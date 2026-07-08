@@ -141,6 +141,11 @@ where
     /// The large quasi-static timestep (inertial term `M/dt²` negligible).
     static_dt: f64,
     n_vertices: usize,
+    /// The disc mesh's outward boundary triangulation, snapshot at construction
+    /// (the mesh itself is moved into `solver`). Deformation-invariant — only the
+    /// vertex *positions* move — so it pairs with [`Self::soft_positions`] to build
+    /// the deformed surface. See [`Self::soft_boundary_faces`].
+    boundary_faces: Vec<[VertexId; 3]>,
     /// Current soft configuration (vertex-major xyz) — warm-starts the next
     /// quasi-static solve; free interior nodes carry forward, bonded nodes are
     /// overwritten with their posed targets each step.
@@ -270,6 +275,10 @@ impl<Msh: Mesh> BondedSandwich<Msh> {
         );
 
         let rest: Vec<Vec3> = mesh.positions().to_vec();
+        // Snapshot the boundary triangulation before `mesh` is moved into the
+        // solver — the connectivity is deformation-invariant, so this one copy
+        // serves every frame's deformed-surface readout ([`Self::soft_boundary_faces`]).
+        let boundary_faces: Vec<[VertexId; 3]> = mesh.boundary_faces().to_vec();
         let lower = Bond::new(lower_body, lower_verts, &rest, &data);
         let upper = Bond::new(upper_body, upper_verts, &rest, &data);
 
@@ -302,6 +311,7 @@ impl<Msh: Mesh> BondedSandwich<Msh> {
             solver,
             static_dt,
             n_vertices,
+            boundary_faces,
             x,
             lower,
             upper,
@@ -456,6 +466,29 @@ impl<Msh: Mesh> BondedSandwich<Msh> {
     #[must_use]
     pub fn upper_face(&self) -> &[VertexId] {
         &self.upper.verts
+    }
+
+    /// The disc's current deformed vertex positions, flat vertex-major xyz
+    /// (length `3·n_vertices`), in the disc's own solve frame.
+    ///
+    /// After a [`Self::step`] or [`Self::probe`] this is the full solved
+    /// configuration — bonded nodes at their posed endplate targets, free interior
+    /// nodes at their equilibrium. Pairs with [`Self::soft_boundary_faces`] to build
+    /// the deformed surface for visualization (mirrors
+    /// [`StaggeredCoupling::soft_positions`](crate::StaggeredCoupling::soft_positions)).
+    #[must_use]
+    pub fn soft_positions(&self) -> &[f64] {
+        &self.x
+    }
+
+    /// The disc surface triangulation (outward-oriented boundary faces), indexed
+    /// into [`Self::soft_positions`]. Constant across the rollout — only the vertex
+    /// positions deform — so a renderer builds each frame as
+    /// `for [a, b, c] in faces { triangle(x[3a..], x[3b..], x[3c..]) }` (mirrors
+    /// [`StaggeredCoupling::soft_boundary_faces`](crate::StaggeredCoupling::soft_boundary_faces)).
+    #[must_use]
+    pub fn soft_boundary_faces(&self) -> &[[VertexId; 3]] {
+        &self.boundary_faces
     }
 
     /// Reverse-mode gradient of the bonded reaction wrenches w.r.t. the two body poses

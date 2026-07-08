@@ -98,6 +98,10 @@ pub struct BondedDisc {
     rest_upper: Vec3,
     /// The disc AABB centre in native mm — the shared flexion pivot.
     center_native: Point3<f64>,
+    /// The native-mm → solver-metre similarity scale (`params.scale`), retained so
+    /// [`Self::deformed_nodes_native`] can invert the solve frame back to native mm
+    /// (`center_native + p_si / scale`). Rendering is its first consumer.
+    scale: f64,
 }
 
 /// The two-box disc scene: free-joint inferior / superior vertebra boxes whose COMs
@@ -233,7 +237,47 @@ pub fn build_bonded_disc(mut mesh: IndexedMesh, params: &DiscParams) -> Result<B
         ml_axis,
         rest_upper,
         center_native,
+        scale: params.scale,
     })
+}
+
+/// One captured flexion pose: the imposed angle, the disc's deformed surface (native
+/// mm), and the small-angle restoring response + conservation residual at that pose.
+pub struct FlexionFrame {
+    /// The imposed flexion angle about the ML axis (rad).
+    pub theta: f64,
+    /// The disc's deformed tet-vertex positions in **native millimetres**, ready to
+    /// pair with [`FlexionTrajectory::boundary_faces`] for the deformed surface.
+    pub deformed_nodes_native: Vec<Point3<f64>>,
+    /// The superior-endplate restoring moment about the disc centre, projected on the
+    /// ML axis (N·m) — negative for a restoring response (see [`BondedDisc::flexion_moment`]).
+    pub moment: f64,
+    /// The bond's conservation residual `‖ΣF‖ + ‖ΣM‖` over both endplates (≈ 0).
+    pub conservation_resid: f64,
+}
+
+/// A replayable capture of a [`BondedDisc`] flexion sweep.
+///
+/// Holds the shared pivot + axis, the disc's rest surface, its (deformation-invariant)
+/// boundary triangulation, and one [`FlexionFrame`] per swept angle — everything a
+/// viewer needs to replay the disc deforming while the superior vertebra rotates about
+/// `(pivot, axis, theta)`.
+///
+/// All positions are **native millimetres** (the vertebra/ligament/facet frame), so a
+/// renderer never touches the solver's SI frame. Produced by [`BondedDisc::capture_flexion`].
+pub struct FlexionTrajectory {
+    /// The flexion pivot — the disc AABB centre in native mm ([`BondedDisc::center_native`]).
+    pub pivot: Point3<f64>,
+    /// The flexion axis — the disc ML unit vector ([`BondedDisc::ml_axis`]).
+    pub axis: Vector3<f64>,
+    /// The disc's rest (θ = 0 equilibrium) tet-vertex positions in native mm — the
+    /// reference a viewer exaggerates deformation against.
+    pub rest_nodes_native: Vec<Point3<f64>>,
+    /// The disc surface triangulation, indexing into every frame's
+    /// `deformed_nodes_native` (constant across the sweep; see [`BondedDisc::boundary_faces`]).
+    pub boundary_faces: Vec<[VertexId; 3]>,
+    /// The captured poses, one per swept angle.
+    pub frames: Vec<FlexionFrame>,
 }
 
 impl BondedDisc {
@@ -248,6 +292,76 @@ impl BondedDisc {
     #[must_use]
     pub const fn center_native(&self) -> Point3<f64> {
         self.center_native
+    }
+
+    /// The disc's current deformed tet-vertex positions mapped back to **native
+    /// millimetres** (`center_native + p_si / scale`), inverting the recentre + scale
+    /// applied at build. Reads the last solved configuration, so call it after
+    /// [`Self::set_flexion`] / [`Self::flexion_moment`] to read that pose's surface.
+    ///
+    /// Pairs with [`Self::boundary_faces`] to build the deformed disc surface in the
+    /// same native-mm frame as the vertebrae, ligaments, and facets.
+    #[must_use]
+    pub fn deformed_nodes_native(&self) -> Vec<Point3<f64>> {
+        let x = self.sandwich.soft_positions();
+        (0..x.len() / 3)
+            .map(|i| {
+                let p_si = Vector3::new(x[3 * i], x[3 * i + 1], x[3 * i + 2]);
+                self.center_native + p_si / self.scale
+            })
+            .collect()
+    }
+
+    /// The disc surface triangulation (outward-oriented boundary faces), indexing into
+    /// [`Self::deformed_nodes_native`]. Constant across a flexion sweep — only the vertex
+    /// positions deform — so a viewer snapshots it once and rebuilds each frame's mesh.
+    #[must_use]
+    pub fn boundary_faces(&self) -> &[[VertexId; 3]] {
+        self.sandwich.soft_boundary_faces()
+    }
+
+    /// Sweep a sequence of flexion `angles` (rad) and record a replayable
+    /// [`FlexionTrajectory`]: the shared pivot/axis, the rest surface, the boundary
+    /// triangulation, and one [`FlexionFrame`] per angle (deformed surface + restoring
+    /// moment + conservation residual). On return the disc is left at the last swept
+    /// angle; the recorded rest surface is independent of that (see below).
+    ///
+    /// The rest surface is the θ = 0 equilibrium, solved first so it is independent of any
+    /// prior drive state. Each frame is a single quasi-static solve (via
+    /// [`Self::flexion_moment`]), then the deformed surface is read back in native mm — so
+    /// a capture costs exactly `N + 1` solves (rest + one per angle).
+    ///
+    /// # Panics
+    /// Panics if any angle drives the soft solve past its SPD region — see
+    /// [`Self::set_flexion`]. Keep every `|angle|` inside the validated sub-degree range.
+    #[must_use]
+    pub fn capture_flexion(&mut self, angles: &[f64]) -> FlexionTrajectory {
+        // Rest = the θ = 0 equilibrium, solved up front so it does not depend on whatever
+        // pose a prior caller left the disc in.
+        self.set_flexion(0.0);
+        let rest_nodes_native = self.deformed_nodes_native();
+        let boundary_faces = self.boundary_faces().to_vec();
+
+        let frames = angles
+            .iter()
+            .map(|&theta| {
+                let (moment, conservation_resid) = self.flexion_moment(theta);
+                FlexionFrame {
+                    theta,
+                    deformed_nodes_native: self.deformed_nodes_native(),
+                    moment,
+                    conservation_resid,
+                }
+            })
+            .collect();
+
+        FlexionTrajectory {
+            pivot: self.center_native,
+            axis: self.ml_axis,
+            rest_nodes_native,
+            boundary_faces,
+            frames,
+        }
     }
 
     /// Impose flexion angle `theta` (rad) about the ML axis through the disc centre
@@ -409,6 +523,158 @@ mod tests {
         assert!(
             format!("{err}").contains("mis-oriented"),
             "expected the SI-orientation guard to fire, got: {err}"
+        );
+    }
+
+    /// Assert a captured sweep is physically sound and return its max node displacement
+    /// (native mm). Shared by the synthetic and real-disc capture tests so the flexion
+    /// invariant lives in ONE place: a valid deformation-invariant boundary surface,
+    /// per-frame conservation, a strictly restoring moment off neutral / a vanishing one
+    /// at neutral, and a real imposed deformation of at least `min_disp` mm. `min_disp` is
+    /// passed per-test, tied to that disc's geometry (`extent·sin θ`) and set comfortably
+    /// above the ~0.02 mm interior-node solve-noise floor so it tests imposed deformation,
+    /// not noise.
+    fn assert_restoring_sweep(traj: &FlexionTrajectory, min_disp: f64) -> f64 {
+        let n = traj.rest_nodes_native.len();
+        assert!(!traj.boundary_faces.is_empty(), "disc must have a surface");
+        assert!(
+            traj.boundary_faces
+                .iter()
+                .flatten()
+                .all(|&v| (v as usize) < n),
+            "every boundary-face vertex must index into the {n}-vertex node buffer"
+        );
+        // Scale for the neutral-frame check: the largest loaded restoring moment.
+        let moment_scale = traj
+            .frames
+            .iter()
+            .map(|f| f.moment.abs())
+            .fold(0.0_f64, f64::max);
+        let mut max_disp = 0.0_f64;
+        for f in &traj.frames {
+            assert_eq!(f.deformed_nodes_native.len(), n, "node count constant");
+            assert!(
+                f.conservation_resid < 1e-8,
+                "θ={:.3}° bond must conserve (resid {:.2e})",
+                f.theta.to_degrees(),
+                f.conservation_resid
+            );
+            if f.theta.abs() > 1e-9 {
+                // Loaded: the ML moment strictly opposes the tilt (θ·M < 0). A `≤ ε` bound
+                // would pass a spurious M = 0, so require a strictly restoring sign.
+                assert!(
+                    f.theta * f.moment < 0.0,
+                    "θ={:.3}° must be restoring (θ·M = {:.2e})",
+                    f.theta.to_degrees(),
+                    f.theta * f.moment
+                );
+            } else {
+                // Neutral: the response must vanish (checked explicitly — `0·M ≤ ε` is
+                // vacuously true and would never test the θ=0 moment).
+                assert!(
+                    f.moment.abs() < 0.1 * moment_scale,
+                    "neutral moment must be ~0, got {:.2e} (scale {moment_scale:.2e})",
+                    f.moment
+                );
+            }
+            for (p, r) in f.deformed_nodes_native.iter().zip(&traj.rest_nodes_native) {
+                max_disp = max_disp.max((p - r).norm());
+            }
+        }
+        assert!(
+            max_disp > min_disp,
+            "the sweep must impose a real deformation (≥ {min_disp:.2e} mm, above solve noise); got {max_disp:.2e} mm"
+        );
+        max_disp
+    }
+
+    #[test]
+    fn capture_flexion_records_a_deforming_restoring_sweep() {
+        // License-free coverage of the capture seam on the synthetic disc: exercises
+        // capture_flexion + deformed_nodes_native + boundary_faces (the real-anatomy
+        // build+measure gate is the #[ignore]d test below).
+        let mut disc = build_bonded_disc(synthetic_disc(), &DiscParams::default()).unwrap();
+        let angles: Vec<f64> = [-0.3_f64, 0.0, 0.3]
+            .iter()
+            .map(|d| d.to_radians())
+            .collect();
+        let traj = disc.capture_flexion(&angles);
+
+        // Shared pivot/axis + the direct accessors agree with the trajectory snapshot.
+        assert_eq!(traj.pivot, disc.center_native());
+        assert_eq!(traj.axis, disc.ml_axis());
+        assert_eq!(disc.boundary_faces(), traj.boundary_faces.as_slice());
+        assert_eq!(
+            disc.deformed_nodes_native().len(),
+            traj.rest_nodes_native.len()
+        );
+
+        // The 24×20×6 mm slab tilted 0.3° about its ML(x) axis moves its farthest node
+        // (~10 mm off-axis) by ~10·sin(0.3°) ≈ 0.05 mm; require ≥ 0.02 mm (above noise).
+        assert_restoring_sweep(&traj, 2e-2);
+    }
+
+    #[test]
+    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
+    fn captures_a_replayable_flexion_sweep_on_the_real_disc() {
+        // Build+measure on the real intervertebral disc: capture a validated sub-degree
+        // sweep and assert the trajectory a viewer will replay is physically sound and
+        // deterministic — no proxy. Gated + license-clean like the rung tests.
+        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
+        let mut disc = build_bonded_disc(disc_mesh, &DiscParams::default()).expect("build disc");
+
+        // Symmetric, all within rung-7's validated SPD range (|θ| ≤ 0.86°).
+        let angles: Vec<f64> = [-0.86_f64, -0.5, 0.0, 0.5, 0.86]
+            .iter()
+            .map(|d| d.to_radians())
+            .collect();
+        let traj = disc.capture_flexion(&angles);
+
+        // Shared pivot/axis are the disc's own.
+        assert_eq!(traj.pivot, disc.center_native());
+        assert_eq!(traj.axis, disc.ml_axis());
+
+        assert_eq!(traj.frames.len(), angles.len());
+
+        // Physics (shared with the synthetic test): valid surface, conservation, restoring
+        // moment, real deformation. The ±0.86° sweep on the real disc deforms it ~0.4 mm;
+        // require ≥ 0.1 mm — well above the ~0.02 mm interior-node solve-noise floor.
+        let max_disp = assert_restoring_sweep(&traj, 1e-1);
+        // The disc ACTUALLY deforms (sub-mm at sub-degree — the viewer exaggerates it).
+        println!(
+            "captured {} frames; max node displacement {max_disp:.4} mm",
+            traj.frames.len()
+        );
+
+        // Reproducibility — asserted on the PHYSICAL OBSERVABLE (the restoring moment),
+        // not per-node bit-identity. The disc's Newton tangent is indefinite (the faer LU
+        // fallback fires every solve) and the force residual (Newton tol 1e-10) is FLAT
+        // over a ~0.02 mm subspace of interior free-node configurations; the multi-threaded
+        // indefinite LU then lands on different points in that flat subspace run-to-run.
+        // The bonded (boundary) nodes are Dirichlet-pinned, so the reaction — hence the
+        // moment — is well-determined regardless. This is fine for the viewer, which replays
+        // ONE captured sweep; we assert the observable a regression would actually track.
+        // (Root cause + the deferred fix — deterministic LU or `SolverConfig::lm_regularization`,
+        // NOT mass regularization, which a spike showed does not help — are a sim-soft
+        // concern, out of scope for this viz rung.)
+        //
+        // Drift is the absolute moment change normalised by the sweep's peak moment, NOT by
+        // each frame's own moment: the near-zero θ=0 frame would make a per-frame ratio blow up.
+        let moment_scale = traj
+            .frames
+            .iter()
+            .map(|f| f.moment.abs())
+            .fold(0.0_f64, f64::max);
+        let again = disc.capture_flexion(&angles);
+        let mut max_moment_drift = 0.0_f64;
+        for (a, b) in traj.frames.iter().zip(&again.frames) {
+            max_moment_drift = max_moment_drift.max((a.moment - b.moment).abs());
+        }
+        let moment_rel = max_moment_drift / moment_scale.max(1e-12);
+        println!("re-capture moment drift: {moment_rel:.2e} rel (scale {moment_scale:.2e})");
+        assert!(
+            moment_rel < 1e-3,
+            "the restoring moment must reproduce across captures (drift {moment_rel:.2e} rel)"
         );
     }
 

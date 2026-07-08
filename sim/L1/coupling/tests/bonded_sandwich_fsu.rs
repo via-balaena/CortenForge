@@ -199,6 +199,72 @@ fn bonded_disc_conserves_and_carries_two_way_tension_under_flexion() {
 }
 
 #[test]
+fn deformed_surface_accessors_track_the_solved_field() {
+    // The visualization seam (viz flexion-deformation rung): `soft_positions` +
+    // `soft_boundary_faces` must expose the ACTUAL solved deformed surface, not the
+    // rest mesh. Build+measure — no proxy: pin the upper endplate to a known
+    // compressed pose and read the surface back.
+    let mut c = build();
+    let rest = c.soft_positions().to_vec(); // constructor seeds `x` at rest
+    let faces_rest = c.soft_boundary_faces().to_vec();
+    let n = rest.len() / 3;
+
+    // Topology is a valid, non-empty surface indexing into the position buffer.
+    assert!(!faces_rest.is_empty(), "disc must have a boundary surface");
+    assert!(
+        faces_rest.iter().flatten().all(|&v| (v as usize) < n),
+        "every boundary-face vertex id must index into soft_positions ({n} verts)"
+    );
+
+    // Compress the upper endplate straight down by δ and solve.
+    let delta = 0.05 * EDGE;
+    c.set_body_pose(
+        UPPER,
+        Vec3::new(C, C, UPPER_REST_Z - delta),
+        UnitQuaternion::identity(),
+    );
+    c.probe();
+    let deformed = c.soft_positions();
+
+    // (1) The buffer is the same shape, and the topology is deformation-invariant
+    //     (only vertex positions move) — the exact contract a renderer relies on.
+    assert_eq!(
+        deformed.len(),
+        rest.len(),
+        "position buffer length constant"
+    );
+    assert_eq!(
+        c.soft_boundary_faces(),
+        faces_rest.as_slice(),
+        "boundary topology must not change under deformation"
+    );
+
+    // (2) The field ACTUALLY deformed — some node moved off its rest position.
+    let max_disp = (0..n)
+        .map(|i| {
+            let d = |k| deformed[3 * i + k] - rest[3 * i + k];
+            (d(0) * d(0) + d(1) * d(1) + d(2) * d(2)).sqrt()
+        })
+        .fold(0.0_f64, f64::max);
+    assert!(
+        max_disp > 1e-6,
+        "probe must deform the disc; max node displacement {max_disp:.2e} m"
+    );
+
+    // (3) The upper bonded face sits at its imposed target: every upper-face node's
+    //     z is the rest top (EDGE) displaced by exactly −δ (Dirichlet-pinned to the
+    //     box). This ties the exposed surface to the posed rigid body precisely.
+    for &v in c.upper_face() {
+        let z = deformed[3 * v as usize + 2];
+        assert!(
+            (z - (EDGE - delta)).abs() < 1e-9,
+            "upper-face node {v} must be pinned to the compressed endplate z={:.6}, got {z:.6}",
+            EDGE - delta
+        );
+    }
+}
+
+#[test]
 fn compressed_disc_springs_endplates_apart_dynamically() {
     // The coupled ROUND-TRIP: drive the endplates toward each other (no gravity) and
     // let the disc's reaction wrench drive the real rigid engine. An initial approach
