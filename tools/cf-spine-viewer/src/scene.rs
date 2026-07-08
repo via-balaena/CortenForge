@@ -25,10 +25,21 @@ use cf_fsu_geometry::{
     BODY_RADIUS, FACET_CELL, FACET_MAX_CONTACTS, SegmentFrame, extreme_vertex, facet_grid, load,
     oracle, segment_frame,
 };
+use cf_fsu_model::{DiscParams, FlexionTrajectory, build_bonded_disc};
 use mesh_types::{Aabb, IndexedMesh};
 use nalgebra::{Point3, UnitQuaternion, Vector3};
 use sim_core::sdf::compute_shape_contact;
 use sim_core::{Pose, SdfContact, SdfGrid, ShapeConcave};
+
+/// Peak flexion/extension angle of the captured sweep (degrees). The bonded disc
+/// converges only at sub-degree strains — beyond ~1° the boundary tets leave their
+/// SPD region and the solve diverges (rung 7) — so the sweep stays at the validated
+/// maximum and the viewer exaggerates the sub-mm deformation for legibility.
+const MAX_FLEX_DEG: f64 = 0.86;
+/// Frames in the captured sweep, evenly spaced in angle across `[-MAX, +MAX]`. Each is
+/// one expensive quasi-static soft solve, so the count is modest; the viewer
+/// interpolates between them for smooth playback.
+const N_FLEX_FRAMES: usize = 15;
 
 /// A ligament rendered as a straight line between two field-derived sites.
 pub struct Ligament {
@@ -37,11 +48,14 @@ pub struct Ligament {
     pub superior: Point3<f64>, // attachment on L4
 }
 
-/// The assembled static scene, as plain geometry in native millimetres.
+/// The assembled scene, as plain geometry in native millimetres.
 pub struct FsuScene {
     pub l4: IndexedMesh,
     pub l5: IndexedMesh,
-    pub disc: IndexedMesh,
+    /// The live bonded disc's captured flexion sweep: rest + per-angle deformed
+    /// tet-node positions (native mm) + boundary faces + pivot/axis. Replaces the
+    /// static STL disc shell — the viewer renders the deforming tet boundary.
+    pub flexion: FlexionTrajectory,
     pub ligaments: Vec<Ligament>,
     /// Facet near-contact points (within the 1 mm detection margin at the
     /// neutral pose) — the articular-process contact region.
@@ -192,6 +206,37 @@ fn combined_aabb(meshes: &[&IndexedMesh]) -> Aabb {
     Aabb::from_points(meshes.iter().flat_map(|m| m.vertices.iter()))
 }
 
+/// Evenly-spaced flexion angles across `[-MAX_FLEX_DEG, +MAX_FLEX_DEG]` (radians),
+/// ascending so the captured sweep warm-starts smoothly frame to frame.
+fn flexion_sweep() -> Vec<f64> {
+    let max = MAX_FLEX_DEG.to_radians();
+    (0..N_FLEX_FRAMES)
+        .map(|i| {
+            #[allow(clippy::cast_precision_loss)] // N_FLEX_FRAMES is tiny; the ratio is exact.
+            let t = i as f64 / (N_FLEX_FRAMES - 1) as f64; // 0..=1
+            -max + t * (2.0 * max)
+        })
+        .collect()
+}
+
+/// Tet-mesh the real disc, bond it between the two vertebra endplates, and capture a
+/// sub-degree flexion sweep as a replayable trajectory (native mm). Consumes its own
+/// copy of the disc mesh (`build_bonded_disc` recentres + scales it destructively).
+///
+/// `build_bonded_disc` already drops the mesher's disconnected rim islands
+/// (`SdfMeshedTetMesh::largest_component`), so the captured surface is a single connected
+/// component — the viewer renders it directly, no render-side filtering needed.
+fn capture_flexion(disc: IndexedMesh) -> Result<FlexionTrajectory> {
+    let mut bonded = build_bonded_disc(disc, &DiscParams::default())?;
+    let traj = bonded.capture_flexion(&flexion_sweep());
+    println!(
+        "disc surface: {} nodes, {} boundary faces (single component)",
+        traj.rest_nodes_native.len(),
+        traj.boundary_faces.len()
+    );
+    Ok(traj)
+}
+
 /// Assemble the static FSU scene from the three STL paths (native mm).
 pub fn build(l4_path: &Path, l5_path: &Path, disc_path: &Path) -> Result<FsuScene> {
     let l4 = load(l4_path)?;
@@ -241,11 +286,17 @@ pub fn build(l4_path: &Path, l5_path: &Path, disc_path: &Path) -> Result<FsuScen
         eprintln!("WARNING: {w}");
     }
 
+    // Frame the camera on all three tissues (the STL disc extent ≈ the tet-boundary),
+    // then consume the disc mesh into the bonded-disc flexion capture.
     let aabb = combined_aabb(&[&l4, &l5, &disc]);
+    println!("capturing bonded-disc flexion sweep ({N_FLEX_FRAMES} frames, ±{MAX_FLEX_DEG:.2}°)…");
+    let flexion = capture_flexion(disc)?; // logs the disc surface size (single component)
+    println!("captured {} flexion frames", flexion.frames.len());
+
     Ok(FsuScene {
         l4,
         l5,
-        disc,
+        flexion,
         ligaments,
         facet_contacts,
         aabb,
