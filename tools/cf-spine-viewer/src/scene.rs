@@ -54,7 +54,7 @@ pub struct FsuScene {
     pub l5: IndexedMesh,
     /// The clean STL disc surface (native mm) — a smooth watertight lens, the render
     /// geometry. The tet mesh is too fragmented to render as a coherent disc, so the
-    /// viewer draws THIS surface and displaces it by the FEM field (see [`disc_node_map`]).
+    /// viewer draws THIS surface and displaces it by the FEM field (see `disc_node_map`).
     pub disc_surface: IndexedMesh,
     /// For each `disc_surface` vertex, the index (into [`FlexionTrajectory::rest_nodes_native`])
     /// of the nearest tet node on the largest component's boundary. Per frame the vertex is
@@ -63,7 +63,7 @@ pub struct FsuScene {
     pub disc_node_map: Vec<usize>,
     /// The live bonded disc's captured flexion sweep: rest + per-angle deformed
     /// tet-node positions (native mm) + pivot/axis. The FEM displacement field sampled
-    /// onto [`disc_surface`] via [`disc_node_map`].
+    /// onto `disc_surface` via `disc_node_map`.
     pub flexion: FlexionTrajectory,
     pub ligaments: Vec<Ligament>,
     /// Facet near-contact points (within the 1 mm detection margin at the
