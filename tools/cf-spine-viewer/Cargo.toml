@@ -46,6 +46,18 @@ sim-core = { workspace = true }
 # facet/ligament constants), extracted from this viewer + the rung 4b/5/7 tests.
 cf-fsu-geometry = { workspace = true }
 
+# cf-fsu-model — `build_bonded_disc` + `BondedDisc::capture_flexion` produce the
+# `FlexionTrajectory` (the live bonded intervertebral disc's replayable flexion
+# sweep: per-frame deformed tet-node positions in native mm + pivot + ML axis).
+# Drives the deformation playback this rung adds.
+cf-fsu-model = { workspace = true }
+
+# sim-bevy-soft — `mesh::{build_soft_mesh, apply_soft_positions}` build and
+# per-frame update the deforming tet-boundary disc surface, with area-weighted
+# normals that (unlike Bevy's corner-angle smoother) don't zero out at mm scale.
+# Reused so the deforming disc shares the workspace's validated soft-mesh path.
+sim-bevy-soft = { workspace = true }
+
 # `AttributedMesh` (+ `compute_normals`) / `IndexedMesh` / `Aabb`.
 mesh-types = { workspace = true }
 # `Point3` / `Vector3` / `UnitQuaternion` — field-derived site math + poses.

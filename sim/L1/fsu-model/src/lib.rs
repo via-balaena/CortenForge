@@ -41,9 +41,11 @@ use nalgebra::{Point3, Unit, UnitQuaternion, Vector3};
 use sim_coupling::BondedSandwich;
 use sim_mjcf::load_model;
 use sim_soft::{
-    Aabb3, MaterialField, Mesh, MeshingHints, SdfMeshedTetMesh, Vec3, VertexId,
-    pick_vertices_by_predicate,
+    Aabb3, MaterialField, Mesh, MeshingHints, SdfMeshedTetMesh, Vec3, pick_vertices_by_predicate,
 };
+// Re-exported: `FlexionTrajectory::boundary_faces` is `Vec<[VertexId; 3]>`, so consumers
+// (e.g. a viewer building a mesh from it) need to name the vertex-index type.
+pub use sim_soft::VertexId;
 
 /// Body index of the inferior (lower) vertebra box in the disc scene (world = 0).
 const LOWER: usize = 1;

@@ -2531,11 +2531,13 @@ dependencies = [
  "bevy_egui",
  "cf-bevy-common",
  "cf-fsu-geometry",
+ "cf-fsu-model",
  "cf-viewer",
  "clap",
  "mesh-types",
  "nalgebra 0.34.2",
  "sim-bevy",
+ "sim-bevy-soft",
  "sim-core",
 ]
 
