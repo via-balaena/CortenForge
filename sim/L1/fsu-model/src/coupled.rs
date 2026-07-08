@@ -254,13 +254,16 @@ impl CoupledFsu {
     /// field is scaled per frame, so extension shows the disc's real (not mirror-of-flexion)
     /// shape. The superior vertebra rotates about `(pivot, axis, theta)`.
     ///
+    /// # Errors
+    /// Returns an error if a swept `applied` moment has no equilibrium within
+    /// `±EQUILIBRIUM_BRACKET` ([`Self::equilibrium`] returns `None`) — e.g. a hypermobile
+    /// segment or a supra-physiologic moment beyond the ~6° flexion / ~4.5° extension ROM.
+    /// A physiologic ramp (`|moment| ≤ 7.5 N·m`) is always in range.
+    ///
     /// # Panics
-    /// Panics if a swept `applied` moment has no equilibrium within `±EQUILIBRIUM_BRACKET`
-    /// ([`Self::equilibrium`] returns `None`) — pass a physiologic ramp (`|moment| ≤ 7.5
-    /// N·m`, well inside the ~6° flexion / ~4.5° extension ROM); or if the reference disc
-    /// probe drives the soft solve past its SPD region (it does not, at the sub-degree probe).
-    #[must_use]
-    pub fn capture_ramp(&mut self, applied_moments: &[f64]) -> CoupledTrajectory {
+    /// Panics if the reference disc probe drives the soft solve past its SPD region — it
+    /// does not, at the validated sub-degree probe angle (the disc's fail-close contract).
+    pub fn capture_ramp(&mut self, applied_moments: &[f64]) -> Result<CoupledTrajectory> {
         // Reference disc deformation at BOTH sub-degree probes: the disc's response is only
         // near-antisymmetric, so extension frames scale the −probe field and flexion frames
         // the +probe field (rather than mirroring one), preserving the real extension shape.
@@ -285,12 +288,9 @@ impl CoupledFsu {
         let frames = applied_moments
             .iter()
             .map(|&applied| {
-                // A physiologic ramp always has an equilibrium in the bracket (see the
-                // `# Panics` note); None here is a caller error, not a recoverable state.
-                #[allow(clippy::expect_used)]
-                let theta = self
-                    .equilibrium(applied)
-                    .expect("applied moment must have an equilibrium within the ROM bracket");
+                let theta = self.equilibrium(applied).with_context(|| {
+                    format!("no equilibrium within the ROM bracket for {applied} N·m")
+                })?;
                 let phi = disc_sign * theta; // disc-frame extrapolation angle
                 let (field, s) = if phi >= 0.0 {
                     (&disp_plus, phi / K_DISC_PROBE)
@@ -300,22 +300,22 @@ impl CoupledFsu {
                 let deformed_nodes_native =
                     rest.iter().zip(field).map(|(r, d)| r + d * s).collect();
                 let (n_facet, _) = self.facet_moment(theta);
-                CoupledFrame {
+                Ok(CoupledFrame {
                     applied,
                     theta,
                     deformed_nodes_native,
                     n_facet,
-                }
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
 
-        CoupledTrajectory {
+        Ok(CoupledTrajectory {
             pivot: self.pivot,
             axis: self.axis,
             rest_nodes_native: rest,
             boundary_faces: ref_traj.boundary_faces,
             frames,
-        }
+        })
     }
 }
 
@@ -404,13 +404,15 @@ fn build_coupled_model(
 }
 
 /// Bisect for the root of a **monotone-decreasing** `f` equal to `target` over
-/// `[−bracket, +bracket]` (80 halvings → ~1e-24·bracket).
+/// `[−bracket, +bracket]`.
 ///
-/// Returns `None` when no root lies in the bracket — i.e. `target` is outside
-/// `[f(+bracket), f(−bracket)]`. This is the guard that stops a bracketed bisection from
-/// silently returning the *bracket edge* as though it were a solved root (which would
-/// hand a caller an angle at the ±bracket limit for a moment the segment cannot actually
-/// balance in range).
+/// Returns `None` in two cases, so a caller never receives a non-root angle:
+/// - `target` is outside `[f(+bracket), f(−bracket)]` — no root in range (this stops a
+///   bracketed bisection from silently returning the *bracket edge* as a solved root);
+/// - the bisection converges but the **residual** `|f(root) − target|` is not near zero —
+///   which happens when `f` is not actually monotone over the bracket (e.g. a
+///   non-monotone / discontinuous contact response near engagement onset), so there is no
+///   clean crossing and the bisection would otherwise report a spurious one.
 fn solve_decreasing(target: f64, bracket: f64, f: impl Fn(f64) -> f64) -> Option<f64> {
     // Monotone decreasing ⇒ f(−bracket) is the max, f(+bracket) the min; a root exists
     // iff f(+bracket) ≤ target ≤ f(−bracket).
@@ -418,7 +420,13 @@ fn solve_decreasing(target: f64, bracket: f64, f: impl Fn(f64) -> f64) -> Option
         return None;
     }
     let (mut lo, mut hi) = (-bracket, bracket);
-    for _ in 0..80 {
+    // Halve until the interval reaches f64 precision (~52 steps for a ~0.4 rad bracket);
+    // 60 is a safe cap. Each iteration evaluates `f` (an SDF contact query here), so
+    // stopping at convergence avoids ~20+ wasted queries per solve.
+    for _ in 0..60 {
+        if hi - lo < 1e-12 {
+            break;
+        }
         let mid = 0.5 * (lo + hi);
         if f(mid) > target {
             lo = mid; // still above target → move toward the decreasing (hi) end
@@ -426,7 +434,10 @@ fn solve_decreasing(target: f64, bracket: f64, f: impl Fn(f64) -> f64) -> Option
             hi = mid;
         }
     }
-    Some(0.5 * (lo + hi))
+    let root = 0.5 * (lo + hi);
+    // A monotone bisection drives the residual to ~0; a large residual means the bracket
+    // held no clean root (f non-monotone / discontinuous), so signal no-equilibrium.
+    ((f(root) - target).abs() < 1e-6).then_some(root)
 }
 
 /// The two articular SDF grids posed at flexion `theta` (L4 rotated about `axis`
@@ -702,7 +713,9 @@ mod tests {
         );
 
         // Capture a small ramp: one frame per applied moment, sharing the disc surface.
-        let traj = fsu.capture_ramp(&[-0.5, 0.0, 0.5]);
+        let traj = fsu
+            .capture_ramp(&[-0.5, 0.0, 0.5])
+            .expect("all three moments have equilibria in the bracket");
         assert_eq!(traj.frames.len(), 3);
         assert_eq!(traj.pivot, fsu.pivot());
         assert_eq!(traj.axis, fsu.axis());
