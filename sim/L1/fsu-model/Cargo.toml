@@ -1,0 +1,38 @@
+[package]
+name = "cf-fsu-model"
+description = "Assembled Functional Spinal Unit model — tet-meshes the real intervertebral disc, bonds it between two rigid vertebra endplates (sim-coupling), and drives its quasi-static flexion/extension deformation. The live-simulation sibling of cf-fsu-geometry's static recipes."
+keywords = ["spine", "fsu", "disc", "biomechanics", "simulation"]
+categories = ["science", "simulation"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Bonds the soft FEM disc (sim-soft) to two rigid endplates via the sim-coupling
+# keystone (BondedSandwich), so its dependency closure inherits sim-soft's
+# faer/gemm stack — which blows every L0 tier's 200-dep cap. L1 (the keystone's
+# own tier, unbounded cap) is the only legal home.
+[package.metadata.cortenforge]
+tier = "L1"
+
+[lints]
+workspace = true
+
+[dependencies]
+# `IndexedMesh` / `Aabb` — the disc surface mesh + its bounding box.
+cf-geometry = { workspace = true }
+# `oracle` — the exact signed-distance field the tet-mesher samples.
+cf-fsu-geometry = { workspace = true }
+# `BondedSandwich` — the two-way soft↔rigid disc bond (the keystone).
+sim-coupling = { workspace = true }
+# `SdfMeshedTetMesh` / `MeshingHints` / `MaterialField` — tet-mesh the disc from its field.
+sim-soft = { workspace = true }
+# `load_model` — build the two-box disc scene from MJCF.
+sim-mjcf = { workspace = true }
+# `Point3` / `Vector3` / `UnitQuaternion` — the frame + flexion math.
+nalgebra = { workspace = true }
+# `Result` + context/`bail!` for the fallible build path.
+anyhow = { workspace = true }

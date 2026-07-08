@@ -97,15 +97,13 @@ use cf_fsu_geometry::{
     BODY_RADIUS, FACET_CELL, FACET_MAX_CONTACTS, SegmentFrame, extreme_vertex, facet_grid,
     load_from_env, oracle, segment_frame,
 };
-use cf_geometry::{Aabb, IndexedMesh};
+use cf_fsu_model::{DiscParams, build_bonded_disc};
+use cf_geometry::IndexedMesh;
 use nalgebra::{Point3, Unit, UnitQuaternion, Vector3};
 use sim_core::sdf::compute_shape_contact;
 use sim_core::{Pose, SdfContact, SdfGrid, ShapeConcave};
-use sim_coupling::BondedSandwich;
 use sim_mjcf::load_model;
-use sim_soft::{
-    Aabb3, MaterialField, Mesh, MeshingHints, SdfMeshedTetMesh, Vec3, pick_vertices_by_predicate,
-};
+use sim_soft::Vec3;
 
 // ── Literature corridor (facts, not copyrightable): representative in-vitro L4–L5
 // segmental ROM at a physiologic moment. Yamamoto 1989 (10 N·m): flexion 5.8°,
@@ -117,152 +115,13 @@ const PHYSIOLOGIC_MOMENT: f64 = 7.5; // N·m
 const LIT_FLEXION_DEG: (f64, f64) = (5.0, 8.5); // one-direction flexion ROM corridor
 const LIT_EXTENSION_DEG: (f64, f64) = (2.5, 5.5); // one-direction extension ROM corridor
 
-// ── Disc scene constants (SI metres; recentred+scaled — rung-6c discipline). ──
-const SCALE: f64 = 1.0e-3; // mm → m
-const CELL: f64 = 0.003; // tet lattice spacing (m)
-const PAD: f64 = 0.0015; // lattice padding beyond the disc AABB (m)
-const BAND_FRAC: f64 = 0.18; // endplate band = 18% of the disc SI extent
-const H_BOX: f64 = 0.006; // rigid-vertebra box half-thickness (m)
-const STATIC_DT: f64 = 1.0e3; // quasi-static disc
-const LOWER: usize = 1;
-const UPPER: usize = 2;
+// ── Disc probe constants (the bonded-disc scene itself is `cf_fsu_model`). ──
 const DISC_PROBE_DEG: [f64; 2] = [0.5, 0.86]; // small angles: keep the tets in their SPD region
 const DEFAULT_MU: f64 = 1.0e5; // disc Neo-Hookean shear modulus (Pa) — the rung-6c fallback
 
 // ── Ligament / facet constants (native mm frame). ──
 const K_LIG: f64 = 20.0; // tendon stiffness N/mm (rung-5, uncalibrated)
 const K_FACET: f64 = 200.0; // facet penalty N/mm (uncalibrated; sensitivity only)
-
-// ─────────────────────────── DISC SUBSYSTEM (scaled SI) ───────────────────────────
-
-/// The bonded disc plus the geometry the flexion probe needs.
-struct DiscModel {
-    sandwich: BondedSandwich<SdfMeshedTetMesh>,
-    ml_scaled: Vector3<f64>,    // ML direction in the (unrotated) disc frame
-    rest_up: Vec3,              // superior box body origin at rest
-    center_native: Point3<f64>, // disc AABB centre in native mm (the shared pivot)
-}
-
-fn disc_mjcf(c_inf: Vec3, c_sup: Vec3) -> String {
-    let lo = c_inf - Vec3::z() * H_BOX;
-    let hi = c_sup + Vec3::z() * H_BOX;
-    format!(
-        r#"<mujoco><option gravity="0 0 0" timestep="0.001"/><worldbody>
-    <body name="inf" pos="{lx} {ly} {lz}"><freejoint/><geom type="box" size="0.025 0.025 {h}" mass="0.05"/></body>
-    <body name="sup" pos="{ux} {uy} {uz}"><freejoint/><geom type="box" size="0.025 0.025 {h}" mass="0.05"/></body>
-    </worldbody></mujoco>"#,
-        lx = lo.x,
-        ly = lo.y,
-        lz = lo.z,
-        ux = hi.x,
-        uy = hi.y,
-        uz = hi.z,
-        h = H_BOX,
-    )
-}
-
-/// Load + tet-mesh the real disc at shear modulus `mu`, bond it between two field-posed
-/// boxes, and capture the shared pivot (disc AABB centre, native mm) + the ML direction.
-fn build_disc(mu: f64) -> DiscModel {
-    let mut mesh = load_from_env("CF_DISC_STL").expect("load disc mesh");
-    let bbox0 = Aabb::from_points(mesh.vertices.iter());
-    let center_native = Point3::from(bbox0.min.coords + (bbox0.max - bbox0.min) * 0.5);
-    for v in &mut mesh.vertices {
-        *v = Point3::from((v.coords - center_native.coords) * SCALE);
-    }
-    let sdf = oracle(&mesh).expect("disc oracle");
-    let bbox = Aabb::from_points(mesh.vertices.iter());
-    // Derive the disc's principal axes from its AABB extents (no axis on faith,
-    // rung-6c discipline): SI = thinnest, ML (the flexion/extension axis) = widest.
-    let span = bbox.max - bbox.min;
-    assert!(
-        span.z < span.x && span.z < span.y,
-        "disc SI (thinnest) must be native z"
-    );
-    let spans = [span.x, span.y, span.z];
-    let widest = (0..3)
-        .max_by(|&a, &b| spans[a].total_cmp(&spans[b]))
-        .unwrap();
-    let mut ml_scaled = Vector3::zeros();
-    ml_scaled[widest] = 1.0; // the disc's widest principal extent = ML
-    let hints = MeshingHints {
-        bbox: Aabb3::new(
-            Vec3::new(bbox.min.x - PAD, bbox.min.y - PAD, bbox.min.z - PAD),
-            Vec3::new(bbox.max.x + PAD, bbox.max.y + PAD, bbox.max.z + PAD),
-        ),
-        cell_size: CELL,
-        material_field: Some(MaterialField::uniform(mu, 4.0 * mu)),
-    };
-    let tet = SdfMeshedTetMesh::from_sdf(&sdf, &hints).expect("disc meshes");
-    let (lo_z, hi_z) = (bbox.min.z, bbox.max.z);
-    let band = BAND_FRAC * (hi_z - lo_z);
-    let inferior = pick_vertices_by_predicate(&tet, |p| p.z < lo_z + band);
-    let superior = pick_vertices_by_predicate(&tet, |p| p.z > hi_z - band);
-    assert!(
-        !inferior.is_empty() && !superior.is_empty(),
-        "endplate bands non-empty"
-    );
-    let cen = |vs: &[u32]| {
-        let s: Vec3 = vs.iter().map(|&v| tet.positions()[v as usize]).sum();
-        s / vs.len() as f64
-    };
-    let (c_inf, c_sup) = (cen(&inferior), cen(&superior));
-    println!(
-        "disc(mu={mu:.0e}): {} tets, endplates {}+{} verts",
-        tet.n_tets(),
-        inferior.len(),
-        superior.len()
-    );
-    let model = load_model(&disc_mjcf(c_inf, c_sup)).expect("disc FSU MJCF");
-    let mut data = model.make_data();
-    data.forward(&model).expect("disc forward");
-    let rest_up = data.xpos[UPPER];
-    let sandwich = BondedSandwich::from_tet_mesh(
-        model, data, LOWER, UPPER, tet, inferior, superior, STATIC_DT,
-    );
-    DiscModel {
-        sandwich,
-        ml_scaled,
-        rest_up,
-        center_native,
-    }
-}
-
-/// The disc's restoring response to a flexion `θ` about the ML axis through the disc
-/// centre (origin in the scaled frame): the reaction moment on the superior vertebra
-/// about that pivot, projected on ML (N·m), plus a conservation residual `‖ΣF‖`+`‖ΣM‖`
-/// over both bonded faces (rung-6 oracle; ≈0 for a self-equilibrated field).
-fn disc_flexion_moment(disc: &mut DiscModel, theta: f64) -> (f64, f64) {
-    let axis = Unit::new_normalize(disc.ml_scaled);
-    let rot = UnitQuaternion::from_axis_angle(&axis, theta);
-    // rotate the superior box about the origin (disc centre); the bonded endplate
-    // follows rigidly, so the two faces' relative rotation is exactly θ.
-    disc.sandwich.set_body_pose(UPPER, rot * disc.rest_up, rot);
-    disc.sandwich.probe();
-    let react = disc.sandwich.last_reaction();
-    let targets = disc.sandwich.last_targets();
-    let at = |i: usize, s: &[f64]| Vec3::new(s[3 * i], s[3 * i + 1], s[3 * i + 2]);
-    // moment on the superior vertebra about the origin (disc centre).
-    let mut m_up = Vec3::zeros();
-    for &v in disc.sandwich.upper_face() {
-        let i = v as usize;
-        m_up += at(i, targets).cross(&at(i, react));
-    }
-    // conservation over BOTH faces (should vanish).
-    let (mut f_tot, mut m_tot) = (Vec3::zeros(), Vec3::zeros());
-    for &v in disc
-        .sandwich
-        .lower_face()
-        .iter()
-        .chain(disc.sandwich.upper_face())
-    {
-        let i = v as usize;
-        let f = at(i, react);
-        f_tot += f;
-        m_tot += at(i, targets).cross(&f);
-    }
-    (m_up.dot(&disc.ml_scaled), f_tot.norm() + m_tot.norm())
-}
 
 // ─────────────────────────── LIGAMENT SUBSYSTEM (native mm) ───────────────────────────
 
@@ -453,14 +312,22 @@ fn l4_l5_fsu_segmental_response_vs_literature() {
 
     // ── Disc: build, verify the ML axes agree, measure the small-strain bending
     //    stiffness (linearity across two probe angles) + conservation ──
-    let mut disc = build_disc(DEFAULT_MU);
-    let pivot = disc.center_native; // shared pivot (native mm)
+    let disc_mesh = load_from_env("CF_DISC_STL").expect("load disc mesh");
+    let mut disc = build_bonded_disc(
+        disc_mesh,
+        &DiscParams {
+            mu: DEFAULT_MU,
+            ..DiscParams::default()
+        },
+    )
+    .expect("build bonded disc");
+    let pivot = disc.center_native(); // shared pivot (native mm)
     // The shared flexion/extension axis = the disc's own field-derived principal ML axis
     // (its widest extent). Cross-check it against the independent vertebral-frame ML
     // (superior × posterior): they agree to an anatomical obliquity — the vertebral ML is
     // tilted by the lordotic body-centre vector + coarse body-centre localization, so we
     // adopt the cleaner disc axis and REPORT the disagreement rather than assume they match.
-    let flex_axis = disc.ml_scaled;
+    let flex_axis = disc.ml_axis();
     let ml_align = frame.ml.dot(&flex_axis).abs();
     println!(
         "[frame] flexion axis = disc ML ({:.2},{:.2},{:.2}); vertebral-ML agreement = {ml_align:.4} \
@@ -479,7 +346,7 @@ fn l4_l5_fsu_segmental_response_vs_literature() {
     let mut ks = Vec::new();
     for &deg in &DISC_PROBE_DEG {
         let th = deg.to_radians();
-        let (m, resid) = disc_flexion_moment(&mut disc, th);
+        let (m, resid) = disc.flexion_moment(th);
         assert!(
             resid < 1e-8,
             "disc bond must conserve (‖ΣF‖+‖ΣM‖ = {resid:.2e})"
@@ -665,8 +532,16 @@ fn l4_l5_fsu_segmental_response_vs_literature() {
         let kd = if (mu - DEFAULT_MU).abs() < f64::EPSILON {
             k_disc
         } else {
-            let mut d = build_disc(mu);
-            let (m_probe, _) = disc_flexion_moment(&mut d, DISC_PROBE_DEG[1].to_radians());
+            let disc_mesh = load_from_env("CF_DISC_STL").expect("load disc mesh");
+            let mut d = build_bonded_disc(
+                disc_mesh,
+                &DiscParams {
+                    mu,
+                    ..DiscParams::default()
+                },
+            )
+            .expect("build bonded disc");
+            let (m_probe, _) = d.flexion_moment(DISC_PROBE_DEG[1].to_radians());
             m_probe / DISC_PROBE_DEG[1].to_radians()
         };
         let curve: Vec<(f64, f64)> = sweep
