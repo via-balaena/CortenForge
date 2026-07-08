@@ -221,12 +221,28 @@ impl CoupledFsu {
     /// negative applied moment and a negative `theta`, capped by facet contact.
     ///
     /// The total restoring moment is monotone in `theta`, so a bracketed bisection over
-    /// `±EQUILIBRIUM_BRACKET` converges to the unique root.
+    /// `±EQUILIBRIUM_BRACKET` converges to the unique root. Returns `None` when no
+    /// equilibrium exists within `±EQUILIBRIUM_BRACKET` (the applied moment exceeds what
+    /// the segment can balance in range) — the caller must decide, never a silent
+    /// bracket-edge angle.
     #[must_use]
-    pub fn equilibrium(&self, applied: f64) -> f64 {
-        // Balance: total_moment(theta) = −applied. total_moment is monotone DECREASING in
-        // theta, so bisect over ±EQUILIBRIUM_BRACKET for the unique root.
-        solve_decreasing(-applied, EQUILIBRIUM_BRACKET, |t| self.total_moment(t))
+    pub fn equilibrium(&self, applied: f64) -> Option<f64> {
+        self.equilibrium_with_facet_scale(applied, 1.0)
+    }
+
+    /// Like [`Self::equilibrium`], but the facet penalty is scaled by `facet_scale`
+    /// (`1.0` = the built-in `k_facet`). Because the oriented facet moment is exactly
+    /// linear in `k_facet`, this evaluates a stiffer/softer facet contact **without
+    /// rebuilding** — the primitive a `k_facet` sensitivity/convergence sweep needs.
+    /// `facet_scale = 0.0` is the contact-free (spring-only) equilibrium. Returns `None`
+    /// when no equilibrium lies within `±EQUILIBRIUM_BRACKET`.
+    #[must_use]
+    pub fn equilibrium_with_facet_scale(&self, applied: f64, facet_scale: f64) -> Option<f64> {
+        // Balance: restoring + facet_scale·facet = −applied. Monotone DECREASING in theta,
+        // so bisect over ±EQUILIBRIUM_BRACKET for the unique root.
+        solve_decreasing(-applied, EQUILIBRIUM_BRACKET, |t| {
+            self.restoring_moment(t) + facet_scale * self.facet_moment(t).1
+        })
     }
 
     /// Capture a coupled force-driven trajectory for replay: for each `applied` moment
@@ -234,36 +250,55 @@ impl CoupledFsu {
     /// the disc's deformation at that angle. Because the disc bends linearly (and its FEM
     /// only converges sub-degree), the deformation at each equilibrium angle is the
     /// sub-degree field linearly scaled to that angle — the same extrapolation rung 7's
-    /// `k_disc` relies on. The superior vertebra rotates about `(pivot, axis, theta)`.
+    /// `k_disc` relies on. The disc is probed at BOTH `±K_DISC_PROBE` and the correct-sign
+    /// field is scaled per frame, so extension shows the disc's real (not mirror-of-flexion)
+    /// shape. The superior vertebra rotates about `(pivot, axis, theta)`.
     ///
     /// # Panics
-    /// Panics if the reference disc capture drives the soft solve past its SPD region —
-    /// it does not, being fixed at the validated sub-degree probe angle.
+    /// Panics if a swept `applied` moment has no equilibrium within `±EQUILIBRIUM_BRACKET`
+    /// ([`Self::equilibrium`] returns `None`) — pass a physiologic ramp (`|moment| ≤ 7.5
+    /// N·m`, well inside the ~6° flexion / ~4.5° extension ROM); or if the reference disc
+    /// probe drives the soft solve past its SPD region (it does not, at the sub-degree probe).
     #[must_use]
     pub fn capture_ramp(&mut self, applied_moments: &[f64]) -> CoupledTrajectory {
-        // Reference disc deformation at the sub-degree probe: rest + a single converged
-        // deformed field. Every ROM angle scales this linearly.
-        let ref_traj = self.disc.capture_flexion(&[K_DISC_PROBE]);
+        // Reference disc deformation at BOTH sub-degree probes: the disc's response is only
+        // near-antisymmetric, so extension frames scale the −probe field and flexion frames
+        // the +probe field (rather than mirroring one), preserving the real extension shape.
+        let ref_traj = self.disc.capture_flexion(&[-K_DISC_PROBE, K_DISC_PROBE]);
         let rest = ref_traj.rest_nodes_native;
-        let disp_ref: Vec<Vector3<f64>> = ref_traj.frames[0]
-            .deformed_nodes_native
-            .iter()
-            .zip(&rest)
-            .map(|(d, r)| d - r)
-            .collect();
+        let disp = |frame: usize| -> Vec<Vector3<f64>> {
+            ref_traj.frames[frame]
+                .deformed_nodes_native
+                .iter()
+                .zip(&rest)
+                .map(|(d, r)| d - r)
+                .collect()
+        };
+        let disp_minus = disp(0); // field at −K_DISC_PROBE
+        let disp_plus = disp(1); // field at +K_DISC_PROBE
         // The disc's own `capture_flexion` rotates about `disc.ml_axis()`; the coupled
-        // equilibrium `theta` is about the flexion-oriented `self.axis` (= ±ml). A
-        // rotation by `theta` about `self.axis` is one by `sign·theta` about `ml`, so the
-        // disc-frame extrapolation angle carries that sign.
+        // equilibrium `theta` is about the flexion-oriented `self.axis` (= ±ml). A rotation
+        // by `theta` about `self.axis` is one by `sign·theta` about `ml`, so the disc-frame
+        // angle `phi` carries that sign; pick the probe field matching its sign.
         let disc_sign = self.axis.dot(&self.disc.ml_axis()).signum();
 
         let frames = applied_moments
             .iter()
             .map(|&applied| {
-                let theta = self.equilibrium(applied);
-                let s = disc_sign * theta / K_DISC_PROBE; // linear extrapolation factor
+                // A physiologic ramp always has an equilibrium in the bracket (see the
+                // `# Panics` note); None here is a caller error, not a recoverable state.
+                #[allow(clippy::expect_used)]
+                let theta = self
+                    .equilibrium(applied)
+                    .expect("applied moment must have an equilibrium within the ROM bracket");
+                let phi = disc_sign * theta; // disc-frame extrapolation angle
+                let (field, s) = if phi >= 0.0 {
+                    (&disp_plus, phi / K_DISC_PROBE)
+                } else {
+                    (&disp_minus, -phi / K_DISC_PROBE)
+                };
                 let deformed_nodes_native =
-                    rest.iter().zip(&disp_ref).map(|(r, d)| r + d * s).collect();
+                    rest.iter().zip(field).map(|(r, d)| r + d * s).collect();
                 let (n_facet, _) = self.facet_moment(theta);
                 CoupledFrame {
                     applied,
@@ -369,9 +404,19 @@ fn build_coupled_model(
 }
 
 /// Bisect for the root of a **monotone-decreasing** `f` equal to `target` over
-/// `[−bracket, +bracket]` (80 halvings → ~1e-24·bracket). The equilibrium condition
-/// `total_moment(theta) = −applied` has exactly this shape.
-fn solve_decreasing(target: f64, bracket: f64, f: impl Fn(f64) -> f64) -> f64 {
+/// `[−bracket, +bracket]` (80 halvings → ~1e-24·bracket).
+///
+/// Returns `None` when no root lies in the bracket — i.e. `target` is outside
+/// `[f(+bracket), f(−bracket)]`. This is the guard that stops a bracketed bisection from
+/// silently returning the *bracket edge* as though it were a solved root (which would
+/// hand a caller an angle at the ±bracket limit for a moment the segment cannot actually
+/// balance in range).
+fn solve_decreasing(target: f64, bracket: f64, f: impl Fn(f64) -> f64) -> Option<f64> {
+    // Monotone decreasing ⇒ f(−bracket) is the max, f(+bracket) the min; a root exists
+    // iff f(+bracket) ≤ target ≤ f(−bracket).
+    if target > f(-bracket) || target < f(bracket) {
+        return None;
+    }
     let (mut lo, mut hi) = (-bracket, bracket);
     for _ in 0..80 {
         let mid = 0.5 * (lo + hi);
@@ -381,7 +426,7 @@ fn solve_decreasing(target: f64, bracket: f64, f: impl Fn(f64) -> f64) -> f64 {
             hi = mid;
         }
     }
-    0.5 * (lo + hi)
+    Some(0.5 * (lo + hi))
 }
 
 /// The two articular SDF grids posed at flexion `theta` (L4 rotated about `axis`
@@ -465,15 +510,32 @@ mod tests {
         // moment M is θ* = M/k. Here target = −applied, and f(θ) = −k·θ.
         let k = 3.0_f64;
         let applied = 0.6_f64;
-        let theta = solve_decreasing(-applied, 1.0, |t| -k * t);
+        let theta = solve_decreasing(-applied, 1.0, |t| -k * t).expect("root in bracket");
         assert!(
             (theta - applied / k).abs() < 1e-9,
             "expected θ = M/k = {:.6}, got {theta:.6}",
             applied / k
         );
         // A negative (extension) applied moment gives a negative angle.
-        let theta_ext = solve_decreasing(applied, 1.0, |t| -k * t);
+        let theta_ext = solve_decreasing(applied, 1.0, |t| -k * t).expect("root in bracket");
         assert!((theta_ext + applied / k).abs() < 1e-9, "sign symmetry");
+    }
+
+    #[test]
+    fn solve_decreasing_signals_no_root_outside_bracket() {
+        // The bracket guard: when the true root (M/k = 2.0) lies beyond the ±1.0 bracket,
+        // return None rather than silently handing back the bracket edge as a "root".
+        let k = 3.0_f64;
+        assert_eq!(
+            solve_decreasing(-6.0, 1.0, |t| -k * t),
+            None,
+            "a root at θ=2.0 outside the ±1.0 bracket must yield None, not the edge"
+        );
+        assert_eq!(
+            solve_decreasing(6.0, 1.0, |t| -k * t),
+            None,
+            "the extension side out-of-bracket case must also yield None"
+        );
     }
 
     /// Two overlapping unit spheres one native-mm cell apart along +x, so their SDF
@@ -616,16 +678,27 @@ mod tests {
             "a +θ (flexion) tilt must be opposed by a restoring (−) spring moment"
         );
 
-        // Equilibrium under an applied flexion moment is finite and non-trivial; the
-        // total moment is what it balances.
-        let theta = fsu.equilibrium(1.0);
-        assert!(
-            theta.is_finite(),
-            "equilibrium must converge to a finite angle"
-        );
+        // Equilibrium under an applied flexion moment exists and is what total_moment
+        // balances; an out-of-range moment (past the bracket) returns None.
+        let theta = fsu
+            .equilibrium(1.0)
+            .expect("a 1 N·m flexion moment has an equilibrium in the bracket");
+        assert!(theta.is_finite(), "equilibrium must be a finite angle");
         assert!(
             (fsu.total_moment(theta) + 1.0).abs() < 1e-2,
             "at equilibrium total_moment(θ) ≈ −applied"
+        );
+        assert_eq!(
+            fsu.equilibrium(1.0e6),
+            None,
+            "a moment far beyond the ROM must return None, not a bracket-edge angle"
+        );
+        // With well-separated grids the facets never engage, so any facet scale gives the
+        // same (spring-only) equilibrium as the built-in path — exercises the sweep method.
+        assert_eq!(
+            fsu.equilibrium_with_facet_scale(1.0, 5.0),
+            fsu.equilibrium(1.0),
+            "facet scaling must not change a contact-free equilibrium"
         );
 
         // Capture a small ramp: one frame per applied moment, sharing the disc surface.

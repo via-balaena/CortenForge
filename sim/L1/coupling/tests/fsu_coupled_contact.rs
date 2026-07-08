@@ -100,7 +100,10 @@ fn l4_l5_coupled_flexion_extension_equilibrium() {
     }
 
     // ── FLEXION: the coupled equilibrium at 7.5 N·m reproduces rung 7's 6.13° ROM. ──
-    let flex_deg = fsu.equilibrium(PHYSIOLOGIC_MOMENT).to_degrees();
+    let flex_deg = fsu
+        .equilibrium(PHYSIOLOGIC_MOMENT)
+        .expect("flexion equilibrium must exist within the ROM bracket")
+        .to_degrees();
     println!(
         "\n[flexion]   coupled equilibrium at {PHYSIOLOGIC_MOMENT} N·m = {flex_deg:.3}°  (rung 7 {RUNG7_FLEXION_ROM_DEG}°)"
     );
@@ -120,7 +123,9 @@ fn l4_l5_coupled_flexion_extension_equilibrium() {
     //    reach the physiologic moment (the ligaments are lax — rung 7's note that the
     //    physiological extension limiter is facet contact), so the equilibrium is set by
     //    the facet contact, which is engaged there. ──
-    let ext = fsu.equilibrium(-PHYSIOLOGIC_MOMENT);
+    let ext = fsu
+        .equilibrium(-PHYSIOLOGIC_MOMENT)
+        .expect("extension equilibrium must exist within the ROM bracket");
     let ext_deg = ext.to_degrees().abs();
     let (n_ext, _) = fsu.facet_moment(ext);
     println!(
@@ -157,22 +162,14 @@ fn l4_l5_coupled_flexion_extension_equilibrium() {
     //    no rebuild — and root-find the extension equilibrium at each stiffness. ──
     println!("\n── K_facet convergence (extension ROM → geometric rigid-contact limit) ──");
     let base_k = CoupledParams::default().k_facet;
+    // Reuse the crate's own bracket-checked solver via the facet-scale sweep API (the
+    // oriented facet moment is exactly linear in k_facet), rather than re-implementing the
+    // bisection here — one validated root-finder, no drift.
     let ext_rom_at = |k_facet: f64| -> f64 {
-        let scale = k_facet / base_k;
-        // total restoring on the extension side, with the facet term scaled to k_facet.
-        let total = |theta: f64| fsu.restoring_moment(theta) + scale * fsu.facet_moment(theta).1;
-        // total_moment is monotone decreasing in theta; extension equilibrium solves
-        // total(theta) = +PHYSIOLOGIC_MOMENT for theta < 0. Bisect [-15°, 0].
-        let (mut lo, mut hi) = ((-15.0_f64).to_radians(), 0.0);
-        for _ in 0..80 {
-            let mid = 0.5 * (lo + hi);
-            if total(mid) > PHYSIOLOGIC_MOMENT {
-                lo = mid;
-            } else {
-                hi = mid;
-            }
-        }
-        (0.5 * (lo + hi)).to_degrees().abs()
+        fsu.equilibrium_with_facet_scale(-PHYSIOLOGIC_MOMENT, k_facet / base_k)
+            .expect("extension equilibrium must exist for a stiffer facet")
+            .to_degrees()
+            .abs()
     };
     let ks = [200.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0];
     let roms: Vec<f64> = ks.iter().map(|&k| ext_rom_at(k)).collect();

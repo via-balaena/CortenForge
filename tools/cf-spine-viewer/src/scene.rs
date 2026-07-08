@@ -243,6 +243,13 @@ fn capture_coupled(
 ) -> Result<CoupledTrajectory> {
     let mut fsu = CoupledFsu::build(l4, l5, disc, &CoupledParams::default())?;
     let traj = fsu.capture_ramp(&moment_ramp());
+    // Guard against a disc that tet-meshed to nothing (all components dropped): with no
+    // boundary faces, `nearest_tet_nodes` would silently map every surface vertex to node
+    // 0 and render a collapsed spike. Fail loud instead of showing a wrong disc.
+    anyhow::ensure!(
+        !traj.boundary_faces.is_empty() && !traj.rest_nodes_native.is_empty(),
+        "disc tet-mesh produced no surface (degenerate/near-flat disc mesh?) — cannot render"
+    );
     let (ext, flex) = (
         traj.frames.first().map_or(0.0, |f| f.theta.to_degrees()),
         traj.frames.last().map_or(0.0, |f| f.theta.to_degrees()),
