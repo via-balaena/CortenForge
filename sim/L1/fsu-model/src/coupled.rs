@@ -55,6 +55,28 @@ const EQUILIBRIUM_BRACKET: f64 = 12.0_f64 * std::f64::consts::PI / 180.0;
 /// so the effective tolerance scales with that factor (see `equilibrium_with_facet_scale`).
 const RESIDUAL_TOL: f64 = 1.0e-3;
 
+/// The physiologic sagittal moment (N·m) an FSU replay is driven to — the ±bound of the
+/// default [`moment_ramp`] (7.5 N·m, the standard in-vitro flexion/extension test load).
+pub const PHYSIOLOGIC_MOMENT: f64 = 7.5;
+/// Frame count of the default replay [`moment_ramp`].
+pub const RAMP_FRAMES: usize = 25;
+
+/// The default applied-moment ramp for a coupled replay.
+///
+/// [`RAMP_FRAMES`] evenly-spaced moments from −[`PHYSIOLOGIC_MOMENT`] (extension) to
+/// +[`PHYSIOLOGIC_MOMENT`] (flexion), N·m — the sweep [`CoupledFsu::capture_ramp`] consumes.
+/// Shared by the viewer and the validation test so the two can never sweep different grids.
+#[must_use]
+pub fn moment_ramp() -> Vec<f64> {
+    (0..RAMP_FRAMES)
+        .map(|i| {
+            #[allow(clippy::cast_precision_loss)] // RAMP_FRAMES is tiny; the ratio is exact.
+            let t = i as f64 / (RAMP_FRAMES - 1) as f64;
+            -PHYSIOLOGIC_MOMENT + t * (2.0 * PHYSIOLOGIC_MOMENT)
+        })
+        .collect()
+}
+
 /// Tunable stiffnesses for the coupled FSU assembly.
 ///
 /// [`Default`] reproduces the rung-5/6c/7 recipe (`k_lig` = 20 N/mm, `k_facet` = 200
@@ -261,9 +283,9 @@ impl CoupledFsu {
 
     /// Total coupled restoring moment (disc + ligaments + oriented facet contact) about
     /// the flexion axis at `theta` (rad), N·m. Monotone decreasing in `theta`. This is the
-    /// SAME quantity the equilibrium solver balances (both route through
-    /// [`Self::total_moment_scaled`]), so a diagnostic reading of it can never drift from
-    /// the solved root.
+    /// SAME quantity the equilibrium solver balances (both route through the private
+    /// `total_moment_scaled`), so a diagnostic reading of it can never drift from the
+    /// solved root.
     #[must_use]
     pub fn total_moment(&self, theta: f64) -> f64 {
         self.total_moment_scaled(theta, 1.0)
@@ -549,6 +571,16 @@ pub fn posed_facet_contacts(
     )
 }
 
+/// Whether a facet contact is **engaged** — the bones genuinely interpenetrate
+/// (`penetration > 0`).
+///
+/// The single definition of "engaged" shared by the engagement asymmetry probe, the
+/// oriented moment, and the rung-7 harness, so they can never disagree on the threshold.
+#[must_use]
+pub fn is_engaged(c: &SdfContact) -> bool {
+    c.penetration > 0.0
+}
+
 /// Number of penetrating facet contacts at flexion `theta` (the engagement asymmetry).
 fn facet_engaged(
     g4: &Arc<SdfGrid>,
@@ -559,7 +591,7 @@ fn facet_engaged(
 ) -> usize {
     posed_facet_contacts(g4, g5, pivot, axis, theta)
         .iter()
-        .filter(|c| c.penetration > 0.0)
+        .filter(|c| is_engaged(c))
         .count()
 }
 
@@ -580,7 +612,7 @@ fn facet_oriented(
 ) -> f64 {
     let mut m = Vector3::zeros();
     for c in posed_facet_contacts(g4, g5, pivot, axis, theta) {
-        if c.penetration <= 0.0 {
+        if !is_engaged(&c) {
             continue;
         }
         on_point(c.point);

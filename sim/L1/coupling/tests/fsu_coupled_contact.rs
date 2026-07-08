@@ -33,10 +33,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use cf_fsu_geometry::load_from_env;
-use cf_fsu_model::{CoupledFsu, CoupledParams};
+use cf_fsu_model::{CoupledFsu, CoupledParams, PHYSIOLOGIC_MOMENT, moment_ramp};
 
 // ── Physiologic probe + rung-7 oracle (facts / prior result, not tunable). ──
-const PHYSIOLOGIC_MOMENT: f64 = 7.5; // N·m — the applied flexion/extension moment
+// PHYSIOLOGIC_MOMENT (7.5 N·m) is shared with the viewer via cf_fsu_model::moment_ramp.
 const RUNG7_FLEXION_ROM_DEG: f64 = 6.13; // rung 7's headline flexion ROM at 7.5 N·m
 const ROM_TOL_DEG: f64 = 0.15; // agreement window vs rung 7's grid-interpolated ROM
 const RUNG7_K_DISC: f64 = -0.2819; // rung 7's measured disc bending stiffness (N·m/rad)
@@ -156,13 +156,10 @@ fn l4_l5_coupled_flexion_extension_equilibrium() {
 
     // ── FULL RAMP: the viewer captures the whole moment sweep (extension → flexion), not
     //    just the ±7.5 endpoints, and its launch depends on EVERY intermediate equilibrium
-    //    resolving. Validate the same 25-step ramp here so a mid-ramp facet-engagement gap
-    //    (which would abort the viewer at startup) is caught by the test, not the GUI. ──
-    const N_RAMP: usize = 25; // matches the viewer's N_RAMP_FRAMES
-    for i in 0..N_RAMP {
-        #[allow(clippy::cast_precision_loss)]
-        let t = i as f64 / (N_RAMP - 1) as f64;
-        let applied = -PHYSIOLOGIC_MOMENT + t * 2.0 * PHYSIOLOGIC_MOMENT;
+    //    resolving. Sweep the SAME shared `moment_ramp()` the viewer captures, so a mid-ramp
+    //    facet-engagement gap (which would abort the viewer at startup) is caught here, not
+    //    in the GUI — and the two can never drift onto different grids. ──
+    for applied in moment_ramp() {
         assert!(
             fsu.equilibrium(applied).is_some(),
             "every ramp moment must have an equilibrium — {applied:+.2} N·m returned None (would abort the viewer at startup)"

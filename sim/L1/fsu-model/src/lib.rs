@@ -54,7 +54,8 @@ pub use sim_soft::VertexId;
 
 mod coupled;
 pub use coupled::{
-    CoupledFrame, CoupledFsu, CoupledParams, CoupledTrajectory, posed_facet_contacts,
+    CoupledFrame, CoupledFsu, CoupledParams, CoupledTrajectory, PHYSIOLOGIC_MOMENT, RAMP_FRAMES,
+    is_engaged, moment_ramp, posed_facet_contacts,
 };
 
 /// Body index of the inferior (lower) vertebra box in the disc scene (world = 0).

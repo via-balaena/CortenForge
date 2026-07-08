@@ -96,7 +96,7 @@ use std::sync::Arc;
 use cf_fsu_geometry::{
     BODY_RADIUS, SegmentFrame, extreme_vertex, facet_grid, load_from_env, oracle, segment_frame,
 };
-use cf_fsu_model::{DiscParams, build_bonded_disc, posed_facet_contacts};
+use cf_fsu_model::{DiscParams, build_bonded_disc, is_engaged, posed_facet_contacts};
 use cf_geometry::IndexedMesh;
 use nalgebra::{Point3, Vector3};
 use sim_core::SdfGrid;
@@ -200,7 +200,7 @@ fn facet_response(
     let mut m = Vec3::zeros();
     let mut engaged = 0;
     for c in posed_facet_contacts(g4, g5, pivot, ml, theta) {
-        if c.penetration <= 0.0 {
+        if !is_engaged(&c) {
             continue;
         }
         engaged += 1;

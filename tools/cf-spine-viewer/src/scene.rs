@@ -16,19 +16,12 @@ use std::path::Path;
 
 use anyhow::{Result, ensure};
 use cf_fsu_geometry::{BODY_RADIUS, SegmentFrame, extreme_vertex, load};
-use cf_fsu_model::{CoupledFsu, CoupledParams, CoupledTrajectory, VertexId};
+use cf_fsu_model::{
+    CoupledFsu, CoupledParams, CoupledTrajectory, PHYSIOLOGIC_MOMENT, RAMP_FRAMES, VertexId,
+    moment_ramp,
+};
 use mesh_types::{Aabb, IndexedMesh};
 use nalgebra::{Point3, Vector3};
-
-/// Peak applied moment of the captured ramp (N·m) — the physiologic pure-moment probe
-/// (rung 7). Swept from `−MAX` (extension) to `+MAX` (flexion); the coupled solver
-/// returns the equilibrium angle at each, so the motion is force-driven and ROM-limited
-/// (bones stop on the facets in extension, ligaments/disc limit flexion).
-const MAX_MOMENT: f64 = 7.5;
-/// Frames in the captured ramp, evenly spaced in applied moment across `[−MAX, +MAX]`.
-/// Each solves one coupled equilibrium (cheap) + reuses one sub-degree disc solve, so the
-/// count can be generous; the viewer interpolates between frames for smooth playback.
-const N_RAMP_FRAMES: usize = 25;
 
 /// A ligament rendered as a straight line between two field-derived sites.
 pub struct Ligament {
@@ -159,18 +152,6 @@ fn combined_aabb(meshes: &[&IndexedMesh]) -> Aabb {
     Aabb::from_points(meshes.iter().flat_map(|m| m.vertices.iter()))
 }
 
-/// Evenly-spaced applied moments across `[-MAX_MOMENT, +MAX_MOMENT]` (N·m), ascending
-/// (extension → flexion) so the replay sweeps the segment open smoothly.
-fn moment_ramp() -> Vec<f64> {
-    (0..N_RAMP_FRAMES)
-        .map(|i| {
-            #[allow(clippy::cast_precision_loss)] // N_RAMP_FRAMES is tiny; the ratio is exact.
-            let t = i as f64 / (N_RAMP_FRAMES - 1) as f64; // 0..=1
-            -MAX_MOMENT + t * (2.0 * MAX_MOMENT)
-        })
-        .collect()
-}
-
 /// For each `surface` vertex, the index of the nearest tet node **on the disc's rendered
 /// boundary** (`boundary_faces` — the largest connected component's surface nodes).
 ///
@@ -233,7 +214,7 @@ pub fn build(l4_path: &Path, l5_path: &Path, disc_path: &Path) -> Result<FsuScen
     // overlays reuse those (no second oracle / segment-frame / facet-grid / ML-axis
     // computation), and the disc's own `ml_axis` is the single source of the flexion axis.
     println!(
-        "assembling coupled FSU + capturing moment ramp ({N_RAMP_FRAMES} frames, ±{MAX_MOMENT} N·m)…"
+        "assembling coupled FSU + capturing moment ramp ({RAMP_FRAMES} frames, ±{PHYSIOLOGIC_MOMENT} N·m)…"
     );
     let mut fsu = CoupledFsu::build(&l4, &l5, disc.clone(), &CoupledParams::default())?;
 
