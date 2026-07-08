@@ -2,23 +2,28 @@
 //!
 //! **Flexion-deformation FSU scene (this rung):** renders the literature-
 //! validated L4–L5 Functional Spinal Unit (geometry ladder rung 7) *flexing*
-//! — the two real vertebrae with a per-tissue bone material, the
-//! intervertebral disc as its real deforming FEM tet-boundary surface, and
-//! the field-derived ligament lines + facet near-contact points that ride the
-//! superior vertebra. A headless capture (`cf_fsu_model::capture_flexion`)
-//! solves a sub-degree flexion sweep of the bonded disc once at startup; the
-//! Bevy loop then replays it — L5 fixed, L4 rotating about the disc-centre
-//! pivot, the disc deforming in lockstep — with an egui timeline and a
-//! labelled "deformation ×N" exaggeration slider.
+//! — the two real vertebrae with a per-tissue bone material, the intervertebral
+//! disc as a clean deforming surface, and the field-derived ligament lines +
+//! facet near-contact points that ride the superior vertebra. A headless capture
+//! (`cf_fsu_model::capture_flexion`) solves a sub-degree flexion sweep of the
+//! bonded disc once at startup; the Bevy loop then replays it — L5 fixed, L4
+//! rotating about the disc-centre pivot, the disc deforming in lockstep — with an
+//! egui timeline and a labelled "deformation ×N" exaggeration slider.
+//!
+//! ## Disc rendering
+//!
+//! The FEM tet mesh is too fragmented to draw as a coherent disc (the BCC
+//! isosurface-stuffing mesher shatters the thin lens), so the viewer renders the
+//! **clean watertight STL surface** and displaces each of its vertices by the FEM
+//! displacement field — sampled from the nearest tet node (`scene::nearest_tet_nodes`).
+//! Clean geometry from the STL, real deformation from the physics.
 //!
 //! ## Honesty
 //!
 //! The bonded disc converges only at **sub-degree** strains (~0.86° before the
 //! boundary tets leave their SPD region — rung 7), so the real deformation is
 //! sub-millimetre. The ×N slider exaggerates it (and L4's rotation, coherently)
-//! for legibility; the panel always reports the **true** physical angle. The
-//! disc is the real `cell`-resolution tet boundary — visibly faceted, not the
-//! smooth STL shell of the static rung.
+//! for legibility; the panel always reports the **true** physical angle.
 //!
 //! The headless scene assembly + capture live in [`scene`] (Bevy-free); this
 //! file is the thin Bevy/egui driver. The visual pass is user-side (this
@@ -112,12 +117,14 @@ struct FlexedL4;
 #[derive(Component)]
 struct DiscMesh;
 
-/// The bone meshes — consumed once at startup to build the GPU assets, then
-/// removed (freed) so a second copy of the geometry does not sit resident.
+/// The startup meshes — consumed once to build the GPU assets, then removed
+/// (freed) so a second copy of the geometry does not sit resident. The disc is the
+/// clean STL surface (deformed per frame by the FEM field, not the ragged tet boundary).
 #[derive(Resource)]
 struct SceneMeshes {
     l4: IndexedMesh,
     l5: IndexedMesh,
+    disc_surface: IndexedMesh,
 }
 
 /// The lightweight overlay data the per-frame systems + panel read for the
@@ -135,6 +142,11 @@ struct Overlays {
 #[derive(Resource)]
 struct Flexion {
     traj: FlexionTrajectory,
+    /// The clean STL disc's rest vertex positions (native mm) — the render surface.
+    disc_rest: Vec<Point3<f64>>,
+    /// For each `disc_rest` vertex, the nearest tet-node index in `traj.rest_nodes_native`,
+    /// so the surface is displaced by that node's FEM displacement each frame.
+    disc_map: Vec<usize>,
     /// Auto-advancing playback (vs. paused / hand-scrubbed).
     playing: bool,
     /// Continuous frame position in `[0, frames-1]`; interpolated for smoothness.
@@ -203,12 +215,15 @@ fn run_app(fsu: FsuScene) {
     let FsuScene {
         l4,
         l5,
+        disc_surface,
+        disc_node_map,
         flexion,
         ligaments,
         facet_contacts,
         aabb,
         warnings,
     } = fsu;
+    let disc_rest = disc_surface.vertices.clone();
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -220,7 +235,11 @@ fn run_app(fsu: FsuScene) {
         .add_plugins(EguiPlugin::default())
         .add_plugins(OrbitCameraPlugin)
         .insert_resource(ClearColor(Color::srgb(0.10, 0.10, 0.12)))
-        .insert_resource(SceneMeshes { l4, l5 })
+        .insert_resource(SceneMeshes {
+            l4,
+            l5,
+            disc_surface,
+        })
         .insert_resource(Overlays {
             ligaments,
             facet_contacts,
@@ -232,6 +251,8 @@ fn run_app(fsu: FsuScene) {
             // eases into flexion rather than snapping to a full tilt on frame 1.
             cursor: (flexion.frames.len().saturating_sub(1)) as f32 / 2.0,
             traj: flexion,
+            disc_rest,
+            disc_map: disc_node_map,
             playing: true,
             direction: 1.0,
             deform_scale: DEFORM_SCALE_DEFAULT,
@@ -299,7 +320,6 @@ fn setup_scene(
     mut materials: ResMut<Assets<StandardMaterial>>,
     scene_meshes: Res<SceneMeshes>,
     overlays: Res<Overlays>,
-    flexion: Res<Flexion>,
 ) {
     // L5 (inferior) — fixed. L4 (superior) — tagged as the flexing body.
     spawn_bone(
@@ -318,20 +338,18 @@ fn setup_scene(
     );
     commands.entity(l4).insert(FlexedL4);
 
-    // Disc — the real deforming tet-boundary surface (native mm, Z-up→Y-up swap
-    // in `build_soft_mesh`). Built at the rest configuration; `flexion_update`
-    // rewrites its positions each frame. Translucent teal, double-sided.
-    let rest: Vec<Vector3<f64>> = flexion
-        .traj
-        .rest_nodes_native
+    // Disc — the CLEAN STL surface (a smooth watertight lens), not the ragged tet
+    // boundary. `build_soft_mesh` gives it the Z-up→Y-up swap + smooth normals; built at
+    // rest, `flexion_update` displaces its vertices by the FEM field each frame.
+    let disc_verts: Vec<Vector3<f64>> = scene_meshes
+        .disc_surface
+        .vertices
         .iter()
         .map(|p| p.coords)
         .collect();
-    let disc_mesh = build_soft_mesh(&rest, &flexion.traj.boundary_faces, UpAxis::PlusZ);
-    // OPAQUE: the disc is a CLOSED tet-boundary solid. Alpha blending it (as the
-    // rung-1 STL shell did) makes Bevy blend every triangle without depth sorting,
-    // which shreds the closed volume into translucent confetti. Opaque renders it as
-    // the clean solid it is; the gap it fills reads fine without see-through.
+    let disc_mesh = build_soft_mesh(&disc_verts, &scene_meshes.disc_surface.faces, UpAxis::PlusZ);
+    // Opaque teal, double-sided (a thin closed shell reads fine as a solid lens; the
+    // gap it fills doesn't need see-through, and blending an unsorted shell smears it).
     let disc_material = StandardMaterial {
         base_color: DISC_COLOR,
         metallic: 0.05,
@@ -414,19 +432,21 @@ fn flexion_update(
     let pivot = flexion.traj.pivot;
     let axis = flexion.traj.axis;
 
-    // Build the exaggerated deformed frame into the reused scratch buffer + the
-    // interpolated true angle, in a scoped borrow so we can write back `true_theta`.
-    // `flat` (a system Local) is independent of `flexion`, so filling it while borrowing
-    // the trajectory is fine.
+    // Displace each CLEAN STL surface vertex by the FEM field (sampled from its nearest
+    // tet node) into the reused scratch buffer, plus the interpolated true angle — in a
+    // scoped borrow so we can write back `true_theta`. `flat` (a system Local) is
+    // independent of `flexion`, so filling it while borrowing the trajectory is fine.
     flat.clear();
     let true_theta = {
         let traj = &flexion.traj;
         let (fa, fb) = (&traj.frames[lo], &traj.frames[hi]);
-        for (i, r) in traj.rest_nodes_native.iter().enumerate() {
-            let a = fa.deformed_nodes_native[i];
-            let b = fb.deformed_nodes_native[i];
-            let interp = a + (b - a) * frac; // interpolated deformed position
-            let p = r + (interp - r) * scale; // exaggerated about the rest position
+        for (dr, &j) in flexion.disc_rest.iter().zip(&flexion.disc_map) {
+            // FEM displacement of the mapped tet node (interpolated between frames).
+            let a = fa.deformed_nodes_native[j];
+            let b = fb.deformed_nodes_native[j];
+            let interp = a + (b - a) * frac;
+            let disp = interp - traj.rest_nodes_native[j];
+            let p = dr + disp * scale; // clean STL vertex + the exaggerated FEM displacement
             flat.push(p.x);
             flat.push(p.y);
             flat.push(p.z);
