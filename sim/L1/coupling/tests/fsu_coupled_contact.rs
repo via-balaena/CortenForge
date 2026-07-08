@@ -154,6 +154,21 @@ fn l4_l5_coupled_flexion_extension_equilibrium() {
         "ligaments+disc alone must be too lax to reach {PHYSIOLOGIC_MOMENT} N·m — facets are the limiter"
     );
 
+    // ── FULL RAMP: the viewer captures the whole moment sweep (extension → flexion), not
+    //    just the ±7.5 endpoints, and its launch depends on EVERY intermediate equilibrium
+    //    resolving. Validate the same 25-step ramp here so a mid-ramp facet-engagement gap
+    //    (which would abort the viewer at startup) is caught by the test, not the GUI. ──
+    const N_RAMP: usize = 25; // matches the viewer's N_RAMP_FRAMES
+    for i in 0..N_RAMP {
+        #[allow(clippy::cast_precision_loss)]
+        let t = i as f64 / (N_RAMP - 1) as f64;
+        let applied = -PHYSIOLOGIC_MOMENT + t * 2.0 * PHYSIOLOGIC_MOMENT;
+        assert!(
+            fsu.equilibrium(applied).is_some(),
+            "every ramp moment must have an equilibrium — {applied:+.2} N·m returned None (would abort the viewer at startup)"
+        );
+    }
+
     // ── CAVEAT (honest account of the facet extension result; investigated 2026-07-08):
     //    like rung 7, the coupled model shares ONE pivot (the disc centre) and ONE axis
     //    (the disc's principal ML) across disc + ligaments + facets. That is right for the

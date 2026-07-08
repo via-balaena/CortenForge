@@ -260,10 +260,20 @@ impl CoupledFsu {
     }
 
     /// Total coupled restoring moment (disc + ligaments + oriented facet contact) about
-    /// the flexion axis at `theta` (rad), N·m. Monotone decreasing in `theta`.
+    /// the flexion axis at `theta` (rad), N·m. Monotone decreasing in `theta`. This is the
+    /// SAME quantity the equilibrium solver balances (both route through
+    /// [`Self::total_moment_scaled`]), so a diagnostic reading of it can never drift from
+    /// the solved root.
     #[must_use]
     pub fn total_moment(&self, theta: f64) -> f64 {
-        self.restoring_moment(theta) + self.facet_moment(theta).1
+        self.total_moment_scaled(theta, 1.0)
+    }
+
+    /// Total restoring moment with the facet penalty scaled by `facet_scale` (N·m). The
+    /// single definition of the coupled restoring the solver roots on and `total_moment`
+    /// reports (`facet_scale = 1.0`).
+    fn total_moment_scaled(&self, theta: f64, facet_scale: f64) -> f64 {
+        self.restoring_moment(theta) + facet_scale * self.facet_moment(theta).1
     }
 
     /// Solve the coupled quasi-static equilibrium under an `applied` moment (N·m,
@@ -295,7 +305,7 @@ impl CoupledFsu {
         // base) — otherwise a stiff sweep point could reject a valid root as a false gap.
         let tol = RESIDUAL_TOL * facet_scale.max(1.0);
         solve_decreasing(-applied, EQUILIBRIUM_BRACKET, tol, |t| {
-            self.restoring_moment(t) + facet_scale * self.facet_moment(t).1
+            self.total_moment_scaled(t, facet_scale)
         })
     }
 

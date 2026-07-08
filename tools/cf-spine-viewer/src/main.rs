@@ -156,8 +156,28 @@ struct Flexion {
     true_theta: f64,
     /// Interpolated applied moment at the cursor (N·m, +flexion). Panel readout.
     applied: f64,
-    /// Engaged facet contacts at the cursor's nearest frame (>0 = bones in contact).
+    /// The captured frame whose facet contacts to show, or `None` when the cursor is not
+    /// squarely inside the engaged region (open, or an ambiguous transition). Computed ONCE
+    /// per frame (via `engaged_facet_frame`) and read by BOTH the panel count and
+    /// `draw_facets`, so they can never disagree.
+    facet_frame: Option<usize>,
+    /// Engaged facet-contact count for the panel — `facet_frame`'s point count (0 if `None`).
     n_facet: usize,
+}
+
+/// The captured frame to source facet contacts from at `cursor`: the lower bracketing
+/// frame, but only when BOTH bracketing frames are engaged (so nothing shows at an
+/// ambiguous inter-frame transition — the pose interpolates but contacts are per-frame).
+/// The single definition shared by the panel readout and `draw_facets`.
+fn engaged_facet_frame(traj: &CoupledTrajectory, cursor: f32) -> Option<usize> {
+    let n = traj.frames.len();
+    if n == 0 {
+        return None;
+    }
+    let lo = (cursor.floor().clamp(0.0, (n - 1) as f32)) as usize;
+    let hi = (lo + 1).min(n - 1);
+    (!traj.frames[lo].facet_points.is_empty() && !traj.frames[hi].facet_points.is_empty())
+        .then_some(lo)
 }
 
 /// Per-tissue visibility flags, driven by the egui panel.
@@ -255,6 +275,7 @@ fn run_app(fsu: FsuScene) {
             direction: 1.0,
             true_theta: 0.0,
             applied: 0.0,
+            facet_frame: None,
             n_facet: 0,
         })
         .insert_resource(SceneToggles::default())
@@ -455,18 +476,12 @@ fn flexion_update(
     };
     flexion.true_theta = true_theta;
     flexion.applied = applied;
-    // Engagement is a per-frame fact but the pose is interpolated, so only report contact
-    // when BOTH bracketing captured frames are engaged — never at an ambiguous transition
-    // (which would claim contact before/after the bones actually meet). Exact per-pose
-    // contact is the live-query the exact-geometry rung will add. `draw_facets` uses the
-    // same gate + the `lo` frame, so the count and the drawn markers always agree.
-    flexion.n_facet = if flexion.traj.frames[lo].facet_points.is_empty()
-        || flexion.traj.frames[hi].facet_points.is_empty()
-    {
-        0
-    } else {
-        flexion.traj.frames[lo].facet_points.len()
-    };
+    // Compute the engaged facet frame ONCE (the both-bracketing-frames-engaged gate); the
+    // panel count and `draw_facets` both read this, so they can never disagree.
+    flexion.facet_frame = engaged_facet_frame(&flexion.traj, flexion.cursor);
+    flexion.n_facet = flexion
+        .facet_frame
+        .map_or(0, |lo| flexion.traj.frames[lo].facet_points.len());
 
     // Rewrite the disc surface (Z-up→Y-up swap + smooth-normal recompute).
     if let Ok(handle) = q_disc.single() {
@@ -541,29 +556,20 @@ fn pose_about_pivot(p: &Point3<f64>, rot: &UnitQuaternion<f64>, pivot: Point3<f6
 }
 
 /// Draw the coupled solve's real engaged facet contact points — where the bones actually
-/// touch — as red spheres. Drawn only when BOTH frames bracketing the cursor are engaged
-/// (so nothing shows at an ambiguous transition or in flexion — matching the panel's
-/// engagement gate). The `lo` frame's points are re-posed by the residual rotation to the
-/// interpolated body angle so they stay glued to the articulation between frames.
+/// touch — as red spheres. Sourced from `flexion.facet_frame` (the shared engaged-frame gate
+/// `flexion_update` computed, so the drawn markers always match the panel count): nothing at
+/// an ambiguous transition or in flexion. The frame's points are re-posed by the residual
+/// rotation to the interpolated body angle so they stay glued to the articulation.
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
 fn draw_facets(mut gizmos: Gizmos, toggles: Res<SceneToggles>, flexion: Res<Flexion>) {
     if !toggles.facets {
         return;
     }
-    let n = flexion.traj.frames.len();
-    if n == 0 {
+    let Some(lo) = flexion.facet_frame else {
         return;
-    }
-    let lo = flexion.cursor.floor().clamp(0.0, (n - 1) as f32) as usize;
-    let hi = (lo + 1).min(n - 1);
-    // Only draw when the interpolated pose is squarely inside the engaged region.
-    if flexion.traj.frames[lo].facet_points.is_empty()
-        || flexion.traj.frames[hi].facet_points.is_empty()
-    {
-        return;
-    }
+    };
     let pivot = flexion.traj.pivot;
-    // Residual rotation from the `lo` frame's angle to the interpolated body angle.
+    // Residual rotation from the source frame's angle to the interpolated body angle.
     let delta = flexion.true_theta - flexion.traj.frames[lo].theta;
     let rot = UnitQuaternion::from_axis_angle(&Unit::new_normalize(flexion.traj.axis), delta);
     for p in &flexion.traj.frames[lo].facet_points {
