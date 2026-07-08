@@ -369,6 +369,8 @@ fn flexion_update(
     mut meshes: ResMut<Assets<Mesh>>,
     // Reused across frames (cleared + refilled in place) to avoid a per-frame heap alloc.
     mut flat: Local<Vec<f64>>,
+    // The (cursor, deform_scale) last rendered — lets us skip the whole rebuild while idle.
+    mut last_applied: Local<Option<(f32, f32)>>,
     q_disc: Query<&Mesh3d, With<DiscMesh>>,
     mut q_l4: Query<&mut Transform, With<FlexedL4>>,
 ) {
@@ -394,6 +396,14 @@ fn flexion_update(
         flexion.cursor = c;
         flexion.direction = dir;
     }
+
+    // Skip the (expensive) disc-mesh rebuild + normal recompute + GPU upload when the
+    // pose is unchanged since last frame — e.g. paused with no scrub or slider drag.
+    let pose_key = (flexion.cursor, flexion.deform_scale);
+    if *last_applied == Some(pose_key) {
+        return;
+    }
+    *last_applied = Some(pose_key);
 
     // Bracketing frames + fraction for interpolation.
     let c = flexion.cursor.clamp(0.0, max);

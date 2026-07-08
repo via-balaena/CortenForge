@@ -27,6 +27,9 @@ use cf_fsu_geometry::{
 };
 use cf_fsu_model::{DiscParams, FlexionTrajectory, build_bonded_disc};
 use mesh_types::{Aabb, IndexedMesh};
+use nalgebra::{Point3, UnitQuaternion, Vector3};
+use sim_core::sdf::compute_shape_contact;
+use sim_core::{Pose, SdfContact, SdfGrid, ShapeConcave};
 
 /// Peak flexion/extension angle of the captured sweep (degrees). The bonded disc
 /// converges only at sub-degree strains — beyond ~1° the boundary tets leave their
@@ -37,9 +40,6 @@ const MAX_FLEX_DEG: f64 = 0.86;
 /// one expensive quasi-static soft solve, so the count is modest; the viewer
 /// interpolates between them for smooth playback.
 const N_FLEX_FRAMES: usize = 15;
-use nalgebra::{Point3, UnitQuaternion, Vector3};
-use sim_core::sdf::compute_shape_contact;
-use sim_core::{Pose, SdfContact, SdfGrid, ShapeConcave};
 
 /// A ligament rendered as a straight line between two field-derived sites.
 pub struct Ligament {
@@ -290,13 +290,8 @@ pub fn build(l4_path: &Path, l5_path: &Path, disc_path: &Path) -> Result<FsuScen
     // then consume the disc mesh into the bonded-disc flexion capture.
     let aabb = combined_aabb(&[&l4, &l5, &disc]);
     println!("capturing bonded-disc flexion sweep ({N_FLEX_FRAMES} frames, ±{MAX_FLEX_DEG:.2}°)…");
-    let flexion = capture_flexion(disc)?;
-    println!(
-        "captured {} flexion frames ({} disc nodes, {} boundary faces)",
-        flexion.frames.len(),
-        flexion.rest_nodes_native.len(),
-        flexion.boundary_faces.len()
-    );
+    let flexion = capture_flexion(disc)?; // logs the disc surface size (single component)
+    println!("captured {} flexion frames", flexion.frames.len());
 
     Ok(FsuScene {
         l4,
