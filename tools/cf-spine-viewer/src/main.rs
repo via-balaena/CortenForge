@@ -455,10 +455,18 @@ fn flexion_update(
     };
     flexion.true_theta = true_theta;
     flexion.applied = applied;
-    // Engaged-contact count = the nearest captured frame's facet points — the SAME frame
-    // `draw_facets` renders, so the "N contacts" readout always matches the drawn markers.
-    let nearest = flexion.cursor.round().clamp(0.0, max) as usize;
-    flexion.n_facet = flexion.traj.frames[nearest].facet_points.len();
+    // Engagement is a per-frame fact but the pose is interpolated, so only report contact
+    // when BOTH bracketing captured frames are engaged — never at an ambiguous transition
+    // (which would claim contact before/after the bones actually meet). Exact per-pose
+    // contact is the live-query the exact-geometry rung will add. `draw_facets` uses the
+    // same gate + the `lo` frame, so the count and the drawn markers always agree.
+    flexion.n_facet = if flexion.traj.frames[lo].facet_points.is_empty()
+        || flexion.traj.frames[hi].facet_points.is_empty()
+    {
+        0
+    } else {
+        flexion.traj.frames[lo].facet_points.len()
+    };
 
     // Rewrite the disc surface (Z-up→Y-up swap + smooth-normal recompute).
     if let Ok(handle) = q_disc.single() {
@@ -533,10 +541,10 @@ fn pose_about_pivot(p: &Point3<f64>, rot: &UnitQuaternion<f64>, pivot: Point3<f6
 }
 
 /// Draw the coupled solve's real engaged facet contact points — where the bones actually
-/// touch — as red spheres. They are empty in flexion (facets open, nothing drawn) and grow
-/// in extension where the bones stop. The points were captured at their frame's angle, so
-/// they are re-posed by the small residual rotation to the interpolated body angle to stay
-/// glued to the articulation between frames.
+/// touch — as red spheres. Drawn only when BOTH frames bracketing the cursor are engaged
+/// (so nothing shows at an ambiguous transition or in flexion — matching the panel's
+/// engagement gate). The `lo` frame's points are re-posed by the residual rotation to the
+/// interpolated body angle so they stay glued to the articulation between frames.
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
 fn draw_facets(mut gizmos: Gizmos, toggles: Res<SceneToggles>, flexion: Res<Flexion>) {
     if !toggles.facets {
@@ -546,12 +554,19 @@ fn draw_facets(mut gizmos: Gizmos, toggles: Res<SceneToggles>, flexion: Res<Flex
     if n == 0 {
         return;
     }
-    let nearest = flexion.cursor.round().clamp(0.0, (n - 1) as f32) as usize;
+    let lo = flexion.cursor.floor().clamp(0.0, (n - 1) as f32) as usize;
+    let hi = (lo + 1).min(n - 1);
+    // Only draw when the interpolated pose is squarely inside the engaged region.
+    if flexion.traj.frames[lo].facet_points.is_empty()
+        || flexion.traj.frames[hi].facet_points.is_empty()
+    {
+        return;
+    }
     let pivot = flexion.traj.pivot;
-    // Residual rotation from the captured frame's angle to the interpolated body angle.
-    let delta = flexion.true_theta - flexion.traj.frames[nearest].theta;
+    // Residual rotation from the `lo` frame's angle to the interpolated body angle.
+    let delta = flexion.true_theta - flexion.traj.frames[lo].theta;
     let rot = UnitQuaternion::from_axis_angle(&Unit::new_normalize(flexion.traj.axis), delta);
-    for p in &flexion.traj.frames[nearest].facet_points {
+    for p in &flexion.traj.frames[lo].facet_points {
         let posed = pose_about_pivot(p, &rot, pivot);
         gizmos.sphere(
             Isometry3d::from_translation(vec3_from_point(&posed)),

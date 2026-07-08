@@ -177,13 +177,6 @@ impl CoupledFsu {
         &self.frame
     }
 
-    /// The two articular SDF grids `(superior L4, inferior L5)` — reusable for a viewer's
-    /// facet overlay so the expensive grids are sampled once.
-    #[must_use]
-    pub const fn grids(&self) -> (&Arc<SdfGrid>, &Arc<SdfGrid>) {
-        (&self.g4, &self.g5)
-    }
-
     /// The shared flexion pivot (disc AABB centre, native mm).
     #[must_use]
     pub const fn pivot(&self) -> Point3<f64> {
@@ -227,7 +220,9 @@ impl CoupledFsu {
     /// about the flexion axis in N·m)`. Each repulsive force is oriented along L5's
     /// outward SDF gradient, so the moment genuinely opposes penetration (restoring).
     /// Zero in flexion (`theta > 0`), engaging in extension. This is the equilibrium
-    /// solver's hot path, so it only COUNTS the contacts (no point allocation).
+    /// solver's hot path, so it only COUNTS the contacts — it skips the per-contact point
+    /// `Vec` that [`Self::facet_response`] collects (the SDF query itself still allocates a
+    /// contact set; making that allocation-free is a `compute_shape_contact` change).
     #[must_use]
     pub fn facet_moment(&self, theta: f64) -> (usize, f64) {
         let mut n = 0;
