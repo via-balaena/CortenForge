@@ -1,0 +1,661 @@
+//! The **coupled** L4–L5 FSU: disc + ligaments + facet contact solved as ONE
+//! quasi-static equilibrium.
+//!
+//! Rung 7 characterised the segment by *analytic superposition* — it imposed a
+//! flexion angle, read each structure's restoring moment separately, and summed
+//! them. This module instead ASSEMBLES the three structures into a single model and
+//! **solves for the equilibrium pose** under an applied moment, so the pieces
+//! genuinely feel each other: the facets constrain the motion, the ligaments engage
+//! at the solved pose, the disc resists — all coupled.
+//!
+//! The three ingredients, each a piece rung 7 already validated in isolation:
+//! - **disc bending** → a hinge spring ([`BondedDisc`]'s small-strain `k_disc`, a
+//!   linearised bushing — the disc FEM only converges sub-degree, so across the ROM
+//!   it is exactly the linear extrapolation rung 7 uses);
+//! - **ligaments** → two pull-only `<spatial>` tendons (anterior ALL + posterior
+//!   interspinous), field-derived attachment sites;
+//! - **facets** → an SDF penalty over the two articular `ShapeConcave` grids, with
+//!   each repulsive force **oriented along the fixed vertebra's outward SDF gradient**
+//!   so it genuinely separates the bodies (rung 7 left the raw-grid normal's sign
+//!   unvalidated and kept the facet term out of its headline; orienting it makes the
+//!   contact restoring by construction — the fix this module adds).
+//!
+//! ## Sign convention
+//!
+//! All angles here are **flexion-positive**: the ML axis is oriented (via the facet
+//! engagement asymmetry — facets open in flexion, engage in extension) so that a
+//! positive angle is flexion and a negative angle is extension. An applied moment is
+//! likewise positive for flexion. Callers never handle a raw handedness.
+
+use std::sync::Arc;
+
+use anyhow::{Context, Result};
+use cf_fsu_geometry::{
+    BODY_RADIUS, FACET_CELL, FACET_MAX_CONTACTS, SegmentFrame, extreme_vertex, facet_grid, oracle,
+    segment_frame,
+};
+use cf_geometry::IndexedMesh;
+use nalgebra::{Point3, Unit, UnitQuaternion, Vector3};
+use sim_core::sdf::compute_shape_contact;
+use sim_core::{Pose, SdfContact, SdfGrid, ShapeConcave};
+use sim_mjcf::load_model;
+
+use crate::{BondedDisc, DiscParams, build_bonded_disc};
+
+/// The flexion-probe angle (rad) at which the disc's small-strain bending stiffness
+/// `k_disc` is measured — kept inside the bonded disc's validated sub-degree SPD range.
+const K_DISC_PROBE: f64 = 0.86_f64 * std::f64::consts::PI / 180.0;
+/// Angular bracket for the equilibrium bisection (rad). Comfortably spans the
+/// physiological ROM (flexion ~6°, extension ~4.5°) on both sides of neutral.
+const EQUILIBRIUM_BRACKET: f64 = 12.0_f64 * std::f64::consts::PI / 180.0;
+
+/// Tunable stiffnesses for the coupled FSU assembly.
+///
+/// [`Default`] reproduces the rung-5/6c/7 recipe (`k_lig` = 20 N/mm, `k_facet` = 200
+/// N/mm, both uncalibrated; the disc recipe is [`DiscParams::default`]).
+#[derive(Debug, Clone, Copy)]
+pub struct CoupledParams {
+    /// Disc tet-mesh + material recipe (drives the measured `k_disc` bushing).
+    pub disc: DiscParams,
+    /// Ligament tendon stiffness (N/mm).
+    pub k_lig: f64,
+    /// Facet penalty stiffness (N/mm) — the uncalibrated contact wall.
+    pub k_facet: f64,
+}
+
+impl Default for CoupledParams {
+    fn default() -> Self {
+        Self {
+            disc: DiscParams::default(),
+            k_lig: 20.0,
+            k_facet: 200.0,
+        }
+    }
+}
+
+/// The assembled coupled L4–L5 FSU.
+///
+/// Build with [`CoupledFsu::build`], then query the restoring moments or solve for
+/// equilibrium ([`CoupledFsu::equilibrium`]) under an applied moment. Retains the live
+/// bonded disc so a viewer can capture the coupled ROM together with the disc's
+/// deformation ([`CoupledFsu::capture_ramp`]).
+pub struct CoupledFsu {
+    /// Disc bushing (hinge spring) + the two ligament tendons, in native mm.
+    model: sim_core::Model,
+    /// Superior (L4) articular SDF grid — rotates with flexion.
+    g4: Arc<SdfGrid>,
+    /// Inferior (L5) articular SDF grid — fixed; its outward gradient orients contact.
+    g5: Arc<SdfGrid>,
+    /// Shared flexion pivot (disc AABB centre, native mm).
+    pivot: Point3<f64>,
+    /// Flexion-positive ML axis (oriented so +θ = flexion).
+    axis: Vector3<f64>,
+    /// Facet penalty stiffness (N/mm).
+    k_facet: f64,
+    /// The disc's small-strain bending stiffness (N·m/rad, negative = restoring).
+    k_disc: f64,
+    /// The live bonded disc, retained for [`Self::capture_ramp`]'s deformation field.
+    disc: BondedDisc,
+}
+
+impl CoupledFsu {
+    /// Assemble the coupled FSU from the three meshes (native mm): tet-mesh + bond the
+    /// disc, measure its `k_disc` bushing, build the ligament + bushing hinge model,
+    /// and sample the two articular SDF grids. The flexion sense is derived from the
+    /// facet engagement asymmetry (never hardcoded).
+    ///
+    /// # Errors
+    /// Propagates a failure to derive the segment frame, build the bonded disc, or
+    /// build the ligament MJCF model, and errors if the facets do not engage on exactly
+    /// one rotation sense (a degenerate or mislabelled articular geometry).
+    pub fn build(
+        l4: &IndexedMesh,
+        l5: &IndexedMesh,
+        disc_mesh: IndexedMesh,
+        params: &CoupledParams,
+    ) -> Result<Self> {
+        let o4 = oracle(l4).context("L4 oracle")?;
+        let o5 = oracle(l5).context("L5 oracle")?;
+        let frame = segment_frame(l4, l5, &o4, &o5).context("segment frame")?;
+
+        let mut disc = build_bonded_disc(disc_mesh, &params.disc).context("build bonded disc")?;
+        let pivot = disc.center_native();
+        let ml = disc.ml_axis();
+        // Small-strain disc bending stiffness (linear bushing), measured sub-degree.
+        let (m, _) = disc.flexion_moment(K_DISC_PROBE);
+        let k_disc = m / K_DISC_PROBE;
+
+        // Orient the ML axis so +θ is flexion: probe the facet engagement asymmetry —
+        // the articular surfaces open in flexion and engage in extension.
+        let g4 = facet_grid(l4, &o4);
+        let g5 = facet_grid(l5, &o5);
+        let probe = 6.0_f64.to_radians();
+        let n_pos = facet_engaged(&g4, &g5, pivot, ml, probe);
+        let n_neg = facet_engaged(&g4, &g5, pivot, ml, -probe);
+        anyhow::ensure!(
+            (n_pos == 0) ^ (n_neg == 0),
+            "facets must engage on exactly one rotation sense (extension): +{n_pos} / −{n_neg}"
+        );
+        // Flexion = the sense the facets OPEN. Fold that handedness into the axis so the
+        // rest of the API is flexion-positive.
+        let axis = if n_pos == 0 { ml } else { -ml };
+
+        let model = build_coupled_model(l4, l5, &frame, axis, pivot, params.k_lig, -k_disc * 1e3)
+            .context("build coupled ligament/bushing model")?;
+
+        Ok(Self {
+            model,
+            g4,
+            g5,
+            pivot,
+            axis,
+            k_facet: params.k_facet,
+            k_disc,
+            disc,
+        })
+    }
+
+    /// The shared flexion pivot (disc AABB centre, native mm).
+    #[must_use]
+    pub const fn pivot(&self) -> Point3<f64> {
+        self.pivot
+    }
+
+    /// The flexion-positive ML axis (unit; +θ about it is flexion).
+    #[must_use]
+    pub const fn axis(&self) -> Vector3<f64> {
+        self.axis
+    }
+
+    /// The disc's measured small-strain bending stiffness (N·m/rad, negative = restoring).
+    #[must_use]
+    pub const fn k_disc(&self) -> f64 {
+        self.k_disc
+    }
+
+    /// The spring restoring moment (disc bushing + ligaments) about the flexion axis at
+    /// angle `theta` (rad), in N·m. Reads the coupled model's `qfrc_spring` — the sum of
+    /// the disc joint spring and both tendon springs (native mm → N·m). Negative opposes
+    /// a positive (flexion) `theta`. Excludes facet contact (see [`Self::facet_moment`]).
+    ///
+    /// # Panics
+    /// Panics if the coupled model's forward solve fails — unreachable for this fixed,
+    /// valid 1-DOF model (no contacts, no actuators, gravity off).
+    #[must_use]
+    pub fn restoring_moment(&self, theta: f64) -> f64 {
+        let mut data = self.model.make_data();
+        data.qpos[0] = theta;
+        // Infallible for this static 1-DOF model (see the `# Panics` note): a forward
+        // solve of two bodies + a hinge + tendons has no failure mode to recover from.
+        #[allow(clippy::expect_used)]
+        data.forward(&self.model).expect("coupled forward");
+        data.qfrc_spring[0] * 1e-3
+    }
+
+    /// Facet contact at flexion `theta` (rad): `(engaged contact count, restoring moment
+    /// about the flexion axis in N·m)`. Each repulsive force is oriented along L5's
+    /// outward SDF gradient, so the moment genuinely opposes penetration (restoring).
+    /// Zero in flexion (`theta > 0`), engaging in extension.
+    #[must_use]
+    pub fn facet_moment(&self, theta: f64) -> (usize, f64) {
+        facet_moment_oriented(
+            &self.g4,
+            &self.g5,
+            self.pivot,
+            self.axis,
+            theta,
+            self.k_facet,
+        )
+    }
+
+    /// Total coupled restoring moment (disc + ligaments + oriented facet contact) about
+    /// the flexion axis at `theta` (rad), N·m. Monotone decreasing in `theta`.
+    #[must_use]
+    pub fn total_moment(&self, theta: f64) -> f64 {
+        self.restoring_moment(theta) + self.facet_moment(theta).1
+    }
+
+    /// Solve the coupled quasi-static equilibrium under an `applied` moment (N·m,
+    /// positive = flexion): the angle `theta` (rad) at which the total restoring moment
+    /// balances it (`total_moment(theta) = −applied`). Flexion-positive; extension is a
+    /// negative applied moment and a negative `theta`, capped by facet contact.
+    ///
+    /// The total restoring moment is monotone in `theta`, so a bracketed bisection over
+    /// `±EQUILIBRIUM_BRACKET` converges to the unique root.
+    #[must_use]
+    pub fn equilibrium(&self, applied: f64) -> f64 {
+        // Balance: total_moment(theta) = −applied. total_moment is monotone DECREASING in
+        // theta, so bisect over ±EQUILIBRIUM_BRACKET for the unique root.
+        solve_decreasing(-applied, EQUILIBRIUM_BRACKET, |t| self.total_moment(t))
+    }
+
+    /// Capture a coupled force-driven trajectory for replay: for each `applied` moment
+    /// (N·m, positive = flexion), solve the equilibrium angle and record it together with
+    /// the disc's deformation at that angle. Because the disc bends linearly (and its FEM
+    /// only converges sub-degree), the deformation at each equilibrium angle is the
+    /// sub-degree field linearly scaled to that angle — the same extrapolation rung 7's
+    /// `k_disc` relies on. The superior vertebra rotates about `(pivot, axis, theta)`.
+    ///
+    /// # Panics
+    /// Panics if the reference disc capture drives the soft solve past its SPD region —
+    /// it does not, being fixed at the validated sub-degree probe angle.
+    #[must_use]
+    pub fn capture_ramp(&mut self, applied_moments: &[f64]) -> CoupledTrajectory {
+        // Reference disc deformation at the sub-degree probe: rest + a single converged
+        // deformed field. Every ROM angle scales this linearly.
+        let ref_traj = self.disc.capture_flexion(&[K_DISC_PROBE]);
+        let rest = ref_traj.rest_nodes_native;
+        let disp_ref: Vec<Vector3<f64>> = ref_traj.frames[0]
+            .deformed_nodes_native
+            .iter()
+            .zip(&rest)
+            .map(|(d, r)| d - r)
+            .collect();
+        // The disc's own `capture_flexion` rotates about `disc.ml_axis()`; the coupled
+        // equilibrium `theta` is about the flexion-oriented `self.axis` (= ±ml). A
+        // rotation by `theta` about `self.axis` is one by `sign·theta` about `ml`, so the
+        // disc-frame extrapolation angle carries that sign.
+        let disc_sign = self.axis.dot(&self.disc.ml_axis()).signum();
+
+        let frames = applied_moments
+            .iter()
+            .map(|&applied| {
+                let theta = self.equilibrium(applied);
+                let s = disc_sign * theta / K_DISC_PROBE; // linear extrapolation factor
+                let deformed_nodes_native =
+                    rest.iter().zip(&disp_ref).map(|(r, d)| r + d * s).collect();
+                let (n_facet, _) = self.facet_moment(theta);
+                CoupledFrame {
+                    applied,
+                    theta,
+                    deformed_nodes_native,
+                    n_facet,
+                }
+            })
+            .collect();
+
+        CoupledTrajectory {
+            pivot: self.pivot,
+            axis: self.axis,
+            rest_nodes_native: rest,
+            boundary_faces: ref_traj.boundary_faces,
+            frames,
+        }
+    }
+}
+
+/// One captured coupled equilibrium pose: the applied moment, the solved angle, the
+/// disc's deformed surface (native mm), and the number of engaged facet contacts.
+pub struct CoupledFrame {
+    /// The applied moment about the flexion axis (N·m, positive = flexion).
+    pub applied: f64,
+    /// The solved equilibrium flexion angle (rad; negative = extension).
+    pub theta: f64,
+    /// The disc's deformed tet-vertex positions (native mm) at `theta`.
+    pub deformed_nodes_native: Vec<Point3<f64>>,
+    /// Engaged facet contacts at `theta` (0 in flexion; grows in extension).
+    pub n_facet: usize,
+}
+
+/// A replayable capture of the coupled FSU swept over a moment ramp.
+///
+/// Native millimetres throughout (the vertebra/ligament/facet frame). Mirrors
+/// [`crate::FlexionTrajectory`] but the frames are *force-driven equilibria* (a
+/// solved angle per applied moment) rather than prescribed angles, and each carries
+/// the facet engagement count so a viewer can show the bones stopping on the facets.
+pub struct CoupledTrajectory {
+    /// The flexion pivot (disc AABB centre, native mm).
+    pub pivot: Point3<f64>,
+    /// The flexion-positive ML axis.
+    pub axis: Vector3<f64>,
+    /// The disc's rest (θ = 0) tet-vertex positions, native mm.
+    pub rest_nodes_native: Vec<Point3<f64>>,
+    /// The disc surface triangulation, indexing every frame's `deformed_nodes_native`.
+    pub boundary_faces: Vec<[crate::VertexId; 3]>,
+    /// The captured equilibria, one per applied moment.
+    pub frames: Vec<CoupledFrame>,
+}
+
+// ─────────────────────────── internal assembly helpers ───────────────────────────
+
+/// Build the coupled 1-DOF model: L5 fixed, L4 on a flexion hinge about `axis` through
+/// `pivot` carrying the disc bushing (`disc_stiffness_nmm`, N·mm/rad) plus the two
+/// pull-only ligament tendons (anterior ALL + posterior interspinous), field-derived.
+fn build_coupled_model(
+    l4: &IndexedMesh,
+    l5: &IndexedMesh,
+    frame: &SegmentFrame,
+    axis: Vector3<f64>,
+    pivot: Point3<f64>,
+    k_lig: f64,
+    disc_stiffness_nmm: f64,
+) -> Result<sim_core::Model> {
+    let (b4, b5, post) = (frame.b4, frame.b5, frame.posterior);
+    let attach = |m: &IndexedMesh, o: Point3<f64>, d: Vector3<f64>, r: f64| {
+        extreme_vertex(m, o, d, axis, r).context("ligament attachment site (no vertex qualifies)")
+    };
+    let all4 = attach(l4, b4, -post, BODY_RADIUS)?;
+    let all5 = attach(l5, b5, -post, BODY_RADIUS)?;
+    let isp4 = attach(l4, b4, post, f64::INFINITY)?;
+    let isp5 = attach(l5, b5, post, f64::INFINITY)?;
+    let slack = |a: Point3<f64>, b: Point3<f64>| (a - b).norm();
+    let site = |p: Point3<f64>| format!("{} {} {}", p.x, p.y, p.z);
+    let mjcf = format!(
+        r#"<mujoco model="fsu_coupled"><option gravity="0 0 0"/><worldbody>
+      <body name="L5" pos="0 0 0"><inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+        <site name="l5a" pos="{a5}"/><site name="l5i" pos="{i5}"/></body>
+      <body name="L4" pos="0 0 0">
+        <joint name="flex" type="hinge" axis="{mx} {my} {mz}" pos="{pv}" stiffness="{ks}" springref="0"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+        <site name="l4a" pos="{a4}"/><site name="l4i" pos="{i4}"/></body></worldbody>
+      <tendon>
+        <spatial name="ALL" stiffness="{k}" springlength="0 {sa}" damping="0" width="0.5"><site site="l5a"/><site site="l4a"/></spatial>
+        <spatial name="ISP" stiffness="{k}" springlength="0 {si}" damping="0" width="0.5"><site site="l5i"/><site site="l4i"/></spatial>
+      </tendon></mujoco>"#,
+        a5 = site(all5),
+        i5 = site(isp5),
+        a4 = site(all4),
+        i4 = site(isp4),
+        mx = axis.x,
+        my = axis.y,
+        mz = axis.z,
+        pv = site(pivot),
+        ks = disc_stiffness_nmm,
+        k = k_lig,
+        sa = slack(all4, all5),
+        si = slack(isp4, isp5),
+    );
+    load_model(&mjcf).context("coupled ligament/bushing model")
+}
+
+/// Bisect for the root of a **monotone-decreasing** `f` equal to `target` over
+/// `[−bracket, +bracket]` (80 halvings → ~1e-24·bracket). The equilibrium condition
+/// `total_moment(theta) = −applied` has exactly this shape.
+fn solve_decreasing(target: f64, bracket: f64, f: impl Fn(f64) -> f64) -> f64 {
+    let (mut lo, mut hi) = (-bracket, bracket);
+    for _ in 0..80 {
+        let mid = 0.5 * (lo + hi);
+        if f(mid) > target {
+            lo = mid; // still above target → move toward the decreasing (hi) end
+        } else {
+            hi = mid;
+        }
+    }
+    0.5 * (lo + hi)
+}
+
+/// The two articular SDF grids posed at flexion `theta` (L4 rotated about `axis`
+/// through `pivot`, L5 fixed), and the resulting contact set.
+fn facet_contacts(
+    g4: &Arc<SdfGrid>,
+    g5: &Arc<SdfGrid>,
+    pivot: Point3<f64>,
+    axis: Vector3<f64>,
+    theta: f64,
+) -> Vec<SdfContact> {
+    let r = UnitQuaternion::from_axis_angle(&Unit::new_normalize(axis), theta);
+    let pose_a = Pose {
+        position: Point3::from(pivot.coords - r * pivot.coords),
+        rotation: r,
+    };
+    let pose_b = Pose {
+        position: Point3::origin(),
+        rotation: UnitQuaternion::identity(),
+    };
+    compute_shape_contact(
+        &ShapeConcave::new(Arc::clone(g4)),
+        &pose_a,
+        &ShapeConcave::new(Arc::clone(g5)),
+        &pose_b,
+        FACET_CELL,
+        FACET_MAX_CONTACTS,
+    )
+}
+
+/// Number of penetrating facet contacts at flexion `theta` (the engagement asymmetry).
+fn facet_engaged(
+    g4: &Arc<SdfGrid>,
+    g5: &Arc<SdfGrid>,
+    pivot: Point3<f64>,
+    axis: Vector3<f64>,
+    theta: f64,
+) -> usize {
+    facet_contacts(g4, g5, pivot, axis, theta)
+        .iter()
+        .filter(|c| c.penetration > 0.0)
+        .count()
+}
+
+/// Facet penalty moment about `axis` at flexion `theta`, with each repulsive force
+/// oriented along L5's outward SDF gradient at the contact point — guaranteeing it
+/// separates L4 from L5 (a restoring contact). Returns `(engaged count, moment N·m)`.
+fn facet_moment_oriented(
+    g4: &Arc<SdfGrid>,
+    g5: &Arc<SdfGrid>,
+    pivot: Point3<f64>,
+    axis: Vector3<f64>,
+    theta: f64,
+    k_facet: f64,
+) -> (usize, f64) {
+    let mut m = Vector3::zeros();
+    let mut engaged = 0;
+    for c in facet_contacts(g4, g5, pivot, axis, theta) {
+        if c.penetration <= 0.0 {
+            continue;
+        }
+        engaged += 1;
+        let g = g5.gradient_clamped(c.point);
+        if g.norm() > 1e-9 {
+            let f = g.normalize() * (k_facet * c.penetration);
+            m += (c.point - pivot).cross(&f);
+        }
+    }
+    (engaged, m.dot(&axis) * 1e-3)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // tests may unwrap/panic.
+
+    use super::*;
+
+    #[test]
+    fn solve_decreasing_finds_a_linear_spring_root() {
+        // A pure restoring spring: total_moment(θ) = −k·θ. Equilibrium under an applied
+        // moment M is θ* = M/k. Here target = −applied, and f(θ) = −k·θ.
+        let k = 3.0_f64;
+        let applied = 0.6_f64;
+        let theta = solve_decreasing(-applied, 1.0, |t| -k * t);
+        assert!(
+            (theta - applied / k).abs() < 1e-9,
+            "expected θ = M/k = {:.6}, got {theta:.6}",
+            applied / k
+        );
+        // A negative (extension) applied moment gives a negative angle.
+        let theta_ext = solve_decreasing(applied, 1.0, |t| -k * t);
+        assert!((theta_ext + applied / k).abs() < 1e-9, "sign symmetry");
+    }
+
+    /// Two overlapping unit spheres one native-mm cell apart along +x, so their SDF
+    /// grids interpenetrate → a facet contact query fires. `g5` is the fixed sphere at
+    /// the origin; its outward gradient orients the repulsion.
+    fn overlapping_spheres() -> (Arc<SdfGrid>, Arc<SdfGrid>) {
+        let g5 = Arc::new(SdfGrid::sphere(Point3::origin(), 10.0, 24, 2.0));
+        let g4 = Arc::new(SdfGrid::sphere(Point3::new(15.0, 0.0, 0.0), 10.0, 24, 2.0));
+        (g4, g5)
+    }
+
+    #[test]
+    fn facet_engagement_detects_overlap_only() {
+        let (g4, g5) = overlapping_spheres();
+        let pivot = Point3::origin();
+        let axis = Vector3::z();
+        // At θ=0 the spheres (centres 15 mm apart, radii 10) overlap by 5 mm → contacts.
+        assert!(
+            facet_engaged(&g4, &g5, pivot, axis, 0.0) > 0,
+            "overlapping grids must produce facet contacts"
+        );
+        // Pull g4's grid far away by rotating it 90° about a far pivot → no overlap.
+        let far_pivot = Point3::new(500.0, 0.0, 0.0);
+        assert_eq!(
+            facet_engaged(
+                &g4,
+                &g5,
+                far_pivot,
+                Vector3::z(),
+                std::f64::consts::FRAC_PI_2
+            ),
+            0,
+            "separated grids must produce no facet contacts"
+        );
+    }
+
+    /// A synthetic vertebra point cloud: near-midline (x ≈ 0) vertices spread along the
+    /// anterior/posterior (y) axis and vertically, so `extreme_vertex` can locate a
+    /// body-rim (−y) and a spinous (+y) ligament site. `zc` is the body-centre height.
+    fn vertebra_cloud(zc: f64) -> IndexedMesh {
+        let vertices = [
+            [0.0, -18.0, zc], // anterior body rim (−y)
+            [0.0, 22.0, zc],  // posterior spinous tip (+y)
+            [3.0, 0.0, zc],   // near-midline filler
+            [-3.0, 0.0, zc + 4.0],
+            [0.0, 5.0, zc - 4.0],
+        ]
+        .iter()
+        .map(|&[x, y, z]| Point3::new(x, y, z))
+        .collect();
+        IndexedMesh {
+            vertices,
+            faces: vec![[0, 1, 2]],
+        }
+    }
+
+    /// A disc-like synthetic slab (widest x = ML, thinnest z = SI), matching the shape
+    /// `build_bonded_disc` expects, placed at a native-mm-scale offset.
+    fn synthetic_disc() -> IndexedMesh {
+        let c = Point3::new(0.0, 0.0, 950.0);
+        let h = Vector3::new(12.0, 10.0, 3.0);
+        let v = |dx: f64, dy: f64, dz: f64| Point3::new(c.x + dx, c.y + dy, c.z + dz);
+        let vertices = vec![
+            v(-h.x, -h.y, -h.z),
+            v(h.x, -h.y, -h.z),
+            v(h.x, h.y, -h.z),
+            v(-h.x, h.y, -h.z),
+            v(-h.x, -h.y, h.z),
+            v(h.x, -h.y, h.z),
+            v(h.x, h.y, h.z),
+            v(-h.x, h.y, h.z),
+        ];
+        let faces = vec![
+            [0, 3, 2],
+            [0, 2, 1],
+            [4, 5, 6],
+            [4, 6, 7],
+            [0, 1, 5],
+            [0, 5, 4],
+            [2, 3, 7],
+            [2, 7, 6],
+            [0, 4, 7],
+            [0, 7, 3],
+            [1, 2, 6],
+            [1, 6, 5],
+        ];
+        IndexedMesh { vertices, faces }
+    }
+
+    /// Assemble a synthetic [`CoupledFsu`] directly (the test submodule can name the
+    /// private fields), exercising `build_coupled_model` + a real (synthetic) bonded disc
+    /// + overlapping facet grids — without the licensed anatomy `build` needs.
+    fn synthetic_fsu() -> CoupledFsu {
+        let (l4, l5) = (vertebra_cloud(20.0), vertebra_cloud(0.0));
+        let frame = SegmentFrame {
+            b4: Point3::new(0.0, 0.0, 20.0),
+            b5: Point3::new(0.0, 0.0, 0.0),
+            superior_axis: Vector3::z(),
+            posterior: Vector3::y(),
+            ml: Vector3::x(),
+        };
+        let axis = Vector3::x();
+        let pivot = Point3::new(0.0, 0.0, 10.0);
+        let k_disc = -0.28;
+        let model = build_coupled_model(&l4, &l5, &frame, axis, pivot, 20.0, -k_disc * 1e3)
+            .expect("synthetic coupled model");
+        // Well-separated grids → facets inactive, so the equilibrium here is the clean
+        // spring-only (monotone) root. The engaged/oriented facet path is covered by the
+        // `overlapping_spheres` tests.
+        let g5 = Arc::new(SdfGrid::sphere(Point3::origin(), 10.0, 24, 2.0));
+        let g4 = Arc::new(SdfGrid::sphere(Point3::new(80.0, 0.0, 0.0), 10.0, 24, 2.0));
+        let disc = build_bonded_disc(synthetic_disc(), &DiscParams::default()).expect("disc");
+        CoupledFsu {
+            model,
+            g4,
+            g5,
+            pivot,
+            axis,
+            k_facet: 200.0,
+            k_disc,
+            disc,
+        }
+    }
+
+    #[test]
+    fn coupled_queries_and_capture_on_synthetic_parts() {
+        let mut fsu = synthetic_fsu();
+        // Accessors reflect what was assembled.
+        assert_eq!(fsu.pivot(), Point3::new(0.0, 0.0, 10.0));
+        assert_eq!(fsu.axis(), Vector3::x());
+        assert!((fsu.k_disc() - (-0.28)).abs() < 1e-12);
+
+        // The spring (disc + ligaments) is force-free at neutral and restoring off it.
+        assert!(
+            fsu.restoring_moment(0.0).abs() < 1e-6,
+            "neutral must be force-free"
+        );
+        assert!(
+            fsu.restoring_moment(3.0_f64.to_radians()) < 0.0,
+            "a +θ (flexion) tilt must be opposed by a restoring (−) spring moment"
+        );
+
+        // Equilibrium under an applied flexion moment is finite and non-trivial; the
+        // total moment is what it balances.
+        let theta = fsu.equilibrium(1.0);
+        assert!(
+            theta.is_finite(),
+            "equilibrium must converge to a finite angle"
+        );
+        assert!(
+            (fsu.total_moment(theta) + 1.0).abs() < 1e-2,
+            "at equilibrium total_moment(θ) ≈ −applied"
+        );
+
+        // Capture a small ramp: one frame per applied moment, sharing the disc surface.
+        let traj = fsu.capture_ramp(&[-0.5, 0.0, 0.5]);
+        assert_eq!(traj.frames.len(), 3);
+        assert_eq!(traj.pivot, fsu.pivot());
+        assert_eq!(traj.axis, fsu.axis());
+        assert!(!traj.boundary_faces.is_empty(), "disc must have a surface");
+        assert!(
+            traj.frames
+                .iter()
+                .all(|f| f.deformed_nodes_native.len() == traj.rest_nodes_native.len()),
+            "every frame's deformed surface matches the rest node count"
+        );
+    }
+
+    #[test]
+    fn oriented_facet_moment_is_linear_in_stiffness() {
+        // f = ĝ·(k·penetration), so the moment scales exactly linearly with k_facet —
+        // a deterministic property of the oriented penalty, independent of the geometry.
+        let (g4, g5) = overlapping_spheres();
+        let pivot = Point3::new(0.0, 0.0, -5.0); // offset so the contact has a lever arm
+        let axis = Vector3::z();
+        let (n1, m1) = facet_moment_oriented(&g4, &g5, pivot, axis, 0.0, 100.0);
+        let (n2, m2) = facet_moment_oriented(&g4, &g5, pivot, axis, 0.0, 200.0);
+        assert!(n1 > 0 && n1 == n2, "same geometry → same engaged count");
+        assert!(
+            (m2 - 2.0 * m1).abs() < 1e-9 * m1.abs().max(1e-12),
+            "oriented facet moment must be linear in k_facet: m(200)={m2:.4}, 2·m(100)={:.4}",
+            2.0 * m1
+        );
+    }
+}

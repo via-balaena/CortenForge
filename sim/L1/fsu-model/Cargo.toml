@@ -30,8 +30,11 @@ cf-fsu-geometry = { workspace = true }
 sim-coupling = { workspace = true }
 # `SdfMeshedTetMesh` / `MeshingHints` / `MaterialField` — tet-mesh the disc from its field.
 sim-soft = { workspace = true }
-# `load_model` — build the two-box disc scene from MJCF.
+# `load_model` — build the two-box disc scene + the coupled ligament/bushing model from MJCF.
 sim-mjcf = { workspace = true }
+# `Model` / `Pose` / `SdfGrid` / `ShapeConcave` / `sdf::compute_shape_contact` — the coupled
+# FSU model (hinge bushing + tendons) + the facet SDF-penalty contact.
+sim-core = { workspace = true }
 # `Point3` / `Vector3` / `UnitQuaternion` — the frame + flexion math.
 nalgebra = { workspace = true }
 # `Result` + context/`bail!` for the fallible build path.

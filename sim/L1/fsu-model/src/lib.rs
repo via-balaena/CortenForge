@@ -1,11 +1,16 @@
 //! The assembled **Functional Spinal Unit** (FSU) flexion model.
 //!
 //! `cf-fsu-geometry` turns a raw vertebra/disc mesh into static anatomical geometry;
-//! this crate turns the disc mesh into a *live, simulatable* bonded soft disc.
-//! [`build_bonded_disc`] tet-meshes the real intervertebral disc from its own signed
-//! field and bonds it between two rigid vertebra-endplate boxes
-//! ([`BondedSandwich`]); [`BondedDisc`] then drives its
-//! quasi-static flexion/extension response.
+//! this crate turns it into a *live, simulatable* FSU. Two layers:
+//!
+//! - the **bonded soft disc** ([`build_bonded_disc`] / [`BondedDisc`]): tet-meshes the
+//!   real intervertebral disc from its own signed field and bonds it between two rigid
+//!   vertebra-endplate boxes ([`BondedSandwich`]), then drives its quasi-static
+//!   flexion/extension response;
+//! - the **coupled FSU** ([`CoupledFsu`]): assembles the disc (as a
+//!   linearised bushing), the ligaments (tendons), and the facets (oriented SDF contact)
+//!   into ONE model and solves for the equilibrium pose under an applied moment — the
+//!   force-driven, ROM-limited segment, vs rung 7's analytic superposition of the parts.
 //!
 //! ## Two frames, one bridge
 //!
@@ -20,7 +25,6 @@
 //!
 //! ## Scope / honesty
 //!
-//! Extracted from the rung-7 FSU validation test, which is now its single consumer.
 //! The bonded disc only converges at **sub-degree** strains — beyond ~1° the boundary
 //! tets leave their SPD region and the soft solve diverges (and panics) — so
 //! [`BondedDisc::flexion_moment`] is a small-angle probe, and a segment's larger-angle
@@ -47,6 +51,9 @@ use sim_soft::{
 // Re-exported: `FlexionTrajectory::boundary_faces` is `Vec<[VertexId; 3]>`, so consumers
 // (e.g. a viewer building a mesh from it) need to name the vertex-index type.
 pub use sim_soft::VertexId;
+
+mod coupled;
+pub use coupled::{CoupledFrame, CoupledFsu, CoupledParams, CoupledTrajectory};
 
 /// Body index of the inferior (lower) vertebra box in the disc scene (world = 0).
 const LOWER: usize = 1;
