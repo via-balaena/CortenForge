@@ -290,9 +290,125 @@ pub fn facet_grid(mesh: &IndexedMesh, sdf: &MeshOracle) -> Arc<SdfGrid> {
     ))
 }
 
+/// Maximum distance a vertex may be projected onto a bone (mm).
+///
+/// Acts as the thickness of the near-endplate layer that conforms: a disc vertex within this
+/// of L4 or L5 seats on that endplate, everything deeper (the disc interior / annulus middle)
+/// is left free. Comfortably spans the observed disc↔vertebra registration gap plus the full
+/// endplate-face relief (≤ ~4 mm on the `BodyParts3D` L4/L5 disc), yet stays well inside the
+/// ~9 mm disc half-thickness so the two endplate layers never meet.
+pub const SI_CONFORM_CAP: f64 = 4.0;
+/// Minimum |move·SI| / |move| to accept a projection (else the vertex is left in place). A
+/// projection onto an endplate FACE moves the vertex roughly along the SI axis (endplate
+/// normal ≈ SI), so its alignment is near 1; a projection onto the vertebra's LATERAL WALL
+/// moves nearly perpendicular to SI (alignment near 0). This `cos 70°` threshold seats the
+/// faces (which the disc must render flush on) while declining an annulus vertex that would
+/// wrap sideways onto the body wall. Only applied to moves larger than
+/// [`SI_CONFORM_ON_SURFACE`] — a vertex already on the bone needs no direction.
+const SI_CONFORM_MIN_ALIGN: f64 = 0.34;
+/// A vertex already within this distance of the bone (mm) is left as-is (already seated; the
+/// direction guard does not apply). Sub-10-µm — the disc's median native endplate gap.
+const SI_CONFORM_ON_SURFACE: f64 = 1.0e-3;
+
+/// Conform the disc's endplate-facing vertices onto the **real** L4/L5 endplate surfaces
+/// (native mm), so the rendered disc *is* the contact geometry — no proxy gap.
+///
+/// The intervertebral disc and its neighbouring vertebrae are independent `BodyParts3D`
+/// segmentations that do not perfectly abut: the disc's top/bottom faces float a fraction of
+/// a millimetre off — or slightly into — the real bone, which shows as a disc-lift seam. For
+/// every disc vertex this projects onto the **nearer** of the two endplates
+/// ([`MeshOracle::closest_point`], which follows the local surface normal so it seats a face
+/// even where it tilts or curves away from the global SI axis), subject to two guards keyed
+/// off the SI axis ([`SegmentFrame::superior_axis`]):
+///
+/// - a [`SI_CONFORM_CAP`] cap on the move — this both leaves the disc interior/annulus middle
+///   (far from either bone) untouched and defines the *thickness* of the seated endplate
+///   layer, so the WHOLE top and bottom face seats, not a fixed slab;
+/// - a [`SI_CONFORM_MIN_ALIGN`] direction guard — a vertex whose nearest surface point is
+///   reached by a near-lateral move (the vertebra's side WALL, not its endplate) is left in
+///   place rather than wrapped sideways onto the body.
+///
+/// Picking the nearer endplate per vertex needs no SI-orientation convention; the guards
+/// alone decide what is a face (seat it) versus interior/annulus (leave it). Purely geometric:
+/// the returned mesh keeps the same topology (faces); only endplate-facing vertex positions
+/// move.
+///
+/// `restrict_band` chooses the caller's two uses, which deliberately differ:
+/// - `None` — conform the **whole** top and bottom face. This is the RENDER surface: the
+///   drawn disc must seat flush along its entire endplate (rendered === contacts).
+/// - `Some(band_frac)` — conform only the top/bottom `band_frac` of the disc's native-z
+///   extent. This is the BONDED disc: seating the full FEM face over-constrains and stiffens
+///   the disc (its measured `k_disc` shifts ~6×), so the bond seats just the endplate band it
+///   actually ties to (a subset the whole-face render then extends). Pass the disc `band_frac`
+///   `cf_fsu_model::build_bonded_disc` bonds, so the two agree on the band.
+#[must_use]
+pub fn conform_disc_to_endplates(
+    disc: &IndexedMesh,
+    o4: &MeshOracle,
+    o5: &MeshOracle,
+    frame: &SegmentFrame,
+    restrict_band: Option<f64>,
+) -> IndexedMesh {
+    let si = frame.superior_axis; // unit SI axis — the endplate-normal direction for the guard
+    // Optional native-z band cut: (low_cut, high_cut) — only z ≤ low_cut or z ≥ high_cut conform.
+    let band = restrict_band.map(|bf| {
+        let bbox = Aabb::from_points(disc.vertices.iter());
+        let (lo, hi) = (bbox.min.z, bbox.max.z);
+        let b = bf * (hi - lo);
+        (lo + b, hi - b)
+    });
+    let mut out = disc.clone();
+    for (i, &v) in disc.vertices.iter().enumerate() {
+        if let Some((low_cut, high_cut)) = band {
+            if v.z > low_cut && v.z < high_cut {
+                continue; // interior (not in the endplate band) — bond use skips it
+            }
+        }
+        if let Some(p) = project_to_nearest_endplate(v, si, o4, o5) {
+            out.vertices[i] = p;
+        }
+    }
+    out
+}
+
+/// Project `v` onto its nearest point on whichever endplate (`o4` = L4 or `o5` = L5) is
+/// closer, following the LOCAL surface normal (`closest_point`), subject to the
+/// [`SI_CONFORM_CAP`] move cap and the [`SI_CONFORM_MIN_ALIGN`] direction guard (`si` = the
+/// SI axis). Returns the surface point, or `None` — leaving the vertex in place — when the
+/// nearest endplate is past the cap (the disc interior / annulus middle) or is reached by a
+/// near-lateral move onto a side wall rather than an endplate face.
+fn project_to_nearest_endplate(
+    v: Point3<f64>,
+    si: Vector3<f64>,
+    o4: &MeshOracle,
+    o5: &MeshOracle,
+) -> Option<Point3<f64>> {
+    // Nearer of the two endplates — no band / SI-orientation convention needed.
+    let (p4, p5) = (o4.closest_point(v), o5.closest_point(v));
+    let p = if (p4 - v).norm_squared() <= (p5 - v).norm_squared() {
+        p4
+    } else {
+        p5
+    };
+    let d = p - v;
+    let dist = d.norm();
+    if dist < SI_CONFORM_ON_SURFACE {
+        return Some(p); // already on the surface — no meaningful direction to guard
+    }
+    if dist > SI_CONFORM_CAP {
+        return None; // nearest endplate is too far — disc interior / annulus middle
+    }
+    // Endplate FACE ⇒ move ≈ along SI (alignment ~1); side WALL ⇒ move ≈ ⟂ SI (alignment ~0).
+    if (d.dot(&si) / dist).abs() < SI_CONFORM_MIN_ALIGN {
+        return None; // near-lateral move — would wrap onto the body wall, decline
+    }
+    Some(p)
+}
+
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)] // tests may unwrap.
+    // tests may unwrap; the small-count → f64 casts (vertex tallies) are exact.
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::cast_precision_loss)]
 
     use super::*;
 
@@ -536,5 +652,151 @@ mod tests {
         // parallel test runner.)
         let err = load_from_env("CF_FSU_GEOMETRY_DEFINITELY_UNSET_VAR").unwrap_err();
         assert!(format!("{err}").contains("is not set"), "got {err}");
+    }
+
+    /// A two-box synthetic FSU + a gapped disc for the conform recipe: L5 box spans
+    /// z∈[−10,10] (top surface z=+10), L4 box spans z∈[20,40] (bottom surface z=+20),
+    /// and the disc's endplate bands float 2 mm short of each — top verts at z=18, bottom
+    /// at z=12 — with a mid row at z=15 that must stay put. SI = +z. Returns
+    /// `(disc, o4, o5, frame)`.
+    fn conform_scene() -> (IndexedMesh, MeshOracle, MeshOracle, SegmentFrame) {
+        let o4 = oracle(&box_mesh(Point3::new(0.0, 0.0, 30.0), 10.0)).unwrap();
+        let o5 = oracle(&box_mesh(Point3::new(0.0, 0.0, 0.0), 10.0)).unwrap();
+        let frame = SegmentFrame {
+            b4: Point3::new(0.0, 0.0, 30.0),
+            b5: Point3::new(0.0, 0.0, 0.0),
+            superior_axis: Vector3::z(),
+            posterior: Vector3::y(),
+            ml: Vector3::x(),
+        };
+        // Disc vertices: 4 top (z=18, gap to L4@20), 4 mid (z=15, interior), 4 bottom
+        // (z=12, gap to L5@10). Faces are irrelevant to the conform (vertex-only), so none.
+        let mut vertices = Vec::new();
+        for &z in &[18.0_f64, 15.0, 12.0] {
+            for &(x, y) in &[(-3.0, -3.0), (3.0, -3.0), (3.0, 3.0), (-3.0, 3.0)] {
+                vertices.push(Point3::new(x, y, z));
+            }
+        }
+        let disc = IndexedMesh {
+            vertices,
+            faces: vec![],
+        };
+        (disc, o4, o5, frame)
+    }
+
+    #[test]
+    fn conform_snaps_endplate_faces_onto_the_real_bone() {
+        let (disc, o4, o5, frame) = conform_scene();
+        let conformed = conform_disc_to_endplates(&disc, &o4, &o5, &frame, None);
+        assert_eq!(conformed.vertices.len(), disc.vertices.len());
+
+        for (i, (v0, v)) in disc.vertices.iter().zip(&conformed.vertices).enumerate() {
+            if v0.z > 16.0 {
+                // Top face (nearer L4) → L4 bottom face at z=20 (moved +2 mm along +z).
+                assert!(
+                    o4.evaluate(*v).abs() < 1e-3,
+                    "top vertex {i} must land on L4"
+                );
+                assert!(
+                    (v.z - 20.0).abs() < 1e-3,
+                    "top vertex {i} at z≈20, got {}",
+                    v.z
+                );
+            } else if v0.z < 14.0 {
+                // Bottom face (nearer L5) → L5 top face at z=10 (moved −2 mm along −z).
+                assert!(
+                    o5.evaluate(*v).abs() < 1e-3,
+                    "bottom vertex {i} must land on L5"
+                );
+                assert!(
+                    (v.z - 10.0).abs() < 1e-3,
+                    "bottom vertex {i} at z≈10, got {}",
+                    v.z
+                );
+            } else {
+                // Mid row (z=15): 5 mm from each endplate, beyond the 4 mm cap → untouched.
+                assert_eq!(*v, *v0, "interior vertex {i} must not move");
+            }
+        }
+    }
+
+    #[test]
+    fn conform_leaves_overhang_vertices_in_place() {
+        // A vertex far outside the L4/L5 footprint (x=50, half-width 10): its nearest bone
+        // point is ~40 mm away, beyond SI_CONFORM_CAP → left exactly in place.
+        let (mut disc, o4, o5, frame) = conform_scene();
+        let overhang = Point3::new(50.0, 0.0, 18.0);
+        disc.vertices.push(overhang);
+        let conformed = conform_disc_to_endplates(&disc, &o4, &o5, &frame, None);
+        let got = *conformed.vertices.last().unwrap();
+        assert_eq!(
+            got, overhang,
+            "an overhang vertex must not be projected, got {got:?}"
+        );
+    }
+
+    #[test]
+    #[ignore = "needs $CF_L4_STL/$CF_L5_STL/$CF_DISC_STL (BodyParts3D, CC BY-SA, not committed)"]
+    fn conform_seats_the_real_disc_endplate_faces_on_the_bone() {
+        // The exact-geometry contract on the REAL anatomy: EVERY vertex the conform moves
+        // sits on the nearer vertebra surface (|sdf| ≈ 0) — it never leaves a vertex floating
+        // off the bone. A meaningful share of the disc (its top + bottom faces) must seat;
+        // the untouched remainder is the disc interior / annulus (far from either endplate).
+        let l4 = load_from_env("CF_L4_STL").unwrap();
+        let l5 = load_from_env("CF_L5_STL").unwrap();
+        let disc = load_from_env("CF_DISC_STL").unwrap();
+        let o4 = oracle(&l4).unwrap();
+        let o5 = oracle(&l5).unwrap();
+        let frame = segment_frame(&l4, &l5, &o4, &o5).unwrap();
+
+        let conformed = conform_disc_to_endplates(&disc, &o4, &o5, &frame, None);
+        assert_eq!(conformed.vertices.len(), disc.vertices.len());
+        assert_eq!(
+            conformed.faces, disc.faces,
+            "conform is vertex-only: topology unchanged"
+        );
+
+        // Radius from the SI axis through the disc centre — to show the untouched vertices are
+        // the disc interior / annulus, not scattered face vertices the conform should have hit.
+        let bbox = Aabb::from_points(disc.vertices.iter());
+        let center = Point3::from(bbox.min.coords + (bbox.max - bbox.min) * 0.5);
+        let si = frame.superior_axis;
+        let radius = |p: Point3<f64>| {
+            let d = p - center;
+            (d - d.dot(&si) * si).norm()
+        };
+        let (mut seated, mut untouched, mut worst) = (0_usize, 0_usize, 0.0_f64);
+        let (mut r_seated, mut r_untouched) = (0.0_f64, 0.0_f64);
+        for (v0, v) in disc.vertices.iter().zip(&conformed.vertices) {
+            if v == v0 {
+                untouched += 1;
+                r_untouched += radius(*v0);
+            } else {
+                // A moved vertex MUST sit on the nearer vertebra surface — the contract.
+                let d = o4.evaluate(*v).abs().min(o5.evaluate(*v).abs());
+                assert!(
+                    d < 1e-3,
+                    "a moved vertex must land on a bone, got |sdf|={d:.4}"
+                );
+                seated += 1;
+                worst = worst.max(d);
+                r_seated += radius(*v0);
+            }
+        }
+        let total = seated + untouched;
+        println!(
+            "conform: {seated}/{total} vertices seated on an endplate (worst |sdf| {worst:.2e} mm), {untouched} untouched (interior/annulus)"
+        );
+        println!(
+            "mean radius from SI axis: seated {:.1} mm, untouched {:.1} mm",
+            r_seated / seated.max(1) as f64,
+            r_untouched / untouched.max(1) as f64,
+        );
+        // The disc's two endplate faces are a large share of its surface, so a healthy count
+        // must seat — a regression that broke the projection would collapse this.
+        assert!(
+            seated > total / 4,
+            "at least a quarter of the disc must seat ({seated}/{total})"
+        );
     }
 }

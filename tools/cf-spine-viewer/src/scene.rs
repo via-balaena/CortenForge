@@ -15,7 +15,7 @@
 use std::path::Path;
 
 use anyhow::{Result, ensure};
-use cf_fsu_geometry::{BODY_RADIUS, SegmentFrame, extreme_vertex, load};
+use cf_fsu_geometry::{BODY_RADIUS, MeshOracle, SegmentFrame, extreme_vertex, load, oracle};
 use cf_fsu_model::{
     CoupledFsu, CoupledParams, CoupledTrajectory, PHYSIOLOGIC_MOMENT, RAMP_FRAMES, VertexId,
     moment_ramp,
@@ -34,18 +34,27 @@ pub struct Ligament {
 pub struct FsuScene {
     pub l4: IndexedMesh,
     pub l5: IndexedMesh,
-    /// The clean STL disc surface (native mm) — a smooth watertight lens, the render
-    /// geometry. The tet mesh is too fragmented to render as a coherent disc, so the
-    /// viewer draws THIS surface and displaces it by the FEM field (see `disc_node_map`).
+    /// The disc render surface (native mm) — the clean STL lens with its endplate bands
+    /// **conformed onto the real L4/L5 surfaces** ([`CoupledFsu::conformed_disc_surface`]),
+    /// so the drawn disc coincides with the bone at the endplates (rendered === contacts).
+    /// The tet mesh is too fragmented to render as a coherent disc, so the viewer draws THIS
+    /// surface and displaces it by the FEM field (see `disc_node_weights`).
     pub disc_surface: IndexedMesh,
-    /// For each `disc_surface` vertex, the index (into [`CoupledTrajectory::rest_nodes_native`])
-    /// of the nearest tet node on the largest component's boundary. Per frame the vertex is
-    /// displaced by that node's FEM displacement — a smooth, complete disc that deforms by
-    /// the real physics without depending on the ragged tet boundary.
-    pub disc_node_map: Vec<usize>,
+    /// For each `disc_surface` vertex, the `K` nearest boundary tet nodes (indices into
+    /// [`CoupledTrajectory::rest_nodes_native`]) with inverse-distance weights summing to 1.
+    /// Per frame the vertex is displaced by the WEIGHTED BLEND of those nodes' FEM
+    /// displacements — smooth C⁰ skinning, so the fine surface does not facet/tear over the
+    /// coarse (few-mm) tet field the way a single nearest-node lookup does.
+    pub disc_node_weights: Vec<Vec<(usize, f64)>>,
+    /// The L4/L5 signed-distance oracles — the viewer clamps the deformed disc surface out of
+    /// the bones each frame (the rigid-attachment carrier can otherwise push the annulus into a
+    /// vertebra at the ROM extremes). Built here so the fallible oracle construction stays in
+    /// the `Result`-returning assembly, not the infallible Bevy driver.
+    pub o4: MeshOracle,
+    pub o5: MeshOracle,
     /// The coupled FSU's captured force-driven ramp: per-frame equilibrium angle +
     /// deformed disc tet-node positions (native mm) + facet engagement + pivot/axis. The
-    /// disc FEM displacement field is sampled onto `disc_surface` via `disc_node_map`.
+    /// disc FEM displacement field is sampled onto `disc_surface` via `disc_node_weights`.
     pub flexion: CoupledTrajectory,
     pub ligaments: Vec<Ligament>,
     /// Combined bounding box across all three meshes, for camera framing.
@@ -152,20 +161,26 @@ fn combined_aabb(meshes: &[&IndexedMesh]) -> Aabb {
     Aabb::from_points(meshes.iter().flat_map(|m| m.vertices.iter()))
 }
 
-/// For each `surface` vertex, the index of the nearest tet node **on the disc's rendered
-/// boundary** (`boundary_faces` — the largest connected component's surface nodes).
+/// Number of tet nodes each surface vertex blends over. Enough to interpolate smoothly across
+/// the coarse (few-mm) tet field without reaching past the local neighbourhood.
+const SKIN_NEIGHBOURS: usize = 6;
+
+/// For each `surface` vertex, the [`SKIN_NEIGHBOURS`] nearest tet nodes **on the disc's
+/// rendered boundary** (`boundary_faces` — the largest connected component's surface nodes),
+/// with inverse-distance-squared weights normalised to sum to 1.
 ///
 /// Restricting candidates to the boundary nodes matters for correctness, not just speed:
-/// the dropped rim-island nodes stay at rest (zero displacement), so mapping a surface
-/// vertex onto one would tear the disc under exaggeration; the boundary nodes all carry a
-/// real, smooth, connected FEM displacement. It also shrinks the brute-force pass ~5× (a
-/// one-time startup cost, dwarfed by the sweep's FEM solves). The matched node's
-/// displacement is applied to that surface vertex each frame.
-fn nearest_tet_nodes(
+/// the dropped rim-island nodes stay at rest (zero displacement), so blending a surface
+/// vertex onto one would tear the disc; the boundary nodes all carry a real, smooth,
+/// connected FEM displacement. Blending several (vs the single nearest) skins the fine
+/// surface **smoothly** over the coarse tet field — a single nearest-node lookup gives each
+/// vertex one node's displacement verbatim, so the surface facets/tears at the bone interface
+/// where the displacement gradient is steepest.
+fn weighted_tet_nodes(
     surface: &IndexedMesh,
     rest_nodes: &[Point3<f64>],
     boundary_faces: &[[VertexId; 3]],
-) -> Vec<usize> {
+) -> Vec<Vec<(usize, f64)>> {
     let mut candidates: Vec<usize> = boundary_faces
         .iter()
         .flatten()
@@ -173,19 +188,26 @@ fn nearest_tet_nodes(
         .collect();
     candidates.sort_unstable();
     candidates.dedup();
+    // Distance below which a surface vertex is taken as coincident with a node (avoids a
+    // divide-by-zero and lets an exactly-matched vertex track that node rigidly).
+    const EPS2: f64 = 1e-12;
     surface
         .vertices
         .iter()
         .map(|v| {
-            candidates
+            // K nearest candidates by rest distance.
+            let mut near: Vec<(usize, f64)> = candidates
                 .iter()
-                .copied()
-                .min_by(|&a, &b| {
-                    (rest_nodes[a] - v)
-                        .norm_squared()
-                        .total_cmp(&(rest_nodes[b] - v).norm_squared())
-                })
-                .unwrap_or(0)
+                .map(|&i| (i, (rest_nodes[i] - v).norm_squared()))
+                .collect();
+            let k = SKIN_NEIGHBOURS.min(near.len());
+            near.select_nth_unstable_by(k - 1, |a, b| a.1.total_cmp(&b.1));
+            near.truncate(k);
+            // Inverse-distance-squared weights, normalised to sum to 1.
+            let raw: Vec<(usize, f64)> =
+                near.iter().map(|&(i, d2)| (i, 1.0 / (d2 + EPS2))).collect();
+            let total: f64 = raw.iter().map(|&(_, w)| w).sum();
+            raw.into_iter().map(|(i, w)| (i, w / total)).collect()
         })
         .collect()
 }
@@ -216,7 +238,12 @@ pub fn build(l4_path: &Path, l5_path: &Path, disc_path: &Path) -> Result<FsuScen
     println!(
         "assembling coupled FSU + capturing moment ramp ({RAMP_FRAMES} frames, ±{PHYSIOLOGIC_MOMENT} N·m)…"
     );
-    let mut fsu = CoupledFsu::build(&l4, &l5, disc.clone(), &CoupledParams::default())?;
+    let mut fsu = CoupledFsu::build(&l4, &l5, &disc, &CoupledParams::default())?;
+    // The disc render surface = the FSU's disc conformed onto the real endplates (native
+    // mm). Drawing THIS (not the raw STL) is what makes rendered === contacts: the disc's
+    // endplate bands now sit on the bone, closing the disc-lift seam. Cloned once here so
+    // the later `capture_ramp` can borrow `fsu` mutably.
+    let disc_surface = fsu.conformed_disc_surface().clone();
 
     // Overlays derived from the coupled FSU's shared frame + flexion axis.
     let mut warnings = coregistration_warnings(&disc, fsu.frame(), fsu.axis());
@@ -234,11 +261,11 @@ pub fn build(l4_path: &Path, l5_path: &Path, disc_path: &Path) -> Result<FsuScen
         eprintln!("WARNING: {w}");
     }
 
-    // Capture the coupled force-driven ramp. The disc STL stays as the clean render surface;
-    // the FSU already consumed a clone for the FEM tet-mesh + coupled solve.
+    // Capture the coupled force-driven ramp. `disc_surface` (the conformed render surface)
+    // is already captured above; the FSU tet-meshes + solves on the same conformed disc.
     let flexion = fsu.capture_ramp(&moment_ramp())?;
     // Guard against a disc that tet-meshed to nothing (all components dropped): with no
-    // boundary faces, `nearest_tet_nodes` would silently collapse the disc onto node 0.
+    // boundary faces, `weighted_tet_nodes` would silently collapse the disc onto node 0.
     ensure!(
         !flexion.boundary_faces.is_empty() && !flexion.rest_nodes_native.is_empty(),
         "disc tet-mesh produced no surface (degenerate/near-flat disc mesh?) — cannot render"
@@ -255,18 +282,27 @@ pub fn build(l4_path: &Path, l5_path: &Path, disc_path: &Path) -> Result<FsuScen
         flexion.boundary_faces.len()
     );
 
-    // Map each clean-STL vertex to its nearest connected-component boundary tet node, so
-    // the smooth surface can be displaced by the FEM field per frame (the tet boundary is
-    // too fragmented to draw directly).
-    let aabb = combined_aabb(&[&l4, &l5, &disc]);
-    let disc_node_map =
-        nearest_tet_nodes(&disc, &flexion.rest_nodes_native, &flexion.boundary_faces);
+    // Skin each conformed-surface vertex to its nearest boundary tet nodes (inverse-distance
+    // weighted), so the smooth surface deforms by a blended FEM field per frame (the tet
+    // boundary is too fragmented to draw directly). Blending several nodes keeps the fine
+    // surface from faceting over the coarse tet field at the bone interface.
+    let aabb = combined_aabb(&[&l4, &l5, &disc_surface]);
+    let disc_node_weights = weighted_tet_nodes(
+        &disc_surface,
+        &flexion.rest_nodes_native,
+        &flexion.boundary_faces,
+    );
+    // The bone oracles the viewer clamps the deformed disc against each frame.
+    let o4 = oracle(&l4)?;
+    let o5 = oracle(&l5)?;
 
     Ok(FsuScene {
         l4,
         l5,
-        disc_surface: disc,
-        disc_node_map,
+        disc_surface,
+        disc_node_weights,
+        o4,
+        o5,
         flexion,
         ligaments,
         aabb,

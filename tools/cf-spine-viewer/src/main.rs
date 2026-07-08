@@ -18,7 +18,7 @@
 //! The FEM tet mesh is too fragmented to draw as a coherent disc (the BCC
 //! isosurface-stuffing mesher shatters the thin lens), so the viewer renders the
 //! **clean watertight STL surface** and displaces each of its vertices by the FEM
-//! displacement field — sampled from the nearest tet node (`scene::nearest_tet_nodes`).
+//! displacement field — sampled from the nearest tet nodes, inverse-distance weighted (`scene::weighted_tet_nodes`).
 //! Clean geometry from the STL, real deformation from the physics.
 //!
 //! ## Honesty
@@ -142,9 +142,22 @@ struct Flexion {
     traj: CoupledTrajectory,
     /// The clean STL disc's rest vertex positions (native mm) — the render surface.
     disc_rest: Vec<Point3<f64>>,
-    /// For each `disc_rest` vertex, the nearest tet-node index in `traj.rest_nodes_native`,
-    /// so the surface is displaced by that node's FEM displacement each frame.
-    disc_map: Vec<usize>,
+    /// For each `disc_rest` vertex, the nearest tet nodes in `traj.rest_nodes_native` with
+    /// inverse-distance weights (see [`scene::weighted_tet_nodes`]), so the small FEM BULGE is
+    /// skinned smoothly (C⁰) onto the surface each frame.
+    disc_weights: Vec<Vec<(usize, f64)>>,
+    /// For each `disc_rest` vertex, its SI-height fraction `t ∈ [0, 1]` (0 at the inferior/L5
+    /// face, 1 at the superior/L4 face). The rigid-attachment carrier rotates the vertex by
+    /// `t·θ` about the flexion axis, so the L5 face stays put and the L4 face follows L4
+    /// exactly — applied to the vertex ITSELF (not skinned), so the rotating top stays glued.
+    disc_t: Vec<f64>,
+    /// The L4/L5 signed-distance oracles, used each frame to CLAMP the deformed disc surface
+    /// out of the bones: the rigid-attachment carrier can push the annulus into a bone under
+    /// flexion/extension (the sub-degree FEM cannot deform around the bone at the full ROM),
+    /// so any vertex that lands inside a bone is projected back onto its surface — the disc
+    /// never pierces a vertebra (rendered === contacts).
+    o4: cf_fsu_geometry::MeshOracle,
+    o5: cf_fsu_geometry::MeshOracle,
     /// Auto-advancing playback (vs. paused / hand-scrubbed).
     playing: bool,
     /// Continuous frame position in `[0, frames-1]`; interpolated for smoothness.
@@ -236,13 +249,29 @@ fn run_app(fsu: FsuScene) {
         l4,
         l5,
         disc_surface,
-        disc_node_map,
+        disc_node_weights,
+        o4,
+        o5,
         flexion,
         ligaments,
         aabb,
         warnings,
     } = fsu;
     let disc_rest = disc_surface.vertices.clone();
+    // Per-vertex rigid-attachment carrier weight: project each rest vertex onto the SI axis
+    // through the pivot, normalise over the disc's SI extent, then clamp to the bonded bands
+    // (`cf_fsu_model::carrier_t` — shared with the capture so the caps coincide with the FEM's).
+    let disc_t = {
+        let (si, pivot) = (flexion.si_axis, flexion.pivot);
+        let h: Vec<f64> = disc_rest.iter().map(|v| (v - pivot).dot(&si)).collect();
+        let (hmin, hmax) = h
+            .iter()
+            .fold((f64::MAX, f64::MIN), |(a, b), &x| (a.min(x), b.max(x)));
+        let span = (hmax - hmin).max(1e-9);
+        h.iter()
+            .map(|&x| cf_fsu_model::carrier_t((x - hmin) / span))
+            .collect::<Vec<f64>>()
+    };
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -270,7 +299,10 @@ fn run_app(fsu: FsuScene) {
             cursor: (flexion.frames.len().saturating_sub(1)) as f32 / 2.0,
             traj: flexion,
             disc_rest,
-            disc_map: disc_node_map,
+            disc_weights: disc_node_weights,
+            disc_t,
+            o4,
+            o5,
             playing: true,
             direction: 1.0,
             true_theta: 0.0,
@@ -450,29 +482,52 @@ fn flexion_update(
     let pivot = flexion.traj.pivot;
     let axis = flexion.traj.axis;
 
-    // Displace each CLEAN STL surface vertex by the FEM field (sampled from its nearest
-    // tet node) into the reused scratch buffer, plus the interpolated angle/moment — in a
-    // scoped borrow so we can write back the readouts. `flat` (a system Local) is
-    // independent of `flexion`, so filling it while borrowing the trajectory is fine.
+    // Build the deformed disc surface into the reused scratch buffer: each vertex = its rigid
+    // ATTACHMENT CARRIER (rotate the vertex itself by t·θ about the pivot — so the L5 face
+    // stays put and the L4 face follows L4 exactly, no detachment) + the small FEM BULGE
+    // skinned smoothly from the nearest tet nodes. `flat` (a system Local) is independent of
+    // `flexion`, so filling it while borrowing the trajectory is fine.
     flat.clear();
     let (true_theta, applied) = {
         let traj = &flexion.traj;
         let (fa, fb) = (&traj.frames[lo], &traj.frames[hi]);
-        for (dr, &j) in flexion.disc_rest.iter().zip(&flexion.disc_map) {
-            // FEM displacement of the mapped tet node (interpolated between frames).
-            let a = fa.deformed_nodes_native[j];
-            let b = fb.deformed_nodes_native[j];
-            let interp = a + (b - a) * frac;
-            let disp = interp - traj.rest_nodes_native[j];
-            let p = dr + disp; // clean STL vertex + the real FEM displacement at this angle
+        let theta = fa.theta + (fb.theta - fa.theta) * frac;
+        let applied = fa.applied + (fb.applied - fa.applied) * frac;
+        let unit_axis = Unit::new_normalize(axis);
+        // L4's rigid rotation this frame (for clamping into its rotated frame; L5 is fixed).
+        let l4_rot = UnitQuaternion::from_axis_angle(&unit_axis, theta);
+        for ((dr, weights), &t) in flexion
+            .disc_rest
+            .iter()
+            .zip(&flexion.disc_weights)
+            .zip(&flexion.disc_t)
+        {
+            // Carrier: the vertex rotated by t·θ about the flexion axis through the pivot.
+            let rot = UnitQuaternion::from_axis_angle(&unit_axis, t * theta);
+            let carrier = pivot + rot * (dr - pivot);
+            // Skin the small FEM bulge (interpolated between frames) onto the vertex.
+            let mut bulge = Vector3::zeros();
+            for &(j, w) in weights {
+                let a = fa.bulge_nodes_native[j];
+                let b = fb.bulge_nodes_native[j];
+                bulge += (a + (b - a) * frac) * w;
+            }
+            let mut p = carrier + bulge;
+            // Clamp out of the bones: the twist can push the annulus into a vertebra, so
+            // project any vertex inside rotated-L4 (un-rotate → nearest surface → re-rotate) or
+            // inside fixed-L5 back onto that surface. The disc never pierces a bone.
+            let l4_local = pivot + l4_rot.inverse() * (p - pivot);
+            if flexion.o4.evaluate(l4_local) < 0.0 {
+                p = pivot + l4_rot * (flexion.o4.closest_point(l4_local) - pivot);
+            }
+            if flexion.o5.evaluate(p) < 0.0 {
+                p = flexion.o5.closest_point(p);
+            }
             flat.push(p.x);
             flat.push(p.y);
             flat.push(p.z);
         }
-        (
-            fa.theta + (fb.theta - fa.theta) * frac,
-            fa.applied + (fb.applied - fa.applied) * frac,
-        )
+        (theta, applied)
     };
     flexion.true_theta = true_theta;
     flexion.applied = applied;
