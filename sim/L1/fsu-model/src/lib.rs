@@ -137,6 +137,25 @@ fn disc_mjcf(c_inf: Vec3, c_sup: Vec3, h_box: f64) -> String {
     )
 }
 
+/// The disc's medio-lateral (flexion/extension) axis: the coordinate axis of the point
+/// cloud's widest **AABB extent**.
+///
+/// Deliberately the axis-aligned AABB extent — NOT a PCA principal direction (an oblique
+/// disc's longest point-to-point direction can differ from its widest axis-aligned extent),
+/// and NOT [`Aabb::longest_axis`] (which resolves an exact extent tie to the FIRST maximum;
+/// rung 7's original `max_by` takes the LAST, and a byte-identical extraction must match it).
+/// A real anatomical disc has a unique widest axis, so the choices agree on every real input.
+fn ml_axis_from_points(vertices: &[Point3<f64>]) -> Vector3<f64> {
+    let size = Aabb::from_points(vertices.iter()).size();
+    let extents = [size.x, size.y, size.z];
+    let widest = (0..3)
+        .max_by(|&a, &b| extents[a].total_cmp(&extents[b]))
+        .unwrap_or(0);
+    let mut ml = Vector3::zeros();
+    ml[widest] = 1.0;
+    ml
+}
+
 /// Tet-mesh the real intervertebral disc `mesh` (native mm) and bond it between two
 /// field-posed rigid endplate boxes, returning the live [`BondedDisc`].
 ///
@@ -172,17 +191,7 @@ pub fn build_bonded_disc(mut mesh: IndexedMesh, params: &DiscParams) -> Result<B
             size.z
         );
     }
-    // ML = the widest extent. Deliberately NOT `Aabb::longest_axis()`: that breaks an
-    // exact-tie between extents as first-max (X), whereas rung-7's original `max_by`
-    // returned the LAST maximum — matching it keeps this a byte-identical extraction. (A
-    // real anatomical disc has a unique widest axis, so the two agree on every real
-    // input; they differ only for a physically degenerate exactly-square disc.)
-    let extents = [size.x, size.y, size.z];
-    let widest = (0..3)
-        .max_by(|&a, &b| extents[a].total_cmp(&extents[b]))
-        .unwrap_or(0);
-    let mut ml_axis = Vector3::zeros();
-    ml_axis[widest] = 1.0;
+    let ml_axis = ml_axis_from_points(&mesh.vertices);
 
     // Pad the lattice beyond the disc so the tet mesh fully contains the surface.
     let padded = bbox.expanded(params.pad);
@@ -524,23 +533,27 @@ mod tests {
     }
 
     #[test]
+    fn ml_axis_is_widest_aabb_extent_not_pca() {
+        // The flexion axis must be the widest AXIS-ALIGNED extent, NOT a PCA principal
+        // direction. This cloud's longest point-to-point direction is the x-y diagonal, but
+        // its widest axis-aligned extent is x (span 10 vs y-span 3) → +x. A regression of
+        // `ml_axis_from_points` to a PCA axis would silently rotate the whole segment about
+        // the wrong axis on a real oblique disc, with no other test catching it.
+        let pts = [Point3::new(0.0, 0.0, 0.0), Point3::new(10.0, 3.0, 1.0)];
+        assert_eq!(ml_axis_from_points(&pts), Vector3::x());
+    }
+
+    #[test]
     fn ml_axis_breaks_extent_ties_by_last_max_not_longest_axis() {
-        // Guards the deliberate `max_by` (LAST maximum) tie-break vs `Aabb::longest_axis`
-        // (FIRST maximum): a disc with x and y extents TIED at the widest must pick the
-        // last (y). A regression to `longest_axis()` / a PCA axis would flip a square disc
-        // and silently rotate the whole segment about the wrong axis (a real defect the
-        // PR-A gating review already caught once).
-        let disc = build_bonded_disc(
-            // 20 × 20 × 6 mm: x == y widest (tied), z thinnest (the SI guard).
-            box_mesh(Point3::new(0.0, 0.0, 950.0), Vector3::new(10.0, 10.0, 3.0)),
-            &DiscParams::default(),
-        )
-        .unwrap();
-        assert_eq!(
-            disc.ml_axis(),
-            Vector3::y(),
-            "a tied widest extent must resolve to the LAST axis (y), not the first (x)"
-        );
+        // The deliberate `max_by` (LAST maximum) tie-break vs `Aabb::longest_axis` (FIRST
+        // maximum): x and y extents TIED at the widest must resolve to the last (y). A
+        // regression to `longest_axis()` would flip a square disc (a defect the PR-A gating
+        // review caught once).
+        let pts = [
+            Point3::new(-10.0, -10.0, -3.0),
+            Point3::new(10.0, 10.0, 3.0),
+        ];
+        assert_eq!(ml_axis_from_points(&pts), Vector3::y());
     }
 
     #[test]

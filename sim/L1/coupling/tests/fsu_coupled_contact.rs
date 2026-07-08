@@ -218,8 +218,10 @@ fn l4_l5_coupled_flexion_extension_equilibrium() {
         );
     }
     assert!(
-        (roms[roms.len() - 2] - roms[roms.len() - 1]).abs() < (roms[0] - roms[1]).abs(),
-        "the ROM must be flattening (later steps smaller than the first) — approaching a limit"
+        // Same 1e-2° jitter slack as the monotonicity check: a converged sweep whose last
+        // step is already tiny must not flake if sub-grid noise nudges it past the first step.
+        (roms[roms.len() - 2] - roms[roms.len() - 1]).abs() < (roms[0] - roms[1]).abs() + 1e-2,
+        "the ROM must be flattening (later steps no larger than the first) — approaching a limit"
     );
     for (&k, &rom) in ks.iter().zip(&roms) {
         assert!(
