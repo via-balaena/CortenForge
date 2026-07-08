@@ -2388,6 +2388,7 @@ dependencies = [
  "cf-fsu-geometry",
  "cf-geometry",
  "nalgebra 0.34.2",
+ "sim-core",
  "sim-coupling",
  "sim-mjcf",
  "sim-soft",

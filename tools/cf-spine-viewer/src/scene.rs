@@ -1,45 +1,27 @@
 //! Headless FSU scene builder (Bevy-free).
 //!
-//! Assembles the static L4–L5 Functional Spinal Unit as plain data for
-//! rendering — everything in native BodyParts3D millimetres (a static view runs
-//! no solver, so no recenter/scale is needed; the three meshes already stack in
-//! their shared anatomical frame):
+//! Assembles the L4–L5 Functional Spinal Unit as plain data for rendering, everything in
+//! native BodyParts3D millimetres. The heavy lifting is [`cf_fsu_model::CoupledFsu`], built
+//! ONCE here: it owns the anatomical frame, the two articular SDF grids, the flexion axis,
+//! and the bonded disc, and it captures the force-driven moment-ramp
+//! ([`CoupledFsu::capture_ramp`]) whose frames carry the disc deformation + the real engaged
+//! facet contact points. The scene reuses the FSU's frame + flexion axis for its overlays,
+//! so nothing (oracle / segment-frame / facet-grid / ML axis) is computed twice.
 //!
-//!   * the two vertebra surfaces (welded), plus the disc STL shell;
-//!   * the field-derived ligament attachment sites (ALL + interspinous);
-//!   * the facet near-contact points, from the `ShapeConcave` SDF collision at
-//!     the neutral pose.
-//!
-//! The shared field recipes (`load` / `oracle` / `segment_frame` /
-//! `extreme_vertex` / `facet_grid`) live in the graded `cf-fsu-geometry` crate,
-//! consumed here; the rung 4b/5/7 tests migrate to it in a follow-up. This
-//! module keeps the viewer-specific assembly: the disc principal-ML choice,
-//! ligament building, the co-registration warnings, neutral-pose facet contacts,
-//! and the scene `build` orchestrator.
+//! This module keeps the viewer-specific assembly on top of the FSU: the two ligament lines
+//! (field-derived attachment sites), the co-registration warnings, and the `build`
+//! orchestrator that stitches the FSU + overlays + render surfaces into an [`FsuScene`].
 
 use std::path::Path;
-use std::sync::Arc;
 
-use anyhow::Result;
-use cf_fsu_geometry::{
-    BODY_RADIUS, FACET_CELL, FACET_MAX_CONTACTS, SegmentFrame, extreme_vertex, facet_grid, load,
-    oracle, segment_frame,
+use anyhow::{Result, ensure};
+use cf_fsu_geometry::{BODY_RADIUS, SegmentFrame, extreme_vertex, load};
+use cf_fsu_model::{
+    CoupledFsu, CoupledParams, CoupledTrajectory, PHYSIOLOGIC_MOMENT, RAMP_FRAMES, VertexId,
+    moment_ramp,
 };
-use cf_fsu_model::{DiscParams, FlexionTrajectory, VertexId, build_bonded_disc};
 use mesh_types::{Aabb, IndexedMesh};
-use nalgebra::{Point3, UnitQuaternion, Vector3};
-use sim_core::sdf::compute_shape_contact;
-use sim_core::{Pose, SdfContact, SdfGrid, ShapeConcave};
-
-/// Peak flexion/extension angle of the captured sweep (degrees). The bonded disc
-/// converges only at sub-degree strains — beyond ~1° the boundary tets leave their
-/// SPD region and the solve diverges (rung 7) — so the sweep stays at the validated
-/// maximum and the viewer exaggerates the sub-mm deformation for legibility.
-const MAX_FLEX_DEG: f64 = 0.86;
-/// Frames in the captured sweep, evenly spaced in angle across `[-MAX, +MAX]`. Each is
-/// one expensive quasi-static soft solve, so the count is modest; the viewer
-/// interpolates between them for smooth playback.
-const N_FLEX_FRAMES: usize = 15;
+use nalgebra::{Point3, Vector3};
 
 /// A ligament rendered as a straight line between two field-derived sites.
 pub struct Ligament {
@@ -56,44 +38,22 @@ pub struct FsuScene {
     /// geometry. The tet mesh is too fragmented to render as a coherent disc, so the
     /// viewer draws THIS surface and displaces it by the FEM field (see `disc_node_map`).
     pub disc_surface: IndexedMesh,
-    /// For each `disc_surface` vertex, the index (into [`FlexionTrajectory::rest_nodes_native`])
+    /// For each `disc_surface` vertex, the index (into [`CoupledTrajectory::rest_nodes_native`])
     /// of the nearest tet node on the largest component's boundary. Per frame the vertex is
     /// displaced by that node's FEM displacement — a smooth, complete disc that deforms by
     /// the real physics without depending on the ragged tet boundary.
     pub disc_node_map: Vec<usize>,
-    /// The live bonded disc's captured flexion sweep: rest + per-angle deformed
-    /// tet-node positions (native mm) + pivot/axis. The FEM displacement field sampled
-    /// onto `disc_surface` via `disc_node_map`.
-    pub flexion: FlexionTrajectory,
+    /// The coupled FSU's captured force-driven ramp: per-frame equilibrium angle +
+    /// deformed disc tet-node positions (native mm) + facet engagement + pivot/axis. The
+    /// disc FEM displacement field is sampled onto `disc_surface` via `disc_node_map`.
+    pub flexion: CoupledTrajectory,
     pub ligaments: Vec<Ligament>,
-    /// Facet near-contact points (within the 1 mm detection margin at the
-    /// neutral pose) — the articular-process contact region.
-    pub facet_contacts: Vec<Point3<f64>>,
     /// Combined bounding box across all three meshes, for camera framing.
     pub aabb: Aabb,
     /// Co-registration / degeneracy warnings surfaced during assembly (empty
     /// for a well-formed, co-registered trio). Shown in the panel + on stderr
     /// so a misaligned or mismatched input is never presented as a valid FSU.
     pub warnings: Vec<String>,
-}
-
-/// The disc's principal medio-lateral axis = its widest AABB extent, snapped to
-/// the coordinate axis (rung-7's `ml_scaled` derivation). This is the CANONICAL
-/// flexion/extension axis rung-7 adopted over the vertebral-frame ML: the latter
-/// is tilted ~19° by the lordotic wedge + coarse body-centre localisation, so
-/// the ligament midline filter uses THIS axis to match the validated FSU.
-fn disc_principal_ml(disc: &IndexedMesh) -> Vector3<f64> {
-    let bbox = Aabb::from_points(disc.vertices.iter());
-    let span = bbox.max - bbox.min;
-    let extents = [span.x, span.y, span.z];
-    // Widest extent = ML. On exactly-equal extents `max_by` keeps the later
-    // index (deterministic); a real disc has a distinct widest axis.
-    let widest = (0..3)
-        .max_by(|&a, &b| extents[a].total_cmp(&extents[b]))
-        .unwrap_or(0);
-    let mut ml = Vector3::zeros();
-    ml[widest] = 1.0;
-    ml
 }
 
 /// The two modelled ligaments: anterior longitudinal (ALL, on the body rim,
@@ -188,62 +148,8 @@ fn coregistration_warnings(
     warnings
 }
 
-/// Facet near-contact points at the NEUTRAL pose (both vertebrae at identity).
-/// `compute_shape_contact` returns every pair within the detection margin
-/// (`FACET_CELL` = 1 mm); at neutral the articular surfaces nearly touch (rung
-/// 4b measured a small positive gap, no interpenetration) so these are the
-/// near-contact facet region, not interpenetrations — we render them all rather
-/// than filtering `penetration > 0` (which is the force-relevant subset, empty
-/// at neutral).
-fn facet_contact_points(g4: &Arc<SdfGrid>, g5: &Arc<SdfGrid>) -> Vec<Point3<f64>> {
-    let identity = Pose {
-        position: Point3::origin(),
-        rotation: UnitQuaternion::identity(),
-    };
-    let contacts: Vec<SdfContact> = compute_shape_contact(
-        &ShapeConcave::new(Arc::clone(g4)),
-        &identity,
-        &ShapeConcave::new(Arc::clone(g5)),
-        &identity,
-        FACET_CELL,
-        FACET_MAX_CONTACTS,
-    );
-    contacts.iter().map(|c| c.point).collect()
-}
-
 fn combined_aabb(meshes: &[&IndexedMesh]) -> Aabb {
     Aabb::from_points(meshes.iter().flat_map(|m| m.vertices.iter()))
-}
-
-/// Evenly-spaced flexion angles across `[-MAX_FLEX_DEG, +MAX_FLEX_DEG]` (radians),
-/// ascending so the captured sweep warm-starts smoothly frame to frame.
-fn flexion_sweep() -> Vec<f64> {
-    let max = MAX_FLEX_DEG.to_radians();
-    (0..N_FLEX_FRAMES)
-        .map(|i| {
-            #[allow(clippy::cast_precision_loss)] // N_FLEX_FRAMES is tiny; the ratio is exact.
-            let t = i as f64 / (N_FLEX_FRAMES - 1) as f64; // 0..=1
-            -max + t * (2.0 * max)
-        })
-        .collect()
-}
-
-/// Tet-mesh the real disc, bond it between the two vertebra endplates, and capture a
-/// sub-degree flexion sweep as a replayable trajectory (native mm). Consumes its own
-/// copy of the disc mesh (`build_bonded_disc` recentres + scales it destructively).
-///
-/// `build_bonded_disc` already drops the mesher's disconnected rim islands
-/// (`SdfMeshedTetMesh::largest_component`), so the captured surface is a single connected
-/// component — the viewer renders it directly, no render-side filtering needed.
-fn capture_flexion(disc: IndexedMesh) -> Result<FlexionTrajectory> {
-    let mut bonded = build_bonded_disc(disc, &DiscParams::default())?;
-    let traj = bonded.capture_flexion(&flexion_sweep());
-    println!(
-        "disc surface: {} nodes, {} boundary faces (single component)",
-        traj.rest_nodes_native.len(),
-        traj.boundary_faces.len()
-    );
-    Ok(traj)
 }
 
 /// For each `surface` vertex, the index of the nearest tet node **on the disc's rendered
@@ -303,19 +209,18 @@ pub fn build(l4_path: &Path, l5_path: &Path, disc_path: &Path) -> Result<FsuScen
         );
     }
 
-    let o4 = oracle(&l4)?;
-    let o5 = oracle(&l5)?;
-    let frame = segment_frame(&l4, &l5, &o4, &o5)?;
+    // Assemble the coupled FSU ONCE. It builds and owns the anatomical frame, the two
+    // articular SDF grids, the flexion-oriented ML axis, and the bonded disc — the viewer's
+    // overlays reuse those (no second oracle / segment-frame / facet-grid / ML-axis
+    // computation), and the disc's own `ml_axis` is the single source of the flexion axis.
+    println!(
+        "assembling coupled FSU + capturing moment ramp ({RAMP_FRAMES} frames, ±{PHYSIOLOGIC_MOMENT} N·m)…"
+    );
+    let mut fsu = CoupledFsu::build(&l4, &l5, disc.clone(), &CoupledParams::default())?;
 
-    // The disc's own principal axis is the canonical ML (rung-7): use it for
-    // both the ligament midline filter and the co-registration cross-check.
-    let disc_ml = disc_principal_ml(&disc);
-    let mut warnings = coregistration_warnings(&disc, &frame, disc_ml);
-    let ligaments = build_ligaments(&l4, &l5, &frame, disc_ml, &mut warnings);
-
-    let g4 = facet_grid(&l4, &o4);
-    let g5 = facet_grid(&l5, &o5);
-    let facet_contacts = facet_contact_points(&g4, &g5);
+    // Overlays derived from the coupled FSU's shared frame + flexion axis.
+    let mut warnings = coregistration_warnings(&disc, fsu.frame(), fsu.axis());
+    let ligaments = build_ligaments(&l4, &l5, fsu.frame(), fsu.axis(), &mut warnings);
     for lig in &ligaments {
         println!(
             "ligament {}: L5 site {:.1?} → L4 site {:.1?}  ({:.1} mm)",
@@ -325,25 +230,35 @@ pub fn build(l4_path: &Path, l5_path: &Path, disc_path: &Path) -> Result<FsuScen
             (lig.superior - lig.inferior).norm()
         );
     }
-    println!(
-        "assembled FSU: {} facet near-contact points",
-        facet_contacts.len()
-    );
     for w in &warnings {
         eprintln!("WARNING: {w}");
     }
 
-    // Frame the camera on all three tissues, then capture the flexion sweep. The disc
-    // STL is kept as the (clean) render surface; `capture_flexion` consumes a clone for
-    // the FEM tet-mesh + solve.
-    let aabb = combined_aabb(&[&l4, &l5, &disc]);
-    println!("capturing bonded-disc flexion sweep ({N_FLEX_FRAMES} frames, ±{MAX_FLEX_DEG:.2}°)…");
-    let flexion = capture_flexion(disc.clone())?;
-    println!("captured {} flexion frames", flexion.frames.len());
+    // Capture the coupled force-driven ramp. The disc STL stays as the clean render surface;
+    // the FSU already consumed a clone for the FEM tet-mesh + coupled solve.
+    let flexion = fsu.capture_ramp(&moment_ramp())?;
+    // Guard against a disc that tet-meshed to nothing (all components dropped): with no
+    // boundary faces, `nearest_tet_nodes` would silently collapse the disc onto node 0.
+    ensure!(
+        !flexion.boundary_faces.is_empty() && !flexion.rest_nodes_native.is_empty(),
+        "disc tet-mesh produced no surface (degenerate/near-flat disc mesh?) — cannot render"
+    );
+    let (ext, flex) = (
+        flexion.frames.first().map_or(0.0, |f| f.theta.to_degrees()),
+        flexion.frames.last().map_or(0.0, |f| f.theta.to_degrees()),
+    );
+    println!(
+        "coupled ramp: {} frames → extension {ext:.2}° … flexion {flex:.2}°; \
+         disc surface {} nodes, {} boundary faces",
+        flexion.frames.len(),
+        flexion.rest_nodes_native.len(),
+        flexion.boundary_faces.len()
+    );
 
     // Map each clean-STL vertex to its nearest connected-component boundary tet node, so
     // the smooth surface can be displaced by the FEM field per frame (the tet boundary is
     // too fragmented to draw directly).
+    let aabb = combined_aabb(&[&l4, &l5, &disc]);
     let disc_node_map =
         nearest_tet_nodes(&disc, &flexion.rest_nodes_native, &flexion.boundary_faces);
 
@@ -354,7 +269,6 @@ pub fn build(l4_path: &Path, l5_path: &Path, disc_path: &Path) -> Result<FsuScen
         disc_node_map,
         flexion,
         ligaments,
-        facet_contacts,
         aabb,
         warnings,
     })
@@ -406,39 +320,23 @@ mod tests {
     }
 
     #[test]
-    fn disc_principal_ml_is_widest_extent_axis() {
-        // Extents x=2, y=12, z=1 → widest is Y → ML snaps to the +Y axis.
-        let m = mesh(&[[0.0, -2.0, 0.0], [2.0, 10.0, 1.0]]);
-        assert_eq!(disc_principal_ml(&m), Vector3::y());
-    }
-
-    #[test]
-    fn disc_principal_ml_uses_aabb_extent_not_pca() {
-        // The tool deliberately uses the widest AABB EXTENT (not a PCA principal
-        // axis): this cloud's longest point-to-point direction is the x-y diagonal,
-        // but its widest axis-aligned extent is x (span 10 vs y-span 3) → +X.
-        let m = mesh(&[[0.0, 0.0, 0.0], [10.0, 3.0, 1.0]]);
-        assert_eq!(disc_principal_ml(&m), Vector3::x());
-    }
-
-    #[test]
     fn coregistration_clean_when_aligned_and_seated() {
-        // L5→L4 along +z; disc widest along x, centred midway between the bodies.
+        // L5→L4 along +z; disc ML x (widest extent — the flexion axis the coupled FSU
+        // supplies from `BondedDisc::ml_axis`), centred midway between the bodies.
         let f = frame([0.0, 0.0, 0.0], [0.0, 0.0, 20.0], Vector3::x());
-        let disc = mesh(&[[-10.0, -5.0, 9.0], [10.0, 5.0, 11.0]]); // ML x; centre (0,0,10)
-        let disc_ml = disc_principal_ml(&disc);
+        let disc = mesh(&[[-10.0, -5.0, 9.0], [10.0, 5.0, 11.0]]); // centre (0,0,10)
         assert!(
-            coregistration_warnings(&disc, &f, disc_ml).is_empty(),
+            coregistration_warnings(&disc, &f, Vector3::x()).is_empty(),
             "an aligned, seated trio must produce no warnings"
         );
     }
 
     #[test]
     fn coregistration_warns_on_ml_disagreement() {
-        // Vertebral ML is +y but the disc's widest extent (→ ML) is +x: dot 0 < 0.9.
+        // Vertebral ML is +y but the disc ML is +x: dot 0 < 0.9.
         let f = frame([0.0, 0.0, 0.0], [0.0, 0.0, 20.0], Vector3::y());
-        let disc = mesh(&[[-10.0, -1.0, 9.0], [10.0, 1.0, 11.0]]); // ML x; centre (0,0,10) seated
-        let w = coregistration_warnings(&disc, &f, disc_principal_ml(&disc));
+        let disc = mesh(&[[-10.0, -1.0, 9.0], [10.0, 1.0, 11.0]]); // centre (0,0,10) seated
+        let w = coregistration_warnings(&disc, &f, Vector3::x());
         // Exactly the ML warning — the disc is seated, so the between-check stays silent.
         assert_eq!(
             w.len(),
@@ -453,7 +351,7 @@ mod tests {
         // Disc centred BELOW L5 along the SI axis → `along` negative → "not between".
         let f = frame([0.0, 0.0, 0.0], [0.0, 0.0, 20.0], Vector3::x());
         let disc = mesh(&[[-10.0, -5.0, -15.0], [10.0, 5.0, -13.0]]); // centre z=-14
-        let w = coregistration_warnings(&disc, &f, disc_principal_ml(&disc));
+        let w = coregistration_warnings(&disc, &f, Vector3::x());
         assert_eq!(
             w.len(),
             1,
@@ -468,7 +366,7 @@ mod tests {
         // separation) must also warn — guards against dropping `|| along > sep`.
         let f = frame([0.0, 0.0, 0.0], [0.0, 0.0, 20.0], Vector3::x());
         let disc = mesh(&[[-10.0, -5.0, 29.0], [10.0, 5.0, 31.0]]); // centre z=30 > sep 20
-        let w = coregistration_warnings(&disc, &f, disc_principal_ml(&disc));
+        let w = coregistration_warnings(&disc, &f, Vector3::x());
         assert_eq!(
             w.len(),
             1,
@@ -483,7 +381,7 @@ mod tests {
         // exactly on L5 (along == 0) is seated, so NO warning — a `<=` typo bites.
         let f = frame([0.0, 0.0, 0.0], [0.0, 0.0, 20.0], Vector3::x());
         let disc = mesh(&[[-10.0, -5.0, -1.0], [10.0, 5.0, 1.0]]); // centre z=0 == b5
-        let w = coregistration_warnings(&disc, &f, disc_principal_ml(&disc));
+        let w = coregistration_warnings(&disc, &f, Vector3::x());
         assert!(w.is_empty(), "on-boundary disc must not warn, got {w:?}");
     }
 }

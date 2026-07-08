@@ -1,14 +1,17 @@
 //! `cf-spine-viewer` — native Bevy viewer for anatomical spine models.
 //!
-//! **Flexion-deformation FSU scene (this rung):** renders the literature-
-//! validated L4–L5 Functional Spinal Unit (geometry ladder rung 7) *flexing*
-//! — the two real vertebrae with a per-tissue bone material, the intervertebral
-//! disc as a clean deforming surface, and the field-derived ligament lines +
-//! facet near-contact points that ride the superior vertebra. A headless capture
-//! (`cf_fsu_model::capture_flexion`) solves a sub-degree flexion sweep of the
-//! bonded disc once at startup; the Bevy loop then replays it — L5 fixed, L4
-//! rotating about the disc-centre pivot, the disc deforming in lockstep — with an
-//! egui timeline and a labelled "deformation ×N" exaggeration slider.
+//! **Coupled contact FSU scene (this rung):** renders the literature-validated
+//! L4–L5 Functional Spinal Unit (geometry ladder rung 7) as a *coupled, moment-driven
+//! simulation* — the two real vertebrae with a per-tissue bone material, the
+//! intervertebral disc as a clean deforming surface, and the field-derived ligament
+//! lines + facet contacts that ride the superior vertebra. A headless capture
+//! (`cf_fsu_model::CoupledFsu::capture_ramp`) sweeps an applied pure moment from
+//! extension to flexion and solves the coupled equilibrium (disc bushing + ligament
+//! tendons + oriented facet contact) at each level; the Bevy loop then replays it —
+//! L5 fixed, L4 rotating to its solved equilibrium angle about the disc-centre pivot,
+//! the disc deforming in lockstep — with an egui timeline. The motion is **force-driven
+//! and ROM-limited**: L4 stops on the facets in extension (the facets glow when engaged)
+//! and the disc/ligaments limit flexion, so the bones no longer interpenetrate.
 //!
 //! ## Disc rendering
 //!
@@ -20,10 +23,11 @@
 //!
 //! ## Honesty
 //!
-//! The bonded disc converges only at **sub-degree** strains (~0.86° before the
-//! boundary tets leave their SPD region — rung 7), so the real deformation is
-//! sub-millimetre. The ×N slider exaggerates it (and L4's rotation, coherently)
-//! for legibility; the panel always reports the **true** physical angle.
+//! The rigid-body ROM is the real solved equilibrium (no exaggeration). The bonded disc
+//! FEM only converges at **sub-degree** strains (~0.86° — rung 7), so the disc's
+//! deformation at each ROM angle is that sub-degree field **linearly extrapolated** to
+//! the angle — the same `k_disc` linearity rung 7's validated response relies on. The
+//! panel reports the applied moment, the solved angle, and the facet engagement.
 //!
 //! The headless scene assembly + capture live in [`scene`] (Bevy-free); this
 //! file is the thin Bevy/egui driver. The visual pass is user-side (this
@@ -47,7 +51,7 @@ use bevy::prelude::*;
 use bevy::time::Real;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 use cf_bevy_common::prelude::{OrbitCameraPlugin, orbit_camera_input};
-use cf_fsu_model::FlexionTrajectory;
+use cf_fsu_model::CoupledTrajectory;
 use cf_viewer::{UpAxis, setup_camera_and_lighting};
 use clap::Parser;
 use mesh_types::{Aabb, AttributedMesh, IndexedMesh};
@@ -61,25 +65,19 @@ use sim_bevy_soft::mesh::{apply_soft_positions, build_soft_mesh};
 const BONE_COLOR: Color = Color::srgb(0.90, 0.88, 0.82); // ivory cortical bone
 const DISC_COLOR: Color = Color::srgb(0.20, 0.62, 0.68); // teal cartilage (opaque — see disc material)
 const LIGAMENT_COLOR: Color = Color::srgb(0.86, 0.74, 0.42); // fibrous tan
-const FACET_COLOR: Color = Color::srgb(0.90, 0.28, 0.22); // articular-contact red
+const FACET_COLOR: Color = Color::srgb(0.90, 0.28, 0.22); // articular-contact red (engaged)
 
 // Overlay glyph radii, in native millimetres.
 const SITE_RADIUS: f32 = 1.5; // ligament attachment marker
 const FACET_RADIUS: f32 = 0.8; // facet near-contact marker
 
-// ── Flexion replay ──
-/// Default deformation exaggeration. The real flexion is sub-degree (≤0.86°) and
-/// the disc's deformation is sub-mm, so we exaggerate for legibility — but only
-/// modestly: the disc is ~6 mm thick with coarse ~3 mm tets, and scaling node
-/// displacements past ~half the disc thickness inverts those tets (shatters the
-/// surface), while scaling L4's rigid rotation past the real ROM drives it through
-/// L5 (there is no contact in this kinematic replay). ×4 ≈ 3.4° apparent keeps
-/// both well inside the safe range; the panel always reports the TRUE angle.
-const DEFORM_SCALE_DEFAULT: f32 = 4.0;
-/// Slider ceiling — ×6 ≈ 5.2°, about the segment's physiological flexion ROM
-/// (rung 7 measured ~6°); beyond this the thin coarse disc starts to self-cross.
-const DEFORM_SCALE_MAX: f32 = 6.0;
+// ── Coupled replay ──
 /// Playback speed in captured-frames per second; interpolation keeps it smooth.
+/// The motion is the REAL coupled ROM (flexion ~6°, extension ~4.5° stopping on the
+/// facets) — force-driven and ROM-limited, so no exaggeration is applied: L4 rotates by
+/// the solved equilibrium angle and the disc deforms by the (linearly-extrapolated) FEM
+/// field at that angle. The panel reports the applied moment, the true angle, and the
+/// facet engagement so the "bones stop on the facets" is legible.
 const PLAYBACK_FPS: f32 = 6.0;
 
 /// Render the assembled L4–L5 FSU flexing in a native Bevy window.
@@ -132,16 +130,16 @@ struct SceneMeshes {
 #[derive(Resource)]
 struct Overlays {
     ligaments: Vec<Ligament>,
-    facet_contacts: Vec<Point3<f64>>,
     aabb: Aabb,
     warnings: Vec<String>,
 }
 
-/// The captured flexion sweep + its live replay state. One shared cursor drives
-/// the disc deformation AND L4's rotation, so they stay in exact lockstep.
+/// The captured coupled ramp + its live replay state. One shared cursor drives the
+/// disc deformation AND L4's rotation from the solved equilibria, so they stay in exact
+/// lockstep — the real force-driven motion, not a kinematic exaggeration.
 #[derive(Resource)]
 struct Flexion {
-    traj: FlexionTrajectory,
+    traj: CoupledTrajectory,
     /// The clean STL disc's rest vertex positions (native mm) — the render surface.
     disc_rest: Vec<Point3<f64>>,
     /// For each `disc_rest` vertex, the nearest tet-node index in `traj.rest_nodes_native`,
@@ -153,11 +151,33 @@ struct Flexion {
     cursor: f32,
     /// Ping-pong direction: `+1` flexing forward, `-1` returning.
     direction: f32,
-    /// Deformation (and coherent rotation) exaggeration factor `N`.
-    deform_scale: f32,
-    /// Interpolated TRUE flexion angle at the cursor (rad) — the physical angle,
-    /// before exaggeration. Written each frame; read by the overlays + panel.
+    /// Interpolated flexion angle at the cursor (rad) — the solved equilibrium angle.
+    /// Written each frame; read by the overlays + panel.
     true_theta: f64,
+    /// Interpolated applied moment at the cursor (N·m, +flexion). Panel readout.
+    applied: f64,
+    /// The captured frame whose facet contacts to show, or `None` when the cursor is not
+    /// squarely inside the engaged region (open, or an ambiguous transition). Computed ONCE
+    /// per frame (via `engaged_facet_frame`) and read by BOTH the panel count and
+    /// `draw_facets`, so they can never disagree.
+    facet_frame: Option<usize>,
+    /// Engaged facet-contact count for the panel — `facet_frame`'s point count (0 if `None`).
+    n_facet: usize,
+}
+
+/// The captured frame to source facet contacts from at `cursor`: the lower bracketing
+/// frame, but only when BOTH bracketing frames are engaged (so nothing shows at an
+/// ambiguous inter-frame transition — the pose interpolates but contacts are per-frame).
+/// The single definition shared by the panel readout and `draw_facets`.
+fn engaged_facet_frame(traj: &CoupledTrajectory, cursor: f32) -> Option<usize> {
+    let n = traj.frames.len();
+    if n == 0 {
+        return None;
+    }
+    let lo = (cursor.floor().clamp(0.0, (n - 1) as f32)) as usize;
+    let hi = (lo + 1).min(n - 1);
+    (!traj.frames[lo].facet_points.is_empty() && !traj.frames[hi].facet_points.is_empty())
+        .then_some(lo)
 }
 
 /// Per-tissue visibility flags, driven by the egui panel.
@@ -219,7 +239,6 @@ fn run_app(fsu: FsuScene) {
         disc_node_map,
         flexion,
         ligaments,
-        facet_contacts,
         aabb,
         warnings,
     } = fsu;
@@ -227,7 +246,7 @@ fn run_app(fsu: FsuScene) {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "cf-spine-viewer — L4–L5 FSU (flexion)".into(),
+                title: "cf-spine-viewer — L4–L5 FSU (coupled contact sim)".into(),
                 ..default()
             }),
             ..default()
@@ -242,7 +261,6 @@ fn run_app(fsu: FsuScene) {
         })
         .insert_resource(Overlays {
             ligaments,
-            facet_contacts,
             aabb,
             warnings,
         })
@@ -255,8 +273,10 @@ fn run_app(fsu: FsuScene) {
             disc_map: disc_node_map,
             playing: true,
             direction: 1.0,
-            deform_scale: DEFORM_SCALE_DEFAULT,
             true_theta: 0.0,
+            applied: 0.0,
+            facet_frame: None,
+            n_facet: 0,
         })
         .insert_resource(SceneToggles::default())
         .add_systems(Startup, setup_scene)
@@ -376,10 +396,10 @@ fn setup_scene(
     commands.remove_resource::<SceneMeshes>();
 }
 
-/// Advance the replay cursor and drive BOTH the disc deformation and L4's
-/// rotation from it, in lockstep. Deformation is exaggerated by `deform_scale`
-/// (`rest + N·(deformed − rest)`) and L4 rotates by the coherently-scaled angle
-/// (`N·θ` about the disc-centre pivot), so the disc top stays glued to L4.
+/// Advance the replay cursor and drive BOTH the disc deformation and L4's rotation from
+/// it, in lockstep. The motion is the solved coupled equilibrium: L4 rotates by the true
+/// angle `θ` about the disc-centre pivot, and the disc surface is displaced by the FEM
+/// field (`rest + (deformed − rest)`) at that angle — no exaggeration.
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
 fn flexion_update(
     time: Res<Time<Real>>,
@@ -387,8 +407,8 @@ fn flexion_update(
     mut meshes: ResMut<Assets<Mesh>>,
     // Reused across frames (cleared + refilled in place) to avoid a per-frame heap alloc.
     mut flat: Local<Vec<f64>>,
-    // The (cursor, deform_scale) last rendered — lets us skip the whole rebuild while idle.
-    mut last_applied: Local<Option<(f32, f32)>>,
+    // The cursor last rendered — lets us skip the whole rebuild while idle.
+    mut last_cursor: Local<Option<f32>>,
     q_disc: Query<&Mesh3d, With<DiscMesh>>,
     mut q_l4: Query<&mut Transform, With<FlexedL4>>,
 ) {
@@ -416,28 +436,26 @@ fn flexion_update(
     }
 
     // Skip the (expensive) disc-mesh rebuild + normal recompute + GPU upload when the
-    // pose is unchanged since last frame — e.g. paused with no scrub or slider drag.
-    let pose_key = (flexion.cursor, flexion.deform_scale);
-    if *last_applied == Some(pose_key) {
+    // pose is unchanged since last frame — e.g. paused with no scrub.
+    if *last_cursor == Some(flexion.cursor) {
         return;
     }
-    *last_applied = Some(pose_key);
+    *last_cursor = Some(flexion.cursor);
 
     // Bracketing frames + fraction for interpolation.
     let c = flexion.cursor.clamp(0.0, max);
     let lo = c.floor() as usize;
     let hi = (lo + 1).min(n - 1);
     let frac = f64::from(c - lo as f32);
-    let scale = f64::from(flexion.deform_scale);
     let pivot = flexion.traj.pivot;
     let axis = flexion.traj.axis;
 
     // Displace each CLEAN STL surface vertex by the FEM field (sampled from its nearest
-    // tet node) into the reused scratch buffer, plus the interpolated true angle — in a
-    // scoped borrow so we can write back `true_theta`. `flat` (a system Local) is
+    // tet node) into the reused scratch buffer, plus the interpolated angle/moment — in a
+    // scoped borrow so we can write back the readouts. `flat` (a system Local) is
     // independent of `flexion`, so filling it while borrowing the trajectory is fine.
     flat.clear();
-    let true_theta = {
+    let (true_theta, applied) = {
         let traj = &flexion.traj;
         let (fa, fb) = (&traj.frames[lo], &traj.frames[hi]);
         for (dr, &j) in flexion.disc_rest.iter().zip(&flexion.disc_map) {
@@ -446,14 +464,24 @@ fn flexion_update(
             let b = fb.deformed_nodes_native[j];
             let interp = a + (b - a) * frac;
             let disp = interp - traj.rest_nodes_native[j];
-            let p = dr + disp * scale; // clean STL vertex + the exaggerated FEM displacement
+            let p = dr + disp; // clean STL vertex + the real FEM displacement at this angle
             flat.push(p.x);
             flat.push(p.y);
             flat.push(p.z);
         }
-        fa.theta + (fb.theta - fa.theta) * frac
+        (
+            fa.theta + (fb.theta - fa.theta) * frac,
+            fa.applied + (fb.applied - fa.applied) * frac,
+        )
     };
     flexion.true_theta = true_theta;
+    flexion.applied = applied;
+    // Compute the engaged facet frame ONCE (the both-bracketing-frames-engaged gate); the
+    // panel count and `draw_facets` both read this, so they can never disagree.
+    flexion.facet_frame = engaged_facet_frame(&flexion.traj, flexion.cursor);
+    flexion.n_facet = flexion
+        .facet_frame
+        .map_or(0, |lo| flexion.traj.frames[lo].facet_points.len());
 
     // Rewrite the disc surface (Z-up→Y-up swap + smooth-normal recompute).
     if let Ok(handle) = q_disc.single() {
@@ -462,10 +490,10 @@ fn flexion_update(
         }
     }
 
-    // Rotate L4 by the exaggerated angle about the pivot. The Y/Z swap is a
-    // reflection, so `quat_from_unit_quaternion` gives the swap-consistent
-    // rotation R; rotating about pivot p is `R` with translation `p − R·p`.
-    let rot = UnitQuaternion::from_axis_angle(&Unit::new_normalize(axis), true_theta * scale);
+    // Rotate L4 by the true angle about the pivot. The Y/Z swap is a reflection, so
+    // `quat_from_unit_quaternion` gives the swap-consistent rotation R; rotating about
+    // pivot p is `R` with translation `p − R·p`.
+    let rot = UnitQuaternion::from_axis_angle(&Unit::new_normalize(axis), true_theta);
     let r_bevy = quat_from_unit_quaternion(&rot);
     let p_bevy = vec3_from_point(&pivot);
     if let Ok(mut tf) = q_l4.single_mut() {
@@ -474,14 +502,11 @@ fn flexion_update(
     }
 }
 
-/// The physics-space rotation that maps a rest point to its displayed (exaggerated)
-/// pose: `pivot + R(axis, N·θ)·(p − pivot)`. Shared by the overlay systems so
-/// L4-attached sites track the vertebra exactly.
+/// The physics-space rotation that maps a rest point to its displayed pose:
+/// `pivot + R(axis, θ)·(p − pivot)`. Shared by the overlay systems so L4-attached sites
+/// track the vertebra exactly.
 fn display_rotation(flexion: &Flexion) -> UnitQuaternion<f64> {
-    UnitQuaternion::from_axis_angle(
-        &Unit::new_normalize(flexion.traj.axis),
-        flexion.true_theta * f64::from(flexion.deform_scale),
-    )
+    UnitQuaternion::from_axis_angle(&Unit::new_normalize(flexion.traj.axis), flexion.true_theta)
 }
 
 /// Toggle each tissue mesh's visibility from the panel flags.
@@ -516,7 +541,7 @@ fn draw_ligaments(
     let rot = display_rotation(&flexion);
     let pivot = flexion.traj.pivot;
     for lig in &overlays.ligaments {
-        let superior = pivot + rot * (lig.superior - pivot); // rides L4
+        let superior = pose_about_pivot(&lig.superior, &rot, pivot); // rides L4
         let (a, b) = (vec3_from_point(&lig.inferior), vec3_from_point(&superior));
         gizmos.line(a, b, LIGAMENT_COLOR);
         gizmos.sphere(Isometry3d::from_translation(a), SITE_RADIUS, LIGAMENT_COLOR);
@@ -524,25 +549,34 @@ fn draw_ligaments(
     }
 }
 
-/// Draw the facet near-contact points as small red spheres, riding the superior
-/// articular process (rotated with L4 — an approximation of the shifting contact).
+/// Rotate a native-mm point about the flexion `pivot` by `rot` — the `pivot + R·(p−pivot)`
+/// idiom the L4-riding overlays share.
+fn pose_about_pivot(p: &Point3<f64>, rot: &UnitQuaternion<f64>, pivot: Point3<f64>) -> Point3<f64> {
+    pivot + rot * (p - pivot)
+}
+
+/// Draw the coupled solve's real engaged facet contact points — where the bones actually
+/// touch — as red spheres. Sourced from `flexion.facet_frame` (the shared engaged-frame gate
+/// `flexion_update` computed, so the drawn markers always match the panel count): nothing at
+/// an ambiguous transition or in flexion. The frame's points are re-posed by the residual
+/// rotation to the interpolated body angle so they stay glued to the articulation.
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
-fn draw_facets(
-    mut gizmos: Gizmos,
-    overlays: Res<Overlays>,
-    toggles: Res<SceneToggles>,
-    flexion: Res<Flexion>,
-) {
+fn draw_facets(mut gizmos: Gizmos, toggles: Res<SceneToggles>, flexion: Res<Flexion>) {
     if !toggles.facets {
         return;
     }
-    let rot = display_rotation(&flexion);
+    let Some(lo) = flexion.facet_frame else {
+        return;
+    };
     let pivot = flexion.traj.pivot;
-    for p in &overlays.facet_contacts {
-        let posed = pivot + rot * (p - pivot);
+    // Residual rotation from the source frame's angle to the interpolated body angle.
+    let delta = flexion.true_theta - flexion.traj.frames[lo].theta;
+    let rot = UnitQuaternion::from_axis_angle(&Unit::new_normalize(flexion.traj.axis), delta);
+    for p in &flexion.traj.frames[lo].facet_points {
+        let posed = pose_about_pivot(p, &rot, pivot);
         gizmos.sphere(
             Isometry3d::from_translation(vec3_from_point(&posed)),
-            FACET_RADIUS,
+            FACET_RADIUS * 1.4,
             FACET_COLOR,
         );
     }
@@ -562,11 +596,11 @@ fn scene_panel(
         .default_width(260.0)
         .show(ctx, |ui| {
             ui.heading("L4–L5 FSU");
-            ui.label("geometry ladder rung 7 (flexion)");
+            ui.label("coupled contact sim (moment-driven)");
             ui.separator();
 
-            // ── Flexion replay ──
-            ui.label("Flexion replay:");
+            // ── Coupled replay ──
+            ui.label("Moment-driven replay:");
             let n = flexion.traj.frames.len();
             let max = (n.saturating_sub(1)) as f32;
             let play_label = if flexion.playing {
@@ -586,20 +620,27 @@ fn scene_panel(
                 flexion.cursor = cursor;
                 flexion.playing = false;
             }
-            let mut scale = flexion.deform_scale;
-            if ui
-                .add(egui::Slider::new(&mut scale, 1.0..=DEFORM_SCALE_MAX).text("deformation ×N"))
-                .changed()
-            {
-                flexion.deform_scale = scale;
+            // Force-driven readouts: applied moment → solved equilibrium angle, and the
+            // facet engagement (the bones stopping in extension).
+            let angle_deg = flexion.true_theta.to_degrees();
+            let phase = if angle_deg >= 0.0 {
+                "flexion"
+            } else {
+                "extension"
+            };
+            ui.label(format!("applied moment: {:+.2} N·m", flexion.applied));
+            ui.label(format!("equilibrium angle: {angle_deg:+.2}° ({phase})"));
+            if flexion.n_facet > 0 {
+                ui.colored_label(
+                    egui::Color32::from_rgb(230, 80, 60),
+                    format!(
+                        "● facets ENGAGED — {} contacts (bones stop)",
+                        flexion.n_facet
+                    ),
+                );
+            } else {
+                ui.label("○ facets open (no contact)");
             }
-            let true_deg = flexion.true_theta.to_degrees();
-            let shown_deg = true_deg * f64::from(flexion.deform_scale);
-            ui.label(format!("true flexion: {true_deg:+.3}°"));
-            ui.label(format!(
-                "shown ×{:.0} = {shown_deg:+.1}° (exaggerated)",
-                flexion.deform_scale
-            ));
             ui.separator();
 
             ui.label("Show:");
@@ -607,7 +648,7 @@ fn scene_panel(
             ui.checkbox(&mut toggles.l5, "L5 vertebra");
             ui.checkbox(&mut toggles.disc, "Intervertebral disc (FEM)");
             ui.checkbox(&mut toggles.ligaments, "Ligaments");
-            ui.checkbox(&mut toggles.facets, "Facet near-contacts");
+            ui.checkbox(&mut toggles.facets, "Facet contacts (extension)");
             ui.separator();
 
             // Derive the ligament readout from what was actually built — a
@@ -618,10 +659,7 @@ fn scene_panel(
                 overlays.ligaments.len(),
                 names.join(", ")
             ));
-            ui.label(format!(
-                "{} facet near-contact points",
-                overlays.facet_contacts.len()
-            ));
+            ui.label("red spheres = engaged facet contacts (extension)");
             ui.label("LMB orbit · RMB pan · scroll zoom · Esc quit");
             if !overlays.warnings.is_empty() {
                 ui.separator();

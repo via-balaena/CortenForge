@@ -1,11 +1,16 @@
 //! The assembled **Functional Spinal Unit** (FSU) flexion model.
 //!
 //! `cf-fsu-geometry` turns a raw vertebra/disc mesh into static anatomical geometry;
-//! this crate turns the disc mesh into a *live, simulatable* bonded soft disc.
-//! [`build_bonded_disc`] tet-meshes the real intervertebral disc from its own signed
-//! field and bonds it between two rigid vertebra-endplate boxes
-//! ([`BondedSandwich`]); [`BondedDisc`] then drives its
-//! quasi-static flexion/extension response.
+//! this crate turns it into a *live, simulatable* FSU. Two layers:
+//!
+//! - the **bonded soft disc** ([`build_bonded_disc`] / [`BondedDisc`]): tet-meshes the
+//!   real intervertebral disc from its own signed field and bonds it between two rigid
+//!   vertebra-endplate boxes ([`BondedSandwich`]), then drives its quasi-static
+//!   flexion/extension response;
+//! - the **coupled FSU** ([`CoupledFsu`]): assembles the disc (as a
+//!   linearised bushing), the ligaments (tendons), and the facets (oriented SDF contact)
+//!   into ONE model and solves for the equilibrium pose under an applied moment — the
+//!   force-driven, ROM-limited segment, vs rung 7's analytic superposition of the parts.
 //!
 //! ## Two frames, one bridge
 //!
@@ -20,7 +25,6 @@
 //!
 //! ## Scope / honesty
 //!
-//! Extracted from the rung-7 FSU validation test, which is now its single consumer.
 //! The bonded disc only converges at **sub-degree** strains — beyond ~1° the boundary
 //! tets leave their SPD region and the soft solve diverges (and panics) — so
 //! [`BondedDisc::flexion_moment`] is a small-angle probe, and a segment's larger-angle
@@ -47,6 +51,12 @@ use sim_soft::{
 // Re-exported: `FlexionTrajectory::boundary_faces` is `Vec<[VertexId; 3]>`, so consumers
 // (e.g. a viewer building a mesh from it) need to name the vertex-index type.
 pub use sim_soft::VertexId;
+
+mod coupled;
+pub use coupled::{
+    CoupledFrame, CoupledFsu, CoupledParams, CoupledTrajectory, PHYSIOLOGIC_MOMENT, RAMP_FRAMES,
+    is_engaged, moment_ramp, posed_facet_contacts,
+};
 
 /// Body index of the inferior (lower) vertebra box in the disc scene (world = 0).
 const LOWER: usize = 1;
@@ -128,6 +138,25 @@ fn disc_mjcf(c_inf: Vec3, c_sup: Vec3, h_box: f64) -> String {
     )
 }
 
+/// The disc's medio-lateral (flexion/extension) axis: the coordinate axis of the point
+/// cloud's widest **AABB extent**.
+///
+/// Deliberately the axis-aligned AABB extent — NOT a PCA principal direction (an oblique
+/// disc's longest point-to-point direction can differ from its widest axis-aligned extent),
+/// and NOT [`Aabb::longest_axis`] (which resolves an exact extent tie to the FIRST maximum;
+/// rung 7's original `max_by` takes the LAST, and a byte-identical extraction must match it).
+/// A real anatomical disc has a unique widest axis, so the choices agree on every real input.
+fn ml_axis_from_points(vertices: &[Point3<f64>]) -> Vector3<f64> {
+    let size = Aabb::from_points(vertices.iter()).size();
+    let extents = [size.x, size.y, size.z];
+    let widest = (0..3)
+        .max_by(|&a, &b| extents[a].total_cmp(&extents[b]))
+        .unwrap_or(0);
+    let mut ml = Vector3::zeros();
+    ml[widest] = 1.0;
+    ml
+}
+
 /// Tet-mesh the real intervertebral disc `mesh` (native mm) and bond it between two
 /// field-posed rigid endplate boxes, returning the live [`BondedDisc`].
 ///
@@ -163,17 +192,7 @@ pub fn build_bonded_disc(mut mesh: IndexedMesh, params: &DiscParams) -> Result<B
             size.z
         );
     }
-    // ML = the widest extent. Deliberately NOT `Aabb::longest_axis()`: that breaks an
-    // exact-tie between extents as first-max (X), whereas rung-7's original `max_by`
-    // returned the LAST maximum — matching it keeps this a byte-identical extraction. (A
-    // real anatomical disc has a unique widest axis, so the two agree on every real
-    // input; they differ only for a physically degenerate exactly-square disc.)
-    let extents = [size.x, size.y, size.z];
-    let widest = (0..3)
-        .max_by(|&a, &b| extents[a].total_cmp(&extents[b]))
-        .unwrap_or(0);
-    let mut ml_axis = Vector3::zeros();
-    ml_axis[widest] = 1.0;
+    let ml_axis = ml_axis_from_points(&mesh.vertices);
 
     // Pad the lattice beyond the disc so the tet mesh fully contains the surface.
     let padded = bbox.expanded(params.pad);
@@ -438,21 +457,19 @@ impl BondedDisc {
     }
 }
 
+/// License-free geometry fixtures shared by this crate's test modules (`lib.rs` and
+/// `coupled.rs`), so the box triangulation lives in exactly one place.
 #[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // tests may unwrap/expect/panic.
+pub(crate) mod test_support {
+    use nalgebra::{Point3, Vector3};
 
-    use super::*;
+    use crate::IndexedMesh;
 
-    /// A watertight axis-aligned box (8 verts, 12 outward-wound triangles) with the
-    /// given half-extents, centred at `center` — a closed surface the signed oracle
-    /// can sign, standing in for the disc (thinnest extent = a disc-like endplate gap).
-    ///
-    /// Mirrors the cubic `box_mesh` fixture in `cf-fsu-geometry`'s own tests (widened
-    /// here to per-axis half-extents). Kept local rather than shared: it is a
-    /// `#[cfg(test)]` helper, and promoting it to either crate's public surface just to
-    /// avoid a small, self-contained fixture would leak test scaffolding into the API.
-    fn box_mesh(center: Point3<f64>, half: Vector3<f64>) -> IndexedMesh {
+    /// A watertight axis-aligned box (8 verts, 12 outward-wound triangles) with the given
+    /// half-extents, centred at `center` — a closed surface the signed oracle can sign,
+    /// standing in for the disc (thinnest extent = a disc-like endplate gap).
+    #[must_use]
+    pub fn box_mesh(center: Point3<f64>, half: Vector3<f64>) -> IndexedMesh {
         let c = center;
         let (hx, hy, hz) = (half.x, half.y, half.z);
         let vertices = vec![
@@ -484,12 +501,21 @@ mod tests {
 
     /// A disc-like synthetic slab: widest in x (ML), thinnest in z (SI), placed at a
     /// native-mm-scale offset so recentring + scaling are exercised.
-    fn synthetic_disc() -> IndexedMesh {
+    #[must_use]
+    pub fn synthetic_disc() -> IndexedMesh {
         box_mesh(
             Point3::new(100.0, 100.0, 950.0),
             Vector3::new(12.0, 10.0, 3.0), // 24 × 20 × 6 mm — x widest, z thinnest
         )
     }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // tests may unwrap/expect/panic.
+
+    use super::test_support::{box_mesh, synthetic_disc};
+    use super::*;
 
     #[test]
     fn builds_and_derives_the_ml_axis_and_pivot() {
@@ -505,6 +531,30 @@ mod tests {
             "pivot is the native-mm AABB centre, got {:?}",
             disc.center_native()
         );
+    }
+
+    #[test]
+    fn ml_axis_is_widest_aabb_extent_not_pca() {
+        // The flexion axis must be the widest AXIS-ALIGNED extent, NOT a PCA principal
+        // direction. This cloud's longest point-to-point direction is the x-y diagonal, but
+        // its widest axis-aligned extent is x (span 10 vs y-span 3) → +x. A regression of
+        // `ml_axis_from_points` to a PCA axis would silently rotate the whole segment about
+        // the wrong axis on a real oblique disc, with no other test catching it.
+        let pts = [Point3::new(0.0, 0.0, 0.0), Point3::new(10.0, 3.0, 1.0)];
+        assert_eq!(ml_axis_from_points(&pts), Vector3::x());
+    }
+
+    #[test]
+    fn ml_axis_breaks_extent_ties_by_last_max_not_longest_axis() {
+        // The deliberate `max_by` (LAST maximum) tie-break vs `Aabb::longest_axis` (FIRST
+        // maximum): x and y extents TIED at the widest must resolve to the last (y). A
+        // regression to `longest_axis()` would flip a square disc (a defect the PR-A gating
+        // review caught once).
+        let pts = [
+            Point3::new(-10.0, -10.0, -3.0),
+            Point3::new(10.0, 10.0, 3.0),
+        ];
+        assert_eq!(ml_axis_from_points(&pts), Vector3::y());
     }
 
     #[test]
