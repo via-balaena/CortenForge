@@ -66,7 +66,6 @@ const BONE_COLOR: Color = Color::srgb(0.90, 0.88, 0.82); // ivory cortical bone
 const DISC_COLOR: Color = Color::srgb(0.20, 0.62, 0.68); // teal cartilage (opaque — see disc material)
 const LIGAMENT_COLOR: Color = Color::srgb(0.86, 0.74, 0.42); // fibrous tan
 const FACET_COLOR: Color = Color::srgb(0.90, 0.28, 0.22); // articular-contact red (engaged)
-const FACET_COLOR_OPEN: Color = Color::srgb(0.45, 0.34, 0.32); // muted (facets open, flexion)
 
 // Overlay glyph radii, in native millimetres.
 const SITE_RADIUS: f32 = 1.5; // ligament attachment marker
@@ -131,7 +130,6 @@ struct SceneMeshes {
 #[derive(Resource)]
 struct Overlays {
     ligaments: Vec<Ligament>,
-    facet_contacts: Vec<Point3<f64>>,
     aabb: Aabb,
     warnings: Vec<String>,
 }
@@ -221,7 +219,6 @@ fn run_app(fsu: FsuScene) {
         disc_node_map,
         flexion,
         ligaments,
-        facet_contacts,
         aabb,
         warnings,
     } = fsu;
@@ -244,7 +241,6 @@ fn run_app(fsu: FsuScene) {
         })
         .insert_resource(Overlays {
             ligaments,
-            facet_contacts,
             aabb,
             warnings,
         })
@@ -459,14 +455,10 @@ fn flexion_update(
     };
     flexion.true_theta = true_theta;
     flexion.applied = applied;
-    // Interpolate the engaged-contact count between the bracketing frames so the "facets
-    // ENGAGED" readout tracks the interpolated pose (contacts grow monotonically into
-    // extension), rather than snapping at the frame midpoint.
-    let (n_lo, n_hi) = (
-        flexion.traj.frames[lo].n_facet as f64,
-        flexion.traj.frames[hi].n_facet as f64,
-    );
-    flexion.n_facet = (n_lo + (n_hi - n_lo) * frac).round() as usize;
+    // Engaged-contact count = the nearest captured frame's facet points — the SAME frame
+    // `draw_facets` renders, so the "N contacts" readout always matches the drawn markers.
+    let nearest = flexion.cursor.round().clamp(0.0, max) as usize;
+    flexion.n_facet = flexion.traj.frames[nearest].facet_points.len();
 
     // Rewrite the disc surface (Z-up→Y-up swap + smooth-normal recompute).
     if let Ok(handle) = q_disc.single() {
@@ -536,32 +528,26 @@ fn draw_ligaments(
 
 /// Draw the facet near-contact points as small spheres riding the superior articular
 /// process. When the coupled solve reports engaged contacts (extension — the bones stop
-/// on the facets) they glow bright red; when the facets are open (flexion) they dim to a
-/// muted marker, so the engagement asymmetry is legible.
+/// where the bones actually touch at the current pose. These are the coupled solve's real
+/// engaged contact points at the nearest captured frame (empty in flexion — facets open —
+/// so nothing draws; growing red spheres in extension where the bones stop).
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
-fn draw_facets(
-    mut gizmos: Gizmos,
-    overlays: Res<Overlays>,
-    toggles: Res<SceneToggles>,
-    flexion: Res<Flexion>,
-) {
+fn draw_facets(mut gizmos: Gizmos, toggles: Res<SceneToggles>, flexion: Res<Flexion>) {
     if !toggles.facets {
         return;
     }
-    let rot = display_rotation(&flexion);
-    let pivot = flexion.traj.pivot;
-    let engaged = flexion.n_facet > 0;
-    let (color, radius) = if engaged {
-        (FACET_COLOR, FACET_RADIUS * 1.4) // bones in contact — emphasise
-    } else {
-        (FACET_COLOR_OPEN, FACET_RADIUS) // facets open (flexion)
-    };
-    for p in &overlays.facet_contacts {
-        let posed = pivot + rot * (p - pivot);
+    let n = flexion.traj.frames.len();
+    if n == 0 {
+        return;
+    }
+    let nearest = flexion.cursor.round().clamp(0.0, (n - 1) as f32) as usize;
+    // The facet points are already at the posed (rotated) contact locations for that
+    // frame's angle — draw them directly (no display_rotation).
+    for p in &flexion.traj.frames[nearest].facet_points {
         gizmos.sphere(
-            Isometry3d::from_translation(vec3_from_point(&posed)),
-            radius,
-            color,
+            Isometry3d::from_translation(vec3_from_point(p)),
+            FACET_RADIUS * 1.4,
+            FACET_COLOR,
         );
     }
 }
@@ -643,10 +629,7 @@ fn scene_panel(
                 overlays.ligaments.len(),
                 names.join(", ")
             ));
-            ui.label(format!(
-                "{} facet near-contact points",
-                overlays.facet_contacts.len()
-            ));
+            ui.label("red spheres = engaged facet contacts (extension)");
             ui.label("LMB orbit · RMB pan · scroll zoom · Esc quit");
             if !overlays.warnings.is_empty() {
                 ui.separator();
