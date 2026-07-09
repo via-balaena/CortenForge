@@ -17,17 +17,21 @@
 //!
 //! The FEM tet mesh is too fragmented to draw as a coherent disc (the BCC
 //! isosurface-stuffing mesher shatters the thin lens), so the viewer renders the
-//! **clean watertight STL surface** and displaces each of its vertices by the FEM
+//! clean STL surface (endplate bands conformed onto the real bone via
+//! `CoupledFsu::conformed_disc_surface`) and displaces each of its vertices by the FEM
 //! displacement field — sampled from the nearest tet nodes, inverse-distance weighted (`scene::weighted_tet_nodes`).
 //! Clean geometry from the STL, real deformation from the physics.
 //!
 //! ## Honesty
 //!
-//! The rigid-body ROM is the real solved equilibrium (no exaggeration). The bonded disc
-//! FEM only converges at **sub-degree** strains (~0.86° — rung 7), so the disc's
-//! deformation at each ROM angle is that sub-degree field **linearly extrapolated** to
-//! the angle — the same `k_disc` linearity rung 7's validated response relies on. The
-//! panel reports the applied moment, the solved angle, and the facet engagement.
+//! The rigid-body ROM is the real solved equilibrium (no exaggeration). The disc's
+//! deformation at each ROM angle is a genuine incremental FEM solve: the bonded disc is
+//! warm-started through sub-degree steps to the target angle and the real deformed tet
+//! nodes are read back (`CoupledFsu::capture_ramp`). There is NO
+//! extrapolation — the "sub-degree convergence wall" was a from-rest-jump artifact, and a
+//! fine monotone sweep reaches the full ±ROM cleanly. (The equilibrium *angle* itself
+//! still comes from the linear `k_disc` bushing rung 7 validated.) The panel reports the
+//! applied moment, the solved angle, and the facet engagement.
 //!
 //! The headless scene assembly + capture live in [`scene`] (Bevy-free); this
 //! file is the thin Bevy/egui driver. The visual pass is user-side (this

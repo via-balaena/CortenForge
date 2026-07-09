@@ -676,7 +676,6 @@ mod tests {
     /// literature band.
     #[test]
     #[ignore = "needs $CF_L4_STL/$CF_L5_STL (BodyParts3D, CC BY-SA, not committed)"]
-    #[allow(clippy::cast_precision_loss)]
     fn b6_4_coupled_fsu_from_a_lofted_disc() {
         use cf_fsu_geometry::load_from_env;
 

@@ -11706,7 +11706,6 @@ dependencies = [
  "mesh-sdf",
  "mesh-types",
  "nalgebra 0.34.2",
- "sim-core",
  "sim-coupling",
  "sim-mjcf",
  "sim-ml-chassis",

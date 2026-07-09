@@ -381,8 +381,10 @@ impl CoupledFsu {
     /// full ±ROM cleanly. The disc bonds to its endplate boxes, which rotate with the flexion,
     /// so the real deformation is attached to both vertebrae by construction (top face follows
     /// L4, bottom follows L5) — the viewer just skins the clean surface onto these real nodes.
-    /// The sweep runs in two legs from rest (0 → flexion peak, 0 → extension peak) so both
-    /// directions stay incremental.
+    /// The sweep is ONE continuous monotone chain from rest — down to the extension peak,
+    /// then up through neutral to the flexion peak — so every step stays sub-degree.
+    /// Chaining the legs (rather than resetting to rest between them) is load-bearing: a
+    /// reset would warm-start the next solve from the far-deformed state, a big jump.
     ///
     /// # Errors
     /// Returns an error if a swept `applied` moment has no equilibrium within

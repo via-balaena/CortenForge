@@ -1,4 +1,10 @@
-//! Disc-render ladder — **the fitted disc: `modeled-disc`**.
+//! Disc-render ladder — **the SDF-modelled disc: `modeled-disc`** (superseded checkpoint).
+//!
+//! ▶ SUPERSEDED by the painted-loft primitive (`paint-faces`): an automatic endplate rule
+//! can't cleanly delimit the contact region — it leaves a posterior canal flap where the
+//! footprint sits over the pedicle/canal — so the shipping disc is now a human-painted loft.
+//! This example is kept as the checkpoint that PROVED a disc can be modelled from the endplate
+//! surfaces (68% seated), not the live path.
 //!
 //! Renders the disc MODELLED from the vertebral endplates (`cf_fsu_geometry::
 //! model_disc_between_endplates`) nestled between the real L4 and L5 — so you can SEE it seat.

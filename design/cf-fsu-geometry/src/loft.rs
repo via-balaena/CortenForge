@@ -14,12 +14,14 @@
 //!
 //! # Ladder
 //!
-//! * **B0 (this file):** [`extract_patch`] — from a mesh and a face-id
-//!   selection, produce the patch sub-mesh plus its ordered, winding-oriented
-//!   boundary-rim loop(s).
-//! * B1: stitch two rims into the perimeter wall.
-//! * B2: assemble top patch + wall + bottom patch → one closed watertight mesh.
-//! * B3+: smooth only the wall; pick anatomical patches; GUI painting.
+//! All rungs below now live in this module (the primitive is complete):
+//!
+//! * **B0:** [`extract_patch`] — from a mesh and a face-id selection, produce
+//!   the patch sub-mesh plus its ordered, winding-oriented boundary-rim loop(s).
+//! * **B1:** [`stitch_rims`] — stitch two rims into the perimeter wall.
+//! * **B2:** [`assemble_bushing`] — top patch + wall + bottom patch → one closed
+//!   watertight mesh.
+//! * **B3:** [`smooth_wall`] — smooth only the free wall (contact caps stay pinned).
 
 use std::collections::{HashMap, HashSet};
 
@@ -77,10 +79,13 @@ pub enum WallCorrespondence {
     /// Pair by arc length from a nearest-start alignment — right for similar
     /// rims (the synthetic puck/cylinder cases).
     ArcLength,
-    /// Greedy shortest-diagonal loop-loft — right for two dissimilar, concave
-    /// real rims (the L4/L5 endplates), where arc-length pairing drifts and
-    /// throws a spike. Applies to a single-segment wall; subdivided walls
-    /// (`wall_segments > 1`) currently use arc length.
+    /// Greedy shortest-diagonal loop-loft — an alternative pairing for two
+    /// dissimilar rims where arc-length can drift. NOTE: the shipping
+    /// painted-endplate disc lofts with [`ArcLength`](Self::ArcLength) (convex
+    /// painted rims distribute evenly under arc length); shortest-diagonal was
+    /// developed for the abandoned auto-selected concave rims and is kept as a
+    /// characterized alternative for the future `mesh-loft` GUI. Applies to a
+    /// single-segment wall; subdivided walls (`wall_segments > 1`) use arc length.
     ShortestDiagonal,
 }
 

@@ -74,14 +74,13 @@ sim-soft = { workspace = true }
 sim-ml-chassis = { workspace = true }
 # `BondedSandwich` — the two-rigid-body soft bond the disc uses (ladder step 2+).
 sim-coupling = { workspace = true }
-# `Model` / `Data` — the rigid scene the sandwich bonds between.
-sim-core = { workspace = true }
-# `load_model` — build the two-plate MJCF scene.
+# `load_model` — build the two-plate MJCF scene (the `Model`/`Data` it returns are
+# driven via inherent methods, so no direct `sim-core` dep is needed).
 sim-mjcf = { workspace = true }
 # Rotation math for the prescribed-boundary / plate-pose drive.
 nalgebra = { workspace = true }
-# `load_from_env` + `oracle` + `IndexedMesh` — load the real BodyParts3D vertebra/disc
-# STLs and build their signed-distance oracles (the real-anatomy ladder rungs, step 5+).
+# `load_from_env` + `loft::*` + `model_disc_between_endplates` — load the real BodyParts3D
+# vertebra/disc STLs and build/loft the disc (the real-anatomy ladder rungs, step 5+).
 # Same loader the FSU model uses, so the examples share its weld-repair + native-mm
 # convention (design→sim dep, mirrors cf-fsu-model's dependency on this crate).
 cf-fsu-geometry = { workspace = true }
