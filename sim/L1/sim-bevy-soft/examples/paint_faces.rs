@@ -48,7 +48,7 @@ use cf_bevy_common::mesh::triangle_mesh_flat_shaded;
 use cf_bevy_common::prelude::{OrbitCamera, update_orbit_camera};
 use cf_fsu_geometry::load_from_env;
 use cf_fsu_geometry::loft::{
-    WallCorrespondence, assemble_bushing, extract_patch, flip_patch, seal_pinholes,
+    WallCorrespondence, assemble_bushing, extract_patch, finalize_patch, flip_patch, is_watertight,
 };
 use cf_geometry::IndexedMesh;
 use cf_viewer::{UpAxis, setup_camera_and_lighting};
@@ -698,7 +698,8 @@ fn loft_disc(
         return;
     }
 
-    // Extract + seal each painted patch, keyed by body name.
+    // Extract + prepare each painted patch, keyed by body name. finalize_patch
+    // keeps the largest component and seals interior holes, leaving one outer rim.
     let mut l4 = None;
     let mut l5 = None;
     for body in &q_bodies {
@@ -706,8 +707,7 @@ fn loft_disc(
             continue;
         }
         let faces: Vec<usize> = body.painted.iter().copied().collect();
-        let mut patch = extract_patch(&body.source, &faces);
-        seal_pinholes(&mut patch.mesh, 30);
+        let patch = finalize_patch(&extract_patch(&body.source, &faces));
         match body.name {
             "L4" => l4 = Some(patch),
             "L5" => l5 = Some(patch),
@@ -725,6 +725,13 @@ fn loft_disc(
     let top = flip_patch(&l4);
     let bushing = assemble_bushing(&top, &l5, 1, WallCorrespondence::ArcLength);
     let disc = bushing.mesh;
+    if !is_watertight(&disc) {
+        println!(
+            "loft: the painted patches didn't form a watertight disc — paint a \
+             single connected region on each body and try again"
+        );
+        return;
+    }
     println!(
         "lofted disc: {} verts / {} faces (press S to export for physics)",
         disc.vertices.len(),

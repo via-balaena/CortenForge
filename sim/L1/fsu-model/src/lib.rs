@@ -565,7 +565,8 @@ mod tests {
     /// GUI does this cleaner).
     fn lofted_disc(l4: &IndexedMesh, l5: &IndexedMesh) -> IndexedMesh {
         use cf_fsu_geometry::loft::{
-            WallCorrespondence, assemble_bushing, extract_patch, flip_patch, seal_pinholes,
+            WallCorrespondence, assemble_bushing, extract_patch, finalize_patch, flip_patch,
+            is_watertight,
         };
         let l4_faces = select_endplate(l4, -1.0);
         let l5_faces = select_endplate(l5, 1.0);
@@ -573,12 +574,14 @@ mod tests {
             !l4_faces.is_empty() && !l5_faces.is_empty(),
             "empty endplate selection"
         );
-        let mut top = extract_patch(l4, &l4_faces);
-        let mut bottom = extract_patch(l5, &l5_faces);
-        seal_pinholes(&mut top.mesh, 30);
-        seal_pinholes(&mut bottom.mesh, 30);
+        // Prepare each patch (largest component, interior holes sealed → one outer
+        // rim) so the loft meets assemble_bushing's single-boundary precondition.
+        let top = finalize_patch(&extract_patch(l4, &l4_faces));
+        let bottom = finalize_patch(&extract_patch(l5, &l5_faces));
         let top = flip_patch(&top);
-        assemble_bushing(&top, &bottom, 1, WallCorrespondence::ArcLength).mesh
+        let disc = assemble_bushing(&top, &bottom, 1, WallCorrespondence::ArcLength).mesh;
+        assert!(is_watertight(&disc), "lofted disc must be watertight");
+        disc
     }
 
     /// B6 end-to-end: a human-lofted disc **tet-meshes, bonds to a restoring

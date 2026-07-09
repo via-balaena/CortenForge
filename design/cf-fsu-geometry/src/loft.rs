@@ -405,10 +405,44 @@ fn cumulative_params(positions: &[Point3<f64>]) -> Vec<f64> {
     cum
 }
 
-/// The largest boundary rim of a patch — the outer boundary to loft the wall
-/// onto (interior pinholes trace as smaller rims and are sealed later).
-fn largest_rim(rims: &[Vec<u32>]) -> Option<&Vec<u32>> {
-    rims.iter().max_by_key(|rim| rim.len())
+/// The positions of a rim's vertices, in loop order.
+fn rim_positions(mesh: &IndexedMesh, rim: &[u32]) -> Vec<Point3<f64>> {
+    rim.iter().map(|&v| mesh.vertices[v as usize]).collect()
+}
+
+/// Enclosed area of a closed 3D polygon via Newell's method — the magnitude of
+/// its vectorial area `½ Σ vᵢ × vᵢ₊₁`. Origin-independent and needs no
+/// projection axis, so it is robust for the non-planar rims real endplates trace.
+fn rim_area(positions: &[Point3<f64>]) -> f64 {
+    let n = positions.len();
+    if n < 3 {
+        return 0.0;
+    }
+    let mut area_vec = Vector3::zeros();
+    for i in 0..n {
+        area_vec += positions[i].coords.cross(&positions[(i + 1) % n].coords);
+    }
+    0.5 * area_vec.norm()
+}
+
+/// Index of a patch's **outer** boundary rim — the one enclosing the largest
+/// area, which the wall lofts onto (interior holes trace as smaller rims).
+///
+/// Ranks by enclosed area (Newell), not vertex count: a finely-tessellated
+/// interior hole can carry more vertices than a coarse outer rim, so the
+/// vertex-count proxy is invertible where the area metric is not.
+#[must_use]
+pub fn outer_rim_index(patch: &Patch) -> Option<usize> {
+    (0..patch.rims.len()).max_by(|&i, &j| {
+        let ai = rim_area(&rim_positions(&patch.mesh, &patch.rims[i]));
+        let aj = rim_area(&rim_positions(&patch.mesh, &patch.rims[j]));
+        ai.total_cmp(&aj)
+    })
+}
+
+/// The patch's outer boundary rim, or `None` if it has no rim (a closed surface).
+fn outer_rim(patch: &Patch) -> Option<&Vec<u32>> {
+    outer_rim_index(patch).map(|i| &patch.rims[i])
 }
 
 /// Assemble a top patch, the perimeter wall, and a bottom patch into one closed
@@ -466,7 +500,7 @@ pub fn assemble_bushing(
         faces.push([c + offset, b + offset, a + offset]);
     }
 
-    if let (Some(rim_a), Some(rim_b)) = (largest_rim(&top.rims), largest_rim(&bottom.rims)) {
+    if let (Some(rim_a), Some(rim_b)) = (outer_rim(top), outer_rim(bottom)) {
         let rim_b_shifted: Vec<u32> = rim_b.iter().map(|&v| v + offset).collect();
         let segments = wall_segments.max(1);
         if segments == 1 {
@@ -495,38 +529,180 @@ pub fn assemble_bushing(
     }
 }
 
+/// Seal one boundary loop with a centroid fan: add one centroid vertex and fan
+/// triangles `[a, centre, b]` over each directed boundary edge `a → b` — so
+/// every fan triangle carries the edge `b → a`, consistently oriented with the
+/// surrounding surface. Loops shorter than a triangle are skipped.
+// The centroid-index / loop-length casts are lossless at any real mesh size.
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+fn seal_rim(mesh: &mut IndexedMesh, rim: &[u32]) {
+    let k = rim.len();
+    if k < 3 {
+        return;
+    }
+    let mut sum = Vector3::zeros();
+    for &v in rim {
+        sum += mesh.vertices[v as usize].coords;
+    }
+    let centre = Point3::from(sum / k as f64);
+    let centre_idx = mesh.vertices.len() as u32;
+    mesh.vertices.push(centre);
+    for i in 0..k {
+        mesh.faces.push([rim[i], centre_idx, rim[(i + 1) % k]]);
+    }
+}
+
 /// Seal small boundary loops (pinholes) of a closed-ish mesh with a centroid
 /// fan, leaving any loop larger than `max_edges` open. Returns the number of
 /// loops sealed.
 ///
-/// Uses the winding-oriented `extract_rims` tracer (reliable where general
-/// hole-detection tangles on real-bone boundaries), adding one centroid vertex
-/// per pinhole and fanning triangles `[a, centre, b]` over each directed
-/// boundary edge `a → b` — so every fan triangle carries the edge `b → a`,
-/// consistently oriented with the surrounding surface.
-// The centroid-index / loop-length casts are lossless at any real mesh size.
-#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+/// This is a size-thresholded, mesh-level primitive; it cannot tell an outer
+/// boundary from an interior hole, so it is **not** the way to prepare a painted
+/// patch — use [`finalize_patch`] (or [`seal_interior_holes`]), which is
+/// rim-aware and never seals the boundary the wall must loft onto.
 pub fn seal_pinholes(mesh: &mut IndexedMesh, max_edges: usize) -> usize {
     let loops = extract_rims(&mesh.faces);
     let mut sealed = 0;
     for rim in loops {
-        let k = rim.len();
-        if k < 3 || k > max_edges {
+        if rim.len() < 3 || rim.len() > max_edges {
             continue;
         }
-        let mut sum = Vector3::zeros();
-        for &v in &rim {
-            sum += mesh.vertices[v as usize].coords;
-        }
-        let centre = Point3::from(sum / k as f64);
-        let centre_idx = mesh.vertices.len() as u32;
-        mesh.vertices.push(centre);
-        for i in 0..k {
-            mesh.faces.push([rim[i], centre_idx, rim[(i + 1) % k]]);
-        }
+        seal_rim(mesh, &rim);
         sealed += 1;
     }
     sealed
+}
+
+/// Partition a face set into edge-connected components, largest first, each a
+/// list of face indices. Two faces share a component iff they share an edge.
+fn connected_components(faces: &[[u32; 3]]) -> Vec<Vec<usize>> {
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]]; // path-halving
+            x = parent[x];
+        }
+        x
+    }
+    let mut parent: Vec<usize> = (0..faces.len()).collect();
+    let mut edge_owner: HashMap<(u32, u32), usize> = HashMap::new();
+    for (fi, &[a, b, c]) in faces.iter().enumerate() {
+        for (u, v) in [(a, b), (b, c), (c, a)] {
+            match edge_owner.get(&normalize_edge(u, v)) {
+                Some(&other) => {
+                    let (ra, rb) = (find(&mut parent, fi), find(&mut parent, other));
+                    if ra != rb {
+                        parent[ra] = rb;
+                    }
+                }
+                None => {
+                    edge_owner.insert(normalize_edge(u, v), fi);
+                }
+            }
+        }
+    }
+    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+    for fi in 0..faces.len() {
+        let root = find(&mut parent, fi);
+        groups.entry(root).or_default().push(fi);
+    }
+    let mut components: Vec<Vec<usize>> = groups.into_values().collect();
+    components.sort_by_key(|c| std::cmp::Reverse(c.len()));
+    components
+}
+
+/// Reduce a patch to its largest edge-connected component, re-indexed against a
+/// compact vertex array (its rims and `source_vertex` map recomputed).
+///
+/// A painter who drops a stray disconnected blob would otherwise loft a wall
+/// onto one component and leave the other as a floating shell or open boundary;
+/// keeping the largest component makes the disc single-bodied by construction
+/// (and matches the downstream tet-mesher, which also keeps the largest solid).
+#[must_use]
+pub fn keep_largest_component(patch: &Patch) -> Patch {
+    let components = connected_components(&patch.mesh.faces);
+    if components.len() <= 1 {
+        return patch.clone();
+    }
+    let mut old_to_new: HashMap<u32, u32> = HashMap::new();
+    let mut vertices = Vec::new();
+    let mut source_vertex = Vec::new();
+    let mut faces = Vec::new();
+    let mut next_new: u32 = 0;
+    for &fi in &components[0] {
+        let mut new_face = [0u32; 3];
+        for (slot, &old) in new_face.iter_mut().zip(patch.mesh.faces[fi].iter()) {
+            let new = *old_to_new.entry(old).or_insert_with(|| {
+                let idx = next_new;
+                next_new += 1;
+                vertices.push(patch.mesh.vertices[old as usize]);
+                source_vertex.push(patch.source_vertex[old as usize]);
+                idx
+            });
+            *slot = new;
+        }
+        faces.push(new_face);
+    }
+    let rims = extract_rims(&faces);
+    Patch {
+        mesh: IndexedMesh::from_parts(vertices, faces),
+        rims,
+        source_vertex,
+    }
+}
+
+/// Seal every interior hole of a patch, leaving only the outer boundary rim
+/// open, and refresh [`Patch::rims`] to that single surviving rim. Returns the
+/// number of holes sealed.
+///
+/// Unlike [`seal_pinholes`], this is rim-aware: it seals exactly the non-outer
+/// rims (identified by enclosed area via [`outer_rim_index`]) regardless of
+/// their size, so it can never close the boundary the wall must loft onto, and
+/// it updates `rims` — removing both the seal-the-outer-rim and the stale-rim
+/// hazards of threshold sealing.
+pub fn seal_interior_holes(patch: &mut Patch) -> usize {
+    let Some(outer) = outer_rim_index(patch) else {
+        return 0;
+    };
+    let outer_rim = patch.rims[outer].clone();
+    let holes: Vec<Vec<u32>> = patch
+        .rims
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| i != outer)
+        .map(|(_, rim)| rim.clone())
+        .collect();
+    for hole in &holes {
+        seal_rim(&mut patch.mesh, hole);
+    }
+    patch.rims = vec![outer_rim];
+    holes.len()
+}
+
+/// Prepare a raw painted patch for lofting.
+///
+/// Keeps its largest connected component and seals every interior hole, leaving
+/// exactly the outer boundary rim open. The result satisfies
+/// [`assemble_bushing`]'s single-boundary precondition by
+/// construction, so a caller no longer has to guess a pinhole threshold or guard
+/// against a disconnected or holed paint. Verify the assembled bushing with
+/// [`is_watertight`].
+#[must_use]
+pub fn finalize_patch(patch: &Patch) -> Patch {
+    let mut patch = keep_largest_component(patch);
+    seal_interior_holes(&mut patch);
+    patch
+}
+
+/// True if the mesh has no boundary edges — every edge is shared by ≥2 faces.
+///
+/// The closed-surface readout for an assembled bushing (the disc a soft solver
+/// or SDF tet-mesher can consume; an open or multi-shell mesh cannot be signed).
+#[must_use]
+pub fn is_watertight(mesh: &IndexedMesh) -> bool {
+    MeshAdjacency::build(&mesh.faces)
+        .boundary_edges()
+        .next()
+        .is_none()
 }
 
 /// Return a copy of `patch` with reversed winding.
@@ -1179,5 +1355,170 @@ mod tests {
         assert_eq!(adjacency.non_manifold_edge_count(), 0, "non-manifold");
         assert_consistently_oriented_closed(&puck);
         assert!((puck.signed_volume() - 1.0).abs() < 1e-9);
+    }
+
+    /// A flat disc-with-a-hole: a 4×4 vertex grid (3×3 cells) at z=0 with the
+    /// centre cell removed, so its boundary is a 12-edge outer rim plus a 4-edge
+    /// interior hole. Returns the mesh and the selection of all its faces.
+    fn grid_with_hole() -> (IndexedMesh, Vec<usize>) {
+        let mut vertices = Vec::new();
+        for j in 0..4u32 {
+            for i in 0..4u32 {
+                vertices.push(Point3::new(f64::from(i), f64::from(j), 0.0));
+            }
+        }
+        let idx = |i: u32, j: u32| j * 4 + i;
+        let mut faces = Vec::new();
+        for cj in 0..3u32 {
+            for ci in 0..3u32 {
+                if ci == 1 && cj == 1 {
+                    continue; // centre cell → interior hole
+                }
+                let (a, b, c, d) = (
+                    idx(ci, cj),
+                    idx(ci + 1, cj),
+                    idx(ci + 1, cj + 1),
+                    idx(ci, cj + 1),
+                );
+                faces.push([a, b, c]);
+                faces.push([a, c, d]);
+            }
+        }
+        let n = faces.len();
+        (IndexedMesh::from_parts(vertices, faces), (0..n).collect())
+    }
+
+    /// Two disjoint squares in one mesh: a big 2×2 grid (8 tris, 9 verts) at the
+    /// origin and a small single square (2 tris, 4 verts) off at x = 10.
+    fn disjoint_squares() -> (IndexedMesh, Vec<usize>) {
+        let mut vertices = Vec::new();
+        for j in 0..3u32 {
+            for i in 0..3u32 {
+                vertices.push(Point3::new(f64::from(i), f64::from(j), 0.0));
+            }
+        }
+        let big = |i: u32, j: u32| j * 3 + i;
+        let mut faces = Vec::new();
+        for cj in 0..2u32 {
+            for ci in 0..2u32 {
+                faces.push([big(ci, cj), big(ci + 1, cj), big(ci + 1, cj + 1)]);
+                faces.push([big(ci, cj), big(ci + 1, cj + 1), big(ci, cj + 1)]);
+            }
+        }
+        let base = vertices.len() as u32;
+        for (dx, dy) in [(10.0, 0.0), (11.0, 0.0), (11.0, 1.0), (10.0, 1.0)] {
+            vertices.push(Point3::new(dx, dy, 0.0));
+        }
+        faces.push([base, base + 1, base + 2]);
+        faces.push([base, base + 2, base + 3]);
+        let n = faces.len();
+        (IndexedMesh::from_parts(vertices, faces), (0..n).collect())
+    }
+
+    #[test]
+    fn rim_area_ranks_by_area_not_vertex_count() {
+        // A big coarse triangle (3 verts) vs a small fine octagon (8 verts): the
+        // triangle has fewer vertices but far more area — so the area metric
+        // ranks it first where a vertex-count proxy would invert.
+        let big = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(10.0, 0.0, 0.0),
+            Point3::new(0.0, 10.0, 0.0),
+        ];
+        let small: Vec<Point3<f64>> = (0..8)
+            .map(|k| {
+                let a = std::f64::consts::TAU * f64::from(k) / 8.0;
+                Point3::new(0.5 * a.cos(), 0.5 * a.sin(), 0.0)
+            })
+            .collect();
+        assert!(rim_area(&big) > rim_area(&small));
+        assert!(big.len() < small.len());
+    }
+
+    #[test]
+    fn outer_rim_index_selects_the_enclosing_boundary() {
+        let (mesh, selection) = grid_with_hole();
+        let patch = extract_patch(&mesh, &selection);
+        assert_eq!(patch.rims.len(), 2, "expected an outer rim and a hole");
+        let outer = outer_rim_index(&patch).unwrap();
+        // The outer perimeter (12 edges) encloses more area than the hole (4).
+        assert!(patch.rims[outer].len() > patch.rims[1 - outer].len());
+    }
+
+    #[test]
+    fn keep_largest_component_drops_the_stray_blob() {
+        let (mesh, selection) = disjoint_squares();
+        let patch = extract_patch(&mesh, &selection);
+        assert_eq!(connected_components(&patch.mesh.faces).len(), 2);
+        let kept = keep_largest_component(&patch);
+        assert_eq!(kept.mesh.face_count(), 8, "kept the 8-triangle square");
+        assert_eq!(kept.mesh.vertex_count(), 9);
+        assert_eq!(connected_components(&kept.mesh.faces).len(), 1);
+    }
+
+    #[test]
+    fn seal_interior_holes_closes_the_hole_and_keeps_the_outer_rim() {
+        let (mesh, selection) = grid_with_hole();
+        let mut patch = extract_patch(&mesh, &selection);
+        assert_eq!(
+            MeshAdjacency::build(&patch.mesh.faces).boundary_edge_count(),
+            16, // 12 outer + 4 hole
+        );
+        let sealed = seal_interior_holes(&mut patch);
+        assert_eq!(sealed, 1);
+        assert_eq!(patch.rims.len(), 1, "only the outer rim survives");
+        // The hole is closed; the outer boundary (12 edges) stays open.
+        assert_eq!(
+            MeshAdjacency::build(&patch.mesh.faces).boundary_edge_count(),
+            12,
+        );
+    }
+
+    #[test]
+    fn finalize_patch_never_seals_a_small_clean_outer_rim() {
+        // A tiny patch whose outer rim is only 4 edges: the old size-thresholded
+        // seal_pinholes(_, 30) would fan it shut (destroying the boundary the
+        // wall lofts onto); finalize_patch must leave the outer rim open.
+        let patch = extract_patch(&unit_square_mesh(), &[0, 1]);
+        let out = finalize_patch(&patch);
+        assert_eq!(out.rims.len(), 1);
+        assert_eq!(out.mesh.face_count(), 2, "outer rim not sealed");
+        assert_eq!(
+            MeshAdjacency::build(&out.mesh.faces).boundary_edge_count(),
+            4
+        );
+    }
+
+    #[test]
+    fn finalize_patch_reduces_a_holed_disconnected_patch_to_one_rim() {
+        // A patch that is both disconnected and holed: finalize keeps the largest
+        // component (the holed grid) and seals its hole → exactly one boundary.
+        let (grid, _) = grid_with_hole();
+        let mut vertices = grid.vertices;
+        let mut faces = grid.faces;
+        let base = vertices.len() as u32;
+        for (dx, dy) in [(20.0, 0.0), (21.0, 0.0), (21.0, 1.0)] {
+            vertices.push(Point3::new(dx, dy, 0.0));
+        }
+        faces.push([base, base + 1, base + 2]); // stray disconnected triangle
+        let mesh = IndexedMesh::from_parts(vertices, faces);
+        let n = mesh.face_count();
+        let patch = extract_patch(&mesh, &(0..n).collect::<Vec<_>>());
+        let out = finalize_patch(&patch);
+        assert_eq!(out.rims.len(), 1);
+        assert_eq!(connected_components(&out.mesh.faces).len(), 1);
+    }
+
+    #[test]
+    fn is_watertight_distinguishes_open_from_closed() {
+        assert!(!is_watertight(&unit_square_mesh()));
+        let puck = assemble_bushing(
+            &square_patch(1.0),
+            &square_patch(0.0),
+            1,
+            WallCorrespondence::ArcLength,
+        )
+        .mesh;
+        assert!(is_watertight(&puck));
     }
 }
