@@ -15,7 +15,13 @@
 //! zooms; **right-drag** pans. **Shift + left-drag** paints/erases on the active
 //! body; **Tab** switches active body; **E** paint/erase; **N** normal filter;
 //! **`-` / `=`** filter tolerance; **`[` / `]`** brush size; **C** clears the
-//! active body.
+//! active body. **Enter** lofts the disc; **S** exports it to an STL.
+//!
+//! **Paint → simulate loop:** paint both endplates, **Enter** to loft, **S** to
+//! export the disc (STL, to `$CF_DISC_OUT` or a temp path — the console prints
+//! it), then feed that path to the validated physics recipe:
+//! `CF_DISC_STL=<printed path> cargo run --release -p sim-bevy-soft --example
+//! real-disc-bonded` — the painted disc tet-meshed, bonded, and flexing.
 //!
 //! The STLs are BodyParts3D (CC BY-SA, **not committed**). Point `$CF_L4_STL` /
 //! `$CF_L5_STL` at the L4 / L5 STLs (FMA13075 / 13076).
@@ -27,6 +33,7 @@
 #![allow(clippy::too_many_arguments)] // Bevy systems legitimately take many resource params.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::mesh::VertexAttributeValues;
@@ -40,6 +47,7 @@ use cf_fsu_geometry::loft::{
 };
 use cf_geometry::IndexedMesh;
 use cf_viewer::{UpAxis, setup_camera_and_lighting};
+use mesh_io::save_stl;
 use mesh_types::Aabb;
 
 /// Base (unpainted) face colour — pale bone ivory.
@@ -74,6 +82,11 @@ struct ShowDisc(bool);
 /// The spawned disc entity (replaced each time the disc is re-lofted).
 #[derive(Resource, Default)]
 struct DiscEntity(Option<Entity>);
+
+/// The last lofted disc mesh (native mm), kept so `S` can export it to an STL
+/// the physics consumers (`real-disc-bonded`) load via `$CF_DISC_STL`.
+#[derive(Resource, Default)]
+struct LoftedDisc(Option<IndexedMesh>);
 
 /// The two bodies and which one the brush acts on (cycled with `Tab`).
 #[derive(Resource)]
@@ -151,6 +164,7 @@ const CONTROLS: &str = "CONTROLS\n\
      Ctrl + Z     undo stroke\n\
      C            clear body\n\
      Enter        loft disc\n\
+     S            export disc (STL)\n\
      Tab          (in review) back";
 
 fn main() {
@@ -161,6 +175,7 @@ fn main() {
         .init_resource::<ActiveStroke>()
         .init_resource::<ShowDisc>()
         .init_resource::<DiscEntity>()
+        .init_resource::<LoftedDisc>()
         .insert_resource(BrushRadius(BRUSH_INIT))
         .insert_resource(BrushMode::Paint)
         .insert_resource(NormalFilter {
@@ -183,6 +198,7 @@ fn main() {
                 clear_selection,
                 undo_stroke,
                 loft_disc,
+                export_disc,
             ),
         )
         .add_systems(Update, (update_hud, update_display))
@@ -668,6 +684,7 @@ fn loft_disc(
     q_bodies: Query<&PaintBody>,
     mut show: ResMut<ShowDisc>,
     mut disc_entity: ResMut<DiscEntity>,
+    mut lofted: ResMut<LoftedDisc>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -704,10 +721,11 @@ fn loft_disc(
     let bushing = assemble_bushing(&top, &l5, 1, WallCorrespondence::ArcLength);
     let disc = bushing.mesh;
     println!(
-        "lofted disc: {} verts / {} faces",
+        "lofted disc: {} verts / {} faces (press S to export for physics)",
         disc.vertices.len(),
         disc.faces.len()
     );
+    lofted.0 = Some(disc.clone());
 
     let render = triangle_mesh_flat_shaded(&disc, None, UpAxis::PlusZ);
     let handle = meshes.add(render);
@@ -731,6 +749,31 @@ fn loft_disc(
             .id(),
     );
     show.0 = true;
+}
+
+/// Export the last lofted disc to an STL with `S`, so the physics consumers
+/// (e.g. `real-disc-bonded`) can load it via `$CF_DISC_STL` — closing the
+/// paint → simulate loop. The path is `$CF_DISC_OUT`, or `painted_disc.stl` in
+/// the working directory.
+fn export_disc(keys: Res<ButtonInput<KeyCode>>, lofted: Res<LoftedDisc>) {
+    if !keys.just_pressed(KeyCode::KeyS) {
+        return;
+    }
+    let Some(disc) = &lofted.0 else {
+        println!("export: loft a disc (Enter) first");
+        return;
+    };
+    let path = std::env::var("CF_DISC_OUT").map_or_else(
+        |_| std::env::temp_dir().join("painted_disc.stl"),
+        PathBuf::from,
+    );
+    match save_stl(disc, &path, true) {
+        Ok(()) => println!(
+            "exported disc -> {p}\n  simulate it:  CF_DISC_STL={p} cargo run --release -p sim-bevy-soft --example real-disc-bonded",
+            p = path.display()
+        ),
+        Err(e) => println!("export failed: {e}"),
+    }
 }
 
 /// Update what is shown: in review (disc lofted) both vertebrae are translucent

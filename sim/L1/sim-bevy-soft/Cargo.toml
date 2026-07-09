@@ -96,6 +96,9 @@ mesh-sdf = { workspace = true }
 # `build_bonded_disc` + `BondedDisc` — the validated real intervertebral-disc tet-mesh + endplate
 # bond + flexion drive (ladder step 5.2 renders the real disc bonded + deforming).
 cf-fsu-model = { workspace = true }
+# `save_stl` — export a painted-and-lofted disc so the physics consumers (real-disc-bonded) can
+# load it via `$CF_DISC_STL`, closing the paint → simulate loop (paint-faces `S`).
+mesh-io = { workspace = true }
 
 # 1. `soft-bend` — a pinned soft block sheared by a prescribed top-face displacement,
 #    rendered as its deforming tet-boundary surface. Isolates FEM deformation →
