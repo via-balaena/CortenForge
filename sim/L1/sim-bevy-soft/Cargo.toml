@@ -53,6 +53,8 @@ bevy = { workspace = true, default-features = false, features = [
     "bevy_asset",
     "bevy_core_pipeline",
     "bevy_pbr",
+    "bevy_picking",
+    "mesh_picking",
     "bevy_render",
     "bevy_winit",
     "multi_threaded",
@@ -153,3 +155,10 @@ path = "examples/real_disc_bonded.rs"
 [[example]]
 name = "modeled-disc"
 path = "examples/modeled_disc.rs"
+
+# `paint-faces` — B5.0 of the bushing-loft ladder: load a real vertebra, click a face and it
+#    highlights. Verifies mesh picking maps a ray hit's triangle index to the right source face
+#    (the first rung of the region-painting GUI that will pick the two endplate patches to loft).
+[[example]]
+name = "paint-faces"
+path = "examples/paint_faces.rs"
