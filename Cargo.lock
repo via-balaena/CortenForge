@@ -11702,6 +11702,7 @@ dependencies = [
  "cf-fsu-model",
  "cf-geometry",
  "cf-viewer",
+ "mesh-io",
  "mesh-sdf",
  "mesh-types",
  "nalgebra 0.34.2",

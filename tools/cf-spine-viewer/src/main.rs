@@ -143,7 +143,7 @@ struct Flexion {
     /// The clean STL disc's rest vertex positions (native mm) — the render surface.
     disc_rest: Vec<Point3<f64>>,
     /// For each `disc_rest` vertex, the nearest tet nodes in `traj.rest_nodes_native` with
-    /// inverse-distance weights (see [`scene::weighted_tet_nodes`]), so the disc's real FEM
+    /// inverse-distance weights (see `scene::weighted_tet_nodes`), so the disc's real FEM
     /// displacement is skinned smoothly (C⁰) onto the clean surface each frame.
     disc_weights: Vec<Vec<(usize, f64)>>,
     /// L4/L5 oracles — each frame, a deformed disc vertex that lands inside a bone is projected

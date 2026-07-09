@@ -524,79 +524,6 @@ pub fn seal_pinholes(mesh: &mut IndexedMesh, max_edges: usize) -> usize {
     sealed
 }
 
-/// Simplify a closed rim loop with Douglas–Peucker, dropping vertices whose
-/// perpendicular distance from the running chord is within `tolerance` (mm).
-///
-/// Returns a **subset** of the input indices in loop order — a cleaner,
-/// lower-vertex perimeter that hugs the original within `tolerance`. The
-/// jagged boundary of a traced surface patch is a mesh artifact, not anatomy,
-/// and it spawns sliver tets when the disc is volume-meshed; decimating the
-/// free-wall rim gives a tet-friendly perimeter while the contact caps stay
-/// exact.
-#[must_use]
-pub fn decimate_rim(verts: &[Point3<f64>], rim: &[u32], tolerance: f64) -> Vec<u32> {
-    let n = rim.len();
-    if n < 4 {
-        return rim.to_vec();
-    }
-    let points: Vec<Point3<f64>> = rim.iter().map(|&v| verts[v as usize]).collect();
-
-    // Split the closed loop at its two most-distant anchors into two open
-    // chains, simplify each, then recombine the kept vertices in loop order.
-    let start = 0usize;
-    let far = (1..n)
-        .max_by(|&a, &b| {
-            dist(&points[a], &points[start]).total_cmp(&dist(&points[b], &points[start]))
-        })
-        .unwrap_or(n / 2);
-
-    let mut keep = vec![false; n];
-    keep[start] = true;
-    keep[far] = true;
-    dp_simplify(&points, &mut keep, start, far, tolerance);
-    dp_simplify(&points, &mut keep, far, n, tolerance); // `n` wraps back to `start`
-
-    rim.iter()
-        .zip(&keep)
-        .filter_map(|(&v, &k)| k.then_some(v))
-        .collect()
-}
-
-/// Douglas–Peucker over the (possibly wrapping) index range `lo..=hi`, marking
-/// vertices to keep. `hi == points.len()` wraps to index 0, so a closed loop
-/// splits into two open chains.
-fn dp_simplify(points: &[Point3<f64>], keep: &mut [bool], lo: usize, hi: usize, tolerance: f64) {
-    if hi <= lo + 1 {
-        return;
-    }
-    let n = points.len();
-    let anchor = points[lo % n];
-    let chord = points[hi % n] - anchor;
-    let chord_len2 = chord.norm_squared();
-
-    let mut split = lo;
-    let mut max_dist = -1.0;
-    for i in (lo + 1)..hi {
-        let point = points[i % n];
-        let perp = if chord_len2 < 1e-20 {
-            (point - anchor).norm()
-        } else {
-            let proj = ((point - anchor).dot(&chord) / chord_len2).clamp(0.0, 1.0);
-            (point - (anchor + chord * proj)).norm()
-        };
-        if perp > max_dist {
-            max_dist = perp;
-            split = i;
-        }
-    }
-
-    if max_dist > tolerance {
-        keep[split % n] = true;
-        dp_simplify(points, keep, lo, split, tolerance);
-        dp_simplify(points, keep, split, hi, tolerance);
-    }
-}
-
 /// Return a copy of `patch` with reversed winding.
 ///
 /// Every face normal flips and each rim is reversed so it stays
@@ -1165,30 +1092,6 @@ mod tests {
         let iters = smooth_wall(&mut bushing, 10, TAUBIN_DEFAULT_LAMBDA, TAUBIN_DEFAULT_MU);
         assert_eq!(iters, 0);
         assert_eq!(bushing.mesh.vertices, before);
-    }
-
-    #[test]
-    fn decimate_rim_collapses_collinear_edges() {
-        // Unit-square perimeter sampled at 10 points per edge (40 points, the
-        // edge-interior ones exactly collinear).
-        let corners = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
-        let mut verts = Vec::new();
-        for e in 0..4 {
-            let (x0, y0) = corners[e];
-            let (x1, y1) = corners[(e + 1) % 4];
-            for k in 0..10 {
-                let t = f64::from(k) / 10.0;
-                verts.push(Point3::new(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, 0.0));
-            }
-        }
-        let rim: Vec<u32> = (0..verts.len() as u32).collect();
-
-        // At a tight tolerance only the four corners survive.
-        let decimated = decimate_rim(&verts, &rim, 0.01);
-        assert_eq!(decimated.len(), 4);
-        // Every dropped vertex is within tolerance of the simplified loop (DP
-        // guarantee) — so the perimeter is faithful, just far coarser.
-        assert!(decimated.len() < rim.len());
     }
 
     #[test]

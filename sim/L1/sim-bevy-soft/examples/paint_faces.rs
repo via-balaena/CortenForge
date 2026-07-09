@@ -1,10 +1,11 @@
-//! Face-painting ladder — **B5.2: paint two bodies** (`paint-faces`).
+//! Disc region-painting tool (`paint-faces`) — paint two endplate patches,
+//! loft a disc between them, export it to drive the physics.
 //!
 //! Loads the two vertebrae (`$CF_L4_STL`, `$CF_L5_STL`) and lets you **paint /
 //! erase a region of faces on each** with a round brush drawn on the surface.
 //! This is the region-selection front-end for the disc loft: a human paints the
 //! two endplate patches (the automatic rule can't select real endplates
-//! cleanly), which then loft into the disc (next rung).
+//! cleanly), which then loft into the disc (**Enter**).
 //!
 //! Picking contract: `cf_bevy_common::triangle_mesh_flat_shaded` emits three
 //! vertices per face **in face order**, so a mesh ray hit's `triangle_index` is
