@@ -661,6 +661,62 @@ mod tests {
         );
     }
 
+    /// B6.4 — the capstone: a painted (lofted) disc drops into the FULL coupled
+    /// FSU (disc bushing + ligaments + facet contact) and produces a physically
+    /// sound, monotone, restoring, facet-stopped segmental response — the same
+    /// assembly rung 7 validates against literature, now driven by a human-painted
+    /// disc.
+    ///
+    /// This validates the **integration** (painted disc → full FSU → physiologic
+    /// response), not the tight literature ROM band: the rough *auto-lofted* disc
+    /// is softer in flexion than the scanned disc (a different centre/geometry
+    /// shifts the ligament lever arms), so its flexion exits the ROM bracket
+    /// before the full 7.5 N·m. We sweep the moment range where equilibria exist;
+    /// a carefully painted disc matching the real geometry is what would hit the
+    /// literature band.
+    #[test]
+    #[ignore = "needs $CF_L4_STL/$CF_L5_STL (BodyParts3D, CC BY-SA, not committed)"]
+    #[allow(clippy::cast_precision_loss)]
+    fn b6_4_coupled_fsu_from_a_lofted_disc() {
+        use cf_fsu_geometry::load_from_env;
+
+        let l4 = load_from_env("CF_L4_STL").unwrap();
+        let l5 = load_from_env("CF_L5_STL").unwrap();
+        let disc = lofted_disc(&l4, &l5);
+        let mut fsu = CoupledFsu::build(&l4, &l5, &disc, &CoupledParams::default())
+            .expect("coupled FSU builds with a lofted disc");
+        println!("coupled FSU: k_disc {:.3} N·m/rad", fsu.k_disc());
+
+        // Force-driven equilibrium sweep over the in-bracket moment range.
+        let ramp: Vec<f64> = (0..=18).map(|i| -6.0 + f64::from(i) * 0.5).collect();
+        let traj = fsu
+            .capture_ramp(&ramp)
+            .expect("coupled equilibria exist within the ROM bracket");
+
+        // Monotone extension → flexion, a physiologic few-degrees ROM each way.
+        for w in traj.frames.windows(2) {
+            assert!(
+                w[1].theta >= w[0].theta - 1e-9,
+                "equilibrium angle must rise monotonically with the applied moment"
+            );
+        }
+        let ext_deg = traj.frames.first().unwrap().theta.to_degrees();
+        let flex_deg = traj.frames.last().unwrap().theta.to_degrees();
+        println!("ROM: extension {ext_deg:.1}° … flexion {flex_deg:.1}° (in-bracket sweep)");
+        assert!(ext_deg < 0.0 && flex_deg > 0.0, "wrong flexion sense");
+
+        // The facets stop extension and open in flexion — the ROM is contact-limited,
+        // not just spring-limited.
+        assert!(
+            !traj.frames.first().unwrap().facet_points.is_empty(),
+            "facets must engage at the extension peak"
+        );
+        assert!(
+            traj.frames.last().unwrap().facet_points.is_empty(),
+            "facets must open at the flexion peak"
+        );
+    }
+
     #[test]
     fn ml_axis_is_widest_aabb_extent_not_pca() {
         // The flexion axis must be the widest AXIS-ALIGNED extent, NOT a PCA principal
