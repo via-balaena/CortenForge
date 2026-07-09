@@ -13,7 +13,9 @@
 //! FSU), so the disc annulus can penalty-contact the actual vertebra surface.
 //!
 //! Captured headlessly (the top face is pressed down 0 → peak → 0, warm-started), then looped.
-//! Orbit with LMB.
+//! Orbit with LMB; the rigid dome is rendered **translucent** (opacity adjustable with `[` /
+//! `]`) so the block's contacting face is visible *through* it — otherwise the opaque surface
+//! hides the exact interface being verified.
 //!
 //! Run: `cargo run -p sim-bevy-soft --example curved-contact`
 
@@ -48,6 +50,11 @@ const MU: f64 = 5.0e4;
 const STATIC_DT: f64 = 1.0e3;
 /// Replay seconds per frame (20 fps).
 const FRAME_DT: f64 = 0.05;
+/// Initial opacity of the (translucent) rigid dome — low enough to see the block's contacting
+/// face through it, high enough to read the curve.
+const CONTACT_ALPHA_INIT: f32 = 0.4;
+/// Opacity step per `[` / `]` press.
+const CONTACT_ALPHA_STEP: f32 = 0.05;
 
 /// The captured scene: the deforming block + the static dome (sphere).
 #[derive(Resource)]
@@ -137,6 +144,9 @@ fn capture() -> Scene {
 /// Marks the deforming soft block.
 #[derive(Component)]
 struct SoftBlock;
+/// Marks the translucent rigid dome (its opacity is `[` / `]`-adjustable).
+#[derive(Component)]
+struct ContactSurface;
 
 fn main() {
     App::new()
@@ -144,7 +154,7 @@ fn main() {
         .add_plugins(OrbitCameraPlugin)
         .insert_resource(capture())
         .add_systems(Startup, setup)
-        .add_systems(Update, animate)
+        .add_systems(Update, (animate, adjust_transparency))
         .run();
 }
 
@@ -171,14 +181,17 @@ fn setup(
     ));
     // Static rigid dome (the sphere the block contacts). Bevy's sphere is centred at the
     // transform; map the SDF centre through the same UpAxis convention as the soft mesh.
+    // Translucent so the block's contacting face is visible through it — `[` / `]` adjust opacity.
     let center = UpAxis::PlusZ.to_bevy_point(&Point3::from(scene.dome_center));
     commands.spawn((
         Mesh3d(meshes.add(Sphere::new(scene.dome_radius as f32))),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.72, 0.72, 0.76),
+            base_color: Color::srgba(0.72, 0.72, 0.76, CONTACT_ALPHA_INIT),
             perceptual_roughness: 0.9,
+            alpha_mode: AlphaMode::Blend,
             ..default()
         })),
+        ContactSurface,
         Transform::from_translation(center.into()),
     ));
 
@@ -202,6 +215,28 @@ fn animate(
     if let Ok(m) = block.single() {
         if let Some(mesh) = meshes.get_mut(&m.0) {
             apply_soft_positions(mesh, &scene.block_frames[idx], UpAxis::PlusZ);
+        }
+    }
+}
+
+/// Adjust the rigid dome's opacity with `[` (more transparent) / `]` (more opaque) — a live
+/// transparency "slider" so the contact interface stays visible through the sphere.
+fn adjust_transparency(
+    keys: Res<ButtonInput<KeyCode>>,
+    surface: Query<&MeshMaterial3d<StandardMaterial>, With<ContactSurface>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let delta = if keys.just_pressed(KeyCode::BracketRight) {
+        CONTACT_ALPHA_STEP
+    } else if keys.just_pressed(KeyCode::BracketLeft) {
+        -CONTACT_ALPHA_STEP
+    } else {
+        return;
+    };
+    if let Ok(m) = surface.single() {
+        if let Some(mat) = materials.get_mut(&m.0) {
+            let alpha = (mat.base_color.alpha() + delta).clamp(0.05, 1.0);
+            mat.base_color.set_alpha(alpha);
         }
     }
 }
