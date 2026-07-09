@@ -65,12 +65,25 @@ cf-viewer = { workspace = true }
 sim-soft = { workspace = true }
 # `Tensor` — the solver's `replay_step` input/warm-start type.
 sim-ml-chassis = { workspace = true }
-# Rotation math for the prescribed-boundary deformation drive.
+# `BondedSandwich` — the two-rigid-body soft bond the disc uses (ladder step 2+).
+sim-coupling = { workspace = true }
+# `Model` / `Data` — the rigid scene the sandwich bonds between.
+sim-core = { workspace = true }
+# `load_model` — build the two-plate MJCF scene.
+sim-mjcf = { workspace = true }
+# Rotation math for the prescribed-boundary / plate-pose drive.
 nalgebra = { workspace = true }
 
-# 1. `soft-bend` — a pinned soft block bent by a prescribed top-face rotation,
+# 1. `soft-bend` — a pinned soft block sheared by a prescribed top-face displacement,
 #    rendered as its deforming tet-boundary surface. Isolates FEM deformation →
 #    smooth surface, with NO skinning and NO anatomy (ladder step 1).
 [[example]]
 name = "soft-bend"
 path = "examples/soft_bend.rs"
+
+# 2. `bonded-sandwich` — a soft block bonded between two rigid plates (the disc's
+#    `BondedSandwich` primitive); the top plate rotates and the block stays glued to
+#    both, deforming in between. Isolates soft↔rigid ATTACHMENT (ladder step 2).
+[[example]]
+name = "bonded-sandwich"
+path = "examples/bonded_sandwich.rs"
