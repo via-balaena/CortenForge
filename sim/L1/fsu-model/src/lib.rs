@@ -533,6 +533,111 @@ mod tests {
         );
     }
 
+    /// Rough endplate face selection: the down-facing lower region (`sign = -1`,
+    /// L4 inferior) or up-facing upper region (`sign = +1`, L5 superior).
+    fn select_endplate(mesh: &IndexedMesh, sign: f64) -> Vec<usize> {
+        let bbox = Aabb::from_points(mesh.vertices.iter());
+        let zmid = 0.5 * (bbox.min.z + bbox.max.z);
+        let mut ids = Vec::new();
+        for i in 0..mesh.faces.len() {
+            let Some(tri) = mesh.triangle(i) else {
+                continue;
+            };
+            let centroid = Point3::from((tri.v0.coords + tri.v1.coords + tri.v2.coords) / 3.0);
+            let normal = (tri.v1 - tri.v0).cross(&(tri.v2 - tri.v0));
+            let norm = normal.norm();
+            if norm < f64::EPSILON {
+                continue;
+            }
+            let region = if sign < 0.0 {
+                centroid.z < zmid
+            } else {
+                centroid.z > zmid
+            };
+            if region && (normal.z / norm) * sign > 0.7 {
+                ids.push(i);
+            }
+        }
+        ids
+    }
+
+    #[test]
+    #[ignore = "needs $CF_L4_STL/$CF_L5_STL (BodyParts3D, CC BY-SA, not committed)"]
+    #[allow(clippy::cast_precision_loss)]
+    fn b6_0_tet_mesh_of_a_lofted_disc() {
+        use cf_fsu_geometry::load_from_env;
+        use cf_fsu_geometry::loft::{
+            WallCorrespondence, assemble_bushing, extract_patch, flip_patch, seal_pinholes,
+        };
+
+        let l4 = load_from_env("CF_L4_STL").unwrap();
+        let l5 = load_from_env("CF_L5_STL").unwrap();
+
+        // Loft a disc from rough endplate patches (the painted GUI does this cleaner).
+        let l4_faces = select_endplate(&l4, -1.0);
+        let l5_faces = select_endplate(&l5, 1.0);
+        assert!(
+            !l4_faces.is_empty() && !l5_faces.is_empty(),
+            "empty endplate selection"
+        );
+        let mut top = extract_patch(&l4, &l4_faces);
+        let mut bottom = extract_patch(&l5, &l5_faces);
+        seal_pinholes(&mut top.mesh, 30);
+        seal_pinholes(&mut bottom.mesh, 30);
+        let top = flip_patch(&top);
+        let disc = assemble_bushing(&top, &bottom, 1, WallCorrespondence::ArcLength).mesh;
+        println!(
+            "lofted disc: {} verts / {} faces",
+            disc.vertices.len(),
+            disc.faces.len()
+        );
+
+        // Tet-mesh via the same SDF/BCC path build_bonded_disc uses (native mm → m).
+        let params = DiscParams::default();
+        let mut scaled = disc;
+        let bbox0 = Aabb::from_points(scaled.vertices.iter());
+        let center = Point3::from(bbox0.min.coords + (bbox0.max - bbox0.min) * 0.5);
+        for v in &mut scaled.vertices {
+            *v = Point3::from((v.coords - center.coords) * params.scale);
+        }
+        let padded = Aabb::from_points(scaled.vertices.iter()).expanded(params.pad);
+        let hints = MeshingHints {
+            bbox: Aabb3::new(
+                Vec3::new(padded.min.x, padded.min.y, padded.min.z),
+                Vec3::new(padded.max.x, padded.max.y, padded.max.z),
+            ),
+            cell_size: params.cell,
+            material_field: Some(MaterialField::uniform(params.mu, 4.0 * params.mu)),
+        };
+        let sdf = oracle(&scaled).unwrap();
+        let raw = SdfMeshedTetMesh::from_sdf(&sdf, &hints).unwrap();
+        let tets_raw = raw.n_tets();
+        let tet = raw.largest_component();
+        println!(
+            "tet mesh: {} tets ({} before largest_component, {:.0}% kept), {} verts",
+            tet.n_tets(),
+            tets_raw,
+            100.0 * tet.n_tets() as f64 / tets_raw.max(1) as f64,
+            tet.n_vertices(),
+        );
+
+        let quality = tet.quality();
+        let min_dihedral = quality
+            .dihedral_min
+            .iter()
+            .copied()
+            .fold(f64::MAX, f64::min)
+            .to_degrees();
+        let max_aspect = quality.aspect_ratio.iter().copied().fold(0.0, f64::max);
+        let inverted = quality.signed_volume.iter().filter(|&&v| v <= 0.0).count();
+        println!(
+            "  min dihedral {min_dihedral:.1} deg, max aspect {max_aspect:.1}, inverted tets {inverted}"
+        );
+
+        assert!(tet.n_tets() > 0, "disc tet-meshed to zero tets");
+        assert_eq!(inverted, 0, "inverted (negative-volume) tets present");
+    }
+
     #[test]
     fn ml_axis_is_widest_aabb_extent_not_pca() {
         // The flexion axis must be the widest AXIS-ALIGNED extent, NOT a PCA principal
