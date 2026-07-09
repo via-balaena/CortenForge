@@ -46,10 +46,11 @@ pub struct FsuScene {
     /// displacements — smooth C⁰ skinning, so the fine surface does not facet/tear over the
     /// coarse (few-mm) tet field the way a single nearest-node lookup does.
     pub disc_node_weights: Vec<Vec<(usize, f64)>>,
-    /// The L4/L5 signed-distance oracles — the viewer clamps the deformed disc surface out of
-    /// the bones each frame (the rigid-attachment carrier can otherwise push the annulus into a
-    /// vertebra at the ROM extremes). Built here so the fallible oracle construction stays in
-    /// the `Result`-returning assembly, not the infallible Bevy driver.
+    /// The L4/L5 signed-distance oracles — the viewer projects any deformed disc vertex that
+    /// lands INSIDE a bone back onto its surface (the disc FEM bonds to boxes, not the bones, so
+    /// its annulus bulges freely and would otherwise pierce the vertebra on the compression
+    /// side; a real disc can't — the bone stops it). Built here so the fallible construction
+    /// stays in the `Result`-returning assembly, not the infallible Bevy driver.
     pub o4: MeshOracle,
     pub o5: MeshOracle,
     /// The coupled FSU's captured force-driven ramp: per-frame equilibrium angle +
@@ -292,7 +293,7 @@ pub fn build(l4_path: &Path, l5_path: &Path, disc_path: &Path) -> Result<FsuScen
         &flexion.rest_nodes_native,
         &flexion.boundary_faces,
     );
-    // The bone oracles the viewer clamps the deformed disc against each frame.
+    // Bone oracles for the viewer's per-frame disc-vs-bone non-penetration projection.
     let o4 = oracle(&l4)?;
     let o5 = oracle(&l5)?;
 

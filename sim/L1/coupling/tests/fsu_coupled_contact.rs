@@ -39,14 +39,12 @@ use cf_fsu_model::{CoupledFsu, CoupledParams, PHYSIOLOGIC_MOMENT, moment_ramp};
 // PHYSIOLOGIC_MOMENT (7.5 N·m) is shared with the viewer via cf_fsu_model::moment_ramp.
 const RUNG7_FLEXION_ROM_DEG: f64 = 6.13; // rung 7's headline flexion ROM at 7.5 N·m
 const ROM_TOL_DEG: f64 = 0.15; // agreement window vs rung 7's grid-interpolated ROM
-const RUNG7_K_DISC: f64 = -0.2819; // rung 7's disc bending stiffness with the box bond (N·m/rad)
-// The exact-geometry disc conform (endplate bands projected onto the real L4/L5 surfaces)
-// shifts k_disc only ~0.5% vs the box bond (≈ −0.2805): the nearest-point projection makes
-// the minimal-displacement correction onto the real endplate, so it barely changes the disc's
-// bending geometry — confirming the box bond was already an accurate k_disc proxy, and the
-// rung's real payoff is the render (the seam), not a stiffness fix. Guard = a gross-regression
-// bound around rung 7's value.
-const K_DISC_CONFORM_TOL: f64 = 0.02;
+const RUNG7_K_DISC: f64 = -0.2819; // rung 7's disc bending stiffness (N·m/rad)
+// k_disc is measured on the bonded FEM disc, which keeps the RAW (un-conformed) geometry: the
+// exact-geometry conform is applied to the RENDER surface only (a conformed FEM mesh spawns
+// sliver tets that fail the large-angle incremental deform sweep). So k_disc reproduces rung 7's
+// value; the guard is a gross-regression bound around it.
+const K_DISC_TOL: f64 = 0.02;
 // Literature extension corridor (Yamamoto 1989 / Panjabi–White, widened for 7.5–10 N·m).
 const LIT_EXTENSION_DEG: (f64, f64) = (2.5, 5.5);
 
@@ -61,22 +59,18 @@ fn l4_l5_coupled_flexion_extension_equilibrium() {
     let fsu =
         CoupledFsu::build(&l4, &l5, &disc, &CoupledParams::default()).expect("build coupled FSU");
 
-    // ── Disc bushing: k_disc measured on the disc CONFORMED to the real endplates (exact
-    //    geometry). Expected ~−0.2805 — a ~0.5% shift from rung 7's box-bond −0.2819 (the
-    //    minimal-displacement conform barely changes the bending geometry); flexion sense
-    //    still derived, not hardcoded. The bound is a gross-regression guard. ──
+    // ── Disc bushing: k_disc measured on the bonded FEM disc (raw geometry — the conform is
+    //    render-surface-only), so it reproduces rung 7's value; flexion sense still derived,
+    //    not hardcoded. The bound is a gross-regression guard. ──
     let k_disc = fsu.k_disc();
-    println!(
-        "[disc]  k_disc = {k_disc:+.4} N·m/rad  (rung 7 box-bond {RUNG7_K_DISC:+.4}, exact-endplate ~0.5% shift)"
-    );
+    println!("[disc]  k_disc = {k_disc:+.4} N·m/rad  (rung 7 {RUNG7_K_DISC:+.4})");
     assert!(
         k_disc < 0.0,
         "disc bending must be restoring, got {k_disc:+.4}"
     );
     assert!(
-        (k_disc - RUNG7_K_DISC).abs() < K_DISC_CONFORM_TOL,
-        "k_disc on the conformed disc must stay within {K_DISC_CONFORM_TOL} of rung 7's box-bond \
-         {RUNG7_K_DISC:+.4} (the exact-endplate conform softens it ~5%), got {k_disc:+.4}"
+        (k_disc - RUNG7_K_DISC).abs() < K_DISC_TOL,
+        "k_disc must reproduce rung 7's {RUNG7_K_DISC:+.4} within {K_DISC_TOL}, got {k_disc:+.4}"
     );
 
     // Neutral pose is force-free (ligaments at slack, disc spring at reference).
