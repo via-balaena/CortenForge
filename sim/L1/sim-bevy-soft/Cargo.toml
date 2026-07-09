@@ -129,3 +129,10 @@ path = "examples/real_bone_render.rs"
 [[example]]
 name = "box-on-mesh-sphere"
 path = "examples/box_on_mesh_sphere.rs"
+
+# 5.1b `box-on-bone` — 5.1a's grid-SDF contact on REAL anatomy: the box's free +x side presses
+#    into the L5 vertebra voxelised to a `CachedGridSdf`. Plain penalty (the grid needs none of the
+#    oracle's cutoff/smoothing/averaging); non-penetration verified over all box verts (step 5.1b).
+[[example]]
+name = "box-on-bone"
+path = "examples/box_on_bone.rs"
