@@ -25,7 +25,7 @@ use std::collections::{HashMap, HashSet};
 
 use cf_geometry::IndexedMesh;
 use mesh_repair::MeshAdjacency;
-use nalgebra::Point3;
+use nalgebra::{Point3, Vector3};
 
 /// A contact patch extracted from a source mesh.
 ///
@@ -466,6 +466,85 @@ fn build_ringed_wall(
     faces.extend(wall);
 }
 
+/// Taubin-smooth **only** the free wall vertices of a `bushing`, leaving the
+/// contact caps exact (B3b).
+///
+/// The first `bushing.contact_count` vertices — the two endplate caps — are
+/// pinned: they still anchor their free neighbours (so the wall stays attached
+/// to the exact contact rims) but never move, keeping `rendered === contacts`
+/// on the surfaces that matter. Every free wall-interior vertex is relaxed by a
+/// Taubin low-pass filter (alternating shrink `λ` and expand `μ` passes) so the
+/// free surface loses faceting/creases without the volume shrinkage plain
+/// Laplacian smoothing would cause.
+///
+/// Returns the number of iterations applied (`0` if `iterations == 0`, the mesh
+/// has no faces, or there are no free vertices to move).
+pub fn smooth_wall(bushing: &mut Bushing, iterations: usize, lambda: f64, mu: f64) -> usize {
+    let first_free = bushing.contact_count as usize;
+    let mesh = &mut bushing.mesh;
+    if iterations == 0 || mesh.faces.is_empty() || first_free >= mesh.vertices.len() {
+        return 0;
+    }
+
+    // 1-ring adjacency: `neighbors[i]` = vertices sharing an edge with `i`.
+    let n = mesh.vertices.len();
+    let mut neighbors: Vec<Vec<u32>> = vec![Vec::new(); n];
+    for &[a, b, c] in &mesh.faces {
+        push_neighbor(&mut neighbors, a, b);
+        push_neighbor(&mut neighbors, b, c);
+        push_neighbor(&mut neighbors, c, a);
+    }
+
+    let mut buffer = mesh.vertices.clone();
+    for _ in 0..iterations {
+        taubin_pass(&mesh.vertices, &neighbors, first_free, lambda, &mut buffer);
+        std::mem::swap(&mut mesh.vertices, &mut buffer);
+        taubin_pass(&mesh.vertices, &neighbors, first_free, mu, &mut buffer);
+        std::mem::swap(&mut mesh.vertices, &mut buffer);
+    }
+    iterations
+}
+
+/// Add the undirected edge `(a, b)` to the 1-ring adjacency, deduping linearly
+/// (triangulated-surface valence is small, so the `contains` scan is bounded).
+fn push_neighbor(neighbors: &mut [Vec<u32>], a: u32, b: u32) {
+    if a == b {
+        return;
+    }
+    if !neighbors[a as usize].contains(&b) {
+        neighbors[a as usize].push(b);
+    }
+    if !neighbors[b as usize].contains(&a) {
+        neighbors[b as usize].push(a);
+    }
+}
+
+/// One Laplacian umbrella pass with weight `weight`: each free vertex
+/// (index `>= first_free`) moves `weight × (neighbour_centroid - vertex)`;
+/// pinned vertices and vertices with no neighbours pass through unchanged.
+// Neighbour counts are tiny and lossless in `f64`.
+#[allow(clippy::cast_precision_loss)]
+fn taubin_pass(
+    src: &[Point3<f64>],
+    neighbors: &[Vec<u32>],
+    first_free: usize,
+    weight: f64,
+    dst: &mut [Point3<f64>],
+) {
+    for i in 0..src.len() {
+        if i < first_free || neighbors[i].is_empty() {
+            dst[i] = src[i];
+            continue;
+        }
+        let mut sum = Vector3::zeros();
+        for &nb in &neighbors[i] {
+            sum += src[nb as usize].coords;
+        }
+        let centroid = sum / neighbors[i].len() as f64;
+        dst[i] = src[i] + (centroid - src[i].coords) * weight;
+    }
+}
+
 #[cfg(test)]
 #[allow(
     // Tests legitimately use `.unwrap()`/indexing to assert structure; the
@@ -481,7 +560,8 @@ mod tests {
     use std::f64::consts::TAU;
 
     use super::*;
-    use nalgebra::Point3;
+    use mesh_repair::{TAUBIN_DEFAULT_LAMBDA, TAUBIN_DEFAULT_MU};
+    use nalgebra::{Point3, Vector3};
 
     /// A unit square (4 corners, 2 CCW triangles in the z=0 plane) plus a stray
     /// vertex and triangle that share the square's `1–2` edge but are *not*
@@ -784,5 +864,75 @@ mod tests {
                 v.z
             );
         }
+    }
+
+    /// Sum over free vertices of the distance to their 1-ring neighbour
+    /// centroid — a discrete-Laplacian roughness that Taubin smoothing lowers.
+    fn wall_roughness(mesh: &IndexedMesh, first_free: usize) -> f64 {
+        let n = mesh.vertices.len();
+        let mut neighbors: Vec<HashSet<u32>> = vec![HashSet::new(); n];
+        for &[a, b, c] in &mesh.faces {
+            for (x, y) in [(a, b), (b, c), (c, a)] {
+                neighbors[x as usize].insert(y);
+                neighbors[y as usize].insert(x);
+            }
+        }
+        let mut roughness = 0.0;
+        for (i, ring) in neighbors.iter().enumerate().skip(first_free) {
+            if ring.is_empty() {
+                continue;
+            }
+            let mut sum = Vector3::zeros();
+            for &j in ring {
+                sum += mesh.vertices[j as usize].coords;
+            }
+            let centroid = sum / ring.len() as f64;
+            roughness += (mesh.vertices[i].coords - centroid).norm();
+        }
+        roughness
+    }
+
+    #[test]
+    fn smooth_wall_relaxes_free_verts_and_pins_caps() {
+        let top = square_patch(1.0);
+        let bottom = square_patch(0.0);
+        let mut bushing = assemble_bushing(&top, &bottom, 4);
+        let first_free = bushing.contact_count as usize; // 8
+
+        // Corrugate the free wall so it is far from a Taubin fixpoint.
+        for (offset, v) in bushing.mesh.vertices[first_free..].iter_mut().enumerate() {
+            v.x += if offset % 2 == 0 { 0.3 } else { -0.3 };
+        }
+        let caps_before: Vec<Point3<f64>> = bushing.mesh.vertices[..first_free].to_vec();
+        let free_before: Vec<Point3<f64>> = bushing.mesh.vertices[first_free..].to_vec();
+        let rough_before = wall_roughness(&bushing.mesh, first_free);
+
+        let iters = smooth_wall(&mut bushing, 10, TAUBIN_DEFAULT_LAMBDA, TAUBIN_DEFAULT_MU);
+        assert_eq!(iters, 10);
+
+        // Caps are pinned: byte-identical after smoothing.
+        assert_eq!(&bushing.mesh.vertices[..first_free], caps_before.as_slice());
+
+        // Free verts actually moved, and the wall got smoother.
+        assert_ne!(&bushing.mesh.vertices[first_free..], free_before.as_slice());
+        let rough_after = wall_roughness(&bushing.mesh, first_free);
+        assert!(
+            rough_after < rough_before * 0.5,
+            "roughness {rough_after} not < half of {rough_before}"
+        );
+
+        // Still a valid closed solid.
+        let adjacency = MeshAdjacency::build(&bushing.mesh.faces);
+        assert_eq!(adjacency.boundary_edge_count(), 0);
+        assert!(bushing.mesh.signed_volume() > 0.0);
+    }
+
+    #[test]
+    fn smooth_wall_is_noop_without_free_verts() {
+        let mut bushing = assemble_bushing(&square_patch(1.0), &square_patch(0.0), 1);
+        let before = bushing.mesh.vertices.clone();
+        let iters = smooth_wall(&mut bushing, 10, TAUBIN_DEFAULT_LAMBDA, TAUBIN_DEFAULT_MU);
+        assert_eq!(iters, 0);
+        assert_eq!(bushing.mesh.vertices, before);
     }
 }
