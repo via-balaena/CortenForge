@@ -1,30 +1,26 @@
-//! Face-painting ladder — **B5.1: brush-paint a region** (`paint-faces`).
+//! Face-painting ladder — **B5.2: paint two bodies** (`paint-faces`).
 //!
-//! Loads a real vertebra (`$CF_L4_STL`) and lets you **paint / erase a region
-//! of faces** with a round brush that is drawn on the surface. This is the
-//! region-selection front-end for the disc loft: a human paints the two
-//! endplate patches (the automatic rule can't select real endplates cleanly),
-//! which then loft into the disc.
+//! Loads the two vertebrae (`$CF_L4_STL`, `$CF_L5_STL`) and lets you **paint /
+//! erase a region of faces on each** with a round brush drawn on the surface.
+//! This is the region-selection front-end for the disc loft: a human paints the
+//! two endplate patches (the automatic rule can't select real endplates
+//! cleanly), which then loft into the disc (next rung).
 //!
 //! Picking contract: `cf_bevy_common::triangle_mesh_flat_shaded` emits three
 //! vertices per face **in face order**, so a mesh ray hit's `triangle_index` is
 //! the source `IndexedMesh` face id; the brush paints every face whose centroid
-//! is within the brush radius of the hit face.
+//! is within the brush radius of the hit face (optionally normal-filtered).
 //!
-//! Controls: **left-drag** orbits; **scroll** zooms; **right-drag** pans.
-//! **Shift + left-drag** paints (or erases) a brush stroke; **`E`** toggles
-//! paint / erase; **`[` / `]`** shrink / grow the brush; **`C`** clears all.
-//! The brush ring on the surface shows its size (red = paint, cyan = erase).
+//! Controls (also shown in the on-screen HUD): **left-drag** orbits; **scroll**
+//! zooms; **right-drag** pans. **Shift + left-drag** paints/erases on the active
+//! body; **Tab** switches active body; **E** paint/erase; **N** normal filter;
+//! **`-` / `=`** filter tolerance; **`[` / `]`** brush size; **C** clears the
+//! active body.
 //!
-//! **`N`** toggles a normal-similarity filter (on by default) so the brush only
-//! paints faces facing the same way as the one under the cursor — painting a
-//! flat endplate won't spill onto the steep lateral walls. **`-` / `=`** widen /
-//! tighten the tolerance.
+//! The STLs are BodyParts3D (CC BY-SA, **not committed**). Point `$CF_L4_STL` /
+//! `$CF_L5_STL` at the L4 / L5 STLs (FMA13075 / 13076).
 //!
-//! The STL is BodyParts3D (CC BY-SA, **not committed**). Point `$CF_L4_STL` at
-//! the L4 STL (FMA13075).
-//!
-//! Run: `CF_L4_STL=… cargo run --release -p sim-bevy-soft --example paint-faces`
+//! Run: `CF_L4_STL=… CF_L5_STL=… cargo run --release -p sim-bevy-soft --example paint-faces`
 
 #![allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
 #![allow(clippy::expect_used)] // an example may expect on its own required asset/env setup.
@@ -39,6 +35,7 @@ use bevy::prelude::*;
 use cf_bevy_common::mesh::triangle_mesh_flat_shaded;
 use cf_bevy_common::prelude::{OrbitCamera, update_orbit_camera};
 use cf_fsu_geometry::load_from_env;
+use cf_geometry::IndexedMesh;
 use cf_viewer::{UpAxis, setup_camera_and_lighting};
 use mesh_types::Aabb;
 
@@ -52,13 +49,28 @@ const BRUSH_INIT: f64 = 4.0;
 const BRUSH_MIN: f64 = 0.5;
 const BRUSH_MAX: f64 = 30.0;
 
-/// The paintable mesh plus per-face centroids and unit normals (native mm) for
-/// the brush-radius and normal-similarity queries.
-#[derive(Resource)]
-struct PaintTarget {
+/// A paintable body: its render mesh, per-face centroids + unit normals (native
+/// mm) for the brush queries, and the set of painted face ids.
+#[derive(Component)]
+struct PaintBody {
+    name: &'static str,
     mesh: Handle<Mesh>,
     centroids: Vec<[f64; 3]>,
     normals: Vec<[f64; 3]>,
+    painted: HashSet<usize>,
+}
+
+/// The two bodies and which one the brush acts on (cycled with `Tab`).
+#[derive(Resource)]
+struct Bodies {
+    entities: Vec<Entity>,
+    active: usize,
+}
+
+impl Bodies {
+    fn active_entity(&self) -> Entity {
+        self.entities[self.active]
+    }
 }
 
 /// Restrict the brush to faces whose normal is within `max_angle_deg` of the
@@ -70,12 +82,8 @@ struct NormalFilter {
     max_angle_deg: f64,
 }
 
-/// The set of currently-painted face ids (tracked so `C` can clear them).
-#[derive(Resource, Default)]
-struct Painted(HashSet<usize>);
-
-/// The surface point under the cursor this frame (world space) and the face
-/// there — set by [`hover_ray`], read by the brush ring and the paint stroke.
+/// The surface point under the cursor this frame (world space) and the active
+/// body's face there — set by [`hover_ray`], read by the brush ring and stroke.
 #[derive(Resource, Default)]
 struct Hover {
     point: Option<Vec3>,
@@ -94,11 +102,46 @@ enum BrushMode {
     Erase,
 }
 
+/// Marks the HUD status-text node (the dynamic half).
+#[derive(Component)]
+struct HudText;
+
+/// One paint/erase stroke: the faces whose selection state it flipped, so it
+/// can be undone. `mode` records whether the stroke painted or erased them.
+struct Stroke {
+    body: Entity,
+    mode: BrushMode,
+    faces: Vec<usize>,
+}
+
+/// Undo stack of finished strokes.
+#[derive(Resource, Default)]
+struct History(Vec<Stroke>);
+
+/// The stroke currently being drawn (accumulates while Shift + left is held).
+#[derive(Resource, Default)]
+struct ActiveStroke(Option<Stroke>);
+
+/// Static controls reference, one per row, shown in the HUD sidebar.
+const CONTROLS: &str = "CONTROLS\n\
+     orbit        left-drag\n\
+     pan          right-drag\n\
+     zoom         scroll\n\
+     paint        Shift + left-drag\n\
+     Tab          switch body\n\
+     E            paint / erase\n\
+     N            normal filter\n\
+     - / =        tolerance\n\
+     [ / ]        brush size\n\
+     Ctrl + Z     undo stroke\n\
+     C            clear body";
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
-        .init_resource::<Painted>()
         .init_resource::<Hover>()
+        .init_resource::<History>()
+        .init_resource::<ActiveStroke>()
         .insert_resource(BrushRadius(BRUSH_INIT))
         .insert_resource(BrushMode::Paint)
         .insert_resource(NormalFilter {
@@ -107,30 +150,34 @@ fn main() {
         })
         .add_systems(Startup, setup)
         .add_systems(Update, (camera_input, update_orbit_camera).chain())
-        .add_systems(Update, (hover_ray, apply_brush, draw_brush).chain())
         .add_systems(
             Update,
-            (adjust_brush, toggle_mode, toggle_filter, clear_selection),
+            (hover_ray, apply_brush, finalize_stroke, draw_brush).chain(),
         )
+        .add_systems(
+            Update,
+            (
+                adjust_brush,
+                toggle_mode,
+                toggle_filter,
+                switch_body,
+                clear_selection,
+                undo_stroke,
+            ),
+        )
+        .add_systems(Update, (update_hud, update_body_visibility))
         .run();
 }
 
-fn setup(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
-    let l4 = load_from_env("CF_L4_STL").expect("set $CF_L4_STL (vertebra, e.g. FMA13075)");
-
-    // Per-face centroids and unit normals in native coordinates for the
-    // brush-radius and normal-similarity queries.
-    let mut centroids: Vec<[f64; 3]> = Vec::with_capacity(l4.faces.len());
-    let mut normals: Vec<[f64; 3]> = Vec::with_capacity(l4.faces.len());
-    for &[a, b, c] in &l4.faces {
+/// Per-face centroids and unit normals in native coordinates.
+fn face_geometry(mesh: &IndexedMesh) -> (Vec<[f64; 3]>, Vec<[f64; 3]>) {
+    let mut centroids = Vec::with_capacity(mesh.faces.len());
+    let mut normals = Vec::with_capacity(mesh.faces.len());
+    for &[a, b, c] in &mesh.faces {
         let (a, b, c) = (
-            l4.vertices[a as usize],
-            l4.vertices[b as usize],
-            l4.vertices[c as usize],
+            mesh.vertices[a as usize],
+            mesh.vertices[b as usize],
+            mesh.vertices[c as usize],
         );
         centroids.push([
             (a.x + b.x + c.x) / 3.0,
@@ -145,34 +192,98 @@ fn setup(
             [0.0, 0.0, 1.0]
         });
     }
+    (centroids, normals)
+}
 
-    // Per-source-vertex colours seed the ATTRIBUTE_COLOR attribute; the builder
-    // emits three per face, which the brush then overwrites per face.
-    let seed = vec![BASE; l4.vertices.len()];
-    let mesh = triangle_mesh_flat_shaded(&l4, Some(&seed), UpAxis::PlusZ);
-    let handle = meshes.add(mesh);
+fn setup(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let l4 = load_from_env("CF_L4_STL").expect("set $CF_L4_STL (superior vertebra, FMA13075)");
+    let l5 = load_from_env("CF_L5_STL").expect("set $CF_L5_STL (inferior vertebra, FMA13076)");
 
-    commands.spawn((
-        Mesh3d(handle.clone()),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            // White base so the per-vertex face colours show through unmodulated.
-            base_color: Color::WHITE,
+    let mut entities = Vec::new();
+    for (mesh, name) in [(&l4, "L4"), (&l5, "L5")] {
+        let (centroids, normals) = face_geometry(mesh);
+        let seed = vec![BASE; mesh.vertices.len()];
+        let handle = meshes.add(triangle_mesh_flat_shaded(mesh, Some(&seed), UpAxis::PlusZ));
+        let material = materials.add(StandardMaterial {
+            base_color: Color::WHITE, // per-vertex face colours show through
             perceptual_roughness: 0.85,
+            double_sided: true,
+            cull_mode: None,
             ..default()
-        })),
-        Transform::default(),
-    ));
-    commands.insert_resource(PaintTarget {
-        mesh: handle,
-        centroids,
-        normals,
+        });
+        let entity = commands
+            .spawn((
+                Mesh3d(handle.clone()),
+                MeshMaterial3d(material),
+                Transform::default(),
+                PaintBody {
+                    name,
+                    mesh: handle,
+                    centroids,
+                    normals,
+                    painted: HashSet::new(),
+                },
+            ))
+            .id();
+        entities.push(entity);
+    }
+    commands.insert_resource(Bodies {
+        entities,
+        active: 0,
     });
 
-    setup_camera_and_lighting(
-        &mut commands,
-        &Aabb::from_points(l4.vertices.iter()),
-        UpAxis::PlusZ,
-    );
+    // Frame both vertebrae.
+    let bounds = Aabb::from_points(l4.vertices.iter().chain(l5.vertices.iter()));
+    setup_camera_and_lighting(&mut commands, &bounds, UpAxis::PlusZ);
+
+    // HUD sidebar (full-height, left edge): a title, the static controls list,
+    // and the live status block, each item on its own row.
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(0.0),
+                top: Val::Px(0.0),
+                height: Val::Percent(100.0),
+                width: Val::Px(226.0),
+                padding: UiRect::all(Val::Px(16.0)),
+                row_gap: Val::Px(16.0),
+                flex_direction: FlexDirection::Column,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.05, 0.05, 0.07, 0.88)),
+        ))
+        .with_children(|panel| {
+            panel.spawn((
+                Text::new("PAINT  FACES"),
+                TextFont {
+                    font_size: 17.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.96, 0.72, 0.40)),
+            ));
+            panel.spawn((
+                Text::new(CONTROLS),
+                TextFont {
+                    font_size: 12.5,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.60, 0.62, 0.68)),
+            ));
+            panel.spawn((
+                Text::new(""),
+                TextFont {
+                    font_size: 13.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.95, 0.95, 0.97)),
+                HudText,
+            ));
+        });
 }
 
 /// Usual controls: orbit on left-drag (unless Shift is held for painting), pan
@@ -197,11 +308,13 @@ fn camera_input(
     }
 }
 
-/// Ray-cast the cursor into the mesh every frame, recording the surface hit for
-/// the brush ring and the paint stroke.
+/// Ray-cast the cursor every frame, recording the hit only when the **active**
+/// body is the front-most surface — so the brush ring and stroke stay on the
+/// body you are painting.
 fn hover_ray(
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform)>,
+    bodies: Res<Bodies>,
     mut ray_cast: MeshRayCast,
     mut hover: ResMut<Hover>,
 ) {
@@ -219,18 +332,21 @@ fn hover_ray(
     let Ok(ray) = camera.viewport_to_world(camera_transform, cursor) else {
         return;
     };
-    if let Some((_entity, hit)) = ray_cast
+    let active = bodies.active_entity();
+    if let Some((entity, hit)) = ray_cast
         .cast_ray(ray, &MeshRayCastSettings::default())
         .first()
     {
-        hover.point = Some(hit.point);
-        hover.normal = hit.normal;
-        hover.face = hit.triangle_index;
+        if *entity == active {
+            hover.point = Some(hit.point);
+            hover.normal = hit.normal;
+            hover.face = hit.triangle_index;
+        }
     }
 }
 
-/// While Shift + left is held, paint (or erase) every face within the brush
-/// radius of the hovered face.
+/// While Shift + left is held, paint (or erase) faces on the active body within
+/// the brush radius (and, if enabled, the normal-similarity tolerance).
 fn apply_brush(
     mouse: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -238,8 +354,9 @@ fn apply_brush(
     radius: Res<BrushRadius>,
     filter: Res<NormalFilter>,
     hover: Res<Hover>,
-    target: Res<PaintTarget>,
-    mut painted: ResMut<Painted>,
+    bodies: Res<Bodies>,
+    mut stroke: ResMut<ActiveStroke>,
+    mut q_bodies: Query<&mut PaintBody>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     if !painting(&keys) || !mouse.pressed(MouseButton::Left) {
@@ -248,11 +365,22 @@ fn apply_brush(
     let Some(face) = hover.face else {
         return;
     };
-    let (Some(&centre), Some(&reference)) = (target.centroids.get(face), target.normals.get(face))
-    else {
+    let active_entity = bodies.active_entity();
+    let Ok(mut body) = q_bodies.get_mut(active_entity) else {
         return;
     };
-    let Some(mesh) = meshes.get_mut(&target.mesh) else {
+    let PaintBody {
+        mesh: handle,
+        centroids,
+        normals,
+        painted,
+        ..
+    } = body.as_mut();
+
+    let (Some(&centre), Some(&reference)) = (centroids.get(face), normals.get(face)) else {
+        return;
+    };
+    let Some(mesh) = meshes.get_mut(&*handle) else {
         return;
     };
     let Some(VertexAttributeValues::Float32x4(colours)) = mesh.attribute_mut(Mesh::ATTRIBUTE_COLOR)
@@ -260,9 +388,16 @@ fn apply_brush(
         return;
     };
 
+    // Begin (or continue) the current stroke, so it can be undone as a unit.
+    let stroke = stroke.0.get_or_insert_with(|| Stroke {
+        body: active_entity,
+        mode: *mode,
+        faces: Vec::new(),
+    });
+
     let r2 = radius.0 * radius.0;
     let cos_min = filter.max_angle_deg.to_radians().cos();
-    for (f, (c, n)) in target.centroids.iter().zip(&target.normals).enumerate() {
+    for (f, (c, n)) in centroids.iter().zip(normals.iter()).enumerate() {
         let d = [c[0] - centre[0], c[1] - centre[1], c[2] - centre[2]];
         if d[0].mul_add(d[0], d[1].mul_add(d[1], d[2] * d[2])) > r2 {
             continue;
@@ -276,16 +411,91 @@ fn apply_brush(
                 continue; // normal too different from the face under the cursor
             }
         }
-        match *mode {
+        let changed = match stroke.mode {
             BrushMode::Paint => {
-                if painted.0.insert(f) {
+                let inserted = painted.insert(f);
+                if inserted {
                     recolour(colours, f, HIGHLIGHT);
                 }
+                inserted
             }
             BrushMode::Erase => {
-                if painted.0.remove(&f) {
+                let removed = painted.remove(&f);
+                if removed {
                     recolour(colours, f, BASE);
                 }
+                removed
+            }
+        };
+        if changed {
+            stroke.faces.push(f);
+        }
+    }
+}
+
+/// Close the current stroke once the brush is released, pushing it (if it
+/// changed anything) onto the undo history.
+fn finalize_stroke(
+    mouse: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut stroke: ResMut<ActiveStroke>,
+    mut history: ResMut<History>,
+) {
+    if stroke.0.is_none() {
+        return;
+    }
+    if painting(&keys) && mouse.pressed(MouseButton::Left) {
+        return; // still drawing
+    }
+    if let Some(done) = stroke.0.take() {
+        if !done.faces.is_empty() {
+            history.0.push(done);
+        }
+    }
+}
+
+/// Undo the last stroke with `Ctrl`/`Cmd + Z`: re-flip the faces it changed and
+/// make that body active so the change is visible.
+fn undo_stroke(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut history: ResMut<History>,
+    mut bodies: ResMut<Bodies>,
+    mut q_bodies: Query<&mut PaintBody>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    if !undo_pressed(&keys) {
+        return;
+    }
+    let Some(stroke) = history.0.pop() else {
+        return;
+    };
+    if let Some(index) = bodies.entities.iter().position(|&e| e == stroke.body) {
+        bodies.active = index;
+    }
+    let Ok(mut body) = q_bodies.get_mut(stroke.body) else {
+        return;
+    };
+    let PaintBody {
+        mesh: handle,
+        painted,
+        ..
+    } = body.as_mut();
+    let Some(mesh) = meshes.get_mut(&*handle) else {
+        return;
+    };
+    let Some(VertexAttributeValues::Float32x4(colours)) = mesh.attribute_mut(Mesh::ATTRIBUTE_COLOR)
+    else {
+        return;
+    };
+    for &f in &stroke.faces {
+        match stroke.mode {
+            BrushMode::Paint => {
+                painted.remove(&f);
+                recolour(colours, f, BASE);
+            }
+            BrushMode::Erase => {
+                painted.insert(f);
+                recolour(colours, f, HIGHLIGHT);
             }
         }
     }
@@ -334,47 +544,122 @@ fn toggle_mode(keys: Res<ButtonInput<KeyCode>>, mut mode: ResMut<BrushMode>) {
 fn toggle_filter(keys: Res<ButtonInput<KeyCode>>, mut filter: ResMut<NormalFilter>) {
     if keys.just_pressed(KeyCode::KeyN) {
         filter.enabled = !filter.enabled;
-        println!(
-            "normal filter: {}",
-            if filter.enabled { "ON" } else { "OFF" }
-        );
     }
     if keys.just_pressed(KeyCode::Minus) {
         filter.max_angle_deg = (filter.max_angle_deg + 5.0).min(90.0);
-        println!("normal tolerance: {:.0}°", filter.max_angle_deg);
     }
     if keys.just_pressed(KeyCode::Equal) {
         filter.max_angle_deg = (filter.max_angle_deg - 5.0).max(5.0);
-        println!("normal tolerance: {:.0}°", filter.max_angle_deg);
     }
 }
 
-/// Clear the whole selection with `C`.
+/// Cycle the active body with `Tab`.
+fn switch_body(keys: Res<ButtonInput<KeyCode>>, mut bodies: ResMut<Bodies>) {
+    if keys.just_pressed(KeyCode::Tab) {
+        bodies.active = (bodies.active + 1) % bodies.entities.len();
+    }
+}
+
+/// Clear the active body's selection with `C`.
 fn clear_selection(
     keys: Res<ButtonInput<KeyCode>>,
-    target: Res<PaintTarget>,
-    mut painted: ResMut<Painted>,
+    bodies: Res<Bodies>,
+    mut q_bodies: Query<&mut PaintBody>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    if !keys.just_pressed(KeyCode::KeyC) || painted.0.is_empty() {
+    if !keys.just_pressed(KeyCode::KeyC) {
         return;
     }
-    let Some(mesh) = meshes.get_mut(&target.mesh) else {
+    let Ok(mut body) = q_bodies.get_mut(bodies.active_entity()) else {
         return;
     };
-    if let Some(VertexAttributeValues::Float32x4(colours)) =
-        mesh.attribute_mut(Mesh::ATTRIBUTE_COLOR)
-    {
-        for &f in &painted.0 {
-            recolour(colours, f, BASE);
+    if body.painted.is_empty() {
+        return;
+    }
+    if let Some(mesh) = meshes.get_mut(&body.mesh) {
+        if let Some(VertexAttributeValues::Float32x4(colours)) =
+            mesh.attribute_mut(Mesh::ATTRIBUTE_COLOR)
+        {
+            for &f in &body.painted {
+                recolour(colours, f, BASE);
+            }
         }
     }
-    painted.0.clear();
+    body.painted.clear();
+}
+
+/// Refresh the on-screen HUD: controls + live status.
+fn update_hud(
+    bodies: Res<Bodies>,
+    mode: Res<BrushMode>,
+    radius: Res<BrushRadius>,
+    filter: Res<NormalFilter>,
+    q_bodies: Query<&PaintBody>,
+    mut q_text: Query<&mut Text, With<HudText>>,
+) {
+    let Ok(mut text) = q_text.single_mut() else {
+        return;
+    };
+    let active = bodies.active_entity();
+    let active_name = q_bodies.get(active).map_or("?", |b| b.name);
+    let mode = match *mode {
+        BrushMode::Paint => "PAINT",
+        BrushMode::Erase => "ERASE",
+    };
+    let filter_status = if filter.enabled {
+        format!("on ({:.0} deg)", filter.max_angle_deg)
+    } else {
+        "off".to_string()
+    };
+    let mut counts = String::new();
+    for &e in &bodies.entities {
+        if let Ok(b) = q_bodies.get(e) {
+            counts.push_str(&format!("  {:<11}{}\n", b.name, b.painted.len()));
+        }
+    }
+
+    text.0 = format!(
+        "STATUS\n\
+         active       {active_name}\n\
+         mode         {mode}\n\
+         brush        {:.1} mm\n\
+         filter       {filter_status}\n\
+         \n\
+         painted\n\
+         {counts}",
+        radius.0,
+    );
+}
+
+/// Show only the active body — the others are hidden — so the body being
+/// painted is unobstructed. Runs whenever the active selection changes.
+fn update_body_visibility(bodies: Res<Bodies>, mut q_vis: Query<&mut Visibility>) {
+    if !bodies.is_changed() {
+        return;
+    }
+    for (i, &e) in bodies.entities.iter().enumerate() {
+        if let Ok(mut visibility) = q_vis.get_mut(e) {
+            *visibility = if i == bodies.active {
+                Visibility::Visible
+            } else {
+                Visibility::Hidden
+            };
+        }
+    }
 }
 
 /// Whether a Shift key (the paint modifier) is held.
 fn painting(keys: &ButtonInput<KeyCode>) -> bool {
     keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight)
+}
+
+/// Whether the undo chord (`Ctrl`/`Cmd + Z`) was just pressed.
+fn undo_pressed(keys: &ButtonInput<KeyCode>) -> bool {
+    let modifier = keys.pressed(KeyCode::ControlLeft)
+        || keys.pressed(KeyCode::ControlRight)
+        || keys.pressed(KeyCode::SuperLeft)
+        || keys.pressed(KeyCode::SuperRight);
+    modifier && keys.just_pressed(KeyCode::KeyZ)
 }
 
 /// Set the three emitted vertices of face `f` (`3f, 3f+1, 3f+2`) to `colour`.
