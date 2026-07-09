@@ -381,10 +381,12 @@ impl CoupledFsu {
     /// full ±ROM cleanly. The disc bonds to its endplate boxes, which rotate with the flexion,
     /// so the real deformation is attached to both vertebrae by construction (top face follows
     /// L4, bottom follows L5) — the viewer just skins the clean surface onto these real nodes.
-    /// The sweep is ONE continuous monotone chain from rest — down to the extension peak,
-    /// then up through neutral to the flexion peak — so every step stays sub-degree.
-    /// Chaining the legs (rather than resetting to rest between them) is load-bearing: a
-    /// reset would warm-start the next solve from the far-deformed state, a big jump.
+    /// The sweep is ONE continuous chain from rest — for the sorted moment ramp its
+    /// consumers pass, monotone down to the extension peak then up through neutral to the
+    /// flexion peak — and every warm-started sub-step stays ≤ `CAPTURE_SUBSTEP` regardless
+    /// of input order. Chaining the legs (rather than resetting to rest between them) is
+    /// load-bearing: a reset would warm-start the next solve from the far-deformed state,
+    /// a big jump.
     ///
     /// # Errors
     /// Returns an error if a swept `applied` moment has no equilibrium within
@@ -416,7 +418,7 @@ impl CoupledFsu {
             thetas.iter().map(|&t| self.facet_response(t).0).collect();
 
         // Drive the RENDER disc's FEM incrementally to each equilibrium angle and read the REAL
-        // deformed nodes (no extrapolation). Two monotone legs from rest keep every step small.
+        // deformed nodes (no extrapolation). One continuous chain from rest keeps every step small.
         let n = thetas.len();
         let mut deformed: Vec<Vec<Point3<f64>>> = vec![Vec::new(); n];
         let (rest_nodes_native, boundary_faces) = {

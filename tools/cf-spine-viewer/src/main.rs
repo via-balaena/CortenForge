@@ -85,8 +85,9 @@ const FACET_RADIUS: f32 = 0.8; // facet near-contact marker
 /// Playback speed in captured-frames per second; interpolation keeps it smooth.
 /// The motion is the REAL coupled ROM (flexion ~6°, extension ~4.5° stopping on the
 /// facets) — force-driven and ROM-limited, so no exaggeration is applied: L4 rotates by
-/// the solved equilibrium angle and the disc deforms by the (linearly-extrapolated) FEM
-/// field at that angle. The panel reports the applied moment, the true angle, and the
+/// the solved equilibrium angle and the disc deforms by the real FEM field at that angle
+/// (interpolated between incrementally-solved captured frames, not extrapolated). The
+/// panel reports the applied moment, the true angle, and the
 /// facet engagement so the "bones stop on the facets" is legible.
 const PLAYBACK_FPS: f32 = 6.0;
 
