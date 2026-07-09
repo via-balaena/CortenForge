@@ -56,6 +56,21 @@ pub struct Patch {
     pub source_vertex: Vec<u32>,
 }
 
+/// An assembled bushing: the closed loft mesh plus the boundary between its
+/// exact contact caps and its free perimeter wall.
+#[derive(Debug, Clone)]
+pub struct Bushing {
+    /// The closed, outward-oriented bushing mesh.
+    pub mesh: IndexedMesh,
+
+    /// The first `contact_count` vertices are the two contact caps (the exact
+    /// endplate surfaces — pinned when the wall is smoothed); every vertex at or
+    /// after this index is a free wall-interior vertex introduced by the ring
+    /// subdivision. With a single-segment wall there are no free vertices and
+    /// `contact_count == mesh.vertex_count()`.
+    pub contact_count: u32,
+}
+
 /// Extract the patch defined by `face_ids` from `mesh`.
 ///
 /// Produces the re-indexed sub-mesh of the selected faces plus its ordered,
@@ -165,6 +180,77 @@ const fn normalize_edge(v0: u32, v1: u32) -> (u32, u32) {
     if v0 < v1 { (v0, v1) } else { (v1, v0) }
 }
 
+/// Reorder `rim_b` to correspond to `rim_a`: rotate it to start at the vertex
+/// nearest `pa0` (= `rim_a[0]`), then reverse it if that better matches the
+/// direction of `rim_a`'s first step toward `pa1` (= `rim_a[1]`). Shared by the
+/// wall stitch and the ring-subdivision positioning so both agree on how the
+/// two rims line up.
+fn orient_rim_b(
+    pa0: &Point3<f64>,
+    pa1: &Point3<f64>,
+    rim_b: &[u32],
+    verts: &[Point3<f64>],
+) -> Vec<u32> {
+    let nb = rim_b.len();
+    let pb: Vec<Point3<f64>> = rim_b.iter().map(|&v| verts[v as usize]).collect();
+    let k = (0..nb)
+        .min_by(|&i, &j| dist(pa0, &pb[i]).total_cmp(&dist(pa0, &pb[j])))
+        .unwrap_or(0);
+    let fwd = dist(pa1, &pb[(k + 1) % nb]);
+    let rev = dist(pa1, &pb[(k + nb - 1) % nb]);
+    let reverse = rev < fwd;
+    (0..nb)
+        .map(|m| {
+            let src = if reverse {
+                (k + nb - m) % nb
+            } else {
+                (k + m) % nb
+            };
+            rim_b[src]
+        })
+        .collect()
+}
+
+/// Resample a closed loop of positions to exactly `r` points spaced uniformly
+/// by arc length, starting at the loop's first point. Used to give an interior
+/// wall ring a matched vertex count when the two rims differ in resolution.
+/// Returns the input unchanged if it has zero perimeter or `r == 0`.
+// The step/count casts are exact: loop counts are tiny and lossless in `f64`.
+#[allow(clippy::cast_precision_loss)]
+fn resample_loop(positions: &[Point3<f64>], count: usize) -> Vec<Point3<f64>> {
+    let len = positions.len();
+    if len == 0 || count == 0 {
+        return positions.to_vec();
+    }
+    let mut cum = vec![0.0];
+    let mut total = 0.0;
+    for i in 0..len {
+        total += dist(&positions[i], &positions[(i + 1) % len]);
+        cum.push(total);
+    }
+    if total <= 0.0 {
+        return positions.to_vec();
+    }
+    let mut out = Vec::with_capacity(count);
+    let mut seg = 0usize;
+    for step in 0..count {
+        let target = (step as f64 / count as f64) * total;
+        while seg + 1 < cum.len() && cum[seg + 1] < target {
+            seg += 1;
+        }
+        let seg_len = cum[seg + 1] - cum[seg];
+        let frac = if seg_len > 0.0 {
+            (target - cum[seg]) / seg_len
+        } else {
+            0.0
+        };
+        let start = positions[seg % len];
+        let end = positions[(seg + 1) % len];
+        out.push(start + (end - start) * frac);
+    }
+    out
+}
+
 /// Stitch two boundary-rim loops into the bushing's perimeter wall — the free
 /// (no-contact) surface bridging the top patch to the bottom patch (B1).
 ///
@@ -190,28 +276,7 @@ pub fn stitch_rims(verts: &[Point3<f64>], rim_a: &[u32], rim_b: &[u32]) -> Vec<[
     }
 
     let pa: Vec<Point3<f64>> = rim_a.iter().map(|&v| verts[v as usize]).collect();
-    let pb: Vec<Point3<f64>> = rim_b.iter().map(|&v| verts[v as usize]).collect();
-
-    // Align `rim_b` to start at the vertex nearest `rim_a[0]`, then choose the
-    // traversal direction whose next step stays closest to `rim_a`'s next step.
-    let k = (0..nb)
-        .min_by(|&i, &j| dist(&pa[0], &pb[i]).total_cmp(&dist(&pa[0], &pb[j])))
-        .unwrap_or(0);
-    let fwd = dist(&pa[1], &pb[(k + 1) % nb]);
-    let rev = dist(&pa[1], &pb[(k + nb - 1) % nb]);
-    let reverse = rev < fwd;
-
-    // `rim_b` rotated to start at `k`, forward or reversed to match `rim_a`.
-    let b_idx: Vec<u32> = (0..nb)
-        .map(|m| {
-            let src = if reverse {
-                (k + nb - m) % nb
-            } else {
-                (k + m) % nb
-            };
-            rim_b[src]
-        })
-        .collect();
+    let b_idx = orient_rim_b(&pa[0], &pa[1], rim_b, verts);
     let b_pos: Vec<Point3<f64>> = b_idx.iter().map(|&v| verts[v as usize]).collect();
 
     let ta = cumulative_params(&pa);
@@ -272,13 +337,19 @@ fn cumulative_params(positions: &[Point3<f64>]) -> Vec<f64> {
 }
 
 /// Assemble a top patch, the perimeter wall, and a bottom patch into one closed
-/// bushing mesh (B2).
+/// [`Bushing`] mesh (B2 / B3a).
 ///
 /// The two patches are concatenated into a shared vertex array (top first, then
 /// bottom), the bottom patch's faces are **flipped** so its normals point out
-/// the opposite side, and the wall from [`stitch_rims`] seals the two outer
-/// rims. A final orientation pass flips the whole mesh if it came out inside-out,
-/// so the result always has outward-facing normals (`signed_volume > 0`).
+/// the opposite side, and the perimeter wall seals the two outer rims. A final
+/// orientation pass flips the whole mesh if it came out inside-out, so the
+/// result always has outward-facing normals (`signed_volume > 0`).
+///
+/// `wall_segments` is the number of stacked wall rings between the two rims.
+/// With `1` the wall is a single triangle band directly between the rims (no
+/// free vertices). With `n > 1` the wall gains `n - 1` interior rings of **free
+/// vertices** (linearly interpolated between the rims), so the free surface can
+/// be smoothed or bulged while the contact caps stay exact — see [`Bushing`].
 ///
 /// # Preconditions
 ///
@@ -293,11 +364,13 @@ fn cumulative_params(positions: &[Point3<f64>]) -> Vec<f64> {
 /// If either patch has no rim the caps are still concatenated but the mesh is
 /// left open (no wall) — the watertight check is the caller's readout.
 #[must_use]
-// Vertex counts fit in `u32` by the `IndexedMesh` index contract, so the
-// offset cast below cannot truncate at any real mesh size.
-#[allow(clippy::cast_possible_truncation)]
-pub fn assemble_bushing(top: &Patch, bottom: &Patch) -> IndexedMesh {
+// Vertex/ring counts fit in `u32` by the `IndexedMesh` index contract and the
+// ring fraction is a tiny lossless integer ratio, so no cast truncates or loses
+// precision at any real mesh size.
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+pub fn assemble_bushing(top: &Patch, bottom: &Patch, wall_segments: usize) -> Bushing {
     let offset = top.mesh.vertices.len() as u32;
+    let contact_count = offset + bottom.mesh.vertices.len() as u32;
 
     let mut vertices = top.mesh.vertices.clone();
     vertices.extend_from_slice(&bottom.mesh.vertices);
@@ -307,10 +380,15 @@ pub fn assemble_bushing(top: &Patch, bottom: &Patch) -> IndexedMesh {
     for &[a, b, c] in &bottom.mesh.faces {
         faces.push([c + offset, b + offset, a + offset]);
     }
-    // Perimeter wall bridging the two outer rims (bottom rim shifted to match).
+
     if let (Some(rim_a), Some(rim_b)) = (top.rims.first(), bottom.rims.first()) {
         let rim_b_shifted: Vec<u32> = rim_b.iter().map(|&v| v + offset).collect();
-        faces.extend(stitch_rims(&vertices, rim_a, &rim_b_shifted));
+        let segments = wall_segments.max(1);
+        if segments == 1 {
+            faces.extend(stitch_rims(&vertices, rim_a, &rim_b_shifted));
+        } else {
+            build_ringed_wall(&mut vertices, &mut faces, rim_a, &rim_b_shifted, segments);
+        }
     }
 
     let mut mesh = IndexedMesh::from_parts(vertices, faces);
@@ -320,7 +398,72 @@ pub fn assemble_bushing(top: &Patch, bottom: &Patch) -> IndexedMesh {
             face.swap(1, 2);
         }
     }
-    mesh
+    Bushing {
+        mesh,
+        contact_count,
+    }
+}
+
+/// Build a subdivided wall of `segments` stacked rings between `rim_a` and
+/// `rim_b` (both indexing `vertices`). Appends `segments - 1` interior rings of
+/// free vertices (each with `rim_a.len()` points, interpolated toward the
+/// arc-length-resampled bottom rim) and the wall faces. Interior rings are
+/// stitched to their neighbours as equal-count quad grids; the last interior
+/// ring joins `rim_b` via [`stitch_rims`] so unequal rim counts still seal.
+// Ring index arithmetic and the ring fraction are lossless at any real mesh size.
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+fn build_ringed_wall(
+    vertices: &mut Vec<Point3<f64>>,
+    faces: &mut Vec<[u32; 3]>,
+    rim_a: &[u32],
+    rim_b: &[u32],
+    segments: usize,
+) {
+    let na = rim_a.len();
+    let pa: Vec<Point3<f64>> = rim_a.iter().map(|&v| vertices[v as usize]).collect();
+    // Bottom rim oriented to match rim_a, then resampled to `na` points so each
+    // interior ring vertex `i` interpolates rim_a[i] → sample_b[i] (no twist).
+    let b_oriented = orient_rim_b(&pa[0], &pa[1], rim_b, vertices);
+    let b_pos: Vec<Point3<f64>> = b_oriented.iter().map(|&v| vertices[v as usize]).collect();
+    let sample_b = resample_loop(&b_pos, na);
+
+    let interior_base = vertices.len() as u32;
+    for ring in 1..segments {
+        let t = ring as f64 / segments as f64;
+        for i in 0..na {
+            vertices.push(pa[i] + (sample_b[i] - pa[i]) * t);
+        }
+    }
+
+    // Vertex indices of ring `r` (ring 0 = rim_a; interior rings appended above).
+    let ring_indices = |r: usize| -> Vec<u32> {
+        if r == 0 {
+            rim_a.to_vec()
+        } else {
+            (0..na)
+                .map(|i| interior_base + ((r - 1) * na + i) as u32)
+                .collect()
+        }
+    };
+
+    // Equal-count quad-grid stitch between consecutive na-point rings. The
+    // winding matches `stitch_rims`' equal-count output so the whole wall — and
+    // its join to the caps — stays consistently oriented.
+    for r in 0..segments - 1 {
+        let top = ring_indices(r);
+        let bot = ring_indices(r + 1);
+        for i in 0..na {
+            let (t0, t1) = (top[i], top[(i + 1) % na]);
+            let (b0, b1) = (bot[i], bot[(i + 1) % na]);
+            faces.push([t0, b0, t1]);
+            faces.push([t1, b0, b1]);
+        }
+    }
+
+    // Last interior ring → bottom rim: `stitch_rims` handles unequal counts.
+    let last = ring_indices(segments - 1);
+    let wall = stitch_rims(vertices, &last, rim_b);
+    faces.extend(wall);
 }
 
 #[cfg(test)]
@@ -576,7 +719,7 @@ mod tests {
     fn assemble_two_squares_is_closed_puck() {
         let top = square_patch(1.0);
         let bottom = square_patch(0.0);
-        let puck = assemble_bushing(&top, &bottom);
+        let puck = assemble_bushing(&top, &bottom, 1).mesh;
 
         // 2 top caps + 2 bottom caps + 8 wall = 12 tris over 8 verts (a box).
         assert_eq!(puck.vertex_count(), 8);
@@ -600,10 +743,46 @@ mod tests {
         // a valid same-convention pair whose natural assembly is consistently
         // oriented but inside-out. The orientation pass must recover a positive,
         // still-consistent puck, so the result is robust to which cap is which.
-        let puck = assemble_bushing(&square_patch(0.0), &square_patch(1.0));
+        let puck = assemble_bushing(&square_patch(0.0), &square_patch(1.0), 1).mesh;
         let vol = puck.signed_volume();
         assert!(vol > 0.0, "orientation pass did not recover: volume {vol}");
         assert!((vol - 1.0).abs() < 1e-9, "volume {vol} != unit box");
         assert_consistently_oriented_closed(&puck);
+    }
+
+    #[test]
+    fn subdivided_wall_adds_free_rings_and_stays_closed() {
+        let top = square_patch(1.0);
+        let bottom = square_patch(0.0);
+        let bushing = assemble_bushing(&top, &bottom, 3);
+        let mesh = &bushing.mesh;
+
+        // 8 cap verts + (segments-1)=2 interior rings × 4 = 8 free verts.
+        assert_eq!(mesh.vertex_count(), 16);
+        assert_eq!(bushing.contact_count, 8);
+        // 4 caps + wall: two 4-quad grids (16 tris) + final 4×4 band (8) = 24.
+        assert_eq!(mesh.face_count(), 28);
+
+        // Still a valid closed solid.
+        let adjacency = MeshAdjacency::build(&mesh.faces);
+        assert_eq!(adjacency.boundary_edge_count(), 0, "not watertight");
+        assert_eq!(adjacency.non_manifold_edge_count(), 0, "non-manifold");
+        assert_consistently_oriented_closed(mesh);
+        let vol = mesh.signed_volume();
+        assert!((vol - 1.0).abs() < 1e-9, "volume {vol} != unit box");
+
+        // The contact caps are byte-identical to the input patches.
+        for i in 0..4 {
+            assert_eq!(mesh.vertices[i], top.mesh.vertices[i]);
+            assert_eq!(mesh.vertices[i + 4], bottom.mesh.vertices[i]);
+        }
+        // Interior ring verts sit strictly between the caps in z (free wall).
+        for v in &mesh.vertices[8..16] {
+            assert!(
+                v.z > 0.0 && v.z < 1.0,
+                "interior ring z {} not between caps",
+                v.z
+            );
+        }
     }
 }
