@@ -26,11 +26,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use cf_geometry::{Aabb, IndexedMesh, SdfGrid};
+use cf_design::Solid;
+use cf_geometry::{Aabb, IndexedMesh, Sdf, SdfGrid};
 use mesh_io::load_stl;
 use mesh_repair::{RepairParams, repair_mesh};
 use mesh_sdf::{PseudoNormalSign, Signed, TriMeshDistance};
-use nalgebra::{Point3, Vector3};
+use nalgebra::{Matrix3, Point3, Vector3};
 
 /// Facet SDF grid cell size, in millimetres (rung 4b/7).
 pub const FACET_CELL: f64 = 1.0;
@@ -324,7 +325,7 @@ const SI_CONFORM_ON_SURFACE: f64 = 1.0e-3;
 /// - a [`SI_CONFORM_CAP`] cap on the move — this both leaves the disc interior/annulus middle
 ///   (far from either bone) untouched and defines the *thickness* of the seated endplate
 ///   layer, so the WHOLE top and bottom face seats, not a fixed slab;
-/// - a [`SI_CONFORM_MIN_ALIGN`] direction guard — a vertex whose nearest surface point is
+/// - a `SI_CONFORM_MIN_ALIGN` direction guard — a vertex whose nearest surface point is
 ///   reached by a near-lateral move (the vertebra's side WALL, not its endplate) is left in
 ///   place rather than wrapped sideways onto the body.
 ///
@@ -403,6 +404,142 @@ fn project_to_nearest_endplate(
         return None; // near-lateral move — would wrap onto the body wall, decline
     }
     Some(p)
+}
+
+/// The disc's transverse cross-section at `z_mid`, extruded infinitely along the SI (native z)
+/// axis and optionally eroded inward by `erode` mm — an `Sdf` giving the disc's own footprint as
+/// a prism. Used as the lateral bound in [`model_disc_between_endplates`]; the endplate carve
+/// trims its top and bottom, so only its footprint (not its SI extent) is meaningful.
+struct DiscFootprintPrism {
+    disc: MeshOracle,
+    z_mid: f64,
+    erode: f64,
+}
+
+impl Sdf for DiscFootprintPrism {
+    fn eval(&self, p: Point3<f64>) -> f64 {
+        // Ignore the SI coordinate → an infinite prism of the mid-plane section; `+erode` shrinks
+        // the footprint inward (a positive shift of the signed distance).
+        self.disc.evaluate(Point3::new(p.x, p.y, self.z_mid)) + self.erode
+    }
+    fn grad(&self, p: Point3<f64>) -> Vector3<f64> {
+        let g = self.disc.grad(Point3::new(p.x, p.y, self.z_mid));
+        Vector3::new(g.x, g.y, 0.0) // a prism has no SI gradient
+    }
+    fn hessian(&self, _p: Point3<f64>) -> Matrix3<f64> {
+        Matrix3::zeros()
+    }
+}
+
+/// Parameters for [`model_disc_between_endplates`]. [`Default`] is tuned for the `BodyParts3D`
+/// L4–L5 disc (native mm).
+#[derive(Debug, Clone, Copy)]
+pub struct DiscModelParams {
+    /// Surface-mesh tolerance (native mm) — the lattice cell the carved solid is polygonised at;
+    /// smaller resolves the endplate curvature more finely.
+    pub cell: f64,
+    /// How far (mm) the SI bound pokes past the disc's own SI extent into each vertebra, so the
+    /// endplate carve reliably reaches L4/L5 even where the scanned disc under-fills the gap
+    /// (measured: the disc's superior face floats ~2.5 mm below L4 — the margin must exceed that).
+    pub si_margin: f64,
+    /// Erode the disc footprint inward (mm) so its rim stays within the vertebral body, where the
+    /// endplates carve it cleanly; `0.0` keeps the scanned silhouette. A small value tidies the
+    /// annulus rim (the carve leaves a thin sliver where the footprint overhangs the body).
+    pub footprint_erode: f64,
+}
+
+impl Default for DiscModelParams {
+    fn default() -> Self {
+        Self {
+            cell: 1.0,
+            si_margin: 4.0,
+            footprint_erode: 1.0,
+        }
+    }
+}
+
+/// Model the intervertebral disc as the solid that **fills the gap between the two vertebral
+/// endplates**.
+///
+/// It is carved from the disc's own footprint by subtracting the real vertebrae, so its top face
+/// **is** L4's inferior endplate and its bottom face **is** L5's superior endplate, by construction.
+///
+/// This replaces using an independent disc scan as the disc geometry. The `BodyParts3D` disc,
+/// vertebrae, and their interfaces are separate segmentations that do not abut: the scanned disc's
+/// faces float off the endplates (its superior band sits ~2.5 mm below L4), so bonding it to the
+/// real bone over-stretches it. The **modeled** disc fits both endplates exactly — zero seam,
+/// rendered === physics — and, being one connected solid carved from a clean prism, does not
+/// fragment the way the thin scanned rim does.
+///
+/// Construction: `disc = (disc footprint prism ∩ SI slab) − L4 − L5`. The prism is the disc's
+/// mid-plane cross-section extruded along SI (`DiscFootprintPrism`); the slab clamps its height
+/// to reach `si_margin` into each vertebra; subtracting the two vertebra oracles carves the top
+/// and bottom into the real curved endplates. The result is polygonised with `cf-design`'s SDF
+/// mesher.
+///
+/// `l4` is the SUPERIOR vertebra (above the disc, +z), `l5` the INFERIOR; `disc` is the scanned
+/// disc, used ONLY for its lateral footprint + SI extent (its ill-fitting faces are discarded by
+/// the carve). All meshes are native millimetres; SI must be native z (the disc's thinnest extent
+/// — the shared FSU convention, matching `build_bonded_disc`).
+///
+/// # Errors
+/// Returns an error if the disc's thinnest extent is not native z (a mis-oriented mesh), if a
+/// vertebra/disc oracle fails to build, or if the carve yields an empty solid (L4/L5 swapped, or
+/// `si_margin` too small to reach the endplates).
+pub fn model_disc_between_endplates(
+    l4: &IndexedMesh,
+    l5: &IndexedMesh,
+    disc: &IndexedMesh,
+    params: &DiscModelParams,
+) -> Result<IndexedMesh> {
+    let bbox = Aabb::from_points(disc.vertices.iter());
+    let center = Point3::from(bbox.min.coords + (bbox.max - bbox.min) * 0.5);
+    let ext = bbox.max - bbox.min;
+    if !(ext.z < ext.x && ext.z < ext.y) {
+        bail!(
+            "disc SI extent (thinnest) must be native z; got extents ({:.2}, {:.2}, {:.2}) mm — mis-oriented mesh?",
+            ext.x,
+            ext.y,
+            ext.z
+        );
+    }
+
+    // A domain generously covering the disc plus the endplate patches of both vertebrae (the
+    // `from_sdf` evaluation bound; the carved solid's own bounds — set by the slab below — keep
+    // the mesher tight regardless).
+    let pad = Vector3::new(
+        ext.x * 0.5 + 25.0,
+        ext.y * 0.5 + 25.0,
+        ext.z * 0.5 + params.si_margin + 25.0,
+    );
+    let bounds = Aabb::from_points([center - pad, center + pad].iter());
+
+    // Lateral bound: the disc's own footprint (its mid-plane section extruded along SI, eroded),
+    // clamped to a slab that reaches `si_margin` into each vertebra so the carve connects.
+    let prism = Solid::from_sdf(
+        DiscFootprintPrism {
+            disc: oracle(disc).context("disc oracle")?,
+            z_mid: center.z,
+            erode: params.footprint_erode,
+        },
+        bounds,
+    );
+    let half_z = ext.z * 0.5 + params.si_margin;
+    let slab = Solid::cuboid(Vector3::new(ext.x, ext.y, half_z)).translate(center.coords);
+
+    // Carve the two vertebrae out of the footprint column → the disc between the endplates.
+    let disc_solid = prism
+        .intersect(slab)
+        .subtract(Solid::from_sdf(oracle(l4).context("L4 oracle")?, bounds))
+        .subtract(Solid::from_sdf(oracle(l5).context("L5 oracle")?, bounds));
+
+    let mesh = disc_solid.mesh(params.cell).geometry;
+    if mesh.is_empty() {
+        bail!(
+            "modeled disc is empty — check L4/L5 orientation (l4 must be superior/+z) or increase si_margin"
+        );
+    }
+    Ok(mesh)
 }
 
 #[cfg(test)]
@@ -797,6 +934,129 @@ mod tests {
         assert!(
             seated > total / 4,
             "at least a quarter of the disc must seat ({seated}/{total})"
+        );
+    }
+
+    /// A watertight axis-aligned box (8 verts, 12 outward-CCW tris) centred at `c` with the given
+    /// half-extents — a closed surface the signed oracle can sign; a flat-endplate stand-in for a
+    /// vertebra (and, thin, for the disc footprint).
+    fn axis_box(c: Point3<f64>, half: Vector3<f64>) -> IndexedMesh {
+        const S: [[f64; 3]; 8] = [
+            [-1.0, -1.0, -1.0],
+            [1.0, -1.0, -1.0],
+            [1.0, 1.0, -1.0],
+            [-1.0, 1.0, -1.0],
+            [-1.0, -1.0, 1.0],
+            [1.0, -1.0, 1.0],
+            [1.0, 1.0, 1.0],
+            [-1.0, 1.0, 1.0],
+        ];
+        const F: [[u32; 3]; 12] = [
+            [0, 3, 2],
+            [0, 2, 1],
+            [4, 5, 6],
+            [4, 6, 7],
+            [0, 1, 5],
+            [0, 5, 4],
+            [2, 3, 7],
+            [2, 7, 6],
+            [0, 4, 7],
+            [0, 7, 3],
+            [1, 2, 6],
+            [1, 6, 5],
+        ];
+        let vertices = S
+            .iter()
+            .map(|s| {
+                Point3::new(
+                    c.x + s[0] * half.x,
+                    c.y + s[1] * half.y,
+                    c.z + s[2] * half.z,
+                )
+            })
+            .collect();
+        IndexedMesh::from_parts(vertices, F.to_vec())
+    }
+
+    #[test]
+    fn models_a_disc_that_fills_the_gap_between_two_box_endplates() {
+        // Two box "vertebrae" with a 10 mm gap (upper z∈[5,15], lower z∈[-15,-5]); the modeled disc
+        // must FILL the gap — top face on the upper box (z≈5), bottom on the lower (z≈-5), thickness
+        // ≈ the 10 mm gap — regardless of the (deliberately too-thin, 8 mm) scanned-disc footprint.
+        let upper = axis_box(Point3::new(0.0, 0.0, 10.0), Vector3::new(20.0, 20.0, 5.0));
+        let lower = axis_box(Point3::new(0.0, 0.0, -10.0), Vector3::new(20.0, 20.0, 5.0));
+        let disc = axis_box(Point3::new(0.0, 0.0, 0.0), Vector3::new(15.0, 15.0, 4.0));
+        let params = DiscModelParams {
+            cell: 1.0,
+            si_margin: 4.0,
+            footprint_erode: 0.0,
+        };
+        let modeled = model_disc_between_endplates(&upper, &lower, &disc, &params).unwrap();
+        assert!(!modeled.is_empty(), "carve must not be empty");
+
+        let bb = Aabb::from_points(modeled.vertices.iter());
+        let thickness = bb.max.z - bb.min.z;
+        assert!(
+            (thickness - 10.0).abs() < 1.5,
+            "disc thickness {thickness:.2} mm should ≈ the 10 mm gap (fills it despite the thin footprint)"
+        );
+        assert!(
+            (bb.max.z - 5.0).abs() < 1.0,
+            "top face carved onto the upper box (z≈5), got {:.2}",
+            bb.max.z
+        );
+        assert!(
+            (bb.min.z + 5.0).abs() < 1.0,
+            "bottom face carved onto the lower box (z≈-5), got {:.2}",
+            bb.min.z
+        );
+    }
+
+    #[test]
+    fn model_rejects_a_misoriented_disc() {
+        // SI must be native z (thinnest). A disc whose thinnest axis is x must be rejected loudly.
+        let upper = axis_box(Point3::new(0.0, 0.0, 10.0), Vector3::new(20.0, 20.0, 5.0));
+        let lower = axis_box(Point3::new(0.0, 0.0, -10.0), Vector3::new(20.0, 20.0, 5.0));
+        let bad = axis_box(Point3::new(0.0, 0.0, 0.0), Vector3::new(2.0, 15.0, 15.0)); // thinnest = x
+        let err = model_disc_between_endplates(&upper, &lower, &bad, &DiscModelParams::default())
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("thinnest"),
+            "expected a mis-orientation error, got: {err}"
+        );
+    }
+
+    #[test]
+    #[ignore = "needs $CF_L4_STL/$CF_L5_STL/$CF_DISC_STL (BodyParts3D, CC BY-SA, not committed)"]
+    fn models_the_real_disc_seated_on_both_endplates() {
+        // The pivot on real anatomy: the modeled disc is a single non-empty solid whose surface
+        // seats a meaningful share on the REAL endplates (the fit the scanned disc lacked — its
+        // superior face floated ~2.5 mm off L4).
+        let l4 = load_from_env("CF_L4_STL").unwrap();
+        let l5 = load_from_env("CF_L5_STL").unwrap();
+        let disc = load_from_env("CF_DISC_STL").unwrap();
+
+        let modeled =
+            model_disc_between_endplates(&l4, &l5, &disc, &DiscModelParams::default()).unwrap();
+        assert!(!modeled.is_empty(), "modeled disc must not be empty");
+
+        let o4 = oracle(&l4).unwrap();
+        let o5 = oracle(&l5).unwrap();
+        let on_bone = modeled
+            .vertices
+            .iter()
+            .filter(|v| o4.evaluate(**v).abs() < 0.5 || o5.evaluate(**v).abs() < 0.5)
+            .count();
+        let frac = on_bone as f64 / modeled.vertices.len() as f64;
+        assert!(
+            frac > 0.3,
+            "at least 30% of the disc surface should seat on an endplate (top+bottom faces), got {:.0}%",
+            frac * 100.0
+        );
+        println!(
+            "modeled disc: {} surface verts, {:.0}% seated on L4/L5",
+            modeled.vertices.len(),
+            frac * 100.0
         );
     }
 }
