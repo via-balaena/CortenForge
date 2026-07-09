@@ -40,3 +40,37 @@ unsafe_code = "forbid"
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
+
+# ── Soft-body render examples (the disc-render baby-step ladder) ──
+# The library keeps its minimal bevy feature set for downstream consumers; the
+# examples need a full windowed app (winit + pbr + core-pipeline + …). Declaring
+# the richer bevy here as a DEV-dependency means Cargo only unifies those
+# features when building the examples — a crate that depends on `sim-bevy-soft`
+# as a library still pulls only `bevy_render` + `bevy_asset`.
+[dev-dependencies]
+# Full windowed Bevy for the example apps (mirrors sim-bevy's feature set).
+bevy = { workspace = true, default-features = false, features = [
+    "bevy_asset",
+    "bevy_core_pipeline",
+    "bevy_pbr",
+    "bevy_render",
+    "bevy_winit",
+    "multi_threaded",
+    "tonemapping_luts",
+    "zstd_rust",
+] }
+# `setup_camera_and_lighting` + `UpAxis` — the shared viewer camera/light rig.
+cf-viewer = { workspace = true }
+# The soft FEM solver the examples drive headlessly to capture a deformation.
+sim-soft = { workspace = true }
+# `Tensor` — the solver's `replay_step` input/warm-start type.
+sim-ml-chassis = { workspace = true }
+# Rotation math for the prescribed-boundary deformation drive.
+nalgebra = { workspace = true }
+
+# 1. `soft-bend` — a pinned soft block bent by a prescribed top-face rotation,
+#    rendered as its deforming tet-boundary surface. Isolates FEM deformation →
+#    smooth surface, with NO skinning and NO anatomy (ladder step 1).
+[[example]]
+name = "soft-bend"
+path = "examples/soft_bend.rs"
