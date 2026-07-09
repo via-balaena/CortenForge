@@ -71,6 +71,19 @@ pub struct Bushing {
     pub contact_count: u32,
 }
 
+/// How [`assemble_bushing`] pairs the two rims when building the wall.
+#[derive(Debug, Clone, Copy)]
+pub enum WallCorrespondence {
+    /// Pair by arc length from a nearest-start alignment — right for similar
+    /// rims (the synthetic puck/cylinder cases).
+    ArcLength,
+    /// Greedy shortest-diagonal loop-loft — right for two dissimilar, concave
+    /// real rims (the L4/L5 endplates), where arc-length pairing drifts and
+    /// throws a spike. Applies to a single-segment wall; subdivided walls
+    /// (`wall_segments > 1`) currently use arc length.
+    ShortestDiagonal,
+}
+
 /// Extract the patch defined by `face_ids` from `mesh`.
 ///
 /// Produces the re-indexed sub-mesh of the selected faces plus its ordered,
@@ -284,10 +297,61 @@ pub fn stitch_rims(verts: &[Point3<f64>], rim_a: &[u32], rim_b: &[u32]) -> Vec<[
     if ta.is_empty() || tb.is_empty() {
         return Vec::new(); // degenerate (zero perimeter)
     }
+    stitch_by_params(rim_a, &b_idx, &ta, &tb)
+}
 
-    // Greedy loop-band triangulation: advance whichever rim is behind in
-    // normalized arc length, emitting one triangle per advance. `na + nb`
-    // advances → `na + nb` triangles closing the band.
+/// Stitch two boundary rims with a greedy **shortest-diagonal** loop-loft.
+///
+/// The robust pairing for two dissimilar, concave real rims (e.g. the L4/L5
+/// endplates): after aligning starts (`orient_rim_b`), each step advances
+/// whichever loop makes the shorter connecting diagonal. This is a purely
+/// local-geometric rule, so it stays twist-free where arc-length or angle
+/// pairing drifts out of sync and throws a long spike triangle across the disc.
+#[must_use]
+pub fn stitch_rims_diagonal(verts: &[Point3<f64>], rim_a: &[u32], rim_b: &[u32]) -> Vec<[u32; 3]> {
+    let (na, nb) = (rim_a.len(), rim_b.len());
+    if na < 3 || nb < 3 {
+        return Vec::new();
+    }
+    let pa: Vec<Point3<f64>> = rim_a.iter().map(|&v| verts[v as usize]).collect();
+    let b_idx = orient_rim_b(&pa[0], &pa[1], rim_b, verts);
+    let pb: Vec<Point3<f64>> = b_idx.iter().map(|&v| verts[v as usize]).collect();
+
+    // Greedy shortest-diagonal loop-loft: at each step advance whichever loop
+    // makes the shorter connecting diagonal. Local-geometric (no global param),
+    // so it stays twist-free on dissimilar, concave rims where arc-length or
+    // angle pairing drifts. `na + nb` advances close the band.
+    let mut faces = Vec::with_capacity(na + nb);
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < na || j < nb {
+        let advance_a = if i >= na {
+            false
+        } else if j >= nb {
+            true
+        } else {
+            // Cost of advancing A = length of the new diagonal b_j → a_{i+1};
+            // cost of advancing B = a_i → b_{j+1}.
+            let cost_a = dist(&pb[j], &pa[(i + 1) % na]);
+            let cost_b = dist(&pa[i], &pb[(j + 1) % nb]);
+            cost_a <= cost_b
+        };
+        if advance_a {
+            faces.push([rim_a[i], b_idx[j % nb], rim_a[(i + 1) % na]]);
+            i += 1;
+        } else {
+            faces.push([rim_a[i % na], b_idx[j], b_idx[(j + 1) % nb]]);
+            j += 1;
+        }
+    }
+    faces
+}
+
+/// Greedy loop-band triangulation between `rim_a` and the already-oriented
+/// `b_idx`, advancing whichever rim is behind in its normalized correspondence
+/// parameter (`ta` / `tb`, length `n + 1`). Emits one triangle per advance —
+/// `na + nb` in total — closing the band; each rim edge appears exactly once.
+fn stitch_by_params(rim_a: &[u32], b_idx: &[u32], ta: &[f64], tb: &[f64]) -> Vec<[u32; 3]> {
+    let (na, nb) = (rim_a.len(), b_idx.len());
     let mut faces = Vec::with_capacity(na + nb);
     let (mut i, mut j) = (0usize, 0usize);
     while i < na || j < nb {
@@ -336,6 +400,12 @@ fn cumulative_params(positions: &[Point3<f64>]) -> Vec<f64> {
     cum
 }
 
+/// The largest boundary rim of a patch — the outer boundary to loft the wall
+/// onto (interior pinholes trace as smaller rims and are sealed later).
+fn largest_rim(rims: &[Vec<u32>]) -> Option<&Vec<u32>> {
+    rims.iter().max_by_key(|rim| rim.len())
+}
+
 /// Assemble a top patch, the perimeter wall, and a bottom patch into one closed
 /// [`Bushing`] mesh (B2 / B3a).
 ///
@@ -363,12 +433,22 @@ fn cumulative_params(positions: &[Point3<f64>]) -> Vec<f64> {
 ///
 /// If either patch has no rim the caps are still concatenated but the mesh is
 /// left open (no wall) — the watertight check is the caller's readout.
+///
+/// `correspondence` selects how the single-segment wall pairs the two rims:
+/// [`WallCorrespondence::ArcLength`] for similar rims, or
+/// [`WallCorrespondence::ShortestDiagonal`] for two dissimilar, concave real
+/// rims (the disc's endplates).
 #[must_use]
 // Vertex/ring counts fit in `u32` by the `IndexedMesh` index contract and the
 // ring fraction is a tiny lossless integer ratio, so no cast truncates or loses
 // precision at any real mesh size.
 #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
-pub fn assemble_bushing(top: &Patch, bottom: &Patch, wall_segments: usize) -> Bushing {
+pub fn assemble_bushing(
+    top: &Patch,
+    bottom: &Patch,
+    wall_segments: usize,
+    correspondence: WallCorrespondence,
+) -> Bushing {
     let offset = top.mesh.vertices.len() as u32;
     let contact_count = offset + bottom.mesh.vertices.len() as u32;
 
@@ -381,11 +461,17 @@ pub fn assemble_bushing(top: &Patch, bottom: &Patch, wall_segments: usize) -> Bu
         faces.push([c + offset, b + offset, a + offset]);
     }
 
-    if let (Some(rim_a), Some(rim_b)) = (top.rims.first(), bottom.rims.first()) {
+    if let (Some(rim_a), Some(rim_b)) = (largest_rim(&top.rims), largest_rim(&bottom.rims)) {
         let rim_b_shifted: Vec<u32> = rim_b.iter().map(|&v| v + offset).collect();
         let segments = wall_segments.max(1);
         if segments == 1 {
-            faces.extend(stitch_rims(&vertices, rim_a, &rim_b_shifted));
+            let wall = match correspondence {
+                WallCorrespondence::ArcLength => stitch_rims(&vertices, rim_a, &rim_b_shifted),
+                WallCorrespondence::ShortestDiagonal => {
+                    stitch_rims_diagonal(&vertices, rim_a, &rim_b_shifted)
+                }
+            };
+            faces.extend(wall);
         } else {
             build_ringed_wall(&mut vertices, &mut faces, rim_a, &rim_b_shifted, segments);
         }
@@ -401,6 +487,67 @@ pub fn assemble_bushing(top: &Patch, bottom: &Patch, wall_segments: usize) -> Bu
     Bushing {
         mesh,
         contact_count,
+    }
+}
+
+/// Seal small boundary loops (pinholes) of a closed-ish mesh with a centroid
+/// fan, leaving any loop larger than `max_edges` open. Returns the number of
+/// loops sealed.
+///
+/// Uses the winding-oriented `extract_rims` tracer (reliable where general
+/// hole-detection tangles on real-bone boundaries), adding one centroid vertex
+/// per pinhole and fanning triangles `[a, centre, b]` over each directed
+/// boundary edge `a → b` — so every fan triangle carries the edge `b → a`,
+/// consistently oriented with the surrounding surface.
+// The centroid-index / loop-length casts are lossless at any real mesh size.
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+pub fn seal_pinholes(mesh: &mut IndexedMesh, max_edges: usize) -> usize {
+    let loops = extract_rims(&mesh.faces);
+    let mut sealed = 0;
+    for rim in loops {
+        let k = rim.len();
+        if k < 3 || k > max_edges {
+            continue;
+        }
+        let mut sum = Vector3::zeros();
+        for &v in &rim {
+            sum += mesh.vertices[v as usize].coords;
+        }
+        let centre = Point3::from(sum / k as f64);
+        let centre_idx = mesh.vertices.len() as u32;
+        mesh.vertices.push(centre);
+        for i in 0..k {
+            mesh.faces.push([rim[i], centre_idx, rim[(i + 1) % k]]);
+        }
+        sealed += 1;
+    }
+    sealed
+}
+
+/// Return a copy of `patch` with reversed winding.
+///
+/// Every face normal flips and each rim is reversed so it stays
+/// winding-oriented. Use it to bring two patches into the **same** orientation
+/// convention before [`assemble_bushing`] — e.g. flipping the L4-inferior
+/// endplate (whose bone normal points down) to match the L5-superior endplate
+/// (pointing up).
+#[must_use]
+pub fn flip_patch(patch: &Patch) -> Patch {
+    let faces = patch
+        .mesh
+        .faces
+        .iter()
+        .map(|&[a, b, c]| [a, c, b])
+        .collect();
+    let rims = patch
+        .rims
+        .iter()
+        .map(|rim| rim.iter().rev().copied().collect())
+        .collect();
+    Patch {
+        mesh: IndexedMesh::from_parts(patch.mesh.vertices.clone(), faces),
+        rims,
+        source_vertex: patch.source_vertex.clone(),
     }
 }
 
@@ -799,7 +946,7 @@ mod tests {
     fn assemble_two_squares_is_closed_puck() {
         let top = square_patch(1.0);
         let bottom = square_patch(0.0);
-        let puck = assemble_bushing(&top, &bottom, 1).mesh;
+        let puck = assemble_bushing(&top, &bottom, 1, WallCorrespondence::ArcLength).mesh;
 
         // 2 top caps + 2 bottom caps + 8 wall = 12 tris over 8 verts (a box).
         assert_eq!(puck.vertex_count(), 8);
@@ -823,7 +970,13 @@ mod tests {
         // a valid same-convention pair whose natural assembly is consistently
         // oriented but inside-out. The orientation pass must recover a positive,
         // still-consistent puck, so the result is robust to which cap is which.
-        let puck = assemble_bushing(&square_patch(0.0), &square_patch(1.0), 1).mesh;
+        let puck = assemble_bushing(
+            &square_patch(0.0),
+            &square_patch(1.0),
+            1,
+            WallCorrespondence::ArcLength,
+        )
+        .mesh;
         let vol = puck.signed_volume();
         assert!(vol > 0.0, "orientation pass did not recover: volume {vol}");
         assert!((vol - 1.0).abs() < 1e-9, "volume {vol} != unit box");
@@ -834,7 +987,7 @@ mod tests {
     fn subdivided_wall_adds_free_rings_and_stays_closed() {
         let top = square_patch(1.0);
         let bottom = square_patch(0.0);
-        let bushing = assemble_bushing(&top, &bottom, 3);
+        let bushing = assemble_bushing(&top, &bottom, 3, WallCorrespondence::ArcLength);
         let mesh = &bushing.mesh;
 
         // 8 cap verts + (segments-1)=2 interior rings × 4 = 8 free verts.
@@ -896,7 +1049,7 @@ mod tests {
     fn smooth_wall_relaxes_free_verts_and_pins_caps() {
         let top = square_patch(1.0);
         let bottom = square_patch(0.0);
-        let mut bushing = assemble_bushing(&top, &bottom, 4);
+        let mut bushing = assemble_bushing(&top, &bottom, 4, WallCorrespondence::ArcLength);
         let first_free = bushing.contact_count as usize; // 8
 
         // Corrugate the free wall so it is far from a Taubin fixpoint.
@@ -929,10 +1082,97 @@ mod tests {
 
     #[test]
     fn smooth_wall_is_noop_without_free_verts() {
-        let mut bushing = assemble_bushing(&square_patch(1.0), &square_patch(0.0), 1);
+        let mut bushing = assemble_bushing(
+            &square_patch(1.0),
+            &square_patch(0.0),
+            1,
+            WallCorrespondence::ArcLength,
+        );
         let before = bushing.mesh.vertices.clone();
         let iters = smooth_wall(&mut bushing, 10, TAUBIN_DEFAULT_LAMBDA, TAUBIN_DEFAULT_MU);
         assert_eq!(iters, 0);
         assert_eq!(bushing.mesh.vertices, before);
+    }
+
+    #[test]
+    fn flip_patch_reverses_winding_and_rims() {
+        let (mesh, selection) = square_with_stray();
+        let patch = extract_patch(&mesh, &selection);
+        let flipped = flip_patch(&patch);
+
+        // Vertices unchanged; every face reversed; every rim reversed.
+        assert_eq!(flipped.mesh.vertices, patch.mesh.vertices);
+        assert_eq!(flipped.source_vertex, patch.source_vertex);
+        for (orig, flip) in patch.mesh.faces.iter().zip(&flipped.mesh.faces) {
+            assert_eq!(*flip, [orig[0], orig[2], orig[1]]);
+        }
+        for (orig, flip) in patch.rims.iter().zip(&flipped.rims) {
+            let mut rev = orig.clone();
+            rev.reverse();
+            assert_eq!(*flip, rev);
+        }
+        // Winding flipped → rim signed area sign flips (was CCW/positive).
+        assert!(signed_area_xy(&flipped.mesh, &flipped.rims[0]) < 0.0);
+    }
+
+    /// A unit square as one mesh (2 tris) — its single boundary is a 4-edge loop.
+    fn unit_square_mesh() -> IndexedMesh {
+        IndexedMesh::from_parts(
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(1.0, 1.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+            ],
+            vec![[0, 1, 2], [0, 2, 3]],
+        )
+    }
+
+    #[test]
+    fn seal_pinholes_fills_loops_within_threshold() {
+        let mut mesh = unit_square_mesh();
+        assert_eq!(MeshAdjacency::build(&mesh.faces).boundary_edge_count(), 4);
+
+        // The 4-edge loop is <= max, so it seals: +1 centroid vertex, +4 fan
+        // faces, and the boundary closes.
+        let sealed = seal_pinholes(&mut mesh, 5);
+        assert_eq!(sealed, 1);
+        assert_eq!(mesh.vertex_count(), 5);
+        assert_eq!(mesh.face_count(), 6);
+        assert_eq!(MeshAdjacency::build(&mesh.faces).boundary_edge_count(), 0);
+    }
+
+    #[test]
+    fn seal_pinholes_skips_loops_above_threshold() {
+        let mut mesh = unit_square_mesh();
+        // 4-edge loop > max 3 → left open, mesh unchanged.
+        let sealed = seal_pinholes(&mut mesh, 3);
+        assert_eq!(sealed, 0);
+        assert_eq!(mesh.vertex_count(), 4);
+        assert_eq!(mesh.face_count(), 2);
+    }
+
+    #[test]
+    fn stitch_diagonal_opposite_wound_circles_is_clean_cylinder() {
+        // The shortest-diagonal loft must also produce a clean, untwisted wall.
+        let (verts, rim_a, rim_b) = cylinder_rims(16, 9, true);
+        let faces = stitch_rims_diagonal(&verts, &rim_a, &rim_b);
+        assert_clean_wall(&verts, &rim_a, &rim_b, &faces);
+    }
+
+    #[test]
+    fn assemble_shortest_diagonal_is_closed_puck() {
+        let puck = assemble_bushing(
+            &square_patch(1.0),
+            &square_patch(0.0),
+            1,
+            WallCorrespondence::ShortestDiagonal,
+        )
+        .mesh;
+        let adjacency = MeshAdjacency::build(&puck.faces);
+        assert_eq!(adjacency.boundary_edge_count(), 0, "not watertight");
+        assert_eq!(adjacency.non_manifold_edge_count(), 0, "non-manifold");
+        assert_consistently_oriented_closed(&puck);
+        assert!((puck.signed_volume() - 1.0).abs() < 1e-9);
     }
 }
