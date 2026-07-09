@@ -25,6 +25,7 @@ use std::collections::{HashMap, HashSet};
 
 use cf_geometry::IndexedMesh;
 use mesh_repair::MeshAdjacency;
+use nalgebra::Point3;
 
 /// A contact patch extracted from a source mesh.
 ///
@@ -164,14 +165,126 @@ const fn normalize_edge(v0: u32, v1: u32) -> (u32, u32) {
     if v0 < v1 { (v0, v1) } else { (v1, v0) }
 }
 
+/// Stitch two boundary-rim loops into the bushing's perimeter wall — the free
+/// (no-contact) surface bridging the top patch to the bottom patch (B1).
+///
+/// Both rims index into the shared `verts` array (the assembled bushing's
+/// vertex list); the returned triangles reference the same indices, so the wall
+/// drops straight into the assembly (B2) alongside the two patch face sets.
+///
+/// The stitch is correspondence-robust: it aligns the rims by nearest start
+/// vertex, picks the winding direction of `rim_b` that matches `rim_a` (the two
+/// patches face *away* from each other, so their rims are typically listed in
+/// opposite angular order — a naive index-parallel bridge would twist), then
+/// advances along both by normalized arc length so unequal vertex counts
+/// distribute cleanly. The result is a closed triangle band of exactly
+/// `rim_a.len() + rim_b.len()` faces whose only boundary edges are the two rims.
+///
+/// Returns an empty vec if either rim has fewer than three vertices or is
+/// geometrically degenerate (zero perimeter).
+#[must_use]
+pub fn stitch_rims(verts: &[Point3<f64>], rim_a: &[u32], rim_b: &[u32]) -> Vec<[u32; 3]> {
+    let (na, nb) = (rim_a.len(), rim_b.len());
+    if na < 3 || nb < 3 {
+        return Vec::new();
+    }
+
+    let pa: Vec<Point3<f64>> = rim_a.iter().map(|&v| verts[v as usize]).collect();
+    let pb: Vec<Point3<f64>> = rim_b.iter().map(|&v| verts[v as usize]).collect();
+
+    // Align `rim_b` to start at the vertex nearest `rim_a[0]`, then choose the
+    // traversal direction whose next step stays closest to `rim_a`'s next step.
+    let k = (0..nb)
+        .min_by(|&i, &j| dist(&pa[0], &pb[i]).total_cmp(&dist(&pa[0], &pb[j])))
+        .unwrap_or(0);
+    let fwd = dist(&pa[1], &pb[(k + 1) % nb]);
+    let rev = dist(&pa[1], &pb[(k + nb - 1) % nb]);
+    let reverse = rev < fwd;
+
+    // `rim_b` rotated to start at `k`, forward or reversed to match `rim_a`.
+    let b_idx: Vec<u32> = (0..nb)
+        .map(|m| {
+            let src = if reverse {
+                (k + nb - m) % nb
+            } else {
+                (k + m) % nb
+            };
+            rim_b[src]
+        })
+        .collect();
+    let b_pos: Vec<Point3<f64>> = b_idx.iter().map(|&v| verts[v as usize]).collect();
+
+    let ta = cumulative_params(&pa);
+    let tb = cumulative_params(&b_pos);
+    if ta.is_empty() || tb.is_empty() {
+        return Vec::new(); // degenerate (zero perimeter)
+    }
+
+    // Greedy loop-band triangulation: advance whichever rim is behind in
+    // normalized arc length, emitting one triangle per advance. `na + nb`
+    // advances → `na + nb` triangles closing the band.
+    let mut faces = Vec::with_capacity(na + nb);
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < na || j < nb {
+        let advance_a = if i >= na {
+            false
+        } else if j >= nb {
+            true
+        } else {
+            ta[i + 1] <= tb[j + 1]
+        };
+        if advance_a {
+            faces.push([rim_a[i], b_idx[j % nb], rim_a[(i + 1) % na]]);
+            i += 1;
+        } else {
+            faces.push([rim_a[i % na], b_idx[j], b_idx[(j + 1) % nb]]);
+            j += 1;
+        }
+    }
+    faces
+}
+
+/// Euclidean distance between two points.
+#[inline]
+fn dist(a: &Point3<f64>, b: &Point3<f64>) -> f64 {
+    (a - b).norm()
+}
+
+/// Cumulative normalized arc length of a closed loop: length `n + 1`, with
+/// `[0] = 0`, `[n] = 1.0` (the perimeter including the closing edge back to the
+/// start). Returns empty if the loop has zero perimeter.
+fn cumulative_params(positions: &[Point3<f64>]) -> Vec<f64> {
+    let n = positions.len();
+    let mut cum = Vec::with_capacity(n + 1);
+    cum.push(0.0);
+    let mut total = 0.0;
+    for i in 0..n {
+        total += dist(&positions[i], &positions[(i + 1) % n]);
+        cum.push(total);
+    }
+    if total <= 0.0 {
+        return Vec::new();
+    }
+    for c in &mut cum {
+        *c /= total;
+    }
+    cum
+}
+
 #[cfg(test)]
 #[allow(
     // Tests legitimately use `.unwrap()`/indexing to assert structure; the
     // workspace deny-lints on these are relaxed for the test module.
     clippy::unwrap_used,
-    clippy::indexing_slicing
+    clippy::indexing_slicing,
+    // Synthetic-circle fixtures cast small loop counts to `f64` for angles and
+    // to `u32` for rim indices — both fit trivially at test sizes.
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation
 )]
 mod tests {
+    use std::f64::consts::TAU;
+
     use super::*;
     use nalgebra::Point3;
 
@@ -267,5 +380,113 @@ mod tests {
         let patch = extract_patch(&mesh, &[0, 99]);
         assert_eq!(patch.mesh.face_count(), 1);
         assert_eq!(patch.mesh.vertex_count(), 3);
+    }
+
+    const CYL_R: f64 = 2.0;
+    const CYL_H: f64 = 3.0;
+
+    /// One circle of `n` vertices at height `z`, radius [`CYL_R`], wound CCW
+    /// (`ccw = true`) or CW when viewed from +z.
+    fn circle(n: usize, z: f64, ccw: bool) -> Vec<Point3<f64>> {
+        (0..n)
+            .map(|i| {
+                let t = TAU * (i as f64) / (n as f64);
+                let a = if ccw { t } else { -t };
+                Point3::new(CYL_R * a.cos(), CYL_R * a.sin(), z)
+            })
+            .collect()
+    }
+
+    /// Two coaxial circles as a shared vertex array plus the two rim loops.
+    /// The bottom rim is wound *opposite* the top when `opposite` — the
+    /// realistic bushing case (patches face away, so rims list in reverse
+    /// angular order), which a naive index-parallel stitch would twist.
+    fn cylinder_rims(
+        n_top: usize,
+        n_bot: usize,
+        opposite: bool,
+    ) -> (Vec<Point3<f64>>, Vec<u32>, Vec<u32>) {
+        let mut verts = circle(n_top, CYL_H, true);
+        verts.extend(circle(n_bot, 0.0, !opposite));
+        let rim_a: Vec<u32> = (0..n_top as u32).collect();
+        let rim_b: Vec<u32> = (n_top as u32..(n_top + n_bot) as u32).collect();
+        (verts, rim_a, rim_b)
+    }
+
+    /// Area of the triangle `[a, b, c]` (indices into `verts`).
+    fn tri_area(verts: &[Point3<f64>], f: [u32; 3]) -> f64 {
+        let (a, b, c) = (
+            verts[f[0] as usize],
+            verts[f[1] as usize],
+            verts[f[2] as usize],
+        );
+        (b - a).cross(&(c - a)).norm() * 0.5
+    }
+
+    /// Normalized edges of a rim loop (each consecutive pair, closing the loop).
+    fn rim_edges(rim: &[u32]) -> HashSet<(u32, u32)> {
+        (0..rim.len())
+            .map(|i| normalize_edge(rim[i], rim[(i + 1) % rim.len()]))
+            .collect()
+    }
+
+    /// Assert the stitched wall is a clean, untwisted band: right face count,
+    /// edge-manifold, boundary == exactly the two rims, and total area within
+    /// tolerance of the ideal cylinder wall (a twist inflates the area).
+    fn assert_clean_wall(verts: &[Point3<f64>], rim_a: &[u32], rim_b: &[u32], faces: &[[u32; 3]]) {
+        assert_eq!(faces.len(), rim_a.len() + rim_b.len(), "face count");
+
+        // No degenerate triangles.
+        for &f in faces {
+            assert!(tri_area(verts, f) > 1e-9, "degenerate triangle {f:?}");
+        }
+
+        // Edge-manifold, and its only boundary edges are the two rims.
+        let adjacency = MeshAdjacency::build(faces);
+        assert_eq!(adjacency.non_manifold_edge_count(), 0, "non-manifold wall");
+        let boundary: HashSet<(u32, u32)> = adjacency.boundary_edges().collect();
+        let mut expected = rim_edges(rim_a);
+        expected.extend(rim_edges(rim_b));
+        assert_eq!(boundary, expected, "wall boundary is not exactly the rims");
+
+        // Total area near the ideal cylinder lateral area — a twisted stitch
+        // (long diagonal triangles crossing the axis) blows this up.
+        let area: f64 = faces.iter().map(|&f| tri_area(verts, f)).sum();
+        let ideal = TAU * CYL_R * CYL_H;
+        assert!(
+            (area - ideal).abs() / ideal < 0.05,
+            "wall area {area} not within 5% of ideal {ideal}"
+        );
+    }
+
+    #[test]
+    fn stitch_opposite_wound_circles_is_clean_cylinder() {
+        // The realistic case: rims wound opposite. Must not twist.
+        let (verts, rim_a, rim_b) = cylinder_rims(16, 16, true);
+        let faces = stitch_rims(&verts, &rim_a, &rim_b);
+        assert_clean_wall(&verts, &rim_a, &rim_b, &faces);
+    }
+
+    #[test]
+    fn stitch_same_wound_circles_is_clean_cylinder() {
+        // Direction detection must not wrongly reverse already-aligned rims.
+        let (verts, rim_a, rim_b) = cylinder_rims(16, 16, false);
+        let faces = stitch_rims(&verts, &rim_a, &rim_b);
+        assert_clean_wall(&verts, &rim_a, &rim_b, &faces);
+    }
+
+    #[test]
+    fn stitch_unequal_counts_is_clean_cylinder() {
+        // Unequal vertex counts must still bridge cleanly (arc-length advance).
+        let (verts, rim_a, rim_b) = cylinder_rims(16, 9, true);
+        let faces = stitch_rims(&verts, &rim_a, &rim_b);
+        assert_clean_wall(&verts, &rim_a, &rim_b, &faces);
+    }
+
+    #[test]
+    fn stitch_degenerate_rims_return_empty() {
+        let verts = circle(3, 0.0, true);
+        // A two-vertex "rim" is not a loop.
+        assert!(stitch_rims(&verts, &[0, 1], &[0, 1, 2]).is_empty());
     }
 }
