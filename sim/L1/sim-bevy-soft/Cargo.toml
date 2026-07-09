@@ -86,6 +86,9 @@ cf-geometry = { workspace = true }
 # finite-difference gradient chatters and stalls the Newton solve (ladder step 5.1a finding);
 # the grid SDF is what the FSU facet contact already uses.
 mesh-sdf = { workspace = true }
+# `build_bonded_disc` + `BondedDisc` — the validated real intervertebral-disc tet-mesh + endplate
+# bond + flexion drive (ladder step 5.2 renders the real disc bonded + deforming).
+cf-fsu-model = { workspace = true }
 
 # 1. `soft-bend` — a pinned soft block sheared by a prescribed top-face displacement,
 #    rendered as its deforming tet-boundary surface. Isolates FEM deformation →
@@ -136,3 +139,10 @@ path = "examples/box_on_mesh_sphere.rs"
 [[example]]
 name = "box-on-bone"
 path = "examples/box_on_bone.rs"
+
+# 5.2 `real-disc-bonded` — box→the REAL thin-lens disc soft body (`build_bonded_disc`), bonded at
+#    its endplate bands between two plates and flexed incrementally (crux #1: warm-stepped fine
+#    angles reach 6°). NO bone contact yet; isolates thin-lens bond + smooth deform (ladder step 5.2).
+[[example]]
+name = "real-disc-bonded"
+path = "examples/real_disc_bonded.rs"

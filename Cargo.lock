@@ -11672,6 +11672,7 @@ dependencies = [
  "bevy",
  "cf-bevy-common",
  "cf-fsu-geometry",
+ "cf-fsu-model",
  "cf-geometry",
  "cf-viewer",
  "mesh-sdf",
