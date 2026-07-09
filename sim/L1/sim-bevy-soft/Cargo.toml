@@ -87,3 +87,10 @@ path = "examples/soft_bend.rs"
 [[example]]
 name = "bonded-sandwich"
 path = "examples/bonded_sandwich.rs"
+
+# 3. `curved-contact` — a soft block pressed onto a CURVED rigid surface (a sphere SDF via
+#    `PenaltyRigidContact`); its free face must conform to the curve without piercing it.
+#    Isolates soft↔curved-rigid CONTACT — the disc annulus's missing physics (ladder step 3).
+[[example]]
+name = "curved-contact"
+path = "examples/curved_contact.rs"
