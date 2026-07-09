@@ -42,7 +42,11 @@ struct Surface {
 
 fn to_surface(mesh: &IndexedMesh) -> Surface {
     Surface {
-        verts: mesh.vertices.iter().map(|p| Vec3::new(p.x, p.y, p.z)).collect(),
+        verts: mesh
+            .vertices
+            .iter()
+            .map(|p| Vec3::new(p.x, p.y, p.z))
+            .collect(),
         faces: mesh.faces.clone(),
     }
 }
@@ -58,7 +62,8 @@ struct Scene {
 fn build_scene() -> Scene {
     let l4 = load_from_env("CF_L4_STL").expect("set $CF_L4_STL (superior vertebra, FMA13075)");
     let l5 = load_from_env("CF_L5_STL").expect("set $CF_L5_STL (inferior vertebra, FMA13076)");
-    let disc_scan = load_from_env("CF_DISC_STL").expect("set $CF_DISC_STL (disc footprint, FMA16036)");
+    let disc_scan =
+        load_from_env("CF_DISC_STL").expect("set $CF_DISC_STL (disc footprint, FMA16036)");
     let disc = model_disc_between_endplates(&l4, &l5, &disc_scan, &DiscModelParams::default())
         .expect("model the disc between the endplates");
     println!(
