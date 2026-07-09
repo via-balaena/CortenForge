@@ -1589,11 +1589,11 @@ fn render_force_displacement_plot(ui: &mut egui::Ui, run: &InsertionSimOutputs) 
     // axes
     painter.line_segment(
         [plot_rect.left_bottom(), plot_rect.right_bottom()],
-        egui::Stroke::new(1.0, egui::Color32::from_gray(120)),
+        egui::Stroke::new(1.0_f32, egui::Color32::from_gray(120)),
     );
     painter.line_segment(
         [plot_rect.left_bottom(), plot_rect.left_top()],
-        egui::Stroke::new(1.0, egui::Color32::from_gray(120)),
+        egui::Stroke::new(1.0_f32, egui::Color32::from_gray(120)),
     );
     // axis labels
     let label_color = egui::Color32::from_gray(180);
@@ -1629,7 +1629,7 @@ fn render_force_displacement_plot(ui: &mut egui::Ui, run: &InsertionSimOutputs) 
             plot_rect.bottom() - ny * plot_rect.height(),
         )
     };
-    let stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(110, 200, 240));
+    let stroke = egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(110, 200, 240));
     for pair in curve.windows(2) {
         let a = to_screen(pair[0].0, pair[0].1);
         let b = to_screen(pair[1].0, pair[1].1);

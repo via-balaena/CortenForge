@@ -40,3 +40,132 @@ unsafe_code = "forbid"
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
+
+# ── Soft-body render examples (the disc-render baby-step ladder) ──
+# The library keeps its minimal bevy feature set for downstream consumers; the
+# examples need a full windowed app (winit + pbr + core-pipeline + …). Declaring
+# the richer bevy here as a DEV-dependency means Cargo only unifies those
+# features when building the examples — a crate that depends on `sim-bevy-soft`
+# as a library still pulls only `bevy_render` + `bevy_asset`.
+[dev-dependencies]
+# Full windowed Bevy for the example apps (mirrors sim-bevy's feature set).
+bevy = { workspace = true, default-features = false, features = [
+    "bevy_asset",
+    "bevy_core_pipeline",
+    "bevy_gizmos",
+    "bevy_pbr",
+    "bevy_picking",
+    "mesh_picking",
+    "bevy_render",
+    "bevy_text",
+    "bevy_ui",
+    "bevy_ui_render",
+    "bevy_winit",
+    "default_font",
+    "multi_threaded",
+    "tonemapping_luts",
+    "zstd_rust",
+] }
+# `setup_camera_and_lighting` + `UpAxis` — the shared viewer camera/light rig.
+cf-viewer = { workspace = true }
+# The soft FEM solver the examples drive headlessly to capture a deformation.
+sim-soft = { workspace = true }
+# `Tensor` — the solver's `replay_step` input/warm-start type.
+sim-ml-chassis = { workspace = true }
+# `BondedSandwich` — the two-rigid-body soft bond the disc uses (ladder step 2+).
+sim-coupling = { workspace = true }
+# `load_model` — build the two-plate MJCF scene (the `Model`/`Data` it returns are
+# driven via inherent methods, so no direct `sim-core` dep is needed).
+sim-mjcf = { workspace = true }
+# Rotation math for the prescribed-boundary / plate-pose drive.
+nalgebra = { workspace = true }
+# `load_from_env` + `loft::*` + `model_disc_between_endplates` — load the real BodyParts3D
+# vertebra/disc STLs and build/loft the disc (the real-anatomy ladder rungs, step 5+).
+# Same loader the FSU model uses, so the examples share its weld-repair + native-mm
+# convention (design→sim dep, mirrors cf-fsu-model's dependency on this crate).
+cf-fsu-geometry = { workspace = true }
+# `IndexedMesh` (construct a tessellated sphere to feed the SDF pipeline) — the mesh-SDF
+# contact rung (5.1a) that isolates the SDF representation from anatomy.
+cf-geometry = { workspace = true }
+# `TriMeshDistance` + `CachedGridSdf` — voxelize a mesh into a GRID SDF (smooth analytic
+# trilinear gradient) for stable penalty contact. A raw `mesh_sdf::Signed` oracle's
+# finite-difference gradient chatters and stalls the Newton solve (ladder step 5.1a finding);
+# the grid SDF is what the FSU facet contact already uses.
+mesh-sdf = { workspace = true }
+# `build_bonded_disc` + `BondedDisc` — the validated real intervertebral-disc tet-mesh + endplate
+# bond + flexion drive (ladder step 5.2 renders the real disc bonded + deforming).
+cf-fsu-model = { workspace = true }
+# `save_stl` — export a painted-and-lofted disc so the physics consumers (real-disc-bonded) can
+# load it via `$CF_DISC_STL`, closing the paint → simulate loop (paint-faces `S`).
+mesh-io = { workspace = true }
+
+# 1. `soft-bend` — a pinned soft block sheared by a prescribed top-face displacement,
+#    rendered as its deforming tet-boundary surface. Isolates FEM deformation →
+#    smooth surface, with NO skinning and NO anatomy (ladder step 1).
+[[example]]
+name = "soft-bend"
+path = "examples/soft_bend.rs"
+
+# 2. `bonded-sandwich` — a soft block bonded between two rigid plates (the disc's
+#    `BondedSandwich` primitive); the top plate rotates and the block stays glued to
+#    both, deforming in between. Isolates soft↔rigid ATTACHMENT (ladder step 2).
+[[example]]
+name = "bonded-sandwich"
+path = "examples/bonded_sandwich.rs"
+
+# 3. `curved-contact` — a soft block pressed onto a CURVED rigid surface (a sphere SDF via
+#    `PenaltyRigidContact`); its free face must conform to the curve without piercing it.
+#    Isolates soft↔curved-rigid CONTACT — the disc annulus's missing physics (ladder step 3).
+[[example]]
+name = "curved-contact"
+path = "examples/curved_contact.rs"
+
+# 4. `bonded-contact` — steps 2+3 in ONE solve: a soft block bonded top+bottom to two plates
+#    (Dirichlet bonds) AND its free side conforming to a curved sphere SDF (`PenaltyRigidContact`).
+#    Isolates bond+contact COEXISTENCE — the disc's full FEM structure on a box (ladder step 4).
+[[example]]
+name = "bonded-contact"
+path = "examples/bonded_contact.rs"
+
+# 5.0 `real-bone-render` — load ONE real vertebra STL ($CF_L5_STL, BodyParts3D) and render it,
+#    NO physics. First real-anatomy rung: de-risks the asset pipeline (STL → weld-repair → scale
+#    → UpAxis orient → Bevy mesh) in isolation before any bond/contact touches it (ladder step 5.0).
+[[example]]
+name = "real-bone-render"
+path = "examples/real_bone_render.rs"
+
+# 5.1a `box-on-mesh-sphere` — step 4's box, contact SDF swapped from the ANALYTIC `SphereSdf` to a
+#    GRID SDF (`CachedGridSdf`) voxelised from a tessellated sphere mesh. Isolates the SDF
+#    representation on smooth geometry: the raw mesh oracle's FD-gradient normal stalls the Newton
+#    solve; the grid's smooth trilinear gradient converges cleanly (ladder step 5.1a).
+[[example]]
+name = "box-on-mesh-sphere"
+path = "examples/box_on_mesh_sphere.rs"
+
+# 5.1b `box-on-bone` — 5.1a's grid-SDF contact on REAL anatomy: the box's free +x side presses
+#    into the L5 vertebra voxelised to a `CachedGridSdf`. Plain penalty (the grid needs none of the
+#    oracle's cutoff/smoothing/averaging); non-penetration verified over all box verts (step 5.1b).
+[[example]]
+name = "box-on-bone"
+path = "examples/box_on_bone.rs"
+
+# 5.2 `real-disc-bonded` — box→the REAL thin-lens disc soft body (`build_bonded_disc`), bonded at
+#    its endplate bands between two plates and flexed incrementally (crux #1: warm-stepped fine
+#    angles reach 6°). NO bone contact yet; isolates thin-lens bond + smooth deform (ladder step 5.2).
+[[example]]
+name = "real-disc-bonded"
+path = "examples/real_disc_bonded.rs"
+
+# `modeled-disc` — the disc MODELLED from the endplates (`model_disc_between_endplates`) rendered
+#    nestled between translucent L4/L5, so the fit (68% seated on the real bone) is visible. The
+#    pivot's payoff: a disc that fills the endplate gap by construction (fitted-disc viz).
+[[example]]
+name = "modeled-disc"
+path = "examples/modeled_disc.rs"
+
+# `paint-faces` — B5.0 of the bushing-loft ladder: load a real vertebra, click a face and it
+#    highlights. Verifies mesh picking maps a ray hit's triangle index to the right source face
+#    (the first rung of the region-painting GUI that will pick the two endplate patches to loft).
+[[example]]
+name = "paint-faces"
+path = "examples/paint_faces.rs"

@@ -31,6 +31,9 @@ mesh-io = { workspace = true }
 mesh-repair = { workspace = true }
 # `Signed<TriMeshDistance, PseudoNormalSign>` — the exact mesh-derived metric oracle.
 mesh-sdf = { workspace = true }
+# `Solid` SDF-CSG (subtract/intersect/from_sdf/mesh) — model the disc as the solid carved between
+# the real vertebral endplates (`model_disc_between_endplates`).
+cf-design = { workspace = true }
 # `Point3` / `Vector3` — field-derived site + frame math.
 nalgebra = { workspace = true }
 # `Result` + context/`bail!` for the fallible load/oracle/frame path.

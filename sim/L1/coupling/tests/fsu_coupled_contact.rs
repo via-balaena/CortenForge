@@ -39,7 +39,12 @@ use cf_fsu_model::{CoupledFsu, CoupledParams, PHYSIOLOGIC_MOMENT, moment_ramp};
 // PHYSIOLOGIC_MOMENT (7.5 N·m) is shared with the viewer via cf_fsu_model::moment_ramp.
 const RUNG7_FLEXION_ROM_DEG: f64 = 6.13; // rung 7's headline flexion ROM at 7.5 N·m
 const ROM_TOL_DEG: f64 = 0.15; // agreement window vs rung 7's grid-interpolated ROM
-const RUNG7_K_DISC: f64 = -0.2819; // rung 7's measured disc bending stiffness (N·m/rad)
+const RUNG7_K_DISC: f64 = -0.2819; // rung 7's disc bending stiffness (N·m/rad)
+// k_disc is measured on the bonded FEM disc, which keeps the RAW (un-conformed) geometry: the
+// exact-geometry conform is applied to the RENDER surface only (a conformed FEM mesh spawns
+// sliver tets that fail the large-angle incremental deform sweep). So k_disc reproduces rung 7's
+// value; the guard is a gross-regression bound around it.
+const K_DISC_TOL: f64 = 0.02;
 // Literature extension corridor (Yamamoto 1989 / Panjabi–White, widened for 7.5–10 N·m).
 const LIT_EXTENSION_DEG: (f64, f64) = (2.5, 5.5);
 
@@ -52,9 +57,11 @@ fn l4_l5_coupled_flexion_extension_equilibrium() {
     let l5 = load_from_env("CF_L5_STL").expect("load L5 mesh");
     let disc = load_from_env("CF_DISC_STL").expect("load disc mesh");
     let fsu =
-        CoupledFsu::build(&l4, &l5, disc, &CoupledParams::default()).expect("build coupled FSU");
+        CoupledFsu::build(&l4, &l5, &disc, &CoupledParams::default()).expect("build coupled FSU");
 
-    // ── Disc bushing reproduces rung 7's k_disc, flexion sense derived (not hardcoded). ──
+    // ── Disc bushing: k_disc measured on the bonded FEM disc (raw geometry — the conform is
+    //    render-surface-only), so it reproduces rung 7's value; flexion sense still derived,
+    //    not hardcoded. The bound is a gross-regression guard. ──
     let k_disc = fsu.k_disc();
     println!("[disc]  k_disc = {k_disc:+.4} N·m/rad  (rung 7 {RUNG7_K_DISC:+.4})");
     assert!(
@@ -62,8 +69,8 @@ fn l4_l5_coupled_flexion_extension_equilibrium() {
         "disc bending must be restoring, got {k_disc:+.4}"
     );
     assert!(
-        (k_disc - RUNG7_K_DISC).abs() < 0.02,
-        "k_disc must reproduce rung 7's {RUNG7_K_DISC:+.4}, got {k_disc:+.4}"
+        (k_disc - RUNG7_K_DISC).abs() < K_DISC_TOL,
+        "k_disc must reproduce rung 7's {RUNG7_K_DISC:+.4} within {K_DISC_TOL}, got {k_disc:+.4}"
     );
 
     // Neutral pose is force-free (ligaments at slack, disc spring at reference).

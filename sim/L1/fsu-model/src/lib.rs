@@ -533,6 +533,195 @@ mod tests {
         );
     }
 
+    /// Rough endplate face selection: the down-facing lower region (`sign = -1`,
+    /// L4 inferior) or up-facing upper region (`sign = +1`, L5 superior).
+    fn select_endplate(mesh: &IndexedMesh, sign: f64) -> Vec<usize> {
+        let bbox = Aabb::from_points(mesh.vertices.iter());
+        let zmid = 0.5 * (bbox.min.z + bbox.max.z);
+        let mut ids = Vec::new();
+        for i in 0..mesh.faces.len() {
+            let Some(tri) = mesh.triangle(i) else {
+                continue;
+            };
+            let centroid = Point3::from((tri.v0.coords + tri.v1.coords + tri.v2.coords) / 3.0);
+            let normal = (tri.v1 - tri.v0).cross(&(tri.v2 - tri.v0));
+            let norm = normal.norm();
+            if norm < f64::EPSILON {
+                continue;
+            }
+            let region = if sign < 0.0 {
+                centroid.z < zmid
+            } else {
+                centroid.z > zmid
+            };
+            if region && (normal.z / norm) * sign > 0.7 {
+                ids.push(i);
+            }
+        }
+        ids
+    }
+
+    /// Loft a disc from rough auto-selected L4/L5 endplate patches (the painting
+    /// GUI does this cleaner).
+    fn lofted_disc(l4: &IndexedMesh, l5: &IndexedMesh) -> IndexedMesh {
+        use cf_fsu_geometry::loft::{
+            WallCorrespondence, assemble_bushing, extract_patch, finalize_patch, flip_patch,
+        };
+        let l4_faces = select_endplate(l4, -1.0);
+        let l5_faces = select_endplate(l5, 1.0);
+        assert!(
+            !l4_faces.is_empty() && !l5_faces.is_empty(),
+            "empty endplate selection"
+        );
+        // Prepare each patch (largest component, interior holes sealed → one outer
+        // rim) so the loft meets assemble_bushing's single-boundary precondition.
+        let top = finalize_patch(&extract_patch(l4, &l4_faces));
+        let bottom = finalize_patch(&extract_patch(l5, &l5_faces));
+        let top = flip_patch(&top);
+        // `finalize_patch` already guarantees one connected component with its
+        // interior holes sealed; the assembled disc may still carry a few open
+        // wall-seam edges (the arc-length correspondence on these dissimilar
+        // auto-selected rims), which the SDF tet-mesher resamples away — so we do
+        // NOT require strict watertightness here (measured: 50 open edges / 0
+        // non-manifold on the real L4/L5, and it tet-meshes, bonds, and sweeps).
+        assemble_bushing(&top, &bottom, 1, WallCorrespondence::ArcLength).mesh
+    }
+
+    /// B6 end-to-end: a human-lofted disc **tet-meshes, bonds to a restoring
+    /// stiffness, seats on the exact bone for free, and sweeps** — the payoff of
+    /// building the disc *from* the endplates. The scanned disc could do none of
+    /// these (it over-stretched 2.15× and its conform shifted `k_disc` ~6×). The
+    /// bond + sweep succeeding is itself proof the tet mesh is clean — inverted or
+    /// fragmented tets diverge (spike-measured: 99% kept, 11.8° min dihedral, 0
+    /// inverted).
+    #[test]
+    #[ignore = "needs $CF_L4_STL/$CF_L5_STL (BodyParts3D, CC BY-SA, not committed)"]
+    fn b6_lofted_disc_bonds_seats_and_sweeps() {
+        use cf_fsu_geometry::{conform_disc_to_endplates, load_from_env, segment_frame};
+
+        let l4 = load_from_env("CF_L4_STL").unwrap();
+        let l5 = load_from_env("CF_L5_STL").unwrap();
+        let o4 = oracle(&l4).unwrap();
+        let o5 = oracle(&l5).unwrap();
+        let frame = segment_frame(&l4, &l5, &o4, &o5).unwrap();
+        let disc = lofted_disc(&l4, &l5);
+        let params = DiscParams::default();
+
+        // (1) The caps ARE the endplate surfaces: conforming them onto the exact
+        // bone is a sub-mm move (the scanned disc needed multi-mm, stiffening moves).
+        let conformed = conform_disc_to_endplates(&disc, &o4, &o5, &frame, Some(params.band_frac));
+        let max_move = disc
+            .vertices
+            .iter()
+            .zip(&conformed.vertices)
+            .map(|(a, b)| (a - b).norm())
+            .fold(0.0, f64::max);
+        println!("conform: max cap-band move {max_move:.2} mm");
+        assert!(
+            max_move < 4.0,
+            "cap band not seated on the bone ({max_move:.2} mm)"
+        );
+
+        // (2) Bonds + probes to a restoring, symmetric, self-equilibrated k_disc,
+        // and the exact-bone conform leaves it intact (no ~6× shift).
+        let theta = 0.5_f64.to_radians();
+        let mut raw_bond = build_bonded_disc(disc, &params).expect("lofted disc bonds");
+        let (m_flex, resid_flex) = raw_bond.flexion_moment(theta);
+        let (m_ext, resid_ext) = raw_bond.flexion_moment(-theta);
+        let (k_flex, k_ext) = (m_flex / theta, m_ext / -theta);
+        let k_conformed = build_bonded_disc(conformed, &params)
+            .expect("conformed disc bonds")
+            .flexion_moment(theta)
+            .0
+            / theta;
+        println!(
+            "k_disc: flex {k_flex:.1}, ext {k_ext:.1}, conformed {k_conformed:.1} N·m/rad; resid {resid_flex:.1e} / {resid_ext:.1e}"
+        );
+        assert!(k_flex.is_finite() && k_ext.is_finite(), "non-finite k_disc");
+        assert!(
+            k_flex * k_ext > 0.0 && k_flex.abs() > 1.0,
+            "not a consistent linear spring ({k_flex:.1} vs {k_ext:.1})"
+        );
+        assert!(
+            resid_flex < 1e-2 && resid_ext < 1e-2,
+            "bond not self-equilibrated ({resid_flex:.2e} / {resid_ext:.2e})"
+        );
+        assert!(
+            (k_conformed - k_flex).abs() < 0.5 * k_flex.abs(),
+            "exact-bone conform shifted k_disc ({k_flex:.1} -> {k_conformed:.1})"
+        );
+
+        // (3) A sub-degree sweep (incremental, warm-started) genuinely deforms and
+        // restores across angles — conservation + strictly-restoring moment per
+        // frame + a real imposed deformation (assert_restoring_sweep, shared with
+        // the synthetic and scanned-disc capture tests).
+        let angles: Vec<f64> = [-0.5_f64, -0.25, 0.0, 0.25, 0.5]
+            .iter()
+            .map(|d| d.to_radians())
+            .collect();
+        let traj = raw_bond.capture_flexion(&angles);
+        let max_disp = assert_restoring_sweep(&traj, 2e-2);
+        println!(
+            "sweep: {} frames, max node displacement {max_disp:.3} mm",
+            traj.frames.len()
+        );
+    }
+
+    /// B6.4 — the capstone: a painted (lofted) disc drops into the FULL coupled
+    /// FSU (disc bushing + ligaments + facet contact) and produces a physically
+    /// sound, monotone, restoring, facet-stopped segmental response — the same
+    /// assembly rung 7 validates against literature, now driven by a human-painted
+    /// disc.
+    ///
+    /// This validates the **integration** (painted disc → full FSU → physiologic
+    /// response), not the tight literature ROM band: the rough *auto-lofted* disc
+    /// is softer in flexion than the scanned disc (a different centre/geometry
+    /// shifts the ligament lever arms), so its flexion exits the ROM bracket
+    /// before the full 7.5 N·m. We sweep the moment range where equilibria exist;
+    /// a carefully painted disc matching the real geometry is what would hit the
+    /// literature band.
+    #[test]
+    #[ignore = "needs $CF_L4_STL/$CF_L5_STL (BodyParts3D, CC BY-SA, not committed)"]
+    fn b6_4_coupled_fsu_from_a_lofted_disc() {
+        use cf_fsu_geometry::load_from_env;
+
+        let l4 = load_from_env("CF_L4_STL").unwrap();
+        let l5 = load_from_env("CF_L5_STL").unwrap();
+        let disc = lofted_disc(&l4, &l5);
+        let mut fsu = CoupledFsu::build(&l4, &l5, &disc, &CoupledParams::default())
+            .expect("coupled FSU builds with a lofted disc");
+        println!("coupled FSU: k_disc {:.3} N·m/rad", fsu.k_disc());
+
+        // Force-driven equilibrium sweep over the in-bracket moment range.
+        let ramp: Vec<f64> = (0..=18).map(|i| -6.0 + f64::from(i) * 0.5).collect();
+        let traj = fsu
+            .capture_ramp(&ramp)
+            .expect("coupled equilibria exist within the ROM bracket");
+
+        // Monotone extension → flexion, a physiologic few-degrees ROM each way.
+        for w in traj.frames.windows(2) {
+            assert!(
+                w[1].theta >= w[0].theta - 1e-9,
+                "equilibrium angle must rise monotonically with the applied moment"
+            );
+        }
+        let ext_deg = traj.frames.first().unwrap().theta.to_degrees();
+        let flex_deg = traj.frames.last().unwrap().theta.to_degrees();
+        println!("ROM: extension {ext_deg:.1}° … flexion {flex_deg:.1}° (in-bracket sweep)");
+        assert!(ext_deg < 0.0 && flex_deg > 0.0, "wrong flexion sense");
+
+        // The facets stop extension and open in flexion — the ROM is contact-limited,
+        // not just spring-limited.
+        assert!(
+            !traj.frames.first().unwrap().facet_points.is_empty(),
+            "facets must engage at the extension peak"
+        );
+        assert!(
+            traj.frames.last().unwrap().facet_points.is_empty(),
+            "facets must open at the flexion peak"
+        );
+    }
+
     #[test]
     fn ml_axis_is_widest_aabb_extent_not_pca() {
         // The flexion axis must be the widest AXIS-ALIGNED extent, NOT a PCA principal

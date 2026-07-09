@@ -32,8 +32,8 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use cf_fsu_geometry::{
-    BODY_RADIUS, FACET_CELL, FACET_MAX_CONTACTS, SegmentFrame, extreme_vertex, facet_grid, oracle,
-    segment_frame,
+    BODY_RADIUS, FACET_CELL, FACET_MAX_CONTACTS, SegmentFrame, conform_disc_to_endplates,
+    extreme_vertex, facet_grid, oracle, segment_frame,
 };
 use cf_geometry::IndexedMesh;
 use nalgebra::{Point3, Unit, UnitQuaternion, Vector3};
@@ -46,6 +46,10 @@ use crate::{BondedDisc, DiscParams, build_bonded_disc};
 /// The flexion-probe angle (rad) at which the disc's small-strain bending stiffness
 /// `k_disc` is measured — kept inside the bonded disc's validated sub-degree SPD range.
 const K_DISC_PROBE: f64 = 0.86_f64 * std::f64::consts::PI / 180.0;
+/// Sub-step (rad) for the incremental disc-render sweep in [`CoupledFsu::capture_ramp`]. Each
+/// warm-started soft solve advances at most this far, so the disc FEM stays inside its validity
+/// region all the way to the full ROM — the "sub-degree wall" is only a from-rest-jump artifact.
+const CAPTURE_SUBSTEP: f64 = 0.1_f64 * std::f64::consts::PI / 180.0;
 /// Angular bracket for the equilibrium bisection (rad). Comfortably spans the
 /// physiological ROM (flexion ~6°, extension ~4.5°) on both sides of neutral.
 const EQUILIBRIUM_BRACKET: f64 = 12.0_f64 * std::f64::consts::PI / 180.0;
@@ -127,17 +131,32 @@ pub struct CoupledFsu {
     axis: Vector3<f64>,
     /// Facet penalty stiffness (N/mm).
     k_facet: f64,
-    /// The disc's small-strain bending stiffness (N·m/rad, negative = restoring).
+    /// The disc's small-strain bending stiffness (N·m/rad, negative = restoring), measured from
+    /// [`Self::render_disc`] and baked into `model`'s hinge (the equilibrium the ROM solve uses).
     k_disc: f64,
-    /// The live bonded disc, retained for [`Self::capture_ramp`]'s deformation field.
-    disc: BondedDisc,
+    /// The live bonded disc (RAW geometry — well-conditioned, so its FEM solves incrementally to
+    /// the full ROM; a conformed mesh spawns sliver tets that fail the sweep). [`Self::capture_ramp`]
+    /// drives it to each equilibrium angle and reads the REAL deformed nodes, which the whole-face-
+    /// conformed [`Self::conformed_disc_surface`] is skinned onto. Also the source of `k_disc`.
+    render_disc: BondedDisc,
+    /// The disc surface (native mm) with its WHOLE top/bottom face conformed onto the real
+    /// L4/L5 surfaces — the exact contact geometry, retained so a viewer renders *this* (not
+    /// the raw STL) and the drawn disc IS what the bond sits on (rendered === contacts).
+    conformed_disc_surface: IndexedMesh,
 }
 
 impl CoupledFsu {
-    /// Assemble the coupled FSU from the three meshes (native mm): tet-mesh + bond the
-    /// disc, measure its `k_disc` bushing, build the ligament + bushing hinge model,
-    /// and sample the two articular SDF grids. The flexion sense is derived from the
-    /// facet engagement asymmetry (never hardcoded).
+    /// Assemble the coupled FSU from the three meshes (native mm): **conform the disc's
+    /// endplate bands onto the real L4/L5 surfaces**, tet-mesh + bond the (conformed) disc,
+    /// measure its `k_disc` bushing, build the ligament + bushing hinge model, and sample
+    /// the two articular SDF grids. The flexion sense is derived from the facet engagement
+    /// asymmetry (never hardcoded).
+    ///
+    /// The conform ([`conform_disc_to_endplates`]) projects the disc's endplate face onto the
+    /// exact bone surfaces, so the disc (via [`Self::conformed_disc_surface`]) *renders* on the
+    /// real endplates — no proxy gap. The bonded FEM disc keeps the raw geometry (a conformed
+    /// mesh spawns sliver tets that fail the large-angle deform sweep); `k_disc` on it is rung
+    /// 7's, the conform shifting it a negligible ~0.5%.
     ///
     /// # Errors
     /// Propagates a failure to derive the segment frame, build the bonded disc, or
@@ -146,18 +165,28 @@ impl CoupledFsu {
     pub fn build(
         l4: &IndexedMesh,
         l5: &IndexedMesh,
-        disc_mesh: IndexedMesh,
+        disc_mesh: &IndexedMesh,
         params: &CoupledParams,
     ) -> Result<Self> {
         let o4 = oracle(l4).context("L4 oracle")?;
         let o5 = oracle(l5).context("L5 oracle")?;
         let frame = segment_frame(l4, l5, &o4, &o5).context("segment frame")?;
 
-        let mut disc = build_bonded_disc(disc_mesh, &params.disc).context("build bonded disc")?;
-        let pivot = disc.center_native();
-        let ml = disc.ml_axis();
+        // The RENDER SURFACE conforms onto the real endplates (rendered === contacts) — its
+        // whole top/bottom face is seated on the bone so the drawn disc hugs it edge-to-edge.
+        // The BONDED FEM disc, by contrast, stays on the RAW (un-conformed) geometry: conforming
+        // the mesh drags surface vertices onto the bumpy bone and spawns sliver tets that fail
+        // the incremental deform sweep past a few degrees, whereas the raw disc's well-shaped
+        // tets solve cleanly to the full ROM (and its k_disc = rung 7's, the conform shifting it
+        // a negligible ~0.5% anyway). So: real deformation on raw tets, rendered on a conformed
+        // surface skinned to it.
+        let conformed_disc_surface = conform_disc_to_endplates(disc_mesh, &o4, &o5, &frame, None);
+        let mut render_disc =
+            build_bonded_disc(disc_mesh.clone(), &params.disc).context("build bonded disc")?;
+        let pivot = render_disc.center_native();
+        let ml = render_disc.ml_axis();
         // Small-strain disc bending stiffness (linear bushing), measured sub-degree.
-        let (m, _) = disc.flexion_moment(K_DISC_PROBE);
+        let (m, _) = render_disc.flexion_moment(K_DISC_PROBE);
         let k_disc = m / K_DISC_PROBE;
 
         // Orient the ML axis so +θ is flexion: probe the facet engagement asymmetry —
@@ -189,7 +218,8 @@ impl CoupledFsu {
             axis,
             k_facet: params.k_facet,
             k_disc,
-            disc,
+            render_disc,
+            conformed_disc_surface,
         })
     }
 
@@ -197,6 +227,15 @@ impl CoupledFsu {
     #[must_use]
     pub const fn frame(&self) -> &SegmentFrame {
         &self.frame
+    }
+
+    /// The disc surface (native mm) with its endplate bands conformed onto the real L4/L5
+    /// surfaces — the exact geometry the disc bonds to and deforms against. A viewer renders
+    /// THIS (displaced by the per-frame FEM field) instead of the raw disc STL, so the drawn
+    /// disc coincides with the bone at the endplates (rendered === contacts, no disc-lift seam).
+    #[must_use]
+    pub const fn conformed_disc_surface(&self) -> &IndexedMesh {
+        &self.conformed_disc_surface
     }
 
     /// The shared flexion pivot (disc AABB centre, native mm).
@@ -332,13 +371,22 @@ impl CoupledFsu {
     }
 
     /// Capture a coupled force-driven trajectory for replay: for each `applied` moment
-    /// (N·m, positive = flexion), solve the equilibrium angle and record it together with
-    /// the disc's deformation at that angle. Because the disc bends linearly (and its FEM
-    /// only converges sub-degree), the deformation at each equilibrium angle is the
-    /// sub-degree field linearly scaled to that angle — the same extrapolation rung 7's
-    /// `k_disc` relies on. The disc is probed at BOTH `±K_DISC_PROBE` and the correct-sign
-    /// field is scaled per frame, so extension shows the disc's real (not mirror-of-flexion)
-    /// shape. The superior vertebra rotates about `(pivot, axis, theta)`.
+    /// (N·m, positive = flexion), solve the equilibrium angle and record the disc's REAL
+    /// deformed shape at that angle.
+    ///
+    /// The render disc's soft FEM is driven **incrementally** to each equilibrium angle —
+    /// warm-started from the previous solve so every step is sub-degree — and the genuinely
+    /// deformed tet nodes are read back. There is NO extrapolation: the "sub-degree
+    /// convergence wall" is a from-rest-jump artifact, and a fine monotone sweep reaches the
+    /// full ±ROM cleanly. The disc bonds to its endplate boxes, which rotate with the flexion,
+    /// so the real deformation is attached to both vertebrae by construction (top face follows
+    /// L4, bottom follows L5) — the viewer just skins the clean surface onto these real nodes.
+    /// The sweep is ONE continuous chain from rest — for the sorted moment ramp its
+    /// consumers pass, monotone down to the extension peak then up through neutral to the
+    /// flexion peak — and every warm-started sub-step stays ≤ `CAPTURE_SUBSTEP` regardless
+    /// of input order. Chaining the legs (rather than resetting to rest between them) is
+    /// load-bearing: a reset would warm-start the next solve from the far-deformed state,
+    /// a big jump.
     ///
     /// # Errors
     /// Returns an error if a swept `applied` moment has no equilibrium within
@@ -347,81 +395,85 @@ impl CoupledFsu {
     /// A physiologic ramp (`|moment| ≤ 7.5 N·m`) is always in range.
     ///
     /// # Panics
-    /// Panics if the reference disc probe drives the soft solve past its SPD region — it
-    /// does not, at the validated sub-degree probe angle (the disc's fail-close contract).
+    /// Panics if the incremental soft solve fails to converge at a sub-degree step — it does
+    /// not on the validated geometry (a fine warm-started sweep reaches the full ROM).
+    // usize→f64 casts are small sub-step counts, exact in f64.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     pub fn capture_ramp(&mut self, applied_moments: &[f64]) -> Result<CoupledTrajectory> {
-        // Reference disc deformation at BOTH sub-degree probes: the disc's response is only
-        // near-antisymmetric, so extension frames scale the −probe field and flexion frames
-        // the +probe field (rather than mirroring one), preserving the real extension shape.
-        let ref_traj = self.disc.capture_flexion(&[-K_DISC_PROBE, K_DISC_PROBE]);
-        let rest = ref_traj.rest_nodes_native;
-        let disp = |frame: usize| -> Vec<Vector3<f64>> {
-            ref_traj.frames[frame]
-                .deformed_nodes_native
-                .iter()
-                .zip(&rest)
-                .map(|(d, r)| d - r)
-                .collect()
-        };
-        let disp_minus = disp(0); // field at −K_DISC_PROBE
-        let disp_plus = disp(1); // field at +K_DISC_PROBE
-        // The disc's own `capture_flexion` rotates about `disc.ml_axis()`; the coupled
-        // equilibrium `theta` is about the flexion-oriented `self.axis` (= ±ml). A rotation
-        // by `theta` about `self.axis` is one by `sign·theta` about `ml`, so the disc-frame
-        // angle `phi` carries that sign; pick the probe field matching its sign.
-        let disc_sign = self.axis.dot(&self.disc.ml_axis()).signum();
-
-        let frames = applied_moments
+        // Equilibrium angle per applied moment (monotone increasing: extension → flexion).
+        let thetas: Vec<f64> = applied_moments
             .iter()
             .map(|&applied| {
-                let theta = self.equilibrium(applied).with_context(|| {
+                self.equilibrium(applied).with_context(|| {
                     format!("no equilibrium within the ROM bracket for {applied} N·m")
-                })?;
-                let phi = disc_sign * theta; // disc-frame extrapolation angle
-                // At the physiologic flexion peak (~6.13°) this scales the sub-degree field
-                // by ~7×. Deliberately UNCAPPED: the disc surface must track L4's real solved
-                // ROM (a deform cap would unglue the disc top from the vertebra). The old
-                // viewer's ×6 ceiling guarded the *fragmented tet-boundary* render; this
-                // displaces the clean watertight STL surface, which stays coherent at this
-                // scale (user-verified clean at the 6.13° extreme). The ROM itself is bounded
-                // by EQUILIBRIUM_BRACKET, so `s` cannot run away.
-                let (field, s) = if phi >= 0.0 {
-                    (&disp_plus, phi / K_DISC_PROBE)
-                } else {
-                    (&disp_minus, -phi / K_DISC_PROBE)
-                };
-                let deformed_nodes_native =
-                    rest.iter().zip(field).map(|(r, d)| r + d * s).collect();
-                // One facet query at the solved angle yields the engaged contact points a
-                // viewer draws (count = len); the moment is unused here (the solver used it).
-                let (facet_points, _) = self.facet_response(theta);
-                Ok(CoupledFrame {
-                    applied,
-                    theta,
-                    deformed_nodes_native,
-                    facet_points,
                 })
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Result<_>>()?;
+        // Engaged facet points per frame — queried before borrowing the render disc.
+        let mut facet_points: Vec<Vec<Point3<f64>>> =
+            thetas.iter().map(|&t| self.facet_response(t).0).collect();
+
+        // Drive the RENDER disc's FEM incrementally to each equilibrium angle and read the REAL
+        // deformed nodes (no extrapolation). One continuous chain from rest keeps every step small.
+        let n = thetas.len();
+        let mut deformed: Vec<Vec<Point3<f64>>> = vec![Vec::new(); n];
+        let (rest_nodes_native, boundary_faces) = {
+            let disc = &mut self.render_disc;
+            disc.set_flexion(0.0);
+            let rest = disc.deformed_nodes_native();
+            let faces = disc.boundary_faces().to_vec();
+            // ONE continuous monotone sweep from rest: down to the extension peak, then up
+            // through neutral to the flexion peak. Chaining the legs (rather than resetting to 0
+            // between them) is load-bearing: a reset would warm-start the next solve from the
+            // far-deformed state, a big jump that over-stretches a boundary tet — whereas every
+            // step here is ≤ CAPTURE_SUBSTEP, so the FEM stays valid across the whole ±ROM.
+            let ext: Vec<usize> = (0..n).filter(|&i| thetas[i] < 0.0).rev().collect(); // 0 → −peak
+            let flex: Vec<usize> = (0..n).filter(|&i| thetas[i] >= 0.0).collect(); // −peak → +peak
+            let mut cur = 0.0;
+            for &fi in ext.iter().chain(&flex) {
+                let target = thetas[fi];
+                let steps = ((target - cur).abs() / CAPTURE_SUBSTEP).ceil().max(1.0) as usize;
+                for s in 1..=steps {
+                    disc.set_flexion(cur + (target - cur) * (s as f64 / steps as f64));
+                }
+                cur = target;
+                deformed[fi] = disc.deformed_nodes_native();
+            }
+            (rest, faces)
+        };
+
+        let frames = (0..n)
+            .map(|i| CoupledFrame {
+                applied: applied_moments[i],
+                theta: thetas[i],
+                deformed_nodes_native: std::mem::take(&mut deformed[i]),
+                facet_points: std::mem::take(&mut facet_points[i]),
+            })
+            .collect();
 
         Ok(CoupledTrajectory {
             pivot: self.pivot,
             axis: self.axis,
-            rest_nodes_native: rest,
-            boundary_faces: ref_traj.boundary_faces,
+            rest_nodes_native,
+            boundary_faces,
             frames,
         })
     }
 }
 
-/// One captured coupled equilibrium pose: the applied moment, the solved angle, the
-/// disc's deformed surface (native mm), and the engaged facet contact points.
+/// One captured coupled equilibrium pose: the applied moment, the solved angle, the disc's
+/// REAL deformed tet nodes (native mm), and the engaged facet contact points.
 pub struct CoupledFrame {
     /// The applied moment about the flexion axis (N·m, positive = flexion).
     pub applied: f64,
     /// The solved equilibrium flexion angle (rad; negative = extension).
     pub theta: f64,
-    /// The disc's deformed tet-vertex positions (native mm) at `theta`.
+    /// The disc's deformed tet-node positions at `theta` (native mm) — the genuinely-solved
+    /// FEM shape (incremental, not extrapolated). A viewer skins its clean surface onto these.
     pub deformed_nodes_native: Vec<Point3<f64>>,
     /// The penetrating facet contact points (native mm) at `theta` — where the bones
     /// actually touch. Empty in flexion (facets open); grows into extension. The engaged
@@ -438,11 +490,11 @@ pub struct CoupledFrame {
 pub struct CoupledTrajectory {
     /// The flexion pivot (disc AABB centre, native mm).
     pub pivot: Point3<f64>,
-    /// The flexion-positive ML axis.
+    /// The flexion-positive ML axis (the axis L4 rotates about at each frame's angle).
     pub axis: Vector3<f64>,
     /// The disc's rest (θ = 0) tet-vertex positions, native mm.
     pub rest_nodes_native: Vec<Point3<f64>>,
-    /// The disc surface triangulation, indexing every frame's `deformed_nodes_native`.
+    /// The disc surface triangulation, indexing every frame's node buffers.
     pub boundary_faces: Vec<[crate::VertexId; 3]>,
     /// The captured equilibria, one per applied moment.
     pub frames: Vec<CoupledFrame>,
@@ -742,7 +794,10 @@ mod tests {
         // `overlapping_spheres` tests.
         let g5 = Arc::new(SdfGrid::sphere(Point3::origin(), 10.0, 24, 2.0));
         let g4 = Arc::new(SdfGrid::sphere(Point3::new(80.0, 0.0, 0.0), 10.0, 24, 2.0));
-        let disc = build_bonded_disc(synthetic_disc(), &DiscParams::default()).expect("disc");
+        // The render disc is a bonded synthetic disc (its shape is what `capture_ramp` reads);
+        // the real build conforms the whole face onto the bones.
+        let render_disc =
+            build_bonded_disc(synthetic_disc(), &DiscParams::default()).expect("render disc");
         let scratch = RefCell::new(model.make_data());
         CoupledFsu {
             model,
@@ -754,7 +809,8 @@ mod tests {
             axis,
             k_facet: 200.0,
             k_disc,
-            disc,
+            render_disc,
+            conformed_disc_surface: synthetic_disc(),
         }
     }
 

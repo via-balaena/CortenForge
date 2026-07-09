@@ -17,17 +17,21 @@
 //!
 //! The FEM tet mesh is too fragmented to draw as a coherent disc (the BCC
 //! isosurface-stuffing mesher shatters the thin lens), so the viewer renders the
-//! **clean watertight STL surface** and displaces each of its vertices by the FEM
-//! displacement field — sampled from the nearest tet node (`scene::nearest_tet_nodes`).
+//! clean STL surface (endplate bands conformed onto the real bone via
+//! `CoupledFsu::conformed_disc_surface`) and displaces each of its vertices by the FEM
+//! displacement field — sampled from the nearest tet nodes, inverse-distance weighted (`scene::weighted_tet_nodes`).
 //! Clean geometry from the STL, real deformation from the physics.
 //!
 //! ## Honesty
 //!
-//! The rigid-body ROM is the real solved equilibrium (no exaggeration). The bonded disc
-//! FEM only converges at **sub-degree** strains (~0.86° — rung 7), so the disc's
-//! deformation at each ROM angle is that sub-degree field **linearly extrapolated** to
-//! the angle — the same `k_disc` linearity rung 7's validated response relies on. The
-//! panel reports the applied moment, the solved angle, and the facet engagement.
+//! The rigid-body ROM is the real solved equilibrium (no exaggeration). The disc's
+//! deformation at each ROM angle is a genuine incremental FEM solve: the bonded disc is
+//! warm-started through sub-degree steps to the target angle and the real deformed tet
+//! nodes are read back (`CoupledFsu::capture_ramp`). There is NO
+//! extrapolation — the "sub-degree convergence wall" was a from-rest-jump artifact, and a
+//! fine monotone sweep reaches the full ±ROM cleanly. (The equilibrium *angle* itself
+//! still comes from the linear `k_disc` bushing rung 7 validated.) The panel reports the
+//! applied moment, the solved angle, and the facet engagement.
 //!
 //! The headless scene assembly + capture live in [`scene`] (Bevy-free); this
 //! file is the thin Bevy/egui driver. The visual pass is user-side (this
@@ -41,6 +45,12 @@
 //!
 //! The BodyParts3D meshes (FMA13075 = L4, FMA13076 = L5, FMA16036 = disc)
 //! are CC BY-SA — session-local, never committed.
+//!
+//! `--disc` accepts any watertight disc STL in the same native-mm frame — in
+//! particular a disc *painted and lofted* in the `paint-faces` tool
+//! (`sim-bevy-soft`), which prints this exact command on export. That closes the
+//! loop: hand-paint the two endplate patches, loft the bushing, and watch it
+//! deform between the real vertebrae here.
 
 mod scene;
 
@@ -75,8 +85,9 @@ const FACET_RADIUS: f32 = 0.8; // facet near-contact marker
 /// Playback speed in captured-frames per second; interpolation keeps it smooth.
 /// The motion is the REAL coupled ROM (flexion ~6°, extension ~4.5° stopping on the
 /// facets) — force-driven and ROM-limited, so no exaggeration is applied: L4 rotates by
-/// the solved equilibrium angle and the disc deforms by the (linearly-extrapolated) FEM
-/// field at that angle. The panel reports the applied moment, the true angle, and the
+/// the solved equilibrium angle and the disc deforms by the real FEM field at that angle
+/// (interpolated between incrementally-solved captured frames, not extrapolated). The
+/// panel reports the applied moment, the true angle, and the
 /// facet engagement so the "bones stop on the facets" is legible.
 const PLAYBACK_FPS: f32 = 6.0;
 
@@ -142,9 +153,15 @@ struct Flexion {
     traj: CoupledTrajectory,
     /// The clean STL disc's rest vertex positions (native mm) — the render surface.
     disc_rest: Vec<Point3<f64>>,
-    /// For each `disc_rest` vertex, the nearest tet-node index in `traj.rest_nodes_native`,
-    /// so the surface is displaced by that node's FEM displacement each frame.
-    disc_map: Vec<usize>,
+    /// For each `disc_rest` vertex, the nearest tet nodes in `traj.rest_nodes_native` with
+    /// inverse-distance weights (see `scene::weighted_tet_nodes`), so the disc's real FEM
+    /// displacement is skinned smoothly (C⁰) onto the clean surface each frame.
+    disc_weights: Vec<Vec<(usize, f64)>>,
+    /// L4/L5 oracles — each frame, a deformed disc vertex that lands inside a bone is projected
+    /// back onto its surface (the FEM annulus bulges freely and would pierce the compression-side
+    /// vertebra; the bone stops it). See [`FsuScene::o4`].
+    o4: cf_fsu_geometry::MeshOracle,
+    o5: cf_fsu_geometry::MeshOracle,
     /// Auto-advancing playback (vs. paused / hand-scrubbed).
     playing: bool,
     /// Continuous frame position in `[0, frames-1]`; interpolated for smoothness.
@@ -236,7 +253,9 @@ fn run_app(fsu: FsuScene) {
         l4,
         l5,
         disc_surface,
-        disc_node_map,
+        disc_node_weights,
+        o4,
+        o5,
         flexion,
         ligaments,
         aabb,
@@ -270,7 +289,9 @@ fn run_app(fsu: FsuScene) {
             cursor: (flexion.frames.len().saturating_sub(1)) as f32 / 2.0,
             traj: flexion,
             disc_rest,
-            disc_map: disc_node_map,
+            disc_weights: disc_node_weights,
+            o4,
+            o5,
             playing: true,
             direction: 1.0,
             true_theta: 0.0,
@@ -450,29 +471,44 @@ fn flexion_update(
     let pivot = flexion.traj.pivot;
     let axis = flexion.traj.axis;
 
-    // Displace each CLEAN STL surface vertex by the FEM field (sampled from its nearest
-    // tet node) into the reused scratch buffer, plus the interpolated angle/moment — in a
-    // scoped borrow so we can write back the readouts. `flat` (a system Local) is
-    // independent of `flexion`, so filling it while borrowing the trajectory is fine.
+    // Build the deformed disc surface into the reused scratch buffer: each clean-surface vertex
+    // is displaced by the disc's REAL FEM displacement (`deformed − rest`), skinned smoothly
+    // (inverse-distance blend of the nearest tet nodes, interpolated between frames). The
+    // deformation is a genuine incremental solve, so no carrier or extrapolation is needed — but
+    // the FEM bonds to boxes, not the bones, so its annulus can bulge INTO the compression-side
+    // vertebra; a final projection pushes any vertex inside a bone back onto that surface (the
+    // bone stops the bulge). `flat` (a system Local) is independent of `flexion`, so filling it
+    // while borrowing the trajectory is fine.
     flat.clear();
     let (true_theta, applied) = {
         let traj = &flexion.traj;
         let (fa, fb) = (&traj.frames[lo], &traj.frames[hi]);
-        for (dr, &j) in flexion.disc_rest.iter().zip(&flexion.disc_map) {
-            // FEM displacement of the mapped tet node (interpolated between frames).
-            let a = fa.deformed_nodes_native[j];
-            let b = fb.deformed_nodes_native[j];
-            let interp = a + (b - a) * frac;
-            let disp = interp - traj.rest_nodes_native[j];
-            let p = dr + disp; // clean STL vertex + the real FEM displacement at this angle
+        let theta = fa.theta + (fb.theta - fa.theta) * frac;
+        let applied = fa.applied + (fb.applied - fa.applied) * frac;
+        // L4 rotates by θ this frame (project into its rotated frame); L5 is fixed.
+        let l4_rot = UnitQuaternion::from_axis_angle(&Unit::new_normalize(axis), theta);
+        for (dr, weights) in flexion.disc_rest.iter().zip(&flexion.disc_weights) {
+            let mut disp = Vector3::zeros();
+            for &(j, w) in weights {
+                let a = fa.deformed_nodes_native[j];
+                let b = fb.deformed_nodes_native[j];
+                disp += ((a + (b - a) * frac) - traj.rest_nodes_native[j]) * w;
+            }
+            let mut p = dr + disp;
+            // Non-penetration: project out of rotated-L4 (un-rotate → nearest surface → re-rotate)
+            // or fixed-L5, so the disc never pierces a bone.
+            let l4_local = pivot + l4_rot.inverse() * (p - pivot);
+            if flexion.o4.evaluate(l4_local) < 0.0 {
+                p = pivot + l4_rot * (flexion.o4.closest_point(l4_local) - pivot);
+            }
+            if flexion.o5.evaluate(p) < 0.0 {
+                p = flexion.o5.closest_point(p);
+            }
             flat.push(p.x);
             flat.push(p.y);
             flat.push(p.z);
         }
-        (
-            fa.theta + (fb.theta - fa.theta) * frac,
-            fa.applied + (fb.applied - fa.applied) * frac,
-        )
+        (theta, applied)
     };
     flexion.true_theta = true_theta;
     flexion.applied = applied;
