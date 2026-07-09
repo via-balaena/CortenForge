@@ -94,3 +94,10 @@ path = "examples/bonded_sandwich.rs"
 [[example]]
 name = "curved-contact"
 path = "examples/curved_contact.rs"
+
+# 4. `bonded-contact` — steps 2+3 in ONE solve: a soft block bonded top+bottom to two plates
+#    (Dirichlet bonds) AND its free side conforming to a curved sphere SDF (`PenaltyRigidContact`).
+#    Isolates bond+contact COEXISTENCE — the disc's full FEM structure on a box (ladder step 4).
+[[example]]
+name = "bonded-contact"
+path = "examples/bonded_contact.rs"
