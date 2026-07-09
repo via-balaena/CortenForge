@@ -73,11 +73,19 @@ sim-core = { workspace = true }
 sim-mjcf = { workspace = true }
 # Rotation math for the prescribed-boundary / plate-pose drive.
 nalgebra = { workspace = true }
-# `load_from_env` + `IndexedMesh` — load the real BodyParts3D vertebra/disc STLs
-# (the real-anatomy ladder rungs, step 5+). Same loader the FSU model uses, so the
-# examples share its weld-repair + native-mm convention (design→sim dep, mirrors
-# cf-fsu-model's dependency on this crate).
+# `load_from_env` + `oracle` + `IndexedMesh` — load the real BodyParts3D vertebra/disc
+# STLs and build their signed-distance oracles (the real-anatomy ladder rungs, step 5+).
+# Same loader the FSU model uses, so the examples share its weld-repair + native-mm
+# convention (design→sim dep, mirrors cf-fsu-model's dependency on this crate).
 cf-fsu-geometry = { workspace = true }
+# `IndexedMesh` (construct a tessellated sphere to feed the SDF pipeline) — the mesh-SDF
+# contact rung (5.1a) that isolates the SDF representation from anatomy.
+cf-geometry = { workspace = true }
+# `TriMeshDistance` + `CachedGridSdf` — voxelize a mesh into a GRID SDF (smooth analytic
+# trilinear gradient) for stable penalty contact. A raw `mesh_sdf::Signed` oracle's
+# finite-difference gradient chatters and stalls the Newton solve (ladder step 5.1a finding);
+# the grid SDF is what the FSU facet contact already uses.
+mesh-sdf = { workspace = true }
 
 # 1. `soft-bend` — a pinned soft block sheared by a prescribed top-face displacement,
 #    rendered as its deforming tet-boundary surface. Isolates FEM deformation →
@@ -113,3 +121,11 @@ path = "examples/bonded_contact.rs"
 [[example]]
 name = "real-bone-render"
 path = "examples/real_bone_render.rs"
+
+# 5.1a `box-on-mesh-sphere` — step 4's box, contact SDF swapped from the ANALYTIC `SphereSdf` to a
+#    GRID SDF (`CachedGridSdf`) voxelised from a tessellated sphere mesh. Isolates the SDF
+#    representation on smooth geometry: the raw mesh oracle's FD-gradient normal stalls the Newton
+#    solve; the grid's smooth trilinear gradient converges cleanly (ladder step 5.1a).
+[[example]]
+name = "box-on-mesh-sphere"
+path = "examples/box_on_mesh_sphere.rs"
