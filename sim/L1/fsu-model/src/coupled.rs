@@ -134,10 +134,10 @@ pub struct CoupledFsu {
     /// The disc's small-strain bending stiffness (N·m/rad, negative = restoring), measured from
     /// [`Self::render_disc`] and baked into `model`'s hinge (the equilibrium the ROM solve uses).
     k_disc: f64,
-    /// The live bonded disc (band-conformed — well-conditioned, so its FEM solves incrementally
-    /// to the full ROM). [`Self::capture_ramp`] drives it to each equilibrium angle and reads the
-    /// REAL deformed nodes, which the whole-face-conformed [`Self::conformed_disc_surface`] is
-    /// skinned onto. Also the source of `k_disc` (its bushing stiffness).
+    /// The live bonded disc (RAW geometry — well-conditioned, so its FEM solves incrementally to
+    /// the full ROM; a conformed mesh spawns sliver tets that fail the sweep). [`Self::capture_ramp`]
+    /// drives it to each equilibrium angle and reads the REAL deformed nodes, which the whole-face-
+    /// conformed [`Self::conformed_disc_surface`] is skinned onto. Also the source of `k_disc`.
     render_disc: BondedDisc,
     /// The disc surface (native mm) with its WHOLE top/bottom face conformed onto the real
     /// L4/L5 surfaces — the exact contact geometry, retained so a viewer renders *this* (not
