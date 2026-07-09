@@ -561,47 +561,50 @@ mod tests {
         ids
     }
 
-    /// Loft a disc headlessly from rough auto-selected L4/L5 endplate patches
-    /// (the painting GUI does this cleaner). Reads `$CF_L4_STL` / `$CF_L5_STL`.
-    fn lofted_disc_from_env() -> IndexedMesh {
-        use cf_fsu_geometry::load_from_env;
+    /// Loft a disc from rough auto-selected L4/L5 endplate patches (the painting
+    /// GUI does this cleaner).
+    fn lofted_disc(l4: &IndexedMesh, l5: &IndexedMesh) -> IndexedMesh {
         use cf_fsu_geometry::loft::{
             WallCorrespondence, assemble_bushing, extract_patch, flip_patch, seal_pinholes,
         };
-        let l4 = load_from_env("CF_L4_STL").unwrap();
-        let l5 = load_from_env("CF_L5_STL").unwrap();
-        let l4_faces = select_endplate(&l4, -1.0);
-        let l5_faces = select_endplate(&l5, 1.0);
+        let l4_faces = select_endplate(l4, -1.0);
+        let l5_faces = select_endplate(l5, 1.0);
         assert!(
             !l4_faces.is_empty() && !l5_faces.is_empty(),
             "empty endplate selection"
         );
-        let mut top = extract_patch(&l4, &l4_faces);
-        let mut bottom = extract_patch(&l5, &l5_faces);
+        let mut top = extract_patch(l4, &l4_faces);
+        let mut bottom = extract_patch(l5, &l5_faces);
         seal_pinholes(&mut top.mesh, 30);
         seal_pinholes(&mut bottom.mesh, 30);
         let top = flip_patch(&top);
         assemble_bushing(&top, &bottom, 1, WallCorrespondence::ArcLength).mesh
     }
 
+    /// B6 end-to-end: a human-lofted disc **tet-meshes cleanly, bonds to a
+    /// restoring stiffness, and seats on the exact bone for free** — the payoff of
+    /// building the disc *from* the endplates. The scanned disc could do none of
+    /// these (it over-stretched 2.15× and its conform shifted `k_disc` ~6×).
     #[test]
     #[ignore = "needs $CF_L4_STL/$CF_L5_STL (BodyParts3D, CC BY-SA, not committed)"]
     #[allow(clippy::cast_precision_loss)]
-    fn b6_0_tet_mesh_of_a_lofted_disc() {
-        let disc = lofted_disc_from_env();
-        println!(
-            "lofted disc: {} verts / {} faces",
-            disc.vertices.len(),
-            disc.faces.len()
-        );
+    fn b6_lofted_disc_tet_meshes_bonds_and_seats() {
+        use cf_fsu_geometry::{conform_disc_to_endplates, load_from_env, segment_frame};
 
-        // Tet-mesh via the same SDF/BCC path build_bonded_disc uses (native mm → m).
+        let l4 = load_from_env("CF_L4_STL").unwrap();
+        let l5 = load_from_env("CF_L5_STL").unwrap();
+        let o4 = oracle(&l4).unwrap();
+        let o5 = oracle(&l5).unwrap();
+        let frame = segment_frame(&l4, &l5, &o4, &o5).unwrap();
+        let disc = lofted_disc(&l4, &l5);
         let params = DiscParams::default();
-        let mut scaled = disc;
+
+        // (1) Tet-meshes cleanly: no rim fragmentation, no slivers, no inverted tets.
+        let mut scaled = disc.clone();
         let bbox0 = Aabb::from_points(scaled.vertices.iter());
-        let center = Point3::from(bbox0.min.coords + (bbox0.max - bbox0.min) * 0.5);
+        let centre = Point3::from(bbox0.min.coords + (bbox0.max - bbox0.min) * 0.5);
         for v in &mut scaled.vertices {
-            *v = Point3::from((v.coords - center.coords) * params.scale);
+            *v = Point3::from((v.coords - centre.coords) * params.scale);
         }
         let padded = Aabb::from_points(scaled.vertices.iter()).expanded(params.pad);
         let hints = MeshingHints {
@@ -612,18 +615,8 @@ mod tests {
             cell_size: params.cell,
             material_field: Some(MaterialField::uniform(params.mu, 4.0 * params.mu)),
         };
-        let sdf = oracle(&scaled).unwrap();
-        let raw = SdfMeshedTetMesh::from_sdf(&sdf, &hints).unwrap();
-        let tets_raw = raw.n_tets();
-        let tet = raw.largest_component();
-        println!(
-            "tet mesh: {} tets ({} before largest_component, {:.0}% kept), {} verts",
-            tet.n_tets(),
-            tets_raw,
-            100.0 * tet.n_tets() as f64 / tets_raw.max(1) as f64,
-            tet.n_vertices(),
-        );
-
+        let raw = SdfMeshedTetMesh::from_sdf(&oracle(&scaled).unwrap(), &hints).unwrap();
+        let (raw_n, tet) = (raw.n_tets(), raw.largest_component());
         let quality = tet.quality();
         let min_dihedral = quality
             .dihedral_min
@@ -631,49 +624,59 @@ mod tests {
             .copied()
             .fold(f64::MAX, f64::min)
             .to_degrees();
-        let max_aspect = quality.aspect_ratio.iter().copied().fold(0.0, f64::max);
         let inverted = quality.signed_volume.iter().filter(|&&v| v <= 0.0).count();
         println!(
-            "  min dihedral {min_dihedral:.1} deg, max aspect {max_aspect:.1}, inverted tets {inverted}"
+            "tet: {} tets ({:.0}% kept), min dihedral {min_dihedral:.1} deg, {inverted} inverted",
+            tet.n_tets(),
+            100.0 * tet.n_tets() as f64 / raw_n.max(1) as f64,
+        );
+        assert!(
+            tet.n_tets() > 0 && inverted == 0,
+            "disc did not tet-mesh cleanly"
         );
 
-        assert!(tet.n_tets() > 0, "disc tet-meshed to zero tets");
-        assert_eq!(inverted, 0, "inverted (negative-volume) tets present");
-    }
+        // (2) The caps ARE the endplate surfaces: conforming them onto the exact
+        // bone is a sub-mm move (the scanned disc needed multi-mm, stiffening moves).
+        let conformed = conform_disc_to_endplates(&disc, &o4, &o5, &frame, Some(params.band_frac));
+        let max_move = disc
+            .vertices
+            .iter()
+            .zip(&conformed.vertices)
+            .map(|(a, b)| (a - b).norm())
+            .fold(0.0, f64::max);
+        println!("conform: max cap-band move {max_move:.2} mm");
+        assert!(
+            max_move < 4.0,
+            "cap band not seated on the bone ({max_move:.2} mm)"
+        );
 
-    #[test]
-    #[ignore = "needs $CF_L4_STL/$CF_L5_STL (BodyParts3D, CC BY-SA, not committed)"]
-    fn b6_1_bond_and_probe_lofted_disc() {
-        // The question the whole arc was built for: the SCANNED disc could not fit
-        // between L4/L5 (bonding over-stretched it 2.15x and failed). Does our
-        // lofted, fitting disc bond and probe to a restoring stiffness without
-        // diverging?
-        let disc = lofted_disc_from_env();
-        let mut bonded = build_bonded_disc(disc, &DiscParams::default())
-            .expect("lofted disc bonds between the endplates");
-
-        // Sub-degree probe (beyond ~1 deg the boundary tets leave their SPD region).
+        // (3) Bonds + probes to a restoring, symmetric, self-equilibrated k_disc,
+        // and the exact-bone conform leaves it intact (no ~6× shift).
         let theta = 0.5_f64.to_radians();
-        let (m_flex, resid_flex) = bonded.flexion_moment(theta);
-        let (m_ext, resid_ext) = bonded.flexion_moment(-theta);
-        let k_flex = m_flex / theta;
-        let k_ext = m_ext / -theta;
+        let mut raw_bond = build_bonded_disc(disc, &params).expect("lofted disc bonds");
+        let (m_flex, resid_flex) = raw_bond.flexion_moment(theta);
+        let (m_ext, resid_ext) = raw_bond.flexion_moment(-theta);
+        let (k_flex, k_ext) = (m_flex / theta, m_ext / -theta);
+        let k_conformed = build_bonded_disc(conformed, &params)
+            .expect("conformed disc bonds")
+            .flexion_moment(theta)
+            .0
+            / theta;
         println!(
-            "k_disc: flex {k_flex:.1} N·m/rad, ext {k_ext:.1} N·m/rad; conservation resid {resid_flex:.2e} / {resid_ext:.2e}"
+            "k_disc: flex {k_flex:.1}, ext {k_ext:.1}, conformed {k_conformed:.1} N·m/rad; resid {resid_flex:.1e} / {resid_ext:.1e}"
         );
-
-        // A real disc is a consistent linear spring: flexion and extension give the
-        // same-sign stiffness, both non-trivial and finite (it converged, no panic).
         assert!(k_flex.is_finite() && k_ext.is_finite(), "non-finite k_disc");
         assert!(
-            k_flex * k_ext > 0.0,
-            "flex/ext stiffness disagree in sign ({k_flex:.1} vs {k_ext:.1})"
+            k_flex * k_ext > 0.0 && k_flex.abs() > 1.0,
+            "not a consistent linear spring ({k_flex:.1} vs {k_ext:.1})"
         );
-        assert!(k_flex.abs() > 1.0, "disc carries no measurable stiffness");
-        // The bonded field is self-equilibrated (rung-6 conservation oracle).
         assert!(
             resid_flex < 1e-2 && resid_ext < 1e-2,
             "bond not self-equilibrated ({resid_flex:.2e} / {resid_ext:.2e})"
+        );
+        assert!(
+            (k_conformed - k_flex).abs() < 0.5 * k_flex.abs(),
+            "exact-bone conform shifted k_disc ({k_flex:.1} -> {k_conformed:.1})"
         );
     }
 
