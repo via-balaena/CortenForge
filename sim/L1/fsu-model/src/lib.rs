@@ -561,19 +561,15 @@ mod tests {
         ids
     }
 
-    #[test]
-    #[ignore = "needs $CF_L4_STL/$CF_L5_STL (BodyParts3D, CC BY-SA, not committed)"]
-    #[allow(clippy::cast_precision_loss)]
-    fn b6_0_tet_mesh_of_a_lofted_disc() {
+    /// Loft a disc headlessly from rough auto-selected L4/L5 endplate patches
+    /// (the painting GUI does this cleaner). Reads `$CF_L4_STL` / `$CF_L5_STL`.
+    fn lofted_disc_from_env() -> IndexedMesh {
         use cf_fsu_geometry::load_from_env;
         use cf_fsu_geometry::loft::{
             WallCorrespondence, assemble_bushing, extract_patch, flip_patch, seal_pinholes,
         };
-
         let l4 = load_from_env("CF_L4_STL").unwrap();
         let l5 = load_from_env("CF_L5_STL").unwrap();
-
-        // Loft a disc from rough endplate patches (the painted GUI does this cleaner).
         let l4_faces = select_endplate(&l4, -1.0);
         let l5_faces = select_endplate(&l5, 1.0);
         assert!(
@@ -585,7 +581,14 @@ mod tests {
         seal_pinholes(&mut top.mesh, 30);
         seal_pinholes(&mut bottom.mesh, 30);
         let top = flip_patch(&top);
-        let disc = assemble_bushing(&top, &bottom, 1, WallCorrespondence::ArcLength).mesh;
+        assemble_bushing(&top, &bottom, 1, WallCorrespondence::ArcLength).mesh
+    }
+
+    #[test]
+    #[ignore = "needs $CF_L4_STL/$CF_L5_STL (BodyParts3D, CC BY-SA, not committed)"]
+    #[allow(clippy::cast_precision_loss)]
+    fn b6_0_tet_mesh_of_a_lofted_disc() {
+        let disc = lofted_disc_from_env();
         println!(
             "lofted disc: {} verts / {} faces",
             disc.vertices.len(),
@@ -636,6 +639,42 @@ mod tests {
 
         assert!(tet.n_tets() > 0, "disc tet-meshed to zero tets");
         assert_eq!(inverted, 0, "inverted (negative-volume) tets present");
+    }
+
+    #[test]
+    #[ignore = "needs $CF_L4_STL/$CF_L5_STL (BodyParts3D, CC BY-SA, not committed)"]
+    fn b6_1_bond_and_probe_lofted_disc() {
+        // The question the whole arc was built for: the SCANNED disc could not fit
+        // between L4/L5 (bonding over-stretched it 2.15x and failed). Does our
+        // lofted, fitting disc bond and probe to a restoring stiffness without
+        // diverging?
+        let disc = lofted_disc_from_env();
+        let mut bonded = build_bonded_disc(disc, &DiscParams::default())
+            .expect("lofted disc bonds between the endplates");
+
+        // Sub-degree probe (beyond ~1 deg the boundary tets leave their SPD region).
+        let theta = 0.5_f64.to_radians();
+        let (m_flex, resid_flex) = bonded.flexion_moment(theta);
+        let (m_ext, resid_ext) = bonded.flexion_moment(-theta);
+        let k_flex = m_flex / theta;
+        let k_ext = m_ext / -theta;
+        println!(
+            "k_disc: flex {k_flex:.1} N·m/rad, ext {k_ext:.1} N·m/rad; conservation resid {resid_flex:.2e} / {resid_ext:.2e}"
+        );
+
+        // A real disc is a consistent linear spring: flexion and extension give the
+        // same-sign stiffness, both non-trivial and finite (it converged, no panic).
+        assert!(k_flex.is_finite() && k_ext.is_finite(), "non-finite k_disc");
+        assert!(
+            k_flex * k_ext > 0.0,
+            "flex/ext stiffness disagree in sign ({k_flex:.1} vs {k_ext:.1})"
+        );
+        assert!(k_flex.abs() > 1.0, "disc carries no measurable stiffness");
+        // The bonded field is self-equilibrated (rung-6 conservation oracle).
+        assert!(
+            resid_flex < 1e-2 && resid_ext < 1e-2,
+            "bond not self-equilibrated ({resid_flex:.2e} / {resid_ext:.2e})"
+        );
     }
 
     #[test]
