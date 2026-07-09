@@ -55,6 +55,8 @@ pub struct Patch {
     /// For each patch vertex, the index it held in the source mesh:
     /// `source_vertex[new] = old`. Lets a caller pin the patch back onto the
     /// body it was painted on (the disc's contact bond) or carry attributes.
+    /// Invariant (upheld by [`extract_patch`]): `source_vertex.len() ==
+    /// mesh.vertices.len()` — [`keep_largest_component`] indexes it per vertex.
     pub source_vertex: Vec<u32>,
 }
 
@@ -411,8 +413,11 @@ fn rim_positions(mesh: &IndexedMesh, rim: &[u32]) -> Vec<Point3<f64>> {
 }
 
 /// Enclosed area of a closed 3D polygon via Newell's method — the magnitude of
-/// its vectorial area `½ Σ vᵢ × vᵢ₊₁`. Origin-independent and needs no
-/// projection axis, so it is robust for the non-planar rims real endplates trace.
+/// its vectorial area `½ Σ vᵢ × vᵢ₊₁`. Origin-independent and needs no projection
+/// axis, so it is robust for the gently non-planar rims real endplates trace.
+/// Caveat: the magnitude UNDER-reads a severely folded loop (opposing normals
+/// cancel, tending to 0 for a loop folded onto itself), so [`outer_rim_index`]
+/// assumes the outer boundary is not near-folded.
 fn rim_area(positions: &[Point3<f64>]) -> f64 {
     let n = positions.len();
     if n < 3 {
@@ -606,7 +611,10 @@ fn connected_components(faces: &[[u32; 3]]) -> Vec<Vec<usize>> {
         groups.entry(root).or_default().push(fi);
     }
     let mut components: Vec<Vec<usize>> = groups.into_values().collect();
-    components.sort_by_key(|c| std::cmp::Reverse(c.len()));
+    // Largest first; break exact size ties by smallest member face index so the
+    // pick is deterministic (the `groups` HashMap iteration order is not).
+    // Each component's Vec is built in ascending face order, so `c[0]` is its min.
+    components.sort_by_key(|c| (std::cmp::Reverse(c.len()), c[0]));
     components
 }
 
@@ -695,8 +703,10 @@ pub fn finalize_patch(patch: &Patch) -> Patch {
 
 /// True if the mesh has no boundary edges — every edge is shared by ≥2 faces.
 ///
-/// The closed-surface readout for an assembled bushing (the disc a soft solver
-/// or SDF tet-mesher can consume; an open or multi-shell mesh cannot be signed).
+/// A readout for an assembled bushing, not a strict manifold check: it detects an
+/// OPEN surface (an edge bounding a single face) but NOT two disjoint closed
+/// shells (which also have no boundary edges). The loft pipeline reduces to one
+/// component via [`finalize_patch`], so "no boundary edges" means closed there.
 #[must_use]
 pub fn is_watertight(mesh: &IndexedMesh) -> bool {
     MeshAdjacency::build(&mesh.faces)
@@ -1446,6 +1456,38 @@ mod tests {
     }
 
     #[test]
+    fn outer_rim_index_picks_area_even_when_the_hole_has_more_vertices() {
+        // ★ The exact property 667d6710 added: a big COARSE outer rim (3 verts,
+        // large area) vs a small FINE hole rim (8 verts, tiny area). A regression
+        // to the old `max_by_key(rim.len())` would pick the hole; area must win.
+        let mut vertices = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(100.0, 0.0, 0.0),
+            Point3::new(0.0, 100.0, 0.0),
+        ];
+        for k in 0..8 {
+            let a = std::f64::consts::TAU * f64::from(k) / 8.0;
+            vertices.push(Point3::new(a.cos(), a.sin(), 0.0));
+        }
+        let hole: Vec<u32> = (3..11).collect(); // 8 verts, tiny area
+        let big: Vec<u32> = vec![0, 1, 2]; // 3 verts, huge area
+        let patch = Patch {
+            mesh: IndexedMesh::from_parts(vertices, Vec::new()),
+            rims: vec![hole, big],
+            source_vertex: Vec::new(),
+        };
+        assert!(
+            patch.rims[0].len() > patch.rims[1].len(),
+            "hole has more verts"
+        );
+        assert_eq!(
+            outer_rim_index(&patch),
+            Some(1),
+            "area must win over vertex count"
+        );
+    }
+
+    #[test]
     fn keep_largest_component_drops_the_stray_blob() {
         let (mesh, selection) = disjoint_squares();
         let patch = extract_patch(&mesh, &selection);
@@ -1454,6 +1496,16 @@ mod tests {
         assert_eq!(kept.mesh.face_count(), 8, "kept the 8-triangle square");
         assert_eq!(kept.mesh.vertex_count(), 9);
         assert_eq!(connected_components(&kept.mesh.faces).len(), 1);
+        // ★ The source_vertex map is the disc→endplate BOND map: every kept
+        // vertex must still point back to its original source position (a
+        // decoupled remap would silently break the bond).
+        assert_eq!(kept.source_vertex.len(), kept.mesh.vertex_count());
+        for (i, &src) in kept.source_vertex.iter().enumerate() {
+            assert_eq!(
+                kept.mesh.vertices[i], mesh.vertices[src as usize],
+                "source_vertex[{i}] must map to the original position"
+            );
+        }
     }
 
     #[test]
@@ -1507,6 +1559,10 @@ mod tests {
         let out = finalize_patch(&patch);
         assert_eq!(out.rims.len(), 1);
         assert_eq!(connected_components(&out.mesh.faces).len(), 1);
+        // Pin that the LARGE holed grid survived (16 faces + 4 from sealing its
+        // hole = 20), not the stray 1-face triangle — a wrong-component pick
+        // would still satisfy the rim/component asserts above.
+        assert_eq!(out.mesh.face_count(), 20, "kept the grid, not the stray");
     }
 
     #[test]
