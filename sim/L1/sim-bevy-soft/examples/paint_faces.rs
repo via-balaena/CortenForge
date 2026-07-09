@@ -35,6 +35,9 @@ use bevy::prelude::*;
 use cf_bevy_common::mesh::triangle_mesh_flat_shaded;
 use cf_bevy_common::prelude::{OrbitCamera, update_orbit_camera};
 use cf_fsu_geometry::load_from_env;
+use cf_fsu_geometry::loft::{
+    WallCorrespondence, assemble_bushing, extract_patch, flip_patch, seal_pinholes,
+};
 use cf_geometry::IndexedMesh;
 use cf_viewer::{UpAxis, setup_camera_and_lighting};
 use mesh_types::Aabb;
@@ -54,11 +57,23 @@ const BRUSH_MAX: f64 = 30.0;
 #[derive(Component)]
 struct PaintBody {
     name: &'static str,
+    source: IndexedMesh,
     mesh: Handle<Mesh>,
+    material: Handle<StandardMaterial>,
     centroids: Vec<[f64; 3]>,
     normals: Vec<[f64; 3]>,
     painted: HashSet<usize>,
 }
+
+/// Whether the lofted disc is currently shown (review mode). In review both
+/// vertebrae are translucent and the disc is visible; otherwise only the active
+/// body is shown, opaque, for painting.
+#[derive(Resource, Default)]
+struct ShowDisc(bool);
+
+/// The spawned disc entity (replaced each time the disc is re-lofted).
+#[derive(Resource, Default)]
+struct DiscEntity(Option<Entity>);
 
 /// The two bodies and which one the brush acts on (cycled with `Tab`).
 #[derive(Resource)]
@@ -134,7 +149,9 @@ const CONTROLS: &str = "CONTROLS\n\
      - / =        tolerance\n\
      [ / ]        brush size\n\
      Ctrl + Z     undo stroke\n\
-     C            clear body";
+     C            clear body\n\
+     Enter        loft disc\n\
+     Tab          (in review) back";
 
 fn main() {
     App::new()
@@ -142,6 +159,8 @@ fn main() {
         .init_resource::<Hover>()
         .init_resource::<History>()
         .init_resource::<ActiveStroke>()
+        .init_resource::<ShowDisc>()
+        .init_resource::<DiscEntity>()
         .insert_resource(BrushRadius(BRUSH_INIT))
         .insert_resource(BrushMode::Paint)
         .insert_resource(NormalFilter {
@@ -163,9 +182,10 @@ fn main() {
                 switch_body,
                 clear_selection,
                 undo_stroke,
+                loft_disc,
             ),
         )
-        .add_systems(Update, (update_hud, update_body_visibility))
+        .add_systems(Update, (update_hud, update_display))
         .run();
 }
 
@@ -218,11 +238,13 @@ fn setup(
         let entity = commands
             .spawn((
                 Mesh3d(handle.clone()),
-                MeshMaterial3d(material),
+                MeshMaterial3d(material.clone()),
                 Transform::default(),
                 PaintBody {
                     name,
+                    source: mesh.clone(),
                     mesh: handle,
+                    material,
                     centroids,
                     normals,
                     painted: HashSet::new(),
@@ -553,10 +575,18 @@ fn toggle_filter(keys: Res<ButtonInput<KeyCode>>, mut filter: ResMut<NormalFilte
     }
 }
 
-/// Cycle the active body with `Tab`.
-fn switch_body(keys: Res<ButtonInput<KeyCode>>, mut bodies: ResMut<Bodies>) {
+/// Cycle the active body with `Tab` (also returns from disc review to painting).
+fn switch_body(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut bodies: ResMut<Bodies>,
+    mut show: ResMut<ShowDisc>,
+) {
     if keys.just_pressed(KeyCode::Tab) {
-        bodies.active = (bodies.active + 1) % bodies.entities.len();
+        if show.0 {
+            show.0 = false; // leave review without advancing the body
+        } else {
+            bodies.active = (bodies.active + 1) % bodies.entities.len();
+        }
     }
 }
 
@@ -631,15 +661,114 @@ fn update_hud(
     );
 }
 
-/// Show only the active body — the others are hidden — so the body being
-/// painted is unobstructed. Runs whenever the active selection changes.
-fn update_body_visibility(bodies: Res<Bodies>, mut q_vis: Query<&mut Visibility>) {
-    if !bodies.is_changed() {
+/// Loft the two painted patches into the disc with `Enter`, spawn it, and enter
+/// review (both vertebrae translucent, disc visible).
+fn loft_disc(
+    keys: Res<ButtonInput<KeyCode>>,
+    q_bodies: Query<&PaintBody>,
+    mut show: ResMut<ShowDisc>,
+    mut disc_entity: ResMut<DiscEntity>,
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    if !keys.just_pressed(KeyCode::Enter) {
+        return;
+    }
+
+    // Extract + seal each painted patch, keyed by body name.
+    let mut l4 = None;
+    let mut l5 = None;
+    for body in &q_bodies {
+        if body.painted.len() < 3 {
+            continue;
+        }
+        let faces: Vec<usize> = body.painted.iter().copied().collect();
+        let mut patch = extract_patch(&body.source, &faces);
+        seal_pinholes(&mut patch.mesh, 30);
+        match body.name {
+            "L4" => l4 = Some(patch),
+            "L5" => l5 = Some(patch),
+            _ => {}
+        }
+    }
+    let (Some(l4), Some(l5)) = (l4, l5) else {
+        println!("loft: paint a region on BOTH L4 and L5 first");
+        return;
+    };
+
+    // L4's bone normal points down toward the disc, so flip it to match L5's.
+    // Arc-length correspondence distributes evenly around these convex painted
+    // rims, avoiding the fan/spike a greedy shortest-diagonal can drift into.
+    let top = flip_patch(&l4);
+    let bushing = assemble_bushing(&top, &l5, 1, WallCorrespondence::ArcLength);
+    let disc = bushing.mesh;
+    println!(
+        "lofted disc: {} verts / {} faces",
+        disc.vertices.len(),
+        disc.faces.len()
+    );
+
+    let render = triangle_mesh_flat_shaded(&disc, None, UpAxis::PlusZ);
+    let handle = meshes.add(render);
+    let material = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.20, 0.62, 0.68),
+        perceptual_roughness: 0.6,
+        double_sided: true,
+        cull_mode: None,
+        ..default()
+    });
+    if let Some(old) = disc_entity.0.take() {
+        commands.entity(old).despawn();
+    }
+    disc_entity.0 = Some(
+        commands
+            .spawn((
+                Mesh3d(handle),
+                MeshMaterial3d(material),
+                Transform::default(),
+            ))
+            .id(),
+    );
+    show.0 = true;
+}
+
+/// Update what is shown: in review (disc lofted) both vertebrae are translucent
+/// and the disc is visible; otherwise only the active body is shown, opaque.
+fn update_display(
+    bodies: Res<Bodies>,
+    show: Res<ShowDisc>,
+    disc_entity: Res<DiscEntity>,
+    q_bodies: Query<&PaintBody>,
+    mut q_vis: Query<&mut Visibility>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    if !bodies.is_changed() && !show.is_changed() && !disc_entity.is_changed() {
         return;
     }
     for (i, &e) in bodies.entities.iter().enumerate() {
         if let Ok(mut visibility) = q_vis.get_mut(e) {
-            *visibility = if i == bodies.active {
+            *visibility = if show.0 || i == bodies.active {
+                Visibility::Visible
+            } else {
+                Visibility::Hidden
+            };
+        }
+        if let Ok(body) = q_bodies.get(e) {
+            if let Some(material) = materials.get_mut(&body.material) {
+                if show.0 {
+                    material.base_color = Color::srgba(0.87, 0.84, 0.78, 0.30);
+                    material.alpha_mode = AlphaMode::Blend;
+                } else {
+                    material.base_color = Color::WHITE;
+                    material.alpha_mode = AlphaMode::Opaque;
+                }
+            }
+        }
+    }
+    if let Some(disc) = disc_entity.0 {
+        if let Ok(mut visibility) = q_vis.get_mut(disc) {
+            *visibility = if show.0 {
                 Visibility::Visible
             } else {
                 Visibility::Hidden
