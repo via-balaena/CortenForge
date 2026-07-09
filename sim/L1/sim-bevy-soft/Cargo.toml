@@ -52,6 +52,7 @@ panic = "deny"
 bevy = { workspace = true, default-features = false, features = [
     "bevy_asset",
     "bevy_core_pipeline",
+    "bevy_gizmos",
     "bevy_pbr",
     "bevy_picking",
     "mesh_picking",
