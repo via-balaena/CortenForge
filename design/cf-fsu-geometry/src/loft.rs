@@ -271,6 +271,58 @@ fn cumulative_params(positions: &[Point3<f64>]) -> Vec<f64> {
     cum
 }
 
+/// Assemble a top patch, the perimeter wall, and a bottom patch into one closed
+/// bushing mesh (B2).
+///
+/// The two patches are concatenated into a shared vertex array (top first, then
+/// bottom), the bottom patch's faces are **flipped** so its normals point out
+/// the opposite side, and the wall from [`stitch_rims`] seals the two outer
+/// rims. A final orientation pass flips the whole mesh if it came out inside-out,
+/// so the result always has outward-facing normals (`signed_volume > 0`).
+///
+/// # Preconditions
+///
+/// Each patch must be a single-boundary surface disc (exactly one rim; the
+/// outer rim `rims[0]` is used) and the two patches must be given in the **same
+/// winding convention** — both wound so their normals point the same absolute
+/// direction, as [`extract_patch`] yields when both regions are painted with a
+/// consistent surface orientation. The bottom flip then makes the two caps face
+/// away from each other and the wall seals them. A patch with an interior hole
+/// (more than one rim) needs one wall per rim and is out of scope here.
+///
+/// If either patch has no rim the caps are still concatenated but the mesh is
+/// left open (no wall) — the watertight check is the caller's readout.
+#[must_use]
+// Vertex counts fit in `u32` by the `IndexedMesh` index contract, so the
+// offset cast below cannot truncate at any real mesh size.
+#[allow(clippy::cast_possible_truncation)]
+pub fn assemble_bushing(top: &Patch, bottom: &Patch) -> IndexedMesh {
+    let offset = top.mesh.vertices.len() as u32;
+
+    let mut vertices = top.mesh.vertices.clone();
+    vertices.extend_from_slice(&bottom.mesh.vertices);
+
+    let mut faces = top.mesh.faces.clone();
+    // Bottom faces: reverse winding (flip normal) and shift into the shared array.
+    for &[a, b, c] in &bottom.mesh.faces {
+        faces.push([c + offset, b + offset, a + offset]);
+    }
+    // Perimeter wall bridging the two outer rims (bottom rim shifted to match).
+    if let (Some(rim_a), Some(rim_b)) = (top.rims.first(), bottom.rims.first()) {
+        let rim_b_shifted: Vec<u32> = rim_b.iter().map(|&v| v + offset).collect();
+        faces.extend(stitch_rims(&vertices, rim_a, &rim_b_shifted));
+    }
+
+    let mut mesh = IndexedMesh::from_parts(vertices, faces);
+    // Guarantee outward orientation: flip every face if the solid is inside-out.
+    if mesh.is_inside_out() {
+        for face in &mut mesh.faces {
+            face.swap(1, 2);
+        }
+    }
+    mesh
+}
+
 #[cfg(test)]
 #[allow(
     // Tests legitimately use `.unwrap()`/indexing to assert structure; the
@@ -488,5 +540,70 @@ mod tests {
         let verts = circle(3, 0.0, true);
         // A two-vertex "rim" is not a loop.
         assert!(stitch_rims(&verts, &[0, 1], &[0, 1, 2]).is_empty());
+    }
+
+    /// A unit-square patch at height `z`, wound CCW from +z (normal +z) — the
+    /// same convention for top and bottom, as [`assemble_bushing`] expects.
+    fn square_patch(z: f64) -> Patch {
+        let mesh = IndexedMesh::from_parts(
+            vec![
+                Point3::new(0.0, 0.0, z),
+                Point3::new(1.0, 0.0, z),
+                Point3::new(1.0, 1.0, z),
+                Point3::new(0.0, 1.0, z),
+            ],
+            vec![[0, 1, 2], [0, 2, 3]],
+        );
+        extract_patch(&mesh, &[0, 1])
+    }
+
+    /// Assert the mesh is a consistently-oriented closed 2-manifold: every
+    /// directed half-edge is unique (no two faces traverse `a→b` the same way)
+    /// and every edge is traversed in both directions (its reverse is present).
+    fn assert_consistently_oriented_closed(mesh: &IndexedMesh) {
+        let mut directed: HashSet<(u32, u32)> = HashSet::new();
+        for &[a, b, c] in &mesh.faces {
+            for edge in [(a, b), (b, c), (c, a)] {
+                assert!(directed.insert(edge), "duplicate half-edge {edge:?}");
+            }
+        }
+        for &(a, b) in &directed {
+            assert!(directed.contains(&(b, a)), "edge {a}->{b} has no reverse");
+        }
+    }
+
+    #[test]
+    fn assemble_two_squares_is_closed_puck() {
+        let top = square_patch(1.0);
+        let bottom = square_patch(0.0);
+        let puck = assemble_bushing(&top, &bottom);
+
+        // 2 top caps + 2 bottom caps + 8 wall = 12 tris over 8 verts (a box).
+        assert_eq!(puck.vertex_count(), 8);
+        assert_eq!(puck.face_count(), 12);
+
+        // Watertight: no boundary edges, no non-manifold edges.
+        let adjacency = MeshAdjacency::build(&puck.faces);
+        assert_eq!(adjacency.boundary_edge_count(), 0, "not watertight");
+        assert_eq!(adjacency.non_manifold_edge_count(), 0, "non-manifold");
+
+        // Consistently oriented, outward (positive), unit-box volume.
+        assert_consistently_oriented_closed(&puck);
+        let vol = puck.signed_volume();
+        assert!(vol > 0.0, "inside-out: volume {vol}");
+        assert!((vol - 1.0).abs() < 1e-9, "volume {vol} != unit box");
+    }
+
+    #[test]
+    fn assemble_recovers_when_caps_assemble_inward() {
+        // Pass the caps z-swapped (lower square as "top", upper as "bottom") —
+        // a valid same-convention pair whose natural assembly is consistently
+        // oriented but inside-out. The orientation pass must recover a positive,
+        // still-consistent puck, so the result is robust to which cap is which.
+        let puck = assemble_bushing(&square_patch(0.0), &square_patch(1.0));
+        let vol = puck.signed_volume();
+        assert!(vol > 0.0, "orientation pass did not recover: volume {vol}");
+        assert!((vol - 1.0).abs() < 1e-9, "volume {vol} != unit box");
+        assert_consistently_oriented_closed(&puck);
     }
 }
