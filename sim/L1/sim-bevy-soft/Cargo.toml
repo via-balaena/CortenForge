@@ -146,3 +146,10 @@ path = "examples/box_on_bone.rs"
 [[example]]
 name = "real-disc-bonded"
 path = "examples/real_disc_bonded.rs"
+
+# `modeled-disc` — the disc MODELLED from the endplates (`model_disc_between_endplates`) rendered
+#    nestled between translucent L4/L5, so the fit (68% seated on the real bone) is visible. The
+#    pivot's payoff: a disc that fills the endplate gap by construction (fitted-disc viz).
+[[example]]
+name = "modeled-disc"
+path = "examples/modeled_disc.rs"

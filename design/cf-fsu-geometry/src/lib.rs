@@ -29,7 +29,10 @@ use anyhow::{Context, Result, bail};
 use cf_design::Solid;
 use cf_geometry::{Aabb, IndexedMesh, Sdf, SdfGrid};
 use mesh_io::load_stl;
-use mesh_repair::{RepairParams, repair_mesh};
+use mesh_repair::{
+    RepairParams, TAUBIN_DEFAULT_LAMBDA, TAUBIN_DEFAULT_MU, keep_largest_component, repair_mesh,
+    taubin_smooth_vertices,
+};
 use mesh_sdf::{PseudoNormalSign, Signed, TriMeshDistance};
 use nalgebra::{Matrix3, Point3, Vector3};
 
@@ -435,8 +438,8 @@ impl Sdf for DiscFootprintPrism {
 /// L4–L5 disc (native mm).
 #[derive(Debug, Clone, Copy)]
 pub struct DiscModelParams {
-    /// Surface-mesh tolerance (native mm) — the lattice cell the carved solid is polygonised at;
-    /// smaller resolves the endplate curvature more finely.
+    /// Surface-mesh tolerance (native mm) — the lattice cell the carved solid is dual-contoured
+    /// at; smaller resolves the endplate curvature more finely (at more triangles + compute).
     pub cell: f64,
     /// How far (mm) the SI bound pokes past the disc's own SI extent into each vertebra, so the
     /// endplate carve reliably reaches L4/L5 even where the scanned disc under-fills the gap
@@ -446,14 +449,26 @@ pub struct DiscModelParams {
     /// endplates carve it cleanly; `0.0` keeps the scanned silhouette. A small value tidies the
     /// annulus rim (the carve leaves a thin sliver where the footprint overhangs the body).
     pub footprint_erode: f64,
+    /// Taubin (shrink-free) smoothing passes over the carved surface — removes the high-frequency
+    /// dual-contouring crazing the vertebra oracle's finite-difference gradient induces on the
+    /// endplate faces, without shrinking the disc off the endplates. `0` leaves the raw carve.
+    pub smooth_iters: usize,
+    /// Trim the disc `Some(mm)` behind the vertebral-body midpoint along the segment frame's
+    /// posterior axis — the scanned footprint reaches back into the spinal canal, where only one
+    /// endplate is present and the carve leaves a thin posterior flap; this cuts the disc to the
+    /// body region. `None` skips the trim (and the segment-frame computation) — used where the
+    /// posterior axis is undefined (e.g. symmetric test geometry).
+    pub posterior_trim: Option<f64>,
 }
 
 impl Default for DiscModelParams {
     fn default() -> Self {
         Self {
-            cell: 1.0,
+            cell: 0.8,
             si_margin: 4.0,
             footprint_erode: 1.0,
+            smooth_iters: 8,
+            posterior_trim: Some(14.0),
         }
     }
 }
@@ -474,8 +489,9 @@ impl Default for DiscModelParams {
 /// Construction: `disc = (disc footprint prism ∩ SI slab) − L4 − L5`. The prism is the disc's
 /// mid-plane cross-section extruded along SI (`DiscFootprintPrism`); the slab clamps its height
 /// to reach `si_margin` into each vertebra; subtracting the two vertebra oracles carves the top
-/// and bottom into the real curved endplates. The result is polygonised with `cf-design`'s SDF
-/// mesher.
+/// and bottom into the real curved endplates. The result is polygonised with `cf-design`'s
+/// dual-contouring mesher (which keeps the sharp annulus edge and avoids marching-cubes aliasing)
+/// and reduced to its largest connected component.
 ///
 /// `l4` is the SUPERIOR vertebra (above the disc, +z), `l5` the INFERIOR; `disc` is the scanned
 /// disc, used ONLY for its lateral footprint + SI extent (its ill-fitting faces are discarded by
@@ -514,6 +530,9 @@ pub fn model_disc_between_endplates(
     );
     let bounds = Aabb::from_points([center - pad, center + pad].iter());
 
+    let o4 = oracle(l4).context("L4 oracle")?;
+    let o5 = oracle(l5).context("L5 oracle")?;
+
     // Lateral bound: the disc's own footprint (its mid-plane section extruded along SI, eroded),
     // clamped to a slab that reaches `si_margin` into each vertebra so the carve connects.
     let prism = Solid::from_sdf(
@@ -526,19 +545,37 @@ pub fn model_disc_between_endplates(
     );
     let half_z = ext.z * 0.5 + params.si_margin;
     let slab = Solid::cuboid(Vector3::new(ext.x, ext.y, half_z)).translate(center.coords);
+    let mut lateral = prism.intersect(slab);
+
+    // Optionally cut the posterior canal flap: keep only the half-space anterior of the body
+    // midpoint + `trim` mm along the frame's posterior axis.
+    if let Some(trim) = params.posterior_trim {
+        let frame = segment_frame(l4, l5, &o4, &o5).context("segment frame for posterior trim")?;
+        let body_mid = (frame.b4.coords + frame.b5.coords) * 0.5;
+        let threshold = frame.posterior.dot(&body_mid) + trim;
+        lateral = lateral.intersect(Solid::plane(frame.posterior, threshold));
+    }
 
     // Carve the two vertebrae out of the footprint column → the disc between the endplates.
-    let disc_solid = prism
-        .intersect(slab)
-        .subtract(Solid::from_sdf(oracle(l4).context("L4 oracle")?, bounds))
-        .subtract(Solid::from_sdf(oracle(l5).context("L5 oracle")?, bounds));
+    let disc_solid = lateral
+        .subtract(Solid::from_sdf(o4, bounds))
+        .subtract(Solid::from_sdf(o5, bounds));
 
-    let mesh = disc_solid.mesh(params.cell).geometry;
+    let mut mesh = disc_solid.mesh_dc(params.cell).geometry;
     if mesh.is_empty() {
         bail!(
             "modeled disc is empty — check L4/L5 orientation (l4 must be superior/+z) or increase si_margin"
         );
     }
+    // Drop any isolated fragments the carve leaves (small pockets sealed off between the endplates)
+    // so the disc is a single connected solid, then Taubin-smooth the endplate crazing.
+    keep_largest_component(&mut mesh);
+    taubin_smooth_vertices(
+        &mut mesh,
+        params.smooth_iters,
+        TAUBIN_DEFAULT_LAMBDA,
+        TAUBIN_DEFAULT_MU,
+    );
     Ok(mesh)
 }
 
@@ -990,6 +1027,8 @@ mod tests {
             cell: 1.0,
             si_margin: 4.0,
             footprint_erode: 0.0,
+            smooth_iters: 0, // flat box endplates → no crazing to smooth; keep the exact thickness
+            posterior_trim: None, // symmetric boxes have no defined posterior axis
         };
         let modeled = model_disc_between_endplates(&upper, &lower, &disc, &params).unwrap();
         assert!(!modeled.is_empty(), "carve must not be empty");
