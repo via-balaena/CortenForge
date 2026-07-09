@@ -1,0 +1,15 @@
+# Pin the Rust toolchain for reproducible builds and grading.
+#
+# CI installs `dtolnay/rust-toolchain@stable`, which floats to whatever stable is
+# newest at run time. A newer clippy adds lints the workspace has not been swept
+# for yet (e.g. 1.97's `manual_assert` / f32-inference-fallback), which fail
+# `cargo xtask grade` on crates untouched by a PR — turning an unrelated diff red
+# the moment it triggers a full grade. Pinning makes CI use the same clippy the
+# workspace is verified warning-clean on. rustup honors this file over the
+# channel the CI action installs, so it governs both CI and local.
+#
+# Bump DELIBERATELY, paired with a clippy-lint cleanup of the whole workspace —
+# never implicitly per toolchain release.
+[toolchain]
+channel = "1.96.0"
+components = ["clippy", "rustfmt"]
