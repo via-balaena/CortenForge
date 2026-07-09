@@ -22,6 +22,12 @@
 //! * **B2:** [`assemble_bushing`] — top patch + wall + bottom patch → one closed
 //!   watertight mesh.
 //! * **B3:** [`smooth_wall`] — smooth only the free wall (contact caps stay pinned).
+//!
+//! Patch preparation for real painted regions (so a raw selection meets
+//! [`assemble_bushing`]'s single-boundary precondition): [`finalize_patch`] =
+//! [`keep_largest_component`] (drop a stray blob) + [`seal_interior_holes`]
+//! (seal every hole but the [`outer_rim_index`] boundary). [`is_watertight`] is
+//! the closed-surface readout.
 
 use std::collections::{HashMap, HashSet};
 
@@ -557,27 +563,6 @@ fn seal_rim(mesh: &mut IndexedMesh, rim: &[u32]) {
     }
 }
 
-/// Seal small boundary loops (pinholes) of a closed-ish mesh with a centroid
-/// fan, leaving any loop larger than `max_edges` open. Returns the number of
-/// loops sealed.
-///
-/// This is a size-thresholded, mesh-level primitive; it cannot tell an outer
-/// boundary from an interior hole, so it is **not** the way to prepare a painted
-/// patch — use [`finalize_patch`] (or [`seal_interior_holes`]), which is
-/// rim-aware and never seals the boundary the wall must loft onto.
-pub fn seal_pinholes(mesh: &mut IndexedMesh, max_edges: usize) -> usize {
-    let loops = extract_rims(&mesh.faces);
-    let mut sealed = 0;
-    for rim in loops {
-        if rim.len() < 3 || rim.len() > max_edges {
-            continue;
-        }
-        seal_rim(mesh, &rim);
-        sealed += 1;
-    }
-    sealed
-}
-
 /// Partition a face set into edge-connected components, largest first, each a
 /// list of face indices. Two faces share a component iff they share an edge.
 fn connected_components(faces: &[[u32; 3]]) -> Vec<Vec<usize>> {
@@ -662,11 +647,11 @@ pub fn keep_largest_component(patch: &Patch) -> Patch {
 /// open, and refresh [`Patch::rims`] to that single surviving rim. Returns the
 /// number of holes sealed.
 ///
-/// Unlike [`seal_pinholes`], this is rim-aware: it seals exactly the non-outer
-/// rims (identified by enclosed area via [`outer_rim_index`]) regardless of
-/// their size, so it can never close the boundary the wall must loft onto, and
-/// it updates `rims` — removing both the seal-the-outer-rim and the stale-rim
-/// hazards of threshold sealing.
+/// Rim-aware: it seals exactly the non-outer rims (identified by enclosed area
+/// via [`outer_rim_index`]) regardless of their size, so it can never close the
+/// boundary the wall must loft onto, and it updates `rims` — sidestepping both
+/// the seal-the-outer-rim and stale-rim hazards a size-thresholded sealer would
+/// hit (it cannot tell an outer boundary from an interior hole).
 pub fn seal_interior_holes(patch: &mut Patch) -> usize {
     let Some(outer) = outer_rim_index(patch) else {
         return 0;
@@ -1320,30 +1305,6 @@ mod tests {
     }
 
     #[test]
-    fn seal_pinholes_fills_loops_within_threshold() {
-        let mut mesh = unit_square_mesh();
-        assert_eq!(MeshAdjacency::build(&mesh.faces).boundary_edge_count(), 4);
-
-        // The 4-edge loop is <= max, so it seals: +1 centroid vertex, +4 fan
-        // faces, and the boundary closes.
-        let sealed = seal_pinholes(&mut mesh, 5);
-        assert_eq!(sealed, 1);
-        assert_eq!(mesh.vertex_count(), 5);
-        assert_eq!(mesh.face_count(), 6);
-        assert_eq!(MeshAdjacency::build(&mesh.faces).boundary_edge_count(), 0);
-    }
-
-    #[test]
-    fn seal_pinholes_skips_loops_above_threshold() {
-        let mut mesh = unit_square_mesh();
-        // 4-edge loop > max 3 → left open, mesh unchanged.
-        let sealed = seal_pinholes(&mut mesh, 3);
-        assert_eq!(sealed, 0);
-        assert_eq!(mesh.vertex_count(), 4);
-        assert_eq!(mesh.face_count(), 2);
-    }
-
-    #[test]
     fn stitch_diagonal_opposite_wound_circles_is_clean_cylinder() {
         // The shortest-diagonal loft must also produce a clean, untwisted wall.
         let (verts, rim_a, rim_b) = cylinder_rims(16, 9, true);
@@ -1408,19 +1369,20 @@ mod tests {
             }
         }
         let big = |i: u32, j: u32| j * 3 + i;
-        let mut faces = Vec::new();
+        let base = vertices.len() as u32; // first small-square vertex (9)
+        for (dx, dy) in [(10.0, 0.0), (11.0, 0.0), (11.0, 1.0), (10.0, 1.0)] {
+            vertices.push(Point3::new(dx, dy, 0.0));
+        }
+        // Emit the SMALL square's faces FIRST so extract_patch gives the big
+        // (kept) component non-identity patch-local indices — exercising the
+        // source_vertex remap on `new != old` in keep_largest_component's test.
+        let mut faces = vec![[base, base + 1, base + 2], [base, base + 2, base + 3]];
         for cj in 0..2u32 {
             for ci in 0..2u32 {
                 faces.push([big(ci, cj), big(ci + 1, cj), big(ci + 1, cj + 1)]);
                 faces.push([big(ci, cj), big(ci + 1, cj + 1), big(ci, cj + 1)]);
             }
         }
-        let base = vertices.len() as u32;
-        for (dx, dy) in [(10.0, 0.0), (11.0, 0.0), (11.0, 1.0), (10.0, 1.0)] {
-            vertices.push(Point3::new(dx, dy, 0.0));
-        }
-        faces.push([base, base + 1, base + 2]);
-        faces.push([base, base + 2, base + 3]);
         let n = faces.len();
         (IndexedMesh::from_parts(vertices, faces), (0..n).collect())
     }
@@ -1528,9 +1490,9 @@ mod tests {
 
     #[test]
     fn finalize_patch_never_seals_a_small_clean_outer_rim() {
-        // A tiny patch whose outer rim is only 4 edges: the old size-thresholded
-        // seal_pinholes(_, 30) would fan it shut (destroying the boundary the
-        // wall lofts onto); finalize_patch must leave the outer rim open.
+        // A tiny patch whose outer rim is only 4 edges: a size-thresholded sealer
+        // would fan it shut (destroying the boundary the wall lofts onto), but the
+        // rim-aware finalize_patch must leave the single outer rim open.
         let patch = extract_patch(&unit_square_mesh(), &[0, 1]);
         let out = finalize_patch(&patch);
         assert_eq!(out.rims.len(), 1);
