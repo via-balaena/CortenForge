@@ -41,6 +41,12 @@
 //!
 //! The BodyParts3D meshes (FMA13075 = L4, FMA13076 = L5, FMA16036 = disc)
 //! are CC BY-SA — session-local, never committed.
+//!
+//! `--disc` accepts any watertight disc STL in the same native-mm frame — in
+//! particular a disc *painted and lofted* in the `paint-faces` tool
+//! (`sim-bevy-soft`), which prints this exact command on export. That closes the
+//! loop: hand-paint the two endplate patches, loft the bushing, and watch it
+//! deform between the real vertebrae here.
 
 mod scene;
 
