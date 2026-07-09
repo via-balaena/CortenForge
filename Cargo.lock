@@ -11671,6 +11671,7 @@ version = "1.0.0"
 dependencies = [
  "bevy",
  "cf-bevy-common",
+ "cf-fsu-geometry",
  "cf-viewer",
  "mesh-types",
  "nalgebra 0.34.2",

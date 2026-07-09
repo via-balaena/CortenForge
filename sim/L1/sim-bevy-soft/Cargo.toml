@@ -73,6 +73,11 @@ sim-core = { workspace = true }
 sim-mjcf = { workspace = true }
 # Rotation math for the prescribed-boundary / plate-pose drive.
 nalgebra = { workspace = true }
+# `load_from_env` + `IndexedMesh` — load the real BodyParts3D vertebra/disc STLs
+# (the real-anatomy ladder rungs, step 5+). Same loader the FSU model uses, so the
+# examples share its weld-repair + native-mm convention (design→sim dep, mirrors
+# cf-fsu-model's dependency on this crate).
+cf-fsu-geometry = { workspace = true }
 
 # 1. `soft-bend` — a pinned soft block sheared by a prescribed top-face displacement,
 #    rendered as its deforming tet-boundary surface. Isolates FEM deformation →
@@ -101,3 +106,10 @@ path = "examples/curved_contact.rs"
 [[example]]
 name = "bonded-contact"
 path = "examples/bonded_contact.rs"
+
+# 5.0 `real-bone-render` — load ONE real vertebra STL ($CF_L5_STL, BodyParts3D) and render it,
+#    NO physics. First real-anatomy rung: de-risks the asset pipeline (STL → weld-repair → scale
+#    → UpAxis orient → Bevy mesh) in isolation before any bond/contact touches it (ladder step 5.0).
+[[example]]
+name = "real-bone-render"
+path = "examples/real_bone_render.rs"
