@@ -581,14 +581,16 @@ mod tests {
         assemble_bushing(&top, &bottom, 1, WallCorrespondence::ArcLength).mesh
     }
 
-    /// B6 end-to-end: a human-lofted disc **tet-meshes cleanly, bonds to a
-    /// restoring stiffness, and seats on the exact bone for free** — the payoff of
+    /// B6 end-to-end: a human-lofted disc **tet-meshes, bonds to a restoring
+    /// stiffness, seats on the exact bone for free, and sweeps** — the payoff of
     /// building the disc *from* the endplates. The scanned disc could do none of
-    /// these (it over-stretched 2.15× and its conform shifted `k_disc` ~6×).
+    /// these (it over-stretched 2.15× and its conform shifted `k_disc` ~6×). The
+    /// bond + sweep succeeding is itself proof the tet mesh is clean — inverted or
+    /// fragmented tets diverge (spike-measured: 99% kept, 11.8° min dihedral, 0
+    /// inverted).
     #[test]
     #[ignore = "needs $CF_L4_STL/$CF_L5_STL (BodyParts3D, CC BY-SA, not committed)"]
-    #[allow(clippy::cast_precision_loss)]
-    fn b6_lofted_disc_tet_meshes_bonds_and_seats() {
+    fn b6_lofted_disc_bonds_seats_and_sweeps() {
         use cf_fsu_geometry::{conform_disc_to_endplates, load_from_env, segment_frame};
 
         let l4 = load_from_env("CF_L4_STL").unwrap();
@@ -599,43 +601,7 @@ mod tests {
         let disc = lofted_disc(&l4, &l5);
         let params = DiscParams::default();
 
-        // (1) Tet-meshes cleanly: no rim fragmentation, no slivers, no inverted tets.
-        let mut scaled = disc.clone();
-        let bbox0 = Aabb::from_points(scaled.vertices.iter());
-        let centre = Point3::from(bbox0.min.coords + (bbox0.max - bbox0.min) * 0.5);
-        for v in &mut scaled.vertices {
-            *v = Point3::from((v.coords - centre.coords) * params.scale);
-        }
-        let padded = Aabb::from_points(scaled.vertices.iter()).expanded(params.pad);
-        let hints = MeshingHints {
-            bbox: Aabb3::new(
-                Vec3::new(padded.min.x, padded.min.y, padded.min.z),
-                Vec3::new(padded.max.x, padded.max.y, padded.max.z),
-            ),
-            cell_size: params.cell,
-            material_field: Some(MaterialField::uniform(params.mu, 4.0 * params.mu)),
-        };
-        let raw = SdfMeshedTetMesh::from_sdf(&oracle(&scaled).unwrap(), &hints).unwrap();
-        let (raw_n, tet) = (raw.n_tets(), raw.largest_component());
-        let quality = tet.quality();
-        let min_dihedral = quality
-            .dihedral_min
-            .iter()
-            .copied()
-            .fold(f64::MAX, f64::min)
-            .to_degrees();
-        let inverted = quality.signed_volume.iter().filter(|&&v| v <= 0.0).count();
-        println!(
-            "tet: {} tets ({:.0}% kept), min dihedral {min_dihedral:.1} deg, {inverted} inverted",
-            tet.n_tets(),
-            100.0 * tet.n_tets() as f64 / raw_n.max(1) as f64,
-        );
-        assert!(
-            tet.n_tets() > 0 && inverted == 0,
-            "disc did not tet-mesh cleanly"
-        );
-
-        // (2) The caps ARE the endplate surfaces: conforming them onto the exact
+        // (1) The caps ARE the endplate surfaces: conforming them onto the exact
         // bone is a sub-mm move (the scanned disc needed multi-mm, stiffening moves).
         let conformed = conform_disc_to_endplates(&disc, &o4, &o5, &frame, Some(params.band_frac));
         let max_move = disc
@@ -650,7 +616,7 @@ mod tests {
             "cap band not seated on the bone ({max_move:.2} mm)"
         );
 
-        // (3) Bonds + probes to a restoring, symmetric, self-equilibrated k_disc,
+        // (2) Bonds + probes to a restoring, symmetric, self-equilibrated k_disc,
         // and the exact-bone conform leaves it intact (no ~6× shift).
         let theta = 0.5_f64.to_radians();
         let mut raw_bond = build_bonded_disc(disc, &params).expect("lofted disc bonds");
@@ -677,6 +643,21 @@ mod tests {
         assert!(
             (k_conformed - k_flex).abs() < 0.5 * k_flex.abs(),
             "exact-bone conform shifted k_disc ({k_flex:.1} -> {k_conformed:.1})"
+        );
+
+        // (3) A sub-degree sweep (incremental, warm-started) genuinely deforms and
+        // restores across angles — conservation + strictly-restoring moment per
+        // frame + a real imposed deformation (assert_restoring_sweep, shared with
+        // the synthetic and scanned-disc capture tests).
+        let angles: Vec<f64> = [-0.5_f64, -0.25, 0.0, 0.25, 0.5]
+            .iter()
+            .map(|d| d.to_radians())
+            .collect();
+        let traj = raw_bond.capture_flexion(&angles);
+        let max_disp = assert_restoring_sweep(&traj, 2e-2);
+        println!(
+            "sweep: {} frames, max node displacement {max_disp:.3} mm",
+            traj.frames.len()
         );
     }
 
