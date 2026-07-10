@@ -2,7 +2,6 @@
 //! attachment-site markers) and the engaged facet-contact points.
 
 use bevy::prelude::*;
-use mesh_types::Aabb;
 use nalgebra::{Unit, UnitQuaternion};
 use sim_bevy::convert::vec3_from_point;
 
@@ -22,7 +21,6 @@ const FACET_RADIUS: f32 = 0.8; // facet near-contact marker
 #[derive(Resource)]
 pub(crate) struct Overlays {
     pub(crate) ligaments: Vec<Ligament>,
-    pub(crate) aabb: Aabb,
     pub(crate) warnings: Vec<String>,
 }
 

@@ -39,8 +39,14 @@
 //! thin Bevy driver that composes the concern modules — [`cli`] (STL path resolution),
 //! [`render`] (tissue entities), [`replay`] (the moment-ramp playback), [`overlays`]
 //! (ligament/facet gizmos), [`panel`] (the egui side panel), [`input`] (pointer
-//! arbitration), and [`state`] (the `Design`↔`Simulate` mode machine) — into one app.
-//! The visual pass is user-side (this session cannot see GUI output). Run:
+//! arbitration), [`state`] (the mode machine), and [`solve`] (the on-demand background
+//! FSU assembly) — into one app.
+//!
+//! The app opens in `Design`, loads L4/L5 + a `--disc` (a stand-in until the paint
+//! front-end lands next rung), and on `S` dispatches the ~90 s coupled-FSU solve to a
+//! background thread (`Solving`) before replaying it (`Simulate`). The bones + camera
+//! persist across modes; only the disc + the replay are mode-scoped. The visual pass is
+//! user-side (this session cannot see GUI output). Run:
 //!
 //! ```text
 //! cargo run -p cf-spine-viewer -- --dir <dir-with-the-3-STLs>
@@ -64,48 +70,42 @@ mod panel;
 mod render;
 mod replay;
 mod scene;
+mod solve;
 mod state;
 
 use anyhow::Result;
 use bevy::prelude::*;
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 use cf_bevy_common::prelude::{OrbitCameraPlugin, orbit_camera_input};
+use cf_fsu_geometry::load;
 use cf_viewer::{UpAxis, setup_camera_and_lighting};
+use mesh_types::{Aabb, IndexedMesh};
 
 use clap::Parser;
 use cli::Cli;
 use input::block_orbit_input_when_over_egui;
-use overlays::{Overlays, draw_facets, draw_ligaments};
+use overlays::{draw_facets, draw_ligaments};
 use panel::{SceneToggles, apply_visibility, scene_panel};
-use render::{SceneMeshes, setup_scene};
-use replay::{Flexion, flexion_update};
-use scene::FsuScene;
-use state::{StudioState, design_panel, handle_state_transitions};
+use render::{SourceMeshes, leave_simulate, spawn_bones};
+use replay::flexion_update;
+use solve::{SolveError, SolveTask, poll_solve, start_solve};
+use state::{StudioState, design_panel, design_quit, simulate_back, solving_panel};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let (l4, l5, disc) = cli::resolve_paths(&cli)?;
-    let fsu = scene::build(&l4, &l5, &disc)?;
-    run_app(fsu);
+    let (l4_path, l5_path, disc_path) = cli::resolve_paths(&cli)?;
+    // Load the three meshes into memory up front; the FSU is NOT assembled here —
+    // the solve runs on demand (S) from these, on a background thread.
+    let (l4, l5, disc) = (load(&l4_path)?, load(&l5_path)?, load(&disc_path)?);
+    run_app(l4, l5, disc);
     Ok(())
 }
 
-/// Wire the assembled FSU scene into a Bevy app: inject the scene data as
-/// resources, then compose the concern modules' systems into the schedule.
-fn run_app(fsu: FsuScene) {
-    let FsuScene {
-        l4,
-        l5,
-        disc_surface,
-        disc_node_weights,
-        o4,
-        o5,
-        flexion,
-        ligaments,
-        aabb,
-        warnings,
-    } = fsu;
-    let disc_rest = disc_surface.vertices.clone();
+/// Wire the app: keep the three source meshes resident, spawn the persistent
+/// bones + camera at startup, and compose the mode-scoped systems. The sim
+/// resources (`Flexion`, `Overlays`) are inserted by [`solve::poll_solve`] when a
+/// solve completes — not up front.
+fn run_app(l4: IndexedMesh, l5: IndexedMesh, disc: IndexedMesh) {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -117,31 +117,28 @@ fn run_app(fsu: FsuScene) {
         .add_plugins(EguiPlugin::default())
         .add_plugins(OrbitCameraPlugin)
         .init_state::<StudioState>()
+        .init_resource::<SolveTask>()
+        .init_resource::<SolveError>()
         .insert_resource(ClearColor(Color::srgb(0.10, 0.10, 0.12)))
-        .insert_resource(SceneMeshes {
-            l4,
-            l5,
-            disc_surface,
-        })
-        .insert_resource(Overlays {
-            ligaments,
-            aabb,
-            warnings,
-        })
-        .insert_resource(Flexion::new(flexion, disc_rest, disc_node_weights, o4, o5))
+        .insert_resource(SourceMeshes { l4, l5, disc })
         .insert_resource(SceneToggles::default())
-        // The scene (camera + tissue) is spawned once at startup and persists;
-        // the replay/overlay/panel systems below are gated to Simulate, so in
-        // Design the FSU simply freezes behind the (opaque) Design panel. Real
-        // per-state spawn/despawn arrives in PR3d, where Design gets its own
-        // paint entities distinct from the sim scene.
-        .add_systems(Startup, (setup_scene, setup_camera))
-        // Always-on: pointer arbitration + the mode-switch keys.
+        // Bones + camera persist across modes (so the 3D world is never empty);
+        // the disc is spawned by the solve poll and torn down on leaving Simulate.
+        .add_systems(Startup, (spawn_bones, setup_camera))
+        .add_systems(OnExit(StudioState::Simulate), leave_simulate)
+        // Always-on: pointer arbitration.
+        .add_systems(
+            Update,
+            block_orbit_input_when_over_egui.before(orbit_camera_input),
+        )
+        // Per-mode input + the solve poll.
         .add_systems(
             Update,
             (
-                block_orbit_input_when_over_egui.before(orbit_camera_input),
-                handle_state_transitions,
+                start_solve.run_if(in_state(StudioState::Design)),
+                design_quit.run_if(in_state(StudioState::Design)),
+                poll_solve.run_if(in_state(StudioState::Solving)),
+                simulate_back.run_if(in_state(StudioState::Simulate)),
             ),
         )
         // The replay + overlays run only in Simulate.
@@ -158,18 +155,17 @@ fn run_app(fsu: FsuScene) {
         .add_systems(
             EguiPrimaryContextPass,
             (
-                scene_panel.run_if(in_state(StudioState::Simulate)),
                 design_panel.run_if(in_state(StudioState::Design)),
+                solving_panel.run_if(in_state(StudioState::Solving)),
+                scene_panel.run_if(in_state(StudioState::Simulate)),
             ),
         )
         .run();
 }
 
-/// Spawn the orbit camera + lighting, framed on the combined scene AABB. Kept
-/// separate from the tissue spawn ([`render::setup_scene`]) so the camera
-/// persists independently of the scene entities.
-fn setup_camera(mut commands: Commands, overlays: Res<Overlays>) {
-    // Native mm — frame directly on the combined AABB. `setup_camera_and_lighting`
-    // swaps the target into Bevy Y-up, matching the swapped meshes.
-    setup_camera_and_lighting(&mut commands, &overlays.aabb, UpAxis::PlusZ);
+/// Spawn the orbit camera + lighting, framed on the combined L4/L5 AABB (the FSU
+/// bounds; the disc sits between the bodies). Persists across modes.
+fn setup_camera(mut commands: Commands, sources: Res<SourceMeshes>) {
+    let bounds = Aabb::from_points(sources.l4.vertices.iter().chain(sources.l5.vertices.iter()));
+    setup_camera_and_lighting(&mut commands, &bounds, UpAxis::PlusZ);
 }
