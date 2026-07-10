@@ -20,8 +20,7 @@
 //!
 //! - [`sdf_layers`] — the cached scan SDF + per-iso marching-cubes
 //!   extraction (`CachedScanSdf`, `CapPlanes`, `build_cached_scan_sdf`,
-//!   `extract_layer_surface`, `marching_cubes_at_iso`,
-//!   `sample_sdf_into_cached_template`, plus the
+//!   `extract_layer_surface`, `sample_sdf_into_cached_template`, plus the
 //!   `SDF_SOURCE_TARGET_FACES` / `LAYER_PREVIEW_CELL_SIZE_M` /
 //!   `LAYER_GRID_MARGIN_M` tuning constants).
 //! - [`clip_plane`] — the centerline-anchored clip plane (material,

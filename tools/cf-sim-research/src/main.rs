@@ -520,10 +520,12 @@ fn compute_validations(
     cavity: &CavityState,
     layers: &LayersState,
 ) -> DeviceValidations {
-    // Clamp the iso to the cached grid's envelope so a wide slider
-    // never trips the `debug_assert!` in `extract_layer_surface` —
-    // same clamp shape as `update_layer_meshes` (slice 9 sub-leaf 4).
-    let max_iso = sdf_layers::LAYER_GRID_MARGIN_M - sdf_layers::LAYER_PREVIEW_CELL_SIZE_M;
+    // Clamp the iso to the cached grid's own envelope so a wide slider never
+    // trips the `assert!` in `extract_layer_surface` — same clamp shape as
+    // `update_layer_meshes` (slice 9 sub-leaf 4). Ask the cache rather than
+    // rebuilding `margin - cell` here: the envelope belongs to the grid that
+    // was actually built, not to `LAYER_GRID_MARGIN_M`.
+    let max_iso = cached_sdf.max_extractable_iso();
     let clamp = |iso: f64| iso.clamp(-max_iso, max_iso);
 
     // Closed pinned-floor shells (sub-leaf 2) → signed_volume_m3 is
@@ -864,10 +866,10 @@ fn update_layer_meshes(
         // future arc should either widen `LAYER_GRID_MARGIN_M` or
         // tighten the slider once iter-1 / iter-2 surfaces a real
         // case.
-        let envelope = sdf_layers::LAYER_GRID_MARGIN_M;
-        // Pull the iso strictly INSIDE the envelope so the
-        // `debug_assert!` (strict `<`) still passes in debug builds.
-        let max_iso = envelope - sdf_layers::LAYER_PREVIEW_CELL_SIZE_M;
+        // The cache owns its envelope (`margin - cell` of the grid actually
+        // built); clamping to it satisfies `extract_layer_surface`'s `assert!`
+        // by construction, including at saturation (the assert is `<=`).
+        let max_iso = cached_sdf.max_extractable_iso();
         let safe_offset_m = offset_m.clamp(-max_iso, max_iso);
         // Slice S11.2 — deformed-shells path picks the SLAB mesh
         // (inner + outer faces) so the user reads each layer as a

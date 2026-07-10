@@ -133,12 +133,17 @@ const SDF_DEGENERATE_AREA_M2: f64 = 1e-15;
 /// binary inserts the `CachedScanSdf` resource.
 pub const LAYER_PREVIEW_CELL_SIZE_M: f64 = 0.0025;
 
-/// Margin (meters) added on every side of the scan AABB when
-/// allocating the cached grid. Must cover the maximum-outward layer
-/// offset so the marching-cubes extraction has enough grid headroom
-/// to find the iso surface; 40 mm covers 6 layers × ~5 mm cumulative
-/// plus a safety pad. Hard upper bound on extractable offsets — see
-/// the `debug_assert!` in [`extract_layer_surface`].
+/// Margin (meters) the two device binaries pass to
+/// [`build_cached_scan_sdf`] when allocating the cached grid. Must cover the
+/// maximum-outward layer offset so the marching-cubes extraction has enough
+/// grid headroom to find the iso surface; 40 mm covers 6 layers × ~5 mm
+/// cumulative plus a safety pad.
+///
+/// This is *configuration*, not a precondition. The extractable-iso envelope
+/// belongs to whichever grid a cache was actually built with — read it from
+/// [`CachedScanSdf::max_extractable_iso`], never from this constant. (A
+/// caller passing a different `margin_m` gets a different envelope; tests do
+/// exactly that.)
 pub const LAYER_GRID_MARGIN_M: f64 = 0.040;
 
 // Wall-band threshold + the 3-region flood-fill (Region enum +
@@ -242,6 +247,12 @@ pub struct CachedScanSdf {
     pub open_grid: Option<ScalarGrid>,
     /// Margin-expanded AABB the grids cover, in physics-frame meters.
     pub bounds: (Point3<f64>, Point3<f64>),
+    /// Margin (meters) this cache's grids were actually built with — the
+    /// `margin_m` passed to [`build_cached_scan_sdf`], not any global
+    /// default. [`LAYER_GRID_MARGIN_M`] is one deployment's *configuration*
+    /// (what the two device binaries pass); the extractable-iso envelope is
+    /// a property of *this* grid. See [`Self::max_extractable_iso`].
+    pub margin_m: f64,
     /// Most-negative `closed_grid` value (= negation of the cavity-
     /// collapse threshold under the no-caps fast path). When the user-
     /// requested cavity inset goes below this, the inward iso lies
@@ -253,6 +264,25 @@ pub struct CachedScanSdf {
     /// preserved via the closed-grid minimum for now — sharpening this
     /// for the with-caps path is a banked validations-panel followup.)
     pub min_sdf_value: f64,
+}
+
+impl CachedScanSdf {
+    /// The largest `|iso|` this cache's grids can resolve, in meters.
+    ///
+    /// The grid AABB is the scan AABB expanded by [`Self::margin_m`] on every
+    /// side, so an iso surface at outward offset `d` lies inside the grid when
+    /// `d <= margin`. Marching cubes additionally needs a cell of headroom to
+    /// *bracket* the crossing — a level set inside the outermost cell has no
+    /// sample beyond it to interpolate against — hence one `cell_size` is
+    /// subtracted. Extraction past this bound does not fail loudly: it
+    /// silently CLIPS against the grid bounds.
+    ///
+    /// This is the single source of truth for that envelope. Callers should
+    /// clamp with it rather than recomputing `margin - cell` themselves.
+    #[must_use]
+    pub fn max_extractable_iso(&self) -> f64 {
+        self.margin_m - self.closed_grid.cell_size()
+    }
 }
 
 /// Decimate the cleaned scan to roughly `SDF_SOURCE_TARGET_FACES`
@@ -530,6 +560,7 @@ pub fn build_cached_scan_sdf(
         closed_grid,
         open_grid,
         bounds: (min, max),
+        margin_m,
         min_sdf_value,
     })
 }
@@ -717,21 +748,40 @@ fn clip_mesh_against_cap_plane(mesh: &IndexedMesh, plane: &CapPlane) -> IndexedM
 ///
 /// # Panics
 ///
-/// `debug_assert!`s that `|offset_m| < LAYER_GRID_MARGIN_M` — the
-/// grid AABB was sized for that envelope; extractions past the margin
-/// would silently clip against the bounds.
+/// Asserts `offset_m <= cache.max_extractable_iso()` — the OUTWARD envelope of
+/// the grid THIS cache was built with. Past it, marching cubes silently CLIPS
+/// against the grid bounds and returns a wrong surface, so the check is a hard
+/// `assert!` rather than a `debug_assert!`: the failure it guards is silent
+/// geometry corruption, and `debug_assert!` compiles out of exactly the release
+/// builds that ship. Callers clamp with [`CachedScanSdf::max_extractable_iso`],
+/// so a correct caller cannot trip it.
+///
+/// The bound is ONE-SIDED. The margin is outward headroom (the grid AABB is the
+/// scan AABB grown outward), so an outward iso at `+d` needs `d` of room beyond
+/// the surface — but an inward iso at `-d` has its level set INSIDE the body,
+/// hence always inside the grid, for any `d`. Requesting an inward offset past
+/// [`CachedScanSdf::min_sdf_value`] is legal and well-defined: every cell then
+/// exceeds the iso, marching cubes finds no crossing, and the result is an
+/// empty mesh. The Validations panel's cavity-collapse gate relies on exactly
+/// that behaviour, so inward offsets are deliberately unguarded here.
 #[must_use]
 pub fn extract_layer_surface(
     cache: &CachedScanSdf,
     cap_planes: &[CapPlane],
     offset_m: f64,
 ) -> IndexedMesh {
-    debug_assert!(
-        offset_m.abs() < LAYER_GRID_MARGIN_M,
-        "extract_layer_surface: |offset_m|={:.4} exceeds LAYER_GRID_MARGIN_M={:.4}; \
-         grid AABB cannot represent this iso value",
-        offset_m.abs(),
-        LAYER_GRID_MARGIN_M,
+    // `<=`, not `<`: callers clamp to exactly `max_extractable_iso()`, and
+    // `f64::clamp` returns the bound itself at saturation.
+    assert!(
+        offset_m <= cache.max_extractable_iso(),
+        "extract_layer_surface: outward offset_m={:.4} exceeds this cache's \
+         extractable envelope {:.4} (margin {:.4} − cell {:.4}); the grid AABB \
+         cannot represent this iso value and marching cubes would silently clip \
+         against the bounds",
+        offset_m,
+        cache.max_extractable_iso(),
+        cache.margin_m,
+        cache.closed_grid.cell_size(),
     );
     if cap_planes.is_empty() {
         // Pre-pinned-floor parity: MC at `iso = offset_m` on the raw
@@ -843,24 +893,6 @@ pub fn sample_sdf_into_cached_template<S: Sdf + ?Sized>(
         }
     }
     grid
-}
-
-/// Slice S11.1 — MC a [`ScalarGrid`] at the requested iso value, with
-/// the same `LAYER_GRID_MARGIN_M` envelope `debug_assert!` the
-/// per-layer + cavity extraction paths use. Wraps the
-/// `MarchingCubesConfig::at_iso_value` / `marching_cubes` boilerplate
-/// for the per-step intruder loop in cf-sim-research's `insertion_sim_ui`.
-#[must_use]
-pub fn marching_cubes_at_iso(grid: &ScalarGrid, iso: f64) -> IndexedMesh {
-    debug_assert!(
-        iso.abs() < LAYER_GRID_MARGIN_M,
-        "marching_cubes_at_iso: |iso|={:.4} exceeds LAYER_GRID_MARGIN_M={:.4}; \
-         grid AABB cannot represent this iso value",
-        iso.abs(),
-        LAYER_GRID_MARGIN_M,
-    );
-    let config = MarchingCubesConfig::at_iso_value(iso);
-    marching_cubes(grid, &config)
 }
 
 #[cfg(test)]
@@ -2124,6 +2156,68 @@ mod tests {
             (max_lateral - expected).abs() < cell,
             "cavity floor outline lateral extent = {max_lateral} m; expected ≈ {expected} m \
              (h − T) within half a cell",
+        );
+    }
+
+    /// The extractable envelope is a property of the grid THIS cache was built
+    /// with — `margin − cell` — not of `LAYER_GRID_MARGIN_M`, which is merely
+    /// what the two device binaries happen to pass.
+    #[test]
+    fn max_extractable_iso_is_this_grid_s_margin_minus_one_cell() {
+        let sphere = unit_icosphere(2);
+        let cache = build_cached_scan_sdf(&sphere, &[], 0.05, 0.2).expect("build cache");
+        assert!(
+            (cache.max_extractable_iso() - (0.2 - 0.05)).abs() < 1e-12,
+            "envelope = {} m; expected margin(0.2) − cell(0.05) = 0.15 m",
+            cache.max_extractable_iso(),
+        );
+        // And it tracks the grid, not the global constant.
+        assert!(
+            cache.max_extractable_iso() > LAYER_GRID_MARGIN_M,
+            "a cache built with a 0.2 m margin must out-reach the 0.040 m production config",
+        );
+    }
+
+    /// An OUTWARD iso past the envelope would silently clip against the grid
+    /// bounds, so it must panic — in release too, which is why the guard is a
+    /// hard `assert!` rather than a `debug_assert!`.
+    #[test]
+    #[should_panic(expected = "exceeds this cache's extractable envelope")]
+    fn outward_offset_past_the_envelope_panics() {
+        let sphere = unit_icosphere(2);
+        let cache = build_cached_scan_sdf(&sphere, &[], 0.05, 0.2).expect("build cache");
+        let past = cache.max_extractable_iso() + 1e-6;
+        let _ = extract_layer_surface(&cache, &[], past);
+    }
+
+    /// The envelope is ONE-SIDED. The margin is outward headroom; an inward iso
+    /// lies inside the body, hence always inside the grid. Going past
+    /// `min_sdf_value` inward is legal and yields an empty mesh — the
+    /// cavity-collapse behaviour the Validations panel depends on. A symmetric
+    /// `offset_m.abs()` guard would wrongly panic here.
+    #[test]
+    fn inward_offset_past_the_envelope_is_legal_and_collapses_to_empty() {
+        let sphere = unit_icosphere(3);
+        let small = IndexedMesh {
+            vertices: sphere
+                .vertices
+                .iter()
+                .map(|v| Point3::from(v.coords * 0.02 + FIXTURE_OFFSET))
+                .collect(),
+            faces: sphere.faces.clone(),
+        };
+        let cache = build_cached_scan_sdf(&small, &[], 0.001, 0.02).expect("build cache");
+        let deep: f64 = -0.025;
+        assert!(
+            deep.abs() > cache.max_extractable_iso(),
+            "fixture must probe deeper than the envelope for this test to mean anything \
+             (|{deep}| vs {})",
+            cache.max_extractable_iso(),
+        );
+        // Must not panic; yields no surface because every cell exceeds the iso.
+        assert!(
+            extract_layer_surface(&cache, &[], deep).faces.is_empty(),
+            "inward iso past min_sdf_value should yield an empty mesh, not a panic",
         );
     }
 }
