@@ -38,9 +38,9 @@
 //! The headless scene assembly + capture live in [`scene`] (Bevy-free); this file is the
 //! thin Bevy driver that composes the concern modules — [`cli`] (STL path resolution),
 //! [`render`] (tissue entities), [`replay`] (the moment-ramp playback), [`overlays`]
-//! (ligament/facet gizmos), [`panel`] (the egui side panel), and [`input`] (pointer
-//! arbitration + quit) — into one app. The visual pass is user-side (this session cannot
-//! see GUI output). Run:
+//! (ligament/facet gizmos), [`panel`] (the egui side panel), [`input`] (pointer
+//! arbitration), and [`state`] (the `Design`↔`Simulate` mode machine) — into one app.
+//! The visual pass is user-side (this session cannot see GUI output). Run:
 //!
 //! ```text
 //! cargo run -p cf-spine-viewer -- --dir <dir-with-the-3-STLs>
@@ -64,6 +64,7 @@ mod panel;
 mod render;
 mod replay;
 mod scene;
+mod state;
 
 use anyhow::Result;
 use bevy::prelude::*;
@@ -73,12 +74,13 @@ use cf_viewer::{UpAxis, setup_camera_and_lighting};
 
 use clap::Parser;
 use cli::Cli;
-use input::{block_orbit_input_when_over_egui, exit_on_esc};
+use input::block_orbit_input_when_over_egui;
 use overlays::{Overlays, draw_facets, draw_ligaments};
 use panel::{SceneToggles, apply_visibility, scene_panel};
 use render::{SceneMeshes, setup_scene};
 use replay::{Flexion, flexion_update};
 use scene::FsuScene;
+use state::{StudioState, design_panel, handle_state_transitions};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -114,6 +116,7 @@ fn run_app(fsu: FsuScene) {
         }))
         .add_plugins(EguiPlugin::default())
         .add_plugins(OrbitCameraPlugin)
+        .init_state::<StudioState>()
         .insert_resource(ClearColor(Color::srgb(0.10, 0.10, 0.12)))
         .insert_resource(SceneMeshes {
             l4,
@@ -125,36 +128,40 @@ fn run_app(fsu: FsuScene) {
             aabb,
             warnings,
         })
-        .insert_resource(Flexion {
-            // Start at the neutral (middle) frame so the FSU opens at rest and
-            // eases into flexion rather than snapping to a full tilt on frame 1.
-            cursor: (flexion.frames.len().saturating_sub(1)) as f32 / 2.0,
-            traj: flexion,
-            disc_rest,
-            disc_weights: disc_node_weights,
-            o4,
-            o5,
-            playing: true,
-            direction: 1.0,
-            true_theta: 0.0,
-            applied: 0.0,
-            facet_frame: None,
-            n_facet: 0,
-        })
+        .insert_resource(Flexion::new(flexion, disc_rest, disc_node_weights, o4, o5))
         .insert_resource(SceneToggles::default())
+        // The scene (camera + tissue) is spawned once at startup and persists;
+        // the replay/overlay/panel systems below are gated to Simulate, so in
+        // Design the FSU simply freezes behind the (opaque) Design panel. Real
+        // per-state spawn/despawn arrives in PR3d, where Design gets its own
+        // paint entities distinct from the sim scene.
         .add_systems(Startup, (setup_scene, setup_camera))
+        // Always-on: pointer arbitration + the mode-switch keys.
         .add_systems(
             Update,
             (
                 block_orbit_input_when_over_egui.before(orbit_camera_input),
+                handle_state_transitions,
+            ),
+        )
+        // The replay + overlays run only in Simulate.
+        .add_systems(
+            Update,
+            (
                 flexion_update,
                 apply_visibility,
                 draw_ligaments.after(flexion_update),
                 draw_facets.after(flexion_update),
-                exit_on_esc,
+            )
+                .run_if(in_state(StudioState::Simulate)),
+        )
+        .add_systems(
+            EguiPrimaryContextPass,
+            (
+                scene_panel.run_if(in_state(StudioState::Simulate)),
+                design_panel.run_if(in_state(StudioState::Design)),
             ),
         )
-        .add_systems(EguiPrimaryContextPass, scene_panel)
         .run();
 }
 

@@ -1,5 +1,5 @@
 //! Input arbitration: suppress orbit-camera motion while the pointer is over the
-//! egui panel, and quit on `Esc`.
+//! egui panel. (Keyboard-driven mode changes + quit live in [`crate::state`].)
 
 use bevy::prelude::*;
 use bevy_egui::EguiContexts;
@@ -16,12 +16,4 @@ pub(crate) fn block_orbit_input_when_over_egui(
         scroll.delta = Vec2::ZERO;
     }
     Ok(())
-}
-
-/// Esc quits the window (mirrors the other `tools/` viewers).
-#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
-pub(crate) fn exit_on_esc(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>) {
-    if keys.just_pressed(KeyCode::Escape) {
-        exit.write(AppExit::Success);
-    }
 }

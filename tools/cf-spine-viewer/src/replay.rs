@@ -60,6 +60,34 @@ pub(crate) struct Flexion {
     pub(crate) n_facet: usize,
 }
 
+impl Flexion {
+    /// Build the replay state from the captured trajectory + the disc skinning
+    /// data, starting at the neutral (middle) frame so the FSU opens at rest and
+    /// eases into flexion rather than snapping to a full tilt on frame 1.
+    pub(crate) fn new(
+        traj: CoupledTrajectory,
+        disc_rest: Vec<Point3<f64>>,
+        disc_weights: Vec<Vec<(usize, f64)>>,
+        o4: MeshOracle,
+        o5: MeshOracle,
+    ) -> Self {
+        Self {
+            cursor: (traj.frames.len().saturating_sub(1)) as f32 / 2.0,
+            traj,
+            disc_rest,
+            disc_weights,
+            o4,
+            o5,
+            playing: true,
+            direction: 1.0,
+            true_theta: 0.0,
+            applied: 0.0,
+            facet_frame: None,
+            n_facet: 0,
+        }
+    }
+}
+
 /// The captured frame to source facet contacts from at `cursor`: the lower bracketing
 /// frame, but only when BOTH bracketing frames are engaged (so nothing shows at an
 /// ambiguous inter-frame transition — the pose interpolates but contacts are per-frame).
