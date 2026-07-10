@@ -257,11 +257,13 @@ jobs:
   # ============================================================================
   # TESTS (DEBUG) - Default features, debug profile — light-crate gate
   # ============================================================================
-  # Runs `cargo test` (default features, debug) on the 23 workspace
-  # lib/integration crates whose tests finish quickly in debug mode. The
-  # grade job's `--skip-coverage` flag skips its Coverage criterion (which
-  # is what runs cargo test inside grade), so this job + tests-release are
-  # the SOLE test-execution gate in CI.
+  # Runs `cargo test` (default features, debug) on the workspace crates whose
+  # tests finish quickly in debug mode — mostly libs, plus `tools/` bins whose
+  # tests are pure-function. The three shard lists below are the SOURCE OF TRUTH
+  # for that set (a hardcoded count here rots; this comment previously said 23
+  # when the shards named 42). The grade job's `--skip-coverage` flag skips its
+  # Coverage criterion (which is what runs cargo test inside grade), so this job
+  # + tests-release are the SOLE test-execution gate in CI.
   #
   # `--all-features` is intentionally absent (plan §6.1): Layer Integrity in
   # the grader enforces all-features cleanliness; running it again here would
