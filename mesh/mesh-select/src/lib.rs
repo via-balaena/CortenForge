@@ -209,6 +209,18 @@ mod tests {
     }
 
     #[test]
+    fn brush_keeps_a_face_exactly_on_the_radius() {
+        // Centroids at x=0 (seed) and x=2. With radius exactly 2 the far face's
+        // squared centroid-distance equals r², and the strict `>` keeps it; a
+        // hair under the radius drops it.
+        let field = FaceField::new(&mesh_of(&[flat_triangle_at(0.0), flat_triangle_at(2.0)]));
+        let mut on_edge = field.brush(0, 2.0, None);
+        on_edge.sort_unstable();
+        assert_eq!(on_edge, vec![0, 1], "a face exactly at the radius is kept");
+        assert_eq!(field.brush(0, 1.999, None), vec![0], "just inside drops it");
+    }
+
+    #[test]
     fn brush_out_of_range_seed_is_empty() {
         let field = FaceField::new(&mesh_of(&[flat_triangle_at(0.0)]));
         assert!(field.brush(9, 10.0, None).is_empty());
