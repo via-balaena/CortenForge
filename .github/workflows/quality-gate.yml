@@ -280,7 +280,8 @@ jobs:
   # trees (Bevy via sim-bevy-soft + Slint/wgpu via cf-studio-gui) and it stayed
   # at ~25 min. Each giant tree must compile *somewhere*, so the win comes from
   # co-locating each tree's consumers on ONE shard (it compiles once, not 2-3×):
-  #   - shard 1 = the Bevy tree   (cf-bevy-common, sim-bevy-soft, cf-viewer, sim-ml-chassis-bevy, cf-spine-viewer)
+  #   - shard 1 = the Bevy tree   (cf-bevy-common, sim-bevy-soft, cf-viewer, sim-ml-chassis-bevy,
+  #                                cf-spine-viewer, cf-sim-research, cf-scan-prep, cf-device-design)
   #   - shard 2 = the Slint tree  (cf-studio-{core,engine,gui,studio}; cf-studio-gui pulls ~12 slint crates)
   #   - shard 3 = FEM + core + mesh (sim-soft, sim-core, sim-mjcf, …) — no Bevy, no Slint
   # `sim-core` is a universal dep so it compiles in every shard regardless (the
@@ -290,13 +291,43 @@ jobs:
   # `grade` covers it), examples (~197, no #[test]), -benches (5), xtask (graded
   # by grade-all; unit tests via pre-commit), and the heavy stochastic-physics
   # validators sim-ml-chassis / sim-thermostat / sim-rl / sim-conformance-tests /
-  # sim-opt / sim-rl-baselines (run in `tests-release` below). cf-viewer / cf-bevy-common /
-  # sim-bevy-soft / cf-spine-viewer ARE included: their tests are pure-function (no App::new() /
-  # window spin-up), so headless CI handles them with the x11/wayland dev libs
-  # installed below. cf-spine-viewer is a `tools/` BIN crate — xtask's Layer-Integrity
-  # grader exempts it (no tier metadata), but that exemption is about GRADING, not
-  # TESTING: its `scene.rs` unit tests (coregistration guards + AABB framing) need a
-  # shard here or they run in no CI context at all.
+  # sim-opt / sim-rl-baselines (run in `tests-release` below).
+  #
+  # This job's crate lists are the ONLY hand-maintained crate enumeration in CI
+  # (`grade` uses `grade-all --shard i/3`, which walks every crate automatically but
+  # passes `--skip-coverage`, so it executes NO tests). That is why crates drift out
+  # of coverage here and nowhere else — a crate absent from these lists and from
+  # `tests-release` has its unit tests run in NO CI context at all.
+  #
+  # Included on that basis:
+  #   - cf-spine-viewer, cf-sim-research, cf-scan-prep, cf-device-design — `tools/`
+  #     BIN crates, no tier metadata, exempt from xtask's Layer-Integrity grader.
+  #     That exemption is about GRADING, not TESTING. Their tests are pure-function
+  #     (no App::new() / window spin-up), so headless CI runs them with the
+  #     x11/wayland dev libs installed below. All four carry the Bevy+egui tree, so
+  #     shard 1 is the co-located home (+20 net crates vs +134/+193 on shards 2/3,
+  #     which would compile that tree a SECOND time).
+  #   - cf-device-types — NOT a tools/ bin: a `design/` LIBRARY with tier metadata
+  #     (`tier = "L0"`, `tier_up_features = { bevy = "L1" }`), so grade-all DOES
+  #     grade it; only `--skip-coverage` keeps its tests from running there. It is
+  #     GUI-free, so it lands on shard 2 for +0 new crates. Do not strip its tier
+  #     metadata or drop it from shard 2 on the belief that grade covers its tests.
+  # All 273 of these tests execute in ~1.6 s; the cost of adding them is COMPILE +
+  # test-binary LINK time, not test execution. Each Bevy+egui bin statically links
+  # the full tree, so watch shard 1's wall time (18.8/30 min before this change) and
+  # rebalance — or add a 4th shard — if it drifts past ~25 min.
+  #
+  # ⚠️ cf-device-geometry is DELIBERATELY still absent, and this is a BANDAID, not a
+  # resolution: its 50 unit tests (real production code — the SDF cache + iso
+  # extraction that cf-device-design and cf-sim-research both consume) run NOWHERE.
+  # 6 of them FAIL in debug: `sdf_layers.rs` debug_assert!s
+  # `|offset| < LAYER_GRID_MARGIN_M = 0.040` in BOTH `extract_layer_surface` (:729)
+  # and `marching_cubes_at_iso` (:855), yet those tests pass 0.05 / 0.1. They pass
+  # under --release, where debug_assert! compiles out — so adding this crate to
+  # `tests-release` would HIDE the bug rather than fix it, and adding it here would
+  # red the pipeline. Reconcile the assert bound with the legitimate test offsets
+  # (or gate the assert on grid extent), THEN add it to shard 1 (it is Bevy+egui).
+  # Do NOT add it to silence this note, and do NOT delete this note to close the gap.
   #
   # The `quality-gate` job `needs: [tests-debug]` waits for ALL matrix legs and
   # fails if any shard fails, so the `Quality Gate` required check still gates
@@ -317,12 +348,13 @@ jobs:
         include:
           - id: 1
             crates: cf-bevy-common sim-bevy-soft cf-viewer sim-ml-chassis-bevy cf-spine-viewer
+              cf-sim-research cf-scan-prep cf-device-design
               mesh-types mesh-io mesh-repair mesh-sdf mesh-offset mesh-shell mesh-measure
               cf-msk-lib cf-mjcf-emit cf-osim
           - id: 2
             crates: cf-studio-core cf-studio-engine cf-studio-gui cf-studio
               cf-geometry cf-spatial cf-scan-prep-core mesh-printability mesh-lattice mesh
-              cortenforge cf-msk-fit cf-anthro cf-cap-planes
+              cortenforge cf-msk-fit cf-anthro cf-cap-planes cf-device-types
           - id: 3
             crates: sim-soft sim-core sim-mjcf sim-urdf sim-gpu sim-types
               sim-therm-env cf-design cf-design-tests cf-fsu-geometry cf-cast-cli sim
