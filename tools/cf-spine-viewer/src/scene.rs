@@ -41,7 +41,7 @@ pub struct FsuScene {
     /// surface and displaces it by the FEM field (see `disc_node_weights`).
     pub disc_surface: IndexedMesh,
     /// For each `disc_surface` vertex, the `K` nearest boundary tet nodes (indices into
-    /// [`CoupledTrajectory::rest_nodes_native`]) with inverse-distance weights summing to 1.
+    /// [`CoupledTrajectory::rest_nodes_native`]) with inverse-distance-squared weights summing to 1.
     /// Per frame the vertex is displaced by the WEIGHTED BLEND of those nodes' FEM
     /// displacements — smooth C⁰ skinning, so the fine surface does not facet/tear over the
     /// coarse (few-mm) tet field the way a single nearest-node lookup does.
@@ -283,7 +283,7 @@ pub fn build(l4_path: &Path, l5_path: &Path, disc_path: &Path) -> Result<FsuScen
         flexion.boundary_faces.len()
     );
 
-    // Skin each conformed-surface vertex to its nearest boundary tet nodes (inverse-distance
+    // Skin each conformed-surface vertex to its nearest boundary tet nodes (inverse-distance-squared
     // weighted), so the smooth surface deforms by a blended FEM field per frame (the tet
     // boundary is too fragmented to draw directly). Blending several nodes keeps the fine
     // surface from faceting over the coarse tet field at the bone interface.

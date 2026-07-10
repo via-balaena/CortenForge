@@ -19,7 +19,7 @@
 //! isosurface-stuffing mesher shatters the thin lens), so the viewer renders the
 //! clean STL surface (endplate bands conformed onto the real bone via
 //! `CoupledFsu::conformed_disc_surface`) and displaces each of its vertices by the FEM
-//! displacement field — sampled from the nearest tet nodes, inverse-distance weighted (`scene::weighted_tet_nodes`).
+//! displacement field — sampled from the nearest tet nodes, inverse-distance-squared weighted (`scene::weighted_tet_nodes`).
 //! Clean geometry from the STL, real deformation from the physics.
 //!
 //! ## Honesty
@@ -154,7 +154,7 @@ struct Flexion {
     /// The clean STL disc's rest vertex positions (native mm) — the render surface.
     disc_rest: Vec<Point3<f64>>,
     /// For each `disc_rest` vertex, the nearest tet nodes in `traj.rest_nodes_native` with
-    /// inverse-distance weights (see `scene::weighted_tet_nodes`), so the disc's real FEM
+    /// inverse-distance-squared weights (see `scene::weighted_tet_nodes`), so the disc's real FEM
     /// displacement is skinned smoothly (C⁰) onto the clean surface each frame.
     disc_weights: Vec<Vec<(usize, f64)>>,
     /// L4/L5 oracles — each frame, a deformed disc vertex that lands inside a bone is projected
@@ -473,7 +473,7 @@ fn flexion_update(
 
     // Build the deformed disc surface into the reused scratch buffer: each clean-surface vertex
     // is displaced by the disc's REAL FEM displacement (`deformed − rest`), skinned smoothly
-    // (inverse-distance blend of the nearest tet nodes, interpolated between frames). The
+    // (inverse-distance-squared blend of the nearest tet nodes, interpolated between frames). The
     // deformation is a genuine incremental solve, so no carrier or extrapolation is needed — but
     // the FEM bonds to boxes, not the bones, so its annulus can bulge INTO the compression-side
     // vertebra; a final projection pushes any vertex inside a bone back onto that surface (the

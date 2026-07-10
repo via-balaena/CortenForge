@@ -257,11 +257,13 @@ jobs:
   # ============================================================================
   # TESTS (DEBUG) - Default features, debug profile — light-crate gate
   # ============================================================================
-  # Runs `cargo test` (default features, debug) on the 23 workspace
-  # lib/integration crates whose tests finish quickly in debug mode. The
-  # grade job's `--skip-coverage` flag skips its Coverage criterion (which
-  # is what runs cargo test inside grade), so this job + tests-release are
-  # the SOLE test-execution gate in CI.
+  # Runs `cargo test` (default features, debug) on the workspace crates whose
+  # tests finish quickly in debug mode — mostly libs, plus `tools/` bins whose
+  # tests are pure-function. The three shard lists below are the SOURCE OF TRUTH
+  # for that set (a hardcoded count here rots; this comment previously said 23
+  # when the shards named 42). The grade job's `--skip-coverage` flag skips its
+  # Coverage criterion (which is what runs cargo test inside grade), so this job
+  # + tests-release are the SOLE test-execution gate in CI.
   #
   # `--all-features` is intentionally absent (plan §6.1): Layer Integrity in
   # the grader enforces all-features cleanliness; running it again here would
@@ -278,7 +280,7 @@ jobs:
   # trees (Bevy via sim-bevy-soft + Slint/wgpu via cf-studio-gui) and it stayed
   # at ~25 min. Each giant tree must compile *somewhere*, so the win comes from
   # co-locating each tree's consumers on ONE shard (it compiles once, not 2-3×):
-  #   - shard 1 = the Bevy tree   (cf-bevy-common, sim-bevy-soft, cf-viewer, sim-ml-chassis-bevy)
+  #   - shard 1 = the Bevy tree   (cf-bevy-common, sim-bevy-soft, cf-viewer, sim-ml-chassis-bevy, cf-spine-viewer)
   #   - shard 2 = the Slint tree  (cf-studio-{core,engine,gui,studio}; cf-studio-gui pulls ~12 slint crates)
   #   - shard 3 = FEM + core + mesh (sim-soft, sim-core, sim-mjcf, …) — no Bevy, no Slint
   # `sim-core` is a universal dep so it compiles in every shard regardless (the
@@ -289,9 +291,12 @@ jobs:
   # by grade-all; unit tests via pre-commit), and the heavy stochastic-physics
   # validators sim-ml-chassis / sim-thermostat / sim-rl / sim-conformance-tests /
   # sim-opt / sim-rl-baselines (run in `tests-release` below). cf-viewer / cf-bevy-common /
-  # sim-bevy-soft ARE included: their tests are pure-function (no App::new() /
+  # sim-bevy-soft / cf-spine-viewer ARE included: their tests are pure-function (no App::new() /
   # window spin-up), so headless CI handles them with the x11/wayland dev libs
-  # installed below.
+  # installed below. cf-spine-viewer is a `tools/` BIN crate — xtask's Layer-Integrity
+  # grader exempts it (no tier metadata), but that exemption is about GRADING, not
+  # TESTING: its `scene.rs` unit tests (coregistration guards + AABB framing) need a
+  # shard here or they run in no CI context at all.
   #
   # The `quality-gate` job `needs: [tests-debug]` waits for ALL matrix legs and
   # fails if any shard fails, so the `Quality Gate` required check still gates
@@ -311,7 +316,7 @@ jobs:
       matrix:
         include:
           - id: 1
-            crates: cf-bevy-common sim-bevy-soft cf-viewer sim-ml-chassis-bevy
+            crates: cf-bevy-common sim-bevy-soft cf-viewer sim-ml-chassis-bevy cf-spine-viewer
               mesh-types mesh-io mesh-repair mesh-sdf mesh-offset mesh-shell mesh-measure
               cf-msk-lib cf-mjcf-emit cf-osim
           - id: 2
