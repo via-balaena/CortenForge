@@ -2388,11 +2388,14 @@ fn applies_to_crate(crate_name: &str) -> bool {
     // is a `tools/` workspace tool with the cf- prefix — same exemption.
     // cf-spine-viewer (the native Bevy anatomical-spine viewer; static L4-L5
     // FSU scene) is a `tools/` Bevy GUI workspace tool with the cf- prefix —
-    // same exemption shape as cf-sim-research.
+    // same exemption shape as cf-sim-research. cf-mesh-paint (the reusable
+    // brush-painting Bevy plugin over mesh-select) is a repo-root Bevy support
+    // crate, a structural sibling of cf-bevy-common — same exemption shape.
     if matches!(
         crate_name,
         "cf-viewer"
             | "cf-bevy-common"
+            | "cf-mesh-paint"
             | "cf-scan-prep"
             | "cf-device-design"
             | "cf-sim-research"
@@ -4092,6 +4095,8 @@ serde = \"1\"
         // classified SDK library tiers — see the in-scope test.)
         assert!(!applies_to_crate("cf-viewer"));
         assert!(!applies_to_crate("cf-bevy-common"));
+        // cf-mesh-paint: repo-root Bevy paint plugin, sibling of cf-bevy-common.
+        assert!(!applies_to_crate("cf-mesh-paint"));
         assert!(!applies_to_crate("cf-scan-prep"));
         assert!(!applies_to_crate("cf-device-design"));
         assert!(!applies_to_crate("cf-sim-research"));
