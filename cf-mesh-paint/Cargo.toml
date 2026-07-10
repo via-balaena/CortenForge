@@ -20,7 +20,7 @@ publish = false
 [dependencies]
 # Bevy 0.18 — the minimal feature set the plugin library touches: ECS + math +
 # transform + input + app (base), plus `bevy_render` + `bevy_asset` for the
-# `Mesh` / `Assets<Mesh>` per-face colour recolouring, `bevy_gizmos` for the
+# `Mesh` / `Assets<Mesh>` per-face color recoloring, `bevy_gizmos` for the
 # brush ring, and `bevy_picking` + `mesh_picking` for the hover ray-cast.
 # Windowing / PBR / UI stay a consumer concern (brought by each example via
 # Cargo's additive feature unification), exactly like cf-bevy-common.

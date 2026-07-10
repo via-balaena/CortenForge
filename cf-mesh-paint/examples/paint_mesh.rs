@@ -73,7 +73,7 @@ fn main() {
 }
 
 /// The plugin config, kept so `setup` seeds each render mesh with the same base
-/// colour the brush restores on erase.
+/// color the brush restores on erase.
 #[derive(Resource, Clone, Copy)]
 struct PaintDefaults {
     config: MeshPaintConfig,
@@ -98,7 +98,7 @@ fn setup(
         all_points.extend(source.vertices.iter().copied());
         let handle = meshes.add(paint_render_mesh(&source, UpAxis::PlusZ, base));
         let material = materials.add(StandardMaterial {
-            base_color: Color::WHITE, // per-vertex face colours show through
+            base_color: Color::WHITE, // per-vertex face colors show through
             perceptual_roughness: 0.85,
             double_sided: true,
             cull_mode: None,

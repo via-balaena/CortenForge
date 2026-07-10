@@ -3,8 +3,8 @@
 //! A consumer registers each paintable body as a [`PaintBody`] component and
 //! tracks the ordered set (with the brush-active one) in the [`PaintTargets`]
 //! resource. The render mesh a body carries **must** be built with
-//! [`paint_render_mesh`] — it seeds the per-face colour attribute the brush
-//! recolours, and it preserves the picking contract the hover ray-cast relies
+//! [`paint_render_mesh`] — it seeds the per-face color attribute the brush
+//! recolors, and it preserves the picking contract the hover ray-cast relies
 //! on: `cf_bevy_common::mesh::triangle_mesh_flat_shaded` emits three vertices
 //! per face **in face order**, so a mesh ray hit's `triangle_index` is exactly
 //! the source [`IndexedMesh`] face id.
@@ -18,7 +18,7 @@ use cf_geometry::IndexedMesh;
 use mesh_select::FaceField;
 
 /// A paintable body: its source mesh, the render-mesh handle whose per-face
-/// colours the brush drives, the precomputed [`FaceField`] the brush queries
+/// colors the brush drives, the precomputed [`FaceField`] the brush queries
 /// against, and the set of painted face ids.
 ///
 /// Construct with [`PaintBody::new`], spawn it alongside a `Mesh3d` built by
@@ -81,7 +81,7 @@ impl PaintBody {
         self.painted.is_empty()
     }
 
-    /// Handle of the render mesh whose per-face colours the brush drives.
+    /// Handle of the render mesh whose per-face colors the brush drives.
     #[must_use]
     pub fn mesh(&self) -> &Handle<Mesh> {
         &self.mesh
@@ -143,23 +143,23 @@ impl PaintTargets {
 }
 
 /// Build a body's render mesh: a flat-shaded [`IndexedMesh`] → Bevy `Mesh` with
-/// a per-face colour attribute seeded to `base_color`, oriented by `up`.
+/// a per-face color attribute seeded to `base_color`, oriented by `up`.
 ///
 /// This is the one supported way to build a [`PaintBody`]'s render mesh: it
 /// owns the picking contract (three vertices per face, in face order) and the
-/// base-colour convention the brush restores on erase.
+/// base-color convention the brush restores on erase.
 #[must_use]
 pub fn paint_render_mesh(source: &IndexedMesh, up: UpAxis, base_color: [f32; 4]) -> Mesh {
     let seed = vec![base_color; source.vertices.len()];
     triangle_mesh_flat_shaded(source, Some(&seed), up)
 }
 
-/// Set the three emitted vertices of face `f` (`3f, 3f+1, 3f+2`) to `colour`.
-pub(crate) fn recolour(colours: &mut [[f32; 4]], f: usize, colour: [f32; 4]) {
+/// Set the three emitted vertices of face `f` (`3f, 3f+1, 3f+2`) to `color`.
+pub(crate) fn recolor(colors: &mut [[f32; 4]], f: usize, color: [f32; 4]) {
     let base = f * 3;
     for k in 0..3 {
-        if let Some(slot) = colours.get_mut(base + k) {
-            *slot = colour;
+        if let Some(slot) = colors.get_mut(base + k) {
+            *slot = color;
         }
     }
 }
@@ -222,10 +222,10 @@ mod tests {
     }
 
     #[test]
-    fn paint_render_mesh_seeds_base_colour_per_emitted_vertex() {
+    fn paint_render_mesh_seeds_base_color_per_emitted_vertex() {
         let mesh = paint_render_mesh(&tri(), UpAxis::PlusZ, [0.8, 0.78, 0.72, 1.0]);
-        // Flat shading emits three vertices per face: 2 faces → 6 colours, all
-        // seeded to the base colour.
+        // Flat shading emits three vertices per face: 2 faces → 6 colors, all
+        // seeded to the base color.
         let seeded = matches!(
             mesh.attribute(Mesh::ATTRIBUTE_COLOR),
             Some(bevy::mesh::VertexAttributeValues::Float32x4(c))
@@ -238,17 +238,17 @@ mod tests {
     }
 
     #[test]
-    fn recolour_sets_exactly_one_face_triple() {
-        let mut colours = vec![[0.0; 4]; 6];
-        recolour(&mut colours, 1, [1.0, 0.0, 0.0, 1.0]);
-        assert_eq!(&colours[0..3], &[[0.0; 4]; 3]); // face 0 untouched
-        assert!(colours[3..6].iter().all(|c| *c == [1.0, 0.0, 0.0, 1.0]));
+    fn recolor_sets_exactly_one_face_triple() {
+        let mut colors = vec![[0.0; 4]; 6];
+        recolor(&mut colors, 1, [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(&colors[0..3], &[[0.0; 4]; 3]); // face 0 untouched
+        assert!(colors[3..6].iter().all(|c| *c == [1.0, 0.0, 0.0, 1.0]));
     }
 
     #[test]
-    fn recolour_out_of_range_face_is_ignored() {
-        let mut colours = vec![[0.0; 4]; 6];
-        recolour(&mut colours, 99, [1.0, 0.0, 0.0, 1.0]); // no panic, no change
-        assert!(colours.iter().all(|c| *c == [0.0; 4]));
+    fn recolor_out_of_range_face_is_ignored() {
+        let mut colors = vec![[0.0; 4]; 6];
+        recolor(&mut colors, 99, [1.0, 0.0, 0.0, 1.0]); // no panic, no change
+        assert!(colors.iter().all(|c| *c == [0.0; 4]));
     }
 }

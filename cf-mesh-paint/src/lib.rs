@@ -43,16 +43,21 @@ use bevy::prelude::*;
 pub use body::{PaintBody, PaintTargets, paint_render_mesh};
 pub use brush::{Brush, BrushMode, Hover, NormalFilter, PaintColors, PaintingBlocked};
 pub use input::{orbit_when_not_painting, painting, undo_pressed};
-pub use stroke::{ActiveStroke, History};
+pub use stroke::History;
 
-/// Configurable defaults for [`MeshPaintPlugin`]: the paint / base colours, the
+// Internal-only: the plugin owns the in-progress stroke; a consumer has no use
+// for it, so it is not part of the public surface (unlike `History`, which a
+// HUD can read).
+use stroke::ActiveStroke;
+
+/// Configurable defaults for [`MeshPaintPlugin`]: the paint / base colors, the
 /// brush radius and its bounds, and the normal filter's initial state. The
-/// `base_color` here must match the colour you pass to [`paint_render_mesh`].
+/// `base_color` here must match the color you pass to [`paint_render_mesh`].
 #[derive(Clone, Copy, Debug)]
 pub struct MeshPaintConfig {
-    /// Unpainted face colour (also the [`paint_render_mesh`] seed).
+    /// Unpainted face color (also the [`paint_render_mesh`] seed).
     pub base_color: [f32; 4],
-    /// Painted face colour.
+    /// Painted face color.
     pub highlight_color: [f32; 4],
     /// Initial brush radius (native mesh units).
     pub brush_init: f64,
@@ -89,7 +94,7 @@ impl Default for MeshPaintConfig {
 /// a HUD, which a consumer renders from the public state resources.
 #[derive(Default)]
 pub struct MeshPaintPlugin {
-    /// Initial brush / colour / filter defaults.
+    /// Initial brush / color / filter defaults.
     pub config: MeshPaintConfig,
 }
 

@@ -8,7 +8,7 @@
 use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
 
-use crate::body::{PaintBody, PaintTargets, recolour};
+use crate::body::{PaintBody, PaintTargets, recolor};
 use crate::brush::{BrushMode, PaintColors};
 
 /// One paint/erase stroke: the faces whose selection state it flipped (so it
@@ -91,7 +91,8 @@ pub fn undo_stroke(
     let Some(mesh) = meshes.get_mut(&*handle) else {
         return;
     };
-    let Some(VertexAttributeValues::Float32x4(colours)) = mesh.attribute_mut(Mesh::ATTRIBUTE_COLOR)
+    let Some(VertexAttributeValues::Float32x4(face_colors)) =
+        mesh.attribute_mut(Mesh::ATTRIBUTE_COLOR)
     else {
         return;
     };
@@ -99,11 +100,11 @@ pub fn undo_stroke(
         match stroke.mode {
             BrushMode::Paint => {
                 painted.remove(&f);
-                recolour(colours, f, colors.base);
+                recolor(face_colors, f, colors.base);
             }
             BrushMode::Erase => {
                 painted.insert(f);
-                recolour(colours, f, colors.highlight);
+                recolor(face_colors, f, colors.highlight);
             }
         }
     }

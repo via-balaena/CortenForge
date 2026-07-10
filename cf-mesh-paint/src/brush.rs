@@ -10,23 +10,23 @@ use bevy::mesh::VertexAttributeValues;
 use bevy::picking::mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings};
 use bevy::prelude::*;
 
-use crate::body::{PaintBody, PaintTargets, recolour};
+use crate::body::{PaintBody, PaintTargets, recolor};
 use crate::input::painting;
 use crate::stroke::{ActiveStroke, Stroke};
 
-/// The paint / erase base colours a body's faces are driven to. Seeded from
-/// [`MeshPaintConfig`](crate::MeshPaintConfig); `base` must match the colour
+/// The paint / erase base colors a body's faces are driven to. Seeded from
+/// [`MeshPaintConfig`](crate::MeshPaintConfig); `base` must match the color
 /// [`paint_render_mesh`](crate::paint_render_mesh) seeded the mesh with.
-#[derive(Resource, Clone, Copy)]
+#[derive(Resource, Clone, Copy, Debug)]
 pub struct PaintColors {
-    /// Unpainted face colour (what erase restores).
+    /// Unpainted face color (what erase restores).
     pub base: [f32; 4],
-    /// Painted face colour.
+    /// Painted face color.
     pub highlight: [f32; 4],
 }
 
 /// The brush radius (native mesh units) and its bounds.
-#[derive(Resource, Clone, Copy)]
+#[derive(Resource, Clone, Copy, Debug)]
 pub struct Brush {
     /// Current radius.
     pub radius: f64,
@@ -48,7 +48,7 @@ pub enum BrushMode {
 /// Restrict the brush to faces whose normal is within `max_angle_deg` of the
 /// face under the cursor — so painting a flat region doesn't spill onto steep
 /// adjacent walls. Toggle with `N`, widen / tighten with `-` / `=`.
-#[derive(Resource)]
+#[derive(Resource, Clone, Copy, Debug)]
 pub struct NormalFilter {
     /// Whether the filter is active.
     pub enabled: bool,
@@ -59,7 +59,7 @@ pub struct NormalFilter {
 /// The surface point under the cursor this frame (world space), its normal, and
 /// the active body's face there — set by [`hover_ray`], read by the brush ring
 /// and the stroke.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Debug)]
 pub struct Hover {
     /// World-space hit point, or `None` when the cursor is off the active body.
     pub point: Option<Vec3>,
@@ -77,9 +77,9 @@ pub struct Hover {
 #[derive(Resource, Default)]
 pub struct PaintingBlocked(pub bool);
 
-/// Brush-ring colour while painting.
+/// Brush-ring color while painting.
 const RING_PAINT: Color = Color::srgb(0.95, 0.35, 0.25);
-/// Brush-ring colour while erasing.
+/// Brush-ring color while erasing.
 const RING_ERASE: Color = Color::srgb(0.30, 0.80, 0.90);
 
 /// Ray-cast the cursor every frame, recording the hit only when the **active**
@@ -129,7 +129,7 @@ pub fn hover_ray(
 /// the active body, within the brush radius and — if enabled — the
 /// normal-similarity tolerance.
 // A Bevy system takes each resource/query as a distinct parameter by design;
-// the paint step legitimately reads input + brush state + colours + the target.
+// the paint step legitimately reads input + brush state + colors + the target.
 #[allow(clippy::too_many_arguments)]
 pub fn apply_brush(
     mouse: Res<ButtonInput<MouseButton>>,
@@ -166,7 +166,8 @@ pub fn apply_brush(
     let Some(mesh) = meshes.get_mut(&*handle) else {
         return;
     };
-    let Some(VertexAttributeValues::Float32x4(colours)) = mesh.attribute_mut(Mesh::ATTRIBUTE_COLOR)
+    let Some(VertexAttributeValues::Float32x4(face_colors)) =
+        mesh.attribute_mut(Mesh::ATTRIBUTE_COLOR)
     else {
         return;
     };
@@ -184,14 +185,14 @@ pub fn apply_brush(
             BrushMode::Paint => {
                 let inserted = painted.insert(f);
                 if inserted {
-                    recolour(colours, f, colors.highlight);
+                    recolor(face_colors, f, colors.highlight);
                 }
                 inserted
             }
             BrushMode::Erase => {
                 let removed = painted.remove(&f);
                 if removed {
-                    recolour(colours, f, colors.base);
+                    recolor(face_colors, f, colors.base);
                 }
                 removed
             }
@@ -202,21 +203,17 @@ pub fn apply_brush(
     }
 }
 
-/// Draw the brush as a ring on the surface, coloured by mode.
+/// Draw the brush as a ring on the surface, colored by mode.
 pub fn draw_brush(mut gizmos: Gizmos, hover: Res<Hover>, brush: Res<Brush>, mode: Res<BrushMode>) {
     let Some(point) = hover.point else {
         return;
     };
-    let colour = match *mode {
+    let color = match *mode {
         BrushMode::Paint => RING_PAINT,
         BrushMode::Erase => RING_ERASE,
     };
     let rotation = Quat::from_rotation_arc(Vec3::Z, hover.normal.normalize_or_zero());
-    gizmos.circle(
-        Isometry3d::new(point, rotation),
-        brush.radius as f32,
-        colour,
-    );
+    gizmos.circle(Isometry3d::new(point, rotation), brush.radius as f32, color);
 }
 
 /// Shrink / grow the brush with `[` / `]`.

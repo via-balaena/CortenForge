@@ -7,7 +7,7 @@ use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
 use cf_bevy_common::prelude::OrbitCamera;
 
-use crate::body::{PaintBody, PaintTargets, recolour};
+use crate::body::{PaintBody, PaintTargets, recolor};
 use crate::brush::PaintColors;
 
 /// Whether a `Shift` key (the paint modifier) is held. Public so a consumer's
@@ -55,11 +55,11 @@ pub fn clear_selection(
         return;
     }
     if let Some(mesh) = meshes.get_mut(&body.mesh) {
-        if let Some(VertexAttributeValues::Float32x4(colours)) =
+        if let Some(VertexAttributeValues::Float32x4(face_colors)) =
             mesh.attribute_mut(Mesh::ATTRIBUTE_COLOR)
         {
             for &f in &body.painted {
-                recolour(colours, f, colors.base);
+                recolor(face_colors, f, colors.base);
             }
         }
     }
