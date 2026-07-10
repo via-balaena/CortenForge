@@ -53,6 +53,7 @@ use mesh_io::save_stl;
 use mesh_loft::{
     WallCorrespondence, assemble_bushing, extract_patch, finalize_patch, flip_patch, is_watertight,
 };
+use mesh_select::FaceField;
 use mesh_types::Aabb;
 
 /// Base (unpainted) face colour — pale bone ivory.
@@ -65,16 +66,15 @@ const BRUSH_INIT: f64 = 4.0;
 const BRUSH_MIN: f64 = 0.5;
 const BRUSH_MAX: f64 = 30.0;
 
-/// A paintable body: its render mesh, per-face centroids + unit normals (native
-/// mm) for the brush queries, and the set of painted face ids.
+/// A paintable body: its render mesh, the precomputed [`FaceField`] the brush
+/// queries against, and the set of painted face ids.
 #[derive(Component)]
 struct PaintBody {
     name: &'static str,
     source: IndexedMesh,
     mesh: Handle<Mesh>,
     material: Handle<StandardMaterial>,
-    centroids: Vec<[f64; 3]>,
-    normals: Vec<[f64; 3]>,
+    field: FaceField,
     painted: HashSet<usize>,
 }
 
@@ -210,32 +210,6 @@ fn main() {
         .run();
 }
 
-/// Per-face centroids and unit normals in native coordinates.
-fn face_geometry(mesh: &IndexedMesh) -> (Vec<[f64; 3]>, Vec<[f64; 3]>) {
-    let mut centroids = Vec::with_capacity(mesh.faces.len());
-    let mut normals = Vec::with_capacity(mesh.faces.len());
-    for &[a, b, c] in &mesh.faces {
-        let (a, b, c) = (
-            mesh.vertices[a as usize],
-            mesh.vertices[b as usize],
-            mesh.vertices[c as usize],
-        );
-        centroids.push([
-            (a.x + b.x + c.x) / 3.0,
-            (a.y + b.y + c.y) / 3.0,
-            (a.z + b.z + c.z) / 3.0,
-        ]);
-        let n = (b - a).cross(&(c - a));
-        let len = n.norm();
-        normals.push(if len > 1e-12 {
-            [n.x / len, n.y / len, n.z / len]
-        } else {
-            [0.0, 0.0, 1.0]
-        });
-    }
-    (centroids, normals)
-}
-
 fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -246,7 +220,7 @@ fn setup(
 
     let mut entities = Vec::new();
     for (mesh, name) in [(&l4, "L4"), (&l5, "L5")] {
-        let (centroids, normals) = face_geometry(mesh);
+        let field = FaceField::new(mesh);
         let seed = vec![BASE; mesh.vertices.len()];
         let handle = meshes.add(triangle_mesh_flat_shaded(mesh, Some(&seed), UpAxis::PlusZ));
         let material = materials.add(StandardMaterial {
@@ -266,8 +240,7 @@ fn setup(
                     source: mesh.clone(),
                     mesh: handle,
                     material,
-                    centroids,
-                    normals,
+                    field,
                     painted: HashSet::new(),
                 },
             ))
@@ -414,15 +387,11 @@ fn apply_brush(
     };
     let PaintBody {
         mesh: handle,
-        centroids,
-        normals,
+        field,
         painted,
         ..
     } = body.as_mut();
 
-    let (Some(&centre), Some(&reference)) = (centroids.get(face), normals.get(face)) else {
-        return;
-    };
     let Some(mesh) = meshes.get_mut(&*handle) else {
         return;
     };
@@ -438,22 +407,11 @@ fn apply_brush(
         faces: Vec::new(),
     });
 
-    let r2 = radius.0 * radius.0;
-    let cos_min = filter.max_angle_deg.to_radians().cos();
-    for (f, (c, n)) in centroids.iter().zip(normals.iter()).enumerate() {
-        let d = [c[0] - centre[0], c[1] - centre[1], c[2] - centre[2]];
-        if d[0].mul_add(d[0], d[1].mul_add(d[1], d[2] * d[2])) > r2 {
-            continue;
-        }
-        if filter.enabled {
-            let dot = n[0].mul_add(
-                reference[0],
-                n[1].mul_add(reference[1], n[2] * reference[2]),
-            );
-            if dot < cos_min {
-                continue; // normal too different from the face under the cursor
-            }
-        }
+    // The faces the brush covers around the hovered face, optionally restricted
+    // to those whose normal matches (so a flat endplate doesn't spill onto the
+    // steep lateral walls).
+    let normal_filter = filter.enabled.then_some(filter.max_angle_deg);
+    for f in field.brush(face, radius.0, normal_filter) {
         let changed = match stroke.mode {
             BrushMode::Paint => {
                 let inserted = painted.insert(f);
