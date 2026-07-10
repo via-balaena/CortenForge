@@ -1,0 +1,31 @@
+[package]
+name = "mesh-loft"
+description = "Anatomy-free mesh-loft primitive — join two painted contact patches into one closed, watertight bushing (extract patch + rim, stitch the perimeter wall, assemble, and smooth only the free wall)"
+keywords = ["mesh", "loft", "bushing", "geometry", "watertight"]
+categories = ["mathematics", "graphics"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+# Pure mesh primitive over the cf-geometry kernel + mesh-repair adjacency/Taubin
+# smoothing. No mesh-io, no anatomy, no Bevy — a Layer-0 building block the FSU
+# disc and a general bushing GUI both compose. Transitive footprint (~59) sits
+# well under the L0 100/120 caps.
+[package.metadata.cortenforge]
+tier = "L0"
+
+[lints]
+workspace = true
+
+[dependencies]
+# `IndexedMesh` — the geometric kernel type every patch/wall/bushing is built on.
+cf-geometry = { workspace = true }
+# `MeshAdjacency` — rim walking / edge-connected component labelling. (The
+# `TAUBIN_DEFAULT_*` constants are also re-exported from here, but only the
+# tests use them; `smooth_wall` takes lambda/mu as parameters.)
+mesh-repair = { workspace = true }
+# `Point3` / `Vector3` — vertex + rim geometry.
+nalgebra = { workspace = true }

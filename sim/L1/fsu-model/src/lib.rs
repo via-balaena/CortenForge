@@ -564,7 +564,7 @@ mod tests {
     /// Loft a disc from rough auto-selected L4/L5 endplate patches (the painting
     /// GUI does this cleaner).
     fn lofted_disc(l4: &IndexedMesh, l5: &IndexedMesh) -> IndexedMesh {
-        use cf_fsu_geometry::loft::{
+        use mesh_loft::{
             WallCorrespondence, assemble_bushing, extract_patch, finalize_patch, flip_patch,
         };
         let l4_faces = select_endplate(l4, -1.0);

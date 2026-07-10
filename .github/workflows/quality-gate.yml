@@ -345,7 +345,7 @@ jobs:
           - id: 1
             crates: cf-bevy-common sim-bevy-soft cf-viewer sim-ml-chassis-bevy cf-spine-viewer
               cf-sim-research cf-scan-prep cf-device-design cf-device-geometry
-              mesh-types mesh-io mesh-repair mesh-sdf mesh-offset mesh-shell mesh-measure
+              mesh-types mesh-io mesh-repair mesh-loft mesh-sdf mesh-offset mesh-shell mesh-measure
               cf-msk-lib cf-mjcf-emit cf-osim
           - id: 2
             crates: cf-studio-core cf-studio-engine cf-studio-gui cf-studio

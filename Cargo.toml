@@ -83,6 +83,7 @@ members = [
     "mesh/mesh-io",
     "mesh/mesh-repair",
     "mesh/mesh-repair-benches",
+    "mesh/mesh-loft",
     "mesh/mesh-sdf",
     "mesh/mesh-offset",
     "mesh/mesh-shell",
@@ -687,6 +688,7 @@ mesh-types = { path = "mesh/mesh-types" }
 mesh-io = { path = "mesh/mesh-io" }
 mesh-repair = { path = "mesh/mesh-repair" }
 mesh-repair-benches = { path = "mesh/mesh-repair-benches" }
+mesh-loft = { path = "mesh/mesh-loft" }
 mesh-sdf = { path = "mesh/mesh-sdf" }
 mesh-offset = { path = "mesh/mesh-offset" }
 mesh-shell = { path = "mesh/mesh-shell" }

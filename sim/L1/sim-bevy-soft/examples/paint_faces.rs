@@ -47,12 +47,12 @@ use bevy::prelude::*;
 use cf_bevy_common::mesh::triangle_mesh_flat_shaded;
 use cf_bevy_common::prelude::{OrbitCamera, update_orbit_camera};
 use cf_fsu_geometry::load_from_env;
-use cf_fsu_geometry::loft::{
-    WallCorrespondence, assemble_bushing, extract_patch, finalize_patch, flip_patch, is_watertight,
-};
 use cf_geometry::IndexedMesh;
 use cf_viewer::{UpAxis, setup_camera_and_lighting};
 use mesh_io::save_stl;
+use mesh_loft::{
+    WallCorrespondence, assemble_bushing, extract_patch, finalize_patch, flip_patch, is_watertight,
+};
 use mesh_types::Aabb;
 
 /// Base (unpainted) face colour — pale bone ivory.

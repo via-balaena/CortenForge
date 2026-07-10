@@ -79,11 +79,14 @@ sim-coupling = { workspace = true }
 sim-mjcf = { workspace = true }
 # Rotation math for the prescribed-boundary / plate-pose drive.
 nalgebra = { workspace = true }
-# `load_from_env` + `loft::*` + `model_disc_between_endplates` — load the real BodyParts3D
-# vertebra/disc STLs and build/loft the disc (the real-anatomy ladder rungs, step 5+).
-# Same loader the FSU model uses, so the examples share its weld-repair + native-mm
-# convention (design→sim dep, mirrors cf-fsu-model's dependency on this crate).
+# `load_from_env` + `model_disc_between_endplates` — load the real BodyParts3D
+# vertebra/disc STLs (the real-anatomy ladder rungs, step 5+). Same loader the FSU
+# model uses, so the examples share its weld-repair + native-mm convention
+# (design→sim dep, mirrors cf-fsu-model's dependency on this crate).
 cf-fsu-geometry = { workspace = true }
+# `assemble_bushing` + patch prep — loft the two painted endplate patches into the
+# disc (the anatomy-free bushing primitive `paint_faces` composes).
+mesh-loft = { workspace = true }
 # `IndexedMesh` (construct a tessellated sphere to feed the SDF pipeline) — the mesh-SDF
 # contact rung (5.1a) that isolates the SDF representation from anatomy.
 cf-geometry = { workspace = true }

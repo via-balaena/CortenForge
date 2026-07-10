@@ -1,20 +1,21 @@
-//! General mesh-loft primitive — the anatomy-free core of the *bushing*.
+//! The `mesh-loft` primitive — join two painted contact patches into one
+//! closed, watertight *bushing*.
 //!
 //! A **bushing** is defined by its two contact regions: one patch painted on
 //! each of the two bodies it sits between, joined by a smooth *perimeter wall*
 //! stitched between their rims (the free, no-contact surface). The loft is what
 //! connects the two patches into one closed compliant interface.
 //!
-//! This module is deliberately anatomy-free — it operates on a bare
-//! [`IndexedMesh`] and a face-id selection, with no notion of vertebrae,
-//! endplates, or discs. The FSU disc is only its *first* consumer (it picks the
-//! two endplate patches and lofts them); a general bushing GUI is the second.
-//! When that second consumer lands this module is expected to graduate to a
-//! standalone `mesh-loft` crate.
+//! This crate is deliberately anatomy-free — it operates on a bare
+//! [`IndexedMesh`] and a face-id selection, with no notion of the bodies the
+//! patches were painted on. Consumers supply that meaning: a compliant mount
+//! lofted between two machined parts, a soft interface between two rigid
+//! bodies, or a general paint-and-loft GUI all reduce to the same two patches
+//! and a wall.
 //!
 //! # Ladder
 //!
-//! All rungs below now live in this module (the primitive is complete):
+//! All rungs below now live in this crate (the primitive is complete):
 //!
 //! * **B0:** [`extract_patch`] — from a mesh and a face-id selection, produce
 //!   the patch sub-mesh plus its ordered, winding-oriented boundary-rim loop(s).
@@ -28,6 +29,11 @@
 //! [`keep_largest_component`] (drop a stray blob) + [`seal_interior_holes`]
 //! (seal every hole but the [`outer_rim_index`] boundary). [`is_watertight`] is
 //! the closed-surface readout.
+
+// L0 library posture (matches `mesh-repair` / `cf-geometry`): production code
+// never panics — deny `unwrap`/`expect` outside tests so a future edit can't
+// smuggle one into the primitive.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 use std::collections::{HashMap, HashSet};
 
@@ -60,7 +66,7 @@ pub struct Patch {
 
     /// For each patch vertex, the index it held in the source mesh:
     /// `source_vertex[new] = old`. Lets a caller pin the patch back onto the
-    /// body it was painted on (the disc's contact bond) or carry attributes.
+    /// body it was painted on (its contact bond) or carry attributes.
     /// Invariant (upheld by [`extract_patch`]): `source_vertex.len() ==
     /// mesh.vertices.len()` — [`keep_largest_component`] indexes it per vertex.
     pub source_vertex: Vec<u32>,
@@ -74,10 +80,10 @@ pub struct Bushing {
     pub mesh: IndexedMesh,
 
     /// The first `contact_count` vertices are the two contact caps (the exact
-    /// endplate surfaces — pinned when the wall is smoothed); every vertex at or
-    /// after this index is a free wall-interior vertex introduced by the ring
-    /// subdivision. With a single-segment wall there are no free vertices and
-    /// `contact_count == mesh.vertex_count()`.
+    /// painted contact surfaces — pinned when the wall is smoothed); every
+    /// vertex at or after this index is a free wall-interior vertex introduced
+    /// by the ring subdivision. With a single-segment wall there are no free
+    /// vertices and `contact_count == mesh.vertex_count()`.
     pub contact_count: u32,
 }
 
@@ -88,11 +94,10 @@ pub enum WallCorrespondence {
     /// rims (the synthetic puck/cylinder cases).
     ArcLength,
     /// Greedy shortest-diagonal loop-loft — an alternative pairing for two
-    /// dissimilar rims where arc-length can drift. NOTE: the shipping
-    /// painted-endplate disc lofts with [`ArcLength`](Self::ArcLength) (convex
-    /// painted rims distribute evenly under arc length); shortest-diagonal was
-    /// developed for the abandoned auto-selected concave rims and is kept as a
-    /// characterized alternative for the future `mesh-loft` GUI. Applies to a
+    /// dissimilar rims where arc-length can drift. NOTE: convex painted rims
+    /// distribute evenly under [`ArcLength`](Self::ArcLength), so that is the
+    /// usual choice; shortest-diagonal is characterized and kept for concave or
+    /// otherwise dissimilar rims where arc length pairs poorly. Applies to a
     /// single-segment wall; subdivided walls (`wall_segments > 1`) use arc length.
     ShortestDiagonal,
 }
@@ -315,11 +320,11 @@ pub fn stitch_rims(verts: &[Point3<f64>], rim_a: &[u32], rim_b: &[u32]) -> Vec<[
 
 /// Stitch two boundary rims with a greedy **shortest-diagonal** loop-loft.
 ///
-/// The robust pairing for two dissimilar, concave real rims (e.g. the L4/L5
-/// endplates): after aligning starts (`orient_rim_b`), each step advances
-/// whichever loop makes the shorter connecting diagonal. This is a purely
-/// local-geometric rule, so it stays twist-free where arc-length or angle
-/// pairing drifts out of sync and throws a long spike triangle across the disc.
+/// The robust pairing for two dissimilar, concave rims: after aligning starts
+/// (`orient_rim_b`), each step advances whichever loop makes the shorter
+/// connecting diagonal. This is a purely local-geometric rule, so it stays
+/// twist-free where arc-length or angle pairing drifts out of sync and throws a
+/// long spike triangle across the wall.
 #[must_use]
 pub fn stitch_rims_diagonal(verts: &[Point3<f64>], rim_a: &[u32], rim_b: &[u32]) -> Vec<[u32; 3]> {
     let (na, nb) = (rim_a.len(), rim_b.len());
@@ -420,7 +425,7 @@ fn rim_positions(mesh: &IndexedMesh, rim: &[u32]) -> Vec<Point3<f64>> {
 
 /// Enclosed area of a closed 3D polygon via Newell's method — the magnitude of
 /// its vectorial area `½ Σ vᵢ × vᵢ₊₁`. Origin-independent and needs no projection
-/// axis, so it is robust for the gently non-planar rims real endplates trace.
+/// axis, so it is robust for the gently non-planar rims real painted regions trace.
 /// Caveat: the magnitude UNDER-reads a severely folded loop (opposing normals
 /// cancel, tending to 0 for a loop folded onto itself), so [`outer_rim_index`]
 /// assumes the outer boundary is not near-folded.
@@ -487,7 +492,7 @@ fn outer_rim(patch: &Patch) -> Option<&Vec<u32>> {
 /// `correspondence` selects how the single-segment wall pairs the two rims:
 /// [`WallCorrespondence::ArcLength`] for similar rims, or
 /// [`WallCorrespondence::ShortestDiagonal`] for two dissimilar, concave real
-/// rims (the disc's endplates).
+/// rims.
 #[must_use]
 // Vertex/ring counts fit in `u32` by the `IndexedMesh` index contract and the
 // ring fraction is a tiny lossless integer ratio, so no cast truncates or loses
@@ -608,8 +613,8 @@ fn connected_components(faces: &[[u32; 3]]) -> Vec<Vec<usize>> {
 ///
 /// A painter who drops a stray disconnected blob would otherwise loft a wall
 /// onto one component and leave the other as a floating shell or open boundary;
-/// keeping the largest component makes the disc single-bodied by construction
-/// (and matches the downstream tet-mesher, which also keeps the largest solid).
+/// keeping the largest component makes the patch single-bodied by construction
+/// (and matches a downstream tet-mesher, which also keeps the largest solid).
 #[must_use]
 pub fn keep_largest_component(patch: &Patch) -> Patch {
     let components = connected_components(&patch.mesh.faces);
@@ -704,9 +709,8 @@ pub fn is_watertight(mesh: &IndexedMesh) -> bool {
 ///
 /// Every face normal flips and each rim is reversed so it stays
 /// winding-oriented. Use it to bring two patches into the **same** orientation
-/// convention before [`assemble_bushing`] — e.g. flipping the L4-inferior
-/// endplate (whose bone normal points down) to match the L5-superior endplate
-/// (pointing up).
+/// convention before [`assemble_bushing`] — e.g. flipping a patch whose surface
+/// normal points one way to match the opposing patch pointing the other.
 #[must_use]
 pub fn flip_patch(patch: &Patch) -> Patch {
     let faces = patch
@@ -792,7 +796,7 @@ fn build_ringed_wall(
 /// Taubin-smooth **only** the free wall vertices of a `bushing`, leaving the
 /// contact caps exact (B3b).
 ///
-/// The first `bushing.contact_count` vertices — the two endplate caps — are
+/// The first `bushing.contact_count` vertices — the two contact caps — are
 /// pinned: they still anchor their free neighbours (so the wall stays attached
 /// to the exact contact rims) but never move, keeping `rendered === contacts`
 /// on the surfaces that matter. Every free wall-interior vertex is relaxed by a
@@ -1458,7 +1462,7 @@ mod tests {
         assert_eq!(kept.mesh.face_count(), 8, "kept the 8-triangle square");
         assert_eq!(kept.mesh.vertex_count(), 9);
         assert_eq!(connected_components(&kept.mesh.faces).len(), 1);
-        // ★ The source_vertex map is the disc→endplate BOND map: every kept
+        // ★ The source_vertex map is the patch→body BOND map: every kept
         // vertex must still point back to its original source position (a
         // decoupled remap would silently break the bond).
         assert_eq!(kept.source_vertex.len(), kept.mesh.vertex_count());
