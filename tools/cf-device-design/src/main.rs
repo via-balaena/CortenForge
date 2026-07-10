@@ -652,11 +652,14 @@ fn update_cavity_mesh(
 /// cumulative thickness theoretically reaches 6 layers × 20 mm =
 /// 120 mm via the existing per-layer thickness slider — past the
 /// cached grid's envelope. The current per-layer slider defaults
-/// keep typical use well inside 40 mm; release builds silently
-/// clip to the grid bounds if a user dials past, and debug builds
-/// trip the `debug_assert!` in
-/// [`sdf_layers::extract_layer_surface`]. A future arc may tighten
-/// the slider OR grow the grid — for iter-1 the 40 mm envelope is
+/// keep typical use well inside 40 mm. An outward offset past the
+/// envelope would make [`sdf_layers::extract_layer_surface`] panic
+/// (its guard is a hard `assert!`, in release too — it protects
+/// against a SILENTLY-clipped wrong surface), so this function
+/// clamps every offset to
+/// [`sdf_layers::CachedScanSdf::max_extractable_iso`] before calling
+/// it; the clamp is load-bearing, not decorative. A future arc may
+/// tighten the slider OR grow the grid — for iter-1 the envelope is
 /// the load-bearing constraint.
 #[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
 fn update_layer_meshes(
@@ -691,19 +694,16 @@ fn update_layer_meshes(
     for (i, layer) in layers.layers.iter().enumerate() {
         cumulative_thickness_m += layer.thickness_m;
         let offset_m = cumulative_thickness_m - cavity.inset_m;
-        // Clamp the iso value to the cached grid's envelope so a wide
-        // slider configuration doesn't trip the debug-assert in
-        // [`sdf_layers::extract_layer_surface`]. Clamping AT the
-        // envelope (not just BELOW it) lets MC pull whatever surface
-        // is visible inside the cached grid; the alternative
-        // (silently dropping the layer) would leave the user without
-        // a visual cue that the slider exceeded the envelope. A
-        // future arc should either widen `LAYER_GRID_MARGIN_M` or
-        // tighten the slider once iter-1 / iter-2 surfaces a real
-        // case.
-        // The cache owns its envelope (`margin - cell` of the grid actually
-        // built); clamping to it satisfies `extract_layer_surface`'s `assert!`
-        // by construction, including at saturation (the assert is `<=`).
+        // Clamp the iso to the cached grid's own envelope. This is
+        // load-bearing: `extract_layer_surface` hard-`assert!`s an outward
+        // offset within the envelope (in release too), so an unclamped wide
+        // slider would panic mid-session. The cache owns the bound
+        // (`margin - cell` of the grid actually built), and clamping AT it —
+        // not just below — lets MC pull whatever surface is still visible
+        // inside the grid rather than silently dropping the layer (which
+        // would leave the user no visual cue the slider went too far). The
+        // assert is `<=`, so clamping to exactly `max_extractable_iso()`
+        // satisfies it at saturation.
         let max_iso = cached_sdf.max_extractable_iso();
         let safe_offset_m = offset_m.clamp(-max_iso, max_iso);
         let layer_indexed =
