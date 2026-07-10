@@ -11,9 +11,7 @@ use sim_bevy_soft::mesh::build_soft_mesh;
 
 // ── Per-tissue palette (a serious anatomical read, not toy colors). ──
 const BONE_COLOR: Color = Color::srgb(0.90, 0.88, 0.82); // ivory cortical bone
-/// Teal cartilage (opaque — see the disc material). Also the paint/loft disc
-/// tint shared with the `paint-faces` tool.
-pub(crate) const DISC_COLOR: Color = Color::srgb(0.20, 0.62, 0.68);
+const DISC_COLOR: Color = Color::srgb(0.20, 0.62, 0.68); // teal cartilage (opaque — see disc material)
 
 /// Which tissue an entity is, so the visibility panel can toggle it.
 #[derive(Component, Clone, Copy)]

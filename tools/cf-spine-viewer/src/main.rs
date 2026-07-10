@@ -36,10 +36,11 @@
 //! ## Module map
 //!
 //! The headless scene assembly + capture live in [`scene`] (Bevy-free); this file is the
-//! thin Bevy driver that composes the concern modules — [`render`] (tissue entities),
-//! [`replay`] (the moment-ramp playback), [`overlays`] (ligament/facet gizmos), [`panel`]
-//! (the egui side panel), and [`input`] (pointer arbitration + quit) — into one app. The
-//! visual pass is user-side (this session cannot see GUI output). Run:
+//! thin Bevy driver that composes the concern modules — [`cli`] (STL path resolution),
+//! [`render`] (tissue entities), [`replay`] (the moment-ramp playback), [`overlays`]
+//! (ligament/facet gizmos), [`panel`] (the egui side panel), and [`input`] (pointer
+//! arbitration + quit) — into one app. The visual pass is user-side (this session cannot
+//! see GUI output). Run:
 //!
 //! ```text
 //! cargo run -p cf-spine-viewer -- --dir <dir-with-the-3-STLs>
