@@ -213,20 +213,26 @@ fn weighted_tet_nodes(
         .collect()
 }
 
-/// Assemble the static FSU scene from the three STL paths (native mm).
+/// Assemble the static FSU scene from the three STL paths (native mm) — the CLI
+/// entry point. Loads each mesh (weld-repaired) then delegates to
+/// [`build_from_meshes`].
 pub fn build(l4_path: &Path, l5_path: &Path, disc_path: &Path) -> Result<FsuScene> {
-    let l4 = load(l4_path)?;
-    let l5 = load(l5_path)?;
-    let disc = load(disc_path)?;
-    // Per-mesh load summary. The crate's `load` is a pure (silent) library call,
-    // so the viewer reports the post-repair size here as the build-blind sanity
-    // signal — a broken/degenerate mesh shows up as an implausible vertex count.
-    // (The raw pre-weld count the old inline loader printed is a repair internal:
-    // always large for STL triangle soup, so it doesn't distinguish good meshes
-    // from bad; the post-repair count does.)
+    build_from_meshes(load(l4_path)?, load(l5_path)?, load(disc_path)?)
+}
+
+/// Assemble the static FSU scene from three **in-memory** meshes (native mm).
+/// This is the Studio path: the disc is painted + lofted in memory (never round-
+/// tripped through an STL) and L4/L5 are already loaded by the paint front-end.
+/// The disk-loading [`build`] wrapper is the CLI's entry to this same assembly.
+pub fn build_from_meshes(l4: IndexedMesh, l5: IndexedMesh, disc: IndexedMesh) -> Result<FsuScene> {
+    // Per-mesh size summary as the build-blind sanity signal — a broken or
+    // degenerate mesh shows up as an implausible vertex count. For loaded meshes
+    // this is the post-repair size (`load` weld-repairs silently); for a painted
+    // disc it is the loft output. (The raw pre-weld triangle-soup count is a
+    // repair internal — always large — so it doesn't distinguish good from bad.)
     for (name, mesh) in [("L4", &l4), ("L5", &l5), ("disc", &disc)] {
         println!(
-            "loaded {name}: {} verts / {} faces",
+            "mesh {name}: {} verts / {} faces",
             mesh.vertices.len(),
             mesh.faces.len()
         );
