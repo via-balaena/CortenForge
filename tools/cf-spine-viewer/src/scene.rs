@@ -9,8 +9,9 @@
 //! so nothing (oracle / segment-frame / facet-grid / ML axis) is computed twice.
 //!
 //! This module keeps the viewer-specific assembly on top of the FSU: the two ligament lines
-//! (field-derived attachment sites), the co-registration warnings, and the `build`
-//! orchestrator that stitches the FSU + overlays + render surfaces into an [`FsuScene`].
+//! (field-derived attachment sites), the co-registration warnings, and the
+//! `build_from_meshes` orchestrator that stitches the FSU + overlays + render surfaces
+//! into an [`FsuScene`].
 
 use anyhow::{Result, ensure};
 use cf_fsu_geometry::{BODY_RADIUS, MeshOracle, SegmentFrame, extreme_vertex, oracle};

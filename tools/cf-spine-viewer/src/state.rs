@@ -24,10 +24,11 @@ pub(crate) enum StudioState {
     Simulate,
 }
 
-/// `Esc` quits from Design (the top-level mode). `S`→solve is handled by
-/// [`crate::solve::start_solve`].
+/// `Esc` quits — wired for Design and Solving (Simulate's `Esc` returns to
+/// Design instead). Quitting mid-solve is safe: the bones keep the 3D world
+/// non-empty and the background task is abandoned at process exit.
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
-pub(crate) fn design_quit(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>) {
+pub(crate) fn quit_on_esc(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>) {
     if keys.just_pressed(KeyCode::Escape) {
         exit.write(AppExit::Success);
     }
@@ -81,6 +82,8 @@ pub(crate) fn solving_panel(mut contexts: EguiContexts) -> bevy::ecs::error::Res
             ui.spinner();
             ui.add_space(8.0);
             ui.label("Assembling + solving the coupled FSU (~90 s). This window stays responsive.");
+            ui.add_space(8.0);
+            ui.label("Esc  quit");
         });
     });
     Ok(())

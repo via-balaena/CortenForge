@@ -89,7 +89,7 @@ use panel::{SceneToggles, apply_visibility, scene_panel};
 use render::{SourceMeshes, leave_simulate, spawn_bones};
 use replay::flexion_update;
 use solve::{SolveError, SolveTask, poll_solve, start_solve};
-use state::{StudioState, design_panel, design_quit, simulate_back, solving_panel};
+use state::{StudioState, design_panel, quit_on_esc, simulate_back, solving_panel};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -136,7 +136,8 @@ fn run_app(l4: IndexedMesh, l5: IndexedMesh, disc: IndexedMesh) {
             Update,
             (
                 start_solve.run_if(in_state(StudioState::Design)),
-                design_quit.run_if(in_state(StudioState::Design)),
+                quit_on_esc
+                    .run_if(in_state(StudioState::Design).or(in_state(StudioState::Solving))),
                 poll_solve.run_if(in_state(StudioState::Solving)),
                 simulate_back.run_if(in_state(StudioState::Simulate)),
             ),
