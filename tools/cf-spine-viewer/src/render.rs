@@ -1,6 +1,8 @@
-//! The FSU scene entities: the two vertebrae (per-tissue bone material) and the
-//! clean deforming disc surface, spawned from the assembled [`crate::scene`] and
-//! then driven per frame by [`crate::replay`].
+//! The FSU scene entities. The two vertebrae are spawned once at startup and
+//! persist across modes ([`spawn_bones`] — so the 3D world is never empty and
+//! previews the paint target); the deforming disc is Simulate-scoped, spawned
+//! from the solved surface on entering Simulate ([`spawn_disc`]) and torn down
+//! on leaving ([`leave_simulate`]), which also returns L4 to rest.
 
 use bevy::prelude::*;
 use cf_viewer::UpAxis;
@@ -29,14 +31,15 @@ pub(crate) struct FlexedL4;
 #[derive(Component)]
 pub(crate) struct DiscMesh;
 
-/// The startup meshes — consumed to build the GPU assets. The disc is the clean
-/// STL surface (deformed per frame by the FEM field, not the ragged tet
-/// boundary). Kept resident so the scene can be re-spawned on a state re-entry.
+/// The three input meshes (native mm), kept resident: L4/L5 spawn the always-on
+/// bones + frame the camera, and all three are the inputs to the on-demand solve
+/// (see [`crate::solve`]). In the next rung the disc field is replaced by the
+/// painted-and-lofted disc.
 #[derive(Resource)]
-pub(crate) struct SceneMeshes {
+pub(crate) struct SourceMeshes {
     pub(crate) l4: IndexedMesh,
     pub(crate) l5: IndexedMesh,
-    pub(crate) disc_surface: IndexedMesh,
+    pub(crate) disc: IndexedMesh,
 }
 
 /// Build a SMOOTH-shaded Bevy mesh from an indexed surface: area-weighted
@@ -76,42 +79,44 @@ fn spawn_bone(
         .id()
 }
 
-/// Spawn the FSU scene entities (both vertebrae + the deforming disc surface)
-/// from [`SceneMeshes`]. The camera + lighting are spawned separately (see
-/// `setup_camera` in `main`), so this owns only the tissue geometry.
-pub(crate) fn setup_scene(
+/// Spawn the two vertebrae (L5 fixed, L4 tagged as the flexing body) at startup.
+/// They persist across all modes.
+pub(crate) fn spawn_bones(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    scene_meshes: Res<SceneMeshes>,
+    sources: Res<SourceMeshes>,
 ) {
-    // L5 (inferior) — fixed. L4 (superior) — tagged as the flexing body.
     spawn_bone(
         &mut commands,
         &mut meshes,
         &mut materials,
-        &scene_meshes.l5,
+        &sources.l5,
         TissuePart::L5,
     );
     let l4 = spawn_bone(
         &mut commands,
         &mut meshes,
         &mut materials,
-        &scene_meshes.l4,
+        &sources.l4,
         TissuePart::L4,
     );
     commands.entity(l4).insert(FlexedL4);
+}
 
-    // Disc — the CLEAN STL surface (a smooth watertight lens), not the ragged tet
-    // boundary. `build_soft_mesh` gives it the Z-up→Y-up swap + smooth normals; built at
-    // rest, `flexion_update` displaces its vertices by the FEM field each frame.
-    let disc_verts: Vec<Vector3<f64>> = scene_meshes
-        .disc_surface
-        .vertices
-        .iter()
-        .map(|p| p.coords)
-        .collect();
-    let disc_mesh = build_soft_mesh(&disc_verts, &scene_meshes.disc_surface.faces, UpAxis::PlusZ);
+/// Spawn the deforming disc from the solved render surface — the clean STL lens
+/// (not the ragged tet boundary); `flexion_update` rewrites its vertices by the
+/// FEM field each frame. Called directly by the solve poll (so the disc + its
+/// replay resources are inserted together, with no cross-schedule timing gap);
+/// torn down by [`leave_simulate`].
+pub(crate) fn spawn_disc(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    disc_surface: &IndexedMesh,
+) {
+    let disc_verts: Vec<Vector3<f64>> = disc_surface.vertices.iter().map(|p| p.coords).collect();
+    let disc_mesh = build_soft_mesh(&disc_verts, &disc_surface.faces, UpAxis::PlusZ);
     // Opaque teal, double-sided (a thin closed shell reads fine as a solid lens; the
     // gap it fills doesn't need see-through, and blending an unsorted shell smears it).
     let disc_material = StandardMaterial {
@@ -131,4 +136,20 @@ pub(crate) fn setup_scene(
         TissuePart::Disc,
         DiscMesh,
     ));
+}
+
+/// On leaving Simulate: despawn the disc and return L4 to rest, so Design shows
+/// the bare bones at rest. The bones + camera persist (so the 3D world is never
+/// empty — quitting against an empty world deadlocks wgpu teardown on macOS).
+pub(crate) fn leave_simulate(
+    mut commands: Commands,
+    disc: Query<Entity, With<DiscMesh>>,
+    mut flexed: Query<&mut Transform, With<FlexedL4>>,
+) {
+    for entity in &disc {
+        commands.entity(entity).despawn();
+    }
+    for mut transform in &mut flexed {
+        *transform = Transform::default();
+    }
 }

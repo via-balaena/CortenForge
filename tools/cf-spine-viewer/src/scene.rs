@@ -9,13 +9,12 @@
 //! so nothing (oracle / segment-frame / facet-grid / ML axis) is computed twice.
 //!
 //! This module keeps the viewer-specific assembly on top of the FSU: the two ligament lines
-//! (field-derived attachment sites), the co-registration warnings, and the `build`
-//! orchestrator that stitches the FSU + overlays + render surfaces into an [`FsuScene`].
-
-use std::path::Path;
+//! (field-derived attachment sites), the co-registration warnings, and the
+//! `build_from_meshes` orchestrator that stitches the FSU + overlays + render surfaces
+//! into an [`FsuScene`].
 
 use anyhow::{Result, ensure};
-use cf_fsu_geometry::{BODY_RADIUS, MeshOracle, SegmentFrame, extreme_vertex, load, oracle};
+use cf_fsu_geometry::{BODY_RADIUS, MeshOracle, SegmentFrame, extreme_vertex, oracle};
 use cf_fsu_model::{
     CoupledFsu, CoupledParams, CoupledTrajectory, PHYSIOLOGIC_MOMENT, RAMP_FRAMES, VertexId,
     moment_ramp,
@@ -32,8 +31,6 @@ pub struct Ligament {
 
 /// The assembled scene, as plain geometry in native millimetres.
 pub struct FsuScene {
-    pub l4: IndexedMesh,
-    pub l5: IndexedMesh,
     /// The disc render surface (native mm) — the clean STL lens with its endplate bands
     /// **conformed onto the real L4/L5 surfaces** ([`CoupledFsu::conformed_disc_surface`]),
     /// so the drawn disc coincides with the bone at the endplates (rendered === contacts).
@@ -58,8 +55,6 @@ pub struct FsuScene {
     /// disc FEM displacement field is sampled onto `disc_surface` via `disc_node_weights`.
     pub flexion: CoupledTrajectory,
     pub ligaments: Vec<Ligament>,
-    /// Combined bounding box across all three meshes, for camera framing.
-    pub aabb: Aabb,
     /// Co-registration / degeneracy warnings surfaced during assembly (empty
     /// for a well-formed, co-registered trio). Shown in the panel + on stderr
     /// so a misaligned or mismatched input is never presented as a valid FSU.
@@ -158,10 +153,6 @@ fn coregistration_warnings(
     warnings
 }
 
-fn combined_aabb(meshes: &[&IndexedMesh]) -> Aabb {
-    Aabb::from_points(meshes.iter().flat_map(|m| m.vertices.iter()))
-}
-
 /// Number of tet nodes each surface vertex blends over. Enough to interpolate smoothly across
 /// the coarse (few-mm) tet field without reaching past the local neighbourhood.
 const SKIN_NEIGHBOURS: usize = 6;
@@ -213,17 +204,11 @@ fn weighted_tet_nodes(
         .collect()
 }
 
-/// Assemble the static FSU scene from the three STL paths (native mm) — the CLI
-/// entry point. Loads each mesh (weld-repaired) then delegates to
-/// [`build_from_meshes`].
-pub fn build(l4_path: &Path, l5_path: &Path, disc_path: &Path) -> Result<FsuScene> {
-    build_from_meshes(load(l4_path)?, load(l5_path)?, load(disc_path)?)
-}
-
-/// Assemble the static FSU scene from three **in-memory** meshes (native mm).
-/// This is the Studio path: the disc is painted + lofted in memory (never round-
-/// tripped through an STL) and L4/L5 are already loaded by the paint front-end.
-/// The disk-loading [`build`] wrapper is the CLI's entry to this same assembly.
+/// Assemble the static FSU scene from three **in-memory** meshes (native mm) —
+/// the app loads L4/L5 + the disc and runs this on demand (the disc becomes a
+/// painted + lofted mesh once the paint front-end lands). Heavy (~90 s in
+/// release): tet-mesh + SDF grids + the moment-ramp capture, so the app dispatches
+/// it to a background thread.
 pub fn build_from_meshes(l4: IndexedMesh, l5: IndexedMesh, disc: IndexedMesh) -> Result<FsuScene> {
     // Per-mesh size summary as the build-blind sanity signal — a broken or
     // degenerate mesh shows up as an implausible vertex count. For loaded meshes
@@ -293,7 +278,6 @@ pub fn build_from_meshes(l4: IndexedMesh, l5: IndexedMesh, disc: IndexedMesh) ->
     // weighted), so the smooth surface deforms by a blended FEM field per frame (the tet
     // boundary is too fragmented to draw directly). Blending several nodes keeps the fine
     // surface from faceting over the coarse tet field at the bone interface.
-    let aabb = combined_aabb(&[&l4, &l5, &disc_surface]);
     let disc_node_weights = weighted_tet_nodes(
         &disc_surface,
         &flexion.rest_nodes_native,
@@ -304,15 +288,12 @@ pub fn build_from_meshes(l4: IndexedMesh, l5: IndexedMesh, disc: IndexedMesh) ->
     let o5 = oracle(&l5)?;
 
     Ok(FsuScene {
-        l4,
-        l5,
         disc_surface,
         disc_node_weights,
         o4,
         o5,
         flexion,
         ligaments,
-        aabb,
         warnings,
     })
 }
@@ -351,15 +332,6 @@ mod tests {
             posterior: Vector3::y(), // unused by coregistration_warnings
             ml,
         }
-    }
-
-    #[test]
-    fn combined_aabb_spans_every_mesh() {
-        let a = mesh(&[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [0.5, 0.5, 0.5]]);
-        let b = mesh(&[[-2.0, 0.0, 0.0], [3.0, 4.0, 5.0], [1.0, 1.0, 1.0]]);
-        let bb = combined_aabb(&[&a, &b]);
-        assert_eq!(bb.min, Point3::new(-2.0, 0.0, 0.0));
-        assert_eq!(bb.max, Point3::new(3.0, 4.0, 5.0));
     }
 
     #[test]
