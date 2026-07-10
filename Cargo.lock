@@ -2414,6 +2414,7 @@ dependencies = [
  "anyhow",
  "cf-fsu-geometry",
  "cf-geometry",
+ "mesh-loft",
  "nalgebra 0.34.2",
  "sim-core",
  "sim-coupling",
@@ -8939,6 +8940,7 @@ version = "1.0.0"
 dependencies = [
  "mesh-io",
  "mesh-lattice",
+ "mesh-loft",
  "mesh-measure",
  "mesh-offset",
  "mesh-printability",
@@ -8979,6 +8981,15 @@ dependencies = [
  "nalgebra 0.34.2",
  "rand 0.9.2",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "mesh-loft"
+version = "1.0.0"
+dependencies = [
+ "cf-geometry",
+ "mesh-repair",
+ "nalgebra 0.34.2",
 ]
 
 [[package]]
@@ -11703,6 +11714,7 @@ dependencies = [
  "cf-geometry",
  "cf-viewer",
  "mesh-io",
+ "mesh-loft",
  "mesh-sdf",
  "mesh-types",
  "nalgebra 0.34.2",

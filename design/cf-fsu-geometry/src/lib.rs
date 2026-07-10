@@ -36,8 +36,6 @@ use mesh_repair::{
 use mesh_sdf::{PseudoNormalSign, Signed, TriMeshDistance};
 use nalgebra::{Matrix3, Point3, Vector3};
 
-pub mod loft;
-
 /// Facet SDF grid cell size, in millimetres (rung 4b/7).
 pub const FACET_CELL: f64 = 1.0;
 /// Maximum distance off the mid-sagittal plane for a near-midline site (mm).

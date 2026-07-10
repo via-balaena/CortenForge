@@ -39,3 +39,8 @@ sim-core = { workspace = true }
 nalgebra = { workspace = true }
 # `Result` + context/`bail!` for the fallible build path.
 anyhow = { workspace = true }
+
+[dev-dependencies]
+# `assemble_bushing` + patch prep — the human-paint → lofted-disc test helper
+# (`lofted_disc`) builds the disc from two endplate patches via the loft primitive.
+mesh-loft = { workspace = true }

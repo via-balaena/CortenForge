@@ -37,6 +37,7 @@
 //!
 //! ## Core Operations
 //! - [`repair`] - Mesh validation and repair (holes, winding, intersections)
+//! - [`loft`] - Loft two painted contact patches into one closed watertight bushing
 //! - [`sdf`] - Signed distance field computation
 //! - [`offset`] - Mesh offset via SDF and marching cubes
 //! - [`shell`] - Shell generation for 3D printing
@@ -64,6 +65,9 @@ pub use mesh_io as io;
 
 /// Mesh validation and repair.
 pub use mesh_repair as repair;
+
+/// Loft two painted contact patches into one closed watertight bushing.
+pub use mesh_loft as loft;
 
 /// Signed distance field computation.
 pub use mesh_sdf as sdf;
