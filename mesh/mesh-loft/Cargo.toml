@@ -23,7 +23,9 @@ workspace = true
 [dependencies]
 # `IndexedMesh` — the geometric kernel type every patch/wall/bushing is built on.
 cf-geometry = { workspace = true }
-# `MeshAdjacency` (rim walking / component labelling) + `TAUBIN_DEFAULT_*` (free-wall smoothing).
+# `MeshAdjacency` — rim walking / edge-connected component labelling. (The
+# `TAUBIN_DEFAULT_*` constants are also re-exported from here, but only the
+# tests use them; `smooth_wall` takes lambda/mu as parameters.)
 mesh-repair = { workspace = true }
 # `Point3` / `Vector3` — vertex + rim geometry.
 nalgebra = { workspace = true }

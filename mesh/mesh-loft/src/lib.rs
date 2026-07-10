@@ -30,6 +30,11 @@
 //! (seal every hole but the [`outer_rim_index`] boundary). [`is_watertight`] is
 //! the closed-surface readout.
 
+// L0 library posture (matches `mesh-repair` / `cf-geometry`): production code
+// never panics — deny `unwrap`/`expect` outside tests so a future edit can't
+// smuggle one into the primitive.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+
 use std::collections::{HashMap, HashSet};
 
 use cf_geometry::IndexedMesh;
