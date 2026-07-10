@@ -15,7 +15,7 @@
 //!
 //! # Ladder
 //!
-//! All rungs below now live in this module (the primitive is complete):
+//! All rungs below now live in this crate (the primitive is complete):
 //!
 //! * **B0:** [`extract_patch`] — from a mesh and a face-id selection, produce
 //!   the patch sub-mesh plus its ordered, winding-oriented boundary-rim loop(s).
@@ -75,10 +75,10 @@ pub struct Bushing {
     pub mesh: IndexedMesh,
 
     /// The first `contact_count` vertices are the two contact caps (the exact
-    /// painted contact surfaces — pinned when the wall is smoothed); every vertex at or
-    /// after this index is a free wall-interior vertex introduced by the ring
-    /// subdivision. With a single-segment wall there are no free vertices and
-    /// `contact_count == mesh.vertex_count()`.
+    /// painted contact surfaces — pinned when the wall is smoothed); every
+    /// vertex at or after this index is a free wall-interior vertex introduced
+    /// by the ring subdivision. With a single-segment wall there are no free
+    /// vertices and `contact_count == mesh.vertex_count()`.
     pub contact_count: u32,
 }
 
