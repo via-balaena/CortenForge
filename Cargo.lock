@@ -8946,6 +8946,7 @@ dependencies = [
  "mesh-printability",
  "mesh-repair",
  "mesh-sdf",
+ "mesh-select",
  "mesh-shell",
  "mesh-types",
  "tempfile",
@@ -9062,6 +9063,14 @@ dependencies = [
  "nalgebra 0.34.2",
  "parry3d",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "mesh-select"
+version = "1.0.0"
+dependencies = [
+ "cf-geometry",
+ "nalgebra 0.34.2",
 ]
 
 [[package]]
@@ -11716,6 +11725,7 @@ dependencies = [
  "mesh-io",
  "mesh-loft",
  "mesh-sdf",
+ "mesh-select",
  "mesh-types",
  "nalgebra 0.34.2",
  "sim-coupling",

@@ -1,0 +1,27 @@
+[package]
+name = "mesh-select"
+description = "Brush-based face selection primitive — precompute per-face centroids + normals, then query the set of faces a round surface brush covers (with an optional normal-similarity filter)"
+keywords = ["mesh", "select", "brush", "picking", "geometry"]
+categories = ["mathematics", "graphics"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+# Pure headless selection query over the cf-geometry kernel. No mesh-io, no
+# anatomy, no Bevy — a Layer-0 building block a paint GUI, tendon-site picker,
+# subtractive-bore selector, or scan-trimmer all compose. Two deps, tiny
+# transitive footprint, well under the L0 caps.
+[package.metadata.cortenforge]
+tier = "L0"
+
+[lints]
+workspace = true
+
+[dependencies]
+# `IndexedMesh` — the mesh whose faces are selected.
+cf-geometry = { workspace = true }
+# `Point3` / `Vector3` — face centroid + normal math.
+nalgebra = { workspace = true }

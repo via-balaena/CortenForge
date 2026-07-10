@@ -87,6 +87,8 @@ cf-fsu-geometry = { workspace = true }
 # `assemble_bushing` + patch prep — loft the two painted endplate patches into the
 # disc (the anatomy-free bushing primitive `paint_faces` composes).
 mesh-loft = { workspace = true }
+# `FaceField` — the brush → face-id selection primitive `paint_faces` queries.
+mesh-select = { workspace = true }
 # `IndexedMesh` (construct a tessellated sphere to feed the SDF pipeline) — the mesh-SDF
 # contact rung (5.1a) that isolates the SDF representation from anatomy.
 cf-geometry = { workspace = true }

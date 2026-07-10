@@ -32,6 +32,8 @@ mesh-io = { workspace = true, features = ["threemf"] }
 mesh-repair = { workspace = true }
 # Loft two painted contact patches into one closed watertight bushing (workspace)
 mesh-loft = { workspace = true }
+# Brush → face-id selection over a mesh (workspace)
+mesh-select = { workspace = true }
 # Mesh signed-distance fields (workspace)
 mesh-sdf = { workspace = true }
 # Mesh offset operations (workspace)

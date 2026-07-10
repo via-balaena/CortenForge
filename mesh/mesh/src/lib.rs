@@ -38,6 +38,7 @@
 //! ## Core Operations
 //! - [`repair`] - Mesh validation and repair (holes, winding, intersections)
 //! - [`loft`] - Loft two painted contact patches into one closed watertight bushing
+//! - [`select`] - Brush → face-id selection over a mesh
 //! - [`sdf`] - Signed distance field computation
 //! - [`offset`] - Mesh offset via SDF and marching cubes
 //! - [`shell`] - Shell generation for 3D printing
@@ -68,6 +69,9 @@ pub use mesh_repair as repair;
 
 /// Loft two painted contact patches into one closed watertight bushing.
 pub use mesh_loft as loft;
+
+/// Brush → face-id selection over a mesh.
+pub use mesh_select as select;
 
 /// Signed distance field computation.
 pub use mesh_sdf as sdf;
