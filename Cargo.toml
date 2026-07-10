@@ -78,6 +78,12 @@ members = [
     # cf-viewer + sim-bevy + sim-bevy-soft.
     "cf-bevy-common",
 
+    # Reusable Bevy brush-painting plugin over the `mesh-select` primitive —
+    # a consumer registers paintable bodies and reads back the painted
+    # face-id set (the disc-endplate paint front-end + generic mesh region
+    # selection). UI-free like cf-bevy-common; consumers bring their own egui.
+    "cf-mesh-paint",
+
     # Mesh domain (active development)
     "mesh/mesh-types",
     "mesh/mesh-io",
@@ -792,6 +798,10 @@ sim-bevy-soft = { path = "sim/L1/sim-bevy-soft" }
 
 # Shared Bevy-0.18 helpers consumed by cf-viewer + sim-bevy + sim-bevy-soft.
 cf-bevy-common = { path = "cf-bevy-common" }
+
+# Reusable Bevy brush-painting plugin over `mesh-select`; consumed by
+# sim-bevy-soft's paint-faces example (and CortenForge Studio).
+cf-mesh-paint = { path = "cf-mesh-paint" }
 
 # cf-viewer library — scene helpers (`RenderScale`, `compute_render_scale`,
 # `setup_camera_and_lighting`, `spawn_face_mesh`) shared with

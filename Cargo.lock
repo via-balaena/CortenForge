@@ -2432,6 +2432,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-mesh-paint"
+version = "1.0.0"
+dependencies = [
+ "bevy",
+ "bevy_egui",
+ "cf-bevy-common",
+ "cf-geometry",
+ "cf-viewer",
+ "mesh-select",
+ "mesh-types",
+ "nalgebra 0.34.2",
+]
+
+[[package]]
 name = "cf-mjcf-emit"
 version = "1.0.0"
 dependencies = [
@@ -11721,11 +11735,11 @@ dependencies = [
  "cf-fsu-geometry",
  "cf-fsu-model",
  "cf-geometry",
+ "cf-mesh-paint",
  "cf-viewer",
  "mesh-io",
  "mesh-loft",
  "mesh-sdf",
- "mesh-select",
  "mesh-types",
  "nalgebra 0.34.2",
  "sim-coupling",

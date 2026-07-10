@@ -1,0 +1,91 @@
+[package]
+name = "cf-mesh-paint"
+description = "Reusable Bevy-0.18 brush-painting plugin over the mesh-select primitive — register paintable bodies, brush face regions, read back the painted face-id set"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Workspace-internal Bevy support crate, structurally a sibling of
+# cf-bevy-common: repo-root, no `[package.metadata.cortenforge]` tier block
+# (tier metadata is for L0/L1 sim libraries under sim/, not shared Bevy
+# support crates), and exempted from the xtask Layer-Integrity grader (see
+# `xtask/src/grade.rs::applies_to_crate`). Like cf-bevy-common it is UI-free:
+# the plugin owns paint state + interaction only, and consumers layer their
+# own egui HUD on top by reading the public paint-state resources.
+
+[dependencies]
+# Bevy 0.18 — the minimal feature set the plugin library touches: ECS + math +
+# transform + input + app (base), plus `bevy_render` + `bevy_asset` for the
+# `Mesh` / `Assets<Mesh>` per-face color recoloring, `bevy_gizmos` for the
+# brush ring, and `bevy_picking` + `mesh_picking` for the hover ray-cast.
+# Windowing / PBR / UI stay a consumer concern (brought by each example via
+# Cargo's additive feature unification), exactly like cf-bevy-common.
+bevy = { workspace = true, default-features = false, features = [
+    "bevy_asset",
+    "bevy_gizmos",
+    "bevy_picking",
+    "bevy_render",
+    "mesh_picking",
+] }
+
+# `IndexedMesh` — the source mesh a paintable body carries + the loft/select
+# primitives operate on.
+cf-geometry = { workspace = true }
+
+# `FaceField` + `brush()` — the brush → face-id selection primitive this plugin
+# wraps with Bevy interaction glue (extracted in #558).
+mesh-select = { workspace = true }
+
+# `triangle_mesh_flat_shaded` (the picking-contract render mesh: 3 verts/face in
+# face order, so a ray hit's `triangle_index` is the source face id) + `UpAxis`
+# + `OrbitCamera` (the optional paint-aware camera-gating convenience system).
+cf-bevy-common = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[dev-dependencies]
+# Full windowed Bevy for the generic paint demo (mirrors sim-bevy-soft's
+# example feature set); egui for the demo's status HUD — the reference
+# integration a consumer app (CortenForge Studio) copies.
+bevy = { workspace = true, default-features = false, features = [
+    "bevy_asset",
+    "bevy_core_pipeline",
+    "bevy_gizmos",
+    "bevy_pbr",
+    "bevy_picking",
+    "mesh_picking",
+    "bevy_render",
+    "bevy_winit",
+    "default_font",
+    "multi_threaded",
+    "tonemapping_luts",
+    "zstd_rust",
+] }
+# egui-on-Bevy plugin — the demo's status panel (workspace-standard UI, 0.39.1).
+bevy_egui = { version = "0.39.1", default-features = false, features = [
+    "default_fonts",
+    "render",
+] }
+# `setup_camera_and_lighting` — the shared viewer camera/light rig.
+cf-viewer = { workspace = true }
+# `Point3` — build the demo's procedural UV-sphere `IndexedMesh` verts.
+nalgebra = { workspace = true }
+# `Aabb::from_points` — frame both spheres for the camera.
+mesh-types = { workspace = true }
+
+# `paint-mesh` — generic showcase: paint face regions on two procedurally
+# generated spheres (asset-free), reading the painted-face counts back into an
+# egui status panel. The reference `cf-mesh-paint` integration.
+[[example]]
+name = "paint-mesh"
+path = "examples/paint_mesh.rs"
