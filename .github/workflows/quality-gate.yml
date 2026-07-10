@@ -281,7 +281,8 @@ jobs:
   # at ~25 min. Each giant tree must compile *somewhere*, so the win comes from
   # co-locating each tree's consumers on ONE shard (it compiles once, not 2-3×):
   #   - shard 1 = the Bevy tree   (cf-bevy-common, sim-bevy-soft, cf-viewer, sim-ml-chassis-bevy,
-  #                                cf-spine-viewer, cf-sim-research, cf-scan-prep, cf-device-design)
+  #                                cf-spine-viewer, cf-sim-research, cf-scan-prep, cf-device-design,
+  #                                cf-device-geometry)
   #   - shard 2 = the Slint tree  (cf-studio-{core,engine,gui,studio}; cf-studio-gui pulls ~12 slint crates)
   #   - shard 3 = FEM + core + mesh (sim-soft, sim-core, sim-mjcf, …) — no Bevy, no Slint
   # `sim-core` is a universal dep so it compiles in every shard regardless (the
@@ -304,30 +305,25 @@ jobs:
   #     BIN crates, no tier metadata, exempt from xtask's Layer-Integrity grader.
   #     That exemption is about GRADING, not TESTING. Their tests are pure-function
   #     (no App::new() / window spin-up), so headless CI runs them with the
-  #     x11/wayland dev libs installed below. All four carry the Bevy+egui tree, so
+  #     x11/wayland dev libs installed below. All carry the Bevy+egui tree, so
   #     shard 1 is the co-located home (+20 net crates vs +134/+193 on shards 2/3,
   #     which would compile that tree a SECOND time).
+  #   - cf-device-geometry — a `design/` LIBRARY (Bevy+egui, so shard 1). Its 50 tests
+  #     ran in NO CI context until its `extract_layer_surface` envelope assert was
+  #     fixed: it was a `debug_assert!` (compiled out of the release builds that ship,
+  #     guarding SILENT geometry clipping) against the `LAYER_GRID_MARGIN_M` constant
+  #     rather than the margin the cache was actually built with, and it was symmetric
+  #     when the envelope is outward-only. Now a hard `assert!` on
+  #     `CachedScanSdf::max_extractable_iso()`. Green in debug AND release.
   #   - cf-device-types — NOT a tools/ bin: a `design/` LIBRARY with tier metadata
   #     (`tier = "L0"`, `tier_up_features = { bevy = "L1" }`), so grade-all DOES
   #     grade it; only `--skip-coverage` keeps its tests from running there. It is
   #     GUI-free, so it lands on shard 2 for +0 new crates. Do not strip its tier
   #     metadata or drop it from shard 2 on the belief that grade covers its tests.
-  # All 273 of these tests execute in ~1.6 s; the cost of adding them is COMPILE +
+  # All 326 of these tests execute in ~1.6 s; the cost of adding them is COMPILE +
   # test-binary LINK time, not test execution. Each Bevy+egui bin statically links
-  # the full tree, so watch shard 1's wall time (18.8/30 min before this change) and
+  # the full tree, so watch shard 1's wall time (21.9/30 min as of #554) and
   # rebalance — or add a 4th shard — if it drifts past ~25 min.
-  #
-  # ⚠️ cf-device-geometry is DELIBERATELY still absent, and this is a BANDAID, not a
-  # resolution: its 50 unit tests (real production code — the SDF cache + iso
-  # extraction that cf-device-design and cf-sim-research both consume) run NOWHERE.
-  # 6 of them FAIL in debug: `sdf_layers.rs` debug_assert!s
-  # `|offset| < LAYER_GRID_MARGIN_M = 0.040` in BOTH `extract_layer_surface` (:729)
-  # and `marching_cubes_at_iso` (:855), yet those tests pass 0.05 / 0.1. They pass
-  # under --release, where debug_assert! compiles out — so adding this crate to
-  # `tests-release` would HIDE the bug rather than fix it, and adding it here would
-  # red the pipeline. Reconcile the assert bound with the legitimate test offsets
-  # (or gate the assert on grid extent), THEN add it to shard 1 (it is Bevy+egui).
-  # Do NOT add it to silence this note, and do NOT delete this note to close the gap.
   #
   # The `quality-gate` job `needs: [tests-debug]` waits for ALL matrix legs and
   # fails if any shard fails, so the `Quality Gate` required check still gates
@@ -348,7 +344,7 @@ jobs:
         include:
           - id: 1
             crates: cf-bevy-common sim-bevy-soft cf-viewer sim-ml-chassis-bevy cf-spine-viewer
-              cf-sim-research cf-scan-prep cf-device-design
+              cf-sim-research cf-scan-prep cf-device-design cf-device-geometry
               mesh-types mesh-io mesh-repair mesh-sdf mesh-offset mesh-shell mesh-measure
               cf-msk-lib cf-mjcf-emit cf-osim
           - id: 2
