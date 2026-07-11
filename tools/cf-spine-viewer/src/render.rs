@@ -1,10 +1,16 @@
-//! The FSU scene entities. The two vertebrae are spawned once at startup and
-//! persist across modes ([`spawn_bones`] — so the 3D world is never empty and
-//! previews the paint target); the deforming disc is Simulate-scoped, spawned
-//! from the solved surface on entering Simulate ([`spawn_disc`]) and torn down
-//! on leaving ([`leave_simulate`]), which also returns L4 to rest.
+//! The scene entities across modes. Design shows the two vertebrae as
+//! **paintable** bodies ([`spawn_paint_bodies`]); Simulate shows them as smooth
+//! flexing bones plus the deforming disc ([`spawn_bones`] + [`spawn_disc`]). The
+//! two representations are per-mode so the paint mesh (flat-shaded, per-vertex
+//! colourable) and the anatomical bone mesh (smooth) each get their own render.
+//!
+//! ★ Never-empty-render invariant (the macOS wgpu quit-deadlock guard): a drawn
+//! mesh exists in every mode where quit is reachable — the paint bodies in
+//! Design/Solving, the bones+disc in Simulate — and the Design↔Simulate swaps
+//! happen within one `StateTransition` command flush, so no frame is empty.
 
 use bevy::prelude::*;
+use cf_mesh_paint::prelude::{MeshPaintConfig, PaintBody, PaintTargets, paint_render_mesh};
 use cf_viewer::UpAxis;
 use mesh_types::{AttributedMesh, IndexedMesh};
 use nalgebra::Vector3;
@@ -31,15 +37,13 @@ pub(crate) struct FlexedL4;
 #[derive(Component)]
 pub(crate) struct DiscMesh;
 
-/// The three input meshes (native mm), kept resident: L4/L5 spawn the always-on
-/// bones + frame the camera, and all three are the inputs to the on-demand solve
-/// (see [`crate::solve`]). In the next rung the disc field is replaced by the
-/// painted-and-lofted disc.
+/// The two vertebra meshes (native mm), kept resident: they seed the Design
+/// paint bodies + the Simulate bones + frame the camera, and are two of the
+/// three inputs to the on-demand solve (the disc is painted, not loaded).
 #[derive(Resource)]
 pub(crate) struct SourceMeshes {
     pub(crate) l4: IndexedMesh,
     pub(crate) l5: IndexedMesh,
-    pub(crate) disc: IndexedMesh,
 }
 
 /// Build a SMOOTH-shaded Bevy mesh from an indexed surface: area-weighted
@@ -49,6 +53,67 @@ fn smooth_mesh(indexed: &IndexedMesh) -> Mesh {
     let mut attributed = AttributedMesh::from(indexed.clone());
     attributed.compute_normals();
     triangle_mesh_from_attributed(&attributed)
+}
+
+/// Spawn the two vertebrae as **paintable bodies** — the Design representation.
+/// Each carries a flat-shaded, per-vertex-colourable render mesh (the picking
+/// contract [`cf_mesh_paint`] needs) and a [`PaintBody`]; the ordered set goes
+/// into [`PaintTargets`]. Run at startup (initial Design) and on leaving
+/// Simulate. Despawned by [`despawn_paint_bodies`] on entering Simulate.
+pub(crate) fn spawn_paint_bodies(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    sources: Res<SourceMeshes>,
+) {
+    // Seed each render mesh with the base colour the brush restores on erase.
+    let base = MeshPaintConfig::default().base_color;
+    let mut entities = Vec::new();
+    for (mesh, name) in [(&sources.l4, "L4"), (&sources.l5, "L5")] {
+        let handle = meshes.add(paint_render_mesh(mesh, UpAxis::PlusZ, base));
+        let material = materials.add(StandardMaterial {
+            base_color: Color::WHITE, // per-vertex face colours show through
+            perceptual_roughness: 0.85,
+            double_sided: true,
+            cull_mode: None,
+            ..default()
+        });
+        let entity = commands
+            .spawn((
+                Mesh3d(handle.clone()),
+                MeshMaterial3d(material),
+                Transform::default(),
+                PaintBody::new(name, mesh.clone(), handle),
+            ))
+            .id();
+        entities.push(entity);
+    }
+    commands.insert_resource(PaintTargets::new(entities));
+}
+
+/// Despawn the paint bodies on entering Simulate (the smooth bones take over).
+pub(crate) fn despawn_paint_bodies(mut commands: Commands, bodies: Query<Entity, With<PaintBody>>) {
+    for entity in &bodies {
+        commands.entity(entity).despawn();
+    }
+}
+
+/// Show only the **active** paint body (hide the other), so the vertebra you are
+/// painting isn't occluded by its neighbour — `Tab` (which cycles the active
+/// body) swaps which one is visible. Runs while painting (Design).
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
+pub(crate) fn update_paint_visibility(
+    targets: Res<PaintTargets>,
+    mut bodies: Query<(Entity, &mut Visibility), With<PaintBody>>,
+) {
+    let active = targets.active_entity();
+    for (entity, mut visibility) in &mut bodies {
+        *visibility = if Some(entity) == active {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
 }
 
 /// Spawn one bone (vertebra) surface with its material + a visibility-toggle
@@ -79,8 +144,9 @@ fn spawn_bone(
         .id()
 }
 
-/// Spawn the two vertebrae (L5 fixed, L4 tagged as the flexing body) at startup.
-/// They persist across all modes.
+/// Spawn the two smooth vertebrae (L5 fixed, L4 tagged as the flexing body) on
+/// entering Simulate — the anatomical representation. Torn down (with the disc)
+/// by [`despawn_sim_scene`] on leaving.
 pub(crate) fn spawn_bones(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -107,8 +173,7 @@ pub(crate) fn spawn_bones(
 /// Spawn the deforming disc from the solved render surface — the clean STL lens
 /// (not the ragged tet boundary); `flexion_update` rewrites its vertices by the
 /// FEM field each frame. Called directly by the solve poll (so the disc + its
-/// replay resources are inserted together, with no cross-schedule timing gap);
-/// torn down by [`leave_simulate`].
+/// replay resources are inserted together, with no cross-schedule timing gap).
 pub(crate) fn spawn_disc(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
@@ -138,18 +203,11 @@ pub(crate) fn spawn_disc(
     ));
 }
 
-/// On leaving Simulate: despawn the disc and return L4 to rest, so Design shows
-/// the bare bones at rest. The bones + camera persist (so the 3D world is never
-/// empty — quitting against an empty world deadlocks wgpu teardown on macOS).
-pub(crate) fn leave_simulate(
-    mut commands: Commands,
-    disc: Query<Entity, With<DiscMesh>>,
-    mut flexed: Query<&mut Transform, With<FlexedL4>>,
-) {
-    for entity in &disc {
+/// On leaving Simulate: despawn the whole sim scene (both bones + the disc — all
+/// carry [`TissuePart`]). The paint bodies are re-spawned in the same
+/// `StateTransition` flush (see `run_app`), so Design is never an empty world.
+pub(crate) fn despawn_sim_scene(mut commands: Commands, tissue: Query<Entity, With<TissuePart>>) {
+    for entity in &tissue {
         commands.entity(entity).despawn();
-    }
-    for mut transform in &mut flexed {
-        *transform = Transform::default();
     }
 }

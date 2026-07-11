@@ -262,6 +262,18 @@ pub fn build_from_meshes(l4: IndexedMesh, l5: IndexedMesh, disc: IndexedMesh) ->
         !flexion.boundary_faces.is_empty() && !flexion.rest_nodes_native.is_empty(),
         "disc tet-mesh produced no surface (degenerate/near-flat disc mesh?) — cannot render"
     );
+    // Guard against a disc that tet-meshed into a spiky, FRAGMENTED surface: a thin or
+    // uneven lens — painted patches spanning varying normals/elevation (a flat part + a
+    // slope) — explodes into many sliver boundary faces that render as a shattered disc. A
+    // clean lens' tet boundary is comparable to its own surface; a big blow-up ⇒ repaint.
+    ensure!(
+        flexion.boundary_faces.len() <= 3 * disc_surface.faces.len(),
+        "disc tet-meshed into a fragmented surface ({} boundary faces vs {} disc faces) — the \
+         painted patches are too thin or span uneven normals; paint fuller, flatter endplate \
+         patches on a single face (avoid spanning a flat part into a slope)",
+        flexion.boundary_faces.len(),
+        disc_surface.faces.len()
+    );
     let (ext, flex) = (
         flexion.frames.first().map_or(0.0, |f| f.theta.to_degrees()),
         flexion.frames.last().map_or(0.0, |f| f.theta.to_degrees()),

@@ -42,26 +42,23 @@
 //! arbitration), [`state`] (the mode machine), and [`solve`] (the on-demand background
 //! FSU assembly) — into one app.
 //!
-//! The app opens in `Design`, loads L4/L5 + a `--disc` (a stand-in until the paint
-//! front-end lands next rung), and on `S` dispatches the ~90 s coupled-FSU solve to a
-//! background thread (`Solving`) before replaying it (`Simulate`). The bones + camera
-//! persist across modes; only the disc + the replay are mode-scoped. The visual pass is
-//! user-side (this session cannot see GUI output). Run:
+//! The app opens in `Design`: it loads the two vertebrae and lets you **paint the
+//! two endplate patches** on them (the [`cf_mesh_paint`] brush). `S` lofts the
+//! patches into the disc and dispatches the ~90 s coupled-FSU solve to a
+//! background thread (`Solving`), then replays it (`Simulate`). The camera
+//! persists; the paint bodies (Design) and the bones+disc (Simulate) are
+//! mode-scoped. The visual pass is user-side (this session cannot see GUI output).
+//! Run:
 //!
 //! ```text
-//! cargo run -p cf-spine-viewer -- --dir <dir-with-the-3-STLs>
+//! cargo run -p cf-spine-viewer -- --dir <dir-with-the-2-vertebra-STLs>
 //! # or explicit paths:
-//! cargo run -p cf-spine-viewer -- --l4 L4.stl --l5 L5.stl --disc DISC.stl
+//! cargo run -p cf-spine-viewer -- --l4 L4.stl --l5 L5.stl
 //! ```
 //!
-//! The BodyParts3D meshes (FMA13075 = L4, FMA13076 = L5, FMA16036 = disc)
-//! are CC BY-SA — session-local, never committed.
-//!
-//! `--disc` accepts any watertight disc STL in the same native-mm frame — in
-//! particular a disc *painted and lofted* in the `paint-faces` tool
-//! (`sim-bevy-soft`), which prints this exact command on export. That closes the
-//! loop: hand-paint the two endplate patches, loft the bushing, and watch it
-//! deform between the real vertebrae here.
+//! The BodyParts3D meshes (FMA13075 = L4, FMA13076 = L5) are CC BY-SA —
+//! session-local, never committed. The disc is no longer an input: it is
+//! hand-painted and lofted in the Design state, closing the loop end-to-end.
 
 mod cli;
 mod input;
@@ -76,65 +73,82 @@ mod state;
 use anyhow::Result;
 use bevy::prelude::*;
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
-use cf_bevy_common::prelude::{OrbitCameraPlugin, orbit_camera_input};
+use cf_bevy_common::prelude::update_orbit_camera;
 use cf_fsu_geometry::load;
+use cf_mesh_paint::prelude::{MeshPaintPlugin, orbit_when_not_painting};
 use cf_viewer::{UpAxis, setup_camera_and_lighting};
 use mesh_types::{Aabb, IndexedMesh};
 
 use clap::Parser;
 use cli::Cli;
-use input::block_orbit_input_when_over_egui;
+use input::arbitrate_pointer_over_egui;
 use overlays::{draw_facets, draw_ligaments};
 use panel::{SceneToggles, apply_visibility, scene_panel};
-use render::{SourceMeshes, leave_simulate, spawn_bones};
+use render::{
+    SourceMeshes, despawn_paint_bodies, despawn_sim_scene, spawn_bones, spawn_paint_bodies,
+    update_paint_visibility,
+};
 use replay::flexion_update;
 use solve::{SolveError, SolveTask, poll_solve, start_solve};
 use state::{StudioState, design_panel, quit_on_esc, simulate_back, solving_panel};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let (l4_path, l5_path, disc_path) = cli::resolve_paths(&cli)?;
-    // Load the three meshes into memory up front; the FSU is NOT assembled here —
-    // the solve runs on demand (S) from these, on a background thread.
-    let (l4, l5, disc) = (load(&l4_path)?, load(&l5_path)?, load(&disc_path)?);
-    run_app(l4, l5, disc);
+    let (l4_path, l5_path) = cli::resolve_paths(&cli)?;
+    // Load the two vertebrae up front; the disc is painted + lofted in Design,
+    // and the FSU is assembled on demand (S) on a background thread.
+    let (l4, l5) = (load(&l4_path)?, load(&l5_path)?);
+    run_app(l4, l5);
     Ok(())
 }
 
-/// Wire the app: keep the three source meshes resident, spawn the persistent
-/// bones + camera at startup, and compose the mode-scoped systems. The sim
+/// Wire the app: keep the two vertebra meshes resident, spawn the camera + the
+/// Design paint bodies at startup, and compose the mode-scoped systems. The sim
 /// resources (`Flexion`, `Overlays`) are inserted by [`solve::poll_solve`] when a
 /// solve completes — not up front.
-fn run_app(l4: IndexedMesh, l5: IndexedMesh, disc: IndexedMesh) {
+fn run_app(l4: IndexedMesh, l5: IndexedMesh) {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "cf-spine-viewer — L4–L5 FSU (coupled contact sim)".into(),
+                title: "cf-spine-viewer — L4–L5 FSU (paint → solve → replay)".into(),
                 ..default()
             }),
             ..default()
         }))
         .add_plugins(EguiPlugin::default())
-        .add_plugins(OrbitCameraPlugin)
+        .add_plugins(MeshPaintPlugin::default())
         .init_state::<StudioState>()
         .init_resource::<SolveTask>()
         .init_resource::<SolveError>()
         .insert_resource(ClearColor(Color::srgb(0.10, 0.10, 0.12)))
-        .insert_resource(SourceMeshes { l4, l5, disc })
+        .insert_resource(SourceMeshes { l4, l5 })
         .insert_resource(SceneToggles::default())
-        // Bones + camera persist across modes (so the 3D world is never empty);
-        // the disc is spawned by the solve poll and torn down on leaving Simulate.
-        .add_systems(Startup, (spawn_bones, setup_camera))
-        .add_systems(OnExit(StudioState::Simulate), leave_simulate)
-        // Always-on: pointer arbitration.
+        // Camera persists. The Design paint bodies (startup + on leaving Simulate)
+        // and the Simulate bones+disc (on entering / leaving Simulate) are
+        // mode-scoped — but a drawn mesh always exists where quit is reachable
+        // (paint bodies in Design/Solving, bones+disc in Simulate), and the swaps
+        // happen in one `StateTransition` flush, so no frame is empty (the macOS
+        // wgpu quit-deadlock guard).
+        .add_systems(Startup, (spawn_paint_bodies, setup_camera))
+        .add_systems(OnEnter(StudioState::Simulate), (despawn_paint_bodies, spawn_bones))
+        .add_systems(OnExit(StudioState::Simulate), (despawn_sim_scene, spawn_paint_bodies))
+        // Always-on: egui pointer arbitration (suppresses orbit + paint over the
+        // panel), then the paint-aware orbit camera.
         .add_systems(
             Update,
-            block_orbit_input_when_over_egui.before(orbit_camera_input),
+            (
+                arbitrate_pointer_over_egui
+                    .before(orbit_when_not_painting)
+                    .before(cf_mesh_paint::brush::hover_ray),
+                orbit_when_not_painting,
+                update_orbit_camera.after(orbit_when_not_painting),
+            ),
         )
         // Per-mode input + the solve poll.
         .add_systems(
             Update,
             (
+                update_paint_visibility.run_if(in_state(StudioState::Design)),
                 start_solve.run_if(in_state(StudioState::Design)),
                 quit_on_esc
                     .run_if(in_state(StudioState::Design).or(in_state(StudioState::Solving))),
