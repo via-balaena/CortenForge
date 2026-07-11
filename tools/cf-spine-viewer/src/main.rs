@@ -43,11 +43,15 @@
 //! FSU assembly) — into one app.
 //!
 //! The app opens in `Design`: it loads the two vertebrae and lets you **paint the
-//! two endplate patches** on them (the [`cf_mesh_paint`] brush). `S` lofts the
-//! patches into the disc and dispatches the ~90 s coupled-FSU solve to a
-//! background thread (`Solving`), then replays it (`Simulate`). The camera
-//! persists; the paint bodies (Design) and the bones+disc (Simulate) are
-//! mode-scoped. The visual pass is user-side (this session cannot see GUI output).
+//! two endplate patches** on them (the [`cf_mesh_paint`] brush). `Enter` lofts the
+//! patches into the disc and dispatches the ~5 s **build** (tet-mesh + `k_disc` probe +
+//! fragmentation guards) to a background thread (`Building`), then shows the conformed
+//! disc (`Preview`) — so a bad painting is caught in seconds. `S` in Preview dispatches
+//! only the ~85 s moment-ramp **capture** (`Solving`) on the held build, then replays it
+//! (`Simulate`); `Esc`/`D` from Preview or Simulate returns to Design to repaint. The
+//! camera persists; the paint bodies (Design → Solving), the Preview disc, and the
+//! bones+disc (Simulate) are mode-scoped. The visual pass is user-side (this session
+//! cannot see GUI output).
 //! Run:
 //!
 //! ```text
@@ -85,12 +89,18 @@ use input::arbitrate_pointer_over_egui;
 use overlays::{draw_facets, draw_ligaments};
 use panel::{SceneToggles, apply_visibility, scene_panel};
 use render::{
-    SourceMeshes, despawn_paint_bodies, despawn_sim_scene, spawn_bones, spawn_paint_bodies,
-    update_paint_visibility,
+    SourceMeshes, despawn_paint_bodies, despawn_preview_disc, despawn_sim_scene, show_paint_bodies,
+    spawn_bones, spawn_paint_bodies, spawn_preview_disc, update_paint_visibility,
 };
 use replay::flexion_update;
-use solve::{SolveError, SolveTask, poll_solve, start_solve};
-use state::{StudioState, design_panel, quit_on_esc, simulate_back, solving_panel};
+use solve::{
+    BuildTask, HeldBuildSlot, SolveError, SolveTask, discard_pending_work, poll_build, poll_solve,
+    start_build, start_capture,
+};
+use state::{
+    StudioState, back_to_design, building_panel, design_panel, preview_panel, quit_on_esc,
+    solving_panel,
+};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -118,19 +128,37 @@ fn run_app(l4: IndexedMesh, l5: IndexedMesh) {
         .add_plugins(EguiPlugin::default())
         .add_plugins(MeshPaintPlugin::default())
         .init_state::<StudioState>()
+        .init_resource::<BuildTask>()
         .init_resource::<SolveTask>()
         .init_resource::<SolveError>()
+        // The built-but-not-captured FSU is held here between `Enter` (build) and `S`
+        // (capture). NonSend because it wraps a non-`Sync` `CoupledFsu` (see `solve`).
+        .init_non_send_resource::<HeldBuildSlot>()
         .insert_resource(ClearColor(Color::srgb(0.10, 0.10, 0.12)))
         .insert_resource(SourceMeshes { l4, l5 })
         .insert_resource(SceneToggles::default())
-        // Camera persists. The Design paint bodies (startup + on leaving Simulate)
-        // and the Simulate bones+disc (on entering / leaving Simulate) are
-        // mode-scoped — but a drawn mesh always exists where quit is reachable
-        // (paint bodies in Design/Solving, bones+disc in Simulate), and the swaps
-        // happen in one `StateTransition` flush, so no frame is empty (the macOS
-        // wgpu quit-deadlock guard).
+        // Camera persists. The Design paint bodies (startup + on leaving Simulate), the
+        // Preview disc (on entering Preview), and the Simulate bones+disc (on entering /
+        // leaving Simulate) are mode-scoped — but a drawn mesh always exists where quit is
+        // reachable (paint bodies in Design/Building/Preview/Solving, bones+disc in
+        // Simulate), and the swaps happen in one `StateTransition` flush, so no frame is
+        // empty (the macOS wgpu quit-deadlock guard).
         .add_systems(Startup, (spawn_paint_bodies, setup_camera))
-        .add_systems(OnEnter(StudioState::Simulate), (despawn_paint_bodies, spawn_bones))
+        // Returning to Design: drop the Preview disc + any held build / in-flight task
+        // (repaint from scratch).
+        .add_systems(
+            OnEnter(StudioState::Design),
+            (despawn_preview_disc, discard_pending_work),
+        )
+        // The build succeeded: show the conformed disc + both (un-hidden) vertebrae.
+        .add_systems(
+            OnEnter(StudioState::Preview),
+            (spawn_preview_disc, show_paint_bodies),
+        )
+        .add_systems(
+            OnEnter(StudioState::Simulate),
+            (despawn_paint_bodies, spawn_bones, despawn_preview_disc),
+        )
         .add_systems(OnExit(StudioState::Simulate), (despawn_sim_scene, spawn_paint_bodies))
         // Always-on: egui pointer arbitration (suppresses orbit + paint over the
         // panel), then the paint-aware orbit camera.
@@ -144,16 +172,22 @@ fn run_app(l4: IndexedMesh, l5: IndexedMesh) {
                 update_orbit_camera.after(orbit_when_not_painting),
             ),
         )
-        // Per-mode input + the solve poll.
+        // Per-mode input + the build/capture polls.
         .add_systems(
             Update,
             (
                 update_paint_visibility.run_if(in_state(StudioState::Design)),
-                start_solve.run_if(in_state(StudioState::Design)),
-                quit_on_esc
-                    .run_if(in_state(StudioState::Design).or(in_state(StudioState::Solving))),
+                start_build.run_if(in_state(StudioState::Design)),
+                poll_build.run_if(in_state(StudioState::Building)),
+                start_capture.run_if(in_state(StudioState::Preview)),
                 poll_solve.run_if(in_state(StudioState::Solving)),
-                simulate_back.run_if(in_state(StudioState::Simulate)),
+                back_to_design
+                    .run_if(in_state(StudioState::Preview).or(in_state(StudioState::Simulate))),
+                quit_on_esc.run_if(
+                    in_state(StudioState::Design)
+                        .or(in_state(StudioState::Building))
+                        .or(in_state(StudioState::Solving)),
+                ),
             ),
         )
         // The replay + overlays run only in Simulate.
@@ -171,6 +205,8 @@ fn run_app(l4: IndexedMesh, l5: IndexedMesh) {
             EguiPrimaryContextPass,
             (
                 design_panel.run_if(in_state(StudioState::Design)),
+                building_panel.run_if(in_state(StudioState::Building)),
+                preview_panel.run_if(in_state(StudioState::Preview)),
                 solving_panel.run_if(in_state(StudioState::Solving)),
                 scene_panel.run_if(in_state(StudioState::Simulate)),
             ),
