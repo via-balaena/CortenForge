@@ -89,8 +89,9 @@ use input::arbitrate_pointer_over_egui;
 use overlays::{draw_facets, draw_ligaments};
 use panel::{SceneToggles, apply_visibility, scene_panel};
 use render::{
-    SourceMeshes, despawn_paint_bodies, despawn_preview_disc, despawn_sim_scene, show_paint_bodies,
-    spawn_bones, spawn_paint_bodies, spawn_preview_disc, update_paint_visibility,
+    PaintStash, SourceMeshes, despawn_paint_bodies, despawn_preview_disc, despawn_sim_scene,
+    show_paint_bodies, spawn_bones, spawn_paint_bodies, spawn_preview_disc, stash_paint,
+    update_paint_visibility,
 };
 use replay::flexion_update;
 use solve::{
@@ -137,6 +138,8 @@ fn run_app(l4: IndexedMesh, l5: IndexedMesh) {
         .insert_resource(ClearColor(Color::srgb(0.10, 0.10, 0.12)))
         .insert_resource(SourceMeshes { l4, l5 })
         .insert_resource(SceneToggles::default())
+        // Painted selections survive the Simulate round-trip via this stash.
+        .init_resource::<PaintStash>()
         // Camera persists. The Design paint bodies (startup + on leaving Simulate), the
         // Preview disc (on entering Preview), and the Simulate bones+disc (on entering /
         // leaving Simulate) are mode-scoped — but a drawn mesh always exists where quit is
@@ -155,9 +158,16 @@ fn run_app(l4: IndexedMesh, l5: IndexedMesh) {
             OnEnter(StudioState::Preview),
             (spawn_preview_disc, show_paint_bodies),
         )
+        // Stash the painting before the paint bodies are torn down, so `spawn_paint_bodies`
+        // can restore it on the way back (OnExit).
         .add_systems(
             OnEnter(StudioState::Simulate),
-            (despawn_paint_bodies, spawn_bones, despawn_preview_disc),
+            (
+                stash_paint.before(despawn_paint_bodies),
+                despawn_paint_bodies,
+                spawn_bones,
+                despawn_preview_disc,
+            ),
         )
         .add_systems(OnExit(StudioState::Simulate), (despawn_sim_scene, spawn_paint_bodies))
         // Always-on: egui pointer arbitration (suppresses orbit + paint over the

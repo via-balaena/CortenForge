@@ -11,6 +11,7 @@
 
 use std::collections::HashSet;
 
+use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
 use cf_bevy_common::axis::UpAxis;
 use cf_bevy_common::mesh::triangle_mesh_flat_shaded;
@@ -79,6 +80,44 @@ impl PaintBody {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.painted.is_empty()
+    }
+
+    /// Restore a saved selection, repainting the render mesh from scratch: replace the
+    /// painted set with `faces`, drive **every** face to `base`, then the selected faces to
+    /// `highlight`. The inverse of reading [`Self::painted`] out — a consumer that re-spawns
+    /// a body (e.g. after leaving the paint view) calls it so the selection survives both as
+    /// face ids and as the visible highlight. Repainting the whole buffer (rather than only
+    /// the selected faces) makes it idempotent: the visible state is fully defined by
+    /// `faces`, independent of the mesh's prior colors. `base`/`highlight` are the brush's
+    /// two colors (e.g. [`MeshPaintConfig`](crate::MeshPaintConfig)'s
+    /// `base_color`/`highlight_color`). Face ids at or beyond the source face count are
+    /// dropped (from both the painted set and the mesh), so [`Self::painted`] stays a valid
+    /// set of indices into `source().faces` even when restoring against a changed mesh.
+    pub fn restore(
+        &mut self,
+        faces: impl IntoIterator<Item = usize>,
+        meshes: &mut Assets<Mesh>,
+        base: [f32; 4],
+        highlight: [f32; 4],
+    ) {
+        // Drop any id past the source faces so the painted set a consumer reads back (and
+        // indexes into `source().faces`) can never carry a stale/invalid index.
+        let n_faces = self.source.faces.len();
+        self.painted = faces.into_iter().filter(|&f| f < n_faces).collect();
+        let Some(mesh) = meshes.get_mut(&self.mesh) else {
+            return;
+        };
+        let Some(VertexAttributeValues::Float32x4(colors)) =
+            mesh.attribute_mut(Mesh::ATTRIBUTE_COLOR)
+        else {
+            return;
+        };
+        for c in colors.iter_mut() {
+            *c = base;
+        }
+        for &f in &self.painted {
+            recolor(colors, f, highlight);
+        }
     }
 
     /// Handle of the render mesh whose per-face colors the brush drives.
@@ -250,5 +289,103 @@ mod tests {
         let mut colors = vec![[0.0; 4]; 6];
         recolor(&mut colors, 99, [1.0, 0.0, 0.0, 1.0]); // no panic, no change
         assert!(colors.iter().all(|c| *c == [0.0; 4]));
+    }
+
+    const BASE: [f32; 4] = [0.80, 0.78, 0.72, 1.0];
+    const HL: [f32; 4] = [0.90, 0.30, 0.20, 1.0];
+
+    /// Read the render mesh's per-emitted-vertex COLOR buffer back out (empty if the mesh or
+    /// its Float32x4 COLOR attribute is absent — asserted non-empty by each caller).
+    fn face_colors(meshes: &Assets<Mesh>, body: &PaintBody) -> Vec<[f32; 4]> {
+        match meshes
+            .get(body.mesh())
+            .map(|m| m.attribute(Mesh::ATTRIBUTE_COLOR))
+        {
+            Some(Some(VertexAttributeValues::Float32x4(c))) => c.clone(),
+            _ => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn restore_seeds_the_painted_set_and_highlights_those_faces() {
+        let source = tri(); // 2 faces → 6 emitted-vertex colors
+        let mut meshes = Assets::<Mesh>::default();
+        let handle = meshes.add(paint_render_mesh(&source, UpAxis::PlusZ, BASE));
+        let mut body = PaintBody::new("L4", source, handle);
+
+        body.restore([1usize], &mut meshes, BASE, HL);
+
+        assert_eq!(body.painted_count(), 1);
+        assert!(body.painted().contains(&1));
+        let colors = face_colors(&meshes, &body);
+        assert_eq!(colors.len(), 6, "2 faces → 6 emitted-vertex colors");
+        assert!(colors[0..3].iter().all(|c| *c == BASE), "face 0 stays base");
+        assert!(colors[3..6].iter().all(|c| *c == HL), "face 1 highlighted");
+    }
+
+    #[test]
+    fn restore_repaints_from_scratch_replacing_a_prior_selection() {
+        // The idempotence guarantee: restoring a narrower set fully replaces the prior one,
+        // driving the dropped face's mesh color back to base (not leaving a stale highlight).
+        let source = tri();
+        let mut meshes = Assets::<Mesh>::default();
+        let handle = meshes.add(paint_render_mesh(&source, UpAxis::PlusZ, BASE));
+        let mut body = PaintBody::new("L4", source, handle);
+
+        body.restore([0usize, 1], &mut meshes, BASE, HL); // both faces
+        body.restore([1usize], &mut meshes, BASE, HL); // now only face 1
+
+        assert_eq!(body.painted_count(), 1);
+        assert!(body.painted().contains(&1) && !body.painted().contains(&0));
+        let colors = face_colors(&meshes, &body);
+        assert_eq!(colors.len(), 6, "2 faces → 6 emitted-vertex colors");
+        assert!(
+            colors[0..3].iter().all(|c| *c == BASE),
+            "face 0 must revert to base, not keep a stale highlight"
+        );
+        assert!(
+            colors[3..6].iter().all(|c| *c == HL),
+            "face 1 stays highlighted"
+        );
+    }
+
+    #[test]
+    fn restore_empty_selection_clears_every_face_to_base() {
+        // The clearing corner of the idempotence claim: an empty selection drives the whole
+        // buffer to base and leaves nothing painted.
+        let source = tri();
+        let mut meshes = Assets::<Mesh>::default();
+        let handle = meshes.add(paint_render_mesh(&source, UpAxis::PlusZ, BASE));
+        let mut body = PaintBody::new("L4", source, handle);
+
+        body.restore([0usize, 1], &mut meshes, BASE, HL); // paint both first
+        body.restore(std::iter::empty(), &mut meshes, BASE, HL); // then clear
+
+        assert!(body.is_empty());
+        let colors = face_colors(&meshes, &body);
+        assert_eq!(colors.len(), 6);
+        assert!(
+            colors.iter().all(|c| *c == BASE),
+            "all faces revert to base"
+        );
+    }
+
+    #[test]
+    fn restore_drops_out_of_range_face_ids() {
+        // A stale/invalid id (from restoring against a changed mesh) must not enter the
+        // painted set — a consumer indexes it into source().faces downstream.
+        let source = tri(); // faces 0 and 1 only
+        let mut meshes = Assets::<Mesh>::default();
+        let handle = meshes.add(paint_render_mesh(&source, UpAxis::PlusZ, BASE));
+        let mut body = PaintBody::new("L4", source, handle);
+
+        body.restore([0usize, 99], &mut meshes, BASE, HL);
+
+        assert_eq!(body.painted_count(), 1, "the out-of-range id 99 is dropped");
+        assert!(body.painted().contains(&0) && !body.painted().contains(&99));
+        let colors = face_colors(&meshes, &body);
+        assert_eq!(colors.len(), 6);
+        assert!(colors[0..3].iter().all(|c| *c == HL), "face 0 highlighted");
+        assert!(colors[3..6].iter().all(|c| *c == BASE), "face 1 stays base");
     }
 }
