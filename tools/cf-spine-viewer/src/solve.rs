@@ -1,9 +1,16 @@
-//! The on-demand FSU solve. `S` in Design dispatches the coupled-FSU assembly
-//! ([`scene::build_from_meshes`]) to a background thread — it takes ~90 s in
-//! release (tet-mesh + SDF grids + the moment-ramp capture) — so the window
-//! stays responsive during the solve instead of showing the macOS beachball.
-//! The poll picks up the result the frame it finishes and hands the replay +
-//! overlay data to Simulate.
+//! The two-phase on-demand FSU solve, split so a bad painting is caught cheaply.
+//!
+//! `Enter` in Design runs the **build phase** ([`scene::build_fsu`], ~5 s: tet-mesh + SDF
+//! grids + `k_disc` probe + the disc-mesh fragmentation guards) on a background thread and,
+//! on success, parks the built FSU in [`HeldBuildSlot`] and shows the conformed disc
+//! (Preview). `S` in Preview then runs only the **capture phase** ([`scene::capture_scene`],
+//! ~85 s: the moment ramp) on the held build. Splitting the phases means the expensive
+//! ramp is only ever paid for a painting that already tet-meshed cleanly.
+//!
+//! Both phases run off the main thread so the window stays responsive (no macOS
+//! beachball). [`CoupledFsu`](cf_fsu_model::CoupledFsu) is `Send` (so a build moves into
+//! and out of a task freely) but **not `Sync`** (a `RefCell` scratch buffer), so a held
+//! build cannot be a plain Bevy `Resource` — it lives in a `NonSend` slot instead.
 
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
@@ -15,40 +22,50 @@ use mesh_types::IndexedMesh;
 use crate::overlays::Overlays;
 use crate::render::{self, SourceMeshes};
 use crate::replay::Flexion;
-use crate::scene::{self, FsuScene};
+use crate::scene::{self, FsuScene, HeldBuild};
 use crate::state::StudioState;
 
-/// The in-flight background solve, if any.
+/// The in-flight build phase, if any (`Enter` → [`scene::build_fsu`]).
+#[derive(Resource, Default)]
+pub(crate) struct BuildTask {
+    pending: Option<Task<Result<HeldBuild, String>>>,
+}
+
+/// The in-flight capture phase, if any (`S` → [`scene::capture_scene`]).
 #[derive(Resource, Default)]
 pub(crate) struct SolveTask {
     pending: Option<Task<Result<FsuScene, String>>>,
 }
 
-/// The most recent solve error (shown in the Design panel), if the last solve
-/// failed.
+/// The built-but-not-captured FSU, held between the Design build (`Enter`) and the Preview
+/// capture (`S`). A `NonSend` resource because [`HeldBuild`] holds a non-`Sync`
+/// `CoupledFsu`; it is parked on the main thread and moved into the capture task on `S`.
+#[derive(Default)]
+pub(crate) struct HeldBuildSlot(pub(crate) Option<HeldBuild>);
+
+/// The most recent failure (loft / build / capture), shown in the Design panel.
 #[derive(Resource, Default)]
 pub(crate) struct SolveError(pub(crate) Option<String>);
 
-/// `S` in Design lofts the two painted endplate patches into the disc, then
-/// dispatches the coupled-FSU assembly to the `AsyncComputeTaskPool` and enters
-/// Solving. Ignored while a solve is in flight; if a patch is unpainted it
-/// surfaces a message and stays in Design. The meshes are cloned into the task
-/// so the ECS world isn't borrowed across the ~90 s compute.
+/// `Enter` in Design lofts the two painted endplate patches into the disc, then dispatches
+/// the ~5 s build phase to the `AsyncComputeTaskPool` and enters Building. Ignored while a
+/// build is in flight; if a patch is unpainted it surfaces a message and stays in Design.
+/// The meshes are cloned into the task so the ECS world isn't borrowed across the compute.
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
-pub(crate) fn start_solve(
+pub(crate) fn start_build(
     keys: Res<ButtonInput<KeyCode>>,
     bodies: Query<&PaintBody>,
     sources: Res<SourceMeshes>,
-    mut task: ResMut<SolveTask>,
+    mut task: ResMut<BuildTask>,
     mut error: ResMut<SolveError>,
     mut next: ResMut<NextState<StudioState>>,
 ) {
-    if !keys.just_pressed(KeyCode::KeyS) || task.pending.is_some() {
+    if !keys.just_pressed(KeyCode::Enter) || task.pending.is_some() {
         return;
     }
-    // Loft runs on the main thread (it reads the `PaintBody` query, which can't
-    // cross into the task), so catch a panic here too — a malformed bushing must
-    // route back to Design, not crash the app.
+    // Loft runs on the main thread (it reads the `PaintBody` query, which can't cross into
+    // the task), so catch a panic here too — a malformed bushing must route back to Design,
+    // not crash the app.
     let lofted =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| loft_painted_disc(&bodies)));
     let disc = match lofted {
@@ -70,22 +87,104 @@ pub(crate) fn start_solve(
     let (l4, l5) = (sources.l4.clone(), sources.l5.clone());
     let pool = AsyncComputeTaskPool::get();
     task.pending = Some(pool.spawn(async move {
-        // The FEM solve fail-closes with a PANIC on a disc geometry it rejects (a
-        // validity violation — an over-distorted tet). Catch it here so a bad disc
-        // routes back to Design; otherwise the panic re-raises on the main thread
-        // when the task is polled and crashes the whole app.
+        // The build's `k_disc` probe drives one FEM solve, which fail-closes with a PANIC on
+        // a disc geometry it rejects (an over-distorted tet). Catch it so a bad disc routes
+        // back to Design instead of re-raising on the main thread when the task is polled.
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            scene::build_from_meshes(l4, l5, disc)
+            scene::build_fsu(&l4, &l5, disc)
         })) {
             Ok(result) => result.map_err(|e| e.to_string()),
             Err(_) => Err(
-                "the solver rejected this disc (a validity violation — the geometry is \
-                           too distorted); paint fuller, flatter endplate patches on a single face"
+                "the solver rejected this disc (a validity violation — the geometry is too \
+                 distorted); paint fuller, flatter endplate patches on a single face"
+                    .to_string(),
+            ),
+        }
+    }));
+    next.set(StudioState::Building);
+}
+
+/// Poll the in-flight build each frame while Building. On success, park the built FSU in
+/// the held-build slot and enter Preview (the conformed disc is spawned `OnEnter(Preview)`);
+/// on failure (unpaintable disc, fragmentation guard, or panic), surface the error and drop
+/// back to Design.
+pub(crate) fn poll_build(
+    mut task: ResMut<BuildTask>,
+    mut slot: NonSendMut<HeldBuildSlot>,
+    mut error: ResMut<SolveError>,
+    mut next: ResMut<NextState<StudioState>>,
+) {
+    let Some(mut pending) = task.pending.take() else {
+        return;
+    };
+    let Some(result) = future::block_on(future::poll_once(&mut pending)) else {
+        task.pending = Some(pending); // still running
+        return;
+    };
+    match result {
+        Ok(build) => {
+            slot.0 = Some(build);
+            next.set(StudioState::Preview);
+        }
+        Err(msg) => {
+            error.0 = Some(msg);
+            next.set(StudioState::Design);
+        }
+    }
+}
+
+/// `S` in Preview dispatches the ~85 s capture phase on the held build and enters Solving.
+/// Ignored while a capture is in flight or if the slot is somehow empty. The build is moved
+/// out of the slot into the task (it drives the disc FEM), so returning to Preview requires
+/// a fresh build — matching the tweak loop (repaint → `Enter` → `S`).
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
+pub(crate) fn start_capture(
+    keys: Res<ButtonInput<KeyCode>>,
+    sources: Res<SourceMeshes>,
+    mut slot: NonSendMut<HeldBuildSlot>,
+    mut task: ResMut<SolveTask>,
+    mut next: ResMut<NextState<StudioState>>,
+) {
+    if !keys.just_pressed(KeyCode::KeyS) || task.pending.is_some() {
+        return;
+    }
+    let Some(build) = slot.0.take() else {
+        return; // no held build to capture
+    };
+    let (l4, l5) = (sources.l4.clone(), sources.l5.clone());
+    let pool = AsyncComputeTaskPool::get();
+    task.pending = Some(pool.spawn(async move {
+        // The incremental ramp drives the disc FEM to each equilibrium angle; it fail-closes
+        // with a PANIC on a step it rejects (a validity violation). Catch it so a bad disc
+        // routes back to Design rather than crashing the app when the task is polled.
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            scene::capture_scene(build, &l4, &l5)
+        })) {
+            Ok(result) => result.map_err(|e| e.to_string()),
+            Err(_) => Err(
+                "the solver rejected this disc during the ramp (a validity violation — the \
+                 geometry is too distorted); paint fuller, flatter endplate patches"
                     .to_string(),
             ),
         }
     }));
     next.set(StudioState::Solving);
+}
+
+/// Entering Design is a clean slate: drop any held build (the user chose to repaint over it,
+/// or a failed capture left it) and abandon any in-flight build/capture task. In the normal
+/// paths the slot + tasks are already empty (`poll_build`/`poll_solve` take their task before
+/// routing here, and `start_capture` takes the build), so this only bites the pathological
+/// same-frame `S`+`Esc` race in Preview — where it drops the orphaned capture task that would
+/// otherwise wedge `start_capture`'s `pending.is_some()` guard forever.
+pub(crate) fn discard_pending_work(
+    mut slot: NonSendMut<HeldBuildSlot>,
+    mut build: ResMut<BuildTask>,
+    mut capture: ResMut<SolveTask>,
+) {
+    slot.0 = None;
+    build.pending = None;
+    capture.pending = None;
 }
 
 /// Loft the two painted patches (L4 + L5) into the intervertebral disc, or an
@@ -139,7 +238,7 @@ fn explode_to_soup(mesh: &IndexedMesh) -> IndexedMesh {
     IndexedMesh::from_parts(vertices, faces)
 }
 
-/// Poll the in-flight solve each frame while Solving. On success, insert the
+/// Poll the in-flight capture each frame while Solving. On success, insert the
 /// replay + overlay resources and the disc surface, then enter Simulate; on
 /// failure, surface the error and drop back to Design.
 pub(crate) fn poll_solve(

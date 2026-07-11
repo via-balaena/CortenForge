@@ -9,9 +9,11 @@
 //! so nothing (oracle / segment-frame / facet-grid / ML axis) is computed twice.
 //!
 //! This module keeps the viewer-specific assembly on top of the FSU: the two ligament lines
-//! (field-derived attachment sites), the co-registration warnings, and the
-//! `build_from_meshes` orchestrator that stitches the FSU + overlays + render surfaces
-//! into an [`FsuScene`].
+//! (field-derived attachment sites), the co-registration warnings, and the two-phase
+//! orchestrator — [`build_fsu`] (the ~5 s assembly + disc-mesh guards, held as a
+//! [`HeldBuild`]) then [`capture_scene`] (the ~85 s moment ramp) — that stitches the FSU +
+//! overlays + render surfaces into an [`FsuScene`]. Splitting the phases lets the Studio
+//! validate a painting cheaply (`Enter`) before committing to the expensive capture (`S`).
 
 use anyhow::{Result, ensure};
 use cf_fsu_geometry::{BODY_RADIUS, MeshOracle, SegmentFrame, extreme_vertex, oracle};
@@ -204,18 +206,45 @@ fn weighted_tet_nodes(
         .collect()
 }
 
-/// Assemble the static FSU scene from three **in-memory** meshes (native mm) —
-/// the app loads L4/L5 + the disc and runs this on demand (the disc becomes a
-/// painted + lofted mesh once the paint front-end lands). Heavy (~90 s in
-/// release): tet-mesh + SDF grids + the moment-ramp capture, so the app dispatches
-/// it to a background thread.
-pub fn build_from_meshes(l4: IndexedMesh, l5: IndexedMesh, disc: IndexedMesh) -> Result<FsuScene> {
+/// A **built, not-yet-captured** coupled FSU: the ~5 s assembly ([`build_fsu`]) held
+/// between the Design build (`Enter`) and the Simulate capture (`S`).
+///
+/// Retains the live [`CoupledFsu`] (its tet-meshed, bonded disc + SDF grids), the
+/// conformed render surface, and the overlays — everything [`capture_scene`] needs to
+/// run only the ~85 s moment ramp on top. The fragmentation / degeneracy guards have
+/// already passed by the time this exists (they run in `build_fsu`), so holding one is
+/// proof the painting tet-meshes cleanly.
+///
+/// `CoupledFsu` is `Send` but **not `Sync`** (it holds a `RefCell` scratch buffer), so a
+/// held build cannot be a plain Bevy `Resource`; the app parks it in a `NonSend` slot.
+pub struct HeldBuild {
+    /// The live coupled FSU — moved into the capture task to drive [`CoupledFsu::capture_ramp`].
+    pub fsu: CoupledFsu,
+    /// The conformed disc render surface (native mm) — shown as the Preview disc and
+    /// skinned by the captured FEM field in Simulate.
+    pub disc_surface: IndexedMesh,
+    /// The two ligament lines, derived once from the FSU's shared frame.
+    pub ligaments: Vec<Ligament>,
+    /// Co-registration / degeneracy warnings surfaced during assembly.
+    pub warnings: Vec<String>,
+}
+
+/// **Build phase (~5 s):** assemble the coupled FSU from three **in-memory** meshes
+/// (native mm) and validate that its disc tet-meshed into a renderable surface — the
+/// cheap gate that catches a bad painting *before* the ~85 s [`capture_scene`] ramp.
+///
+/// Runs everything except the moment-ramp capture: [`CoupledFsu::build`] (tet-mesh + SDF
+/// grids + `k_disc` probe), the conformed render surface, the co-registration warnings,
+/// the ligament lines, and the two disc-mesh guards — which read
+/// [`CoupledFsu::render_boundary_faces`] (available immediately after build) instead of
+/// the ramp's trajectory, so a fragmented/degenerate disc is rejected in seconds.
+pub fn build_fsu(l4: &IndexedMesh, l5: &IndexedMesh, disc: IndexedMesh) -> Result<HeldBuild> {
     // Per-mesh size summary as the build-blind sanity signal — a broken or
     // degenerate mesh shows up as an implausible vertex count. For loaded meshes
     // this is the post-repair size (`load` weld-repairs silently); for a painted
     // disc it is the loft output. (The raw pre-weld triangle-soup count is a
     // repair internal — always large — so it doesn't distinguish good from bad.)
-    for (name, mesh) in [("L4", &l4), ("L5", &l5), ("disc", &disc)] {
+    for (name, mesh) in [("L4", l4), ("L5", l5), ("disc", &disc)] {
         println!(
             "mesh {name}: {} verts / {} faces",
             mesh.vertices.len(),
@@ -227,19 +256,41 @@ pub fn build_from_meshes(l4: IndexedMesh, l5: IndexedMesh, disc: IndexedMesh) ->
     // articular SDF grids, the flexion-oriented ML axis, and the bonded disc — the viewer's
     // overlays reuse those (no second oracle / segment-frame / facet-grid / ML-axis
     // computation), and the disc's own `ml_axis` is the single source of the flexion axis.
-    println!(
-        "assembling coupled FSU + capturing moment ramp ({RAMP_FRAMES} frames, ±{PHYSIOLOGIC_MOMENT} N·m)…"
-    );
-    let mut fsu = CoupledFsu::build(&l4, &l5, &disc, &CoupledParams::default())?;
+    println!("assembling coupled FSU (tet-mesh + SDF grids + k_disc probe)…");
+    let fsu = CoupledFsu::build(l4, l5, &disc, &CoupledParams::default())?;
     // The disc render surface = the FSU's disc conformed onto the real endplates (native
     // mm). Drawing THIS (not the raw STL) is what makes rendered === contacts: the disc's
-    // endplate bands now sit on the bone, closing the disc-lift seam. Cloned once here so
-    // the later `capture_ramp` can borrow `fsu` mutably.
+    // endplate bands now sit on the bone, closing the disc-lift seam.
     let disc_surface = fsu.conformed_disc_surface().clone();
+
+    // Disc-mesh guards, run here on the post-build tet boundary (the SAME triangulation
+    // `capture_ramp` would copy into its trajectory), so a bad painting is caught in ~5 s
+    // rather than after the full ~85 s ramp.
+    let boundary = fsu.render_boundary_faces();
+    // (1) A disc that tet-meshed to nothing (all components dropped): with no boundary
+    // faces, `weighted_tet_nodes` would silently collapse the disc onto node 0. A non-empty
+    // boundary also implies a non-empty node buffer (its faces index the nodes), so this
+    // subsumes the old post-capture `rest_nodes_native.is_empty()` half of the guard.
+    ensure!(
+        !boundary.is_empty(),
+        "disc tet-mesh produced no surface (degenerate/near-flat disc mesh?) — cannot render"
+    );
+    // (2) A disc that tet-meshed into a spiky, FRAGMENTED surface: a thin or uneven lens —
+    // painted patches spanning varying normals/elevation (a flat part + a slope) — explodes
+    // into many sliver boundary faces that render as a shattered disc. A clean lens' tet
+    // boundary is comparable to its own surface; a big blow-up ⇒ repaint.
+    ensure!(
+        boundary.len() <= 3 * disc_surface.faces.len(),
+        "disc tet-meshed into a fragmented surface ({} boundary faces vs {} disc faces) — the \
+         painted patches are too thin or span uneven normals; paint fuller, flatter endplate \
+         patches on a single face (avoid spanning a flat part into a slope)",
+        boundary.len(),
+        disc_surface.faces.len()
+    );
 
     // Overlays derived from the coupled FSU's shared frame + flexion axis.
     let mut warnings = coregistration_warnings(&disc, fsu.frame(), fsu.axis());
-    let ligaments = build_ligaments(&l4, &l5, fsu.frame(), fsu.axis(), &mut warnings);
+    let ligaments = build_ligaments(l4, l5, fsu.frame(), fsu.axis(), &mut warnings);
     for lig in &ligaments {
         println!(
             "ligament {}: L5 site {:.1?} → L4 site {:.1?}  ({:.1} mm)",
@@ -253,27 +304,33 @@ pub fn build_from_meshes(l4: IndexedMesh, l5: IndexedMesh, disc: IndexedMesh) ->
         eprintln!("WARNING: {w}");
     }
 
+    Ok(HeldBuild {
+        fsu,
+        disc_surface,
+        ligaments,
+        warnings,
+    })
+}
+
+/// **Capture phase (~85 s):** run the coupled force-driven moment ramp on a
+/// [`HeldBuild`] and stitch the result into a replayable [`FsuScene`].
+///
+/// Drives the held FSU's disc FEM through [`CoupledFsu::capture_ramp`], skins the
+/// conformed surface onto the deformed tet field, and builds the bone oracles for the
+/// per-frame non-penetration projection. The disc-mesh guards already passed in
+/// [`build_fsu`], so this phase is guard-free — a `HeldBuild` is a validated build.
+pub fn capture_scene(built: HeldBuild, l4: &IndexedMesh, l5: &IndexedMesh) -> Result<FsuScene> {
+    let HeldBuild {
+        mut fsu,
+        disc_surface,
+        ligaments,
+        warnings,
+    } = built;
+
     // Capture the coupled force-driven ramp. `disc_surface` (the conformed render surface)
-    // is already captured above; the FSU tet-meshes + solves on the same conformed disc.
+    // was captured in the build phase; the FSU tet-meshes + solves on the same conformed disc.
+    println!("capturing moment ramp ({RAMP_FRAMES} frames, ±{PHYSIOLOGIC_MOMENT} N·m)…");
     let flexion = fsu.capture_ramp(&moment_ramp())?;
-    // Guard against a disc that tet-meshed to nothing (all components dropped): with no
-    // boundary faces, `weighted_tet_nodes` would silently collapse the disc onto node 0.
-    ensure!(
-        !flexion.boundary_faces.is_empty() && !flexion.rest_nodes_native.is_empty(),
-        "disc tet-mesh produced no surface (degenerate/near-flat disc mesh?) — cannot render"
-    );
-    // Guard against a disc that tet-meshed into a spiky, FRAGMENTED surface: a thin or
-    // uneven lens — painted patches spanning varying normals/elevation (a flat part + a
-    // slope) — explodes into many sliver boundary faces that render as a shattered disc. A
-    // clean lens' tet boundary is comparable to its own surface; a big blow-up ⇒ repaint.
-    ensure!(
-        flexion.boundary_faces.len() <= 3 * disc_surface.faces.len(),
-        "disc tet-meshed into a fragmented surface ({} boundary faces vs {} disc faces) — the \
-         painted patches are too thin or span uneven normals; paint fuller, flatter endplate \
-         patches on a single face (avoid spanning a flat part into a slope)",
-        flexion.boundary_faces.len(),
-        disc_surface.faces.len()
-    );
     let (ext, flex) = (
         flexion.frames.first().map_or(0.0, |f| f.theta.to_degrees()),
         flexion.frames.last().map_or(0.0, |f| f.theta.to_degrees()),
@@ -296,8 +353,8 @@ pub fn build_from_meshes(l4: IndexedMesh, l5: IndexedMesh, disc: IndexedMesh) ->
         &flexion.boundary_faces,
     );
     // Bone oracles for the viewer's per-frame disc-vs-bone non-penetration projection.
-    let o4 = oracle(&l4)?;
-    let o5 = oracle(&l5)?;
+    let o4 = oracle(l4)?;
+    let o5 = oracle(l5)?;
 
     Ok(FsuScene {
         disc_surface,

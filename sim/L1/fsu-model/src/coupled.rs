@@ -238,6 +238,18 @@ impl CoupledFsu {
         &self.conformed_disc_surface
     }
 
+    /// The render disc's tet-mesh boundary faces — the fragmentation signal available
+    /// **immediately after [`Self::build`]**, before the far more expensive
+    /// [`Self::capture_ramp`] (~85 s vs the ~5 s build). This is exactly the triangulation
+    /// `capture_ramp` copies
+    /// into [`CoupledTrajectory::boundary_faces`] (it is tet-mesh topology, fixed at build
+    /// and invariant under deformation), so a caller can run its degeneracy / fragmentation
+    /// guard on the ~5 s build and reject a bad painting without paying for the full ramp.
+    #[must_use]
+    pub fn render_boundary_faces(&self) -> &[[crate::VertexId; 3]] {
+        self.render_disc.boundary_faces()
+    }
+
     /// The shared flexion pivot (disc AABB centre, native mm).
     #[must_use]
     pub const fn pivot(&self) -> Point3<f64> {
@@ -855,6 +867,15 @@ mod tests {
             "facet scaling must not change a contact-free equilibrium"
         );
 
+        // The post-build fragmentation signal is present before any ramp and is exactly
+        // what the ramp will copy into the trajectory (the split's load-bearing invariant:
+        // the ~5 s build can guard on this without paying for the ~85 s capture).
+        let boundary_post_build = fsu.render_boundary_faces().to_vec();
+        assert!(
+            !boundary_post_build.is_empty(),
+            "the boundary surface must be available immediately after build"
+        );
+
         // Capture a small ramp: one frame per applied moment, sharing the disc surface.
         let traj = fsu
             .capture_ramp(&[-0.5, 0.0, 0.5])
@@ -863,6 +884,10 @@ mod tests {
         assert_eq!(traj.pivot, fsu.pivot());
         assert_eq!(traj.axis, fsu.axis());
         assert!(!traj.boundary_faces.is_empty(), "disc must have a surface");
+        assert_eq!(
+            traj.boundary_faces, boundary_post_build,
+            "the post-build boundary must match the ramp's captured triangulation"
+        );
         assert!(
             traj.frames
                 .iter()

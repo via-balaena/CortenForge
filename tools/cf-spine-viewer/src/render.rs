@@ -1,13 +1,14 @@
-//! The scene entities across modes. Design shows the two vertebrae as
-//! **paintable** bodies ([`spawn_paint_bodies`]); Simulate shows them as smooth
-//! flexing bones plus the deforming disc ([`spawn_bones`] + [`spawn_disc`]). The
-//! two representations are per-mode so the paint mesh (flat-shaded, per-vertex
-//! colourable) and the anatomical bone mesh (smooth) each get their own render.
+//! The scene entities across modes. Design/Building/Preview show the two vertebrae as
+//! **paintable** bodies ([`spawn_paint_bodies`]) — Preview adds the static conformed disc
+//! ([`spawn_preview_disc`]); Simulate shows them as smooth flexing bones plus the deforming
+//! disc ([`spawn_bones`] + [`spawn_disc`]). The two vertebra representations are per-mode so
+//! the paint mesh (flat-shaded, per-vertex colourable) and the anatomical bone mesh (smooth)
+//! each get their own render.
 //!
-//! ★ Never-empty-render invariant (the macOS wgpu quit-deadlock guard): a drawn
-//! mesh exists in every mode where quit is reachable — the paint bodies in
-//! Design/Solving, the bones+disc in Simulate — and the Design↔Simulate swaps
-//! happen within one `StateTransition` command flush, so no frame is empty.
+//! ★ Never-empty-render invariant (the macOS wgpu quit-deadlock guard): a drawn mesh exists
+//! in every mode where quit is reachable — the paint bodies in Design/Building/Preview/
+//! Solving, the bones+disc in Simulate — and the swaps happen within one `StateTransition`
+//! command flush, so no frame is empty.
 
 use bevy::prelude::*;
 use cf_mesh_paint::prelude::{MeshPaintConfig, PaintBody, PaintTargets, paint_render_mesh};
@@ -36,6 +37,13 @@ pub(crate) struct FlexedL4;
 /// Marks the deforming disc soft-mesh entity (its positions are rewritten each frame).
 #[derive(Component)]
 pub(crate) struct DiscMesh;
+
+/// Marks the static **Preview** disc — the conformed render surface shown after the ~5 s
+/// build, while the user decides whether to run the ~85 s capture. Kept distinct from the
+/// deforming [`DiscMesh`] so it is despawned when leaving the built state (entering Design
+/// or Simulate) without touching the sim disc.
+#[derive(Component)]
+pub(crate) struct PreviewDisc;
 
 /// The two vertebra meshes (native mm), kept resident: they seed the Design
 /// paint bodies + the Simulate bones + frame the camera, and are two of the
@@ -116,6 +124,15 @@ pub(crate) fn update_paint_visibility(
     }
 }
 
+/// Show BOTH paint bodies on entering Preview. Design hides the inactive vertebra while
+/// painting (see [`update_paint_visibility`]); Preview wants both visible so the conformed
+/// disc reads as seated between the two vertebrae.
+pub(crate) fn show_paint_bodies(mut bodies: Query<&mut Visibility, With<PaintBody>>) {
+    for mut visibility in &mut bodies {
+        *visibility = Visibility::Visible;
+    }
+}
+
 /// Spawn one bone (vertebra) surface with its material + a visibility-toggle
 /// marker, returning the entity so the caller can tag the flexing one.
 fn spawn_bone(
@@ -170,6 +187,29 @@ pub(crate) fn spawn_bones(
     commands.entity(l4).insert(FlexedL4);
 }
 
+/// Build the teal disc render mesh from a conformed surface — the same soft-mesh
+/// construction the deforming disc uses, so the static Preview disc and the animated
+/// Simulate disc are visually identical (only the sim rewrites its vertices per frame).
+fn disc_mesh(disc_surface: &IndexedMesh) -> Mesh {
+    let disc_verts: Vec<Vector3<f64>> = disc_surface.vertices.iter().map(|p| p.coords).collect();
+    build_soft_mesh(&disc_verts, &disc_surface.faces, UpAxis::PlusZ)
+}
+
+/// The disc material: opaque teal, double-sided (a thin closed shell reads fine as a
+/// solid lens; the gap it fills doesn't need see-through, and blending an unsorted shell
+/// smears it). Shared by the Preview and Simulate discs.
+fn disc_material() -> StandardMaterial {
+    StandardMaterial {
+        base_color: DISC_COLOR,
+        metallic: 0.05,
+        perceptual_roughness: 0.7,
+        double_sided: true,
+        cull_mode: None,
+        alpha_mode: AlphaMode::Opaque,
+        ..default()
+    }
+}
+
 /// Spawn the deforming disc from the solved render surface — the clean STL lens
 /// (not the ragged tet boundary); `flexion_update` rewrites its vertices by the
 /// FEM field each frame. Called directly by the solve poll (so the disc + its
@@ -180,27 +220,47 @@ pub(crate) fn spawn_disc(
     materials: &mut Assets<StandardMaterial>,
     disc_surface: &IndexedMesh,
 ) {
-    let disc_verts: Vec<Vector3<f64>> = disc_surface.vertices.iter().map(|p| p.coords).collect();
-    let disc_mesh = build_soft_mesh(&disc_verts, &disc_surface.faces, UpAxis::PlusZ);
-    // Opaque teal, double-sided (a thin closed shell reads fine as a solid lens; the
-    // gap it fills doesn't need see-through, and blending an unsorted shell smears it).
-    let disc_material = StandardMaterial {
-        base_color: DISC_COLOR,
-        metallic: 0.05,
-        perceptual_roughness: 0.7,
-        double_sided: true,
-        cull_mode: None,
-        alpha_mode: AlphaMode::Opaque,
-        ..default()
-    };
     commands.spawn((
-        Mesh3d(meshes.add(disc_mesh)),
-        MeshMaterial3d(materials.add(disc_material)),
+        Mesh3d(meshes.add(disc_mesh(disc_surface))),
+        MeshMaterial3d(materials.add(disc_material())),
         Transform::default(),
         Visibility::Visible,
         TissuePart::Disc,
         DiscMesh,
     ));
+}
+
+/// Spawn the static **Preview** disc on entering Preview — the conformed render surface
+/// from the held build, shown (over the resident paint bodies) so the user sees the real
+/// lofted + conformed disc before committing to the ~85 s capture. Despawned by
+/// [`despawn_preview_disc`] on leaving the built state.
+pub(crate) fn spawn_preview_disc(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    held: NonSend<crate::solve::HeldBuildSlot>,
+) {
+    let Some(build) = held.0.as_ref() else {
+        return; // no held build (shouldn't happen in Preview) — nothing to show
+    };
+    commands.spawn((
+        Mesh3d(meshes.add(disc_mesh(&build.disc_surface))),
+        MeshMaterial3d(materials.add(disc_material())),
+        Transform::default(),
+        Visibility::Visible,
+        PreviewDisc,
+    ));
+}
+
+/// Despawn the Preview disc on leaving the built state (entering Design to repaint, or
+/// Simulate where the deforming disc takes over). Harmless when none exists.
+pub(crate) fn despawn_preview_disc(
+    mut commands: Commands,
+    discs: Query<Entity, With<PreviewDisc>>,
+) {
+    for entity in &discs {
+        commands.entity(entity).despawn();
+    }
 }
 
 /// On leaving Simulate: despawn the whole sim scene (both bones + the disc — all
