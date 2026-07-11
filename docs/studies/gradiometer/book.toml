@@ -1,0 +1,19 @@
+[book]
+title = "Gradiometer — A Study in Differentiable Instrument Co-Design"
+authors = ["CortenForge"]
+description = "An architectural study of how the CortenForge SDK — differentiable mechanical multiphysics + geometry + gradient-based co-design — would enable the design of a room-temperature MEMS gravity gradiometer. Feasibility is established first with a physics spike; the primitive ladder, program gates, and co-design payoff are then derived from the existing kernel. Sibling to the mesh, soft-body, casting, and biological-navigation studies."
+language = "en"
+src = "src"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = ""
+edit-url-template = ""
+
+[output.html.fold]
+enable = true
+level = 1
+
+[preprocessor.katex]
+after = ["links"]
