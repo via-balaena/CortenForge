@@ -42,7 +42,7 @@ pub use aabb::{Aabb, Axis};
 pub use bounded::Bounded;
 pub use bvh::{Bvh, BvhPrimitive, bvh_from_mesh, bvh_from_triangle_mesh, query_bvh_pair};
 pub use convex_hull::{ConvexHull, convex_hull};
-pub use curve::{CatmullRomCurve, nearest_point_on_catmull_rom};
+pub use curve::{CatmullRomCurve, closest_point_on_catmull_rom};
 pub use geometric::Geometric;
 pub use heightfield::HeightFieldData;
 pub use mesh::IndexedMesh;
