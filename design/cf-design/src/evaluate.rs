@@ -538,67 +538,8 @@ fn eval_pipe(vertices: &[Point3<f64>], radius: f64, p: &Point3<f64>) -> f64 {
 /// Pipe along a Catmull-Rom spline: distance to closest point on spline minus
 /// radius. Near-exact SDF via subdivision + Newton refinement.
 fn eval_pipe_spline(control_points: &[Point3<f64>], radius: f64, p: &Point3<f64>) -> f64 {
-    let n = control_points.len();
-    let mut min_dist_sq = f64::INFINITY;
-
-    // For 2 control points: degenerate to single line segment
-    if n == 2 {
-        let closest = cf_geometry::closest_point_segment(control_points[0], control_points[1], *p);
-        return nalgebra::distance_squared(p, &closest).sqrt() - radius;
-    }
-
-    // Catmull-Rom: each span uses 4 control points (p0, p1, p2, p3).
-    // We iterate spans from index 0..n-3 (span i uses points i, i+1, i+2, i+3).
-    // For open curves: first span repeats the first point, last span repeats the last.
-    let num_spans = n - 1;
-    for span in 0..num_spans {
-        let p0 = control_points[if span == 0 { 0 } else { span - 1 }];
-        let p1 = control_points[span];
-        let p2 = control_points[span + 1];
-        let p3 = control_points[if span + 2 < n { span + 2 } else { n - 1 }];
-
-        // Coarse search: subdivide span into 16 linear segments
-        let subdivs: u32 = 16;
-        let mut best_t = 0.0_f64;
-        let mut best_d_sq = f64::INFINITY;
-
-        for i in 0..=subdivs {
-            let t = f64::from(i) / f64::from(subdivs);
-            let q = catmull_rom_point(p0, p1, p2, p3, t);
-            let d_sq = nalgebra::distance_squared(p, &q);
-            if d_sq < best_d_sq {
-                best_d_sq = d_sq;
-                best_t = t;
-            }
-        }
-
-        // Newton refinement on distance²(t): minimize f(t) = |C(t) - p|²
-        // f'(t) = 2 * dot(C(t) - p, C'(t))
-        // f''(t) = 2 * (dot(C'(t), C'(t)) + dot(C(t) - p, C''(t)))
-        // Newton step: t -= f'(t) / f''(t)
-        let mut t = best_t;
-        for _ in 0..4 {
-            let c = catmull_rom_point(p0, p1, p2, p3, t);
-            let c_d = catmull_rom_deriv(p0, p1, p2, p3, t);
-            let c_dd = catmull_rom_deriv2(p0, p1, p2, p3, t);
-            let diff = c - p;
-            let fp = 2.0 * diff.dot(&c_d);
-            let fpp = 2.0 * (c_d.dot(&c_d) + diff.dot(&c_dd));
-            if fpp.abs() < 1e-20 {
-                break;
-            }
-            t -= fp / fpp;
-            t = t.clamp(0.0, 1.0);
-        }
-
-        let c = catmull_rom_point(p0, p1, p2, p3, t);
-        let d_sq = nalgebra::distance_squared(p, &c);
-        if d_sq < min_dist_sq {
-            min_dist_sq = d_sq;
-        }
-    }
-
-    min_dist_sq.sqrt() - radius
+    let nearest = cf_geometry::nearest_point_on_catmull_rom(control_points, p);
+    nalgebra::distance(p, &nearest) - radius
 }
 
 // ── Loft helpers ──────────────────────────────────────────────────────────
@@ -657,7 +598,7 @@ fn loft_radius_at(stations: &[[f64; 2]], z: f64) -> f64 {
     catmull_rom_1d(r_m1, r0, r1, r2, t)
 }
 
-/// 1D Catmull-Rom interpolation. Same basis as `catmull_rom_point`.
+/// 1D Catmull-Rom interpolation (uniform α=0.5 basis), used for loft radii.
 // Short names mirror textbook / paper notation.
 #[allow(clippy::many_single_char_names)]
 fn catmull_rom_1d(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
@@ -668,60 +609,6 @@ fn catmull_rom_1d(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
     let quad = 2.0f64.mul_add(p0, 4.0f64.mul_add(p2, -(5.0 * p1) - p3)) * t2;
     let cubic = 3.0f64.mul_add(p1, 3.0f64.mul_add(-p2, -p0 + p3)) * t3;
     0.5 * (linear + quad + cubic)
-}
-
-// ── Catmull-Rom helpers ──────────────────────────────────────────────────
-
-/// Catmull-Rom spline evaluation at parameter t ∈ [0, 1].
-///
-/// Uses the standard matrix form with α = 0.5 (centripetal is typical, but
-/// uniform α=0.5 is the standard Catmull-Rom used in graphics).
-fn catmull_rom_point(
-    p0: Point3<f64>,
-    p1: Point3<f64>,
-    p2: Point3<f64>,
-    p3: Point3<f64>,
-    t: f64,
-) -> Point3<f64> {
-    let t2 = t * t;
-    let t3 = t2 * t;
-    // C(t) = 0.5 * ((2*P1) + (-P0 + P2)*t + (2*P0 - 5*P1 + 4*P2 - P3)*t² + (-P0 + 3*P1 - 3*P2 + P3)*t³)
-    let c = (p1.coords * 2.0
-        + (-p0.coords + p2.coords) * t
-        + (p0.coords * 2.0 - p1.coords * 5.0 + p2.coords * 4.0 - p3.coords) * t2
-        + (-p0.coords + p1.coords * 3.0 - p2.coords * 3.0 + p3.coords) * t3)
-        * 0.5;
-    Point3::from(c)
-}
-
-/// First derivative of Catmull-Rom spline at parameter t.
-fn catmull_rom_deriv(
-    p0: Point3<f64>,
-    p1: Point3<f64>,
-    p2: Point3<f64>,
-    p3: Point3<f64>,
-    t: f64,
-) -> nalgebra::Vector3<f64> {
-    let t2 = t * t;
-    // C'(t) = 0.5 * ((-P0 + P2) + (4*P0 - 10*P1 + 8*P2 - 2*P3)*t + (-3*P0 + 9*P1 - 9*P2 + 3*P3)*t²)
-    ((-p0.coords + p2.coords)
-        + (p0.coords * 4.0 - p1.coords * 10.0 + p2.coords * 8.0 - p3.coords * 2.0) * t
-        + (-p0.coords * 3.0 + p1.coords * 9.0 - p2.coords * 9.0 + p3.coords * 3.0) * t2)
-        * 0.5
-}
-
-/// Second derivative of Catmull-Rom spline at parameter t.
-fn catmull_rom_deriv2(
-    p0: Point3<f64>,
-    p1: Point3<f64>,
-    p2: Point3<f64>,
-    p3: Point3<f64>,
-    t: f64,
-) -> nalgebra::Vector3<f64> {
-    // C''(t) = 0.5 * ((4*P0 - 10*P1 + 8*P2 - 2*P3) + (-6*P0 + 18*P1 - 18*P2 + 6*P3)*t)
-    ((p0.coords * 4.0 - p1.coords * 10.0 + p2.coords * 8.0 - p3.coords * 2.0)
-        + (-p0.coords * 6.0 + p1.coords * 18.0 - p2.coords * 18.0 + p3.coords * 6.0) * t)
-        * 0.5
 }
 
 #[cfg(test)]
