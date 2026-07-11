@@ -46,11 +46,24 @@ pub(crate) fn start_solve(
     if !keys.just_pressed(KeyCode::KeyS) || task.pending.is_some() {
         return;
     }
-    let disc = match loft_painted_disc(&bodies) {
-        Ok(disc) => disc,
-        Err(msg) => {
+    // Loft runs on the main thread (it reads the `PaintBody` query, which can't
+    // cross into the task), so catch a panic here too — a malformed bushing must
+    // route back to Design, not crash the app.
+    let lofted =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| loft_painted_disc(&bodies)));
+    let disc = match lofted {
+        Ok(Ok(disc)) => disc,
+        Ok(Err(msg)) => {
             error.0 = Some(msg);
             return; // stay in Design
+        }
+        Err(_) => {
+            error.0 = Some(
+                "lofting the painted patches failed — the painted regions produced an invalid \
+                 bushing; try repainting fuller, flatter patches"
+                    .to_string(),
+            );
+            return;
         }
     };
     error.0 = None;

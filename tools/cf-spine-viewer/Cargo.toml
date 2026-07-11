@@ -76,16 +76,18 @@ mesh-loft = { workspace = true }
 # from an STL. Without it the raw loft tet-meshes into a shattered surface.
 mesh-repair = { workspace = true }
 
-# Bevy 0.18 — feature set mirrors cf-sim-research exactly so the
-# workspace's validated rendering subset stays consistent across viewers.
+# Bevy 0.18 — the cf-sim-research validated rendering subset, PLUS `bevy_picking`
+# + `mesh_picking` for `cf-mesh-paint`'s hover ray-cast (the paint brush). Keeps
+# the workspace's rendering subset consistent while documenting the paint
+# requirement explicitly (rather than leaning on cf-mesh-paint enabling it).
 bevy = { workspace = true, default-features = false, features = [
     "bevy_asset",
     "bevy_core_pipeline",
     "bevy_gizmos",
     "bevy_gizmos_render",
     "bevy_pbr",
-    "bevy_picking",
-    "mesh_picking",
+    "bevy_picking",  # cf-mesh-paint hover ray-cast (paint brush)
+    "mesh_picking",  # cf-mesh-paint hover ray-cast (paint brush)
     "bevy_render",
     "bevy_state",
     "bevy_text",
