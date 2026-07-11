@@ -439,6 +439,8 @@ members = [
     # Foundation (active development)
     "design/cf-geometry",
     "design/cf-fsu-geometry",
+    "design/cf-routing",
+    "design/cf-routing-tests",
     "design/cf-spatial",
 
     # Design kernel (active development)
@@ -712,6 +714,8 @@ mesh = { path = "mesh/mesh" }
 # Geometric kernel
 cf-geometry = { path = "design/cf-geometry" }
 cf-fsu-geometry = { path = "design/cf-fsu-geometry" }
+cf-routing = { path = "design/cf-routing" }
+cf-routing-tests = { path = "design/cf-routing-tests" }
 
 # Spatial foundation
 cf-spatial = { path = "design/cf-spatial" }

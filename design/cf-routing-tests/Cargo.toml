@@ -1,0 +1,34 @@
+[package]
+name = "cf-routing-tests"
+description = "Integration tests for cf-routing — real-anatomy bore on a licensed L4 vertebra. Holds the mesh-loader dev-deps (cf-fsu-geometry → mesh-io) so they stay out of cf-routing's L0 dev-graph."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Coverage criterion N/A: this crate has no src/ — only [[test]] integration
+# targets. --lib errors with "no library targets found".
+[package.metadata.cortenforge]
+tier = "L0-integration"
+grading_profile = "integration-only"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Crate under test — exercises the `Path` + `bore` routing API end-to-end.
+cf-routing = { workspace = true }
+# `Solid` CSG kernel — the bore target/result and the pipe-spline field probe.
+cf-design = { workspace = true }
+# Real-anatomy fixtures: mesh load + SDF oracle + body-centre.
+cf-fsu-geometry = { workspace = true }
+# Aabb / IndexedMesh / Sdf used to bound the mesh and probe the bone field.
+cf-geometry = { workspace = true }
+# Watertight / manifold validation of the meshed bore.
+mesh-repair = { workspace = true }
+# Point / Vector primitives.
+nalgebra = { workspace = true }
+
+[dev-dependencies]
+# Approximate equality for the finite-difference gradient check.
+approx = { workspace = true }

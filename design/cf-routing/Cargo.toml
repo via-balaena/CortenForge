@@ -1,0 +1,33 @@
+[package]
+name = "cf-routing"
+description = "Differentiable centerline routing — one path, many physical realizations"
+keywords = ["routing", "path", "cad", "sdf", "differentiable"]
+categories = ["mathematics", "graphics", "algorithms"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[package.metadata.cortenforge]
+tier = "L0"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Linear algebra (points, vectors) — the currency of every geometry API here.
+nalgebra = { workspace = true }
+# `CatmullRomCurve` — the single source of the centerline geometry a `Path` wraps.
+cf-geometry = { workspace = true }
+# `Solid` CSG kernel — the target and result type of the subtractive `bore`.
+cf-design = { workspace = true }
+
+[dev-dependencies]
+# Approximate equality for the geometric unit tests.
+approx = { workspace = true }
+# Watertight / manifold validation of the meshed synthetic bore. (Does not pull
+# `mesh-io`, so the L0 tier ban is respected; the real-anatomy test that needs a
+# mesh loader lives in the L0-integration `cf-routing-tests` crate.)
+mesh-repair = { workspace = true }

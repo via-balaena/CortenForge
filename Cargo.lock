@@ -2495,6 +2495,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-routing"
+version = "1.0.0"
+dependencies = [
+ "approx 0.5.1",
+ "cf-design",
+ "cf-geometry",
+ "mesh-repair",
+ "nalgebra 0.34.2",
+]
+
+[[package]]
+name = "cf-routing-tests"
+version = "1.0.0"
+dependencies = [
+ "approx 0.5.1",
+ "cf-design",
+ "cf-fsu-geometry",
+ "cf-geometry",
+ "cf-routing",
+ "mesh-repair",
+ "nalgebra 0.34.2",
+]
+
+[[package]]
 name = "cf-scan-prep"
 version = "1.0.0"
 dependencies = [
