@@ -10,6 +10,8 @@
 //! Solving, the bones+disc in Simulate — and the swaps happen within one `StateTransition`
 //! command flush, so no frame is empty.
 
+use std::collections::HashMap;
+
 use bevy::prelude::*;
 use cf_mesh_paint::prelude::{MeshPaintConfig, PaintBody, PaintTargets, paint_render_mesh};
 use cf_viewer::UpAxis;
@@ -54,6 +56,26 @@ pub(crate) struct SourceMeshes {
     pub(crate) l5: IndexedMesh,
 }
 
+/// The painted face-ids stashed per body name, so a painting survives the Simulate
+/// round-trip (which despawns + re-spawns the paint bodies). Keyed by name because the
+/// re-spawned bodies are new entities. Written by [`stash_paint`] on entering Simulate;
+/// re-applied by [`spawn_paint_bodies`] when it rebuilds the bodies on leaving Simulate.
+#[derive(Resource, Default)]
+pub(crate) struct PaintStash(HashMap<String, Vec<usize>>);
+
+/// Capture each paint body's selection into [`PaintStash`] before the bodies are despawned
+/// on entering Simulate, so [`spawn_paint_bodies`] can restore it when the user returns to
+/// Design. Runs `.before(despawn_paint_bodies)`.
+#[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
+pub(crate) fn stash_paint(bodies: Query<&PaintBody>, mut stash: ResMut<PaintStash>) {
+    for body in &bodies {
+        stash.0.insert(
+            body.name().to_string(),
+            body.painted().iter().copied().collect(),
+        );
+    }
+}
+
 /// Build a SMOOTH-shaded Bevy mesh from an indexed surface: area-weighted
 /// per-vertex normals (`AttributedMesh::compute_normals`) rendered by the
 /// shared attributed converter (f64→f32 + Z-up→Y-up handled internally).
@@ -68,14 +90,23 @@ fn smooth_mesh(indexed: &IndexedMesh) -> Mesh {
 /// contract [`cf_mesh_paint`] needs) and a [`PaintBody`]; the ordered set goes
 /// into [`PaintTargets`]. Run at startup (initial Design) and on leaving
 /// Simulate. Despawned by [`despawn_paint_bodies`] on entering Simulate.
+///
+/// Restores each body's stashed selection ([`PaintStash`]) inline, so a re-spawned body
+/// comes back with its painting. Folding the restore in here (rather than a separate
+/// `OnExit(Simulate)` system reading the spawned bodies) is a stylistic/efficiency choice —
+/// it avoids an extra ordered system plus the `ApplyDeferred` sync point Bevy would insert to
+/// flush this system's spawn `Commands` before it — not a correctness requirement. The stash
+/// is empty at startup, so the first launch spawns clean bodies.
 pub(crate) fn spawn_paint_bodies(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     sources: Res<SourceMeshes>,
+    stash: Res<PaintStash>,
 ) {
-    // Seed each render mesh with the base colour the brush restores on erase.
-    let base = MeshPaintConfig::default().base_color;
+    // The brush's two colours (base seeds the render mesh; both are used to restore a stash).
+    let config = MeshPaintConfig::default();
+    let (base, highlight) = (config.base_color, config.highlight_color);
     let mut entities = Vec::new();
     for (mesh, name) in [(&sources.l4, "L4"), (&sources.l5, "L5")] {
         let handle = meshes.add(paint_render_mesh(mesh, UpAxis::PlusZ, base));
@@ -86,12 +117,16 @@ pub(crate) fn spawn_paint_bodies(
             cull_mode: None,
             ..default()
         });
+        let mut body = PaintBody::new(name, mesh.clone(), handle.clone());
+        if let Some(faces) = stash.0.get(name) {
+            body.restore(faces.iter().copied(), &mut meshes, base, highlight);
+        }
         let entity = commands
             .spawn((
-                Mesh3d(handle.clone()),
+                Mesh3d(handle),
                 MeshMaterial3d(material),
                 Transform::default(),
-                PaintBody::new(name, mesh.clone(), handle),
+                body,
             ))
             .id();
         entities.push(entity);
