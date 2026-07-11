@@ -121,8 +121,10 @@ impl CatmullRomCurve {
 /// closest to `query`.
 ///
 /// Walks every span with a coarse 16-way sampling followed by four Newton
-/// iterations on the squared distance. The two-control-point case degenerates
-/// to the closest point on the single line segment.
+/// iterations on the squared distance, keeping whichever of the two is closer
+/// (Newton can diverge from a minimum on a high-curvature span). The
+/// two-control-point case degenerates to the closest point on the single line
+/// segment.
 ///
 /// This is the borrowing form of [`CatmullRomCurve::nearest_point`]: it takes
 /// the control points directly so callers on a hot path (e.g. evaluating a
@@ -160,6 +162,8 @@ pub fn nearest_point_on_catmull_rom(
         let subdivs: u32 = 16;
         let mut best_t = 0.0_f64;
         let mut best_d_sq = f64::INFINITY;
+        // Overwritten on the i=0 iteration for any finite query (d_sq < ∞).
+        let mut best_point = Point3::origin();
 
         for i in 0..=subdivs {
             let t = f64::from(i) / f64::from(subdivs);
@@ -168,6 +172,7 @@ pub fn nearest_point_on_catmull_rom(
             if d_sq < best_d_sq {
                 best_d_sq = d_sq;
                 best_t = t;
+                best_point = q;
             }
         }
 
@@ -187,8 +192,17 @@ pub fn nearest_point_on_catmull_rom(
             t = t.clamp(0.0, 1.0);
         }
 
-        let c = cr_point(p0, p1, p2, p3, t);
-        let d_sq = nalgebra::distance_squared(query, &c);
+        // Newton minimizes a stationary point, not necessarily a minimum: on a
+        // high-curvature span it can converge to a point farther from `query`
+        // than the coarse seed. Keep whichever is closer so a span never
+        // reports worse than its 16-way grid best.
+        let newton_point = cr_point(p0, p1, p2, p3, t);
+        let newton_d_sq = nalgebra::distance_squared(query, &newton_point);
+        let (c, d_sq) = if newton_d_sq < best_d_sq {
+            (newton_point, newton_d_sq)
+        } else {
+            (best_point, best_d_sq)
+        };
         if d_sq < min_dist_sq {
             min_dist_sq = d_sq;
             nearest = c;
@@ -367,6 +381,53 @@ mod tests {
             let expected = crate::closest_point_segment(a, b, probe);
             assert_eq!(got, expected);
         }
+    }
+
+    /// Brute-force ground-truth check on a high-curvature (zig-zag) curve where
+    /// unguarded Newton would return points up to ~2.5x farther than the true
+    /// nearest. With the coarse-vs-Newton safeguard the search matches a dense
+    /// sampling of the curve everywhere.
+    #[test]
+    fn nearest_point_matches_brute_force_on_sharp_curve() {
+        let cps = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.3, 0.5, 0.0),
+            Point3::new(0.6, -0.4, 0.0),
+            Point3::new(0.9, 0.5, 0.0),
+            Point3::new(1.2, -0.4, 0.0),
+            Point3::new(1.5, 0.5, 0.0),
+            Point3::new(1.8, 0.0, 0.0),
+        ];
+
+        // Dense sampling of the whole curve = ground-truth nearest distance.
+        let brute = |p: &Point3<f64>| -> f64 {
+            let mut best = f64::INFINITY;
+            for span in 0..cps.len() - 1 {
+                let (p0, p1, p2, p3) = span_points(&cps, span);
+                for i in 0..=20_000u32 {
+                    let t = f64::from(i) / 20_000.0;
+                    let d = nalgebra::distance_squared(p, &cr_point(p0, p1, p2, p3, t));
+                    best = best.min(d);
+                }
+            }
+            best.sqrt()
+        };
+
+        let mut max_err = 0.0f64;
+        for ix in 0..=40 {
+            for iy in 0..=40 {
+                let p = Point3::new(
+                    -0.4 + 2.6 * f64::from(ix) / 40.0,
+                    -0.6 + 1.4 * f64::from(iy) / 40.0,
+                    0.0,
+                );
+                let got = nalgebra::distance(&p, &nearest_point_on_catmull_rom(&cps, &p));
+                max_err = max_err.max(got - brute(&p));
+            }
+        }
+        // Search never reports farther than ground truth (bounded by the brute
+        // sampling resolution); the old unguarded search erred by up to ~0.39.
+        assert!(max_err < 1e-3, "max error vs brute force = {max_err:.3e}");
     }
 
     #[test]
