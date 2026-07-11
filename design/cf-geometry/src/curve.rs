@@ -45,11 +45,18 @@ pub struct CatmullRomCurve {
 impl CatmullRomCurve {
     /// Creates a curve through `control_points`.
     ///
-    /// Returns [`None`] when fewer than two control points are supplied — a
-    /// curve is undefined without at least a start and an end.
+    /// Returns [`None`] when fewer than two control points are supplied, or when
+    /// any control-point coordinate is non-finite — a curve is undefined in
+    /// either case.
     #[must_use]
     pub fn new(control_points: Vec<Point3<f64>>) -> Option<Self> {
         if control_points.len() < 2 {
+            return None;
+        }
+        if control_points
+            .iter()
+            .any(|p| !p.coords.iter().all(|c| c.is_finite()))
+        {
             return None;
         }
         Some(Self { control_points })
@@ -294,6 +301,15 @@ mod tests {
         assert!(CatmullRomCurve::new(vec![]).is_none());
         assert!(CatmullRomCurve::new(vec![Point3::origin()]).is_none());
         assert!(CatmullRomCurve::new(vec![Point3::origin(), Point3::new(1.0, 0.0, 0.0)]).is_some());
+    }
+
+    #[test]
+    fn new_rejects_non_finite_coordinates() {
+        let ok = Point3::new(1.0, 0.0, 0.0);
+        assert!(CatmullRomCurve::new(vec![Point3::new(f64::NAN, 0.0, 0.0), ok]).is_none());
+        assert!(CatmullRomCurve::new(vec![Point3::new(f64::INFINITY, 0.0, 0.0), ok]).is_none());
+        assert!(CatmullRomCurve::new(vec![ok, Point3::new(0.0, f64::NEG_INFINITY, 0.0)]).is_none());
+        assert!(CatmullRomCurve::new(vec![Point3::origin(), ok]).is_some());
     }
 
     #[test]

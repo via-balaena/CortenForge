@@ -353,7 +353,7 @@ jobs:
               cortenforge cf-msk-fit cf-anthro cf-cap-planes cf-device-types
           - id: 3
             crates: sim-soft sim-core sim-mjcf sim-urdf sim-gpu sim-types
-              sim-therm-env cf-design cf-design-tests cf-fsu-geometry cf-cast-cli sim
+              sim-therm-env cf-design cf-design-tests cf-fsu-geometry cf-routing cf-routing-tests cf-cast-cli sim
               pbit-analyze pbit-fw-core
     steps:
       - uses: actions/checkout@v6
