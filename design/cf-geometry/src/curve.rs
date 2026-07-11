@@ -98,11 +98,11 @@ impl CatmullRomCurve {
 
     /// Returns the point on the curve closest to `p`.
     ///
-    /// Convenience wrapper over [`nearest_point_on_catmull_rom`]; see that
+    /// Convenience wrapper over [`closest_point_on_catmull_rom`]; see that
     /// function for the algorithm.
     #[must_use]
-    pub fn nearest_point(&self, p: &Point3<f64>) -> Point3<f64> {
-        nearest_point_on_catmull_rom(&self.control_points, p)
+    pub fn closest_point(&self, p: &Point3<f64>) -> Point3<f64> {
+        closest_point_on_catmull_rom(&self.control_points, p)
     }
 
     /// Maps a global `t ∈ [0, 1]` to its span index and local parameter `u`.
@@ -133,14 +133,14 @@ impl CatmullRomCurve {
 /// two-control-point case degenerates to the closest point on the single line
 /// segment.
 ///
-/// This is the borrowing form of [`CatmullRomCurve::nearest_point`]: it takes
+/// This is the borrowing form of [`CatmullRomCurve::closest_point`]: it takes
 /// the control points directly so callers on a hot path (e.g. evaluating a
 /// swept-tube SDF while meshing) need not allocate a curve per query.
 ///
 /// With fewer than two control points the curve is undefined; the origin is
 /// returned. Prefer [`CatmullRomCurve::new`], which rejects that case.
 #[must_use]
-pub fn nearest_point_on_catmull_rom(
+pub fn closest_point_on_catmull_rom(
     control_points: &[Point3<f64>],
     query: &Point3<f64>,
 ) -> Point3<f64> {
@@ -158,7 +158,7 @@ pub fn nearest_point_on_catmull_rom(
     }
 
     let mut min_dist_sq = f64::INFINITY;
-    let mut nearest = Point3::origin();
+    let mut closest = Point3::origin();
 
     // n >= 3 here, so `n - 1` cannot underflow.
     let num_spans = n - 1;
@@ -212,11 +212,11 @@ pub fn nearest_point_on_catmull_rom(
         };
         if d_sq < min_dist_sq {
             min_dist_sq = d_sq;
-            nearest = c;
+            closest = c;
         }
     }
 
-    nearest
+    closest
 }
 
 /// Returns the four control points `(p0, p1, p2, p3)` governing `span`,
@@ -350,10 +350,10 @@ mod tests {
     }
 
     #[test]
-    fn nearest_point_recovers_small_offset() {
+    fn closest_point_recovers_small_offset() {
         let curve = sample_curve();
         // Offset a known on-curve point along the surface normal-ish direction
-        // (perpendicular to the tangent) by a small amount; nearest_point must
+        // (perpendicular to the tangent) by a small amount; closest_point must
         // return approximately the original on-curve point.
         let t = 0.37;
         let on_curve = curve.sample(t);
@@ -362,18 +362,18 @@ mod tests {
         let arbitrary = Vector3::new(0.0, 0.0, 1.0);
         let perp = (arbitrary - tan * arbitrary.dot(&tan)).normalize();
         let probe = on_curve + perp * 1e-3;
-        let nearest = curve.nearest_point(&probe);
-        assert_abs_diff_eq!(nearest, on_curve, epsilon = 1e-5);
+        let closest = curve.closest_point(&probe);
+        assert_abs_diff_eq!(closest, on_curve, epsilon = 1e-5);
     }
 
     #[test]
-    fn nearest_point_on_curve_is_itself() {
+    fn closest_point_on_curve_is_itself() {
         let curve = sample_curve();
         for k in 0..=10 {
             let t = f64::from(k) / 10.0;
             let on_curve = curve.sample(t);
-            let nearest = curve.nearest_point(&on_curve);
-            assert_abs_diff_eq!(nearest, on_curve, epsilon = 1e-9);
+            let closest = curve.closest_point(&on_curve);
+            assert_abs_diff_eq!(closest, on_curve, epsilon = 1e-9);
         }
     }
 
@@ -387,13 +387,13 @@ mod tests {
         assert_abs_diff_eq!(curve.sample(0.0), a, epsilon = 1e-12);
         assert_abs_diff_eq!(curve.sample(1.0), b, epsilon = 1e-12);
 
-        // nearest_point matches closest_point_segment byte-for-byte.
+        // closest_point matches closest_point_segment byte-for-byte.
         for probe in [
             Point3::new(0.0, 0.0, 0.0),
             Point3::new(5.0, 5.0, 5.0),
             Point3::new(-3.0, 0.0, 2.0),
         ] {
-            let got = curve.nearest_point(&probe);
+            let got = curve.closest_point(&probe);
             let expected = crate::closest_point_segment(a, b, probe);
             assert_eq!(got, expected);
         }
@@ -401,10 +401,10 @@ mod tests {
 
     /// Brute-force ground-truth check on a high-curvature (zig-zag) curve where
     /// unguarded Newton would return points up to ~2.5x farther than the true
-    /// nearest. With the coarse-vs-Newton safeguard the search matches a dense
+    /// closest. With the coarse-vs-Newton safeguard the search matches a dense
     /// sampling of the curve everywhere.
     #[test]
-    fn nearest_point_matches_brute_force_on_sharp_curve() {
+    fn closest_point_matches_brute_force_on_sharp_curve() {
         let cps = [
             Point3::new(0.0, 0.0, 0.0),
             Point3::new(0.3, 0.5, 0.0),
@@ -415,7 +415,7 @@ mod tests {
             Point3::new(1.8, 0.0, 0.0),
         ];
 
-        // Dense sampling of the whole curve = ground-truth nearest distance.
+        // Dense sampling of the whole curve = ground-truth closest distance.
         let brute = |p: &Point3<f64>| -> f64 {
             let mut best = f64::INFINITY;
             for span in 0..cps.len() - 1 {
@@ -437,7 +437,7 @@ mod tests {
                     -0.6 + 1.4 * f64::from(iy) / 40.0,
                     0.0,
                 );
-                let got = nalgebra::distance(&p, &nearest_point_on_catmull_rom(&cps, &p));
+                let got = nalgebra::distance(&p, &closest_point_on_catmull_rom(&cps, &p));
                 max_err = max_err.max(got - brute(&p));
             }
         }
@@ -447,13 +447,13 @@ mod tests {
     }
 
     #[test]
-    fn nearest_point_on_fewer_than_two_points_is_origin() {
+    fn closest_point_on_fewer_than_two_points_is_origin() {
         // The free fn is public and unguarded; below two control points the
         // curve is undefined and it must return origin, not panic.
         let probe = Point3::new(1.0, 2.0, 3.0);
-        assert_eq!(nearest_point_on_catmull_rom(&[], &probe), Point3::origin());
+        assert_eq!(closest_point_on_catmull_rom(&[], &probe), Point3::origin());
         assert_eq!(
-            nearest_point_on_catmull_rom(&[Point3::new(4.0, 5.0, 6.0)], &probe),
+            closest_point_on_catmull_rom(&[Point3::new(4.0, 5.0, 6.0)], &probe),
             Point3::origin()
         );
     }

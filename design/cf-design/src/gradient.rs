@@ -10,6 +10,7 @@
 use nalgebra::{Point3, Vector3};
 
 use crate::field_node::FieldNode;
+use crate::loft::{loft_radius_at, loft_radius_deriv};
 
 impl FieldNode {
     /// Compute the analytic gradient of the scalar field at a point.
@@ -723,14 +724,14 @@ fn grad_pipe(vertices: &[Point3<f64>], p: &Point3<f64>) -> Vector3<f64> {
     (p - nearest) / dist
 }
 
-/// Pipe spline: direction from nearest point on Catmull-Rom spline to query.
+/// Pipe spline: direction from closest point on Catmull-Rom spline to query.
 fn grad_pipe_spline(control_points: &[Point3<f64>], p: &Point3<f64>) -> Vector3<f64> {
-    let nearest = cf_geometry::nearest_point_on_catmull_rom(control_points, p);
-    let dist = nalgebra::distance(p, &nearest);
+    let closest = cf_geometry::closest_point_on_catmull_rom(control_points, p);
+    let dist = nalgebra::distance(p, &closest);
     if dist < 1e-15 {
         return Vector3::zeros();
     }
-    (p - nearest) / dist
+    (p - closest) / dist
 }
 
 // ── Loft gradient helper ────────────────────────────────────────────────
@@ -781,7 +782,7 @@ fn grad_loft(stations: &[[f64; 2]], p: &Point3<f64>) -> Vector3<f64> {
     }
 }
 
-// ── Duplicated helpers (private in evaluate.rs) ─────────────────────────
+// ── Repeat-domain fold helpers (mirrored in evaluate.rs) ────────────────
 
 /// Fold coordinate into fundamental domain for infinite repetition.
 fn fold_repeat(coord: f64, spacing: f64) -> f64 {
@@ -797,87 +798,6 @@ fn fold_repeat_bounded(coord: f64, spacing: f64, count: u32) -> f64 {
     let half = (n - 1.0) * spacing * 0.5;
     let id = ((coord + half) / spacing).round().clamp(0.0, n - 1.0);
     coord - id.mul_add(spacing, -half)
-}
-
-/// 1D Catmull-Rom interpolation (uniform α=0.5 basis), used for loft radii.
-// Short names mirror textbook / paper notation.
-#[allow(clippy::many_single_char_names)]
-fn cr_1d(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
-    let t2 = t * t;
-    let t3 = t2 * t;
-    let linear = 2.0f64.mul_add(p1, (-p0 + p2) * t);
-    let quad = 2.0f64.mul_add(p0, 4.0f64.mul_add(p2, -(5.0 * p1) - p3)) * t2;
-    let cubic = 3.0f64.mul_add(p1, 3.0f64.mul_add(-p2, -p0 + p3)) * t3;
-    0.5 * (linear + quad + cubic)
-}
-
-/// 1D Catmull-Rom first derivative.
-// Short names mirror textbook / paper notation.
-#[allow(clippy::many_single_char_names)]
-fn cr_1d_deriv(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
-    let t2 = t * t;
-    let linear = -p0 + p2;
-    let quad = 2.0 * 2.0f64.mul_add(p0, 4.0f64.mul_add(p2, -(5.0 * p1) - p3)) * t;
-    let cubic = 3.0 * 3.0f64.mul_add(p1, 3.0f64.mul_add(-p2, -p0 + p3)) * t2;
-    0.5 * (linear + quad + cubic)
-}
-
-/// Catmull-Rom interpolation of loft radius at a given z.
-fn loft_radius_at(stations: &[[f64; 2]], z: f64) -> f64 {
-    let n = stations.len();
-    let z_clamped = z.clamp(stations[0][0], stations[n - 1][0]);
-
-    let mut span = 0;
-    for (i, station) in stations[..n - 1].iter().enumerate() {
-        if z_clamped >= station[0] {
-            span = i;
-        }
-    }
-    span = span.min(n - 2);
-
-    let z0 = stations[span][0];
-    let z1 = stations[span + 1][0];
-    let dz = z1 - z0;
-    if dz < 1e-15 {
-        return stations[span][1];
-    }
-    let t = ((z_clamped - z0) / dz).clamp(0.0, 1.0);
-
-    let r_m1 = stations[span.saturating_sub(1)][1];
-    let r0 = stations[span][1];
-    let r1 = stations[span + 1][1];
-    let r2 = stations[(span + 2).min(n - 1)][1];
-
-    cr_1d(r_m1, r0, r1, r2, t)
-}
-
-/// Derivative dR/dz of loft radius interpolation at a given z.
-fn loft_radius_deriv(stations: &[[f64; 2]], z: f64) -> f64 {
-    let n = stations.len();
-    let z_clamped = z.clamp(stations[0][0], stations[n - 1][0]);
-
-    let mut span = 0;
-    for (i, station) in stations[..n - 1].iter().enumerate() {
-        if z_clamped >= station[0] {
-            span = i;
-        }
-    }
-    span = span.min(n - 2);
-
-    let z0 = stations[span][0];
-    let z1 = stations[span + 1][0];
-    let dz = z1 - z0;
-    if dz < 1e-15 {
-        return 0.0;
-    }
-    let t = ((z_clamped - z0) / dz).clamp(0.0, 1.0);
-
-    let r_m1 = stations[span.saturating_sub(1)][1];
-    let r0 = stations[span][1];
-    let r1 = stations[span + 1][1];
-    let r2 = stations[(span + 2).min(n - 1)][1];
-
-    cr_1d_deriv(r_m1, r0, r1, r2, t) / dz
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -1123,7 +1043,7 @@ mod tests {
     }
 
     /// Byte-identity gate for the delegation of `pipe_spline` eval+grad to
-    /// `cf_geometry::nearest_point_on_catmull_rom`. Golden values were captured
+    /// `cf_geometry::closest_point_on_catmull_rom`. Golden values were captured
     /// from the pre-delegation inline implementation at full f64 precision;
     /// delegation must reproduce them bit-for-bit (asserted with `==`).
     #[test]

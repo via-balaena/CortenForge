@@ -35,6 +35,7 @@ mod evaluate_batch;
 pub(crate) mod field_node;
 mod gradient;
 mod interval;
+mod loft;
 pub mod mechanism;
 mod mesher;
 #[cfg(test)]
