@@ -67,10 +67,10 @@ slint = { version = "1", features = ["unstable-wgpu-28"] }
 # turns it on for every target via cargo's additive feature unification.
 # Pinned to 28 to match slint 1.15's wgpu-core 28. Drop when naga ships a
 # release that enables its own `termcolor` (or stops stripping codespan's).
-naga = { version = "28", features = ["termcolor"] }
+naga = { version = "29", features = ["termcolor"] }
 # Native open/save file dialogs for the step screens (scan / prep /
 # design pickers). Direct dep; isolated to the GUI crate.
-rfd = "0.15"
+rfd = "0.17"
 # The SDK through the facade — the `mesh` umbrella: `cortenforge::mesh::io`
 # (load scan/mold meshes) + `cortenforge::mesh::types` (`IndexedMesh` for the
 # live preview the step-2 EditSession mutates). The GUI needs only the mesh
