@@ -17,7 +17,7 @@
 //!   * [`facet_grid`] — sample the field into an [`SdfGrid`] for facet contact.
 //!
 //! The recipes were proven in the geometry-fidelity ladder and are the single
-//! home consumed by the `cf-spine-viewer` tool and the rung 4b / 5 / 6c / 7
+//! home consumed by the `cf-spine-studio` tool and the rung 4b / 5 / 6c / 7
 //! integration tests. The crate is deliberately **sim-core-free**: [`facet_grid`]
 //! builds a `cf_geometry::SdfGrid` directly, and the `ShapeConcave` collision
 //! that consumes the grid stays in each caller.

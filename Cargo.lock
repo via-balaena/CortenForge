@@ -2566,7 +2566,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "cf-spine-viewer"
+name = "cf-spine-studio"
 version = "1.0.0"
 dependencies = [
  "anyhow",

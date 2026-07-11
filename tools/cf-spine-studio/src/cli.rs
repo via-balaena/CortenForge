@@ -9,7 +9,7 @@ use clap::Parser;
 
 /// Paint the L4–L5 endplates, loft the disc, and simulate the coupled FSU.
 #[derive(Parser)]
-#[command(name = "cf-spine-viewer")]
+#[command(name = "cf-spine-studio")]
 pub(crate) struct Cli {
     /// Directory holding the two BodyParts3D vertebra STLs, named by FMA id
     /// (FMA13075 = L4, FMA13076 = L5). Native mm.

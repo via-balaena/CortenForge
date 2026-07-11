@@ -14,7 +14,7 @@
 //! prints the exact command to run the **anatomical FSU** — the painted disc as
 //! the deforming soft bushing between the *real* L4/L5 vertebrae, with the
 //! field-derived ligaments and facet contacts, solved as one moment-driven
-//! equilibrium (`cf-spine-viewer`, reusing the same vertebra STLs this tool
+//! equilibrium (`cf-spine-studio`, reusing the same vertebra STLs this tool
 //! loaded). A simpler alternative bonds the disc between two abstract plates
 //! (`real-disc-bonded`, via `$CF_DISC_STL`). Same validated recipe either way:
 //! the painted disc tet-meshed, bonded, and flexing.
@@ -316,17 +316,16 @@ fn loft_disc(
     show.0 = true;
 }
 
-/// Export the last lofted disc to an STL with `S` and print the exact commands
-/// to simulate it — closing the paint → simulate loop. The path is
-/// `$CF_DISC_OUT`, or `painted_disc.stl` in the temp dir.
+/// Export the last lofted disc to an STL with `S` and print a command to bond it
+/// between two abstract plates (`real-disc-bonded`). The path is `$CF_DISC_OUT`,
+/// or `painted_disc.stl` in the temp dir.
 ///
-/// The primary finale is the **anatomical FSU** (`cf-spine-viewer`): the painted
-/// disc becomes the deforming soft bushing between the *real* L4/L5 vertebrae,
-/// with the field-derived ligaments and facet contacts, solved as one
-/// moment-driven equilibrium ([`cf_fsu_model::CoupledFsu`]). It reuses the same
-/// vertebra STLs the tool was loaded with (`$CF_L4_STL` / `$CF_L5_STL`), so the
-/// printed command is a single copy-paste. A simpler alternative bonds the disc
-/// between two abstract plates (`real-disc-bonded`).
+/// The full **anatomical FSU** is its own app now, `cf-spine-studio`: it paints
+/// the two endplate patches on the *real* L4/L5 vertebrae in-window and lofts +
+/// solves the coupled FSU (disc bushing + field-derived ligaments + facet
+/// contacts) as one moment-driven equilibrium ([`cf_fsu_model::CoupledFsu`]) — so
+/// it paints its own disc and does not take an exported STL. If the vertebra STLs
+/// are known (`$CF_L4_STL` / `$CF_L5_STL`), the printed command launches it.
 fn export_disc(keys: Res<ButtonInput<KeyCode>>, lofted: Res<LoftedDisc>) {
     if !keys.just_pressed(KeyCode::KeyS) {
         return;
@@ -345,20 +344,22 @@ fn export_disc(keys: Res<ButtonInput<KeyCode>>, lofted: Res<LoftedDisc>) {
     }
     let p = path.display();
     println!("exported disc -> {p}");
-    // The anatomical finale: the painted disc as the bushing between the REAL
-    // vertebrae. Reuse the vertebra paths the tool was loaded with.
+    // What the exported disc feeds: bond it between two abstract plates.
+    println!(
+        "  bond between two plates: CF_DISC_STL={p} cargo run --release -p sim-bevy-soft --example real-disc-bonded"
+    );
+    // The full anatomical FSU is the cf-spine-studio app — it paints its OWN disc
+    // on the real vertebrae, so it doesn't consume the exported STL. Reuse the
+    // vertebra paths the tool was loaded with.
     match (std::env::var("CF_L4_STL"), std::env::var("CF_L5_STL")) {
         (Ok(l4), Ok(l5)) => println!(
-            "  anatomical FSU (disc between the real L4/L5, + ligaments + facets):\n\
-             \x20   cargo run --release -p cf-spine-viewer -- --l4 {l4} --l5 {l5} --disc {p}"
+            "  anatomical FSU (paint + solve on the real L4/L5, + ligaments + facets):\n\
+             \x20   cargo run --release -p cf-spine-studio -- --l4 {l4} --l5 {l5}"
         ),
         _ => println!(
-            "  anatomical FSU: cargo run --release -p cf-spine-viewer -- --l4 <L4.stl> --l5 <L5.stl> --disc {p}"
+            "  anatomical FSU: cargo run --release -p cf-spine-studio -- --l4 <L4.stl> --l5 <L5.stl>"
         ),
     }
-    println!(
-        "  or between two plates: CF_DISC_STL={p} cargo run --release -p sim-bevy-soft --example real-disc-bonded"
-    );
 }
 
 /// Leave disc review with `Esc`, returning to painting (the active body opaque).

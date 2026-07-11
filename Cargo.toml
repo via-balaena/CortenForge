@@ -47,11 +47,12 @@ members = [
     # the insertion-sim + heat-map + sliding-intruder rendering from
     # cf-device-design. See `docs/SIM_DECOUPLE_REFACTOR_PLAN.md` §4.
     "tools/cf-sim-research",
-    # Native Bevy viewer for anatomical spine models — the static
-    # Functional Spinal Unit (FSU) scene (vertebrae + disc + ligament
-    # lines + facet-contact points), consuming the shared cf-bevy-common
-    # camera + cf-viewer scene scaffold. See project-anatomical-spine-viz.
-    "tools/cf-spine-viewer",
+    # Native Bevy Design↔Simulate studio for the L4–L5 Functional Spinal
+    # Unit: paint the two endplate patches, loft + solve the coupled FSU
+    # (disc bushing + ligaments + facet contact), and replay the
+    # moment-driven ROM. Consumes the shared cf-bevy-common camera +
+    # cf-viewer scene scaffold. See project-anatomical-spine-viz.
+    "tools/cf-spine-studio",
     # OpenSim (.osim) → MJCF bridge for the musculoskeletal-builder arc
     # (scan → bones/tendons model, Mission #4). Started as the S0 bridge
     # spike; see docs/msk_builder/.

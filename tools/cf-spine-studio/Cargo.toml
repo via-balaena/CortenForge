@@ -1,6 +1,6 @@
 [package]
-name = "cf-spine-viewer"
-description = "Native Bevy viewer for anatomical spine models — static Functional Spinal Unit (FSU) scene: per-tissue vertebrae + disc + ligament lines + facet-contact points"
+name = "cf-spine-studio"
+description = "Native Bevy Design↔Simulate studio for the L4–L5 Functional Spinal Unit: paint the two endplate patches, loft + solve the coupled FSU (disc bushing + ligaments + facet contact), and replay the moment-driven ROM"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -14,7 +14,7 @@ publish = false
 # cf-sim-research / cf-device-design / cf-scan-prep precedent).
 
 [[bin]]
-name = "cf-spine-viewer"
+name = "cf-spine-studio"
 path = "src/main.rs"
 
 [dependencies]

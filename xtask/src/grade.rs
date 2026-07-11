@@ -2386,9 +2386,9 @@ fn applies_to_crate(crate_name: &str) -> bool {
     // deliverable #2 — gradient-based optimization over the differentiable
     // soft↔rigid coupling, consuming sim-coupling + reusing the chassis Adam)
     // is a `tools/` workspace tool with the cf- prefix — same exemption.
-    // cf-spine-viewer (the native Bevy anatomical-spine viewer; static L4-L5
-    // FSU scene) is a `tools/` Bevy GUI workspace tool with the cf- prefix —
-    // same exemption shape as cf-sim-research. cf-mesh-paint (the reusable
+    // cf-spine-studio (the native Bevy Design↔Simulate anatomical-spine studio;
+    // paint → solve → replay the L4-L5 FSU) is a `tools/` Bevy GUI workspace tool
+    // with the cf- prefix — same exemption shape as cf-sim-research. cf-mesh-paint (the reusable
     // brush-painting Bevy plugin over mesh-select) is a repo-root Bevy support
     // crate, a structural sibling of cf-bevy-common — same exemption shape.
     if matches!(
@@ -2399,7 +2399,7 @@ fn applies_to_crate(crate_name: &str) -> bool {
             | "cf-scan-prep"
             | "cf-device-design"
             | "cf-sim-research"
-            | "cf-spine-viewer"
+            | "cf-spine-studio"
             | "cf-device-geometry"
             | "cf-osim"
             | "cf-anthro"
@@ -4100,8 +4100,8 @@ serde = \"1\"
         assert!(!applies_to_crate("cf-scan-prep"));
         assert!(!applies_to_crate("cf-device-design"));
         assert!(!applies_to_crate("cf-sim-research"));
-        // cf-spine-viewer: native Bevy anatomical-spine viewer, same shape.
-        assert!(!applies_to_crate("cf-spine-viewer"));
+        // cf-spine-studio: native Bevy anatomical-spine studio, same shape.
+        assert!(!applies_to_crate("cf-spine-studio"));
         assert!(!applies_to_crate("cf-device-geometry"));
         // musculoskeletal-builder arc tools (Mission #4) — same exemption shape.
         assert!(!applies_to_crate("cf-osim"));
