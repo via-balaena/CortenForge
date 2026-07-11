@@ -15,7 +15,7 @@
 //! will look right when the disc joins it in step 5.3.
 //!
 //! The STL is BodyParts3D (CC BY-SA, **not committed**). Point `$CF_L5_STL` at an L5 vertebra
-//! surface STL (FMA13076); the same file the parked `cf-spine-viewer` consumes. Orbit with LMB.
+//! surface STL (FMA13076); the same file the `cf-spine-studio` tool consumes. Orbit with LMB.
 //!
 //! Run: `CF_L5_STL=/path/to/L5.stl cargo run -p sim-bevy-soft --example real-bone-render`
 
@@ -83,7 +83,7 @@ fn setup(
     scene: Res<BoneScene>,
 ) {
     // Ivory bone. `double_sided` + `cull_mode: None` so a raw scan surface reads correctly
-    // regardless of any residual winding inconsistency (mirrors the cf-spine-viewer bone
+    // regardless of any residual winding inconsistency (mirrors the cf-spine-studio bone
     // material); this rung is verifying geometry, not shading.
     commands.spawn((
         Mesh3d(meshes.add(build_soft_mesh(&scene.verts, &scene.faces, UpAxis::PlusZ))),

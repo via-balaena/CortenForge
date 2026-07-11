@@ -281,7 +281,7 @@ jobs:
   # at ~25 min. Each giant tree must compile *somewhere*, so the win comes from
   # co-locating each tree's consumers on ONE shard (it compiles once, not 2-3×):
   #   - shard 1 = the Bevy tree   (cf-bevy-common, sim-bevy-soft, cf-viewer, sim-ml-chassis-bevy,
-  #                                cf-spine-viewer, cf-sim-research, cf-scan-prep, cf-device-design,
+  #                                cf-spine-studio, cf-sim-research, cf-scan-prep, cf-device-design,
   #                                cf-device-geometry)
   #   - shard 2 = the Slint tree  (cf-studio-{core,engine,gui,studio}; cf-studio-gui pulls ~12 slint crates)
   #   - shard 3 = FEM + core + mesh (sim-soft, sim-core, sim-mjcf, …) — no Bevy, no Slint
@@ -301,7 +301,7 @@ jobs:
   # `tests-release` has its unit tests run in NO CI context at all.
   #
   # Included on that basis:
-  #   - cf-spine-viewer, cf-sim-research, cf-scan-prep, cf-device-design — `tools/`
+  #   - cf-spine-studio, cf-sim-research, cf-scan-prep, cf-device-design — `tools/`
   #     BIN crates, no tier metadata, exempt from xtask's Layer-Integrity grader.
   #     That exemption is about GRADING, not TESTING. Their tests are pure-function
   #     (no App::new() / window spin-up), so headless CI runs them with the
@@ -343,7 +343,7 @@ jobs:
       matrix:
         include:
           - id: 1
-            crates: cf-bevy-common sim-bevy-soft cf-viewer sim-ml-chassis-bevy cf-spine-viewer
+            crates: cf-bevy-common sim-bevy-soft cf-viewer sim-ml-chassis-bevy cf-spine-studio
               cf-sim-research cf-scan-prep cf-device-design cf-device-geometry
               mesh-types mesh-io mesh-repair mesh-loft mesh-select mesh-sdf mesh-offset mesh-shell mesh-measure
               cf-msk-lib cf-mjcf-emit cf-osim

@@ -123,7 +123,7 @@ fn flatten(ps: &[Point3<f64>]) -> Vec<f64> {
 /// **on the disc boundary** (`boundary_faces` — the largest component's surface nodes), with
 /// inverse-distance-squared weights summing to 1. Candidates are restricted to boundary nodes so a
 /// surface vertex never blends onto a dropped rim-island node (which stays at rest → would tear the
-/// disc). Mirrors the FSU viewer's `weighted_tet_nodes` (`tools/cf-spine-viewer`).
+/// disc). Mirrors the FSU studio's `weighted_tet_nodes` (`tools/cf-spine-studio`).
 fn weighted_tet_nodes(
     surface: &IndexedMesh,
     rest_nodes: &[Point3<f64>],

@@ -1,4 +1,4 @@
-//! `cf-spine-viewer` — native Bevy viewer for anatomical spine models.
+//! `cf-spine-studio` — native Bevy Design↔Simulate studio for anatomical spine models.
 //!
 //! **Coupled contact FSU scene (this rung):** renders the literature-validated
 //! L4–L5 Functional Spinal Unit (geometry ladder rung 7) as a *coupled, moment-driven
@@ -55,9 +55,9 @@
 //! Run:
 //!
 //! ```text
-//! cargo run -p cf-spine-viewer -- --dir <dir-with-the-2-vertebra-STLs>
+//! cargo run -p cf-spine-studio -- --dir <dir-with-the-2-vertebra-STLs>
 //! # or explicit paths:
-//! cargo run -p cf-spine-viewer -- --l4 L4.stl --l5 L5.stl
+//! cargo run -p cf-spine-studio -- --l4 L4.stl --l5 L5.stl
 //! ```
 //!
 //! The BodyParts3D meshes (FMA13075 = L4, FMA13076 = L5) are CC BY-SA —
@@ -121,7 +121,7 @@ fn run_app(l4: IndexedMesh, l5: IndexedMesh) {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "cf-spine-viewer — L4–L5 FSU (paint → solve → replay)".into(),
+                title: "cf-spine-studio — L4–L5 FSU (paint → build → simulate)".into(),
                 ..default()
             }),
             ..default()
