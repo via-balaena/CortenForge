@@ -68,7 +68,7 @@ impl CatmullRomCurve {
     #[must_use]
     pub fn sample(&self, t: f64) -> Point3<f64> {
         let (span, u) = self.locate(t);
-        let (p0, p1, p2, p3) = self.span_points(span);
+        let (p0, p1, p2, p3) = span_points(&self.control_points, span);
         cr_point(p0, p1, p2, p3, u)
     }
 
@@ -81,7 +81,7 @@ impl CatmullRomCurve {
     #[must_use]
     pub fn tangent(&self, t: f64) -> Vector3<f64> {
         let (span, u) = self.locate(t);
-        let (p0, p1, p2, p3) = self.span_points(span);
+        let (p0, p1, p2, p3) = span_points(&self.control_points, span);
         let num_spans = self.control_points.len() - 1;
         // Span count is a small, exact-in-f64 integer (control-point count).
         #[allow(clippy::cast_precision_loss)]
@@ -91,68 +91,11 @@ impl CatmullRomCurve {
 
     /// Returns the point on the curve closest to `p`.
     ///
-    /// Walks every span with a coarse sampling followed by Newton refinement on
-    /// the squared distance. The two-control-point case degenerates to the
-    /// closest point on the single line segment.
+    /// Convenience wrapper over [`nearest_point_on_catmull_rom`]; see that
+    /// function for the algorithm.
     #[must_use]
     pub fn nearest_point(&self, p: &Point3<f64>) -> Point3<f64> {
-        let n = self.control_points.len();
-
-        if n == 2 {
-            return crate::closest_point_segment(
-                self.control_points[0],
-                self.control_points[1],
-                *p,
-            );
-        }
-
-        let mut min_dist_sq = f64::INFINITY;
-        let mut nearest = Point3::origin();
-
-        let num_spans = n - 1;
-        for span in 0..num_spans {
-            let (p0, p1, p2, p3) = self.span_points(span);
-
-            // Coarse search: subdivide the span into 16 linear segments.
-            let subdivs: u32 = 16;
-            let mut best_t = 0.0_f64;
-            let mut best_d_sq = f64::INFINITY;
-
-            for i in 0..=subdivs {
-                let t = f64::from(i) / f64::from(subdivs);
-                let q = cr_point(p0, p1, p2, p3, t);
-                let d_sq = nalgebra::distance_squared(p, &q);
-                if d_sq < best_d_sq {
-                    best_d_sq = d_sq;
-                    best_t = t;
-                }
-            }
-
-            // Newton refinement on distance²(t): minimize f(t) = |C(t) - p|².
-            let mut t = best_t;
-            for _ in 0..4 {
-                let c = cr_point(p0, p1, p2, p3, t);
-                let c_d = cr_deriv(p0, p1, p2, p3, t);
-                let c_dd = cr_deriv2(p0, p1, p2, p3, t);
-                let diff = c - p;
-                let fp = 2.0 * diff.dot(&c_d);
-                let fpp = 2.0 * (c_d.dot(&c_d) + diff.dot(&c_dd));
-                if fpp.abs() < 1e-20 {
-                    break;
-                }
-                t -= fp / fpp;
-                t = t.clamp(0.0, 1.0);
-            }
-
-            let c = cr_point(p0, p1, p2, p3, t);
-            let d_sq = nalgebra::distance_squared(p, &c);
-            if d_sq < min_dist_sq {
-                min_dist_sq = d_sq;
-                nearest = c;
-            }
-        }
-
-        nearest
+        nearest_point_on_catmull_rom(&self.control_points, p)
     }
 
     /// Maps a global `t ∈ [0, 1]` to its span index and local parameter `u`.
@@ -172,18 +115,101 @@ impl CatmullRomCurve {
         let u = tt - span as f64;
         (span, u)
     }
+}
 
-    /// Returns the four control points `(p0, p1, p2, p3)` governing `span`,
-    /// duplicating the endpoints for the clamped (open) convention.
-    fn span_points(&self, span: usize) -> (Point3<f64>, Point3<f64>, Point3<f64>, Point3<f64>) {
-        let cps = &self.control_points;
-        let n = cps.len();
-        let p0 = cps[if span == 0 { 0 } else { span - 1 }];
-        let p1 = cps[span];
-        let p2 = cps[span + 1];
-        let p3 = cps[if span + 2 < n { span + 2 } else { n - 1 }];
-        (p0, p1, p2, p3)
+/// Returns the point on the clamped Catmull-Rom curve through `control_points`
+/// closest to `query`.
+///
+/// Walks every span with a coarse 16-way sampling followed by four Newton
+/// iterations on the squared distance. The two-control-point case degenerates
+/// to the closest point on the single line segment.
+///
+/// This is the borrowing form of [`CatmullRomCurve::nearest_point`]: it takes
+/// the control points directly so callers on a hot path (e.g. evaluating a
+/// swept-tube SDF while meshing) need not allocate a curve per query.
+///
+/// With fewer than two control points the curve is undefined; the origin is
+/// returned. Prefer [`CatmullRomCurve::new`], which rejects that case.
+#[must_use]
+pub fn nearest_point_on_catmull_rom(
+    control_points: &[Point3<f64>],
+    query: &Point3<f64>,
+) -> Point3<f64> {
+    let n = control_points.len();
+
+    // A curve needs at least two control points; below that it is undefined
+    // (see the doc contract). Returning origin keeps this public entry point
+    // panic-free — callers that need validation use `CatmullRomCurve::new`.
+    if n < 2 {
+        return Point3::origin();
     }
+
+    if n == 2 {
+        return crate::closest_point_segment(control_points[0], control_points[1], *query);
+    }
+
+    let mut min_dist_sq = f64::INFINITY;
+    let mut nearest = Point3::origin();
+
+    // n >= 3 here, so `n - 1` cannot underflow.
+    let num_spans = n - 1;
+    for span in 0..num_spans {
+        let (p0, p1, p2, p3) = span_points(control_points, span);
+
+        // Coarse search: subdivide the span into 16 linear segments.
+        let subdivs: u32 = 16;
+        let mut best_t = 0.0_f64;
+        let mut best_d_sq = f64::INFINITY;
+
+        for i in 0..=subdivs {
+            let t = f64::from(i) / f64::from(subdivs);
+            let q = cr_point(p0, p1, p2, p3, t);
+            let d_sq = nalgebra::distance_squared(query, &q);
+            if d_sq < best_d_sq {
+                best_d_sq = d_sq;
+                best_t = t;
+            }
+        }
+
+        // Newton refinement on distance²(t): minimize f(t) = |C(t) - query|².
+        let mut t = best_t;
+        for _ in 0..4 {
+            let c = cr_point(p0, p1, p2, p3, t);
+            let c_d = cr_deriv(p0, p1, p2, p3, t);
+            let c_dd = cr_deriv2(p0, p1, p2, p3, t);
+            let diff = c - query;
+            let fp = 2.0 * diff.dot(&c_d);
+            let fpp = 2.0 * (c_d.dot(&c_d) + diff.dot(&c_dd));
+            if fpp.abs() < 1e-20 {
+                break;
+            }
+            t -= fp / fpp;
+            t = t.clamp(0.0, 1.0);
+        }
+
+        let c = cr_point(p0, p1, p2, p3, t);
+        let d_sq = nalgebra::distance_squared(query, &c);
+        if d_sq < min_dist_sq {
+            min_dist_sq = d_sq;
+            nearest = c;
+        }
+    }
+
+    nearest
+}
+
+/// Returns the four control points `(p0, p1, p2, p3)` governing `span`,
+/// duplicating the endpoints for the clamped (open) convention.
+fn span_points(
+    control_points: &[Point3<f64>],
+    span: usize,
+) -> (Point3<f64>, Point3<f64>, Point3<f64>, Point3<f64>) {
+    let n = control_points.len();
+    let p0 = control_points[if span == 0 { 0 } else { span - 1 }];
+    let p1 = control_points[span];
+    let p2 = control_points[span + 1];
+    let p3 = control_points[if span + 2 < n { span + 2 } else { n - 1 }];
+    (p0, p1, p2, p3)
 }
 
 /// Catmull-Rom spline position on a single span at local `t ∈ [0, 1]`.
@@ -341,5 +367,17 @@ mod tests {
             let expected = crate::closest_point_segment(a, b, probe);
             assert_eq!(got, expected);
         }
+    }
+
+    #[test]
+    fn nearest_point_on_fewer_than_two_points_is_origin() {
+        // The free fn is public and unguarded; below two control points the
+        // curve is undefined and it must return origin, not panic.
+        let probe = Point3::new(1.0, 2.0, 3.0);
+        assert_eq!(nearest_point_on_catmull_rom(&[], &probe), Point3::origin());
+        assert_eq!(
+            nearest_point_on_catmull_rom(&[Point3::new(4.0, 5.0, 6.0)], &probe),
+            Point3::origin()
+        );
     }
 }
