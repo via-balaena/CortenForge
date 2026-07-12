@@ -2332,6 +2332,12 @@ pub trait RigidParamSpec {
     /// or a `(body, axis)` pair (inertia).
     type Target: Copy;
 
+    /// Whether this spec wires the forced rollout (`forced_waypoint_jacobian`).
+    /// Default `false`; only [`FrictionSpec`] sets it `true`. Checked by
+    /// `with_input` so forcing an unwired spec fails fast at the builder rather than
+    /// panicking deep in a later rollout.
+    const SUPPORTS_FORCED: bool = false;
+
     /// Write `value` into `model` for `target`. Cached implicit parameters are
     /// refreshed once afterwards by [`finalize`](RigidParamSpec::finalize).
     fn apply(model: &mut sim_core::Model, target: Self::Target, value: f64);
@@ -2472,6 +2478,12 @@ pub struct RigidParamSystemId<S: RigidParamSpec> {
     /// length `n_steps` = **forced** (drives the rollout, e.g. an actuator input for
     /// sim-to-real on a *forced* system). Set via [`with_input`](Self::with_input).
     input: Vec<sim_core::DVector<f64>>,
+    /// Whether [`with_input`](Self::with_input) is valid: true only when `observed`
+    /// is caller-supplied (`from_measured_trajectory`), so the caller owns
+    /// input-consistency. The `for_inverse_design*` constructors self-generate an
+    /// **unforced** `observed`, which a forced rollout would not match — they set
+    /// this `false` so `with_input` rejects the inconsistent combination.
+    permits_input: bool,
 }
 
 impl<S: RigidParamSpec> RigidParamSystemId<S> {
@@ -2543,6 +2555,7 @@ impl<S: RigidParamSpec> RigidParamSystemId<S> {
             targets,
             cfg,
             input: Vec::new(),
+            permits_input: false, // self-generated UNFORCED observation
         }
     }
 
@@ -2583,6 +2596,7 @@ impl<S: RigidParamSpec> RigidParamSystemId<S> {
             targets,
             cfg: sim_core::DerivativeConfig::default(),
             input: Vec::new(),
+            permits_input: true, // caller-supplied observation; caller owns input-consistency
         }
     }
 
@@ -2590,12 +2604,30 @@ impl<S: RigidParamSpec> RigidParamSystemId<S> {
     /// forced-system extension the analytic sim-to-real loop needs (a free rollout is
     /// the empty default). `input[t]` is written into `qfrc_applied` before step
     /// `t+1`, so the identified parameters are recovered along the *driven* trajectory
-    /// (e.g. an actuator's measured input). Currently wired for [`FrictionSystemId`].
+    /// (e.g. an actuator's measured input). Wired only for [`FrictionSystemId`].
+    ///
+    /// Valid only on a problem built from a caller-supplied observation
+    /// ([`from_measured_trajectory`](Self::from_measured_trajectory)) — the caller
+    /// owns having produced `observed` under this same input. It is **rejected** on the
+    /// `for_inverse_design*` constructors, which self-generate an *unforced* reference
+    /// `observed` that a forced rollout would not match.
     ///
     /// # Panics
-    /// Panics if `input.len() != n_steps` or any `input[t].len() != nv`.
+    /// Panics if the spec has no forced rollout wired (`!S::SUPPORTS_FORCED`), if the
+    /// problem was built by `for_inverse_design*` (`!permits_input`), if
+    /// `input.len() != n_steps`, or if any `input[t].len() != nv`.
     #[must_use]
     pub fn with_input(mut self, input: Vec<sim_core::DVector<f64>>) -> Self {
+        assert!(
+            S::SUPPORTS_FORCED,
+            "with_input: this parameter channel has no forced rollout wired (only friction does)",
+        );
+        assert!(
+            self.permits_input,
+            "with_input requires a caller-supplied observation (from_measured_trajectory); \
+             for_inverse_design* self-generates an UNFORCED observation a forced rollout \
+             would not match",
+        );
         assert_eq!(
             input.len(),
             self.n_steps,
@@ -2816,6 +2848,9 @@ pub struct FrictionSpec;
 
 impl RigidParamSpec for FrictionSpec {
     type Target = usize;
+
+    // Friction is the one channel with a forced rollout wired (below).
+    const SUPPORTS_FORCED: bool = true;
 
     fn apply(model: &mut sim_core::Model, joint: usize, value: f64) {
         model.dof_frictionloss[model.jnt_dof_adr[joint]] = value;
