@@ -30,6 +30,7 @@ mod check;
 mod complete;
 mod grade;
 mod setup;
+mod validators;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -143,6 +144,16 @@ enum Commands {
     /// List all crates and their current grades
     Status,
 
+    /// Discover and run the example-validators red-or-green.
+    ///
+    /// Runs every crate declaring `[package.metadata.cortenforge]
+    /// example_kind = "validator"` in `--release` and fails if any exits
+    /// non-zero (also fails if zero are discovered). Discovery is by manifest
+    /// marker (no hand-maintained list), so a new marked validator is gated
+    /// automatically; a self-gating example missing the marker is warned, not
+    /// yet failed (see `validators.rs`).
+    RunValidators,
+
     /// Set up development environment (git hooks, verify tools)
     Setup,
 
@@ -190,6 +201,7 @@ fn main() -> Result<()> {
         Commands::Affected { base, json } => affected::run(&base, json),
         Commands::Ci => check::run_ci(),
         Commands::Status => grade::status(),
+        Commands::RunValidators => validators::run(),
         Commands::Setup => setup::run(),
         Commands::Uninstall => setup::uninstall(),
     }

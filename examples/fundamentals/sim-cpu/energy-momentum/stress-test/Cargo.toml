@@ -5,6 +5,14 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+# Declares this example's role in the validation contract. `validator` = the
+# binary self-checks against oracles and exits non-zero on any failure, so CI
+# runs it red-or-green (see `cargo xtask run-validators`). The alternative kind
+# is `demo` (illustration only; compile-checked but not run). Every self-gating
+# example MUST declare `validator` or its oracle checks run nowhere in CI.
+[package.metadata.cortenforge]
+example_kind = "validator"
+
 [dependencies]
 # Physics Model / Data stepped by the example simulation loop
 sim-core = { workspace = true }
