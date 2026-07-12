@@ -2332,6 +2332,12 @@ pub trait RigidParamSpec {
     /// or a `(body, axis)` pair (inertia).
     type Target: Copy;
 
+    /// Whether this spec wires the forced rollout (`forced_waypoint_jacobian`).
+    /// Default `false`; only [`FrictionSpec`] sets it `true`. Checked by
+    /// `with_input` so forcing an unwired spec fails fast at the builder rather than
+    /// panicking deep in a later rollout.
+    const SUPPORTS_FORCED: bool = false;
+
     /// Write `value` into `model` for `target`. Cached implicit parameters are
     /// refreshed once afterwards by [`finalize`](RigidParamSpec::finalize).
     fn apply(model: &mut sim_core::Model, target: Self::Target, value: f64);
@@ -2384,6 +2390,34 @@ pub trait RigidParamSpec {
              matching is not yet wired for it (friction is first; smooth channels are leaf 2)",
         );
         Self::trajectory_jacobian(model, data0, n_steps, cfg)
+    }
+
+    /// Like [`waypoint_jacobian`](RigidParamSpec::waypoint_jacobian) but **forced**:
+    /// each `input[t]` (a length-`nv` generalized force) is written into `qfrc_applied`
+    /// before step `t+1`, so the rollout is driven rather than free. `input` is either
+    /// empty (unforced — identical to `waypoint_jacobian`) or length `n_steps`.
+    ///
+    /// The default is unforced-only: it asserts `input` is empty and delegates to
+    /// `waypoint_jacobian`. Only [`FrictionSpec`] wires the forced rollout — the
+    /// smooth channels' forced support is deferred, mirroring their deferred
+    /// multi-waypoint case (the analytic `mjd_*` recursions would need the driven
+    /// linearization point threaded through, which friction's FD rollout gets for free).
+    ///
+    /// # Errors
+    /// Propagates any [`sim_core::StepError`] from the rollout.
+    fn forced_waypoint_jacobian(
+        model: &sim_core::Model,
+        data0: &sim_core::Data,
+        n_steps: usize,
+        waypoints: &[usize],
+        input: &[sim_core::DVector<f64>],
+        cfg: &sim_core::DerivativeConfig,
+    ) -> Result<(sim_core::DVector<f64>, sim_core::DMatrix<f64>), sim_core::StepError> {
+        assert!(
+            input.is_empty(),
+            "forced rollout (per-step applied force) is wired only for the friction channel",
+        );
+        Self::waypoint_jacobian(model, data0, n_steps, waypoints, cfg)
     }
 
     /// Column of the trajectory Jacobian corresponding to `target`.
@@ -2439,6 +2473,17 @@ pub struct RigidParamSystemId<S: RigidParamSpec> {
     targets: Vec<S::Target>,
     /// Transition-derivative config for the per-step `A_t`.
     cfg: sim_core::DerivativeConfig,
+    /// Optional per-step generalized applied force (`qfrc_applied`), one length-`nv`
+    /// vector per step. Empty = **unforced** (a free rollout, the original behavior);
+    /// length `n_steps` = **forced** (drives the rollout, e.g. an actuator input for
+    /// sim-to-real on a *forced* system). Set via [`with_input`](Self::with_input).
+    input: Vec<sim_core::DVector<f64>>,
+    /// Whether [`with_input`](Self::with_input) is valid: true only when `observed`
+    /// is caller-supplied (`from_measured_trajectory`), so the caller owns
+    /// input-consistency. The `for_inverse_design*` constructors self-generate an
+    /// **unforced** `observed`, which a forced rollout would not match — they set
+    /// this `false` so `with_input` rejects the inconsistent combination.
+    permits_input: bool,
 }
 
 impl<S: RigidParamSpec> RigidParamSystemId<S> {
@@ -2509,6 +2554,8 @@ impl<S: RigidParamSpec> RigidParamSystemId<S> {
             waypoints,
             targets,
             cfg,
+            input: Vec::new(),
+            permits_input: false, // self-generated UNFORCED observation
         }
     }
 
@@ -2548,7 +2595,53 @@ impl<S: RigidParamSpec> RigidParamSystemId<S> {
             waypoints,
             targets,
             cfg: sim_core::DerivativeConfig::default(),
+            input: Vec::new(),
+            permits_input: true, // caller-supplied observation; caller owns input-consistency
         }
+    }
+
+    /// Attach a **per-step generalized applied force** to drive the rollout — the
+    /// forced-system extension the analytic sim-to-real loop needs (a free rollout is
+    /// the empty default). `input[t]` is written into `qfrc_applied` before step
+    /// `t+1`, so the identified parameters are recovered along the *driven* trajectory
+    /// (e.g. an actuator's measured input). Wired only for [`FrictionSystemId`].
+    ///
+    /// Valid only on a problem built from a caller-supplied observation
+    /// ([`from_measured_trajectory`](Self::from_measured_trajectory)) — the caller
+    /// owns having produced `observed` under this same input. It is **rejected** on the
+    /// `for_inverse_design*` constructors, which self-generate an *unforced* reference
+    /// `observed` that a forced rollout would not match.
+    ///
+    /// # Panics
+    /// Panics if the spec has no forced rollout wired (`!S::SUPPORTS_FORCED`), if the
+    /// problem was built by `for_inverse_design*` (`!permits_input`), if
+    /// `input.len() != n_steps`, or if any `input[t].len() != nv`.
+    #[must_use]
+    pub fn with_input(mut self, input: Vec<sim_core::DVector<f64>>) -> Self {
+        assert!(
+            S::SUPPORTS_FORCED,
+            "with_input: this parameter channel has no forced rollout wired (only friction does)",
+        );
+        assert!(
+            self.permits_input,
+            "with_input requires a caller-supplied observation (from_measured_trajectory); \
+             for_inverse_design* self-generates an UNFORCED observation a forced rollout \
+             would not match",
+        );
+        assert_eq!(
+            input.len(),
+            self.n_steps,
+            "forced input length {} != n_steps {}",
+            input.len(),
+            self.n_steps,
+        );
+        let nv = self.model.nv;
+        assert!(
+            input.iter().all(|u| u.len() == nv),
+            "each forced-input vector must have length nv = {nv}",
+        );
+        self.input = input;
+        self
     }
 
     /// Roll out at `params` and return the stacked waypoint states and their full
@@ -2560,11 +2653,12 @@ impl<S: RigidParamSpec> RigidParamSystemId<S> {
             S::apply(&mut model, t, v);
         }
         S::finalize(&mut model);
-        S::waypoint_jacobian(
+        S::forced_waypoint_jacobian(
             &model,
             &self.data0,
             self.n_steps,
             &self.waypoints,
+            &self.input,
             &self.cfg,
         )
         .expect("system-ID trajectory jacobian")
@@ -2755,6 +2849,9 @@ pub struct FrictionSpec;
 impl RigidParamSpec for FrictionSpec {
     type Target = usize;
 
+    // Friction is the one channel with a forced rollout wired (below).
+    const SUPPORTS_FORCED: bool = true;
+
     fn apply(model: &mut sim_core::Model, joint: usize, value: f64) {
         model.dof_frictionloss[model.jnt_dof_adr[joint]] = value;
     }
@@ -2776,6 +2873,18 @@ impl RigidParamSpec for FrictionSpec {
         data0: &sim_core::Data,
         n_steps: usize,
         waypoints: &[usize],
+        cfg: &sim_core::DerivativeConfig,
+    ) -> Result<(sim_core::DVector<f64>, sim_core::DMatrix<f64>), sim_core::StepError> {
+        // The free rollout is the empty-input case of the forced one.
+        Self::forced_waypoint_jacobian(model, data0, n_steps, waypoints, &[], cfg)
+    }
+
+    fn forced_waypoint_jacobian(
+        model: &sim_core::Model,
+        data0: &sim_core::Data,
+        n_steps: usize,
+        waypoints: &[usize],
+        input: &[sim_core::DVector<f64>],
         _cfg: &sim_core::DerivativeConfig,
     ) -> Result<(sim_core::DVector<f64>, sim_core::DMatrix<f64>), sim_core::StepError> {
         // Scope: pin to the same tested regime as the single-step
@@ -2808,6 +2917,17 @@ impl RigidParamSpec for FrictionSpec {
         let qpos0 = data0.qpos.clone();
         let w = waypoints.len();
 
+        // `input` is either empty (free rollout) or one length-nv applied force per
+        // step, written into `qfrc_applied` before each step. It is param-independent,
+        // so the friction FD sensitivity is simply evaluated along the driven
+        // trajectory (the opening spike confirmed a clean ∂x/∂μ plateau under forcing).
+        assert!(
+            input.is_empty() || input.len() == n_steps,
+            "forced input must be empty or length n_steps ({n_steps}); got {}",
+            input.len(),
+        );
+        let forced = !input.is_empty();
+
         // Roll out, recording the tangent state at each waypoint, stacked in order.
         // Assumes `waypoints` is strictly increasing within `1..=n_steps` (the
         // problem constructors validate it).
@@ -2816,6 +2936,9 @@ impl RigidParamSpec for FrictionSpec {
             let mut out = sim_core::DVector::zeros(w * nx);
             let mut slot = 0;
             for step in 1..=n_steps {
+                if forced {
+                    d.qfrc_applied.copy_from(&input[step - 1]);
+                }
                 d.step(m)?;
                 if slot < w && waypoints[slot] == step {
                     out.rows_mut(slot * nx, nx)
@@ -3662,6 +3785,65 @@ mod tests {
     /// 15 waypoints, every 10th step over the 150-step rollout.
     fn friction_waypoints() -> Vec<usize> {
         (10..=150).step_by(10).collect()
+    }
+
+    #[test]
+    fn recovers_frictionloss_from_forced_trajectory() {
+        // The forced-rollout extension: a per-step applied force on DOF 0 (a reversing
+        // drive, as a real actuated system-ID would have) drives BOTH the measured
+        // trajectory and the model rollout the optimizer walks. Friction is recovered
+        // *along the driven trajectory* — the sim-to-real shape for a *forced* system
+        // (e.g. the EMPS actuator), which the free rollout cannot represent.
+        let n_steps = 150usize;
+        let waypoints = friction_waypoints();
+        let (true_model, data0) = friction_rig(0.05, 0.03);
+        let nv = true_model.nv;
+
+        // Reversing drive on DOF 0; DOF 1 unforced.
+        let input: Vec<sim_core::DVector<f64>> = (0..n_steps)
+            .map(|k| {
+                let mut u = sim_core::DVector::zeros(nv);
+                u[0] = 0.4 * (std::f64::consts::TAU * 0.7 * (k as f64) * true_model.timestep).sin();
+                u
+            })
+            .collect();
+
+        // Measured (sim-to-real stand-in): TRUE friction rolled out FORCED.
+        let (observed, _) = FrictionSpec::forced_waypoint_jacobian(
+            &true_model,
+            &data0,
+            n_steps,
+            &waypoints,
+            &input,
+            &sim_core::DerivativeConfig::default(),
+        )
+        .expect("forced measured rollout");
+
+        // The input genuinely drives the system: the forced trajectory differs from
+        // the free one (else `with_input` would be a no-op and the test vacuous).
+        let free = measured_waypoints(&true_model, &data0, n_steps, &waypoints);
+        assert!(
+            (&observed - &free).norm() > 1e-3,
+            "applied force must change the trajectory (forced vs free)",
+        );
+
+        // Recover DOF 0's friction from the forced measured trajectory (DOF 1 fixed at
+        // 0.03). Start off-target; the forced rollout must be threaded through evaluate.
+        let problem = FrictionSystemId::from_measured_trajectory(
+            true_model,
+            data0,
+            n_steps,
+            waypoints,
+            vec![0],
+            observed,
+        )
+        .with_input(input);
+        let recovered = recover_friction(&problem, &[0.02]);
+        assert!(
+            (recovered[0] - 0.05).abs() < 1e-3,
+            "forced friction-ID recovered {:.5}, expected 0.05",
+            recovered[0],
+        );
     }
 
     #[test]

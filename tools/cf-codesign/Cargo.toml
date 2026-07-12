@@ -25,3 +25,7 @@ sim-core = { path = "../../sim/L0/core" }
 sim-ml-chassis = { workspace = true }
 
 [dev-dependencies]
+# Reads the EMPS actuator benchmark's MATLAB v5 (.mat, zlib-compressed) data for
+# the `emps_sim_to_real` example — a pure-Rust reader so the sim-to-real example
+# stays self-contained (fetch-not-vendor). Example-only; not in the library graph.
+matfile = "0.5"
