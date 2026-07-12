@@ -116,7 +116,10 @@ fn emps_model() -> Model {
     );
     let mut m = sim_mjcf::load_model(&mjcf).expect("load EMPS slide model");
     m.integrator = Integrator::Euler;
-    m.dof_damping[0] = FV1;
+    // Viscous damping must be set via `jnt_damping` (not `dof_damping`): the Euler
+    // integrator's damping is derived by `compute_implicit_params` from `jnt_damping`,
+    // so a `dof_damping` write is silently discarded (matches the DampingSpec channel).
+    m.jnt_damping[0] = FV1;
     m.dof_frictionloss[0] = FC1_REF; // targeted DOF — overwritten by the optimizer
     m.compute_implicit_params();
     m
@@ -251,11 +254,11 @@ fn main() {
         .min_by(|a, b| a.1.total_cmp(&b.1))
         .expect("nonempty sweep");
     println!(
-        "\nForced sim-to-real works: identified friction predicts held-out motion {:.0}x better\n\
-         than no-friction. Model-adequacy gap: the minimal 1-DOF model's best-fit friction is\n\
-         ~{best_fc:.0} (RMS {best_r:.3} m), above the reference {FC1_REF} — the fixed M/Fv/OF,\n\
-         finite-difference velocity, and closed-loop input are unmodeled. Joint M/Fv/Fc/OF\n\
-         identification is the next rung.",
+        "\nForced sim-to-real works: identified friction predicts held-out position {:.0}x better\n\
+         than no-friction ({r_id:.3} m RMS), beating the reference-friction fit ({r_ref:.3} m).\n\
+         Best-fit friction ~{best_fc:.0} differs from Janot's {FC1_REF} — our engine finds its own\n\
+         consistent value — and a ~{best_r:.3} m residual floor remains: asymmetric friction and\n\
+         the closed-loop input are unmodeled. Joint M/Fv/Fc/OF identification is the next rung.",
         r_none / r_id,
     );
 }
