@@ -87,6 +87,12 @@ anchor loss, material loss angle — is what pushes a design toward nominal or p
 cannot be hand-waved. That is flagged as the hard Tier-2 gate in
 [Chapter 4](40-program.md#gate-2--the-q--dissipation-floor---the-genuinely-hard-part).
 
+One honesty caveat on the numbers above: this is a **thermomechanical-only** floor. The real
+instrument adds **readout noise** (capacitive pickoff + amplifier) in quadrature, and for room-temp
+capacitive MEMS that term is frequently *dominant* — so the quoted ~0.6–2 E is optimistic until the
+Rung 4 budget carries the readout term. Readout noise is in-budget by design (a differentiable
+referred-input model, not circuit design); see [Chapter 3](30-primitives.md#where-the-scope-line-actually-falls).
+
 ## Gate 3 — What actually makes it hard (and where CortenForge earns its keep)
 
 Passing Gates 1 and 2 says a *bare, static, isolated* proof-mass pair could work. The reason

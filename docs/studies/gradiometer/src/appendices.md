@@ -38,7 +38,9 @@ so that the architecture would rest on measured facts rather than optimism. It i
 estimate: point-mass gravity, an idealized single-mode resonator, and literature-typical MEMS
 parameters. It deliberately does **not** model the real FEM behavior, dissipation ($Q$)
 mechanisms, or manufacturing tolerances — those are the subject of the build program
-([Chapter 4](40-program.md)), not the feasibility gate.
+([Chapter 4](40-program.md)), not the feasibility gate. It is also **mechanical-only**: it omits
+readout noise, which adds in quadrature and can dominate at room temperature — so the quoted floor
+is optimistic, and the Rung 4 budget must close that gap before any floor is asserted as real.
 
 ## SDK symbols quick-reference (for the implementer)
 
@@ -53,9 +55,11 @@ The primitives the ladder stands on or extends, with where to find them:
 | forward dynamics + accel sensors | `sim-core` | the differential / platform-motion framing |
 | structural FEM (stiffness/mass assembly) | `sim-soft` | substrate for a *future* modal analysis ($f_0$) — the eigenproblem itself is not built yet |
 
-**Missing (to build):** the ∇g forward model (Rung 1); modal/eigenfrequency analysis and the
-$Q$/dissipation model (Rung 4, the hard part). **Out of scope:** electromechanical readout,
-silicon fab process.
+**Missing (to build):** the ∇g forward model (Rung 1); modal/eigenfrequency analysis with an
+anisotropic-Si material path, and the $Q$/dissipation + readout-noise budget (Rung 4, the hard
+part). **Out of scope:** the *engines* behind the inputs — etch-process physics, circuit synthesis,
+DAQ firmware — not the inputs themselves. Anisotropic Si, fab-geometry tolerances, and readout noise
+all enter as differentiable terms; see [Chapter 3](30-primitives.md#where-the-scope-line-actually-falls).
 
 ## Glossary
 
