@@ -181,6 +181,9 @@ pub mod unified_solvers;
 /// Phase 13 Spec B — PGS early termination, solver_stat, Newton regression.
 pub mod pgs_spec_b;
 
+/// Regression: elliptic contact friction rows inherit normal-row regularization.
+pub mod elliptic_friction_regularization;
+
 // ============================================================================
 // Noslip Post-Processor Tests (§33)
 // ============================================================================
