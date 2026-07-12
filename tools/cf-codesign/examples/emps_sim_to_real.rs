@@ -1,32 +1,39 @@
-//! Sim-to-real ingestion for the **EMPS** actuator benchmark (step 2 of the rung:
-//! fetch + parse; the identification loop is added in step 3).
+//! Sim-to-real on the **EMPS** actuator benchmark — identify dry friction on a
+//! *forced* system and validate on held-out measured data.
 //!
 //! The Electro-Mechanical Positioning System (EMPS) is a prismatic drive whose
-//! dominant nonlinearity is dry friction — the same physics [`FrictionSystemId`]
-//! already identifies, now on a *forced* system (the drive force is a measured
-//! input). This example loads the measured trajectory the identification consumes.
+//! dominant nonlinearity is dry friction — the physics [`FrictionSystemId`] already
+//! identifies, here on a *forced* system: the drive force `gtau · vir` is a measured
+//! input applied every step (the forced-rollout extension), not a free decay. The
+//! continuous model is `M·q̈ = gtau·vir − Fv·q̇ − Fc·sign(q̇) − OF`; M/Fv/OF are held
+//! at the benchmark's reference values and Coulomb friction `Fc` is identified, then
+//! checked against the shipped reference and a no-friction baseline on held-out data.
 //!
 //! Data: A. Janot, M. Gautier, M. Brunot, *Data Set and Reference Models of an
 //! Electro-Mechanical Positioning System*, 2019 Workshop on Nonlinear System
-//! Identification Benchmarks. It is **referenced, not redistributed**: the archive
-//! is fetched at runtime (no data bytes committed). `DATA_EMPS.mat` (MATLAB v5)
-//! holds `t` (s), `vir` (drive input), `qm` (measured position, m), and `gtau`
-//! (input→force gain); the generalized force on the mass is `gtau · vir`.
+//! Identification Benchmarks — **referenced, not redistributed** (fetched at runtime).
 //!
 //! ```text
 //! cargo run -p cf-codesign --example emps_sim_to_real --release
 //! ```
-//! Requires `curl` + `unzip` and one-time network access (then cached in the temp
-//! dir). Offline: download the URL below, `unzip -p` `DATA_EMPS.mat` to the cache path.
+//! Requires `curl` + `unzip` and one-time network access (then cached in the temp dir).
 #![allow(clippy::expect_used, clippy::print_stdout)]
 
 use std::path::PathBuf;
 use std::process::Command;
 
+use cf_codesign::{FrictionSystemId, Normalized};
+use sim_core::{DVector, Integrator, Model};
+
 /// The nonlinearbenchmark EMPS distribution (a zip containing `DATA_EMPS.mat`).
-/// Referenced, never vendored.
 const DATA_URL: &str =
     "https://drive.google.com/uc?export=download&id=1zwoXYa9-3f8NQ0ohzmjpF7UxbNgRTHkS";
+
+// EMPS reference model parameters (Janot et al., `Simulation_EMPS.m`).
+const M1: f64 = 95.1089; // effective mass
+const FV1: f64 = 203.5034; // viscous friction (held fixed)
+const FC1_REF: f64 = 20.3935; // Coulomb friction — the reference the ID is checked against
+const OF1: f64 = -3.1648; // constant force offset
 
 /// One EMPS trajectory: time (s), drive input `vir`, measured position `qm` (m),
 /// and the input→force gain `gtau` (generalized force = `gtau · vir`).
@@ -37,9 +44,9 @@ struct EmpsData {
     gtau: f64,
 }
 
-/// Fetch `DATA_EMPS.mat` to a temp-dir cache (reused on later runs), extracting it
-/// from the referenced archive. Returns `None` with a guidance message if
-/// `curl`/`unzip`/network is unavailable — an example must not panic on that.
+/// Fetch `DATA_EMPS.mat` to a temp-dir cache, extracting it from the referenced
+/// archive. Returns `None` with a guidance message if `curl`/`unzip`/network is
+/// unavailable — an example must not panic on that.
 fn fetch_emps() -> Option<PathBuf> {
     let cache = std::env::temp_dir().join("cf_emps_DATA_EMPS.mat");
     if cache.exists() {
@@ -48,8 +55,6 @@ fn fetch_emps() -> Option<PathBuf> {
     let zip = std::env::temp_dir().join("cf_emps.zip");
     if !zip.exists() {
         println!("Fetching EMPS dataset → {}", zip.display());
-        // Download to a temp name and rename on success so an interrupted transfer
-        // never leaves a truncated file a later run would trust.
         let part = zip.with_extension("part");
         let ok = Command::new("curl")
             .args(["-sSL", "-o", part.to_str().expect("utf-8 path"), DATA_URL])
@@ -61,7 +66,6 @@ fn fetch_emps() -> Option<PathBuf> {
             return None;
         }
     }
-    // Extract just the one member to the cache path.
     let out = Command::new("unzip")
         .args(["-p", zip.to_str().expect("utf-8 path"), "DATA_EMPS.mat"])
         .output()
@@ -97,9 +101,106 @@ fn load_emps(path: &PathBuf) -> EmpsData {
     }
 }
 
-fn range(x: &[f64]) -> (f64, f64) {
-    x.iter()
-        .fold((f64::MAX, f64::MIN), |(a, b), &v| (a.min(v), b.max(v)))
+/// The 1-DOF prismatic model, M1/Fv1 fixed; Coulomb friction is the identified target.
+fn emps_model() -> Model {
+    let mjcf = format!(
+        r#"<mujoco>
+      <option gravity="0 0 0" timestep="0.001" integrator="Euler"/>
+      <worldbody>
+        <body name="carriage">
+          <joint name="slide" type="slide" axis="1 0 0"/>
+          <geom type="box" size="0.05 0.05 0.05" mass="{M1}"/>
+        </body>
+      </worldbody>
+    </mujoco>"#
+    );
+    let mut m = sim_mjcf::load_model(&mjcf).expect("load EMPS slide model");
+    m.integrator = Integrator::Euler;
+    m.dof_damping[0] = FV1;
+    m.dof_frictionloss[0] = FC1_REF; // targeted DOF — overwritten by the optimizer
+    m.compute_implicit_params();
+    m
+}
+
+/// Central finite-difference velocity of the position samples (uniform `dt`).
+fn velocity(q: &[f64], dt: f64) -> Vec<f64> {
+    let n = q.len();
+    (0..n)
+        .map(|k| match k {
+            0 => (q[1] - q[0]) / dt,
+            k if k == n - 1 => (q[n - 1] - q[n - 2]) / dt,
+            _ => (q[k + 1] - q[k - 1]) / (2.0 * dt),
+        })
+        .collect()
+}
+
+/// Per-step generalized drive force `gtau·vir + OF` as length-1 applied-force vectors.
+fn drive_force(d: &EmpsData) -> Vec<DVector<f64>> {
+    d.vir
+        .iter()
+        .map(|&v| DVector::from_element(1, d.gtau * v + OF1))
+        .collect()
+}
+
+/// Identify Coulomb friction on `0..n_train` from the measured (position, velocity)
+/// trajectory, driven by the measured input — a full-trajectory (multi-waypoint) fit,
+/// which flattens friction's non-convex terminal loss.
+fn identify_fc(d: &EmpsData, vel: &[f64], forces: &[DVector<f64>], n_train: usize) -> f64 {
+    let waypoints: Vec<usize> = (40..=n_train).step_by(40).collect();
+    let model = emps_model();
+    let mut data0 = model.make_data();
+    data0.qpos[0] = d.qm[0];
+    data0.qvel[0] = vel[0];
+
+    let nx = 2; // 2·nv + na, with nv = 1 and na = 0
+    let mut observed = DVector::zeros(waypoints.len() * nx);
+    for (i, &wp) in waypoints.iter().enumerate() {
+        observed[i * nx] = d.qm[wp] - d.qm[0];
+        observed[i * nx + 1] = vel[wp];
+    }
+
+    let problem = FrictionSystemId::from_measured_trajectory(
+        model,
+        data0,
+        n_train,
+        waypoints,
+        vec![0],
+        observed,
+    )
+    .with_input(forces[..n_train].to_vec());
+
+    let normalized = Normalized::with_residual_scale(&problem, 1.0, true);
+    normalized
+        .optimize(&[5.0], &normalized.recommended_config())
+        .params[0]
+}
+
+/// Forward-roll the model (forced by the measured input) over `start..start+len` from
+/// the measured initial state, returning predicted position at each step.
+fn predict_positions(fc: f64, d: &EmpsData, vel0: f64, start: usize, len: usize) -> Vec<f64> {
+    let mut model = emps_model();
+    model.dof_frictionloss[0] = fc;
+    model.compute_implicit_params();
+    let mut data = model.make_data();
+    data.qpos[0] = d.qm[start];
+    data.qvel[0] = vel0;
+    let mut out = Vec::with_capacity(len);
+    for k in 0..len {
+        data.qfrc_applied[0] = d.gtau * d.vir[start + k] + OF1;
+        data.step(&model).expect("validation step");
+        out.push(data.qpos[0]);
+    }
+    out
+}
+
+/// Position RMS (m) of a prediction against the measured `qm` over `start..start+len`.
+fn rms_pos(pred: &[f64], d: &EmpsData, start: usize) -> f64 {
+    let s: f64 = pred
+        .iter()
+        .enumerate()
+        .map(|(k, &p)| (p - d.qm[start + 1 + k]).powi(2))
+        .sum();
+    (s / pred.len() as f64).sqrt()
 }
 
 fn main() {
@@ -107,24 +208,54 @@ fn main() {
     let d = load_emps(&path);
     let n = d.t.len();
     let dt = (d.t[n - 1] - d.t[0]) / (n - 1) as f64;
-    let (vmin, vmax) = range(&d.vir);
-    let (qmin, qmax) = range(&d.qm);
+    let vel = velocity(&d.qm, dt);
+    let forces = drive_force(&d);
 
-    println!("\n=== EMPS ingestion (Janot et al. 2019) ===");
+    let n_train = 6000usize;
+    let val_start = 6000usize;
+    let n_val = 6000usize;
+
+    println!("\n=== EMPS sim-to-real: identify Coulomb friction (forced) ===");
     println!(
-        "{n} samples @ {:.0} Hz over {:.2} s",
+        "{n} samples @ {:.0} Hz; train 0..{n_train} ({:.1} s), held-out {val_start}..{} ({:.1} s)",
         1.0 / dt,
-        d.t[n - 1] - d.t[0]
+        n_train as f64 * dt,
+        val_start + n_val,
+        n_val as f64 * dt,
     );
+
+    let fc = identify_fc(&d, &vel, &forces, n_train);
+    println!("\nidentified Fc = {fc:.4}   (shipped reference Fc1 = {FC1_REF})");
+
+    let rms = |fc: f64| {
+        rms_pos(
+            &predict_positions(fc, &d, vel[val_start], val_start, n_val),
+            &d,
+            val_start,
+        )
+    };
+    let (r_id, r_none, r_ref) = (rms(fc), rms(0.0), rms(FC1_REF));
+    println!("\nheld-out position RMS (m):");
     println!(
-        "  input   vir  ∈ [{vmin:.3}, {vmax:.3}]   gain gtau = {:.3}",
-        d.gtau
+        "  identified  Fc={fc:5.2} : {r_id:.5}   ({:.0}x better than no-friction)",
+        r_none / r_id
     );
+    println!("  no friction Fc= 0.00 : {r_none:.5}   (baseline)");
+    println!("  reference   Fc={FC1_REF:5.2} : {r_ref:.5}");
+
+    // The minimal model's friction landscape on held-out data — where its best fit
+    // actually lies (a model-adequacy readout, not tuning toward the reference).
+    let (best_fc, best_r) = (0..=70)
+        .step_by(2)
+        .map(|x| (f64::from(x), rms(f64::from(x))))
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .expect("nonempty sweep");
     println!(
-        "  force   gtau·vir ∈ [{:.2}, {:.2}]  (generalized drive on the mass)",
-        d.gtau * vmin,
-        d.gtau * vmax
+        "\nForced sim-to-real works: identified friction predicts held-out motion {:.0}x better\n\
+         than no-friction. Model-adequacy gap: the minimal 1-DOF model's best-fit friction is\n\
+         ~{best_fc:.0} (RMS {best_r:.3} m), above the reference {FC1_REF} — the fixed M/Fv/OF,\n\
+         finite-difference velocity, and closed-loop input are unmodeled. Joint M/Fv/Fc/OF\n\
+         identification is the next rung.",
+        r_none / r_id,
     );
-    println!("  output  qm   ∈ [{qmin:.4}, {qmax:.4}] m  (measured position, the fit target)");
-    println!("\nIngestion OK — ready for the friction-ID loop (step 3).");
 }
