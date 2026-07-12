@@ -289,8 +289,11 @@ jobs:
   # wall-time floor); only the two GUI trees are isolable. Rebalance the lists if
   # a shard's measured time drifts. Crates intentionally in NO shard (run
   # elsewhere or not unit-tested): sim-bevy (fragile headless graphics; clippy in
-  # `grade` covers it), examples (~197, no #[test]), -benches (5), xtask (graded
-  # by grade-all; unit tests via pre-commit), and the heavy stochastic-physics
+  # `grade` covers it), examples (176, no #[test] — those declaring
+  # `example_kind = "validator"` are RUN red-or-green by the `validate-examples`
+  # job below; the rest are demos, compile-checked by `grade`'s clippy only),
+  # -benches (5), xtask (graded by grade-all; unit tests via pre-commit), and the
+  # heavy stochastic-physics
   # validators sim-ml-chassis / sim-thermostat / sim-rl / sim-conformance-tests /
   # sim-opt / sim-rl-baselines (run in `tests-release` below).
   #
@@ -788,11 +791,51 @@ jobs:
           path: sbom.json
 
   # ============================================================================
+  # VALIDATE EXAMPLES - Run the fundamentals example-validators red-or-green
+  # ============================================================================
+  # `examples/fundamentals/**` validators self-check against oracles (energy
+  # drift, momentum conservation, …) and `exit(1)` on failure — but that only
+  # fires when the binary is RUN. The tests-debug/tests-release shards (CI's
+  # only test-execution gate) intentionally exclude examples (no `#[test]`), so
+  # a validator's checks otherwise run NOWHERE. This job runs them: `xtask
+  # run-validators` discovers every crate declaring `[package.metadata.
+  # cortenforge] example_kind = "validator"` and runs each in --release,
+  # failing if any exits non-zero. Discovery is by manifest marker, not a
+  # hand-maintained list, so a new validator is gated automatically (unlike the
+  # tests-debug shard lists, CI's one hand-maintained enumeration and its sole
+  # drift source). It also warns on self-gating examples missing the marker.
+  #
+  # NOT affected-scoped and NOT sharded: with one declared validator (deps
+  # sim-core + sim-mjcf, both universal) it would run on nearly any sim change
+  # anyway, and one small binary is cheap. When the marker fans out to all 30
+  # validators — some pulling the ML/RL tree — shard this like `grade` and
+  # measure wall time. Validators are GUI-free today, so no apt libs are
+  # installed; add them if a GUI-dependent validator is ever marked.
+  validate-examples:
+    name: Validate Examples
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: ${{ !cancelled() }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
+
+      - name: cargo xtask run-validators
+        run: cargo run -p xtask --release -- run-validators
+
+  # ============================================================================
   # FINAL GATE
   # ============================================================================
   quality-gate:
     name: Quality Gate
-    needs: [format, grade, tests-debug, tests-release, cross-os, feature-combos, dependencies]
+    needs: [format, grade, tests-debug, tests-release, cross-os, feature-combos, dependencies, validate-examples]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
