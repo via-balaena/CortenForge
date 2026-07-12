@@ -61,8 +61,15 @@ fn fetch_emps() -> Option<PathBuf> {
             .status()
             .map(|s| s.success())
             .unwrap_or(false);
-        if !ok || std::fs::rename(&part, &zip).is_err() {
-            println!("  could not fetch (need `curl` + network); skipping.");
+        // Reject a non-zip payload (e.g. a Google Drive virus-scan HTML interstitial,
+        // which curl saves with a success status) before caching — a zip starts "PK".
+        let is_zip = ok
+            && std::fs::read(&part)
+                .map(|b| b.starts_with(b"PK"))
+                .unwrap_or(false);
+        if !is_zip || std::fs::rename(&part, &zip).is_err() {
+            let _ = std::fs::remove_file(&part);
+            println!("  could not fetch a valid archive (need `curl` + network); skipping.");
             return None;
         }
     }
@@ -143,22 +150,33 @@ fn velocity(q: &[f64], dt: f64) -> Vec<f64> {
         .collect()
 }
 
-/// Per-step external drive force `gtau·vir − OF` as length-1 applied-force vectors —
-/// the applied term in `M q̈ = gtau·vir − Fv q̇ − Fc·sign(q̇) − OF` (`OF = OF1`); the
-/// engine handles the `−Fv q̇` and `−Fc·sign(q̇)` terms.
-fn drive_force(d: &EmpsData) -> Vec<DVector<f64>> {
-    d.vir
-        .iter()
-        .map(|&v| DVector::from_element(1, d.gtau * v - OF1))
+/// The external drive force `gtau·vir[k] − OF` on the mass — the applied term in
+/// `M q̈ = gtau·vir − Fv q̇ − Fc·sign(q̇) − OF` (`OF = OF1`); the engine handles the
+/// `−Fv q̇` and `−Fc·sign(q̇)` terms. The **single source** of the force/offset
+/// convention, shared by identification and validation.
+fn applied_force(d: &EmpsData, k: usize) -> f64 {
+    d.gtau * d.vir[k] - OF1
+}
+
+/// The first `len` per-step drive forces as length-1 applied-force vectors.
+fn drive_force(d: &EmpsData, len: usize) -> Vec<DVector<f64>> {
+    (0..len)
+        .map(|k| DVector::from_element(1, applied_force(d, k)))
         .collect()
 }
 
 /// Identify Coulomb friction on `0..n_train` from the measured (position, velocity)
 /// trajectory, driven by the measured input — a full-trajectory (multi-waypoint) fit,
 /// which flattens friction's non-convex terminal loss.
-fn identify_fc(d: &EmpsData, vel: &[f64], forces: &[DVector<f64>], n_train: usize) -> f64 {
+fn identify_fc(
+    base: &Model,
+    d: &EmpsData,
+    vel: &[f64],
+    forces: &[DVector<f64>],
+    n_train: usize,
+) -> f64 {
     let waypoints: Vec<usize> = (40..=n_train).step_by(40).collect();
-    let model = emps_model();
+    let model = base.clone();
     let mut data0 = model.make_data();
     data0.qpos[0] = d.qm[0];
     data0.qvel[0] = vel[0];
@@ -205,7 +223,7 @@ fn predict_positions(
     data.qvel[0] = vel0;
     let mut out = Vec::with_capacity(len);
     for k in 0..len {
-        data.qfrc_applied[0] = d.gtau * d.vir[start + k] - OF1;
+        data.qfrc_applied[0] = applied_force(d, start + k);
         data.step(&model).expect("validation step");
         out.push(data.qpos[0]);
     }
@@ -225,32 +243,35 @@ fn rms_pos(pred: &[f64], d: &EmpsData, start: usize) -> f64 {
 fn main() {
     let Some(path) = fetch_emps() else { return };
     let d = load_emps(&path);
-    let n = d.t.len();
-    let dt = (d.t[n - 1] - d.t[0]) / (n - 1) as f64;
 
     let n_train = 6000usize;
     let val_start = 6000usize;
     let n_val = 6000usize;
+    let need = val_start + n_val + 1;
 
-    // The model integrates at a fixed 1 kHz with one measured force per step, and the
-    // fixed windows need enough samples — guard both rather than silently corrupt the
-    // fit or panic (the same "must not panic" contract as fetch_emps).
+    // Length guards BEFORE any indexing (t[n-1], the windows, per-sample forces) so a
+    // degenerate or length-mismatched .mat skips cleanly rather than panicking — the
+    // same "must not panic" contract as fetch_emps.
+    let n = d.t.len();
+    if n < need || d.vir.len() < n || d.qm.len() < n {
+        println!(
+            "EMPS arrays too short/mismatched (t={n}, vir={}, qm={}; need >= {need}) — skipping.",
+            d.vir.len(),
+            d.qm.len(),
+        );
+        return;
+    }
+    let dt = (d.t[n - 1] - d.t[0]) / (n - 1) as f64;
+    // The model integrates at a fixed 1 kHz with one measured force per step.
     if (dt - 0.001).abs() > 1e-6 {
         println!(
             "EMPS data is not ~1 kHz (dt = {dt:.5} s); this example assumes 1 kHz — skipping."
         );
         return;
     }
-    if n < val_start + n_val + 1 {
-        println!(
-            "EMPS data has {n} samples; the fixed windows need >= {} — skipping.",
-            val_start + n_val + 1
-        );
-        return;
-    }
 
     let vel = velocity(&d.qm, dt);
-    let forces = drive_force(&d);
+    let forces = drive_force(&d, n_train);
     let base = emps_model();
 
     println!("\n=== EMPS sim-to-real: identify Coulomb friction (forced) ===");
@@ -262,7 +283,7 @@ fn main() {
         n_val as f64 * dt,
     );
 
-    let fc = identify_fc(&d, &vel, &forces, n_train);
+    let fc = identify_fc(&base, &d, &vel, &forces, n_train);
     println!("\nidentified Fc = {fc:.4}   (shipped reference Fc1 = {FC1_REF})");
 
     let rms = |fc: f64| {
@@ -289,11 +310,23 @@ fn main() {
         .min_by(|a, b| a.1.total_cmp(&b.1))
         .expect("nonempty sweep")
         .0;
+    // Report the measured outcome; gate the verdict on the actual numbers rather than
+    // asserting it (build+measure — never print a success the run didn't produce).
+    let stroke = d.qm.iter().copied().fold(f64::MIN, f64::max)
+        - d.qm.iter().copied().fold(f64::MAX, f64::min);
+    let match_pct = (fc - FC1_REF).abs() / FC1_REF * 100.0;
+    let verdict = if r_id < 0.005 && match_pct < 5.0 {
+        "The engine recovers the benchmark's own dry-friction parameter directly from measured data."
+    } else if r_id < r_none {
+        "Identified friction beats no-friction, but the fit or the parameter match is looser than near-perfect."
+    } else {
+        "Identified friction does NOT beat the no-friction baseline — see the numbers above."
+    };
     println!(
-        "\nForced sim-to-real is near-perfect: {r_id:.4} m held-out RMS ({:.0}x better than\n\
-         no-friction, < 1% of the ~0.25 m stroke). And the identified friction Fc={fc:.2} matches\n\
-         Janot's reference {FC1_REF} to ~2% (held-out best-fit sweep ~{best_fc:.0}) — the engine\n\
-         recovers the benchmark's own dry-friction parameter directly from the measured trajectory.",
+        "\nHeld-out RMS {r_id:.4} m = {:.1}% of the {stroke:.3} m stroke ({:.0}x better than\n\
+         no-friction); identified Fc={fc:.2} vs Janot's reference {FC1_REF} = {match_pct:.1}% off\n\
+         (held-out best-fit sweep ~{best_fc:.0}).\n{verdict}",
+        r_id / stroke * 100.0,
         r_none / r_id,
     );
 }
