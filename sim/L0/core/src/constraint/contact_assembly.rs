@@ -76,6 +76,7 @@ pub(super) fn assemble_contact_rows(
             let has_solreffriction = is_elliptic
                 && (contact.solreffriction[0] != 0.0 || contact.solreffriction[1] != 0.0);
 
+            let normal_row = *row;
             for r in 0..dim {
                 for col in 0..nv {
                     data.efc_J[(*row, col)] = cj[(r, col)];
@@ -118,6 +119,34 @@ pub(super) fn assemble_contact_rows(
                     contact.mu,
                     bw_c,
                 );
+            }
+
+            // Elliptic cone: MuJoCo computes ONE impedance per contact (from the
+            // normal/penetration) and applies the same imp/diagApprox/R/D to every
+            // condim row. Our per-row `finalize_constraint_row` instead derives the
+            // friction rows' R from their own (tangential) diagApprox, which carries
+            // a lever-arm term (≈ r²/I) MuJoCo omits — leaving elliptic friction rows
+            // ~10³× too soft and starving tangential grip in fast contacts.
+            // Overwrite the friction rows to inherit the normal row's regularization.
+            // (aref/efc_b are unaffected: friction rows have pos=margin=0, so their
+            // reference acceleration has no impedance-dependent term.)
+            //
+            // All four impedance fields are rewritten together to keep each row's
+            // (imp, diagApprox, R, D) tuple self-consistent. The solver consumes R/D
+            // and conformance dumps read diagApprox; efc_imp has no runtime reader
+            // today, but is kept in sync so R = (1-imp)/imp·diagApprox still holds if
+            // anything recomputes it — leaving it stale would be a silent trap.
+            if is_elliptic {
+                let imp_n = data.efc_imp[normal_row];
+                let diag_n = data.efc_diagApprox[normal_row];
+                let r_n = data.efc_R[normal_row];
+                let d_n = data.efc_D[normal_row];
+                for fr in (normal_row + 1)..(normal_row + dim) {
+                    data.efc_imp[fr] = imp_n;
+                    data.efc_diagApprox[fr] = diag_n;
+                    data.efc_R[fr] = r_n;
+                    data.efc_D[fr] = d_n;
+                }
             }
         }
     }
