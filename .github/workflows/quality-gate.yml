@@ -800,10 +800,14 @@ jobs:
   # a validator's checks otherwise run NOWHERE. This job runs them: `xtask
   # run-validators` discovers every crate declaring `[package.metadata.
   # cortenforge] example_kind = "validator"` and runs each in --release,
-  # failing if any exits non-zero. Discovery is by manifest marker, not a
-  # hand-maintained list, so a new validator is gated automatically (unlike the
-  # tests-debug shard lists, CI's one hand-maintained enumeration and its sole
-  # drift source). It also warns on self-gating examples missing the marker.
+  # failing if any exits non-zero (and failing if ZERO are discovered — a
+  # silent green no-op would be the very "passing CI ≠ tests ran" hole this
+  # closes). Discovery is by manifest marker, not a hand-maintained list, so a
+  # new marked validator is gated automatically (unlike the tests-debug shard
+  # lists, CI's one hand-maintained enumeration and its sole drift source). It
+  # also warns on self-gating examples missing the marker — a currently
+  # warn-only backstop, so an unmarked validator still runs nowhere until the
+  # marker fans out and that audit is promoted to a hard failure.
   #
   # NOT affected-scoped and NOT sharded: with one declared validator (deps
   # sim-core + sim-mjcf, both universal) it would run on nearly any sim change
@@ -811,11 +815,14 @@ jobs:
   # validators — some pulling the ML/RL tree — shard this like `grade` and
   # measure wall time. Validators are GUI-free today, so no apt libs are
   # installed; add them if a GUI-dependent validator is ever marked.
+  #
+  # No `if:` / `needs:` — a job with no dependencies always runs (barring
+  # cancellation), and the final `quality-gate` job's `needs: […]` is what
+  # enforces the block-on-red.
   validate-examples:
     name: Validate Examples
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    if: ${{ !cancelled() }}
     steps:
       - uses: actions/checkout@v6
 

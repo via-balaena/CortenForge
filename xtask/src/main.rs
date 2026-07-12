@@ -144,12 +144,14 @@ enum Commands {
     /// List all crates and their current grades
     Status,
 
-    /// Discover and run the fundamentals example-validators red-or-green.
+    /// Discover and run the example-validators red-or-green.
     ///
-    /// Runs every example declaring `[package.metadata.cortenforge]
+    /// Runs every crate declaring `[package.metadata.cortenforge]
     /// example_kind = "validator"` in `--release` and fails if any exits
-    /// non-zero. Discovery is by manifest marker (no hand-maintained list),
-    /// so a new validator is gated automatically. See `validators.rs`.
+    /// non-zero (also fails if zero are discovered). Discovery is by manifest
+    /// marker (no hand-maintained list), so a new marked validator is gated
+    /// automatically; a self-gating example missing the marker is warned, not
+    /// yet failed (see `validators.rs`).
     RunValidators,
 
     /// Set up development environment (git hooks, verify tools)
