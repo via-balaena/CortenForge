@@ -69,7 +69,7 @@ after the differentiator is proven.
 The noise floor ([Chapter 1, Gate 2](10-feasibility.md#gate-2--is-the-signal-above-the-noise)) swings the device between "nominal"
 (~0.6–2 E, useful) and "pessimistic" (~30–100 E, marginal). Of the parameters that set it, $Q$ is
 the one that is modelled dissipation physics rather than a design lever — so it is where the
-uncertainty lives. This is the missing Tier-2 physics ([Chapter 3, Rung 4](30-primitives.md#rung-4--the-thermomechanical-noise-budget-tier-2-the-hard-part)):
+uncertainty lives. This is the missing Tier-2 physics ([Chapter 3, Rung 4](30-primitives.md#rung-4--the-noise-budget-thermomechanical--readout-tier-2-the-hard-part)):
 
 - **$f_0$ (modal analysis):** an eigenproblem on the structural FEM's stiffness/mass matrices —
   addable, in-character.
@@ -105,8 +105,11 @@ can be pushed. This is [Chapter 5](50-payoff.md).
   chapters re-inflate past this.
 - **Platform vibration** even when "still" (a walking robot creeps, breathes) — the still-and-dwell
   model needs its own measurement before any mobile deployment claim.
-- **Fab reality** — DRIE tolerances, single-crystal-Si anisotropy — sit at the scope boundary. The
-  tolerance model in Gate 1 is a *proxy* for fab, not the fab itself.
+- **Fab reality is in-scope, differentiably** — DRIE geometry tolerances (sidewall taper, scalloping)
+  and single-crystal-Si anisotropy are modeled as first-class parametric inputs to Gate 1, not a
+  proxy for something outside. What stays out is the *etch-process physics* that produces them. The
+  open risk is fidelity, not scope: whether the parametric deviation model captures the mismatch a
+  real wafer shows.
 
 **Posture:** this is a banked expansion, not committed work. Rung 1 is the smallest honest first
 step; Gate 1 is where we learn whether to keep going. Nothing starts without an explicit go-ahead.

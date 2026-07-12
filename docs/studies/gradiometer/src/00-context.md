@@ -9,11 +9,11 @@
 > | | |
 > |---|---|
 > | **Status** | Feasibility established (spike-backed). **Conditional GO** for the large-anomaly / void niche. No code written yet. |
-> | **Verdict** | A nominal room-temp MEMS device reaches ~0.6–2 E with dwell; tunnels/chambers/big caches are 1–100 E. Person-borne threats are *out* (physics). |
+> | **Verdict** | A nominal room-temp MEMS device reaches ~0.6–2 E with dwell (mechanical-only floor; readout noise adds in quadrature and is now in-budget); tunnels/chambers/big caches are 1–100 E. Person-borne threats are *out* (physics). |
 > | **The bet** | Matching *by construction* (sub-ppm) + self-gravity *from CAD* — both geometry problems, both on CortenForge's exact strength. Not "beat a SQUID on noise." |
 > | **Load-bearing unknown** | Does a *co-designed* match beat a *hand-matched* pair by enough to matter under real FEM + tolerances? Unproven. This is [Gate 1](40-program.md#gate-1--does-the-matching-leverage-actually-exist---the-load-bearing-decision). |
 > | **First buildable rung** | The ∇g forward model (geometry + mass → gradient tensor + self-gravity), differentiable, built on the existing `mass_properties`. See [Chapter 3](30-primitives.md) + [Chapter 4](40-program.md). |
-> | **Out of scope** | Analog readout electronics; silicon micromachining process; anything past the mechanical transducer. |
+> | **Scope line** | By *coupling to the figure of merit*, not category. **In** (cheap + differentiable): anisotropic-Si elasticity, fab-geometry tolerances, readout noise as a referred-input term. **Out** (separate engines): etch-process physics, circuit synthesis, DAQ firmware. See [Ch 3](30-primitives.md#where-the-scope-line-actually-falls). |
 >
 > **Where to go:** feasibility numbers → [Ch 1](10-feasibility.md) · why it's our problem → [Ch 2](20-thesis.md) ·
 > what to build on what → [Ch 3](30-primitives.md) · the gated program → [Ch 4](40-program.md) ·
@@ -64,5 +64,9 @@ architect.**
    instrument's geometry against a noise-limited, self-gravity-nulled, common-mode-rejecting
    objective.
 
-Nothing past the mechanical transducer — analog readout electronics, silicon micromachining
-process — is in scope. Those stay outside, by design.
+The scope line falls by *coupling to the figure of merit*, not by category. Every term that moves
+the matching or noise answer is modeled — differentiably, cheap — including the anisotropic-Si
+constitutive law, fab-geometry tolerances, and readout noise as a referred-input budget term. What
+stays out is the *engines* behind them: etch-process physics, circuit synthesis, DAQ firmware —
+mature external tools, not sensing crates. The moat is the differentiable co-design loop; "all the
+way" means every coupled term lives on that tape.
