@@ -69,7 +69,7 @@ after the differentiator is proven.
 The noise floor ([Chapter 1, Gate 2](10-feasibility.md#gate-2--is-the-signal-above-the-noise)) swings the device between "nominal"
 (~0.6–2 E, useful) and "pessimistic" (~30–100 E, marginal). Of the parameters that set it, $Q$ is
 the one that is modelled dissipation physics rather than a design lever — so it is where the
-uncertainty lives. This is the missing Tier-2 physics ([Chapter 3, Rung 4](30-primitives.md#rung-4--the-thermomechanical-noise-budget-tier-2-the-hard-part)):
+uncertainty lives. This is the missing Tier-2 physics ([Chapter 3, Rung 4](30-primitives.md#rung-4--the-noise-budget-thermomechanical--readout-tier-2-the-hard-part)):
 
 - **$f_0$ (modal analysis):** an eigenproblem on the structural FEM's stiffness/mass matrices —
   addable, in-character.
