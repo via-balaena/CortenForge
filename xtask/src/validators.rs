@@ -2,47 +2,73 @@
 //!
 //! # The validation contract
 //!
-//! An `examples/**` crate plays one of two roles, declared in its `Cargo.toml`
-//! under `[package.metadata.cortenforge] example_kind` (validators live under
-//! `examples/fundamentals/` today):
+//! Every **headless** `examples/**` crate must declare a role in its
+//! `Cargo.toml` under `[package.metadata.cortenforge] example_kind`:
 //!
 //! - `validator` — the binary self-checks against oracles (energy drift,
-//!   momentum conservation, …) and calls `std::process::exit(1)` on any
-//!   failure. Its exit code IS the red/green signal.
+//!   momentum conservation, a closed-form stress, …) and terminates with a
+//!   **non-zero exit** on any failure. Its exit code IS the red/green signal.
 //! - `demo` — illustration only; CI compile-checks it (via `grade`'s clippy)
 //!   but never runs it, because it asserts nothing.
 //!
+//! "Headless" means the crate has no direct Bevy dependency. Bevy examples are
+//! *visual* — their axis is a rendered window a human inspects, which CI cannot
+//! run — so they are exempt from this contract and are compile-only by design.
+//!
+//! # Why the signal is the exit code, not a fixed idiom
+//!
+//! A validator may signal failure two ways, and the contract deliberately does
+//! not care which: an explicit `std::process::exit(1)`, or a panicking
+//! assertion (`assert!`, `assert_eq!`, `assert_relative_eq!`, …) — a panic in
+//! `main` aborts with a non-zero code (101) exactly like `exit(1)`. This
+//! command runs each validator and reads its exit code, so **both conventions
+//! are handled identically**. There is nothing to detect at run time; the
+//! marker declares intent and the exit code reports the result.
+//!
 //! # Why this command exists
 //!
-//! A `validator`'s oracle checks fire only when the binary is *run*. CI
-//! compiles every example (workspace member) but the `tests-debug` /
-//! `tests-release` shards — CI's only test-execution gate — intentionally
-//! exclude examples (they carry no `#[test]`). So a validator's checks run
-//! nowhere unless something runs the binary. This command is that something:
-//! it discovers every crate declaring `example_kind = "validator"` from `cargo
-//! metadata` and runs each in `--release`, failing if any exits non-zero.
+//! A validator's oracle checks fire only when the binary is *run*. CI compiles
+//! every example (workspace member) but the `tests-debug` / `tests-release`
+//! shards — CI's only test-execution gate — intentionally exclude examples
+//! (they carry no `#[test]`). So a validator's checks run nowhere unless
+//! something runs the binary. This command is that something: it discovers
+//! every crate declaring `example_kind = "validator"` from `cargo metadata`
+//! and runs each in `--release`, failing if any exits non-zero.
 //!
 //! Discovery is by manifest marker, not a hand-maintained list, so a new
-//! *marked* validator is picked up automatically — narrowing the drift class
-//! where a crate silently falls out of CI coverage. Two residual holes are
-//! held down explicitly: discovering zero validators is a hard error (a silent
-//! green no-op would be the very failure this closes), and self-gating
-//! examples missing the marker are audited (below).
+//! *marked* validator is picked up automatically. Discovering zero validators
+//! is a hard error — a silent green no-op would be the very "passing CI ≠ tests
+//! ran" failure this closes.
 //!
-//! # The audit (drift backstop)
+//! # The classification audit (drift backstop)
 //!
-//! Discovery is only airtight if every self-gating example actually carries
-//! the marker. The command therefore also audits: any example whose source
-//! calls `std::process::exit(1)` but does NOT declare `example_kind =
-//! "validator"` is reported as an undeclared validator — its checks would run
-//! nowhere. Today this is a warning that quantifies the gap; promoting it to
-//! a hard failure is the fan-out step once every validator is marked. (The
-//! substring scan is deliberately coarse; harden it before that promotion so
-//! `exit(2)` / aliased-`exit` / `ExitCode::FAILURE` forms cannot slip past.)
+//! Discovery is only airtight if every headless example actually declares a
+//! kind. The command therefore audits the contract and reports two gaps as
+//! warnings (a future step promotes them to a hard failure once every headless
+//! example is classified):
+//!
+//! - **Unclassified** — a headless example with no valid `example_kind`
+//!   (missing, or an unrecognised value). Whether its source self-gates is
+//!   shown as a triage hint (`validator?` / `demo?`).
+//! - **Misclassified** — a crate declared `demo` whose source self-gates; its
+//!   oracle checks would run in no CI context.
+//!
+//! The self-gating heuristic (`source_self_gates`) is a *hint for
+//! classification only*, never the gate — the marker is the source of truth, so
+//! the heuristic never needs to recognise every possible failure idiom.
+//!
+//! Scope note: only *headless* examples are audited. A dual-mode crate — one
+//! that runs a headless oracle by default but also offers an opt-in Bevy view
+//! (`CF_VISUAL=1`) — carries a Bevy dep and so reads as non-headless, leaving
+//! its oracle outside this audit. The intended resolution is to split such a
+//! crate into a headless validator and a separate Bevy demo, not to widen the
+//! audit to guess at Bevy crates' intent.
 
 use anyhow::{Context, Result};
 use owo_colors::OwoColorize;
+use regex::Regex;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use xshell::{cmd, Shell};
 
 /// A workspace crate paired with the facts the contract needs.
@@ -54,20 +80,35 @@ struct CrateEntry {
     /// The declared `example_kind`, if any.
     kind: Option<String>,
     /// Whether the crate lives under an `examples/` directory (scopes the
-    /// undeclared-validator audit; discovery of validators is by marker
-    /// alone, independent of path).
+    /// classification contract; discovery of validators is by marker alone,
+    /// independent of path).
     is_example: bool,
+    /// Whether the crate has no direct Bevy dependency. Headless examples are
+    /// bound by the classification contract; Bevy (visual) examples are exempt.
+    is_headless: bool,
 }
 
 /// The two `example_kind` values under `[package.metadata.cortenforge]`.
 const KIND_VALIDATOR: &str = "validator";
 const KIND_DEMO: &str = "demo";
 
+/// A contract gap found while auditing one crate.
+enum Gap {
+    /// Headless example carrying no valid `example_kind` (missing or
+    /// unrecognised) — must be classified. `self_gates` is the triage hint:
+    /// `true` ⇒ likely `validator`.
+    Unclassified { self_gates: bool },
+    /// Declared `demo` yet the source self-gates — a likely mis-marked
+    /// validator whose oracle checks would run nowhere.
+    Misclassified,
+}
+
 /// Entry point for `cargo xtask run-validators`.
 ///
-/// Discovers every declared `validator`, runs each red-or-green, and returns
-/// an error (non-zero exit for CI) if any validator fails to pass. Undeclared
-/// validators are surfaced as a warning but do not (yet) fail the gate.
+/// Discovers every declared `validator`, runs each red-or-green, and returns an
+/// error (non-zero exit for CI) if any validator fails to pass. Contract gaps
+/// (unclassified / misclassified headless examples) are surfaced as warnings
+/// but do not (yet) fail the gate.
 pub fn run() -> Result<()> {
     let sh = Shell::new()?;
     let crates = discover_crates(&sh)?;
@@ -79,32 +120,43 @@ pub fn run() -> Result<()> {
         .filter(|c| c.kind.as_deref() == Some(KIND_VALIDATOR))
         .collect();
 
-    let undeclared: Vec<&CrateEntry> = crates
-        .iter()
-        .filter(|c| {
-            c.is_example
-                && c.kind.as_deref() != Some(KIND_VALIDATOR)
-                && looks_like_validator(&c.dir)
-        })
-        .collect();
+    // Audit the classification contract. `source_self_gates` is only consulted
+    // for in-scope crates that are not already declared validators — it is a
+    // triage hint, never the gate.
+    let mut unclassified: Vec<(&CrateEntry, bool)> = Vec::new();
+    let mut misclassified: Vec<&CrateEntry> = Vec::new();
+    for c in &crates {
+        let self_gates = c.is_example
+            && c.is_headless
+            && c.kind.as_deref() != Some(KIND_VALIDATOR)
+            && source_self_gates(&c.dir);
+        match audit_gap(c.is_example, c.is_headless, c.kind.as_deref(), self_gates) {
+            Some(Gap::Unclassified { self_gates }) => unclassified.push((c, self_gates)),
+            Some(Gap::Misclassified) => misclassified.push(c),
+            None => {}
+        }
+    }
 
     println!(
         "{}",
         format!(
-            "Validation contract — {} declared validator(s), {} undeclared",
+            "Validation contract — {} declared validator(s), {} unclassified headless \
+             example(s), {} possibly-misclassified",
             validators.len(),
-            undeclared.len()
+            unclassified.len(),
+            misclassified.len()
         )
         .bold()
     );
 
-    audit_undeclared(&undeclared);
+    audit_unclassified(&unclassified);
+    audit_misclassified(&misclassified);
 
     // A discovery that finds zero validators would pass CI having run nothing
     // — the exact "passing CI ≠ tests ran" hole this command exists to close.
-    // At least one example is marked once this ships, so zero means the marker
-    // or a workspace member was dropped. Fail loudly rather than green-no-op.
-    // (Printed after the audit so any dropped markers show up as undeclared.)
+    // At least one example is marked, so zero means the marker or a workspace
+    // member was dropped. Fail loudly rather than green-no-op. (Printed after
+    // the audit so any dropped markers show up as unclassified.)
     if validators.is_empty() {
         anyhow::bail!(
             "no crate declares `example_kind = \"validator\"` — expected at least \
@@ -141,27 +193,69 @@ pub fn run() -> Result<()> {
     }
 }
 
-/// Report undeclared validators. A warning today (quantifies the gap for
-/// fan-out); the marker becomes mandatory once every validator carries it.
-fn audit_undeclared(undeclared: &[&CrateEntry]) {
-    if undeclared.is_empty() {
+/// Classify one crate against the contract. Pure (no fs/cargo) so the rule is
+/// unit-testable: only headless examples are in scope; a Bevy example or a
+/// non-example yields no gap.
+fn audit_gap(
+    is_example: bool,
+    is_headless: bool,
+    kind: Option<&str>,
+    self_gates: bool,
+) -> Option<Gap> {
+    if !is_example || !is_headless {
+        return None;
+    }
+    match kind {
+        Some(KIND_VALIDATOR) => None,
+        Some(KIND_DEMO) if self_gates => Some(Gap::Misclassified),
+        Some(KIND_DEMO) => None,
+        // `None` (no marker) or an unknown/typo'd kind: both leave the crate
+        // un-run, so both are contract gaps. (`warn_unknown_kinds` additionally
+        // names the typo so the manifest is easy to find.)
+        _ => Some(Gap::Unclassified { self_gates }),
+    }
+}
+
+/// Report unclassified headless examples — the fan-out worklist. Each is
+/// tagged with the triage hint so classification is a glance, not a code-read.
+fn audit_unclassified(unclassified: &[(&CrateEntry, bool)]) {
+    if unclassified.is_empty() {
         return;
     }
     println!(
-        "\n{} {} example(s) call `process::exit(1)` but do not declare \
-         `example_kind = \"validator\"` — their checks run in NO CI context:",
+        "\n{} {} headless example(s) declare no `example_kind` — every headless \
+         example must be classified `validator` or `demo`:",
         "warning:".yellow().bold(),
-        undeclared.len()
+        unclassified.len()
     );
-    for e in undeclared {
+    for (e, self_gates) in unclassified {
+        if *self_gates {
+            println!("  - {} ({})", e.name.yellow(), "validator?".green());
+        } else {
+            println!("  - {} ({})", e.name.yellow(), "demo?".blue());
+        }
+    }
+}
+
+/// Report `demo`-declared crates whose source self-gates — a likely mis-marked
+/// validator whose oracle checks run in no CI context.
+fn audit_misclassified(misclassified: &[&CrateEntry]) {
+    if misclassified.is_empty() {
+        return;
+    }
+    println!(
+        "\n{} {} example(s) declare `example_kind = \"demo\"` but self-gate — likely \
+         mis-marked validators (their checks run nowhere):",
+        "warning:".yellow().bold(),
+        misclassified.len()
+    );
+    for e in misclassified {
         println!("  - {}", e.name.yellow());
     }
 }
 
 /// Warn on any `example_kind` value outside the known vocabulary. A typo like
-/// `"validater"` would otherwise silently downgrade a validator to non-run;
-/// the `looks_like_validator` audit still catches it, but a named warning
-/// points straight at the manifest.
+/// `"validater"` would otherwise silently downgrade a validator to non-run.
 fn warn_unknown_kinds(crates: &[CrateEntry]) {
     for c in crates {
         if let Some(kind) = &c.kind {
@@ -178,10 +272,12 @@ fn warn_unknown_kinds(crates: &[CrateEntry]) {
 }
 
 /// Read the workspace crates from `cargo metadata`, tagging each with its
-/// declared `example_kind` and whether it lives under `examples/`.
+/// declared `example_kind`, whether it lives under `examples/`, and whether it
+/// is headless (no direct Bevy dependency).
 ///
 /// `--no-deps` scopes packages to workspace members; each package's
-/// `[package.metadata]` table is carried verbatim under `metadata`.
+/// `[package.metadata]` table is carried verbatim under `metadata`, and its
+/// direct dependencies under `dependencies`.
 fn discover_crates(sh: &Shell) -> Result<Vec<CrateEntry>> {
     let json = cmd!(sh, "cargo metadata --format-version 1 --no-deps")
         .read()
@@ -213,20 +309,44 @@ fn discover_crates(sh: &Shell) -> Result<Vec<CrateEntry>> {
             .as_str()
             .map(String::from);
 
+        let is_headless = !depends_on_bevy(pkg);
+
         crates.push(CrateEntry {
             name,
             dir,
             kind,
             is_example,
+            is_headless,
         });
     }
     Ok(crates)
 }
 
-/// Heuristic for the audit: does this crate's `src/` self-gate via a non-zero
-/// exit? Presence of `std::process::exit(1)` (or `process::exit(1)`) marks a
-/// binary that reports failure through its exit code.
-fn looks_like_validator(dir: &Path) -> bool {
+/// Does a `cargo metadata` package have any direct Bevy dependency? Covers the
+/// whole family (`bevy`, `sim-bevy`, `sim-bevy-soft`, `cf-bevy-common`,
+/// `sim-ml-chassis-bevy`, …) by matching the substring `bevy` in the dep name.
+fn depends_on_bevy(pkg: &serde_json::Value) -> bool {
+    pkg["dependencies"].as_array().is_some_and(|deps| {
+        deps.iter()
+            .any(|d| d["name"].as_str().is_some_and(|n| n.contains("bevy")))
+    })
+}
+
+/// Triage heuristic: does this crate's `src/` self-gate — fail via a non-zero
+/// exit? True if any source (with line comments stripped, so a mention in a
+/// `//`/`//!` comment does not count) calls `process::exit`/`exit` with a
+/// non-zero argument, or uses a panicking `assert*!` macro (a panic aborts
+/// `main` with a non-zero code). A hint for classification only, never the gate
+/// — so it need not recognise every idiom (`.unwrap()` / `-> Result` `?` gating
+/// are missed; the marker, not this heuristic, is the source of truth).
+fn source_self_gates(dir: &Path) -> bool {
+    // Compiled once, not per crate — the audit calls this for every in-scope
+    // example. `exit(<nonzero>)` or a panicking `assert*!` marks a self-gate.
+    static FAILING_EXIT: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\bexit\s*\(\s*[^0\s)]").expect("valid regex"));
+    static ASSERT_MACRO: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\bassert(_\w+)?\s*!").expect("valid regex"));
+
     let src = dir.join("src");
     for entry in walkdir::WalkDir::new(&src)
         .into_iter()
@@ -234,7 +354,8 @@ fn looks_like_validator(dir: &Path) -> bool {
     {
         if entry.path().extension().is_some_and(|e| e == "rs") {
             if let Ok(text) = std::fs::read_to_string(entry.path()) {
-                if text.contains("process::exit(1)") {
+                let code = strip_line_comments(&text);
+                if FAILING_EXIT.is_match(&code) || ASSERT_MACRO.is_match(&code) {
                     return true;
                 }
             }
@@ -243,9 +364,22 @@ fn looks_like_validator(dir: &Path) -> bool {
     false
 }
 
+/// Drop `//`-to-end-of-line content so an `assert!`/`exit(1)` mentioned in a
+/// line or doc comment does not read as self-gating. Coarse (does not parse
+/// block comments or string literals), which is fine for a heuristic hint.
+fn strip_line_comments(text: &str) -> String {
+    text.lines()
+        .map(|line| match line.find("//") {
+            Some(i) => &line[..i],
+            None => line,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::looks_like_validator;
+    use super::{audit_gap, source_self_gates, Gap, KIND_DEMO, KIND_VALIDATOR};
     use std::fs;
     use std::path::PathBuf;
 
@@ -265,19 +399,110 @@ mod tests {
             "fn main() { if fail { std::process::exit(1); } }",
         )
         .expect("write source");
-        assert!(looks_like_validator(&dir));
+        assert!(source_self_gates(&dir));
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn ignores_demo_without_exit_gate() {
+    fn detects_assert_gate_in_source() {
+        // The assert convention (~44 headless validators) the exit-only detector
+        // missed — panics abort main with a non-zero code, so these self-gate.
+        for macro_call in [
+            "assert!(x > 0.0);",
+            "assert_eq!(a, b);",
+            "assert_relative_eq!(observed, analytic, max_relative = 1e-12);",
+        ] {
+            let dir = scratch("assert");
+            fs::write(
+                dir.join("src/main.rs"),
+                format!("fn main() {{ {macro_call} }}"),
+            )
+            .expect("write source");
+            assert!(source_self_gates(&dir), "should self-gate: {macro_call}");
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn ignores_assert_mentioned_only_in_a_comment() {
+        // A doc/line comment that names `assert!`/`exit(1)` must not read as a
+        // gate — line comments are stripped before matching.
+        let dir = scratch("comment");
+        fs::write(
+            dir.join("src/main.rs"),
+            "//! A demo. A real validator would assert_eq!(a, b) or exit(1).\n\
+             fn main() { println!(\"demo\"); } // no assert!(x) here either",
+        )
+        .expect("write source");
+        assert!(!source_self_gates(&dir));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn audit_flags_unknown_kind_as_unclassified() {
+        // A typo'd kind is neither run (not `validator`) nor a valid `demo`, so
+        // it leaves the crate un-run — a contract gap, not a silent pass.
+        assert!(
+            matches!(
+                audit_gap(true, true, Some("validater"), false),
+                Some(Gap::Unclassified { .. })
+            ),
+            "unknown example_kind on a headless example is a gap"
+        );
+    }
+
+    #[test]
+    fn ignores_demo_without_gate() {
         let dir = scratch("demo");
         fs::write(
             dir.join("src/main.rs"),
-            "fn main() { println!(\"just a demonstration\"); }",
+            // A success-only `exit(0)` and the bare word \"assertion\" must NOT
+            // read as self-gating.
+            "fn main() { println!(\"just an assertion-free demonstration\"); std::process::exit(0); }",
         )
         .expect("write source");
-        assert!(!looks_like_validator(&dir));
+        assert!(!source_self_gates(&dir));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn audit_scopes_to_headless_examples() {
+        // Non-example and Bevy-example crates are out of contract scope.
+        assert!(audit_gap(false, true, None, true).is_none(), "non-example");
+        assert!(
+            audit_gap(true, false, None, true).is_none(),
+            "bevy example exempt"
+        );
+    }
+
+    #[test]
+    fn audit_flags_unclassified_headless() {
+        match audit_gap(true, true, None, true) {
+            Some(Gap::Unclassified { self_gates }) => assert!(self_gates),
+            _ => panic!("headless example with no kind should be Unclassified"),
+        }
+    }
+
+    #[test]
+    fn audit_flags_demo_that_self_gates() {
+        assert!(
+            matches!(
+                audit_gap(true, true, Some(KIND_DEMO), true),
+                Some(Gap::Misclassified)
+            ),
+            "demo that self-gates is a likely mis-marked validator"
+        );
+    }
+
+    #[test]
+    fn audit_passes_declared_crates() {
+        assert!(
+            audit_gap(true, true, Some(KIND_VALIDATOR), true).is_none(),
+            "declared validator is fine"
+        );
+        assert!(
+            audit_gap(true, true, Some(KIND_DEMO), false).is_none(),
+            "demo that does not self-gate is fine"
+        );
     }
 }
