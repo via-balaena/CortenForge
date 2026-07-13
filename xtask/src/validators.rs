@@ -47,8 +47,9 @@
 //! warnings (a future step promotes them to a hard failure once every headless
 //! example is classified):
 //!
-//! - **Unclassified** — a headless example with no `example_kind`. Whether its
-//!   source self-gates is shown as a triage hint (`validator?` / `demo?`).
+//! - **Unclassified** — a headless example with no valid `example_kind`
+//!   (missing, or an unrecognised value). Whether its source self-gates is
+//!   shown as a triage hint (`validator?` / `demo?`).
 //! - **Misclassified** — a crate declared `demo` whose source self-gates; its
 //!   oracle checks would run in no CI context.
 //!
@@ -67,6 +68,7 @@ use anyhow::{Context, Result};
 use owo_colors::OwoColorize;
 use regex::Regex;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use xshell::{cmd, Shell};
 
 /// A workspace crate paired with the facts the contract needs.
@@ -92,8 +94,9 @@ const KIND_DEMO: &str = "demo";
 
 /// A contract gap found while auditing one crate.
 enum Gap {
-    /// Headless example carrying no `example_kind` — must be classified.
-    /// `self_gates` is the triage hint: `true` ⇒ likely `validator`.
+    /// Headless example carrying no valid `example_kind` (missing or
+    /// unrecognised) — must be classified. `self_gates` is the triage hint:
+    /// `true` ⇒ likely `validator`.
     Unclassified { self_gates: bool },
     /// Declared `demo` yet the source self-gates — a likely mis-marked
     /// validator whose oracle checks would run nowhere.
@@ -337,9 +340,14 @@ fn depends_on_bevy(pkg: &serde_json::Value) -> bool {
 /// — so it need not recognise every idiom (`.unwrap()` / `-> Result` `?` gating
 /// are missed; the marker, not this heuristic, is the source of truth).
 fn source_self_gates(dir: &Path) -> bool {
+    // Compiled once, not per crate — the audit calls this for every in-scope
+    // example. `exit(<nonzero>)` or a panicking `assert*!` marks a self-gate.
+    static FAILING_EXIT: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\bexit\s*\(\s*[^0\s)]").expect("valid regex"));
+    static ASSERT_MACRO: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\bassert(_\w+)?\s*!").expect("valid regex"));
+
     let src = dir.join("src");
-    let failing_exit = Regex::new(r"\bexit\s*\(\s*[^0\s)]").expect("valid regex");
-    let assert_macro = Regex::new(r"\bassert(_\w+)?\s*!").expect("valid regex");
     for entry in walkdir::WalkDir::new(&src)
         .into_iter()
         .filter_map(Result::ok)
@@ -347,7 +355,7 @@ fn source_self_gates(dir: &Path) -> bool {
         if entry.path().extension().is_some_and(|e| e == "rs") {
             if let Ok(text) = std::fs::read_to_string(entry.path()) {
                 let code = strip_line_comments(&text);
-                if failing_exit.is_match(&code) || assert_macro.is_match(&code) {
+                if FAILING_EXIT.is_match(&code) || ASSERT_MACRO.is_match(&code) {
                     return true;
                 }
             }
