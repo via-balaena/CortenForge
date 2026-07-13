@@ -22,7 +22,7 @@
 //! 6. RK4 >> Euler (10× better)
 //! 7. All periods within 2% of RK4's measured period
 //!
-//! Run with: `cargo run -p example-integrator-comparison --release`
+//! Run with: `cargo run -p example-integrator-stress-test --release`
 
 #![allow(
     clippy::expect_used,

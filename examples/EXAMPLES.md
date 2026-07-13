@@ -121,7 +121,7 @@ CPU physics fundamentals — joints, sensors, MJCF, sim-core.
 
 | Example | Package | Status | Notes |
 |---------|---------|--------|-------|
-| `integrators/comparison` | `example-integrator-comparison` | Working | Headless energy drift table, 7 checks |
+| `integrators/stress-test` | `example-integrator-stress-test` | Working | Headless energy drift table, 7 checks (validator) |
 | `integrators/comparison-visual` | `example-integrator-comparison-visual` | Working | 3 double pendulums side by side |
 | `integrators/euler` | `example-integrator-euler` | Working | Semi-implicit Euler, visible drift |
 | `integrators/rk4` | `example-integrator-rk4` | Working | 4th-order Runge-Kutta, near-perfect |

@@ -18,7 +18,7 @@ the actual math the engine executes.
 
 | Example | Type | What it shows |
 |---------|------|---------------|
-| [`comparison/`](comparison/) | Headless | All 5 integrators on the same pendulum, formatted table + 7 pass/fail checks |
+| [`stress-test/`](stress-test/) | Headless | All 5 integrators on the same pendulum, formatted table + 7 pass/fail checks (validator) |
 | [`comparison-visual/`](comparison-visual/) | Bevy | 3 double pendulums (Euler, RK4, Implicit) side by side with energy HUD |
 | [`euler/`](euler/) | Bevy | Semi-implicit Euler — visible energy drift at dt=0.005 |
 | [`rk4/`](rk4/) | Bevy | 4th-order Runge-Kutta — near-zero energy drift |
@@ -29,7 +29,7 @@ the actual math the engine executes.
 ## Run
 
 ```
-cargo run -p example-integrator-comparison --release          # headless table
+cargo run -p example-integrator-stress-test --release         # headless table (validator)
 cargo run -p example-integrator-comparison-visual --release   # side-by-side
 cargo run -p example-integrator-euler --release
 cargo run -p example-integrator-rk4 --release
