@@ -18,11 +18,17 @@ criterion = { workspace = true }
 # Pendulum + hinge-chain bench fixtures (test_fixtures::pendulum_bench, hinge_chain),
 # plus BatchSim / Model used directly in bench setup
 sim-core = { workspace = true, features = ["test-fixtures"] }
-# Crate under bench: ActionSpace, Environment, ObservationSpace, SimEnv, Tensor, VecEnv
-sim-ml-chassis = { workspace = true }
+# Crate under bench: ActionSpace, Environment, ObservationSpace, SimEnv,
+# Tensor, VecEnv, plus the Competition runner and the reaching-6dof stock
+# task fixture (test-fixtures) used by competition_benchmarks.
+sim-ml-chassis = { workspace = true, features = ["test-fixtures"] }
 
 [[bench]]
 name = "bridge_benchmarks"
+harness = false
+
+[[bench]]
+name = "competition_benchmarks"
 harness = false
 
 [lints]

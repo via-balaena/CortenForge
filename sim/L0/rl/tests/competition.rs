@@ -904,7 +904,7 @@ fn competition_2dof_all_linear() {
     let task = reaching_2dof();
     let comp = Competition::new(20, TrainingBudget::Epochs(30), 42);
 
-    let builders: Vec<&dyn Fn(&TaskConfig) -> Box<dyn Algorithm>> = vec![
+    let builders: Vec<&(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync)> = vec![
         &build_cem_linear,
         &build_reinforce_linear,
         &build_ppo_linear,
@@ -987,7 +987,7 @@ fn hypothesis_cem_scales_poorly() {
     let result_2dof = comp
         .run(
             &[task_2dof],
-            &[&build_cem_linear as &dyn Fn(&TaskConfig) -> Box<dyn Algorithm>],
+            &[&build_cem_linear as &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync)],
         )
         .expect("2-DOF failed");
 
@@ -995,7 +995,7 @@ fn hypothesis_cem_scales_poorly() {
     let result_6dof = comp
         .run(
             &[task_6dof],
-            &[&build_cem_mlp as &dyn Fn(&TaskConfig) -> Box<dyn Algorithm>],
+            &[&build_cem_mlp as &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync)],
         )
         .expect("6-DOF failed");
 
@@ -1056,7 +1056,7 @@ fn hypothesis_value_fn_matters_at_scale() {
     let task = reaching_6dof();
     let comp = Competition::new(50, TrainingBudget::Epochs(40), 42);
 
-    let builders: Vec<&dyn Fn(&TaskConfig) -> Box<dyn Algorithm>> =
+    let builders: Vec<&(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync)> =
         vec![&build_reinforce_mlp, &build_ppo_mlp];
 
     let result = comp.run(&[task], &builders).expect("competition failed");
@@ -1115,7 +1115,7 @@ fn hypothesis_off_policy_efficiency() {
     let task = reaching_6dof();
     let comp = Competition::new(20, TrainingBudget::Epochs(20), 42);
 
-    let builders: Vec<&dyn Fn(&TaskConfig) -> Box<dyn Algorithm>> =
+    let builders: Vec<&(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync)> =
         vec![&build_cem_mlp, &build_ppo_mlp, &build_td3_mlp_low_warmup];
 
     let result = comp.run(&[task], &builders).expect("competition failed");
@@ -1163,7 +1163,7 @@ fn hypothesis_mlp_beats_linear() {
     let task = reaching_6dof();
     let comp = Competition::new(30, TrainingBudget::Epochs(40), 42);
 
-    let builders: Vec<&dyn Fn(&TaskConfig) -> Box<dyn Algorithm>> =
+    let builders: Vec<&(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync)> =
         vec![&build_ppo_linear, &build_ppo_mlp];
 
     let result = comp.run(&[task], &builders).expect("competition failed");
@@ -1216,7 +1216,7 @@ fn hypothesis_entropy_helps() {
     let task = reaching_6dof();
     let comp = Competition::new(30, TrainingBudget::Epochs(40), 42);
 
-    let builders: Vec<&dyn Fn(&TaskConfig) -> Box<dyn Algorithm>> =
+    let builders: Vec<&(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync)> =
         vec![&build_td3_linear, &build_sac_linear];
 
     let result = comp.run(&[task], &builders).expect("competition failed");
@@ -1294,7 +1294,7 @@ fn competition_6dof_all_mlp() {
     let task = reaching_6dof();
     let comp = Competition::new(50, TrainingBudget::Epochs(50), 42);
 
-    let builders: Vec<&dyn Fn(&TaskConfig) -> Box<dyn Algorithm>> = vec![
+    let builders: Vec<&(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync)> = vec![
         &build_cem_mlp,
         &build_reinforce_mlp,
         &build_ppo_mlp,
@@ -1381,7 +1381,7 @@ fn competition_6dof_autograd_1layer_parity() {
     let task = reaching_6dof();
     let comp = Competition::new_verbose(50, TrainingBudget::Epochs(50), 42);
 
-    let builders: Vec<&dyn Fn(&TaskConfig) -> Box<dyn Algorithm>> = vec![
+    let builders: Vec<&(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync)> = vec![
         &build_cem_autograd_1layer,
         &build_reinforce_autograd_1layer,
         &build_ppo_autograd_1layer,
@@ -1483,7 +1483,7 @@ fn competition_6dof_autograd_2layer() {
     let task = reaching_6dof();
     let comp = Competition::new_verbose(50, TrainingBudget::Epochs(50), 42);
 
-    let builders: Vec<&dyn Fn(&TaskConfig) -> Box<dyn Algorithm>> = vec![
+    let builders: Vec<&(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync)> = vec![
         &build_cem_autograd_2layer,
         &build_reinforce_autograd_2layer,
         &build_ppo_autograd_2layer,
@@ -1563,7 +1563,7 @@ fn budget_scaling_more_epochs() {
     let task = reaching_6dof();
     let comp = Competition::new_verbose(50, TrainingBudget::Epochs(200), 42);
 
-    let builders: Vec<&dyn Fn(&TaskConfig) -> Box<dyn Algorithm>> = vec![
+    let builders: Vec<&(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync)> = vec![
         &build_cem_autograd_2layer,
         &build_td3_autograd_2layer,
         &build_sac_autograd_2layer,
@@ -1614,7 +1614,7 @@ fn budget_scaling_lower_lr() {
     let task = reaching_6dof();
     let comp = Competition::new_verbose(50, TrainingBudget::Epochs(50), 42);
 
-    let builders: Vec<&dyn Fn(&TaskConfig) -> Box<dyn Algorithm>> = vec![
+    let builders: Vec<&(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync)> = vec![
         &build_cem_autograd_2layer,
         &build_reinforce_autograd_2layer_low_lr,
         &build_ppo_autograd_2layer_low_lr,
@@ -1676,7 +1676,7 @@ fn budget_scaling_more_envs() {
     let task = reaching_6dof();
     let comp = Competition::new_verbose(200, TrainingBudget::Epochs(50), 42);
 
-    let builders: Vec<&dyn Fn(&TaskConfig) -> Box<dyn Algorithm>> = vec![
+    let builders: Vec<&(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync)> = vec![
         &build_cem_autograd_2layer,
         &build_reinforce_autograd_2layer,
         &build_ppo_autograd_2layer,
@@ -1797,7 +1797,7 @@ fn competition_6dof_obstacle_autograd_2layer() {
     let task = obstacle_reaching_6dof();
     let comp = Competition::new_verbose(50, TrainingBudget::Epochs(50), 42);
 
-    let builders: Vec<&dyn Fn(&TaskConfig) -> Box<dyn Algorithm>> = vec![
+    let builders: Vec<&(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync)> = vec![
         &build_cem_autograd_2layer,
         &build_reinforce_autograd_2layer,
         &build_ppo_autograd_2layer,

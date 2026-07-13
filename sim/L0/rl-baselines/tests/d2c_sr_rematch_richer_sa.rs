@@ -231,7 +231,8 @@ fn d2c_sr_rematch_richer_sa_smoke() {
 
     let cem = cem_builder(SMOKE_EPISODE_STEPS);
     let rsa = richer_sa_builder(SMOKE_EPISODE_STEPS);
-    let algorithm_builders: Vec<&dyn Fn(&TaskConfig) -> Box<dyn Algorithm>> = vec![&cem, &rsa];
+    let algorithm_builders: Vec<&(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync)> =
+        vec![&cem, &rsa];
 
     let mut bootstrap_rng = StdRng::seed_from_u64(BOOTSTRAP_RNG_SEED);
     let task = rematch_task(SMOKE_EPISODE_STEPS, SMOKE_SUB_STEPS);
@@ -283,7 +284,8 @@ fn d2c_sr_rematch_richer_sa() {
 
     let cem = cem_builder(PROD_EPISODE_STEPS);
     let rsa = richer_sa_builder(PROD_EPISODE_STEPS);
-    let algorithm_builders: Vec<&dyn Fn(&TaskConfig) -> Box<dyn Algorithm>> = vec![&cem, &rsa];
+    let algorithm_builders: Vec<&(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync)> =
+        vec![&cem, &rsa];
 
     let mut bootstrap_rng = StdRng::seed_from_u64(BOOTSTRAP_RNG_SEED);
     let task = rematch_task(PROD_EPISODE_STEPS, PROD_SUB_STEPS);

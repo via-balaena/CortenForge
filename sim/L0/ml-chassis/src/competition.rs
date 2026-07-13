@@ -478,7 +478,7 @@ impl Competition {
     pub fn run(
         &self,
         tasks: &[TaskConfig],
-        builders: &[&dyn Fn(&TaskConfig) -> Box<dyn Algorithm>],
+        builders: &[&(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync)],
     ) -> Result<CompetitionResult, EnvError> {
         self.run_replicates(tasks, builders, &[self.seed])
     }
@@ -495,124 +495,245 @@ impl Competition {
     /// `LangevinThermostat`) vary their physics noise sequence across
     /// replicates, deterministic tasks ignore the seed.
     ///
-    /// Execution is sequential (no `rayon` dependency on L0); the first
-    /// error aborts the whole call, matching [`Self::run`]'s contract.
+    /// # Parallelism
+    ///
+    /// Runs are independent — a fresh env, a fresh algorithm, its own seed,
+    /// no shared state — so they execute concurrently on a pool of scoped
+    /// `std::thread`s (no external dependency; keeps this L0 crate lean),
+    /// each pulling the next unclaimed run off a shared atomic cursor for
+    /// dynamic load balancing.  Hence the `Sync` bound on the builders.
+    /// Results are restored to the documented seeds-outermost order
+    /// regardless of completion order, so the returned [`CompetitionResult`]
+    /// is **bit-identical** to sequential execution in its deterministic
+    /// content (rewards, run ordering, provenance `best_epoch`/`best_reward`)
+    /// — modulo the wall-clock `timestamp` / `wall_time_ms` fields, which
+    /// never match across any two executions.  (Only returned data is
+    /// deterministic: `verbose` stderr blocks appear in completion order, not
+    /// run order.)  Because builders are invoked concurrently in
+    /// nondeterministic order, they must be call-order-independent — any
+    /// per-call state must use its own synchronization, not an invocation
+    /// counter.  Physics stepping inside each run stays sequential
+    /// (`sim-core`'s `parallel` feature is a separate per-env axis) to avoid
+    /// nested oversubscription.
     ///
     /// # Errors
     ///
     /// Returns [`EnvError`] if any [`TaskConfig::build_vec_env()`] fails.
+    /// Unlike the old sequential loop, a failing run no longer short-circuits
+    /// the others — every run executes, then the positionally-first error (in
+    /// emission order) is returned, so the returned `Err` value matches
+    /// sequential execution's contract exactly.
     pub fn run_replicates(
         &self,
         tasks: &[TaskConfig],
-        builders: &[&dyn Fn(&TaskConfig) -> Box<dyn Algorithm>],
+        builders: &[&(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync)],
         seeds: &[u64],
     ) -> Result<CompetitionResult, EnvError> {
-        let mut runs = Vec::with_capacity(tasks.len() * builders.len() * seeds.len());
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
+        // Flatten to the documented seeds-outermost, task-major, builder-major
+        // order, tagging each item with its emission index so results can be
+        // restored to that order regardless of completion order.
+        type Builder<'a> = &'a (dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync);
+        let mut work: Vec<(usize, u64, &TaskConfig, Builder)> =
+            Vec::with_capacity(tasks.len() * builders.len() * seeds.len());
         for (replicate_index, &seed) in seeds.iter().enumerate() {
             for task in tasks {
-                for builder in builders {
-                    let mut env = task.build_vec_env(self.n_envs, seed)?;
-                    let mut algorithm = builder(task);
-                    let name = algorithm.name();
-
-                    if self.verbose {
-                        eprintln!(
-                            "\n[{name}] training on {} (replicate {replicate_index}, seed {seed})...",
-                            task.name()
-                        );
-                    }
-
-                    let t0 = std::time::Instant::now();
-                    let verbose = self.verbose;
-
-                    let metrics = algorithm.train(&mut env, self.budget, seed, &|m| {
-                        if verbose {
-                            eprintln!(
-                                "  epoch {:>3}: reward={:>10.2}, dones={:>3}, {}ms",
-                                m.epoch, m.mean_reward, m.done_count, m.wall_time_ms
-                            );
-                        }
-                    });
-
-                    if self.verbose {
-                        // Print `best` (max mean_reward across epochs) alongside `final`
-                        // (last epoch's mean_reward). The rematch's statistical pipeline
-                        // consumes `best_reward()`, not the final, so a reader watching
-                        // the live log must see both to interpret the run correctly.
-                        // See `docs/studies/ml_chassis_refactor/src/50-d2c-sr-rematch-writeup.md`
-                        // for the case study where reading only `final` misled the author.
-                        let final_reward = metrics.last().map_or(f64::NAN, |m| m.mean_reward);
-                        let best_reward = metrics
-                            .iter()
-                            .map(|m| m.mean_reward)
-                            .fold(f64::NEG_INFINITY, f64::max);
-                        let total_dones: usize = metrics.iter().map(|m| m.done_count).sum();
-                        eprintln!(
-                            "[{name}] done — best={best_reward:.2}, final={final_reward:.2}, {total_dones} dones, {:.1}s",
-                            t0.elapsed().as_secs_f64()
-                        );
-                    }
-
-                    let artifact = algorithm.policy_artifact();
-                    let best_artifact = algorithm.best_artifact();
-
-                    // Strict `>` matches BestTracker (§3.3): ties keep the
-                    // earlier epoch.  Do NOT replace with
-                    // `RunResult::best_reward()` — that uses
-                    // `partial_cmp`→`Ordering::Equal` fallback and would
-                    // pick the later epoch under a tie, diverging from
-                    // `best_epoch`'s "earliest tied epoch" invariant.
-                    let (best_epoch, best_reward) = {
-                        let mut bi = 0;
-                        let mut br = f64::NEG_INFINITY;
-                        for (i, m) in metrics.iter().enumerate() {
-                            if m.mean_reward > br {
-                                br = m.mean_reward;
-                                bi = i;
-                            }
-                        }
-                        if metrics.is_empty() {
-                            (0, None)
-                        } else if br.is_finite() {
-                            (bi, Some(br))
-                        } else {
-                            (0, None)
-                        }
-                    };
-
-                    let provenance = TrainingProvenance {
-                        algorithm: name.to_string(),
-                        task: task.name().to_string(),
-                        seed,
-                        epochs_trained: metrics.len(),
-                        final_reward: metrics.last().map_or(0.0, |m| m.mean_reward),
-                        best_reward,
-                        best_epoch,
-                        total_steps: metrics.iter().map(|m| m.total_steps).sum(),
-                        wall_time_ms: metrics.iter().map(|m| m.wall_time_ms).sum(),
-                        timestamp: now_iso8601(),
-                        hyperparams: BTreeMap::new(),
-                        metrics: metrics.clone(),
-                        parent: None,
-                    };
-
-                    let artifact = artifact.with_provenance(provenance.clone());
-                    let best_artifact = best_artifact.with_provenance(provenance);
-
-                    runs.push(RunResult {
-                        task_name: task.name().to_string(),
-                        algorithm_name: name.to_string(),
-                        replicate_index,
-                        metrics,
-                        artifact,
-                        best_artifact,
-                    });
+                for &builder in builders {
+                    work.push((replicate_index, seed, task, builder));
                 }
             }
         }
 
+        // Collect `(emission_index, result)` pairs, then sort by index — so
+        // the returned `CompetitionResult` is identical to sequential
+        // execution and the first `Err` (positionally, in emission order)
+        // wins, matching the sequential "first error aborts" contract.
+        let n = work.len();
+        let n_threads = std::thread::available_parallelism()
+            .map_or(1, std::num::NonZeroUsize::get)
+            .min(n);
+
+        let mut indexed: Vec<(usize, Result<RunResult, EnvError>)> = if n_threads <= 1 {
+            // Fast path: no threads for 0/1 items or a single core.
+            work.iter()
+                .enumerate()
+                .map(|(i, &(ri, seed, task, builder))| (i, self.run_one(task, builder, ri, seed)))
+                .collect()
+        } else {
+            // A shared atomic cursor hands each worker the next unclaimed item
+            // — dynamic load balancing (an idle worker grabs the next run), so
+            // heterogeneous run costs stay balanced without a work-stealing
+            // dependency. Runs are independent (fresh env + algorithm + seed,
+            // no shared mutable state), so this is data-race free; the `Sync`
+            // bound on the builders is what lets them be shared across workers.
+            let cursor = AtomicUsize::new(0);
+            let work = &work;
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..n_threads)
+                    .map(|_| {
+                        scope.spawn(|| {
+                            let mut local = Vec::new();
+                            loop {
+                                let i = cursor.fetch_add(1, Ordering::Relaxed);
+                                if i >= work.len() {
+                                    break;
+                                }
+                                let (ri, seed, task, builder) = work[i];
+                                local.push((i, self.run_one(task, builder, ri, seed)));
+                            }
+                            local
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .flat_map(|h| match h.join() {
+                        Ok(local) => local,
+                        // Re-raise a worker panic on the parent thread rather
+                        // than swallowing it (which would drop that run's slot).
+                        Err(payload) => std::panic::resume_unwind(payload),
+                    })
+                    .collect()
+            })
+        };
+
+        indexed.sort_by_key(|(i, _)| *i);
+        let mut runs = Vec::with_capacity(n);
+        for (_, result) in indexed {
+            runs.push(result?);
+        }
+
         Ok(CompetitionResult { runs })
+    }
+
+    /// Execute one `(task, builder, seed)` run and package it as a
+    /// [`RunResult`].  Pure and self-contained — no shared mutable state —
+    /// so it is safe to call from many worker threads at once.
+    fn run_one(
+        &self,
+        task: &TaskConfig,
+        builder: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync),
+        replicate_index: usize,
+        seed: u64,
+    ) -> Result<RunResult, EnvError> {
+        use std::fmt::Write as _;
+
+        let mut env = task.build_vec_env(self.n_envs, seed)?;
+        let mut algorithm = builder(task);
+        let name = algorithm.name();
+
+        // Verbose output is buffered per-run and flushed as a single atomic
+        // write at the end, so concurrent runs never interleave mid-line.
+        // (Live per-epoch streaming is meaningless when N runs execute at
+        // once.)  `RefCell` is thread-local to this run — never shared.
+        // `writeln!` into a `String` is infallible, so `.ok()` discards the
+        // `fmt::Result` without an `unwrap`/`expect`.
+        let log = std::cell::RefCell::new(String::new());
+        if self.verbose {
+            writeln!(
+                log.borrow_mut(),
+                "\n[{name}] training on {} (replicate {replicate_index}, seed {seed})...",
+                task.name()
+            )
+            .ok();
+        }
+
+        let t0 = std::time::Instant::now();
+        let verbose = self.verbose;
+
+        let metrics = algorithm.train(&mut env, self.budget, seed, &|m| {
+            if verbose {
+                writeln!(
+                    log.borrow_mut(),
+                    "  epoch {:>3}: reward={:>10.2}, dones={:>3}, {}ms",
+                    m.epoch,
+                    m.mean_reward,
+                    m.done_count,
+                    m.wall_time_ms
+                )
+                .ok();
+            }
+        });
+
+        if self.verbose {
+            // Print `best` (max mean_reward across epochs) alongside `final`
+            // (last epoch's mean_reward). The rematch's statistical pipeline
+            // consumes `best_reward()`, not the final, so a reader watching
+            // the log must see both to interpret the run correctly.
+            // See `docs/studies/ml_chassis_refactor/src/50-d2c-sr-rematch-writeup.md`
+            // for the case study where reading only `final` misled the author.
+            let final_reward = metrics.last().map_or(f64::NAN, |m| m.mean_reward);
+            let best_reward = metrics
+                .iter()
+                .map(|m| m.mean_reward)
+                .fold(f64::NEG_INFINITY, f64::max);
+            let total_dones: usize = metrics.iter().map(|m| m.done_count).sum();
+            writeln!(
+                log.borrow_mut(),
+                "[{name}] done — best={best_reward:.2}, final={final_reward:.2}, {total_dones} dones, {:.1}s",
+                t0.elapsed().as_secs_f64()
+            )
+            .ok();
+            // Single macro call → one lock acquisition → the block stays
+            // contiguous even under concurrent runs.
+            eprint!("{}", log.borrow());
+        }
+
+        let artifact = algorithm.policy_artifact();
+        let best_artifact = algorithm.best_artifact();
+
+        // Strict `>` matches BestTracker (§3.3): ties keep the
+        // earlier epoch.  Do NOT replace with
+        // `RunResult::best_reward()` — that uses
+        // `partial_cmp`→`Ordering::Equal` fallback and would
+        // pick the later epoch under a tie, diverging from
+        // `best_epoch`'s "earliest tied epoch" invariant.
+        let (best_epoch, best_reward) = {
+            let mut bi = 0;
+            let mut br = f64::NEG_INFINITY;
+            for (i, m) in metrics.iter().enumerate() {
+                if m.mean_reward > br {
+                    br = m.mean_reward;
+                    bi = i;
+                }
+            }
+            if metrics.is_empty() {
+                (0, None)
+            } else if br.is_finite() {
+                (bi, Some(br))
+            } else {
+                (0, None)
+            }
+        };
+
+        let provenance = TrainingProvenance {
+            algorithm: name.to_string(),
+            task: task.name().to_string(),
+            seed,
+            epochs_trained: metrics.len(),
+            final_reward: metrics.last().map_or(0.0, |m| m.mean_reward),
+            best_reward,
+            best_epoch,
+            total_steps: metrics.iter().map(|m| m.total_steps).sum(),
+            wall_time_ms: metrics.iter().map(|m| m.wall_time_ms).sum(),
+            timestamp: now_iso8601(),
+            hyperparams: BTreeMap::new(),
+            metrics: metrics.clone(),
+            parent: None,
+        };
+
+        let artifact = artifact.with_provenance(provenance.clone());
+        let best_artifact = best_artifact.with_provenance(provenance);
+
+        Ok(RunResult {
+            task_name: task.name().to_string(),
+            algorithm_name: name.to_string(),
+            replicate_index,
+            metrics,
+            artifact,
+            best_artifact,
+        })
     }
 }
 
@@ -720,6 +841,79 @@ mod tests {
         }
     }
 
+    /// Mock algorithm whose per-epoch reward is a pure function of its seed
+    /// (RNG-driven, no physics stepping — instant).  Used by
+    /// `run_replicates_parallel_bit_identical_to_isolated` to prove the
+    /// parallel run loop isolates RNG state per run and preserves order.
+    struct SeededMockAlgorithm {
+        policy: Box<dyn Policy>,
+        best: crate::best_tracker::BestTracker,
+    }
+
+    impl Algorithm for SeededMockAlgorithm {
+        fn name(&self) -> &'static str {
+            "Seeded"
+        }
+
+        fn train(
+            &mut self,
+            env: &mut VecEnv,
+            budget: TrainingBudget,
+            seed: u64,
+            on_epoch: &dyn Fn(&EpochMetrics),
+        ) -> Vec<EpochMetrics> {
+            use rand::SeedableRng;
+            use rand::rngs::StdRng;
+
+            let mut rng = StdRng::seed_from_u64(seed);
+            let n = match budget {
+                TrainingBudget::Epochs(n) => n,
+                TrainingBudget::Steps(_) => 1,
+            };
+            let _ = env.reset_all();
+            let n_envs = env.n_envs();
+            let mut metrics = Vec::with_capacity(n);
+            for epoch in 0..n {
+                let mean_reward = crate::stats::randn(&mut rng);
+                self.best
+                    .maybe_update(epoch, mean_reward, self.policy.params());
+                let em = EpochMetrics {
+                    epoch,
+                    mean_reward,
+                    done_count: 0,
+                    total_steps: n_envs,
+                    wall_time_ms: 0,
+                    extra: BTreeMap::new(),
+                };
+                on_epoch(&em);
+                metrics.push(em);
+            }
+            metrics
+        }
+
+        fn policy_artifact(&self) -> PolicyArtifact {
+            PolicyArtifact::from_policy(&*self.policy)
+        }
+
+        fn best_artifact(&self) -> PolicyArtifact {
+            self.best.to_artifact(self.policy.descriptor())
+        }
+
+        fn checkpoint(&self) -> TrainingCheckpoint {
+            let (best_params, best_reward, best_epoch) = self.best.to_checkpoint();
+            TrainingCheckpoint {
+                algorithm_name: "Seeded".into(),
+                policy_artifact: self.policy_artifact(),
+                critics: vec![],
+                optimizer_states: vec![],
+                algorithm_state: BTreeMap::new(),
+                best_params: Some(best_params),
+                best_reward,
+                best_epoch,
+            }
+        }
+    }
+
     // ── Competition basics ────────────────────────────────────────────
 
     #[test]
@@ -727,9 +921,9 @@ mod tests {
         let comp = Competition::new(2, TrainingBudget::Epochs(3), 42);
         let tasks = [reaching_2dof()];
 
-        let builder_a: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+        let builder_a: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) =
             &|_task| Box::new(MockAlgorithm::new("AlgoA"));
-        let builder_b: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+        let builder_b: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) =
             &|_task| Box::new(MockAlgorithm::new("AlgoB"));
 
         let result = comp.run(&tasks, &[builder_a, builder_b]).unwrap();
@@ -745,7 +939,7 @@ mod tests {
     #[test]
     fn competition_empty_tasks() {
         let comp = Competition::new(2, TrainingBudget::Epochs(1), 42);
-        let builder: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+        let builder: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) =
             &|_task| Box::new(MockAlgorithm::new("A"));
         let result = comp.run(&[], &[builder]).unwrap();
         assert!(result.runs.is_empty());
@@ -755,7 +949,7 @@ mod tests {
     fn competition_empty_builders() {
         let comp = Competition::new(2, TrainingBudget::Epochs(1), 42);
         let tasks = [reaching_2dof()];
-        let builders: &[&dyn Fn(&TaskConfig) -> Box<dyn Algorithm>] = &[];
+        let builders: &[&(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync)] = &[];
         let result = comp.run(&tasks, builders).unwrap();
         assert!(result.runs.is_empty());
     }
@@ -765,7 +959,7 @@ mod tests {
         let comp = Competition::new(2, TrainingBudget::Epochs(2), 42);
         let tasks = [reaching_2dof(), reaching_6dof()];
 
-        let builder: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+        let builder: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) =
             &|_task| Box::new(MockAlgorithm::new("Mock"));
 
         let result = comp.run(&tasks, &[builder]).unwrap();
@@ -891,8 +1085,10 @@ mod tests {
         let comp = Competition::new(2, TrainingBudget::Epochs(1), 42);
         let tasks = [reaching_2dof()];
 
-        let b1: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> = &|_| Box::new(MockAlgorithm::new("A"));
-        let b2: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> = &|_| Box::new(MockAlgorithm::new("B"));
+        let b1: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) =
+            &|_| Box::new(MockAlgorithm::new("A"));
+        let b2: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) =
+            &|_| Box::new(MockAlgorithm::new("B"));
 
         let result = comp.run(&tasks, &[b1, b2]).unwrap();
         let for_task = result.for_task("reaching-2dof");
@@ -904,7 +1100,7 @@ mod tests {
         let comp = Competition::new(2, TrainingBudget::Epochs(1), 42);
         let tasks = [reaching_2dof(), reaching_6dof()];
 
-        let builder: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+        let builder: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) =
             &|_| Box::new(MockAlgorithm::new("Mock"));
 
         let result = comp.run(&tasks, &[builder]).unwrap();
@@ -920,7 +1116,7 @@ mod tests {
         let comp = Competition::new(2, TrainingBudget::Epochs(3), seed);
         let tasks = [reaching_2dof()];
 
-        let builder: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+        let builder: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) =
             &|_task| Box::new(MockAlgorithm::new("AlgoP"));
 
         let result = comp.run(&tasks, &[builder]).unwrap();
@@ -947,7 +1143,7 @@ mod tests {
         let comp = Competition::new(2, TrainingBudget::Epochs(1), 42);
         let tasks = [reaching_2dof()];
 
-        let builder: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+        let builder: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) =
             &|_task| Box::new(MockAlgorithm::new("Saver"));
 
         let result = comp.run(&tasks, &[builder]).unwrap();
@@ -974,9 +1170,9 @@ mod tests {
 
         // Both use MockAlgorithm (same reward), but we can still verify
         // best_for_task returns Some with correct provenance.
-        let builder_a: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+        let builder_a: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) =
             &|_task| Box::new(MockAlgorithm::new("BestA"));
-        let builder_b: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+        let builder_b: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) =
             &|_task| Box::new(MockAlgorithm::new("BestB"));
 
         let result = comp.run(&tasks, &[builder_a, builder_b]).unwrap();
@@ -1038,7 +1234,7 @@ mod tests {
         let comp = Competition::new(2, TrainingBudget::Epochs(5), 42);
         let tasks = [reaching_2dof()];
 
-        let builder: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+        let builder: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) =
             &|_task| Box::new(MockAlgorithm::new("Serde"));
 
         let result = comp.run(&tasks, &[builder]).unwrap();
@@ -1060,7 +1256,7 @@ mod tests {
         let comp = Competition::new(2, TrainingBudget::Epochs(1), 42);
         let tasks = [reaching_2dof()];
 
-        let builder: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+        let builder: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) =
             &|_task| Box::new(MockAlgorithm::new("BestSave"));
 
         let result = comp.run(&tasks, &[builder]).unwrap();
@@ -1092,9 +1288,9 @@ mod tests {
         let comp = Competition::new(2, TrainingBudget::Epochs(2), 42);
         let tasks = [reaching_2dof(), reaching_6dof()];
 
-        let b1: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+        let b1: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) =
             &|_task| Box::new(MockAlgorithm::new("MockA"));
-        let b2: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+        let b2: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) =
             &|_task| Box::new(MockAlgorithm::new("MockB"));
 
         let result = comp
@@ -1108,7 +1304,7 @@ mod tests {
     fn run_replicates_replicate_index_monotonic() {
         let comp = Competition::new(2, TrainingBudget::Epochs(1), 42);
         let tasks = [reaching_2dof()];
-        let builder: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+        let builder: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) =
             &|_task| Box::new(MockAlgorithm::new("Mock"));
 
         let result = comp
@@ -1138,7 +1334,7 @@ mod tests {
         // PR 2a's load-bearing review gate.
         let comp = Competition::new(1, TrainingBudget::Epochs(3), 42);
         let tasks = [reaching_2dof()];
-        let builder: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+        let builder: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) =
             &|_task| Box::new(MockAlgorithm::new("TieBreaker"));
 
         let result = comp.run_replicates(&tasks, &[builder], &[42]).unwrap();
@@ -1168,7 +1364,7 @@ mod tests {
         // through a stale VecEnv would produce inconsistent metrics.len().
         let comp = Competition::new(2, TrainingBudget::Epochs(4), 42);
         let tasks = [reaching_2dof()];
-        let builder: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+        let builder: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) =
             &|_task| Box::new(MockAlgorithm::new("FreshEnv"));
 
         let result = comp.run_replicates(&tasks, &[builder], &[1, 2, 3]).unwrap();
@@ -1191,7 +1387,7 @@ mod tests {
         // existing single-seed contract is preserved exactly.
         let comp = Competition::new(2, TrainingBudget::Epochs(2), 42);
         let tasks = [reaching_2dof()];
-        let builder: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+        let builder: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) =
             &|_task| Box::new(MockAlgorithm::new("Wrap"));
 
         let result = comp.run(&tasks, &[builder]).unwrap();
@@ -1205,7 +1401,7 @@ mod tests {
     fn find_replicate_returns_specific_seed() {
         let comp = Competition::new(2, TrainingBudget::Epochs(1), 42);
         let tasks = [reaching_2dof()];
-        let builder: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+        let builder: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) =
             &|_task| Box::new(MockAlgorithm::new("Finder"));
 
         let result = comp
@@ -1231,7 +1427,7 @@ mod tests {
     fn replicate_best_rewards_flat_filter() {
         let comp = Competition::new(2, TrainingBudget::Epochs(2), 42);
         let tasks = [reaching_2dof()];
-        let builder: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+        let builder: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) =
             &|_task| Box::new(MockAlgorithm::new("Rwd"));
 
         let result = comp.run_replicates(&tasks, &[builder], &[1, 2, 3]).unwrap();
@@ -1251,7 +1447,7 @@ mod tests {
         // amendment; the shape contract matches the best variant.
         let comp = Competition::new(2, TrainingBudget::Epochs(2), 42);
         let tasks = [reaching_2dof()];
-        let builder: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+        let builder: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) =
             &|_task| Box::new(MockAlgorithm::new("Rwd"));
 
         let result = comp.run_replicates(&tasks, &[builder], &[1, 2, 3]).unwrap();
@@ -1272,7 +1468,7 @@ mod tests {
     fn describe_returns_seed_summary() {
         let comp = Competition::new(2, TrainingBudget::Epochs(2), 42);
         let tasks = [reaching_2dof()];
-        let builder: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+        let builder: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) =
             &|_task| Box::new(MockAlgorithm::new("Desc"));
 
         let result = comp.run_replicates(&tasks, &[builder], &[1, 2, 3]).unwrap();
@@ -1288,7 +1484,7 @@ mod tests {
     fn describe_none_for_missing_pair() {
         let comp = Competition::new(2, TrainingBudget::Epochs(1), 42);
         let tasks = [reaching_2dof()];
-        let builder: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+        let builder: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) =
             &|_task| Box::new(MockAlgorithm::new("Present"));
 
         let result = comp.run_replicates(&tasks, &[builder], &[0]).unwrap();
@@ -1384,21 +1580,19 @@ mod tests {
             }
         }
 
-        // Seed 0 and seed 2 produce the finite-reward variant; seed 1
-        // produces the zero-epoch variant.  The factory dispatches on
-        // `self.seed` — but Competition's builder closure only sees
-        // the `TaskConfig`, not the seed, so we dispatch via a
-        // RefCell-backed counter instead.
-        let call_count = std::cell::RefCell::new(0usize);
+        // Exactly one of the three builder invocations produces the
+        // zero-epoch variant.  Competition's builder closure only sees the
+        // `TaskConfig`, not the seed, so we dispatch on an invocation
+        // counter.  It is an `AtomicUsize` (not a `RefCell`) because
+        // `run_replicates` evaluates runs in parallel — the closure must be
+        // `Sync`, and the runs may fire in any order.  The assertion below
+        // is count-based ("2 of 3 survive"), not identity-based, so it holds
+        // regardless of which invocation draws the zero-epoch variant.
+        let call_count = std::sync::atomic::AtomicUsize::new(0);
         let comp = Competition::new(1, TrainingBudget::Epochs(2), 0);
         let tasks = [reaching_2dof()];
-        let builder: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> = &|_task| {
-            let i = {
-                let mut c = call_count.borrow_mut();
-                let v = *c;
-                *c += 1;
-                v
-            };
+        let builder: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) = &|_task| {
+            let i = call_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if i == 1 {
                 // Middle replicate: zero-epoch, gets filtered out.
                 let policy: Box<dyn Policy> = Box::new(LinearPolicy::new(1, 1, &[1.0]));
@@ -1447,5 +1641,123 @@ mod tests {
             a.validate(),
             Err(ArtifactError::NonFiniteValue { .. })
         ));
+    }
+
+    // ── Parallel run_replicates: bit-identity guard ──────────────────────
+
+    #[test]
+    fn run_replicates_parallel_bit_identical_to_isolated() {
+        // Guards ORDER-PRESERVATION and per-run DETERMINISM of the parallel
+        // run loop: a batched multi-run competition must be bit-for-bit
+        // identical to the same runs computed one at a time. Fails if the
+        // flatten/collect emits runs out of the documented order, or if a
+        // run's output depends on anything but its own seed. (Data-race
+        // freedom itself is enforced by the `Sync` bound at compile time,
+        // not by this test — each run allocates its own RNG, so cross-run
+        // contamination is impossible by construction.) `SeededMockAlgorithm`
+        // makes reward a pure function of the seed with no physics, so the
+        // check is instant and the reward-bit comparison is exact.
+        let builder: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) = &|_task| {
+            let policy: Box<dyn Policy> = Box::new(LinearPolicy::new(1, 1, &[1.0]));
+            let best = crate::best_tracker::BestTracker::new(policy.params());
+            Box::new(SeededMockAlgorithm { policy, best })
+        };
+
+        let comp = Competition::new(4, TrainingBudget::Epochs(6), 0);
+        let tasks = [reaching_2dof(), reaching_6dof()];
+        let seeds = [11u64, 22, 33, 44, 55];
+
+        // Batched: all 5 seeds × 2 tasks = 10 runs through the parallel loop.
+        let batched = comp.run_replicates(&tasks, &[builder], &seeds).unwrap();
+        assert_eq!(batched.runs.len(), 10);
+
+        // Isolated: recompute each run as a single-item competition, in the
+        // documented seeds-outermost / task-major order, and compare
+        // bit-for-bit. (A one-item `run_replicates` still goes through the
+        // parallel machinery, but a lone work item cannot cross-contaminate,
+        // so it is a valid per-run oracle.)
+        let mut k = 0;
+        for &seed in &seeds {
+            for task in &tasks {
+                let iso = comp
+                    .run_replicates(std::slice::from_ref(task), &[builder], &[seed])
+                    .unwrap();
+                assert_eq!(iso.runs.len(), 1);
+                let (b, i) = (&batched.runs[k], &iso.runs[0]);
+                assert_eq!(b.task_name, i.task_name, "run {k} task order");
+                assert_eq!(b.algorithm_name, i.algorithm_name);
+                assert_eq!(b.metrics.len(), i.metrics.len());
+                for (mb, mi) in b.metrics.iter().zip(&i.metrics) {
+                    assert_eq!(
+                        mb.mean_reward.to_bits(),
+                        mi.mean_reward.to_bits(),
+                        "seed {seed} task {} epoch {}: batched {} != isolated {}",
+                        b.task_name,
+                        mb.epoch,
+                        mb.mean_reward,
+                        mi.mean_reward
+                    );
+                }
+                // Provenance best-epoch / best-reward must match too.
+                let pb = b.artifact.provenance.as_ref().unwrap();
+                let pi = i.artifact.provenance.as_ref().unwrap();
+                assert_eq!(pb.best_epoch, pi.best_epoch);
+                assert_eq!(pb.best_reward, pi.best_reward);
+                k += 1;
+            }
+        }
+        assert_eq!(k, batched.runs.len());
+    }
+
+    #[test]
+    fn run_replicates_returns_positionally_first_error() {
+        // The parallel loop runs every work item, then returns the
+        // positionally-first `Err` in emission order. Guard that contract:
+        // it crosses the reordering boundary, so it must not depend on which
+        // run happens to fail first at runtime.
+        fn failing_task(tag: &'static str) -> TaskConfig {
+            TaskConfig::from_build_fn(tag, 1, 1, vec![1.0], move |_n, _s| {
+                Err(EnvError::MissingField { field: tag })
+            })
+        }
+        let builder: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) =
+            &|_t| Box::new(MockAlgorithm::new("Unused"));
+
+        // Two failing tasks: the earlier position (task-major within the one
+        // seed) must win, deterministically across repeats.
+        let comp = Competition::new(2, TrainingBudget::Epochs(1), 0);
+        let tasks = [failing_task("first"), failing_task("second")];
+        for _ in 0..8 {
+            let err = comp.run_replicates(&tasks, &[builder], &[7]).unwrap_err();
+            assert!(
+                matches!(&err, EnvError::MissingField { field } if *field == "first"),
+                "must return the positionally-first error, got {err:?}"
+            );
+        }
+
+        // A successful run positioned before a failing one still surfaces the
+        // failure (build succeeds, then the later build fails).
+        let mixed = [reaching_2dof(), failing_task("boom")];
+        assert!(matches!(
+            comp.run_replicates(&mixed, &[builder], &[7]).unwrap_err(),
+            EnvError::MissingField { field: "boom" }
+        ));
+    }
+
+    #[test]
+    fn run_replicates_verbose_smoke() {
+        // Exercises the verbose per-run buffering + single atomic flush path
+        // in `run_one` under a multi-run parallel call. Stderr bytes can't be
+        // asserted here, but the call must complete without panicking and
+        // return every run — covering the `writeln!`/`RefCell`/`eprint!` path
+        // that exists specifically to keep concurrent output from interleaving.
+        let comp = Competition::new_verbose(2, TrainingBudget::Epochs(2), 0);
+        let tasks = [reaching_2dof()];
+        let b1: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) =
+            &|_| Box::new(MockAlgorithm::new("V1"));
+        let b2: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) =
+            &|_| Box::new(MockAlgorithm::new("V2"));
+        let result = comp.run_replicates(&tasks, &[b1, b2], &[1, 2, 3]).unwrap();
+        assert_eq!(result.runs.len(), 6); // 1 task × 2 builders × 3 seeds
     }
 }
