@@ -10,6 +10,18 @@
 //! cargo test -p sim-rl --test competition -- --ignored --nocapture
 //! ```
 //!
+//! ⚠️ STALE 6-DOF BASELINES (pending re-calibration): the absolute-reward
+//! assertions on `reaching-6dof` (e.g. `hypothesis_cem_scales_poorly`'s
+//! `r6 < r2 * 2.0`, and the `_1layer_parity` orderings) were calibrated when
+//! the 6-DOF fixture was numerically diverging under RK4 (qpos/qvel blew up).
+//! That was fixed by adding joint armature to `sim_core::test_fixtures::
+//! reaching_6dof` — the arm is now stable and genuinely learnable, so those
+//! magnitudes have shifted and some of these tests will fail until re-run and
+//! re-based. The "CEM scales poorly on 6-DOF" conclusion itself must be
+//! re-evaluated, since its old evidence rested on the divergence, not on
+//! control difficulty. Re-baseline once the RL loop is parallelized (the runs
+//! become cheap) — see the RL-performance-optimization arc.
+//!
 //! ## Level 0-1 (Tests 1-7): Hand-coded gradients
 //!
 //! SAC uses `LinearStochasticPolicy` (no `MlpStochasticPolicy` exists).

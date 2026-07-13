@@ -146,6 +146,10 @@ pub fn reaching_2dof() -> Model {
 /// Three-segment 6-DOF reaching arm with alternating pitch/yaw hinges
 /// and a fingertip site on the distal segment. Mirrors `MJCF_6DOF`.
 ///
+/// Adds per-joint armature (`ARMATURE_6DOF`) that the zero-armature MuJoCo
+/// reference lacks — required here for RK4 stability, so this fixture is not
+/// a bit-faithful mirror of a zero-armature MJCF under stepping.
+///
 /// Body order: world(0), seg1(1), seg2(2), seg3(3). Joint order:
 /// j1 (pitch on seg1), j2 (yaw on seg1), j3 (pitch on seg2),
 /// j4 (yaw on seg2), j5 (pitch on seg3), j6 (yaw on seg3). Motor gears
@@ -161,7 +165,8 @@ pub fn reaching_6dof() -> Model {
 }
 
 /// 6-DOF reaching arm + a static obstacle body and a target site on
-/// worldbody. Mirrors `MJCF_6DOF_OBSTACLE`.
+/// worldbody. Mirrors `MJCF_6DOF_OBSTACLE`, plus per-joint armature
+/// (`ARMATURE_6DOF`) required for RK4 stability (see `reaching_6dof`).
 ///
 /// Body order: world(0), seg1(1), seg2(2), seg3(3), obstacle(4).
 /// Site order: target(0, on world), fingertip(1, on seg3).
@@ -370,7 +375,29 @@ fn add_6dof_segments(model: &mut Model) {
         Vector3::new(seg3_len, 0.0, 0.0),
         0.015,
     );
+
+    // Reflected motor-rotor inertia on the six arm hinges just added. They are
+    // the only joints in the model at this point (both callers add any obstacle
+    // body — which is static / joint-free — afterwards), so writing every
+    // `jnt_armature` entry targets exactly j1..=j6. `crba` adds this to the
+    // mass-matrix diagonal; see `ARMATURE_6DOF` for why it is required.
+    for a in &mut model.jnt_armature {
+        *a = ARMATURE_6DOF;
+    }
 }
+
+/// Reflected motor-rotor inertia (armature) applied to every 6-DOF arm joint
+/// in `add_6dof_segments`.
+///
+/// Physically this is the geared actuators' rotor inertia seen through the
+/// gearbox. Numerically it is required for stability: without it, this
+/// fixture's thin distal segments and joint damping make the explicit RK4
+/// integrator diverge at `dt = 0.002` — joint velocities blow up under
+/// gravity alone. Armature adds to the mass-matrix diagonal (`crba`), pulling
+/// the step back into RK4's stable region. Both directions are pinned by the
+/// `reaching_6dof_stable_under_gravity` and
+/// `reaching_6dof_diverges_without_armature` tests below.
+const ARMATURE_6DOF: f64 = 0.01;
 
 /// Push 6 motors (gear 10/8/6/5/4/3) on joints 0..=5.
 fn add_6dof_motors(model: &mut Model) {
@@ -389,6 +416,46 @@ mod tests {
         let mut data = model.make_data();
         data.forward(model).expect("forward");
         data.step(model).expect("step");
+    }
+
+    /// Peak `|qvel|` over `n` gravity-only (zero-control) steps from rest.
+    fn peak_qvel_under_gravity(model: &Model, n: usize) -> f64 {
+        let mut data = model.make_data();
+        data.forward(model).expect("forward");
+        let mut peak = 0.0_f64;
+        for _ in 0..n {
+            data.step(model).expect("step");
+            peak = peak.max(data.qvel.iter().fold(0.0, |m, &v| m.max(v.abs())));
+        }
+        peak
+    }
+
+    #[test]
+    fn reaching_6dof_stable_under_gravity() {
+        // Regression guard for the armature stability fix: under gravity with
+        // zero control the arm must stay physical, not diverge. Explicit RK4
+        // needs `ARMATURE_6DOF` on the mass-matrix diagonal to hold this.
+        let peak = peak_qvel_under_gravity(&reaching_6dof(), 200);
+        assert!(
+            peak < 10.0,
+            "6-DOF arm should stay physical under gravity (peak |qvel| = {peak:.2} rad/s); \
+             armature likely missing or insufficient"
+        );
+    }
+
+    #[test]
+    fn reaching_6dof_diverges_without_armature() {
+        // Negative control: with armature removed, the same arm blows up under
+        // RK4 — pinning that armature (not some other change) is what stabilizes.
+        let mut model = reaching_6dof();
+        for a in &mut model.jnt_armature {
+            *a = 0.0;
+        }
+        let peak = peak_qvel_under_gravity(&model, 200);
+        assert!(
+            peak > 100.0,
+            "without armature the 6-DOF arm should diverge under RK4 (peak |qvel| = {peak:.2} rad/s)"
+        );
     }
 
     #[test]
