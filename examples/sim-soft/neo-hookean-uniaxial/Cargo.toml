@@ -5,6 +5,14 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+# Declares this example's role in the validation contract. `validator` = the
+# binary self-checks against oracles (here: analytic Neo-Hookean P_11/P_22/ψ vs
+# `Material::first_piola`/`energy` at rel-tol 1e-12) and exits non-zero on any
+# failure, so CI runs it red-or-green (see `cargo xtask run-validators`). The
+# alternative kind is `demo` (illustration only; compile-checked but not run).
+[package.metadata.cortenforge]
+example_kind = "validator"
+
 [dependencies]
 # NeoHookean + Material trait + ValidityDomain + InversionHandling.
 sim-soft = { workspace = true }
