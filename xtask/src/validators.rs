@@ -55,6 +55,13 @@
 //! The self-gating heuristic (`source_self_gates`) is a *hint for
 //! classification only*, never the gate — the marker is the source of truth, so
 //! the heuristic never needs to recognise every possible failure idiom.
+//!
+//! Scope note: only *headless* examples are audited. A dual-mode crate — one
+//! that runs a headless oracle by default but also offers an opt-in Bevy view
+//! (`CF_VISUAL=1`) — carries a Bevy dep and so reads as non-headless, leaving
+//! its oracle outside this audit. The intended resolution is to split such a
+//! crate into a headless validator and a separate Bevy demo, not to widen the
+//! audit to guess at Bevy crates' intent.
 
 use anyhow::{Context, Result};
 use owo_colors::OwoColorize;
@@ -196,9 +203,13 @@ fn audit_gap(
         return None;
     }
     match kind {
-        None => Some(Gap::Unclassified { self_gates }),
+        Some(KIND_VALIDATOR) => None,
         Some(KIND_DEMO) if self_gates => Some(Gap::Misclassified),
-        _ => None,
+        Some(KIND_DEMO) => None,
+        // `None` (no marker) or an unknown/typo'd kind: both leave the crate
+        // un-run, so both are contract gaps. (`warn_unknown_kinds` additionally
+        // names the typo so the manifest is easy to find.)
+        _ => Some(Gap::Unclassified { self_gates }),
     }
 }
 
@@ -215,12 +226,11 @@ fn audit_unclassified(unclassified: &[(&CrateEntry, bool)]) {
         unclassified.len()
     );
     for (e, self_gates) in unclassified {
-        let hint = if *self_gates {
-            "validator?".green().to_string()
+        if *self_gates {
+            println!("  - {} ({})", e.name.yellow(), "validator?".green());
         } else {
-            "demo?".blue().to_string()
-        };
-        println!("  - {} ({hint})", e.name.yellow());
+            println!("  - {} ({})", e.name.yellow(), "demo?".blue());
+        }
     }
 }
 
@@ -313,19 +323,19 @@ fn discover_crates(sh: &Shell) -> Result<Vec<CrateEntry>> {
 /// whole family (`bevy`, `sim-bevy`, `sim-bevy-soft`, `cf-bevy-common`,
 /// `sim-ml-chassis-bevy`, …) by matching the substring `bevy` in the dep name.
 fn depends_on_bevy(pkg: &serde_json::Value) -> bool {
-    pkg["dependencies"]
-        .as_array()
-        .map(|deps| {
-            deps.iter()
-                .any(|d| d["name"].as_str().is_some_and(|n| n.contains("bevy")))
-        })
-        .unwrap_or(false)
+    pkg["dependencies"].as_array().is_some_and(|deps| {
+        deps.iter()
+            .any(|d| d["name"].as_str().is_some_and(|n| n.contains("bevy")))
+    })
 }
 
 /// Triage heuristic: does this crate's `src/` self-gate — fail via a non-zero
-/// exit? True if any source calls `process::exit`/`exit` with a non-zero
-/// argument, or uses a panicking `assert*!` macro (a panic aborts `main` with a
-/// non-zero code). This is a hint for classification only, never the gate.
+/// exit? True if any source (with line comments stripped, so a mention in a
+/// `//`/`//!` comment does not count) calls `process::exit`/`exit` with a
+/// non-zero argument, or uses a panicking `assert*!` macro (a panic aborts
+/// `main` with a non-zero code). A hint for classification only, never the gate
+/// — so it need not recognise every idiom (`.unwrap()` / `-> Result` `?` gating
+/// are missed; the marker, not this heuristic, is the source of truth).
 fn source_self_gates(dir: &Path) -> bool {
     let src = dir.join("src");
     let failing_exit = Regex::new(r"\bexit\s*\(\s*[^0\s)]").expect("valid regex");
@@ -336,13 +346,27 @@ fn source_self_gates(dir: &Path) -> bool {
     {
         if entry.path().extension().is_some_and(|e| e == "rs") {
             if let Ok(text) = std::fs::read_to_string(entry.path()) {
-                if failing_exit.is_match(&text) || assert_macro.is_match(&text) {
+                let code = strip_line_comments(&text);
+                if failing_exit.is_match(&code) || assert_macro.is_match(&code) {
                     return true;
                 }
             }
         }
     }
     false
+}
+
+/// Drop `//`-to-end-of-line content so an `assert!`/`exit(1)` mentioned in a
+/// line or doc comment does not read as self-gating. Coarse (does not parse
+/// block comments or string literals), which is fine for a heuristic hint.
+fn strip_line_comments(text: &str) -> String {
+    text.lines()
+        .map(|line| match line.find("//") {
+            Some(i) => &line[..i],
+            None => line,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -389,6 +413,34 @@ mod tests {
             assert!(source_self_gates(&dir), "should self-gate: {macro_call}");
             let _ = fs::remove_dir_all(&dir);
         }
+    }
+
+    #[test]
+    fn ignores_assert_mentioned_only_in_a_comment() {
+        // A doc/line comment that names `assert!`/`exit(1)` must not read as a
+        // gate — line comments are stripped before matching.
+        let dir = scratch("comment");
+        fs::write(
+            dir.join("src/main.rs"),
+            "//! A demo. A real validator would assert_eq!(a, b) or exit(1).\n\
+             fn main() { println!(\"demo\"); } // no assert!(x) here either",
+        )
+        .expect("write source");
+        assert!(!source_self_gates(&dir));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn audit_flags_unknown_kind_as_unclassified() {
+        // A typo'd kind is neither run (not `validator`) nor a valid `demo`, so
+        // it leaves the crate un-run — a contract gap, not a silent pass.
+        assert!(
+            matches!(
+                audit_gap(true, true, Some("validater"), false),
+                Some(Gap::Unclassified { .. })
+            ),
+            "unknown example_kind on a headless example is a gap"
+        );
     }
 
     #[test]

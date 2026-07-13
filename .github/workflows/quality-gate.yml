@@ -791,29 +791,33 @@ jobs:
           path: sbom.json
 
   # ============================================================================
-  # VALIDATE EXAMPLES - Run the fundamentals example-validators red-or-green
+  # VALIDATE EXAMPLES - Run the example-validators red-or-green
   # ============================================================================
-  # `examples/fundamentals/**` validators self-check against oracles (energy
-  # drift, momentum conservation, …) and `exit(1)` on failure — but that only
-  # fires when the binary is RUN. The tests-debug/tests-release shards (CI's
-  # only test-execution gate) intentionally exclude examples (no `#[test]`), so
-  # a validator's checks otherwise run NOWHERE. This job runs them: `xtask
-  # run-validators` discovers every crate declaring `[package.metadata.
-  # cortenforge] example_kind = "validator"` and runs each in --release,
-  # failing if any exits non-zero (and failing if ZERO are discovered — a
-  # silent green no-op would be the very "passing CI ≠ tests ran" hole this
-  # closes). Discovery is by manifest marker, not a hand-maintained list, so a
-  # new marked validator is gated automatically (unlike the tests-debug shard
-  # lists, CI's one hand-maintained enumeration and its sole drift source). It
-  # also warns on self-gating examples missing the marker — a currently
-  # warn-only backstop, so an unmarked validator still runs nowhere until the
-  # marker fans out and that audit is promoted to a hard failure.
+  # Every headless `examples/**` crate declares a role in Cargo.toml under
+  # `[package.metadata.cortenforge] example_kind = "validator" | "demo"`. A
+  # `validator` self-checks against oracles (energy drift, momentum
+  # conservation, a closed-form stress, …) and terminates with a NON-ZERO exit
+  # on failure — via `exit(1)` OR a panicking `assert!` (a panic aborts main
+  # with code 101), so both idioms are gated identically. The
+  # tests-debug/tests-release shards (CI's only test-execution gate) exclude
+  # examples (no `#[test]`), so a validator's checks otherwise run NOWHERE. This
+  # job runs them: `xtask run-validators` discovers every crate declaring
+  # `example_kind = "validator"` and runs each in --release, failing if any
+  # exits non-zero (and failing if ZERO are discovered — a silent green no-op
+  # would be the very "passing CI ≠ tests ran" hole this closes). Discovery is
+  # by manifest marker, not a hand-maintained list, so a new marked validator is
+  # gated automatically (unlike the tests-debug shard lists, CI's one
+  # hand-maintained enumeration and its sole drift source). It also audits the
+  # classification contract, WARN-ONLY for now: it reports every headless
+  # example that declares no kind (with a validator?/demo? triage hint) and any
+  # `demo` whose source self-gates. Those warnings become a hard failure once
+  # every headless example is classified.
   #
-  # NOT affected-scoped and NOT sharded: with one declared validator (deps
-  # sim-core + sim-mjcf, both universal) it would run on nearly any sim change
-  # anyway, and one small binary is cheap. When the marker fans out to all 30
-  # validators — some pulling the ML/RL tree — shard this like `grade` and
-  # measure wall time. Validators are GUI-free today, so no apt libs are
+  # NOT affected-scoped and NOT sharded: one declared validator today (deps
+  # sim-core + sim-mjcf, both universal) would run on nearly any sim change
+  # anyway, and one small binary is cheap. As markers fan out across the ~70
+  # headless validators — some pulling the ML/RL tree — shard this like `grade`
+  # and measure wall time. Validators are GUI-free today, so no apt libs are
   # installed; add them if a GUI-dependent validator is ever marked.
   #
   # No `if:` / `needs:` — a job with no dependencies always runs (barring
