@@ -20,8 +20,10 @@ nalgebra    = { workspace = true }
 num-traits  = { workspace = true }
 # Across-run parallelism in the Competition runner — each (task, builder,
 # seed) run is independent, so run_replicates maps them over a rayon pool.
-# Physics stepping inside each run stays sequential (sim-core's `parallel`
-# feature is a separate, per-env axis) to avoid nested oversubscription.
+# Physics stepping inside each run is sequential here because this crate does
+# not enable sim-core's `parallel` (per-env) feature; if a co-compiled crate
+# turns it on graph-wide, the two rayon axes nest (work-stealing handles it —
+# oversubscription, never deadlock).
 rayon       = { workspace = true }
 # RNG traits — Gaussian noise, Xavier init, stochastic policy sampling
 rand        = { workspace = true }

@@ -501,15 +501,26 @@ impl Competition {
     /// no shared state — so they execute in parallel across a `rayon` pool
     /// (hence the `Sync` bound on the builders).  Results are collected in
     /// the documented seeds-outermost order regardless of completion order,
-    /// so output is **bit-identical** to sequential execution.  Physics
-    /// stepping inside each run stays sequential (`sim-core`'s `parallel`
-    /// feature is a separate per-env axis) to avoid nested oversubscription.
+    /// so the returned [`CompetitionResult`] is **bit-identical** to
+    /// sequential execution in its deterministic content (rewards, run
+    /// ordering, provenance `best_epoch`/`best_reward`) — modulo the
+    /// wall-clock `timestamp` / `wall_time_ms` fields, which never match
+    /// across any two executions.  (Only returned data is deterministic:
+    /// `verbose` stderr blocks appear in completion order, not run order.)
+    /// Because builders are invoked concurrently in nondeterministic order,
+    /// they must be call-order-independent — any per-call state must use its
+    /// own synchronization, not an invocation counter.  Physics stepping
+    /// inside each run stays sequential (`sim-core`'s `parallel` feature is a
+    /// separate per-env axis, off in this crate's graph) to avoid nested
+    /// oversubscription.
     ///
     /// # Errors
     ///
     /// Returns [`EnvError`] if any [`TaskConfig::build_vec_env()`] fails.
-    /// Under multiple failures the positionally-first error (in emission
-    /// order) is returned, matching sequential execution's contract.
+    /// Unlike the old sequential loop, a failing run no longer short-circuits
+    /// the others — every run executes, then the positionally-first error (in
+    /// emission order) is returned, so the returned `Err` value matches
+    /// sequential execution's contract exactly.
     pub fn run_replicates(
         &self,
         tasks: &[TaskConfig],
@@ -1590,13 +1601,16 @@ mod tests {
 
     #[test]
     fn run_replicates_parallel_bit_identical_to_isolated() {
-        // The parallel run loop seeds a fresh RNG per run, so a batched
-        // multi-run competition must be bit-for-bit identical to the same
-        // runs computed one at a time. This would fail if concurrent runs
-        // leaked RNG state or if the flatten/collect emitted runs out of the
-        // documented order. Uses `SeededMockAlgorithm` (seed-driven reward,
-        // no physics) so the check is instant and isolates the concurrency
-        // property from physics determinism.
+        // Guards ORDER-PRESERVATION and per-run DETERMINISM of the parallel
+        // run loop: a batched multi-run competition must be bit-for-bit
+        // identical to the same runs computed one at a time. Fails if the
+        // flatten/collect emits runs out of the documented order, or if a
+        // run's output depends on anything but its own seed. (Data-race
+        // freedom itself is enforced by the `Sync` bound at compile time,
+        // not by this test — each run allocates its own RNG, so cross-run
+        // contamination is impossible by construction.) `SeededMockAlgorithm`
+        // makes reward a pure function of the seed with no physics, so the
+        // check is instant and the reward-bit comparison is exact.
         let builder: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) = &|_task| {
             let policy: Box<dyn Policy> = Box::new(LinearPolicy::new(1, 1, &[1.0]));
             let best = crate::best_tracker::BestTracker::new(policy.params());
@@ -1611,8 +1625,11 @@ mod tests {
         let batched = comp.run_replicates(&tasks, &[builder], &seeds).unwrap();
         assert_eq!(batched.runs.len(), 10);
 
-        // Isolated: recompute each run alone, in the documented
-        // seeds-outermost / task-major order, and compare bit-for-bit.
+        // Isolated: recompute each run as a single-item competition, in the
+        // documented seeds-outermost / task-major order, and compare
+        // bit-for-bit. (A one-item `run_replicates` still goes through the
+        // parallel machinery, but a lone work item cannot cross-contaminate,
+        // so it is a valid per-run oracle.)
         let mut k = 0;
         for &seed in &seeds {
             for task in &tasks {
@@ -1644,5 +1661,57 @@ mod tests {
             }
         }
         assert_eq!(k, batched.runs.len());
+    }
+
+    #[test]
+    fn run_replicates_returns_positionally_first_error() {
+        // The parallel loop runs every work item, then returns the
+        // positionally-first `Err` in emission order. Guard that contract:
+        // it crosses the reordering boundary, so it must not depend on which
+        // run happens to fail first at runtime.
+        fn failing_task(tag: &'static str) -> TaskConfig {
+            TaskConfig::from_build_fn(tag, 1, 1, vec![1.0], move |_n, _s| {
+                Err(EnvError::MissingField { field: tag })
+            })
+        }
+        let builder: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) =
+            &|_t| Box::new(MockAlgorithm::new("Unused"));
+
+        // Two failing tasks: the earlier position (task-major within the one
+        // seed) must win, deterministically across repeats.
+        let comp = Competition::new(2, TrainingBudget::Epochs(1), 0);
+        let tasks = [failing_task("first"), failing_task("second")];
+        for _ in 0..8 {
+            let err = comp.run_replicates(&tasks, &[builder], &[7]).unwrap_err();
+            assert!(
+                matches!(&err, EnvError::MissingField { field } if *field == "first"),
+                "must return the positionally-first error, got {err:?}"
+            );
+        }
+
+        // A successful run positioned before a failing one still surfaces the
+        // failure (build succeeds, then the later build fails).
+        let mixed = [reaching_2dof(), failing_task("boom")];
+        assert!(matches!(
+            comp.run_replicates(&mixed, &[builder], &[7]).unwrap_err(),
+            EnvError::MissingField { field: "boom" }
+        ));
+    }
+
+    #[test]
+    fn run_replicates_verbose_smoke() {
+        // Exercises the verbose per-run buffering + single atomic flush path
+        // in `run_one` under a multi-run parallel call. Stderr bytes can't be
+        // asserted here, but the call must complete without panicking and
+        // return every run — covering the `writeln!`/`RefCell`/`eprint!` path
+        // that exists specifically to keep concurrent output from interleaving.
+        let comp = Competition::new_verbose(2, TrainingBudget::Epochs(2), 0);
+        let tasks = [reaching_2dof()];
+        let b1: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) =
+            &|_| Box::new(MockAlgorithm::new("V1"));
+        let b2: &(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync) =
+            &|_| Box::new(MockAlgorithm::new("V2"));
+        let result = comp.run_replicates(&tasks, &[b1, b2], &[1, 2, 3]).unwrap();
+        assert_eq!(result.runs.len(), 6); // 1 task × 2 builders × 3 seeds
     }
 }
