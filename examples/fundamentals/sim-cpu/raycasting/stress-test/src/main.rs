@@ -137,7 +137,13 @@ fn push_sphere_geom(model: &mut Model, body_id: usize, radius: f64) {
 /// Geom 0: sphere r=1 at z=5 (body 1). Geom 1: sphere r=1 at z=10 (body 2).
 fn make_two_sphere_scene() -> (Model, Data) {
     let mut model = Model::empty();
-    model.nbody = 3; // world + 2 bodies
+    // Just the world body. The two sphere geoms carry body IDs 1 and 2 solely so
+    // the body-exclude check (15) has distinct ids to filter on — `raycast_scene`
+    // only *compares* `geom_body`, never indexes the per-body arrays, so no real
+    // bodies are needed. This mirrors sim-core's own `raycast.rs` scene test;
+    // setting `nbody` to 3 without populating the 21 `body_*` arrays would make a
+    // malformed Model that `make_data`'s `validate_joint_layout` rightly panics on.
+    model.nbody = 1;
 
     push_sphere_geom(&mut model, 1, 1.0);
     push_sphere_geom(&mut model, 2, 1.0);
