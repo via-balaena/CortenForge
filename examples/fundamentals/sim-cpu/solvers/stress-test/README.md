@@ -1,4 +1,4 @@
-# Solvers — Convergence Comparison
+# Stress Test — Solver Convergence
 
 Runs all 3 constraint solvers on the same two-box stacking scene and compares
 convergence speed, constraint satisfaction, and stability. This is the
@@ -30,7 +30,7 @@ original Newton stats are lost. Detect Newton fallbacks via
 ## What to expect
 
 ```
-=== Solver Comparison (t = 5s, dt = 0.002) ===
+=== Solver Stress Test (t = 5s, dt = 0.002) ===
 
   Solver       Avg iter  Max iter  Drift(mm)  Max depth(mm)  E drift(%)  Fallback
   ────────────────────────────────────────────────────────────────────────────────
@@ -88,5 +88,5 @@ minimize initial transient.
 ## Run
 
 ```
-cargo run -p example-solver-comparison --release
+cargo run -p example-solver-stress-test --release
 ```

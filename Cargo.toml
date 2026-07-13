@@ -297,7 +297,7 @@ members = [
     "examples/fundamentals/sim-cpu/composites/cable-loaded",
 
     # Examples — fundamentals / sim-cpu / solvers
-    "examples/fundamentals/sim-cpu/solvers/comparison",
+    "examples/fundamentals/sim-cpu/solvers/stress-test",
     "examples/fundamentals/sim-cpu/solvers/comparison-visual",
     "examples/fundamentals/sim-cpu/solvers/pgs",
     "examples/fundamentals/sim-cpu/solvers/cg",
