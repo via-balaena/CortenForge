@@ -1,4 +1,4 @@
-# Integrators — Energy Drift Comparison
+# Stress Test — Integrator Energy Drift
 
 Runs all 5 integrators on the same undamped pendulum and compares energy
 conservation. This is the definitive test: identical physics, identical
@@ -25,7 +25,7 @@ No window — headless analysis. The output is the table.
 ## What to expect
 
 ```
-=== Integrator Comparison (t = 15s, dt = 0.005) ===
+=== Integrator Stress Test (t = 15s, dt = 0.005) ===
   Drift normalized by m*g*d = 2.4525 J
 
   Integrator              Drift(%mgd)
@@ -93,5 +93,5 @@ cargo run -p example-integrator-implicit-spring-damper --release
 ## Run
 
 ```
-cargo run -p example-integrator-comparison --release
+cargo run -p example-integrator-stress-test --release
 ```

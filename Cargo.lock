@@ -4643,13 +4643,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-integrator-comparison"
-version = "1.0.0"
-dependencies = [
- "sim-mjcf",
-]
-
-[[package]]
 name = "example-integrator-comparison-visual"
 version = "1.0.0"
 dependencies = [
@@ -4705,6 +4698,13 @@ dependencies = [
  "bevy",
  "sim-bevy",
  "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-integrator-stress-test"
+version = "1.0.0"
+dependencies = [
  "sim-mjcf",
 ]
 
