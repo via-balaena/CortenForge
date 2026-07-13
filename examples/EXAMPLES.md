@@ -133,7 +133,7 @@ CPU physics fundamentals — joints, sensors, MJCF, sim-core.
 
 | Example | Package | Status | Notes |
 |---------|---------|--------|-------|
-| `solvers/comparison` | `example-solver-comparison` | Working | Headless convergence table, 7 checks |
+| `solvers/stress-test` | `example-solver-stress-test` | Working | Headless convergence table, 7 checks |
 | `solvers/comparison-visual` | `example-solver-comparison-visual` | Working | 3 stacks side by side |
 | `solvers/pgs` | `example-solver-pgs` | Working | Projected Gauss-Seidel, ~47 iter |
 | `solvers/cg` | `example-solver-cg` | Working | Conjugate Gradient, ~31 iter |

@@ -1,4 +1,4 @@
-//! Solver Comparison — Headless Convergence Analysis
+//! Solver Stress Test — Headless Convergence Analysis
 //!
 //! Runs all 3 constraint solvers (PGS, CG, Newton) on an identical two-box
 //! stacking scene for 5 seconds, then prints a formatted comparison table
@@ -15,7 +15,7 @@
 //! 6. Constraint violation < 1mm for all solvers
 //! 7. Energy stable: |drift| < 1% for all solvers
 //!
-//! Run with: `cargo run -p example-solver-comparison --release`
+//! Run with: `cargo run -p example-solver-stress-test --release`
 
 #![allow(
     clippy::expect_used,
@@ -170,7 +170,7 @@ fn main() {
     ];
 
     // Print comparison table
-    println!("=== Solver Comparison (t = {SIM_TIME}s, dt = {DT}) ===\n");
+    println!("=== Solver Stress Test (t = {SIM_TIME}s, dt = {DT}) ===\n");
     println!(
         "  {:<12} {:>10} {:>10} {:>12} {:>14} {:>12} {:>10}",
         "Solver", "Avg iter", "Max iter", "Drift(mm)", "Max depth(mm)", "E drift(%)", "Fallback"
