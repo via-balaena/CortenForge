@@ -25,7 +25,7 @@ No window — headless analysis. The output is the table.
 ## What to expect
 
 ```
-=== Integrator Comparison (t = 15s, dt = 0.005) ===
+=== Integrator Stress Test (t = 15s, dt = 0.005) ===
   Drift normalized by m*g*d = 2.4525 J
 
   Integrator              Drift(%mgd)

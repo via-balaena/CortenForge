@@ -1,4 +1,4 @@
-//! Integrator Comparison — Headless Energy Drift Analysis
+//! Integrator Stress Test — Headless Energy Drift Analysis
 //!
 //! Runs all 5 integrators on an identical undamped pendulum for 15 seconds,
 //! then prints a formatted comparison table with energy drift, period accuracy,
@@ -16,9 +16,9 @@
 //! Validates (7 checks):
 //! 1. Euler drifts visibly (>0.1% of m*g*d)
 //! 2. RK4 near-perfect (<0.001% of m*g*d)
-//! 3. Implicit stable (<0.1% of m*g*d)
-//! 4. `ImplicitFast` stable (<0.1% of m*g*d)
-//! 5. `ImplicitSpringDamper` bounded (<1% of m*g*d)
+//! 3. Implicit stable (<0.5% of m*g*d)
+//! 4. `ImplicitFast` stable (<0.5% of m*g*d)
+//! 5. `ImplicitSpringDamper` bounded (<5% of m*g*d)
 //! 6. RK4 >> Euler (10× better)
 //! 7. All periods within 2% of RK4's measured period
 //!
@@ -137,7 +137,7 @@ fn main() {
     let rk4_period = results[1].measured_period;
 
     // Print comparison table
-    println!("=== Integrator Comparison (t = {SIM_TIME}s, dt = {DT}) ===");
+    println!("=== Integrator Stress Test (t = {SIM_TIME}s, dt = {DT}) ===");
     println!("  Drift normalized by m*g*d = {M_G_D:.4} J");
     println!("  Period reference: RK4 measured T = {rk4_period:.4}s");
     println!();
