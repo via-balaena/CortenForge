@@ -267,7 +267,7 @@ fn d2c_sr_rematch() {
         ))
     };
 
-    let algorithm_builders: Vec<&dyn Fn(&TaskConfig) -> Box<dyn Algorithm>> =
+    let algorithm_builders: Vec<&(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync)> =
         vec![&cem_builder, &sa_builder];
 
     // ── Bootstrap RNG ──

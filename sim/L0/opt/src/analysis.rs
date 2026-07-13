@@ -478,7 +478,7 @@ fn emit_metric_block(
 pub fn run_rematch(
     competition: &Competition,
     task: &TaskConfig,
-    algorithm_builders: &[&dyn Fn(&TaskConfig) -> Box<dyn Algorithm>],
+    algorithm_builders: &[&(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync)],
     bootstrap_rng: &mut impl Rng,
 ) -> Result<TwoMetricOutcome, EnvError> {
     run_rematch_with_runner(

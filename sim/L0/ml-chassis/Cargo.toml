@@ -18,6 +18,11 @@ tier = "L0"
 nalgebra    = { workspace = true }
 # Generic numeric traits (Float, Zero, One, NumCast) — used by Tensor<T>
 num-traits  = { workspace = true }
+# Across-run parallelism in the Competition runner — each (task, builder,
+# seed) run is independent, so run_replicates maps them over a rayon pool.
+# Physics stepping inside each run stays sequential (sim-core's `parallel`
+# feature is a separate, per-env axis) to avoid nested oversubscription.
+rayon       = { workspace = true }
 # RNG traits — Gaussian noise, Xavier init, stochastic policy sampling
 rand        = { workspace = true }
 # Serialization for PolicyArtifact and TrainingCheckpoint

@@ -11948,6 +11948,7 @@ dependencies = [
  "nalgebra 0.34.2",
  "num-traits",
  "rand 0.9.2",
+ "rayon",
  "serde",
  "serde_json",
  "sim-core",
