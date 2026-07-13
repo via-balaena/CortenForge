@@ -1,6 +1,6 @@
 # URDF Loading — URDF-to-Model Pipeline
 
-Ten examples covering the full `sim-urdf` pipeline: parsing URDF XML,
+Nine examples covering the full `sim-urdf` pipeline: parsing URDF XML,
 converting to MJCF, and compiling to a `sim-core::Model`. Each example
 isolates a single URDF feature.
 
@@ -8,8 +8,8 @@ The pipeline is: URDF XML → `urdf_to_mjcf()` → MJCF XML → `load_model()` �
 
 ## Examples
 
-Eight visual examples (Bevy window with HUD and orbit camera) plus two
-headless validators:
+Eight visual examples (Bevy window with HUD and orbit camera) plus one
+headless validator:
 
 | Example | Type | What it demonstrates |
 |---------|------|---------------------|
@@ -21,8 +21,7 @@ headless validators:
 | [geometry](geometry/) | Visual | Box + cylinder + sphere size conversion |
 | [inertia](inertia/) | Visual | Diagonal vs fullinertia, different precession |
 | [damping-friction](damping-friction/) | Visual | Three pendulums: no-loss, damped, friction |
-| [error-handling](error-handling/) | Headless | Invalid URDFs → correct error variants (7 checks) |
-| [stress-test](stress-test/) | Headless | Full pipeline regression gate (31 checks) |
+| [stress-test](stress-test/) | Headless | Full pipeline regression gate (35 checks, incl. error-variant handling) |
 
 ## Key conversions
 
@@ -53,7 +52,6 @@ Headless examples print to console and exit:
 
 ```
 cargo run -p example-urdf-stress-test --release
-cargo run -p example-urdf-error-handling --release
 ```
 
 Orbit: left-drag | Pan: right-drag | Zoom: scroll

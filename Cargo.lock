@@ -6528,13 +6528,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-urdf-error-handling"
-version = "1.0.0"
-dependencies = [
- "sim-urdf",
-]
-
-[[package]]
 name = "example-urdf-fixed"
 version = "1.0.0"
 dependencies = [

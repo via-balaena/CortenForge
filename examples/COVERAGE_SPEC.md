@@ -13,7 +13,7 @@ integration tests — they find bugs that unit tests miss.
 ## Current State (2026-04-02)
 
 - 232K LOC codebase
-- sim-core + sim-mjcf + sim-urdf → 147 examples (Track 1A + Track 1B layers 1–14)
+- sim-core + sim-mjcf + sim-urdf → 146 examples (Track 1A + Track 1B layers 1–14)
   - Joint types: hinge, slide, ball, free (4/4 — all covered)
   - Sensors: 31/31 types covered (Track 1A: 16, tendons: 3, joint-limits: 1, sensors-advanced: 11+)
   - Actuators: 10 examples, Muscles: 5 examples
@@ -21,7 +21,7 @@ integration tests — they find bugs that unit tests miss.
   - Equality constraints: 8 examples
   - Contact tuning: 7 examples
   - Inverse dynamics: 5 examples, Energy-momentum: 5 examples
-  - URDF loading: 10 examples
+  - URDF loading: 9 examples
   - Mocap bodies: 4 examples, 12 stress-test checks
   - Tendons: 8 examples, 16 stress-test checks
   - Sensors-advanced: 7 examples, 25 stress-test checks
@@ -110,7 +110,7 @@ integration tests — they find bugs that unit tests miss.
 ### Model Loading
 - MJCF (inline string) ✓
 - **MJCF (file with <include>) ✗**
-- URDF ✓ (10 examples: revolute, prismatic, continuous, fixed, mimic, geometry, inertia, damping-friction, error-handling, stress-test)
+- URDF ✓ (9 examples: revolute, prismatic, continuous, fixed, mimic, geometry, inertia, damping-friction, stress-test)
 
 ### Inverse Dynamics & Jacobians
 - Inverse dynamics ✓ (gravity-comp, torque-profile, forward-replay, stress-test — 4 examples)
@@ -166,7 +166,7 @@ integration tests — they find bugs that unit tests miss.
 
 ## Proposed Example Structure
 
-### Track 1A: sim-core fundamentals — COMPLETE (82 examples)
+### Track 1A: sim-core fundamentals — COMPLETE (81 examples)
 
 ```
 fundamentals/
@@ -184,7 +184,7 @@ fundamentals/
     contact-tuning/         # DONE — friction, condim, solref, solimp, margin/gap, pair override (7 examples)
     inverse-dynamics/       # DONE — gravity-comp, torque-profile, forward-replay, jacobian, stress-test (5 examples)
     energy-momentum/        # DONE — 4 visual + stress-test (12 checks)
-    urdf-loading/           # DONE — 10 examples: all joint types, geometry, mimic, inertia, dynamics, errors
+    urdf-loading/           # DONE — 9 examples: all joint types, geometry, mimic, inertia, dynamics, error handling (in stress-test)
 ```
 
 ---
@@ -454,10 +454,10 @@ Four visual examples + stress-test (12 checks), one concept per example:
 5. **stress-test** — 12 headless checks: free-flight (4), pendulum (2),
    bounce (2), damped (2), flag disabled (1), multi-body (1). All pass.
 
-##### 12. `urdf-loading/` — DONE (10 examples)
+##### 12. `urdf-loading/` — DONE (9 examples)
 
-One concept per example, 8 visual (Bevy) + 1 headless error-handling + 1
-headless stress-test (31 checks). Covers the full `sim_urdf` pipeline:
+One concept per example, 8 visual (Bevy) + 1 headless stress-test
+(35 checks). Covers the full `sim_urdf` pipeline:
 
 1. **revolute** — Hinge pendulum, period matches analytical compound-pendulum
    formula. `track_period` + `track_energy` validation.
@@ -477,12 +477,11 @@ headless stress-test (31 checks). Covers the full `sim_urdf` pipeline:
 8. **damping-friction** — Three colored pendulums (combined MJCF): no-loss
    (blue, swings forever), damped (green, decays smoothly), friction (red,
    decays then stops). URDF `<dynamics friction>` → MJCF `frictionloss`.
-9. **error-handling** — Headless. 7 checks: missing robot, unknown joint
-   type, undefined link, duplicate link, malformed XML, empty string, error
-   message context.
-10. **stress-test** — Headless. 31 checks: structural equivalence, dynamic
-    equivalence, all joint types, geometry sizes, inertia, limits, damping,
-    frictionloss, mimic tracking, planar DOF, mesh conversion, error variants.
+9. **stress-test** — Headless. 35 checks: structural equivalence, dynamic
+   equivalence, all joint types, geometry sizes, inertia, limits, damping,
+   frictionloss, mimic tracking, planar DOF, mesh conversion, and error
+   handling (missing robot, unknown-joint/undefined-link/duplicate-link
+   variants, malformed XML, empty string, error-message context).
 
 ### Track 1B: sim-core foundation layer 2 (~70 examples)
 
@@ -1780,7 +1779,7 @@ Two-pass review (numbers + visuals) after each visual example.
 Build from the ground up — the foundation must be bulletproof before moving
 to GPU or advanced features:
 
-1. **Track 1A** — COMPLETE (82 examples). Basic sim-core fundamentals.
+1. **Track 1A** — COMPLETE (81 examples). Basic sim-core fundamentals.
 2. **Track 1B** IN PROGRESS — sim-core foundation layer 2 (~70 examples).
    No stone unturned — every implemented subsystem gets dedicated coverage.
    **14/20 subdirectories done.**
