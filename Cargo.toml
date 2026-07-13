@@ -261,7 +261,6 @@ members = [
     "examples/fundamentals/sim-cpu/urdf-loading/geometry",
     "examples/fundamentals/sim-cpu/urdf-loading/inertia",
     "examples/fundamentals/sim-cpu/urdf-loading/damping-friction",
-    "examples/fundamentals/sim-cpu/urdf-loading/error-handling",
 
     # Examples — fundamentals / sim-cpu / derivatives
     "examples/fundamentals/sim-cpu/derivatives/stress-test",

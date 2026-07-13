@@ -1097,14 +1097,15 @@ fn check_29_error_unknown_joint_type() -> (u32, u32) {
         </robot>
     "#,
     );
-    let pass = result.is_err();
+    // Assert the exact error variant, not merely that some error occurred — a
+    // bare `is_err()` would pass even if the parser returned the wrong error.
+    let pass = matches!(&result, Err(sim_urdf::UrdfError::UnknownJointType(_)));
     let p = check(
-        "Unknown joint type → error",
+        "Unknown joint type → UnknownJointType",
         pass,
-        &if pass {
-            format!("correct: {}", result.unwrap_err())
-        } else {
-            "BUG: should have failed".into()
+        &match &result {
+            Err(e) => format!("correct: {e}"),
+            Ok(_) => "BUG: should have failed".to_string(),
         },
     );
     (u32::from(p), 1)
@@ -1120,9 +1121,41 @@ fn check_30_error_undefined_link() -> (u32, u32) {
             "nonexistent",
         ));
     let result = sim_urdf::validate(&robot);
+    // Assert the exact error variant, not merely that some error occurred.
+    let pass = matches!(&result, Err(sim_urdf::UrdfError::UndefinedLink { .. }));
+    let p = check(
+        "Undefined link → UndefinedLink",
+        pass,
+        &match &result {
+            Err(e) => format!("correct: {e}"),
+            Ok(_) => "BUG: should have failed".to_string(),
+        },
+    );
+    (u32::from(p), 1)
+}
+
+fn check_31_error_duplicate_link() -> (u32, u32) {
+    let robot = sim_urdf::UrdfRobot::new("test")
+        .with_link(sim_urdf::UrdfLink::new("same_name"))
+        .with_link(sim_urdf::UrdfLink::new("same_name"));
+    let result = sim_urdf::validate(&robot);
+    let pass = matches!(&result, Err(sim_urdf::UrdfError::DuplicateLink(_)));
+    let p = check(
+        "Duplicate link → DuplicateLink",
+        pass,
+        &match &result {
+            Err(e) => format!("correct: {e}"),
+            Ok(_) => "BUG: should have failed".to_string(),
+        },
+    );
+    (u32::from(p), 1)
+}
+
+fn check_32_error_malformed_xml() -> (u32, u32) {
+    let result = sim_urdf::parse_urdf_str("<not valid xml");
     let pass = result.is_err();
     let p = check(
-        "Undefined link → error",
+        "Malformed XML → error (no panic)",
         pass,
         &if pass {
             format!("correct: {}", result.unwrap_err())
@@ -1133,7 +1166,39 @@ fn check_30_error_undefined_link() -> (u32, u32) {
     (u32::from(p), 1)
 }
 
-fn check_31_urdf_to_mjcf_inspectable() -> (u32, u32) {
+fn check_33_error_empty_string() -> (u32, u32) {
+    let result = sim_urdf::parse_urdf_str("");
+    let pass = result.is_err();
+    let p = check(
+        "Empty string → error (no panic)",
+        pass,
+        &if pass {
+            format!("correct: {}", result.unwrap_err())
+        } else {
+            "BUG: should have failed".into()
+        },
+    );
+    (u32::from(p), 1)
+}
+
+fn check_34_error_message_context() -> (u32, u32) {
+    // A good error names the offending link and joint, not just "invalid".
+    let err = sim_urdf::UrdfError::undefined_link("arm_link", "shoulder_joint");
+    let msg = err.to_string();
+    let pass = msg.contains("arm_link") && msg.contains("shoulder_joint");
+    let p = check(
+        "Error message includes context",
+        pass,
+        &format!("msg=\"{msg}\""),
+    );
+    (u32::from(p), 1)
+}
+
+// ============================================================================
+// Group 12: MJCF conversion
+// ============================================================================
+
+fn check_35_urdf_to_mjcf_inspectable() -> (u32, u32) {
     let mjcf = sim_urdf::urdf_to_mjcf(ARM_URDF).expect("convert");
 
     // Verify the intermediate MJCF is well-formed and inspectable
@@ -1256,16 +1321,28 @@ fn main() {
         check_28_error_missing_robot()
     );
     run!(
-        "29. Unknown joint type → error",
+        "29. Unknown joint type → UnknownJointType",
         check_29_error_unknown_joint_type()
     );
     run!(
-        "30. Undefined link → error",
+        "30. Undefined link → UndefinedLink",
         check_30_error_undefined_link()
     );
     run!(
-        "31. urdf_to_mjcf() inspectable",
-        check_31_urdf_to_mjcf_inspectable()
+        "31. Duplicate link → DuplicateLink",
+        check_31_error_duplicate_link()
+    );
+    run!("32. Malformed XML → error", check_32_error_malformed_xml());
+    run!("33. Empty string → error", check_33_error_empty_string());
+    run!(
+        "34. Error message includes context",
+        check_34_error_message_context()
+    );
+
+    // Group 12: MJCF conversion
+    run!(
+        "35. urdf_to_mjcf() inspectable",
+        check_35_urdf_to_mjcf_inspectable()
     );
 
     // Summary
