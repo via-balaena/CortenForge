@@ -498,21 +498,23 @@ impl Competition {
     /// # Parallelism
     ///
     /// Runs are independent — a fresh env, a fresh algorithm, its own seed,
-    /// no shared state — so they execute in parallel across a `rayon` pool
-    /// (hence the `Sync` bound on the builders).  Results are collected in
-    /// the documented seeds-outermost order regardless of completion order,
-    /// so the returned [`CompetitionResult`] is **bit-identical** to
-    /// sequential execution in its deterministic content (rewards, run
-    /// ordering, provenance `best_epoch`/`best_reward`) — modulo the
-    /// wall-clock `timestamp` / `wall_time_ms` fields, which never match
-    /// across any two executions.  (Only returned data is deterministic:
-    /// `verbose` stderr blocks appear in completion order, not run order.)
-    /// Because builders are invoked concurrently in nondeterministic order,
-    /// they must be call-order-independent — any per-call state must use its
-    /// own synchronization, not an invocation counter.  Physics stepping
-    /// inside each run stays sequential (`sim-core`'s `parallel` feature is a
-    /// separate per-env axis, off in this crate's graph) to avoid nested
-    /// oversubscription.
+    /// no shared state — so they execute concurrently on a pool of scoped
+    /// `std::thread`s (no external dependency; keeps this L0 crate lean),
+    /// each pulling the next unclaimed run off a shared atomic cursor for
+    /// dynamic load balancing.  Hence the `Sync` bound on the builders.
+    /// Results are restored to the documented seeds-outermost order
+    /// regardless of completion order, so the returned [`CompetitionResult`]
+    /// is **bit-identical** to sequential execution in its deterministic
+    /// content (rewards, run ordering, provenance `best_epoch`/`best_reward`)
+    /// — modulo the wall-clock `timestamp` / `wall_time_ms` fields, which
+    /// never match across any two executions.  (Only returned data is
+    /// deterministic: `verbose` stderr blocks appear in completion order, not
+    /// run order.)  Because builders are invoked concurrently in
+    /// nondeterministic order, they must be call-order-independent — any
+    /// per-call state must use its own synchronization, not an invocation
+    /// counter.  Physics stepping inside each run stays sequential
+    /// (`sim-core`'s `parallel` feature is a separate per-env axis) to avoid
+    /// nested oversubscription.
     ///
     /// # Errors
     ///
@@ -527,11 +529,11 @@ impl Competition {
         builders: &[&(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync)],
         seeds: &[u64],
     ) -> Result<CompetitionResult, EnvError> {
-        use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         // Flatten to the documented seeds-outermost, task-major, builder-major
-        // order.  rayon's indexed `collect` preserves input order in the
-        // output, so results match sequential execution exactly.
+        // order, tagging each item with its emission index so results can be
+        // restored to that order regardless of completion order.
         type Builder<'a> = &'a (dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync);
         let mut work: Vec<(usize, u64, &TaskConfig, Builder)> =
             Vec::with_capacity(tasks.len() * builders.len() * seeds.len());
@@ -543,18 +545,62 @@ impl Competition {
             }
         }
 
-        let results: Vec<Result<RunResult, EnvError>> = work
-            .par_iter()
-            .map(|&(replicate_index, seed, task, builder)| {
-                self.run_one(task, builder, replicate_index, seed)
-            })
-            .collect();
+        // Collect `(emission_index, result)` pairs, then sort by index — so
+        // the returned `CompetitionResult` is identical to sequential
+        // execution and the first `Err` (positionally, in emission order)
+        // wins, matching the sequential "first error aborts" contract.
+        let n = work.len();
+        let n_threads = std::thread::available_parallelism()
+            .map_or(1, std::num::NonZeroUsize::get)
+            .min(n);
 
-        // Preserve the "first error aborts" contract deterministically: the
-        // results Vec is already in emission order, so the first `Err` is the
-        // positionally-first failing run.
-        let mut runs = Vec::with_capacity(results.len());
-        for result in results {
+        let mut indexed: Vec<(usize, Result<RunResult, EnvError>)> = if n_threads <= 1 {
+            // Fast path: no threads for 0/1 items or a single core.
+            work.iter()
+                .enumerate()
+                .map(|(i, &(ri, seed, task, builder))| (i, self.run_one(task, builder, ri, seed)))
+                .collect()
+        } else {
+            // A shared atomic cursor hands each worker the next unclaimed item
+            // — dynamic load balancing (an idle worker grabs the next run), so
+            // heterogeneous run costs stay balanced without a work-stealing
+            // dependency. Runs are independent (fresh env + algorithm + seed,
+            // no shared mutable state), so this is data-race free; the `Sync`
+            // bound on the builders is what lets them be shared across workers.
+            let cursor = AtomicUsize::new(0);
+            let work = &work;
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..n_threads)
+                    .map(|_| {
+                        scope.spawn(|| {
+                            let mut local = Vec::new();
+                            loop {
+                                let i = cursor.fetch_add(1, Ordering::Relaxed);
+                                if i >= work.len() {
+                                    break;
+                                }
+                                let (ri, seed, task, builder) = work[i];
+                                local.push((i, self.run_one(task, builder, ri, seed)));
+                            }
+                            local
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .flat_map(|h| match h.join() {
+                        Ok(local) => local,
+                        // Re-raise a worker panic on the parent thread rather
+                        // than swallowing it (which would drop that run's slot).
+                        Err(payload) => std::panic::resume_unwind(payload),
+                    })
+                    .collect()
+            })
+        };
+
+        indexed.sort_by_key(|(i, _)| *i);
+        let mut runs = Vec::with_capacity(n);
+        for (_, result) in indexed {
             runs.push(result?);
         }
 
@@ -563,7 +609,7 @@ impl Competition {
 
     /// Execute one `(task, builder, seed)` run and package it as a
     /// [`RunResult`].  Pure and self-contained — no shared mutable state —
-    /// so it is safe to call from many rayon workers at once.
+    /// so it is safe to call from many worker threads at once.
     fn run_one(
         &self,
         task: &TaskConfig,

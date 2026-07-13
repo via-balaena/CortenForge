@@ -5,7 +5,7 @@
 //! ## What this measures
 //!
 //! `run_replicates` executes independent `(task, builder, seed)` runs over a
-//! rayon pool. This bench pits the real parallel path against a
+//! pool of scoped threads. This bench pits the real parallel path against a
 //! looped-sequential baseline (each run issued as its own one-item
 //! `run_replicates`, so no two overlap) on the same total work — a real
 //! 6-DOF reaching task with physics-bound rollouts. The ratio of the two
@@ -130,7 +130,7 @@ fn bench_run_replicates(c: &mut Criterion) {
     // Each iteration runs 12 full training runs — keep the sample count low.
     group.sample_size(10);
 
-    // Real shipping path: all 12 runs dispatched across the rayon pool.
+    // Real shipping path: all 12 runs dispatched across the scoped-thread pool.
     group.bench_function("parallel_12runs", |b| {
         b.iter(|| {
             let result = comp
