@@ -54,6 +54,17 @@ sim-core    = { workspace = true, features = ["test-fixtures"] }
 # don't opt in.
 test-fixtures = ["sim-core/test-fixtures"]
 
+# Opt-in per-env physics parallelism: forwards to sim-core's `parallel`
+# feature so `BatchSim::step_all` (and thus `VecEnv::step`) steps the N envs
+# across a rayon pool. OFF by default. Enable it for a SINGLE training run
+# (one policy, many envs) where there is no across-run parallelism to saturate
+# the cores — measured ~3x on a 12-core M-series. Leave it OFF for the
+# `Competition` suite, which parallelizes ACROSS runs (std::thread::scope);
+# turning both on nests the two rayon/thread axes and oversubscribes. Default-
+# off is also what keeps rayon out of downstream L0 crates' isolated dep graphs
+# (e.g. sim-soft, which sits exactly at the L0 100-dep cap).
+parallel = ["sim-core/parallel"]
+
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 # wasm_js backend opt-in for getrandom (transitively pulled via
 # rand_chacha → rand_core). Paired with the workspace `.cargo/config.toml`
