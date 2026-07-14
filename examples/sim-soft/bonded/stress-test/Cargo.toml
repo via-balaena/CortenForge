@@ -1,0 +1,48 @@
+[package]
+name = "example-bonded-stress-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Declares this example's role in the validation contract. `validator` = the
+# binary self-checks against oracles and exits non-zero on any failure, so CI
+# runs it red-or-green (see `cargo xtask run-validators`). The alternative kind
+# is `demo` (illustration only; compile-checked but not run). Every self-gating
+# example MUST declare `validator` or its oracle checks run nowhere in CI.
+[package.metadata.cortenforge]
+example_kind = "validator"
+
+[dependencies]
+# bilayer_beam: HandBuiltTetMesh::cantilever_bilayer_beam + inline HalfSpaceField
+#   (Field trait) + BoundaryConditions + pick_vertices_by_predicate + LoadAxis.
+# lame_shells: SoftScene::layered_silicone_sphere + LayeredScalarField +
+#   LAYERED_SPHERE_* geometry re-exports + SceneInitial + SdfMeshedTetMesh +
+#   SphereSdf + referenced_vertices.
+# Both: CpuNewtonSolver / CpuTet4NHSolver + MaterialField + Mesh trait +
+#   NeoHookean + Material + NewtonStep + NullContact + Solver + SolverConfig +
+#   Tet4 + Vec3 + VertexId + InversionHandling (validity-domain sanity at x_final).
+sim-soft = { workspace = true }
+# Both: Tensor for solver.replay_step inputs (x_prev, v_prev, theta).
+sim-ml-chassis = { workspace = true }
+# Both: Point3 + IndexedMesh + AttributedMesh wrap for the per-tet centroid
+# point-cloud PLY (bilayer_beam = y-slab, lame_shells = z-slab).
+mesh-types = { workspace = true }
+# Both: save_ply_attributed for the out/*.ply artifacts (each 2 per-vertex
+# scalars — bilayer_beam: displacement_z + material_id; lame_shells:
+# material_id + radial_displacement).
+mesh-io = { workspace = true }
+# bilayer_beam: Matrix3 for the F_probe = diag(1.2, 1, 1) Material-trait probe +
+#   the F = J · J_0^-1 max-singular-value validity path.
+# lame_shells: additionally Matrix6 + Vector6 + SVD for the closed-form
+#   multi-shell Lamé 6×6 solver inlined from IV-5.
+nalgebra = { workspace = true }
+# Both: Result<()> return + error-context wrapping for the PLY emit step.
+anyhow = { workspace = true }
+# Both: assert_relative_eq! for the IV-1 sparse-tier rel-tol contract on
+# captured displacement bits + the within-30% analytic gates; same convention
+# as the sdf / scalar-field / stretch stress-tests.
+approx = { workspace = true }
+
+[lints]
+workspace = true

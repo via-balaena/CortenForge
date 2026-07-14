@@ -90,8 +90,15 @@ Status legend per top of file: `have` / `internal-fixture` / `missing` / `blocke
 > `examples/sim-soft/scalar-field/stress-test/` (modules `layered` / `blended`)
 > — one domain → one stress-test. Row numbers preserved as immutable IDs; the
 > standalone `layered-scalar-field` / `blended-scalar-field` crates no longer
-> exist. Rows 10–11 (`bonded-bilayer-beam` / `concentric-lame-shells`) are
-> FEM-solving multi-material — a separate later domain, still standalone.
+> exist. Rows 10–11 (`bonded-bilayer-beam` / `concentric-lame-shells` — the
+> FEM-solving bonded multi-material pair) likewise folded into one headless
+> validator `example-bonded-stress-test` at
+> `examples/sim-soft/bonded/stress-test/` (modules `bilayer_beam` /
+> `lame_shells`) — solver-driven multi-material FEM validated against
+> closed-form elasticity (Euler-Bernoulli composite beam / piecewise-Lamé
+> shell). The standalone `bonded-bilayer-beam` / `concentric-lame-shells`
+> crates no longer exist; the rows 10–11 entries below are retained as
+> immutable capability IDs.
 
 | # | Concept | Simplest example | Capability shown | Status | Gap to land |
 |---|---|---|---|---|---|
