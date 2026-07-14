@@ -1,4 +1,4 @@
-//! layered-scalar-field — `LayeredScalarField` over a 3-shell concentric
+//! layered — `LayeredScalarField` (sharp CSG step) over a 3-shell concentric
 //! `SphereSdf` partition.
 //!
 //! Per inventory Tier 3 row 8 — the canonical multi-material spatial-field
@@ -703,7 +703,7 @@ fn print_summary(
     path: &Path,
 ) {
     let n_orphans = mesh.n_vertices() - referenced.len();
-    println!("==== layered-scalar-field ====");
+    println!("==== layered ====");
     println!();
     println!("input  : SphereSdf {{ radius: {R_OUTER} }}  (solid body — no cavity)");
     println!("         MeshingHints {{");
@@ -810,7 +810,7 @@ fn print_summary(
 // main
 // =============================================================================
 
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     let mesh = build_layered_mesh();
 
     verify_layered_field_thresholds_strictly_monotone();

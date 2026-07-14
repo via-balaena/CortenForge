@@ -1,4 +1,4 @@
-//! blended-scalar-field — `BlendedScalarField` smooth cubic-Hermite-smoothstep
+//! blended — `BlendedScalarField` smooth cubic-Hermite-smoothstep
 //! transition between two uniform Lamé regions (the "stiff skin over soft
 //! core" canonical idiom from `material_field.rs:130`), with the same SDF
 //! used both inside the field's blend AND attached via
@@ -926,7 +926,7 @@ fn print_summary(
     path: &Path,
 ) {
     let n_orphans = mesh.n_vertices() - referenced.len();
-    println!("==== blended-scalar-field ====");
+    println!("==== blended ====");
     println!();
     println!("input  : SphereSdf {{ radius: {R_OUTER} }}  (solid body)");
     println!("         MeshingHints {{");
@@ -1057,7 +1057,7 @@ fn print_summary(
 // main
 // =============================================================================
 
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     let mesh = build_blended_mesh();
 
     verify_band_half_width_validity();

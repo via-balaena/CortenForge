@@ -396,8 +396,9 @@ members = [
     "examples/sim-soft/single-tet-stretch",
     "examples/sim-soft/neo-hookean-uniaxial",
     "examples/sim-soft/multi-element-stretch",
-    "examples/sim-soft/layered-scalar-field",
-    "examples/sim-soft/blended-scalar-field",
+    # Scalar-field domain: layered-scalar-field + blended-scalar-field folded
+    # into one stress-test (rows 8-9) — one domain -> one validation superset.
+    "examples/sim-soft/scalar-field/stress-test",
     "examples/sim-soft/bonded-bilayer-beam",
     "examples/sim-soft/concentric-lame-shells",
     "examples/sim-soft/soft-drop-on-plane",

@@ -68,6 +68,14 @@ Status legend per top of file: `have` / `internal-fixture` / `missing` / `blocke
 
 ### Tier 3 — Multi-material spatial fields (Phase 4 surface)
 
+> **Standardization (2026-07-14):** rows 8–9 (the `ScalarField` pair) folded
+> into one headless validator `example-scalar-field-stress-test` at
+> `examples/sim-soft/scalar-field/stress-test/` (modules `layered` / `blended`)
+> — one domain → one stress-test. Row numbers preserved as immutable IDs; the
+> standalone `layered-scalar-field` / `blended-scalar-field` crates no longer
+> exist. Rows 10–11 (`bonded-bilayer-beam` / `concentric-lame-shells`) are
+> FEM-solving multi-material — a separate later domain, still standalone.
+
 | # | Concept | Simplest example | Capability shown | Status | Gap to land |
 |---|---|---|---|---|---|
 | 8 | Layered scalar material field | `layered-scalar-field` — `LayeredScalarField` over a SDF stack (3 concentric shells); emit per-tet material-tag PLY (color = layer ID) | sharp-boundary spatial composition; `Field<f64>: Send + Sync` trait-object stack | `have` (`8fc28bad` + N+2 `233b687d` + N+3 `ce6485f4`) | — |
