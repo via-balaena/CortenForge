@@ -28,14 +28,14 @@ and PR sequencing rationale.
 | Example | Concept |
 |---------|---------|
 | [`sdf/stress-test`](sdf/stress-test/) | The sim-soft SDF surface as one validation superset (rows 1–3 folded — one domain → one stress-test), three modules: **`sphere_eval`** — the `Sdf` trait contract on `SphereSdf` (analytic signed distance + unit gradient, documented `Vec3::z()` origin fallback, 11³ = 1331 grid sweep, FD-Eikonal diagnostic); **`hollow_shell`** — sharp-CSG `SphereSdf{1.0} \ SphereSdf{0.5}` via `DifferenceSdf` (book Part 7 §00 §01), z = 0 slice (49² = 2401 verts) with `signed_distance` + `active_branch` (branch-flip circle at `\|p\| = 0.75`); **`sdf_to_tet`** — `SdfMeshedTetMesh::from_sdf` BCC + Labelle-Shewchuk Isosurface Stuffing at the III-1 scene (`R = 0.1 m`, `cell_size = 0.02 m`, 6768 tets), closed boundary surface (1224 faces, Euler χ = 2) with bimodal `boundary_residual`. |
-| [`single-tet-stretch`](single-tet-stretch/) | The arc's first FEM-running example. `SkeletonSolver::step` (backward-Euler Newton with `NeoHookean` on a hand-built 1-tet mesh, no contact) on `SoftScene::one_tet_cube` — canonical decimeter-edge tet with `θ = 10 N` along `+ẑ` on `v_3` and `v_0..v_2` Dirichlet-pinned; converges in 3 iters to `dz ≈ 9.69e-4 m` (~1 % strain) with all 12 DOFs of `x_final` matching the IV-1 frozen-reference bit pattern. JSON-only force-stretch trace (single-tet topology is too trivial for a render). |
+
+*Row 4 (`single-tet-stretch`) folded into the [`stretch/stress-test`](stretch/stress-test/) validator (module `single_tet`) alongside rows 5–6 — see Tier 2.*
 
 ### Tier 2 — Constitutive + multi-element (Phase 1–2 surface)
 
 | Example | Concept |
 |---------|---------|
-| [`neo-hookean-uniaxial`](neo-hookean-uniaxial/) | Direct-eval Neo-Hookean stress-strain curve across a 12-point traction-free uniaxial sweep on a single Tet4 (`F = diag(λ, λ_t, λ_t)` with `λ_t` from a 1-D inner Newton on the traction-free transcendental); analytic NH `P_11`, `P_22`, ψ vs `Material::first_piola` / `Material::energy` at rel-tol 1e-12, plus a `ValidityDomain` declaration check + per-point in-domain `max\|σ−1\|` gate; 48 captured-bit self-pins (4 quantities × 12 points) under the IV-1 dense bit-equal tier. JSON output + optional `uv run plot.py` matplotlib post-hoc 2×2 panel. |
-| [`multi-element-stretch`](multi-element-stretch/) | Phase 2 multi-element FEM assembly under uniform Dirichlet stretch on a 27-vertex / 48-tet hex grid (`HandBuiltTetMesh::uniform_block(2)`) at `λ = 1.20`, with one interior vertex left free so Newton has actual work to do (3 iters, residual ~1e-14 N). Per-tet `F` evaluates to `diag(λ, 1, 1)` for every one of the 48 tets (uniformity spread = `0.0` Pa on the capture platform); `P_11`, `P_22`, ψ match closed forms at rel-tol 1e-12. Quasi-static via `cfg.density = 0`. JSON-only per-tet uniformity trace. |
+| [`stretch/stress-test`](stretch/stress-test/) | The sim-soft uniaxial-stretch surface as one validation superset on the canonical compressible NH baseline (`μ = 1e5`, `Λ = 4e5` Pa, `ν ≈ 0.4`), rows 4–6 folded — one domain → one stress-test, a deliberate solver → constitutive → assembly ladder — three modules: **`single_tet`** (row 4, Tier 1) — the arc's first FEM-running example, `SkeletonSolver::step` (backward-Euler Newton with `NeoHookean`, no contact) on `SoftScene::one_tet_cube` with `θ = 10 N` along `+ẑ` on `v_3` and `v_0..v_2` Dirichlet-pinned; converges in 3 iters to `dz ≈ 9.69e-4 m` (~1 % strain) with all 12 DOFs of `x_final` matching the IV-1 frozen-reference bit pattern; **`neo_hookean`** (row 5) — direct-eval NH stress-strain curve across a 12-point traction-free uniaxial sweep on a single Tet4 (`F = diag(λ, λ_t, λ_t)` with `λ_t` from a 1-D inner Newton on the traction-free transcendental); analytic `P_11`, `P_22`, ψ vs `Material::first_piola` / `Material::energy` at rel-tol 1e-12, plus a `ValidityDomain` declaration check + per-point in-domain `max\|σ−1\|` gate; 48 captured-bit self-pins (4 quantities × 12 points); optional `uv run plot.py` matplotlib 2×2 panel; **`multi_element`** (row 6) — Phase 2 multi-element FEM assembly under uniform Dirichlet stretch on a 27-vertex / 48-tet hex grid (`HandBuiltTetMesh::uniform_block(2)`) at `λ = 1.20`, one interior vertex free (3 iters, residual ~1e-14 N); per-tet `F` = `diag(λ, 1, 1)` for every one of the 48 tets (uniformity spread `0.0` Pa on the capture platform), `P_11`, `P_22`, ψ vs closed form at rel-tol 1e-12, quasi-static via `cfg.density = 0`, 10 sparse-tier captured-bit self-pins. JSON-only traces under `out/<module>/`. |
 
 ### Tier 3 — Multi-material spatial fields (Phase 4 surface)
 
@@ -83,11 +83,12 @@ Examples split by tier per
   3, 5, 6). Open in [`cf-view`](../../cf-viewer/) — the workspace's
   unified Bevy-CLI viewer with auto-discovered per-vertex scalars
   and auto-colormap detection. Per-example READMEs call out the
-  scalar to pre-select and the canonical visual. Some rows
-  (`single-tet-stretch` in Tier 1; `neo-hookean-uniaxial` and
-  `multi-element-stretch` in Tier 2; `silicone-material-table` in
-  Tier 5) ship JSON-only — the table or curve IS the artifact, no
-  spatial render is meaningful (per
+  scalar to pre-select and the canonical visual. Some rows ship
+  JSON-only — the table or curve IS the artifact, no spatial render
+  is meaningful: the [`stretch/stress-test`](stretch/stress-test/)
+  modules (`single_tet`, `neo_hookean`, `multi_element` — rows 4–6,
+  Tiers 1–2) write JSON-only traces to `out/<module>/`, and
+  `silicone-material-table` (Tier 5) is likewise JSON-only (per
   [`feedback_visual_pass_collapses_for_json_rows`](../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_visual_pass_collapses_for_json_rows.md)).
 - **Bevy `CF_VISUAL=1` opt-in** for contact dynamics (Tier 4).
   Headless asserts + PLY emit always run; setting `CF_VISUAL=1`
