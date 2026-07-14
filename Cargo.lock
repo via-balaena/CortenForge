@@ -5119,30 +5119,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-mesh-shell-generation-fast"
-version = "1.0.0"
-dependencies = [
- "anyhow",
- "mesh-io",
- "mesh-repair",
- "mesh-shell",
- "mesh-types",
-]
-
-[[package]]
-name = "example-mesh-shell-generation-high-quality"
-version = "1.0.0"
-dependencies = [
- "anyhow",
- "mesh-io",
- "mesh-measure",
- "mesh-repair",
- "mesh-sdf",
- "mesh-shell",
- "mesh-types",
-]
-
-[[package]]
 name = "example-ml-6dof-cem-linear"
 version = "1.0.0"
 dependencies = [
@@ -5940,6 +5916,19 @@ dependencies = [
  "sim-bevy",
  "sim-core",
  "sim-mjcf",
+]
+
+[[package]]
+name = "example-shell-generation-stress-test"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "mesh-io",
+ "mesh-measure",
+ "mesh-repair",
+ "mesh-sdf",
+ "mesh-shell",
+ "mesh-types",
 ]
 
 [[package]]

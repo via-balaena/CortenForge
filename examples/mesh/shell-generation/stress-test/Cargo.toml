@@ -1,0 +1,33 @@
+[package]
+name = "example-shell-generation-stress-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Declares this example's role in the validation contract. `validator` = the
+# binary self-checks against oracles and exits non-zero on any failure, so CI
+# runs it red-or-green (see `cargo xtask run-validators`). The alternative kind
+# is `demo` (illustration only; compile-checked but not run). Every self-gating
+# example MUST declare `validator` or its oracle checks run nowhere in CI.
+[package.metadata.cortenforge]
+example_kind = "validator"
+
+[dependencies]
+# open-box / closed-cube fixtures + IndexedMesh + Bounded::aabb / signed_volume
+mesh-types = { workspace = true }
+# save_ply / load_ply for the out/*.ply artifacts + round-trip check
+mesh-io = { workspace = true }
+# ShellBuilder + generate methods — the SUT
+mesh-shell = { workspace = true }
+# validate_mesh — topology flags for the diagnostic block
+mesh-repair = { workspace = true }
+# TriMeshDistance for the high-quality wall-thickness uniformity oracle
+mesh-sdf = { workspace = true }
+# cross_section for the high-quality mid-height annular slice readout
+mesh-measure = { workspace = true }
+# Result<()> return type for each module's run()
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

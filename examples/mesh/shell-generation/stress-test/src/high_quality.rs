@@ -1,44 +1,48 @@
-//! SDF-based shell generation around a closed cube.
+//! SDF-based shell generation (`.high_quality()` preset) around a closed
+//! cube.
 //!
 //! Builds a closed 10mm cube (8 verts, 6 walls × 2 = 12 triangles
 //! with the same diagonal-triangulation pattern as the open-topped
-//! box used in `shell-generation-fast`), runs it through
+//! box used in [`crate::fast`]), runs it through
 //! `mesh_shell::ShellBuilder` with the `.high_quality()` preset, and
 //! saves two PLY artifacts:
 //!
-//!   * `out/before.ply` — input closed cube
-//!   * `out/shell.ply`  — generated shell with 2mm walls; outer
+//!   * `out/hq_before.ply` — input closed cube
+//!   * `out/hq_shell.ply`  — generated shell with 2mm walls; outer
 //!     surface is the SDF level set at distance 2.0mm from the inner
 //!     cube, marched into a triangle mesh + welded + per-face flipped
 //!     by the engine fix that landed in commits 11.5.1 + 11.5.2.
 //!
-//! Three pedagogical points the example anchors:
+//! Three pedagogical points the module anchors:
 //!
 //!   1. **The SDF level set produces UNIFORM perpendicular wall
 //!      thickness regardless of input triangulation, modulo
 //!      half-voxel MC discretization noise.** This is the load-bearing
-//!      contrast vs `shell-generation-fast`, where the same
+//!      contrast vs [`crate::fast`], where the same
 //!      diagonal-triangulation pattern produced 0.667mm thinnest
 //!      perpendicular wall at vert 2 (33% of the parameterized 2.0mm).
-//!      Commit 12 measures wall thickness via brute-force
-//!      closest-point on an SDF of the outer-only mesh, sampled at
-//!      24 wall-interior points (4 per wall × 6 walls); every sample
-//!      lands within `WALL_TOLERANCE_MM` of `WALL_THICKNESS_MM`.
-//!   2. **The cost paid for uniform thickness is vertex-soup-then-
-//!      welded outer + cell-scale chamfering at sharp creases.** The
-//!      outer surface comes from `mesh-offset`'s marching cubes (no
-//!      1:1 vertex correspondence with the input). The cube's 8
-//!      VERTICES round into Steiner-Minkowski sphere octants of
-//!      radius `wall_thickness`; the cube's 12 EDGES round into
-//!      cylindrical fillets of the same radius. This is GENUINE
-//!      level-set curvature, not MC discretization artifact (compare
-//!      the inward case in `offset/stress-test`, where the level set
-//!      has sharp corners and MC chamfers them as a tessellation
-//!      artifact).
-//!   3. **`has_consistent_winding == true` on closed-input SDF
-//!      shells.** Strict improvement over commit 11's rim-winding
-//!      quirk: closed input → no rim → no edge-direction conflict
-//!      between rim quads and reversed inner faces.
+//!      Wall thickness is measured via brute-force closest-point on an
+//!      SDF of the outer-only mesh, sampled at 24 wall-interior points
+//!      (4 per wall × 6 walls); every sample lands within
+//!      `WALL_TOLERANCE_MM` of `WALL_THICKNESS_MM`.
+//!   2. **The cost paid for uniform thickness is a marching-cubes outer
+//!      surface (welded, no 1:1 vertex correspondence) with cell-scale
+//!      chamfering at sharp creases.** The outer surface comes from
+//!      `mesh-offset`'s marching cubes. The cube's 8 VERTICES round into
+//!      Steiner-Minkowski sphere octants of radius `wall_thickness`; the
+//!      cube's 12 EDGES round into cylindrical fillets of the same
+//!      radius. This is GENUINE level-set curvature, not MC
+//!      discretization artifact (compare the inward case in
+//!      `offset/stress-test`, where the level set has sharp corners and
+//!      MC chamfers them as a tessellation artifact).
+//!   3. **`has_consistent_winding == true` on the SDF shell.** A closed
+//!      input has no boundary, so no rim is generated and there is no
+//!      inner/outer/rim seam to reconcile; the outer MC surface is
+//!      per-face flipped by the 11.5.2 fix and the inner surface is
+//!      winding-reversed, giving one consistently-oriented manifold.
+//!      (The normal-method [`crate::fast`] companion DOES generate a rim
+//!      on its open input and is likewise consistently wound, via the
+//!      separate rim-winding fix.)
 //!
 //! Wall thickness uniformity is the load-bearing assertion: 24
 //! sample points span the 6 walls (4 per wall, displaced 3mm from
@@ -50,15 +54,14 @@
 //! cushion (0.2mm at 0.3mm voxel) to admit the cell-scale MC
 //! tessellation noise without admitting genuine level-set curvature.
 //!
-//! See `examples/mesh/README.md` for cadence; see sibling
-//! `examples/mesh/shell-generation-fast/` for the normal-method
-//! companion (1-to-1 vertex correspondence; triangulation-skewed
-//! perpendicular thickness).
+//! See sibling [`crate::fast`] for the normal-method companion
+//! (1-to-1 vertex correspondence; triangulation-skewed perpendicular
+//! thickness).
 
 // Mesh processing uses u32 indices throughout; truncating a usize
 // vertex count to u32 would only matter for meshes with >4B vertices
 // (impossible at 64 GB+ memory). Mirrors the same allow in
-// `mesh/mesh-io/src/ply.rs` and `examples/mesh/ply-with-custom-attributes`.
+// `mesh/mesh-io/src/ply.rs`.
 #![allow(clippy::cast_possible_truncation)]
 // Vert/face ratio printout casts usize counts to f64 — meshes with
 // >2^52 verts exceed practical limits, so the precision loss is
@@ -68,31 +71,33 @@
 use std::path::Path;
 
 use anyhow::{Result, anyhow};
-use mesh_io::{load_ply, save_ply};
+use mesh_io::save_ply;
 use mesh_measure::cross_section;
 use mesh_repair::validate_mesh;
 use mesh_sdf::{TriMeshDistance, UnsignedDistance};
 use mesh_shell::{ShellBuildResult, ShellBuilder, WallGenerationMethod};
 use mesh_types::{Bounded, IndexedMesh, Point3, Vector3};
 
+use crate::common::{print_diagnostics, print_shell_stats, verify_round_trip};
+
 /// Side length of the input closed cube, in mesh units. The
 /// `mesh-shell` API uses mm naming throughout; meshes carry no
 /// inherent unit, so we treat these as mm. Same value as
-/// `shell-generation-fast` so the input topology is directly
-/// comparable (verts 0–7 + diagonal triangulation match exactly,
-/// plus 2 top faces to close the cube).
+/// [`crate::fast`] so the input topology is directly comparable
+/// (verts 0–7 + diagonal triangulation match exactly, plus 2 top
+/// faces to close the cube).
 const SIDE_MM: f64 = 10.0;
 
-/// Wall thickness in mm. Same value as `shell-generation-fast` so
-/// the per-vertex-offset table from the contrast README applies
-/// directly: where commit 11 measured 0.667mm thinnest perpendicular
-/// at vert 2 (33% thinning), commit 12 measures `~2.0mm` uniformly
-/// at every wall-interior sample.
+/// Wall thickness in mm. Same value as [`crate::fast`] so the
+/// per-vertex-offset table from the contrast README applies directly:
+/// where the normal method measured 0.667mm thinnest perpendicular at
+/// vert 2 (33% thinning), the SDF method measures `~2.0mm` uniformly at
+/// every wall-interior sample.
 const WALL_THICKNESS_MM: f64 = 2.0;
 
 /// Voxel size for the SDF marching-cubes pass, in mm. Matches the
 /// `.high_quality()` preset's default. Set explicitly via
-/// `.voxel_size(VOXEL_MM)` after `.high_quality()` so the example
+/// `.voxel_size(VOXEL_MM)` after `.high_quality()` so the module
 /// reads as self-documenting.
 const VOXEL_MM: f64 = 0.3;
 
@@ -103,30 +108,30 @@ const VOXEL_MM: f64 = 0.3;
 /// need >> `wall_thickness` near corners).
 const WALL_TOLERANCE_MM: f64 = 0.2;
 
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     let before = closed_cube(SIDE_MM);
 
     // .high_quality() sets `wall_method = Sdf`, `sdf_voxel_size_mm =
     // 0.3`, AND `validate = true`. The chained `.voxel_size(VOXEL_MM)`
     // re-asserts the voxel size after the preset (idempotent here at
     // 0.3, but documents intent so future changes to the preset
-    // default surface as a one-line example diff).
+    // default surface as a one-line diff).
     let result = ShellBuilder::new(&before)
         .wall_thickness(WALL_THICKNESS_MM)
         .high_quality()
         .voxel_size(VOXEL_MM)
         .build()
         .map_err(|e| anyhow!("shell build failed: {e}"))?;
-    let shell = result.mesh.clone();
+    let shell = &result.mesh;
 
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("out");
     std::fs::create_dir_all(&out_dir)?;
-    let before_path = out_dir.join("before.ply");
-    let shell_path = out_dir.join("shell.ply");
+    let before_path = out_dir.join("hq_before.ply");
+    let shell_path = out_dir.join("hq_shell.ply");
     save_ply(&before, &before_path, true)?;
-    save_ply(&shell, &shell_path, true)?;
+    save_ply(shell, &shell_path, true)?;
 
-    println!("==== shell-generation-high-quality ====");
+    println!("==== shell-generation-high-quality (SDF method) ====");
     println!();
     println!("input  : closed {SIDE_MM:.0}mm cube (6 walls × 2 = 12 faces, no boundary)");
     println!(
@@ -136,50 +141,33 @@ fn main() -> Result<()> {
 
     print_diagnostics("before  (closed cube)              ", &before);
     println!();
-    print_diagnostics("shell   (SDF-based, 2mm walls)     ", &shell);
+    print_diagnostics("shell   (SDF-based, 2mm walls)     ", shell);
     println!();
     print_shell_stats(&result);
     println!();
-    print_cross_section(&shell, SIDE_MM / 2.0);
+    print_cross_section(shell, SIDE_MM / 2.0);
     println!();
 
     verify_before(&before);
     verify_shell(&before, &result)?;
+    verify_round_trip("hq before", &before, &before_path)?;
+    verify_round_trip("hq shell", shell, &shell_path)?;
 
-    let before_loaded = load_ply(&before_path)?;
-    let shell_loaded = load_ply(&shell_path)?;
-    verify_round_trip(&[
-        ("before", &before, &before_loaded),
-        ("shell", &shell, &shell_loaded),
-    ]);
-
-    println!("artifacts:");
-    println!(
-        "  out/before.ply : {}v, {}f (round-trip verified)",
-        before_loaded.vertices.len(),
-        before_loaded.faces.len(),
-    );
-    println!(
-        "  out/shell.ply  : {}v, {}f (round-trip verified)",
-        shell_loaded.vertices.len(),
-        shell_loaded.faces.len(),
-    );
-    println!();
     println!("OK — SDF-based shell built, validated, and uniform-thickness within tolerance");
+    println!();
 
     Ok(())
 }
 
 /// Construct an axis-aligned closed cube of given side length,
 /// anchored at the origin. Vertex layout matches
-/// `examples/mesh/shell-generation-fast/src/main.rs::open_topped_box`
-/// exactly for verts 0–7; faces are the same 10 wall-triangle faces
-/// (5 walls × 2 tris) plus 2 top-wall triangles `[4,5,6]` and
-/// `[4,6,7]` to close the cube. 12 triangle faces total (6 walls × 2
-/// each), all outward-wound.
+/// [`crate::fast`]'s `open_topped_box` exactly for verts 0–7; faces
+/// are the same 10 wall-triangle faces (5 walls × 2 tris) plus 2
+/// top-wall triangles `[4,5,6]` and `[4,6,7]` to close the cube. 12
+/// triangle faces total (6 walls × 2 each), all outward-wound.
 fn closed_cube(side: f64) -> IndexedMesh {
     let mut mesh = IndexedMesh::new();
-    // 8 vertices at the cube corners (same indexing as commit 11).
+    // 8 vertices at the cube corners (same indexing as the open box).
     mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
     mesh.vertices.push(Point3::new(side, 0.0, 0.0));
     mesh.vertices.push(Point3::new(side, side, 0.0));
@@ -210,48 +198,6 @@ fn closed_cube(side: f64) -> IndexedMesh {
     mesh.faces.push([1, 6, 5]);
 
     mesh
-}
-
-/// Print a labeled diagnostic block: counts, AABB, signed volume,
-/// surface area, and the topology flags from `validate_mesh`.
-fn print_diagnostics(label: &str, mesh: &IndexedMesh) {
-    let report = validate_mesh(mesh);
-    let aabb = mesh.aabb();
-    println!("{label}:");
-    println!("  vertices       : {}", report.vertex_count);
-    println!("  faces          : {}", report.face_count);
-    println!(
-        "  AABB           : ({:+.3}, {:+.3}, {:+.3}) → ({:+.3}, {:+.3}, {:+.3})",
-        aabb.min.x, aabb.min.y, aabb.min.z, aabb.max.x, aabb.max.y, aabb.max.z,
-    );
-    println!("  signed_volume  : {:.4}", mesh.signed_volume());
-    println!("  surface_area   : {:.4}", mesh.surface_area());
-    println!("  is_manifold    : {}", report.is_manifold);
-    println!("  is_watertight  : {}", report.is_watertight);
-    println!("  is_inside_out  : {}", report.is_inside_out);
-    println!("  boundary_edges : {}", report.boundary_edge_count);
-}
-
-/// Print the structured `ShellGenerationResult` field-by-field,
-/// followed by the `ShellValidationResult` (always `Some` because
-/// `.high_quality()` sets `validate = true`).
-fn print_shell_stats(result: &ShellBuildResult) {
-    let stats = &result.shell_stats;
-    println!("ShellGenerationResult:");
-    println!("  inner_vertex_count : {}", stats.inner_vertex_count);
-    println!("  outer_vertex_count : {}", stats.outer_vertex_count);
-    println!("  rim_face_count     : {}", stats.rim_face_count);
-    println!("  total_face_count   : {}", stats.total_face_count);
-    println!("  boundary_size      : {}", stats.boundary_size);
-    println!("  wall_method        : {}", stats.wall_method);
-    println!("  offset_applied     : {}", result.offset_applied);
-    println!();
-    match &stats.validation {
-        Some(validation) => print!("{validation}"),
-        None => println!(
-            "(validation skipped — should not happen with .high_quality(), which forces validate=true)"
-        ),
-    }
 }
 
 /// Print a cross-section of the shell at z = `z_mm` (mid-height of
@@ -326,10 +272,7 @@ fn verify_before(mesh: &IndexedMesh) {
 ///    well below the soup-signature 3.0 (welded by 11.5.2 fix).
 /// 2. **Validation surface** (`verify_validation`) —
 ///    `is_watertight && is_manifold && is_printable() &&
-///    has_consistent_winding`. The bonus `has_consistent_winding`
-///    flag is true here because closed input has no rim, so no
-///    edge-direction conflict between rim quads and reversed inner
-///    faces (the quirk that flagged commit 11's open-input shell).
+///    has_consistent_winding`, issues list empty.
 /// 3. **Properly wound in face-normal sense** (`verify_winding`) —
 ///    `signed_volume > 0`, `is_inside_out == false`. The 11.5.2 fix
 ///    flips MC's inside-out winding via per-face `face.swap(1, 2)`
@@ -338,7 +281,7 @@ fn verify_before(mesh: &IndexedMesh) {
 ///    24 wall-interior sample points, distance to outer mesh in
 ///    `[WALL_THICKNESS_MM - WALL_TOLERANCE_MM, WALL_THICKNESS_MM +
 ///    WALL_TOLERANCE_MM]` for every sample. THE primary anchor.
-/// 5. **PLY round-trip** (`verify_round_trip`, called from main) —
+/// 5. **PLY round-trip** (`verify_round_trip`, called from run) —
 ///    vertex/face counts survive the I/O boundary.
 fn verify_shell(before: &IndexedMesh, result: &ShellBuildResult) -> Result<()> {
     let shell = &result.mesh;
@@ -414,10 +357,9 @@ fn verify_topology(
 }
 
 /// Validation surface for the SDF shell on closed input.
-/// `is_watertight && is_manifold && is_printable()`, with the
-/// bonus `has_consistent_winding == true` — strict improvement
-/// over commit 11's rim-winding quirk on open input. Issues list
-/// is empty.
+/// `is_watertight && is_manifold && is_printable()`, with
+/// `has_consistent_winding == true` (closed input → no rim → no
+/// seam to reconcile). Issues list is empty.
 fn verify_validation(stats: &mesh_shell::ShellGenerationResult) -> Result<()> {
     let validation = stats
         .validation
@@ -433,7 +375,7 @@ fn verify_validation(stats: &mesh_shell::ShellGenerationResult) -> Result<()> {
     assert_eq!(validation.non_manifold_edge_count, 0);
     assert!(
         validation.has_consistent_winding,
-        "closed-input SDF shell has no rim ⇒ no edge-direction conflict (vs commit 11's quirk)",
+        "closed-input SDF shell has no rim ⇒ no edge-direction conflict",
     );
     assert!(
         validation.issues.is_empty(),
@@ -462,8 +404,8 @@ fn verify_winding(shell: &IndexedMesh) {
     );
 }
 
-/// Uniform perpendicular wall thickness. THE primary anchor of
-/// commit 12. Sample 24 wall-interior points (4 per wall × 6 walls,
+/// Uniform perpendicular wall thickness. THE primary anchor of the
+/// SDF method. Sample 24 wall-interior points (4 per wall × 6 walls,
 /// at `(3, 3)`, `(7, 3)`, `(3, 7)`, `(7, 7)` in each wall's local
 /// 2D coords; displaced 3mm from every cube edge so they're well
 /// clear of the 2mm-radius corner/edge fillet zone). For each
@@ -598,22 +540,4 @@ fn wall_interior_samples(side: f64) -> Vec<Point3<f64>> {
         }
     }
     samples
-}
-
-/// Verify each `(label, in_memory, loaded)` triple: PLY round-trip
-/// preserves vertex and face counts exactly (no welding, no
-/// de-duplication on the I/O path).
-fn verify_round_trip(pairs: &[(&str, &IndexedMesh, &IndexedMesh)]) {
-    for (label, in_memory, loaded) in pairs {
-        assert_eq!(
-            loaded.vertices.len(),
-            in_memory.vertices.len(),
-            "{label}: vertex count drift across PLY round-trip",
-        );
-        assert_eq!(
-            loaded.faces.len(),
-            in_memory.faces.len(),
-            "{label}: face count drift across PLY round-trip",
-        );
-    }
 }
