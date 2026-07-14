@@ -55,10 +55,24 @@ pub struct VecStepResult {
 ///
 /// ## Threading model
 ///
-/// Physics stepping is parallelized via `BatchSim::step_all()` (rayon).
-/// The bridge's own work (action injection, reward/done evaluation,
-/// observation extraction, resets) runs sequentially after `step_all()`
-/// returns — physics dominates wall time; the bridge overhead is <2%.
+/// Physics stepping goes through `BatchSim::step_all()`, which steps the `N`
+/// envs across a rayon pool **only when `sim-core`'s `parallel` feature is
+/// enabled** (via this crate's `parallel` feature); by default it is
+/// sequential. The bridge's own work (action injection, reward/done
+/// evaluation, observation extraction, resets) always runs sequentially after
+/// `step_all()` returns — physics dominates wall time; the bridge overhead is
+/// <2%. Enabling per-env parallelism speeds a single training run (~3×
+/// observed on a 12-core M-series for a 50-env CEM run); the underlying
+/// per-env `step_all` scaling is benched in `sim-core-benches::bench_step_all`
+/// (run with `cargo bench -p sim-core-benches --features sim-core/parallel`).
+///
+/// This **per-env** axis is one of two parallelism levers; the other is the
+/// **across-run** axis inside [`Competition::run_replicates`](crate::Competition::run_replicates),
+/// which runs independent `(task, builder, seed)` runs concurrently. Use
+/// per-env parallelism for a *single* training run (one policy, many envs)
+/// where nothing else saturates the cores; leave it off for competition
+/// suites, which use the across-run axis — enabling both nests the two and
+/// oversubscribes.
 ///
 /// All closures are `Send + Sync` so that `VecEnv` itself is
 /// `Send + Sync` (essential for async training loops and Bevy resources).
@@ -70,7 +84,8 @@ pub struct VecStepResult {
 /// All sub-steps run for all envs via `batch.step_all()` — no per-env
 /// early exit (contrast with [`SimEnv`](crate::SimEnv) which breaks on
 /// `done` each sub-step).  Done/truncated are evaluated once at the final
-/// state.  This preserves `BatchSim`'s single parallel dispatch.
+/// state.  This preserves `BatchSim`'s single `step_all` dispatch per
+/// sub-step (one rayon fan-out when the `parallel` feature is on).
 ///
 /// [`BatchSim`]: sim_core::BatchSim
 pub struct VecEnv {
