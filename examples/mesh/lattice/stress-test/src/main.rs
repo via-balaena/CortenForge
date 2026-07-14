@@ -22,7 +22,7 @@
 //! - [`mesh_bounded_infill`] — the composite FDM pipeline via
 //!   `generate_infill` on a watertight input mesh: shell + lattice +
 //!   caps + connections, with the §Q-5 hollow-shell winding guard. Its
-//!   50 mm cube fixture lives in the [`mesh_bounded_infill::fixture`]
+//!   50 mm cube fixture lives in the `mesh_bounded_infill::fixture`
 //!   submodule.
 //!
 //! Each module self-gates against closed-form / analytic oracles and
