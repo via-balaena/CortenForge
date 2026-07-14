@@ -134,13 +134,22 @@ const SHELL_THICKNESS: f64 = 1.2;
 /// as `2V = F + 8` in `usize` (always `2V ≥ F`, no underflow).
 const SHELL_EULER_2V_MINUS_F: usize = 8;
 
-/// `result.lattice.vertex_count()` — 104 cubic struts × 14 verts per
-/// 6-segment cylinder (hand-authored strut geometry; deterministic).
-const EXPECTED_LATTICE_VC: usize = 1_456;
+/// Number of cubic struts `generate_infill` emits into the 50 mm cube's
+/// mesh-bounded interior at `for_fdm` + `cell_size 10` — a deterministic
+/// topological count for this fixture, independent of per-cylinder
+/// tessellation.
+const LATTICE_STRUT_COUNT: usize = 104;
 
-/// `result.lattice.face_count()` — 104 cubic struts × 24 tris per
-/// cylinder.
-const EXPECTED_LATTICE_FC: usize = 2_496;
+/// `result.lattice.vertex_count()` — one 6-segment cylinder per strut.
+/// Derived from the per-cylinder const (not a raw literal) so it tracks
+/// `STRUT_VERTS_PER_CYLINDER` if the strut tessellation changes; the
+/// lattice is un-welded, so verts scale linearly with strut count
+/// (`104 × 14 = 1456`).
+const EXPECTED_LATTICE_VC: usize = LATTICE_STRUT_COUNT * STRUT_VERTS_PER_CYLINDER;
+
+/// `result.lattice.face_count()` — 24 tris per strut cylinder, derived
+/// (`104 × 24 = 2496`).
+const EXPECTED_LATTICE_FC: usize = LATTICE_STRUT_COUNT * STRUT_TRIS_PER_CYLINDER;
 
 /// Cap geometry per gap-c fix: two extruded boxes (`combine_meshes`
 /// of two cube sub-meshes) at top + bottom of the inset interior, 8

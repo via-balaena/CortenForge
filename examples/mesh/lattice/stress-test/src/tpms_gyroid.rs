@@ -251,12 +251,21 @@ fn verify_lattice_result_geometry(result: &LatticeResult, bounds: (Point3<f64>, 
     assert!(v_count > 0, "lattice must have vertices");
     assert!(t_count > 0, "lattice must have triangles");
 
-    // F10 soup signature: BIT-EXACT.
+    // F10 vertex-soup signature. This is a RATIO invariant, not a
+    // fragile absolute count: the un-welded marching-cubes output emits
+    // 3 unique vertices per triangle at ANY resolution, so `3 × t_count`
+    // holds regardless of `RESOLUTION` / `CELL_SIZE`. It asserts the
+    // current un-welded contract (F10); the only thing that flips it is
+    // the v0.9 #10 weld pass (`mesh-repair::weld_vertices`), a
+    // consumer-gated feature whose implementer updates this assert as
+    // part of that change — NOT a silent lib-retune. (Softening to
+    // `<= 3 × t_count` would be vacuous: every triangle mesh satisfies
+    // it, so it would witness nothing.)
     assert_eq!(
         v_count,
         3 * t_count,
-        "MC vertex-soup signature: vertex_count must equal 3 × triangle_count (F10); \
-         got vertex_count = {v_count}, triangle_count = {t_count}",
+        "MC vertex-soup signature: vertex_count must equal 3 × triangle_count (F10, \
+         un-welded); got vertex_count = {v_count}, triangle_count = {t_count}",
     );
 
     let (min, max) = bounds;
