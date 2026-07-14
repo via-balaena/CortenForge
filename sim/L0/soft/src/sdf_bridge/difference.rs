@@ -30,8 +30,8 @@
 //! - `DifferenceSdf` is the **trait teaching primitive** for sharp-CSG
 //!   composition + a `Box<dyn Sdf>` heterogeneous-composition escape
 //!   hatch when lifting through `from_sdf` is undesirable. The Tier 1
-//!   example [`hollow-shell-sdf`][r2] teaches the difference operator
-//!   through `DifferenceSdf::new(SphereSdf, SphereSdf)` at minimal
+//!   [`sdf/stress-test`][sdf] module `hollow_shell` teaches the difference
+//!   operator through `DifferenceSdf::new(SphereSdf, SphereSdf)` at minimal
 //!   surface; [`solid-to-sim-soft`][r16] uses
 //!   `DifferenceSdf<SphereSdf>` as the bit-equality baseline against
 //!   typed-Solid `Solid::sphere().subtract()` at HEADLINE A's
@@ -42,7 +42,7 @@
 //! you teaching the trait or anchoring the bridge" (use
 //! `DifferenceSdf`).
 //!
-//! [r2]: ../../../../../examples/sim-soft/hollow-shell-sdf/
+//! [sdf]: ../../../../../examples/sim-soft/sdf/stress-test/
 //! [r16]: ../../../../../examples/sim-soft/solid-to-sim-soft/
 //!
 //! # Differentiability

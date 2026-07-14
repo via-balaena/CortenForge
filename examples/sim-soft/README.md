@@ -27,9 +27,7 @@ and PR sequencing rationale.
 
 | Example | Concept |
 |---------|---------|
-| [`sphere-sdf-eval`](sphere-sdf-eval/) | The `Sdf` trait contract on `SphereSdf` — analytic signed distance and unit-length gradient, including the documented `Vec3::z()` origin-singularity fallback; 11³ = 1331 grid sweep emitted as PLY with `extras["signed_distance"]`. |
-| [`hollow-shell-sdf`](hollow-shell-sdf/) | Sharp-CSG difference combinator `SphereSdf{R_OUTER=1.0} \ SphereSdf{R_CAVITY=0.5}` via `DifferenceSdf` (book Part 7 §00 §01); emits a 2-D z = 0 slice (49² = 2401 verts) with two scalars — `signed_distance` (donut cross-section) and `active_branch` (visualises the equidistant branch-flip circle at `\|p\| = 0.75`). |
-| [`sdf-to-tet-sphere`](sdf-to-tet-sphere/) | `SdfMeshedTetMesh::from_sdf` on a solid `SphereSdf` — the canonical Phase 3 BCC + Labelle-Shewchuk Isosurface Stuffing pipeline at the III-1 determinism scene (`R = 0.1 m`, `cell_size = 0.02 m`, 6768 tets); first triangle-mesh cf-view consumer in the arc, emitting a closed boundary surface (1224 faces, 614 vertices, Euler χ = 2) with per-vertex `boundary_residual = \|‖p‖ − R\|` exposing the bimodal warp-snapped (≈ 0) vs cut-point (`O(cell_size²)`) distribution. |
+| [`sdf/stress-test`](sdf/stress-test/) | The sim-soft SDF surface as one validation superset (rows 1–3 folded — one domain → one stress-test), three modules: **`sphere_eval`** — the `Sdf` trait contract on `SphereSdf` (analytic signed distance + unit gradient, documented `Vec3::z()` origin fallback, 11³ = 1331 grid sweep, FD-Eikonal diagnostic); **`hollow_shell`** — sharp-CSG `SphereSdf{1.0} \ SphereSdf{0.5}` via `DifferenceSdf` (book Part 7 §00 §01), z = 0 slice (49² = 2401 verts) with `signed_distance` + `active_branch` (branch-flip circle at `\|p\| = 0.75`); **`sdf_to_tet`** — `SdfMeshedTetMesh::from_sdf` BCC + Labelle-Shewchuk Isosurface Stuffing at the III-1 scene (`R = 0.1 m`, `cell_size = 0.02 m`, 6768 tets), closed boundary surface (1224 faces, Euler χ = 2) with bimodal `boundary_residual`. |
 | [`single-tet-stretch`](single-tet-stretch/) | The arc's first FEM-running example. `SkeletonSolver::step` (backward-Euler Newton with `NeoHookean` on a hand-built 1-tet mesh, no contact) on `SoftScene::one_tet_cube` — canonical decimeter-edge tet with `θ = 10 N` along `+ẑ` on `v_3` and `v_0..v_2` Dirichlet-pinned; converges in 3 iters to `dz ≈ 9.69e-4 m` (~1 % strain) with all 12 DOFs of `x_final` matching the IV-1 frozen-reference bit pattern. JSON-only force-stretch trace (single-tet topology is too trivial for a render). |
 
 ### Tier 2 — Constitutive + multi-element (Phase 1–2 surface)
@@ -110,17 +108,25 @@ material / bridge / synthesis examples are static.
 
 ## Layout convention
 
-Every example is a workspace member crate at:
+**Standardization target (migration in progress).** Each implicit domain
+folds into ONE headless `stress-test` validation superset — the
+validation-consistency arc's "one domain → one stress-test" shape, mirroring
+`examples/mesh/<domain>/stress-test/`:
 
 ```
-examples/sim-soft/<name>/
-├── Cargo.toml     # [package].name = "example-sim-soft-<name>"
+examples/sim-soft/<domain>/stress-test/
+├── Cargo.toml     # [package].name = "example-<domain>-stress-test"
+│                  # [package.metadata.cortenforge] example_kind = "validator"
 ├── README.md      # museum-plaque (template per `examples/mesh/README.md`)
-├── src/main.rs    # writes PLY / JSON to out/, or runs a Bevy app
-└── out/           # gitignored; generated artifacts (PLY / JSON)
+├── src/main.rs    # dispatcher: one module per folded example, each run()
+└── out/           # gitignored (**/out/); generated PLY / JSON artifacts
 ```
 
-Names are dash-case, matching the rest of the workspace.
+Migrated so far: `sdf/stress-test` (rows 1–3 — `sphere-sdf-eval` +
+`hollow-shell-sdf` + `sdf-to-tet-sphere`). The remaining examples still use
+the pre-standardization flat crate `examples/sim-soft/<name>/` with name
+`example-sim-soft-<name>`; they migrate domain-by-domain. Names are dash-case,
+matching the rest of the workspace.
 
 ## Cadence
 

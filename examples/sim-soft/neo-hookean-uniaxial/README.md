@@ -194,7 +194,7 @@ Per [`feedback_release_mode_heavy_tests`][rel], always `--release` for the examp
 
 ## Cross-references
 
-- **Sister sim-soft examples**: `single-tet-stretch` (row 4 — same canonical Ecoflex-class scene, but full `Solver::step` end-to-end with backward-Euler Newton; companion to this row's direct-eval form), `sphere-sdf-eval` / `hollow-shell-sdf` / `sdf-to-tet-sphere` (rows 1-3 — SDF + meshing surface, prior to FEM-running rows). See `sim/L0/soft/EXAMPLE_INVENTORY.md` Tier 1 + Tier 2.
+- **Sister sim-soft examples**: `single-tet-stretch` (row 4 — same canonical Ecoflex-class scene, but full `Solver::step` end-to-end with backward-Euler Newton; companion to this row's direct-eval form), `sdf/stress-test` modules `sphere_eval` / `hollow_shell` / `sdf_to_tet` (rows 1-3 — SDF + meshing surface, prior to FEM-running rows). See `sim/L0/soft/EXAMPLE_INVENTORY.md` Tier 1 + Tier 2.
 - **`NeoHookean` impl**: `sim/L0/soft/src/material/neo_hookean.rs` — the closed forms this example checks (`first_piola`, `energy`) and the `validity()` declaration the `validity_domain_declaration` anchor reads.
 - **`Material` trait + `ValidityDomain`**: `sim/L0/soft/src/material/mod.rs:19-91`.
 - **Companion gradcheck test**: `sim/L0/soft/tests/material_fd.rs` — FD vs analytic check on `first_piola` and `tangent` at one nontrivial F. This row is the user-facing demo of the same constitutive surface that test exercises in unit form, scaled to a full sweep with closed-form comparison instead of FD.

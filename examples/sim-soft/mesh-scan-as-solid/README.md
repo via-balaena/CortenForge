@@ -263,7 +263,7 @@ provenance.
   vertex-region false-positives at the bbox boundary).
 - **PLY-attribute pattern**: mirrored from
   `examples/mesh/ply-with-custom-attributes` and
-  `examples/sim-soft/sphere-sdf-eval`.
+  `examples/sim-soft/sdf/stress-test` (module `sphere_eval`).
 - **Inventory entry**:
   `sim/L0/soft/EXAMPLE_INVENTORY.md` row 15 (Tier 5 bridges).
 - **Cadence memos**:

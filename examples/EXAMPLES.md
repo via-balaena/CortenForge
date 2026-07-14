@@ -325,9 +325,7 @@ Soft-body FEM examples — Neo-Hookean elasticity on linear tetrahedra, BCC + La
 
 | Example | Package | Status | Notes |
 |---------|---------|--------|-------|
-| `sphere-sdf-eval` | `example-sim-soft-sphere-sdf-eval` | Working | `Sdf` trait contract on `SphereSdf`; 11³ = 1331-point grid with `signed_distance` per-vertex scalar |
-| `hollow-shell-sdf` | `example-sim-soft-hollow-shell-sdf` | Working | `DifferenceSdf` of two `SphereSdf`s; hollow-body composition; z=0 slice with `signed_distance` + `active_branch` scalars |
-| `sdf-to-tet-sphere` | `example-sim-soft-sdf-to-tet-sphere` | Working | `SdfMeshedTetMesh::from_sdf` solid sphere; BCC + Labelle-Shewchuk Isosurface Stuffing pipeline; first triangle-mesh cf-view consumer (1224 faces, Euler χ = 2, bimodal `boundary_residual` scalar) |
+| `sdf/stress-test` | `example-sdf-stress-test` | Working (validator) | SDF validation superset, rows 1–3 folded (one domain → one stress-test): module `sphere_eval` (`Sdf` trait contract on `SphereSdf`, 11³ grid + FD-Eikonal), `hollow_shell` (`DifferenceSdf` hollow-body composition, z=0 slice with `signed_distance` + `active_branch`), `sdf_to_tet` (`SdfMeshedTetMesh::from_sdf` BCC + Isosurface Stuffing, 1224 faces, Euler χ = 2, bimodal `boundary_residual`) |
 | `single-tet-stretch` | `example-sim-soft-single-tet-stretch` | Working | Walking-skeleton hand-built tet path — alternative to the SDF route for hand-authored scenes. `SkeletonSolver::step` on `SoftScene::one_tet_cube`; converges in 3 iters to `dz ≈ 9.69e-4 m` matching the IV-1 frozen-reference bit pattern; JSON-only force-stretch trace |
 
 ### Tier 2 — Constitutive + multi-element

@@ -14,7 +14,7 @@ publish = false
 # row 11 (concentric-lame-shells, IV-5 hollow form).
 sim-soft = { workspace = true }
 # Point3 + IndexedMesh + AttributedMesh wrap for the per-tet centroid
-# point-cloud PLY (mirrors row 1's sphere-sdf-eval point-cloud pattern).
+# point-cloud PLY (mirrors row 1's sphere_eval point-cloud pattern).
 mesh-types = { workspace = true }
 # save_ply_attributed for out/material_layer_assignment.ply.
 mesh-io = { workspace = true }

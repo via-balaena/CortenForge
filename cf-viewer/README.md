@@ -16,7 +16,7 @@ from its up-axis convention to Bevy's Y-up internally.
 ## Quickstart
 
 ```text
-cargo run -p cf-viewer --release -- examples/sim-soft/sphere-sdf-eval/out/sdf_grid.ply
+cargo run -p cf-viewer --release -- examples/sim-soft/sdf/stress-test/out/sdf_grid.ply
 ```
 
 The viewer auto-discovers per-vertex scalars in the PLY's `extras`
@@ -47,8 +47,8 @@ cf-view <path> [--scalar=<name>] [--colormap=<auto|divergent|sequential|categori
 ## See also
 
 - [`docs/VIEWER_DESIGN.md`](../docs/VIEWER_DESIGN.md) — design plan with originating signal, locked decisions (Q1-Q8), open issues, and iteration log. Living document; will be deleted after the workspace fully migrates per `feedback_code_speaks`.
-- [`examples/sim-soft/sphere-sdf-eval`](../examples/sim-soft/sphere-sdf-eval) — v1 reference consumer (1331-point PLY with two per-vertex scalars: `signed_distance` divergent + `gradient_magnitude` sequential) exercising auto-discovery + dropdown switching + colormap detection end-to-end.
+- [`examples/sim-soft/sdf/stress-test`](../examples/sim-soft/sdf/stress-test) — v1 reference consumer (module `sphere_eval`, emitting `out/sdf_grid.ply`: a 1331-point PLY with two per-vertex scalars: `signed_distance` divergent + `gradient_magnitude` sequential) exercising auto-discovery + dropdown switching + colormap detection end-to-end.
 
 ## Tests
 
-`cargo test -p cf-viewer` — 42 unit tests covering colormap detection, scalar extraction, CLI parsing, and mesh conversion. The orbit camera + up-axis convention live in `cf-bevy-common` (15 unit tests, `cargo test -p cf-bevy-common`) since sim-soft PR2 C2b factored them out for sharing with sim-bevy + sim-bevy-soft. The Bevy window itself is not tested in CI (no headless display server on the runners); local visual review against `examples/sim-soft/sphere-sdf-eval` is the v1 test surface for the rendering path.
+`cargo test -p cf-viewer` — 42 unit tests covering colormap detection, scalar extraction, CLI parsing, and mesh conversion. The orbit camera + up-axis convention live in `cf-bevy-common` (15 unit tests, `cargo test -p cf-bevy-common`) since sim-soft PR2 C2b factored them out for sharing with sim-bevy + sim-bevy-soft. The Bevy window itself is not tested in CI (no headless display server on the runners); local visual review against `examples/sim-soft/sdf/stress-test` (module `sphere_eval`) is the v1 test surface for the rendering path.

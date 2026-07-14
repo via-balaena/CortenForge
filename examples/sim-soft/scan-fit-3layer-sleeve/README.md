@@ -87,7 +87,7 @@ Each anchor is encoded as an `assert!` / `assert_eq!` / `assert_relative_eq!` in
 |---|---|
 | `signed_volume > 0` per tet | strict (D-10 detector) |
 
-Every tet has positive signed volume — the BCC + Isosurface Stuffing pipeline preserves orientation through the heterogeneous-CSG carve; same Theorem-1-sanity envelope row 3 [`sdf-to-tet-sphere`](../sdf-to-tet-sphere) anchors verbatim. This anchor is also the pre-condition for the per-tet `deformation_gradient` helper's `D_rest.try_inverse().expect(...)` invariant — `D_rest` is invertible iff the tet has positive signed volume.
+Every tet has positive signed volume — the BCC + Isosurface Stuffing pipeline preserves orientation through the heterogeneous-CSG carve; same Theorem-1-sanity envelope row 3 [`sdf_to_tet`](../sdf/stress-test) anchors verbatim. This anchor is also the pre-condition for the per-tet `deformation_gradient` helper's `D_rest.try_inverse().expect(...)` invariant — `D_rest` is invertible iff the tet has positive signed volume.
 
 ### 2. `counts_exact`
 

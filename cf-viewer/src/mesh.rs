@@ -41,7 +41,7 @@ use mesh_types::AttributedMesh;
 /// Radius of point-cloud sphere markers, expressed as a fraction of the
 /// AABB diagonal.
 ///
-/// Empirically tuned against the sphere-sdf-eval fixture (1331 verts on an
+/// Empirically tuned against the `sphere_eval` fixture (1331 verts on an
 /// 11³ grid, ~3.5 diagonal): 0.5% renders discrete dots without occluding
 /// neighbors. Commit 4's colormap pipeline can refine once shading provides
 /// a second visibility cue.

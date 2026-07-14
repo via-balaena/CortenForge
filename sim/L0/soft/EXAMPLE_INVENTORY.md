@@ -45,6 +45,13 @@ Status legend per top of file: `have` / `internal-fixture` / `missing` / `blocke
 
 ### Tier 1 — SDF primitives + meshing (Phase 3 surface)
 
+> **Standardization (2026-07-14):** rows 1–3 folded into one headless
+> validator `example-sdf-stress-test` at `examples/sim-soft/sdf/stress-test/`
+> (modules `sphere_eval` / `hollow_shell` / `sdf_to_tet`) — one domain → one
+> stress-test, per the validation-consistency arc. Row numbers preserved as
+> immutable IDs; the standalone `sphere-sdf-eval` / `hollow-shell-sdf` /
+> `sdf-to-tet-sphere` crates no longer exist.
+
 | # | Concept | Simplest example | Capability shown | Status | Gap to land |
 |---|---|---|---|---|---|
 | 1 | SDF primitive eval + grad | `sphere-sdf-eval` — sample `SphereSdf::eval` + `grad` over a grid; emit signed-distance PLY (vertex extras like mesh-sdf-distance-query) | `Sdf` trait contract; analytic distance + unit gradient on the zero set | `have` (PR #226 cf-viewer arc) | — |

@@ -1,3 +1,5 @@
 # Per-example PLY / JSON artifacts written by `cargo run --release`.
-# Mirrors the convention from `examples/mesh/.gitignore`.
-*/out/
+# Mirrors the convention from `examples/mesh/.gitignore`. `**/out/` matches at
+# any nesting depth so the standardization layout's nested crates (e.g.
+# examples/sim-soft/sdf/stress-test/out/) are covered, not just flat */out/.
+**/out/

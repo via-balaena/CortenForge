@@ -688,8 +688,8 @@ fn spawn_geometry(
         //
         // Radius is the MIN of two bounds:
         //   1. `diagonal × POINT_RADIUS_FRACTION` — the original
-        //      empirical bound, calibrated against sphere-sdf-eval's
-        //      sparse 11³ grid.
+        //      empirical bound, calibrated against the `sphere_eval`
+        //      fixture's sparse 11³ grid.
         //   2. `0.4 × (V/N)^(1/3)` — density-aware bound. With `N`
         //      points uniformly distributed in volume `V`, the average
         //      inter-point spacing is `(V/N)^(1/3)`; rendering each as

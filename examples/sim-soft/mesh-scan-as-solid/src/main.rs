@@ -70,12 +70,12 @@
 
 // PLY field-data is single-precision on disk; converting f64 SDF
 // values to f32 for `extras["signed_distance"]` is intrinsic to the
-// PLY format. Same rationale as `sphere-sdf-eval` and
+// PLY format. Same rationale as `sphere_eval` (sdf/stress-test) and
 // `mesh-sdf-distance-query`.
 #![allow(clippy::cast_possible_truncation)]
 // Grid-axis coords read as the textbook `−half_extent + i · spacing`;
 // the `mul_add` rewrite obscures intent and the result is
-// bit-equivalent here. Same precedent as sphere-sdf-eval.
+// bit-equivalent here. Same precedent as sphere_eval (sdf/stress-test).
 #![allow(clippy::suboptimal_flops)]
 // Grid axis indices are `0..17` so `usize as f64` is exactly
 // representable (f64 mantissa is 52 bits; max index is 16).

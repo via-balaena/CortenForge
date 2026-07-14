@@ -5632,6 +5632,17 @@ name = "example-sdf-gpu-01-hockey"
 version = "1.0.0"
 
 [[package]]
+name = "example-sdf-stress-test"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "mesh-io",
+ "mesh-types",
+ "sim-soft",
+]
+
+[[package]]
 name = "example-sensor-accelerometer"
 version = "1.0.0"
 dependencies = [
@@ -5915,17 +5926,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sim-soft-hollow-shell-sdf"
-version = "1.0.0"
-dependencies = [
- "anyhow",
- "approx 0.5.1",
- "mesh-io",
- "mesh-types",
- "sim-soft",
-]
-
-[[package]]
 name = "example-sim-soft-layered-scalar-field"
 version = "1.0.0"
 dependencies = [
@@ -6079,16 +6079,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sim-soft-sdf-to-tet-sphere"
-version = "1.0.0"
-dependencies = [
- "anyhow",
- "mesh-io",
- "mesh-types",
- "sim-soft",
-]
-
-[[package]]
 name = "example-sim-soft-silicone-material-table"
 version = "1.0.0"
 dependencies = [
@@ -6135,17 +6125,6 @@ dependencies = [
  "mesh-types",
  "nalgebra 0.34.2",
  "sim-ml-chassis",
- "sim-soft",
-]
-
-[[package]]
-name = "example-sim-soft-sphere-sdf-eval"
-version = "1.0.0"
-dependencies = [
- "anyhow",
- "approx 0.5.1",
- "mesh-io",
- "mesh-types",
  "sim-soft",
 ]
 

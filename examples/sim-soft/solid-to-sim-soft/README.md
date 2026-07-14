@@ -90,7 +90,7 @@ Mesh topology is a function of geometry + `cell_size` only, not of material part
 | `aspect_ratio ≥ 0.05` per tet | Theorem 1 sanity floor |
 | `dihedral ∈ [5°, 175°]` per tet | Theorem 1 sanity floor |
 
-Same Theorem 1 envelope row 3 [`sdf-to-tet-sphere`](../sdf-to-tet-sphere) anchors verbatim; the BCC + stuffing pipeline is material-blind for tet quality.
+Same Theorem 1 envelope row 3 [`sdf_to_tet`](../sdf/stress-test) anchors verbatim; the BCC + stuffing pipeline is material-blind for tet quality.
 
 ### 4. `solver_converges`
 
