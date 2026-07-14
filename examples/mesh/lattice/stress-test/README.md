@@ -64,13 +64,12 @@ exits 0.
 
 ## Visual artifacts
 
-Modules write human-inspectable ASCII PLY files for the `cf-viewer`
-visual-review path — the first four to the crate's `out/`
-(`gyroid_lattice.ply`, `cubic_lattice.ply`,
-`density_gradient_lattice.ply`, `sphere_gyroid.ply` +
-`sphere_gyroid_full.ply`), and `mesh_bounded_infill` to a working-
-directory `out/` (`input.ply`, `shell.ply`, `lattice.ply`,
-`composite.ply`):
+Every module writes binary PLY files to the crate's `out/` for the
+`cf-viewer` visual-review path: `gyroid_lattice.ply`,
+`cubic_lattice.ply`, `density_gradient_lattice.ply`,
+`sphere_gyroid.ply` + `sphere_gyroid_full.ply`, and (from
+`mesh_bounded_infill`) `input.ply`, `shell.ply`, `lattice.ply`,
+`composite.ply`:
 
 ```
 cargo run -p cf-viewer --release -- examples/mesh/lattice/stress-test/out/gyroid_lattice.ply
