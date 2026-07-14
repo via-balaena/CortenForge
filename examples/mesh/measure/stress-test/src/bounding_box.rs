@@ -28,7 +28,7 @@
 // Cross-product unit-normal computation reads as the textbook formula
 // `e1.y*e2.z - e1.z*e2.y`; the `mul_add` rewrite obscures intent and
 // produces bit-equivalent results on integer vertex coordinates.
-// (Same precedent as printability-showcase verify_fixture_geometry.)
+// (Same precedent as the showcase module verify_fixture_geometry.)
 #![allow(clippy::suboptimal_flops)]
 
 use std::path::Path;
@@ -127,7 +127,7 @@ fn rot_coef() -> f64 {
 ///
 /// Cube A: 8 corners of `[0, 10] × [-5, 5] × [0, 10]` (y-centered on
 /// origin), indexed bottom-CCW then top-CCW (matches the
-/// printability-showcase `build_body` template).
+/// `showcase` module's `build_body` template).
 ///
 /// Cube B: local 20×10×10 brick `[−10, 10] × [−5, 5] × [−5, 5]`
 /// rotated by `R(z, 45°)` then translated to `(25, 0, 5)`. The
@@ -225,7 +225,7 @@ fn build_fixture() -> IndexedMesh {
         .collect();
 
     // 12-face template per cube (2 tris × 6 faces). Same winding as
-    // printability-showcase build_body. Cube B uses the same template
+    // the showcase module build_body. Cube B uses the same template
     // shifted by CUBE_A_VERT_COUNT_U32 (= 8).
     let v0 = CUBE_A_VERT_COUNT_U32;
     let faces: Vec<[u32; 3]> = vec![

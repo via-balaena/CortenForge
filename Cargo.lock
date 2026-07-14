@@ -5032,93 +5032,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-mesh-printability-long-bridge"
-version = "1.0.0"
-dependencies = [
- "anyhow",
- "approx 0.5.1",
- "mesh-io",
- "mesh-printability",
- "mesh-types",
-]
-
-[[package]]
-name = "example-mesh-printability-orientation"
-version = "1.0.0"
-dependencies = [
- "anyhow",
- "approx 0.5.1",
- "mesh-io",
- "mesh-printability",
- "mesh-types",
- "nalgebra 0.34.2",
-]
-
-[[package]]
-name = "example-mesh-printability-self-intersecting"
-version = "1.0.0"
-dependencies = [
- "anyhow",
- "mesh-io",
- "mesh-printability",
- "mesh-types",
-]
-
-[[package]]
-name = "example-mesh-printability-showcase"
-version = "1.0.0"
-dependencies = [
- "anyhow",
- "approx 0.5.1",
- "mesh-io",
- "mesh-printability",
- "mesh-types",
-]
-
-[[package]]
-name = "example-mesh-printability-small-feature"
-version = "1.0.0"
-dependencies = [
- "anyhow",
- "mesh-io",
- "mesh-printability",
- "mesh-types",
-]
-
-[[package]]
-name = "example-mesh-printability-technology-sweep"
-version = "1.0.0"
-dependencies = [
- "anyhow",
- "approx 0.5.1",
- "mesh-io",
- "mesh-printability",
- "mesh-types",
-]
-
-[[package]]
-name = "example-mesh-printability-thin-wall"
-version = "1.0.0"
-dependencies = [
- "anyhow",
- "approx 0.5.1",
- "mesh-io",
- "mesh-printability",
- "mesh-types",
-]
-
-[[package]]
-name = "example-mesh-printability-trapped-volume"
-version = "1.0.0"
-dependencies = [
- "anyhow",
- "approx 0.5.1",
- "mesh-io",
- "mesh-printability",
- "mesh-types",
-]
-
-[[package]]
 name = "example-ml-6dof-cem-linear"
 version = "1.0.0"
 dependencies = [
@@ -5525,6 +5438,18 @@ dependencies = [
  "sim-bevy",
  "sim-core",
  "sim-mjcf",
+]
+
+[[package]]
+name = "example-printability-stress-test"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "mesh-io",
+ "mesh-printability",
+ "mesh-types",
+ "nalgebra 0.34.2",
 ]
 
 [[package]]

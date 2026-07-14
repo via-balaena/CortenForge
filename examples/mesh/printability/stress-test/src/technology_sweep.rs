@@ -117,16 +117,16 @@
 //! ## How to run
 //!
 //! ```text
-//! cargo run -p example-mesh-printability-technology-sweep --release
+//! cargo run -p example-printability-stress-test --release
 //! ```
 //!
 //! `--release` is required: SLA's voxel grid is `~ 1000 × 800 × 600 ≈
 //! 480 MB` (well under the §6.3 1 GB cap, but heavy in debug). Output
-//! is written to `examples/mesh/printability-technology-sweep/out/`:
+//! is written to `examples/mesh/printability/stress-test/out/technology_sweep/`:
 //!
-//! - `out/mesh.ply` — 16-vertex, 24-triangle ASCII PLY of the fixture.
-//! - `out/issues_fdm.ply`, `out/issues_sla.ply`, `out/issues_sls.ply`,
-//!   `out/issues_mjf.ply` — vertex-only ASCII PLYs of per-tech region
+//! - `out/technology_sweep/mesh.ply` — 16-vertex, 24-triangle ASCII PLY of the fixture.
+//! - `out/technology_sweep/issues_fdm.ply`, `out/technology_sweep/issues_sla.ply`, `out/technology_sweep/issues_sls.ply`,
+//!   `out/technology_sweep/issues_mjf.ply` — vertex-only ASCII PLYs of per-tech region
 //!   centroids. Same mesh, four different point clouds — the visual
 //!   payoff.
 //!
@@ -134,8 +134,8 @@
 //! If you do want to eyeball the artifacts, run cf-view on each PLY
 //! separately:
 //! ```text
-//! cargo run -p cf-viewer --release -- examples/mesh/printability-technology-sweep/out/mesh.ply
-//! cargo run -p cf-viewer --release -- examples/mesh/printability-technology-sweep/out/issues_fdm.ply
+//! cargo run -p cf-viewer --release -- examples/mesh/printability/stress-test/out/technology_sweep/mesh.ply
+//! cargo run -p cf-viewer --release -- examples/mesh/printability/stress-test/out/technology_sweep/issues_fdm.ply
 //! ```
 //! cf-view v1 ships single-file rendering; multi-file overlay is
 //! deferred. See `README.md`.
@@ -176,9 +176,10 @@ const INNER_Z_MAX: f64 = 14.6;
 /// band per `classify_thin_wall_severity` (validation.rs:750).
 const TOP_WALL_THICKNESS: f64 = OUTER_Z - INNER_Z_MAX; // = 0.4 mm
 
-/// Analytical cavity volume. Mathematically `22 × 17 × 13.1 = 4900.4`,
-/// but `14.6` is not bit-exact in IEEE-754 f64 (`14.6 - 1.5` evaluates
-/// to `13.0999...`), so this constant is `≈ 4899.4 mm³`. The voxel-
+/// Analytical cavity volume. Mathematically `22 × 17 × 13.1 = 4899.4`;
+/// `14.6` is not bit-exact in IEEE-754 f64 (`14.6 - 1.5` evaluates to
+/// `13.0999...`), so the computed constant drifts by `< 0.1 mm³` and
+/// prints as `≈ 4899.4 mm³`. The voxel-
 /// discretized region must lie within `± TRAPPED_VOLUME_REL_TOL` of
 /// the f64 value; for axis-aligned cavities aligned to voxel edges the
 /// discretization is bit-exact at this f64 value.
@@ -306,11 +307,11 @@ fn voxel_size(config: &PrinterConfig) -> f64 {
 // emission gives main() its length; the pedagogical flow is clearest
 // when it reads top-to-bottom in one function (row #21 precedent).
 #[allow(clippy::similar_names, clippy::too_many_lines)]
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     let mesh = build_hollow_box();
     verify_fixture_geometry(&mesh);
 
-    println!("==== mesh-printability-technology-sweep ====");
+    println!("==== printability: technology-sweep ====");
     println!();
     println!(
         "input  : {}-vertex, {}-triangle hollow box",
@@ -347,7 +348,9 @@ fn main() -> Result<()> {
     verify_shared_anchors(&mjf_validation, &mjf, "MJF");
     verify_mjf(&mjf_validation);
 
-    let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("out");
+    let out_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("out")
+        .join("technology_sweep");
     std::fs::create_dir_all(&out_dir)?;
     let mesh_path = out_dir.join("mesh.ply");
     save_ply(&mesh, &mesh_path, false)?;
@@ -360,24 +363,24 @@ fn main() -> Result<()> {
     println!();
     println!("artifacts:");
     println!(
-        "  out/mesh.ply        : {}v, {}f (ASCII)",
+        "  out/technology_sweep/mesh.ply        : {}v, {}f (ASCII)",
         mesh.vertices.len(),
         mesh.faces.len(),
     );
     println!(
-        "  out/issues_fdm.ply  : {} centroid point(s) (ASCII, vertex-only)",
+        "  out/technology_sweep/issues_fdm.ply  : {} centroid point(s) (ASCII, vertex-only)",
         issue_centroid_count(&fdm_validation),
     );
     println!(
-        "  out/issues_sla.ply  : {} centroid point(s) (ASCII, vertex-only)",
+        "  out/technology_sweep/issues_sla.ply  : {} centroid point(s) (ASCII, vertex-only)",
         issue_centroid_count(&sla_validation),
     );
     println!(
-        "  out/issues_sls.ply  : {} centroid point(s) (ASCII, vertex-only)",
+        "  out/technology_sweep/issues_sls.ply  : {} centroid point(s) (ASCII, vertex-only)",
         issue_centroid_count(&sls_validation),
     );
     println!(
-        "  out/issues_mjf.ply  : {} centroid point(s) (ASCII, vertex-only)",
+        "  out/technology_sweep/issues_mjf.ply  : {} centroid point(s) (ASCII, vertex-only)",
         issue_centroid_count(&mjf_validation),
     );
     println!();
@@ -659,8 +662,8 @@ fn verify_shared_anchors(v: &PrintValidation, config: &PrinterConfig, label: &st
     let region = &v.trapped_volumes[0];
 
     // (2) Voxel-discretized cavity volume within ± 10 % of analytical
-    // `22 × 17 × 13.1 ≈ 4899.4 mm³` (f64; mathematical 4900.4 — see
-    // `ANALYTICAL_CAVITY_VOLUME`'s doc for the IEEE-754 drift). For
+    // `22 × 17 × 13.1 = 4899.4 mm³` (the computed f64 const drifts by
+    // `< 0.1 mm³` — see `ANALYTICAL_CAVITY_VOLUME`'s doc). For
     // axis-aligned cube cavities aligned to voxel edges the
     // discretization is bit-exact; the 10 % band is cross-platform
     // headroom per §9.6.
@@ -690,17 +693,21 @@ fn verify_shared_anchors(v: &PrintValidation, config: &PrinterConfig, label: &st
     // mesh is watertight and the voxel-grid memory budget sits below
     // the 1 GB cap on every tech (FDM ~ 8 MB, SLA ~ 480 MB,
     // SLS ~ 60 MB, MJF ~ 117 MB at the 25×20×15 outer extents).
-    let trapped_skipped = v
+    // Global no-skip guard (restores the former thin-wall example's
+    // `skipped_count == 0` over ALL DetectorSkipped types): on a
+    // watertight, consistently-wound hollow box no detector's
+    // preconditions fail — TrappedVolume stays within the 1 GB voxel
+    // cap and every other detector runs. A spurious skip of ANY type
+    // (not just TrappedVolume) must fail loudly.
+    let skipped_count = v
         .issues
         .iter()
-        .filter(|i| {
-            i.issue_type == PrintIssueType::DetectorSkipped
-                && i.description.contains("TrappedVolume")
-        })
+        .filter(|i| i.issue_type == PrintIssueType::DetectorSkipped)
         .count();
     assert_eq!(
-        trapped_skipped, 0,
-        "{label}: TrappedVolume detector must not skip on a watertight 25×20×15 hollow box",
+        skipped_count, 0,
+        "{label}: no detector must skip on a watertight 25×20×15 hollow box \
+         (TrappedVolume within the 1 GB voxel cap; all others precondition-satisfied)",
     );
 
     // (6) `is_printable() == false` on every tech — the load-bearing
@@ -898,7 +905,7 @@ fn save_issue_centroids(v: &PrintValidation, path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Number of region centroids written to `out/issues_<tech>.ply`.
+/// Number of region centroids written to `out/technology_sweep/issues_<tech>.ply`.
 const fn issue_centroid_count(v: &PrintValidation) -> usize {
     v.thin_walls.len() + v.overhangs.len() + v.support_regions.len() + v.trapped_volumes.len()
 }

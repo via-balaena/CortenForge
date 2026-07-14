@@ -106,10 +106,10 @@
 //! ## How to run
 //!
 //! ```text
-//! cargo run -p example-mesh-printability-orientation --release
+//! cargo run -p example-printability-stress-test --release
 //! ```
 //!
-//! Output written to `examples/mesh/printability-orientation/out/`. Open
+//! Output written to `examples/mesh/printability/stress-test/out/orientation/`. Open
 //! `mesh_original.ply` and `mesh_rotated.ply` side-by-side in two
 //! cf-view windows for the visuals pass — see the README for the
 //! `--up +Z` recommendation (cf-view's `+Z` default already matches
@@ -321,12 +321,12 @@ const DOWNHILL_HALF_WIDTH_DEG: f64 = 33.75;
 // hide the run-by-run flow that the visuals-pass reader walks down. Each Run
 // block stays inline (validate → print → assert) for top-to-bottom readability.
 #[allow(clippy::too_many_lines)]
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     // ─── Fixture: leaning cylinder, post-`place_on_build_plate` ──────────
     let cylinder_pre_place = build_leaning_cylinder();
     let mesh = place_on_build_plate(&cylinder_pre_place);
 
-    println!("==== mesh-printability-orientation ====");
+    println!("==== printability: orientation ====");
     println!();
     let axis = axis_unit();
     println!(
@@ -546,7 +546,9 @@ fn main() -> Result<()> {
     println!();
 
     // ─── Save 5 PLYs (anchor support for visuals-pass) ───────────────────
-    let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("out");
+    let out_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("out")
+        .join("orientation");
     std::fs::create_dir_all(&out_dir)?;
     save_ply(&mesh, out_dir.join("mesh_original.ply"), false)?;
     save_ply(&mesh_rotated, out_dir.join("mesh_rotated.ply"), false)?;
@@ -556,25 +558,25 @@ fn main() -> Result<()> {
 
     println!("artifacts:");
     println!(
-        "  out/mesh_original.ply : {}v, {}f (ASCII; leaning cylinder, post-place_on_build_plate)",
+        "  out/orientation/mesh_original.ply : {}v, {}f (ASCII; leaning cylinder, post-place_on_build_plate)",
         mesh.vertices.len(),
         mesh.faces.len(),
     );
     println!(
-        "  out/mesh_rotated.ply  : {}v, {}f (ASCII; manual R_Y(-60°) rotation + place_on_build_plate)",
+        "  out/orientation/mesh_rotated.ply  : {}v, {}f (ASCII; manual R_Y(-60°) rotation + place_on_build_plate)",
         mesh_rotated.vertices.len(),
         mesh_rotated.faces.len(),
     );
     println!(
-        "  out/issues_run1.ply   : {} centroid point(s) (ASCII, vertex-only)",
+        "  out/orientation/issues_run1.ply   : {} centroid point(s) (ASCII, vertex-only)",
         validation_run1.overhangs.len(),
     );
     println!(
-        "  out/issues_run2.ply   : {} centroid point(s) (ASCII, vertex-only; expected empty)",
+        "  out/orientation/issues_run2.ply   : {} centroid point(s) (ASCII, vertex-only; expected empty)",
         validation_run2.overhangs.len(),
     );
     println!(
-        "  out/issues_run3.ply   : {} centroid point(s) (ASCII, vertex-only; expected empty)",
+        "  out/orientation/issues_run3.ply   : {} centroid point(s) (ASCII, vertex-only; expected empty)",
         validation_run3.overhangs.len(),
     );
     println!();
@@ -585,7 +587,7 @@ fn main() -> Result<()> {
 
 /// Hand-author a CCW-from-outside cylinder along the `(axis, perp_u,
 /// perp_v)` right-handed basis (`perp_u × perp_v = axis`). Pattern
-/// duplicated from row #17 (`printability-self-intersecting`) per
+/// duplicated from the `self_intersecting` module (row #17) per
 /// `feedback_simplify_examples` (no shared-fixture-helpers; per-example
 /// duplication).
 ///

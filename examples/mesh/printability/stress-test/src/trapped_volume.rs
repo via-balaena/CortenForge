@@ -4,8 +4,8 @@
 //! spherical cavity at its centre — outer cube (12 outward-wound tris)
 //! plus an interior UV-tessellated sphere shell (32 segs × 16 stacks =
 //! 960 inward-wound tris) — and validates it under all four
-//! `PrinterConfig::*_default` technologies. Saves `out/mesh.ply` (the
-//! input fixture) and `out/issues.ply` (centroids from the FDM
+//! `PrinterConfig::*_default` technologies. Saves `out/trapped_volume/mesh.ply` (the
+//! input fixture) and `out/trapped_volume/issues.ply` (centroids from the FDM
 //! iteration, the richest cluster of points).
 //!
 //! ## Why a sealed sphere cavity inside a solid cube
@@ -87,10 +87,10 @@
 //! ## How to run
 //!
 //! ```text
-//! cargo run -p example-mesh-printability-trapped-volume --release
+//! cargo run -p example-printability-stress-test --release
 //! ```
 //!
-//! Output written to `examples/mesh/printability-trapped-volume/out/`.
+//! Output written to `examples/mesh/printability/stress-test/out/trapped_volume/`.
 //! Open `mesh.ply` and `issues.ply` in cf-view for the visuals pass —
 //! see the README's viewer callout for notes on the inner sphere's
 //! REVERSED winding (cf-view's two-sided PBR materials make the cavity
@@ -180,10 +180,10 @@ fn analytical_sphere_volume() -> f64 {
 // renaming to e.g. `sla_v` / `sls_v` would obscure the per-tech intent and
 // trade one similar-pair for another.
 #[allow(clippy::similar_names)]
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     let mesh = build_cube_with_sphere_cavity();
 
-    println!("==== mesh-printability-trapped-volume ====");
+    println!("==== printability: trapped-volume ====");
     println!();
     println!(
         "input  : {}-vertex, {}-triangle solid cube with sealed sphere cavity",
@@ -219,7 +219,9 @@ fn main() -> Result<()> {
     verify_shared_anchors(&mjf_validation, &mjf, "MJF");
     verify_mjf(&mjf_validation);
 
-    let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("out");
+    let out_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("out")
+        .join("trapped_volume");
     std::fs::create_dir_all(&out_dir)?;
     let mesh_path = out_dir.join("mesh.ply");
     let issues_path = out_dir.join("issues.ply");
@@ -231,12 +233,12 @@ fn main() -> Result<()> {
     println!();
     println!("artifacts:");
     println!(
-        "  out/mesh.ply   : {}v, {}f (ASCII)",
+        "  out/trapped_volume/mesh.ply   : {}v, {}f (ASCII)",
         mesh.vertices.len(),
         mesh.faces.len(),
     );
     println!(
-        "  out/issues.ply : {} centroid point(s) (ASCII, vertex-only; FDM iteration)",
+        "  out/trapped_volume/issues.ply : {} centroid point(s) (ASCII, vertex-only; FDM iteration)",
         issue_centroid_count(&fdm_validation),
     );
     println!();
@@ -618,8 +620,8 @@ fn assert_trapped_severity(v: &PrintValidation, expected: IssueSeverity, label: 
 ///
 /// Aggregates `thin_walls` + `overhangs` + `support_regions` +
 /// `trapped_volumes` — the populated region collections after the v0.8
-/// detector arc. `LongBridge` is intentionally OMITTED (per row #14b's
-/// printability-thin-wall precedent): its centroid is the cluster-bbox
+/// detector arc. `LongBridge` is intentionally OMITTED (per the row #14b
+/// precedent): its centroid is the cluster-bbox
 /// midpoint, not a per-region "issue location" point in the same sense
 /// as the other detectors. For this fixture (sealed cavity, no
 /// downward-facing faces with extent ≥ `max_bridge_span`), `LongBridge`
@@ -635,7 +637,7 @@ fn save_issue_centroids(v: &PrintValidation, path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Number of region centroids written to `out/issues.ply`.
+/// Number of region centroids written to `out/trapped_volume/issues.ply`.
 const fn issue_centroid_count(v: &PrintValidation) -> usize {
     v.thin_walls.len() + v.overhangs.len() + v.support_regions.len() + v.trapped_volumes.len()
 }

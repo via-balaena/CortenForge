@@ -6,8 +6,8 @@
 //! shells overlap geometrically near the origin (a 3-D plus-sign cross)
 //! but share no vertices, edges, or faces; mesh-repair flags every
 //! triangle pair where one cylinder's lateral surface punches through
-//! the other's. Saves `out/mesh.ply` (the input fixture) and
-//! `out/issues.ply` (a vertex-only point cloud at each region's
+//! the other's. Saves `out/self_intersecting/mesh.ply` (the input fixture) and
+//! `out/self_intersecting/issues.ply` (a vertex-only point cloud at each region's
 //! `approximate_location`, plus the overhang co-flag centroids).
 //!
 //! ## Why two interpenetrating cylinders
@@ -113,10 +113,10 @@
 //! ## How to run
 //!
 //! ```text
-//! cargo run -p example-mesh-printability-self-intersecting --release
+//! cargo run -p example-printability-stress-test --release
 //! ```
 //!
-//! Output written to `examples/mesh/printability-self-intersecting/out/`.
+//! Output written to `examples/mesh/printability/stress-test/out/self_intersecting/`.
 //! Open `mesh.ply` and `issues.ply` in cf-view for the visuals pass —
 //! see the README's viewer callout for the WYSIWYP rendering of the
 //! cross zone (z-fighting along the four interpenetration rings is
@@ -172,7 +172,7 @@ const LOCATION_TOL: f64 = RADIUS;
 /// conditional.
 const MAX_REPORTED: usize = 100;
 
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     // ─── Fixture: two interpenetrating cylinders (no boolean union) ──────
     let cylinder_a = make_cylinder(
         Point3::origin(),
@@ -194,7 +194,7 @@ fn main() -> Result<()> {
     );
     let assembly = place_on_build_plate(&concat(&cylinder_a, &cylinder_b));
 
-    println!("==== mesh-printability-self-intersecting ====");
+    println!("==== printability: self-intersecting ====");
     println!();
     println!(
         "input  : 2 interpenetrating cylinders ({SEGMENTS}-segment lateral, {LENGTH} mm × {RADIUS} mm radius each)",
@@ -248,7 +248,9 @@ fn main() -> Result<()> {
     println!("OK — single-cylinder regression: 0 SelfIntersecting regions");
 
     // ─── Artifacts ───────────────────────────────────────────────────────
-    let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("out");
+    let out_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("out")
+        .join("self_intersecting");
     std::fs::create_dir_all(&out_dir)?;
     let mesh_path = out_dir.join("mesh.ply");
     let issues_path = out_dir.join("issues.ply");
@@ -258,12 +260,12 @@ fn main() -> Result<()> {
     println!();
     println!("artifacts:");
     println!(
-        "  out/mesh.ply   : {}v, {}f (ASCII)",
+        "  out/self_intersecting/mesh.ply   : {}v, {}f (ASCII)",
         assembly.vertices.len(),
         assembly.faces.len(),
     );
     println!(
-        "  out/issues.ply : {} centroid point(s) (ASCII, vertex-only; \
+        "  out/self_intersecting/issues.ply : {} centroid point(s) (ASCII, vertex-only; \
          {} self-intersect locations + {} overhang centroids)",
         issue_centroid_count(&validation),
         validation.self_intersecting.len(),
@@ -549,7 +551,7 @@ fn save_issue_centroids(v: &PrintValidation, path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Number of region centroids written to `out/issues.ply`.
+/// Number of region centroids written to `out/self_intersecting/issues.ply`.
 const fn issue_centroid_count(v: &PrintValidation) -> usize {
     v.self_intersecting.len() + v.overhangs.len()
 }

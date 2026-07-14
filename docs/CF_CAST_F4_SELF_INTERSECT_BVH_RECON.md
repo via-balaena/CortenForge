@@ -278,7 +278,7 @@ Three load-bearing tests at S1:
 
 1. **`self_intersect_bvh_matches_reference_o_n_squared`** — on a
    fixture with known self-intersections (e.g., the existing
-   `examples/mesh/printability-self-intersecting` test mesh +
+   `examples/mesh/printability/stress-test` (module `self_intersecting`) test mesh +
    the `make_box_with_pin_intersection` cf-cast-style fixture),
    run both `detect_self_intersections` (BVH) and
    `detect_self_intersections_reference` (O(n²), preserved as
@@ -340,7 +340,7 @@ guarantee as F4-S1's thin-walls test.
   result struct.
 - `mesh-repair-benches/benches/repair_benchmarks.rs` — benchmark
   suite. Same signature. Will measure the speedup automatically.
-- `examples/mesh/printability-self-intersecting/src/main.rs`
+- `examples/mesh/printability/stress-test/src/self_intersecting.rs`
   — workspace example. Same signature.
 
 ## §S-6 Workshop iter-3 unblock criteria
