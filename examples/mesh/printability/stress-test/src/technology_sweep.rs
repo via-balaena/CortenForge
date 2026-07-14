@@ -693,17 +693,21 @@ fn verify_shared_anchors(v: &PrintValidation, config: &PrinterConfig, label: &st
     // mesh is watertight and the voxel-grid memory budget sits below
     // the 1 GB cap on every tech (FDM ~ 8 MB, SLA ~ 480 MB,
     // SLS ~ 60 MB, MJF ~ 117 MB at the 25×20×15 outer extents).
-    let trapped_skipped = v
+    // Global no-skip guard (restores the former thin-wall example's
+    // `skipped_count == 0` over ALL DetectorSkipped types): on a
+    // watertight, consistently-wound hollow box no detector's
+    // preconditions fail — TrappedVolume stays within the 1 GB voxel
+    // cap and every other detector runs. A spurious skip of ANY type
+    // (not just TrappedVolume) must fail loudly.
+    let skipped_count = v
         .issues
         .iter()
-        .filter(|i| {
-            i.issue_type == PrintIssueType::DetectorSkipped
-                && i.description.contains("TrappedVolume")
-        })
+        .filter(|i| i.issue_type == PrintIssueType::DetectorSkipped)
         .count();
     assert_eq!(
-        trapped_skipped, 0,
-        "{label}: TrappedVolume detector must not skip on a watertight 25×20×15 hollow box",
+        skipped_count, 0,
+        "{label}: no detector must skip on a watertight 25×20×15 hollow box \
+         (TrappedVolume within the 1 GB voxel cap; all others precondition-satisfied)",
     );
 
     // (6) `is_printable() == false` on every tech — the load-bearing

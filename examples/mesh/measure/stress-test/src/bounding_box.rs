@@ -127,7 +127,7 @@ fn rot_coef() -> f64 {
 ///
 /// Cube A: 8 corners of `[0, 10] × [-5, 5] × [0, 10]` (y-centered on
 /// origin), indexed bottom-CCW then top-CCW (matches the
-/// the `showcase` module's `build_body` template).
+/// `showcase` module's `build_body` template).
 ///
 /// Cube B: local 20×10×10 brick `[−10, 10] × [−5, 5] × [−5, 5]`
 /// rotated by `R(z, 45°)` then translated to `(25, 0, 5)`. The
