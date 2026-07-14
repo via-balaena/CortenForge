@@ -400,8 +400,10 @@ members = [
     # Scalar-field domain: layered-scalar-field + blended-scalar-field folded
     # into one stress-test (rows 8-9) — one domain -> one validation superset.
     "examples/sim-soft/scalar-field/stress-test",
-    "examples/sim-soft/bonded-bilayer-beam",
-    "examples/sim-soft/concentric-lame-shells",
+    # Bonded multi-material domain: bonded-bilayer-beam + concentric-lame-shells
+    # folded into one stress-test (rows 10-11) — one domain -> one validation
+    # superset (solver-driven multi-material FEM vs closed-form elasticity).
+    "examples/sim-soft/bonded/stress-test",
     "examples/sim-soft/soft-drop-on-plane",
     "examples/sim-soft/hertz-sphere-plane",
     "examples/sim-soft/compressive-block",

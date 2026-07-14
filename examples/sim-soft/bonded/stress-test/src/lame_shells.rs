@@ -1,4 +1,4 @@
-//! concentric-lame-shells — Phase 4 IV-5 user-facing wrap: three-shell
+//! lame-shells — Phase 4 IV-5 user-facing wrap: three-shell
 //! concentric hollow silicone sphere meshed via the BCC + Labelle-Shewchuk
 //! pipeline, internal pressure on the cavity wall, fixed Dirichlet pin on
 //! the outer surface, with closed-form piecewise-Lamé radial-displacement
@@ -1685,7 +1685,7 @@ fn print_summary(
     let middle_rel_err = (middle_obs - middle_ana).abs() / middle_ana.abs();
     let outer_rel_err = (outer_obs - outer_ana).abs() / outer_ana.abs();
 
-    println!("==== concentric-lame-shells ====");
+    println!("==== lame_shells ====");
     println!();
     println!("Scene: SoftScene::layered_silicone_sphere");
     println!(
@@ -1849,7 +1849,7 @@ fn print_summary(
 // main
 // =============================================================================
 
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     verify_geometry_invariants();
 
     let snapshot = run_scene(three_shell_field());

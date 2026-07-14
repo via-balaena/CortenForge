@@ -1,4 +1,4 @@
-//! bonded-bilayer-beam — Phase 4 IV-3 user-facing wrap: shared-vertex
+//! bilayer-beam — Phase 4 IV-3 user-facing wrap: shared-vertex
 //! multi-material cantilever beam under tip load, with EB-composite
 //! analytic comparison + uniform-baseline asymmetry gate.
 //!
@@ -1309,7 +1309,7 @@ fn print_summary(
 ) {
     let yslab_total = n_lower_yslab + n_upper_yslab;
     let rel_err_eb = (tip_disp_bilayer - analytic_eb).abs() / analytic_eb;
-    println!("==== bonded-bilayer-beam ====");
+    println!("==== bilayer_beam ====");
     println!();
     println!("Scene: HandBuiltTetMesh::cantilever_bilayer_beam");
     println!("  geometry             : (L, b, H) = ({LENGTH}, {BREADTH}, {HEIGHT}) m");
@@ -1431,7 +1431,7 @@ fn print_summary(
 // main
 // =============================================================================
 
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     verify_geometry_invariants();
 
     // Bilayer scene — the row's primary solver run.
