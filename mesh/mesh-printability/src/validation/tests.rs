@@ -2965,21 +2965,7 @@ fn test_small_feature_floating_triangle_detected() {
     // 100 mm cube + isolated 0.1 mm triangle. min_feature_size = 0.4
     // → triangle flags as Warning (0.1 < 0.4 / 2 = 0.2); cube does
     // not (max_extent 100 ≫ 0.4).
-    let mut vertices: Vec<Point3<f64>> = Vec::new();
-    let mut faces: Vec<[u32; 3]> = Vec::new();
-    append_unit_cube_at(&mut vertices, &mut faces, Point3::new(0.0, 0.0, 0.0), 100.0);
-    // Append the floating triangle at +X = 200 mm (well outside the
-    // cube) so the two are not edge-adjacent.
-    // Cast as in `append_unit_cube_at`.
-    let base = vertices.len() as u32;
-    vertices.extend_from_slice(&[
-        Point3::new(200.0, 0.0, 0.0),
-        Point3::new(200.1, 0.0, 0.0),
-        Point3::new(200.0, 0.1, 0.0),
-    ]);
-    faces.push([base, base + 1, base + 2]);
-
-    let mesh = IndexedMesh::from_parts(vertices, faces);
+    let (mesh, _tri) = make_cube_plus_floating_triangle();
     let mut config = PrinterConfig::fdm_default();
     config.min_feature_size = 0.4;
     let result = validate_for_printing(&mesh, &config)
@@ -3279,4 +3265,254 @@ fn test_small_feature_sort_stable() {
     // Lowest-face-idx fragment first per §4.4.
     assert_eq!(r1.small_features[0].faces, vec![0]);
     assert_eq!(r1.small_features[1].faces, vec![1]);
+}
+
+// =============================================================================
+// Gap-scan backfill — behaviors previously guarded ONLY by the
+// `example-printability-stress-test` modules, promoted to CI-gated lib
+// tests (the example asserts remain as the secondary net). Audit source:
+// the printability fold's example→guard gap-scan.
+// =============================================================================
+
+/// 100 mm cube + an isolated 0.1 mm floating triangle at x = 200 mm (well
+/// outside the cube, so the two are not edge-adjacent). Under
+/// `min_feature_size = 0.4` the triangle flags as a `SmallFeature`
+/// Warning and the cube does not. Returns the mesh + the triangle's 3 vertices
+/// (for centroid assertions). Shared by the two floating-triangle tests.
+fn make_cube_plus_floating_triangle() -> (IndexedMesh, [Point3<f64>; 3]) {
+    let mut vertices: Vec<Point3<f64>> = Vec::new();
+    let mut faces: Vec<[u32; 3]> = Vec::new();
+    append_unit_cube_at(&mut vertices, &mut faces, Point3::new(0.0, 0.0, 0.0), 100.0);
+    let base = u32::try_from(vertices.len()).expect("vertex count fits in u32");
+    let tri = [
+        Point3::new(200.0, 0.0, 0.0),
+        Point3::new(200.1, 0.0, 0.0),
+        Point3::new(200.0, 0.1, 0.0),
+    ];
+    vertices.extend_from_slice(&tri);
+    faces.push([base, base + 1, base + 2]);
+    (IndexedMesh::from_parts(vertices, faces), tri)
+}
+
+#[test]
+fn test_thin_wall_cross_technology_severity_matrix() {
+    // Gap #1: the headline "one part, four verdicts" behavior. A FIXED
+    // 0.45 mm wall is steered into a DIFFERENT severity band by each
+    // technology's `min_wall_thickness`, on the SAME geometry. Every
+    // other ThinWall test runs under `fdm_default` (min_wall = 1.0) and
+    // varies the slab thickness; nothing else drives the detector through
+    // a non-FDM `PrinterConfig`, so the per-tech config path + the
+    // divergence itself were example-only.
+    //
+    // 0.45 mm is a clean INTERIOR point for every tech's bands — at least
+    // 0.05 mm from each threshold, far outside the ±1e-6 ray-offset FP
+    // window — so no verdict sits on a strict-`<` boundary knife-edge
+    // (the strict-`<` boundary itself is guarded by
+    // test_thin_wall_borderline_no_issue):
+    //   FDM min_wall 1.0: 0.45 < 0.5 = min_wall/2  → Critical.
+    //   SLA min_wall 0.4: 0.45 ≥ 0.4               → not flagged.
+    //   SLS min_wall 0.7: 0.35 ≤ 0.45 < 0.7        → Warning.
+    //   MJF min_wall 0.5: 0.25 ≤ 0.45 < 0.5        → Warning.
+    let mesh = make_thin_slab(0.45);
+    let matrix = [
+        (
+            PrinterConfig::fdm_default(),
+            "FDM",
+            Some(IssueSeverity::Critical),
+        ),
+        (PrinterConfig::sla_default(), "SLA", None),
+        (
+            PrinterConfig::sls_default(),
+            "SLS",
+            Some(IssueSeverity::Warning),
+        ),
+        (
+            PrinterConfig::mjf_default(),
+            "MJF",
+            Some(IssueSeverity::Warning),
+        ),
+    ];
+
+    for (config, tech, want) in matrix {
+        let result = validate_for_printing(&mesh, &config)
+            .unwrap_or_else(|e| panic!("validation should succeed under {tech}: {e}"));
+        let severities: Vec<IssueSeverity> = result
+            .issues
+            .iter()
+            .filter(|i| i.issue_type == PrintIssueType::ThinWall)
+            .map(|i| i.severity)
+            .collect();
+        match want {
+            None => assert!(
+                result.thin_walls.is_empty() && severities.is_empty(),
+                "{tech}: 0.45 mm ≥ min_wall must NOT flag ThinWall; got {severities:?}"
+            ),
+            Some(sev) => {
+                assert!(
+                    !result.thin_walls.is_empty(),
+                    "{tech}: 0.45 mm wall below min_wall must flag ThinWall"
+                );
+                assert!(
+                    !severities.is_empty() && severities.iter().all(|s| *s == sev),
+                    "{tech}: every ThinWall issue must be {sev:?} on the 0.45 mm wall; \
+                     got {severities:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_small_feature_region_center_is_component_vertex_mean() {
+    // Gap #2: the DETECTOR-COMPUTED region centroid. `regions.rs` only
+    // exercises the `SmallFeatureRegion::new` constructor; nothing
+    // asserts `small_features[*].center` as produced by
+    // `validate_for_printing`, so a component-centroid regression would
+    // pass the whole suite. Shares the floating-triangle fixture with
+    // test_small_feature_floating_triangle_detected.
+    let (mesh, tri) = make_cube_plus_floating_triangle();
+    let mut config = PrinterConfig::fdm_default();
+    config.min_feature_size = 0.4;
+    let result = validate_for_printing(&mesh, &config).expect("validation must succeed");
+
+    assert_eq!(
+        result.small_features.len(),
+        1,
+        "only the 0.1 mm triangle flags"
+    );
+    let center = result.small_features[0].center;
+    let mean_x = (tri[0].x + tri[1].x + tri[2].x) / 3.0;
+    let mean_y = (tri[0].y + tri[1].y + tri[2].y) / 3.0;
+    let mean_z = (tri[0].z + tri[1].z + tri[2].z) / 3.0;
+    assert!(
+        (center.x - mean_x).abs() < 1e-9
+            && (center.y - mean_y).abs() < 1e-9
+            && (center.z - mean_z).abs() < 1e-9,
+        "SmallFeature centroid must be the component vertex mean ({mean_x}, {mean_y}, {mean_z}); \
+         got ({}, {}, {})",
+        center.x,
+        center.y,
+        center.z
+    );
+}
+
+#[test]
+fn test_small_feature_and_thin_wall_co_flag_blocks_printability() {
+    // Gap #3: cross-detector convergence. A sub-`min_feature`,
+    // sub-`min_wall` isolated solid raises BOTH a SmallFeature Warning
+    // AND a ThinWall Critical — and the Critical is what drives
+    // `is_printable() == false`. Lib fixtures deliberately isolate one
+    // detector; `stress_cross_unit_conversion_full_pipeline` notes the
+    // co-flag but explicitly declines to assert `thin_walls`.
+    //
+    // A 0.3 mm watertight cube: max_extent 0.3 < min_feature/2 = 0.4 →
+    // SmallFeature Warning; opposite walls 0.3 mm apart < min_wall/2 =
+    // 0.5 → ThinWall Critical.
+    let mesh = make_unit_cube_at(Point3::new(0.0, 0.0, 0.0), 0.3);
+
+    let mut config = PrinterConfig::fdm_default(); // min_wall 1.0
+    config.min_feature_size = 0.8;
+    let result = validate_for_printing(&mesh, &config).expect("validation must succeed");
+
+    let small_warning = result.issues.iter().any(|i| {
+        i.issue_type == PrintIssueType::SmallFeature && i.severity == IssueSeverity::Warning
+    });
+    let thin_critical = result
+        .issues
+        .iter()
+        .any(|i| i.issue_type == PrintIssueType::ThinWall && i.severity == IssueSeverity::Critical);
+    assert!(
+        small_warning,
+        "0.3 mm feature < 0.8/2 = 0.4 → SmallFeature Warning"
+    );
+    assert!(
+        thin_critical,
+        "0.3 mm wall < 1.0/2 = 0.5 → ThinWall Critical"
+    );
+    assert!(
+        !result.is_printable(),
+        "the ThinWall Critical co-flag must block printability (SmallFeature alone is advisory)"
+    );
+}
+
+#[test]
+fn test_long_bridge_endpoint_coordinates_span_the_bridge_axis() {
+    // Gap #4: the back-projected `start`/`end` endpoint COORDINATES.
+    // Lib tests assert `span` and `start.x` *ordering* but never the
+    // endpoint values, so a back-projection bug (wrong axis, wrong
+    // perpendicular-midpoint, wrong z-elevation) would slip through.
+    // Fixture: 20×5 slab bottom at z = 10, span along X.
+    let mesh = make_closed_bridge_fixture(20.0, 5.0, 1.5, 10.0);
+    let result = validate_for_printing(&mesh, &PrinterConfig::fdm_default())
+        .expect("validation should succeed");
+
+    assert_eq!(result.long_bridges.len(), 1);
+    let region = &result.long_bridges[0];
+    // Pin the actual endpoint COORDINATES, not just |Δx| == span (which
+    // holds by construction: endpoints = center ∓ axis·half_span). The
+    // slab bottom spans x ∈ [0, 20] at the perpendicular midpoint
+    // y = 2.5 (mid of [0, 5]), on the flagged bottom-face plane z = 10.
+    // A wrong-perpendicular-midpoint or wrong-long-axis-center
+    // back-projection shifts these values and is caught here.
+    let x_lo = region.start.x.min(region.end.x);
+    let x_hi = region.start.x.max(region.end.x);
+    assert!(
+        (x_lo - 0.0).abs() < 1e-6,
+        "bridge low endpoint x = 0; got {x_lo}"
+    );
+    assert!(
+        (x_hi - 20.0).abs() < 1e-6,
+        "bridge high endpoint x = 20 (slab x-extent); got {x_hi}"
+    );
+    assert!(
+        (region.start.y - 2.5).abs() < 1e-6 && (region.end.y - 2.5).abs() < 1e-6,
+        "both endpoints at perpendicular midpoint y = 2.5; got start.y = {}, end.y = {}",
+        region.start.y,
+        region.end.y
+    );
+    assert!(
+        (region.start.z - 10.0).abs() < 1e-6 && (region.end.z - 10.0).abs() < 1e-6,
+        "endpoints on the bridge's z = 10 plane; got start.z = {}, end.z = {}",
+        region.start.z,
+        region.end.z
+    );
+    assert!(
+        (region.span - 20.0).abs() < 1e-6,
+        "span = 20 mm; got {}",
+        region.span
+    );
+}
+
+#[test]
+fn test_overhang_area_equivalent_across_mesh_and_up_vector_rotation() {
+    // Gap #5 (Gap L, area level): flagging the same physical overhang
+    // two ways — rotating the MESH (-90° about X, default +Z up) vs
+    // rotating the VALIDATOR's up-vector (+Y up on the original mesh) —
+    // must yield the same overhang AREA, not merely the same region
+    // count (the count-level equivalence is guarded by
+    // test_overhang_with_y_up_orientation). This is the mesh-rotation ≡
+    // up-vector-rotation invariant the orientation example demonstrates
+    // on a leaning cylinder.
+    let mesh_z = make_overhang_fixture(std::f64::consts::FRAC_PI_2, 5.0);
+    let mesh_y = rotate_neg_90_about_x(&mesh_z);
+
+    let result_z = validate_for_printing(&mesh_z, &PrinterConfig::fdm_default())
+        .expect("validation should succeed for +Z-up roof");
+    let result_y = validate_for_printing(
+        &mesh_y,
+        &PrinterConfig::fdm_default().with_build_up_direction(Vector3::new(0.0, 1.0, 0.0)),
+    )
+    .expect("validation should succeed for +Y-up rotated roof");
+
+    let area_z: f64 = result_z.overhangs.iter().map(|r| r.area).sum();
+    let area_y: f64 = result_y.overhangs.iter().map(|r| r.area).sum();
+    assert!(
+        area_z > 0.0,
+        "+Z-up roof must flag a non-zero overhang area"
+    );
+    assert!(
+        (area_z - area_y).abs() < 1e-9,
+        "overhang AREA must match across mesh-rotation and up-vector-rotation routes; \
+         got {area_z} (+Z up) vs {area_y} (+Y up)"
+    );
 }
