@@ -519,4 +519,74 @@ mod tests {
         assert!(!offset.vertices.is_empty());
         assert!(!offset.faces.is_empty());
     }
+
+    /// Count `(boundary_edges, non_manifold_edges, unique_edges)` for a
+    /// triangle mesh from its face connectivity alone (a boundary edge is
+    /// incident to one face, a non-manifold edge to three or more). The
+    /// caller checks the genus-0 Euler identity `V + F == E + 2` (`χ = 2`)
+    /// in `usize`, which stays cast-free and never underflows for a closed
+    /// mesh (`E ≥ V` and `E ≥ F`).
+    ///
+    /// This is a small hand-rolled scan rather than a call to
+    /// `mesh_repair::validate_mesh` (which computes the same counts) on
+    /// purpose: keeping this L0 crate's own topology oracle independent of
+    /// a sibling L0 crate means a bug in `mesh-repair`'s edge logic can't
+    /// mask a real `mesh-offset` regression here, and it avoids a
+    /// dev-dependency on `mesh-repair`. The example layer
+    /// (`examples/mesh/offset/stress-test`), which already depends on
+    /// `mesh-repair` for its diagnostics, uses `validate_mesh` directly.
+    fn edge_topology(mesh: &IndexedMesh) -> (usize, usize, usize) {
+        use std::collections::HashMap;
+        let mut edges: HashMap<(u32, u32), u32> = HashMap::new();
+        for tri in &mesh.faces {
+            for (a, b) in [(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])] {
+                let key = if a < b { (a, b) } else { (b, a) };
+                *edges.entry(key).or_insert(0) += 1;
+            }
+        }
+        let boundary = edges.values().filter(|&&c| c == 1).count();
+        let non_manifold = edges.values().filter(|&&c| c > 2).count();
+        (boundary, non_manifold, edges.len())
+    }
+
+    /// The topological contract behind the `offset` example's re-narration
+    /// (see `examples/mesh/offset/stress-test`): at an off-grid resolution
+    /// `offset_mesh` returns a clean, watertight, outward-wound, genus-0
+    /// 2-manifold in BOTH directions — no vertex-soup, no inside-out
+    /// winding (cf. `marching_cubes_produces_outward_winding_on_cube_sdf`
+    /// for the winding half). `0.03` does not divide the offset magnitude
+    /// `0.1`, so the eroded/dilated faces fall between sample planes and
+    /// marching cubes avoids the on-plane degeneracy that otherwise
+    /// stitches spurious handles (that grid-alignment pitfall is
+    /// demonstrated, un-gated, in the example itself).
+    #[test]
+    fn offset_mesh_is_watertight_outward_wound_genus0_off_grid() {
+        let mesh = unit_cube();
+        let config = OffsetConfig::default().with_resolution(0.03);
+        for distance in [0.1_f64, -0.1] {
+            let offset = offset_mesh(&mesh, distance, &config)
+                .unwrap_or_else(|e| panic!("offset by {distance} should succeed: {e:?}"));
+            let (boundary, non_manifold, edges) = edge_topology(&offset);
+            let (v, f) = (offset.vertices.len(), offset.faces.len());
+            assert_eq!(
+                boundary, 0,
+                "offset by {distance} must be watertight (0 boundary edges); got {boundary}",
+            );
+            assert_eq!(
+                non_manifold, 0,
+                "offset by {distance} must be manifold (0 edges with 3+ faces); got {non_manifold}",
+            );
+            assert_eq!(
+                v + f,
+                edges + 2,
+                "offset by {distance} must be a genus-0 manifold (V + F = E + 2, i.e. χ = 2); \
+                 got V={v}, E={edges}, F={f}",
+            );
+            assert!(
+                offset.signed_volume() > 0.0,
+                "offset by {distance} must be outward-wound (signed_volume > 0); got {}",
+                offset.signed_volume(),
+            );
+        }
+    }
 }

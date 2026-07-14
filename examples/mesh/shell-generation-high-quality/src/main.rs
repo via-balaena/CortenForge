@@ -32,8 +32,9 @@
 //!      radius `wall_thickness`; the cube's 12 EDGES round into
 //!      cylindrical fillets of the same radius. This is GENUINE
 //!      level-set curvature, not MC discretization artifact (compare
-//!      `mesh-offset-inward`, where the level set has sharp corners
-//!      and MC chamfers them as a tessellation artifact).
+//!      the inward case in `offset/stress-test`, where the level set
+//!      has sharp corners and MC chamfers them as a tessellation
+//!      artifact).
 //!   3. **`has_consistent_winding == true` on closed-input SDF
 //!      shells.** Strict improvement over commit 11's rim-winding
 //!      quirk: closed input → no rim → no edge-direction conflict

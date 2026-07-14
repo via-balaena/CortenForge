@@ -1,0 +1,29 @@
+[package]
+name = "example-offset-stress-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Declares this example's role in the validation contract. `validator` = the
+# binary self-checks against oracles and exits non-zero on any failure, so CI
+# runs it red-or-green (see `cargo xtask run-validators`). The alternative kind
+# is `demo` (illustration only; compile-checked but not run). Every self-gating
+# example MUST declare `validator` or its oracle checks run nowhere in CI.
+[package.metadata.cortenforge]
+example_kind = "validator"
+
+[dependencies]
+# unit_cube() fixture + IndexedMesh + Bounded::aabb / signed_volume / surface_area
+mesh-types = { workspace = true }
+# save_ply for the out/*.ply human-inspectable artifacts
+mesh-io = { workspace = true }
+# offset_mesh + OffsetConfig — the SUT
+mesh-offset = { workspace = true }
+# validate_mesh — V/E/F counts, watertight/manifold/inside-out flags, Euler χ
+mesh-repair = { workspace = true }
+# Result<()> return type for each module's run()
+anyhow = { workspace = true }
+
+[lints]
+workspace = true
