@@ -1,0 +1,40 @@
+[package]
+name = "example-stretch-stress-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Declares this example's role in the validation contract. `validator` = the
+# binary self-checks against oracles and exits non-zero on any failure, so CI
+# runs it red-or-green (see `cargo xtask run-validators`). The alternative kind
+# is `demo` (illustration only; compile-checked but not run). Every self-gating
+# example MUST declare `validator` or its oracle checks run nowhere in CI.
+[package.metadata.cortenforge]
+example_kind = "validator"
+
+[dependencies]
+# single_tet: SoftScene::one_tet_cube + SkeletonSolver + CpuNewtonSolver +
+#   NewtonStep + NullContact + SolverConfig + Tet4 + Solver trait.
+# neo_hookean: NeoHookean + Material trait + ValidityDomain + InversionHandling.
+# multi_element: CpuNewtonSolver (Phase 2 assembly) + HandBuiltTetMesh +
+#   BoundaryConditions + NeoHookean + MaterialField + Tet4 + referenced_vertices
+#   + pick_vertices_by_predicate.
+sim-soft = { workspace = true }
+# single_tet + multi_element: Tape + Tensor for the theta_var registration /
+# replay_step (ml-chassis is sim-soft's tape backend).
+sim-ml-chassis = { workspace = true }
+# neo_hookean + multi_element: Matrix3 (+ Vector3) for hand-crafting F and
+# reading first_piola results directly.
+nalgebra = { workspace = true }
+# All modules: Result<()> return + error-context wrapping for the JSON emit step.
+anyhow = { workspace = true }
+# All modules: JSON emit for the out/<module>/*.json inspection artifacts —
+# schema documented inline in each module's save fn.
+serde_json = { workspace = true }
+# neo_hookean + multi_element: assert_relative_eq! for closed-form analytic vs
+# observed comparisons — same convention as sim/L0/soft/tests/material_fd.rs.
+approx = { workspace = true }
+
+[lints]
+workspace = true

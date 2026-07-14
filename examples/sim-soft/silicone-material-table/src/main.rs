@@ -14,7 +14,7 @@
 //! `cf-view`, the table IS the artifact); museum-plaque-tour shape
 //! per [`feedback_museum_plaque_readmes`][m] + [`feedback_visual_pass_collapses_for_json_rows`][v].
 //!
-//! Companion to row 5 [`neo-hookean-uniaxial`][r5]: row 5 sweeps a
+//! Companion to row 5 (the [`neo_hookean`][r5] module): row 5 sweeps a
 //! single material across `λ ∈ [0.15, 1.95]` under traction-free
 //! uniaxial (transcendental `λ_t`); row 19 sweeps seven materials at
 //! one fixed `F` under simple stretch (closed-form scalar — no inner
@@ -27,7 +27,7 @@
 //!
 //! [m]: ../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_museum_plaque_readmes.md
 //! [v]: ../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_visual_pass_collapses_for_json_rows.md
-//! [r5]: ../neo-hookean-uniaxial
+//! [r5]: ../stretch/stress-test
 //!
 //! # Probe — simple uniaxial stretch at `λ = 2.0`
 //!

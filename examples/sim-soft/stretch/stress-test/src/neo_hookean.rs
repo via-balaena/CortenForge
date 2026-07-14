@@ -1,4 +1,4 @@
-//! neo-hookean-uniaxial — direct-eval NH constitutive surface vs closed form.
+//! neo-hookean — direct-eval NH constitutive surface vs closed form.
 //!
 //! Direct-evaluation comparison of `NeoHookean::first_piola` /
 //! `NeoHookean::energy` against the closed-form Neo-Hookean stress and
@@ -547,7 +547,7 @@ fn verify_sweep_in_domain(records: &[SweepRecord]) {
 // =============================================================================
 //
 // Captured on 2026-05-05 at sim-soft `dev` HEAD (preceding commit
-// `5bab2e62` from row 4 single-tet-stretch), rustc 1.95.0 (`59807616e`
+// `5bab2e62` from row 4 `single_tet`), rustc 1.95.0 (`59807616e`
 // 2026-04-14) — the same toolchain IV-1 captured at sim-soft
 // `c3729d4a` per `invariant_iv_1_uniform_passthrough.rs:138-151`
 // — on macOS arm64.
@@ -773,7 +773,7 @@ fn save_force_stretch_json(records: &[SweepRecord], mat: &NeoHookean, path: &Pat
 // =============================================================================
 
 fn print_summary(records: &[SweepRecord], path: &Path) {
-    println!("==== neo-hookean-uniaxial ====");
+    println!("==== neo_hookean ====");
     println!();
     println!("input  : NeoHookean::from_lame(μ = {MU_PA:e}, Λ = {LAMBDA_PA:e})  (Pa)");
     println!("         compressible NH at ν ≈ 0.4 (Λ = 4μ — Ecoflex-class)");
@@ -840,7 +840,7 @@ fn print_summary(records: &[SweepRecord], path: &Path) {
 // main
 // =============================================================================
 
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     let mat = NeoHookean::from_lame(MU_PA, LAMBDA_PA);
 
     verify_validity_domain_declaration(&mat);
@@ -854,7 +854,9 @@ fn main() -> Result<()> {
     verify_sweep_in_domain(&records);
     verify_sweep_bit_equal(&records);
 
-    let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("out");
+    let out_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("out")
+        .join("neo_hookean");
     std::fs::create_dir_all(&out_dir)
         .with_context(|| format!("failed to create {}", out_dir.display()))?;
     let out_path = out_dir.join("force_stretch.json");

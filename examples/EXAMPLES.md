@@ -326,14 +326,14 @@ Soft-body FEM examples — Neo-Hookean elasticity on linear tetrahedra, BCC + La
 | Example | Package | Status | Notes |
 |---------|---------|--------|-------|
 | `sdf/stress-test` | `example-sdf-stress-test` | Working (validator) | SDF validation superset, rows 1–3 folded (one domain → one stress-test): module `sphere_eval` (`Sdf` trait contract on `SphereSdf`, 11³ grid + FD-Eikonal), `hollow_shell` (`DifferenceSdf` hollow-body composition, z=0 slice with `signed_distance` + `active_branch`), `sdf_to_tet` (`SdfMeshedTetMesh::from_sdf` BCC + Isosurface Stuffing, 1224 faces, Euler χ = 2, bimodal `boundary_residual`) |
-| `single-tet-stretch` | `example-sim-soft-single-tet-stretch` | Working | Walking-skeleton hand-built tet path — alternative to the SDF route for hand-authored scenes. `SkeletonSolver::step` on `SoftScene::one_tet_cube`; converges in 3 iters to `dz ≈ 9.69e-4 m` matching the IV-1 frozen-reference bit pattern; JSON-only force-stretch trace |
+
+*Row 4 (`single-tet-stretch`) folded into the `stretch/stress-test` validator (module `single_tet`) alongside rows 5–6 — see Tier 2.*
 
 ### Tier 2 — Constitutive + multi-element
 
 | Example | Package | Status | Notes |
 |---------|---------|--------|-------|
-| `neo-hookean-uniaxial` | `example-sim-soft-neo-hookean-uniaxial` | Working | Canonical traction-free NH stretch curve — direct-eval `Material::first_piola` / `Material::energy` against closed form across 12-point sweep with inner Newton on `λ_t`; `ValidityDomain` declaration check + 48 captured-bit self-pins; JSON + optional `uv run plot.py` matplotlib panel |
-| `multi-element-stretch` | `example-sim-soft-multi-element-stretch` | Working | Phase 2 multi-element FEM assembly under uniform Dirichlet stretch on a 27-vertex / 48-tet hex grid (`λ = 1.20`, one interior vertex free); per-tet `F` bit-equal `diag(λ, 1, 1)` across all 48 tets; quasi-static via `cfg.density = 0`; JSON-only per-tet uniformity trace |
+| `stretch/stress-test` | `example-stretch-stress-test` | Working (validator) | Uniaxial-stretch validation superset on the canonical compressible NH baseline (`μ = 1e5`, `Λ = 4e5` Pa), rows 4–6 folded (one domain → one stress-test; a solver → constitutive → assembly ladder): module `single_tet` (row 4 — `SkeletonSolver::step` on `SoftScene::one_tet_cube`, `θ = 10 N`, 3 iters, `dz ≈ 9.69e-4 m`, 12 IV-1 bit-pins), `neo_hookean` (row 5 — direct-eval `Material::first_piola` / `energy` vs closed form across a 12-point traction-free sweep with inner Newton on `λ_t`, `ValidityDomain` check, 48 captured-bit self-pins, optional `uv run plot.py` panel), `multi_element` (row 6 — Phase 2 multi-element FEM assembly on a 27-vertex / 48-tet hex grid at `λ = 1.20` with one interior vertex free, per-tet `F` uniform `diag(λ, 1, 1)` across all 48 tets, quasi-static via `cfg.density = 0`, 10 sparse-tier bit-pins). JSON-only traces under `out/<module>/` |
 
 ### Tier 3 — Multi-material spatial fields
 

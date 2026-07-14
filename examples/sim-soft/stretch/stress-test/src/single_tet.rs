@@ -1,4 +1,4 @@
-//! single-tet-stretch — `SkeletonSolver` end-to-end on `SoftScene::one_tet_cube`.
+//! single-tet — `SkeletonSolver` end-to-end on `SoftScene::one_tet_cube`.
 //!
 //! Walking-skeleton uniaxial-traction step on the canonical 1-tet cube
 //! per spec §2: decimeter-edge tet, `(μ, λ) = (1e5, 4e5)` Pa,
@@ -13,7 +13,7 @@
 //! Per `feedback_math_pass_first_handauthored`, a clean `cargo run
 //! --release` exit-0 IS the correctness signal — every claim sits
 //! behind an `assert_*` in a `verify_*` anchor group below. Output
-//! artifact is `out/force_stretch.json` (no spatial artifact, no
+//! artifact is `out/single_tet/force_stretch.json` (no spatial artifact, no
 //! cf-view rendering — single-tet has trivial topology and the
 //! force-stretch readout is the inspection signal per inventory Q4
 //! row 4).
@@ -410,7 +410,7 @@ fn verify_x_final_bit_equal(step: &NewtonStep<CpuTape>) {
 
 /// Single-step record at `θ = THETA` capturing the full DOF state +
 /// reduced `v_3` displacement readout. The constitutive `θ`-sweep
-/// curve belongs to row 5 (`neo-hookean-uniaxial`); this row's JSON
+/// curve belongs to row 5 (the `neo_hookean` module); this row's JSON
 /// is the inspection artifact for the walking-skeleton step API
 /// itself, not a force-stretch curve.
 fn save_force_stretch_json(
@@ -479,7 +479,7 @@ fn print_summary(
     path: &Path,
 ) {
     let (dx, dy, dz) = displacement_v3;
-    println!("==== single-tet-stretch ====");
+    println!("==== single_tet ====");
     println!();
     println!("input  : SoftScene::one_tet_cube()");
     println!("         vertices: v_0=(0,0,0), v_1=(0.1,0,0), v_2=(0,0.1,0), v_3=(0,0,0.1)  m");
@@ -523,14 +523,14 @@ fn print_summary(
     println!();
     println!("JSON   : {}", path.display());
     println!("         single-record force-stretch trace — full DOF state + v_3 readout");
-    println!("         (constitutive θ-sweep is row 5 `neo-hookean-uniaxial`)");
+    println!("         (constitutive θ-sweep is row 5 `neo_hookean`)");
 }
 
 // =============================================================================
 // main
 // =============================================================================
 
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     let (step, initial, cfg) = run_skeleton_step();
 
     verify_newton_convergence(&step, &cfg);
@@ -544,7 +544,9 @@ fn main() -> Result<()> {
 
     let displacement_v3 = (dx, dy, dz);
 
-    let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("out");
+    let out_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("out")
+        .join("single_tet");
     std::fs::create_dir_all(&out_dir)
         .with_context(|| format!("failed to create {}", out_dir.display()))?;
     let out_path = out_dir.join("force_stretch.json");

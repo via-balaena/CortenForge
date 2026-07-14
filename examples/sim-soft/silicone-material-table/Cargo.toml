@@ -13,7 +13,7 @@ publish = false
 sim-soft = { workspace = true }
 # Matrix3 for hand-crafting F = diag(λ, 1, 1) and reading
 # `mat.first_piola` results directly (no solver, no Tape/Tensor) — same
-# direct-eval shape as row 5 `neo-hookean-uniaxial`.
+# direct-eval shape as row 5 `neo_hookean` (in `example-stretch-stress-test`).
 nalgebra = { workspace = true }
 # Result<()> return + error-context wrapping for the JSON emit step.
 anyhow = { workspace = true }

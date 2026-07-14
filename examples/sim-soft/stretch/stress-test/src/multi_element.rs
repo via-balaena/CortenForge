@@ -1,4 +1,4 @@
-//! multi-element-stretch — Phase 2 multi-element FEM assembly under uniform
+//! multi-element — Phase 2 multi-element FEM assembly under uniform
 //! Dirichlet stretch.
 //!
 //! Solver-driven 48-tet hex-grid (`uniform_block(2, 0.1, ...)`) under
@@ -36,7 +36,7 @@
 //! # Deformation gradient
 //!
 //! `F = diag(λ, 1, 1)` constrained — same Lamé pair as row 5
-//! (`neo-hookean-uniaxial`) and the same anchor stretch
+//! (the `neo_hookean` module) and the same anchor stretch
 //! `λ = LAMBDA_STRETCH = 1.20`, but here imposed via Dirichlet pinning
 //! of every boundary vertex to `D · X_rest` rather than evaluated
 //! directly. The transverse stress `P_22 = Λ ln(λ) ≠ 0` reflects the
@@ -746,7 +746,7 @@ fn verify_uniformity_spread_bounded(records: &[TetRecord]) -> f64 {
 // =============================================================================
 //
 // **Capture provenance** — captured on 2026-05-05 at sim-soft `dev` (row-5
-// tip `bd727023` from neo-hookean-uniaxial, pre-row-6), rustc 1.95.0
+// tip `bd727023` from `neo_hookean`, pre-row-6), rustc 1.95.0
 // (`59807616e` 2026-04-14) — the same toolchain IV-1 captured at sim-soft
 // `c3729d4a` per `invariant_iv_1_uniform_passthrough.rs:138-151` — on macOS arm64.
 //
@@ -979,7 +979,7 @@ fn print_summary(
     let p11_expected = analytic_p11(LAMBDA_STRETCH, MU_PA, LAMBDA_PA);
     let p22_expected = analytic_p22(LAMBDA_STRETCH, LAMBDA_PA);
     let psi_expected = analytic_psi(LAMBDA_STRETCH, MU_PA, LAMBDA_PA);
-    println!("==== multi-element-stretch ====");
+    println!("==== multi_element ====");
     println!();
     println!(
         "input  : HandBuiltTetMesh::uniform_block(n = {N_PER_EDGE}, edge = {EDGE_LEN} m, uniform NH)"
@@ -1101,7 +1101,7 @@ fn print_summary(
 // main
 // =============================================================================
 
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     let mat = NeoHookean::from_lame(MU_PA, LAMBDA_PA);
     let (mesh, boundary, x_prev_flat, expected_v13_stretched) = build_scene();
 
@@ -1144,7 +1144,9 @@ fn main() -> Result<()> {
     verify_captured_bits(interior_observed, &records);
 
     // JSON + stdout summary.
-    let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("out");
+    let out_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("out")
+        .join("multi_element");
     std::fs::create_dir_all(&out_dir)
         .with_context(|| format!("failed to create {}", out_dir.display()))?;
     let out_path = out_dir.join("multi_element_stretch.json");

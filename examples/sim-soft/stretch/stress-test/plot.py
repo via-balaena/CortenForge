@@ -5,16 +5,17 @@
 #     "numpy>=1.26",
 # ]
 # ///
-"""Render `out/force_stretch.json` as a 2x2 panel figure.
+"""Render `out/neo_hookean/force_stretch.json` as a 2x2 panel figure.
 
-Run with `uv run plot.py` from the example directory (PEP 723 inline
-deps install on first run; subsequent runs reuse the cached env). The
-figure saves to `out/force_stretch.png` and opens an interactive
-window if a display is available.
+Run with `uv run plot.py` from the stress-test directory (PEP 723
+inline deps install on first run; subsequent runs reuse the cached
+env). The figure saves to `out/neo_hookean/force_stretch.png` and opens
+an interactive window if a display is available.
 
 Per inventory Q4 visualization convention, JSON-only rows (4, 5, 6)
 get matplotlib post-hoc visualization rather than a viewer pass —
-this script is the canonical post-hoc visual aid for row 5's curve.
+this script is the canonical post-hoc visual aid for row 5's curve
+(the `neo_hookean` module of `example-stretch-stress-test`).
 """
 
 from __future__ import annotations
@@ -29,15 +30,15 @@ import numpy as np
 
 
 HERE = Path(__file__).parent
-JSON_PATH = HERE / "out" / "force_stretch.json"
-PNG_PATH = HERE / "out" / "force_stretch.png"
+JSON_PATH = HERE / "out" / "neo_hookean" / "force_stretch.json"
+PNG_PATH = HERE / "out" / "neo_hookean" / "force_stretch.png"
 
 
 def main() -> int:
     if not JSON_PATH.exists():
         print(
             f"error: {JSON_PATH} does not exist. "
-            f"Run `cargo run -p example-sim-soft-neo-hookean-uniaxial --release` first.",
+            f"Run `cargo run -p example-stretch-stress-test --release` first.",
             file=sys.stderr,
         )
         return 1
@@ -60,11 +61,11 @@ def main() -> int:
 
     fig, axes = plt.subplots(2, 2, figsize=(12, 9), constrained_layout=True)
     fig.suptitle(
-        f"neo-hookean-uniaxial: traction-free F = diag(λ, λ_t, λ_t)\n"
+        f"neo_hookean: traction-free F = diag(λ, λ_t, λ_t)\n"
         f"compressible NH (μ = {mu:.2g} Pa, Λ = {lam:.2g} Pa, ν ≈ 0.4); "
         f"in-domain λ ≈ [{bracket[0]:.4f}, {bracket[1]:.4f}]\n"
         f"observed (mat.first_piola / mat.energy) and analytic agree to "
-        f"f64 ULP — see asserts in src/main.rs",
+        f"f64 ULP — see asserts in src/neo_hookean.rs",
         fontsize=11,
     )
 

@@ -147,7 +147,7 @@
 // `try_inverse().expect(...)` on `J_0` for the canonical mesh: the
 // hand-built right-handed CFK tets per `cantilever_bilayer_beam` have
 // non-singular reference jacobians by construction. Same precedent as
-// row 6's `multi-element-stretch`.
+// row 6's `multi_element` module (in `example-stretch-stress-test`).
 #![allow(clippy::expect_used)]
 // `usize as f64` cast on `loaded.len()` for the per-vertex theta
 // distribution (`f_total / n_loaded`). Loaded count ≤ 81 here, well within
@@ -654,8 +654,8 @@ fn build_tet_records(snapshot: &SceneSnapshot) -> Vec<TetRecord> {
 
 /// `max |σᵢ − 1|` over the singular values of `F`. Same metric the
 /// solver's `check_validity_at_step_start` evaluates per tet. Mirrors
-/// row 6's `max_stretch_deviation` at
-/// `examples/sim-soft/multi-element-stretch/src/main.rs:271-277`.
+/// row 6's `max_stretch_deviation` in
+/// `examples/sim-soft/stretch/stress-test/src/multi_element.rs`.
 fn max_stretch_deviation(f: &Matrix3<f64>) -> f64 {
     let svd = f.svd_unordered(false, false);
     svd.singular_values

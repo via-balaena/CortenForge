@@ -52,6 +52,14 @@ Status legend per top of file: `have` / `internal-fixture` / `missing` / `blocke
 > immutable IDs; the standalone `sphere-sdf-eval` / `hollow-shell-sdf` /
 > `sdf-to-tet-sphere` crates no longer exist.
 
+> **Standardization (2026-07-14):** row 4 (`single-tet-stretch`) folded into
+> one headless validator `example-stretch-stress-test` at
+> `examples/sim-soft/stretch/stress-test/` (module `single_tet`), together with
+> Tier 2's rows 5–6 (`neo-hookean-uniaxial` / `multi-element-stretch`) — one
+> uniaxial-stretch domain → one stress-test (the domain straddles Tier 1 / Tier
+> 2). Row numbers preserved as immutable IDs; the standalone `single-tet-stretch`
+> crate no longer exists.
+
 | # | Concept | Simplest example | Capability shown | Status | Gap to land |
 |---|---|---|---|---|---|
 | 1 | SDF primitive eval + grad | `sphere-sdf-eval` — sample `SphereSdf::eval` + `grad` over a grid; emit signed-distance PLY (vertex extras like mesh-sdf-distance-query) | `Sdf` trait contract; analytic distance + unit gradient on the zero set | `have` (PR #226 cf-viewer arc) | — |
@@ -60,6 +68,15 @@ Status legend per top of file: `have` / `internal-fixture` / `missing` / `blocke
 | 4 | Hand-built tet (skeleton path) | `single-tet-stretch` — `SoftScene::one_tet_cube` + uniaxial load via `BoundaryConditions`; print final-state Tensor + assert displacement sign + magnitude | `SingleTetMesh` + `BoundaryConditions` walking-skeleton pattern (alternative to SDF path for hand-authored scenes) | `have` (`5bab2e62`) | — |
 
 ### Tier 2 — Constitutive + multi-element (Phase 1–2 surface)
+
+> **Standardization (2026-07-14):** rows 5–6 (`neo-hookean-uniaxial` /
+> `multi-element-stretch`) folded into one headless validator
+> `example-stretch-stress-test` at `examples/sim-soft/stretch/stress-test/`
+> (modules `neo_hookean` / `multi_element`), together with Tier 1's row 4
+> (`single-tet-stretch` → module `single_tet`) — one uniaxial-stretch domain →
+> one stress-test (the domain straddles Tier 1 / Tier 2). Row numbers preserved
+> as immutable IDs; the standalone `neo-hookean-uniaxial` / `multi-element-stretch`
+> crates no longer exist.
 
 | # | Concept | Simplest example | Capability shown | Status | Gap to land |
 |---|---|---|---|---|---|
