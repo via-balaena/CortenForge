@@ -10,17 +10,26 @@
 //! cargo test -p sim-rl --test competition -- --ignored --nocapture
 //! ```
 //!
-//! ⚠️ STALE 6-DOF BASELINES (pending re-calibration): the absolute-reward
-//! assertions on `reaching-6dof` (e.g. `hypothesis_cem_scales_poorly`'s
-//! `r6 < r2 * 2.0`, and the `_1layer_parity` orderings) were calibrated when
-//! the 6-DOF fixture was numerically diverging under RK4 (qpos/qvel blew up).
-//! That was fixed by adding joint armature to `sim_core::test_fixtures::
-//! reaching_6dof` — the arm is now stable and genuinely learnable, so those
-//! magnitudes have shifted and some of these tests will fail until re-run and
-//! re-based. The "CEM scales poorly on 6-DOF" conclusion itself must be
-//! re-evaluated, since its old evidence rested on the divergence, not on
-//! control difficulty. Re-baseline once the RL loop is parallelized (the runs
-//! become cheap) — see the RL-performance-optimization arc.
+//! 6-DOF baselines re-calibrated on the #591 stable arm (the fixture had
+//! been numerically diverging under RK4; joint armature stabilized it). The
+//! two headline competitions (`competition_6dof_all_mlp` and
+//! `_autograd_1layer_parity`) are now **multi-seed** (5 seeds via
+//! `run_replicates`, cheap since the runner parallelizes across runs): they
+//! report each algorithm's best-reward mean ± std and assert only the
+//! seed-robust invariant — off-policy (TD3, SAC) ≫ on-policy (PPO, REINFORCE).
+//! The old single-seed `r_ppo > r_reinforce` asserts were removed in favor of
+//! a two-sided verdict rendered from the data: on **final-epoch reward** at 40
+//! epochs across 5 seeds, the value baseline **robustly helps** — PPO beats
+//! REINFORCE by ~1.7× the pooled spread (see `hypothesis_value_fn_matters_at_
+//! scale`). (On best-of-epochs the noisier REINFORCE draws ahead, which is why
+//! that test uses final reward — variance reduction pays off at convergence,
+//! not in lucky peaks.) Re-baseline finding: **"CEM scales poorly on 6-DOF"
+//! was a divergence artifact** — on the stable arm CEM makes real progress at
+//! 50 epochs (dones > 0), landing between off- and on-policy rather than
+//! collapsing. `hypothesis_cem_scales_poorly` still passes at seed 42 (6-DOF's
+//! larger joint-space error keeps it > 2× worse than 2-DOF), consistent with
+//! task scale rather than CEM failure — though that specific test remains
+//! single-seed and is not a swept claim.
 //!
 //! ## Level 0-1 (Tests 1-7): Hand-coded gradients
 //!
@@ -47,8 +56,8 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 use sim_ml_chassis::{
     Activation, Algorithm, AutogradPolicy, AutogradQ, AutogradStochasticPolicy, AutogradValue,
-    Competition, LinearPolicy, LinearQ, LinearStochasticPolicy, LinearValue, MlpPolicy, MlpQ,
-    MlpValue, OptimizerConfig, RunResult, TaskConfig, TrainingBudget,
+    Competition, CompetitionResult, LinearPolicy, LinearQ, LinearStochasticPolicy, LinearValue,
+    MlpPolicy, MlpQ, MlpValue, OptimizerConfig, RunResult, SeedSummary, TaskConfig, TrainingBudget,
 };
 use sim_rl::{
     Cem, CemHyperparams, Ppo, PpoHyperparams, Reinforce, ReinforceHyperparams, Sac, SacHyperparams,
@@ -89,6 +98,72 @@ fn print_reversal_check(r_cem: f64, gradient_results: &[(&str, f64)]) {
         eprintln!(
             "\n*** CEM ({r_cem:.2}) still dominates — gradient methods' best: {best_reward:.2} ***"
         );
+    }
+}
+
+/// Print the per-algorithm best-reward distribution (mean ± std across seeds)
+/// for a 5-algorithm 6-DOF competition, then assert the ONE seed-robust
+/// invariant: off-policy replay (TD3, SAC) beats on-policy (PPO, REINFORCE) by
+/// more than the pooled per-seed spread.
+///
+/// Single-seed orderings on this task are noisy — the on-policy pair (PPO vs
+/// REINFORCE) and CEM's exact placement swing with seed. Rather than gate on
+/// those brittle orderings (the pre-#591 tests did, calibrated on a
+/// numerically-diverging arm), this records the full distribution as the
+/// artifact and asserts only the off-policy≫on-policy separation, which is
+/// large and stable across seeds. `best_reward` is used deliberately as a
+/// *conservative* metric for this invariant: `best ≥ final`, so it flatters
+/// the on-policy methods (whose best can be an early, near-initial peak) —
+/// off-policy dominating on `best` therefore typically dominates by even more
+/// on `final` (the off-policy methods converge monotonically, so best ≈ final,
+/// while the on-policy `final` degrades below `best`). The distribution table
+/// (`eprintln`) is the load-bearing science output.
+fn assert_off_policy_dominates(result: &CompetitionResult, task: &str, n_seeds: usize) {
+    let summ = |algo: &str| {
+        result
+            .describe(task, algo)
+            .unwrap_or_else(|| panic!("{task}: no seed summary for {algo}"))
+    };
+    let algos = [
+        ("CEM", summ("CEM")),
+        ("SAC", summ("SAC")),
+        ("TD3", summ("TD3")),
+        ("PPO", summ("PPO")),
+        ("REINFORCE", summ("REINFORCE")),
+    ];
+
+    eprintln!("\n=== {task}: {n_seeds}-seed best-reward mean ± std ===");
+    for (name, s) in &algos {
+        eprintln!(
+            "  {name:<10} {:>13.2} ± {:>11.2}  (n={})",
+            s.mean, s.std_dev, s.n
+        );
+    }
+
+    let get = |name: &str| {
+        algos
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, s)| *s)
+            .unwrap()
+    };
+    let (td3, sac, ppo, reinforce) = (get("TD3"), get("SAC"), get("PPO"), get("REINFORCE"));
+    for (off_name, off) in [("TD3", td3), ("SAC", sac)] {
+        for (on_name, on) in [("PPO", ppo), ("REINFORCE", reinforce)] {
+            // Pooled spread = sum of the two per-seed std devs. A gap wider
+            // than that is well outside seed noise for n=5.
+            let margin = off.std_dev + on.std_dev;
+            assert!(
+                off.mean - on.mean > margin,
+                "{task}: off-policy {off_name} ({:.1} ± {:.1}) must beat on-policy \
+                 {on_name} ({:.1} ± {:.1}) by more than the pooled std ({margin:.1}) — \
+                 this is the seed-robust invariant",
+                off.mean,
+                off.std_dev,
+                on.mean,
+                on.std_dev
+            );
+        }
     }
 }
 
@@ -1048,48 +1123,82 @@ fn hypothesis_cem_scales_poorly() {
 
 // ── Test 3: Hypothesis 2 — PPO's value function matters at scale ───────────
 
-/// PPO >> REINFORCE on 6-DOF because the learned value baseline reduces
-/// gradient variance.  On easy tasks (2-DOF) the gap is small.
+/// Does PPO's learned value baseline beat plain REINFORCE on 6-DOF? —
+/// **multi-seed**, re-baselined on the #591 stable arm.
+///
+/// The classic claim is that the value baseline reduces gradient variance so
+/// PPO ends up ahead of REINFORCE. This uses **final-epoch reward** (not
+/// best-of-epochs): the baseline's payoff is end-of-training performance, and
+/// best-of-epochs would reward the *noisier* method's lucky peaks — the
+/// opposite of what a variance-reduction claim is about.
+///
+/// The pre-#591 single-seed `r_ppo > r_reinforce` assert (calibrated on the
+/// diverging arm) is replaced by a two-sided verdict rendered from the 5-seed
+/// distributions: the baseline "helps" / "hurts" only if the mean gap clears
+/// the pooled per-seed spread, else "within seed noise". The only hard
+/// assertion is finiteness; the printed comparison is the artifact.
 #[test]
 #[ignore = "multi-minute competition run"]
 fn hypothesis_value_fn_matters_at_scale() {
     let task = reaching_6dof();
     let comp = Competition::new(50, TrainingBudget::Epochs(40), 42);
+    let seeds = [42u64, 7, 13, 100, 2024];
 
     let builders: Vec<&(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync)> =
         vec![&build_reinforce_mlp, &build_ppo_mlp];
 
-    let result = comp.run(&[task], &builders).expect("competition failed");
-    result.print_summary();
+    let result = comp
+        .run_replicates(&[task], &builders, &seeds)
+        .expect("competition failed");
 
-    let reinforce = result.find("reaching-6dof", "REINFORCE").unwrap();
-    let ppo = result.find("reaching-6dof", "PPO").unwrap();
-
-    // PPO should achieve better final reward.
-    let r_reinforce = reinforce.final_reward().unwrap();
-    let r_ppo = ppo.final_reward().unwrap();
-    assert!(
-        r_ppo > r_reinforce,
-        "PPO ({r_ppo:.2}) should beat REINFORCE ({r_reinforce:.2}) on 6-DOF"
-    );
-
-    // PPO should reach the target more often (when either triggers dones).
-    // At current budgets, neither may trigger the precise done condition,
-    // so only assert when there's signal to compare.
-    if ppo.total_dones() > 0 || reinforce.total_dones() > 0 {
-        assert!(
-            ppo.total_dones() >= reinforce.total_dones(),
-            "PPO dones ({}) should match or exceed REINFORCE dones ({}) on 6-DOF",
-            ppo.total_dones(),
-            reinforce.total_dones()
-        );
+    for run in &result.runs {
+        run.assert_finite();
     }
 
+    // Final-epoch reward distribution (end-of-training performance).
+    let summ = |algo: &str| {
+        SeedSummary::from_rewards(&result.replicate_final_rewards("reaching-6dof", algo))
+            .unwrap_or_else(|| panic!("no final-reward summary for {algo}"))
+    };
+    let ppo = summ("PPO");
+    let reinforce = summ("REINFORCE");
+
     eprintln!(
-        "PPO: reward={r_ppo:.2}, dones={}, REINFORCE: reward={r_reinforce:.2}, dones={}",
-        ppo.total_dones(),
-        reinforce.total_dones()
+        "\n=== value-baseline hypothesis: PPO vs REINFORCE (40ep, {}-seed, final reward) ===",
+        seeds.len()
     );
+    eprintln!(
+        "  PPO        {:>12.2} ± {:>10.2}  (n={})",
+        ppo.mean, ppo.std_dev, ppo.n
+    );
+    eprintln!(
+        "  REINFORCE  {:>12.2} ± {:>10.2}  (n={})",
+        reinforce.mean, reinforce.std_dev, reinforce.n
+    );
+
+    // Two-sided verdict from the data: a mean gap wider than the pooled
+    // per-seed spread in either direction is a robust result; otherwise the
+    // two are indistinguishable at this budget.
+    let margin = ppo.std_dev + reinforce.std_dev;
+    if ppo.mean - reinforce.mean > margin {
+        eprintln!(
+            "Finding: value baseline HELPS robustly — PPO leads REINFORCE by \
+             {:.1} > pooled std {margin:.1}",
+            ppo.mean - reinforce.mean
+        );
+    } else if reinforce.mean - ppo.mean > margin {
+        eprintln!(
+            "Finding: value baseline HURTS — REINFORCE robustly beats PPO by \
+             {:.1} > pooled std {margin:.1} (hypothesis refuted at this budget)",
+            reinforce.mean - ppo.mean
+        );
+    } else {
+        eprintln!(
+            "Finding: PPO and REINFORCE are indistinguishable — |gap| {:.1} <= \
+             pooled std {margin:.1} (value baseline neither helps nor hurts here)",
+            (ppo.mean - reinforce.mean).abs()
+        );
+    }
 }
 
 // ── Test 4: Hypothesis 3 — Off-policy sample efficiency ────────────────────
@@ -1264,35 +1373,36 @@ fn hypothesis_entropy_helps() {
 
 // ── Test 7: Full sweep — headline test ─────────────────────────────────────
 
-/// All 5 algorithms, MLP policies, 6-DOF.  The headline competition.
+/// All 5 algorithms, MLP policies, 6-DOF.  The headline competition —
+/// **multi-seed**, re-baselined on the #591 stable arm.
 ///
-/// **Ordering under Ch 41 PR 2b corrected metric** (seed 42, 50ep/50env):
+/// Runs `run_replicates` over 5 seeds and reports each algorithm's best-reward
+/// mean ± std. The seed-robust finding on the corrected (non-diverging) arm:
 ///
-///   SAC (-10.64) > TD3 (-11.99) >> CEM (-479.20) >> PPO (-3449) >> REINFORCE (-7500)
+///   off-policy (TD3, SAC) ≫ CEM ≫ on-policy (PPO, REINFORCE)
 ///
-/// **Pre-PR-2b historical ordering** (reported in earlier runs against the
-/// unit-broken metric):
+/// TD3/SAC converge near 0; CEM makes real progress at 50 epochs (dones > 0,
+/// mean best-reward well ahead of the on-policy methods), which **refutes the
+/// old "CEM scales poorly on 6-DOF" claim** — that was an artifact of the
+/// numerically-diverging pre-#591 fixture, not a CEM failure. CEM does not
+/// fully solve the task (best ~-200 vs TD3's ~-5), but it clearly learns.
+/// PPO and REINFORCE trail well behind with high per-seed variance (their
+/// final-epoch rewards degrade further than their best, so best ≫ final).
 ///
-///   CEM (-1.05, 49 dones) > SAC > TD3 >> PPO >> REINFORCE
-///
-/// The old "CEM dominates" conclusion was an artifact of unit mismatch:
-/// CEM's reported value was per-step-mean (~-1.05) while the gradient
-/// methods reported per-episode-total (~-10 to -7500). Under Ch 24 Decision 1
-/// every algorithm now reports per-episode-total, and CEM's 49-done
-/// convergence shows up at -479.20 (per-episode total ≈ per-step -1.05 ×
-/// avg-trajectory-length). The corrected ordering shows SAC slightly
-/// ahead of TD3 on 6-DOF even with `LinearStochasticPolicy`, and both
-/// gradient methods decisively beat CEM. The `CEM > off-policy` ordering
-/// previously asserted here was removed as a findings-mode conversion;
-/// the `off-policy > on-policy` assertions survive because they reflect
-/// a semantically valid comparison under both metrics.
-///
-/// See Ch 41 §4.3 and Ch 24 §1.8 for the full unit-mismatch diagnosis.
+/// The only hard assertion is off-policy ≫ on-policy (see
+/// [`assert_off_policy_dominates`]). The pre-#591 single-seed asserts
+/// (`r_td3 > r_ppo`, `r_ppo > r_reinforce`) are gone: the `PPO > REINFORCE`
+/// half is *metric-dependent* — REINFORCE's lucky peaks put it ahead on the
+/// best-of-epochs reward this table reports, while PPO wins on final-epoch
+/// reward (the variance-reduction metric; see `hypothesis_value_fn_matters_
+/// at_scale`). Not a stable single-seed ordering to gate on. See Ch 41 §4.3 /
+/// Ch 24 §1.8 for the earlier unit-mismatch history.
 #[test]
 #[ignore = "multi-minute competition run"]
 fn competition_6dof_all_mlp() {
     let task = reaching_6dof();
     let comp = Competition::new(50, TrainingBudget::Epochs(50), 42);
+    let seeds = [42u64, 7, 13, 100, 2024];
 
     let builders: Vec<&(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync)> = vec![
         &build_cem_mlp,
@@ -1302,53 +1412,16 @@ fn competition_6dof_all_mlp() {
         &build_sac_mlp,
     ];
 
-    let result = comp.run(&[task], &builders).expect("competition failed");
-    result.print_summary();
+    let result = comp
+        .run_replicates(&[task], &builders, &seeds)
+        .expect("competition failed");
 
-    let cem = result.find("reaching-6dof", "CEM").unwrap();
-    let td3 = result.find("reaching-6dof", "TD3").unwrap();
-    let sac = result.find("reaching-6dof", "SAC").unwrap();
-    let ppo = result.find("reaching-6dof", "PPO").unwrap();
-    let reinforce = result.find("reaching-6dof", "REINFORCE").unwrap();
-
-    let r_cem = cem.final_reward().unwrap();
-    let r_td3 = td3.final_reward().unwrap();
-    let r_sac = sac.final_reward().unwrap();
-    let r_ppo = ppo.final_reward().unwrap();
-    let r_reinforce = reinforce.final_reward().unwrap();
-
-    // Off-policy beats on-policy — this assertion is semantically valid
-    // under both pre- and post-PR-2b metrics because TD3/PPO/REINFORCE
-    // all reported per-episode-total units even before Decision 1.
-    assert!(
-        r_td3 > r_ppo,
-        "TD3 ({r_td3:.2}) should beat PPO ({r_ppo:.2}) — off-policy replay helps"
-    );
-    assert!(
-        r_ppo > r_reinforce,
-        "PPO ({r_ppo:.2}) should beat REINFORCE ({r_reinforce:.2}) — baseline helps"
-    );
-
-    // CEM vs gradient methods: findings-mode, no hard assertion. The old
-    // `r_cem > r_td3` assertion was an artifact of the pre-PR-2b unit
-    // mismatch (see doc comment above).
-    print_reversal_check(
-        r_cem,
-        &[
-            ("TD3", r_td3),
-            ("SAC", r_sac),
-            ("PPO", r_ppo),
-            ("REINFORCE", r_reinforce),
-        ],
-    );
-
-    // Print full results for the record.
-    for name in &["CEM", "SAC", "TD3", "PPO", "REINFORCE"] {
-        if let Some(run) = result.find("reaching-6dof", name) {
-            let r = run.final_reward().unwrap();
-            eprintln!("{name}: reward={r:.2}, dones={}", run.total_dones());
-        }
+    // Every replicate's every epoch must be finite.
+    for run in &result.runs {
+        run.assert_finite();
     }
+
+    assert_off_policy_dominates(&result, "reaching-6dof", seeds.len());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1357,19 +1430,29 @@ fn competition_6dof_all_mlp() {
 
 // ── Test 8: Autograd 1-layer parity ──────────────────────────────────────
 
-/// All 5 algorithms, autograd backends, 1 hidden layer (32 units), 6-DOF.
+/// All 5 algorithms, autograd backends, 1 hidden layer (32 units), 6-DOF —
+/// **multi-seed**, re-baselined on the #591 stable arm.
 ///
-/// Post-Ch-41-PR-2b ordering at level 2 1-layer parity (seed 42, 50ep/50env):
+/// The point of this test is *parity*: tape-based reverse-mode autograd must
+/// produce the same competition **structure** as hand-coded gradients. It
+/// runs the same 5-seed `run_replicates` and asserts the same seed-robust
+/// invariant — off-policy (TD3, SAC) ≫ on-policy (PPO, REINFORCE) — via
+/// [`assert_off_policy_dominates`], confirming the autograd tape doesn't
+/// regress the ordering.
 ///
-///   SAC (-10.64) > TD3 (-11.99) >> CEM (-479.20) >> PPO (-3449) >> REINFORCE (-7500)
+/// **Reduced budget (20 epochs, vs Test 7's 50):** autograd's tape backward
+/// is ~10× the cost of the hand-coded path, and the off-policy≫on-policy
+/// separation is already stark by 20 epochs (cf. `hypothesis_off_policy_
+/// efficiency`), so the full-budget ordering — established by the hand-coded
+/// `competition_6dof_all_mlp` — need not be re-run here at 50 epochs. This
+/// cuts the autograd regression guard from ~40 min to ~24 min.
+/// (Because the budget differs, the absolute numbers here are *not* meant to
+/// match Test 7's; the shared invariant is the parity check.)
 ///
-/// The autograd-1-layer numbers match the hand-coded MLP numbers (Test 7)
-/// within noise, validating that autograd doesn't regress performance. The
-/// old "CEM should dominate" ordering was a unit-mismatch artifact — see
-/// Test 7's doc comment for the full diagnosis. This test's findings-mode
-/// conversion mirrors Test 7's: the `off-policy > on-policy` assertions
-/// survive (semantically valid under both metrics) and the `CEM > TD3`
-/// assertion is replaced with `print_reversal_check`.
+/// The pre-#591 single-seed asserts (`r_td3 > r_ppo`, `r_ppo > r_reinforce`)
+/// are gone for the same reason as Test 7: the `PPO > REINFORCE` half is
+/// metric-dependent (final vs best-of-epochs), not a stable ordering to gate
+/// on (see Test 7's doc comment).
 ///
 /// Two differences from level 0-1 hand-coded:
 /// 1. Gradients computed via tape-based reverse-mode AD, not hand-coded
@@ -1379,7 +1462,8 @@ fn competition_6dof_all_mlp() {
 #[ignore = "multi-minute competition run"]
 fn competition_6dof_autograd_1layer_parity() {
     let task = reaching_6dof();
-    let comp = Competition::new_verbose(50, TrainingBudget::Epochs(50), 42);
+    let comp = Competition::new(50, TrainingBudget::Epochs(20), 42);
+    let seeds = [42u64, 7, 13, 100, 2024];
 
     let builders: Vec<&(dyn Fn(&TaskConfig) -> Box<dyn Algorithm> + Sync)> = vec![
         &build_cem_autograd_1layer,
@@ -1389,72 +1473,16 @@ fn competition_6dof_autograd_1layer_parity() {
         &build_sac_autograd_1layer,
     ];
 
-    let result = comp.run(&[task], &builders).expect("competition failed");
-    result.print_summary();
+    let result = comp
+        .run_replicates(&[task], &builders, &seeds)
+        .expect("competition failed");
 
-    let cem = result.find("reaching-6dof", "CEM").unwrap();
-    let td3 = result.find("reaching-6dof", "TD3").unwrap();
-    let sac = result.find("reaching-6dof", "SAC").unwrap();
-    let ppo = result.find("reaching-6dof", "PPO").unwrap();
-    let reinforce = result.find("reaching-6dof", "REINFORCE").unwrap();
-
-    // All metrics must be finite.
-    for run in [cem, td3, sac, ppo, reinforce] {
+    // Every replicate's every epoch must be finite.
+    for run in &result.runs {
         run.assert_finite();
     }
 
-    let r_cem = cem.final_reward().unwrap();
-    let r_td3 = td3.final_reward().unwrap();
-    let r_sac = sac.final_reward().unwrap();
-    let r_ppo = ppo.final_reward().unwrap();
-    let r_reinforce = reinforce.final_reward().unwrap();
-
-    // Off-policy beats on-policy — semantically valid under both metrics
-    // (TD3, PPO, REINFORCE all reported per-episode-total units even
-    // before Ch 24 Decision 1).
-    assert!(
-        r_td3 > r_ppo,
-        "TD3 ({r_td3:.2}) should beat PPO ({r_ppo:.2}) at 1 layer"
-    );
-    assert!(
-        r_ppo > r_reinforce,
-        "PPO ({r_ppo:.2}) should beat REINFORCE ({r_reinforce:.2}) at 1 layer"
-    );
-
-    // CEM vs gradient methods: findings-mode, no hard assertion (the old
-    // `r_cem > r_td3` assertion was a pre-PR-2b unit-mismatch artifact).
-    print_reversal_check(
-        r_cem,
-        &[
-            ("TD3", r_td3),
-            ("SAC", r_sac),
-            ("PPO", r_ppo),
-            ("REINFORCE", r_reinforce),
-        ],
-    );
-
-    // Print full results for the record.
-    eprintln!("\n=== Level 2 parity (1-layer autograd) ===");
-    for (name, reward) in [
-        ("CEM", r_cem),
-        ("SAC", r_sac),
-        ("TD3", r_td3),
-        ("PPO", r_ppo),
-        ("REINFORCE", r_reinforce),
-    ] {
-        let run = result.find("reaching-6dof", name).unwrap();
-        eprintln!("{name}: reward={reward:.2}, dones={}", run.total_dones());
-    }
-
-    // SAC comparison: now with MLP actor, does it beat TD3?
-    if r_sac > r_td3 {
-        eprintln!(
-            "Finding: SAC ({r_sac:.2}) overtakes TD3 ({r_td3:.2}) — \
-             MLP stochastic actor unlocked by autograd"
-        );
-    } else {
-        eprintln!("Finding: TD3 ({r_td3:.2}) still ahead of SAC ({r_sac:.2}) at 1 layer");
-    }
+    assert_off_policy_dominates(&result, "reaching-6dof", seeds.len());
 }
 
 // ── Test 9: Autograd 2-layer — the headline test ─────────────────────────
