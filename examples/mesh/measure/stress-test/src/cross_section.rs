@@ -1,4 +1,4 @@
-//! mesh-measure-cross-section — planar slicing of a 32-segment closed cylinder.
+//! cross-section — planar slicing of a 32-segment closed cylinder (`mesh-measure` surface).
 //!
 //! Demonstrates the full `mesh-measure::cross_section` +
 //! `cross_sections` + `circumference_at_height` + `area_at_height`
@@ -485,7 +485,7 @@ fn verify_plane_normal_normalization(mesh: &IndexedMesh, mid: &CrossSection) {
 /// plane-normal demos. Extracted from `main` to keep the entrypoint
 /// under clippy's `too_many_lines` cap.
 fn print_summary(mesh: &IndexedMesh, mid: &CrossSection) {
-    println!("==== mesh-measure-cross-section ====");
+    println!("==== measure: cross-section ====");
     println!();
     println!(
         "input  : {}-vertex, {}-triangle 32-segment closed cylinder",
@@ -585,7 +585,7 @@ fn print_summary(mesh: &IndexedMesh, mid: &CrossSection) {
 // main
 // =============================================================================
 
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     let mesh = build_fixture();
     verify_fixture_geometry(&mesh);
 

@@ -4823,6 +4823,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-measure-stress-test"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "mesh-io",
+ "mesh-measure",
+ "mesh-types",
+ "nalgebra 0.34.2",
+]
+
+[[package]]
 name = "example-mesh-attributed-mesh-basics"
 version = "1.0.0"
 dependencies = [
@@ -4968,40 +4980,6 @@ dependencies = [
  "approx 0.5.1",
  "mesh-io",
  "mesh-lattice",
- "mesh-types",
-]
-
-[[package]]
-name = "example-mesh-mesh-measure-bounding-box"
-version = "1.0.0"
-dependencies = [
- "anyhow",
- "approx 0.5.1",
- "mesh-io",
- "mesh-measure",
- "mesh-types",
- "nalgebra 0.34.2",
-]
-
-[[package]]
-name = "example-mesh-mesh-measure-cross-section"
-version = "1.0.0"
-dependencies = [
- "anyhow",
- "approx 0.5.1",
- "mesh-io",
- "mesh-measure",
- "mesh-types",
-]
-
-[[package]]
-name = "example-mesh-mesh-measure-distance-to-mesh"
-version = "1.0.0"
-dependencies = [
- "anyhow",
- "approx 0.5.1",
- "mesh-io",
- "mesh-measure",
  "mesh-types",
 ]
 

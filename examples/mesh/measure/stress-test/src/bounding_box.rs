@@ -1,4 +1,4 @@
-//! mesh-measure-bounding-box — AABB + OBB on a two-shape fixture.
+//! bounding-box — AABB + OBB on a two-shape fixture (`mesh-measure` surface).
 //!
 //! Demonstrates the full `mesh-measure::dimensions` +
 //! `oriented_bounding_box` public surface against a hand-authored
@@ -534,7 +534,7 @@ fn verify_brick_obb(obb: &OrientedBoundingBox, brick_verts: &[Point3<f64>]) {
 // main
 // =============================================================================
 
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     let mesh = build_fixture();
     verify_fixture_geometry(&mesh);
 
@@ -550,7 +550,7 @@ fn main() -> Result<()> {
     let brick_obb = oriented_bounding_box(&brick_mesh);
     verify_brick_obb(&brick_obb, &brick_verts);
 
-    println!("==== mesh-measure-bounding-box ====");
+    println!("==== measure: bounding-box ====");
     println!();
     println!(
         "input  : {}-vertex, {}-triangle two-shape fixture",

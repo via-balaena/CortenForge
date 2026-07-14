@@ -261,8 +261,7 @@ OK — 4 strut + 2 estimate_strut_volume + 4 LatticeType + ...
 ## Cross-references
 
 - **Sister examples** rounding out the v1.0 mesh-arc:
-  `mesh-measure-bounding-box`, `mesh-measure-cross-section`,
-  `mesh-measure-distance-to-mesh`, `mesh-sdf-distance-query`,
+  `measure/stress-test`, `mesh-sdf-distance-query`,
   `mesh-lattice-tpms-gyroid`. The density-modulated counterpart is
   `mesh-lattice-density-gradient` (variable density via `DensityMap`
   on octet-truss).

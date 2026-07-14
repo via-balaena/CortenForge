@@ -1,5 +1,7 @@
 # Generated artifacts from example runs (PLY frames, intermediate meshes).
-# Each example writes to its own out/ directory under
-# examples/mesh/<name>/out/ — kept local for the visuals pass, never
-# committed. See README.md for the layout convention.
-*/out/
+# Each example writes to its own out/ directory (e.g.
+# examples/mesh/<domain>/<crate>/out/) — kept local for the visuals
+# pass, never committed. `**/out/` matches at any nesting depth so the
+# standardization layout's nested crates are covered. See README.md for
+# the layout convention.
+**/out/

@@ -51,15 +51,15 @@ These examples cover the mesh-to-SDF half of the bridge: building signed-distanc
 
 ## Band 4 — measurement
 
-Three examples cover the geometric-inspection surface: bounding boxes (axis-aligned vs PCA-based oriented), planar cross-sections, and point- and mesh-distance composition into Hausdorff. Each one surfaced one or more v0.9 candidates where spec authoring or example execution exposed an FP-stability or formula gap that didn't show up under unit-test coverage.
+One stress-test (`measure/stress-test`) covers the geometric-inspection surface across three modules: bounding boxes (axis-aligned vs PCA-based oriented), planar cross-sections, and point- and mesh-distance composition into Hausdorff. Each module surfaced one or more v0.9 candidates where spec authoring or example execution exposed an FP-stability or formula gap that didn't show up under unit-test coverage.
 
-### `mesh-measure`
+### `mesh-measure` (folded into `measure/stress-test`)
 
-- **`mesh-measure-bounding-box`** — AABB and OBB on a two-shape fixture (axis-aligned cube + 45°-rotated brick). Demonstrates when AABB and OBB coincide, when they diverge (PCA recovers the brick's `(20, 10, 10)` extents), and that the folk-intuition "OBB ⊆ AABB" is false for any non-trivial OBB rotation — corners extend OUTSIDE the AABB envelope by `half_extent · sin(rotation_angle)`.
+- **`bounding_box` module** — AABB and OBB on a two-shape fixture (axis-aligned cube + 45°-rotated brick). Demonstrates when AABB and OBB coincide, when they diverge (PCA recovers the brick's `(20, 10, 10)` extents), and that the folk-intuition "OBB ⊆ AABB" is false for any non-trivial OBB rotation — corners extend OUTSIDE the AABB envelope by `half_extent · sin(rotation_angle)`.
   Surfaced v0.9 candidates #5 (tolerance-aware `OrientedBoundingBox::contains`) and #6 (documenting the OBB ⊄ AABB caveat). Pairs with [Part 6 — Measurement](60-measurement.md).
-- **`mesh-measure-cross-section`** — planar slicing of a 32-segment closed cylinder: mid-slice, 10-slice stack, `circumference_at_height` and `area_at_height` helpers, out-of-mesh handling, and plane-normal auto-normalization.
+- **`cross_section` module** — planar slicing of a 32-segment closed cylinder: mid-slice, 10-slice stack, `circumference_at_height` and `area_at_height` helpers, out-of-mesh handling, and plane-normal auto-normalization.
   Surfaced v0.9 candidate #7 (shoelace-weighted polygon centroid; the current naive average biases on chain-closure-duplicate contours by ~0.077 mm on this fixture). Pairs with [Part 6 — Measurement](60-measurement.md).
-- **`mesh-measure-distance-to-mesh`** — point-to-point + unsigned point-to-mesh + symmetric Hausdorff between two vertex-disjoint unit cubes. Demonstrates that Hausdorff is composition over the exposed primitives, not a built-in — a deliberate API choice deferring the convenience wrapper until a real consumer drives it.
+- **`distance` module** — point-to-point + unsigned point-to-mesh + symmetric Hausdorff between two vertex-disjoint unit cubes. Demonstrates that Hausdorff is composition over the exposed primitives, not a built-in — a deliberate API choice deferring the convenience wrapper until a real consumer drives it.
   Pairs with [Part 6 — Measurement](60-measurement.md).
 
 ## Band 5 — shell and printability
@@ -113,7 +113,7 @@ Five `mesh-lattice` examples cover the three lattice approaches in the workspace
 
 ## Layout convention
 
-Every example is a workspace member crate. Directory names are dash-case to match the rest of the workspace (`mesh-pipeline`, `hello-solid`, etc.); package names are `example-mesh-<dash-case-name>`. Generated PLY artifacts go to a per-example `out/` directory, gitignored at the `examples/mesh/.gitignore` level.
+Every example is a workspace member crate with dash-case directory names. The standardization arc is migrating mesh examples to the uniform `examples/mesh/<domain>/<crate>` layout that matches `fundamentals/sim-cpu`: each domain consolidates into one headless `stress-test` validator (package `example-<domain>-stress-test`, marked `[package.metadata.cortenforge] example_kind = "validator"`) alongside any visual demos, so the CI `run-validators` gate tracks one physics-validation superset per domain. Flat `example-mesh-<name>` examples not yet folded keep their names until their domain is migrated — `measure/stress-test` (folding the three former `mesh-measure-*` examples) is the first. Generated PLY artifacts go to a per-crate `out/` directory, gitignored via `**/out/` at the `examples/mesh/.gitignore` level.
 
 The canonical per-example README template — including the `## What it does` / `## Numerical anchors` / `## Visuals` / `## Run` sections — lives in [`examples/mesh/README.md`](../../../../examples/mesh/README.md), the single source of truth so it doesn't drift between this book and the examples directory.
 
@@ -123,7 +123,7 @@ Per `feedback_one_at_a_time` and `feedback_one_at_a_time_review`, each example i
 
 ## What this part commits to
 
-- The 25-example inventory above is the canonical mesh examples list at the platform's first stable release.
-- New examples MUST follow the layout convention (workspace member crate at `examples/mesh/<dash-case-name>/`, museum-plaque README per `feedback_museum_plaque_readmes`, two-pass reviewed).
+- The inventory above is the canonical mesh examples list at the platform's first stable release (originally 25 flat crates; the standardization arc is consolidating them per-domain into `stress-test` validators, so the crate count drops as domains are folded — `measure/stress-test` was the first, folding three into one).
+- New examples MUST follow the standardization layout (one headless `stress-test` validator per domain at `examples/mesh/<domain>/stress-test/`, package `example-<domain>-stress-test`, museum-plaque README per `feedback_museum_plaque_readmes`, two-pass reviewed).
 - Per-example numerical anchors and expected outputs live in each example's README and `src/main.rs` — the depth source. The aggregator at `examples/mesh/README.md` is index-granularity (link out, no anchor citation, per `feedback_museum_plaque_readmes` extended to docs aggregators); this Part is the pedagogical narrative tying examples to the rest of the book.
 - New examples that surface gaps in the platform should add the gap to [Part 10's v0.9 candidates list](100-roadmap.md#v09-candidates) (or an appropriate Open architectural question section), with a trigger statement describing what consumer arrival looks like.
