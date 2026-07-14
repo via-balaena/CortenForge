@@ -62,7 +62,7 @@ One stress-test (`measure/stress-test`) covers the geometric-inspection surface 
 
 ## Band 5 — shell and printability
 
-A `mesh-shell` stress-test and eight `mesh-printability` examples cover the manufacturing-aware operations: producing wall-thickness shells (the foundational geometry for every casting and printing workflow) and validating a candidate mesh against per-technology printer constraints. The printability set is the densest in the inventory because each detector ships its own pedagogical fixture surfacing one detector at a time, plus a final showcase exercising six detectors on a single multi-shell bracket.
+A `mesh-shell` stress-test and a `mesh-printability` stress-test cover the manufacturing-aware operations: producing wall-thickness shells (the foundational geometry for every casting and printing workflow) and validating a candidate mesh against per-technology printer constraints. The printability stress-test is the densest module set in the inventory because each detector keeps its own pedagogical fixture surfacing one detector at a time, plus a final showcase exercising six detectors on a single multi-shell bracket.
 
 ### `mesh-shell`
 
@@ -71,18 +71,17 @@ A `mesh-shell` stress-test and eight `mesh-printability` examples cover the manu
 
 ### `mesh-printability`
 
-These eight examples mirror the v0.8 detector inventory documented in [Part 5 — Shell and printability](50-shell-and-print.md). Each ships a fixture purpose-built to surface one detector cleanly, plus regression coverage on adjacent detectors that would naturally co-fire on the fixture.
+The `printability/stress-test` crate is the domain validator, its seven modules mirroring the v0.8 detector inventory documented in [Part 5 — Shell and printability](50-shell-and-print.md). Each module keeps a fixture purpose-built to surface one detector cleanly, plus regression coverage on adjacent detectors that would naturally co-fire on the fixture. Folded from eight former per-crate examples; the former `printability-thin-wall` was dropped as a strict subset of `technology_sweep`'s FDM slice (same hollow-box family, analytical oracles, no coverage lost).
 
-- **`printability-thin-wall`** — `ThinWall` detector. Double-walled hollow box with a 0.4 mm top wall thinned below FDM's 1.0 mm threshold; two Critical clusters plus a cavity-ceiling overhang co-flag.
-- **`printability-long-bridge`** — `LongBridge` detector. 24-vertex H-shape with a 20 mm middle bridge above FDM's 10 mm `max_bridge_span`; the two 5 mm cantilevers cluster independently. Silent-drop on SLS / MJF (powder support).
-- **`printability-trapped-volume`** — `TrappedVolume` detector. Solid cube with a sealed sphere cavity; `Info` on FDM (extrusion prints through), `Critical` on SLA / SLS / MJF (resin / powder traps).
-- **`printability-self-intersecting`** — `SelfIntersecting` detector. Two interpenetrating cylinders without boolean cleanup; flags 100 triangle pairs (the `mesh-repair::IntersectionParams::default` `max_reported` cap) plus a single-cylinder convex-mesh regression.
-- **`printability-small-feature`** — `SmallFeature` detector. 30 mm cube + 0.2 mm hex-prism burr; Warning band; ThinWall co-flag drives `is_printable() == false`.
-- **`printability-orientation`** — `PrinterConfig::build_up_direction` parametrization. Leaning cylinder revalidated under three runs (original, manual `R_Y(-60°)` rotation, build-up direction set to the axis); the v0.8 Gap L invariant is mesh-rotation ≡ up-vector-rotation when both are exact.
-- **`printability-technology-sweep`** — cross-technology severity divergence. Same hollow box validated under FDM / SLA / SLS / MJF; each technology fails `is_printable()` for a different reason.
-- **`printability-showcase`** — capstone. Single bracket fixture (528 vertices / 1032 faces, five vertex-disjoint shells) exercising six detectors at once; surfaces five deliberate spec deviations as load-bearing pedagogical observations.
+- **`long_bridge`** — `LongBridge` detector. 24-vertex H-shape with a 20 mm middle bridge above FDM's 10 mm `max_bridge_span`; the two 5 mm cantilevers cluster independently. Silent-drop on SLS / MJF (powder support). The bridge midpoint coincides with the middle-overhang centroid (cross-detector co-flag).
+- **`trapped_volume`** — `TrappedVolume` detector. Solid cube with a sealed sphere cavity; voxel volume validated against analytical `(4/3)πr³`; `Info` on FDM (extrusion prints through), `Critical` on SLA / SLS / MJF (resin / powder traps).
+- **`self_intersecting`** — `SelfIntersecting` detector. Two interpenetrating cylinders without boolean cleanup; the `max_reported` cap biconditional (truncation suffix iff cap hit) plus a single-cylinder convex-mesh no-false-positive control.
+- **`small_feature`** — `SmallFeature` detector. 30 mm cube + 0.2 mm hex-prism burr; Warning band; ThinWall co-flag drives `is_printable() == false`.
+- **`orientation`** — `PrinterConfig::build_up_direction` parametrization. Leaning cylinder revalidated under three runs (original, manual `R_Y(-60°)` rotation, build-up direction set to the axis); the v0.8 Gap L invariant is mesh-rotation ≡ up-vector-rotation when both are exact.
+- **`technology_sweep`** — cross-technology severity divergence. Same hollow box validated under FDM / SLA / SLS / MJF; each technology fails `is_printable()` for a different reason. Its FDM slice is the canonical hollow-box `ThinWall` oracle.
+- **`showcase`** — capstone. Single bracket fixture (528 vertices / 1032 faces, five vertex-disjoint shells) exercising six detectors at once; surfaces five deliberate spec deviations as load-bearing pedagogical observations.
 
-All eight pair with [Part 5 — Shell and printability](50-shell-and-print.md).
+All seven modules pair with [Part 5 — Shell and printability](50-shell-and-print.md).
 
 ## Band 6 — lattices and composites
 

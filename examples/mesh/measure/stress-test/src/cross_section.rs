@@ -27,7 +27,7 @@
 // Cross-product unit-normal computation reads as the textbook formula
 // `e1.y*e2.z - e1.z*e2.y`; the `mul_add` rewrite obscures intent and
 // produces bit-equivalent results on integer + sin/cos vertex
-// coordinates. (Same precedent as printability-showcase
+// coordinates. (Same precedent as the showcase module
 // verify_fixture_geometry.)
 #![allow(clippy::suboptimal_flops)]
 // `i as f64` for ring-segment-index → angle conversion; `i` is bounded

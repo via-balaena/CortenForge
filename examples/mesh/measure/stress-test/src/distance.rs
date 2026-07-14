@@ -109,7 +109,7 @@ const HAUSDORFF_EXPECTED: f64 = 12.0; // square value; sqrt taken below
 
 /// Build an axis-aligned unit cube spanning `[min, max]³`.
 ///
-/// Vertex layout (matches the bbox + printability-showcase
+/// Vertex layout (matches the bbox + showcase-module
 /// 12-face template):
 /// - v0 `(min, min, min)` — bottom-front-left
 /// - v1 `(max, min, min)` — bottom-front-right

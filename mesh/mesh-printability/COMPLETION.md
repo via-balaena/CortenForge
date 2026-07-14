@@ -127,8 +127,8 @@ Headline items:
 - **Overhang-predicate FP bits not bit-exact** across FMA-vs-non-FMA platforms (the 9 per-site `#[allow(clippy::suboptimal_flops)]` deferral). Tolerance bands + cross-os CI mitigate.
 - **Cavity-ceiling co-flag** under the corrected Gap M predicate: a sealed cavity's ceiling inherently flags as 90° overhang. Documented behavior; v0.9 candidate for cavity-aware overhang severity.
 - **`find_optimal_orientation` discrete sample set** cannot reach arbitrary axis-aligned rotations (e.g., `R_Y(-60°)`). For exact-axis recovery, use `apply_orientation` with a hand-constructed `Matrix3`. v0.9 candidate.
-- **`mesh-repair detect_self_intersections` false-positives** on thin-aspect-ratio prismatic geometry (cylinders L≥18mm at R=5mm, leaning-prism wing in `printability-showcase`). v0.9 candidate (carried up to mesh-repair).
-- **Build-plate filter discrimination** (Gap M.2 over-aggressiveness): filter excludes any face whose lowest VERTEX touches the plate, even when the centroid + remaining vertices represent real overhang concern. Surfaced by `printability-showcase`. v0.9 candidate.
+- **`mesh-repair detect_self_intersections` false-positives** on thin-aspect-ratio prismatic geometry (cylinders L≥18mm at R=5mm, leaning-prism wing in the `showcase` module). v0.9 candidate (carried up to mesh-repair).
+- **Build-plate filter discrimination** (Gap M.2 over-aggressiveness): filter excludes any face whose lowest VERTEX touches the plate, even when the centroid + remaining vertices represent real overhang concern. Surfaced by the `showcase` module. v0.9 candidate.
 - **`§4.4` global severity-descending sort** of `validation.issues` not implemented; issues append in detector run order (overhangs → thin_walls → long_bridges → trapped_volumes → self_intersections → small_features). v0.9 candidate.
 
 ## Cross-references
@@ -136,7 +136,7 @@ Headline items:
 - **CHANGELOG.md** — per-entry detail for every Gap A–M shipped + verbose v0.9 candidates anchor.
 - **mesh book §50** (`docs/studies/mesh_architecture/src/50-shell-and-print.md`) — depth-pass narrative on the architecture + worked example + Known limitations.
 - **Pre-squash audit trail** (lands in row #25): `git checkout feature/mesh-printability-v0-8-pre-squash` recovers the per-commit history.
-- **Example crates** (`examples/mesh/printability-*`): 8 visual demos, one per detector + orientation parametrization + cross-tech sweep + capstone showcase. Each is documented as a museum-plaque README per `feedback_museum_plaque_readmes`.
+- **Example crate** (`examples/mesh/printability/stress-test`, crate `example-printability-stress-test`): the domain validation superset, seven headless modules (`long_bridge` / `trapped_volume` / `self_intersecting` / `small_feature` / `orientation` / `technology_sweep` / `showcase`) each self-gating one detector or composition pattern, folded from the former eight per-crate examples. Documented as a museum-plaque README per `feedback_museum_plaque_readmes`.
 
 ## Example
 

@@ -74,10 +74,10 @@
 //! ## How to run
 //!
 //! ```text
-//! cargo run -p example-mesh-printability-small-feature --release
+//! cargo run -p example-printability-stress-test --release
 //! ```
 //!
-//! Output written to `examples/mesh/printability-small-feature/out/`.
+//! Output written to `examples/mesh/printability/stress-test/out/small_feature/`.
 //! Open `mesh.ply` in cf-view for the visuals pass. The burr is barely
 //! visible at default zoom (0.2 mm vs the cube's 30 mm — 1:150 scale
 //! ratio); zoom to `(35, 15, 0.1)` at ≥ 100× magnification to see the
@@ -136,13 +136,13 @@ fn expected_burr_volume() -> f64 {
     hex_area * BURR_HEIGHT
 }
 
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     // ─── Fixture: 30 mm cube + 0.2 mm hex-prism burr (vertex-disjoint) ───
     let cube = build_main_cube();
     let burr = build_hex_prism_burr();
     let assembly = concat(&cube, &burr);
 
-    println!("==== mesh-printability-small-feature ====");
+    println!("==== printability: small-feature ====");
     println!();
     println!(
         "input  : 30 mm solid cube + 0.2 mm hex-prism burr (vertex-disjoint, both watertight)"
@@ -178,7 +178,9 @@ fn main() -> Result<()> {
     verify(&validation);
 
     // ─── Artifacts ───────────────────────────────────────────────────────
-    let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("out");
+    let out_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("out")
+        .join("small_feature");
     std::fs::create_dir_all(&out_dir)?;
     let mesh_path = out_dir.join("mesh.ply");
     let issues_path = out_dir.join("issues.ply");
@@ -188,12 +190,12 @@ fn main() -> Result<()> {
     println!();
     println!("artifacts:");
     println!(
-        "  out/mesh.ply   : {}v, {}f (ASCII)",
+        "  out/small_feature/mesh.ply   : {}v, {}f (ASCII)",
         assembly.vertices.len(),
         assembly.faces.len(),
     );
     println!(
-        "  out/issues.ply : {} centroid point(s) (ASCII, vertex-only)",
+        "  out/small_feature/issues.ply : {} centroid point(s) (ASCII, vertex-only)",
         issue_centroid_count(&validation),
     );
     println!();
@@ -521,7 +523,7 @@ fn save_issue_centroids(v: &PrintValidation, path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Number of region centroids written to `out/issues.ply`.
+/// Number of region centroids written to `out/small_feature/issues.ply`.
 const fn issue_centroid_count(v: &PrintValidation) -> usize {
     v.small_features.len() + v.thin_walls.len()
 }

@@ -177,17 +177,17 @@
 //! ## How to run
 //!
 //! ```text
-//! cargo run -p example-mesh-printability-showcase --release
+//! cargo run -p example-printability-stress-test --release
 //! ```
 //!
 //! `--release` is required for the FDM voxel-grid `TrappedVolume`
 //! detector on the body cavity (`~ 500 × 300 × 100 = 15 M voxels =
 //! 15 MB at 0.1 mm voxel`; tractable in release, slow in debug). Output
-//! is written to `examples/mesh/printability-showcase/out/`:
+//! is written to `examples/mesh/printability/stress-test/out/showcase/`:
 //!
-//! - `out/mesh.ply` — 528-vertex, 1032-triangle ASCII PLY of the full
+//! - `out/showcase/mesh.ply` — 528-vertex, 1032-triangle ASCII PLY of the full
 //!   bracket fixture.
-//! - `out/issues.ply` — vertex-only ASCII PLY of all detected region
+//! - `out/showcase/issues.ply` — vertex-only ASCII PLY of all detected region
 //!   centroids (12 points on FDM: `thin_walls` + overhangs +
 //!   `support_regions` + `trapped_volumes` + `small_features`).
 //!
@@ -195,8 +195,8 @@
 //! If you do want to eyeball the artifacts, run cf-view on each PLY
 //! separately:
 //! ```text
-//! cargo run -p cf-viewer --release -- examples/mesh/printability-showcase/out/mesh.ply
-//! cargo run -p cf-viewer --release -- examples/mesh/printability-showcase/out/issues.ply
+//! cargo run -p cf-viewer --release -- examples/mesh/printability/stress-test/out/showcase/mesh.ply
+//! cargo run -p cf-viewer --release -- examples/mesh/printability/stress-test/out/showcase/issues.ply
 //! ```
 //! cf-view v1 ships single-file rendering; see `README.md` for the
 //! WYSIWYP-rendering rationale + cavity / sphere-tessellation notes.
@@ -241,7 +241,7 @@ const SPHERE_CZ: f64 = BODY_Z / 2.0;
 const SPHERE_RADIUS: f64 = 3.0;
 
 /// UV tessellation: longitudinal segments per latitude ring.
-/// Same resolution as `printability-trapped-volume` for visual
+/// Same resolution as the `trapped_volume` module for visual
 /// continuity.
 const SPHERE_SEGS: u32 = 32;
 
@@ -1083,11 +1083,11 @@ fn mesh_bbox(mesh: &IndexedMesh) -> (Point3<f64>, Point3<f64>) {
 // clearer top-to-bottom in `main` than split into helpers (row #22
 // precedent).
 #[allow(clippy::similar_names, clippy::too_many_lines)]
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     let mesh = build_bracket();
     verify_fixture_geometry(&mesh);
 
-    println!("==== mesh-printability-showcase ====");
+    println!("==== printability: showcase ====");
     println!();
     println!(
         "input  : {}-vertex, {}-triangle bracket fixture (5 vertex-disjoint shells)",
@@ -1120,7 +1120,9 @@ fn main() -> Result<()> {
     verify(&validation);
 
     // ─── Artifacts ───────────────────────────────────────────────────────
-    let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("out");
+    let out_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("out")
+        .join("showcase");
     std::fs::create_dir_all(&out_dir)?;
     let mesh_path = out_dir.join("mesh.ply");
     let issues_path = out_dir.join("issues.ply");
@@ -1130,12 +1132,12 @@ fn main() -> Result<()> {
     println!();
     println!("artifacts:");
     println!(
-        "  out/mesh.ply   : {}v, {}f (ASCII)",
+        "  out/showcase/mesh.ply   : {}v, {}f (ASCII)",
         mesh.vertices.len(),
         mesh.faces.len(),
     );
     println!(
-        "  out/issues.ply : {} centroid point(s) (ASCII, vertex-only)",
+        "  out/showcase/issues.ply : {} centroid point(s) (ASCII, vertex-only)",
         issue_centroid_count(&validation),
     );
     println!();
@@ -1373,7 +1375,7 @@ fn save_issue_centroids(v: &PrintValidation, path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Number of region centroids written to `out/issues.ply`.
+/// Number of region centroids written to `out/showcase/issues.ply`.
 const fn issue_centroid_count(v: &PrintValidation) -> usize {
     v.thin_walls.len()
         + v.overhangs.len()

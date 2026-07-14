@@ -1,0 +1,36 @@
+[package]
+name = "example-printability-stress-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Declares this example's role in the validation contract. `validator` = the
+# binary self-checks against oracles and exits non-zero on any failure, so CI
+# runs it red-or-green (see `cargo xtask run-validators`). The alternative kind
+# is `demo` (illustration only; compile-checked but not run). Every self-gating
+# example MUST declare `validator` or its oracle checks run nowhere in CI.
+[package.metadata.cortenforge]
+example_kind = "validator"
+
+[dependencies]
+# Hand-authored fixtures (hollow boxes, H-shape, leaning/interpenetrating
+# cylinders, sphere cavity, multi-shell bracket) + Point3 / Vector3.
+mesh-types = { workspace = true }
+# save_ply for the per-module out/<module>/*.ply human-inspectable artifacts.
+mesh-io = { workspace = true }
+# validate_for_printing + PrinterConfig::{fdm,sla,sls,mjf}_default + orientation
+# API (with_build_up_direction / apply_orientation / place_on_build_plate /
+# find_optimal_orientation) + region / issue / severity types.
+mesh-printability = { workspace = true }
+# Result<()> return type for each module's run().
+anyhow = { workspace = true }
+# assert_relative_eq! numerical anchors (long_bridge / orientation /
+# trapped_volume / technology_sweep / showcase).
+approx = { workspace = true }
+# UnitQuaternion::from_axis_angle for orientation's exact R_Y(-60°) rotation
+# (mesh-types re-exports Point3 / Vector3 but not UnitQuaternion).
+nalgebra = { workspace = true }
+
+[lints]
+workspace = true

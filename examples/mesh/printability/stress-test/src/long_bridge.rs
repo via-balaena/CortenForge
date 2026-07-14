@@ -10,7 +10,7 @@
 //! outer end (each span 5 mm, below threshold and silently dropped by
 //! the bridge detector).
 //!
-//! Saves `out/mesh.ply` (the input fixture) and `out/issues.ply` (a
+//! Saves `out/long_bridge/mesh.ply` (the input fixture) and `out/long_bridge/issues.ply` (a
 //! 4-point centroid cloud — 1 `LongBridge` midpoint at (15, 2.5, 18)
 //! plus 3 `OverhangRegion` centroids at (-1.25, 2.5, 18), (15, 2.5, 18),
 //! (31.25, 2.5, 18); the middle-bridge `LongBridge` midpoint and the
@@ -87,10 +87,10 @@
 //! ## How to run
 //!
 //! ```text
-//! cargo run -p example-mesh-printability-long-bridge --release
+//! cargo run -p example-printability-stress-test --release
 //! ```
 //!
-//! Output written to `examples/mesh/printability-long-bridge/out/`. Open
+//! Output written to `examples/mesh/printability/stress-test/out/long_bridge/`. Open
 //! `mesh.ply` and `issues.ply` in cf-view for the visuals pass — see
 //! the README's downward-facing-geometry callout for orbit instructions
 //! to expose the slab's downward-facing bottom.
@@ -151,13 +151,13 @@ const CENTROID_TOL: f64 = 1.0e-9;
 /// projections collapse to `v.x` and the subtraction is exact.
 const SPAN_TOL: f64 = 1.0e-6;
 
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     let mesh = build_h_shape();
 
     let fdm = PrinterConfig::fdm_default();
     let validation = validate_for_printing(&mesh, &fdm)?;
 
-    println!("==== mesh-printability-long-bridge ====");
+    println!("==== printability: long-bridge ====");
     println!();
     println!("input  : 44-triangle hand-authored H-shape");
     println!(
@@ -184,7 +184,9 @@ fn main() -> Result<()> {
     println!("{}", sls_validation.summary());
     verify_sls_tech_skip(&sls_validation);
 
-    let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("out");
+    let out_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("out")
+        .join("long_bridge");
     std::fs::create_dir_all(&out_dir)?;
     let mesh_path = out_dir.join("mesh.ply");
     let issues_path = out_dir.join("issues.ply");
@@ -194,12 +196,12 @@ fn main() -> Result<()> {
     println!();
     println!("artifacts:");
     println!(
-        "  out/mesh.ply   : {}v, {}f (ASCII)",
+        "  out/long_bridge/mesh.ply   : {}v, {}f (ASCII)",
         mesh.vertices.len(),
         mesh.faces.len(),
     );
     println!(
-        "  out/issues.ply : {} centroid point(s) (ASCII, vertex-only)",
+        "  out/long_bridge/issues.ply : {} centroid point(s) (ASCII, vertex-only)",
         issue_centroid_count(&validation),
     );
     println!();
@@ -342,7 +344,7 @@ fn build_h_shape() -> IndexedMesh {
 /// Print region/issue diagnostics to stdout. Surfaces the cluster
 /// `start`/`end`/`span`/`area` for each `LongBridgeRegion`, and the
 /// per-overhang centroid + angle + area, so the visuals pass can
-/// cross-reference the centroids against `out/issues.ply`.
+/// cross-reference the centroids against `out/long_bridge/issues.ply`.
 fn print_diagnostics(v: &PrintValidation) {
     println!("LongBridge regions ({}):", v.long_bridges.len());
     for (i, region) in v.long_bridges.iter().enumerate() {
@@ -612,7 +614,7 @@ fn save_issue_centroids(v: &PrintValidation, path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Number of region centroids written to `out/issues.ply`.
+/// Number of region centroids written to `out/long_bridge/issues.ply`.
 const fn issue_centroid_count(v: &PrintValidation) -> usize {
     v.long_bridges.len() + v.overhangs.len()
 }

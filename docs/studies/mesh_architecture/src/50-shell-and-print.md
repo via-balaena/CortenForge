@@ -115,16 +115,17 @@ This positions `mesh-printability` as the cousin of `mesh-repair`: both are L0 p
 
 ### Worked example: a hollow box with one thin wall
 
-The `printability-thin-wall` example crate (`examples/mesh/printability-thin-wall`) hand-authors a `30 × 20 × 15 mm` box with an internal cavity (`[1.5, 28.5] × [1.5, 18.5] × [1.5, 14.6]`) — side and bottom walls 1.5 mm thick, **top wall thinned to 0.4 mm**. Two vertex-disjoint shells (8 outer + 8 inner; outer CCW-from-outside, inner REVERSED so each face's outward normal points away from the surrounding solid). The mesh is watertight + consistently wound by construction; 24 triangles total.
+The `technology_sweep` module (`examples/mesh/printability/stress-test`, FDM slice) hand-authors a `25 × 20 × 15 mm` box with an internal cavity (`[1.5, 23.5] × [1.5, 18.5] × [1.5, 14.6]`) — side and bottom walls 1.5 mm thick, **top wall thinned to 0.4 mm**. Two vertex-disjoint shells (8 outer + 8 inner; outer CCW-from-outside, inner REVERSED so each face's outward normal points away from the surrounding solid). The mesh is watertight + consistently wound by construction; 24 triangles total.
 
 Running `validate_for_printing` under `PrinterConfig::fdm_default()` produces:
 
 - `thin_walls.len() == 2` — two clusters: outer top (12 tris) + inner top (12 tris). Edge-adjacency clustering keeps the shells topologically disjoint because they share no vertex.
 - Both clusters: `severity = Critical` (`thickness ≈ 0.4 mm < min_wall_thickness/2 = 0.5 mm`).
 - `overhangs.len() ≥ 1` — the inner top's downward-facing normal is a 90° overhang under the corrected Gap M predicate; emits `ExcessiveOverhang` Critical (the cavity-ceiling co-flag — documented v0.9 candidate for cavity-aware severity).
-- `trapped_volumes.len() == 1` — the sealed cavity (`≈ 6012.9 mm³`); FDM tolerates closed cavities so severity is `Info`.
+- `long_bridges.len() == 1` — the same inner-top ceiling spans the 22 mm cavity width, above FDM's 10 mm `max_bridge_span`; emits `LongBridge` Critical. (A sealed cavity ceiling is simultaneously an overhang and a bridge; both co-flag on FDM.)
+- `trapped_volumes.len() == 1` — the sealed cavity (`≈ 4899.4 mm³`); FDM tolerates closed cavities so severity is `Info`.
 - `is_printable() == false` (any Critical blocks it).
-- `summary()` — `"Found 4 issue(s): 3 critical, 0 warning, 1 info."`
+- `summary()` — `"Not printable: 4 critical issue(s), 1 info"` (5 issues total: 2 `ThinWall` + 1 `ExcessiveOverhang` + 1 `LongBridge` Critical, plus 1 `TrappedVolume` Info).
 
 The fixture is the canonical demonstration of two patterns: **closed-shell topology produces 2-cluster ThinWall outcomes** (top + bottom share no edge through side walls — generalizes to any thin slab/box), and **the cavity-ceiling co-flag** is a load-bearing v0.9 backlog item, not a bug — under the corrected predicate any sealed downward-facing surface is a 90° overhang regardless of whether the cavity is fully enclosed.
 
@@ -142,22 +143,35 @@ The CHANGELOG's `[Unreleased] / v0.9 candidates` block carries the verbose form 
 - **Leaning-prism `ThinWall` co-flag.** A solid prismatic feature tilted past ~50° presents narrow inward distances when the ThinWall ray-cast exits through a tilted lateral face. The showcase wing (`5 × 5 × 15 mm`, 60° tilt) sees inward rays exit at `(WING_X_SPAN/2)/tan(60°) ≈ 0.962 mm`, below the FDM `min_wall_thickness = 1 mm` Warning band — even though the cross-section is 5 mm. A real-CAD pitfall surfaced as a load-bearing pedagogical observation; v0.9 candidate (project ray along shell-perpendicular and require both directions to confirm).
 - **Global severity-descending sort of `validation.issues` not implemented.** Issues append in detector run order; the cross-detector `Critical → Warning → Info` sort that callers iterating `validation.issues` may expect did not land in v0.8. Per-detector sort policies (e.g., `long_bridges` by `(start.x, start.y, start.z)` via `f64::total_cmp`) are honored. v0.9 candidate.
 
-### Runnable demos — eight example crates
+### Runnable demos — one stress-test, seven modules
 
-The v0.8 fix arc shipped with eight `examples/mesh/printability-*` crates, each a museum-plaque demonstration of one detector or composition pattern. Each crate's `main()` encodes math-pass numerical anchors as Rust `assert!`s alongside its `out/*.ply` artifact emission, so `cargo run --release -p example-mesh-printability-<name>` exits 0 iff the detector behavior matches the spec. The READMEs walk through "what to look for" prose for the visuals pass.
+The v0.8 fix arc's per-detector demonstrations are folded into one domain
+validator, `examples/mesh/printability/stress-test` (crate
+`example-printability-stress-test`), each module a museum-plaque
+demonstration of one detector or composition pattern. Every module's
+`run()` encodes math-pass numerical anchors as Rust `assert!`s alongside
+its `out/<module>/*.ply` artifact emission, so `cargo run --release -p
+example-printability-stress-test` exits 0 iff every detector's behavior
+matches the spec. The README walks through "what to look for" prose for
+the visuals pass.
 
-| Crate | Detector(s) exercised | Pedagogical claim |
-|-------|------------------------|-------------------|
-| `printability-thin-wall` | `ThinWall` (Gap C) | Hand-authored 24-triangle hollow box; 2-cluster topology + cavity-ceiling co-flag |
-| `printability-long-bridge` | `LongBridge` (Gap G) | 44-triangle H-shape boolean-union; middle bridge fires Critical, cantilevers below threshold |
-| `printability-trapped-volume` | `TrappedVolume` (Gap H) | Solid cube + sealed sphere cavity (REVERSED winding); per-tech severity matrix (FDM Info, SLA/SLS/MJF Critical) |
-| `printability-self-intersecting` | `SelfIntersecting` (Gap I) | Two interpenetrating cylinders; mesh-repair re-use through the validate pipeline |
-| `printability-small-feature` | `SmallFeature` (Gap J) | Cube + 0.2 mm hex-prism burr on the build plate; non-Critical Warning, `is_printable() == true` |
-| `printability-orientation` | `build_up_direction` (Gap L) | Leaning cylinder; 3-run invariant (rotating mesh ≡ rotating up-vector) |
-| `printability-technology-sweep` | (all detectors) | Single hollow box validated under FDM/SLA/SLS/MJF; cross-tech severity divergence |
-| `printability-showcase` | (all eight detectors) | Five vertex-disjoint shells (528 v / 1032 f); capstone surfacing five v0.8 spec deviations + a sixth observation (§4.4 sort partial implementation) as load-bearing pedagogy |
+| Module | Detector(s) exercised | Pedagogical claim |
+|--------|------------------------|-------------------|
+| `long_bridge` | `LongBridge` (Gap G) | 44-triangle H-shape boolean-union; middle bridge fires Critical, cantilevers below threshold; bridge midpoint ≡ overhang centroid |
+| `trapped_volume` | `TrappedVolume` (Gap H) | Solid cube + sealed sphere cavity (REVERSED winding); analytical `(4/3)πr³` volume; per-tech severity matrix (FDM Info, SLA/SLS/MJF Critical) |
+| `self_intersecting` | `SelfIntersecting` (Gap I) | Two interpenetrating cylinders; `max_reported` cap biconditional + convex no-false-positive control |
+| `small_feature` | `SmallFeature` (Gap J) | Cube + 0.2 mm hex-prism burr; SmallFeature Warning + ThinWall Critical co-flag drives `is_printable() == false` |
+| `orientation` | `build_up_direction` (Gap L) | Leaning cylinder; 3-run invariant (rotating mesh ≡ rotating up-vector) |
+| `technology_sweep` | (all detectors; canonical `ThinWall` Gap C oracle) | Single hollow box validated under FDM/SLA/SLS/MJF; cross-tech severity divergence |
+| `showcase` | (all six detectors) | Five vertex-disjoint shells (528 v / 1032 f); capstone surfacing five v0.8 spec deviations + a sixth observation (§4.4 sort partial implementation) as load-bearing pedagogy |
 
-Each example ships ASCII PLY artifacts for `f3d` / MeshLab / ParaView review. Where `f3d`'s default rendering hides load-bearing geometry (REVERSED inner shells, downward-facing slab bottoms, `+Y`-up vs `+Z`-up world), the README's top-of-file callout names the workaround.
+The former `printability-thin-wall` crate was dropped in the fold: its
+FDM-only `ThinWall` (Gap C) hollow-box oracle is a strict subset of
+`technology_sweep`'s FDM slice, which asserts the same 2-cluster
+topology and cavity-ceiling co-flag more tightly across four
+technologies.
+
+Each module ships ASCII PLY artifacts for `f3d` / MeshLab / ParaView review. Where `f3d`'s default rendering hides load-bearing geometry (REVERSED inner shells, downward-facing slab bottoms, `+Y`-up vs `+Z`-up world), the README's top-of-file callout names the workaround.
 
 ## Pattern transfer to casting
 
