@@ -662,8 +662,8 @@ fn verify_shared_anchors(v: &PrintValidation, config: &PrinterConfig, label: &st
     let region = &v.trapped_volumes[0];
 
     // (2) Voxel-discretized cavity volume within ± 10 % of analytical
-    // `22 × 17 × 13.1 ≈ 4899.4 mm³` (f64; mathematical 4900.4 — see
-    // `ANALYTICAL_CAVITY_VOLUME`'s doc for the IEEE-754 drift). For
+    // `22 × 17 × 13.1 = 4899.4 mm³` (the computed f64 const drifts by
+    // `< 0.1 mm³` — see `ANALYTICAL_CAVITY_VOLUME`'s doc). For
     // axis-aligned cube cavities aligned to voxel edges the
     // discretization is bit-exact; the 10 % band is cross-platform
     // headroom per §9.6.

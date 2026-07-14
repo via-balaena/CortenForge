@@ -119,13 +119,13 @@ The `technology_sweep` module (`examples/mesh/printability/stress-test`, FDM sli
 
 Running `validate_for_printing` under `PrinterConfig::fdm_default()` produces:
 
-- `thin_walls.len() == 2` — two clusters: outer top (12 tris) + inner top (12 tris). Edge-adjacency clustering keeps the shells topologically disjoint because they share no vertex.
+- `thin_walls.len() == 2` — two clusters: outer top (2 tris) + inner top (2 tris). Edge-adjacency clustering keeps the shells topologically disjoint because they share no vertex.
 - Both clusters: `severity = Critical` (`thickness ≈ 0.4 mm < min_wall_thickness/2 = 0.5 mm`).
 - `overhangs.len() ≥ 1` — the inner top's downward-facing normal is a 90° overhang under the corrected Gap M predicate; emits `ExcessiveOverhang` Critical (the cavity-ceiling co-flag — documented v0.9 candidate for cavity-aware severity).
-- `long_bridges.len() == 1` — the same inner-top ceiling spans the 22 mm cavity width, above FDM's 10 mm `max_bridge_span`; emits `LongBridge` Critical. (A sealed cavity ceiling is simultaneously an overhang and a bridge; both co-flag on FDM.)
+- `long_bridges.len() == 1` — the same inner-top ceiling spans the 22 mm cavity width, above FDM's 10 mm `max_bridge_span`, so a `LongBridge` Critical *also* fires (a sealed cavity ceiling is simultaneously an overhang and a bridge). The `technology_sweep` stress-test surfaces this count via stdout but **deliberately does not assert it** — the LongBridge co-flag is incidental to the per-technology severity story the module guards, so treat it as observed-not-guaranteed.
 - `trapped_volumes.len() == 1` — the sealed cavity (`≈ 4899.4 mm³`); FDM tolerates closed cavities so severity is `Info`.
-- `is_printable() == false` (any Critical blocks it).
-- `summary()` — `"Not printable: 4 critical issue(s), 1 info"` (5 issues total: 2 `ThinWall` + 1 `ExcessiveOverhang` + 1 `LongBridge` Critical, plus 1 `TrappedVolume` Info).
+- `is_printable() == false` (any Critical blocks it — the stress-test asserts this plus the two `ThinWall` clusters, the `ExcessiveOverhang`, and the `TrappedVolume` `Info`).
+- `summary()` — the emitted string reflects every issue, so with the incidental LongBridge co-flag it currently reads `"Not printable: 4 critical issue(s), 1 info"` (2 `ThinWall` + 1 `ExcessiveOverhang` + 1 `LongBridge` Critical, plus 1 `TrappedVolume` Info).
 
 The fixture is the canonical demonstration of two patterns: **closed-shell topology produces 2-cluster ThinWall outcomes** (top + bottom share no edge through side walls — generalizes to any thin slab/box), and **the cavity-ceiling co-flag** is a load-bearing v0.9 backlog item, not a bug — under the corrected predicate any sealed downward-facing surface is a 90° overhang regardless of whether the cavity is fully enclosed.
 
