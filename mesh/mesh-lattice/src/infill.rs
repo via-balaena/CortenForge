@@ -417,12 +417,15 @@ pub fn generate_infill(
     // ~48% of struts. The parry pseudo-normal sign that followed was
     // stable under MC discretization but only by accident: it returned
     // POSITIVE in the cavity (the topological interior of
-    // `inner_offset`) because `mesh-offset`'s inward-offset MC
-    // produces a mesh with `signed_volume() < 0` (faces oriented with
+    // `inner_offset`) because, PRE-§Q-5, `mesh-offset`'s inward-offset
+    // MC produced a mesh with `signed_volume() < 0` (faces oriented with
     // normals into the cavity), and pseudo-normal then read the cavity
     // as "outside" the closed surface. The old call site negated the
     // result to recover the cavity-SDF convention (`< 0` in cavity,
-    // `> 0` in wall).
+    // `> 0` in wall). (Post-§Q-5, `mesh-offset` is outward-facing; the
+    // flood-fill sign below is winding-independent, so it is unaffected
+    // by that change — unlike the shell-assembly site, which now
+    // reverses the inner winding explicitly.)
     //
     // The mesh-sdf oracle decomposition arc replaces both with
     // `FloodFillSign` (BFS from grid corners, walls block leakage):
@@ -475,7 +478,23 @@ pub fn generate_infill(
     let lattice_result = generate_lattice(&cavity_lattice_params, (iter_min, iter_max))?;
 
     // Build the hollow shell: outer surface + inward-offset inner surface.
-    let shell = combine_meshes(mesh, &inner_offset);
+    //
+    // The inner surface must be wound so its normals point INTO the
+    // cavity (opposite the outer surface); otherwise both nested
+    // surfaces contribute positively and `shell_volume` becomes the sum
+    // `outer + inner` instead of the wall `outer − inner` (e.g. on a
+    // 50 mm cube: `50³ + 47.6³ = 232 850` mm³ — larger than the bounding
+    // box — instead of `50³ − 47.6³ = 17 150` mm³). Pre-§Q-5,
+    // `mesh-offset`'s inward-offset marching cubes emitted inside-out
+    // faces and this orientation held for free (see the `inner_offset`
+    // sign-oracle note above). The §Q-5 fix
+    // (`mesh-offset/src/marching_cubes.rs` → CCW outward winding) made
+    // `inner_offset` outward-facing, so the winding must now be reversed
+    // explicitly here — mirroring `mesh-shell::generate_shell_sdf`
+    // (`shell/generate.rs:328-330`). Guarded by
+    // `shell_signed_volume_is_wall_not_sum`.
+    let inner_wall = reverse_winding(&inner_offset);
+    let shell = combine_meshes(mesh, &inner_wall);
 
     // Build solid caps in the reserved z-bands. Two axis-aligned boxes
     // (outward-CCW) covering the full xy interior; empty mesh when
@@ -572,11 +591,13 @@ pub fn generate_infill(
     combined = combine_meshes(&combined, &cap_mesh);
     combined = combine_meshes(&combined, &connections_mesh);
 
-    // Shell signed-volume integral resolves to the wall volume:
-    // `mesh-offset`'s inward-offset MC orients inner faces with normals
-    // pointing into the cavity, so the divergence theorem subtracts the
-    // inner-offset enclosed volume from the outer mesh's enclosed
-    // volume.
+    // Shell signed-volume integral resolves to the wall volume: the
+    // inner surface was winding-reversed at the shell-assembly site
+    // above (`reverse_winding(&inner_offset)`) so its normals point into
+    // the cavity, so the divergence theorem subtracts the inner-offset
+    // enclosed volume from the outer mesh's enclosed volume. (Post-§Q-5,
+    // `mesh-offset`'s MC is outward-facing, so this reversal is
+    // required — without it the two surfaces would add, not subtract.)
     let interior_volume = (interior_max.x - interior_min.x)
         * (interior_max.y - interior_min.y)
         * (interior_max.z - interior_min.z);
@@ -733,6 +754,21 @@ fn compute_bounds(mesh: &IndexedMesh) -> (Point3<f64>, Point3<f64>) {
     (min, max)
 }
 
+/// Returns a copy of `mesh` with every triangle's winding reversed
+/// (swapping the 2nd and 3rd indices), flipping each face normal.
+///
+/// Used to orient an inward-offset inner surface so its normals point
+/// into the cavity when assembling a hollow shell — see the call site
+/// in `generate_infill`.
+fn reverse_winding(mesh: &IndexedMesh) -> IndexedMesh {
+    let faces = mesh
+        .faces
+        .iter()
+        .map(|f| [f[0], f[2], f[1]])
+        .collect::<Vec<_>>();
+    IndexedMesh::from_parts(mesh.vertices.clone(), faces)
+}
+
 /// Combines two meshes into one.
 fn combine_meshes(a: &IndexedMesh, b: &IndexedMesh) -> IndexedMesh {
     let mut vertices = a.vertices.clone();
@@ -852,6 +888,53 @@ mod tests {
 
         let infill = result.unwrap();
         assert!(infill.vertex_count() > 0);
+    }
+
+    /// Regression guard for the hollow-shell inner-wall winding.
+    ///
+    /// The shell is `outer_surface ∪ inward_offset_inner_surface`. The
+    /// inner surface must be wound so its normals point INTO the cavity,
+    /// making `shell_volume` the wall volume `outer − inner`. A winding
+    /// mismatch (the §Q-5 regression: `mesh-offset` became outward-facing
+    /// and `generate_infill` kept using it as-is) makes the two nested
+    /// surfaces both contribute positively, so `shell_volume` becomes
+    /// `outer + inner` and EXCEEDS the bounding box — physically
+    /// impossible for a shell that fits inside the input.
+    ///
+    /// On the 50 mm cube with `shell_thickness = 1.2`: wall =
+    /// `50³ − 47.6³ = 17 149.8` mm³ (correct) vs `50³ + 47.6³ =
+    /// 232 850` mm³ (the bug). The `< SIDE³` assertion is the
+    /// load-bearing one; the tolerance band catches subtler drift.
+    #[test]
+    fn shell_signed_volume_is_wall_not_sum() {
+        const SIDE: f64 = 50.0;
+        let mesh = create_test_cube();
+        let params = InfillParams::for_fdm().with_cell_size(10.0);
+        let result = generate_infill(&mesh, &params).unwrap();
+
+        let cube_volume = SIDE * SIDE * SIDE;
+        let inner = SIDE - 2.0 * params.shell_thickness; // 47.6 mm
+        let wall = cube_volume - inner * inner * inner; // 50³ − 47.6³ ≈ 17 150
+
+        // Load-bearing invariant: a hollow shell inside a 50 mm cube
+        // cannot enclose more than the cube. Catches the outer+inner bug.
+        assert!(
+            result.shell_volume > 0.0 && result.shell_volume < cube_volume,
+            "shell_volume {} must be in (0, {cube_volume}) — a shell within the cube \
+             cannot exceed the cube volume; > cube signals inner-wall winding flipped \
+             (outer + inner instead of outer − inner)",
+            result.shell_volume,
+        );
+        // Tighter guard: within 1% of the analytical wall volume. The
+        // marching-cubes chamfer on the inner offset is ~0.12% (measured
+        // 17 169.7 vs analytical 17 149.8), so 1% is ~8× headroom over
+        // tessellation drift while still catching a real few-percent
+        // volume regression.
+        assert!(
+            ((result.shell_volume - wall) / wall).abs() < 0.01,
+            "shell_volume {} should match the analytical wall volume {wall} (50³ − 47.6³) within 1%",
+            result.shell_volume,
+        );
     }
 
     #[test]

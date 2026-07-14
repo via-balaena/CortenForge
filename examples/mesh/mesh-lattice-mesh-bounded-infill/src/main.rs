@@ -21,21 +21,37 @@
 //! anchors below lock the post-fix numerical contract on the
 //! `for_fdm + cell_size 10` configuration over the 50 mm cube.
 //!
-//! Locked anchors (default config, `solid_caps = true`):
+//! Anchors (default config, `solid_caps = true`). The shell is a
+//! **welded, watertight** hollow shell (two nested closed manifolds);
+//! its structure and volume are anchored as **invariants**, not exact
+//! marching-cubes counts, so they survive mesher tessellation changes.
+//! (The earlier exact `224 672 / 74 900` soup anchors broke silently
+//! when `mesh-offset` began welding + the §Q-5 winding fix flipped the
+//! inner cavity wall — see `verify_gap_a_shell` / `verify_gap_d_volumes`
+//! and the library guard
+//! `mesh_lattice::infill::tests::shell_signed_volume_is_wall_not_sum`.)
 //!
-//! - mesh: 226 662 verts / 78 308 tris.
-//! - shell: 224 672 verts / 74 900 tris (real inward-offset hollow
-//!   shell, gap a post-fix).
+//! - shell: welded 2-component closed manifold, `2V − F = 8` at any
+//!   resolution (currently 40 844 V / 81 680 F on this fixture).
+//! - `shell_volume` ≈ 17 170 mm³ — the hollow WALL volume `SIDE³ −
+//!   47.6³ = 17 149.8` mm³ + a sub-percent MC chamfer, anchored within
+//!   1%; strictly `< SIDE³` (a shell inside the cube cannot exceed it).
 //! - lattice: 1 456 verts / 2 496 tris (104 cubic struts × 14/24 per
-//!   cylinder).
+//!   cylinder; deterministic hand-authored geometry).
 //! - caps: 16 verts / 24 tris (2 boxes × 8/12; gap c post-fix).
-//! - connections: 37 struts × 14/24 = 518 verts / 888 tris (gap b
-//!   post-fix; bridging struts from lattice nodes to inner shell).
-//! - `shell_volume` = 17 195.179 mm³ (signed-volume integral; gap d).
+//! - connections: bridging struts from near-shell lattice nodes to the
+//!   inner shell (gap b), ~30 whole 14/24 cylinders on this fixture —
+//!   anchored to a plausible range (≥10 non-trivial bridges, and fewer
+//!   than the lattice strut count) + well-formed, not an exact count (the
+//!   number follows the resolution-dependent closest-point queries).
+//! - mesh: shell + lattice + caps + connections, asserted as an
+//!   internally-consistent decomposition (whole cylinders, vert/tri
+//!   counts agree — catches cross-part welding) rather than an exact
+//!   total.
 //! - `lattice_volume` = 28.821 mm³ (signed-volume integral; gap d).
-//! - `interior_volume` = 53 157.376 mm³ = 37.6³ (mesh-SDF
-//!   intersection on offset shell; gap e — bit-equal to AABB inset
-//!   on the cube, structurally different on non-cube fixtures).
+//! - `interior_volume` = 53 157.376 mm³ = 37.6³ (mesh-SDF intersection
+//!   on offset shell; gap e — bit-equal to AABB inset on the cube,
+//!   structurally different on non-cube fixtures).
 //! - `actual_density` = 0.010 402.
 //!
 //! Comparison anchor: a second `generate_infill` run with
@@ -96,28 +112,30 @@ const INSET: f64 = CELL_SIZE_OVERRIDE.mul_add(0.5, 1.2);
 const TOP_WIDE_Z: f64 = SIDE - INSET - CELL_SIZE_OVERRIDE;
 
 // =============================================================================
-// Locked numerical anchors — post-fix, for_fdm + cell_size 10,
-// solid_caps = true (default)
+// Numerical anchors — for_fdm + cell_size 10, solid_caps = true.
+// Shell structure/volume are resolution-independent INVARIANTS (not
+// exact MC counts); lattice/cap/volume values are deterministic.
 // =============================================================================
 
-/// `mesh.vertex_count()` = `shell.vc` (224 672) + `lattice.vc`
-/// (1 456) + `cap_verts` (16 = 2 × 8) + `connection_verts` (518 =
-/// 37 × 14).
-const EXPECTED_MESH_VC: usize = 226_662;
+/// Shell wall thickness in mm (the `for_fdm` preset default). Sets the
+/// inward-offset distance, so the hollow-shell cavity is a `SIDE − 2 ×
+/// SHELL_THICKNESS = 47.6` mm cube.
+const SHELL_THICKNESS: f64 = 1.2;
 
-/// `mesh.face_count()` = `shell.fc` (74 900) + `lattice.fc` (2 496)
-/// + `cap_tris` (24 = 2 × 12) + `connection_tris` (888 = 37 × 24).
-const EXPECTED_MESH_TC: usize = 78_308;
-
-/// `result.shell.vertex_count()` — real inward-offset hollow shell
-/// (gap a post-fix); decisively NOT equal to `fixture.vertex_count() = 8`.
-const EXPECTED_SHELL_VC: usize = 224_672;
-
-/// `result.shell.face_count()`.
-const EXPECTED_SHELL_FC: usize = 74_900;
+/// The shell is a **welded, watertight** hollow shell: two nested
+/// genus-0 closed manifold surfaces (outer + inner cavity). Euler's
+/// formula makes `F = 2V − 2χ` with `χ = 2 + 2 = 4`, so `2V − F = 8`
+/// — a TOPOLOGICAL invariant independent of marching-cubes resolution.
+/// This anchors the shell's structure without locking the exact vertex
+/// count (currently 40 844 V / 81 680 F on this fixture), which the old
+/// `224 672 / 74 900` soup anchors did — and which broke silently when
+/// `mesh-offset` began welding its MC output. Vertex-soup (`V = 3F`)
+/// would give `2V − F = 5F`, so this also witnesses the weld. Checked
+/// as `2V = F + 8` in `usize` (always `2V ≥ F`, no underflow).
+const SHELL_EULER_2V_MINUS_F: usize = 8;
 
 /// `result.lattice.vertex_count()` — 104 cubic struts × 14 verts per
-/// 6-segment cylinder.
+/// 6-segment cylinder (hand-authored strut geometry; deterministic).
 const EXPECTED_LATTICE_VC: usize = 1_456;
 
 /// `result.lattice.face_count()` — 104 cubic struts × 24 tris per
@@ -130,24 +148,19 @@ const EXPECTED_LATTICE_FC: usize = 2_496;
 const EXPECTED_CAP_VERTS: usize = 16;
 const EXPECTED_CAP_TRIS: usize = 24;
 
-/// Lattice-to-shell connection count per gap-b fix — each of 37
-/// lattice nodes within `2 × cell_size = 20 mm` of the inner shell
-/// (filtered to NOT lie within the carved cap bands) emits one
-/// 14-vert / 24-tri cylinder bridge to its `closest_point` on the
-/// inner shell.
-const EXPECTED_CONNECTION_COUNT: usize = 37;
-
 /// Cylinder geometry: `mesh-lattice` strut cylinders generate 6
 /// axial segments + 2 cap rings = 14 verts, 24 tris.
 const STRUT_VERTS_PER_CYLINDER: usize = 14;
 const STRUT_TRIS_PER_CYLINDER: usize = 24;
 
-/// `result.shell_volume` — signed-volume integral on the offset
-/// shell (gap d post-fix). Analytical lower bound: `50³ − 47.6³ =
-/// 17 149.824` mm³; the `+45.355` mm³ delta is the marching-cubes
-/// chamfer on the inner offset (sharp creases bevel under linear
-/// interpolation between corners bracketing `shell_sdf == 0`).
-const EXPECTED_SHELL_VOLUME: f64 = 17_195.178_666_783_733;
+/// Relative tolerance for the shell wall volume vs the analytical
+/// `SIDE³ − 47.6³`. The marching-cubes chamfer on the inner offset is
+/// ~0.12% (measured 17 169.7 vs analytical 17 149.8), so 1% is ~8×
+/// headroom over tessellation drift while still catching a real
+/// few-percent volume regression. Replaces the old 17-significant-figure
+/// lock, which was fragile to any mesher change; mirrors the library
+/// guard `shell_signed_volume_is_wall_not_sum`.
+const SHELL_VOLUME_REL_TOL: f64 = 0.01;
 
 /// `result.lattice_volume` — signed-volume integral on the lattice
 /// mesh (gap d post-fix).
@@ -328,15 +341,22 @@ fn verify_gap_a_shell(fixture: &IndexedMesh, result: &InfillResult) -> Result<()
         result.shell.vertex_count(),
         fixture.vertex_count(),
     );
+    // Structure via a topological invariant, NOT an exact MC count: the
+    // welded hollow shell is two nested genus-0 closed manifolds, so
+    // `2V − F = 8` at any resolution (see SHELL_EULER_2V_MINUS_F). This
+    // survives mesher tessellation changes; the old exact 224 672 /
+    // 74 900 soup anchors did not.
+    let (vc, fc) = (result.shell.vertex_count(), result.shell.face_count());
     ensure!(
-        result.shell.vertex_count() == EXPECTED_SHELL_VC,
-        "shell.vertex_count = {}, expected {EXPECTED_SHELL_VC}",
-        result.shell.vertex_count(),
+        2 * vc == fc + SHELL_EULER_2V_MINUS_F,
+        "shell should be a welded 2-component closed manifold (2V = F + {SHELL_EULER_2V_MINUS_F}); got V={vc}, F={fc}, 2V={}, F+{SHELL_EULER_2V_MINUS_F}={} (vertex-soup would give 2V = 6F)",
+        2 * vc,
+        fc + SHELL_EULER_2V_MINUS_F,
     );
     ensure!(
-        result.shell.face_count() == EXPECTED_SHELL_FC,
-        "shell.face_count = {}, expected {EXPECTED_SHELL_FC}",
-        result.shell.face_count(),
+        fc > fixture.face_count(),
+        "offset shell ({fc} tris) should be finer than the {}-tri input cube",
+        fixture.face_count(),
     );
     Ok(())
 }
@@ -356,54 +376,82 @@ fn verify_lattice_geometry(result: &InfillResult) -> Result<()> {
 }
 
 fn verify_combined_mesh_totals(result: &InfillResult) -> Result<()> {
-    // shell + lattice + 2 cap boxes + 37 connection-strut cylinders.
+    // The composite is a plain concatenation of shell + lattice + caps +
+    // connection struts (no cross-part welding). Rather than lock an
+    // exact total — which would rot with the shell tessellation (the
+    // shell's exact count is intentionally not anchored; see
+    // verify_gap_a_shell) — assert the decomposition is INTERNALLY
+    // CONSISTENT: the connection geometry the composite carries beyond
+    // shell + lattice + caps must be WHOLE cylinders, and the vert- and
+    // tri-derived cylinder counts must AGREE. A cross-part weld or a
+    // dropped face would desynchronize them, and a wrong cap count would
+    // break divisibility. This holds at any shell resolution.
+    let (conn_verts, conn_tris) = connection_geometry(result);
     ensure!(
-        result.vertex_count() == EXPECTED_MESH_VC,
-        "mesh.vertex_count = {}, expected {EXPECTED_MESH_VC}",
-        result.vertex_count(),
+        conn_verts % STRUT_VERTS_PER_CYLINDER == 0 && conn_tris % STRUT_TRIS_PER_CYLINDER == 0,
+        "connection geometry should be whole cylinders: {conn_verts} verts (÷{STRUT_VERTS_PER_CYLINDER}), {conn_tris} tris (÷{STRUT_TRIS_PER_CYLINDER})",
     );
     ensure!(
-        result.triangle_count() == EXPECTED_MESH_TC,
-        "mesh.triangle_count = {}, expected {EXPECTED_MESH_TC}",
-        result.triangle_count(),
+        conn_verts / STRUT_VERTS_PER_CYLINDER == conn_tris / STRUT_TRIS_PER_CYLINDER,
+        "decomposition inconsistent: {conn_verts} verts ⇒ {} cylinders, {conn_tris} tris ⇒ {} cylinders (cross-part weld?)",
+        conn_verts / STRUT_VERTS_PER_CYLINDER,
+        conn_tris / STRUT_TRIS_PER_CYLINDER,
     );
     Ok(())
 }
 
+/// Connection-strut geometry the composite carries beyond
+/// shell + lattice + caps, derived from the decomposition
+/// `mesh − shell − lattice − caps`.
+const fn connection_geometry(result: &InfillResult) -> (usize, usize) {
+    // `saturating_sub` so a hypothetical future weld/dedup regression (the
+    // composite carrying fewer verts than shell + lattice + caps) yields 0
+    // — caught cleanly by the whole-cylinder / agreement checks and the
+    // gap-b presence guard — rather than a `usize` underflow panic.
+    let conn_verts = result
+        .vertex_count()
+        .saturating_sub(result.shell.vertex_count())
+        .saturating_sub(result.lattice.vertex_count())
+        .saturating_sub(EXPECTED_CAP_VERTS);
+    let conn_tris = result
+        .triangle_count()
+        .saturating_sub(result.shell.face_count())
+        .saturating_sub(result.lattice.face_count())
+        .saturating_sub(EXPECTED_CAP_TRIS);
+    (conn_verts, conn_tris)
+}
+
 fn verify_gap_b_connections(result: &InfillResult) -> Result<()> {
-    // Connections inject extra verts/tris beyond shell + lattice (+
-    // caps).
+    // gap-b: near-shell lattice nodes each emit one bridging cylinder to
+    // their closest point on the inner shell, so the composite carries
+    // MORE than shell + lattice + caps. The exact count (30 on this
+    // fixture) follows the resolution-dependent closest-point queries on
+    // the welded inner shell, so anchor a plausible RANGE rather than the
+    // exact number (same anti-rot rationale as the shell Euler invariant):
+    //   - lower bound MIN_BRIDGES: a near-empty count signals broken
+    //     near-shell detection (a real structural weakness — few
+    //     lattice-to-wall bridges), not tessellation drift.
+    //   - upper bound `< lattice strut count`: each bridge originates at
+    //     a lattice grid NODE, and the cubic lattice has strictly more
+    //     struts than nodes, so the strut count is a valid (if loose,
+    //     ~2×) ceiling — the example cannot see the internal node count.
+    //     A residual at/above the strut count means non-connection
+    //     geometry (e.g. a duplicated lattice, which adds exactly one
+    //     strut count to the residual) was silently absorbed into the
+    //     `mesh − shell − lattice − caps` decomposition.
+    const MIN_BRIDGES: usize = 10;
+    let base = result.shell.vertex_count() + result.lattice.vertex_count() + EXPECTED_CAP_VERTS;
     ensure!(
-        result.vertex_count() > result.shell.vertex_count() + result.lattice.vertex_count(),
-        "gap-b: mesh.vertex_count ({}) should exceed shell + lattice ({} + {} = {}); no connection verts injected pre-fix",
+        result.vertex_count() > base,
+        "gap-b: mesh.vertex_count ({}) should exceed shell + lattice + caps ({base}); no bridging struts injected pre-fix",
         result.vertex_count(),
-        result.shell.vertex_count(),
-        result.lattice.vertex_count(),
-        result.shell.vertex_count() + result.lattice.vertex_count(),
     );
-    let connection_verts = result.vertex_count()
-        - result.shell.vertex_count()
-        - result.lattice.vertex_count()
-        - EXPECTED_CAP_VERTS;
+    let (conn_verts, _) = connection_geometry(result);
+    let connections = conn_verts / STRUT_VERTS_PER_CYLINDER;
+    let lattice_struts = result.lattice.vertex_count() / STRUT_VERTS_PER_CYLINDER;
     ensure!(
-        connection_verts == EXPECTED_CONNECTION_COUNT * STRUT_VERTS_PER_CYLINDER,
-        "connection_verts = {}, expected {} = {} connections × {} verts/cylinder",
-        connection_verts,
-        EXPECTED_CONNECTION_COUNT * STRUT_VERTS_PER_CYLINDER,
-        EXPECTED_CONNECTION_COUNT,
-        STRUT_VERTS_PER_CYLINDER,
-    );
-    let connection_tris = result.triangle_count()
-        - result.shell.face_count()
-        - result.lattice.face_count()
-        - EXPECTED_CAP_TRIS;
-    ensure!(
-        connection_tris == EXPECTED_CONNECTION_COUNT * STRUT_TRIS_PER_CYLINDER,
-        "connection_tris = {}, expected {} = {} connections × {} tris/cylinder",
-        connection_tris,
-        EXPECTED_CONNECTION_COUNT * STRUT_TRIS_PER_CYLINDER,
-        EXPECTED_CONNECTION_COUNT,
-        STRUT_TRIS_PER_CYLINDER,
+        connections >= MIN_BRIDGES && connections < lattice_struts,
+        "gap-b: bridging strut count ({connections}) should be in [{MIN_BRIDGES}, {lattice_struts}) — at least {MIN_BRIDGES} non-trivial bridges, and fewer than the lattice strut count ({lattice_struts}, a loose ceiling since bridges ≤ nodes < struts; a residual at/above it signals duplicated geometry absorbed as fake connections)",
     );
     Ok(())
 }
@@ -423,20 +471,29 @@ fn verify_gap_c_cap_carving(result: &InfillResult) -> Result<()> {
 
 fn verify_gap_d_volumes(result: &InfillResult) -> Result<()> {
     // shell_volume / lattice_volume are signed-volume integrals, not
-    // bbox-heuristic. The offset shell signed volume bounds tightly
-    // to the analytical lower bound 50³ − 47.6³ = 17 149.824 mm³ +
-    // a 45.355 mm³ chamfer from MC linear interpolation on the inner
-    // offset.
+    // bbox-heuristic. The hollow-shell WALL volume is the analytical
+    // `SIDE³ − 47.6³ = 17 149.824` mm³ (outer minus inner cavity) plus a
+    // sub-percent marching-cubes chamfer on the inner offset. Anchored
+    // as an invariant band, NOT the old 17-sig-fig exact lock:
+    //   1. `0 < shell_volume < SIDE³` — a hollow shell inside the cube
+    //      cannot enclose more than the cube. LOAD-BEARING: the §Q-5
+    //      inner-wall winding regression made `shell_volume = SIDE³ +
+    //      47.6³ = 232 850` mm³ (outer + inner instead of outer −
+    //      inner), which this catches. Mirrors the library guard
+    //      `mesh_lattice::infill::tests::shell_signed_volume_is_wall_not_sum`.
+    //   2. within SHELL_VOLUME_REL_TOL of the analytical wall volume.
+    let cube_volume = SIDE * SIDE * SIDE;
+    let cavity_edge = SIDE - 2.0 * SHELL_THICKNESS;
+    let wall_volume = cube_volume - cavity_edge * cavity_edge * cavity_edge;
     ensure!(
-        (result.shell_volume - EXPECTED_SHELL_VOLUME).abs() < VOLUME_TOL,
-        "shell_volume = {:.17}, expected {EXPECTED_SHELL_VOLUME} ± {VOLUME_TOL}",
+        result.shell_volume > 0.0 && result.shell_volume < cube_volume,
+        "gap-d: shell_volume ({}) must be in (0, {cube_volume}) — a hollow shell within the cube cannot exceed it (> cube ⇒ inner-wall winding flipped)",
         result.shell_volume,
     );
     ensure!(
-        result.shell_volume < SIDE * SIDE * SIDE,
-        "gap-d: shell_volume ({}) should be < SIDE³ ({}) — shell is hollow post-fix, not the input cube",
+        ((result.shell_volume - wall_volume) / wall_volume).abs() < SHELL_VOLUME_REL_TOL,
+        "gap-d: shell_volume ({}) should match the analytical wall SIDE³ − 47.6³ = {wall_volume} within {SHELL_VOLUME_REL_TOL} (rel)",
         result.shell_volume,
-        SIDE * SIDE * SIDE,
     );
     ensure!(
         (result.lattice_volume - EXPECTED_LATTICE_VOLUME).abs() < VOLUME_TOL,
@@ -444,13 +501,14 @@ fn verify_gap_d_volumes(result: &InfillResult) -> Result<()> {
         result.lattice_volume,
     );
 
-    // total_volume = shell_volume + lattice_volume (interior_volume
-    // is reported separately and is NOT part of total_volume per
-    // `InfillResult::total_volume`).
-    let expected_total = EXPECTED_SHELL_VOLUME + EXPECTED_LATTICE_VOLUME;
+    // total_volume() is DEFINED as shell_volume + lattice_volume
+    // (interior_volume is reported separately and is NOT part of it per
+    // `InfillResult::total_volume`). Assert the identity against the
+    // runtime parts rather than hardcoded constants.
+    let expected_total = result.shell_volume + result.lattice_volume;
     ensure!(
         (result.total_volume() - expected_total).abs() < TOTAL_VOLUME_TOL,
-        "total_volume = {:.17}, expected shell_volume + lattice_volume = {EXPECTED_SHELL_VOLUME} + {EXPECTED_LATTICE_VOLUME} = {expected_total}",
+        "total_volume = {:.17}, expected shell_volume + lattice_volume = {expected_total:.17}",
         result.total_volume(),
     );
     Ok(())
@@ -591,10 +649,10 @@ fn print_summary(result: &InfillResult, no_caps: &InfillResult) {
     println!(
         "  - cap geometry      = {EXPECTED_CAP_VERTS} verts / {EXPECTED_CAP_TRIS} tris (2 boxes × 8/12)",
     );
+    let (conn_verts, conn_tris) = connection_geometry(result);
     println!(
-        "  - connections       = {EXPECTED_CONNECTION_COUNT} struts × {STRUT_VERTS_PER_CYLINDER}/{STRUT_TRIS_PER_CYLINDER} per cylinder = {} verts / {} tris",
-        EXPECTED_CONNECTION_COUNT * STRUT_VERTS_PER_CYLINDER,
-        EXPECTED_CONNECTION_COUNT * STRUT_TRIS_PER_CYLINDER,
+        "  - connections       = {} struts × {STRUT_VERTS_PER_CYLINDER}/{STRUT_TRIS_PER_CYLINDER} per cylinder = {conn_verts} verts / {conn_tris} tris",
+        conn_verts / STRUT_VERTS_PER_CYLINDER,
     );
     println!(
         "  - mesh.{{vc, tc}}     = {}, {} (= shell + lattice + caps + connections)",
