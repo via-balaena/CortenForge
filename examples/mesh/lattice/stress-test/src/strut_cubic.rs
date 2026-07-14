@@ -6,7 +6,7 @@
 // macros; allow at file level since every call is a post-validation
 // `Option::None` / `Result::Err` impossibility, not a real panic site.
 #![allow(clippy::unreachable)]
-//! mesh-lattice-strut-cubic — cubic strut lattice generation +
+//! strut-cubic — cubic strut lattice generation +
 //! the 3MF beam-data export precursor.
 //!
 //! Fixture: 25 mm cube at
@@ -14,7 +14,7 @@
 //! (radius 0.5 mm), uniform density 1.0 (so `density.sqrt() == 1.0`
 //! and per-beam `r1 == r2 == 0.5` exactly), `with_beam_export(true)`.
 //!
-//! Strut counterpart to `mesh-lattice-tpms-gyroid`: cylindrical
+//! Strut counterpart to `tpms_gyroid`: cylindrical
 //! beams between integer-spaced grid nodes — NOT a TPMS isosurface.
 //! That topology unlocks combinatorial + bit-exact anchors that the
 //! marching-cubes path cannot offer:
@@ -399,7 +399,7 @@ fn verify_beam_data(data: &BeamLatticeData) -> f64 {
 /// Bundled inputs for [`print_summary`]; avoids
 /// `clippy::too_many_arguments` while keeping fields trivially
 /// constructed at the call site (precedent: `Summary` in
-/// `mesh-sdf-distance-query` + `mesh-lattice-tpms-gyroid`).
+/// `mesh-sdf-distance-query` + `tpms_gyroid`).
 struct Summary<'a> {
     result: &'a LatticeResult,
     beam_data: &'a BeamLatticeData,
@@ -409,7 +409,7 @@ struct Summary<'a> {
 /// Print the human-readable summary. Extracted from `main` to keep
 /// the entrypoint under clippy's `too_many_lines` cap.
 fn print_summary(s: &Summary) {
-    println!("==== mesh-lattice-strut-cubic ====");
+    println!("==== lattice: strut-cubic ====");
     println!();
     println!(
         "fixture: 25 mm bbox, cell_size = {CELL_SIZE} mm, strut_thickness = \
@@ -481,7 +481,7 @@ fn print_summary(s: &Summary) {
 // main
 // =============================================================================
 
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     verify_strut_free_fns();
     verify_estimate_strut_volume();
     verify_lattice_type_traits();

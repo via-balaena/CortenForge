@@ -1,12 +1,12 @@
 # The mesh examples inventory
 
-The mesh ecosystem ships with complete example coverage of all 10 public crates. Every crate has at least one example demonstrating its load-bearing capabilities; the lattice family ships five examples spanning TPMS, strut, density-graded, shape-bounded, and shell-bounded composite paths.
+The mesh ecosystem ships with complete example coverage of all 10 public crates. Every crate has at least one example demonstrating its load-bearing capabilities; the lattice domain ships one stress-test (five modules) spanning TPMS, strut, density-graded, shape-bounded, and mesh-bounded composite paths.
 
 Each example is a workspace member crate at `examples/mesh/<name>/{Cargo.toml, src/main.rs, README.md, out/}`. The aggregator at [`examples/mesh/README.md`](../../../../examples/mesh/README.md) is the canonical per-example navigator; per-example READMEs are the depth source for numerical anchors and visuals notes. This part synthesizes those examples into a pedagogical reading order — six bands ascending from foundational types through repair, SDF and offset, measurement, manufacturing-aware operations, and lattice composites — with cross-references back to the rest of the book and forward to the v0.9 candidates [Part 10](100-roadmap.md) tracks.
 
 ## Reading order
 
-The 25 examples below are arranged in six pedagogical bands. Within each band, examples are sub-grouped by crate to mirror the workspace layout. The progression matches Parts 1-7 of this book: read this part alongside [Part 1](10-types.md) through [Part 7](70-lattices.md) to see each concept land as runnable code with locked numerical anchors.
+The examples below are arranged in six pedagogical bands. Within each band, examples are sub-grouped by crate to mirror the workspace layout. The progression matches Parts 1-7 of this book: read this part alongside [Part 1](10-types.md) through [Part 7](70-lattices.md) to see each concept land as runnable code with locked numerical anchors.
 
 ## Band 1 — foundational types and I/O
 
@@ -85,26 +85,13 @@ All seven modules pair with [Part 5 — Shell and printability](50-shell-and-pri
 
 ## Band 6 — lattices and composites
 
-Five `mesh-lattice` examples cover the three lattice approaches in the workspace: TPMS implicit-surface lattices via marching cubes, strut graphs via cylindrical beams between grid nodes, and the FDM-style composite (shell + lattice + caps + connections) that combines all three with a `mesh-offset`-driven inward shell.
+The `lattice/stress-test` crate is the `mesh-lattice` domain validator, its five modules covering the three lattice approaches in the workspace: TPMS implicit-surface lattices via marching cubes, strut graphs via cylindrical beams between grid nodes, and the FDM-style composite (shell + lattice + caps + connections) that combines all three with a `mesh-offset`-driven inward shell. Folded from five former per-crate examples; all five carry distinct oracles (no subsumption). Pairs with [Part 7 — Lattices](70-lattices.md).
 
-### TPMS path — implicit-surface lattices
-
-- **`mesh-lattice-tpms-gyroid`** — TPMS lattice via the gyroid implicit surface. Direct anchors on `gyroid` / `density_to_threshold` / `make_shell`, then `generate_lattice` for a 30 mm cube at density 0.5; locks the un-welded MC vertex-soup signature `vertex_count == 3 × triangle_count` BIT-EXACT.
-  v0.9 candidate #10 (welded MC output) is trigger-gated to a real consumer needing visual aesthetic or file-size compression. Pairs with [Part 7 — Lattices](70-lattices.md).
-- **`mesh-lattice-shape-bounded`** — boundary-conforming TPMS via `with_shape_sdf`. Gyroid clipped to an analytical sphere of radius 12 mm; trim drops 72.8% of vertices vs the bbox-filling baseline (87 480 vs 321 084). Demonstrates the analytical-SDF path — complementary to the mesh-SDF path used by `generate_infill` below.
-  Pairs with [Part 7 — Lattices](70-lattices.md).
-
-### Strut path — cylindrical beams between grid nodes
-
-- **`mesh-lattice-strut-cubic`** — cubic strut lattice. Direct anchors on `generate_strut` / `combine_struts` / `estimate_strut_volume`, then `generate_lattice` with `with_beam_export(true)` populating the 3MF `BeamLatticeData` precursor (216 deduplicated grid nodes; 540 beams; total length 2700 mm).
-  Surfaces v0.9 candidate #16 (3MF beam writer in `mesh-io` — the data model is populated, the writer is the missing half). Pairs with [Part 7 — Lattices](70-lattices.md).
-- **`mesh-lattice-density-gradient`** — variable-density octet-truss via `DensityMap::Gradient`. Per-beam `r1 = strut_thickness/2 × √density` modulation; four discrete cell-z strata produce four discrete radius bands visible end-to-end in the output.
-  Pairs with [Part 7 — Lattices](70-lattices.md).
-
-### Composite (FDM infill) — shell + lattice + caps + connections
-
-- **`mesh-lattice-mesh-bounded-infill`** — FDM-style composite via `generate_infill` on a hand-authored 50 mm watertight cube. Outer inward-offset shell (the F6 gap-a `mesh-offset` integration), interior cubic lattice clipped by mesh-SDF intersection on the offset shell (gap e), bridging connection struts from each unique lattice grid-node to the nearest shell point (gap b), and solid caps at the build-plate-aligned faces (gap c). Four PLY outputs: input, shell, lattice, composite.
-  Surfaces v0.9 candidates #12-15 (0%-infill early-return still has the gap-a pattern; non-convex inputs whose AABB inset includes outside-part regions; `shell_thickness == 0` edge case; explicit `LatticeParams::layer_height` field). Pairs with [Part 7 — Lattices](70-lattices.md) and [Part 5 — Shell and printability](50-shell-and-print.md).
+- **`tpms_gyroid`** — TPMS lattice via the gyroid implicit surface. Direct anchors on `gyroid` / `density_to_threshold` / `make_shell`, then `generate_lattice` for a 30 mm cube at density 0.5, verifying every marching-cubes vertex lands on the analytical shell surface. Currently locks the un-welded MC vertex-soup signature `vertex_count == 3 × triangle_count`; v0.9 candidate #10 (welded MC output) is trigger-gated to a real consumer needing visual aesthetic or file-size compression.
+- **`shape_bounded`** — boundary-conforming TPMS via `with_shape_sdf`. Gyroid clipped to an analytical sphere of radius 12 mm; the `is_outside_shape` predicate plus a confinement invariant (every vertex within `radius + voxel_size + cushion` of the SDF zero level-set). The analytical-SDF path — complementary to the mesh-SDF path used by `generate_infill` below.
+- **`strut_cubic`** — cubic strut lattice. Direct anchors on `generate_strut` / `combine_struts` / `estimate_strut_volume`, then `generate_lattice` with `with_beam_export(true)` populating the 3MF `BeamLatticeData` precursor (216 deduplicated grid nodes; 540 beams; total length 2700 mm). Surfaces v0.9 candidate #16 (3MF beam writer in `mesh-io`).
+- **`density_gradient`** — variable-density octet-truss via `DensityMap::Gradient`. The full `DensityMap` enum plus per-beam `r1 = strut_thickness/2 × √density` modulation; four discrete cell-z strata produce four discrete radius bands visible end-to-end.
+- **`mesh_bounded_infill`** — FDM-style composite via `generate_infill` on a hand-authored 50 mm watertight cube. Outer inward-offset shell (the F6 gap-a `mesh-offset` integration, anchored by the resolution-independent Euler invariant `2V−F=8`), interior cubic lattice clipped by mesh-SDF intersection (gap e), bridging connection struts to the nearest shell point (gap b), and solid caps (gap c); the §Q-5 hollow-shell winding guard catches the inner-wall sign flip. Four PLY outputs: input, shell, lattice, composite. Surfaces v0.9 candidates #12-15. Also pairs with [Part 5 — Shell and printability](50-shell-and-print.md).
 
 ## Layout convention
 

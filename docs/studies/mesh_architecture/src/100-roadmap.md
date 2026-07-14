@@ -9,7 +9,7 @@ Phase A delivered the foundation extensions soft-body needed (extensible per-ver
 - **PR #222** (`2dac42b4`, 2026-04-29) — examples + `AttributedMesh` + `mesh-shell` SDF fixes; 22-commit audit trail; mesh + casting book skeletons.
 - **PR #223** (`e9cb0d6d`, 2026-05-01) — `mesh-printability` v0.8 fix arc; 13 detector-coverage gaps closed plus 8 printability examples.
 - **PR #224** (`e79f2fc2`, 2026-05-02) — first half of the v1.0 examples-coverage arc; 8 examples plus the C15a `BeamLatticeData` octet-truss in-arc gap-fix.
-- A fourth PR (in flight on the `feature/mesh-v1-pr2-bounded-infill` branch when these book updates were authored) lands the second half of the v1.0 arc: the F6 `generate_infill` gap-fix sub-arc (gaps a-e, plus post-fix anchor recapture), the `mesh-lattice-mesh-bounded-infill` composite example, the v1.0 examples-mesh aggregator rewrite, and these book updates.
+- A fourth PR (in flight on the `feature/mesh-v1-pr2-bounded-infill` branch when these book updates were authored) lands the second half of the v1.0 arc: the F6 `generate_infill` gap-fix sub-arc (gaps a-e, plus post-fix anchor recapture), the mesh-bounded-infill composite example (now the `mesh_bounded_infill` module of `examples/mesh/lattice/stress-test`), the v1.0 examples-mesh aggregator rewrite, and these book updates.
 
 The core deliverables — `AttributedMesh::extras: HashMap<String, Vec<f32>>` extensible per-vertex slot; `mesh-io::save_ply_attributed` PLY writer; complete example coverage of all 10 public crates (see [Part 8 — The mesh examples inventory](80-examples.md)) — are all in place.
 
@@ -72,8 +72,8 @@ For `mesh-printability`-specific candidates surfaced by the v0.8 fix arc (PR #22
 10. **Welded TPMS-lattice MC output.** `extract_isosurface` emits un-welded vertex-soup output (the locked signature `vertex_count == 3 × triangle_count`). `mesh-shell` already runs a weld pass via `mesh-repair::weld_vertices`; apply the same pattern.
     *Trigger*: a real consumer needs welded TPMS output for visual aesthetic OR file-size compression. ~30 LOC.
 
-11. **Demo non-default `BeamCap` variants (`Flat`, `Butt`).** The default `BeamCap::Round` is exercised by `mesh-lattice-strut-cubic`; `Flat` and `Butt` are unexercised at the example layer.
-    *Trigger*: a user reports surprise that `BeamCap::Flat` / `BeamCap::Butt` aren't visually demonstrated. Augment `mesh-lattice-strut-cubic` with a sub-demo, OR add a separate example. ~80 LOC additive.
+11. **Demo non-default `BeamCap` variants (`Flat`, `Butt`).** The default `BeamCap::Round` is exercised by the `strut_cubic` module; `Flat` and `Butt` are unexercised at the example layer.
+    *Trigger*: a user reports surprise that `BeamCap::Flat` / `BeamCap::Butt` aren't visually demonstrated. Augment the `strut_cubic` module with a sub-demo, OR add a separate example. ~80 LOC additive.
 
 12. **0%-infill early-return in `generate_infill` still uses the gap-a `shell = mesh.clone()` pattern.** The 100%-infill case is semantically defensible (solid = no shell distinction); the 0%-infill case is semantically wrong (a hollow part SHOULD have an inward-offset shell, not a clone of the input mesh). Strict-(b) deferral from the F6 gap-a sub-arc.
     *Trigger*: a consumer reports the 0%-infill output looks wrong. ~30 LOC: extend the offset-mesh path to cover the early-return.
@@ -89,7 +89,7 @@ For `mesh-printability`-specific candidates surfaced by the v0.8 fix arc (PR #22
 
 ### `mesh-io`
 
-16. **3MF beam writer.** `BeamLatticeData` is already the data model (populated by `mesh-lattice-strut-cubic`'s `with_beam_export(true)` — see Part 8 Band 6); the writer needs the 3MF Beam Lattice Extension format.
+16. **3MF beam writer.** `BeamLatticeData` is already the data model (populated by the `strut_cubic` module's `with_beam_export(true)` — see Part 8 Band 6); the writer needs the 3MF Beam Lattice Extension format.
     *Trigger*: 3MF beam-output demand from a printer-driver workflow. ~300-500 LOC.
 
 ## Open architectural questions

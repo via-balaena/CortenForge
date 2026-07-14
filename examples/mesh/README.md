@@ -100,25 +100,9 @@ IS the correctness signal — the visuals pass is optional pedagogy.
 
 ### `mesh-lattice` — TPMS, strut, and composite lattices
 
-#### TPMS path — implicit-surface lattices via marching cubes
-
 | Example | Concept |
 |---------|---------|
-| [`mesh-lattice-tpms-gyroid`](mesh-lattice-tpms-gyroid/) | TPMS lattice via the gyroid implicit surface — `gyroid` / `density_to_threshold` / `make_shell` direct anchors then `generate_lattice` for a 30 mm cube at density 0.5; locks the F10 vertex-soup MC signature (`vertex_count == 3 × triangle_count` BIT-EXACT) |
-| [`mesh-lattice-shape-bounded`](mesh-lattice-shape-bounded/) | Boundary-conforming TPMS via `with_shape_sdf` — gyroid clipped to an analytical sphere of radius 12 mm; trim drops 72.8% of vertices vs the bbox-filling baseline (87 480 vs 321 084) |
-
-#### Strut path — cylindrical beams between grid nodes
-
-| Example | Concept |
-|---------|---------|
-| [`mesh-lattice-strut-cubic`](mesh-lattice-strut-cubic/) | Cubic strut lattice — `generate_strut` / `combine_struts` / `estimate_strut_volume` direct anchors then `generate_lattice` with `with_beam_export(true)` populating the 3MF `BeamLatticeData` precursor (216 deduplicated grid nodes + 540 beams) |
-| [`mesh-lattice-density-gradient`](mesh-lattice-density-gradient/) | Variable-density octet-truss via `DensityMap::Gradient` — per-beam `r1 = strut_thickness/2 × √density` modulation; four discrete cell-z strata produce four discrete radius bands visible end-to-end in the output |
-
-#### Composite (FDM infill) — shell + lattice + caps + connections
-
-| Example | Concept |
-|---------|---------|
-| [`mesh-lattice-mesh-bounded-infill`](mesh-lattice-mesh-bounded-infill/) | FDM-style shell + lattice composite via `generate_infill` on a hand-authored 50 mm watertight cube — outer inward-offset shell + interior cubic lattice + bridging connections + solid caps; four PLY outputs (input / shell / lattice / composite) |
+| [`lattice/stress-test`](lattice/stress-test/) | The `mesh-lattice` validation superset (one domain → one stress-test). Five modules: **tpms_gyroid** (TPMS implicit surface — `gyroid`/`density_to_threshold`/`make_shell` anchors then `generate_lattice`, every MC vertex on the analytical shell surface), **strut_cubic** (cubic struts — closed-form strut/cone volumes, `combine_struts` no-weld, the 3MF `BeamLatticeData` precursor = 216 grid nodes + 540 beams), **density_gradient** (the full `DensityMap` enum + per-beam `r1 = strut_thickness/2 × √density` modulation on an octet-truss), **shape_bounded** (analytical-SDF clip via `with_shape_sdf` — gyroid trimmed to a sphere, `is_outside_shape` predicate + confinement invariant), **mesh_bounded_infill** (composite FDM `generate_infill` on a 50 mm cube — shell + lattice + caps + connections, resolution-independent Euler `2V−F=8` shell anchor + §Q-5 winding guard) |
 
 ## Future examples
 

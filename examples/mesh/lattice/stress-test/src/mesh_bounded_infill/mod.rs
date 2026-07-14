@@ -6,11 +6,11 @@
 // `unreachable!()`; allow at file level since every call site is a
 // post-validation `Result::Err` impossibility, not a real panic.
 #![allow(clippy::unreachable)]
-//! mesh-lattice-mesh-bounded-infill — FDM-style shell + lattice
+//! mesh-bounded-infill — FDM-style shell + lattice
 //! composite via `generate_infill` on a hand-authored 50 mm
 //! watertight cube.
 //!
-//! Mesh-bounded counterpart to `mesh-lattice-shape-bounded`
+//! Mesh-bounded counterpart to `shape_bounded`
 //! (analytical-SDF trim); both ship in v1.0.
 //!
 //! Demonstrates the canonical FDM-infill workflow on a watertight
@@ -59,12 +59,12 @@
 //! top region (above `SIDE − inset − cell_size = 33.8 mm`) holds 0
 //! lattice verts WITH caps and 448 verts WITHOUT.
 
+mod fixture;
+
 use std::path::PathBuf;
 
+use self::fixture::{SIDE, cube_50mm, cube_at_origin, verify_fixture};
 use anyhow::{Result, ensure};
-use example_mesh_mesh_lattice_mesh_bounded_infill::{
-    SIDE, cube_50mm, cube_at_origin, verify_fixture,
-};
 use mesh_io::save_ply;
 use mesh_lattice::{InfillParams, InfillResult, LatticeError, generate_infill};
 use mesh_types::IndexedMesh;
@@ -197,7 +197,7 @@ const DENSITY_TOL: f64 = 1e-9;
 const TOTAL_VOLUME_TOL: f64 = 1e-9;
 
 // =============================================================================
-// PLY output paths — workspace-root-relative (cargo runs from the workspace)
+// PLY output paths — relative to the crate out/ (resolved via CARGO_MANIFEST_DIR)
 // =============================================================================
 
 const INPUT_PLY: &str = "out/input.ply";
@@ -209,7 +209,7 @@ const COMPOSITE_PLY: &str = "out/composite.ply";
 // Entry point
 // =============================================================================
 
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     let fixture = cube_50mm();
     verify_fixture(&fixture)?;
 
@@ -600,7 +600,7 @@ fn count_top_wide(result: &InfillResult) -> usize {
 }
 
 // =============================================================================
-// PLY outputs — write the four artifacts to workspace-root `out/`
+// PLY outputs — write the four artifacts to the crate `out/`
 // =============================================================================
 
 fn write_plys(fixture: &IndexedMesh, result: &InfillResult) -> Result<()> {
@@ -612,7 +612,11 @@ fn write_plys(fixture: &IndexedMesh, result: &InfillResult) -> Result<()> {
 }
 
 fn write_one(mesh: &IndexedMesh, path: &str) -> Result<()> {
-    let path = PathBuf::from(path);
+    // Resolve under the crate's own directory so artifacts land in
+    // `examples/mesh/lattice/stress-test/out/` (covered by the mesh
+    // `**/out/` gitignore), consistent with the other four modules —
+    // not a CWD-relative `out/` at the workspace root.
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(path);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -625,7 +629,7 @@ fn write_one(mesh: &IndexedMesh, path: &str) -> Result<()> {
 // =============================================================================
 
 fn print_summary(result: &InfillResult, no_caps: &InfillResult) {
-    println!("=== mesh-lattice-mesh-bounded-infill (post-fix anchors) ===");
+    println!("=== mesh_bounded_infill (post-fix anchors) ===");
     println!();
     println!("Fixture: 50 mm × 50 mm × 50 mm watertight cube");
     println!(

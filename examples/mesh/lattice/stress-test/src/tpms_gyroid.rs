@@ -6,7 +6,7 @@
 // post-validation `Option::None` / `Result::Err` impossibility, not a
 // real panic site.
 #![allow(clippy::unreachable)]
-//! mesh-lattice-tpms-gyroid — TPMS surface generation via the gyroid
+//! tpms-gyroid — TPMS surface generation via the gyroid
 //! implicit function + marching-cubes vertex-soup output.
 //!
 //! Fixture: 30 mm cube at
@@ -374,7 +374,7 @@ struct Summary<'a> {
 /// Print the human-readable summary. Extracted from `main` to keep
 /// the entrypoint under clippy's `too_many_lines` cap.
 fn print_summary(s: &Summary) {
-    println!("==== mesh-lattice-tpms-gyroid ====");
+    println!("==== lattice: tpms-gyroid ====");
     println!();
     println!("fixture: 30 mm bbox, cell_size = {CELL_SIZE} mm, resolution = {RESOLUTION}");
     println!("         density = {DENSITY}, wall_thickness = {WALL_THICKNESS} mm");
@@ -423,7 +423,7 @@ fn print_summary(s: &Summary) {
 // main
 // =============================================================================
 
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     verify_gyroid_free_fn();
     verify_density_to_threshold();
     verify_make_shell();
