@@ -577,6 +577,46 @@ mod tests {
     }
 
     #[test]
+    fn test_normal_shell_on_open_box_has_consistent_winding() {
+        // Regression guard for the rim-winding fix: a normal-based shell
+        // around an open-topped box must be a consistently-oriented,
+        // watertight, manifold, printable shell. Before the fix,
+        // `generate_rim` wound its triangles to MATCH (not oppose) the
+        // reversed-inner / original-outer surface edges, so the shell was
+        // watertight + manifold + not-inside-out yet
+        // `has_consistent_winding == false` (one `InconsistentWinding`
+        // issue). See the `shell-generation` example for the demonstration.
+        let inner = create_open_box();
+        let params = ShellParams::fast();
+
+        let (shell, _) = generate_shell(&inner, &params).expect("should succeed");
+        let validation = validate_shell(&shell);
+
+        assert!(validation.is_watertight, "rim should close the open top");
+        assert!(validation.is_manifold, "shell should be manifold");
+        assert!(
+            validation.has_consistent_winding,
+            "rim triangles must be wound consistently with the inner/outer surfaces; got issues: {:?}",
+            validation.issues,
+        );
+        assert!(
+            validation.is_printable(),
+            "shell should be printable (watertight + manifold + consistent winding)",
+        );
+        assert!(
+            validation.issues.is_empty(),
+            "a correctly-wound shell should report no issues; got: {:?}",
+            validation.issues,
+        );
+        // Face-normal sense is also correct: positive wall volume, not inside-out.
+        assert!(
+            shell.signed_volume() > 0.0,
+            "shell wall volume should be positive; got {}",
+            shell.signed_volume(),
+        );
+    }
+
+    #[test]
     fn test_generate_shell_empty_mesh() {
         let empty = IndexedMesh::new();
         let params = ShellParams::default();

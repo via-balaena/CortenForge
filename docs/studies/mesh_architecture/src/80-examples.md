@@ -62,13 +62,11 @@ One stress-test (`measure/stress-test`) covers the geometric-inspection surface 
 
 ## Band 5 — shell and printability
 
-Two `mesh-shell` examples and eight `mesh-printability` examples cover the manufacturing-aware operations: producing wall-thickness shells (the foundational geometry for every casting and printing workflow) and validating a candidate mesh against per-technology printer constraints. The printability set is the densest in the inventory because each detector ships its own pedagogical fixture surfacing one detector at a time, plus a final showcase exercising six detectors on a single multi-shell bracket.
+A `mesh-shell` stress-test and eight `mesh-printability` examples cover the manufacturing-aware operations: producing wall-thickness shells (the foundational geometry for every casting and printing workflow) and validating a candidate mesh against per-technology printer constraints. The printability set is the densest in the inventory because each detector ships its own pedagogical fixture surfacing one detector at a time, plus a final showcase exercising six detectors on a single multi-shell bracket.
 
 ### `mesh-shell`
 
-- **`shell-generation-fast`** — normal-based shell on an open-topped box. Preserves vertex correspondence; perpendicular wall thickness varies as `1/√k` at corners (geometric distortion is intrinsic to the normal-based path, not a bug).
-  Pairs with [Part 5 — Shell and printability](50-shell-and-print.md).
-- **`shell-generation-high-quality`** — SDF-based shell on a closed cube. Uniform perpendicular wall thickness everywhere; Steiner-Minkowski rounding at sharp creases (the geometric trade for uniformity). Side-by-side comparison with the fast path.
+- **`shell-generation/stress-test`** — the `mesh-shell` domain validator, exercising both wall-generation methods on the same 10mm cube geometry (folded from the former `shell-generation-fast` / `-high-quality` pair). The `fast` module (normal-based, open-topped box) preserves vertex correspondence but skews perpendicular wall thickness by `1/√k` at corners (intrinsic to the normal path, not a bug); the `high_quality` module (SDF + marching cubes, closed cube) holds uniform thickness to within half a voxel at the cost of MC re-triangulation and Steiner-Minkowski rounding at sharp creases. Both now produce consistently-wound shells — the normal path via the rim-winding fix in `generate_rim`, the SDF path via the 11.5.x per-face-flip fix.
   Pairs with [Part 5 — Shell and printability](50-shell-and-print.md).
 
 ### `mesh-printability`

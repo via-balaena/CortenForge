@@ -78,8 +78,7 @@ IS the correctness signal — the visuals pass is optional pedagogy.
 
 | Example | Concept |
 |---------|---------|
-| [`shell-generation-fast`](shell-generation-fast/) | Normal-based shell on an open-topped box — vertex correspondence preserved; perpendicular wall thickness varies as `1/√k` at corners |
-| [`shell-generation-high-quality`](shell-generation-high-quality/) | SDF-based shell on a closed cube — uniform perpendicular wall thickness; Steiner-Minkowski rounding at sharp creases |
+| [`shell-generation/stress-test`](shell-generation/stress-test/) | The `mesh-shell` validation superset (one domain → one stress-test). Two modules: **fast** (normal-based, open-topped box — vertex correspondence preserved, `1/√k` corner thickness skew) and **high_quality** (SDF + marching cubes, closed cube — uniform wall thickness, Steiner-Minkowski rounding). Both consistently wound |
 
 ### `mesh-measure` — geometric measurement
 

@@ -52,15 +52,26 @@ pub fn generate_rim(mesh: &IndexedMesh, inner_vertex_count: usize) -> (Vec<[u32;
     let offset = inner_vertex_count as u32;
 
     // For each boundary edge in the inner surface, create a quad (2 triangles)
-    // connecting it to the corresponding edge in the outer surface
+    // connecting it to the corresponding edge in the outer surface.
+    //
+    // `find_boundary_edges` returns each edge in the ORIGINAL face winding
+    // (v0 -> v1). In the assembled shell (see `generate_shell_normal`) the
+    // inner faces are winding-REVERSED (so their normals point into the
+    // cavity) while the outer faces keep the original winding. For the shell
+    // to be a consistently-oriented manifold, each rim triangle's shared edge
+    // with a surface must traverse OPPOSITE to that surface's edge:
+    //   - inner surface has this boundary edge as v1 -> v0 (reversed), so the
+    //     rim must traverse it v0 -> v1;
+    //   - outer surface has it as (v0+off) -> (v1+off), so the rim must
+    //     traverse (v1+off) -> (v0+off).
+    // Both triangles below are wound to satisfy that, giving
+    // `has_consistent_winding == true` (outward-facing everywhere).
     for (v0, v1) in &boundary_edges {
-        // Inner edge: v0 -> v1
-        // Outer edge: (v0 + offset) -> (v1 + offset)
-        // Create two triangles to form a quad:
-        // Triangle 1: inner v0, outer v0, outer v1
-        // Triangle 2: inner v0, outer v1, inner v1
-        rim_faces.push([*v0, v0 + offset, v1 + offset]);
-        rim_faces.push([*v0, v1 + offset, *v1]);
+        // Quad corners: inner v0/v1, outer v0/v1 (= v0+off / v1+off).
+        // Triangle 1: inner v0, outer v1, outer v0
+        // Triangle 2: inner v0, inner v1, outer v1
+        rim_faces.push([*v0, v1 + offset, v0 + offset]);
+        rim_faces.push([*v0, *v1, v1 + offset]);
     }
 
     debug!("Generated {} rim faces", rim_faces.len());

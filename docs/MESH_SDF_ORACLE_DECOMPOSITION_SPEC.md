@@ -371,7 +371,7 @@ The stress-test pass may reveal that one or more decisions above need revision. 
 
   Tests + gates: 97 pass (unchanged baseline). `cargo run -p xtask -- grade mesh-lattice`: **A across all 7 automated criteria; coverage UP to 93.3% A+ (was 84.5% A baseline)** — the migration's net code shrink and the new code paths sitting inside the already-exercised `generate_infill` pipeline pushed coverage higher, not lower. Clippy + build + doc + WASM all clean.
 
-**Stress-test finding (banked for D.5/D.6)**: pre-existing breakage from D.1 at `examples/mesh/mesh-sdf-distance-query/src/main.rs:60` — imports four free functions (`closest_point_on_triangle`, `point_in_mesh`, `point_segment_distance_squared`, `ray_triangle_intersect`) that D.1 deleted. `cargo check --workspace` fails on this example today; not introduced by D.4. Other workspace deprecation warnings (cf-cast-cli, examples in cast/layered-silicone, sim-soft/{layered-silicone-device, mesh-scan-as-solid}, mesh/shell-generation-high-quality) all still use `SignedDistanceField`; cf-cast-cli is D.5 scope explicitly, the examples need a follow-up sub-leaf during the D.6 docs pass.
+**Stress-test finding (banked for D.5/D.6)**: pre-existing breakage from D.1 at `examples/mesh/mesh-sdf-distance-query/src/main.rs:60` — imports four free functions (`closest_point_on_triangle`, `point_in_mesh`, `point_segment_distance_squared`, `ray_triangle_intersect`) that D.1 deleted. `cargo check --workspace` fails on this example today; not introduced by D.4. Other workspace deprecation warnings (cf-cast-cli, examples in cast/layered-silicone, sim-soft/{layered-silicone-device, mesh-scan-as-solid}) all still use `SignedDistanceField`; cf-cast-cli is D.5 scope explicitly, the examples need a follow-up sub-leaf during the D.6 docs pass.
 
 **D.5 — cf-cast-cli migration (workshop unblock).** SHIPPED 2026-05-18 on dev `f74eb4c8`. Single commit per spec (157 insertions / 71 deletions across `scan.rs`, `derive.rs`, `lib.rs`).
 
@@ -515,7 +515,7 @@ D.6 is the final docs + memory sub-leaf. Scope:
    - `examples/cast/layered-silicone/*` — uses `SignedDistanceField` for scan SDF.
    - `examples/sim-soft/layered-silicone-device/*` — same.
    - `examples/sim-soft/mesh-scan-as-solid/*` — same.
-   - `examples/mesh/shell-generation-high-quality/*` — same.
+   - `examples/mesh/shell-generation/stress-test/*` (`high_quality` module; formerly `shell-generation-high-quality`) — DONE: uses `TriMeshDistance` for the wall-thickness oracle, no `SignedDistanceField`.
 
    Migrate each to either `flood_filled_sdf(...)` (scan-derived) or `Signed { distance: TriMeshDistance::new(mesh)?, sign: PseudoNormalSign::from_distance(&distance) }` (synthetic / well-formed). Batch into one commit since they're independent + low-risk.
 3. **Memory: parry-accel spec memo** ([[project-mesh-sdf-parry-accel-spec]]). Annotate §F1 CANCELLED, citing this spec.

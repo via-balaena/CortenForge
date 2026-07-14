@@ -405,6 +405,54 @@ mod tests {
     }
 
     #[test]
+    fn check_winding_consistency_detects_inconsistent_winding() {
+        // True-positive coverage for the winding detector: take a
+        // consistently-wound watertight tetrahedron and reverse a SINGLE
+        // face's winding. The mesh stays watertight + manifold (same edges,
+        // each still shared by exactly 2 faces) but two of the flipped
+        // face's edges now run the SAME direction in both incident faces,
+        // so `check_winding_consistency` must fire. This guards the
+        // detector's positive path independently of any example — the
+        // `shell-generation` fold's rim-winding fix means no example
+        // produces a mis-wound shell anymore.
+        let mut shell = create_watertight_tetrahedron();
+        let [a, b, c] = shell.faces[0];
+        shell.faces[0] = [a, c, b]; // reverse winding of one face
+
+        let result = validate_shell(&shell);
+
+        assert!(
+            result.is_watertight,
+            "flipping one face keeps it watertight"
+        );
+        assert!(result.is_manifold, "flipping one face keeps it manifold");
+        assert!(
+            !result.has_consistent_winding,
+            "one reversed face ⇒ inconsistent winding must be detected",
+        );
+        // `is_printable()` is winding-INDEPENDENT (watertight && manifold),
+        // so a mis-wound shell still reads as printable — that was the whole
+        // point of the old rim quirk. The stricter `is_valid()` (which adds
+        // consistent winding) is what the detector guards.
+        assert!(
+            result.is_printable(),
+            "watertight + manifold ⇒ is_printable() is true regardless of winding",
+        );
+        assert!(
+            !result.is_valid(),
+            "inconsistent winding ⇒ NOT valid (is_valid() includes winding)",
+        );
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|i| matches!(i, ShellIssue::InconsistentWinding)),
+            "expected an InconsistentWinding issue; got: {:?}",
+            result.issues,
+        );
+    }
+
+    #[test]
     fn test_validate_open_shell() {
         let shell = create_open_box();
         let result = validate_shell(&shell);
