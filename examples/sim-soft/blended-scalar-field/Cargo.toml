@@ -14,7 +14,7 @@ publish = false
 # for cross-row visual continuity (same body sphere, same bbox).
 sim-soft = { workspace = true }
 # Point3 + IndexedMesh + AttributedMesh wrap for the per-tet centroid
-# point-cloud PLY (mirrors row 1's sphere-sdf-eval point-cloud pattern
+# point-cloud PLY (mirrors row 1's sphere_eval point-cloud pattern
 # + row 8's z-slab cut).
 mesh-types = { workspace = true }
 # save_ply_attributed for out/material_blend.ply (3 per-vertex scalars:

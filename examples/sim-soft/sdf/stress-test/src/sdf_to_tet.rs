@@ -1,4 +1,4 @@
-//! sdf-to-tet-sphere — `SdfMeshedTetMesh::from_sdf` on a solid `SphereSdf`.
+//! sdf-to-tet — `SdfMeshedTetMesh::from_sdf` on a solid `SphereSdf`.
 //!
 //! Wraps the BCC + Labelle-Shewchuk Isosurface Stuffing pipeline
 //! (SIGGRAPH 2007 Theorem 1 — `α_long = 0.24999`, `α_short = 0.41189`)
@@ -616,7 +616,7 @@ fn print_summary(
     let (n_warp, n_cut) = residual_buckets;
     let (total_vol, analytic_vol, rel_err) = volume_stats;
     let n_orphans = mesh.n_vertices() - referenced.len();
-    println!("==== sdf-to-tet-sphere ====");
+    println!("==== sdf-to-tet ====");
     println!();
     println!("input  : SphereSdf {{ radius: {RADIUS} }}");
     println!("         MeshingHints {{");
@@ -681,7 +681,7 @@ fn print_summary(
 // main
 // =============================================================================
 
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     let mesh = build_sphere_mesh();
 
     verify_determinism(&mesh);

@@ -852,7 +852,7 @@ fn probe_f() -> Matrix3<f64> {
 ///
 /// The correctness anchors (1-9) run over all 6768 body tets; only the
 /// visual PLY emit + anchor 10 (`verify_zslab_visual_populations_exact`)
-/// operate on the filtered slab subset. Mirrors hollow-shell-sdf row 2's
+/// operate on the filtered slab subset. Mirrors `hollow_shell` row 2's
 /// z=0 slice precedent and row 8's z-slab cut for cross-section cf-view
 /// visualization (rationale: a thin slab in 3D projects unambiguously
 /// to a 2D disk pattern at any orbit angle, where a 3D wedge requires

@@ -19,10 +19,10 @@
 //!   a body whose operands are all themselves `Solid`-typed.
 //! - [`SphereSdf`] is the **trait teaching primitive** + the
 //!   bit-pinned reference surface for IV-1 / IV-2 / IV-3 / IV-5
-//!   invariant fixtures. The Tier 1 example crates
-//!   [`sphere-sdf-eval`][r1], [`hollow-shell-sdf`][r2] (via
+//!   invariant fixtures. The Tier 1 [`sdf/stress-test`][sdf] modules
+//!   `sphere_eval`, `hollow_shell` (via
 //!   [`DifferenceSdf`](super::DifferenceSdf)), and
-//!   [`sdf-to-tet-sphere`][r3] teach the [`Sdf`] contract through
+//!   `sdf_to_tet` teach the [`Sdf`] contract through
 //!   `SphereSdf`'s minimal-surface implementation; the
 //!   [`solid-to-sim-soft`][r16] HEADLINE A bridge anchor pins
 //!   `Solid::sphere(r).evaluate(&p)` bit-equal to `SphereSdf::eval(p)`
@@ -33,9 +33,7 @@
 //! composing typed cf-design solids" (use `Solid`) vs "are you
 //! teaching the `Sdf` trait or anchoring the bridge" (use `SphereSdf`).
 //!
-//! [r1]: ../../../../../examples/sim-soft/sphere-sdf-eval/
-//! [r2]: ../../../../../examples/sim-soft/hollow-shell-sdf/
-//! [r3]: ../../../../../examples/sim-soft/sdf-to-tet-sphere/
+//! [sdf]: ../../../../../examples/sim-soft/sdf/stress-test/
 //! [r16]: ../../../../../examples/sim-soft/solid-to-sim-soft/
 
 use crate::Vec3;

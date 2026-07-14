@@ -17,7 +17,7 @@ let step = solver.step(&mut tape, &initial.x_prev, &initial.v_prev, theta_var, c
 
 `SkeletonSolver = CpuTet4NHSolver<SingleTetMesh>` is `lib.rs:99`'s walking-skeleton specialization of `CpuNewtonSolver<Tet4, SingleTetMesh, NullContact, 4, 1>` — backward-Euler Newton with `NeoHookean` constitutive law (Phase 4 Decision G) on a hand-built 1-tet mesh, no contact. `SoftScene::one_tet_cube` returns the canonical scene per spec §2: vertices at `v_0=(0,0,0)`, `v_1=(0.1,0,0)`, `v_2=(0,0.1,0)`, `v_3=(0,0,0.1)` m with `MaterialField::uniform(1e5, 4e5)`; default `BoundaryConditions` pin `v_0..v_2` and load `v_3` along `LoadAxis::AxisZ`. The Stage-1 θ convention dispatches a length-1 scalar tensor as a `+ẑ` traction magnitude on every loaded vertex's z-DOF (`backward_euler.rs:807-817`).
 
-This is the **first FEM-running** example in the arc — rows 1+2+3 (`sphere-sdf-eval`, `hollow-shell-sdf`, `sdf-to-tet-sphere`) exercised the SDF eval / composition / meshing surface only. Row 4 is `Solver::step` end-to-end: assemble the elastic + inertial + external-force tangent, factor, line-search, converge, return `NewtonStep { x_final, iter_count, final_residual_norm }`.
+This is the **first FEM-running** example in the arc — rows 1+2+3 — the `sdf/stress-test` modules `sphere_eval`, `hollow_shell`, `sdf_to_tet` — exercised the SDF eval / composition / meshing surface only. Row 4 is `Solver::step` end-to-end: assemble the elastic + inertial + external-force tangent, factor, line-search, converge, return `NewtonStep { x_final, iter_count, final_residual_norm }`.
 
 **Why these scene parameters**: spec §2's walking-skeleton defaults — soft-robotics dimensional regime (`L = 0.1` m, silicone-class density), Ecoflex-class Lamé pair (`λ = 4μ ⇒ ν = 0.4` compressible Neo-Hookean per Phase H deferral), and `θ = 10` N chosen to land the response in the linear / mildly-nonlinear regime (`δz ≈ 1%` strain). `solver_convergence::stage_1_traction_converges` is the original Phase 1 invariant test on this exact configuration; this example wraps it as a user-facing demo.
 
@@ -117,7 +117,7 @@ Output: `out/force_stretch.json` (single-record schema above). Stdout prints inp
 
 ## Cross-references
 
-- **Sister Tier 1 examples**: `sphere-sdf-eval` (row 1 — `Sdf` trait contract on `SphereSdf`), `hollow-shell-sdf` (row 2 — `DifferenceSdf` composition), `sdf-to-tet-sphere` (row 3 — BCC + Isosurface Stuffing on a solid sphere). See `sim/L0/soft/EXAMPLE_INVENTORY.md` Tier 1.
+- **Sister Tier 1 modules** (`sdf/stress-test`): `sphere_eval` (row 1 — `Sdf` trait contract on `SphereSdf`), `hollow_shell` (row 2 — `DifferenceSdf` composition), `sdf_to_tet` (row 3 — BCC + Isosurface Stuffing on a solid sphere). See `sim/L0/soft/EXAMPLE_INVENTORY.md` Tier 1.
 - **`SkeletonSolver` + `CpuTet4NHSolver` definitions**: `sim/L0/soft/src/lib.rs:89-99` (type aliases); `sim/L0/soft/src/solver/backward_euler.rs` (`CpuNewtonSolver` impl, `SolverConfig::skeleton`).
 - **`SoftScene::one_tet_cube`**: `sim/L0/soft/src/readout/scene.rs:72-89` — canonical 1-tet scene per spec §2.
 - **`SingleTetMesh::new`**: `sim/L0/soft/src/mesh/single_tet.rs:32-50` — vertex placement + per-tet material sampling.

@@ -390,9 +390,9 @@ members = [
     "examples/mesh/lattice/stress-test",
 
     # Examples — sim-soft
-    "examples/sim-soft/sphere-sdf-eval",
-    "examples/sim-soft/hollow-shell-sdf",
-    "examples/sim-soft/sdf-to-tet-sphere",
+    # SDF domain: sphere-sdf-eval + hollow-shell-sdf + sdf-to-tet-sphere folded
+    # into one stress-test (rows 1–3) — one domain → one validation superset.
+    "examples/sim-soft/sdf/stress-test",
     "examples/sim-soft/single-tet-stretch",
     "examples/sim-soft/neo-hookean-uniaxial",
     "examples/sim-soft/multi-element-stretch",

@@ -71,7 +71,7 @@ Z-slab cut is `|centroid.z| < CELL_SIZE / 2 = 0.01`; total z-slab tet count is `
 |---|---|
 | `signed_volume > 0` per tet | strict (D-10 detector) |
 
-Every tet has positive signed volume — the BCC + IS pipeline preserves orientation through the heterogeneous-CSG carve; same Theorem-1-sanity envelope row 3 [`sdf-to-tet-sphere`](../sdf-to-tet-sphere) anchors verbatim.
+Every tet has positive signed volume — the BCC + IS pipeline preserves orientation through the heterogeneous-CSG carve; same Theorem-1-sanity envelope row 3 [`sdf_to_tet`](../sdf/stress-test) anchors verbatim.
 
 ### 4. `solver_converges`
 

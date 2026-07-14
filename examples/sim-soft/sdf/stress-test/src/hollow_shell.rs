@@ -1,4 +1,4 @@
-//! hollow-shell-sdf — sharp-CSG difference combinator on `SphereSdf`s.
+//! hollow-shell — sharp-CSG difference combinator on `SphereSdf`s.
 //!
 //! `SphereSdf{R_OUTER=1.0} \ SphereSdf{R_CAVITY=0.5}` composed via
 //! [`DifferenceSdf`] (book Part 7 §00 §01 sharp-CSG difference operator
@@ -38,12 +38,12 @@
 
 // PLY field-data is single-precision on disk; converting f64 SDF
 // values to f32 for `extras["signed_distance"]` is intrinsic to the
-// PLY format. Same rationale as `sphere-sdf-eval`.
+// PLY format. Same rationale as the `sphere_eval` module.
 #![allow(clippy::cast_possible_truncation)]
 // Slice-axis coords read as the textbook formula
 // `-half_extent + i * spacing`; the `mul_add` rewrite obscures intent
-// and the result is bit-equivalent here. Same precedent as
-// sphere-sdf-eval bulk-grid construction.
+// and the result is bit-equivalent here. Same precedent as the
+// `sphere_eval` module's bulk-grid construction.
 #![allow(clippy::suboptimal_flops)]
 // Slice axis indices are `0..49` so `usize as f64` is exactly
 // representable (f64 mantissa is 52 bits; max index is 48). Cast is
@@ -440,7 +440,7 @@ fn verify_slice_consistency(slice: &[SliceSample]) -> (usize, usize, usize, usiz
 /// zero on both circles, positive cavity + exterior) and
 /// `active_branch` (categorical: 1.0 = outer-active, 0.0 =
 /// cavity-active; visually shows the branch-flip circle at `|p| =
-/// 0.75`). Mirrors the `examples/sim-soft/sphere-sdf-eval` two-scalar
+/// 0.75`). Mirrors the sibling `sphere_eval` module's two-scalar
 /// pattern.
 fn save_slice_ply(slice: &[SliceSample], path: &Path) -> Result<()> {
     let vertices: Vec<Point3<f64>> = slice
@@ -472,7 +472,7 @@ fn print_summary(
     exterior: usize,
     path: &Path,
 ) {
-    println!("==== hollow-shell-sdf ====");
+    println!("==== hollow-shell ====");
     println!();
     println!("input  : DifferenceSdf {{");
     println!("           a: SphereSdf {{ radius: {R_OUTER} }},  // outer wall");
@@ -520,7 +520,7 @@ fn print_summary(
 // main
 // =============================================================================
 
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     let diff = build_hollow_shell();
 
     verify_outer_surface_eval(&diff);

@@ -167,7 +167,7 @@ const EXACT_TOL: f64 = 0.0;
 
 // ── Exact-pinned counts (III-1 determinism contract) ─────────────────────
 //
-// Same scene topology + cell_size as row 3 (`sdf-to-tet-sphere`); the
+// Same scene topology + cell_size as row 3 (`sdf_to_tet`); the
 // material-field carry doesn't affect mesh topology (BCC + stuffing runs
 // before `materials_from_field` populates the cache). Mesh counts are
 // therefore identical to row 3's `N_*_EXACT`. Per-shell tet counts are
@@ -209,7 +209,7 @@ const N_OUTER_TETS_EXACT: usize = 3624;
 /// × N_TETS = 0.10 × 6768 ≈ 677` total (exact-pinned per-shell). The
 /// z-slab PLY is the cf-view artifact — projecting onto a thin disk
 /// reveals the three concentric color rings unmistakably from any
-/// camera angle, mirroring hollow-shell-sdf row 2's z=0 slice
+/// camera angle, mirroring `hollow_shell` row 2's z=0 slice
 /// precedent. The un-filtered 6768-centroid cloud renders the outer
 /// shell as a near-solid surface under cf-view's commit-3 sphere-radius
 /// factor, occluding the inner layers; the octant-cut variant solves
@@ -617,7 +617,7 @@ const ZSLAB_HALF_THICKNESS: f64 = CELL_SIZE / 2.0;
 /// visual PLY emit + anchor 10 (`verify_zslab_visual_populations_exact`)
 /// operate on the filtered slab subset. Per-shell slab counts are
 /// exact-pinned via the `*_ZSLAB_EXACT` constants for III-1 determinism
-/// contract coverage. Mirrors hollow-shell-sdf row 2's z=0 slice
+/// contract coverage. Mirrors `hollow_shell` row 2's z=0 slice
 /// precedent for cross-section cf-view visualization (rationale: a thin
 /// slab in 3D projects unambiguously to a 2D disk pattern at any orbit
 /// angle, where a 3D wedge requires the user to face the cut planes).

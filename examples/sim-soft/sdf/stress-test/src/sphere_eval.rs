@@ -1,4 +1,4 @@
-//! sphere-sdf-eval — `Sdf` trait contract on `SphereSdf` + a discrete
+//! sphere-eval — `Sdf` trait contract on `SphereSdf` + a discrete
 //! Eikonal-property diagnostic on the sampled grid.
 //!
 //! Sphere of radius 1 centred at the origin. Signed distance is
@@ -492,7 +492,7 @@ fn verify_fd_gradient_magnitude(grid: &[GridSample], fd_grad_mag: &[f32]) {
 // =============================================================================
 
 fn print_summary(interior: usize, surface: usize, exterior: usize, path: &Path) {
-    println!("==== sphere-sdf-eval ====");
+    println!("==== sphere-eval ====");
     println!();
     println!("input  : SphereSdf {{ radius: {SPHERE_RADIUS} }} (unit sphere at origin)");
     println!("         eval(p) = ‖p‖ − {SPHERE_RADIUS}");
@@ -532,7 +532,7 @@ fn print_summary(interior: usize, surface: usize, exterior: usize, path: &Path) 
 // main
 // =============================================================================
 
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     let sphere = SphereSdf {
         radius: SPHERE_RADIUS,
     };
