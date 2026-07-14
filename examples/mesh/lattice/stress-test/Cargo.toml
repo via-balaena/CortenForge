@@ -1,0 +1,32 @@
+[package]
+name = "example-lattice-stress-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Declares this example's role in the validation contract. `validator` = the
+# binary self-checks against oracles and exits non-zero on any failure, so CI
+# runs it red-or-green (see `cargo xtask run-validators`). The alternative kind
+# is `demo` (illustration only; compile-checked but not run). Every self-gating
+# example MUST declare `validator` or its oracle checks run nowhere in CI.
+[package.metadata.cortenforge]
+example_kind = "validator"
+
+[dependencies]
+# Hand-authored fixtures (bbox cubes, the 50 mm cube fixture) + Point3 +
+# result-mesh inspection.
+mesh-types = { workspace = true }
+# save_ply for the per-module out/*.ply human-inspectable artifacts.
+mesh-io = { workspace = true }
+# LatticeParams / LatticeType / DensityMap / generate_lattice / generate_infill
+# + the gyroid/strut free fns + LatticeResult / InfillResult / BeamLatticeData.
+mesh-lattice = { workspace = true }
+# Result<()> / ensure! in each module's run().
+anyhow = { workspace = true }
+# assert_relative_eq! numerical anchors (tpms_gyroid / strut_cubic /
+# density_gradient / shape_bounded).
+approx = { workspace = true }
+
+[lints]
+workspace = true

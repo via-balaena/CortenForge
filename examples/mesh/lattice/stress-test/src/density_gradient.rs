@@ -6,7 +6,7 @@
 // macros; allow at file level since every call is a post-validation
 // `Option::None` / `Result::Err` impossibility, not a real panic site.
 #![allow(clippy::unreachable)]
-//! mesh-lattice-density-gradient — variable-density lattice via
+//! density-gradient — variable-density lattice via
 //! `DensityMap` on the octet-truss preset.
 //!
 //! Fixture: 30 mm cube at
@@ -15,7 +15,7 @@
 //! `Gradient` density map climbs linearly along z: `from_density = 0.1`
 //! at `(0, 0, 0)`, `to_density = 0.5` at `(0, 0, 30)`.
 //!
-//! Density-modulated counterpart to `mesh-lattice-strut-cubic`:
+//! Density-modulated counterpart to `strut_cubic`:
 //! same strut path mechanism, but octet-truss topology (20 struts per
 //! cell — 8 corner-to-center + 12 corner-to-corner) and a non-uniform
 //! density map. The load-bearing observation: density modulates per-
@@ -546,7 +546,7 @@ fn verify_function_demo() {
 /// Bundled inputs for [`print_summary`]; avoids
 /// `clippy::too_many_arguments` while keeping fields trivially
 /// constructed at the call site (precedent: `Summary` in
-/// `mesh-sdf-distance-query` + `mesh-lattice-strut-cubic`).
+/// `mesh-sdf-distance-query` + `strut_cubic`).
 struct Summary<'a> {
     result: &'a LatticeResult,
     beam_data: &'a BeamLatticeData,
@@ -556,7 +556,7 @@ struct Summary<'a> {
 /// Print the human-readable summary. Extracted from `main` to keep
 /// the entrypoint under clippy's `too_many_lines` cap.
 fn print_summary(s: &Summary) {
-    println!("==== mesh-lattice-density-gradient ====");
+    println!("==== lattice: density-gradient ====");
     println!();
     println!(
         "fixture: 30 mm bbox, cell_size = {CELL_SIZE} mm, strut_thickness \
@@ -647,7 +647,7 @@ fn print_summary(s: &Summary) {
 // main
 // =============================================================================
 
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     verify_density_map_evaluation();
     verify_density_map_clamping();
     verify_density_map_constructors();

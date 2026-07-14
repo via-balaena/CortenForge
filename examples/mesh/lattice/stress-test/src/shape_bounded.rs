@@ -6,7 +6,7 @@
 // post-validation `Option::None` / `Result::Err` impossibility, not a
 // real panic site.
 #![allow(clippy::unreachable)]
-//! mesh-lattice-shape-bounded — boundary-conforming TPMS lattice clipped
+//! shape-bounded — boundary-conforming TPMS lattice clipped
 //! to an analytical sphere SDF via `with_shape_sdf`.
 //!
 //! Fixture: 30 mm cube
@@ -33,10 +33,10 @@
 //! Q7 retrofit PR's flat-per-triangle pivot, the trade-off is
 //! mesh-generation-side: viewer truthfully shows what the mesh is.
 //!
-//! Boundary-conforming counterpart to `mesh-lattice-tpms-gyroid`
+//! Boundary-conforming counterpart to `tpms_gyroid`
 //! (same gyroid TPMS path, but the lattice is trimmed to a
 //! mathematical shape rather than filling the full bbox);
-//! complementary to `mesh-lattice-mesh-bounded-infill` (the
+//! complementary to `mesh_bounded_infill` (the
 //! mesh-bounded composite path via `generate_infill`).
 
 use std::path::Path;
@@ -319,8 +319,8 @@ fn verify_tiny_sphere_edge_case(tiny: &LatticeResult, with_sdf: &LatticeResult) 
 /// Bundled inputs for [`print_summary`]; avoids
 /// `clippy::too_many_arguments` while keeping fields trivially
 /// constructed at the call site (precedent: `Summary` extraction in
-/// `mesh-sdf-distance-query`, `mesh-lattice-strut-cubic`, and
-/// `mesh-lattice-density-gradient`).
+/// `mesh-sdf-distance-query`, `strut_cubic`, and
+/// `density_gradient`).
 struct Summary<'a> {
     with_sdf: &'a LatticeResult,
     without_sdf: &'a LatticeResult,
@@ -332,7 +332,7 @@ struct Summary<'a> {
 /// the entrypoint under clippy's `too_many_lines` cap.
 #[allow(clippy::cast_precision_loss)] // vertex counts ≤ ~3 × 10⁵, well within f64 mantissa
 fn print_summary(s: &Summary) {
-    println!("==== mesh-lattice-shape-bounded ====");
+    println!("==== lattice: shape-bounded ====");
     println!();
     println!(
         "fixture: 30 mm³ bbox centered at origin (-15..15), cell_size = {CELL_SIZE} mm, \
@@ -401,7 +401,7 @@ fn print_summary(s: &Summary) {
 // main
 // =============================================================================
 
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     let params_with = build_params_with_sdf();
     let params_without = build_params_without_sdf();
     let params_tiny = build_params_tiny_sphere();

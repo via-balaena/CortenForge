@@ -31,10 +31,10 @@ the entries below are the mesh-lattice-specific subset.
   aesthetic OR file-size compression. Effort: ~30 LOC.
 
 - **Demo non-default `BeamCap` variants (`Flat`, `Butt`).** The
-  default `BeamCap::Round` is exercised by `mesh-lattice-strut-cubic`;
+  default `BeamCap::Round` is exercised by the `strut_cubic` module;
   `Flat` and `Butt` are unexercised at the example layer. *Trigger*:
   a user reports surprise that `BeamCap::Flat` / `BeamCap::Butt`
-  aren't visually demonstrated. Augment `mesh-lattice-strut-cubic`
+  aren't visually demonstrated. Augment the `strut_cubic` module
   with a sub-demo, OR add a separate example. Effort: ~80 LOC
   additive.
 
@@ -146,8 +146,8 @@ struts connecting near-shell lattice nodes to the inner shell wall.
 
 The fixes ship together as the v1.0.0 cavity-correctness milestone.
 Post-fix anchor verification in the
-`mesh-lattice-mesh-bounded-infill` example's `main.rs` (under
-`examples/mesh/`) locks the behavioural deltas for future
+`mesh_bounded_infill` module's `mod.rs` (under
+`examples/mesh/lattice/stress-test/`) locks the behavioural deltas for future
 maintainers.
 
 - **Gap a — real shell offset.** `generate_infill` now invokes

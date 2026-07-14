@@ -17,7 +17,7 @@ list (sixteen candidates spanning four crates) lives in
 the entry below is the mesh-io-specific subset.
 
 - **3MF beam writer.** `BeamLatticeData` is already the data model
-  (populated by `mesh-lattice-strut-cubic`'s `with_beam_export(true)`
+  (populated by the `strut_cubic` module's `with_beam_export(true)`
   — see mesh book Part 8 Band 6); the writer needs the 3MF Beam
   Lattice Extension format. *Trigger*: 3MF beam-output demand from
   a printer-driver workflow. Effort: ~300-500 LOC.

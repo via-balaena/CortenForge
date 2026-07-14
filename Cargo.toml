@@ -387,11 +387,7 @@ members = [
     "examples/mesh/printability/stress-test",
     "examples/mesh/measure/stress-test",
     "examples/mesh/mesh-sdf-distance-query",
-    "examples/mesh/mesh-lattice-tpms-gyroid",
-    "examples/mesh/mesh-lattice-strut-cubic",
-    "examples/mesh/mesh-lattice-density-gradient",
-    "examples/mesh/mesh-lattice-shape-bounded",
-    "examples/mesh/mesh-lattice-mesh-bounded-infill",
+    "examples/mesh/lattice/stress-test",
 
     # Examples — sim-soft
     "examples/sim-soft/sphere-sdf-eval",
