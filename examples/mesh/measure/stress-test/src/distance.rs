@@ -6,8 +6,8 @@
 // at file level since every call is a post-validation `Option::None`
 // / `Result::Err` impossibility, not a real panic site.
 #![allow(clippy::unreachable)]
-//! mesh-measure-distance-to-mesh — point-to-point + point-to-mesh +
-//! symmetric Hausdorff distance composed from the public surface.
+//! distance — point-to-point + point-to-mesh + symmetric Hausdorff
+//! distance composed from the `mesh-measure` public surface.
 //!
 //! Demonstrates the full `mesh-measure::measure_distance` +
 //! `closest_point_on_mesh` + `distance_to_mesh` public surface against
@@ -491,7 +491,7 @@ fn print_summary(
     p2p: &DistanceMeasurement,
     hausdorff: f64,
 ) {
-    println!("==== mesh-measure-distance-to-mesh ====");
+    println!("==== measure: distance-to-mesh ====");
     println!();
     println!(
         "input  : two SEPARATE axis-aligned unit cubes ({} verts + {} tris each)",
@@ -588,7 +588,7 @@ fn print_summary(
 // main
 // =============================================================================
 
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     let cube_a = unit_cube_at(CUBE_A_MIN, CUBE_A_MAX);
     let cube_b = unit_cube_at(CUBE_B_MIN, CUBE_B_MAX);
     verify_cube_geometry(&cube_a, "cube_a", CUBE_A_MIN, CUBE_A_MAX);

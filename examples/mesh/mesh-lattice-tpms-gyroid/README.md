@@ -271,8 +271,7 @@ artifact path.
 ## Cross-references
 
 - **Sister examples** rounding out the v1.0 mesh-arc:
-  `mesh-measure-bounding-box`, `mesh-measure-cross-section`,
-  `mesh-measure-distance-to-mesh`, `mesh-sdf-distance-query`. The
+  `measure/stress-test`, `mesh-sdf-distance-query`. The
   strut-based contrast is `mesh-lattice-strut-cubic` (uniform
   cubic lattice); the variable-density extension is
   `mesh-lattice-density-gradient` (octet-truss with `DensityMap`).

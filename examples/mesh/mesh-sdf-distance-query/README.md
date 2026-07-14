@@ -286,10 +286,9 @@ counter values + max unsigned distance.
 ## Cross-references
 
 - **Sister examples** rounding out the v1.0 mesh-arc:
-  `mesh-measure-bounding-box`, `mesh-measure-cross-section`,
-  `mesh-measure-distance-to-mesh`. The unsigned `distance_to_mesh`
-  in `mesh-measure-distance-to-mesh` uses an internal
-  `closest_point_on_triangle` that **duplicates** mesh-sdf's free
+  `measure/stress-test`. The unsigned `distance_to_mesh`
+  exercised by `measure/stress-test`'s `distance` module uses an
+  internal `closest_point_on_triangle` that **duplicates** mesh-sdf's free
   fn (v0.9 dedup candidate; see `mesh-sdf/CHANGELOG.md`).
 - **PLY-attribute pattern**: `examples/mesh/ply-with-custom-attributes/`
   — same `save_ply_attributed` + `extras["<scalar>"]` pattern; this

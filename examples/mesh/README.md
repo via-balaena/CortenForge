@@ -86,9 +86,7 @@ IS the correctness signal — the visuals pass is optional pedagogy.
 
 | Example | Concept |
 |---------|---------|
-| [`mesh-measure-bounding-box`](mesh-measure-bounding-box/) | AABB + OBB on a two-shape fixture (axis-aligned cube + 45°-rotated brick) — when do they coincide, when do they diverge? PCA recovers the brick's `(20, 10, 10)` extents on a non-cubic input |
-| [`mesh-measure-cross-section`](mesh-measure-cross-section/) | Planar slicing of a 32-segment closed cylinder — mid-slice + 10-slice stack + `circumference_at_height` / `area_at_height` helpers + out-of-mesh + plane-normal auto-normalization |
-| [`mesh-measure-distance-to-mesh`](mesh-measure-distance-to-mesh/) | Point-to-point + unsigned point-to-mesh + symmetric Hausdorff between two vertex-disjoint unit cubes; Hausdorff is composition over the exposed primitives, not a built-in |
+| [`measure/stress-test`](measure/stress-test/) | The `mesh-measure` validation superset (one domain → one stress-test). Three modules: **bounding_box** (AABB + PCA-OBB on a cube + 45°-rotated brick — OBB ⊄ AABB), **cross_section** (planar slicing of a 32-segment cylinder — shoelace area/perimeter, biased centroid, out-of-mesh, plane-normal normalization), **distance** (point-to-point + point-to-mesh + symmetric Hausdorff between two vertex-disjoint cubes) |
 
 ### `mesh-sdf` — signed-distance queries
 
