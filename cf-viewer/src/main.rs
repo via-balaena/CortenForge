@@ -695,8 +695,8 @@ fn spawn_geometry(
         //      inter-point spacing is `(V/N)^(1/3)`; rendering each as
         //      a sphere ~40% of that spacing keeps adjacent spheres
         //      visually discrete (~20% gap). Surfaces dense per-tet
-        //      centroid clouds (sim-soft layered-scalar-field row 8 +
-        //      successors) where the diagonal-only rule gave overlap.
+        //      centroid clouds (sim-soft scalar-field row 8, module `layered`,
+        //      + successors) where the diagonal-only rule gave overlap.
         let raw_aabb = input.mesh.aabb();
         let scaled_aabb = scale_aabb(&raw_aabb, scale);
         let diagonal = (scaled_aabb.diagonal() as f32).max(1.0);
