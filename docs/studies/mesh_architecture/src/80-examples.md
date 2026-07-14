@@ -35,13 +35,11 @@ A single example covers the canonical broken-to-clean pipeline. Repair sits betw
 
 ## Band 3 — SDF and offset
 
-These examples cover the mesh-to-SDF half of the bridge: building signed-distance fields, querying them point-wise and on bulk grids, and using them to generate offset surfaces via marching cubes. The SDF example surfaced two v0.9 candidates (sign-convention robustness at vertex / edge regions, and BVH-acceleration of the closest-point primitive); the offset examples lock in the un-welded MC vertex-soup signature.
+These examples cover the mesh-to-SDF half of the bridge: building signed-distance fields, querying them point-wise and on bulk grids, and using them to generate offset surfaces via marching cubes. The SDF example surfaced two v0.9 candidates (sign-convention robustness at vertex / edge regions, and BVH-acceleration of the closest-point primitive); the offset example locks in the Steiner-vs-polytope volume asymmetry and the genus-0 topological invariant of the offset output.
 
 ### `mesh-offset`
 
-- **`mesh-offset-outward`** — SDF + marching cubes outward offset. Surfaces corner rounding (Steiner-Minkowski; intrinsic to the offset operation, not a bug) and the per-face-flip pattern needed to render un-welded MC vertex-soup output correctly in single-sided viewers.
-  Pairs with [Part 3 — SDF and offset](30-sdf-and-offset.md).
-- **`mesh-offset-inward`** — SDF + marching cubes inward offset on a closed cube. Sharp polytope preservation (no rounding). Pair-companion to `mesh-offset-outward` highlighting the asymmetry between expansion and erosion.
+- **`offset/stress-test`** — SDF + marching cubes offset in both directions on a closed cube, the `mesh-offset` domain validator (folded from the former `mesh-offset-outward` / `mesh-offset-inward` pair). Anchors the expansion/erosion asymmetry — outward dilation rounds corners (Steiner-Minkowski volume; intrinsic to the operation, not a bug) while inward erosion preserves the sharp polytope (exact `(1 + 2d)³`) — and the **grid-alignment topology pitfall**: an eroded face landing exactly on marching-cubes sample planes stitches spurious handles (genus > 0), which an off-grid resolution avoids. The clean output is now watertight and outward-wound directly (the §Q-5 winding fix plus the MC edge-vertex cache retired the old inside-out vertex-soup output and its per-face-flip workaround).
   Pairs with [Part 3 — SDF and offset](30-sdf-and-offset.md).
 
 ### `mesh-sdf`

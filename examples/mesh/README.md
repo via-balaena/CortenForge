@@ -72,8 +72,7 @@ IS the correctness signal — the visuals pass is optional pedagogy.
 
 | Example | Concept |
 |---------|---------|
-| [`mesh-offset-outward`](mesh-offset-outward/) | SDF + marching cubes outward offset — corner rounding; vertex-soup MC output handled with per-face flip pattern |
-| [`mesh-offset-inward`](mesh-offset-inward/) | SDF + marching cubes inward offset — sharp polytope preservation (no Steiner-Minkowski rounding); pair-companion to `mesh-offset-outward` |
+| [`offset/stress-test`](offset/stress-test/) | SDF + marching cubes offset (both directions) — Steiner-Minkowski corner rounding outward vs. sharp polytope preservation inward, plus the grid-alignment topology pitfall; the `mesh-offset` domain validator |
 
 ### `mesh-shell` — wall-thickness shell generation
 

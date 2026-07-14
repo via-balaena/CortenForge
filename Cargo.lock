@@ -4984,28 +4984,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-mesh-mesh-offset-inward"
-version = "1.0.0"
-dependencies = [
- "anyhow",
- "mesh-io",
- "mesh-offset",
- "mesh-repair",
- "mesh-types",
-]
-
-[[package]]
-name = "example-mesh-mesh-offset-outward"
-version = "1.0.0"
-dependencies = [
- "anyhow",
- "mesh-io",
- "mesh-offset",
- "mesh-repair",
- "mesh-types",
-]
-
-[[package]]
 name = "example-mesh-mesh-repair-walkthrough"
 version = "1.0.0"
 dependencies = [
@@ -5510,6 +5488,17 @@ version = "1.0.0"
 dependencies = [
  "sim-core",
  "sim-mjcf",
+]
+
+[[package]]
+name = "example-offset-stress-test"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "mesh-io",
+ "mesh-offset",
+ "mesh-repair",
+ "mesh-types",
 ]
 
 [[package]]

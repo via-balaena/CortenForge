@@ -60,7 +60,7 @@ overrides interact in a specific order:
 | `.voxel_size(f64)` | `sdf_voxel_size_mm` | Default `0.5`. Only used by `sdf_walls`. |
 | `.fast()` (preset) | `wall_method = Normal`, `validate = false` | This example's headline preset. |
 | `.high_quality()` (preset) | `wall_method = Sdf`, `sdf_voxel_size_mm = 0.3`, `validate = true` | Companion (commit 12). |
-| `.offset(f64)` | `offset_mm = Some(...)` | Optional pre-pass: SDF offset the input before shell generation. Routes through `mesh-offset`. Not used by this example — see [`mesh-offset-outward`](../mesh-offset-outward/) and [`mesh-offset-inward`](../mesh-offset-inward/) for the standalone offset pipeline. |
+| `.offset(f64)` | `offset_mm = Some(...)` | Optional pre-pass: SDF offset the input before shell generation. Routes through `mesh-offset`. Not used by this example — see [`offset/stress-test`](../offset/stress-test/) for the standalone offset pipeline. |
 
 **Order matters.** `.fast()` and `.high_quality()` are fix-up methods
 that set MULTIPLE fields. If you want fast walls AND post-build
@@ -456,12 +456,12 @@ cargo run -p cf-viewer --release -- examples/mesh/shell-generation-fast/out/shel
     backface culling). The `mesh-shell` 0.7.x rim winding quirk
     flagged by `has_consistent_winding == false` is INVISIBLE in
     any lighting model — it affects edge-traversal direction, not
-    face-normal direction. No `_flipped.ply` companion needed —
-    unlike [`mesh-offset-outward`](../mesh-offset-outward/) and
-    [`mesh-offset-inward`](../mesh-offset-inward/), which DO need
-    one because `mesh-offset` 0.7.x's marching cubes path emits
-    inside-out winding (a normal-direction problem, visible in
-    backface-culled viewers).
+    face-normal direction. No `_flipped.ply` companion needed here,
+    and none in [`offset/stress-test`](../offset/stress-test/)
+    either: `mesh-offset`'s marching cubes path now emits
+    outward-wound output directly (the §Q-5 winding fix), so its
+    former inside-out normal-direction problem — the reason those
+    examples once shipped a flipped companion — is gone.
   - **Sharp planar surfaces, not chamfered.** The outer surface
     is a closed-form polygon mesh (no MC discretization), so
     faces are exactly planar between vertices and corners are

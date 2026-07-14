@@ -180,6 +180,5 @@ Output written to `examples/mesh/printability-thin-wall/out/`.
 
 - [`mesh-printability` `[Unreleased]/Added`](../../../mesh/mesh-printability/CHANGELOG.md)
   — the §6.1 ThinWall detector entry that this example demonstrates.
-- [`mesh-offset-inward`](../mesh-offset-inward/) — for the analogous
-  "platform truth + viewer-friendly" winding-pair narrative on a
-  different artifact.
+- [`offset/stress-test`](../offset/stress-test/) — the `mesh-offset`
+  domain validator (SDF + marching-cubes offset, both directions).

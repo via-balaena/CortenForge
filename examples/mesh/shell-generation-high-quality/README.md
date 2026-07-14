@@ -150,8 +150,8 @@ octants of radius 2mm.
 This rounding is **GENUINE level-set curvature, not MC discretization
 artifact.** The level set ITSELF is curved at edges and vertices; the
 MC tessellation discretizes the curved level set into triangle facets
-at voxel resolution. Distinguish from
-[`mesh-offset-inward`](../mesh-offset-inward/) (commit 10), where the
+at voxel resolution. Distinguish from the inward case in
+[`offset/stress-test`](../offset/stress-test/), where the
 level set has SHARP corners (inward offset of a convex polytope
 preserves polytope structure, no rounding) and MC chamfers them as a
 tessellation artifact only.
@@ -323,12 +323,13 @@ cargo run -p cf-viewer --release -- examples/mesh/shell-generation-high-quality/
   - **Cube vertices are filleted into sphere octants** of radius 2mm.
     Each octant is tessellated into many small chamfered planar
     facets at 0.3mm voxel resolution.
-  - **No `_flipped.ply` companion is needed.** Unlike
-    [`mesh-offset-outward`](../mesh-offset-outward/) and
-    [`mesh-offset-inward`](../mesh-offset-inward/) (where the raw MC
-    output IS inside-out, requiring per-face flip remediation), the
-    shell here is properly wound by construction (the 11.5.2 engine
-    fix applies the per-face flip internally). All viewer pipelines
+  - **No `_flipped.ply` companion is needed.** The shell here is
+    properly wound by construction (the 11.5.2 engine fix applies the
+    per-face flip internally); the standalone
+    [`offset/stress-test`](../offset/stress-test/) needs no flip
+    either now that `mesh-offset`'s marching cubes emits outward-wound
+    output directly (the §Q-5 winding fix retired its old inside-out
+    raw-MC output). All viewer pipelines
     render the shell correctly: backface-culled, two-sided, lit, etc.
     The `has_consistent_winding == true` bonus also means downstream
     tools that BFS the face graph (e.g. `mesh_repair::fix_winding_order`)
