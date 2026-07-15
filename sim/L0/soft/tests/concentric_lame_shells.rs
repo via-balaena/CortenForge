@@ -230,6 +230,28 @@
 //! 3. [`iv_5_three_shell_is_run_to_run_deterministic`] — Decision N
 //!    determinism: two builds at `h/2` produce bit-equal `materials()`
 //!    cache and bit-equal `step.x_final` after a single `replay_step`.
+//!
+//! Three further `#[test]` blocks generalise the cavity-wall-only reads
+//! above to the full displacement profile (backfilled from the
+//! `example-bonded-stress-test` `lame_shells` demonstration, which was the
+//! sole home of these oracles):
+//!
+//! 4. [`iv_5_three_shell_inner_and_middle_profile_match_piecewise_lame`] —
+//!    per-shell profile: the inner + middle shells' FEM mean radial
+//!    displacement (over all referenced vertices in the shell) matches the
+//!    piecewise-Lamé closed-form mean over the same set within `0.30` at
+//!    `h/2`. The outer shell is excluded (pinned-dominated, genuinely
+//!    under-converged at `h/2`).
+//!
+//! 5. [`iv_5_three_shell_cavity_strictly_between_uniform_bounds`] — IV-2
+//!    lens β analog for the sphere: the three-shell cavity-wall mean lies
+//!    strictly between the uniform-1× (all-soft) and uniform-2×
+//!    (all-stiff) baselines.
+//!
+//! 6. [`iv_5_three_shell_radial_monotonicity_outward`] — strict outward
+//!    monotone-decay `cavity > inner > middle > outer ≥ 0`, the sign the
+//!    piecewise-Lamé field predicts under internal-pressure-with-fixed-
+//!    outer geometry.
 
 #![allow(
     // Direct displacement comparisons drive the sanity-band and
@@ -256,8 +278,8 @@ use nalgebra::{Matrix6, Vector6};
 use sim_soft::{
     CpuNewtonSolver, CpuTet4NHSolver, Field, LAYERED_SPHERE_R_CAVITY, LAYERED_SPHERE_R_INNER_OUTER,
     LAYERED_SPHERE_R_OUTER, LAYERED_SPHERE_R_OUTER_INNER, LayeredScalarField, MaterialField, Mesh,
-    NullContact, SceneInitial, SdfMeshedTetMesh, SoftScene, Solver, SolverConfig, SphereSdf, Tet4,
-    Vec3,
+    NewtonStep, NullContact, SceneInitial, SdfMeshedTetMesh, SoftScene, Solver, SolverConfig,
+    SphereSdf, Tet4, Vec3, VertexId, referenced_vertices,
 };
 
 mod common;
@@ -357,9 +379,20 @@ fn three_shell_field() -> MaterialField {
 
 /// Uniform-middle `MaterialField` for the sanity-passthrough test. Every
 /// tet receives the middle-composite Lamé pair, collapsing the three-
-/// shell scene to a single-material thick-walled hollow sphere.
+/// shell scene to a single-material thick-walled hollow sphere. Also the
+/// **uniform-2×** (stiffest) baseline for the between-uniform-bounds gate
+/// [`iv_5_three_shell_cavity_strictly_between_uniform_bounds`].
 fn uniform_middle_field() -> MaterialField {
     MaterialField::uniform(MU_MIDDLE, LAMBDA_MIDDLE)
+}
+
+/// **Uniform-1×** (softest) baseline for the between-uniform-bounds gate:
+/// every tet at the inner / outer Ecoflex pair `(MU_INNER, LAMBDA_INNER)`.
+/// Twice as compliant as [`uniform_middle_field`] (uniform-2×); the
+/// three-shell `1×/2×/1×` cavity-wall inflation is bounded above by this
+/// all-soft configuration.
+fn uniform_inner_field() -> MaterialField {
+    MaterialField::uniform(MU_INNER, LAMBDA_INNER)
 }
 
 // ── Closed-form Lamé multi-shell solver ──────────────────────────────────
@@ -521,47 +554,46 @@ fn solve_single_shell_lame_via_three_shell(
 
 // ── Test scaffold — single replay_step at static dt ──────────────────────
 
-/// Bundled output of [`run_at_refinement`] — carries the
-/// Saint-Venant-averaged cavity-wall radial displacement plus Newton
-/// diagnostics for the `eprintln!` line.
-struct StepReport {
-    /// Mean radial displacement `Σ_v (|x_final[v]| - R_cavity_v_rest) /
-    /// N_loaded` over every cavity-surface vertex, where
-    /// `R_cavity_v_rest = positions_rest[v].norm()`. Saint-Venant idiom
-    /// (mirror IV-3's tip-displacement read pattern).
-    cavity_u_r_mean: f64,
-    /// Newton iteration count at convergence.
-    iter_count: usize,
-    /// Free-DOF residual norm at convergence.
-    residual_norm: f64,
-    /// Number of cavity-surface vertices (the `N_loaded` denominator).
-    n_loaded: usize,
+/// Shared FEM-run output for the layered-silicone-sphere scene: one
+/// backward-Euler `replay_step` from rest plus the rest-configuration
+/// bookkeeping every post-solve readout needs. Every scene-driven test
+/// (cavity-wall convergence, per-shell profile, monotonicity) builds on
+/// this single build+solve, so the solver config and the Saint-Venant
+/// cavity-mean convention are single-sourced.
+struct SolveOutcome {
+    /// Converged Newton step (`x_final`, iter count, residual).
+    step: NewtonStep<sim_soft::CpuTape>,
+    /// Rest positions of every vertex, snapshotted before the mesh moved
+    /// into the solver.
+    rest: Vec<Vec3>,
+    /// Vertices referenced by at least one tet (solver participants).
+    referenced: Vec<VertexId>,
+    /// Cavity-surface (loaded) vertex ids — the Saint-Venant denominator.
+    loaded: Vec<usize>,
     /// Number of pinned outer-surface vertices.
     n_pinned: usize,
     /// Total tet count at this refinement.
     n_tets: usize,
 }
 
-/// Single backward-Euler `replay_step` on the layered silicone sphere
-/// at `cell_size` with the supplied `MaterialField` and internal
-/// pressure. Returns the cavity-wall mean radial displacement plus
-/// Newton diagnostics.
-fn run_at_refinement(cell_size: f64, field: MaterialField, pressure: f64) -> StepReport {
+/// Build the layered silicone sphere at `cell_size` with the supplied
+/// `MaterialField` + internal pressure and take a single static-regime
+/// `replay_step` from rest. Snapshots the rest configuration (positions,
+/// referenced set, loaded band) before the mesh moves into the solver.
+fn build_solve_and_read(cell_size: f64, field: MaterialField, pressure: f64) -> SolveOutcome {
     let (mesh, bc, initial, theta) = SoftScene::layered_silicone_sphere(field, cell_size, pressure)
         .expect("layered_silicone_sphere should mesh successfully at canonical cell sizes");
-
     let SceneInitial { x_prev, v_prev } = initial;
 
-    // Snapshot the cavity-surface vertices' rest radii before the mesh
-    // moves into the solver — needed for the Saint-Venant `u_r` read
-    // after the step.
-    let positions = mesh.positions();
-    let cavity_rest: Vec<(usize, f64)> = bc
+    // Snapshot the rest configuration before the mesh moves into the
+    // solver — needed for every post-step Saint-Venant `u_r` read.
+    let rest: Vec<Vec3> = mesh.positions().to_vec();
+    let referenced = referenced_vertices(&mesh);
+    let loaded: Vec<usize> = bc
         .loaded_vertices
         .iter()
-        .map(|&(v, _)| (v as usize, positions[v as usize].norm()))
+        .map(|&(v, _)| v as usize)
         .collect();
-    let n_loaded = bc.loaded_vertices.len();
     let n_pinned = bc.pinned_vertices.len();
     let n_tets = mesh.n_tets();
 
@@ -570,39 +602,149 @@ fn run_at_refinement(cell_size: f64, field: MaterialField, pressure: f64) -> Ste
     // Mirrors IV-3's static-regime headroom. Empirically Newton
     // converges in ~3 iters per level under the radially-symmetric
     // distributed-pressure load with fixed-outer-pin BC — quadratic
-    // convergence kicks in immediately because the rest configuration
-    // is close to the small-strain equilibrium. `50` leaves headroom
-    // against future perturbations (and matches IV-3 verbatim).
+    // convergence kicks in immediately because the rest configuration is
+    // close to the small-strain equilibrium. `50` leaves headroom against
+    // future perturbations (and matches IV-3 verbatim).
     cfg.max_newton_iter = 50;
 
     let solver: CpuTet4NHSolver<SdfMeshedTetMesh> =
         CpuNewtonSolver::new(Tet4, mesh, NullContact, cfg, bc);
     let step = solver.replay_step(&x_prev, &v_prev, &theta, cfg.dt);
 
-    // Saint-Venant-averaged cavity-wall radial displacement.
-    // Use `Vec3::norm` for the FMA-optimised radial-magnitude
-    // computation rather than open-coding `(Σ xᵢ²).sqrt()`.
-    let u_r_sum: f64 = cavity_rest
-        .iter()
-        .map(|&(v, rest_radius)| {
-            let final_pos = Vec3::new(
-                step.x_final[3 * v],
-                step.x_final[3 * v + 1],
-                step.x_final[3 * v + 2],
-            );
-            final_pos.norm() - rest_radius
-        })
-        .sum();
-    let cavity_u_r_mean = u_r_sum / cavity_rest.len() as f64;
-
-    StepReport {
-        cavity_u_r_mean,
-        iter_count: step.iter_count,
-        residual_norm: step.final_residual_norm,
-        n_loaded,
+    SolveOutcome {
+        step,
+        rest,
+        referenced,
+        loaded,
         n_pinned,
         n_tets,
     }
+}
+
+/// Per-vertex observed radial displacement `‖x_final[v]‖ − ‖rest[v]‖`. Use
+/// `Vec3::norm` for the FMA-optimised radial magnitude rather than
+/// open-coding `(Σ xᵢ²).sqrt()`.
+fn observed_u_r(outcome: &SolveOutcome, v: usize) -> f64 {
+    let final_pos = Vec3::new(
+        outcome.step.x_final[3 * v],
+        outcome.step.x_final[3 * v + 1],
+        outcome.step.x_final[3 * v + 2],
+    );
+    final_pos.norm() - outcome.rest[v].norm()
+}
+
+/// Saint-Venant-averaged cavity-wall mean radial displacement: mean of
+/// [`observed_u_r`] over the cavity-surface (loaded) vertices. The single
+/// cavity-mean convention shared by every scene-driven test (mirror IV-3's
+/// tip-displacement read pattern).
+fn cavity_wall_mean(outcome: &SolveOutcome) -> f64 {
+    let sum: f64 = outcome
+        .loaded
+        .iter()
+        .map(|&v| observed_u_r(outcome, v))
+        .sum();
+    sum / outcome.loaded.len() as f64
+}
+
+/// Bundled output of [`run_at_refinement`] — the Saint-Venant-averaged
+/// cavity-wall radial displacement plus the Newton diagnostics the
+/// convergence test's `eprintln!` + budget asserts consume.
+struct StepReport {
+    cavity_u_r_mean: f64,
+    iter_count: usize,
+    residual_norm: f64,
+    n_loaded: usize,
+    n_pinned: usize,
+    n_tets: usize,
+}
+
+/// Cavity-wall convergence-ladder read: a single `replay_step` on the
+/// layered silicone sphere at `cell_size`, projected to the cavity-wall
+/// mean plus Newton diagnostics. Thin wrapper over [`build_solve_and_read`]
+/// and [`cavity_wall_mean`], so the build+solve and cavity-mean convention
+/// stay single-sourced with the per-shell readouts.
+fn run_at_refinement(cell_size: f64, field: MaterialField, pressure: f64) -> StepReport {
+    let outcome = build_solve_and_read(cell_size, field, pressure);
+    StepReport {
+        cavity_u_r_mean: cavity_wall_mean(&outcome),
+        iter_count: outcome.step.iter_count,
+        residual_norm: outcome.step.final_residual_norm,
+        n_loaded: outcome.loaded.len(),
+        n_pinned: outcome.n_pinned,
+        n_tets: outcome.n_tets,
+    }
+}
+
+// ── Per-shell readout scaffold (per-shell-profile + monotonicity gates) ──
+
+/// Layer-ID for a rest position under the same partition rule
+/// `LayeredScalarField` applies internally (`partition_point(|&t| t <= phi)`
+/// on `phi = ‖p‖ − R_OUTER`): `0` inner, `1` middle, `2` outer. Independent
+/// re-derivation of the mesher's partition predicate — matches
+/// [`three_shell_field`]'s threshold construction — so any drift between
+/// this walk and the field's shows up as a per-shell readout that no longer
+/// matches the piecewise-Lamé analytic (rather than a silent mislabel).
+fn shell_at(p: Vec3) -> usize {
+    let phi = p.norm() - LAYERED_SPHERE_R_OUTER;
+    let phi_inner_outer = LAYERED_SPHERE_R_INNER_OUTER - LAYERED_SPHERE_R_OUTER;
+    let phi_outer_inner = LAYERED_SPHERE_R_OUTER_INNER - LAYERED_SPHERE_R_OUTER;
+    if phi < phi_inner_outer {
+        0
+    } else if phi < phi_outer_inner {
+        1
+    } else {
+        2
+    }
+}
+
+/// Divide per-shell displacement sums by their counts, guarding against an
+/// empty shell (which would make the mean undefined).
+fn finish_shell_means(sum: [f64; 3], count: [usize; 3]) -> [f64; 3] {
+    let mut means = [0.0_f64; 3];
+    for s in 0..3 {
+        assert!(
+            count[s] > 0,
+            "shell {s} has zero referenced vertices — per-shell mean is undefined"
+        );
+        means[s] = sum[s] / count[s] as f64;
+    }
+    means
+}
+
+/// Observed mean radial displacement over all referenced vertices in each
+/// shell `[inner, middle, outer]`, partitioned by [`shell_at`] on the rest
+/// position. The FEM side of the per-shell-profile oracle; also the
+/// readout the monotonicity gate compares.
+fn per_shell_observed_means(outcome: &SolveOutcome) -> [f64; 3] {
+    let mut sum = [0.0_f64; 3];
+    let mut count = [0_usize; 3];
+    for &vid in &outcome.referenced {
+        let v = vid as usize;
+        let s = shell_at(outcome.rest[v]);
+        sum[s] += observed_u_r(outcome, v);
+        count[s] += 1;
+    }
+    finish_shell_means(sum, count)
+}
+
+/// Analytic piecewise-Lamé mean `coeffs.u_r(shell, ‖rest‖)` over the SAME
+/// per-shell referenced-vertex partition [`per_shell_observed_means`] walks
+/// — so BCC-quantisation noise affects both sides equally (apples-to-apples,
+/// no band-tolerance on the vertex distribution). `coeffs` is this file's
+/// own [`solve_three_shell_lame`] closed-form, compared against the FEM
+/// `x_final`: a genuine FEM-vs-analytic oracle, not a recompute of either
+/// side's own expression. Only the profile gate needs this; the
+/// monotonicity gate reads observed means alone.
+fn per_shell_analytic_means(outcome: &SolveOutcome, coeffs: &LameCoefficients) -> [f64; 3] {
+    let mut sum = [0.0_f64; 3];
+    let mut count = [0_usize; 3];
+    for &vid in &outcome.referenced {
+        let v = vid as usize;
+        let s = shell_at(outcome.rest[v]);
+        sum[s] += coeffs.u_r(s, outcome.rest[v].norm());
+        count[s] += 1;
+    }
+    finish_shell_means(sum, count)
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
@@ -943,5 +1085,160 @@ fn iv_5_three_shell_is_run_to_run_deterministic() {
         "first cavity vertex should have inflated outward (final_radius = {final_radius:e}, \
          R_cavity = {r_cavity:e}); a non-displacing scene makes the determinism gate a \
          no-op",
+    );
+}
+
+#[test]
+fn iv_5_three_shell_inner_and_middle_profile_match_piecewise_lame() {
+    // Per-shell radial-displacement PROFILE gate — generalises the
+    // convergence test's cavity-wall-only read to the interior shells.
+    // For the inner and middle shells, the FEM's mean radial displacement
+    // over all referenced vertices in the shell is compared against the
+    // piecewise-Lamé closed-form mean over the SAME vertex set. Catches a
+    // material-assignment or interface-continuity bug that leaves the
+    // cavity-wall reading intact but distorts the interior profile.
+    //
+    // The OUTER shell is deliberately excluded: 734 of its ~952 referenced
+    // vertices sit pinned at `u_r = 0` (fixed-outer-surface BC), so its
+    // mean is small-magnitude and pinned-dominated — a Tet4 mesh at `h/2`
+    // genuinely under-converges it (~36 % rel-err), which would force a
+    // special-cased looser band. The inner + middle shells carry the
+    // load-bearing interior profile and bind cleanly under a single band.
+    let outcome = build_solve_and_read(CELL_SIZE_H2, three_shell_field(), PRESSURE);
+    let shells = [
+        ShellParams {
+            mu: MU_INNER,
+            lambda: LAMBDA_INNER,
+        },
+        ShellParams {
+            mu: MU_MIDDLE,
+            lambda: LAMBDA_MIDDLE,
+        },
+        ShellParams {
+            mu: MU_OUTER,
+            lambda: LAMBDA_OUTER,
+        },
+    ];
+    let radii = [
+        LAYERED_SPHERE_R_CAVITY,
+        LAYERED_SPHERE_R_INNER_OUTER,
+        LAYERED_SPHERE_R_OUTER_INNER,
+        LAYERED_SPHERE_R_OUTER,
+    ];
+    let coeffs = solve_three_shell_lame(shells, radii, PRESSURE);
+    let observed_means = per_shell_observed_means(&outcome);
+    let analytic_means = per_shell_analytic_means(&outcome, &coeffs);
+
+    // Same 0.30 sanity band the uniform-passthrough test uses at h/2
+    // (Tet4 + centroid-tag discretisation; IV-3 sanity-band precedent).
+    // Inner / middle observed at ~12 % / ~19 % rel-err — binding with
+    // margin.
+    for (shell_id, label) in [(0usize, "inner"), (1usize, "middle")] {
+        let observed = observed_means[shell_id];
+        let analytic = analytic_means[shell_id];
+        assert!(
+            observed > 0.0,
+            "{label}-shell observed mean must displace outward under internal pressure \
+             (got {observed:e}); a non-positive value signals a load-direction or BC bug"
+        );
+        assert!(
+            analytic > 0.0,
+            "{label}-shell piecewise-Lamé analytic mean must be positive (got {analytic:e}); \
+             a non-positive value signals a sign error in the closed-form 6×6 setup"
+        );
+        let rel_err = (observed - analytic).abs() / analytic;
+        assert!(
+            rel_err < 0.30,
+            "{label}-shell profile at cell_size = {CELL_SIZE_H2:.3}: \
+             |observed - analytic| / analytic = {rel_err:.4} > 0.30; observed = {observed:e}, \
+             analytic = {analytic:e} — the interior displacement profile has drifted from the \
+             piecewise-Lamé prediction",
+        );
+    }
+}
+
+#[test]
+fn iv_5_three_shell_cavity_strictly_between_uniform_bounds() {
+    // IV-2 lens β analog for the hollow sphere (the lib already has the
+    // bilayer-BEAM version in `multi_material_continuity.rs`, not the
+    // sphere). Three h/2 runs: three-shell `1×/2×/1×`, uniform-1×
+    // (all-soft), uniform-2× (all-stiff). The cavity-wall mean radial
+    // displacement satisfies a strict-between inequality:
+    //
+    //   u_r_uniform_2x < u_r_three_shell < u_r_uniform_1x
+    //
+    // Uniform-2× is stiffest (smallest inflation); uniform-1× is softest
+    // (largest); the three-shell body sits between because two of its
+    // three shells are at 1× (more compliant than uniform-2×) and one is
+    // at 2× (less compliant than uniform-1×). Catches dropped-tet /
+    // swapped-materials / mis-assigned bugs that push the three-shell
+    // cavity reading onto or past a bound without failing the per-shell
+    // rel-err gate.
+    let three_shell =
+        run_at_refinement(CELL_SIZE_H2, three_shell_field(), PRESSURE).cavity_u_r_mean;
+    let uniform_1x =
+        run_at_refinement(CELL_SIZE_H2, uniform_inner_field(), PRESSURE).cavity_u_r_mean;
+    let uniform_2x =
+        run_at_refinement(CELL_SIZE_H2, uniform_middle_field(), PRESSURE).cavity_u_r_mean;
+
+    assert!(
+        three_shell > 0.0 && uniform_1x > 0.0 && uniform_2x > 0.0,
+        "all three cavity-wall means must displace outward: three_shell = {three_shell:e}, \
+         uniform_1x = {uniform_1x:e}, uniform_2x = {uniform_2x:e}"
+    );
+
+    // Sanity: all-stiff deflects strictly less than all-soft. Without this
+    // the "between bounds" claim would be vacuous.
+    assert!(
+        uniform_2x < uniform_1x,
+        "uniform-2× (all-stiff) cavity mean ({uniform_2x:e}) must be less than uniform-1× \
+         (all-soft) ({uniform_1x:e}) — linearity of the Lamé 6×6 in (μ, λ)"
+    );
+    assert!(
+        uniform_2x < three_shell,
+        "three-shell cavity mean ({three_shell:e}) must exceed uniform-2× ({uniform_2x:e}) — \
+         two of three shells are at 1× (softer than uniform-2×'s all-2× configuration)"
+    );
+    assert!(
+        three_shell < uniform_1x,
+        "three-shell cavity mean ({three_shell:e}) must be less than uniform-1× \
+         ({uniform_1x:e}) — the middle shell is at 2× (stiffer than uniform-1×'s all-1× \
+         configuration)"
+    );
+}
+
+#[test]
+fn iv_5_three_shell_radial_monotonicity_outward() {
+    // Strict outward-decreasing monotonicity across the four Saint-Venant-
+    // averaged readouts: cavity_wall > inner > middle > outer ≥ 0. The
+    // piecewise-Lamé closed-form predicts strict outward monotone-decay
+    // under internal-pressure-with-fixed-outer geometry (cavity wall most
+    // inflated, outer wall pinned at 0). Sanity guard against
+    // load-direction or BC-sign regressions the per-shell profile gate's
+    // magnitude-band could miss. Reads observed means only — no analytic
+    // profile computation is needed for a pure ordering check.
+    let outcome = build_solve_and_read(CELL_SIZE_H2, three_shell_field(), PRESSURE);
+    let cavity = cavity_wall_mean(&outcome);
+    let [inner, middle, outer] = per_shell_observed_means(&outcome);
+
+    assert!(
+        cavity > inner,
+        "monotonicity drift: cavity-wall mean ({cavity:e}) must exceed inner-shell mean \
+         ({inner:e}) — cavity-surface vertices sit at the inner boundary where u_r is maximal"
+    );
+    assert!(
+        inner > middle,
+        "monotonicity drift: inner-shell mean ({inner:e}) must exceed middle-shell mean \
+         ({middle:e}) — radial displacement decays outward under fixed-outer BC"
+    );
+    assert!(
+        middle > outer,
+        "monotonicity drift: middle-shell mean ({middle:e}) must exceed outer-shell mean \
+         ({outer:e}) — the outer wall is pinned at u_r = 0"
+    );
+    assert!(
+        outer >= 0.0,
+        "monotonicity drift: outer-shell mean ({outer:e}) must be non-negative (radial \
+         expansion is outward, never inward, under positive internal pressure)"
     );
 }
