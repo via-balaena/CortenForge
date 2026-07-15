@@ -20,6 +20,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rotated 45° whose OBB recovers the true `(20, 12, 8)` extents (the defining
   OBB-vs-AABB behavior, previously only exercised on axis-aligned cubes).
 
+### Changed
+
+- **`CrossSection`/`Contour` centroid is now the true polygon centroid**
+  (area-weighted shoelace moments in the plane frame), replacing the naive
+  `sum(points) / points.len()` average that a chain-closure-duplicate vertex
+  biased away from the geometric centroid (~0.077 mm on the 32-gon cylinder
+  mid-slice; now `(0, 0, 5)` to ~3e-17). The 2D projection basis is shared
+  with the area computation via the new `plane_basis` helper. Surfaced by the
+  `measure` stress-test. *Consumer note:* callers reading `.centroid` now get
+  the geometric centroid, not the point-mean — a value change, not an API one.
+
 ### v0.9 candidates
 
 These backlog candidates are gated on a real consumer driving them per
@@ -47,18 +58,6 @@ the entries below are the mesh-measure-specific subset.
   the docstring + audit pass before another consumer encodes the
   wrong sanity check. Effort: ~10 LOC.
 
-- **Proper polygon centroid in `CrossSection` (shoelace-weighted, not
-  naive average).** Surfaced by `mesh-measure-cross-section` (mesh
-  book Part 8 Band 4): the current centroid is
-  `sum(points) / points.len()`, but `chain_segments` produces a
-  contour with one chain-closure-duplicate point, biasing a symmetric
-  polygon's centroid by `V_dup / (N + 1) ≠ (0, 0, 0)`. On the
-  32-segment cylinder mid-slice the bias is ~0.077 mm in `(x, y)`.
-  *Trigger*: a consumer needs ≤ 1e-10 centroid accuracy. Effort:
-  ~30 LOC: replace the naive average with
-  `c_x = (1 / (6A)) · Σ (x_i + x_(i+1)) · (x_i · y_(i+1) − x_(i+1) · y_i)`,
-  projecting to 2D via the existing `(u, v)` basis lifted from
-  `calculate_cross_section_area`.
 
 - **`closest_point_on_triangle` duplication consolidation (cross-crate).**
   See the corresponding `mesh-sdf` v0.9 candidate; the proposed home
