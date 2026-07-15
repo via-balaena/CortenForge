@@ -383,15 +383,14 @@ fn verify_point_to_mesh_corner_directions(cube_a: &IndexedMesh) {
     }
 }
 
-/// Center query at the cube centroid `(0.5, 0.5, 0.5)`.
-/// `distance_to_mesh` is unsigned, so the value is the half-edge
-/// `0.5` regardless of inside/outside semantics. The closest point
-/// is on the FIRST face triangle returned by `mesh.triangles()` —
-/// per the bottom-cap face emission order, that's the bottom face
-/// (`z = 0`) tri `[0, 3, 2]`; the projected closest point is
-/// `(0.5, 0.5, 0)` lying on the diagonal between the two bottom
-/// tris (so either tri returns the same point; the strict `<` tie-
-/// break in `closest_point_on_mesh` keeps the first).
+/// Center query at the cube centroid `(0.5, 0.5, 0.5)`. `distance_to_mesh`
+/// is unsigned, so the value is the half-edge `0.5`. The query is
+/// equidistant from ALL SIX faces, so WHICH face `closest_point_on_mesh`
+/// returns is a tie decided by triangle emission order + the strict-`<`
+/// tie-break — NOT a contract. So we anchor only the emission-order-
+/// independent facts: the distance is `0.5`, the returned point is
+/// self-consistent with that distance, and it is one of the six valid
+/// face-center projections.
 fn verify_point_to_mesh_center(cube_a: &IndexedMesh) {
     let query = Point3::new(0.5, 0.5, 0.5);
     let Some(d) = distance_to_mesh(cube_a, query) else {
@@ -402,12 +401,25 @@ fn verify_point_to_mesh_center(cube_a: &IndexedMesh) {
     let Some(cp) = closest_point_on_mesh(cube_a, query) else {
         unreachable!("center query closest_point returned None on cube_a");
     };
-    // Closest is on the bottom face (z = 0). The (x, y) projection
-    // lies on the diagonal of the two bottom-cap tris; the first
-    // wins via `closest_point_on_mesh`'s strict `<` tie-break.
-    assert_relative_eq!(cp.x, 0.5, epsilon = DISTANCE_TOL);
-    assert_relative_eq!(cp.y, 0.5, epsilon = DISTANCE_TOL);
-    assert_relative_eq!(cp.z, 0.0, epsilon = DISTANCE_TOL);
+    // The returned point lies at exactly the reported distance from the query.
+    assert_relative_eq!((query - cp).norm(), d, epsilon = DISTANCE_TOL);
+    // ...and it is one of the six face centers (which one is a tie, so we
+    // don't pin it — that was the emission-order-brittle part).
+    let face_centers = [
+        Point3::new(0.5, 0.5, 0.0),
+        Point3::new(0.5, 0.5, 1.0),
+        Point3::new(0.5, 0.0, 0.5),
+        Point3::new(0.5, 1.0, 0.5),
+        Point3::new(0.0, 0.5, 0.5),
+        Point3::new(1.0, 0.5, 0.5),
+    ];
+    assert!(
+        face_centers
+            .iter()
+            .any(|fc| (cp - fc).norm() < DISTANCE_TOL),
+        "closest point at the cube center should be one of the 6 face centers \
+         (which one is emission-order-dependent); got {cp:?}",
+    );
 }
 
 // =============================================================================
