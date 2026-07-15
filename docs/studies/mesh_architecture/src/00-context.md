@@ -2,7 +2,7 @@
 
 |  |  |
 |---|---|
-| **What** | A study in the 10-crate CortenForge mesh ecosystem — the L0 geometric foundation under soft-body simulation, casting/manufacturing, and any future mechanical-design domain. |
+| **What** | A study in the ten CortenForge mesh crates this book documents — the L0 geometric foundation under soft-body simulation, casting/manufacturing, and any future mechanical-design domain. (Two newer public crates, `mesh-loft` and `mesh-select`, are outside this book's current scope.) |
 | **Why** | The mesh ecosystem is mature, A-grade, and feature-rich (`mesh-types`, `mesh-io`, `mesh-repair`, `mesh-sdf`, `mesh-offset`, `mesh-shell`, `mesh-measure`, `mesh-printability`, `mesh-lattice`, plus the `mesh` umbrella) — but has crate-level doc comments and no architectural narrative tying them together. As CortenForge grows two new domains (soft-body simulation + casting) that lean on the mesh ecosystem, the foundation deserves the same first-class architectural treatment the soft-body and casting books got. |
 | **Goal** | Document what each crate is, why its API is shaped the way it is, where the gaps are, what extensions are planned, and how the ecosystem couples to the domain crates that consume it. Retrospective for the existing surface, forward-looking for the gaps and extensions. |
 | **Canonical exercises** | (a) per-vertex attribute PLY snapshots from soft-body simulations — drives the `AttributedMesh::extras` extension and the `save_ply_attributed` writer; (b) mold-cavity generation for the layered silicone device — drives the `mesh-shell` → `sim-cast::MoldBuilder` design pattern. |
