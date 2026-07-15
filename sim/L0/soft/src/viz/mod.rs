@@ -81,12 +81,11 @@
 //! that already encodes the body's geometry. The viz primitives here
 //! USE that connectivity directly rather than re-meshing from a
 //! lower-information representation. A pre-pivot Delaunay-of-centroids
-//! architecture (banked at `examples/sim-soft/spade-delaunay-spike/`)
-//! was falsified across 8 fix attempts because it threw away the tet
-//! connectivity and tried to re-derive geometry from centroid clouds
-//! plus filters; each fix patched one geometry-specific symptom and
-//! exposed another. The lesson: when a structured mesh exists, its
-//! connectivity is the right primitive.
+//! architecture was falsified across 8 fix attempts because it threw
+//! away the tet connectivity and tried to re-derive geometry from
+//! centroid clouds plus filters; each fix patched one geometry-specific
+//! symptom and exposed another. The lesson: when a structured mesh
+//! exists, its connectivity is the right primitive.
 //!
 //! See `project_sim_soft_viz_arc.md` (memory) for the full
 //! architecture story including the spike findings.

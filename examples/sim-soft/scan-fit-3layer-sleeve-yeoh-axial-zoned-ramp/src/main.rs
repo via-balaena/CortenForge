@@ -175,7 +175,7 @@
 //!      canonical FEM-viz convention (3D body, sequential heatmap,
 //!      rotate to inspect). The Delaunay-of-centroids architecture
 //!      that preceded this primitive was falsified by an 8-iteration
-//!      spike at `examples/sim-soft/spade-delaunay-spike/` (banked).
+//!      spike (banked in the [vizarc] memory).
 //!    - PLY `out/sleeve_slab_cut_x0_final.ply`: cross-section at
 //!      x = 0 emitted via [`sim_soft::viz::slab_cut`] (F1.1 lift of
 //!      the F1.3 scratch prototype). Marching-tetrahedra
