@@ -1,6 +1,6 @@
 # The mesh examples inventory
 
-The mesh ecosystem ships with complete example coverage of all 10 public crates. Every crate has at least one example demonstrating its load-bearing capabilities; the lattice domain ships one stress-test (five modules) spanning TPMS, strut, density-graded, shape-bounded, and mesh-bounded composite paths.
+The mesh ecosystem ships example coverage of the ten public crates below — each with at least one example demonstrating its load-bearing capabilities; the lattice domain ships one stress-test (five modules) spanning TPMS, strut, density-graded, shape-bounded, and mesh-bounded composite paths. Two further public crates — `mesh-loft` (join two painted contact patches into one watertight bushing) and `mesh-select` (brush-based face selection) — are not yet exampled; like the [v0.9 candidates](100-roadmap.md#v09-candidates), they await a consumer to drive their first example.
 
 Examples are workspace member crates under `examples/mesh/`: standalone examples live flat at `examples/mesh/<name>/{Cargo.toml, src/main.rs, README.md, out/}`, while a consolidated domain (measure, offset, shell-generation, printability, lattice) ships one `examples/mesh/<domain>/stress-test/` validator whose modules each carry a former per-example fixture + oracle. The aggregator at [`examples/mesh/README.md`](../../../../examples/mesh/README.md) is the canonical per-example navigator; per-example READMEs are the depth source for numerical anchors and visuals notes. This part synthesizes those examples into a pedagogical reading order — six bands ascending from foundational types through repair, SDF and offset, measurement, manufacturing-aware operations, and lattice composites — with cross-references back to the rest of the book and forward to the v0.9 candidates [Part 10](100-roadmap.md) tracks.
 
@@ -54,9 +54,9 @@ One stress-test (`measure/stress-test`) covers the geometric-inspection surface 
 ### `mesh-measure` (folded into `measure/stress-test`)
 
 - **`bounding_box` module** — AABB and OBB on a two-shape fixture (axis-aligned cube + 45°-rotated brick). Demonstrates when AABB and OBB coincide, when they diverge (PCA recovers the brick's `(20, 10, 10)` extents), and that the folk-intuition "OBB ⊆ AABB" is false for any non-trivial OBB rotation — corners extend OUTSIDE the AABB envelope by `half_extent · sin(rotation_angle)`.
-  Surfaced v0.9 candidates #5 (tolerance-aware `OrientedBoundingBox::contains`) and #6 (documenting the OBB ⊄ AABB caveat). Pairs with [Part 6 — Measurement](60-measurement.md).
+  Surfaced v0.9 candidates #5 (tolerance-aware `OrientedBoundingBox::contains` — shipped in #613) and #6 (documenting the OBB ⊄ AABB caveat). Pairs with [Part 6 — Measurement](60-measurement.md).
 - **`cross_section` module** — planar slicing of a 32-segment closed cylinder: mid-slice, 10-slice stack, `circumference_at_height` and `area_at_height` helpers, out-of-mesh handling, and plane-normal auto-normalization.
-  Surfaced v0.9 candidate #7 (shoelace-weighted polygon centroid; the current naive average biases on chain-closure-duplicate contours by ~0.077 mm on this fixture). Pairs with [Part 6 — Measurement](60-measurement.md).
+  Surfaced v0.9 candidate #7 (shoelace-weighted polygon centroid — shipped in #614; the former naive average biased chain-closure-duplicate contours by ~0.077 mm on this fixture, now corrected to the true centroid). Pairs with [Part 6 — Measurement](60-measurement.md).
 - **`distance` module** — point-to-point + unsigned point-to-mesh + symmetric Hausdorff between two vertex-disjoint unit cubes. Demonstrates that Hausdorff is composition over the exposed primitives, not a built-in — a deliberate API choice deferring the convenience wrapper until a real consumer drives it.
   Pairs with [Part 6 — Measurement](60-measurement.md).
 

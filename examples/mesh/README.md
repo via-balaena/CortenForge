@@ -3,7 +3,10 @@
 Focused, single-concept demonstrations of the 10-crate mesh ecosystem
 (`mesh-types`, `mesh-io`, `mesh-repair`, `mesh-sdf`, `mesh-offset`,
 `mesh-shell`, `mesh-measure`, `mesh-printability`, `mesh-lattice`, plus
-the `mesh` umbrella).
+the `mesh` umbrella). Two further public crates — `mesh-loft` (bushing
+lofting) and `mesh-select` (brush-based face selection) — are not yet
+exampled; they await a consumer to drive their first example (see the
+[Part 10 v0.9 candidates](../../docs/studies/mesh_architecture/src/100-roadmap.md#v09-candidates)).
 
 Each example writes one or more PLY artifacts to its own `out/`
 directory; per-example READMEs document the locked numerical anchors
@@ -84,7 +87,7 @@ IS the correctness signal — the visuals pass is optional pedagogy.
 
 | Example | Concept |
 |---------|---------|
-| [`measure/stress-test`](measure/stress-test/) | The `mesh-measure` validation superset (one domain → one stress-test). Three modules: **bounding_box** (AABB + PCA-OBB on a cube + 45°-rotated brick — OBB ⊄ AABB), **cross_section** (planar slicing of a 32-segment cylinder — shoelace area/perimeter, biased centroid, out-of-mesh, plane-normal normalization), **distance** (point-to-point + point-to-mesh + symmetric Hausdorff between two vertex-disjoint cubes) |
+| [`measure/stress-test`](measure/stress-test/) | The `mesh-measure` validation superset (one domain → one stress-test). Three modules: **bounding_box** (AABB + PCA-OBB on a cube + 45°-rotated brick — OBB ⊄ AABB), **cross_section** (planar slicing of a 32-segment cylinder — shoelace area/perimeter + shoelace-weighted centroid, out-of-mesh, plane-normal normalization), **distance** (point-to-point + point-to-mesh + symmetric Hausdorff between two vertex-disjoint cubes) |
 
 ### `mesh-sdf` — signed-distance queries
 
@@ -116,7 +119,8 @@ real consumer drives them.
 
 ## Layout convention
 
-Every example is a workspace member crate at:
+Examples take one of two shapes. An unfolded single-concept example
+lives flat:
 
 ```
 examples/mesh/<name>/
@@ -125,6 +129,13 @@ examples/mesh/<name>/
 ├── src/main.rs    # writes PLY to out/
 └── out/           # gitignored; generated artifacts
 ```
+
+A consolidated domain (measure, offset, shell-generation, printability,
+lattice) instead ships one validator at
+`examples/mesh/<domain>/stress-test/`, package
+`example-<domain>-stress-test` (domain name only, no `mesh-` infix — matching
+the standardization layout in [Part 8](../../docs/studies/mesh_architecture/src/80-examples.md)),
+whose modules each carry a former per-example fixture + oracle.
 
 Names are dash-case to match the rest of the workspace
 (`mesh-pipeline`, `hello-solid`, etc.).

@@ -11,7 +11,7 @@ Phase A delivered the foundation extensions soft-body needed (extensible per-ver
 - **PR #224** (`e79f2fc2`, 2026-05-02) — first half of the v1.0 examples-coverage arc; 8 examples plus the C15a `BeamLatticeData` octet-truss in-arc gap-fix.
 - A fourth PR (in flight on the `feature/mesh-v1-pr2-bounded-infill` branch when these book updates were authored) lands the second half of the v1.0 arc: the F6 `generate_infill` gap-fix sub-arc (gaps a-e, plus post-fix anchor recapture), the mesh-bounded-infill composite example (now the `mesh_bounded_infill` module of `examples/mesh/lattice/stress-test`), the v1.0 examples-mesh aggregator rewrite, and these book updates.
 
-The core deliverables — `AttributedMesh::extras: HashMap<String, Vec<f32>>` extensible per-vertex slot; `mesh-io::save_ply_attributed` PLY writer; complete example coverage of all 10 public crates (see [Part 8 — The mesh examples inventory](80-examples.md)) — are all in place.
+The core deliverables — `AttributedMesh::extras: HashMap<String, Vec<f32>>` extensible per-vertex slot; `mesh-io::save_ply_attributed` PLY writer; complete example coverage of the ten public crates then in the ecosystem (see [Part 8 — The mesh examples inventory](80-examples.md)) — are all in place.
 
 ## Phase B — broader attribute typing (future-work)
 
@@ -32,7 +32,7 @@ Drives PLY writer extensions (typed properties), 3MF metadata extensions (XML-ty
 
 ## v0.9 candidates
 
-The first stable release surfaced sixteen near-term candidates: eleven from cross-crate audit and example execution, five from the F6 `generate_infill` gap-fix sub-arc. Each candidate is gated on a real consumer driving it (per `feedback_examples_drive_gap_fixes`); the Trigger line in each entry below states what consumer-arrival looks like. Crate-specific candidates also appear in the corresponding `CHANGELOG.md` `[Unreleased]` block.
+The first stable release surfaced sixteen near-term candidates: eleven from cross-crate audit and example execution, five from the F6 `generate_infill` gap-fix sub-arc. Each candidate is gated on a real consumer driving it (per `feedback_examples_drive_gap_fixes`); the Trigger line in each entry below states what consumer-arrival looks like. Crate-specific candidates also appear in the corresponding `CHANGELOG.md` `[Unreleased]` block. Two `mesh-measure` candidates (#5, #7) have since shipped — the measurement consistency audit was the consumer that drove them (#613, #614); they keep their numbers below (cross-referenced from Part 8) and are marked shipped rather than removed.
 
 For `mesh-printability`-specific candidates surfaced by the v0.8 fix arc (PR #223), see `mesh/mesh-printability/CHANGELOG.md`'s `[Unreleased]` block — that backlog is tracked at the crate level rather than mirrored here, since it's specific to the printability detector inventory.
 
@@ -52,14 +52,12 @@ For `mesh-printability`-specific candidates surfaced by the v0.8 fix arc (PR #22
 4. **`MeasureError` / `MeasureResult` adoption.** Currently `Option<T>` carries the same information for callers; tightening to `Result<T, MeasureError>` is API-shape-breaking.
    *Trigger*: a function tightens validation to fail-fast (e.g., empty mesh becomes a hard error), OR a power user reports surprise that `dimensions()` returns `Default` rather than an error on degenerate input. ~80 LOC + breaking-API rename + downstream call-site updates.
 
-5. **Tolerance-aware `OrientedBoundingBox::contains`.** Surfaced by `measure/stress-test`'s `bounding_box` module (Part 8 Band 4): PCA's iterative `SymmetricEigen` produces `half_extents` and the inverse-rotation mapping with ~1 ULP roundoff; the four input vertices that defined the OBB extremes can fail strict `<=` containment by `~1.78e-15`.
-   *Trigger*: a user reports a vertex they passed in failing `obb.contains(v)`. ~30 LOC: add `contains_with_tol(point, eps)` method, keep strict `contains` as alias for `contains_with_tol(p, 0.0)`.
+5. **Tolerance-aware `OrientedBoundingBox::contains`.** ✅ **Shipped — #613** (`56b7f15d`). Surfaced by `measure/stress-test`'s `bounding_box` module (Part 8 Band 4): PCA's iterative `SymmetricEigen` produces `half_extents` and the inverse-rotation mapping with ~1 ULP roundoff; the four input vertices that defined the OBB extremes can fail strict `<=` containment by `~1.78e-15`. Resolved by `OrientedBoundingBox::contains_with_tol(point, eps)`, with strict `contains` kept as `contains_with_tol(p, 0.0)` (bit-identical).
 
 6. **Document "OBB ⊄ AABB in general" + remove the corners-within-AABB anchor pattern from API docs and examples.** Surfaced during `measure/stress-test` `bounding_box`-module spec authoring: the folk-intuition "OBB is tighter than AABB so OBB ⊆ AABB" is false for any non-trivial OBB rotation; OBB corners extend OUTSIDE the AABB envelope by `half_extent · sin(rotation_angle)`.
    *Trigger*: write the docstring + audit pass before another consumer encodes the wrong sanity check. ~10 LOC.
 
-7. **Proper polygon centroid in `CrossSection` (shoelace-weighted, not naive average).** Surfaced by `measure/stress-test`'s `cross_section` module (Part 8 Band 4): the current centroid is `sum(points) / points.len()`, but `chain_segments` produces a contour with one chain-closure-duplicate point, biasing a symmetric polygon's centroid by `V_dup / (N + 1) ≠ (0, 0, 0)`. On the 32-segment cylinder mid-slice the bias is ~0.077 mm in `(x, y)`.
-   *Trigger*: a consumer needs ≤ 1e-10 centroid accuracy. ~30 LOC: replace the naive average with `c_x = (1 / (6A)) · Σ (x_i + x_(i+1)) · (x_i · y_(i+1) − x_(i+1) · y_i)`, projecting to 2D via the existing `(u, v)` basis lifted from `calculate_cross_section_area`.
+7. **Proper polygon centroid in `CrossSection` (shoelace-weighted, not naive average).** ✅ **Shipped — #614** (`859f732a`). Surfaced by `measure/stress-test`'s `cross_section` module (Part 8 Band 4): the former centroid was `sum(points) / points.len()`, but `chain_segments` produces a contour with one chain-closure-duplicate point, biasing a symmetric polygon's centroid by `V_dup / (N + 1) ≠ (0, 0, 0)` — on the 32-segment cylinder mid-slice, ~0.077 mm in `(x, y)`. Resolved with the shoelace-moment formula `c_x = (1 / (6A)) · Σ (x_i + x_(i+1)) · (x_i · y_(i+1) − x_(i+1) · y_i)`, projected to 2D via the `(u, v)` basis shared with `calculate_cross_section_area` (now (0, 0, 5) to ~3e-17 on that fixture).
 
 8. **Consolidate `closest_point_on_triangle` duplication between `mesh-sdf` and `mesh-measure`.** Workspace-hygiene refactor; pick one home (probably `mesh-sdf` since it's the older surface) and re-export.
    *Trigger*: a maintainer asks "why does this exist twice?" ~50 LOC.
