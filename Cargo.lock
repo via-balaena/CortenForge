@@ -4847,6 +4847,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-material-stress-test"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "nalgebra 0.34.2",
+ "serde_json",
+ "sim-soft",
+]
+
+[[package]]
 name = "example-measure-stress-test"
 version = "1.0.0"
 dependencies = [
@@ -6027,17 +6038,6 @@ dependencies = [
  "nalgebra 0.34.2",
  "serde_json",
  "sim-ml-chassis",
- "sim-soft",
-]
-
-[[package]]
-name = "example-sim-soft-silicone-material-table"
-version = "1.0.0"
-dependencies = [
- "anyhow",
- "approx 0.5.1",
- "nalgebra 0.34.2",
- "serde_json",
  "sim-soft",
 ]
 

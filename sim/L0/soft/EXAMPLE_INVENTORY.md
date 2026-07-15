@@ -117,6 +117,15 @@ Status legend per top of file: `have` / `internal-fixture` / `missing` / `blocke
 
 ### Tier 5 — Bridges + extensions (silicone-device path; **mostly blocked**)
 
+> **Standardization (2026-07-14):** row 19 (`silicone-material-table`) relocated
+> into the standardization layout as validator `example-material-stress-test` at
+> `examples/sim-soft/material/stress-test/` (module `material_table`) — a
+> singleton `material` domain (the constitutive-table oracle is unrelated to the
+> Tier-6 synthesis device, so they are NOT one domain). Row number preserved as
+> an immutable capability ID; the standalone `silicone-material-table` crate no
+> longer exists. Rows 15–16 (`mesh-scan-as-solid` / `solid-to-sim-soft`, the
+> bridge pair) are a separate later fold.
+
 | # | Concept | Simplest example | Capability shown | Status | Gap to land |
 |---|---|---|---|---|---|
 | 15 | mesh-sdf → cf-design bridge | `mesh-scan-as-solid` — programmatic 12-tri cube fixture saved to STL + reloaded via `mesh_io`; SDF dispatched via `&dyn cf_design::Sdf` (post-PR3 F2 impl on `SignedDistanceField`); 17³ bulk grid PLY with `signed_distance` + `inside_raycast` extras, HE-1 raycast diagonal degeneracy + F2-caveat-absent identity documented | scanned-geometry-as-design-primitive (the literal-SDF path per device memo) | `have` (PR3 row 15) | — |

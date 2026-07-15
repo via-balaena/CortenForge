@@ -59,7 +59,7 @@ and PR sequencing rationale.
 |---------|---------|
 | [`mesh-scan-as-solid`](mesh-scan-as-solid/) | `mesh_sdf::SignedDistanceField` satisfies `cf_design::Sdf` (PR3 F2). 12-tri programmatic cube fixture round-tripped through binary STL on disk; closed-form L∞-ball anchors at face / edge / vertex / interior probes via `&dyn cf_design::Sdf`; 17³ = 4913 bulk grid PLY with two scalars — `signed_distance` (analytical SDF) and `inside_raycast` (raycast inside-test, with documented HE-1 diagonal gaps). |
 | [`solid-to-sim-soft`](solid-to-sim-soft/) | `cf_design::Solid` is a first-class SDF for `SdfMeshedTetMesh::from_sdf` via the F1+F3 bridge (PR3 row 16). A typed boolean-difference body composed via cf-design's CSG kernel (`Solid::sphere(R_OUTER).subtract(Solid::sphere(R_CAVITY))`) flows into sim-soft's BCC + Labelle-Shewchuk pipeline through one `&dyn cf_design::Sdf` coercion — companion to row 15's scan-SDF bridge. Geometry identical to row 11 (single-material variant, `MaterialField::skeleton_default = uniform(1e5, 4e5)`); HEADLINE A bit-exact bridge-equivalence anchor vs `DifferenceSdf<SphereSdf>` baseline (`equals_structurally` + per-vertex position match at `EXACT_TOL = 0.0`); cavity-wall mean cross-row continuity bit-equal to row 11's `CAVITY_WALL_UNIFORM_1X_REF_BITS`. Z-slab PLY with `radial_displacement` scalar (single-material variant, no `material_id`). |
-| [`silicone-material-table`](silicone-material-table/) | Engineering-grade Smooth-On platinum-cure silicone Lamé pairs + density via PR3 F4's `silicone_table.rs` const module. Iterates 7 `pub const SiliconeMaterial` entries (`{Ecoflex 00-10/20/30/50, Dragon Skin 10A/20A/30A}`), dispatches each via `SiliconeMaterial::to_neo_hookean()` (`const` bridge into the `Material` trait surface), probes at `F = diag(2.0, 1, 1)` (the data-sheet `σ_100 = 100% engineering strain` anchor). 7 verify groups: `λ.to_bits() == (4·μ).to_bits()` ν=0.40 invariant + rest-config zero + closed-form `P_11` / `P_22` / ψ at rel-tol 1e-12 + transverse symmetry + hardness ordering + 21 captured-bit self-pins (3 quantities × 7 materials). JSON-only per `feedback_visual_pass_collapses_for_json_rows`. |
+| [`material/stress-test`](material/stress-test/) | The sim-soft material-reference surface as one validation superset (row 19 relocated into the standardization layout — singleton `material` domain, module **`material_table`**): engineering-grade Smooth-On platinum-cure silicone Lamé pairs + density via PR3 F4's `silicone_table.rs` const module. Iterates 7 `pub const SiliconeMaterial` entries (`{Ecoflex 00-10/20/30/50, Dragon Skin 10A/20A/30A}`), dispatches each via `SiliconeMaterial::to_neo_hookean()` (`const` bridge into the `Material` trait surface), probes at `F = diag(2.0, 1, 1)` (the data-sheet `σ_100 = 100% engineering strain` anchor). 7 verify groups: `λ.to_bits() == (4·μ).to_bits()` ν=0.40 invariant + rest-config zero + closed-form `P_11` / `P_22` / ψ at rel-tol 1e-12 + transverse symmetry + hardness ordering + 21 captured-bit self-pins (3 quantities × 7 materials). JSON-only per `feedback_visual_pass_collapses_for_json_rows`; no solver/mesh. |
 
 ### Tier 6 — Synthesis (the engineering goal)
 
@@ -87,7 +87,8 @@ Examples split by tier per
   is meaningful: the [`stretch/stress-test`](stretch/stress-test/)
   modules (`single_tet`, `neo_hookean`, `multi_element` — rows 4–6,
   Tiers 1–2) write JSON-only traces to `out/<module>/`, and
-  `silicone-material-table` (Tier 5) is likewise JSON-only (per
+  [`material/stress-test`](material/stress-test/)'s `material_table`
+  (row 19, Tier 5) is likewise JSON-only (per
   [`feedback_visual_pass_collapses_for_json_rows`](../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_visual_pass_collapses_for_json_rows.md)).
 - **Bevy `CF_VISUAL=1` opt-in** for contact dynamics (Tier 4).
   Headless asserts + PLY emit always run; setting `CF_VISUAL=1`
@@ -125,8 +126,9 @@ Migrated so far: `sdf/stress-test` (rows 1–3 — `sphere-sdf-eval` +
 `hollow-shell-sdf` + `sdf-to-tet-sphere`), `stretch/stress-test` (rows 4–6 —
 `single-tet-stretch` + `neo-hookean-uniaxial` + `multi-element-stretch`),
 `scalar-field/stress-test` (rows 8–9 — `layered-scalar-field` +
-`blended-scalar-field`), and `bonded/stress-test` (rows 10–11 —
-`bonded-bilayer-beam` + `concentric-lame-shells`). The remaining
+`blended-scalar-field`), `bonded/stress-test` (rows 10–11 —
+`bonded-bilayer-beam` + `concentric-lame-shells`), and `material/stress-test`
+(row 19 — `silicone-material-table`, a singleton domain). The remaining
 examples still use
 the pre-standardization flat crate `examples/sim-soft/<name>/` with name
 `example-sim-soft-<name>`; they migrate domain-by-domain. Names are dash-case,

@@ -1,4 +1,4 @@
-//! silicone-material-table — engineering-grade lookup of Smooth-On
+//! material-table — engineering-grade lookup of Smooth-On
 //! platinum-cure silicone Lamé pairs + density, with each entry's
 //! compressible-Neo-Hookean stress + energy at the σ_100 anchor
 //! validated against closed-form.
@@ -12,7 +12,7 @@
 //! `λ = 2.0`, the data-sheet `σ_100 = 100 % engineering strain`
 //! anchor). Per inventory Q4 row 19 visualization, JSON-only (no
 //! `cf-view`, the table IS the artifact); museum-plaque-tour shape
-//! per [`feedback_museum_plaque_readmes`][m] + [`feedback_visual_pass_collapses_for_json_rows`][v].
+//! per `feedback_museum_plaque_readmes` + `feedback_visual_pass_collapses_for_json_rows`.
 //!
 //! Companion to row 5 (the [`neo_hookean`][r5] module): row 5 sweeps a
 //! single material across `λ ∈ [0.15, 1.95]` under traction-free
@@ -25,9 +25,7 @@
 //! checking each entry's `Material`-trait dispatch against closed-form
 //! NH at the data-sheet `σ_100` anchor.
 //!
-//! [m]: ../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_museum_plaque_readmes.md
-//! [v]: ../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_visual_pass_collapses_for_json_rows.md
-//! [r5]: ../stretch/stress-test
+//! [r5]: ../../stretch/stress-test
 //!
 //! # Probe — simple uniaxial stretch at `λ = 2.0`
 //!
@@ -85,7 +83,7 @@
 //! data sheet up to a known finite-strain correction," not "the
 //! table is the data sheet bit-exact."
 //!
-//! [st]: ../../../sim/L0/soft/src/material/silicone_table.rs
+//! [st]: ../../../../sim/L0/soft/src/material/silicone_table.rs
 //!
 //! # Anchor groups (all assertions exit-0 on success)
 //!
@@ -482,7 +480,7 @@ fn verify_hardness_ordering(records: &[MaterialRecord]) {
 const CAPTURED_BITS: [(u64, u64, u64); 7] = [
     // (P_11, P_22, ψ) per material at F = diag(2, 1, 1).
     // Index order matches LIBRARY order. Captured at land-time via
-    // `CF_CAPTURE_BITS=1 cargo run -p example-sim-soft-silicone-material-table --release`
+    // `CF_CAPTURE_BITS=1 cargo run -p example-material-stress-test --release`
     // (sim-soft `dev` post-row-16-N+4 tip `1b295cf9`, rustc 1.95.0 on macOS arm64).
     (
         0x40e9_5e29_8d50_3413,
@@ -649,7 +647,7 @@ fn save_json(records: &[MaterialRecord], path: &Path) -> Result<()> {
 // =============================================================================
 
 fn print_summary(records: &[MaterialRecord], json_path: &Path) {
-    println!("==== silicone-material-table ====");
+    println!("==== material_table ====");
     println!();
     println!("input  : 7 SiliconeMaterial consts from sim_soft::material::silicone_table (PR3 F4)");
     println!("         dispatched via SiliconeMaterial::to_neo_hookean() -> NeoHookean");
@@ -698,14 +696,16 @@ fn print_summary(records: &[MaterialRecord], json_path: &Path) {
     );
     println!();
     println!("JSON   : {}", json_path.display());
-    println!("         programmatic-consumption lookup; schema in src/main.rs::save_json doc.");
+    println!(
+        "         programmatic-consumption lookup; schema in src/material_table.rs::save_json doc."
+    );
 }
 
 // =============================================================================
 // main
 // =============================================================================
 
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     let records = build_records();
 
     verify_nu_invariant(&records);

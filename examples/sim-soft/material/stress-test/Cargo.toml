@@ -1,0 +1,37 @@
+[package]
+name = "example-material-stress-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Declares this example's role in the validation contract. `validator` = the
+# binary self-checks against oracles and exits non-zero on any failure, so CI
+# runs it red-or-green (see `cargo xtask run-validators`). The alternative kind
+# is `demo` (illustration only; compile-checked but not run). Every self-gating
+# example MUST declare `validator` or its oracle checks run nowhere in CI.
+[package.metadata.cortenforge]
+example_kind = "validator"
+
+[dependencies]
+# material_table: silicone_table::{ECOFLEX_*, DRAGON_SKIN_*} consts (PR3 F4) +
+# SiliconeMaterial::to_neo_hookean() const-fn bridge + Material trait
+# (energy + first_piola) for the per-material constitutive probe + NeoHookean
+# type for documentation reference.
+sim-soft = { workspace = true }
+# material_table: Matrix3 for hand-crafting F = diag(λ, 1, 1) and reading
+# `mat.first_piola` results directly (no solver, no Tape/Tensor) — same
+# direct-eval shape as row 5 `neo_hookean` (in `example-stretch-stress-test`).
+nalgebra = { workspace = true }
+# Result<()> return + error-context wrapping for the JSON emit step.
+anyhow = { workspace = true }
+# JSON emit for out/silicone_materials.json — programmatic-consumption lookup
+# table; schema documented inline in src/material_table.rs::save_json.
+serde_json = { workspace = true }
+# `assert_relative_eq!` for closed-form analytic vs `mat.first_piola`
+# comparisons + per-material captured-bits self-pin — same convention as the
+# stretch / bonded stress-tests (closed-form anchor at 1e-12 rel-tol).
+approx = { workspace = true }
+
+[lints]
+workspace = true

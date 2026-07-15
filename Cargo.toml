@@ -410,7 +410,10 @@ members = [
     "examples/sim-soft/contact-force-readout",
     "examples/sim-soft/mesh-scan-as-solid",
     "examples/sim-soft/solid-to-sim-soft",
-    "examples/sim-soft/silicone-material-table",
+    # Material-reference domain: silicone-material-table relocated to the
+    # standardization layout (row 19) — singleton domain, one validation
+    # superset (constitutive table vs closed-form NH; no solver/mesh).
+    "examples/sim-soft/material/stress-test",
     "examples/sim-soft/layered-silicone-device",
     "examples/sim-soft/scan-fit-3layer-sleeve",
     "examples/sim-soft/scan-fit-3layer-sleeve-v15",
