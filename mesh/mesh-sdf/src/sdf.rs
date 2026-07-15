@@ -244,6 +244,30 @@ mod tests {
         mesh
     }
 
+    /// Unit octahedron: 6 vertices on the ±axes at radius 1, 8 CCW faces.
+    /// Integer coords make it an exact closed-form L1-ball — the surface
+    /// is `|x| + |y| + |z| = 1`, so the signed distance to it is
+    /// `(|x| + |y| + |z| − 1) / √3` (the `/√3` is the L1→L2 conversion,
+    /// each face normal being `(±1, ±1, ±1)/√3`).
+    fn unit_octahedron() -> IndexedMesh {
+        let mut mesh = IndexedMesh::new();
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0)); // 0 +X
+        mesh.vertices.push(Point3::new(-1.0, 0.0, 0.0)); // 1 -X
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0)); // 2 +Y
+        mesh.vertices.push(Point3::new(0.0, -1.0, 0.0)); // 3 -Y
+        mesh.vertices.push(Point3::new(0.0, 0.0, 1.0)); // 4 +Z
+        mesh.vertices.push(Point3::new(0.0, 0.0, -1.0)); // 5 -Z
+        mesh.faces.push([0, 2, 4]); // +x+y+z
+        mesh.faces.push([0, 3, 5]); // +x-y-z
+        mesh.faces.push([1, 2, 5]); // -x+y-z
+        mesh.faces.push([1, 3, 4]); // -x-y+z
+        mesh.faces.push([0, 5, 2]); // +x+y-z
+        mesh.faces.push([0, 4, 3]); // +x-y+z
+        mesh.faces.push([1, 4, 2]); // -x+y+z
+        mesh.faces.push([1, 5, 3]); // -x-y-z
+        mesh
+    }
+
     /// Compose `Signed<TriMeshDistance, PseudoNormalSign>` from a
     /// mesh — the standard parry-pseudo-normal composition used across
     /// the tests below.
@@ -251,6 +275,63 @@ mod tests {
         let distance = TriMeshDistance::new(mesh).expect("should create SDF");
         let sign = PseudoNormalSign::from_distance(&distance);
         Signed { distance, sign }
+    }
+
+    /// Closed-form magnitude oracle: the octahedron surface is the L1 unit
+    /// ball, so the signed distance is exactly `(|x|+|y|+|z| − 1)/√3` and the
+    /// closest surface point moves each interior query outward by that amount
+    /// along the `(±1,±1,±1)/√3` face normal. The other sdf tests pin sign +
+    /// loose magnitude bounds against tetrahedron/pyramid fixtures; this pins
+    /// exact magnitude + closest-point against an analytical primitive.
+    /// (Ported from the `mesh-sdf-distance-query` example's octahedron anchor.)
+    /// Tolerance is `1e-6` — parry's BVH is f32 internally, well outside f32
+    /// roundoff yet far inside any practical surface-locating tolerance.
+    #[test]
+    fn signed_distance_matches_closed_form_l1_ball_on_octahedron() {
+        const TOL: f64 = 1e-6;
+        let inv_sqrt3 = 1.0 / 3.0_f64.sqrt();
+        let third = 1.0 / 3.0;
+        let sdf = build_sdf(unit_octahedron());
+
+        // Generic interior (0.05, 0.07, 0.11): L1-norm 0.23 → SDF -0.77/√3.
+        let generic = Point3::new(0.05, 0.07, 0.11);
+        assert_relative_eq!(sdf.distance(generic), -0.77 * inv_sqrt3, epsilon = TOL);
+        assert_relative_eq!(
+            sdf.unsigned_distance(generic),
+            0.77 * inv_sqrt3,
+            epsilon = TOL
+        );
+        assert!(sdf.is_inside(generic));
+        let cp = sdf.closest_point(generic);
+        assert_relative_eq!(cp.x, 0.05 + 0.77 / 3.0, epsilon = TOL);
+        assert_relative_eq!(cp.y, 0.07 + 0.77 / 3.0, epsilon = TOL);
+        assert_relative_eq!(cp.z, 0.11 + 0.77 / 3.0, epsilon = TOL);
+
+        // 6 face-region interior queries at (±0.3, ±0.3, ±0.3): L1-norm 0.9
+        // → SDF -0.1/√3; closest point clamps to the face center (±1/3)³.
+        let face_signs: [(f64, f64, f64); 6] = [
+            (1.0, 1.0, 1.0),
+            (1.0, -1.0, -1.0),
+            (-1.0, 1.0, -1.0),
+            (-1.0, -1.0, 1.0),
+            (1.0, 1.0, -1.0),
+            (-1.0, -1.0, -1.0),
+        ];
+        for (sx, sy, sz) in face_signs {
+            let q = Point3::new(0.3 * sx, 0.3 * sy, 0.3 * sz);
+            assert_relative_eq!(sdf.distance(q), -0.1 * inv_sqrt3, epsilon = TOL);
+            assert!(sdf.is_inside(q));
+            let cp = sdf.closest_point(q);
+            assert_relative_eq!(cp.x, sx * third, epsilon = TOL);
+            assert_relative_eq!(cp.y, sy * third, epsilon = TOL);
+            assert_relative_eq!(cp.z, sz * third, epsilon = TOL);
+        }
+
+        // Vertex-direction exterior probe (2,0,0): clamps to the +X vertex at
+        // distance exactly 1.
+        let vertex_q = Point3::new(2.0, 0.0, 0.0);
+        assert_relative_eq!(sdf.distance(vertex_q), 1.0, epsilon = TOL);
+        assert!(!sdf.is_inside(vertex_q));
     }
 
     #[test]

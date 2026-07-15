@@ -5,6 +5,15 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+# Headless demo — an oracle-decomposition walkthrough (pseudo-normal vs
+# flood-fill sign). Its oracles are duplicated in `mesh-sdf`'s own
+# `flood_fill.rs`/`sdf.rs`/`oracle.rs` unit tests; the one unique piece — the
+# closed-form L1-ball octahedron exact-magnitude anchor — is backfilled to
+# `mesh-sdf` `src/sdf.rs`, so correctness lives in the library; this stays a
+# runnable demonstration. Compile-only in CI; not run by `xtask run-validators`.
+[package.metadata.cortenforge]
+example_kind = "demo"
+
 [dependencies]
 # Octahedron + pyramid fixtures: Point3 + IndexedMesh::from_parts + AttributedMesh wrap
 mesh-types = { workspace = true }

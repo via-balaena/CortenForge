@@ -5,6 +5,13 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+# Headless demo — a "what each format preserves" tutorial. Its oracles are a
+# subset of `mesh-io`'s own STL/PLY/OBJ round-trip tests (`src/ply.rs`,
+# `src/obj.rs`, `tests/thingi10k_conformance.rs`), so correctness lives in the
+# library; this just shows usage. Compile-only in CI; not run by `xtask run-validators`.
+[package.metadata.cortenforge]
+example_kind = "demo"
+
 [dependencies]
 # unit_cube + IndexedMesh helpers (signed_volume, surface_area, aabb)
 mesh-types = { workspace = true }
