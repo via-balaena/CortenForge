@@ -5,6 +5,14 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+# Headless demo — a broken→clean repair-pipeline walkthrough. Its distinct
+# end-to-end composition oracle (cascade cleanup, stage ordering, terminal
+# watertight∧manifold∧outward) is backfilled to `mesh-repair`'s own
+# `tests/repair_pipeline.rs`, so correctness lives in the library; this stays a
+# runnable demonstration. Compile-only in CI; not run by `xtask run-validators`.
+[package.metadata.cortenforge]
+example_kind = "demo"
+
 [dependencies]
 # unit_cube + IndexedMesh + Point3
 mesh-types = { workspace = true }
