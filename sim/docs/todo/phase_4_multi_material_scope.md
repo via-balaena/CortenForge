@@ -3,7 +3,7 @@
 **Status:** Scope memo — fifth PR of the six-phase foundation-up sequence. Pre-code recon complete (read-only session 2026-04-27, post-merge of PR #219); this memo is the draft, ready to execute.
 **Date:** 2026-04-27, post PR #219 (`c3729d4a`) — Phase 3 SDF→tet bridge MERGED.
 **Branch:** `feature/phase-4-multi-material`, off main `c3729d4a`.
-**Master-architect delegation:** confirmed 2026-04-27, durable through Phase 4 PR merge. See [`feedback_master_architect_delegation`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_master_architect_delegation.md).
+**Master-architect delegation:** confirmed 2026-04-27, durable through Phase 4 PR merge. See `feedback_master_architect_delegation`.
 **Follows:** `project_gameplan.md` (memory) — Phase 4 of the six-phase foundation-up sequence. Builds on PR #218 (Phase 2 multi-element FEM, `f3f16c8f`) + PR #219 (Phase 3 SDF→tet bridge, `c3729d4a`).
 **Target:** ~900–1300 net new lines across `sim/L0/soft/src/{field,material,mesh,sdf_bridge,solver}/` + 7 new test files + 1 forward-looking coordination memo (`cf_design_material_handoff_scope.md`). One PR.
 

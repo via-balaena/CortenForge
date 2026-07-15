@@ -1,7 +1,7 @@
 //! Readout types + `ForwardMap` trait.
 //!
 //! γ-locked API surface per
-//! [`project_soft_body_gamma_apis.md`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/project_soft_body_gamma_apis.md):
+//! `project_soft_body_gamma_apis.md`:
 //! `RewardBreakdown`, `EditResult`, `GradientEstimate`, `RewardWeights`,
 //! and the `ForwardMap` trait itself. Skeleton defines the types;
 //! Phase B wires `SkeletonForwardMap` (concrete impl) to compose the

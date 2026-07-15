@@ -3,7 +3,7 @@
 **Status:** Scope memo — third PR of the six-phase foundation-up sequence. Pre-code recon complete (read-only session 2026-04-26 night); this memo is the draft, ready to execute.
 **Date:** 2026-04-26 night, post PR #217 (`788b2178`) — Phase 1 BF-7+BF-8 preemptive book reconciliation MERGED.
 **Branch:** `feature/phase-2-multi-element-fem`, off main `788b2178`.
-**Master-architect delegation:** re-confirmed 2026-04-26 night, durable through Phase 2 PR merge. See [`feedback_master_architect_delegation`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_master_architect_delegation.md).
+**Master-architect delegation:** re-confirmed 2026-04-26 night, durable through Phase 2 PR merge. See `feedback_master_architect_delegation`.
 **Follows:** `project_gameplan.md` (memory) — Phase 2 of the six-phase foundation-up sequence. First production-code phase since the walking skeleton (PR #214 `fcd559e4`); Phase 0 absorbed by PRs #213+#216; Phase 1 shipped as #217.
 **Target:** ~600–1000 net new lines across `sim/L0/soft/src/{mesh,solver,differentiable,observable,readout}/` + 3 new test files; plus ~50-line BF-9 pseudocode rewrite in two Part 5 Ch 00 chapter files. One PR.
 
@@ -13,7 +13,7 @@ Phase 2 takes the **smallest possible step from the walking skeleton's 1-tet sca
 
 ## 0. Baseline — what shipped, what's 1-tet-pinned, what's already generic
 
-Verified via the [Phase 2 readiness recon (read-only, 2026-04-26 night)](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/MEMORY.md#resume-here).
+Verified via the Phase 2 readiness recon (read-only, 2026-04-26 night).
 
 **Already generic, no Phase 2 work required:**
 - Seven traits — `Material`, `Element<const N, const G>`, `Mesh`, `ContactModel`, `Solver`, `Differentiable`, `Observable`. All declare interfaces that don't pin element count.
