@@ -3,7 +3,7 @@
 **Status:** Scope memo — post-refactor rewrite. Ready to stress-test before code lands.
 **Date:** 2026-04-23, post PR #213 (`77751866`) — platform refactor soft-body-readiness MERGED.
 **Supersedes:** the 2026-04-21 draft at commit `ee192303` (pre-refactor, marked SUPERSEDED at branch-tip).
-**Follows:** [`project_soft_body_walking_skeleton_pivot.md`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/project_soft_body_walking_skeleton_pivot.md) — user directive to close the spec-to-code ratio after Pass 3 δ.
+**Follows:** `project_soft_body_walking_skeleton_pivot.md` — user directive to close the spec-to-code ratio after Pass 3 δ.
 **Book spec:** [`docs/studies/soft_body_architecture/`](../../../docs/studies/soft_body_architecture/) at tip `77751866`.
 **Target:** ~500–1500 LOC Rust, single long-running branch `feature/soft-body-walking-skeleton`.
 
@@ -220,7 +220,7 @@ Absent from skeleton (deferred by phase): `sim-core` (F), `sim-mjcf` (F), `sim-t
 
 ## 5. Proposed new API — skeleton must define
 
-Names locked by γ ([`project_soft_body_gamma_apis.md`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/project_soft_body_gamma_apis.md)) but not yet in Rust. Skeleton writes these — first contact with code is expected to surface refinements feeding back into Part 10 Ch 00.
+Names locked by γ (`project_soft_body_gamma_apis.md`) but not yet in Rust. Skeleton writes these — first contact with code is expected to surface refinements feeding back into Part 10 Ch 00.
 
 - **`RewardBreakdown`** (γ) — struct with **four** per-term fields per [Part 10 Ch 00 00-forward.md:47](../../../docs/studies/soft_body_architecture/src/100-optimization/00-forward.md) + [Part 1 Ch 01](../../../docs/studies/soft_body_architecture/src/10-physical/01-reward.md): `pressure_uniformity`, `coverage`, `peak_bound`, `stiffness_bound`. 1-tet values: see §2 reward table. Two methods: `score_with(&weights: &RewardWeights) -> f64` for scalar composition (used by downstream optimizers consuming scalar reward); `apply_residuals(&self, residuals: &ResidualCorrections) -> Self` per δ Ch 00 readout §3 (consumed by `SimToRealCorrection::correct`, post-Phase-I).
 - **`EditResult`** (γ) — three-variant enum: `ParameterOnly`, `TopologyPreserving`, `TopologyChanging`. 1-tet θ-only variation always yields `ParameterOnly`.
@@ -300,7 +300,7 @@ All steps on `feature/soft-body-walking-skeleton`. No merge until §7 passes.
 
 ## 10. Recommendations flagged for user check (recommend-first)
 
-Per [`feedback_recommend_first_deep_specialist.md`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_recommend_first_deep_specialist.md): numerically-load-bearing choices below are Claude's call + rationale, flagged for user check against principles.
+Per `feedback_recommend_first_deep_specialist.md`: numerically-load-bearing choices below are Claude's call + rationale, flagged for user check against principles.
 
 | # | Call | Rationale | User-check hook |
 |---|---|---|---|
@@ -345,7 +345,7 @@ Surprises the skeleton stress-test surfaced in the book spec (BF-N) plus scaffol
 
 | # | Where | Finding | Class |
 |---|---|---|---|
-| BF-1 | γ API register ([`project_soft_body_gamma_apis.md`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/project_soft_body_gamma_apis.md)) + Part 6 Ch 02:8 + Part 5 Ch 00 + Part 8 Ch 02 + Part 10 Ch 02/03 | faer sparse Cholesky type is `Llt<I, T>` (generic over index + element), not `Llt<T>`. All book references to `Llt<f64>` should read `Llt<I, f64>` (or `Llt<u32, f64>` after fixing the default index). Affects: PreferenceGP, BradleyTerryGP, GradientEnhancedGP caches + backward-Euler factor-on-tape + sparse-solvers chapter. | API-signature drift |
+| BF-1 | γ API register (`project_soft_body_gamma_apis.md`) + Part 6 Ch 02:8 + Part 5 Ch 00 + Part 8 Ch 02 + Part 10 Ch 02/03 | faer sparse Cholesky type is `Llt<I, T>` (generic over index + element), not `Llt<T>`. All book references to `Llt<f64>` should read `Llt<I, f64>` (or `Llt<u32, f64>` after fixing the default index). Affects: PreferenceGP, BradleyTerryGP, GradientEnhancedGP caches + backward-Euler factor-on-tape + sparse-solvers chapter. | API-signature drift |
 | BF-2 | Part 6 Ch 02:26 code sketch | `Llt::try_new_with_symbolic(&stiffness)?` is incomplete — faer 0.24's constructor is `try_new_with_symbolic(symbolic: SymbolicLlt<I>, mat: SparseColMatRef<'_, I, T>, side: Side)`, requiring a pre-computed `SymbolicLlt` + explicit `Side`. Book sketch should show the symbolic-then-numeric two-step pattern. | API-signature drift |
 | BF-3 | Part 6 Ch 02:34 code sketch | `factor.solve_in_place(&mut minus_dr_dtheta.apply_t(&upstream))` is dimensionally inconsistent — $(\partial r / \partial \theta)^{\mathsf{T}}$ · upstream has shape $[n_\theta]$, cannot be RHS for $[n_\text{dof} \times n_\text{dof}]$ solve. Sketch's order of operations is inverted. Correct sequence: (1) λ = A^{-1} · upstream via `solve_in_place`, (2) result = ±(∂r/∂θ)^T · λ. The math at lines 13-15 is fine; only the code sketch needs fixing. | Pseudocode correctness |
 | BF-4 | Part 11 Ch 01 00-core.md:121 + 01-composition.md:66 | `Differentiable::register_vjp(forward_key: TapeNodeKey, vjp: Box<dyn VjpOp>)` assumes a key-indexed VJP registry that doesn't match the chassis API shipped in PR #213. Chassis's model is `Tape::push_custom(value: Tensor<f64>, op: Box<dyn VjpOp>) -> Var` — VJP is bundled with the node at forward-pass time, not registered-by-key-then-looked-up. No `TapeNodeKey` type exists in `sim-ml-chassis`. Also, register_vjp taking an `instance` (Box<dyn VjpOp>) rather than a factory/closure makes per-call primal-data capture awkward. **Fix options:** (a) drop `register_vjp` from the trait; Material/Element/ContactModel methods directly return configured `Box<dyn VjpOp>` instances that Solver::step passes to push_custom; (b) keep register_vjp but make it a factory registration with signature like `register_vjp(key: OpClassId, factory: Box<dyn Fn(&PrimalData) -> Box<dyn VjpOp>>)`. Skeleton picks (a) de facto by stubbing register_vjp and creating VJPs inline. | Trait-signature / platform-API mismatch |
@@ -368,7 +368,7 @@ BF-7 and BF-8 closed by Phase 1 PR 2026-04-26 (`feature/phase-1-bf7-bf8-preempti
 
 ## Appendix: γ-locked API name registry (skeleton must cite verbatim)
 
-From [`project_soft_body_gamma_apis.md`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/project_soft_body_gamma_apis.md):
+From `project_soft_body_gamma_apis.md`:
 
 - `ForwardMap` (trait) — `evaluate(theta, tape) → (RewardBreakdown, EditResult)` + `gradient(theta, tape) → (Tensor<f64>, GradientEstimate)`
 - `RewardBreakdown` (struct) — per-term reward struct with 4 fields (`pressure_uniformity`, `coverage`, `peak_bound`, `stiffness_bound`) + two methods: `score_with(&weights) -> f64` (scalar composition per Part 1 Ch 01 composition rule) + `apply_residuals(&residuals) -> Self` (sim-to-real correction, post-Phase-I)

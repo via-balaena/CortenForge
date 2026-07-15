@@ -10,7 +10,7 @@
 //! (Phase 4), and rigid-contact FEM via penalty and IPC C²-barrier
 //! models with friction (Phase 5). Architecture follows the seven
 //! γ-locked API names from
-//! [`project_soft_body_gamma_apis.md`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/project_soft_body_gamma_apis.md);
+//! `project_soft_body_gamma_apis.md`;
 //! `MaterialField` is internal-API-shaped per Phase 4 scope memo
 //! Decision M.
 //!

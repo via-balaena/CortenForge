@@ -4,7 +4,7 @@
 **Status revision 2026-04-27:** pivoted from uniform-cubic-lattice + MT-clip to BCC + Labelle-Shewchuk Isosurface Stuffing mid-commit-6 per III-2 evidence (sanity floor failed across all 9 sphere combinations — see §0.5 + Appendix A). Commits 1–3 are algorithm-agnostic and stay; commits 4–5 will be reset and re-implemented on the BCC pipeline before squash-merge.
 **Date:** 2026-04-26 night, post PR #218 (`f3f16c8f`) — Phase 2 multi-element FEM MERGED. Pivot dated 2026-04-27.
 **Branch:** `feature/phase-3-sdf-tet-bridge`, off main `f3f16c8f`. Pre-pivot tip at `4b3a189c` (7 commits ahead of main: 2 memo + 5 implementation). Commits 4–5 (`f8e0a1d9`, `4b3a189c`) will be reset; commits 1–3 (`2c056d82`, `9cd3f221`, `973b0eb1`) stay.
-**Master-architect delegation:** re-confirmed 2026-04-26 night, durable through Phase 3 PR merge. See [`feedback_master_architect_delegation`](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_master_architect_delegation.md). Standing counterweights apply: confirm before any commit/push/branch creation; surface plan-contradicting evidence as a material plan change.
+**Master-architect delegation:** re-confirmed 2026-04-26 night, durable through Phase 3 PR merge. See `feedback_master_architect_delegation`. Standing counterweights apply: confirm before any commit/push/branch creation; surface plan-contradicting evidence as a material plan change.
 **Follows:** `project_gameplan.md` (memory) — Phase 3 of the six-phase foundation-up sequence. Materially higher-risk than Phase 2 (mesher = highest-risk subsystem in the whole arc per gameplan); `feedback_sharpen_the_axe` applies — recon depth before commitment, no rushing.
 **Target:** ~1,000–1,500 net new lines across `sim/L0/soft/src/sdf_bridge/` (new module) + `sim/L0/soft/src/mesh/` (QualityMetrics + new quality kernel) + `sim/L0/soft/src/readout/scene.rs` (BC helper) + 3 new test files; plus ~40-line BF-10 book amendment in two book chapters and one scope-memo §13 closure footer. One PR. (Pre-pivot estimate was 700–1,200; BCC + stuffing is ~300 LOC heavier than the cubic + MT-clip placeholder it replaces.)
 
@@ -20,7 +20,7 @@ Phase 3 takes the **smallest possible step from Phase 2's hand-built multi-tet m
 
 ## 0. Baseline — what shipped, what's hand-built-pinned, what's net-new
 
-Verified via the [Phase 3 readiness recon (read-only, 2026-04-26 night)](../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/MEMORY.md#resume-here).
+Verified via the Phase 3 readiness recon (read-only, 2026-04-26 night).
 
 **Already shipped, no Phase 3 work required:**
 - The seven-trait surface — `Material`, `Element<const N, const G>`, `Mesh`, `ContactModel`, `Solver`, `Differentiable`, `Observable`. All declare interfaces that don't pin mesh provenance. Phase 2's generalized `CpuTet4NHSolver<Msh>` accepts any `impl Mesh`.

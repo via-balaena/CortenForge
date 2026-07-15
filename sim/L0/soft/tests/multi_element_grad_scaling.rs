@@ -24,7 +24,7 @@
 //!    IFT adjoint solve materially.
 //!
 //! NOTE on bit-equality (per
-//! [`project_faer_block_diagonal_fp_drift.md`](../../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/project_faer_block_diagonal_fp_drift.md)):
+//! `project_faer_block_diagonal_fp_drift.md`):
 //! the scope memo's strict bit-equality claims for per-tet
 //! contribution and aggregate-as-sum-of-N-baselines were revised
 //! after the commit-5 finding that faer's sparse solve on a

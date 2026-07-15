@@ -28,7 +28,7 @@
 //!
 //! ## Why fraction not absolute count
 //!
-//! Per [`project_3d_interface_scaling`][p] and IV-4's analogous
+//! Per `project_3d_interface_scaling` and IV-4's analogous
 //! reasoning: under `h → h/2`, total tet count scales as `O(1/h³)`
 //! (volumetric) while the band-flagged count scales as `O(A · L_e /
 //! h³) = O(A / h²)` (band area times one mean-edge-length over
@@ -52,8 +52,6 @@
 //!   identically (the SDF reference is just plumbed through
 //!   [`MaterialField::with_interface_sdf`]); a future composition-
 //!   path coverage gate is a Phase H follow-on.
-//!
-//! [p]: ../../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/project_3d_interface_scaling.md
 
 // `from_sdf` calls `.expect()` to surface meshing failures as test
 // panics — the canonical sphere scene either succeeds by construction

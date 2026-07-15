@@ -55,7 +55,7 @@
 //! signals a real regression; cross-platform 1e-12-bar agreement
 //! signals the value is correct within FP precision.
 //!
-//! **Aligned with [`project_faer_block_diagonal_fp_drift`](../../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/project_faer_block_diagonal_fp_drift.md).**
+//! **Aligned with `project_faer_block_diagonal_fp_drift`.**
 //! The Phase 2 commit-5 finding — `faer`'s sparse solve takes a
 //! per-column FP path that drifts at the last few bits even on a
 //! block-diagonal SPD matrix — extends here cross-platform: the same
