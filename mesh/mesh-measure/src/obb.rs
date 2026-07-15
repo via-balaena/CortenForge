@@ -77,13 +77,31 @@ impl OrientedBoundingBox {
         self.rotation * Vector3::z()
     }
 
-    /// Check if a point is inside the OBB.
+    /// Check if a point is inside the OBB, within an absolute tolerance
+    /// `eps` on each local half-extent.
+    ///
+    /// A vertex that *defines* the OBB (an extreme along a principal
+    /// axis) projects back to the boundary of the local frame, where
+    /// PCA's iterative eigen-decomposition leaves ~1e-15 of FP roundoff;
+    /// the strict `<=` in [`Self::contains`] can then reject it by ~1
+    /// ULP. Pass a small `eps` (e.g. `1e-9`) to admit such boundary
+    /// points. `eps = 0.0` reproduces [`Self::contains`] exactly.
+    #[must_use]
+    pub fn contains_with_tol(&self, point: Point3<f64>, eps: f64) -> bool {
+        let local = self.rotation.inverse() * (point - self.center);
+        local.x.abs() <= self.half_extents.x + eps
+            && local.y.abs() <= self.half_extents.y + eps
+            && local.z.abs() <= self.half_extents.z + eps
+    }
+
+    /// Check if a point is inside the OBB (strict; no tolerance).
+    ///
+    /// Equivalent to [`Self::contains_with_tol`] with `eps = 0.0`. Note
+    /// that a vertex on the OBB boundary can be rejected by ~1 ULP of
+    /// PCA roundoff — use [`Self::contains_with_tol`] when that matters.
     #[must_use]
     pub fn contains(&self, point: Point3<f64>) -> bool {
-        let local = self.rotation.inverse() * (point - self.center);
-        local.x.abs() <= self.half_extents.x
-            && local.y.abs() <= self.half_extents.y
-            && local.z.abs() <= self.half_extents.z
+        self.contains_with_tol(point, 0.0)
     }
 
     /// Get the surface area of the OBB.
@@ -309,5 +327,90 @@ mod tests {
             .max(extents.y.min(extents.z));
         assert!((max_extent - 4.0).abs() < 0.1);
         assert!((mid_extent - 2.0).abs() < 0.1);
+    }
+
+    /// A 20×12×8 box (all three dims distinct → no PCA eigenvalue
+    /// degeneracy), rotated 45° about Z and centered at (25, 0, 5).
+    /// Built from `unit_cube` so winding stays consistent under the
+    /// orientation-preserving transform. Distinct dims make the
+    /// principal axes unique, so the OBB recovers the box exactly — a
+    /// square-cross-section brick would leave the two short axes'
+    /// in-plane basis solver-dependent.
+    fn rotated_brick_20x12x8() -> IndexedMesh {
+        let mut mesh = unit_cube();
+        let rot = Rotation3::from_axis_angle(&Vector3::z_axis(), std::f64::consts::FRAC_PI_4);
+        let (sx, sy, sz) = (20.0, 12.0, 8.0);
+        let center = Vector3::new(25.0, 0.0, 5.0);
+        for v in &mut mesh.vertices {
+            let centered = Vector3::new((v.x - 0.5) * sx, (v.y - 0.5) * sy, (v.z - 0.5) * sz);
+            *v = Point3::from(center + rot * centered);
+        }
+        mesh
+    }
+
+    #[test]
+    fn test_obb_recovers_rotated_brick_extents() {
+        // The defining OBB behavior: on a rotated non-axis-aligned box,
+        // recover the TRUE extents, not the inflated axis-aligned shadow
+        // an AABB would report. (The lib's other OBB tests only use
+        // axis-aligned cubes = identity rotation.)
+        let obb = oriented_bounding_box(&rotated_brick_20x12x8());
+        let e = obb.extents();
+        let mut sorted = [e.x, e.y, e.z];
+        sorted.sort_by(|a, b| b.total_cmp(a));
+        assert!(
+            (sorted[0] - 20.0).abs() < 1e-9,
+            "long extent: {}",
+            sorted[0]
+        );
+        assert!((sorted[1] - 12.0).abs() < 1e-9, "mid extent: {}", sorted[1]);
+        assert!(
+            (sorted[2] - 8.0).abs() < 1e-9,
+            "short extent: {}",
+            sorted[2]
+        );
+        assert!(
+            (obb.volume - 1920.0).abs() < 1e-6,
+            "volume 20·12·8: {}",
+            obb.volume
+        );
+        assert!((obb.center.x - 25.0).abs() < 1e-9);
+        assert!((obb.center.y - 0.0).abs() < 1e-9);
+        assert!((obb.center.z - 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_obb_contains_with_tol_admits_boundary_within_eps() {
+        let obb = oriented_bounding_box(&rotated_brick_20x12x8());
+        // A point just past the +x local face by 5e-10, along the actual
+        // (rotated) principal axis.
+        let just_past = obb.center + obb.axis_x() * (obb.half_extents.x + 5e-10);
+        assert!(
+            obb.contains_with_tol(just_past, 1e-9),
+            "1e-9 tol admits a 5e-10 overshoot"
+        );
+        assert!(
+            !obb.contains_with_tol(just_past, 0.0),
+            "zero tol rejects any overshoot"
+        );
+        assert!(
+            !obb.contains(just_past),
+            "strict contains == contains_with_tol(_, 0.0)"
+        );
+        // Well outside → rejected even with tolerance.
+        let far = obb.center + obb.axis_x() * (obb.half_extents.x + 1.0);
+        assert!(
+            !obb.contains_with_tol(far, 1e-9),
+            "1e-9 tol rejects a 1.0 overshoot"
+        );
+        assert!(obb.contains(obb.center), "center is strictly inside");
+        // Every defining vertex is contained within a 1e-9 tolerance —
+        // the boundary-ULP case strict `contains` cannot promise.
+        for v in &rotated_brick_20x12x8().vertices {
+            assert!(
+                obb.contains_with_tol(*v, 1e-9),
+                "boundary vertex {v:?} within tol"
+            );
+        }
     }
 }
