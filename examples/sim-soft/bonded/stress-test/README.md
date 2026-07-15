@@ -48,9 +48,10 @@ the cavity surface (134 verts) and a fixed Dirichlet pin on the outer surface
 to `max|σ-1| ≈ 0.024`. Four Saint-Venant-averaged radial-displacement readouts
 (cavity-wall `2.857e-4 m` + inner / middle / outer shell means) match the
 **piecewise-Lamé thick-shell 6×6 closed-form** (`u_r^{(i)}(r) = A_i r + B_i / r²`
-with fixed-outer BC `u_r^{(3)}(R_b) = 0`) within **30 %** at h/2 (rel-tol binding
-for cavity / inner / middle; a `5e-6 m` eps-floor absorbs the small-magnitude
-outer-shell mean). Discriminators: `u_r_uniform_2× < u_r_three_shell <
+with fixed-outer BC `u_r^{(3)}(R_b) = 0`) within **30 %** at h/2 for cavity /
+inner / middle (observed ~14 / 12 / 19 %); the small-magnitude, pinned-dominated
+outer-shell mean genuinely under-converges to ~36 % and is gated at an honest
+binding **40 %** (not masked behind an eps-floor). Discriminators: `u_r_uniform_2× < u_r_three_shell <
 u_r_uniform_1×` on the cavity-wall mean (IV-2 lens β, three full solver passes,
 HEADLINE C); strict outward monotone decay `cavity > inner > middle > outer ≥ 0`;
 6 means pinned under the IV-1 sparse-tier rel-tol contract. Sole coverage of the

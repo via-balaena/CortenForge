@@ -25,7 +25,8 @@
 //!   the cavity surface and a fixed Dirichlet pin on the outer surface. Four
 //!   Saint-Venant-averaged radial-displacement readouts (cavity-wall +
 //!   per-shell) are matched against the **piecewise-Lamé thick-shell 6×6
-//!   closed-form** within 30 % at h/2; the same IV-2-lens-β strict-between
+//!   closed-form** within 30 % at h/2 (outer shell 40 %: small-magnitude,
+//!   pinned-dominated); the same IV-2-lens-β strict-between
 //!   cavity-wall gate runs three full solver passes.
 //!
 //! The two are complementary, not subsuming: [`bilayer_beam`] is the sole

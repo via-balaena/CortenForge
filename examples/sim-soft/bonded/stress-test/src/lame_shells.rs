@@ -42,18 +42,19 @@
 //! `EXAMPLE_INVENTORY.md` Tier 3 row 11 says "assert radial displacement
 //! vs Lamé per shell" without a quantitative bound — unlike row 10's "to
 //! 3 digits" wording, no inventory-recalibration is required here.
-//! The operative gate per readout is `assert_relative_eq!(observed,
-//! analytic, max_relative = 0.30, epsilon = 5.0e-6 m)` at `cell_size =
-//! h/2 = 0.02` — mirroring IV-5's
-//! `iv_5_uniform_passthrough_at_h2_matches_single_shell_lame` sanity-
-//! band rel-tol with an absolute floor that absorbs the small-magnitude
-//! outer-shell mean (cavity / inner / middle readouts pass via the rel-
-//! tol branch at `~14 % / ~12 % / ~19 %` rel-err observed; outer-shell
-//! readout passes via the eps-floor branch at `~36 %` rel-err but
-//! absolute diff `~3.7e-6 m < 5e-6 m` floor — the outer shell's `~952`
-//! referenced vertices include `734` pinned-at-zero outer-wall vertices
-//! by the fixed-outer BC, so the mean's small magnitude makes BCC
-//! quantization a meaningful fraction of the rel-err denominator). See
+//! The operative gate is a per-shell binding `assert_relative_eq!` at
+//! `cell_size = h/2 = 0.02` — mirroring IV-5's
+//! `iv_5_uniform_passthrough_at_h2_matches_single_shell_lame` sanity-band
+//! rel-tol. The cavity / inner / middle readouts are gated at
+//! `max_relative = RADIAL_REL_TOL = 0.30` and pass at `~14 % / ~12 % /
+//! ~19 %` rel-err observed. The outer-shell readout is small-magnitude
+//! and pinned-dominated — its `~952` referenced vertices include `734`
+//! pinned-at-zero outer-wall vertices (fixed-outer BC), so at h/2 a Tet4
+//! mesh genuinely under-converges it to `~35.6 %` rel-err. It is gated at
+//! an honest, binding `OUTER_SHELL_REL_TOL = 0.40` that reflects that
+//! reality (NOT masked behind an absolute-epsilon floor, which would make
+//! the outer readout non-gating while advertising a `< 30 %` match it
+//! does not achieve). See
 //! README §"Tet4 caveat" for the convergence story (IV-5 documents
 //! super-quadratic empirical rate at the fine end with a conservative
 //! `< 0.20` absolute floor at h/4; the user-facing example at h/2 lives
@@ -121,7 +122,7 @@
 //!   sanity at the deformed configuration; the inflation cavity at
 //!   `pressure = 5e3 Pa` lands well inside `RequireOrientation` regime
 //!   with global `max|σ-1| < 0.05` small-strain sanity).
-//! - **`radial_displacement_per_shell_matches_lame_within_30pct`** —
+//! - **`radial_displacement_per_shell_matches_lame`** —
 //!   four Saint-Venant-averaged radial-displacement readouts. (1) The
 //!   cavity-wall mean over `bc.loaded_vertices` of the per-vertex norm-
 //!   difference `|x_final| - |rest|`, mirroring IV-5's
@@ -130,11 +131,12 @@
 //!   all referenced vertices in each shell (`shell_at` partition) of the
 //!   same scalar; the analytic mean `coeffs.u_r(shell_id, |rest|)` is
 //!   computed over the SAME vertex set so quantization noise affects
-//!   both sides equally. Each readout gated `assert_relative_eq!(observed,
-//!   analytic, max_relative = 0.30, epsilon = 5.0e-6)`. The `5e-6` eps
-//!   absolute floor absorbs the small-magnitude outer-shell mean's BCC-
-//!   quantization; the `0.30` rel-tol is binding for cavity / inner /
-//!   middle readouts. HEADLINE B — the inventory's named gate ("assert
+//!   both sides equally. Cavity / inner / middle are gated at
+//!   `max_relative = RADIAL_REL_TOL = 0.30` (binding); the small-magnitude
+//!   pinned-dominated outer shell, which genuinely under-converges to
+//!   `~35.6 %` at h/2, is gated at an honest binding
+//!   `OUTER_SHELL_REL_TOL = 0.40` — every readout is a real rel-err gate,
+//!   none masked by an absolute floor. HEADLINE B — the inventory's named gate ("assert
 //!   radial displacement vs Lamé per shell"), generalising IV-5's
 //!   cavity-wall-only reading to a 3-shell profile gate while preserving
 //!   the IV-5 cross-reference at the cavity-wall readout.
@@ -333,21 +335,22 @@ const SPARSE_EPS_ABS: f64 = 1.0e-12;
 /// user-facing example at h/2 lives a refinement up that ladder).
 const RADIAL_REL_TOL: f64 = 0.30;
 
-/// Absolute floor for the per-shell radial-displacement gate — absorbs
-/// the small-magnitude outer-shell mean's BCC-quantization noise. The
-/// outer shell's referenced-vertex mean is `~6.7e-6 m` (small magnitude
-/// because 77% of outer-shell vertices are pinned at `u_r = 0` by the
-/// fixed-outer-surface BC, plus the non-pinned outer-shell-interior
-/// vertices have `u_r` decaying toward 0 at `r ≈ R_OUTER`); at h/2 the
-/// observed-vs-analytic abs diff is `~3.7e-6 m` (~35% rel-err). The
-/// `5e-6 m` floor absorbs this case via `assert_relative_eq!`'s
-/// `epsilon` branch (`abs_diff <= max(eps, rel_tol * max(|obs|, |ana|))`),
-/// while the `0.30` `max_relative` gate stays binding for the three
-/// larger-magnitude readouts (cavity ~3e-4 m, inner ~2e-4 m, middle
-/// ~6e-5 m). Headroom over observed outer abs diff is `~1.3e-6 m`
-/// (~35% margin); IV-1 sparse-tier 3-ULP cross-platform drift is far
-/// below that scale at sparse-mesh magnitudes.
-const RADIAL_EPS_ABS_FLOOR: f64 = 5.0e-6;
+/// Honest binding rel-tol for the OUTER-shell radial-displacement gate.
+/// The outer shell's referenced-vertex mean is small (`~6.7e-6 m`)
+/// because 734 of its 952 referenced vertices are pinned at `u_r = 0` by
+/// the fixed-outer-surface BC, and the non-pinned interior vertices decay
+/// toward 0 at `r ≈ R_OUTER`. At `h/2` a Tet4 mesh genuinely under-
+/// converges this small-magnitude, pinned-dominated readout to `~35.6 %`
+/// rel-err — versus `~12–19 %` for the three larger-magnitude shells
+/// (cavity ~3e-4 m, inner ~2e-4 m, middle ~6e-5 m), which stay binding
+/// under `RADIAL_REL_TOL`. Rather than mask the outer shell behind an
+/// absolute-`epsilon` floor — which would make its readout non-gating
+/// while still advertising a "within 30 %" match it does not achieve —
+/// the outer shell is gated at an honest, binding `0.40` that reflects
+/// the accuracy the physics reaches at h/2 and still catches any
+/// regression pushing it past `0.40`. IV-1 sparse-tier 3-ULP
+/// cross-platform drift is orders of magnitude below this margin.
+const OUTER_SHELL_REL_TOL: f64 = 0.40;
 
 // =============================================================================
 // Constants — geometry derived (re-exports, phi thresholds, bbox)
@@ -488,10 +491,10 @@ const MIDDLE_SHELL_MEAN_REF_BITS: u64 = 0x3f0f_79e1_9a3e_5ec8;
 /// `u_r = 0` by the fixed-outer-surface BC, so the mean is dominated by
 /// the 218 outer-shell-interior vertices' small radial displacement).
 /// `f64::from_bits(0x3edc_33bf_bc93_1078) ≈ 6.723_915_199_905_690_701e-6`.
-/// Rel-err vs same-vertex-set analytic mean `~35.6 %`; the
-/// `RADIAL_REL_TOL = 0.30` gate is absorbed by `RADIAL_EPS_ABS_FLOOR =
-/// 5e-6` for this small-magnitude case (observed abs diff `~3.7e-6 m`,
-/// floor headroom `~1.3e-6 m`).
+/// Rel-err vs same-vertex-set analytic mean `~35.6 %` — this
+/// small-magnitude pinned-dominated shell genuinely under-converges at
+/// h/2 and is gated at the honest binding `OUTER_SHELL_REL_TOL = 0.40`
+/// (see anchor 6), not masked behind an absolute-epsilon floor.
 const OUTER_SHELL_MEAN_REF_BITS: u64 = 0x3edc_33bf_bc93_1078;
 
 /// Uniform-1× cavity-wall mean radial displacement bits (m). Captured
@@ -1276,7 +1279,7 @@ fn verify_solver_converges(snapshot: &SceneSnapshot, records: &[TetRecord]) {
 }
 
 // =============================================================================
-// 6. verify_radial_displacement_per_shell_matches_lame_within_30pct — HEADLINE B
+// 6. verify_radial_displacement_per_shell_matches_lame — HEADLINE B
 // =============================================================================
 
 /// HEADLINE B — four Saint-Venant-averaged radial-displacement readouts
@@ -1300,7 +1303,7 @@ fn verify_solver_converges(snapshot: &SceneSnapshot, records: &[TetRecord]) {
 ///
 /// Returns `[cavity_wall_mean, inner_shell_mean, middle_shell_mean,
 /// outer_shell_mean]` for downstream anchors 7 + 8.
-fn verify_radial_displacement_per_shell_matches_lame_within_30pct(
+fn verify_radial_displacement_per_shell_matches_lame(
     snapshot: &SceneSnapshot,
     coeffs: &LameCoefficients,
 ) -> [f64; 4] {
@@ -1320,8 +1323,7 @@ fn verify_radial_displacement_per_shell_matches_lame_within_30pct(
     assert_relative_eq!(
         cavity_observed,
         cavity_analytic,
-        max_relative = RADIAL_REL_TOL,
-        epsilon = RADIAL_EPS_ABS_FLOOR,
+        max_relative = RADIAL_REL_TOL
     );
 
     let mut means = [cavity_observed, 0.0, 0.0, 0.0];
@@ -1346,12 +1348,18 @@ fn verify_radial_displacement_per_shell_matches_lame_within_30pct(
             analytic > 0.0,
             "shell {shell_id} analytic mean must be positive; got {analytic:e}"
         );
-        assert_relative_eq!(
-            observed,
-            analytic,
-            max_relative = RADIAL_REL_TOL,
-            epsilon = RADIAL_EPS_ABS_FLOOR,
-        );
+        // Shell 2 (outer) is small-magnitude + pinned-dominated (734 of
+        // its 952 referenced vertices sit at u_r = 0), so it genuinely
+        // under-converges to ~35.6% at h/2; gate it at the honest
+        // OUTER_SHELL_REL_TOL. Inner/middle hit ~12/19%, well under
+        // RADIAL_REL_TOL. Every shell stays a binding rel-err gate — no
+        // absolute-epsilon floor masking the comparison.
+        let shell_rel_tol = if shell_id == 2 {
+            OUTER_SHELL_REL_TOL
+        } else {
+            RADIAL_REL_TOL
+        };
+        assert_relative_eq!(observed, analytic, max_relative = shell_rel_tol);
         means[shell_id + 1] = observed;
     }
     means
@@ -1735,7 +1743,7 @@ fn print_summary(
         "  solver_converges                                                 : iter < {MAX_NEWTON_ITER}; residual < tol; max|σ-1| < 1.0 at x_final"
     );
     println!(
-        "  radial_displacement_per_shell_matches_lame_within_30pct          : 4 readouts pass assert_relative_eq! (rel < {RADIAL_REL_TOL} OR abs < {RADIAL_EPS_ABS_FLOOR:e} m) (HEADLINE B)"
+        "  radial_displacement_per_shell_matches_lame                       : cavity/inner/middle rel < {RADIAL_REL_TOL}, outer rel < {OUTER_SHELL_REL_TOL} (HEADLINE B)"
     );
     println!(
         "  cavity_wall_three_shell_strictly_between_uniform_bounds          : u_r_uniform_2x < u_r_three_shell < u_r_uniform_1x (HEADLINE C)"
@@ -1787,11 +1795,13 @@ fn print_summary(
         "  outer_shell_mean      : {outer_obs:>13.6e} m    {outer_ana:>13.6e} m    {outer_rel_err:>8.4}"
     );
     println!(
-        "  gate: assert_relative_eq! at max_relative = {RADIAL_REL_TOL}, epsilon = {RADIAL_EPS_ABS_FLOOR:e} m"
+        "  gate: assert_relative_eq! rel-tol — cavity/inner/middle at {RADIAL_REL_TOL}, outer at {OUTER_SHELL_REL_TOL}"
     );
-    println!("        (rel-tol binding for cavity / inner / middle; eps-floor absorbs outer-shell");
     println!(
-        "         small-magnitude case — abs diff ~3.7e-6 m < {RADIAL_EPS_ABS_FLOOR:e} m floor)"
+        "        (outer shell is small-magnitude + pinned-dominated, genuinely ~35.6% at h/2 —"
+    );
+    println!(
+        "         gated at an honest binding {OUTER_SHELL_REL_TOL}, not masked behind an eps-floor)"
     );
 
     let three_shell_cavity = means[0];
@@ -1862,7 +1872,7 @@ pub fn run() -> Result<()> {
     let pop_counts = verify_per_tet_material_assignment(&snapshot, &records);
     verify_solver_converges(&snapshot, &records);
 
-    let means = verify_radial_displacement_per_shell_matches_lame_within_30pct(&snapshot, &coeffs);
+    let means = verify_radial_displacement_per_shell_matches_lame(&snapshot, &coeffs);
 
     // HEADLINE C uniform-baseline runs (anchor 7).
     let cavity_uniform_1x = run_uniform_baseline_cavity_wall_mean(uniform_1x_field());
