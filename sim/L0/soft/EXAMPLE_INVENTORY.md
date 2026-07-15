@@ -123,8 +123,15 @@ Status legend per top of file: `have` / `internal-fixture` / `missing` / `blocke
 > singleton `material` domain (the constitutive-table oracle is unrelated to the
 > Tier-6 synthesis device, so they are NOT one domain). Row number preserved as
 > an immutable capability ID; the standalone `silicone-material-table` crate no
-> longer exists. Rows 15–16 (`mesh-scan-as-solid` / `solid-to-sim-soft`, the
-> bridge pair) are a separate later fold.
+> longer exists.
+>
+> **Standardization (2026-07-15):** rows 15–16 (`mesh-scan-as-solid` /
+> `solid-to-sim-soft`, the SDF-bridge pair — both directions of the
+> `cf_design::Sdf` trait) folded into one validator `example-sdf-bridge-stress-test`
+> at `examples/sim-soft/sdf-bridge/stress-test/` (modules `mesh_scan` /
+> `solid_to_sim`) — one domain → one stress-test, the example counterpart to the
+> `sim/L0/soft/src/sdf_bridge/` library module. Row numbers preserved as
+> immutable capability IDs; the standalone crates no longer exist.
 
 | # | Concept | Simplest example | Capability shown | Status | Gap to land |
 |---|---|---|---|---|---|

@@ -514,7 +514,7 @@ D.6 is the final docs + memory sub-leaf. Scope:
    - `examples/mesh/mesh-sdf-distance-query/src/main.rs:60` — BROKEN since D.1 (imports 4 deleted free fns `closest_point_on_triangle`, `point_in_mesh`, `point_segment_distance_squared`, `ray_triangle_intersect`). `cargo check --workspace` fails on this example today.
    - `examples/cast/layered-silicone/*` — uses `SignedDistanceField` for scan SDF.
    - `examples/sim-soft/layered-silicone-device/*` — same.
-   - `examples/sim-soft/mesh-scan-as-solid/*` — same.
+   - `examples/sim-soft/sdf-bridge/stress-test/src/mesh_scan.rs` (formerly `mesh-scan-as-solid`) — same.
    - `examples/mesh/shell-generation/stress-test/*` (`high_quality` module; formerly `shell-generation-high-quality`) — DONE: uses `TriMeshDistance` for the wall-thickness oracle, no `SignedDistanceField`.
 
    Migrate each to either `flood_filled_sdf(...)` (scan-derived) or `Signed { distance: TriMeshDistance::new(mesh)?, sign: PseudoNormalSign::from_distance(&distance) }` (synthetic / well-formed). Batch into one commit since they're independent + low-risk.

@@ -32,7 +32,7 @@
 //!   hatch when lifting through `from_sdf` is undesirable. The Tier 1
 //!   [`sdf/stress-test`][sdf] module `hollow_shell` teaches the difference
 //!   operator through `DifferenceSdf::new(SphereSdf, SphereSdf)` at minimal
-//!   surface; [`solid-to-sim-soft`][r16] uses
+//!   surface; [`sdf-bridge/stress-test`'s `solid_to_sim`][r16] uses
 //!   `DifferenceSdf<SphereSdf>` as the bit-equality baseline against
 //!   typed-Solid `Solid::sphere().subtract()` at HEADLINE A's
 //!   `EXACT_TOL = 0.0` cross-crate equivalence anchor.
@@ -43,7 +43,7 @@
 //! `DifferenceSdf`).
 //!
 //! [sdf]: ../../../../../examples/sim-soft/sdf/stress-test/
-//! [r16]: ../../../../../examples/sim-soft/solid-to-sim-soft/
+//! [r16]: ../../../../../examples/sim-soft/sdf-bridge/stress-test/
 //!
 //! # Differentiability
 //!

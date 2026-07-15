@@ -408,8 +408,10 @@ members = [
     "examples/sim-soft/hertz-sphere-plane",
     "examples/sim-soft/compressive-block",
     "examples/sim-soft/contact-force-readout",
-    "examples/sim-soft/mesh-scan-as-solid",
-    "examples/sim-soft/solid-to-sim-soft",
+    # SDF-bridge domain: mesh-scan-as-solid + solid-to-sim-soft folded into one
+    # stress-test (rows 15-16) — one domain -> one validation superset (both
+    # directions of the cf_design::Sdf trait as the SDF interop spine).
+    "examples/sim-soft/sdf-bridge/stress-test",
     # Material-reference domain: silicone-material-table relocated to the
     # standardization layout (row 19) — singleton domain, one validation
     # superset (constitutive table vs closed-form NH; no solver/mesh).
