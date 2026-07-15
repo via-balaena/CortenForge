@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`OrientedBoundingBox::contains_with_tol(point, eps)`** — tolerance-aware
+  containment. A vertex that defines the OBB (an extreme along a principal
+  axis) projects to the local-frame boundary, where PCA's `SymmetricEigen`
+  leaves ~1 ULP of roundoff, so strict `contains` could reject it by
+  `~1.78e-15`. `contains` is now `contains_with_tol(p, 0.0)`. Surfaced by the
+  `measure` stress-test, which previously hand-rolled a tolerant
+  reimplementation; it now calls the library method.
+- **Rotated-box OBB extent-recovery test** — a non-degenerate 20×12×8 box
+  rotated 45° whose OBB recovers the true `(20, 12, 8)` extents (the defining
+  OBB-vs-AABB behavior, previously only exercised on axis-aligned cubes).
+
 ### v0.9 candidates
 
 These backlog candidates are gated on a real consumer driving them per
@@ -24,16 +37,6 @@ the entries below are the mesh-measure-specific subset.
   `dimensions()` returns `Default` rather than an error on degenerate
   input. Effort: ~80 LOC + breaking-API rename + downstream call-site
   updates.
-
-- **Tolerance-aware `OrientedBoundingBox::contains`.** Surfaced by
-  `mesh-measure-bounding-box` (mesh book Part 8 Band 4): PCA's
-  iterative `SymmetricEigen` produces `half_extents` and the
-  inverse-rotation mapping with ~1 ULP roundoff; the four input
-  vertices that defined the OBB extremes can fail strict `<=`
-  containment by `~1.78e-15`. *Trigger*: a user reports a vertex
-  they passed in failing `obb.contains(v)`. Effort: ~30 LOC: add
-  `contains_with_tol(point, eps)` method, keep strict `contains` as
-  alias for `contains_with_tol(p, 0.0)`.
 
 - **Document "OBB ⊄ AABB in general" + remove the corners-within-AABB
   anchor pattern from API docs and examples.** Surfaced during

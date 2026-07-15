@@ -63,15 +63,6 @@ const PCA_TOL: f64 = 1e-9;
 /// reflecting covariance-matrix FP stability across libms.
 const OBB_VOLUME_REL_TOL: f64 = 0.05;
 
-/// Combined-mesh OBB anchor: principal-axis x-component (empirical,
-/// from `atan(3/8) / 2 ≈ 10.275°`). Closed form is
-/// `cos(atan(3/8) / 2) = sqrt((sqrt(73) + 8) / (2·sqrt(73)))`.
-const COMBINED_OBB_AXIS_X: f64 = 0.983_953_550_115_310_3;
-
-/// Combined-mesh OBB anchor: principal-axis y-component (empirical;
-/// `sin(atan(3/8) / 2) = sqrt((sqrt(73) - 8) / (2·sqrt(73)))`).
-const COMBINED_OBB_AXIS_Y: f64 = 0.178_424_805_493_736_6;
-
 /// Combined-mesh OBB anchor: volume — empirical, locked at the
 /// post-PCA value of `7169.483166351446`. Deterministic per nalgebra
 /// `SymmetricEigen` on this fixture's covariance.
@@ -332,14 +323,6 @@ fn verify_fixture_geometry(mesh: &IndexedMesh) {
     }
 }
 
-/// Rotate a world-space point into an OBB's local frame —
-/// `local = R⁻¹ · (point − center)`. Mirrors `OrientedBoundingBox::contains`
-/// but returns the local offset so anchors can apply per-axis tolerance.
-/// Used by both `verify_combined_obb` and `verify_brick_obb`.
-fn obb_local_offset(obb: &OrientedBoundingBox, point: Point3<f64>) -> nalgebra::Vector3<f64> {
-    obb.rotation.inverse() * (point - obb.center)
-}
-
 // =============================================================================
 // verify_dimensions — AABB anchors
 // =============================================================================
@@ -429,10 +412,16 @@ fn verify_combined_obb(obb: &OrientedBoundingBox, mesh: &IndexedMesh) {
         max_relative = OBB_VOLUME_REL_TOL
     );
 
-    // Principal axis components (cos / sin of ~10.27°, verified to 1e-9).
+    // Principal axis components vs the CLOSED FORM (not a locked
+    // literal): the combined fixture's covariance puts the principal
+    // axis at θ = atan(3/8) from world +x, so by the half-angle identity
+    // (cos θ = 8/√73, sin θ = 3/√73) axis_x = (cos(θ/2), sin(θ/2), 0).
+    let sqrt73 = 73.0_f64.sqrt();
+    let expected_axis_x = ((sqrt73 + 8.0) / (2.0 * sqrt73)).sqrt();
+    let expected_axis_y = ((sqrt73 - 8.0) / (2.0 * sqrt73)).sqrt();
     let axis_x = obb.axis_x();
-    assert_relative_eq!(axis_x.x.abs(), COMBINED_OBB_AXIS_X, epsilon = PCA_TOL);
-    assert_relative_eq!(axis_x.y.abs(), COMBINED_OBB_AXIS_Y, epsilon = PCA_TOL);
+    assert_relative_eq!(axis_x.x.abs(), expected_axis_x, epsilon = PCA_TOL);
+    assert_relative_eq!(axis_x.y.abs(), expected_axis_y, epsilon = PCA_TOL);
     assert_relative_eq!(axis_x.z, 0.0, epsilon = PCA_TOL);
 
     // Axes orthogonal (`OrientedBoundingBox::axis_*` surface coverage).
@@ -449,29 +438,17 @@ fn verify_combined_obb(obb: &OrientedBoundingBox, mesh: &IndexedMesh) {
         obb.surface_area()
     );
 
-    // All 16 input vertices satisfy `obb.contains(v) == true` —
-    // implemented with a 1-ULP tolerance because PCA's iterative
-    // eigen-decomposition computes `half_extents` and the inverse-rotation
-    // mapping with ~1e-15 FP roundoff. Vertices that defined the OBB
-    // (the extremes along each principal axis) project back to the
-    // boundary of the local frame and `<=` comparison can trip by 1 ULP
-    // (here: vertices 8 / 12 fail by `dy = 1.776e-15`). The strict
-    // library behavior is a v0.9 candidate gap (tolerance-aware
-    // `OBB::contains_with_tol`); see `mesh-measure/CHANGELOG.md`.
+    // All 16 input vertices are contained, via the tolerance-aware
+    // `contains_with_tol`: vertices that define the OBB (extremes along a
+    // principal axis) project back to the local-frame boundary, where
+    // PCA's iterative eigen-decomposition leaves ~1e-15 FP roundoff, so
+    // strict `contains` can reject them by ~1 ULP (here vertices 8 / 12 by
+    // `dy = 1.776e-15`). `PCA_TOL = 1e-9` comfortably admits them.
     for (i, v) in mesh.vertices.iter().enumerate() {
-        let local = obb_local_offset(obb, *v);
         assert!(
-            local.x.abs() <= obb.half_extents.x + PCA_TOL
-                && local.y.abs() <= obb.half_extents.y + PCA_TOL
-                && local.z.abs() <= obb.half_extents.z + PCA_TOL,
-            "OBB containment fails for input vertex {i}: |local|=({:.6}, {:.6}, {:.6}) \
-             vs half_extents=({:.6}, {:.6}, {:.6})",
-            local.x.abs(),
-            local.y.abs(),
-            local.z.abs(),
-            obb.half_extents.x,
-            obb.half_extents.y,
-            obb.half_extents.z,
+            obb.contains_with_tol(*v, PCA_TOL),
+            "OBB does not contain input vertex {i} = {v:?} (half_extents = {:?})",
+            obb.half_extents,
         );
     }
 
@@ -514,14 +491,12 @@ fn verify_brick_obb(obb: &OrientedBoundingBox, brick_verts: &[Point3<f64>]) {
     assert_relative_eq!(obb.center.y, TILTED_CENTER_Y, epsilon = PCA_TOL);
     assert_relative_eq!(obb.center.z, TILTED_CENTER_Z, epsilon = PCA_TOL);
 
-    // All 8 brick vertices contained (1-ULP-tolerance contains —
-    // same FP-roundoff caveat as the combined-OBB anchor).
+    // All 8 brick vertices contained via the tolerance-aware
+    // `contains_with_tol` (same FP-roundoff caveat as the combined-OBB
+    // anchor).
     for (i, v) in brick_verts.iter().enumerate() {
-        let local = obb_local_offset(obb, *v);
         assert!(
-            local.x.abs() <= obb.half_extents.x + PCA_TOL
-                && local.y.abs() <= obb.half_extents.y + PCA_TOL
-                && local.z.abs() <= obb.half_extents.z + PCA_TOL,
+            obb.contains_with_tol(*v, PCA_TOL),
             "brick OBB does not contain brick vertex {i} = {v:?}"
         );
     }
