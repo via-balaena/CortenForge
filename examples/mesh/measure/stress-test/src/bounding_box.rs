@@ -13,10 +13,13 @@
 //!   `center.y = 0`) (verts 0–7).
 //! - **Cube B**: 20 × 10 × 10 mm brick (long axis along local +X)
 //!   rotated 45° around Z and translated so its bbox-center is
-//!   `(25, 0, 5)` (verts 8–15). The brick is non-cubic so PCA's
-//!   eigenvalues are distinct — the OBB recovers the brick's
-//!   actual `(20, 10, 10)` extents while AABB inflates the rotated
-//!   shadow to `(15√2, 15√2, 10) ≈ (21.21, 21.21, 10)`.
+//!   `(25, 0, 5)` (verts 8–15). Its long axis is unique, so the OBB
+//!   recovers `BRICK_LONG = 20` exactly while AABB inflates the
+//!   rotated shadow to `(15√2, 15√2, 10) ≈ (21.21, 21.21, 10)`. The
+//!   10×10 cross-section is a SQUARE (degenerate short eigenvalues),
+//!   so the two short extents are pinned only as EQUAL and within
+//!   `[10, 10√2]` — see [`verify_brick_obb`]. Exact unique recovery
+//!   lives in `mesh-measure`'s own non-degenerate box test.
 //!
 //! The rotation uses `let s = f64::sqrt(0.5)` for both cosine and
 //! sine coefficients of the 45° rotation matrix —
@@ -97,9 +100,11 @@ const TILTED_CENTER_Z: f64 = 5.0;
 const CUBE_A_EDGE: f64 = 10.0;
 
 /// Brick (cube B) full edge lengths along local axes — long axis is
-/// 20 mm along local +X; short axes are 10 mm along local Y / Z.
-/// The 2:1 aspect ratio ensures non-degenerate PCA: the long-axis
-/// eigenvalue separates cleanly from the two short-axis eigenvalues.
+/// 20 mm along local +X; short axes are 10 mm along local Y / Z. The
+/// long-axis eigenvalue separates cleanly (unique → exact recovery),
+/// but the two equal short axes give a SQUARE cross-section whose
+/// eigenvalues are DEGENERATE, so the in-plane basis is solver-chosen;
+/// `verify_brick_obb` anchors only the basis-independent facts.
 const BRICK_LONG: f64 = 20.0;
 const BRICK_SHORT: f64 = 10.0;
 
@@ -466,27 +471,44 @@ fn verify_combined_obb(obb: &OrientedBoundingBox, mesh: &IndexedMesh) {
 // verify_brick_obb — OBB on cube B sub-mesh recovers the original brick
 // =============================================================================
 
-/// Lock the OBB on cube B alone (the 20×10×10 tilted brick, extracted
-/// as a sub-mesh) against the analytical recovery: `volume = 2000`,
-/// sorted extents `(20, 10, 10)`, center at `(25, 0, 5)`. PCA on the
-/// brick's 8 vertices has eigenvalues `(33.33, 8.33, 8.33)` (long-axis
-/// distinct from the two equal short axes), so the principal axis is
-/// uniquely the rotated `+X` and the OBB recovers the box exactly.
+/// Anchor the OBB on cube B alone (the 20×10×10 tilted brick, extracted
+/// as a sub-mesh). PCA on the brick's 8 vertices has eigenvalues
+/// `(33.33, 8.33, 8.33)`: the long axis is distinct — uniquely the
+/// rotated `+X`, so its extent recovers 20 exactly — but the two EQUAL
+/// short eigenvalues make the 10×10 cross-section's in-plane basis
+/// DEGENERATE (solver-chosen). So this anchors only the basis-
+/// independent facts (long extent, equal shorts within `[10, 10√2]`,
+/// center `(25, 0, 5)`, volume in `[2000, 4000]`); exact unique
+/// recovery is the library's own job on a non-degenerate box.
 fn verify_brick_obb(obb: &OrientedBoundingBox, brick_verts: &[Point3<f64>]) {
-    // Volume recovery.
-    assert_relative_eq!(obb.volume, BRICK_OBB_VOLUME, epsilon = PCA_TOL);
-
-    // Sorted extents recover (20, 10, 10).
+    // The brick is 20×10×10 — a SQUARE (10×10) cross-section perpendicular
+    // to its long axis. A square's corner point-cloud has isotropic in-plane
+    // covariance, so PCA's two short eigenvalues are DEGENERATE (equal) and
+    // the in-plane basis is solver-chosen. Only the basis-INDEPENDENT facts
+    // are robust to a nalgebra version bump, so those are what we anchor:
+    //   - the long axis is unique → its extent recovers BRICK_LONG exactly;
+    //   - the two short extents are EQUAL (square symmetry: the square's
+    //     bounding box has the same side in any in-plane rotation);
+    //   - each short extent lies in [BRICK_SHORT, BRICK_SHORT·√2] (a square-
+    //     aligned basis gives 10, a 45°-rotated basis gives 10√2);
+    //   - the center is the brick's centroid (basis-independent).
+    // The EXACT unique (20,12,8) recovery is demonstrated in the LIBRARY's
+    // own test on a NON-degenerate box (mesh-measure `obb.rs`).
     let e = obb.extents();
     let mut sorted = [e.x, e.y, e.z];
-    // Descending sort by total_cmp — OBB extents are finite (no NaN);
-    // total_cmp gives a strict total order without an Option.
+    // Descending sort by total_cmp — OBB extents are finite (no NaN).
     sorted.sort_by(|a, b| b.total_cmp(a));
-    assert_relative_eq!(sorted[0], BRICK_LONG, epsilon = PCA_TOL);
-    assert_relative_eq!(sorted[1], BRICK_SHORT, epsilon = PCA_TOL);
-    assert_relative_eq!(sorted[2], BRICK_SHORT, epsilon = PCA_TOL);
 
-    // Center is at the brick's bbox-center.
+    assert_relative_eq!(sorted[0], BRICK_LONG, epsilon = PCA_TOL);
+    assert_relative_eq!(sorted[1], sorted[2], epsilon = PCA_TOL);
+    let short_hi = BRICK_SHORT * std::f64::consts::SQRT_2;
+    assert!(
+        sorted[1] >= BRICK_SHORT - PCA_TOL && sorted[1] <= short_hi + PCA_TOL,
+        "short extent {} outside the square-cross-section range [{BRICK_SHORT}, {short_hi}]",
+        sorted[1],
+    );
+
+    // Center is at the brick's bbox-center (basis-independent).
     assert_relative_eq!(obb.center.x, TILTED_CENTER_X, epsilon = PCA_TOL);
     assert_relative_eq!(obb.center.y, TILTED_CENTER_Y, epsilon = PCA_TOL);
     assert_relative_eq!(obb.center.z, TILTED_CENTER_Z, epsilon = PCA_TOL);
@@ -501,8 +523,14 @@ fn verify_brick_obb(obb: &OrientedBoundingBox, brick_verts: &[Point3<f64>]) {
         );
     }
 
-    // Surface area = 2·(20·10 + 20·10 + 10·10) = 2·(200+200+100) = 1000 mm².
-    assert_relative_eq!(obb.surface_area(), 1000.0, epsilon = PCA_TOL);
+    // Volume = 8·hx·hy·hz = BRICK_LONG · short²; short ∈ [10, 10√2] →
+    // volume ∈ [2000, 4000] (basis-dependent in the degenerate plane).
+    assert!(
+        obb.volume >= BRICK_OBB_VOLUME - PCA_TOL && obb.volume <= 2.0 * BRICK_OBB_VOLUME + PCA_TOL,
+        "brick OBB volume {} outside [{BRICK_OBB_VOLUME}, {}]",
+        obb.volume,
+        2.0 * BRICK_OBB_VOLUME,
+    );
 }
 
 // =============================================================================
@@ -591,8 +619,11 @@ pub fn run() -> Result<()> {
     brick_sorted.sort_by(|a, b| b.total_cmp(a));
     println!("OBB on cube B alone (the 20×10×10 brick, sub-mesh):");
     println!(
-        "  volume = {:.4} mm³  (recovers analytical {} — PCA finds 45° rotation)",
-        brick_obb.volume, BRICK_OBB_VOLUME,
+        "  volume = {:.4} mm³  (in [{}, {}] — square cross-section leaves the \
+         degenerate in-plane basis solver-chosen)",
+        brick_obb.volume,
+        BRICK_OBB_VOLUME,
+        2.0 * BRICK_OBB_VOLUME,
     );
     println!(
         "  extents (sorted) = ({:.4}, {:.4}, {:.4})",
