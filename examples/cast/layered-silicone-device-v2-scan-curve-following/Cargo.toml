@@ -5,6 +5,12 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+# Headless demo — a cf-cast v2 example wrapper with no oracle asserts
+# (exercises Steps 5-10 end-to-end, doesn't validate against a ground
+# truth). Compile-only in CI; not run by `xtask run-validators`.
+[package.metadata.cortenforge]
+example_kind = "demo"
+
 [dependencies]
 # v2 cf-cast surface: CastSpec + CastLayer + MoldingMaterial +
 # DEFAULT_MASS_BUDGET_KG (shared with v1) PLUS the v2-arc additions:
