@@ -1,0 +1,43 @@
+[package]
+name = "example-sdf-bridge-stress-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Declares this example's role in the validation contract. `validator` = the
+# binary self-checks against oracles and exits non-zero on any failure, so CI
+# runs it red-or-green (see `cargo xtask run-validators`). The alternative kind
+# is `demo` (illustration only; compile-checked but not run). Every self-gating
+# example MUST declare `validator` or its oracle checks run nowhere in CI.
+[package.metadata.cortenforge]
+example_kind = "validator"
+
+[dependencies]
+# solid_to_sim: cf_design::Solid CSG body; mesh_scan: cf_design::Sdf trait
+# (the dispatch surface both modules validate).
+cf-design = { workspace = true }
+# solid_to_sim: SdfMeshedTetMesh::from_sdf + Aabb3 + MeshingHints + the FEM
+# solver stack (CpuNewtonSolver / Tet4 / BoundaryConditions / DifferenceSdf /
+# SphereSdf / referenced_vertices + the LAYERED_SPHERE_* geometry re-exports).
+sim-soft = { workspace = true }
+# solid_to_sim: Tensor for solver.replay_step inputs.
+sim-ml-chassis = { workspace = true }
+# mesh_scan: Signed<TriMeshDistance, PseudoNormalSign> mesh-derived SDF.
+mesh-sdf = { workspace = true }
+# mesh_scan: save_stl + load_mesh for the runtime STL round-trip; both modules:
+# save_ply_attributed for the cf-view PLY artifacts.
+mesh-io = { workspace = true }
+# Both: IndexedMesh + AttributedMesh + Point3 (+ Vector3 in mesh_scan) for the
+# fixture meshes + per-vertex-scalar PLY emit.
+mesh-types = { workspace = true }
+# solid_to_sim: nalgebra matrix arithmetic on the per-tet F / quality floors.
+nalgebra = { workspace = true }
+# Both: Result<()> return + error-context wrapping for the artifact emit steps.
+anyhow = { workspace = true }
+# Both: assert_relative_eq! for the closed-form / bridge-equivalence / Lamé
+# gates — same convention as the sdf / stretch / bonded stress-tests.
+approx = { workspace = true }
+
+[lints]
+workspace = true

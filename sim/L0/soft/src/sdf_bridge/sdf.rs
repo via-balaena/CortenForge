@@ -24,7 +24,7 @@
 //!   [`DifferenceSdf`](super::DifferenceSdf)), and
 //!   `sdf_to_tet` teach the [`Sdf`] contract through
 //!   `SphereSdf`'s minimal-surface implementation; the
-//!   [`solid-to-sim-soft`][r16] HEADLINE A bridge anchor pins
+//!   [`sdf-bridge/stress-test`'s `solid_to_sim`][r16] HEADLINE A bridge anchor pins
 //!   `Solid::sphere(r).evaluate(&p)` bit-equal to `SphereSdf::eval(p)`
 //!   at `EXACT_TOL = 0.0` as the cross-crate semantic-equivalence
 //!   contract.
@@ -34,7 +34,7 @@
 //! teaching the `Sdf` trait or anchoring the bridge" (use `SphereSdf`).
 //!
 //! [sdf]: ../../../../../examples/sim-soft/sdf/stress-test/
-//! [r16]: ../../../../../examples/sim-soft/solid-to-sim-soft/
+//! [r16]: ../../../../../examples/sim-soft/sdf-bridge/stress-test/
 
 use crate::Vec3;
 use nalgebra::{Matrix3, Point3};

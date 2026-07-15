@@ -5489,6 +5489,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-sdf-bridge-stress-test"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "approx 0.5.1",
+ "cf-design",
+ "mesh-io",
+ "mesh-sdf",
+ "mesh-types",
+ "nalgebra 0.34.2",
+ "sim-ml-chassis",
+ "sim-soft",
+]
+
+[[package]]
 name = "example-sdf-cpu-01-sdf-grid"
 version = "1.0.0"
 dependencies = [
@@ -5940,18 +5955,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sim-soft-mesh-scan-as-solid"
-version = "1.0.0"
-dependencies = [
- "anyhow",
- "approx 0.5.1",
- "cf-design",
- "mesh-io",
- "mesh-sdf",
- "mesh-types",
-]
-
-[[package]]
 name = "example-sim-soft-scan-fit-3layer-sleeve"
 version = "1.0.0"
 dependencies = [
@@ -6052,20 +6055,6 @@ dependencies = [
  "mesh-io",
  "mesh-types",
  "sim-bevy-soft",
- "sim-ml-chassis",
- "sim-soft",
-]
-
-[[package]]
-name = "example-sim-soft-solid-to-sim-soft"
-version = "1.0.0"
-dependencies = [
- "anyhow",
- "approx 0.5.1",
- "cf-design",
- "mesh-io",
- "mesh-types",
- "nalgebra 0.34.2",
  "sim-ml-chassis",
  "sim-soft",
 ]

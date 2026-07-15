@@ -1,4 +1,4 @@
-//! solid-to-sim-soft — `cf_design::Solid` is a first-class SDF for
+//! solid-to-sim — `cf_design::Solid` is a first-class SDF for
 //! `SdfMeshedTetMesh::from_sdf`, shipped at PR3 F1+F3.
 //!
 //! A typed boolean-difference body composed via cf-design's CSG kernel
@@ -10,7 +10,7 @@
 //! `SdfMeshedTetMesh::from_sdf(sdf: &dyn Sdf, ...)` already accepts —
 //! load-bearing demonstration of the bridge.
 //!
-//! Companion to row 15 `mesh-scan-as-solid` (cf-design-side, scan-derived
+//! Companion to the `mesh_scan` module (row 15 — cf-design-side, scan-derived
 //! `mesh_sdf::Signed<TriMeshDistance, _>` consumed via the same trait): row 15
 //! validates the mesh-derived SDF impl against a closed-form cube anchor;
 //! row 16 validates the typed-`Solid` consumer against the production
@@ -843,7 +843,7 @@ fn print_summary(
     let r_outer = LAYERED_SPHERE_R_OUTER;
     let r_cavity = LAYERED_SPHERE_R_CAVITY;
     let half = LAYERED_SPHERE_BBOX_HALF_EXTENT;
-    println!("==== solid-to-sim-soft ====");
+    println!("==== solid_to_sim ====");
     println!();
     println!("input  : Solid::sphere({r_outer}).subtract(Solid::sphere({r_cavity}))");
     println!("         (typed cf_design::Solid CSG body — F1 impl Sdf for Solid)");
@@ -906,7 +906,7 @@ fn print_summary(
 // main
 // =============================================================================
 
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     verify_geometry_invariants();
 
     // Bridge equivalence (HEADLINE A): same hints, two SDF surfaces.

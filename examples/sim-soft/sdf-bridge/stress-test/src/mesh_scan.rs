@@ -7,7 +7,7 @@
 // a real panic site. Same precedent as
 // `examples/mesh/mesh-sdf-distance-query`.
 #![allow(clippy::unreachable)]
-//! mesh-scan-as-solid — a mesh-derived SDF satisfies [`cf_design::Sdf`].
+//! mesh-scan — a mesh-derived SDF satisfies [`cf_design::Sdf`].
 //!
 //! A scanned mesh is a triangle soup with no analytical SDF. Composing
 //! a [`mesh_sdf::TriMeshDistance`] (parry BVH-backed unsigned distance)
@@ -647,7 +647,7 @@ fn print_summary(
     cube_path: &Path,
     grid_path: &Path,
 ) {
-    println!("==== mesh-scan-as-solid ====");
+    println!("==== mesh_scan ====");
     println!();
     println!("input  : programmatic 12-triangle cube (8v, 12f)");
     println!("         half-extent R = {R}; vertices at (±R, ±R, ±R)");
@@ -708,7 +708,7 @@ fn print_summary(
 // main
 // =============================================================================
 
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     let mesh = build_cube_mesh(R);
     verify_cube_geometry(&mesh);
 
