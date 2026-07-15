@@ -103,34 +103,11 @@ const HELPER_TOL: f64 = 1e-12;
 /// input internally; output magnitude is 1 modulo one `sqrt` roundoff.
 const NORMAL_MAG_TOL: f64 = 1e-12;
 
-/// Centroid tolerance for the LIBRARY's biased centroid (naive
-/// average over chain-closure-duplicated points). The TRUE polygon
-/// centroid is `(0, 0, 5)`; library returns `V_first / 65` where
-/// `V_first` is the chain's anchor vertex (deterministic per
-/// face-emission order). Anchored to literal precision below; see
-/// `mesh-measure/CHANGELOG.md` for the v0.9 candidate (proper
-/// polygon centroid via shoelace).
+/// Centroid tolerance. The mid-slice is a symmetric 32-gon centered on
+/// the cylinder axis, so its true (shoelace-weighted) polygon centroid
+/// is `(0, 0, 5)`; the x/y components come out at ~3e-17 (symmetric
+/// sin/cos cancellation), well inside this bound.
 const CENTROID_TOL: f64 = 1e-12;
-
-/// Empirical biased centroid x of the mid-slice. Library returns
-/// `sum / N` where N = 65 (64 unique perimeter points + 1 chain-closure
-/// duplicate); for our symmetric 32-gon perimeter `sum_unique = 0`,
-/// so `centroid = V_dup / 65` where `V_dup` is the chain-closure-
-/// duplicated point. Probe shows `V_dup = mid_(16, 17)` at z=5 (a
-/// wall-quad diagonal midpoint on the cylinder's −x side, where the
-/// chain happens to close after spiraling out from face 64 = wall
-/// tri `A_0 = [bot_0, bot_1, top_1]`). Analytical:
-/// `mid_(16,17).x = -2.5·(1 + cos(π/16))`, giving
-/// `centroid_x = -(1 + cos(π/16)) / 26 ≈ -0.0762`.
-const MID_SLICE_CENTROID_X: f64 = -0.076_184_049_246_278_27;
-
-/// Empirical biased centroid y. `mid_(16,17).y = -2.5·sin(π/16)` →
-/// `centroid_y = -sin(π/16) / 26 ≈ -0.00750`.
-const MID_SLICE_CENTROID_Y: f64 = -0.007_503_473_923_697_397;
-
-/// Empirical biased centroid z. All 65 stored points lie at z=5, so
-/// `sum_z = 325` and `centroid_z = 325/65 = 5.0` (FP-exact).
-const MID_SLICE_CENTROID_Z: f64 = 5.0;
 
 /// Expected mid-slice contour count (single closed loop).
 const MID_SLICE_CONTOUR_COUNT: usize = 1;
@@ -346,13 +323,12 @@ fn verify_mid_slice(mid: &CrossSection) {
     );
     assert!(!mid.is_empty(), "mid-slice should be non-empty");
 
-    // Centroid: library returns naive-average sum/N over chain-closure-
-    // duplicated points (NOT polygon centroid). For our symmetric 32-gon
-    // perimeter, sum_unique = 0; sum = V_dup; centroid = V_dup / 65.
-    // See `mesh-measure/CHANGELOG.md` for the v0.9 candidate fix.
-    assert_relative_eq!(mid.centroid.x, MID_SLICE_CENTROID_X, epsilon = CENTROID_TOL);
-    assert_relative_eq!(mid.centroid.y, MID_SLICE_CENTROID_Y, epsilon = CENTROID_TOL);
-    assert_relative_eq!(mid.centroid.z, MID_SLICE_CENTROID_Z, epsilon = CENTROID_TOL);
+    // Centroid: the mid-slice is a symmetric 32-gon centered on the
+    // cylinder axis, so the true (shoelace-weighted) polygon centroid
+    // is (0, 0, 5).
+    assert_relative_eq!(mid.centroid.x, 0.0, epsilon = CENTROID_TOL);
+    assert_relative_eq!(mid.centroid.y, 0.0, epsilon = CENTROID_TOL);
+    assert_relative_eq!(mid.centroid.z, 5.0, epsilon = CENTROID_TOL);
 
     // Plane normal is normalized internally regardless of input magnitude.
     assert_relative_eq!(mid.plane_normal.norm(), 1.0, epsilon = NORMAL_MAG_TOL);
@@ -424,11 +400,20 @@ fn verify_slice_stack(mesh: &IndexedMesh) {
 
 /// `circumference_at_height` and `area_at_height` are wrappers that
 /// invoke `cross_section` with `Point3::new(0, 0, z)` + `Vector3::z()`.
-/// Outputs match the explicit single-slice call bit-equivalently
-/// (FP determinism); `HELPER_TOL` is just comparison slack.
 fn verify_helpers(mesh: &IndexedMesh, mid: &CrossSection) {
     let circ = circumference_at_height(mesh, 5.0);
     let area = area_at_height(mesh, 5.0);
+
+    // Assert against the ANALYTICAL 32-gon values — not merely against
+    // `mid`, which the helpers equal by construction (they call
+    // `cross_section` with the same inputs, so `circ == mid.perimeter`
+    // holds trivially and tests nothing about the numbers).
+    let expected_area = 400.0 * (std::f64::consts::PI / 16.0).sin();
+    let expected_perimeter = 320.0 * (std::f64::consts::PI / 32.0).sin();
+    assert_relative_eq!(circ, expected_perimeter, epsilon = SHOELACE_TOL);
+    assert_relative_eq!(area, expected_area, epsilon = SHOELACE_TOL);
+
+    // Consistency with the explicit single-slice call (the delegation).
     assert_relative_eq!(circ, mid.perimeter, epsilon = HELPER_TOL);
     assert_relative_eq!(area, mid.area, epsilon = HELPER_TOL);
 }
@@ -516,8 +501,8 @@ fn print_summary(mesh: &IndexedMesh, mid: &CrossSection) {
         (1.0 - mid.perimeter / analytical_perimeter) * 100.0,
     );
     println!(
-        "  centroid  = ({:.6}, {:.6}, {:.6})   ← biased by V_dup/65 vs true \
-         (0, 0, 5); v0.9 candidate (proper polygon centroid via shoelace)",
+        "  centroid  = ({:.6}, {:.6}, {:.6})   ← true polygon centroid (0, 0, 5) \
+         via shoelace moments",
         mid.centroid.x, mid.centroid.y, mid.centroid.z,
     );
     println!(

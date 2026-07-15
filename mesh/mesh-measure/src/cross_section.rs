@@ -69,7 +69,7 @@ pub struct Contour {
     pub area: f64,
     /// Loop perimeter.
     pub perimeter: f64,
-    /// Point-mean centroid of this loop.
+    /// Area-weighted (true polygon) centroid of this loop.
     pub centroid: Point3<f64>,
     /// Bounding box of this loop (min, max).
     pub bounds: (Point3<f64>, Point3<f64>),
@@ -234,17 +234,12 @@ pub fn cross_section(
     }
 }
 
-/// Measure a single closed loop (area via shoelace, perimeter, point-mean
-/// centroid, bounds).
+/// Measure a single closed loop (area via shoelace, perimeter,
+/// area-weighted polygon centroid, bounds).
 fn build_contour(points: Vec<Point3<f64>>, normal: Vector3<f64>) -> Contour {
     let area = calculate_cross_section_area(&points, normal);
     let perimeter = contour_perimeter(&points);
-    let centroid = if points.is_empty() {
-        Point3::origin()
-    } else {
-        let sum: Vector3<f64> = points.iter().map(|p| p.coords).sum();
-        Point3::from(sum / points.len() as f64)
-    };
+    let centroid = contour_centroid(&points, normal);
     let bounds = compute_points_bounds(&points);
     Contour {
         points,
@@ -253,6 +248,67 @@ fn build_contour(points: Vec<Point3<f64>>, normal: Vector3<f64>) -> Contour {
         centroid,
         bounds,
     }
+}
+
+/// Orthonormal in-plane basis `(u, v)` for a plane with the given
+/// (unit) `normal`. Shared by the shoelace area and centroid so both
+/// project points onto the same 2D frame.
+fn plane_basis(normal: Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) {
+    let u = if normal.x.abs() < 0.9 {
+        Vector3::x().cross(&normal).normalize()
+    } else {
+        Vector3::y().cross(&normal).normalize()
+    };
+    let v = normal.cross(&u);
+    (u, v)
+}
+
+/// Area-weighted centroid of a planar loop (the true polygon centroid,
+/// via the shoelace moment formula in the plane's 2D frame), returned
+/// in 3D world coordinates.
+///
+/// Falls back to the point-mean for degenerate loops (< 3 points or
+/// near-zero area) where the moment formula is undefined. A repeated
+/// chain-closure vertex is harmless: the zero-length closing edge
+/// contributes nothing to either moment.
+fn contour_centroid(points: &[Point3<f64>], normal: Vector3<f64>) -> Point3<f64> {
+    let point_mean = || {
+        let sum: Vector3<f64> = points.iter().map(|p| p.coords).sum();
+        Point3::from(sum / points.len().max(1) as f64)
+    };
+    if points.len() < 3 {
+        return point_mean();
+    }
+
+    let (u, v) = plane_basis(normal);
+    let pts2d: Vec<(f64, f64)> = points
+        .iter()
+        .map(|p| (p.coords.dot(&u), p.coords.dot(&v)))
+        .collect();
+
+    // Shoelace moments: `a2 = 2·signed_area`, and the first moments of
+    // area whose ratios give the centroid.
+    let n = pts2d.len();
+    let mut a2 = 0.0;
+    let mut cx = 0.0;
+    let mut cy = 0.0;
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let cross = pts2d[i].0 * pts2d[j].1 - pts2d[j].0 * pts2d[i].1;
+        a2 += cross;
+        cx += (pts2d[i].0 + pts2d[j].0) * cross;
+        cy += (pts2d[i].1 + pts2d[j].1) * cross;
+    }
+    if a2.abs() < 1e-15 {
+        return point_mean();
+    }
+    // Centroid in 2D: `C = (Σ(p_i + p_j)·cross) / (3·2A) = .../(3·a2)`.
+    let c_u = cx / (3.0 * a2);
+    let c_v = cy / (3.0 * a2);
+    // Map back to 3D: the loop is coplanar, so its constant normal
+    // offset is `points[0]·normal`.
+    let d = points[0].coords.dot(&normal);
+    Point3::from(c_u * u + c_v * v + d * normal)
 }
 
 /// Perimeter of an ordered loop: consecutive edge lengths, closing the loop if
@@ -470,16 +526,8 @@ fn calculate_cross_section_area(points: &[Point3<f64>], normal: Vector3<f64>) ->
         return 0.0;
     }
 
-    // Project points onto 2D plane
-    // Create orthonormal basis on the plane
-    let u = if normal.x.abs() < 0.9 {
-        Vector3::x().cross(&normal).normalize()
-    } else {
-        Vector3::y().cross(&normal).normalize()
-    };
-    let v = normal.cross(&u);
-
-    // Project to 2D
+    // Project points onto the plane's 2D frame.
+    let (u, v) = plane_basis(normal);
     let points_2d: Vec<(f64, f64)> = points
         .iter()
         .map(|p| (p.coords.dot(&u), p.coords.dot(&v)))
