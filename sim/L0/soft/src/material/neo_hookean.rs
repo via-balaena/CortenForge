@@ -153,3 +153,86 @@ fn assemble_tangent_9x9(
     }
     t
 }
+
+#[cfg(test)]
+mod tests {
+    use approx::assert_relative_eq;
+    use nalgebra::{Matrix3, Vector3};
+
+    use super::*;
+
+    /// Skeleton Ecoflex-class Lamé pair (`ν = 0.40`, `λ = 4μ`) per spec §2.
+    const MU: f64 = 1.0e5;
+    const LAMBDA: f64 = 4.0e5;
+
+    /// `F = diag(s, 1, 1)` — simple uniaxial stretch (transverse stretches
+    /// pinned at 1, so `J = s`); the configuration whose closed form is
+    /// scalar arithmetic with no inner Newton solve.
+    fn diag_stretch(s: f64) -> Matrix3<f64> {
+        Matrix3::from_diagonal(&Vector3::new(s, 1.0, 1.0))
+    }
+
+    #[test]
+    fn first_piola_matches_closed_form_at_uniaxial_stretch() {
+        // At F = diag(s, 1, 1): J = s, F⁻ᵀ = diag(1/s, 1, 1), so
+        // P = μ(F − F⁻ᵀ) + Λ ln(J) F⁻ᵀ is diagonal with
+        //   P_11 = μ(s − 1/s) + Λ ln(s) / s
+        //   P_22 = P_33 = Λ ln(s)
+        // and vanishing off-diagonals. The expected values use straight
+        // scalar arithmetic (no `mul_add`), independent of the matrix
+        // implementation — a genuine cross-check, not a re-run of the
+        // impl's own FMA chain.
+        let nh = NeoHookean::from_lame(MU, LAMBDA);
+        for &s in &[2.0_f64, 1.5, 0.8] {
+            let p = nh.first_piola(&diag_stretch(s));
+            let ln_s = s.ln();
+            let p11 = MU * (s - 1.0 / s) + LAMBDA * ln_s / s;
+            let p22 = LAMBDA * ln_s;
+            assert_relative_eq!(p[(0, 0)], p11, max_relative = 1.0e-12);
+            // P_22 matches the closed form Λ ln(s)...
+            assert_relative_eq!(p[(1, 1)], p22, max_relative = 1.0e-12);
+            // ...and P_33 == P_22 by transverse symmetry (F leaves the
+            // (2, 3)-plane symmetric). Asserting P_33 against P_22 rather
+            // than re-asserting it against `p22` keeps this a distinct
+            // symmetry check — the direction the sibling test in
+            // `yeoh_contract.rs` covers only for `Yeoh`, not `NeoHookean`.
+            assert_relative_eq!(p[(2, 2)], p[(1, 1)], max_relative = 1.0e-12);
+            for i in 0..3 {
+                for j in 0..3 {
+                    if i != j {
+                        assert_relative_eq!(p[(i, j)], 0.0, epsilon = 1.0e-9);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn energy_matches_closed_form_at_uniaxial_stretch() {
+        // ψ(diag(s, 1, 1)) = (μ/2)(I₁ − 3) − μ ln J + (Λ/2)(ln J)²
+        //                  = (μ/2)(s² − 1) − μ ln(s) + (Λ/2)(ln s)²
+        let nh = NeoHookean::from_lame(MU, LAMBDA);
+        for &s in &[2.0_f64, 1.5, 0.8] {
+            let ln_s = s.ln();
+            let expected = 0.5 * MU * (s * s - 1.0) - MU * ln_s + 0.5 * LAMBDA * ln_s * ln_s;
+            assert_relative_eq!(
+                nh.energy(&diag_stretch(s)),
+                expected,
+                max_relative = 1.0e-12
+            );
+        }
+    }
+
+    #[test]
+    fn rest_configuration_is_stress_and_energy_free() {
+        // At F = I: F − F⁻ᵀ = 0 and ln(det I) = 0, so both P and ψ vanish.
+        let nh = NeoHookean::from_lame(MU, LAMBDA);
+        let p = nh.first_piola(&Matrix3::identity());
+        for i in 0..3 {
+            for j in 0..3 {
+                assert_relative_eq!(p[(i, j)], 0.0, epsilon = 1.0e-12);
+            }
+        }
+        assert_relative_eq!(nh.energy(&Matrix3::identity()), 0.0, epsilon = 1.0e-12);
+    }
+}
