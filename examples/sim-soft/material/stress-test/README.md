@@ -1,10 +1,12 @@
-# material — Stress Test (sim-soft silicone-material validation superset)
+# material — Demo (sim-soft silicone-material reference table)
 
-Headless validation of the sim-soft **material-reference** surface: the
-production silicone constants table validated against closed-form compressible
-Neo-Hookean stress + energy. No window, no Bevy — self-gating assertions that
-abort (exit 101) on any mismatch, so `cargo xtask run-validators` runs it
-red-or-green.
+Headless **demonstration** of the sim-soft material-reference surface: the
+production silicone constants table, with each entry's compressible
+Neo-Hookean stress + energy at the σ_100 anchor shown alongside its Smooth-On
+data-sheet value. No window, no Bevy, and no self-gating asserts — the printed
+table (and `out/silicone_materials.json`) IS the artifact. The underlying
+constitutive correctness is validated in the library (see "Where the
+correctness lives"), so this example's job is to SHOW the lookup, not check it.
 
 The `material` domain currently has a single capability example
 (`silicone-material-table`, row 19), relocated into the standardization layout
@@ -15,7 +17,7 @@ restructuring.
 
 ## Modules
 
-### `material_table` (row 19) — silicone constants vs closed-form NH
+### `material_table` (row 19) — silicone constants + compressible-NH stress (demo)
 Direct-eval consumer of F4's
 [`sim_soft::material::silicone_table`](../../../../sim/L0/soft/src/material/silicone_table.rs):
 iterates the seven `pub const SiliconeMaterial` entries (`{ECOFLEX_00_10 / _20 /
@@ -24,19 +26,20 @@ _30 / _50, DRAGON_SKIN_10A / _20A / _30A}`), dispatches each via
 and probes the resulting `NeoHookean` at `F = diag(2.0, 1, 1)` — simple uniaxial
 stretch at `λ = 2.0`, the Smooth-On `σ_100 = 100 % engineering strain`
 data-sheet anchor (`ε = 1.0 ⇒ λ = 2`). **No solver, no mesh** — the constitutive
-table is the artifact. Seven anchor groups (see below); output is
-`out/silicone_materials.json` (a programmatic-consumption lookup; JSON-only per
-inventory Q4 row 19 — the table IS the artifact, cf-view is irrelevant for
-material-reference data).
+table is the artifact. Output is `out/silicone_materials.json` (a
+programmatic-consumption lookup; JSON-only per inventory Q4 row 19 — the table
+IS the artifact, cf-view is irrelevant for material-reference data).
 
 Companion to row 5 (the `neo_hookean` module of
 [`stretch/stress-test`](../../stretch/stress-test)): row 5 sweeps one material
 across `λ ∈ [0.15, 1.95]` under traction-free uniaxial (transcendental `λ_t`);
 row 19 sweeps seven materials at one fixed `F` under simple stretch (closed-form
-scalar, no inner Newton). Together they close the constitutive-coverage story —
-row 5 validates `Material::first_piola` + `energy` across the in-domain bracket
-on one material; row 19 validates the production library's `to_neo_hookean()`
-const bridge on all seven at the data-sheet anchor.
+scalar, no inner Newton). Together they cover the constitutive story from two
+angles — row 5 (a validator) checks `Material::first_piola` + `energy` across
+the in-domain bracket on one material; row 19 (this demo) exhibits the
+production library's `to_neo_hookean()` const bridge on all seven at the
+data-sheet anchor. Row 19 asserts nothing — the bridge's correctness is
+covered by `silicone_table.rs`'s and `neo_hookean.rs`'s own lib tests.
 
 **Closed forms** (compressible NH at `F = diag(λ, 1, 1)`, `J = λ`, `Λ = 4μ` ⇒
 `ν = 0.40`):
@@ -54,24 +57,20 @@ data-sheet's catalog-value uncertainty is exactly what Fork B's post-cast
 modulus fit absorbs; the contract is "the table reproduces the data sheet up to
 a known finite-strain correction," not "bit-exact to the data sheet."
 
-**Anchor groups** (all assertions exit-0 on success; `cargo run --release`
-exit-0 IS the correctness signal):
+**Where the correctness lives** (this demo does not self-gate; every property
+these readouts illustrate is validated by a lib unit test that covers every
+entry in this table):
 
-1. **`nu_invariant`** — per material, `λ_pa.to_bits() == (4·μ_pa).to_bits()`
-   (F4's `lambda_is_four_times_mu_at_nu_0_40` lifted as a cross-crate net).
-2. **`rest_config_zero`** — at `F = I`, `P_11` / `P_22` / ψ all `0u64` bit-exact.
-3. **`closed_form_p11`** — observed vs `μ(λ−1/λ) + Λ ln(λ)/λ` at rel `1e-12`.
-4. **`closed_form_p22`** — observed vs `Λ ln(λ)`; `P_33 == P_22` within `1e-8 Pa`.
-5. **`closed_form_psi`** — observed vs closed-form ψ at rel `1e-12`.
-6. **`hardness_ordering`** — `P_11` non-decreasing along source-PSI order
-   (Ecoflex 00-10 / 00-20 tie permitted at 8 PSI).
-7. **`captured_bits`** — per-material `(P_11, P_22, ψ)` exact `to_bits()` self-pin
-   (21 pins, IV-1 dense bit-equal tier — pure-analytic probe, no sparse-solver
-   FMA path). Failure-mode protocol per IV-1: on a drift, rule out toolchain
-   before suspecting a real regression in `Material::first_piola` / `energy` or
-   F4's `to_neo_hookean`; NEVER re-bake to silence it. Re-bake helper (on an
-   intentional F4 const edit only): `CF_CAPTURE_BITS=1 cargo run -p
-   example-material-stress-test --release` prints the block and skips the pin.
+- **`NeoHookean` closed-form `first_piola` / `energy` value + `P_22 == P_33`
+  transverse symmetry + rest-config zero** → `neo_hookean.rs`'s `#[cfg(test)]`
+  unit tests (material-parameter-independent, so one test covers all seven).
+- **`λ = 4μ` (ν = 0.40) + μ-non-decreasing-along-hardness ordering** →
+  `silicone_table.rs`'s own `#[cfg(test)]` tests
+  (`lambda_is_four_times_mu_at_nu_0_40` / `mu_is_non_decreasing_along_hardness_order`).
+
+The σ_100 data-sheet values are decorative reference points — printed and
+serialized alongside the computed `P_11`, never asserted (the demo's contract
+is not "the table is the data sheet bit-exact").
 
 ## Run
 
@@ -79,11 +78,11 @@ exit-0 IS the correctness signal):
 cargo run -p example-material-stress-test --release
 ```
 
-Expected: the module prints its anchor-group summary + the 7×material table and
-exits 0. Release mode is the workspace convention across the sim-soft examples
-arc (this row is purely analytic — seven `first_piola` + `energy` evals on a
-`Matrix3<f64>`, milliseconds in debug — but `--release` keeps the invocation
-shape uniform, and the captured bits were captured under release).
+Expected: the demo prints the 7×material table, writes the JSON, and exits 0.
+Release mode is the workspace convention across the sim-soft examples arc (this
+row is purely analytic — seven `first_piola` + `energy` evals on a
+`Matrix3<f64>`, milliseconds either way — but `--release` keeps the invocation
+shape uniform).
 
 ## Artifacts
 

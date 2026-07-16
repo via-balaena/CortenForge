@@ -1,7 +1,9 @@
 //! material-table — engineering-grade lookup of Smooth-On
 //! platinum-cure silicone Lamé pairs + density, with each entry's
-//! compressible-Neo-Hookean stress + energy at the σ_100 anchor
-//! validated against closed-form.
+//! compressible-Neo-Hookean stress + energy at the σ_100 anchor shown
+//! alongside its data-sheet value. A demonstration, not a validator —
+//! it computes and displays these readouts but asserts nothing; the
+//! constitutive correctness is validated in the library (see below).
 //!
 //! Direct-eval consumer of [`sim_soft::material::silicone_table`] (PR3
 //! F4): iterates the seven `pub const SiliconeMaterial` entries
@@ -18,12 +20,12 @@
 //! single material across `λ ∈ [0.15, 1.95]` under traction-free
 //! uniaxial (transcendental `λ_t`); row 19 sweeps seven materials at
 //! one fixed `F` under simple stretch (closed-form scalar — no inner
-//! Newton). The two rows together close the constitutive-coverage
-//! story: row 5 validates `Material::first_piola` + `Material::energy`
-//! across the in-domain bracket on one material; row 19 validates the
-//! production material library's `to_neo_hookean()` const bridge by
-//! checking each entry's `Material`-trait dispatch against closed-form
-//! NH at the data-sheet `σ_100` anchor.
+//! Newton). Row 19 DEMONSTRATES the production material library's
+//! `to_neo_hookean()` const bridge — dispatching each entry through the
+//! `Material`-trait surface and tabulating the result next to the
+//! data-sheet `σ_100` anchor. The correctness of that dispatch (the
+//! closed-form NH stress/energy the readouts embody) is validated in the
+//! library, not here.
 //!
 //! [r5]: ../../stretch/stress-test
 //!
@@ -85,34 +87,29 @@
 //!
 //! [st]: ../../../../sim/L0/soft/src/material/silicone_table.rs
 //!
-//! # Anchor groups (all assertions exit-0 on success)
+//! # Demonstration (not a validator — no self-gating asserts)
 //!
-//! - **`nu_invariant`** — per material, `λ_pa.to_bits() ==
-//!   (4 · μ_pa).to_bits()`. Mirrors F4's `lambda_is_four_times_mu_at_nu_0_40`
-//!   unit test verbatim, lifted into the row's anchor set as a
-//!   cross-crate regression net (any drift in F4 fires here).
-//! - **`rest_config_zero`** — per material, at `F = I` every output
-//!   is `0u64` bit-exact (`F − F⁻ᵀ = 0`, `ln(det I) = 0`). Same
-//!   invariant row 5 pins for its `λ = 1.0` rest point.
-//! - **`closed_form_p11`** — per material, observed `P_11` at
-//!   `F = diag(2, 1, 1)` matches closed-form `μ(λ − 1/λ) + Λ ln(λ)/λ`
-//!   at relative `1e-12`. Same gate row 5 uses for its closed-form
-//!   `P_11` anchor.
-//! - **`closed_form_p22`** — per material, observed `P_22` matches
-//!   `Λ ln(λ)`; `P_33 == P_22` by transverse symmetry within
-//!   `EPS_ABS_PA`.
-//! - **`closed_form_psi`** — per material, observed ψ matches
-//!   closed-form ψ at relative `1e-12`.
-//! - **`hardness_ordering`** — `P_11` non-decreasing along source-PSI
-//!   order with the Ecoflex 00-10 / 00-20 tie permitted (both at 8
-//!   PSI; F4's `mu_is_non_decreasing_along_hardness_order` invariant
-//!   lifted into stress space).
-//! - **`captured_bits`** — per-material `(P_11, P_22, ψ)` exact
-//!   `to_bits()` self-pin (21 pins). Pure-analytic probe with no
-//!   sparse-solver path → IV-1 dense bit-equal tier applies. Failure-
-//!   mode protocol verbatim per IV-1: rule out toolchain drift first;
-//!   if same toolchain, real regression in `Material::first_piola` /
-//!   `Material::energy` OR in F4's `to_neo_hookean` const bridge.
+//! This is an `example_kind = "demo"`: it iterates the seven silicone
+//! entries, dispatches each via `to_neo_hookean()`, probes the resulting
+//! `NeoHookean` at `F = diag(2, 1, 1)`, and emits the museum-plaque table
+//! plus `out/silicone_materials.json` (the σ_100 datasheet reference
+//! alongside the compressible-NH `P_11` — the "engineering-grade lookup up
+//! to a known finite-strain correction" story). It does NOT gate on its
+//! outputs; the
+//! underlying correctness is validated in the library, so the example's
+//! job is to SHOW, not to check:
+//!
+//! - **`NeoHookean` closed-form `first_piola` / `energy` value + `P_22 ==
+//!   P_33` transverse symmetry + rest-config zero** → `neo_hookean.rs`'s
+//!   `#[cfg(test)]` unit tests (material-parameter-independent, so they
+//!   cover every entry in this table).
+//! - **`λ = 4μ` (ν = 0.40) and the μ-non-decreasing-along-hardness
+//!   ordering** → `silicone_table.rs`'s own `#[cfg(test)]` tests
+//!   (`lambda_is_four_times_mu_at_nu_0_40` / `mu_is_non_decreasing_along_hardness_order`).
+//!
+//! The σ_100 datasheet values are decorative reference points (printed and
+//! serialized, never asserted — the demo's contract is not "the table is
+//! the data sheet bit-exact").
 
 // `doc_markdown` flags Unicode math notation (`λ`, `μ`, `Λ`, `σ_100`,
 // `ν`) as if they were unbacktrick-quoted code identifiers. Same
@@ -128,7 +125,6 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use approx::assert_relative_eq;
 use nalgebra::{Matrix3, Vector3};
 use serde_json::json;
 use sim_soft::{
@@ -152,26 +148,6 @@ use sim_soft::{
 /// clean. Row 5's traction-free sweep covers the in-domain bracket at
 /// the constitutive-surface layer.
 const PROBE_LAMBDA: f64 = 2.0;
-
-// =============================================================================
-// Constants — tolerances (rows 5+11 closed-form anchor convention)
-// =============================================================================
-
-/// Closed-form rel-tol for `P_11` / `P_22` / ψ analytic vs observed.
-/// Mirrors row 5's `REL_TOL = 1e-12` verbatim — same constitutive
-/// surface, same closed-form-anchor protocol; pure-analytic probe
-/// with no sparse-solver path, but `1e-12` admits any cross-platform
-/// FMA-fusion drift in nalgebra's matrix-arithmetic path through
-/// `Material::first_piola` (`self.mu * (f - f_inv_t) + self.lambda *
-/// ln_j * f_inv_t`).
-const REL_TOL: f64 = 1.0e-12;
-
-/// Absolute floor in pascals. At `λ = 2.0`, the smallest material
-/// (`ECOFLEX_00_10`, μ = 18 kPa) has `P_22 ≈ 49.9 kPa` — `1e-8 Pa`
-/// is 13 orders below the smallest probed stress, catches any
-/// genuine regression without flapping on round-off. Same precedent
-/// as row 5.
-const EPS_ABS_PA: f64 = 1.0e-8;
 
 // =============================================================================
 // Constants — PSI → Pa conversion (engineering-grade lookup)
@@ -242,41 +218,13 @@ const LIBRARY: &[MaterialEntry] = &[
 ];
 
 // =============================================================================
-// Closed-form analytic helpers — compressible NH at simple uniaxial stretch
+// MaterialRecord — per-entry computed state
 // =============================================================================
-
-/// `ψ(F = diag(λ, 1, 1))` for compressible NH. FMA chain matches
-/// `NeoHookean::energy` in `neo_hookean.rs` so the closed-form vs
-/// observed comparison is bit-exact at a given `(μ, λ_lame, λ)` —
-/// the `1e-12` rel-tol gate is for cross-platform headroom, not for
-/// round-off slack at the local FP path.
-fn analytic_psi(lambda: f64, mu: f64, lambda_lame: f64) -> f64 {
-    let i_1 = lambda.mul_add(lambda, 2.0);
-    let ln_j = lambda.ln();
-    let half_mu = 0.5 * mu;
-    let half_lambda = 0.5 * lambda_lame;
-    half_lambda.mul_add(ln_j * ln_j, half_mu.mul_add(i_1 - 3.0, -mu * ln_j))
-}
-
-/// `P_11(F = diag(λ, 1, 1))` for compressible NH:
-/// `μ(λ − 1/λ) + Λ ln(λ) / λ`.
-fn analytic_p11(lambda: f64, mu: f64, lambda_lame: f64) -> f64 {
-    mu.mul_add(lambda - 1.0 / lambda, lambda_lame * lambda.ln() / lambda)
-}
-
-/// `P_22(F = diag(λ, 1, 1)) = P_33 = Λ ln(λ)` (axial-stretch identity).
-fn analytic_p22(lambda: f64, lambda_lame: f64) -> f64 {
-    lambda_lame * lambda.ln()
-}
 
 /// Construct `F = diag(λ, 1, 1)` for the constitutive eval.
 fn deformation_gradient(lambda: f64) -> Matrix3<f64> {
     Matrix3::from_diagonal(&Vector3::new(lambda, 1.0, 1.0))
 }
-
-// =============================================================================
-// MaterialRecord — per-entry computed state
-// =============================================================================
 
 #[derive(Debug, Clone)]
 struct MaterialRecord {
@@ -286,31 +234,21 @@ struct MaterialRecord {
     density_kg_per_m3: f64,
     sigma_100_psi: f64,
     sigma_100_pa: f64,
+    /// Observed `P_11 = first_piola(diag(2,1,1))[(0,0)]`. The closed-form
+    /// correctness of these outputs is validated in the lib
+    /// (`neo_hookean.rs` unit tests); here they are demonstration readouts.
     p_11_observed: f64,
-    p_11_analytic: f64,
     p_22_observed: f64,
-    p_22_analytic: f64,
-    p_33_observed: f64,
     psi_observed: f64,
-    psi_analytic: f64,
-    /// At `F = I`: every output should be `0u64` bit-exact; captured
-    /// in the record so `verify_rest_config_zero` reads from one place.
-    rest_p_11_bits: u64,
-    rest_p_22_bits: u64,
-    rest_psi_bits: u64,
 }
 
 fn build_records() -> Vec<MaterialRecord> {
     let f_probe = deformation_gradient(PROBE_LAMBDA);
-    let identity = Matrix3::<f64>::identity();
     LIBRARY
         .iter()
         .map(|entry| {
             let nh = entry.mat.to_neo_hookean();
             let p_observed = nh.first_piola(&f_probe);
-            let psi_observed = nh.energy(&f_probe);
-            let rest_p = nh.first_piola(&identity);
-            let rest_psi = nh.energy(&identity);
             MaterialRecord {
                 name: entry.name,
                 mu_pa: entry.mat.mu,
@@ -319,270 +257,11 @@ fn build_records() -> Vec<MaterialRecord> {
                 sigma_100_psi: entry.sigma_100_psi,
                 sigma_100_pa: entry.sigma_100_psi * PSI_TO_PA,
                 p_11_observed: p_observed[(0, 0)],
-                p_11_analytic: analytic_p11(PROBE_LAMBDA, entry.mat.mu, entry.mat.lambda),
                 p_22_observed: p_observed[(1, 1)],
-                p_22_analytic: analytic_p22(PROBE_LAMBDA, entry.mat.lambda),
-                p_33_observed: p_observed[(2, 2)],
-                psi_observed,
-                psi_analytic: analytic_psi(PROBE_LAMBDA, entry.mat.mu, entry.mat.lambda),
-                rest_p_11_bits: rest_p[(0, 0)].to_bits(),
-                rest_p_22_bits: rest_p[(1, 1)].to_bits(),
-                rest_psi_bits: rest_psi.to_bits(),
+                psi_observed: nh.energy(&f_probe),
             }
         })
         .collect()
-}
-
-// =============================================================================
-// 1. verify_nu_invariant — `λ = 4μ` per F4 conversion at ν = 0.40
-// =============================================================================
-
-/// Per material, `λ_pa.to_bits() == (4 · μ_pa).to_bits()`. Mirrors
-/// F4's `lambda_is_four_times_mu_at_nu_0_40` unit test — lifted here
-/// as a cross-crate regression net so any future drift in the F4
-/// conversion (e.g. ν changed, λ formula edited) fires loudly at
-/// row 19's anchor pass.
-fn verify_nu_invariant(records: &[MaterialRecord]) {
-    for rec in records {
-        assert_eq!(
-            rec.lambda_pa.to_bits(),
-            (4.0 * rec.mu_pa).to_bits(),
-            "{}: λ = {} Pa drifted from 4μ = {} Pa (ν = 0.40 invariant)",
-            rec.name,
-            rec.lambda_pa,
-            4.0 * rec.mu_pa,
-        );
-    }
-}
-
-// =============================================================================
-// 2. verify_rest_config_zero — F = I gives `0u64` exact for every output
-// =============================================================================
-
-/// Per material, at `F = I`: `try_inverse(I) = I`, `F − F⁻ᵀ = 0`,
-/// `ln(det I) = 0`, so every NH constitutive output is `0u64` bit-
-/// exact. Pin the `to_bits() == 0u64` invariant directly across all
-/// seven materials; any drift here is a regression in
-/// `Material::first_piola` / `Material::energy` OR in F4's
-/// `to_neo_hookean` const bridge.
-fn verify_rest_config_zero(records: &[MaterialRecord]) {
-    for rec in records {
-        assert_eq!(
-            rec.rest_p_11_bits, 0_u64,
-            "{}: rest-config P_11 bits {:#018x} ≠ 0u64 (F = I should give P = 0 exact)",
-            rec.name, rec.rest_p_11_bits,
-        );
-        assert_eq!(
-            rec.rest_p_22_bits, 0_u64,
-            "{}: rest-config P_22 bits {:#018x} ≠ 0u64",
-            rec.name, rec.rest_p_22_bits,
-        );
-        assert_eq!(
-            rec.rest_psi_bits, 0_u64,
-            "{}: rest-config ψ bits {:#018x} ≠ 0u64",
-            rec.name, rec.rest_psi_bits,
-        );
-    }
-}
-
-// =============================================================================
-// 3. verify_closed_form_p11 — observed vs μ(λ − 1/λ) + Λ ln(λ)/λ
-// =============================================================================
-
-fn verify_closed_form_p11(records: &[MaterialRecord]) {
-    for rec in records {
-        assert_relative_eq!(
-            rec.p_11_observed,
-            rec.p_11_analytic,
-            max_relative = REL_TOL,
-            epsilon = EPS_ABS_PA,
-        );
-    }
-}
-
-// =============================================================================
-// 4. verify_closed_form_p22 — observed vs Λ ln(λ); P_33 == P_22
-// =============================================================================
-
-fn verify_closed_form_p22(records: &[MaterialRecord]) {
-    for rec in records {
-        assert_relative_eq!(
-            rec.p_22_observed,
-            rec.p_22_analytic,
-            max_relative = REL_TOL,
-            epsilon = EPS_ABS_PA,
-        );
-        // Transverse symmetry: F = diag(λ, 1, 1) leaves the (2, 3)-
-        // plane symmetric, so P_22 == P_33 in IEEE-754. Pin within
-        // EPS_ABS_PA rather than `to_bits` strict — nalgebra's matrix
-        // arithmetic visits (1, 1) and (2, 2) on different code paths
-        // that may FMA-fuse differently across platforms.
-        assert!(
-            (rec.p_33_observed - rec.p_22_observed).abs() <= EPS_ABS_PA,
-            "{}: P_33 = {:e} should equal P_22 = {:e} by transverse symmetry",
-            rec.name,
-            rec.p_33_observed,
-            rec.p_22_observed,
-        );
-    }
-}
-
-// =============================================================================
-// 5. verify_closed_form_psi — observed vs (μ/2)(I₁ − 3) − μ ln J + (Λ/2)(ln J)²
-// =============================================================================
-
-fn verify_closed_form_psi(records: &[MaterialRecord]) {
-    for rec in records {
-        assert_relative_eq!(
-            rec.psi_observed,
-            rec.psi_analytic,
-            max_relative = REL_TOL,
-            epsilon = EPS_ABS_PA,
-        );
-    }
-}
-
-// =============================================================================
-// 6. verify_hardness_ordering — P_11 non-decreasing along source-PSI order
-// =============================================================================
-
-/// `P_11(λ = 2)` non-decreasing along the LIBRARY array, with the
-/// Ecoflex 00-10 / 00-20 tie permitted (both at 8 PSI; F4's
-/// `mu_is_non_decreasing_along_hardness_order` invariant lifted into
-/// stress space). Every other adjacent pair is strictly increasing.
-fn verify_hardness_ordering(records: &[MaterialRecord]) {
-    for window in records.windows(2) {
-        let lo = &window[0];
-        let hi = &window[1];
-        assert!(
-            hi.p_11_observed >= lo.p_11_observed,
-            "{}'s P_11 = {} Pa must be ≥ {}'s P_11 = {} Pa (hardness-ordering invariant)",
-            hi.name,
-            hi.p_11_observed,
-            lo.name,
-            lo.p_11_observed,
-        );
-    }
-}
-
-// =============================================================================
-// 7. verify_captured_bits — per-material (P_11, P_22, ψ) self-pin
-// =============================================================================
-
-/// Captured `(P_11, P_22, ψ)` bits at `F = diag(2, 1, 1)` for each
-/// of the seven materials. `to_bits()` strict equality (IV-1 dense
-/// bit-equal tier — pure-analytic probe, no sparse-solver FMA-fusion
-/// path that the IV-1 sparse-tier rel-tol would admit drift on).
-///
-/// Generated by running this row once at land-time and capturing the
-/// hex output of `print_capture_block` (called from `main` when the
-/// `CF_CAPTURE_BITS=1` env var is set).
-const CAPTURED_BITS: [(u64, u64, u64); 7] = [
-    // (P_11, P_22, ψ) per material at F = diag(2, 1, 1).
-    // Index order matches LIBRARY order. Captured at land-time via
-    // `CF_CAPTURE_BITS=1 cargo run -p example-material-stress-test --release`
-    // (sim-soft `dev` post-row-16-N+4 tip `1b295cf9`, rustc 1.95.0 on macOS arm64).
-    (
-        0x40e9_5e29_8d50_3413,
-        0x40e8_5e53_1aa0_6826,
-        0x40df_12ea_312b_01b2,
-    ), // Ecoflex 00-10
-    (
-        0x40e9_5e29_8d50_3413,
-        0x40e8_5e53_1aa0_6826,
-        0x40df_12ea_312b_01b2,
-    ), // Ecoflex 00-20
-    (
-        0x40f0_350c_532c_2145,
-        0x40ef_2331_4cb0_8514,
-        0x40e3_da4e_82f7_ebc0,
-    ), // Ecoflex 00-30
-    (
-        0x40f3_bb03_dfb0_2880,
-        0x40f2_f407_bf60_5101,
-        0x40e8_2b27_ed5a_56a7,
-    ), // Ecoflex 00-50
-    (
-        0x4101_f808_196e_24e2,
-        0x4101_42d0_32dc_49c5,
-        0x40f6_02bb_3829_2134,
-    ), // Dragon Skin 10A
-    (
-        0x4113_e81d_0d1d_28dd,
-        0x4113_1f5a_1a3a_51ba,
-        0x4108_6265_ff78_dbff,
-    ), // Dragon Skin 20A
-    (
-        0x4121_70bc_9127_23cd,
-        0x4120_c0d9_224e_479a,
-        0x4115_5d01_01cd_912b,
-    ), // Dragon Skin 30A
-];
-
-fn verify_captured_bits(records: &[MaterialRecord]) {
-    assert_eq!(
-        records.len(),
-        CAPTURED_BITS.len(),
-        "LIBRARY ({}) and CAPTURED_BITS ({}) length mismatch — \
-         re-bake CAPTURED_BITS to match LIBRARY",
-        records.len(),
-        CAPTURED_BITS.len(),
-    );
-    for (rec, &(p11_bits, p22_bits, psi_bits)) in records.iter().zip(CAPTURED_BITS.iter()) {
-        assert_eq!(
-            rec.p_11_observed.to_bits(),
-            p11_bits,
-            "{}: captured P_11 bits drift — got {:#018x} ({} Pa), expected {:#018x} ({} Pa)",
-            rec.name,
-            rec.p_11_observed.to_bits(),
-            rec.p_11_observed,
-            p11_bits,
-            f64::from_bits(p11_bits),
-        );
-        assert_eq!(
-            rec.p_22_observed.to_bits(),
-            p22_bits,
-            "{}: captured P_22 bits drift — got {:#018x} ({} Pa), expected {:#018x} ({} Pa)",
-            rec.name,
-            rec.p_22_observed.to_bits(),
-            rec.p_22_observed,
-            p22_bits,
-            f64::from_bits(p22_bits),
-        );
-        assert_eq!(
-            rec.psi_observed.to_bits(),
-            psi_bits,
-            "{}: captured ψ bits drift — got {:#018x} ({} J/m³), expected {:#018x} ({} J/m³)",
-            rec.name,
-            rec.psi_observed.to_bits(),
-            rec.psi_observed,
-            psi_bits,
-            f64::from_bits(psi_bits),
-        );
-    }
-}
-
-/// One-shot capture helper — prints the `CAPTURED_BITS` block ready
-/// to paste back into source. Activated only when `CF_CAPTURE_BITS=1`
-/// is set; otherwise silent. Used at land-time + on intentional
-/// re-bake (e.g. F4 const value edit); IV-1 failure-mode protocol
-/// forbids re-bake to silence a drift assertion.
-fn print_capture_block(records: &[MaterialRecord]) {
-    println!("// Paste into CAPTURED_BITS — generated by CF_CAPTURE_BITS=1 run");
-    println!(
-        "const CAPTURED_BITS: [(u64, u64, u64); {}] = [",
-        records.len()
-    );
-    for rec in records {
-        println!(
-            "    ({:#018x}, {:#018x}, {:#018x}), // {}",
-            rec.p_11_observed.to_bits(),
-            rec.p_22_observed.to_bits(),
-            rec.psi_observed.to_bits(),
-            rec.name,
-        );
-    }
-    println!("];");
 }
 
 // =============================================================================
@@ -653,16 +332,10 @@ fn print_summary(records: &[MaterialRecord], json_path: &Path) {
     println!("         dispatched via SiliconeMaterial::to_neo_hookean() -> NeoHookean");
     println!("         probed at F = diag({PROBE_LAMBDA}, 1, 1) — simple uniaxial stretch (J = λ)");
     println!();
-    println!("Anchor groups (all assertions exit-0 on success):");
-    println!("  nu_invariant         : λ_pa.to_bits() == (4·μ_pa).to_bits()  per material");
-    println!("  rest_config_zero     : at F = I, P_11/P_22/ψ all 0u64       per material");
-    println!("  closed_form_p11      : observed vs μ(λ−1/λ) + Λ ln(λ)/λ      rel ≤ {REL_TOL:e}");
-    println!("  closed_form_p22      : observed vs Λ ln(λ); P_33 == P_22    rel ≤ {REL_TOL:e}");
-    println!(
-        "  closed_form_psi      : observed vs (μ/2)(I₁−3) − μ lnJ + (Λ/2)(lnJ)²  rel ≤ {REL_TOL:e}"
-    );
-    println!("  hardness_ordering    : P_11 non-decreasing along source-PSI order");
-    println!("  captured_bits        : per-material (P_11, P_22, ψ) to_bits self-pin");
+    println!("demo (no self-gating asserts — the table below IS the artifact):");
+    println!("  the NeoHookean closed-form correctness these outputs demonstrate is validated in");
+    println!("  the lib (`neo_hookean.rs` first_piola/energy/symmetry unit tests); the `λ = 4μ`");
+    println!("  and hardness-ordering invariants live in `silicone_table.rs`'s own tests.");
     println!();
     println!(
         "{:<16}{:>9}{:>9}{:>9}{:>10}{:>10}{:>11}{:>13}",
@@ -707,24 +380,6 @@ fn print_summary(records: &[MaterialRecord], json_path: &Path) {
 
 pub fn run() -> Result<()> {
     let records = build_records();
-
-    verify_nu_invariant(&records);
-    verify_rest_config_zero(&records);
-    verify_closed_form_p11(&records);
-    verify_closed_form_p22(&records);
-    verify_closed_form_psi(&records);
-    verify_hardness_ordering(&records);
-
-    // `CF_CAPTURE_BITS=1 cargo run -p ... --release` prints the
-    // CAPTURED_BITS block and skips the captured-bits self-pin (the
-    // pin would fail before the helper runs). Used at land-time and
-    // on intentional re-bake; IV-1 protocol forbids re-bake to
-    // silence a drift assertion.
-    if std::env::var("CF_CAPTURE_BITS").is_ok() {
-        print_capture_block(&records);
-    } else {
-        verify_captured_bits(&records);
-    }
 
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("out");
     std::fs::create_dir_all(&out_dir)

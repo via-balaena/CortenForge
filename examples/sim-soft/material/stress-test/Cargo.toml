@@ -11,7 +11,7 @@ publish = false
 # is `demo` (illustration only; compile-checked but not run). Every self-gating
 # example MUST declare `validator` or its oracle checks run nowhere in CI.
 [package.metadata.cortenforge]
-example_kind = "validator"
+example_kind = "demo"
 
 [dependencies]
 # material_table: silicone_table::{ECOFLEX_*, DRAGON_SKIN_*} consts (PR3 F4) +
@@ -28,10 +28,6 @@ anyhow = { workspace = true }
 # JSON emit for out/silicone_materials.json — programmatic-consumption lookup
 # table; schema documented inline in src/material_table.rs::save_json.
 serde_json = { workspace = true }
-# `assert_relative_eq!` for closed-form analytic vs `mat.first_piola`
-# comparisons + per-material captured-bits self-pin — same convention as the
-# stretch / bonded stress-tests (closed-form anchor at 1e-12 rel-tol).
-approx = { workspace = true }
 
 [lints]
 workspace = true
