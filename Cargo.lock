@@ -4851,7 +4851,6 @@ name = "example-material-stress-test"
 version = "1.0.0"
 dependencies = [
  "anyhow",
- "approx 0.5.1",
  "nalgebra 0.34.2",
  "serde_json",
  "sim-soft",
