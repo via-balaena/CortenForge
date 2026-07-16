@@ -21,49 +21,46 @@
 //! three distinct shells so a shell-swap bug surfaces in the value-
 //! correctness gate. `cell_size = 0.02` matches III-1 / IV-4 h/2 canonical.
 //!
-//! Anchor groups (all assertions exit-0 on success):
+//! Per-tet layer-assignment CORRECTNESS against the `LayeredScalarField`
+//! `partition_point` rule is validated in the LIBRARY (IV-4,
+//! `sim/L0/soft/tests/sdf_material_tagging.rs`, end-to-end through the
+//! mesher). This example is the pipeline DEMONSTRATION: it builds the
+//! 3-shell composition, spot-checks the real `mesh.materials()` against
+//! the shell Lamé constants, and emits the cf-view artifact. Anchor
+//! groups (all assertions exit-0 on success):
 //!
 //! - **Determinism** — second `from_sdf` call produces an
-//!   `equals_structurally` mesh.
+//!   `equals_structurally` mesh + materials `(μ, λ)` bit-equal (via the
+//!   public accessors).
 //! - **Counts** — `n_tets`, `n_vertices`, `referenced_vertices.len()`
-//!   exact-pinned per III-1 contract (same scene + resolution as row 3).
+//!   exact-pinned per III-1 contract (same scene + resolution as row 3);
+//!   the deterministic mesh the pipeline demonstrates. Finer per-shell /
+//!   z-slab counts are deliberately NOT pinned.
 //! - **Layered-field thresholds strictly monotone** — the
 //!   `LayeredScalarField` constructor's invariant re-asserted (loud,
 //!   user-facing). `R_INNER_OUTER < R_OUTER_INNER < R_OUTER`; phi
 //!   thresholds `[-0.04, -0.02]` strict-ascending.
-//! - **Per-tet layer assignment matches SDF predicate** — for every tet,
-//!   `mesh.materials()[t]` (probed via `energy(F_probe)` +
-//!   `first_piola(F_probe)` bit-equal at `F_probe = diag(1.2, 1, 1)`)
-//!   matches `expected[shell_at(centroid)]`. The headline cross-impl
-//!   gate: the test-side `shell_at` reimplements `LayeredScalarField`'s
-//!   `partition_point(|&t| t <= phi)` rule, so centroid-sampled
-//!   `materials()` and re-derived `expected[shell_at(...)]` MUST agree
-//!   on every tet by construction. Drift between mesher partition pass
-//!   and test re-derivation fires loud.
+//! - **Per-shell materials** — for every tet, `mesh.materials()[t]`
+//!   carries the Lamé pair of the shell its centroid lands in, read via
+//!   the public `NeoHookean::mu()` / `lambda()` and compared bit-exactly
+//!   to the `SHELL_LAME` constants (oracle = the constants indexed by the
+//!   `shell_at` radius classification — no library-arithmetic mirror).
 //! - **Shell populations non-empty** — each layer (0, 1, 2) has ≥ 1 tet
 //!   at this resolution. Sanity guard against a degenerate scene
 //!   (e.g., a middle annulus too thin to admit any centroid).
-//! - **Shell populations exact-pinned** — captured per-shell tet counts
-//!   under the III-1 determinism contract; mirrors `N_*_EXACT` shape.
-//! - **Layer-ID categorical count** — exactly 3 unique IDs in the
-//!   per-tet vector. Gates cf-view's `< 16 unique` categorical-colormap
-//!   detection per VIEWER_DESIGN.md Q5; if a regression introduced a
-//!   fourth bucket, cf-view would still pick categorical (4 < 16) but
-//!   the example's pedagogy ("3-shell sharp-boundary composition")
-//!   would silently slip.
 //! - **Interface flags all-false** — `mesh.interface_flags()` is
 //!   `[false; n_tets]` because `MaterialField::with_interface_sdf` was
 //!   NOT called. Pedagogically clarifies the interface flag is the
 //!   `BlendedScalarField` smooth-transition band rule (`|φ(x_c)| < L_e`
 //!   per Part 7 §02 §01), not relevant to `LayeredScalarField`'s sharp
-//!   boundaries.
+//!   boundaries — the exact complement of `blended`.
 //! - **Centroid radii within body** — every per-tet centroid satisfies
 //!   `‖centroid‖ < R_OUTER`. Solid-body sanity check; the mesher only
 //!   emits tets inside the SDF, so centroids must be strictly interior.
-//! - **Z-slab visual populations exact-pinned** — captured per-shell tet
-//!   counts in the `|z| < cell_size/2` slab cut that drives the cf-view
-//!   PLY. Visual-pedagogy guard: each layer must have ≥ 1 z-slab
-//!   centroid for the three concentric-ring cf-view rendering to work.
+//! - **Z-slab visual populations non-empty** — each shell contributes
+//!   ≥ 1 centroid to the `|z| < cell_size/2` slab cut that drives the
+//!   cf-view PLY, so the three concentric rings render. Exact per-shell
+//!   slab counts are NOT pinned (mesher-version artifacts).
 
 // PLY field-data is single-precision on disk; converting f64 layer IDs
 // (0.0 / 1.0 / 2.0) to f32 for `extras["material_layer_id"]` is intrinsic
@@ -88,15 +85,12 @@
 use std::path::Path;
 
 use anyhow::Result;
-use approx::assert_relative_eq;
 use mesh_io::save_ply_attributed;
 use mesh_types::{AttributedMesh, IndexedMesh, Point3};
-use nalgebra::Matrix3;
 use sim_soft::{
     Aabb3, Field, LAYERED_SPHERE_BBOX_HALF_EXTENT, LAYERED_SPHERE_R_INNER_OUTER,
-    LAYERED_SPHERE_R_OUTER, LAYERED_SPHERE_R_OUTER_INNER, LayeredScalarField, Material,
-    MaterialField, Mesh, MeshingHints, NeoHookean, SdfMeshedTetMesh, SphereSdf, TetId, Vec3,
-    VertexId, referenced_vertices,
+    LAYERED_SPHERE_R_OUTER, LAYERED_SPHERE_R_OUTER_INNER, LayeredScalarField, MaterialField, Mesh,
+    MeshingHints, SdfMeshedTetMesh, SphereSdf, TetId, Vec3, VertexId, referenced_vertices,
 };
 
 // =============================================================================
@@ -151,28 +145,16 @@ const LAMBDA_MIDDLE: f64 = 4.0e5;
 const MU_OUTER: f64 = 2.0e5;
 const LAMBDA_OUTER: f64 = 8.0e5;
 
-/// Probe stretch for the Material-trait value-correctness gate.
-/// `F_probe = diag(PROBE_LAMBDA, 1, 1)` with `PROBE_LAMBDA = 1.20` ties
-/// to row 6's `LAMBDA_STRETCH` for cross-row continuity.
-const PROBE_LAMBDA: f64 = 1.20;
-
-/// Bit-equal tolerance for the Material-trait probe. Both the test-side
-/// `expected[shell_at(centroid)]` and the mesher-side
-/// `mesh.materials()[t]` run identical `NeoHookean::first_piola` /
-/// `energy` arithmetic on identical `(μ, λ)` pairs and identical
-/// `F_probe`; outputs are bit-equal by construction. `epsilon = 0.0`
-/// satisfies clippy's `float_cmp` lint without actually relaxing the
-/// bound (mirrors row 2's `EXACT_TOL = 0.0`).
-const EXACT_TOL: f64 = 0.0;
-
-// ── Exact-pinned counts (III-1 determinism contract) ─────────────────────
+// ── Exact-pinned mesh counts (III-1 determinism contract) ────────────────
 //
 // Same scene topology + cell_size as row 3 (`sdf_to_tet`); the
 // material-field carry doesn't affect mesh topology (BCC + stuffing runs
-// before `materials_from_field` populates the cache). Mesh counts are
-// therefore identical to row 3's `N_*_EXACT`. Per-shell tet counts are
-// captured fresh during this row's first run on the capture platform
-// (rustc 1.95.0, macOS arm64).
+// before `materials_from_field` populates the cache), so these top-line
+// counts are identical to row 3's. They pin the deterministic mesh the
+// pipeline validator demonstrates. The finer per-shell / z-slab tet
+// counts are deliberately NOT pinned — they are mesher-version artifacts
+// (softened to structural non-empty guards); per-tet material correctness
+// lives in the lib (IV-4, `sdf_material_tagging.rs`).
 
 /// Total emitted tet count. Identical to row 3's `N_TETS_EXACT` —
 /// material-field carry doesn't shift mesh topology.
@@ -185,42 +167,6 @@ const N_VERTICES_EXACT: usize = 4634;
 /// Vertices referenced by at least one tet. Identical to row 3.
 const N_REFERENCED_EXACT: usize = 1483;
 
-/// Per-shell tet counts captured on the III-1 / IV-4 h/2 canonical scene.
-/// `INNER + MIDDLE + OUTER == N_TETS_EXACT` exact (the partition is
-/// total over the body's tets — no tet sits outside all three buckets).
-/// Captured 2026-05-05 at sim-soft `dev` (post-row-6 tip), rustc 1.95.0
-/// (`59807616e` 2026-04-14) on macOS arm64 — same toolchain + platform
-/// as IV-1's reference capture per
-/// `invariant_iv_1_uniform_passthrough.rs:138-151`. III-1 determinism
-/// contract makes these run-to-run + same-toolchain bit-stable; cross-
-/// platform sparse-mesh stability (~3k tets) is empirically untested,
-/// so a future CI matrix expansion may surface drift — relax via the
-/// IV-1 sparse-tier protocol (do NOT re-bake without diagnosing
-/// toolchain vs real regression first).
-const N_INNER_TETS_EXACT: usize = 1344;
-const N_MIDDLE_TETS_EXACT: usize = 1800;
-const N_OUTER_TETS_EXACT: usize = 3624;
-
-/// Per-shell tet counts in the visual-PLY z-slab cut
-/// (`|centroid.z| < CELL_SIZE / 2`). Captured under the same provenance
-/// as the full-body counts above; the BCC + stuffing pipeline is
-/// symmetric across the body so the z-slab counts are approximately
-/// `(slab_thickness / body_diameter) × N_TETS = (cell_size / (2 R_OUTER))
-/// × N_TETS = 0.10 × 6768 ≈ 677` total (exact-pinned per-shell). The
-/// z-slab PLY is the cf-view artifact — projecting onto a thin disk
-/// reveals the three concentric color rings unmistakably from any
-/// camera angle, mirroring `hollow_shell` row 2's z=0 slice
-/// precedent. The un-filtered 6768-centroid cloud renders the outer
-/// shell as a near-solid surface under cf-view's commit-3 sphere-radius
-/// factor, occluding the inner layers; the octant-cut variant solves
-/// most of the occlusion but the convex outer-shell surface still
-/// dominates from non-cut-face camera angles. See
-/// `project_cf_viewer_dense_point_cloud_gap.md` for the engine-side
-/// followup.
-const N_INNER_TETS_ZSLAB_EXACT: usize = 216;
-const N_MIDDLE_TETS_ZSLAB_EXACT: usize = 176;
-const N_OUTER_TETS_ZSLAB_EXACT: usize = 256;
-
 // =============================================================================
 // Shell partition (mirrors `sdf_material_tagging.rs::shell_at`)
 // =============================================================================
@@ -231,11 +177,10 @@ const N_OUTER_TETS_ZSLAB_EXACT: usize = 256;
 /// the point lands in the *outer* shell, `values[i + 1]`). Returns
 /// `0` for inner, `1` for middle, `2` for outer — matching the `values`
 /// slot indexing of the `LayeredScalarField` constructed in
-/// [`build_three_shell_field`]. Test-side reimplementation of the
-/// partition rule provides the cross-implementation gate at
-/// [`verify_per_tet_layer_assignment_matches_sdf_predicate`]: any drift
-/// between this if-else and the mesher's `partition_point` walk fires
-/// loud at runtime.
+/// [`build_three_shell_field`]. A plain geometric radius classification
+/// that indexes `SHELL_LAME` for [`verify_per_shell_materials`]; the
+/// per-tet correctness of the mesher's `partition_point` walk itself is
+/// owned by the lib (IV-4).
 fn shell_at(p: Vec3) -> usize {
     let phi = p.norm() - R_OUTER;
     if phi < PHI_INNER_THRESHOLD {
@@ -307,9 +252,8 @@ struct TetRecord {
 /// [`shell_at`]. The centroid IS the canonical evaluation point per Part
 /// 7 §02 §00 — same point `materials_from_field` samples at when
 /// populating `mesh.materials()`. Caller chains
-/// [`verify_per_tet_layer_assignment_matches_sdf_predicate`] to gate
-/// `mesh.materials()[t]` against `expected[shell_at(centroid)]` for
-/// every tet via the Material-trait probe.
+/// [`verify_per_shell_materials`] to gate `mesh.materials()[t]` against
+/// the shell's Lamé pair for every tet via the public `.mu()`/`.lambda()`.
 fn extract_centroid_records(mesh: &SdfMeshedTetMesh) -> Vec<TetRecord> {
     let positions = mesh.positions();
     let n_tets_id = mesh.n_tets() as TetId;
@@ -341,15 +285,14 @@ fn verify_determinism(mesh: &SdfMeshedTetMesh) {
         "second from_sdf call drifted — III-1 determinism contract violated",
     );
     // Material cache determinism — second build's `materials()` must
-    // be bit-equal under the Material-trait probe at every tet.
-    // (Sister of III-1's `materials_from_field` determinism: same
+    // be bit-equal (Lamé pairs read via the public accessors) at every
+    // tet. (Sister of III-1's `materials_from_field` determinism: same
     // centroid sampling on bit-equal mesh topology.)
     assert_eq!(
         mesh.materials().len(),
         other.materials().len(),
         "materials cache length drift",
     );
-    let f_probe = probe_f();
     for (i, (a, b)) in mesh
         .materials()
         .iter()
@@ -357,9 +300,9 @@ fn verify_determinism(mesh: &SdfMeshedTetMesh) {
         .enumerate()
     {
         assert_eq!(
-            a.energy(&f_probe).to_bits(),
-            b.energy(&f_probe).to_bits(),
-            "materials cache drift at tet {i}: energy(F_probe) bit-unequal across runs",
+            (a.mu().to_bits(), a.lambda().to_bits()),
+            (b.mu().to_bits(), b.lambda().to_bits()),
+            "materials cache drift at tet {i}: (μ, λ) bit-unequal across runs",
         );
     }
 }
@@ -404,30 +347,22 @@ const fn verify_layered_field_thresholds_strictly_monotone() {
 }
 
 // =============================================================================
-// verify_per_tet_layer_assignment_matches_sdf_predicate
+// verify_per_shell_materials
 // =============================================================================
 
-/// Headline cross-implementation gate — for every tet, the mesher's
-/// centroid-sampled `mesh.materials()[t]` must agree with
-/// `expected[shell_at(centroid)]` under the Material-trait probe.
+/// For every tet, the mesher's centroid-sampled `mesh.materials()[t]`
+/// must carry the Lamé pair of the shell its centroid lands in, read
+/// straight off the public `NeoHookean::mu()` / `lambda()` accessors and
+/// compared bit-exactly to the shell's `SHELL_LAME` constants.
 ///
-/// `NeoHookean::{mu, lambda}` are private (no public accessors), so the
-/// comparison runs through the trait's `energy` + `first_piola` at a
-/// reference `F_probe = diag(PROBE_LAMBDA, 1, 1)`. The full probe is
-/// energy (1 scalar) + first_piola (Matrix3 = 9 scalars); together they
-/// over-determine the `(μ, λ)` pair — `P_22 = λ ln(J)` directly fixes
-/// `λ`, then `P_11 = μ(F − F⁻ᵀ)_11 + λ ln(J) F⁻ᵀ_11` fixes `μ`. Energy
-/// alone is one linear equation in `(μ, λ)` so wouldn't suffice; the
-/// Matrix3 entries are the load-bearing identification path. `EXACT_TOL
-/// = 0.0` because both sides run identical NH arithmetic on identical
-/// Lamé pairs + identical `F` — bit-equal by construction on a fixed
-/// toolchain.
-fn verify_per_tet_layer_assignment_matches_sdf_predicate(
-    mesh: &SdfMeshedTetMesh,
-    records: &[TetRecord],
-) {
-    let expected = expected_neo_hookeans();
-    let f_probe = probe_f();
+/// The oracle is the constant Lamé pairs indexed by `shell_at` (a plain
+/// geometric radius classification — the example's own pedagogy, not a
+/// re-derivation of any library arithmetic). Per-tet layer-assignment
+/// CORRECTNESS against the `LayeredScalarField` `partition_point` rule is
+/// owned by the lib (IV-4, `tests/sdf_material_tagging.rs`); this is the
+/// example-layer demonstration that the pipeline carries the 3-shell
+/// assignment into `materials()`.
+fn verify_per_shell_materials(mesh: &SdfMeshedTetMesh, records: &[TetRecord]) {
     let materials = mesh.materials();
     assert_eq!(
         materials.len(),
@@ -438,25 +373,15 @@ fn verify_per_tet_layer_assignment_matches_sdf_predicate(
     );
     for rec in records {
         let observed = &materials[rec.tet_id as usize];
-        let expected_nh = &expected[rec.layer_id];
-        // Probe via `energy` — scalar comparison surfaces the easiest
-        // diagnostic when a regression hits.
-        assert_relative_eq!(
-            observed.energy(&f_probe),
-            expected_nh.energy(&f_probe),
-            epsilon = EXACT_TOL,
+        let (mu, lambda) = SHELL_LAME[rec.layer_id];
+        assert_eq!(
+            (observed.mu().to_bits(), observed.lambda().to_bits()),
+            (mu.to_bits(), lambda.to_bits()),
+            "tet {} (shell {}) materials (μ, λ) not bit-equal to the shell's Lamé pair \
+             ({mu:e}, {lambda:e})",
+            rec.tet_id,
+            rec.layer_id,
         );
-        // Probe via `first_piola` — Matrix3 comparison adds the per-
-        // entry coverage. A regression that nudges `μ` and `λ` such that
-        // `energy` happens to coincide while `first_piola` differs
-        // surfaces here.
-        let observed_p = observed.first_piola(&f_probe);
-        let expected_p = expected_nh.first_piola(&f_probe);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert_relative_eq!(observed_p[(i, j)], expected_p[(i, j)], epsilon = EXACT_TOL,);
-            }
-        }
     }
 }
 
@@ -479,49 +404,6 @@ fn verify_shell_populations_non_empty(records: &[TetRecord]) -> [usize; 3] {
         "outer shell empty at cell_size = {CELL_SIZE} — degenerate scene",
     );
     counts
-}
-
-// =============================================================================
-// verify_shell_populations_exact
-// =============================================================================
-
-fn verify_shell_populations_exact(counts: [usize; 3]) {
-    assert_eq!(counts[0], N_INNER_TETS_EXACT, "inner-shell tet count drift");
-    assert_eq!(
-        counts[1], N_MIDDLE_TETS_EXACT,
-        "middle-shell tet count drift"
-    );
-    assert_eq!(counts[2], N_OUTER_TETS_EXACT, "outer-shell tet count drift");
-    // Total partitions over the body — the 3 shell counts sum to
-    // `N_TETS_EXACT` (every tet bucket-assigns into exactly one shell).
-    assert_eq!(
-        counts[0] + counts[1] + counts[2],
-        N_TETS_EXACT,
-        "shell counts do not partition: sum != N_TETS_EXACT",
-    );
-}
-
-// =============================================================================
-// verify_layer_id_categorical_count
-// =============================================================================
-
-fn verify_layer_id_categorical_count(records: &[TetRecord]) {
-    let mut seen = [false; 3];
-    for rec in records {
-        assert!(
-            rec.layer_id < 3,
-            "tet {} layer_id {} out of range [0, 3)",
-            rec.tet_id,
-            rec.layer_id,
-        );
-        seen[rec.layer_id] = true;
-    }
-    let unique_count = seen.iter().filter(|&&s| s).count();
-    assert_eq!(
-        unique_count, 3,
-        "layer-id unique count {unique_count} != 3 — cf-view's categorical \
-         heuristic ({{0, 1, 2}} → 3 sharp colors) requires all three buckets populated",
-    );
 }
 
 // =============================================================================
@@ -581,18 +463,14 @@ fn shell_population_counts(records: &[TetRecord]) -> [usize; 3] {
     counts
 }
 
-const fn expected_neo_hookeans() -> [NeoHookean; 3] {
-    [
-        NeoHookean::from_lame(MU_INNER, LAMBDA_INNER),
-        NeoHookean::from_lame(MU_MIDDLE, LAMBDA_MIDDLE),
-        NeoHookean::from_lame(MU_OUTER, LAMBDA_OUTER),
-    ]
-}
-
-fn probe_f() -> Matrix3<f64> {
-    Matrix3::from_diagonal_element(1.0)
-        .map_with_location(|i, j, x| if i == 0 && j == 0 { PROBE_LAMBDA } else { x })
-}
+/// Per-shell `(μ, λ)` Lamé pairs, indexed by the `shell_at` layer id
+/// (0 = inner, 1 = middle, 2 = outer). The oracle for
+/// [`verify_per_shell_materials`].
+const SHELL_LAME: [(f64, f64); 3] = [
+    (MU_INNER, LAMBDA_INNER),
+    (MU_MIDDLE, LAMBDA_MIDDLE),
+    (MU_OUTER, LAMBDA_OUTER),
+];
 
 // =============================================================================
 // Z-slab visual filter
@@ -613,23 +491,23 @@ const ZSLAB_HALF_THICKNESS: f64 = CELL_SIZE / 2.0;
 /// rendering — projects to a thin disk in 3D, reading as three
 /// concentric color rings on the z=0 plane.
 ///
-/// The correctness anchors (1-9) run over all 6768 body tets; only the
-/// visual PLY emit + anchor 10 (`verify_zslab_visual_populations_exact`)
-/// operate on the filtered slab subset. Per-shell slab counts are
-/// exact-pinned via the `*_ZSLAB_EXACT` constants for III-1 determinism
-/// contract coverage. Mirrors `hollow_shell` row 2's z=0 slice
-/// precedent for cross-section cf-view visualization (rationale: a thin
-/// slab in 3D projects unambiguously to a 2D disk pattern at any orbit
-/// angle, where a 3D wedge requires the user to face the cut planes).
+/// The correctness anchors run over all 6768 body tets; only the visual
+/// PLY emit + [`verify_zslab_visual_populations_non_empty`] operate on
+/// the filtered slab subset (each shell must contribute ≥ 1 slab centroid
+/// so the three rings render; exact slab counts are not pinned). Mirrors
+/// `hollow_shell` row 2's z=0 slice precedent for cross-section cf-view
+/// visualization (rationale: a thin slab in 3D projects unambiguously to
+/// a 2D disk pattern at any orbit angle, where a 3D wedge requires the
+/// user to face the cut planes).
 fn keep_for_zslab_visual(rec: &TetRecord) -> bool {
     rec.centroid.z.abs() < ZSLAB_HALF_THICKNESS
 }
 
 // =============================================================================
-// verify_zslab_visual_populations_exact
+// verify_zslab_visual_populations_non_empty
 // =============================================================================
 
-fn verify_zslab_visual_populations_exact(records: &[TetRecord]) -> [usize; 3] {
+fn verify_zslab_visual_populations_non_empty(records: &[TetRecord]) -> [usize; 3] {
     let mut counts = [0usize; 3];
     for rec in records.iter().filter(|r| keep_for_zslab_visual(r)) {
         counts[rec.layer_id] += 1;
@@ -646,18 +524,8 @@ fn verify_zslab_visual_populations_exact(records: &[TetRecord]) -> [usize; 3] {
         counts[2] > 0,
         "z-slab outer-shell empty — cf-view visual would lose the outer-layer ring",
     );
-    assert_eq!(
-        counts[0], N_INNER_TETS_ZSLAB_EXACT,
-        "z-slab inner-shell count drift",
-    );
-    assert_eq!(
-        counts[1], N_MIDDLE_TETS_ZSLAB_EXACT,
-        "z-slab middle-shell count drift",
-    );
-    assert_eq!(
-        counts[2], N_OUTER_TETS_ZSLAB_EXACT,
-        "z-slab outer-shell count drift",
-    );
+    // Exact per-shell slab counts are NOT pinned — they are mesher-version
+    // artifacts; only non-emptiness (each ring renders) is the guard.
     counts
 }
 
@@ -738,7 +606,7 @@ fn print_summary(
     println!();
     println!("Anchor groups (all assertions exit-0 on success):");
     println!(
-        "  determinism                       : 2nd from_sdf call equals_structurally + materials cache bit-equal"
+        "  determinism                       : 2nd from_sdf call equals_structurally + materials (μ, λ) bit-equal"
     );
     println!(
         "  counts                            : n_tets / n_vertices / referenced exact-pin (III-1 contract)"
@@ -747,19 +615,17 @@ fn print_summary(
         "  layered_field_thresholds_monotone : R_INNER_OUTER < R_OUTER_INNER < R_OUTER (constructor invariant)"
     );
     println!(
-        "  per_tet_layer_assignment          : mesh.materials()[t] vs expected[shell_at(centroid)] bit-equal"
+        "  per_shell_materials               : mesh.materials()[t] (μ, λ) == the shell's Lamé pair (via .mu()/.lambda())"
     );
     println!(
         "  shell_populations_non_empty       : all three shells > 0 tets at cell_size = {CELL_SIZE}"
     );
-    println!("  shell_populations_exact           : per-shell tet counts exact-pinned");
-    println!("  layer_id_categorical_count        : exactly 3 unique IDs ∈ {{0, 1, 2}}");
     println!(
         "  interface_flags_all_false         : LayeredScalarField does not populate interface band rule"
     );
     println!("  centroid_radii_within_body        : every per-tet centroid ‖c‖ < R_OUTER");
     println!(
-        "  zslab_visual_populations_exact    : per-shell z-slab counts exact-pinned (cf-view artifact)"
+        "  zslab_visual_populations_non_empty: each z-slab shell non-empty (cf-view artifact)"
     );
     println!();
     println!("Mesh:");
@@ -821,14 +687,12 @@ pub fn run() -> Result<()> {
 
     let records = extract_centroid_records(&mesh);
 
-    verify_per_tet_layer_assignment_matches_sdf_predicate(&mesh, &records);
+    verify_per_shell_materials(&mesh, &records);
     let counts = verify_shell_populations_non_empty(&records);
-    verify_shell_populations_exact(counts);
-    verify_layer_id_categorical_count(&records);
     verify_interface_flags_all_false(&mesh);
     let centroid_radius_max = verify_centroid_radii_within_body(&records);
 
-    let zslab_counts = verify_zslab_visual_populations_exact(&records);
+    let zslab_counts = verify_zslab_visual_populations_non_empty(&records);
 
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("out");
     std::fs::create_dir_all(&out_dir)?;

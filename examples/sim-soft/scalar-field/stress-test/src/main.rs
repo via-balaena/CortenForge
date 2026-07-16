@@ -2,27 +2,33 @@
 //!
 //! One headless validator covering the sim-soft spatial material-field surface
 //! — sharp-CSG partition and smooth-sigmoid blend — folded from two former
-//! per-concept examples (each now a module preserving its hand-authored fixture
-//! + oracle checks verbatim):
+//! per-concept examples, each now a module. Under Rule B, per-tet
+//! library-behaviour correctness lives in the lib's own tests
+//! (`sdf_material_tagging.rs` for the layered partition,
+//! `blended_material_composition.rs` for the smoothstep composition); these
+//! modules are the runnable pipeline DEMONSTRATIONS that spot-check the real
+//! mesher outputs against independent oracles + emit the cf-view artifacts:
 //!
 //! - [`layered`] — `LayeredScalarField` sharp CSG step over a 3-shell
-//!   concentric `SphereSdf` partition: categorical material-tag partition
-//!   (`{0, 1, 2}`, exactly 3 unique ids), exact per-shell populations, and the
-//!   `interface_flags`-all-false contract (no `with_interface_sdf` call).
+//!   concentric `SphereSdf` partition: each tet's `mesh.materials()` (μ, λ)
+//!   read via the public accessors matches its shell's Lamé pair, plus the
+//!   `interface_flags`-all-false contract (no `with_interface_sdf` call) and a
+//!   centroid-inside-body geometry sanity.
 //! - [`blended`] — `BlendedScalarField` smooth cubic-Hermite smoothstep between
-//!   two Lamé regions: monotone μ gradient across the band, bit-exact `s=0`/`s=1`
-//!   snap outside it, and the positive per-tet `interface_flags` book rule
-//!   (`|φ(x_c)| < L_e`, IV-6) — the exact complement of `layered`'s all-false.
+//!   two Lamé regions: `mesh.materials()` snaps bit-exactly to the endpoint
+//!   constants outside the band and grades strictly between them inside it, and
+//!   `mesh.interface_flags()` are mixed (the `with_interface_sdf` band fires) —
+//!   the complement of `layered`'s all-false.
 //!
-//! The two are complementary, not subsuming: `blended` exercises code paths
-//! (`BlendedScalarField::sample` FMA chain, `with_interface_sdf`) that `layered`
-//! cannot reach, and `layered` is the sole coverage of the no-interface-SDF
-//! partition path + categorical cardinality.
+//! The two are complementary, not subsuming: `blended` demonstrates the
+//! `BlendedScalarField::sample` + `with_interface_sdf` composition path (graded
+//! materials + populated interface flags) that `layered` cannot reach; `layered`
+//! demonstrates the sharp 3-shell partition + the no-interface-SDF all-false path.
 //!
-//! Each module self-gates against closed-form / partition / topology oracles
-//! and aborts (exit 101) on any mismatch, so `cargo xtask run-validators` runs
-//! it red-or-green. Each also writes its human-inspectable per-tet centroid PLY
-//! to `out/` (`material_layer_assignment.ply`, `material_blend.ply`) for the
+//! Each module self-gates and aborts (exit 101) on any mismatch, so
+//! `cargo xtask run-validators` runs it red-or-green. Each also writes its
+//! human-inspectable per-tet centroid PLY to `out/`
+//! (`material_layer_assignment.ply`, `material_blend.ply`) for the
 //! `cf-viewer` visual-review path.
 
 mod blended;
