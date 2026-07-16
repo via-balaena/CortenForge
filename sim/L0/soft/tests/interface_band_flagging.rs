@@ -44,14 +44,16 @@
 //! - Newton-hot-path purity (Decision K's "Newton loop does not
 //!   branch on the flag") — verified by `grep` audit at commit
 //!   review time per scope memo §4, not by this test.
-//! - The `BlendedScalarField` smoothstep-blend path with the
-//!   composition's own SDF — IV-6 uses the `LayeredScalarField`
-//!   shell-pattern with its own SDF as the interface SDF, which
-//!   exercises the same `|φ(x_c)| < L_e` rule on a single SDF
-//!   reference. The `BlendedScalarField` path samples the flag
-//!   identically (the SDF reference is just plumbed through
-//!   [`MaterialField::with_interface_sdf`]); a future composition-
-//!   path coverage gate is a Phase H follow-on.
+//! - The per-tet book rule `|φ(x_c)| < L_e` itself — IV-6 checks the
+//!   flagged *fraction* in aggregate (monotonicity, determinism,
+//!   all-false passthrough), not the per-tet biconditional. The
+//!   per-tet rule and the `BlendedScalarField` smoothstep-blend
+//!   composition path are covered in
+//!   `tests/blended_material_composition.rs`
+//!   (`blended_interface_flags_match_book_rule_per_tet`). IV-6 here
+//!   uses the `LayeredScalarField` shell-pattern; the flag samples
+//!   identically for either field (the SDF reference is just plumbed
+//!   through [`MaterialField::with_interface_sdf`]).
 
 // `from_sdf` calls `.expect()` to surface meshing failures as test
 // panics — the canonical sphere scene either succeeds by construction
