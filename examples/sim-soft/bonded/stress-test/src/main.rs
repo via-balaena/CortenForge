@@ -18,7 +18,7 @@
 //!   displacement-continuity gate at production scale.
 //! - [`lame_shells`] (row 11) — a three-shell concentric hollow silicone
 //!   sphere (`DifferenceSdf` of two `SphereSdf`s, `R_OUTER = 0.10 m`,
-//!   `R_CAVITY = 0.04 m`, 6456 tets) meshed via
+//!   `R_CAVITY = 0.04 m`, ~6.5k tets) meshed via
 //!   `SoftScene::layered_silicone_sphere` (BCC + Labelle-Shewchuk) with a
 //!   3-shell `MaterialField` per Decision J's `1× / 2× / 1×` symmetry, under a
 //!   per-vertex radially-outward pressure traction (`LoadAxis::FullVector`) on

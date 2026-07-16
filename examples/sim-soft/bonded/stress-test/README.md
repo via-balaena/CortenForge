@@ -37,14 +37,15 @@ bilayer + composite-beam-bending path (axial tip force). cf-view artifact:
 
 ### `lame_shells` (row 11) — three-shell hollow sphere vs piecewise-Lamé
 A three-shell concentric hollow silicone sphere (`DifferenceSdf` of two
-`SphereSdf`s, `R_OUTER = 0.10 m`, `R_CAVITY = 0.04 m`, **6456 tets / 4682 verts,
-1480 referenced**) meshed via `SoftScene::layered_silicone_sphere` (BCC +
-Labelle-Shewchuk) with a 3-shell `MaterialField` per Decision J's `1× / 2× / 1×`
-symmetry (inner Ecoflex / middle composite / outer Ecoflex — **1032 / 1800 /
-3624** tets). A per-vertex radially-outward pressure traction
+`SphereSdf`s, `R_OUTER = 0.10 m`, `R_CAVITY = 0.04 m`, **~6.5k tets / ~4.7k verts,
+~1.5k referenced** at h/2 — reported, not pinned, since the BCC mesher's absolute
+counts are a mesher-version artifact) meshed via `SoftScene::layered_silicone_sphere`
+(BCC + Labelle-Shewchuk) with a 3-shell `MaterialField` per Decision J's
+`1× / 2× / 1×` symmetry (inner Ecoflex / middle composite / outer Ecoflex). A
+per-vertex radially-outward pressure traction
 (`f_v = pressure · n̂_v · A_v`, `LoadAxis::FullVector`, `pressure = 5e3 Pa`) on
-the cavity surface (134 verts) and a fixed Dirichlet pin on the outer surface
-(734 verts); a single static-regime `replay_step` converges in **3 Newton iters**
+the cavity surface (~130 verts) and a fixed Dirichlet pin on the outer surface
+(~730 verts); a single static-regime `replay_step` converges in **3 Newton iters**
 to `max|σ-1| ≈ 0.024`. Four Saint-Venant-averaged radial-displacement readouts
 (cavity-wall `2.857e-4 m` + inner / middle / outer shell means) match the
 **piecewise-Lamé thick-shell 6×6 closed-form** (`u_r^{(i)}(r) = A_i r + B_i / r²`
@@ -53,11 +54,14 @@ inner / middle (observed ~14 / 12 / 19 %); the small-magnitude, pinned-dominated
 outer-shell mean genuinely under-converges to ~36 % and is gated at an honest
 binding **40 %** (not masked behind an eps-floor). Discriminators: `u_r_uniform_2× < u_r_three_shell <
 u_r_uniform_1×` on the cavity-wall mean (IV-2 lens β, three full solver passes,
-HEADLINE C); strict outward monotone decay `cavity > inner > middle > outer ≥ 0`;
-6 means pinned under the IV-1 sparse-tier rel-tol contract. Sole coverage of the
+HEADLINE C); strict outward monotone decay `cavity > inner > middle > outer ≥ 0`.
+The per-shell radial-displacement, between-uniform-bounds, and monotonicity
+oracles now live in the lib too (`concentric_lame_shells.rs` IV-5); mesh
+cardinalities are asserted only as structural invariants (non-empty, orphans
+exist, shells populated), not exact-count freezes. Sole coverage of the
 SDF-meshed hollow-body 3-shell + pressurized-shell path (radial `FullVector`
 pressure + Dirichlet outer). cf-view artifact:
-`out/concentric_lame_shells.ply` — 616-centroid z-slab point cloud
+`out/concentric_lame_shells.ply` — ~600-centroid z-slab point cloud
 (`material_id` + `radial_displacement` scalars, `DISPLACEMENT_SCALE = 50×`).
 
 ## Run
@@ -70,7 +74,7 @@ Expected: each module prints its anchor-group summary (`Anchor groups (all
 assertions exit-0 on success)`) and the binary exits 0 — a clean exit-0 IS the
 correctness signal (there is no `PASS` token; a failed assert aborts with 101).
 Use `--release`: the FEM Newton solves are ~30× slower in debug. The solves here
-are small (a 7680-tet beam and a 6456-tet shell; `lame_shells` runs three full
+are small (a 7680-tet beam and a ~6.5k-tet shell; `lame_shells` runs three full
 passes for the uniform-baseline discriminator), so the pair is cheap in release.
 
 ## Artifacts
