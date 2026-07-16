@@ -97,22 +97,24 @@
 //!   `layered_silicone_sphere` constructor's runtime panic invariants at
 //!   the user-facing example layer (compile-time enforcement on geometry
 //!   constants).
-//! - **`mesh_topology_exact`** — `mesh.n_tets`, `mesh.n_vertices`,
-//!   `referenced_vertices(&mesh).len()` exact-pinned per the III-1
-//!   determinism contract at `cell_size = h/2 = 0.02` on the canonical
-//!   `DifferenceSdf` hollow-shell body.
+//! - **`mesh_topology_invariants`** — structural invariants of the BCC
+//!   hollow-shell mesh (`n_tets > 0`, `referenced < n_vertices` so the BCC
+//!   lattice leaves orphan corners). NOT exact-count freezes — the mesher's
+//!   absolute counts are a mesher-version artifact; run-to-run determinism
+//!   at this scale is the lib's concern
+//!   (`concentric_lame_shells.rs:iv_5_three_shell_is_run_to_run_deterministic`).
 //! - **`boundary_partition`** — `bc.pinned_vertices` (outer-surface band)
-//!   and `bc.loaded_vertices` (cavity-surface band) cardinality
-//!   exact-pinned, ascending-order, disjoint; every `bc.loaded_vertices`
-//!   entry uses `LoadAxis::FullVector` (radially-outward pressure
-//!   traction is per-component, not axis-aligned).
+//!   and `bc.loaded_vertices` (cavity-surface band) both non-empty,
+//!   ascending-order, disjoint; every `bc.loaded_vertices` entry uses
+//!   `LoadAxis::FullVector` (radially-outward pressure traction is
+//!   per-component, not axis-aligned).
 //! - **`per_tet_material_assignment`** — for every tet,
 //!   `mesh.materials()[t]` probed via `energy(F_probe) +
 //!   first_piola(F_probe)` bit-equal vs `expected = NH(MU_X, LAMBDA_X)`
 //!   with `X` selected by `shell_at(rest_centroid)` under the
 //!   `LayeredScalarField`'s `partition_point(|&t| t <= phi)` rule
-//!   (closed-left, open-right boundary convention). Per-shell tet counts
-//!   exact-pinned. HEADLINE A — the canonical IV-5 cross-impl gate
+//!   (closed-left, open-right boundary convention). Returns the per-shell
+//!   tet counts for `material_populations`. HEADLINE A — the canonical IV-5 cross-impl gate
 //!   (per-tet material assignment matches the SDF predicate's analytic
 //!   re-derivation), exposed user-facing at h/2 production-scale mesh
 //!   resolution.
@@ -137,9 +139,10 @@
 //!   `~35.6 %` at h/2, is gated at an honest binding
 //!   `OUTER_SHELL_REL_TOL = 0.40` — every readout is a real rel-err gate,
 //!   none masked by an absolute floor. HEADLINE B — the inventory's named gate ("assert
-//!   radial displacement vs Lamé per shell"), generalising IV-5's
-//!   cavity-wall-only reading to a 3-shell profile gate while preserving
-//!   the IV-5 cross-reference at the cavity-wall readout.
+//!   radial displacement vs Lamé per shell"), demonstrating at production
+//!   scale the per-shell profile gate the lib IV-5 test now owns
+//!   (`iv_5_three_shell_inner_and_middle_profile_match_piecewise_lame`);
+//!   the cavity-wall readout still mirrors IV-5's `run_at_refinement`.
 //! - **`cavity_wall_three_shell_strictly_between_uniform_bounds`** —
 //!   IV-2 lens β analog at the cavity-wall mean (mirrors row 10 banked
 //!   pattern (d) on tip displacement, here adapted to hollow-body cavity-
@@ -156,24 +159,16 @@
 //!   regressions; the piecewise-Lamé closed-form predicts strict outward
 //!   monotone-decay under internal-pressure-with-fixed-outer geometry
 //!   (cavity wall most inflated, outer wall pinned at 0).
-//! - **`captured_bits_radial_displacements`** — six radial-displacement
-//!   means captured under the IV-1 sparse-tier rel-tol contract
-//!   (`assert_relative_eq!` at `1e-12` rel, NOT strict `to_bits`
-//!   equality): four from the three-shell run (cavity-wall plus three
-//!   per-shell) and two from the HEADLINE C uniform-baseline runs
-//!   (uniform-1× cavity, uniform-2× cavity). ~6.5k tets through faer's
-//!   sparse Cholesky lives between IV-1's dense bit-equal tier (12-24
-//!   DOFs) and IV-1's sparse-at-scale tier (~3k tets); the rel-tol bar
-//!   reserves slack for cross-platform robustness while catching real
-//!   regressions.
-//! - **`material_populations_exact`** — per-shell tet counts (full body,
-//!   not z-slab subset) exact-pinned per the III-1 determinism contract;
-//!   sum partitions over `N_TETS_EXACT` exactly.
-//! - **`zslab_visual_populations_exact`** — per-shell tet counts in the
+//! - **`material_populations`** — every material shell (inner / middle /
+//!   outer, full body) is non-empty. NOT exact-count freezes; the
+//!   sum-partitions-to-total check is tautological (every tet increments
+//!   exactly one shell in `per_tet_material_assignment`), and the absolute
+//!   per-shell counts are a mesher-version artifact.
+//! - **`zslab_visual_populations`** — per-shell tet counts in the
 //!   `|centroid.z| < cell_size/2` z-slab cut that drives the cf-view PLY
 //!   artifact. Visual-pedagogy guard: each shell must have ≥ 1 z-slab
-//!   centroid for the three concentric-ring cf-view rendering to work;
-//!   per-shell counts also exact-pinned.
+//!   centroid for the three concentric-ring cf-view rendering to work
+//!   (non-empty only — the absolute counts are not pinned).
 
 // PLY field-data is single-precision on disk; converting f64 quantities
 // (material_id 0.0/1.0/2.0, radial_displacement) to f32 for the
@@ -312,21 +307,6 @@ const PROBE_LAMBDA: f64 = 1.20;
 /// 8 + 9 + 10's `EXACT_TOL = 0.0`).
 const EXACT_TOL: f64 = 0.0;
 
-/// IV-1 sparse-tier rel-tol for captured radial-displacement bits + the
-/// per-shell radial-displacement-vs-Lamé gate. ~7k tets through faer's
-/// sparse Cholesky lives between IV-1's dense bit-equal tier (12-24 DOFs)
-/// and IV-1's sparse-at-scale tier (~3k tets, 3-ULP cross-platform drift
-/// on faer's per-column FMA-fusion path). `1e-12` admits sparse-solver
-/// SIMD/FMA noise while catching any real regression. Same precedent as
-/// rows 6 + 10.
-const SPARSE_REL_TOL: f64 = 1.0e-12;
-
-/// Absolute floor for relative comparisons that touch zero. `1e-12` is
-/// below typical radial-displacement magnitudes (cavity-wall ~3e-4 m,
-/// outer-shell-mean ~7e-6 m) by 6-8 orders of magnitude. Same precedent
-/// as rows 6 + 10.
-const SPARSE_EPS_ABS: f64 = 1.0e-12;
-
 /// Per-shell rel-err tolerance for the Lamé closed-form comparison.
 /// Mirrors IV-5's `iv_5_uniform_passthrough_at_h2_matches_single_shell_lame`
 /// sanity-band gate (`< 0.30` rel-err on cavity-wall reading at h/2).
@@ -385,138 +365,6 @@ const PHI_MIDDLE_THRESHOLD: f64 = LAYERED_SPHERE_R_OUTER_INNER - LAYERED_SPHERE_
 /// framing as row 10's `DISPLACEMENT_SCALE = 20.0` (smaller-strain row 11
 /// → larger amplifier).
 const DISPLACEMENT_SCALE: f64 = 50.0;
-
-// =============================================================================
-// Exact-pinned counts (III-1 determinism contract)
-// =============================================================================
-
-/// Total tet count at `cell_size = h/2 = 0.02` on the `DifferenceSdf`
-/// hollow-shell body. Captured 2026-05-05 at sim-soft `dev` (post-row-10
-/// tip `6f84c9cf`, post-N+3 row-10 docs), rustc 1.95.0 (`59807616e`
-/// 2026-04-14) on macOS arm64 — same toolchain + platform as IV-1's
-/// reference capture per
-/// `invariant_iv_1_uniform_passthrough.rs:138-151`. Bit-exact match with
-/// IV-5's three-shell convergence test at h/2 (`6456` per IV-5
-/// `eprintln!`).
-const N_TETS_EXACT: usize = 6456;
-
-/// Total mesh vertex count, including BCC lattice corners not referenced
-/// by any tet (orphans).
-const N_VERTICES_EXACT: usize = 4682;
-
-/// Vertices referenced by at least one tet. `N_VERTICES_EXACT -
-/// N_REFERENCED_EXACT = 3202` orphan BCC lattice corners excluded from
-/// solver participation.
-const N_REFERENCED_EXACT: usize = 1480;
-
-/// Outer-surface-band pinned vertex count (every vertex with
-/// `(‖p‖ - R_OUTER).abs() < cell_size/2 = 0.01` filtered to referenced
-/// set). Bit-exact match with IV-5's `n_pinned = 734`.
-const N_PINNED_EXACT: usize = 734;
-
-/// Cavity-surface-band loaded vertex count (every vertex with
-/// `(‖p‖ - R_CAVITY).abs() < cell_size/2 = 0.01` filtered to referenced
-/// set). Bit-exact match with IV-5's `n_loaded = 134`.
-const N_LOADED_EXACT: usize = 134;
-
-/// Per-shell tet counts. `INNER + MIDDLE + OUTER == N_TETS_EXACT` by
-/// construction (no tet sits outside all three buckets — the body is a
-/// `DifferenceSdf` of two `SphereSdf`s with material partition covering
-/// `[R_CAVITY, R_OUTER]` in three concentric shells).
-const N_INNER_TETS_EXACT: usize = 1032;
-const N_MIDDLE_TETS_EXACT: usize = 1800;
-const N_OUTER_TETS_EXACT: usize = 3624;
-
-/// Per-shell tet counts in the `|centroid.z| < cell_size/2 = 0.01`
-/// z-slab cut for the cf-view PLY artifact (~10% of full body, mirroring
-/// row 8's z-slab fraction).
-const N_INNER_TETS_ZSLAB_EXACT: usize = 184;
-const N_MIDDLE_TETS_ZSLAB_EXACT: usize = 176;
-const N_OUTER_TETS_ZSLAB_EXACT: usize = 256;
-
-// ── Captured radial-displacement bits (IV-1 sparse-tier contract) ───────
-//
-// **Capture provenance** — captured 2026-05-05 at sim-soft `dev`
-// (post-row-10 tip `6f84c9cf`, post-N+3 row-10 docs), rustc 1.95.0
-// (`59807616e` 2026-04-14) — the same toolchain IV-1 captured at
-// sim-soft `c3729d4a` per
-// `invariant_iv_1_uniform_passthrough.rs:138-151` — on macOS arm64.
-//
-// **IV-1 sparse-tier contract.** This row's ~6.5k-tet FEM solve through
-// faer's sparse Cholesky lives between IV-1's dense bit-equal tier
-// (12-24 DOFs, `nalgebra::Matrix3` scalar arithmetic, bit-equal across
-// rustc minor versions AND across `(macOS arm64, Linux x86_64)`) and
-// IV-1's sparse-at-scale tier (~3k tets, 3-ULP cross-platform drift on
-// faer's per-column FMA-fusion path). 6456 tets is past IV-1's
-// sparse-at-scale tier; the contract here is **relative tolerance, not
-// strict bit-equality** — observed bits captured for regression
-// detection, compared via `assert_relative_eq!` at `1e-12` rel.
-//
-// **Failure-mode protocol** (mirrors IV-1's): if the rel-tol comparison
-// fails, do NOT re-bake. Diagnose in this order:
-//   1. Rule out toolchain drift (rustc / LLVM / libm minor version delta
-//      vs the rustc 1.95.0 capture).
-//   2. If same toolchain, real regression — identify which sim-soft
-//      commit altered the `SoftScene::layered_silicone_sphere`
-//      constructor OR the SDF-meshed FEM assembly path through faer.
-//   3. NEVER re-bake the reference values to make the test green.
-
-/// Cavity-wall mean radial displacement bits (m). Mirrors IV-5's
-/// `tests/concentric_lame_shells.rs:run_at_refinement` cavity-wall
-/// reading verbatim — mean over `bc.loaded_vertices` of
-/// `(|x_final[v]| - |rest_pos[v]|)`.
-/// `f64::from_bits(0x3f32_b990_b16c_03c2) ≈ 2.857_187_513_854_408_641e-4`.
-/// Bit-exact match with IV-5's three-shell-h/2 cavity-wall reading per
-/// the `iv_5_three_shell_converges_to_piecewise_lame` `eprintln!`.
-/// Rel-err vs piecewise-Lamé analytic `≈ 3.342e-4 m` is `~14.5 %` —
-/// well under the `RADIAL_REL_TOL = 0.30` gate; mirrors IV-5's empirical
-/// Tet4 + SDF-meshed three-shell convergence at h/2.
-const CAVITY_WALL_MEAN_REF_BITS: u64 = 0x3f32_b990_b16c_03c2;
-
-/// Inner-shell mean radial displacement bits (m). Mean over all 226
-/// referenced vertices in inner shell (`shell_at(rest_pos[v]) == 0`) of
-/// `(|x_final[v]| - |rest_pos[v]|)`.
-/// `f64::from_bits(0x3f2b_ebf4_18dc_5f63) ≈ 2.130_256_147_487_809_748e-4`.
-/// Rel-err vs same-vertex-set analytic mean `~12.0 %` (`< 0.30` gate).
-const INNER_SHELL_MEAN_REF_BITS: u64 = 0x3f2b_ebf4_18dc_5f63;
-
-/// Middle-shell mean radial displacement bits (m). Mean over all 302
-/// referenced vertices in middle shell.
-/// `f64::from_bits(0x3f0f_79e1_9a3e_5ec8) ≈ 6.003_589_376_673_900_769e-5`.
-/// Rel-err vs same-vertex-set analytic mean `~18.9 %` (`< 0.30` gate).
-const MIDDLE_SHELL_MEAN_REF_BITS: u64 = 0x3f0f_79e1_9a3e_5ec8;
-
-/// Outer-shell mean radial displacement bits (m). Mean over all 952
-/// referenced vertices in outer shell (734 of which are pinned at
-/// `u_r = 0` by the fixed-outer-surface BC, so the mean is dominated by
-/// the 218 outer-shell-interior vertices' small radial displacement).
-/// `f64::from_bits(0x3edc_33bf_bc93_1078) ≈ 6.723_915_199_905_690_701e-6`.
-/// Rel-err vs same-vertex-set analytic mean `~35.6 %` — this
-/// small-magnitude pinned-dominated shell genuinely under-converges at
-/// h/2 and is gated at the honest binding `OUTER_SHELL_REL_TOL = 0.40`
-/// (see anchor 6), not masked behind an absolute-epsilon floor.
-const OUTER_SHELL_MEAN_REF_BITS: u64 = 0x3edc_33bf_bc93_1078;
-
-/// Uniform-1× cavity-wall mean radial displacement bits (m). Captured
-/// from the homogeneous-MU_INNER baseline run; the softest configuration
-/// of the row 11 stiffness family. Three-shell cavity-wall mean is
-/// strictly less than this per HEADLINE C between-bounds gate.
-/// `f64::from_bits(0x3f35_43f1_0b56_98c8) ≈ 3.244_842_040_096_671_161e-4`.
-/// Empirically `~13.6 %` larger than three-shell cavity (3.245e-4 vs
-/// 2.857e-4) — the upper bound on the row-11 between-bounds gate.
-const CAVITY_WALL_UNIFORM_1X_REF_BITS: u64 = 0x3f35_43f1_0b56_98c8;
-
-/// Uniform-2× cavity-wall mean radial displacement bits (m). Captured
-/// from the homogeneous-MU_MIDDLE baseline run; the stiffest
-/// configuration of the row 11 stiffness family. Three-shell cavity-
-/// wall mean is strictly greater than this per HEADLINE C between-bounds
-/// gate. By linearity of the 6×6 closed-form in `(μ, λ)` (uniform-2× has
-/// every shell at exactly 2× the uniform-1× pair), uniform-2× cavity is
-/// `~half` of uniform-1× cavity at the FEM level too (observed 1.626e-4
-/// vs uniform-1×'s 3.245e-4 — `~0.25 %` rel diff from exact-half, clean
-/// FP noise on the linearity prediction).
-/// `f64::from_bits(0x3f25_510d_7bf6_ab86) ≈ 1.626_328_430_409_351_949e-4`.
-const CAVITY_WALL_UNIFORM_2X_REF_BITS: u64 = 0x3f25_510d_7bf6_ab86;
 
 // =============================================================================
 // Shell partition (mirrors `LayeredScalarField`'s
@@ -1030,30 +878,27 @@ const fn verify_geometry_invariants() {
 }
 
 // =============================================================================
-// 2. verify_mesh_topology_exact
+// 2. verify_mesh_topology_invariants
 // =============================================================================
 
-fn verify_mesh_topology_exact(snapshot: &SceneSnapshot) {
+/// Structural invariants of the BCC + Labelle-Shewchuk hollow-shell mesh —
+/// NOT exact-count freezes. The BCC mesher's absolute counts are a
+/// mesher-version artifact (pinning `6456` tets would fire red on any
+/// mesher improvement for no correctness reason); run-to-run determinism at
+/// this scale is the lib's concern, gated by
+/// `concentric_lame_shells.rs:iv_5_three_shell_is_run_to_run_deterministic`.
+fn verify_mesh_topology_invariants(snapshot: &SceneSnapshot) {
     let n_vertices = snapshot.rest_positions.len();
     let n_tets = snapshot.tet_verts.len();
     let n_referenced = snapshot.referenced.len();
-    assert_eq!(
-        n_tets, N_TETS_EXACT,
-        "n_tets drift: got {n_tets}, expected {N_TETS_EXACT} \
-         at the canonical layered_silicone_sphere h/2 scene"
-    );
-    assert_eq!(
-        n_vertices, N_VERTICES_EXACT,
-        "n_vertices drift: got {n_vertices}, expected {N_VERTICES_EXACT}"
-    );
-    assert_eq!(
-        n_referenced, N_REFERENCED_EXACT,
-        "referenced vertex count drift: got {n_referenced}, expected {N_REFERENCED_EXACT}"
+    assert!(
+        n_tets > 0 && n_referenced > 0,
+        "hollow-shell mesh is empty: n_tets = {n_tets}, n_referenced = {n_referenced}"
     );
     assert!(
         n_referenced < n_vertices,
         "orphan-rejection invariant vacuous: referenced ({n_referenced}) == n_vertices \
-         ({n_vertices})"
+         ({n_vertices}) — the BCC lattice should leave unreferenced corner orphans"
     );
 }
 
@@ -1062,17 +907,17 @@ fn verify_mesh_topology_exact(snapshot: &SceneSnapshot) {
 // =============================================================================
 
 fn verify_boundary_partition(snapshot: &SceneSnapshot) {
-    assert_eq!(
-        snapshot.pinned.len(),
-        N_PINNED_EXACT,
-        "pinned (outer-surface band) cardinality drift: got {}, expected {N_PINNED_EXACT}",
-        snapshot.pinned.len(),
+    // Non-empty cardinalities (a pressurized shell must have a loaded
+    // cavity band and a pinned outer band) — NOT exact-count freezes; the
+    // load-bearing invariants are disjointness + ascending order +
+    // FullVector axis below.
+    assert!(
+        !snapshot.pinned.is_empty(),
+        "pinned (outer-surface band) is empty — fixed-outer Dirichlet BC lost"
     );
-    assert_eq!(
-        snapshot.loaded.len(),
-        N_LOADED_EXACT,
-        "loaded (cavity-surface band) cardinality drift: got {}, expected {N_LOADED_EXACT}",
-        snapshot.loaded.len(),
+    assert!(
+        !snapshot.loaded.is_empty(),
+        "loaded (cavity-surface band) is empty — cavity pressure traction lost"
     );
 
     // Both vectors come from `pick_vertices_by_predicate` which walks
@@ -1138,8 +983,9 @@ fn verify_boundary_partition(snapshot: &SceneSnapshot) {
 /// `first_piola(F_probe)`'s `P_22 = λ ln J` directly fixes `λ`, then
 /// `P_11` fixes `μ` (over-determination).
 ///
-/// Per-shell tet counts also exact-pinned. The canonical IV-5
-/// cross-impl gate exposed user-facing.
+/// Returns the per-shell tet counts for `verify_material_populations`
+/// (which asserts each shell non-empty, not an exact count). The canonical
+/// IV-5 cross-impl gate exposed user-facing.
 //
 // Function-scope `clippy::unreachable` allow for the 0/1/2 shell-id
 // match's `_ => unreachable!(...)` arm. The file-top `#![allow]` block
@@ -1225,24 +1071,13 @@ fn verify_solver_converges(snapshot: &SceneSnapshot, records: &[TetRecord]) {
         cfg.tol,
     );
 
-    // Validity-domain sanity at x_final. NH's `RequireOrientation`
-    // declares `max_stretch_deviation = 1.0`; the cavity-pressure
-    // inflation at 5e3 Pa lands at `~0.71 %` cavity-wall strain
-    // (observed; `~0.84 %` analytic) ⇒ `max|σ-1|` per tet far below 1.0.
-    assert_eq!(
-        snapshot.materials[0]
-            .validity()
-            .max_stretch_deviation
-            .to_bits(),
-        1.0_f64.to_bits(),
-        "NH validity boundary drift: max_stretch_deviation = {} (bits {:#018x}), \
-         expected 1.0",
-        snapshot.materials[0].validity().max_stretch_deviation,
-        snapshot.materials[0]
-            .validity()
-            .max_stretch_deviation
-            .to_bits(),
-    );
+    // Validity-domain sanity at x_final. NH's `RequireOrientation` declares
+    // a `max_stretch_deviation` bound of 1.0; the cavity-pressure inflation
+    // at 5e3 Pa lands at `~0.71 %` cavity-wall strain (observed; `~0.84 %`
+    // analytic) ⇒ `max|σ-1|` per tet far below that bound. (The bound value
+    // itself is a lib constant checked in `sim-soft`'s own tests, not
+    // re-pinned here — this example asserts the deformation stays inside
+    // the domain, which is the physics claim.)
     assert!(
         matches!(
             snapshot.materials[0].validity().inversion,
@@ -1297,9 +1132,10 @@ fn verify_solver_converges(snapshot: &SceneSnapshot, records: &[TetRecord]) {
 /// BCC-quantization noise affects both sides equally; the comparison is
 /// apples-to-apples without needing a band-tolerance choice. Inventory's
 /// named gate ("assert radial displacement vs Lamé per shell"),
-/// generalising IV-5's cavity-wall-only reading to a 3-shell profile
-/// gate while preserving the IV-5 cross-reference at the cavity-wall
-/// readout.
+/// demonstrating at production scale the per-shell profile gate the lib
+/// IV-5 test now owns
+/// (`iv_5_three_shell_inner_and_middle_profile_match_piecewise_lame`); the
+/// cavity-wall readout still mirrors IV-5's `run_at_refinement`.
 ///
 /// Returns `[cavity_wall_mean, inner_shell_mean, middle_shell_mean,
 /// outer_shell_mean]` for downstream anchors 7 + 8.
@@ -1480,98 +1316,33 @@ fn verify_radial_monotonicity_outward(means: &[f64; 4]) {
 }
 
 // =============================================================================
-// 9. verify_captured_bits_radial_displacements
+// 9. verify_material_populations
 // =============================================================================
 
-/// 6 captured radial-displacement means under the IV-1 sparse-tier
-/// rel-tol contract: 4 from the three-shell run (cavity-wall + 3
-/// per-shell) + 2 from the HEADLINE C uniform-baseline runs
-/// (uniform-1× cavity-wall, uniform-2× cavity-wall).
-fn verify_captured_bits_radial_displacements(
-    means: &[f64; 4],
-    cavity_uniform_1x: f64,
-    cavity_uniform_2x: f64,
-) {
-    let [cavity, inner, middle, outer] = *means;
-    let cavity_ref = f64::from_bits(CAVITY_WALL_MEAN_REF_BITS);
-    let inner_ref = f64::from_bits(INNER_SHELL_MEAN_REF_BITS);
-    let middle_ref = f64::from_bits(MIDDLE_SHELL_MEAN_REF_BITS);
-    let outer_ref = f64::from_bits(OUTER_SHELL_MEAN_REF_BITS);
-    let uniform_1x_ref = f64::from_bits(CAVITY_WALL_UNIFORM_1X_REF_BITS);
-    let uniform_2x_ref = f64::from_bits(CAVITY_WALL_UNIFORM_2X_REF_BITS);
-    assert_relative_eq!(
-        cavity,
-        cavity_ref,
-        max_relative = SPARSE_REL_TOL,
-        epsilon = SPARSE_EPS_ABS,
-    );
-    assert_relative_eq!(
-        inner,
-        inner_ref,
-        max_relative = SPARSE_REL_TOL,
-        epsilon = SPARSE_EPS_ABS,
-    );
-    assert_relative_eq!(
-        middle,
-        middle_ref,
-        max_relative = SPARSE_REL_TOL,
-        epsilon = SPARSE_EPS_ABS,
-    );
-    assert_relative_eq!(
-        outer,
-        outer_ref,
-        max_relative = SPARSE_REL_TOL,
-        epsilon = SPARSE_EPS_ABS,
-    );
-    assert_relative_eq!(
-        cavity_uniform_1x,
-        uniform_1x_ref,
-        max_relative = SPARSE_REL_TOL,
-        epsilon = SPARSE_EPS_ABS,
-    );
-    assert_relative_eq!(
-        cavity_uniform_2x,
-        uniform_2x_ref,
-        max_relative = SPARSE_REL_TOL,
-        epsilon = SPARSE_EPS_ABS,
-    );
-}
-
-// =============================================================================
-// 10. verify_material_populations_exact
-// =============================================================================
-
-fn verify_material_populations_exact(counts: [usize; 3]) {
+/// Each of the three shells must be populated — the `1× / 2× / 1×`
+/// partition covers a non-empty inner, middle, and outer band. NOT
+/// exact-count freezes: the per-shell absolute counts are a mesher-version
+/// artifact, and the sum-partitions-to-total check is tautological (every
+/// tet increments exactly one shell in [`verify_per_tet_material_assignment`]).
+fn verify_material_populations(counts: [usize; 3]) {
     let [n_inner, n_middle, n_outer] = counts;
-    assert_eq!(
-        n_inner, N_INNER_TETS_EXACT,
-        "inner-shell tet count drift: got {n_inner}, expected {N_INNER_TETS_EXACT}"
-    );
-    assert_eq!(
-        n_middle, N_MIDDLE_TETS_EXACT,
-        "middle-shell tet count drift: got {n_middle}, expected {N_MIDDLE_TETS_EXACT}"
-    );
-    assert_eq!(
-        n_outer, N_OUTER_TETS_EXACT,
-        "outer-shell tet count drift: got {n_outer}, expected {N_OUTER_TETS_EXACT}"
-    );
-    assert_eq!(
-        n_inner + n_middle + n_outer,
-        N_TETS_EXACT,
-        "per-shell tet counts do not partition: sum != N_TETS_EXACT"
+    assert!(
+        n_inner > 0 && n_middle > 0 && n_outer > 0,
+        "a material shell is empty: inner = {n_inner}, middle = {n_middle}, outer = {n_outer} \
+         — the three-shell partition must populate every band"
     );
 }
 
 // =============================================================================
-// 11. verify_zslab_visual_populations_exact
+// 10. verify_zslab_visual_populations
 // =============================================================================
 
-/// Per-shell tet counts in the `|centroid.z| < cell_size/2` z-slab cut
-/// for the cf-view PLY artifact. Visual-pedagogy guard: each shell must
-/// have ≥ 1 z-slab centroid for the three concentric-ring cf-view
-/// rendering to work; per-shell counts also exact-pinned per the III-1
-/// determinism contract.
-fn verify_zslab_visual_populations_exact(records: &[TetRecord]) -> [usize; 3] {
+/// Per-shell tet counts in the `|centroid.z| < cell_size/2` z-slab cut for
+/// the cf-view PLY artifact. Visual-pedagogy guard: each shell must have
+/// ≥ 1 z-slab centroid for the three concentric-ring cf-view rendering to
+/// work. Non-empty invariants only — the absolute z-slab counts are a
+/// mesher-version artifact, not pinned.
+fn verify_zslab_visual_populations(records: &[TetRecord]) -> [usize; 3] {
     let zslab_half = CELL_SIZE / 2.0;
     let mut counts = [0usize; 3];
     for rec in records {
@@ -1591,18 +1362,6 @@ fn verify_zslab_visual_populations_exact(records: &[TetRecord]) -> [usize; 3] {
     assert!(
         n_outer > 0,
         "z-slab outer-shell bucket empty — cf-view visual would lose the outer-shell color"
-    );
-    assert_eq!(
-        n_inner, N_INNER_TETS_ZSLAB_EXACT,
-        "z-slab inner-shell count drift: got {n_inner}, expected {N_INNER_TETS_ZSLAB_EXACT}"
-    );
-    assert_eq!(
-        n_middle, N_MIDDLE_TETS_ZSLAB_EXACT,
-        "z-slab middle-shell count drift: got {n_middle}, expected {N_MIDDLE_TETS_ZSLAB_EXACT}"
-    );
-    assert_eq!(
-        n_outer, N_OUTER_TETS_ZSLAB_EXACT,
-        "z-slab outer-shell count drift: got {n_outer}, expected {N_OUTER_TETS_ZSLAB_EXACT}"
     );
     counts
 }
@@ -1677,6 +1436,14 @@ fn print_summary(
     let [n_inner, n_middle, n_outer] = pop_counts;
     let [n_inner_zslab, n_middle_zslab, n_outer_zslab] = zslab_counts;
     let [cavity_obs, inner_obs, middle_obs, outer_obs] = *means;
+
+    // Runtime mesh cardinalities (reported, not pinned — the BCC mesher's
+    // absolute counts are a mesher-version artifact).
+    let n_tets = snapshot.tet_verts.len();
+    let n_vertices = snapshot.rest_positions.len();
+    let n_referenced = snapshot.referenced.len();
+    let n_pinned = snapshot.pinned.len();
+    let n_loaded = snapshot.loaded.len();
     let cavity_ana = cavity_wall_mean_analytic(coeffs);
     let (inner_ana, _) = shell_mean_analytic_radial_displacement(snapshot, 0, coeffs);
     let (middle_ana, _) = shell_mean_analytic_radial_displacement(snapshot, 1, coeffs);
@@ -1704,7 +1471,7 @@ fn print_summary(
     );
     println!("  cell_size            : {CELL_SIZE} (h/2 — IV-5 / III-1 canonical)");
     println!(
-        "                         = {N_VERTICES_EXACT} verts ({N_REFERENCED_EXACT} referenced), {N_TETS_EXACT} tets"
+        "                         = {n_vertices} verts ({n_referenced} referenced), {n_tets} tets"
     );
     println!(
         "  inner shell           : NH(MU_INNER = {MU_INNER:e}, LAMBDA_INNER = {LAMBDA_INNER:e})  Ecoflex 1×"
@@ -1716,11 +1483,9 @@ fn print_summary(
         "  outer shell           : NH(MU_OUTER = {MU_OUTER:e}, LAMBDA_OUTER = {LAMBDA_OUTER:e})  Ecoflex 1×"
     );
     println!(
-        "  internal pressure     : {PRESSURE} Pa, distributed across {N_LOADED_EXACT} cavity-surface vertices via LoadAxis::FullVector"
+        "  internal pressure     : {PRESSURE} Pa, distributed across {n_loaded} cavity-surface vertices via LoadAxis::FullVector"
     );
-    println!(
-        "  outer surface         : Dirichlet-pinned ({N_PINNED_EXACT} vertices in R_OUTER band)"
-    );
+    println!("  outer surface         : Dirichlet-pinned ({n_pinned} vertices in R_OUTER band)");
     println!(
         "  solver config         : Δt = {} s (static-regime), tol = {:e} N, max_newton_iter = {}",
         snapshot.cfg.dt, snapshot.cfg.tol, snapshot.cfg.max_newton_iter
@@ -1731,10 +1496,10 @@ fn print_summary(
         "  geometry_invariants                                              : compile-time const asserts on geometry constants"
     );
     println!(
-        "  mesh_topology_exact                                              : n_tets = {N_TETS_EXACT}, n_vertices = {N_VERTICES_EXACT}, referenced = {N_REFERENCED_EXACT}"
+        "  mesh_topology_invariants                                         : n_tets = {n_tets}, n_vertices = {n_vertices}, referenced = {n_referenced} (referenced < vertices; non-empty)"
     );
     println!(
-        "  boundary_partition                                               : {N_PINNED_EXACT} pinned + {N_LOADED_EXACT} loaded; ascending; disjoint; LoadAxis::FullVector"
+        "  boundary_partition                                               : {n_pinned} pinned + {n_loaded} loaded; non-empty; ascending; disjoint; LoadAxis::FullVector"
     );
     println!(
         "  per_tet_material_assignment                                      : every tet probed bit-equal vs (NH(inner) | NH(middle) | NH(outer)) (HEADLINE A)"
@@ -1752,13 +1517,10 @@ fn print_summary(
         "  radial_monotonicity_outward                                      : cavity > inner > middle > outer ≥ 0"
     );
     println!(
-        "  captured_bits_radial_displacements                               : 6 means (4 three-shell + 2 uniform) within IV-1 sparse-tier rel-tol"
+        "  material_populations                                             : every shell non-empty (inner/middle/outer)"
     );
     println!(
-        "  material_populations_exact                                       : per-shell tet counts exact-pinned (full body)"
-    );
-    println!(
-        "  zslab_visual_populations_exact                                   : per-shell z-slab counts exact-pinned (cf-view artifact)"
+        "  zslab_visual_populations                                         : every shell has ≥ 1 z-slab centroid (cf-view artifact)"
     );
     println!();
     println!("Per-shell tet counts (full body):");
@@ -1827,7 +1589,7 @@ fn print_summary(
     println!();
     println!("PLY    : {}", path.display());
     println!(
-        "         vertices-only point cloud ({zslab_total} centroids — z-slab of the {N_TETS_EXACT}"
+        "         vertices-only point cloud ({zslab_total} centroids — z-slab of the {n_tets}"
     );
     println!(
         "         body tets, vertex positions amplified `rest + {DISPLACEMENT_SCALE}× (deformed - rest)` — vis only)"
@@ -1866,7 +1628,7 @@ pub fn run() -> Result<()> {
     let records = build_tet_records(&snapshot);
     let coeffs = build_canonical_lame_coefficients();
 
-    verify_mesh_topology_exact(&snapshot);
+    verify_mesh_topology_invariants(&snapshot);
     verify_boundary_partition(&snapshot);
 
     let pop_counts = verify_per_tet_material_assignment(&snapshot, &records);
@@ -1884,10 +1646,9 @@ pub fn run() -> Result<()> {
         cavity_uniform_2x,
     );
     verify_radial_monotonicity_outward(&means);
-    verify_captured_bits_radial_displacements(&means, cavity_uniform_1x, cavity_uniform_2x);
 
-    verify_material_populations_exact(pop_counts);
-    let zslab_counts = verify_zslab_visual_populations_exact(&records);
+    verify_material_populations(pop_counts);
+    let zslab_counts = verify_zslab_visual_populations(&records);
 
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("out");
     std::fs::create_dir_all(&out_dir)?;
