@@ -210,4 +210,35 @@ mod tests {
             epsilon = 1e-15,
         );
     }
+
+    #[test]
+    fn grad_at_crease_ties_to_the_a_branch() {
+        // At the crease where `φ_a == -φ_b` exactly, the `>=` tie-break must
+        // deterministically return the a-branch gradient (∇φ_a), not the
+        // b-branch (-∇φ_b) — the two point in opposite radial directions,
+        // so the tie must not flap. The two `grad_in_*_active_branch` tests
+        // above probe strictly OFF the crease (r = 0.09 / 0.05); this pins
+        // the `>=` boundary behavior itself.
+        //
+        // Dyadic radii (1.0 / 0.5) make the crease at
+        // `|p| = (R_outer + R_cavity) / 2 = 0.75` bit-exact:
+        // `|(0.75, 0, 0)| = sqrt(0.5625) = 0.75` exactly, so
+        // `φ_a = 0.75 - 1.0 = -0.25 = -(0.75 - 0.5) = -φ_b`, and the `>=`
+        // resolves to true → a-branch on every platform.
+        let shell = DifferenceSdf::new(
+            Box::new(SphereSdf { radius: 1.0 }),
+            Box::new(SphereSdf { radius: 0.5 }),
+        );
+        for axis in [Vec3::x(), Vec3::y(), Vec3::z()] {
+            for sign in [1.0_f64, -1.0] {
+                let p = Point3::from(sign * 0.75 * axis);
+                // Sanity: the probe really is on the crease — eval is -0.25
+                // via either branch (it is the grad that differs).
+                assert_relative_eq!(shell.eval(p), -0.25, epsilon = 1e-15);
+                // a-branch: grad = ∇φ_a = p / |p| = sign * axis, NOT the
+                // b-branch's -p / |p|.
+                assert_relative_eq!(shell.grad(p), sign * axis, epsilon = 1e-15);
+            }
+        }
+    }
 }

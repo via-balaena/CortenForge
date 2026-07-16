@@ -392,6 +392,8 @@ mod tests {
     // range — same Mesh-trait-API tax as `equals_structurally`.
     #![allow(clippy::cast_possible_truncation)]
 
+    use std::collections::{BTreeMap, BTreeSet};
+
     use nalgebra::Matrix3;
 
     use super::*;
@@ -728,5 +730,51 @@ mod tests {
                  (face centroid {face_centroid:?}, normal {normal:?})",
             );
         }
+    }
+
+    /// Topology of `Mesh::boundary_faces()`: the boundary of a solid tet
+    /// mesh is a closed genus-0 surface, so its Euler characteristic
+    /// `χ = V − E + F` is `2` and every boundary edge is shared by exactly
+    /// two faces (watertight / closed-manifold). These invariants are what
+    /// a well-formed boundary extraction guarantees — asserted here on the
+    /// deterministic `2³`-cell cube (48 boundary triangles). No exact
+    /// V/E/F counts are pinned (those are a mesh-resolution artifact); the
+    /// topological invariants hold at any resolution.
+    #[test]
+    fn uniform_block_boundary_is_closed_genus_0_manifold() {
+        let mesh = HandBuiltTetMesh::uniform_block(2, 0.1, &canonical_field());
+        let faces = mesh.boundary_faces();
+
+        // Unique boundary vertices.
+        let mut verts: BTreeSet<VertexId> = BTreeSet::new();
+        // Undirected edge (sorted vertex pair) -> incidence count.
+        let mut edge_count: BTreeMap<[VertexId; 2], usize> = BTreeMap::new();
+        for face in faces {
+            verts.extend(face.iter().copied());
+            for mut edge in [[face[0], face[1]], [face[1], face[2]], [face[2], face[0]]] {
+                edge.sort_unstable();
+                *edge_count.entry(edge).or_insert(0) += 1;
+            }
+        }
+
+        // Closed-manifold: every boundary edge shared by exactly two faces
+        // (a hole leaves an edge with 1 incidence; a non-manifold flap ≥ 3).
+        for (edge, &count) in &edge_count {
+            assert_eq!(
+                count, 2,
+                "boundary edge {edge:?} appears {count} times — boundary is not closed-manifold",
+            );
+        }
+
+        // Euler characteristic of a closed genus-0 surface: V − E + F = 2,
+        // written `V + F == E + 2` to stay in usize (a valid closed surface
+        // always has V + F ≥ E + 2, so no subtraction underflow).
+        let (v, e, f) = (verts.len(), edge_count.len(), faces.len());
+        assert_eq!(
+            v + f,
+            e + 2,
+            "Euler characteristic V − E + F ≠ 2 (V = {v}, E = {e}, F = {f}) — boundary is not a \
+             topological sphere",
+        );
     }
 }
