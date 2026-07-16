@@ -7,8 +7,10 @@ that abort (exit 101) on any mismatch, so `cargo xtask run-validators` runs it
 red-or-green.
 
 Folded from two former per-concept examples (`layered-scalar-field` row 8,
-`blended-scalar-field` row 9), each now a module preserving its hand-authored
-fixture and oracle checks verbatim. One domain → one stress-test.
+`blended-scalar-field` row 9), each now a module. One domain → one stress-test.
+Under Rule B, per-tet library-behaviour correctness lives in the lib's own
+tests; these modules are the runnable pipeline demonstrations that spot-check
+the real mesher outputs against independent oracles + emit the cf-view artifacts.
 
 ## Modules
 
@@ -25,20 +27,25 @@ positive flagging. Emits the categorical `material_layer_id` scalar.
 
 ### `blended` — `BlendedScalarField` (smooth cubic-Hermite smoothstep)
 The same body sphere + bbox as `layered`, but a smoothstep transition between
-two Lamé regions (`μ = 5e4→2e5`) across a band `‖p‖ ∈ [0.055, 0.085]`.
-Validates the blended `(μ, λ)` against a test-side smoothstep (`s²(3−2s)`) +
-FMA re-derivation at `EXACT_TOL = 0.0`, **bit-exact `s=0`/`s=1` snap** outside
-the band (`.to_bits()` equal to pure inner/outer NH), a **monotone
-non-decreasing μ gradient** across the band, and the **positive per-tet
-`interface_flags` book rule** (`|φ(x_c)| < L_e`, IV-6 — HEADLINE 2, the
-complement of `layered`). Exact bucket populations (inside-snap **1056** / band
-**2736** / outside-snap **2976**; **3480** interface-flagged — a distinct band).
-Emits three scalars: `interface_flag`, `material_mu`, `smoothstep_weight`.
+two Lamé regions (`μ = 5e4→2e5`) across a band `‖p‖ ∈ [0.055, 0.085]`. Reads
+the mesher's own `mesh.materials()` (via the public `NeoHookean::mu()` /
+`lambda()`) and checks it against **independent** oracles — never a
+re-derivation of the blend arithmetic: **bit-exact `s=0`/`s=1` snap** to the
+endpoint constants outside the band, and at least one band tet carrying a μ
+**strictly between** the endpoints (graded, not stepped). The mesher's
+`mesh.interface_flags()` are checked to be **mixed** (some `true` — the
+`with_interface_sdf` band fires — and some `false`). Per-tet blended-material
+and `|φ(x_c)| < L_e` book-rule CORRECTNESS is owned by the lib
+(`sim/L0/soft/tests/blended_material_composition.rs`); this module is the
+pipeline demonstration. Top-line mesh counts are pinned (III-1 contract); finer
+per-bucket / z-slab counts are structural (non-empty), not pinned. Emits three
+scalars: `interface_flag`, `material_mu`, `smoothstep_weight` (all read off the
+real mesher outputs).
 
-The two are complementary, not subsuming: `blended`'s monotone-gradient +
-positive-flag oracles exercise `BlendedScalarField::sample` + `with_interface_sdf`
-paths `layered` cannot reach; `layered` is the sole coverage of the
-no-interface-SDF partition path + categorical cardinality.
+The two are complementary, not subsuming: `blended` demonstrates the
+`BlendedScalarField::sample` + `with_interface_sdf` composition path (graded
+materials + populated interface flags) `layered` cannot reach; `layered` is the
+sole coverage of the no-interface-SDF partition path + categorical cardinality.
 
 ## Run
 

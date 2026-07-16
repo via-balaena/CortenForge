@@ -22,11 +22,11 @@ sim-soft = { workspace = true }
 mesh-types = { workspace = true }
 # save_ply_attributed for the out/*.ply human-inspectable artifacts
 mesh-io = { workspace = true }
-# Matrix3 for the F_probe = diag(1.2, 1, 1) Material-trait probe (both modules)
+# Matrix3 for the F_probe = diag(1.2, 1, 1) Material-trait probe (layered module)
 nalgebra = { workspace = true }
 # Result<()> return type for each module's run()
 anyhow = { workspace = true }
-# assert_relative_eq! numerical anchors (both modules)
+# assert_relative_eq! numerical anchors (layered module)
 approx = { workspace = true }
 
 [lints]

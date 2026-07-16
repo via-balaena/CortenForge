@@ -267,6 +267,69 @@ fn blended_materials_grade_monotonically_across_band() {
 }
 
 #[test]
+fn blended_materials_follow_cubic_hermite_shape_not_linear() {
+    // The blend kernel is the cubic Hermite smoothstep `w(s) = s²(3 − 2s)`,
+    // NOT a linear ramp `w(s) = s`. Both are monotone, both snap at the
+    // endpoints, and both pass through the midpoint at `s = 0.5`, so
+    // monotonicity / snap / midpoint checks cannot tell them apart. The
+    // distinguishing property is the S-CURVE SHAPE: the cubic lies strictly
+    // BELOW the linear chord for `s < 0.5` and strictly ABOVE it for
+    // `s > 0.5` (`w(s) − s = −s(s − 1)(2s − 1)`).
+    //
+    // Oracle is that chord, built from `s` — which is a trivial LINEAR
+    // function of φ, independent of the cubic arithmetic — so this is not a
+    // re-derivation of the kernel. `s` within `SHAPE_MARGIN` of 0.5 is
+    // skipped (there the gap to the chord vanishes); both the below and the
+    // above populations must be non-empty or the shape claim is vacuous.
+    const SHAPE_MARGIN: f64 = 0.1;
+
+    let mesh = build_blended_mesh();
+    let materials = mesh.materials();
+    let n_tets = mesh.n_tets() as TetId;
+
+    let mut n_below = 0usize;
+    let mut n_above = 0usize;
+    for tet_id in 0..n_tets {
+        let phi = centroid(&mesh, tet_id).norm() - R_INTERFACE;
+        if phi.abs() >= BAND {
+            continue; // snap region: kernel is clamped, shape not exercised
+        }
+        // Smoothstep input `s ∈ (0, 1)`, linear in φ.
+        let s = (phi + BAND) / (2.0 * BAND);
+        if (s - 0.5).abs() < SHAPE_MARGIN {
+            continue; // near the inflection the cubic ≈ the chord
+        }
+        let observed_mu = materials[tet_id as usize].mu();
+        let chord_mu = s.mul_add(MU_OUTER - MU_INNER, MU_INNER);
+        if s < 0.5 {
+            assert!(
+                observed_mu < chord_mu,
+                "tet {tet_id} (s = {s}) μ = {observed_mu} not strictly below the linear chord \
+                 {chord_mu} — the blend is not the cubic Hermite S-curve (a linear ramp would sit \
+                 on the chord)",
+            );
+            n_below += 1;
+        } else {
+            assert!(
+                observed_mu > chord_mu,
+                "tet {tet_id} (s = {s}) μ = {observed_mu} not strictly above the linear chord \
+                 {chord_mu} — the blend is not the cubic Hermite S-curve",
+            );
+            n_above += 1;
+        }
+    }
+
+    assert!(
+        n_below > 0,
+        "no band tet with s < 0.5 − margin — cannot check the below-chord half of the S-curve",
+    );
+    assert!(
+        n_above > 0,
+        "no band tet with s > 0.5 + margin — cannot check the above-chord half of the S-curve",
+    );
+}
+
+#[test]
 fn blended_interface_flags_match_book_rule_per_tet() {
     // Per-tet book rule `|φ(x_c)| < L_e` (Part 7 §02 §01) for the
     // BlendedScalarField-composition interface SDF — the coverage IV-6
