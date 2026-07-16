@@ -18,9 +18,11 @@
 //!
 //! Bulk pass: an 11³ = 1331-point grid in `[−2, 2]³` at spacing 0.4 is
 //! emitted as `out/sdf_grid.ply` with two per-vertex scalars for
-//! external colormap rendering, and the bit-exact identity
-//! `eval(p) == ‖p‖ − radius` is asserted at every grid point (both
-//! sides do the same arithmetic, so equality holds exactly):
+//! external colormap rendering; the grid pass checks the unit-length
+//! gradient at every non-origin point (plus the documented Z-fallback at
+//! the centre) and tallies the interior / surface / exterior sign
+//! buckets. The eval values themselves are covered pointwise by the
+//! closed-form `verify_*_eval` checks above:
 //!
 //! - `extras["signed_distance"]` — analytic SDF value `‖p‖ − 1`.
 //! - `extras["gradient_magnitude"]` — `|∇_FD SDF|` from central /
@@ -72,7 +74,7 @@ use sim_soft::{Sdf, SphereSdf, Vec3};
 const SPHERE_RADIUS: f64 = 1.0;
 
 /// FP-exact comparisons (axis-aligned surface, origin interior,
-/// Pythagorean-triple exterior, grid-identity).
+/// Pythagorean-triple exterior, and the origin grad-norm / Z-fallback).
 const EXACT_TOL: f64 = 0.0;
 
 /// Approximate comparisons where coordinate rounding forces a sub-ε
@@ -306,11 +308,14 @@ fn build_grid(s: &SphereSdf) -> Vec<GridSample> {
     grid
 }
 
-/// Bit-exact identity: `SphereSdf::eval` is implemented as
-/// `p.norm() − self.radius`; computing the same RHS in the test is
-/// the same FP arithmetic, so equality holds exactly. Plus a unit-
-/// length grad-norm check at every non-origin grid point and an
-/// origin-fallback assert at the centre.
+/// Per-grid-point gradient diagnostics over the whole grid: a
+/// unit-length grad-norm check at every non-origin point plus the
+/// documented Z-fallback at the centre, and the interior / surface /
+/// exterior sign-bucket tallies for the museum-plaque summary. (The
+/// eval values are covered pointwise by the closed-form
+/// `verify_*_eval` checks against hand-derived distances — this
+/// function does NOT re-derive `SphereSdf::eval`'s own `‖p‖ − r`
+/// expression, which would be vacuous.)
 fn verify_grid_consistency(grid: &[GridSample]) -> (usize, usize, usize) {
     assert_eq!(grid.len(), GRID_TOTAL);
 
@@ -319,10 +324,6 @@ fn verify_grid_consistency(grid: &[GridSample]) -> (usize, usize, usize) {
     let mut exterior = 0usize;
 
     for (i, g) in grid.iter().enumerate() {
-        // Bit-exact identity at every grid point.
-        let expected = g.p.norm() - SPHERE_RADIUS;
-        assert_relative_eq!(g.eval, expected, epsilon = EXACT_TOL);
-
         // Unit gradient at every non-origin point. The origin (only at
         // `i = (5, 5, 5)` in 1-D-flattened index 5*121 + 5*11 + 5 = 665)
         // is the documented Z-fallback.
