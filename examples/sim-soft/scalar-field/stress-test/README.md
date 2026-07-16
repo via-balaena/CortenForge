@@ -16,14 +16,18 @@ the real mesher outputs against independent oracles + emit the cf-view artifacts
 
 ### `layered` — `LayeredScalarField` (sharp CSG step)
 A 3-shell concentric `SphereSdf` partition sampled per-tet at the centroid via
-`MaterialField::from_fields`. Validates the material-tag partition against a
-test-side `partition_point` re-derivation (per-tet `NeoHookean` energy +
-`first_piola` bit-equal at `F = diag(1.2, 1, 1)`), exactly **3 unique layer ids
-`{0, 1, 2}`** (gates cf-view's tab10 categorical heuristic), exact per-shell
-populations (inner **1344** / middle **1800** / outer **3624**, partitioning
-all **6768** tets), and the **`interface_flags`-all-false contract** — this
-module never calls `with_interface_sdf`, the exact complement of `blended`'s
-positive flagging. Emits the categorical `material_layer_id` scalar.
+`MaterialField::from_fields`. Reads the mesher's own `mesh.materials()` (via
+the public `NeoHookean::mu()` / `lambda()`) and checks each tet carries the
+Lamé pair of the shell its centroid lands in (oracle = the `SHELL_LAME`
+constants indexed by a geometric radius classification — no library-arithmetic
+mirror), plus the **`interface_flags`-all-false contract** — this module never
+calls `with_interface_sdf`, the exact complement of `blended`'s positive
+flagging — and a centroid-inside-body geometry sanity. Per-tet layer-assignment
+CORRECTNESS against the `partition_point` rule is owned by the lib (IV-4,
+`sim/L0/soft/tests/sdf_material_tagging.rs`); this module is the pipeline
+demonstration. Top-line mesh counts are pinned (III-1 contract); per-shell +
+z-slab counts are structural (non-empty), not pinned. Emits the categorical
+`material_layer_id` scalar (read off the real mesher output).
 
 ### `blended` — `BlendedScalarField` (smooth cubic-Hermite smoothstep)
 The same body sphere + bbox as `layered`, but a smoothstep transition between
@@ -44,8 +48,8 @@ real mesher outputs).
 
 The two are complementary, not subsuming: `blended` demonstrates the
 `BlendedScalarField::sample` + `with_interface_sdf` composition path (graded
-materials + populated interface flags) `layered` cannot reach; `layered` is the
-sole coverage of the no-interface-SDF partition path + categorical cardinality.
+materials + populated interface flags) `layered` cannot reach; `layered`
+demonstrates the sharp 3-shell partition + the no-interface-SDF all-false path.
 
 ## Run
 
@@ -59,10 +63,10 @@ correctness signal (there is no `PASS` token; a failed assert aborts with 101).
 
 ## Visual artifacts
 
-Each module writes a per-tet centroid PLY (a thin `|z| < cell_size/2` z-slab,
-648 of 6768 centroids — projecting the shell structure onto a legible disk) to
-`out/` for the `cf-viewer` visual-review path (per-vertex scalars auto-detected
-and colormapped):
+Each module writes a per-tet centroid PLY (a thin `|z| < cell_size/2` z-slab
+subset of the 6768 body tets — projecting the shell structure onto a legible
+disk) to `out/` for the `cf-viewer` visual-review path (per-vertex scalars
+auto-detected and colormapped):
 
 ```
 cargo run -p cf-viewer --release -- examples/sim-soft/scalar-field/stress-test/out/material_layer_assignment.ply   # layered: categorical material_layer_id (3 concentric rings)
