@@ -76,9 +76,9 @@ const R_CAVITY: f64 = 0.5;
 const BRANCH_FLIP_RADIUS: f64 = 0.75;
 
 /// FP-exact comparisons (axis-aligned surface points, dyadic interior
-/// anchors, Pythagorean-triple exterior, slice-grid identity). Every
-/// anchor in this example is bit-exact — radii and probe points are
-/// chosen dyadic so the FP arithmetic admits exact equality.
+/// anchors, Pythagorean-triple exterior, the branch-flip crease grad).
+/// Every anchor in this example is bit-exact — radii and probe points
+/// are chosen dyadic so the FP arithmetic admits exact equality.
 const EXACT_TOL: f64 = 0.0;
 
 /// Slice resolution per axis — 49 points endpoint-inclusive in
@@ -384,15 +384,14 @@ fn build_slice(diff: &DifferenceSdf) -> Vec<SliceSample> {
     slice
 }
 
-/// Bit-exact identity at every slice grid point: `DifferenceSdf::eval`
-/// is implemented as `max(phi_a, -phi_b)` over the boxed operands;
-/// computing the same RHS in the test is the same FP arithmetic, so
-/// equality holds exactly. Active-branch field re-derives the
-/// `phi_a >= -phi_b` predicate and asserts agreement with the field
-/// captured during grid construction.
-///
-/// Returns `(interior_shell, surface, cavity_interior, exterior)`
-/// bucket counts for the museum-plaque summary.
+/// Region sign-bucket tally over the slice grid — interior shell
+/// (`eval < 0`), exterior and cavity-interior (`eval > 0`, split by
+/// radius), surface (`eval == 0`) — plus the grid-length and partition
+/// structural checks. Returns `(interior_shell, surface,
+/// cavity_interior, exterior)` for the museum-plaque summary. (The eval
+/// values are covered pointwise by the closed-form `verify_*_eval`
+/// checks; this function does NOT re-derive `DifferenceSdf::eval`'s own
+/// `max(φ_a, −φ_b)` expression, which would be vacuous.)
 fn verify_slice_consistency(slice: &[SliceSample]) -> (usize, usize, usize, usize) {
     assert_eq!(slice.len(), SLICE_TOTAL);
 
@@ -402,16 +401,12 @@ fn verify_slice_consistency(slice: &[SliceSample]) -> (usize, usize, usize, usiz
     let mut exterior = 0usize;
 
     for s in slice {
-        // Bit-exact identity against the closed-form difference.
+        // Radius for region bucketing only — NOT an eval re-derivation.
+        // The eval values are covered pointwise by the closed-form
+        // `verify_*_eval` checks against hand-derived distances;
+        // recomputing `DifferenceSdf::eval`'s own `max(φ_a, −φ_b)` here
+        // (and the `a_active` predicate) would be vacuous.
         let n = s.p.norm();
-        let phi_a = n - R_OUTER;
-        let neg_phi_b = -(n - R_CAVITY);
-        let expected = phi_a.max(neg_phi_b);
-        assert_relative_eq!(s.eval, expected, epsilon = EXACT_TOL);
-
-        // Active-branch field consistency.
-        let expected_a = phi_a >= neg_phi_b;
-        assert_eq!(s.a_active, expected_a);
 
         // Bucket by region: interior shell (eval < 0), exterior (eval >
         // 0 AND outside outer), cavity_interior (eval > 0 AND inside
@@ -493,7 +488,7 @@ fn print_summary(
     println!("  branch_flip_locus          : at |p| = 0.75, tie-break picks a-branch");
     println!("  outer_surface_grad         : at |p| = R_OUTER, a-active, outward normal");
     println!("  cavity_surface_grad        : at |p| = R_CAVITY, b-active, INWARD normal");
-    println!("  slice_consistency          : bit-exact eval + a_active match @ all 2401 pts");
+    println!("  slice_consistency          : region sign-bucket tally + partition @ all 2401 pts");
     println!();
     println!(
         "Slice {SLICE_RES}² = {SLICE_TOTAL} points in [−{SLICE_HALF_EXTENT}, +{SLICE_HALF_EXTENT}]² × {{0}} at spacing {SLICE_SPACING}:"

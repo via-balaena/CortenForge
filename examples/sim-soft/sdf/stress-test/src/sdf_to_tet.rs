@@ -43,8 +43,8 @@
 
 // PLY field-data is single-precision on disk; converting f64 boundary
 // residuals to f32 for `extras["boundary_residual"]` is intrinsic to
-// the PLY format. Same precedent as rows 1+2. Covers the index-cast
-// sites (`mesh.n_tets() as TetId`, `i as u32` for PLY index).
+// the PLY format. Same precedent as rows 1+2. Also covers the `i as u32`
+// PLY-index cast.
 #![allow(clippy::cast_possible_truncation)]
 // `usize as i64` casts in `verify_boundary_counts_and_topology` —
 // sphere-scale boundary counts (~10³) stay astronomically below
@@ -65,8 +65,7 @@ use anyhow::Result;
 use mesh_io::save_ply_attributed;
 use mesh_types::{AttributedMesh, IndexedMesh, Point3};
 use sim_soft::{
-    Aabb3, Mesh, MeshingHints, SdfMeshedTetMesh, SphereSdf, TetId, Vec3, VertexId,
-    referenced_vertices,
+    Aabb3, Mesh, MeshingHints, SdfMeshedTetMesh, SphereSdf, Vec3, VertexId, referenced_vertices,
 };
 
 // =============================================================================
@@ -303,50 +302,6 @@ const fn sorted_pair(a: VertexId, b: VertexId) -> [VertexId; 2] {
     if a <= b { [a, b] } else { [b, a] }
 }
 
-/// Extract the boundary triangles of the tet mesh.
-///
-/// For each tet `(v0, v1, v2, v3)` (right-handed by III-1 contract),
-/// emit four outward-oriented faces:
-///
-/// - `(v1, v2, v3)` opposite `v0`
-/// - `(v0, v3, v2)` opposite `v1`
-/// - `(v0, v1, v3)` opposite `v2`
-/// - `(v0, v2, v1)` opposite `v3`
-///
-/// (Standard right-handed-tet convention: each face's vertices wind
-/// such that the cross product of consecutive edges points away from
-/// the missing vertex.) Index by the sorted-triple key into a
-/// `BTreeMap` carrying `(count, ordered_face)`. A face shared between
-/// two tets appears twice and is interior; a face appearing once is on
-/// the boundary. Returns the unique outward-oriented triangles in
-/// sorted-key order (deterministic via `BTreeMap` traversal).
-fn extract_boundary_faces(mesh: &SdfMeshedTetMesh) -> Vec<[VertexId; 3]> {
-    let mut face_count: BTreeMap<[VertexId; 3], (usize, [VertexId; 3])> = BTreeMap::new();
-
-    // `as TetId` cast: `n_tets` returns `usize` while the trait-side
-    // walk takes `TetId = u32`. III-1 sphere meshes stay ≪ `u32::MAX`
-    // (canonical N_TETS_EXACT = 6768); covered by the file-level
-    // `cast_possible_truncation` allow.
-    let n_tets_id = mesh.n_tets() as TetId;
-    for tet_id in 0..n_tets_id {
-        let [v0, v1, v2, v3] = mesh.tet_vertices(tet_id);
-        let outward = [[v1, v2, v3], [v0, v3, v2], [v0, v1, v3], [v0, v2, v1]];
-        for face in outward {
-            let mut sorted = face;
-            sorted.sort_unstable();
-            face_count
-                .entry(sorted)
-                .and_modify(|(c, _)| *c += 1)
-                .or_insert((1, face));
-        }
-    }
-
-    face_count
-        .into_iter()
-        .filter_map(|(_, (count, face))| (count == 1).then_some(face))
-        .collect()
-}
-
 /// Vertices appearing in at least one boundary face, sorted ascending.
 fn boundary_vertices_of(boundary_faces: &[[VertexId; 3]]) -> Vec<VertexId> {
     let mut set: BTreeSet<VertexId> = BTreeSet::new();
@@ -446,8 +401,8 @@ fn verify_boundary_edges_appear_exactly_twice(edge_counts: &BTreeMap<[VertexId; 
 /// radially outward — equivalent on this scene to `normal · centroid >
 /// 0` since the sphere is centred at the origin and the boundary
 /// centroid lies near the analytic surface. Catches a regression that
-/// flips the canonical right-handed-tet face convention used in
-/// `extract_boundary_faces`.
+/// flips the canonical right-handed-tet face-winding convention emitted
+/// by `Mesh::boundary_faces()`.
 fn verify_boundary_outward_winding(mesh: &SdfMeshedTetMesh, boundary_faces: &[[VertexId; 3]]) {
     let positions = mesh.positions();
     for (i, face) in boundary_faces.iter().enumerate() {
@@ -692,13 +647,19 @@ pub fn run() -> Result<()> {
     let referenced = referenced_vertices(&mesh);
     verify_counts(&mesh, &referenced);
 
-    let boundary_faces = extract_boundary_faces(&mesh);
-    let boundary_vertices = boundary_vertices_of(&boundary_faces);
-    let edge_counts = boundary_edge_counts(&boundary_faces);
+    // The mesh already extracts and stores its outward-wound boundary
+    // triangles at construction — read them via the `Mesh::boundary_faces()`
+    // trait API rather than re-deriving them here. The closed-manifold /
+    // Euler-characteristic topology of that extraction is gated in the lib
+    // (`mesh::hand_built::tests::uniform_block_boundary_is_closed_genus_0_manifold`);
+    // this example demonstrates it at production sphere-scale.
+    let boundary_faces = mesh.boundary_faces();
+    let boundary_vertices = boundary_vertices_of(boundary_faces);
+    let edge_counts = boundary_edge_counts(boundary_faces);
 
-    verify_boundary_counts_and_topology(&boundary_faces, &boundary_vertices, &edge_counts);
+    verify_boundary_counts_and_topology(boundary_faces, &boundary_vertices, &edge_counts);
     verify_boundary_edges_appear_exactly_twice(&edge_counts);
-    verify_boundary_outward_winding(&mesh, &boundary_faces);
+    verify_boundary_outward_winding(&mesh, boundary_faces);
 
     let residuals = boundary_residuals(&mesh, &boundary_vertices);
     verify_boundary_residuals_within_eikonal_band(&residuals);
@@ -712,7 +673,7 @@ pub fn run() -> Result<()> {
     save_boundary_ply(
         &mesh,
         &boundary_vertices,
-        &boundary_faces,
+        boundary_faces,
         &residuals,
         &out_path,
     )?;
@@ -720,7 +681,7 @@ pub fn run() -> Result<()> {
     print_summary(
         &mesh,
         &referenced,
-        &boundary_faces,
+        boundary_faces,
         &boundary_vertices,
         &edge_counts,
         residual_buckets,
