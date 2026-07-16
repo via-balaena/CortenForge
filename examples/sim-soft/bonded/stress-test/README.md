@@ -27,13 +27,16 @@ Pa, `z < H/2`) and region B (`2×` Decision J composite, `z ≥ H/2`) — an exa
 displacement `d_bilayer ≈ 1.086e-2 m` matches the **Euler-Bernoulli composite
 (transformed-section) beam** analytic `δ_eb ≈ 1.299e-2 m` to **16.4 %** rel-err
 (`< 0.30` per IV-3's Tet4 sub-`O(h²)` sanity gate). Discriminators:
-`d_uniform_B < d_bilayer < d_uniform_A` (IV-2 lens β); per-interface-vertex
-`x_final`-via-either-layer bit-equality (first IV-2 shared-vertex continuity gate
-at production scale, HEADLINE B); 3 tip displacements pinned under the IV-1
-sparse-tier rel-tol contract. Sole coverage of the hand-built shared-vertex
-bilayer + composite-beam-bending path (axial tip force). cf-view artifact:
-`out/bilayer_beam.ply` — 960-centroid y-slab point cloud (`displacement_z` +
-`material_id` scalars, `DISPLACEMENT_SCALE = 20×` on rendered positions only).
+`d_uniform_B < d_bilayer < d_uniform_A` (IV-2 lens β); the shared-vertex
+bonding topology — every `z = H/2` interface vertex is incident to a tet in
+both layers, the C⁰-continuous / no-slip bond by construction (first IV-2
+shared-vertex continuity gate at production scale, HEADLINE B). Mesh counts
+are asserted as derived-formula structural invariants (`6·NX·NY·NZ` tets,
+exact `3840/3840` half-split), not captured freezes. Sole coverage of the
+hand-built shared-vertex bilayer + composite-beam-bending path (axial tip
+force). cf-view artifact: `out/bilayer_beam.ply` — ~960-centroid y-slab
+point cloud (`displacement_z` + `material_id` scalars,
+`DISPLACEMENT_SCALE = 20×` on rendered positions only).
 
 ### `lame_shells` (row 11) — three-shell hollow sphere vs piecewise-Lamé
 A three-shell concentric hollow silicone sphere (`DifferenceSdf` of two

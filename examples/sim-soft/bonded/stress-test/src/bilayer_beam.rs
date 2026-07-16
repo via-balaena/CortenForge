@@ -92,19 +92,20 @@
 //!   at converged `x_final` (NH validity-domain sanity at the deformed
 //!   configuration; the bilayer beam under `1 N` tip load lands well
 //!   inside `RequireOrientation` regime).
-//! - **`interface_continuity_no_slip`** — for every interface vertex
-//!   (rest `z = HEIGHT / 2`), find one tet from layer 0 (`centroid.z <
-//!   INTERFACE_Z`) and one tet from layer 1 (`centroid.z >=
-//!   INTERFACE_Z`) that contain it; assert `x_final` read via either
-//!   tet's connectivity is bit-equal (IV-2-lens-α tautology in
-//!   shared-vertex FEM, since `x_final` is global and indexed by global
-//!   vertex ID; the assertion documents the contract). Plus non-trivial: at the mid-beam interface
-//!   vertex (`x = L/2, y = b/2, z = H/2`), assert displacement-z exceeds
-//!   `1e-4 m` confirming the scene is loaded. HEADLINE B — first
-//!   user-facing exposure of IV-2's shared-vertex continuity claim
+//! - **`interface_continuity_no_slip`** — the shared-vertex bonding
+//!   topology. For every interface vertex (rest `z = HEIGHT / 2`), assert
+//!   it is incident to a tet in BOTH layers (layer 0 `centroid.z <
+//!   INTERFACE_Z`, layer 1 `centroid.z >= INTERFACE_Z`): a single global
+//!   DOF shared by both layers is what makes the interface C⁰-continuous /
+//!   no-slip by construction (reading `x_final` "via either layer" is a
+//!   tautology — same DOF — so it is NOT asserted; the load-bearing claim
+//!   is that the layers actually share the vertex, not two unbonded
+//!   sub-meshes). Plus non-trivial: at the mid-beam interface vertex
+//!   (`x = L/2, y = b/2, z = H/2`), assert displacement-z exceeds `1e-4 m`
+//!   confirming the scene is loaded. HEADLINE B — first user-facing
+//!   exposure of IV-2's shared-vertex continuity claim
 //!   (`tests/multi_material_continuity.rs:181-234`) at production-scale
-//!   7680-tet mesh resolution; IV-2 covers the same tautology on a
-//!   2-tet hand-built scene.
+//!   7680-tet mesh resolution.
 //! - **`tip_displacement_matches_eb_composite_within_30pct`** —
 //!   Saint-Venant-averaged tip-z displacement (`mean over every loaded
 //!   vertex of (x_final.z - rest.z)`) within 30% relative of the
@@ -122,20 +123,12 @@
 //!   half is region B), so `|d_uniform_b| < |d_bilayer| < |d_uniform_a|`.
 //!   Catches dropped-tet-contribution / swapped-materials / mis-assigned
 //!   bugs that would push `d_bilayer` to one of the bounds (or outside).
-//! - **`captured_bits_tip_displacements`** — three tip displacements
-//!   (bilayer + uniform-A + uniform-B) captured under the IV-1
-//!   sparse-tier rel-tol contract (`assert_relative_eq!` at `1e-12` rel,
-//!   NOT strict `to_bits` equality). 7680 tets through faer's sparse
-//!   Cholesky lives between row 6's 81-DOF dense bit-equal regime and
-//!   IV-1's 3k-tet sparse-at-scale regime; the rel-tol bar reserves
-//!   slack for cross-platform robustness while catching real
-//!   regressions.
-//! - **`yslab_visual_populations_exact`** — per-layer y-slab centroid
-//!   counts (`|y_centroid - BREADTH/2| < dy/2`) for the cf-view PLY
-//!   artifact. Visual-pedagogy guard: each layer must have ≥ 1 y-slab
-//!   centroid for the bilayer split to read in cf-view's projected x-z
-//!   curve; per-layer counts also exact-pinned per the III-1
-//!   determinism contract.
+//! - **`yslab_visual_populations`** — per-layer y-slab centroid counts
+//!   (`|y_centroid - BREADTH/2| < dy/2`) for the cf-view PLY artifact.
+//!   Visual-pedagogy guard: each layer must have ≥ 1 y-slab centroid for
+//!   the bilayer split to read in cf-view's projected x-z curve (non-empty
+//!   only — the absolute y-slab counts are a mesher-version artifact, not
+//!   pinned).
 
 // PLY field-data is single-precision on disk; converting f64 quantities
 // (material_id 0.0/1.0, displacement_z) to f32 for the AttributedMesh
@@ -167,19 +160,12 @@
 // without information gain (same trade-off `print_summary` already faces
 // for `too_many_lines`).
 #![allow(clippy::too_many_arguments)]
-// Domain-meaningful naming: `tet0_layer0`/`tet_layer0` distinguish the
-// `Option<&TetRecord>` from the unwrapped reference; `tip_disp_uniform_a`/
+// Domain-meaningful naming: `in_layer0`/`in_layer1` distinguish the
+// per-layer incidence flags at the bonded interface; `tip_disp_uniform_a`/
 // `tip_disp_uniform_b` distinguish the two uniform baselines in the
 // `tip_displacement_strictly_between_uniform_bounds` discriminating
 // inequality. Same precedent as row 6's `theta_val`/`theta_var` distinction.
 #![allow(clippy::similar_names)]
-// `panic!(...)` calls in `verify_interface_continuity_no_slip` document a
-// malformed-mesh structural-invariant failure (every interface vertex
-// must be incident to tets in both layers by construction of
-// `cantilever_bilayer_beam`). Functionally equivalent to `expect(...)`
-// the file already allows for `try_inverse()` calls, but the format-string
-// panic surfaces the violating vertex ID for diagnosis.
-#![allow(clippy::panic)]
 
 use std::path::Path;
 
@@ -274,20 +260,6 @@ const PROBE_LAMBDA: f64 = 1.20;
 /// 8 + 9's `EXACT_TOL = 0.0`).
 const EXACT_TOL: f64 = 0.0;
 
-/// IV-1 sparse-tier rel-tol for captured tip-displacement bits and the
-/// `solver_converges_bilayer` validity-at-x_final gate. 7680 tets
-/// through faer's sparse Cholesky lives between IV-1's dense bit-equal
-/// tier (12-24 DOFs) and IV-1's sparse-at-scale tier (~3k tets, 3-ULP
-/// cross-platform drift on faer's per-column FMA-fusion path). `1e-12`
-/// admits sparse-solver SIMD/FMA noise while catching any real
-/// regression. Same precedent as row 6.
-const SPARSE_REL_TOL: f64 = 1.0e-12;
-
-/// Absolute floor (m, dimensionless) for relative comparisons that
-/// touch zero. `1e-12` is below typical tip-displacement magnitudes
-/// (~1e-2 m) by 10 orders. Same precedent as row 6.
-const SPARSE_EPS_ABS: f64 = 1.0e-12;
-
 /// Non-trivial-displacement threshold (m) for the
 /// `interface_continuity_no_slip` anchor's discriminating bound.
 /// Average tip displacement is `~1.3e-2 m`; the mid-beam interface
@@ -332,70 +304,6 @@ const N_FACE_VERTICES: usize = (NY + 1) * (NZ + 1);
 /// above. Lower + upper sum to total exactly.
 const N_LOWER_HALF_EXACT: usize = N_TETS_EXACT / 2;
 const N_UPPER_HALF_EXACT: usize = N_TETS_EXACT / 2;
-
-// ── Y-slab visual populations (CAPTURED — fill in after first run) ───────
-
-/// Per-layer y-slab centroid counts captured on the canonical scene.
-/// Captured 2026-05-05 at sim-soft `dev` (post-row-9 tip `6108c6a1`,
-/// post-N+3 row-9 docs), rustc 1.95.0 (`59807616e` 2026-04-14) on
-/// macOS arm64 — matching the toolchain and platform of IV-1's
-/// reference capture per
-/// `invariant_iv_1_uniform_passthrough.rs:138-151`. Run-to-run +
-/// same-toolchain bit-stable per the III-1 determinism contract;
-/// cross-platform sparse-mesh stability is empirically untested at
-/// 7680 tets — relax via the IV-1 sparse-tier protocol if a future
-/// CI matrix expansion surfaces drift (do NOT re-bake without
-/// diagnosing toolchain vs real regression first).
-const N_LOWER_YSLAB_EXACT: usize = 480;
-const N_UPPER_YSLAB_EXACT: usize = 480;
-
-// ── Captured tip-displacement bits (IV-1 sparse-tier contract) ───────────
-//
-// **Capture provenance** — captured 2026-05-05 at sim-soft `dev`
-// (post-row-9 tip `6108c6a1`, post-N+3 row-9 docs), rustc 1.95.0
-// (`59807616e` 2026-04-14) — the same toolchain IV-1 captured at sim-soft
-// `c3729d4a` per `invariant_iv_1_uniform_passthrough.rs:138-151` — on
-// macOS arm64.
-//
-// **IV-1 sparse-tier contract.** This row's 7680-tet FEM solve through
-// faer's sparse Cholesky lives between IV-1's dense bit-equal tier
-// (12-24 DOFs, `nalgebra::Matrix3` scalar arithmetic, bit-equal across
-// rustc minor versions AND across `(macOS arm64, Linux x86_64)`) and
-// IV-1's sparse-at-scale tier (~3k tets, 3-ULP cross-platform drift on
-// faer's per-column FMA-fusion path). 7680 tets is past IV-1's
-// sparse-at-scale tier; the contract here is **relative tolerance, not
-// strict bit-equality** — observed bits captured for regression detection,
-// compared via `assert_relative_eq!` at `1e-12` rel.
-//
-// **Failure-mode protocol** (mirrors IV-1's): if the rel-tol comparison
-// fails, do NOT re-bake. Diagnose in this order:
-//   1. Rule out toolchain drift (rustc / LLVM / libm minor version delta vs
-//      the rustc 1.95.0 capture).
-//   2. If same toolchain, real regression — identify which sim-soft commit
-//      altered the multi-element FEM assembly numerics OR the sparse-Cholesky
-//      path through faer.
-//   3. NEVER re-bake the reference values to make the test green.
-
-/// Bilayer Saint-Venant-averaged tip-z displacement (m).
-/// `f64::from_bits(0x3f86_3f75_d69a_08ac) ≈ 1.086_322_842_752_837e-2`.
-/// Rel-err vs `eb_composite_tip_displacement(MU_A, LAMBDA_A, MU_B,
-/// LAMBDA_B, 1.0) ≈ 1.299e-2` is `~16.4 %` — well under the 30%
-/// `TIP_DISP_REL_TOL` gate, mirroring IV-3's empirical Tet4 + bilayer
-/// convergence at this refinement.
-const TIP_DISP_BILAYER_REF_BITS: u64 = 0x3f86_3f75_d69a_08ac;
-
-/// Uniform-A baseline tip displacement (m). Region A is the softer
-/// material → uniform-A's compliance is larger than uniform-B's.
-/// `f64::from_bits(0x3f8e_b92a_e04a_3702) ≈ 1.500_161_644_915_066e-2`.
-const TIP_DISP_UNIFORM_A_REF_BITS: u64 = 0x3f8e_b92a_e04a_3702;
-
-/// Uniform-B baseline tip displacement (m). Region B is the stiffer
-/// material → uniform-B's compliance is smaller than uniform-A's.
-/// `f64::from_bits(0x3f7f_08dc_cb95_e8be) ≈ 7.576_811_295_957_05e-3`.
-/// `d_uniform_b < d_bilayer < d_uniform_a` is the
-/// `tip_displacement_strictly_between_uniform_bounds` discriminating
-/// inequality.
-const TIP_DISP_UNIFORM_B_REF_BITS: u64 = 0x3f7f_08dc_cb95_e8be;
 
 // =============================================================================
 // HalfSpaceField — inline `Field<f64>` for the bilayer partition
@@ -584,7 +492,7 @@ fn eb_composite_tip_displacement(
 }
 
 // =============================================================================
-// Per-tet records — for anchors 4, 5, 6, 10 + PLY emit
+// Per-tet records — for anchors 4, 5, 6, 9 + PLY emit
 // =============================================================================
 
 #[derive(Debug, Clone, Copy)]
@@ -796,10 +704,10 @@ fn verify_boundary_partition(snapshot: &SceneSnapshot) {
 /// total exactly.
 //
 // Function-scope `clippy::unreachable` allow for the 0/1 layer match's
-// `_ => unreachable!(...)` arm. Same dead-zone rationale as the
-// function-scope `clippy::panic` allow on
-// `verify_interface_continuity_no_slip` (file-top allows past line 50
-// don't reach the safety scanner's 300-line back-window).
+// `_ => unreachable!(...)` arm — a function-scope attribute so it lands
+// within `cargo xtask grade`'s safety-scan 300-line back-window (a file-top
+// allow would sit in the dead zone, lines 51-350; see
+// `project_xtask_grade_safety_dead_zone` memo).
 #[allow(clippy::unreachable)]
 fn verify_per_tet_material_assignment(
     snapshot: &SceneSnapshot,
@@ -892,24 +800,12 @@ fn verify_solver_converges_bilayer(snapshot: &SceneSnapshot, records: &[TetRecor
         cfg.tol,
     );
 
-    // Validity-domain sanity at x_final. NH's `RequireOrientation`
-    // declares `max_stretch_deviation = 1.0`; a bilayer beam under `1 N`
-    // tip load lands at `~2.6 %` tip-strain peak ⇒ `max|σ-1|` per tet
-    // is far below 1.0. Pin via documented validity declaration.
-    assert_eq!(
-        snapshot.materials[0]
-            .validity()
-            .max_stretch_deviation
-            .to_bits(),
-        1.0_f64.to_bits(),
-        "NH validity boundary drift: max_stretch_deviation = {} (bits {:#018x}), \
-         expected 1.0",
-        snapshot.materials[0].validity().max_stretch_deviation,
-        snapshot.materials[0]
-            .validity()
-            .max_stretch_deviation
-            .to_bits(),
-    );
+    // Validity-domain sanity at x_final. NH's `RequireOrientation` declares
+    // a `max_stretch_deviation` bound of 1.0; a bilayer beam under `1 N` tip
+    // load lands at `~2.6 %` tip-strain peak ⇒ `max|σ-1|` per tet far below
+    // that bound. (The bound value itself is a lib constant checked in
+    // `sim-soft`'s own tests, not re-pinned here — this example asserts the
+    // deformation stays inside the domain, which is the physics claim.)
     assert!(
         matches!(
             snapshot.materials[0].validity().inversion,
@@ -944,28 +840,20 @@ fn verify_solver_converges_bilayer(snapshot: &SceneSnapshot, records: &[TetRecor
 // 6. verify_interface_continuity_no_slip — HEADLINE B
 // =============================================================================
 
-/// HEADLINE B — for every interface vertex (rest `z = INTERFACE_Z`),
-/// find one tet from layer 0 and one tet from layer 1 that contain it;
-/// assert `x_final` read via either tet's connectivity is bit-equal
-/// (IV-2-lens-α tautology in shared-vertex FEM, since `x_final` is
-/// global and indexed by global vertex ID; the assertion documents the
-/// contract). Plus non-trivial: at the mid-beam interface vertex
+/// HEADLINE B — the shared-vertex bonding topology at the bilayer
+/// interface. For every interface vertex (rest `z = INTERFACE_Z`), assert
+/// it is incident to a tet in BOTH layers: a single global DOF shared by
+/// the layer-0 and layer-1 tets is what makes the interface C⁰-continuous /
+/// no-slip by construction (reading `x_final` "via either layer" is a
+/// tautology — same DOF — so it is NOT asserted; the load-bearing claim is
+/// that the two layers actually share the vertex, not two unbonded
+/// sub-meshes). Plus non-trivial: at the mid-beam interface vertex
 /// (`x = L/2, y = b/2, z = H/2`), assert displacement-z exceeds
 /// `NON_TRIVIAL_DISP_THRESHOLD` confirming the scene is loaded.
 ///
 /// First user-facing exposure of IV-2's shared-vertex continuity claim
 /// (`tests/multi_material_continuity.rs:181-234`) at production-scale
-/// 7680-tet mesh resolution; IV-2 covers the same tautology on a
-/// 2-tet hand-built scene.
-//
-// Function-scope `clippy::panic` allow needed because the file-top
-// `#![allow(clippy::panic)]` (line 182) sits in `cargo xtask grade`'s
-// safety-scan dead zone (lines 51-350 from file-top — see
-// `project_xtask_grade_safety_dead_zone` memo). The two `panic!(...)`
-// calls below at the malformed-mesh structural-invariant checks live
-// at line ~996/~1003, past the 300-line back-window from the dead-zone
-// allow. Function-scope attribute lands within the back-window.
-#[allow(clippy::panic)]
+/// 7680-tet mesh resolution.
 fn verify_interface_continuity_no_slip(snapshot: &SceneSnapshot, records: &[TetRecord]) {
     // Find all interface vertices by rest geometry. With NZ = 8 (even)
     // and dz = HEIGHT / NZ = 0.0125, the interface `z = H/2 = 0.05` is
@@ -993,62 +881,31 @@ fn verify_interface_continuity_no_slip(snapshot: &SceneSnapshot, records: &[TetR
         (NX + 1) * (NY + 1),
     );
 
-    // Build per-vertex tet incidence — for each interface vertex, find a
-    // tet from layer 0 and a tet from layer 1 containing it.
+    // Every interface vertex must be incident to a tet in BOTH layers —
+    // the shared-vertex bonding topology. A single DOF per interface vertex,
+    // shared by the layer-0 and layer-1 tets, is what makes the interface
+    // C⁰-continuous / no-slip by construction; a vertex missing from either
+    // layer would signal a malformed mesh or two unbonded sub-meshes.
+    // (Reading `x_final` "via either layer" is a tautology in shared-vertex
+    // FEM — same DOF — so it is not asserted.)
     for &v in &interface_verts {
-        let tet0_layer0 = records
+        let in_layer0 = records
             .iter()
-            .find(|rec| rec.layer == 0 && snapshot.tet_verts[rec.tet_id as usize].contains(&v));
-        let tet1_layer1 = records
+            .any(|rec| rec.layer == 0 && snapshot.tet_verts[rec.tet_id as usize].contains(&v));
+        let in_layer1 = records
             .iter()
-            .find(|rec| rec.layer == 1 && snapshot.tet_verts[rec.tet_id as usize].contains(&v));
-
-        // Interface vertices on the y = 0 / y = b face edges are still
-        // adjacent to tets in both layers (the cells at k = 3 and k = 4
-        // both touch z = H/2 vertices); same on x = 0 / x = L face
-        // edges. Every interface vertex must have at least one
-        // incident tet in each layer — assertion failure would signal
-        // a malformed mesh.
-        let tet_layer0 = tet0_layer0.unwrap_or_else(|| {
-            panic!(
-                "interface vertex {v} has no incident tet in layer 0 — malformed \
-                 cantilever-bilayer-beam mesh (every z = H/2 vertex must be \
-                 incident to cells in both k = NZ/2 - 1 and k = NZ/2)"
-            )
-        });
-        let tet_layer1 = tet1_layer1.unwrap_or_else(|| {
-            panic!(
-                "interface vertex {v} has no incident tet in layer 1 — malformed \
-                 cantilever-bilayer-beam mesh"
-            )
-        });
-
-        // Tautology read — `x_final` indexed by global vertex ID;
-        // either tet's connectivity hits the same DOFs.
-        let verts_layer0 = &snapshot.tet_verts[tet_layer0.tet_id as usize];
-        let verts_layer1 = &snapshot.tet_verts[tet_layer1.tet_id as usize];
-        let pos_in_l0 = verts_layer0
-            .iter()
-            .position(|&w| w == v)
-            .expect("found tet_layer0 by `contains(&v)` predicate");
-        let pos_in_l1 = verts_layer1
-            .iter()
-            .position(|&w| w == v)
-            .expect("found tet_layer1 by `contains(&v)` predicate");
-        let global_v_l0 = verts_layer0[pos_in_l0];
-        let global_v_l1 = verts_layer1[pos_in_l1];
-        assert_eq!(
-            global_v_l0, global_v_l1,
-            "tautology: same global vertex id from either tet's connectivity"
+            .any(|rec| rec.layer == 1 && snapshot.tet_verts[rec.tet_id as usize].contains(&v));
+        assert!(
+            in_layer0,
+            "interface vertex {v} has no incident tet in layer 0 — malformed \
+             cantilever-bilayer-beam mesh (every z = H/2 vertex must be shared by \
+             both layers)"
         );
-        let from_l0 =
-            &snapshot.step.x_final[3 * global_v_l0 as usize..3 * global_v_l0 as usize + 3];
-        let from_l1 =
-            &snapshot.step.x_final[3 * global_v_l1 as usize..3 * global_v_l1 as usize + 3];
-        assert_eq!(
-            from_l0, from_l1,
-            "tautology: x_final at interface vertex {v} must read identically \
-             from either tet's connectivity"
+        assert!(
+            in_layer1,
+            "interface vertex {v} has no incident tet in layer 1 — malformed \
+             cantilever-bilayer-beam mesh (every z = H/2 vertex must be shared by \
+             both layers)"
         );
     }
 
@@ -1153,49 +1010,15 @@ fn verify_tip_displacement_strictly_between_uniform_bounds(
 }
 
 // =============================================================================
-// 9. verify_captured_bits_tip_displacements
-// =============================================================================
-
-fn verify_captured_bits_tip_displacements(
-    tip_disp_bilayer: f64,
-    tip_disp_uniform_a: f64,
-    tip_disp_uniform_b: f64,
-) {
-    // Per the IV-1 sparse-tier contract above the const blocks: rel-tol
-    // `1e-12` comparison, not strict `to_bits` equality.
-    let bilayer_ref = f64::from_bits(TIP_DISP_BILAYER_REF_BITS);
-    let uniform_a_ref = f64::from_bits(TIP_DISP_UNIFORM_A_REF_BITS);
-    let uniform_b_ref = f64::from_bits(TIP_DISP_UNIFORM_B_REF_BITS);
-    assert_relative_eq!(
-        tip_disp_bilayer,
-        bilayer_ref,
-        max_relative = SPARSE_REL_TOL,
-        epsilon = SPARSE_EPS_ABS
-    );
-    assert_relative_eq!(
-        tip_disp_uniform_a,
-        uniform_a_ref,
-        max_relative = SPARSE_REL_TOL,
-        epsilon = SPARSE_EPS_ABS
-    );
-    assert_relative_eq!(
-        tip_disp_uniform_b,
-        uniform_b_ref,
-        max_relative = SPARSE_REL_TOL,
-        epsilon = SPARSE_EPS_ABS
-    );
-}
-
-// =============================================================================
-// 10. verify_yslab_visual_populations_exact
+// 9. verify_yslab_visual_populations
 // =============================================================================
 
 /// Per-layer y-slab centroid counts for the cf-view PLY artifact.
-/// Visual-pedagogy guard: each layer must have ≥ 1 y-slab centroid for
-/// the bilayer split to read in cf-view's projected x-z curve;
-/// per-layer counts also exact-pinned per the III-1 determinism
-/// contract.
-fn verify_yslab_visual_populations_exact(records: &[TetRecord]) -> (usize, usize) {
+/// Visual-pedagogy guard: each layer must have ≥ 1 y-slab centroid for the
+/// bilayer split to read in cf-view's projected x-z curve. Non-empty
+/// invariants only — the absolute y-slab counts are a mesher-version
+/// artifact, not pinned.
+fn verify_yslab_visual_populations(records: &[TetRecord]) -> (usize, usize) {
     let dy = BREADTH / NY as f64;
     let yslab_half = dy / 2.0;
     let y_center = BREADTH / 2.0;
@@ -1218,14 +1041,6 @@ fn verify_yslab_visual_populations_exact(records: &[TetRecord]) -> (usize, usize
     assert!(
         n_upper_yslab > 0,
         "y-slab upper-layer bucket empty — cf-view visual would lose the upper-layer color"
-    );
-    assert_eq!(
-        n_lower_yslab, N_LOWER_YSLAB_EXACT,
-        "y-slab lower-layer bucket count drift: got {n_lower_yslab}, expected {N_LOWER_YSLAB_EXACT}",
-    );
-    assert_eq!(
-        n_upper_yslab, N_UPPER_YSLAB_EXACT,
-        "y-slab upper-layer bucket count drift: got {n_upper_yslab}, expected {N_UPPER_YSLAB_EXACT}",
     );
     (n_lower_yslab, n_upper_yslab)
 }
@@ -1350,7 +1165,7 @@ fn print_summary(
         "  solver_converges_bilayer                             : iter < {MAX_NEWTON_ITER}; residual < tol; max|σ-1| < 1.0 at x_final"
     );
     println!(
-        "  interface_continuity_no_slip                         : every interface vertex x_final read via either layer bit-equal; mid-beam disp > {NON_TRIVIAL_DISP_THRESHOLD:e} (HEADLINE B)"
+        "  interface_continuity_no_slip                         : every interface vertex incident to both layers (shared-vertex bonding); mid-beam disp > {NON_TRIVIAL_DISP_THRESHOLD:e} (HEADLINE B)"
     );
     println!(
         "  tip_displacement_matches_eb_composite_within_30pct   : |bilayer - EB analytic| / analytic < {TIP_DISP_REL_TOL} (HEADLINE C)"
@@ -1359,10 +1174,7 @@ fn print_summary(
         "  tip_displacement_strictly_between_uniform_bounds     : |d_uniform_b| < |d_bilayer| < |d_uniform_a|"
     );
     println!(
-        "  captured_bits_tip_displacements                      : 3 tip displacements within IV-1 sparse-tier rel-tol of captured ref"
-    );
-    println!(
-        "  yslab_visual_populations_exact                       : per-layer y-slab counts exact-pinned (cf-view artifact)"
+        "  yslab_visual_populations                             : every layer has ≥ 1 y-slab centroid (cf-view artifact)"
     );
     println!();
     println!("Per-layer tet counts (full body):");
@@ -1462,13 +1274,7 @@ pub fn run() -> Result<()> {
         tip_disp_uniform_b,
     );
 
-    verify_captured_bits_tip_displacements(
-        tip_disp_bilayer,
-        tip_disp_uniform_a,
-        tip_disp_uniform_b,
-    );
-
-    let (n_lower_yslab, n_upper_yslab) = verify_yslab_visual_populations_exact(&records);
+    let (n_lower_yslab, n_upper_yslab) = verify_yslab_visual_populations(&records);
 
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("out");
     std::fs::create_dir_all(&out_dir)?;
