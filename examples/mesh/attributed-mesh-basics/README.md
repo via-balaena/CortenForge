@@ -42,7 +42,11 @@ AttributedMesh {
 Each populated slot has length `vertex_count()`. `extras` map values share
 that constraint and `insert_extra` enforces it at insertion time.
 
-## Numerical anchors
+## Expected values (printed)
+
+The `AttributedMesh` slot semantics + `insert_extra` length validation
+these show off are owned by `mesh-types`' lib tests; this example prints
+the populated state for inspection rather than asserting it.
 
 - `vertex_count == 8`, `face_count == 12`
 - `mesh.normals` is `Some` with length 8

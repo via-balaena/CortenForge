@@ -2,8 +2,10 @@
 //!
 //! Builds a unit cube, attaches `extras["height"]` = each vertex's
 //! z-coordinate, saves via [`mesh_io::save_ply_attributed`], reloads via
-//! [`mesh_io::load_ply_attributed`], and asserts every numerical anchor
-//! listed in the README.
+//! [`mesh_io::load_ply_attributed`], and prints the recovered values.
+//! A demonstration of the workflow — round-trip correctness (count
+//! preservation + bit-equal extras) is owned by `mesh-io`'s
+//! `roundtrip_attributed_*` lib tests, not asserted here.
 //!
 //! See `examples/mesh/README.md` for cadence; see
 //! `docs/studies/mesh_architecture/src/80-examples.md` for the spec.
@@ -24,7 +26,7 @@ fn main() -> Result<()> {
 
     // Populate `extras["height"]` = each vertex's z-coordinate (f32).
     let heights: Vec<f32> = mesh.geometry.vertices.iter().map(|v| v.z as f32).collect();
-    mesh.insert_extra("height", heights.clone())?;
+    mesh.insert_extra("height", heights)?;
 
     // Write the binary PLY to <crate>/out/cube.ply (cwd-independent).
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("out");
@@ -32,39 +34,13 @@ fn main() -> Result<()> {
     let out_path = out_dir.join("cube.ply");
     save_ply_attributed(&mesh, &out_path, true)?;
 
-    // Reload and assert every round-trip invariant.
+    // Reload the attributed PLY and read back the recovered values. This
+    // is a demonstration of the save → load workflow — round-trip
+    // correctness (vertex/face-count preservation + bit-equal `extras`) is
+    // owned by `mesh-io`'s `roundtrip_attributed_*` lib tests, so this
+    // example only illustrates the flow and prints what came back.
     let reloaded = load_ply_attributed(&out_path)?;
-    assert_eq!(reloaded.vertex_count(), 8, "vertex count must roundtrip");
-    assert_eq!(reloaded.face_count(), 12, "face count must roundtrip");
-    assert_eq!(
-        reloaded.extras.len(),
-        1,
-        "expected exactly one extra key (\"height\")",
-    );
-    assert!(
-        reloaded.extras.contains_key("height"),
-        "\"height\" extra missing after roundtrip",
-    );
     let reloaded_heights = &reloaded.extras["height"];
-    assert_eq!(
-        reloaded_heights.len(),
-        reloaded.vertex_count(),
-        "heights length must equal vertex count",
-    );
-    assert_eq!(
-        reloaded_heights, &heights,
-        "extras[\"height\"] must be bit-equal after roundtrip",
-    );
-    for (i, v) in reloaded.geometry.vertices.iter().enumerate() {
-        // Bit-equality (not approx) — values are 0.0 / 1.0, exactly
-        // representable in f32; PLY writes f32 LE bytes and the loader
-        // reads them back without any further conversion.
-        assert_eq!(
-            reloaded_heights[i].to_bits(),
-            (v.z as f32).to_bits(),
-            "height[{i}] must bit-equal reloaded vertex z-coord",
-        );
-    }
 
     // Numerical summary for the user-facing numbers pass.
     println!("==== ply-with-custom-attributes ====");
@@ -76,7 +52,7 @@ fn main() -> Result<()> {
     );
     println!("heights      : {reloaded_heights:?}");
     println!("output       : {}", out_path.display());
-    println!("OK — round-trip verified");
+    println!("OK — round-trip demonstrated");
 
     Ok(())
 }

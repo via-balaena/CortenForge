@@ -12,8 +12,11 @@ Builds a unit cube (`mesh_types::unit_cube`, 8 vertices, 12 triangles)
 and saves it independently to `out/cube.stl`, `out/cube.ply`, and
 `out/cube.obj` (fan-from-source, not a chain — chained tests would
 conflate per-format losses). Each artifact is reloaded via the matching
-`mesh_io::load_*` and compared back to the source on five invariants:
-vertex count, face count, signed volume, surface area, and AABB.
+`mesh_io::load_*` and its five invariants — vertex count, face count,
+signed volume, surface area, and AABB — printed in a comparison table
+alongside the source row. Format-preserving round-trip correctness is
+owned by `mesh-io`'s per-format lib tests; this example demonstrates the
+divergence rather than asserting it.
 
 The headline divergence is that `mesh_io::load_stl` does **not** dedup
 vertices — STL files store three fresh vertices per triangle on disk,
@@ -21,7 +24,7 @@ and the loader honors that, so the unit cube round-trips through STL
 with 36 vertices instead of 8. PLY and OBJ both store explicit vertex
 sharing and recover the original 8.
 
-## Numerical anchors
+## Expected values (printed in the table)
 
 - `face_count == 12` for all three formats
 - `vertex_count == 36` after STL round-trip (12 tris × 3 fresh verts)
@@ -43,7 +46,7 @@ binaries traverse f32 on disk, OBJ traverses `:.6` ASCII. For
 - Open `out/cube.stl`, `out/cube.ply`, and `out/cube.obj` in MeshLab /
   ParaView / Blender — all three render as the same closed unit cube
 - No degenerate triangles, no duplicate faces, no inverted normals
-  (winding sanity check beyond the numerical assertion)
+  (winding sanity, reflected in the printed positive volume)
 - The STL file size is noticeably larger relative to its information
   content — that's the topology loss made tangible
 - If your viewer renders the OBJ all-black, that's the OBJ-format

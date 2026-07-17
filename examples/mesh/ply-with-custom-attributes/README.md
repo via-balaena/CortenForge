@@ -12,10 +12,12 @@ Builds a unit cube (`mesh_types::unit_cube`, 8 vertices, 12 triangles) and
 wraps it as an `AttributedMesh`. Populates a single per-vertex extra
 `extras["height"]` whose values are each vertex's z-coordinate cast to
 `f32`. Writes the attributed mesh to `out/cube.ply` as binary PLY, then
-reloads via `load_ply_attributed` and asserts every numerical anchor
-below.
+reloads via `load_ply_attributed` and prints the recovered values.
+Round-trip correctness (count preservation + bit-equal `extras`) is owned
+by `mesh-io`'s `roundtrip_attributed_*` lib tests; this example
+demonstrates the workflow rather than asserting it.
 
-## Numerical anchors
+## Expected values (printed)
 
 - Vertex count: 8 in == 8 out
 - Face count: 12 in == 12 out

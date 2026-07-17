@@ -3,8 +3,11 @@
 **The repair pipeline pattern from broken to clean.** The `mesh-repair`
 crate exposes operations to fix six classes of common mesh defects.
 This example deliberately constructs a unit cube with all six defects,
-runs the repair pipeline in three explicit stages, and verifies the
-result is watertight, manifold, and outward-wound.
+runs the repair pipeline in three explicit stages, and prints each
+stage's diagnostics so you can watch the mesh become watertight,
+manifold, and outward-wound. The stage-by-stage repair oracle is owned
+by `mesh-repair`'s `tests/repair_pipeline.rs` end-to-end lib test — this
+walkthrough demonstrates the pattern rather than asserting it.
 
 `repair_mesh(&RepairParams)` is the **basic** pipeline — it runs four
 of the six fix operations: degenerate-triangle removal, vertex welding,
@@ -46,7 +49,7 @@ it with six defects, one per repair operation:
 
 Snapshots the broken mesh as `out/before.ply`, runs the pipeline,
 snapshots the repaired mesh as `out/after.ply`, and reloads both via
-`load_ply` to verify round-trip integrity.
+`load_ply`, printing their recovered counts.
 
 ## The pipeline diagram
 
@@ -72,7 +75,11 @@ boundary normal and may or may not match the rest of the mesh. One
 final winding pass fixes both the original reversed face AND any
 fill-tri inconsistency.
 
-## Numerical anchors
+## Expected values (printed at each stage)
+
+These are the stage outputs the walkthrough prints for inspection; the
+same transitions are asserted end-to-end in `mesh-repair`'s
+`tests/repair_pipeline.rs`.
 
 **Pre-repair (broken mesh):**
 
@@ -116,7 +123,8 @@ In the run on the author's machine: 8 boundary edges and 2
 non-manifold edges pre-repair, dropping to 3 boundary edges and 0
 non-manifold edges after `repair_mesh`. The exact pre-repair counts
 may vary across machines/runs (hashbrown ordering); the post-repair
-counts are deterministic and asserted by the example.
+counts are deterministic (asserted in `mesh-repair`'s
+`tests/repair_pipeline.rs`, printed here).
 
 **After `repair_mesh(&RepairParams::default())`:**
 
@@ -174,10 +182,11 @@ sweeps everything orphaned by **all** prior stages:
 After all four stages: 3 orphaned vertices, all cleaned up in the
 final pass. This is the cascade pattern — earlier repair stages create
 later cleanup work, which is why running `remove_unreferenced_vertices`
-last is correct. The number `3` is asserted exactly so this property
-becomes a drift-catching anchor: if a future change to `repair_mesh`
-re-orders stages or stops orphaning vertices, the example will fail
-loudly rather than silently diverging from the documented behavior.
+last is correct. The number `3` is the drift-catching anchor for this
+property: `mesh-repair`'s `tests/repair_pipeline.rs` asserts
+`unreferenced_removed == 3` exactly, so if a future change to
+`repair_mesh` re-orders stages or stops orphaning vertices, that lib
+test fails loudly rather than the behavior silently diverging.
 
 ## Visuals
 

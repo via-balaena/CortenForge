@@ -23,12 +23,6 @@ use anyhow::Result;
 use mesh_io::{load_obj, load_ply, load_stl, save_obj, save_ply, save_stl};
 use mesh_types::{Aabb, Bounded, IndexedMesh, unit_cube};
 
-/// Tolerance for scalar invariants that traverse f32 (STL, PLY) or
-/// `:.6` ASCII (OBJ). The unit cube's coordinates are 0.0/1.0 and
-/// exactly representable in f32, so in practice the round-trip is
-/// bit-exact; the tolerance documents the precision contract.
-const EPS: f64 = 1.0e-6;
-
 /// Five invariants we read off each loaded mesh.
 struct Summary {
     vertex_count: usize,
@@ -102,59 +96,15 @@ fn main() -> Result<()> {
     print_row("ply", &s_ply);
     print_row("obj", &s_obj);
 
-    // Topology divergence — the headline anchor of this example.
-    assert_eq!(
-        s_stl.vertex_count, 36,
-        "STL roundtrip should NOT dedup vertices: 12 tris * 3 = 36 expected",
-    );
-    assert_eq!(
-        s_ply.vertex_count, 8,
-        "PLY must preserve vertex sharing: expected 8 verts",
-    );
-    assert_eq!(
-        s_obj.vertex_count, 8,
-        "OBJ must preserve vertex sharing: expected 8 verts",
-    );
-
-    // Face count is preserved by all three formats.
-    assert_eq!(s_stl.face_count, 12, "STL face count must roundtrip");
-    assert_eq!(s_ply.face_count, 12, "PLY face count must roundtrip");
-    assert_eq!(s_obj.face_count, 12, "OBJ face count must roundtrip");
-
-    // Geometry preserved by all three (volume ≈ 1, area ≈ 6).
-    for (label, s) in [("stl", &s_stl), ("ply", &s_ply), ("obj", &s_obj)] {
-        assert!(
-            (s.volume - 1.0).abs() < EPS,
-            "{label} signed_volume must be 1.0 within {EPS}, got {}",
-            s.volume,
-        );
-        assert!(
-            s.volume > 0.0,
-            "{label} signed_volume must be positive (winding sanity), got {}",
-            s.volume,
-        );
-        assert!(
-            (s.area - 6.0).abs() < EPS,
-            "{label} surface_area must be 6.0 within {EPS}, got {}",
-            s.area,
-        );
-        for (axis, want, got) in [
-            ("min.x", 0.0, s.aabb.min.x),
-            ("min.y", 0.0, s.aabb.min.y),
-            ("min.z", 0.0, s.aabb.min.z),
-            ("max.x", 1.0, s.aabb.max.x),
-            ("max.y", 1.0, s.aabb.max.y),
-            ("max.z", 1.0, s.aabb.max.z),
-        ] {
-            assert!(
-                (got - want).abs() < EPS,
-                "{label} aabb.{axis} must be {want} within {EPS}, got {got}",
-            );
-        }
-    }
+    // The table above IS the comparison: read down the `verts` column to
+    // see the headline divergence — STL does NOT dedup (36 = 12 tris × 3)
+    // while PLY and OBJ recover the shared 8; all three preserve the
+    // cube's geometry (volume ≈ 1, area ≈ 6, unit AABB). Format-preserving
+    // round-trip correctness is owned by `mesh-io`'s per-format lib tests,
+    // so this example demonstrates the workflow rather than asserting it.
 
     println!("output     : {}", out_dir.display());
-    println!("OK — format conversion verified");
+    println!("OK — format conversion demonstrated");
 
     Ok(())
 }
