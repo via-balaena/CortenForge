@@ -3,14 +3,16 @@
 //! One headless validator covering the sim-soft uniaxial-stretch surface on the
 //! canonical compressible Neo-Hookean baseline (`μ = 1e5`, `Λ = 4e5` Pa,
 //! `ν ≈ 0.4`) — a deliberate solver → constitutive → assembly ladder, folded
-//! from three former per-concept examples (each now a module preserving its
-//! hand-authored fixture + oracle checks verbatim):
+//! from three former per-concept examples, each now a module driving the real
+//! engine and emitting an inspectable trace:
 //!
 //! - [`single_tet`] (row 4) — `SkeletonSolver::step` end-to-end on
 //!   `SoftScene::one_tet_cube`: a `θ = 10 N` `+ẑ` traction on `v_3` with
-//!   `v_0..v_2` Dirichlet-pinned, converging in 3 Newton iters. Anchors the
-//!   walking-skeleton solver path with 12 IV-1 `x_final` bit-pins + an exact
-//!   iter-count pin + a dimensional displacement band.
+//!   `v_0..v_2` Dirichlet-pinned, converging in 3 Newton iters. Demonstrates
+//!   the walking-skeleton solver path and emits the DOF trace; self-gates only
+//!   that the solve converged. The scene's physical correctness (`x_final`
+//!   bit-equality, Dirichlet pins, displacement sign / band) is owned by the
+//!   `sim-soft` lib tests `solver_convergence.rs` + IV-1.
 //! - [`neo_hookean`] (row 5) — the traction-free uniaxial force-stretch
 //!   CURVE (`F = diag(λ, λ_t, λ_t)`, `λ_t` from a 1-D inner Newton) driven
 //!   through the real `NeoHookean` across a 12-point sweep and emitted as
@@ -37,10 +39,11 @@
 //!
 //! Each module self-gates and aborts (exit 101) on any mismatch, so
 //! `cargo xtask run-validators` runs it red-or-green. The gate KIND varies
-//! by module: [`single_tet`] and [`multi_element`] carry closed-form /
-//! bit-equal / convergence oracles; [`neo_hookean`] is a demonstration whose
-//! constitutive correctness lives in the `sim-soft` lib tests, so it gates
-//! only on demonstration-integrity + curve-shape properties. Each writes its
+//! by module: [`multi_element`] carries the multi-element assembly oracle
+//! (per-tet `F`/stress uniformity); [`single_tet`] and [`neo_hookean`] are
+//! demonstrations whose physical / constitutive correctness lives in the
+//! `sim-soft` lib tests, so they gate only on demonstration-integrity (that
+//! the solve converged) + curve-shape properties. Each writes its
 //! human-inspectable JSON trace to a namespaced `out/<module>/` directory;
 //! [`neo_hookean`] additionally has a companion `plot.py` (PEP 723 `uv run`)
 //! that renders its sweep to `out/neo_hookean/`.
