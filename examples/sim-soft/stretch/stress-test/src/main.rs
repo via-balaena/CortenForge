@@ -25,9 +25,11 @@
 //! - [`multi_element`] (row 6) — Phase 2 multi-element FEM assembly on a
 //!   27-vertex / 48-tet `HandBuiltTetMesh::uniform_block(2)` under uniform
 //!   Dirichlet stretch (`λ = 1.20`, one interior vertex free), quasi-static via
-//!   `cfg.density = 0`. The assembly ORACLE: per-tet `F` uniform `diag(λ, 1, 1)`
-//!   across all 48 tets + a bounded `P_11` uniformity spread — example-only, an
-//!   axis `tests/uniaxial_fem_coupon.rs` (single element) doesn't reach. Real
+//!   `cfg.density = 0` — a heavy end-to-end FEM solve demonstrating per-tet `F`
+//!   uniform `diag(λ, 1, 1)` across all 48 tets + a bounded `P_11` uniformity
+//!   spread. Its distinct axis vs the lib's `tests/uniaxial_fem_coupon.rs`
+//!   (a multi-element *traction-free* patch test) is the **constrained-transverse**
+//!   `diag(λ, 1, 1)` config + the explicit all-48 per-element readout. Real
 //!   per-tet `P`/ψ go to the JSON; their closed-form CORRECTNESS is lib-owned.
 //!
 //! The three are complementary, not subsuming: [`single_tet`] is the sole

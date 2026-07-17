@@ -55,15 +55,24 @@
 //!     F_ij  = 0  for i ≠ j               (diagonal F)
 //! ```
 //!
-//! The genuine oracle here is the **multi-element FEM ASSEMBLY** — that
-//! homogeneous Dirichlet boundary data, stitched local→global across all 48
-//! tets and solved on the free block, reproduces the uniform deformation. That
-//! is example-only: `tests/uniaxial_fem_coupon.rs` covers the single-element
-//! homogeneous-reproduction, but not the all-48-tet uniformity. The
-//! *constitutive* law at `F = diag(λ, 1, 1)` (the `P`/`ψ` closed form) is owned
-//! by the `sim-soft` `NeoHookean` lib tests (`diag(s,1,1)` + `diag(a,b,b)`), so
-//! this module reads the real per-tet `P`/`ψ` into the JSON but does not
-//! re-assert their values against the closed form.
+//! This module is the **assembly rung** of the stretch pipeline ladder: a
+//! heavy end-to-end FEM solve (mesh build → Dirichlet BC → Newton solve →
+//! per-tet `F`) demonstrating that homogeneous Dirichlet data, stitched
+//! local→global and solved on the free block, reproduces the uniform
+//! deformation — with an explicit per-element `F` uniformity + `P_11` spread
+//! readout across all 48 tets.
+//!
+//! The FEM assembly *machinery* and the constitutive law it drives are both
+//! lib-owned: `tests/uniaxial_fem_coupon.rs` is a multi-element (384-tet)
+//! **traction-free** (`F = diag(λ, λ_t, λ_t)`) constant-strain patch test —
+//! it pins the boundary to the affine field, drives every interior node back
+//! onto it, and checks a representative element's `F`/stress; and the `P`/`ψ`
+//! closed form is owned by the `NeoHookean` lib tests (`diag(s,1,1)` +
+//! `diag(a,b,b)`). This example's distinct axis is the **constrained-transverse**
+//! configuration (`diag(λ, 1, 1)`, `λ_t = 1` prescribed — not the coupon's
+//! traction-free solve) plus the explicit all-48 per-element uniformity/spread.
+//! It reads the real per-tet `P`/`ψ` into the JSON but does not re-assert their
+//! values against the closed form.
 //!
 //! # Anchor groups (all assertions exit-0 on success)
 //!
@@ -131,9 +140,9 @@ const LAMBDA_PA: f64 = 4.0e5;
 /// Cells per cube edge — `uniform_block` requires `n >= 2` and even.
 /// `n = 2` is the smallest legal value AND the smallest mesh that has a
 /// truly interior vertex (the cube's center at vertex ID 13 below).
-/// Larger `n` would balloon the bit-pin scope without strengthening the
-/// uniformity claim — single interior at 1 is sufficient to gate
-/// "homogeneous deformation under affine boundary data" pedagogy.
+/// Larger `n` would enlarge the mesh without strengthening the uniformity
+/// claim — a single interior vertex is sufficient to demonstrate
+/// "homogeneous deformation under affine boundary data".
 const N_PER_EDGE: usize = 2;
 
 /// Cube edge length (m) — decimeter scale per the walking-skeleton scope §2
@@ -160,7 +169,8 @@ const N_BOUNDARY_VERTICES: usize = N_VERTICES - 1;
 
 /// Prescribed uniaxial stretch `λ = F_11` along `+x̂`. Same anchor stretch as
 /// row 5's tensile working point for cross-row continuity (and `|λ − 1| = 0.20`
-/// stays well inside NH's `max_stretch_deviation = 1.0` validity boundary).
+/// stays well inside NH's declared `max_stretch_deviation` validity boundary,
+/// read live in [`verify_validity_in_bounds_at_x_prev`]).
 const LAMBDA_STRETCH: f64 = 1.20;
 
 /// Spatial-predicate epsilon for boundary detection (m). Mesh vertex coordinates
@@ -169,11 +179,14 @@ const LAMBDA_STRETCH: f64 = 1.20;
 /// without ambiguity. `1e-12` mirrors the JSON anchor tolerance.
 const BOUNDARY_PREDICATE_EPS: f64 = 1.0e-12;
 
-/// Closed-form-vs-observed relative tolerance — same value as row 5.
-/// Both the per-tet `F = J · J_0^-1` and `Material::first_piola(F)` paths do
-/// `nalgebra::Matrix3` arithmetic; observed agreement is at the few-ULP level
-/// (~1e-15). `1e-12` admits expression-tree reordering noise + sparse-solver
-/// SIMD/FMA noise on the v_13 free-DOF without flapping.
+/// Relative tolerance for the kinematic assembly checks — per-tet
+/// `F` vs `diag(λ, 1, 1)` and the interior vertex vs `D · X_rest`.
+/// The per-tet `F = J · J_0^-1` path does `nalgebra::Matrix3` arithmetic;
+/// observed agreement with the imposed homogeneous field is at the
+/// few-ULP level (~1e-15). `1e-12` admits expression-tree reordering
+/// noise + sparse-solver SIMD/FMA noise on the v_13 free-DOF without
+/// flapping. (Constitutive `P`/ψ values are not asserted here — see the
+/// module docstring; that closed form is owned by the lib tests.)
 const REL_TOL: f64 = 1.0e-12;
 
 /// Absolute floor (Pa, m, or J/m³ — context-dependent) for relative
@@ -187,9 +200,9 @@ const EPS_ABS: f64 = 1.0e-12;
 /// drift on v_13, then through the per-tet `F = J · J_0^-1` (with
 /// `J_0^-1` ~ 20 m⁻¹) into ~1e-13 strain drift, then through the NH
 /// tangent (~1e5 Pa per unit strain) into ~1e-8 Pa stress drift. Bound
-/// at `1e-6` Pa = 11 orders below the closed-form `P_11(1.20) ≈ 9.7e4` Pa
-/// — six orders of slack above the noise floor, six orders below any
-/// real regression.
+/// at `1e-6` Pa = 11 orders below the observed `P_11 ≈ 9.7e4` Pa
+/// magnitude at this stretch — six orders of slack above the noise
+/// floor, six orders below any real regression.
 const UNIFORMITY_SPREAD_BOUND_PA: f64 = 1.0e-6;
 
 // =============================================================================
@@ -861,7 +874,7 @@ fn print_summary(
     println!(
         "  P_11 spread              : {spread_p11:>13.3e} Pa  (bound {UNIFORMITY_SPREAD_BOUND_PA:e} Pa)"
     );
-    println!("  max|σᵢ-1| across tets    : {max_dev:>13.6}     (< 1.0 strict in-domain)");
+    println!("  max|σᵢ-1| across tets    : {max_dev:>13.6}     (all tets in-domain — see gate)");
     println!();
     println!("JSON   : {}", path.display());
     println!("         per-tet record + scene + expected_homogeneous + uniformity verdict");

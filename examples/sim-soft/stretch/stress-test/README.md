@@ -57,11 +57,14 @@ all 26 boundary vertices pinned to `D · X_rest` with `D = diag(λ, 1, 1)`,
 `λ = 1.20`, and the **single interior vertex (ID 13) left free** starting at
 rest so Newton has real work (3 iters, residual `~1e-14 N`). Quasi-static via
 `cfg.density = 0` (suppress inertia → pure elasticity equilibrium `x = D · X`).
-The assembly **oracle**: per-tet `F` evaluates to `diag(λ, 1, 1)` for **every
-one of the 48 tets** with a bounded `P_11` uniformity spread (`0.0` Pa on the
-capture platform), plus the interior vertex reproducing `D · X_rest[13]`. That
-is example-only — `tests/uniaxial_fem_coupon.rs` covers the single-element
-homogeneous-reproduction, but not the all-48-tet uniformity. The real per-tet
+A heavy end-to-end FEM solve: per-tet `F` evaluates to `diag(λ, 1, 1)` for
+**every one of the 48 tets** with a bounded `P_11` uniformity spread (`0.0` Pa
+on the capture platform), plus the interior vertex reproducing `D · X_rest[13]`.
+The FEM assembly machinery is lib-owned — `tests/uniaxial_fem_coupon.rs` is a
+multi-element (384-tet) **traction-free** (`F = diag(λ, λ_t, λ_t)`) constant-strain
+patch test — so this example's distinct axis is the **constrained-transverse**
+`diag(λ, 1, 1)` config (`λ_t = 1` prescribed, not the coupon's traction-free
+solve) plus the explicit all-48 per-element uniformity readout. The real per-tet
 `P`/ψ (`P_11 ≈ 9.744e4`, `P_22 = P_33 ≈ 7.293e4` Pa, `Λ ln λ` — non-zero,
 constrained transverse) go to the JSON as observed values; their **closed-form
 correctness is owned by the `sim-soft` `NeoHookean` lib tests** (`diag(s,1,1)` +
