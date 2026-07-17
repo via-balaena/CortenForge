@@ -172,6 +172,14 @@ mod tests {
         Matrix3::from_diagonal(&Vector3::new(s, 1.0, 1.0))
     }
 
+    /// `F = diag(a, b, b)` with `b` chosen independently of `a` — uniaxial
+    /// stretch alongside a *non-unit* transverse stretch, so the transverse
+    /// Piola term `μ(b − 1/b)` is non-zero. (At `diag(s, 1, 1)` that term
+    /// vanishes identically.)
+    fn diag_general(a: f64, b: f64) -> Matrix3<f64> {
+        Matrix3::from_diagonal(&Vector3::new(a, b, b))
+    }
+
     #[test]
     fn first_piola_matches_closed_form_at_uniaxial_stretch() {
         // At F = diag(s, 1, 1): J = s, F⁻ᵀ = diag(1/s, 1, 1), so
@@ -208,6 +216,41 @@ mod tests {
     }
 
     #[test]
+    fn first_piola_matches_closed_form_at_general_transverse_stretch() {
+        // At F = diag(a, b, b): J = a·b², F⁻ᵀ = diag(1/a, 1/b, 1/b), so
+        // P = μ(F − F⁻ᵀ) + Λ ln(J) F⁻ᵀ is diagonal with
+        //   P_11 = μ(a − 1/a) + Λ ln(J) / a
+        //   P_22 = P_33 = μ(b − 1/b) + Λ ln(J) / b
+        // The transverse `μ(b − 1/b)` term is exercised *non-zero* here —
+        // at F = diag(s, 1, 1) it vanishes identically, so the uniaxial
+        // sibling above (and every FEM coupon, which root-finds the
+        // transverse stretch on `first_piola` itself and so has no parallel
+        // closed form) leaves it unpinned. Scalar arithmetic (no `mul_add`),
+        // independent of the matrix implementation.
+        let nh = NeoHookean::from_lame(MU, LAMBDA);
+        // (a, b): axial tension with lateral contraction, and axial
+        // compression with lateral expansion — both `b ≠ 1`, both `det F > 0`.
+        for &(a, b) in &[(1.5_f64, 0.9), (0.8, 1.1)] {
+            let p = nh.first_piola(&diag_general(a, b));
+            let ln_j = (a * b * b).ln();
+            let p11 = MU * (a - 1.0 / a) + LAMBDA * ln_j / a;
+            let p22 = MU * (b - 1.0 / b) + LAMBDA * ln_j / b;
+            assert_relative_eq!(p[(0, 0)], p11, max_relative = 1.0e-12);
+            // P_22 carries the non-zero transverse μ term...
+            assert_relative_eq!(p[(1, 1)], p22, max_relative = 1.0e-12);
+            // ...and P_33 == P_22 by transverse symmetry (distinct check).
+            assert_relative_eq!(p[(2, 2)], p[(1, 1)], max_relative = 1.0e-12);
+            for i in 0..3 {
+                for j in 0..3 {
+                    if i != j {
+                        assert_relative_eq!(p[(i, j)], 0.0, epsilon = 1.0e-9);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn energy_matches_closed_form_at_uniaxial_stretch() {
         // ψ(diag(s, 1, 1)) = (μ/2)(I₁ − 3) − μ ln J + (Λ/2)(ln J)²
         //                  = (μ/2)(s² − 1) − μ ln(s) + (Λ/2)(ln s)²
@@ -217,6 +260,24 @@ mod tests {
             let expected = 0.5 * MU * (s * s - 1.0) - MU * ln_s + 0.5 * LAMBDA * ln_s * ln_s;
             assert_relative_eq!(
                 nh.energy(&diag_stretch(s)),
+                expected,
+                max_relative = 1.0e-12
+            );
+        }
+    }
+
+    #[test]
+    fn energy_matches_closed_form_at_general_transverse_stretch() {
+        // ψ(diag(a, b, b)) = (μ/2)(I₁ − 3) − μ ln J + (Λ/2)(ln J)²
+        //   with I₁ = a² + 2b² and J = a·b². The transverse contribution
+        //   2b² ≠ 2 exercises I₁ non-trivially, unlike diag(s, 1, 1).
+        let nh = NeoHookean::from_lame(MU, LAMBDA);
+        for &(a, b) in &[(1.5_f64, 0.9), (0.8, 1.1)] {
+            let ln_j = (a * b * b).ln();
+            let i1_minus_3 = a * a + 2.0 * b * b - 3.0;
+            let expected = 0.5 * MU * i1_minus_3 - MU * ln_j + 0.5 * LAMBDA * ln_j * ln_j;
+            assert_relative_eq!(
+                nh.energy(&diag_general(a, b)),
                 expected,
                 max_relative = 1.0e-12
             );
