@@ -28,7 +28,7 @@ pub extras: HashMap<String, AttributeArray>;
 
 Drives PLY writer extensions (typed properties), 3MF metadata extensions (XML-typed values), and downstream consumer updates. Probably bundled with whichever soft-body or sim-cast use case first needs non-`f32` attributes.
 
-**Status at first stable release**: no consumer drove this. The single custom-attribute consumer in the example inventory, `mesh-sdf-distance-query`'s grid PLY with `extras["signed_distance"]: Vec<f32>`, fits the existing `HashMap<String, Vec<f32>>` shape exactly. Defer until a multi-type consumer arrives.
+**Status at first stable release**: no consumer drove this. The custom-attribute consumers in the example inventory — e.g. `mesh-sdf-distance-query`'s grid PLY with per-oracle `extras[...]: Vec<f32>` scalars — fit the existing `HashMap<String, Vec<f32>>` shape exactly. Defer until a multi-type consumer arrives.
 
 ## v0.9 candidates
 

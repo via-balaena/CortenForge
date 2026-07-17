@@ -37,7 +37,7 @@ cargo run -p cf-viewer --release -- examples/mesh/<example>/out/<file>.ply
 ```
 
 cf-view handles both geometry-only meshes and per-vertex scalar PLYs
-(e.g. `extras["signed_distance"]` from `mesh-sdf-distance-query`)
+(e.g. `extras["pseudo_normal_signed"]` from `mesh-sdf-distance-query`)
 out of the box — the dropdown auto-discovers scalar names and the
 colormap fires by distribution heuristic (divergent / sequential /
 categorical). Cavity-bearing fixtures (printability hollow-box,
@@ -93,7 +93,7 @@ IS the correctness signal — the visuals pass is optional pedagogy.
 
 | Example | Concept |
 |---------|---------|
-| [`mesh-sdf-distance-query`](mesh-sdf-distance-query/) | Numerical SDF on a unit octahedron — `SignedDistanceField` cached queries + free-fn one-shots + direct primitives (`closest_point_on_triangle`, `ray_triangle_intersect`, `point_segment_distance_squared`) + `point_in_mesh` ray-casting + 1000-point grid PLY with `extras["signed_distance"]` |
+| [`mesh-sdf-distance-query`](mesh-sdf-distance-query/) | Oracle-decomposition walkthrough — `mesh-sdf`'s signed distance split into `TriMeshDistance` (unsigned) + a sign oracle (`PseudoNormalSign` / `FloodFillSign`) composed via `Signed<D, S>`, on a well-formed octahedron (both oracles agree) and an inverted-cap pyramid (pseudo-normal reports a wrong far-field sign; flood-fill rescues it). 1000-point bulk-grid PLY with per-oracle signed-distance + disagreement scalars. Correctness lib-owned (demo) |
 
 ### `mesh-printability` — manufacturability validation
 

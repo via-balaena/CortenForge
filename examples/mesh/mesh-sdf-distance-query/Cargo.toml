@@ -6,11 +6,13 @@ license.workspace = true
 publish = false
 
 # Headless demo — an oracle-decomposition walkthrough (pseudo-normal vs
-# flood-fill sign). Its oracles are duplicated in `mesh-sdf`'s own
-# `flood_fill.rs`/`sdf.rs`/`oracle.rs` unit tests; the one unique piece — the
-# closed-form L1-ball octahedron exact-magnitude anchor — is backfilled to
-# `mesh-sdf` `src/sdf.rs`, so correctness lives in the library; this stays a
-# runnable demonstration. Compile-only in CI; not run by `xtask run-validators`.
+# flood-fill sign). It carries no asserts; the oracles it illustrates live
+# in `mesh-sdf`'s `src/sdf.rs` + `src/flood_fill.rs` unit tests (the
+# closed-form L1-ball octahedron anchor
+# `signed_distance_matches_closed_form_l1_ball_on_octahedron`; the
+# inverted-cap rescue `pseudo_normal_wrong_flood_fill_right_on_inward_cap`),
+# so correctness lives in the library. This is a runnable demonstration;
+# compile-only in CI, not run by `xtask run-validators`.
 [package.metadata.cortenforge]
 example_kind = "demo"
 
@@ -27,8 +29,6 @@ mesh-sdf = { workspace = true }
 cf-geometry = { workspace = true }
 # Result<()> return type for main()
 anyhow = { workspace = true }
-# assert_relative_eq! for SDF query / closest-point anchors
-approx = { workspace = true }
 
 [lints]
 workspace = true
