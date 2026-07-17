@@ -30,15 +30,16 @@ then every anchor dispatches through `&dyn cf_design::Sdf`:
   at every named face + origin probe (integer `±R` round-trips losslessly
   through STL's f32).
 - **Bulk grid** (17³ = 4913 points in `[−2, 2]³`) — closed-form-vs-trait
-  identity at every point (`1e-12`); heuristic strict-interior coverage (343
-  points, `|coord| ≤ 0.75`, all `eval < 0`); off-diagonal strict-interior
-  raycast coverage (294 = 343 − 49); `raycast_inside` **pinned at 729** (all
-  `|coord| ≤ R` including the boundary shell) as a parry-pseudo-normal drift
-  tripwire; F2-caveat-absent identity (`heuristic_inside == 343`). The **HE-1
-  ray-edge diagonal degeneracy** (49 `y = z` interior probes that Möller-Trumbore
-  may miss) is documented and **excluded from assertion** — never locked to a
-  wrong value; the `heuristic ↔ raycast divergence` (≈386, dominated by HE-1) is
-  printed as a diagnostic, not pinned.
+  identity at every point (`1e-12`); heuristic strict-interior coverage (`7³ =
+  343` points, `|coord| ≤ 0.75`, all `eval < 0`); and the **`PseudoNormalSign`
+  inside-set proven equal to the closed cube** `[−R, R]³` by full per-point
+  set-equality (`is_inside ⟺ |coord| ≤ R`), so `raycast_inside = 9³ = 729` and
+  the `eval < 0` ↔ `is_inside` divergence `= 729 − 343 = 386` (the boundary
+  shell, where faces have `eval == 0` but `is_inside`) are both **derived
+  closed-form geometric identities, not captured empirical counts**. (The
+  pre-parry `+X` Möller-Trumbore ray-cast had an HE-1 face-diagonal degeneracy
+  on the `y = z` interior probes; the pseudo-normal path has none, so those
+  probes are now unconditionally inside.)
 
 Sole coverage of the mesh-SDF → `cf_design::Sdf` direction. cf-view artifacts:
 `out/cube_scan.stl` (the STL "scan" input) + `out/sdf_grid.ply` (4913-point cloud,
@@ -55,9 +56,13 @@ A typed `cf_design::Solid` CSG body (`Solid::sphere(0.10).subtract(Solid::sphere
   positions bit-equal (`EXACT_TOL = 0.0`); cf-design's `Sphere`/`Subtract`
   arithmetic is bit-identical to sim-soft's `SphereSdf`/`DifferenceSdf`, so the
   BCC + stuffing pipeline produces bit-identical meshes.
-- **`counts_exact`** — `n_tets = 6456`, `n_vertices = 4682`, `n_referenced =
-  1480`, `n_pinned = 734`, `n_loaded = 134` — bit-equal to row 11's counts
-  (topology is a function of geometry + `cell_size` only, not material).
+- **`counts_structural`** — mesher-version-robust topology invariants:
+  `n_tets > 0`, `n_referenced < n_vertices` (orphan-rejection non-vacuity), and
+  both surface bands non-empty. Absolute counts are **deliberately not pinned** —
+  they are mesher-version artifacts that fire red on any legitimate mesher
+  improvement (row 11's `lame_shells` softened the identical captures for the
+  same reason). At the current mesher these run `n_tets = 6456`, `n_vertices =
+  4682`, `n_referenced = 1480`, `n_pinned = 734`, `n_loaded = 134`.
 - **`quality_floors`** — per-tet `signed_volume > 0`, `aspect_ratio ≥ 0.05`,
   dihedral `∈ [5°, 175°]` (Theorem-1 envelope).
 - **`solver_converges`** — a single static-regime `replay_step` converges in 3
@@ -66,14 +71,12 @@ A typed `cf_design::Solid` CSG body (`Solid::sphere(0.10).subtract(Solid::sphere
   displacement `≈ 3.245e-4 m` matches the single-material Lamé closed-form
   `≈ 3.823e-4 m` within 30 % (`~15 %` rel-err at h/2; IV-5 super-quadratic
   convergence at the fine end).
-- **`captured_cavity_wall_bits`** — the cavity-wall mean is pinned bit-equal
-  (IV-1 sparse-tier `1e-12` rel) to row 11's `CAVITY_WALL_UNIFORM_1X_REF_BITS`:
-  same geometry + same Lamé pair + same faer path ⇒ bit-equal observation
-  (cross-row continuity guard).
 
-Sole coverage of the typed-`Solid` → sim-soft meshing + FEM direction. cf-view
-artifact: `out/shell_zslab.ply` (616-centroid z-slab cloud, `radial_displacement`
-scalar, `DISPLACEMENT_SCALE = 50×`).
+Determinism is pinned by HEADLINE A (`equals_structurally` + bit-exact
+positions), FEM correctness by `cavity_wall_lame` against the analytic Lamé
+closed form. Sole coverage of the typed-`Solid` → sim-soft meshing + FEM
+direction. cf-view artifact: `out/shell_zslab.ply` (z-slab centroid cloud,
+`radial_displacement` scalar, `DISPLACEMENT_SCALE = 50×`).
 
 ## Run
 
@@ -84,15 +87,15 @@ cargo run -p example-sdf-bridge-stress-test --release
 Expected: each module prints its anchor-group summary + stats and the binary
 exits 0 — a clean exit-0 IS the correctness signal (there is no `PASS` token; a
 failed assert aborts with 101). Use `--release`: the FEM mesh-and-solve in
-`solid_to_sim` is ~30× slower in debug. The solves are small (a 6456-tet shell,
+`solid_to_sim` is ~30× slower in debug. The solves are small (a ~6.5k-tet shell,
 a 4913-point grid), so the pair is cheap in release.
 
 ## Artifacts
 
 Each module writes to `out/` with distinct filenames (no namespacing needed):
 `cube_scan.stl` (binary, 12 facets — the round-trip input), `sdf_grid.ply`
-(4913-point cloud, two per-vertex scalars), and `shell_zslab.ply` (616-centroid
-z-slab, one scalar; only rendered positions are `50×`-amplified — the scalar
+(4913-point cloud, two per-vertex scalars), and `shell_zslab.ply` (z-slab
+centroid cloud, one scalar; only rendered positions are `50×`-amplified — the scalar
 carries the TRUE physical displacement and every `verify_*` runs on unscaled
 solver outputs). Open in cf-view:
 
@@ -113,7 +116,8 @@ cargo run -p cf-viewer --release -- examples/sim-soft/sdf-bridge/stress-test/out
 - **Sister sim-soft folds**: `sdf/stress-test`'s `sdf_to_tet` (row 3 — the
   single-material `SdfMeshedTetMesh::from_sdf` counterpart `solid_to_sim`
   generalises to a typed `Solid` source); `bonded/stress-test`'s `lame_shells`
-  (row 11 — the three-shell scene whose counts + cavity-wall bits `solid_to_sim`
-  pins against for cross-row continuity).
+  (row 11 — the three-shell scene whose single-material geometry `solid_to_sim`
+  reuses; both softened their absolute mesher counts for mesher-improvement
+  robustness).
 - **Book**: Part 7 §00 §01 (sharp-CSG difference operator); Part 3 (BCC +
   Isosurface Stuffing meshing).

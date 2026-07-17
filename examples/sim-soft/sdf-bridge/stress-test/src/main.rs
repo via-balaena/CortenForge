@@ -14,10 +14,10 @@
 //!   anchor dispatches through `&dyn cf_design::Sdf`: closed-form L∞-ball SDF at
 //!   face / edge / vertex / interior probes, a finite-difference gradient
 //!   face-band check, an STL round-trip agreement gate, and a 17³ = 4913 bulk
-//!   grid consistency pass (`raycast_inside` pinned at 729, off-diagonal
-//!   strict-interior raycast coverage, F2-caveat-absent identity; the HE-1
-//!   ray-edge diagonal degeneracy is documented and excluded from assertion,
-//!   never locked to a wrong value).
+//!   grid consistency pass (the `PseudoNormalSign` inside-set proven equal to
+//!   the closed cube `[−R, R]³` = 9³ = 729 grid points, the strict-interior
+//!   heuristic bucket = 7³ = 343, and their boundary-shell difference = 386 —
+//!   all closed-form geometric identities, none a captured empirical count).
 //! - [`solid_to_sim`] (row 16) — the **design → sim** direction: a typed
 //!   `cf_design::Solid` CSG body (`Solid::sphere(R_OUTER).subtract(sphere(
 //!   R_CAVITY))`) coerces to `&dyn Sdf` and drives

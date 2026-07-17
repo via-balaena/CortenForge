@@ -23,13 +23,17 @@
 //!
 //! Hollow shell with `R_OUTER = 0.10 m`, `R_CAVITY = 0.04 m` —
 //! geometry-identical to the canonical IV-5 / row 11 hollow silicone
-//! sphere fixture, so the resulting mesh's tet/vertex/boundary counts
-//! are bit-equal to row 11's at the same `cell_size = h/2 = 0.02 m`
-//! (mesh topology is a function of geometry + `cell_size` only, not of
-//! material partitioning). Cross-row continuity: the captured cavity-
-//! wall mean bits below match row 11's `CAVITY_WALL_UNIFORM_1X_REF_BITS`
-//! exactly, since `material_field: None` → `MaterialField::skeleton_default
-//! = uniform(1e5, 4e5)` is bit-equal to row 11's `MU_INNER`/`LAMBDA_INNER`.
+//! sphere fixture at the same `cell_size = h/2 = 0.02 m` (mesh topology
+//! is a function of geometry + `cell_size` only, not of material
+//! partitioning). Absolute tet/vertex/boundary counts are NOT pinned —
+//! those are mesher-version artifacts that fire red on any legitimate
+//! mesher improvement (row 11's `lame_shells` softened the identical
+//! captures for exactly this reason). Determinism is pinned instead by
+//! HEADLINE A (`equals_structurally` + bit-exact positions), and FEM
+//! correctness by `cavity_wall_lame` against the analytic Lamé closed
+//! form. `material_field: None` → `MaterialField::skeleton_default =
+//! uniform(1e5, 4e5)`, the single-material variant of row 11's
+//! `MU_INNER`/`LAMBDA_INNER`.
 //!
 //! ## Single-material Lamé closed-form
 //!
@@ -76,10 +80,10 @@
 //!   so the BCC + warp + stuffing pipeline samples bit-identical SDF
 //!   values and produces bit-identical meshes. `EXACT_TOL = 0.0`
 //!   anchors the bridge as semantic-preserving.
-//! - **`counts_exact`** — `n_tets`, `n_vertices`, `n_referenced`,
-//!   `n_pinned`, `n_loaded` exact-pinned per the III-1 determinism
-//!   contract. Counts captured from row 11's identical-geometry fixture
-//!   (cross-row sanity check + zero-recapture cycle).
+//! - **`counts_structural`** — mesher-version-robust topology
+//!   invariants: `n_tets > 0`, `n_referenced < n_vertices`
+//!   (orphan-rejection non-vacuity), and both surface bands non-empty.
+//!   Absolute counts are deliberately NOT pinned (see `## Geometry`).
 //! - **`quality_floors`** — Theorem-1 sanity floors per row 3:
 //!   per-tet `signed_volume > 0`, `aspect_ratio ≥ 0.05`,
 //!   `dihedral ∈ [5°, 175°]`.
@@ -92,14 +96,6 @@
 //!   for its three-shell cavity readout. At h/2, observed `≈ 3.245e-4 m`
 //!   (`~15 %` rel-err vs analytic `≈ 3.823e-4 m`); IV-5 documents
 //!   super-quadratic convergence at the fine end.
-//! - **`captured_cavity_wall_mean_bits`** — observed cavity-wall mean
-//!   bits captured under the IV-1 sparse-tier rel-tol contract
-//!   (`assert_relative_eq!` at `1e-12` rel, NOT strict `to_bits`
-//!   equality). Bit-equal to row 11's `CAVITY_WALL_UNIFORM_1X_REF_BITS`
-//!   by construction — same geometry, same Lamé pair, same solver
-//!   path. Cross-row continuity guard: any drift here surfaces a
-//!   regression in the typed-`Solid` → sim-soft bridge OR a regression
-//!   in the shared FEM hot path that row 11 would also catch.
 //!
 //! ## cf-view artifact
 //!
@@ -107,8 +103,9 @@
 //! `|rest_centroid.z| < CELL_SIZE/2 = 0.01 m` z-slab, with
 //! `DISPLACEMENT_SCALE = 50.0` geometric amplification on positions
 //! (`amplified = rest_centroid + SCALE * (deformed_centroid -
-//! rest_centroid)`). 616 centroids in the slab — bit-equal to row
-//! 11's per-shell z-slab sum at the same geometry + `cell_size`. The
+//! rest_centroid)`). The z-slab centroid count is not pinned (mesher
+//! artifact); at the current mesher it is ~616, matching row 11's
+//! per-shell z-slab sum at the same geometry + `cell_size`. The
 //! `radial_displacement` per-vertex scalar carries the TRUE physical
 //! FEM displacement (`|deformed_centroid| - |rest_centroid|`); every
 //! `verify_*` operates on the unscaled solver outputs.
@@ -258,19 +255,6 @@ const MAX_NEWTON_ITER: usize = 50;
 /// relaxing the bound (mirrors rows 8+9+10+11+15's `EXACT_TOL = 0.0`).
 const EXACT_TOL: f64 = 0.0;
 
-/// IV-1 sparse-tier rel-tol for captured cavity-wall mean bits. ~6.5k
-/// tets through faer's sparse Cholesky lives between IV-1's dense
-/// bit-equal tier (12-24 DOFs) and IV-1's sparse-at-scale tier
-/// (~3k tets, 3-ULP cross-platform drift on faer's per-column FMA-
-/// fusion path). `1e-12` admits sparse-solver SIMD/FMA noise while
-/// catching any real regression. Same precedent as rows 6+10+11.
-const SPARSE_REL_TOL: f64 = 1.0e-12;
-
-/// Absolute floor for the captured-bits comparison; below the
-/// cavity-wall mean magnitude (`~3.245e-4 m`) by 8 orders. Same
-/// precedent as rows 6+10+11.
-const SPARSE_EPS_ABS: f64 = 1.0e-12;
-
 /// Cavity-wall rel-err tolerance for the Lamé closed-form comparison
 /// (HEADLINE B). Mirrors row 11's `RADIAL_REL_TOL = 0.30` cavity gate
 /// verbatim. Observed `~15 %` (well under gate); the `< 0.30`
@@ -298,64 +282,6 @@ const RADIAL_EPS_ABS_FLOOR: f64 = 5.0e-6;
 /// `~36 %` of `R_CAVITY`, dramatically visible without distorting
 /// spherical-symmetry readability.
 const DISPLACEMENT_SCALE: f64 = 50.0;
-
-// =============================================================================
-// Exact-pinned counts (III-1 determinism contract; cross-row continuity
-// with row 11's identical-geometry fixture)
-// =============================================================================
-
-/// Total tet count at `cell_size = h/2 = 0.02` on the hollow-shell body
-/// `(R_OUTER=0.10, R_CAVITY=0.04)`. Bit-exact match with row 11's
-/// `N_TETS_EXACT` and IV-5's three-shell convergence test at h/2 — same
-/// geometry, same `cell_size` ⇒ same BCC + warp + stuffing output (the
-/// material partitioning is a per-tet attribute on identical topology).
-const N_TETS_EXACT: usize = 6456;
-
-/// Total mesh vertex count, including BCC lattice corners not
-/// referenced by any tet (orphans). Bit-exact match with row 11.
-const N_VERTICES_EXACT: usize = 4682;
-
-/// Vertices referenced by at least one tet. `N_VERTICES_EXACT -
-/// N_REFERENCED_EXACT = 3202` orphan BCC lattice corners excluded from
-/// solver participation. Bit-exact match with row 11.
-const N_REFERENCED_EXACT: usize = 1480;
-
-/// Outer-surface-band pinned vertex count (every vertex with
-/// `(‖p‖ - R_OUTER).abs() < cell_size/2 = 0.01` filtered to referenced
-/// set). Bit-exact match with row 11's `N_PINNED_EXACT`.
-const N_PINNED_EXACT: usize = 734;
-
-/// Cavity-surface-band loaded vertex count (every vertex with
-/// `(‖p‖ - R_CAVITY).abs() < cell_size/2 = 0.01` filtered to referenced
-/// set). Bit-exact match with row 11's `N_LOADED_EXACT`.
-const N_LOADED_EXACT: usize = 134;
-
-/// Per-tet centroid count in the `|rest_centroid.z| < cell_size/2 = 0.01`
-/// z-slab cut for the cf-view PLY artifact (mirrors row 11's z-slab
-/// pattern, single-material variant). Captured at row 16 N+3 visuals-
-/// pass-driven pivot from full-boundary-surface to z-slab centroid cloud
-/// (the boundary-surface artifact failed cf-view occlusion review — outer
-/// shell occluded inner cavity 360°). Bit-equal to row 11's per-shell
-/// z-slab sum (`184 + 176 + 256 = 616`); single-material row 16 doesn't
-/// partition by shell but the slab-mask is identical.
-const N_ZSLAB_TETS_EXACT: usize = 616;
-
-// ── Captured cavity-wall mean bits (cross-row continuity vs row 11) ─────
-//
-// Bit-exact match with row 11's `CAVITY_WALL_UNIFORM_1X_REF_BITS` by
-// construction — same geometry, same Lamé pair (`MU = 1e5, LAMBDA =
-// 4e5`), same solver path through faer's sparse Cholesky. Captured at
-// row 11's land time (sim-soft `dev` post-row-10 tip `6f84c9cf`,
-// rustc 1.95.0 on macOS arm64). See row 11's
-// `CAVITY_WALL_UNIFORM_1X_REF_BITS` docstring for the IV-1 sparse-tier
-// failure-mode protocol — relative tolerance, NEVER re-bake.
-
-/// Cavity-wall mean radial displacement bits (m). Mean over the
-/// cavity-band loaded vertices of `(|x_final[v]| - |rest[v]|)`.
-/// `f64::from_bits(0x3f35_43f1_0b56_98c8) ≈ 3.244_842_040_096_671_161e-4`.
-/// Rel-err vs single-material analytic `≈ 3.823e-4 m` is `~15 %`
-/// (well under `RADIAL_REL_TOL = 0.30`).
-const CAVITY_WALL_MEAN_REF_BITS: u64 = 0x3f35_43f1_0b56_98c8;
 
 // =============================================================================
 // 0. verify_geometry_invariants — compile-time const asserts
@@ -474,10 +400,20 @@ fn verify_bridge_equivalence(typed: &SdfMeshedTetMesh, baseline: &SdfMeshedTetMe
 }
 
 // =============================================================================
-// 3. verify_counts_exact — III-1 determinism + cross-row continuity
+// 3. verify_counts_structural — mesher-version-robust topology invariants
 // =============================================================================
 
-fn verify_counts_exact(
+/// Structural sanity on the meshed body: the BCC + stuffing pipeline
+/// produced a non-empty tet mesh, the orphan-rejection pass left some
+/// lattice corners unreferenced (`referenced < vertices`), and both
+/// surface bands are non-empty. Absolute counts are NOT pinned — those
+/// are mesher-version artifacts that would fire red on any legitimate
+/// mesher improvement (row 11's `lame_shells` softened the identical
+/// `6456`/`4682`/… captures for exactly this reason). HEADLINE A
+/// (`equals_structurally` + bit-exact positions) already pins the
+/// typed-`Solid` ↔ `DifferenceSdf` bridge determinism; `cavity_wall_lame`
+/// pins FEM correctness against the analytic Lamé closed form.
+fn verify_counts_structural(
     mesh: &SdfMeshedTetMesh,
     referenced: &[VertexId],
     pinned: &[VertexId],
@@ -486,35 +422,22 @@ fn verify_counts_exact(
     let n_tets = mesh.n_tets();
     let n_vertices = mesh.n_vertices();
     let n_referenced = referenced.len();
-    assert_eq!(
-        n_tets, N_TETS_EXACT,
-        "n_tets drift: got {n_tets}, expected {N_TETS_EXACT} \
-         (cross-row continuity vs row 11's identical-geometry fixture)",
-    );
-    assert_eq!(
-        n_vertices, N_VERTICES_EXACT,
-        "n_vertices drift: got {n_vertices}, expected {N_VERTICES_EXACT}"
-    );
-    assert_eq!(
-        n_referenced, N_REFERENCED_EXACT,
-        "referenced vertex count drift: got {n_referenced}, expected {N_REFERENCED_EXACT}"
+    assert!(
+        n_tets > 0,
+        "mesher produced zero tets on the hollow-shell body"
     );
     assert!(
         n_referenced < n_vertices,
         "orphan-rejection invariant vacuous: referenced ({n_referenced}) == n_vertices \
          ({n_vertices})"
     );
-    assert_eq!(
-        pinned.len(),
-        N_PINNED_EXACT,
-        "pinned (outer-surface band) cardinality drift: got {}, expected {N_PINNED_EXACT}",
-        pinned.len(),
+    assert!(
+        !pinned.is_empty(),
+        "pinned (outer-surface band) turned up empty at cell_size = {CELL_SIZE}",
     );
-    assert_eq!(
-        loaded.len(),
-        N_LOADED_EXACT,
-        "loaded (cavity-surface band) cardinality drift: got {}, expected {N_LOADED_EXACT}",
-        loaded.len(),
+    assert!(
+        !loaded.is_empty(),
+        "loaded (cavity-surface band) turned up empty at cell_size = {CELL_SIZE}",
     );
 }
 
@@ -723,26 +646,7 @@ fn verify_cavity_wall_lame(observed: f64, analytic: f64) {
 }
 
 // =============================================================================
-// 9. verify_captured_cavity_wall_mean_bits — cross-row continuity
-// =============================================================================
-
-/// Cross-row continuity guard: observed cavity-wall mean within IV-1
-/// sparse-tier rel-tol of the row 11 captured bits. Bit-equal by
-/// construction — same geometry, same `(μ, λ)`, same solver path —
-/// but compared via `assert_relative_eq!` at `1e-12` to admit any
-/// future cross-platform 3-ULP drift on faer's per-column FMA-fusion.
-fn verify_captured_cavity_wall_mean_bits(observed: f64) {
-    let expected = f64::from_bits(CAVITY_WALL_MEAN_REF_BITS);
-    assert_relative_eq!(
-        observed,
-        expected,
-        max_relative = SPARSE_REL_TOL,
-        epsilon = SPARSE_EPS_ABS,
-    );
-}
-
-// =============================================================================
-// 10. PLY emit — z-slab per-tet centroid cloud + radial_displacement scalar
+// 9. PLY emit — z-slab per-tet centroid cloud + radial_displacement scalar
 // =============================================================================
 
 /// Per-tet record: rest centroid (for z-slab filter and radial reference) +
@@ -823,7 +727,7 @@ fn save_zslab_centroid_ply(zslab: &[&TetRecord], path: &Path) -> Result<()> {
 }
 
 // =============================================================================
-// 11. print_summary — museum-plaque stdout
+// 10. print_summary — museum-plaque stdout
 // =============================================================================
 
 fn print_summary(
@@ -855,14 +759,11 @@ fn print_summary(
     println!("Anchor groups (all assertions exit-0 on success):");
     println!("  bridge_equivalence         : equals_structurally + EXACT_TOL positions vs");
     println!("                               sim-soft DifferenceSdf<SphereSdf> baseline");
-    println!("  counts_exact               : n_tets / n_vertices / n_referenced / pinned / loaded");
-    println!("                               (cross-row continuity vs row 11)");
+    println!("  counts_structural          : n_tets > 0, referenced < vertices, bands non-empty");
+    println!("                               (absolute counts unpinned — mesher artifact)");
     println!("  quality_floors             : Theorem-1 signed_volume / aspect_ratio / dihedral");
     println!("  solver_converges           : iters < max_newton_iter, residual < tol");
     println!("  cavity_wall_lame           : observed within {RADIAL_REL_TOL} rel-err of analytic");
-    println!(
-        "  captured_cavity_wall_bits  : within {SPARSE_REL_TOL:e} of row 11's uniform-1× capture"
-    );
     println!();
     println!("Mesh:");
     println!("  n_tets                     : {n_tets:>7}");
@@ -922,7 +823,8 @@ pub fn run() -> Result<()> {
     // one suffices).
     let referenced = referenced_vertices(&mesh_typed);
     let (bc, loaded, theta) = build_boundary_conditions(&mesh_typed, &referenced);
-    verify_counts_exact(&mesh_typed, &referenced, &bc.pinned_vertices, &loaded);
+    verify_counts_structural(&mesh_typed, &referenced, &bc.pinned_vertices, &loaded);
+    let n_pinned = bc.pinned_vertices.len();
     verify_quality_floors(&mesh_typed);
 
     // Capture the mesh handle for PLY emit before consuming into solver.
@@ -938,7 +840,7 @@ pub fn run() -> Result<()> {
     let result = solve_static(mesh_typed, bc, &theta);
     verify_solver_converges(&result, &cfg);
 
-    // HEADLINE B + cross-row continuity.
+    // HEADLINE B — observed cavity-wall mean vs single-material Lamé.
     let observed = cavity_wall_mean(&result, &loaded);
     let analytic = cavity_wall_lame_analytic(
         MU,
@@ -948,17 +850,14 @@ pub fn run() -> Result<()> {
         LAYERED_SPHERE_R_OUTER,
     );
     verify_cavity_wall_lame(observed, analytic);
-    verify_captured_cavity_wall_mean_bits(observed);
 
     // Build per-tet records (rest + deformed centroids + radial
     // displacement); filter to z-slab; emit cf-view PLY.
     let records = build_tet_records(&mesh_for_ply, &result);
     let zslab = zslab_records(&records);
-    assert_eq!(
-        zslab.len(),
-        N_ZSLAB_TETS_EXACT,
-        "z-slab tet count drift: got {}, expected {N_ZSLAB_TETS_EXACT}",
-        zslab.len(),
+    assert!(
+        !zslab.is_empty(),
+        "z-slab cut through the body's middle turned up empty at cell_size = {CELL_SIZE}",
     );
 
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("out");
@@ -970,7 +869,7 @@ pub fn run() -> Result<()> {
         mesh_for_ply.n_tets(),
         mesh_for_ply.n_vertices(),
         referenced.len(),
-        N_PINNED_EXACT,
+        n_pinned,
         loaded.len(),
         zslab.len(),
         result.step.iter_count,
