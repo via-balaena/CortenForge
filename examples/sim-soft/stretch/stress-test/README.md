@@ -8,8 +8,11 @@ run-validators` runs it red-or-green.
 
 Folded from three former per-concept examples (`single-tet-stretch` row 4,
 `neo-hookean-uniaxial` row 5, `multi-element-stretch` row 6), each now a module
-preserving its hand-authored fixture and oracle checks verbatim. One domain →
-one stress-test. The domain straddles the inventory's Tier 1 (row 4) and Tier 2
+driving the real engine and emitting an inspectable trace. Per Rule-B, the
+`single_tet` and `neo_hookean` modules delegate physical / constitutive
+correctness to the `sim-soft` lib tests and self-gate only on
+demonstration-integrity; `multi_element` still carries the assembly oracle.
+One domain → one stress-test. The domain straddles the inventory's Tier 1 (row 4) and Tier 2
 (rows 5–6); the three modules are complementary, not subsuming — each is the
 sole coverage of one distinct axis.
 
@@ -69,8 +72,9 @@ uniformity oracle). JSON-only (`out/multi_element/multi_element_stretch.json`).
 cargo run -p example-stretch-stress-test --release
 ```
 
-Expected: each module prints its anchor-group summary (`Anchor groups (all
-assertions exit-0 on success)`) and the binary exits 0 — a clean exit-0 IS the
+Expected: each module prints its scene + gate summary (the gate header varies
+by module — e.g. `multi_element`'s `Anchor groups`, `single_tet`'s
+`Demonstration gate`) and the binary exits 0 — a clean exit-0 IS the
 correctness signal (there is no `PASS` token; a failed assert aborts with 101).
 Use `--release`: the FEM Newton solves are ~30× slower in debug. The solves
 here are small (a single tet and a 48-tet block), so the trio is cheap in
