@@ -400,10 +400,11 @@ fn main() -> Result<()> {
     )?;
 
     // ── Bulk-grid query: both oracles agree on the octahedron ─────────
-    // The counts below are read back for the printout; the underlying
-    // contracts (flood-fill produces one inside component on a clean
-    // mesh, and both sign oracles agree on a well-formed mesh) are
-    // asserted in `mesh-sdf`'s `flood_fill.rs` lib tests
+    // The counts below are read back for the printout; this octahedron
+    // grid demonstrates the general contracts (flood-fill produces one
+    // inside component on a clean mesh, and both sign oracles agree on a
+    // well-formed mesh) that `mesh-sdf`'s `flood_fill.rs` lib tests assert
+    // on pyramid / dome fixtures
     // (`flood_fill_sign_correct_on_closed_pyramid`,
     // `flood_fill_matches_pseudo_normal_on_outward_cap`).
     let samples = build_grid(&octa_pn_sdf, &octa_ff_sdf);

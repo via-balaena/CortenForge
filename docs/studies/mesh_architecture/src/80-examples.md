@@ -45,7 +45,7 @@ These examples cover the mesh-to-SDF half of the bridge: building signed-distanc
 ### `mesh-sdf`
 
 - **`mesh-sdf-distance-query`** — oracle-decomposition walkthrough: `mesh-sdf`'s signed distance split into `TriMeshDistance` (parry BVH-backed unsigned) + a sign oracle (`PseudoNormalSign` / `FloodFillSign`) composed via `Signed<D, S>`, on a well-formed octahedron (both oracles agree) and a pathological inverted-cap pyramid (pseudo-normal reports a wrong far-field sign below the inverted base; flood-fill rescues it via topological reachability). Emits a 1000-point bulk-grid PLY with per-oracle signed-distance + disagreement scalars. A demonstration — its oracles are asserted in `mesh-sdf`'s `sdf.rs`/`flood_fill.rs` lib tests.
-  Surfaced v0.9 candidates #2 (SDF sign-convention upgrade) and #3 (BVH acceleration). Pairs with [Part 3 — SDF and offset](30-sdf-and-offset.md).
+  Surfaced v0.9 candidates #2 (SDF sign-convention upgrade) and #3 (BVH acceleration) — both since resolved by the mesh-sdf oracle-decomposition rewrite (`PseudoNormalSign` / `FloodFillSign` + parry-BVH `TriMeshDistance`). Pairs with [Part 3 — SDF and offset](30-sdf-and-offset.md).
 
 ## Band 4 — measurement
 

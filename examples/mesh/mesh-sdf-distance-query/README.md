@@ -74,7 +74,9 @@ not re-assert:
 - **Flood-fill contracts** (one inside component on a clean mesh; both
   sign oracles agree on a well-formed mesh) → `flood_fill.rs`
   `flood_fill_sign_correct_on_closed_pyramid`,
-  `flood_fill_matches_pseudo_normal_on_outward_cap`.
+  `flood_fill_matches_pseudo_normal_on_outward_cap` (asserted on
+  pyramid / dome fixtures; the octahedron grid here demonstrates the same
+  contract, it is not itself a lib test).
 
 ## Visuals
 

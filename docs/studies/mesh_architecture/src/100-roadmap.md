@@ -41,11 +41,9 @@ For `mesh-printability`-specific candidates surfaced by the v0.8 fix arc (PR #22
 1. **`SdfError::OutOfBounds` + `InvalidDimensions` resolution.** Two unused error variants are dead code unless the grid SDF API ships.
    *Trigger*: a grid-SDF API consumer arrives, OR an explicit decision to remove. ~50 LOC.
 
-2. **SDF sign-convention upgrade — pseudo-normal or winding-number at vertex / edge regions.** Surfaced by `mesh-sdf-distance-query` (Part 8 Band 3): on the unit octahedron's 1000-point bulk-grid scan, `signed_distance < 0` reports 14 inside while ray-cast `point_in_mesh` correctly reports 8. The 6 false-positives are at points where multiple faces tie on the closest octahedron vertex and the strict-`<` tie-break in `SignedDistanceField::distance` picks a face whose outward normal flips sign relative to the geometric inside-test. Failure applies to vertex / edge regions of any mesh, including convex.
-   *Trigger*: a user reports SDF sign flipping incorrectly near edges or vertices of any geometry. ~200 LOC; algorithm well-documented in the literature (Bærentzen-Aanæs angle-weighted vertex normal, or generalized winding number).
+2. **SDF sign-convention upgrade — pseudo-normal or winding-number at vertex / edge regions.** ✅ **Resolved by the mesh-sdf oracle-decomposition rewrite (D arc).** The single face-normal-sign `SignedDistanceField` — whose strict-`<` face tie-break flipped signs at vertex / edge regions (the octahedron bulk-grid failure that surfaced this) — was replaced by `TriMeshDistance` (unsigned distance) composed against a pluggable sign oracle: `PseudoNormalSign` (Bærentzen-Aanæs angle-weighted pseudo-normal, exactly the fix named here) or `FloodFillSign` (topological reachability, for inverted-cap / cleaned scans). Demonstrated by the rewritten `mesh-sdf-distance-query` two-oracle walkthrough.
 
-3. **BVH acceleration of `SignedDistanceField::closest_point`.** Currently O(F) brute-force scan over all faces. On the F6 `generate_infill` connections pass, ~50 lattice nodes × 75 K faces ≈ 3.8 M ops per call (tractable in release mode, on the order of milliseconds). A BVH would compress this to ~3.8 K ops, three orders of magnitude.
-   *Trigger*: any consumer reports SDF query as a measured bottleneck. Medium-effort; a BVH primitive already exists in `mesh-repair` for self-intersection detection.
+3. **BVH acceleration of SDF closest-point queries.** ✅ **Resolved by the mesh-sdf oracle-decomposition rewrite (D arc).** The O(F) brute-force `SignedDistanceField::closest_point` was replaced by `TriMeshDistance`, which is backed by parry3d's BVH — distance / closest-point queries are already BVH-accelerated.
 
 ### `mesh-measure`
 
@@ -59,8 +57,7 @@ For `mesh-printability`-specific candidates surfaced by the v0.8 fix arc (PR #22
 
 7. **Proper polygon centroid in `CrossSection` (shoelace-weighted, not naive average).** ✅ **Shipped — #614** (`859f732a`). Surfaced by `measure/stress-test`'s `cross_section` module (Part 8 Band 4): the former centroid was `sum(points) / points.len()`, but `chain_segments` produces a contour with one chain-closure-duplicate point, biasing a symmetric polygon's centroid by `V_dup / (N + 1) ≠ (0, 0, 0)` — on the 32-segment cylinder mid-slice, ~0.077 mm in `(x, y)`. Resolved with the shoelace-moment formula `c_x = (1 / (6A)) · Σ (x_i + x_(i+1)) · (x_i · y_(i+1) − x_(i+1) · y_i)`, projected to 2D via the `(u, v)` basis shared with `calculate_cross_section_area` (now (0, 0, 5) to ~3e-17 on that fixture).
 
-8. **Consolidate `closest_point_on_triangle` duplication between `mesh-sdf` and `mesh-measure`.** Workspace-hygiene refactor; pick one home (probably `mesh-sdf` since it's the older surface) and re-export.
-   *Trigger*: a maintainer asks "why does this exist twice?" ~50 LOC.
+8. **Consolidate `closest_point_on_triangle` duplication between `mesh-sdf` and `mesh-measure`.** ✅ **Resolved by the mesh-sdf oracle-decomposition rewrite (D arc)** — mesh-sdf's own copy was removed when distance / closest-point moved onto parry3d's `TriMeshDistance`, so the cross-crate duplication no longer exists. (Only `mesh-measure`'s private `closest_point_on_triangle` in `distance.rs` remains; replacing that with parry is a separate, untriggered item.)
 
 ### `mesh-lattice`
 
@@ -109,7 +106,7 @@ Currently no driving force; flagged as future-when-relevant.
 
 Many operations across the ecosystem assume preconditions that aren't enforced at the type level:
 
-- `mesh-sdf::point_in_mesh` assumes watertight.
+- `mesh-sdf`'s `PseudoNormalSign` sign oracle assumes watertight (use `FloodFillSign` for cleaned / inverted-cap scans).
 - `mesh-offset::offset_mesh` assumes watertight + manifold.
 - `mesh-shell::generate_shell` assumes watertight + manifold + closed boundary.
 - `mesh-printability::validate_for_printing` assumes manifold.
@@ -136,7 +133,7 @@ Should the mesh ecosystem grow a reward-aware surface, or should reward composit
 All mesh-ecosystem crates are pure CPU. Several operations are computationally heavy and would benefit from GPU acceleration:
 
 - `mesh-offset` marching cubes kernel.
-- `mesh-sdf::SignedDistanceField::distance` (per-query closest-point search).
+- `mesh-sdf` signed-distance queries (`TriMeshDistance` + sign oracle; already parry-BVH-backed on CPU, GPU would batch them).
 - `mesh-printability::find_optimal_orientation` (search over many orientations).
 - `mesh-lattice` TPMS marching-cubes extraction.
 
