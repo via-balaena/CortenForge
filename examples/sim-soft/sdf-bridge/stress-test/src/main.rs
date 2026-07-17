@@ -25,8 +25,9 @@
 //!   proves the bridge is bit-preserving — the typed-`Solid` mesh
 //!   `equals_structurally` a `DifferenceSdf<SphereSdf>` baseline with per-vertex
 //!   positions bit-equal — then a single-material pressurization FEM readout
-//!   validates the cavity-wall mean against single-material Lamé (within 30 %)
-//!   and pins it bit-equal to row 11's uniform-1× capture (cross-row continuity).
+//!   validates the cavity-wall mean against single-material Lamé (within 30 %).
+//!   Mesh counts are structural invariants only (absolute counts unpinned —
+//!   mesher-version artifacts, like row 11).
 //!
 //! The two are complementary, not subsuming: [`mesh_scan`] is the sole coverage
 //! of the mesh-SDF → `cf_design::Sdf` direction (triangle-soup source, closed-

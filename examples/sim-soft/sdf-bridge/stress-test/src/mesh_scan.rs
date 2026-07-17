@@ -757,23 +757,16 @@ pub fn run() -> Result<()> {
          (any extra would be an F2-caveat false-positive on the cube fixture)",
     );
 
-    // Pseudo-normal inside-count = the CLOSED cube [−R, R]³ grid-point
-    // count, a closed-form geometric identity: 9 dyadic values per axis
-    // in `|coord| ≤ R` (indices 4..=12) → 9³. `verify_grid_consistency`
-    // already asserts the per-point set-equality; this pins the aggregate
-    // count for the museum plaque.
-    assert_eq!(
-        raycast_inside, CLOSED_CUBE_COUNT,
-        "pseudo-normal inside-count must equal the closed cube [−R, R]³ \
-         grid-point count 9³ = {CLOSED_CUBE_COUNT}; drift ⇒ a PseudoNormalSign \
-         boundary-classification change or an oracle swap",
-    );
     // `divergence` (eval < 0 vs is_inside disagreement) is the boundary
     // shell: strict-interior points have eval < 0 AND is_inside, exterior
     // points have neither, and the CLOSED_CUBE − STRICT_INTERIOR face
     // shell has is_inside but eval == 0 (probes exactly on a cube face,
     // unsigned_distance == 0). So the count is the closed-form difference
-    // 729 − 343 = 386, not an empirical capture.
+    // 729 − 343 = 386, not an empirical capture. The aggregate
+    // `raycast_inside == CLOSED_CUBE_COUNT` (9³) is not re-asserted here —
+    // it is already forced by `verify_grid_consistency`'s per-point
+    // set-equality plus the closed-cube bucket count; this pins the
+    // boundary-shell relationship between the two printed aggregates.
     assert_eq!(
         divergence,
         CLOSED_CUBE_COUNT - STRICT_INTERIOR_COUNT,

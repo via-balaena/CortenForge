@@ -198,10 +198,11 @@ use sim_soft::{
 // uniform-1× baseline; bit-equal to MaterialField::skeleton_default)
 // =============================================================================
 
-/// Single-material `μ` (Pa). Pinned to row 11's `MU_INNER` so this row's
-/// FEM solve produces a cavity-wall mean bit-equal to row 11's
-/// `CAVITY_WALL_UNIFORM_1X_REF_BITS` — cross-row continuity anchor.
-/// Equivalent to `MaterialField::skeleton_default = uniform(1e5, 4e5)`.
+/// Single-material `μ` (Pa) — the shear modulus for the single-material
+/// Lamé cavity-wall gate (HEADLINE B). Equal to row 11's `MU_INNER` and
+/// to `MaterialField::skeleton_default = uniform(1e5, 4e5)` (the
+/// `material_field: None` default), so this row's hollow shell reuses
+/// row 11's single-material regime.
 const MU: f64 = 1.0e5;
 
 /// Single-material `λ` (Pa). `λ = 4 μ` ⇒ `ν = 0.4` compressible regime
