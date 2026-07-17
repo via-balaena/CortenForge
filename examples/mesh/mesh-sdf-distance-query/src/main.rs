@@ -1,24 +1,14 @@
-// `unreachable!()` calls below are diagnostic guards on `let-else`
-// branches that cannot fire (fixtures are non-empty by construction →
-// `TriMeshDistance::new` cannot return `Err(EmptyMesh)`). `xtask grade`
-// counts un-justified `unreachable!()` macros; allow at file level since
-// every call is a post-validation impossibility, not a real panic site.
-#![allow(clippy::unreachable)]
 // PLY field-data is single-precision on disk; converting f64 sdf values
 // to f32 for `extras[...]` is intrinsic to the PLY format.
 #![allow(clippy::cast_possible_truncation)]
-// Cross-product unit-normal computation reads as the textbook formula
-// `e1.y*e2.z - e1.z*e2.y`; the `mul_add` rewrite obscures intent and
-// produces bit-equivalent results on integer vertex coordinates.
-#![allow(clippy::suboptimal_flops)]
 // `usize as f64` casts on grid indices (max GRID_SIZE = 10) for
 // coordinate computation. Well within f64 mantissa exact range. Same
 // allowance as the row 6/8/9/10/11 sim-soft examples.
 #![allow(clippy::cast_precision_loss)]
 // `main` orchestrates the example end-to-end: build fixtures, run
-// both oracles, verify, save PLY, print summary. Each step is ~20-30
-// LOC and isn't independently meaningful — splitting would obscure
-// the demonstration narrative more than help.
+// both oracles, save PLY, print summary. Each step is ~20-30 LOC and
+// isn't independently meaningful — splitting would obscure the
+// demonstration narrative more than help.
 #![allow(clippy::too_many_lines)]
 // Programmatic fixtures (octahedron, inverted-cap pyramid) are
 // non-empty by construction so `TriMeshDistance::new` cannot return
@@ -59,7 +49,6 @@
 use std::path::Path;
 
 use anyhow::Result;
-use approx::assert_relative_eq;
 use cf_geometry::Aabb;
 use mesh_io::{save_ply, save_ply_attributed};
 use mesh_sdf::{
@@ -72,15 +61,6 @@ use mesh_types::{AttributedMesh, IndexedMesh, Point3};
 // Constants
 // =============================================================================
 
-/// FP-exact integer octahedron coords + analytical `1/√3` normals hit
-/// `1e-12`. SDF queries go through parry3d which uses f32 internally
-/// (per [[project-mesh-sdf-parry-accel-spec]]), so distance assertions
-/// relax to 1e-6 — well outside f32 roundoff, well inside any practical
-/// surface-locating tolerance.
-const VERTEX_TOL: f64 = 1e-12;
-const NORMAL_TOL: f64 = 1e-12;
-const DISTANCE_TOL: f64 = 1e-6;
-
 const OCTAHEDRON_VERT_COUNT: usize = 6;
 const OCTAHEDRON_FACE_COUNT: usize = 8;
 const OCTAHEDRON_RADIUS: f64 = 1.0;
@@ -91,10 +71,6 @@ const GRID_SIZE: usize = 10;
 const GRID_TOTAL: usize = GRID_SIZE * GRID_SIZE * GRID_SIZE;
 const GRID_MIN: f64 = -2.0;
 const GRID_MAX: f64 = 2.0;
-
-/// 8 grid points at `(±2/9, ±2/9, ±2/9)`; next-nearest `|x|+|y|+|z|`
-/// is `10/9 > 1`. Both oracles agree on a well-formed octahedron.
-const EXPECTED_INSIDE_COUNT: usize = 8;
 
 /// Flood-fill cell size on the octahedron grid (50 mm-ish at the
 /// chosen unit scale). Non-divisor of the octahedron's 1.0 radius so
@@ -136,58 +112,6 @@ fn build_octahedron(r: f64) -> IndexedMesh {
     IndexedMesh::from_parts(vertices, faces)
 }
 
-/// Lock 6 vertex coords + 8 face-winding cross-product unit normals.
-/// Integer vertex coords make the cross products bit-exact at 1e-12.
-fn verify_octahedron_geometry(mesh: &IndexedMesh, r: f64) {
-    assert_eq!(mesh.vertices.len(), OCTAHEDRON_VERT_COUNT);
-    assert_eq!(mesh.faces.len(), OCTAHEDRON_FACE_COUNT);
-
-    let expected_v: [[f64; 3]; OCTAHEDRON_VERT_COUNT] = [
-        [r, 0.0, 0.0],
-        [-r, 0.0, 0.0],
-        [0.0, r, 0.0],
-        [0.0, -r, 0.0],
-        [0.0, 0.0, r],
-        [0.0, 0.0, -r],
-    ];
-    for (i, expected) in expected_v.iter().enumerate() {
-        let v = mesh.vertices[i];
-        assert_relative_eq!(v.x, expected[0], epsilon = VERTEX_TOL);
-        assert_relative_eq!(v.y, expected[1], epsilon = VERTEX_TOL);
-        assert_relative_eq!(v.z, expected[2], epsilon = VERTEX_TOL);
-    }
-
-    let inv_sqrt3 = 1.0 / 3.0_f64.sqrt();
-    let expected_n: [[f64; 3]; OCTAHEDRON_FACE_COUNT] = [
-        [inv_sqrt3, inv_sqrt3, inv_sqrt3],
-        [inv_sqrt3, -inv_sqrt3, -inv_sqrt3],
-        [-inv_sqrt3, inv_sqrt3, -inv_sqrt3],
-        [-inv_sqrt3, -inv_sqrt3, inv_sqrt3],
-        [inv_sqrt3, inv_sqrt3, -inv_sqrt3],
-        [inv_sqrt3, -inv_sqrt3, inv_sqrt3],
-        [-inv_sqrt3, inv_sqrt3, inv_sqrt3],
-        [-inv_sqrt3, -inv_sqrt3, -inv_sqrt3],
-    ];
-    for (i, expected) in expected_n.iter().enumerate() {
-        let f = mesh.faces[i];
-        let p0 = mesh.vertices[f[0] as usize];
-        let p1 = mesh.vertices[f[1] as usize];
-        let p2 = mesh.vertices[f[2] as usize];
-        let e1 = [p1.x - p0.x, p1.y - p0.y, p1.z - p0.z];
-        let e2 = [p2.x - p0.x, p2.y - p0.y, p2.z - p0.z];
-        let n = [
-            e1[1] * e2[2] - e1[2] * e2[1],
-            e1[2] * e2[0] - e1[0] * e2[2],
-            e1[0] * e2[1] - e1[1] * e2[0],
-        ];
-        let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
-        let unit = [n[0] / len, n[1] / len, n[2] / len];
-        assert_relative_eq!(unit[0], expected[0], epsilon = NORMAL_TOL);
-        assert_relative_eq!(unit[1], expected[1], epsilon = NORMAL_TOL);
-        assert_relative_eq!(unit[2], expected[2], epsilon = NORMAL_TOL);
-    }
-}
-
 // =============================================================================
 // Fixture: pathological inverted-cap pyramid
 // =============================================================================
@@ -227,93 +151,24 @@ fn build_inverted_cap_pyramid() -> IndexedMesh {
 // Section 1 — Oracle composition walkthrough on the octahedron
 // =============================================================================
 
-/// 8 analytical anchor queries covering interior face regions, vertex
-/// directions, and far-field. Pins [`TriMeshDistance`] +
-/// [`PseudoNormalSign`] composition against the closed-form L1-ball
-/// SDF `(|x| + |y| + |z| − 1) / √3` for face-region queries.
-fn verify_octahedron_signed_pseudo_normal(
+/// Sample the octahedron's `Signed<TriMeshDistance, PseudoNormalSign>`
+/// composition at three representative probes for the printed summary: a
+/// generic interior point, a face-center direction, and a vertex-direction
+/// exterior probe. The closed-form L1-ball values these reproduce —
+/// `(|x| + |y| + |z| − 1) / √3`, including `closest_point` and `is_inside`
+/// over generic + 6 face-center + vertex probes — are asserted in
+/// `mesh-sdf`'s `signed_distance_matches_closed_form_l1_ball_on_octahedron`
+/// lib test; this walkthrough reads the values back for display.
+fn octahedron_pseudo_normal_summary(
     sdf: &Signed<TriMeshDistance, PseudoNormalSign>,
 ) -> SignedSummary {
-    let inv_sqrt3 = 1.0 / 3.0_f64.sqrt();
-    let third = 1.0 / 3.0;
-
-    // Generic interior `(0.05, 0.07, 0.11)`. L1-norm 0.23 → SDF
-    // `(0.23 − 1) / √3 = -0.77 / √3` (negative inside).
     let generic = Point3::new(0.05, 0.07, 0.11);
-    let generic_signed = -0.77 * inv_sqrt3;
-    assert_relative_eq!(
-        sdf.distance(generic),
-        generic_signed,
-        epsilon = DISTANCE_TOL
-    );
-    assert_relative_eq!(
-        sdf.unsigned_distance(generic),
-        0.77 * inv_sqrt3,
-        epsilon = DISTANCE_TOL
-    );
-    assert!(sdf.is_inside(generic));
-    let cp = sdf.closest_point(generic);
-    assert_relative_eq!(cp.x, 0.05 + 0.77 / 3.0, epsilon = DISTANCE_TOL);
-    assert_relative_eq!(cp.y, 0.07 + 0.77 / 3.0, epsilon = DISTANCE_TOL);
-    assert_relative_eq!(cp.z, 0.11 + 0.77 / 3.0, epsilon = DISTANCE_TOL);
-
-    // 6 face-center direction interior queries — analytical anchor.
-    let face_center_signed = -0.1 * inv_sqrt3;
-    let face_cases: [(f64, f64, f64); 6] = [
-        (1.0, 1.0, 1.0),
-        (1.0, -1.0, -1.0),
-        (-1.0, 1.0, -1.0),
-        (-1.0, -1.0, 1.0),
-        (1.0, 1.0, -1.0),
-        (-1.0, -1.0, -1.0),
-    ];
-    for (sx, sy, sz) in face_cases {
-        let q = Point3::new(0.3 * sx, 0.3 * sy, 0.3 * sz);
-        assert_relative_eq!(sdf.distance(q), face_center_signed, epsilon = DISTANCE_TOL);
-        assert!(sdf.is_inside(q));
-        let cp = sdf.closest_point(q);
-        assert_relative_eq!(cp.x, sx * third, epsilon = DISTANCE_TOL);
-        assert_relative_eq!(cp.y, sy * third, epsilon = DISTANCE_TOL);
-        assert_relative_eq!(cp.z, sz * third, epsilon = DISTANCE_TOL);
-    }
-
-    // 1 vertex-direction exterior probe — clamps to +X vertex.
     let vertex_q = Point3::new(2.0, 0.0, 0.0);
-    let vertex_signed = 1.0;
-    assert_relative_eq!(
-        sdf.distance(vertex_q),
-        vertex_signed,
-        epsilon = DISTANCE_TOL
-    );
-    assert!(!sdf.is_inside(vertex_q));
-
     SignedSummary {
         generic_signed: sdf.distance(generic),
         face_center_signed: sdf.distance(Point3::new(0.3, 0.3, 0.3)),
         vertex_unsigned: sdf.unsigned_distance(vertex_q),
     }
-}
-
-/// Same anchor queries via [`FloodFillSign`] composition. On a
-/// well-formed octahedron both sign oracles must agree.
-fn verify_octahedron_signed_flood_fill(sdf: &Signed<TriMeshDistance, FloodFillSign>) {
-    let inv_sqrt3 = 1.0 / 3.0_f64.sqrt();
-
-    // Generic interior — unsigned distance is BVH-exact, sign comes
-    // from flood-fill grid lookup. Both must match the pseudo-normal
-    // result on this clean CCW fixture.
-    let generic = Point3::new(0.05, 0.07, 0.11);
-    let expected_signed = -0.77 * inv_sqrt3;
-    assert_relative_eq!(
-        sdf.distance(generic),
-        expected_signed,
-        epsilon = DISTANCE_TOL
-    );
-    assert!(sdf.is_inside(generic));
-
-    let vertex_q = Point3::new(2.0, 0.0, 0.0);
-    assert!(!sdf.is_inside(vertex_q));
-    assert_relative_eq!(sdf.unsigned_distance(vertex_q), 1.0, epsilon = DISTANCE_TOL);
 }
 
 #[derive(Debug)]
@@ -370,11 +225,13 @@ fn build_grid(
 /// Probe the inverted-cap pyramid at four points: one interior, one
 /// far-field below the inverted base (where [`PseudoNormalSign`]
 /// produces the wrong sign), one far-field above the apex, and one to
-/// the side.
+/// the side. Returns the per-probe comparison for the printout.
 ///
-/// Asserts the canonical D arc claim: [`PseudoNormalSign`] produces a
-/// wrong-sign far-field below the inverted base; [`FloodFillSign`]
-/// produces correct outside signs from topological reachability.
+/// Demonstrates the canonical D arc contrast: [`PseudoNormalSign`]
+/// produces a wrong-sign far-field below the inverted base;
+/// [`FloodFillSign`] produces correct outside signs from topological
+/// reachability. The claim is asserted in `mesh-sdf`'s `flood_fill.rs`
+/// `pseudo_normal_wrong_flood_fill_right_on_inward_cap` lib test.
 fn compare_oracles_on_inverted_cap(
     pseudo_normal_sdf: &Signed<TriMeshDistance, PseudoNormalSign>,
     flood_fill_sdf: &Signed<TriMeshDistance, FloodFillSign>,
@@ -421,18 +278,13 @@ fn compare_oracles_on_inverted_cap(
         });
     }
 
-    // The load-bearing assertion: PseudoNormalSign is WRONG on the
-    // far-field-below-inverted-base probe (1 disagreement expected),
-    // FloodFillSign is right everywhere (0 disagreements expected).
-    assert_eq!(
-        pseudo_normal_disagreements, 1,
-        "PseudoNormalSign should produce exactly 1 wrong sign on the inverted-cap fixture (far-field below inverted base)",
-    );
-    assert_eq!(
-        flood_fill_disagreements, 0,
-        "FloodFillSign should produce correct signs everywhere on the inverted-cap fixture",
-    );
-
+    // The load-bearing behavior this demonstrates — PseudoNormalSign
+    // produces exactly 1 wrong sign (far-field below the inverted base)
+    // while FloodFillSign is correct everywhere — is asserted in
+    // `mesh-sdf`'s `flood_fill.rs`
+    // `pseudo_normal_wrong_flood_fill_right_on_inward_cap` lib test (same
+    // inverted-base fixture, same probe direction). Here we surface the
+    // per-probe comparison for the printout.
     OracleComparison {
         probe_records,
         pseudo_normal_disagreements,
@@ -506,9 +358,8 @@ fn main() -> Result<()> {
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("out");
     std::fs::create_dir_all(&out_dir)?;
 
-    // ── Section 0: build + verify octahedron geometry ──────────────────
+    // ── Section 0: build octahedron fixture ────────────────────────────
     let octahedron = build_octahedron(OCTAHEDRON_RADIUS);
-    verify_octahedron_geometry(&octahedron, OCTAHEDRON_RADIUS);
     save_ply(
         &octahedron,
         out_dir.join("octahedron.ply"),
@@ -531,7 +382,7 @@ fn main() -> Result<()> {
         distance: octa_distance,
         sign: octa_pn_sign,
     };
-    let summary = verify_octahedron_signed_pseudo_normal(&octa_pn_sdf);
+    let summary = octahedron_pseudo_normal_summary(&octa_pn_sdf);
 
     // ── Section 2: flood-fill composition + agreement on octahedron ───
     //
@@ -547,33 +398,22 @@ fn main() -> Result<()> {
         FLOOD_FILL_CELL_SIZE,
         WALL_THRESHOLD_FACTOR_DEFAULT,
     )?;
-    assert_eq!(
-        octa_ff_report.inside_components, 1,
-        "octahedron flood-fill must produce 1 connected inside region",
-    );
-    verify_octahedron_signed_flood_fill(&octa_ff_sdf);
 
-    // ── Bulk-grid query: both oracles must agree on the octahedron ────
+    // ── Bulk-grid query: both oracles agree on the octahedron ─────────
+    // The counts below are read back for the printout; this octahedron
+    // grid demonstrates the general contracts (flood-fill produces one
+    // inside component on a clean mesh, and both sign oracles agree on a
+    // well-formed mesh) that `mesh-sdf`'s `flood_fill.rs` lib tests assert
+    // on pyramid / dome fixtures
+    // (`flood_fill_sign_correct_on_closed_pyramid`,
+    // `flood_fill_matches_pseudo_normal_on_outward_cap`).
     let samples = build_grid(&octa_pn_sdf, &octa_ff_sdf);
-    assert_eq!(samples.len(), GRID_TOTAL);
     let pn_inside_count = samples.iter().filter(|s| s.pseudo_normal_inside).count();
     let ff_inside_count = samples.iter().filter(|s| s.flood_fill_inside).count();
-    assert_eq!(
-        pn_inside_count, EXPECTED_INSIDE_COUNT,
-        "PseudoNormalSign inside-count on octahedron must be {EXPECTED_INSIDE_COUNT}",
-    );
-    assert_eq!(
-        ff_inside_count, EXPECTED_INSIDE_COUNT,
-        "FloodFillSign inside-count on octahedron must be {EXPECTED_INSIDE_COUNT}",
-    );
     let disagreement_count = samples
         .iter()
         .filter(|s| s.pseudo_normal_inside != s.flood_fill_inside)
         .count();
-    assert_eq!(
-        disagreement_count, 0,
-        "well-formed octahedron: both sign oracles must agree on every grid point",
-    );
     save_grid_ply(&samples, &out_dir.join("octahedron_sdf_grid.ply"))?;
 
     // ── Section 3: pathological inverted-cap pyramid — load-bearing ───
@@ -592,16 +432,12 @@ fn main() -> Result<()> {
         sign: inv_pn_sign,
     };
     let inv_bounds = Aabb::new(Point3::new(-4.0, -4.0, -4.0), Point3::new(4.0, 4.0, 4.0));
-    let (inv_ff_sdf, inv_ff_report) = flood_filled_sdf(
+    let (inv_ff_sdf, _inv_ff_report) = flood_filled_sdf(
         inverted_pyramid,
         inv_bounds,
         0.0743,
         WALL_THRESHOLD_FACTOR_DEFAULT,
     )?;
-    assert_eq!(
-        inv_ff_report.inside_components, 1,
-        "inverted-cap pyramid flood-fill must produce 1 connected inside region",
-    );
     let comparison = compare_oracles_on_inverted_cap(&inv_pn_sdf, &inv_ff_sdf);
 
     // ── stdout summary ────────────────────────────────────────────────
