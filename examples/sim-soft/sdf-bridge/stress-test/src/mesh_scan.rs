@@ -59,10 +59,11 @@
 //! mode. `eval < 0` (strict-inequality heuristic-inside) and
 //! [`Signed::is_inside`] now both route through the same
 //! [`PseudoNormalSign`], so the historical "heuristic ↔ raycast
-//! divergence" framing collapses; the residual divergence (~386 grid
-//! points on the 17³ grid) is structural boundary-convention noise on
-//! probes that land exactly on cube faces (`unsigned_distance == 0`
-//! → `eval == 0` → `eval < 0` false even when `is_inside` is true).
+//! divergence" framing collapses; the residual divergence (exactly
+//! `CLOSED_CUBE_COUNT − STRICT_INTERIOR_COUNT = 729 − 343 = 386` grid
+//! points, pinned in `main`) is structural boundary-convention: probes
+//! that land exactly on cube faces (`unsigned_distance == 0` →
+//! `eval == 0` → `eval < 0` false even when `is_inside` is true).
 //! For a
 //! fixture where a sign oracle does demonstrably fail (and the D-arc
 //! flood-fill defense actively rescues it), see
@@ -138,20 +139,21 @@ const GRID_TOTAL: usize = GRID_RES * GRID_RES * GRID_RES;
 /// across the whole set.
 const STRICT_INTERIOR_COUNT: usize = 7 * 7 * 7;
 
-/// HE-1 raycast-degeneracy count among strict-interior probes: the
-/// `y == z` subset (one per `(c, c)` pair across 7 axis values, with
-/// 7 x values each) where the +X-direction ray-cast from probe to
-/// `+X` face hits exactly the diagonal edge shared between triangles
-/// `[1, 2, 6]` and `[1, 6, 5]` (the `y = z` line on the `x = R`
-/// plane). Möller-Trumbore returns `None` on the parallel /
-/// edge-coincident hit, undercounting the intersection and flipping
-/// `is_inside` to `false`. Same phenomenon `mesh-sdf-distance-query`
-/// documents at the octahedron origin (HE-1: `+X` ray sharing 4
-/// faces at vertex `(1, 0, 0)`). Subtract this count to get the
-/// "off-diagonal strict-interior" subset where raycast is reliable.
-const STRICT_INTERIOR_DIAGONAL_DEGENERATE_COUNT: usize = 7 * 7;
-const STRICT_INTERIOR_OFF_DIAGONAL_COUNT: usize =
-    STRICT_INTERIOR_COUNT - STRICT_INTERIOR_DIAGONAL_DEGENERATE_COUNT;
+/// Closed-form count of grid points inside the CLOSED cube `[−R, R]³`
+/// (boundary inclusive). Per axis the set `|coord| ≤ R = 1.0` selects
+/// the 9 dyadic grid values `{−1.0, −0.75, …, 0.75, 1.0}` (grid indices
+/// 4..=12), all bit-exactly representable in f64; `9³ = 729` total. The
+/// [`PseudoNormalSign`] oracle classifies exactly this closed set as
+/// inside — the strict-interior bucket plus the boundary probes at
+/// `|coord| == R` (unsigned distance 0, where the pseudo-normal returns
+/// the inside half-space). So `raycast_inside` (the whole-grid
+/// pseudo-normal inside-count) equals this geometric count structurally,
+/// not as a captured empirical bit; the residual `eval < 0` ↔ `is_inside`
+/// divergence is exactly the boundary shell `CLOSED_CUBE_COUNT −
+/// STRICT_INTERIOR_COUNT = 729 − 343 = 386` (those faces have
+/// `eval == 0`, so the strict-inequality heuristic excludes them while
+/// the sign oracle includes them).
+const CLOSED_CUBE_COUNT: usize = 9 * 9 * 9;
 
 // =============================================================================
 // Cube fixture
@@ -475,24 +477,25 @@ fn verify_stl_round_trip(mesh: &IndexedMesh, sdf: &ScanSdf, out_dir: &Path) -> R
 // =============================================================================
 
 /// Per-grid-point sample: world-space position, signed distance via
-/// the [`Sdf`] trait, and ray-cast inside-test (the authoritative
-/// inside/outside reference).
+/// the [`Sdf`] trait, and the pseudo-normal inside-test (the
+/// authoritative inside/outside reference; the field name keeps the
+/// historical `raycast` label — see the module docstring on the
+/// [`PseudoNormalSign`] migration).
 struct GridSample {
     p: Point3<f64>,
     eval: f64,
     inside_raycast: bool,
 }
 
-/// Off-the-`+X`-face shared-diagonal test for HE-1 raycast filtering.
-/// The bulk-grid `y` and `z` coordinates are dyadic (built from
-/// spacing 0.25 = 2⁻²) so `y == z` is bit-exact and exactly catches
-/// the 49 strict-interior probes on the diagonal between triangles
-/// `[1, 2, 6]` and `[1, 6, 5]`. clippy's `float_cmp` "compare within
-/// margin" suggestion would silently misclassify those probes —
-/// hence the localized allow.
-#[allow(clippy::float_cmp)]
-fn is_off_xface_diagonal(g: &GridSample) -> bool {
-    g.p.y != g.p.z
+/// Membership in the CLOSED cube `[−R, R]³` (boundary inclusive). The
+/// bulk-grid coordinates are dyadic (spacing `0.25 = 2⁻²`) and `R = 1.0`
+/// is dyadic, so each `|coord| ≤ R` comparison is bit-exact — boundary
+/// probes at `|coord| == R` land on grid indices 4 and 12 with no FP
+/// slack. This is the closed-form oracle the [`PseudoNormalSign`]
+/// inside-test is validated against (set-equality in
+/// `verify_grid_consistency`).
+fn is_closed_cube(g: &GridSample) -> bool {
+    g.p.x.abs() <= R && g.p.y.abs() <= R && g.p.z.abs() <= R
 }
 
 /// Build the 17³ = 4913-point grid in `[−2, 2]³` at spacing 0.25.
@@ -536,22 +539,28 @@ fn build_grid(sdf: &ScanSdf) -> Vec<GridSample> {
 ///    the far-field vertex / edge regions outside the cube are
 ///    documented to potentially flip sign (see F2 docstring at
 ///    `design/cf-design/src/sdf.rs:81-89`).
-/// 3. **Raycast off-diagonal strict-interior coverage** — every
-///    strict-interior grid point with `y != z` (i.e. NOT on the +X
-///    face's `[1, 2, 6]`/`[1, 6, 5]` shared diagonal) reports
-///    `inside_raycast = true`. The 49 strict-interior probes ON the
-///    `y == z` line hit the HE-1 ray-edge-coincidence degeneracy
-///    (Möller-Trumbore drops parallel / edge-incident hits) and may
-///    report `inside_raycast = false`; we make no assertion about
-///    those.
+/// 3. **Pseudo-normal inside-set = closed cube** — the sign oracle
+///    ([`PseudoNormalSign`], exposed as `is_inside`) classifies a grid
+///    point as inside iff it lies in the CLOSED cube `[−R, R]³`
+///    (`|coord| ≤ R` on every axis). Asserted as full set-equality over
+///    the grid: `inside_raycast == is_closed_cube` at every point, with
+///    the closed-cube bucket counted at `CLOSED_CUBE_COUNT = 9³ = 729`.
+///    Dyadic spacing makes the `|coord| == R` boundary probes bit-exact,
+///    so the boundary shell is unambiguously inside.
 ///
-/// The heuristic ↔ raycast divergence count printed in the museum
-/// plaque is dominated by HE-1 (raycast's failure mode at
-/// face-diagonal-incident probes), NOT by the F2 caveat (the
-/// heuristic's far-field sign-flip). Both are intrinsic to the
-/// respective algorithms; for a *known* F2-caveat fixture, see
-/// `examples/mesh/mesh-sdf-distance-query` (octahedron, 6
-/// vertex-region false-positives at the bbox boundary).
+/// The `eval < 0` ↔ `is_inside` divergence printed in the museum plaque
+/// is therefore exactly the boundary shell `CLOSED_CUBE_COUNT −
+/// STRICT_INTERIOR_COUNT = 729 − 343 = 386`: those grid points sit on a
+/// cube face (`unsigned_distance == 0` → `eval == 0`), so the
+/// strict-inequality heuristic `eval < 0` excludes them while the sign
+/// oracle includes them. Both counts are closed-form geometric identities
+/// on this fixture, not captured empirical values. (The pre-parry `+X`
+/// Möller-Trumbore ray-cast had an additional HE-1 face-diagonal
+/// degeneracy that dropped the `y == z` interior probes; the
+/// [`PseudoNormalSign`] path has no such degeneracy, which is why the
+/// diagonal probes are now unconditionally inside. For a fixture where a
+/// sign oracle genuinely fails, see `examples/mesh/mesh-sdf-distance-query`
+/// — octahedron, vertex-region false-positives at the bbox boundary.)
 ///
 /// Returns `(raycast_inside, heuristic_inside, divergence)` for the
 /// museum-plaque summary.
@@ -581,27 +590,26 @@ fn verify_grid_consistency(grid: &[GridSample]) -> (usize, usize, usize) {
         "every strict-interior grid point must have eval < 0",
     );
 
-    // (3) Raycast covers the off-diagonal strict-interior subset.
-    // Diagonal-degenerate count `7² = 49` (one per `(y == z)` pair
-    // across 7 axis values, repeated for each of 7 x values).
-    let off_diagonal_strict = grid
-        .iter()
-        .filter(is_strict_interior)
-        .filter(|g| is_off_xface_diagonal(g))
-        .count();
+    // (3) Pseudo-normal inside-set equals the closed cube [−R, R]³.
+    // First pin the closed-cube bucket to its closed-form size 9³, then
+    // assert the sign oracle's inside-classification matches closed-cube
+    // membership at every grid point (set-equality, both directions).
+    let closed_cube = grid.iter().filter(|g| is_closed_cube(g)).count();
     assert_eq!(
-        off_diagonal_strict, STRICT_INTERIOR_OFF_DIAGONAL_COUNT,
-        "off-diagonal strict-interior count = {STRICT_INTERIOR_OFF_DIAGONAL_COUNT}; got {off_diagonal_strict}",
+        closed_cube, CLOSED_CUBE_COUNT,
+        "closed-cube bucket must be 9³ = {CLOSED_CUBE_COUNT}; got {closed_cube}",
     );
-    let off_diagonal_all_raycast = grid
-        .iter()
-        .filter(is_strict_interior)
-        .filter(|g| is_off_xface_diagonal(g))
-        .all(|g| g.inside_raycast);
-    assert!(
-        off_diagonal_all_raycast,
-        "every off-diagonal strict-interior grid point must report inside via raycast",
-    );
+    for g in grid {
+        assert_eq!(
+            g.inside_raycast,
+            is_closed_cube(g),
+            "pseudo-normal is_inside at {:?} = {} disagrees with closed-cube \
+             membership {} — sign-oracle boundary classification drifted",
+            g.p,
+            g.inside_raycast,
+            is_closed_cube(g),
+        );
+    }
 
     // Counts.
     let raycast_inside = grid.iter().filter(|g| g.inside_raycast).count();
@@ -675,14 +683,16 @@ fn print_summary(
         R - GRID_SPACING,
     );
     println!(
-        "  raycast off-diag strict    : {STRICT_INTERIOR_OFF_DIAGONAL_COUNT} pts (= {STRICT_INTERIOR_COUNT} − {STRICT_INTERIOR_DIAGONAL_DEGENERATE_COUNT} HE-1 diag) all inside via raycast",
+        "  pseudo-normal inside-set   : {CLOSED_CUBE_COUNT} pts = closed cube [−R, R]³ (9³); is_inside iff |coord| ≤ R",
     );
     println!(
-        "  inside via raycast         : {raycast_inside:>5} (authoritative; HE-1 undercounts diag)"
+        "  inside via sign oracle     : {raycast_inside:>5} (= 9³ closed cube; boundary-inclusive)"
     );
-    println!("  inside via heuristic < 0   : {heuristic_inside:>5} (face-normal sign)");
     println!(
-        "  heuristic ↔ raycast diverge: {divergence:>5} (≥ {STRICT_INTERIOR_DIAGONAL_DEGENERATE_COUNT} HE-1 diag; F2-caveat absent on cube)",
+        "  inside via heuristic < 0   : {heuristic_inside:>5} (= 7³ strict interior; face-normal sign)"
+    );
+    println!(
+        "  boundary-shell divergence  : {divergence:>5} (= {CLOSED_CUBE_COUNT} − {STRICT_INTERIOR_COUNT}; faces have eval == 0 but is_inside)",
     );
     println!();
     println!("Artifacts:");
@@ -747,34 +757,24 @@ pub fn run() -> Result<()> {
          (any extra would be an F2-caveat false-positive on the cube fixture)",
     );
 
-    // Raycast + divergence are empirical pins on the sign oracle's
-    // boundary handling at face-coplanar / edge-incident probes.
-    // Captured post-D arc with cube fixture + 17³ × 0.25 grid +
-    // `Signed<TriMeshDistance, PseudoNormalSign>` (parry pseudo-normal
-    // sign, see [[project-mesh-sdf-oracle-decomposition-spec]]); drift
-    // here would indicate a parry policy change or an oracle swap.
-    // Pre-parry the captured count was 576 (ray-cast based); the
-    // change to 729 is structural — parry's pseudo-normal sign returns
-    // a different inside/outside boundary classification than the old
-    // +X ray-cast on the cube fixture's face / edge / vertex probes.
+    // `divergence` (eval < 0 vs is_inside disagreement) is the boundary
+    // shell: strict-interior points have eval < 0 AND is_inside, exterior
+    // points have neither, and the CLOSED_CUBE − STRICT_INTERIOR face
+    // shell has is_inside but eval == 0 (probes exactly on a cube face,
+    // unsigned_distance == 0). So the count is the closed-form difference
+    // 729 − 343 = 386, not an empirical capture. The aggregate
+    // `raycast_inside == CLOSED_CUBE_COUNT` (9³) is not re-asserted here —
+    // it is already forced by `verify_grid_consistency`'s per-point
+    // set-equality plus the closed-cube bucket count; this pins the
+    // boundary-shell relationship between the two printed aggregates.
     assert_eq!(
-        raycast_inside, 729,
-        "pseudo-normal inside-count drifted from captured 729 \
-         (parry pseudo-normal policy change or oracle swap?)",
+        divergence,
+        CLOSED_CUBE_COUNT - STRICT_INTERIOR_COUNT,
+        "eval-vs-is_inside divergence must equal the boundary shell \
+         (closed − strict interior = {CLOSED_CUBE_COUNT} − {STRICT_INTERIOR_COUNT} \
+         = {}); got {divergence}",
+        CLOSED_CUBE_COUNT - STRICT_INTERIOR_COUNT,
     );
-    // `divergence` (heuristic-vs-raycast disagreement) is no longer
-    // pinned: the pre-parry value of 331 was tied to the old +X
-    // ray-cast policy. Post-parry, both `eval` sign and `is_inside`
-    // route through the SAME `Sign::is_inside` oracle, but the count
-    // is non-zero (386 empirically on this 17³ grid) because `eval <
-    // 0` is a strict-inequality test: probes exactly on the cube
-    // surface have `unsigned_distance == 0` → `eval == 0` → `eval < 0`
-    // is false, even when `Sign::is_inside` returns true (boundary
-    // convention). The strictly-axis-aligned `±R` faces account for
-    // most of these boundary-convention disagreements at the chosen
-    // dyadic spacing. Surfaced informationally in the summary; the
-    // load-bearing strict-interior heuristic_inside == 343 assertion
-    // above already pins the F2 caveat absent on this fixture.
 
     let cube_path = out_dir.join("cube_scan.stl");
     let grid_path = out_dir.join("sdf_grid.ply");

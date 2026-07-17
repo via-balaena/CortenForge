@@ -14,10 +14,10 @@
 //!   anchor dispatches through `&dyn cf_design::Sdf`: closed-form L∞-ball SDF at
 //!   face / edge / vertex / interior probes, a finite-difference gradient
 //!   face-band check, an STL round-trip agreement gate, and a 17³ = 4913 bulk
-//!   grid consistency pass (`raycast_inside` pinned at 729, off-diagonal
-//!   strict-interior raycast coverage, F2-caveat-absent identity; the HE-1
-//!   ray-edge diagonal degeneracy is documented and excluded from assertion,
-//!   never locked to a wrong value).
+//!   grid consistency pass (the `PseudoNormalSign` inside-set proven equal to
+//!   the closed cube `[−R, R]³` = 9³ = 729 grid points, the strict-interior
+//!   heuristic bucket = 7³ = 343, and their boundary-shell difference = 386 —
+//!   all closed-form geometric identities, none a captured empirical count).
 //! - [`solid_to_sim`] (row 16) — the **design → sim** direction: a typed
 //!   `cf_design::Solid` CSG body (`Solid::sphere(R_OUTER).subtract(sphere(
 //!   R_CAVITY))`) coerces to `&dyn Sdf` and drives
@@ -25,8 +25,9 @@
 //!   proves the bridge is bit-preserving — the typed-`Solid` mesh
 //!   `equals_structurally` a `DifferenceSdf<SphereSdf>` baseline with per-vertex
 //!   positions bit-equal — then a single-material pressurization FEM readout
-//!   validates the cavity-wall mean against single-material Lamé (within 30 %)
-//!   and pins it bit-equal to row 11's uniform-1× capture (cross-row continuity).
+//!   validates the cavity-wall mean against single-material Lamé (within 30 %).
+//!   Mesh counts are structural invariants only (absolute counts unpinned —
+//!   mesher-version artifacts, like row 11).
 //!
 //! The two are complementary, not subsuming: [`mesh_scan`] is the sole coverage
 //! of the mesh-SDF → `cf_design::Sdf` direction (triangle-soup source, closed-
