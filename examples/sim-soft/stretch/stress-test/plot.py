@@ -64,8 +64,8 @@ def main() -> int:
         f"neo_hookean: traction-free F = diag(λ, λ_t, λ_t)\n"
         f"compressible NH (μ = {mu:.2g} Pa, Λ = {lam:.2g} Pa, ν ≈ 0.4); "
         f"in-domain λ ≈ [{bracket[0]:.4f}, {bracket[1]:.4f}]\n"
-        f"observed (mat.first_piola / mat.energy) and analytic agree to "
-        f"f64 ULP — see asserts in src/neo_hookean.rs",
+        f"observed (mat.first_piola / mat.energy) with analytic closed-form "
+        f"overlay — correctness gated in sim-soft neo_hookean.rs lib tests",
         fontsize=11,
     )
 
