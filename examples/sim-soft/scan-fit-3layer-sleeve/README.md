@@ -97,9 +97,8 @@ Every tet has positive signed volume — the BCC + Isosurface Stuffing pipeline 
 | `n_referenced`           | `> 0` and `≤ n_vertices` (referenced set ⊆ all vertices; the excess are orphan BCC lattice corners the solver skips) |
 | `n_pinned` (outer-envelope band) | non-empty proper subset of `n_referenced` (every vertex with `\|outer_envelope.eval(p)\| < CELL_SIZE / 2`) |
 | each per-shell tet count | `> 0` (all three material bands populated) |
-| `n_inner + n_middle + n_outer` | `== n_tets` (partition gate — every tet centroid sits in exactly one distance-from-scan shell) |
 
-Structural invariants, not exact counts: the specific tet/vertex counts are a mesher-version artifact (they change on any BCC/stuffing improvement), whereas non-emptiness + the exact partition are the properties that actually matter. The generic per-shell routing correctness is lib-owned (`sdf_material_tagging.rs` IV-4); see gate 5 for this scene's routing check.
+Structural invariants, not exact counts: the specific tet/vertex counts are a mesher-version artifact (they change on any BCC/stuffing improvement), whereas non-emptiness is the property that actually matters. (The three per-shell counts partition every tet exactly once by construction — the caller derives them from a total match over all tets — so a `sum == n_tets` assert would guard nothing; the per-shell routing is checked independently in gate 5.) The generic per-shell routing correctness is lib-owned (`sdf_material_tagging.rs` IV-4); see gate 5 for this scene's routing check.
 
 ### 3. `zslab_populations`
 

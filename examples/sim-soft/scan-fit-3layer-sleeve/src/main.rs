@@ -132,8 +132,9 @@
 //!    - JSON `out/scan_fit_3layer_sleeve.json`: scalars (geometry
 //!      constants + counts + force-total + `n_active_pairs` +
 //!      mean/max force/displacement + per-layer `Ψ̄`) + per-shell tet
-//!      counts + 3-material provenance block + per-active-pair detail
-//!      array (mirrors row 18 + 20's two-section schema).
+//!      counts + 3-material layer block (name / proxy / `(μ, λ)` /
+//!      density) + per-active-pair detail array (mirrors row 18 + 20's
+//!      two-section schema).
 //!    - PLY `out/sleeve_zslab.ply`: z-slab per-tet centroid cloud
 //!      (`|centroid.z| < CELL_SIZE / 2`) with two scalars —
 //!      `material_id` categorical (0 = inner / 1 = middle / 2 = outer;
@@ -629,11 +630,11 @@ fn verify_mesh_structure(
     assert!(inner_count > 0, "inner shell is empty");
     assert!(middle_count > 0, "middle shell is empty");
     assert!(outer_count > 0, "outer shell is empty");
-    assert_eq!(
-        inner_count + middle_count + outer_count,
-        mesh.n_tets(),
-        "the three shells must partition every tet exactly once",
-    );
+    // (No `inner + middle + outer == n_tets` assert: the caller derives the
+    // three counts by iterating every tet through a total match, so the sum
+    // equals `n_tets` by construction — it would guard nothing. The per-shell
+    // non-empty checks above + `verify_material_routing`'s independent
+    // per-shell classification carry the real routing content.)
 }
 
 /// z-slab populations — each shell contributes at least one tet to the

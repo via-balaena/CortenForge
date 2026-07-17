@@ -58,8 +58,8 @@ mesh-io = { workspace = true }
 anyhow = { workspace = true }
 # JSON emit for `out/scan_fit_3layer_sleeve.json` — fit-pose summary
 # (force_total + displacement + per-layer Ψ̄) + per-shell tet counts +
-# 3-material provenance block + per-active-pair detail array. Mirrors
-# row 18 + 20's two-section schema.
+# 3-material layer block (name / proxy / (μ, λ) / density) + per-active-
+# pair detail array. Mirrors row 18 + 20's two-section schema.
 serde_json = { workspace = true }
 # `Matrix3` + `Vector3` for the per-tet F-from-positions helper +
 # `cf_design::Sdf::eval` `Point3` receiver adaptation at material-field
