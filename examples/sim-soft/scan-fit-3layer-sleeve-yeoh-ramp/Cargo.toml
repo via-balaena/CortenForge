@@ -5,6 +5,20 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+# Declares this example's role in the validation contract. `validator` = the
+# binary self-checks against oracles and exits non-zero on any failure, so CI
+# runs it red-or-green (see `cargo xtask run-validators`). This row is a Rule-B
+# validator: a heavy 16-step quasi-static ramp demonstrator whose oracles are
+# pipeline-emergent structural + physics invariants (positive tet volume,
+# per-step convergence, per-step force-displacement monotonicity, strict Ψ̄
+# ordering, displacement bound, per-shell material routing) read from the real
+# solve — NOT captured-bit self-pins (stripped in the Rule-B de-frag;
+# constitutive/mesher correctness is lib-owned). Robust deep-penetration
+# convergence to 8 mm depends on the calibrated Yeoh validity bounds routed via
+# `MaterialField::from_yeoh_fields_with_bounds`.
+[package.metadata.cortenforge]
+example_kind = "validator"
+
 [dependencies]
 # `cf_design::Solid::cuboid` (the axis-aligned scan stand-in body —
 # exact-SDF primitive required for offset to produce a true uniform
@@ -19,8 +33,9 @@ publish = false
 # pipelines via the same trait — no per-shape glue.
 cf-design = { workspace = true }
 # `Aabb3` + `BoundaryConditions` + `CpuNewtonSolver` +
-# `LayeredScalarField` + `MaterialField` (with `from_yeoh_fields` —
-# Yeoh variant for the F4.0 generic-mesh path) + `Mesh<Yeoh>` +
+# `LayeredScalarField` + `MaterialField` (with
+# `from_yeoh_fields_with_bounds` — Yeoh variant carrying the calibrated
+# per-anchor validity caps for the F4.0 generic-mesh path) + `Mesh<Yeoh>` +
 # `MeshingHints` + `NewtonStep` + `PenaltyRigidContact` +
 # `PenaltyRigidContactYeohSolver` (Yeoh alias of
 # `CpuNewtonSolver<…, Yeoh, 4, 1>`, lib.rs:148) + `SceneInitial` +
@@ -46,21 +61,18 @@ sim-soft = { workspace = true }
 # contact (rigid intrusion probe drives the cavity wall) at every
 # step; no distributed pressure. Same idiom as rows 18 + 20 + 21 + 22.
 sim-ml-chassis = { workspace = true }
-# `Point3` + `IndexedMesh` + `AttributedMesh` for the final-step
-# z-slab per-tet centroid PLY emit (`material_id` categorical +
-# `displacement_magnitude` sequential, per pattern (aa) for hollow /
-# interior-cavity bodies).
+# `Vector3` for the `Solid` half-extents + the per-tet F-from-positions
+# helper's column vectors.
 mesh-types = { workspace = true }
-# `save_ply_attributed` for `out/sleeve_zslab_final.ply`.
+# `save_ply_attributed` for the F1.5 viz artifacts
+# (`out/sleeve_boundary_final.ply` / `sleeve_slab_cut_z0_final.ply` +
+# the cf-design design-mesh + per-step `design_surface_deformed` series),
+# each carrying `material_id` categorical + `displacement_magnitude`
+# sequential per-vertex scalars.
 mesh-io = { workspace = true }
 # `Result<()>` return + error-context wrapping for the JSON + PLY emit
 # steps. Same convention as rows 1-22.
 anyhow = { workspace = true }
-# `assert_relative_eq!` for the IV-1 sparse-tier rel-tol contract on
-# captured per-step force / displacement / per-layer Ψ̄ bits + the
-# `to_yeoh()` Yeoh-parameters round-trip + counts-bound and
-# material-provenance gates. Same convention as rows 1-22.
-approx = { workspace = true }
 # JSON emit for `out/scan_fit_3layer_sleeve_yeoh_ramp.json` —
 # final-step scalars + 3-material provenance (Yeoh-flavored: μ, c2, λ,
 # density, source-tag, validity bounds) + `ramp_curve` array (per-step
