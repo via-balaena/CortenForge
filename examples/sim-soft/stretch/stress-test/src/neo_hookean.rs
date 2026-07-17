@@ -13,9 +13,11 @@
 //! checks at `F = diag(s, 1, 1)` (uniaxial) and `F = diag(a, b, b)`
 //! (general transverse, `b ≠ 1`) at rel `1e-12`, plus rest-config zero.
 //! This module is a DEMONSTRATION: it drives the real material across a
-//! physically-meaningful sweep, self-gates on demonstration-integrity and
-//! curve-shape properties, and overlays the analytic closed form in the
-//! JSON/plot purely for visual comparison — not as a correctness gate.
+//! physically-meaningful sweep and self-gates on demonstration-integrity
+//! and curve-shape properties. The emitted curve is the REAL observed
+//! response (`mat.first_piola` / `mat.energy`) — no analytic overlay, so
+//! nothing in the artifact is unverified; the closed forms below are the
+//! theory it demonstrates, proven in the lib tests named above.
 //!
 //! # Deformation gradient
 //!
@@ -67,7 +69,7 @@
 // the closed-form math in this file's docstrings (and in the parent NH
 // implementation at `sim/L0/soft/src/material/neo_hookean.rs`); backticking
 // every Greek symbol would clutter the prose without adding signal. Code
-// identifiers (`mat.first_piola`, `SWEEP_*_BITS`, etc.) ARE backticked.
+// identifiers (`mat.first_piola`, `SWEEP_LAMBDAS`, etc.) ARE backticked.
 #![allow(clippy::doc_markdown)]
 
 use std::path::Path;
@@ -159,28 +161,6 @@ fn solve_lambda_t(lambda: f64, mu: f64, lambda_lame: f64) -> Result<(f64, usize,
     );
 }
 
-// =============================================================================
-// Closed-form analytic helpers (traction-free uniaxial).
-// =============================================================================
-
-/// Closed-form energy density `ψ(λ, λ_t)` for compressible NH under
-/// traction-free uniaxial stretch.
-fn analytic_psi(lambda: f64, lambda_t: f64, mu: f64, lambda_lame: f64) -> f64 {
-    let i_1 = lambda.mul_add(lambda, 2.0 * lambda_t * lambda_t);
-    let j = lambda * lambda_t * lambda_t;
-    let ln_j = j.ln();
-    let half_mu = 0.5 * mu;
-    let half_lambda = 0.5 * lambda_lame;
-    half_lambda.mul_add(ln_j * ln_j, half_mu.mul_add(i_1 - 3.0, -mu * ln_j))
-}
-
-/// Closed-form `P_11(λ, λ_t)` for compressible NH under traction-free
-/// uniaxial stretch.
-fn analytic_p11(lambda: f64, lambda_t: f64, mu: f64, lambda_lame: f64) -> f64 {
-    let j = lambda * lambda_t * lambda_t;
-    mu.mul_add(lambda - 1.0 / lambda, lambda_lame * j.ln() / lambda)
-}
-
 /// Construct `F = diag(λ, λ_t, λ_t)` for the constitutive eval.
 fn deformation_gradient(lambda: f64, lambda_t: f64) -> Matrix3<f64> {
     Matrix3::from_diagonal(&Vector3::new(lambda, lambda_t, lambda_t))
@@ -208,11 +188,9 @@ struct SweepRecord {
     newton_iter_count: usize,
     newton_residual: f64,
     p_11_observed: f64,
-    p_11_analytic: f64,
     p_22_observed: f64,
     p_33_observed: f64,
     psi_observed: f64,
-    psi_analytic: f64,
 }
 
 fn run_sweep(mat: &NeoHookean) -> Result<Vec<SweepRecord>> {
@@ -231,11 +209,9 @@ fn run_sweep(mat: &NeoHookean) -> Result<Vec<SweepRecord>> {
             newton_iter_count: iter,
             newton_residual: residual,
             p_11_observed: p_observed[(0, 0)],
-            p_11_analytic: analytic_p11(lambda, lambda_t, MU_PA, LAMBDA_PA),
             p_22_observed: p_observed[(1, 1)],
             p_33_observed: p_observed[(2, 2)],
             psi_observed,
-            psi_analytic: analytic_psi(lambda, lambda_t, MU_PA, LAMBDA_PA),
         });
     }
     Ok(records)
@@ -459,10 +435,6 @@ fn save_force_stretch_json(records: &[SweepRecord], mat: &NeoHookean, path: &Pat
     let sweep: Vec<_> = records
         .iter()
         .map(|rec| {
-            let p11_rel_err = (rec.p_11_observed - rec.p_11_analytic).abs()
-                / rec.p_11_analytic.abs().max(EPS_ABS_PA);
-            let psi_rel_err = (rec.psi_observed - rec.psi_analytic).abs()
-                / rec.psi_analytic.abs().max(EPS_ABS_PA);
             let p22_newton_bound = (rec.newton_residual / rec.lambda_t).abs() + EPS_ABS_PA;
             json!({
                 "lambda":                       rec.lambda,
@@ -472,23 +444,14 @@ fn save_force_stretch_json(records: &[SweepRecord], mat: &NeoHookean, path: &Pat
                 "in_domain":                    rec.max_stretch_deviation < in_domain_bound,
                 "lambda_t_newton_iter_count":   rec.newton_iter_count,
                 "lambda_t_newton_residual":     rec.newton_residual,
-                "P_11": {
-                    "analytic":  rec.p_11_analytic,
-                    "observed":  rec.p_11_observed,
-                    "rel_err":   p11_rel_err,
-                },
+                "P_11": { "observed": rec.p_11_observed },
                 "P_22": {
-                    "analytic_eq_0_by_construction": true,
-                    "observed":                      rec.p_22_observed,
-                    "P_33_observed":                 rec.p_33_observed,
-                    "newton_precision_bound":        p22_newton_bound,
-                    "below_bound":                   rec.p_22_observed.abs() <= p22_newton_bound,
+                    "observed":               rec.p_22_observed,
+                    "P_33_observed":          rec.p_33_observed,
+                    "newton_precision_bound": p22_newton_bound,
+                    "below_bound":            rec.p_22_observed.abs() <= p22_newton_bound,
                 },
-                "psi": {
-                    "analytic":  rec.psi_analytic,
-                    "observed":  rec.psi_observed,
-                    "rel_err":   psi_rel_err,
-                },
+                "psi": { "observed": rec.psi_observed },
             })
         })
         .collect();
@@ -553,16 +516,14 @@ fn print_summary(records: &[SweepRecord], bound: f64, path: &Path) {
     println!("  monotonicity_and_sign    : P_11 strictly increasing; sign(P_11) == sign(λ-1)");
     println!("  sweep_in_domain          : max|σ-1| < {bound} (declared bound) at every point");
     println!();
-    println!("(rel err P_11 column = observed vs analytic overlay — visual only, not a gate)");
+    println!("Observed force-stretch curve (real mat.first_piola / mat.energy):");
     println!(
-        "{:>5}  {:>14}  {:>10}  {:>10}  {:>4}  {:>13}  {:>13}  {:>13}  {:>13}",
-        "λ", "λ_t", "J", "max|σ-1|", "iter", "P_11 [Pa]", "P_22 [Pa]", "ψ [J/m³]", "rel err P_11"
+        "{:>5}  {:>14}  {:>10}  {:>10}  {:>4}  {:>13}  {:>13}  {:>13}",
+        "λ", "λ_t", "J", "max|σ-1|", "iter", "P_11 [Pa]", "P_22 [Pa]", "ψ [J/m³]"
     );
     for rec in records {
-        let rel_err =
-            (rec.p_11_observed - rec.p_11_analytic).abs() / rec.p_11_analytic.abs().max(EPS_ABS_PA);
         println!(
-            "{:>5}  {:>14.10}  {:>10.6}  {:>10.6}  {:>4}  {:>13.6e}  {:>13.6e}  {:>13.6e}  {:>13.3e}",
+            "{:>5}  {:>14.10}  {:>10.6}  {:>10.6}  {:>4}  {:>13.6e}  {:>13.6e}  {:>13.6e}",
             rec.lambda,
             rec.lambda_t,
             rec.j,
@@ -571,13 +532,12 @@ fn print_summary(records: &[SweepRecord], bound: f64, path: &Path) {
             rec.p_11_observed,
             rec.p_22_observed,
             rec.psi_observed,
-            rel_err,
         );
     }
     println!();
     println!("JSON   : {}", path.display());
     println!("         12-record force-stretch curve — λ, λ_t, J, max|σ-1|, P_11/P_22/ψ");
-    println!("         (analytic vs observed + rel err) per point. Read with:");
+    println!("         (observed) per point. Read with:");
     println!(
         "         jq '.stretch_sweep | map({{lambda, P_11: .P_11.observed}})'  {}",
         path.display()

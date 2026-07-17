@@ -56,7 +56,6 @@ def main() -> int:
     lambda_t = np.array([r["lambda_t"] for r in sweep])
     j_vol = np.array([r["J"] for r in sweep])
     p11_obs = np.array([r["P_11"]["observed"] for r in sweep])
-    p11_ana = np.array([r["P_11"]["analytic"] for r in sweep])
     psi_obs = np.array([r["psi"]["observed"] for r in sweep])
 
     fig, axes = plt.subplots(2, 2, figsize=(12, 9), constrained_layout=True)
@@ -64,8 +63,8 @@ def main() -> int:
         f"neo_hookean: traction-free F = diag(λ, λ_t, λ_t)\n"
         f"compressible NH (μ = {mu:.2g} Pa, Λ = {lam:.2g} Pa, ν ≈ 0.4); "
         f"in-domain λ ≈ [{bracket[0]:.4f}, {bracket[1]:.4f}]\n"
-        f"observed (mat.first_piola / mat.energy) with analytic closed-form "
-        f"overlay — correctness gated in sim-soft neo_hookean.rs lib tests",
+        f"observed response (mat.first_piola / mat.energy) — closed-form "
+        f"correctness gated in sim-soft neo_hookean.rs lib tests",
         fontsize=11,
     )
 
@@ -79,7 +78,6 @@ def main() -> int:
     ax = axes[0, 0]
     ax.axhline(0.0, color="gray", lw=0.5, ls="--", alpha=0.6)
     ax.plot(lambdas, p11_obs, "-o", color="C0", label="observed (mat.first_piola)")
-    ax.plot(lambdas, p11_ana, "x", color="C1", ms=8, label="analytic (closed form)")
     shade_out_of_domain(ax)
     ax.set_xlabel("stretch λ")
     ax.set_ylabel("P_11 [Pa]")

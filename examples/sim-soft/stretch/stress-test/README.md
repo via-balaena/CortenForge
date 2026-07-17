@@ -38,10 +38,10 @@ sweep-in-domain (bound from the live `validity()`).
 
 Constitutive **closed-form correctness** (`first_piola`/`energy` vs analytic at
 rel `1e-12`) is owned by the `sim-soft` `NeoHookean` lib tests — `diag(s,1,1)`
-uniaxial and `diag(a,b,b)` general-transverse — not re-asserted here; the
-analytic closed form is overlaid in the JSON/plot for visual comparison only.
-JSON (`out/neo_hookean/force_stretch.json`) + optional `uv run plot.py`
-matplotlib 2×2 panel (`out/neo_hookean/force_stretch.png`).
+uniaxial and `diag(a,b,b)` general-transverse — not re-asserted here. The JSON
+and plot carry the **real observed** curve only (no analytic overlay, so nothing
+in the artifact is unverified). JSON (`out/neo_hookean/force_stretch.json`) +
+optional `uv run plot.py` matplotlib 2×2 panel (`out/neo_hookean/force_stretch.png`).
 
 ### `multi_element` (row 6) — Phase 2 multi-element FEM assembly
 `replay_step` on a 27-vertex / 48-tet hex grid
