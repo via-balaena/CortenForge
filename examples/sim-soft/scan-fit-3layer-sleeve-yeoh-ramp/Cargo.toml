@@ -5,6 +5,20 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+# Declares this example's role in the validation contract. `validator` = the
+# binary self-checks against oracles and exits non-zero on any failure, so CI
+# runs it red-or-green (see `cargo xtask run-validators`). This row is a Rule-B
+# validator: a heavy 16-step quasi-static ramp demonstrator whose oracles are
+# pipeline-emergent structural + physics invariants (positive tet volume,
+# per-step convergence, per-step force-displacement monotonicity, strict Ψ̄
+# ordering, displacement bound, per-shell material routing) read from the real
+# solve — NOT captured-bit self-pins (stripped in the Rule-B de-frag;
+# constitutive/mesher correctness is lib-owned). Robust deep-penetration
+# convergence to 8 mm depends on the calibrated Yeoh validity bounds routed via
+# `MaterialField::from_yeoh_fields_with_bounds`.
+[package.metadata.cortenforge]
+example_kind = "validator"
+
 [dependencies]
 # `cf_design::Solid::cuboid` (the axis-aligned scan stand-in body —
 # exact-SDF primitive required for offset to produce a true uniform
@@ -56,11 +70,6 @@ mesh-io = { workspace = true }
 # `Result<()>` return + error-context wrapping for the JSON + PLY emit
 # steps. Same convention as rows 1-22.
 anyhow = { workspace = true }
-# `assert_relative_eq!` for the IV-1 sparse-tier rel-tol contract on
-# captured per-step force / displacement / per-layer Ψ̄ bits + the
-# `to_yeoh()` Yeoh-parameters round-trip + counts-bound and
-# material-provenance gates. Same convention as rows 1-22.
-approx = { workspace = true }
 # JSON emit for `out/scan_fit_3layer_sleeve_yeoh_ramp.json` —
 # final-step scalars + 3-material provenance (Yeoh-flavored: μ, c2, λ,
 # density, source-tag, validity bounds) + `ramp_curve` array (per-step

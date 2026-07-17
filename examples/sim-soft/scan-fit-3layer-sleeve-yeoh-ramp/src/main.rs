@@ -134,8 +134,10 @@
 //!    mean_disp, max_disp, mean_psi_inner/middle/outer,
 //!    max_psi_outer)` into a `RampStepResult`. Per-tet `Ψ_t =
 //!    Material::energy(F_t)` calls `Yeoh::energy` on every Yeoh tet.
-//!    The final step (step 16 at 8 mm) drives the headline
-//!    captured-bit anchors + the PLY z-slab artifact.
+//!    The per-step force / displacement / Ψ̄ series drive the
+//!    force-displacement monotonicity + strict Ψ̄-ordering gates and
+//!    the JSON `ramp_curve`; the final step (step 16 at 8 mm) drives
+//!    the PLY viz artifacts.
 //!
 //! 8. **Readouts** —
 //!    - JSON `out/scan_fit_3layer_sleeve_yeoh_ramp.json`: 4-section
@@ -161,8 +163,15 @@
 //!    - Optional `plot_ramp.py` (PEP 723 + matplotlib): dual-axis
 //!      depth × `force_z` + depth × `max_disp` force-displacement
 //!      curve. Run via `uv run plot_ramp.py`.
-//!    - `verify_*` runtime gates (12 anchor groups, see "Numerical
-//!      anchors" in `README.md`).
+//!    - `verify_*` runtime gates — pipeline-emergent structural +
+//!      physics invariants (see "Numerical anchors" in `README.md`).
+//!      This row is a Rule-B `validator`: its oracles are read from
+//!      the real 16-step ramp (positive tet volume, per-step
+//!      convergence, force-displacement monotonicity, strict Ψ̄
+//!      ordering, displacement bound, per-shell material routing) —
+//!      the pre-Rule-B captured-bit self-pins were stripped
+//!      (constitutive + mesher correctness is lib-owned; see the
+//!      de-frag note over the `Verifications` section).
 //!
 //! # Why z = 0 for the slab cut
 //!
@@ -213,7 +222,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use anyhow::Result;
-use approx::assert_relative_eq;
 use cf_design::Solid;
 use mesh_io::save_ply_attributed;
 use mesh_types::Vector3;
@@ -323,232 +331,10 @@ const STATIC_DT: f64 = 1.0;
 /// terminus and (b) Yeoh's `C₂(I₁−3)²` stiffening, which can either
 /// shorten the per-step Newton path (smoother stress-strain curve) or
 /// lengthen it (different search-direction geometry in the new
-/// constitutive). 150 is a hedge with empirical headroom; the bootstrap
-/// run characterises actual per-step iter envelope and the locked
-/// `IT_COUNT_RAMP_EXACT` array below pins it bit-exactly.
+/// constitutive). 150 is a hedge with empirical headroom; the per-step
+/// convergence gate (`verify_per_step_solver_converges`) asserts every step
+/// stays under this cap (observed max is 77 iters at step 16).
 const MAX_NEWTON_ITER: usize = 150;
-
-// =============================================================================
-// Constants — tolerances
-// =============================================================================
-
-/// IV-1 sparse-tier rel-tol for captured per-step force / displacement
-/// / per-layer Ψ̄ bits. ~75 k tets × 12 chained steps through faer's
-/// sparse Cholesky lives at the IV-1 sparse-at-scale tier; `1e-12`
-/// admits sparse-solver SIMD/FMA noise while catching real
-/// regressions. Same precedent as rows 6+10+11+16+20+21.
-const SPARSE_REL_TOL: f64 = 1.0e-12;
-
-/// Absolute floor for the captured-bits comparison.
-const SPARSE_EPS_ABS: f64 = 1.0e-12;
-
-/// Bit-exact tolerance for the F4 const-fn `to_yeoh()` Yeoh-parameters
-/// round-trip (μ + λ + C₂ + asymmetric validity bounds, per F4.0
-/// arc-memo §"Implementation status").
-const F4_PROVENANCE_EXACT_TOL: f64 = 0.0;
-
-/// Probe `F = diag(1.01, 1, 1)` material-assignment-probe tolerance.
-const MATERIAL_PROBE_EXACT_TOL: f64 = 0.0;
-
-// =============================================================================
-// Constants — captured first-run anchor bits
-// =============================================================================
-//
-// **Capture provenance** — captured 2026-05-09 at sim-soft `dev` (post
-// PR #235 Yeoh-foundation tip `e0c2f856`), rustc 1.95.0
-// (`59807616e` 2026-04-14) on macOS arm64 — same toolchain + platform
-// as IV-1's reference capture and row 22's. First-run capture
-// bootstrapped via `CF_CAPTURE_BITS=1` (pattern (cc) banked at row
-// 19): when set, every captured-anchor check is bypassed and a paste-
-// ready capture block is printed to stderr; when unset (default),
-// every captured-bits gate runs the strict `to_bits()` self-pin
-// against the constants below.
-//
-// Geometry-derived counts (`N_TETS_EXACT`, `N_VERTICES_EXACT`,
-// `N_REFERENCED_EXACT`, `N_PINNED_EXACT`, the per-shell tet counts,
-// the z-slab counts) are bit-equal to row 22's captures — the BCC + IS
-// pipeline is deterministic on the same SDF + hints; only the material
-// model differs, and material doesn't affect the discretisation.
-
-/// Total tet count after BCC + Isosurface Stuffing on the sleeve body.
-/// Bit-equal to row 22's `N_TETS_EXACT = 74_628` (geometry + BCC + IS
-/// pipeline are deterministic on the same SDF + hints).
-const N_TETS_EXACT: usize = 74_628;
-
-/// Total mesh vertex count, including BCC corners not referenced by
-/// any tet. Bit-equal to row 22.
-const N_VERTICES_EXACT: usize = 31_966;
-
-/// Vertices referenced by ≥ 1 tet. Bit-equal to row 22.
-const N_REFERENCED_EXACT: usize = 17_384;
-
-/// Outer-envelope-surface Dirichlet-pinned vertex count. Bit-equal to
-/// row 22.
-const N_PINNED_EXACT: usize = 7_046;
-
-/// Per-shell tet counts at first capture. Bit-equal to row 22.
-const N_INNER_TETS_EXACT: usize = 25_892;
-const N_MIDDLE_TETS_EXACT: usize = 16_656;
-const N_OUTER_TETS_EXACT: usize = 32_080;
-
-/// Per-shell tet counts in the `|centroid.z| < CELL_SIZE / 2 = 0.002`
-/// z-slab cut for the cf-view PLY artifact (final step only).
-/// Bit-equal to row 22 (geometry + slab cut unchanged).
-const N_INNER_TETS_ZSLAB_EXACT: usize = 768;
-const N_MIDDLE_TETS_ZSLAB_EXACT: usize = 432;
-const N_OUTER_TETS_ZSLAB_EXACT: usize = 892;
-
-/// Ramp-step partition gate. Bit-pinned to `N_RAMP_STEPS = 16`.
-const N_RAMP_STEPS_EXACT: usize = N_RAMP_STEPS;
-
-/// Active contact-pair count at the FINAL ramp step (depth = 8 mm),
-/// filtered to REFERENCED vertices. 50 physical contacts at 8 mm vs
-/// row 22's 37 at 6 mm — deeper penetration engages more wrap-cap
-/// material on the contact band.
-const N_CONTACT_PAIRS_FINAL_EXACT: usize = 50;
-
-/// Per-step Newton iter counts. The chained `replay_step` is
-/// deterministic on a fixed toolchain; iter-count drift signals real
-/// solver-path regression, not noise. Row 22's NH counts at depths
-/// 0.5..6 mm were `[8, 8, 9, 11, 11, 13, 14, 16, 19, 22, 30, 61]`;
-/// row 23's Yeoh counts at the same depths are
-/// `[8, 8, 9, 10, 11, 12, 13, 15, 16, 19, 23, 27]` — Yeoh's
-/// `C₂(I₁−3)²` stiffening yields a smoother Newton path past row 22's
-/// step 11 (e.g. step 12 drops 61→27 iters). The past-NH-wall
-/// extension `[31, 39, 49, 77]` at depths 6.5..8 mm escalates as
-/// expected and remains under the `MAX_NEWTON_ITER = 150` cap with
-/// 73-iter margin at step 16.
-const IT_COUNT_RAMP_EXACT: [usize; N_RAMP_STEPS] =
-    [8, 8, 9, 10, 11, 12, 13, 15, 16, 19, 23, 27, 31, 39, 49, 77];
-
-/// Per-step `+z`-component of contact reaction force bits (N), summed
-/// over REFERENCED vertices only. Force is in `+z` direction (probe
-/// pushes wrap-cap material UP), grows monotonically with deeper
-/// penetration. Approximate values: `[1.10, 1.89, 2.97, 4.20, 5.64,
-/// 7.35, 9.44, 11.92, 14.72, 17.89, 21.49, 25.60, 30.27, 35.51, 41.79,
-/// 49.28] N`. The past-6 mm tail (steps 13-16) climbs faster than
-/// linear extrapolation from row 22's NH curve — Yeoh's `C₂(I₁−3)²`
-/// stiffening engages at the higher-strain regime where NH would have
-/// failed validity-closed.
-const FORCE_TOTAL_Z_RAMP_REF_BITS: [u64; N_RAMP_STEPS] = [
-    0x3ff1_ae1f_ecfc_3482,
-    0x3ffe_3701_b63b_1b78,
-    0x4007_b876_1acd_eeef,
-    0x4010_ccd3_13cd_4b9f,
-    0x4016_8b71_f81d_df8d,
-    0x401d_63cd_7f11_9259,
-    0x4022_e1ff_73a6_599d,
-    0x4027_d5ea_c8ca_8205,
-    0x402d_6e4e_7a66_bbd5,
-    0x4031_e339_047f_1bc2,
-    0x4035_7dc4_9585_e8e0,
-    0x4039_9ab3_ac32_828a,
-    0x403e_441b_cbf2_fd16,
-    0x4041_c173_9fb4_4199,
-    0x4044_e566_7d9c_def5,
-    0x4048_a441_1f47_e7ee,
-];
-
-/// Per-step max body-wide displacement-magnitude bits (m) over all
-/// referenced vertices. Approximate values: `[1.48, 1.97, 2.47, 2.95,
-/// 3.44, 3.93, 4.41, 4.88, 5.35, 5.82, 6.27, 6.72, 7.15, 7.57, 8.00,
-/// 8.45] mm`. Step 16's `max_disp = 8.45 mm` < `WRAP_THICKNESS = 14
-/// mm` — the geometric upper-bound gate stays comfortable throughout
-/// the 8 mm ramp.
-const MAX_DISP_RAMP_REF_BITS: [u64; N_RAMP_STEPS] = [
-    0x3f58_423e_2986_d12c,
-    0x3f60_2acc_ce26_2941,
-    0x3f64_30f0_cc86_8cd6,
-    0x3f68_33b9_339d_2671,
-    0x3f6c_323c_b5d5_48e8,
-    0x3f70_158b_dd0e_6680,
-    0x3f72_0d70_6fe9_7f33,
-    0x3f73_fffc_084e_46ab,
-    0x3f75_eccd_94df_894d,
-    0x3f77_d2b9_1ffd_4735,
-    0x3f79_b05e_8e5b_a430,
-    0x3f7b_8416_1059_bcb7,
-    0x3f7d_4bcd_74de_81fc,
-    0x3f7f_04a9_c660_267a,
-    0x3f80_6093_1c13_e0e8,
-    0x3f81_5097_9889_b741,
-];
-
-/// Per-step inner-layer mean strain-energy-density bits (J/m³). Inner
-/// is softest (μ = 18 kPa) AND closest to probe → highest mean Ψ
-/// throughout the ramp. Final-step value ≈ 606 J/m³ (~2× row 22's
-/// 302 J/m³ at 6 mm; Yeoh's `C₂(I₁−3)²` term contributes the extra
-/// ~40 % beyond simple depth-doubling).
-const MEAN_PSI_INNER_RAMP_REF_BITS: [u64; N_RAMP_STEPS] = [
-    0x4011_eb65_64cf_33f7,
-    0x4022_b0db_1a77_230c,
-    0x4031_1499_8372_4c87,
-    0x403c_9a89_0f24_7c56,
-    0x4045_fdaa_a645_dd14,
-    0x404f_ca59_1b6b_9609,
-    0x4056_0bd8_f7ca_f091,
-    0x405d_a2f5_6d98_d11f,
-    0x4063_6464_b9d2_ce6a,
-    0x4068_c667_760f_a388,
-    0x406e_ff67_bbb1_d5f6,
-    0x4073_0e94_28d3_00ad,
-    0x4077_14f7_a39c_4147,
-    0x407b_98c0_a965_7d77,
-    0x4080_3f9b_cb1f_4fe4,
-    0x4082_f371_6779_42c0,
-];
-
-/// Per-step middle-layer mean strain-energy-density bits (J/m³).
-/// Final-step value ≈ 295 J/m³.
-const MEAN_PSI_MIDDLE_RAMP_REF_BITS: [u64; N_RAMP_STEPS] = [
-    0x3fe3_5bad_1472_aec5,
-    0x3ff8_bfc8_f1c7_7705,
-    0x400a_1d29_e1c4_d020,
-    0x4017_df75_fb75_d616,
-    0x4023_ee42_da9c_0c65,
-    0x402f_5580_565c_5ded,
-    0x4037_7c15_c840_fa7e,
-    0x4040_f954_3f40_a149,
-    0x4047_d253_c78e_a0aa,
-    0x4050_4d8f_1618_4696,
-    0x4055_d4f4_7bc0_a55c,
-    0x405c_a75a_9ba5_7027,
-    0x4062_7471_e281_67b0,
-    0x4067_54eb_ff36_63a5,
-    0x406d_71fa_ee5c_5da5,
-    0x4072_6c0e_e7e9_5277,
-];
-
-/// Per-step outer-layer mean strain-energy-density bits (J/m³). Outer
-/// is stiffest (μ = 113 kPa) AND outer-Dirichlet-pinned → lowest mean
-/// Ψ throughout the ramp. Final-step value ≈ 113 J/m³.
-const MEAN_PSI_OUTER_RAMP_REF_BITS: [u64; N_RAMP_STEPS] = [
-    0x3fc0_c9d4_d9aa_fd6e,
-    0x3fd6_767d_32ae_dee8,
-    0x3fe8_d78c_11a0_1e05,
-    0x3ff7_7840_0de5_6d5b,
-    0x4004_2de8_46ae_5518,
-    0x4010_5965_aa4f_b720,
-    0x4019_52ea_2650_8bda,
-    0x4022_ec27_b1df_c12e,
-    0x402b_72b5_da18_a764,
-    0x4033_7058_8bd2_58b2,
-    0x403a_fcb8_296d_d29d,
-    0x4042_6456_06ab_635c,
-    0x4048_a375_f756_a12a,
-    0x4050_3464_6d6b_7d9b,
-    0x4055_63d9_f408_9237,
-    0x405c_32cb_d5fb_1988,
-];
-
-/// Final-step (step 16, depth = 8 mm) outer-layer max strain-energy-
-/// density bits (J/m³). Durability proxy at the user-target depth:
-/// ~49205 J/m³ (~ 436× outer-layer mean ~113 J/m³ — peak localises in
-/// tets adjacent to the contact band where probe loads transmit
-/// through the radial chain inner → middle → outer; the ratio is
-/// higher than row 22's 345× because of Yeoh's high-strain stiffening
-/// at the 8 mm engaged-contact regime).
-const MAX_PSI_OUTER_FINAL_REF_BITS: u64 = 0x40e8_069d_d6fd_8307;
 
 // =============================================================================
 // SDF builders
@@ -1041,14 +827,27 @@ fn solve_ramp(
 }
 
 // =============================================================================
-// Verifications — 12 anchor groups
+// Verifications — structural + physics gates
 // =============================================================================
+//
+// Rule-B de-frag (mirrors row 21): the pre-Rule-B captured-bit self-pins
+// (per-shell + z-slab + contact-pair count freezes, the per-step iter-count
+// freeze, the 80 per-step + final force/displacement/Ψ̄ `to_bits()` pins, the
+// `to_yeoh()` additive-decomposition provenance mirror) were STRIPPED — they
+// froze one run's FP trajectory on one toolchain. Constitutive correctness
+// (Yeoh closed form + additive decomposition + `to_yeoh()` round-trip) is
+// lib-owned (`yeoh_contract.rs` + `silicone_table.rs::tests::
+// to_yeoh_round_trips_yeoh_fields_for_each_anchor` +
+// `..._from_effective_shore_at_anchor_position_returns_anchor_data`); per-shell
+// routing is lib-owned (`sdf_material_tagging.rs` IV-4). What survives is the
+// scene's emergent physics read from the real 16-step ramp: valid mesh,
+// per-step convergence, per-step force-displacement monotonicity, per-step
+// strict Ψ̄ ordering, per-step displacement bound, and per-shell material
+// routing — robust to FP drift.
 
-fn capturing_bits() -> bool {
-    std::env::var("CF_CAPTURE_BITS").is_ok()
-}
-
-fn verify_counts_exact(
+/// Structural mesh invariants — resolution-robust, no exact-count freeze
+/// (see the row-21 template `verify_mesh_structure`).
+fn verify_mesh_structure(
     mesh: &SdfMeshedTetMesh<Yeoh>,
     referenced: &[VertexId],
     pinned: &[VertexId],
@@ -1056,44 +855,30 @@ fn verify_counts_exact(
     middle_count: usize,
     outer_count: usize,
 ) {
-    if capturing_bits() {
-        eprintln!("=== CAPTURED COUNTS (paste into source) ===");
-        eprintln!("const N_TETS_EXACT: usize = {};", mesh.n_tets());
-        eprintln!("const N_VERTICES_EXACT: usize = {};", mesh.n_vertices());
-        eprintln!("const N_REFERENCED_EXACT: usize = {};", referenced.len());
-        eprintln!("const N_PINNED_EXACT: usize = {};", pinned.len());
-        eprintln!("const N_INNER_TETS_EXACT: usize = {inner_count};");
-        eprintln!("const N_MIDDLE_TETS_EXACT: usize = {middle_count};");
-        eprintln!("const N_OUTER_TETS_EXACT: usize = {outer_count};");
-        return;
-    }
-    assert_eq!(mesh.n_tets(), N_TETS_EXACT, "n_tets");
-    assert_eq!(mesh.n_vertices(), N_VERTICES_EXACT, "n_vertices");
-    assert_eq!(referenced.len(), N_REFERENCED_EXACT, "n_referenced");
-    assert_eq!(pinned.len(), N_PINNED_EXACT, "n_pinned");
-    assert_eq!(inner_count, N_INNER_TETS_EXACT, "n_inner_tets");
-    assert_eq!(middle_count, N_MIDDLE_TETS_EXACT, "n_middle_tets");
-    assert_eq!(outer_count, N_OUTER_TETS_EXACT, "n_outer_tets");
-    assert_eq!(
-        inner_count + middle_count + outer_count,
-        N_TETS_EXACT,
-        "shell-count partition sums to N_TETS_EXACT",
+    assert!(mesh.n_tets() > 0, "mesh has no tets");
+    assert!(
+        referenced.len() <= mesh.n_vertices(),
+        "referenced vertices ({}) exceed total vertices ({})",
+        referenced.len(),
+        mesh.n_vertices(),
     );
+    assert!(!referenced.is_empty(), "no referenced vertices");
+    assert!(
+        !pinned.is_empty() && pinned.len() < referenced.len(),
+        "pinned band ({}) must be a non-empty proper subset of referenced ({})",
+        pinned.len(),
+        referenced.len(),
+    );
+    assert!(inner_count > 0, "inner shell is empty");
+    assert!(middle_count > 0, "middle shell is empty");
+    assert!(outer_count > 0, "outer shell is empty");
 }
 
-fn verify_zslab_counts_exact(inner_zslab: usize, middle_zslab: usize, outer_zslab: usize) {
-    if capturing_bits() {
-        eprintln!("const N_INNER_TETS_ZSLAB_EXACT: usize = {inner_zslab};");
-        eprintln!("const N_MIDDLE_TETS_ZSLAB_EXACT: usize = {middle_zslab};");
-        eprintln!("const N_OUTER_TETS_ZSLAB_EXACT: usize = {outer_zslab};");
-        return;
-    }
-    assert_eq!(inner_zslab, N_INNER_TETS_ZSLAB_EXACT, "n_inner_tets_zslab");
-    assert_eq!(
-        middle_zslab, N_MIDDLE_TETS_ZSLAB_EXACT,
-        "n_middle_tets_zslab",
-    );
-    assert_eq!(outer_zslab, N_OUTER_TETS_ZSLAB_EXACT, "n_outer_tets_zslab");
+/// z-slab populations — each shell contributes ≥ 1 tet to the `z = 0` cut.
+fn verify_zslab_populations(inner_zslab: usize, middle_zslab: usize, outer_zslab: usize) {
+    assert!(inner_zslab > 0, "z-slab inner shell empty");
+    assert!(middle_zslab > 0, "z-slab middle shell empty");
+    assert!(outer_zslab > 0, "z-slab outer shell empty");
 }
 
 fn verify_quality_floors(mesh: &SdfMeshedTetMesh<Yeoh>) {
@@ -1113,13 +898,6 @@ fn verify_quality_floors(mesh: &SdfMeshedTetMesh<Yeoh>) {
     }
 }
 
-fn verify_n_ramp_steps_exact(n_results: usize) {
-    assert_eq!(
-        n_results, N_RAMP_STEPS_EXACT,
-        "ramp produced {n_results} step results, expected {N_RAMP_STEPS_EXACT}",
-    );
-}
-
 fn verify_per_step_solver_converges(results: &[RampStepResult]) {
     for r in results {
         assert!(
@@ -1136,25 +914,6 @@ fn verify_per_step_solver_converges(results: &[RampStepResult]) {
             r.step,
             r.depth_m,
             r.final_residual_norm,
-        );
-    }
-}
-
-fn verify_per_step_iter_count(results: &[RampStepResult]) {
-    if capturing_bits() {
-        let entries: Vec<String> = results.iter().map(|r| r.iter_count.to_string()).collect();
-        eprintln!(
-            "const IT_COUNT_RAMP_EXACT: [usize; N_RAMP_STEPS] = [{}];",
-            entries.join(", "),
-        );
-        return;
-    }
-    for r in results {
-        let expected = IT_COUNT_RAMP_EXACT[r.step - 1];
-        assert_eq!(
-            r.iter_count, expected,
-            "ramp step {}: iter_count = {} (expected {})",
-            r.step, r.iter_count, expected,
         );
     }
 }
@@ -1240,10 +999,10 @@ fn verify_per_step_strain_energy_ordering(results: &[RampStepResult]) {
 
 fn verify_per_step_max_disp_bounded(results: &[RampStepResult]) {
     // Body-wide max displacement must stay strictly < WRAP_THICKNESS
-    // at every ramp step. The 6 mm final depth produces ~6.7 mm peak
-    // body-wide displacement (per the v2 spike), well under 14 mm.
-    // (The penalty equilibrium can push the cavity wall farther than
-    // the rigid penetration depth — that's expected behaviour.)
+    // at every ramp step. The 8 mm final depth produces ~8.5 mm peak
+    // body-wide displacement, still well under 14 mm. (The penalty
+    // equilibrium can push the cavity wall farther than the rigid
+    // penetration depth — that's expected behaviour.)
     for r in results {
         assert!(
             r.max_disp_m < WRAP_THICKNESS,
@@ -1256,196 +1015,64 @@ fn verify_per_step_max_disp_bounded(results: &[RampStepResult]) {
     }
 }
 
-fn verify_n_contact_pairs_final_exact(results: &[RampStepResult]) {
+/// The final ramp step engaged contact — at least one active referenced-vertex
+/// pair. (The exact count was a mesher/discretization artifact; non-empty is
+/// the invariant that matters.)
+fn verify_contact_engaged(results: &[RampStepResult]) {
     let final_step = results.last().expect("ramp produced no results");
-    if capturing_bits() {
-        eprintln!(
-            "const N_CONTACT_PAIRS_FINAL_EXACT: usize = {};",
-            final_step.n_active_pairs,
-        );
-        return;
-    }
-    assert_eq!(
-        final_step.n_active_pairs, N_CONTACT_PAIRS_FINAL_EXACT,
-        "n_active_pairs at final ramp step",
-    );
-}
-
-fn verify_material_provenance() {
-    let inner = inner_silicone();
-    // Provenance: inner is Path 2 (interpolated, weight=1.0); the
-    // others are Path 1 anchors. The Path-2 source tag is the
-    // distinguishing artifact even when the numerics coincide with
-    // the high anchor.
-    //
-    // Weight is bit-exactly 1.0: bracket() at silicone_table.rs:469
-    // computes `(20.0 - 10.0) / (20.0 - 10.0)`, which is exact in
-    // IEEE 754. Pinned by the test
-    // `silicone_table.rs::tests::from_effective_shore_at_anchor_position_returns_anchor_data`
-    // (silicone_table.rs:898). The 1e-15 tolerance is a safety margin
-    // against future bracket-math refactors that might introduce
-    // sub-ULP drift; tighten to `== 1.0` if the bracket invariant is
-    // ever lifted to the type system.
     assert!(
-        matches!(
-            inner.source,
-            ConstructionSource::Interpolated { weight, .. } if (weight - 1.0).abs() < 1e-15,
-        ),
-        "inner_silicone() source tag is not Interpolated{{weight=1.0}}: {:?}",
-        inner.source,
+        final_step.n_active_pairs > 0,
+        "no active contact pairs at the final ramp step — probe did not engage the cavity wall",
     );
-
-    for mat in [&inner, &DRAGON_SKIN_10A, &DRAGON_SKIN_20A] {
-        let yr = mat.to_yeoh();
-        let id = Matrix3::<f64>::identity();
-        assert_relative_eq!(yr.energy(&id), 0.0, epsilon = F4_PROVENANCE_EXACT_TOL);
-
-        let mut f = Matrix3::<f64>::identity();
-        f[(0, 0)] = 1.01;
-        // Per arc-memo F1 Spike-1 finding: Yeoh::energy must match
-        // additive decomposition `nh_part + C₂·(I₁−3)²` to preserve
-        // bit-exactness against NH at C₂=0. Mirror that exact shape
-        // here so the comparison is bit-exact for nonzero C₂ too.
-        let i1 = 1.01_f64.mul_add(1.01, 2.0);
-        let j_ln = 1.01_f64.ln();
-        let half_mu = 0.5 * mat.mu;
-        let half_lambda = 0.5 * mat.lambda;
-        let nh_part = half_lambda.mul_add(j_ln * j_ln, half_mu.mul_add(i1 - 3.0, -mat.mu * j_ln));
-        let i1m3 = i1 - 3.0;
-        // Bit-exact reproduction of `Yeoh::energy`'s additive
-        // decomposition (yeoh.rs:130-137): `nh_part + c2 * i1m3 * i1m3`.
-        // Folding c2*i1m3 into a mul_add would change rounding and break
-        // bit-equality with the implementation.
-        #[allow(clippy::suboptimal_flops)]
-        let expected = nh_part + mat.c2 * i1m3 * i1m3;
-        assert_relative_eq!(yr.energy(&f), expected, epsilon = F4_PROVENANCE_EXACT_TOL,);
-    }
 }
 
-fn verify_material_assignment_partition(
-    mesh: &SdfMeshedTetMesh<Yeoh>,
-    shell_idx_per_tet: &[usize],
-) {
+/// Per-tet material routing — the `MaterialField` assigned every tet the
+/// `(μ, C₂, λ)` of the shell its centroid falls in by distance-from-scan.
+/// Reads the real per-tet `Yeoh` from `mesh.materials()` via the public
+/// `.mu()` / `.c2()` / `.lambda()` accessors and compares to the shell's F4
+/// table entry with an exact `to_bits()` `==` (both come from the same anchor
+/// through the same `to_yeoh()`, so a correctly routed tet is bit-identical —
+/// a routing check, NOT a constitutive-arithmetic mirror). The Yeoh closed
+/// form + additive decomposition + the `to_yeoh()` round-trip are lib-owned
+/// (`yeoh_contract.rs` + `silicone_table.rs::tests::
+/// to_yeoh_round_trips_yeoh_fields_for_each_anchor`), as is the inner layer's
+/// Path-2 `from_effective_shore` weight-1.0 provenance
+/// (`..._from_effective_shore_at_anchor_position_returns_anchor_data`). Each
+/// shell is verified non-vacuously (≥ 1 tet).
+fn verify_material_routing(mesh: &SdfMeshedTetMesh<Yeoh>, shell_idx_per_tet: &[usize]) {
     let materials = mesh.materials();
     assert_eq!(
         materials.len(),
         shell_idx_per_tet.len(),
         "materials() length does not match per-tet shell-classification length",
     );
-    let mut f = Matrix3::<f64>::identity();
-    f[(0, 0)] = 1.01;
-
     let expected_yeoh = [
         inner_silicone().to_yeoh(),
         DRAGON_SKIN_10A.to_yeoh(),
         DRAGON_SKIN_20A.to_yeoh(),
     ];
+    let mut checked = [0usize; 3];
     for (t, &shell_idx) in shell_idx_per_tet.iter().enumerate() {
-        let observed = materials[t].energy(&f);
-        let expected = expected_yeoh[shell_idx].energy(&f);
+        let observed = &materials[t];
+        let expected = &expected_yeoh[shell_idx];
         assert!(
-            (observed - expected).abs() <= MATERIAL_PROBE_EXACT_TOL,
-            "tet {t} shell {shell_idx}: observed energy {observed} != expected {expected}",
+            observed.mu().to_bits() == expected.mu().to_bits()
+                && observed.c2().to_bits() == expected.c2().to_bits()
+                && observed.lambda().to_bits() == expected.lambda().to_bits(),
+            "tet {t} shell {shell_idx}: routed (μ, C₂, λ) = ({}, {}, {}) != table ({}, {}, {})",
+            observed.mu(),
+            observed.c2(),
+            observed.lambda(),
+            expected.mu(),
+            expected.c2(),
+            expected.lambda(),
         );
+        checked[shell_idx] += 1;
     }
-}
-
-fn verify_outer_layer_max_psi_final(results: &[RampStepResult]) {
-    let final_step = results.last().expect("ramp produced no results");
-    if capturing_bits() {
-        eprintln!(
-            "const MAX_PSI_OUTER_FINAL_REF_BITS: u64 = 0x{:016x};",
-            final_step.max_psi_outer_j_per_m3.to_bits(),
-        );
-        return;
-    }
-    assert_relative_eq!(
-        final_step.max_psi_outer_j_per_m3,
-        f64::from_bits(MAX_PSI_OUTER_FINAL_REF_BITS),
-        max_relative = SPARSE_REL_TOL,
-        epsilon = SPARSE_EPS_ABS,
+    assert!(
+        checked.iter().all(|&c| c > 0),
+        "material routing not exercised on every shell (per-shell tet counts {checked:?})",
     );
-}
-
-fn verify_per_step_captured_bits(results: &[RampStepResult]) {
-    if capturing_bits() {
-        let force_z_hex: Vec<String> = results
-            .iter()
-            .map(|r| format!("0x{:016x}", r.force_total_z_n.to_bits()))
-            .collect();
-        let max_disp_hex: Vec<String> = results
-            .iter()
-            .map(|r| format!("0x{:016x}", r.max_disp_m.to_bits()))
-            .collect();
-        let psi_in_hex: Vec<String> = results
-            .iter()
-            .map(|r| format!("0x{:016x}", r.mean_psi_inner_j_per_m3.to_bits()))
-            .collect();
-        let psi_mi_hex: Vec<String> = results
-            .iter()
-            .map(|r| format!("0x{:016x}", r.mean_psi_middle_j_per_m3.to_bits()))
-            .collect();
-        let psi_ou_hex: Vec<String> = results
-            .iter()
-            .map(|r| format!("0x{:016x}", r.mean_psi_outer_j_per_m3.to_bits()))
-            .collect();
-        eprintln!(
-            "const FORCE_TOTAL_Z_RAMP_REF_BITS: [u64; N_RAMP_STEPS] = [\n    {},\n];",
-            force_z_hex.join(",\n    "),
-        );
-        eprintln!(
-            "const MAX_DISP_RAMP_REF_BITS: [u64; N_RAMP_STEPS] = [\n    {},\n];",
-            max_disp_hex.join(",\n    "),
-        );
-        eprintln!(
-            "const MEAN_PSI_INNER_RAMP_REF_BITS: [u64; N_RAMP_STEPS] = [\n    {},\n];",
-            psi_in_hex.join(",\n    "),
-        );
-        eprintln!(
-            "const MEAN_PSI_MIDDLE_RAMP_REF_BITS: [u64; N_RAMP_STEPS] = [\n    {},\n];",
-            psi_mi_hex.join(",\n    "),
-        );
-        eprintln!(
-            "const MEAN_PSI_OUTER_RAMP_REF_BITS: [u64; N_RAMP_STEPS] = [\n    {},\n];",
-            psi_ou_hex.join(",\n    "),
-        );
-        eprintln!("=== END CAPTURED BITS ===");
-        return;
-    }
-
-    for r in results {
-        let k = r.step - 1;
-        assert_relative_eq!(
-            r.force_total_z_n,
-            f64::from_bits(FORCE_TOTAL_Z_RAMP_REF_BITS[k]),
-            max_relative = SPARSE_REL_TOL,
-            epsilon = SPARSE_EPS_ABS,
-        );
-        assert_relative_eq!(
-            r.max_disp_m,
-            f64::from_bits(MAX_DISP_RAMP_REF_BITS[k]),
-            max_relative = SPARSE_REL_TOL,
-            epsilon = SPARSE_EPS_ABS,
-        );
-        assert_relative_eq!(
-            r.mean_psi_inner_j_per_m3,
-            f64::from_bits(MEAN_PSI_INNER_RAMP_REF_BITS[k]),
-            max_relative = SPARSE_REL_TOL,
-            epsilon = SPARSE_EPS_ABS,
-        );
-        assert_relative_eq!(
-            r.mean_psi_middle_j_per_m3,
-            f64::from_bits(MEAN_PSI_MIDDLE_RAMP_REF_BITS[k]),
-            max_relative = SPARSE_REL_TOL,
-            epsilon = SPARSE_EPS_ABS,
-        );
-        assert_relative_eq!(
-            r.mean_psi_outer_j_per_m3,
-            f64::from_bits(MEAN_PSI_OUTER_RAMP_REF_BITS[k]),
-            max_relative = SPARSE_REL_TOL,
-            epsilon = SPARSE_EPS_ABS,
-        );
-    }
 }
 
 // =============================================================================
@@ -1608,8 +1235,8 @@ fn write_json_readout(
 // centroid cloud at z = 0. Lifted to [`sim_soft::viz::boundary_surface`]
 // + [`sim_soft::viz::slab_cut`] at F1.1 / F1.5 retrofit; row 23 now
 // emits the full 3D body + the proper triangulated cross-section
-// rather than an amplified centroid cloud. Z-slab tet-COUNT
-// regression gate (`verify_zslab_counts_exact`) survives — cheap
+// rather than an amplified centroid cloud. The z-slab per-shell
+// population gate (`verify_zslab_populations`) survives — cheap
 // centroid filter, no PLY data.
 
 // =============================================================================
@@ -1663,7 +1290,7 @@ fn main() -> Result<()> {
     // Quality + counts gates BEFORE the ramp (geometry-derived, bit-
     // equal to row 21 v1's anchors).
     verify_quality_floors(&mesh);
-    verify_counts_exact(
+    verify_mesh_structure(
         &mesh,
         &referenced,
         &bc.pinned_vertices,
@@ -1671,8 +1298,7 @@ fn main() -> Result<()> {
         n_middle,
         n_outer,
     );
-    verify_material_assignment_partition(&mesh, &shell_idx_per_tet);
-    verify_material_provenance();
+    verify_material_routing(&mesh, &shell_idx_per_tet);
 
     // 6. Quasi-static intrusion ramp — chained `replay_step` over
     // 16 steps. The upstream `mesh` + `bc` are NOT moved into the
@@ -1697,16 +1323,12 @@ fn main() -> Result<()> {
         n_outer,
     )?;
 
-    // 7. Per-step + final-step verifies.
-    verify_n_ramp_steps_exact(results.len());
+    // 7. Per-step verifies (structural + physics gates read from the ramp).
     verify_per_step_solver_converges(&results);
-    verify_per_step_iter_count(&results);
     verify_force_displacement_monotone(&results);
     verify_per_step_strain_energy_ordering(&results);
     verify_per_step_max_disp_bounded(&results);
-    verify_n_contact_pairs_final_exact(&results);
-    verify_outer_layer_max_psi_final(&results);
-    verify_per_step_captured_bits(&results);
+    verify_contact_engaged(&results);
 
     // 8. JSON + PLY readouts.
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("out");
@@ -1754,7 +1376,7 @@ fn main() -> Result<()> {
             _ => n_outer_z += 1,
         }
     }
-    verify_zslab_counts_exact(n_inner_z, n_middle_z, n_outer_z);
+    verify_zslab_populations(n_inner_z, n_middle_z, n_outer_z);
 
     // Per-tet displacement magnitude across the full mesh + per-tet
     // material id (radial shell index). Both feed boundary-surface
@@ -2042,5 +1664,4 @@ const _: () = {
     assert!(BBOX_HALF_X > SCAN_HX + WRAP_THICKNESS);
     assert!(BBOX_HALF_Y > SCAN_HY + WRAP_THICKNESS);
     assert!(BBOX_HALF_Z > SCAN_HZ + WRAP_THICKNESS);
-    assert!(N_RAMP_STEPS_EXACT == N_RAMP_STEPS);
 };
