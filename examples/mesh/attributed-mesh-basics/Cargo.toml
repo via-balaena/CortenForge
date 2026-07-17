@@ -5,10 +5,10 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-# Headless demo — an AttributedMesh API tutorial. Its asserts are a strict
-# subset of `mesh-types` `src/attributed.rs` unit tests (SoA slots, extras,
-# length validation), so correctness lives in the library; this just shows
-# usage. Compile-only in CI; not run by `xtask run-validators`.
+# Headless demo — an AttributedMesh API tutorial. It carries no asserts; the
+# SoA-slot / extras / length-validation correctness it illustrates lives in
+# `mesh-types` `src/attributed.rs` unit tests. This just prints the populated
+# state. Compile-only in CI; not run by `xtask run-validators`.
 [package.metadata.cortenforge]
 example_kind = "demo"
 

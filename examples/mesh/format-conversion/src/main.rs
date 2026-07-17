@@ -11,8 +11,9 @@
 //! reloaded STL has 36 vertices, not 8. PLY and OBJ both store explicit
 //! vertex sharing and recover the original 8. All three preserve the
 //! cube's *geometry* (volume ≈ 1, area ≈ 6, unit AABB); only PLY and OBJ
-//! preserve its *topology*. Round-trip correctness is owned by `mesh-io`'s
-//! per-format lib tests (including `stl_does_not_dedup_shared_vertices`);
+//! preserve its *topology*. Per-format count preservation and the STL
+//! geometry-vs-topology divergence are owned by `mesh-io`'s round-trip lib
+//! tests (including `stl_roundtrip_preserves_geometry_not_vertex_sharing`);
 //! this example demonstrates the divergence rather than asserting it.
 //!
 //! See `examples/mesh/README.md` for cadence; see
