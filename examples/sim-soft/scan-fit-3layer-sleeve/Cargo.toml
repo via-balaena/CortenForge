@@ -5,6 +5,18 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+# Declares this example's role in the validation contract. `validator` = the
+# binary self-checks against oracles and exits non-zero on any failure, so CI
+# runs it red-or-green (see `cargo xtask run-validators`). The alternative kind
+# is `demo` (illustration only; compile-checked but not run). Every self-gating
+# example MUST declare `validator` or its oracle checks run nowhere in CI. This
+# row's oracles are pipeline-emergent structural invariants (positive tet
+# volume, solver convergence, per-shell material routing, strict Ψ̄ ordering,
+# displacement bound) computed from the real solve — NOT captured-bit self-pins
+# (stripped in the Rule-B de-frag; constitutive/mesher correctness is lib-owned).
+[package.metadata.cortenforge]
+example_kind = "validator"
+
 [dependencies]
 # `cf_design::Solid::cuboid` (the axis-aligned scan stand-in body —
 # exact-SDF primitive required for offset to produce a true uniform
@@ -44,15 +56,10 @@ mesh-io = { workspace = true }
 # `Result<()>` return + error-context wrapping for the JSON + PLY emit
 # steps. Same convention as rows 1-20.
 anyhow = { workspace = true }
-# `assert_relative_eq!` for the IV-1 sparse-tier rel-tol contract on
-# captured force / displacement / per-layer Ψ̄ bits + the `to_neo_hookean()`
-# Lamé-pair round-trip + counts-bound and material-provenance gates.
-# Same convention as rows 1-20.
-approx = { workspace = true }
 # JSON emit for `out/scan_fit_3layer_sleeve.json` — fit-pose summary
 # (force_total + displacement + per-layer Ψ̄) + per-shell tet counts +
-# 3-material provenance block + per-active-pair detail array. Mirrors
-# row 18 + 20's two-section schema.
+# 3-material layer block (name / proxy / (μ, λ) / density) + per-active-
+# pair detail array. Mirrors row 18 + 20's two-section schema.
 serde_json = { workspace = true }
 # `Matrix3` + `Vector3` for the per-tet F-from-positions helper +
 # `cf_design::Sdf::eval` `Point3` receiver adaptation at material-field
