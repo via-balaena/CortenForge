@@ -96,9 +96,17 @@
 //!    (deterministic BCC + IS pipeline). Cost: ~16× row 21's single
 //!    rebuild ≈ ~2 s release.
 //!
-//! 5. **3-layer `MaterialField`** via `MaterialField::from_yeoh_fields`
-//!    (three scalar fields: μ, C₂, λ — `C₁ = μ/2` is derived per
-//!    arc memo D2). Inner = Path-2 parametric construction via
+//! 5. **3-layer `MaterialField`** via
+//!    `MaterialField::from_yeoh_fields_with_bounds` (five scalar
+//!    fields: μ, C₂, λ + the per-anchor calibrated tensile /
+//!    compressive validity caps — `C₁ = μ/2` is derived per arc memo
+//!    D2). The two extra bound fields are load-bearing at 8 mm: the
+//!    bounds-less `from_yeoh_fields` would leave each per-tet Yeoh's
+//!    validity `None`, falling through to the legacy Neo-Hookean
+//!    symmetric ceiling `max_stretch_deviation = 1.0` (σ ∈ [0, 2]),
+//!    which the deep-penetration solve grazes near step 16 even
+//!    though a Yeoh silicone's real envelope is `0.8·λ_break ≈ 6-9`.
+//!    Inner = Path-2 parametric construction via
 //!    [`SiliconeMaterial::from_effective_shore`] at
 //!    `ShoreReading::DoubleZero(20.0)` (Slacker-softened Ecoflex
 //!    00-30 proxy at effective Shore 00-20; the bracket weight at
@@ -617,7 +625,44 @@ fn build_material_field() -> MaterialField {
         vec![LAYER_INNER, LAYER_MIDDLE_OUTER],
         vec![inner.lambda, DRAGON_SKIN_10A.lambda, DRAGON_SKIN_20A.lambda],
     ));
-    MaterialField::from_yeoh_fields(mu_field, c2_field, lambda_field)
+    // Per-anchor calibrated Yeoh validity bounds (tensile `0.8·λ_break`,
+    // compressive `0.20`), lifted from the F4 `SiliconeMaterial` anchors into
+    // two partition fields exactly like μ/c2/λ. WITHOUT these, the bounds-less
+    // `from_yeoh_fields` leaves each per-tet Yeoh's validity `None`, so it
+    // falls through to the LEGACY Neo-Hookean symmetric ceiling
+    // `max_stretch_deviation = 1.0` (σ ∈ [0, 2]) — ~3× tighter than silicone's
+    // real ~6-9 envelope. That NH placeholder is what trips the solver's
+    // fail-closed validity gate near the 8 mm target (a contact-zone tet grazes
+    // σ ≈ 2.0), even though a Yeoh silicone stretches far past 100 %. Routing
+    // the real caps via `from_yeoh_fields_with_bounds` (which closes the
+    // "MaterialField-drops-bounds" gap, material_field.rs) gives the deep-
+    // penetration solve its true ~3-4× stretch margin. Physics unchanged: the
+    // bound only governs the fail-closed gate, not the energy/force response.
+    let max_stretch_field: Box<dyn Field<f64>> = Box::new(LayeredScalarField::new(
+        scan_for_partition(),
+        vec![LAYER_INNER, LAYER_MIDDLE_OUTER],
+        vec![
+            inner.validity_max_principal_stretch,
+            DRAGON_SKIN_10A.validity_max_principal_stretch,
+            DRAGON_SKIN_20A.validity_max_principal_stretch,
+        ],
+    ));
+    let min_stretch_field: Box<dyn Field<f64>> = Box::new(LayeredScalarField::new(
+        scan_for_partition(),
+        vec![LAYER_INNER, LAYER_MIDDLE_OUTER],
+        vec![
+            inner.validity_min_principal_stretch,
+            DRAGON_SKIN_10A.validity_min_principal_stretch,
+            DRAGON_SKIN_20A.validity_min_principal_stretch,
+        ],
+    ));
+    MaterialField::from_yeoh_fields_with_bounds(
+        mu_field,
+        c2_field,
+        lambda_field,
+        max_stretch_field,
+        min_stretch_field,
+    )
 }
 
 // =============================================================================
