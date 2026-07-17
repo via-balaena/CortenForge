@@ -355,7 +355,7 @@ fn build_sleeve_body(outer: Solid, scan: Solid) -> Solid {
 /// Probe `Solid` at the given penetration depth (m). At `depth = 0.001 m`
 /// (1 mm) this matches row 21 v1's static fit-pose probe verbatim; the
 /// ramp loop calls this at progressively deeper depths up to
-/// `PROBE_PENETRATION_FINAL = 0.006 m`.
+/// `PROBE_PENETRATION_FINAL = 0.008 m`.
 fn build_probe_solid_at_depth(depth: f64) -> Solid {
     let probe_z = SCAN_HZ - PROBE_RADIUS + depth;
     Solid::sphere(PROBE_RADIUS).translate(Vector3::new(0.0, 0.0, probe_z))
@@ -411,9 +411,14 @@ fn build_material_field() -> MaterialField {
         vec![LAYER_INNER, LAYER_MIDDLE_OUTER],
         vec![inner.lambda, DRAGON_SKIN_10A.lambda, DRAGON_SKIN_20A.lambda],
     ));
-    // Per-anchor calibrated Yeoh validity bounds (tensile `0.8·λ_break`,
-    // compressive `0.20`), lifted from the F4 `SiliconeMaterial` anchors into
-    // two partition fields exactly like μ/c2/λ. WITHOUT these, the bounds-less
+    // Per-anchor calibrated Yeoh validity bounds, lifted from the F4
+    // `SiliconeMaterial` anchors into two partition fields exactly like μ/c2/λ.
+    // Only the TENSILE cap (`0.8·λ_break`) is applied at sample time (per
+    // H4-2-C, `from_yeoh_fields_with_bounds` routes it via
+    // `with_max_principal_stretch_only`); the compressive field (`0.20`) is
+    // threaded for API completeness but dropped at sample — the compressive
+    // net is `det F > 0`. The tensile cap is what matters here. WITHOUT these,
+    // the bounds-less
     // `from_yeoh_fields` leaves each per-tet Yeoh's validity `None`, so it
     // falls through to the LEGACY Neo-Hookean symmetric ceiling
     // `max_stretch_deviation = 1.0` (σ ∈ [0, 2]) — ~3× tighter than silicone's
@@ -1615,7 +1620,7 @@ fn print_summary(
         "  out/sleeve_design_surface_final.ply       (full 3D body via sim_soft::viz::design_surface, marching-cubes on design SDF)"
     );
     println!(
-        "  out/sleeve_design_surface_deformed_step_01.ply..step_12.ply  (F2.3c ramp animation series: per-step deformed body via sim_soft::viz::design_surface_deformed at amplify=10)"
+        "  out/sleeve_design_surface_deformed_step_01.ply..step_16.ply  (F2.3c ramp animation series: per-step deformed body via sim_soft::viz::design_surface_deformed at amplify=10)"
     );
     println!();
     println!("View final-step PLYs in cf-view (workspace's unified visual-review viewer):");
