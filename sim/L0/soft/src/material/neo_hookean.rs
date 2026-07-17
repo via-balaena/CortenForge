@@ -180,6 +180,24 @@ mod tests {
         Matrix3::from_diagonal(&Vector3::new(a, b, b))
     }
 
+    /// Assert a diagonal first-Piola tensor against its closed form: `P_11`
+    /// and `P_22` match `p11` / `p22`, `P_33 == P_22` by transverse symmetry
+    /// (checked against the *observed* `P_22`, not `p22`, so it stays a
+    /// distinct symmetry check — the direction `yeoh_contract.rs` covers only
+    /// for `Yeoh`), and every off-diagonal vanishes.
+    fn assert_diagonal_piola(p: &Matrix3<f64>, p11: f64, p22: f64) {
+        assert_relative_eq!(p[(0, 0)], p11, max_relative = 1.0e-12);
+        assert_relative_eq!(p[(1, 1)], p22, max_relative = 1.0e-12);
+        assert_relative_eq!(p[(2, 2)], p[(1, 1)], max_relative = 1.0e-12);
+        for i in 0..3 {
+            for j in 0..3 {
+                if i != j {
+                    assert_relative_eq!(p[(i, j)], 0.0, epsilon = 1.0e-9);
+                }
+            }
+        }
+    }
+
     #[test]
     fn first_piola_matches_closed_form_at_uniaxial_stretch() {
         // At F = diag(s, 1, 1): J = s, F⁻ᵀ = diag(1/s, 1, 1), so
@@ -196,22 +214,7 @@ mod tests {
             let ln_s = s.ln();
             let p11 = MU * (s - 1.0 / s) + LAMBDA * ln_s / s;
             let p22 = LAMBDA * ln_s;
-            assert_relative_eq!(p[(0, 0)], p11, max_relative = 1.0e-12);
-            // P_22 matches the closed form Λ ln(s)...
-            assert_relative_eq!(p[(1, 1)], p22, max_relative = 1.0e-12);
-            // ...and P_33 == P_22 by transverse symmetry (F leaves the
-            // (2, 3)-plane symmetric). Asserting P_33 against P_22 rather
-            // than re-asserting it against `p22` keeps this a distinct
-            // symmetry check — the direction the sibling test in
-            // `yeoh_contract.rs` covers only for `Yeoh`, not `NeoHookean`.
-            assert_relative_eq!(p[(2, 2)], p[(1, 1)], max_relative = 1.0e-12);
-            for i in 0..3 {
-                for j in 0..3 {
-                    if i != j {
-                        assert_relative_eq!(p[(i, j)], 0.0, epsilon = 1.0e-9);
-                    }
-                }
-            }
+            assert_diagonal_piola(&p, p11, p22);
         }
     }
 
@@ -235,18 +238,8 @@ mod tests {
             let ln_j = (a * b * b).ln();
             let p11 = MU * (a - 1.0 / a) + LAMBDA * ln_j / a;
             let p22 = MU * (b - 1.0 / b) + LAMBDA * ln_j / b;
-            assert_relative_eq!(p[(0, 0)], p11, max_relative = 1.0e-12);
-            // P_22 carries the non-zero transverse μ term...
-            assert_relative_eq!(p[(1, 1)], p22, max_relative = 1.0e-12);
-            // ...and P_33 == P_22 by transverse symmetry (distinct check).
-            assert_relative_eq!(p[(2, 2)], p[(1, 1)], max_relative = 1.0e-12);
-            for i in 0..3 {
-                for j in 0..3 {
-                    if i != j {
-                        assert_relative_eq!(p[(i, j)], 0.0, epsilon = 1.0e-9);
-                    }
-                }
-            }
+            // P_22 carries the non-zero transverse μ term.
+            assert_diagonal_piola(&p, p11, p22);
         }
     }
 
