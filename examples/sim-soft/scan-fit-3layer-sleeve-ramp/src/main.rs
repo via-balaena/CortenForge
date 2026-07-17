@@ -1120,8 +1120,8 @@ fn main() -> Result<()> {
         }
     }
 
-    // Quality + counts gates BEFORE the ramp (geometry-derived, bit-
-    // equal to row 21 v1's anchors).
+    // Quality + structure gates BEFORE the ramp (structural invariants on
+    // the deterministic mesh; no exact-count freeze).
     verify_quality_floors(&mesh);
     verify_mesh_structure(
         &mesh,

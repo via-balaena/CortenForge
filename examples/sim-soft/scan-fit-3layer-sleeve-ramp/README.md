@@ -58,9 +58,9 @@ for k in 0..N_RAMP_STEPS {
 
 // 7. Per-step verifies (structural + physics gates, see "Numerical anchors").
 
-// 8. JSON + PLY readouts. Final step drives the headline z-slab artifact;
-//    the JSON `ramp_curve` array carries the full force-displacement trace
-//    for matplotlib post-processing.
+// 8. JSON + PLY readouts. Final step drives the headline viz PLYs
+//    (boundary surface + z=0 slab cut); the JSON `ramp_curve` array carries
+//    the full force-displacement trace for matplotlib post-processing.
 ```
 
 The ramp pattern composes for any scenario where the single-step Newton basin is too tight. Future rows can reuse `solve_ramp` directly; the only per-row choice is `(N_RAMP_STEPS, PROBE_PENETRATION_FINAL, MAX_NEWTON_ITER)` — all three set empirically from a pre-execution spike on the target geometry.
