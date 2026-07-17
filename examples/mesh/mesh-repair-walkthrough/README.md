@@ -91,7 +91,8 @@ same transitions are asserted end-to-end in `mesh-repair`'s
 - `!report.is_watertight`, `!report.is_manifold`
 
 The pre-repair `non_manifold_edge_count`, `count_inconsistent_faces`,
-and `detect_holes(...)` values are PRINTED but NOT asserted: the
+and `detect_holes(...)` values are printed but left unpinned (even
+`tests/repair_pipeline.rs` anchors only the deterministic counts): the
 duplicate face and degenerate triangle share edges with cube
 neighbors, so multiple edges have 3+ incident faces (non-manifold).
 The BFS-based winding check and the boundary-loop tracer both behave
@@ -148,7 +149,8 @@ counts are deterministic (asserted in `mesh-repair`'s
 - `count_inconsistent_faces(&mesh)` may be 1 or 2 (the original
   reversed face plus possibly the fill triangle; ear-clipping winding
   is determined by the hole's boundary normal and may not match the
-  surrounding faces). Not asserted — the next stage handles it.
+  surrounding faces). `tests/repair_pipeline.rs` pins only `>= 1` here;
+  the next stage drives it to 0.
 
 **After `fix_winding_order` (final state):**
 
