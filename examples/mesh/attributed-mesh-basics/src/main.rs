@@ -6,9 +6,9 @@
 //! and the extensible [`extras`] map relate, and what the platform's
 //! length-mismatch error looks like in practice.
 //!
-//! Pairs with `ply-with-custom-attributes` (which proves extras survive
-//! disk) — this example explains what extras and slots ARE in the first
-//! place.
+//! Pairs with `ply-with-custom-attributes` (which demonstrates extras
+//! surviving disk) — this example explains what extras and slots ARE in
+//! the first place.
 //!
 //! See `examples/mesh/README.md` for cadence; see
 //! `docs/studies/mesh_architecture/src/10-types.md` for the type reference.
@@ -21,21 +21,12 @@
 #![allow(clippy::cast_possible_truncation)]
 
 use anyhow::Result;
-use mesh_types::{AttributeMismatchError, AttributedMesh, VertexColor, unit_cube};
+use mesh_types::{AttributedMesh, VertexColor, unit_cube};
 
 fn main() -> Result<()> {
     // ── Build the cube and wrap as AttributedMesh ──────────────────────
     // Every slot starts as None / empty — attribution is opt-in.
     let mut mesh = AttributedMesh::from(unit_cube());
-    assert_eq!(mesh.vertex_count(), 8);
-    assert_eq!(mesh.face_count(), 12);
-    assert!(mesh.normals.is_none());
-    assert!(mesh.colors.is_none());
-    assert!(mesh.zone_ids.is_none());
-    assert!(mesh.clearances.is_none());
-    assert!(mesh.offsets.is_none());
-    assert!(mesh.uvs.is_none());
-    assert!(mesh.extras.is_empty());
 
     // ── Populate three representative slots ────────────────────────────
     // 1. normals — geometry-derived, area-weighted (built-in helper).
@@ -54,53 +45,39 @@ fn main() -> Result<()> {
     // 3. extras["height"] — per-vertex z-coordinate, mirroring the anchor
     //    in `ply-with-custom-attributes` for cross-example continuity.
     let heights: Vec<f32> = mesh.geometry.vertices.iter().map(|v| v.z as f32).collect();
-    mesh.insert_extra("height", heights.clone())?;
+    mesh.insert_extra("height", heights)?;
 
-    // ── Verify the populated state ─────────────────────────────────────
-    assert!(mesh.normals.is_some(), "normals slot must be populated");
-    assert_eq!(
-        mesh.normals.as_ref().map_or(0, Vec::len),
-        mesh.vertex_count(),
-        "normals length must equal vertex count",
-    );
-    assert!(mesh.colors.is_some(), "colors slot must be populated");
-    assert_eq!(
-        mesh.colors.as_ref().map_or(0, Vec::len),
-        mesh.vertex_count(),
-        "colors length must equal vertex count",
-    );
-    assert_eq!(mesh.extras.len(), 1, "exactly one extras key expected");
-    assert!(mesh.extras.contains_key("height"));
-    assert_eq!(mesh.extras["height"], heights);
-    for (i, v) in mesh.geometry.vertices.iter().enumerate() {
-        // Bit-equal: 0.0 / 1.0 are exactly representable in f32.
-        assert_eq!(
-            mesh.extras["height"][i].to_bits(),
-            (v.z as f32).to_bits(),
-            "extras[\"height\"][{i}] must bit-equal v.z as f32",
-        );
-    }
-    // Other built-in slots remain None — opt-in semantics preserved.
-    assert!(mesh.zone_ids.is_none());
-    assert!(mesh.clearances.is_none());
-    assert!(mesh.offsets.is_none());
-    assert!(mesh.uvs.is_none());
+    // The visuals pass for this no-I/O example is a structured printout of
+    // the populated state (normals/colors/extras populated, the other
+    // slots still None). The slot-length + opt-in invariants this shows
+    // off are owned by `mesh-types`' `AttributedMesh` lib tests.
+    print_summary(&mesh);
 
     // ── Length-mismatch demo ───────────────────────────────────────────
-    // Mesh has 8 vertices; `bogus` has 3. `insert_extra` must reject.
+    // Mesh has 8 vertices; `bogus` has 3. `insert_extra` rejects the
+    // length mismatch (validation owned by `mesh-types`'
+    // `AttributeMismatchError` lib tests) and leaves the mesh unchanged.
     let bogus = vec![0.0_f32; 3];
-    let err = match mesh.insert_extra("bogus", bogus) {
-        Ok(()) => anyhow::bail!("insert_extra unexpectedly accepted a length-mismatched vector"),
-        Err(e) => e,
-    };
-    assert_eq!(err.name, "bogus");
-    assert_eq!(err.expected, mesh.vertex_count());
-    assert_eq!(err.actual, 3);
-    assert_eq!(mesh.extras.len(), 1, "mesh state must be unchanged on Err");
-    assert!(!mesh.extras.contains_key("bogus"));
-
-    // The visuals pass for this no-I/O example is a structured printout.
-    print_summary(&mesh, &err);
+    println!();
+    println!("length-mismatch demo:");
+    match mesh.insert_extra("bogus", bogus) {
+        Err(err) => {
+            println!("  caught: {err}");
+            println!(
+                "  fields: name={:?}, expected={}, actual={}",
+                err.name, err.expected, err.actual,
+            );
+        }
+        Ok(()) => {
+            println!("  note: insert_extra accepted a length-mismatched vector (unexpected)");
+        }
+    }
+    println!(
+        "  mesh.extras.len() after the attempt = {} (unchanged)",
+        mesh.extras.len(),
+    );
+    println!();
+    println!("OK — attributed-mesh shape demonstrated");
 
     Ok(())
 }
@@ -110,10 +87,10 @@ fn slot_summary(len: Option<usize>) -> String {
     len.map_or_else(|| String::from("None"), |n| format!("Some({n} entries)"))
 }
 
-/// Print the `AttributedMesh`'s full populated state plus the formatted
-/// length-mismatch error. This IS the example's visuals pass — read down
-/// the slot lines and confirm populated/None matches the README.
-fn print_summary(mesh: &AttributedMesh, err: &AttributeMismatchError) {
+/// Print the `AttributedMesh`'s full populated state. This IS the
+/// example's visuals pass — read down the slot lines and confirm
+/// populated/None matches the README.
+fn print_summary(mesh: &AttributedMesh) {
     println!("==== attributed-mesh-basics ====");
     println!(
         "geometry      : {} vertices, {} faces",
@@ -149,17 +126,4 @@ fn print_summary(mesh: &AttributedMesh, err: &AttributeMismatchError) {
         println!("                  {k:?}: {v:?}");
     }
     println!("                }}");
-    println!();
-    println!("length-mismatch demo:");
-    println!("  caught: {err}");
-    println!(
-        "  fields: name={:?}, expected={}, actual={}",
-        err.name, err.expected, err.actual,
-    );
-    println!(
-        "  mesh.extras.len() after error = {} (unchanged)",
-        mesh.extras.len(),
-    );
-    println!();
-    println!("OK — attributed-mesh shape verified");
 }

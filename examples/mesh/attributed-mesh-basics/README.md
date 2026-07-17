@@ -4,8 +4,8 @@ The `AttributedMesh` shape itself: how struct-of-arrays per-vertex slots,
 the extensible `extras` map, and the length-validation contract relate to
 the underlying `IndexedMesh`. **No I/O** — this example demonstrates the
 type, not the wire format. Pairs with
-[`ply-with-custom-attributes`](../ply-with-custom-attributes/) (which proves
-extras survive disk).
+[`ply-with-custom-attributes`](../ply-with-custom-attributes/) (which
+demonstrates extras surviving disk).
 
 ## What it does
 
@@ -42,7 +42,11 @@ AttributedMesh {
 Each populated slot has length `vertex_count()`. `extras` map values share
 that constraint and `insert_extra` enforces it at insertion time.
 
-## Numerical anchors
+## Expected values (printed)
+
+The `AttributedMesh` slot semantics + `insert_extra` length validation
+these show off are owned by `mesh-types`' lib tests; this example prints
+the populated state for inspection rather than asserting it.
 
 - `vertex_count == 8`, `face_count == 12`
 - `mesh.normals` is `Some` with length 8

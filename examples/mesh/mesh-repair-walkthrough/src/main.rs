@@ -3,7 +3,9 @@
 //! Builds a `unit_cube` and corrupts it with six defects (one per repair
 //! operation in `mesh-repair`'s public surface), then runs the pipeline in
 //! three explicit stages — `repair_mesh` → `fill_holes` → `fix_winding_order`
-//! — and verifies the result is watertight, manifold, and outward-wound.
+//! — printing each stage's diagnostics so you can watch the mesh go from
+//! broken to watertight, manifold, and outward-wound. The stage-by-stage
+//! repair oracle is owned by `mesh-repair`'s `tests/repair_pipeline.rs`.
 //!
 //! `repair_mesh` is the **basic** pipeline (degenerate-removal + welding +
 //! duplicate-face removal + unreferenced-vertex cleanup); hole-filling and
@@ -45,14 +47,12 @@ fn main() -> Result<()> {
     print_defects(dup_idx, unref_idx, mid_idx);
 
     print_diagnostics("initial validation", &mesh);
-    verify_initial(&mesh);
 
     // ── stage 1: repair_mesh ───────────────────────────────────────────
     let summary = repair_mesh(&mut mesh, &RepairParams::default());
     print_repair_summary(&summary);
     println!();
     print_diagnostics("post-repair_mesh validation", &mesh);
-    verify_post_repair(&mesh, &summary);
 
     // ── stage 2: fill_holes ────────────────────────────────────────────
     let filled = fill_holes(&mut mesh, 10)?;
@@ -61,7 +61,6 @@ fn main() -> Result<()> {
     println!("  filled              : {filled} hole(s)");
     println!();
     print_diagnostics("post-fill_holes validation", &mesh);
-    verify_post_fill(&mesh, filled);
 
     // ── stage 3: fix_winding_order ─────────────────────────────────────
     fix_winding_order(&mut mesh)?;
@@ -70,139 +69,32 @@ fn main() -> Result<()> {
     println!("  done                : winding propagated by BFS from face[0]");
     println!();
     print_diagnostics("final validation", &mesh);
-    verify_final(&mesh);
 
     // ── persist + round-trip ───────────────────────────────────────────
+    // The stage-by-stage repair oracle (each stage's exact counts +
+    // watertight/manifold/winding transitions) is owned by mesh-repair's
+    // `tests/repair_pipeline.rs` end-to-end lib test; this walkthrough
+    // demonstrates the pattern and prints each stage's diagnostics.
     save_ply(&mesh, &after_path, true)?;
     let after_loaded = load_ply(&after_path)?;
     let before_loaded = load_ply(&before_path)?;
-    verify_round_trip(&before_loaded, &after_loaded);
 
     println!();
     println!("artifacts:");
     println!(
-        "  out/before.ply : {}v, {}f (round-trip verified)",
+        "  out/before.ply : {}v, {}f (round-trip)",
         before_loaded.vertices.len(),
         before_loaded.faces.len(),
     );
     println!(
-        "  out/after.ply  : {}v, {}f (round-trip verified)",
+        "  out/after.ply  : {}v, {}f (round-trip)",
         after_loaded.vertices.len(),
         after_loaded.faces.len(),
     );
     println!();
-    println!("OK — repair pipeline verified");
+    println!("OK — repair pipeline demonstrated");
 
     Ok(())
-}
-
-/// Pre-repair: defect side-effects make boundary/non-manifold counts hard
-/// to predict from the defect inventory alone (the re-routed face and the
-/// degenerate triangle both introduce extra boundary edges; the duplicate
-/// face introduces non-manifold edges). Anchor only the deterministic
-/// counts; meaningful adjacency properties become assertable after
-/// `repair_mesh` cleans the topology.
-fn verify_initial(mesh: &IndexedMesh) {
-    let report = validate_mesh(mesh);
-    assert_eq!(report.vertex_count, 11);
-    assert_eq!(report.face_count, 13);
-    assert!(!report.is_watertight);
-    assert!(!report.is_manifold);
-    assert!(report.degenerate_face_count >= 1);
-    assert!(report.duplicate_face_count >= 1);
-    assert!(
-        report.boundary_edge_count >= 3,
-        "at minimum the 3 hole edges; defects add more (see README)",
-    );
-}
-
-/// Post-`repair_mesh`: adjacency is clean. The only remaining issues are
-/// the hole (3 boundary edges) and the hand-reversed `face[5]`.
-fn verify_post_repair(mesh: &IndexedMesh, summary: &RepairSummary) {
-    assert_eq!(
-        summary.vertices_welded, 1,
-        "1 weld merge expected (vert 8 → vert 0)"
-    );
-    assert_eq!(
-        summary.degenerates_removed, 1,
-        "1 degenerate triangle expected"
-    );
-    assert_eq!(summary.duplicates_removed, 1, "1 duplicate face expected");
-    assert_eq!(
-        summary.unreferenced_removed, 3,
-        "cascade-cleanup: hand-stranded vert 9 + post-weld orphan vert 8 + post-degen orphan vert 10",
-    );
-    assert_eq!(summary.final_vertices, 8);
-    assert_eq!(summary.final_faces, 11);
-
-    let report = validate_mesh(mesh);
-    assert_eq!(
-        report.boundary_edge_count, 3,
-        "post-repair: only the hole's 3 edges remain as boundary",
-    );
-    assert_eq!(report.non_manifold_edge_count, 0);
-    assert_eq!(report.degenerate_face_count, 0);
-    assert_eq!(report.duplicate_face_count, 0);
-    assert!(report.is_manifold);
-    assert!(!report.is_watertight);
-    assert_eq!(
-        count_inconsistent_faces(mesh),
-        1,
-        "post-repair: only the hand-reversed face[5] is inconsistent",
-    );
-}
-
-/// Post-`fill_holes`: surface is closed. Winding may still be inconsistent
-/// (the original reversed face and possibly the fill triangle).
-fn verify_post_fill(mesh: &IndexedMesh, filled: usize) {
-    assert_eq!(
-        filled, 1,
-        "expected 1 hole filled (the deleted-face triangle)"
-    );
-    let report = validate_mesh(mesh);
-    assert_eq!(
-        report.vertex_count, 8,
-        "ear-clipping reuses boundary vertices; no new ones added"
-    );
-    assert_eq!(report.face_count, 12, "fill added 1 triangle (11 → 12)");
-    assert_eq!(report.boundary_edge_count, 0);
-    assert!(report.is_watertight, "post-fill: surface is now closed");
-    assert!(report.is_manifold);
-}
-
-/// Post-`fix_winding_order`: the BFS reaches all faces through the now-closed
-/// surface and produces globally-consistent winding (outward, since `face[0]` is
-/// the BFS seed and `unit_cube` wound it outward).
-fn verify_final(mesh: &IndexedMesh) {
-    let report = validate_mesh(mesh);
-    assert_eq!(report.vertex_count, 8);
-    assert_eq!(report.face_count, 12);
-    assert_eq!(report.boundary_edge_count, 0);
-    assert!(report.is_watertight, "final mesh must be watertight");
-    assert!(report.is_manifold, "final mesh must be manifold");
-    assert!(!report.is_inside_out, "final mesh winding must be outward");
-    assert_eq!(report.degenerate_face_count, 0);
-    assert_eq!(report.duplicate_face_count, 0);
-    assert_eq!(
-        count_inconsistent_faces(mesh),
-        0,
-        "winding must be globally consistent",
-    );
-}
-
-/// Verify both PLY artifacts reload to their expected counts and the
-/// after-mesh remains watertight + manifold after disk round-trip.
-fn verify_round_trip(before: &IndexedMesh, after: &IndexedMesh) {
-    assert_eq!(before.vertices.len(), 11);
-    assert_eq!(before.faces.len(), 13);
-    assert_eq!(after.vertices.len(), 8);
-    assert_eq!(after.faces.len(), 12);
-    let after_report = validate_mesh(after);
-    assert!(
-        after_report.is_watertight,
-        "after.ply must reload watertight"
-    );
-    assert!(after_report.is_manifold, "after.ply must reload manifold");
 }
 
 /// Build the unit cube plus six intentional defects.

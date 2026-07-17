@@ -439,6 +439,49 @@ mod tests {
     }
 
     #[test]
+    fn stl_roundtrip_preserves_geometry_not_vertex_sharing() {
+        // STL "preserves geometry, discards topology": load_stl does NOT
+        // dedup (STL stores three fresh vertices per triangle on disk and
+        // the loader honors that), so the unit cube's 8 shared corners
+        // inflate to 12 tris * 3 = 36 independent vertices — yet the
+        // geometry (signed volume, surface area) is unchanged because the
+        // 36 vertices are the same corner positions repeated. (Contrast
+        // PLY/OBJ, which store explicit vertex sharing and recover the
+        // original 8 — see the `ply`/`obj` round-trip tests.) This is the
+        // load-bearing behavior the `format-conversion` example
+        // demonstrates; pinning it here keeps the oracle CI-gated rather
+        // than living only in a demo.
+        let original = mesh_types::unit_cube();
+        assert_eq!(original.vertex_count(), 8);
+        assert_eq!(original.face_count(), 12);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cube.stl");
+        save_stl(&original, &path, true).expect("save_stl");
+        let loaded = load_stl(&path).expect("load_stl");
+
+        // Topology (vertex sharing) is lost: 8 -> 36.
+        assert_eq!(
+            loaded.vertex_count(),
+            36,
+            "load_stl must NOT dedup shared vertices: 12 tris * 3 = 36",
+        );
+        assert_eq!(loaded.face_count(), 12, "face count is preserved");
+
+        // Geometry is preserved despite the sharing loss.
+        assert!(
+            (loaded.signed_volume() - 1.0).abs() < 1e-6,
+            "unit-cube volume must survive the STL round-trip, got {}",
+            loaded.signed_volume(),
+        );
+        assert!(
+            (loaded.surface_area() - 6.0).abs() < 1e-6,
+            "unit-cube surface area must survive the STL round-trip, got {}",
+            loaded.surface_area(),
+        );
+    }
+
+    #[test]
     fn roundtrip_binary_large_mesh_past_bufreader_boundary() {
         // Regression for the `read` → `read_exact` fix: prior code
         // used `BufReader::read(&mut buf)` per triangle, which returns

@@ -5,10 +5,12 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-# Headless demo — a "what each format preserves" tutorial. Its oracles are a
-# subset of `mesh-io`'s own STL/PLY/OBJ round-trip tests (`src/ply.rs`,
-# `src/obj.rs`, `tests/thingi10k_conformance.rs`), so correctness lives in the
-# library; this just shows usage. Compile-only in CI; not run by `xtask run-validators`.
+# Headless demo — a "what each format preserves" tutorial. It carries no
+# asserts; the per-format count preservation and STL's geometry-vs-topology
+# divergence it illustrates live in `mesh-io`'s round-trip tests (`src/stl.rs`
+# `stl_roundtrip_preserves_geometry_not_vertex_sharing`, `src/ply.rs`,
+# `src/obj.rs`, `tests/thingi10k_conformance.rs`). This just prints the
+# comparison table. Compile-only in CI; not run by `xtask run-validators`.
 [package.metadata.cortenforge]
 example_kind = "demo"
 

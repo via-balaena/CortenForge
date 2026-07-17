@@ -16,9 +16,10 @@
 //! - the terminal **watertight ∧ manifold ∧ outward** biconditional as the
 //!   pipeline's end state.
 //!
-//! Ported from the `mesh-repair-walkthrough` example (which retains the same
-//! assertions as a runnable demo plus PLY round-trip); this is the CI-gated
-//! copy in the library's own test suite.
+//! Ported from the `mesh-repair-walkthrough` example, which is now a runnable
+//! demonstration of the same pipeline (it prints each stage's diagnostics but
+//! no longer asserts); this integration test is the CI-gated home of the
+//! stage-by-stage oracle.
 //!
 //! Run with: `cargo test -p mesh-repair --test repair_pipeline`
 
