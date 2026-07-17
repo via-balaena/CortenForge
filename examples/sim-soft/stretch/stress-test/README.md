@@ -26,18 +26,22 @@ dimensional-analysis band `[5e-4, 1.5e-3] m`), with the pinned DOFs held to
 `c3729d4a`, rustc 1.95.0). Sole coverage of the single-element end-to-end
 `Solver::step` path. JSON-only (`out/single_tet/force_stretch.json`).
 
-### `neo_hookean` (row 5) — direct-eval constitutive vs closed form
-Direct evaluation of `NeoHookean::first_piola` / `NeoHookean::energy` against the
-closed-form NH stress and energy for **traction-free uniaxial stretch**
+### `neo_hookean` (row 5) — traction-free force-stretch curve (demonstration)
+Drives the real `NeoHookean` across a **12-point traction-free uniaxial sweep**
 (`F = diag(λ, λ_t, λ_t)`, `λ_t` from a 1-D inner Newton on the traction-free
-transcendental). A **12-point sweep** across `λ ∈ [0.15, 1.95]` (asymmetric
-density; in-domain bracket `λ ≈ [0.1182, 2.0]`) validates analytic `P_11`,
-`P_22`, ψ vs observed at rel-tol `1e-12`, a `ValidityDomain` declaration check,
-`P_11` monotonicity + sign, rest-config `to_bits == 0`, and **48 captured-bit
-self-pins** (`P_11`, `P_22`, ψ, `λ_t` × 12) under the IV-1 dense bit-equal tier.
-No solver — the constitutive law is exercised in isolation; sole coverage of the
-direct-eval axis. JSON (`out/neo_hookean/force_stretch.json`) + optional
-`uv run plot.py` matplotlib 2×2 panel (`out/neo_hookean/force_stretch.png`).
+transcendental) over `λ ∈ [0.15, 1.95]` (asymmetric density; in-domain bracket
+`λ ≈ [0.1182, 2.0]`) and emits the force-stretch curve as JSON — the artifact.
+No solver — the constitutive law is exercised in isolation. Demonstration
+self-gates read the **real** `first_piola`/`energy` output: inner-Newton
+convergence, traction-free `P_22`/`P_33`, `P_11` monotonicity + sign, and
+sweep-in-domain (bound from the live `validity()`).
+
+Constitutive **closed-form correctness** (`first_piola`/`energy` vs analytic at
+rel `1e-12`) is owned by the `sim-soft` `NeoHookean` lib tests — `diag(s,1,1)`
+uniaxial and `diag(a,b,b)` general-transverse — not re-asserted here. The JSON
+and plot carry the **real observed** curve only (no analytic overlay, so nothing
+in the artifact is unverified). JSON (`out/neo_hookean/force_stretch.json`) +
+optional `uv run plot.py` matplotlib 2×2 panel (`out/neo_hookean/force_stretch.png`).
 
 ### `multi_element` (row 6) — Phase 2 multi-element FEM assembly
 `replay_step` on a 27-vertex / 48-tet hex grid
