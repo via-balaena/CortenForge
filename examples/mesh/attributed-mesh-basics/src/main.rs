@@ -6,9 +6,9 @@
 //! and the extensible [`extras`] map relate, and what the platform's
 //! length-mismatch error looks like in practice.
 //!
-//! Pairs with `ply-with-custom-attributes` (which proves extras survive
-//! disk) — this example explains what extras and slots ARE in the first
-//! place.
+//! Pairs with `ply-with-custom-attributes` (which demonstrates extras
+//! surviving disk) — this example explains what extras and slots ARE in
+//! the first place.
 //!
 //! See `examples/mesh/README.md` for cadence; see
 //! `docs/studies/mesh_architecture/src/10-types.md` for the type reference.

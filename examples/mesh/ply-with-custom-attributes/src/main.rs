@@ -40,7 +40,10 @@ fn main() -> Result<()> {
     // owned by `mesh-io`'s `roundtrip_attributed_*` lib tests, so this
     // example only illustrates the flow and prints what came back.
     let reloaded = load_ply_attributed(&out_path)?;
-    let reloaded_heights = &reloaded.extras["height"];
+    // `.get` (not `[]` indexing) keeps this a pure demonstration — a
+    // round-trip regression that dropped the extra would print `None`
+    // here rather than panicking (the round-trip contract is lib-owned).
+    let reloaded_heights = reloaded.extras.get("height");
 
     // Numerical summary for the user-facing numbers pass.
     println!("==== ply-with-custom-attributes ====");

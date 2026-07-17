@@ -4,8 +4,8 @@ The `AttributedMesh` shape itself: how struct-of-arrays per-vertex slots,
 the extensible `extras` map, and the length-validation contract relate to
 the underlying `IndexedMesh`. **No I/O** — this example demonstrates the
 type, not the wire format. Pairs with
-[`ply-with-custom-attributes`](../ply-with-custom-attributes/) (which proves
-extras survive disk).
+[`ply-with-custom-attributes`](../ply-with-custom-attributes/) (which
+demonstrates extras surviving disk).
 
 ## What it does
 

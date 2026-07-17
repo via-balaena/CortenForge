@@ -439,6 +439,34 @@ mod tests {
     }
 
     #[test]
+    fn stl_does_not_dedup_shared_vertices() {
+        // load_stl does NOT dedup: STL stores three fresh vertices per
+        // triangle on disk and the loader honors that, so a shared-vertex
+        // mesh inflates on round-trip. The unit cube's 8 shared corners
+        // become 12 tris * 3 = 36 independent vertices; the face count is
+        // preserved. (Contrast PLY/OBJ, which store explicit vertex
+        // sharing and recover the original 8 — see the `ply`/`obj`
+        // round-trip tests.) This is the load-bearing behavior the
+        // `format-conversion` example demonstrates; pinning it here keeps
+        // the oracle CI-gated rather than living only in a demo.
+        let original = mesh_types::unit_cube();
+        assert_eq!(original.vertex_count(), 8);
+        assert_eq!(original.face_count(), 12);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cube.stl");
+        save_stl(&original, &path, true).expect("save_stl");
+        let loaded = load_stl(&path).expect("load_stl");
+
+        assert_eq!(
+            loaded.vertex_count(),
+            36,
+            "load_stl must NOT dedup shared vertices: 12 tris * 3 = 36",
+        );
+        assert_eq!(loaded.face_count(), 12, "face count is preserved");
+    }
+
+    #[test]
     fn roundtrip_binary_large_mesh_past_bufreader_boundary() {
         // Regression for the `read` → `read_exact` fix: prior code
         // used `BufReader::read(&mut buf)` per triangle, which returns

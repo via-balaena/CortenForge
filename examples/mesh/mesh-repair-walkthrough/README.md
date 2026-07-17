@@ -162,8 +162,9 @@ counts are deterministic (asserted in `mesh-repair`'s
 
 - `out/before.ply` reloads as 11 verts × 13 faces (matches in-memory
   pre-repair state)
-- `out/after.ply` reloads as 8 verts × 12 faces and re-validates as
-  watertight + manifold
+- `out/after.ply` reloads as 8 verts × 12 faces (the reloaded counts are
+  printed; the repaired mesh's watertight + manifold state is asserted
+  in-memory by `tests/repair_pipeline.rs`)
 
 ### Why `unreferenced_removed == 3`, not 1
 

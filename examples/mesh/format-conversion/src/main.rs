@@ -2,16 +2,18 @@
 //!
 //! Builds a unit cube (8 verts, 12 tris) and saves it through each of the
 //! three major mesh formats independently (fan-from-source, not a chain).
-//! Each artifact is reloaded and compared back to the source on five
-//! invariants: vertex count, face count, signed volume, surface area, and
-//! axis-aligned bounding box.
+//! Each artifact is reloaded and its five invariants — vertex count, face
+//! count, signed volume, surface area, and axis-aligned bounding box —
+//! printed in a comparison table alongside the source row.
 //!
 //! The headline is a divergence: STL files store three fresh vertices per
 //! triangle and `mesh_io::load_stl` does **not** dedup on load, so the
 //! reloaded STL has 36 vertices, not 8. PLY and OBJ both store explicit
 //! vertex sharing and recover the original 8. All three preserve the
-//! cube's *geometry* (volume ≈ 1, area ≈ 6, AABB exact within `1e-6`);
-//! only PLY and OBJ preserve its *topology*.
+//! cube's *geometry* (volume ≈ 1, area ≈ 6, unit AABB); only PLY and OBJ
+//! preserve its *topology*. Round-trip correctness is owned by `mesh-io`'s
+//! per-format lib tests (including `stl_does_not_dedup_shared_vertices`);
+//! this example demonstrates the divergence rather than asserting it.
 //!
 //! See `examples/mesh/README.md` for cadence; see
 //! `docs/studies/mesh_architecture/src/20-io.md` for the multi-format I/O
