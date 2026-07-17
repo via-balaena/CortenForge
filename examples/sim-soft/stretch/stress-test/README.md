@@ -57,14 +57,17 @@ all 26 boundary vertices pinned to `D · X_rest` with `D = diag(λ, 1, 1)`,
 `λ = 1.20`, and the **single interior vertex (ID 13) left free** starting at
 rest so Newton has real work (3 iters, residual `~1e-14 N`). Quasi-static via
 `cfg.density = 0` (suppress inertia → pure elasticity equilibrium `x = D · X`).
-Per-tet `F` evaluates to `diag(λ, 1, 1)` for **every one of the 48 tets**
-(uniformity spread `0.0` Pa on the capture platform), and `P_11 ≈ 9.744e4`,
-`P_22 = P_33 ≈ 7.293e4` Pa (`Λ ln λ`, non-zero — constrained transverse), ψ match
-closed form at rel-tol `1e-12`. **10 sparse-tier captured-bit self-pins**
-(interior `x_final` + representative isolated tet's `F`/`P`/ψ, rel-tol `1e-12`
-per the IV-1 sparse-tier contract, 81-DOF faer Cholesky). Sole coverage of the
-multi-element assembly path (local → global stitch, interior free DOF, per-tet
-uniformity oracle). JSON-only (`out/multi_element/multi_element_stretch.json`).
+The assembly **oracle**: per-tet `F` evaluates to `diag(λ, 1, 1)` for **every
+one of the 48 tets** with a bounded `P_11` uniformity spread (`0.0` Pa on the
+capture platform), plus the interior vertex reproducing `D · X_rest[13]`. That
+is example-only — `tests/uniaxial_fem_coupon.rs` covers the single-element
+homogeneous-reproduction, but not the all-48-tet uniformity. The real per-tet
+`P`/ψ (`P_11 ≈ 9.744e4`, `P_22 = P_33 ≈ 7.293e4` Pa, `Λ ln λ` — non-zero,
+constrained transverse) go to the JSON as observed values; their **closed-form
+correctness is owned by the `sim-soft` `NeoHookean` lib tests** (`diag(s,1,1)` +
+`diag(a,b,b)`), not re-asserted here. Sole coverage of the multi-element
+assembly path (local → global stitch, interior free DOF, per-tet uniformity).
+JSON-only (`out/multi_element/multi_element_stretch.json`).
 
 ## Run
 
@@ -103,8 +106,8 @@ uv run examples/sim-soft/stretch/stress-test/plot.py   # reads out/neo_hookean/f
   `SkeletonSolver`, multi-element assembly); `SoftScene::one_tet_cube` +
   `HandBuiltTetMesh::uniform_block` fixtures.
 - **IV-1 bit-equal contract**: `sim/L0/soft/tests/invariant_iv_1_uniform_passthrough.rs`
-  (owns `single_tet`'s `x_final` bit-equality; the two-tier dense-vs-sparse
-  contract + failure-mode protocol `multi_element`'s remaining bit-pins cite).
+  (owns `single_tet`'s `x_final` bit-equality — the de-fragged modules delegate
+  their bit-level regression net here rather than self-pinning captured bits).
 - **Single-tet convergence + scene physics**:
   `sim/L0/soft/tests/solver_convergence.rs` (owns the `single_tet` scene's
   Dirichlet pins, displacement sign / band, F=I axis alignment).
