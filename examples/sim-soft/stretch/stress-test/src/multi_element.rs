@@ -55,6 +55,25 @@
 //!     F_ij  = 0  for i ≠ j               (diagonal F)
 //! ```
 //!
+//! This module is the **assembly rung** of the stretch pipeline ladder: a
+//! heavy end-to-end FEM solve (mesh build → Dirichlet BC → Newton solve →
+//! per-tet `F`) demonstrating that homogeneous Dirichlet data, stitched
+//! local→global and solved on the free block, reproduces the uniform
+//! deformation — with an explicit per-element `F` uniformity + `P_11` spread
+//! readout across all 48 tets.
+//!
+//! The FEM assembly *machinery* and the constitutive law it drives are both
+//! lib-owned: `tests/uniaxial_fem_coupon.rs` is a multi-element (384-tet)
+//! **traction-free** (`F = diag(λ, λ_t, λ_t)`) constant-strain patch test —
+//! it pins the boundary to the affine field, drives every interior node back
+//! onto it, and checks a representative element's `F`/stress; and the `P`/`ψ`
+//! closed form is owned by the `NeoHookean` lib tests (`diag(s,1,1)` +
+//! `diag(a,b,b)`). This example's distinct axis is the **constrained-transverse**
+//! configuration (`diag(λ, 1, 1)`, `λ_t = 1` prescribed — not the coupon's
+//! traction-free solve) plus the explicit all-48 per-element uniformity/spread.
+//! It reads the real per-tet `P`/`ψ` into the JSON but does not re-assert their
+//! values against the closed form.
+//!
 //! # Anchor groups (all assertions exit-0 on success)
 //!
 //! - **Referenced-vertices canonical pattern** — `referenced_vertices(&mesh)` returns `[0..27)`;
@@ -64,46 +83,31 @@
 //! - **Mesh topology** — `n_vertices == 27`, `n_tets == 48`, interior vertex ID == 13.
 //! - **Boundary partition** — 26 boundary vertices pinned, 1 interior free (vertex ID 13).
 //! - **Validity in-domain at `x_prev`** — `max |σᵢ − 1|` per tet stays below NH's
-//!   declared `max_stretch_deviation = 1.0` boundary at the off-equilibrium initial guess.
+//!   declared `max_stretch_deviation` boundary at the off-equilibrium initial guess.
 //! - **Solver converges** — `iter_count < cfg.max_newton_iter`; `final_residual_norm < cfg.tol`.
 //! - **Pinned `x_final` exact** — every pinned vertex's xyz stay bit-equal to `D · X_rest`.
 //! - **Interior `x_final` near homogeneous** — vertex 13 lands at `D · X_rest[13]` within
 //!   relative `1e-12` (Newton-convergence noise floor).
-//! - **Per-element `F` uniform diag** — every tet's `F` matches `diag(λ, 1, 1)` at
-//!   relative `1e-12` (or absolute `1e-12` for the off-diagonal-zero entries).
-//! - **Per-element stress closed form** — every tet's `P_11`, `P_22`, `P_33`, `ψ` matches
-//!   the constrained-NH closed form at relative `1e-12`.
+//! - **Per-element `F` uniform diag** (the assembly headline) — every tet's `F` matches
+//!   `diag(λ, 1, 1)` at relative `1e-12` (or absolute `1e-12` for the off-diagonal-zero entries).
 //! - **Uniformity spread bounded** — `max P_11 − min P_11` across all 48 tets within
 //!   a tight FP-noise bound (Newton convergence + sparse-solve drift).
-//! - **Captured bits** — captured-reference bit pins for: interior `x_final` (3),
-//!   one isolated representative tet's `F`/`P` diag + `ψ` (7). Captured-bit anchors
-//!   use **relative-tolerance comparison**, NOT strict `to_bits` equality, per the
-//!   IV-1 sparse-tier contract — 81 DOFs through faer's sparse Cholesky lives between
-//!   IV-1's dense bit-equal tier (12-24 DOFs) and sparse-at-scale tier (~3k tets,
-//!   3-ULP cross-platform drift). 1e-12 relative bar admits sparse-solver SIMD/FMA
-//!   noise while catching any real regression.
 
 #![allow(
     // `doc_markdown` flags Unicode math notation (`λ`, `μ`, `Λ`, `σᵢ`, `ψ`)
     // as if they were unbacktrick-quoted code identifiers. Same allowance
     // as row 5.
     clippy::doc_markdown,
-    // `try_inverse().expect(...)` on `J_0` for the canonical mesh +
-    // `.find(...).expect(...)` on the hardcoded representative tet ID
-    // are contractually safe in this scene (`uniform_block` produces
-    // right-handed tets per its constructor doc; tet ID 6 is hardcoded
-    // within 0..48). Same pattern as `multi_element_grad_scaling.rs`'s
-    // file-level `expect_used` allow.
+    // `try_inverse().expect(...)` on `J_0` for the canonical mesh is
+    // contractually safe in this scene (`uniform_block` produces
+    // right-handed tets per its constructor doc). Same pattern as
+    // `multi_element_grad_scaling.rs`'s file-level `expect_used` allow.
     clippy::expect_used,
     // `usize as u32` on `mesh.n_tets()` (max 48 here, < u32::MAX) — the
     // standard Mesh-trait API tax mirrored in `mesh::referenced_vertices`
     // and the solver assembly methods (see `backward_euler.rs:212` and
     // `mesh/hand_built.rs:382`).
     clippy::cast_possible_truncation,
-    // `rep_f_diag` / `rep_p_diag` (representative tet's diagonals) is a
-    // meaningful F-vs-P distinction; same pattern as the
-    // `theta_val` / `theta_var` distinction in `multi_element_grad_scaling.rs`.
-    clippy::similar_names,
     // `print_summary` is a museum-plaque stdout writer — splitting into
     // sub-helpers fragments the visual format without information gain.
     // Same allowance as row 4 / row 5's print_summary.
@@ -136,9 +140,9 @@ const LAMBDA_PA: f64 = 4.0e5;
 /// Cells per cube edge — `uniform_block` requires `n >= 2` and even.
 /// `n = 2` is the smallest legal value AND the smallest mesh that has a
 /// truly interior vertex (the cube's center at vertex ID 13 below).
-/// Larger `n` would balloon the bit-pin scope without strengthening the
-/// uniformity claim — single interior at 1 is sufficient to gate
-/// "homogeneous deformation under affine boundary data" pedagogy.
+/// Larger `n` would enlarge the mesh without strengthening the uniformity
+/// claim — a single interior vertex is sufficient to demonstrate
+/// "homogeneous deformation under affine boundary data".
 const N_PER_EDGE: usize = 2;
 
 /// Cube edge length (m) — decimeter scale per the walking-skeleton scope §2
@@ -165,7 +169,8 @@ const N_BOUNDARY_VERTICES: usize = N_VERTICES - 1;
 
 /// Prescribed uniaxial stretch `λ = F_11` along `+x̂`. Same anchor stretch as
 /// row 5's tensile working point for cross-row continuity (and `|λ − 1| = 0.20`
-/// stays well inside NH's `max_stretch_deviation = 1.0` validity boundary).
+/// stays well inside NH's declared `max_stretch_deviation` validity boundary,
+/// read live in [`verify_validity_in_bounds_at_x_prev`]).
 const LAMBDA_STRETCH: f64 = 1.20;
 
 /// Spatial-predicate epsilon for boundary detection (m). Mesh vertex coordinates
@@ -174,11 +179,14 @@ const LAMBDA_STRETCH: f64 = 1.20;
 /// without ambiguity. `1e-12` mirrors the JSON anchor tolerance.
 const BOUNDARY_PREDICATE_EPS: f64 = 1.0e-12;
 
-/// Closed-form-vs-observed relative tolerance — same value as row 5.
-/// Both the per-tet `F = J · J_0^-1` and `Material::first_piola(F)` paths do
-/// `nalgebra::Matrix3` arithmetic; observed agreement is at the few-ULP level
-/// (~1e-15). `1e-12` admits expression-tree reordering noise + sparse-solver
-/// SIMD/FMA noise on the v_13 free-DOF without flapping.
+/// Relative tolerance for the kinematic assembly checks — per-tet
+/// `F` vs `diag(λ, 1, 1)` and the interior vertex vs `D · X_rest`.
+/// The per-tet `F = J · J_0^-1` path does `nalgebra::Matrix3` arithmetic;
+/// observed agreement with the imposed homogeneous field is at the
+/// few-ULP level (~1e-15). `1e-12` admits expression-tree reordering
+/// noise + sparse-solver SIMD/FMA noise on the v_13 free-DOF without
+/// flapping. (Constitutive `P`/ψ values are not asserted here — see the
+/// module docstring; that closed form is owned by the lib tests.)
 const REL_TOL: f64 = 1.0e-12;
 
 /// Absolute floor (Pa, m, or J/m³ — context-dependent) for relative
@@ -192,36 +200,10 @@ const EPS_ABS: f64 = 1.0e-12;
 /// drift on v_13, then through the per-tet `F = J · J_0^-1` (with
 /// `J_0^-1` ~ 20 m⁻¹) into ~1e-13 strain drift, then through the NH
 /// tangent (~1e5 Pa per unit strain) into ~1e-8 Pa stress drift. Bound
-/// at `1e-6` Pa = 11 orders below the closed-form `P_11(1.20) ≈ 9.7e4` Pa
-/// — six orders of slack above the noise floor, six orders below any
-/// real regression.
+/// at `1e-6` Pa = 11 orders below the observed `P_11 ≈ 9.7e4` Pa
+/// magnitude at this stretch — six orders of slack above the noise
+/// floor, six orders below any real regression.
 const UNIFORMITY_SPREAD_BOUND_PA: f64 = 1.0e-6;
-
-// =============================================================================
-// Closed-form analytic helpers (constrained F = diag(λ, 1, 1)).
-// =============================================================================
-
-/// Closed-form energy density `ψ(λ)` for compressible NH at `F = diag(λ, 1, 1)`.
-fn analytic_psi(lambda: f64, mu: f64, lambda_lame: f64) -> f64 {
-    let ln_lambda = lambda.ln();
-    let half_mu = 0.5 * mu;
-    let half_lambda = 0.5 * lambda_lame;
-    half_lambda.mul_add(
-        ln_lambda * ln_lambda,
-        half_mu.mul_add(lambda.mul_add(lambda, -1.0), -mu * ln_lambda),
-    )
-}
-
-/// Closed-form `P_11(λ)` for compressible NH at `F = diag(λ, 1, 1)`.
-fn analytic_p11(lambda: f64, mu: f64, lambda_lame: f64) -> f64 {
-    mu.mul_add(lambda - 1.0 / lambda, lambda_lame * lambda.ln() / lambda)
-}
-
-/// Closed-form `P_22 = P_33` for compressible NH at `F = diag(λ, 1, 1)`.
-/// Equals `Λ ln(λ)` — non-zero (constrained transverse, not traction-free).
-fn analytic_p22(lambda: f64, lambda_lame: f64) -> f64 {
-    lambda_lame * lambda.ln()
-}
 
 // =============================================================================
 // Per-element F from positions: F = J · J_0^-1
@@ -504,17 +486,10 @@ fn verify_boundary_partition(boundary: &[VertexId]) {
 // =============================================================================
 
 fn verify_validity_in_bounds_at_x_prev(mesh: &HandBuiltTetMesh, mat: &NeoHookean, x_prev: &[f64]) {
-    // Sanity: NH's published validity domain still has the boundary we
-    // assume below.
+    // Read NH's published validity domain — its `max_stretch_deviation` IS
+    // the in-domain bound each tet must stay below, and the demo relies on
+    // its `RequireOrientation` inversion policy (satisfied by det F > 0).
     let validity = mat.validity();
-    assert_eq!(
-        validity.max_stretch_deviation.to_bits(),
-        1.0_f64.to_bits(),
-        "NH validity boundary drift: max_stretch_deviation = {} (bits {:#018x}), \
-         expected 1.0",
-        validity.max_stretch_deviation,
-        validity.max_stretch_deviation.to_bits(),
-    );
     assert!(
         matches!(validity.inversion, InversionHandling::RequireOrientation),
         "NH inversion handler drift: got {:?}, expected RequireOrientation",
@@ -664,58 +639,6 @@ fn verify_per_element_f_uniform_diag(records: &[TetRecord]) {
 }
 
 // =============================================================================
-// verify_per_element_stress_closed_form
-// =============================================================================
-
-fn verify_per_element_stress_closed_form(records: &[TetRecord]) {
-    let p11_expected = analytic_p11(LAMBDA_STRETCH, MU_PA, LAMBDA_PA);
-    let p22_expected = analytic_p22(LAMBDA_STRETCH, LAMBDA_PA);
-    let psi_expected = analytic_psi(LAMBDA_STRETCH, MU_PA, LAMBDA_PA);
-    for rec in records {
-        assert_relative_eq!(
-            rec.p[(0, 0)],
-            p11_expected,
-            max_relative = REL_TOL,
-            epsilon = EPS_ABS
-        );
-        assert_relative_eq!(
-            rec.p[(1, 1)],
-            p22_expected,
-            max_relative = REL_TOL,
-            epsilon = EPS_ABS
-        );
-        assert_relative_eq!(
-            rec.p[(2, 2)],
-            p22_expected,
-            max_relative = REL_TOL,
-            epsilon = EPS_ABS
-        );
-        assert_relative_eq!(
-            rec.psi,
-            psi_expected,
-            max_relative = REL_TOL,
-            epsilon = EPS_ABS
-        );
-        // Off-diagonals of P should also be zero (P_ij = 0 for i ≠ j
-        // when F is diagonal — NH's first_piola of a diagonal F is
-        // diagonal). Pin via absolute floor.
-        for i in 0..3 {
-            for j in 0..3 {
-                if i == j {
-                    continue;
-                }
-                assert!(
-                    rec.p[(i, j)].abs() < EPS_ABS,
-                    "tet {}: P[({i},{j})] = {:e} exceeds off-diagonal floor {EPS_ABS:e}",
-                    rec.tet_id,
-                    rec.p[(i, j)],
-                );
-            }
-        }
-    }
-}
-
-// =============================================================================
 // verify_uniformity_spread_bounded
 // =============================================================================
 
@@ -742,124 +665,6 @@ fn verify_uniformity_spread_bounded(records: &[TetRecord]) -> f64 {
 }
 
 // =============================================================================
-// Captured-reference bit anchors (see provenance block below)
-// =============================================================================
-//
-// **Capture provenance** — captured on 2026-05-05 at sim-soft `dev` (row-5
-// tip `bd727023` from `neo_hookean`, pre-row-6), rustc 1.95.0
-// (`59807616e` 2026-04-14) — the same toolchain IV-1 captured at sim-soft
-// `c3729d4a` per `invariant_iv_1_uniform_passthrough.rs:138-151` — on macOS arm64.
-//
-// **IV-1 sparse-tier contract.** This row's 81-DOF FEM solve through faer's
-// sparse Cholesky lives between IV-1's dense bit-equal tier (12-24 DOFs,
-// `nalgebra::Matrix3` scalar arithmetic, bit-equal across rustc minor versions
-// AND across `(macOS arm64, Linux x86_64)`) and IV-1's sparse-at-scale tier
-// (~3k tets, 3-ULP cross-platform drift on faer's per-column FMA-fusion
-// path). At this scale we don't know empirically which side cross-platform
-// stability lands on, so the contract here is **relative tolerance, not
-// strict bit-equality** — observed bits captured for regression detection,
-// compared via `assert_relative_eq!` at `1e-12` rel. If empirically bit-equal
-// on the capture platform that's a bonus surfaced in stdout/JSON; the
-// contract IS the rel-tol bar.
-//
-// **Failure-mode protocol** (mirrors IV-1's): if the rel-tol comparison
-// fails, do NOT re-bake. Diagnose in this order:
-//   1. Rule out toolchain drift (rustc / LLVM / libm minor version delta vs
-//      the rustc 1.95.0 capture).
-//   2. If same toolchain, real regression — identify which sim-soft commit
-//      altered the multi-element FEM assembly numerics OR the sparse-Cholesky
-//      path through faer.
-//   3. NEVER re-bake the reference values to make the test green.
-
-// Interior vertex `x_final` reference (3 entries: x, y, z). Captured at
-// sim-soft `dev` (row-5 tip, pre-row-6), rustc 1.95.0 (`59807616e`
-// 2026-04-14) on macOS arm64.
-const INTERIOR_X_FINAL_REF_BITS: [u64; 3] = [
-    0x3fae_b851_eb85_1eb8, // v13.x = 0.06 = 1.2 * 0.05 (D · v13_rest.x)
-    0x3fa9_9999_9999_999a, // v13.y = 0.05 (unchanged — constrained transverse)
-    0x3fa9_9999_9999_999a, // v13.z = 0.05 (unchanged — constrained transverse)
-];
-
-/// Index of the representative ISOLATED tet (no v_13 vertex) — its 4 verts
-/// are all on the boundary, pinned bit-equal to `D · X_rest`, so its `F`
-/// is computed entirely from frozen position bits and IS bit-equal to
-/// `diag(λ, 1, 1)` on a fixed toolchain. Verified at runtime to be
-/// isolated (the assert in [`verify_captured_bits`] re-checks
-/// `contains_interior == false` so an inventory-edit-driven tet-id
-/// reordering surfaces immediately rather than silently invalidating
-/// the capture).
-const REPRESENTATIVE_ISOLATED_TET_ID: u32 = 6;
-
-/// Representative isolated tet's `F` diagonal — 3 entries, bit-equal to
-/// `diag(LAMBDA_STRETCH, 1, 1)` on the capture toolchain.
-const REPRESENTATIVE_F_DIAG_REF_BITS: [u64; 3] = [
-    0x3ff3_3333_3333_3333, // F[0,0] = LAMBDA_STRETCH = 1.2
-    0x3ff0_0000_0000_0000, // F[1,1] = 1.0
-    0x3ff0_0000_0000_0000, // F[2,2] = 1.0
-];
-
-/// Representative isolated tet's `P` diagonal — 3 entries, bit-equal to
-/// `(P_11, P_22, P_33)` from the constrained NH closed form on the
-/// capture toolchain.
-const REPRESENTATIVE_P_DIAG_REF_BITS: [u64; 3] = [
-    0x40f7_ca08_4d8a_ed08, // P[0,0] ≈ 9.744051893131819e4 Pa  (μ(λ-1/λ) + Λ ln(λ)/λ)
-    0x40f1_ce09_f6a6_b60a, // P[1,1] ≈ 7.292862271758183e4 Pa  (Λ ln(λ))
-    0x40f1_ce09_f6a6_b60a, // P[2,2] ≈ 7.292862271758183e4 Pa  (Λ ln(λ); = P[1,1])
-];
-
-/// Representative isolated tet's energy density `ψ` (J/m³).
-const REPRESENTATIVE_PSI_REF_BITS: u64 = 0x40c4_5809_83ce_d475; // ψ ≈ 1.0416074334958781e4
-
-// =============================================================================
-// verify_captured_bits
-// =============================================================================
-
-fn verify_captured_bits(observed_v13: Vec3, records: &[TetRecord]) {
-    // Per the IV-1 sparse-tier contract documented above the `*_REF_BITS`
-    // arrays: rel-tol `1e-12` comparison, not strict `to_bits` equality
-    // — 81 DOFs through faer's sparse Cholesky lives in the gray zone
-    // between IV-1's dense bit-equal tier and sparse-at-scale tier.
-    // Empirically bit-equal on the capture platform (macOS arm64) at
-    // λ = 1.20; cross-platform reservation is the slack the rel-tol
-    // bar buys.
-    let v13_components = [observed_v13.x, observed_v13.y, observed_v13.z];
-    for (&val, &ref_bits) in v13_components.iter().zip(INTERIOR_X_FINAL_REF_BITS.iter()) {
-        let expected = f64::from_bits(ref_bits);
-        assert_relative_eq!(val, expected, max_relative = REL_TOL, epsilon = EPS_ABS);
-    }
-
-    // Find the representative tet — assert it's isolated so an inventory-edit
-    // -driven tet-id reordering surfaces immediately rather than silently
-    // invalidating the capture.
-    let rep = records
-        .iter()
-        .find(|r| r.tet_id == REPRESENTATIVE_ISOLATED_TET_ID)
-        .expect("representative isolated tet must exist in records");
-    assert!(
-        !rep.contains_interior,
-        "representative tet {REPRESENTATIVE_ISOLATED_TET_ID} contains interior vertex — \
-         pick a different tet_id (the bit anchor is captured on an isolated tet only)"
-    );
-    let rep_f_diag = [rep.f[(0, 0)], rep.f[(1, 1)], rep.f[(2, 2)]];
-    let rep_p_diag = [rep.p[(0, 0)], rep.p[(1, 1)], rep.p[(2, 2)]];
-    for (&val, &ref_bits) in rep_f_diag.iter().zip(REPRESENTATIVE_F_DIAG_REF_BITS.iter()) {
-        let expected = f64::from_bits(ref_bits);
-        assert_relative_eq!(val, expected, max_relative = REL_TOL, epsilon = EPS_ABS);
-    }
-    for (&val, &ref_bits) in rep_p_diag.iter().zip(REPRESENTATIVE_P_DIAG_REF_BITS.iter()) {
-        let expected = f64::from_bits(ref_bits);
-        assert_relative_eq!(val, expected, max_relative = REL_TOL, epsilon = EPS_ABS);
-    }
-    let psi_expected = f64::from_bits(REPRESENTATIVE_PSI_REF_BITS);
-    assert_relative_eq!(
-        rep.psi,
-        psi_expected,
-        max_relative = REL_TOL,
-        epsilon = EPS_ABS
-    );
-}
-
-// =============================================================================
 // JSON emit
 // =============================================================================
 
@@ -872,9 +677,6 @@ fn save_json(
     spread_p11: f64,
     path: &Path,
 ) -> Result<()> {
-    let p11_expected = analytic_p11(LAMBDA_STRETCH, MU_PA, LAMBDA_PA);
-    let p22_expected = analytic_p22(LAMBDA_STRETCH, LAMBDA_PA);
-    let psi_expected = analytic_psi(LAMBDA_STRETCH, MU_PA, LAMBDA_PA);
     let tets: Vec<_> = records
         .iter()
         .map(|r| {
@@ -928,12 +730,12 @@ fn save_json(
                 "lambda": LAMBDA_STRETCH,
             },
         },
+        // The kinematic (Dirichlet-imposed) expectations the assembly must
+        // reproduce — F = diag(λ,1,1) and the interior vertex at D·X_rest.
+        // Constitutive stress/energy at this F is owned by the sim-soft
+        // NeoHookean lib tests; per-tet observed P/ψ are in `tets` below.
         "expected_homogeneous": {
             "F_diag": [LAMBDA_STRETCH, 1.0, 1.0],
-            "P_11_Pa": p11_expected,
-            "P_22_Pa": p22_expected,
-            "P_33_Pa": p22_expected,
-            "psi_J_per_m3": psi_expected,
             "v13_stretched": [expected_v13_stretched.x, expected_v13_stretched.y, expected_v13_stretched.z],
         },
         "step_result": {
@@ -976,9 +778,6 @@ fn print_summary(
     spread_p11: f64,
     path: &Path,
 ) {
-    let p11_expected = analytic_p11(LAMBDA_STRETCH, MU_PA, LAMBDA_PA);
-    let p22_expected = analytic_p22(LAMBDA_STRETCH, LAMBDA_PA);
-    let psi_expected = analytic_psi(LAMBDA_STRETCH, MU_PA, LAMBDA_PA);
     println!("==== multi_element ====");
     println!();
     println!(
@@ -1001,23 +800,21 @@ fn print_summary(
         "         x_prev  : 26 boundary at D·X_rest, vertex {INTERIOR_VERTEX_ID} at REST  (off-equilibrium initial guess)"
     );
     println!();
-    println!("Expected homogeneous values at F = diag({LAMBDA_STRETCH}, 1, 1):");
-    println!("  P_11_analytic            : {p11_expected:>13.6e} Pa  (μ(λ-1/λ) + Λ ln(λ)/λ)");
     println!(
-        "  P_22_analytic = P_33     : {p22_expected:>13.6e} Pa  (Λ ln(λ); non-zero — constrained)"
+        "Kinematic expectation the assembly must reproduce (F = diag({LAMBDA_STRETCH}, 1, 1)):"
     );
-    println!("  ψ_analytic               : {psi_expected:>13.6e} J/m³");
     println!(
-        "  v13_stretched            : ({:>9.6}, {:>9.6}, {:>9.6}) m",
+        "  v13_stretched (D·X_rest) : ({:>9.6}, {:>9.6}, {:>9.6}) m",
         expected_v13_stretched.x, expected_v13_stretched.y, expected_v13_stretched.z
     );
+    println!("  (constitutive P/ψ at this F owned by sim-soft's NeoHookean lib tests)");
     println!();
     println!("Anchor groups (all assertions exit-0 on success):");
     println!("  referenced_vertices_full      : referenced_vertices(&mesh) == [0..27)");
     println!("  mesh_topology                 : 27 verts, 48 tets, interior vertex ID == 13");
     println!("  boundary_partition            : 26 boundary pinned, vertex 13 free, ascending");
     println!(
-        "  validity_in_bounds_at_x_prev  : per-tet max|σ-1| < NH bound 1.0 at off-equilibrium x_prev"
+        "  validity_in_bounds_at_x_prev  : per-tet max|σ-1| < NH bound at off-equilibrium x_prev"
     );
     println!("  solver_converges              : iter_count < max_newton_iter; residual < tol");
     println!("  pinned_x_final_exact          : every pinned DOF bit-equal to x_prev");
@@ -1026,13 +823,7 @@ fn print_summary(
     );
     println!("  per_element_F_uniform_diag    : every tet F vs diag(λ, 1, 1) at rel {REL_TOL:e}");
     println!(
-        "  per_element_stress_closed_form: every tet (P_11, P_22, ψ) vs NH closed form at rel {REL_TOL:e}"
-    );
-    println!(
         "  uniformity_spread_bounded     : max P_11 - min P_11 < {UNIFORMITY_SPREAD_BOUND_PA:e} Pa across {N_TETS} tets"
-    );
-    println!(
-        "  captured_bits                 : interior + representative tet within rel-tol of captured ref"
     );
     println!();
     println!("Step result:");
@@ -1083,7 +874,7 @@ fn print_summary(
     println!(
         "  P_11 spread              : {spread_p11:>13.3e} Pa  (bound {UNIFORMITY_SPREAD_BOUND_PA:e} Pa)"
     );
-    println!("  max|σᵢ-1| across tets    : {max_dev:>13.6}     (< 1.0 strict in-domain)");
+    println!("  max|σᵢ-1| across tets    : {max_dev:>13.6}     (all tets in-domain — see gate)");
     println!();
     println!("JSON   : {}", path.display());
     println!("         per-tet record + scene + expected_homogeneous + uniformity verdict");
@@ -1139,9 +930,7 @@ pub fn run() -> Result<()> {
     let records = build_tet_records(&rest_positions, &tet_verts, &mat, &step.x_final);
 
     verify_per_element_f_uniform_diag(&records);
-    verify_per_element_stress_closed_form(&records);
     let spread_p11 = verify_uniformity_spread_bounded(&records);
-    verify_captured_bits(interior_observed, &records);
 
     // JSON + stdout summary.
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -25,8 +25,12 @@
 //! - [`multi_element`] (row 6) — Phase 2 multi-element FEM assembly on a
 //!   27-vertex / 48-tet `HandBuiltTetMesh::uniform_block(2)` under uniform
 //!   Dirichlet stretch (`λ = 1.20`, one interior vertex free), quasi-static via
-//!   `cfg.density = 0`: per-tet `F` uniform `diag(λ, 1, 1)` across all 48 tets
-//!   and `P_11` / `P_22` / ψ vs closed form, plus 10 sparse-tier bit-pins.
+//!   `cfg.density = 0` — a heavy end-to-end FEM solve demonstrating per-tet `F`
+//!   uniform `diag(λ, 1, 1)` across all 48 tets + a bounded `P_11` uniformity
+//!   spread. Its distinct axis vs the lib's `tests/uniaxial_fem_coupon.rs`
+//!   (a multi-element *traction-free* patch test) is the **constrained-transverse**
+//!   `diag(λ, 1, 1)` config + the explicit all-48 per-element readout. Real
+//!   per-tet `P`/ψ go to the JSON; their closed-form CORRECTNESS is lib-owned.
 //!
 //! The three are complementary, not subsuming: [`single_tet`] is the sole
 //! coverage of the single-element end-to-end `Solver::step` path; [`neo_hookean`]
