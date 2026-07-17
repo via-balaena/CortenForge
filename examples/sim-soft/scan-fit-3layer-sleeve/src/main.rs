@@ -123,8 +123,10 @@
 //!    inline from `mesh.tet_vertices(t)`, `mesh.positions()` (rest),
 //!    and `step.x_final` (deformed); per-tet `Ψ_t = mesh.materials()[t]
 //!    .energy(&F)` aggregates per-layer to `Ψ̄_inner / Ψ̄_middle /
-//!    Ψ̄_outer`. The aggregation drives anchor 5 (compliance ordering)
-//!    and anchor 6 (outer-layer durability bound).
+//!    Ψ̄_outer`, which drives the strict compliance-ordering gate
+//!    `Ψ̄_inner > Ψ̄_middle > Ψ̄_outer` (`verify_strain_energy_ordering`).
+//!    The per-layer means + outer-layer peak Ψ are also emitted to the
+//!    JSON readout for eyes-on inspection.
 //!
 //! 8. **Readouts** —
 //!    - JSON `out/scan_fit_3layer_sleeve.json`: scalars (geometry
@@ -138,8 +140,14 @@
 //!      cf-view auto-picks categorical palette per pattern (u)) and
 //!      `displacement_magnitude` continuous unipolar (sequential
 //!      viridis per pattern (u)).
-//!    - `verify_*` runtime gates (9 anchor groups, see "Numerical
-//!      anchors" in `README.md`).
+//!    - `verify_*` runtime gates — pipeline-emergent structural +
+//!      physics invariants (see "Numerical anchors" in `README.md`).
+//!      This row is a Rule-B `validator`: its oracles are read from the
+//!      real solve (positive tet volume, converged Newton, per-shell
+//!      material routing, strict Ψ̄ ordering, displacement bound) — the
+//!      pre-Rule-B captured-bit self-pins were stripped (constitutive +
+//!      mesher correctness is lib-owned; see the de-frag note over the
+//!      `Verifications` section).
 //!
 //! # Why z-slab over full-boundary-surface
 //!
@@ -188,7 +196,6 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use anyhow::Result;
-use approx::assert_relative_eq;
 use cf_design::Solid;
 use mesh_io::save_ply_attributed;
 use mesh_types::{AttributedMesh, IndexedMesh, Point3, Vector3};
@@ -324,151 +331,6 @@ const STATIC_DT: f64 = 1.0;
 /// Newton iter cap. Mirrors rows 11 + 16 + 20's `MAX_NEWTON_ITER`
 /// verbatim; empirical convergence on similar geometries is ≤ 7 iters.
 const MAX_NEWTON_ITER: usize = 50;
-
-// =============================================================================
-// Constants — tolerances
-// =============================================================================
-
-/// IV-1 sparse-tier rel-tol for captured force / displacement / per-
-/// layer Ψ̄ bits. ~75 k tets through faer's sparse Cholesky lives at
-/// the IV-1 sparse-at-scale tier (3-ULP cross-platform drift);
-/// `1e-12` admits sparse-solver SIMD/FMA noise while catching any
-/// real regression. Same precedent as rows 6+10+11+16+20.
-const SPARSE_REL_TOL: f64 = 1.0e-12;
-
-/// Absolute floor for the captured-bits comparison; below the cavity-
-/// wall displacement-magnitude scale (`< 1e-3 m`) by 9 orders. Same
-/// precedent as rows 6+10+11+16+20.
-const SPARSE_EPS_ABS: f64 = 1.0e-12;
-
-/// Bit-exact tolerance for the F4 const-fn `to_neo_hookean()` Lamé-
-/// pair round-trip — the F4 unit test at `silicone_table.rs::tests::
-/// to_neo_hookean_round_trips_lame_pair` asserts the same identity at
-/// `epsilon = 0.0`, and we re-assert it here so a regression in F4
-/// trips this row directly. Same precedent as rows 19 + 20.
-const F4_PROVENANCE_EXACT_TOL: f64 = 0.0;
-
-/// Probe `F = diag(1.01, 1, 1)` material-assignment-probe tolerance.
-/// `EXACT_TOL = 0.0` per row 8 pattern (a) — both sides run identical
-/// NH arithmetic on identical `(μ, λ)` and identical `F`, bit-equal by
-/// construction on a fixed toolchain.
-const MATERIAL_PROBE_EXACT_TOL: f64 = 0.0;
-
-// =============================================================================
-// Constants — captured first-run anchor bits
-// =============================================================================
-//
-// **Capture provenance** — captured 2026-05-08 at sim-soft `dev`
-// (post-Q7 tip `13e46dad`, PR3 + post-PR3 cleanup + Q7 cf-viewer
-// retrofit shipped), rustc 1.95.0 (`59807616e` 2026-04-14) on macOS
-// arm64 — same toolchain + platform as IV-1's reference capture. Re-
-// bake protocol per IV-1: if a rel-tol assertion fails, do NOT re-
-// bake; rule out toolchain drift first; if same toolchain, real
-// regression in cf-design's `cuboid` / `offset` plumbing OR in
-// sim-soft's BCC + IS + faer hot path OR in the inline
-// `deformation_gradient` arithmetic.
-//
-// First-run capture is bootstrapped via `CF_CAPTURE_BITS=1` (pattern
-// (cc) banked at row 19): when the env var is set, the capture-print
-// helper emits `CAPTURED_*_REF_BITS = 0x...` blocks ready to paste
-// into the constants below; when unset (default), every captured-bits
-// gate runs the strict `to_bits()` self-pin against these constants.
-// Identity-row pattern: every `*_EXACT` count is filled at first run
-// (initial value `0` triggers a deliberate-fail diagnostic), every
-// `*_REF_BITS` is filled at first run after that.
-
-/// Total tet count after the BCC + Isosurface Stuffing pipeline carves
-/// the scan-shaped cavity from the offset-wrapped cuboid. Captured at
-/// first run (`CF_CAPTURE_BITS=1`, post-Q7 tip `13e46dad`, 2026-05-08,
-/// rustc 1.95.0, macOS arm64).
-const N_TETS_EXACT: usize = 74_628;
-
-/// Total mesh vertex count, including BCC lattice corners not
-/// referenced by any tet.
-const N_VERTICES_EXACT: usize = 31_966;
-
-/// Vertices referenced by at least one tet. `N_VERTICES_EXACT -
-/// N_REFERENCED_EXACT = 14_582` orphan BCC lattice corners excluded
-/// from solver participation.
-const N_REFERENCED_EXACT: usize = 17_384;
-
-/// Outer-envelope-surface Dirichlet-pinned vertex count (every vertex
-/// with `|outer_envelope.eval(p)| < CELL_SIZE / 2`, filtered to
-/// referenced set).
-const N_PINNED_EXACT: usize = 7_046;
-
-/// Per-shell tet counts at first capture. `INNER + MIDDLE + OUTER ==
-/// N_TETS_EXACT` by construction (every tet centroid sits in exactly
-/// one of the three distance-from-scan bins).
-const N_INNER_TETS_EXACT: usize = 25_892;
-const N_MIDDLE_TETS_EXACT: usize = 16_656;
-const N_OUTER_TETS_EXACT: usize = 32_080;
-
-/// Per-shell tet counts in the `|centroid.z| < CELL_SIZE / 2 = 0.002`
-/// z-slab cut for the cf-view PLY artifact.
-const N_INNER_TETS_ZSLAB_EXACT: usize = 768;
-const N_MIDDLE_TETS_ZSLAB_EXACT: usize = 432;
-const N_OUTER_TETS_ZSLAB_EXACT: usize = 892;
-
-/// Active contact-pair count at the static fit pose, filtered to
-/// REFERENCED vertices (v2.5-equivalent cleanup, 2026-05-08; row 21
-/// anchor cleanup mirroring row 22 v2.5). 13 real physical contacts
-/// at the 1 mm static-overlap pose. Pre-cleanup the unfiltered count
-/// was 294 (95-97 % orphan-driven — orphan BCC corners inside the
-/// empty cavity, with no FEM stiffness, ignored by the solver).
-/// Cross-row continuity to row 22 v2.5 step 2 (also at 1 mm depth):
-/// bit-equal at 13 pairs.
-const N_CONTACT_PAIRS_EXACT: usize = 13;
-
-/// Total `+z`-component of the static-pose contact reaction force (N),
-/// summed over REFERENCED vertices only (v2.5-equivalent cleanup).
-/// `force_on_soft = +κ · (d̂ - sd) · normal`; for the row's static-
-/// overlap pose the wrap-cap material above the scan's `+z` cap is
-/// pushed UP (`+z` direction), so the physical sum is positive.
-/// Bits represent ~+1.87 N. Pre-cleanup the unfiltered sum was
-/// -130.5 N — that NEGATIVE sign was orphan-driven (orphans below
-/// the probe equator have `-z` normals and dominated the sum);
-/// post-cleanup the physically correct `+z` push surfaces.
-const FORCE_TOTAL_Z_REF_BITS: u64 = 0x3ffd_e776_ddb0_0a18;
-
-/// Cavity-wall mean displacement-magnitude bits (m) over the FILTERED
-/// (referenced-only) active-contact-pair vertex set (v2.5-equivalent
-/// cleanup). ~1.24 mm — the 13 real cavity-wall vertices in the
-/// active contact band each move ~1-2 mm under the 1 mm probe
-/// penetration (penalty-equilibrium amplification, see anchor 8's
-/// `max_disp / depth ≈ 2-3×` at shallow penetration prose). Pre-
-/// cleanup the mean was 55 µm — diluted by ~280 orphan vertices
-/// with zero displacement (orphans don't move; the FEM solver skips
-/// them); post-cleanup the mean reflects only physically displaced
-/// cavity-wall material.
-const CAVITY_WALL_MEAN_DISP_REF_BITS: u64 = 0x3f54_791c_dd65_0589;
-
-/// Cavity-wall max displacement-magnitude bits (m) over the FILTERED
-/// (referenced-only) active-contact-pair vertex set. ~1.97 mm —
-/// UNCHANGED from the pre-cleanup value (max is over real movements;
-/// orphans contribute zero by construction), confirming the orphan-
-/// pollution effect on the mean was a dilution-by-zero artifact.
-const CAVITY_WALL_MAX_DISP_REF_BITS: u64 = 0x3f60_2b04_a1ce_3f13;
-
-/// Per-layer mean strain-energy-density bits (J/m³) — the headline
-/// architectural payload of row 21. Inner is softest (μ = 18 kPa) AND
-/// closest to probe → highest mean Ψ. Outer is stiffest (μ = 113 kPa)
-/// AND outer-Dirichlet-pinned → lowest mean Ψ. The strict-monotone
-/// ordering `Ψ̄_inner > Ψ̄_middle > Ψ̄_outer` is encoded as anchor 5;
-/// the bit-pinned values catch FMA / faer drift in the per-tet F-from-
-/// positions + `Material::energy` pipeline. Approximate values:
-/// ~9.21 / ~1.53 / ~0.34 J/m³.
-const MEAN_PSI_INNER_REF_BITS: u64 = 0x4022_6b7f_4bef_57af;
-const MEAN_PSI_MIDDLE_REF_BITS: u64 = 0x3ff8_675a_701a_9886;
-const MEAN_PSI_OUTER_REF_BITS: u64 = 0x3fd5_e5a3_dc72_1c2a;
-
-/// Outer-layer max strain-energy-density bits (J/m³) — durability
-/// proxy. Self-pinned at first capture; catches regressions where the
-/// outer-layer peak Ψ drifts under cf-design / sim-soft hot-path
-/// changes. ~175.8 J/m³ (~ 514× the outer-layer mean — peak is
-/// localised in tets adjacent to the contact band where the probe
-/// loads transmit through the radial chain inner → middle → outer).
-const OUTER_PSI_MAX_REF_BITS: u64 = 0x4065_f999_5fa6_15bd;
 
 // =============================================================================
 // SDF builders
@@ -719,23 +581,30 @@ fn deformation_gradient(verts: [VertexId; 4], rest: &[Vec3], curr: &[Vec3]) -> M
 }
 
 // =============================================================================
-// Verifications — 9 anchor groups
+// Verifications — structural + physics gates
 // =============================================================================
+//
+// Rule-B de-frag: the pre-Rule-B captured-bit self-pins (per-shell tet-count
+// freezes, contact-pair-count freeze, force/displacement/Ψ̄ `to_bits()` pins,
+// `to_neo_hookean()` provenance mirror) were STRIPPED — they pinned this run's
+// exact FP trajectory on one toolchain, strictly more fragile than the
+// pipeline-emergent invariants they redundantly implied. Constitutive
+// correctness (`NeoHookean` closed form + `to_neo_hookean()` round-trip) is
+// lib-owned (`neo_hookean.rs` tests + `silicone_table.rs::tests::
+// to_neo_hookean_round_trips_lame_pair`); per-shell material routing by
+// distance-from-scan is lib-owned (`sdf_material_tagging.rs` IV-4). What
+// survives here is the scene's own emergent physics: a valid mesh, a
+// converged solve, correct per-shell material assignment, the strict
+// Ψ̄ ordering, and geometric displacement bounds — read from the real solve,
+// robust to FP drift.
 
-/// `true` when the `CF_CAPTURE_BITS` env var is set (any value). Per
-/// pattern (cc) banked at row 19: env-var-gated bypass of every
-/// captured-anchor check + a single print pass that emits every
-/// `*_EXACT` count and every `*_REF_BITS` line ready to paste into
-/// the constants block. IV-1 protocol forbids re-baking to silence a
-/// drift assertion — `CF_CAPTURE_BITS` is for first-time capture
-/// (initial-author-bake) and intentional re-bake (e.g., F4 const
-/// value updated to a new data-sheet revision), not for failure
-/// silencing.
-fn capturing_bits() -> bool {
-    std::env::var("CF_CAPTURE_BITS").is_ok()
-}
-
-fn verify_counts_exact(
+/// Structural mesh invariants — resolution-robust, no exact-count freeze.
+/// Every tet is classified into exactly one distance-from-scan shell, so the
+/// three per-shell counts partition the whole mesh; the referenced set is a
+/// subset of all vertices; and the pinned band is a non-empty proper subset of
+/// the referenced set. (The exact counts these once pinned were a mesher-
+/// version artifact — see the module de-frag note.)
+fn verify_mesh_structure(
     mesh: &SdfMeshedTetMesh,
     referenced: &[VertexId],
     pinned: &[VertexId],
@@ -743,44 +612,37 @@ fn verify_counts_exact(
     middle_count: usize,
     outer_count: usize,
 ) {
-    if capturing_bits() {
-        eprintln!("=== CAPTURED COUNTS (paste into source) ===");
-        eprintln!("const N_TETS_EXACT: usize = {};", mesh.n_tets());
-        eprintln!("const N_VERTICES_EXACT: usize = {};", mesh.n_vertices());
-        eprintln!("const N_REFERENCED_EXACT: usize = {};", referenced.len());
-        eprintln!("const N_PINNED_EXACT: usize = {};", pinned.len());
-        eprintln!("const N_INNER_TETS_EXACT: usize = {inner_count};");
-        eprintln!("const N_MIDDLE_TETS_EXACT: usize = {middle_count};");
-        eprintln!("const N_OUTER_TETS_EXACT: usize = {outer_count};");
-        return;
-    }
-    assert_eq!(mesh.n_tets(), N_TETS_EXACT, "n_tets");
-    assert_eq!(mesh.n_vertices(), N_VERTICES_EXACT, "n_vertices");
-    assert_eq!(referenced.len(), N_REFERENCED_EXACT, "n_referenced");
-    assert_eq!(pinned.len(), N_PINNED_EXACT, "n_pinned");
-    assert_eq!(inner_count, N_INNER_TETS_EXACT, "n_inner_tets");
-    assert_eq!(middle_count, N_MIDDLE_TETS_EXACT, "n_middle_tets");
-    assert_eq!(outer_count, N_OUTER_TETS_EXACT, "n_outer_tets");
+    assert!(mesh.n_tets() > 0, "mesh has no tets");
+    assert!(
+        referenced.len() <= mesh.n_vertices(),
+        "referenced vertices ({}) exceed total vertices ({})",
+        referenced.len(),
+        mesh.n_vertices(),
+    );
+    assert!(!referenced.is_empty(), "no referenced vertices");
+    assert!(
+        !pinned.is_empty() && pinned.len() < referenced.len(),
+        "pinned band ({}) must be a non-empty proper subset of referenced ({})",
+        pinned.len(),
+        referenced.len(),
+    );
+    assert!(inner_count > 0, "inner shell is empty");
+    assert!(middle_count > 0, "middle shell is empty");
+    assert!(outer_count > 0, "outer shell is empty");
     assert_eq!(
         inner_count + middle_count + outer_count,
-        N_TETS_EXACT,
-        "shell-count partition sums to N_TETS_EXACT",
+        mesh.n_tets(),
+        "the three shells must partition every tet exactly once",
     );
 }
 
-fn verify_zslab_counts_exact(inner_zslab: usize, middle_zslab: usize, outer_zslab: usize) {
-    if capturing_bits() {
-        eprintln!("const N_INNER_TETS_ZSLAB_EXACT: usize = {inner_zslab};");
-        eprintln!("const N_MIDDLE_TETS_ZSLAB_EXACT: usize = {middle_zslab};");
-        eprintln!("const N_OUTER_TETS_ZSLAB_EXACT: usize = {outer_zslab};");
-        return;
-    }
-    assert_eq!(inner_zslab, N_INNER_TETS_ZSLAB_EXACT, "n_inner_tets_zslab");
-    assert_eq!(
-        middle_zslab, N_MIDDLE_TETS_ZSLAB_EXACT,
-        "n_middle_tets_zslab",
-    );
-    assert_eq!(outer_zslab, N_OUTER_TETS_ZSLAB_EXACT, "n_outer_tets_zslab");
+/// z-slab populations — each shell contributes at least one tet to the
+/// `|centroid.z| < CELL_SIZE / 2` cut, so the cf-view PLY artifact shows all
+/// three material bands. Non-empty, not exact-count (mesher-version robust).
+fn verify_zslab_populations(inner_zslab: usize, middle_zslab: usize, outer_zslab: usize) {
+    assert!(inner_zslab > 0, "z-slab inner shell empty");
+    assert!(middle_zslab > 0, "z-slab middle shell empty");
+    assert!(outer_zslab > 0, "z-slab outer shell empty");
 }
 
 fn verify_quality_floors(mesh: &SdfMeshedTetMesh) {
@@ -815,64 +677,53 @@ fn verify_solver_converges<T>(step: &NewtonStep<T>) {
     );
 }
 
-fn verify_material_provenance() {
-    // F4 const-fn `to_neo_hookean()` returns a `NeoHookean` whose
-    // energy at `F = I` is bit-equally zero AND whose energy at a
-    // small uniaxial stretch `F = diag(1.01, 1, 1)` matches the
-    // closed-form `(λ/2)(ln J)² + ((μ/2)(I₁ − 3) − μ ln J)`. Mirrors
-    // F4's own unit test verbatim — a regression here surfaces as
-    // drift between F4's table and `NeoHookean::from_lame`'s FMA
-    // chain. Same precedent as rows 19 + 20.
-    for mat in [&ECOFLEX_00_20, &DRAGON_SKIN_10A, &DRAGON_SKIN_20A] {
-        let nh = mat.to_neo_hookean();
-        let id = Matrix3::<f64>::identity();
-        assert_relative_eq!(nh.energy(&id), 0.0, epsilon = F4_PROVENANCE_EXACT_TOL);
-
-        let mut f = Matrix3::<f64>::identity();
-        f[(0, 0)] = 1.01;
-        let i1 = 1.01_f64.mul_add(1.01, 2.0);
-        let j_ln = 1.01_f64.ln();
-        let half_mu = 0.5 * mat.mu;
-        let half_lambda = 0.5 * mat.lambda;
-        let expected = half_lambda.mul_add(j_ln * j_ln, half_mu.mul_add(i1 - 3.0, -mat.mu * j_ln));
-        assert_relative_eq!(nh.energy(&f), expected, epsilon = F4_PROVENANCE_EXACT_TOL,);
-    }
-}
-
-/// Per-tet material assignment matches the `LayeredScalarField`
-/// partition by distance-from-scan at the centroid. Probe via the
-/// `Material::energy` trait at `F = diag(1.01, 1, 1)` (row 8 pattern
-/// (a)): both sides run identical NH arithmetic on identical
-/// `(μ, λ)`, bit-equal by construction on a fixed toolchain.
-///
-/// Headline gate of the row's multi-material correctness — verifies
-/// that every per-tet `NeoHookean` cached by `MaterialField::sample`
-/// at mesh-build time matches the `(μ, λ)` pair the centroid's
-/// shell would assign by direct lookup at `silicone_table.rs`.
-fn verify_material_assignment_partition(mesh: &SdfMeshedTetMesh, shell_idx_per_tet: &[usize]) {
+/// Per-tet material routing — the `MaterialField` assigned every tet the
+/// `(μ, λ)` of the shell its centroid falls in by distance-from-scan. Reads
+/// the real per-tet `NeoHookean` from `mesh.materials()` via the public
+/// `.mu()` / `.lambda()` accessors and compares to the shell's F4 table entry
+/// (same const source → bit-equal, so exact `==`, not a tolerance). This is
+/// the scene's routing invariant — NOT a constitutive-arithmetic mirror; the
+/// closed-form `NeoHookean` energy and the `to_neo_hookean()` Lamé round-trip
+/// are lib-owned (`neo_hookean.rs` tests + `silicone_table.rs::tests::
+/// to_neo_hookean_round_trips_lame_pair`), and the generic routing mechanism
+/// is lib-owned (`sdf_material_tagging.rs` IV-4). Each shell is verified
+/// non-vacuously (≥ 1 tet).
+fn verify_material_routing(mesh: &SdfMeshedTetMesh, shell_idx_per_tet: &[usize]) {
     let materials = mesh.materials();
     assert_eq!(
         materials.len(),
         shell_idx_per_tet.len(),
         "materials() length does not match per-tet shell-classification length",
     );
-    let mut f = Matrix3::<f64>::identity();
-    f[(0, 0)] = 1.01;
-
     let expected_nh = [
         ECOFLEX_00_20.to_neo_hookean(),
         DRAGON_SKIN_10A.to_neo_hookean(),
         DRAGON_SKIN_20A.to_neo_hookean(),
     ];
+    let mut checked = [0usize; 3];
     for (t, &shell_idx) in shell_idx_per_tet.iter().enumerate() {
-        let observed = materials[t].energy(&f);
-        let expected = expected_nh[shell_idx].energy(&f);
+        let observed = &materials[t];
+        let expected = &expected_nh[shell_idx];
+        // Bit-equal `==` on purpose: both `(μ, λ)` come from the SAME F4 table
+        // entry through the SAME `to_neo_hookean()` const fn, so a correctly
+        // routed tet is bit-identical. `to_bits()` makes the exact comparison
+        // explicit and clippy-clean (no `float_cmp`).
         assert!(
-            (observed - expected).abs() <= MATERIAL_PROBE_EXACT_TOL,
-            "tet {t} shell {shell_idx}: observed energy {observed} != expected {expected} \
+            observed.mu().to_bits() == expected.mu().to_bits()
+                && observed.lambda().to_bits() == expected.lambda().to_bits(),
+            "tet {t} shell {shell_idx}: routed (μ, λ) = ({}, {}) != table ({}, {}) \
              (boundary-convention drift between shell_at_phi and LayeredScalarField::sample?)",
+            observed.mu(),
+            observed.lambda(),
+            expected.mu(),
+            expected.lambda(),
         );
+        checked[shell_idx] += 1;
     }
+    assert!(
+        checked.iter().all(|&c| c > 0),
+        "material routing not exercised on every shell (per-shell tet counts {checked:?})",
+    );
 }
 
 /// Per-layer mean strain-energy density `Ψ̄_inner / Ψ̄_middle /
@@ -905,29 +756,6 @@ fn verify_strain_energy_ordering(mean_psi_inner: f64, mean_psi_middle: f64, mean
     );
 }
 
-/// Outer-layer max strain-energy-density bound (durability proxy).
-/// The captured `OUTER_PSI_MAX_REF_BITS` is the peak over outer-shell
-/// tets at first capture; this anchor catches a regression where the
-/// outer-layer's peak Ψ exceeds that value under a hot-path drift in
-/// cf-design / sim-soft. Compared via `assert_relative_eq!` at
-/// `SPARSE_REL_TOL` + `SPARSE_EPS_ABS` — same self-pin protocol as
-/// the per-layer means.
-fn verify_outer_layer_max_psi(max_psi_outer: f64) {
-    if capturing_bits() {
-        eprintln!(
-            "const OUTER_PSI_MAX_REF_BITS: u64 = 0x{:016x};",
-            max_psi_outer.to_bits(),
-        );
-        return;
-    }
-    assert_relative_eq!(
-        max_psi_outer,
-        f64::from_bits(OUTER_PSI_MAX_REF_BITS),
-        max_relative = SPARSE_REL_TOL,
-        epsilon = SPARSE_EPS_ABS,
-    );
-}
-
 /// Peak vertex displacement < `WRAP_THICKNESS`. Hard geometric upper
 /// bound: no cavity-wall vertex can move farther than the wrap is
 /// thick, since the outer envelope at exactly `phi = WRAP_THICKNESS`
@@ -945,90 +773,13 @@ fn verify_peak_displacement_bounded(max_disp: f64) {
     );
 }
 
-fn verify_n_contact_pairs_exact(n_pairs: usize) {
-    if capturing_bits() {
-        eprintln!("const N_CONTACT_PAIRS_EXACT: usize = {n_pairs};");
-        return;
-    }
-    assert_eq!(
-        n_pairs, N_CONTACT_PAIRS_EXACT,
-        "n_contact_pairs at static fit pose",
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn verify_captured_bits(
-    force_total_z: f64,
-    mean_disp: f64,
-    max_disp: f64,
-    mean_psi_inner: f64,
-    mean_psi_middle: f64,
-    mean_psi_outer: f64,
-) {
-    if capturing_bits() {
-        eprintln!(
-            "const FORCE_TOTAL_Z_REF_BITS: u64 = 0x{:016x};",
-            force_total_z.to_bits(),
-        );
-        eprintln!(
-            "const CAVITY_WALL_MEAN_DISP_REF_BITS: u64 = 0x{:016x};",
-            mean_disp.to_bits(),
-        );
-        eprintln!(
-            "const CAVITY_WALL_MAX_DISP_REF_BITS: u64 = 0x{:016x};",
-            max_disp.to_bits(),
-        );
-        eprintln!(
-            "const MEAN_PSI_INNER_REF_BITS: u64 = 0x{:016x};",
-            mean_psi_inner.to_bits(),
-        );
-        eprintln!(
-            "const MEAN_PSI_MIDDLE_REF_BITS: u64 = 0x{:016x};",
-            mean_psi_middle.to_bits(),
-        );
-        eprintln!(
-            "const MEAN_PSI_OUTER_REF_BITS: u64 = 0x{:016x};",
-            mean_psi_outer.to_bits(),
-        );
-        eprintln!("=== END CAPTURED BITS ===");
-        return;
-    }
-
-    assert_relative_eq!(
-        force_total_z,
-        f64::from_bits(FORCE_TOTAL_Z_REF_BITS),
-        max_relative = SPARSE_REL_TOL,
-        epsilon = SPARSE_EPS_ABS,
-    );
-    assert_relative_eq!(
-        mean_disp,
-        f64::from_bits(CAVITY_WALL_MEAN_DISP_REF_BITS),
-        max_relative = SPARSE_REL_TOL,
-        epsilon = SPARSE_EPS_ABS,
-    );
-    assert_relative_eq!(
-        max_disp,
-        f64::from_bits(CAVITY_WALL_MAX_DISP_REF_BITS),
-        max_relative = SPARSE_REL_TOL,
-        epsilon = SPARSE_EPS_ABS,
-    );
-    assert_relative_eq!(
-        mean_psi_inner,
-        f64::from_bits(MEAN_PSI_INNER_REF_BITS),
-        max_relative = SPARSE_REL_TOL,
-        epsilon = SPARSE_EPS_ABS,
-    );
-    assert_relative_eq!(
-        mean_psi_middle,
-        f64::from_bits(MEAN_PSI_MIDDLE_REF_BITS),
-        max_relative = SPARSE_REL_TOL,
-        epsilon = SPARSE_EPS_ABS,
-    );
-    assert_relative_eq!(
-        mean_psi_outer,
-        f64::from_bits(MEAN_PSI_OUTER_REF_BITS),
-        max_relative = SPARSE_REL_TOL,
-        epsilon = SPARSE_EPS_ABS,
+/// The static overlap pose actually engaged contact — at least one active
+/// referenced-vertex contact pair. (The exact pair count this once froze was a
+/// mesher/discretization artifact; non-empty is the invariant that matters.)
+fn verify_contact_engaged(n_pairs: usize) {
+    assert!(
+        n_pairs > 0,
+        "no active contact pairs at the static fit pose — probe did not engage the cavity wall",
     );
 }
 
@@ -1233,11 +984,11 @@ fn main() -> Result<()> {
         }
     }
 
-    // 7. Quality + counts gates BEFORE moving the mesh into the
+    // 7. Quality + structure gates BEFORE moving the mesh into the
     //    solver. (`mesh.n_tets()` etc. work on `&mesh`; the
     //    `verify_quality_floors` walk is read-only.)
     verify_quality_floors(&mesh);
-    verify_counts_exact(
+    verify_mesh_structure(
         &mesh,
         &referenced,
         &bc.pinned_vertices,
@@ -1246,18 +997,13 @@ fn main() -> Result<()> {
         n_outer,
     );
 
-    // 8. Material assignment partition gate — per-tet `Material::
-    //    energy(F_probe)` matches expected[shell_at(centroid)] bit-
-    //    equally. Headline gate of the row's multi-material correctness.
-    verify_material_assignment_partition(&mesh, &shell_idx_per_tet);
+    // 8. Material routing gate — every tet was assigned its shell's
+    //    (μ, λ) by the `MaterialField`. Reads real `mesh.materials()`
+    //    via `.mu()` / `.lambda()`; constitutive math + the
+    //    `to_neo_hookean()` round-trip are lib-owned.
+    verify_material_routing(&mesh, &shell_idx_per_tet);
 
-    // 9. Material provenance — F4 const Lamé pair survives
-    //    `to_neo_hookean()` round-trip bit-equally per F4's contract
-    //    test. Re-asserted here so a regression in F4 trips this row
-    //    directly.
-    verify_material_provenance();
-
-    // 10. Solver run — penalty contact with the spherical probe as
+    // 9. Solver run — penalty contact with the spherical probe as
     //     rigid intrusion primitive (post-PR2 trait unification: any
     //     `impl Sdf` is a valid rigid primitive directly via
     //     `PenaltyRigidContact::new`; row 20 was the first non-plane
@@ -1272,7 +1018,7 @@ fn main() -> Result<()> {
 
     verify_solver_converges(&step);
 
-    // 11. Per-pair contact readout — build a fresh inspection mesh +
+    // 10. Per-pair contact readout — build a fresh inspection mesh +
     //     contact (the originals were moved into the solver) and call
     //     `per_pair_readout` against the deformed positions. Mirrors
     //     row 18 + 20's two-scene idiom.
@@ -1305,7 +1051,7 @@ fn main() -> Result<()> {
     // See pattern (xx) at row 22 patterns memo.
     let readouts = sim_soft::filter_pair_readouts_to_referenced(raw_readouts, &referenced);
     let n_pairs = readouts.len();
-    verify_n_contact_pairs_exact(n_pairs);
+    verify_contact_engaged(n_pairs);
 
     let force_total_z: f64 = readouts.iter().map(|r| r.force_on_soft.z).sum();
     let force_magnitudes: Vec<f64> = readouts.iter().map(|r| r.force_on_soft.norm()).collect();
@@ -1343,7 +1089,7 @@ fn main() -> Result<()> {
 
     verify_peak_displacement_bounded(max_disp_magnitude);
 
-    // 12. Per-tet strain energy density — first sim-soft user-facing
+    // 11. Per-tet strain energy density — first sim-soft user-facing
     //     row to demonstrate post-solve per-tet `Ψ` extraction. The
     //     deformed `positions_vec3` + the `rest_positions` snapshot +
     //     the per-tet vertex indices in `tets` are all that's needed;
@@ -1391,17 +1137,8 @@ fn main() -> Result<()> {
     };
 
     verify_strain_energy_ordering(mean_psi_inner, mean_psi_middle, mean_psi_outer);
-    verify_outer_layer_max_psi(max_psi_outer);
-    verify_captured_bits(
-        force_total_z,
-        mean_disp_magnitude,
-        max_disp_magnitude,
-        mean_psi_inner,
-        mean_psi_middle,
-        mean_psi_outer,
-    );
 
-    // 13. JSON + PLY readouts.
+    // 12. JSON + PLY readouts.
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("out");
     std::fs::create_dir_all(&out_dir)?;
 
@@ -1486,12 +1223,12 @@ fn main() -> Result<()> {
         zslab_disp.push((deformed_centroid - rest_centroid).norm());
         zslab_mat.push(mat_id as f64);
     }
-    verify_zslab_counts_exact(n_inner_z, n_middle_z, n_outer_z);
+    verify_zslab_populations(n_inner_z, n_middle_z, n_outer_z);
 
     let ply_path = out_dir.join("sleeve_zslab.ply");
     emit_zslab_ply(&ply_path, &zslab_records, &zslab_disp, &zslab_mat)?;
 
-    // 14. Museum-plaque summary.
+    // 13. Museum-plaque summary.
     print_summary(
         n_tets,
         n_vertices,
