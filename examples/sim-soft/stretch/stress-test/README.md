@@ -15,16 +15,20 @@ sole coverage of one distinct axis.
 
 ## Modules
 
-### `single_tet` (row 4) — walking-skeleton `Solver::step`
+### `single_tet` (row 4) — walking-skeleton `Solver::step` (demonstration)
 `SkeletonSolver::step` (backward-Euler Newton with `NeoHookean`, no contact) on
 `SoftScene::one_tet_cube` — the canonical decimeter-edge tet with `θ = 10 N`
-along `+ẑ` on `v_3` and `v_0..v_2` Dirichlet-pinned. Converges in **3 Newton
-iters** (exact-pinned) to `dz ≈ 9.692e-4 m` (~1 % strain, inside the
-dimensional-analysis band `[5e-4, 1.5e-3] m`), with the pinned DOFs held to
-`1e-14 m` and off-axis `v_3.x`/`v_3.y` below `1e-5 m`. All **12 DOFs of
-`x_final` match the IV-1 frozen-reference bit pattern** (captured at sim-soft
-`c3729d4a`, rustc 1.95.0). Sole coverage of the single-element end-to-end
-`Solver::step` path. JSON-only (`out/single_tet/force_stretch.json`).
+along `+ẑ` on `v_3` and `v_0..v_2` Dirichlet-pinned. Converges in 3 Newton iters
+to `dz ≈ 9.692e-4 m` (~1 % strain), which the module emits as the DOF trace.
+Self-gates only that **the solve converged** (`iter_count < max_newton_iter`,
+`residual < tol`), so the emitted trace is a real converged solution. The
+scene's physical correctness — `x_final` bit-equality vs the IV-1 reference,
+Dirichlet-pin enforcement, `+ẑ` displacement sign, F=I axis alignment, and the
+dimensional-analysis band `[5e-4, 1.5e-3] m` — is owned by the `sim-soft` lib
+tests `solver_convergence.rs::stage_1_traction_converges` (byte-for-byte this
+scene) + `invariant_iv_1_uniform_passthrough.rs` (the `x_final` bit contract),
+not re-asserted here. Sole coverage of the single-element end-to-end
+`Solver::step` demonstration. JSON-only (`out/single_tet/force_stretch.json`).
 
 ### `neo_hookean` (row 5) — traction-free force-stretch curve (demonstration)
 Drives the real `NeoHookean` across a **12-point traction-free uniaxial sweep**
@@ -95,6 +99,9 @@ uv run examples/sim-soft/stretch/stress-test/plot.py   # reads out/neo_hookean/f
   `SkeletonSolver`, multi-element assembly); `SoftScene::one_tet_cube` +
   `HandBuiltTetMesh::uniform_block` fixtures.
 - **IV-1 bit-equal contract**: `sim/L0/soft/tests/invariant_iv_1_uniform_passthrough.rs`
-  (the two-tier dense-vs-sparse contract + failure-mode protocol the bit-pins
-  cite).
+  (owns `single_tet`'s `x_final` bit-equality; the two-tier dense-vs-sparse
+  contract + failure-mode protocol `multi_element`'s remaining bit-pins cite).
+- **Single-tet convergence + scene physics**:
+  `sim/L0/soft/tests/solver_convergence.rs` (owns the `single_tet` scene's
+  Dirichlet pins, displacement sign / band, F=I axis alignment).
 - **Book**: Part 2 Ch 04 (hyperelastic Neo-Hookean energy + tangent).
