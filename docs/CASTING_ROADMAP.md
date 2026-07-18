@@ -68,7 +68,7 @@ End-to-end flow (CortenForge produces artifacts for steps 2-3; everything else i
 
 - ✅ `cf-design::Solid` — CSG primitives (sphere, cuboid, from_sdf, union, difference, intersection)
 - ✅ `cf-design::Sdf` trait — uniform SDF surface for arbitrary geometries
-- ✅ `mesh-sdf::SignedDistanceField` — SDF from triangle mesh; impls `cf-design::Sdf`
+- ✅ `mesh-sdf::flood_filled_sdf` — signed SDF from a triangle mesh (`Signed<TriMeshDistance, FloodFillSign>`); impls `cf-design::Sdf`
 - ✅ `mesh-offset::offset_mesh` — positive/negative offset via SDF + marching cubes
 - ✅ `mesh-offset::marching_cubes` — iso-surface extraction from a `ScalarGrid`
 - ✅ `mesh-printability::validate_for_printing` — FDM / SLA / SLS / MJF printability gates
@@ -140,7 +140,7 @@ Why crate-first over example-first: standing project preference is foundational 
 Resolved 2026-05-12 by user:
 
 - **Q1 Print technology** → **FDM PLA**. F4 gate uses `mesh-printability::PrinterConfig::fdm_default()`. Configurable for v2+ if SLA becomes the right choice later.
-- **Q2 Innermost plug geometry** → **scan-derived primary, capsule fallback**. v1 MVP supports both paths via the same `mesh_sdf::SignedDistanceField` → `cf-design::Solid::from_sdf` pipe that already works in the `layered-silicone-device` row. Default if no STL path is supplied = `Solid::capsule(R, half_height)` (the `Solid::capsule` constructor exists at `design/cf-design/src/solid.rs:135` — first-class primitive). The cuboid placeholder from row 25 is explicitly retired.
+- **Q2 Innermost plug geometry** → **scan-derived primary, capsule fallback**. v1 MVP supports both paths via the same `mesh_sdf::flood_filled_sdf` → `cf-design::Solid::from_sdf` pipe that already works in the `layered-silicone-device` row. Default if no STL path is supplied = `Solid::capsule(R, half_height)` (the `Solid::capsule` constructor exists at `design/cf-design/src/solid.rs:135` — first-class primitive). The cuboid placeholder from row 25 is explicitly retired.
 
 Other parameters (mold wall thickness, pour-channel placement, mold release strategy, layer keying, demolding axis) belong in F-leaf implementation specs; they surface in-context when each leaf is being built.
 

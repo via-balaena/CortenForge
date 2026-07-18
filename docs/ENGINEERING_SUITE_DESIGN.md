@@ -75,7 +75,8 @@ invent new geometric primitives. The heavy lifting:
 - **`cf_design::Solid::from_sdf(mesh_sdf_signed_distance_field,
   aabb)`** — wraps a scan SDF into the typed kernel for boolean
   composition with primitives.
-- **`mesh_sdf::SignedDistanceField`** — the scan SDF source. Loads
+- **`mesh_sdf::flood_filled_sdf`** — the scan SDF source
+  (flood-fill-signed `Signed<TriMeshDistance, FloodFillSign>`). Loads
   from the cleaned STL exactly as `cf-cast-cli::scan` does.
 - **`cf_cast::Ribbon`** — curve-following 2-piece mold split.
   Already handles up to 120° of cumulative tangent rotation; the
@@ -118,7 +119,7 @@ because the layer surfaces are subtle.
 
 The cavity former. Built from:
 
-1. Load the scan SDF via `mesh_sdf::SignedDistanceField`, wrap
+1. Load the scan SDF via `mesh_sdf::flood_filled_sdf`, wrap
    with `Solid::from_sdf(scan_sdf, scan_aabb)`.
 2. Clip to the insertable arc range — intersect with a half-space
    whose plane is centered at the centerline point at arc-length
