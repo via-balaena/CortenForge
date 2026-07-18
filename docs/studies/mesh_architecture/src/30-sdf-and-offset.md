@@ -51,7 +51,7 @@ pub fn flood_filled_sdf(
     bounds: Aabb,
     cell_size: f64,
     wall_threshold_factor: f64,  // WALL_THRESHOLD_FACTOR_DEFAULT
-) -> SdfResult<(Signed<TriMeshDistance, FloodFillSign>, FloodFillReport)>;
+) -> Result<(Signed<TriMeshDistance, FloodFillSign>, FloodFillReport), FloodFilledSdfBuildError>;
 ```
 
 Build the distance oracle once (its BVH amortizes across every query), then
