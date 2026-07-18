@@ -64,10 +64,11 @@
 //! crate into a headless validator and a separate Bevy demo, not to widen the
 //! audit to guess at Bevy crates' intent.
 
-use crate::pr_scope::{filter_only, select_shard};
+use crate::pr_scope::{filter_only, select_shard_weighted};
 use anyhow::{Context, Result};
 use owo_colors::OwoColorize;
 use regex::Regex;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use xshell::{cmd, Shell};
@@ -87,6 +88,10 @@ struct CrateEntry {
     /// Whether the crate has no direct Bevy dependency. Headless examples are
     /// bound by the classification contract; Bevy (visual) examples are exempt.
     is_headless: bool,
+    /// Direct dependency names (raw, unfiltered) from `cargo metadata`. Filtered
+    /// to workspace members when building the dep graph for compile-weight shard
+    /// balancing (see [`transitive_dep_weights`]).
+    deps: Vec<String>,
 }
 
 /// The two `example_kind` values under `[package.metadata.cortenforge]`.
@@ -189,14 +194,40 @@ pub fn run(only: Option<Vec<String>>, shard: Option<(usize, usize)>) -> Result<(
         );
     }
 
-    // PR-scope the RUN only (the audit above stays whole-workspace). Sort first
-    // so `--shard`'s round-robin is deterministic, then apply `--only` (affected
-    // set) and `--shard` exactly as `grade-all` does. An empty result here means
-    // "no affected validator in this selection" — a legitimate no-op, NOT the
-    // zero-discovered hard-fail (that guard ran on the full set above).
+    // Compile-weight per validator so heavy ones (pulling the ML/RL tree) spread
+    // across shards instead of clustering — computed from the metadata already
+    // read above, over the WHOLE workspace graph (weight is intrinsic, not
+    // scope-dependent).
+    let members: HashSet<&str> = crates.iter().map(|c| c.name.as_str()).collect();
+    let direct: HashMap<String, Vec<String>> = crates
+        .iter()
+        .map(|c| {
+            let member_deps = c
+                .deps
+                .iter()
+                .filter(|d| members.contains(d.as_str()))
+                .cloned()
+                .collect();
+            (c.name.clone(), member_deps)
+        })
+        .collect();
+    let weights = transitive_dep_weights(&direct);
+
+    // PR-scope the RUN only (the audit above stays whole-workspace): apply
+    // `--only` (the affected set), then split by `--shard` via weight-aware LPT
+    // bin-packing. An empty result here means "no affected validator in this
+    // selection" — a legitimate no-op, NOT the zero-discovered hard-fail (that
+    // guard ran on the full set above).
     let mut validator_names: Vec<String> = validators.iter().map(|v| v.name.clone()).collect();
     validator_names.sort();
-    let run_names = select_shard(&filter_only(&validator_names, only.as_deref()), shard);
+    let weighted: Vec<(String, u64)> = filter_only(&validator_names, only.as_deref())
+        .into_iter()
+        .map(|name| {
+            let w = weights.get(&name).copied().unwrap_or(0);
+            (name, w)
+        })
+        .collect();
+    let run_names = select_shard_weighted(&weighted, shard);
 
     if run_names.is_empty() {
         println!(
@@ -369,6 +400,7 @@ fn discover_crates(sh: &Shell) -> Result<Vec<CrateEntry>> {
             .map(String::from);
 
         let is_headless = !depends_on_bevy(pkg);
+        let deps = direct_dep_names(pkg);
 
         crates.push(CrateEntry {
             name,
@@ -376,6 +408,7 @@ fn discover_crates(sh: &Shell) -> Result<Vec<CrateEntry>> {
             kind,
             is_example,
             is_headless,
+            deps,
         });
     }
     Ok(crates)
@@ -389,6 +422,48 @@ fn depends_on_bevy(pkg: &serde_json::Value) -> bool {
         deps.iter()
             .any(|d| d["name"].as_str().is_some_and(|n| n.contains("bevy")))
     })
+}
+
+/// The direct dependency names of a `cargo metadata` package (raw; the caller
+/// intersects with the workspace-member set to get intra-workspace edges).
+fn direct_dep_names(pkg: &serde_json::Value) -> Vec<String> {
+    pkg["dependencies"]
+        .as_array()
+        .map(|deps| {
+            deps.iter()
+                .filter_map(|d| d["name"].as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Forward transitive workspace-dependency count per crate — a compile-weight
+/// proxy for balancing validator shards. `direct` maps each crate to its DIRECT
+/// workspace-member deps; the weight is the number of DISTINCT crates reachable
+/// over dependency edges, excluding the crate itself. A validator that pulls the
+/// ML/RL tree transitively reaches far more crates than a pure-mesh one, so it
+/// weighs more — no hand-maintained "heavy" list. A dependency cycle terminates
+/// via the `seen` set (and self-reach is excluded).
+fn transitive_dep_weights(direct: &HashMap<String, Vec<String>>) -> HashMap<String, u64> {
+    let mut weights = HashMap::with_capacity(direct.len());
+    for start in direct.keys() {
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut stack: Vec<&str> = direct[start].iter().map(String::as_str).collect();
+        while let Some(c) = stack.pop() {
+            if seen.insert(c) {
+                if let Some(deps) = direct.get(c) {
+                    for d in deps {
+                        if !seen.contains(d.as_str()) {
+                            stack.push(d);
+                        }
+                    }
+                }
+            }
+        }
+        let weight = seen.iter().filter(|&&c| c != start.as_str()).count() as u64;
+        weights.insert(start.clone(), weight);
+    }
+    weights
 }
 
 /// Triage heuristic: does this crate's `src/` self-gate — fail via a non-zero
@@ -438,9 +513,60 @@ fn strip_line_comments(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{audit_gap, contract_violation, source_self_gates, Gap, KIND_DEMO, KIND_VALIDATOR};
+    use super::{
+        audit_gap, contract_violation, source_self_gates, transitive_dep_weights, Gap, KIND_DEMO,
+        KIND_VALIDATOR,
+    };
+    use std::collections::HashMap;
     use std::fs;
     use std::path::PathBuf;
+
+    fn graph(edges: &[(&str, &[&str])]) -> HashMap<String, Vec<String>> {
+        edges
+            .iter()
+            .map(|(k, ds)| (k.to_string(), ds.iter().map(|s| s.to_string()).collect()))
+            .collect()
+    }
+
+    #[test]
+    fn transitive_weight_counts_forward_closure_excluding_self() {
+        // app → mid → core, app → util. app reaches {mid, util, core} = 3.
+        let g = graph(&[
+            ("app", &["mid", "util"]),
+            ("mid", &["core"]),
+            ("util", &[]),
+            ("core", &[]),
+        ]);
+        let w = transitive_dep_weights(&g);
+        assert_eq!(w["app"], 3);
+        assert_eq!(w["mid"], 1); // core
+        assert_eq!(w["util"], 0);
+        assert_eq!(w["core"], 0);
+    }
+
+    #[test]
+    fn transitive_weight_terminates_on_cycles_and_excludes_self() {
+        // a ⇄ b: each reaches the other but not (net) itself.
+        let g = graph(&[("a", &["b"]), ("b", &["a"])]);
+        let w = transitive_dep_weights(&g);
+        assert_eq!(w["a"], 1, "reaches b, self excluded");
+        assert_eq!(w["b"], 1, "reaches a, self excluded");
+    }
+
+    #[test]
+    fn transitive_weight_orders_heavy_above_light() {
+        // The property the shard balancer relies on: a validator pulling a deep
+        // tree outweighs a shallow one.
+        let g = graph(&[
+            ("heavy", &["l1"]),
+            ("l1", &["l2"]),
+            ("l2", &["l3"]),
+            ("l3", &[]),
+            ("light", &["l3"]),
+        ]);
+        let w = transitive_dep_weights(&g);
+        assert!(w["heavy"] > w["light"], "{} vs {}", w["heavy"], w["light"]);
+    }
 
     /// Unique temp dir for one test case, isolated by name (no external deps).
     fn scratch(tag: &str) -> PathBuf {
