@@ -173,11 +173,20 @@ enum Commands {
 
         /// Run only a deterministic 1/N slice of the selected validators, as
         /// `i/N` (1-based; e.g. `--shard 2/3`). Lets CI fan the run out across
-        /// N parallel jobs to cut wall time. Validators are assigned
-        /// round-robin over their sorted names so heavy ones scatter evenly.
-        /// Omit to run all selected validators.
+        /// N parallel jobs to cut wall time. Validators are assigned by
+        /// weight-aware bin-packing (measured wall-time) so heavy ones scatter
+        /// evenly. Omit to run all selected validators.
         #[arg(long, value_parser = parse_shard)]
         shard: Option<(usize, usize)>,
+
+        /// After running, record each validator's measured wall-time into the
+        /// committed timings baseline (`xtask/validator_timings.json`) that
+        /// drives shard balancing. Run over the FULL fleet (no `--shard` /
+        /// `--only`) to regenerate the complete baseline; a sharded/scoped run
+        /// merges only the timings it observed. Intended for a periodic refresh,
+        /// not the per-PR shard jobs.
+        #[arg(long)]
+        record_timings: bool,
     },
 
     /// Set up development environment (git hooks, verify tools)
@@ -227,7 +236,11 @@ fn main() -> Result<()> {
         Commands::Affected { base, json } => affected::run(&base, json),
         Commands::Ci => check::run_ci(),
         Commands::Status => grade::status(),
-        Commands::RunValidators { only, shard } => validators::run(only, shard),
+        Commands::RunValidators {
+            only,
+            shard,
+            record_timings,
+        } => validators::run(only, shard, record_timings),
         Commands::Setup => setup::run(),
         Commands::Uninstall => setup::uninstall(),
     }

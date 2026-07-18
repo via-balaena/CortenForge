@@ -64,13 +64,26 @@
 //! crate into a headless validator and a separate Bevy demo, not to widen the
 //! audit to guess at Bevy crates' intent.
 
-use crate::pr_scope::{filter_only, select_shard};
+use crate::pr_scope::{filter_only, select_shard_weighted};
 use anyhow::{Context, Result};
 use owo_colors::OwoColorize;
 use regex::Regex;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
+use std::time::Instant;
 use xshell::{cmd, Shell};
+
+/// Committed per-validator wall-time baseline (seconds), the weight source for
+/// shard balancing. Regenerate with `run-validators --record-timings`.
+const TIMINGS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/validator_timings.json");
+
+/// Weight (seconds) for a validator absent from the timings baseline — e.g. one
+/// added since the last `--record-timings` refresh. Deliberately generous so an
+/// unknown validator is treated as heavy and isolated into its own bucket by the
+/// LPT split rather than risking a slow cluster; it self-corrects on the next
+/// refresh.
+const UNKNOWN_VALIDATOR_SECS: f64 = 60.0;
 
 /// A workspace crate paired with the facts the contract needs.
 struct CrateEntry {
@@ -122,7 +135,18 @@ enum Gap {
 /// workspace — the contract is the drift backstop and must never be narrowed.
 /// A run set that is empty *after* filtering is a legitimate no-op (this shard
 /// has no affected validator), distinct from the "zero discovered" hard-fail.
-pub fn run(only: Option<Vec<String>>, shard: Option<(usize, usize)>) -> Result<()> {
+///
+/// Shards are balanced by cost, not validator count: each validator's weight is
+/// its measured runtime (the committed `validator_timings.json` baseline) plus a
+/// per-crate compile constant ([`COMPILE_OVERHEAD_SECS`]). Runtime alone
+/// clusters the few slow validators onto one shard; count alone ignores that a
+/// handful run 100× longer — the sum balances both. With `record_timings`, each
+/// validator's observed runtime is written back to the baseline after the run.
+pub fn run(
+    only: Option<Vec<String>>,
+    shard: Option<(usize, usize)>,
+    record_timings_flag: bool,
+) -> Result<()> {
     let sh = Shell::new()?;
     let crates = discover_crates(&sh)?;
 
@@ -189,14 +213,22 @@ pub fn run(only: Option<Vec<String>>, shard: Option<(usize, usize)>) -> Result<(
         );
     }
 
-    // PR-scope the RUN only (the audit above stays whole-workspace). Sort first
-    // so `--shard`'s round-robin is deterministic, then apply `--only` (affected
-    // set) and `--shard` exactly as `grade-all` does. An empty result here means
-    // "no affected validator in this selection" — a legitimate no-op, NOT the
-    // zero-discovered hard-fail (that guard ran on the full set above).
+    // PR-scope the RUN only (the audit above stays whole-workspace): apply
+    // `--only` (the affected set), then split by `--shard` via weight-aware LPT
+    // bin-packing on measured wall-time. An empty result means "no affected
+    // validator in this selection" — a legitimate no-op, NOT the zero-discovered
+    // hard-fail (that guard ran on the full set above).
+    let timings = load_timings();
     let mut validator_names: Vec<String> = validators.iter().map(|v| v.name.clone()).collect();
     validator_names.sort();
-    let run_names = select_shard(&filter_only(&validator_names, only.as_deref()), shard);
+    let weighted: Vec<(String, u64)> = filter_only(&validator_names, only.as_deref())
+        .into_iter()
+        .map(|name| {
+            let w = weight_millis(&timings, &name);
+            (name, w)
+        })
+        .collect();
+    let run_names = select_shard_weighted(&weighted, shard);
 
     if run_names.is_empty() {
         println!(
@@ -208,16 +240,29 @@ pub fn run(only: Option<Vec<String>>, shard: Option<(usize, usize)>) -> Result<(
 
     println!("\nRunning {} validator(s) (--release):\n", run_names.len());
     let mut failures: Vec<&str> = Vec::new();
+    let mut measured: HashMap<String, f64> = HashMap::new();
     for name in &run_names {
         println!("{} {}", "──▶".cyan(), name.bold());
+        let start = Instant::now();
         let outcome = cmd!(sh, "cargo run --release --quiet -p {name}").run();
+        let secs = start.elapsed().as_secs_f64();
+        measured.insert(name.clone(), secs);
         match outcome {
-            Ok(()) => println!("  {} {}\n", "PASS".green().bold(), name),
+            Ok(()) => println!("  {} {name} ({secs:.1}s)\n", "PASS".green().bold()),
             Err(_) => {
-                println!("  {} {}\n", "FAIL".red().bold(), name);
+                println!("  {} {name} ({secs:.1}s)\n", "FAIL".red().bold());
                 failures.push(name.as_str());
             }
         }
+    }
+
+    if record_timings_flag {
+        record_timings(&timings, &measured)?;
+        println!(
+            "  {} {} timing(s) → {TIMINGS_PATH}",
+            "recorded".cyan().bold(),
+            measured.len()
+        );
     }
 
     let total = run_names.len();
@@ -391,6 +436,72 @@ fn depends_on_bevy(pkg: &serde_json::Value) -> bool {
     })
 }
 
+/// Load the committed per-validator wall-time baseline (seconds), or an empty
+/// map if the file is missing or unparseable. An empty map is graceful: every
+/// validator then falls back to [`UNKNOWN_VALIDATOR_SECS`], so sharding degrades
+/// to a uniform (round-robin-equivalent) split until the baseline is recorded.
+fn load_timings() -> HashMap<String, f64> {
+    std::fs::read_to_string(TIMINGS_PATH)
+        .ok()
+        .map(|json| parse_timings(&json))
+        .unwrap_or_default()
+}
+
+/// Parse a `{ "validator-name": seconds }` JSON map; a malformed file yields an
+/// empty map (a bad baseline must never crash the gate).
+fn parse_timings(json: &str) -> HashMap<String, f64> {
+    serde_json::from_str(json).unwrap_or_default()
+}
+
+/// Fixed per-validator compile cost (seconds) added to every validator's
+/// measured runtime to form its shard weight.
+///
+/// The recorded timings are pure *runtime* (warm cache), but in CI each
+/// validator ALSO costs its own example-crate compile — roughly uniform per
+/// crate and independent of runtime. Balancing runtime alone (an earlier
+/// iteration) piled the many fast validators onto one shard whose *compile* then
+/// dominated its wall-time; adding a per-crate constant makes LPT spread them.
+/// Back-solved from CI wall-times at ~3.8 s/crate (the shared-workspace-tree
+/// compile is a fixed per-shard cost paid by every shard, so it is deliberately
+/// NOT attributed here). Approximate by design — refine if CI shard times stay
+/// skewed.
+const COMPILE_OVERHEAD_SECS: f64 = 3.8;
+
+/// The shard weight (integer milliseconds) for a validator: its measured runtime
+/// (or [`UNKNOWN_VALIDATOR_SECS`] when absent) plus [`COMPILE_OVERHEAD_SECS`], so
+/// the LPT split balances BOTH the few long-running validators and the compile
+/// cost of the many fast ones. Milliseconds keep the bin-packer's `u64` exact.
+fn weight_millis(timings: &HashMap<String, f64>, name: &str) -> u64 {
+    let runtime = timings.get(name).copied().unwrap_or(UNKNOWN_VALIDATOR_SECS);
+    ((runtime + COMPILE_OVERHEAD_SECS) * 1000.0) as u64
+}
+
+/// Merge freshly-measured timings into the baseline and write it back, sorted by
+/// key so the committed file has a stable, reviewable diff. Existing entries not
+/// re-measured this run (e.g. under `--shard`/`--only`) are preserved.
+fn record_timings(existing: &HashMap<String, f64>, measured: &HashMap<String, f64>) -> Result<()> {
+    let mut merged = existing.clone();
+    for (name, secs) in measured {
+        merged.insert(name.clone(), *secs);
+    }
+    let mut sorted: Vec<(&String, &f64)> = merged.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(b.0));
+    let map: serde_json::Map<String, serde_json::Value> = sorted
+        .into_iter()
+        .map(|(k, v)| {
+            (
+                k.clone(),
+                serde_json::json!((v * 1000.0).round() / 1000.0), // 3-dp, stable
+            )
+        })
+        .collect();
+    let json = serde_json::to_string_pretty(&serde_json::Value::Object(map))
+        .context("serialize validator timings")?;
+    std::fs::write(TIMINGS_PATH, json + "\n")
+        .with_context(|| format!("write timings baseline to {TIMINGS_PATH}"))?;
+    Ok(())
+}
+
 /// Triage heuristic: does this crate's `src/` self-gate — fail via a non-zero
 /// exit? True if any source (with line comments stripped, so a mention in a
 /// `//`/`//!` comment does not count) calls `process::exit`/`exit` with a
@@ -438,9 +549,41 @@ fn strip_line_comments(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{audit_gap, contract_violation, source_self_gates, Gap, KIND_DEMO, KIND_VALIDATOR};
+    use super::{
+        audit_gap, contract_violation, parse_timings, source_self_gates, weight_millis, Gap,
+        COMPILE_OVERHEAD_SECS, KIND_DEMO, KIND_VALIDATOR, UNKNOWN_VALIDATOR_SECS,
+    };
     use std::fs;
     use std::path::PathBuf;
+
+    #[test]
+    fn parse_timings_reads_name_to_seconds_map() {
+        let t = parse_timings(r#"{"example-a": 12.5, "example-b": 3.0}"#);
+        assert_eq!(t.get("example-a"), Some(&12.5));
+        assert_eq!(t.get("example-b"), Some(&3.0));
+    }
+
+    #[test]
+    fn parse_timings_tolerates_garbage() {
+        // A malformed baseline must degrade to "no data", never crash the gate.
+        assert!(parse_timings("not json").is_empty());
+        assert!(parse_timings("").is_empty());
+    }
+
+    #[test]
+    fn weight_millis_adds_compile_overhead_to_runtime_then_falls_back() {
+        let t = parse_timings(r#"{"known": 4.2}"#);
+        // recorded runtime + the per-crate compile constant.
+        assert_eq!(
+            weight_millis(&t, "known"),
+            ((4.2 + COMPILE_OVERHEAD_SECS) * 1000.0) as u64
+        );
+        // Unknown → generous runtime placeholder (+ overhead) so LPT isolates it.
+        assert_eq!(
+            weight_millis(&t, "brand-new"),
+            ((UNKNOWN_VALIDATOR_SECS + COMPILE_OVERHEAD_SECS) * 1000.0) as u64
+        );
+    }
 
     /// Unique temp dir for one test case, isolated by name (no external deps).
     fn scratch(tag: &str) -> PathBuf {

@@ -35,6 +35,44 @@ pub(crate) fn select_shard(crate_names: &[String], shard: Option<(usize, usize)>
     }
 }
 
+/// Partition items into the `i/N` shard by GREEDY longest-processing-time
+/// bin-packing on `weight`, instead of round-robin by position
+/// ([`select_shard`]). Balances wall time when per-item cost is uneven — e.g.
+/// validators whose measured runtimes span an order of magnitude, which
+/// round-robin (balancing count, not cost) would cluster into one shard.
+///
+/// Deterministic, so every parallel shard job computes the SAME disjoint
+/// partition from the same input: items are ordered by `(weight desc, name
+/// asc)`, then each is placed in the currently-lightest bucket with ties broken
+/// by lowest index. `None` returns every name in that stable order. The union of
+/// all `1..=N` shards is exactly the input with no overlap.
+pub(crate) fn select_shard_weighted(
+    items: &[(String, u64)],
+    shard: Option<(usize, usize)>,
+) -> Vec<String> {
+    let mut ordered: Vec<&(String, u64)> = items.iter().collect();
+    ordered.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+    let Some((i, n)) = shard else {
+        return ordered.into_iter().map(|(name, _)| name.clone()).collect();
+    };
+
+    let mut loads = vec![0u64; n];
+    let mut buckets: Vec<Vec<String>> = vec![Vec::new(); n];
+    for (name, weight) in ordered {
+        // Lightest bucket; strict `<` keeps the lowest index on ties.
+        let mut best = 0usize;
+        for b in 1..n {
+            if loads[b] < loads[best] {
+                best = b;
+            }
+        }
+        loads[best] += *weight;
+        buckets[best].push(name.clone());
+    }
+    buckets.swap_remove(i - 1)
+}
+
 /// Restrict the crate list to an explicit affected set (PR-scoped CI).
 ///
 /// `None` returns the list unchanged (the full-workspace gate on
@@ -60,7 +98,7 @@ pub(crate) fn filter_only(crate_names: &[String], only: Option<&[String]>) -> Ve
 
 #[cfg(test)]
 mod tests {
-    use super::{filter_only, select_shard};
+    use super::{filter_only, select_shard, select_shard_weighted};
 
     fn names(n: usize) -> Vec<String> {
         (0..n).map(|i| format!("crate-{i:03}")).collect()
@@ -119,6 +157,68 @@ mod tests {
             max - min <= 1,
             "shard sizes {sizes:?} differ by more than 1"
         );
+    }
+
+    #[test]
+    fn weighted_none_returns_all_sorted_by_weight_then_name() {
+        let items = vec![
+            ("b".to_string(), 1u64),
+            ("a".to_string(), 5u64),
+            ("c".to_string(), 5u64),
+        ];
+        // weight desc, then name asc within equal weight: a(5), c(5), b(1).
+        assert_eq!(select_shard_weighted(&items, None), vec!["a", "c", "b"]);
+    }
+
+    #[test]
+    fn weighted_shards_partition_and_are_disjoint() {
+        let items: Vec<(String, u64)> = (0..50)
+            .map(|i| (format!("c{i:02}"), (i % 7 + 1) as u64))
+            .collect();
+        let n = 3;
+        let mut union: Vec<String> = Vec::new();
+        for i in 1..=n {
+            union.extend(select_shard_weighted(&items, Some((i, n))));
+        }
+        union.sort();
+        let mut expected: Vec<String> = items.iter().map(|(name, _)| name.clone()).collect();
+        expected.sort();
+        assert_eq!(union, expected, "shards must reconstruct the input");
+
+        let s1 = select_shard_weighted(&items, Some((1, n)));
+        let s2 = select_shard_weighted(&items, Some((2, n)));
+        let s3 = select_shard_weighted(&items, Some((3, n)));
+        for c in &s1 {
+            assert!(!s2.contains(c) && !s3.contains(c), "{c} in multiple shards");
+        }
+        for c in &s2 {
+            assert!(!s3.contains(c), "{c} in multiple shards");
+        }
+    }
+
+    #[test]
+    fn weighted_balances_skew_that_round_robin_would_cluster() {
+        // Three heavy + three light. Round-robin over the sorted order would put
+        // all three heavies on the same shard; LPT gives each shard one heavy +
+        // one light → perfectly balanced makespan.
+        let items = vec![
+            ("a".to_string(), 10u64),
+            ("b".to_string(), 10),
+            ("c".to_string(), 10),
+            ("d".to_string(), 1),
+            ("e".to_string(), 1),
+            ("f".to_string(), 1),
+        ];
+        let n = 3;
+        let loads: Vec<u64> = (1..=n)
+            .map(|i| {
+                select_shard_weighted(&items, Some((i, n)))
+                    .iter()
+                    .map(|name| items.iter().find(|(x, _)| x == name).map_or(0, |(_, w)| *w))
+                    .sum()
+            })
+            .collect();
+        assert_eq!(loads, vec![11, 11, 11], "LPT should equalize shard load");
     }
 
     #[test]
