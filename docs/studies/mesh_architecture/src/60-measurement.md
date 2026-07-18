@@ -55,9 +55,9 @@ let closest = closest_point_on_mesh(point, &mesh);
 // also: measure_distance for pairs of points (trivial wrapper)
 ```
 
-Point-to-mesh distance is unsigned (no inside/outside test — for that, use `mesh-sdf::point_in_mesh` plus this distance for the magnitude). Closest-point query returns the actual position on the surface, useful for projection operations.
+Point-to-mesh distance is unsigned (no inside/outside test — for that, use `mesh-sdf`'s signed query `Signed<TriMeshDistance, S>`, whose sign oracle adds inside/outside on top of the distance). Closest-point query returns the actual position on the surface, useful for projection operations.
 
-The depth pass covers the closest-point algorithm (per-triangle closest-point check, accelerated by spatial hash for large meshes), the relationship to `mesh-sdf::SignedDistanceField` (mesh-sdf adds the sign and amortizes setup cost across many queries; mesh-measure's `distance_to_mesh` is the one-off pattern), and when each is the right tool.
+The depth pass covers the closest-point algorithm (per-triangle closest-point check, accelerated by spatial hash for large meshes), the relationship to `mesh-sdf`'s `Signed<TriMeshDistance, S>` (mesh-sdf adds the sign oracle and amortizes the parry BVH across many queries; mesh-measure's `distance_to_mesh` is the one-off pattern), and when each is the right tool.
 
 ## What's NOT in `mesh-measure`
 

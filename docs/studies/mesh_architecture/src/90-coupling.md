@@ -7,7 +7,7 @@ What this part covers (when authored to depth):
 `sim-soft` consumes the mesh ecosystem at three boundaries:
 
 - **Surface output** (planned): tet-mesh boundary triangle extraction (`sim_soft::mesh::surface::extract_boundary_triangles`) returns an `IndexedMesh` ready for `mesh-io::save_ply_attributed`. Soft-body PLY snapshots flow through this path: tet mesh → boundary triangles → `AttributedMesh` with per-vertex scalars (displacement_magnitude, von_mises_stress, etc.) → PLY frame on disk.
-- **SDF round-trip** (potential): if a soft-body example wants to query `mesh-sdf::SignedDistanceField` against the deformed surface (e.g., for collision visualization), the same surface-extraction path feeds in. Less load-bearing than the snapshot path but architecturally clean.
+- **SDF round-trip** (potential): if a soft-body example wants to query `mesh-sdf`'s `Signed<TriMeshDistance, S>` against the deformed surface (e.g., for collision visualization), the same surface-extraction path feeds in. Less load-bearing than the snapshot path but architecturally clean.
 - **Material data co-location** (existing): both `sim-soft` and `mesh-types::AttributedMesh` consume the same material database (Ecoflex/Dragon Skin/etc.) — `sim-soft` uses Lamé parameters and viscoelastic spectra; mesh-types uses the same materials' visual properties for rendering. Single source of truth, two consumer surfaces.
 
 `sim-soft` does NOT depend on `mesh-types` or `mesh-io` directly today — the dependency edge is added when the surface-extraction module lands. The depth pass discusses why this delayed coupling was the right call (kept sim-soft's foundation phases dependency-light) and the migration plan when the edge is added.
@@ -19,7 +19,7 @@ What this part covers (when authored to depth):
 - **Mold geometry** — `mesh-shell::ShellBuilder` provides the design template for `sim-cast::MoldBuilder`. Same builder pattern, mold-specific concerns (parting surfaces, pour ports) layered on top.
 - **Mold cavity inversion** — `mesh-offset::offset_mesh` is the foundational operation for inward-offsetting a part to compute its mold cavity.
 - **Manufacturability validation** — `mesh-printability`'s `Config → validate → IssueList` shape transfers to `sim-cast::ManufacturabilityCheck` directly.
-- **SDF surface bridging** — `mesh-sdf::SignedDistanceField` for cast-side queries (does this point lie inside the cavity?); `sim-soft::sdf_bridge::Sdf` for design-side authoring (analytic SDF as the design primitive).
+- **SDF surface bridging** — `mesh-sdf`'s `Signed<TriMeshDistance, S>` for cast-side queries (does this point lie inside the cavity?); `sim-soft::sdf_bridge::Sdf` for design-side authoring (analytic SDF as the design primitive).
 - **Lattice infill** — `mesh-lattice` for sacrificial lattice cores or lattice-infilled cast parts. Future-relevant.
 
 The depth pass covers the API-shape transfer in detail and names which `mesh-*` operations `sim-cast` reuses verbatim versus extends.
