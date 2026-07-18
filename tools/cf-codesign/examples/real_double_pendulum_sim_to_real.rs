@@ -22,7 +22,7 @@
 //! cargo run -p cf-codesign --example real_double_pendulum_sim_to_real --release
 //! ```
 //! Requires `curl` + `unzip` and one-time network access (then cached).
-#![allow(clippy::expect_used, clippy::print_stdout, clippy::unwrap_used)]
+#![allow(clippy::expect_used, clippy::print_stdout)]
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -41,6 +41,9 @@ const D2: f64 = 0.071; // bottom pivot → lower COM (m)
 const L1: f64 = 0.172; // top pivot → bottom pivot (m)
 // Lower-link rest offset: measured φ₂ hangs at −2520° (= −7×360°); φ₁ at 0°.
 const PHI2_REST_DEG: f64 = 2520.0;
+// sim-core integration timestep — also the MJCF `<option timestep>`; the two
+// MUST agree (the sim↔data index mapping assumes it), hence one source.
+const SIM_DT: f64 = 5e-5;
 
 /// Fetch one CSV (`Trial1/<name>.csv`) out of the referenced zip into a temp
 /// cache. Returns `None` (with a message) if `curl`/`unzip`/network is missing —
@@ -111,7 +114,7 @@ fn parse_csv(path: &PathBuf) -> (Vec<f64>, Vec<f64>) {
 fn build_model() -> Model {
     let mjcf = format!(
         r#"<mujoco model="double_pendulum">
-            <option gravity="0 0 -9.81" timestep="5e-5"/>
+            <option gravity="0 0 -9.81" timestep="{SIM_DT}"/>
             <worldbody>
                 <body name="upper" pos="0 0 0">
                     <joint name="j1" type="hinge" axis="0 1 0" pos="0 0 0"/>
@@ -160,6 +163,12 @@ fn main() {
     let (t, phi1) = parse_csv(&p1);
     let (_t2, phi2) = parse_csv(&p2);
     let n = t.len().min(phi1.len()).min(phi2.len());
+    // The full paper trajectory is ~38.8k samples (77 s @ 500 Hz); a truncated or
+    // corrupt cache would panic downstream (t[n-1], the window scan) — skip instead.
+    if n < 5000 {
+        println!("Skipping: data too short ({n} samples) — expected the full ~77 s trajectory.");
+        return;
+    }
     let dt_data = (t[n - 1] - t[0]) / (n as f64 - 1.0);
     println!(
         "Loaded {n} samples @ {:.0} Hz ({:.1} s). Params = HardwareX Table 4 (published, fixed).",
@@ -175,7 +184,7 @@ fn main() {
     let vel = |a: &[f64], i: usize| (a[i + 1] - a[i - 1]) / (2.0 * dt_data);
 
     let model = build_model();
-    let sim_dt = 5e-5_f64;
+    let sim_dt = SIM_DT;
     let horizons = [0.05, 0.10, 0.15, 0.20, 0.50];
 
     // Roll sim-core from the measured IC at sample `i`, return θ-RMS (deg) over `h`.
@@ -206,7 +215,7 @@ fn main() {
         .step_by(stride)
         .map(|i| (i, rms_at(i, 0.10)))
         .collect();
-    scan.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    scan.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
     let (best_i, best_rms) = scan[0];
     let median = scan[scan.len() / 2].1;
     let frac_sub_deg = scan.iter().filter(|(_, r)| *r < 1.0).count() as f64 / scan.len() as f64;
@@ -253,19 +262,21 @@ fn main() {
         1.0 / lambda
     );
 
-    // Verdict: fixed published params reproduce the real coupled dynamics to within
-    // a small multiple of tracking σ over ~⅓ τ_λ. Grossly-wrong ⇒ loud failure.
+    // Verdict. The full distribution (best · median · sub-degree %) above is the
+    // honest picture; the assert below is a REGRESSION gate, not a proof of
+    // correctness (a min over ~200 noisy windows is a weak discriminator — it
+    // catches gross breakage, not a subtle model error).
     println!("\nPhase-1 verdict:");
     println!(
         "   sim-core reproduces the REAL double pendulum to {rms_01:.2}° over 0.10 s (~{:.0}% of τ_λ)",
         100.0 * 0.10 * lambda
     );
     println!("   at a well-conditioned window, using ONLY the paper's fixed published");
-    println!("   parameters (no fitting). Sub-degree agreement is unreachable with a wrong");
-    println!("   model, so this validates the engine's coupled two-link dynamics; the");
-    println!("   larger median reflects chaotic IC-sensitivity (bounded by τ_λ), not model error.");
-    // Grade gate: the engine MUST reproduce reality to sub-degree at the best-
-    // conditioned window (proves the model), and τ_λ must sit in the chaotic band.
+    println!("   parameters (no fitting) — a strong consistency check for the coupled");
+    println!("   two-link dynamics. The larger median is chaotic IC-sensitivity");
+    println!("   (bounded by τ_λ), not model error, and is expected, not a failure.");
+    // Regression gate: the best-conditioned window must stay sub-degree-ish and
+    // τ_λ must sit in the chaotic band; grossly-wrong ⇒ loud failure.
     assert!(
         rms_01 < 1.5,
         "Phase-1 regression: best-window 0.10 s θ-RMS {rms_01:.2}° exceeds 1.5°"
