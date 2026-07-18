@@ -6,9 +6,9 @@ The device geometry is a 3-layer hollow body: outer + inner shells of `ECOFLEX_0
 
 | Shell | Radial band | F4 material | `(μ, λ)` |
 |---|---|---|---|
-| Inner  | `‖p‖ ∈ [0, 0.05] m`      | `ECOFLEX_00_30`   | μ = 23 kPa, λ = 92 kPa  |
-| Middle | `‖p‖ ∈ (0.05, 0.075] m`  | `DRAGON_SKIN_10A` | μ = 51 kPa, λ = 204 kPa |
-| Outer  | `‖p‖ ∈ (0.075, 0.10] m`  | `ECOFLEX_00_30`   | μ = 23 kPa, λ = 92 kPa  |
+| Inner  | `‖p‖ ∈ [0, 0.05) m`      | `ECOFLEX_00_30`   | μ = 23 kPa, λ = 92 kPa  |
+| Middle | `‖p‖ ∈ [0.05, 0.075) m`  | `DRAGON_SKIN_10A` | μ = 51 kPa, λ = 204 kPa |
+| Outer  | `‖p‖ ∈ [0.075, 0.10] m`  | `ECOFLEX_00_30`   | μ = 23 kPa, λ = 92 kPa  |
 
 The material partition is by `‖p‖` radial bin from the origin (parametric, NOT scan-shaped) — the cavity asymmetry does not mix into the material classes. The DS10A proxy for the conductive composite is F4's silicone matrix only; the Cu mesh + carbon black mechanical uplift is deferred to a Fork-B post-cast modulus calibration that absorbs uplift into the effective μ at calibration time.
 
