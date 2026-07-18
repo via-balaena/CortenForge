@@ -23,7 +23,7 @@ This is v2 cf-cast. v1 stays in main as a building block (the underlying SDF + m
 
 v2 cf-cast consumes the output of `cf-scan-prep` commit #12 (Save):
 
-1. **`<stem>.cleaned.stl`** — the watertight, simplified, optionally clipped + capped scan mesh in cast-frame meters. cf-scan-prep's Cap step closes any open boundaries so `mesh_sdf::SignedDistanceField::from_mesh` gives valid inside/outside.
+1. **`<stem>.cleaned.stl`** — the watertight, simplified, optionally clipped + capped scan mesh in cast-frame meters. cf-scan-prep's Cap step closes any open boundaries so `mesh_sdf::flood_filled_sdf` gives valid inside/outside.
 
 2. **`<stem>.prep.toml`** — provenance + the **centerline polyline** computed by cf-scan-prep's cross-section-centroid algorithm (commit #9). Polyline format:
 
