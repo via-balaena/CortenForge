@@ -62,7 +62,7 @@ Every gate sits behind an `assert!` / `assert_eq!` in `src/main.rs::verify_*`; p
 
 ## Why x-slab over z-slab (vs row 23)
 
-Row 23's z-slab cut at z = 0 (the body equator) catches the propagated radial response of the wrap shell — the cut sits 40 mm BELOW the contact zone at z ≈ +SCAN_HZ. For row 24 the equator IS the AXIAL_SPLIT, INSIDE the smoothstep band — the entire z-slab samples blended-band material, which obliterates the soft-tip / stiff-anchor visualisation that this row demonstrates. An x-slab at x = 0 cuts perpendicular to the long axis and spans the full z range, exposing the proximal-pure / band / distal-pure axial structure as a 2-D centroid cloud. Z-slab tet counts are RETAINED as bit-equal regression gates (cheap centroid filter; not emitted as PLY) — see anchor 3 below.
+Row 23's z-slab cut at z = 0 (the body equator) catches the propagated radial response of the wrap shell — the cut sits 40 mm BELOW the contact zone at z ≈ +SCAN_HZ. For row 24 the equator IS the AXIAL_SPLIT, INSIDE the smoothstep band — the entire z-slab samples blended-band material, which obliterates the soft-tip / stiff-anchor visualisation that this row demonstrates. An x-slab at x = 0 cuts perpendicular to the long axis and spans the full z range, exposing the proximal-pure / band / distal-pure axial structure — emitted as a triangulated cross-section (`sim_soft::viz::slab_cut` / `design_slab_cut`). Z-slab per-shell tet counts are retained as cheap non-empty population gates (centroid filter, not emitted as PLY) — see anchor 3 below.
 
 ## Sanitization
 

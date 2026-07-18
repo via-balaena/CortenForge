@@ -724,9 +724,9 @@ struct RampStepResult {
     /// final-step only and lived inside [`FinalStepData`].
     per_tet_psi: Vec<f64>,
     /// Step 16 only: the per-pair readouts for JSON
-    /// `final_contact_pairs` and the final-step PLY x-slab + the
-    /// 9-cell zone × shell mean Ψ partition (intermediate steps drop
-    /// these to keep memory bounded).
+    /// `final_contact_pairs` and the final-step x-slab / z-slab
+    /// population gates + the 9-cell zone × shell mean Ψ partition
+    /// (intermediate steps drop these to keep memory bounded).
     final_step_data: Option<FinalStepData>,
 }
 
@@ -1675,13 +1675,13 @@ fn main() -> Result<()> {
         .expect("final ramp step missing FinalStepData");
     let half_cell = 0.5 * CELL_SIZE;
 
-    // z-slab + x-slab tet-COUNT regression gates. Cheap centroid
-    // filter — no PLY emit — surviving as bit-equal regression
+    // z-slab + x-slab per-cell population gates. Cheap centroid
+    // filter — no PLY emit — surviving as non-empty population
     // checks (z-slab from row 23 carry-through; x-slab from v3
     // axial differentiator). The PLY-emit-with-data path was
-    // retired at F1.2; the count partitions stay because they
-    // cost ~one centroid-comparison per tet and pin a useful
-    // geometric invariant.
+    // retired at F1.2; the population partitions stay because they
+    // cost ~one centroid-comparison per tet and assert a useful
+    // non-empty geometric invariant.
     let mut n_zone_shell_xslab: [[usize; 3]; 3] = [[0; 3]; 3];
     let mut n_inner_z_carry = 0usize;
     let mut n_middle_z_carry = 0usize;
