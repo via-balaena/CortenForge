@@ -220,8 +220,10 @@ fn main() {
     let median = scan[scan.len() / 2].1;
     let frac_sub_deg = scan.iter().filter(|(_, r)| *r < 1.0).count() as f64 / scan.len() as f64;
     println!(
-        "Scanned {} windows, t∈[2,50] s. 0.10 s θ-RMS: best {best_rms:.2}° (t₀={:.2} s), median {median:.2}°, {:.0}% sub-degree.\n",
+        "Scanned {} windows, t∈[{:.0},{:.0}] s. 0.10 s θ-RMS: best {best_rms:.2}° (t₀={:.2} s), median {median:.2}°, {:.0}% sub-degree.\n",
         scan.len(),
+        t[lo],
+        t[hi - 1],
         t[best_i],
         100.0 * frac_sub_deg
     );
@@ -243,13 +245,23 @@ fn main() {
     let tau_n = (6.0 / sim_dt) as usize;
     let a = rollout(&model, q, v, tau_n);
     let b = rollout(&model, [q[0] + eps, q[1]], v, tau_n);
+    // Collect ln(separation) over the clean exponential-growth band, then STOP at
+    // the first saturation. No `wrap` here (unlike `rms_at`): the two nearby
+    // trajectories accumulate the SAME large rotations, so their raw per-link
+    // difference stays small and continuous until saturation — wrapping it would
+    // let post-saturation points fold back under the threshold and bias λ low
+    // (τ_λ high). Break at 0.1 rad keeps the fit firmly in the linear regime.
     let (mut ts, mut ls) = (Vec::new(), Vec::new());
     for k in 0..tau_n {
-        let sep = ((wrap(a[k].0 - b[k].0)).powi(2) + (wrap(a[k].1 - b[k].1)).powi(2)).sqrt();
-        if sep > eps * 10.0 && sep < 0.5 {
-            ts.push(k as f64 * sim_dt);
-            ls.push(sep.ln());
+        let sep = ((a[k].0 - b[k].0).powi(2) + (a[k].1 - b[k].1).powi(2)).sqrt();
+        if sep < eps * 10.0 {
+            continue; // still on the initial noise floor — growth not yet resolved
         }
+        if sep >= 0.1 {
+            break; // saturating — later points leave the exponential regime
+        }
+        ts.push(k as f64 * sim_dt);
+        ls.push(sep.ln());
     }
     // least-squares slope of ln(sep) vs t over the exponential-growth window.
     let m = ts.len() as f64;
@@ -274,7 +286,8 @@ fn main() {
     println!("   at a well-conditioned window, using ONLY the paper's fixed published");
     println!("   parameters (no fitting) — a strong consistency check for the coupled");
     println!("   two-link dynamics. The larger median is chaotic IC-sensitivity");
-    println!("   (bounded by τ_λ), not model error, and is expected, not a failure.");
+    println!("   (bounded by τ_λ) plus a small floor from the simplified point-mass");
+    println!("   model (Table 4 omits the links' own inertia) — expected, not a failure.");
     // Regression gate: the best-conditioned window must stay sub-degree-ish and
     // τ_λ must sit in the chaotic band; grossly-wrong ⇒ loud failure.
     assert!(
