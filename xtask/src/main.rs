@@ -33,6 +33,11 @@ mod pr_scope;
 mod setup;
 mod validators;
 
+/// CI-config self-test: asserts every gating job is wired into `quality-gate`
+/// (see the module for the rationale). Test-only — no runtime surface.
+#[cfg(test)]
+mod workflow_gate;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 

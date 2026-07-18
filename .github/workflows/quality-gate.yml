@@ -878,17 +878,42 @@ jobs:
   # ============================================================================
   # FINAL GATE
   # ============================================================================
+  # This aggregator is the SOLE required status check in the `main` ruleset, so
+  # it must post an unambiguous pass/fail. Two properties make that safe:
+  #   - `if: ${{ !cancelled() }}` — it ALWAYS runs (barring cancellation) even
+  #     when a dependency failed. A bare `needs:` job would instead be SKIPPED on
+  #     any red dependency, and a skipped *required* check is the well-known
+  #     GitHub hole that can count as passing — silently letting a red build
+  #     merge. Running-then-checking removes that ambiguity.
+  #   - the verify step fails on ANY dependency result other than `success`
+  #     (failure / cancelled / skipped), so one red shard turns the gate red.
+  # Every gated job runs unconditionally (`format`, `dependencies`) or under
+  # `if: !cancelled()` (the affected-scoped matrices), so none produces a
+  # legitimate `skipped` except under cancellation — when this job doesn't run
+  # either. `affected`/`sbom`/`semver` are intentionally NOT gated (infra /
+  # advisory); the `workflow_gate` xtask test enforces that every OTHER job is
+  # listed in `needs` so a new gating job can't silently escape the gate.
   quality-gate:
     name: Quality Gate
     needs: [format, grade, tests-debug, tests-release, cross-os, feature-combos, dependencies, validate-examples]
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: All checks passed
+      - name: Verify all required jobs succeeded
+        shell: bash
+        # `join(needs.*.result, ',')` is the aggregated result of each needed
+        # job (for a matrix job, `success` only if EVERY shard passed). Fail the
+        # gate if any is not exactly `success`.
         run: |
+          results='${{ join(needs.*.result, ',') }}'
+          echo "dependency results: $results"
+          if printf '%s' "$results" | tr ',' '\n' | grep -qvx 'success'; then
+            echo "::error::Quality Gate: a required job did not succeed ($results)"
+            exit 1
+          fi
           echo "╔══════════════════════════════════════════════════════════════╗"
           echo "║                    QUALITY GATE PASSED                        ║"
-          echo "║                                                              ║"
-          echo "║  All automated criteria meet A-grade standard.               ║"
+          echo "║  All required jobs succeeded — A-grade standard met.          ║"
           echo "║  Ready for API review and merge.                             ║"
           echo "╚══════════════════════════════════════════════════════════════╝"
