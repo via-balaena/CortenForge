@@ -1,7 +1,9 @@
 # cf-device-design SDF-Based Layer Surfaces — Spec
 
-**Status**: SPEC (recon session output). Implementation = next session.
-Bundles into PR #248.
+**Status**: SHIPPED (2026-05, PR #248 arc), then evolved — see the
+**As-built** note below. Everything under `## Goal` is the ORIGINAL
+single-SDF layer-preview plan, preserved as a historical record; the
+shipped code is the source of truth and diverged as documented.
 
 **Predecessors**:
 - `docs/CF_DEVICE_DESIGN_SDF_LAYERS_BOOKMARK.md` — problem statement +
@@ -10,6 +12,42 @@ Bundles into PR #248.
   layer-preview bookmark; this arc is its Phase 4.
 - `docs/CENTERLINE_SPEC.md` + the just-merged centerline arc on
   `dev` (PR #248).
+
+## As-built (2026-05-16+) — read this first
+
+The plan below shipped, then evolved. The current code is the source
+of truth; this section records how it diverged so the plan stays a
+faithful historical record without misrepresenting the live API. The
+perf spike, rationale, and test plan below are still what the shipped
+code's doc-comments cite (`cf-device-geometry/src/sdf_layers.rs`,
+`cf-device-design/src/main.rs`, `cf-sim-research/src/main.rs`).
+
+- **Location.** The `sdf_layers` module was extracted from
+  `tools/cf-device-design` into the **`design/cf-device-geometry`**
+  library (`design/cf-device-geometry/src/sdf_layers.rs`), consumed by
+  the `cf-device-design` and `cf-sim-research` binaries.
+- **SDF type.** The single `mesh_sdf::SignedDistanceField` named
+  throughout the plan no longer exists — the mesh-sdf oracle-
+  decomposition rewrite replaced it with a composed
+  `Signed<Distance, Sign>` API (`TriMeshDistance` unsigned distance ⊥ a
+  pluggable sign oracle; convenience ctor `flood_filled_sdf`).
+- **Two-SDF `CachedScanSdf`.** A later cap-handling arc (see
+  [`CF_DEVICE_DESIGN_CAVITY_MOUTH_SPEC.md`](CF_DEVICE_DESIGN_CAVITY_MOUTH_SPEC.md)
+  + [`CF_DEVICE_DESIGN_CAVITY_PINNED_FLOOR_REDESIGN_SPEC.md`](CF_DEVICE_DESIGN_CAVITY_PINNED_FLOOR_REDESIGN_SPEC.md))
+  grew the single-SDF `CachedScanSdf { sdf, grid, bounds }` below into
+  the candidate-A form: `{ sdf_closed, sdf_open: Arc<Signed<TriMeshDistance,
+  PseudoNormalSign>>, closed_grid, open_grid: Option<ScalarGrid>,
+  bounds, margin_m, min_sdf_value }`.
+- **Grid sign source (resolves Open risk #5).** The cached grid is
+  filled via mesh-sdf's `CachedGridSdf::build` (flood-fill sign), NOT
+  the pseudo-normal `sdf.distance(p)` this plan's pipeline used —
+  precisely because pseudo-normal sign flips far-field on cleaned
+  scans, the anomaly Open risk #5 flagged. Flood-fill sign is the
+  as-built defense.
+- **Retuned constants.** `SDF_SOURCE_TARGET_FACES` 2500 → **6000**;
+  `LAYER_PREVIEW_CELL_SIZE_M` 5 mm → **2.5 mm**; `LAYER_GRID_MARGIN_M`
+  unchanged at 40 mm. The perf table below is the original 2026-05-16
+  spike record at the then-current constants.
 
 ## Goal
 

@@ -12,11 +12,11 @@ Track F.2's v1 MVP shipped a capsule-fallback example that demonstrates the cast
 
 Real scans don't drop into `cf_cast::CastSpec` directly. They need preprocessing decisions that the capsule fallback didn't surface:
 
-- **Simplify (decimate)** — modern 3D scanners routinely produce 1M-10M+ face meshes. cf-cast samples SDF on a 2 mm grid; mesh detail finer than the cell size is wasted. A 3 M-face scan adds ~30× compute to cf-cast's `SignedDistanceField` build + queries, ~60× memory pressure on Bevy rendering, and produces cleaned STLs the slicer chokes on. Boundary-preserving quadric edge collapse (via `meshopt-rs`) reduces a typical scan to 50k-200k faces with no perceptible quality loss for cast purposes. **Load-bearing for any scan-driven cf-cast workflow.**
+- **Simplify (decimate)** — modern 3D scanners routinely produce 1M-10M+ face meshes. cf-cast samples SDF on a 2 mm grid; mesh detail finer than the cell size is wasted. A 3 M-face scan adds ~30× compute to cf-cast's `flood_filled_sdf` build + queries, ~60× memory pressure on Bevy rendering, and produces cleaned STLs the slicer chokes on. Boundary-preserving quadric edge collapse (via `meshopt-rs`) reduces a typical scan to 50k-200k faces with no perceptible quality loss for cast purposes. **Load-bearing for any scan-driven cf-cast workflow.**
 - **Reorient** — scanner-frame ≠ cast-frame; the scan's local axes must be rotated so the demolding direction is `+z`
 - **Recenter** — translate the scan so the cavity centroid sits at origin (offsets are then symmetric)
 - **Trim** — drop scanner noise (floor, fixture, extraneous geometry) below a clip plane
-- **Cap open boundaries** — body-part scans are inherently open (you stop scanning where the limb continues, leaving a cup-like cross-section). cf-cast's `mesh_sdf::SignedDistanceField` evaluator requires a **watertight** input; without closing the boundary, the scan's "inside" is undefined and SDF queries return garbage. **This makes capping a load-bearing feature, not a polish item.**
+- **Cap open boundaries** — body-part scans are inherently open (you stop scanning where the limb continues, leaving a cup-like cross-section). cf-cast's `mesh_sdf::flood_filled_sdf` evaluator requires a **watertight** input; without closing the boundary, the scan's "inside" is undefined and SDF queries return garbage. **This makes capping a load-bearing feature, not a polish item.**
 - **Mouth handling** — extend `+z` headroom past the scan's natural top so the mold cup opens cleanly
 - **Inspect / validate** — sanity-check size vs print volume, surface mesh-quality issues (non-manifold edges, multi-shell topology)
 
@@ -250,7 +250,7 @@ Rotation state stored internally as `UnitQuaternion<f64>`; Euler conversion happ
 
 ### 6. Cap open boundaries
 
-Closes open boundary loops with a flat planar cap so the saved mesh is watertight (required by `mesh_sdf::SignedDistanceField` downstream in cf-cast).
+Closes open boundary loops with a flat planar cap so the saved mesh is watertight (required by `mesh_sdf::flood_filled_sdf` downstream in cf-cast).
 
 - `[Scan]` button — runs `mesh-repair` boundary-loop detection on the **transformed** mesh (post-rotation/recenter/clip; ensures the cap planes are computed in cast-frame). Cheap; ~10ms for 50k-face meshes.
 - **Loop list** — one entry per detected open boundary, showing:
@@ -267,7 +267,7 @@ Closes open boundary loops with a flat planar cap so the saved mesh is watertigh
 - After capping, a re-`[Scan]` will detect zero open loops (sanity confirmation)
 - **Mesh-repair gate**: the status bar warning that surfaced at load (`"6 issues: 4 holes, 2 non-manifold edges"`) updates after capping — `holes` count drops to zero for the loops that were capped
 - **Cap state invalidation on transform change**: any reorient / recenter / clip change invalidates the loop list (planes were fit to the previous transformed mesh; new transform → planes need re-fit). When invalidated, the loop list dims to gray with overlay text `"Transform changed — re-Scan to refresh"`. User clicks `[Scan]` again to recompute. Don't auto-rescan on every slider tick (defeats the per-loop checkbox state the user already set + re-runs `mesh-repair` for nothing).
-- **Cap normal orientation**: triangulated cap winding determines its outward normal direction. Cap must face away from the mesh interior so `mesh_sdf::SignedDistanceField::from_mesh` computes correct inside/outside. Heuristic: walk the boundary loop counterclockwise as seen from the mesh-majority side of the auto-fit plane (the side containing the majority of original mesh geometry). Fallback (loop straddles both sides ~50/50): use the average outward normal of the boundary edges' adjacent faces and orient the cap-plane normal to match. Verify post-cap by sampling a small SDF probe at `aabb.center()` — should be negative (inside) for a watertight cleaned mesh.
+- **Cap normal orientation**: triangulated cap winding determines its outward normal direction. Cap must face away from the mesh interior so `mesh_sdf::flood_filled_sdf` computes correct inside/outside. Heuristic: walk the boundary loop counterclockwise as seen from the mesh-majority side of the auto-fit plane (the side containing the majority of original mesh geometry). Fallback (loop straddles both sides ~50/50): use the average outward normal of the boundary edges' adjacent faces and orient the cap-plane normal to match. Verify post-cap by sampling a small SDF probe at `aabb.center()` — should be negative (inside) for a watertight cleaned mesh.
 
 ### 7. Mouth extension
 
@@ -370,7 +370,7 @@ Schema versioned implicitly via `tool_version`; future TOML schema changes bump 
 
 STL with rotation + translation + clip + caps baked into vertex positions. Mouth extension is **NOT** baked (it's a bounding-region hint, not a mesh modification).
 
-After capping, the cleaned STL is **watertight** — each cap loop's auto-fit (or user-overridden) plane is triangulated via ear-clipping and added as new faces. This is required for `mesh_sdf::SignedDistanceField::from_mesh` to produce valid SDF queries; an open scan would yield undefined inside/outside topology and corrupt cf-cast's mold-cup CSG.
+After capping, the cleaned STL is **watertight** — each cap loop's auto-fit (or user-overridden) plane is triangulated via ear-clipping and added as new faces. This is required for `mesh_sdf::flood_filled_sdf` to produce valid SDF queries; an open scan would yield undefined inside/outside topology and corrupt cf-cast's mold-cup CSG.
 
 The cast example (`examples/cast/layered-silicone-device-v1-scan/`) consumes only the cleaned STL for geometry; optionally reads the TOML for the `mouth_extension.plus_z_m` value to size the bounding region.
 
