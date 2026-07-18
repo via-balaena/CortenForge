@@ -1,10 +1,18 @@
 # layered-silicone-device
 
-**PR3 row 20 — the Tier 6 synthesis row, closing the entire sim-soft examples arc.** A layered silicone device with a scan-derived cavity is composed end-to-end through every PR3 foundation piece: scan SDF (F2 `impl cf_design::Sdf for mesh_sdf::SignedDistanceField`) → typed-Solid heterogeneous CSG (F5 `Solid::from_sdf` sugar over `user_fn`) → BCC + Isosurface Stuffing tet pipeline (F1 `impl Sdf for Solid` + F3 `sim_soft::Sdf` re-export) → 3-shell `MaterialField` from the silicone constants table (F4 `silicone_table.rs`) → static fit pose with the same scan SDF as the rigid indenter (post-PR2 trait unification: any `impl Sdf` is a valid rigid primitive directly). The relative-comparison "fit-tightness" force readout at zero indenter displacement IS the device memo's "feels right" subjective tightness target made quantitative — the cavity walls already kiss the indenter at rest because the cavity IS scan-shaped.
+**PR3 row 20 — the Tier 6 synthesis row, closing the entire sim-soft examples arc.** A layered silicone device with a scan-derived cavity is composed end-to-end through every PR3 foundation piece: scan SDF (F2 `impl cf_design::Sdf for mesh_sdf::Signed<TriMeshDistance, _>`) → typed-Solid heterogeneous CSG (F5 `Solid::from_sdf` sugar over `user_fn`) → BCC + Isosurface Stuffing tet pipeline (F1 `impl Sdf for Solid` + F3 `sim_soft::Sdf` re-export) → 3-shell `MaterialField` from the silicone constants table (F4 `silicone_table.rs`) → static fit pose with the same scan SDF as the rigid indenter (post-PR2 trait unification: any `impl Sdf` is a valid rigid primitive directly). The relative-comparison "fit-tightness" force readout at zero indenter displacement IS the device memo's "feels right" subjective tightness target made quantitative — the cavity walls already kiss the indenter at rest because the cavity IS scan-shaped.
 
-The device geometry is a 3-layer hollow body: outer + inner shells of `ECOFLEX_00_30` (μ = 23 kPa); middle shell of `DRAGON_SKIN_10A` (μ = 51 kPa, the closest pure-silicone proxy in F4 for the conductive-composite middle layer that real builds carry copper mesh + carbon black through). Each shell is 25 mm thick (`R_OUTER = 0.10 m`, `R_MIDDLE_OUTER = 0.075 m`, `R_INNER_OUTER = 0.05 m`); the cavity is a scan-derived asymmetric region carved from the inner shell.
+The device geometry is a 3-layer hollow body: outer + inner shells of `ECOFLEX_00_30` (μ = 23 kPa); middle shell of `DRAGON_SKIN_10A` (μ = 51 kPa, the closest pure-silicone proxy in F4 for the conductive-composite middle layer that real builds carry copper mesh + carbon black through). Each shell is 25 mm thick (`R_OUTER = 0.10 m`, `R_MIDDLE_OUTER = 0.075 m`, `R_INNER_OUTER = 0.05 m`); the cavity is a scan-derived asymmetric region — a 12-triangle cube fixture (`R_SCAN = 0.025 m`, offset `(0.015, 0, 0)` so the carve is demonstrably non-spherical) — subtracted from the inner shell.
 
-Every claim sits behind an `assert!` / `assert_eq!` / `assert_relative_eq!` in `src/main.rs::verify_*`; per [`feedback_math_pass_first_handauthored`][m], a clean `cargo run --release` exit-0 IS the correctness signal. Outputs are `out/layered_silicone_device.json` (fit-pose scalars + 3-material provenance + per-active-contact-pair detail) and `out/device_zslab.ply` (z-slab per-tet centroid cloud with categorical `material_id` + sequential `displacement_magnitude`).
+| Shell | Radial band | F4 material | `(μ, λ)` |
+|---|---|---|---|
+| Inner  | `‖p‖ ∈ [0, 0.05] m`      | `ECOFLEX_00_30`   | μ = 23 kPa, λ = 92 kPa  |
+| Middle | `‖p‖ ∈ (0.05, 0.075] m`  | `DRAGON_SKIN_10A` | μ = 51 kPa, λ = 204 kPa |
+| Outer  | `‖p‖ ∈ (0.075, 0.10] m`  | `ECOFLEX_00_30`   | μ = 23 kPa, λ = 92 kPa  |
+
+The material partition is by `‖p‖` radial bin from the origin (parametric, NOT scan-shaped) — the cavity asymmetry does not mix into the material classes. The DS10A proxy for the conductive composite is F4's silicone matrix only; the Cu mesh + carbon black mechanical uplift is deferred to a Fork-B post-cast modulus calibration that absorbs uplift into the effective μ at calibration time.
+
+Every gate sits behind an `assert!` / `assert_eq!` in `src/main.rs::verify_*`; per [`feedback_math_pass_first_handauthored`][m], a clean `cargo run --release` exit-0 IS the correctness signal. This row is a Rule-B **validator**: its gates are pipeline-emergent structural + physics invariants read from the real solve, not captured-bit self-pins (those were stripped in the Rule-B de-frag — constitutive and mesher correctness are lib-owned). Outputs are `out/layered_silicone_device.json` (fit-pose scalars + 3-material provenance + per-active-contact-pair detail) and the F1.5 / F2 viz PLY surfaces (see [Visuals](#visuals)).
 
 [m]: ../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_math_pass_first_handauthored.md
 
@@ -13,14 +21,14 @@ Every claim sits behind an `assert!` / `assert_eq!` / `assert_relative_eq!` in `
 The full PR3 bridge stack composed in one expression — a scan-derived cavity carved from a parametric outer body via heterogeneous CSG in cf-design's typed kernel:
 
 ```rust
-let scan_sdf = build_scan_fixture();                             // mesh_sdf::SignedDistanceField, F2
-let scan_solid = Solid::from_sdf(scan_sdf.clone(), scan_bounds); // typed Solid leaf, F5
-let body = Solid::sphere(R_OUTER).subtract(scan_solid);          // typed CSG, cf-design kernel
+let scan_sdf = build_scan_fixture();                             // Signed<TriMeshDistance, _>, F2
+let cavity = Solid::from_sdf(scan_sdf.clone(), scan_bounds());   // typed Solid leaf, F5
+let body = Solid::sphere(R_OUTER).subtract(cavity);             // typed CSG, cf-design kernel
 
 let hints = MeshingHints {
     bbox: Aabb3::new(/* ±0.12 m */),
-    cell_size: 0.02,
-    material_field: Some(build_material_field()),                // 3-shell partition, F4 + LayeredScalarField
+    cell_size: 0.01,
+    material_field: Some(build_material_field()),                // 3-shell radial partition, F4 + LayeredScalarField
 };
 
 let mesh = SdfMeshedTetMesh::from_sdf(&body, &hints)?;           // F1 + F3, &dyn Sdf trait dispatch
@@ -30,116 +38,90 @@ The scan-derived cavity carve composes with the parametric outer sphere through 
 
 The static fit pose makes the relative-comparison fit-tightness story concrete — `PenaltyRigidContact::new(vec![scan_sdf])` with the SAME scan SDF as the rigid indenter (first non-plane consumer of the post-PR2 `Sdf`-trait-unified `PenaltyRigidContact`). At rest the cavity walls already kiss the indenter (the cavity IS scan-shaped, so cavity-wall vertices lie on the scan's zero isosurface at rest); the contact band `sd < d̂` activates immediately, and the body's static equilibrium under the rest-state preload IS the quantitative fit-tightness force.
 
+The same body expression scales — replacing the 12-tri cube fixture with `TriMeshDistance::new(loaded_scan)` + `PseudoNormalSign::from_distance(...)` (row 15's STL-import precedent) lifts a real scan into the pipeline. Production runs swap the fixture builder for an STL load and every downstream code path (`Solid::from_sdf` + `SdfMeshedTetMesh::from_sdf` + the contact `PenaltyRigidContact::new(scan.clone())` line) stays unchanged.
+
 ## Sanitization
 
-Per the [device memo][mem]'s sanitization directive — the scanned reference geometry is referred to as "scanned reference geometry" or "scan-derived rigid indenter" throughout this crate's prose. No anatomical references appear in any tracked surface. The 12-tri cube placeholder is a programmatic synthetic stand-in: the pipeline demonstration is the workflow ("scan → `SignedDistanceField` → cf-design `Solid` → `SdfMeshedTetMesh` → 3-material FEM → contact"), not the cube's specific geometry. Production runs swap the cube fixture for a real scan via row 15's `STL → load_mesh → SignedDistanceField::new` path without any other code change.
+Per the [device memo][mem]'s sanitization directive — the scanned reference geometry is referred to as "scanned reference geometry" or "scan-derived rigid indenter" throughout this crate's prose. No anatomical references appear in any tracked surface. The 12-tri cube placeholder is a programmatic synthetic stand-in: the pipeline demonstration is the workflow ("scan → `Signed<TriMeshDistance, _>` → cf-design `Solid` → `SdfMeshedTetMesh` → 3-material FEM → contact"), not the cube's specific geometry. Production runs swap the cube fixture for a real scan via row 15's `STL → TriMeshDistance::new` path without any other code change.
 
 [mem]: ../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/project_layered_silicone_device.md
 
 ## Numerical anchors
 
-Each anchor is encoded as an `assert!` / `assert_eq!` / `assert_relative_eq!` in `src/main.rs` under `verify_*`. All 8 groups are called from `main()` in dependency order; `cargo run --release` exit-0 means every assert passed.
+Each gate is encoded as an `assert!` / `assert_eq!` in `src/main.rs` under `verify_*` and is called from `main()` in dependency order; `cargo run --release` exit-0 means every gate passed. They are **pipeline-emergent structural + physics invariants** read from the real solve — resolution- and toolchain-robust. The pre-Rule-B captured-bit self-pins (exact tet/vertex/pair counts, `to_bits()` force/displacement pins, the `to_neo_hookean()` provenance mirror, and the `CF_CAPTURE_BITS` capture scaffold) were **stripped**: they froze one run's FP trajectory + mesher version on one toolchain (strictly more fragile than the invariants they redundantly implied), and constitutive correctness (`NeoHookean` closed form + `to_neo_hookean()` round-trip) is lib-owned (`neo_hookean.rs` tests + `silicone_table.rs::tests::to_neo_hookean_round_trips_lame_pair`), as is the generic radial-bin shell routing (`sdf_material_tagging.rs` IV-4). The observed scalars (force, displacement) are still emitted to the JSON readout + stdout for eyes-on inspection — just not self-pinned.
 
-### 1. `counts_exact`
+### 1. `quality_floors`
 
-| Count | Pinned | Source |
-|---|---|---|
-| `n_tets`              | `6860` | first-run capture (post-F5, `93f4bfaa`, 2026-05-08, rustc 1.95.0, macOS arm64) |
-| `n_vertices`          | `4773` | first-run capture |
-| `n_referenced`        | `1576` | `n_vertices - n_orphaned = 3197 orphans` |
-| `n_pinned` (R_OUTER band)  | `710` | diverges from rows 11+16's `734` — the cavity-asymmetry reduces the BCC outer-band lattice population by a handful of vertices |
-| `n_inner_tets` (ECOFLEX_00_30)  | `856` | inner-shell tet count by centroid radial-bin |
-| `n_middle_tets` (DRAGON_SKIN_10A) | `2035` | middle-shell tet count |
-| `n_outer_tets` (ECOFLEX_00_30)  | `3969` | outer-shell tet count |
-| sum | `856 + 2035 + 3969 = 6860` | partition gate (every tet centroid in exactly one shell) |
-
-Cross-row continuity to rows 11+16 does NOT extend (pattern (y) at row 19's banking memo): row 11+16 use a spherical `R_CAVITY = 0.04 m` cavity; row 20 uses an offset 12-tri-cube cavity. Geometry differs ⇒ counts differ. The `R_OUTER = 0.10 m` value matches rows 11+16 visually but is row-20-specific in this row's constant block; the ~3 % `n_pinned` drop reflects the cavity-carve cutting back the outer-band lattice population near the cube's `+x` face.
-
-### 2. `zslab_counts_exact`
-
-| Count | Pinned |
-|---|---|
-| `n_inner_tets_zslab`  | `144` (per-shell partition of the z-slab cut) |
-| `n_middle_tets_zslab` | `270` |
-| `n_outer_tets_zslab`  | `258` |
-
-Z-slab cut is `|centroid.z| < CELL_SIZE / 2 = 0.01`; total z-slab tet count is `672`, ~9.8 % of the body — matches rows 11+16's z-slab fraction (~10 %).
-
-### 3. `quality_floors`
-
-| Anchor | Bound |
+| Gate | Bound |
 |---|---|
 | `signed_volume > 0` per tet | strict (D-10 detector) |
 
-Every tet has positive signed volume — the BCC + IS pipeline preserves orientation through the heterogeneous-CSG carve; same Theorem-1-sanity envelope row 3 [`sdf_to_tet`](../sdf/stress-test) anchors verbatim.
+Every tet has positive signed volume — the BCC + Isosurface Stuffing pipeline preserves orientation through the heterogeneous-CSG carve; same Theorem-1-sanity envelope row 3 [`sdf_to_tet`](../sdf/stress-test) anchors verbatim. This gate is also the pre-condition for the per-tet `deformation_gradient` helper's `D_rest.try_inverse().expect(...)` invariant — `D_rest` is invertible iff the tet has positive signed volume.
 
-### 4. `solver_converges`
+### 2. `mesh_structure`
 
-| Anchor | Bound |
+| Gate | Bound |
 |---|---|
-| `step.iter_count` | `< MAX_NEWTON_ITER = 50` (observed: `7`) |
-| `step.final_residual_norm` | `< 1e-10` (observed: `~1.12e-12`) |
+| `n_tets`                 | `> 0` |
+| `n_referenced`           | `> 0` and `≤ n_vertices` (referenced set ⊆ all vertices; the excess are orphan BCC lattice corners the solver skips) |
+| `n_pinned` (R_OUTER band) | non-empty proper subset of `n_referenced` (every vertex with `(‖p‖ - R_OUTER).abs() < CELL_SIZE / 2`) |
+| each per-shell tet count | `> 0` (all three material bands populated) |
 
-A single backward-Euler `replay_step` at `STATIC_DT = 1.0 s` converges from rest in 7 Newton iters. Convergence is slower than rows 11+16's `3` iters because the contact-bearing nonlinearity (penalty force gradient at active-band vertices) augments the Newton residual relative to the pure-pressure rows.
+Structural invariants, not exact counts: the specific tet/vertex counts are a mesher-version artifact (they change on any BCC/stuffing improvement), whereas non-emptiness is the property that actually matters. (The three per-shell counts partition every tet exactly once by construction — the caller derives them from a total match over all tets — so a `sum == n_tets` assert would guard nothing; the per-shell routing is checked independently in gate 4.) The generic per-shell routing correctness is lib-owned (`sdf_material_tagging.rs` IV-4). (Observed at `CELL_SIZE = 0.01`: `n_tets = 51_292`, `n_vertices = 32_162`, `n_referenced = 10_013`, `n_pinned = 2_842`, per-shell `5_068 / 14_736 / 31_488` — emitted to stdout, not pinned.)
 
-### 5. `material_provenance`
+### 3. `zslab_populations`
 
-| Material | Lamé pair | Energy round-trip |
-|---|---|---|
-| `ECOFLEX_00_30` (outer + inner) | μ = 23 kPa, λ = 92 kPa | `nh.energy(I) == 0.0` AND `nh.energy(diag(1.01, 1, 1))` matches the closed-form FMA chain bit-equally |
-| `DRAGON_SKIN_10A` (middle) | μ = 51 kPa, λ = 204 kPa | same identity at `epsilon = 0.0` |
-
-F4 const-fn `to_neo_hookean()` survives the const-table → `NeoHookean::from_lame` bridge bit-equally per F4's contract test (`silicone_table.rs::tests::to_neo_hookean_round_trips_lame_pair`). Re-asserted here so a regression in F4 trips this row directly. Same precedent as row 19's per-row contract walk.
-
-### 6. `n_contact_pairs_exact`
-
-| Anchor | Pinned |
+| Gate | Bound |
 |---|---|
-| `n_active_pairs` at static fit pose | `127` |
+| each z-slab per-shell tet count (`\|cz\| < CELL_SIZE / 2 = 0.005`) | `> 0` |
 
-At rest the cavity walls already kiss the indenter (the cavity IS scan-shaped, so cavity-wall vertices lie on the scan's zero isosurface). The `PenaltyRigidContact::new` default `d̂` band activates `127` cavity-wall vertices.
+Each material band contributes at least one tet to the `z = 0` cut, so the cf-view cross-section artifacts show all three shells. Non-empty, not exact-count (mesher-version robust).
 
-### 7. `captured_bits` — IV-1 sparse-tier rel-tol
+### 4. `material_routing`
 
-Rest-state contact reaction force + cavity-wall mean displacement bits self-pinned at first capture:
+| Gate | Bound |
+|---|---|
+| `mesh.materials()[t]` per tet | `(μ, λ)` bit-equal to the shell's F4 table entry (`ECOFLEX_00_30` inner + outer, `DRAGON_SKIN_10A` middle, by radial bin), each shell exercised ≥ 1 tet |
 
-| Anchor | Pinned bits | Approximate value |
-|---|---|---|
-| `force_total_z_n` | `0x3fc4_0790_5286_ba74` | `~0.156 N` (axial component of the rest-state preload) |
-| `cavity_wall_mean_disp_m` | `0x3f53_d596_7b05_b573` | `~1.21e-3 m` (over the 127-vertex active-contact-pair set) |
+The scene's multi-material routing invariant — verifies that the `MaterialField` assigned every tet the `(μ, λ)` of the radial shell its centroid falls in. Reads the real per-tet `NeoHookean` from `mesh.materials()` via the public `.mu()` / `.lambda()` accessors and compares to the shell's F4 table entry with an exact `to_bits()` `==` (both come from the same const through the same `to_neo_hookean()` const fn, so a correctly routed tet is bit-identical — this is a routing check, NOT a constitutive-arithmetic mirror). A boundary-convention drift between `partition_point(|&t| t <= phi)` and `shell_at` would fire it immediately. The constitutive math and the `to_neo_hookean()` Lamé round-trip are lib-owned (`neo_hookean.rs` tests + `silicone_table.rs::tests::to_neo_hookean_round_trips_lame_pair`); the generic routing mechanism is lib-owned (`sdf_material_tagging.rs` IV-4).
 
-Compared via `assert_relative_eq!` at `SPARSE_REL_TOL = 1e-12` rel + `SPARSE_EPS_ABS = 1e-12` floor. **Failure-mode protocol per IV-1**: if the rel-tol comparison fails, do NOT re-bake. Diagnose in this order: (1) rule out toolchain drift (rustc / LLVM / libm minor version delta vs the rustc 1.95.0 capture); (2) if same toolchain, real regression in cf-design's `Solid::from_sdf` plumbing OR mesh-sdf's `distance` heuristic OR sim-soft's BCC + IS + faer hot path; (3) NEVER re-bake to silence drift.
+### 5. `solver_converges`
 
-`CF_CAPTURE_BITS=1` env-var bootstrap pattern (banked at row 19 as pattern (cc)): when set, every captured-anchor check (counts AND bits) is bypassed and a paste-ready capture block is printed to stderr. Use for first-time author-bake and intentional re-bake (e.g., F4 const value updated to a new data-sheet revision); never for failure silencing.
+| Gate | Bound |
+|---|---|
+| `step.iter_count` | `< MAX_NEWTON_ITER = 200` (observed: `37`) |
+| `step.final_residual_norm` | `< 1e-10` (observed: `~8.7e-11`) |
 
-### 8. `sanitization_grep`
+A single backward-Euler `replay_step` at `STATIC_DT = 1.0 s` converges from rest in 37 Newton iters. The contact-bearing nonlinearity (penalty force gradient at active-band vertices) augments the Newton residual relative to a pure-pressure row; the `MAX_NEWTON_ITER = 200` cap leaves comfortable headroom at the refined `CELL_SIZE = 0.01` mesh, where the initial cavity-wall/indenter overlap spans more vertices than at the original coarse mesh.
 
-Static prose check, run by reviewers at every cold-read pass: every mention of the scanned reference geometry uses "scanned reference geometry" or "scan-derived rigid indenter" framing. Negative grep for anatomical terms across `src/main.rs`, `README.md`, `Cargo.toml`. Per pattern (dd) parallel-source-of-truth amendment: any prose-rewrite during cold-read must grep ALL parallel surfaces (module docstring + README + commit message) before declaring the cold-read pass done.
+### 6. `contact_engaged`
+
+| Gate | Bound |
+|---|---|
+| `n_active_pairs` at static fit pose | `> 0` (the cavity walls actually engaged the scan-derived indenter; the exact count was a mesher/discretization artifact) |
+
+At rest the cavity walls already kiss the indenter (the cavity IS scan-shaped, so cavity-wall vertices lie on the scan's zero isosurface). The `PenaltyRigidContact::new` default `d̂` band activates the cavity-wall vertices within `d̂`. (Observed: `442` active pairs; rest-state axial reaction `force_total_z ≈ -2.24e-4 N`, cavity-wall mean / max displacement `~6.12e-4 m` / `~1.11e-3 m` — emitted to the JSON readout for inspection.)
 
 ## Visuals
 
-`out/device_zslab.ply` — z-slab per-tet centroid cloud (`672` centroids in `|rest_centroid.z| < CELL_SIZE / 2 = 0.01 m`) with `DISPLACEMENT_SCALE = 50.0` geometric amplification on positions (`amplified = rest_centroid + SCALE * (deformed_centroid - rest_centroid)`). Same z-slab pattern as rows 11+16, with two scalars: categorical `material_id` (0 = inner / 1 = middle / 2 = outer) + sequential `displacement_magnitude` (true physical magnitude, unscaled).
+The F1.5 / F2 viz retrofit emits the full 3D body + design-mesh surfaces via the public `sim_soft::viz` API (the pre-F1.5 amplified z-slab centroid cloud was retired). Every artifact carries three per-vertex scalars — `displacement_magnitude`, categorical `material_id` (0 = inner / 1 = middle / 2 = outer), and `psi_j_per_m3` (per-tet strain-energy density):
 
-Open in cf-view, the workspace's unified visual-review viewer:
+| Artifact | Emitter | What it shows |
+|---|---|---|
+| `out/device_boundary.ply` | `viz::boundary_surface` (F1.1) | full 3D analysis-mesh outer surface — the BCC boundary faithfully, sliver-tet zigzag included |
+| `out/device_slab_cut_z0.ply` | `viz::slab_cut` (F1.1) | equatorial `z = 0` cross-section — exposes the radial material shells + cavity wall in one cut |
+| `out/device_design_slab_cut_z0.ply` | `viz::design_slab_cut` (F2.0) | same cut, marching-squares on the design SDF (smooth circle minus sharp square), decoupled from the analysis discretization |
+| `out/device_design_surface.ply` | `viz::design_surface` (F2.1) | full 3D body, marching-cubes on the design SDF — smooth sphere boundary without the BCC zigzag |
+| `out/device_design_surface_deformed.ply` | `viz::design_surface_deformed` (F2.3a) | design surface offset by the per-vertex displacement field, `amplify = 10` to make the mm-scale deformation visible on the cm-scale body |
+| `out/device_design_scene.ply` | `viz::design_scene` (F2.3b) | body + scan-derived indenter merged, categorical `primitive_id` scalar (0 = body / 1 = indenter) |
+
+Open any of them in cf-view, the workspace's unified visual-review viewer:
 
 ```
-cargo run -p cf-viewer --release -- examples/sim-soft/layered-silicone-device/out/device_zslab.ply
+cargo run -p cf-viewer --release -- examples/sim-soft/layered-silicone-device/out/device_slab_cut_z0.ply
 ```
 
-cf-view auto-picks the colormap per pattern (u) banked at row 15:
-
-- **`material_id`** is binary-categorical (3 distinct values 0/1/2) → cf-view picks the **categorical palette** (row 11 + 16 precedent for shell-id readouts).
-- **`displacement_magnitude`** is unipolar continuous (range `[0, ~4e-3]` m) → cf-view picks **sequential viridis**.
-
-The slab projects centroids onto a 2-D annulus on `z = 0`. Three concentric rings (categorical `material_id`) overlap with a continuous radial-decay gradient (sequential `displacement_magnitude`):
-
-- **Inner ring** at `|p_xy| ∈ [~0.025, ~0.05] m` — 144 inner-shell centroids; displacement magnitudes cluster near the cavity-wall preload signal (~1e-3 m mean for active-contact-pair vertices). Cross-readout: HEADLINE 7's `cavity_wall_mean_disp_m ≈ 1.21e-3 m`.
-- **Middle ring** at `|p_xy| ∈ [~0.05, ~0.075] m` — 270 middle-shell centroids; intermediate displacement (composite stiffness damps the inner-shell-driven cavity push).
-- **Outer ring** at `|p_xy| ∈ [~0.075, ~0.097] m` — 258 outer-shell centroids; displacement decays toward 0 at `R_OUTER` (Dirichlet pin band).
-
-Cavity asymmetry is visible: the offset 12-tri cube cavity at `(0.015, 0, 0)` produces an inner-ring distribution where the cavity-wall vertices on the cube's `-x` face show the highest displacement magnitudes — the cube's `-x` face at `x = -0.010 m` sees a `0.090 m` silicone shell out to the outer pin at `x = -0.10 m`, vs only a `0.060 m` shell from the cube's `+x` face at `x = 0.040 m` to the outer pin at `x = +0.10 m`. The thicker `-x` shell gives the cavity-wall vertices a more compliant elastic response under the rest-state contact preload, so they displace farther; the thinner `+x` shell sits more constrained against the outer Dirichlet pin and displaces less. The eyes-on-pixels review of `out/device_zslab.ply` confirms the high-displacement cluster on the screen-LEFT side of cf-view's default oblique orbit, consistent with the `-x` direction.
-
-**Why z-slab over the full-boundary-surface artifact (row 3 sphere precedent)**: per pattern (aa) banked at row 16 N+3, hollow / interior-cavity / partial-occlusion bodies' full boundary surfaces 360°-occlude the cavity and the inner/middle interfaces from every cf-view orbit angle (cf-view exposes no section-cut UI). The z-slab projects centroids onto a 2-D annulus cut, exposing both the radial material-shell partition and the cavity-wall displacement response. Row 20's geometry is doubly hollow (scan-shaped cavity AND three concentric shells) → z-slab is required by construction; row 16's N+3 pivot is the precedent.
+cf-view auto-picks the colormap per pattern (u) banked at row 15 — `material_id` is binary-categorical (3 values 0/1/2) → categorical palette; `displacement_magnitude` and `psi_j_per_m3` are unipolar continuous → sequential viridis. The `slab_cut` at `z = 0` exposes the three concentric radial shells; the cavity asymmetry (offset cube at `(0.015, 0, 0)`) shows as a non-circular cavity cross-section, and the `design_surface_deformed` artifact shows the cavity walls squashing inward where the rigid indenter presses while the outer sphere boundary deforms far less (the silicone bulk absorbs the contact force). Pair the F1 `boundary_surface` / `slab_cut` artifacts with their F2 `design_*` counterparts for the analysis-mesh-vs-design-mesh side-by-side that motivated the F2 arc.
 
 ## Run
 
@@ -147,14 +129,6 @@ Cavity asymmetry is visible: the offset 12-tri cube cavity at `(0.015, 0, 0)` pr
 cargo run -p example-sim-soft-layered-silicone-device --release
 ```
 
-Per [`feedback_release_mode_heavy_tests`][rel] — release mode is required for the FEM solve at this mesh resolution (`6860` tets through faer's sparse Cholesky + 7 Newton iters with penalty-contact); debug mode would take many minutes for what runs in seconds release.
+Per [`feedback_release_mode_heavy_tests`][rel] — release mode is required for the FEM solve at this mesh resolution (`~51 k` tets through faer's sparse Cholesky + 37 Newton iters with penalty-contact); debug mode would take many minutes for what runs in seconds release.
 
 [rel]: ../../../.claude/projects/-Users-jonhillesheim-forge-cortenforge/memory/feedback_release_mode_heavy_tests.md
-
-## First-time bit capture
-
-```sh
-CF_CAPTURE_BITS=1 cargo run -p example-sim-soft-layered-silicone-device --release
-```
-
-Emits a paste-ready block of every `*_EXACT` count and every `*_REF_BITS` constant, bypassing the captured-anchor checks. Use for first-time author-bake and intentional re-bake; the IV-1 protocol forbids using this to silence a drift assertion.
