@@ -108,8 +108,9 @@ cargo run -p cf-viewer --release -- examples/sim-soft/sdf-bridge/stress-test/out
 
 - **Inventory**: `sim/L0/soft/EXAMPLE_INVENTORY.md` Tier 5 (rows 15–16).
 - **Bridge code these validate**: `sim/L0/soft/src/sdf_bridge/` (F3 re-export +
-  `DifferenceSdf` baseline) and `design/cf-design/src/sdf.rs` (F1 `impl Sdf for
-  Solid`, F2 `impl Sdf for SignedDistanceField`).
+  `DifferenceSdf` baseline), `design/cf-design/src/sdf.rs` (F1 `impl Sdf for
+  Solid`), and `mesh/mesh-sdf/src/sdf_adapter.rs` (F2 `impl<D, S> Sdf for
+  Signed<D, S>`).
 - **F2 sign-heuristic caveat fixture**: `examples/mesh/mesh-sdf-distance-query`
   (octahedron — 6 vertex-region false-positives at the bbox boundary, the
   fixture that DOES trigger the F2 caveat that `mesh_scan`'s cube does not).

@@ -71,7 +71,7 @@ let f_t = deformation_gradient(verts, &rest_positions, &positions_vec3);
 let psi_t = mesh.materials()[t].energy(&f_t);
 ```
 
-The same body expression scales — replacing the cuboid with `Solid::from_sdf(SignedDistanceField::new(loaded_scan), bounds)` (PR3 F5 path; row 20's precedent) lifts a real scan into the typed-Solid kernel. Production runs swap step 1 for an STL load and the rest stays identical.
+The same body expression scales — replacing the cuboid with `Solid::from_sdf(flood_filled_sdf(loaded_scan, bounds, cell, WALL_THRESHOLD_FACTOR_DEFAULT)?.0, bounds)` (PR3 F5 path; row 20's precedent) lifts a real scan into the typed-Solid kernel. Production runs swap step 1 for an STL load and the rest stays identical.
 
 ## Sanitization
 
@@ -187,4 +187,4 @@ This row is v1 of a queued evolution toward iter-2+ silicone-device design suppo
 - **v2** — multi-step force-displacement curve (5-10 step ramp + JSON sidecar). Replaces the single static fit pose with a quasi-static intrusion sweep.
 - **v3** — axial zoned variation (proximal/mid/distal stiffness modifier composed onto the radial `LayeredScalarField`). Needs a custom `Field<f64>` impl OR a `BlendedScalarField` composition over a longitudinal SDF.
 - **v4** — explicit thin copper-mesh sub-layer (4-shell `LayeredScalarField`; ~0.5 mm mesh-band at much higher Shore between Ecoflex and DS10A).
-- **vN** — real anatomy scan replacing the cuboid fixture (`mesh_sdf::SignedDistanceField::new(scan_indexed_mesh)` lifted via PR3 F2 `impl Sdf for SignedDistanceField`, then `Solid::from_sdf` per F5 — exactly row 20's path).
+- **vN** — real anatomy scan replacing the cuboid fixture (`flood_filled_sdf(scan_indexed_mesh, bounds, cell, WALL_THRESHOLD_FACTOR_DEFAULT)?.0` lifted via PR3 F2 `impl<D, S> Sdf for Signed<D, S>`, then `Solid::from_sdf` per F5 — exactly row 20's path).

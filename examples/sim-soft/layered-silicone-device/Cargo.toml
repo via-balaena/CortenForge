@@ -21,14 +21,14 @@ example_kind = "validator"
 [dependencies]
 # `cf_design::Solid::sphere` + `Solid::subtract` (the typed parametric
 # outer-body kernel) + `Solid::from_sdf` (the heterogeneous-CSG bridge
-# shipped at PR3 F5; promotes a `mesh_sdf::SignedDistanceField` cavity
+# shipped at PR3 F5; promotes a `mesh_sdf::Signed<TriMeshDistance, PseudoNormalSign>` cavity
 # operand into a typed `Solid` leaf). The trait `cf_design::Sdf` rides
 # in via `sim_soft::Sdf` re-export (post-PR3 F3) so this row imports
 # `cf_design::Solid` directly and `cf_design::Sdf` only when the typed-
 # Solid evaluator probe needs it (it doesn't here — every `Sdf::eval`
 # call goes through `sim_soft::Sdf`).
 cf-design = { workspace = true }
-# `mesh_sdf::SignedDistanceField` — the scan-derived rigid-indenter SDF
+# `mesh_sdf::Signed<TriMeshDistance, PseudoNormalSign>` — the scan-derived rigid-indenter SDF
 # wrapped from a 12-triangle programmatic cube fixture (no checked-in
 # scan asset per the layered-silicone-device memo's sanitization
 # directive). Same fixture-builder pattern as PR3 row 15

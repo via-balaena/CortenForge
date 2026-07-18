@@ -115,8 +115,8 @@ const EXACT_TOL: f64 = 0.0;
 
 /// Tolerance for edge- and vertex-region probes whose distances
 /// involve `√(rational)` (e.g. `√0.5`, `√0.75`). Mesh-sdf computes
-/// distance via `closest_point_on_triangle` (Ericson region case
-/// resolution) plus a `norm()` call; the resulting FP error stays
+/// distance via parry3d's BVH-backed `TriMeshDistance` (closest-triangle
+/// projection) plus a `norm()` call; the resulting FP error stays
 /// well within `1e-12` for our well-conditioned cube.
 const BAND_TOL: f64 = 1e-12;
 
