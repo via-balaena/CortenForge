@@ -214,7 +214,7 @@
 //! ```
 //!
 //! Per `feedback_release_mode_heavy_tests` — release mode is required
-//! for the FEM solve at this mesh resolution (~5–7 k tets through
+//! for the FEM solve at this mesh resolution (~51 k tets through
 //! faer's sparse Cholesky); debug mode would take many minutes for
 //! what runs in seconds release.
 
@@ -301,7 +301,7 @@ const BBOX_HALF_EXTENT: f64 = 0.12;
 /// `boundary_surface` + `slab_cut` PLY emits faithfully exposed —
 /// the pre-F1.5 z-slab centroid PLY hid the surface approximation
 /// because centroids are interior-only. Refined to 0.01 m (~10
-/// lattice cells across the radius, ~56 k tets) so the spherical
+/// lattice cells across the radius, ~51 k tets) so the spherical
 /// envelope is visibly smoother in the slab cut.
 const CELL_SIZE: f64 = 0.01;
 
@@ -466,15 +466,25 @@ fn build_material_field() -> MaterialField {
 // =============================================================================
 
 /// Shell index of a per-tet centroid: 0 = inner / 1 = middle / 2 =
-/// outer. The boundary convention (closed-left, open-right) mirrors
-/// `LayeredScalarField::sample`'s `partition_point(|&t| t <= phi)`
-/// idiom verbatim, so the per-tet classification agrees with the
-/// `MaterialField`'s sample at the centroid bit-equally.
+/// outer, by radial `phi = ‖p‖ − R_OUTER` bin. The boundary convention
+/// is **open-left, closed-right** (strict `<`): a centroid at the inner
+/// threshold belongs to the middle shell, and one at the middle
+/// threshold belongs to the outer shell. This matches
+/// `LayeredScalarField::sample`'s `partition_point(|&t| t <= phi)` idiom
+/// (the predicate is true at threshold equality, so `partition_point`
+/// steps PAST it — equivalent to the strict-`<` chain here), so the
+/// per-tet classification agrees with the `MaterialField`'s sample at
+/// the centroid bit-equally — the invariant `verify_material_routing`
+/// gates. (Row 20's sphere geometry + BCC centroids don't land on the
+/// exact thresholds at any meaningful fraction of tets, so `<` vs `<=`
+/// is behaviourally identical here; strict `<` is the convention that
+/// stays correct if a future scan geometry does produce boundary hits,
+/// mirroring row 21's `shell_at_phi`.)
 fn shell_at(centroid: Vec3) -> usize {
     let phi = centroid.norm() - R_OUTER;
-    if phi <= R_INNER_OUTER - R_OUTER {
+    if phi < R_INNER_OUTER - R_OUTER {
         0 // inner
-    } else if phi <= R_MIDDLE_OUTER - R_OUTER {
+    } else if phi < R_MIDDLE_OUTER - R_OUTER {
         1 // middle
     } else {
         2 // outer
@@ -991,7 +1001,7 @@ fn main() -> Result<()> {
     std::fs::create_dir_all(&out_dir)?;
 
     // Per-pair JSON records — mirrors row 18's per-active-pair detail
-    // block. Bounded by `n_pairs` (~120) so the JSON stays under a
+    // block. Bounded by `n_pairs` (~440) so the JSON stays under a
     // few hundred KB.
     let pair_records: Vec<Value> = readouts
         .iter()

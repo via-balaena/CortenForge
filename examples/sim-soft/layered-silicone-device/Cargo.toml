@@ -70,8 +70,10 @@ anyhow = { workspace = true }
 # counts + material layer block. Mirrors row 18's two-section schema
 # (scalars + per-active-pair array).
 serde_json = { workspace = true }
-# `Point3` + `Vector3` for trait-method receivers (`cf_design::Sdf`
-# uses `Point3<f64>`; sim-soft adapter sites use `Point3::from(vec3)`).
+# `Matrix3` for the per-tet deformation-gradient helper
+# (`F = D_curr · D_rest⁻¹`) that feeds the per-tet strain-energy-density
+# viz scalar. (`Point3` rides in via the `mesh_types` re-export, not
+# directly from `nalgebra`.)
 nalgebra = { workspace = true }
 
 [lints]
