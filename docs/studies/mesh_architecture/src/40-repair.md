@@ -31,7 +31,7 @@ Many operations downstream of `mesh-repair` have implicit cleanliness preconditi
 
 | Operation | Requires | Failure mode if not met |
 |---|---|---|
-| `mesh-sdf::point_in_mesh` | watertight | inside/outside ambiguous |
+| `mesh-sdf::PseudoNormalSign` (sign oracle) | watertight | inside/outside ambiguous |
 | `mesh-offset::offset_mesh` | watertight, no self-intersect | offset surface has artifacts |
 | `mesh-shell::generate_shell` | watertight, manifold | shell topology malformed |
 | `mesh-printability::validate_for_printing` | manifold | overhang/orientation analysis unreliable |
