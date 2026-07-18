@@ -293,8 +293,7 @@ jobs:
   # `example_kind = "validator"` are RUN red-or-green by the `validate-examples`
   # job below; the rest are demos or not-yet-classified, compile-checked by
   # `grade`'s clippy only),
-  # -benches (5), xtask (graded by grade-all; unit tests via pre-commit), and the
-  # heavy stochastic-physics
+  # -benches (5), and the heavy stochastic-physics
   # validators sim-ml-chassis / sim-thermostat / sim-rl / sim-conformance-tests /
   # sim-opt / sim-rl-baselines (run in `tests-release` below).
   #
@@ -324,6 +323,15 @@ jobs:
   #     grade it; only `--skip-coverage` keeps its tests from running there. It is
   #     GUI-free, so it lands on shard 2 for +0 new crates. Do not strip its tier
   #     metadata or drop it from shard 2 on the belief that grade covers its tests.
+  #   - xtask — the quality tool itself. Its unit tests (shard/only selection,
+  #     validator-audit, and the `workflow_gate` CI-config self-test) are
+  #     pure-function + GUI-free but ran in NO required CI context: `grade-all
+  #     --skip-coverage` executes none, and the pre-commit hook is fmt+clippy only
+  #     (NOT tests). So the `workflow_gate` self-test in particular could not fire
+  #     on the very PR that adds a mis-wired job. On shard 2 (GUI-free); any
+  #     `.github/**` edit trips needs_full → the full shard 2 list runs → `cargo
+  #     test -p xtask` executes the guard. Do NOT drop it on the belief that grade
+  #     or pre-commit covers its tests — neither runs them.
   # All 326 of these tests execute in ~1.6 s; the cost of adding them is COMPILE +
   # test-binary LINK time, not test execution. Each Bevy+egui bin statically links
   # the full tree, so watch shard 1's wall time (21.9/30 min as of #554) and
@@ -354,7 +362,7 @@ jobs:
           - id: 2
             crates: cf-studio-core cf-studio-engine cf-studio-gui cf-studio
               cf-geometry cf-spatial cf-scan-prep-core mesh-printability mesh-lattice mesh
-              cortenforge cf-msk-fit cf-anthro cf-cap-planes cf-device-types
+              cortenforge cf-msk-fit cf-anthro cf-cap-planes cf-device-types xtask
           - id: 3
             crates: sim-soft sim-core sim-mjcf sim-urdf sim-gpu sim-types
               sim-therm-env cf-design cf-design-tests cf-fsu-geometry cf-routing cf-routing-tests cf-cast-cli sim
@@ -891,8 +899,10 @@ jobs:
   # `if: !cancelled()` (the affected-scoped matrices), so none produces a
   # legitimate `skipped` except under cancellation — when this job doesn't run
   # either. `affected`/`sbom`/`semver` are intentionally NOT gated (infra /
-  # advisory); the `workflow_gate` xtask test enforces that every OTHER job is
-  # listed in `needs` so a new gating job can't silently escape the gate.
+  # advisory); the `workflow_gate` xtask test (run via the `tests-debug` shard —
+  # xtask is a shard-2 member, and any `.github/**` edit trips needs_full)
+  # enforces that every OTHER job is listed in `needs` so a new gating job can't
+  # silently escape the gate.
   quality-gate:
     name: Quality Gate
     needs: [format, grade, tests-debug, tests-release, cross-os, feature-combos, dependencies, validate-examples]
