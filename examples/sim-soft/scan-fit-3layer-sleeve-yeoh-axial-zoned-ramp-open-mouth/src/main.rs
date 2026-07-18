@@ -587,10 +587,10 @@ fn build_sleeve_body(outer: Solid, cavity: Solid) -> Solid {
     outer.subtract(cavity)
 }
 
-/// Probe `Solid` at the given penetration depth (m). At `depth =
-/// 0.001 m` (1 mm) this matches row 21 v1's static fit-pose probe
-/// verbatim; the ramp loop calls this at progressively deeper depths
-/// up to `PROBE_PENETRATION_FINAL = 0.008 m`.
+/// Plug `Solid` at the given penetration depth (m). The ramp loop calls
+/// this at progressively deeper depths up to
+/// `PROBE_PENETRATION_FINAL = 0.004 m` (the cuboid plug descending
+/// through the open mouth).
 fn build_probe_solid_at_depth(depth: f64) -> Solid {
     let plug_center_z = PROBE_PLUG_INITIAL_CENTER_Z - depth;
     let r = PROBE_PLUG_CORNER_RADIUS;
@@ -883,8 +883,8 @@ struct RampStepResult {
     /// psi for the ramp-animation PLY series); pre-F2.3c this was
     /// final-step only and lived inside [`FinalStepData`].
     per_tet_psi: Vec<f64>,
-    /// Step 16 only: the per-pair readouts for JSON
-    /// `final_contact_pairs` and the final-step PLY x-slab + the
+    /// Final step (8) only: the per-pair readouts for JSON
+    /// `final_contact_pairs` and the final-step x = 0 slab-cut viz + the
     /// 9-cell zone × shell mean Ψ partition (intermediate steps drop
     /// these to keep memory bounded).
     final_step_data: Option<FinalStepData>,
@@ -1382,7 +1382,7 @@ fn main() -> Result<()> {
     println!("scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp-open-mouth — row 25 (open-mouth fork)");
     println!();
 
-    // 1-5. Build initial mesh + verifies (geometry + material checks).
+    // 1-5. Build initial mesh + material field.
     let scan_solid = build_scan_solid();
     let outer_envelope = build_outer_envelope(scan_solid.clone());
     let sleeve_body =
@@ -1431,7 +1431,8 @@ fn main() -> Result<()> {
     // scalars threaded through the viz emits so cf-view's categorical
     // colormap renders the radial × axial composition with distinct
     // colors. `shell_idx_per_tet` and `zone_idx_per_tet` are already
-    // computed above for the verify gates; here we cast to f64 once so
+    // computed above for the JSON/summary tet-count partition; here we
+    // cast to f64 once so
     // the BTreeMap<&str, &[f64]> emit interface can borrow them
     // through both the static and per-step emit blocks below.
     //
