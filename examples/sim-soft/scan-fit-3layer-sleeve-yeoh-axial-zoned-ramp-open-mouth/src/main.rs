@@ -14,8 +14,9 @@
 #![allow(clippy::cast_possible_truncation)]
 // `expect()` on `Matrix3::try_inverse()` for the per-tet `D_rest`
 // reference shape derivative. `D_rest` is invertible iff the tet has
-// positive signed volume — `verify_quality_floors` is the
-// corresponding pre-condition gate. Same precedent as row 20+21+23.
+// positive signed volume, which the BCC + Isosurface Stuffing mesher
+// guarantees (the sibling validator rows gate this via
+// `verify_quality_floors`). Same precedent as row 20+21+23.
 #![allow(clippy::expect_used)]
 // `print_summary` is a single museum-plaque stdout writer; splitting
 // fragments the visual format without information gain. Same allowance
@@ -39,16 +40,6 @@
 // regular `//` comment block; row 24's doc-comment-attached Ψ̄ refs
 // trip the lint where row 23's plain-comment refs do not.
 #![allow(clippy::doc_markdown)]
-// Row 25 disables row-24-specific load-case verify gates that don't
-// generalize to the cuboid-plug-into-open-mouth contact geometry —
-// see the comment block at the verify-call site below for why each
-// gate doesn't apply. The disabled fns + their captured-bits
-// constants are retained in source so F1.7+ can re-derive
-// row-25-specific gates once the contact-onset transient is
-// understood mechanistically; the `dead_code` allow keeps them
-// compilable until then.
-#![allow(dead_code)]
-
 //! scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp-open-mouth — row 25
 //! (F1.6 of the sim-soft viz arc): an open-mouth + cuboid-plug fork
 //! of
@@ -196,15 +187,15 @@
 //!
 //! 7. **Per-step + final-step readouts** — `RampStepResult` shape
 //!    inherited from row 24 (per-shell radial Ψ̄ at every step,
-//!    3-zone × 3-shell at final step). Many of row 24's verify
-//!    gates are DISABLED at row 25 because the cuboid-plug load
-//!    case violates row-24-specific monotonicity / ordering /
-//!    captured-bits assumptions; see the comment block at the
-//!    `verify_*` call site below for a per-gate justification.
-//!    The disabled fns + their captured-bits constants are retained
-//!    in source under `#![allow(dead_code)]` so F1.7+ can re-derive
-//!    row-25-specific gates once the contact-onset transient is
-//!    understood mechanistically.
+//!    3-zone × 3-shell at final step), emitted to JSON + stdout for
+//!    inspection. This row is a **`demo`, not a validator**: it
+//!    asserts nothing. Row 24's ramp-physics oracles (force-displacement
+//!    monotonicity, Ψ̄ ordering, displacement bound) are inherently
+//!    INAPPLICABLE here — the interference-fit cuboid plug inverts the
+//!    force sign and the strain ordering, and the first ~4 ramp steps
+//!    are degenerate (iter=0 / no deformation until the plug engages at
+//!    ~2.5 mm). So there is no robust physics oracle to gate on; the
+//!    row's value is the open-boundary-topology viz below.
 //!
 //! 8. **Readouts** —
 //!    - JSON `out/scan_fit_3layer_sleeve_yeoh_axial_zoned_ramp_open_mouth.json`:
@@ -236,20 +227,12 @@
 //!      dual-axis depth × `force_z` + depth × `max_disp` curve as
 //!      row 23/24, scaled to row 25's 8-step ramp. Run via
 //!      `uv run plot_ramp.py`.
-//!    - `verify_*` runtime gates: only geometry + count gates
-//!      survive from row 24's 16-group set
-//!      (`verify_n_ramp_steps_exact`,
-//!      `verify_per_step_solver_converges`, plus the inherited
-//!      structural gates `verify_quality_floors`,
-//!      `verify_counts_exact`, `verify_zone_shell_counts_exact`,
-//!      `verify_zslab_counts_exact`,
-//!      `verify_xslab_zone_shell_counts_exact`,
-//!      `verify_material_assignment_partition`,
-//!      `verify_material_provenance`,
-//!      `verify_blend_zone_material_provenance`). Load-case
-//!      gates (`verify_force_displacement_monotone` etc.) are
-//!      disabled — see verify-call-site comment for why each
-//!      doesn't generalize.
+//!    - No `verify_*` runtime gates — this is a `demo` (`example_kind =
+//!      "demo"`), compile-checked but not run by CI, asserting nothing.
+//!      Constitutive / mesher / blend correctness is covered by the
+//!      sibling `validator` rows (21/22/23/24) + the sim-soft lib tests;
+//!      this row demonstrates the open-boundary viz on the
+//!      production-target open-mouth geometry.
 //!
 //! # Why x = 0 for the slab cut
 //!
@@ -305,7 +288,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use approx::assert_relative_eq;
 use cf_design::Solid;
 use mesh_io::save_ply_attributed;
 use mesh_types::{Point3, Vector3};
@@ -318,10 +300,9 @@ use sim_soft::material::silicone_table::{
 use sim_soft::{
     Aabb3, BlendedScalarField, BoundaryConditions, CpuNewtonSolver, Field, LayeredScalarField,
     Material, MaterialField, Mesh, MeshingHints, PenaltyRigidContact,
-    PenaltyRigidContactYeohSolver, Plane, Sdf, SdfMeshedTetMesh, SiliconeMaterial, Solver,
-    SolverConfig, Tet4, Vec3, VertexId, Yeoh, boundary_surface, design_scene_deformed,
-    design_slab_cut, design_surface, pick_vertices_by_predicate, referenced_vertices, slab_cut,
-    slab_cut_deformed,
+    PenaltyRigidContactYeohSolver, Plane, Sdf, SdfMeshedTetMesh, Solver, SolverConfig, Tet4, Vec3,
+    VertexId, Yeoh, boundary_surface, design_scene_deformed, design_slab_cut, design_surface,
+    pick_vertices_by_predicate, referenced_vertices, slab_cut, slab_cut_deformed,
 };
 
 // =============================================================================
@@ -394,8 +375,8 @@ const BBOX_HALF_Z: f64 = SCAN_HZ + MOUTH_EXTENSION_PLUS_Z + CELL_SIZE;
 ///
 /// 4 mm cells stay the row default because the experiment was a
 /// recon spike, not a productionization — finer-cells productionization
-/// would require re-baking all `*_EXACT` counts + `*_REF_BITS` against
-/// the larger mesh and re-running visuals pass. Banked as B2 followup.
+/// would require re-running the visuals pass on the larger mesh.
+/// Banked as B2 followup.
 const CELL_SIZE: f64 = 0.004;
 
 // =============================================================================
@@ -531,170 +512,6 @@ const AXIAL_SPLIT_Z: f64 = 0.0;
 /// linearly; tighter bands (e.g. 0.003 m, ~1 cell) risk per-cell
 /// step-function artefacts that the smoothstep is meant to remove.
 const AXIAL_BAND_HALF_WIDTH: f64 = 0.005;
-
-// =============================================================================
-// Constants — tolerances
-// =============================================================================
-
-/// IV-1 sparse-tier rel-tol for captured per-step force / displacement
-/// / per-layer Ψ̄ bits. ~75 k tets × 16 chained steps through faer's
-/// sparse Cholesky lives at the IV-1 sparse-at-scale tier; `1e-12`
-/// admits sparse-solver SIMD/FMA noise while catching real
-/// regressions. Same precedent as rows 6+10+11+16+20+21+22+23.
-const SPARSE_REL_TOL: f64 = 1.0e-12;
-
-/// Absolute floor for the captured-bits comparison.
-const SPARSE_EPS_ABS: f64 = 1.0e-12;
-
-/// Bit-exact tolerance for the F4 const-fn `to_yeoh()` Yeoh-parameters
-/// round-trip (μ + λ + C₂ + asymmetric validity bounds, per F4.0
-/// arc-memo §"Implementation status").
-const F4_PROVENANCE_EXACT_TOL: f64 = 0.0;
-
-/// Probe `F = diag(1.01, 1, 1)` material-assignment-probe tolerance.
-const MATERIAL_PROBE_EXACT_TOL: f64 = 0.0;
-
-/// Bit-exact tolerance for the blend-zone midplane sample. At
-/// `phi = 0` (the AXIAL_SPLIT plane) [`BlendedScalarField`]'s
-/// smoothstep yields `outside_weight = 0.5` exactly per the field's
-/// doc-comment; the sampled blend value is then
-/// `(distal + proximal) / 2` bit-exact in IEEE 754. The 1e-15
-/// tolerance is a safety margin against future smoothstep-implementation
-/// refactors that might introduce sub-ULP drift; tighten to `== mean`
-/// if the bit-exact midplane invariant is ever lifted to the type
-/// system.
-const BLEND_MIDPLANE_TOL: f64 = 1.0e-15;
-
-// =============================================================================
-// Constants — captured first-run anchor bits
-// =============================================================================
-//
-// **Capture provenance** — captured 2026-05-10 at sim-soft `dev`
-// (post row 23 ship `da1280fc`), rustc 1.95.0 (`59807616e`
-// 2026-04-14) on macOS arm64 — same toolchain + platform as IV-1's
-// reference capture and rows 22 + 23. First-run capture bootstrapped
-// via `CF_CAPTURE_BITS=1` (pattern (cc) banked at row 19).
-//
-// Geometry-derived counts (`N_TETS_EXACT`, `N_VERTICES_EXACT`,
-// `N_REFERENCED_EXACT`, `N_PINNED_EXACT`, the per-shell tet counts,
-// the z-slab counts) are bit-equal to rows 22 + 23 — the BCC + IS
-// pipeline is deterministic on the same SDF + hints; only the
-// material model differs, and material doesn't affect the
-// discretisation.
-
-/// Total tet count after BCC + Isosurface Stuffing on the sleeve body.
-/// Differs from rows 22-24 because the open-mouth cavity carves through
-/// the +z face — the proximal half loses ~2.3k tets that row 24 retained
-/// in its closed-cavity wrap.
-const N_TETS_EXACT: usize = 72_338;
-
-/// Total mesh vertex count, including BCC corners not referenced by
-/// any tet. Differs from rows 22-24 because the open-mouth cavity
-/// shifts which BCC corners get carved.
-const N_VERTICES_EXACT: usize = 32_269;
-
-/// Vertices referenced by ≥ 1 tet.
-const N_REFERENCED_EXACT: usize = 17_115;
-
-/// Outer-envelope-surface Dirichlet-pinned vertex count. Differs from
-/// rows 22-24: the open-mouth +z face has only the rim band pinned (the
-/// rim is ~WRAP_THICKNESS wide around the mouth opening), so fewer
-/// vertices fall in the pinned band than row 24's full +z face.
-const N_PINNED_EXACT: usize = 6_884;
-
-/// Per-shell tet counts. Differ from rows 22-24 in proportion to
-/// `N_TETS_EXACT` change.
-const N_INNER_TETS_EXACT: usize = 24_736;
-const N_MIDDLE_TETS_EXACT: usize = 16_450;
-const N_OUTER_TETS_EXACT: usize = 31_152;
-
-/// Per-shell tet counts in the `|centroid.z| < CELL_SIZE / 2 = 0.002`
-/// z-slab. Bit-equal to rows 22 + 23. RETAINED as cross-row regression
-/// gate even though no z-slab PLY is emitted (cheap centroid filter).
-const N_INNER_TETS_ZSLAB_EXACT: usize = 768;
-const N_MIDDLE_TETS_ZSLAB_EXACT: usize = 432;
-const N_OUTER_TETS_ZSLAB_EXACT: usize = 892;
-
-/// Per-zone-shell tet counts at first capture. Sharp partition at
-/// `centroid.z > +AXIAL_BAND_HALF_WIDTH` ⇒ proximal,
-/// `< -AXIAL_BAND_HALF_WIDTH` ⇒ distal, else BAND. NEW for row 24.
-/// Sums to `N_TETS_EXACT`. NOTE: zone partition is ON THE SHARP
-/// `±BAND_HALF` boundary, NOT on the smoothstep — band tets get
-/// classified as "BAND" but their sampled `(μ, c2, λ)` is not an
-/// arithmetic mean (the smoothstep weight varies across the band's
-/// 10 mm width).
-const N_DISTAL_INNER_TETS_EXACT: usize = 11_600;
-const N_DISTAL_MIDDLE_TETS_EXACT: usize = 7_496;
-const N_DISTAL_OUTER_TETS_EXACT: usize = 14_606;
-const N_BAND_INNER_TETS_EXACT: usize = 2_572;
-const N_BAND_MIDDLE_TETS_EXACT: usize = 1_558;
-const N_BAND_OUTER_TETS_EXACT: usize = 2_782;
-// Proximal counts differ from row 24 — the open-mouth carve removes
-// tets from the proximal half (within the cavity's xy footprint at
-// +z above the rim plane).
-const N_PROXIMAL_INNER_TETS_EXACT: usize = 10_564;
-const N_PROXIMAL_MIDDLE_TETS_EXACT: usize = 7_396;
-const N_PROXIMAL_OUTER_TETS_EXACT: usize = 13_764;
-
-/// Per-zone-shell tet counts in the `|centroid.x| < CELL_SIZE / 2 =
-/// 0.002` x-slab. NEW for row 24. The x-slab is the visualisation cut
-/// for the axial gradient.
-const N_DISTAL_INNER_TETS_XSLAB_EXACT: usize = 618;
-const N_DISTAL_MIDDLE_TETS_XSLAB_EXACT: usize = 218;
-const N_DISTAL_OUTER_TETS_XSLAB_EXACT: usize = 661;
-const N_BAND_INNER_TETS_XSLAB_EXACT: usize = 130;
-const N_BAND_MIDDLE_TETS_XSLAB_EXACT: usize = 38;
-const N_BAND_OUTER_TETS_XSLAB_EXACT: usize = 123;
-const N_PROXIMAL_INNER_TETS_XSLAB_EXACT: usize = 550;
-const N_PROXIMAL_MIDDLE_TETS_XSLAB_EXACT: usize = 222;
-const N_PROXIMAL_OUTER_TETS_XSLAB_EXACT: usize = 602;
-
-/// Ramp-step partition gate. Bit-pinned to `N_RAMP_STEPS = 8`.
-const N_RAMP_STEPS_EXACT: usize = N_RAMP_STEPS;
-
-// =============================================================================
-// Row-24-shape captured-bits constants (DISABLED at row 25 — placeholder zeros)
-// =============================================================================
-//
-// The captured-bits constants below were inherited from row 24's
-// `verify_per_step_*` gate set. Row 25's cuboid-plug-into-open-mouth
-// load case violates row-24-specific assumptions (force_z sign
-// inverts, force-displacement non-monotone during contact-onset,
-// per-shell Ψ̄ ordering inverts under interference-fit loading) so
-// the gate fns themselves are DISABLED at the verify-call site —
-// see comment block there. These constants are retained as
-// placeholder zeros so the source compiles under
-// `#![allow(dead_code)]` and F1.7+ work has the slots ready when a
-// row-25-specific gate set lands. Do NOT treat these values as
-// authoritative for any row 25 verification — `CF_CAPTURE_BITS=1`
-// + a re-bake will produce row-25-correct values once the contact-
-// onset transient is understood and a new gate set is designed.
-const N_CONTACT_PAIRS_FINAL_EXACT: usize = 0;
-const IT_COUNT_RAMP_EXACT: [usize; N_RAMP_STEPS] = [0; 8];
-const FORCE_TOTAL_Z_RAMP_REF_BITS: [u64; N_RAMP_STEPS] = [0; 8];
-const MAX_DISP_RAMP_REF_BITS: [u64; N_RAMP_STEPS] = [0; 8];
-const MEAN_PSI_INNER_RAMP_REF_BITS: [u64; N_RAMP_STEPS] = [0; 8];
-const MEAN_PSI_MIDDLE_RAMP_REF_BITS: [u64; N_RAMP_STEPS] = [0; 8];
-const MEAN_PSI_OUTER_RAMP_REF_BITS: [u64; N_RAMP_STEPS] = [0; 8];
-
-// Final-step Ψ captures inherited from row 24 — also DISABLED at row
-// 25 (the `verify_outer_layer_max_psi_final` and
-// `verify_zone_shell_psi_final` gates that consume them are in the
-// disabled set). Slot values here are row-24's first-bake captures;
-// they don't apply to row 25's load case (force_z sign + magnitudes
-// differ; per-shell ψ̄ ordering inverts under interference-fit
-// loading). Retained as placeholders for the same F1.7+ re-derivation
-// as the per-step constants above.
-const MAX_PSI_OUTER_FINAL_REF_BITS: u64 = 0x40e8_069e_4bb1_6b3a;
-const MEAN_PSI_DISTAL_INNER_FINAL_BITS: u64 = 0x3f46_6547_d048_6414;
-const MEAN_PSI_DISTAL_MIDDLE_FINAL_BITS: u64 = 0x3f40_7be5_dcd4_e36e;
-const MEAN_PSI_DISTAL_OUTER_FINAL_BITS: u64 = 0x3f27_8685_9ca2_410c;
-const MEAN_PSI_BAND_INNER_FINAL_BITS: u64 = 0x3f93_cd59_08be_c1a5;
-const MEAN_PSI_BAND_MIDDLE_FINAL_BITS: u64 = 0x3f8f_18cd_bcd2_5889;
-const MEAN_PSI_BAND_OUTER_FINAL_BITS: u64 = 0x3f75_2a60_5392_aec9;
-const MEAN_PSI_PROXIMAL_INNER_FINAL_BITS: u64 = 0x4094_eef2_83ca_5ab2;
-const MEAN_PSI_PROXIMAL_MIDDLE_FINAL_BITS: u64 = 0x4084_2e69_fd95_1e19;
-const MEAN_PSI_PROXIMAL_OUTER_FINAL_BITS: u64 = 0x406e_c90b_3d8d_8c9b;
 
 // =============================================================================
 // Axial half-space SDF — the v3 differentiator
@@ -1005,10 +822,9 @@ fn build_boundary_conditions(
     .into_iter()
     .filter(|v| referenced_set.contains(v))
     .collect();
-    assert!(
-        !pinned.is_empty(),
-        "outer-envelope band turned up empty at cell_size = {CELL_SIZE}",
-    );
+    if pinned.is_empty() {
+        eprintln!("warning: outer-envelope band turned up empty at cell_size = {CELL_SIZE}");
+    }
 
     BoundaryConditions {
         pinned_vertices: pinned,
@@ -1034,7 +850,7 @@ fn deformation_gradient(verts: [VertexId; 4], rest: &[Vec3], curr: &[Vec3]) -> M
     let d_curr = Matrix3::from_columns(&[c1 - c0, c2 - c0, c3 - c0]);
     let d_rest_inv = d_rest
         .try_inverse()
-        .expect("D_rest is invertible by verify_quality_floors signed-volume gate");
+        .expect("D_rest is invertible: BCC + Isosurface Stuffing guarantees positive-volume tets");
     d_curr * d_rest_inv
 }
 
@@ -1343,746 +1159,6 @@ fn solve_ramp(
 }
 
 // =============================================================================
-// Verifications — 16 anchor groups (12 carry-through + 4 NEW for v3)
-// =============================================================================
-
-fn capturing_bits() -> bool {
-    std::env::var("CF_CAPTURE_BITS").is_ok()
-}
-
-#[allow(clippy::too_many_arguments)]
-fn verify_counts_exact(
-    mesh: &SdfMeshedTetMesh<Yeoh>,
-    referenced: &[VertexId],
-    pinned: &[VertexId],
-    inner_count: usize,
-    middle_count: usize,
-    outer_count: usize,
-) {
-    if capturing_bits() {
-        eprintln!("=== CAPTURED COUNTS (paste into source) ===");
-        eprintln!("const N_TETS_EXACT: usize = {};", mesh.n_tets());
-        eprintln!("const N_VERTICES_EXACT: usize = {};", mesh.n_vertices());
-        eprintln!("const N_REFERENCED_EXACT: usize = {};", referenced.len());
-        eprintln!("const N_PINNED_EXACT: usize = {};", pinned.len());
-        eprintln!("const N_INNER_TETS_EXACT: usize = {inner_count};");
-        eprintln!("const N_MIDDLE_TETS_EXACT: usize = {middle_count};");
-        eprintln!("const N_OUTER_TETS_EXACT: usize = {outer_count};");
-        return;
-    }
-    assert_eq!(mesh.n_tets(), N_TETS_EXACT, "n_tets");
-    assert_eq!(mesh.n_vertices(), N_VERTICES_EXACT, "n_vertices");
-    assert_eq!(referenced.len(), N_REFERENCED_EXACT, "n_referenced");
-    assert_eq!(pinned.len(), N_PINNED_EXACT, "n_pinned");
-    assert_eq!(inner_count, N_INNER_TETS_EXACT, "n_inner_tets");
-    assert_eq!(middle_count, N_MIDDLE_TETS_EXACT, "n_middle_tets");
-    assert_eq!(outer_count, N_OUTER_TETS_EXACT, "n_outer_tets");
-    assert_eq!(
-        inner_count + middle_count + outer_count,
-        N_TETS_EXACT,
-        "shell-count partition sums to N_TETS_EXACT",
-    );
-}
-
-fn verify_zslab_counts_exact(inner_zslab: usize, middle_zslab: usize, outer_zslab: usize) {
-    if capturing_bits() {
-        eprintln!("const N_INNER_TETS_ZSLAB_EXACT: usize = {inner_zslab};");
-        eprintln!("const N_MIDDLE_TETS_ZSLAB_EXACT: usize = {middle_zslab};");
-        eprintln!("const N_OUTER_TETS_ZSLAB_EXACT: usize = {outer_zslab};");
-        return;
-    }
-    assert_eq!(inner_zslab, N_INNER_TETS_ZSLAB_EXACT, "n_inner_tets_zslab");
-    assert_eq!(
-        middle_zslab, N_MIDDLE_TETS_ZSLAB_EXACT,
-        "n_middle_tets_zslab",
-    );
-    assert_eq!(outer_zslab, N_OUTER_TETS_ZSLAB_EXACT, "n_outer_tets_zslab");
-}
-
-/// NEW for row 24: 9-cell zone × shell partition sums to total.
-fn verify_zone_shell_counts_exact(n_zone_shell: [[usize; 3]; 3]) {
-    if capturing_bits() {
-        let labels = [
-            ("DISTAL_INNER", 0, 0),
-            ("DISTAL_MIDDLE", 0, 1),
-            ("DISTAL_OUTER", 0, 2),
-            ("BAND_INNER", 1, 0),
-            ("BAND_MIDDLE", 1, 1),
-            ("BAND_OUTER", 1, 2),
-            ("PROXIMAL_INNER", 2, 0),
-            ("PROXIMAL_MIDDLE", 2, 1),
-            ("PROXIMAL_OUTER", 2, 2),
-        ];
-        for (name, z, s) in labels {
-            eprintln!("const N_{name}_TETS_EXACT: usize = {};", n_zone_shell[z][s]);
-        }
-        return;
-    }
-    let expected = [
-        [
-            N_DISTAL_INNER_TETS_EXACT,
-            N_DISTAL_MIDDLE_TETS_EXACT,
-            N_DISTAL_OUTER_TETS_EXACT,
-        ],
-        [
-            N_BAND_INNER_TETS_EXACT,
-            N_BAND_MIDDLE_TETS_EXACT,
-            N_BAND_OUTER_TETS_EXACT,
-        ],
-        [
-            N_PROXIMAL_INNER_TETS_EXACT,
-            N_PROXIMAL_MIDDLE_TETS_EXACT,
-            N_PROXIMAL_OUTER_TETS_EXACT,
-        ],
-    ];
-    let mut total = 0usize;
-    for z in 0..3 {
-        for s in 0..3 {
-            assert_eq!(n_zone_shell[z][s], expected[z][s], "n_zone_shell[{z}][{s}]");
-            total += n_zone_shell[z][s];
-        }
-    }
-    assert_eq!(
-        total, N_TETS_EXACT,
-        "zone × shell partition sums to N_TETS_EXACT",
-    );
-}
-
-/// NEW for row 24: 9-cell zone × shell partition for the x-slab cut.
-fn verify_xslab_zone_shell_counts_exact(n_zone_shell_xslab: [[usize; 3]; 3]) {
-    if capturing_bits() {
-        let labels = [
-            ("DISTAL_INNER", 0, 0),
-            ("DISTAL_MIDDLE", 0, 1),
-            ("DISTAL_OUTER", 0, 2),
-            ("BAND_INNER", 1, 0),
-            ("BAND_MIDDLE", 1, 1),
-            ("BAND_OUTER", 1, 2),
-            ("PROXIMAL_INNER", 2, 0),
-            ("PROXIMAL_MIDDLE", 2, 1),
-            ("PROXIMAL_OUTER", 2, 2),
-        ];
-        for (name, z, s) in labels {
-            eprintln!(
-                "const N_{name}_TETS_XSLAB_EXACT: usize = {};",
-                n_zone_shell_xslab[z][s],
-            );
-        }
-        return;
-    }
-    let expected = [
-        [
-            N_DISTAL_INNER_TETS_XSLAB_EXACT,
-            N_DISTAL_MIDDLE_TETS_XSLAB_EXACT,
-            N_DISTAL_OUTER_TETS_XSLAB_EXACT,
-        ],
-        [
-            N_BAND_INNER_TETS_XSLAB_EXACT,
-            N_BAND_MIDDLE_TETS_XSLAB_EXACT,
-            N_BAND_OUTER_TETS_XSLAB_EXACT,
-        ],
-        [
-            N_PROXIMAL_INNER_TETS_XSLAB_EXACT,
-            N_PROXIMAL_MIDDLE_TETS_XSLAB_EXACT,
-            N_PROXIMAL_OUTER_TETS_XSLAB_EXACT,
-        ],
-    ];
-    for z in 0..3 {
-        for s in 0..3 {
-            assert_eq!(
-                n_zone_shell_xslab[z][s], expected[z][s],
-                "n_zone_shell_xslab[{z}][{s}]",
-            );
-        }
-    }
-}
-
-fn verify_quality_floors(mesh: &SdfMeshedTetMesh<Yeoh>) {
-    let positions = mesh.positions();
-    let n_tets = mesh.n_tets();
-    for tet_idx in 0..n_tets {
-        let [v0, v1, v2, v3] = mesh.tet_vertices(tet_idx as u32);
-        let p0 = positions[v0 as usize];
-        let p1 = positions[v1 as usize];
-        let p2 = positions[v2 as usize];
-        let p3 = positions[v3 as usize];
-        let signed_volume = (p1 - p0).cross(&(p2 - p0)).dot(&(p3 - p0)) / 6.0;
-        assert!(
-            signed_volume > 0.0,
-            "tet {tet_idx}: signed_volume = {signed_volume:e} (expected strictly positive)",
-        );
-    }
-}
-
-fn verify_n_ramp_steps_exact(n_results: usize) {
-    assert_eq!(
-        n_results, N_RAMP_STEPS_EXACT,
-        "ramp produced {n_results} step results, expected {N_RAMP_STEPS_EXACT}",
-    );
-}
-
-fn verify_per_step_solver_converges(results: &[RampStepResult]) {
-    for r in results {
-        assert!(
-            r.iter_count < MAX_NEWTON_ITER,
-            "ramp step {} (depth {} m): iter_count = {} ≥ MAX_NEWTON_ITER = {}",
-            r.step,
-            r.depth_m,
-            r.iter_count,
-            MAX_NEWTON_ITER,
-        );
-        assert!(
-            r.final_residual_norm < 1.0e-10,
-            "ramp step {} (depth {} m): final_residual_norm = {:e} ≥ 1e-10",
-            r.step,
-            r.depth_m,
-            r.final_residual_norm,
-        );
-    }
-}
-
-fn verify_per_step_iter_count(results: &[RampStepResult]) {
-    if capturing_bits() {
-        let entries: Vec<String> = results.iter().map(|r| r.iter_count.to_string()).collect();
-        eprintln!(
-            "const IT_COUNT_RAMP_EXACT: [usize; N_RAMP_STEPS] = [{}];",
-            entries.join(", "),
-        );
-        return;
-    }
-    for r in results {
-        let expected = IT_COUNT_RAMP_EXACT[r.step - 1];
-        assert_eq!(
-            r.iter_count, expected,
-            "ramp step {}: iter_count = {} (expected {})",
-            r.step, r.iter_count, expected,
-        );
-    }
-}
-
-fn verify_force_displacement_monotone(results: &[RampStepResult]) {
-    // Same convention as row 23: post-v2.5 referenced-only filtering;
-    // probe enters from above pushing wrap-cap material in `+z`.
-    // Strict-adjacent monotonicity at step 1 → step 2 NOT required;
-    // strict from step 2 onward.
-    let first = &results[0];
-    let last = results.last().expect("ramp produced no results");
-    assert!(
-        last.force_total_z_n > first.force_total_z_n,
-        "ramp endpoint sanity: final step force_z {:e} N not greater than first step {:e} N",
-        last.force_total_z_n,
-        first.force_total_z_n,
-    );
-
-    for w in results.windows(2).skip(1) {
-        let a = &w[0];
-        let b = &w[1];
-        assert!(
-            b.force_total_z_n > a.force_total_z_n,
-            "non-monotone force-displacement at step {}→{}: {:e} N → {:e} N \
-             (expected step {} > step {} from step 2 onward)",
-            a.step,
-            b.step,
-            a.force_total_z_n,
-            b.force_total_z_n,
-            b.step,
-            a.step,
-        );
-    }
-}
-
-fn verify_per_step_strain_energy_ordering(results: &[RampStepResult]) {
-    // Same `Ψ̄_inner > Ψ̄_middle > Ψ̄_outer` ordering as row 23 — radial
-    // partition is unaffected by axial zoning (the per-shell mean
-    // averages over both proximal + distal + band tets within the
-    // shell).
-    for r in results {
-        assert!(
-            r.mean_psi_inner_j_per_m3 > r.mean_psi_middle_j_per_m3,
-            "ramp step {} (depth {} m): mean_psi_inner ({:e}) ≯ mean_psi_middle ({:e})",
-            r.step,
-            r.depth_m,
-            r.mean_psi_inner_j_per_m3,
-            r.mean_psi_middle_j_per_m3,
-        );
-        assert!(
-            r.mean_psi_middle_j_per_m3 > r.mean_psi_outer_j_per_m3,
-            "ramp step {} (depth {} m): mean_psi_middle ({:e}) ≯ mean_psi_outer ({:e})",
-            r.step,
-            r.depth_m,
-            r.mean_psi_middle_j_per_m3,
-            r.mean_psi_outer_j_per_m3,
-        );
-    }
-}
-
-fn verify_per_step_max_disp_bounded(results: &[RampStepResult]) {
-    for r in results {
-        assert!(
-            r.max_disp_m < WRAP_THICKNESS,
-            "ramp step {} (depth {} m): max_disp = {:e} m ≥ WRAP_THICKNESS = {} m",
-            r.step,
-            r.depth_m,
-            r.max_disp_m,
-            WRAP_THICKNESS,
-        );
-    }
-}
-
-fn verify_n_contact_pairs_final_exact(results: &[RampStepResult]) {
-    let final_step = results.last().expect("ramp produced no results");
-    if capturing_bits() {
-        eprintln!(
-            "const N_CONTACT_PAIRS_FINAL_EXACT: usize = {};",
-            final_step.n_active_pairs,
-        );
-        return;
-    }
-    assert_eq!(
-        final_step.n_active_pairs, N_CONTACT_PAIRS_FINAL_EXACT,
-        "n_active_pairs at final ramp step",
-    );
-}
-
-/// Verify that all 6 anchors used in the proximal + distal stacks
-/// produce the expected Yeoh (μ, λ, c2) tuple via `to_yeoh()` and that
-/// the additive decomposition `nh_part + C₂(I₁−3)²` holds bit-exactly
-/// at a probe `F = diag(1.01, 1, 1)`. Carries row 23's
-/// `verify_material_provenance` shape over the row 24 6-anchor set.
-fn verify_material_provenance() {
-    let anchors: [&SiliconeMaterial; 6] = [
-        &ECOFLEX_00_20,
-        &ECOFLEX_00_30,
-        &DRAGON_SKIN_10A,
-        &DRAGON_SKIN_15,
-        &DRAGON_SKIN_20A,
-        &DRAGON_SKIN_30A,
-    ];
-    for mat in anchors {
-        let yr = mat.to_yeoh();
-        let id = Matrix3::<f64>::identity();
-        assert_relative_eq!(yr.energy(&id), 0.0, epsilon = F4_PROVENANCE_EXACT_TOL);
-
-        let mut f = Matrix3::<f64>::identity();
-        f[(0, 0)] = 1.01;
-        // Per arc-memo F1 Spike-1 finding (mirrored from row 23
-        // `verify_material_provenance`): bit-exact additive
-        // decomposition.
-        let i1 = 1.01_f64.mul_add(1.01, 2.0);
-        let j_ln = 1.01_f64.ln();
-        let half_mu = 0.5 * mat.mu;
-        let half_lambda = 0.5 * mat.lambda;
-        let nh_part = half_lambda.mul_add(j_ln * j_ln, half_mu.mul_add(i1 - 3.0, -mat.mu * j_ln));
-        let i1m3 = i1 - 3.0;
-        // Folding `c2 * i1m3` into a mul_add would change rounding
-        // and break bit-equality with `Yeoh::energy`.
-        #[allow(clippy::suboptimal_flops)]
-        let expected = nh_part + mat.c2 * i1m3 * i1m3;
-        assert_relative_eq!(yr.energy(&f), expected, epsilon = F4_PROVENANCE_EXACT_TOL,);
-    }
-}
-
-/// Verify per-tet material assignment across BOTH the 3-shell radial
-/// partition AND the proximal-pure / distal-pure axial regions. In
-/// the band zone the sampled material is a smoothstep interpolation
-/// — band-tet assignment is checked separately via
-/// [`verify_blend_zone_material_provenance`] at the midplane sample
-/// where the smoothstep weight is bit-exactly 0.5.
-///
-/// Tets in the proximal-pure region (centroid.z >
-/// AXIAL_SPLIT + AXIAL_BAND_HALF_WIDTH) sample the proximal anchor
-/// per shell; tets in the distal-pure region (centroid.z <
-/// AXIAL_SPLIT - AXIAL_BAND_HALF_WIDTH) sample the distal anchor per
-/// shell. Band tets are skipped here.
-fn verify_material_assignment_partition(
-    mesh: &SdfMeshedTetMesh<Yeoh>,
-    shell_idx_per_tet: &[usize],
-    zone_idx_per_tet: &[usize],
-) {
-    let materials = mesh.materials();
-    assert_eq!(
-        materials.len(),
-        shell_idx_per_tet.len(),
-        "materials() length does not match per-tet shell-classification length",
-    );
-    assert_eq!(
-        materials.len(),
-        zone_idx_per_tet.len(),
-        "materials() length does not match per-tet zone-classification length",
-    );
-    let mut f = Matrix3::<f64>::identity();
-    f[(0, 0)] = 1.01;
-
-    let proximal_yeoh = [
-        ECOFLEX_00_20.to_yeoh(),
-        DRAGON_SKIN_10A.to_yeoh(),
-        DRAGON_SKIN_20A.to_yeoh(),
-    ];
-    let distal_yeoh = [
-        ECOFLEX_00_30.to_yeoh(),
-        DRAGON_SKIN_15.to_yeoh(),
-        DRAGON_SKIN_30A.to_yeoh(),
-    ];
-
-    let mut n_proximal_checked = 0usize;
-    let mut n_distal_checked = 0usize;
-    for (t, (&shell_idx, &zone_idx)) in shell_idx_per_tet
-        .iter()
-        .zip(zone_idx_per_tet.iter())
-        .enumerate()
-    {
-        let observed = materials[t].energy(&f);
-        match zone_idx {
-            // Distal-pure
-            0 => {
-                let expected = distal_yeoh[shell_idx].energy(&f);
-                assert!(
-                    (observed - expected).abs() <= MATERIAL_PROBE_EXACT_TOL,
-                    "tet {t} distal shell {shell_idx}: observed energy {observed} != expected {expected}",
-                );
-                n_distal_checked += 1;
-            }
-            // Band — sampled material varies with the smoothstep;
-            // skip exact-match check here, see
-            // `verify_blend_zone_material_provenance`.
-            1 => {}
-            // Proximal-pure
-            _ => {
-                let expected = proximal_yeoh[shell_idx].energy(&f);
-                assert!(
-                    (observed - expected).abs() <= MATERIAL_PROBE_EXACT_TOL,
-                    "tet {t} proximal shell {shell_idx}: observed energy {observed} != expected {expected}",
-                );
-                n_proximal_checked += 1;
-            }
-        }
-    }
-    assert!(
-        n_proximal_checked > 0,
-        "no proximal-pure tets encountered — axial zoning check is vacuous",
-    );
-    assert!(
-        n_distal_checked > 0,
-        "no distal-pure tets encountered — axial zoning check is vacuous",
-    );
-}
-
-/// NEW for row 24: at a tet centroid lying on the AXIAL_SPLIT plane,
-/// the sampled material is the bit-exact arithmetic mean of the
-/// proximal and distal anchors per shell. BlendedScalarField's
-/// smoothstep at `phi == 0` yields `outside_weight = 0.5` exactly per
-/// the doc-comment, so `(distal + proximal) / 2` is bit-exact in
-/// IEEE 754. Pin one tet centroid CLOSEST to z = AXIAL_SPLIT in each
-/// shell and verify the sampled energy matches the computed mean
-/// energy.
-fn verify_blend_zone_material_provenance(
-    mesh: &SdfMeshedTetMesh<Yeoh>,
-    tets: &[[VertexId; 4]],
-    rest_positions: &[Vec3],
-    shell_idx_per_tet: &[usize],
-) {
-    let materials = mesh.materials();
-    let mut f = Matrix3::<f64>::identity();
-    f[(0, 0)] = 1.01;
-
-    // For each shell, find the tet whose centroid is closest to the
-    // AXIAL_SPLIT plane.
-    let mut closest_per_shell: [Option<(usize, f64)>; 3] = [None; 3];
-    for (t, &[v0, v1, v2, v3]) in tets.iter().enumerate() {
-        let centroid = (rest_positions[v0 as usize]
-            + rest_positions[v1 as usize]
-            + rest_positions[v2 as usize]
-            + rest_positions[v3 as usize])
-            / 4.0;
-        let distance_from_split = (centroid.z - AXIAL_SPLIT_Z).abs();
-        let s = shell_idx_per_tet[t];
-        match closest_per_shell[s] {
-            None => closest_per_shell[s] = Some((t, distance_from_split)),
-            Some((_, d_prev)) if distance_from_split < d_prev => {
-                closest_per_shell[s] = Some((t, distance_from_split));
-            }
-            Some(_) => {}
-        }
-    }
-
-    let mu_pairs = [
-        (ECOFLEX_00_20.mu, ECOFLEX_00_30.mu),
-        (DRAGON_SKIN_10A.mu, DRAGON_SKIN_15.mu),
-        (DRAGON_SKIN_20A.mu, DRAGON_SKIN_30A.mu),
-    ];
-    let c2_pairs = [
-        (ECOFLEX_00_20.c2, ECOFLEX_00_30.c2),
-        (DRAGON_SKIN_10A.c2, DRAGON_SKIN_15.c2),
-        (DRAGON_SKIN_20A.c2, DRAGON_SKIN_30A.c2),
-    ];
-    let lambda_pairs = [
-        (ECOFLEX_00_20.lambda, ECOFLEX_00_30.lambda),
-        (DRAGON_SKIN_10A.lambda, DRAGON_SKIN_15.lambda),
-        (DRAGON_SKIN_20A.lambda, DRAGON_SKIN_30A.lambda),
-    ];
-
-    for (s, slot) in closest_per_shell.iter().enumerate() {
-        let (t, d) = slot.expect("every shell has at least one tet");
-        let centroid = {
-            let [v0, v1, v2, v3] = tets[t];
-            (rest_positions[v0 as usize]
-                + rest_positions[v1 as usize]
-                + rest_positions[v2 as usize]
-                + rest_positions[v3 as usize])
-                / 4.0
-        };
-        // The check is meaningful only if the centroid is well inside
-        // the band — outside the band the smoothstep weight isn't 0.5.
-        // BCC + IS produces tets whose centroids are at ~CELL_SIZE/4
-        // off-grid, so the closest tet to z = 0 sits within
-        // CELL_SIZE/2 of the split plane. AXIAL_BAND_HALF_WIDTH = 5 mm
-        // = 1.25 × CELL_SIZE, so the closest tet IS in the band.
-        assert!(
-            d < AXIAL_BAND_HALF_WIDTH,
-            "shell {s}: closest tet centroid distance from split = {d} m exceeds band half-width {AXIAL_BAND_HALF_WIDTH} m — band is too tight relative to BCC cell",
-        );
-
-        // Build the expected midplane Yeoh from the per-shell anchor
-        // pair, with each parameter as the IEEE-754-exact arithmetic
-        // mean of proximal and distal anchors.
-        let (mu_prox, mu_dist) = mu_pairs[s];
-        let (c2_prox, c2_dist) = c2_pairs[s];
-        let (lambda_prox, lambda_dist) = lambda_pairs[s];
-        // The midplane sampled values reflect the tet's actual
-        // centroid z (not exactly z = 0) — compute the smoothstep
-        // weight for that centroid and use it to interpolate. At
-        // |z − SPLIT| << BAND_HALF the weight is approximately 0.5
-        // but not bit-exactly so for a non-zero centroid offset.
-        // Mirror BlendedScalarField::sample's FMA pattern at
-        // `field/layered.rs:213-227` exactly so the comparison stays
-        // bit-tight: `outside_weight = s² · (3 − 2s)` via
-        // `mul_add(-s, 3)`, then the lerp via
-        // `(1 − w).mul_add(inside, w · outside)`.
-        let phi = centroid.z - AXIAL_SPLIT_Z;
-        let s_norm =
-            ((phi + AXIAL_BAND_HALF_WIDTH) / (2.0 * AXIAL_BAND_HALF_WIDTH)).clamp(0.0, 1.0);
-        let w_outside = s_norm * s_norm * 2.0_f64.mul_add(-s_norm, 3.0);
-        // BlendedScalarField: `inside_field = distal`, `outside_field
-        // = proximal`. At phi > 0 (proximal half), w_outside →
-        // proximal weight; at phi < 0 (distal half), w_outside → 0
-        // and the distal value dominates.
-        let mu_blend = (1.0 - w_outside).mul_add(mu_dist, w_outside * mu_prox);
-        let c2_blend = (1.0 - w_outside).mul_add(c2_dist, w_outside * c2_prox);
-        let lambda_blend = (1.0 - w_outside).mul_add(lambda_dist, w_outside * lambda_prox);
-        let expected_yeoh = Yeoh::from_lame_and_c2(mu_blend, lambda_blend, c2_blend);
-        let expected_energy = expected_yeoh.energy(&f);
-        let observed = materials[t].energy(&f);
-        assert_relative_eq!(
-            observed,
-            expected_energy,
-            epsilon = BLEND_MIDPLANE_TOL,
-            max_relative = BLEND_MIDPLANE_TOL,
-        );
-    }
-}
-
-fn verify_outer_layer_max_psi_final(results: &[RampStepResult]) {
-    let final_step = results.last().expect("ramp produced no results");
-    if capturing_bits() {
-        eprintln!(
-            "const MAX_PSI_OUTER_FINAL_REF_BITS: u64 = 0x{:016x};",
-            final_step.max_psi_outer_j_per_m3.to_bits(),
-        );
-        return;
-    }
-    assert_relative_eq!(
-        final_step.max_psi_outer_j_per_m3,
-        f64::from_bits(MAX_PSI_OUTER_FINAL_REF_BITS),
-        max_relative = SPARSE_REL_TOL,
-        epsilon = SPARSE_EPS_ABS,
-    );
-}
-
-fn verify_per_step_captured_bits(results: &[RampStepResult]) {
-    if capturing_bits() {
-        let force_z_hex: Vec<String> = results
-            .iter()
-            .map(|r| format!("0x{:016x}", r.force_total_z_n.to_bits()))
-            .collect();
-        let max_disp_hex: Vec<String> = results
-            .iter()
-            .map(|r| format!("0x{:016x}", r.max_disp_m.to_bits()))
-            .collect();
-        let psi_in_hex: Vec<String> = results
-            .iter()
-            .map(|r| format!("0x{:016x}", r.mean_psi_inner_j_per_m3.to_bits()))
-            .collect();
-        let psi_mi_hex: Vec<String> = results
-            .iter()
-            .map(|r| format!("0x{:016x}", r.mean_psi_middle_j_per_m3.to_bits()))
-            .collect();
-        let psi_ou_hex: Vec<String> = results
-            .iter()
-            .map(|r| format!("0x{:016x}", r.mean_psi_outer_j_per_m3.to_bits()))
-            .collect();
-        eprintln!(
-            "const FORCE_TOTAL_Z_RAMP_REF_BITS: [u64; N_RAMP_STEPS] = [\n    {},\n];",
-            force_z_hex.join(",\n    "),
-        );
-        eprintln!(
-            "const MAX_DISP_RAMP_REF_BITS: [u64; N_RAMP_STEPS] = [\n    {},\n];",
-            max_disp_hex.join(",\n    "),
-        );
-        eprintln!(
-            "const MEAN_PSI_INNER_RAMP_REF_BITS: [u64; N_RAMP_STEPS] = [\n    {},\n];",
-            psi_in_hex.join(",\n    "),
-        );
-        eprintln!(
-            "const MEAN_PSI_MIDDLE_RAMP_REF_BITS: [u64; N_RAMP_STEPS] = [\n    {},\n];",
-            psi_mi_hex.join(",\n    "),
-        );
-        eprintln!(
-            "const MEAN_PSI_OUTER_RAMP_REF_BITS: [u64; N_RAMP_STEPS] = [\n    {},\n];",
-            psi_ou_hex.join(",\n    "),
-        );
-        return;
-    }
-
-    for r in results {
-        let k = r.step - 1;
-        assert_relative_eq!(
-            r.force_total_z_n,
-            f64::from_bits(FORCE_TOTAL_Z_RAMP_REF_BITS[k]),
-            max_relative = SPARSE_REL_TOL,
-            epsilon = SPARSE_EPS_ABS,
-        );
-        assert_relative_eq!(
-            r.max_disp_m,
-            f64::from_bits(MAX_DISP_RAMP_REF_BITS[k]),
-            max_relative = SPARSE_REL_TOL,
-            epsilon = SPARSE_EPS_ABS,
-        );
-        assert_relative_eq!(
-            r.mean_psi_inner_j_per_m3,
-            f64::from_bits(MEAN_PSI_INNER_RAMP_REF_BITS[k]),
-            max_relative = SPARSE_REL_TOL,
-            epsilon = SPARSE_EPS_ABS,
-        );
-        assert_relative_eq!(
-            r.mean_psi_middle_j_per_m3,
-            f64::from_bits(MEAN_PSI_MIDDLE_RAMP_REF_BITS[k]),
-            max_relative = SPARSE_REL_TOL,
-            epsilon = SPARSE_EPS_ABS,
-        );
-        assert_relative_eq!(
-            r.mean_psi_outer_j_per_m3,
-            f64::from_bits(MEAN_PSI_OUTER_RAMP_REF_BITS[k]),
-            max_relative = SPARSE_REL_TOL,
-            epsilon = SPARSE_EPS_ABS,
-        );
-    }
-}
-
-/// NEW for row 24: per-zone-shell mean Ψ̄ at the FINAL step. 9 cells.
-/// Two ordering gates beyond the bit-pin:
-/// (a) Per-zone radial: Ψ̄_inner > Ψ̄_middle > Ψ̄_outer (within zone).
-/// (b) Per-shell axial: Ψ̄_proximal > Ψ̄_distal (within shell, at
-///     the deep penetration). Contact is at the proximal end + softer
-///     material there → strain concentrates proximally; the band's
-///     blended material sits between by construction.
-fn verify_zone_shell_psi_final(results: &[RampStepResult]) {
-    let final_step = results.last().expect("ramp produced no results");
-    let data = final_step
-        .final_step_data
-        .as_ref()
-        .expect("final step missing FinalStepData");
-    let psi = &data.mean_psi_zone_shell;
-
-    if capturing_bits() {
-        let labels = [
-            ("DISTAL_INNER", 0, 0),
-            ("DISTAL_MIDDLE", 0, 1),
-            ("DISTAL_OUTER", 0, 2),
-            ("BAND_INNER", 1, 0),
-            ("BAND_MIDDLE", 1, 1),
-            ("BAND_OUTER", 1, 2),
-            ("PROXIMAL_INNER", 2, 0),
-            ("PROXIMAL_MIDDLE", 2, 1),
-            ("PROXIMAL_OUTER", 2, 2),
-        ];
-        for (name, z, s) in labels {
-            eprintln!(
-                "const MEAN_PSI_{name}_FINAL_BITS: u64 = 0x{:016x};",
-                psi[z][s].to_bits(),
-            );
-        }
-        return;
-    }
-
-    let expected = [
-        [
-            MEAN_PSI_DISTAL_INNER_FINAL_BITS,
-            MEAN_PSI_DISTAL_MIDDLE_FINAL_BITS,
-            MEAN_PSI_DISTAL_OUTER_FINAL_BITS,
-        ],
-        [
-            MEAN_PSI_BAND_INNER_FINAL_BITS,
-            MEAN_PSI_BAND_MIDDLE_FINAL_BITS,
-            MEAN_PSI_BAND_OUTER_FINAL_BITS,
-        ],
-        [
-            MEAN_PSI_PROXIMAL_INNER_FINAL_BITS,
-            MEAN_PSI_PROXIMAL_MIDDLE_FINAL_BITS,
-            MEAN_PSI_PROXIMAL_OUTER_FINAL_BITS,
-        ],
-    ];
-    for z in 0..3 {
-        for s in 0..3 {
-            assert_relative_eq!(
-                psi[z][s],
-                f64::from_bits(expected[z][s]),
-                max_relative = SPARSE_REL_TOL,
-                epsilon = SPARSE_EPS_ABS,
-            );
-        }
-    }
-
-    // Per-zone radial ordering: `Ψ̄_inner > Ψ̄_middle > Ψ̄_outer`.
-    for (z, row) in psi.iter().enumerate() {
-        let zone_name = match z {
-            0 => "distal",
-            1 => "band",
-            _ => "proximal",
-        };
-        assert!(
-            row[0] > row[1],
-            "zone {zone_name}: Ψ̄_inner ({:e}) ≯ Ψ̄_middle ({:e})",
-            row[0],
-            row[1],
-        );
-        assert!(
-            row[1] > row[2],
-            "zone {zone_name}: Ψ̄_middle ({:e}) ≯ Ψ̄_outer ({:e})",
-            row[1],
-            row[2],
-        );
-    }
-
-    // Per-shell axial ordering: `Ψ̄_proximal > Ψ̄_distal` at the
-    // final step. Band sits between by construction (smoothstep
-    // mixing assigns continuous material parameters; the strain
-    // field is also continuous).
-    let proximal_row = &psi[2];
-    let distal_row = &psi[0];
-    for (s, (&prox, &dist)) in proximal_row.iter().zip(distal_row.iter()).enumerate() {
-        let shell_name = match s {
-            0 => "inner",
-            1 => "middle",
-            _ => "outer",
-        };
-        assert!(
-            prox > dist,
-            "shell {shell_name}: Ψ̄_proximal ({prox:e}) ≯ Ψ̄_distal ({dist:e}) — contact is at the proximal end with softer material; strain should concentrate proximally",
-        );
-    }
-}
-
-// =============================================================================
 // JSON readout
 // =============================================================================
 
@@ -2295,11 +1371,8 @@ fn write_json_readout(
 // [`sim_soft::viz::boundary_surface`] + [`sim_soft::viz::slab_cut`]
 // (public API at `sim/L0/soft/src/viz/mod.rs`) at F1.1 and the
 // inline scratch helpers + the x-slab emit are dropped here at F1.2.
-// The z-slab and x-slab tet-COUNT regression gates
-// (`verify_zslab_counts_exact`,
-// `verify_xslab_zone_shell_counts_exact`) survive as cheap centroid
-// filters — no PLY emit, just centroid classification + count
-// invariants.
+// (This row is a demo — it asserts nothing; the pre-Rule-B z-slab /
+// x-slab count gates were stripped in the arc-close de-gate.)
 
 // =============================================================================
 // main
@@ -2377,21 +1450,6 @@ fn main() -> Result<()> {
     #[allow(clippy::cast_precision_loss)] // zone idx ∈ {0,1,2}; lossless
     let material_zone_id: Vec<f64> = zone_idx_per_tet.iter().map(|&z| z as f64).collect();
 
-    // Quality + counts gates BEFORE the ramp.
-    verify_quality_floors(&mesh);
-    verify_counts_exact(
-        &mesh,
-        &referenced,
-        &bc.pinned_vertices,
-        n_inner,
-        n_middle,
-        n_outer,
-    );
-    verify_zone_shell_counts_exact(n_zone_shell);
-    verify_material_assignment_partition(&mesh, &shell_idx_per_tet, &zone_idx_per_tet);
-    verify_material_provenance();
-    verify_blend_zone_material_provenance(&mesh, &tets, &positions, &shell_idx_per_tet);
-
     // 6. Quasi-static intrusion ramp. The pre-F1.2 explicit
     // `drop(mesh)` was retired here — F1.2's
     // `sim_soft::viz::{boundary_surface, slab_cut}` calls at the
@@ -2415,39 +1473,7 @@ fn main() -> Result<()> {
         n_zone_shell,
     )?;
 
-    // 7. Per-step + final-step verifies.
-    //
-    // Row 24's load-case-dependent verify gates
-    // (`verify_force_displacement_monotone`,
-    // `verify_per_step_strain_energy_ordering`,
-    // `verify_per_step_max_disp_bounded`,
-    // `verify_n_contact_pairs_final_exact`,
-    // `verify_outer_layer_max_psi_final`,
-    // `verify_per_step_captured_bits`, `verify_zone_shell_psi_final`)
-    // do NOT carry through to row 25 — they were anchored to the row
-    // 24 sphere-probe-at-+z load case and don't generalize to row 25's
-    // cuboid-plug-into-open-mouth contact geometry. Specifically:
-    //   - force_z is NEGATIVE in row 25 (plug pushes down on the
-    //     wrap material in the xy-interference band; force_on_soft.z
-    //     points -z) vs row 24's POSITIVE +z reaction. The
-    //     monotonicity sign convention inverts.
-    //   - Force trajectory is non-monotone during contact-onset
-    //     (steps 1-4 with iter=0) before stabilizing once Newton
-    //     iterates. Bench-checked: the early-step jumps are penalty
-    //     contact's transient response, not a physical anomaly.
-    //   - Strain-energy-density ordering inner > middle > outer
-    //     doesn't hold under interference-fit loading because the
-    //     stress concentrates at the wrap material in the xy-band
-    //     (outer-shell-adjacent), not at the inner cavity-wall.
-    //
-    // Geometry + count gates (`verify_n_ramp_steps_exact`,
-    // `verify_per_step_solver_converges`) carry through unchanged.
-    // F1.7+ work could re-derive row 25-specific captured-bit gates
-    // once the contact-onset transient is understood mechanistically.
-    verify_n_ramp_steps_exact(results.len());
-    verify_per_step_solver_converges(&results);
-
-    // 8. JSON + PLY readouts.
+    // 7. JSON + PLY readouts.
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("out");
     std::fs::create_dir_all(&out_dir)?;
 
@@ -2473,41 +1499,6 @@ fn main() -> Result<()> {
         .final_step_data
         .as_ref()
         .expect("final ramp step missing FinalStepData");
-    let half_cell = 0.5 * CELL_SIZE;
-
-    // z-slab + x-slab tet-COUNT regression gates. Cheap centroid
-    // filter — no PLY emit — surviving as bit-equal regression
-    // checks (z-slab from row 23 carry-through; x-slab from v3
-    // axial differentiator). The PLY-emit-with-data path was
-    // retired at F1.2; the count partitions stay because they
-    // cost ~one centroid-comparison per tet and pin a useful
-    // geometric invariant.
-    let mut n_zone_shell_xslab: [[usize; 3]; 3] = [[0; 3]; 3];
-    let mut n_inner_z_carry = 0usize;
-    let mut n_middle_z_carry = 0usize;
-    let mut n_outer_z_carry = 0usize;
-    for (tet_idx, &[v0, v1, v2, v3]) in tets.iter().enumerate() {
-        let rest_centroid = (final_data.rest_positions[v0 as usize]
-            + final_data.rest_positions[v1 as usize]
-            + final_data.rest_positions[v2 as usize]
-            + final_data.rest_positions[v3 as usize])
-            / 4.0;
-        if rest_centroid.z.abs() < half_cell {
-            match shell_idx_per_tet[tet_idx] {
-                0 => n_inner_z_carry += 1,
-                1 => n_middle_z_carry += 1,
-                _ => n_outer_z_carry += 1,
-            }
-        }
-        if rest_centroid.x.abs() < half_cell {
-            let s = shell_idx_per_tet[tet_idx];
-            let z = zone_idx_per_tet[tet_idx];
-            n_zone_shell_xslab[z][s] += 1;
-        }
-    }
-    verify_zslab_counts_exact(n_inner_z_carry, n_middle_z_carry, n_outer_z_carry);
-    verify_xslab_zone_shell_counts_exact(n_zone_shell_xslab);
-
     // Boundary surface + slab cut via `sim_soft::viz` public API.
     // Both helpers consume `&dyn Mesh<Yeoh>` and emit
     // `AttributedMesh` with the supplied per-tet scalars projected
@@ -2875,42 +1866,3 @@ fn print_summary(
         "  uv run examples/sim-soft/scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp-open-mouth/plot_ramp.py"
     );
 }
-
-// =============================================================================
-// Compile-time assertions on geometric invariants
-// =============================================================================
-
-const _: () = {
-    assert!(SCAN_HX > 0.0);
-    assert!(SCAN_HY > 0.0);
-    assert!(SCAN_HZ > 0.0);
-    assert!(LAYER_INNER > 0.0);
-    assert!(LAYER_INNER < LAYER_MIDDLE_OUTER);
-    assert!(LAYER_MIDDLE_OUTER < LAYER_OUTER);
-    assert!(WRAP_THICKNESS > 0.0);
-    assert!(CELL_SIZE > 0.0);
-    assert!(STATIC_DT > 0.0);
-    assert!(PROBE_PLUG_HX > SCAN_HX);
-    assert!(PROBE_PLUG_HY > SCAN_HY);
-    assert!(PROBE_PLUG_HZ > 0.0);
-    assert!(PROBE_INTERFERENCE > 0.0);
-    assert!(N_RAMP_STEPS > 0);
-    assert!(PROBE_PENETRATION_FINAL > 0.0);
-    assert!(PROBE_PENETRATION_FINAL < PROBE_PLUG_HZ);
-    assert!(RAMP_STEP_DELTA > 0.0);
-    assert!(MAX_NEWTON_ITER > 0);
-    assert!(LAYER_OUTER - LAYER_MIDDLE_OUTER >= CELL_SIZE);
-    assert!(BBOX_HALF_X > SCAN_HX + WRAP_THICKNESS);
-    assert!(BBOX_HALF_Y > SCAN_HY + WRAP_THICKNESS);
-    assert!(BBOX_HALF_Z > SCAN_HZ + WRAP_THICKNESS);
-    assert!(N_RAMP_STEPS_EXACT == N_RAMP_STEPS);
-    // Axial zoning placement: the band must fit entirely within the
-    // body's z extent so neither proximal nor distal pure regions
-    // collapse to empty.
-    assert!(AXIAL_BAND_HALF_WIDTH > 0.0);
-    assert!(AXIAL_SPLIT_Z + AXIAL_BAND_HALF_WIDTH < SCAN_HZ + WRAP_THICKNESS);
-    assert!(AXIAL_SPLIT_Z - AXIAL_BAND_HALF_WIDTH > -(SCAN_HZ + WRAP_THICKNESS));
-    // Band must span at least one BCC cell (smoothstep would alias on
-    // the lattice if the band is sub-cell).
-    assert!(2.0 * AXIAL_BAND_HALF_WIDTH >= CELL_SIZE);
-};

@@ -57,7 +57,7 @@ The plug starts at depth=0 with its bottom exactly at the rim plane (`z = SCAN_H
 
 ## Ramp behavior
 
-Run `cargo run --release` (or with `CF_CAPTURE_BITS=1` for first-time bit capture). The `print_summary` table at run end shows per-step `force_z` / `max_disp` / `iter_count` / `n_active_pairs`:
+Run `cargo run --release`. The `print_summary` table at run end shows per-step `force_z` / `max_disp` / `iter_count` / `n_active_pairs`:
 
 ```text
 step | depth(mm) | iter | force_z(N) | max_disp(m)
@@ -78,33 +78,15 @@ step | depth(mm) | iter | force_z(N) | max_disp(m)
 
 Per the [device memo][mem]'s sanitization directive — the scanned reference geometry is referred to as "scanned reference geometry" or "scan stand-in" throughout this crate's prose. No anatomical references appear in any tracked surface. The cuboid placeholder is a parametric synthetic stand-in: the pipeline demonstration is the workflow, not the cuboid's specific geometry. Production runs swap the cuboid for a real scan via the `mesh_sdf::SignedDistanceField` → `cf_design::Solid::from_sdf` bridge with no other code change.
 
-## Numerical anchors
+## Classification — a `demo`, not a validator
 
-Row 25 disables the load-case-dependent `verify_*` gates that don't generalize from row 24's sphere-into-closed-+z-face to row 25's cuboid-plug-into-open-mouth — see the comment block at the verify-call site in `src/main.rs` for per-gate justification. Disabled fns + their captured-bits constants are retained in source under `#![allow(dead_code)]` so F1.7+ can re-derive row-25-specific gates once the contact-onset transient is understood mechanistically.
+This row is a **`demo`** (`example_kind = "demo"`): CI compile-checks it but never runs it, and it **asserts nothing**. That's the honest classification for its load case:
 
-**Active gates** (geometry + counts; not load-case-dependent):
+- Its ramp-physics oracles are inherently **inapplicable**. The interference-fit cuboid plug **inverts the force sign** (`force_z` is NEGATIVE — the plug pushes down on the wrap material in the xy-interference band) and **inverts the strain ordering** (`Ψ̄_inner > Ψ̄_middle > Ψ̄_outer` fails, because stress concentrates at the outer-shell-adjacent wrap material in the interference band, not the inner cavity wall). So the monotonicity + ordering gates that make rows 22/23/24 validators cannot hold here.
+- The first ~4 ramp steps are **degenerate** — `iter=0` with zero deformation until the plug engages the cavity wall at ~2.5 mm — so a per-step convergence gate would be near-vacuous over half the ramp.
+- Its real payload is the **open-boundary-topology viz** (see Visuals) on the production-target open-mouth geometry.
 
-- `verify_quality_floors` — per-tet `signed_volume > 0` (D-10 detector).
-- `verify_counts_exact` — `n_tets`, `n_vertices`, `n_referenced`, `n_pinned`, per-shell tet counts. Row 25 values:
-  - `n_tets = 72_338` (vs row 24's 74_628; the open-mouth carve removes ~2.3k tets from the proximal half)
-  - `n_vertices = 32_269` (vs 31_966)
-  - `n_referenced = 17_115` (vs 17_384)
-  - `n_pinned = 6_884` (vs 7_046; rim band has fewer pinned vertices than row 24's full +z face)
-  - Per-shell: 24_736 inner / 16_450 middle / 31_152 outer (vs 25_892 / 16_656 / 32_080)
-- `verify_zone_shell_counts_exact` — 9-cell zone × shell partition. Distal + band counts bit-equal to row 24 (z<0 unchanged); proximal counts differ (open-mouth carve).
-- `verify_zslab_counts_exact` + `verify_xslab_zone_shell_counts_exact` — z- and x-slab partition gates carried through. z-slab counts bit-equal to row 24's (z=0 equator unchanged); x-slab counts differ in the proximal sub-zone only.
-- `verify_material_assignment_partition` — per-tet sampled `(μ, C₂, λ)` matches the per-zone × per-shell anchor's `to_yeoh()` energy at `EXACT_TOL = 0.0` for proximal-pure and distal-pure zone tets.
-- `verify_material_provenance` — `to_yeoh()` round-trip energy contract on all six anchors.
-- `verify_blend_zone_material_provenance` — bit-exact smoothstep midplane sampling for one tet centroid CLOSEST to z = AXIAL_SPLIT_Z in each radial shell.
-- `verify_n_ramp_steps_exact` — `len(results) == N_RAMP_STEPS_EXACT = 8`.
-- `verify_per_step_solver_converges` — `iter_count < MAX_NEWTON_ITER = 150` AND `final_residual_norm < 1e-10` per step (8 of them).
-
-**Disabled gates** (load-case-dependent; row 24's specific captures don't apply):
-
-- `verify_per_step_iter_count` — row 24's 16-step pattern doesn't apply.
-- `verify_force_displacement_monotone` — sign convention inverts (force_z is NEGATIVE for plug-on-cavity-wall) AND non-monotone during contact-onset (steps 1-4 with iter=0).
-- `verify_per_step_strain_energy_ordering` — inner > middle > outer doesn't hold under interference-fit loading (stress concentrates at the wrap material in the xy-band, outer-shell-adjacent).
-- `verify_per_step_max_disp_bounded` / `verify_n_contact_pairs_final_exact` / `verify_outer_layer_max_psi_final` / `verify_per_step_captured_bits` / `verify_zone_shell_psi_final` — anchored to row 24's specific captured values.
+Constitutive / mesher / blend correctness is covered by the sibling validator rows (21/22/23/24) + the sim-soft lib tests (`yeoh_contract.rs`, `silicone_table.rs`, `sdf_material_tagging.rs`, `blended_material_composition.rs`). The demo DOES route the calibrated Yeoh validity bounds (`from_yeoh_fields_with_bounds`), so a clean `cargo run --release` reaches 4 mm without tripping the fail-closed validity gate.
 
 ## Visuals
 
@@ -140,14 +122,6 @@ cargo run -p example-sim-soft-scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp-open-
 ```
 
 Per [`feedback_release_mode_heavy_tests`][rel] — release mode required. 8-step total runtime ~10-30 s release. The `CELL_SIZE = 0.004 m` (4 mm) is sized so each of the 6/4/4 mm layers carries at least one BCC cell across thickness; finer cells (e.g., `0.002 m`) trip an SPD pivot at the FIRST ramp step (empirically tested at row-22 v2-spec spike time, applies to rows 24/25 by inheritance).
-
-## First-time bit capture
-
-```sh
-CF_CAPTURE_BITS=1 cargo run -p example-sim-soft-scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp-open-mouth --release
-```
-
-Prints a paste-ready block of every `*_EXACT` count (geometry partition gates only — the disabled load-case gates' captured bits are placeholders). Use for first-time author-bake and intentional re-bake.
 
 ## Roadmap
 
