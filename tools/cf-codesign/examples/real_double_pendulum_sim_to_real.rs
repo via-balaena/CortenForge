@@ -69,7 +69,7 @@ const MU_C1: f64 = 1.91e-4; // joint-1 Coulomb (N·m)
 const MU_V2: f64 = 5.08e-6; // joint-2 viscous
 const MU_C2: f64 = 4.44e-5; // joint-2 Coulomb
 // Phase 2 integrates with RK4 at this timestep. Semi-implicit Euler (Phase 1's
-// integrator) bleeds ~0.3 J of *numerical* energy over the ~66 s decay —
+// integrator) bleeds ~0.3 J of *numerical* energy over the ~62 s decay —
 // comparable to the ~1 J of *physical* decay we identify — which would swamp the
 // damping signal. RK4 conserves energy to ~0 over the same rollout up to dt≈5e-4
 // (checked vs MuJoCo: 0.0 mJ drift), so it is mandatory for an energy-based damping
@@ -502,9 +502,11 @@ fn main() {
     // dissipation design matrix is near-singular (cond ~4e4) and a blind inversion
     // collapses onto one or two terms. A scalar magnitude is the only robustly
     // recoverable quantity, so that is all we fit.
+    // Scan wide enough that the (soft, realization-dependent) optimum lands well
+    // inside the range — a railed boundary value would be a fit artifact, not a fit.
     let mut best = (1.0f64, rms_table3);
     let mut a = 0.5;
-    while a <= 6.0 + 1e-9 {
+    while a <= 8.0 + 1e-9 {
         let r = rms_energy(a);
         if r < best.1 {
             best = (a, r);
@@ -556,7 +558,7 @@ fn main() {
         1e3 * rms_nodamp
     );
     assert!(
-        best.1 < 0.4 * rms_nodamp && (1.0..=6.0).contains(&best.0),
+        best.1 < 0.4 * rms_nodamp && (1.0..=8.0).contains(&best.0),
         "Phase-2 regression: scalar fit did not improve as expected (best {:.0} mJ at α={:.2})",
         1e3 * best.1,
         best.0
