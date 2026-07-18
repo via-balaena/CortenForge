@@ -88,9 +88,10 @@ struct CrateEntry {
     /// Whether the crate has no direct Bevy dependency. Headless examples are
     /// bound by the classification contract; Bevy (visual) examples are exempt.
     is_headless: bool,
-    /// Direct dependency names (raw, unfiltered) from `cargo metadata`. Filtered
-    /// to workspace members when building the dep graph for compile-weight shard
-    /// balancing (see [`transitive_dep_weights`]).
+    /// Direct dependency names from `cargo metadata`, excluding dev-deps (see
+    /// [`direct_dep_names`]). Intersected with workspace members when building
+    /// the dep graph for compile-weight shard balancing (see
+    /// [`transitive_dep_weights`]).
     deps: Vec<String>,
 }
 
@@ -424,13 +425,22 @@ fn depends_on_bevy(pkg: &serde_json::Value) -> bool {
     })
 }
 
-/// The direct dependency names of a `cargo metadata` package (raw; the caller
-/// intersects with the workspace-member set to get intra-workspace edges).
+/// The direct dependency names of a `cargo metadata` package, excluding
+/// dev-dependencies (the caller intersects with the workspace-member set to get
+/// intra-workspace edges).
+///
+/// Dev-deps are dropped because the weight proxies the cost of `cargo run
+/// --release -p <crate>` — which compiles the crate's normal and build
+/// dependencies but NOT its dev-dependencies (those build only for that crate's
+/// own tests/benches). In `cargo metadata`, a dependency entry's `kind` is
+/// `null` for a normal dep, `"build"` for a build dep, and `"dev"` for a dev
+/// dep; only the last is excluded.
 fn direct_dep_names(pkg: &serde_json::Value) -> Vec<String> {
     pkg["dependencies"]
         .as_array()
         .map(|deps| {
             deps.iter()
+                .filter(|d| d["kind"].as_str() != Some("dev"))
                 .filter_map(|d| d["name"].as_str().map(String::from))
                 .collect()
         })
