@@ -550,7 +550,7 @@ impl Solid {
     ///
     /// Sugar over [`Self::user_fn`] for the common pattern of bridging an
     /// externally-defined signed-distance function — a scan-derived
-    /// [`mesh_sdf::Signed`], a custom analytic function
+    /// `mesh_sdf::Signed`, a custom analytic function
     /// wrapped behind an `impl Sdf` newtype, or any other crate's SDF
     /// type that satisfies the [`Sdf`] contract — into the typed-`Solid`
     /// expression tree, so it composes with parametric primitives via

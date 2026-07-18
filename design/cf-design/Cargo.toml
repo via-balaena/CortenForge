@@ -31,8 +31,6 @@ parallel-meshing = ["dep:rayon"]
 [dependencies]
 # Geometric primitives (workspace)
 cf-geometry = { workspace = true }
-# Triangle-mesh SDF source (impl cf_design::Sdf for SignedDistanceField)
-mesh-sdf = { workspace = true }
 # Per-vertex attribute container (Solid::mesh* returns AttributedMesh)
 mesh-types = { workspace = true }
 # Linear algebra (vectors, matrices, rotations)
@@ -49,6 +47,14 @@ sim-core = { workspace = true }
 [dev-dependencies]
 # Approximate equality for numeric tests
 approx = { workspace = true }
+# mesh-sdf metrics (`surface_deviation_to_sdf` + `DeviationReport` +
+# `SampleOptions`) for the test-only mesher-fidelity harness
+# (`mesher_fidelity`, a `#[cfg(test)]` module), plus `Signed` /
+# `TriMeshDistance` / `PseudoNormalSign` in `solid_layered` unit tests.
+# The `Sdf` trait itself lives in cf-geometry and the blanket
+# `impl Sdf for Signed<D, S>` lives in mesh-sdf, so no non-test build
+# path references this crate — hence dev-only.
+mesh-sdf = { workspace = true }
 # 3MF round-trip tests + sim-mjcf integration tests + sphere-diagnostic test
 # live in `design/cf-design-tests/` (tier L0-integration) so the heavier
 # mesh-io[threemf] + sim-mjcf chains stay out of cf-design's L0 dev-graph.
