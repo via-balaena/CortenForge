@@ -68,10 +68,22 @@ use crate::pr_scope::{filter_only, select_shard_weighted};
 use anyhow::{Context, Result};
 use owo_colors::OwoColorize;
 use regex::Regex;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
+use std::time::Instant;
 use xshell::{cmd, Shell};
+
+/// Committed per-validator wall-time baseline (seconds), the weight source for
+/// shard balancing. Regenerate with `run-validators --record-timings`.
+const TIMINGS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/validator_timings.json");
+
+/// Weight (seconds) for a validator absent from the timings baseline — e.g. one
+/// added since the last `--record-timings` refresh. Deliberately generous so an
+/// unknown validator is treated as heavy and isolated into its own bucket by the
+/// LPT split rather than risking a slow cluster; it self-corrects on the next
+/// refresh.
+const UNKNOWN_VALIDATOR_SECS: f64 = 60.0;
 
 /// A workspace crate paired with the facts the contract needs.
 struct CrateEntry {
@@ -88,11 +100,6 @@ struct CrateEntry {
     /// Whether the crate has no direct Bevy dependency. Headless examples are
     /// bound by the classification contract; Bevy (visual) examples are exempt.
     is_headless: bool,
-    /// Direct dependency names from `cargo metadata`, excluding dev-deps (see
-    /// [`direct_dep_names`]). Intersected with workspace members when building
-    /// the dep graph for compile-weight shard balancing (see
-    /// [`transitive_dep_weights`]).
-    deps: Vec<String>,
 }
 
 /// The two `example_kind` values under `[package.metadata.cortenforge]`.
@@ -128,7 +135,17 @@ enum Gap {
 /// workspace — the contract is the drift backstop and must never be narrowed.
 /// A run set that is empty *after* filtering is a legitimate no-op (this shard
 /// has no affected validator), distinct from the "zero discovered" hard-fail.
-pub fn run(only: Option<Vec<String>>, shard: Option<(usize, usize)>) -> Result<()> {
+///
+/// Shards are balanced by measured wall-time (the committed
+/// `validator_timings.json` baseline), not validator count — runtime dominates
+/// and is uneven, so a count-balanced split clusters the slow ones. With
+/// `record_timings`, each validator's observed time is written back to the
+/// baseline after the run.
+pub fn run(
+    only: Option<Vec<String>>,
+    shard: Option<(usize, usize)>,
+    record_timings_flag: bool,
+) -> Result<()> {
     let sh = Shell::new()?;
     let crates = discover_crates(&sh)?;
 
@@ -195,36 +212,18 @@ pub fn run(only: Option<Vec<String>>, shard: Option<(usize, usize)>) -> Result<(
         );
     }
 
-    // Compile-weight per validator so heavy ones (pulling the ML/RL tree) spread
-    // across shards instead of clustering — computed from the metadata already
-    // read above, over the WHOLE workspace graph (weight is intrinsic, not
-    // scope-dependent).
-    let members: HashSet<&str> = crates.iter().map(|c| c.name.as_str()).collect();
-    let direct: HashMap<String, Vec<String>> = crates
-        .iter()
-        .map(|c| {
-            let member_deps = c
-                .deps
-                .iter()
-                .filter(|d| members.contains(d.as_str()))
-                .cloned()
-                .collect();
-            (c.name.clone(), member_deps)
-        })
-        .collect();
-    let weights = transitive_dep_weights(&direct);
-
     // PR-scope the RUN only (the audit above stays whole-workspace): apply
     // `--only` (the affected set), then split by `--shard` via weight-aware LPT
-    // bin-packing. An empty result here means "no affected validator in this
-    // selection" — a legitimate no-op, NOT the zero-discovered hard-fail (that
-    // guard ran on the full set above).
+    // bin-packing on measured wall-time. An empty result means "no affected
+    // validator in this selection" — a legitimate no-op, NOT the zero-discovered
+    // hard-fail (that guard ran on the full set above).
+    let timings = load_timings();
     let mut validator_names: Vec<String> = validators.iter().map(|v| v.name.clone()).collect();
     validator_names.sort();
     let weighted: Vec<(String, u64)> = filter_only(&validator_names, only.as_deref())
         .into_iter()
         .map(|name| {
-            let w = weights.get(&name).copied().unwrap_or(0);
+            let w = weight_millis(&timings, &name);
             (name, w)
         })
         .collect();
@@ -240,16 +239,29 @@ pub fn run(only: Option<Vec<String>>, shard: Option<(usize, usize)>) -> Result<(
 
     println!("\nRunning {} validator(s) (--release):\n", run_names.len());
     let mut failures: Vec<&str> = Vec::new();
+    let mut measured: HashMap<String, f64> = HashMap::new();
     for name in &run_names {
         println!("{} {}", "──▶".cyan(), name.bold());
+        let start = Instant::now();
         let outcome = cmd!(sh, "cargo run --release --quiet -p {name}").run();
+        let secs = start.elapsed().as_secs_f64();
+        measured.insert(name.clone(), secs);
         match outcome {
-            Ok(()) => println!("  {} {}\n", "PASS".green().bold(), name),
+            Ok(()) => println!("  {} {name} ({secs:.1}s)\n", "PASS".green().bold()),
             Err(_) => {
-                println!("  {} {}\n", "FAIL".red().bold(), name);
+                println!("  {} {name} ({secs:.1}s)\n", "FAIL".red().bold());
                 failures.push(name.as_str());
             }
         }
+    }
+
+    if record_timings_flag {
+        record_timings(&timings, &measured)?;
+        println!(
+            "  {} {} timing(s) → {TIMINGS_PATH}",
+            "recorded".cyan().bold(),
+            measured.len()
+        );
     }
 
     let total = run_names.len();
@@ -401,7 +413,6 @@ fn discover_crates(sh: &Shell) -> Result<Vec<CrateEntry>> {
             .map(String::from);
 
         let is_headless = !depends_on_bevy(pkg);
-        let deps = direct_dep_names(pkg);
 
         crates.push(CrateEntry {
             name,
@@ -409,7 +420,6 @@ fn discover_crates(sh: &Shell) -> Result<Vec<CrateEntry>> {
             kind,
             is_example,
             is_headless,
-            deps,
         });
     }
     Ok(crates)
@@ -425,55 +435,55 @@ fn depends_on_bevy(pkg: &serde_json::Value) -> bool {
     })
 }
 
-/// The direct dependency names of a `cargo metadata` package, excluding
-/// dev-dependencies (the caller intersects with the workspace-member set to get
-/// intra-workspace edges).
-///
-/// Dev-deps are dropped because the weight proxies the cost of `cargo run
-/// --release -p <crate>` — which compiles the crate's normal and build
-/// dependencies but NOT its dev-dependencies (those build only for that crate's
-/// own tests/benches). In `cargo metadata`, a dependency entry's `kind` is
-/// `null` for a normal dep, `"build"` for a build dep, and `"dev"` for a dev
-/// dep; only the last is excluded.
-fn direct_dep_names(pkg: &serde_json::Value) -> Vec<String> {
-    pkg["dependencies"]
-        .as_array()
-        .map(|deps| {
-            deps.iter()
-                .filter(|d| d["kind"].as_str() != Some("dev"))
-                .filter_map(|d| d["name"].as_str().map(String::from))
-                .collect()
-        })
+/// Load the committed per-validator wall-time baseline (seconds), or an empty
+/// map if the file is missing or unparseable. An empty map is graceful: every
+/// validator then falls back to [`UNKNOWN_VALIDATOR_SECS`], so sharding degrades
+/// to a uniform (round-robin-equivalent) split until the baseline is recorded.
+fn load_timings() -> HashMap<String, f64> {
+    std::fs::read_to_string(TIMINGS_PATH)
+        .ok()
+        .map(|json| parse_timings(&json))
         .unwrap_or_default()
 }
 
-/// Forward transitive workspace-dependency count per crate — a compile-weight
-/// proxy for balancing validator shards. `direct` maps each crate to its DIRECT
-/// workspace-member deps; the weight is the number of DISTINCT crates reachable
-/// over dependency edges, excluding the crate itself. A validator that pulls the
-/// ML/RL tree transitively reaches far more crates than a pure-mesh one, so it
-/// weighs more — no hand-maintained "heavy" list. A dependency cycle terminates
-/// via the `seen` set (and self-reach is excluded).
-fn transitive_dep_weights(direct: &HashMap<String, Vec<String>>) -> HashMap<String, u64> {
-    let mut weights = HashMap::with_capacity(direct.len());
-    for start in direct.keys() {
-        let mut seen: HashSet<&str> = HashSet::new();
-        let mut stack: Vec<&str> = direct[start].iter().map(String::as_str).collect();
-        while let Some(c) = stack.pop() {
-            if seen.insert(c) {
-                if let Some(deps) = direct.get(c) {
-                    for d in deps {
-                        if !seen.contains(d.as_str()) {
-                            stack.push(d);
-                        }
-                    }
-                }
-            }
-        }
-        let weight = seen.iter().filter(|&&c| c != start.as_str()).count() as u64;
-        weights.insert(start.clone(), weight);
+/// Parse a `{ "validator-name": seconds }` JSON map; a malformed file yields an
+/// empty map (a bad baseline must never crash the gate).
+fn parse_timings(json: &str) -> HashMap<String, f64> {
+    serde_json::from_str(json).unwrap_or_default()
+}
+
+/// The shard weight (integer milliseconds) for a validator: its recorded
+/// wall-time, or [`UNKNOWN_VALIDATOR_SECS`] when absent. Milliseconds keep the
+/// LPT bin-packer's `u64` arithmetic exact.
+fn weight_millis(timings: &HashMap<String, f64>, name: &str) -> u64 {
+    let secs = timings.get(name).copied().unwrap_or(UNKNOWN_VALIDATOR_SECS);
+    (secs * 1000.0) as u64
+}
+
+/// Merge freshly-measured timings into the baseline and write it back, sorted by
+/// key so the committed file has a stable, reviewable diff. Existing entries not
+/// re-measured this run (e.g. under `--shard`/`--only`) are preserved.
+fn record_timings(existing: &HashMap<String, f64>, measured: &HashMap<String, f64>) -> Result<()> {
+    let mut merged = existing.clone();
+    for (name, secs) in measured {
+        merged.insert(name.clone(), *secs);
     }
-    weights
+    let mut sorted: Vec<(&String, &f64)> = merged.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(b.0));
+    let map: serde_json::Map<String, serde_json::Value> = sorted
+        .into_iter()
+        .map(|(k, v)| {
+            (
+                k.clone(),
+                serde_json::json!((v * 1000.0).round() / 1000.0), // 3-dp, stable
+            )
+        })
+        .collect();
+    let json = serde_json::to_string_pretty(&serde_json::Value::Object(map))
+        .context("serialize validator timings")?;
+    std::fs::write(TIMINGS_PATH, json + "\n")
+        .with_context(|| format!("write timings baseline to {TIMINGS_PATH}"))?;
+    Ok(())
 }
 
 /// Triage heuristic: does this crate's `src/` self-gate — fail via a non-zero
@@ -524,58 +534,35 @@ fn strip_line_comments(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        audit_gap, contract_violation, source_self_gates, transitive_dep_weights, Gap, KIND_DEMO,
-        KIND_VALIDATOR,
+        audit_gap, contract_violation, parse_timings, source_self_gates, weight_millis, Gap,
+        KIND_DEMO, KIND_VALIDATOR, UNKNOWN_VALIDATOR_SECS,
     };
-    use std::collections::HashMap;
     use std::fs;
     use std::path::PathBuf;
 
-    fn graph(edges: &[(&str, &[&str])]) -> HashMap<String, Vec<String>> {
-        edges
-            .iter()
-            .map(|(k, ds)| (k.to_string(), ds.iter().map(|s| s.to_string()).collect()))
-            .collect()
+    #[test]
+    fn parse_timings_reads_name_to_seconds_map() {
+        let t = parse_timings(r#"{"example-a": 12.5, "example-b": 3.0}"#);
+        assert_eq!(t.get("example-a"), Some(&12.5));
+        assert_eq!(t.get("example-b"), Some(&3.0));
     }
 
     #[test]
-    fn transitive_weight_counts_forward_closure_excluding_self() {
-        // app → mid → core, app → util. app reaches {mid, util, core} = 3.
-        let g = graph(&[
-            ("app", &["mid", "util"]),
-            ("mid", &["core"]),
-            ("util", &[]),
-            ("core", &[]),
-        ]);
-        let w = transitive_dep_weights(&g);
-        assert_eq!(w["app"], 3);
-        assert_eq!(w["mid"], 1); // core
-        assert_eq!(w["util"], 0);
-        assert_eq!(w["core"], 0);
+    fn parse_timings_tolerates_garbage() {
+        // A malformed baseline must degrade to "no data", never crash the gate.
+        assert!(parse_timings("not json").is_empty());
+        assert!(parse_timings("").is_empty());
     }
 
     #[test]
-    fn transitive_weight_terminates_on_cycles_and_excludes_self() {
-        // a ⇄ b: each reaches the other but not (net) itself.
-        let g = graph(&[("a", &["b"]), ("b", &["a"])]);
-        let w = transitive_dep_weights(&g);
-        assert_eq!(w["a"], 1, "reaches b, self excluded");
-        assert_eq!(w["b"], 1, "reaches a, self excluded");
-    }
-
-    #[test]
-    fn transitive_weight_orders_heavy_above_light() {
-        // The property the shard balancer relies on: a validator pulling a deep
-        // tree outweighs a shallow one.
-        let g = graph(&[
-            ("heavy", &["l1"]),
-            ("l1", &["l2"]),
-            ("l2", &["l3"]),
-            ("l3", &[]),
-            ("light", &["l3"]),
-        ]);
-        let w = transitive_dep_weights(&g);
-        assert!(w["heavy"] > w["light"], "{} vs {}", w["heavy"], w["light"]);
+    fn weight_millis_uses_recorded_time_then_falls_back() {
+        let t = parse_timings(r#"{"known": 4.2}"#);
+        assert_eq!(weight_millis(&t, "known"), 4200);
+        // Unknown → the generous placeholder (so LPT isolates it).
+        assert_eq!(
+            weight_millis(&t, "brand-new"),
+            (UNKNOWN_VALIDATOR_SECS * 1000.0) as u64
+        );
     }
 
     /// Unique temp dir for one test case, isolated by name (no external deps).

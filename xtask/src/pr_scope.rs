@@ -37,9 +37,9 @@ pub(crate) fn select_shard(crate_names: &[String], shard: Option<(usize, usize)>
 
 /// Partition items into the `i/N` shard by GREEDY longest-processing-time
 /// bin-packing on `weight`, instead of round-robin by position
-/// ([`select_shard`]). Balances wall time when item costs are uneven — e.g. a
-/// few validators pull the heavy ML/RL tree and dominate compile+link time,
-/// which round-robin (balancing count, not cost) clusters into one shard.
+/// ([`select_shard`]). Balances wall time when per-item cost is uneven — e.g.
+/// validators whose measured runtimes span an order of magnitude, which
+/// round-robin (balancing count, not cost) would cluster into one shard.
 ///
 /// Deterministic, so every parallel shard job computes the SAME disjoint
 /// partition from the same input: items are ordered by `(weight desc, name
