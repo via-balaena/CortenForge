@@ -693,7 +693,7 @@ Per §5 falsifier matrix outcomes:
   composition argument with a fixture test (the §C.1 "gradient
   continuity across pair flip" test).
 - **Open question: SDF normal `n = ∂d/∂p` continuity**. For
-  mesh-derived SDFs (`mesh_sdf::SignedDistanceField`), `n` may have
+  mesh-derived SDFs (`mesh_sdf::TriMeshDistance`), `n` may have
   discontinuities at the closest-triangle-partition boundaries
   (independent of `sd = d̂` flips). Smoothing the gap function
   doesn't address this orthogonal source of chattering. If the

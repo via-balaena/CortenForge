@@ -1,6 +1,10 @@
 # mesh-sdf — Parry BVH Acceleration Spec
 
-**Status**: SPEC SHIPPED 2026-05-17 LATE. Next session: cold-read + P1 implementation.
+**Status**: SUPERSEDED — see the **Superseded** note below. The
+parry-BVH acceleration this spec set out to deliver shipped, but NOT as
+the bit-identical `SignedDistanceField` retrofit sketched here; the
+mesh-sdf oracle-decomposition D-arc replaced the struct entirely. This
+document is preserved as the 2026-05-17 recon record.
 
 **Trigger**: cf-cast-cli iter-1 verification run on sock_over_capsule (2026-05-17 LATE) hit ~40 min wall time without completing the FIRST of 6 mold STL exports; projected total ~4 hours. Root cause: `mesh_sdf::SignedDistanceField` does brute-force O(faces) per closest-triangle query on the full 167k-face cleaned scan, and the new candidate-A pinned-floor construction doubles the per-cell query count. Decimation in cf-cast-cli would patch the symptom but locks in a mold-fidelity tuning knob that gets WORSE as scan complexity grows. Parry-backed BVH fixes the root cause: per-query cost drops O(faces) → O(log faces) ≈ 5,000× speedup on iter-1.
 
@@ -12,6 +16,30 @@
 - cf-device-design preview's `SDF_SOURCE_TARGET_FACES = 2500` decimation cap (currently a load-bearing performance tuning; would become cosmetic).
 
 ---
+
+## Superseded (post-2026-05-17) — read this first
+
+The performance goal shipped: parry3d's BVH now backs every mesh-sdf
+closest-triangle query (O(faces) → O(log faces)), exactly as this spec
+motivated. But the **approach** below — grow a `TriMesh` field inside
+`SignedDistanceField` and keep the struct + public API bit-identical —
+was NOT how it landed. The mesh-sdf oracle-decomposition **D-arc**
+dissolved `SignedDistanceField` entirely into a composed API:
+
+- `TriMeshDistance` (`mesh/mesh-sdf/src/sdf.rs`) — the parry
+  `TriMesh`-backed **unsigned** distance oracle. This is where the BVH
+  acceleration this spec wanted actually lives.
+- a pluggable **sign** oracle — `PseudoNormalSign` (parry pseudo-normal
+  inside test) or `FloodFillSign` (topological reachability, robust on
+  cleaned scans) — composed via `Signed { distance, sign }`, with the
+  convenience ctor `flood_filled_sdf`.
+
+So the struct-field sketches, the "drop-in / zero consumer code change"
+integration shape (§1), and the `SignedDistanceField`-named API surface
+throughout describe an architecture that never shipped as-designed. The
+`§7 flood-fill robust sign` line did materialize — as `FloodFillSign` /
+`CachedGridSdf`. Everything below is preserved as the 2026-05-17 recon
+record; the composed oracle API is the source of truth.
 
 ## Headline construction
 
