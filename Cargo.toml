@@ -418,7 +418,6 @@ members = [
     "examples/sim-soft/material/stress-test",
     "examples/sim-soft/layered-silicone-device",
     "examples/sim-soft/scan-fit-3layer-sleeve",
-    "examples/sim-soft/scan-fit-3layer-sleeve-v15",
     "examples/sim-soft/scan-fit-3layer-sleeve-ramp",
     "examples/sim-soft/scan-fit-3layer-sleeve-yeoh-ramp",
     "examples/sim-soft/scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp",
