@@ -9,29 +9,64 @@ CortenForge has two complementary SDF surfaces, sitting at opposite ends of an S
 | Direction | Crate | Role |
 |---|---|---|
 | **Analytic SDF → mesh** | `sim-soft::sdf_bridge::Sdf` (trait) | Design primitive — author SDFs (`SphereSdf`, `DifferenceSdf`, future custom SDFs), feed into a mesher (`SdfMeshedTetMesh::from_sdf`) to get a tet mesh. |
-| **Mesh → numerical SDF** | `mesh-sdf::SignedDistanceField` | Query an existing triangle mesh — given a point, return signed distance to the nearest surface. |
+| **Mesh → numerical SDF** | `mesh-sdf::Signed<TriMeshDistance, S>` | Query an existing triangle mesh — given a point, return signed distance to the nearest surface. |
 
-These are NOT redundant. They serve different purposes — analytic SDFs are *inputs* to mesh generation; numerical SDFs are *outputs* of mesh queries. A typical end-to-end pipeline uses both: author with `sim-soft::sdf_bridge::Sdf`, mesh into a tet mesh, extract a triangle surface, run `mesh-sdf::SignedDistanceField::new(triangle_surface)` to get back a numerical SDF the rest of the toolchain can query.
+These are NOT redundant. They serve different purposes — analytic SDFs are *inputs* to mesh generation; numerical SDFs are *outputs* of mesh queries. A typical end-to-end pipeline uses both: author with `sim-soft::sdf_bridge::Sdf`, mesh into a tet mesh, extract a triangle surface, compose a numerical SDF over it with `mesh-sdf` (`Signed { distance: TriMeshDistance::new(triangle_surface)?, sign }`) that the rest of the toolchain can query.
 
 The depth pass covers: when each direction is the right tool, the precision/cost tradeoff (analytic SDFs are exact and fast; numerical SDFs are approximations bounded by mesh resolution), and the cases where the round-trip is needed (e.g., `mesh-offset` operating on a body that started life as an analytic SDF).
 
 ## `mesh-sdf` — numerical SDF from a triangle mesh
 
-```rust
-pub struct SignedDistanceField { /* ... */ }
+The API is two **orthogonal oracles** — unsigned distance and sign — composed
+into a signed-distance source. This is the oracle-decomposition architecture
+(see `docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md`); it replaced the earlier
+single `SignedDistanceField` struct whose one face-normal sign heuristic
+flipped signs at vertex/edge regions.
 
-impl SignedDistanceField {
+```rust
+// Unsigned distance oracle — parry3d BVH-backed closest-triangle query.
+pub struct TriMeshDistance { /* parry3d TriMesh + BVH */ }
+impl TriMeshDistance {
     pub fn new(mesh: IndexedMesh) -> SdfResult<Self>;
-    pub fn distance(&self, point: Point3) -> f64;
 }
 
-pub fn signed_distance(point: Point3, mesh: &IndexedMesh) -> f64;
-pub fn point_in_mesh(point: Point3, mesh: &IndexedMesh) -> bool;
+// Composition: any `UnsignedDistance` oracle ⊥ any `Sign` oracle.
+pub struct Signed<D: UnsignedDistance, S: Sign> { pub distance: D, pub sign: S }
+impl<D: UnsignedDistance, S: Sign> Signed<D, S> {
+    pub fn evaluate(&self, p: Point3) -> f64;          // signed distance
+    pub fn unsigned_distance(&self, p: Point3) -> f64;
+    pub fn closest_point(&self, p: Point3) -> Point3;
+}
+
+// Sign oracle #1 — angle-weighted pseudo-normal (fast; well-formed meshes).
+pub struct PseudoNormalSign { /* ... */ }
+impl PseudoNormalSign {
+    pub fn from_distance(distance: &TriMeshDistance) -> Self;  // shares the BVH
+}
+
+// Sign oracle #2 — flood-fill topological reachability (robust; cleaned scans).
+// Convenience ctor builds `TriMeshDistance` + `FloodFillSign` in one call.
+pub fn flood_filled_sdf(
+    mesh: IndexedMesh,
+    bounds: Aabb,
+    cell_size: f64,
+    wall_threshold_factor: f64,  // WALL_THRESHOLD_FACTOR_DEFAULT
+) -> SdfResult<(Signed<TriMeshDistance, FloodFillSign>, FloodFillReport)>;
 ```
 
-Two API patterns: `SignedDistanceField::new` for many queries against the same mesh (amortizes any pre-processing); `signed_distance` for one-off queries. Underlying algorithm: closest-point-on-triangle for unsigned distance, ray-cast or winding-number for inside/outside determination.
+Build the distance oracle once (its BVH amortizes across every query), then
+choose the sign oracle to match the input: `PseudoNormalSign` for well-formed
+synthetic meshes, `FloodFillSign` for cleaned body-part scans. Underlying
+algorithm: parry3d's BVH gives unsigned distance and closest-point in
+O(log faces); the sign oracle decides inside/outside independently.
 
-The depth pass covers the precise algorithms, accuracy bounds, performance characteristics, and the failure modes (e.g., what happens for non-watertight meshes — the inside/outside test becomes ill-defined; consumers must validate watertight-ness via `mesh-repair::validate_mesh` first or accept the ambiguity).
+The depth pass covers the precise algorithms, accuracy bounds, performance
+characteristics, and the failure modes. The key one — non-watertight meshes,
+where a naive inside/outside test becomes ill-defined — is exactly what drove
+the two-oracle split: `PseudoNormalSign` is fast but fragile there, while
+`FloodFillSign` derives the sign from topological reachability and stays robust
+on cleaned scans. Consumers with well-formed meshes can still validate
+watertight-ness via `mesh-repair::validate_mesh` and use the faster oracle.
 
 ## `mesh-offset` — offset surfaces via SDF + marching cubes
 
