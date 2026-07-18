@@ -5939,7 +5939,6 @@ name = "example-sim-soft-layered-silicone-device"
 version = "1.0.0"
 dependencies = [
  "anyhow",
- "approx 0.5.1",
  "cf-design",
  "mesh-io",
  "mesh-sdf",

@@ -166,8 +166,16 @@
 //!      `primitive_id` (categorical body-vs-indenter color split) and
 //!      the body's continuous scalars (deformation / strain / `material_id`;
 //!      uniform 0 on the rigid indenter).
-//!    - `verify_*` runtime gates (8 anchor groups, see "Numerical
-//!      anchors" in `README.md`).
+//!    - `verify_*` runtime gates — pipeline-emergent structural and
+//!      physics invariants (see "Numerical anchors" in `README.md`).
+//!      This row is a Rule-B `validator`: its oracles are read from the
+//!      real solve (positive tet volume, converged Newton, per-shell
+//!      material routing, non-empty shell populations, engaged contact).
+//!      The pre-Rule-B captured-bit self-pins (per-shell and
+//!      contact-pair-count freezes, force/displacement `to_bits()` pins,
+//!      the `to_neo_hookean()` provenance mirror) were stripped, since
+//!      constitutive and mesher correctness is lib-owned. See the
+//!      de-frag note over the `Verifications` section.
 //!
 //! # Why both boundary-surface and slab-cut
 //!
@@ -206,7 +214,7 @@
 //! ```
 //!
 //! Per `feedback_release_mode_heavy_tests` — release mode is required
-//! for the FEM solve at this mesh resolution (~5–7 k tets through
+//! for the FEM solve at this mesh resolution (~51 k tets through
 //! faer's sparse Cholesky); debug mode would take many minutes for
 //! what runs in seconds release.
 
@@ -214,7 +222,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use anyhow::Result;
-use approx::assert_relative_eq;
 use cf_design::Solid;
 use mesh_io::save_ply_attributed;
 use mesh_sdf::{PseudoNormalSign, Signed, TriMeshDistance};
@@ -226,7 +233,7 @@ use mesh_sdf::{PseudoNormalSign, Signed, TriMeshDistance};
 /// `mesh_sdf::flood_filled_sdf` per
 /// `docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md`.
 type ScanSdf = Signed<TriMeshDistance, PseudoNormalSign>;
-use mesh_types::{IndexedMesh, Point3, Vector3};
+use mesh_types::{IndexedMesh, Point3};
 use nalgebra::Matrix3;
 use serde_json::{Value, json};
 use sim_ml_chassis::Tensor;
@@ -294,9 +301,8 @@ const BBOX_HALF_EXTENT: f64 = 0.12;
 /// `boundary_surface` + `slab_cut` PLY emits faithfully exposed —
 /// the pre-F1.5 z-slab centroid PLY hid the surface approximation
 /// because centroids are interior-only. Refined to 0.01 m (~10
-/// lattice cells across the radius, ~56 k tets) so the spherical
-/// envelope is visibly smoother in the slab cut. Captured-bits
-/// constants below are first-run captures at the refined mesh.
+/// lattice cells across the radius, ~51 k tets) so the spherical
+/// envelope is visibly smoother in the slab cut.
 const CELL_SIZE: f64 = 0.01;
 
 /// Static-regime time step (s). Mirrors rows 11 + 14 + 16 + 18's
@@ -315,149 +321,6 @@ const STATIC_DT: f64 = 1.0;
 /// at the refined mesh is ~70-100 iters at first call from rest;
 /// 200 leaves comfortable headroom for future load perturbations.
 const MAX_NEWTON_ITER: usize = 200;
-
-// =============================================================================
-// Constants — tolerances
-// =============================================================================
-
-/// IV-1 sparse-tier rel-tol for captured displacement bits. ~5–7 k
-/// tets through faer's sparse Cholesky lives between IV-1's dense
-/// bit-equal tier (12-24 DOFs) and IV-1's sparse-at-scale tier
-/// (~3 k tets, 3-ULP cross-platform drift). `1e-12` admits sparse-
-/// solver SIMD/FMA noise while catching any real regression. Same
-/// precedent as rows 6+10+11+16.
-const SPARSE_REL_TOL: f64 = 1.0e-12;
-
-/// Absolute floor for the captured-bits comparison; below the cavity-
-/// wall displacement-magnitude scale (`< 1e-4 m`) by 8 orders. Same
-/// precedent as rows 6+10+11+16.
-const SPARSE_EPS_ABS: f64 = 1.0e-12;
-
-/// Bit-exact tolerance for the F4 const-fn `to_neo_hookean()` Lamé-
-/// pair round-trip — the F4 unit test at `silicone_table.rs::tests::
-/// to_neo_hookean_round_trips_lame_pair` asserts the same identity at
-/// `epsilon = 0.0`, and we re-assert it here so a regression in F4
-/// trips this row directly. Same precedent as row 19.
-const F4_PROVENANCE_EXACT_TOL: f64 = 0.0;
-
-// =============================================================================
-// Constants — captured first-run anchor bits
-// =============================================================================
-//
-// **Capture provenance** — captured 2026-05-08 at sim-soft `dev`
-// (post-foundation tip `93f4bfaa`, PR3 F5 `Solid::from_sdf` shipped),
-// rustc 1.95.0 (`59807616e` 2026-04-14) on macOS arm64 — same toolchain
-// + platform as IV-1's reference capture. Re-bake protocol per IV-1:
-// if a rel-tol assertion fails, do NOT re-bake; rule out toolchain
-// drift first; if same toolchain, real regression in cf-design's
-// `Solid::from_sdf` plumbing OR in mesh-sdf's `distance` heuristic OR
-// in sim-soft's BCC + IS + faer hot path.
-//
-// First-run capture is bootstrapped via `CF_CAPTURE_BITS=1` (pattern
-// (cc) banked at row 19): when the env var is set, the capture-print
-// helper emits `CAPTURED_*_REF_BITS = 0x...` blocks ready to paste
-// into the constants below; when unset (default), every captured-bits
-// gate runs the strict `to_bits()` self-pin against these constants.
-// Identity-row pattern: every `*_EXACT` count is filled at first run
-// (initial value `0` triggers a deliberate-fail diagnostic), every
-// `*_REF_BITS` is filled at first run after that.
-
-/// Total tet count after the BCC + Isosurface Stuffing pipeline carves
-/// the scan-shaped cavity from the outer body. Captured at first run
-/// (`CF_CAPTURE_BITS=1`, 2026-05-08, post-F5 tip `93f4bfaa`). Diverges
-/// from rows 11 + 16's `6456` because the scan-shaped cavity (12-tri
-/// cube at `(0.015, 0, 0)`) differs from rows 11 + 16's `R_CAVITY =
-/// 0.04 m` sphere — pattern (y) cross-row bit-equal continuity does
-/// NOT extend.
-const N_TETS_EXACT: usize = 51_292;
-
-/// Total mesh vertex count, including BCC lattice corners not
-/// referenced by any tet.
-const N_VERTICES_EXACT: usize = 32_162;
-
-/// Vertices referenced by at least one tet.
-const N_REFERENCED_EXACT: usize = 10_013;
-
-/// Outer-surface Dirichlet-pinned vertex count (every vertex with
-/// `(‖p‖ - R_OUTER).abs() < CELL_SIZE / 2 = 0.005`, filtered to
-/// referenced set).
-const N_PINNED_EXACT: usize = 2_842;
-
-/// Per-shell tet counts at first capture. `INNER + MIDDLE + OUTER ==
-/// N_TETS_EXACT` by construction (every tet centroid sits in exactly
-/// one of the three radial bins). Re-captured 2026-05-18 post-D arc:
-/// `PseudoNormalSign` vs the pre-parry ray-cast sign produces a
-/// slightly different inside/outside classification at the cavity
-/// boundary → the tet inclusion test at scan-cavity carve time drifts
-/// the per-shell counts. Sum still equals `N_TETS_EXACT`.
-const N_INNER_TETS_EXACT: usize = 5_068;
-const N_MIDDLE_TETS_EXACT: usize = 14_736;
-const N_OUTER_TETS_EXACT: usize = 31_488;
-
-/// Per-shell tet counts in the `|centroid.z| < CELL_SIZE / 2 = 0.005`
-/// z-slab cut. Survives at the F1.5 retrofit as a cheap centroid
-/// regression filter (no PLY data emitted there anymore). Re-captured
-/// 2026-05-18 post-D arc.
-const N_INNER_TETS_ZSLAB_EXACT: usize = 460;
-const N_MIDDLE_TETS_ZSLAB_EXACT: usize = 752;
-const N_OUTER_TETS_ZSLAB_EXACT: usize = 1_288;
-
-/// Active contact-pair count at the static fit pose. Contact band is
-/// `sd < d̂ = PENALTY_DHAT_DEFAULT` (sim-soft's crate-default value);
-/// at rest the cavity walls already kiss the indenter, so all cavity-
-/// surface vertices within `d̂` are active. Re-captured 2026-05-18
-/// post-D arc.
-///
-/// Per-face partition (from the per-pair JSON readout):
-///
-/// | face | `n_pairs` |
-/// |------|---------|
-/// | -X / +X | 71 / 71 |
-/// | -Y / +Y | 86 / 87 |
-/// | -Z / +Z | 61 / 66 |
-///
-/// The Y faces hold ~46 more pairs than the Z faces (173 vs 127) on
-/// what's geometrically a Y↔Z-symmetric cube cavity. Root cause: the
-/// BCC tet-stuffing warp step at
-/// `sim/L0/soft/src/sdf_bridge/stuffing.rs::warp_lattice` walks 14
-/// incident edges per lattice vertex in a fixed `+x, -x, +y, -y, +z,
-/// -z, …` order and first-match-wins on the warp-violation predicate
-/// (Decision M D-11 — deterministic; theorem-safe because
-/// Labelle-Shewchuk Theorem 1's angle guarantees are independent of
-/// which violating cut is chosen). At every YZ cavity corner where
-/// both a `+y` and a `+z` edge cross the SDF boundary simultaneously,
-/// `+y` wins → the corner-vertex snaps onto the Y face instead of the
-/// Z face. Net effect on a synthetic axis-aligned cube fixture: Y
-/// faces gain pairs that "should" geometrically have gone to Z faces.
-/// The within-axis residuals (Y Δ=1, Z Δ=5) are below-noise FP
-/// boundary-classification jitter at lattice vertices that land
-/// exactly on a cube face plane.
-///
-/// Workshop-realistic cleaned scans don't trigger any of this — body-
-/// part geometry has no axis-aligned faces, no axis-aligned edges, no
-/// lattice-aligned vertex positions, so no two perpendicular edges
-/// cross the boundary simultaneously and the warp's axis-priority
-/// branch is inert.
-const N_CONTACT_PAIRS_EXACT: usize = 442;
-
-/// Total z-component of the rest-state contact reaction force (N).
-/// `force_on_soft = +κ · (d̂ - sd) · normal`; the z-sum captures the
-/// axial component of the fit-tightness force at zero indenter
-/// displacement.
-/// `f64::from_bits(0xbf2d_6b5f_f144_0800) ≈ -2.245e-4 N`. Re-captured
-/// 2026-05-18 post-D arc (`PseudoNormalSign` vs the pre-parry ray-cast
-/// boundary classification at the cavity edge produces a slightly
-/// different cavity-tet inclusion set; the z-component near-cancels at
-/// rest and the residual sign/magnitude depends on which boundary tets
-/// land just-inside vs just-outside the cavity).
-const FORCE_TOTAL_Z_REF_BITS: u64 = 0xbf2d_6b5f_f144_0800;
-
-/// Cavity-wall mean displacement-magnitude bits (m) at the static fit
-/// pose. Mean over the active-contact-pair vertex set of
-/// `(deformed - rest).norm()`.
-/// `f64::from_bits(0x3f44_0ecb_b0cb_1cbc) ≈ 6.110e-4 m`. Re-captured
-/// 2026-05-18 post-D arc.
-const CAVITY_WALL_MEAN_DISP_REF_BITS: u64 = 0x3f44_0ecb_b0cb_1cbc;
 
 // =============================================================================
 // Programmatic 12-tri cube scan fixture
@@ -603,15 +466,25 @@ fn build_material_field() -> MaterialField {
 // =============================================================================
 
 /// Shell index of a per-tet centroid: 0 = inner / 1 = middle / 2 =
-/// outer. The boundary convention (closed-left, open-right) mirrors
-/// `LayeredScalarField::sample`'s `partition_point(|&t| t <= phi)`
-/// idiom verbatim, so the per-tet classification agrees with the
-/// `MaterialField`'s sample at the centroid bit-equally.
+/// outer, by radial `phi = ‖p‖ − R_OUTER` bin. The boundary convention
+/// is **open-left, closed-right** (strict `<`): a centroid at the inner
+/// threshold belongs to the middle shell, and one at the middle
+/// threshold belongs to the outer shell. This matches
+/// `LayeredScalarField::sample`'s `partition_point(|&t| t <= phi)` idiom
+/// (the predicate is true at threshold equality, so `partition_point`
+/// steps PAST it — equivalent to the strict-`<` chain here), so the
+/// per-tet classification agrees with the `MaterialField`'s sample at
+/// the centroid bit-equally — the invariant `verify_material_routing`
+/// gates. (Row 20's sphere geometry + BCC centroids don't land on the
+/// exact thresholds at any meaningful fraction of tets, so `<` vs `<=`
+/// is behaviourally identical here; strict `<` is the convention that
+/// stays correct if a future scan geometry does produce boundary hits,
+/// mirroring row 21's `shell_at_phi`.)
 fn shell_at(centroid: Vec3) -> usize {
     let phi = centroid.norm() - R_OUTER;
-    if phi <= R_INNER_OUTER - R_OUTER {
+    if phi < R_INNER_OUTER - R_OUTER {
         0 // inner
-    } else if phi <= R_MIDDLE_OUTER - R_OUTER {
+    } else if phi < R_MIDDLE_OUTER - R_OUTER {
         1 // middle
     } else {
         2 // outer
@@ -734,23 +607,30 @@ fn deformation_gradient(verts: [VertexId; 4], rest: &[Vec3], curr: &[Vec3]) -> M
 }
 
 // =============================================================================
-// Verifications — 8 anchor groups
+// Verifications — structural + physics gates
 // =============================================================================
+//
+// Rule-B de-frag: the pre-Rule-B captured-bit self-pins (per-shell + z-slab
+// tet-count freezes, contact-pair-count freeze, force/displacement `to_bits()`
+// pins, `to_neo_hookean()` provenance mirror, and the `CF_CAPTURE_BITS` capture
+// scaffold) were STRIPPED — they pinned this run's exact FP trajectory + mesher
+// version on one toolchain, strictly more fragile than the pipeline-emergent
+// invariants they redundantly implied. Constitutive correctness (`NeoHookean`
+// closed form + the `to_neo_hookean()` Lamé round-trip) is lib-owned
+// (`neo_hookean.rs` tests + `silicone_table.rs::tests::
+// to_neo_hookean_round_trips_lame_pair`); per-shell material routing by radial
+// bin is lib-owned (`sdf_material_tagging.rs` IV-4). What survives here is the
+// scene's own emergent physics: a valid mesh, a converged solve, correct
+// per-shell material assignment, non-empty shell populations, and engaged
+// contact — read from the real solve, robust to FP drift.
 
-/// `true` when the `CF_CAPTURE_BITS` env var is set (any value). Per
-/// pattern (cc) banked at row 19: env-var-gated bypass of every
-/// captured-anchor check + a single print pass that emits every
-/// `*_EXACT` count and every `*_REF_BITS` line ready to paste into
-/// the constants block. IV-1 protocol forbids re-baking to silence a
-/// drift assertion — `CF_CAPTURE_BITS` is for first-time capture
-/// (initial-author-bake) and intentional re-bake (e.g., F4 const
-/// value updated to a new data-sheet revision), not for failure
-/// silencing.
-fn capturing_bits() -> bool {
-    std::env::var("CF_CAPTURE_BITS").is_ok()
-}
-
-fn verify_counts_exact(
+/// Structural mesh invariants — resolution-robust, no exact-count freeze.
+/// Every tet is classified into exactly one radial shell, so the three
+/// per-shell counts partition the whole mesh; the referenced set is a subset of
+/// all vertices; and the pinned band is a non-empty proper subset of the
+/// referenced set. (The exact counts these once pinned were a mesher-version
+/// artifact — see the module de-frag note.)
+fn verify_mesh_structure(
     mesh: &SdfMeshedTetMesh,
     referenced: &[VertexId],
     pinned: &[VertexId],
@@ -758,44 +638,37 @@ fn verify_counts_exact(
     middle_count: usize,
     outer_count: usize,
 ) {
-    if capturing_bits() {
-        eprintln!("=== CAPTURED COUNTS (paste into source) ===");
-        eprintln!("const N_TETS_EXACT: usize = {};", mesh.n_tets());
-        eprintln!("const N_VERTICES_EXACT: usize = {};", mesh.n_vertices());
-        eprintln!("const N_REFERENCED_EXACT: usize = {};", referenced.len());
-        eprintln!("const N_PINNED_EXACT: usize = {};", pinned.len());
-        eprintln!("const N_INNER_TETS_EXACT: usize = {inner_count};");
-        eprintln!("const N_MIDDLE_TETS_EXACT: usize = {middle_count};");
-        eprintln!("const N_OUTER_TETS_EXACT: usize = {outer_count};");
-        return;
-    }
-    assert_eq!(mesh.n_tets(), N_TETS_EXACT, "n_tets");
-    assert_eq!(mesh.n_vertices(), N_VERTICES_EXACT, "n_vertices");
-    assert_eq!(referenced.len(), N_REFERENCED_EXACT, "n_referenced");
-    assert_eq!(pinned.len(), N_PINNED_EXACT, "n_pinned");
-    assert_eq!(inner_count, N_INNER_TETS_EXACT, "n_inner_tets");
-    assert_eq!(middle_count, N_MIDDLE_TETS_EXACT, "n_middle_tets");
-    assert_eq!(outer_count, N_OUTER_TETS_EXACT, "n_outer_tets");
-    assert_eq!(
-        inner_count + middle_count + outer_count,
-        N_TETS_EXACT,
-        "shell-count partition sums to N_TETS_EXACT",
+    assert!(mesh.n_tets() > 0, "mesh has no tets");
+    assert!(
+        referenced.len() <= mesh.n_vertices(),
+        "referenced vertices ({}) exceed total vertices ({})",
+        referenced.len(),
+        mesh.n_vertices(),
     );
+    assert!(!referenced.is_empty(), "no referenced vertices");
+    assert!(
+        !pinned.is_empty() && pinned.len() < referenced.len(),
+        "pinned band ({}) must be a non-empty proper subset of referenced ({})",
+        pinned.len(),
+        referenced.len(),
+    );
+    assert!(inner_count > 0, "inner shell is empty");
+    assert!(middle_count > 0, "middle shell is empty");
+    assert!(outer_count > 0, "outer shell is empty");
+    // (No `inner + middle + outer == n_tets` assert: the caller derives the
+    // three counts by iterating every tet through a total match, so the sum
+    // equals `n_tets` by construction — it would guard nothing. The per-shell
+    // non-empty checks above + `verify_material_routing`'s independent per-shell
+    // classification carry the real routing content.)
 }
 
-fn verify_zslab_counts_exact(inner_zslab: usize, middle_zslab: usize, outer_zslab: usize) {
-    if capturing_bits() {
-        eprintln!("const N_INNER_TETS_ZSLAB_EXACT: usize = {inner_zslab};");
-        eprintln!("const N_MIDDLE_TETS_ZSLAB_EXACT: usize = {middle_zslab};");
-        eprintln!("const N_OUTER_TETS_ZSLAB_EXACT: usize = {outer_zslab};");
-        return;
-    }
-    assert_eq!(inner_zslab, N_INNER_TETS_ZSLAB_EXACT, "n_inner_tets_zslab");
-    assert_eq!(
-        middle_zslab, N_MIDDLE_TETS_ZSLAB_EXACT,
-        "n_middle_tets_zslab",
-    );
-    assert_eq!(outer_zslab, N_OUTER_TETS_ZSLAB_EXACT, "n_outer_tets_zslab");
+/// z-slab populations — each shell contributes at least one tet to the
+/// `|centroid.z| < CELL_SIZE / 2` cut, so the cf-view PLY artifacts show all
+/// three material bands. Non-empty, not exact-count (mesher-version robust).
+fn verify_zslab_populations(inner_zslab: usize, middle_zslab: usize, outer_zslab: usize) {
+    assert!(inner_zslab > 0, "z-slab inner shell empty");
+    assert!(middle_zslab > 0, "z-slab middle shell empty");
+    assert!(outer_zslab > 0, "z-slab outer shell empty");
 }
 
 fn verify_quality_floors(mesh: &SdfMeshedTetMesh) {
@@ -830,67 +703,64 @@ fn verify_solver_converges<T>(step: &NewtonStep<T>) {
     );
 }
 
-fn verify_material_provenance() {
-    // F4 const-fn `to_neo_hookean()` returns a `NeoHookean` whose
-    // energy at `F = I` is bit-equally zero AND whose energy at a
-    // small uniaxial stretch `F = diag(1.01, 1, 1)` matches the
-    // closed-form `(λ/2)(ln J)² + ((μ/2)(I₁ − 3) − μ ln J)`. Mirrors
-    // F4's own unit test verbatim — a regression here would surface
-    // as drift between F4's table and `NeoHookean::from_lame`'s FMA
-    // chain. Same precedent as row 19's per-row contract walk.
-    use nalgebra::Matrix3;
-    for mat in [&ECOFLEX_00_30, &DRAGON_SKIN_10A] {
-        let nh = mat.to_neo_hookean();
-        let id = Matrix3::<f64>::identity();
-        assert_relative_eq!(nh.energy(&id), 0.0, epsilon = F4_PROVENANCE_EXACT_TOL);
-
-        let mut f = Matrix3::<f64>::identity();
-        f[(0, 0)] = 1.01;
-        let i1 = 1.01_f64.mul_add(1.01, 2.0);
-        let j_ln = 1.01_f64.ln();
-        let half_mu = 0.5 * mat.mu;
-        let half_lambda = 0.5 * mat.lambda;
-        let expected = half_lambda.mul_add(j_ln * j_ln, half_mu.mul_add(i1 - 3.0, -mat.mu * j_ln));
-        assert_relative_eq!(nh.energy(&f), expected, epsilon = F4_PROVENANCE_EXACT_TOL,);
-    }
-}
-
-fn verify_n_contact_pairs_exact(n_pairs: usize) {
-    if capturing_bits() {
-        eprintln!("const N_CONTACT_PAIRS_EXACT: usize = {n_pairs};");
-        return;
-    }
+/// Per-tet material routing — the `MaterialField` assigned every tet the
+/// `(μ, λ)` of the radial shell its centroid falls in. Reads the real per-tet
+/// `NeoHookean` from `mesh.materials()` via the public `.mu()` / `.lambda()`
+/// accessors and compares to the shell's F4 table entry (same const source →
+/// bit-equal, so exact `==`, not a tolerance). This is the scene's routing
+/// invariant — NOT a constitutive-arithmetic mirror; the closed-form
+/// `NeoHookean` energy and the `to_neo_hookean()` Lamé round-trip are lib-owned
+/// (`neo_hookean.rs` tests + `silicone_table.rs::tests::
+/// to_neo_hookean_round_trips_lame_pair`), and the generic routing mechanism is
+/// lib-owned (`sdf_material_tagging.rs` IV-4). Each shell is verified
+/// non-vacuously (≥ 1 tet). Shell → material: inner + outer = `ECOFLEX_00_30`,
+/// middle = `DRAGON_SKIN_10A`.
+fn verify_material_routing(mesh: &SdfMeshedTetMesh, shell_idx_per_tet: &[usize]) {
+    let materials = mesh.materials();
     assert_eq!(
-        n_pairs, N_CONTACT_PAIRS_EXACT,
-        "n_contact_pairs at static fit pose",
+        materials.len(),
+        shell_idx_per_tet.len(),
+        "materials() length does not match per-tet shell-classification length",
+    );
+    let expected_nh = [
+        ECOFLEX_00_30.to_neo_hookean(),   // 0 = inner
+        DRAGON_SKIN_10A.to_neo_hookean(), // 1 = middle
+        ECOFLEX_00_30.to_neo_hookean(),   // 2 = outer
+    ];
+    let mut checked = [0usize; 3];
+    for (t, &shell_idx) in shell_idx_per_tet.iter().enumerate() {
+        let observed = &materials[t];
+        let expected = &expected_nh[shell_idx];
+        // Bit-equal `==` on purpose: both `(μ, λ)` come from the SAME F4 table
+        // entry through the SAME `to_neo_hookean()` const fn, so a correctly
+        // routed tet is bit-identical. `to_bits()` makes the exact comparison
+        // explicit and clippy-clean (no `float_cmp`).
+        assert!(
+            observed.mu().to_bits() == expected.mu().to_bits()
+                && observed.lambda().to_bits() == expected.lambda().to_bits(),
+            "tet {t} shell {shell_idx}: routed (μ, λ) = ({}, {}) != table ({}, {}) \
+             (boundary-convention drift between shell_at and LayeredScalarField::sample?)",
+            observed.mu(),
+            observed.lambda(),
+            expected.mu(),
+            expected.lambda(),
+        );
+        checked[shell_idx] += 1;
+    }
+    assert!(
+        checked.iter().all(|&c| c > 0),
+        "material routing not exercised on every shell (per-shell tet counts {checked:?})",
     );
 }
 
-fn verify_captured_bits(force_total_z: f64, mean_disp: f64) {
-    if capturing_bits() {
-        eprintln!(
-            "const FORCE_TOTAL_Z_REF_BITS: u64 = 0x{:016x};",
-            force_total_z.to_bits(),
-        );
-        eprintln!(
-            "const CAVITY_WALL_MEAN_DISP_REF_BITS: u64 = 0x{:016x};",
-            mean_disp.to_bits(),
-        );
-        eprintln!("=== END CAPTURED BITS ===");
-        return;
-    }
-
-    assert_relative_eq!(
-        force_total_z,
-        f64::from_bits(FORCE_TOTAL_Z_REF_BITS),
-        max_relative = SPARSE_REL_TOL,
-        epsilon = SPARSE_EPS_ABS,
-    );
-    assert_relative_eq!(
-        mean_disp,
-        f64::from_bits(CAVITY_WALL_MEAN_DISP_REF_BITS),
-        max_relative = SPARSE_REL_TOL,
-        epsilon = SPARSE_EPS_ABS,
+/// The static fit pose actually engaged contact — at least one active
+/// contact pair. (The exact pair count this once froze was a mesher/
+/// discretization artifact; non-empty is the invariant that matters.)
+fn verify_contact_engaged(n_pairs: usize) {
+    assert!(
+        n_pairs > 0,
+        "no active contact pairs at the static fit pose — cavity walls did not \
+         engage the scan-derived indenter",
     );
 }
 
@@ -981,8 +851,8 @@ fn write_json_readout(
 // centroid cloud. Lifted to [`sim_soft::viz::boundary_surface`] +
 // [`sim_soft::viz::slab_cut`] at F1.1 / F1.5 retrofit; row 20 now
 // emits the full 3D body + the proper triangulated cross-section
-// rather than an amplified centroid cloud. Z-slab tet-COUNT
-// regression gate (`verify_zslab_counts_exact`) survives — cheap
+// rather than an amplified centroid cloud. Z-slab per-shell
+// population gate (`verify_zslab_populations`) survives — cheap
 // centroid filter, no PLY data.
 
 // =============================================================================
@@ -1044,11 +914,11 @@ fn main() -> Result<()> {
         }
     }
 
-    // 6. Quality + counts gates BEFORE moving the mesh into the
+    // 6. Quality + structure gates BEFORE moving the mesh into the
     //    solver. (`mesh.n_tets()` etc. work on `&mesh`; the
     //    `verify_quality_floors` walk is read-only.)
     verify_quality_floors(&mesh);
-    verify_counts_exact(
+    verify_mesh_structure(
         &mesh,
         &referenced,
         &bc.pinned_vertices,
@@ -1057,11 +927,11 @@ fn main() -> Result<()> {
         n_outer,
     );
 
-    // 7. Material provenance — F4 const Lamé pair survives
-    //    `to_neo_hookean()` round-trip bit-equally per F4's contract
-    //    test. Re-asserted here so a regression in F4 trips this row
-    //    directly.
-    verify_material_provenance();
+    // 7. Material routing gate — every tet was assigned its radial
+    //    shell's (μ, λ) by the `MaterialField`. Reads real
+    //    `mesh.materials()` via `.mu()` / `.lambda()`; the constitutive
+    //    math + `to_neo_hookean()` round-trip are lib-owned.
+    verify_material_routing(&mesh, &shell_idx_per_tet);
 
     // 8. Solver run — penalty contact with the scan as rigid
     //    indenter (post-PR2 trait unification: any `impl Sdf` is a
@@ -1098,7 +968,7 @@ fn main() -> Result<()> {
         .collect();
     let readouts = inspection_contact.per_pair_readout(&inspection_mesh, &positions_vec3);
     let n_pairs = readouts.len();
-    verify_n_contact_pairs_exact(n_pairs);
+    verify_contact_engaged(n_pairs);
 
     let force_total_z: f64 = readouts.iter().map(|r| r.force_on_soft.z).sum();
     let force_magnitudes: Vec<f64> = readouts.iter().map(|r| r.force_on_soft.norm()).collect();
@@ -1116,7 +986,7 @@ fn main() -> Result<()> {
             sim_soft::ContactPair::Vertex { vertex_id, .. } => vertex_id,
         })
         .collect();
-    let mut disp_magnitudes: Vec<f64> = cavity_vertex_ids
+    let disp_magnitudes: Vec<f64> = cavity_vertex_ids
         .iter()
         .map(|&v| (positions_vec3[v as usize] - rest_positions[v as usize]).norm())
         .collect();
@@ -1125,16 +995,13 @@ fn main() -> Result<()> {
         .iter()
         .copied()
         .fold(f64::NEG_INFINITY, f64::max);
-    disp_magnitudes.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-
-    verify_captured_bits(force_total_z, mean_disp_magnitude);
 
     // 10. JSON + PLY readouts.
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("out");
     std::fs::create_dir_all(&out_dir)?;
 
     // Per-pair JSON records — mirrors row 18's per-active-pair detail
-    // block. Bounded by `n_pairs` (~120) so the JSON stays under a
+    // block. Bounded by `n_pairs` (~440) so the JSON stays under a
     // few hundred KB.
     let pair_records: Vec<Value> = readouts
         .iter()
@@ -1183,8 +1050,10 @@ fn main() -> Result<()> {
     // original `mesh` was moved into the solver above.
     let half_cell = 0.5 * CELL_SIZE;
 
-    // z-slab tet-COUNT regression gate (cheap centroid filter — no
-    // PLY data accumulation; pre-F1.5 PLY-emit path retired).
+    // z-slab per-shell population gate (cheap centroid filter — no
+    // PLY data accumulation; pre-F1.5 PLY-emit path retired). Each
+    // shell must be non-empty in the cut so the cross-section artifacts
+    // show all three material bands.
     let mut n_inner_z = 0usize;
     let mut n_middle_z = 0usize;
     let mut n_outer_z = 0usize;
@@ -1203,7 +1072,7 @@ fn main() -> Result<()> {
             _ => n_outer_z += 1,
         }
     }
-    verify_zslab_counts_exact(n_inner_z, n_middle_z, n_outer_z);
+    verify_zslab_populations(n_inner_z, n_middle_z, n_outer_z);
 
     // Per-tet displacement magnitude across the full mesh + per-tet
     // material id (radial shell index). Both feed boundary-surface
@@ -1486,11 +1355,3 @@ const _: () = {
     assert!(CELL_SIZE > 0.0);
     assert!(STATIC_DT > 0.0);
 };
-
-// Suppress an unused-import warning for `Vector3` — pulled in via the
-// `nalgebra` import for the file-level docstring's reference (and
-// reserved for future per-vertex emit logic if a follow-on consumer
-// of the cavity-displacement field needs full-vector output rather
-// than just magnitude).
-#[allow(dead_code)]
-type _UnusedVector3Anchor = Vector3<f64>;
