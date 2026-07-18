@@ -1,15 +1,22 @@
 //! Sim-to-real on the **Mendeley low-cost double pendulum** (`doi:10.17632/7yd2ntbh3w.1`,
-//! HardwareX `S2468-0672(20)30047-X`) — **Phase 1**: with the paper's published,
-//! *fixed* physical parameters, does the engine reproduce the real *coupled*
-//! two-link dynamics within the chaotic-divergence (Lyapunov) horizon?
+//! HardwareX `S2468-0672(20)30047-X`), in two phases against the chaos:
 //!
-//! A large-swing double pendulum is chaotic, so a correct engine still diverges
-//! from measured angles after a few Lyapunov times `τ_λ`. Long-horizon exact-θ
-//! RMS therefore CANNOT be the metric (it would fail a perfect engine). Phase 1
-//! is the honest short-horizon test: roll sim-core from a measured initial
-//! condition at a low-speed (turning-point) window and report the θ-RMS-vs-horizon
-//! curve alongside the measured `τ_λ` — no long-horizon overclaim. Damping is
-//! left OFF here (conservative dynamics); the energy-decay damping fit is Phase 2.
+//! - **Phase 1 — coupled dynamics.** With the paper's published, *fixed* physical
+//!   parameters, does the engine reproduce the real *coupled* two-link dynamics
+//!   within the chaotic-divergence (Lyapunov) horizon? A large-swing double
+//!   pendulum is chaotic, so a correct engine still diverges from measured angles
+//!   after a few Lyapunov times `τ_λ`; long-horizon exact-θ RMS therefore CANNOT be
+//!   the metric (it would fail a perfect engine). Phase 1 is the honest
+//!   short-horizon test: roll sim-core from a measured initial condition at a
+//!   low-speed (turning-point) window and report the θ-RMS-vs-horizon curve
+//!   alongside the measured `τ_λ` — no long-horizon overclaim. Damping is off here.
+//!
+//! - **Phase 2 — dissipation.** Total energy `E(t) = KE + PE` is the *slow*,
+//!   non-chaotic variable (`dE/dt = −dissipation`). Phase 2 asks whether sim-core,
+//!   driven by the paper's published Table-3 joint damping, reproduces the measured
+//!   E(t) decay envelope over the long swing-down — the paper's own validation
+//!   (its Fig. 16) — and fits the one identifiable knob (a scalar magnitude on the
+//!   damping) against that envelope.
 //!
 //! Parameters are the paper's Table 4 "Approximate Simplified" reduced model
 //! (point masses at the COM offsets) — using the *published* values, not a
@@ -27,7 +34,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use sim_core::Model;
+use sim_core::{ENABLE_ENERGY, Model};
 use sim_mjcf::load_model;
 
 /// Mendeley file listing → direct download URL for `Video_Tracking_Data.zip`.
@@ -44,6 +51,31 @@ const PHI2_REST_DEG: f64 = 2520.0;
 // sim-core integration timestep — also the MJCF `<option timestep>`; the two
 // MUST agree (the sim↔data index mapping assumes it), hence one source.
 const SIM_DT: f64 = 5e-5;
+
+// ── Phase 2 (energy-decay damping) ─────────────────────────────────────────
+// Table 3 per-joint damping (SI). The paper's model is τ = μ_v·ω + μ_q·ω|ω| +
+// μ_c·sign(ω) (viscous + quadratic + Coulomb). sim-core maps viscous μ_v →
+// `jnt_damping` and Coulomb μ_c → `dof_frictionloss`; it has NO native quadratic
+// joint-damping term, so μ_q is omitted. That omission is the main reason the
+// best-fit scale α (below) runs high (~3–5 on sim-core's own chaotic realization,
+// ~2.7 against a MuJoCo-RK4 reference) rather than ~1: a spike that restored the
+// paper's quadratic term (as an applied per-step torque) recovered α≈1.5, i.e. the
+// *published magnitude* — so the quadratic gap, not the parameters, explains most of
+// α>1. (A compound-inertia model was also tried and made the fit WORSE — adding
+// inertia needs *more* damping, pushing α further from 1 — so it is deliberately not
+// modelled here.)
+const MU_V1: f64 = 1.76e-5; // joint-1 viscous (N·m·s/rad)
+const MU_C1: f64 = 1.91e-4; // joint-1 Coulomb (N·m)
+const MU_V2: f64 = 5.08e-6; // joint-2 viscous
+const MU_C2: f64 = 4.44e-5; // joint-2 Coulomb
+// Phase 2 integrates with RK4 at this timestep. Semi-implicit Euler (Phase 1's
+// integrator) bleeds ~0.3 J of *numerical* energy over the ~62 s decay —
+// comparable to the ~1 J of *physical* decay we identify — which would swamp the
+// damping signal. RK4 conserves energy to ~0 over the same rollout up to dt≈5e-4
+// (checked vs MuJoCo: 0.0 mJ drift), so it is mandatory for an energy-based damping
+// metric — and a coarse RK4 step keeps the multi-α scan fast with no numerical
+// dissipation.
+const RK4_DT: f64 = 5e-4;
 
 /// Fetch one CSV (`Trial1/<name>.csv`) out of the referenced zip into a temp
 /// cache. Returns `None` (with a message) if `curl`/`unzip`/network is missing —
@@ -153,6 +185,54 @@ fn rollout(model: &Model, q: [f64; 2], v: [f64; 2], n: usize) -> Vec<(f64, f64)>
 fn wrap(a: f64) -> f64 {
     use std::f64::consts::PI;
     (a + PI).rem_euclid(2.0 * PI) - PI
+}
+
+/// Phase-2 model: the same two-link geometry as [`build_model`], but integrated
+/// with **RK4** and carrying per-joint damping scaled by `alpha` (viscous →
+/// `damping`, Coulomb → `frictionloss`). `alpha = 0` is the conservative baseline;
+/// `alpha = 1` is the paper's published Table-3 magnitude. Energy tracking is
+/// enabled so `Data::total_energy()` is populated.
+fn build_damped_model(alpha: f64) -> Model {
+    let mjcf = format!(
+        r#"<mujoco model="double_pendulum_damped">
+            <option gravity="0 0 -9.81" timestep="{RK4_DT}" integrator="RK4"/>
+            <worldbody>
+                <body name="upper" pos="0 0 0">
+                    <joint name="j1" type="hinge" axis="0 1 0" pos="0 0 0" damping="{dv1}" frictionloss="{dc1}"/>
+                    <inertial pos="0 0 {neg_d1}" mass="{M1}" diaginertia="1e-12 1e-12 1e-12"/>
+                    <body name="lower" pos="0 0 {neg_l1}">
+                        <joint name="j2" type="hinge" axis="0 1 0" pos="0 0 0" damping="{dv2}" frictionloss="{dc2}"/>
+                        <inertial pos="0 0 {neg_d2}" mass="{M2}" diaginertia="1e-12 1e-12 1e-12"/>
+                    </body>
+                </body>
+            </worldbody>
+        </mujoco>"#,
+        dv1 = alpha * MU_V1,
+        dc1 = alpha * MU_C1,
+        dv2 = alpha * MU_V2,
+        dc2 = alpha * MU_C2,
+        neg_d1 = -D1,
+        neg_l1 = -L1,
+        neg_d2 = -D2,
+    );
+    let mut model = load_model(&mjcf).expect("load damped double-pendulum model");
+    model.enableflags |= ENABLE_ENERGY;
+    model
+}
+
+/// Total mechanical energy `KE + PE` sim-core assigns to the absolute link state
+/// `(θ₁, θ₂, θ̇₁, θ̇₂)`. Evaluating both the measured envelope and the rolled-out
+/// trajectory through the *same* engine call guarantees one identical energy
+/// reference (no potential-energy-zero mismatch between a hand-written formula and
+/// the engine's). Damping does not enter energy, so any `alpha` model works.
+fn energy_of_state(model: &Model, th1: f64, th2: f64, w1: f64, w2: f64) -> f64 {
+    let mut d = model.make_data();
+    d.qpos[0] = th1;
+    d.qpos[1] = th2 - th1; // relative hinge coordinate
+    d.qvel[0] = w1;
+    d.qvel[1] = w2 - w1;
+    d.forward(model).expect("energy forward");
+    d.total_energy()
 }
 
 fn main() {
@@ -319,4 +399,169 @@ fn main() {
         "τ_λ out of expected chaotic range (λ = {lambda:.3} /s)"
     );
     println!("   ✓ within bound (best-window 0.10 s RMS < 1.5°, τ_λ in chaotic range).");
+
+    // ═══════════════════════ Phase 2: energy-decay damping ═══════════════════
+    // Chaos makes long-horizon θ-matching impossible (Phase 1), but total energy
+    // E(t) = KE + PE is the SLOW, non-chaotic variable: dE/dt = −dissipation. So
+    // the honest damping test is whether sim-core, driven by the paper's published
+    // damping, reproduces the measured E(t) DECAY ENVELOPE over the long swing-down
+    // — the same validation the paper does (its Fig. 16).
+    println!("\n────────────────────────────────────────────────────────────");
+    println!("Phase 2: joint damping vs the measured energy-decay envelope E(t)\n");
+
+    // One engine model supplies the energy reference for every state (measured and
+    // simulated); damping does not enter energy, so the α = 0 model is reused.
+    let eref = build_damped_model(0.0);
+    let e_meas = |i: usize| -> f64 {
+        let i = i.clamp(1, n - 2); // vel() reads i±1
+        energy_of_state(&eref, th1[i], th2[i], vel(&th1, i), vel(&th2, i))
+    };
+
+    // The launch injects energy up to a post-launch PEAK; the clean monotone decay
+    // begins there. Locate the peak in the first several seconds and use its
+    // measured state as the damping-ID initial condition.
+    let search_hi = ((8.0 / dt_data) as usize).min(n - 2);
+    let mut ipk = 1usize;
+    let mut e_peak = f64::MIN;
+    for i in 1..search_hi {
+        let e = e_meas(i);
+        if e > e_peak {
+            e_peak = e;
+            ipk = i;
+        }
+    }
+    let t_peak = t[ipk];
+
+    // Compare sim vs measured energy at 1 s checkpoints from the peak to the end of
+    // the clean decay; precompute the measured envelope once.
+    let decay_end = 66.0_f64.min(t[n - 1]);
+    let checks: Vec<f64> = {
+        let (mut v, mut c) = (Vec::new(), t_peak.ceil());
+        while c <= decay_end {
+            v.push(c);
+            c += 1.0;
+        }
+        v
+    };
+    let e_meas_at: Vec<f64> = checks
+        .iter()
+        .map(|&c| e_meas((c / dt_data).round() as usize))
+        .collect();
+
+    // Roll the RK4 damped model at scale `alpha` from the peak IC; return the RMS
+    // energy error (J) against the measured envelope. `total_energy()` is stale
+    // after an RK4 step (derived quantities reflect the last stage), so refresh it
+    // with an explicit `forward()` at each checkpoint before reading.
+    let rms_energy = |alpha: f64| -> f64 {
+        let model = build_damped_model(alpha);
+        let mut d = model.make_data();
+        d.qpos[0] = th1[ipk];
+        d.qpos[1] = th2[ipk] - th1[ipk];
+        d.qvel[0] = vel(&th1, ipk);
+        d.qvel[1] = vel(&th2, ipk) - vel(&th1, ipk);
+        let nsteps = ((decay_end - t_peak) / RK4_DT) as usize + 2;
+        let (mut ci, mut se, mut cnt) = (0usize, 0.0f64, 0usize);
+        for k in 0..nsteps {
+            let abst = t_peak + k as f64 * RK4_DT;
+            while ci < checks.len() && abst >= checks[ci] - 1e-9 {
+                d.forward(&model).expect("energy forward");
+                se += (d.total_energy() - e_meas_at[ci]).powi(2);
+                cnt += 1;
+                ci += 1;
+            }
+            if ci >= checks.len() {
+                break;
+            }
+            d.step(&model).expect("damped double-pendulum step");
+        }
+        (se / cnt as f64).sqrt()
+    };
+
+    println!(
+        "Post-launch peak at t₀={t_peak:.2} s, E₀={e_peak:.3} J → decays to rest over ~{:.0} s.\n",
+        decay_end - t_peak
+    );
+
+    // No-damp (conservative) baseline and the published Table-3 magnitude.
+    let rms_nodamp = rms_energy(0.0);
+    let rms_table3 = rms_energy(1.0);
+    println!("   E(t) RMS vs the measured envelope over the decay:");
+    println!(
+        "     no damping (α=0, conservative) : {:6.0} mJ   (E stays flat — no decay)",
+        1e3 * rms_nodamp
+    );
+    println!(
+        "     Table-3 published  (α=1)        : {:6.0} mJ",
+        1e3 * rms_table3
+    );
+
+    // Scan the ONE well-conditioned knob: a scalar α on the whole Table-3 vector.
+    // The individual per-joint / per-mechanism coefficients are NOT separately
+    // identifiable from a single energy-decay trajectory — the two joint rates are
+    // collinear across the decay (both fast early, both slow late), so the
+    // dissipation design matrix is near-singular (cond ~4e4) and a blind inversion
+    // collapses onto one or two terms. A scalar magnitude is the only robustly
+    // recoverable quantity, so that is all we fit.
+    // Scan wide enough that the (soft, realization-dependent) optimum lands well
+    // inside the range — a railed boundary value would be a fit artifact, not a fit.
+    let mut best = (1.0f64, rms_table3);
+    let mut a = 0.5;
+    while a <= 8.0 + 1e-9 {
+        let r = rms_energy(a);
+        if r < best.1 {
+            best = (a, r);
+        }
+        a += 0.25;
+    }
+    println!(
+        "     best scalar α = {:.2}            : {:6.0} mJ",
+        best.0,
+        1e3 * best.1
+    );
+
+    println!("\nPhase-2 verdict:");
+    println!(
+        "   The conservative baseline cannot decay at all ({:.0} mJ off the",
+        1e3 * rms_nodamp
+    );
+    println!("   measured envelope); with the paper's PUBLISHED damping (α=1, no fitting)");
+    println!(
+        "   sim-core's total_energy() tracks the real swing-down decay to {:.0} mJ —",
+        1e3 * rms_table3
+    );
+    println!("   dissipation reproduces the envelope, the damping analogue of Phase 1's");
+    println!("   coupled dynamics. Fitting the one identifiable knob (a scalar on the whole");
+    println!(
+        "   Table-3 vector) reaches {:.0} mJ at α≈{:.1}. But α is SOFT, not a precise",
+        1e3 * best.1,
+        best.0
+    );
+    println!("   identification: it runs ~2.7 (vs a MuJoCo-RK4 reference) to ~3–5 (sim-core's");
+    println!("   own chaotic realization) and falls to ~1.5 once the paper's quadratic joint-");
+    println!("   damping term is restored (sim-core has no native quadratic term). Individual");
+    println!("   coefficients are NOT recoverable from a single decay curve (collinear rates,");
+    println!("   near-singular design matrix), and chaos leaves the envelope a ~10–25%");
+    println!("   discriminator. So the honest claim is the decay-vs-no-decay contrast and an");
+    println!("   order-right magnitude — not a precise damping value.");
+
+    // Regression gate: dissipation must clearly beat the conservative baseline and a
+    // scalar fit must find a real further improvement in a physically-sane band.
+    // Bounds are LOOSE by design — chaos makes the envelope only a ~10–25%
+    // discriminator and the best α is soft (~2.7–5 across engines/realizations),
+    // so this guards against gross breakage (energy untracked, damping unapplied),
+    // not a precise value the metric cannot resolve.
+    assert!(
+        rms_table3 < 0.75 * rms_nodamp,
+        "Phase-2 regression: Table-3 damping ({:.0} mJ) did not clearly beat the \
+         no-damp baseline ({:.0} mJ)",
+        1e3 * rms_table3,
+        1e3 * rms_nodamp
+    );
+    assert!(
+        best.1 < 0.4 * rms_nodamp && (1.0..=8.0).contains(&best.0),
+        "Phase-2 regression: scalar fit did not improve as expected (best {:.0} mJ at α={:.2})",
+        1e3 * best.1,
+        best.0
+    );
+    println!("   ✓ within bound (published damping beats no-damp; scalar fit improves further).");
 }
