@@ -46,8 +46,11 @@ cf-geometry = { workspace = true }
 cf-cap-planes = { workspace = true }
 # `load_stl` for the cleaned scan STL.
 mesh-io = { workspace = true }
-# `SignedDistanceField::new` over the loaded scan mesh — used as
-# the cf-design Sdf source for plug + layer body derivation.
+# `flood_filled_sdf` + `WALL_THRESHOLD_FACTOR_DEFAULT` (the primary
+# flood-fill-signed SDF over the cleaned scan mesh) plus
+# `TriMeshDistance::new` + `PseudoNormalSign` + `Signed` (the
+# cap-stripped open-rind path) — the cf-design Sdf source for plug +
+# layer body derivation.
 mesh-sdf = { workspace = true }
 # `PrinterConfig::fdm_default` + `with_min_wall_thickness` — same
 # F4 surface the v2 example uses.
