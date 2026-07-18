@@ -209,4 +209,4 @@ This row realises the v3 "axial-zoned variation" entry from row 23's roadmap. Ne
 
 - **v4 (explicit Cu mesh sub-layer)** — 4-shell `LayeredScalarField`; ~0.5 mm mesh-band at much higher Shore between Ecoflex and DS10A. **Gated on solver-side fix** (faer LU fallback) since CELL_SIZE ≲ 0.25 m is needed to resolve a 0.5 mm sub-layer, well below the 2 mm CELL_SIZE that already trips an SPD pivot at the FIRST ramp step (row 22 v2-spec Spike A).
 - **v5+ (3-param Yeoh with measured C₃)** — when post-cast Fork-B calibration data lands, switch from 2-param to 3-param Yeoh per the U1 future-proofing note in the arc memo. The `c3: Option<f64>` field in `SiliconeMaterial` is already in place.
-- **vN — real anatomy scan replacing the cuboid fixture** (`mesh_sdf::SignedDistanceField::new(scan_indexed_mesh)` lifted via PR3 F2 `impl Sdf for SignedDistanceField`, then `Solid::from_sdf` per F5 — exactly row 20's path).
+- **vN — real anatomy scan replacing the cuboid fixture** (`flood_filled_sdf(scan_indexed_mesh, bounds, cell, WALL_THRESHOLD_FACTOR_DEFAULT)?.0` lifted via PR3 F2 `impl<D, S> Sdf for Signed<D, S>`, then `Solid::from_sdf` per F5 — exactly row 20's path).

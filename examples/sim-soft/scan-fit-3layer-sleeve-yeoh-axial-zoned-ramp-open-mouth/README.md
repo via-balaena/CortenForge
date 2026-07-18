@@ -76,7 +76,7 @@ step | depth(mm) | iter | force_z(N) | max_disp(m)
 
 ## Sanitization
 
-Per the [device memo][mem]'s sanitization directive — the scanned reference geometry is referred to as "scanned reference geometry" or "scan stand-in" throughout this crate's prose. No anatomical references appear in any tracked surface. The cuboid placeholder is a parametric synthetic stand-in: the pipeline demonstration is the workflow, not the cuboid's specific geometry. Production runs swap the cuboid for a real scan via the `mesh_sdf::SignedDistanceField` → `cf_design::Solid::from_sdf` bridge with no other code change.
+Per the [device memo][mem]'s sanitization directive — the scanned reference geometry is referred to as "scanned reference geometry" or "scan stand-in" throughout this crate's prose. No anatomical references appear in any tracked surface. The cuboid placeholder is a parametric synthetic stand-in: the pipeline demonstration is the workflow, not the cuboid's specific geometry. Production runs swap the cuboid for a real scan via the `mesh_sdf::flood_filled_sdf` → `cf_design::Solid::from_sdf` bridge with no other code change.
 
 ## Classification — a `demo`, not a validator
 
@@ -128,4 +128,4 @@ Per [`feedback_release_mode_heavy_tests`][rel] — release mode required. 8-step
 - **F1.7 follow-up** — re-derive row-25-specific load-case verify gates (force trajectory, ψ̄ ordering under interference-fit loading) once the contact-onset transient is mechanistically understood. Most likely a separate gate set keyed on the cuboid-plug load case rather than reusing row 24's shape.
 - **F2 (viz arc continuation, banked at [vizarc memo][vizarc] §F2)** — decouple display mesh from sim mesh. Display surfaces from the design SDF via marching cubes + scalar transfer via barycentric interpolation. Fixes the boundary-surface depth-perception limitation of cf-view's flat shading.
 - **Deeper-than-4mm penetration** — refine mesh near rim corners (CELL_SIZE local refinement) or chamfer plug edges more aggressively. Currently capped by max-stretch-deviation validity bound trip ~4.5 mm.
-- **vN — real scan replacing the cuboid stand-in** (`mesh_sdf::SignedDistanceField::new(scan_indexed_mesh)` lifted via PR3 F2 `impl Sdf for SignedDistanceField`, then `Solid::from_sdf` per F5 — exactly row 20's path).
+- **vN — real scan replacing the cuboid stand-in** (`flood_filled_sdf(scan_indexed_mesh, bounds, cell, WALL_THRESHOLD_FACTOR_DEFAULT)?.0` lifted via PR3 F2 `impl<D, S> Sdf for Signed<D, S>`, then `Solid::from_sdf` per F5 — exactly row 20's path).
