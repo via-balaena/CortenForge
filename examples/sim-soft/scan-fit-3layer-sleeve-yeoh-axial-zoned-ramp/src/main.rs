@@ -811,7 +811,71 @@ fn build_axial_zoned_material_field() -> MaterialField {
         band,
     ));
 
-    MaterialField::from_yeoh_fields(mu_field, c2_field, lambda_field)
+    // Per-anchor calibrated Yeoh validity bounds, blended axially exactly like
+    // μ/C₂/λ. Only the TENSILE cap (`0.8·λ_break`) is applied at sample time
+    // (H4-2-C `with_max_principal_stretch_only`); the compressive field
+    // (`0.20`) is threaded for API completeness but dropped at sample
+    // (compressive net = det F > 0). WITHOUT these, the bounds-less
+    // `from_yeoh_fields` leaves each per-tet Yeoh's validity `None`, falling
+    // through to the legacy Neo-Hookean σ=2.0 ceiling — ~3× tighter than
+    // silicone's real ~4-9 envelope — which the 8 mm solve grazes near step 16
+    // (see rows 23 + the row-24 README "Why the bounds matter" note).
+    let max_stretch_proximal: Box<dyn Field<f64>> = Box::new(LayeredScalarField::new(
+        scan_for_partition(),
+        vec![LAYER_INNER, LAYER_MIDDLE_OUTER],
+        vec![
+            ECOFLEX_00_20.validity_max_principal_stretch,
+            DRAGON_SKIN_10A.validity_max_principal_stretch,
+            DRAGON_SKIN_20A.validity_max_principal_stretch,
+        ],
+    ));
+    let max_stretch_distal: Box<dyn Field<f64>> = Box::new(LayeredScalarField::new(
+        scan_for_partition(),
+        vec![LAYER_INNER, LAYER_MIDDLE_OUTER],
+        vec![
+            ECOFLEX_00_30.validity_max_principal_stretch,
+            DRAGON_SKIN_15.validity_max_principal_stretch,
+            DRAGON_SKIN_30A.validity_max_principal_stretch,
+        ],
+    ));
+    let max_stretch_field: Box<dyn Field<f64>> = Box::new(BlendedScalarField::new(
+        axial(),
+        max_stretch_distal,
+        max_stretch_proximal,
+        band,
+    ));
+    let min_stretch_proximal: Box<dyn Field<f64>> = Box::new(LayeredScalarField::new(
+        scan_for_partition(),
+        vec![LAYER_INNER, LAYER_MIDDLE_OUTER],
+        vec![
+            ECOFLEX_00_20.validity_min_principal_stretch,
+            DRAGON_SKIN_10A.validity_min_principal_stretch,
+            DRAGON_SKIN_20A.validity_min_principal_stretch,
+        ],
+    ));
+    let min_stretch_distal: Box<dyn Field<f64>> = Box::new(LayeredScalarField::new(
+        scan_for_partition(),
+        vec![LAYER_INNER, LAYER_MIDDLE_OUTER],
+        vec![
+            ECOFLEX_00_30.validity_min_principal_stretch,
+            DRAGON_SKIN_15.validity_min_principal_stretch,
+            DRAGON_SKIN_30A.validity_min_principal_stretch,
+        ],
+    ));
+    let min_stretch_field: Box<dyn Field<f64>> = Box::new(BlendedScalarField::new(
+        axial(),
+        min_stretch_distal,
+        min_stretch_proximal,
+        band,
+    ));
+
+    MaterialField::from_yeoh_fields_with_bounds(
+        mu_field,
+        c2_field,
+        lambda_field,
+        max_stretch_field,
+        min_stretch_field,
+    )
 }
 
 // =============================================================================
