@@ -161,15 +161,35 @@ fn main() {
         return;
     };
     let (t, phi1) = parse_csv(&p1);
-    let (_t2, phi2) = parse_csv(&p2);
+    let (t2, phi2) = parse_csv(&p2);
+    // Verify the data, don't trust it (a corrupt cache must SKIP, never panic or
+    // silently mis-compare). The upper/lower angle files must share a row-for-row
+    // timebase: if one had dropped a malformed row the other kept, index i would
+    // silently compare different instants — a silent-wrong sim-to-real. Exact
+    // Vec equality holds for the clean uniform-grid data and diverges on any
+    // per-row desync.
+    if t != t2 {
+        println!(
+            "Skipping: upper/lower angle files are not row-aligned ({} vs {} rows).",
+            t.len(),
+            t2.len()
+        );
+        return;
+    }
     let n = t.len().min(phi1.len()).min(phi2.len());
-    // The full paper trajectory is ~38.8k samples (77 s @ 500 Hz); a truncated or
-    // corrupt cache would panic downstream (t[n-1], the window scan) — skip instead.
+    // The full paper trajectory is ~38.8k samples (77 s @ 500 Hz); a truncated
+    // cache would panic downstream (t[n-1], the window scan) — skip instead.
     if n < 5000 {
         println!("Skipping: data too short ({n} samples) — expected the full ~77 s trajectory.");
         return;
     }
     let dt_data = (t[n - 1] - t[0]) / (n as f64 - 1.0);
+    // A degenerate (zero-span / non-monotone) timebase would make dt_data ≤ 0 and
+    // blow up the window indices — skip rather than panic.
+    if !dt_data.is_finite() || dt_data <= 0.0 {
+        println!("Skipping: non-increasing timestamps (dt = {dt_data}) — corrupt data.");
+        return;
+    }
     println!(
         "Loaded {n} samples @ {:.0} Hz ({:.1} s). Params = HardwareX Table 4 (published, fixed).",
         1.0 / dt_data,
