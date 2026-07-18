@@ -43,9 +43,9 @@
 //! # The classification audit (drift backstop)
 //!
 //! Discovery is only airtight if every headless example actually declares a
-//! kind. The command therefore audits the contract and reports two gaps as
-//! warnings (a future step promotes them to a hard failure once every headless
-//! example is classified):
+//! kind. The command therefore audits the contract and **hard-fails** on either
+//! gap (checked before the validator runs, so a metadata-only violation fails
+//! fast):
 //!
 //! - **Unclassified** — a headless example with no valid `example_kind`
 //!   (missing, or an unrecognised value). Whether its source self-gates is
@@ -107,8 +107,9 @@ enum Gap {
 ///
 /// Discovers every declared `validator`, runs each red-or-green, and returns an
 /// error (non-zero exit for CI) if any validator fails to pass. Contract gaps
-/// (unclassified / misclassified headless examples) are surfaced as warnings
-/// but do not (yet) fail the gate.
+/// (unclassified / misclassified headless examples) also fail the gate — a hard
+/// error, checked before the validator runs so a metadata-only violation fails
+/// fast.
 pub fn run() -> Result<()> {
     let sh = Shell::new()?;
     let crates = discover_crates(&sh)?;
@@ -151,6 +152,17 @@ pub fn run() -> Result<()> {
 
     audit_unclassified(&unclassified);
     audit_misclassified(&misclassified);
+
+    // HARD-FAIL on any classification gap (arc-close b rung 8). The contract is
+    // enforced now that every headless example is classified: an unclassified or
+    // misclassified headless example fails the gate instead of merely warning, so
+    // the 0/0 state cannot silently regress. Checked before the heavy validator
+    // runs — a metadata-only violation fails fast. `source_self_gates` remains a
+    // triage hint for the report, never the gate (the marker is the source of
+    // truth); the gate is purely "is the crate classified".
+    if let Some(msg) = contract_violation(unclassified.len(), misclassified.len()) {
+        anyhow::bail!("{msg}");
+    }
 
     // A discovery that finds zero validators would pass CI having run nothing
     // — the exact "passing CI ≠ tests ran" hole this command exists to close.
@@ -216,6 +228,25 @@ fn audit_gap(
     }
 }
 
+/// The enforcement policy over the audited gap counts. Pure (no fs/cargo) so the
+/// rule is unit-testable, mirroring `audit_gap`. Returns `Some(message)` — the
+/// hard-fail reason — when the contract is violated (any unclassified or
+/// misclassified headless example), or `None` when the contract holds. The gate
+/// is deliberately count-only: `audit_gap` already decided *what* is a gap; this
+/// decides *whether any gap fails the run*.
+fn contract_violation(unclassified: usize, misclassified: usize) -> Option<String> {
+    if unclassified == 0 && misclassified == 0 {
+        return None;
+    }
+    Some(format!(
+        "validation contract violated: {unclassified} unclassified + {misclassified} \
+         possibly-misclassified headless example(s) (see the audit above). Every headless \
+         example must declare `example_kind = \"{KIND_VALIDATOR}\"` or \"{KIND_DEMO}\", and a \
+         `{KIND_DEMO}` must not self-gate. Add the marker to the crate's \
+         `[package.metadata.cortenforge]` table."
+    ))
+}
+
 /// Report unclassified headless examples — the fan-out worklist. Each is
 /// tagged with the triage hint so classification is a glance, not a code-read.
 fn audit_unclassified(unclassified: &[(&CrateEntry, bool)]) {
@@ -225,7 +256,7 @@ fn audit_unclassified(unclassified: &[(&CrateEntry, bool)]) {
     println!(
         "\n{} {} headless example(s) declare no `example_kind` — every headless \
          example must be classified `validator` or `demo`:",
-        "warning:".yellow().bold(),
+        "error:".red().bold(),
         unclassified.len()
     );
     for (e, self_gates) in unclassified {
@@ -246,7 +277,7 @@ fn audit_misclassified(misclassified: &[&CrateEntry]) {
     println!(
         "\n{} {} example(s) declare `example_kind = \"demo\"` but self-gate — likely \
          mis-marked validators (their checks run nowhere):",
-        "warning:".yellow().bold(),
+        "error:".red().bold(),
         misclassified.len()
     );
     for e in misclassified {
@@ -379,7 +410,7 @@ fn strip_line_comments(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{audit_gap, source_self_gates, Gap, KIND_DEMO, KIND_VALIDATOR};
+    use super::{audit_gap, contract_violation, source_self_gates, Gap, KIND_DEMO, KIND_VALIDATOR};
     use std::fs;
     use std::path::PathBuf;
 
@@ -503,6 +534,40 @@ mod tests {
         assert!(
             audit_gap(true, true, Some(KIND_DEMO), false).is_none(),
             "demo that does not self-gate is fine"
+        );
+    }
+
+    #[test]
+    fn contract_holds_only_when_both_gap_counts_are_zero() {
+        // The rung-8 enforcement policy: a fully-classified fleet (0/0) passes;
+        // any unclassified OR misclassified example is a hard-fail.
+        assert!(
+            contract_violation(0, 0).is_none(),
+            "0 unclassified / 0 misclassified is the passing contract state"
+        );
+        assert!(
+            contract_violation(1, 0).is_some(),
+            "an unclassified headless example must fail the gate"
+        );
+        assert!(
+            contract_violation(0, 1).is_some(),
+            "a misclassified headless example must fail the gate"
+        );
+        assert!(
+            contract_violation(3, 2).is_some(),
+            "both gap kinds present must fail the gate"
+        );
+    }
+
+    #[test]
+    fn contract_violation_message_names_both_counts() {
+        // The fail message must carry the actionable numbers so CI logs point
+        // straight at the scope of the gap.
+        let msg = contract_violation(2, 1).expect("nonzero gaps violate the contract");
+        assert!(msg.contains('2') && msg.contains('1'), "message: {msg}");
+        assert!(
+            msg.contains(KIND_VALIDATOR) && msg.contains(KIND_DEMO),
+            "message should name both valid kinds: {msg}"
         );
     }
 }

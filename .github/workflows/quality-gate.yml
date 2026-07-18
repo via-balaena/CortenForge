@@ -809,10 +809,10 @@ jobs:
   # by manifest marker, not a hand-maintained list, so a new marked validator is
   # gated automatically (unlike the tests-debug shard lists, CI's one
   # hand-maintained enumeration and its sole drift source). It also audits the
-  # classification contract, WARN-ONLY for now: it reports every headless
-  # example that declares no kind (with a validator?/demo? triage hint) and any
-  # `demo` whose source self-gates. Those warnings become a hard failure once
-  # every headless example is classified.
+  # classification contract and HARD-FAILS on either gap: every headless example
+  # that declares no kind (reported with a validator?/demo? triage hint) and any
+  # `demo` whose source self-gates. The gap check runs before the validators, so
+  # a metadata-only violation fails fast.
   #
   # NOT affected-scoped and NOT sharded: one declared validator today (deps
   # sim-core + sim-mjcf, both universal) would run on nearly any sim change
