@@ -29,6 +29,7 @@ mod affected;
 mod check;
 mod complete;
 mod grade;
+mod pr_scope;
 mod setup;
 mod validators;
 
@@ -154,7 +155,25 @@ enum Commands {
     /// either gap — a headless example that declares no kind, or a `demo` whose
     /// source self-gates — checked before the validators run (see
     /// `validators.rs`).
-    RunValidators,
+    RunValidators {
+        /// Run only the validators whose crate is in this comma-separated set
+        /// (PR-scoped CI; pass the output of `cargo xtask affected`). Applied
+        /// only to the *run* step — the classification audit always covers the
+        /// whole workspace. Applied before `--shard`, so each shard runs a
+        /// slice of this set. Omit to run every discovered validator (the gate
+        /// on main/merge). An empty value (`--only ""`) runs none — the no-op
+        /// for a PR that affects no validator.
+        #[arg(long, value_delimiter = ',')]
+        only: Option<Vec<String>>,
+
+        /// Run only a deterministic 1/N slice of the selected validators, as
+        /// `i/N` (1-based; e.g. `--shard 2/3`). Lets CI fan the run out across
+        /// N parallel jobs to cut wall time. Validators are assigned
+        /// round-robin over their sorted names so heavy ones scatter evenly.
+        /// Omit to run all selected validators.
+        #[arg(long, value_parser = parse_shard)]
+        shard: Option<(usize, usize)>,
+    },
 
     /// Set up development environment (git hooks, verify tools)
     Setup,
@@ -203,7 +222,7 @@ fn main() -> Result<()> {
         Commands::Affected { base, json } => affected::run(&base, json),
         Commands::Ci => check::run_ci(),
         Commands::Status => grade::status(),
-        Commands::RunValidators => validators::run(),
+        Commands::RunValidators { only, shard } => validators::run(only, shard),
         Commands::Setup => setup::run(),
         Commands::Uninstall => setup::uninstall(),
     }

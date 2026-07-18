@@ -64,6 +64,7 @@
 //! crate into a headless validator and a separate Bevy demo, not to widen the
 //! audit to guess at Bevy crates' intent.
 
+use crate::pr_scope::{filter_only, select_shard};
 use anyhow::{Context, Result};
 use owo_colors::OwoColorize;
 use regex::Regex;
@@ -110,7 +111,18 @@ enum Gap {
 /// (unclassified / misclassified headless examples) also fail the gate — a hard
 /// error, checked before the validator runs so a metadata-only violation fails
 /// fast.
-pub fn run() -> Result<()> {
+///
+/// # PR-scoping the run (not the audit)
+///
+/// `only` (from `--only`, the affected set) and `shard` (from `--shard i/N`)
+/// narrow **only the run step**, mirroring `grade-all`: they select which
+/// validators' binaries actually build+run, so a docs-only PR runs none and a
+/// foundational PR fans its affected validators across N parallel jobs. The
+/// classification audit and the zero-discovered guard always cover the whole
+/// workspace — the contract is the drift backstop and must never be narrowed.
+/// A run set that is empty *after* filtering is a legitimate no-op (this shard
+/// has no affected validator), distinct from the "zero discovered" hard-fail.
+pub fn run(only: Option<Vec<String>>, shard: Option<(usize, usize)>) -> Result<()> {
     let sh = Shell::new()?;
     let crates = discover_crates(&sh)?;
 
@@ -177,22 +189,38 @@ pub fn run() -> Result<()> {
         );
     }
 
-    println!("\nRunning validators (--release):\n");
+    // PR-scope the RUN only (the audit above stays whole-workspace). Sort first
+    // so `--shard`'s round-robin is deterministic, then apply `--only` (affected
+    // set) and `--shard` exactly as `grade-all` does. An empty result here means
+    // "no affected validator in this selection" — a legitimate no-op, NOT the
+    // zero-discovered hard-fail (that guard ran on the full set above).
+    let mut validator_names: Vec<String> = validators.iter().map(|v| v.name.clone()).collect();
+    validator_names.sort();
+    let run_names = select_shard(&filter_only(&validator_names, only.as_deref()), shard);
+
+    if run_names.is_empty() {
+        println!(
+            "\n{} no validator in this selection (--only / --shard) — nothing to run.",
+            "note:".bold()
+        );
+        return Ok(());
+    }
+
+    println!("\nRunning {} validator(s) (--release):\n", run_names.len());
     let mut failures: Vec<&str> = Vec::new();
-    for v in &validators {
-        let name = &v.name;
+    for name in &run_names {
         println!("{} {}", "──▶".cyan(), name.bold());
         let outcome = cmd!(sh, "cargo run --release --quiet -p {name}").run();
         match outcome {
             Ok(()) => println!("  {} {}\n", "PASS".green().bold(), name),
             Err(_) => {
                 println!("  {} {}\n", "FAIL".red().bold(), name);
-                failures.push(name);
+                failures.push(name.as_str());
             }
         }
     }
 
-    let total = validators.len();
+    let total = run_names.len();
     let passed = total - failures.len();
     println!("{}", "═".repeat(60));
     println!("  Validators: {passed}/{total} passed");

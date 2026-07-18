@@ -814,20 +814,38 @@ jobs:
   # `demo` whose source self-gates. The gap check runs before the validators, so
   # a metadata-only violation fails fast.
   #
-  # NOT affected-scoped and NOT sharded: one declared validator today (deps
-  # sim-core + sim-mjcf, both universal) would run on nearly any sim change
-  # anyway, and one small binary is cheap. As markers fan out across the ~76
-  # headless examples — some pulling the ML/RL tree — shard this like `grade`
-  # and measure wall time. Validators are GUI-free today, so no apt libs are
-  # installed; add them if a GUI-dependent validator is ever marked.
+  # AFFECTED-SCOPED + SHARDED (mirrors `grade`): the validator fleet has grown
+  # past ~40 crates — some pulling the ML/RL tree — so building+running the whole
+  # set in --release cost ~22 min even on a docs-only PR. The run is now
+  # PR-scoped and fanned across 3 shards, exactly like `grade`:
+  #   - `--only <affected>` runs only validators whose crate is in the affected
+  #     set (changed crates + reverse-dep closure). A docs/config PR affects no
+  #     validator → every shard no-ops in seconds.
+  #   - `--shard i/3` splits the rest across parallel jobs, so a foundational PR
+  #     (affected ≈ whole workspace) still finishes fast.
+  # The classification audit inside `run-validators` ALWAYS covers the whole
+  # workspace regardless of `--only`/`--shard` (the contract is the drift
+  # backstop), and discovering zero validators is still a hard-fail; an empty set
+  # *after* affected/shard filtering is a legitimate no-op. Scoping requires a
+  # positive signal (affected succeeded, PR event, full-fallback valve not
+  # tripped) — every other path runs the full fleet, and a `.github/**` change
+  # trips `needs_full`, so edits to THIS job run the full validator set. GUI-free
+  # today, so no apt libs; add them if a GUI-dependent validator is ever marked.
   #
-  # No `if:` / `needs:` — a job with no dependencies always runs (barring
-  # cancellation), and the final `quality-gate` job's `needs: […]` is what
-  # enforces the block-on-red.
+  # `if: !cancelled()` (not a bare unconditional job) so a skipped/failed
+  # `affected` never turns this into a skipped *required* check — mirroring
+  # `grade`; the final `quality-gate` job's `needs: […]` enforces block-on-red
+  # across all shards.
   validate-examples:
-    name: Validate Examples
+    name: Validate Examples (shard ${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    needs: [affected]
+    if: ${{ !cancelled() }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v6
 
@@ -839,8 +857,23 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
 
-      - name: cargo xtask run-validators
-        run: cargo run -p xtask --release -- run-validators
+      - name: cargo xtask run-validators --shard ${{ matrix.shard }}/3
+        # Scope to the affected subset ONLY on a positive PR signal (affected
+        # succeeded, PR event, full-fallback valve not tripped); every other path
+        # runs the full fleet. Mirrors the `grade` job's guard.
+        run: |
+          if [ "${{ needs.affected.result }}" = "success" ] \
+            && [ "${{ github.event_name }}" = "pull_request" ] \
+            && [ "${{ needs.affected.outputs.needs_full }}" != "true" ]; then
+            echo "PR-scoped validators (--only): ${{ needs.affected.outputs.crates }}"
+            cargo run -p xtask --release -- run-validators \
+              --shard ${{ matrix.shard }}/3 --only "${{ needs.affected.outputs.crates }}"
+          else
+            echo "Full validator run (non-PR / needs_full / affected unavailable)."
+            cargo run -p xtask --release -- run-validators \
+              --shard ${{ matrix.shard }}/3
+          fi
+        shell: bash
 
   # ============================================================================
   # FINAL GATE
