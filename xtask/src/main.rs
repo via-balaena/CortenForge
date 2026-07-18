@@ -150,9 +150,10 @@ enum Commands {
     /// example_kind = "validator"` in `--release` and fails if any exits
     /// non-zero (also fails if zero are discovered). Discovery is by manifest
     /// marker (no hand-maintained list), so a new marked validator is gated
-    /// automatically. Also audits the classification contract, warn-only for
-    /// now: every headless example that declares no kind, and any `demo` whose
-    /// source self-gates, is reported (see `validators.rs`).
+    /// automatically. Also audits the classification contract and hard-fails on
+    /// either gap — a headless example that declares no kind, or a `demo` whose
+    /// source self-gates — checked before the validators run (see
+    /// `validators.rs`).
     RunValidators,
 
     /// Set up development environment (git hooks, verify tools)
