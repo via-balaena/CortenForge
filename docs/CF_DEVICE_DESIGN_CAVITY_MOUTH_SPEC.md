@@ -6,6 +6,34 @@ User visual gate on iter-1 sock fixture pending.
 **Parent**: [`CF_DEVICE_DESIGN_CAVITY_MOUTH_BOOKMARK.md`](CF_DEVICE_DESIGN_CAVITY_MOUTH_BOOKMARK.md).
 **Followup** (not blocking fit-viz): [`CF_DEVICE_DESIGN_INSERTION_SIM_OPEN_CAVITY_BOOKMARK.md`](CF_DEVICE_DESIGN_INSERTION_SIM_OPEN_CAVITY_BOOKMARK.md).
 
+## As-built (post-2026-05-16) — read this first
+
+Shipped 2026-05-16, then the mesh-sdf oracle-decomposition **D-arc**
+(which post-dates this spec) plus the D.2 flood-fill grid moved the API
+and the grid-fill mechanism out from under the Sub-leaf 3 sketch below.
+The current code is the source of truth; this records the divergences
+so the spec stays a faithful shipped record. The two-SDF *idea* (§1 Q2)
+is unchanged — closed body for sign, cap-stripped open body for
+unsigned magnitude — the drift is in types and the sign source.
+
+- **Location + SDF type.** The `sdf_layers` module moved
+  `tools/cf-device-design` → `design/cf-device-geometry`
+  (`src/sdf_layers.rs`). The `mesh_sdf::SignedDistanceField` named below
+  no longer exists — the D-arc replaced it with the composed
+  `Signed<TriMeshDistance, PseudoNormalSign>`.
+- **As-built `CachedScanSdf`.** The Sub-leaf 3 struct
+  `{ sdf_closed, sdf_open: Arc<SignedDistanceField>, grid, bounds,
+  min_sdf_value }` shipped as `{ sdf_closed, sdf_open:
+  Arc<Signed<TriMeshDistance, PseudoNormalSign>>, closed_grid,
+  open_grid: Option<ScalarGrid>, bounds, margin_m, min_sdf_value }`.
+- **Grid sign source (the real change).** The Sub-leaf 3 fill computes
+  `sd_closed.signum() * open_unsigned` from the pseudo-normal
+  `sdf_closed.distance(p)`. The shipped code fills `closed_grid` via
+  mesh-sdf's `CachedGridSdf::build` (3-region **flood-fill** sign),
+  because pseudo-normal sign flips far-field on cleaned scans; the
+  `sdf_closed` field is retained only for sign-independent closest-point
+  projection (heat-map re-projection), NOT for the grid sign.
+
 ## Implementation summary
 
 5 sub-leaves shipped one commit at a time:
