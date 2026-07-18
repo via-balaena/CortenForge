@@ -136,11 +136,12 @@ enum Gap {
 /// A run set that is empty *after* filtering is a legitimate no-op (this shard
 /// has no affected validator), distinct from the "zero discovered" hard-fail.
 ///
-/// Shards are balanced by measured wall-time (the committed
-/// `validator_timings.json` baseline), not validator count — runtime dominates
-/// and is uneven, so a count-balanced split clusters the slow ones. With
-/// `record_timings`, each validator's observed time is written back to the
-/// baseline after the run.
+/// Shards are balanced by cost, not validator count: each validator's weight is
+/// its measured runtime (the committed `validator_timings.json` baseline) plus a
+/// per-crate compile constant ([`COMPILE_OVERHEAD_SECS`]). Runtime alone
+/// clusters the few slow validators onto one shard; count alone ignores that a
+/// handful run 100× longer — the sum balances both. With `record_timings`, each
+/// validator's observed runtime is written back to the baseline after the run.
 pub fn run(
     only: Option<Vec<String>>,
     shard: Option<(usize, usize)>,
@@ -452,12 +453,27 @@ fn parse_timings(json: &str) -> HashMap<String, f64> {
     serde_json::from_str(json).unwrap_or_default()
 }
 
-/// The shard weight (integer milliseconds) for a validator: its recorded
-/// wall-time, or [`UNKNOWN_VALIDATOR_SECS`] when absent. Milliseconds keep the
-/// LPT bin-packer's `u64` arithmetic exact.
+/// Fixed per-validator compile cost (seconds) added to every validator's
+/// measured runtime to form its shard weight.
+///
+/// The recorded timings are pure *runtime* (warm cache), but in CI each
+/// validator ALSO costs its own example-crate compile — roughly uniform per
+/// crate and independent of runtime. Balancing runtime alone (an earlier
+/// iteration) piled the many fast validators onto one shard whose *compile* then
+/// dominated its wall-time; adding a per-crate constant makes LPT spread them.
+/// Back-solved from CI wall-times at ~3.8 s/crate (the shared-workspace-tree
+/// compile is a fixed per-shard cost paid by every shard, so it is deliberately
+/// NOT attributed here). Approximate by design — refine if CI shard times stay
+/// skewed.
+const COMPILE_OVERHEAD_SECS: f64 = 3.8;
+
+/// The shard weight (integer milliseconds) for a validator: its measured runtime
+/// (or [`UNKNOWN_VALIDATOR_SECS`] when absent) plus [`COMPILE_OVERHEAD_SECS`], so
+/// the LPT split balances BOTH the few long-running validators and the compile
+/// cost of the many fast ones. Milliseconds keep the bin-packer's `u64` exact.
 fn weight_millis(timings: &HashMap<String, f64>, name: &str) -> u64 {
-    let secs = timings.get(name).copied().unwrap_or(UNKNOWN_VALIDATOR_SECS);
-    (secs * 1000.0) as u64
+    let runtime = timings.get(name).copied().unwrap_or(UNKNOWN_VALIDATOR_SECS);
+    ((runtime + COMPILE_OVERHEAD_SECS) * 1000.0) as u64
 }
 
 /// Merge freshly-measured timings into the baseline and write it back, sorted by
@@ -535,7 +551,7 @@ fn strip_line_comments(text: &str) -> String {
 mod tests {
     use super::{
         audit_gap, contract_violation, parse_timings, source_self_gates, weight_millis, Gap,
-        KIND_DEMO, KIND_VALIDATOR, UNKNOWN_VALIDATOR_SECS,
+        COMPILE_OVERHEAD_SECS, KIND_DEMO, KIND_VALIDATOR, UNKNOWN_VALIDATOR_SECS,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -555,13 +571,17 @@ mod tests {
     }
 
     #[test]
-    fn weight_millis_uses_recorded_time_then_falls_back() {
+    fn weight_millis_adds_compile_overhead_to_runtime_then_falls_back() {
         let t = parse_timings(r#"{"known": 4.2}"#);
-        assert_eq!(weight_millis(&t, "known"), 4200);
-        // Unknown → the generous placeholder (so LPT isolates it).
+        // recorded runtime + the per-crate compile constant.
+        assert_eq!(
+            weight_millis(&t, "known"),
+            ((4.2 + COMPILE_OVERHEAD_SECS) * 1000.0) as u64
+        );
+        // Unknown → generous runtime placeholder (+ overhead) so LPT isolates it.
         assert_eq!(
             weight_millis(&t, "brand-new"),
-            (UNKNOWN_VALIDATOR_SECS * 1000.0) as u64
+            ((UNKNOWN_VALIDATOR_SECS + COMPILE_OVERHEAD_SECS) * 1000.0) as u64
         );
     }
 
