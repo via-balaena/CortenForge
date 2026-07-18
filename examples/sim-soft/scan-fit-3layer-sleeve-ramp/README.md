@@ -23,7 +23,7 @@ The ramp's empirical reach was characterized at v2-spec lock time via five pre-e
 
 This row is also the **first sim-soft user-facing example to demonstrate quasi-static `replay_step` chaining** — `x_prev_k+1 = x_final_k`, `v_prev = 0` throughout (no inertia carry-over). Distinct from row 17 [`soft-drop-on-plane`](../soft-drop-on-plane/), which chains the full `step` solver method for transient dynamics with inertial damping; v2's chaining is the quasi-static-equilibrium variant. The pattern generalises to any scenario where the single-step Newton basin would otherwise collapse.
 
-Every claim sits behind an `assert!` / `assert_eq!` / `assert_relative_eq!` in `src/main.rs::verify_*`; per [`feedback_math_pass_first_handauthored`][m], a clean `cargo run --release` exit-0 IS the correctness signal. Outputs are `out/scan_fit_3layer_sleeve_ramp.json` (final-step scalars + 3-material provenance + per-step `ramp_curve` array + per-active-contact-pair detail at the final step) and `out/sleeve_zslab_final.ply` (z-slab per-tet centroid cloud at the final step, with categorical `material_id` + sequential `displacement_magnitude`).
+Every gate sits behind an `assert!` / `assert_eq!` in `src/main.rs::verify_*`; per [`feedback_math_pass_first_handauthored`][m], a clean `cargo run --release` exit-0 IS the correctness signal. This row is a Rule-B **validator**: its gates are pipeline-emergent structural + physics invariants read from the real 12-step ramp, not captured-bit self-pins (those were stripped in the Rule-B de-frag — constitutive and mesher correctness are lib-owned). Outputs are `out/scan_fit_3layer_sleeve_ramp.json` (final-step scalars + per-shell material `(μ, λ)` + per-step `ramp_curve` array + per-active-contact-pair detail at the final step) and the F1.5 viz PLYs `out/sleeve_boundary_final.ply` + `out/sleeve_slab_cut_z0_final.ply` + `out/sleeve_design_surface_deformed_step_01..12.ply` (full 3D body, equatorial cross-section, and per-step deformed design surfaces via `sim_soft::viz`).
 
 ## What this example demonstrates
 
@@ -56,11 +56,11 @@ for k in 0..N_RAMP_STEPS {
     x_prev_flat.clone_from(&step_k.x_final);  // chain
 }
 
-// 7. Per-step + final-step verifies (12 anchor groups, see "Numerical anchors").
+// 7. Per-step verifies (structural + physics gates, see "Numerical anchors").
 
-// 8. JSON + PLY readouts. Final step drives the headline z-slab artifact;
-//    the JSON `ramp_curve` array carries the full force-displacement trace
-//    for matplotlib post-processing.
+// 8. JSON + PLY readouts. Final step drives the headline viz PLYs
+//    (boundary surface + z=0 slab cut); the JSON `ramp_curve` array carries
+//    the full force-displacement trace for matplotlib post-processing.
 ```
 
 The ramp pattern composes for any scenario where the single-step Newton basin is too tight. Future rows can reuse `solve_ramp` directly; the only per-row choice is `(N_RAMP_STEPS, PROBE_PENETRATION_FINAL, MAX_NEWTON_ITER)` — all three set empirically from a pre-execution spike on the target geometry.
@@ -71,143 +71,99 @@ Per the [device memo][mem]'s sanitization directive — the scanned reference ge
 
 ## Numerical anchors
 
-Each anchor is encoded as an `assert!` / `assert_eq!` / `assert_relative_eq!` in `src/main.rs` under `verify_*`. All 12 groups are called from `main()` in dependency order; `cargo run --release` exit-0 means every assert passed.
+Each gate is encoded as an `assert!` / `assert_eq!` in `src/main.rs` under `verify_*` and is called from `main()` in dependency order; `cargo run --release` exit-0 means every gate passed. They are **pipeline-emergent structural + physics invariants** read from the real 12-step ramp — resolution- and toolchain-robust. The pre-Rule-B captured-bit self-pins (exact tet/vertex/pair counts, the per-step iter-count freeze, the 60 per-step + final `to_bits()` force/displacement/Ψ̄ pins, the `to_neo_hookean()` provenance mirror) were **stripped**: they froze one run's FP trajectory on one toolchain, and the constitutive correctness they redundantly implied is lib-owned (`neo_hookean.rs` closed-form tests + `silicone_table.rs::tests::to_neo_hookean_round_trips_lame_pair`), as is the generic distance-from-scan shell routing (`sdf_material_tagging.rs` IV-4). The observed per-step scalars (force, displacement, per-layer Ψ̄) are still emitted to the JSON `ramp_curve` + stdout for eyes-on inspection — just not self-pinned.
 
 ### 1. `quality_floors`
 
-| Anchor | Bound |
+| Gate | Bound |
 |---|---|
 | `signed_volume > 0` per tet | strict (D-10 detector) |
 
-Same anchor as row 21 v1. Pre-condition for the per-tet `deformation_gradient` helper's `D_rest.try_inverse()` invariant.
+Same gate as row 21 v1. Pre-condition for the per-tet `deformation_gradient` helper's `D_rest.try_inverse()` invariant.
 
-### 2. `counts_exact`
+### 2. `mesh_structure`
 
-| Count | Pinned | Source |
-|---|---|---|
-| `n_tets`              | `74_628` | bit-equal to row 21 v1 (geometry + BCC + IS deterministic on same SDF + hints) |
-| `n_vertices`          | `31_966` | bit-equal to row 21 v1 |
-| `n_referenced`        | `17_384` | bit-equal to row 21 v1 |
-| `n_pinned` (outer-envelope band) | `7_046` | bit-equal to row 21 v1 |
-| `n_inner_tets` (`ECOFLEX_00_20`)   | `25_892` | bit-equal to row 21 v1 |
-| `n_middle_tets` (`DRAGON_SKIN_10A`)| `16_656` | bit-equal to row 21 v1 |
-| `n_outer_tets` (`DRAGON_SKIN_20A`) | `32_080` | bit-equal to row 21 v1 |
-| sum                                | `74_628` | partition gate |
-
-Cross-row continuity to row 21 v1 IS the gate (pattern (y) — bit-equal cross-row continuity captures regressions; row 22 + row 21 v1 share geometry + material stack exactly, so counts are bit-equal).
-
-### 3. `zslab_counts_exact`
-
-| Count | Pinned |
+| Gate | Bound |
 |---|---|
-| `n_inner_tets_zslab`  | `768` (per-shell partition of the z-slab cut at `\|cz\| < CELL_SIZE / 2 = 0.002`) |
-| `n_middle_tets_zslab` | `432` |
-| `n_outer_tets_zslab`  | `892` |
+| `n_tets` | `> 0` |
+| `n_referenced` | `> 0` and `≤ n_vertices` (referenced ⊆ all vertices) |
+| `n_pinned` (outer-envelope band) | non-empty proper subset of `n_referenced` |
+| each per-shell tet count | `> 0` (all three material bands populated) |
 
-Bit-equal to row 21 v1 (z-slab geometry + cut axis are unchanged).
+Structural invariants, not exact counts (the specific tet/vertex counts are a mesher-version artifact). Per-shell routing correctness is checked in gate 9 + owned by lib IV-4.
 
-### 4. `n_ramp_steps_exact`
+### 3. `zslab_populations`
 
-| Anchor | Bound |
+| Gate | Bound |
 |---|---|
-| `len(results) == N_RAMP_STEPS_EXACT` | strict (12) |
+| each z-slab per-shell tet count (`\|cz\| < CELL_SIZE / 2 = 0.002`) | `> 0` |
 
-Partition gate — the ramp must produce exactly 12 step results.
+Each material band contributes ≥ 1 tet to the `z = 0` cut. Non-empty, not exact-count.
 
-### 5. `per_step_solver_converges`
+### 4. `per_step_solver_converges`
 
-| Anchor | Bound |
+| Gate | Bound |
 |---|---|
 | `r.iter_count < MAX_NEWTON_ITER = 100` | per step, all 12 |
 | `r.final_residual_norm < 1e-10` | per step, all 12 |
 
-Each step's Newton solve must converge within the iter cap + tolerance bound. Empirical iter counts: `[8, 8, 9, 11, 11, 13, 14, 16, 19, 22, 30, 61]` — step 12 (the deepest at 6 mm) is the closest to the cap with 39 iters of margin.
+Each step's Newton solve must converge within the iter cap + tolerance bound. Observed iter counts `[8 … 30, 61]` — step 12 (the deepest at 6 mm) is the closest to the cap with 39 iters of margin.
 
-### 6. `per_step_iter_count`
+### 5. `force_displacement_monotone`
 
-| Anchor | Pinned |
-|---|---|
-| `IT_COUNT_RAMP_EXACT[k] == r.iter_count` per step | `[8, 8, 9, 11, 11, 13, 14, 16, 19, 22, 30, 61]` |
-
-The chained `replay_step` is deterministic on a fixed toolchain (rustc 1.95.0 on macOS arm64); iter-count drift signals real solver-path regression, not noise. Tighter than `per_step_solver_converges` (anchor 5) — that gate accepts any iter count below the cap; this gate pins to specific values.
-
-### 7. `force_displacement_monotone`
-
-| Anchor | Bound |
+| Gate | Bound |
 |---|---|
 | `force_total_z[N-1] > force_total_z[0]` | strict (ramp endpoint sanity) |
 | `force_total_z[k+1] > force_total_z[k]` for k ≥ 1 | strict-adjacent monotone from step 2 onward |
 
-Force-on-soft summed `+z`-component is in `+z` direction (probe enters from above; wrap-cap material is pushed UP) and grows monotonically with deeper penetration as more wrap-cap material engages. Strict-adjacent monotonicity at step 1 → step 2 is NOT required: contact engagement at the shallowest 0.5 mm penetration is in a transient regime where the active-pair set is still settling. From step 2 onward the gate IS strict (any inversion in the deeper regime would signal a real defect).
+Force-on-soft summed `+z`-component is in `+z` direction (probe enters from above; wrap-cap material is pushed UP) and grows monotonically with deeper penetration (observed `~1.1 N` at 0.5 mm → `~25.6 N` at 6 mm). Strict-adjacent monotonicity at step 1 → step 2 is NOT required: contact engagement at the shallowest 0.5 mm penetration is a transient regime where the active-pair set is still settling.
 
-**v2.5 sign-flip note.** Pre-v2.5 anchors had `force_total_z` in the `-z` direction (e.g., `-137 N` at step 1) because the unfiltered `per_pair_readout` includes ORPHAN BCC vertices inside the empty cavity — orphans below the probe equator have `-z` normals and dominated the sum (~95-97% of readout entries were orphans). v2.5 filters readouts to referenced (= solver-active) vertices only, surfacing the physically meaningful `+z` push from wrap-cap-above-probe contacts. See pattern (xx) at the row 22 patterns memo and the v2 spec memo's "Post-ship investigation" section for the orphan-pollution discovery and v2.5 cleanup rationale.
+**v2.5 sign-flip note.** Pre-v2.5 `force_total_z` was `-z` (e.g., `-137 N` at step 1) because the unfiltered `per_pair_readout` includes ORPHAN BCC vertices inside the empty cavity — orphans below the probe equator have `-z` normals and dominated the sum. `sim_soft::filter_pair_readouts_to_referenced` restricts to solver-active vertices, surfacing the physically meaningful `+z` push. See pattern (xx) at the row 22 patterns memo.
 
-### 8. `per_step_strain_energy_ordering`
+### 6. `per_step_strain_energy_ordering`
 
-| Anchor | Bound |
+| Gate | Bound |
 |---|---|
 | `Ψ̄_inner > Ψ̄_middle` | strict, per step (12) |
 | `Ψ̄_middle > Ψ̄_outer` | strict, per step (12) |
 
-Same `Ψ̄_inner > Ψ̄_middle > Ψ̄_outer` ordering as row 21 v1's anchor 7, but applied at every ramp step. The compounding (compliance + distance-to-load + distance-to-constraint) holds throughout the ramp, so the ordering is robust at every intermediate equilibrium. Final-step values: `Ψ̄_inner ≈ 302 J/m³`, `Ψ̄_middle ≈ 102 J/m³`, `Ψ̄_outer ≈ 30 J/m³`.
+The same `Ψ̄_inner > Ψ̄_middle > Ψ̄_outer` ordering as row 21 v1, applied at every ramp step. The compounding (compliance + distance-to-load + distance-to-constraint) holds throughout. Observed final-step values: `Ψ̄_inner ≈ 302 J/m³`, `Ψ̄_middle ≈ 102 J/m³`, `Ψ̄_outer ≈ 30 J/m³`.
 
-### 9. `per_step_max_disp_bounded`
+### 7. `per_step_max_disp_bounded`
 
-| Anchor | Bound |
+| Gate | Bound |
 |---|---|
 | `max_disp[k] < WRAP_THICKNESS = 0.014 m` | strict, per step (12) |
 
-Body-wide max displacement must stay under the 14 mm wrap thickness at every step (the cavity wall reaching the outer envelope's Dirichlet pin band would mean wrap collapse). Final-step max_disp ≈ 6.7 mm, ~48 % of the bound.
+Body-wide max displacement must stay under the 14 mm wrap thickness at every step (the cavity wall reaching the outer envelope's Dirichlet pin band would mean wrap collapse). Observed final-step max_disp ≈ 6.7 mm, ~48 % of the bound.
 
-### 10. `material_provenance` + `material_assignment_partition`
+### 8. `contact_engaged`
 
-| Material | Lamé pair | Identity at `epsilon = 0.0` |
-|---|---|---|
-| `ECOFLEX_00_20` (inner)   | μ = 18 kPa, λ = 72 kPa  | `nh.energy(I) == 0` and `nh.energy(F_probe) == FMA(λ/2, ...)` |
-| `DRAGON_SKIN_10A` (middle)| μ = 51 kPa, λ = 204 kPa | same |
-| `DRAGON_SKIN_20A` (outer) | μ = 113 kPa, λ = 452 kPa | same |
-
-Plus per-tet material assignment via `mesh.materials()[t].energy(F_probe)` matches the centroid's shell lookup at `EXACT_TOL = 0.0`. Same anchors as row 21 v1's anchors 5 + 6.
-
-### 11. `n_contact_pairs_final_exact` + `outer_layer_max_psi_final`
-
-| Anchor | Pinned |
+| Gate | Bound |
 |---|---|
-| `n_active_pairs` at final step (referenced-only, v2.5) | `37` |
-| `max Ψ_outer` at final step | bits self-pinned (~10487 J/m³); rel-tol IV-1 sparse-tier |
+| `n_active_pairs` at final step | `> 0` |
 
-Pre-v2.5 the anchored `n_active_pairs` was 273 — but ~95-97 % of those were ORPHAN BCC lattice vertices inside the empty cavity (no FEM stiffness, ignored by the solver). v2.5 filters to referenced vertices only; the count is now physically meaningful. Real pair count GROWS from 9 at 0.5 mm penetration to 37 at 4 mm and PLATEAUS at 37 from step 7 onward — the deepening probe pose progressively engages more wrap-cap material until the active band stabilizes. Max Ψ_outer at 6 mm depth is ~60× row 21 v1's 175.8 J/m³ at 1 mm — strain at the contact-band-adjacent outer-shell tets concentrates dramatically as the radial chain inner → middle → outer transmits the deeper probe load. (Row 21 v1 was anchor-cleanup'd analogously in commit `a70e61eb` — both rows now use the filtered convention; row 21 v1's anchored count at 1 mm depth is 13, bit-equal to row 22 step 2's 13.)
+The final (deepest) ramp step engaged the probe against the cavity wall. (The exact pair count was a mesher/discretization artifact; non-empty is the invariant that matters — the count is over the referenced-only filtered set, so it excludes the orphan cavity vertices discussed in gate 5.)
 
-### 12. `per_step_captured_bits` — IV-1 sparse-tier rel-tol
+### 9. `material_routing`
 
-Per-step force-displacement + per-layer Ψ̄ aggregates self-pinned at first capture, 5 quantities × 12 steps = 60 captured-bit anchors (plus the final-step `MAX_PSI_OUTER_FINAL_REF_BITS` from anchor 11):
+| Gate | Bound |
+|---|---|
+| `mesh.materials()[t]` per tet | `(μ, λ)` bit-equal to the shell's F4 entry, each shell exercised ≥ 1 tet |
 
-- `FORCE_TOTAL_Z_RAMP_REF_BITS[12]` — `+z`-force-on-soft summed (referenced-only post-v2.5); values `~[1.1, 1.9, 2.9, 4.2, 5.6, 7.2, 9.2, 11.5, 14.1, 16.9, 20.0, 23.1] N`. Force is in `+z` direction (wrap-cap material pushed UP by the probe) and monotone-growing. Pre-v2.5 these were `~[-137, -131, ..., -1135] N` — orphan-driven sign reversal documented above.
-- `MAX_DISP_RAMP_REF_BITS[12]` — body-wide max displacement; values `~[1.5, 2.0, 2.5, 3.0, 3.4, 3.9, 4.4, 4.9, 5.4, 5.8, 6.3, 6.7] mm`.
-- `MEAN_PSI_INNER_RAMP_REF_BITS[12]` — inner-shell mean Ψ.
-- `MEAN_PSI_MIDDLE_RAMP_REF_BITS[12]` — middle-shell mean Ψ.
-- `MEAN_PSI_OUTER_RAMP_REF_BITS[12]` — outer-shell mean Ψ.
-
-Compared via `assert_relative_eq!` at `SPARSE_REL_TOL = 1e-12` rel + `SPARSE_EPS_ABS = 1e-12` floor. **Failure-mode protocol per IV-1**: if a rel-tol comparison fails, do NOT re-bake. Diagnose in this order: (1) rule out toolchain drift (rustc / LLVM / libm minor version delta vs the rustc 1.95.0 capture); (2) if same toolchain, real regression in cf-design's `cuboid` / `offset` plumbing OR in sim-soft's BCC + IS + faer hot path OR in the chained-`replay_step` path OR in the inline `deformation_gradient` arithmetic; (3) NEVER re-bake to silence drift.
-
-`CF_CAPTURE_BITS=1` env-var bootstrap pattern (banked at row 19 as pattern (cc)): when set, every captured-anchor check is bypassed and a paste-ready capture block is printed to stderr. Use for first-time author-bake and intentional re-bake; never for failure silencing.
+The scene's multi-material routing invariant — the `MaterialField` assigned every tet the `(μ, λ)` of the shell its centroid falls in. Reads the real per-tet `NeoHookean` from `mesh.materials()` via public `.mu()` / `.lambda()` and compares to the shell's F4 entry (`ECOFLEX_00_20` / `DRAGON_SKIN_10A` / `DRAGON_SKIN_20A`, all `.to_neo_hookean()`) with an exact `to_bits()` `==` — a routing check, NOT a constitutive mirror. The closed-form NH energy + the `to_neo_hookean()` round-trip are lib-owned (`neo_hookean.rs` tests + `silicone_table.rs::tests::to_neo_hookean_round_trips_lame_pair`); the generic routing mechanism is lib-owned (`sdf_material_tagging.rs` IV-4).
 
 ## Visuals
 
-`out/sleeve_zslab_final.ply` — z-slab per-tet centroid cloud at the FINAL ramp step (depth = 6 mm) (`2_092` centroids in `|rest_centroid.z| < CELL_SIZE / 2 = 0.002 m`) with `DISPLACEMENT_SCALE = 10.0` geometric amplification on positions (`amplified = rest_centroid + SCALE * (deformed_centroid - rest_centroid)`). Lower than row 21 v1's `50×` so the rendered displacement-field magnitude stays visually comparable to v1's at the same body-scale: v1's `50× × 1.97 mm peak ≈ 99 mm` rendered; v2's `10× × 6.7 mm peak ≈ 67 mm` rendered — same order of magnitude even though v2's true displacements are ~3.4× larger. Two scalars: categorical `material_id` (0 = inner / 1 = middle / 2 = outer) + sequential `displacement_magnitude` (true physical magnitude, unscaled).
+Post-F1.5-viz-retrofit, the final step (depth = 6 mm) emits proper triangulated viz artifacts via `sim_soft::viz` (not the pre-retrofit z-slab centroid cloud): `out/sleeve_boundary_final.ply` (full 3D body via `boundary_surface`), `out/sleeve_slab_cut_z0_final.ply` (equatorial cross-section at `z = 0` via `slab_cut`, 40 mm below the contact zone — catches the propagated wrap-shell response), plus the cf-design design-mesh emits and the per-step deformed-surface sequence `out/sleeve_design_surface_deformed_step_01..12.ply` (scrubbable in cf-view). Each carries a categorical `material_id` (0 = inner / 1 = middle / 2 = outer → categorical palette) + a sequential `displacement_magnitude` (unipolar → viridis), per pattern (u).
 
 Open in cf-view, the workspace's unified visual-review viewer:
 
 ```
-cargo run -p cf-viewer --release -- examples/sim-soft/scan-fit-3layer-sleeve-ramp/out/sleeve_zslab_final.ply
+cargo run -p cf-viewer --release -- examples/sim-soft/scan-fit-3layer-sleeve-ramp/out/sleeve_boundary_final.ply
 ```
 
-cf-view auto-picks the colormap per pattern (u) banked at row 15:
-
-- **`material_id`** is binary-categorical (3 distinct values 0/1/2) → cf-view picks the **categorical palette**.
-- **`displacement_magnitude`** is unipolar continuous → cf-view picks **sequential viridis**.
-
-The slab projects centroids onto a 2-D annulus on `z = 0`, 40 mm BELOW the contact zone at `z ≈ 0.040 m`. Same z-slab axis as row 21 v1; the slab catches the propagated response of the wrap shell, NOT the contact-zone signal directly.
+(An eyes-on-pixels review of the retrofit artifacts is a user-side pass — the boundary/slab-cut meshes replaced the pre-F1.5 centroid cloud this section originally described.)
 
 **Regime transition vs row 21 v1.** Row 21 v1's [Visuals section](../scan-fit-3layer-sleeve/README.md#visuals) describes a peak-at-mid-thickness flexural-bending mode at 1 mm penetration: the inner cavity wall and outer envelope are both held near zero (cavity-wall material constrained from moving inward + outer envelope Dirichlet-pinned), so the wrap cross-section interior is the path of least resistance. v2's final-step PLY at 6 mm penetration shows a **qualitatively different** pattern — the displacement field is highest at the inner cavity wall (yellow band against the cavity opening in the viridis sequential render) and decays outward to the Dirichlet-pinned outer envelope (dark purple). The 6× deeper probe pose displaces the inner cavity wall at z=0 (40 mm below the contact zone) substantially through the propagated load chain, exiting the small-strain regime where v1's flexural mode dominated; v2's regime is "inner cavity wall pushed outward as a whole, decaying radially to the outer pin."
 
@@ -232,14 +188,6 @@ cargo run -p example-sim-soft-scan-fit-3layer-sleeve-ramp --release
 ```
 
 Per [`feedback_release_mode_heavy_tests`][rel] — release mode is required for the FEM solve. The 12-step ramp at ~75 k tets through faer's sparse Cholesky takes ~30-60 s release; debug mode would take many minutes per step × 12 steps. The `CELL_SIZE = 0.004 m` (4 mm) is sized so each of the 6/4/4 mm layers carries at least one BCC cell across thickness; finer cells (e.g. `0.002 m`) trip an SPD pivot at the FIRST ramp step (denser per-cell penalty gradient — empirically tested at v2-spec spike time and rejected).
-
-## First-time bit capture
-
-```sh
-CF_CAPTURE_BITS=1 cargo run -p example-sim-soft-scan-fit-3layer-sleeve-ramp --release
-```
-
-Emits a paste-ready block of every `*_EXACT` count, `IT_COUNT_RAMP_EXACT` array, every `*_RAMP_REF_BITS` array, and `MAX_PSI_OUTER_FINAL_REF_BITS`, bypassing the captured-anchor checks. Use for first-time author-bake and intentional re-bake; the IV-1 protocol forbids using this to silence a drift assertion.
 
 ## Roadmap (followups, not in v2 scope)
 
