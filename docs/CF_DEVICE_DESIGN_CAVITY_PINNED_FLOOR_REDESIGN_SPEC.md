@@ -2,8 +2,10 @@
 
 **Status**: RECON ITERATION 2 COMPLETE 2026-05-16 LATE-EVENING (fresh-
 context session following scope-C falsification at visual gate #1).
-Implementation NOT yet started — user reviews spec + decides rollback
-strategy before any code lands. Three-session pattern, **second
+Candidate A subsequently **SHIPPED** — see the **As-built** note below.
+This document is the recon-iteration-2 plan (pre-implementation, and
+pre-dating the mesh-sdf D-arc); the shipped code is the source of
+truth and diverged as documented. Three-session pattern, **second
 iteration's recon** (bookmark → recon-this-doc → implementation).
 
 **Scope**: SAME as scope-C — all 3 consumers (cf-device-design preview
@@ -31,6 +33,43 @@ insertion sim force-readout correctness, cf-cast-cli mold geometry,
 fit-viz rungs 2-6.
 
 ---
+
+## As-built (post-2026-05-16) — read this first
+
+Candidate A shipped across all three consumers, and the mesh-sdf
+oracle-decomposition **D-arc** (which post-dates this recon) plus the
+D.5 watertight-sign fix moved the API out from under the code sketches
+below. The current code is the source of truth; this section records
+the divergences so the plan stays a faithful recon record without
+misrepresenting the live API. The candidate-A geometry (set-theoretic
+anisotropic offset via `pinned_floor_shell(closed, open, ...)`) is
+unchanged — the drift is in SDF construction, not the math.
+
+- **SDF type.** The `mesh_sdf::SignedDistanceField` named throughout no
+  longer exists — the D-arc replaced it with a composed
+  `Signed<Distance, Sign>` API (`TriMeshDistance` unsigned distance ⊥ a
+  pluggable sign oracle; convenience ctor `flood_filled_sdf`).
+- **cf-cast-cli closed scan is now FLOOD-FILL (inverts §Sub-leaf A5 +
+  §7).** The plan states the closed scan "uses `SignedDistanceField`
+  … NOT flood-fill." The D.5 watertight fix reversed that: the closed
+  scan is now `SharedScanSdf` = `Signed<TriMeshDistance, FloodFillSign>`
+  (flood-fill sign — the load-bearing defense against pseudo-normal
+  far-field flips on cleaned scans; see
+  `tools/cf-cast-cli/src/scan.rs`). The **open** (cap-stripped) SDF is
+  `Signed<TriMeshDistance, PseudoNormalSign>` as planned — its sign is
+  discarded because `UnsignedRindSdf` consumes only `open.eval(p).abs()`
+  (`tools/cf-cast-cli/src/derive.rs`, `derive_spec_and_ribbon`).
+- **cf-device-geometry grid is flood-fill too.** The preview/insertion
+  path fills its cached grid via mesh-sdf's `CachedGridSdf::build`
+  (flood-fill sign), retaining a pseudo-normal `Signed<TriMeshDistance,
+  PseudoNormalSign>` only for closest-point projection — see the
+  as-built note in
+  [`CF_DEVICE_DESIGN_CAVITY_MOUTH_SPEC.md`](CF_DEVICE_DESIGN_CAVITY_MOUTH_SPEC.md).
+- **`pinned_floor_shell` signature.** Ships in `cf-design`
+  (`design/cf-design/src/solid_layered.rs`), generic over the closed +
+  open `Sdf` implementors (`fn pinned_floor_shell<C, O>` where
+  `C: Sdf`); cf-cast-cli's call sites pass `Arc<dyn cf_design::Sdf>`,
+  per the §2 ladder.
 
 ## Headline finding (read this first if you read nothing else)
 
