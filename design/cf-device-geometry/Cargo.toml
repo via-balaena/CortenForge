@@ -66,9 +66,8 @@ cf-device-types = { workspace = true, features = ["bevy"] }
 mesh-types = { workspace = true }
 
 # Sdf machinery deps (2.5.c).
-# `SignedDistanceField` + `CachedGridSdf` + `Signed`/`TriMeshDistance`/
-# `PseudoNormalSign` + `WALL_THRESHOLD_FACTOR_DEFAULT` for the
-# cached-scan SDF stack.
+# `CachedGridSdf` + `Signed`/`TriMeshDistance`/`PseudoNormalSign` +
+# `WALL_THRESHOLD_FACTOR_DEFAULT` for the cached-scan SDF stack.
 mesh-sdf = { workspace = true }
 # `MarchingCubesConfig` + `ScalarGrid` + `marching_cubes` for per-iso
 # extraction (lower-level than `mesh_offset::offset_mesh` so one
