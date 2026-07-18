@@ -60,7 +60,7 @@ per `docs/CURVE_FOLLOWING_DESIGN.md` §"Output artifacts".
 This example uses synthetic `Solid::pipe` geometry. To run on a
 real cf-scan-prep-cleaned scan, see the module docstring in
 [`src/main.rs`](src/main.rs) — replace the geometry construction
-with `mesh_io::load_stl` + `mesh_sdf::SignedDistanceField::from_mesh`
+with `mesh_io::load_stl` + `mesh_sdf::flood_filled_sdf`
 + `Solid::from_sdf`, and parse the centerline polyline from
 `.prep.toml`'s `[centerline]` block. The CastSpec construction
 (layers, materials, bounding region, cell size, printer config,

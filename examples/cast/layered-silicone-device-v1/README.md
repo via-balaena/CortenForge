@@ -53,9 +53,14 @@ capsule with the scan's signed-distance field:
 
 ```rust
 use mesh_io::load_stl;
-use mesh_sdf::SignedDistanceField;
+use mesh_sdf::{flood_filled_sdf, WALL_THRESHOLD_FACTOR_DEFAULT};
 let scan_mesh = load_stl("scan.stl")?;
-let scan_sdf = SignedDistanceField::from_mesh(&scan_mesh, ...);
+let (scan_sdf, _report) = flood_filled_sdf(
+    scan_mesh,
+    scan_bounds,
+    cell_size_m,
+    WALL_THRESHOLD_FACTOR_DEFAULT,
+)?;
 let cavity = Solid::from_sdf(scan_sdf, scan_bounds);
 ```
 
