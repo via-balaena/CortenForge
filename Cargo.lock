@@ -2313,7 +2313,10 @@ dependencies = [
 name = "cf-codesign"
 version = "1.0.0"
 dependencies = [
+ "cf-design",
+ "cf-routing",
  "matfile",
+ "nalgebra 0.34.2",
  "sim-core",
  "sim-coupling",
  "sim-mjcf",

@@ -111,6 +111,9 @@ use sim_coupling::{DiffPolicy, LinearFeedback, RolloutError, StaggeredCoupling};
 use sim_ml_chassis::OptimizerConfig;
 use std::fmt;
 
+mod route;
+pub use route::RouteTarget;
+
 /// The co-design objective could not be evaluated at a parameter point because the
 /// underlying forward model **fail-closed** there — a *genuinely infeasible* design,
 /// not a bug. (For the stiff-contact grip this is the soft solver's non-convergence:
