@@ -17,9 +17,13 @@
 //! Catmull–Rom basis weight, a smooth plateau). With only a handful of control-point
 //! degrees of freedom, that gradient is taken by **finite differences of the
 //! objective** — the same choice [`FrictionSpec`](crate::FrictionSpec) makes for its
-//! non-analytic channel, and well-conditioned here because the objective is smooth
-//! (it reads `φ_body` directly, with no CSG-`max` crease). Analytic centerline
-//! Jacobians (`length_grad`) stay unbuilt until a many-DOF consumer needs them.
+//! non-analytic channel, and well-conditioned here because the objective reads the
+//! body's own smooth field `φ_body` directly — no CSG-`max` crease like the R0 bored
+//! field. (The clearance penalty's `max(0, ·)` is a ReLU with a *continuous* gradient,
+//! so central FD stays well-conditioned everywhere except exactly at the clearance
+//! threshold `φ_body = req`, a measure-zero set the sampled route generally misses.)
+//! Analytic centerline Jacobians (`length_grad`) stay unbuilt until a many-DOF
+//! consumer needs them.
 //!
 //! **Symmetry note.** A straight route through a body-symmetric scene is an *even*
 //! objective in the detour direction (`+`/`−` detours are identical), so its

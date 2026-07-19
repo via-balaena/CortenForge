@@ -34,8 +34,9 @@ fn off_ridge(target: &RouteTarget) -> Vec<f64> {
 
 /// (1) The `evaluate` gradient (central FD at the target's internal eps) matches an
 /// INDEPENDENT central FD of `objective` taken in the test at a different eps —
-/// confirming the FD plumbing is correct and the objective is well-conditioned (the
-/// two eps agree ⇒ a plateau, not a crease).
+/// confirming the FD plumbing is correct and the objective is well-conditioned here
+/// (the two eps agree ⇒ a plateau; no sample sits on the penalty's `max(0, ·)`
+/// threshold at this point, where the ReLU kink would otherwise show up).
 #[test]
 fn route_gradient_matches_independent_fd() {
     let t = scene();
