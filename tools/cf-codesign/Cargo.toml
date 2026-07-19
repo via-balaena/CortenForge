@@ -23,6 +23,15 @@ sim-mjcf = { path = "../../sim/L0/mjcf" }
 sim-core = { path = "../../sim/L0/core" }
 # The gradient optimizer (Adam) — reused, not reinvented (sim-opt is gradient-free).
 sim-ml-chassis = { workspace = true }
+# The differentiable routing primitive (centerline `Path`) — the geometry design
+# axis: a route's control points are the design variables in `RouteTarget`.
+cf-routing = { workspace = true }
+# Analytic signed-distance bodies (`Solid`) the route is optimized against.
+# `workspace = true` inherits the `default-features = false` tier cap (no
+# parallel-meshing/rayon — we only need `Solid::capsule`/`evaluate`).
+cf-design = { workspace = true }
+# Point/vector types for the route control points.
+nalgebra = { workspace = true }
 
 [dev-dependencies]
 # Reads the EMPS actuator benchmark's MATLAB v5 (.mat, zlib-compressed) data for
