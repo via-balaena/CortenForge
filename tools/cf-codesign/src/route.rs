@@ -117,7 +117,18 @@ impl RouteTarget {
     }
 
     /// The full control-point list `[start, interior…, end]` for design `params`.
+    ///
+    /// # Panics
+    /// Panics if `params.len() != 3 · n_interior` (a clear error rather than an
+    /// opaque out-of-bounds index or a silently-truncated route).
     fn control_points(&self, params: &[f64]) -> Vec<Point3<f64>> {
+        assert_eq!(
+            params.len(),
+            3 * self.n_interior,
+            "route params length {} != 3·n_interior {}",
+            params.len(),
+            3 * self.n_interior,
+        );
         let mut cps = Vec::with_capacity(self.n_interior + 2);
         cps.push(self.start);
         for i in 0..self.n_interior {
@@ -134,6 +145,9 @@ impl RouteTarget {
     /// The objective at `params`: `path_length + penalty_weight · Σ clearance
     /// violation²`. Returns `+∞` if the control points are degenerate (a `Path`
     /// needs ≥2 finite points) so the optimizer treats it as strictly worse.
+    ///
+    /// # Panics
+    /// Panics if `params.len() != 3 · n_interior`.
     #[must_use]
     pub fn objective(&self, params: &[f64]) -> f64 {
         let Some(path) = Path::new(self.control_points(params)) else {
@@ -156,6 +170,9 @@ impl RouteTarget {
     /// The smallest centerline clearance `min_t φ_body(sample(t))` along the route at
     /// `params` (negative inside the body). A converged route should have this at or
     /// just above [`req_clearance`](Self::req_clearance).
+    ///
+    /// # Panics
+    /// Panics if `params.len() != 3 · n_interior`.
     #[must_use]
     pub fn min_clearance(&self, params: &[f64]) -> f64 {
         let Some(path) = Path::new(self.control_points(params)) else {

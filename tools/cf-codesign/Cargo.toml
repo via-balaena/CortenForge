@@ -25,9 +25,11 @@ sim-core = { path = "../../sim/L0/core" }
 sim-ml-chassis = { workspace = true }
 # The differentiable routing primitive (centerline `Path`) — the geometry design
 # axis: a route's control points are the design variables in `RouteTarget`.
-cf-routing = { path = "../../design/cf-routing" }
+cf-routing = { workspace = true }
 # Analytic signed-distance bodies (`Solid`) the route is optimized against.
-cf-design = { path = "../../design/cf-design" }
+# `workspace = true` inherits the `default-features = false` tier cap (no
+# parallel-meshing/rayon — we only need `Solid::capsule`/`evaluate`).
+cf-design = { workspace = true }
 # Point/vector types for the route control points.
 nalgebra = { workspace = true }
 
