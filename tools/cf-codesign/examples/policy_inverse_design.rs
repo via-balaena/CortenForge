@@ -80,10 +80,10 @@ fn main() {
     println!("  b    = {b:>9.4}   (bias)");
     println!(
         "\nDriven platen z_N = {z_final:.6} (target {target_z:.6}, |Δ| = {:.2e}) in {} iters; \
-         converged = {}",
+         stop = {:?}",
         (z_final - target_z).abs(),
         result.iters,
-        result.converged,
+        result.stop_reason,
     );
     println!(
         "(3 policy weights for one scalar target is under-determined — this is a \

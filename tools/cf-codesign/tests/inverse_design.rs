@@ -8,11 +8,11 @@
 //! Two checks: (1) the problem's analytic gradient matches a finite difference
 //! of its loss (so the co-design gradient is correct for the objective, not just
 //! a descent direction); (2) the optimizer recovers `μ*` to tolerance and
-//! reports `converged`.
+//! stops on a criterion rather than the iteration cap.
 
 #![allow(clippy::expect_used)]
 
-use cf_codesign::{CoDesignProblem, OptConfig, SoftMaterialTarget, optimize};
+use cf_codesign::{CoDesignProblem, OptConfig, SoftMaterialTarget, StopReason, optimize};
 
 const PLATEN_MJCF: &str = r#"<mujoco>
   <option gravity="0 0 -9.81" timestep="0.001"/>
@@ -72,11 +72,17 @@ fn recovers_known_material_from_target_behavior() {
     let rel_mu = (mu - mu_star).abs() / mu_star;
     eprintln!(
         "inverse design: μ₀={mu0} → μ={mu:.3} (μ*={mu_star}) rel={rel_mu:.3e}  \
-         loss={:.3e}  iters={}  converged={}",
-        result.loss, result.iters, result.converged,
+         loss={:.3e}  iters={}  stop={:?}",
+        result.loss, result.iters, result.stop_reason,
     );
 
-    assert!(result.converged, "optimizer did not converge in max_iters");
+    assert!(
+        matches!(
+            result.stop_reason,
+            StopReason::GradTol | StopReason::LossTol
+        ),
+        "optimizer did not converge in max_iters"
+    );
     assert!(
         result.loss < 1e-10,
         "final loss {} not below tol",

@@ -9,7 +9,7 @@
 //! walls make the optimal radius analytically predictable, which is what turns the
 //! headline gate from a direction check into a quantitative one.
 
-use cf_codesign::{CoDesignProblem, ConduitTarget, OptConfig, optimize};
+use cf_codesign::{CoDesignProblem, ConduitTarget, OptConfig, StopReason, optimize};
 use cf_design::Solid;
 use nalgebra::{Point3, Vector3};
 
@@ -140,7 +140,10 @@ fn conduit_codesign_bends_and_sizes() {
     );
 
     let res = optimize(&t, &x0, &t.recommended_config());
-    assert!(res.converged, "capsule recovery did not converge");
+    assert!(
+        matches!(res.stop_reason, StopReason::GradTol | StopReason::LossTol),
+        "capsule recovery did not converge"
+    );
 
     let r = t.radius(&res.params);
     assert!(r > 2.0 * r0, "radius did not grow: {r0} -> {r}");
@@ -209,7 +212,7 @@ fn conduit_on_ridge_stalls() {
 /// The feasible runs stop at `max_iters` rather than `grad_tol`: the length↔clearance
 /// equilibrium is a shallow Adam limit cycle (the same one documented for the
 /// fixed-radius sibling). It is benign — `r*` is stable to ~1% between 800 and 8000
-/// iterations — so the gate asserts the optimum, not the convergence flag.
+/// iterations — so the gate asserts the optimum, not the stop reason.
 #[test]
 fn conduit_radius_falls_as_corridor_narrows() {
     let gaps = [3.0, 2.0, 1.0, 0.5];

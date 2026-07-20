@@ -65,10 +65,10 @@ fn main() {
     let mu = result.params[0];
     println!(
         "\nRecovered buffer μ = {mu:.1} Pa → peak force {:.1} N (target {target_force} N) \
-         in {} iters; converged = {}",
+         in {} iters; stop = {:?}",
         target.forward_peak_force(mu),
         result.iters,
-        result.converged,
+        result.stop_reason,
     );
     println!("The differentiable co-design loop tuned the buffer to meet the recoverability spec.");
 }

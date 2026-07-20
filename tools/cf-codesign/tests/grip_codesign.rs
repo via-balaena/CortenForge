@@ -30,7 +30,7 @@
 #![allow(clippy::expect_used)]
 
 use cf_codesign::{
-    CoDesignProblem, GripCoDesignTarget, GripObjective, InfeasibleDesign, OptConfig,
+    CoDesignProblem, GripCoDesignTarget, GripObjective, InfeasibleDesign, OptConfig, StopReason,
 };
 
 // The de-escalation grip: an actuated hinge arm, its finite sphere tip pressed into
@@ -146,12 +146,18 @@ fn grip_inverse_design_recovers_behavior() {
     let x_final = problem.forward_x(mu_rec, &th_rec);
     eprintln!(
         "x_tgt={x_tgt:.9} x_start={x_start:.9} x_final={x_final:.9} |x-tgt|={:.3e} \
-         μ: {mu0} → {mu_rec:.1} (μ*={MU_STAR})  θ_rec={th_rec:?}  iters={} conv={}",
+         μ: {mu0} → {mu_rec:.1} (μ*={MU_STAR})  θ_rec={th_rec:?}  iters={} stop={:?}",
         (x_final - x_tgt).abs(),
         result.iters,
-        result.converged,
+        result.stop_reason,
     );
-    assert!(result.converged, "grip inverse design did not converge");
+    assert!(
+        matches!(
+            result.stop_reason,
+            StopReason::GradTol | StopReason::LossTol
+        ),
+        "grip inverse design did not converge"
+    );
     assert!(
         (x_final - x_tgt).abs() < 1e-8,
         "recovered (μ, θ) should hit the restraint target: x_final {x_final} vs target {x_tgt}"

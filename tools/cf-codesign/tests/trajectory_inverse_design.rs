@@ -12,7 +12,7 @@
 //! objective, machine-exact); (2) the [`Normalized`]-wrapped gradient matches an
 //! FD in the optimizer's (log-μ) space (the `1/L²` loss-scale and `dμ/dp = μ`
 //! chain-rule bookkeeping is correct); (3) the optimizer recovers `μ*` to
-//! tolerance **with the standard `eps = 1e-8`** and reports `converged`.
+//! tolerance **with the standard `eps = 1e-8`** and stops on a criterion rather than the iteration cap.
 //!
 //! **Conditioning note.** `z_N` is a position, so `∂z_N/∂μ ~ 1e-7` and the raw
 //! loss gradient is `~2e-10` — below Adam's standard `eps = 1e-8`, so optimizing
@@ -23,7 +23,9 @@
 
 #![allow(clippy::expect_used)]
 
-use cf_codesign::{CoDesignProblem, Normalized, OptConfig, SoftMaterialTrajectoryTarget, optimize};
+use cf_codesign::{
+    CoDesignProblem, Normalized, OptConfig, SoftMaterialTrajectoryTarget, StopReason, optimize,
+};
 
 // Platen started already in contact (plane at z − clearance = 0.103 vs the soft
 // block's top face at z = 0.1) so the rollout is engaged from step 0 (it deepens
@@ -197,11 +199,17 @@ fn recovers_known_material_from_target_trajectory() {
     let rel_mu = (mu - mu_star).abs() / mu_star;
     eprintln!(
         "trajectory inverse design (standard eps): μ₀={mu0} → μ={mu:.4} (μ*={mu_star}) \
-         rel={rel_mu:.3e}  loss={:.3e}  iters={}  converged={}",
-        result.loss, result.iters, result.converged,
+         rel={rel_mu:.3e}  loss={:.3e}  iters={}  stop={:?}",
+        result.loss, result.iters, result.stop_reason,
     );
 
-    assert!(result.converged, "optimizer did not converge in max_iters");
+    assert!(
+        matches!(
+            result.stop_reason,
+            StopReason::GradTol | StopReason::LossTol
+        ),
+        "optimizer did not converge in max_iters"
+    );
     // Robust gate (the measured recovery is far tighter, ~1e-6 or better); loose
     // here so cross-OS float drift in the coupled rollout can't flake it.
     assert!(

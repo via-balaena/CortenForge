@@ -61,7 +61,7 @@ fn main() {
     // The loss reaches its floor well before `max_iters`; the gradient-norm stop
     // does NOT trip because the soft clearance penalty holds a small persistent
     // gradient at the length↔clearance equilibrium (a fixed-lr Adam limit cycle
-    // about a stiff minimum) — so `converged` reflects the gradient criterion, not
+    // about a stiff minimum) — so the stop reason reflects the gradient criterion, not
     // optimality. The stable loss below is the real convergence signal.
     println!("\noptimized route ({} iters):", res.iters);
     println!("  objective   = {:.4}", res.loss);

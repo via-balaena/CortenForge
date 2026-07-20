@@ -13,7 +13,7 @@
 //! 3. when the optimum is interior (never infeasible), `reject_infeasible` leaves the result
 //!    byte-identical.
 
-use cf_codesign::{CoDesignProblem, InfeasibleDesign, OptConfig, optimize};
+use cf_codesign::{CoDesignProblem, InfeasibleDesign, OptConfig, StopReason, optimize};
 
 /// `½(x − target)²` with a fail-closed feasible region: `try_evaluate` returns `Err` for
 /// `x > feasible_max`, and `evaluate` re-panics it (mimicking the grip — a typed `Err` on the
@@ -40,6 +40,10 @@ impl CoDesignProblem for FailClosedQuadratic {
         }
         let r = x - self.target;
         Ok((0.5 * r * r, vec![r]))
+    }
+    /// `½(x − target)²` — zero residual is the least it can be.
+    fn loss_lower_bound(&self) -> Option<f64> {
+        Some(0.0)
     }
 }
 
@@ -145,6 +149,10 @@ fn default_try_evaluate_through_reject_infeasible_loop() {
             let r = p[0] - self.target;
             (0.5 * r * r, vec![r])
         }
+        /// `½(x − target)²` — zero residual is the least it can be.
+        fn loss_lower_bound(&self) -> Option<f64> {
+            Some(0.0)
+        }
     }
     let prob = SmoothQuadratic { target: 1.5 };
     let result = optimize(&prob, &[0.0], &cfg(true));
@@ -153,4 +161,34 @@ fn default_try_evaluate_through_reject_infeasible_loop() {
         "smooth problem under reject_infeasible should reach the interior optimum 1.5, got {}",
         result.params[0]
     );
+}
+
+/// An infeasible `x0` breaks before the first iterate is ever scored. That exit is
+/// reported as [`StopReason::Infeasible`] — distinct from an exhausted budget, which is
+/// what it used to be indistinguishable from — and the reported `iters` reflects the
+/// records actually taken rather than claiming a full run.
+#[test]
+fn infeasible_start_reports_its_own_stop_reason() {
+    let prob = FailClosedQuadratic {
+        target: 1.0,
+        feasible_max: 0.5,
+    };
+    // x0 = 2.0 is already past `feasible_max`, so iteration 0 cannot be scored.
+    let result = optimize(&prob, &[2.0], &cfg(true));
+
+    assert_eq!(
+        result.stop_reason,
+        StopReason::Infeasible,
+        "an infeasible start must not be reported as an exhausted budget"
+    );
+    assert_eq!(result.iters, 0, "no iteration was performed");
+    assert!(
+        result.history.is_empty(),
+        "no iterate was scored, so nothing should be recorded"
+    );
+    assert!(
+        result.final_grad_inf.is_nan(),
+        "no gradient was ever evaluated, so there is none to report"
+    );
+    assert!(result.loss.is_nan(), "no feasible loss was ever scored");
 }

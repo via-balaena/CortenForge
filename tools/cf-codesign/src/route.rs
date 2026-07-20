@@ -266,6 +266,23 @@ impl CoDesignProblem for RouteTarget {
         (loss, grad)
     }
     // No `lower_bounds`: control-point coordinates are signed positions in space.
+
+    /// `Some(‖end − start‖)` — the straight-line chord between the fixed endpoints.
+    ///
+    /// The objective is `length + w·penalty`; the penalty is a sum of squares (`≥ 0`)
+    /// and the sampled polyline runs from `start` to `end`, so by the triangle
+    /// inequality its length is at least the chord. (Verified rather than assumed: the
+    /// route interpolates its endpoints, `sample(0) = start` and `sample(1) = end`.)
+    ///
+    /// The bound is **slack whenever the body blocks the straight route** — the true
+    /// optimum then includes an unavoidable detour whose size is the thing being
+    /// solved for. That costs only completeness, never soundness: `loss − chord <
+    /// loss_tol` still implies the design is within `loss_tol` of optimal, so the stop
+    /// cannot fire falsely. It is tight exactly when an unobstructed straight route is
+    /// the answer, which is precisely when firing is correct.
+    fn loss_lower_bound(&self) -> Option<f64> {
+        Some((self.end - self.start).norm())
+    }
 }
 
 /// A co-design problem over a conduit's *route and radius together*: find the
@@ -332,12 +349,13 @@ impl CoDesignProblem for RouteTarget {
 /// The inherited stationary-ridge footgun applies to the route block exactly as it does
 /// for [`RouteTarget`] — initialize off the ridge.
 ///
-/// # The signed objective breaks the loss-tolerance stop
-/// Unlike every other target here, `J` is **not** a squared residual and is **not**
-/// bounded below by zero — the `−w_r·r` reward takes it negative. The default
-/// `loss_tol = 1e-10` therefore fires at the sign crossing rather than at an optimum.
-/// Drive this problem with [`recommended_config`](Self::recommended_config), which
-/// disables that stop; see its docs.
+/// # The objective is signed, so the loss-tolerance stop does not apply
+/// Unlike every other target here, `J` is not a squared residual: the `−w_r·r` reward
+/// takes it negative, and a "small loss" then says nothing about optimality. This
+/// target therefore declares no
+/// [`loss_lower_bound`](CoDesignProblem::loss_lower_bound), which switches that
+/// criterion off structurally — no caller can mis-drive it. See that impl for why no
+/// bound can be stated.
 #[derive(Debug, Clone)]
 pub struct ConduitTarget {
     body: Solid,
@@ -411,38 +429,33 @@ impl ConduitTarget {
         }
     }
 
-    /// A configuration that is **sound for this objective**: gradient-norm and
-    /// iteration limits only, with the loss-tolerance stop *disabled*
-    /// (`loss_tol = −∞`).
+    /// Learning rate and iteration budget suited to this objective's O(1) geometric
+    /// gradients.
     ///
-    /// # Why this is not a tuning convenience
-    /// [`optimize`](crate::optimize) stops when `loss < loss_tol`. Every other target
-    /// in this crate minimizes a squared residual `½(y − y*)²`, which is **bounded
-    /// below by zero**, so a small loss really does mean converged. This objective is
-    /// **signed** — the `−w_r·r` reward drives `J` negative as soon as it outweighs
-    /// length plus penalty — so *any* finite `loss_tol` is tripped at the sign
-    /// crossing, halting the run at an arbitrary point that has nothing to do with
-    /// optimality. With the default `loss_tol = 1e-10` the optimizer stops early and
-    /// silently: it returns a plausible-looking radius that is simply wherever `J`
-    /// first went negative, identical across scenes with genuinely different optima.
-    /// Convergence here must be judged by the gradient norm.
+    /// The loss-tolerance stop no longer needs disabling by hand here: this target
+    /// reports no [`loss_lower_bound`](Self::loss_lower_bound), so the optimizer
+    /// switches that criterion off structurally, whatever `loss_tol` a caller passes.
+    /// (This method used to carry a `loss_tol = −∞` sentinel for exactly that purpose.)
     ///
     /// # The gradient norm is radius-weighted, so read it with care
     /// `grad_tol` is not scale-free in log-space: `dJ/d(ln r) = r · dJ/dr`, so the
     /// radius component vanishes as `r → 0` *by construction*, whatever the design's
     /// optimality. In an infeasible scene, where the radius is driven down without
-    /// limit, a small enough `r` therefore trips any fixed `grad_tol` and reports
-    /// `converged` on a conduit that is merely shrinking to nothing. The shipped gates
-    /// stay well clear of this (`r ≈ 4e-5` against a threshold that needs `r ≈ 3e-6`),
-    /// but a longer run or a smaller `penalty_weight` would reach it — so check that a
-    /// converged radius is a *fit*, not a collapse.
+    /// limit, a small enough `r` therefore trips any fixed `grad_tol` and reports a
+    /// [`GradTol`](crate::StopReason::GradTol) stop on a conduit that is merely
+    /// shrinking to nothing. A longer run or a smaller `penalty_weight` reaches it — so
+    /// check that a stopped radius is a *fit*, not a collapse.
+    ///
+    /// (The radius component alone cannot trip this in practice at these constants,
+    /// because the route block dominates the norm by orders of magnitude — see
+    /// [`OptConfig::grad_tol`](crate::OptConfig::grad_tol). That is a property of the
+    /// mixed-scale vector, not a safety margin to rely on.)
     #[must_use]
     pub fn recommended_config(&self) -> crate::OptConfig {
         crate::OptConfig {
             lr: 0.05,
             max_iters: 800,
             grad_tol: 1.0e-4,
-            loss_tol: f64::NEG_INFINITY,
             ..crate::OptConfig::default()
         }
     }
@@ -526,7 +539,7 @@ impl ConduitTarget {
     /// finite-difference stencil gives `∞ − ∞ = NaN`, and on one side `±∞`; either
     /// poisons the Adam step. Worse, [`optimize`](crate::optimize) derives its stopping
     /// norm with `f64::max`, which *returns the non-NaN operand*, so an all-NaN
-    /// gradient reads as `‖grad‖∞ = 0` and the run reports `converged` on a design it
+    /// gradient reads as `‖grad‖∞ = 0` and the run reports a `GradTol` stop on a design it
     /// never actually evaluated — returning the overflowed-but-finite parameters
     /// untouched, since it stops before stepping (NaN parameters arise only on a later
     /// iterate, after a partially-NaN gradient has been stepped in). This is inherited
@@ -607,4 +620,27 @@ impl CoDesignProblem for ConduitTarget {
     }
     // No `lower_bounds`: the coordinates are signed positions and the radius is
     // reparametrized as `ln r` (positive by construction), so nothing needs clamping.
+
+    /// `None` — **no lower bound can be stated for this objective**, which disables
+    /// the loss-tolerance stop. This is the method that makes the signed-reward
+    /// objective safe to optimize, and it replaces the `loss_tol = −∞` sentinel this
+    /// target used to need.
+    ///
+    /// Whether `J` is bounded below at all depends on `w_r` and the scene, so it
+    /// cannot be answered at construction. Fatten in place and the clearance penalty
+    /// `~w_c·m·r²` overwhelms the linear reward, so `J → +∞`. But *detour and fatten
+    /// together* — holding the route roughly `r` clear of the body so the penalty
+    /// stays zero — costs length only linearly, giving `J ≈ (c − w_r)·r`, which runs
+    /// to `−∞` for any `w_r` above the length cost per unit of clearance. So the
+    /// objective is bounded below for a modest reward and unbounded for a generous
+    /// one, with the crossover set by geometry.
+    ///
+    /// Either way a numeric `loss_tol` is meaningless here: `J` goes negative as soon
+    /// as the reward outweighs length plus penalty, so the stop fires at that sign
+    /// crossing rather than at an optimum — silently returning a plausible radius that
+    /// is merely wherever `J` first went negative. That produced a **bit-identical
+    /// `r*` for two corridors with genuinely different optima** before it was caught.
+    fn loss_lower_bound(&self) -> Option<f64> {
+        None
+    }
 }

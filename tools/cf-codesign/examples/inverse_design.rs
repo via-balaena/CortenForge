@@ -47,10 +47,10 @@ fn main() {
         }
     }
     println!(
-        "\nRecovered μ = {:.3} (μ* = {mu_star}, rel error {:.2e}) in {} iters; converged = {}",
+        "\nRecovered μ = {:.3} (μ* = {mu_star}, rel error {:.2e}) in {} iters; stop = {:?}",
         result.params[0],
         (result.params[0] - mu_star).abs() / mu_star,
         result.iters,
-        result.converged,
+        result.stop_reason,
     );
 }

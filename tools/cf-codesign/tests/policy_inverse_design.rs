@@ -25,7 +25,7 @@
 
 #![allow(clippy::expect_used)]
 
-use cf_codesign::{CoDesignProblem, FeedbackPolicyTarget, OptConfig};
+use cf_codesign::{CoDesignProblem, FeedbackPolicyTarget, OptConfig, StopReason};
 
 // A platen started already in contact (the keystone trajectory fixture); the
 // feedback policy pushes the platen up/down against the soft block.
@@ -118,13 +118,19 @@ fn inverse_design_recovers_target_behavior() {
     let z_final = target.forward_z(&result.params);
     eprintln!(
         "target_z={target_z:.9} z(0)={z_zero:.9} z_final={z_final:.9} \
-         |z-tgt|={:.3e} iters={} conv={} params={:?}",
+         |z-tgt|={:.3e} iters={} stop={:?} params={:?}",
         (z_final - target_z).abs(),
         result.iters,
-        result.converged,
+        result.stop_reason,
         result.params,
     );
-    assert!(result.converged, "policy inverse design did not converge");
+    assert!(
+        matches!(
+            result.stop_reason,
+            StopReason::GradTol | StopReason::LossTol
+        ),
+        "policy inverse design did not converge"
+    );
     assert!(
         (z_final - target_z).abs() < 1e-9,
         "recovered policy should hit the target height: z_final {z_final} vs target {target_z}"
@@ -159,11 +165,15 @@ fn normalization_is_load_bearing() {
     let result = cf_codesign::optimize(&target, &[0.0; 3], &cfg);
     let z_final = target.forward_z(&result.params);
     eprintln!(
-        "raw: z_final={z_final:.9} target={target_z:.9} |z-tgt|={:.3e} conv={}",
+        "raw: z_final={z_final:.9} target={target_z:.9} |z-tgt|={:.3e} stop={:?}",
         (z_final - target_z).abs(),
-        result.converged
+        result.stop_reason
     );
-    assert!(!result.converged, "raw run should not converge to loss_tol");
+    assert_eq!(
+        result.stop_reason,
+        StopReason::MaxIters,
+        "raw run should not converge to loss_tol"
+    );
     // Raw stalls ~1e-9 (eps-limited as the gradient collapses); the conditioned run
     // reaches ~1e-12. The 1e-10 bar (>10× the raw stall point's margin) is robust
     // while the normalized run is ~3 orders past it.

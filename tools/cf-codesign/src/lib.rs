@@ -92,6 +92,29 @@
 //! parameter steps — so the **standard** Adam `eps` keeps its scale-invariance
 //! instead of crawling (rather than chasing a fragile per-scene tiny `eps`).
 //!
+//! # How a run stops
+//!
+//! [`optimize`] ends for exactly one of the reasons named by [`StopReason`], and the
+//! result reports which: the gradient norm fell below `grad_tol`, the loss reached its
+//! tolerance, or the iteration budget ran out. Two things are worth knowing before
+//! reading a stop as "this design is optimal".
+//!
+//! **The loss criterion is opt-in per problem.** `loss_tol` is measured against a
+//! problem's [`CoDesignProblem::loss_lower_bound`], not against zero, so it means
+//! "provably within `loss_tol` of the optimum" — sound for any true lower bound,
+//! however slack. A problem that can state no bound (an objective with a reward term
+//! can be unbounded below) returns `None` and the criterion is switched off, because
+//! "the loss got small" would be a statement about nothing. Declaring this is a
+//! one-line obligation on every problem; there is no default, since either default
+//! would be silently wrong for some objective.
+//!
+//! **The gradient criterion is a stationarity test in the problem's own parameter
+//! space**, not a proof of optimality — it is neither invariant under reparametrization
+//! nor scale-free across blocks (see [`OptConfig::grad_tol`]). Accordingly the gates in
+//! this crate assert *physical outcomes* — a recovered stiffness, a clearance, a
+//! radius — rather than the stop reason, and `MaxIters` is not a failure on its own: a
+//! soft equilibrium can sit in a shallow limit cycle around a perfectly good optimum.
+//!
 //! Scope: a single design parameter (material), an open-loop control schedule, a
 //! closed-loop state-feedback policy, or joint design+policy, all in the keystone's
 //! contact-engaged regime. Richer policies (MLP), multi-parameter design, and
@@ -99,12 +122,12 @@
 //! (`docs/codesign/recon.md`).
 //!
 //! ```no_run
-//! use cf_codesign::{optimize, OptConfig, SoftMaterialTarget};
+//! use cf_codesign::{optimize, OptConfig, SoftMaterialTarget, StopReason};
 //! # const MJCF: &str = "";
 //! // Target behavior = the rigid outcome a reference material μ* produces.
 //! let probe = SoftMaterialTarget::for_inverse_design(MJCF.to_string(), 0.099, 40_000.0);
 //! let result = optimize(&probe, &[20_000.0], &OptConfig::default());
-//! assert!(result.converged);
+//! assert_eq!(result.stop_reason, StopReason::LossTol);
 //! ```
 
 use sim_coupling::{DiffPolicy, LinearFeedback, RolloutError, StaggeredCoupling};
@@ -199,6 +222,44 @@ pub trait CoDesignProblem {
     fn lower_bounds(&self) -> Option<Vec<f64>> {
         None
     }
+
+    /// A lower bound on this problem's loss — **not necessarily tight** — or `None`
+    /// if no bound is known.
+    ///
+    /// This is what makes [`OptConfig::loss_tol`] mean something. The optimizer stops
+    /// when the loss comes within `loss_tol` **of this bound**, so for any `B ≤
+    /// optimum`:
+    ///
+    /// ```text
+    /// loss − B < loss_tol   ⇒   loss < optimum + loss_tol
+    /// ```
+    ///
+    /// The certificate is therefore **sound however slack `B` is**: it can fail to
+    /// fire when the run has in fact converged, but it can never fire falsely.
+    /// Slackness costs only completeness, and a missed certificate simply falls
+    /// through to the gradient-norm or iteration-cap stop — the safe direction.
+    ///
+    /// **The obligation runs one way, and only one way: whatever you return must be
+    /// `≤` the true optimum.** Too low is merely conservative. Too high — a value the
+    /// loss can actually drop beneath — makes the stop fire *falsely*, halting on a
+    /// design that is not near-optimal and reporting it as converged. That is strictly
+    /// worse than having no criterion at all, so when in doubt return a looser bound,
+    /// or `None`.
+    ///
+    /// Returning `None` **disables the loss-tolerance stop entirely**, which is the
+    /// honest answer whenever no bound can be stated. That is not an edge case: an
+    /// objective with a reward term can be unbounded below, and a design objective
+    /// whose optimal value is the very thing being solved for has no *a priori*
+    /// bound. Without this method such a problem silently inherits a numeric
+    /// `loss_tol` that halts it at a meaningless point — see
+    /// [`ConduitTarget::loss_lower_bound`](crate::ConduitTarget) for the concrete
+    /// failure this prevents.
+    ///
+    /// There is deliberately **no default**. A default of `Some(0.0)` would silently
+    /// re-arm that trap for the next objective that is not a squared residual, and a
+    /// default of `None` would quietly disable a stop that existing targets rely on.
+    /// Answering it is a one-line obligation on every implementor.
+    fn loss_lower_bound(&self) -> Option<f64>;
 }
 
 /// Optimization hyperparameters for [`optimize`].
@@ -212,8 +273,37 @@ pub struct OptConfig {
     /// Stop when `‖gradient‖∞` falls below this. **`0.0` disables the
     /// gradient criterion** (the test is strict `<`, and `‖·‖∞ ≥ 0`), leaving
     /// `loss_tol` / `max_iters` as the active stops — the [`Default`].
+    ///
+    /// # Scope: this norm is taken in the parameter space the problem supplies
+    /// It is **not invariant under reparametrization**, and it is **not scale-free
+    /// across blocks**. Two consequences worth knowing before reading a `GradTol`
+    /// stop as "optimal":
+    ///
+    /// - *Reparametrized parameters are weighted by their own magnitude.* Under a log
+    ///   substitution `dJ/d(ln x) = x · dJ/dx`, so the component vanishes as `x → 0`
+    ///   even where the physical gradient is a nonzero constant — a parameter marching
+    ///   to a boundary is indistinguishable from a converged one. See
+    ///   [`ConduitTarget::recommended_config`](crate::ConduitTarget), where a radius
+    ///   collapsing toward zero can report a stop.
+    /// - *A mixed-scale vector is dominated by its largest block.* `‖·‖∞` reports one
+    ///   number, so a well-converged block can be masked by a noisier one and the test
+    ///   says little about the quiet block. `ConduitTarget` measurably has this shape —
+    ///   its route block runs some **six orders of magnitude** above its radius block,
+    ///   pinned at `≥ 1e5` by `conduit_gradient_norm_is_route_dominated`.
+    ///
+    /// The gates in this crate assert *physical outcomes* rather than the stop flag, so
+    /// nothing currently depends on this being a true optimality test. Replacing it
+    /// with a metric-aware criterion should be driven by a caller that must trust the
+    /// stop *without* checking a physical outcome.
     pub grad_tol: f64,
-    /// Stop when the (absolute) loss falls below this.
+    /// Stop when the loss comes within this of
+    /// [`CoDesignProblem::loss_lower_bound`] — i.e. when `loss − bound < loss_tol`,
+    /// a **sound** optimality certificate (it cannot fire falsely; see that method).
+    /// **Ignored entirely when the problem reports no bound**, since "the loss got
+    /// small" is then a statement about nothing.
+    ///
+    /// For the squared-residual targets the bound is `0.0`, so this reads exactly as
+    /// the plain absolute-loss test it has always been.
     pub loss_tol: f64,
     /// Adam's numerical-stability constant `ε` (the `+ε` in
     /// `lr·m̂/(√v̂ + ε)`). The default `1e-8` is Adam's standard value and is
@@ -287,6 +377,35 @@ pub struct IterRecord {
     pub grad_inf: f64,
 }
 
+/// Why an [`optimize`] run stopped.
+///
+/// A bare "converged" flag conflates *found an optimum* with *the gradient got
+/// small*, which are not the same claim — see [`OptResult::final_grad_inf`] for the
+/// case where they come apart.
+/// `#[non_exhaustive]` because this set is expected to grow: the
+/// [`grad_tol`](OptConfig::grad_tol) docs already anticipate a metric-aware criterion
+/// alongside the plain gradient norm, and adding a variant must not break every
+/// downstream `match`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum StopReason {
+    /// `‖gradient‖∞` fell below [`OptConfig::grad_tol`]. **Read this as a stationarity
+    /// test in the parameter space the problem supplies, not as proof of optimality**
+    /// (see [`OptConfig::grad_tol`]).
+    GradTol,
+    /// The loss came within [`OptConfig::loss_tol`] of the problem's
+    /// [`loss_lower_bound`](CoDesignProblem::loss_lower_bound) — a sound optimality
+    /// certificate. Only reachable when the problem reports a bound.
+    LossTol,
+    /// The iteration cap was reached without either criterion firing. Not a failure
+    /// on its own: a soft equilibrium can sit in a shallow limit cycle whose optimum
+    /// is perfectly good (several gates here assert the optimum rather than the flag).
+    MaxIters,
+    /// Feasibility-aware mode ([`OptConfig::reject_infeasible`]) could not evaluate a
+    /// feasible iterate and stopped early.
+    Infeasible,
+}
+
 /// Result of an [`optimize`] run.
 #[derive(Clone, Debug)]
 pub struct OptResult {
@@ -296,9 +415,22 @@ pub struct OptResult {
     pub loss: f64,
     /// Iterations performed.
     pub iters: usize,
-    /// Whether a stopping criterion (`grad_tol` / `loss_tol`) was met before
-    /// `max_iters`.
-    pub converged: bool,
+    /// Which stopping criterion ended the run.
+    pub stop_reason: StopReason,
+    /// `‖gradient‖∞` at the **last iterate scored**, which is not always the iterate
+    /// returned in [`params`](Self::params).
+    ///
+    /// On a criterion stop they are the same point. On the `MaxIters` tail `params` has
+    /// taken one further step (and under `reject_infeasible` may be the best *earlier*
+    /// feasible iterate), so this is the gradient at the last point actually evaluated,
+    /// not at `params`. `NaN` when no iteration was scored at all — `max_iters == 0`, or
+    /// an infeasible `x0` that broke before the first record.
+    ///
+    /// Exposed so a caller can tell a genuine optimum from a vanishing-gradient
+    /// artifact, and can inspect *which* parameters carry the norm — under a
+    /// reparametrization or across blocks at different scales, `‖·‖∞` may be
+    /// dominated by one block and say little about the others.
+    pub final_grad_inf: f64,
     /// Per-iteration `(params, loss, ‖grad‖∞)` history.
     pub history: Vec<IterRecord>,
 }
@@ -379,12 +511,18 @@ pub fn optimize(problem: &dyn CoDesignProblem, x0: &[f64], cfg: &OptConfig) -> O
     .build(x0.len());
     let mut params = x0.to_vec();
     let bounds = problem.lower_bounds();
+    // `None` ⇒ the loss-tolerance stop is disabled outright (no reference to measure
+    // against), rather than silently comparing a meaningless absolute loss.
+    let loss_bound = problem.loss_lower_bound();
     let mut history = Vec::with_capacity(cfg.max_iters);
     // Feasibility-aware runs return the BEST feasible iterate seen, not the last: Adam is
     // non-monotonic and backtracking restores feasibility (not loss), so "best so far" is what makes
     // the result a genuine improvement — and, since the feasible `x0` is the first point scored, never
     // worse than the start. Default mode keeps last-iterate semantics (byte-identical).
     let mut best: Option<(f64, Vec<f64>)> = None;
+    // Set when the feasibility-aware loop breaks out early, so the tail can report
+    // `Infeasible` rather than mislabelling it as an exhausted iteration budget.
+    let mut broke_infeasible = false;
 
     for it in 0..cfg.max_iters {
         // The iterate is kept feasible (invariant, maintained by the backtrack below), so this
@@ -393,7 +531,10 @@ pub fn optimize(problem: &dyn CoDesignProblem, x0: &[f64], cfg: &OptConfig) -> O
         let (loss, grad) = if cfg.reject_infeasible {
             match problem.try_evaluate(&params) {
                 Ok(v) => v,
-                Err(_) => break,
+                Err(_) => {
+                    broke_infeasible = true;
+                    break;
+                }
             }
         } else {
             problem.evaluate(&params)
@@ -407,12 +548,22 @@ pub fn optimize(problem: &dyn CoDesignProblem, x0: &[f64], cfg: &OptConfig) -> O
             loss,
             grad_inf,
         });
-        if grad_inf < cfg.grad_tol || loss < cfg.loss_tol {
+        // `loss − bound < loss_tol` is the sound certificate; with the squared-residual
+        // targets' bound of exactly 0.0 this is `loss < loss_tol` bit-for-bit
+        // (subtracting +0.0 is the IEEE-754 identity), so their behavior is unchanged.
+        let loss_hit = loss_bound.is_some_and(|b| loss - b < cfg.loss_tol);
+        if grad_inf < cfg.grad_tol || loss_hit {
             return OptResult {
                 params,
                 loss,
                 iters: it,
-                converged: true,
+                // Gradient is tested first, so it wins a tie — matching the `||` order.
+                stop_reason: if grad_inf < cfg.grad_tol {
+                    StopReason::GradTol
+                } else {
+                    StopReason::LossTol
+                },
+                final_grad_inf: grad_inf,
                 history,
             };
         }
@@ -445,8 +596,22 @@ pub fn optimize(problem: &dyn CoDesignProblem, x0: &[f64], cfg: &OptConfig) -> O
     OptResult {
         params,
         loss,
-        iters: cfg.max_iters,
-        converged: false,
+        // Iterations actually performed. On the infeasible break that is short of the
+        // budget, so report the record count rather than claiming a full run — a
+        // `Infeasible` result paired with `iters == max_iters` would contradict itself.
+        iters: if broke_infeasible {
+            history.len()
+        } else {
+            cfg.max_iters
+        },
+        stop_reason: if broke_infeasible {
+            StopReason::Infeasible
+        } else {
+            StopReason::MaxIters
+        },
+        // The gradient at the last iterate actually scored. `NaN` when none was: either
+        // `max_iters == 0`, or an infeasible `x0` that broke before the first record.
+        final_grad_inf: history.last().map_or(f64::NAN, |r| r.grad_inf),
         history,
     }
 }
@@ -498,7 +663,7 @@ pub fn optimize(problem: &dyn CoDesignProblem, x0: &[f64], cfg: &OptConfig) -> O
 /// # Example
 ///
 /// ```no_run
-/// use cf_codesign::{Normalized, SoftMaterialTrajectoryTarget};
+/// use cf_codesign::{Normalized, SoftMaterialTrajectoryTarget, StopReason};
 /// # const MJCF: &str = "";
 /// let target = SoftMaterialTrajectoryTarget::for_inverse_design(MJCF.to_string(), 20, 0.124);
 /// // Dimensionless residual (L = the 0.1 m block edge) + log-μ relative steps.
@@ -686,7 +851,7 @@ impl CoDesignProblem for Normalized<'_> {
         let scaled_loss = loss * self.loss_scale;
         // A `log_space` parameter `p` is unbounded above, so `μ = exp(p)` can
         // overflow to `+inf` and poison the run — silently, since the optimizer
-        // would only record `converged = false` with garbage params. The
+        // would only record a `MaxIters` stop with garbage params. The
         // load-bearing quantity is the GRADIENT (`opt.step_in_place` feeds it into
         // `params`), and the `exp(p)` overflow lands in `dx/dp` here, so guard the
         // scaled gradient AND the loss (the convergence test reads the loss; and
@@ -722,6 +887,14 @@ impl CoDesignProblem for Normalized<'_> {
                 lb
             }
         })
+    }
+    /// The inner problem's bound carried through the loss rescaling. `loss_scale` is
+    /// guarded strictly positive at construction, so the map is order-preserving and a
+    /// bound stays a bound; `None` propagates (rescaling cannot bound an unbounded
+    /// objective). `log_space` reparametrizes only the PARAMETERS — it never touches
+    /// the loss value — so it does not enter here.
+    fn loss_lower_bound(&self) -> Option<f64> {
+        self.inner.loss_lower_bound().map(|b| b * self.loss_scale)
     }
 }
 
@@ -981,6 +1154,11 @@ impl CoDesignProblem for SoftMaterialTarget {
     fn lower_bounds(&self) -> Option<Vec<f64>> {
         Some(vec![self.mu_floor])
     }
+    /// `Some(0.0)`: the loss is `½(residual)²`, so zero residual — a design that hits
+    /// the target exactly — is the least it can be.
+    fn loss_lower_bound(&self) -> Option<f64> {
+        Some(0.0)
+    }
 }
 
 /// A co-design problem over a soft block's Neo-Hookean stiffness whose outcome is
@@ -1021,7 +1199,7 @@ impl CoDesignProblem for SoftMaterialTarget {
 /// index** (twice total), unlike the single-step target's one shared build.
 ///
 /// ```no_run
-/// use cf_codesign::{Normalized, SoftMaterialTrajectoryTarget};
+/// use cf_codesign::{Normalized, SoftMaterialTrajectoryTarget, StopReason};
 /// # const MJCF: &str = "";
 /// let target = SoftMaterialTrajectoryTarget::for_inverse_design(MJCF.to_string(), 20, 0.124);
 /// // z_N is weakly sensitive — condition it so the STANDARD eps converges.
@@ -1029,7 +1207,7 @@ impl CoDesignProblem for SoftMaterialTarget {
 /// let cfg = problem.recommended_config();
 /// // `optimize` brackets the physical↔normalized mapping (x0 + result in μ units).
 /// let result = problem.optimize(&[20_000.0], &cfg);
-/// assert!(result.converged);
+/// assert_eq!(result.stop_reason, StopReason::LossTol);
 /// ```
 pub struct SoftMaterialTrajectoryTarget {
     mjcf: String,
@@ -1153,6 +1331,11 @@ impl CoDesignProblem for SoftMaterialTrajectoryTarget {
     fn lower_bounds(&self) -> Option<Vec<f64>> {
         Some(vec![self.mu_floor])
     }
+    /// `Some(0.0)`: the loss is `½(residual)²`, so zero residual — a design that hits
+    /// the target exactly — is the least it can be.
+    fn loss_lower_bound(&self) -> Option<f64> {
+        Some(0.0)
+    }
 }
 
 /// A co-design problem over a soft buffer's stiffness whose outcome is the **peak contact force**
@@ -1182,7 +1365,7 @@ impl CoDesignProblem for SoftMaterialTrajectoryTarget {
 /// [`Normalized`] with `log_space = true` for relative (scale-free) steps and a structural `μ > 0`.
 ///
 /// ```no_run
-/// use cf_codesign::{Normalized, PeakForceTarget};
+/// use cf_codesign::{Normalized, PeakForceTarget, StopReason};
 /// # const MJCF: &str = "";
 /// // Recover the buffer stiffness whose peak strike force lands at 200 N (recoverable).
 /// let target = PeakForceTarget::for_impact_design(MJCF.to_string(), 2.0, 60, 200.0);
@@ -1190,7 +1373,7 @@ impl CoDesignProblem for SoftMaterialTrajectoryTarget {
 /// let problem = Normalized::with_residual_scale(&target, 200.0, true);
 /// let cfg = problem.recommended_config();
 /// let result = problem.optimize(&[20_000.0], &cfg);
-/// assert!(result.converged);
+/// assert_eq!(result.stop_reason, StopReason::LossTol);
 /// ```
 pub struct PeakForceTarget {
     mjcf: String,
@@ -1334,6 +1517,11 @@ impl CoDesignProblem for PeakForceTarget {
 
     fn lower_bounds(&self) -> Option<Vec<f64>> {
         Some(vec![self.mu_floor])
+    }
+    /// `Some(0.0)`: the loss is `½(residual)²`, so zero residual — a design that hits
+    /// the target exactly — is the least it can be.
+    fn loss_lower_bound(&self) -> Option<f64> {
+        Some(0.0)
     }
 }
 
@@ -1525,6 +1713,11 @@ impl CoDesignProblem for ControlScheduleTarget {
     // Control forces are signed (push up or down), so there is no lower bound —
     // and `lower_bounds = None` keeps the `Normalized` log-space lever inapplicable
     // here by construction (it is the signed-parameter case).
+    /// `Some(0.0)`: the loss is `½(residual)²`, so zero residual — a design that hits
+    /// the target exactly — is the least it can be.
+    fn loss_lower_bound(&self) -> Option<f64> {
+        Some(0.0)
+    }
 }
 
 /// A co-design problem over a **closed-loop feedback policy**: tune the policy
@@ -1708,6 +1901,11 @@ impl<P: DiffPolicy> CoDesignProblem for FeedbackPolicyTarget<P> {
     // The first policy's weights are signed (no lower bound), so `lower_bounds =
     // None` keeps the `Normalized` log-space lever inapplicable by construction
     // (the signed-parameter case, like `ControlScheduleTarget`).
+    /// `Some(0.0)`: the loss is `½(residual)²`, so zero residual — a design that hits
+    /// the target exactly — is the least it can be.
+    fn loss_lower_bound(&self) -> Option<f64> {
+        Some(0.0)
+    }
 }
 
 /// **The joint design+policy co-design problem** — the mission's "one outer loop
@@ -1940,6 +2138,11 @@ impl<P: DiffPolicy> CoDesignProblem for JointTarget<P> {
 
     // μ is reparametrized as ln μ (positive by construction, no bound needed) and
     // the θ weights are signed (no bound) — so `lower_bounds = None`.
+    /// `Some(0.0)`: the loss is `½(residual)²`, so zero residual — a design that hits
+    /// the target exactly — is the least it can be.
+    fn loss_lower_bound(&self) -> Option<f64> {
+        Some(0.0)
+    }
 }
 
 /// Joint design+policy co-design on the **de-escalation friction grip** — a soft
@@ -2316,6 +2519,12 @@ impl<P: DiffPolicy> CoDesignProblem for GripCoDesignTarget<P> {
 
     // μ is reparametrized as ln μ (positive by construction, no bound needed) and
     // the θ weights are signed (no bound) — so `lower_bounds = None`.
+    /// `Some(0.0)`: both objectives are sums of squares (`½(tip_x − tip_x*)²` for
+    /// `RestrainTipX`; `Σ(qₖ − q_hold)²` for `Hold`, built on the coupling tape as an
+    /// accumulation of `mul(dev, dev)`), so zero is the least either can be.
+    fn loss_lower_bound(&self) -> Option<f64> {
+        Some(0.0)
+    }
 }
 
 /// How a rigid-parameter family plugs into the generic [`RigidParamSystemId`].
@@ -2708,6 +2917,11 @@ impl<S: RigidParamSpec> CoDesignProblem for RigidParamSystemId<S> {
         // Mass, damping, and inertia are all physically non-negative.
         Some(vec![0.0; self.targets.len()])
     }
+    /// `Some(0.0)`: the loss is `½‖residual‖²`, so a perfect fit to the reference
+    /// trajectory is the least it can be.
+    fn loss_lower_bound(&self) -> Option<f64> {
+        Some(0.0)
+    }
 }
 
 /// [`RigidParamSpec`] for per-joint **damping** — `∂x_N/∂D` via
@@ -3074,6 +3288,11 @@ mod tests {
         fn evaluate(&self, _params: &[f64]) -> (f64, Vec<f64>) {
             (f64::INFINITY, vec![0.0])
         }
+        /// A constant stub; `Some(0.0)` is a valid (slack) bound and keeps the
+        /// loss-tolerance stop's behavior in these guard tests unchanged.
+        fn loss_lower_bound(&self) -> Option<f64> {
+            Some(0.0)
+        }
     }
 
     /// A stub returning a FINITE loss but a non-finite GRADIENT — the load-bearing
@@ -3087,10 +3306,15 @@ mod tests {
         fn evaluate(&self, _params: &[f64]) -> (f64, Vec<f64>) {
             (1.0, vec![f64::NAN])
         }
+        /// A constant stub; `Some(0.0)` is a valid (slack) bound and keeps the
+        /// loss-tolerance stop's behavior in these guard tests unchanged.
+        fn loss_lower_bound(&self) -> Option<f64> {
+            Some(0.0)
+        }
     }
 
     /// [`Normalized::evaluate`] panics (loudly) when the inner loss is non-finite,
-    /// rather than scaling `inf`/`NaN` onward into a silent `converged = false`
+    /// rather than scaling `inf`/`NaN` onward into a silent `MaxIters` stop
     /// run. The guard is a plain `assert!` (always on, including release-heavy CI).
     #[test]
     #[should_panic(expected = "non-finite loss")]
@@ -3120,6 +3344,11 @@ mod tests {
             }
             fn evaluate(&self, _params: &[f64]) -> (f64, Vec<f64>) {
                 (2.0, vec![3.0])
+            }
+            /// A constant stub; `Some(0.0)` is a valid (slack) bound and keeps the
+            /// loss-tolerance stop's behavior in these guard tests unchanged.
+            fn loss_lower_bound(&self) -> Option<f64> {
+                Some(0.0)
             }
         }
         let wrapped = Normalized::new(&FiniteLoss, 0.5, false);

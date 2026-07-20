@@ -9,7 +9,7 @@
 //!
 //! Two checks: (1) the raw problem's analytic gradient matches a central FD of its peak-force loss
 //! (the consumed gradient is correct for the objective, machine-exact); (2) the [`Normalized`]-
-//! wrapped optimizer recovers `μ*` to tolerance with the standard `eps` and reports `converged`.
+//! wrapped optimizer recovers `μ*` to tolerance with the standard `eps` and stops on a criterion rather than the iteration cap.
 //!
 //! Conditioning note. Unlike the position-outcome targets (`z_N ~ 1e-7`, gradient eps-dominated),
 //! peak force is `O(100 N)` with a well-scaled gradient — there is no tiny-gradient problem here.
@@ -18,7 +18,7 @@
 
 #![allow(clippy::expect_used)]
 
-use cf_codesign::{CoDesignProblem, Normalized, PeakForceTarget};
+use cf_codesign::{CoDesignProblem, Normalized, PeakForceTarget, StopReason};
 
 // The de-escalation impact fixture: a 1 kg limb at the contact-band top (z = 0.115), struck
 // downward into a pinned soft buffer (block top z = 0.10). Mirrors the RQ1 scenario.
@@ -92,11 +92,17 @@ fn recovers_known_stiffness_from_target_peak_force() {
     let rel_mu = (mu - mu_star).abs() / mu_star;
     eprintln!(
         "peak-force inverse design: μ₀={mu0} → μ={mu:.4} (μ*={mu_star}) rel={rel_mu:.3e}  \
-         target_force={target_force:.2} N  loss={:.3e}  iters={}  converged={}",
-        result.loss, result.iters, result.converged,
+         target_force={target_force:.2} N  loss={:.3e}  iters={}  stop={:?}",
+        result.loss, result.iters, result.stop_reason,
     );
 
-    assert!(result.converged, "optimizer did not converge in max_iters");
+    assert!(
+        matches!(
+            result.stop_reason,
+            StopReason::GradTol | StopReason::LossTol
+        ),
+        "optimizer did not converge in max_iters"
+    );
     assert!(
         rel_mu < 1e-3,
         "did not recover μ*: μ={mu} μ*={mu_star} (rel {rel_mu:e})"

@@ -67,9 +67,9 @@ fn main() {
     }
     let mu = result.params[0];
     println!(
-        "\nRecovered μ = {mu:.3} (μ* = {mu_star}, rel error {:.2e}) in {} iters; converged = {}",
+        "\nRecovered μ = {mu:.3} (μ* = {mu_star}, rel error {:.2e}) in {} iters; stop = {:?}",
         (mu - mu_star).abs() / mu_star,
         result.iters,
-        result.converged,
+        result.stop_reason,
     );
 }
