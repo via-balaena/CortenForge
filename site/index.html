@@ -52,7 +52,7 @@
 
       <p class="kicker">The kit is the product.</p>
 
-      <p>Most tools cover one leg of that path and hand off through file exchange. These components share one representation, so a gradient can run the whole way &mdash; from how a manufactured part behaves back to the parameters that shaped it. The capstone that proves it composes end to end &mdash; a differentiable body-to-device co-design loop, with an RL-controlled exoskeleton as the demonstration &mdash; is <strong>not yet built</strong>. See <a class="inline" href="https://github.com/via-balaena/CortenForge/blob/main/MISSION.md">MISSION.md</a>.</p>
+      <p>Most tools cover one leg of that path and hand off through file exchange. These components are built on a shared representation instead, so that gradients can eventually run the whole way &mdash; from how a manufactured part behaves back to the parameters that shaped it. <strong>That end-to-end gradient does not exist yet.</strong> The pieces it needs &mdash; the co-design optimizer, sim-to-real calibration, differentiable compliance fields &mdash; are what the project is building toward, and <a class="inline" href="https://github.com/via-balaena/CortenForge/blob/main/MISSION.md">MISSION.md</a> is explicit about which are done and which are not.</p>
     </section>
 
     <section>
@@ -60,38 +60,28 @@
 
       <div class="stack">
         <div class="stack-row">
-          <h3>Robotics &amp; control</h3>
-          <p>Rigid-body dynamics with muscles, tendons, and actuators. Import an existing MJCF or URDF model, take analytic derivatives through it, and train a policy against it.</p>
+          <h3>Robotics, control &amp; RL</h3>
+          <p>Import an existing MJCF or URDF model, take derivatives through the dynamics, and train a policy against batched environments.</p>
         </div>
 
         <div class="stack-row">
           <h3>Soft robotics</h3>
-          <p>Hyperelastic FEM with contact, for compliant grippers and actuators &mdash; through to the molds that cast them.</p>
+          <p>Simulate compliant grippers and actuators against hyperelastic FEM with contact, then generate the molds that cast them.</p>
         </div>
 
         <div class="stack-row">
           <h3>Biomechanics</h3>
-          <p>Musculoskeletal models with soft-tissue contact, differentiable, so parameters can be fit to measured data instead of guessed.</p>
+          <p>Build a musculoskeletal model from an OpenSim source, simulate soft tissue, and fit rigid-body parameters to measured trajectories. Separate components today, not one pipeline.</p>
         </div>
 
         <div class="stack-row">
-          <h3>Generative design &amp; digital fabrication</h3>
-          <p>Implicit-surface modeling, graded material stacks, and lattice compliance fields, with printability as a checkable constraint rather than an afterthought.</p>
+          <h3>Scan &rarr; design &rarr; fabrication</h3>
+          <p>Repair a scan into something watertight, convert it to an SDF, build implicit geometry against it, and gate the result for printing. Cendrillon walks this path end to end.</p>
         </div>
 
         <div class="stack-row">
-          <h3>Scanning &amp; reverse engineering</h3>
-          <p>Repair a scan into something watertight, convert it to an SDF, measure it, and build geometry against it.</p>
-        </div>
-
-        <div class="stack-row">
-          <h3>Custom-fit products</h3>
-          <p>Anything shaped to a scanned body &mdash; the path from a scan to a printable mold, exercised end to end by Cendrillon.</p>
-        </div>
-
-        <div class="stack-row">
-          <h3>Embodied-AI research &amp; teaching</h3>
-          <p>Batched differentiable environments and a full learning stack, in one dependency, with worked examples to read.</p>
+          <h3>Embodied-AI research</h3>
+          <p>Reach batched differentiable environments and the learning stack through one dependency, with <a class="inline" href="https://github.com/via-balaena/CortenForge/tree/main/examples">examples</a> to read.</p>
         </div>
       </div>
     </section>
@@ -104,51 +94,21 @@
       <pre><code>[dependencies]
 cortenforge = { git = "https://github.com/via-balaena/CortenForge" }</code></pre>
 
-      <p class="note">Depend on the repository, not crates.io. The published listings are years behind this workspace &mdash; <code>cortenforge</code> sits at 0.6.0 there and <code>mesh-repair</code> at 0.2.0, against 1.0.0 here &mdash; so <code>cargo add</code> will silently give you a stale version.</p>
+      <p class="note">Depend on the repository, not crates.io &mdash; the published listings are frozen years behind this workspace, so <code>cargo add</code> will silently give you a stale version. Pin a <code>rev</code> if you need reproducibility.</p>
 
       <pre><code>// Two umbrellas plus the design and fabrication crates, all through one dependency:
 use cortenforge::sim;          // rigid + soft physics, soft&harr;rigid coupling, RL/opt
 use cortenforge::mesh;         // load / repair / measure / print meshes
 use cortenforge::cf_design;    // implicit-surface design kernel</code></pre>
 
-      <p>The facade is a headless capability map across three domains &mdash; simulation and co-design (<code>sim::core</code>, <code>sim::soft</code>, the differentiable soft&harr;rigid coupling keystone <code>sim::coupling</code>, plus <code>sim::rl</code>, <code>sim::opt</code>, and <code>sim::ml_chassis</code>), mesh processing (<code>mesh::io</code>, <code>mesh::repair</code>, <code>mesh::sdf</code>, &hellip;), and design&rarr;fabrication, which is re-exported crate by crate rather than under an umbrella (<code>cf_design</code>, <code>cf_scan_prep_core</code>, <code>cf_cast</code>).</p>
+      <p>Simulation lives under <code>sim</code>, mesh work under <code>mesh</code>, and the design and fabrication crates are re-exported individually. The facade is headless by construction &mdash; the Bevy, GUI, and GPU crates are left out of it, so anything built against it runs without a window or a graphics driver, on a build server or inside a training loop. Those crates are still in the repository when you want them; you depend on them directly.</p>
 
-      <p>Bevy, GUI, and GPU crates are deliberately excluded from the facade, so anything compiled against it runs without a window or a graphics driver &mdash; on a build server, in a batch sweep, or inside a training loop. The GPU physics pipeline and the Bevy viewers are still in the repository; you depend on them directly when you want them.</p>
+      <p>To work on the SDK itself rather than depend on it:</p>
 
       <pre><code>git clone https://github.com/via-balaena/CortenForge.git
 cd CortenForge
 cargo build --workspace
 cargo xtask grade &lt;crate-name&gt;   # run the quality gate on a single crate</code></pre>
-    </section>
-
-    <section>
-      <h2>Status</h2>
-
-      <p class="lead-in">There is no stable release yet, and the API still moves. If you need reproducibility, pin a revision rather than tracking <code>main</code>.</p>
-
-      <pre><code>cortenforge = { git = "https://github.com/via-balaena/CortenForge", rev = "&lt;commit&gt;" }</code></pre>
-
-      <div class="stack">
-        <div class="stack-row">
-          <h3>Minimum Rust version</h3>
-          <p>1.87. The workspace pins the 1.96.0 toolchain so that builds and lints are reproducible; bumps are deliberate, paired with a workspace-wide lint sweep.</p>
-        </div>
-
-        <div class="stack-row">
-          <h3>Versioning</h3>
-          <p>The workspace carries a <code>1.0.0</code> version number, but treat it as pre-release: nothing is published from it, there are no release notes, and breaking changes land when they improve the architecture.</p>
-        </div>
-
-        <div class="stack-row">
-          <h3>Tagged releases</h3>
-          <p>Git tags build the Cendrillon application, not the SDK &mdash; <code>v0.3.2</code> is a Cendrillon version. There is no SDK tag to pin to yet.</p>
-        </div>
-
-        <div class="stack-row">
-          <h3>Platforms</h3>
-          <p>CI runs the full suite on Linux, plus a cross-OS job covering three platform-sensitive crates on macOS and Windows. Cendrillon ships builds for all three.</p>
-        </div>
-      </div>
     </section>
 
     <section>
@@ -202,19 +162,47 @@ cargo xtask grade &lt;crate-name&gt;   # run the quality gate on a single crate<
     </section>
 
     <section>
+      <h2>Status</h2>
+
+      <p class="lead-in">There is no stable release yet, and the API still moves. These are the terms of depending on it.</p>
+
+      <div class="stack">
+        <div class="stack-row">
+          <h3>Rust toolchain</h3>
+          <p>The workspace pins 1.96.0 so builds and lints are reproducible, and that is what CI uses. The manifests declare <code>rust-version = "1.87"</code>, but nothing builds at 1.87 &mdash; treat it as declared, not tested.</p>
+        </div>
+
+        <div class="stack-row">
+          <h3>Versioning</h3>
+          <p>The workspace carries a <code>1.0.0</code> version number, but treat it as pre-release: publishing is switched off, there are no release notes, and breaking changes land when they improve the architecture. The crates.io listings are frozen at a much older state, which is why the install above uses git.</p>
+        </div>
+
+        <div class="stack-row">
+          <h3>Tagged releases</h3>
+          <p>Git tags build the Cendrillon application, not the SDK &mdash; <code>v0.3.2</code> is a Cendrillon version. There is no SDK tag to pin to yet.</p>
+        </div>
+
+        <div class="stack-row">
+          <h3>Platforms</h3>
+          <p>CI runs sharded tests on Linux &mdash; broad, though a handful of crates sit outside the shards deliberately &mdash; plus a cross-OS job covering four platform-sensitive crates on macOS and Windows. Cendrillon&rsquo;s macOS Apple-silicon build is the one that blocks a release; Windows, Linux, and Intel Mac are beta.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
       <h2>Elsewhere</h2>
 
       <div class="cards">
         <a class="card" href="/cendrillon/">
           <span class="card-label">Application</span>
           <span class="card-title">Cendrillon</span>
-          <span class="card-sub">A guided desktop tool taking a 3D scan to printable molds for casting silicone.</span>
+          <span class="card-sub">A guided desktop tool that takes a 3D scan all the way to printable molds for casting silicone.</span>
         </a>
 
         <a class="card" href="https://github.com/via-balaena/CortenForge/blob/main/MISSION.md">
           <span class="card-label">Mission</span>
           <span class="card-title">Where this is going</span>
-          <span class="card-sub">The thesis, the capstone we are building toward, and the honest constraints.</span>
+          <span class="card-sub">The thesis, the capstone it is building toward, and the honest constraints.</span>
         </a>
 
         <a class="card" href="/research/">
