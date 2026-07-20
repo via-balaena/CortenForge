@@ -14,16 +14,20 @@
 
 # Part 3 — The gap
 
-- [Sophisticated ⊥ validated](30-gap.md)
+- [Sophisticated and validated are disjoint sets](30-gap.md)
 
-# Part 4 — Program
+# Part 4 — The primitive ladder
+
+- [What the SDK has, and what it does not](35-primitives.md)
+
+# Part 5 — Program
 
 - [What CortenForge would build, gated](40-program.md)
 
-# Part 5 — Verdict
+# Part 6 — Verdict
 
 - [The fork](50-verdict.md)
 
 # Appendices
 
-- [Claim ledger, parameters, sources, method](appendices.md)
+- [Claim ledger, parameters, glossary, sources, method](appendices.md)

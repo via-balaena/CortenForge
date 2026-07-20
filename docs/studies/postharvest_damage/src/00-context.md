@@ -9,18 +9,21 @@
 >
 > | | |
 > |---|---|
-> | **Status** | Literature recon complete (3 adversarial sweeps, 323 agents). **No code written. No decision made.** |
-> | **Verdict** | The field has a real structural gap and it is shaped like our strengths. The tonnage argument that motivated the study **does not survive** and has been retracted. |
-> | **★ The finding** | **The sophisticated constitutive work and the quantitatively-validated work are disjoint sets.** Nobody bridges them. See [Ch 3](30-gap.md). |
-> | **The bet** | Not "simulate fruit" — people do that. **Held-out validation + inverse design + distributional prediction**, none of which the field currently does. |
-> | **Load-bearing unknown** | Whether our solver can reproduce a *published* damage-extent error at all. Unproven, and cheap to falsify. This is [Gate 0](40-program.md#gate-0--can-we-reproduce-a-published-number). |
-> | **First buildable rung** | Reproduce the ginseng or kiwifruit bruise-area result from published constitutive parameters. **Pure software — no bench work.** See [Ch 4](40-program.md). |
-> | **Scope line** | By *coupling to the figure of merit*. **In**: soft contact, tissue constitutive models, damage criteria, geometry, inverse design. **Out**: microbial spoilage, ripening biochemistry, cold chain, logistics, CFD. |
-> | **Honest ceiling** | Damage-onset energy varies **~7× within a single lot**. The correct deliverable is *distributional*, not deterministic. See [Ch 2](20-mechanics.md#-the-variability-that-should-reshape-the-deliverable). |
+> | **Status** | Literature recon complete. **No code written. No decision made.** |
+> | **★ Finding** | **The sophisticated constitutive work and the quantitatively-validated work are disjoint sets** — the cellular models are unvalidated on damage magnitude, the validated models are bilinear elastic-plastic, and nobody bridges. See [Ch 3](30-gap.md). |
+> | **Case for** | Four things the field does not do, all of which we are placed to do. |
+> | **Case against** | Evidence base is ~7 papers per sweep, adversarial counter-search never ran, six major groups unreached, competitive landscape unmapped, and the philanthropic premise is unverified. |
+> | **The bet** | Not "simulate fruit" — people do that. **Held-out validation + inverse design + distributional prediction.** *(That the field does none of these is a medium-confidence absence-of-evidence finding, not an established fact — see [Ch 3](30-gap.md#nobody-does-inverse-design).)* |
+> | **Load-bearing unknown** | Whether our solver can reproduce a *published* damage-extent error at all. This is [Gate 0](40-program.md#gate-0--can-we-reproduce-a-published-number). |
+> | **⚠ Cost correction** | **`sim-soft` is hyperelastic and cannot express plasticity without a trait change.** Gate 0 is not a free consumer of existing primitives. See [Ch 4](35-primitives.md#-the-blocking-gap-sim-soft-has-no-plasticity-path). |
+> | **First buildable rung** | Reproduce the kiwifruit bruise-area result. Needs a plasticity material path first; the constitutive parameters themselves are published. |
+> | **Scope line** | By *coupling to the figure of merit*. **In**: soft contact, tissue constitutive models, damage criteria, geometry, inverse design. **Out**: microbial spoilage, ripening biochemistry, cold chain, logistics, CFD, post-hoc bruise detection. |
+> | **Honest ceiling** | Damage-onset energy varies **~7×** across specimens *(medium confidence; Parke 1963, as reported in Molema 1999)*. The correct deliverable is *distributional*, not deterministic. See [Ch 2](20-mechanics.md#-the-variability-that-should-reshape-the-deliverable). |
 >
-> **Where to go:** what the loss numbers can't say → [Ch 1](10-loss.md) · what's known about the mechanics → [Ch 2](20-mechanics.md) ·
-> the gap → [Ch 3](30-gap.md) · the gated program → [Ch 4](40-program.md) ·
-> the fork → [Ch 5](50-verdict.md) · claim ledger & parameters → [appendix](appendices.md).
+> **Where to go:** if you read one chapter, read [Ch 3](30-gap.md) — it carries the finding.
+> Then [Ch 4](35-primitives.md) for what we'd have to build and [Ch 6](50-verdict.md) for the decision.
+> Full path: [Ch 1](10-loss.md) · [Ch 2](20-mechanics.md) · [Ch 3](30-gap.md) ·
+> [Ch 4](35-primitives.md) · [Ch 5](40-program.md) · [Ch 6](50-verdict.md) · [appendix](appendices.md).
 
 ## The question
 
@@ -30,10 +33,9 @@ whether that loop transfers to a philanthropic problem by substituting one term:
 
 > body ↔ device co-design → **produce ↔ container co-design**
 
-Same optimizer, same soft-contact physics, same covenant that
-[exact geometry *is* the exact physics](../../../../MISSION.md) — a proxy fruit geometry lies about
-where the load concentrated, which is precisely how a bruise appears where the model said it
-would not.
+Same optimizer, same soft-contact physics, same covenant recorded in `MISSION.md` — that a proxy
+geometry lies about where the load concentrated, which is precisely how a bruise appears where the
+model said it would not.
 
 The narrow question:
 
@@ -51,58 +53,78 @@ binding constraint.
 It is also **not** a business case. Harvest robotics for high-value crops in wealthy countries
 is a crowded, well-funded commercial space where marginal contribution is near zero. The
 philanthropic argument, if one survives, has to rest somewhere else — see
-[Ch 5](50-verdict.md#why-this-is-philanthropy-and-not-a-product).
+[Ch 6](50-verdict.md#why-this-is-philanthropy-and-not-a-product).
 
 ## How this book is ordered
 
-The order is deliberate and matches how every CortenForge arc is built —
-**measure before you architect**, and *retract before you build*.
+[Chapter 3](30-gap.md) carries the finding and [Chapter 4](35-primitives.md) carries the cost. A
+reader short on time should start there and treat Chapters 1–2 as supporting evidence.
 
-1. **The loss accounting first**, in [Chapter 1](10-loss.md), because that is what motivated the
-   study and it is where the argument was weakest. The chapter leads with a retraction.
-2. **Then the mechanics**, in [Chapter 2](20-mechanics.md): what constitutive models, damage
-   criteria, and parameter values actually exist in the accessible literature, and how good the
-   validation really is when you read the primary text rather than the abstract.
-3. **Then the gap**, in [Chapter 3](30-gap.md). This is the load-bearing chapter and the reason
-   the study was worth running.
-4. **Then the ladder**, in [Chapter 4](40-program.md): a gated program whose first three rungs
-   are pure software, each one capable of killing the direction cheaply.
-5. **Then the fork**, in [Chapter 5](50-verdict.md), which is a decision for the head engineer
-   and is deliberately left open.
+The written order is nonetheless chronological — loss accounting, then mechanics, then the gap —
+for one reason: **Chapter 1 is where this study's original motivation died**, and a reader who
+meets the gap before the retraction will over-weight it. The retraction is short and comes first
+in that chapter.
+
+1. [**Chapter 1**](10-loss.md) — what the loss statistics can and cannot support. Opens with a
+   retraction of the argument that motivated the study.
+2. [**Chapter 2**](20-mechanics.md) — constitutive models, damage criteria, parameter values, and
+   what the validation actually looks like when you read primary text instead of abstracts.
+3. [**Chapter 3**](30-gap.md) — the finding.
+4. [**Chapter 4**](35-primitives.md) — SDK inventory: what exists, what is missing, and the one
+   gap that changes the cost of everything downstream.
+5. [**Chapter 5**](40-program.md) — a gated program with explicit NO-GO branches.
+6. [**Chapter 6**](50-verdict.md) — the fork, left open.
 
 ## Epistemic status
 
-Everything in this book comes from three adversarial research sweeps run in July 2026. The
-method, the full claim ledger, and the refuted claims are in the [appendix](appendices.md).
-Summary of the evidence base:
+Everything here comes from three adversarial research sweeps run in July 2026. Method, full
+ledger, and refuted claims are in the [appendix](appendices.md).
 
 | | Sweep 1 | Sweep 2 | Sweep 3 | Total |
 |---|---|---|---|---|
-| Agents | 111 | 105 | 107 | **323** |
 | Sources fetched | 28 | 22 | 24 | **74** |
 | Claims extracted | 108 | 80 | 77 | **265** |
 | Claims verified | 25 | 25 | 25 | **75** |
-| **Confirmed** | 14 | 17 | 19 | **50** |
-| **Refuted** | 11 | 8 | 6 | **25** |
+| Confirmed | 14 | 17 | 19 | **50** |
+| Refuted | 11 | 8 | 6 | **25** |
 
-Each verified claim was subjected to 3-vote adversarial verification; a claim needed 2 of 3
-refutations to be killed. **One third of all claims that reached verification were killed.**
-That ratio is the single most important fact about this evidence base, and several of the
-casualties were claims this study's own author had advanced.
+**Read that table carefully, because it is easy to over-read.**
 
-Three standing caveats apply to everything below, and are repeated where they bite:
+- **190 of 265 extracted claims were never adjudicated.** Exactly 25 per sweep reached
+  verification — a budget cap, not a risk-ranked selection. The verified set is a 28% subsample
+  chosen by an unstated rule.
+- Of the 75 that were adjudicated, **25 were killed** — but that ratio describes the subsample,
+  not the evidence base.
+- **The single most important fact about this evidence base is not the kill rate.** It is that
+  **adversarial counter-search never ran** in sweeps 2 and 3 (budget exhausted at 200/200), so the
+  "no credible source disputes this" leg of verification is missing throughout.
 
-- **Search budget was exhausted (200/200) during verification in sweeps 2 and 3.** Adversarial
-  counter-searches could not be run. Absence of contradicting evidence is a tool artifact, not a
-  verified null.
-- **Paywalls held throughout.** ScienceDirect, Wiley, and MDPI HTML returned 403 consistently.
-  Verification succeeded only via institutional repositories, PMC mirrors, `mdpi-res.com` PDF
-  deploys, and local `pdftotext`. Some decision-relevant papers were never reached.
+Three standing caveats, repeated where they bite:
+
+- **No counter-search.** Absence of contradicting evidence is a tool artifact, not a verified null.
+- **Paywalls shaped the evidence set.** ScienceDirect, Wiley, and MDPI HTML returned 403
+  consistently. Sweep 1's conclusion that the field was primitive turned out to be a
+  **reachability artifact**, corrected only when sweep 3 routed through institutional
+  repositories. Some decision-relevant papers were never reached at all.
 - **The competitive landscape is unmapped.** Three sweeps produced *zero* surviving claims on
-  tooling, licensing, development-sector practice, or patents. See
-  [Ch 5](50-verdict.md#what-we-still-do-not-know).
+  tooling, licensing, development-sector practice, or patents.
 
-Where a claim was verified from full text, this book says so. Where only an abstract was
-reached, it says that too. Where a sweep produced nothing, that is recorded as a negative
-result rather than silently omitted — because in this study, absence of evidence has repeatedly
-turned out to be decision-relevant.
+Where a claim was verified from full text, this book says so. Where only an abstract was reached,
+it says that. Where a sweep produced nothing, that is recorded as a negative result — with one
+distinction this study got wrong on its first pass and now enforces: **"we searched and found
+nothing" and "we never searched" are different claims**, and the appendix marks which is which.
+
+### On this study's own retractions
+
+Five positions this study advanced were killed by its own verification, and they are recorded in
+[Ch 6](50-verdict.md#what-three-sweeps-actually-changed).
+
+**Four of the five leave the program more attractive than it was.** Each correction is
+individually sound, but the aggregate is a book advertising self-inflicted casualties while
+emerging with a stronger case than it started with. A reader should weigh that pattern directly
+rather than treat the retraction count as evidence of rigor.
+
+One further caution, added after review: the argument this study fell back on when the tonnage
+case died — the micronutrient overlap in [Ch 1](10-loss.md#what-survives-as-motivation) — **was
+never submitted to the sweeps at all.** It is the author's reasoning, not a verified finding, and
+it is marked as such where it appears.

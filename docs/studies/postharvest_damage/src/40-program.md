@@ -1,170 +1,192 @@
 # What CortenForge would build, gated
 
-This chapter derives a program from [the four open lanes](30-gap.md#four-open-lanes). It is
-sequenced by the CortenForge covenant: **cheapest falsification first**, each rung capable of
-killing the direction, no code written until the rung below it is green.
+This chapter derives a program from [the four open lanes](30-gap.md#four-open-lanes), sequenced by
+the CortenForge covenant: **cheapest falsification first**, each rung capable of killing the
+direction, no code written until the rung below it is green.
 
-> **Correction carried forward.** An earlier reading of this evidence concluded that the entry
-> cost was bench work — a materials tester, specimens, months before a line of solver code paid
-> off. **That was wrong.** The ginseng and kiwifruit papers publish constitutive parameters *and*
-> a damage-extent error, which makes them reproduction targets. **The first three gates are pure
-> software.** Bench work enters at Gate 3, and only if the software gates are green.
-
-## What already exists in the SDK
-
-Inventory before architecture. The relevant primitives are already built and validated:
-
-| Need | Existing primitive | Status |
-|---|---|---|
-| Soft-tissue FEM | `sim/L0/soft` — BE-FEM + IFT | ✅ validated (Ecoflex uniaxial 5.8% RMS) |
-| Exact contact on real geometry | `cf-core` contact, mesh-SDF | ✅ MuJoCo-conformant |
-| Geometry → physics, differentiably | `cf-mesh`, SDF pipeline | ✅ |
-| Gradient-based co-design | `cf-codesign` | ✅ `RouteTarget` landed (#661) |
-| Route/geometry design variables | `cf-routing` | ✅ |
-| Coupled soft ↔ rigid, one tape | `sim/L1/coupling` | ✅ keystone complete |
-
-Nothing in the first three gates requires a new engine. That is the point — this program is a
-consumer of existing primitives, not a pretext to build new ones.
+> **Two corrections from review, both load-bearing.**
+>
+> **1.** An earlier draft claimed the first three gates were "pure software" consuming existing
+> primitives. **`sim-soft` is hyperelastic and cannot express plasticity without a trait change** —
+> see [Ch 4](35-primitives.md#-the-blocking-gap-sim-soft-has-no-plasticity-path). Gate 0 is not free,
+> and every downstream cost estimate shifted.
+>
+> **2.** An earlier draft asserted every gate could "kill the direction cheaply" while giving only
+> Gate 0 a failure branch. Gates 1–5 now carry explicit **NO-GO** conditions. Where a gate genuinely
+> cannot fail, it is labelled a *deliverable*, not a gate.
 
 ## Gate 0 — Can we reproduce a published number?
 
 **The load-bearing unknown.** Everything downstream is worthless if this fails.
 
-**Target.** The American ginseng root pendulum-impact study (2025) is the better first target,
-because its constitutive parameters came from **independent uniaxial compression tests** on
-cortex and cambium rather than from a citation — so reproducing it is not circular. Kiwifruit
-(*Foods* 2024, 9.63% bruise area) is the backup, with full tissue-specific parameter tables in
-the [appendix](appendices.md#recovered-constitutive-parameters).
+**Target: kiwifruit** — Xu et al. 2024, cv. 'Xuxiang', whose full tissue-specific parameter table
+(skin / core / flesh-axial / flesh-radial, with tangent moduli, bio-yields and Poisson ratios) is
+recovered in the [appendix](appendices.md#recovered-constitutive-parameters).
 
-**The task.** Implement bilinear isotropic strain-hardening elastic-plastic tissue in `sim/L0/soft`,
-apply the von Mises > bio-yield criterion, run the published impact condition, and compare bruise
-area against the published value.
+> **⚠ Ginseng is not the target, contrary to an earlier draft.** The ginseng study (2025) is
+> methodologically the *better* comparison — its parameters came from independent uniaxial
+> compression tests rather than a citation, so reproducing it would not be circular. But **no
+> ginseng parameter values exist anywhere in this study's evidence base**; sweep 3 recovered only
+> the model class. The numbers would have to be extracted from the paper first, which is unattempted
+> work, not a starting point.
+>
+> **Also do not confuse the two kiwifruit papers.** The recovered parameter table is Xu et al.
+> ('Xuxiang'). The 9.63% bruise-area result is Zhu et al., *Foods* 2024 — a different study, present
+> in the appendix only as a three-value footnote with no Poisson ratios. Reproducing the 9.63%
+> specifically requires Zhu's parameters, which are incomplete here.
 
-**Pass.** Our bruise-area prediction lands within the published error band using only published
-parameters — no tuning.
+**Prerequisite.** A plasticity path in `sim-soft`: widened or parallel `Material` contract, internal
+state per quadrature point, return mapping, consistent tangent. This is the real cost of Gate 0 and
+it is unestimated.
 
-**Fail → stop.** If we cannot reproduce a bilinear elastic-plastic result that a commercial FE
-package produced, the problem is our solver, not the field, and this direction is not ours.
+**The task.** Bilinear isotropic strain-hardening elastic-plastic tissue, von Mises > bio-yield
+criterion, published impact condition, compare predicted bruise area against published value.
 
-> **Honest note on what passing means.** Reproducing a mean-vs-mean number at one condition is a
-> *conformance* check, not a validation of the underlying science. It proves our engine belongs in
-> the conversation. It proves nothing about whether the criterion is right — that is Gate 1.
+**PASS.** Bruise-area prediction within the published error band using only published parameters, no
+tuning.
+
+**NO-GO.** If we cannot reproduce a bilinear elastic-plastic result that a commercial FE package
+produced, the problem is our solver and this direction is not ours. **Stop.**
+
+**ALSO NO-GO — the cost branch.** If the plasticity trait change proves to require restructuring the
+solver's tangent path or breaks the existing adjoint, stop and reconsider
+[the buy-not-build alternative](35-primitives.md#the-honest-alternative-nobody-costed) before
+continuing.
+
+> Reproducing a mean-vs-mean number at one condition is a **conformance check**, not a validation of
+> the underlying science. It proves our engine belongs in the conversation. It says nothing about
+> whether the criterion is right — that is Gate 1.
 
 ## Gate 1 — The ablation nobody ran
 
 **The question the field left open.** Skin is 4–8× stiffer than flesh where it is modelled, and is
-usually not modelled at all. **Nobody has tested whether that changes bruise-volume prediction.**
+often not modelled at all. Nobody has tested whether that changes bruise-volume prediction.
 
-**The task.** Run the Gate 0 geometry twice — homogeneous vs. explicit skin/flesh/core layers —
-and report the delta in predicted bruise volume, not just contact pressure and contact area.
+> **Both premises are medium-confidence.** The ratio is one cultivar of one commodity; the
+> "usually ignored" pattern holds across three of four papers and the field-wide version was
+> **refuted 0-3**. See [Ch 2](20-mechanics.md#skin-is-often-ignored-and-where-measured-it-is-48-stiffer).
+> If either premise fails on wider reading, this gate loses its point before it starts.
 
-**Why this rung.** It is cheap, it is pure software, it uses parameters already recovered, and
-**either outcome is publishable**. If skin omission barely moves bruise volume, the field's
-homogeneous models are vindicated and a lot of complexity is unnecessary. If it moves it a lot,
-a large fraction of the published literature is built on a disqualifying simplification.
+**The task.** Run the Gate 0 geometry twice — homogeneous vs. explicit skin/flesh/core — and report
+the delta in predicted bruise **volume**, not just contact pressure and area.
 
-**Pass.** A defensible number with a stated uncertainty, either direction.
+**PASS.** A defensible delta with stated uncertainty, either direction.
 
-> This is the first rung that produces **new knowledge** rather than conformance. It is also the
-> cheapest possible contribution to the field, and it would be a reasonable place to stop and
-> publish if the program goes no further.
+**NO-GO.** If the with/without-skin delta is *inside* the specimen-to-specimen scatter measured at
+Gate 2, the ablation is unresolvable at this precision and publishing it would be noise. Stop and
+reorder: Gate 2 first, Gate 1 after, or drop Gate 1.
+
+> **Honesty about this gate's cost.** It is cheap *given Gate 0* — a multi-material mesh run on
+> machinery that already exists. It is not independently cheap, and an earlier draft's "a real
+> contribution for a few weeks of work" was priced without the plasticity prerequisite.
 
 ## Gate 2 — Distributional prediction
 
-**The constraint from [Ch 2](20-mechanics.md#-the-variability-that-should-reshape-the-deliverable).**
-Damage-onset energy varies ~7× within a single lot. Deterministic prediction of an individual
-specimen is close to a category mistake, and **no stochastic or Monte Carlo FEM on produce exists
-anywhere in the evidence base.**
+**The constraint.** Damage-onset energy varies ~7× across specimens *(medium confidence, as of
+Molema 1999)*. Deterministic prediction of an individual specimen is close to a category mistake,
+and no stochastic or Monte Carlo FEM on produce surfaced in any sweep.
 
-**The task.** Propagate parameter distributions — seeded from published standard deviations where
-they exist — through the Gate 1 model, and predict a **distribution** of bruise volume rather
-than a point value.
+**The task.** Propagate parameter distributions through the Gate 1 model; predict a **distribution**
+of bruise volume rather than a point value.
 
-**Pass.** A predicted distribution whose spread is commensurate with the reported experimental
-scatter. Not a matched mean — a matched *spread*.
+**PASS.** A predicted distribution whose *spread* is commensurate with reported experimental
+scatter. Not a matched mean — a matched spread.
 
-**Why it matters for the deliverable.** The use case is designing a crate that will handle ten
-thousand apples, not predicting one apple. A distributional objective — *P(bruise > threshold)*
-— is both the honest output and the more useful one. It also has to be designed in here, at the
-solver interface, rather than bolted on after Gate 4.
+**NO-GO.** If the predicted spread cannot be made commensurate with experiment — or if published
+scatter turns out too sparse to score against — then damage prediction is not distributionally
+tractable from public data, and Gate 4's objective function has no honest form. Stop and reconsider
+whether the deliverable is a model at all.
 
-> **Risk flagged.** The parameter distributions this gate needs may not exist in published form.
-> Every parameter recovered in three sweeps is a **point estimate with no reported scatter**. If
-> seeding fails, this gate becomes the first one that genuinely requires bench data, and Gate 3
-> moves ahead of it.
+> **⚠ Seeding failure is the expected case, not a risk.** Every parameter recovered in three sweeps
+> is a **point estimate with no reported scatter**, and sweep 2 produced zero verified claims on
+> variability. So the distributions this gate needs most likely **do not exist in published form**.
+>
+> That inverts the program's ordering: **Gate 2 probably requires Gate 3's bench data**, which means
+> the honest sequence is 0 → 1 → 3 → 2 → 4, and the "three pure-software gates" framing is
+> optimistic. It is retained above only because the alternative — seeding from the few published
+> standard deviations and reporting the seeding as a limitation — is worth one attempt before
+> committing to bench work.
 
 ## Gate 3 — Our own calibration data
 
-**The first bench rung, and it is unavoidable eventually.**
-[The calibration data does not exist](30-gap.md#the-calibration-data-does-not-exist) — confirmed
-across three sweeps and by the frontier group's own admission. No archived force-displacement
-curves paired with damage outcomes, nothing in any open data repository.
+**The first bench rung.** No force-time or force-displacement curves paired per-specimen with damage
+outcomes surfaced in three sweeps.
 
-**The task.** Generate what the field is missing: force-displacement curves under ASABE S368-style
-compression, with full specimen metadata (cultivar, ripeness, turgor, temperature, storage
-duration, contact geometry, loading rate), **paired per-specimen with measured damage** by the
-Molema slicing protocol or a modern imaging equivalent.
+> **⚠ This is a coverage gap, not a searched negative.** The targeted open-data-repository search
+> **never ran** — see [Ch 3](30-gap.md#the-calibration-data-does-not-exist). Before committing to
+> months of bench work on the premise that we would be generating something that does not exist,
+> **run that search.** It is cheap and it is the single highest-leverage unattempted action in this
+> program.
 
-**Then publish it openly.** No such dataset exists in Zenodo, Dryad, Figshare, Mendeley, or
-4TU.ResearchData.
+**The task.** Force-displacement curves under ASABE S368-style compression with full specimen
+metadata (cultivar, ripeness, turgor, temperature, storage duration, contact geometry, loading
+rate), paired per-specimen with measured damage. Then publish openly.
 
-**Pass.** A dataset sufficient to calibrate a constitutive model *and* fit a damage criterion,
-with enough specimens to characterize scatter.
+**PASS.** A dataset sufficient to calibrate a constitutive model *and* fit a damage criterion, with
+enough specimens to characterize scatter.
 
-> **★ This is the rung where held-out validation becomes possible for the first time.** With our
-> own specimens we control the train/test split — the thing
-> [no paper in the evidence base documents](20-mechanics.md#what-survives-the-correction). That is
-> a larger contribution than the solver.
+**NO-GO.** If the repository search finds an adequate existing dataset, **skip this gate** — it
+becomes redundant and its cost should not be paid.
 
-**Cost honesty.** This is a materials tester, a few hundred specimens, a cold room, and months.
-It is the real fork in this program and it is the subject of [Chapter 5](50-verdict.md).
+> **★ This is where held-out validation becomes possible for the first time.** With our own specimens
+> we control the train/test split — the thing
+> [no paper in the evidence base documents](20-mechanics.md#what-survives-the-correction).
 
 ## Gate 4 — Inverse design
 
-**The flagship rung**, and the one where CortenForge's specific machinery becomes load-bearing
-rather than incidental.
+**The flagship rung**, and where CortenForge's machinery becomes load-bearing rather than incidental.
 
-**The task.** Take a validated, distributional damage model as an **objective function** and
-optimize a design variable against it. The natural first target is container geometry — crate wall
-profile, liner compliance, divider spacing, chute curvature — using the same `cf-codesign`
-machinery that `RouteTarget` uses for route control points against a body SDF.
+> **⚠ Gated on an unanswered question.** Adjoints through path-dependent plastic state require
+> differentiating the return map across a non-smooth yield switch. **Whether the BE-FEM/IFT adjoint
+> survives that is unknown** — see
+> [Ch 4](35-primitives.md#the-adjoint-question-which-is-worse). Resolve it before costing this gate.
 
-The substitution is exact:
+**The task.** A validated distributional damage model as an **objective function**, optimizing a
+design variable — crate wall profile, liner compliance, divider spacing, chute curvature — via the
+same `cf-codesign` machinery `RouteTarget` uses against a body SDF.
 
 > body ↔ device co-design → **produce ↔ container co-design**
 
-**Pass.** A geometry the optimizer found, that measurably reduces damage against a hand-designed
-baseline, verified experimentally.
+**PASS.** A geometry the optimizer found that measurably reduces damage against a hand-designed
+baseline, **verified experimentally**.
 
-> **Why this is genuinely novel.** [Nobody does inverse design](30-gap.md#nobody-does-inverse-design)
-> in this field — confirmed at medium confidence across sweep 2. Every study is forward analysis;
-> optimization is deferred to future work where mentioned at all. This gate is the one that would
-> be a real methodological contribution rather than an accessibility one.
+**NO-GO.** If gradients through the damage physics prove unusable — non-smooth, or dominated by
+specimen noise — fall back to surrogate or Bayesian optimization and re-evaluate whether a
+*differentiable* engine was ever the right tool. That fallback would remove most of this program's
+CortenForge-specific justification, and should be treated as a serious negative result rather than a
+detour.
 
-## Gate 5 — Open the tooling
+> **This gate is bench-dependent**, despite sitting after the fork. Its pass criterion requires
+> experimental verification. An earlier draft's sequence diagram labelled it "software" and hid that.
 
-**The philanthropic payoff**, and deliberately last, because it is worthless before Gate 3.
+## Gate 5 — Open the tooling *(deliverable, not a gate)*
 
-Publish the validated model, the parameter database, the calibration dataset, and the optimizer
-as an **open, free, documented tool** — so that a researcher, NGO, or cooperative without an
-Abaqus license can evaluate a crate design.
+Publish the validated model, parameter database, calibration dataset, and optimizer as an open,
+free, documented tool.
 
-> **Unverified premise, flagged.** Whether commercial FE license cost is *actually* a binding
-> constraint for the people bearing these losses **was not established by any sweep**. Three
-> attempts produced zero surviving claims on tooling, licensing, or development-sector practice.
-> This gate rests on an assumption, and the assumption should be checked — by talking to CGIAR,
-> GIZ, or the Postharvest Education Foundation — **before** it is used to justify effort.
+This **cannot fail on technical grounds** and is therefore not a gate. It is the philanthropic
+payoff, and it is contingent, not conditional.
+
+> **⚠ Its premise is unverified and now also load-bearing for build-vs-buy.** Whether commercial FE
+> licence cost is *actually* a binding constraint for the intended users was **not established by any
+> sweep** — three attempts, zero surviving claims. If licences are not the barrier, this gate
+> delivers little, *and* the
+> [buy-not-build alternative](35-primitives.md#the-honest-alternative-nobody-costed) becomes
+> substantially more attractive for Gates 0–2.
+>
+> Check it — by asking CGIAR, GIZ, or the Postharvest Education Foundation — **before** it justifies
+> effort. This is [open question 8](appendices.md#open-questions).
 
 ## Sequence and scope line
 
 ```
-Gate 0  reproduce published number        pure software    ← falsifies the solver
-Gate 1  skin ablation                     pure software    ← first new knowledge
-Gate 2  distributional prediction         pure software    ← fixes the deliverable shape
-─────────────────────────────────────────────────────────  ← the fork (Ch 5)
-Gate 3  own calibration dataset           BENCH            ← enables held-out validation
-Gate 4  inverse design                    software         ← the flagship
-Gate 5  open tooling                      software + eng   ← the philanthropic payoff
+Gate 0  reproduce a published number     NEEDS PLASTICITY   ← falsifies the solver
+Gate 1  skin ablation                    software           ← first new knowledge
+Gate 2  distributional prediction        software*          ← *likely needs Gate 3 data
+─────────────────────────────────────────────────────────── ← the fork (Ch 6)
+Gate 3  own calibration dataset          BENCH              ← enables held-out validation
+Gate 4  inverse design                   software + BENCH   ← flagship; adjoint unresolved
+Gate 5  open tooling                     deliverable        ← cannot fail; premise unverified
 ```
 
 **Scope line, by coupling to the figure of merit** — not by category:
@@ -172,13 +194,13 @@ Gate 5  open tooling                      software + eng   ← the philanthropic
 | In scope | Out of scope |
 |---|---|
 | Soft-tissue contact mechanics | Microbial spoilage, pathogen entry |
-| Tissue constitutive models | Ripening biochemistry, ethylene kinetics |
+| Tissue constitutive models incl. plasticity | Ripening biochemistry, ethylene kinetics |
 | Damage criteria and thresholds | Cold chain, refrigeration, CFD |
 | Exact geometry → contact | Logistics, routing, market economics |
-| Distributional/stochastic prediction | Post-hoc bruise *detection* (crowded ML field) |
-| Gradient-based geometry optimization | Harvest robotics for high-value crops (crowded, commercial) |
+| Distributional / stochastic prediction | Post-hoc bruise *detection* |
+| Gradient-based geometry optimization | Harvest robotics for high-value crops |
 
-The exclusions are deliberate and several were argued for explicitly. Post-hoc bruise detection
-via hyperspectral and deep learning is an active, crowded field — three sweeps surfaced Mask R-CNN
-strawberries, SWIR apples, 61-cultivar blueberry YOLO, MRI/ANN pear volume. That is *measurement
-after the fact*, orthogonal to *prediction before the design*. Do not drift into it.
+Post-hoc bruise detection via hyperspectral imaging and deep learning is an active, crowded field —
+sweep 1 surfaced Mask R-CNN strawberries, SWIR apples, a 61-cultivar blueberry YOLO, and MRI/ANN
+pear volume. That is *measurement after the fact*, orthogonal to *prediction before the design*. Do
+not drift into it.

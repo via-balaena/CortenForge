@@ -3,7 +3,8 @@
 This chapter surveys the accessible literature on modelling mechanical damage in produce:
 constitutive practice, damage criteria, parameter values, validation quality, and specimen
 variability. It is deliberately concrete — every number below was verified against primary text
-unless flagged otherwise.
+unless flagged otherwise, and **claims verified at 2-1 or rated medium confidence carry that marker
+inline**, not only in the [ledger](appendices.md#claim-ledger).
 
 The short version: **there is more usable material here than the field's reputation suggests,
 and the validation is worse than its abstracts suggest.**
@@ -50,7 +51,13 @@ also point estimates with **no reported scatter**, and one recovered table lists
 g/mm³ at physically implausible values (~1000× off) — a quality signal about table-level rigor
 that should temper any wholesale reuse.
 
-### Skin is usually ignored, and it is 4–8× stiffer
+### Skin is often ignored, and where measured it is 4–8× stiffer
+
+> **Confidence: medium.** Two separate limits apply. The 4–8× ratio comes from **one cultivar of one
+> commodity**. And the claim that homogeneous single-material models represent *field-wide* practice
+> was **refuted 0-3** — the defensible reading is "a pattern across three of four papers in this
+> evidence base," not an established norm. Both limits matter, because this section is the entire
+> basis for [Gate 1](40-program.md#gate-1--the-ablation-nobody-ran).
 
 Where skin *is* modelled separately, the stiffness contrast is large:
 
@@ -88,12 +95,25 @@ Energy appears in that paper only as a solver sanity check (hourglass energy < 5
 energy), not as a criterion.
 
 > This is **convention-by-repetition, not demonstrated consensus.** No verified source shows the
-> field agreeing, and every claim asserting a systematic multi-criterion comparison was refuted.
+> field agreeing.
+>
+> **A correction on how that conclusion was reached.** An earlier draft added: "every claim
+> asserting a systematic multi-criterion comparison was refuted." That is true and *cannot be used
+> this way*. Those claims were refuted **because the full text was unreachable** — ScienceDirect
+> 403, Semantic Scholar 429, OpenAlex null abstract — and the source explicitly adds that the
+> paper's "existence weakly suggests such comparison is beginning." Converting an access failure
+> into positive evidence of absence is an inference the evidence base forbids. The locked paper is
+> [*Postharvest Biol. Technol.* 213, 112930](30-gap.md#the-honest-counter-case), and it is the
+> source most likely to overturn this section.
 
-### Absorbed energy is falsified as a simple criterion
+### Absorbed energy does not work as a simple criterion
 
-Sweep 1 established this and sweep 2 confirmed it. Bruise susceptibility — defined as bruise
-volume per unit impact energy — is **itself energy-dependent**:
+> **Verified 2-1, confidence medium.** The split was "precisely on the inferential overreach," per
+> the source. Treat the falsification as well-evidenced for *this dataset* and provisional as a
+> statement about the field.
+
+Bruise susceptibility — defined as bruise volume per unit impact energy — is **itself
+energy-dependent**:
 
 | Impact level | Bruise susceptibility |
 |---|---|
@@ -132,14 +152,17 @@ The threshold is bracketed by experiment. Meanwhile "at the three deformation le
 4 mm, the maximum generated normal stress inside the apple was above the point of failure" while
 bruising "was almost zero" at 1–2 mm — **the max-normal criterion fires where no damage occurs.**
 
-**Result: max-shear correct, max-normal produces false positives.**
+**Result, at n=1: max-shear correct, max-normal produces false positives.**
 
-> **Limits that matter.** Quasi-static only — this does *not* generalize to impact. Single
-> cultivar, single group, one paper, coarse 3-level bracketing, no held-out validation. This is a
-> consistency and bracketing check on the calibration specimens; "validated" overstates it. The
-> paper itself notes the model overpredicts stress beyond bio-yield. And the **spatial** half of
-> the result — that the FEM max-shear *location* matched the observed subsurface bruise location —
-> was **refuted 0-3** and does not survive.
+> **Confidence: medium, and the limits nearly swallow the result.** Quasi-static only — this does
+> *not* generalize to impact. Single cultivar, single group, one paper, coarse 3-level bracketing,
+> no held-out validation. This is a consistency and bracketing check on the calibration specimens;
+> "validated" overstates it. The paper itself notes the model overpredicts stress beyond bio-yield.
+> And the **spatial** half of the result — that the FEM max-shear *location* matched the observed
+> subsurface bruise location — was **refuted 0-3** and does not survive.
+>
+> Whether this reproduces under impact loading, in other cultivars, is
+> [open question 4](appendices.md#open-questions).
 
 ## Validation quality
 
@@ -209,7 +232,10 @@ Setting $P = 0$ gives $\ln F = 3.763$, hence $F = 43.1$ N. And the FEM's 45.2 N 
 simulated equivalent stress reaches the bio-yield stress **measured from the same specimen
 population**.
 
-**The persimmon 12% contact-force error is partially circular**, because the force-time method
+**The persimmon 12% contact-force error is partially circular** *(source reached at abstract level
+only — the sweep's phrasing "its abstract states no critical-stress threshold" indicates the full
+text was not obtained; treat these three numbers as less firm than the rest of this section)*,
+because the force-time method
 *prescribes the measured force history as the input boundary condition*. The genuinely predictive
 setup — initial velocity — gives **21% force and 52% deformation**. The honest predictive numbers
 are the bad ones.
@@ -271,7 +297,8 @@ designed in from the start rather than bolted on.
 Two threads worth knowing, because they are the field's actual foundation.
 
 **Instrumented spheres.** The main tool for locating damage in a supply chain, and seriously
-limited. Praeger et al., *Sensors* 2013, 13(6):7140 (Leibniz-ATB): on a 10 cm drop onto steel, a
+limited. *(The calibration-disagreement finding below was verified 2-1; the prediction limit that
+follows it, 3-0.)* Praeger et al., *Sensors* 2013, 13(6):7140 (Leibniz-ATB): on a 10 cm drop onto steel, a
 Mikras sensor in a **real potato** read ~110 g while the same sensor in a polyurethane dummy, plus
 IRD and TuberLog, each read ~200 g. Dummy density was deliberately matched (1.14 vs 1.08 g/cm³),
 isolating the cause to **casing stiffness** — "the synthetic casing material was in general more

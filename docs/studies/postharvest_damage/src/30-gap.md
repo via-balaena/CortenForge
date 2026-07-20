@@ -1,7 +1,6 @@
-# Sophisticated ⊥ validated
+# Sophisticated and validated are disjoint sets
 
-This is the load-bearing chapter. Everything before it is context; everything after it is
-consequence.
+This chapter carries the finding.
 
 Two sweeps produced a picture of a primitive field: bilinear elastic-plastic models, borrowed
 parameters, validation by eyeballing stress contours against photographs. That picture was
@@ -10,6 +9,10 @@ around the paywalls through institutional repositories and found the frontier.
 
 The frontier is real. It is also **disjoint from the validated work**, and that disjointness is
 the finding.
+
+> **A note on the title.** An earlier draft called this "Sophisticated ⊥ validated." That symbol
+> means orthogonality, which is not the claim. The claim is set disjointness: the two bodies of
+> work do not overlap.
 
 ## The frontier exists
 
@@ -30,8 +33,6 @@ of model that would let bruise formation emerge from microstructure rather than 
 threshold.
 
 ## The frontier is unvalidated on mechanics
-
-And here is the turn.
 
 The **only** quantitative error that model reports is **geometric**: microstructure NRMSE < 3%
 against cesium contrast-enhanced micro-CT, comparing 649 real cells against 712 virtual ones.
@@ -96,7 +97,13 @@ Now put the two halves together.
 | **Kiwifruit** (*Foods* 2024) | ✗ — isotropic bilinear elastic-plastic | ✓ 9.63% bruise area |
 | **Ginseng root** (2025) | ✗ — bilinear isotropic strain-hardening | ✓ 0.4–2.2% bruise area |
 | **Apple** (*Comput. Electron. Agric.* 2024) | ✗ (abstract only) | ✓ "max 2.51%" pooled |
-| **Carrot** (2021) | Elastic-plastic + Prony | ✓ 4.87% — but calibration-vs-calibration |
+| **Carrot** (2021) | Elastic-plastic + Prony | ✗ — its 4.87% is a **critical-force** error, not damage extent |
+
+> **Correction.** An earlier draft listed carrot's 4.87% in the damage-extent column, inflating the
+> count of validated studies from three to four. It is a single scalar comparison of critical
+> *force* — 45.2 N simulated against 43.1 N "experimental" — and
+> [Ch 2](20-mechanics.md#where-the-headline-numbers-come-from) shows that 43.1 N is itself a
+> regression intercept, not a measurement.
 
 Every study that reports a damage-extent error is **bilinear elastic-plastic in commercial FE**.
 No poroelasticity, no turgor, no microstructural cellular mechanics appears in *any* of them.
@@ -112,6 +119,22 @@ cortex with linear elastic cambium.
 > **★ The accurate characterization is not "the field is primitive."**
 > It is: **the sophisticated constitutive work and the quantitatively-validated work are disjoint
 > sets, and nobody bridges them.**
+
+### ⚠ The known candidate counter-example
+
+**Van Zeebroeck — DEM prediction of bruise depth in 'Jonagold' apples.** The review surveyed in
+this chapter cites it as its bruise-prediction success story, and it is the one piece of work in
+the evidence base that could sit in *both* columns above: a discrete-element (not bilinear
+elastic-plastic) model applied to a damage-extent quantity.
+
+**Its status here is unresolved, and the resolution failed in a way that matters.** A sweep-3 claim
+asserting that Van Zeebroeck's validation was qualitative-only was **refuted 1-2** — meaning the
+verifiers did *not* accept that it was qualitative, which if anything cuts *toward* it being a real
+counter-example. No source in this study reached the underlying papers.
+
+An earlier draft of this book omitted Van Zeebroeck entirely, which had the effect of removing the
+strongest known threat to its central finding. Until those papers are read, **"nobody bridges" is a
+claim with one named, unexamined exception**, and it should be stated that way.
 
 ## The calibration data does not exist
 
@@ -147,9 +170,20 @@ energy.
 
 You cannot fit a constitutive model to a scalar energy dose.
 
-**Negative result, searched directly and recorded because it is decision-relevant:** no dataset of
-produce force-displacement curves was located in **Zenodo, Dryad, Figshare, Mendeley Data, or
-4TU.ResearchData** in any of the three sweeps.
+> **⚠ Correction — this is a coverage gap, not a searched negative.** An earlier draft stated that
+> no dataset of produce force-displacement curves was located in Zenodo, Dryad, Figshare, Mendeley
+> Data, or 4TU.ResearchData, and described that as "searched directly."
+>
+> **Those repositories were never successfully searched.** Sweep 3's caveats state that the
+> open-data-repository question, along with the ASABE-standard and landscape questions, is
+> "**ENTIRELY UNANSWERED** — no surviving claims addressed any of them. **This is a coverage gap,
+> not a negative finding.**" Sweep 2 likewise records zero verified claims on force-time datasets.
+>
+> The honest position: **no such dataset surfaced in three sweeps, and the targeted repository
+> search never ran.** That is weaker than a negative result and it weakens
+> [Gate 3](40-program.md#gate-3--our-own-calibration-data) accordingly — the claim that we would be
+> publishing something that does not exist is *unverified*, and should be checked before it
+> justifies bench work.
 
 One more finding worth carrying, because it shows how cleanly the two traditions are separated:
 the Molema thesis — the deepest full-text produce-damage thesis reached — **contains no finite
@@ -160,8 +194,10 @@ narrative prose or citations to other authors, and the elasticity discussion app
 instrumented *sphere* as a physical object, not to tissue. Its only models are generalized linear
 mixed models fitted in GenStat. All three hits for `simulation` refer to hardware.
 
-The empirical damage tradition and the computational mechanics tradition **have been running in
-parallel without touching for thirty years.**
+In this evidence base the empirical damage tradition and the computational mechanics tradition do
+not touch — though "this evidence base" is two theses (1993, 1999) against a modelling literature
+from 2019–2025, so the separation is *observed across* those sources rather than established as a
+continuous historical fact.
 
 ## Nobody does inverse design
 
@@ -200,8 +236,10 @@ Collecting what the three sweeps established, the field currently does not:
    validation. Every reported error is mean-vs-mean at one condition.
 3. **Do inverse design.** All forward analysis and parameter studies. Optimization deferred to
    future work where mentioned at all.
-4. **Predict distributionally.** ~7× within-lot variability in damage-onset energy, and no
-   stochastic or Monte Carlo FEM on produce anywhere.
+4. **Predict distributionally.** ~7× specimen-to-specimen variability in damage-onset energy
+   *(medium confidence, as of Molema 1999)*, and no stochastic or Monte Carlo FEM on produce
+   surfaced **in any sweep** — noting that sweep 2 recorded zero verified claims on the variability
+   question, so this is thin rather than settled.
 
 Each of those is a gap that a validation-disciplined, differentiable, geometry-exact engine is
 unusually well-placed to close. That is the case for the program in
