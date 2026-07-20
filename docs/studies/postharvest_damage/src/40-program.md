@@ -15,27 +15,24 @@ direction, no code written until the rung below it is green.
 
 **The load-bearing unknown.** Everything downstream is worthless if this fails.
 
-**Target: kiwifruit** — Xu et al. 2024, cv. 'Xuxiang', whose full tissue-specific parameter table
-(skin / core / flesh-axial / flesh-radial, with tangent moduli, bio-yields and Poisson ratios) is
-recovered in the [appendix](appendices.md#recovered-constitutive-parameters).
+**Target: kiwifruit cv. 'Xuxiang'** — Zhu et al., *Foods* 2024, 13(21):3523,
+`10.3390/foods13213523`. One paper, verified from the PDF. It supplies **both** the constitutive
+table *and* the 9.63% bruise-area result, so target and oracle are the same study.
+
+Its Table 3 gives skin / flesh / core Young's modulus, tangent modulus, bio-yield stress, density and
+Poisson ratio — **each with a standard deviation** — plus the collision-surface properties (steel,
+PVC, neoprene) needed to set up the drop. Transcribed in the
+[appendix](appendices.md#kiwifruit--xuxiang--the-gate-0-target-table--verified-from-the-pdf).
 
 > **⚠ Ginseng looks like the better target and is not usable.** The ginseng study (2025) is
 > methodologically stronger — its parameters came from independent uniaxial compression tests rather
 > than a citation, so reproducing it would not be circular. But **no ginseng parameter values exist
-> anywhere in this study's evidence base**; only the model class was recovered. The numbers would
-> have to be extracted from the paper first, which is unattempted work, not a starting point.
+> anywhere in this study's evidence base**; only the model class was recovered. Extracting them is
+> unattempted work, not a starting point.
 >
-> **⚠ Unresolved: are there one or two kiwifruit papers?** This study's sweeps recorded a
-> 'Xuxiang' parameter table attributed to "Xu et al. 2024" and, separately, a 9.63% bruise-area
-> result attributed to "Zhu et al., *Foods* 2024, 13(21):3523" with *different* stiffness values. A
-> later retrieval pass confirmed via Crossref that Foods 13(21):3523 is **Zhu Yue et al.,
-> "Multiscale Modeling and Simulation of Falling Collision Damage Sensitivity of Kiwifruit"**, and
-> **found no distinct "Xu et al. 2024 kiwifruit" paper** — though it did not exhaustively rule one
-> out.
->
-> So either two papers exist and the parameter sets are genuinely different, or the sweeps split one
-> paper in two and one of the recovered tables is misattributed. **Resolve this before Gate 0** — it
-> is a ten-minute check against the actual PDF, and it determines which numbers you feed the solver.
+> **⚠ Ignore any "Xu et al. 2024 kiwifruit" table.** Earlier drafts carried an orthotropic parameter
+> set under that name. No such paper exists in Crossref and none of its values appear in the Zhu PDF.
+> See the [appendix correction](appendices.md#kiwifruit--xuxiang--the-gate-0-target-table--verified-from-the-pdf).
 
 **Prerequisite.** A plasticity path in `sim-soft`: widened or parallel `Material` contract, internal
 state per quadrature point, return mapping, consistent tangent. This is the real cost of Gate 0 and
@@ -61,12 +58,12 @@ continuing.
 
 ## Gate 1 — The ablation nobody ran
 
-**The question the field left open.** Skin is 4–8× stiffer than flesh where it is modelled, and is
+**The question the field left open.** Skin is ~7× stiffer than flesh where it is modelled, and is
 often not modelled at all. Nobody has tested whether that changes bruise-volume prediction.
 
-> **Both premises are medium-confidence.** The ratio is one cultivar of one commodity; the
+> **Both premises are medium-confidence.** The 6.8× ratio is one cultivar of one commodity, from a single isotropic table; the
 > "usually ignored" pattern holds across three of four papers and the field-wide version was
-> **refuted 0-3**. See [Ch 2](20-mechanics.md#skin-is-often-ignored-and-where-measured-it-is-48-stiffer).
+> **refuted 0-3**. See [Ch 2](20-mechanics.md#skin-is-often-ignored-and-where-measured-it-is-7-stiffer).
 > If either premise fails on wider reading, this gate loses its point before it starts.
 
 **The task.** Run the Gate 0 geometry twice — homogeneous vs. explicit skin/flesh/core — and report
@@ -99,15 +96,15 @@ scatter turns out too sparse to score against — then damage prediction is not 
 tractable from public data, and Gate 4's objective function has no honest form. Stop and reconsider
 whether the deliverable is a model at all.
 
-> **⚠ Seeding failure is the expected case, not a risk.** Every parameter recovered in three sweeps
-> is a **point estimate with no reported scatter**, and sweep 2 produced zero verified claims on
-> variability. So the distributions this gate needs most likely **do not exist in published form**.
+> **✅ Seeding is possible after all.** Earlier drafts assumed every recovered parameter was a point
+> estimate, making this gate depend on Gate 3's bench data. **The Gate 0 target table reports mean ±
+> SD** for Young's modulus, tangent modulus, bio-yield and density across all three tissues — enough
+> to seed a first parameter distribution directly.
 >
-> That inverts the program's ordering: **Gate 2 probably requires Gate 3's bench data**, which means
-> the honest sequence is 0 → 1 → 3 → 2 → 4, and the "three pure-software gates" framing is
-> optimistic. It is retained above only because the alternative — seeding from the few published
-> standard deviations and reporting the seeding as a limitation — is worth one attempt before
-> committing to bench work.
+> Two honest limits remain. Those SDs describe **specimen-to-specimen scatter within one cultivar at
+> one maturity**, so they will understate the ~7× damage-onset spread seen across harvest dates and
+> ripeness. And the *damage-outcome* scatter needed to score the predicted spread against experiment
+> is still thin. So Gate 2 can start on published data but may not finish on it.
 
 ## Gate 3 — Our own calibration data
 

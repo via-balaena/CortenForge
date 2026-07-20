@@ -51,18 +51,23 @@ also point estimates with **no reported scatter**, and one recovered table lists
 g/mm³ at physically implausible values (~1000× off) — a quality signal about table-level rigor
 that should temper any wholesale reuse.
 
-### Skin is often ignored, and where measured it is 4–8× stiffer
+### Skin is often ignored, and where measured it is ~7× stiffer
 
-> **Confidence: medium.** Two separate limits apply. The 4–8× ratio comes from **one cultivar of one
-> commodity**. And the claim that homogeneous single-material models represent *field-wide* practice
-> was **refuted 0-3** — the defensible reading is "a pattern across three of four papers in this
-> evidence base," not an established norm. Both limits matter, because this section is the entire
-> basis for [Gate 1](40-program.md#gate-1--the-ablation-nobody-ran).
+> **Confidence: medium, and thinner than an earlier draft implied.** The ratio rests on **one
+> cultivar of one commodity**. And the claim that homogeneous single-material models represent
+> *field-wide* practice was **refuted 0-3** — the defensible reading is "a pattern across three of
+> four papers in this evidence base," not an established norm. Both limits matter, because this
+> section is the entire basis for [Gate 1](40-program.md#gate-1--the-ablation-nobody-ran).
 
 Where skin *is* modelled separately, the stiffness contrast is large:
 
-- Kiwifruit 'Xuxiang': skin E = 10.233 MPa against flesh E = 2.305 MPa axial / 1.346 MPa radial
-  → **4.44× to 7.60×**.
+- Kiwifruit 'Xuxiang' (Zhu et al. 2024, verified from the PDF): skin E = 10.69 ± 0.46 MPa against
+  flesh E = 1.57 ± 0.12 MPa → **6.8×**. Core sits between at 5.11 ± 0.28 MPa.
+
+> **Correction.** Earlier drafts cited "4.44× to 7.60×" from an orthotropic parameter table that
+> [turned out to be spurious](appendices.md#kiwifruit--xuxiang--the-gate-0-target-table--verified-from-the-pdf).
+> The verified table has isotropic flesh, so there is **one ratio, not a range** — and the evidence
+> for this claim is correspondingly thinner than the range implied.
 
 Against that, the apple drop study states "The material was homogeneous throughout the entire
 volume of the model," and its own authors concede that modelling "of individual layers (skin,

@@ -74,8 +74,8 @@ a claim) → synthesize with confidence ratings.
 | Claim | Provenance |
 |---|---|
 | Bilinear elastic-plastic is the working constitutive standard as of 2024 | no vote; **high** |
-| Parameters are point estimates, frequently borrowed rather than measured | no vote; **high** |
-| Skin modelled separately is 4–8× stiffer; separate modelling not standard *(3 of 4 papers; field-wide version refuted 0-3)* | no vote; **medium** |
+| Parameters are point estimates, frequently borrowed rather than measured | no vote; **high** — ⚠ **partly falsified by direct check**: the kiwifruit table reports mean ± SD and was measured, not borrowed |
+| Skin modelled separately is ~7× stiffer *(verified 6.8×; earlier "4–8×" came from a spurious table)*; separate modelling not standard *(3 of 4 papers; field-wide version refuted 0-3)* | no vote; **medium** |
 | De facto criterion = von Mises > bio-yield; no damage-accumulation law | no vote; **high** |
 | Max-shear beats max-normal (Ghasemi 2015) — quasi-static, single cultivar, n=1 | no vote; **medium** |
 | No verified consensus criterion; no verified systematic multi-criterion comparison | no vote; **medium** |
@@ -169,8 +169,14 @@ a claim) → synthesize with confidence ratings.
 
 ## Recovered constitutive parameters
 
-Usable for [Gate 0](40-program.md#gate-0--can-we-reproduce-a-published-number). **All are point
-estimates with no reported scatter.** Verify against primary sources before relying on them.
+Usable for [Gate 0](40-program.md#gate-0--can-we-reproduce-a-published-number). Verify against primary
+sources before relying on them — one table below was verified from the PDF directly and one earlier
+entry turned out to be spurious.
+
+> **Scatter, corrected.** Earlier drafts asserted that *every* recovered parameter is a point estimate
+> with no reported scatter, and [Gate 2](40-program.md#gate-2--distributional-prediction) leaned on
+> that. **It is false for the kiwifruit table**, which reports mean ± SD for Young's modulus, tangent
+> modulus, bio-yield stress *and* density. It remains true for the apple and carrot tables.
 
 ### Apple — 'Golden Delicious' (whole-fruit homogeneous)
 
@@ -185,22 +191,36 @@ estimates with no reported scatter.** Verify against primary sources before rely
 
 > E and ν taken from Komarnicki et al.; **only density was measured.**
 
-### Kiwifruit — 'Xuxiang' (Xu et al. 2024) — the **Gate 0 target table**
+### Kiwifruit — 'Xuxiang' — the **Gate 0 target table** ✅ verified from the PDF
 
-| Tissue | E (MPa) | Tangent (MPa) | Bio-yield (MPa) | ν |
-|---|---|---|---|---|
-| Skin | 10.233 | — | 0.514 | 0.30 |
-| Core | 4.499 | 1.381 | 1.306 | 0.30 |
-| Flesh (axial) | 2.305 | 0.967 | 0.491 | 0.40 |
-| Flesh (radial) | 1.346 | 0.642 | 0.292 | 0.40 |
+Zhu, Zhu, Wang, Zhao, Han, Wang, Yuan, Lu, Feng, Hu — *"Multiscale Modeling and Simulation of Falling
+Collision Damage Sensitivity of Kiwifruit,"* **Foods** 2024, 13(21):3523, `10.3390/foods13213523`.
+Table 3, transcribed from the `mdpi-res.com` PDF.
 
-> **⚠ Different study from the 9.63% result.** Zhu et al., *Foods* 2024, 13(21):3523 — which
-> produced the 9.63% bruise-area error — reports skin E=10.69 / yield 0.53; pulp E=1.57 / tangent
-> 0.92 / yield 0.26; core E=5.11 / tangent 0.83 / yield 1.12. **No Poisson ratios, no density.**
-> Reproducing the 9.63% specifically requires Zhu's full set, which is not recovered here.
+| Material | Young's modulus (MPa) | Tangent modulus (MPa) | Bio-yield stress (MPa) | Density (kg m⁻³) | ν |
+|---|---|---|---|---|---|
+| **Skin** | 10.69 ± 0.46 | — | 0.53 ± 0.12 | 960 ± 30 | 0.30 |
+| **Flesh** | 1.57 ± 0.12 | 0.92 ± 0.06 | 0.26 ± 0.07 | 1030 ± 45 | 0.40 |
+| **Core** | 5.11 ± 0.28 | 0.83 ± 0.04 | 1.12 ± 0.23 | 1120 ± 70 | 0.40 |
+| Steel *(collision surface)* | 2.1 × 10⁵ | — | 235 | 7850 | 0.33 |
+| PVC *(collision surface)* | 70 | — | — | 60 | 0.30 |
+| Neoprene *(collision surface)* | 7.8 | — | — | 930 | 0.47 |
+
+> **★ This table reports standard deviations**, and it is the same paper that produced the 9.63%
+> bruise-area result. Gate 0 and the 9.63% target are therefore the *same* study — complete, with
+> impact-surface properties included. **This is the one to reproduce.**
+
+> **⚠ Correction — a second kiwifruit table in earlier drafts was spurious.** Those drafts carried an
+> orthotropic 'Xuxiang' table (skin E=10.233 / core 4.499 / flesh axial 2.305 / flesh radial 1.346)
+> attributed to "Xu et al. 2024." **No such paper exists in Crossref, and none of those values appear
+> anywhere in the Zhu PDF** (grep count: zero). Provenance unknown — possibly a conflation with
+> Du, Wang, Wang, Yao & Hong, *"Prediction of Bruise Susceptibility of Harvested Kiwifruit
+> (Actinidia chinensis) Using Finite Element Method,"* Postharvest Biol. Technol. 2019
+> (`10.1016/j.postharvbio.2019.02.013`), which Zhu cites as ref 20 and which was not retrieved.
+> **Do not use those numbers.**
 >
-> **⚠ Quality flag:** one recovered kiwifruit table lists density in g/mm³ at physically implausible
-> values (~1000× off). Treat table-level rigor with caution.
+> The "density in g/mm³, ~1000× off" quality flag in earlier drafts belonged to that same
+> unverifiable table and is withdrawn — the verified table above is dimensionally sane.
 
 ### Carrot — 'New Red Carrot' (22 ± 1 °C, 40–60% RH, ASAE S368.4 at 2.5 mm/min, n=10)
 
@@ -287,9 +307,10 @@ Domain terms used without definition elsewhere in this book.
 
 ### Validated FEM
 
-- Zhu et al., *Foods* 2024, 13(21):3523 — kiwifruit drop-impact, 9.63% bruise area. *PMC full text.*
+- Zhu, Zhu, Wang, Zhao, Han, Wang, Yuan, Lu, Feng & Hu — "Multiscale Modeling and Simulation of Falling Collision Damage Sensitivity of Kiwifruit," *Foods* 2024, 13(21):3523, `10.3390/foods13213523` — 9.63% bruise area; **the Gate 0 target**. *Verified full text via `mdpi-res.com`.*
 - American ginseng root pendulum impact, 2025, PMC12179082 — 0.4–2.2% bruise area, independent
   constitutive tests. Northeast Agricultural University, Harbin. *PMC full text.*
+- Du, Wang, Wang, Yao & Hong 2019, `10.1016/j.postharvbio.2019.02.013` — kiwifruit bruise susceptibility by FEM. Cited by Zhu as ref 20; **not retrieved**. Possible origin of the spurious orthotropic table.
 - Xu, Liu, Huang, Li — *Comput. Electron. Agric.* 2024, `10.1016/j.compag.2024.109024` — apple drop,
   "max error 2.51%." *Abstract only.*
 - Xia et al. 2021, `10.3390/agriculture11060471` — carrot, Prony + von Mises criterion. *Full text.*
