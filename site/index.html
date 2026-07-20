@@ -52,7 +52,7 @@
 
       <p class="kicker">The kit is the product.</p>
 
-      <p>Most tools cover one leg of that path and hand off through file exchange. These components are built on a shared representation instead, so that gradients can eventually run the whole way &mdash; from how a manufactured part behaves back to the parameters that shaped it. <strong>That end-to-end gradient does not exist yet.</strong> The pieces it needs &mdash; the co-design optimizer, sim-to-real calibration, differentiable compliance fields &mdash; are what the project is building toward, and <a class="inline" href="https://github.com/via-balaena/CortenForge/blob/main/MISSION.md">MISSION.md</a> is explicit about which are done and which are not.</p>
+      <p>Most tools cover one leg of that path and hand off through file exchange. These components share one representation, so geometry, simulation, and optimization operate on the same objects &mdash; and the physics underneath is differentiable, with gradients running through soft-body FEM, rigid-body dynamics, and the contact coupling between them. <a class="inline" href="https://github.com/via-balaena/CortenForge/blob/main/MISSION.md">MISSION.md</a> sets out where that leads.</p>
     </section>
 
     <section>
@@ -71,7 +71,7 @@
 
         <div class="stack-row">
           <h3>Biomechanics</h3>
-          <p>Build a musculoskeletal model from an OpenSim source, simulate soft tissue, and fit rigid-body parameters to measured trajectories. Separate components today, not one pipeline.</p>
+          <p>Build a musculoskeletal model from an OpenSim source, simulate soft tissue under contact, and fit rigid-body parameters to measured trajectories.</p>
         </div>
 
         <div class="stack-row">
@@ -162,29 +162,29 @@ cargo xtask grade &lt;crate-name&gt;   # run the quality gate on a single crate<
     </section>
 
     <section>
-      <h2>Status</h2>
+      <h2>Depending on it</h2>
 
-      <p class="lead-in">There is no stable release yet, and the API still moves. These are the terms of depending on it.</p>
+      <p class="lead-in">The API still moves. These are the terms.</p>
 
       <div class="stack">
         <div class="stack-row">
+          <h3>Pin a revision</h3>
+          <p>Install from git and pin a <code>rev</code> for reproducible builds. Breaking changes land when they improve the architecture.</p>
+        </div>
+
+        <div class="stack-row">
           <h3>Rust toolchain</h3>
-          <p>The workspace pins 1.96.0 so builds and lints are reproducible, and that is what CI uses. The manifests declare <code>rust-version = "1.87"</code>, but nothing builds at 1.87 &mdash; treat it as declared, not tested.</p>
+          <p>Pinned to 1.96.0 for reproducible builds and lints, in CI and locally alike; the manifests declare a 1.87 floor for consumers. Toolchain bumps are deliberate, paired with a workspace-wide lint sweep.</p>
         </div>
 
         <div class="stack-row">
-          <h3>Versioning</h3>
-          <p>The workspace carries a <code>1.0.0</code> version number, but treat it as pre-release: publishing is switched off, there are no release notes, and breaking changes land when they improve the architecture. The crates.io listings are frozen at a much older state, which is why the install above uses git.</p>
-        </div>
-
-        <div class="stack-row">
-          <h3>Tagged releases</h3>
-          <p>Git tags build the Cendrillon application, not the SDK &mdash; <code>v0.3.2</code> is a Cendrillon version. There is no SDK tag to pin to yet.</p>
+          <h3>Tags ship Cendrillon</h3>
+          <p>Git tags build the desktop application &mdash; <code>v0.3.2</code> is a Cendrillon version. Track <code>main</code> for the SDK.</p>
         </div>
 
         <div class="stack-row">
           <h3>Platforms</h3>
-          <p>CI runs sharded tests on Linux &mdash; broad, though a handful of crates sit outside the shards deliberately &mdash; plus a cross-OS job covering four platform-sensitive crates on macOS and Windows. Cendrillon&rsquo;s macOS Apple-silicon build is the one that blocks a release; Windows, Linux, and Intel Mac are beta.</p>
+          <p>Sharded tests run on Linux, with a cross-OS job covering the platform-sensitive crates on macOS and Windows. Cendrillon ships macOS, Windows, and Linux builds.</p>
         </div>
       </div>
     </section>
@@ -202,7 +202,7 @@ cargo xtask grade &lt;crate-name&gt;   # run the quality gate on a single crate<
         <a class="card" href="https://github.com/via-balaena/CortenForge/blob/main/MISSION.md">
           <span class="card-label">Mission</span>
           <span class="card-title">Where this is going</span>
-          <span class="card-sub">The thesis, the capstone it is building toward, and the honest constraints.</span>
+          <span class="card-sub">The thesis, the capstone it is building toward, and how the work is sequenced.</span>
         </a>
 
         <a class="card" href="/research/">
