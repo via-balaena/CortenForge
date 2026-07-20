@@ -1,0 +1,460 @@
+# Claim ledger, parameters, glossary, sources, method
+
+## Method
+
+Three sequential adversarial research sweeps, run July 2026 via the `deep-research` workflow
+harness. Each sweep: decompose into search angles → parallel web search per angle → URL-dedup and
+fetch → extract falsifiable claims → **3-vote adversarial verification** (2 of 3 refutations kills
+a claim) → synthesize with confidence ratings.
+
+| | Sweep 1 | Sweep 2 | Sweep 3 |
+|---|---|---|---|
+| **Focus** | Loss accounting; causal coupling | FEM maturity; forward vs inverse | Frontier; calibration data; landscape |
+| Sources fetched | 28 | 22 | 24 |
+| Claims extracted | 108 | 80 | 77 |
+| Claims verified | 25 | 25 | 25 |
+| Confirmed | 14 | 17 | 19 |
+| Refuted | 11 | 8 | 6 |
+| Post-synthesis findings | 11 | 9 | 14 |
+
+### ⚠ How to read the ledger below
+
+1. **The confirmed tables list 34 rows against 50 confirmed claims.** Those 34 are the
+   **post-synthesis findings** — the harness merges semantically duplicate confirmed claims before
+   reporting, and the 50 are upstream of that merge, not individually enumerable from the output.
+   Nothing was dropped; the two numbers count different objects.
+2. **Sweep 2 recorded no votes at all** — only a `confidence` rating. The tables below therefore use
+   a **Provenance** column stating what each source actually recorded, rather than a Vote column
+   that would have to invent counts for a third of the ledger.
+3. **The refuted table is complete at 25.**
+
+### Method limitations, load-bearing
+
+- **Verifier search budget exhausted (200/200) in sweeps 2 and 3.** The "no credible source disputes
+  this" leg could not run. Verification rested on direct primary-text reading — adequate for claims
+  purely descriptive of one paper's contents, **a real weakness for any field-level generalization.**
+- **Paywalls shaped the evidence set.** Sweep 1's "the field is primitive" conclusion was a
+  **reachability artifact**, corrected only when sweep 3 routed around publishers.
+- **Selection bias toward what is open.** Recovered evidence skews Chinese, Polish and Iranian
+  applied ag-engineering. "Practice" means *modal practice in the accessible literature*.
+- **"Not found" vs "not searched."** Several questions (ASABE standards, tooling,
+  development-sector practice, patents) produced **zero verified claims** — recorded in the source
+  caveats as *coverage gaps, not negative findings*, and still unsearched. The open-data-repository
+  question was in that list and **has since been searched** — see
+  [Ch 3](30-gap.md#-the-repository-search-run). This distinction is marked throughout.
+
+### Routing lessons (reusable)
+
+- `mdpi-res.com` direct PDF deploys succeed where MDPI HTML 403s.
+- PMC mirrors succeed for MDPI-published *Foods* articles.
+- Lirias (KU Leuven) and WUR eDepot serve open post-prints, but return PDFs `WebFetch` **cannot
+  render** — download plus local `pdftotext` is required.
+- DOAJ v2, Crossref, OpenAlex and Semantic Scholar APIs work where publisher HTML does not.
+- **Theses are the highest-yield open source** for parameter tables, raw scatter, and honest negative
+  results that journal papers compress out.
+
+## Claim ledger
+
+### ✅ Confirmed — loss accounting *(sweep 1: vote records exist)*
+
+| Claim | Provenance |
+|---|---|
+| FLI = 13.3% global harvest-to-retail, 2023; 13.0% in 2015; excludes retail/consumer | 3-0, high |
+| F&V worst commodity group 25.4%; cereals & pulses 8.4%; roots/tubers/oil 12.3%; meat 14.0% | 3-0, high |
+| Regional: sub-Saharan Africa 23.0%, LDCs 19.9%, SIDS 19.0%, N. America & Europe 10.0% | 3-0, high |
+| FLI is a **modelled imputation**, not a measurement; FAO states results unreliable below aggregate | 3-0, high |
+| **★ FAO's model contains no physical-cause axis**; mechanical damage not extractable | 3-0, high |
+| Field-measurement review median whole-chain F&V loss 16.2% vs FAO-lineage 22–44% | 3-0, high |
+| Regional F&V medians (N. Africa ~34% … N. America ~8%) — thin, selection-biased | **2-1, medium** |
+| LSMS-ISA maize 1.4–5.9% vs FAO 8% / APHLIS 10–12% — third disagreeing regime | 3-0, high |
+| Impact produces dose-dependent bruise growth **and** elevated ethylene (pomegranate, banana) | 3-0, high |
+| Absorbed energy is a first-order correlate only; susceptibility superlinear | **2-1, medium** |
+| Instrumented-fruit devices disagree at stiff impacts; cannot predict without per-commodity calibration | 3-0 / **2-1** merged |
+
+### ✅ Confirmed — mechanics *(sweep 2: **no vote records exist**; confidence only)*
+
+| Claim | Provenance |
+|---|---|
+| Bilinear elastic-plastic is the working constitutive standard as of 2024 | no vote; **high** |
+| Parameters are point estimates, frequently borrowed rather than measured | no vote; **high** — ⚠ partly falsified: kiwifruit reports mean ± SD, measured not borrowed |
+| Skin modelled separately is ~7× stiffer (verified 6.8×); separate modelling not standard — 3 of 4 papers, field-wide version **refuted 0-3** | no vote; **medium** |
+| De facto criterion = von Mises > bio-yield; no damage-accumulation law | no vote; **high** |
+| Max-shear beats max-normal (Ghasemi 2015) — quasi-static, single cultivar, n=1 | no vote; **medium** |
+| No verified consensus criterion; no verified systematic multi-criterion comparison | no vote; **medium** |
+| **Validation quality is poor**: correlations, single scalars, or qualitative eyeballing | no vote; **high** |
+| Headline numbers are fitted-to-same-data, circular, or regression intercepts | no vote; **high** |
+| **All verified work is forward simulation**; no inverse design surfaced | no vote; **medium** ⚠ absence-of-evidence from ~7 papers |
+
+### ✅ Confirmed — the gap *(sweep 3: vote records exist)*
+
+| Claim | Provenance |
+|---|---|
+| **★ MeBioS frontier is real**: cellular DEM, turgor, visco-elastoplastic walls, rupture, debonding | 3-0, high |
+| **★ That frontier is unvalidated on mechanics**; only geometric NRMSE <3%, partly circular | 3-0 / **2-1**, high |
+| **★ First-party admission**: the required same-batch calibration data does not exist *(as of ~2019)* | 3-0, high |
+| **★ Nicolai/Saeys/Opara review**: constitutive laws "have not received much attention" | 3-0, high |
+| Damage-extent errors **do** exist (kiwifruit 9.63%, ginseng 0.4–2.2%, apple 2.51% abstract-only) | 3-0, high |
+| **Held-out status not established** in any study | 3-0 / **2-1**, high |
+| Validated studies uniformly bilinear elastic-plastic — including papers titled "multiscale" | 3-0, high |
+| Some published FE work does not calibrate from its own data at all | 3-0, high |
+| That work reports **no** quantitative damage validation — compares stress plots to other papers' | 3-0, high |
+| Loading-paired damage data exists (Molema) but at **scalar energy resolution**, not force curves | 3-0, high |
+| Calibration apparatus documented, but only means and SDs archived — no raw traces | 3-0, high |
+| **★ ~7× specimen-to-specimen variability** in damage-onset energy *(as of Molema 1999)* | 3-0, **medium** |
+| Massey/NZ tradition was empirical impact-correlation; boundary hyperbolic *(abstract only)* | 3-0, **medium** |
+| **Negative**: the deepest produce-damage thesis contains **zero** FE or constitutive mechanics | 3-0, high |
+
+### ❌ Refuted — complete, all 25
+
+**Sweep 1 (11)**
+
+| Refuted claim | Vote |
+|---|---|
+| FLI 13.2% in 2021 with F&V 31.2% and cereals 7.2% | 1-2 |
+| Regional: sub-Saharan Africa 19.9–20%, N. America & Europe 9.2% | 0-3 |
+| Losses concentrate in post-harvest handling and market stages (~15% median each) | 0-3 |
+| FAO ~37% of food lost in sub-Saharan Africa; cereals 20.5%; **8% for handling and storage alone** | 0-3 |
+| FAO figures methodologically weak and **likely upward-biased** | 0-3 |
+| High-impact fruit lost 20.39% weight by day 28 | 0-3 |
+| Ethylene spike peaking at day 21 in high-impact fruit | 0-3 |
+| Late-storage respiration peaks interpreted by authors as microbial infestation | 1-2 |
+| Bruised bananas reached 14.02 mg/kg/h respiration on day 2 | 0-3 |
+| High-impact bananas unmeasurable by day 12 via ripening + **microbial infestation** | 0-3 |
+| Potato black-spot damage threshold ~50–100 g, size-dependent | 0-3 |
+
+> The fourth row carries a trap: the refuted claim **included** an "8% for post-harvest handling and
+> storage alone" clause, while a separate *confirmed* sweep-1 finding uses the same 8%. The evidence
+> base is internally inconsistent on it. [Ch 1](10-loss.md) does not cite the figure, and should not
+> — treat 8% as contested if it resurfaces.
+
+**Sweep 2 (8)**
+
+| Refuted claim | Vote |
+|---|---|
+| 2022 apple study modelled fruit as homogeneous *(as evidence of **field-wide** practice)* | 0-3 |
+| Energy-threshold criterion (~100 N·mm) in active use as damage-onset criterion | 0-3 |
+| FEM max-shear **location** coincided with observed subsurface bruise location | 0-3 |
+| Constitutive model was linear viscoelastic with constant bulk modulus; skin not separate | 0-3 |
+| Current practice uses bilinear elasto-plastic with **tissue-specific anisotropic** parameters | 0-3 |
+| Damage onset predicted where equivalent stress reaches bio-yield **at ~5% strain** | 1-2 |
+| Xu 2024 compares five named methods (BTM, EM, UVRM, EVM, FDM) with condition-dependent ranking | 0-3 |
+| Xu 2024 sweeps six drop heights (600–2100 mm) and four contact materials | 0-3 |
+
+> The last two were refuted **for unreachability**, not for being wrong — ScienceDirect 403,
+> Semantic Scholar 429, OpenAlex null abstract. See
+> [Ch 2](20-mechanics.md#what-the-field-actually-uses) for why that cannot be used as evidence of
+> absence.
+
+**Sweep 3 (6)**
+
+| Refuted claim | Vote |
+|---|---|
+| MeBioS's mechanics line is multiscale cell-based modelling positioned as a building block | 1-2 |
+| **Design optimization via these models is aspiration, not practice** — i.e. the frontier is forward analysis | 1-2 |
+| **Contact-law knowledge is scarce; Van Zeebroeck's DEM bruise-depth work was qualitative-only** | 1-2 |
+| Massey thesis pairs measured impact kinematics with bruise area per specimen | 1-2 |
+| The ginseng validation was **definitively in-sample** | 0-3 |
+| The MDPI RSM-surrogate paper performs no experimental validation of bruise predictions | 1-2 |
+
+> **★ The two rows that cut against this study's thesis.**
+>
+> The second row is the closest thing in the ledger to a refutation of
+> [Ch 3's "nobody does inverse design"](30-gap.md#nobody-does-inverse-design) — a claim that the
+> frontier is forward-analysis-only was *not* accepted by verifiers.
+>
+> The third names **Van Zeebroeck's DEM work on 'Jonagold' apples** and refuses the characterization
+> that it was qualitative-only, which at the time cut *toward* it being a genuine counter-example to
+> "nobody bridges." **Since settled by reading it** — whole-fruit DEM, viscoelastic contact, damage
+> by regression; it does not bridge, and it reports bruise *volume*, not depth. See
+> [Ch 3](30-gap.md#the-candidate-counter-example-examined).
+>
+> The fifth row cuts the other way and is why this book says "held-out status **not established**"
+> rather than "established as in-sample."
+
+## Recovered constitutive parameters
+
+Only the kiwifruit table below was transcribed from the primary PDF. **The rest came from sweep
+summaries and should be treated as unconfirmed** until checked — one entry recovered that way turned
+out not to exist at all.
+
+> **On scatter.** The kiwifruit table reports **mean ± SD** for Young's modulus, tangent modulus,
+> bio-yield stress and density — enough to seed
+> [Gate 2](40-program.md#gate-2--distributional-prediction) without bench data. The apple and carrot
+> tables are point estimates with no reported scatter.
+
+### Apple — 'Golden Delicious' (whole-fruit homogeneous)
+
+| Property | Value |
+|---|---|
+| Young's modulus E | 4.069 MPa |
+| Poisson ratio ν | 0.32 |
+| Density ρ | 845 kg/m³ |
+| Crushable-foam yield | 0.3 and 3 *(units inferred MPa — **not stated in source**)* at uniaxial plastic strains 0 and 1 |
+| Yield-stress ratios | 0.1 / 0.5 at plastic strain rates 0 and 1 |
+| Geometry | Idealized 71.7 mm sphere, 163 g (from 300 apples) |
+
+> E and ν taken from Komarnicki et al.; **only density was measured.**
+
+### Kiwifruit — 'Xuxiang' — the **Gate 0 target table** ✅ verified from the PDF
+
+Zhu, Zhu, Wang, Zhao, Han, Wang, Yuan, Lu, Feng, Hu — *"Multiscale Modeling and Simulation of Falling
+Collision Damage Sensitivity of Kiwifruit,"* **Foods** 2024, 13(21):3523, `10.3390/foods13213523`.
+Table 3, transcribed from the `mdpi-res.com` PDF.
+
+| Material | Young's modulus (MPa) | Tangent modulus (MPa) | Bio-yield stress (MPa) | Density (kg m⁻³) | ν |
+|---|---|---|---|---|---|
+| **Skin** | 10.69 ± 0.46 | — | 0.53 ± 0.12 | 960 ± 30 | 0.30 |
+| **Flesh** | 1.57 ± 0.12 | 0.92 ± 0.06 | 0.26 ± 0.07 | 1030 ± 45 | 0.40 |
+| **Core** | 5.11 ± 0.28 | 0.83 ± 0.04 | 1.12 ± 0.23 | 1120 ± 70 | 0.40 |
+| Steel *(collision surface)* | 2.1 × 10⁵ | — | 235 | 7850 | 0.33 |
+| PVC *(collision surface)* | 70 | — | — | 60 | 0.30 |
+| Neoprene *(collision surface)* | 7.8 | — | — | 930 | 0.47 |
+
+> **★ This table reports standard deviations**, and it is the same paper that produced the 9.63%
+> bruise-area result. Gate 0 and the 9.63% target are therefore the *same* study — complete, with
+> impact-surface properties included. **This is the one to reproduce.**
+
+> **⚠ Do not use the orthotropic 'Xuxiang' table that circulates under the name "Xu et al. 2024"**
+> (skin E=10.233 / core 4.499 / flesh axial 2.305 / flesh radial 1.346). **No such paper exists in
+> Crossref**, and none of those values appear anywhere in the Zhu PDF — grep count zero. The likely
+> origin is a conflation with Du, Wang, Wang, Yao & Hong, *"Prediction of Bruise Susceptibility of
+> Harvested Kiwifruit (Actinidia chinensis) Using Finite Element Method,"* **Postharvest Biol.
+> Technol.** 2019, `10.1016/j.postharvbio.2019.02.013` — cited by Zhu as ref 20, never retrieved here.
+>
+> A "density in g/mm³, ~1000× off" quality flag reported by the sweeps belonged to that same
+> unverifiable table.
+>
+> The verified table is not flawless either: **PVC density is listed as 60 kg m⁻³**, roughly 20×
+> too low (PVC is ~1400). The transcription is faithful — the error is the source's — but do not
+> reuse that row without checking.
+
+### Carrot — 'New Red Carrot' (22 ± 1 °C, 40–60% RH, ASAE S368.4 at 2.5 mm/min, n=10)
+
+| Tissue | E (MPa) | Bio-yield (MPa) | Tangent (MPa) | ν |
+|---|---|---|---|---|
+| Flesh | 4.45 | 0.806 | 3.35 | 0.477 |
+| Core | 4.63 | 0.821 | 3.42 | 0.479 |
+
+**Prony series (2-term):**
+
+| Tissue | g₁ | g₂ | τ₁ (s) | τ₂ (s) |
+|---|---|---|---|---|
+| Flesh | 0.218 | 0.233 | 1.684 | 26.31 |
+| Core | 0.238 | 0.237 | 1.623 | 30.3 |
+
+### Apple — 2022 compression study
+
+ν = 0.35, E = 5.0 MPa — **both literature-cited, not measured.** No density, yield stress, or Prony
+terms disclosed.
+
+### ⚠ Not recovered: ginseng
+
+The American ginseng study (2025) is methodologically the strongest reproduction target — its
+parameters came from independent uniaxial compression on cortex and cambium — but **no numerical
+values were recovered by any sweep.** Only the model class is known: "idealized bilinear isotropic
+strain-hardening elastic-plastic" cortex, linear elastic cambium.
+
+## Impact-energy reference values
+
+| Source | Commodity | Energies |
+|---|---|---|
+| Pomegranate 'Helow' | Pendulum, 45° / 65° | 1.18 J / 2.29 J |
+| Banana cv. Malindi | Pendulum, low/med/high | 0.074 / 0.160 / 0.273 J |
+| Molema (potato) | Computer-controlled pendulum | 0.600 / 0.200 / 0.067 J |
+
+Molema apparatus: impact-body curvatures flat / R30 / R15; delivered-energy accuracy −3 to +8%;
+tubers absorb ~70–80% of delivered energy. Table 4.5 exemplars: B∞ @ 0.600 J = 286.9 (14.2) g,
+2.85 (0.12) ms; B15 @ 0.067 J = 64.3 (3.56) g, 4.00 (0.13) ms.
+
+Absorbed energy convention: $E_a = mg(h_1 - h_2)$, computed from rebound height.
+
+Bruise susceptibility, banana, day 12 / 22 °C: **8.37×10⁴ → 1.04×10⁵ mm³/J** (medium → high impact);
+max bruise volume 2.09×10⁴ mm³.
+
+**Damage-onset scatter:** Parke (1963) — one sample damaged at 0.09 J, another absorbed 0.6 J
+undamaged. Ghadge (1988) — onset spanning 0.4–0.7 J. *(Both as reported in Molema 1999.)*
+
+## Glossary
+
+Domain terms used without definition elsewhere in this book.
+
+| Term | Meaning |
+|---|---|
+| **Bio-yield** | Stress at which plant tissue first shows irreversible cellular failure — the produce analogue of a yield stress. The de facto bruise threshold in this literature. |
+| **Bruise susceptibility (BS)** | Bruise volume divided by impact energy (mm³/J). Note it is a *ratio*, so reporting it is not independent evidence that energy predicts bruising. |
+| **Turgor** | Internal hydrostatic pressure of a plant cell pressing against its wall. What makes produce firm; drops as fruit ages. |
+| **Climacteric** | Fruit that ripens via an autocatalytic ethylene burst after harvest (banana, apple, tomato). Non-climacteric fruit does not. Matters because impact effects superimpose on that burst. |
+| **Poroelastic** | Constitutive model treating tissue as a porous solid saturated with fluid, so stress depends on fluid migration. Absent from all validated work here. |
+| **Prony series** | Sum-of-exponentials representation of viscoelastic relaxation; $g_i$ are relative moduli, $\tau_i$ relaxation times. |
+| **Crushable foam** | Abaqus material model for cellular solids that compact under pressure, with volumetric hardening. Used for whole-apple drop models. |
+| **DEM** | Discrete Element Method — bodies modelled as interacting discrete particles rather than a continuum mesh. Used by MeBioS at cell scale. |
+| **NRMSE** | Normalized root-mean-square error. |
+| **Cortex / cambium** | Outer storage tissue and the thin dividing layer beneath it, in root vegetables. Modelled as separate materials in the ginseng study. |
+| **BE-FEM** | Backward-Euler finite element method — implicit time integration, the `sim-soft` solver family. |
+| **IFT** | Implicit Function Theorem — how `sim-soft` differentiates through an implicit solve. |
+| **Return mapping** | Algorithm projecting a trial elastic stress back onto the yield surface in plasticity. The thing `sim-soft` has no place to put. |
+| **HLPE** | High Level Panel of Experts (on Food Security and Nutrition) — source of FAO's socio-economic loss-cause taxonomy. |
+| **APHLIS** | African Postharvest Losses Information System. |
+| **LSMS-ISA** | Living Standards Measurement Study – Integrated Surveys on Agriculture (World Bank household survey programme). |
+| **SIDS** | Small Island Developing States. |
+| **IS-100 / ASABE S368** | Instrumented-sphere device family; and the ASABE standard for compression testing of food materials. Formerly ASAE S368. |
+| **SWIR** | Short-wave infrared imaging, used for post-hoc bruise detection. |
+
+## Key sources
+
+### Frontier / constitutive
+
+- Diels, Nicolai, Ramon, Wang & Smeets — "A discrete element approach to model rupturable 3D
+  visco-elastoplastic tomato cells and their inter-cellular contact mechanics," *Soft Matter*
+  (~2019). KU Leuven BIOSYST-MeBioS. **Open post-print via Lirias.** *Verified full text.*
+- Zhejiang University with MeBioS (Saeys, Nicolai) and Stellenbosch (Opara) — "Mechanical damages and
+  packaging methods along the fresh fruit supply chain: a review" (~2022–23). **Open post-print.**
+  *Verified full text.*
+
+### Validated FEM
+
+- Zhu, Zhu, Wang, Zhao, Han, Wang, Yuan, Lu, Feng & Hu — "Multiscale Modeling and Simulation of Falling Collision Damage Sensitivity of Kiwifruit," *Foods* 2024, 13(21):3523, `10.3390/foods13213523` — 9.63% bruise area; **the Gate 0 target**. *Verified full text via `mdpi-res.com`.*
+- American ginseng root pendulum impact, 2025, PMC12179082 — 0.4–2.2% bruise area, independent
+  constitutive tests. Northeast Agricultural University, Harbin. *PMC full text.*
+- Du, Wang, Wang, Yao & Hong 2019, `10.1016/j.postharvbio.2019.02.013` — kiwifruit bruise susceptibility by FEM. Cited by Zhu as ref 20; **not retrieved**. Possible origin of the spurious orthotropic table.
+- Xu, Liu, Huang, Li — *Comput. Electron. Agric.* 2024, `10.1016/j.compag.2024.109024` — apple drop,
+  "max error 2.51%." *Abstract only.*
+- Xia et al., *Agriculture* 2021, `10.3390/agriculture11060471` — carrot, Prony + von Mises criterion. *Full text.*
+- Szyjewicz et al., *Appl. Sci.* 2021, `10.3390/app11167579` — apple drop, Crushable Foam. *Full text.*
+- Soheilsarv et al. 2024, *J. Food Process Eng.* — persimmon pendulum. *Abstract level only.*
+- 2022 apple compression, PMC9265796 — the no-validation case. *Full text via `mdpi-res.com`.*
+- Ghasemi et al., *J. Agric. Machinery* 2015, `10.22067/jam.v5i2.28262` — max-shear vs max-normal.
+  **Open access.**
+
+### Empirical tradition
+
+- Molema, G.-J. — PhD thesis, Wageningen, defended 30 Nov 1999. **WUR eDepot, open.**
+  *Verified full text (259,717 chars / 7,633 lines).*
+- Pang, W. — PhD thesis, Massey University, 1993 — "Bruise Factor," hyperbolic damage boundary.
+  *Abstract only, Massey Research Online.*
+- Praeger, Surdilovic, Truppel, Herold & Geyer — "Comparison of Electronic Fruits for Impact
+  Detection on a Laboratory Scale," *Sensors* 2013, 13(6):7140. Leibniz-ATB. *Full text.*
+
+### Loss statistics
+
+- FAO SDG Data Portal, indicator 12.3.1a — Food Loss Index. *Primary.*
+- FAO methodology working paper (52 pp), `openknowledge.fao.org` — the no-cause-axis finding.
+  *Verified full text.*
+- Ambuko et al. 2025, *Frontiers in Horticulture*, `10.3389/fhort.2025.1529040` — 16.2% median.
+- Kaminski & Christiaensen 2014, *Food Policy* — LSMS-ISA maize. Via World Bank.
+- Ambler, de Brauw & Godlonton 2018 — detailed loss module, 1,200 Malawi households.
+- Pomegranate: *Foods* 2023, 12(6):1122, PMC10048388. Banana: *Current Research in Food Science* 2023,
+  `10.1016/j.crfs.2023.100640`, PMC10696235. Both *full text*.
+
+### Open data (found by the post-sweep repository search)
+
+- **`10.48804/GNBFGU`** — Van Cauteren, Dequeker, Ty, Ongenae, Van Doorselaer, Soete, **Verboven,
+  Smeets, Nicolai**. *Replication Data for: In-situ visualisation of the micromechanical deformation
+  of apple tissue using 4D X-ray computed tomography with digital volume correlation.* KU Leuven RDR,
+  available 2026-05-28, **CC-BY-NC-SA-4.0**. Force–displacement curves (apple cortex cubes 4×4×4 mm³,
+  3 harvest stages × 2 orientations × 4 replicates) + FE-DVC internal strain fields + per-cell
+  morphology; ~700 files, mostly CSV, Snakemake pipeline. **The closest thing yet to the same-batch
+  dataset MeBioS said in ~2019 did not exist.** No damage outcomes.
+- **Dintwa 2006, Table B.1** (KU Leuven) — machine-readable tangential-contact table (normal force,
+  tangential force, contact radius, `Kn`, `Kt`, 100 load steps). **FEM output for elastic spheres, not
+  physical specimens, no bruise pairing** — a contact-model oracle, not a sim-to-real anchor.
+  Potentially relevant to the elliptic-cone/impratio work.
+
+### Partial force↔damage sources (all require work)
+
+- **Scheffler 2018** (Stellenbosch) — Appendices B/C, per-specimen peak force vs bruise area/depth,
+  n≈13 per impactor. Scatter *plots*, digitizable, not arrays.
+- **Heap 1994** (Massey) — Appendix 6, ~152 pp, one row per numbered apple with bruise depth, volume,
+  energy absorbed; thousands of specimens. **No load cell in the thesis** — pairs with drop energy,
+  never force. `pdftotext` garbles it; needs re-OCR from page images.
+- **Hussein 2019** (Opara group) — per-fruit force-deformation curves on a TA-XT Plus with 10 kg load
+  cell, **published only as mean ± SE. The curves exist and were never released.** Best candidate for
+  obtaining pairing by asking rather than measuring.
+
+### Read, and resolved
+
+- **Van Zeebroeck** — KU Leuven PhD 2005. **⚠ NOT OBTAINED.** The Lirias record is metadata-only
+  with no deposited PDF. The characterization used in [Ch 3](30-gap.md#the-candidate-counter-example-examined)
+  — whole-fruit DEM, viscoelastic Kuwabara–Kono contact, damage by regression — is **second-hand from
+  a research agent and unverifiable**. No quoted phrase attributed to this thesis survived checking.
+  The only held source is the 2022 review, which describes the work qualitatively and says **bruise
+  depth**.
+- **Diels 2019** — KU Leuven PhD, full text via Lirias, **verified**. Abstract reports Kuwabara–Kono
+  **R² 0.71 ± 0.20** vs **0.90 ± 0.13** for visco-elastoplastic on 'Jonagold'. ⚠ **Conditional**: the
+  results section gives 0.51 ± 0.22 (VEP) vs 0.74 ± 0.18 (KK) **below 0.3 m/s** — plastic is *worse*
+  at gentle impacts — and 0.90 ± 0.13 vs 0.76 ± 0.18 above it. States viscoelastic will
+  be insufficient where plastic dissipation matters. Also contains **force-deformation curves for
+  'Jonagold' half-apples** (Fig. 3.5, nine angles, 0.12–1.46 m/s) as figures.
+
+### Named but never read
+
+- **Van Zeebroeck et al. (2006)** — *Postharvest Biol. Technol.* 41(2):85–91, "model building and
+  validation." The one place a numeric validation figure would live. **Closed at Elsevier, absent from
+  Lirias**, no abstract in OpenAlex or Crossref.
+- **Xu, Liu, Wang, Guan, Tang, Li (2024)** — "Evaluation of bruise volume quantification methods using
+  finite element analysis for apple," *Postharvest Biol. Technol.* 213,
+  `10.1016/j.postharvbio.2024.112930`. Confirmed via Crossref and OpenAlex (~10 citations).
+  **ScienceDirect 403 ×4.**
+- **Baheri 1997** — KU Leuven, potato mechanical damage, 301 pp. **Not digitally indexed anywhere**;
+  flagged by the repository search as its most promising unretrieved item.
+- **Dintwa (2011)** — earlier MeBioS multiscale cell-based work, referenced but not retrieved.
+- **Mohsenin**, *Physical Properties of Plant and Animal Materials* — cited throughout the field;
+  current standard-reference status **never verified**.
+
+## Open questions
+
+> **Questions 1–3 and 11 have been answered since the sweeps** — see
+> [Ch 6](50-verdict.md#what-option-b-has-already-resolved). They are retained here with their
+> resolutions rather than deleted, because the *shape* of each answer matters more than the verdict.
+
+1. ~~Do the open-data repositories lack produce force-displacement data?~~ **ANSWERED: split.**
+   Force curves + DVC strain + microstructure exist (`10.48804/GNBFGU`). Force↔**damage** pairing does
+   not, because damage is published per-specimen while force curves are reduced to scalars first.
+2. ~~What did Van Zeebroeck's DEM work validate?~~ **ANSWERED: does not bridge.** Whole-fruit DEM,
+   viscoelastic contact, damage by regression, no numeric validation metric reachable.
+3. ~~Does the MeBioS ~2019 calibration-data gap persist?~~ **ANSWERED: substantially closed**, by
+   MeBioS themselves in May 2026. Still missing from their own 2019 specification: failure-propagation
+   imaging and single-cell compression / pressure-probe on the same batch. **Worth confirming by
+   email** — a dataset three months old suggests an active line with more unpublished.
+4. **Is the max-shear-over-max-normal result reproducible under impact loading** and in other
+   cultivars? Currently one paper, one cultivar, quasi-static, three deformation levels.
+5. **What does the locked paper conclude** about which bruise-volume quantification method wins?
+   CNKI, Chinese institutional repositories, and a thesis version remain untried.
+6. **Does skin modelling materially change bruise volume**, or only contact pressure and area? No
+   study ran the ablation → [Gate 1](40-program.md#gate-1--the-ablation-nobody-ran).
+7. **What are the coefficients of variation** for fruit mechanical properties, and has anyone run
+   stochastic or Monte Carlo produce FEM? The apple and carrot parameters are point estimates; only the kiwifruit table reports SDs.
+8. **Is FE licence cost actually a binding constraint** for low-income-country researchers and
+   development-sector actors? Zero evidence after three sweeps — and it now gates a **build-vs-buy**
+   decision, not just [Gate 5](40-program.md#gate-5--open-the-tooling-deliverable-not-a-gate).
+9. **Is FAO's Food Loss and Waste Database minable** for a mechanical-damage share? It records
+   narrative causes across 700+ publications and 37,000+ data points.
+10. **Are the unreached groups already doing this?** Wageningen (modern), UC Davis, Cranfield,
+    Washington State (Karkee), Michigan State, USDA ARS.
+11. ~~Does the `sim-soft` adjoint survive path-dependent plastic state?~~ **ANSWERED: yes.**
+    Through-time adjoint exists via tape-composed per-step VJPs; plastic state becomes another
+    threaded parent, with a worked precedent in the `friction_xprev` path. **Not a one-term change**:
+    nested return-map sensitivity, a non-smooth yield switch, and per-quadrature-point state.
+    Gate 4 unblocked in principle; the non-smoothness is the residual risk.
+12. **Does ASABE S368 mandate force-deformation curve reporting**, and do benchmark datasets exist?
+
+## If you revise this book
+
+A four-agent cold read of the first draft found 22 defects. The individual corrections are in
+`git log docs/studies/postharvest_damage/` — that record is git's job, not this appendix's.
+
+The **shape** of those defects is worth carrying forward, because it will recur:
+
+> Every defect clustered at **compression points** — the status box, chapter headings, the bolded
+> verdict line above a limits blockquote, the program chapter. Body prose kept its hedges; summaries
+> dropped them. And every compression went in the direction the author wanted.
+>
+> **So cold-read the summaries separately from the chapters.** A pass that reads front-to-back will
+> not catch this. Check specifically that every `medium`-confidence, 2-1, or
+> absence-of-evidence claim carries its marker *wherever it is restated*, not only in the ledger
+> above.
+
+Two warnings are deliberately left inline rather than consolidated here, because a reader acting on
+them needs them at the point of use: the
+[micronutrient provenance warning](10-loss.md#what-survives-as-motivation) and the
+[`sim-soft` plasticity cost](35-primitives.md).
