@@ -19,17 +19,14 @@ a claim) → synthesize with confidence ratings.
 
 ### ⚠ How to read the ledger below
 
-Three things an earlier draft of this appendix got wrong, corrected here:
-
-1. **The confirmed tables list 34 rows, not 50.** Those 34 are the **post-synthesis findings** —
-   the harness merges semantically duplicate confirmed claims before reporting. The 50 confirmed
-   claims are upstream of that merge and are not individually enumerable from the output. Nothing
-   was dropped; the two numbers count different objects.
-2. **Sweep 2 has no vote records at all.** Its findings carry only a `confidence` rating. An earlier
-   draft printed "3-0" for sweep-2 rows, which **manufactured vote counts that do not exist**. The
-   tables below use a single **Provenance** column that states what each source actually recorded.
-3. **The refuted table is now complete at 25** — an earlier draft listed 19 and silently omitted
-   six, three of which cut against this study's thesis.
+1. **The confirmed tables list 34 rows against 50 confirmed claims.** Those 34 are the
+   **post-synthesis findings** — the harness merges semantically duplicate confirmed claims before
+   reporting, and the 50 are upstream of that merge, not individually enumerable from the output.
+   Nothing was dropped; the two numbers count different objects.
+2. **Sweep 2 recorded no votes at all** — only a `confidence` rating. The tables below therefore use
+   a **Provenance** column stating what each source actually recorded, rather than a Vote column
+   that would have to invent counts for a third of the ledger.
+3. **The refuted table is complete at 25.**
 
 ### Method limitations, load-bearing
 
@@ -165,7 +162,7 @@ Three things an earlier draft of this appendix got wrong, corrected here:
 >
 > The third names **Van Zeebroeck's DEM bruise-depth work on 'Jonagold' apples** and refuses the
 > characterization that it was qualitative-only — which cuts *toward* it being a genuine
-> counter-example to "nobody bridges." An earlier draft omitted both rows.
+> counter-example to "nobody bridges."
 >
 > The fifth row cuts the other way and is why this book says "held-out status **not established**"
 > rather than "established as in-sample."
@@ -363,3 +360,40 @@ Domain terms used without definition elsewhere in this book.
 11. **Does the `sim-soft` adjoint survive path-dependent plastic state?** Answerable in-house, and it
     blocks [Gate 4](40-program.md#gate-4--inverse-design).
 12. **Does ASABE S368 mandate force-deformation curve reporting**, and do benchmark datasets exist?
+
+## Revision history
+
+Kept here rather than inline, so the chapters can state what is true without narrating how they got
+there. Two exceptions remain in the body because a reader acting on them needs the warning at the
+point of use: the [micronutrient provenance
+warning](10-loss.md#what-survives-as-motivation) and the [`sim-soft` cost
+correction](35-primitives.md).
+
+**v1 → v2 (commit `05e59963`), after a four-agent gating cold read.** 22 defects, five
+publication-blocking. Refuted-claim leakage was clean — all 25 killed claims had stayed confined to
+the ledger — but the failures clustered at **compression points**: the status box, chapter headings,
+and the program chapter. Every compression had gone in the direction of "go."
+
+| Defect | Correction |
+|---|---|
+| "Consumer of existing primitives"; soft FEM marked ✅ | **False.** `sim-soft` is hyperelastic; `first_piola(&self, f)` makes stress a pure function of `F`. New [Ch 4](35-primitives.md). |
+| Micronutrient argument described as having "survived three sweeps" | **Never submitted to them** — zero hits in all three raw outputs. Now marked author reasoning. |
+| Six ledger rows given "3-0" votes | **Invented** by mapping `confidence: high`. Sweep 2 has no vote field. Column replaced. |
+| Refuted table listed 19 of 25 | Six omissions, three cutting against the thesis — including Van Zeebroeck. Now complete. |
+| "Negative result, searched directly" (open-data repositories) | The search **never ran**. Downgraded to a coverage gap; [Gate 3](40-program.md#gate-3--our-own-calibration-data) weakened. |
+| Carrot's 4.87% in the damage-extent column | It is a **critical-force** error. Inflated the validated count 3→4. |
+| Gate 0 targeted at ginseng | **No ginseng parameters exist** in the evidence base. Retargeted to kiwifruit. |
+| Gates 1–5 had no failure branches | Real **NO-GO** conditions added; Gate 5 relabelled a deliverable. |
+| Gate 4 labelled software | It is **bench-dependent** — its pass criterion requires experimental verification. |
+| "Sophisticated ⊥ validated" | ⊥ is orthogonality; the claim is **disjointness**. |
+| Paywall-caused refutations cited as evidence of absence | An access failure is not a negative result. |
+| Medium-confidence and 2-1 claims stated flatly in summaries | Markers carried to point of use. |
+| Four `MISSION.md` links | Dead — mdbook rewrites `.md`→`.html` — and three were miscited. Removed. |
+
+**v2 → v3.** Inline correction notices consolidated into this section; Ch 1 cut 217→~135 lines;
+glossary added.
+
+> **The lesson worth keeping** is not any single defect but their shared shape: hedges survive in
+> body prose and evaporate in summaries, and they evaporate asymmetrically. Anyone revising this
+> book should cold-read the status box and chapter headings *separately* from the chapters
+> themselves.

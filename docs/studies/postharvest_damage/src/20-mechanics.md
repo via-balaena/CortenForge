@@ -97,14 +97,13 @@ energy), not as a criterion.
 > This is **convention-by-repetition, not demonstrated consensus.** No verified source shows the
 > field agreeing.
 >
-> **A correction on how that conclusion was reached.** An earlier draft added: "every claim
-> asserting a systematic multi-criterion comparison was refuted." That is true and *cannot be used
-> this way*. Those claims were refuted **because the full text was unreachable** — ScienceDirect
-> 403, Semantic Scholar 429, OpenAlex null abstract — and the source explicitly adds that the
-> paper's "existence weakly suggests such comparison is beginning." Converting an access failure
-> into positive evidence of absence is an inference the evidence base forbids. The locked paper is
-> [*Postharvest Biol. Technol.* 213, 112930](30-gap.md#the-honest-counter-case), and it is the
-> source most likely to overturn this section.
+> **One inference is not available here.** Claims asserting a systematic multi-criterion comparison
+> *were* refuted — but **because the full text was unreachable** (ScienceDirect 403, Semantic
+> Scholar 429, OpenAlex null abstract), and the source explicitly adds that the paper's "existence
+> weakly suggests such comparison is beginning." An access failure cannot be converted into positive
+> evidence of absence. The locked paper is
+> [*Postharvest Biol. Technol.* 213, 112930](30-gap.md#the-honest-counter-case) and it is the source
+> most likely to overturn this section.
 
 ### Absorbed energy does not work as a simple criterion
 
@@ -169,11 +168,10 @@ bruising "was almost zero" at 1–2 mm — **the max-normal criterion fires wher
 This is the field's weakest link, and reading the primary text rather than the abstract changes
 the picture substantially.
 
-### The correction
+### Damage-extent errors do exist
 
-An earlier draft of this study asserted that **no** published work reports a quantitative
-predicted-vs-measured damage-extent error. **That was wrong, and is retracted.** Sweep 3
-overturned it:
+It is easy to conclude from the accessible literature that nobody reports a quantitative
+predicted-vs-measured damage-extent error. That is not true — three studies do:
 
 | Study | Quantity | Reported error |
 |---|---|---|
@@ -193,7 +191,7 @@ quantities, not specifically bruise volume.
 > volume quantification methods using finite element analysis for apple." That second paper is the
 > single most decision-relevant unread source in this study.
 
-### What survives the correction
+### But held-out status is not established
 
 The **narrower** claim, and it is the one that matters:
 

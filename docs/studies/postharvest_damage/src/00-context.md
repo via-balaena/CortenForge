@@ -15,7 +15,7 @@
 > | **Case against** | Evidence base is ~7 papers per sweep, adversarial counter-search never ran, six major groups unreached, competitive landscape unmapped, and the philanthropic premise is unverified. |
 > | **The bet** | Not "simulate fruit" — people do that. **Held-out validation + inverse design + distributional prediction.** *(That the field does none of these is a medium-confidence absence-of-evidence finding, not an established fact — see [Ch 3](30-gap.md#nobody-does-inverse-design).)* |
 > | **Load-bearing unknown** | Whether our solver can reproduce a *published* damage-extent error at all. This is [Gate 0](40-program.md#gate-0--can-we-reproduce-a-published-number). |
-> | **⚠ Cost correction** | **`sim-soft` is hyperelastic and cannot express plasticity without a trait change.** Gate 0 is not a free consumer of existing primitives. See [Ch 4](35-primitives.md#-the-blocking-gap-sim-soft-has-no-plasticity-path). |
+> | **⚠ Largest unpriced cost** | **`sim-soft` is hyperelastic and cannot express plasticity without a trait change.** No gate is free. See [Ch 4](35-primitives.md#-the-blocking-gap-sim-soft-has-no-plasticity-path). |
 > | **First buildable rung** | Reproduce the kiwifruit bruise-area result. Needs a plasticity material path first; the constitutive parameters themselves are published. |
 > | **Scope line** | By *coupling to the figure of merit*. **In**: soft contact, tissue constitutive models, damage criteria, geometry, inverse design. **Out**: microbial spoilage, ripening biochemistry, cold chain, logistics, CFD, post-hoc bruise detection. |
 > | **Honest ceiling** | Damage-onset energy varies **~7×** across specimens *(medium confidence; Parke 1963, as reported in Molema 1999)*. The correct deliverable is *distributional*, not deterministic. See [Ch 2](20-mechanics.md#-the-variability-that-should-reshape-the-deliverable). |
@@ -116,15 +116,16 @@ nothing" and "we never searched" are different claims**, and the appendix marks 
 
 ### On this study's own retractions
 
-Five positions this study advanced were killed by its own verification, and they are recorded in
-[Ch 6](50-verdict.md#what-three-sweeps-actually-changed).
+Seven positions this study advanced were later killed — five by its own verification, two by a
+subsequent cold read. They are tabulated in
+[Ch 6](50-verdict.md#what-three-sweeps-actually-changed) and in full in the
+[revision history](appendices.md#revision-history).
 
-**Four of the five leave the program more attractive than it was.** Each correction is
-individually sound, but the aggregate is a book advertising self-inflicted casualties while
-emerging with a stronger case than it started with. A reader should weigh that pattern directly
-rather than treat the retraction count as evidence of rigor.
+**Four of the five sweep-driven retractions left the program more attractive; both review-driven
+ones made it less so.** Each correction is individually sound, but a study that only ever corrects
+in its own favour is not correcting. Weigh the retraction count as evidence that this was checked,
+not that it was right.
 
-One further caution, added after review: the argument this study fell back on when the tonnage
-case died — the micronutrient overlap in [Ch 1](10-loss.md#what-survives-as-motivation) — **was
-never submitted to the sweeps at all.** It is the author's reasoning, not a verified finding, and
-it is marked as such where it appears.
+One caution carries into the body: the argument this study fell back on when the tonnage case died —
+the micronutrient overlap in [Ch 1](10-loss.md#what-survives-as-motivation) — **was never submitted
+to the sweeps.** It is author reasoning, and it is marked as such where it appears.

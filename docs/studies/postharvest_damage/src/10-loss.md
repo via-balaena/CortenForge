@@ -114,11 +114,11 @@ in the evidence base. It cannot carry an argument.
 >
 > What follows **was never submitted to the sweeps**. The terms `micronutrient` and `hidden hunger`
 > return zero hits across all three raw research outputs. It is the author's own reasoning from the
-> commodity breakdown above, **not a verified finding**, and it did not survive adversarial
-> verification because it never entered it.
+> commodity breakdown above — **not a verified finding**. It did not survive adversarial verification;
+> it never entered it.
 >
-> An earlier draft of this chapter described it as "the only one that survived three sweeps." That
-> framing borrowed authority the claim had not earned, and is retracted.
+> Do not describe it as having survived the sweeps. That is borrowed authority, and it is the easiest
+> mistake to make with this chapter, since everything around it *was* verified.
 
 With that caveat: loss concentrates in fruits, vegetables, roots and tubers — the perishable,
 high-moisture, mechanically fragile commodities — while cereals, which barely bruise, lose at a

@@ -16,26 +16,25 @@ The study began with a tonnage argument and a mechanism. Both failed.
 | Validation is weak | **Survives, narrowed**: held-out status not established anywhere. |
 | Simulation angle may be crowded | **Open** on inverse design, held-out validation, distributional prediction — at *medium* confidence, from ~7 papers. |
 
-Two further corrections came from post-commit review rather than the sweeps, and both cut against
-the program:
+A later cold read added two more, both cutting against the program: that
+[`sim-soft` cannot host plasticity](35-primitives.md) without a trait change, and that the
+[micronutrient motivation](10-loss.md#what-survives-as-motivation) was never submitted to the sweeps
+at all. Full record in the [appendix](appendices.md#revision-history).
 
-| | |
-|---|---|
-| "Gates 0–2 are pure software" | **Wrong.** `sim-soft` is hyperelastic; plasticity needs a trait change. [Ch 4](35-primitives.md). |
-| "The micronutrient argument survived three sweeps" | **Wrong.** It was never submitted to them. [Ch 1](10-loss.md#what-survives-as-motivation). |
+**Note the asymmetry, because it is the most useful thing this table says.** Of the five
+sweep-driven retractions, four left the program *more* attractive — the field being less primitive
+upgraded the finding; damage-extent errors existing created a reproduction target. Both
+review-driven corrections made it *less* attractive.
 
-**Note the asymmetry.** Of the five sweep-driven retractions, four left the program *more*
-attractive — the field being less primitive upgraded the finding, and damage-extent errors existing
-created a reproduction target. Both review-driven corrections made it *less* attractive. That
-pattern is worth more than the retraction count: **self-correction that only ever improves the case
-is not self-correction.**
+**Self-correction that only ever improves the case is not self-correction.** Weigh the retraction
+count accordingly: it is evidence that this study was checked, not that it was right.
 
 ## The case for
 
 **The gap is real, and it is shaped like our strengths.**
 
 Four things the field does not do — [bridge sophisticated ↔ validated](30-gap.md#the-disjointness),
-[validate held-out](20-mechanics.md#what-survives-the-correction),
+[validate held-out](20-mechanics.md#but-held-out-status-is-not-established),
 [inverse design](30-gap.md#nobody-does-inverse-design),
 [distributional prediction](20-mechanics.md#-the-variability-that-should-reshape-the-deliverable) —
 are four things CortenForge is placed to do.
@@ -105,8 +104,7 @@ committing.
 **B. Cheap-first: run the unattempted checks before any code.** Search the open-data repositories,
 read Van Zeebroeck, email MeBioS, ask CGIAR whether licences are the barrier. Days of work,
 resolves four load-bearing unknowns, and could kill or reshape the program before a line is
-written. **This is the lowest-regret option, and it did not appear in the earlier draft — which
-went straight to building.**
+written. **Lowest regret of the four**, and it dominates A on cost.
 
 **C. Full program including Gate 3.** Multi-year with a bench component. Justified only if the
 philanthropic case is load-bearing for you personally; the technical case does not require it.

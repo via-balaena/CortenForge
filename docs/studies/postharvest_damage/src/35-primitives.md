@@ -1,12 +1,12 @@
 # What the SDK has, and what it does not
 
-> **This chapter exists because an earlier draft got it wrong.** That draft asserted "nothing in the
-> first three gates requires a new engine — this program is a consumer of existing primitives, not a
-> pretext to build new ones," and marked soft-tissue FEM ✅ validated.
+> **The one-line version.** It is tempting to read this program as a consumer of existing primitives
+> — we have a validated soft-body FEM, contact, and a co-design optimizer, so the gates look like
+> assembly work.
 >
-> **That is false.** `sim-soft` is a hyperelastic solver. It cannot express elastic-plasticity
-> without changing a core trait. The claim was asserted from familiarity rather than checked against
-> the code, which is the exact failure the repo's covenant exists to prevent.
+> **They are not.** `sim-soft` is a *hyperelastic* solver, and every damage model in
+> [Ch 3](30-gap.md) is elastic-plastic. Bridging that is a trait change, not an `impl`, and it is
+> the single largest unpriced cost in the program.
 
 ## Inventory
 
@@ -113,5 +113,6 @@ If the program proceeds past Gate 2, the natural homes are:
 - **Produce-damage targets** → `tools/cf-codesign`, alongside `SoftMaterialTarget` and
   `RouteTarget`, following the pattern those established.
 
-No new L0 crate is obviously warranted. That is a genuine point in the program's favour, and it is
-the one thing the earlier draft's "consumer of existing primitives" framing got right.
+**No new L0 crate is obviously warranted.** That is a genuine point in the program's favour, and the
+one sense in which "consumer of existing primitives" holds: the *architecture* absorbs this work
+cleanly. It is the constitutive contract, not the crate layout, that has to change.

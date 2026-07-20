@@ -4,16 +4,12 @@ This chapter derives a program from [the four open lanes](30-gap.md#four-open-la
 the CortenForge covenant: **cheapest falsification first**, each rung capable of killing the
 direction, no code written until the rung below it is green.
 
-> **Two corrections from review, both load-bearing.**
+> **Read [Chapter 4](35-primitives.md) first.** `sim-soft` is hyperelastic and cannot express
+> plasticity without a trait change, so **none of the gates below is free** — the costs here are
+> stated on that assumption.
 >
-> **1.** An earlier draft claimed the first three gates were "pure software" consuming existing
-> primitives. **`sim-soft` is hyperelastic and cannot express plasticity without a trait change** —
-> see [Ch 4](35-primitives.md#-the-blocking-gap-sim-soft-has-no-plasticity-path). Gate 0 is not free,
-> and every downstream cost estimate shifted.
->
-> **2.** An earlier draft asserted every gate could "kill the direction cheaply" while giving only
-> Gate 0 a failure branch. Gates 1–5 now carry explicit **NO-GO** conditions. Where a gate genuinely
-> cannot fail, it is labelled a *deliverable*, not a gate.
+> Every gate carries an explicit **NO-GO** condition. Where one genuinely cannot fail, it is labelled
+> a *deliverable* rather than a gate.
 
 ## Gate 0 — Can we reproduce a published number?
 
@@ -23,17 +19,16 @@ direction, no code written until the rung below it is green.
 (skin / core / flesh-axial / flesh-radial, with tangent moduli, bio-yields and Poisson ratios) is
 recovered in the [appendix](appendices.md#recovered-constitutive-parameters).
 
-> **⚠ Ginseng is not the target, contrary to an earlier draft.** The ginseng study (2025) is
-> methodologically the *better* comparison — its parameters came from independent uniaxial
-> compression tests rather than a citation, so reproducing it would not be circular. But **no
-> ginseng parameter values exist anywhere in this study's evidence base**; sweep 3 recovered only
-> the model class. The numbers would have to be extracted from the paper first, which is unattempted
-> work, not a starting point.
+> **⚠ Ginseng looks like the better target and is not usable.** The ginseng study (2025) is
+> methodologically stronger — its parameters came from independent uniaxial compression tests rather
+> than a citation, so reproducing it would not be circular. But **no ginseng parameter values exist
+> anywhere in this study's evidence base**; only the model class was recovered. The numbers would
+> have to be extracted from the paper first, which is unattempted work, not a starting point.
 >
-> **Also do not confuse the two kiwifruit papers.** The recovered parameter table is Xu et al.
-> ('Xuxiang'). The 9.63% bruise-area result is Zhu et al., *Foods* 2024 — a different study, present
-> in the appendix only as a three-value footnote with no Poisson ratios. Reproducing the 9.63%
-> specifically requires Zhu's parameters, which are incomplete here.
+> **⚠ Two different kiwifruit papers are easily conflated.** The recovered parameter table is Xu et
+> al. ('Xuxiang'). The 9.63% bruise-area result is Zhu et al., *Foods* 2024 — a different study,
+> present in the appendix only as a three-value footnote with no Poisson ratios. Reproducing the
+> 9.63% specifically requires Zhu's parameters, which are incomplete here.
 
 **Prerequisite.** A plasticity path in `sim-soft`: widened or parallel `Material` contract, internal
 state per quadrature point, return mapping, consistent tangent. This is the real cost of Gate 0 and
@@ -76,9 +71,9 @@ the delta in predicted bruise **volume**, not just contact pressure and area.
 Gate 2, the ablation is unresolvable at this precision and publishing it would be noise. Stop and
 reorder: Gate 2 first, Gate 1 after, or drop Gate 1.
 
-> **Honesty about this gate's cost.** It is cheap *given Gate 0* — a multi-material mesh run on
-> machinery that already exists. It is not independently cheap, and an earlier draft's "a real
-> contribution for a few weeks of work" was priced without the plasticity prerequisite.
+> **This gate is cheap *given Gate 0*** — a multi-material mesh run on machinery that by then
+> exists. It is **not** independently cheap: pricing it alone, without the plasticity prerequisite,
+> understates it by the entire cost of Gate 0.
 
 ## Gate 2 — Distributional prediction
 
@@ -130,7 +125,7 @@ becomes redundant and its cost should not be paid.
 
 > **★ This is where held-out validation becomes possible for the first time.** With our own specimens
 > we control the train/test split — the thing
-> [no paper in the evidence base documents](20-mechanics.md#what-survives-the-correction).
+> [no paper in the evidence base documents](20-mechanics.md#but-held-out-status-is-not-established).
 
 ## Gate 4 — Inverse design
 
@@ -156,8 +151,8 @@ specimen noise — fall back to surrogate or Bayesian optimization and re-evalua
 CortenForge-specific justification, and should be treated as a serious negative result rather than a
 detour.
 
-> **This gate is bench-dependent**, despite sitting after the fork. Its pass criterion requires
-> experimental verification. An earlier draft's sequence diagram labelled it "software" and hid that.
+> **This gate is bench-dependent**, despite reading as a software rung. Its pass criterion requires
+> experimental verification, and the sequence diagram below marks it accordingly.
 
 ## Gate 5 — Open the tooling *(deliverable, not a gate)*
 

@@ -10,10 +10,6 @@ around the paywalls through institutional repositories and found the frontier.
 The frontier is real. It is also **disjoint from the validated work**, and that disjointness is
 the finding.
 
-> **A note on the title.** An earlier draft called this "Sophisticated ⊥ validated." That symbol
-> means orthogonality, which is not the claim. The claim is set disjointness: the two bodies of
-> work do not overlap.
-
 ## The frontier exists
 
 **KU Leuven MeBioS** — Diels, Nicolai, Ramon, Wang & Smeets — published a discrete-element model
@@ -99,11 +95,11 @@ Now put the two halves together.
 | **Apple** (*Comput. Electron. Agric.* 2024) | ✗ (abstract only) | ✓ "max 2.51%" pooled |
 | **Carrot** (2021) | Elastic-plastic + Prony | ✗ — its 4.87% is a **critical-force** error, not damage extent |
 
-> **Correction.** An earlier draft listed carrot's 4.87% in the damage-extent column, inflating the
-> count of validated studies from three to four. It is a single scalar comparison of critical
-> *force* — 45.2 N simulated against 43.1 N "experimental" — and
-> [Ch 2](20-mechanics.md#where-the-headline-numbers-come-from) shows that 43.1 N is itself a
-> regression intercept, not a measurement.
+> **Carrot does not belong in the right-hand column**, though it is often read that way. Its 4.87%
+> is a single scalar comparison of critical *force* — 45.2 N simulated against 43.1 N
+> "experimental" — and [Ch 2](20-mechanics.md#where-the-headline-numbers-come-from) shows that 43.1 N
+> is itself a regression intercept, not a measurement. Counting it would put the number of studies
+> with a validated damage-extent error at four rather than three.
 
 Every study that reports a damage-extent error is **bilinear elastic-plastic in commercial FE**.
 No poroelasticity, no turgor, no microstructural cellular mechanics appears in *any* of them.
@@ -132,9 +128,8 @@ asserting that Van Zeebroeck's validation was qualitative-only was **refuted 1-2
 verifiers did *not* accept that it was qualitative, which if anything cuts *toward* it being a real
 counter-example. No source in this study reached the underlying papers.
 
-An earlier draft of this book omitted Van Zeebroeck entirely, which had the effect of removing the
-strongest known threat to its central finding. Until those papers are read, **"nobody bridges" is a
-claim with one named, unexamined exception**, and it should be stated that way.
+Until those papers are read, **"nobody bridges" is a claim with one named, unexamined exception**,
+and it should be stated that way.
 
 ## The calibration data does not exist
 
@@ -170,19 +165,18 @@ energy.
 
 You cannot fit a constitutive model to a scalar energy dose.
 
-> **⚠ Correction — this is a coverage gap, not a searched negative.** An earlier draft stated that
-> no dataset of produce force-displacement curves was located in Zenodo, Dryad, Figshare, Mendeley
-> Data, or 4TU.ResearchData, and described that as "searched directly."
+> **⚠ This is a coverage gap, not a searched negative — the distinction matters.**
 >
-> **Those repositories were never successfully searched.** Sweep 3's caveats state that the
-> open-data-repository question, along with the ASABE-standard and landscape questions, is
-> "**ENTIRELY UNANSWERED** — no surviving claims addressed any of them. **This is a coverage gap,
-> not a negative finding.**" Sweep 2 likewise records zero verified claims on force-time datasets.
+> The open-data repositories — Zenodo, Dryad, Figshare, Mendeley Data, 4TU.ResearchData — **were
+> never successfully searched.** Sweep 3's caveats record that question, along with the
+> ASABE-standard and landscape questions, as "**ENTIRELY UNANSWERED** — no surviving claims
+> addressed any of them. **This is a coverage gap, not a negative finding.**" Sweep 2 likewise
+> records zero verified claims on force-time datasets.
 >
-> The honest position: **no such dataset surfaced in three sweeps, and the targeted repository
-> search never ran.** That is weaker than a negative result and it weakens
-> [Gate 3](40-program.md#gate-3--our-own-calibration-data) accordingly — the claim that we would be
-> publishing something that does not exist is *unverified*, and should be checked before it
+> So the honest position is: **no such dataset surfaced in three sweeps, and the targeted search
+> never ran.** That is weaker than a negative result, and it weakens
+> [Gate 3](40-program.md#gate-3--our-own-calibration-data) accordingly — the premise that we would
+> be publishing something that does not exist is *unverified*, and should be checked before it
 > justifies bench work.
 
 One more finding worth carrying, because it shows how cleanly the two traditions are separated:
