@@ -6,8 +6,11 @@
   <title>CortenForge — an SDK for the mechatronics and simulation space</title>
   <meta name="description" content="A software development kit for the mechatronics and simulation space. Composable Rust components for geometry, design, meshing, fabrication, rigid- and soft-body physics, control, and reinforcement learning. Open source, Apache-2.0.">
   <link rel="stylesheet" href="/style.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23080f0e'/%3E%3Crect x='4' y='4' width='8' height='8' fill='%23d9603a'/%3E%3C/svg%3E">
 </head>
 <body>
+
+  <a class="skip" href="#main">Skip to content</a>
 
   <header class="site">
     <div class="wrap bar">
@@ -24,7 +27,7 @@
     </div>
   </header>
 
-  <main class="wrap">
+  <main class="wrap" id="main">
 
     <div class="hero">
       <p class="eyebrow">Open source &middot; Apache-2.0</p>
@@ -40,11 +43,11 @@
     <section>
       <h2>What it is</h2>
 
-      <p class="lead-in">CortenForge provides the building blocks spanning the path <b>physical &rarr; digital &rarr; physical</b>. Because those components are general, they serve a wide range of applications &mdash; robotics, soft robotics, biomechanics, generative design and digital fabrication, custom-fit products, and embodied-AI research.</p>
+      <p class="lead-in">CortenForge provides the building blocks spanning the path <strong>physical &rarr; digital &rarr; physical</strong>. Because those components are general, they serve a wide range of applications &mdash; robotics, soft robotics, biomechanics, generative design and digital fabrication, custom-fit products, and embodied-AI research.</p>
 
       <p class="kicker">The kit is the product.</p>
 
-      <p>To prove the components compose end to end, our capstone undertaking &mdash; <b>not yet built</b> &mdash; is a differentiable body-to-device co-design loop for person-specific assistive robotics, with a powered, RL-controlled exoskeleton as the demonstration. See <a class="inline" href="https://github.com/via-balaena/CortenForge/blob/main/MISSION.md">MISSION.md</a>.</p>
+      <p>To prove the components compose end to end, our capstone undertaking &mdash; <strong>not yet built</strong> &mdash; is a differentiable body-to-device co-design loop for person-specific assistive robotics, with a powered, RL-controlled exoskeleton as the demonstration. See <a class="inline" href="https://github.com/via-balaena/CortenForge/blob/main/MISSION.md">MISSION.md</a>.</p>
     </section>
 
     <section id="install">
@@ -53,11 +56,11 @@
       <p>Applications depend on a single crate &mdash; the <code>cortenforge</code> facade &mdash; and reach the whole SDK through it, so the internal crate structure can evolve behind one stable contract.</p>
 
       <pre><code>[dependencies]
-# Publishing to crates.io is in progress; until then, depend on it via git:
+# Not yet published to crates.io — depend on it via git:
 cortenforge = { git = "https://github.com/via-balaena/CortenForge" }</code></pre>
 
       <pre><code>// Two domain umbrellas expose the whole toolkit through one dependency:
-use cortenforge::sim;   // rigid + soft physics, soft↔rigid coupling, RL/opt
+use cortenforge::sim;   // rigid + soft physics, soft&harr;rigid coupling, RL/opt
 use cortenforge::mesh;  // load / repair / measure / print meshes</code></pre>
 
       <p>The facade is a headless capability map across three domains &mdash; simulation and co-design (<code>sim::core</code>, <code>sim::soft</code>, the differentiable soft&harr;rigid coupling keystone <code>sim::coupling</code>, plus <code>sim::rl</code> and <code>sim::opt</code>), mesh processing (<code>mesh::io</code>, <code>mesh::repair</code>, <code>mesh::sdf</code>, &hellip;), and design&rarr;fabrication (<code>cf_design</code>, <code>cf_scan_prep_core</code>, <code>cf_cast</code>). Bevy, GUI, and GPU crates are deliberately excluded, so every app compiling against the facade stays headless.</p>
@@ -104,18 +107,18 @@ cargo xtask grade &lt;crate-name&gt;   # run the quality gate on a single crate<
 
         <div class="stack-row">
           <h3>Mesh</h3>
-          <p class="crates">mesh-io &middot; mesh-repair &middot; mesh-sdf &middot; +7 more</p>
+          <p class="crates">mesh-io &middot; mesh-repair &middot; mesh-sdf &middot; +9 more</p>
           <p>STL / OBJ / PLY / 3MF I/O, repair, offset, shell, lattice, print validation.</p>
         </div>
 
         <div class="stack-row">
           <h3>Scan &rarr; fabrication</h3>
-          <p class="crates">cf-scan-prep &middot; cf-cast &middot; mesh-printability</p>
+          <p class="crates">cf-scan-prep-core &middot; cf-cast &middot; mesh-printability</p>
           <p>Scan cleanup, multi-material mold generation, printability gating, procedure generation.</p>
         </div>
       </div>
 
-      <p class="stack-note">60+ crates. Pure Rust. Zero framework dependencies at Layer 0. Compiles to native and WASM.</p>
+      <p class="stack-note">70 crates. Pure Rust, no framework dependencies in the physics and mesh cores. Layer-0 crates are checked against the <code>wasm32-unknown-unknown</code> target as part of the quality gate.</p>
     </section>
 
     <section>
@@ -142,18 +145,18 @@ cargo xtask grade &lt;crate-name&gt;   # run the quality gate on a single crate<
       </div>
     </section>
 
-    <footer class="site">
-      <p>CortenForge is general-purpose research and engineering software, provided <b>as is</b> without warranty of any kind. <b>It is not a medical device</b> and makes no medical, therapeutic, or health claims. See the <a href="https://github.com/via-balaena/CortenForge/blob/main/DISCLAIMER.md">full disclaimer</a>.</p>
-      <p>
-        <a href="https://github.com/via-balaena/CortenForge">GitHub</a>
-        <span class="sep">&middot;</span>
-        <a href="https://github.com/via-balaena/CortenForge/blob/main/LICENSE">Apache-2.0</a>
-        <span class="sep">&middot;</span>
-        <a href="https://viabalaena.com">Via Balaena</a>
-      </p>
-    </footer>
-
   </main>
+
+  <footer class="wrap site">
+    <p>CortenForge is general-purpose research and engineering software, provided <strong>as is</strong> without warranty of any kind. <strong>It is not a medical device</strong> and makes no medical, therapeutic, or health claims. See the <a href="https://github.com/via-balaena/CortenForge/blob/main/DISCLAIMER.md">full disclaimer</a>.</p>
+    <p>
+      <a href="https://github.com/via-balaena/CortenForge">GitHub</a>
+      <span class="sep">&middot;</span>
+      <a href="https://github.com/via-balaena/CortenForge/blob/main/LICENSE">Apache-2.0</a>
+      <span class="sep">&middot;</span>
+      <a href="https://viabalaena.com">Via Balaena</a>
+    </p>
+  </footer>
 
 </body>
 </html>

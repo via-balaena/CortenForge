@@ -3,11 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Cendrillon — a guided scan-to-mold desktop tool | CortenForge</title>
+  <title>Cendrillon — a guided scan-to-mold desktop tool — CortenForge</title>
   <meta name="description" content="Cendrillon is a guided desktop tool that takes a 3D scan all the way to printable, silicone-cast molds, step by step. Built with CortenForge. Free and open source.">
   <link rel="stylesheet" href="/style.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23080f0e'/%3E%3Crect x='4' y='4' width='8' height='8' fill='%23d9603a'/%3E%3C/svg%3E">
 </head>
 <body>
+
+  <a class="skip" href="#main">Skip to content</a>
 
   <header class="site">
     <div class="wrap bar">
@@ -24,7 +27,7 @@
     </div>
   </header>
 
-  <main class="wrap">
+  <main class="wrap" id="main">
 
     <div class="hero">
       <p class="eyebrow">Application &middot; built with CortenForge</p>
@@ -55,9 +58,9 @@
       <details class="firstrun" open>
         <summary>First time you open it &mdash; it&rsquo;s unsigned for now</summary>
         <ul>
-          <li><b>Mac</b> &mdash; unzip, drag <code>Cendrillon.app</code> into Applications, and double-click. macOS will say it can&rsquo;t verify the developer: open <b>System Settings &rarr; Privacy &amp; Security</b>, scroll down, and click <b>Open Anyway</b>, then open it again. You only do this once.</li>
-          <li><b>Windows</b> &mdash; unzip and run <code>cf-studio-gui.exe</code>. If SmartScreen warns, click <b>More info &rarr; Run anyway</b>.</li>
-          <li><b>Linux</b> &mdash; <code>tar xzf</code> and run the <code>cf-studio-gui</code> binary. Needs a working Vulkan or GL driver.</li>
+          <li><strong>Mac</strong> &mdash; unzip, drag <code>Cendrillon.app</code> into Applications, and double-click. macOS will say it can&rsquo;t verify the developer: open <strong>System Settings &rarr; Privacy &amp; Security</strong>, scroll down, and click <strong>Open Anyway</strong>, then open it again. You only do this once.</li>
+          <li><strong>Windows</strong> &mdash; unzip and run <code>cf-studio-gui.exe</code>. If SmartScreen warns, click <strong>More info &rarr; Run anyway</strong>.</li>
+          <li><strong>Linux</strong> &mdash; <code>tar xzf</code> and run the <code>cf-studio-gui</code> binary. Needs a working Vulkan or GL driver.</li>
         </ul>
       </details>
 
@@ -77,23 +80,23 @@
     <section>
       <h2>Before you cast anything</h2>
 
-      <p>Cendrillon is general-purpose research and engineering software, provided <b>as is</b> without warranty of any kind. <b>It is not a medical device</b> and makes no medical, therapeutic, or health claims.</p>
+      <p>Cendrillon is general-purpose research and engineering software, provided <strong>as is</strong> without warranty of any kind. <strong>It is not a medical device</strong> and makes no medical, therapeutic, or health claims.</p>
 
-      <p>You use it &mdash; and make and use anything created with it &mdash; <b>entirely at your own risk</b>. You alone are responsible for choosing body-safe materials and for proper mixing, curing, cleaning, and hygiene; improperly cured or non-body-safe silicone can cause serious injury. Always follow the manufacturer&rsquo;s safety data sheet. See the <a class="inline" href="https://github.com/via-balaena/CortenForge/blob/main/DISCLAIMER.md">full disclaimer</a>.</p>
+      <p>You use it &mdash; and make and use anything created with it &mdash; <strong>entirely at your own risk</strong>. You alone are responsible for choosing body-safe materials and for proper mixing, curing, cleaning, and hygiene; improperly cured or non-body-safe silicone can cause serious injury. Always follow the manufacturer&rsquo;s safety data sheet. See the <a class="inline" href="https://github.com/via-balaena/CortenForge/blob/main/DISCLAIMER.md">full disclaimer</a>.</p>
     </section>
 
-    <footer class="site">
-      <p>Cendrillon is part of CortenForge, open source under Apache-2.0.</p>
-      <p>
-        <a href="/">CortenForge SDK</a>
-        <span class="sep">&middot;</span>
-        <a href="https://github.com/via-balaena/CortenForge">GitHub</a>
-        <span class="sep">&middot;</span>
-        <a href="https://viabalaena.com">Via Balaena</a>
-      </p>
-    </footer>
-
   </main>
+
+  <footer class="wrap site">
+    <p>Cendrillon is part of CortenForge, open source under Apache-2.0.</p>
+    <p>
+      <a href="/">CortenForge SDK</a>
+      <span class="sep">&middot;</span>
+      <a href="https://github.com/via-balaena/CortenForge">GitHub</a>
+      <span class="sep">&middot;</span>
+      <a href="https://viabalaena.com">Via Balaena</a>
+    </p>
+  </footer>
 
 </body>
 </html>

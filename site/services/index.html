@@ -6,8 +6,11 @@
   <title>Work with the maintainers — CortenForge</title>
   <meta name="description" content="Engine work, SDK extension, RL and embodied-AI infrastructure, and integration or architecture review — from the people who build CortenForge.">
   <link rel="stylesheet" href="/style.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23080f0e'/%3E%3Crect x='4' y='4' width='8' height='8' fill='%23d9603a'/%3E%3C/svg%3E">
 </head>
 <body>
+
+  <a class="skip" href="#main">Skip to content</a>
 
   <header class="site">
     <div class="wrap bar">
@@ -24,7 +27,7 @@
     </div>
   </header>
 
-  <main class="wrap">
+  <main class="wrap" id="main">
 
     <div class="hero">
       <p class="eyebrow">Services</p>
@@ -49,7 +52,7 @@
 
       <div class="entry">
         <h3>RL &amp; embodied-AI infrastructure</h3>
-        <p>GPU-batched differentiable environments and a full learning stack: PPO, SAC, TD3, CEM.</p>
+        <p>Parallel batched environments, a reverse-mode autograd tape, and a full learning stack: PPO, SAC, TD3, REINFORCE, CEM.</p>
       </div>
 
       <div class="entry">
@@ -63,7 +66,7 @@
 
       <p class="lead-in">The same standards the repository is held to apply to work we do for you.</p>
 
-      <p>Every crate passes an eight-criterion quality gate &mdash; coverage, documentation, lints, safety, dependency budget, layer integrity, WASM compatibility, and API surface &mdash; before anything lands on <code>main</code>. Correctness is validated against external ground truth where ground truth exists, and where it doesn&rsquo;t, we say so rather than assert it.</p>
+      <p>Every crate passes an automated quality gate before anything lands on <code>main</code> &mdash; coverage, documentation, lints, unsafe-code review, a dependency budget, and layer integrity, with Layer-0 crates additionally checked against the <code>wasm32</code> target. API design is reviewed by hand. Correctness is validated against external ground truth where ground truth exists, and where it doesn&rsquo;t, we say so rather than assert it.</p>
 
       <p class="closer">Work delivered as SDK components stays yours under Apache-2.0. That is deliberate: the point of a kit is that you can keep building without us.</p>
     </section>
@@ -77,18 +80,18 @@
       </div>
     </section>
 
-    <footer class="site">
-      <p>CortenForge is built and maintained by <a href="https://viabalaena.com">Via Balaena</a>, an engineering consultancy designing physical devices from scan to manufactured part.</p>
-      <p>
-        <a href="/">CortenForge SDK</a>
-        <span class="sep">&middot;</span>
-        <a href="https://github.com/via-balaena/CortenForge">GitHub</a>
-        <span class="sep">&middot;</span>
-        <a href="https://github.com/via-balaena/CortenForge/blob/main/DISCLAIMER.md">Disclaimer</a>
-      </p>
-    </footer>
-
   </main>
+
+  <footer class="wrap site">
+    <p>CortenForge is built and maintained by <a href="https://viabalaena.com">Via Balaena</a>, an engineering consultancy designing physical devices from scan to manufactured part.</p>
+    <p>
+      <a href="/">CortenForge SDK</a>
+      <span class="sep">&middot;</span>
+      <a href="https://github.com/via-balaena/CortenForge">GitHub</a>
+      <span class="sep">&middot;</span>
+      <a href="https://github.com/via-balaena/CortenForge/blob/main/DISCLAIMER.md">Disclaimer</a>
+    </p>
+  </footer>
 
 </body>
 </html>

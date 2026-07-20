@@ -17,7 +17,6 @@
   --bg:        #080f0e;
   --bg-lift:   #0b1413;
   --surface:   #101a18;
-  --surface-2: #16221f;
 
   --border:    #1f2d2a;
   --border-hi: #31443f;
@@ -51,7 +50,6 @@ html {
 
 body {
   margin: 0;
-  min-height: 100%;
   background:
     /* lamp glow high and off-axis, and a cold wash off the river below */
     radial-gradient(900px 520px at 84% -12%, rgba(217, 96, 58, 0.07), transparent 66%),
@@ -71,11 +69,36 @@ body {
 
 ::selection { background: rgba(217, 96, 58, 0.3); color: #ffffff; }
 
+/* Keyboard focus must be at least as loud as hover, everywhere. */
+:focus-visible {
+  outline: 2px solid var(--accent-hi);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+/* Bypass the five repeated nav links; visible only once focused. */
+.skip {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 30;
+  padding: 11px 18px;
+  background: var(--accent);
+  color: #0a1211;
+  font-size: 15px;
+  font-weight: 650;
+  text-decoration: none;
+  border-radius: 0 0 4px 0;
+}
+
+.skip:focus { left: 0; }
+
 /* ---------- header ---------- */
 
 header.site {
   border-bottom: 1px solid var(--border);
   background: rgba(8, 15, 14, 0.88);
+  -webkit-backdrop-filter: saturate(150%) blur(10px);
   backdrop-filter: saturate(150%) blur(10px);
   position: sticky;
   top: 0;
@@ -112,8 +135,9 @@ header.site {
 
 nav.site {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 24px;
+  gap: 8px 24px;
   font-size: 14.5px;
 }
 
@@ -176,9 +200,10 @@ h1 {
   margin: 28px 0 0;
 }
 
-.cta {
-  display: inline-block;
-  padding: 11px 22px;
+/* One button component. `.cta` sits inline under the hero, `.button` stacks
+   in the download row; everything else about them is shared. */
+.cta,
+.button {
   border-radius: 4px;
   background: var(--accent);
   color: #0a1211;
@@ -186,18 +211,25 @@ h1 {
   text-decoration: none;
   font-size: 15px;
   font-weight: 650;
+  line-height: 1.35;
   transition: background .14s ease, border-color .14s ease;
 }
 
-.cta:hover { background: var(--accent-hi); border-color: var(--accent-hi); }
+.cta { display: inline-block; padding: 11px 22px; }
+.button { display: block; padding: 13px 20px; }
 
-.cta-secondary {
+.cta:hover,
+.button:hover { background: var(--accent-hi); border-color: var(--accent-hi); }
+
+.cta-secondary,
+.button-secondary {
   background: transparent;
   color: var(--text);
   border-color: var(--border-hi);
 }
 
-.cta-secondary:hover { background: var(--surface); border-color: var(--accent); color: var(--text); }
+.cta-secondary:hover,
+.button-secondary:hover { background: var(--surface); color: var(--text); border-color: var(--accent); }
 
 /* ---------- sections ---------- */
 
@@ -329,38 +361,18 @@ pre code {
   margin: 0 0 20px;
 }
 
-.button {
-  display: block;
-  padding: 13px 20px;
-  background: var(--accent);
-  color: #0a1211;
-  border: 1px solid var(--accent);
-  border-radius: 4px;
-  text-decoration: none;
-  font-size: 15px;
-  font-weight: 650;
-  line-height: 1.35;
-  transition: background .14s ease, border-color .14s ease;
-}
-
-.button:hover { background: var(--accent-hi); border-color: var(--accent-hi); }
-
-.button-secondary {
-  background: transparent;
-  color: var(--text);
-  border-color: var(--border-hi);
-}
-
-.button-secondary:hover { background: var(--surface); border-color: var(--accent); }
-
+/* Solid colour rather than opacity — 11.5px text over the accent needs the
+   full 4.5:1, and compositing at 0.8 fell short of it. */
 .button-sub {
   display: block;
   font-family: var(--mono);
   font-size: 11.5px;
-  font-weight: 400;
-  opacity: 0.8;
+  font-weight: 500;
+  color: #20100a;
   margin-top: 3px;
 }
+
+.button-secondary .button-sub { color: var(--text-3); }
 
 /* ---------- disclosure ---------- */
 
@@ -380,6 +392,7 @@ details.firstrun > summary {
 }
 
 details.firstrun > summary::marker { color: var(--accent); }
+details.firstrun > summary::-webkit-details-marker { color: var(--accent); }
 
 .firstrun ul {
   margin: 14px 0 0;
@@ -415,7 +428,6 @@ details.firstrun > summary::marker { color: var(--accent); }
 /* ---------- contact ---------- */
 
 .contact {
-  margin-top: 0;
   padding: 28px 30px;
   background:
     radial-gradient(520px 220px at 88% -30%, rgba(217, 96, 58, 0.1), transparent 70%),
@@ -489,10 +501,11 @@ footer.site {
   font-size: 14.5px;
   line-height: 1.7;
   color: var(--text-3);
-  max-width: 78ch;
 }
 
-footer.site p { margin: 0 0 8px; }
+/* The footer carries .wrap for page alignment; the measure is set on the
+   paragraphs so it stays flush left with the rest of the page. */
+footer.site p { margin: 0 0 8px; max-width: 78ch; }
 footer.site p:last-child { margin: 0; }
 footer.site b { color: var(--text-2); font-weight: 600; }
 
