@@ -18,7 +18,7 @@
 
 #![allow(clippy::expect_used)]
 
-use cf_codesign::{CoDesignProblem, Normalized, PeakForceTarget};
+use cf_codesign::{CoDesignProblem, Normalized, PeakForceTarget, StopReason};
 
 // The de-escalation impact fixture: a 1 kg limb at the contact-band top (z = 0.115), struck
 // downward into a pinned soft buffer (block top z = 0.10). Mirrors the RQ1 scenario.
@@ -92,14 +92,13 @@ fn recovers_known_stiffness_from_target_peak_force() {
     let rel_mu = (mu - mu_star).abs() / mu_star;
     eprintln!(
         "peak-force inverse design: μ₀={mu0} → μ={mu:.4} (μ*={mu_star}) rel={rel_mu:.3e}  \
-         target_force={target_force:.2} N  loss={:.3e}  iters={}  converged={}",
-        result.loss,
-        result.iters,
-        result.converged(),
+         target_force={target_force:.2} N  loss={:.3e}  iters={}  stop={:?}",
+        result.loss, result.iters, result.stop_reason,
     );
 
-    assert!(
-        result.converged(),
+    assert_ne!(
+        result.stop_reason,
+        StopReason::MaxIters,
         "optimizer did not converge in max_iters"
     );
     assert!(

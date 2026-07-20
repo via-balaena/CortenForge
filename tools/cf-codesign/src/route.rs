@@ -349,12 +349,13 @@ impl CoDesignProblem for RouteTarget {
 /// The inherited stationary-ridge footgun applies to the route block exactly as it does
 /// for [`RouteTarget`] — initialize off the ridge.
 ///
-/// # The signed objective breaks the loss-tolerance stop
-/// Unlike every other target here, `J` is **not** a squared residual and is **not**
-/// bounded below by zero — the `−w_r·r` reward takes it negative. The default
-/// `loss_tol = 1e-10` therefore fires at the sign crossing rather than at an optimum.
-/// Drive this problem with [`recommended_config`](Self::recommended_config), which
-/// disables that stop; see its docs.
+/// # The objective is signed, so the loss-tolerance stop does not apply
+/// Unlike every other target here, `J` is not a squared residual: the `−w_r·r` reward
+/// takes it negative, and a "small loss" then says nothing about optimality. This
+/// target therefore declares no
+/// [`loss_lower_bound`](CoDesignProblem::loss_lower_bound), which switches that
+/// criterion off structurally — no caller can mis-drive it. See that impl for why no
+/// bound can be stated.
 #[derive(Debug, Clone)]
 pub struct ConduitTarget {
     body: Solid,
@@ -440,11 +441,15 @@ impl ConduitTarget {
     /// `grad_tol` is not scale-free in log-space: `dJ/d(ln r) = r · dJ/dr`, so the
     /// radius component vanishes as `r → 0` *by construction*, whatever the design's
     /// optimality. In an infeasible scene, where the radius is driven down without
-    /// limit, a small enough `r` therefore trips any fixed `grad_tol` and reports
-    /// `converged` on a conduit that is merely shrinking to nothing. The shipped gates
-    /// stay well clear of this (`r ≈ 4e-5` against a threshold that needs `r ≈ 3e-6`),
-    /// but a longer run or a smaller `penalty_weight` would reach it — so check that a
-    /// converged radius is a *fit*, not a collapse.
+    /// limit, a small enough `r` therefore trips any fixed `grad_tol` and reports a
+    /// [`GradTol`](crate::StopReason::GradTol) stop on a conduit that is merely
+    /// shrinking to nothing. A longer run or a smaller `penalty_weight` reaches it — so
+    /// check that a stopped radius is a *fit*, not a collapse.
+    ///
+    /// (The radius component alone cannot trip this in practice at these constants,
+    /// because the route block dominates the norm by orders of magnitude — see
+    /// [`OptConfig::grad_tol`](crate::OptConfig::grad_tol). That is a property of the
+    /// mixed-scale vector, not a safety margin to rely on.)
     #[must_use]
     pub fn recommended_config(&self) -> crate::OptConfig {
         crate::OptConfig {

@@ -78,10 +78,10 @@ fn main() {
     }
     println!(
         "\nDriven platen z_N = {z_final:.6} (target {target_z:.6}, |Δ| = {:.2e}) in {} iters; \
-         converged = {}",
+         stop = {:?}",
         (z_final - target_z).abs(),
         result.iters,
-        result.converged(),
+        result.stop_reason,
     );
     println!(
         "(The schedule is under-determined — {n_steps} controls for one target — so this is a \

@@ -9,7 +9,7 @@
 //! walls make the optimal radius analytically predictable, which is what turns the
 //! headline gate from a direction check into a quantitative one.
 
-use cf_codesign::{CoDesignProblem, ConduitTarget, OptConfig, optimize};
+use cf_codesign::{CoDesignProblem, ConduitTarget, OptConfig, StopReason, optimize};
 use cf_design::Solid;
 use nalgebra::{Point3, Vector3};
 
@@ -140,7 +140,11 @@ fn conduit_codesign_bends_and_sizes() {
     );
 
     let res = optimize(&t, &x0, &t.recommended_config());
-    assert!(res.converged(), "capsule recovery did not converge");
+    assert_ne!(
+        res.stop_reason,
+        StopReason::MaxIters,
+        "capsule recovery did not converge"
+    );
 
     let r = t.radius(&res.params);
     assert!(r > 2.0 * r0, "radius did not grow: {r0} -> {r}");

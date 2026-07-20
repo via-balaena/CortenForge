@@ -12,7 +12,7 @@
 
 #![allow(clippy::expect_used)]
 
-use cf_codesign::{CoDesignProblem, OptConfig, SoftMaterialTarget, optimize};
+use cf_codesign::{CoDesignProblem, OptConfig, SoftMaterialTarget, StopReason, optimize};
 
 const PLATEN_MJCF: &str = r#"<mujoco>
   <option gravity="0 0 -9.81" timestep="0.001"/>
@@ -72,14 +72,13 @@ fn recovers_known_material_from_target_behavior() {
     let rel_mu = (mu - mu_star).abs() / mu_star;
     eprintln!(
         "inverse design: μ₀={mu0} → μ={mu:.3} (μ*={mu_star}) rel={rel_mu:.3e}  \
-         loss={:.3e}  iters={}  converged={}",
-        result.loss,
-        result.iters,
-        result.converged(),
+         loss={:.3e}  iters={}  stop={:?}",
+        result.loss, result.iters, result.stop_reason,
     );
 
-    assert!(
-        result.converged(),
+    assert_ne!(
+        result.stop_reason,
+        StopReason::MaxIters,
         "optimizer did not converge in max_iters"
     );
     assert!(

@@ -106,23 +106,26 @@ fn route_chord_bound_is_never_violated() {
         "chord between (-3,0,0) and (3,0,0) should be 6, got {bound}"
     );
 
-    let mut x = t.straight_line();
+    let straight = t.straight_line();
     assert!(
-        t.objective(&x) >= bound - 1e-12,
+        t.objective(&straight) >= bound - 1e-12,
         "straight route dips below its own chord bound"
     );
+    // Each perturbation is applied to a FRESH copy, so these are five independent
+    // routes rather than one drifting one.
     for (i, delta) in [(1, 0.5), (4, -2.0), (2, 3.0), (0, -7.0), (5, 12.0)] {
+        let mut x = straight.clone();
         x[i] += delta;
+        let j = t.objective(&x);
         assert!(
-            t.objective(&x) >= bound - 1e-12,
-            "objective {} fell below the chord bound {bound} after perturbing param {i}",
-            t.objective(&x)
+            j >= bound - 1e-12,
+            "objective {j} fell below the chord bound {bound} after perturbing param {i}"
         );
     }
 }
 
-/// (3) `StopReason` distinguishes the three exits, and `converged()` stays consistent
-/// with it. A bare boolean cannot tell "reached an optimum" from "ran out of budget".
+/// (3) `StopReason` names which criterion ended the run. The boolean it replaced could
+/// not tell "reached an optimum" from "ran out of budget", so each exit is pinned here.
 #[test]
 fn stop_reason_distinguishes_the_exits() {
     let t = corridor_scene(2.0);
@@ -138,7 +141,6 @@ fn stop_reason_distinguishes_the_exits() {
         },
     );
     assert_eq!(capped.stop_reason, StopReason::MaxIters);
-    assert!(!capped.converged(), "MaxIters must not read as converged");
 
     // Gradient criterion: a tolerance nothing can miss.
     let loose = optimize(
@@ -150,7 +152,31 @@ fn stop_reason_distinguishes_the_exits() {
         },
     );
     assert_eq!(loose.stop_reason, StopReason::GradTol);
-    assert!(loose.converged(), "GradTol must read as converged");
+
+    // Loss criterion — on a target that DOES declare a bound, so it is reachable.
+    // `RouteTarget`'s bound is the chord, and a tolerance wider than any detour the
+    // scene can require forces the certificate immediately.
+    let route = RouteTarget::new(
+        Solid::capsule(1.0, 3.0),
+        Point3::new(-3.0, 0.0, 0.0),
+        Point3::new(3.0, 0.0, 0.0),
+        2,
+        0.3,
+        0.1,
+        10.0,
+        40,
+    );
+    let by_loss = optimize(
+        &route,
+        &route.straight_line(),
+        &OptConfig {
+            loss_tol: 1e6,
+            grad_tol: 0.0,
+            max_iters: 50,
+            ..OptConfig::default()
+        },
+    );
+    assert_eq!(by_loss.stop_reason, StopReason::LossTol);
 
     // Every exit reports the gradient it stopped at, so a caller can judge the stop
     // rather than trusting the flag.
@@ -186,8 +212,11 @@ fn conduit_gradient_norm_is_route_dominated() {
         .iter()
         .fold(0.0_f64, |m, &g| m.max(g.abs()));
     let radius_block = grad[grad.len() - 1].abs();
+    // Measured ratio is ~1.2e6; the bar sits an order below it so the assertion is
+    // tight enough to actually protect the "orders of magnitude" claim in the
+    // `grad_tol` doc, rather than passing on any mild imbalance.
     assert!(
-        route_block > 100.0 * radius_block,
+        route_block > 1.0e5 * radius_block,
         "expected a route-dominated norm (the documented shape); route {route_block:e} \
          vs radius {radius_block:e} — if this narrowed deliberately, update the \
          `grad_tol` scope note"

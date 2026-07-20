@@ -23,7 +23,9 @@
 
 #![allow(clippy::expect_used)]
 
-use cf_codesign::{CoDesignProblem, Normalized, OptConfig, SoftMaterialTrajectoryTarget, optimize};
+use cf_codesign::{
+    CoDesignProblem, Normalized, OptConfig, SoftMaterialTrajectoryTarget, StopReason, optimize,
+};
 
 // Platen started already in contact (plane at z − clearance = 0.103 vs the soft
 // block's top face at z = 0.1) so the rollout is engaged from step 0 (it deepens
@@ -197,14 +199,13 @@ fn recovers_known_material_from_target_trajectory() {
     let rel_mu = (mu - mu_star).abs() / mu_star;
     eprintln!(
         "trajectory inverse design (standard eps): μ₀={mu0} → μ={mu:.4} (μ*={mu_star}) \
-         rel={rel_mu:.3e}  loss={:.3e}  iters={}  converged={}",
-        result.loss,
-        result.iters,
-        result.converged(),
+         rel={rel_mu:.3e}  loss={:.3e}  iters={}  stop={:?}",
+        result.loss, result.iters, result.stop_reason,
     );
 
-    assert!(
-        result.converged(),
+    assert_ne!(
+        result.stop_reason,
+        StopReason::MaxIters,
         "optimizer did not converge in max_iters"
     );
     // Robust gate (the measured recovery is far tighter, ~1e-6 or better); loose

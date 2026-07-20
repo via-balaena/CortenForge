@@ -31,7 +31,7 @@
 
 #![allow(clippy::expect_used)]
 
-use cf_codesign::{CoDesignProblem, JointTarget, OptConfig};
+use cf_codesign::{CoDesignProblem, JointTarget, OptConfig, StopReason};
 
 const PLATEN_MJCF: &str = r#"<mujoco>
   <option gravity="0 0 -9.81" timestep="0.001"/>
@@ -138,12 +138,16 @@ fn joint_inverse_design_recovers_behavior() {
     let z_final = problem.forward_z(mu_rec, &th_rec);
     eprintln!(
         "z_tgt={z_tgt:.9} z_start={z_start:.9} z_final={z_final:.9} |z-tgt|={:.3e} \
-         μ: 2e4 → {mu_rec:.1} (μ*={MU_STAR})  θ_rec={th_rec:?}  iters={} conv={}",
+         μ: 2e4 → {mu_rec:.1} (μ*={MU_STAR})  θ_rec={th_rec:?}  iters={} stop={:?}",
         (z_final - z_tgt).abs(),
         result.iters,
-        result.converged(),
+        result.stop_reason,
     );
-    assert!(result.converged(), "joint inverse design did not converge");
+    assert_ne!(
+        result.stop_reason,
+        StopReason::MaxIters,
+        "joint inverse design did not converge"
+    );
     assert!(
         (z_final - z_tgt).abs() < 1e-9,
         "recovered (μ, θ) should hit the target height: z_final {z_final} vs target {z_tgt}"

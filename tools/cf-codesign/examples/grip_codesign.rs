@@ -106,10 +106,10 @@ fn main() {
     println!("  b    = {:>9.4}    (holding policy: bias)", th_rec[2]);
     println!(
         "\nGripped limb tip_x = {x_final:.6} m (target {target_x:.6} m, |Δ| = {:.2e} m) in {} \
-         iters; converged = {}",
+         iters; stop = {:?}",
         (x_final - target_x).abs(),
         result.iters,
-        result.converged(),
+        result.stop_reason,
     );
     println!(
         "The differentiable co-design loop tuned the buffer AND the holding policy to restrain \

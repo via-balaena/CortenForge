@@ -99,12 +99,12 @@
 //! (`docs/codesign/recon.md`).
 //!
 //! ```no_run
-//! use cf_codesign::{optimize, OptConfig, SoftMaterialTarget};
+//! use cf_codesign::{optimize, OptConfig, SoftMaterialTarget, StopReason};
 //! # const MJCF: &str = "";
 //! // Target behavior = the rigid outcome a reference material μ* produces.
 //! let probe = SoftMaterialTarget::for_inverse_design(MJCF.to_string(), 0.099, 40_000.0);
 //! let result = optimize(&probe, &[20_000.0], &OptConfig::default());
-//! assert!(result.converged());
+//! assert_eq!(result.stop_reason, StopReason::LossTol);
 //! ```
 
 use sim_coupling::{DiffPolicy, LinearFeedback, RolloutError, StaggeredCoupling};
@@ -216,6 +216,13 @@ pub trait CoDesignProblem {
     /// Slackness costs only completeness, and a missed certificate simply falls
     /// through to the gradient-norm or iteration-cap stop — the safe direction.
     ///
+    /// **The obligation runs one way, and only one way: whatever you return must be
+    /// `≤` the true optimum.** Too low is merely conservative. Too high — a value the
+    /// loss can actually drop beneath — makes the stop fire *falsely*, halting on a
+    /// design that is not near-optimal and reporting it as converged. That is strictly
+    /// worse than having no criterion at all, so when in doubt return a looser bound,
+    /// or `None`.
+    ///
     /// Returning `None` **disables the loss-tolerance stop entirely**, which is the
     /// honest answer whenever no bound can be stated. That is not an edge case: an
     /// objective with a reward term can be unbounded below, and a design objective
@@ -257,17 +264,14 @@ pub struct OptConfig {
     ///   collapsing toward zero can report a stop.
     /// - *A mixed-scale vector is dominated by its largest block.* `‖·‖∞` reports one
     ///   number, so a well-converged block can be masked by a noisier one and the test
-    ///   says little about the quiet block. `ConduitTarget` measurably has this shape:
-    ///   its route block runs some five orders above its radius block.
+    ///   says little about the quiet block. `ConduitTarget` measurably has this shape —
+    ///   its route block runs some **six orders of magnitude** above its radius block,
+    ///   pinned at `≥ 1e5` by `conduit_gradient_norm_is_route_dominated`.
     ///
     /// The gates in this crate assert *physical outcomes* rather than the stop flag, so
-    /// nothing here currently depends on the norm being a true optimality test. **The
-    /// trigger for replacing it with a metric-aware (preconditioned) criterion is a
-    /// caller that must trust the stop without checking a physical outcome** — a
-    /// lattice sweep over hundreds of struts, an outer loop that restarts non-converged
-    /// runs, or the exo capstone's heterogeneous design vector. That consumer should
-    /// drive the metric's design; guessing it in advance would fix the shape before the
-    /// requirement is known.
+    /// nothing currently depends on this being a true optimality test. Replacing it
+    /// with a metric-aware criterion should be driven by a caller that must trust the
+    /// stop *without* checking a physical outcome.
     pub grad_tol: f64,
     /// Stop when the loss comes within this of
     /// [`CoDesignProblem::loss_lower_bound`] — i.e. when `loss − bound < loss_tol`,
@@ -385,7 +389,14 @@ pub struct OptResult {
     pub iters: usize,
     /// Which stopping criterion ended the run.
     pub stop_reason: StopReason,
-    /// `‖gradient‖∞` at the stopping iterate.
+    /// `‖gradient‖∞` at the **last iterate scored**, which is not always the iterate
+    /// returned in [`params`](Self::params).
+    ///
+    /// On a criterion stop they are the same point. On the `MaxIters` tail `params` has
+    /// taken one further step (and under `reject_infeasible` may be the best *earlier*
+    /// feasible iterate), so this is the gradient at the last point actually evaluated,
+    /// not at `params`. `NaN` when no iteration was scored at all — `max_iters == 0`, or
+    /// an infeasible `x0` that broke before the first record.
     ///
     /// Exposed so a caller can tell a genuine optimum from a vanishing-gradient
     /// artifact, and can inspect *which* parameters carry the norm — under a
@@ -394,18 +405,6 @@ pub struct OptResult {
     pub final_grad_inf: f64,
     /// Per-iteration `(params, loss, ‖grad‖∞)` history.
     pub history: Vec<IterRecord>,
-}
-
-impl OptResult {
-    /// Whether a stopping criterion fired before `max_iters`.
-    ///
-    /// Kept as the historical summary, but prefer [`stop_reason`](Self::stop_reason):
-    /// `true` here means only that *some* criterion fired, not that the design is
-    /// optimal.
-    #[must_use]
-    pub const fn converged(&self) -> bool {
-        matches!(self.stop_reason, StopReason::GradTol | StopReason::LossTol)
-    }
 }
 
 /// Backtrack a just-taken Adam step (in `params`, from `prev`) toward `prev`, halving until the
@@ -569,14 +568,21 @@ pub fn optimize(problem: &dyn CoDesignProblem, x0: &[f64], cfg: &OptConfig) -> O
     OptResult {
         params,
         loss,
-        iters: cfg.max_iters,
+        // Iterations actually performed. On the infeasible break that is short of the
+        // budget, so report the record count rather than claiming a full run — a
+        // `Infeasible` result paired with `iters == max_iters` would contradict itself.
+        iters: if broke_infeasible {
+            history.len()
+        } else {
+            cfg.max_iters
+        },
         stop_reason: if broke_infeasible {
             StopReason::Infeasible
         } else {
             StopReason::MaxIters
         },
-        // The gradient at the last iterate actually scored. `NaN` only when no
-        // iteration ran at all (`max_iters == 0`), where there is no gradient to report.
+        // The gradient at the last iterate actually scored. `NaN` when none was: either
+        // `max_iters == 0`, or an infeasible `x0` that broke before the first record.
         final_grad_inf: history.last().map_or(f64::NAN, |r| r.grad_inf),
         history,
     }
@@ -629,7 +635,7 @@ pub fn optimize(problem: &dyn CoDesignProblem, x0: &[f64], cfg: &OptConfig) -> O
 /// # Example
 ///
 /// ```no_run
-/// use cf_codesign::{Normalized, SoftMaterialTrajectoryTarget};
+/// use cf_codesign::{Normalized, SoftMaterialTrajectoryTarget, StopReason};
 /// # const MJCF: &str = "";
 /// let target = SoftMaterialTrajectoryTarget::for_inverse_design(MJCF.to_string(), 20, 0.124);
 /// // Dimensionless residual (L = the 0.1 m block edge) + log-μ relative steps.
@@ -1165,7 +1171,7 @@ impl CoDesignProblem for SoftMaterialTarget {
 /// index** (twice total), unlike the single-step target's one shared build.
 ///
 /// ```no_run
-/// use cf_codesign::{Normalized, SoftMaterialTrajectoryTarget};
+/// use cf_codesign::{Normalized, SoftMaterialTrajectoryTarget, StopReason};
 /// # const MJCF: &str = "";
 /// let target = SoftMaterialTrajectoryTarget::for_inverse_design(MJCF.to_string(), 20, 0.124);
 /// // z_N is weakly sensitive — condition it so the STANDARD eps converges.
@@ -1173,7 +1179,7 @@ impl CoDesignProblem for SoftMaterialTarget {
 /// let cfg = problem.recommended_config();
 /// // `optimize` brackets the physical↔normalized mapping (x0 + result in μ units).
 /// let result = problem.optimize(&[20_000.0], &cfg);
-/// assert!(result.converged());
+/// assert_eq!(result.stop_reason, StopReason::LossTol);
 /// ```
 pub struct SoftMaterialTrajectoryTarget {
     mjcf: String,
@@ -1331,7 +1337,7 @@ impl CoDesignProblem for SoftMaterialTrajectoryTarget {
 /// [`Normalized`] with `log_space = true` for relative (scale-free) steps and a structural `μ > 0`.
 ///
 /// ```no_run
-/// use cf_codesign::{Normalized, PeakForceTarget};
+/// use cf_codesign::{Normalized, PeakForceTarget, StopReason};
 /// # const MJCF: &str = "";
 /// // Recover the buffer stiffness whose peak strike force lands at 200 N (recoverable).
 /// let target = PeakForceTarget::for_impact_design(MJCF.to_string(), 2.0, 60, 200.0);
@@ -1339,7 +1345,7 @@ impl CoDesignProblem for SoftMaterialTrajectoryTarget {
 /// let problem = Normalized::with_residual_scale(&target, 200.0, true);
 /// let cfg = problem.recommended_config();
 /// let result = problem.optimize(&[20_000.0], &cfg);
-/// assert!(result.converged());
+/// assert_eq!(result.stop_reason, StopReason::LossTol);
 /// ```
 pub struct PeakForceTarget {
     mjcf: String,
