@@ -5,6 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>CortenForge — an SDK for the mechatronics and simulation space</title>
   <meta name="description" content="A software development kit for the mechatronics and simulation space. Composable Rust components for geometry, design, meshing, fabrication, rigid- and soft-body physics, control, and reinforcement learning. Open source, Apache-2.0.">
+  <link rel="canonical" href="https://cortenforge.com/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="CortenForge">
+  <meta property="og:url" content="https://cortenforge.com/">
+  <meta property="og:title" content="CortenForge">
+  <meta property="og:description" content="A software development kit for the mechatronics and simulation space. Composable Rust components for geometry, design, meshing, fabrication, rigid- and soft-body physics, control, and reinforcement learning.">
   <link rel="stylesheet" href="/style.css">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23080f0e'/%3E%3Crect x='4' y='4' width='8' height='8' fill='%23d9603a'/%3E%3C/svg%3E">
 </head>
@@ -27,7 +33,7 @@
     </div>
   </header>
 
-  <main class="wrap" id="main">
+  <main class="wrap" id="main" tabindex="-1">
 
     <div class="hero">
       <p class="eyebrow">Open source &middot; Apache-2.0</p>
@@ -56,7 +62,7 @@
       <p>Applications depend on a single crate &mdash; the <code>cortenforge</code> facade &mdash; and reach the whole SDK through it, so the internal crate structure can evolve behind one stable contract.</p>
 
       <pre><code>[dependencies]
-# Not yet published to crates.io — depend on it via git:
+# The crates.io listing is stale (0.6.0) — depend on the repository:
 cortenforge = { git = "https://github.com/via-balaena/CortenForge" }</code></pre>
 
       <pre><code>// Two domain umbrellas expose the whole toolkit through one dependency:
@@ -118,7 +124,7 @@ cargo xtask grade &lt;crate-name&gt;   # run the quality gate on a single crate<
         </div>
       </div>
 
-      <p class="stack-note">70 crates. Pure Rust, no framework dependencies in the physics and mesh cores. Layer-0 crates are checked against the <code>wasm32-unknown-unknown</code> target as part of the quality gate.</p>
+      <p class="stack-note">70 library and tool crates, excluding examples. Pure Rust, with no framework dependencies in the physics and mesh cores. Layer-0 core crates are checked against the <code>wasm32-unknown-unknown</code> target as part of the quality gate.</p>
     </section>
 
     <section>
@@ -151,9 +157,9 @@ cargo xtask grade &lt;crate-name&gt;   # run the quality gate on a single crate<
     <p>CortenForge is general-purpose research and engineering software, provided <strong>as is</strong> without warranty of any kind. <strong>It is not a medical device</strong> and makes no medical, therapeutic, or health claims. See the <a href="https://github.com/via-balaena/CortenForge/blob/main/DISCLAIMER.md">full disclaimer</a>.</p>
     <p>
       <a href="https://github.com/via-balaena/CortenForge">GitHub</a>
-      <span class="sep">&middot;</span>
+      <span class="sep" aria-hidden="true">&middot;</span>
       <a href="https://github.com/via-balaena/CortenForge/blob/main/LICENSE">Apache-2.0</a>
-      <span class="sep">&middot;</span>
+      <span class="sep" aria-hidden="true">&middot;</span>
       <a href="https://viabalaena.com">Via Balaena</a>
     </p>
   </footer>

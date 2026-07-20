@@ -46,6 +46,9 @@ html {
   -webkit-text-size-adjust: 100%;
   background: var(--bg);
   color-scheme: dark;
+  /* Clears the sticky header so #install and the skip link do not land
+     behind it. */
+  scroll-padding-top: 68px;
 }
 
 body {
@@ -73,8 +76,10 @@ body {
 :focus-visible {
   outline: 2px solid var(--accent-hi);
   outline-offset: 3px;
-  border-radius: 2px;
 }
+
+/* main takes focus from the skip link, but is not a tab stop itself. */
+main:focus { outline: none; }
 
 /* Bypass the five repeated nav links; visible only once focused. */
 .skip {
@@ -91,7 +96,8 @@ body {
   border-radius: 0 0 4px 0;
 }
 
-.skip:focus { left: 0; }
+/* Inset when shown so the focus ring is not clipped by the viewport edge. */
+.skip:focus { left: 4px; top: 4px; border-radius: 4px; }
 
 /* ---------- header ---------- */
 
@@ -247,7 +253,7 @@ p { margin: 0 0 16px; }
 
 .lead-in { font-size: 17.5px; color: var(--text-2); max-width: 68ch; }
 
-b, strong { color: var(--text); font-weight: 650; }
+strong { color: var(--text); font-weight: 650; }
 
 .kicker {
   font-size: 17px;
@@ -404,7 +410,7 @@ details.firstrun > summary::-webkit-details-marker { color: var(--accent); }
 
 .firstrun li { margin-bottom: 9px; }
 .firstrun li:last-child { margin-bottom: 0; }
-.firstrun li::marker { color: var(--border-hi); }
+.firstrun li::marker { color: var(--text-3); }
 
 /* ---------- callouts ---------- */
 
@@ -507,7 +513,7 @@ footer.site {
    paragraphs so it stays flush left with the rest of the page. */
 footer.site p { margin: 0 0 8px; max-width: 78ch; }
 footer.site p:last-child { margin: 0; }
-footer.site b { color: var(--text-2); font-weight: 600; }
+footer.site strong { color: var(--text-2); font-weight: 600; }
 
 footer.site a { color: var(--text-2); text-decoration: none; border-bottom: 1px solid var(--border); }
 footer.site a:hover { color: var(--sodium); border-bottom-color: var(--accent); }
@@ -522,6 +528,5 @@ footer.site a:hover { color: var(--sodium); border-bottom-color: var(--accent); 
   nav.site { gap: 16px; font-size: 13.5px; }
   .contact { padding: 22px 20px; }
   .downloads { flex-direction: column; }
-  .button { text-align: left; }
   footer.site { margin-top: 48px; padding-bottom: 44px; }
 }

@@ -5,6 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Work with the maintainers — CortenForge</title>
   <meta name="description" content="Engine work, SDK extension, RL and embodied-AI infrastructure, and integration or architecture review — from the people who build CortenForge.">
+  <link rel="canonical" href="https://cortenforge.com/services/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="CortenForge">
+  <meta property="og:url" content="https://cortenforge.com/services/">
+  <meta property="og:title" content="Work with the maintainers — CortenForge">
+  <meta property="og:description" content="Engine work, SDK extension, RL and embodied-AI infrastructure, and integration or architecture review.">
   <link rel="stylesheet" href="/style.css">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23080f0e'/%3E%3Crect x='4' y='4' width='8' height='8' fill='%23d9603a'/%3E%3C/svg%3E">
 </head>
@@ -27,7 +33,7 @@
     </div>
   </header>
 
-  <main class="wrap" id="main">
+  <main class="wrap" id="main" tabindex="-1">
 
     <div class="hero">
       <p class="eyebrow">Services</p>
@@ -66,7 +72,7 @@
 
       <p class="lead-in">The same standards the repository is held to apply to work we do for you.</p>
 
-      <p>Every crate passes an automated quality gate before anything lands on <code>main</code> &mdash; coverage, documentation, lints, unsafe-code review, a dependency budget, and layer integrity, with Layer-0 crates additionally checked against the <code>wasm32</code> target. API design is reviewed by hand. Correctness is validated against external ground truth where ground truth exists, and where it doesn&rsquo;t, we say so rather than assert it.</p>
+      <p>Every pull request grades the crates it touches and everything downstream of them &mdash; documentation, lints, unsafe-code review, a dependency budget, and layer integrity, with Layer-0 core crates additionally checked against the <code>wasm32</code> target. The full workspace is graded on <code>main</code>; coverage runs locally and in nightly jobs; API design is reviewed by hand. Correctness is validated against external ground truth where ground truth exists, and where it doesn&rsquo;t, we say so rather than assert it.</p>
 
       <p class="closer">Work delivered as SDK components stays yours under Apache-2.0. That is deliberate: the point of a kit is that you can keep building without us.</p>
     </section>
@@ -86,9 +92,9 @@
     <p>CortenForge is built and maintained by <a href="https://viabalaena.com">Via Balaena</a>, an engineering consultancy designing physical devices from scan to manufactured part.</p>
     <p>
       <a href="/">CortenForge SDK</a>
-      <span class="sep">&middot;</span>
+      <span class="sep" aria-hidden="true">&middot;</span>
       <a href="https://github.com/via-balaena/CortenForge">GitHub</a>
-      <span class="sep">&middot;</span>
+      <span class="sep" aria-hidden="true">&middot;</span>
       <a href="https://github.com/via-balaena/CortenForge/blob/main/DISCLAIMER.md">Disclaimer</a>
     </p>
   </footer>
