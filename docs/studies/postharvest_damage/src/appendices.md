@@ -361,39 +361,23 @@ Domain terms used without definition elsewhere in this book.
     blocks [Gate 4](40-program.md#gate-4--inverse-design).
 12. **Does ASABE S368 mandate force-deformation curve reporting**, and do benchmark datasets exist?
 
-## Revision history
+## If you revise this book
 
-Kept here rather than inline, so the chapters can state what is true without narrating how they got
-there. Two exceptions remain in the body because a reader acting on them needs the warning at the
-point of use: the [micronutrient provenance
-warning](10-loss.md#what-survives-as-motivation) and the [`sim-soft` cost
-correction](35-primitives.md).
+A four-agent cold read of the first draft found 22 defects. The individual corrections are in
+`git log docs/studies/postharvest_damage/` — that record is git's job, not this appendix's.
 
-**v1 → v2 (commit `05e59963`), after a four-agent gating cold read.** 22 defects, five
-publication-blocking. Refuted-claim leakage was clean — all 25 killed claims had stayed confined to
-the ledger — but the failures clustered at **compression points**: the status box, chapter headings,
-and the program chapter. Every compression had gone in the direction of "go."
+The **shape** of those defects is worth carrying forward, because it will recur:
 
-| Defect | Correction |
-|---|---|
-| "Consumer of existing primitives"; soft FEM marked ✅ | **False.** `sim-soft` is hyperelastic; `first_piola(&self, f)` makes stress a pure function of `F`. New [Ch 4](35-primitives.md). |
-| Micronutrient argument described as having "survived three sweeps" | **Never submitted to them** — zero hits in all three raw outputs. Now marked author reasoning. |
-| Six ledger rows given "3-0" votes | **Invented** by mapping `confidence: high`. Sweep 2 has no vote field. Column replaced. |
-| Refuted table listed 19 of 25 | Six omissions, three cutting against the thesis — including Van Zeebroeck. Now complete. |
-| "Negative result, searched directly" (open-data repositories) | The search **never ran**. Downgraded to a coverage gap; [Gate 3](40-program.md#gate-3--our-own-calibration-data) weakened. |
-| Carrot's 4.87% in the damage-extent column | It is a **critical-force** error. Inflated the validated count 3→4. |
-| Gate 0 targeted at ginseng | **No ginseng parameters exist** in the evidence base. Retargeted to kiwifruit. |
-| Gates 1–5 had no failure branches | Real **NO-GO** conditions added; Gate 5 relabelled a deliverable. |
-| Gate 4 labelled software | It is **bench-dependent** — its pass criterion requires experimental verification. |
-| "Sophisticated ⊥ validated" | ⊥ is orthogonality; the claim is **disjointness**. |
-| Paywall-caused refutations cited as evidence of absence | An access failure is not a negative result. |
-| Medium-confidence and 2-1 claims stated flatly in summaries | Markers carried to point of use. |
-| Four `MISSION.md` links | Dead — mdbook rewrites `.md`→`.html` — and three were miscited. Removed. |
+> Every defect clustered at **compression points** — the status box, chapter headings, the bolded
+> verdict line above a limits blockquote, the program chapter. Body prose kept its hedges; summaries
+> dropped them. And every compression went in the direction the author wanted.
+>
+> **So cold-read the summaries separately from the chapters.** A pass that reads front-to-back will
+> not catch this. Check specifically that every `medium`-confidence, 2-1, or
+> absence-of-evidence claim carries its marker *wherever it is restated*, not only in the ledger
+> above.
 
-**v2 → v3.** Inline correction notices consolidated into this section; Ch 1 cut 217→~135 lines;
-glossary added.
-
-> **The lesson worth keeping** is not any single defect but their shared shape: hedges survive in
-> body prose and evaporate in summaries, and they evaporate asymmetrically. Anyone revising this
-> book should cold-read the status box and chapter headings *separately* from the chapters
-> themselves.
+Two warnings are deliberately left inline rather than consolidated here, because a reader acting on
+them needs them at the point of use: the
+[micronutrient provenance warning](10-loss.md#what-survives-as-motivation) and the
+[`sim-soft` plasticity cost](35-primitives.md).

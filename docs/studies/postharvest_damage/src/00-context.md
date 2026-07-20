@@ -118,8 +118,8 @@ nothing" and "we never searched" are different claims**, and the appendix marks 
 
 Seven positions this study advanced were later killed — five by its own verification, two by a
 subsequent cold read. They are tabulated in
-[Ch 6](50-verdict.md#what-three-sweeps-actually-changed) and in full in the
-[revision history](appendices.md#revision-history).
+[Ch 6](50-verdict.md#what-three-sweeps-actually-changed); the per-defect record is in
+`git log docs/studies/postharvest_damage/`.
 
 **Four of the five sweep-driven retractions left the program more attractive; both review-driven
 ones made it less so.** Each correction is individually sound, but a study that only ever corrects

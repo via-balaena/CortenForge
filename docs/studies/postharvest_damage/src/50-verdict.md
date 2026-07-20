@@ -19,7 +19,7 @@ The study began with a tonnage argument and a mechanism. Both failed.
 A later cold read added two more, both cutting against the program: that
 [`sim-soft` cannot host plasticity](35-primitives.md) without a trait change, and that the
 [micronutrient motivation](10-loss.md#what-survives-as-motivation) was never submitted to the sweeps
-at all. Full record in the [appendix](appendices.md#revision-history).
+at all.
 
 **Note the asymmetry, because it is the most useful thing this table says.** Of the five
 sweep-driven retractions, four left the program *more* attractive — the field being less primitive
