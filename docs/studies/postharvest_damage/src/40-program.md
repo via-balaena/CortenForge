@@ -30,9 +30,9 @@ PVC, neoprene) needed to set up the drop. Transcribed in the
 > anywhere in this study's evidence base**; only the model class was recovered. Extracting them is
 > unattempted work, not a starting point.
 >
-> **⚠ Ignore any "Xu et al. 2024 kiwifruit" table.** Earlier drafts carried an orthotropic parameter
-> set under that name. No such paper exists in Crossref and none of its values appear in the Zhu PDF.
-> See the [appendix correction](appendices.md#kiwifruit--xuxiang--the-gate-0-target-table--verified-from-the-pdf).
+> **⚠ Ignore any "Xu et al. 2024 kiwifruit" parameter table.** No such paper exists in Crossref, and
+> the orthotropic values circulated under that name appear nowhere in the Zhu PDF —
+> [detail in the appendix](appendices.md#kiwifruit--xuxiang--the-gate-0-target-table--verified-from-the-pdf).
 
 **Prerequisite.** A plasticity path in `sim-soft`: widened or parallel `Material` contract, internal
 state per quadrature point, return mapping, consistent tangent. This is the real cost of Gate 0 and
@@ -96,15 +96,14 @@ scatter turns out too sparse to score against — then damage prediction is not 
 tractable from public data, and Gate 4's objective function has no honest form. Stop and reconsider
 whether the deliverable is a model at all.
 
-> **✅ Seeding is possible after all.** Earlier drafts assumed every recovered parameter was a point
-> estimate, making this gate depend on Gate 3's bench data. **The Gate 0 target table reports mean ±
-> SD** for Young's modulus, tangent modulus, bio-yield and density across all three tissues — enough
-> to seed a first parameter distribution directly.
+> **✅ Seeding does not require bench data.** The Gate 0 target table reports **mean ± SD** for
+> Young's modulus, tangent modulus, bio-yield and density across all three tissues — enough to seed a
+> first parameter distribution directly.
 >
-> Two honest limits remain. Those SDs describe **specimen-to-specimen scatter within one cultivar at
-> one maturity**, so they will understate the ~7× damage-onset spread seen across harvest dates and
-> ripeness. And the *damage-outcome* scatter needed to score the predicted spread against experiment
-> is still thin. So Gate 2 can start on published data but may not finish on it.
+> Two limits. Those SDs describe **specimen-to-specimen scatter within one cultivar at one maturity**,
+> so they will understate the ~7× damage-onset spread seen across harvest dates and ripeness. And the
+> *damage-outcome* scatter needed to score the predicted spread is still thin. **Gate 2 can start on
+> published data but may not finish on it.**
 
 ## Gate 3 — Our own calibration data
 

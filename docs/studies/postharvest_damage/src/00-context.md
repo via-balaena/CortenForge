@@ -10,16 +10,14 @@
 > | | |
 > |---|---|
 > | **Status** | Literature recon complete. **No code written. No decision made.** |
-> | **★ Finding** | **The sophisticated constitutive work and the quantitatively-validated work are disjoint sets** — the cellular models are unvalidated on damage magnitude, the validated models are bilinear elastic-plastic, and nobody bridges. See [Ch 3](30-gap.md). |
-> | **Case for** | Four things the field does not do, all of which we are placed to do. |
-> | **Case against** | Evidence base is ~7 papers per sweep, adversarial counter-search never ran, six major groups unreached, competitive landscape unmapped, and the philanthropic premise is unverified. |
-> | **✅ Since the sweeps** | Three cheap checks run — [repository search](30-gap.md#-the-repository-search-run), [Van Zeebroeck](30-gap.md#the-candidate-counter-example-examined), [the adjoint](35-primitives.md#-the-adjoint-question-answered). Finding **survived and strengthened**; Gate 3 narrowed; Gate 4 unblocked. Detail → [Ch 6](50-verdict.md#what-option-b-has-already-resolved). |
-> | **The bet** | Not "simulate fruit" — people do that. **Held-out validation + inverse design + distributional prediction.** *(That the field does none of these is a medium-confidence absence-of-evidence finding, not an established fact — see [Ch 3](30-gap.md#nobody-does-inverse-design).)* |
-> | **Load-bearing unknown** | Whether our solver can reproduce a *published* damage-extent error at all. This is [Gate 0](40-program.md#gate-0--can-we-reproduce-a-published-number). |
-> | **⚠ Largest unpriced cost** | **`sim-soft` is hyperelastic and cannot express plasticity without a trait change.** No gate is free. See [Ch 4](35-primitives.md#-the-blocking-gap-sim-soft-has-no-plasticity-path). |
-> | **First buildable rung** | Reproduce the kiwifruit bruise-area result. Needs a plasticity material path first; the constitutive parameters themselves are published. |
-> | **Scope line** | By *coupling to the figure of merit*. **In**: soft contact, tissue constitutive models, damage criteria, geometry, inverse design. **Out**: microbial spoilage, ripening biochemistry, cold chain, logistics, CFD, post-hoc bruise detection. |
-> | **Honest ceiling** | Damage-onset energy varies **~7×** across specimens *(medium confidence; Parke 1963, as reported in Molema 1999)*. The correct deliverable is *distributional*, not deterministic. See [Ch 2](20-mechanics.md#-the-variability-that-should-reshape-the-deliverable). |
+> | **★ Finding** | **The sophisticated constitutive work and the quantitatively-validated work are disjoint sets** — cellular models unvalidated on damage magnitude, validated models bilinear elastic-plastic, nobody bridges. [Ch 3](30-gap.md). |
+> | **The bet** | Not "simulate fruit" — people do that. **Held-out validation + inverse design + distributional prediction**, *(medium-confidence absence-of-evidence, not established fact — [Ch 3](30-gap.md#nobody-does-inverse-design))*. |
+> | **Against** | ~7 papers per sweep; adversarial counter-search never ran; six major groups unreached; landscape unmapped; philanthropic premise unverified. |
+> | **✅ Since the sweeps** | Three checks run — [repositories](30-gap.md#-the-repository-search-run), [Van Zeebroeck](30-gap.md#the-candidate-counter-example-examined), [the adjoint](35-primitives.md#-the-adjoint-question-answered). Finding **survived and strengthened**; Gate 3 narrowed; Gate 4 unblocked. [Ch 6](50-verdict.md#what-option-b-has-already-resolved). |
+> | **⚠ Largest unpriced cost** | **`sim-soft` is hyperelastic and cannot express plasticity without a trait change.** No gate is free. [Ch 4](35-primitives.md#-the-blocking-gap-sim-soft-has-no-plasticity-path). |
+> | **First rung** | [Gate 0](40-program.md#gate-0--can-we-reproduce-a-published-number) — reproduce the published kiwifruit bruise-area error (9.63%) from published parameters. Needs the plasticity path first. |
+> | **Scope line** | By *coupling to the figure of merit*. **In**: soft contact, constitutive models, damage criteria, geometry, inverse design. **Out**: spoilage, ripening biochemistry, cold chain, logistics, CFD, post-hoc detection. |
+> | **Honest ceiling** | Damage-onset energy varies **~7×** across specimens *(medium confidence; Parke 1963 via Molema 1999)*. The deliverable is *distributional*, not deterministic. [Ch 2](20-mechanics.md#-the-variability-that-should-reshape-the-deliverable). |
 >
 > **Where to go:** if you read one chapter, read [Ch 3](30-gap.md) — it carries the finding.
 > Then [Ch 4](35-primitives.md) for what we'd have to build and [Ch 6](50-verdict.md) for the decision.

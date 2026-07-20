@@ -74,8 +74,8 @@ a claim) → synthesize with confidence ratings.
 | Claim | Provenance |
 |---|---|
 | Bilinear elastic-plastic is the working constitutive standard as of 2024 | no vote; **high** |
-| Parameters are point estimates, frequently borrowed rather than measured | no vote; **high** — ⚠ **partly falsified by direct check**: the kiwifruit table reports mean ± SD and was measured, not borrowed |
-| Skin modelled separately is ~7× stiffer *(verified 6.8×; earlier "4–8×" came from a spurious table)*; separate modelling not standard *(3 of 4 papers; field-wide version refuted 0-3)* | no vote; **medium** |
+| Parameters are point estimates, frequently borrowed rather than measured | no vote; **high** — ⚠ partly falsified: kiwifruit reports mean ± SD, measured not borrowed |
+| Skin modelled separately is ~7× stiffer (verified 6.8×); separate modelling not standard — 3 of 4 papers, field-wide version **refuted 0-3** | no vote; **medium** |
 | De facto criterion = von Mises > bio-yield; no damage-accumulation law | no vote; **high** |
 | Max-shear beats max-normal (Ghasemi 2015) — quasi-static, single cultivar, n=1 | no vote; **medium** |
 | No verified consensus criterion; no verified systematic multi-criterion comparison | no vote; **medium** |
@@ -169,14 +169,14 @@ a claim) → synthesize with confidence ratings.
 
 ## Recovered constitutive parameters
 
-Usable for [Gate 0](40-program.md#gate-0--can-we-reproduce-a-published-number). Verify against primary
-sources before relying on them — one table below was verified from the PDF directly and one earlier
-entry turned out to be spurious.
+Only the kiwifruit table below was transcribed from the primary PDF. **The rest came from sweep
+summaries and should be treated as unconfirmed** until checked — one entry recovered that way turned
+out not to exist at all.
 
-> **Scatter, corrected.** Earlier drafts asserted that *every* recovered parameter is a point estimate
-> with no reported scatter, and [Gate 2](40-program.md#gate-2--distributional-prediction) leaned on
-> that. **It is false for the kiwifruit table**, which reports mean ± SD for Young's modulus, tangent
-> modulus, bio-yield stress *and* density. It remains true for the apple and carrot tables.
+> **On scatter.** The kiwifruit table reports **mean ± SD** for Young's modulus, tangent modulus,
+> bio-yield stress and density — enough to seed
+> [Gate 2](40-program.md#gate-2--distributional-prediction) without bench data. The apple and carrot
+> tables are point estimates with no reported scatter.
 
 ### Apple — 'Golden Delicious' (whole-fruit homogeneous)
 
@@ -210,17 +210,15 @@ Table 3, transcribed from the `mdpi-res.com` PDF.
 > bruise-area result. Gate 0 and the 9.63% target are therefore the *same* study — complete, with
 > impact-surface properties included. **This is the one to reproduce.**
 
-> **⚠ Correction — a second kiwifruit table in earlier drafts was spurious.** Those drafts carried an
-> orthotropic 'Xuxiang' table (skin E=10.233 / core 4.499 / flesh axial 2.305 / flesh radial 1.346)
-> attributed to "Xu et al. 2024." **No such paper exists in Crossref, and none of those values appear
-> anywhere in the Zhu PDF** (grep count: zero). Provenance unknown — possibly a conflation with
-> Du, Wang, Wang, Yao & Hong, *"Prediction of Bruise Susceptibility of Harvested Kiwifruit
-> (Actinidia chinensis) Using Finite Element Method,"* Postharvest Biol. Technol. 2019
-> (`10.1016/j.postharvbio.2019.02.013`), which Zhu cites as ref 20 and which was not retrieved.
-> **Do not use those numbers.**
+> **⚠ Do not use the orthotropic 'Xuxiang' table that circulates under the name "Xu et al. 2024"**
+> (skin E=10.233 / core 4.499 / flesh axial 2.305 / flesh radial 1.346). **No such paper exists in
+> Crossref**, and none of those values appear anywhere in the Zhu PDF — grep count zero. The likely
+> origin is a conflation with Du, Wang, Wang, Yao & Hong, *"Prediction of Bruise Susceptibility of
+> Harvested Kiwifruit (Actinidia chinensis) Using Finite Element Method,"* **Postharvest Biol.
+> Technol.** 2019, `10.1016/j.postharvbio.2019.02.013` — cited by Zhu as ref 20, never retrieved here.
 >
-> The "density in g/mm³, ~1000× off" quality flag in earlier drafts belonged to that same
-> unverifiable table and is withdrawn — the verified table above is dimensionally sane.
+> A "density in g/mm³, ~1000× off" quality flag reported by the sweeps belonged to that same
+> unverifiable table. The verified table above is dimensionally sane.
 
 ### Carrot — 'New Red Carrot' (22 ± 1 °C, 40–60% RH, ASAE S368.4 at 2.5 mm/min, n=10)
 
@@ -313,11 +311,11 @@ Domain terms used without definition elsewhere in this book.
 - Du, Wang, Wang, Yao & Hong 2019, `10.1016/j.postharvbio.2019.02.013` — kiwifruit bruise susceptibility by FEM. Cited by Zhu as ref 20; **not retrieved**. Possible origin of the spurious orthotropic table.
 - Xu, Liu, Huang, Li — *Comput. Electron. Agric.* 2024, `10.1016/j.compag.2024.109024` — apple drop,
   "max error 2.51%." *Abstract only.*
-- Xia et al. 2021, `10.3390/agriculture11060471` — carrot, Prony + von Mises criterion. *Full text.*
-- Szyjewicz et al. 2021, `10.3390/app11167579` — apple drop, Crushable Foam. *Full text.*
+- Xia et al., *Agriculture* 2021, `10.3390/agriculture11060471` — carrot, Prony + von Mises criterion. *Full text.*
+- Szyjewicz et al., *Appl. Sci.* 2021, `10.3390/app11167579` — apple drop, Crushable Foam. *Full text.*
 - Soheilsarv et al. 2024, *J. Food Process Eng.* — persimmon pendulum. *Abstract level only.*
 - 2022 apple compression, PMC9265796 — the no-validation case. *Full text via `mdpi-res.com`.*
-- Ghasemi et al. 2015, *J. Agric. Machinery*, `10.22067/jam.v5i2.28262` — max-shear vs max-normal.
+- Ghasemi et al., *J. Agric. Machinery* 2015, `10.22067/jam.v5i2.28262` — max-shear vs max-normal.
   **Open access.**
 
 ### Empirical tradition

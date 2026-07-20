@@ -85,7 +85,38 @@ kiwifruit FEM work. It is the review's assessment of the mechanics literature, n
 
 ## The disjointness
 
-Now put the two halves together.
+Plotted against the two axes that matter — how physical the constitutive model is, and whether the
+damage prediction was scored against measurement — the literature occupies two corners and leaves
+the one that matters empty.
+
+```
+                  quantitative damage-extent error reported
+                         no                        yes
+                 ┌──────────────────────┬──────────────────────┐
+     cellular /  │  MeBioS DEM (tomato) │                      │
+     micro-      │  turgor, rupture,    │                      │
+     structural  │  debonding           │        E M P T Y     │
+                 │                      │                      │
+                 │  Diels 2019          │   ← what a validated │
+                 │  NRMSE<3% geometry   │     damage model     │
+                 │  only                │     would occupy     │
+                 ├──────────────────────┼──────────────────────┤
+     bilinear    │                      │  Kiwifruit    9.63%  │
+     elastic-    │  Apple 2022          │  Ginseng   0.4–2.2%  │
+     plastic     │  (no validation)     │  Apple*       2.51%  │
+     (macro)     │                      │                      │
+                 ├──────────────────────┼──────────────────────┤
+     regression  │                      │  Van Zeebroeck       │
+     (not a      │                      │  "sufficient         │
+     constitutive│                      │   accuracy",         │
+     model)      │                      │  no metric found     │
+                 └──────────────────────┴──────────────────────┘
+                                                    * abstract only
+```
+
+The top-right cell is the finding. Everything else is detail.
+
+Now the same picture as a table, with the constitutive class made explicit.
 
 | | Constitutive sophistication | Quantitative damage-extent error |
 |---|---|---|

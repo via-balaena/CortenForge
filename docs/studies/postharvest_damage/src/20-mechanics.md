@@ -17,10 +17,10 @@ quantitatively-validated literature — **never poroelastic or turgor-based**.
 
 | Study | Commodity | Constitutive choice |
 |---|---|---|
-| Szyjewicz et al. 2021 | Apple (drop impact) | Abaqus *Crushable Foam*, volumetric hardening |
-| Xu et al. 2024 | Kiwifruit | E + tangent modulus + bio-yield, per tissue |
-| Soheilsarv et al. 2024 | Persimmon (pendulum) | "elastic-plastic … non-linear explicit procedure" |
-| Xia et al. 2021 | Carrot | Elastic-plastic + 2-term Prony viscoelastic series |
+| Szyjewicz et al., *Appl. Sci.* 2021 | Apple (drop impact) | Abaqus *Crushable Foam*, volumetric hardening |
+| Zhu et al., *Foods* 2024 | Kiwifruit | E + tangent modulus + bio-yield, per tissue |
+| Soheilsarv et al., *J. Food Process Eng.* 2024 | Persimmon (pendulum) | "elastic-plastic … non-linear explicit procedure" |
+| Xia et al., *Agriculture* 2021 | Carrot | Elastic-plastic + 2-term Prony viscoelastic series |
 
 Viscoelastic Prony terms appear as an occasional *addition*. Hyperelastic, poroelastic and
 turgor-based models are **absent from every source that reports a damage-extent error**.
@@ -45,29 +45,27 @@ extensive 3-cultivar × 5-distance × 5-velocity × 5-temperature compression ca
 texture-profile data shows hardness varying with depth (0.90248 N/mm² at 5 mm vs 0.58272 N/mm²
 at 25 mm) — **and still took two elastic constants from a citation and assumed homogeneity.**
 
-Full parameter tables recovered across the sweeps are in the
-[appendix](appendices.md#recovered-constitutive-parameters). They are real and usable. They are
-also point estimates with **no reported scatter**, and one recovered table lists density in
-g/mm³ at physically implausible values (~1000× off) — a quality signal about table-level rigor
-that should temper any wholesale reuse.
+Full parameter tables are in the [appendix](appendices.md#recovered-constitutive-parameters). The
+kiwifruit table was transcribed from the primary PDF and reports **mean ± SD**; the apple and carrot
+tables came from sweep summaries and are point estimates with no scatter. **Treat anything not marked
+as PDF-verified as unconfirmed** — one table recovered that way turned out not to exist.
 
 ### Skin is often ignored, and where measured it is ~7× stiffer
 
-> **Confidence: medium, and thinner than an earlier draft implied.** The ratio rests on **one
-> cultivar of one commodity**. And the claim that homogeneous single-material models represent
-> *field-wide* practice was **refuted 0-3** — the defensible reading is "a pattern across three of
-> four papers in this evidence base," not an established norm. Both limits matter, because this
-> section is the entire basis for [Gate 1](40-program.md#gate-1--the-ablation-nobody-ran).
+> **Confidence: medium, on a single data point.** The ratio rests on **one cultivar of one
+> commodity**. And the claim that homogeneous single-material models represent *field-wide* practice
+> was **refuted 0-3** — the defensible reading is "a pattern across three of four papers in this
+> evidence base," not an established norm. Both limits bear directly on
+> [Gate 1](40-program.md#gate-1--the-ablation-nobody-ran), which this section is the entire basis for.
 
 Where skin *is* modelled separately, the stiffness contrast is large:
 
-- Kiwifruit 'Xuxiang' (Zhu et al. 2024, verified from the PDF): skin E = 10.69 ± 0.46 MPa against
-  flesh E = 1.57 ± 0.12 MPa → **6.8×**. Core sits between at 5.11 ± 0.28 MPa.
+- Kiwifruit 'Xuxiang' (Zhu et al., *Foods* 2024 — verified from the PDF): skin E = 10.69 ± 0.46 MPa
+  against flesh E = 1.57 ± 0.12 MPa → **6.8×**. Core sits between, at 5.11 ± 0.28 MPa.
 
-> **Correction.** Earlier drafts cited "4.44× to 7.60×" from an orthotropic parameter table that
-> [turned out to be spurious](appendices.md#kiwifruit--xuxiang--the-gate-0-target-table--verified-from-the-pdf).
-> The verified table has isotropic flesh, so there is **one ratio, not a range** — and the evidence
-> for this claim is correspondingly thinner than the range implied.
+That is **one ratio, not a range** — the verified table treats flesh as isotropic. Any figure quoted
+as a range for this cultivar traces to a
+[parameter table that does not exist](appendices.md#kiwifruit--xuxiang--the-gate-0-target-table--verified-from-the-pdf).
 
 Against that, the apple drop study states "The material was homogeneous throughout the entire
 volume of the model," and its own authors concede that modelling "of individual layers (skin,
@@ -140,7 +138,7 @@ capacity.
 
 ### The one criterion discrimination test
 
-Ghasemi et al. (2015), *Journal of Agricultural Machinery*, Ferdowsi University of Mashhad, open
+Ghasemi et al., *J. Agric. Machinery* 2015, Ferdowsi University of Mashhad, open
 access. Apple cv. 'Golab kohanz', Abaqus, viscoelastic, quasi-static indentation. This is the
 closest thing in the entire evidence base to a head-to-head criterion test.
 
