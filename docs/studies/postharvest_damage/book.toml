@@ -1,0 +1,19 @@
+[book]
+title = "Postharvest Mechanical Damage — A Study in Validated Produce Contact Mechanics"
+authors = ["CortenForge"]
+description = "A literature study of mechanical damage (bruising) in fruits and vegetables, and whether CortenForge's differentiable soft-contact physics has a load-bearing contribution to make. Establishes what the loss statistics can and cannot say, surveys the constitutive and damage-criterion literature, and names the field's structural gap: the sophisticated constitutive work and the quantitatively-validated work are disjoint sets. Sibling to the gradiometer, mesh, soft-body, casting, and biological-navigation studies."
+language = "en"
+src = "src"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = ""
+edit-url-template = ""
+
+[output.html.fold]
+enable = true
+level = 1
+
+[preprocessor.katex]
+after = ["links"]
