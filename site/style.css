@@ -273,7 +273,7 @@ strong { color: var(--text); font-weight: 650; }
 a.inline {
   color: var(--sodium);
   text-decoration: none;
-  border-bottom: 1px solid rgba(226, 164, 88, 0.35);
+  border-bottom: 1px solid rgba(226, 164, 88, 0.55);
   transition: color .14s ease, border-color .14s ease;
 }
 
@@ -506,7 +506,7 @@ footer.site a:hover { color: var(--sodium); border-bottom-color: var(--accent); 
 
   .wrap { max-width: none; }
 
-  a, a.inline, .note a, footer.site a, .card {
+  a, a.inline, .note a, footer.site a {
     color: #000000;
     text-decoration: underline;
     border-color: #999999;
@@ -514,8 +514,9 @@ footer.site a:hover { color: var(--sodium); border-bottom-color: var(--accent); 
 
   h1, h2, h3, .brand-name, .card-title, strong { color: #000000; }
 
-  .lead-in, .standfirst, .stack-row p, .card-sub, .note, .closer,
-  .kicker, .firstrun ul, .firstrun li, footer.site { color: #222222; }
+  .lead-in, .standfirst, .stack-row p, .stack-row p:last-child, .stack-note,
+  .card-sub, .note, .closer, .kicker, .firstrun ul, .firstrun li,
+  .button-secondary .button-sub, footer.site { color: #222222; }
 
   .crates, code, pre code, .card-label, .eyebrow { color: #000000; }
 
