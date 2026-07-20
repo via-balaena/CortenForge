@@ -526,8 +526,11 @@ impl ConduitTarget {
     /// finite-difference stencil gives `∞ − ∞ = NaN`, and on one side `±∞`; either
     /// poisons the Adam step. Worse, [`optimize`](crate::optimize) derives its stopping
     /// norm with `f64::max`, which *returns the non-NaN operand*, so an all-NaN
-    /// gradient reads as `‖grad‖∞ = 0` and the run reports `converged` with NaN
-    /// parameters. This is inherited from [`RouteTarget`] and not specific to the
+    /// gradient reads as `‖grad‖∞ = 0` and the run reports `converged` on a design it
+    /// never actually evaluated — returning the overflowed-but-finite parameters
+    /// untouched, since it stops before stepping (NaN parameters arise only on a later
+    /// iterate, after a partially-NaN gradient has been stepped in). This is inherited
+    /// from [`RouteTarget`] and not specific to the
     /// radius, and it is far out of reach in practice — log-space overflow needs
     /// `p_last > 709`, some 14000 Adam steps at the recommended `lr` from any sane
     /// start — but treat `+∞` as a diagnostic for a malformed scene, not as a

@@ -300,7 +300,10 @@ fn conduit_radius_stays_positive_under_collapse() {
     // collapse in log-space from a radius that has merely parked at a small value —
     // and it is the evidence behind the claim that the log-space parametrization holds
     // `r > 0` under unbounded downward pressure.
-    let mut previous = f64::INFINITY;
+    // Seeded from the STARTING radius rather than infinity, so the first horizon's
+    // comparison is load-bearing too: 800 iterations must already have collapsed the
+    // radius well below where it began, not merely returned something finite.
+    let mut previous = 0.3;
     for max_iters in [800, 3000, 8000] {
         let cfg = OptConfig {
             max_iters,
