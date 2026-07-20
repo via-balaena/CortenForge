@@ -59,18 +59,41 @@ None of that fits behind `first_piola(&self, f)`. **Implementing plasticity mean
 `Material` trait, not adding an `impl`** — and every existing material, the element assembly, and
 the solver's tangent path are downstream of that signature.
 
-### The adjoint question, which is worse
+### ✅ The adjoint question, answered
 
-`sim-soft` is differentiable — that is the whole point, and `first_piola_param_grad` (keystone S5)
-exists precisely so a soft solve can be differentiated with respect to material parameters.
+An earlier assessment left this open and warned that no gate should be costed as though the adjoint
+survives plasticity. **It was investigated against the code, and the answer is favourable.** The
+adjoint extends, by an established pattern, with one non-trivial term to derive.
 
-**It is unknown whether that machinery survives the introduction of path-dependent state.** Adjoints
-through plasticity require differentiating the return map, and the active-set switch at yield is
-non-smooth. This study did **not** establish whether the BE-FEM/IFT adjoint carries plastic history
-correctly, and no gate below should be costed as though it does.
+**The through-time adjoint already exists.** Not via the `time_adjoint` trait method — that is a
+deliberate stub. It is realized by composing per-step VJPs on the tape through `push_custom`, so one
+`tape.backward` crosses step boundaries. `StateStepVjp` threads `(x_prev, v_prev)` as tape parents;
+`TrajectoryStepVjp` already handles four or five parents depending on drift. **Plastic internal
+state becomes another threaded parent — an existing pattern, not a new mechanism.**
 
-That question is a prerequisite to [Gate 4](40-program.md#gate-4--inverse-design), because inverse
-design over a damage objective needs gradients *through* the damage physics.
+**The real blocker is one sentence in `StateStepVjp`'s derivation:**
+
+> the free-to-free block depends on `x_prev` only through the inertia diagonal (`f_int` depends on
+> the unknown `x`, not on `x_prev`), so the `(M/Δt²)·λ` form is exact for it
+
+**Plasticity breaks exactly that.** With plastic history, `f_int` *does* depend on previous state, so
+`∂r/∂x_prev` stops being the clean diagonal `−(M/Δt²)·I` and acquires a `∂f_int/∂(plastic state)`
+term. That is a real derivation and implementation — but it is one identified term in one primitive,
+not an architectural rewrite.
+
+**Symmetry is probably a non-issue and was anticipated.** The source already notes that "a future
+asymmetric material would need `solve_transpose_in_place` here." Named, expected, small. And for
+**associated J2 von Mises plasticity** — the model every validated paper in [Ch 3](30-gap.md) uses —
+the consistent tangent is symmetric, so the happy-path Cholesky likely survives untouched.
+
+**There is a template.** `MaterialStepVjp` already computes `∂r/∂p_k = ∂f_int/∂p_k` from the stress
+derivative, contracting against the same factored tangent. A plastic-state VJP is structurally
+identical: a computed RHS vector, same factor reuse.
+
+> **Net effect on the program.** The scariest unknown turned out to be the most tractable.
+> [Gate 4](40-program.md#gate-4--inverse-design) is no longer blocked on an open question. **Gate 0's
+> cost is unchanged** — the `Material` trait change and the return mapping are still the real
+> expense.
 
 ## Consequences for cost
 
@@ -79,7 +102,7 @@ design over a damage objective needs gradients *through* the damage physics.
 | [Gate 0](40-program.md#gate-0--can-we-reproduce-a-published-number) | "pure software, existing primitives" | Needs a **new constitutive class + trait change**. Weeks-to-months, not days. |
 | [Gate 1](40-program.md#gate-1--the-ablation-nobody-ran) | "a few weeks of work" | Cheap *given Gate 0*; it is a multi-material mesh run. Not independently cheap. |
 | [Gate 2](40-program.md#gate-2--distributional-prediction) | "pure software" | Needs ensemble/Monte-Carlo driving, which is absent — but it is a harness, not solver surgery. |
-| [Gate 4](40-program.md#gate-4--inverse-design) | "the flagship rung" | Gated on the adjoint question above, which is **unanswered**. |
+| [Gate 4](40-program.md#gate-4--inverse-design) | "the flagship rung" | **Unblocked.** Adjoint extends by an existing pattern; one `∂f_int/∂(plastic state)` term to derive. |
 
 ## The honest alternative nobody costed
 

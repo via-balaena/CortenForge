@@ -25,10 +25,17 @@ recovered in the [appendix](appendices.md#recovered-constitutive-parameters).
 > anywhere in this study's evidence base**; only the model class was recovered. The numbers would
 > have to be extracted from the paper first, which is unattempted work, not a starting point.
 >
-> **⚠ Two different kiwifruit papers are easily conflated.** The recovered parameter table is Xu et
-> al. ('Xuxiang'). The 9.63% bruise-area result is Zhu et al., *Foods* 2024 — a different study,
-> present in the appendix only as a three-value footnote with no Poisson ratios. Reproducing the
-> 9.63% specifically requires Zhu's parameters, which are incomplete here.
+> **⚠ Unresolved: are there one or two kiwifruit papers?** This study's sweeps recorded a
+> 'Xuxiang' parameter table attributed to "Xu et al. 2024" and, separately, a 9.63% bruise-area
+> result attributed to "Zhu et al., *Foods* 2024, 13(21):3523" with *different* stiffness values. A
+> later retrieval pass confirmed via Crossref that Foods 13(21):3523 is **Zhu Yue et al.,
+> "Multiscale Modeling and Simulation of Falling Collision Damage Sensitivity of Kiwifruit"**, and
+> **found no distinct "Xu et al. 2024 kiwifruit" paper** — though it did not exhaustively rule one
+> out.
+>
+> So either two papers exist and the parameter sets are genuinely different, or the sweeps split one
+> paper in two and one of the recovered tables is misattributed. **Resolve this before Gate 0** — it
+> is a ten-minute check against the actual PDF, and it determines which numbers you feed the solver.
 
 **Prerequisite.** A plasticity path in `sim-soft`: widened or parallel `Material` contract, internal
 state per quadrature point, return mapping, consistent tangent. This is the real cost of Gate 0 and
@@ -104,14 +111,21 @@ whether the deliverable is a model at all.
 
 ## Gate 3 — Our own calibration data
 
-**The first bench rung.** No force-time or force-displacement curves paired per-specimen with damage
-outcomes surfaced in three sweeps.
+**The first bench rung — and its scope has narrowed since the repository search ran.**
 
-> **⚠ This is a coverage gap, not a searched negative.** The targeted open-data-repository search
-> **never ran** — see [Ch 3](30-gap.md#the-calibration-data-does-not-exist). Before committing to
-> months of bench work on the premise that we would be generating something that does not exist,
-> **run that search.** It is cheap and it is the single highest-leverage unattempted action in this
-> program.
+> **✅ Force curves exist; the damage pairing does not.** The
+> [repository search](30-gap.md#-the-repository-search-run) found `10.48804/GNBFGU` (Van Cauteren et
+> al., **MeBioS**, CC-BY-NC-SA, May 2026): force–displacement curves for apple cortex under in-situ
+> compression, with DVC strain fields and per-cell morphology on the same specimens, all CSV.
+>
+> **So do not generate constitutive calibration data — that now exists.** What is still missing is
+> force curves paired per-specimen with *damage outcomes*, and the search identified why: damage gets
+> published per specimen, force curves get reduced to scalars before publication.
+>
+> **Ask before measuring.** Hussein (2019, Opara group) recorded per-fruit force-deformation curves
+> on a 10 kg load cell and published only mean ± SE — the curves exist and were never released.
+> Scheffler (2018) has per-specimen peak-force-vs-bruise scatter that is digitizable. An email is
+> cheaper than a cold room.
 
 **The task.** Force-displacement curves under ASABE S368-style compression with full specimen
 metadata (cultivar, ripeness, turgor, temperature, storage duration, contact geometry, loading
@@ -131,10 +145,10 @@ becomes redundant and its cost should not be paid.
 
 **The flagship rung**, and where CortenForge's machinery becomes load-bearing rather than incidental.
 
-> **⚠ Gated on an unanswered question.** Adjoints through path-dependent plastic state require
-> differentiating the return map across a non-smooth yield switch. **Whether the BE-FEM/IFT adjoint
-> survives that is unknown** — see
-> [Ch 4](35-primitives.md#the-adjoint-question-which-is-worse). Resolve it before costing this gate.
+> **✅ No longer blocked.** The through-time adjoint already exists (per-step VJPs composed on the
+> tape), plastic state becomes another threaded parent by an established pattern, and associated J2
+> plasticity keeps the tangent symmetric. One `∂f_int/∂(plastic state)` term needs deriving. See
+> [Ch 4](35-primitives.md#-the-adjoint-question-answered).
 
 **The task.** A validated distributional damage model as an **objective function**, optimizing a
 design variable — crate wall profile, liner compliance, divider spacing, chute curvature — via the

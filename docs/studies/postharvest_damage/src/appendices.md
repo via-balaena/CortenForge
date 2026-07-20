@@ -319,29 +319,73 @@ Domain terms used without definition elsewhere in this book.
 - Pomegranate: *Foods* 2023, 12(6):1122, PMC10048388. Banana: *Current Research in Food Science* 2023,
   `10.1016/j.crfs.2023.100640`, PMC10696235. Both *full text*.
 
+### Open data (found by the post-sweep repository search)
+
+- **`10.48804/GNBFGU`** — Van Cauteren, Dequeker, Ty, Ongenae, Van Doorselaer, Soete, **Verboven,
+  Smeets, Nicolai**. *Replication Data for: In-situ visualisation of the micromechanical deformation
+  of apple tissue using 4D X-ray computed tomography with digital volume correlation.* KU Leuven RDR,
+  available 2026-05-28, **CC-BY-NC-SA-4.0**. Force–displacement curves (apple cortex cubes 4×4×4 mm³,
+  3 harvest stages × 2 orientations × 4 replicates) + FE-DVC internal strain fields + per-cell
+  morphology; ~700 files, mostly CSV, Snakemake pipeline. **The closest thing yet to the same-batch
+  dataset MeBioS said in ~2019 did not exist.** No damage outcomes.
+- **Dintwa 2006, Table B.1** (KU Leuven) — machine-readable tangential-contact table (normal force,
+  tangential force, contact radius, `Kn`, `Kt`, 100 load steps). **FEM output for elastic spheres, not
+  physical specimens, no bruise pairing** — a contact-model oracle, not a sim-to-real anchor.
+  Potentially relevant to the elliptic-cone/impratio work.
+
+### Partial force↔damage sources (all require work)
+
+- **Scheffler 2018** (Stellenbosch) — Appendices B/C, per-specimen peak force vs bruise area/depth,
+  n≈13 per impactor. Scatter *plots*, digitizable, not arrays.
+- **Heap 1994** (Massey) — Appendix 6, ~152 pp, one row per numbered apple with bruise depth, volume,
+  energy absorbed; thousands of specimens. **No load cell in the thesis** — pairs with drop energy,
+  never force. `pdftotext` garbles it; needs re-OCR from page images.
+- **Hussein 2019** (Opara group) — per-fruit force-deformation curves on a TA-XT Plus with 10 kg load
+  cell, **published only as mean ± SE. The curves exist and were never released.** Best candidate for
+  obtaining pairing by asking rather than measuring.
+
+### Read, and resolved
+
+- **Van Zeebroeck** — KU Leuven PhD 2005 (M. Van Zeebroeck, Ramon supervising), 271 pp, **no
+  appendices**. Whole-fruit DEM (one particle = one apple), viscoelastic Kuwabara–Kono / Mindlin–
+  Deresiewicz contact, damage by **regression** on peak force and absorbed energy. Reports bruise
+  *volume*, not depth. Validation stated as "with sufficient accuracy" with **no numeric metric in any
+  reachable source**. Does **not** bridge — see [Ch 3](30-gap.md#the-candidate-counter-example-examined).
+- **Diels 2019** — KU Leuven PhD, full text via Lirias. Measured Kuwabara–Kono at **R² 0.71 ± 0.20**
+  vs **0.90 ± 0.13** for visco-elastoplastic on 'Jonagold' impact profiles; states viscoelastic will
+  be insufficient where plastic dissipation matters. Also contains **force-deformation curves for
+  'Jonagold' half-apples** (Fig. 3.5, nine angles, 0.12–1.46 m/s) as figures.
+
 ### Named but never read
 
-- **Van Zeebroeck** — DEM prediction of bruise depth in 'Jonagold' apples. Cited by the MeBioS-coauthored
-  review as its bruise-prediction success story. **The strongest known threat to this study's central
-  finding, and nobody read it.**
+- **Van Zeebroeck et al. (2006)** — *Postharvest Biol. Technol.* 41(2):85–91, "model building and
+  validation." The one place a numeric validation figure would live. **Closed at Elsevier, absent from
+  Lirias**, no abstract in OpenAlex or Crossref.
 - **Xu, Liu, Wang, Guan, Tang, Li (2024)** — "Evaluation of bruise volume quantification methods using
   finite element analysis for apple," *Postharvest Biol. Technol.* 213,
-  `10.1016/j.postharvbio.2024.112930`. Confirmed to exist via Crossref and OpenAlex (~10 citations).
-  **ScienceDirect 403 ×3.**
+  `10.1016/j.postharvbio.2024.112930`. Confirmed via Crossref and OpenAlex (~10 citations).
+  **ScienceDirect 403 ×4.**
+- **Baheri 1997** — KU Leuven, potato mechanical damage, 301 pp. **Not digitally indexed anywhere**;
+  flagged by the repository search as its most promising unretrieved item.
 - **Dintwa (2011)** — earlier MeBioS multiscale cell-based work, referenced but not retrieved.
 - **Mohsenin**, *Physical Properties of Plant and Animal Materials* — cited throughout the field;
   current standard-reference status **never verified**.
 
 ## Open questions
 
-1. **Do the open-data repositories actually lack produce force-displacement data?** Zenodo, Dryad,
-   Figshare, Mendeley, 4TU were **never successfully searched**. Gates 3 and 5 both assume they do.
-   Cheapest unattempted action in the program.
-2. **What did Van Zeebroeck's DEM work actually validate**, and does it bridge sophisticated ↔
-   validated?
-3. **Does the MeBioS ~2019 calibration-data gap persist?** Has anyone published the same-batch
-   dataset — tissue tension/compression with failure-propagation imaging, plus single-cell mechanics,
-   pressure-probe, and 3D microstructure?
+> **Questions 1–3 and 11 have been answered since the sweeps** — see
+> [Ch 6](50-verdict.md#what-option-b-has-already-resolved). They are retained here with their
+> resolutions rather than deleted, because the *shape* of each answer matters more than the verdict.
+
+1. ~~Do the open-data repositories lack produce force-displacement data?~~ **ANSWERED: split.**
+   Force curves + DVC strain + microstructure exist (`10.48804/GNBFGU`). Force↔**damage** pairing does
+   not, because damage is published per-specimen while force curves are reduced to scalars first.
+2. ~~What did Van Zeebroeck's DEM work validate?~~ **ANSWERED: does not bridge.** Whole-fruit DEM,
+   viscoelastic contact, damage by regression, no numeric validation metric reachable.
+3. ~~Does the MeBioS ~2019 calibration-data gap persist?~~ **ANSWERED: substantially closed**, by
+   MeBioS themselves in May 2026. Still missing from their own 2019 specification: failure-propagation
+   imaging and single-cell compression / pressure-probe on the same batch. **Worth confirming by
+   email** — a dataset three months old suggests an active line with more unpublished.
 4. **Is the max-shear-over-max-normal result reproducible under impact loading** and in other
    cultivars? Currently one paper, one cultivar, quasi-static, three deformation levels.
 5. **What does the locked paper conclude** about which bruise-volume quantification method wins?
@@ -357,8 +401,10 @@ Domain terms used without definition elsewhere in this book.
    narrative causes across 700+ publications and 37,000+ data points.
 10. **Are the unreached groups already doing this?** Wageningen (modern), UC Davis, Cranfield,
     Washington State (Karkee), Michigan State, USDA ARS.
-11. **Does the `sim-soft` adjoint survive path-dependent plastic state?** Answerable in-house, and it
-    blocks [Gate 4](40-program.md#gate-4--inverse-design).
+11. ~~Does the `sim-soft` adjoint survive path-dependent plastic state?~~ **ANSWERED: yes.**
+    Through-time adjoint exists via tape-composed per-step VJPs; plastic state becomes another
+    threaded parent. One `∂f_int/∂(plastic state)` term to derive; associated J2 keeps the tangent
+    symmetric. Gate 4 unblocked.
 12. **Does ASABE S368 mandate force-deformation curve reporting**, and do benchmark datasets exist?
 
 ## If you revise this book

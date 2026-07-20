@@ -116,20 +116,64 @@ cortex with linear elastic cambium.
 > It is: **the sophisticated constitutive work and the quantitatively-validated work are disjoint
 > sets, and nobody bridges them.**
 
-### ⚠ The known candidate counter-example
+### The candidate counter-example, examined
 
-**Van Zeebroeck — DEM prediction of bruise depth in 'Jonagold' apples.** The review surveyed in
-this chapter cites it as its bruise-prediction success story, and it is the one piece of work in
-the evidence base that could sit in *both* columns above: a discrete-element (not bilinear
-elastic-plastic) model applied to a damage-extent quantity.
+**Van Zeebroeck — DEM modelling of apple impact damage.** The review surveyed in this chapter cites
+it as its bruise-prediction success story, and it was the one piece of work that might have sat in
+*both* columns: discrete-element rather than bilinear elastic-plastic, applied to a damage-extent
+quantity. It was retrieved and read.
 
-**Its status here is unresolved, and the resolution failed in a way that matters.** A sweep-3 claim
-asserting that Van Zeebroeck's validation was qualitative-only was **refuted 1-2** — meaning the
-verifiers did *not* accept that it was qualitative, which if anything cuts *toward* it being a real
-counter-example. No source in this study reached the underlying papers.
+**It does not bridge, and it is not in the same category.** Verified from the KU Leuven PhD thesis
+(M. Van Zeebroeck, 2005, Ramon supervising):
 
-Until those papers are read, **"nobody bridges" is a claim with one named, unexamined exception**,
-and it should be stated that way.
+- **One DEM particle is one whole apple** — the thesis states it directly: *"a particle is, for
+  example, a fruit."* This is bulk-handling DEM for fruit-to-fruit and fruit-to-wall contact in
+  crates and bins, not tissue microstructure.
+- **The contact law is viscoelastic**, not elastoplastic: Kuwabara–Kono normal, a viscoelastic
+  Mindlin–Deresiewicz tangential, parameters identified on a rheometer.
+- **Damage is not in the constitutive model at all.** The thesis says the bruise models *"are not
+  inherent to DEM"* — they are multiple linear and non-linear **regressions** mapping peak contact
+  force and absorbed energy plus covariates (ripeness, stiffness, temperature, curvature, harvest
+  date) onto bruise volume. No plasticity, no failure criterion, no cell rupture.
+
+So it belongs in the validated-but-unsophisticated column, with a regression damage layer rather
+than a physical one.
+
+> **Correction to a widely-repeated detail.** The 2022 review describes this as predicting "bruise
+> depth." The thesis reports bruise **volume**. The "depth" phrasing appears to originate in that
+> one review sentence.
+
+**Reported validation:** apples in boxes on an electro-hydraulic shaker against DEM with matched
+initial conditions, concluded to model vibration bruise damage *"with sufficient accuracy."* **No
+numeric error metric appears in any reachable source**, and the 2022 review characterizes it only as
+having "showed that it was possible to predict bruise damage." The one paper where a number would
+live — *Postharvest Biol. Technol.* 41(2):85–91 (2006) — is closed at Elsevier and **absent from
+Lirias**, so a figure cannot be excluded, only not found where it would be advertised.
+
+### ★ The same lab hit this gap twice
+
+This is stronger evidence than the absence of a counter-example, because it is the field's leading
+group documenting the gap in its own words.
+
+**Diels (2019) measured the inadequacy directly.** Fitting 'Jonagold' impact profiles, the
+Kuwabara–Kono viscoelastic law reaches **R² = 0.71 ± 0.20** against **0.90 ± 0.13** for her
+visco-elastoplastic model, and KK *"does not succeed in fitting the data"* even tuned to a single
+specimen. Her stated reason is this chapter's thesis:
+
+> In case of large impacts, potentially resulting in bruise damage, this **plastic energy
+> dissipation can probably not be neglected and thus a viscoelastic model will be insufficient.**
+
+That is independent quantitative support for the claim that bruise-scale mechanics requires
+plasticity — and it is the physics justification for
+[Gate 0](40-program.md#gate-0--can-we-reproduce-a-published-number).
+
+**And Diels' own work fails the bridge test in mirror image.** Her cell-scale model is validated
+*structurally* — NRMSE < 3% on tissue geometry against micro-CT — while her actual bruise-damage
+prediction remains **empirical regression**. Sophisticated side validated qualitatively; quantitative
+side is regression. Same split, one generation later, inside the lab best positioned to close it.
+
+The 2022 review states the position outright: the multiscale mechanical models *"need to be
+incorporated into these DEMs."* As of 2022, from that institute, they are not.
 
 ## The calibration data does not exist
 
@@ -165,19 +209,57 @@ energy.
 
 You cannot fit a constitutive model to a scalar energy dose.
 
-> **⚠ This is a coverage gap, not a searched negative — the distinction matters.**
+### ★ The repository search, run
+
+The three sweeps never actually searched the open-data repositories — that question was recorded in
+their caveats as a coverage gap, not a negative finding. **It has since been run.** The result
+splits the question in two, and only one half is still a gap.
+
+**Force–displacement curves for apple tissue DO exist, openly and machine-readably.**
+
+> **`10.48804/GNBFGU`** — Van Cauteren, Dequeker, Ty, Ongenae, Van Doorselaer, Soete, **Verboven,
+> Smeets, Nicolai**. *Replication Data for: In-situ visualisation of the micromechanical deformation
+> of apple tissue using 4D X-ray computed tomography with digital volume correlation.* KU Leuven RDR,
+> available 2026-05-28, **CC-BY-NC-SA-4.0**.
 >
-> The open-data repositories — Zenodo, Dryad, Figshare, Mendeley Data, 4TU.ResearchData — **were
-> never successfully searched.** Sweep 3's caveats record that question, along with the
-> ASABE-standard and landscape questions, as "**ENTIRELY UNANSWERED** — no surviving claims
-> addressed any of them. **This is a coverage gap, not a negative finding.**" Sweep 2 likewise
-> records zero verified claims on force-time datasets.
->
-> So the honest position is: **no such dataset surfaced in three sweeps, and the targeted search
-> never ran.** That is weaker than a negative result, and it weakens
-> [Gate 3](40-program.md#gate-3--our-own-calibration-data) accordingly — the premise that we would
-> be publishing something that does not exist is *unverified*, and should be checked before it
-> justifies bench work.
+> Contains (1) **force–displacement curves** from in-situ uniaxial compression of apple cortex cubes
+> (4×4×4 mm³) during dynamic X-ray CT — three harvest stages (May/July/September) × two orientations
+> (radial/tangential) × four replicates; (2) **internal 3D strain fields** by global finite-element
+> digital volume correlation, as CSV; (3) **per-cell morphological measurements** from
+> contrast-enhanced high-resolution CT. ~700 files, overwhelmingly CSV, with a Snakemake/Python
+> pipeline reproducing all 12 publication figures. Raw CT volumes are archived separately.
+
+Note the author list. **This is MeBioS** — the same group whose ~2019 paper is quoted above saying
+the required experiments did not exist. It is substantially the same-batch dataset they specified:
+tissue compression, internal deformation, and microstructure on the same specimens. It is three
+months old at the time of writing.
+
+**What still does not exist is the damage pairing.** That dataset characterizes micromechanics; it
+does not carry bruise outcomes. No archived dataset was found anywhere pairing force curves
+per-specimen with measured damage.
+
+**And the search surfaced why**, which is more useful than the negative itself:
+
+> Across ten theses read in full text, the consistent pattern is that **damage outcomes get published
+> per specimen, while force curves get reduced to scalars before publication.** The two halves are
+> routinely measured on the same fruit and then separated at the point of writing up.
+
+Best partial sources for the pairing, all requiring work:
+
+| Source | What it has | Catch |
+|---|---|---|
+| **Scheffler 2018** (Stellenbosch) | Per-specimen peak force vs bruise area/depth, n≈13 per impactor | Scatter *plots*, not arrays — digitizable |
+| **Heap 1994** (Massey) | ~152 pp, one row per numbered apple: bruise depth, volume, energy absorbed; thousands of specimens | **No load cell in the thesis** — pairs with drop *energy*, never force. Needs re-OCR |
+| **Hussein 2019** (Opara group) | Per-fruit force-deformation curves, TA-XT Plus, 10 kg load cell | Published only mean ± SE. **The curves exist and were never released** |
+
+That last row is the actionable one: the data is held by identifiable people who demonstrably
+measured it. Asking is cheaper than re-measuring.
+
+> **Access gaps in this search, recorded honestly.** MDPI `/s1` supplementary endpoints 403'd, so
+> "no supplementary material exists" for those papers is inference from absent in-text citation
+> rather than direct confirmation. `research.wur.nl` is Cloudflare-blocked and its OAI endpoint
+> returns 500, so two Wageningen theses were judged from titles alone. **Baheri 1997** (KU Leuven,
+> potato mechanical damage, 301 pp) is a strong lead that is not digitally indexed anywhere.
 
 One more finding worth carrying, because it shows how cleanly the two traditions are separated:
 the Molema thesis — the deepest full-text produce-damage thesis reached — **contains no finite
@@ -257,7 +339,15 @@ Stated plainly, because it should be argued against rather than buried:
   apple" — eluded all three sweeps. From title and topic tags it is method evaluation rather than
   inverse design, which is the weak negative this study relies on. Its actual contents are
   **unknown**, and it is the paper most likely to overturn the "no consensus criterion" reading.
-- **Source-age asymmetry.** The deepest evidence on calibration data and specimen variability is
-  1993–1999; the evidence on current modelling practice is 2019–2025. Do not read the old theses
-  as statements about the current frontier, and do not read the 2019 MeBioS data-gap admission as
-  proven still-open today.
+- **A second locked paper could carry a number.** Van Zeebroeck's 2006 validation paper
+  (*Postharvest Biol. Technol.* 41(2):85–91) is the one place a quantitative bruise-prediction error
+  for that work would live. Closed at Elsevier, **absent from Lirias**, no abstract in OpenAlex or
+  Crossref. The thesis abstract says only "with sufficient accuracy," which is where a number would
+  be advertised if one existed — but it cannot be excluded.
+- **Source-age asymmetry, and it cuts both ways.** The deepest evidence on calibration data and
+  specimen variability is 1993–1999; the modelling evidence is 2019–2026. Do not read the old theses
+  as statements about the current frontier.
+  **And the 2019 MeBioS data-gap admission is no longer current** — that group published much of the
+  missing data themselves in May 2026 (`10.48804/GNBFGU`). A three-month-old dataset from an active
+  line is a warning that other parts of this chapter may be similarly overtaken. **Check the
+  publication dates before relying on any "nobody has done X" claim here.**
