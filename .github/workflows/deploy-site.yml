@@ -37,9 +37,8 @@ jobs:
       - name: Assemble site
         run: |
           mkdir -p _site
-          cp site/index.html _site/
-          cp site/style.css _site/
-          cp site/CNAME _site/
+          # Copy the whole tree so new pages ship without editing this workflow.
+          cp -r site/. _site/
           cp -r docs/studies/biological_navigation/book _site/research
 
       - name: Upload artifact

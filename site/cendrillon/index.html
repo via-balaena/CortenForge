@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cendrillon — a guided scan-to-mold desktop tool | CortenForge</title>
+  <meta name="description" content="Cendrillon is a guided desktop tool that takes a 3D scan all the way to printable, silicone-cast molds, step by step. Built with CortenForge. Free and open source.">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+  <header class="site">
+    <div class="wrap bar">
+      <a class="brand" href="/">
+        <span class="brand-name">CortenForge</span>
+      </a>
+      <nav class="site">
+        <a href="/">SDK</a>
+        <a href="/cendrillon/" aria-current="page">Cendrillon</a>
+        <a href="/services/">Services</a>
+        <a href="/research/">Research</a>
+        <a href="https://github.com/via-balaena/CortenForge">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap">
+
+    <div class="hero">
+      <p class="eyebrow">Application &middot; built with CortenForge</p>
+      <h1>Cendrillon</h1>
+      <p class="standfirst">A guided desktop tool that takes a 3D scan all the way to printable, silicone-cast molds &mdash; step by step, with the workflow saved as you go.</p>
+    </div>
+
+    <section>
+      <h2>Download</h2>
+
+      <!-- GitHub's stable latest-release URLs (…/releases/latest/download/<asset>)
+           so these keep working across releases without pointing users at the
+           release page. -->
+      <div class="downloads">
+        <a class="button" href="https://github.com/via-balaena/CortenForge/releases/latest/download/Cendrillon-macos-arm64.zip">
+          Download for Mac<span class="button-sub">apple silicon &middot; tested</span>
+        </a>
+        <a class="button button-secondary" href="https://github.com/via-balaena/CortenForge/releases/latest/download/Cendrillon-windows-x86_64.zip">
+          Download for Windows<span class="button-sub">beta</span>
+        </a>
+        <a class="button button-secondary" href="https://github.com/via-balaena/CortenForge/releases/latest/download/Cendrillon-linux-x86_64.tar.gz">
+          Download for Linux<span class="button-sub">beta</span>
+        </a>
+      </div>
+
+      <p class="note">On an older Intel Mac? The Intel build is in beta &mdash; find it, and every other download, on the <a href="https://github.com/via-balaena/CortenForge/releases/latest">releases page</a>.</p>
+
+      <details class="firstrun" open>
+        <summary>First time you open it &mdash; it&rsquo;s unsigned for now</summary>
+        <ul>
+          <li><b>Mac</b> &mdash; unzip, drag <code>Cendrillon.app</code> into Applications, and double-click. macOS will say it can&rsquo;t verify the developer: open <b>System Settings &rarr; Privacy &amp; Security</b>, scroll down, and click <b>Open Anyway</b>, then open it again. You only do this once.</li>
+          <li><b>Windows</b> &mdash; unzip and run <code>cf-studio-gui.exe</code>. If SmartScreen warns, click <b>More info &rarr; Run anyway</b>.</li>
+          <li><b>Linux</b> &mdash; <code>tar xzf</code> and run the <code>cf-studio-gui</code> binary. Needs a working Vulkan or GL driver.</li>
+        </ul>
+      </details>
+
+      <p class="note">Code-signing and notarization &mdash; a one-click launch &mdash; is a planned upgrade.</p>
+    </section>
+
+    <section>
+      <h2>What it does</h2>
+
+      <p class="lead-in">Cendrillon is one workflow through the SDK: a scan goes in, a set of printable mold pieces and a written fabrication procedure come out. Each step is guided, and the project autosaves, so you can stop and resume.</p>
+
+      <p>It exercises a slice of CortenForge end to end &mdash; scan ingestion and repair, SDF conversion, multi-material layer stacks, mold splitting with registration features, printability gating, and generated pour-and-demold instructions. Everything it does is available as library calls if you would rather drive the same path from code.</p>
+
+      <p class="closer">Cendrillon is a worked example of the kit, not a separate product. The whole source is in the same repository &mdash; you can read every line before you download.</p>
+    </section>
+
+    <section>
+      <h2>Before you cast anything</h2>
+
+      <p>Cendrillon is general-purpose research and engineering software, provided <b>as is</b> without warranty of any kind. <b>It is not a medical device</b> and makes no medical, therapeutic, or health claims.</p>
+
+      <p>You use it &mdash; and make and use anything created with it &mdash; <b>entirely at your own risk</b>. You alone are responsible for choosing body-safe materials and for proper mixing, curing, cleaning, and hygiene; improperly cured or non-body-safe silicone can cause serious injury. Always follow the manufacturer&rsquo;s safety data sheet. See the <a class="inline" href="https://github.com/via-balaena/CortenForge/blob/main/DISCLAIMER.md">full disclaimer</a>.</p>
+    </section>
+
+    <footer class="site">
+      <p>Cendrillon is part of CortenForge, open source under Apache-2.0.</p>
+      <p>
+        <a href="/">CortenForge SDK</a>
+        <span class="sep">&middot;</span>
+        <a href="https://github.com/via-balaena/CortenForge">GitHub</a>
+        <span class="sep">&middot;</span>
+        <a href="https://viabalaena.com">Via Balaena</a>
+      </p>
+    </footer>
+
+  </main>
+
+</body>
+</html>
