@@ -218,6 +218,33 @@ section p {
   text-decoration: underline;
 }
 
+/* Services — descriptions run long, so this block reads left-aligned
+   inside the otherwise centred page. */
+.services {
+  text-align: left;
+  margin: 1.1rem 0 1.2rem;
+}
+
+.services dt {
+  font-weight: 600;
+  color: var(--heading);
+}
+
+.services dd {
+  font-size: 0.9rem;
+  color: #666666;
+  margin-bottom: 1rem;
+}
+
+.services dd:last-child { margin-bottom: 0; }
+
+#services p a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+#services p a:hover { text-decoration: underline; }
+
 @media (max-width: 600px) {
   .container { padding: 5rem 1.2rem 3rem; }
   h1 { font-size: 1.6rem; }
