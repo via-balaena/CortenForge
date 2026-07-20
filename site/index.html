@@ -161,7 +161,7 @@ cargo xtask grade &lt;crate-name&gt;      # run the quality gate on a single cra
         </div>
       </div>
 
-      <p class="stack-note">70 crates outside <code>examples/</code>. Pure Rust with no framework dependencies in the physics and mesh cores; the mold-CSG stage builds a vendored C++ kernel, so a first build of <code>cf-cast</code> needs CMake and a C++ compiler. Layer-0 core crates are checked against the <code>wasm32-unknown-unknown</code> target as part of the quality gate.</p>
+      <p class="stack-note">70 crates outside <code>examples/</code>. Pure Rust with no framework dependencies in the physics and mesh cores; the mold-CSG stage builds a vendored C++ kernel through CMake. The facade pulls it in by default, so a first build needs CMake and a C++ compiler; <code>default-features = false, features = ["sim", "mesh"]</code> skips it. Layer-0 core crates are checked against the <code>wasm32-unknown-unknown</code> target as part of the quality gate.</p>
     </section>
 
     <section>

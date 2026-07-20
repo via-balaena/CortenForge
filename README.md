@@ -34,7 +34,7 @@ CortenForge — including the **Cendrillon** application — is general-purpose 
 
 ### Use the SDK
 
-Applications depend on a single crate — the **`cortenforge` facade** — and reach the headless core of the SDK through it, so the internal crate structure can evolve behind one stable contract.
+Applications depend on a single crate — the **`cortenforge` facade** — and reach the headless core of the SDK through it, so the internal crate structure can evolve behind one import surface.
 
 ```toml
 [dependencies]
@@ -43,7 +43,7 @@ cortenforge = { git = "https://github.com/via-balaena/CortenForge" }
 ```
 
 ```rust
-// Two domain umbrellas expose the whole toolkit through one dependency:
+// Two umbrellas plus the design and fabrication crates, all through one dependency:
 use cortenforge::sim;   // rigid + soft physics, soft↔rigid coupling, RL/opt
 use cortenforge::mesh;  // load / repair / measure / print meshes
 

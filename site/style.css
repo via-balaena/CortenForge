@@ -516,7 +516,7 @@ footer.site a:hover { color: var(--sodium); border-bottom-color: var(--accent); 
 
   .lead-in, .standfirst, .stack-row p, .stack-row p:last-child, .stack-note,
   .card-sub, .note, .closer, .kicker, .firstrun ul, .firstrun li,
-  .button-secondary .button-sub, footer.site { color: #222222; }
+  .button-secondary .button-sub, footer.site, .sep { color: #222222; }
 
   .stack-row p.crates, code, pre code, .card-label, .eyebrow { color: #000000; }
 
@@ -534,9 +534,10 @@ footer.site a:hover { color: var(--sodium); border-bottom-color: var(--accent); 
     border-color: #000000;
   }
 
-  /* Links to release assets and docs are useless as bare words on paper. */
-  .actions a[href^="http"]::after,
-  .downloads a[href^="http"]::after {
+  /* Links are useless as bare words on paper. Scoped by ancestor rather than
+     enumerated per component, so new link styles are covered automatically. */
+  main a[href^="http"]::after,
+  footer.site a[href^="http"]::after {
     content: " (" attr(href) ")";
     font-size: 11px;
     overflow-wrap: anywhere;
@@ -553,6 +554,16 @@ footer.site a:hover { color: var(--sodium); border-bottom-color: var(--accent); 
   /* overflow:hidden establishes a BFC that some engines refuse to fragment
      across pages; the radius clipping it buys is moot once backgrounds go. */
   .stack { overflow: visible; }
+
+  /* On paper overflow is a silent clip, and the longest code lines exceed the
+     text width at every common paper/margin combination. */
+  pre {
+    overflow-x: visible;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
 
   footer.site { margin-top: 24px; padding-bottom: 0; }
 
