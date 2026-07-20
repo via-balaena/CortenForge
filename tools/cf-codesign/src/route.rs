@@ -314,18 +314,19 @@ impl CoDesignProblem for RouteTarget {
 /// a tolerance in metres.
 ///
 /// When `m` samples bind at once — they share the reward between them — the slack
-/// shrinks to `w_r / (2·m·w_c)`, giving
+/// shrinks by `m`, and the binding samples enter through their *mean* clearance `φ̄`:
 ///
 /// ```text
-/// r* = (φ_min − margin) + w_r / (2·m·w_c)
+/// r* = (φ̄_binding − margin) + w_r / (2·m·w_c)
 /// ```
 ///
-/// This is genuinely predictive, not just an intuition pump: the gate's flat-walled
-/// corridor scene puts every sample at the same clearance (so `m = n_samples`), and the
-/// optimizer lands within ~1% of this `r*` across a 6× range of corridor widths. On a
-/// curved body `m` is whatever fraction of the route is actually pressed against the
-/// surface and is not known in advance, so there the formula sets the scale of `w_r`
-/// rather than predicting `r*` outright.
+/// This is genuinely predictive where both quantities are known: the gate's flat-walled
+/// corridor scene puts every sample at the same clearance, so `m = n_samples` and
+/// `φ̄ = φ_min` exactly, and the optimizer lands within ~1% of this `r*` across a 6×
+/// range of corridor widths. On a curved body **both** inputs degrade — `m` is whatever
+/// fraction of the route is actually pressed against the surface, and `φ̄` exceeds
+/// `φ_min` because the binding samples sit at a spread of clearances — so there the
+/// formula sets the scale of `w_r` rather than predicting `r*` outright.
 ///
 /// # Symmetry
 /// The inherited stationary-ridge footgun applies to the route block exactly as it does
@@ -425,6 +426,16 @@ impl ConduitTarget {
     /// silently: it returns a plausible-looking radius that is simply wherever `J`
     /// first went negative, identical across scenes with genuinely different optima.
     /// Convergence here must be judged by the gradient norm.
+    ///
+    /// # The gradient norm is radius-weighted, so read it with care
+    /// `grad_tol` is not scale-free in log-space: `dJ/d(ln r) = r · dJ/dr`, so the
+    /// radius component vanishes as `r → 0` *by construction*, whatever the design's
+    /// optimality. In an infeasible scene, where the radius is driven down without
+    /// limit, a small enough `r` therefore trips any fixed `grad_tol` and reports
+    /// `converged` on a conduit that is merely shrinking to nothing. The shipped gates
+    /// stay well clear of this (`r ≈ 4e-5` against a threshold that needs `r ≈ 3e-6`),
+    /// but a longer run or a smaller `penalty_weight` would reach it — so check that a
+    /// converged radius is a *fit*, not a collapse.
     #[must_use]
     pub fn recommended_config(&self) -> crate::OptConfig {
         crate::OptConfig {
@@ -509,7 +520,18 @@ impl ConduitTarget {
 
     /// The objective at `p`: `−w_r·r + length + w_c · Σ clearance violation²`, with
     /// `r = exp(p_last)`. Returns `+∞` for a degenerate route or a radius that has
-    /// overflowed out of log-space, so the optimizer treats it as strictly worse.
+    /// overflowed out of log-space, ranking such a design below any valid one.
+    ///
+    /// **This ranking does not survive differentiation.** A `+∞` on both sides of a
+    /// finite-difference stencil gives `∞ − ∞ = NaN`, and on one side `±∞`; either
+    /// poisons the Adam step. Worse, [`optimize`](crate::optimize) derives its stopping
+    /// norm with `f64::max`, which *returns the non-NaN operand*, so an all-NaN
+    /// gradient reads as `‖grad‖∞ = 0` and the run reports `converged` with NaN
+    /// parameters. This is inherited from [`RouteTarget`] and not specific to the
+    /// radius, and it is far out of reach in practice — log-space overflow needs
+    /// `p_last > 709`, some 14000 Adam steps at the recommended `lr` from any sane
+    /// start — but treat `+∞` as a diagnostic for a malformed scene, not as a
+    /// constraint the optimizer can be driven against.
     ///
     /// # Panics
     /// Panics if `p.len() != 3 · n_interior + 1`.
@@ -532,7 +554,10 @@ impl ConduitTarget {
     /// The smallest centerline clearance `min_t φ_body(sample(t))` along the route at
     /// `p` (negative inside the body). A converged conduit should have this at or just
     /// below [`req_clearance`](Self::req_clearance) — the soft equilibrium sits a
-    /// slack `w_r / (2·w_c)` *inside* the requirement.
+    /// slack `w_r / (2·m·w_c)` *inside* the requirement, `m` being the number of
+    /// samples binding against the body (see the type docs; the shortfall is divided
+    /// among them, so quoting the single-sample `w_r / (2·w_c)` here would overstate
+    /// it by a factor of `m`).
     ///
     /// # Panics
     /// Panics if `p.len() != 3 · n_interior + 1`.

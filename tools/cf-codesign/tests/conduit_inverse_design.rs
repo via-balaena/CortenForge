@@ -144,10 +144,14 @@ fn conduit_codesign_bends_and_sizes() {
 
     let r = t.radius(&res.params);
     assert!(r > 2.0 * r0, "radius did not grow: {r0} -> {r}");
-    // The route detoured far enough that the fattened conduit clears the body: the
-    // centerline stands off by essentially the required clearance. The equilibrium
-    // settles a slack `w_r/(2·m·w_c)` INSIDE the requirement (the reward buys a sliver
-    // of tolerance), so the bound allows that documented shortfall.
+    // The route detoured far enough that the fattened conduit essentially clears the
+    // body. The equilibrium settles a slack INSIDE the requirement (the reward buys a
+    // sliver of tolerance), so a shortfall is expected and the bound must allow it.
+    // On this curved body the slack is NOT predictable — `m`, the number of binding
+    // samples, is unknown — so 0.1 is an empirical bound with ~2× headroom over the
+    // measured 0.049 shortfall, not a figure derived from `w_r/(2·m·w_c)`. The
+    // quantitative check of the closed form lives in the flat-corridor gate below,
+    // where `m` is known.
     let clr = t.min_clearance(&res.params);
     let req = t.req_clearance(&res.params);
     assert!(
@@ -169,11 +173,27 @@ fn conduit_codesign_bends_and_sizes() {
 #[test]
 fn conduit_on_ridge_stalls() {
     let t = capsule_scene();
-    let res = optimize(&t, &t.x0(0.3), &t.recommended_config());
+    let r0 = 0.3;
+    let res = optimize(&t, &t.x0(r0), &t.recommended_config());
     assert!(
         t.min_clearance(&res.params) < 0.0,
         "on-ridge run unexpectedly cleared the body (clearance {})",
         t.min_clearance(&res.params)
+    );
+    // The stall must be SYMMETRY, not a dead optimizer: the route is frozen on the
+    // ridge while the radius axis — which is not symmetry-locked — still moves. Without
+    // this the assertion above would pass even if `optimize` were a no-op, since
+    // `min_clearance` reads only the route.
+    assert!(
+        res.params[1].abs() < 1e-6 && res.params[4].abs() < 1e-6,
+        "route left the ridge: y = {}, {}",
+        res.params[1],
+        res.params[4]
+    );
+    let r = t.radius(&res.params);
+    assert!(
+        (r - r0).abs() > 1e-3,
+        "radius did not move, so the run proves nothing about symmetry: {r}"
     );
 }
 
@@ -199,8 +219,13 @@ fn conduit_radius_falls_as_corridor_narrows() {
         let res = optimize(&t, &off_ridge(&t, 0.3, 0.05), &t.recommended_config());
         let r = t.radius(&res.params);
         let pred = predicted_radius(gap);
+        // The tolerance is deliberately BELOW the slack term `w_r/(2·m·w_c)` = 0.01
+        // that distinguishes this closed form from the naive `gap/2 − margin`. A
+        // looser bound would pass for a prediction that drops the slack entirely,
+        // making the test unable to check the thing it exists to check. Measured
+        // error is ~0.0013, so this still leaves ~4× headroom.
         assert!(
-            (r - pred).abs() < 0.02,
+            (r - pred).abs() < 0.005,
             "gap {gap}: optimal radius {r} vs predicted {pred}"
         );
         radii.push(r);
@@ -268,4 +293,25 @@ fn conduit_radius_stays_positive_under_collapse() {
         r_final < 1e-3,
         "radius was not actually driven toward zero: {r_final}"
     );
+
+    // The DECAY ITSELF, pinned: run the same infeasible scene to three horizons and
+    // require the radius to keep falling by roughly an order of magnitude each time
+    // while never reaching zero. This is what distinguishes a genuine geometric
+    // collapse in log-space from a radius that has merely parked at a small value —
+    // and it is the evidence behind the claim that the log-space parametrization holds
+    // `r > 0` under unbounded downward pressure.
+    let mut previous = f64::INFINITY;
+    for max_iters in [800, 3000, 8000] {
+        let cfg = OptConfig {
+            max_iters,
+            ..t.recommended_config()
+        };
+        let r = t.radius(&optimize(&t, &off_ridge(&t, 0.3, 0.05), &cfg).params);
+        assert!(r > 0.0, "radius reached zero at {max_iters} iters");
+        assert!(
+            r < previous / 3.0,
+            "radius stopped collapsing at {max_iters} iters: {r} vs {previous} before"
+        );
+        previous = r;
+    }
 }
