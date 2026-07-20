@@ -63,9 +63,9 @@
       <details class="firstrun" open>
         <summary>First time you open it &mdash; the builds are unsigned</summary>
         <ul>
-          <li><strong>Mac</strong> &mdash; unzip, drag <code>Cendrillon.app</code> into Applications, and double-click. macOS will say it can&rsquo;t verify the developer: open <strong>System Settings &rarr; Privacy &amp; Security</strong>, scroll down, and click <strong>Open Anyway</strong>, then open it again. You only do this once.</li>
+          <li><strong>Mac</strong> &mdash; unzip, drag <code>Cendrillon.app</code> into Applications, and double-click. macOS will say it can&rsquo;t verify the developer. Open <strong>System Settings &rarr; Privacy &amp; Security</strong>, scroll down, and click <strong>Open Anyway</strong>, then open it again. You only do this once.</li>
           <li><strong>Windows</strong> &mdash; unzip and run <code>cf-studio-gui.exe</code>. That is Cendrillon; the binary still carries its internal name. If SmartScreen warns, click <strong>More info &rarr; Run anyway</strong>.</li>
-          <li><strong>Linux</strong> &mdash; <code>tar xzf</code> and run the <code>cf-studio-gui</code> binary. Needs a working Vulkan or GL driver.</li>
+          <li><strong>Linux</strong> &mdash; <code>tar xzf</code> and run the <code>cf-studio-gui</code> binary; that is Cendrillon, under its internal name. Needs a working Vulkan or GL driver.</li>
         </ul>
       </details>
 
@@ -75,7 +75,7 @@
     <section>
       <h2>What it does</h2>
 
-      <p class="lead-in">Cendrillon is one workflow through the SDK: a scan goes in, a set of printable mold pieces and a written fabrication procedure come out. Each step is guided, and the project autosaves, so you can stop and resume.</p>
+      <p class="lead-in">A scan goes in; a set of printable mold pieces and a written fabrication procedure come out. Each step is guided, and you can export your work as you go.</p>
 
       <p>It exercises a slice of CortenForge end to end &mdash; scan ingestion and repair, SDF conversion, multi-material layer stacks, mold splitting with registration features, printability gating, and generated pour-and-demold instructions. Everything it does is available as library calls if you would rather drive the same path from code.</p>
 

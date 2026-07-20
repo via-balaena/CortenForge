@@ -140,7 +140,6 @@ header.site {
   margin-right: 9px;
   background: var(--accent);
   box-shadow: 0 0 10px rgba(217, 96, 58, 0.55);
-  vertical-align: baseline;
 }
 
 nav.site {
@@ -512,15 +511,17 @@ footer.site a:hover { color: var(--sodium); border-bottom-color: var(--accent); 
     border-color: #999999;
   }
 
-  h1, h2, h3, .brand-name, .card-title, strong { color: #000000; }
+  h1, h2, h3, .stack-row h3, .card-title, strong, footer.site strong,
+  details.firstrun > summary { color: #000000; }
 
   .lead-in, .standfirst, .stack-row p, .stack-row p:last-child, .stack-note,
   .card-sub, .note, .closer, .kicker, .firstrun ul, .firstrun li,
   .button-secondary .button-sub, footer.site { color: #222222; }
 
-  .crates, code, pre code, .card-label, .eyebrow { color: #000000; }
+  .stack-row p.crates, code, pre code, .card-label, .eyebrow { color: #000000; }
 
-  pre, .stack, .card, .closer, details.firstrun, .kicker {
+  pre, .stack, .stack-row, .card, .closer, details.firstrun, .kicker,
+  .hero, footer.site, code {
     background: #ffffff;
     border-color: #999999;
   }
@@ -537,7 +538,9 @@ footer.site a:hover { color: var(--sodium); border-bottom-color: var(--accent); 
   .actions a[href^="http"]::after,
   .downloads a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 11px; }
 
-  section { padding-top: 28px; page-break-inside: avoid; }
+  section { padding-top: 28px; }
+
+  h1, h2, h3 { page-break-after: avoid; break-after: avoid; }
 
   .stack-row { page-break-inside: avoid; }
 }

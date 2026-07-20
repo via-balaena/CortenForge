@@ -52,7 +52,7 @@
 
       <p class="kicker">The kit is the product.</p>
 
-      <p>Most tools cover one leg of that path and hand off through file exchange. These components share one geometric kernel &mdash; an <code>Sdf</code> trait implemented across design, meshing, and both physics engines &mdash; so a design reaches a simulation in memory, with no export step in between. The soft-body FEM and the soft&harr;rigid contact coupling are differentiable, running a single reverse-mode tape across both engines; the rigid engine supplies analytic and finite-difference derivatives. <a class="inline" href="https://github.com/via-balaena/CortenForge/blob/main/MISSION.md">MISSION.md</a> sets out where that leads.</p>
+      <p>Most tools cover one leg of that path and hand off through file exchange. These components share one geometric kernel &mdash; an <code>Sdf</code> trait implemented across design, meshing, and the soft-body engine, with the rigid engine consuming the same kernel&rsquo;s sampled grids &mdash; so a design reaches a simulation in memory, with no export step in between &mdash; <a class="inline" href="https://github.com/via-balaena/CortenForge/tree/main/examples/integration/design-to-sim">design-to-sim</a> is that path in one file. The soft-body FEM and the soft&harr;rigid contact coupling are differentiable, running a single reverse-mode tape across both engines. The rigid engine supplies analytic and finite-difference derivatives. <a class="inline" href="https://github.com/via-balaena/CortenForge/blob/main/MISSION.md">MISSION.md</a> sets out where that leads.</p>
     </section>
 
     <section>
@@ -76,12 +76,12 @@
 
         <div class="stack-row">
           <h3>Scan &rarr; design &rarr; fabrication</h3>
-          <p>Repair a scan into something watertight, convert it to an SDF, build implicit geometry against it, and check the result is printable. Cendrillon walks this path, from a cleaned scan to printable molds.</p>
+          <p>Repair a scan into a watertight body, convert it to an SDF, build implicit geometry against it, and check the result is printable. Cendrillon walks this path, from a raw scan to printable molds.</p>
         </div>
 
         <div class="stack-row">
           <h3>Embodied-AI research</h3>
-          <p>Reach batched environments, differentiable physics, and the full learning stack through one dependency, alongside a corpus of <a class="inline" href="https://github.com/via-balaena/CortenForge/tree/main/examples">worked examples</a>.</p>
+          <p>Reach batched environments, differentiable physics, and the learning stack through one dependency, alongside a corpus of <a class="inline" href="https://github.com/via-balaena/CortenForge/tree/main/examples">worked examples</a>.</p>
         </div>
       </div>
     </section>
@@ -91,12 +91,12 @@
 
       <p>Applications depend on a single crate &mdash; the <code>cortenforge</code> facade &mdash; and reach the headless core of the SDK through it, so the internal crate structure can evolve behind one stable contract.</p>
 
-      <pre><code>[dependencies]
+      <pre tabindex="0" role="region" aria-label="Cargo.toml dependency"><code>[dependencies]
 cortenforge = { git = "https://github.com/via-balaena/CortenForge" }</code></pre>
 
-      <p class="note">Depend on the repository, not crates.io &mdash; the published listings are frozen years behind this workspace, so <code>cargo add</code> will silently give you a stale version.</p>
+      <p class="note">Depend on the repository, not crates.io &mdash; the published listings lag this workspace by months, so <code>cargo add</code> will silently give you a stale version.</p>
 
-      <pre><code>// Two umbrellas plus the design and fabrication crates, all through one dependency:
+      <pre tabindex="0" role="region" aria-label="Facade imports"><code>// Two umbrellas plus the design and fabrication crates, all through one dependency:
 use cortenforge::sim;          // rigid + soft physics, soft&harr;rigid coupling, RL/opt
 use cortenforge::mesh;         // load / repair / measure / print meshes
 use cortenforge::cf_design;    // implicit-surface design kernel
@@ -106,10 +106,10 @@ use cortenforge::cf_cast;      // multi-material mold generation</code></pre>
 
       <p>To work on the SDK itself rather than depend on it:</p>
 
-      <pre><code>git clone https://github.com/via-balaena/CortenForge.git
+      <pre tabindex="0" role="region" aria-label="Build from source"><code>git clone https://github.com/via-balaena/CortenForge.git
 cd CortenForge
-cargo build --workspace
-cargo xtask grade &lt;crate-name&gt;   # run the quality gate on a single crate</code></pre>
+cargo build -p cortenforge          # the facade; --workspace builds all 300 members
+cargo xtask grade &lt;crate-name&gt;      # run the quality gate on a single crate</code></pre>
     </section>
 
     <section>
@@ -119,7 +119,7 @@ cargo xtask grade &lt;crate-name&gt;   # run the quality gate on a single crate<
         <div class="stack-row">
           <h3>Rigid-body physics</h3>
           <p class="crates">sim-core &middot; sim-mjcf &middot; sim-urdf</p>
-          <p>Dynamics matched against MuJoCo 3.4.0, 79/79 on the conformance suite. MJCF and URDF import, analytic and finite-difference derivatives.</p>
+          <p>MuJoCo-aligned dynamics, 79/79 on the 3.4.0 conformance suite. MJCF and URDF import, analytic and finite-difference derivatives.</p>
         </div>
 
         <div class="stack-row">
@@ -155,11 +155,11 @@ cargo xtask grade &lt;crate-name&gt;   # run the quality gate on a single crate<
         <div class="stack-row">
           <h3>Scan &rarr; fabrication</h3>
           <p class="crates">cf-scan-prep-core &middot; cf-cast &middot; mesh-printability</p>
-          <p>Scan cleanup, multi-material mold generation, printability gating, procedure generation.</p>
+          <p>Scan cleanup, multi-material mold generation, printability gating, and generated fabrication procedures.</p>
         </div>
       </div>
 
-      <p class="stack-note">70 crates outside <code>examples/</code>. Pure Rust, with no framework dependencies in the physics and mesh cores. Layer-0 core crates are checked against the <code>wasm32-unknown-unknown</code> target as part of the quality gate.</p>
+      <p class="stack-note">70 crates outside <code>examples/</code>. Pure Rust with no framework dependencies in the physics and mesh cores; the mold-CSG stage builds a vendored C++ kernel, so a first build of <code>cf-cast</code> needs CMake and a C++ compiler. Layer-0 core crates are checked against the <code>wasm32-unknown-unknown</code> target as part of the quality gate.</p>
     </section>
 
     <section>
@@ -193,7 +193,7 @@ cargo xtask grade &lt;crate-name&gt;   # run the quality gate on a single crate<
     <section>
       <h2>Where to start</h2>
 
-      <p class="lead-in">Read a <a class="inline" href="https://github.com/via-balaena/CortenForge/tree/main/examples">worked example</a> to see the components composed, or open an issue on <a class="inline" href="https://github.com/via-balaena/CortenForge/issues">GitHub</a> &mdash; questions and bug reports are equally welcome there.</p>
+      <p class="lead-in">Read a <a class="inline" href="https://github.com/via-balaena/CortenForge/tree/main/examples">worked example</a> to see the components composed, or open an issue on <a class="inline" href="https://github.com/via-balaena/CortenForge/issues">GitHub</a> &mdash; questions and bug reports are both welcome there.</p>
 
       <div class="actions">
         <a class="cta" href="https://github.com/via-balaena/CortenForge">Browse the repository</a>
@@ -214,7 +214,7 @@ cargo xtask grade &lt;crate-name&gt;   # run the quality gate on a single crate<
         <a class="card" href="https://github.com/via-balaena/CortenForge/blob/main/MISSION.md">
           <span class="card-label">Mission</span>
           <span class="card-title">Where this is going</span>
-          <span class="card-sub">The thesis, the capstone it is building toward, and how the work is sequenced.</span>
+          <span class="card-sub">The thesis, the capstone the work is building toward, and how it is sequenced.</span>
         </a>
 
         <a class="card" href="/research/">
@@ -230,7 +230,7 @@ cargo xtask grade &lt;crate-name&gt;   # run the quality gate on a single crate<
   <footer class="wrap site">
     <p>CortenForge is open-source software, free under Apache-2.0, built and maintained by <a href="https://viabalaena.com">Via Balaena</a>. Issues and pull requests are welcome on <a href="https://github.com/via-balaena/CortenForge">GitHub</a>.</p>
 
-    <p>It is general-purpose research and engineering software, provided <strong>as is</strong> without warranty of any kind. <strong>It is not a medical device</strong> and makes no medical, therapeutic, or health claims. See the <a href="https://github.com/via-balaena/CortenForge/blob/main/DISCLAIMER.md">full disclaimer</a>.</p>
+    <p>CortenForge is general-purpose research and engineering software, provided <strong>as is</strong> without warranty of any kind. <strong>It is not a medical device</strong> and makes no medical, therapeutic, or health claims. See the <a href="https://github.com/via-balaena/CortenForge/blob/main/DISCLAIMER.md">full disclaimer</a>.</p>
     <p>
       <a href="https://github.com/via-balaena/CortenForge">GitHub</a>
       <span class="sep" aria-hidden="true">&middot;</span>
