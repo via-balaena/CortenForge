@@ -141,9 +141,9 @@ fn joint_inverse_design_recovers_behavior() {
          μ: 2e4 → {mu_rec:.1} (μ*={MU_STAR})  θ_rec={th_rec:?}  iters={} conv={}",
         (z_final - z_tgt).abs(),
         result.iters,
-        result.converged,
+        result.converged(),
     );
-    assert!(result.converged, "joint inverse design did not converge");
+    assert!(result.converged(), "joint inverse design did not converge");
     assert!(
         (z_final - z_tgt).abs() < 1e-9,
         "recovered (μ, θ) should hit the target height: z_final {z_final} vs target {z_tgt}"

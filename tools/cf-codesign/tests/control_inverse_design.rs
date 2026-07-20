@@ -119,9 +119,12 @@ fn inverse_design_recovers_target_behavior() {
          |z-tgt|={:.3e} iters={} conv={}",
         (z_final - target_z).abs(),
         result.iters,
-        result.converged
+        result.converged()
     );
-    assert!(result.converged, "control inverse design did not converge");
+    assert!(
+        result.converged(),
+        "control inverse design did not converge"
+    );
     assert!(
         (z_final - target_z).abs() < 1e-9,
         "recovered schedule should hit the target height: z_final {z_final} vs target {target_z}"
@@ -157,7 +160,7 @@ fn normalization_is_load_bearing() {
     eprintln!(
         "raw: z_final={z_final:.9} target={target_z:.9} |z-tgt|={:.3e} conv={}",
         (z_final - target_z).abs(),
-        result.converged
+        result.converged()
     );
     assert!(
         (z_final - target_z).abs() > 1e-7,

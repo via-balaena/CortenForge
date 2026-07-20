@@ -81,7 +81,7 @@ fn main() {
          converged = {}",
         (z_final - target_z).abs(),
         result.iters,
-        result.converged,
+        result.converged(),
     );
     println!(
         "(The schedule is under-determined — {n_steps} controls for one target — so this is a \

@@ -73,10 +73,15 @@ fn recovers_known_material_from_target_behavior() {
     eprintln!(
         "inverse design: μ₀={mu0} → μ={mu:.3} (μ*={mu_star}) rel={rel_mu:.3e}  \
          loss={:.3e}  iters={}  converged={}",
-        result.loss, result.iters, result.converged,
+        result.loss,
+        result.iters,
+        result.converged(),
     );
 
-    assert!(result.converged, "optimizer did not converge in max_iters");
+    assert!(
+        result.converged(),
+        "optimizer did not converge in max_iters"
+    );
     assert!(
         result.loss < 1e-10,
         "final loss {} not below tol",

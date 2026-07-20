@@ -109,7 +109,7 @@ fn main() {
          iters; converged = {}",
         (x_final - target_x).abs(),
         result.iters,
-        result.converged,
+        result.converged(),
     );
     println!(
         "The differentiable co-design loop tuned the buffer AND the holding policy to restrain \

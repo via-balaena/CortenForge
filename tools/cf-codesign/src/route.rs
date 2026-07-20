@@ -266,6 +266,23 @@ impl CoDesignProblem for RouteTarget {
         (loss, grad)
     }
     // No `lower_bounds`: control-point coordinates are signed positions in space.
+
+    /// `Some(‖end − start‖)` — the straight-line chord between the fixed endpoints.
+    ///
+    /// The objective is `length + w·penalty`; the penalty is a sum of squares (`≥ 0`)
+    /// and the sampled polyline runs from `start` to `end`, so by the triangle
+    /// inequality its length is at least the chord. (Verified rather than assumed: the
+    /// route interpolates its endpoints, `sample(0) = start` and `sample(1) = end`.)
+    ///
+    /// The bound is **slack whenever the body blocks the straight route** — the true
+    /// optimum then includes an unavoidable detour whose size is the thing being
+    /// solved for. That costs only completeness, never soundness: `loss − chord <
+    /// loss_tol` still implies the design is within `loss_tol` of optimal, so the stop
+    /// cannot fire falsely. It is tight exactly when an unobstructed straight route is
+    /// the answer, which is precisely when firing is correct.
+    fn loss_lower_bound(&self) -> Option<f64> {
+        Some((self.end - self.start).norm())
+    }
 }
 
 /// A co-design problem over a conduit's *route and radius together*: find the
@@ -411,21 +428,13 @@ impl ConduitTarget {
         }
     }
 
-    /// A configuration that is **sound for this objective**: gradient-norm and
-    /// iteration limits only, with the loss-tolerance stop *disabled*
-    /// (`loss_tol = −∞`).
+    /// Learning rate and iteration budget suited to this objective's O(1) geometric
+    /// gradients.
     ///
-    /// # Why this is not a tuning convenience
-    /// [`optimize`](crate::optimize) stops when `loss < loss_tol`. Every other target
-    /// in this crate minimizes a squared residual `½(y − y*)²`, which is **bounded
-    /// below by zero**, so a small loss really does mean converged. This objective is
-    /// **signed** — the `−w_r·r` reward drives `J` negative as soon as it outweighs
-    /// length plus penalty — so *any* finite `loss_tol` is tripped at the sign
-    /// crossing, halting the run at an arbitrary point that has nothing to do with
-    /// optimality. With the default `loss_tol = 1e-10` the optimizer stops early and
-    /// silently: it returns a plausible-looking radius that is simply wherever `J`
-    /// first went negative, identical across scenes with genuinely different optima.
-    /// Convergence here must be judged by the gradient norm.
+    /// The loss-tolerance stop no longer needs disabling by hand here: this target
+    /// reports no [`loss_lower_bound`](Self::loss_lower_bound), so the optimizer
+    /// switches that criterion off structurally, whatever `loss_tol` a caller passes.
+    /// (This method used to carry a `loss_tol = −∞` sentinel for exactly that purpose.)
     ///
     /// # The gradient norm is radius-weighted, so read it with care
     /// `grad_tol` is not scale-free in log-space: `dJ/d(ln r) = r · dJ/dr`, so the
@@ -442,7 +451,6 @@ impl ConduitTarget {
             lr: 0.05,
             max_iters: 800,
             grad_tol: 1.0e-4,
-            loss_tol: f64::NEG_INFINITY,
             ..crate::OptConfig::default()
         }
     }
@@ -607,4 +615,27 @@ impl CoDesignProblem for ConduitTarget {
     }
     // No `lower_bounds`: the coordinates are signed positions and the radius is
     // reparametrized as `ln r` (positive by construction), so nothing needs clamping.
+
+    /// `None` — **no lower bound can be stated for this objective**, which disables
+    /// the loss-tolerance stop. This is the method that makes the signed-reward
+    /// objective safe to optimize, and it replaces the `loss_tol = −∞` sentinel this
+    /// target used to need.
+    ///
+    /// Whether `J` is bounded below at all depends on `w_r` and the scene, so it
+    /// cannot be answered at construction. Fatten in place and the clearance penalty
+    /// `~w_c·m·r²` overwhelms the linear reward, so `J → +∞`. But *detour and fatten
+    /// together* — holding the route roughly `r` clear of the body so the penalty
+    /// stays zero — costs length only linearly, giving `J ≈ (c − w_r)·r`, which runs
+    /// to `−∞` for any `w_r` above the length cost per unit of clearance. So the
+    /// objective is bounded below for a modest reward and unbounded for a generous
+    /// one, with the crossover set by geometry.
+    ///
+    /// Either way a numeric `loss_tol` is meaningless here: `J` goes negative as soon
+    /// as the reward outweighs length plus penalty, so the stop fires at that sign
+    /// crossing rather than at an optimum — silently returning a plausible radius that
+    /// is merely wherever `J` first went negative. That produced a **bit-identical
+    /// `r*` for two corridors with genuinely different optima** before it was caught.
+    fn loss_lower_bound(&self) -> Option<f64> {
+        None
+    }
 }

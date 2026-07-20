@@ -41,6 +41,10 @@ impl CoDesignProblem for FailClosedQuadratic {
         let r = x - self.target;
         Ok((0.5 * r * r, vec![r]))
     }
+    /// `½(x − target)²` — zero residual is the least it can be.
+    fn loss_lower_bound(&self) -> Option<f64> {
+        Some(0.0)
+    }
 }
 
 fn cfg(reject_infeasible: bool) -> OptConfig {
@@ -144,6 +148,10 @@ fn default_try_evaluate_through_reject_infeasible_loop() {
         fn evaluate(&self, p: &[f64]) -> (f64, Vec<f64>) {
             let r = p[0] - self.target;
             (0.5 * r * r, vec![r])
+        }
+        /// `½(x − target)²` — zero residual is the least it can be.
+        fn loss_lower_bound(&self) -> Option<f64> {
+            Some(0.0)
         }
     }
     let prob = SmoothQuadratic { target: 1.5 };

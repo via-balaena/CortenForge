@@ -149,9 +149,9 @@ fn grip_inverse_design_recovers_behavior() {
          μ: {mu0} → {mu_rec:.1} (μ*={MU_STAR})  θ_rec={th_rec:?}  iters={} conv={}",
         (x_final - x_tgt).abs(),
         result.iters,
-        result.converged,
+        result.converged(),
     );
-    assert!(result.converged, "grip inverse design did not converge");
+    assert!(result.converged(), "grip inverse design did not converge");
     assert!(
         (x_final - x_tgt).abs() < 1e-8,
         "recovered (μ, θ) should hit the restraint target: x_final {x_final} vs target {x_tgt}"

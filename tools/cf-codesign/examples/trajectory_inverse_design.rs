@@ -70,6 +70,6 @@ fn main() {
         "\nRecovered μ = {mu:.3} (μ* = {mu_star}, rel error {:.2e}) in {} iters; converged = {}",
         (mu - mu_star).abs() / mu_star,
         result.iters,
-        result.converged,
+        result.converged(),
     );
 }

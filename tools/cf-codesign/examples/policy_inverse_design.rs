@@ -83,7 +83,7 @@ fn main() {
          converged = {}",
         (z_final - target_z).abs(),
         result.iters,
-        result.converged,
+        result.converged(),
     );
     println!(
         "(3 policy weights for one scalar target is under-determined — this is a \

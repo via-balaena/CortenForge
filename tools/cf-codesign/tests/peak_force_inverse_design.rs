@@ -93,10 +93,15 @@ fn recovers_known_stiffness_from_target_peak_force() {
     eprintln!(
         "peak-force inverse design: μ₀={mu0} → μ={mu:.4} (μ*={mu_star}) rel={rel_mu:.3e}  \
          target_force={target_force:.2} N  loss={:.3e}  iters={}  converged={}",
-        result.loss, result.iters, result.converged,
+        result.loss,
+        result.iters,
+        result.converged(),
     );
 
-    assert!(result.converged, "optimizer did not converge in max_iters");
+    assert!(
+        result.converged(),
+        "optimizer did not converge in max_iters"
+    );
     assert!(
         rel_mu < 1e-3,
         "did not recover μ*: μ={mu} μ*={mu_star} (rel {rel_mu:e})"

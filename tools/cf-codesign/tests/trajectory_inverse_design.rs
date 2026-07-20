@@ -198,10 +198,15 @@ fn recovers_known_material_from_target_trajectory() {
     eprintln!(
         "trajectory inverse design (standard eps): μ₀={mu0} → μ={mu:.4} (μ*={mu_star}) \
          rel={rel_mu:.3e}  loss={:.3e}  iters={}  converged={}",
-        result.loss, result.iters, result.converged,
+        result.loss,
+        result.iters,
+        result.converged(),
     );
 
-    assert!(result.converged, "optimizer did not converge in max_iters");
+    assert!(
+        result.converged(),
+        "optimizer did not converge in max_iters"
+    );
     // Robust gate (the measured recovery is far tighter, ~1e-6 or better); loose
     // here so cross-OS float drift in the coupled rollout can't flake it.
     assert!(

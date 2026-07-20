@@ -51,6 +51,6 @@ fn main() {
         result.params[0],
         (result.params[0] - mu_star).abs() / mu_star,
         result.iters,
-        result.converged,
+        result.converged(),
     );
 }

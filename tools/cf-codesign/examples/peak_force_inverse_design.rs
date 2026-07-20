@@ -68,7 +68,7 @@ fn main() {
          in {} iters; converged = {}",
         target.forward_peak_force(mu),
         result.iters,
-        result.converged,
+        result.converged(),
     );
     println!("The differentiable co-design loop tuned the buffer to meet the recoverability spec.");
 }
