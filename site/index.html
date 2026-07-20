@@ -26,7 +26,6 @@
       <nav class="site">
         <a href="/" aria-current="page">SDK</a>
         <a href="/cendrillon/">Cendrillon</a>
-        <a href="/services/">Services</a>
         <a href="/research/">Research</a>
         <a href="https://github.com/via-balaena/CortenForge">GitHub</a>
       </nav>
@@ -49,11 +48,52 @@
     <section>
       <h2>What it is</h2>
 
-      <p class="lead-in">CortenForge provides the building blocks spanning the path <strong>physical &rarr; digital &rarr; physical</strong>. Because those components are general, they serve a wide range of applications &mdash; robotics, soft robotics, biomechanics, generative design and digital fabrication, custom-fit products, and embodied-AI research.</p>
+      <p class="lead-in">CortenForge provides the building blocks spanning the path <strong>physical &rarr; digital &rarr; physical</strong>: get a real object into a simulation, design something against it, optimize that design through the physics, and gate the result for manufacture.</p>
 
       <p class="kicker">The kit is the product.</p>
 
-      <p>To prove the components compose end to end, our capstone undertaking &mdash; <strong>not yet built</strong> &mdash; is a differentiable body-to-device co-design loop for person-specific assistive robotics, with a powered, RL-controlled exoskeleton as the demonstration. See <a class="inline" href="https://github.com/via-balaena/CortenForge/blob/main/MISSION.md">MISSION.md</a>.</p>
+      <p>Most tools cover one leg of that path and hand off through file exchange. These components share one representation, so a gradient can run the whole way &mdash; from how a manufactured part behaves back to the parameters that shaped it. The capstone that proves it composes end to end &mdash; a differentiable body-to-device co-design loop, with an RL-controlled exoskeleton as the demonstration &mdash; is <strong>not yet built</strong>. See <a class="inline" href="https://github.com/via-balaena/CortenForge/blob/main/MISSION.md">MISSION.md</a>.</p>
+    </section>
+
+    <section>
+      <h2>What it&rsquo;s for</h2>
+
+      <div class="stack">
+        <div class="stack-row">
+          <h3>Robotics &amp; control</h3>
+          <p>Rigid-body dynamics with muscles, tendons, and actuators. Import an existing MJCF or URDF model, take analytic derivatives through it, and train a policy against it.</p>
+        </div>
+
+        <div class="stack-row">
+          <h3>Soft robotics</h3>
+          <p>Hyperelastic FEM with contact, for compliant grippers and actuators &mdash; through to the molds that cast them.</p>
+        </div>
+
+        <div class="stack-row">
+          <h3>Biomechanics</h3>
+          <p>Musculoskeletal models with soft-tissue contact, differentiable, so parameters can be fit to measured data instead of guessed.</p>
+        </div>
+
+        <div class="stack-row">
+          <h3>Generative design &amp; digital fabrication</h3>
+          <p>Implicit-surface modeling, graded material stacks, and lattice compliance fields, with printability as a checkable constraint rather than an afterthought.</p>
+        </div>
+
+        <div class="stack-row">
+          <h3>Scanning &amp; reverse engineering</h3>
+          <p>Repair a scan into something watertight, convert it to an SDF, measure it, and build geometry against it.</p>
+        </div>
+
+        <div class="stack-row">
+          <h3>Custom-fit products</h3>
+          <p>Anything shaped to a scanned body &mdash; the path from a scan to a printable mold, exercised end to end by Cendrillon.</p>
+        </div>
+
+        <div class="stack-row">
+          <h3>Embodied-AI research &amp; teaching</h3>
+          <p>Batched differentiable environments and a full learning stack, in one dependency, with worked examples to read.</p>
+        </div>
+      </div>
     </section>
 
     <section id="install">
@@ -79,6 +119,36 @@ use cortenforge::cf_design;    // implicit-surface design kernel</code></pre>
 cd CortenForge
 cargo build --workspace
 cargo xtask grade &lt;crate-name&gt;   # run the quality gate on a single crate</code></pre>
+    </section>
+
+    <section>
+      <h2>Status</h2>
+
+      <p class="lead-in">There is no stable release yet, and the API still moves. If you need reproducibility, pin a revision rather than tracking <code>main</code>.</p>
+
+      <pre><code>cortenforge = { git = "https://github.com/via-balaena/CortenForge", rev = "&lt;commit&gt;" }</code></pre>
+
+      <div class="stack">
+        <div class="stack-row">
+          <h3>Minimum Rust version</h3>
+          <p>1.87. The workspace pins the 1.96.0 toolchain so that builds and lints are reproducible; bumps are deliberate, paired with a workspace-wide lint sweep.</p>
+        </div>
+
+        <div class="stack-row">
+          <h3>Versioning</h3>
+          <p>The workspace carries a <code>1.0.0</code> version number, but treat it as pre-release: nothing is published from it, there are no release notes, and breaking changes land when they improve the architecture.</p>
+        </div>
+
+        <div class="stack-row">
+          <h3>Tagged releases</h3>
+          <p>Git tags build the Cendrillon application, not the SDK &mdash; <code>v0.3.2</code> is a Cendrillon version. There is no SDK tag to pin to yet.</p>
+        </div>
+
+        <div class="stack-row">
+          <h3>Platforms</h3>
+          <p>CI runs the full suite on Linux, plus a cross-OS job covering three platform-sensitive crates on macOS and Windows. Cendrillon ships builds for all three.</p>
+        </div>
+      </div>
     </section>
 
     <section>
@@ -141,10 +211,10 @@ cargo xtask grade &lt;crate-name&gt;   # run the quality gate on a single crate<
           <span class="card-sub">A guided desktop tool taking a 3D scan to printable molds for casting silicone.</span>
         </a>
 
-        <a class="card" href="/services/">
-          <span class="card-label">Services</span>
-          <span class="card-title">Work with the maintainers</span>
-          <span class="card-sub">Engine work, SDK extension, RL infrastructure, architecture review.</span>
+        <a class="card" href="https://github.com/via-balaena/CortenForge/blob/main/MISSION.md">
+          <span class="card-label">Mission</span>
+          <span class="card-title">Where this is going</span>
+          <span class="card-sub">The thesis, the capstone we are building toward, and the honest constraints.</span>
         </a>
 
         <a class="card" href="/research/">
@@ -158,7 +228,9 @@ cargo xtask grade &lt;crate-name&gt;   # run the quality gate on a single crate<
   </main>
 
   <footer class="wrap site">
-    <p>CortenForge is general-purpose research and engineering software, provided <strong>as is</strong> without warranty of any kind. <strong>It is not a medical device</strong> and makes no medical, therapeutic, or health claims. See the <a href="https://github.com/via-balaena/CortenForge/blob/main/DISCLAIMER.md">full disclaimer</a>.</p>
+    <p>CortenForge is open-source software, free under Apache-2.0, built and maintained by <a href="https://viabalaena.com">Via Balaena</a>. Issues and pull requests are welcome on <a href="https://github.com/via-balaena/CortenForge">GitHub</a>.</p>
+
+    <p>It is general-purpose research and engineering software, provided <strong>as is</strong> without warranty of any kind. <strong>It is not a medical device</strong> and makes no medical, therapeutic, or health claims. See the <a href="https://github.com/via-balaena/CortenForge/blob/main/DISCLAIMER.md">full disclaimer</a>.</p>
     <p>
       <a href="https://github.com/via-balaena/CortenForge">GitHub</a>
       <span class="sep" aria-hidden="true">&middot;</span>
