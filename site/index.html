@@ -52,7 +52,7 @@
 
       <p class="kicker">The kit is the product.</p>
 
-      <p>Most tools cover one leg of that path and hand off through file exchange. These components share one geometric kernel: an <code>Sdf</code> trait implemented across design, meshing, and the soft-body engine, with the rigid engine consuming the same kernel&rsquo;s sampled grids. A design therefore reaches a simulation in memory, with no export step in between &mdash; the <a class="inline" href="https://github.com/via-balaena/CortenForge/tree/main/examples/integration/design-to-sim">design-to-sim</a> example is that path, start to finish, in a single source file.</p>
+      <p>Most tools cover one leg of that path and hand off through file exchange. CortenForge&rsquo;s components share one geometric kernel instead: an <code>Sdf</code> trait implemented across design, meshing, and the soft-body engine, with the rigid engine consuming the same kernel&rsquo;s sampled grids. A design therefore reaches a simulation in memory, with no export step in between &mdash; the <a class="inline" href="https://github.com/via-balaena/CortenForge/tree/main/examples/integration/design-to-sim">design-to-sim</a> example is that path, start to finish, in a single source file.</p>
 
       <p>The soft-body FEM and the soft&harr;rigid contact coupling are differentiable, running a single reverse-mode tape across both engines. The rigid engine supplies analytic and finite-difference derivatives. <a class="inline" href="https://github.com/via-balaena/CortenForge/blob/main/MISSION.md">MISSION.md</a> sets out where that leads.</p>
     </section>
@@ -104,7 +104,7 @@ use cortenforge::mesh;         // load / repair / measure / print meshes
 use cortenforge::cf_design;    // implicit-surface design kernel
 use cortenforge::cf_cast;      // multi-material mold generation</code></pre>
 
-      <p>Simulation lives under <code>sim</code>, mesh work under <code>mesh</code>, and the design and fabrication crates are re-exported individually. The facade is headless by construction &mdash; the Bevy, GUI, and GPU crates are left out, as is most of the research and application code under <code>tools/</code>, apart from the headless scan-prep and mold-CLI crates it re-exports &mdash; so anything built against it runs without a window or a graphics driver, on a build server or inside a training loop. The excluded crates are still in the repository; you can depend on them directly.</p>
+      <p>Simulation lives under <code>sim</code>, mesh work under <code>mesh</code>, and the design and fabrication crates are re-exported individually. The facade is headless by construction, so anything built against it runs without a window or a graphics driver &mdash; on a build server, or inside a training loop. Left out: the Bevy, GUI, and GPU crates, and most of the research and application code under <code>tools/</code>, of which it re-exports only the headless scan-prep and mold-CLI crates. Everything excluded is still in the repository; you can depend on it directly.</p>
 
       <p>To work on the SDK itself rather than depend on it:</p>
 
