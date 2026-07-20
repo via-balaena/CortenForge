@@ -28,7 +28,7 @@ CortenForge — including the **Cendrillon** application — is general-purpose 
 | **Mesh** | mesh-io, mesh-repair, mesh-sdf + 8 more | STL/OBJ/PLY/3MF I/O, repair, offset, shell, lattice, print validation |
 | **Scan → fabrication** | cf-scan-prep-core, cf-cast, mesh-printability | Scan cleanup, multi-material mold generation, printability gating, procedure generation |
 
-70 crates outside `examples/`. Pure Rust with no framework dependencies in the physics and mesh cores; the mold-CSG stage builds a vendored C++ kernel, so a first build of `cf-cast` needs CMake and a C++ compiler. Layer-0 core crates are checked against `wasm32-unknown-unknown` by the quality gate.
+70 crates outside `examples/`. Pure Rust with no framework dependencies in the physics and mesh cores; the mold-CSG stage builds a vendored C++ kernel through CMake. The facade pulls it by default, so a first build needs CMake and a C++ compiler; `default-features = false, features = ["sim", "mesh"]` skips it. Layer-0 core crates are checked against `wasm32-unknown-unknown` by the quality gate.
 
 ## Quick Start
 

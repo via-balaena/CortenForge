@@ -477,7 +477,7 @@ footer.site strong { color: var(--text-2); font-weight: 600; }
 footer.site a { color: var(--text-2); text-decoration: none; border-bottom: 1px solid var(--border); }
 footer.site a:hover { color: var(--sodium); border-bottom-color: var(--accent); }
 
-.sep { color: var(--border-hi); padding: 0 6px; }
+.sep { color: var(--text-3); padding: 0 6px; }
 
 @media (max-width: 620px) {
   body { font-size: 16px; }
@@ -536,11 +536,25 @@ footer.site a:hover { color: var(--sodium); border-bottom-color: var(--accent); 
 
   /* Links to release assets and docs are useless as bare words on paper. */
   .actions a[href^="http"]::after,
-  .downloads a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 11px; }
+  .downloads a[href^="http"]::after {
+    content: " (" attr(href) ")";
+    font-size: 11px;
+    overflow-wrap: anywhere;
+  }
 
   section { padding-top: 28px; }
 
   h1, h2, h3 { page-break-after: avoid; break-after: avoid; }
+
+  .firstrun li::marker,
+  details.firstrun > summary::marker { color: #000000; }
+  details.firstrun > summary::-webkit-details-marker { color: #000000; }
+
+  /* overflow:hidden establishes a BFC that some engines refuse to fragment
+     across pages; the radius clipping it buys is moot once backgrounds go. */
+  .stack { overflow: visible; }
+
+  footer.site { margin-top: 24px; padding-bottom: 0; }
 
   .stack-row { page-break-inside: avoid; }
 }

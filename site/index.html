@@ -52,7 +52,9 @@
 
       <p class="kicker">The kit is the product.</p>
 
-      <p>Most tools cover one leg of that path and hand off through file exchange. These components share one geometric kernel &mdash; an <code>Sdf</code> trait implemented across design, meshing, and the soft-body engine, with the rigid engine consuming the same kernel&rsquo;s sampled grids &mdash; so a design reaches a simulation in memory, with no export step in between &mdash; <a class="inline" href="https://github.com/via-balaena/CortenForge/tree/main/examples/integration/design-to-sim">design-to-sim</a> is that path in one file. The soft-body FEM and the soft&harr;rigid contact coupling are differentiable, running a single reverse-mode tape across both engines. The rigid engine supplies analytic and finite-difference derivatives. <a class="inline" href="https://github.com/via-balaena/CortenForge/blob/main/MISSION.md">MISSION.md</a> sets out where that leads.</p>
+      <p>Most tools cover one leg of that path and hand off through file exchange. These components share one geometric kernel: an <code>Sdf</code> trait implemented across design, meshing, and the soft-body engine, with the rigid engine consuming the same kernel&rsquo;s sampled grids. A design therefore reaches a simulation in memory, with no export step in between &mdash; the <a class="inline" href="https://github.com/via-balaena/CortenForge/tree/main/examples/integration/design-to-sim">design-to-sim</a> example is that path, start to finish, in a single source file.</p>
+
+      <p>The soft-body FEM and the soft&harr;rigid contact coupling are differentiable, running a single reverse-mode tape across both engines. The rigid engine supplies analytic and finite-difference derivatives. <a class="inline" href="https://github.com/via-balaena/CortenForge/blob/main/MISSION.md">MISSION.md</a> sets out where that leads.</p>
     </section>
 
     <section>
@@ -66,7 +68,7 @@
 
         <div class="stack-row">
           <h3>Soft robotics</h3>
-          <p>Simulate compliant bodies against hyperelastic FEM with rigid contact, and generate multi-material molds from the same implicit geometry.</p>
+          <p>Simulate compliant bodies with hyperelastic FEM under rigid contact, and generate multi-material molds from the same implicit geometry.</p>
         </div>
 
         <div class="stack-row">
@@ -76,7 +78,7 @@
 
         <div class="stack-row">
           <h3>Scan &rarr; design &rarr; fabrication</h3>
-          <p>Repair a scan into a watertight body, convert it to an SDF, build implicit geometry against it, and check the result is printable. Cendrillon walks this path, from a raw scan to printable molds.</p>
+          <p>Repair a scan into a watertight body, convert it to an SDF, build implicit geometry against it, and check that the result is printable. Cendrillon walks this path, from a raw scan to printable molds.</p>
         </div>
 
         <div class="stack-row">
@@ -89,7 +91,7 @@
     <section id="install">
       <h2>Get started</h2>
 
-      <p>Applications depend on a single crate &mdash; the <code>cortenforge</code> facade &mdash; and reach the headless core of the SDK through it, so the internal crate structure can evolve behind one stable contract.</p>
+      <p>Applications depend on a single crate &mdash; the <code>cortenforge</code> facade &mdash; and reach the headless core of the SDK through it, so the internal crate structure can evolve behind one import surface.</p>
 
       <pre tabindex="0" role="region" aria-label="Cargo.toml dependency"><code>[dependencies]
 cortenforge = { git = "https://github.com/via-balaena/CortenForge" }</code></pre>
@@ -102,7 +104,7 @@ use cortenforge::mesh;         // load / repair / measure / print meshes
 use cortenforge::cf_design;    // implicit-surface design kernel
 use cortenforge::cf_cast;      // multi-material mold generation</code></pre>
 
-      <p>Simulation lives under <code>sim</code>, mesh work under <code>mesh</code>, and the design and fabrication crates are re-exported individually. The facade is headless by construction &mdash; the Bevy, GUI, and GPU crates are left out, as are the research and tooling crates under <code>tools/</code> &mdash; so anything built against it runs without a window or a graphics driver, on a build server or inside a training loop. Those crates are still in the repository; you depend on them directly.</p>
+      <p>Simulation lives under <code>sim</code>, mesh work under <code>mesh</code>, and the design and fabrication crates are re-exported individually. The facade is headless by construction &mdash; the Bevy, GUI, and GPU crates are left out, as is most of the research and application code under <code>tools/</code>, apart from the headless scan-prep and mold-CLI crates it re-exports &mdash; so anything built against it runs without a window or a graphics driver, on a build server or inside a training loop. The excluded crates are still in the repository; you can depend on them directly.</p>
 
       <p>To work on the SDK itself rather than depend on it:</p>
 
@@ -119,7 +121,7 @@ cargo xtask grade &lt;crate-name&gt;      # run the quality gate on a single cra
         <div class="stack-row">
           <h3>Rigid-body physics</h3>
           <p class="crates">sim-core &middot; sim-mjcf &middot; sim-urdf</p>
-          <p>MuJoCo-aligned dynamics, 79/79 on the 3.4.0 conformance suite. MJCF and URDF import, analytic and finite-difference derivatives.</p>
+          <p>MuJoCo-aligned dynamics, 79/79 on our MuJoCo 3.4.0 conformance suite. MJCF and URDF import, analytic and finite-difference derivatives.</p>
         </div>
 
         <div class="stack-row">
@@ -169,7 +171,7 @@ cargo xtask grade &lt;crate-name&gt;      # run the quality gate on a single cra
 
       <div class="stack">
         <div class="stack-row">
-          <h3>Pin a revision</h3>
+          <h3>Revisions</h3>
           <p>Install from git and pin a <code>rev</code> for reproducible builds. Breaking changes land when they improve the architecture.</p>
         </div>
 
@@ -179,8 +181,8 @@ cargo xtask grade &lt;crate-name&gt;      # run the quality gate on a single cra
         </div>
 
         <div class="stack-row">
-          <h3>Tags version Cendrillon, not the SDK</h3>
-          <p>Git tags build the desktop application, so <code>v0.3.2</code> is a Cendrillon release. Track <code>main</code> for the SDK.</p>
+          <h3>Tags</h3>
+          <p>Git tags version Cendrillon, not the SDK &mdash; <code>v0.3.2</code> is a Cendrillon release. Track <code>main</code> for the SDK.</p>
         </div>
 
         <div class="stack-row">
@@ -218,7 +220,7 @@ cargo xtask grade &lt;crate-name&gt;      # run the quality gate on a single cra
         </a>
 
         <a class="card" href="/research/">
-          <span class="card-label">Paper</span>
+          <span class="card-label">Study</span>
           <span class="card-title">Biological Navigation Spectrum</span>
           <span class="card-sub">The X-Encoding design framework for thermodynamic computing.</span>
         </a>

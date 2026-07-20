@@ -48,7 +48,7 @@
            release page. -->
       <div class="downloads">
         <a class="button" href="https://github.com/via-balaena/CortenForge/releases/latest/download/Cendrillon-macos-arm64.zip">
-          Download for Mac<span class="button-sub">Apple silicon</span>
+          Download for Mac<span class="button-sub">Apple silicon &middot; stable</span>
         </a>
         <a class="button button-secondary" href="https://github.com/via-balaena/CortenForge/releases/latest/download/Cendrillon-windows-x86_64.zip">
           Download for Windows<span class="button-sub">beta</span>
@@ -62,10 +62,11 @@
 
       <details class="firstrun" open>
         <summary>First time you open it &mdash; the builds are unsigned</summary>
+        <p class="note">On Windows and Linux the binary is named <code>cf-studio-gui</code> &mdash; that is Cendrillon, under its internal name.</p>
         <ul>
           <li><strong>Mac</strong> &mdash; unzip, drag <code>Cendrillon.app</code> into Applications, and double-click. macOS will say it can&rsquo;t verify the developer. Open <strong>System Settings &rarr; Privacy &amp; Security</strong>, scroll down, and click <strong>Open Anyway</strong>, then open it again. You only do this once.</li>
-          <li><strong>Windows</strong> &mdash; unzip and run <code>cf-studio-gui.exe</code>. That is Cendrillon; the binary still carries its internal name. If SmartScreen warns, click <strong>More info &rarr; Run anyway</strong>.</li>
-          <li><strong>Linux</strong> &mdash; <code>tar xzf</code> and run the <code>cf-studio-gui</code> binary; that is Cendrillon, under its internal name. Needs a working Vulkan or GL driver.</li>
+          <li><strong>Windows</strong> &mdash; unzip and run <code>cf-studio-gui.exe</code>. If SmartScreen warns, click <strong>More info &rarr; Run anyway</strong>.</li>
+          <li><strong>Linux</strong> &mdash; <code>tar xzf</code> and run the <code>cf-studio-gui</code> binary. Needs a working Vulkan or GL driver.</li>
         </ul>
       </details>
 
@@ -77,7 +78,7 @@
 
       <p class="lead-in">A scan goes in; a set of printable mold pieces and a written fabrication procedure come out. Each step is guided, and you can export your work as you go.</p>
 
-      <p>It exercises a slice of CortenForge end to end &mdash; scan ingestion and repair, SDF conversion, multi-material layer stacks, mold splitting with registration features, printability gating, and generated pour-and-demold instructions. Everything it does is available as library calls if you would rather drive the same path from code.</p>
+      <p>It runs on CortenForge end to end &mdash; scan ingestion and repair, SDF conversion, multi-material layer stacks, mold splitting with registration features, printability gating, and generated pour-and-demold instructions. Everything it does is available as library calls if you would rather drive the same path from code.</p>
 
       <p class="closer">Cendrillon&rsquo;s workflow is built entirely from CortenForge components, and its whole source sits in the same repository &mdash; you can read every line before you download.</p>
     </section>
