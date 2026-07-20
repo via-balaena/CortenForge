@@ -46,9 +46,10 @@ html {
   -webkit-text-size-adjust: 100%;
   background: var(--bg);
   color-scheme: dark;
-  /* Clears the sticky header so #install and the skip link do not land
-     behind it. */
-  scroll-padding-top: 68px;
+  /* Clears the sticky header so in-page anchors do not land behind it.
+     The header grows when the bar and then the nav wrap, so this is
+     raised at the narrow breakpoint rather than left at one value. */
+  scroll-padding-top: 72px;
 }
 
 body {
@@ -81,9 +82,11 @@ body {
 /* main takes focus from the skip link, but is not a tab stop itself. */
 main:focus { outline: none; }
 
-/* Bypass the five repeated nav links; visible only once focused. */
+/* Bypass the five repeated nav links; visible only once focused.
+   Fixed rather than absolute so it lands in the viewport when reached by
+   shift-tab from further down the page, not at the top of the document. */
 .skip {
-  position: absolute;
+  position: fixed;
   left: -9999px;
   top: 0;
   z-index: 30;
@@ -93,11 +96,12 @@ main:focus { outline: none; }
   font-size: 15px;
   font-weight: 650;
   text-decoration: none;
-  border-radius: 0 0 4px 0;
+  border-radius: 4px;
 }
 
-/* Inset when shown so the focus ring is not clipped by the viewport edge. */
-.skip:focus { left: 4px; top: 4px; border-radius: 4px; }
+/* Inset by more than the 2px ring plus its 3px offset, so no edge of the
+   focus outline is clipped by the viewport. */
+.skip:focus { left: 6px; top: 6px; }
 
 /* ---------- header ---------- */
 
@@ -235,7 +239,7 @@ h1 {
 }
 
 .cta-secondary:hover,
-.button-secondary:hover { background: var(--surface); color: var(--text); border-color: var(--accent); }
+.button-secondary:hover { background: var(--surface); border-color: var(--accent); }
 
 /* ---------- sections ---------- */
 
@@ -522,6 +526,9 @@ footer.site a:hover { color: var(--sodium); border-bottom-color: var(--accent); 
 
 @media (max-width: 620px) {
   body { font-size: 16px; }
+  /* The bar wraps here and the nav can wrap again below ~366px, roughly
+     doubling the header; anchors need to clear the taller version. */
+  html { scroll-padding-top: 152px; }
   .hero { padding: 42px 0 34px; }
   section { padding-top: 38px; }
   .bar { flex-wrap: wrap; gap: 10px; padding: 11px 0; }
@@ -529,4 +536,49 @@ footer.site a:hover { color: var(--sodium); border-bottom-color: var(--accent); 
   .contact { padding: 22px 20px; }
   .downloads { flex-direction: column; }
   footer.site { margin-top: 48px; padding-bottom: 44px; }
+}
+
+/* Printing drops backgrounds, which would leave near-white type on white
+   paper. Install commands get printed and PDF'd, so invert deliberately. */
+@media print {
+  html, body {
+    background: #ffffff;
+    color: #000000;
+  }
+
+  body::after,
+  header.site,
+  .skip { display: none; }
+
+  .wrap { max-width: none; }
+
+  a { color: #000000; text-decoration: underline; }
+
+  h1, h2, h3, .brand-name, .card-title, strong { color: #000000; }
+
+  .lead-in, .standfirst, .entry p, .stack-row p, .card-sub,
+  .note, .closer, footer.site, .contact p { color: #222222; }
+
+  .crates, code, pre code, .card-label, .eyebrow { color: #000000; }
+
+  pre, .stack, .card, .contact, .closer, details.firstrun {
+    background: #ffffff;
+    border-color: #999999;
+  }
+
+  .stack-row:nth-child(odd) { background: #ffffff; }
+
+  .cta, .button {
+    background: #ffffff;
+    color: #000000;
+    border-color: #000000;
+  }
+
+  /* Links to release assets and docs are useless as bare words on paper. */
+  .actions a[href^="http"]::after,
+  .downloads a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 11px; }
+
+  section { padding-top: 28px; page-break-inside: avoid; }
+
+  .stack-row, .entry { page-break-inside: avoid; }
 }

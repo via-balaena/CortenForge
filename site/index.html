@@ -9,7 +9,7 @@
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="CortenForge">
   <meta property="og:url" content="https://cortenforge.com/">
-  <meta property="og:title" content="CortenForge">
+  <meta property="og:title" content="CortenForge — an SDK for the mechatronics and simulation space">
   <meta property="og:description" content="A software development kit for the mechatronics and simulation space. Composable Rust components for geometry, design, meshing, fabrication, rigid- and soft-body physics, control, and reinforcement learning.">
   <link rel="stylesheet" href="/style.css">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23080f0e'/%3E%3Crect x='4' y='4' width='8' height='8' fill='%23d9603a'/%3E%3C/svg%3E">
@@ -38,7 +38,7 @@
     <div class="hero">
       <p class="eyebrow">Open source &middot; Apache-2.0</p>
       <h1>A software development kit for the mechatronics and simulation space.</h1>
-      <p class="standfirst">Composable Rust components for the full path from physical to digital and back &mdash; geometry, parametric design, meshing and fabrication, rigid- and soft-body physics, control, and reinforcement learning.</p>
+      <p class="standfirst">Composable Rust components for geometry, parametric design, meshing and fabrication, rigid- and soft-body physics, control, and reinforcement learning.</p>
 
       <div class="actions">
         <a class="cta" href="#install">Get started</a>
@@ -57,19 +57,23 @@
     </section>
 
     <section id="install">
-      <h2>Quick start</h2>
+      <h2>Get started</h2>
 
       <p>Applications depend on a single crate &mdash; the <code>cortenforge</code> facade &mdash; and reach the whole SDK through it, so the internal crate structure can evolve behind one stable contract.</p>
 
       <pre><code>[dependencies]
-# The crates.io listing is stale (0.6.0) — depend on the repository:
 cortenforge = { git = "https://github.com/via-balaena/CortenForge" }</code></pre>
 
-      <pre><code>// Two domain umbrellas expose the whole toolkit through one dependency:
-use cortenforge::sim;   // rigid + soft physics, soft&harr;rigid coupling, RL/opt
-use cortenforge::mesh;  // load / repair / measure / print meshes</code></pre>
+      <p class="note">Depend on the repository, not crates.io. The published listings are years behind this workspace &mdash; <code>cortenforge</code> sits at 0.6.0 there and <code>mesh-repair</code> at 0.2.0, against 1.0.0 here &mdash; so <code>cargo add</code> will silently give you a stale version.</p>
 
-      <p>The facade is a headless capability map across three domains &mdash; simulation and co-design (<code>sim::core</code>, <code>sim::soft</code>, the differentiable soft&harr;rigid coupling keystone <code>sim::coupling</code>, plus <code>sim::rl</code> and <code>sim::opt</code>), mesh processing (<code>mesh::io</code>, <code>mesh::repair</code>, <code>mesh::sdf</code>, &hellip;), and design&rarr;fabrication (<code>cf_design</code>, <code>cf_scan_prep_core</code>, <code>cf_cast</code>). Bevy, GUI, and GPU crates are deliberately excluded, so every app compiling against the facade stays headless.</p>
+      <pre><code>// Two umbrellas plus the design and fabrication crates, all through one dependency:
+use cortenforge::sim;          // rigid + soft physics, soft&harr;rigid coupling, RL/opt
+use cortenforge::mesh;         // load / repair / measure / print meshes
+use cortenforge::cf_design;    // implicit-surface design kernel</code></pre>
+
+      <p>The facade is a headless capability map across three domains &mdash; simulation and co-design (<code>sim::core</code>, <code>sim::soft</code>, the differentiable soft&harr;rigid coupling keystone <code>sim::coupling</code>, plus <code>sim::rl</code>, <code>sim::opt</code>, and <code>sim::ml_chassis</code>), mesh processing (<code>mesh::io</code>, <code>mesh::repair</code>, <code>mesh::sdf</code>, &hellip;), and design&rarr;fabrication, which is re-exported crate by crate rather than under an umbrella (<code>cf_design</code>, <code>cf_scan_prep_core</code>, <code>cf_cast</code>).</p>
+
+      <p>Bevy, GUI, and GPU crates are deliberately excluded from the facade, so anything compiled against it runs without a window or a graphics driver &mdash; on a build server, in a batch sweep, or inside a training loop. The GPU physics pipeline and the Bevy viewers are still in the repository; you depend on them directly when you want them.</p>
 
       <pre><code>git clone https://github.com/via-balaena/CortenForge.git
 cd CortenForge
@@ -84,7 +88,7 @@ cargo xtask grade &lt;crate-name&gt;   # run the quality gate on a single crate<
         <div class="stack-row">
           <h3>Rigid-body physics</h3>
           <p class="crates">sim-core &middot; sim-mjcf &middot; sim-urdf</p>
-          <p>MuJoCo-aligned dynamics (79/79 conformance), MJCF and URDF import, analytic derivatives.</p>
+          <p>MuJoCo-aligned dynamics (79/79 conformance tests), MJCF and URDF import, analytic and finite-difference derivatives.</p>
         </div>
 
         <div class="stack-row">
@@ -124,7 +128,7 @@ cargo xtask grade &lt;crate-name&gt;   # run the quality gate on a single crate<
         </div>
       </div>
 
-      <p class="stack-note">70 library and tool crates, excluding examples. Pure Rust, with no framework dependencies in the physics and mesh cores. Layer-0 core crates are checked against the <code>wasm32-unknown-unknown</code> target as part of the quality gate.</p>
+      <p class="stack-note">70 crates outside <code>examples/</code>. Pure Rust, with no framework dependencies in the physics and mesh cores. Layer-0 core crates are checked against the <code>wasm32-unknown-unknown</code> target as part of the quality gate.</p>
     </section>
 
     <section>
@@ -134,7 +138,7 @@ cargo xtask grade &lt;crate-name&gt;   # run the quality gate on a single crate<
         <a class="card" href="/cendrillon/">
           <span class="card-label">Application</span>
           <span class="card-title">Cendrillon</span>
-          <span class="card-sub">A guided desktop tool taking a 3D scan to printable, silicone-cast molds.</span>
+          <span class="card-sub">A guided desktop tool taking a 3D scan to printable molds for casting silicone.</span>
         </a>
 
         <a class="card" href="/services/">
