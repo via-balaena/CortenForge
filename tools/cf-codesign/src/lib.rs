@@ -92,6 +92,29 @@
 //! parameter steps — so the **standard** Adam `eps` keeps its scale-invariance
 //! instead of crawling (rather than chasing a fragile per-scene tiny `eps`).
 //!
+//! # How a run stops
+//!
+//! [`optimize`] ends for exactly one of the reasons named by [`StopReason`], and the
+//! result reports which: the gradient norm fell below `grad_tol`, the loss reached its
+//! tolerance, or the iteration budget ran out. Two things are worth knowing before
+//! reading a stop as "this design is optimal".
+//!
+//! **The loss criterion is opt-in per problem.** `loss_tol` is measured against a
+//! problem's [`CoDesignProblem::loss_lower_bound`], not against zero, so it means
+//! "provably within `loss_tol` of the optimum" — sound for any true lower bound,
+//! however slack. A problem that can state no bound (an objective with a reward term
+//! can be unbounded below) returns `None` and the criterion is switched off, because
+//! "the loss got small" would be a statement about nothing. Declaring this is a
+//! one-line obligation on every problem; there is no default, since either default
+//! would be silently wrong for some objective.
+//!
+//! **The gradient criterion is a stationarity test in the problem's own parameter
+//! space**, not a proof of optimality — it is neither invariant under reparametrization
+//! nor scale-free across blocks (see [`OptConfig::grad_tol`]). Accordingly the gates in
+//! this crate assert *physical outcomes* — a recovered stiffness, a clearance, a
+//! radius — rather than the stop reason, and `MaxIters` is not a failure on its own: a
+//! soft equilibrium can sit in a shallow limit cycle around a perfectly good optimum.
+//!
 //! Scope: a single design parameter (material), an open-loop control schedule, a
 //! closed-loop state-feedback policy, or joint design+policy, all in the keystone's
 //! contact-engaged regime. Richer policies (MLP), multi-parameter design, and
@@ -359,7 +382,12 @@ pub struct IterRecord {
 /// A bare "converged" flag conflates *found an optimum* with *the gradient got
 /// small*, which are not the same claim — see [`OptResult::final_grad_inf`] for the
 /// case where they come apart.
+/// `#[non_exhaustive]` because this set is expected to grow: the
+/// [`grad_tol`](OptConfig::grad_tol) docs already anticipate a metric-aware criterion
+/// alongside the plain gradient norm, and adding a variant must not break every
+/// downstream `match`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum StopReason {
     /// `‖gradient‖∞` fell below [`OptConfig::grad_tol`]. **Read this as a stationarity
     /// test in the parameter space the problem supplies, not as proof of optimality**
@@ -823,7 +851,7 @@ impl CoDesignProblem for Normalized<'_> {
         let scaled_loss = loss * self.loss_scale;
         // A `log_space` parameter `p` is unbounded above, so `μ = exp(p)` can
         // overflow to `+inf` and poison the run — silently, since the optimizer
-        // would only record `converged = false` with garbage params. The
+        // would only record a `MaxIters` stop with garbage params. The
         // load-bearing quantity is the GRADIENT (`opt.step_in_place` feeds it into
         // `params`), and the `exp(p)` overflow lands in `dx/dp` here, so guard the
         // scaled gradient AND the loss (the convergence test reads the loss; and
@@ -3286,7 +3314,7 @@ mod tests {
     }
 
     /// [`Normalized::evaluate`] panics (loudly) when the inner loss is non-finite,
-    /// rather than scaling `inf`/`NaN` onward into a silent `converged = false`
+    /// rather than scaling `inf`/`NaN` onward into a silent `MaxIters` stop
     /// run. The guard is a plain `assert!` (always on, including release-heavy CI).
     #[test]
     #[should_panic(expected = "non-finite loss")]

@@ -1,5 +1,16 @@
 # Co-design optimizer — RECON
 
+> **AS-BUILT DELTA (2026-07-20).** This recon is a dated plan, kept for its reasoning trail;
+> where it disagrees with the code, the code wins. One superseded item:
+>
+> - The stopping rule below is described as `loss < loss_tol` **(absolute)**. That was
+>   sound only because every target then in the crate minimized a squared residual. The
+>   shipped rule measures `loss` against a problem-declared
+>   `CoDesignProblem::loss_lower_bound()`, and a problem that can state no bound (a signed
+>   objective with a reward term) has the criterion disabled outright. `OptResult` reports
+>   a `StopReason` rather than a `converged` boolean. See the `CoDesignProblem` and
+>   `OptConfig` rustdoc for the as-built contract.
+
 *Active recon, opened 2026-06-10. Mission connective-tissue #2 ("Co-design optimizer — one outer
 loop differentiating w.r.t. both design and policy parameters", `MISSION.md`). The first CONSUMER
 of the keystone gradient substrate (the differentiable soft↔rigid coupling, S1–S5, all merged): an

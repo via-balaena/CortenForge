@@ -12,7 +12,7 @@
 //! objective, machine-exact); (2) the [`Normalized`]-wrapped gradient matches an
 //! FD in the optimizer's (log-μ) space (the `1/L²` loss-scale and `dμ/dp = μ`
 //! chain-rule bookkeeping is correct); (3) the optimizer recovers `μ*` to
-//! tolerance **with the standard `eps = 1e-8`** and reports `converged`.
+//! tolerance **with the standard `eps = 1e-8`** and stops on a criterion rather than the iteration cap.
 //!
 //! **Conditioning note.** `z_N` is a position, so `∂z_N/∂μ ~ 1e-7` and the raw
 //! loss gradient is `~2e-10` — below Adam's standard `eps = 1e-8`, so optimizing
@@ -203,9 +203,11 @@ fn recovers_known_material_from_target_trajectory() {
         result.loss, result.iters, result.stop_reason,
     );
 
-    assert_ne!(
-        result.stop_reason,
-        StopReason::MaxIters,
+    assert!(
+        matches!(
+            result.stop_reason,
+            StopReason::GradTol | StopReason::LossTol
+        ),
         "optimizer did not converge in max_iters"
     );
     // Robust gate (the measured recovery is far tighter, ~1e-6 or better); loose

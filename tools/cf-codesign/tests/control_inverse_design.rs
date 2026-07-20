@@ -121,9 +121,11 @@ fn inverse_design_recovers_target_behavior() {
         result.iters,
         result.stop_reason
     );
-    assert_ne!(
-        result.stop_reason,
-        StopReason::MaxIters,
+    assert!(
+        matches!(
+            result.stop_reason,
+            StopReason::GradTol | StopReason::LossTol
+        ),
         "control inverse design did not converge"
     );
     assert!(

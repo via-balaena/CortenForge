@@ -8,7 +8,7 @@
 //! Two checks: (1) the problem's analytic gradient matches a finite difference
 //! of its loss (so the co-design gradient is correct for the objective, not just
 //! a descent direction); (2) the optimizer recovers `μ*` to tolerance and
-//! reports `converged`.
+//! stops on a criterion rather than the iteration cap.
 
 #![allow(clippy::expect_used)]
 
@@ -76,9 +76,11 @@ fn recovers_known_material_from_target_behavior() {
         result.loss, result.iters, result.stop_reason,
     );
 
-    assert_ne!(
-        result.stop_reason,
-        StopReason::MaxIters,
+    assert!(
+        matches!(
+            result.stop_reason,
+            StopReason::GradTol | StopReason::LossTol
+        ),
         "optimizer did not converge in max_iters"
     );
     assert!(

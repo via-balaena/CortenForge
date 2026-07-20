@@ -201,7 +201,7 @@ fn stop_reason_distinguishes_the_exits() {
 ///
 /// This is committed evidence rather than a recollection: if the stopping norm is ever
 /// made metric-aware, this test fails loudly and forces the conversation, instead of
-/// the meaning of `converged` changing silently underneath the crate.
+/// the meaning of a `GradTol` stop changing silently underneath the crate.
 #[test]
 fn conduit_gradient_norm_is_route_dominated() {
     let t = corridor_scene(2.0);

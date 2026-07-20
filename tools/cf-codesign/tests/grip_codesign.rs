@@ -151,9 +151,11 @@ fn grip_inverse_design_recovers_behavior() {
         result.iters,
         result.stop_reason,
     );
-    assert_ne!(
-        result.stop_reason,
-        StopReason::MaxIters,
+    assert!(
+        matches!(
+            result.stop_reason,
+            StopReason::GradTol | StopReason::LossTol
+        ),
         "grip inverse design did not converge"
     );
     assert!(

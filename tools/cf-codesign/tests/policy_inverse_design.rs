@@ -124,9 +124,11 @@ fn inverse_design_recovers_target_behavior() {
         result.stop_reason,
         result.params,
     );
-    assert_ne!(
-        result.stop_reason,
-        StopReason::MaxIters,
+    assert!(
+        matches!(
+            result.stop_reason,
+            StopReason::GradTol | StopReason::LossTol
+        ),
         "policy inverse design did not converge"
     );
     assert!(

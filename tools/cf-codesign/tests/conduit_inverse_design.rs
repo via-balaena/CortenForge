@@ -140,9 +140,8 @@ fn conduit_codesign_bends_and_sizes() {
     );
 
     let res = optimize(&t, &x0, &t.recommended_config());
-    assert_ne!(
-        res.stop_reason,
-        StopReason::MaxIters,
+    assert!(
+        matches!(res.stop_reason, StopReason::GradTol | StopReason::LossTol),
         "capsule recovery did not converge"
     );
 
@@ -213,7 +212,7 @@ fn conduit_on_ridge_stalls() {
 /// The feasible runs stop at `max_iters` rather than `grad_tol`: the length↔clearance
 /// equilibrium is a shallow Adam limit cycle (the same one documented for the
 /// fixed-radius sibling). It is benign — `r*` is stable to ~1% between 800 and 8000
-/// iterations — so the gate asserts the optimum, not the convergence flag.
+/// iterations — so the gate asserts the optimum, not the stop reason.
 #[test]
 fn conduit_radius_falls_as_corridor_narrows() {
     let gaps = [3.0, 2.0, 1.0, 0.5];
