@@ -112,7 +112,7 @@ use sim_ml_chassis::OptimizerConfig;
 use std::fmt;
 
 mod route;
-pub use route::RouteTarget;
+pub use route::{ConduitTarget, RouteTarget};
 
 /// The co-design objective could not be evaluated at a parameter point because the
 /// underlying forward model **fail-closed** there — a *genuinely infeasible* design,
