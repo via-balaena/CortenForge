@@ -3,94 +3,244 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>CortenForge</title>
-  <meta name="description" content="A software development kit for the mechatronics and simulation space. Composable Rust components for geometry, design, meshing, fabrication, rigid- and soft-body physics, control, and reinforcement learning. Open-source.">
-  <link rel="stylesheet" href="style.css">
+  <title>CortenForge — an SDK for the mechatronics and simulation space</title>
+  <meta name="description" content="A software development kit for the mechatronics and simulation space. Composable Rust components for geometry, design, meshing, fabrication, rigid- and soft-body physics, control, and reinforcement learning. Open source, Apache-2.0.">
+  <link rel="canonical" href="https://cortenforge.com/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="CortenForge">
+  <meta property="og:url" content="https://cortenforge.com/">
+  <meta property="og:title" content="CortenForge — an SDK for the mechatronics and simulation space">
+  <meta property="og:description" content="A software development kit for the mechatronics and simulation space. Composable Rust components for geometry, design, meshing, fabrication, rigid- and soft-body physics, control, and reinforcement learning.">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23080f0e'/%3E%3Crect x='4' y='4' width='8' height='8' fill='%23d9603a'/%3E%3C/svg%3E">
 </head>
 <body>
 
-<main class="container">
-  <h1>CortenForge</h1>
-  <p class="tagline">A software development kit for the mechatronics and simulation space.</p>
-  <p>Composable Rust components for the full path from physical to digital and back &mdash; geometry, design, meshing and fabrication, rigid- and soft-body physics, control, and reinforcement learning.</p>
+  <a class="skip" href="#main">Skip to content</a>
 
-  <p class="badge"><img src="https://img.shields.io/badge/built%20with-Rust-dea584?logo=rust&logoColor=white" alt="Built with Rust"></p>
-
-  <!-- A featured example app built with CortenForge — one workflow, a slice of the kit -->
-  <section id="cendrillon" class="card">
-    <p class="eyebrow">Featured app &middot; built with CortenForge</p>
-    <h2>Cendrillon</h2>
-    <p class="card-lead">A guided desktop tool that takes a 3D scan all the way to printable, silicone-cast molds, step by step.</p>
-
-    <!-- Direct per-platform downloads via GitHub's stable latest-release URLs
-         (…/releases/latest/download/<asset>), so the buttons keep working
-         across releases without pointing users at the GitHub release page. -->
-    <div class="downloads">
-      <a class="button" href="https://github.com/via-balaena/CortenForge/releases/latest/download/Cendrillon-macos-arm64.zip">
-        Download for Mac<span class="button-sub">Apple Silicon &middot; tested</span>
+  <header class="site">
+    <div class="wrap bar">
+      <a class="brand" href="/">
+        <span class="brand-name">CortenForge</span>
       </a>
-      <a class="button button-secondary" href="https://github.com/via-balaena/CortenForge/releases/latest/download/Cendrillon-windows-x86_64.zip">
-        Download for Windows<span class="button-sub">beta</span>
-      </a>
-      <a class="button button-secondary" href="https://github.com/via-balaena/CortenForge/releases/latest/download/Cendrillon-linux-x86_64.tar.gz">
-        Download for Linux<span class="button-sub">beta</span>
-      </a>
+      <nav class="site">
+        <a href="/" aria-current="page">SDK</a>
+        <a href="/cendrillon/">Cendrillon</a>
+        <a href="/research/">Research</a>
+        <a href="https://github.com/via-balaena/CortenForge">GitHub</a>
+      </nav>
     </div>
-    <p class="note">On an older Intel Mac? The Intel build is in beta &mdash; find it (and every other download) on the <a href="https://github.com/via-balaena/CortenForge/releases/latest">releases page</a>.</p>
+  </header>
 
-    <details class="firstrun" open>
-      <summary>First time you open it (it's unsigned for now)</summary>
-      <ul class="firstrun-steps">
-        <li><strong>Mac</strong> &mdash; unzip, drag <code>Cendrillon.app</code> into Applications, and double-click. macOS will say it can&rsquo;t verify the developer: open <strong>System Settings &rarr; Privacy &amp; Security</strong>, scroll down, and click <strong>Open Anyway</strong>, then open it again. You only do this once.</li>
-        <li><strong>Windows</strong> &mdash; unzip and run <code>cf-studio-gui.exe</code>. If SmartScreen warns, click <strong>More info &rarr; Run anyway</strong>.</li>
-        <li><strong>Linux</strong> &mdash; <code>tar xzf</code> and run the <code>cf-studio-gui</code> binary (needs a working Vulkan/GL driver).</li>
-      </ul>
-      <p class="note">Code-signing &amp; notarization (a one-click launch) is a planned upgrade.</p>
-    </details>
+  <main class="wrap" id="main" tabindex="-1">
 
-    <p class="note">Prefer to check first? The full source is on <a href="https://github.com/via-balaena/CortenForge">GitHub</a> &mdash; you can read every line before you download.</p>
-  </section>
+    <div class="hero">
+      <p class="eyebrow">Open source &middot; Apache-2.0</p>
+      <h1>A software development kit for the mechatronics and simulation space.</h1>
+      <p class="standfirst">Composable Rust components for geometry, parametric design, meshing and fabrication, rigid- and soft-body physics, control, and reinforcement learning.</p>
 
-  <!-- The kit itself -->
-  <section id="developers">
-    <h2>For developers</h2>
-    <pre><code>git clone https://github.com/via-balaena/CortenForge.git</code></pre>
-    <nav>
-      <a href="https://github.com/via-balaena/CortenForge" aria-label="GitHub">
-        <svg height="28" width="28" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
-        </svg>
-      </a>
-    </nav>
-  </section>
+      <div class="actions">
+        <a class="cta" href="#install">Get started</a>
+        <a class="cta cta-secondary" href="https://github.com/via-balaena/CortenForge">View on GitHub</a>
+      </div>
+    </div>
 
-  <!-- Services offered by the people who build the SDK. Capability language only —
-       never claim client engagements that have not happened. -->
-  <section id="services">
-    <h2>Work with the maintainers</h2>
-    <dl class="services">
-      <dt>Physics engine work</dt>
-      <dd>MuJoCo-aligned rigid-body dynamics in pure Rust: muscles, tendons, actuators, sensors, analytic derivatives, GPU batching. MJCF and URDF import. Hyperelastic soft-body FEM with contact and stress fields.</dd>
+    <section>
+      <h2>What it is</h2>
 
-      <dt>SDK extension</dt>
-      <dd>New physics, new materials, new fabrication targets, built as first-class components. Apache-2.0, so what we build for you doesn&rsquo;t become a dependency on us.</dd>
+      <p class="lead-in">CortenForge provides the building blocks spanning the path <strong>physical &rarr; digital &rarr; physical</strong>: get a real object into a simulation, design something against it, optimize that design through the physics, and gate the result for manufacture.</p>
 
-      <dt>RL &amp; embodied-AI infrastructure</dt>
-      <dd>GPU-batched differentiable environments and a full learning stack: PPO, SAC, TD3, CEM.</dd>
+      <p class="kicker">The kit is the product.</p>
 
-      <dt>Integration &amp; architecture review</dt>
-      <dd>Build against the SDK on your problem, or have us assess the design before you commit to it.</dd>
-    </dl>
-    <p><a href="mailto:viabalaena@proton.me">viabalaena@proton.me</a></p>
-  </section>
+      <p>Most tools cover one leg of that path and hand off through file exchange. CortenForge&rsquo;s components share one geometric kernel instead: an <code>Sdf</code> trait implemented across design, meshing, and the soft-body engine, with the rigid engine consuming the same kernel&rsquo;s sampled grids. A design therefore reaches a simulation in memory, with no export step in between &mdash; the <a class="inline" href="https://github.com/via-balaena/CortenForge/tree/main/examples/integration/design-to-sim">design-to-sim</a> example is that path, start to finish, in a single source file.</p>
 
-  <section id="papers">
-    <h2>Papers</h2>
-    <ul>
-      <li><a href="/research/">Biological Navigation Spectrum &mdash; X-Encoding Design Framework</a></li>
-    </ul>
-  </section>
-</main>
+      <p>The soft-body FEM and the soft&harr;rigid contact coupling are differentiable, running a single reverse-mode tape across both engines. The rigid engine supplies analytic and finite-difference derivatives. <a class="inline" href="https://github.com/via-balaena/CortenForge/blob/main/MISSION.md">MISSION.md</a> sets out where that leads.</p>
+    </section>
+
+    <section>
+      <h2>What it&rsquo;s for</h2>
+
+      <div class="stack">
+        <div class="stack-row">
+          <h3>Robotics, control &amp; RL</h3>
+          <p>Import an existing MJCF or URDF model, take analytic or finite-difference derivatives through the dynamics, or train a policy against batched environments.</p>
+        </div>
+
+        <div class="stack-row">
+          <h3>Soft robotics</h3>
+          <p>Simulate compliant bodies with hyperelastic FEM under rigid contact, and generate multi-material molds from the same implicit geometry.</p>
+        </div>
+
+        <div class="stack-row">
+          <h3>Biomechanics</h3>
+          <p>Convert a gait2392 leg chain from OpenSim, simulate soft tissue with contact, and fit rigid-body parameters to measured trajectories &mdash; separate components today, not one pipeline.</p>
+        </div>
+
+        <div class="stack-row">
+          <h3>Scan &rarr; design &rarr; fabrication</h3>
+          <p>Repair a scan into a watertight body, convert it to an SDF, build implicit geometry against it, and check that the result is printable. Cendrillon walks this path, from a raw scan to printable molds.</p>
+        </div>
+
+        <div class="stack-row">
+          <h3>Embodied-AI research</h3>
+          <p>Reach batched environments, differentiable physics, and the learning stack through one dependency, alongside a corpus of <a class="inline" href="https://github.com/via-balaena/CortenForge/tree/main/examples">worked examples</a>.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="install">
+      <h2>Get started</h2>
+
+      <p>Applications depend on a single crate &mdash; the <code>cortenforge</code> facade &mdash; and reach the headless core of the SDK through it, so the internal crate structure can evolve behind one import surface.</p>
+
+      <pre tabindex="0" role="region" aria-label="Cargo.toml dependency"><code>[dependencies]
+cortenforge = { git = "https://github.com/via-balaena/CortenForge" }</code></pre>
+
+      <p class="note">Depend on the repository, not crates.io &mdash; the published listings lag this workspace by months, so <code>cargo add</code> will silently give you a stale version.</p>
+
+      <pre tabindex="0" role="region" aria-label="Facade imports"><code>// Two umbrellas plus the design and fabrication crates, all through one dependency:
+use cortenforge::sim;          // rigid + soft physics, soft&harr;rigid coupling, RL/opt
+use cortenforge::mesh;         // load / repair / measure / print meshes
+use cortenforge::cf_design;    // implicit-surface design kernel
+use cortenforge::cf_cast;      // multi-material mold generation</code></pre>
+
+      <p>Simulation lives under <code>sim</code>, mesh work under <code>mesh</code>, and the design and fabrication crates are re-exported individually. The facade is headless by construction, so anything built against it runs without a window or a graphics driver &mdash; on a build server, or inside a training loop. Left out: the Bevy, GUI, and GPU crates, and most of the research and application code under <code>tools/</code>, of which it re-exports only the headless scan-prep and mold-CLI crates. Everything excluded is still in the repository; you can depend on it directly.</p>
+
+      <p>To work on the SDK itself rather than depend on it:</p>
+
+      <pre tabindex="0" role="region" aria-label="Build from source"><code>git clone https://github.com/via-balaena/CortenForge.git
+cd CortenForge
+cargo build -p cortenforge          # the facade; --workspace builds all 300 members
+cargo xtask grade &lt;crate-name&gt;      # run the quality gate on a single crate</code></pre>
+    </section>
+
+    <section>
+      <h2>The stack</h2>
+
+      <div class="stack">
+        <div class="stack-row">
+          <h3>Rigid-body physics</h3>
+          <p class="crates">sim-core &middot; sim-mjcf &middot; sim-urdf</p>
+          <p>MuJoCo-aligned dynamics, 79/79 on our MuJoCo 3.4.0 conformance suite. MJCF and URDF import, analytic and finite-difference derivatives.</p>
+        </div>
+
+        <div class="stack-row">
+          <h3>Soft-body physics</h3>
+          <p class="crates">sim-soft</p>
+          <p>Hyperelastic FEM (Neo-Hookean / Yeoh), SDF&rarr;tet meshing, contact, differentiable.</p>
+        </div>
+
+        <div class="stack-row">
+          <h3>ML, RL &amp; optimization</h3>
+          <p class="crates">sim-ml-chassis &middot; sim-rl &middot; sim-opt</p>
+          <p>VecEnv, autograd, CEM, REINFORCE, PPO, TD3, SAC, simulated annealing, parallel tempering.</p>
+        </div>
+
+        <div class="stack-row">
+          <h3>Thermodynamic environments</h3>
+          <p class="crates">sim-therm-env &middot; sim-thermostat</p>
+          <p>Langevin thermostats, double wells, pairwise coupling, pluggable rewards.</p>
+        </div>
+
+        <div class="stack-row">
+          <h3>Design</h3>
+          <p class="crates">cf-design &middot; cf-geometry &middot; cf-spatial</p>
+          <p>SDF primitives, smooth booleans, mechanism assembly, MJCF and STL export.</p>
+        </div>
+
+        <div class="stack-row">
+          <h3>Mesh</h3>
+          <p class="crates">mesh-io &middot; mesh-repair &middot; mesh-sdf &middot; +8 more</p>
+          <p>STL / OBJ / PLY / 3MF I/O, repair, offset, shell, lattice, print validation.</p>
+        </div>
+
+        <div class="stack-row">
+          <h3>Scan &rarr; fabrication</h3>
+          <p class="crates">cf-scan-prep-core &middot; cf-cast &middot; mesh-printability</p>
+          <p>Scan cleanup, multi-material mold generation, printability gating, and generated fabrication procedures.</p>
+        </div>
+      </div>
+
+      <p class="stack-note">70 crates outside <code>examples/</code>. Pure Rust with no framework dependencies in the physics and mesh cores; the mold-CSG stage builds a vendored C++ kernel through CMake. The facade pulls it in by default, so a first build needs CMake and a C++ compiler; <code>default-features = false, features = ["sim", "mesh"]</code> skips it. Layer-0 core crates are checked against the <code>wasm32-unknown-unknown</code> target as part of the quality gate.</p>
+    </section>
+
+    <section>
+      <h2>Depending on it</h2>
+
+      <p class="lead-in">The API still moves. These are the terms.</p>
+
+      <div class="stack">
+        <div class="stack-row">
+          <h3>Revisions</h3>
+          <p>Install from git and pin a <code>rev</code> for reproducible builds. Breaking changes land when they improve the architecture.</p>
+        </div>
+
+        <div class="stack-row">
+          <h3>Rust toolchain</h3>
+          <p>Pinned to 1.96.0 for reproducible builds and lints, in CI and locally alike. Toolchain bumps are deliberate, paired with a workspace-wide lint sweep.</p>
+        </div>
+
+        <div class="stack-row">
+          <h3>Tags</h3>
+          <p>Git tags version Cendrillon, not the SDK &mdash; <code>v0.3.2</code> is a Cendrillon release. Track <code>main</code> for the SDK.</p>
+        </div>
+
+        <div class="stack-row">
+          <h3>Platforms</h3>
+          <p>Sharded tests run on Linux, with a cross-OS job covering four platform-sensitive crates on macOS and Windows.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Where to start</h2>
+
+      <p class="lead-in">Read a <a class="inline" href="https://github.com/via-balaena/CortenForge/tree/main/examples">worked example</a> to see the components composed, or open an issue on <a class="inline" href="https://github.com/via-balaena/CortenForge/issues">GitHub</a> &mdash; questions and bug reports are both welcome there.</p>
+
+      <div class="actions">
+        <a class="cta" href="https://github.com/via-balaena/CortenForge">Browse the repository</a>
+        <a class="cta cta-secondary" href="https://github.com/via-balaena/CortenForge/tree/main/examples">See the examples</a>
+      </div>
+    </section>
+
+    <section>
+      <h2>Elsewhere</h2>
+
+      <div class="cards">
+        <a class="card" href="/cendrillon/">
+          <span class="card-label">Application</span>
+          <span class="card-title">Cendrillon</span>
+          <span class="card-sub">A guided desktop tool that takes a 3D scan all the way to printable molds for casting silicone.</span>
+        </a>
+
+        <a class="card" href="https://github.com/via-balaena/CortenForge/blob/main/MISSION.md">
+          <span class="card-label">Mission</span>
+          <span class="card-title">Where this is going</span>
+          <span class="card-sub">The thesis, the capstone the work is building toward, and how it is sequenced.</span>
+        </a>
+
+        <a class="card" href="/research/">
+          <span class="card-label">Study</span>
+          <span class="card-title">Biological Navigation Spectrum</span>
+          <span class="card-sub">The X-Encoding design framework for thermodynamic computing.</span>
+        </a>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="wrap site">
+    <p>CortenForge is open-source software, free under Apache-2.0, built and maintained by <a href="https://viabalaena.com">Via Balaena</a>. Issues and pull requests are welcome on <a href="https://github.com/via-balaena/CortenForge">GitHub</a>.</p>
+
+    <p>CortenForge is general-purpose research and engineering software, provided <strong>as is</strong> without warranty of any kind. <strong>It is not a medical device</strong> and makes no medical, therapeutic, or health claims. See the <a href="https://github.com/via-balaena/CortenForge/blob/main/DISCLAIMER.md">full disclaimer</a>.</p>
+    <p>
+      <a href="https://github.com/via-balaena/CortenForge">GitHub</a>
+      <span class="sep" aria-hidden="true">&middot;</span>
+      <a href="https://github.com/via-balaena/CortenForge/blob/main/LICENSE">Apache-2.0</a>
+      <span class="sep" aria-hidden="true">&middot;</span>
+      <a href="https://viabalaena.com">Via Balaena</a>
+    </p>
+  </footer>
 
 </body>
 </html>

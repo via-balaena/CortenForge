@@ -16,7 +16,7 @@
 #
 # Coverage is excluded from the CI gate via --skip-coverage because
 # llvm-cov in release mode is ~5-10 min per crate; it runs locally
-# via `cargo xtask grade <crate>` and in dedicated nightly jobs.
+# via `cargo xtask grade <crate>` and in the weekly job in scheduled.yml.
 #
 # Test execution structure (L0 plan §8 step 13 / §6):
 # - `tests-debug` (ubuntu, default features, debug profile): authoritative

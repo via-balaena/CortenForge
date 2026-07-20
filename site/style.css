@@ -1,251 +1,573 @@
+/* CortenForge — cortenforge.com
+ *
+ * A documentation-grade site: dense, scannable, structure over atmosphere. The
+ * reader is an engineer deciding whether to adopt the SDK, so the layout is
+ * conventional on purpose — clear headings, code shown early, one accent for
+ * anything actionable.
+ *
+ * The skin is a wet street at night: a green-black ground, lantern orange for
+ * actions, jade neon for machine-readable text, sodium lamp reserved for hover.
+ * Lantern orange is also corten orange, after the weathering steel the project
+ * is named for — the thread tying this site to viabalaena.com.
+ *
+ * Deliberately dark-only: the palette is the identity, not a preference.
+ */
+
 :root {
-  --bg: #ffffff;
-  --text: #444444;
-  --heading: #1a1a1a;
-  --accent: #2563eb;
-  --border: #e5e5e5;
-  --code-bg: #f5f5f5;
-  --mono: "SF Mono", "Fira Code", Menlo, Consolas, monospace;
-  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --bg:        #080f0e;
+  --bg-lift:   #0b1413;
+  --surface:   #101a18;
+
+  --border:    #1f2d2a;
+  /* Clears 3:1 against the page (WCAG 1.4.11) as a control boundary,
+     while staying recessive next to the filled primary. */
+  --border-hi: #506a60;
+
+  --text:      #e2e9e6;
+  --text-2:    #a4b2ad;
+  --text-3:    #7c8b86;
+
+  /* lantern — anything actionable */
+  --accent:    #d9603a;
+  --accent-hi: #ee7a52;
+  --accent-bg: rgba(217, 96, 58, 0.13);
+
+  /* jade neon — machine-readable text */
+  --jade:      #4ec79f;
+
+  /* sodium lamp — hover only */
+  --sodium:    #e2a458;
+
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
 }
 
-* { box-sizing: border-box; margin: 0; padding: 0; }
+* { box-sizing: border-box; }
+
+html {
+  -webkit-text-size-adjust: 100%;
+  background: var(--bg);
+  color-scheme: dark;
+  /* Clears the sticky header so in-page anchors do not land behind it.
+     The header grows when the bar and then the nav wrap, so this is
+     raised at the narrow breakpoint rather than left at one value. */
+  scroll-padding-top: 72px;
+}
 
 body {
-  font-family: var(--font);
-  background: var(--bg);
+  margin: 0;
+  background:
+    /* lamp glow high and off-axis, and a cold wash off the river below */
+    radial-gradient(900px 520px at 84% -12%, rgba(217, 96, 58, 0.07), transparent 66%),
+    radial-gradient(1200px 700px at 12% 108%, rgba(78, 199, 159, 0.045), transparent 72%),
+    var(--bg);
+  background-attachment: fixed;
   color: var(--text);
-  line-height: 1.7;
+  font: 400 16.5px/1.65 var(--sans);
   -webkit-font-smoothing: antialiased;
 }
 
-.container {
-  max-width: 540px;
+.wrap {
+  max-width: 860px;
   margin: 0 auto;
-  padding: 8rem 1.5rem 4rem;
-  text-align: center;
+  padding: 0 24px;
+}
+
+::selection { background: rgba(217, 96, 58, 0.3); color: #ffffff; }
+
+/* Keyboard focus must be at least as loud as hover, everywhere. */
+:focus-visible {
+  outline: 2px solid var(--accent-hi);
+  outline-offset: 3px;
+}
+
+/* main takes focus from the skip link, but is not a tab stop itself. */
+main:focus { outline: none; }
+
+/* Bypass the repeated nav links; visible only once focused.
+   Fixed rather than absolute so it lands in the viewport when reached by
+   shift-tab from further down the page, not at the top of the document. */
+.skip {
+  position: fixed;
+  left: -9999px;
+  top: 0;
+  z-index: 30;
+  padding: 11px 18px;
+  background: var(--accent);
+  color: #0a1211;
+  font-size: 15px;
+  font-weight: 650;
+  text-decoration: none;
+  border-radius: 4px;
+}
+
+/* Inset by more than the 2px ring plus its 3px offset, so no edge of the
+   focus outline is clipped by the viewport. */
+.skip:focus { left: 6px; top: 6px; }
+
+/* ---------- header ---------- */
+
+header.site {
+  border-bottom: 1px solid var(--border);
+  background: rgba(8, 15, 14, 0.88);
+  -webkit-backdrop-filter: saturate(150%) blur(10px);
+  backdrop-filter: saturate(150%) blur(10px);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 13px 0;
+}
+
+.brand { text-decoration: none; color: var(--text); white-space: nowrap; }
+
+.brand-name {
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+}
+
+/* A small lit square — the sign above the door. */
+.brand-name::before {
+  content: "";
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 9px;
+  background: var(--accent);
+  box-shadow: 0 0 10px rgba(217, 96, 58, 0.55);
+}
+
+nav.site {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 24px;
+  font-size: 14.5px;
+}
+
+nav.site a {
+  color: var(--text-2);
+  text-decoration: none;
+  padding: 4px 0;
+  border-bottom: 2px solid transparent;
+  transition: color .14s ease, border-color .14s ease;
+}
+
+nav.site a:hover { color: var(--sodium); }
+
+nav.site a[aria-current="page"] {
+  color: var(--text);
+  font-weight: 550;
+  border-bottom-color: var(--accent);
+}
+
+/* ---------- hero ---------- */
+
+.hero {
+  padding: 60px 0 46px;
+  border-bottom: 1px solid var(--border);
+}
+
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  margin: 0 0 16px;
 }
 
 h1 {
-  font-size: 2rem;
-  font-weight: 700;
-  color: var(--heading);
-  letter-spacing: -0.02em;
-  margin-bottom: 0.6rem;
+  font-size: clamp(30px, 4.6vw, 42px);
+  font-weight: 650;
+  line-height: 1.18;
+  letter-spacing: -0.025em;
+  color: #f2f7f5;
+  margin: 0 0 20px;
+  max-width: 22ch;
 }
 
-.tagline {
+.standfirst {
+  font-size: 18.5px;
+  line-height: 1.6;
+  color: var(--text-2);
+  margin: 0;
+  max-width: 64ch;
+}
+
+/* primary calls to action, directly under the hero */
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 28px 0 0;
+}
+
+/* One button component. `.cta` sits inline under the hero, `.button` stacks
+   in the download row; everything else about them is shared. */
+.cta,
+.button {
+  border-radius: 4px;
+  background: var(--accent);
+  color: #0a1211;
+  border: 1px solid var(--accent);
+  text-decoration: none;
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.35;
+  transition: background .14s ease, border-color .14s ease;
+}
+
+.cta { display: inline-block; padding: 11px 22px; }
+.button { display: block; padding: 13px 20px; }
+
+.cta:hover,
+.button:hover { background: var(--accent-hi); border-color: var(--accent-hi); }
+
+.cta-secondary,
+.button-secondary {
+  background: transparent;
   color: var(--text);
-  margin-bottom: 1.2rem;
+  border-color: var(--border-hi);
 }
 
-.badge {
-  margin-bottom: 2rem;
+.cta-secondary:hover,
+.button-secondary:hover { background: var(--surface); border-color: var(--accent); }
+
+/* ---------- sections ---------- */
+
+section { padding-top: 52px; }
+
+h2 {
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.018em;
+  color: #f2f7f5;
+  margin: 0 0 18px;
 }
 
-pre {
-  background: var(--code-bg);
+p { margin: 0 0 16px; }
+
+.lead-in { font-size: 17.5px; color: var(--text-2); max-width: 68ch; }
+
+strong { color: var(--text); font-weight: 650; }
+
+.kicker {
+  font-size: 17px;
+  line-height: 1.6;
+  color: var(--text);
+  background: var(--accent-bg);
+  border-left: 3px solid var(--accent);
+  border-radius: 0 4px 4px 0;
+  margin: 24px 0;
+  padding: 14px 18px;
+}
+
+a.inline {
+  color: var(--sodium);
+  text-decoration: none;
+  border-bottom: 1px solid rgba(226, 164, 88, 0.55);
+  transition: color .14s ease, border-color .14s ease;
+}
+
+a.inline:hover { color: var(--accent-hi); border-bottom-color: var(--accent); }
+
+/* ---------- the stack ---------- */
+
+.stack {
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 0.8rem 1rem;
+  overflow: hidden;
+}
+
+.stack-row {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.stack-row:last-child { border-bottom: 0; }
+.stack-row:nth-child(odd) { background: var(--bg-lift); }
+
+.stack-row h3 {
+  font-size: 15.5px;
+  font-weight: 650;
+  color: var(--text);
+  margin: 0 0 4px;
+}
+
+.crates {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--jade);
+  margin: 0 0 5px;
+  overflow-wrap: anywhere;
+}
+
+.stack-row p:last-child { margin: 0; color: var(--text-2); font-size: 15.5px; }
+
+.stack-note { margin: 16px 0 0; font-size: 15px; color: var(--text-3); }
+
+/* ---------- code ---------- */
+
+pre {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 16px 18px;
   overflow-x: auto;
-  margin-bottom: 1.5rem;
-  text-align: left;
-  display: inline-block;
+  margin: 0 0 16px;
 }
 
 code {
   font-family: var(--mono);
-  font-size: 0.9rem;
-  color: var(--text);
+  font-size: 0.9em;
+  color: var(--jade);
+  background: rgba(78, 199, 159, 0.1);
+  padding: 1px 5px;
+  border-radius: 3px;
 }
 
-nav {
-  margin-bottom: 3rem;
+pre code {
+  background: none;
+  padding: 0;
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--text-2);
 }
 
-nav a {
-  color: var(--text);
-  text-decoration: none;
-  transition: color 0.15s;
-}
+/* ---------- downloads ---------- */
 
-nav a:hover { color: var(--heading); }
-
-.sep {
-  color: var(--border);
-  margin: 0 0.4rem;
-}
-
-h2 {
-  font-size: 0.85rem;
-  font-weight: 600;
-  color: var(--text);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  margin-bottom: 0.6rem;
-}
-
-ul {
-  list-style: none;
-  display: inline-block;
-}
-
-ul li { margin-bottom: 0.3rem; }
-
-ul a {
-  color: var(--accent);
-  text-decoration: none;
-}
-
-ul a:hover { text-decoration: underline; }
-
-section {
-  margin: 2.6rem 0;
-}
-
-section p {
-  margin-bottom: 0.6rem;
-}
-
-/* Cendrillon — a featured app built with the SDK, set apart as a card. */
-.card {
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 1.8rem 1.6rem;
-  background: #fafbfc;
-}
-
-.eyebrow {
-  font-size: 0.72rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: #6b7280;
-  margin-bottom: 0.3rem;
-}
-
-.card h2 {
-  font-size: 1.45rem;
-  font-weight: 700;
-  text-transform: none;
-  letter-spacing: -0.01em;
-  color: var(--heading);
-  margin-bottom: 0.5rem;
-}
-
-.card-lead {
-  margin-bottom: 1.3rem;
-}
-
-/* Stacked, full-width download buttons — easy targets, clear hierarchy
-   (primary = the tested Mac build; secondary = the beta platforms). */
 .downloads {
   display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-  margin-bottom: 0.8rem;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 0 0 20px;
 }
 
-.button {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  background: var(--accent);
-  color: #ffffff;
-  text-decoration: none;
-  padding: 0.7rem 1.4rem;
-  border-radius: 8px;
-  font-weight: 600;
-  transition: background 0.15s, border-color 0.15s;
-}
-
-.button:hover { background: #1d4ed8; }
-
-/* Beta platforms: outlined rather than solid, so the tested build leads. */
-.button-secondary {
-  background: #ffffff;
-  color: var(--accent);
-  border: 1px solid var(--border);
-}
-
-.button-secondary:hover {
-  background: #f5f8ff;
-  border-color: var(--accent);
-}
-
+/* Solid colour rather than opacity — 11.5px text over the accent needs the
+   full 4.5:1, and compositing at 0.8 fell short of it. */
 .button-sub {
   display: block;
-  font-size: 0.72rem;
+  font-family: var(--mono);
+  font-size: 11.5px;
   font-weight: 500;
-  opacity: 0.85;
-  margin-top: 0.1rem;
+  color: #20100a;
+  margin-top: 3px;
 }
 
-/* Install help, tucked behind a disclosure so the card stays uncluttered. */
-.firstrun {
-  text-align: left;
-  margin-bottom: 0.8rem;
+.button-secondary .button-sub { color: var(--text-3); }
+
+/* ---------- disclosure ---------- */
+
+details.firstrun {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px 18px;
+  margin: 0 0 16px;
+  background: var(--bg-lift);
 }
 
-.firstrun > summary {
+details.firstrun > summary {
   cursor: pointer;
-  font-size: 0.85rem;
+  font-size: 15px;
   font-weight: 600;
-  color: var(--heading);
-  text-align: center;
-  list-style-position: inside;
+  color: var(--text);
 }
 
-.firstrun-steps {
-  list-style: disc;
+details.firstrun > summary::marker { color: var(--accent); }
+details.firstrun > summary::-webkit-details-marker { color: var(--accent); }
+
+.firstrun ul {
+  margin: 14px 0 0;
+  padding-left: 20px;
+  font-size: 15.5px;
+  color: var(--text-2);
+  max-width: 68ch;
+}
+
+.firstrun li { margin-bottom: 9px; }
+.firstrun li:last-child { margin-bottom: 0; }
+.firstrun li::marker { color: var(--text-3); }
+
+/* ---------- callouts ---------- */
+
+.closer {
+  margin: 20px 0 0;
+  padding: 16px 20px;
+  background: var(--bg-lift);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--jade);
+  border-radius: 0 6px 6px 0;
+  font-size: 16px;
+  color: var(--text-2);
+  max-width: 72ch;
+}
+
+.note { font-size: 14.5px; color: var(--text-3); margin: 0 0 12px; max-width: 72ch; }
+
+.note a { color: var(--text-2); text-decoration: underline; }
+.note a:hover { color: var(--sodium); }
+
+/* ---------- cross-links ---------- */
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 14px;
+}
+
+.card {
   display: block;
-  margin: 0.7rem 0 0.4rem;
-  padding-left: 1.2rem;
-  font-size: 0.85rem;
-  color: #666666;
-}
-
-.firstrun-steps li { margin-bottom: 0.5rem; }
-
-.note {
-  font-size: 0.85rem;
-  color: #666666;
-}
-
-.note a {
-  color: var(--accent);
-  text-decoration: underline;
-}
-
-/* Services — descriptions run long, so this block reads left-aligned
-   inside the otherwise centred page. */
-.services {
-  text-align: left;
-  margin: 1.1rem 0 1.2rem;
-}
-
-.services dt {
-  font-weight: 600;
-  color: var(--heading);
-}
-
-.services dd {
-  font-size: 0.9rem;
-  color: #666666;
-  margin-bottom: 1rem;
-}
-
-.services dd:last-child { margin-bottom: 0; }
-
-#services p a {
-  color: var(--accent);
+  padding: 18px 20px;
+  background: var(--bg-lift);
+  border: 1px solid var(--border);
+  border-radius: 6px;
   text-decoration: none;
+  color: var(--text);
+  transition: border-color .14s ease, background .14s ease;
 }
 
-#services p a:hover { text-decoration: underline; }
+.card:hover { border-color: var(--accent); background: var(--surface); }
 
-@media (max-width: 600px) {
-  .container { padding: 5rem 1.2rem 3rem; }
-  h1 { font-size: 1.6rem; }
+.card-label {
+  display: block;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--jade);
+  margin-bottom: 8px;
+}
+
+.card-title {
+  display: block;
+  font-size: 16.5px;
+  font-weight: 650;
+  letter-spacing: -0.012em;
+  color: var(--text);
+  margin-bottom: 5px;
+}
+
+.card-sub { display: block; font-size: 14.75px; line-height: 1.55; color: var(--text-2); }
+
+/* ---------- footer ---------- */
+
+footer.site {
+  margin-top: 64px;
+  padding: 24px 0 56px;
+  border-top: 1px solid var(--border);
+  font-size: 14.5px;
+  line-height: 1.7;
+  color: var(--text-3);
+}
+
+/* The footer carries .wrap for page alignment; the measure is set on the
+   paragraphs so it stays flush left with the rest of the page. */
+footer.site p { margin: 0 0 8px; max-width: 78ch; }
+footer.site p:last-child { margin: 0; }
+footer.site strong { color: var(--text-2); font-weight: 600; }
+
+footer.site a { color: var(--text-2); text-decoration: none; border-bottom: 1px solid var(--border); }
+footer.site a:hover { color: var(--sodium); border-bottom-color: var(--accent); }
+
+.sep { color: var(--text-3); padding: 0 6px; }
+
+@media (max-width: 620px) {
+  body { font-size: 16px; }
+  /* The bar wraps to two rows here, roughly halving again the space above
+     an anchored heading. */
+  html { scroll-padding-top: 96px; }
+  .hero { padding: 42px 0 34px; }
+  section { padding-top: 38px; }
+  .bar { flex-wrap: wrap; gap: 10px; padding: 11px 0; }
+  nav.site { gap: 16px; font-size: 13.5px; }
+  .downloads { flex-direction: column; }
+  footer.site { margin-top: 48px; padding-bottom: 44px; }
+}
+
+/* Printing drops backgrounds, which would leave near-white type on white
+   paper. Install commands get printed and PDF'd, so invert deliberately. */
+@media print {
+  html, body {
+    background: #ffffff;
+    color: #000000;
+  }
+
+  header.site,
+  .skip { display: none; }
+
+  .wrap { max-width: none; }
+
+  a, a.inline, .note a, footer.site a {
+    color: #000000;
+    text-decoration: underline;
+    border-color: #999999;
+  }
+
+  h1, h2, h3, .stack-row h3, .card-title, strong, footer.site strong,
+  details.firstrun > summary { color: #000000; }
+
+  .lead-in, .standfirst, .stack-row p, .stack-row p:last-child, .stack-note,
+  .card-sub, .note, .closer, .kicker, .firstrun ul, .firstrun li,
+  .button-secondary .button-sub, footer.site, .sep { color: #222222; }
+
+  .stack-row p.crates, code, pre code, .card-label, .eyebrow { color: #000000; }
+
+  pre, .stack, .stack-row, .card, .closer, details.firstrun, .kicker,
+  .hero, footer.site, code {
+    background: #ffffff;
+    border-color: #999999;
+  }
+
+  .stack-row:nth-child(odd) { background: #ffffff; }
+
+  .cta, .button {
+    background: #ffffff;
+    color: #000000;
+    border-color: #000000;
+  }
+
+  /* Links are useless as bare words on paper. Scoped by ancestor rather than
+     enumerated per component, so new link styles are covered automatically. */
+  main a[href^="http"]::after,
+  footer.site a[href^="http"]::after {
+    content: " (" attr(href) ")";
+    font-size: 11px;
+    overflow-wrap: anywhere;
+  }
+
+  section { padding-top: 28px; }
+
+  h1, h2, h3 { page-break-after: avoid; break-after: avoid; }
+
+  .firstrun li::marker,
+  details.firstrun > summary::marker { color: #000000; }
+  details.firstrun > summary::-webkit-details-marker { color: #000000; }
+
+  /* overflow:hidden establishes a BFC that some engines refuse to fragment
+     across pages; the radius clipping it buys is moot once backgrounds go. */
+  .stack { overflow: visible; }
+
+  /* On paper overflow is a silent clip, and the longest code lines exceed the
+     text width at every common paper/margin combination. */
+  pre {
+    overflow-x: visible;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  footer.site { margin-top: 24px; padding-bottom: 0; }
+
+  .stack-row { page-break-inside: avoid; }
 }

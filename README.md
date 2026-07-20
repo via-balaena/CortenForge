@@ -20,30 +20,30 @@ CortenForge — including the **Cendrillon** application — is general-purpose 
 
 | Domain | Crates | Highlights |
 |--------|--------|-----------|
-| **Rigid-body physics** | sim-core, sim-mjcf, sim-urdf | MuJoCo-aligned dynamics (79/79 conformance), MJCF + URDF import, analytic derivatives |
-| **Soft-body physics** | sim-soft | Hyperelastic FEM (NeoHookean / Yeoh), SDF→tet meshing, contact, differentiable |
+| **Rigid-body physics** | sim-core, sim-mjcf, sim-urdf | MuJoCo-aligned dynamics (79/79 on the 3.4.0 conformance suite), MJCF + URDF import, analytic and finite-difference derivatives |
+| **Soft-body physics** | sim-soft | Hyperelastic FEM (Neo-Hookean / Yeoh), SDF→tet meshing, contact, differentiable |
 | **ML / RL / Optimization** | sim-ml-chassis, sim-rl, sim-opt | VecEnv, autograd, CEM, REINFORCE, PPO, TD3, SAC, SA, parallel tempering |
 | **Thermo environments** | sim-therm-env, sim-thermostat | Langevin thermostats, double wells, pairwise coupling, pluggable rewards |
 | **Design** | cf-design, cf-geometry, cf-spatial | SDF primitives, smooth booleans, mechanism assembly, MJCF + STL export |
-| **Mesh** | mesh-io, mesh-repair, mesh-sdf + 7 more | STL/OBJ/PLY/3MF I/O, repair, offset, shell, lattice, print validation |
-| **Scan → fabrication** | cf-scan-prep, cf-cast, mesh-printability | Scan cleanup, multi-material mold generation, printability gating, procedure generation |
+| **Mesh** | mesh-io, mesh-repair, mesh-sdf + 8 more | STL/OBJ/PLY/3MF I/O, repair, offset, shell, lattice, print validation |
+| **Scan → fabrication** | cf-scan-prep-core, cf-cast, mesh-printability | Scan cleanup, multi-material mold generation, printability gating, procedure generation |
 
-60+ crates. Pure Rust. Zero framework dependencies (Layer 0). Compiles to native and WASM.
+70 crates outside `examples/`. Pure Rust with no framework dependencies in the physics and mesh cores; the mold-CSG stage builds a vendored C++ kernel through CMake. The facade pulls it by default, so a first build needs CMake and a C++ compiler; `default-features = false, features = ["sim", "mesh"]` skips it. Layer-0 core crates are checked against `wasm32-unknown-unknown` by the quality gate.
 
 ## Quick Start
 
 ### Use the SDK
 
-Applications depend on a single crate — the **`cortenforge` facade** — and reach the whole SDK through it, so the internal crate structure can evolve behind one stable contract.
+Applications depend on a single crate — the **`cortenforge` facade** — and reach the headless core of the SDK through it, so the internal crate structure can evolve behind one import surface.
 
 ```toml
 [dependencies]
-# Publishing to crates.io is in progress; until then, depend on it via git:
+# The crates.io listings lag this workspace by months — depend on the repository:
 cortenforge = { git = "https://github.com/via-balaena/CortenForge" }
 ```
 
 ```rust
-// Two domain umbrellas expose the whole toolkit through one dependency:
+// Two umbrellas plus the design and fabrication crates, all through one dependency:
 use cortenforge::sim;   // rigid + soft physics, soft↔rigid coupling, RL/opt
 use cortenforge::mesh;  // load / repair / measure / print meshes
 
@@ -64,8 +64,8 @@ Bevy/GUI/GPU crates are deliberately excluded, so every app compiling against th
 ```bash
 git clone https://github.com/via-balaena/CortenForge.git
 cd CortenForge
-cargo build --workspace
-cargo xtask grade <crate-name>   # run the quality gate on a single crate
+cargo build -p cortenforge          # the facade; --workspace builds all 300 members
+cargo xtask grade <crate-name>      # run the quality gate on a single crate
 ```
 
 ## Links
