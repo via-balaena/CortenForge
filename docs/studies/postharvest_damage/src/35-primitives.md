@@ -18,9 +18,9 @@ Verified against the tree at `1bc69a85`, not from memory.
 | Hyperelastic constitutive models | `material/{neo_hookean,yeoh}.rs` | ✅ exists |
 | **Elastic-plastic constitutive path** | — | ❌ **absent, and blocked by trait shape** |
 | **Damage / failure criterion** | — | ❌ absent |
-| Material-parameter gradients (∂P/∂p) | `Material::first_piola_param_grad` (keystone S5) | ✅ exists |
+| Material-parameter gradients (∂P/∂p) | `Material::first_piola_param_grad` (keystone S5) | ⚠ **`NeoHookean` only** — defaults empty; `Yeoh` does not override |
 | Soft contact | `contact/{ipc,friction,penalty,rigid}.rs` | ✅ exists |
-| Exact geometry → physics | `cf-mesh`, `sdf_bridge/` | ✅ exists |
+| Exact geometry → physics | `mesh`, `mesh-sdf`, `sdf_bridge/` | ✅ exists |
 | Soft ↔ rigid coupling, one tape | `sim/L1/coupling` | ✅ keystone complete |
 | Inverse design over soft material params | `cf-codesign::SoftMaterialTarget`, `SoftMaterialTrajectoryTarget` | ✅ exists |
 | Inverse design over geometry / routes | `cf-codesign::RouteTarget` (#661) | ✅ exists |
@@ -38,6 +38,7 @@ pub trait Material: Send + Sync {
     fn first_piola(&self, f: &Matrix3<f64>) -> Matrix3<f64>;
     fn tangent(&self, f: &Matrix3<f64>) -> SMatrix<f64, 9, 9>;
     fn validity(&self) -> ValidityDomain;
+    // + first_piola_param_grad(&self, f) -> Vec<Matrix3>, defaulted empty (keystone S5)
 }
 ```
 
@@ -78,13 +79,37 @@ state becomes another threaded parent — an existing pattern, not a new mechani
 
 **Plasticity breaks exactly that.** With plastic history, `f_int` *does* depend on previous state, so
 `∂r/∂x_prev` stops being the clean diagonal `−(M/Δt²)·I` and acquires a `∂f_int/∂(plastic state)`
-term. That is a real derivation and implementation — but it is one identified term in one primitive,
-not an architectural rewrite.
+term.
+
+**There is already a worked precedent for that departure.** `TrajectoryStepVjp` carries a
+`friction_xprev` path in which `∂r/∂x_prev` gains a `−∇²D` term *beside* `−M/Δt²` — derived,
+implemented and handled. The quoted sentence is scoped to the frictionless `StateStepVjp`; the file
+has already left it once.
+
+> **⚠ But "one term to derive" understates the work, and this book previously said so too flatly.**
+> Three things it hides:
+>
+> 1. **The plastic state is itself the output of a local Newton solve** — the return mapping at every
+>    quadrature point. Differentiating requires the sensitivity of *that* implicit solve: an IFT
+>    nested inside the global one, not merely `∂f_int/∂ε_p`.
+> 2. **Yield/no-yield is a non-smooth switch.** The active set changes with the parameters, so the
+>    loss is only *piecewise* differentiable and gradients kink at elastic-plastic transitions. This
+>    is the standard hazard for gradient-based inverse design in plasticity, and
+>    [Gate 4](40-program.md#gate-4--inverse-design)'s "unblocked" verdict depends on it not biting.
+> 3. **"Another threaded parent" hides the size.** Plastic state is a tensor *per quadrature point*
+>    (~6·n_quad), not a scalar or an `n_dof` vector, and path-dependence forces storing or
+>    checkpointing it across the whole trajectory.
 
 **Symmetry is probably a non-issue and was anticipated.** The source already notes that "a future
 asymmetric material would need `solve_transpose_in_place` here." Named, expected, small. And for
 **associated J2 von Mises plasticity** — the model every validated paper in [Ch 3](30-gap.md) uses —
-the consistent tangent is symmetric, so the happy-path Cholesky likely survives untouched.
+the consistent tangent is symmetric, because the flow direction is the yield-surface normal.
+Non-associated flow is what breaks it.
+
+> **Two caveats on that.** Symmetry is not positive-definiteness, and the Cholesky happy path needs
+> SPD. With hardening it holds; a *softening* damage law — which this program's own inventory wants —
+> destroys it. Fortunately `sim-soft` already carries an **LU fallback for the indefinite case**,
+> which makes this argument safer than the symmetry claim alone would.
 
 **There is a template.** `MaterialStepVjp` already computes `∂r/∂p_k = ∂f_int/∂p_k` from the stress
 derivative, contracting against the same factored tangent. A plastic-state VJP is structurally
@@ -102,7 +127,7 @@ identical: a computed RHS vector, same factor reuse.
 | [Gate 0](40-program.md#gate-0--can-we-reproduce-a-published-number) | "pure software, existing primitives" | Needs a **new constitutive class + trait change**. Weeks-to-months, not days. |
 | [Gate 1](40-program.md#gate-1--the-ablation-nobody-ran) | "a few weeks of work" | Cheap *given Gate 0*; it is a multi-material mesh run. Not independently cheap. |
 | [Gate 2](40-program.md#gate-2--distributional-prediction) | "pure software" | Needs ensemble/Monte-Carlo driving, which is absent — but it is a harness, not solver surgery. |
-| [Gate 4](40-program.md#gate-4--inverse-design) | "the flagship rung" | **Unblocked.** Adjoint extends by an existing pattern; one `∂f_int/∂(plastic state)` term to derive. |
+| [Gate 4](40-program.md#gate-4--inverse-design) | "the flagship rung" | **Unblocked in principle.** Adjoint extends by an existing pattern; residual risk is the non-smooth yield switch. |
 
 ## The honest alternative nobody costed
 

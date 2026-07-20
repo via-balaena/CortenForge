@@ -22,7 +22,7 @@ A later cold read added two more, both cutting against the program: that
 at all.
 
 **Note the asymmetry, because it is the most useful thing this table says.** Of the five
-sweep-driven retractions, four left the program *more* attractive — the field being less primitive
+sweep-driven retractions, three left the program *more* attractive — the field being less primitive
 upgraded the finding; damage-extent errors existing created a reproduction target. Both
 review-driven corrections made it *less* attractive.
 
@@ -57,6 +57,8 @@ already exists and extends to plastic state by an established pattern.
 There is also now a **physics** case, not just a methodological one. Diels (2019) measured the
 viscoelastic contact law at R² 0.71 ± 0.20 against 0.90 ± 0.13 for visco-elastoplastic on 'Jonagold'
 impact profiles, and concluded plastic dissipation *"can probably not be neglected"* at bruise scale.
+**Conditionally** — below 0.3 m/s the plastic model is the worse of the two (0.51 vs 0.74). The case
+holds in the bruising regime and reverses at gentle impacts.
 That is the field's own leading group establishing why the sophisticated side needs plasticity — the
 capability [Ch 4](35-primitives.md) says we would have to build.
 
@@ -65,8 +67,8 @@ capability [Ch 4](35-primitives.md) says we would have to build.
 **The motivation is thin and partly unverified.** The tonnage argument is dead. What replaced it —
 the micronutrient overlap — never entered verification and is flagged as author reasoning.
 
-**The evidence base is small and unchecked.** ~7 papers per sweep. Adversarial counter-search never
-ran. Wageningen's modern group, UC Davis, Cranfield, Washington State, Michigan State and USDA ARS
+**The evidence base is small and unchecked.** ~7 papers per sweep. Adversarial counter-search never ran in
+sweeps 2–3 (budget exhausted). Wageningen's modern group, UC Davis, Cranfield, Washington State, Michigan State and USDA ARS
 were **never reached**. Any could be doing this work.
 
 **Gate 0 costs more than advertised.** Plasticity in `sim-soft` is a trait change, not an `impl` —
@@ -111,8 +113,8 @@ data now exists, and Gate 4 is unblocked.
 
 **B. Finish the cheap checks.** Three are done (below). Two remain, both emails: **MeBioS** — is the
 2019 gap fully closed, what else is unpublished — and **CGIAR/GIZ/PEF** on whether FE licence cost is
-a real barrier, which decides build-vs-buy. Plus two ten-minute items: resolve the kiwifruit paper
-identity, and ask Hussein/Scheffler for their unreleased force↔damage data. **Still the lowest-regret
+a real barrier, which decides build-vs-buy. Plus one ten-minute item: ask Hussein and
+Scheffler for their unreleased force↔damage data. **Still the lowest-regret
 next move**, though it is now most of the way done.
 
 **C. Full program including Gate 3.** Multi-year with a bench component. Justified only if the
@@ -129,7 +131,7 @@ program's favour.**
 | Check | Result |
 |---|---|
 | **Search the open-data repositories** | **Partially closes Gate 3.** Apple-tissue force curves + DVC strain fields + microstructure now exist openly (`10.48804/GNBFGU`, MeBioS, May 2026, CC-BY-NC-SA). Force↔**damage** pairing still absent, and the structural reason is now known. |
-| **Read Van Zeebroeck** | **Finding survives and strengthens.** Whole-fruit DEM, viscoelastic contact, damage by regression — not a bridge. And Diels 2019 measured *why* viscoelastic fails at bruise scale (R² 0.71 vs 0.90), which is now the physics case for Gate 0. |
+| **Read Van Zeebroeck** | **Finding survives**, at reduced confidence — the thesis was never obtained and the characterization is second-hand. Separately, Diels 2019 (verified) gives a *conditional* physics case for plasticity: better above 0.3 m/s, worse below. |
 | **Does the adjoint survive plasticity?** | **Yes.** Through-time adjoint already exists via tape-composed per-step VJPs; plastic state becomes another threaded parent. One `∂f_int/∂(plastic state)` term to derive. Gate 4 unblocked. |
 
 Two are outstanding, and both are yours to send: **email MeBioS** (is the 2019 gap now closed — the
@@ -140,8 +142,8 @@ licence cost is actually a barrier**, which gates build-vs-buy.
 
 - **The competitive landscape is entirely unmapped.** Zero surviving claims across three sweeps on
   tooling, licence costs, development-sector practice, or patents. Probably not on the open web.
-- **Whether there are one or two 2024 kiwifruit papers**, and therefore which parameter table Gate 0
-  should use. A ten-minute check.
+- **Whether Du et al. 2019 is the origin of the withdrawn orthotropic table.** The Gate 0 table
+  itself is settled; only the provenance of the discarded one is open.
 - **Whether a numeric validation figure exists inside Van Zeebroeck's 2006 PBT paper** — closed at
   Elsevier and absent from Lirias. Cannot be excluded, only not found where it would be advertised.
 - **What the locked paper says** — *Postharvest Biol. Technol.* 213, 112930, eluded three sweeps.

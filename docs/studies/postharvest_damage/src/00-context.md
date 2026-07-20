@@ -12,7 +12,7 @@
 > | **Status** | Literature recon complete. **No code written. No decision made.** |
 > | **★ Finding** | **The sophisticated constitutive work and the quantitatively-validated work are disjoint sets** — cellular models unvalidated on damage magnitude, validated models bilinear elastic-plastic, nobody bridges. [Ch 3](30-gap.md). |
 > | **The bet** | Not "simulate fruit" — people do that. **Held-out validation + inverse design + distributional prediction**, *(medium-confidence absence-of-evidence, not established fact — [Ch 3](30-gap.md#nobody-does-inverse-design))*. |
-> | **Against** | ~7 papers per sweep; adversarial counter-search never ran; six major groups unreached; landscape unmapped; philanthropic premise unverified. |
+> | **Against** | ~7 papers per sweep; adversarial counter-search never ran in sweeps 2–3; six major groups unreached; landscape unmapped; philanthropic premise unverified. |
 > | **✅ Since the sweeps** | Three checks run — [repositories](30-gap.md#-the-repository-search-run), [Van Zeebroeck](30-gap.md#the-candidate-counter-example-examined), [the adjoint](35-primitives.md#-the-adjoint-question-answered). Finding **survived and strengthened**; Gate 3 narrowed; Gate 4 unblocked. [Ch 6](50-verdict.md#what-option-b-has-already-resolved). |
 > | **⚠ Largest unpriced cost** | **`sim-soft` is hyperelastic and cannot express plasticity without a trait change.** No gate is free. [Ch 4](35-primitives.md#-the-blocking-gap-sim-soft-has-no-plasticity-path). |
 > | **First rung** | [Gate 0](40-program.md#gate-0--can-we-reproduce-a-published-number) — reproduce the published kiwifruit bruise-area error (9.63%) from published parameters. Needs the plasticity path first. |
@@ -120,7 +120,7 @@ subsequent cold read. They are tabulated in
 [Ch 6](50-verdict.md#what-three-sweeps-actually-changed); the per-defect record is in
 `git log docs/studies/postharvest_damage/`.
 
-**Four of the five sweep-driven retractions left the program more attractive; both review-driven
+**Three of the five sweep-driven retractions left the program more attractive; both review-driven
 ones made it less so.** Each correction is individually sound, but a study that only ever corrects
 in its own favour is not correcting. Weigh the retraction count as evidence that this was checked,
 not that it was right.

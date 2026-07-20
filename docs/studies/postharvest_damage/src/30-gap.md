@@ -106,12 +106,12 @@ the one that matters empty.
      plastic     │  (no validation)     │  Apple*       2.51%  │
      (macro)     │                      │                      │
                  ├──────────────────────┼──────────────────────┤
-     regression  │                      │  Van Zeebroeck       │
-     (not a      │                      │  "sufficient         │
-     constitutive│                      │   accuracy",         │
-     model)      │                      │  no metric found     │
+     regression  │                      │  Van Zeebroeck†      │
+     (not a      │                      │  qualitative in the  │
+     constitutive│                      │  review; thesis      │
+     model)      │                      │  never obtained      │
                  └──────────────────────┴──────────────────────┘
-                                                    * abstract only
+                              * abstract only   † thesis unread, second-hand
 ```
 
 The top-right cell is the finding. Everything else is detail.
@@ -122,7 +122,7 @@ Now the same picture as a table, with the constitutive class made explicit.
 |---|---|---|
 | **MeBioS cellular DEM** (tomato) | Turgor, visco-elastoplastic cell walls, rupture, debonding | ✗ — geometric NRMSE only; mechanics qualitative; under-predicts modulus |
 | **Kiwifruit** (*Foods* 2024) | ✗ — isotropic bilinear elastic-plastic | ✓ 9.63% bruise area |
-| **Ginseng root** (2025) | ✗ — bilinear isotropic strain-hardening | ✓ 0.4–2.2% bruise area |
+| **Ginseng root** (2025) | ✗ — bilinear isotropic strain-hardening | ✓ 0.4–2.1% exterior / 0.76–2.2% internal |
 | **Apple** (*Comput. Electron. Agric.* 2024) | ✗ (abstract only) | ✓ "max 2.51%" pooled |
 | **Carrot** (2021) | Elastic-plastic + Prony | ✗ — its 4.87% is a **critical-force** error, not damage extent |
 
@@ -152,51 +152,73 @@ cortex with linear elastic cambium.
 **Van Zeebroeck — DEM modelling of apple impact damage.** The review surveyed in this chapter cites
 it as its bruise-prediction success story, and it was the one piece of work that might have sat in
 *both* columns: discrete-element rather than bilinear elastic-plastic, applied to a damage-extent
-quantity. It was retrieved and read.
+quantity.
 
-**It does not bridge, and it is not in the same category.** Verified from the KU Leuven PhD thesis
-(M. Van Zeebroeck, 2005, Ramon supervising):
+> **⚠ Read this before relying on the paragraph below.** **The Van Zeebroeck thesis was never
+> obtained.** Its Lirias record is metadata-only with no deposited PDF, and the 2006 paper where a
+> numeric validation would live — *Postharvest Biol. Technol.* 41(2):85–91 — is closed at Elsevier
+> and absent from Lirias. Everything here is either from the 2022 review (which *is* held and
+> verified) or **second-hand from a research agent whose quotations could not be checked against any
+> primary text.** Earlier versions of this section carried a quoted phrase attributed to the thesis
+> that appears in no source available to this study; it has been removed. **Treat the
+> characterization as provisional and the thesis as unread.**
 
-- **One DEM particle is one whole apple** — the thesis states it directly: *"a particle is, for
-  example, a fruit."* This is bulk-handling DEM for fruit-to-fruit and fruit-to-wall contact in
-  crates and bins, not tissue microstructure.
-- **The contact law is viscoelastic**, not elastoplastic: Kuwabara–Kono normal, a viscoelastic
-  Mindlin–Deresiewicz tangential, parameters identified on a rheometer.
-- **Damage is not in the constitutive model at all.** The thesis says the bruise models *"are not
-  inherent to DEM"* — they are multiple linear and non-linear **regressions** mapping peak contact
-  force and absorbed energy plus covariates (ripeness, stiffness, temperature, curvature, harvest
-  date) onto bruise volume. No plasticity, no failure criterion, no cell rupture.
+On the second-hand account, which is internally coherent but unverified: one DEM particle is one
+whole apple — bulk-handling DEM for fruit-to-fruit and fruit-to-wall contact in crates and bins,
+not tissue microstructure; the contact law is viscoelastic (Kuwabara–Kono normal, viscoelastic
+Mindlin–Deresiewicz tangential); and damage is not in the constitutive model at all, but is fitted
+by regression on peak contact force and absorbed energy plus covariates.
 
-So it belongs in the validated-but-unsophisticated column, with a regression damage layer rather
-than a physical one.
+If that account holds, the work belongs in the validated-but-unsophisticated column with a
+regression damage layer rather than a physical one — which is where this chapter places it, at
+reduced confidence.
 
-> **Correction to a widely-repeated detail.** The 2022 review describes this as predicting "bruise
-> depth." The thesis reports bruise **volume**. The "depth" phrasing appears to originate in that
-> one review sentence.
+**What the 2022 review does say, verified from the held post-print:**
 
-**Reported validation:** apples in boxes on an electro-hydraulic shaker against DEM with matched
-initial conditions, concluded to model vibration bruise damage *"with sufficient accuracy."* **No
-numeric error metric appears in any reachable source**, and the 2022 review characterizes it only as
-having "showed that it was possible to predict bruise damage." The one paper where a number would
-live — *Postharvest Biol. Technol.* 41(2):85–91 (2006) — is closed at Elsevier and **absent from
-Lirias**, so a figure cannot be excluded, only not found where it would be advertised.
+> "Van Zeebroeck et al. (2006) simulated the effect of vibration on apples using the DEM. Their
+> results showed that it was possible to predict bruise damage (**bruise depth**) of 'Jonagold'
+> apples… However, **knowledge on contact laws is scarce and more research is required in this
+> area.**"
+
+Two things follow. The review's characterization is **qualitative** — "it was possible to predict" —
+with no error figure. And it says **bruise depth**, not volume.
+
+> **A correction this study previously made is withdrawn.** An earlier version asserted that the
+> thesis reports bruise *volume* and that the review's "depth" was an error. **The review is the only
+> source here that can be checked, and it says depth.** The claim about the thesis rested on the same
+> unverifiable second-hand account. Whether the underlying work reports depth, volume, or both is
+> **open**, and the review should be presumed correct until the thesis is read.
 
 ### ★ The same lab hit this gap twice
 
 This is stronger evidence than the absence of a counter-example, because it is the field's leading
 group documenting the gap in its own words.
 
-**Diels (2019) measured the inadequacy directly.** Fitting 'Jonagold' impact profiles, the
-Kuwabara–Kono viscoelastic law reaches **R² = 0.71 ± 0.20** against **0.90 ± 0.13** for her
-visco-elastoplastic model, and KK *"does not succeed in fitting the data"* even tuned to a single
-specimen. Her stated reason is this chapter's thesis:
+**Diels (2019) measured the inadequacy — but only above an impact-velocity threshold.** Verified
+from the thesis full text. The headline abstract figure is R² = **0.90 ± 0.13** for her
+visco-elastoplastic (VEP) model against **0.71 ± 0.20** for the Kuwabara–Kono viscoelastic law on
+'Jonagold' impact profiles. Her own results section is more careful, and it matters:
+
+| Impact velocity | VEP (visco-elastoplastic) | Kuwabara–Kono (viscoelastic) |
+|---|---|---|
+| **< 0.3 m/s** | 0.51 ± 0.22 | **0.74 ± 0.18** ← viscoelastic wins |
+| **> 0.3 m/s** | **0.90 ± 0.13** | 0.76 ± 0.18 |
+
+**Below 0.3 m/s the plastic model is worse than the elastic one.** And Diels flags a confound
+herself: *"the parameters of the VEP-model were not allowed to vary with impact velocity whereas
+those of the KK-model were."* The 0.71 headline figure is against a KK variant restricted to one
+parameter set per cultivar.
+
+Her stated reason for expecting plasticity to matter is nonetheless this chapter's thesis, and is
+verbatim:
 
 > In case of large impacts, potentially resulting in bruise damage, this **plastic energy
 > dissipation can probably not be neglected and thus a viscoelastic model will be insufficient.**
 
-That is independent quantitative support for the claim that bruise-scale mechanics requires
-plasticity — and it is the physics justification for
-[Gate 0](40-program.md#gate-0--can-we-reproduce-a-published-number).
+**So the physics case for plasticity is real but conditional**: it holds in the impact regime that
+actually causes bruising, and reverses at gentle impacts. That is a *narrower* justification for
+[Gate 0](40-program.md#gate-0--can-we-reproduce-a-published-number) than a flat R² comparison
+implies, and Gate 0's target condition should sit above the threshold.
 
 **And Diels' own work fails the bridge test in mirror image.** Her cell-scale model is validated
 *structurally* — NRMSE < 3% on tissue geometry against micro-CT — while her actual bruise-damage
@@ -206,7 +228,7 @@ side is regression. Same split, one generation later, inside the lab best positi
 The 2022 review states the position outright: the multiscale mechanical models *"need to be
 incorporated into these DEMs."* As of 2022, from that institute, they are not.
 
-## The calibration data does not exist
+## The damage-paired calibration data does not exist
 
 Three sweeps asked whether force-time or force-displacement curves paired with damage outcomes
 exist in accessible form. This is the fact that decides whether independent constitutive
@@ -261,9 +283,13 @@ splits the question in two, and only one half is still a gap.
 > pipeline reproducing all 12 publication figures. Raw CT volumes are archived separately.
 
 Note the author list. **This is MeBioS** — the same group whose ~2019 paper is quoted above saying
-the required experiments did not exist. It is substantially the same-batch dataset they specified:
-tissue compression, internal deformation, and microstructure on the same specimens. It is three
-months old at the time of writing.
+the required experiments did not exist. Three months old at the time of writing.
+
+> **Do not overstate the match.** The 2019 admission concerned **tomato** tissue; this dataset is
+> **apple**. The experiments it specified also included single-cell compression and pressure-probe
+> data, which this dataset does not contain. What it delivers — tissue compression, internal
+> deformation and microstructure on the same specimens — is the largest piece of that
+> specification, not the whole of it.
 
 **What still does not exist is the damage pairing.** That dataset characterizes micromechanics; it
 does not carry bruise outcomes. No archived dataset was found anywhere pairing force curves
@@ -350,7 +376,7 @@ Collecting what the three sweeps established, the field currently does not:
 
 Each of those is a gap that a validation-disciplined, differentiable, geometry-exact engine is
 unusually well-placed to close. That is the case for the program in
-[Chapter 4](40-program.md).
+[Chapter 5](40-program.md).
 
 ## The honest counter-case
 
@@ -373,8 +399,8 @@ Stated plainly, because it should be argued against rather than buried:
 - **A second locked paper could carry a number.** Van Zeebroeck's 2006 validation paper
   (*Postharvest Biol. Technol.* 41(2):85–91) is the one place a quantitative bruise-prediction error
   for that work would live. Closed at Elsevier, **absent from Lirias**, no abstract in OpenAlex or
-  Crossref. The thesis abstract says only "with sufficient accuracy," which is where a number would
-  be advertised if one existed — but it cannot be excluded.
+  Crossref. **The thesis itself was never obtained either** (Lirias record is metadata-only), so no
+  quantitative claim about this work rests on a source this study has read.
 - **Source-age asymmetry, and it cuts both ways.** The deepest evidence on calibration data and
   specimen variability is 1993–1999; the modelling evidence is 2019–2026. Do not read the old theses
   as statements about the current frontier.

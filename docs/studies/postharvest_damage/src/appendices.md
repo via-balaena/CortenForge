@@ -37,9 +37,11 @@ a claim) → synthesize with confidence ratings.
   **reachability artifact**, corrected only when sweep 3 routed around publishers.
 - **Selection bias toward what is open.** Recovered evidence skews Chinese, Polish and Iranian
   applied ag-engineering. "Practice" means *modal practice in the accessible literature*.
-- **"Not found" vs "not searched."** Several questions (open-data repositories, ASABE standards,
-  tooling, development-sector practice, patents) produced **zero verified claims** — recorded in the
-  source caveats as *coverage gaps, not negative findings*. This distinction is marked throughout.
+- **"Not found" vs "not searched."** Several questions (ASABE standards, tooling,
+  development-sector practice, patents) produced **zero verified claims** — recorded in the source
+  caveats as *coverage gaps, not negative findings*, and still unsearched. The open-data-repository
+  question was in that list and **has since been searched** — see
+  [Ch 3](30-gap.md#-the-repository-search-run). This distinction is marked throughout.
 
 ### Routing lessons (reusable)
 
@@ -120,10 +122,10 @@ a claim) → synthesize with confidence ratings.
 | High-impact bananas unmeasurable by day 12 via ripening + **microbial infestation** | 0-3 |
 | Potato black-spot damage threshold ~50–100 g, size-dependent | 0-3 |
 
-> The fourth row matters for [Ch 1](10-loss.md): the refuted claim **included** the "8% for
-> post-harvest handling and storage alone" clause that the chapter cites as fact. The evidence base
-> is internally inconsistent here — a separate confirmed finding uses the same 8%. Treat that figure
-> as contested.
+> The fourth row carries a trap: the refuted claim **included** an "8% for post-harvest handling and
+> storage alone" clause, while a separate *confirmed* sweep-1 finding uses the same 8%. The evidence
+> base is internally inconsistent on it. [Ch 1](10-loss.md) does not cite the figure, and should not
+> — treat 8% as contested if it resurfaces.
 
 **Sweep 2 (8)**
 
@@ -160,9 +162,11 @@ a claim) → synthesize with confidence ratings.
 > [Ch 3's "nobody does inverse design"](30-gap.md#nobody-does-inverse-design) — a claim that the
 > frontier is forward-analysis-only was *not* accepted by verifiers.
 >
-> The third names **Van Zeebroeck's DEM bruise-depth work on 'Jonagold' apples** and refuses the
-> characterization that it was qualitative-only — which cuts *toward* it being a genuine
-> counter-example to "nobody bridges."
+> The third names **Van Zeebroeck's DEM work on 'Jonagold' apples** and refuses the characterization
+> that it was qualitative-only, which at the time cut *toward* it being a genuine counter-example to
+> "nobody bridges." **Since settled by reading it** — whole-fruit DEM, viscoelastic contact, damage
+> by regression; it does not bridge, and it reports bruise *volume*, not depth. See
+> [Ch 3](30-gap.md#the-candidate-counter-example-examined).
 >
 > The fifth row cuts the other way and is why this book says "held-out status **not established**"
 > rather than "established as in-sample."
@@ -218,7 +222,11 @@ Table 3, transcribed from the `mdpi-res.com` PDF.
 > Technol.** 2019, `10.1016/j.postharvbio.2019.02.013` — cited by Zhu as ref 20, never retrieved here.
 >
 > A "density in g/mm³, ~1000× off" quality flag reported by the sweeps belonged to that same
-> unverifiable table. The verified table above is dimensionally sane.
+> unverifiable table.
+>
+> The verified table is not flawless either: **PVC density is listed as 60 kg m⁻³**, roughly 20×
+> too low (PVC is ~1400). The transcription is faithful — the error is the source's — but do not
+> reuse that row without checking.
 
 ### Carrot — 'New Red Carrot' (22 ± 1 °C, 40–60% RH, ASAE S368.4 at 2.5 mm/min, n=10)
 
@@ -365,13 +373,16 @@ Domain terms used without definition elsewhere in this book.
 
 ### Read, and resolved
 
-- **Van Zeebroeck** — KU Leuven PhD 2005 (M. Van Zeebroeck, Ramon supervising), 271 pp, **no
-  appendices**. Whole-fruit DEM (one particle = one apple), viscoelastic Kuwabara–Kono / Mindlin–
-  Deresiewicz contact, damage by **regression** on peak force and absorbed energy. Reports bruise
-  *volume*, not depth. Validation stated as "with sufficient accuracy" with **no numeric metric in any
-  reachable source**. Does **not** bridge — see [Ch 3](30-gap.md#the-candidate-counter-example-examined).
-- **Diels 2019** — KU Leuven PhD, full text via Lirias. Measured Kuwabara–Kono at **R² 0.71 ± 0.20**
-  vs **0.90 ± 0.13** for visco-elastoplastic on 'Jonagold' impact profiles; states viscoelastic will
+- **Van Zeebroeck** — KU Leuven PhD 2005. **⚠ NOT OBTAINED.** The Lirias record is metadata-only
+  with no deposited PDF. The characterization used in [Ch 3](30-gap.md#the-candidate-counter-example-examined)
+  — whole-fruit DEM, viscoelastic Kuwabara–Kono contact, damage by regression — is **second-hand from
+  a research agent and unverifiable**. No quoted phrase attributed to this thesis survived checking.
+  The only held source is the 2022 review, which describes the work qualitatively and says **bruise
+  depth**.
+- **Diels 2019** — KU Leuven PhD, full text via Lirias, **verified**. Abstract reports Kuwabara–Kono
+  **R² 0.71 ± 0.20** vs **0.90 ± 0.13** for visco-elastoplastic on 'Jonagold'. ⚠ **Conditional**: the
+  results section gives 0.51 ± 0.22 (VEP) vs 0.74 ± 0.18 (KK) **below 0.3 m/s** — plastic is *worse*
+  at gentle impacts — and 0.90 ± 0.13 vs 0.76 ± 0.18 above it. States viscoelastic will
   be insufficient where plastic dissipation matters. Also contains **force-deformation curves for
   'Jonagold' half-apples** (Fig. 3.5, nine angles, 0.12–1.46 m/s) as figures.
 
@@ -412,7 +423,7 @@ Domain terms used without definition elsewhere in this book.
 6. **Does skin modelling materially change bruise volume**, or only contact pressure and area? No
    study ran the ablation → [Gate 1](40-program.md#gate-1--the-ablation-nobody-ran).
 7. **What are the coefficients of variation** for fruit mechanical properties, and has anyone run
-   stochastic or Monte Carlo produce FEM? Every parameter recovered here is a point estimate.
+   stochastic or Monte Carlo produce FEM? The apple and carrot parameters are point estimates; only the kiwifruit table reports SDs.
 8. **Is FE licence cost actually a binding constraint** for low-income-country researchers and
    development-sector actors? Zero evidence after three sweeps — and it now gates a **build-vs-buy**
    decision, not just [Gate 5](40-program.md#gate-5--open-the-tooling-deliverable-not-a-gate).
@@ -422,8 +433,9 @@ Domain terms used without definition elsewhere in this book.
     Washington State (Karkee), Michigan State, USDA ARS.
 11. ~~Does the `sim-soft` adjoint survive path-dependent plastic state?~~ **ANSWERED: yes.**
     Through-time adjoint exists via tape-composed per-step VJPs; plastic state becomes another
-    threaded parent. One `∂f_int/∂(plastic state)` term to derive; associated J2 keeps the tangent
-    symmetric. Gate 4 unblocked.
+    threaded parent, with a worked precedent in the `friction_xprev` path. **Not a one-term change**:
+    nested return-map sensitivity, a non-smooth yield switch, and per-quadrature-point state.
+    Gate 4 unblocked in principle; the non-smoothness is the residual risk.
 12. **Does ASABE S368 mandate force-deformation curve reporting**, and do benchmark datasets exist?
 
 ## If you revise this book

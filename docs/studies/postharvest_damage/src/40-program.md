@@ -20,7 +20,7 @@ direction, no code written until the rung below it is green.
 table *and* the 9.63% bruise-area result, so target and oracle are the same study.
 
 Its Table 3 gives skin / flesh / core Young's modulus, tangent modulus, bio-yield stress, density and
-Poisson ratio — **each with a standard deviation** — plus the collision-surface properties (steel,
+Poisson ratio — **with SDs on modulus, bio-yield and density** — plus the collision-surface properties (steel,
 PVC, neoprene) needed to set up the drop. Transcribed in the
 [appendix](appendices.md#kiwifruit--xuxiang--the-gate-0-target-table--verified-from-the-pdf).
 
@@ -58,12 +58,12 @@ continuing.
 
 ## Gate 1 — The ablation nobody ran
 
-**The question the field left open.** Skin is ~7× stiffer than flesh where it is modelled, and is
+**The question the field left open.** Skin is 6.8× stiffer than flesh where it is modelled, and is
 often not modelled at all. Nobody has tested whether that changes bruise-volume prediction.
 
 > **Both premises are medium-confidence.** The 6.8× ratio is one cultivar of one commodity, from a single isotropic table; the
 > "usually ignored" pattern holds across three of four papers and the field-wide version was
-> **refuted 0-3**. See [Ch 2](20-mechanics.md#skin-is-often-ignored-and-where-measured-it-is-7-stiffer).
+> **refuted 0-3**. See [Ch 2](20-mechanics.md#skin-is-often-ignored-and-where-measured-it-is-68-stiffer).
 > If either premise fails on wider reading, this gate loses its point before it starts.
 
 **The task.** Run the Gate 0 geometry twice — homogeneous vs. explicit skin/flesh/core — and report
@@ -130,8 +130,8 @@ rate), paired per-specimen with measured damage. Then publish openly.
 **PASS.** A dataset sufficient to calibrate a constitutive model *and* fit a damage criterion, with
 enough specimens to characterize scatter.
 
-**NO-GO.** If the repository search finds an adequate existing dataset, **skip this gate** — it
-becomes redundant and its cost should not be paid.
+**NO-GO.** If Hussein, Scheffler or another group will release force↔damage data on request,
+**skip this gate** — it becomes redundant and its cost should not be paid. Ask before building a rig.
 
 > **★ This is where held-out validation becomes possible for the first time.** With our own specimens
 > we control the train/test split — the thing
@@ -143,8 +143,9 @@ becomes redundant and its cost should not be paid.
 
 > **✅ No longer blocked.** The through-time adjoint already exists (per-step VJPs composed on the
 > tape), plastic state becomes another threaded parent by an established pattern, and associated J2
-> plasticity keeps the tangent symmetric. One `∂f_int/∂(plastic state)` term needs deriving. See
-> [Ch 4](35-primitives.md#-the-adjoint-question-answered).
+> plasticity keeps the tangent symmetric. **But this is not a one-term change** — the return map is a
+> nested implicit solve, the yield switch is non-smooth, and the state is a tensor per quadrature
+> point. See [Ch 4](35-primitives.md#-the-adjoint-question-answered).
 
 **The task.** A validated distributional damage model as an **objective function**, optimizing a
 design variable — crate wall profile, liner compliance, divider spacing, chute curvature — via the
@@ -174,8 +175,8 @@ payoff, and it is contingent, not conditional.
 
 > **⚠ Its premise is unverified and now also load-bearing for build-vs-buy.** Whether commercial FE
 > licence cost is *actually* a binding constraint for the intended users was **not established by any
-> sweep** — three attempts, zero surviving claims. If licences are not the barrier, this gate
-> delivers little, *and* the
+> sweep** — three attempts, zero surviving claims. If licences are not the barrier, this deliverable
+> is worth little, *and* the
 > [buy-not-build alternative](35-primitives.md#the-honest-alternative-nobody-costed) becomes
 > substantially more attractive for Gates 0–2.
 >
@@ -190,7 +191,7 @@ Gate 1  skin ablation                    software           ← first new knowle
 Gate 2  distributional prediction        software*          ← *likely needs Gate 3 data
 ─────────────────────────────────────────────────────────── ← the fork (Ch 6)
 Gate 3  own calibration dataset          BENCH              ← enables held-out validation
-Gate 4  inverse design                   software + BENCH   ← flagship; adjoint unresolved
+Gate 4  inverse design                   software + BENCH   ← flagship; adjoint resolved
 Gate 5  open tooling                     deliverable        ← cannot fail; premise unverified
 ```
 

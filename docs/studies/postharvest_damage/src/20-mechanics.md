@@ -50,7 +50,7 @@ kiwifruit table was transcribed from the primary PDF and reports **mean ± SD**;
 tables came from sweep summaries and are point estimates with no scatter. **Treat anything not marked
 as PDF-verified as unconfirmed** — one table recovered that way turned out not to exist.
 
-### Skin is often ignored, and where measured it is ~7× stiffer
+### Skin is often ignored, and where measured it is 6.8× stiffer
 
 > **Confidence: medium, on a single data point.** The ratio rests on **one cultivar of one
 > commodity**. And the claim that homogeneous single-material models represent *field-wide* practice
@@ -64,8 +64,8 @@ Where skin *is* modelled separately, the stiffness contrast is large:
   against flesh E = 1.57 ± 0.12 MPa → **6.8×**. Core sits between, at 5.11 ± 0.28 MPa.
 
 That is **one ratio, not a range** — the verified table treats flesh as isotropic. Any figure quoted
-as a range for this cultivar traces to a
-[parameter table that does not exist](appendices.md#kiwifruit--xuxiang--the-gate-0-target-table--verified-from-the-pdf).
+as a range for this cultivar derives from a parameter table that does not exist; see the
+[withdrawal notice](appendices.md#kiwifruit--xuxiang--the-gate-0-target-table--verified-from-the-pdf).
 
 Against that, the apple drop study states "The material was homogeneous throughout the entire
 volume of the model," and its own authors concede that modelling "of individual layers (skin,
@@ -134,7 +134,7 @@ capacity.
 > independent evidence that energy is the right predictor. Second, and decisive for our purposes,
 > these datasets report bruise volume, area and susceptibility — **no force-time histories, no
 > tissue constitutive parameters, no contact geometry.** They can validate an output curve. They
-> **cannot calibrate a material model.** See [Ch 3](30-gap.md#the-calibration-data-does-not-exist).
+> **cannot calibrate a material model.** See [Ch 3](30-gap.md#the-damage-paired-calibration-data-does-not-exist).
 
 ### The one criterion discrimination test
 
