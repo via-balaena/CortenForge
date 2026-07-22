@@ -485,6 +485,7 @@ members = [
     "sim/L0/opt",
     "sim/L0/therm-env",
     "sim/L0/soft",
+    "sim/L0/truss",
 
     # Simulation domain - Layer 1 (Bevy integration)
     "sim/L1/bevy",
@@ -783,6 +784,7 @@ sim-thermostat = { path = "sim/L0/thermostat" }
 sim-opt = { path = "sim/L0/opt" }
 sim-therm-env = { path = "sim/L0/therm-env" }
 sim-soft = { path = "sim/L0/soft" }
+sim-truss = { path = "sim/L0/truss" }
 # Sim domain - Layer 1 (Bevy integration)
 sim-coupling = { path = "sim/L1/coupling" }
 cf-fsu-model = { path = "sim/L1/fsu-model" }

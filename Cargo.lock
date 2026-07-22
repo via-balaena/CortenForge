@@ -11797,6 +11797,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sim-truss"
+version = "1.0.0"
+dependencies = [
+ "approx 0.5.1",
+ "nalgebra 0.34.2",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "sim-types"
 version = "1.0.0"
 dependencies = [
