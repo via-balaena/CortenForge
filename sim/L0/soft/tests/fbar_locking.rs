@@ -21,12 +21,17 @@
 //!
 //! This gate does NOT assert the tip deflection matches Euler-Bernoulli
 //! absolutely: the `L/H = 5` beam at this coarse refinement carries a large,
-//! `ν`-independent discretization offset (constant-strain Tet4 under-resolves
-//! bending), and simple F-bar on the *coupled* Neo-Hookean energy modifies the
-//! response beyond the strictly-locked regime. Both wash out of the **ratio**
-//! `δ(ν_hi)/δ(ν_lo)`, which isolates the `ν`-sensitivity — i.e. the locking
-//! itself. Plain Tet4's ratio collapses far below the physical value; F-bar's
-//! stays near it. That differential is the locking cure, cleanly.
+//! `ν`-independent discretization *factor* (constant-strain Tet4 under-resolves
+//! bending — it scales the deflection down by a roughly constant multiple), and
+//! simple F-bar on the *coupled* Neo-Hookean energy modifies the response
+//! beyond the strictly-locked regime. Because both are **multiplicative and
+//! `ν`-independent**, they cancel in the **ratio** `δ(ν_hi)/δ(ν_lo)` — a purely
+//! additive offset would NOT cancel, but a factor does — leaving only the
+//! `ν`-sensitivity, i.e. the locking itself. Plain Tet4's ratio collapses far
+//! below the physical value; F-bar's stays near it. That differential is the
+//! locking cure, cleanly. (Absolute-accuracy validation of the cured `ν=0.49`
+//! response — F-bar → EB under mesh refinement, or the #676 contact gate at
+//! `ν=0.49` — is a separate rung; this gate proves the cure, not the accuracy.)
 
 // Saint-Venant-averaged tip deflection (`Σ z / N`) and the per-vertex load
 // split (`F / N`) cast the loaded-vertex count to `f64` — the canonical FEM

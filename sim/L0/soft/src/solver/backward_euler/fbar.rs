@@ -1001,4 +1001,90 @@ mod tests {
             );
         }
     }
+
+    /// High-valence hardening: re-run the residual (vs energy-FD) and tangent
+    /// (vs residual-FD) consistency checks on a `uniform_block(2)` mesh, whose
+    /// interior nodes sit in many tets (valence ≫ 2). The `two_tet_shared_face`
+    /// gates above exercise only valence-2 stars; this confirms the `J̄`
+    /// nodal-average and its linearization stay exact when a node's patch spans
+    /// a large element star — so "exact Hessian" does not rest on minimal
+    /// topology.
+    #[test]
+    fn fd_consistency_on_high_valence_block() {
+        let field = nu049_field();
+        let mesh = HandBuiltTetMesh::uniform_block(2, 0.1, &field);
+        let (geoms, _vols) = geometries(&mesh);
+        let materials: Vec<NeoHookean> = mesh.materials().to_vec();
+        let cache = FbarCache::build(&mesh, &geoms);
+
+        // Non-uniform, non-isochoric warp so J_e ≠ J̄_e across the star.
+        let rest = mesh.positions();
+        let n_dof = 3 * rest.len();
+        let mut x = vec![0.0; n_dof];
+        for (v, p) in rest.iter().enumerate() {
+            x[3 * v] = p.x * 1.05 + 0.02 * p.y - 0.01 * p.z;
+            x[3 * v + 1] = p.y * 0.97 + 0.015 * p.z;
+            x[3 * v + 2] = p.z * 1.03 - 0.012 * p.x;
+        }
+
+        // Residual == ∂E/∂x (energy central-difference). Vector-∞-norm-relative
+        // metric (`max|Δ| / max|f|`): a symmetric block's center node carries a
+        // ~0 net force, so a per-DOF ratio would divide energy-FD roundoff
+        // (~1e-7) by that ~0 and false-positive — the global force scale is the
+        // honest denominator. (The two-tet gates have no near-zero-force node,
+        // so their per-DOF metric there is fine.)
+        let mut f_int = vec![0.0; n_dof];
+        cache.scatter_internal_force(&mesh, &materials, &x, &geoms, &mut f_int);
+        let energy = |xv: &[f64]| cache.energy(&mesh, &materials, xv, &geoms);
+        let h = 1e-7;
+        let mut max_abs = 0.0_f64;
+        let mut force_scale = 0.0_f64;
+        for i in 0..n_dof {
+            let mut xp = x.clone();
+            let mut xm = x.clone();
+            xp[i] += h;
+            xm[i] -= h;
+            let fd = (energy(&xp) - energy(&xm)) / (2.0 * h);
+            max_abs = max_abs.max((f_int[i] - fd).abs());
+            force_scale = force_scale.max(f_int[i].abs());
+        }
+        assert!(
+            max_abs / force_scale < 1e-5,
+            "high-valence F-bar residual disagrees with energy FD \
+             (max |Δ| {max_abs:e} / force scale {force_scale:e})"
+        );
+
+        // Tangent K·δ == residual central-difference in direction δ.
+        let residual = |xv: &[f64]| {
+            let mut f = vec![0.0; n_dof];
+            cache.scatter_internal_force(&mesh, &materials, xv, &geoms, &mut f);
+            f
+        };
+        let mut seed = 0xC0FF_EE42_u64;
+        let mut next = || {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            ((seed >> 33) as f64 / (1u64 << 31) as f64) - 1.0
+        };
+        for _trial in 0..3 {
+            let delta: Vec<f64> = (0..n_dof).map(|_| next()).collect();
+            let kd = cache.tangent_matvec(&mesh, &materials, &x, &geoms, &delta);
+            let hd = 1e-6;
+            let xp: Vec<f64> = x.iter().zip(&delta).map(|(a, d)| a + hd * d).collect();
+            let xm: Vec<f64> = x.iter().zip(&delta).map(|(a, d)| a - hd * d).collect();
+            let fp = residual(&xp);
+            let fm = residual(&xm);
+            let mut max_abs = 0.0_f64;
+            let mut kd_scale = 0.0_f64;
+            for i in 0..n_dof {
+                let fd = (fp[i] - fm[i]) / (2.0 * hd);
+                max_abs = max_abs.max((kd[i] - fd).abs());
+                kd_scale = kd_scale.max(kd[i].abs());
+            }
+            assert!(
+                max_abs / kd_scale < 1e-5,
+                "high-valence F-bar tangent K·δ disagrees with residual FD \
+                 (max |Δ| {max_abs:e} / scale {kd_scale:e})"
+            );
+        }
+    }
 }

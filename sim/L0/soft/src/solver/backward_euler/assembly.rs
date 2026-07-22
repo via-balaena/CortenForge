@@ -447,6 +447,16 @@ where
     /// contact and friction terms are empty. Mass is excluded because the constrained
     /// reaction it feeds is the *internal-force* reaction `−f_int` (the inertial term
     /// cancels at a pinned node whose target equals its `x_prev`).
+    ///
+    /// ⚠ **NOT F-bar-aware.** Unlike [`assemble_global_int_force`](Self::assemble_global_int_force)
+    /// and [`assemble_free_hessian_triplets`](Self::assemble_free_hessian_triplets), this
+    /// matvec has no `fbar_cache` branch — it always contracts the plain per-element
+    /// tangent. This is currently sound because its only consumer (the Dirichlet-reaction
+    /// sensitivity) also routes through [`factor_at_position`](Self::factor_at_position),
+    /// which asserts `!config.fbar` (forward-only, PR1) — so no F-bar gradient escapes.
+    /// **PR2 (the differentiability leaf) must make this F-bar-aware** (contract the
+    /// F-bar tangent, e.g. via `FbarCache::tangent_matvec`) before lifting that guard,
+    /// or the reaction sensitivity would be silently plain-tangent under F-bar.
     //
     // Lint allows mirror `assemble_free_hessian_triplets` (the loop this contracts):
     // `as TetId` is the Mesh-trait API tax, the `for a/b in 0..4` node loops index
