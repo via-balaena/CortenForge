@@ -1,6 +1,8 @@
 # Licensed BodyParts3D meshes (CC BY-SA 2.1 JP) must NEVER be committed. Deny by
 # default — only this file and the provenance note are tracked. If you fetch a mesh
-# here (see PROVENANCE.md) it stays ignored, so `git add` can't leak it.
+# here (see PROVENANCE.md) it stays ignored, so a plain `git add` can't leak it.
+# (`git add -f` would still force it in — don't; the documented fetch writes to /tmp,
+# outside the repo, so a mesh never lands here in the first place.)
 *
 !.gitignore
 !PROVENANCE.md

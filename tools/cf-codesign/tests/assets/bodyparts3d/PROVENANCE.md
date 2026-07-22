@@ -39,10 +39,12 @@ CF_L4_STL=/tmp/FMA13075.stl cargo test -p cf-codesign --release \
 ## Coordinates
 
 The meshes are in **native millimetres**, positioned in the whole-atlas coordinate
-frame (L4 sits near `z ≈ 970 mm`). The gate works in this native mm frame unchanged:
-the conduit objective is scale-agnostic geometry (finite differences over a signed
-field), so no rescale to SI metres is needed — that concern is specific to the soft
-FEM solver, which this gate does not use.
+frame (L4 sits near `z ≈ 970 mm`). The gate works in this native mm frame unchanged —
+**not** because the objective is scale-free (it is not: the optimiser's `fd_eps` and
+`grad_tol` are absolute), but because *every* constant in the gate (clearance margin,
+grid cell, padding, and the optimiser tolerances) is consistently in millimetres. A
+rescale to SI metres is a soft-FEM-solver concern; this pure-geometry gate does not
+use it.
 
 ## License + citation
 
