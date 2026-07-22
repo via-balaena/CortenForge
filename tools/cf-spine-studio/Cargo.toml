@@ -102,7 +102,7 @@ bevy = { workspace = true, default-features = false, features = [
 
 # egui-on-Bevy plugin — the per-tissue visibility toggle panel. 0.39.1 is
 # the workspace-validated pin (cf-viewer / cf-sim-research precedent).
-bevy_egui = { version = "0.39.1", default-features = false, features = [
+bevy_egui = { version = "0.41.1", default-features = false, features = [
     "default_fonts",
     "render",
     "bevy_ui",
