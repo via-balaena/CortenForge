@@ -12,7 +12,8 @@ The lumbar Functional Spinal Unit meshes come from **BodyParts3D / Anatomography
 (DBCLS, Japan), via the GitHub clone that names each file by its Foundational Model of
 Anatomy (FMA) ID:
 
-- Repository: <https://github.com/Kevin-Mattheus-Moerman/BodyParts3D> (branch `main`)
+- Repository: <https://github.com/Kevin-Mattheus-Moerman/BodyParts3D> (pinned to commit
+  `f0eeb6e8` in the fetch below — `main` is a mutable ref)
 - Original database: <https://dbarchive.biosciencedbc.jp/en/bodyparts3d/download.html>
 
 | part        | FMA ID   | path in the repo                             | env var       |
@@ -27,9 +28,18 @@ rest of the workspace's `#[ignore]`d ladder tests key off the same way.
 ## Fetch + run
 
 ```sh
-# Pull L4 to a temp path (binary STL, ~753 KB). Do NOT commit it.
-url=https://raw.githubusercontent.com/Kevin-Mattheus-Moerman/BodyParts3D/main/assets/BodyParts3D_data/stl/FMA13075.stl
+# Pinned to a specific commit and verified by checksum — these exact bytes or fail.
+# `main` is mutable; pinning gives reproducibility (a changed mesh would silently shift
+# the gate's numbers) with supply-chain integrity as a bonus.
+commit=f0eeb6e843380cfe6b83797cf8c3e1af74de5e61
+sha256=3464b94d03d42e43bf5ba01a741b7677bec8113a8359eb4a2caec960c6cf341c
+url=https://raw.githubusercontent.com/Kevin-Mattheus-Moerman/BodyParts3D/$commit/assets/BodyParts3D_data/stl/FMA13075.stl
+
+# Pull L4 to a temp path (binary STL, 771384 bytes ≈ 753 KB). Do NOT commit it.
 curl -sSL -o /tmp/FMA13075.stl "$url"
+
+# Verify integrity before use — abort if the bytes differ from the pin.
+echo "$sha256  /tmp/FMA13075.stl" | shasum -a 256 -c -
 
 # Run the env-gated anatomy gate (release — the signed-distance grid build is heavy).
 CF_L4_STL=/tmp/FMA13075.stl cargo test -p cf-codesign --release \
@@ -40,11 +50,11 @@ CF_L4_STL=/tmp/FMA13075.stl cargo test -p cf-codesign --release \
 
 The meshes are in **native millimetres**, positioned in the whole-atlas coordinate
 frame (L4 sits near `z ≈ 970 mm`). The gate works in this native mm frame unchanged —
-**not** because the objective is scale-free (it is not: the optimiser's `fd_eps` and
-`grad_tol` are absolute), but because *every* constant in the gate (clearance margin,
-grid cell, padding, and the optimiser tolerances) is consistently in millimetres. A
-rescale to SI metres is a soft-FEM-solver concern; this pure-geometry gate does not
-use it.
+**not** because the objective is scale-free (it is not: the target's finite-difference
+step and the optimiser's `grad_tol` are absolute), but because *every* constant in the
+gate (clearance margin, grid cell, padding, the FD step, and the optimiser tolerances)
+is consistently in millimetres. A rescale to SI metres is a soft-FEM-solver concern;
+this pure-geometry gate does not use it.
 
 ## License + citation
 
