@@ -20,8 +20,12 @@
 //!   lattice once and answers queries by trilinear interpolation: `O(1)`, and the
 //!   interpolation low-pass-filters the sub-cell facet ridges, leaving only gentle
 //!   gradient seams on the coarse lattice. Its sign comes from a topology-blind
-//!   flood fill, which stays reliable on the decimated, winding-flipped meshes that
-//!   cleaned anatomical scans produce (where a pseudo-normal sign test is fragile).
+//!   flood fill rather than a pseudo-normal test, which is why it is the preferred
+//!   sign for a cleaned anatomical scan — the flood fill does not depend on
+//!   consistent winding, so it is *designed* to tolerate the decimated, winding-
+//!   flipped meshes such scans produce. (That robustness is a property of the
+//!   algorithm, not something the clean-primitive tests here measure; it is
+//!   exercised for real at the imported-mesh rung.)
 //!
 //! The cost is a one-time build and a discretization error on the order of
 //! `cell_size`; both are under the caller's control through the build parameters.
@@ -34,7 +38,13 @@ use mesh_types::{Bounded, IndexedMesh};
 
 /// Failure building a mesh body — either the source mesh is unusable or the
 /// signed-distance grid fill could not classify inside from outside.
+///
+/// `#[non_exhaustive]` in step with the crate's other public error enums
+/// ([`InfeasibleDesign`](crate::InfeasibleDesign), [`StopReason`](crate::StopReason)):
+/// the set of ways a mesh body can fail to build may grow, and callers should match
+/// with a wildcard arm rather than assume these two variants are all of them.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum MeshBodyError {
     /// The parry BVH could not be built (an empty mesh — no faces).
     #[error("mesh signed-distance construction failed: {0}")]
@@ -51,13 +61,20 @@ pub enum MeshBodyError {
 /// nodes `cell_size` apart, and queries interpolate it trilinearly (see the module
 /// docs for why this representation).
 ///
-/// `pad` must exceed the largest clearance the optimizer will demand of the body:
-/// queries outside the lattice return the clamped edge value rather than the true
-/// (larger) distance, so a route point beyond the padded box reads a clearance of
-/// roughly `pad`. As long as `pad` is at least the maximum `tube_radius + margin`
-/// under consideration, such a point registers no clearance violation — which is
-/// correct, since it is that far clear of the body — and the approximation only
-/// ever bites well outside the region where the penalty is active.
+/// **`pad` must enclose the whole region the route is optimized over — the fixed
+/// endpoints and any detour — not merely the body.** The lattice spans the mesh's
+/// bounding box, so the body is always inside it: a route sample that penetrates the
+/// body reads its true (negative) distance and the penalty fires, and no under-sized
+/// `pad` can ever hide a collision. The failure mode is subtler. A query *outside* the
+/// lattice returns the clamped edge value — roughly `pad` — instead of the larger true
+/// distance, so a route point that strays beyond the padded box reads a clearance of
+/// only `pad`. If that is below `req = tube_radius + margin` the point picks up a
+/// *spurious* clearance penalty, which biases the optimized route and radius. The bias
+/// is always conservative (it under-credits real clearance, never over-credits, so the
+/// conduit only ever comes out too timid, never colliding), but it distorts the
+/// optimum, so size `pad` to cover the endpoints and the expected detour, with headroom
+/// beyond `req`. Route endpoints far outside the body's own bounding box are the common
+/// trap.
 ///
 /// # Panics
 /// Panics if `cell_size` or `pad` is not strictly positive and finite — a malformed
@@ -161,6 +178,13 @@ mod tests {
     fn mesh_body_rejects_nonpositive_pad() {
         let mesh = Solid::sphere(0.5).mesh(0.1).geometry;
         let _ = mesh_body(mesh, 0.05, 0.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "mesh tolerance must be positive")]
+    fn solid_mesh_body_rejects_nonpositive_mesh_tol() {
+        // The documented `mesh_tol` panic path, which routes through `Solid::mesh`.
+        let _ = solid_mesh_body(&Solid::sphere(0.5), 0.0, 0.05, 0.3);
     }
 
     #[test]

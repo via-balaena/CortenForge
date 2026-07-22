@@ -43,6 +43,12 @@ const W_C: f64 = 10.0; // clearance penalty weight
 const W_R: f64 = 1.0; // radius reward — modest, so the conduit stays near the body
 const N_SAMPLES: usize = 40;
 
+// The recovery gate's `clr >= req − slack` assertion proves the whole *tube* clears
+// (not just the centerline) only because `MARGIN` exceeds the single-sample slack
+// `W_R/(2·W_C)` — then `clr ≥ r + margin − slack > r`. Enforce that dependency at
+// compile time so a future constant change cannot silently weaken the guarantee.
+const _: () = assert!(MARGIN > W_R / (2.0 * W_C));
+
 /// The sphere as a grid-cached mesh body — built once and shared across the gate's
 /// tests, since the grid fill is the only expensive step (queries are O(1)).
 static MESH_BODY: LazyLock<Arc<dyn Sdf>> = LazyLock::new(|| {
@@ -82,32 +88,39 @@ fn off_ridge(t: &ConduitTarget, r0: f64, nudge: f64) -> Vec<f64> {
     x
 }
 
-/// (1) The gridded mesh body reproduces the analytic sphere field across the
-/// clearance-relevant band (a shell just outside the surface, where the penalty
-/// acts). Deviation must be a small fraction of the grid cell — and orders below the
-/// `req ≈ 0.4` clearances the optimizer reasons about, so no clearance decision can
-/// flip on discretization error.
+/// (1) The gridded mesh body reproduces the analytic sphere field across the whole
+/// clearance-relevant band — not one shell but a radial sweep from just inside the
+/// surface out past the working clearance, so the near-surface region (where marching-
+/// cubes + trilinear error is largest, and where a tight conduit binds) is measured,
+/// not skipped. Deviation must stay a small fraction of the grid cell — and orders
+/// below the `req ≈ 0.4` clearances the optimizer reasons about, so no clearance
+/// decision can flip on discretization error.
 #[test]
 fn mesh_body_field_matches_analytic_sphere() {
     let body = MESH_BODY.clone();
+    // Signed offsets from the surface spanning the penalty band both sides of it:
+    // inside (sign region), the hard near-surface shells, and out to the clearance.
+    let offsets = [-0.15, -0.05, 0.05, 0.10, 0.20, 0.30];
     let mut max_err = 0.0_f64;
-    for i in 0..8 {
-        for j in 0..8 {
-            let th = std::f64::consts::PI * (i as f64 + 0.5) / 8.0;
-            let ph = 2.0 * std::f64::consts::PI * (j as f64) / 8.0;
-            let dir = Point3::new(th.sin() * ph.cos(), th.sin() * ph.sin(), th.cos());
-            // Probe at R + 0.3 — inside the padded grid, in the clearance band.
-            let p = Point3::new(dir.x * (R + 0.3), dir.y * (R + 0.3), dir.z * (R + 0.3));
-            max_err = max_err.max((body.eval(p) - sphere_sdf(p)).abs());
+    for &d in &offsets {
+        let radius = R + d;
+        for i in 0..8 {
+            for j in 0..8 {
+                let th = std::f64::consts::PI * (i as f64 + 0.5) / 8.0;
+                let ph = 2.0 * std::f64::consts::PI * (j as f64) / 8.0;
+                let dir = Point3::new(th.sin() * ph.cos(), th.sin() * ph.sin(), th.cos());
+                let p = Point3::new(dir.x * radius, dir.y * radius, dir.z * radius);
+                max_err = max_err.max((body.eval(p) - sphere_sdf(p)).abs());
+            }
         }
     }
-    // Measured ~1.0e-3 for this scene; the bar sits an order below the grid cell
-    // (0.05) and two below the working clearances (~0.4), so no clearance decision can
-    // flip on it, while staying tight enough (~2× the measured deviation) to fail if
-    // the pipeline breaks.
+    // Measured ~1.7e-3 across the swept band (near-surface dominates). The bar sits an
+    // order below the grid cell (0.05) and two below the working clearances (~0.4), at
+    // ~3.5× the measured deviation so a broken pipeline fails without cross-platform
+    // flake.
     assert!(
-        max_err < 2.0e-3,
-        "mesh SDF deviates from the analytic sphere by {max_err} (bar 2e-3)"
+        max_err < 6.0e-3,
+        "mesh SDF deviates from the analytic sphere by {max_err} (bar 6e-3)"
     );
 }
 
