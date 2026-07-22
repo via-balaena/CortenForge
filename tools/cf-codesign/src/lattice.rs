@@ -52,18 +52,44 @@
 //! One truss solve per evaluation yields the whole gradient vector — where central
 //! FD would cost `n + 1` solves — which is why [`sim_truss`] ships sensitivities.
 //!
-//! # Collapse, and why the stop is not yet trustworthy at scale
+//! # Collapse, and when the log-norm stop is a valid certificate
 //!
 //! A strut carrying no load has optimal area zero, reached at `pₑ → −∞`; its
-//! log-space gradient `∂J/∂pₑ = Aₑ·w·Lₑ` **vanishes as `Aₑ → 0`** even though the
-//! physical gradient `w·Lₑ` is a nonzero constant. So a shrinking strut is
-//! indistinguishable, by gradient norm, from a converged one —
-//! [`ConduitTarget`](crate::ConduitTarget)'s
-//! radius-collapse ambiguity, now replicated across *every* redundant strut at once
-//! and impossible to hand-check. This target therefore leaves the metric-aware
-//! stopping criterion to a later rung; the gates here *measure and pin* the
-//! conditioning (see `tests/lattice_inverse_design.rs`) rather than trusting the
-//! stop flag, exactly as the geometry gates assert physical outcomes.
+//! log-space gradient `∂J/∂pₑ = Aₑ·∂J/∂Aₑ` **vanishes as `Aₑ → 0`** even though the
+//! physical gradient can be a nonzero constant. So a shrinking strut is
+//! indistinguishable, by gradient norm, from a converged one — which raised whether
+//! the plain [`grad_tol`](crate::OptConfig::grad_tol) stop is a valid convergence
+//! certificate here, or needs a metric-aware replacement.
+//!
+//! **For statically *determinate* structures it is a sound certificate.** A
+//! load-bearing strut carries a fixed force there, so its compliance sensitivity
+//! `∂C/∂Aₑ ~ −Nₑ²/Aₑ²` *blows up* as `Aₑ → 0` — a thin live strut has a *large*
+//! log-gradient, not a hidden one. Hence a small log-norm implies each strut is
+//! interior-stationary (`∂J/∂Aₑ ≈ 0`) or collapsed to the `Aₑ ≥ 0` boundary with an
+//! outward gradient (`Aₑ` small, `∂J/∂Aₑ > 0`) — the KKT conditions. (`J(A)` is
+//! convex in `A`, so a KKT point is the global optimum; note `J` is convex in `A`,
+//! not in `p = ln A`, and the KKT reasoning lives in `A`-space.)
+//!
+//! **For *indeterminate* ground structures the log-norm is not a universal
+//! certificate.** A redundant member's force vanishes with its own area, so `∂C/∂Aₑ`
+//! stays *finite*, and a member placed at tiny area can have `∂J/∂Aₑ < 0` (it would
+//! reduce compliance if it grew) while its log-gradient `Aₑ·∂J/∂Aₑ` is negligible —
+//! a KKT violation a loose `grad_tol` would miss
+//! (`log_norm_hides_a_kkt_violation_on_indeterminate_structures`). What limits the
+//! certificate is the log-space area-weighting combined with static indeterminacy,
+//! **not** non-convexity.
+//!
+//! **It does not bite in practice, so no metric-aware replacement was built.** That
+//! violating point needs a member *initialised* thin-but-useful; from a uniform
+//! start descent grows a useful member rather than stranding it, so realistic runs
+//! reach ε-KKT designs with no stranded grower — measured on the 3-bar indeterminate
+//! truss and a 53-strut grid (`indeterminate_uniform_start_strands_no_grower`). And
+//! the log-space stationarity is invariant under the material scaling `E→kE, w→kw`
+//! (`log_norm_stationarity_is_scale_invariant_under_material_scaling`), so one
+//! `grad_tol` transfers across material scales. A caller that distrusts the stop on
+//! an adversarially-initialised indeterminate problem can check `∂J/∂Aₑ` on the
+//! near-collapsed struts directly. The gates assert *physical outcomes*, never the
+//! stop flag.
 //!
 //! A design so under-strutted that its stiffness matrix is a **mechanism** is
 //! reported as [`InfeasibleDesign`] by [`try_evaluate`](CoDesignProblem::try_evaluate),
@@ -187,8 +213,9 @@ impl<const D: usize> LatticeTarget<D> {
     /// `grad_tol` is not scale-free in log-space: `dJ/d(ln Aₑ) = Aₑ · dJ/dAₑ`, so a
     /// strut collapsing toward zero has a vanishing gradient component *whatever its
     /// optimality*. A `GradTol` stop can therefore fire while redundant struts are
-    /// still shrinking — check the recovered design, not the flag. This is the
-    /// conditioning a later rung's metric-aware criterion will address.
+    /// still shrinking — read the recovered design, not the flag. That is a benign
+    /// property, not a defect: a metric-aware criterion was investigated and found
+    /// unnecessary for this convex objective (see the module `Collapse` section).
     #[must_use]
     pub fn recommended_config(&self) -> OptConfig {
         OptConfig {
