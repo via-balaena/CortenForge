@@ -470,6 +470,39 @@ fn try_step_returns_err_on_newton_iter_cap() {
     }
 }
 
+/// F-bar forward-only contract: the differentiable `step` (which factors the
+/// adjoint tangent via `factor_at_position`) fails loudly under `config.fbar`
+/// rather than return a silently-wrong gradient — the adjoint RHS does not yet
+/// carry `F*` (PR2). The forward-only `replay_step` stays usable with F-bar.
+#[test]
+#[should_panic(expected = "F-bar differentiable gradients are not yet supported")]
+fn fbar_differentiable_step_panics() {
+    use sim_ml_chassis::Tape;
+    let mut cfg = SolverConfig::skeleton();
+    cfg.fbar = true;
+    let mut solver = CpuNewtonSolver::new(
+        Tet4,
+        SingleTetMesh::new(&MaterialField::uniform(1.0e5, 4.0e5)),
+        NullContact,
+        cfg,
+        BoundaryConditions {
+            pinned_vertices: vec![0, 1, 2],
+            roller_vertices: Vec::new(),
+            loaded_vertices: vec![(3, LoadAxis::AxisZ)],
+        },
+    );
+
+    let rest = [0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1];
+    let zero = [0.0_f64; 12];
+    let x_prev = sim_ml_chassis::Tensor::from_slice(&rest, &[12]);
+    let v_prev = sim_ml_chassis::Tensor::from_slice(&zero, &[12]);
+    let mut tape = Tape::new();
+    let theta_var = tape.param_tensor(sim_ml_chassis::Tensor::from_slice(&[1.0_f64], &[1]));
+
+    // Differentiable path → factors the adjoint → guard fires.
+    let _ = solver.step(&mut tape, &x_prev, &v_prev, theta_var, 1e-2);
+}
+
 /// F3.3 `ArmijoStall` (local): direct call to `armijo_backtrack`
 /// with `max_line_search_backtracks = 0` AND a synthetic
 /// `r_norm = 0` at `x_curr` AND a non-zero `delta_free`. Any
