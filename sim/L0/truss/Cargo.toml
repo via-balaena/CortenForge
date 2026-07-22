@@ -1,0 +1,37 @@
+# sim-truss — linear-elastic pin-jointed truss (bar-element) solver.
+#
+# Layer 0 crate: zero Bevy, zero ML-framework dependencies. Pure structural
+# mechanics — assemble K(A), solve K·u = f, report compliance and its exact
+# analytic sensitivity to per-strut cross-section area. The first *linear* FE
+# primitive in the workspace (sim-core is rigid; sim-soft is nonlinear
+# Neo-Hookean), built to be the differentiable forward model behind
+# lattice-as-design-var co-design.
+
+[package]
+name = "sim-truss"
+description = "Linear-elastic pin-jointed truss solver: compliance and analytic area-sensitivity"
+keywords = ["truss", "finite-element", "compliance", "structural", "sensitivity"]
+categories = ["algorithms", "mathematics", "science"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[package.metadata.cortenforge]
+tier = "L0"
+
+[dependencies]
+# Linear algebra: node coordinates (SVector), the global stiffness matrix
+# (DMatrix), and the Cholesky factorization used for the SPD solve.
+nalgebra = { workspace = true }
+# Derive macros for the crate's error type.
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Approximate float equality for the closed-form and finite-difference gates.
+approx = { workspace = true }
+
+[lints]
+workspace = true
