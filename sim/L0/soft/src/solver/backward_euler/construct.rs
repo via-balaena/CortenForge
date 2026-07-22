@@ -324,25 +324,10 @@ where
                 }
             }
         }
-        // F-bar coupling widens the pattern to the node-star 2-ring: the
-        // `J̄_e` patch average makes element `e`'s tangent couple every pair of
-        // nodes in its patch, beyond the element-incidence 1-ring above. Add
-        // those pairs (BTreeSet dedups against the pairs already present).
+        // F-bar coupling widens the pattern to the node-star 2-ring the `J̄_e`
+        // patch average induces (dedups against the 1-ring pairs above).
         if let Some(fbar) = &fbar_cache {
-            fbar.for_each_coupling_pair(&mesh, |va, vb| {
-                for i in 0..3 {
-                    for j in 0..3 {
-                        let row_full = 3 * va as usize + i;
-                        let col_full = 3 * vb as usize + j;
-                        if let (Some(row_free), Some(col_free)) =
-                            (full_to_free_idx[row_full], full_to_free_idx[col_full])
-                            && row_free >= col_free
-                        {
-                            triplet_set.insert((col_free, row_free));
-                        }
-                    }
-                }
-            });
+            fbar.insert_free_coupling_pattern(&mesh, &full_to_free_idx, &mut triplet_set);
         }
 
         let pattern_triplets: Vec<Triplet<usize, usize, f64>> = triplet_set

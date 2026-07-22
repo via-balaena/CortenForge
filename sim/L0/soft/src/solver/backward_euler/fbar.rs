@@ -308,6 +308,10 @@ impl FbarCache {
     /// of the F-bar elastic energy (verified against the residual by finite
     /// difference); the triplet assembly the Newton factor consumes is the same
     /// bilinear form, blocked by node pair.
+    //
+    // Long by design: the forward + dotted per-element bundle, the nodal `J̇`
+    // reduction, and the local + patch derivative scatter are one coherent
+    // product-rule sweep — splitting it would scatter the shared dotted state.
     #[allow(clippy::too_many_lines)]
     pub(super) fn tangent_matvec<M, Msh>(
         &self,
@@ -542,14 +546,17 @@ impl FbarCache {
             .collect()
     }
 
-    /// Visit every `(node_a, node_b)` pair the F-bar tangent couples: within
-    /// each element's patch, every node pair. The Hessian sparsity pattern
-    /// (`construct.rs`) is the union of these — the F-bar 2-ring, wider than
-    /// Tet4's element-incidence 1-ring because `J̄_e` reaches the node star.
-    pub(super) fn for_each_coupling_pair<Msh, M>(
+    /// Insert the F-bar tangent's free-DOF lower-triangle sparsity pattern into
+    /// `triplet_set` (keyed `(col_free, row_free)`). The F-bar tangent couples
+    /// every pair of nodes within each element's patch — the node-star 2-ring,
+    /// wider than Tet4's element-incidence 1-ring because `J̄_e` reaches the
+    /// star. Dedups against pairs already present. Consumed by `construct.rs`'s
+    /// symbolic-factor build so the F-bar coupling is pre-allocated.
+    pub(super) fn insert_free_coupling_pattern<Msh, M>(
         &self,
         mesh: &Msh,
-        mut visit: impl FnMut(crate::mesh::VertexId, crate::mesh::VertexId),
+        full_to_free: &[Option<usize>],
+        triplet_set: &mut std::collections::BTreeSet<(usize, usize)>,
     ) where
         M: Material,
         Msh: Mesh<M>,
@@ -558,7 +565,17 @@ impl FbarCache {
             let patch = self.patch_nodes(mesh, e);
             for &va in &patch {
                 for &vb in &patch {
-                    visit(va, vb);
+                    for i in 0..3 {
+                        for j in 0..3 {
+                            let (row_full, col_full) = (3 * va as usize + i, 3 * vb as usize + j);
+                            if let (Some(row_free), Some(col_free)) =
+                                (full_to_free[row_full], full_to_free[col_full])
+                                && row_free >= col_free
+                            {
+                                triplet_set.insert((col_free, row_free));
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -765,8 +782,11 @@ fn frobenius(a: &Matrix3<f64>, b: &Matrix3<f64>) -> f64 {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
 
-/// `F^{-T}`. F-bar shares `NeoHookean`'s `RequireOrientation` contract — a
-/// non-invertible `F` is an upstream barrier failure, not a branch here.
+/// `F^{-T}`.
+//
+// F-bar shares `NeoHookean`'s `RequireOrientation` contract: a non-invertible
+// `F` is an upstream IPC-barrier failure, not a branch here — so the expect is
+// a programmer-error tripwire, matching `neo_hookean::invert_transpose`.
 #[allow(clippy::expect_used)]
 fn invert_transpose(f: &Matrix3<f64>) -> Matrix3<f64> {
     f.try_inverse()
