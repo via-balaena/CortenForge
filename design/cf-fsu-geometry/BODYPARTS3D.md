@@ -29,8 +29,9 @@ that names each file by its Foundational Model of Anatomy (FMA) ID:
 | L5 vertebra | FMA13076 | `assets/BodyParts3D_data/stl/FMA13076.stl` | `CF_L5_STL`   | 864184 | `244f54f1388b1cb02014a6de9c1b32ef40d398967bc8e17ed56b46c637fe11c1` |
 | L4–L5 disc  | FMA16036 | `assets/BodyParts3D_data/stl/FMA16036.stl` | `CF_DISC_STL` | 724584 | `865f96b3f3bfed6536808edadd46c7ff742c6ee6e93eb7e8705863643cec7a94` |
 
-Most consumers need only a subset (the `cf-codesign` conduit gate uses only L4; the disc
-rungs use only the disc); the FSU validation and studio use all three.
+Most consumers need only a subset: the `cf-codesign` conduit gate uses only L4; the disc
+rungs use only the disc; `cf-spine-studio` uses L4 + L5 and lofts the disc itself. The
+FSU validation (`rung7_fsu_validation.rs`) uses all three.
 
 ## Fetch + verify
 
