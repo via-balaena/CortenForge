@@ -243,6 +243,16 @@ where
             element_geometries.push(ElementGeometry { grad_x_n, volume });
         }
 
+        // F-bar nodal-patch cache (locking cure) — built only when enabled;
+        // `None` leaves the plain per-element assembly path bit-equal. Built
+        // here (before the symbolic pattern) because the F-bar tangent's
+        // node-star coupling widens the Hessian sparsity pattern below.
+        let fbar_cache = if config.fbar {
+            Some(super::fbar::FbarCache::build(&mesh, &element_geometries))
+        } else {
+            None
+        };
+
         // 2. Lumped per-DOF mass. For each element `e`, contribute
         // `ρ V_e / 4` to every DOF of every vertex of `e`. Vertices
         // shared by multiple elements accumulate.
@@ -314,6 +324,27 @@ where
                 }
             }
         }
+        // F-bar coupling widens the pattern to the node-star 2-ring: the
+        // `J̄_e` patch average makes element `e`'s tangent couple every pair of
+        // nodes in its patch, beyond the element-incidence 1-ring above. Add
+        // those pairs (BTreeSet dedups against the pairs already present).
+        if let Some(fbar) = &fbar_cache {
+            fbar.for_each_coupling_pair(&mesh, |va, vb| {
+                for i in 0..3 {
+                    for j in 0..3 {
+                        let row_full = 3 * va as usize + i;
+                        let col_full = 3 * vb as usize + j;
+                        if let (Some(row_free), Some(col_free)) =
+                            (full_to_free_idx[row_full], full_to_free_idx[col_full])
+                            && row_free >= col_free
+                        {
+                            triplet_set.insert((col_free, row_free));
+                        }
+                    }
+                }
+            });
+        }
+
         let pattern_triplets: Vec<Triplet<usize, usize, f64>> = triplet_set
             .iter()
             .map(|&(c, r)| Triplet::new(r, c, 1.0))
@@ -358,6 +389,7 @@ where
             symbolic_lu,
             n_dof,
             n_free,
+            fbar_cache,
             friction_surface_drift: Vec3::zeros(),
             _material: std::marker::PhantomData,
         }

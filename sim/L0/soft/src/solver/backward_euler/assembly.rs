@@ -134,20 +134,34 @@ where
         debug_assert!(f_int.len() == self.n_dof);
         f_int.fill(0.0);
         let materials = self.mesh.materials();
-        for (tet_id, geom) in self.element_geometries.iter().enumerate() {
-            let verts = self.mesh.tet_vertices(tet_id as TetId);
-            let x_elem = extract_element_dof_values(x_curr, &verts);
-            let f = deformation_gradient(&x_elem, &geom.grad_x_n);
-            let piola = materials[tet_id].first_piola(&f);
-            // Per-vertex internal-force contribution `V · P · grad_X N_a`.
-            for a in 0..4 {
-                let v = verts[a] as usize;
-                for i in 0..3 {
-                    let mut sum = 0.0;
-                    for j in 0..3 {
-                        sum += piola[(i, j)] * geom.grad_x_n[(a, j)];
+        if let Some(fbar) = &self.fbar_cache {
+            // F-bar mode: the patch-modified kinematic `F*` replaces the plain
+            // per-element elastic force with the consistent nodal-averaged
+            // scatter (Part 2 Ch 05 02-f-bar.md). Contact / friction below are
+            // unchanged.
+            fbar.scatter_internal_force(
+                &self.mesh,
+                materials,
+                x_curr,
+                &self.element_geometries,
+                f_int,
+            );
+        } else {
+            for (tet_id, geom) in self.element_geometries.iter().enumerate() {
+                let verts = self.mesh.tet_vertices(tet_id as TetId);
+                let x_elem = extract_element_dof_values(x_curr, &verts);
+                let f = deformation_gradient(&x_elem, &geom.grad_x_n);
+                let piola = materials[tet_id].first_piola(&f);
+                // Per-vertex internal-force contribution `V · P · grad_X N_a`.
+                for a in 0..4 {
+                    let v = verts[a] as usize;
+                    for i in 0..3 {
+                        let mut sum = 0.0;
+                        for j in 0..3 {
+                            sum += piola[(i, j)] * geom.grad_x_n[(a, j)];
+                        }
+                        f_int[3 * v + i] += geom.volume * sum;
                     }
-                    f_int[3 * v + i] += geom.volume * sum;
                 }
             }
         }
@@ -306,30 +320,45 @@ where
         let mut acc: BTreeMap<(usize, usize), f64> = BTreeMap::new();
 
         let materials = self.mesh.materials();
-        for (tet_id, geom) in self.element_geometries.iter().enumerate() {
-            let verts = self.mesh.tet_vertices(tet_id as TetId);
-            let x_elem = extract_element_dof_values(x_curr, &verts);
-            let f = deformation_gradient(&x_elem, &geom.grad_x_n);
-            let tangent_9x9 = materials[tet_id].tangent(&f);
+        if let Some(fbar) = &self.fbar_cache {
+            // F-bar mode: the consistent nodal-averaged tangent (with the `J̄`
+            // node-star coupling) replaces the plain per-element elastic block.
+            // Its 2-ring pattern is pre-allocated in the symbolic factor.
+            fbar.accumulate_free_tangent(
+                &self.mesh,
+                materials,
+                x_curr,
+                &self.element_geometries,
+                &self.full_to_free_idx,
+                &mut acc,
+            );
+        } else {
+            for (tet_id, geom) in self.element_geometries.iter().enumerate() {
+                let verts = self.mesh.tet_vertices(tet_id as TetId);
+                let x_elem = extract_element_dof_values(x_curr, &verts);
+                let f = deformation_gradient(&x_elem, &geom.grad_x_n);
+                let tangent_9x9 = materials[tet_id].tangent(&f);
 
-            for a in 0..4 {
-                let va = verts[a] as usize;
-                for b in 0..4 {
-                    let vb = verts[b] as usize;
-                    // The 3×3 `V·(BₐᵀℂB_b)` block (shared with `internal_force_tangent_matvec`);
-                    // scatter only its free-DOF, lower-triangle entries.
-                    let block =
-                        element_tangent_block(&geom.grad_x_n, &tangent_9x9, geom.volume, a, b);
-                    for i in 0..3 {
-                        for j in 0..3 {
-                            let row_full = 3 * va + i;
-                            let col_full = 3 * vb + j;
-                            if let (Some(row_free), Some(col_free)) = (
-                                self.full_to_free_idx[row_full],
-                                self.full_to_free_idx[col_full],
-                            ) && row_free >= col_free
-                            {
-                                *acc.entry((col_free, row_free)).or_insert(0.0) += block[(i, j)];
+                for a in 0..4 {
+                    let va = verts[a] as usize;
+                    for b in 0..4 {
+                        let vb = verts[b] as usize;
+                        // The 3×3 `V·(BₐᵀℂB_b)` block (shared with `internal_force_tangent_matvec`);
+                        // scatter only its free-DOF, lower-triangle entries.
+                        let block =
+                            element_tangent_block(&geom.grad_x_n, &tangent_9x9, geom.volume, a, b);
+                        for i in 0..3 {
+                            for j in 0..3 {
+                                let row_full = 3 * va + i;
+                                let col_full = 3 * vb + j;
+                                if let (Some(row_free), Some(col_free)) = (
+                                    self.full_to_free_idx[row_full],
+                                    self.full_to_free_idx[col_full],
+                                ) && row_free >= col_free
+                                {
+                                    *acc.entry((col_free, row_free)).or_insert(0.0) +=
+                                        block[(i, j)];
+                                }
                             }
                         }
                     }
