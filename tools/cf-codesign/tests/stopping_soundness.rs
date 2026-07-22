@@ -7,6 +7,8 @@
 //! finite `loss_tol` fires at that sign crossing, and the run returns a plausible
 //! design that has nothing to do with an optimum.
 
+use std::sync::Arc;
+
 use cf_codesign::{
     CoDesignProblem, ConduitTarget, OptConfig, OptResult, RouteTarget, StopReason, optimize,
 };
@@ -25,7 +27,7 @@ fn corridor_scene(gap: f64) -> ConduitTarget {
         .translate(Vector3::new(0.0, offset, 0.0))
         .union(Solid::cuboid(half).translate(Vector3::new(0.0, -offset, 0.0)));
     ConduitTarget::new(
-        body,
+        Arc::new(body),
         Point3::new(-3.0, 0.0, 0.0),
         Point3::new(3.0, 0.0, 0.0),
         2,
@@ -91,7 +93,7 @@ fn conduit_ignores_loss_tol_and_still_finds_the_optimum() {
 #[test]
 fn route_chord_bound_is_never_violated() {
     let t = RouteTarget::new(
-        Solid::capsule(1.0, 3.0),
+        Arc::new(Solid::capsule(1.0, 3.0)),
         Point3::new(-3.0, 0.0, 0.0),
         Point3::new(3.0, 0.0, 0.0),
         2,
@@ -157,7 +159,7 @@ fn stop_reason_distinguishes_the_exits() {
     // `RouteTarget`'s bound is the chord, and a tolerance wider than any detour the
     // scene can require forces the certificate immediately.
     let route = RouteTarget::new(
-        Solid::capsule(1.0, 3.0),
+        Arc::new(Solid::capsule(1.0, 3.0)),
         Point3::new(-3.0, 0.0, 0.0),
         Point3::new(3.0, 0.0, 0.0),
         2,

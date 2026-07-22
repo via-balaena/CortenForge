@@ -9,6 +9,8 @@
 //! walls make the optimal radius analytically predictable, which is what turns the
 //! headline gate from a direction check into a quantitative one.
 
+use std::sync::Arc;
+
 use cf_codesign::{CoDesignProblem, ConduitTarget, OptConfig, StopReason, optimize};
 use cf_design::Solid;
 use nalgebra::{Point3, Vector3};
@@ -21,7 +23,7 @@ const N_SAMPLES: usize = 40;
 /// The capsule scene of the sibling route gate, with the radius now a design variable.
 fn capsule_scene() -> ConduitTarget {
     ConduitTarget::new(
-        Solid::capsule(1.0, 3.0),
+        Arc::new(Solid::capsule(1.0, 3.0)),
         Point3::new(-3.0, 0.0, 0.0),
         Point3::new(3.0, 0.0, 0.0),
         2,
@@ -41,7 +43,7 @@ fn corridor_scene(gap: f64) -> ConduitTarget {
         .translate(Vector3::new(0.0, offset, 0.0))
         .union(Solid::cuboid(half).translate(Vector3::new(0.0, -offset, 0.0)));
     ConduitTarget::new(
-        body,
+        Arc::new(body),
         Point3::new(-3.0, 0.0, 0.0),
         Point3::new(3.0, 0.0, 0.0),
         2,

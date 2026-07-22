@@ -6,20 +6,22 @@
 //! route plunges through the body; the optimizer must bend it clear while keeping it
 //! short.
 
+use std::sync::Arc;
+
 use cf_codesign::{CoDesignProblem, OptConfig, RouteTarget, optimize};
 use cf_design::Solid;
 use nalgebra::Point3;
 
 fn scene() -> RouteTarget {
     RouteTarget::new(
-        Solid::capsule(1.0, 3.0),    // body: capsule along Z, radius 1
-        Point3::new(-3.0, 0.0, 0.0), // start
-        Point3::new(3.0, 0.0, 0.0),  // end
-        2,                           // interior control points (design vars)
-        0.3,                         // tube radius
-        0.1,                         // clearance margin  → req = 0.4
-        10.0,                        // clearance penalty weight
-        40,                          // samples
+        Arc::new(Solid::capsule(1.0, 3.0)), // body: capsule along Z, radius 1
+        Point3::new(-3.0, 0.0, 0.0),        // start
+        Point3::new(3.0, 0.0, 0.0),         // end
+        2,                                  // interior control points (design vars)
+        0.3,                                // tube radius
+        0.1,                                // clearance margin  → req = 0.4
+        10.0,                               // clearance penalty weight
+        40,                                 // samples
     )
 }
 

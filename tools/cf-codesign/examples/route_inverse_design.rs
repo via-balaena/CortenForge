@@ -14,6 +14,8 @@
 
 #![allow(clippy::expect_used, clippy::print_stdout)]
 
+use std::sync::Arc;
+
 use cf_codesign::{OptConfig, RouteTarget, optimize};
 use cf_design::Solid;
 use nalgebra::Point3;
@@ -24,7 +26,7 @@ fn main() {
     // control points are the design variables; the tube (radius 0.3) must clear the
     // body by a 0.1 margin, so the centerline must stay req = 0.4 clear.
     let target = RouteTarget::new(
-        Solid::capsule(1.0, 3.0),
+        Arc::new(Solid::capsule(1.0, 3.0)),
         Point3::new(-3.0, 0.0, 0.0),
         Point3::new(3.0, 0.0, 0.0),
         2,
