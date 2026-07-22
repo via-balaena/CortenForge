@@ -53,6 +53,28 @@
 //! through node incidence. At rest (`F = I`) every `P*_e = 0`, so all forces
 //! vanish.
 //!
+//! ## Accuracy: a QUALITATIVE cure, not a quantitative one (measured)
+//!
+//! This F-bar **removes the locking pathology** — it lets `ν → 0.49` (Ecoflex
+//! 00-30) *converge* where plain Tet4 locks/stalls, and it recovers the right
+//! deformation *shape* (the ν-collapse of tip deflection is gone; ~4.2×
+//! recovery on the cantilever gate). That is real, useful stability.
+//!
+//! It is **not quantitatively accurate.** Measured against the analytic Lamé
+//! thick-shell oracle (`tests/concentric_lame_shells.rs` machinery), the
+//! cavity-wall displacement **over-softens** — mesh-converged ~5 % at ν=0.4,
+//! growing to ~21 % at ν=0.49 (vs plain Tet4, which converges to the analytic
+//! at ν=0.4 and *under*-predicts ~23 % — locked — at ν=0.49). The cause is the
+//! nodal-star patch average *over-relaxing* the volumetric constraint: it is a
+//! property of this patch **scheme**, not the material (a dev/vol-split
+//! Neo-Hookean was spiked and gives identical results at this strain) and not a
+//! bug (the residual/tangent are FD-proven consistent with the `J̄` energy).
+//! Per the spec, this is F-bar's designated role — the "fast *approximate*"
+//! cure; mixed-u-p / higher-order (Tet10) are the *quantitatively accurate*
+//! near-incompressible paths. Use F-bar for ν=0.49 *stability* and qualitative
+//! / relative work; do not read "cures locking" as "accurate at ν=0.49."
+//! Roadmap to the accurate element: `docs/SIM_SOFT_TET10_PLAN.md`.
+//!
 //! [fbar]: ../../../../../../docs/studies/soft_body_architecture/src/20-materials/05-incompressibility/02-f-bar.md
 
 // Per-element assembly idioms, shared verbatim with `assembly.rs` / `construct.rs`
