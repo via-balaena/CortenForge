@@ -67,6 +67,15 @@ pub struct SolverConfig {
     /// (Ecoflex 00-30's real Poisson ratio); above `ν = 0.49` mixed-u-p is the
     /// spec's recommended cure instead.
     ///
+    /// ⚠ **Qualitative / stability cure, NOT quantitatively accurate.** It lets
+    /// `ν = 0.49` *converge* (where plain Tet4 locks/stalls) with the right
+    /// deformation *shape*, but over-softens the near-incompressible response
+    /// ~5 % at ν=0.4 growing to ~21 % at ν=0.49 (mesh-converged; measured vs the
+    /// analytic Lamé oracle — the nodal-patch average over-relaxes). Use it for
+    /// ν=0.49 stability and qualitative/relative work; the quantitatively
+    /// accurate path is higher-order (Tet10) — see the module docs and
+    /// `docs/SIM_SOFT_TET10_PLAN.md`.
+    ///
     /// PR1 is FORWARD-ONLY: the differentiable paths (`step`, the VJP /
     /// sensitivity methods) **panic** when `fbar` is set rather than silently
     /// return a tangent that omits the F-bar neighbor coupling. Use
