@@ -48,6 +48,7 @@ mod assembly;
 mod config;
 mod construct;
 mod factor;
+mod fbar;
 mod helpers;
 mod newton;
 mod sensitivities;
@@ -149,6 +150,12 @@ pub struct CpuNewtonSolver<
     n_dof: usize,
     /// Free DOF count (`free_dof_indices.len()`), cached.
     n_free: usize,
+
+    /// Nodal-patch topology for the F-bar volumetric-locking cure, built once
+    /// at construction when `config.fbar` is set (else `None` → the plain
+    /// per-element Tet4 assembly path, bit-equal to the pre-F-bar code). Holds
+    /// the nodal rest volumes + vertex incidence the `J̄` average walks.
+    fbar_cache: Option<fbar::FbarCache>,
 
     /// The rigid contact surface's **within-step tangential drift** `Δ_surf` —
     /// the displacement the (kinematic) rigid collider sweeps over the step,

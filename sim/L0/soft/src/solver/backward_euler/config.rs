@@ -58,6 +58,22 @@ pub struct SolverConfig {
     /// — the stick regime). Only consulted when `friction_mu > 0`. IPC default
     /// `≈ 1e-3·L_bbox` m/s.
     pub friction_eps_v: f64,
+    /// Nodal-averaged **F-bar** volumetric-locking cure (Part 2 Ch 05 02-f-bar.md).
+    /// Default `false` = plain per-element Tet4, **bit-equal** to the pre-F-bar
+    /// path (the elastic assembly short-circuits to the unmodified per-element
+    /// loop). `true` feeds the constitutive law the patch-modified kinematic
+    /// `F* = (J̄/J)^{1/3} F`, curing the `ν → 0.5` over-stiffening that pins the
+    /// standalone Tet4 gates to `ν = 0.4`. Enables the `ν ≤ 0.49` regime
+    /// (Ecoflex 00-30's real Poisson ratio); above `ν = 0.49` mixed-u-p is the
+    /// spec's recommended cure instead.
+    ///
+    /// PR1 is FORWARD-ONLY: the differentiable paths (`step`, the VJP /
+    /// sensitivity methods) **panic** when `fbar` is set rather than silently
+    /// return a tangent that omits the F-bar neighbor coupling. Use
+    /// `replay_step` for forward-only F-bar; the differentiability leaf (PR2)
+    /// wires the coupling into the adjoint. (Mirrors the `friction_mu`
+    /// forward-only-in-PR1 contract above.)
+    pub fbar: bool,
 }
 
 impl SolverConfig {
@@ -80,6 +96,7 @@ impl SolverConfig {
             lm_regularization: None,
             friction_mu: 0.0,
             friction_eps_v: 0.0,
+            fbar: false,
         }
     }
 }

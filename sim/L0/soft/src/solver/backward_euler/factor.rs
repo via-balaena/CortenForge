@@ -462,6 +462,14 @@ where
         dt: f64,
         lm_seed_lambda: f64,
     ) -> FactoredFreeTangent {
+        assert!(
+            !self.config.fbar,
+            "F-bar differentiable gradients are not yet supported (forward-only, PR1): the \
+             adjoint tangent IS F-bar-consistent, but the VJP RHS assembly (material-parameter \
+             and load channels) still evaluates at the unmodified F, not F*, so a gradient here \
+             would be silently wrong. Use `replay_step` for forward-only F-bar; the \
+             differentiability leaf (PR2) carries F* into the adjoint RHS."
+        );
         let mu = self.config.friction_mu;
         assert!(
             mu == 0.0 || x_prev.is_some(),
@@ -854,6 +862,14 @@ where
         dt: f64,
         lm_seed_lambda: f64,
     ) -> Result<FactoredFreeTangent, SolverFailure> {
+        assert!(
+            !self.config.fbar,
+            "F-bar differentiable gradients are not yet supported (forward-only, PR1): the \
+             adjoint tangent IS F-bar-consistent, but the VJP RHS assembly (material-parameter \
+             and load channels) still evaluates at the unmodified F, not F*, so a gradient here \
+             would be silently wrong. Use `replay_step` for forward-only F-bar; the \
+             differentiability leaf (PR2) carries F* into the adjoint RHS."
+        );
         let mu = self.config.friction_mu;
         assert!(
             mu == 0.0 || x_prev.is_some(),

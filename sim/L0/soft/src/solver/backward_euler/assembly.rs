@@ -134,20 +134,34 @@ where
         debug_assert!(f_int.len() == self.n_dof);
         f_int.fill(0.0);
         let materials = self.mesh.materials();
-        for (tet_id, geom) in self.element_geometries.iter().enumerate() {
-            let verts = self.mesh.tet_vertices(tet_id as TetId);
-            let x_elem = extract_element_dof_values(x_curr, &verts);
-            let f = deformation_gradient(&x_elem, &geom.grad_x_n);
-            let piola = materials[tet_id].first_piola(&f);
-            // Per-vertex internal-force contribution `V · P · grad_X N_a`.
-            for a in 0..4 {
-                let v = verts[a] as usize;
-                for i in 0..3 {
-                    let mut sum = 0.0;
-                    for j in 0..3 {
-                        sum += piola[(i, j)] * geom.grad_x_n[(a, j)];
+        if let Some(fbar) = &self.fbar_cache {
+            // F-bar mode: the patch-modified kinematic `F*` replaces the plain
+            // per-element elastic force with the consistent nodal-averaged
+            // scatter (Part 2 Ch 05 02-f-bar.md). Contact / friction below are
+            // unchanged.
+            fbar.scatter_internal_force(
+                &self.mesh,
+                materials,
+                x_curr,
+                &self.element_geometries,
+                f_int,
+            );
+        } else {
+            for (tet_id, geom) in self.element_geometries.iter().enumerate() {
+                let verts = self.mesh.tet_vertices(tet_id as TetId);
+                let x_elem = extract_element_dof_values(x_curr, &verts);
+                let f = deformation_gradient(&x_elem, &geom.grad_x_n);
+                let piola = materials[tet_id].first_piola(&f);
+                // Per-vertex internal-force contribution `V · P · grad_X N_a`.
+                for a in 0..4 {
+                    let v = verts[a] as usize;
+                    for i in 0..3 {
+                        let mut sum = 0.0;
+                        for j in 0..3 {
+                            sum += piola[(i, j)] * geom.grad_x_n[(a, j)];
+                        }
+                        f_int[3 * v + i] += geom.volume * sum;
                     }
-                    f_int[3 * v + i] += geom.volume * sum;
                 }
             }
         }
@@ -306,30 +320,45 @@ where
         let mut acc: BTreeMap<(usize, usize), f64> = BTreeMap::new();
 
         let materials = self.mesh.materials();
-        for (tet_id, geom) in self.element_geometries.iter().enumerate() {
-            let verts = self.mesh.tet_vertices(tet_id as TetId);
-            let x_elem = extract_element_dof_values(x_curr, &verts);
-            let f = deformation_gradient(&x_elem, &geom.grad_x_n);
-            let tangent_9x9 = materials[tet_id].tangent(&f);
+        if let Some(fbar) = &self.fbar_cache {
+            // F-bar mode: the consistent nodal-averaged tangent (with the `J̄`
+            // node-star coupling) replaces the plain per-element elastic block.
+            // Its 2-ring pattern is pre-allocated in the symbolic factor.
+            fbar.accumulate_free_tangent(
+                &self.mesh,
+                materials,
+                x_curr,
+                &self.element_geometries,
+                &self.full_to_free_idx,
+                &mut acc,
+            );
+        } else {
+            for (tet_id, geom) in self.element_geometries.iter().enumerate() {
+                let verts = self.mesh.tet_vertices(tet_id as TetId);
+                let x_elem = extract_element_dof_values(x_curr, &verts);
+                let f = deformation_gradient(&x_elem, &geom.grad_x_n);
+                let tangent_9x9 = materials[tet_id].tangent(&f);
 
-            for a in 0..4 {
-                let va = verts[a] as usize;
-                for b in 0..4 {
-                    let vb = verts[b] as usize;
-                    // The 3×3 `V·(BₐᵀℂB_b)` block (shared with `internal_force_tangent_matvec`);
-                    // scatter only its free-DOF, lower-triangle entries.
-                    let block =
-                        element_tangent_block(&geom.grad_x_n, &tangent_9x9, geom.volume, a, b);
-                    for i in 0..3 {
-                        for j in 0..3 {
-                            let row_full = 3 * va + i;
-                            let col_full = 3 * vb + j;
-                            if let (Some(row_free), Some(col_free)) = (
-                                self.full_to_free_idx[row_full],
-                                self.full_to_free_idx[col_full],
-                            ) && row_free >= col_free
-                            {
-                                *acc.entry((col_free, row_free)).or_insert(0.0) += block[(i, j)];
+                for a in 0..4 {
+                    let va = verts[a] as usize;
+                    for b in 0..4 {
+                        let vb = verts[b] as usize;
+                        // The 3×3 `V·(BₐᵀℂB_b)` block (shared with `internal_force_tangent_matvec`);
+                        // scatter only its free-DOF, lower-triangle entries.
+                        let block =
+                            element_tangent_block(&geom.grad_x_n, &tangent_9x9, geom.volume, a, b);
+                        for i in 0..3 {
+                            for j in 0..3 {
+                                let row_full = 3 * va + i;
+                                let col_full = 3 * vb + j;
+                                if let (Some(row_free), Some(col_free)) = (
+                                    self.full_to_free_idx[row_full],
+                                    self.full_to_free_idx[col_full],
+                                ) && row_free >= col_free
+                                {
+                                    *acc.entry((col_free, row_free)).or_insert(0.0) +=
+                                        block[(i, j)];
+                                }
                             }
                         }
                     }
@@ -418,6 +447,16 @@ where
     /// contact and friction terms are empty. Mass is excluded because the constrained
     /// reaction it feeds is the *internal-force* reaction `−f_int` (the inertial term
     /// cancels at a pinned node whose target equals its `x_prev`).
+    ///
+    /// ⚠ **NOT F-bar-aware.** Unlike [`assemble_global_int_force`](Self::assemble_global_int_force)
+    /// and [`assemble_free_hessian_triplets`](Self::assemble_free_hessian_triplets), this
+    /// matvec has no `fbar_cache` branch — it always contracts the plain per-element
+    /// tangent. This is currently sound because its only consumer (the Dirichlet-reaction
+    /// sensitivity) also routes through [`factor_at_position`](Self::factor_at_position),
+    /// which asserts `!config.fbar` (forward-only, PR1) — so no F-bar gradient escapes.
+    /// **PR2 (the differentiability leaf) must make this F-bar-aware** (contract the
+    /// F-bar tangent, e.g. via `FbarCache::tangent_matvec`) before lifting that guard,
+    /// or the reaction sensitivity would be silently plain-tangent under F-bar.
     //
     // Lint allows mirror `assemble_free_hessian_triplets` (the loop this contracts):
     // `as TetId` is the Mesh-trait API tax, the `for a/b in 0..4` node loops index

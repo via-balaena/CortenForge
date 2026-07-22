@@ -243,6 +243,16 @@ where
             element_geometries.push(ElementGeometry { grad_x_n, volume });
         }
 
+        // F-bar nodal-patch cache (locking cure) — built only when enabled;
+        // `None` leaves the plain per-element assembly path bit-equal. Built
+        // here (before the symbolic pattern) because the F-bar tangent's
+        // node-star coupling widens the Hessian sparsity pattern below.
+        let fbar_cache = if config.fbar {
+            Some(super::fbar::FbarCache::build(&mesh, &element_geometries))
+        } else {
+            None
+        };
+
         // 2. Lumped per-DOF mass. For each element `e`, contribute
         // `ρ V_e / 4` to every DOF of every vertex of `e`. Vertices
         // shared by multiple elements accumulate.
@@ -314,6 +324,12 @@ where
                 }
             }
         }
+        // F-bar coupling widens the pattern to the node-star 2-ring the `J̄_e`
+        // patch average induces (dedups against the 1-ring pairs above).
+        if let Some(fbar) = &fbar_cache {
+            fbar.insert_free_coupling_pattern(&mesh, &full_to_free_idx, &mut triplet_set);
+        }
+
         let pattern_triplets: Vec<Triplet<usize, usize, f64>> = triplet_set
             .iter()
             .map(|&(c, r)| Triplet::new(r, c, 1.0))
@@ -358,6 +374,7 @@ where
             symbolic_lu,
             n_dof,
             n_free,
+            fbar_cache,
             friction_surface_drift: Vec3::zeros(),
             _material: std::marker::PhantomData,
         }
