@@ -5,8 +5,9 @@
 //! known, quantitative anchors), this routes around an actual BodyParts3D lumbar
 //! vertebra: thin transverse/spinous processes, the vertebral foramen, concavities.
 //! The mesh is licensed (CC BY-SA) and never committed, so every test here is
-//! `#[ignore]`d and reads the STL from `$CF_L4_STL` — see
-//! `tests/assets/bodyparts3d/PROVENANCE.md` for the source + fetch. Run with:
+//! `#[ignore]`d and reads the STL from `$CF_L4_STL` — the canonical source + pinned
+//! fetch + checksums are in `design/cf-fsu-geometry/BODYPARTS3D.md`
+//! (`tests/assets/bodyparts3d/` carries this gate's run command). Run with:
 //!
 //! ```sh
 //! CF_L4_STL=/tmp/FMA13075.stl cargo test -p cf-codesign --release \
