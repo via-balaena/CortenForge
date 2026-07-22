@@ -13,6 +13,8 @@
 
 #![allow(clippy::expect_used, clippy::print_stdout)]
 
+use std::sync::Arc;
+
 use cf_codesign::{ConduitTarget, optimize};
 use cf_design::Solid;
 use nalgebra::{Point3, Vector3};
@@ -30,7 +32,7 @@ fn corridor(gap: f64) -> ConduitTarget {
         .translate(Vector3::new(0.0, offset, 0.0))
         .union(Solid::cuboid(half).translate(Vector3::new(0.0, -offset, 0.0)));
     ConduitTarget::new(
-        body,
+        Arc::new(body),
         Point3::new(-3.0, 0.0, 0.0),
         Point3::new(3.0, 0.0, 0.0),
         2,
@@ -56,7 +58,7 @@ fn solve(target: &ConduitTarget, r0: f64, nudge: f64) -> (f64, f64, Vec<f64>) {
 fn main() {
     // Part 1 — a capsule to route around, with the tube free to fatten.
     let capsule = ConduitTarget::new(
-        Solid::capsule(1.0, 3.0),
+        Arc::new(Solid::capsule(1.0, 3.0)),
         Point3::new(-3.0, 0.0, 0.0),
         Point3::new(3.0, 0.0, 0.0),
         2,

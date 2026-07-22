@@ -12,6 +12,12 @@
 //! each other; see its docs for the objective and for how to calibrate the radius
 //! reward. Both read the same body field and share the sampling helpers below.
 //!
+//! The body is any [`cf_design::Sdf`], so a route can be optimized against an
+//! analytic [`Solid`](cf_design::Solid) *or* a real triangle mesh — an anatomical
+//! vertebra, an imported part — via [`mesh_body`](crate::mesh_body) /
+//! [`solid_mesh_body`](crate::solid_mesh_body). The optimizer is identical either
+//! way; only the signed-distance source differs.
+//!
 //! The objective is `path_length + w · Σ max(0, req − φ_body(sample))²`: the length
 //! term pulls the route straight; the clearance penalty (over the body's signed
 //! distance field `φ_body`) pushes the centerline `req = tube_radius + margin` clear
@@ -31,13 +37,24 @@
 //! Analytic centerline Jacobians (`length_grad`) stay unbuilt until a many-DOF
 //! consumer needs them.
 //!
+//! For a **mesh** body the field is the grid-cached, trilinearly-interpolated signed
+//! distance ([`mesh_body`](crate::mesh_body)); its gradient has seams on the grid
+//! lattice rather than a closed form, but at the finite-difference step (`1e-6`) —
+//! far below the cell size — the stencil sits inside one smooth cell, so the FD
+//! gradient is measured stable to ~`1e-6` relative and a route recovered against a
+//! meshed body matches one recovered against the same body taken analytically to well
+//! under a grid cell. The smoothness is validated, not assumed (see
+//! `tests/mesh_body_conduit.rs`).
+//!
 //! **Symmetry note.** A straight route through a body-symmetric scene is an *even*
 //! objective in the detour direction (`+`/`−` detours are identical), so its
 //! gradient vanishes there — a stationary ridge, not a minimum. Initialize the
 //! optimizer *off* that ridge (a small detour); [`RouteTarget::straight_line`] gives
 //! the on-ridge line so a caller can perturb it deliberately.
 
-use cf_design::Solid;
+use std::sync::Arc;
+
+use cf_design::Sdf;
 use cf_routing::Path;
 use nalgebra::Point3;
 
@@ -86,10 +103,10 @@ fn polyline_length(pts: &[Point3<f64>]) -> f64 {
 
 /// `Σ max(0, req − φ_body(p))²` over the sampled route — the squared clearance
 /// shortfall against a required centerline clearance `req`.
-fn clearance_penalty(body: &Solid, pts: &[Point3<f64>], req: f64) -> f64 {
+fn clearance_penalty(body: &dyn Sdf, pts: &[Point3<f64>], req: f64) -> f64 {
     pts.iter()
         .map(|p| {
-            let viol = (req - body.evaluate(p)).max(0.0);
+            let viol = (req - body.eval(*p)).max(0.0);
             viol * viol
         })
         .sum()
@@ -99,9 +116,9 @@ fn clearance_penalty(body: &Solid, pts: &[Point3<f64>], req: f64) -> f64 {
 /// a cable centerline so it clears `body` while staying short. The fixed endpoints
 /// bracket the interior points, which are the design variables (`3 ·
 /// n_interior` parameters, `[x,y,z]` per point, in order).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RouteTarget {
-    body: Solid,
+    body: Arc<dyn Sdf>,
     start: Point3<f64>,
     end: Point3<f64>,
     n_interior: usize,
@@ -111,6 +128,24 @@ pub struct RouteTarget {
     penalty_weight: f64,
     n_samples: usize,
     fd_eps: f64,
+}
+
+// `Arc<dyn Sdf>` is not `Debug` (the `Sdf` trait is `Send + Sync`, not `Debug`),
+// so `Debug` is hand-written to render the body as an opaque placeholder while
+// keeping every scalar field visible.
+impl std::fmt::Debug for RouteTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RouteTarget")
+            .field("body", &"<dyn Sdf>")
+            .field("start", &self.start)
+            .field("end", &self.end)
+            .field("n_interior", &self.n_interior)
+            .field("req_clearance", &self.req_clearance)
+            .field("penalty_weight", &self.penalty_weight)
+            .field("n_samples", &self.n_samples)
+            .field("fd_eps", &self.fd_eps)
+            .finish()
+    }
 }
 
 impl RouteTarget {
@@ -126,7 +161,7 @@ impl RouteTarget {
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        body: Solid,
+        body: Arc<dyn Sdf>,
         start: Point3<f64>,
         end: Point3<f64>,
         n_interior: usize,
@@ -206,7 +241,7 @@ impl RouteTarget {
             return f64::INFINITY;
         };
         polyline_length(&pts)
-            + self.penalty_weight * clearance_penalty(&self.body, &pts, self.req_clearance)
+            + self.penalty_weight * clearance_penalty(self.body.as_ref(), &pts, self.req_clearance)
     }
 
     /// The smallest centerline clearance `min_t φ_body(sample(t))` along the route at
@@ -221,7 +256,7 @@ impl RouteTarget {
             return f64::NEG_INFINITY;
         };
         pts.iter()
-            .map(|p| self.body.evaluate(p))
+            .map(|p| self.body.eval(*p))
             .fold(f64::INFINITY, f64::min)
     }
 
@@ -356,9 +391,9 @@ impl CoDesignProblem for RouteTarget {
 /// [`loss_lower_bound`](CoDesignProblem::loss_lower_bound), which switches that
 /// criterion off structurally — no caller can mis-drive it. See that impl for why no
 /// bound can be stated.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ConduitTarget {
-    body: Solid,
+    body: Arc<dyn Sdf>,
     start: Point3<f64>,
     end: Point3<f64>,
     n_interior: usize,
@@ -370,6 +405,25 @@ pub struct ConduitTarget {
     radius_reward: f64,
     n_samples: usize,
     fd_eps: f64,
+}
+
+// Hand-written for the same reason as [`RouteTarget`]'s: `Arc<dyn Sdf>` is not
+// `Debug`, so the body renders as an opaque placeholder and every scalar field
+// stays visible.
+impl std::fmt::Debug for ConduitTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConduitTarget")
+            .field("body", &"<dyn Sdf>")
+            .field("start", &self.start)
+            .field("end", &self.end)
+            .field("n_interior", &self.n_interior)
+            .field("margin", &self.margin)
+            .field("penalty_weight", &self.penalty_weight)
+            .field("radius_reward", &self.radius_reward)
+            .field("n_samples", &self.n_samples)
+            .field("fd_eps", &self.fd_eps)
+            .finish()
+    }
 }
 
 impl ConduitTarget {
@@ -389,7 +443,7 @@ impl ConduitTarget {
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        body: Solid,
+        body: Arc<dyn Sdf>,
         start: Point3<f64>,
         end: Point3<f64>,
         n_interior: usize,
@@ -564,7 +618,7 @@ impl ConduitTarget {
         };
         -self.radius_reward * r
             + polyline_length(&pts)
-            + self.penalty_weight * clearance_penalty(&self.body, &pts, r + self.margin)
+            + self.penalty_weight * clearance_penalty(self.body.as_ref(), &pts, r + self.margin)
     }
 
     /// The smallest centerline clearance `min_t φ_body(sample(t))` along the route at
@@ -585,7 +639,7 @@ impl ConduitTarget {
             return f64::NEG_INFINITY;
         };
         pts.iter()
-            .map(|q| self.body.evaluate(q))
+            .map(|q| self.body.eval(*q))
             .fold(f64::INFINITY, f64::min)
     }
 }

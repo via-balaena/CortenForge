@@ -26,10 +26,19 @@ sim-ml-chassis = { workspace = true }
 # The differentiable routing primitive (centerline `Path`) — the geometry design
 # axis: a route's control points are the design variables in `RouteTarget`.
 cf-routing = { workspace = true }
-# Analytic signed-distance bodies (`Solid`) the route is optimized against.
+# Analytic signed-distance bodies (`Solid`) the route is optimized against, plus
+# the workspace-wide `Sdf` trait a route/conduit body is generalized over.
 # `workspace = true` inherits the `default-features = false` tier cap (no
-# parallel-meshing/rayon — we only need `Solid::capsule`/`evaluate`).
+# parallel-meshing/rayon — we only need `Solid::capsule`/`mesh`/`evaluate`).
 cf-design = { workspace = true }
+# Mesh signed-distance fields: lets a route/conduit body be a real triangle mesh
+# (a grid-cached, trilinearly-interpolated `CachedGridSdf`) — e.g. an anatomical
+# vertebra — as well as an analytic `Solid`. Both satisfy `cf_design::Sdf`.
+mesh-sdf = { workspace = true }
+# `IndexedMesh` container + `Aabb`/`Bounded` for the mesh SDF's grid bounds.
+mesh-types = { workspace = true }
+# Error enum for the mesh-body builder (matches the crate's `InfeasibleDesign` style).
+thiserror = { workspace = true }
 # Point/vector types for the route control points.
 nalgebra = { workspace = true }
 

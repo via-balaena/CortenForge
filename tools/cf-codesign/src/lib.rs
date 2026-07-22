@@ -26,6 +26,21 @@
 //!   (the de-escalation RQ2 target: tune a protective buffer's stiffness to a
 //!   recoverability spec, the keystone peak-force gradient `∂(peak |fz|)/∂μ`).
 //!
+//! *Geometry axis* — tune the *shape* of a route through space (not a material or a
+//! control) so a cable or conduit clears a body while staying short:
+//! - [`RouteTarget`] — the interior control points of a differentiable centerline are
+//!   the design variables, optimized so the route clears a body at a *fixed* tube
+//!   radius.
+//! - [`ConduitTarget`] — promotes the tube radius to a second design variable ("the
+//!   fattest conduit that fits"), the mixed-conditioning route+radius rung.
+//!
+//! The body is any [`cf_design::Sdf`], so either target routes against an analytic
+//! [`Solid`](cf_design::Solid) **or** a real triangle mesh — an anatomical vertebra,
+//! an imported part — via [`mesh_body`] / [`solid_mesh_body`] (a grid-cached signed
+//! distance field). Unlike the material and policy axes, this one takes its gradient by
+//! finite differences over a handful of control-point degrees of freedom rather than
+//! through the coupling tape.
+//!
 //! *Policy axis* — tune the control inputs applied each step:
 //! - [`ControlScheduleTarget`] — an **open-loop** per-step platen control-force
 //!   schedule `u_0 … u_{N−1}` so the platen's height after the coupled rollout
@@ -115,11 +130,12 @@
 //! radius — rather than the stop reason, and `MaxIters` is not a failure on its own: a
 //! soft equilibrium can sit in a shallow limit cycle around a perfectly good optimum.
 //!
-//! Scope: a single design parameter (material), an open-loop control schedule, a
-//! closed-loop state-feedback policy, or joint design+policy, all in the keystone's
-//! contact-engaged regime. Richer policies (MLP), multi-parameter design, and
-//! manufacturing-constrained co-optimization are documented follow-ons
-//! (`docs/codesign/recon.md`).
+//! Scope: a single design parameter (material), the shape of a route (at a fixed
+//! radius or co-designed with it, against an analytic or mesh body), an open-loop
+//! control schedule, a closed-loop state-feedback policy, or joint design+policy — the
+//! coupled axes all in the keystone's contact-engaged regime. Richer policies (MLP),
+//! multi-parameter design, and manufacturing-constrained co-optimization are documented
+//! follow-ons (`docs/codesign/recon.md`).
 //!
 //! ```no_run
 //! use cf_codesign::{optimize, OptConfig, SoftMaterialTarget, StopReason};
@@ -134,7 +150,9 @@ use sim_coupling::{DiffPolicy, LinearFeedback, RolloutError, StaggeredCoupling};
 use sim_ml_chassis::OptimizerConfig;
 use std::fmt;
 
+mod mesh_body;
 mod route;
+pub use mesh_body::{MeshBodyError, mesh_body, solid_mesh_body};
 pub use route::{ConduitTarget, RouteTarget};
 
 /// The co-design objective could not be evaluated at a parameter point because the

@@ -2316,11 +2316,14 @@ dependencies = [
  "cf-design",
  "cf-routing",
  "matfile",
+ "mesh-sdf",
+ "mesh-types",
  "nalgebra 0.34.2",
  "sim-core",
  "sim-coupling",
  "sim-mjcf",
  "sim-ml-chassis",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
