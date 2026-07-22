@@ -97,6 +97,10 @@ pub fn load(path: &Path) -> Result<IndexedMesh> {
 /// `$CF_L4_STL` / `$CF_L5_STL` / `$CF_DISC_STL` (the meshes are CC BY-SA and not
 /// committed); this is the thin env-lookup convenience over [`load`] they share.
 ///
+/// **Where to get the meshes:** `BODYPARTS3D.md` at this crate's root is the canonical
+/// provenance for every workspace consumer — the source repo pinned to a commit, each
+/// mesh's FMA id / env var / SHA-256, and a fetch-and-verify recipe.
+///
 /// # Errors
 /// Returns an error if `var` is unset, or if [`load`] rejects the file it names.
 pub fn load_from_env(var: &str) -> Result<IndexedMesh> {
