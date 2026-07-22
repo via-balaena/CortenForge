@@ -41,6 +41,15 @@
 //! finite differences over a handful of control-point degrees of freedom rather than
 //! through the coupling tape.
 //!
+//! *Structural axis* — tune the *cross-section areas of the struts of a truss* so the
+//! structure is stiff without wasting material:
+//! - [`LatticeTarget`] — a fixed ground structure's per-strut areas are the design
+//!   variables, optimized for mass-penalized compliance `C(A) + w·Σ Aₑ·Lₑ`. Like the
+//!   geometry axis this is self-contained (not through the coupling tape), but its
+//!   gradient is **analytic** — the exact compliance sensitivity `∂C/∂Aₑ` from the
+//!   [`sim_truss`] solver. It is mission connective-tissue #5, the rung with *hundreds*
+//!   of design variables where a strut collapsing to zero area is a legitimate answer.
+//!
 //! *Policy axis* — tune the control inputs applied each step:
 //! - [`ControlScheduleTarget`] — an **open-loop** per-step platen control-force
 //!   schedule `u_0 … u_{N−1}` so the platen's height after the coupled rollout
@@ -150,8 +159,10 @@ use sim_coupling::{DiffPolicy, LinearFeedback, RolloutError, StaggeredCoupling};
 use sim_ml_chassis::OptimizerConfig;
 use std::fmt;
 
+mod lattice;
 mod mesh_body;
 mod route;
+pub use lattice::LatticeTarget;
 pub use mesh_body::{MeshBodyError, mesh_body, solid_mesh_body};
 pub use route::{ConduitTarget, RouteTarget};
 
@@ -207,9 +218,9 @@ impl From<RolloutError> for InfeasibleDesign {
 /// A differentiable design objective the [`optimize`] loop drives: it maps a
 /// parameter vector to a scalar loss and its gradient.
 ///
-/// Object-safe so the optimizer can hold `&dyn CoDesignProblem`. Any
-/// differentiable design objective — material (today), later geometry / lattice
-/// / control policy — implements this and plugs into the same loop.
+/// Object-safe so the optimizer can hold `&dyn CoDesignProblem`. Every design
+/// objective — material, geometry, structural, control policy, joint, system-ID —
+/// implements this and plugs into the same loop.
 pub trait CoDesignProblem {
     /// Number of design parameters.
     fn n_params(&self) -> usize;
