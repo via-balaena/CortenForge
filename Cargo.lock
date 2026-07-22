@@ -2314,6 +2314,7 @@ name = "cf-codesign"
 version = "1.0.0"
 dependencies = [
  "cf-design",
+ "cf-fsu-geometry",
  "cf-routing",
  "matfile",
  "mesh-sdf",
