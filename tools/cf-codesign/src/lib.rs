@@ -321,9 +321,27 @@ pub struct OptConfig {
     ///   pinned at `≥ 1e5` by `conduit_gradient_norm_is_route_dominated`.
     ///
     /// The gates in this crate assert *physical outcomes* rather than the stop flag, so
-    /// nothing currently depends on this being a true optimality test. Replacing it
-    /// with a metric-aware criterion should be driven by a caller that must trust the
-    /// stop *without* checking a physical outcome.
+    /// nothing currently depends on this being a true optimality test. A metric-aware
+    /// replacement was reserved for a caller that must trust the stop *without*
+    /// checking a physical outcome.
+    ///
+    /// # That caller arrived, and the criterion was scoped, not replaced
+    /// [`LatticeTarget`] is that caller — per-strut areas where a strut collapsing to
+    /// zero is a normal answer, un-hand-checkable. It was measured
+    /// (`tests/lattice_inverse_design.rs`), with a nuanced result. For statically
+    /// **determinate** structures the plain log-norm is a *sound* certificate (a thin
+    /// load-bearing strut's `∂C/∂A ~ −1/A²` gives it a large log-gradient, so a small
+    /// log-norm forces every variable to be interior-stationary or collapsed-outward —
+    /// the KKT conditions). For **indeterminate** structures it is *not universal*: a
+    /// redundant member placed at tiny area can want to grow yet show a negligible
+    /// log-gradient (the argument's `−1/A²` barrier does not apply — the limiter is
+    /// log-weighting × indeterminacy, *not* non-convexity). But that violating point
+    /// requires an adversarial thin initialisation; from a uniform start descent grows
+    /// a useful member rather than stranding it, so realistic runs land on ε-KKT
+    /// designs — measured up to a 53-strut grid. So no metric-aware replacement was
+    /// warranted: the reparametrization caveats above are real but benign in practice.
+    /// (A genuinely adversarial indeterminate problem, or a non-convex / reward-bearing
+    /// objective, could still need one — the escape hatch, not the common case.)
     pub grad_tol: f64,
     /// Stop when the loss comes within this of
     /// [`CoDesignProblem::loss_lower_bound`] — i.e. when `loss − bound < loss_tol`,
@@ -411,10 +429,11 @@ pub struct IterRecord {
 /// A bare "converged" flag conflates *found an optimum* with *the gradient got
 /// small*, which are not the same claim — see [`OptResult::final_grad_inf`] for the
 /// case where they come apart.
-/// `#[non_exhaustive]` because this set is expected to grow: the
-/// [`grad_tol`](OptConfig::grad_tol) docs already anticipate a metric-aware criterion
-/// alongside the plain gradient norm, and adding a variant must not break every
-/// downstream `match`.
+/// `#[non_exhaustive]` because this set may still grow: the
+/// [`grad_tol`](OptConfig::grad_tol) docs note the escape-hatch case (an adversarial
+/// indeterminate or non-convex/reward-bearing objective) that could yet warrant a
+/// metric-aware criterion alongside the plain gradient norm, and adding a variant must
+/// not break every downstream `match`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum StopReason {
