@@ -47,3 +47,7 @@ nalgebra = { workspace = true }
 # the `emps_sim_to_real` example — a pure-Rust reader so the sim-to-real example
 # stays self-contained (fetch-not-vendor). Example-only; not in the library graph.
 matfile = "0.5"
+# Loads + weld-repairs a real vertebra STL (via `$CF_L4_STL`) for the env-gated
+# anatomy conduit gate — the proven FSU recipe, reused rather than duplicated.
+# Test-only: the library's `mesh_body` takes any `IndexedMesh`, source-agnostic.
+cf-fsu-geometry = { workspace = true }
