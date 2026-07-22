@@ -66,9 +66,16 @@
 //! stop flag, exactly as the geometry gates assert physical outcomes.
 //!
 //! A design so under-strutted that its stiffness matrix is a **mechanism** is
-//! reported as [`InfeasibleDesign`] (via [`try_evaluate`](CoDesignProblem::try_evaluate)),
-//! the feasibility boundary the optimizer must respect — though the compliance term
-//! (which blows up as a load-bearing strut thins) normally steers well clear of it.
+//! reported as [`InfeasibleDesign`] by [`try_evaluate`](CoDesignProblem::try_evaluate),
+//! the feasibility boundary the optimizer must respect. A caller that expects to
+//! reach it should drive the run with [`OptConfig::reject_infeasible`], which routes
+//! through `try_evaluate` and backtracks; the plain path (what
+//! [`recommended_config`](LatticeTarget::recommended_config) selects) instead
+//! *panics* on an infeasible point. That is safe for the scenes shipped here —
+//! the compliance term blows up as a load-bearing strut thins, so descent steers
+//! well clear of a mechanism, and the shipped horizons keep even a collapsing
+//! strut's area far above floating-point underflow — but a much longer run or a
+//! genuinely singular ground structure should opt into the feasibility-aware mode.
 
 use crate::{CoDesignProblem, InfeasibleDesign, OptConfig};
 use sim_truss::{Truss, TrussError};
@@ -245,6 +252,10 @@ impl<const D: usize> CoDesignProblem for LatticeTarget<D> {
     /// One truss solve yields both the compliance `C` and the exact sensitivity
     /// `∂C/∂Aₑ`; the loss is `C + w·Σ Aₑ·Lₑ` and each gradient component carries the
     /// `dAₑ/d(ln Aₑ) = Aₑ` log-chain factor: `∂J/∂pₑ = Aₑ·(∂C/∂Aₑ + w·Lₑ)`.
+    ///
+    /// # Errors
+    /// Returns [`InfeasibleDesign`] if the truss is a mechanism at these areas (or an
+    /// area has overflowed out of log-space).
     ///
     /// # Panics
     /// Panics if `p.len() != n_struts`.
