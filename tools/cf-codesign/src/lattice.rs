@@ -66,9 +66,9 @@
 //! `∂C/∂Aₑ ~ −Nₑ²/Aₑ²` *blows up* as `Aₑ → 0` — a thin live strut has a *large*
 //! log-gradient, not a hidden one. Hence a small log-norm implies each strut is
 //! interior-stationary (`∂J/∂Aₑ ≈ 0`) or collapsed to the `Aₑ ≥ 0` boundary with an
-//! outward gradient (`Aₑ` small, `∂J/∂Aₑ > 0`) — the KKT conditions. (`J(A)` is
-//! convex in `A`, so a KKT point is the global optimum; note `J` is convex in `A`,
-//! not in `p = ln A`, and the KKT reasoning lives in `A`-space.)
+//! outward gradient (`Aₑ` small, `∂J/∂Aₑ > 0`) — the KKT conditions. (`J` is convex
+//! in `A`, so a KKT point is the global optimum; the constraint is `A ≥ 0` and the
+//! KKT reasoning lives in that `A`-space, not the log-parametrized `p`-space.)
 //!
 //! **For *indeterminate* ground structures the log-norm is not a universal
 //! certificate.** A redundant member's force vanishes with its own area, so `∂C/∂Aₑ`
@@ -215,7 +215,9 @@ impl<const D: usize> LatticeTarget<D> {
     /// optimality*. A `GradTol` stop can therefore fire while redundant struts are
     /// still shrinking — read the recovered design, not the flag. That is a benign
     /// property, not a defect: a metric-aware criterion was investigated and found
-    /// unnecessary for this convex objective (see the module `Collapse` section).
+    /// unnecessary in practice — the log-norm is a sound certificate for determinate
+    /// structures and reliable from a uniform start on indeterminate ones (see the
+    /// module `Collapse` section for the scope and its limit).
     #[must_use]
     pub fn recommended_config(&self) -> OptConfig {
         OptConfig {

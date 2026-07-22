@@ -18,12 +18,13 @@
 //! tell a converged strut from a still-collapsing one
 //! (`collapse_is_not_certifiable_by_gradient_norm`), which raised whether a
 //! metric-aware stop was needed. For **determinate** structures the plain log-norm is
-//! already a valid KKT certificate (`converged_lattice_satisfies_kkt`,
-//! `interior_optimum_fires_gradtol`) and is scale-stable
+//! a valid convergence certificate: it fires a `GradTol` stop at a first-order-optimal
+//! point (`interior_optimum_fires_gradtol`), the converged design satisfies KKT
+//! (`converged_lattice_satisfies_kkt`), and it is scale-stable
 //! (`log_norm_stationarity_is_scale_invariant_under_material_scaling`). For
 //! **indeterminate** structures it is *not universal*
 //! (`log_norm_hides_a_kkt_violation_on_indeterminate_structures`) — but the violation
-//! needs an adversarial thin start, and uniform-start descent never reaches it
+//! needs an adversarial thin start, and uniform-start descent does not reach it
 //! (`indeterminate_uniform_start_strands_no_grower`), so no metric was warranted.
 
 use cf_codesign::{CoDesignProblem, LatticeTarget, OptConfig, StopReason, optimize};
@@ -207,7 +208,7 @@ fn zero_force_strut_collapses_toward_zero() {
 
 #[test]
 fn collapse_is_not_certifiable_by_gradient_norm() {
-    // The rung-C seed: pin that the log-space gradient CANNOT tell a converged
+    // The stopping question in miniature: pin that the log-space gradient CANNOT tell a converged
     // strut from a still-collapsing one. Run a FIXED-length descent (grad_tol
     // disabled) so the redundant strut is sampled while it is still shrinking.
     let target = two_bar_with_zero_force_strut();
@@ -241,8 +242,8 @@ fn collapse_is_not_certifiable_by_gradient_norm() {
     // `GradTol` stop while the strut is still shrinking — the log-norm cannot
     // distinguish "converged" from "still collapsing."
     //
-    // The metric-aware stopping criterion this seeded (rung C) was *investigated and
-    // found unnecessary*: here the distinction is immaterial (this zero-force strut is
+    // The metric-aware stopping criterion this raised was *investigated and found
+    // unnecessary*: here the distinction is immaterial (this zero-force strut is
     // collapsing outward, `∂J/∂A > 0`, and a strut at 1e-6 vs 1e-20 is the same
     // structure — the KKT-valid case proved by `converged_lattice_satisfies_kkt`). The
     // log-norm is a sound certificate for determinate structures and reliable on
@@ -258,7 +259,7 @@ fn collapse_is_not_certifiable_by_gradient_norm() {
 
 #[test]
 fn interior_optimum_fires_gradtol() {
-    // The clean half of rung C's conclusion: for a design whose optimum is
+    // The clean half of the conclusion: for a design whose optimum is
     // interior (every strut load-bearing), the log-norm stop FIRES a `GradTol` stop
     // at a genuine first-order-optimal point. The determinate two-bar has no
     // collapsing strut, so its log-norm falls all the way to `grad_tol`.
@@ -538,22 +539,30 @@ fn indeterminate_uniform_start_strands_no_grower() {
     for a0 in [0.1, 0.5, 1.0, 2.0] {
         check(&vertical_redundant(), a0);
     }
-    // The useful vertical member is kept, not collapsed, from a uniform start.
+    check(&cantilever_grid(4, 3, 2.3, 0.1), 0.5); // and at the many-strut scale
+
+    // Negative-controlled "the optimizer really works" scene: from a SMALL uniform
+    // start, descent GROWS the efficient vertical member (0.1 → ~1) and COLLAPSES
+    // the redundant 45° pair — a no-op that returned x0 would fail both. So the
+    // above "no stranded grower" invariant is over a genuine optimization, and the
+    // useful member is earned from below rather than merely retained from above.
     let vr = vertical_redundant();
-    let res = optimize(
-        &vr,
-        &vr.x0(1.0),
-        &OptConfig {
-            lr: 0.1,
-            max_iters: 8000,
-            grad_tol: 1e-9,
-            ..OptConfig::default()
-        },
+    let cfg = OptConfig {
+        lr: 0.1,
+        max_iters: 8000,
+        grad_tol: 1e-9,
+        ..OptConfig::default()
+    };
+    let areas = vr.to_physical(&optimize(&vr, &vr.x0(0.1), &cfg).params);
+    assert!(
+        areas[2] > 0.5,
+        "vertical member should grow from 0.1, got {}",
+        areas[2]
     );
     assert!(
-        vr.to_physical(&res.params)[2] > 0.1,
-        "the efficient vertical member should earn area from a uniform start"
+        areas[0] < 1e-2 && areas[1] < 1e-2,
+        "the redundant 45° pair should collapse, got {} {}",
+        areas[0],
+        areas[1]
     );
-    // And at the many-strut scale.
-    check(&cantilever_grid(4, 3, 2.3, 0.1), 0.5);
 }
