@@ -150,8 +150,10 @@ use sim_coupling::{DiffPolicy, LinearFeedback, RolloutError, StaggeredCoupling};
 use sim_ml_chassis::OptimizerConfig;
 use std::fmt;
 
+mod lattice;
 mod mesh_body;
 mod route;
+pub use lattice::LatticeTarget;
 pub use mesh_body::{MeshBodyError, mesh_body, solid_mesh_body};
 pub use route::{ConduitTarget, RouteTarget};
 

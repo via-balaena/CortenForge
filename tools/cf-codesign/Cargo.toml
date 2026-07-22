@@ -23,6 +23,10 @@ sim-mjcf = { path = "../../sim/L0/mjcf" }
 sim-core = { path = "../../sim/L0/core" }
 # The gradient optimizer (Adam) — reused, not reinvented (sim-opt is gradient-free).
 sim-ml-chassis = { workspace = true }
+# The linear truss (bar-element) solver — the structural forward model behind the
+# lattice design axis: per-strut areas are the design variables in `LatticeTarget`,
+# and its analytic compliance sensitivity `∂C/∂Aₑ` is the gradient consumed here.
+sim-truss = { workspace = true }
 # The differentiable routing primitive (centerline `Path`) — the geometry design
 # axis: a route's control points are the design variables in `RouteTarget`.
 cf-routing = { workspace = true }

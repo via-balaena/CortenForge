@@ -2324,6 +2324,7 @@ dependencies = [
  "sim-coupling",
  "sim-mjcf",
  "sim-ml-chassis",
+ "sim-truss",
  "thiserror 2.0.18",
 ]
 
