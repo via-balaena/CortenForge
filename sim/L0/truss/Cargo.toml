@@ -1,11 +1,4 @@
-# sim-truss — linear-elastic pin-jointed truss (bar-element) solver.
-#
-# Layer 0 crate: zero Bevy, zero ML-framework dependencies. Pure structural
-# mechanics — assemble K(A), solve K·u = f, report compliance and its exact
-# analytic sensitivity to per-strut cross-section area. The first *linear* FE
-# primitive in the workspace (sim-core is rigid; sim-soft is nonlinear
-# Neo-Hookean), built to be the differentiable forward model behind
-# lattice-as-design-var co-design.
+# sim-truss — Layer-0 linear-elastic truss solver. Full story in src/lib.rs.
 
 [package]
 name = "sim-truss"

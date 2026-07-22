@@ -32,6 +32,14 @@
 //! code solves 2-D ([`Truss2`]) and 3-D ([`Truss3`]) trusses; the mission's 3-D
 //! octet lattice and a legible 2-D textbook frame are literally the same solver.
 //!
+//! ## Units
+//!
+//! The solver is **unit-agnostic**: it only requires that all inputs use one
+//! consistent system. In SI, with `E` in pascals, areas in m², node coordinates
+//! (hence lengths) in metres, and forces in newtons, displacements come out in
+//! metres and compliance `C = fᵀu` in joules. Any other consistent system works
+//! identically.
+//!
 //! ## Sign conventions and the sensitivity
 //!
 //! Displacements follow the applied load; compliance `C = fᵀu ≥ 0` measures how
@@ -51,9 +59,11 @@
 //!
 //! Driving areas toward zero eventually turns the structure into a **mechanism**
 //! — a free node that can displace with no strain energy — and `K` stops being
-//! positive-definite. The solve then returns [`TrussError::SingularStiffness`]
-//! rather than a meaningless displacement, marking the feasibility boundary a
-//! co-design optimizer must respect.
+//! positive-definite. The Cholesky solve then fails and returns
+//! [`TrussError::SingularStiffness`] rather than a meaningless displacement,
+//! marking the feasibility boundary a co-design optimizer must respect. (The
+//! factorization tests *numerical* positive-definiteness, so it is the mechanism
+//! signal in all but the ill-conditioned boundary case; see that error.)
 //!
 //! ## Example
 //!
@@ -90,6 +100,11 @@
 //! assert!(dc_da.iter().all(|&g| g < 0.0));
 //! ```
 
+// A public numerical primitive: the library body must never silently `unwrap` /
+// `expect` (a panic in a solver is a denial of service to its consumer). Tests
+// opt back out — see the `#[allow]` on the `tests` module.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
+
 mod error;
 
 pub use error::TrussError;
@@ -123,6 +138,10 @@ pub struct Support<const D: usize> {
 
 /// An applied nodal load: a force vector added to the named node's degrees of
 /// freedom.
+///
+/// A component acting on an axis that is pinned by a [`Support`] is absorbed by
+/// the support reaction — it does no work (that displacement is zero) and
+/// contributes nothing to the compliance.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Load<const D: usize> {
     /// Index of the loaded node.
@@ -175,8 +194,10 @@ impl<const D: usize> Truss<D> {
     ///
     /// Returns a [`TrussError`] if any strut/support/load names an out-of-range
     /// node ([`NodeIndexOutOfBounds`](TrussError::NodeIndexOutOfBounds)), a strut
-    /// is a self-loop ([`SelfLoopStrut`](TrussError::SelfLoopStrut)) or has
-    /// coinciding endpoints ([`DegenerateStrut`](TrussError::DegenerateStrut)).
+    /// is a self-loop ([`SelfLoopStrut`](TrussError::SelfLoopStrut)), has
+    /// coinciding endpoints ([`DegenerateStrut`](TrussError::DegenerateStrut)),
+    /// or has a non-finite, non-positive Young's modulus
+    /// ([`InvalidModulus`](TrussError::InvalidModulus)).
     pub fn new(
         nodes: Vec<SVector<f64, D>>,
         struts: Vec<Strut>,
@@ -199,6 +220,12 @@ impl<const D: usize> Truss<D> {
                 return Err(TrussError::SelfLoopStrut {
                     strut: e,
                     node: strut.i,
+                });
+            }
+            if strut.youngs_modulus <= 0.0 || !strut.youngs_modulus.is_finite() {
+                return Err(TrussError::InvalidModulus {
+                    strut: e,
+                    youngs_modulus: strut.youngs_modulus,
                 });
             }
             let delta = nodes[strut.j] - nodes[strut.i];
@@ -270,7 +297,7 @@ impl<const D: usize> Truss<D> {
     ///
     /// Returns [`AreaCountMismatch`](TrussError::AreaCountMismatch) if `areas`
     /// does not have one entry per strut, or
-    /// [`NonPositiveArea`](TrussError::NonPositiveArea) if any area is `≤ 0`.
+    /// [`InvalidArea`](TrussError::InvalidArea) if any area is not finite `> 0`.
     pub fn volume(&self, areas: &[f64]) -> Result<f64, TrussError> {
         self.check_areas(areas)?;
         Ok(self
@@ -286,7 +313,7 @@ impl<const D: usize> Truss<D> {
     /// # Errors
     ///
     /// Returns [`AreaCountMismatch`](TrussError::AreaCountMismatch) /
-    /// [`NonPositiveArea`](TrussError::NonPositiveArea) for an invalid area
+    /// [`InvalidArea`](TrussError::InvalidArea) for an invalid area
     /// vector, or [`SingularStiffness`](TrussError::SingularStiffness) if the
     /// design is a mechanism (`K` is not positive-definite over the free DOFs).
     pub fn solve(&self, areas: &[f64]) -> Result<TrussState<D>, TrussError> {
@@ -305,8 +332,9 @@ impl<const D: usize> Truss<D> {
         let f_reduced =
             DVector::from_iterator(n_free, self.free_dofs.iter().map(|&d| self.load[d]));
 
-        // Cholesky exists iff K is symmetric positive-definite; its absence is
-        // exactly the mechanism signal.
+        // Cholesky succeeds iff K is (numerically) symmetric positive-definite;
+        // its failure signals a mechanism — or, at the ill-conditioned boundary,
+        // a PD-but-near-singular K (see `TrussError::SingularStiffness`).
         let chol = nalgebra::Cholesky::new(k_reduced).ok_or(TrussError::SingularStiffness)?;
         let u_reduced = chol.solve(&f_reduced);
 
@@ -365,12 +393,12 @@ impl<const D: usize> Truss<D> {
             });
         }
         for (strut, &area) in areas.iter().enumerate() {
-            // Reject zero, negative, and NaN areas. Written as `≤ 0 || NaN`
-            // rather than `!(area > 0.0)` so the intent is explicit and NaN
-            // (which compares false to everything) is caught rather than slipping
-            // through a bare `area <= 0.0`.
-            if area <= 0.0 || area.is_nan() {
-                return Err(TrussError::NonPositiveArea { strut, area });
+            // Areas must be finite and strictly positive. `≤ 0` catches zero and
+            // negatives; `!is_finite()` catches `NaN` (which compares false to
+            // everything, so a bare `≤ 0` would miss it) and `±∞` (which would
+            // otherwise pass and poison the stiffness matrix).
+            if area <= 0.0 || !area.is_finite() {
+                return Err(TrussError::InvalidArea { strut, area });
             }
         }
         Ok(())
@@ -495,15 +523,98 @@ mod tests {
     }
 
     #[test]
-    fn asymmetric_trestle_matches_closed_form() {
-        // A non-square, non-unit-modulus case exercises the direction transform
-        // and area scaling away from the symmetric special case.
+    fn rescaled_trestle_matches_closed_form() {
+        // A different aspect ratio, modulus, area, and load. Still a left-right
+        // symmetric configuration (base at ±b), so the same closed form applies —
+        // this checks the parameter scaling, not an asymmetric deflection (see
+        // `asymmetric_truss_sensitivity_matches_fd` for that).
         let (truss, a, expected_c, _) = trestle(2.0, 0.7, 7e10, 3e-4, 450.0);
         assert_relative_eq!(
             truss.compliance(&[a, a]).unwrap(),
             expected_c,
             max_relative = 1e-12
         );
+    }
+
+    /// A genuinely asymmetric truss: three fixed anchors at irregular positions
+    /// carry one free node loaded off-axis, so it deflects in *both* x and y and
+    /// the three struts have distinct directions, lengths, and moduli. No closed
+    /// form — validated by the physics invariants plus central-FD sensitivity.
+    fn asymmetric_truss() -> Truss2 {
+        Truss2::new(
+            vec![
+                vector![0.0, 0.0],
+                vector![2.0, 0.3],
+                vector![0.4, 1.6],
+                vector![1.1, 0.7],
+            ],
+            vec![
+                Strut {
+                    i: 0,
+                    j: 3,
+                    youngs_modulus: 9.0e10,
+                },
+                Strut {
+                    i: 1,
+                    j: 3,
+                    youngs_modulus: 7.0e10,
+                },
+                Strut {
+                    i: 2,
+                    j: 3,
+                    youngs_modulus: 12.0e10,
+                },
+            ],
+            vec![
+                Support {
+                    node: 0,
+                    fixed: [true, true],
+                },
+                Support {
+                    node: 1,
+                    fixed: [true, true],
+                },
+                Support {
+                    node: 2,
+                    fixed: [true, true],
+                },
+            ],
+            vec![Load {
+                node: 3,
+                force: vector![300.0, -500.0],
+            }],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn asymmetric_truss_deflects_in_two_dimensions() {
+        let truss = asymmetric_truss();
+        let state = truss.solve(&[1.3e-4, 0.9e-4, 1.7e-4]).unwrap();
+        // Unlike the symmetric trestle (u_x ≡ 0), the free node moves in both
+        // axes — the direction transform is genuinely exercised.
+        assert!(state.displacements[3][0].abs() > 1e-9);
+        assert!(state.displacements[3][1].abs() > 1e-9);
+        assert!(state.compliance > 0.0);
+    }
+
+    #[test]
+    fn asymmetric_sensitivity_matches_central_fd() {
+        let truss = asymmetric_truss();
+        let areas = [1.3e-4, 0.9e-4, 1.7e-4];
+        let (_, grad) = truss.compliance_sensitivity(&areas).unwrap();
+
+        let eps = 1e-9;
+        for k in 0..truss.n_struts() {
+            let mut plus = areas;
+            let mut minus = areas;
+            plus[k] += eps;
+            minus[k] -= eps;
+            let fd = (truss.compliance(&plus).unwrap() - truss.compliance(&minus).unwrap())
+                / (2.0 * eps);
+            assert_relative_eq!(grad[k], fd, max_relative = 1e-6);
+            assert!(grad[k] < 0.0, "strut {k} sensitivity should be negative");
+        }
     }
 
     #[test]
@@ -699,6 +810,24 @@ mod tests {
             Err(TrussError::DegenerateStrut { strut: 0 })
         ));
 
+        // Non-finite / non-positive Young's modulus, rejected at construction
+        // (mirrors the area guard rather than surfacing later as a mechanism).
+        for bad_e in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(matches!(
+                Truss2::new(
+                    ok_nodes.clone(),
+                    vec![Strut {
+                        i: 0,
+                        j: 1,
+                        youngs_modulus: bad_e
+                    }],
+                    vec![],
+                    vec![],
+                ),
+                Err(TrussError::InvalidModulus { strut: 0, .. })
+            ));
+        }
+
         let truss = Truss2::new(ok_nodes, vec![ok_strut], vec![], vec![]).unwrap();
         assert!(matches!(
             truss.compliance(&[1.0, 2.0]),
@@ -707,10 +836,12 @@ mod tests {
                 got: 2
             })
         ));
-        assert!(matches!(
-            truss.compliance(&[0.0]),
-            Err(TrussError::NonPositiveArea { strut: 0, area })
-                if area == 0.0
-        ));
+        // Zero, negative, NaN, and +∞ areas are all rejected as InvalidArea.
+        for bad_a in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(matches!(
+                truss.compliance(&[bad_a]),
+                Err(TrussError::InvalidArea { strut: 0, .. })
+            ));
+        }
     }
 }
