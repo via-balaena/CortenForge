@@ -21,11 +21,12 @@
 //!
 //! **Coordinates.** The mesh is used in its native millimetre frame (positioned in the
 //! whole-atlas frame, `body_center` near `z ≈ 970 mm`). No rescale to SI is done — not
-//! because the objective is scale-free (it is not: `fd_eps` and `grad_tol` are absolute
-//! — see [`OptConfig::grad_tol`](cf_codesign::OptConfig)), but because *every* constant
-//! here (`MARGIN`, `CELL`, `PAD`, `OVERHANG`, and the optimiser's `fd_eps`/`grad_tol`/
-//! `lr`) is consistently in millimetres. The SI-metre requirement is specific to the
-//! soft FEM solver, which this pure-geometry gate does not use.
+//! because the objective is scale-free (it is not: the target's finite-difference step
+//! and the optimiser's `grad_tol` are absolute — see
+//! [`OptConfig::grad_tol`](cf_codesign::OptConfig)), but because *every* constant here —
+//! `MARGIN`, `CELL`, `PAD`, `OVERHANG`, the target's FD step, and the optimiser's
+//! `grad_tol`/`lr` — is consistently in millimetres. The SI-metre requirement is
+//! specific to the soft FEM solver, which this pure-geometry gate does not use.
 //!
 //! **On the field.** The grid-cached signed distance is FD-stable on this geometry
 //! (test `anatomy_conduit_field_is_fd_stable`) but not perfectly *metric* near thin
