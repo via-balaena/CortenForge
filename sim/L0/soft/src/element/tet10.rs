@@ -44,8 +44,10 @@
 //! to a single centroid evaluation as they do for Tet4. [`Tet10`] uses the
 //! 4-point symmetric Stroud rule on the reference tetrahedron
 //! ([`gauss_points`](Element::gauss_points)): degree-of-precision 2 — exact
-//! for the linear-elastic stiffness integrand — with equal reference weights
-//! `V_ref / 4 = 1/24` at the barycentric points `(a, b, b, b)` and its
+//! for the linear-elastic stiffness integrand of a *straight-edged* element,
+//! where the affine map's constant Jacobian keeps that integrand quadratic (a
+//! curved/isoparametric Tet10 would not be exact) — with equal reference
+//! weights `V_ref / 4 = 1/24` at the barycentric points `(a, b, b, b)` and its
 //! permutations, `a = (5 + 3√5)/20`, `b = (5 − √5)/20`. The four weights sum
 //! to the reference-tet volume `1/6`, exactly as Tet4's single centroid weight
 //! does; per-element `|detJ|` scaling is the assembler's job.
@@ -273,8 +275,10 @@ mod tests {
     // self-contained element assembly, independent of the solver.
     //
     // ⚠ Permutation-invariant (`K → P K Pᵀ` is a similarity transform), so it
-    // is BLIND to a midside-ordering bug; that is step 5's asymmetric patch
-    // test. Its job here is spurious-mode detection and the edge-table sanity.
+    // is BLIND to a midside-ordering bug — that is caught by the asymmetric /
+    // quadratic-field patch test on an irregular element (Tet10 ladder step 5,
+    // docs/SIM_SOFT_TET10_PLAN.md), not here. Its job is spurious-mode
+    // detection and edge-table sanity.
 
     /// Isotropic linear-elastic 6×6 constitutive matrix in Voigt order
     /// `[xx, yy, zz, xy, yz, zx]` (engineering shear).
