@@ -1,12 +1,16 @@
 //! `Mesh` trait — tet-mesh storage abstraction.
 //!
-//! Ten items: counts, vertex lookup, positions, adjacency, quality,
+//! Ten core items: counts, vertex lookup, positions, adjacency, quality,
 //! per-tet materials, per-tet interface flags, boundary triangles,
-//! and a structural-equality predicate used by change-detection.
-//! Three impls: [`SingleTetMesh`] (1 tet, walking-skeleton spec §2),
-//! [`HandBuiltTetMesh`] (multi-tet hand-authored scenes — Phase 2/4/5
-//! gate fixtures), and `SdfMeshedTetMesh` (Phase 3 BCC + Labelle-
-//! Shewchuk Isosurface Stuffing pipeline; lives in `sdf_bridge`).
+//! and a structural-equality predicate used by change-detection — plus
+//! one defaulted additive channel, [`Mesh::tet_midside_nodes`], that a
+//! quadratic ([`Tet10`](crate::element::Tet10)) mesh uses to surface its
+//! edge-midpoint nodes (Tet10 ladder rung 3a; linear meshes keep the
+//! `None` default). Four impls: [`SingleTetMesh`] (1 tet, walking-
+//! skeleton spec §2), [`HandBuiltTetMesh`] (multi-tet hand-authored
+//! scenes — Phase 2/4/5 gate fixtures), `SdfMeshedTetMesh` (Phase 3
+//! BCC-plus-Labelle-Shewchuk Isosurface Stuffing pipeline; lives in
+//! `sdf_bridge`), and [`Tet10Mesh`] (the enriched quadratic mesh).
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -19,10 +23,12 @@ pub mod enrich;
 pub mod hand_built;
 pub mod quality;
 pub mod single_tet;
+pub mod tet10_mesh;
 
 pub use enrich::{Tet10Topology, enrich_tet4_to_tet10};
 pub use hand_built::HandBuiltTetMesh;
 pub use single_tet::SingleTetMesh;
+pub use tet10_mesh::Tet10Mesh;
 
 /// Tetrahedron index into a [`Mesh`]. `u32` caps at 4 B tets; skeleton
 /// needs only `0`.
@@ -74,8 +80,31 @@ pub trait Mesh<M: Material = NeoHookean>: Send + Sync {
     /// Number of vertices in the mesh.
     fn n_vertices(&self) -> usize;
 
-    /// Four-vertex indices for the given tetrahedron.
+    /// Four corner-vertex indices for the given tetrahedron.
     fn tet_vertices(&self, tet: TetId) -> [VertexId; 4];
+
+    /// Six edge-midpoint (midside) node indices for the given tetrahedron
+    /// on a quadratic ([`Tet10`](crate::element::Tet10)) mesh, or `None`
+    /// on a linear (Tet4) mesh — the default.
+    ///
+    /// Additive channel (Tet10 ladder rung 3a): the midside nodes it
+    /// returns live in [`Mesh::positions`] / [`Mesh::n_vertices`]
+    /// *alongside* the four corners from [`Mesh::tet_vertices`], and the
+    /// two together form the ten-node connectivity. Slot `i` of the
+    /// returned array is the midpoint of the corner edge at index `i` of
+    /// [`TET10_EDGE_NODES`](crate::element::TET10_EDGE_NODES) — i.e. local
+    /// Tet10 node `4 + i` — so a consumer reconstructs the ordered
+    /// `[VertexId; 10]` as `tet_vertices` followed by `tet_midside_nodes`.
+    ///
+    /// The default `None` keeps every linear mesh a pure Tet4 storage
+    /// surface: because the midside nodes are absent from
+    /// [`Mesh::tet_vertices`], a Tet4 solver never references them and
+    /// the construction-time orphan auto-pin Dirichlet-clamps them — the
+    /// bit-identical-Tet4 property rung 3a rests on. Rung 3b is the first
+    /// consumer that reads this channel to free the midside DOFs.
+    fn tet_midside_nodes(&self, _tet: TetId) -> Option<[VertexId; 6]> {
+        None
+    }
 
     /// Rest-configuration vertex positions, indexed by `VertexId`.
     fn positions(&self) -> &[Vec3];
