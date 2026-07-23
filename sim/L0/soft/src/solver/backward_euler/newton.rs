@@ -441,6 +441,21 @@ where
             v_prev.as_slice().len(),
         );
         assert!(dt > 0.0, "dt must be positive, got {dt}");
+        // Belt-and-suspenders (Tet10 ladder rung 3a): F-bar is Tet4-only.
+        // Its locking cure rests on the single-Gauss-point per-element
+        // volumetric constraint (`fbar.rs`), which multi-Gauss-point Tet10
+        // has no analog for. The differentiable path is already guarded in
+        // `factor_at_position`; this guards the forward primal solve
+        // (`solve_impl` and `try_step` both route here) so a forward-only
+        // Tet10 solve with `fbar=true` can't slip through ungated. Currently
+        // dormant — `new()` still pins `N == 4` — but it outlives that pin
+        // (rung 3b lifts the `N == 4` assert).
+        assert!(
+            !(self.config.fbar && N != 4),
+            "F-bar is implemented for Tet4 (N=4) only; got N={N} with config.fbar=true. \
+             F-bar's single-Gauss-point volumetric constraint has no multi-Gauss-point \
+             Tet10 analog (see fbar.rs)."
+        );
 
         let mut x_curr: Vec<f64> = x_prev.as_slice().to_vec();
         let x_prev_vec: Vec<f64> = x_prev.as_slice().to_vec();
