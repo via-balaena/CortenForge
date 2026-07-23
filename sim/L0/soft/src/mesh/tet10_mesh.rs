@@ -86,6 +86,16 @@ impl Tet10Mesh {
     #[allow(clippy::cast_possible_truncation)]
     #[must_use]
     pub fn from_tet4(mesh: &dyn Mesh) -> Self {
+        // The source must be linear: an already-enriched mesh surfaces
+        // midside nodes, and re-enriching it would treat those as corners.
+        // Cheap sentinel — midside-ness is uniform, so tet 0 stands for all.
+        debug_assert!(
+            mesh.n_tets() == 0 || mesh.tet_midside_nodes(0).is_none(),
+            "from_tet4 expects a linear (Tet4) mesh, but the source already \
+             surfaces midside nodes (an enriched mesh) — re-enrichment would \
+             treat its midsides as corners",
+        );
+
         // Corner-derived caches are enrichment-invariant — copy, don't
         // re-derive (see module docs). Cloning preserves them bit-for-bit.
         let q = mesh.quality().clone();

@@ -14,26 +14,36 @@
 //! unchanged. So the corner block of `x_final` must match the un-enriched
 //! Tet4 solve bit-for-bit.
 //!
-//! The reference Tet4 solve is additionally cross-checked against the
-//! frozen `SHARED_FACE_X_FINAL` golden bits (the same capture pinned by
-//! `invariant_iv_1_uniform_passthrough.rs` and `contact_passthrough.rs`),
-//! so the bit-identity below is anchored to the canonical baseline, not to
-//! a locally-recomputed number.
+//! Two fixtures exercise complementary halves of that claim:
+//! - `two_tet_shared_face` (5 corners + 9 midsides, 42 DOF) — leaves a
+//!   single free vertex, and its reference solve is cross-checked against
+//!   the frozen `SHARED_FACE_X_FINAL` golden (the same capture pinned by
+//!   `invariant_iv_1_uniform_passthrough.rs` / `contact_passthrough.rs`),
+//!   so the bit-identity is anchored to the canonical baseline rather than
+//!   a locally-recomputed number.
+//! - a clamped-base `uniform_block(2)` cube — leaves a whole coupled layer
+//!   of interior free vertices, so the free block is large enough that
+//!   faer's fill-reducing permutation genuinely reorders. This is the
+//!   fixture that stresses the "permutation over the free block is
+//!   unchanged when midsides append after corners" link directly.
 //!
-//! Fast dense-FEM scene (5 corners + 9 midsides, 42 DOF) — auto-discovered
-//! and run in CI by the tests-debug harness. Bit-equality on this dense
-//! path is the contract Decision P wants; see the two golden fixtures'
-//! module docs for the full toolchain-fragility / re-capture protocol.
+//! Both are fast dense-FEM scenes, auto-discovered and run in CI by the
+//! tests-debug harness. Bit-equality on this dense path is the contract
+//! Decision P wants; see the two golden fixtures' module docs for the full
+//! toolchain-fragility / re-capture protocol.
 
 #![allow(
     // Bit-equality via `to_bits()` (u64) is the entire point of this gate.
-    clippy::float_cmp
+    clippy::float_cmp,
+    // `n_vertices() as VertexId` is the Mesh-trait API tax (usize count ->
+    // u32 id): the test meshes hold ~dozens of vertices, far below u32::MAX.
+    clippy::cast_possible_truncation
 )]
 
 use sim_ml_chassis::Tensor;
 use sim_soft::{
     BoundaryConditions, CpuNewtonSolver, CpuTet4NHSolver, HandBuiltTetMesh, LoadAxis,
-    MaterialField, Mesh, NullContact, Solver, SolverConfig, Tet4, Tet10Mesh,
+    MaterialField, Mesh, NullContact, Solver, SolverConfig, Tet4, Tet10Mesh, VertexId,
 };
 
 /// Stage-1 θ magnitude — matches the golden fixtures' `run_shared_face`.
@@ -66,18 +76,6 @@ const SHARED_FACE_X_FINAL: [u64; 15] = [
     0x3fb4_7ae1_47ae_147b,
 ];
 
-/// Boundary conditions shared by both solves — identical because the corner
-/// id-space is preserved by enrichment. Pins corners {0, 1, 2, 4}, loads
-/// corner 3 in `+ẑ`; every midside id (>= 5) is tet-unreferenced under
-/// `tet_vertices` and auto-pinned at construction.
-fn shared_face_bc() -> BoundaryConditions {
-    BoundaryConditions {
-        pinned_vertices: vec![0, 1, 2, 4],
-        roller_vertices: Vec::new(),
-        loaded_vertices: vec![(3, LoadAxis::AxisZ)],
-    }
-}
-
 /// Flatten a mesh's rest positions into a `3·n_vertices` DOF vector.
 fn rest_x_prev(mesh: &dyn Mesh) -> Vec<f64> {
     let positions = mesh.positions();
@@ -90,64 +88,64 @@ fn rest_x_prev(mesh: &dyn Mesh) -> Vec<f64> {
     x
 }
 
-#[test]
-fn enriched_midside_pinned_solve_is_bit_identical_tet4() {
+/// Solve `tet4` and its [`Tet10Mesh`] enrichment under identical boundary
+/// conditions, assert the enriched solve's corner block matches the Tet4
+/// solve bit-for-bit and every pinned midside stays exactly at rest, then
+/// return the Tet4 reference `x_final` (so a caller can additionally anchor
+/// it to a frozen golden).
+///
+/// The corner id-space is preserved by enrichment, so the same `pinned` /
+/// `loaded` vertex ids apply to both meshes verbatim; every midside id
+/// (`>= n_corners`) is tet-unreferenced under `tet_vertices` and auto-pinned
+/// at construction.
+fn assert_enriched_bit_identical(
+    tet4: HandBuiltTetMesh,
+    pinned: &[VertexId],
+    loaded: &[(VertexId, LoadAxis)],
+) -> Vec<f64> {
     let cfg = SolverConfig::skeleton();
-    let field = MaterialField::uniform(MU, LAMBDA);
     let theta = Tensor::from_slice(&[THETA], &[1]);
-
-    // ── Reference: un-enriched Tet4 solve ────────────────────────────────
-    let tet4 = HandBuiltTetMesh::two_tet_shared_face(&field);
+    let bc = || BoundaryConditions {
+        pinned_vertices: pinned.to_vec(),
+        roller_vertices: Vec::new(),
+        loaded_vertices: loaded.to_vec(),
+    };
     let n_corner_dof = 3 * tet4.n_vertices();
+
+    // Enrich BEFORE `tet4` is moved into the reference solver.
+    let tet10 = Tet10Mesh::from_tet4(&tet4);
+    assert_eq!(
+        tet10.n_corners(),
+        tet4.n_vertices(),
+        "corner id-space must be preserved",
+    );
+
+    // Reference: un-enriched Tet4 solve.
     let x_prev_4 = Tensor::from_slice(&rest_x_prev(&tet4), &[n_corner_dof]);
     let v_prev_4 = Tensor::zeros(&[n_corner_dof]);
     let solver_4: CpuTet4NHSolver<HandBuiltTetMesh> =
-        CpuNewtonSolver::new(Tet4, tet4, NullContact, cfg, shared_face_bc());
+        CpuNewtonSolver::new(Tet4, tet4, NullContact, cfg, bc());
     let ref_x_final = solver_4
         .replay_step(&x_prev_4, &v_prev_4, &theta, cfg.dt)
         .x_final;
 
-    // Anchor the reference to the frozen golden baseline (provenance): a
-    // vacuous bit-identity — two identically-wrong solves — is ruled out.
-    assert_eq!(ref_x_final.len(), SHARED_FACE_X_FINAL.len());
-    for (i, (val, &exp)) in ref_x_final
-        .iter()
-        .zip(SHARED_FACE_X_FINAL.iter())
-        .enumerate()
-    {
-        assert_eq!(
-            val.to_bits(),
-            exp,
-            "reference Tet4 x_final[{i}] drifted from the frozen SHARED_FACE golden — \
-             diagnose per invariant_iv_1_uniform_passthrough.rs before touching Tet10",
-        );
-    }
-
-    // ── Tet10Mesh enrichment of the same scene, same BCs ─────────────────
-    let tet10 = Tet10Mesh::from_tet4(&HandBuiltTetMesh::two_tet_shared_face(&field));
-    let n_corners = tet10.n_corners();
-    assert_eq!(
-        n_corners,
-        n_corner_dof / 3,
-        "corner id-space must be preserved"
-    );
+    // Enriched-and-midside-pinned solve, same BCs.
     let enriched_rest = rest_x_prev(&tet10);
     let n_enriched_dof = enriched_rest.len();
     let x_prev_10 = Tensor::from_slice(&enriched_rest, &[n_enriched_dof]);
     let v_prev_10 = Tensor::zeros(&[n_enriched_dof]);
     let solver_10: CpuTet4NHSolver<Tet10Mesh> =
-        CpuNewtonSolver::new(Tet4, tet10, NullContact, cfg, shared_face_bc());
+        CpuNewtonSolver::new(Tet4, tet10, NullContact, cfg, bc());
     let enriched_x_final = solver_10
         .replay_step(&x_prev_10, &v_prev_10, &theta, cfg.dt)
         .x_final;
-
-    // The enriched solve carries the appended midsides, so its DOF vector is
-    // longer; the corner block must match the reference bit-for-bit.
     assert_eq!(
         enriched_x_final.len(),
         n_enriched_dof,
         "enriched solve returns one DOF per enriched vertex",
     );
+
+    // The corner block must match the un-enriched Tet4 solve bit-for-bit.
     for (i, (&corner_val, &ref_val)) in enriched_x_final[..n_corner_dof]
         .iter()
         .zip(ref_x_final.iter())
@@ -177,4 +175,63 @@ fn enriched_midside_pinned_solve_is_bit_identical_tet4() {
              not Dirichlet-clamped by the orphan auto-pin",
         );
     }
+
+    ref_x_final
+}
+
+#[test]
+fn enriched_midside_pinned_solve_is_bit_identical_tet4() {
+    // Single-free-vertex fixture, anchored to the frozen golden.
+    let field = MaterialField::uniform(MU, LAMBDA);
+    let tet4 = HandBuiltTetMesh::two_tet_shared_face(&field);
+    // Pins corners {0, 1, 2, 4}, loads corner 3 in +ẑ — the golden-capture BC.
+    let ref_x_final = assert_enriched_bit_identical(tet4, &[0, 1, 2, 4], &[(3, LoadAxis::AxisZ)]);
+
+    // Anchor the reference to the frozen golden baseline (provenance): a
+    // vacuous bit-identity — two identically-wrong solves — is ruled out.
+    assert_eq!(ref_x_final.len(), SHARED_FACE_X_FINAL.len());
+    for (i, (val, &exp)) in ref_x_final
+        .iter()
+        .zip(SHARED_FACE_X_FINAL.iter())
+        .enumerate()
+    {
+        assert_eq!(
+            val.to_bits(),
+            exp,
+            "reference Tet4 x_final[{i}] drifted from the frozen SHARED_FACE golden — \
+             diagnose per invariant_iv_1_uniform_passthrough.rs before touching Tet10",
+        );
+    }
+}
+
+#[test]
+fn enriched_bit_identity_holds_on_a_multi_free_vertex_block() {
+    // Clamped-base cube: pin the bottom face, load the top face in +ẑ, leaving
+    // the middle layer of vertices free. The coupled free block is large
+    // enough that faer's fill-reducing permutation genuinely reorders, which
+    // is the specific link the single-free-vertex fixture above cannot stress.
+    let edge = 0.1;
+    let field = MaterialField::uniform(MU, LAMBDA);
+    let cube = HandBuiltTetMesh::uniform_block(2, edge, &field);
+    let positions = cube.positions();
+    let n = cube.n_vertices() as VertexId;
+
+    // Bottom layer (z ≈ 0) pinned; top layer (z ≈ edge) loaded. The middle
+    // layer (z ≈ edge/2) is free and interior-coupled.
+    let pinned: Vec<VertexId> = (0..n)
+        .filter(|&v| positions[v as usize].z < 0.25 * edge)
+        .collect();
+    let loaded: Vec<(VertexId, LoadAxis)> = (0..n)
+        .filter(|&v| positions[v as usize].z > 0.75 * edge)
+        .map(|v| (v, LoadAxis::AxisZ))
+        .collect();
+    assert!(
+        !pinned.is_empty() && !loaded.is_empty(),
+        "fixture must have both clamped and loaded vertices",
+    );
+
+    // No golden anchor needed: the first test proves the Tet4 solve path is
+    // the canonical baseline; this one asserts the enriched solve reproduces
+    // whatever the Tet4 solve produces on a permutation-stressing block.
+    let _ = assert_enriched_bit_identical(cube, &pinned, &loaded);
 }
