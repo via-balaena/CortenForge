@@ -64,8 +64,8 @@ pub use material::{
     free_transverse_uniaxial,
 };
 pub use mesh::{
-    HandBuiltTetMesh, Mesh, MeshAdjacency, QualityMetrics, SingleTetMesh, TetId, VertexId,
-    boundary_vertex_areas, referenced_vertices,
+    HandBuiltTetMesh, Mesh, MeshAdjacency, QualityMetrics, SingleTetMesh, Tet10Topology, TetId,
+    VertexId, boundary_vertex_areas, enrich_tet4_to_tet10, referenced_vertices,
 };
 pub use observable::{BasicObservable, Observable, PressureField, StressField, TemperatureField};
 pub use readout::{

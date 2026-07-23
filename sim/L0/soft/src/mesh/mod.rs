@@ -15,10 +15,12 @@ use nalgebra::Point3;
 use crate::Vec3;
 use crate::material::{BuildableFromField, Material, MaterialField, NeoHookean};
 
+pub mod enrich;
 pub mod hand_built;
 pub mod quality;
 pub mod single_tet;
 
+pub use enrich::{Tet10Topology, enrich_tet4_to_tet10};
 pub use hand_built::HandBuiltTetMesh;
 pub use single_tet::SingleTetMesh;
 
