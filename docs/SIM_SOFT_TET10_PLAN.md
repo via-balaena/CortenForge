@@ -83,8 +83,7 @@ at face Gauss points — NOT the "nodal lumping" a prior draft proposed.**
 Lumping redistributes per-vertex *forces*; the consistent P2 load `∫p·N_i dA`
 requires integrating a *traction*, and the P2 corner area is zero (the
 redistribution is singular exactly at the corners it must zero out). So
-lumping gives net-force smoothing, *not* correct local mechanics. **Decision
-6-B (chosen):** the Tet10 element foundation lands first (steps 1–7, demand #1
+lumping gives net-force smoothing, *not* correct local mechanics. **Decision — isolated rung (chosen over building contact in-sequence):** the Tet10 element foundation lands first (steps 1–7, demand #1
 validated on the robust #676 *net-force* metric), then the real
 surface-integrated barrier + curved surface land as **rung 8**, its own
 isolated consistent-contact rung on the proven foundation — the
@@ -127,11 +126,11 @@ anywhere (the centroid `(0.25,0.25,0.25)` is hardcoded at
 | **Boundary/surface path — must move in lockstep with connectivity.** `boundary_faces_from_topology` emits 3-node faces from 4 corners; Tet10 surface midside nodes are otherwise classified *interior* → auto-pinned even if surfaced. Plus `boundary_vertex_areas`, BC/load position-predicates, cavity tributary-area (`N_loaded`). | `mesh/mod.rs:251`, `readout/scene.rs:226-296` | **medium / high** |
 | Per-Gauss-point geometry: `ElementGeometry{grad_x_n:SMatrix<4,3>, volume}` → array of `(grad_x_n, weight)` over G (cardinality **1→4**: the shape gradients `∇_ξN(ξ_q)` and material `F(ξ_q)` vary per-GP so `grad_x_n` genuinely differs across the 4 GPs). **⚠ For a straight-edged Tet10 the isoparametric map collapses to affine, so `J`, `J⁻¹`, `detJ` are CONSTANT** — do not describe the Jacobian as per-GP (it only becomes per-GP under the deferred rung-8 curved surface). Tet4's `(4,1)` path keeps the **edge-vector Jacobian** and the `det.abs()/6.0` weight — a distinct branch, not the Tet10 Σ-form monomorphized (§3.1). | `mod.rs:68`, `construct.rs:221-244` | **large / medium** |
 | Multi-GP forward assembly: `deformation_gradient`/`extract_element_dof_values` → 30-DOF (`[f64;12]→[f64;30]`, `SMatrix<4,3>→<10,3>`); the six kernels `for a in 0..4`→`0..N`, single-GP → `for q in 0..G`. **No `12×12`/`30×30` stiffness type exists** — stiffness is 3×3 blocks from a 9×9 *material* tangent; do not size a matrix-dim row that isn't there. | `mod.rs`, `helpers.rs:17,36`, `assembly.rs:150-558` | **large / medium** |
-| **Consistent-contact rung 8 (decision 6-B — its own rung AFTER the element foundation).** ⚠ Round-3 meta-audit falsified the "nodal lumping" scheme (net-force smoothing, NOT the consistent P2 load — barrier is a force not a traction; P2 corner area = 0 → singular redistribution). The real scheme = **surface-integrated barrier `E=∫b(sd)dA` at face Gauss points + isoparametric curved surface + `boundary_vertex_areas` 6-node**, together (shared face primitive). Needs a new `#[non_exhaustive]` `ContactPair::Face` variant = a **downstream break** (coupling uses irrefutable `let Vertex{..}` — `contact_readout.rs:154`, `single_step.rs:35`). **Friction reconciled with the face-distributed force.** | `contact/ipc.rs:213-310`, `mesh/mod.rs:313` | **large / high (rung 8)** |
+| **Consistent-contact rung 8 (the isolated-rung decision — its own rung AFTER the element foundation).** ⚠ Round-3 meta-audit falsified the "nodal lumping" scheme (net-force smoothing, NOT the consistent P2 load — barrier is a force not a traction; P2 corner area = 0 → singular redistribution). The real scheme = **surface-integrated barrier `E=∫b(sd)dA` at face Gauss points + isoparametric curved surface + `boundary_vertex_areas` 6-node**, together (shared face primitive). Needs a new `#[non_exhaustive]` `ContactPair::Face` variant = a **downstream break** (coupling uses irrefutable `let Vertex{..}` — `contact_readout.rs:154`, `single_step.rs:35`). **Friction reconciled with the face-distributed force.** | `contact/ipc.rs:213-310`, `mesh/mod.rs:313` | **large / high (rung 8)** |
 | Per-Gauss-point material sampling (bypass the per-tet centroid cache) | `mesh/mod.rs:154` (`materials_from_field`), spec `01-tet10.md:46` | **medium / medium** |
 | **Mass lumping — use HRZ (Hinton–Rock–Zienkiewicz) diagonal-scaling, NOT a divisor swap.** `density * volume / 4.0` (`construct.rs:263`) is Tet4-specific; naive row-sum lumping of Tet10 gives **negative corner masses** (→ indefinite tangent → Cholesky failure at small dt). HRZ takes the positive consistent-mass diagonal `∫ρN_i²dV` (evaluated at the 4 Stroud GPs — **rides on §3.3 multi-GP weights**) scaled to preserve total mass. Only a diagonal `Vec<f64>` is ever needed (no consistent matrix). **⚠ Every current oracle is `STATIC_DT` → mass-blind; needs a dynamics gate (§5 steps 3b/7).** | `construct.rs:259-270` | **medium / medium** |
 | Gradient / adjoint RHS per-GP (the silent-wrong risk, but *narrower* than diffuse — §3.5) | `sensitivities.rs:825`, `assembly.rs:472` | **medium / high** |
-| **`fbar.rs` — a whole second 4-node assembler (~15 sites).** EXPLICITLY EXCLUDED from rung 1: off by default, and every differentiable path already `assert!(!config.fbar)` at `factor.rs:466`. Do not size it small; defer it wholesale. **Belt-and-suspenders: add a `forward`-path assert rejecting `config.fbar && N != 4`** (the differentiable path is guarded, but a user forcing `fbar=true` on a forward Tet10 solve is currently ungated). | `fbar.rs` | **out of initial scope** |
+| **`fbar.rs` — a whole second 4-node assembler (~15 sites).** EXPLICITLY EXCLUDED from the initial rungs (steps 1–7): off by default, and every differentiable path already `assert!(!config.fbar)` at `factor.rs:466`. Do not size it small; defer it wholesale. **Belt-and-suspenders: add a `forward`-path assert rejecting `config.fbar && N != 4`** (the differentiable path is guarded, but a user forcing `fbar=true` on a forward Tet10 solve is currently ungated). | `fbar.rs` | **out of initial scope** |
 | Taylor-Hood / mixed-u-p for incompressible Tet10 (only if §4 shows pure Tet10 insufficient) | `01-mixed-up.md:24` | **large / high** (out of initial scope) |
 
 **The single biggest obstacle** is the `Mesh` connectivity + boundary path
@@ -278,7 +277,7 @@ moment midside nodes are in the global DOF/position array, they are
 automatically tested against the SDF and carry barrier force — *zero* contact
 code changes. That moves the #676 net-force ratio (demand #1, step 6d), but is
 **not** enough for correct *local* mechanics — which is why consistent contact
-is its own rung 8 (decision 6-B):
+is its own rung 8 (the isolated-rung decision):
 (a) node-collocated barrier on a quadratic face is *inconsistent* — under
 uniform pressure a quadratic triangle loads midsides, not corners, so equal
 per-node barriers give a lumpy/wrong local pressure (the net-force sum stays
@@ -298,7 +297,7 @@ non-`#[non_exhaustive]`; coupling uses irrefutable `let Vertex{..}` matches
 — `contact_readout.rs:154`, `single_step.rs:35`), requiring `#[non_exhaustive]`
 + downstream fixes.
 It also **shares machinery with the isoparametric curved surface**, so both
-build together as **rung 8** (decision 6-B). (b) A midside
+build together as **rung 8** (the isolated-rung decision). (b) A midside
 node gets `tributary_area = 0` → `pressure = NaN` → `peak_contact_pressure`
 silently drops it — the pressure *readouts* regress from 3b until rung 8's
 `boundary_vertex_areas` (`mesh/mod.rs:313`) 6-node upgrade (a known,
@@ -378,7 +377,9 @@ the same const family, so retargeting ν is a one-line edit that stays
 consistent. Build order at the oracle:
 
 1. **Commit the real Tet4 Lamé baseline** at ν=0.4 (retire 0.993). Record it
-   as `e₄₀` (Tet10 ν=0.4 rel-err, finest mesh) for the differential decision.
+   as `e₄₀` (**Tet4** ν=0.4 rel-err, at the h/2 decision mesh) — the common
+   mesh floor the ν=0.49 threshold subtracts against. (Tet10 ν=0.4 is a
+   separate measurement, step 6b.)
 2. **Tet10 at ν=0.4 → match-or-beat Tet4** on the same oracle. Bug-localizer:
    if Tet10 misses *here*, it's a forward/assembly bug, not an
    incompressibility limit.
@@ -548,7 +549,7 @@ capture — the isoparametric-surface piece is deferred, §7).
    type system catches widening; FD gates catch the runtime `0..4`/single-GP
    sites and the mass. **→ At this point the Tet10 element foundation is
    complete and validated; rung 8 builds consistent contact ON it.**
-8. **★ CONSISTENT-CONTACT RUNG (decision 6-B — its own isolated rung on the
+8. **★ CONSISTENT-CONTACT RUNG (the isolated-rung decision — its own isolated rung on the
    proven foundation).** The genuinely-consistent scheme, done once, properly:
    **surface-integrated barrier `E=∫b(sd)dA` at face Gauss points** (gradient
    distributed via P2 face shape functions) **+ isoparametric curved surface**
@@ -603,7 +604,7 @@ blast radius is in-crate only.
   row-sum lumping gives negative corner masses → indefinite tangent → Cholesky
   failure at small dt. But at `STATIC_DT` the inertial term is ~4 orders below
   stiffness, so **all shipped oracles (Lamé, #676) are mass-blind** and would
-  pass with a wrong mass. Use HRZ (§2) and gate it with the step-8 dynamics
+  pass with a wrong mass. Use HRZ (§2) and gate it with the step-7 dynamics
   test — not a static construct check.
 - **★ ν=0.49 is a convergence risk before it is an accuracy risk.** The Lamé
   docstring says the pressure-inflation mode makes "convergence collapse";
@@ -644,7 +645,7 @@ blast radius is in-crate only.
 
 ## 7. Deferred follow-ons (named, not silent) + open questions
 
-**Consistent contact is rung 8, not a deferral (decision 6-B).** It is a
+**Consistent contact is rung 8, not a deferral (the isolated-rung decision).** It is a
 first-class rung of this plan — *sequenced after* the element foundation, not
 dropped. The round-2 "nodal lumping" shortcut was falsified (§3.5); the real
 work is the **surface-integrated barrier + isoparametric curved surface +
