@@ -1,16 +1,19 @@
 //! `Element` trait — per-element shape functions and quadrature.
 //!
 //! Const-generic in node count `N` and Gauss-point count `G` so per-tet
-//! local assembly uses stack-allocated matrices. Skeleton ships `Tet4`
-//! (N=4, G=1). Tet10 (N=10, G=4) is additive in Phase H per spec §8.
+//! local assembly uses stack-allocated matrices. Ships `Tet4` (N=4, G=1) and
+//! `Tet10` (N=10, G=4); the latter is the standalone quadratic-element
+//! primitive — solver integration follows in later Tet10-ladder rungs.
 
 use nalgebra::{SMatrix, SVector};
 
 use crate::Vec3;
 
+pub mod tet10;
 pub mod tet4;
 
 pub use tet4::Tet4;
+pub use tet10::{TET10_EDGE_NODES, Tet10};
 
 /// Per-element geometric surface: shape functions, their gradients,
 /// and Gauss-point weights. `N` = nodes per element, `G` = Gauss points.
