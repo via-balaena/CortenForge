@@ -17,7 +17,7 @@
 //! - **Identity via the global `(min, max)` key; local slot via the canonical
 //!   table.** A midside node's *identity* (dedup across the tets sharing its
 //!   edge) is keyed on the sorted global corner pair, exactly like the crate's
-//!   other edge dedups ([`boundary_faces_from_topology`](super::boundary_faces_from_topology),
+//!   other edge dedups (`boundary_faces_from_topology`,
 //!   `stuffing::edge_key`). Its *local slot* `4 + i` comes from
 //!   [`TET10_EDGE_NODES`] and nothing else. **These must never be conflated:**
 //!   the same global edge occupies different local slots in different tets, so
@@ -60,7 +60,7 @@ pub struct Tet10Topology {
 /// ids and positions are preserved; midside ids are appended, assigned in
 /// first-encounter order for determinism (the `HashMap` serves identity
 /// lookup only — output order comes from the `tets` walk, sister to
-/// [`boundary_faces_from_topology`](super::boundary_faces_from_topology)).
+/// `boundary_faces_from_topology`).
 ///
 /// # Panics
 ///
