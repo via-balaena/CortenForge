@@ -4,12 +4,19 @@
 > code-grounded pressure-test (every load-bearing claim verified against the
 > actual source at `main`). The implementation roadmap for adding the
 > **Tet10** (10-node quadratic tetrahedron) element to `sim-soft`. Status:
-> **IN PROGRESS — rungs 1–5 landed (#680/#681/#682/#683/#685/#686); the forward
-> solver assembles the REAL multi-Gauss-point Tet10 stiffness over all 10 nodes
-> (§3.3), and the rung-5 element-correctness gates (finite-rotation RBM +
-> asymmetric-patch ordering detector) validate it (§5 step 5). NEXT = rung 6
-> (the ν=0.4 baseline → ν=0.49 ACCEPT/REJECT oracle decision — heavy,
-> user-in-loop, its own session).** ⚠ **Rung 4 landed
+> **IN PROGRESS — rungs 1–6c landed (#680–#690).** The forward solver assembles
+> the REAL multi-Gauss-point Tet10 stiffness over all 10 nodes (§3.3), the
+> rung-5 element-correctness gates validate it (§5 step 5), and **★ rung 6
+> returned ACCEPT: pure-displacement Tet10 is adequate at ν = 0.49 and
+> Taylor-Hood P2-P1 is NOT built** (§5 step 6; `e₄₀ = 0.0615`,
+> `e₁₀,₄₀ = 0.0031`, ν = 0.49 reads 0.0314 `Continuum` / 0.0148 `Facet` against
+> a pre-registered ≤ 0.10 bar, mesh-stable to h/4). ⚠ That verdict is scoped to
+> **mean displacement**, and rests on TWO oracles: `tet10_lame_decision.rs` for
+> accuracy, and `tet10_bending_locking.rs` for locking — the Lamé sphere alone
+> is locking-INSENSITIVE (§5 step 6c corrections). **NEXT = rung 6d (demand #1,
+> the #676 contact-patch floor) — IN PROGRESS on branch
+> `test/sim-soft-tet10-indentation-demand1`, harness validated but the Tet10 arm
+> unmeasured; see that branch and the session memory.** ⚠ **Rung 4 landed
 > via a TWO-CACHE design, not the in-place `ElementGeometry` generalization the
 > §3.3/§3.4 forward text below describes** — see the "★ RUNG 4 LANDED (design
 > delta)" note in §3.3: generalizing `ElementGeometry` in place would have forced
@@ -487,7 +494,8 @@ warning is partly vindicated on the oracle that actually stresses locking; the
    element-order-independent error that swamps the locking signal; **(ii)**
    the shipped asserts are loose bands (`<0.20`/`<0.30`) that *straddle* the
    decision — assert a tight, pre-registered rel-err with the **decision at
-   h/2** (~28k Tet10 DOF; the h/4 Tet10 mesh is ~226k DOF / GB-scale / OOM-risk,
+   h/2** (MEASURED 40,008 Tet10 DOF; the h/4 Tet10 mesh is MEASURED 284,130 DOF
+   / 7.16 GB / OOM-risk,
    so it is a one-shot pre-push confirmation only — see §5 6c budget); **(iii)**
    raise
    `max_newton_iter` to ~150 (`fbar_locking.rs` needed that at ν=0.49 vs the
@@ -634,7 +642,8 @@ capture — the isoparametric-surface piece is deferred, §7).
    - **6a.** Commit the real Tet4 Lamé baseline at ν=0.4 (retire 0.993); record `e₄₀`.
    - **6b.** Tet10 at ν=0.4 → match-or-beat Tet4 (bug-localizer anchor).
    - **6c.** Tet10 at ν=0.49 → **pre-registered three-way decision gate** on
-     the **uniform** sphere, **decision at h/2** (~28k Tet10 DOF — on par with
+     the **uniform** sphere, **decision at h/2** (MEASURED 40,008 Tet10 DOF, from
+     13,336 nodes over 6,456 tets — on par with
      the proven Tet4 h/4 solve; **not h/4**, see budget below),
      `max_newton_iter≈150`: ACCEPT iff converged and rel-err ≤ `max(2·e₄₀, 0.10)`;
      REJECT → Taylor-Hood if rel-err > 0.20 **or** Newton stalls; gray zone →
@@ -643,10 +652,12 @@ capture — the isoparametric-surface piece is deferred, §7).
      moderate mesh (Lamé convergence is already super-quadratic h/2→h/4), so
      h/2 resolves ACCEPT/REJECT; run **h/4 Tet10 as a ONE-SHOT pre-push
      mesh-stability confirmation only, never in CI.** **★ Budget reality: the
-     h/4 Tet10 sphere is ~226k DOF** (66k edges dominate 9.5k corners), ~80–150×
-     the Tet4 factor, **0.5–4 GB** (the ν=0.49 LU-fallback path doubles fill) →
-     **tens of minutes, OOM risk on 7–16 GB CI runners** — do not reuse the
-     Tet4 "57k-tet/multi-minute" figure. Add an **LM-retry / line-search-backtrack
+     h/4 Tet10 sphere is MEASURED 284,130 DOF** (94,710 nodes; the estimate here
+     was ~226k, and the corner count 9.5k was 3.4× low against a measured
+     32,218), at **7.16 GB peak RSS over 500 s for the two ν=0.49 solves** —
+     above the "0.5–4 GB" this line originally predicted, and above what a 7 GB
+     CI runner has. Confirmed OOM-risk; it is an `#[ignore]`d pre-push one-shot
+     and runs in no CI job. Add an **LM-retry / line-search-backtrack
      cap** so a stalling ν=0.49 solve fails the gate cleanly instead of thrashing
      the factor for an hour. Convergence, not accuracy, is the likely failure
      mode — the gate must not crash on it.
@@ -664,7 +675,26 @@ capture — the isoparametric-surface piece is deferred, §7).
      radial-edge midsides into both the load and `cavity_wall_mean`). Or, at
      minimum, A/B equal-split vs consistent-P2 on the uniform sphere and
      pre-register the bias bound.
-   - **6d.** Demand #1: the #676 gate validates the element-stiffness cure on
+   - **6d — ▶ IN PROGRESS (branch `test/sim-soft-tet10-indentation-demand1`,
+     NOT merged).** Harness `tests/tet10_indentation_demand1.rs` at χ = 0.50 is
+     **validated** — its Tet4 arm reproduces #676's committed `RATIO = 1.130`
+     to four decimals. The Tet10 arm is **unmeasured**: it ran >42 min at
+     1.86 GB without finishing (~40× the Tet4 cost), so the node-density control
+     is unresolved and there is no gate. **★ Measured costs that reshape this
+     step:** #676's Tet4 3-χ sweep is **24.2 min**, so it **cannot** join
+     `tests-debug` (30-min shard) — the auto-discovery fix used for the Lamé and
+     bending files is unavailable, and registering it costs ~24 min of CI per
+     affected run (an open cost decision). A Tet10 arm at ~40× is not a routine
+     gate under any scheme; 6d likely ends as a committed one-shot plus an
+     `#[ignore]`d test. **★ The control is the DIFFERENTIAL standoff, not the
+     absolute one:** `ContactPairReadout.sd` is the effective-indentation error,
+     so the confound is `1.5·|Δ(mean sd)|/δ` between elements — a large common
+     offset cancels. Measured Tet4: mean `sd/δ = 0.0421` against a band
+     `d̂/δ = 0.05`, i.e. the barrier is NOT near-rigid at the shipped κ, but that
+     offset is shared. ⚠ Also: the Garcia oracle was **fabricated** on the first
+     attempt (RATIO 3.4324 vs the true 1.130) and is now single-sourced in
+     `tests/common/mod.rs`, used by both #676 and the Tet10 arm.
+   - **6d (original text).** Demand #1: the #676 gate validates the element-stiffness cure on
      **net force only** (bare Tet10 with per-vertex contact already moves the
      ratio via displacement order; correct *local* mechanics come with rung 8).
      **★ Node-density control (required — the barrier is fixed-κ, non-area-
@@ -725,7 +755,7 @@ ignore)]` (the ν=0.49 gate, the dynamics mass-gate, #676) runs in **no
 CI job** unless added there. **Note the #676 demand-#1 gate is *already*
 CI-dark** (release-only, unregistered — a pre-push-only gate today); decide
 explicitly whether the ν=0.49 **h/2 decision** solve (~28k DOF, CI-feasible)
-and #676 become CI-run, while the ν=0.49 **h/4 confirmation** (~226k DOF,
+and #676 become CI-run, while the ν=0.49 **h/4 confirmation** (MEASURED 284k DOF,
 GB-scale, OOM-risk) stays **pre-push one-shot, never CI**. Register whatever
 becomes CI-run in the release `--test` list. Coverage is **skipped** for sim-soft (`grading_profile =
 "integration-only"`), so there is *no unit-coverage net* — correctness rests
