@@ -51,7 +51,7 @@
 //! ## ★ What "pre-registered" does and does not cover here
 //!
 //! The **thresholds** are pre-registered: `ACCEPT iff converged and
-//! rel_err ≤ max(2·e₄₀, 0.10)`, `REJECT if > 0.20 or Newton stalls`, gray
+//! |rel_err| ≤ max(2·e₄₀, 0.10)`, `REJECT if > 0.20 or Newton stalls`, gray
 //! zone `0.10–0.20`. They were fixed in the merged plan (#679) before any
 //! measurement and are not touched here.
 //!
@@ -74,11 +74,9 @@
 //!   `max(2·e₄₀, 0.10)` is **0.100** under [`LoadRule::EqualSplit`], **0.123**
 //!   under [`LoadRule::Continuum`], **0.251** under [`LoadRule::Facet`].
 //! - Note the plan's three rules **overlap**: ACCEPT admits
-//!   `rel_err ≤ max(2·e₄₀, 0.10)` while the gray zone `(0.10, 0.20]` defaults
-//!   to REJECT, so any `e₄₀ > 0.05` leaves a band that satisfies both. And the
-//!   band inherits the load rule outright: `max(2·e₄₀, 0.10)` is **0.100**
-//!   under [`LoadRule::EqualSplit`], **0.123** under [`LoadRule::Continuum`],
-//!   **0.251** under [`LoadRule::Facet`].
+//!   `|rel_err| ≤ max(2·e₄₀, 0.10)` while the gray zone `(0.10, 0.20]`
+//!   defaults to REJECT, so any `e₄₀ > 0.05` leaves a band that satisfies
+//!   both. Item 2 below closes it.
 //!
 //! ### ★ Pre-registered for 6c, fixed here in rung 6b — before any ν = 0.49
 //! ### number is committed
@@ -88,25 +86,51 @@
 //! verdict. Choosing it after seeing a ν = 0.49 reading would be the whole
 //! game. So it is fixed now, while only ν = 0.4 data exists:
 //!
+//! **★ Every threshold below is on `|rel_err|`, never the signed value.**
+//! [`Reading::rel_err`] is signed and volumetric locking drives it *more
+//! negative*, so a signed `rel_err ≤ 0.10` would be satisfied trivially by a
+//! fully locked element. Absolute value, everywhere.
+//!
 //! 1. **6c must ACCEPT under BOTH consistent rules** — [`LoadRule::Continuum`]
-//!    *and* [`LoadRule::Facet`], each against its own `2·e₄₀` band (0.123 and
-//!    0.251). Passing one and failing the other is a REJECT. This removes the
-//!    `Continuum`-vs-`Facet` choice as a lever instead of letting the author
-//!    pick the flattering one: `Continuum` is the rule under which Tet10's
-//!    margin is largest, and it is the shipped default, so requiring `Facet`
-//!    too is the strictly conservative direction. Cost is two extra solves.
-//! 2. **The overlap resolves toward REJECT.** In `[0.10, max(2·e₄₀, 0.10)]`
-//!    the gray-zone rule wins over the ACCEPT rule, because it is the more
-//!    specific of the two and the plan states gray "defaults to REJECT". In
-//!    effect: ACCEPT needs `rel_err ≤ 0.10`; `(0.10, 0.20]` is gray and
-//!    REJECTs unless h/2 → h/4 converges downward through 0.10; `> 0.20` or a
-//!    stall REJECTs. The `2·e₄₀` term can therefore only ever *tighten* the
-//!    bar, never loosen it below 0.10 — again the conservative reading.
-//! 3. **`EqualSplit` is disqualified as a verdict rule**, on the rung-6b
+//!    *and* [`LoadRule::Facet`]. Passing one and failing the other is a
+//!    REJECT. This removes the `Continuum`-vs-`Facet` choice as a lever
+//!    instead of letting the author pick the flattering one: `Continuum` is
+//!    both the shipped default and the rule under which Tet10's margin is
+//!    largest, so requiring `Facet` too is the conservative direction. It is a
+//!    real tightening, not decoration — at ν = 0.4 `Continuum` sits 40× inside
+//!    its bar while `Facet` sits 4.8× inside, so `Facet` binds ~8× harder.
+//!    Cost is two extra solves.
+//! 2. **The overlap resolves toward REJECT, and the bar is 0.10 under every
+//!    rule.** In `[0.10, max(2·e₄₀, 0.10)]` the gray-zone rule wins over the
+//!    ACCEPT rule: it is the more specific of the two, and the plan states
+//!    gray "defaults to REJECT". In effect, for each consistent rule —
+//!    **ACCEPT** needs `|rel_err| ≤ 0.10`; `0.10 < |rel_err| ≤ 0.20` is gray;
+//!    `|rel_err| > 0.20` or a stall REJECTs. Since `max(2·e₄₀, 0.10)` is
+//!    0.123 under `Continuum` and 0.251 under `Facet`, both exceed 0.10, so
+//!    **the `2·e₄₀` term is inert here** — it can only ever tighten the bar
+//!    below 0.10, never loosen it above. Do not quote 0.123 / 0.251 as the
+//!    operative bars; 0.10 is.
+//! 3. **The gray-zone escape is defined, and its failure mode registered.**
+//!    "Converges downward through 0.10" means: the h/4 reading under the *same
+//!    rule* is both `≤ 0.10` and strictly below the h/2 reading. **If the h/4
+//!    solve cannot be run, the verdict is REJECT** — h/4 Tet10 measured 7.13 GB
+//!    / 257 s at ν = 0.4, and the plan warns the ν = 0.49 LU-fallback path
+//!    doubles fill, so "we could not afford the confirmation" must not become
+//!    an ACCEPT by default.
+//! 4. **The verdict is read off the absolute gate only.** [`TET10_NU_0_4`] is
+//!    reporting context, not a threshold: once a ν = 0.49 number exists a
+//!    *differential* reading (`|rel(0.49)| − |rel(0.4)|`) becomes available and
+//!    would flatter, since it subtracts away the element's baseline error. It
+//!    is not a pre-registered criterion and 6c may not substitute it.
+//! 5. **`EqualSplit` is disqualified as a verdict rule**, on the rung-6b
 //!    evidence rather than on theory: it inverts the element ordering at
 //!    ν = 0.4 (see [`TET10_NU_0_4_EQUAL_SPLIT`]), so a verdict read under it
-//!    would be a statement about the load, not the element. It stays committed
-//!    as a control.
+//!    would be a statement about the load, not the element. ⚠ **This is the
+//!    one item pointing the permissive way** — `EqualSplit`'s bar is 0.100
+//!    while Tet10 already reads 0.2405 at ν = 0.4, so keeping it as a verdict
+//!    rule would force an automatic REJECT. It is disqualified because a rule
+//!    that inverts the known ordering cannot adjudicate the element, not
+//!    because of where it lands. It stays committed as a control.
 //!
 //! So 6c is best understood as a *committed, re-runnable confirmation* of a
 //! spike result under conventions chosen in the open, not as a blind gate.
@@ -376,9 +400,10 @@ const TET10_NU_0_4: f64 = 0.0031;
 /// but structurally wrong — and the damage is *element-specific*: against
 /// [`E40_EQUAL_SPLIT`] (0.0140) this is **17× worse than Tet4 under the same
 /// rule**, an inversion of the true element ordering. Under an equal-split
-/// load, Tet10 would FAIL the 6b match-or-beat gate for a reason that is
-/// mostly not about the element — see [`TET10_NU_0_4_EQUAL_SPLIT_SUPPORT`] for
-/// the part that is not about the P2 corner identity either. That is the
+/// load, Tet10 would FAIL the 6b match-or-beat gate — for a reason about the
+/// load rule's mismatch with a quadratic surface, not about the element's
+/// accuracy. See [`TET10_NU_0_4_EQUAL_SPLIT_SUPPORT`] for the third of that
+/// mismatch which is not even about the P2 corner identity. That is the
 /// committed evidence for why 6c may not read its verdict off an equal split.
 const TET10_NU_0_4_EQUAL_SPLIT: f64 = 0.2405;
 
@@ -404,8 +429,15 @@ const TET10_NU_0_4_EQUAL_SPLIT_SUPPORT: f64 = 0.0761;
 ///
 /// The solves are deterministic — re-running reproduces `measured` to all 17
 /// digits, in both profiles — so this bounds cross-platform floating-point
-/// drift, not run-to-run noise, and 5 % leaves several orders of headroom over
-/// any plausible x86-vs-ARM difference in a 3-iteration solve.
+/// drift, not run-to-run noise.
+///
+/// **What 5 % actually pins.** `rel_err` is a difference of two near-equal
+/// quantities, so the tightest band here (±2.0e-4 on [`TET10_NU_0_4`]) is
+/// **±1.8e-4 relative on the displacement — 0.018 %**. That is the number to
+/// judge cross-platform safety against, and it still leaves 5–7 orders over
+/// the `κ(K)·ε ≈ 1e-11…1e-9` drift a 3-iteration faer solve can accumulate.
+/// The mesher stage contributes none: it is elementary ops plus IEEE-exact
+/// `sqrt` over integer connectivity.
 ///
 /// **Relative, not absolute, because a fixed half-width does not scale.** An
 /// earlier `±0.005` was 36 % of the smallest constant it then guarded; rung 6b
@@ -417,7 +449,9 @@ const TET10_NU_0_4_EQUAL_SPLIT_SUPPORT: f64 = 0.0761;
 const COMMITTED_BAND_FRACTION: f64 = 0.05;
 
 /// Floor on the acceptance band, so a constant near zero does not demand a
-/// bit-pin. At the current constants only [`TET10_NU_0_4`] is near it.
+/// bit-pin. It **binds** on exactly one constant today: 5 % of
+/// [`TET10_NU_0_4`] is 1.55e-4, below this floor, so that anchor's effective
+/// band is 6.45 %, not 5 %.
 const COMMITTED_BAND_FLOOR: f64 = 2.0e-4;
 
 // ── Closed-form single-shell Lamé oracle ─────────────────────────────────
@@ -1110,10 +1144,23 @@ fn tet10_at_nu_0_4_matches_or_beats_tet4() {
     // A miss here localizes to the forward path, not to incompressibility,
     // which is what lets 6c attribute a bad ν = 0.49 reading to locking.
     //
-    // ★ Asserted under BOTH consistent rules. Under `Continuum` alone a
-    // forward-path bug making Tet10 ~5 % over-stiff would be masked by that
-    // rule's excess thrust — a real hole in a bug-localizer. `Facet` is the
-    // un-cancelled read and carries the honest margin (2.4×, not 20×).
+    // ★ MEASURED, because the obvious rationale for the second arm is wrong.
+    // Match-or-beat is a LOOSE bar under both rules, and adding `Facet` does
+    // not tighten it: a uniformly 5 %-over-stiff Tet10 element reads -0.0504
+    // against Tet4's -0.0615 (Continuum) and -0.0974 against -0.1257 (Facet),
+    // and PASSES BOTH. In element-stiffness scale `s` the arms fire outside
+    // [0.939, 1.062] and [0.842, 1.084] respectively — Facet's interval
+    // strictly CONTAINS Continuum's, so the conjunction is exactly the
+    // Continuum gate. The bar is Tet4's own error, and under `Facet` that bar
+    // is looser, not tighter.
+    //
+    // What actually catches a uniform stiffness error is `assert_committed`
+    // below (Continuum's band pins `s` to ±0.02 %, Facet's to ±0.28 %). The
+    // Facet arm earns its place differently: it is a second, independently
+    // conditioned load functional — different node weights AND different
+    // directions — so it exercises the ordering claim under a load the
+    // `Continuum` normalisation never touches, and it is the un-cancelled read
+    // that carries the honest margin (2.4×, not 20×).
     let continuum = assert_tet10_matches_or_beats_tet4(LoadRule::Continuum, "Continuum");
     let facet = assert_tet10_matches_or_beats_tet4(LoadRule::Facet, "Facet");
 
