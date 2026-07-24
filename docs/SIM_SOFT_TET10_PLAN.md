@@ -433,6 +433,30 @@ The cheap, decisive gate is the **Lamé single-shell hollow sphere**
 the same const family, so retargeting ν is a one-line edit that stays
 consistent. Build order at the oracle:
 
+**★★ RUNG 6 OUTCOME (landed): ACCEPT.** 6a `e₄₀ = 0.0615` (#688) · 6b
+`e₁₀,₄₀ = 0.0031`, Tet10 match-or-beats Tet4 (#689) · **6c ν=0.49 = 0.0314
+(`Continuum`) / 0.0148 (`Facet`) vs a pre-registered `≤ 0.10` bar → ACCEPT
+(#690)**. All measurements committed and re-runnable in
+`tests/tet10_lame_decision.rs`; every solve at every ν and mesh converged in 3
+Newton iterations **on the Lamé harness** (the bending oracle needs 272 at
+ν=0.49 — see the corrections below). Taylor-Hood P2-P1 is NOT built.
+
+**⚠ Two corrections a gating cold-read forced, both now committed as tests.**
+(1) **The Lamé sphere is locking-INSENSITIVE** — going ν=0.49→0.499 raises λ/μ
+10× and Tet4's error *saturates* (0.1083→0.1062 `Continuum`, 0.1677→0.1653
+`Facet`). A radially symmetric inflation whose incompressible solution is the
+pure `u_r ∝ 1/r²` mode never sets deviatoric against volumetric response, so it
+cannot make the control lock — and an oracle whose control does not lock cannot
+certify that a candidate does not either. §6's "convergence collapse at ν→0.5"
+never materialised there (3 Newton iterations at every ν, including 0.499),
+which is corroborating rather than reassuring. (2) **The missing evidence now
+exists**: `tests/tet10_bending_locking.rs` runs the `fbar_locking` cantilever,
+where the control DOES lock — Tet4 ν-ratio **0.2341** against a physical
+**0.8725** — and Tet10 does not: **0.8058**. ★ Cost finding: Tet10 at ν=0.49
+needs **272 Newton iterations** there against Tet4's 7, so §6's convergence
+warning is partly vindicated on the oracle that actually stresses locking; the
+150-iteration `fbar_locking` budget is not enough for Tet10.
+
 1. **Commit the real Tet4 Lamé baseline** at ν=0.4 (retire 0.993). Record it
    as `e₄₀` (**Tet4** ν=0.4 rel-err, at the h/2 decision mesh) — the input the
    ν=0.49 threshold `max(2·e₄₀, 0.10)` is computed from. (Tet10 ν=0.4 is a
@@ -726,8 +750,19 @@ blast radius is in-crate only.
   stiffness, so **all shipped oracles (Lamé, #676) are mass-blind** and would
   pass with a wrong mass. Use HRZ (§2) and gate it with the step-7 dynamics
   test — not a static construct check.
-- **★ ν=0.49 is a convergence risk before it is an accuracy risk.** The Lamé
-  docstring says the pressure-inflation mode makes "convergence collapse";
+- **★ ν=0.49 is a convergence risk before it is an accuracy risk. ⚠ MEASURED
+  (rung 6c): partly true, and on the OTHER oracle.** The Lamé sphere converges
+  in 3 Newton iterations at every ν through 0.499 — no collapse. But the
+  **bending** cantilever needs **272 iterations for Tet10 at ν=0.49** against
+  Tet4's 7, and it converges cleanly (residual 1.7e-10), so this is cost, not a
+  stall. ★ **Forward-looking: 272 exceeds every other Newton budget in the
+  repo** — `SolverConfig::skeleton` defaults to 10, coupling uses 50/80, and the
+  three FD gates step 7 names (`material_sensitivity`,
+  `dirichlet_reaction_sensitivity`, `state_sensitivity`) budget 50. The adjoint
+  replays the forward Newton, so rung 7 should expect ~40× the tangent
+  factorisations at ν≈0.49 and must size its budgets deliberately rather than
+  inherit them. The original framing follows.
+  The Lamé docstring says the pressure-inflation mode makes "convergence collapse";
   pure Tet10 may stall before producing a number. The 6c gate is three-way
   (converged-accurate / converged-locked / didn't-converge), budget ~150 iters,
   and must route both failure modes to Taylor-Hood rather than crash.
@@ -782,11 +817,26 @@ someday-maybe:
 **Genuinely deferred (out of this plan entirely):**
 - **`fbar.rs` on Tet10 / mixed-u-p.** F-bar's single-GP premise breaks; if a
   cure-on-top for ν=0.49 is needed it is Taylor-Hood P2-P1, a redesign, not a
-  port (triggered only if step 6c REJECTs).
+  port. **★ NOT TRIGGERED: step 6c returned ACCEPT** (see §5 step 6c), so
+  Taylor-Hood is NOT built. ⚠ One caveat that does not close: the 6c verdict is
+  read from a mean *displacement*, and mixed P2-P1's primary remit is
+  suppressing spurious *pressure* modes via inf-sup/LBB stability. A later rung
+  that needs trustworthy pressures near incompressibility must re-open this on
+  a pressure-field oracle; the displacement question is settled, that one was
+  never asked.
 
 **Open questions carried into the build:**
-- **Pure Tet10 vs Tet10 + Taylor-Hood at ν=0.49** — resolved empirically at
-  step 6c.
+- **Pure Tet10 vs Tet10 + Taylor-Hood at ν=0.49** — ✅ **RESOLVED at step 6c
+  (rung 6c, PR #690): ACCEPT — pure-displacement Tet10, no Taylor-Hood.**
+  Measured `|rel_err|` at the h/2 decision mesh against a pre-registered
+  `≤ 0.10` bar required under *both* consistent load rules: **0.0314**
+  (`Continuum`, 3.2× inside) and **0.0148** (`Facet`, 6.8× inside); h/4
+  confirmation converges downward to **0.0053 / 0.0077**. ⚠ Tet4 does grow 1.8×
+  over that ν step (0.0615 → 0.1083), but **that is NOT the locking warrant** —
+  see the corrections block above: the rise saturates one ν step later, so this
+  oracle does not express progressive locking. The locking evidence is
+  `tests/tet10_bending_locking.rs`. Scope of the verdict:
+  mean displacement only — see the caveat under "Genuinely deferred" above.
 - **Tet10 mass-lumping scheme** — decided at step 3b; must be a real scheme,
   not `volume/10`.
 - **Mixed-element Tet4↔Tet10 interfaces** (band-`sdf` tagging, midside-node DOF
