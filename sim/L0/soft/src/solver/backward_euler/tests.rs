@@ -37,14 +37,14 @@ use crate::Vec3;
 use crate::contact::NullContact;
 use crate::element::Element;
 use crate::material::MaterialField;
-use crate::mesh::{HandBuiltTetMesh, Mesh, SingleTetMesh, Tet10Mesh, VertexId};
+use crate::mesh::{HandBuiltTetMesh, Mesh, SingleTetMesh, Tet10Mesh, TetId, VertexId};
 use crate::readout::{BoundaryConditions, LoadAxis};
 use crate::solver::SolverFailure;
 use crate::solver::lm::LmState;
 use crate::solver::{CpuNewtonSolver, LmConfig, Solver, SolverConfig};
 use crate::{
     CpuTet10NHSolver, SkeletonSolver,
-    element::{Tet4, Tet10},
+    element::{TET10_EDGE_NODES, Tet4, Tet10},
 };
 
 fn build(bc: BoundaryConditions) -> SkeletonSolver {
@@ -1338,5 +1338,227 @@ fn tet10_multigp_tangent_matches_bt_d_b_reference() {
          {max_diff:e} (spectral scale {scale:e}). A stiffness-free element, a wrong \
          assembly-level Gauss weight, a drifted Voigt convention, or a mis-integrated \
          corner↔midside block would surface here.",
+    );
+}
+
+// ── Rung 5: Tet10 element-correctness gates (production node mapping) ────────
+//
+// Rung 4's reconciliation (`tet10_multigp_tangent_matches_bt_d_b_reference`)
+// matched the assembled tangent at F = I — but F = I is both permutation-blind
+// (a node relabel is a similarity transform) and rotation-blind (it only fixes
+// the translation null-space). These two gates close both holes THROUGH the
+// production assembler on a real distorted Tet10 mesh:
+//
+//   (a) a finite rigid rotation `x = c + Q·X` must give zero internal force
+//       (the rotation null-space rung 4 never exercised); and
+//   (b) an asymmetric quadratic displacement field must reproduce the analytic
+//       internal force — THE midside-ordering detector, since only a genuinely
+//       quadratic field survives the `A·X` self-cancellation a constant strain
+//       hides behind (see `element::tet10`'s companion patch tests).
+//
+// Both run on `two_tet_shared_face` enriched to Tet10: the two tets share a
+// face, so their nine deduped midsides carry DIFFERENT global vertex ids per
+// tet — which is what makes a per-element slot permutation keyed on the
+// `(min, max)` global-vertex id (rung 2's warned bug) visible, where a single
+// tet could only expose a global permutation.
+
+/// A distorted two-tet Tet10 solver for the rung-5 gates: enrich
+/// [`HandBuiltTetMesh::two_tet_shared_face`] (asymmetric apex, deliberately off
+/// the mirror axis) into a [`Tet10Mesh`]. No boundary conditions — these gates
+/// read the raw assembled internal force at an imposed configuration, they
+/// never solve, so no constraints are needed to remove rigid-body modes.
+fn build_tet10_two_tet_solver() -> CpuTet10NHSolver<Tet10Mesh> {
+    let field = MaterialField::uniform(1.0e5, 4.0e5);
+    let tet4 = HandBuiltTetMesh::two_tet_shared_face(&field);
+    let tet10 = Tet10Mesh::from_tet4(&tet4);
+    CpuNewtonSolver::new(
+        Tet10,
+        tet10,
+        NullContact,
+        SolverConfig::skeleton(),
+        BoundaryConditions {
+            pinned_vertices: Vec::new(),
+            roller_vertices: Vec::new(),
+            loaded_vertices: Vec::new(),
+        },
+    )
+}
+
+/// Rung 5(a) — finite-rotation rigid-body gate. A proper rotation `x = c + Q·X`
+/// makes every element's deformation gradient exactly `Q`, and `NeoHookean`
+/// `P = μ(F − F⁻ᵀ) + λ ln(det F) F⁻ᵀ` vanishes for orthogonal `F` (`Q⁻ᵀ = Q`,
+/// det Q = 1), so the assembled internal force must be ~0. This is strictly
+/// stronger than rung 4's F = I reconciliation, which only covered the
+/// translation null-space. The zero is asserted RELATIVE to the force under a
+/// real 2% stretch, so the tolerance is physically scaled rather than an
+/// arbitrary absolute.
+#[test]
+#[allow(clippy::needless_range_loop)]
+fn tet10_rigid_rotation_yields_zero_internal_force() {
+    let solver = build_tet10_two_tet_solver();
+    let rest = tet10_rest_dofs(&solver);
+    let n = rest.len() / 3;
+
+    // Proper rotation about generic (non-axis-aligned) angles, plus translation.
+    let q = *nalgebra::Rotation3::from_euler_angles(0.4, -0.7, 1.1).matrix();
+    let c = Vec3::new(0.3, -0.2, 0.5);
+    let mut x_rot = vec![0.0_f64; rest.len()];
+    for v in 0..n {
+        let big_x = Vec3::new(rest[3 * v], rest[3 * v + 1], rest[3 * v + 2]);
+        let x = c + q * big_x;
+        x_rot[3 * v] = x.x;
+        x_rot[3 * v + 1] = x.y;
+        x_rot[3 * v + 2] = x.z;
+    }
+    let mut f_rot = vec![0.0_f64; rest.len()];
+    solver.assemble_global_int_force(&x_rot, &x_rot, 1.0, &mut f_rot);
+    let f_rot_max = f_rot.iter().fold(0.0_f64, |m, &v| m.max(v.abs()));
+
+    // Physical scale: internal force under a real 2% uniaxial (x) stretch.
+    let mut x_stretch = rest.clone();
+    for v in 0..n {
+        x_stretch[3 * v] = 1.02 * rest[3 * v];
+    }
+    let mut f_stretch = vec![0.0_f64; rest.len()];
+    solver.assemble_global_int_force(&x_stretch, &x_stretch, 1.0, &mut f_stretch);
+    let f_stretch_max = f_stretch.iter().fold(0.0_f64, |m, &v| m.max(v.abs()));
+
+    // Finiteness FIRST so a non-finite force can't be masked by
+    // `f64::max(m, NaN) == m` in the reductions above.
+    assert!(
+        f_rot.iter().chain(&f_stretch).all(|v| v.is_finite()),
+        "internal force has a non-finite entry — a degenerate/inverted element",
+    );
+    assert!(
+        f_stretch_max > 0.0,
+        "the 2% stretch must produce a live force scale"
+    );
+    assert!(
+        f_rot_max < 1e-8 * f_stretch_max,
+        "rigid rotation must yield ~zero internal force: |f_rot|_max = {f_rot_max:e} \
+         vs the 2%-stretch scale {f_stretch_max:e}",
+    );
+}
+
+/// Rung 5(b) — asymmetric quadratic-field patch test: THE midside-ordering
+/// detector, exercised through the production node mapping (`element_node_ids`
+/// → `extract_element_dof_values` → the assembler over a real distorted
+/// [`Tet10Mesh`]).
+///
+/// Impose a genuinely quadratic displacement `x = X + u(X)`,
+/// `u = (a Y², b Z, c X Y)`, on EVERY node. Because it is in the Tet10
+/// approximation space, the production assembler must reproduce the analytic
+/// internal force exactly. The reference is INDEPENDENT: it maps each element's
+/// slot → node by **physical midpoint lookup** (never reading
+/// `tet_midside_nodes`) and reconstructs `F_q = I + ∇u(X_q)` analytically. So a
+/// drift between `enrich_tet4_to_tet10`'s slot assignment and the element's
+/// `shape_gradients` edge order makes production (i) scatter to a different node
+/// AND (ii) integrate a corrupted geometry — `f_prod ≠ f_ref`. A constant-strain
+/// field could not catch this (the `A·X` map self-cancels any consistent
+/// permutation — see `element::tet10::constant_strain_patch_reproduces_linear_field`).
+// Short index names (i, j = tensor axes; k, s = element node slots) match the
+// assembler's own convention — same rationale as `assembly.rs`'s allow.
+#[test]
+#[allow(clippy::needless_range_loop, clippy::many_single_char_names)]
+fn tet10_quadratic_field_internal_force_matches_analytic() {
+    use crate::material::Material; // first_piola
+
+    let solver = build_tet10_two_tet_solver();
+    let pos = solver.mesh.positions().to_vec();
+    let n = pos.len();
+
+    // Asymmetric quadratic field — small enough to keep every det F > 0. The
+    // shear term c·X·Y is what a midside permutation cannot survive.
+    let (a, b, c) = (1.5, 2.0, 1.0);
+    let u = |p: Vec3| Vec3::new(a * p.y * p.y, b * p.z, c * p.x * p.y);
+    // ∇u rows = (u_x, u_y, u_z), cols = ∂/∂(X, Y, Z).
+    let grad_u = |p: Vec3| {
+        nalgebra::Matrix3::new(0.0, 2.0 * a * p.y, 0.0, 0.0, 0.0, b, c * p.y, c * p.x, 0.0)
+    };
+
+    // Impose x = X + u(X) on every node; production assembles f_int from it.
+    let mut x = vec![0.0_f64; 3 * n];
+    for v in 0..n {
+        let xd = pos[v] + u(pos[v]);
+        x[3 * v] = xd.x;
+        x[3 * v + 1] = xd.y;
+        x[3 * v + 2] = xd.z;
+    }
+    let mut f_prod = vec![0.0_f64; 3 * n];
+    solver.assemble_global_int_force(&x, &x, 1.0, &mut f_prod);
+
+    // Independent reference: per element, map slot → node by PHYSICAL midpoint
+    // lookup, reconstruct F_q from the ANALYTIC field, scatter the `NeoHookean`
+    // force. Never reads the production midside channel, so an ordering drift
+    // diverges here.
+    let find_midpoint = |target: Vec3| -> usize {
+        pos.iter()
+            .position(|&p| (p - target).norm() < 1e-12)
+            .expect("every straight edge midpoint is a mesh node")
+    };
+    let materials = solver.mesh.materials();
+    let mut f_ref = vec![0.0_f64; 3 * n];
+    for tet in 0..solver.mesh.n_tets() {
+        let corners = solver.mesh.tet_vertices(tet as TetId);
+        // Canonical slot → global node id, plus its rest position.
+        let mut node_id = [0usize; 10];
+        for k in 0..4 {
+            node_id[k] = corners[k] as usize;
+        }
+        for (i, &(ca, cb)) in TET10_EDGE_NODES.iter().enumerate() {
+            let mid = (pos[corners[ca] as usize] + pos[corners[cb] as usize]) * 0.5;
+            node_id[4 + i] = find_midpoint(mid);
+        }
+        let node_x = nalgebra::SMatrix::<f64, 10, 3>::from_fn(|slot, k| pos[node_id[slot]][k]);
+
+        let mat = &materials[tet];
+        for (xi, w) in Tet10.gauss_points() {
+            let grad_xi = Tet10.shape_gradients(xi);
+            let jac = node_x.transpose() * grad_xi;
+            let jac_inv = jac.try_inverse().expect("non-degenerate element");
+            let det = jac.determinant();
+            let grad_x = grad_xi * jac_inv;
+
+            // Physical Gauss point X_q and the analytic deformation gradient there.
+            let nvals = Tet10.shape_functions(xi);
+            let x_q = (0..10).fold(Vec3::zeros(), |acc, s| {
+                acc + nvals[s] * Vec3::new(node_x[(s, 0)], node_x[(s, 1)], node_x[(s, 2)])
+            });
+            let f_q = nalgebra::Matrix3::identity() + grad_u(x_q);
+            let piola = mat.first_piola(&f_q);
+
+            for slot in 0..10 {
+                let v = node_id[slot];
+                for i in 0..3 {
+                    let mut sum = 0.0;
+                    for j in 0..3 {
+                        sum += piola[(i, j)] * grad_x[(slot, j)];
+                    }
+                    f_ref[3 * v + i] += w * det.abs() * sum;
+                }
+            }
+        }
+    }
+
+    // Finiteness FIRST — a NaN/inf in f_prod (e.g. an ordering drift inverting
+    // an element → NeoHookean ln(det F) = NaN) must fail loudly, not be masked
+    // by `f64::max(m, NaN) == m` in the reduction below.
+    assert!(
+        f_prod.iter().all(|v| v.is_finite()),
+        "production internal force has a non-finite entry — an ordering drift or \
+         degenerate element geometry inverted F (det ≤ 0)",
+    );
+    let scale = f_ref.iter().fold(0.0_f64, |m, &v| m.max(v.abs()));
+    assert!(scale > 0.0, "the analytic reference force must be live");
+    let max_diff = f_prod
+        .iter()
+        .zip(&f_ref)
+        .fold(0.0_f64, |m, (&p, &r)| m.max((p - r).abs()));
+    assert!(
+        max_diff <= 1e-8 * scale,
+        "Tet10 production internal force deviates from the analytic quadratic-field \
+         reference: max |Δ| = {max_diff:e} (scale {scale:e}). A midside-ordering drift \
+         between enrich_tet4_to_tet10 and the element shape-gradient edge order, a wrong \
+         Gauss weight, or a corrupted element geometry would surface here.",
     );
 }

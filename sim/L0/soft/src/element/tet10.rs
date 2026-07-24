@@ -165,6 +165,26 @@ mod tests {
         Vec3::new(0.17, 0.29, 0.11)
     }
 
+    /// Ten node coordinates of a distorted (irregular) straight-edged Tet10:
+    /// generic, asymmetric corners with each midside re-placed at its straight
+    /// edge midpoint per [`TET10_EDGE_NODES`]. Straight edges keep the
+    /// isoparametric map affine (so `detJ` is constant), while the asymmetry
+    /// removes any element symmetry a midside permutation could hide behind.
+    fn distorted_element_coords() -> [Vec3; 10] {
+        let corners = [
+            Vec3::new(0.1, 0.0, -0.2),
+            Vec3::new(1.3, 0.2, 0.1),
+            Vec3::new(0.2, 1.1, 0.3),
+            Vec3::new(-0.1, 0.4, 1.2),
+        ];
+        let mut coords = [Vec3::zeros(); 10];
+        coords[..4].copy_from_slice(&corners);
+        for (i, &(a, b)) in TET10_EDGE_NODES.iter().enumerate() {
+            coords[4 + i] = (corners[a] + corners[b]) * 0.5;
+        }
+        coords
+    }
+
     #[test]
     fn partition_of_unity() {
         // Σ N_i = 1 everywhere, and (since the sum is constant) Σ ∇N_i = 0.
@@ -365,21 +385,117 @@ mod tests {
 
     #[test]
     fn rank_gate_distorted_element() {
-        // Distort the corners, then re-place midsides at the straight edge
-        // midpoints (keeping the element isoparametric-affine).
-        let corners = [
-            Vec3::new(0.1, 0.0, -0.2),
-            Vec3::new(1.3, 0.2, 0.1),
-            Vec3::new(0.2, 1.1, 0.3),
-            Vec3::new(-0.1, 0.4, 1.2),
-        ];
-        let mut coords = [Vec3::zeros(); 10];
-        coords[..4].copy_from_slice(&corners);
-        for (i, &(a, b)) in TET10_EDGE_NODES.iter().enumerate() {
-            coords[4 + i] = (corners[a] + corners[b]) * 0.5;
-        }
+        let coords = distorted_element_coords();
         let (zero, positive) = eigen_counts(&element_stiffness(&coords));
         assert_eq!(zero, 6, "expected 6 rigid-body modes (distorted)");
         assert_eq!(positive, 24, "expected 24 deformation modes (distorted)");
+    }
+
+    // --- Rung 5: element-correctness gates (patch tests) -----------------
+    //
+    // These are the element-primitive companions to the production-path gates
+    // in `solver::backward_euler::tests` (the finite-rotation rigid-body gate
+    // and the asymmetric quadratic-field ordering detector). They pin the
+    // element's completeness on a distorted element; the production gates then
+    // prove the whole enrich → element_node_ids → assembler chain honors the
+    // same node ordering (docs/SIM_SOFT_TET10_PLAN.md §5 step 5).
+
+    /// Isoparametric completeness on a distorted element: the quadratic shape
+    /// functions reproduce the (affine, straight-edged) geometry map exactly,
+    /// `Σᵢ Nᵢ(ξ) Xᵢ = X(ξ) = X₀ + J·ξ`, at a non-symmetric interior point. A
+    /// midside sitting at a slot that disagreed with its shape function's
+    /// reference edge would break this.
+    #[test]
+    fn isoparametric_completeness_on_distorted_element() {
+        let coords = distorted_element_coords();
+        let xi = sample_point(); // off every symmetry axis
+        let n = Tet10.shape_functions(xi);
+        let interp = (0..10).fold(Vec3::zeros(), |acc, i| acc + n[i] * coords[i]);
+        // Affine map from the four corners (straight edges ⇒ midsides inert here).
+        let affine = coords[0]
+            + (coords[1] - coords[0]) * xi.x
+            + (coords[2] - coords[0]) * xi.y
+            + (coords[3] - coords[0]) * xi.z;
+        assert!(
+            (interp - affine).norm() < 1e-13,
+            "Σ Nᵢ(ξ) Xᵢ = {interp:?} ≠ affine X(ξ) = {affine:?}",
+        );
+    }
+
+    /// Quadratic-field completeness at the element level: a genuinely quadratic
+    /// displacement `u(X) = (a Y², b Z, c X Y)` lies in the Tet10 approximation
+    /// space, so the reconstructed deformation gradient `F = Σ xₐ ⊗ ∇ₓNₐ`
+    /// matches the analytic `I + ∇u(X(ξ))` to machine precision at a
+    /// non-symmetric interior point. The asymmetric shear term `c X Y` is what
+    /// makes a midside permutation visible — a *linear* field cannot (see
+    /// [`constant_strain_patch_reproduces_linear_field`]).
+    // Test elements are constructed non-degenerate, so a failed inverse is a
+    // test-authoring bug worth panicking on (as in `element_stiffness`).
+    #[allow(clippy::expect_used)]
+    #[test]
+    fn deformation_gradient_reproduces_quadratic_field() {
+        let coords = distorted_element_coords();
+        let xi = sample_point();
+
+        // Element geometry at ξ (affine ⇒ constant, evaluated generically).
+        let node_x = SMatrix::<f64, 10, 3>::from_fn(|i, j| coords[i][j]);
+        let grad_xi = Tet10.shape_gradients(xi);
+        let jac = node_x.transpose() * grad_xi;
+        let grad_x = grad_xi * jac.try_inverse().expect("non-degenerate element");
+
+        // Physical point X(ξ) and the analytic quadratic field there.
+        let nvals = Tet10.shape_functions(xi);
+        let x_phys = (0..10).fold(Vec3::zeros(), |acc, i| acc + nvals[i] * coords[i]);
+
+        let (a, b, c) = (1.5, 2.0, 1.0);
+        let u = |p: Vec3| Vec3::new(a * p.y * p.y, b * p.z, c * p.x * p.y);
+        // ∇u rows = (u_x, u_y, u_z), cols = ∂/∂(X, Y, Z).
+        let grad_u = |p: Vec3| {
+            nalgebra::Matrix3::new(0.0, 2.0 * a * p.y, 0.0, 0.0, 0.0, b, c * p.y, c * p.x, 0.0)
+        };
+
+        // Displaced nodes, then reconstruct F = Σ xₐ ⊗ ∇ₓNₐ (the assembler's form).
+        let x_def = SMatrix::<f64, 10, 3>::from_fn(|i, j| (coords[i] + u(coords[i]))[j]);
+        let f_recon = x_def.transpose() * grad_x;
+        let f_analytic = nalgebra::Matrix3::identity() + grad_u(x_phys);
+        let max_diff = (f_recon - f_analytic)
+            .iter()
+            .fold(0.0_f64, |m, &v| m.max(v.abs()));
+        assert!(
+            max_diff < 1e-12,
+            "reconstructed F deviates from I + ∇u(X(ξ)): max |Δ| = {max_diff:e}",
+        );
+    }
+
+    /// Constant-strain (linear-field) patch companion — machine-precision on a
+    /// straight-edged element, but deliberately BLIND to midside ordering: with
+    /// `x = A·X`, the reconstructed `F = A · J_bug · J_bug⁻¹ = A` cancels any
+    /// consistent slot permutation. This is why the ordering detector needs the
+    /// quadratic field above (and the production gate in
+    /// `solver::backward_euler::tests`), not a constant strain.
+    #[allow(clippy::expect_used)]
+    #[test]
+    fn constant_strain_patch_reproduces_linear_field() {
+        let coords = distorted_element_coords();
+        let xi = sample_point();
+        let node_x = SMatrix::<f64, 10, 3>::from_fn(|i, j| coords[i][j]);
+        let grad_xi = Tet10.shape_gradients(xi);
+        let grad_x = grad_xi
+            * (node_x.transpose() * grad_xi)
+                .try_inverse()
+                .expect("non-degenerate element");
+
+        // A generic asymmetric constant strain G; F = I + G everywhere.
+        let g = nalgebra::Matrix3::new(0.03, -0.02, 0.01, 0.00, 0.04, -0.01, 0.02, 0.01, -0.03);
+        let a_map = nalgebra::Matrix3::identity() + g;
+        let x_def = SMatrix::<f64, 10, 3>::from_fn(|i, j| (a_map * coords[i])[j]);
+        let f_recon = x_def.transpose() * grad_x;
+        let max_diff = (f_recon - a_map)
+            .iter()
+            .fold(0.0_f64, |m, &v| m.max(v.abs()));
+        assert!(
+            max_diff < 1e-13,
+            "linear field must reproduce F = I + G exactly; max |Δ| = {max_diff:e}",
+        );
     }
 }
