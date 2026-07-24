@@ -15,37 +15,8 @@ use crate::mesh::{Mesh, TetId, VertexId};
 use crate::readout::BoundaryConditions;
 
 use super::CpuNewtonSolver;
-use super::{ElementGeometry, SolverConfig};
-
-/// Compose the `N` ordered element-local node ids from a tet's 4 corners and
-/// (for a higher-order element, `N > 4`) its 6 midside nodes — consuming the
-/// rung-3a additive midside channel (§3.2 of `docs/SIM_SOFT_TET10_PLAN.md`).
-/// For a linear element (`N == 4`) the midsides are ignored and this returns
-/// exactly [`Mesh::tet_vertices`]. Slots `4..N` follow the corners in the
-/// canonical [`TET10_EDGE_NODES`](crate::element::TET10_EDGE_NODES) order, as
-/// [`Mesh::tet_midside_nodes`] returns them.
-//
-// expect_used: a higher-order (N > 4) element is only ever constructed against
-// a midside-surfacing mesh (e.g. `Tet10Mesh`); a `None` here is a
-// construction-time programmer error, declared in `new()`'s `# Panics`.
-#[allow(clippy::expect_used)]
-fn element_node_ids<const N: usize>(
-    corners: [VertexId; 4],
-    midsides: Option<[VertexId; 6]>,
-) -> [VertexId; N] {
-    let mut nodes: [VertexId; N] = [0; N];
-    nodes[..4].copy_from_slice(&corners);
-    if N > 4 {
-        // `N > 4` is Tet10 (`N == 10`) in this ladder — the six midsides fill
-        // slots `4..10`.
-        let mids = midsides.expect(
-            "a higher-order (N > 4) element requires a mesh that surfaces midside \
-             nodes, but Mesh::tet_midside_nodes returned None",
-        );
-        nodes[4..].copy_from_slice(&mids);
-    }
-    nodes
-}
+use super::helpers::element_node_ids;
+use super::{ElementGeometry, GaussGeometry, SolverConfig};
 
 /// HRZ (Hinton–Rock–Zienkiewicz) diagonal mass-lumping weights — the per-node
 /// fractions of an element's total mass, summing to 1. Each weight is
@@ -324,19 +295,32 @@ where
             }
         }
 
-        // 1. Per-element reference geometry. Computed once; all per-iter
-        // assembly reads from this cache rather than recomputing.
+        // 1. Per-element reference geometry — TWO caches from one Jacobian:
+        //    (a) `element_geometries`: the single-point corner geometry the
+        //        Tet4-flavored consumers read (F-bar, adjoint, validity, mass) —
+        //        byte-identical to rung 3b.
+        //    (b) `gauss_geometries`: the per-Gauss-point stiffness geometry the
+        //        multi-Gauss-point forward kernels integrate over (rung 4).
+        //
+        // For a STRAIGHT-EDGED element the isoparametric map is affine, so the
+        // Jacobian `J` is the constant corner edge-vector matrix
+        // `[v1−v0, v2−v0, v3−v0]` — identical for Tet4 and (straight-edged)
+        // Tet10, and constant across the element's Gauss points. Only the
+        // parametric shape gradient `∇_ξN(ξ_q)` varies per point, so
+        // `grad_x_n^q = ∇_ξN(ξ_q) · J⁻¹` differs per Gauss point while `|detJ|`
+        // is shared. (A curved element — deferred rung 8 — would make `J`
+        // per-point; do not add that here.)
         let x_rest = mesh.positions();
         let mut element_geometries = Vec::with_capacity(n_tets);
-        // Corner constant-strain (parametric) shape gradients. The linear
-        // element's own gradients ARE these (constant in ξ), so Tet4 reads
-        // them straight from the element and stays byte-identical. A Tet10
-        // element's gradients VANISH on the corners at the centroid, and rung
-        // 3b keeps the Tet10 corner elastic block constant-strain Tet4 anyway
-        // (the six midside nodes ride as stiffness-free floating masses, §3.2)
-        // — so `N > 4` uses the linear barycentric corner gradients directly.
-        // Ladder rung 4 replaces this single-point cache with the per-Gauss-
-        // point Tet10 geometry.
+        let mut gauss_geometries = Vec::with_capacity(n_tets);
+        let gauss_points = element.gauss_points();
+        // Single-point (corner) parametric shape gradient for (a). Tet4 reads
+        // the element's own constant barycentric gradient (ξ ignored, byte-
+        // identical to the pre-Tet10 path); a Tet10 element's gradients VANISH
+        // on the corners at the centroid, so `N > 4` uses the linear barycentric
+        // corner gradient — the affine constant-strain block. This is the
+        // single-point proxy for the validity / adjoint / F-bar consumers; the
+        // real (linearly-varying) Tet10 strain lives in (b).
         let grad_xi_corner: SMatrix<f64, 4, 3> = if N > 4 {
             SMatrix::<f64, 4, 3>::new(
                 -1.0, -1.0, -1.0, // ∂N_0/∂ξ (complement barycentric)
@@ -345,9 +329,6 @@ where
                 0.0, 0.0, 1.0, // ∂N_3/∂ξ
             )
         } else {
-            // Tet4: the element's own constant barycentric gradients (ξ
-            // ignored). Routed through the element so the Tet4 geometry path
-            // is byte-identical to the pre-Tet10 code.
             let g = element.shape_gradients(Vec3::new(0.25, 0.25, 0.25));
             SMatrix::<f64, 4, 3>::from_fn(|a, j| g[(a, j)])
         };
@@ -357,14 +338,42 @@ where
             let v1 = x_rest[verts[1] as usize];
             let v2 = x_rest[verts[2] as usize];
             let v3 = x_rest[verts[3] as usize];
+            // Edge-vector Jacobian (a DISTINCT form from the isoparametric
+            // Σ Xᵢ⊗∇_ξNᵢ accumulation — routing Tet4 through that would reorder
+            // the arithmetic and break byte-identity; §3.1 trap). For a
+            // straight-edged Tet10 this edge-vector `J` equals the affine
+            // isoparametric Jacobian exactly.
             let j_0 = Matrix3::from_columns(&[v1 - v0, v2 - v0, v3 - v0]);
             let j_0_inv = j_0
                 .try_inverse()
                 .expect("singular reference Jacobian — malformed rest mesh");
-            let volume = j_0.determinant().abs() / 6.0;
-            // Chain rule: grad_X N_a = grad_ξ N_a · (∂ξ/∂X) = grad_ξ N_a · J_0⁻¹.
+            let det = j_0.determinant();
+            let volume = det.abs() / 6.0;
+
+            // (a) Single-point corner geometry — byte-identical to rung 3b.
             let grad_x_n = grad_xi_corner * j_0_inv;
             element_geometries.push(ElementGeometry { grad_x_n, volume });
+
+            // (b) Per-Gauss-point stiffness geometry.
+            let gauss: [(SMatrix<f64, N, 3>, f64); G] = std::array::from_fn(|q| {
+                let (xi, w_ref) = gauss_points[q];
+                // Chain rule: grad_X N_a = grad_ξ N_a(ξ_q) · (∂ξ/∂X) = grad_ξ N_a · J⁻¹.
+                let grad_x_n = element.shape_gradients(xi) * j_0_inv;
+                // ★ Byte-identity (§3.1 trap): Tet4 (the single-Gauss-point
+                // linear element) keeps the literal `|det|/6.0`. Reconstructing
+                // it as `w_ref·|det|` would use `w_ref = 1/6`, which is not
+                // representable → a silent ULP break. Tet10's `w_ref = 1/24` is
+                // representable and applied directly (its weights are
+                // tolerance-checked, not byte-frozen). For Tet4 the single pair
+                // equals `element_geometries` above bit-for-bit.
+                let weight = if N == 4 {
+                    det.abs() / 6.0
+                } else {
+                    w_ref * det.abs()
+                };
+                (grad_x_n, weight)
+            });
+            gauss_geometries.push(GaussGeometry { gauss });
         }
 
         // F-bar nodal-patch cache (locking cure) — built only when enabled;
@@ -389,10 +398,7 @@ where
             // Only the diagonal is ever needed (no consistent mass matrix).
             let hrz = hrz_mass_weights(&element);
             for tet_id in 0..n_tets as TetId {
-                let nodes = element_node_ids::<N>(
-                    mesh.tet_vertices(tet_id),
-                    mesh.tet_midside_nodes(tet_id),
-                );
+                let nodes = element_node_ids::<M, Msh, N>(&mesh, tet_id);
                 let elem_mass = config.density * element_geometries[tet_id as usize].volume;
                 for a in 0..N {
                     let v = nodes[a] as usize;
@@ -452,27 +458,34 @@ where
         // and (empirically) a symbolic entry the numeric never fills corrupts
         // faer's numeric read. That assembled pattern is two parts:
         //
-        // (a) Corner-corner element incidence (Decision J): for each element,
-        //     every (a, b) corner pair contributes a 3×3 block at
-        //     (free_idx_a, free_idx_b) IF both are free. This is the element's
-        //     actual stiffness coupling in rung 3b — the elastic assembly is
-        //     corner-only; the corner↔midside and midside↔midside stiffness
-        //     blocks arrive with the multi-Gauss-point kernel in rung 4.
+        // (a) Element node incidence (Decision J): for each element, every
+        //     (a, b) node pair contributes a 3×3 block at (free_idx_a,
+        //     free_idx_b) IF both are free. ★ This ranges over ALL `N` element
+        //     nodes (`element_node_ids`), in EXACT lockstep with the numeric
+        //     stiffness assembly (`assemble_free_hessian_triplets`, same
+        //     `0..N` node loops). Rung 4's multi-Gauss-point kernel fills the
+        //     corner↔midside and midside↔midside blocks, so the numeric pattern
+        //     now reaches full 10-node incidence — the symbolic pattern must
+        //     widen with it. Symbolic MUST equal numeric: a symbolic entry the
+        //     numeric never fills silently corrupts faer's numeric read (a
+        //     wrong factor, not a crash — the rung-3b `is_llt` finding). For a
+        //     linear (Tet4) mesh `element_node_ids` returns the 4 corners, so
+        //     `0..N` is `0..4` and the pattern is bit-identical to pre-rung-4.
         //
-        // (b) The free-DOF mass diagonal (below): every free DOF, including a
-        //     rung-3b freed midside, gets a positive `(k, k)`. A stiffness-free
-        //     midside has ONLY this entry, so its slot must be present or the
-        //     factor pattern-mismatches on the mass scatter.
+        // (b) The free-DOF mass diagonal (below): every free DOF gets a
+        //     positive `(k, k)`. Idempotent against (a) for a stiffness-coupled
+        //     DOF; retained for robustness (and the sole slot for any
+        //     hypothetical uncoupled free DOF).
         //
         // BTreeSet keyed by (col, row) gives sorted column-major lower-triangle
         // iteration without a HashMap.
         let mut triplet_set: BTreeSet<(usize, usize)> = BTreeSet::new();
         for tet_id in 0..n_tets as TetId {
-            let verts = mesh.tet_vertices(tet_id);
-            for a in 0..4 {
-                for b in 0..4 {
-                    let va = verts[a] as usize;
-                    let vb = verts[b] as usize;
+            let nodes = element_node_ids::<M, Msh, N>(&mesh, tet_id);
+            for a in 0..N {
+                for b in 0..N {
+                    let va = nodes[a] as usize;
+                    let vb = nodes[b] as usize;
                     for i in 0..3 {
                         for j in 0..3 {
                             let row_full = 3 * va + i;
@@ -516,6 +529,7 @@ where
             config,
             boundary_conditions,
             element_geometries,
+            gauss_geometries,
             mass_per_dof,
             free_dof_indices,
             full_to_free_idx,

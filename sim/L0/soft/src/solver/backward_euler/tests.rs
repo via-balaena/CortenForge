@@ -33,7 +33,9 @@ use faer::sparse::Triplet;
 
 use sim_ml_chassis::Tensor;
 
+use crate::Vec3;
 use crate::contact::NullContact;
+use crate::element::Element;
 use crate::material::MaterialField;
 use crate::mesh::{HandBuiltTetMesh, Mesh, SingleTetMesh, Tet10Mesh, VertexId};
 use crate::readout::{BoundaryConditions, LoadAxis};
@@ -1197,5 +1199,129 @@ fn tet10_dynamic_replay_step_converges() {
     assert!(
         step.x_final.iter().all(|x| x.is_finite()),
         "Tet10 dynamic solve must produce a finite converged state",
+    );
+}
+
+// ── Rung 4: multi-Gauss-point stiffness CORRECTNESS ────────────────────────
+//
+// The rung-3b gates prove the freed Tet10 tangent FACTORS (non-singular) — but a
+// stiffness-free element factors too, because its `M/Δt²` mass diagonal alone is
+// PD. The rung-4 gate proves the assembled Tet10 stiffness is the CORRECT element
+// stiffness. A single Tet10 element's production elastic tangent at rest (F = I)
+// must equal an independent Bᵀ·D·B reference (the rung-1 `element_stiffness`
+// convention), because NeoHookean's ∂P/∂F at F = I is exactly the linear isotropic
+// elasticity tensor `λ δ_iJ δ_kL + μ(δ_ik δ_JL + δ_iL δ_Jk)`. This reconciles the
+// production 9×9-material-tangent / BF-5-flattening assembler against the Voigt
+// `[xx, yy, zz, xy, yz, zx]` convention (rung-1 carry-forward — the strain
+// convention cannot drift) and, being a full magnitude match over all 10 nodes and
+// 4 Gauss points, would catch a stiffness-free element, a wrong Gauss weight, or a
+// mis-integrated corner↔midside block.
+
+const RECON_E: f64 = 1.0;
+const RECON_NU: f64 = 0.3;
+
+/// Isotropic linear-elastic 6×6 Voigt `[xx, yy, zz, xy, yz, zx]` (engineering
+/// shear) constitutive matrix — the same convention `element/tet10.rs`'s rung-1
+/// `element_stiffness` uses.
+fn voigt_elasticity(e: f64, nu: f64) -> nalgebra::SMatrix<f64, 6, 6> {
+    let lambda = e * nu / ((1.0 + nu) * (1.0 - 2.0 * nu));
+    let mu = e / (2.0 * (1.0 + nu));
+    let mut d = nalgebra::SMatrix::<f64, 6, 6>::zeros();
+    for a in 0..3 {
+        for b in 0..3 {
+            d[(a, b)] = lambda;
+        }
+        d[(a, a)] += 2.0 * mu;
+        d[(3 + a, 3 + a)] = mu;
+    }
+    d
+}
+
+/// Independent 30×30 `Bᵀ·D·B` reference stiffness for one straight-edged Tet10
+/// (affine map ⇒ `K^e` exact at the 4 Stroud points), mirroring the rung-1
+/// `element_stiffness` helper's convention.
+fn reference_tet10_stiffness(coords: &[Vec3; 10]) -> nalgebra::DMatrix<f64> {
+    let d_mat = voigt_elasticity(RECON_E, RECON_NU);
+    let node_x = nalgebra::SMatrix::<f64, 10, 3>::from_fn(|i, j| coords[i][j]);
+    let mut k = nalgebra::DMatrix::<f64>::zeros(30, 30);
+    for (xi, weight) in Tet10.gauss_points() {
+        let grad_xi = Tet10.shape_gradients(xi);
+        let jac = node_x.transpose() * grad_xi;
+        let jac_inv = jac.try_inverse().expect("non-degenerate element");
+        let det = jac.determinant();
+        let grad_x = grad_xi * jac_inv;
+        let mut b = nalgebra::SMatrix::<f64, 6, 30>::zeros();
+        for node in 0..10 {
+            let (nx, ny, nz) = (grad_x[(node, 0)], grad_x[(node, 1)], grad_x[(node, 2)]);
+            let c = 3 * node;
+            b[(0, c)] = nx;
+            b[(1, c + 1)] = ny;
+            b[(2, c + 2)] = nz;
+            b[(3, c)] = ny;
+            b[(3, c + 1)] = nx;
+            b[(4, c + 1)] = nz;
+            b[(4, c + 2)] = ny;
+            b[(5, c)] = nz;
+            b[(5, c + 2)] = nx;
+        }
+        let contrib = b.transpose() * d_mat * b * (weight * det.abs());
+        k += nalgebra::DMatrix::from_fn(30, 30, |i, j| contrib[(i, j)]);
+    }
+    k
+}
+
+#[test]
+fn tet10_multigp_tangent_matches_bt_d_b_reference() {
+    // Single Tet10 element with a NeoHookean matched to E = 1, ν = 0.3, so its
+    // ∂P/∂F(I) is the linear isotropic elasticity tensor the reference `D` encodes.
+    let mu = RECON_E / (2.0 * (1.0 + RECON_NU));
+    let lambda = RECON_E * RECON_NU / ((1.0 + RECON_NU) * (1.0 - 2.0 * RECON_NU));
+    let tet4 = SingleTetMesh::new(&MaterialField::uniform(mu, lambda));
+    let tet10 = Tet10Mesh::from_tet4(&tet4);
+
+    // The 10 node coords (corners 0..4, midsides 4..10 in canonical edge order)
+    // read straight off the mesh, so the reference integrates the SAME geometry.
+    let pos = tet10.positions();
+    assert_eq!(pos.len(), 10, "a single Tet10 element has 10 nodes");
+    let mut coords = [Vec3::zeros(); 10];
+    coords.copy_from_slice(&pos[..10]);
+
+    let solver: CpuTet10NHSolver<Tet10Mesh> = CpuNewtonSolver::new(
+        Tet10,
+        tet10,
+        NullContact,
+        SolverConfig::skeleton(),
+        BoundaryConditions {
+            pinned_vertices: Vec::new(),
+            roller_vertices: Vec::new(),
+            loaded_vertices: Vec::new(),
+        },
+    );
+
+    // Production elastic tangent (no mass diagonal, no free/pinned filter) at rest,
+    // assembled column-by-column: K_prod[:, j] = ∂f_int/∂x · e_j.
+    let x_rest = tet10_rest_dofs(&solver);
+    let mut k_prod = nalgebra::DMatrix::<f64>::zeros(30, 30);
+    for j in 0..30 {
+        let mut e_j = vec![0.0; 30];
+        e_j[j] = 1.0;
+        let col = solver.internal_force_tangent_matvec(&x_rest, &e_j);
+        for i in 0..30 {
+            k_prod[(i, j)] = col[i];
+        }
+    }
+
+    let k_ref = reference_tet10_stiffness(&coords);
+    let scale = k_ref.iter().fold(0.0_f64, |m, &v| m.max(v.abs()));
+    assert!(scale > 0.0, "reference stiffness must be non-trivial");
+    let max_diff = (&k_prod - &k_ref)
+        .iter()
+        .fold(0.0_f64, |m, &v| m.max(v.abs()));
+    assert!(
+        max_diff <= 1.0e-9 * scale,
+        "Tet10 production tangent deviates from the Bᵀ·D·B reference: max |Δ| = \
+         {max_diff:e} (spectral scale {scale:e}). A stiffness-free element, a wrong \
+         Gauss weight, a drifted Voigt convention, or a mis-ordered midside block \
+         would surface here.",
     );
 }

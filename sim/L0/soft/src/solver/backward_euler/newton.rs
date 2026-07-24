@@ -103,6 +103,9 @@ where
         for (tet_id, geom) in self.element_geometries.iter().enumerate() {
             let verts = self.mesh.tet_vertices(tet_id as TetId);
             let x_elem = extract_element_dof_values(x_curr, &verts);
+            // Feasibility gate on the single-point corner geometry (for Tet4 the
+            // constant strain; for Tet10 the affine corner block — a per-Gauss-
+            // point sweep is a later refinement, not a rung-4 requirement).
             let f = deformation_gradient(&x_elem, &geom.grad_x_n);
             let validity = materials[tet_id].validity();
 

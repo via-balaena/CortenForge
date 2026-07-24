@@ -14,7 +14,9 @@ use crate::mesh::{Mesh, TetId};
 use crate::readout::LoadAxis;
 
 use super::CpuNewtonSolver;
-use super::helpers::{deformation_gradient, extract_element_dof_values, slice_to_vec3s};
+use super::helpers::{
+    deformation_gradient, element_node_ids, extract_element_dof_values, slice_to_vec3s,
+};
 
 impl<E, Msh, C, M, const N: usize, const G: usize> CpuNewtonSolver<E, Msh, C, M, N, G>
 where
@@ -147,20 +149,26 @@ where
                 f_int,
             );
         } else {
-            for (tet_id, geom) in self.element_geometries.iter().enumerate() {
-                let verts = self.mesh.tet_vertices(tet_id as TetId);
-                let x_elem = extract_element_dof_values(x_curr, &verts);
-                let f = deformation_gradient(&x_elem, &geom.grad_x_n);
-                let piola = materials[tet_id].first_piola(&f);
-                // Per-vertex internal-force contribution `V · P · grad_X N_a`.
-                for a in 0..4 {
-                    let v = verts[a] as usize;
-                    for i in 0..3 {
-                        let mut sum = 0.0;
-                        for j in 0..3 {
-                            sum += piola[(i, j)] * geom.grad_x_n[(a, j)];
+            for (tet_id, geom) in self.gauss_geometries.iter().enumerate() {
+                let nodes = element_node_ids::<M, Msh, N>(&self.mesh, tet_id as TetId);
+                let x_elem = extract_element_dof_values(x_curr, &nodes);
+                // Integrate the internal force over the element's `G` Gauss
+                // points. Each contributes `weight_q · P(F_q) · grad_X N_a(ξ_q)`;
+                // the per-tet material is (uniformly) evaluated at each point's
+                // own `F_q`. Tet4 monomorphizes to a single centroid point,
+                // reproducing the pre-rung-4 `volume · P · grad_X N_a` exactly.
+                for (grad_x_n, weight) in &geom.gauss {
+                    let f = deformation_gradient(&x_elem, grad_x_n);
+                    let piola = materials[tet_id].first_piola(&f);
+                    for a in 0..N {
+                        let v = nodes[a] as usize;
+                        for i in 0..3 {
+                            let mut sum = 0.0;
+                            for j in 0..3 {
+                                sum += piola[(i, j)] * grad_x_n[(a, j)];
+                            }
+                            f_int[3 * v + i] += weight * sum;
                         }
-                        f_int[3 * v + i] += geom.volume * sum;
                     }
                 }
             }
@@ -333,31 +341,40 @@ where
                 &mut acc,
             );
         } else {
-            for (tet_id, geom) in self.element_geometries.iter().enumerate() {
-                let verts = self.mesh.tet_vertices(tet_id as TetId);
-                let x_elem = extract_element_dof_values(x_curr, &verts);
-                let f = deformation_gradient(&x_elem, &geom.grad_x_n);
-                let tangent_9x9 = materials[tet_id].tangent(&f);
-
-                for a in 0..4 {
-                    let va = verts[a] as usize;
-                    for b in 0..4 {
-                        let vb = verts[b] as usize;
-                        // The 3×3 `V·(BₐᵀℂB_b)` block (shared with `internal_force_tangent_matvec`);
-                        // scatter only its free-DOF, lower-triangle entries.
-                        let block =
-                            element_tangent_block(&geom.grad_x_n, &tangent_9x9, geom.volume, a, b);
-                        for i in 0..3 {
-                            for j in 0..3 {
-                                let row_full = 3 * va + i;
-                                let col_full = 3 * vb + j;
-                                if let (Some(row_free), Some(col_free)) = (
-                                    self.full_to_free_idx[row_full],
-                                    self.full_to_free_idx[col_full],
-                                ) && row_free >= col_free
-                                {
-                                    *acc.entry((col_free, row_free)).or_insert(0.0) +=
-                                        block[(i, j)];
+            for (tet_id, geom) in self.gauss_geometries.iter().enumerate() {
+                let nodes = element_node_ids::<M, Msh, N>(&self.mesh, tet_id as TetId);
+                let x_elem = extract_element_dof_values(x_curr, &nodes);
+                // Integrate the elastic tangent over the element's `G` Gauss
+                // points — each (a, b) node-pair block is `Σ_q weight_q ·
+                // Bₐᵀ(ξ_q) ℂ(F_q) B_b(ξ_q)`. The `0..N` node loops now reach the
+                // corner↔midside and midside↔midside blocks a Tet10 fills; the
+                // symbolic factor pattern (`new()` §4) was widened to `0..N` in
+                // lockstep. Tet4 monomorphizes to a single centroid point over
+                // 4 nodes, reproducing the pre-rung-4 scatter exactly.
+                for (grad_x_n, weight) in &geom.gauss {
+                    let f = deformation_gradient(&x_elem, grad_x_n);
+                    let tangent_9x9 = materials[tet_id].tangent(&f);
+                    for a in 0..N {
+                        let va = nodes[a] as usize;
+                        for b in 0..N {
+                            let vb = nodes[b] as usize;
+                            // The 3×3 `V·(BₐᵀℂB_b)` block (shared with
+                            // `internal_force_tangent_matvec`); scatter only its
+                            // free-DOF, lower-triangle entries.
+                            let block =
+                                element_tangent_block(grad_x_n, &tangent_9x9, *weight, a, b);
+                            for i in 0..3 {
+                                for j in 0..3 {
+                                    let row_full = 3 * va + i;
+                                    let col_full = 3 * vb + j;
+                                    if let (Some(row_free), Some(col_free)) = (
+                                        self.full_to_free_idx[row_full],
+                                        self.full_to_free_idx[col_full],
+                                    ) && row_free >= col_free
+                                    {
+                                        *acc.entry((col_free, row_free)).or_insert(0.0) +=
+                                            block[(i, j)];
+                                    }
                                 }
                             }
                         }
@@ -473,24 +490,28 @@ where
         debug_assert!(x.len() == self.n_dof && v.len() == self.n_dof);
         let mut out = vec![0.0_f64; self.n_dof];
 
-        // Elastic tangent: for each element, (K_elem·v)[3va+i] += V·(BᵀℂB)_{ai,bj}·v[3vb+j].
+        // Elastic tangent: for each element + each Gauss point,
+        // (K_elem·v)[3va+i] += weight_q·(BᵀℂB)_{ai,bj}·v[3vb+j]. Tet4
+        // monomorphizes to a single centroid point over 4 nodes (byte-identical
+        // to pre-rung-4); Tet10 sums its 4 points over all 10 nodes.
         let materials = self.mesh.materials();
-        for (tet_id, geom) in self.element_geometries.iter().enumerate() {
-            let verts = self.mesh.tet_vertices(tet_id as TetId);
-            let x_elem = extract_element_dof_values(x, &verts);
-            let f = deformation_gradient(&x_elem, &geom.grad_x_n);
-            let tangent_9x9 = materials[tet_id].tangent(&f);
-            for a in 0..4 {
-                let va = verts[a] as usize;
-                for b in 0..4 {
-                    let vb = verts[b] as usize;
-                    // Same `V·(BₐᵀℂB_b)` block as `assemble_free_hessian_triplets`, contracted
-                    // full-DOF against `v` (no free/pinned filter).
-                    let block =
-                        element_tangent_block(&geom.grad_x_n, &tangent_9x9, geom.volume, a, b);
-                    for i in 0..3 {
-                        for j in 0..3 {
-                            out[3 * va + i] += block[(i, j)] * v[3 * vb + j];
+        for (tet_id, geom) in self.gauss_geometries.iter().enumerate() {
+            let nodes = element_node_ids::<M, Msh, N>(&self.mesh, tet_id as TetId);
+            let x_elem = extract_element_dof_values(x, &nodes);
+            for (grad_x_n, weight) in &geom.gauss {
+                let f = deformation_gradient(&x_elem, grad_x_n);
+                let tangent_9x9 = materials[tet_id].tangent(&f);
+                for a in 0..N {
+                    let va = nodes[a] as usize;
+                    for b in 0..N {
+                        let vb = nodes[b] as usize;
+                        // Same `V·(BₐᵀℂB_b)` block as `assemble_free_hessian_triplets`, contracted
+                        // full-DOF against `v` (no free/pinned filter).
+                        let block = element_tangent_block(grad_x_n, &tangent_9x9, *weight, a, b);
+                        for i in 0..3 {
+                            for j in 0..3 {
+                                out[3 * va + i] += block[(i, j)] * v[3 * vb + j];
+                            }
                         }
                     }
                 }
@@ -534,8 +555,8 @@ where
 // i/j/l/l' indices (BF-5 flattening) and the a/b node indices ARE the math; explicit ranges
 // read clearer than iterators here (mirrors `assemble_free_hessian_triplets`).
 #[allow(clippy::needless_range_loop, clippy::many_single_char_names)]
-fn element_tangent_block(
-    grad_x_n: &SMatrix<f64, 4, 3>,
+fn element_tangent_block<const N: usize>(
+    grad_x_n: &SMatrix<f64, N, 3>,
     tangent_9x9: &SMatrix<f64, 9, 9>,
     volume: f64,
     a: usize,

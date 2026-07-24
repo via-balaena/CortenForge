@@ -4,44 +4,84 @@ use faer::sparse::Triplet;
 use nalgebra::{Matrix3, SMatrix};
 
 use crate::Vec3;
-use crate::mesh::VertexId;
+use crate::material::Material;
+use crate::mesh::{Mesh, TetId, VertexId};
 
 // ── free functions (assembly kernels) ──────────────────────────────────
 
-/// Per-element deformation gradient `F_ij = Σ_a x_{a,i} · ∂N_a/∂X_j`
-/// (direct form).
+/// Compose the `N` ordered element-local node ids from a tet's 4 corners and
+/// (for a higher-order element, `N > 4`) its 6 midside nodes — consuming the
+/// rung-3a additive midside channel (§3.2 of `docs/SIM_SOFT_TET10_PLAN.md`).
+/// For a linear element (`N == 4`) the midsides are ignored and this returns
+/// exactly [`Mesh::tet_vertices`]. Slots `4..N` follow the corners in the
+/// canonical [`TET10_EDGE_NODES`](crate::element::TET10_EDGE_NODES) order, as
+/// [`Mesh::tet_midside_nodes`] returns them.
 ///
-/// Takes 12 element-local position values (vertex-major, xyz-inner)
-/// from `extract_element_dof_values`. At rest (`x_a = X_a`), returns
-/// the identity.
-pub(super) fn deformation_gradient(
-    x_elem: &[f64; 12],
-    grad_x_n: &SMatrix<f64, 4, 3>,
+/// The single source of the `[VertexId; N]` node list every generic assembly
+/// kernel reads — the deformation-gradient / stiffness kernels, the HRZ mass
+/// scatter, and the symbolic-incidence build all route through it so the node
+/// ordering can never drift between them.
+//
+// expect_used: a higher-order (N > 4) element is only ever constructed against
+// a midside-surfacing mesh (e.g. `Tet10Mesh`); a `None` here is a
+// construction-time programmer error, declared in `new()`'s `# Panics`.
+#[allow(clippy::expect_used)]
+pub(super) fn element_node_ids<M, Msh, const N: usize>(mesh: &Msh, tet_id: TetId) -> [VertexId; N]
+where
+    M: Material,
+    Msh: Mesh<M>,
+{
+    let mut nodes: [VertexId; N] = [0; N];
+    nodes[..4].copy_from_slice(&mesh.tet_vertices(tet_id));
+    if N > 4 {
+        // `N > 4` is Tet10 (`N == 10`) in this ladder — the six midsides fill
+        // slots `4..10`.
+        let mids = mesh.tet_midside_nodes(tet_id).expect(
+            "a higher-order (N > 4) element requires a mesh that surfaces midside \
+             nodes, but Mesh::tet_midside_nodes returned None",
+        );
+        nodes[4..].copy_from_slice(&mids);
+    }
+    nodes
+}
+
+/// Extract one element's `N` node positions from the global DOF vector as an
+/// `N × 3` matrix (row `a` = node `a`'s xyz). `x_elem[(a, k)] = x_full[3 *
+/// nodes[a] + k]`.
+///
+/// For `N = 4` this reproduces the pre-rung-4 `[f64; 12]` vertex-major layout
+/// value-for-value (`x_elem[(a, k)] == old x_elem[3 * a + k]`), so the
+/// downstream [`deformation_gradient`] stays bit-identical.
+pub(super) fn extract_element_dof_values<const N: usize>(
+    x_full: &[f64],
+    nodes: &[VertexId; N],
+) -> SMatrix<f64, N, 3> {
+    SMatrix::<f64, N, 3>::from_fn(|a, k| x_full[3 * nodes[a] as usize + k])
+}
+
+/// Per-element deformation gradient `F_ij = Σ_a x_{a,i} · ∂N_a/∂X_j`
+/// (direct form) at one Gauss point.
+///
+/// `x_elem` is the `N × 3` element node matrix from
+/// [`extract_element_dof_values`]; `grad_x_n` is that point's material-frame
+/// shape gradient. At rest (`x_a = X_a`) returns the identity. The explicit
+/// `a`-outer accumulation order is preserved from the pre-rung-4 `N = 4` loop
+/// so Tet4 stays bit-identical (do not replace with a `nalgebra` matmul — that
+/// reorders the reduction).
+pub(super) fn deformation_gradient<const N: usize>(
+    x_elem: &SMatrix<f64, N, 3>,
+    grad_x_n: &SMatrix<f64, N, 3>,
 ) -> Matrix3<f64> {
     let mut f = Matrix3::zeros();
-    for a in 0..4 {
+    for a in 0..N {
         for i in 0..3 {
-            let x_ai = x_elem[3 * a + i];
+            let x_ai = x_elem[(a, i)];
             for j in 0..3 {
                 f[(i, j)] += x_ai * grad_x_n[(a, j)];
             }
         }
     }
     f
-}
-
-/// Extract one element's 12 vertex-DOF values from the global
-/// position vector. Vertex-major + xyz-inner layout: `x_elem[3 * a +
-/// k] = x_full[3 * verts[a] + k]`.
-pub(super) fn extract_element_dof_values(x_full: &[f64], verts: &[VertexId; 4]) -> [f64; 12] {
-    let mut x_elem = [0.0; 12];
-    for a in 0..4 {
-        let v = verts[a] as usize;
-        x_elem[3 * a] = x_full[3 * v];
-        x_elem[3 * a + 1] = x_full[3 * v + 1];
-        x_elem[3 * a + 2] = x_full[3 * v + 2];
-    }
-    x_elem
 }
 
 /// Full-DOF residual per scope §5 R-5: `r = (M/Δt²)·(x - x_prev -
