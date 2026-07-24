@@ -68,7 +68,10 @@
 //!   Tet4 look *worse* (`e₄₀` 0.0140 → 0.0615 versus the equal split) while
 //!   improving Tet10 — the direction a skeptic should challenge — but it also
 //!   makes the ACCEPT band *stricter* (`max(2·e₄₀, 0.10)` = 0.123 rather than
-//!   the 0.299 the shipped oracle's number would have licensed).
+//!   the 0.299 the shipped oracle's number would have licensed). The band
+//!   inherits the convention outright, though, and 6c decides against it:
+//!   `max(2·e₄₀, 0.10)` is **0.100** under [`LoadRule::EqualSplit`], **0.123**
+//!   under [`LoadRule::Continuum`], **0.251** under [`LoadRule::Facet`].
 //! - Note the plan's three rules **overlap** on `[0.10, max(2·e₄₀, 0.10)]`
 //!   for any `e₄₀ > 0.05`: a reading of 0.12 satisfies ACCEPT *and* falls in
 //!   the gray zone that defaults to REJECT. 6c must pre-register a
@@ -87,9 +90,9 @@
 //! (the pinned outer skin, which also kills all six rigid-body modes). Two
 //! equations, two unknowns, solved in closed form by [`Lame::solve`] — no
 //! 6×6 assembly and no LU, because the single-shell case reduces by hand.
-//! Timoshenko & Goodier, *Theory of Elasticity* 3rd ed. §141. At ~0.2 %
-//! cavity-radius inflation the Neo-Hookean response is in its linear-elastic
-//! regime, where it reduces to Lamé.
+//! Timoshenko & Goodier, *Theory of Elasticity* 3rd ed. §141. At the measured
+//! 0.45 % cavity-radius inflation the Neo-Hookean response is in its
+//! linear-elastic regime, where it reduces to Lamé.
 //!
 //! **★ Measurement convention — identical node set, fixed analytic target.**
 //! The FEM mean is the Saint-Venant average of `‖x_final‖ − ‖x_rest‖` over
@@ -308,10 +311,11 @@ const E40_FACET: f64 = 0.1257;
 /// Half-width of the acceptance band around a committed measurement. The
 /// solves are deterministic (the assembler is serial by design and the
 /// mesher is gated for run-to-run bit-equality by IV-5), so this bounds
-/// cross-platform floating-point drift, not run-to-run noise. Calibrated:
-/// re-running the baseline drifts by `1e-5`, while a 1 % material change
-/// moves it by `0.0075` — so the band has ~500× headroom over numerical
-/// noise and still trips on a sub-percent stiffness regression.
+/// cross-platform floating-point drift, not run-to-run noise: re-running the
+/// baseline reproduces `measured` to all 17 digits, in both profiles. Sized
+/// against the effects the file actually discriminates — the load rule spans
+/// 0.0140 to 0.1257, and h → h/2 moves the Tet4 reading by several points —
+/// so `0.005` separates those without pinning a cross-platform ULP.
 const COMMITTED_BAND: f64 = 0.005;
 
 // ── Closed-form single-shell Lamé oracle ─────────────────────────────────
@@ -456,7 +460,8 @@ enum LoadRule {
     /// discrete faceted boundary the FEM actually solves on — and therefore
     /// the rule under which the Galerkin over-stiffness argument strictly
     /// applies — but it charges the mesher's `O((h/R)²)` faceting deficit to
-    /// the element. Applies ~7 % less total load than [`Self::Continuum`].
+    /// the element. Measured, it applies ~5 % less total load than
+    /// [`Self::Continuum`] (4.8 % by force magnitude, 5.0 % by radial thrust).
     Facet,
     /// IV-5's rule: the exact analytic cavity area split **equally** over
     /// every cavity-surface node, along `r̂`. The control. Inconsistent for a
@@ -828,7 +833,7 @@ fn tet4_baseline_at_nu_0_4_is_committed_e40() {
     // measured (h, h/2, h/4 × ν ∈ {0.4, 0.49, 0.499}). The Galerkin
     // over-stiffness argument points the same way but does not strictly carry
     // it here: that argument wants the load consistent with the *discrete*
-    // faceted domain, and `LoadRule::Continuum` deliberately applies ~7 %
+    // faceted domain, and `LoadRule::Continuum` deliberately applies ~5 %
     // more than that (module docs). So this is an empirical regularity worth
     // pinning, not a theorem — a flip means the harness changed character.
     assert!(
