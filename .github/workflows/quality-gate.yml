@@ -573,13 +573,22 @@ jobs:
       # `--test` selections add the cfg-attr-debug-skip release-only paths only
       # (avoids 2× compile cost on debug-already-covered tests). Runs when
       # sim-soft is affected (SOFT_PKGS non-empty → also true on the full path).
-      - name: Run sim-soft release-only contact tests
+      #
+      # `tet10_lame_decision` is the Tet10 ladder rung-6 accuracy harness
+      # (`docs/SIM_SOFT_TET10_PLAN.md` §5 step 6). It is registered HERE and
+      # not left to `tests-debug` because its silicone-sphere solves are
+      # release-only, and an unregistered release-only sim-soft test runs in
+      # no CI job at all. Its h/2 decision mesh is seconds in release; the h/4
+      # mesh-stability confirmation is a pre-push one-shot and is deliberately
+      # NOT a test in that file.
+      - name: Run sim-soft release-only contact + Tet10-oracle tests
         if: matrix.id == 3 && env.SOFT_PKGS != ''
         run: |
           cargo test --release -p sim-soft \
             --test hertz_sphere_plane \
             --test contact_drop_rest \
-            --test non_interpenetration
+            --test non_interpenetration \
+            --test tet10_lame_decision
         shell: bash
 
       # cf-cast's mold/cast kernel (358 library tests) runs --lib-only in
