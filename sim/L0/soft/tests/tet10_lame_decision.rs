@@ -9,11 +9,14 @@
 //!   the decision mesh. The plan's prior "Tet4 → 0.993 at ν = 0.4" figure was
 //!   an uncommitted spike that exists nowhere in the tree; the ν = 0.49
 //!   threshold subtracts against a measured number or against nothing.
-//! - **6b (this commit)** — Tet10 at ν = 0.4 must match-or-beat Tet4 on the
+//! - **6b (landed)** — Tet10 at ν = 0.4 must match-or-beat Tet4 on the
 //!   same harness. A miss *there* localizes to a forward/assembly bug, not to
 //!   an incompressibility limit, which is the whole point of running it before
 //!   the ν = 0.49 gate.
-//! - **6c** — Tet10 at ν = 0.49 against the pre-registered three-way gate.
+//! - **6c (this commit)** — Tet10 at ν = 0.49 against the pre-registered
+//!   three-way gate. **VERDICT: ACCEPT** — and see
+//!   `tet10_bending_locking.rs`, which supplies the locking evidence this
+//!   oracle structurally cannot.
 //!
 //! ## Why a second Lamé file, and not a ν knob on `concentric_lame_shells`
 //!
@@ -114,7 +117,7 @@
 //!    "Converges downward through 0.10" means: the h/4 reading under the *same
 //!    rule* is both `≤ 0.10` and strictly below the h/2 reading. **If the h/4
 //!    solve cannot be run, the verdict is REJECT** — h/4 Tet10 measured 7.13 GB
-//!    / 257 s at ν = 0.4, and the plan warns the ν = 0.49 LU-fallback path
+//!    / 257 s at ν = 0.4 (7.16 GB / 500 s for the two ν = 0.49 solves), and the plan warns the ν = 0.49 LU-fallback path
 //!    doubles fill, so "we could not afford the confirmation" must not become
 //!    an ACCEPT by default.
 //! 4. **The verdict is read off the absolute gate only.** [`TET10_NU_0_4`] is
@@ -240,8 +243,9 @@
 //! demand-#1 gate) is in today.
 //!
 //! The h/4 mesh-stability confirmation is the one thing that stays out: at
-//! 94,710 nodes / 284k DOF it measured **7.13 GB peak RSS over 257 s**, above
-//! what a 7 GB CI runner has. It is a pre-push one-shot, never CI.
+//! 94,710 nodes / 284k DOF the ν = 0.49 confirmation measured **7.16 GB peak
+//! RSS over 500 s for its two solves** (7.13 GB / 257 s is rung 6a's
+//! single-solve ν = 0.4 cost), above what a 7 GB CI runner has. It is a pre-push one-shot, never CI.
 
 #![allow(
     // The measurements are engineering quantities with committed analytic
@@ -296,7 +300,8 @@ const PRESSURE: f64 = 5.0e3;
 
 /// **The decision mesh.** IV-5's `CELL_SIZE_H2`: 6,456 tets → 4,682 Tet4
 /// vertices / 13,336 Tet10 nodes (40,008 DOF). The h/4 Tet10 mesh is 94,710
-/// nodes / 284k DOF and measured 7.13 GB peak RSS over 257 s, so it stays a
+/// nodes / 284k DOF and measured 7.16 GB peak RSS over 500 s for the two
+/// ν = 0.49 solves, so it stays a
 /// pre-push one-shot and never enters CI; the locking signal is an element
 /// property visible at moderate refinement, and Lamé convergence here is
 /// already super-quadratic h/2 → h/4.
@@ -1480,7 +1485,7 @@ fn tet10_at_nu_0_49_decision_gate() {
                         &reading,
                     );
                     // ★ `assert_committed` deliberately does NOT run here. Its
-                    // band is ±0.0016, ~60× tighter than the distance from the
+                    // band is ±0.0016, ~44× tighter than the distance from the
                     // reading to `ACCEPT_BAR`, so asserting it first would make
                     // `Verdict::Gray` and `Verdict::Reject` unreachable on the
                     // accuracy path: any reading bad enough to REJECT would
@@ -1591,6 +1596,14 @@ fn tet10_nu_0_49_h4_mesh_stability_confirmation() {
     // h/4 reading must be both ≤ ACCEPT_BAR and strictly below the h/2
     // reading. At an h/2 verdict of ACCEPT this is confirmation rather than an
     // escape, but the assertion is identical either way.
+    //
+    // ★★ Read the two arms asymmetrically. `Continuum`'s h/2 → h/4 improvement
+    // is dominated by the LOAD CONVENTION converging, not by the element: the
+    // faceted-vs-exact cavity-area excess falls O(h²) (+5.26 % at h/2 → +1.38 %
+    // at h/4), and refining the element alone would push that arm the WRONG way
+    // (~+0.045). So mesh-stability here rests on the `Facet` arm, whose load is
+    // consistent with the discrete boundary; `Continuum`'s downward move is
+    // real but is largely its own bias shrinking.
     //
     // ★ h/2 is solved LIVE here rather than read from its committed constant.
     // The pre-registered clause says "strictly below the h/2 reading", and

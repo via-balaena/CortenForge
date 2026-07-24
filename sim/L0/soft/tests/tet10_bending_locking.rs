@@ -40,12 +40,14 @@
 //! bending by a large multiplicative factor, and Tet10 does not — comparing
 //! their raw deflections would measure element order, not locking. The ratio
 //! divides out any factor that is ν-independent, which includes the
-//! discretisation factor, the mesh, **and the tip-load distribution**. That
-//! last point matters here: an equal per-node split of the tip force is
-//! inconsistent for a quadratic face (the Lamé file's `LoadRule` work is all
-//! about this), but it is applied identically at both ν, so it cancels in the
-//! ratio exactly as the discretisation factor does. No consistent-load
-//! machinery is needed for a locking measurement.
+//! discretisation factor and the mesh. The tip load needs a more careful
+//! statement than "it cancels": an equal per-node split is inconsistent for a
+//! quadratic face (the Lamé file's `LoadRule` work is all about this), and an
+//! inconsistent load is a different *functional*, not a scalar factor — it does
+//! not cancel. What matters is that the identical load vector is applied at
+//! both ν, so whatever bias it carries does not vary across the ratio. That is
+//! why no consistent-load machinery is needed for a locking measurement, and
+//! also why this file's absolute deflections are committed separately.
 //!
 //! Physical target: `δ ∝ 1/E` with `E = 2μ(1+ν)`, so the ideal ratio is
 //! `(1+ν_lo)/(1+ν_hi) = 1.30/1.49 ≈ 0.872` — the beam should barely stiffen.
@@ -123,7 +125,16 @@ const MAX_EXPECTED_NEWTON_ITER: usize = 350;
 /// same trap `tet10_lame_decision.rs` documents: it sits at or below the
 /// ν = 0.49 Tet10 residual floor, so the solve cannot reach it. Scaling to the
 /// load makes the criterion mean the same thing for every configuration.
-const TOL_RELATIVE: f64 = 1e-9;
+///
+/// `1e-8` gives `cfg.tol = 2.0e-9` against a measured ν = 0.49 Tet10 residual
+/// floor of `1.72e-10` — **11.6× margin**. An earlier `1e-9` left only 1.16×,
+/// i.e. this file landed 16 % from the very trap its docstring diagnoses, and
+/// `replay_step` panics on the iteration cap, so a platform with a slightly
+/// higher floor would fail as an opaque panic rather than through one of the
+/// authored assertions. Verified harmless: across `TOL_RELATIVE` ∈ [1e-9, 1e-6]
+/// the ν = 0.49 solve returns bit-identical iterations, residual and
+/// deflection, because Newton's final step drops the residual >1000×.
+const TOL_RELATIVE: f64 = 1e-8;
 
 // ── Committed measurements ───────────────────────────────────────────────
 
@@ -138,6 +149,21 @@ const TET4_NU_RATIO: f64 = 0.2341;
 /// **Tet10's ν-ratio — the rung-6 bending evidence.** Committed with the same
 /// ±5 % relative band convention as the Lamé file.
 const TET10_NU_RATIO: f64 = 0.8058;
+
+/// **Absolute tip deflections, committed — the ratio gate alone has a hole.**
+/// A Tet10 regression that is uniformly over-stiff by any ν-INDEPENDENT factor
+/// (bad Gauss weights, a wrong Jacobian scaling — the Lamé file records a 5 %
+/// instance) leaves the ν-ratio untouched at 0.8058 and passes every ratio
+/// assertion here. Pinning the absolute readings closes that, and anchors the
+/// "ν = 0.30 is an unlocked reference" claim absolutely rather than by ratio:
+/// against a Timoshenko cantilever (κ = 5/6, `G = μ`) the analytic deflections
+/// are 1.983e-2 and 1.738e-2, so Tet10 recovers **95 %** of analytic at
+/// ν = 0.30 and **88 %** at ν = 0.49 — not the profile of a locked element —
+/// while Tet4 falls to 46 % and **12 %**.
+const TET4_DELTA_NU_LO: f64 = 9.1853e-3;
+const TET4_DELTA_NU_HI: f64 = 2.1501e-3;
+const TET10_DELTA_NU_LO: f64 = 1.8869e-2;
+const TET10_DELTA_NU_HI: f64 = 1.5205e-2;
 
 /// Band half-width as a fraction of the committed value.
 const BAND_FRACTION: f64 = 0.05;
@@ -244,9 +270,13 @@ fn tip_deflection(order: ElementOrder, nu: f64) -> f64 {
 }
 
 /// ν-ratio `δ(ν_hi)/δ(ν_lo)` for one element — the offset-free locking metric.
-fn nu_ratio(order: ElementOrder) -> f64 {
+/// Also pins the two absolute deflections, which the ratio by construction
+/// cannot ([`TET10_DELTA_NU_LO`]).
+fn nu_ratio(order: ElementOrder, committed_lo: f64, committed_hi: f64) -> f64 {
     let lo = tip_deflection(order, NU_LO);
     let hi = tip_deflection(order, NU_HI);
+    assert_committed(&format!("{order:?} δ(ν={NU_LO})"), lo, committed_lo);
+    assert_committed(&format!("{order:?} δ(ν={NU_HI})"), hi, committed_hi);
     assert!(
         lo > 0.0 && hi > 0.0,
         "{order:?}: the tip must deflect along the applied +z load at both ν (got lo = {lo:e}, \
@@ -273,8 +303,8 @@ fn assert_committed(label: &str, measured: f64, committed: f64) {
 fn tet10_does_not_lock_in_bending_where_tet4_does() {
     // The locking-sensitive companion to the rung-6c Lamé verdict, on an
     // oracle whose control provably DOES lock.
-    let tet4 = nu_ratio(ElementOrder::Tet4);
-    let tet10 = nu_ratio(ElementOrder::Tet10);
+    let tet4 = nu_ratio(ElementOrder::Tet4, TET4_DELTA_NU_LO, TET4_DELTA_NU_HI);
+    let tet10 = nu_ratio(ElementOrder::Tet10, TET10_DELTA_NU_LO, TET10_DELTA_NU_HI);
     eprintln!("rung-6 bending: physical ≈ {PHYSICAL_RATIO:.4}, Tet4 {tet4:.4}, Tet10 {tet10:.4}");
 
     // 1. THE CONTROL MUST LOCK. Without this the oracle is as uninformative as
