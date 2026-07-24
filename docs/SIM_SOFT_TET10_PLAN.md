@@ -518,10 +518,16 @@ capture — the isoparametric-surface piece is deferred, §7).
      a static gate cannot see a swamped negative mass; see the dynamics
      mass-gate below). Land 3b with, or just before, step 4.
 4. **Multi-Gauss-point forward assembly (§3.3–3.4).** Real quadrature loop,
-   per-GP geometry (cardinality 1→4, constant `detJ`), per-GP material. Gate:
-   **Tet4 byte-identity** — the `det.abs()/6.0` weight and edge-vector Jacobian
+   per-GP geometry (cardinality 1→4, constant `detJ`), per-GP material. Gates:
+   (a) **Tet4 byte-identity** — the `det.abs()/6.0` weight and edge-vector Jacobian
    preserved (§3.1 traps), proven against the golden bit-tests **extended to a
-   Yeoh scene and a roller scene** (the current goldens are NH-only).
+   Yeoh scene and a roller scene** (the current goldens are NH-only). (b) **A
+   stiffness-magnitude reconciliation** — a single Tet10 element's production
+   multi-GP tangent at rest (F=I) must equal an independent `BᵀDB` reference
+   (NeoHookean `∂P/∂F(I)` is exactly linear isotropic elasticity), catching a
+   stiffness-free element, a wrong assembly-level weight, or a mis-integrated
+   corner↔midside block. This is a magnitude check only — node-*ordering* and
+   element-primitive bugs remain the rung-5 / rung-1 gates' job.
 5. **★ Tet10 element-correctness gates (before any integrated oracle).**
    (a) **Finite-rotation rigid-body** `x = c + Q·X` → zero internal force
    (stronger than translation-only; Neo-Hookean `P=0` for orthogonal `Q`).

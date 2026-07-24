@@ -1225,8 +1225,12 @@ fn tet10_dynamic_replay_step_converges() {
 // production 9×9-material-tangent / BF-5-flattening assembler against the Voigt
 // `[xx, yy, zz, xy, yz, zx]` convention (rung-1 carry-forward — the strain
 // convention cannot drift) and, being a full magnitude match over all 10 nodes and
-// 4 Gauss points, would catch a stiffness-free element, a wrong Gauss weight, or a
-// mis-integrated corner↔midside block.
+// 4 Gauss points, would catch a stiffness-free element, a wrong assembly-level Gauss
+// weight, or a mis-integrated corner↔midside block. It does NOT catch a bug INSIDE
+// the shared element primitives (`gauss_points` / `shape_gradients` — those are the
+// rung-1 element tests' job) nor a consistent node PERMUTATION (a similarity
+// transform `PKPᵀ` is invisible to this magnitude match — that is the rung-5b
+// asymmetric-patch gate's job).
 
 const RECON_E: f64 = 1.0;
 const RECON_NU: f64 = 0.3;
@@ -1332,7 +1336,7 @@ fn tet10_multigp_tangent_matches_bt_d_b_reference() {
         max_diff <= 1.0e-9 * scale,
         "Tet10 production tangent deviates from the Bᵀ·D·B reference: max |Δ| = \
          {max_diff:e} (spectral scale {scale:e}). A stiffness-free element, a wrong \
-         Gauss weight, a drifted Voigt convention, or a mis-ordered midside block \
-         would surface here.",
+         assembly-level Gauss weight, a drifted Voigt convention, or a mis-integrated \
+         corner↔midside block would surface here.",
     );
 }
