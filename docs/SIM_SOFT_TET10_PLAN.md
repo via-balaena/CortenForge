@@ -4,9 +4,12 @@
 > code-grounded pressure-test (every load-bearing claim verified against the
 > actual source at `main`). The implementation roadmap for adding the
 > **Tet10** (10-node quadratic tetrahedron) element to `sim-soft`. Status:
-> **IN PROGRESS — rungs 1–4 landed (#680/#681/#682/#683 + rung 4); the forward
-> solver now assembles the REAL multi-Gauss-point Tet10 stiffness over all 10
-> nodes (§3.3). NEXT = rung 5 (element-correctness gates).** ⚠ **Rung 4 landed
+> **IN PROGRESS — rungs 1–5 landed (#680/#681/#682/#683/#685/#686); the forward
+> solver assembles the REAL multi-Gauss-point Tet10 stiffness over all 10 nodes
+> (§3.3), and the rung-5 element-correctness gates (finite-rotation RBM +
+> asymmetric-patch ordering detector) validate it (§5 step 5). NEXT = rung 6
+> (the ν=0.4 baseline → ν=0.49 ACCEPT/REJECT oracle decision — heavy,
+> user-in-loop, its own session).** ⚠ **Rung 4 landed
 > via a TWO-CACHE design, not the in-place `ElementGeometry` generalization the
 > §3.3/§3.4 forward text below describes** — see the "★ RUNG 4 LANDED (design
 > delta)" note in §3.3: generalizing `ElementGeometry` in place would have forced
@@ -528,7 +531,24 @@ capture — the isoparametric-surface piece is deferred, §7).
    stiffness-free element, a wrong assembly-level weight, or a mis-integrated
    corner↔midside block. This is a magnitude check only — node-*ordering* and
    element-primitive bugs remain the rung-5 / rung-1 gates' job.
-5. **★ Tet10 element-correctness gates (before any integrated oracle).**
+5. **★ Tet10 element-correctness gates (before any integrated oracle). ✅ LANDED
+   (#686).** Test-only, on the now-correct multi-GP element. Shipped: (a) the
+   finite-rotation RBM gate and (b) the asymmetric quadratic-field ordering
+   detector — the latter through the *production* node mapping
+   (`element_node_ids` → assembler on a real `two_tet_shared_face`→Tet10 mesh),
+   with an INDEPENDENT reference that maps slot→node by physical midpoint lookup
+   (never reading `tet_midside_nodes`), so an enrich↔shape-gradient ordering
+   drift diverges. (c) the rank/eigenspectrum gate was already landed in rung 1.
+   Element-level companions (completeness + quadratic-F reproduction +
+   constant-strain — the last documented ordering-blind) live in
+   `element/tet10.rs`.
+   **★ Design delta learned here: the assembler-based Tet10 gates — both rung-5
+   production gates and the rung-4 `BᵀDB` tangent gate — now assert FINITENESS
+   FIRST. A drift that inverts F (det ≤ 0 → `ln det F` = NaN) puts NaN in the
+   assembled force, and `f64::max(m, NaN) == m` would otherwise mask it in the
+   max-reduction, passing vacuously. The element-level companions need no such
+   guard — they are pure kinematics that panic loudly on a singular inverse.**
+   The original plan text for step 5 follows.
    (a) **Finite-rotation rigid-body** `x = c + Q·X` → zero internal force
    (stronger than translation-only; Neo-Hookean `P=0` for orthogonal `Q`).
    (b) **★ Asymmetric / quadratic-field patch test on an IRREGULAR element** —
