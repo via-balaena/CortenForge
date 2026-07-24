@@ -5,13 +5,14 @@
 //! at ν = 0.49 (Ecoflex 00-30), or does near-incompressibility need a mixed
 //! Taylor-Hood P2-P1 formulation on top?** The rung-6 ladder is:
 //!
-//! - **6a (this commit)** — commit the *real* Tet4 ν = 0.4 baseline `e₄₀` at
+//! - **6a (landed)** — commit the *real* Tet4 ν = 0.4 baseline `e₄₀` at
 //!   the decision mesh. The plan's prior "Tet4 → 0.993 at ν = 0.4" figure was
 //!   an uncommitted spike that exists nowhere in the tree; the ν = 0.49
 //!   threshold subtracts against a measured number or against nothing.
-//! - **6b** — Tet10 at ν = 0.4 must match-or-beat Tet4 on the same harness.
-//!   A miss *there* localizes to a forward/assembly bug, not to an
-//!   incompressibility limit.
+//! - **6b (this commit)** — Tet10 at ν = 0.4 must match-or-beat Tet4 on the
+//!   same harness. A miss *there* localizes to a forward/assembly bug, not to
+//!   an incompressibility limit, which is the whole point of running it before
+//!   the ν = 0.49 gate.
 //! - **6c** — Tet10 at ν = 0.49 against the pre-registered three-way gate.
 //!
 //! ## Why a second Lamé file, and not a ν knob on `concentric_lame_shells`
@@ -307,6 +308,40 @@ const E40_EQUAL_SPLIT: f64 = 0.0140;
 /// facet normals, the load that is variationally consistent with the
 /// *discrete* faceted boundary rather than with the continuum sphere.
 const E40_FACET: f64 = 0.1257;
+
+/// **`e₁₀,₄₀` — the committed Tet10 ν = 0.4 anchor** (rung 6b), same harness,
+/// same mesh, same load rule, same readout nodes as [`E40`].
+///
+/// This — not `e₄₀` — is the physically meaningful thing a ν = 0.49 Tet10
+/// reading should be compared against, because it isolates *what
+/// near-incompressibility costs Tet10* from what the element and mesh cost
+/// anyway. `e₄₀` is retained only because the plan's pre-registered threshold
+/// is defined in terms of it (see [`E40`]).
+///
+/// ⚠ **Do not read the smallness of this number as "Tet10 is 0.3 % accurate".**
+/// It is small partly because two effects cancel under
+/// [`LoadRule::Continuum`]: the element is over-stiff, and the load rule
+/// applies ~5 % more thrust than the discrete boundary warrants, which pushes
+/// the reading soft. [`TET10_NU_0_4_FACET`] is the same element under the
+/// variationally consistent load and is **17× larger** (0.0525). The
+/// *element-order comparison* is what this file supports — Tet10 beats Tet4
+/// under both consistent rules, by 20× under `Continuum` and 2.4× under
+/// `Facet` — but a standalone absolute accuracy claim for Tet10 is not.
+const TET10_NU_0_4: f64 = 0.0031;
+
+/// [`LoadRule::EqualSplit`] counterpart of [`TET10_NU_0_4`] — IV-5's rule on a
+/// quadratic surface, where `∫N_corner dA = 0` makes it not merely imprecise
+/// but structurally wrong — and the damage is *element-specific*: against
+/// [`E40_EQUAL_SPLIT`] (0.0140) this is **17× worse than Tet4 under the same
+/// rule**, an inversion of the true element ordering. Under IV-5's shipped
+/// load rule, Tet10 would FAIL the 6b match-or-beat gate for a reason that has
+/// nothing to do with the element. That is the committed evidence for why 6c
+/// may not read its verdict off the shipped load rule.
+const TET10_NU_0_4_EQUAL_SPLIT: f64 = 0.2405;
+
+/// [`LoadRule::Facet`] counterpart of [`TET10_NU_0_4`] — true facet areas and
+/// normals, i.e. the load consistent with the *discrete* boundary.
+const TET10_NU_0_4_FACET: f64 = 0.0525;
 
 /// Half-width of the acceptance band around a committed measurement. The
 /// solves are deterministic (the assembler is serial by design and the
@@ -617,13 +652,6 @@ fn surface_conditions(mesh: &dyn Mesh, cell_size: f64, rule: LoadRule) -> Surfac
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ElementOrder {
     Tet4,
-    // Rung 6a lands the harness carrying only the Tet4 measurements. `Tet10`
-    // is solved by the 6b match-or-beat anchor and the 6c decision gate,
-    // which land in their own PRs on top of this one. The Tet10 *mesh* path
-    // is not unexercised in the meantime:
-    // `boundary_face_midsides_sit_at_edge_midpoints` drives `boundary_faces`
-    // over a real `Tet10Mesh`.
-    #[allow(dead_code)]
     Tet10,
 }
 
@@ -914,4 +942,93 @@ fn boundary_face_midsides_sit_at_edge_midpoints() {
         "rung-6 midside-slot gate: {checked} face-edges checked over {n} boundary faces",
         n = faces.len()
     );
+}
+
+// ── 6b — the Tet10 ν = 0.4 match-or-beat anchor ──────────────────────────
+
+#[test]
+fn tet10_at_nu_0_4_matches_or_beats_tet4() {
+    // Ladder rung 6b, and deliberately a BUG-LOCALIZER rather than an
+    // accuracy claim. Tet10 carries 2.5× Tet4's DOF-to-constraint ratio on
+    // identical geometry, so at a compressible ν where neither element locks
+    // it must not do *worse*. If it did, the fault would be in the rung-4
+    // multi-Gauss-point assembly, the rung-3b unpin trio, or the enrichment —
+    // not in near-incompressibility. Running this before the ν = 0.49 gate is
+    // what lets 6c attribute a bad reading to locking at all.
+    //
+    // Both elements are solved live in this test rather than comparing
+    // against the committed `E40`, so a harness change that moved both
+    // readings together cannot masquerade as an element-order result.
+    let tet4 = solve_and_read(
+        ElementOrder::Tet4,
+        NU_BASELINE,
+        CELL_SIZE_DECISION,
+        LoadRule::Continuum,
+    )
+    .expect("the ν = 0.4 Tet4 baseline solve converges");
+    let tet10 = solve_and_read(
+        ElementOrder::Tet10,
+        NU_BASELINE,
+        CELL_SIZE_DECISION,
+        LoadRule::Continuum,
+    )
+    .expect("the ν = 0.4 Tet10 solve converges");
+    report_and_check_physical("6b Tet4 ν=0.4 @ h/2 (Continuum)", &tet4);
+    report_and_check_physical("6b Tet10 ν=0.4 @ h/2 (Continuum)", &tet10);
+
+    // The Tet10 mesh must actually be the enriched one — same corner count,
+    // ~2.8× the nodes. Guards against a silent fallback to the Tet4 path
+    // that would make the comparison vacuous.
+    assert!(
+        tet10.n_nodes > tet4.n_nodes,
+        "6b: the Tet10 mesh has {n10} nodes against Tet4's {n4} — enrichment did not happen, so \
+         this comparison is vacuous",
+        n10 = tet10.n_nodes,
+        n4 = tet4.n_nodes,
+    );
+    assert_eq!(
+        tet10.n_cavity_corners,
+        tet4.n_cavity_corners,
+        "6b: the two elements must be read on the SAME cavity-corner nodes ({c10} vs {c4}); \
+         enrichment preserves corner ids, so a mismatch means the readout set drifted and the \
+         comparison is no longer apples-to-apples",
+        c10 = tet10.n_cavity_corners,
+        c4 = tet4.n_cavity_corners,
+    );
+
+    // The gate itself: match-or-beat on the same oracle.
+    assert!(
+        tet10.rel_err.abs() <= tet4.rel_err.abs(),
+        "6b MISS — Tet10 ({rel10:+.4}) is worse than Tet4 ({rel4:+.4}) at ν = {NU_BASELINE}, \
+         where neither element locks. This localizes to the FORWARD path (rung-4 multi-Gauss-point \
+         assembly, rung-3b unpin trio, or enrichment), NOT to near-incompressibility — fix it \
+         before reading anything from the ν = 0.49 gate.",
+        rel10 = tet10.rel_err,
+        rel4 = tet4.rel_err,
+    );
+    assert_committed("e₁₀,₄₀", tet10.rel_err.abs(), TET10_NU_0_4);
+}
+
+#[test]
+fn tet10_load_rule_ab_at_nu_0_4() {
+    // The Tet4 A/B (`tet4_load_rule_ab_at_nu_0_4`) shows the load rule moves
+    // the reading. On a QUADRATIC surface the equal-split rule is not merely
+    // imprecise but structurally wrong — `∫N_corner dA = 0` exactly, so
+    // loading corners at all is loading nodes the consistent formulation says
+    // carry none. Committing the size of that error here is what licenses 6c
+    // to reject the shipped load rule on evidence rather than on theory.
+    //
+    // ★ Read the EqualSplit constant against `E40_EQUAL_SPLIT`: 0.2405 versus
+    // 0.0140 means the shipped rule INVERTS the element ordering, and Tet10
+    // would fail 6b's match-or-beat under it. The load rule, not the element,
+    // would have produced that verdict.
+    for (rule, committed, label) in [
+        (LoadRule::EqualSplit, TET10_NU_0_4_EQUAL_SPLIT, "EqualSplit"),
+        (LoadRule::Facet, TET10_NU_0_4_FACET, "Facet"),
+    ] {
+        let reading = solve_and_read(ElementOrder::Tet10, NU_BASELINE, CELL_SIZE_DECISION, rule)
+            .expect("the ν = 0.4 Tet10 solve converges under every load rule");
+        report_and_check_physical(&format!("6b Tet10 ν=0.4 @ h/2 ({label})"), &reading);
+        assert_committed(label, reading.rel_err.abs(), committed);
+    }
 }
