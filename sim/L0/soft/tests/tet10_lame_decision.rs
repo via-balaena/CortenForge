@@ -282,6 +282,12 @@ const MU: f64 = 2.0e5;
 /// volumetrically locks as ν → 0.5; `e₄₀` is measured at this ν.
 const NU_BASELINE: f64 = 0.4;
 
+/// **The decision Poisson ratio.** Ecoflex 00-30 is ν ≈ 0.49; every standalone
+/// soft gate avoids it because Tet4 volumetrically locks as ν → 0.5. Whether
+/// pure-displacement Tet10 is accurate enough *here* is the question the whole
+/// ladder exists to answer (plan §1 demand #2).
+const NU_DECISION: f64 = 0.49;
+
 /// Internal cavity pressure (Pa) — IV-5's `PRESSURE`. Measured cavity
 /// inflation at ν = 0.4 is `1.7942e-4 / 0.04 = 0.45 %` of `R_CAVITY`,
 /// comfortably inside the small-strain window where Neo-Hookean reduces to
@@ -295,6 +301,12 @@ const PRESSURE: f64 = 5.0e3;
 /// property visible at moderate refinement, and Lamé convergence here is
 /// already super-quadratic h/2 → h/4.
 const CELL_SIZE_DECISION: f64 = 0.02;
+
+/// Mesh for the gray-zone / mesh-stability confirmation — IV-5's `CELL_SIZE_H4`.
+/// 49,848 tets → 94,710 Tet10 nodes / 284k DOF, measured **7.13 GB peak RSS
+/// over 257 s**. Pre-push one-shot only: the test that uses it is `#[ignore]`d
+/// so it never runs in CI, where a 7 GB runner would OOM.
+const CELL_SIZE_CONFIRMATION: f64 = 0.01;
 
 /// Static regime — IV-5's `STATIC_DT`. At `dt = 1` the inertial term `M/Δt²`
 /// sits ~4 orders below stiffness, so a single `replay_step` from rest lands
@@ -423,6 +435,37 @@ const TET10_NU_0_4_FACET: f64 = 0.0525;
 /// ordering against Tet4's own equal-split reading, so the P2 corner identity
 /// is the dominant cause but **not the whole cause**.
 const TET10_NU_0_4_EQUAL_SPLIT_SUPPORT: f64 = 0.0761;
+
+// ── Committed measurements (6c — the decision) ───────────────────────────
+
+/// **The rung-6c decision reading** — Tet10 at ν = 0.49 under
+/// [`LoadRule::Continuum`], at [`CELL_SIZE_DECISION`].
+const TET10_NU_0_49: f64 = 0.0314;
+
+/// The same reading under [`LoadRule::Facet`]. Pre-registration requires
+/// ACCEPT under **both** consistent rules, and this is the arm that binds
+/// harder — at ν = 0.4 it sat 4.8× inside its bar against `Continuum`'s 40×.
+const TET10_NU_0_49_FACET: f64 = 0.0148;
+
+/// Tet4 at ν = 0.49 under [`LoadRule::Continuum`], for context only — it is
+/// no part of the gate. Reported because the locking signal this ladder exists
+/// to cure should be *visible*: compare against [`E40`] (0.0615) for the same
+/// element two ν apart, and against [`TET10_NU_0_49`] for the two elements at
+/// the same ν.
+const TET4_NU_0_49: f64 = 0.1083;
+
+// ── The pre-registered decision bars (plan §5 step 6c, fixed at rung 6b) ──
+
+/// ACCEPT ceiling on `|rel_err|`. The plan's `max(2·e₄₀, 0.10)` is 0.123 under
+/// `Continuum` and 0.251 under `Facet`, both above 0.10, so the gray-zone rule
+/// wins the overlap and this is the operative bar under every rule — see the
+/// module docs' pre-registration section, item 2.
+const ACCEPT_BAR: f64 = 0.10;
+
+/// Outright-REJECT floor on `|rel_err|`. Between this and [`ACCEPT_BAR`] is
+/// the gray zone, which REJECTs unless h/2 → h/4 converges downward through
+/// [`ACCEPT_BAR`].
+const REJECT_BAR: f64 = 0.20;
 
 /// Acceptance band around a committed measurement, as a **fraction of the
 /// committed value** (see [`assert_committed`]).
@@ -1260,4 +1303,187 @@ fn tet10_equal_split_load_inverts_the_element_ordering() {
         e = tet10_readings[0],
         t4 = tet4_equal.rel_err,
     );
+}
+
+// ── 6c — the ν = 0.49 ACCEPT/REJECT decision gate ────────────────────────
+
+/// The three-way verdict of plan §5 step 6c.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Verdict {
+    /// Converged, and `|rel_err| ≤ ACCEPT_BAR`.
+    Accept,
+    /// `ACCEPT_BAR < |rel_err| ≤ REJECT_BAR`. Defaults to REJECT unless
+    /// h/2 → h/4 converges downward through [`ACCEPT_BAR`]
+    /// ([`tet10_nu_0_49_h4_mesh_stability_confirmation`]).
+    Gray,
+    /// `|rel_err| > REJECT_BAR`, or Newton stalled → Taylor-Hood P2-P1.
+    Reject,
+}
+
+/// Classify a converged reading against the pre-registered bars.
+///
+/// **On `|rel_err|`, never the signed value** — locking drives the reading
+/// *more negative*, so a signed comparison would ACCEPT a fully locked element
+/// trivially (module docs, pre-registration item "Every threshold below is on
+/// `|rel_err|`"). A solve that fails to converge never reaches this function:
+/// `solve_and_read` returns the `SolverFailure`, which the gate maps to
+/// [`Verdict::Reject`] directly.
+fn classify(rel_err: f64) -> Verdict {
+    let magnitude = rel_err.abs();
+    if magnitude <= ACCEPT_BAR {
+        Verdict::Accept
+    } else if magnitude <= REJECT_BAR {
+        Verdict::Gray
+    } else {
+        Verdict::Reject
+    }
+}
+
+#[test]
+fn tet10_at_nu_0_49_decision_gate() {
+    // ★★ LADDER RUNG 6c — THE DECISION. Is pure-displacement Tet10 accurate
+    // enough at Ecoflex's ν ≈ 0.49, or does near-incompressibility need a
+    // mixed Taylor-Hood P2-P1 formulation on top (a redesign, deferred)?
+    //
+    // Everything this test asserts was pre-registered at rung 6b, while only
+    // ν = 0.4 data existed — see the module docs' pre-registration section.
+    // Nothing here was chosen after seeing a ν = 0.49 number. In particular
+    // the gate requires ACCEPT under BOTH consistent load rules, because 6b
+    // measured that the rule choice moves the anchor 17× and would otherwise
+    // be the largest free lever on the verdict.
+    //
+    // Context reading first: Tet4 at the same ν, which is not part of the gate
+    // but should make the locking signal visible.
+    let tet4 = solve_and_read(
+        ElementOrder::Tet4,
+        NU_DECISION,
+        CELL_SIZE_DECISION,
+        LoadRule::Continuum,
+    )
+    .expect("the ν = 0.49 Tet4 solve converges (context reading, not the gate)");
+    report_and_check_physical("6c Tet4 ν=0.49 @ h/2 (Continuum) [context]", &tet4);
+    assert_committed("Tet4 ν=0.49", tet4.rel_err.abs(), TET4_NU_0_49);
+
+    let mut verdicts = Vec::new();
+    for (rule, committed, label) in [
+        (LoadRule::Continuum, TET10_NU_0_49, "Continuum"),
+        (LoadRule::Facet, TET10_NU_0_49_FACET, "Facet"),
+    ] {
+        // A stall is a clean REJECT that flows through the same assertion as
+        // an accuracy miss — not a crash and not a separate code path.
+        // `try_replay_step` surfaces `NewtonIterCap` / `ArmijoStall` as
+        // errors, and plan §6 expected convergence to be the likely failure
+        // mode at ν → 0.5; §5 step 6c routes both to Taylor-Hood alike.
+        let (verdict, rel_err) =
+            match solve_and_read(ElementOrder::Tet10, NU_DECISION, CELL_SIZE_DECISION, rule) {
+                Ok(reading) => {
+                    report_and_check_physical(
+                        &format!("6c Tet10 ν=0.49 @ h/2 ({label})"),
+                        &reading,
+                    );
+                    assert_committed(
+                        &format!("Tet10 ν=0.49 {label}"),
+                        reading.rel_err.abs(),
+                        committed,
+                    );
+                    (classify(reading.rel_err), Some(reading.rel_err))
+                }
+                Err(failure) => {
+                    eprintln!(
+                        "rung-6c ({label}): Newton did not converge at ν = {NU_DECISION} within \
+                         {MAX_NEWTON_ITER} iterations ({failure:?}) — a stall is a REJECT."
+                    );
+                    (Verdict::Reject, None)
+                }
+            };
+        eprintln!(
+            "rung-6c VERDICT ({label}): {mag} vs ACCEPT ≤ {ACCEPT_BAR}, REJECT > {REJECT_BAR} \
+             → {verdict:?}",
+            mag = rel_err.map_or_else(
+                || "did not converge".to_owned(),
+                |r| format!("|rel_err| = {m:.4}", m = r.abs())
+            ),
+        );
+        verdicts.push((label, verdict, rel_err));
+    }
+
+    // The gate: ACCEPT under BOTH consistent rules, or the verdict is REJECT.
+    for (label, verdict, rel_err) in &verdicts {
+        assert_eq!(
+            *verdict,
+            Verdict::Accept,
+            "6c VERDICT = {verdict:?} under {label} ({mag}). Pre-registration requires ACCEPT \
+             under BOTH consistent load rules; a Gray verdict REJECTs unless the h/4 \
+             confirmation converges downward through {ACCEPT_BAR} \
+             (`tet10_nu_0_49_h4_mesh_stability_confirmation`, `--ignored`), and a Reject verdict \
+             routes to Taylor-Hood P2-P1 per plan §5 step 6c.",
+            mag = rel_err.map_or_else(
+                || "did not converge".to_owned(),
+                |r| format!("|rel_err| = {m:.4}", m = r.abs())
+            ),
+        );
+    }
+
+    // Demand #2 is an ELEMENT-ORDER claim, so the ν = 0.49 gate should also
+    // show Tet10 beating Tet4 at the ν where Tet4 locks — the same
+    // match-or-beat logic rung 6b applied at ν = 0.4.
+    let continuum = verdicts[0]
+        .2
+        .expect("the Continuum arm converged (asserted ACCEPT above)");
+    assert!(
+        continuum.abs() < tet4.rel_err.abs(),
+        "6c: Tet10 ({rel10:+.4}) must beat Tet4 ({rel4:+.4}) at ν = {NU_DECISION}; if it does \
+         not, the ν = 0.49 reading is not an element-order result",
+        rel10 = continuum,
+        rel4 = tet4.rel_err,
+    );
+}
+
+#[ignore = "pre-push one-shot, NEVER CI — the h/4 Tet10 mesh is 94,710 nodes / 284k DOF and \
+            measured 7.16 GB peak RSS over 500 s for the two solves, above what a CI runner \
+            has. Run with `cargo test --release -p sim-soft --test tet10_lame_decision -- \
+            --ignored tet10_nu_0_49_h4`"]
+#[test]
+fn tet10_nu_0_49_h4_mesh_stability_confirmation() {
+    // The mesh-stability half of the 6c decision, and the committed artifact
+    // for the gray-zone escape clause. Plan §5 step 6c pins the decision at
+    // h/2 and this at h/4 as a one-shot; before this rung it existed only as
+    // an instruction, so its output was exactly the kind of vanished spike
+    // number the ladder keeps having to retract.
+    //
+    // Pre-registered criterion (module docs, item 3): under the SAME rule, the
+    // h/4 reading must be both ≤ ACCEPT_BAR and strictly below the h/2
+    // reading. At an h/2 verdict of ACCEPT this is confirmation rather than an
+    // escape, but the assertion is identical either way.
+    for (rule, h2_committed, label) in [
+        (LoadRule::Continuum, TET10_NU_0_49, "Continuum"),
+        (LoadRule::Facet, TET10_NU_0_49_FACET, "Facet"),
+    ] {
+        let h4 = solve_and_read(
+            ElementOrder::Tet10,
+            NU_DECISION,
+            CELL_SIZE_CONFIRMATION,
+            rule,
+        )
+        .expect("the ν = 0.49 Tet10 h/4 solve converges");
+        report_and_check_physical(&format!("6c Tet10 ν=0.49 @ h/4 ({label})"), &h4);
+        assert!(
+            h4.rel_err.abs() <= ACCEPT_BAR,
+            "6c h/4 ({label}): |rel_err| = {mag:.4} exceeds the {ACCEPT_BAR} bar — refinement \
+             does not carry the reading through the ACCEPT threshold",
+            mag = h4.rel_err.abs(),
+        );
+        assert!(
+            h4.rel_err.abs() < h2_committed,
+            "6c h/4 ({label}): |rel_err| = {mag:.4} is not strictly below the h/2 reading \
+             {h2_committed:.4} — the error is not converging downward under refinement, so the \
+             h/2 verdict is not mesh-stable",
+            mag = h4.rel_err.abs(),
+        );
+        eprintln!(
+            "rung-6c h/4 confirmation ({label}): h/2 {h2_committed:.4} → h/4 {mag:.4} \
+             (converging downward through {ACCEPT_BAR})",
+            mag = h4.rel_err.abs(),
+        );
+    }
 }
