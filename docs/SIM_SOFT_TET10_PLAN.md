@@ -475,6 +475,31 @@ consistent. Build order at the oracle:
    stalls/exceeds budget; **gray zone 0.10–0.20 defaults to REJECT** unless
    h/2→h/4 shows it converging *downward* through 0.10. Pre-register these
    numbers in the test, don't eyeball a print stream after the fact.
+   - **★ PRE-REGISTERED IN-REPO AT RUNG 6b** (`tests/tet10_lame_decision.rs`,
+     module docs §"Pre-registered for 6c") — fixed while only ν=0.4 data
+     existed, because 6b measured that the load rule moves the Tet10 anchor by
+     **17×** and the ACCEPT band by **2×**, making it the largest remaining
+     lever on the verdict. That file is authoritative for the 6c decision
+     procedure; this paragraph is the summary. Five refinements, all
+     tightenings of the text above:
+     1. Every threshold is on **`|rel_err|`**, never the signed value —
+        locking drives the reading *more negative*, so a signed `≤ 0.10` would
+        be satisfied trivially by a fully locked element.
+     2. 6c must **ACCEPT under BOTH consistent load rules** (`Continuum` *and*
+        `Facet`); passing one and failing the other is a REJECT. This removes
+        the rule choice as a lever rather than letting it be picked after the
+        fact. Not decoration: at ν=0.4 `Facet` binds ~8× harder.
+     3. The ACCEPT/gray **overlap resolves toward gray**, so the operative bar
+        is `|rel_err| ≤ 0.10` under each rule and the `2·e₄₀` term (0.123
+        `Continuum` / 0.251 `Facet`) is **inert** — it can only tighten below
+        0.10, never loosen above.
+     4. The gray escape is defined: the h/4 reading under the *same rule* must
+        be both `≤ 0.10` and strictly below h/2 — and **if h/4 cannot be run,
+        the verdict is REJECT** (h/4 Tet10 measured 7.13 GB / 257 s at ν=0.4).
+     5. `EqualSplit` is **disqualified as a verdict rule** on 6b evidence (it
+        inverts the element ordering at ν=0.4), and the verdict is read off
+        the absolute gate only — the ν=0.4 Tet10 anchor `e₁₀,₄₀ = 0.0031` is
+        reporting context, not a differential threshold 6c may substitute.
 
 **Both oracle meshes are conforming** (the BCC-stuffed SDF sphere is conformal
 by the parity rule; the CFK hex grid shares `vid` indexing), so the
