@@ -70,6 +70,53 @@ where
     numerator.map(|n| n / total)
 }
 
+/// Build the Llt + Lu symbolic factors from the assembled free-DOF sparsity
+/// pattern (`triplet_set`, lower-triangle `(col, row)` keys, `n_free × n_free`).
+/// The Llt factor consumes the lower triangle (`Side::Lower`); the A2 Lu
+/// fallback needs the full pattern, so the lower triangle is reflected — the
+/// diagonal once, each off-diagonal at both `(r, c)` and `(c, r)` — exactly as
+/// the numeric Lu factor symmetrizes the assembled tangent at fall-through.
+//
+// expect_used + panic: a pattern-build failure here is impossible for any valid
+// mesh + Dirichlet set (the same programmer-bug rationale as `new()`'s own
+// `# Panics`); `SymbolicLu` only errors on OutOfMemory. Extracted from `new()`
+// so these expects sit inside the safety `#[allow]` window (they had drifted
+// past the 300-line back-window as `new()` grew).
+#[allow(clippy::expect_used)]
+fn build_symbolic_factors(
+    triplet_set: &BTreeSet<(usize, usize)>,
+    n_free: usize,
+) -> (SymbolicLlt<usize>, SymbolicLu<usize>) {
+    let pattern_triplets: Vec<Triplet<usize, usize, f64>> = triplet_set
+        .iter()
+        .map(|&(c, r)| Triplet::new(r, c, 1.0))
+        .collect();
+    let pattern_mat: SparseColMat<usize, f64> =
+        SparseColMat::try_new_from_triplets(n_free, n_free, &pattern_triplets)
+            .expect("malformed free-block triplet pattern");
+    let symbolic = SymbolicLlt::<usize>::try_new(pattern_mat.symbolic(), Side::Lower)
+        .expect("symbolic factorization of free-block pattern failed");
+
+    // A2 LU fallback: reflect the structurally-symmetric lower-tri pattern into
+    // the full pattern `SymbolicLu` needs (Lu has no `Side` argument; it reads
+    // both halves).
+    let mut pattern_triplets_full: Vec<Triplet<usize, usize, f64>> =
+        Vec::with_capacity(triplet_set.len() * 2);
+    for &(c, r) in triplet_set {
+        pattern_triplets_full.push(Triplet::new(r, c, 1.0));
+        if c != r {
+            pattern_triplets_full.push(Triplet::new(c, r, 1.0));
+        }
+    }
+    let pattern_mat_full: SparseColMat<usize, f64> =
+        SparseColMat::try_new_from_triplets(n_free, n_free, &pattern_triplets_full)
+            .expect("malformed full free-block triplet pattern");
+    let symbolic_lu = SymbolicLu::<usize>::try_new(pattern_mat_full.symbolic())
+        .expect("symbolic LU factorization of free-block pattern failed");
+
+    (symbolic, symbolic_lu)
+}
+
 impl<E, Msh, C, M, const N: usize, const G: usize> CpuNewtonSolver<E, Msh, C, M, N, G>
 where
     E: Element<N, G>,
@@ -239,9 +286,11 @@ where
             }
             // Rung 3b unpin: a higher-order element's midside nodes are real
             // free DOFs (they carry HRZ mass), so they must be referenced too
-            // — otherwise the orphan auto-pin below Dirichlet-clamps them,
-            // which is exactly rung 3a's bit-identical-Tet4 behavior (kept for
-            // `N == 4`, where `tet_midside_nodes` is `None`).
+            // — otherwise the orphan auto-pin below Dirichlet-clamps them.
+            // Gated on the ELEMENT (`N > 4`), not on the mesh: a linear (Tet4)
+            // element on an enriched `Tet10Mesh` (where `tet_midside_nodes` is
+            // `Some`) keeps its midsides auto-pinned — rung 3a's bit-identical
+            // Tet4 behavior.
             if N > 4 {
                 for v in mesh
                     .tet_midside_nodes(tet_id)
@@ -455,35 +504,10 @@ where
             fbar.insert_free_coupling_pattern(&mesh, &full_to_free_idx, &mut triplet_set);
         }
 
-        let pattern_triplets: Vec<Triplet<usize, usize, f64>> = triplet_set
-            .iter()
-            .map(|&(c, r)| Triplet::new(r, c, 1.0))
-            .collect();
-        let pattern_mat: SparseColMat<usize, f64> =
-            SparseColMat::try_new_from_triplets(n_free, n_free, &pattern_triplets)
-                .expect("malformed free-block triplet pattern");
-        let symbolic = SymbolicLlt::<usize>::try_new(pattern_mat.symbolic(), Side::Lower)
-            .expect("symbolic factorization of free-block pattern failed");
-
-        // A2 LU fallback: reflect the structurally-symmetric lower-tri
-        // pattern into the full pattern needed by `SymbolicLu` (Lu has
-        // no `Side` argument; it reads both halves). Diagonal entries
-        // emit once; off-diagonals emit at both (r, c) and (c, r). The
-        // numeric Lu factor at fall-through symmetrizes the assembled
-        // tangent the same way.
-        let mut pattern_triplets_full: Vec<Triplet<usize, usize, f64>> =
-            Vec::with_capacity(triplet_set.len() * 2);
-        for &(c, r) in &triplet_set {
-            pattern_triplets_full.push(Triplet::new(r, c, 1.0));
-            if c != r {
-                pattern_triplets_full.push(Triplet::new(c, r, 1.0));
-            }
-        }
-        let pattern_mat_full: SparseColMat<usize, f64> =
-            SparseColMat::try_new_from_triplets(n_free, n_free, &pattern_triplets_full)
-                .expect("malformed full free-block triplet pattern");
-        let symbolic_lu = SymbolicLu::<usize>::try_new(pattern_mat_full.symbolic())
-            .expect("symbolic LU factorization of free-block pattern failed");
+        // Symbolic Llt + Lu factors of the finalized free-DOF pattern
+        // (extracted so its infallible-in-practice expects stay inside the
+        // safety-lint window).
+        let (symbolic, symbolic_lu) = build_symbolic_factors(&triplet_set, n_free);
 
         Self {
             element,
