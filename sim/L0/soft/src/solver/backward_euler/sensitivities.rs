@@ -825,6 +825,11 @@ where
     fn assemble_material_residual_grad(&self, x_final: &[f64], param_idx: usize) -> Vec<f64> {
         let materials = self.mesh.materials();
         let mut dr_dp = vec![0.0_f64; self.n_dof];
+        // Single-point (Tet4) material-adjoint RHS. Reached only through the
+        // rung-7-guarded differentiable factor (`factor_at_position` asserts
+        // `N == 4`), so it reads the single-point corner geometry; rung 7 widens
+        // it to the per-Gauss-point Tet10 adjoint with the rest of the gradient
+        // path.
         for (tet_id, geom) in self.element_geometries.iter().enumerate() {
             let verts = self.mesh.tet_vertices(tet_id as TetId);
             let x_elem = extract_element_dof_values(x_final, &verts);

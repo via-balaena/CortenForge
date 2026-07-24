@@ -57,21 +57,46 @@ mod trait_impl;
 pub use config::{FrictionReactionGradients, FrictionVertexForce, SolverConfig};
 pub(crate) use factor::FactoredFreeTangent;
 
-/// Per-element reference-frame geometry, pre-computed at solver
-/// construction (Phase 2 commit 4a).
+/// Per-element **single-point** reference geometry (Phase 2 commit 4a).
 ///
-/// `grad_x_n` is the material-frame shape-function gradient
-/// (`SMatrix<f64, 4, 3>`, one row per corner, constant across the
-/// element for Tet4); `volume` is the rest-configuration tet volume.
-/// One per tet in the mesh; cached so the per-iter assembly path
-/// doesn't recompute on every Newton step. For a Tet10 element in ladder
-/// rung 3b this is still the 4-corner constant-strain block (the midside
-/// nodes ride as stiffness-free floating masses); ladder rung 4 generalizes
-/// it to the per-Gauss-point Tet10 geometry.
+/// `grad_x_n` is the constant-strain material-frame shape gradient
+/// (`SMatrix<f64, 4, 3>`, one row per corner); `volume` is the
+/// rest-configuration tet volume. For a Tet10 element this is the affine
+/// corner block (the barycentric constant-strain gradient) — a *single-point*
+/// proxy, NOT the element's real (linearly-varying) strain, which lives in the
+/// per-Gauss-point [`GaussGeometry`]. It is read by the Tet4-flavored, single-
+/// point consumers only: the F-bar assembler, the rung-7-guarded material
+/// adjoint, the feasibility (validity) gate, and the lumped-mass volume — none
+/// of which the multi-Gauss-point forward stiffness touches.
 #[derive(Clone, Debug)]
 struct ElementGeometry {
     grad_x_n: SMatrix<f64, 4, 3>,
     volume: f64,
+}
+
+/// Per-element **per-Gauss-point** stiffness geometry (Tet10 ladder rung 4).
+///
+/// Holds the `G` Gauss-point pairs `(grad_x_n, weight)`, where `grad_x_n` is
+/// the material-frame shape gradient at that point (`SMatrix<f64, N, 3>`, one
+/// row per node) and `weight = w_q · |detJ|`. For a **straight-edged** element
+/// the isoparametric map is affine, so `|detJ|` is constant across the element
+/// and only `grad_x_n` differs per point (`∇_ξN(ξ_q)` is linear in `ξ`); a
+/// curved element (deferred rung 8) would additionally vary `detJ` per point.
+///
+/// - **Tet4** monomorphizes to `(N, G) = (4, 1)`: the single centroid point,
+///   whose pair is bit-identical to the matching [`ElementGeometry`] fields.
+/// - **Tet10** is `(10, 4)`: four Stroud points, each with its own
+///   `SMatrix<f64, 10, 3>` gradient, sharing one constant `|detJ|`.
+///
+/// Consumed only by the forward stiffness kernels
+/// (`assemble_global_int_force` / `assemble_free_hessian_triplets` /
+/// `internal_force_tangent_matvec`). Held alongside [`ElementGeometry`] rather
+/// than replacing it so the Tet4-flavored single-point consumers above — F-bar
+/// especially — stay byte-identical and untouched.
+#[derive(Clone, Debug)]
+struct GaussGeometry<const N: usize, const G: usize> {
+    /// The `G` Gauss points as `(material-frame shape gradient, weight)`.
+    gauss: [(SMatrix<f64, N, 3>, f64); G],
 }
 
 /// CPU backward-Euler Newton solver.
@@ -115,9 +140,16 @@ pub struct CpuNewtonSolver<
     // and the assembly methods below. Replaces the pre-Phase-2
     // hardcoded `N_DOF` / `N_FREE` / `FREE_OFFSET` constants and the
     // per-iter `reference_geometry` recomputation.
-    /// One entry per mesh tet — material-frame shape gradients and
-    /// rest-configuration volume.
+    /// One entry per mesh tet — the single-point corner shape gradient and
+    /// rest volume. Feeds the Tet4-flavored single-point consumers (F-bar,
+    /// material adjoint, validity gate, lumped mass); the forward stiffness
+    /// reads [`Self::gauss_geometries`] instead.
     element_geometries: Vec<ElementGeometry>,
+    /// One entry per mesh tet — the per-Gauss-point stiffness geometry
+    /// (`(grad_x_n, weight)` × `G`) the multi-Gauss-point forward kernels
+    /// integrate over (Tet10 ladder rung 4). For Tet4 `(G = 1)` its single pair
+    /// matches `element_geometries` bit-for-bit.
+    gauss_geometries: Vec<GaussGeometry<N, G>>,
     /// Lumped per-DOF mass (`length n_dof`). For a linear (Tet4) element the
     /// entry for DOF `i` (vertex `v = i / 3`) is `Σ_e (ρ V_e / 4)` over every
     /// element `e` that contains `v` (Phase 2 reproduces the walking

@@ -4,11 +4,18 @@
 > code-grounded pressure-test (every load-bearing claim verified against the
 > actual source at `main`). The implementation roadmap for adding the
 > **Tet10** (10-node quadratic tetrahedron) element to `sim-soft`. Status:
-> **IN PROGRESS — rungs 1–3b merged (#680/#681/#682/#683); the forward solver
-> now frees the Tet10 midside DOFs (unpin + HRZ mass + incidence). NEXT = rung
-> 4 (multi-Gauss-point stiffness).** This doc is the forward plan the build
-> follows; the merged rungs' code-verified deltas (and the rung-4 hand-off)
-> live in the `project-tet10-fbar-element-upgrade` session memory.
+> **IN PROGRESS — rungs 1–4 landed (#680/#681/#682/#683 + rung 4); the forward
+> solver now assembles the REAL multi-Gauss-point Tet10 stiffness over all 10
+> nodes (§3.3). NEXT = rung 5 (element-correctness gates).** ⚠ **Rung 4 landed
+> via a TWO-CACHE design, not the in-place `ElementGeometry` generalization the
+> §3.3/§3.4 forward text below describes** — see the "★ RUNG 4 LANDED (design
+> delta)" note in §3.3: generalizing `ElementGeometry` in place would have forced
+> an `fbar.rs` signature change, breaking the hard "no fbar changes" isolation, so
+> the per-Gauss-point data lives in a NEW `GaussGeometry<N,G>` cache while the
+> single-point `ElementGeometry` is RETAINED (not replaced) for the Tet4-flavored
+> consumers. This doc is the forward plan the build follows; the landed rungs'
+> code-verified deltas live in the `project-tet10-fbar-element-upgrade` session
+> memory.
 >
 > The element *design* already lives in the spec book
 > ([`30-discretization/00-element-choice/01-tet10.md`](studies/soft_body_architecture/src/30-discretization/00-element-choice/01-tet10.md), path relative to `docs/`):
@@ -251,7 +258,12 @@ unpin-trio + that geometry).**
     centroid (∂N=0 there), so
     the direct-form `F = Σ xₐ⊗∇Nₐ` would give `F=0` → NaN. 3b's corner geometry
     therefore uses the linear barycentric gradients (a Tet4 constant-strain
-    block); rung 4's per-Gauss-point geometry (§3.3) replaces it.
+    block). **Rung 4 landed (design delta): this single-point corner block is
+    RETAINED in `ElementGeometry` — it still feeds the validity gate, the
+    rung-7-guarded material adjoint, F-bar, and the lumped mass — while the real
+    per-Gauss-point stiffness geometry lives in a separate `GaussGeometry<N,G>`
+    cache the forward kernels integrate over (§3.3). The forward *stiffness* is
+    replaced by per-GP; the corner block is not deleted.**
 - **Per-GP geometry and boundary extraction are NOT part of the atomic core**
   — they are *correctness* concerns (real Tet10 stiffness / valid pressure
   diagnostics), stageable separately. A midside that is free + has a positive
@@ -263,6 +275,20 @@ Lift the `N==4` assert (`construct.rs:78`) as the last thing in 3b, once the
 unpinned path is non-singular.
 
 ### 3.3 Single → multi-Gauss-point (cardinality 1 → G)
+
+> **★ RUNG 4 LANDED (design delta — read first).** The build did NOT generalize
+> `ElementGeometry` in place as the text below plans. `ElementGeometry` is
+> consumed *by type* in `fbar.rs` (~30 sites) and `sensitivities.rs`, so making
+> it const-generic `<N,G>` would ripple a signature change into `fbar.rs` —
+> breaking the hard "no fbar.rs changes" isolation (§5, rung-8/fbar deferral).
+> Instead, `ElementGeometry` stays non-generic (the single-point corner geometry
+> for the Tet4-flavored consumers — F-bar / material adjoint / validity / mass,
+> all byte-identical and untouched), and a NEW `GaussGeometry<const N, const G>`
+> cache holds the per-Gauss-point `(grad_x_n, weight)` the three forward
+> stiffness kernels integrate over. Two caches rather than one; for Tet4
+> `gauss[0]` duplicates the `ElementGeometry` fields bit-for-bit. The rest of
+> this section describes the per-GP *math*, which is unchanged; only the *home*
+> of the per-GP data differs (a separate cache, not `ElementGeometry`'s fields).
 
 `ElementGeometry` currently holds one `grad_x_n: SMatrix<f64,4,3>` + one
 `volume` — a single centroid Gauss point, valid only because Tet4's
@@ -492,10 +518,16 @@ capture — the isoparametric-surface piece is deferred, §7).
      a static gate cannot see a swamped negative mass; see the dynamics
      mass-gate below). Land 3b with, or just before, step 4.
 4. **Multi-Gauss-point forward assembly (§3.3–3.4).** Real quadrature loop,
-   per-GP geometry (cardinality 1→4, constant `detJ`), per-GP material. Gate:
-   **Tet4 byte-identity** — the `det.abs()/6.0` weight and edge-vector Jacobian
+   per-GP geometry (cardinality 1→4, constant `detJ`), per-GP material. Gates:
+   (a) **Tet4 byte-identity** — the `det.abs()/6.0` weight and edge-vector Jacobian
    preserved (§3.1 traps), proven against the golden bit-tests **extended to a
-   Yeoh scene and a roller scene** (the current goldens are NH-only).
+   Yeoh scene and a roller scene** (the current goldens are NH-only). (b) **A
+   stiffness-magnitude reconciliation** — a single Tet10 element's production
+   multi-GP tangent at rest (F=I) must equal an independent `BᵀDB` reference
+   (NeoHookean `∂P/∂F(I)` is exactly linear isotropic elasticity), catching a
+   stiffness-free element, a wrong assembly-level weight, or a mis-integrated
+   corner↔midside block. This is a magnitude check only — node-*ordering* and
+   element-primitive bugs remain the rung-5 / rung-1 gates' job.
 5. **★ Tet10 element-correctness gates (before any integrated oracle).**
    (a) **Finite-rotation rigid-body** `x = c + Q·X` → zero internal force
    (stronger than translation-only; Neo-Hookean `P=0` for orthogonal `Q`).

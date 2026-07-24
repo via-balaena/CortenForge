@@ -33,7 +33,9 @@ use faer::sparse::Triplet;
 
 use sim_ml_chassis::Tensor;
 
+use crate::Vec3;
 use crate::contact::NullContact;
+use crate::element::Element;
 use crate::material::MaterialField;
 use crate::mesh::{HandBuiltTetMesh, Mesh, SingleTetMesh, Tet10Mesh, VertexId};
 use crate::readout::{BoundaryConditions, LoadAxis};
@@ -1059,7 +1061,7 @@ fn dirichlet_reaction_matvec_and_sensitivity_lib_smoke() {
     assert!(live > 1.0, "dR must be live (max |dR| = {live:.3e})");
 }
 
-// ── Rung 3b: the Tet10 unpin-trio dynamics gate ────────────────────────────
+// ── Rung 3b/4: the Tet10 unpin-trio + multi-Gauss-point dynamics gate ───────
 //
 // {free-DOF unpin + HRZ mass + Hessian-incidence widening} lands atomically:
 // the moment a midside DOF is freed, its mass-diagonal `(k, k)` needs both a
@@ -1069,7 +1071,9 @@ fn dirichlet_reaction_matvec_and_sensitivity_lib_smoke() {
 // landmine: naive row-sum lumping gives NEGATIVE Tet10 corner masses), and the
 // free tangent factors PD (Llt, non-singular) at a small DYNAMIC dt. STATIC_DT
 // would be mass-blind (`M/Δt² ≈ 0` swamps a bad mass), so the factor gate MUST
-// run dynamically.
+// run dynamically. Since rung 4 the freed midsides also carry REAL multi-Gauss-
+// point stiffness (not the earlier stiffness-free scaffold); the tangent these
+// gates factor is the full 10-node element stiffness + HRZ mass.
 
 /// A small uniform Tet10 solver: enrich a `uniform_block` cube into a
 /// [`Tet10Mesh`], pin its bottom face, and free everything above — corners
@@ -1151,11 +1155,18 @@ fn tet10_mass_diagonal_is_strictly_positive() {
     }
 }
 
-/// The construct + FACTOR gate: the free-DOF tangent (corner constant-strain
-/// stiffness + HRZ mass on the freed midsides) must factor PD — the `Llt`
-/// happy path, NOT the `Lu` rescue — at a small DYNAMIC dt. The mass term
-/// `M/Δt²` is what keeps the stiffness-free midside DOFs non-singular; at
-/// `STATIC_DT` it is ≈ 0 and this gate would be mass-blind.
+/// The construct + FACTOR gate: the Tet10 free-DOF tangent (the multi-Gauss-
+/// point element stiffness over all 10 nodes — rung 4 — plus HRZ mass) must
+/// factor PD — the `Llt` happy path, NOT the `Lu` rescue — at a small DYNAMIC
+/// dt. It guards two failure modes: (1) a symbolic/numeric sparsity-pattern
+/// disagreement (a symbolic entry the numeric never fills corrupts faer's read
+/// → spurious non-PD → Lu fallback — the rung-3b `is_llt` landmine, now that
+/// rung 4 fills the corner↔midside blocks the symbolic must match); and (2) a
+/// non-positive HRZ mass diagonal — the small dt keeps `M/Δt²` significant so a
+/// negative nodal mass surfaces as non-PD even where the real stiffness would
+/// otherwise dominate (at `STATIC_DT` the mass term ≈ 0 and this would be
+/// mass-blind). Stiffness *correctness* (vs a stiffness-free element) is the
+/// separate job of `tet10_multigp_tangent_matches_bt_d_b_reference`.
 #[test]
 fn tet10_free_tangent_factors_pd_at_dynamic_dt() {
     // Small + dynamic: `M/Δt²` is significant (STATIC_DT ≈ 1.0 would swamp it).
@@ -1165,19 +1176,21 @@ fn tet10_free_tangent_factors_pd_at_dynamic_dt() {
 
     let triplets = solver.assemble_free_hessian_triplets(&x_rest, None, dt);
     let mut lm_state = LmState::disabled();
-    let factor = solver.factor_free_tangent(&triplets, &mut lm_state, "rung 3b dynamics gate");
+    let factor = solver.factor_free_tangent(&triplets, &mut lm_state, "rung 3b/4 dynamics gate");
     assert!(
         factor.is_llt(),
         "the Tet10 free tangent must factor PD (Llt) at a small dynamic dt — an Lu \
-         fallback means the freed midside mass diagonal is non-positive or the widened \
-         symbolic incidence is missing a free-DOF (k, k) slot",
+         fallback means the HRZ mass diagonal is non-positive, or the symbolic incidence \
+         and the numeric multi-Gauss-point stiffness assembly disagree on the sparsity \
+         pattern (a superset symbolic entry corrupts faer's numeric read)",
     );
 }
 
 /// End-to-end forward path: a dynamic `replay_step` under gravity must
-/// converge (non-singular through every Newton factor) on the Tet10 mesh,
-/// with the freed, stiffness-free midsides carried as floating masses. A
-/// singular midside would trip the LU-doubly-failed panic instead.
+/// converge (non-singular through every Newton factor) on the Tet10 mesh, with
+/// the freed midsides carried by the real multi-Gauss-point element stiffness
+/// (rung 4) plus their HRZ mass. A singular midside would trip the
+/// LU-doubly-failed panic instead.
 #[test]
 fn tet10_dynamic_replay_step_converges() {
     let mut cfg = SolverConfig::skeleton();
@@ -1197,5 +1210,133 @@ fn tet10_dynamic_replay_step_converges() {
     assert!(
         step.x_final.iter().all(|x| x.is_finite()),
         "Tet10 dynamic solve must produce a finite converged state",
+    );
+}
+
+// ── Rung 4: multi-Gauss-point stiffness CORRECTNESS ────────────────────────
+//
+// The rung-3b gates prove the freed Tet10 tangent FACTORS (non-singular) — but a
+// stiffness-free element factors too, because its `M/Δt²` mass diagonal alone is
+// PD. The rung-4 gate proves the assembled Tet10 stiffness is the CORRECT element
+// stiffness. A single Tet10 element's production elastic tangent at rest (F = I)
+// must equal an independent Bᵀ·D·B reference (the rung-1 `element_stiffness`
+// convention), because NeoHookean's ∂P/∂F at F = I is exactly the linear isotropic
+// elasticity tensor `λ δ_iJ δ_kL + μ(δ_ik δ_JL + δ_iL δ_Jk)`. This reconciles the
+// production 9×9-material-tangent / BF-5-flattening assembler against the Voigt
+// `[xx, yy, zz, xy, yz, zx]` convention (rung-1 carry-forward — the strain
+// convention cannot drift) and, being a full magnitude match over all 10 nodes and
+// 4 Gauss points, would catch a stiffness-free element, a wrong assembly-level Gauss
+// weight, or a mis-integrated corner↔midside block. It does NOT catch a bug INSIDE
+// the shared element primitives (`gauss_points` / `shape_gradients` — those are the
+// rung-1 element tests' job) nor a consistent node PERMUTATION (a similarity
+// transform `PKPᵀ` is invisible to this magnitude match — that is the rung-5b
+// asymmetric-patch gate's job).
+
+const RECON_E: f64 = 1.0;
+const RECON_NU: f64 = 0.3;
+
+/// Isotropic linear-elastic 6×6 Voigt `[xx, yy, zz, xy, yz, zx]` (engineering
+/// shear) constitutive matrix — the same convention `element/tet10.rs`'s rung-1
+/// `element_stiffness` uses.
+fn voigt_elasticity(e: f64, nu: f64) -> nalgebra::SMatrix<f64, 6, 6> {
+    let lambda = e * nu / ((1.0 + nu) * (1.0 - 2.0 * nu));
+    let mu = e / (2.0 * (1.0 + nu));
+    let mut d = nalgebra::SMatrix::<f64, 6, 6>::zeros();
+    for a in 0..3 {
+        for b in 0..3 {
+            d[(a, b)] = lambda;
+        }
+        d[(a, a)] += 2.0 * mu;
+        d[(3 + a, 3 + a)] = mu;
+    }
+    d
+}
+
+/// Independent 30×30 `Bᵀ·D·B` reference stiffness for one straight-edged Tet10
+/// (affine map ⇒ `K^e` exact at the 4 Stroud points), mirroring the rung-1
+/// `element_stiffness` helper's convention.
+fn reference_tet10_stiffness(coords: &[Vec3; 10]) -> nalgebra::DMatrix<f64> {
+    let d_mat = voigt_elasticity(RECON_E, RECON_NU);
+    let node_x = nalgebra::SMatrix::<f64, 10, 3>::from_fn(|i, j| coords[i][j]);
+    let mut k = nalgebra::DMatrix::<f64>::zeros(30, 30);
+    for (xi, weight) in Tet10.gauss_points() {
+        let grad_xi = Tet10.shape_gradients(xi);
+        let jac = node_x.transpose() * grad_xi;
+        let jac_inv = jac.try_inverse().expect("non-degenerate element");
+        let det = jac.determinant();
+        let grad_x = grad_xi * jac_inv;
+        let mut b = nalgebra::SMatrix::<f64, 6, 30>::zeros();
+        for node in 0..10 {
+            let (nx, ny, nz) = (grad_x[(node, 0)], grad_x[(node, 1)], grad_x[(node, 2)]);
+            let c = 3 * node;
+            b[(0, c)] = nx;
+            b[(1, c + 1)] = ny;
+            b[(2, c + 2)] = nz;
+            b[(3, c)] = ny;
+            b[(3, c + 1)] = nx;
+            b[(4, c + 1)] = nz;
+            b[(4, c + 2)] = ny;
+            b[(5, c)] = nz;
+            b[(5, c + 2)] = nx;
+        }
+        let contrib = b.transpose() * d_mat * b * (weight * det.abs());
+        k += nalgebra::DMatrix::from_fn(30, 30, |i, j| contrib[(i, j)]);
+    }
+    k
+}
+
+#[test]
+fn tet10_multigp_tangent_matches_bt_d_b_reference() {
+    // Single Tet10 element with a NeoHookean matched to E = 1, ν = 0.3, so its
+    // ∂P/∂F(I) is the linear isotropic elasticity tensor the reference `D` encodes.
+    let mu = RECON_E / (2.0 * (1.0 + RECON_NU));
+    let lambda = RECON_E * RECON_NU / ((1.0 + RECON_NU) * (1.0 - 2.0 * RECON_NU));
+    let tet4 = SingleTetMesh::new(&MaterialField::uniform(mu, lambda));
+    let tet10 = Tet10Mesh::from_tet4(&tet4);
+
+    // The 10 node coords (corners 0..4, midsides 4..10 in canonical edge order)
+    // read straight off the mesh, so the reference integrates the SAME geometry.
+    let pos = tet10.positions();
+    assert_eq!(pos.len(), 10, "a single Tet10 element has 10 nodes");
+    let mut coords = [Vec3::zeros(); 10];
+    coords.copy_from_slice(&pos[..10]);
+
+    let solver: CpuTet10NHSolver<Tet10Mesh> = CpuNewtonSolver::new(
+        Tet10,
+        tet10,
+        NullContact,
+        SolverConfig::skeleton(),
+        BoundaryConditions {
+            pinned_vertices: Vec::new(),
+            roller_vertices: Vec::new(),
+            loaded_vertices: Vec::new(),
+        },
+    );
+
+    // Production elastic tangent (no mass diagonal, no free/pinned filter) at rest,
+    // assembled column-by-column: K_prod[:, j] = ∂f_int/∂x · e_j.
+    let x_rest = tet10_rest_dofs(&solver);
+    let mut k_prod = nalgebra::DMatrix::<f64>::zeros(30, 30);
+    for j in 0..30 {
+        let mut e_j = vec![0.0; 30];
+        e_j[j] = 1.0;
+        let col = solver.internal_force_tangent_matvec(&x_rest, &e_j);
+        for i in 0..30 {
+            k_prod[(i, j)] = col[i];
+        }
+    }
+
+    let k_ref = reference_tet10_stiffness(&coords);
+    let scale = k_ref.iter().fold(0.0_f64, |m, &v| m.max(v.abs()));
+    assert!(scale > 0.0, "reference stiffness must be non-trivial");
+    let max_diff = (&k_prod - &k_ref)
+        .iter()
+        .fold(0.0_f64, |m, &v| m.max(v.abs()));
+    assert!(
+        max_diff <= 1.0e-9 * scale,
+        "Tet10 production tangent deviates from the Bᵀ·D·B reference: max |Δ| = \
+         {max_diff:e} (spectral scale {scale:e}). A stiffness-free element, a wrong \
+         assembly-level Gauss weight, a drifted Voigt convention, or a mis-integrated \
+         corner↔midside block would surface here.",
     );
 }
