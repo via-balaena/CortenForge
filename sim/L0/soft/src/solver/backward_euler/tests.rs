@@ -23,7 +23,10 @@
     // module hoists them once at the module level.
     clippy::panic,
     clippy::expect_used,
-    clippy::float_cmp
+    clippy::float_cmp,
+    // `count as VertexId` is the Mesh-trait API tax (usize -> u32 id): the
+    // hand-built test meshes hold far fewer than u32::MAX vertices.
+    clippy::cast_possible_truncation
 )]
 
 use faer::sparse::Triplet;
@@ -32,12 +35,15 @@ use sim_ml_chassis::Tensor;
 
 use crate::contact::NullContact;
 use crate::material::MaterialField;
-use crate::mesh::SingleTetMesh;
+use crate::mesh::{HandBuiltTetMesh, Mesh, SingleTetMesh, Tet10Mesh, VertexId};
 use crate::readout::{BoundaryConditions, LoadAxis};
 use crate::solver::SolverFailure;
 use crate::solver::lm::LmState;
 use crate::solver::{CpuNewtonSolver, LmConfig, Solver, SolverConfig};
-use crate::{SkeletonSolver, element::Tet4};
+use crate::{
+    CpuTet10NHSolver, SkeletonSolver,
+    element::{Tet4, Tet10},
+};
 
 fn build(bc: BoundaryConditions) -> SkeletonSolver {
     CpuNewtonSolver::new(
@@ -1051,4 +1057,145 @@ fn dirichlet_reaction_matvec_and_sensitivity_lib_smoke() {
     assert!(dr.iter().all(|x| x.is_finite()), "dR must be finite");
     let live = dr.iter().map(|x| x.abs()).fold(0.0, f64::max);
     assert!(live > 1.0, "dR must be live (max |dR| = {live:.3e})");
+}
+
+// ── Rung 3b: the Tet10 unpin-trio dynamics gate ────────────────────────────
+//
+// {free-DOF unpin + HRZ mass + Hessian-incidence widening} lands atomically:
+// the moment a midside DOF is freed, its mass-diagonal `(k, k)` needs both a
+// POSITIVE value (else an indefinite tangent) and a symbolic-pattern SLOT
+// (else a factor pattern-mismatch). These gates prove all three on a uniform
+// Tet10 mesh — midsides FREE, mass diagonal strictly POSITIVE (the HRZ
+// landmine: naive row-sum lumping gives NEGATIVE Tet10 corner masses), and the
+// free tangent factors PD (Llt, non-singular) at a small DYNAMIC dt. STATIC_DT
+// would be mass-blind (`M/Δt² ≈ 0` swamps a bad mass), so the factor gate MUST
+// run dynamically.
+
+/// A small uniform Tet10 solver: enrich a `uniform_block` cube into a
+/// [`Tet10Mesh`], pin its bottom face, and free everything above — corners
+/// AND the (unpinned) midside nodes. Returns the solver plus the corner count
+/// (every midside `VertexId` is `>= n_corners`). `config` lets a caller drive
+/// a dynamic solve (e.g. gravity) since the config is fixed at construction.
+fn build_tet10_block(config: SolverConfig) -> (CpuTet10NHSolver<Tet10Mesh>, usize) {
+    let edge = 0.1;
+    let field = MaterialField::uniform(1.0e5, 4.0e5);
+    let cube = HandBuiltTetMesh::uniform_block(2, edge, &field);
+    let n_corners = cube.n_vertices();
+    let positions = cube.positions().to_vec();
+    // Pin the bottom layer (z ≈ 0); the rest — corners and midsides — is free.
+    let pinned: Vec<VertexId> = (0..n_corners as VertexId)
+        .filter(|&v| positions[v as usize].z < 0.25 * edge)
+        .collect();
+    assert!(!pinned.is_empty(), "fixture must clamp a bottom face");
+
+    let tet10 = Tet10Mesh::from_tet4(&cube);
+    let bc = BoundaryConditions {
+        pinned_vertices: pinned,
+        roller_vertices: Vec::new(),
+        loaded_vertices: Vec::new(),
+    };
+    let solver = CpuNewtonSolver::new(Tet10, tet10, NullContact, config, bc);
+    (solver, n_corners)
+}
+
+/// Flatten a solver's rest positions into a `3·n_vertices` DOF vector.
+fn tet10_rest_dofs(solver: &CpuTet10NHSolver<Tet10Mesh>) -> Vec<f64> {
+    let positions = solver.mesh.positions();
+    let mut x = vec![0.0_f64; 3 * positions.len()];
+    for (v, pos) in positions.iter().enumerate() {
+        x[3 * v] = pos.x;
+        x[3 * v + 1] = pos.y;
+        x[3 * v + 2] = pos.z;
+    }
+    x
+}
+
+/// The unpin: a Tet10 solve must FREE the midside DOFs (rung 3a auto-pinned
+/// them). At least one free DOF must belong to a midside vertex, and every
+/// free DOF must round-trip through `full_to_free_idx`.
+#[test]
+fn tet10_midside_dofs_are_freed() {
+    let (solver, n_corners) = build_tet10_block(SolverConfig::skeleton());
+    let free_midside_dofs = solver
+        .free_dof_indices
+        .iter()
+        .filter(|&&d| d / 3 >= n_corners)
+        .count();
+    assert!(
+        free_midside_dofs > 0,
+        "rung 3b must FREE the midside DOFs, but none appear in free_dof_indices \
+         (n_corners = {n_corners}, n_free = {})",
+        solver.n_free,
+    );
+    for &d in &solver.free_dof_indices {
+        assert!(
+            solver.full_to_free_idx[d].is_some(),
+            "free DOF {d} must round-trip through full_to_free_idx",
+        );
+    }
+}
+
+/// The HRZ landmine: naive Tet10 row-sum lumping gives NEGATIVE corner masses
+/// → indefinite tangent → Cholesky failure. This uniform block has no orphan
+/// vertices, so every DOF's lumped mass must be strictly positive.
+#[test]
+fn tet10_mass_diagonal_is_strictly_positive() {
+    let (solver, _) = build_tet10_block(SolverConfig::skeleton());
+    for (i, &m) in solver.mass_per_dof.iter().enumerate() {
+        assert!(
+            m > 0.0,
+            "mass_per_dof[{i}] = {m} is not strictly positive — HRZ lumping must \
+             keep every Tet10 nodal mass positive (naive row-sum goes negative on \
+             corners)",
+        );
+    }
+}
+
+/// The construct + FACTOR gate: the free-DOF tangent (corner constant-strain
+/// stiffness + HRZ mass on the freed midsides) must factor PD — the `Llt`
+/// happy path, NOT the `Lu` rescue — at a small DYNAMIC dt. The mass term
+/// `M/Δt²` is what keeps the stiffness-free midside DOFs non-singular; at
+/// `STATIC_DT` it is ≈ 0 and this gate would be mass-blind.
+#[test]
+fn tet10_free_tangent_factors_pd_at_dynamic_dt() {
+    // Small + dynamic: `M/Δt²` is significant (STATIC_DT ≈ 1.0 would swamp it).
+    let dt = 1.0e-3;
+    let (solver, _) = build_tet10_block(SolverConfig::skeleton());
+    let x_rest = tet10_rest_dofs(&solver);
+
+    let triplets = solver.assemble_free_hessian_triplets(&x_rest, None, dt);
+    let mut lm_state = LmState::disabled();
+    let factor = solver.factor_free_tangent(&triplets, &mut lm_state, "rung 3b dynamics gate");
+    assert!(
+        factor.is_llt(),
+        "the Tet10 free tangent must factor PD (Llt) at a small dynamic dt — an Lu \
+         fallback means the freed midside mass diagonal is non-positive or the widened \
+         symbolic incidence is missing a free-DOF (k, k) slot",
+    );
+}
+
+/// End-to-end forward path: a dynamic `replay_step` under gravity must
+/// converge (non-singular through every Newton factor) on the Tet10 mesh,
+/// with the freed, stiffness-free midsides carried as floating masses. A
+/// singular midside would trip the LU-doubly-failed panic instead.
+#[test]
+fn tet10_dynamic_replay_step_converges() {
+    let mut cfg = SolverConfig::skeleton();
+    cfg.dt = 1.0e-3; // small dynamic dt (mass-significant)
+    cfg.gravity_z = -9.81; // non-zero residual at rest → the solve actually factors
+    let (solver, _) = build_tet10_block(cfg);
+
+    let rest = tet10_rest_dofs(&solver);
+    let n_dof = rest.len();
+    let x_prev = Tensor::from_slice(&rest, &[n_dof]);
+    let v_prev = Tensor::zeros(&[n_dof]);
+    let theta = Tensor::zeros(&[0]);
+
+    // Forward-only: `replay_step` never touches the (rung-7-guarded) adjoint.
+    let step = solver.replay_step(&x_prev, &v_prev, &theta, cfg.dt);
+    assert_eq!(step.x_final.len(), n_dof);
+    assert!(
+        step.x_final.iter().all(|x| x.is_finite()),
+        "Tet10 dynamic solve must produce a finite converged state",
+    );
 }

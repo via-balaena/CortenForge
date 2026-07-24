@@ -61,10 +61,13 @@ pub(crate) use factor::FactoredFreeTangent;
 /// construction (Phase 2 commit 4a).
 ///
 /// `grad_x_n` is the material-frame shape-function gradient
-/// (`SMatrix<f64, 4, 3>`, one row per node, constant across the
+/// (`SMatrix<f64, 4, 3>`, one row per corner, constant across the
 /// element for Tet4); `volume` is the rest-configuration tet volume.
 /// One per tet in the mesh; cached so the per-iter assembly path
-/// doesn't recompute on every Newton step.
+/// doesn't recompute on every Newton step. For a Tet10 element in ladder
+/// rung 3b this is still the 4-corner constant-strain block (the midside
+/// nodes ride as stiffness-free floating masses); ladder rung 4 generalizes
+/// it to the per-Gauss-point Tet10 geometry.
 #[derive(Clone, Debug)]
 struct ElementGeometry {
     grad_x_n: SMatrix<f64, 4, 3>,
@@ -115,11 +118,14 @@ pub struct CpuNewtonSolver<
     /// One entry per mesh tet — material-frame shape gradients and
     /// rest-configuration volume.
     element_geometries: Vec<ElementGeometry>,
-    /// Lumped per-DOF mass (`length n_dof`). For each DOF `i` belonging
-    /// to vertex `v = i / 3`, the entry is `Σ_e (ρ V_e / 4)` over every
-    /// element `e` that contains `v`. Phase 2 reproduces the
-    /// walking-skeleton's "per-vertex mass = ρ `V_total` / 4" rule when
-    /// every vertex sits in exactly one tet.
+    /// Lumped per-DOF mass (`length n_dof`). For a linear (Tet4) element the
+    /// entry for DOF `i` (vertex `v = i / 3`) is `Σ_e (ρ V_e / 4)` over every
+    /// element `e` that contains `v` (Phase 2 reproduces the walking
+    /// skeleton's "per-vertex mass = ρ `V_total` / 4" rule when every vertex
+    /// sits in exactly one tet). For a higher-order element (Tet10, rung 3b)
+    /// it is the HRZ (Hinton–Rock–Zienkiewicz) diagonal lump instead —
+    /// `Σ_e ρ V_e · (∫N_i² / Σ_k ∫N_k²)` — positive on every node, where
+    /// naive row-sum lumping goes negative on quadratic-tet corners.
     mass_per_dof: Vec<f64>,
     /// Full-DOF indices of the free DOFs, in ascending order. For the
     /// 1-tet skeleton: `[9, 10, 11]` (`v_3`'s xyz). For multi-tet:
