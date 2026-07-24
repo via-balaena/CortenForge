@@ -1326,6 +1326,14 @@ fn tet10_multigp_tangent_matches_bt_d_b_reference() {
         }
     }
 
+    // Finiteness FIRST — a NaN in k_prod (e.g. a node-ordering drift warping the
+    // rest-state F below det 0 → `ln(det F)` in the tangent) would be swallowed
+    // by `f64::max(m, NaN) == m` in the reduction below, silently passing. Guard
+    // it explicitly (rung-5 gates carry the same guard).
+    assert!(
+        k_prod.iter().all(|v| v.is_finite()),
+        "production tangent has a non-finite entry — a degenerate/inverted element",
+    );
     let k_ref = reference_tet10_stiffness(&coords);
     let scale = k_ref.iter().fold(0.0_f64, |m, &v| m.max(v.abs()));
     assert!(scale > 0.0, "reference stiffness must be non-trivial");
@@ -1467,8 +1475,10 @@ fn tet10_quadratic_field_internal_force_matches_analytic() {
     let pos = solver.mesh.positions().to_vec();
     let n = pos.len();
 
-    // Asymmetric quadratic field — small enough to keep every det F > 0. The
-    // shear term c·X·Y is what a midside permutation cannot survive.
+    // Asymmetric quadratic field. On this decimeter-scale mesh (coords ≤ 0.1 m)
+    // the induced ∇u keeps every Gauss-point det F > 0 (the finiteness assert
+    // below fails loudly otherwise). The shear term c·X·Y is what a midside
+    // permutation cannot survive.
     let (a, b, c) = (1.5, 2.0, 1.0);
     let u = |p: Vec3| Vec3::new(a * p.y * p.y, b * p.z, c * p.x * p.y);
     // ∇u rows = (u_x, u_y, u_z), cols = ∂/∂(X, Y, Z).
