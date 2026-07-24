@@ -434,9 +434,24 @@ the same const family, so retargeting ν is a one-line edit that stays
 consistent. Build order at the oracle:
 
 1. **Commit the real Tet4 Lamé baseline** at ν=0.4 (retire 0.993). Record it
-   as `e₄₀` (**Tet4** ν=0.4 rel-err, at the h/2 decision mesh) — the common
-   mesh floor the ν=0.49 threshold subtracts against. (Tet10 ν=0.4 is a
+   as `e₄₀` (**Tet4** ν=0.4 rel-err, at the h/2 decision mesh) — the input the
+   ν=0.49 threshold `max(2·e₄₀, 0.10)` is computed from. (Tet10 ν=0.4 is a
    separate measurement, step 6b.)
+   - **★ LANDED (rung 6a): `e₄₀ = 0.0615`**, measured in
+     `tests/tet10_lame_decision.rs`. ⚠ **The "common mesh floor" framing this
+     step previously carried is FALSIFIED and has been removed.** It claimed
+     `e₄₀` is a discretisation floor *both* elements inherit, so that
+     subtracting it isolates the incompressibility penalty. Measured on
+     identical geometry, load, tolerance and readout, Tet10 at ν=0.4 reads
+     `-0.0031` against Tet4's `-0.0615` — Tet10 inherits ~5% of `e₄₀`, so it is
+     predominantly a *Tet4 element* error, not a shared floor. `e₄₀` is
+     retained because the pre-registered threshold is defined in terms of it;
+     it is **not** evidence about Tet10. The physically meaningful anchor for
+     "what does ν=0.49 cost Tet10" is the step-6b Tet10 ν=0.4 reading.
+   - ⚠ `e₄₀` is also **harness-defined**: it is `0.0140` under an equal-split
+     cavity load and `0.1257` under the true-facet load (all three committed in
+     that file's A/B). So the ACCEPT band `max(2·e₄₀, 0.10)` is itself
+     convention-dependent — 0.100 / 0.123 / 0.251 respectively.
 2. **Tet10 at ν=0.4 → match-or-beat Tet4** on the same oracle. Bug-localizer:
    if Tet10 misses *here*, it's a forward/assembly bug, not an
    incompressibility limit.
