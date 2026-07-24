@@ -2,8 +2,9 @@
 //!
 //! Const-generic in node count `N` and Gauss-point count `G` so per-tet
 //! local assembly uses stack-allocated matrices. Ships `Tet4` (N=4, G=1) and
-//! `Tet10` (N=10, G=4); the latter is the standalone quadratic-element
-//! primitive — solver integration follows in later Tet10-ladder rungs.
+//! `Tet10` (N=10, G=4); the forward solver frees the Tet10 midside DOFs from
+//! ladder rung 3b, with the multi-Gauss-point stiffness (rung 4) and the
+//! differentiable adjoint (rung 7) following in later Tet10-ladder rungs.
 
 use nalgebra::{SMatrix, SVector};
 

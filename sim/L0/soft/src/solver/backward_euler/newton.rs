@@ -447,9 +447,9 @@ where
         // has no analog for. The differentiable path is already guarded in
         // `factor_at_position`; this guards the forward primal solve
         // (`solve_impl` and `try_step` both route here) so a forward-only
-        // Tet10 solve with `fbar=true` can't slip through ungated. Currently
-        // dormant — `new()` still pins `N == 4` — but it outlives that pin
-        // (rung 3b lifts the `N == 4` assert).
+        // Tet10 solve with `fbar=true` can't slip through ungated. Live since
+        // rung 3b lifted `new()`'s `N == 4` pin: a plain (`fbar=false`) Tet10
+        // forward solve is now supported and passes this guard.
         assert!(
             !(self.config.fbar && N != 4),
             "F-bar is implemented for Tet4 (N=4) only; got N={N} with config.fbar=true. \

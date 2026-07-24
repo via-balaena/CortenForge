@@ -114,6 +114,18 @@ pub type CpuTet4NHSolver<Msh> =
 pub type CpuTet4YeohSolver<Msh> =
     solver::CpuNewtonSolver<element::Tet4, Msh, contact::NullContact, material::Yeoh, 4, 1>;
 
+/// CPU backward-Euler Newton solver pinned to [`Tet10`](element::Tet10) +
+/// `NullContact` + `NeoHookean`, generic over the mesh impl.
+///
+/// The quadratic (Tet10) sibling of [`CpuTet4NHSolver`], driven with a
+/// [`Tet10Mesh`] (`CpuTet10NHSolver<Tet10Mesh>`). Ladder rung
+/// 3b onward the **forward** primal solve (`replay_step`) frees the midside
+/// DOFs and lumps their mass (HRZ); the **differentiable** path (`step` /
+/// sensitivities) is guarded until ladder rung 7 wires the Tet10 adjoint —
+/// see `docs/SIM_SOFT_TET10_PLAN.md`.
+pub type CpuTet10NHSolver<Msh> =
+    solver::CpuNewtonSolver<element::Tet10, Msh, contact::NullContact, material::NeoHookean, 10, 4>;
+
 /// Walking-skeleton solver alias — `CpuTet4NHSolver` over `SingleTetMesh`.
 ///
 /// Concrete backward-Euler Newton with `NeoHookean` + `Tet4` +
