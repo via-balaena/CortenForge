@@ -109,17 +109,19 @@ remedy for demand #1.
 
 ---
 
-## 2. What the port touches — recon sizing (verified at `main`)
+## 2. What the port touches — recon sizing (authoring baseline; verified at `main` pre-rung-1)
 
 "Tet10 is additive" is aspirational and, as scoped in the first draft, was
 too narrow. The const-generic `CpuNewtonSolver<E, Msh, C, M, const N, const
 G>` (`solver/backward_euler/mod.rs:86`) and the `Element<N,G>` trait
 (`element/mod.rs:17`) are genuinely element-agnostic — Tet4 impls
-`Element<4,1>` (`element/tet4.rs:24`). But the const generics are
-**decorative below `new()`, and `G` is decorative even inside it**:
-`construct.rs:78` hard-asserts `N == 4`, `gauss_points()` is *never called*
-anywhere (the centroid `(0.25,0.25,0.25)` is hardcoded at
-`construct.rs:221`), and every assembly body uses concrete Tet4 types.
+`Element<4,1>` (`element/tet4.rs:24`). At authoring the const generics were
+**decorative below `new()`, and `G` decorative even inside it**:
+`construct.rs` hard-asserted `N == 4`, `gauss_points()` was *never called*
+anywhere (the centroid `(0.25,0.25,0.25)` was hardcoded), and every assembly
+body used concrete Tet4 types. **(Rungs 1–3b have since lifted the `N == 4`
+assert and wired `gauss_points()` into the HRZ mass — §3.2; the forward
+stiffness assembly stays Tet4-shaped until rung 4.)**
 
 | Area | Anchor | Size / risk |
 |---|---|---|
@@ -207,8 +209,11 @@ at `mesh/mod.rs:145` anticipates such an extraction, but for *cross-`M`
 object-safety*, not higher-order nodes; it is evidence the extraction is
 acceptable, not that it was designed for Tet10).
 
-**The genuine atomic core is 3 items, and there is a safe staged
-intermediate — split this into 3a (plumbing) and 3b (the unpin-trio).**
+**The genuine atomic core is the 3-item DOF unpin-trio — plus the
+corner-geometry that keeps the freed element mechanically Tet4, which the
+build proved is NOT automatic (see the CODE-VERIFIED note below) — and there
+is a safe staged intermediate: split this into 3a (plumbing) and 3b (the
+unpin-trio + that geometry).**
 
 - **3a — safe plumbing, midsides auto-pinned (a valid smaller commit).**
   Land the additive `MeshTopology` 10-node channel + `enrich_tet4_to_tet10`
@@ -224,8 +229,9 @@ intermediate — split this into 3a (plumbing) and 3b (the unpin-trio).**
   crashes: **{free-DOF unpin + Tet10 mass (HRZ) + Hessian-incidence widening}**.
   This is forced by the symbolic-pattern path: the mass-diagonal scatter emits
   a `(k,k)` entry for every free DOF (`assembly.rs:419-423`), and a `(k,k)`
-  not present in the cached symbolic pattern (built from corner incidence,
-  `construct.rs:305-326`) is a pattern mismatch → panic at `factor.rs:387`.
+  not present in the cached symbolic pattern (built from corner incidence in
+  `construct.rs` §4, factored via the `build_symbolic_factors` helper) is a
+  pattern mismatch → panic at `factor.rs:387`.
   So incidence-widening is mandatory on unpin, and a *non-zero* (positive)
   mass diagonal is mandatory to factor — the negative-corner-mass landmine
   (§2 mass row) bites exactly here. Land 3b together with, or immediately
@@ -240,8 +246,9 @@ intermediate — split this into 3a (plumbing) and 3b (the unpin-trio).**
     numeric read (a wrong factor, not a crash).** Rung 4 reaches `0..N`
     legitimately because its multi-GP stiffness *fills* those blocks — so **rung
     4 widens the symbolic AND numeric patterns in lockstep** (never symbolic
-    alone). (b) **"Still mechanically Tet4" needed a 4th sub-item.** Tet10's
-    shape gradients VANISH on the four corners at the centroid (∂N=0 there), so
+    alone). (b) **"Still mechanically Tet4" is NOT automatic — it lands with
+    the trio.** Tet10's shape gradients VANISH on the four corners at the
+    centroid (∂N=0 there), so
     the direct-form `F = Σ xₐ⊗∇Nₐ` would give `F=0` → NaN. 3b's corner geometry
     therefore uses the linear barycentric gradients (a Tet4 constant-strain
     block); rung 4's per-Gauss-point geometry (§3.3) replaces it.
