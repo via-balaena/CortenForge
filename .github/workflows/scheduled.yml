@@ -273,7 +273,7 @@ jobs:
   # ============================================================================
   summary:
     name: Weekly Summary
-    needs: [security-audit, coverage, dependencies, mutation-testing, benchmark-baseline, supply-chain, msrv, clippy-stable-drift]
+    needs: [security-audit, coverage, dependencies, mutation-testing, benchmark-baseline, supply-chain, msrv, clippy-stable-drift, soft-contact-heavy]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -290,4 +290,45 @@ jobs:
           echo "| Benchmarks | ${{ needs.benchmark-baseline.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Supply Chain | ${{ needs.supply-chain.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| MSRV | ${{ needs.msrv.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Soft contact heavy (#676) | ${{ needs.soft-contact-heavy.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Clippy Drift | ${{ needs.clippy-stable-drift.result }} |" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================================
+  # SOFT CONTACT (HEAVY) - the weekly backstop for the demand-#1 gate, #676
+  # ============================================================================
+  # `bonded_layer_indentation` gates demand #1 of the Tet10 arc — the
+  # mesh-converged ~9 % Tet4 curved-contact-patch over-stiffness (extrapolated
+  # floor 1.0915). The Quality Gate runs it per-PR, but deliberately behind a
+  # `sim/L0/soft/**` PATH filter rather than the affected set, because sim-soft
+  # depends on cf-geometry / mesh-offset / mesh-types / sim-ml-chassis and the
+  # reverse-dep closure would fire an hour-long job on unrelated foundational
+  # edits.
+  #
+  # This weekly run is the case that filter misses BY CONSTRUCTION: a change in
+  # one of those dependencies that genuinely breaks the contact force law
+  # without touching sim/L0/soft/**. Weekly is the right cadence — the gate had
+  # run in ZERO CI jobs since it landed, so catching such a regression within a
+  # week is the improvement; catching it within a merge is not worth ~1 h of
+  # runner time on every merge.
+  soft-contact-heavy:
+    name: Soft contact heavy (#676)
+    runs-on: ubuntu-latest
+    # Measured 24.2 min locally against a 1.0-2.2x CI factor; sized so a slow
+    # runner cannot turn a passing gate into a timeout failure.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run the demand-#1 bonded-layer indentation gate
+        run: cargo test --release -p sim-soft --test bonded_layer_indentation

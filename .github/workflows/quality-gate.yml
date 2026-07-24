@@ -903,9 +903,103 @@ jobs:
   # xtask is a shard-2 member, and any `.github/**` edit trips needs_full)
   # enforces that every OTHER job is listed in `needs` so a new gating job can't
   # silently escape the gate.
+  # ============================================================================
+  # SOFT CONTACT (HEAVY) - the demand-#1 indentation gate, #676
+  # ============================================================================
+  # `bonded_layer_indentation` is the ONLY gate holding demand #1 of the Tet10
+  # arc: it established, with a 3-level cell-convergence study, that Tet4
+  # over-stiffens the curved contact patch by a mesh-converged ~9 %
+  # (extrapolated floor 1.0915). It has run in NO CI job since it landed —
+  # release-only AND unregistered — so this job ends that.
+  #
+  # ★ Why its own job, and why a PATH filter rather than the affected set.
+  # Measured 24.2 min locally; CI is 1.0-2.2x slower (the three registered
+  # contact tests are 2.90 min local vs 6.42 min in CI), so it may approach an
+  # hour. Two consequences:
+  #   1. It cannot live in `tests-release` shard 3 (45-min timeout, already
+  #      13.4 min of other work). Hence a dedicated job with 90 min, which
+  #      cannot time out at either end of that uncertainty range.
+  #   2. It must NOT be gated on SOFT_PKGS like the other sim-soft steps.
+  #      That flag is the affected set = changed crates + REVERSE-DEP CLOSURE,
+  #      and sim-soft depends on cf-geometry / mesh-offset / mesh-types /
+  #      sim-ml-chassis — so editing a foundational crate would fire an
+  #      hour-long contact-indentation job with no relation to the change. The
+  #      path filter fires it when someone actually touches the soft engine,
+  #      i.e. when demand #1 can regress and the PR author is the right person
+  #      to wait for it.
+  #
+  # A weekly run in `scheduled.yml` is the backstop for the case this filter
+  # misses by construction: a dependency change that genuinely breaks the
+  # contact force law without touching sim/L0/soft/**.
+  #
+  # The job ALWAYS runs (`if: !cancelled()`) so it is never a skipped required
+  # check — the aggregator treats any non-`success` result, including
+  # `skipped`, as failure. The path decision gates the STEP, not the job, which
+  # is the same shape `tests-debug` uses for its affected set.
+  soft-contact-heavy:
+    name: sim-soft heavy contact (#676)
+    runs-on: ubuntu-latest
+    # Generous: measured 24.2 min locally against a 1.0-2.2x CI factor. Sized so
+    # a slow runner cannot turn a passing gate into a timeout failure, which
+    # would read as a real defect and teach people to ignore it.
+    timeout-minutes: 90
+    if: ${{ !cancelled() }}
+    steps:
+      # fetch-depth: 0 — the path decision diffs against the PR base, which
+      # needs the merge-base, i.e. enough history of both sides.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether the soft engine changed
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          # PR-only by design: on push/merge_group the weekly scheduled run is
+          # the coverage, so a ~1 h job never sits between a merge and main.
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "not a pull_request ($EVENT_NAME) — weekly scheduled run covers this"
+            exit 0
+          fi
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          if git diff --name-only "origin/$BASE_REF...HEAD" | grep -q '^sim/L0/soft/'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "sim/L0/soft/ touched — running the demand-#1 indentation gate"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "sim/L0/soft/ untouched — skipping (deliberately NOT the affected set)"
+          fi
+        shell: bash
+
+      - name: Install system dependencies
+        if: steps.scope.outputs.run == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
+
+      - name: Install Rust
+        if: steps.scope.outputs.run == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        if: steps.scope.outputs.run == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
+
+      # Release-only by its own cfg_attr, and genuinely heavy: a 71-increment
+      # displacement ramp over three meshes plus a 3-level convergence study.
+      - name: Run the demand-#1 bonded-layer indentation gate
+        if: steps.scope.outputs.run == 'true'
+        run: cargo test --release -p sim-soft --test bonded_layer_indentation
+        shell: bash
+
   quality-gate:
     name: Quality Gate
-    needs: [format, grade, tests-debug, tests-release, cross-os, feature-combos, dependencies, validate-examples]
+    needs: [format, grade, tests-debug, tests-release, cross-os, feature-combos, dependencies, validate-examples, soft-contact-heavy]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
