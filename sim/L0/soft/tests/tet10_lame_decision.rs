@@ -303,9 +303,11 @@ const PRESSURE: f64 = 5.0e3;
 const CELL_SIZE_DECISION: f64 = 0.02;
 
 /// Mesh for the gray-zone / mesh-stability confirmation — IV-5's `CELL_SIZE_H4`.
-/// 49,848 tets → 94,710 Tet10 nodes / 284k DOF, measured **7.13 GB peak RSS
-/// over 257 s**. Pre-push one-shot only: the test that uses it is `#[ignore]`d
-/// so it never runs in CI, where a 7 GB runner would OOM.
+/// 94,710 Tet10 nodes / 284k DOF. The ν = 0.49 confirmation measured **7.16 GB
+/// peak RSS over 500 s for its two solves** (the 7.13 GB / 257 s quoted
+/// elsewhere is rung 6a's single-solve ν = 0.4 cost). Pre-push one-shot only:
+/// the test that uses it is `#[ignore]`d so it never runs in CI, where a 7 GB
+/// runner would OOM.
 const CELL_SIZE_CONFIRMATION: f64 = 0.01;
 
 /// Static regime — IV-5's `STATIC_DT`. At `dt = 1` the inertial term `M/Δt²`
@@ -323,9 +325,9 @@ const STATIC_DT: f64 = 1.0;
 const MAX_NEWTON_ITER: usize = 150;
 
 /// Convergence tolerance as a fraction of the applied load's L2 norm — see
-/// the module docs' tolerance section. Chosen two orders above the highest
-/// measured residual floor (Tet10 at ν = 0.49, `1.43e-10`) and nine orders
-/// below the load itself.
+/// the module docs' tolerance section. Chosen well above the highest measured
+/// residual floor (Tet10 at ν = 0.49: `1.43e-10` at h/2, `2.08e-10` at h/4)
+/// and nine orders below the load itself.
 const TOL_RELATIVE: f64 = 1e-9;
 
 /// Iteration bound that actually discriminates. `MAX_NEWTON_ITER` cannot
@@ -339,8 +341,17 @@ const MAX_EXPECTED_NEWTON_ITER: usize = 10;
 /// Absolute ceiling on the accepted residual, independent of the tolerance
 /// the solver was configured with. Guards against a future regression that
 /// converges to a sloppier residual under a tolerance that silently allows
-/// it. All measured configurations land at `1.4e-10` or below.
-const MAX_ACCEPTED_RESIDUAL: f64 = 1e-9;
+/// it.
+///
+/// **The floor scales with λ, so this ceiling must cover the stiffest
+/// configuration any test here drives.** Measured: `1.4e-10` at ν = 0.49 h/2,
+/// `2.1e-10` at ν = 0.49 h/4, and `1.5e-9` at ν = 0.499 — a 10× rise in λ/μ
+/// moves the floor an order of magnitude while the applied load is unchanged,
+/// so a load-relative ceiling would not track it either. `3e-9` clears the
+/// worst measured case by 2× and still sits below the configured `cfg.tol`
+/// (`5.9e-9` for Tet10), which keeps the check non-vacuous: it catches a
+/// tolerance set too loose, which convergence alone cannot.
+const MAX_ACCEPTED_RESIDUAL: f64 = 3e-9;
 
 // ── Committed measurements (6a) ──────────────────────────────────────────
 
@@ -443,8 +454,17 @@ const TET10_NU_0_4_EQUAL_SPLIT_SUPPORT: f64 = 0.0761;
 const TET10_NU_0_49: f64 = 0.0314;
 
 /// The same reading under [`LoadRule::Facet`]. Pre-registration requires
-/// ACCEPT under **both** consistent rules, and this is the arm that binds
-/// harder — at ν = 0.4 it sat 4.8× inside its bar against `Continuum`'s 40×.
+/// ACCEPT under **both** consistent rules.
+///
+/// ⚠ **Do not read the two arms as independent evidence.** Measured, ~88 % of
+/// the Continuum↔Facet gap at ν = 0.49 is the fixed `+5.26 %` radial-thrust
+/// excess `Continuum` applies — so the pair contributes roughly `0.006` of
+/// genuinely independent signal against a `0.10` bar, and "passes by 3.2× and
+/// by 6.8×" is closer to one measurement quoted twice than to two. (At ν = 0.4
+/// `Facet` bound harder; at ν = 0.49 it is the looser arm, because
+/// `Continuum`'s bias crosses zero and changes sign here.) `Facet` remains the
+/// arm to trust for a *level*: it is the load consistent with the discrete
+/// boundary the FEM actually solves on.
 const TET10_NU_0_49_FACET: f64 = 0.0148;
 
 /// Tet4 at ν = 0.49 under [`LoadRule::Continuum`], for context only — it is
@@ -453,6 +473,42 @@ const TET10_NU_0_49_FACET: f64 = 0.0148;
 /// element two ν apart, and against [`TET10_NU_0_49`] for the two elements at
 /// the same ν.
 const TET4_NU_0_49: f64 = 0.1083;
+
+/// The h/4 mesh-stability confirmation reading under [`LoadRule::Continuum`]
+/// ([`tet10_nu_0_49_h4_mesh_stability_confirmation`], `#[ignore]`d). Committed
+/// for the same reason every other measurement here is: an h/4 number reported
+/// only in a commit message is exactly the vanished spike this arc keeps
+/// having to retract.
+const TET10_NU_0_49_H4: f64 = 0.0053;
+
+/// The h/4 confirmation under [`LoadRule::Facet`].
+const TET10_NU_0_49_H4_FACET: f64 = 0.0077;
+
+/// Stress Poisson ratio for the oracle-sensitivity probe — `λ/μ = 499`, a
+/// **10× stiffer volumetric constraint than [`NU_DECISION`]**. Not part of the
+/// gate; it exists to measure whether this oracle can express progressive
+/// locking at all (see
+/// [`oracle_locking_sensitivity_saturates_beyond_nu_0_49`]).
+const NU_STRESS: f64 = 0.499;
+
+/// Tet4 at ν = 0.499, [`LoadRule::Continuum`]. Compare [`TET4_NU_0_49`]
+/// (0.1083): a 10× rise in λ/μ leaves it **unchanged, slightly improved**.
+const TET4_NU_0_499: f64 = 0.1062;
+
+/// Tet4 at ν = 0.499, [`LoadRule::Facet`]. Compare [`TET4_NU_0_49_FACET`]
+/// (0.1677) — same saturation under the unbiased rule.
+const TET4_NU_0_499_FACET: f64 = 0.1653;
+
+/// Tet4 at ν = 0.49 under [`LoadRule::Facet`] — the unbiased counterpart of
+/// [`TET4_NU_0_49`], needed because the ν = 0.4 → 0.49 rise is 1.76× under
+/// `Continuum` but only 1.33× under `Facet`.
+const TET4_NU_0_49_FACET: f64 = 0.1677;
+
+/// Tet10 at ν = 0.499, [`LoadRule::Continuum`].
+const TET10_NU_0_499: f64 = 0.0191;
+
+/// Tet10 at ν = 0.499, [`LoadRule::Facet`].
+const TET10_NU_0_499_FACET: f64 = 0.0124;
 
 // ── The pre-registered decision bars (plan §5 step 6c, fixed at rung 6b) ──
 
@@ -1257,9 +1313,11 @@ fn tet10_equal_split_load_inverts_the_element_ordering() {
             .expect("the ν = 0.4 Tet10 solve converges under every load rule");
         report_and_check_physical(&format!("6b Tet10 ν=0.4 @ h/2 ({label})"), &reading);
         assert_committed(&format!("Tet10 {label}"), reading.rel_err.abs(), committed);
-        // The sign IS the finding: every consistent reading in this file is
-        // negative (over-stiff); these are the only positive ones, and the
-        // sign is what makes them an INVERSION rather than a magnitude.
+        // The sign IS the finding here: at ν = 0.4 every consistent reading is
+        // negative (over-stiff), so a positive one marks an INVERSION rather
+        // than a magnitude. (At ν = 0.49 the consistent rules no longer agree
+        // on sign — see `TET10_NU_0_49` — so this reasoning is scoped to the
+        // ν = 0.4 comparison it is written for.)
         assert!(
             reading.rel_err > 0.0,
             "6b: Tet10 under {label} should read over-SOFT (positive) — that sign is what makes \
@@ -1339,18 +1397,58 @@ fn classify(rel_err: f64) -> Verdict {
     }
 }
 
+/// ★★ **What an ACCEPT here does NOT license.** Stated on the gate itself, not
+/// only in a commit message, because this arc's standing failure mode is
+/// exactly that caveats survive in prose and vanish from the artifact:
+///
+/// - **One oracle, and a locking-INSENSITIVE one.** Radial inflation of a
+///   thick-walled sphere with a fixed outer skin — not contact, not a
+///   distorted or sliver mesh. And measured, this oracle cannot express
+///   progressive locking at all: Tet4's error saturates across a 10× rise in
+///   λ/μ (`oracle_locking_sensitivity_saturates_beyond_nu_0_49`), so it can
+///   certify accuracy here but not a locking cure. **The bending evidence
+///   lives in `tet10_bending_locking.rs`**, on a cantilever where the control
+///   genuinely collapses (Tet4 ν-ratio 0.2341 against a physical 0.8725) and
+///   Tet10 does not (0.8058). Read the two files together; neither alone
+///   settles ν → 0.5.
+/// - **★ A mean-displacement readout is blind to the failure Taylor-Hood
+///   actually exists to fix.** The verdict is a Saint-Venant mean radial
+///   displacement over 110 corner nodes. Pure-displacement elements at ν → 0.5
+///   characteristically deliver acceptable *displacements* alongside a
+///   spurious oscillatory (checkerboard) *pressure* field, and suppressing
+///   that via inf-sup/LBB stability is the primary reason mixed P2-P1 exists.
+///   This harness never evaluates pressure or stress. So the verdict is
+///   "accurate enough in mean displacement at ν = 0.49", **not** "the pressure
+///   field is sound" — if a later rung needs trustworthy pressures near
+///   incompressibility, that question is still open.
+/// - **Static, therefore mass-blind** (`STATIC_DT`): says nothing about the
+///   Tet10 HRZ lumped mass, which is rung 7's dynamics gate.
+/// - **Forward path only.** The differentiable path stays `N == 4`-guarded
+///   until rung 7; no adjoint channel is exercised here.
+/// - **ν = 0.49, not 0.499.** Untested under this harness.
+/// - **Demand #1 is untouched** — the ~9 % Tet4 curved-contact-patch floor
+///   (#676) is rung 6d, deferred, and no reading here bears on it.
+/// - **The two consistent rules disagree in SIGN at ν = 0.49** (`Continuum`
+///   +0.0314 over-soft, `Facet` −0.0148 over-stiff). Both are inside the bar,
+///   which is what the gate reads, but the *level* is what is being certified,
+///   not a claim about the direction of the residual error.
 #[test]
 fn tet10_at_nu_0_49_decision_gate() {
     // ★★ LADDER RUNG 6c — THE DECISION. Is pure-displacement Tet10 accurate
     // enough at Ecoflex's ν ≈ 0.49, or does near-incompressibility need a
     // mixed Taylor-Hood P2-P1 formulation on top (a redesign, deferred)?
     //
-    // Everything this test asserts was pre-registered at rung 6b, while only
-    // ν = 0.4 data existed — see the module docs' pre-registration section.
-    // Nothing here was chosen after seeing a ν = 0.49 number. In particular
-    // the gate requires ACCEPT under BOTH consistent load rules, because 6b
-    // measured that the rule choice moves the anchor 17× and would otherwise
-    // be the largest free lever on the verdict.
+    // Every threshold that DECIDES the verdict was pre-registered at rung 6b,
+    // while only ν = 0.4 data existed — see the module docs' pre-registration
+    // section; this commit added lines to the file and deleted none of it. In
+    // particular the gate requires ACCEPT under BOTH consistent load rules,
+    // because 6b measured that the rule choice moves the anchor 17× and would
+    // otherwise be the largest free lever on the verdict. (The
+    // `assert_committed` bands and the Tet10-beats-Tet4 check below are NOT
+    // pre-registered — they were written against measured ν = 0.49 numbers.
+    // Both are tightenings on top of the verdict rule, never a route to
+    // ACCEPT, but they were not fixed in advance and are not described as if
+    // they were.)
     //
     // Context reading first: Tet4 at the same ν, which is not part of the gate
     // but should make the locking signal visible.
@@ -1365,9 +1463,9 @@ fn tet10_at_nu_0_49_decision_gate() {
     assert_committed("Tet4 ν=0.49", tet4.rel_err.abs(), TET4_NU_0_49);
 
     let mut verdicts = Vec::new();
-    for (rule, committed, label) in [
-        (LoadRule::Continuum, TET10_NU_0_49, "Continuum"),
-        (LoadRule::Facet, TET10_NU_0_49_FACET, "Facet"),
+    for (rule, label) in [
+        (LoadRule::Continuum, "Continuum"),
+        (LoadRule::Facet, "Facet"),
     ] {
         // A stall is a clean REJECT that flows through the same assertion as
         // an accuracy miss — not a crash and not a separate code path.
@@ -1381,17 +1479,22 @@ fn tet10_at_nu_0_49_decision_gate() {
                         &format!("6c Tet10 ν=0.49 @ h/2 ({label})"),
                         &reading,
                     );
-                    assert_committed(
-                        &format!("Tet10 ν=0.49 {label}"),
-                        reading.rel_err.abs(),
-                        committed,
-                    );
+                    // ★ `assert_committed` deliberately does NOT run here. Its
+                    // band is ±0.0016, ~60× tighter than the distance from the
+                    // reading to `ACCEPT_BAR`, so asserting it first would make
+                    // `Verdict::Gray` and `Verdict::Reject` unreachable on the
+                    // accuracy path: any reading bad enough to REJECT would
+                    // panic as a "committed constant moved" regression long
+                    // before the decision logic ran, and the Taylor-Hood
+                    // routing message could never print. The verdict is
+                    // asserted first, below; the regression pin follows it.
                     (classify(reading.rel_err), Some(reading.rel_err))
                 }
                 Err(failure) => {
                     eprintln!(
-                        "rung-6c ({label}): Newton did not converge at ν = {NU_DECISION} within \
-                         {MAX_NEWTON_ITER} iterations ({failure:?}) — a stall is a REJECT."
+                        "rung-6c ({label}): the solve did not converge at ν = {NU_DECISION} \
+                         ({failure:?}) — per plan §5 step 6c a stall REJECTs exactly as an \
+                         accuracy miss does."
                     );
                     (Verdict::Reject, None)
                 }
@@ -1408,6 +1511,8 @@ fn tet10_at_nu_0_49_decision_gate() {
     }
 
     // The gate: ACCEPT under BOTH consistent rules, or the verdict is REJECT.
+    // This runs BEFORE the committed-constant pins so a genuine Gray/Reject
+    // reading reports the DECISION, not a regression-band mismatch.
     for (label, verdict, rel_err) in &verdicts {
         assert_eq!(
             *verdict,
@@ -1422,6 +1527,37 @@ fn tet10_at_nu_0_49_decision_gate() {
                 |r| format!("|rel_err| = {m:.4}", m = r.abs())
             ),
         );
+    }
+
+    // Regression pins, secondary to the verdict: these keep the numbers from
+    // drifting silently, but they are NOT the gate and are not pre-registered.
+    // Signs are pinned per-rule because at ν = 0.49 the two consistent rules
+    // DISAGREE about the direction of the residual error — `Continuum` reads
+    // over-soft, `Facet` over-stiff — and that disagreement is itself a
+    // finding (see `TET10_NU_0_49_FACET`). 6a and 6b each pin a sign for the
+    // same reason: a ± band on a small anchor otherwise admits either one.
+    for (label, expected_positive, committed) in [
+        ("Continuum", true, TET10_NU_0_49),
+        ("Facet", false, TET10_NU_0_49_FACET),
+    ] {
+        let rel_err = verdicts
+            .iter()
+            .find(|(l, _, _)| *l == label)
+            .and_then(|(_, _, r)| *r)
+            .expect("both arms converged (asserted ACCEPT above)");
+        assert_eq!(
+            rel_err > 0.0,
+            expected_positive,
+            "6c ({label}): expected the reading to be {dir}, got {rel_err:+.4}. The two \
+             consistent rules disagree in sign at ν = 0.49 by design; a flip here means the \
+             load convention or the element changed character.",
+            dir = if expected_positive {
+                "over-soft (positive)"
+            } else {
+                "over-stiff (negative)"
+            },
+        );
+        assert_committed(&format!("Tet10 ν=0.49 {label}"), rel_err.abs(), committed);
     }
 
     // Demand #2 is an ELEMENT-ORDER claim, so the ν = 0.49 gate should also
@@ -1455,10 +1591,19 @@ fn tet10_nu_0_49_h4_mesh_stability_confirmation() {
     // h/4 reading must be both ≤ ACCEPT_BAR and strictly below the h/2
     // reading. At an h/2 verdict of ACCEPT this is confirmation rather than an
     // escape, but the assertion is identical either way.
-    for (rule, h2_committed, label) in [
-        (LoadRule::Continuum, TET10_NU_0_49, "Continuum"),
-        (LoadRule::Facet, TET10_NU_0_49_FACET, "Facet"),
+    //
+    // ★ h/2 is solved LIVE here rather than read from its committed constant.
+    // The pre-registered clause says "strictly below the h/2 reading", and
+    // `assert_committed` admits ±5 %, so comparing against the constant would
+    // leave a window where a drifted h/2 and a rising h/4 both pass while the
+    // sequence is actually diverging — on the one clause that exists to stop
+    // an unearned ACCEPT. The extra h/2 solve costs ~3 s against h/4's ~250 s.
+    for (rule, h4_committed, label) in [
+        (LoadRule::Continuum, TET10_NU_0_49_H4, "Continuum"),
+        (LoadRule::Facet, TET10_NU_0_49_H4_FACET, "Facet"),
     ] {
+        let h2 = solve_and_read(ElementOrder::Tet10, NU_DECISION, CELL_SIZE_DECISION, rule)
+            .expect("the ν = 0.49 Tet10 h/2 solve converges");
         let h4 = solve_and_read(
             ElementOrder::Tet10,
             NU_DECISION,
@@ -1467,6 +1612,11 @@ fn tet10_nu_0_49_h4_mesh_stability_confirmation() {
         )
         .expect("the ν = 0.49 Tet10 h/4 solve converges");
         report_and_check_physical(&format!("6c Tet10 ν=0.49 @ h/4 ({label})"), &h4);
+        assert_committed(
+            &format!("Tet10 ν=0.49 h/4 {label}"),
+            h4.rel_err.abs(),
+            h4_committed,
+        );
         assert!(
             h4.rel_err.abs() <= ACCEPT_BAR,
             "6c h/4 ({label}): |rel_err| = {mag:.4} exceeds the {ACCEPT_BAR} bar — refinement \
@@ -1474,16 +1624,125 @@ fn tet10_nu_0_49_h4_mesh_stability_confirmation() {
             mag = h4.rel_err.abs(),
         );
         assert!(
-            h4.rel_err.abs() < h2_committed,
-            "6c h/4 ({label}): |rel_err| = {mag:.4} is not strictly below the h/2 reading \
-             {h2_committed:.4} — the error is not converging downward under refinement, so the \
-             h/2 verdict is not mesh-stable",
+            h4.rel_err.abs() < h2.rel_err.abs(),
+            "6c h/4 ({label}): |rel_err| = {mag:.4} is not strictly below the live h/2 reading \
+             {h2mag:.4} — the error is not converging downward under refinement, so the h/2 \
+             verdict is not mesh-stable",
             mag = h4.rel_err.abs(),
+            h2mag = h2.rel_err.abs(),
         );
         eprintln!(
-            "rung-6c h/4 confirmation ({label}): h/2 {h2_committed:.4} → h/4 {mag:.4} \
-             (converging downward through {ACCEPT_BAR})",
+            "rung-6c h/4 confirmation ({label}): h/2 {h2mag:.4} → h/4 {mag:.4} (converging \
+             downward through {ACCEPT_BAR})",
+            h2mag = h2.rel_err.abs(),
             mag = h4.rel_err.abs(),
+        );
+    }
+}
+
+// ── Oracle-sensitivity probe: what this oracle can and cannot certify ────
+
+#[test]
+fn oracle_locking_sensitivity_saturates_beyond_nu_0_49() {
+    // ★★ THE HONEST LIMIT ON RUNG 6c, committed rather than argued.
+    //
+    // The 6c verdict was originally justified in part by "Tet4's error nearly
+    // doubles from ν = 0.4 to ν = 0.49, so the volumetric locking this ladder
+    // exists to cure is real and present in this oracle." Extending the same
+    // sweep one step FALSIFIES that warrant, and this test pins the
+    // falsification so it cannot be quietly forgotten.
+    //
+    // Volumetric locking is UNBOUNDED as ν → 0.5: the error should grow
+    // without limit as λ/μ grows. Measured here, going ν = 0.49 → 0.499 raises
+    // λ/μ from 49 to 499 — a 10× stiffer volumetric constraint — and Tet4's
+    // error does not grow at all. It SATURATES, and slightly improves.
+    //
+    // Why that is physically reasonable, and why it matters: this oracle is a
+    // radially symmetric inflation, whose exact incompressible solution is the
+    // pure volume-preserving mode `u_r ∝ 1/r²`. A displacement field with one
+    // spatial degree of freedom does not stress the deviatoric-vs-volumetric
+    // competition that makes locking severe in BENDING. Corroborating: the
+    // oracle's own docstring predicts "convergence collapse" as ν → 0.5, and
+    // Newton converges in 3 iterations at every ν tried, including 0.499.
+    //
+    // ★ Consequence for the verdict. Rung 6c legitimately certifies that Tet10
+    // is accurate in mean displacement at ν = 0.49 on this oracle, and that it
+    // beats Tet4 there by a wide margin. It does NOT certify that Tet10 cures
+    // volumetric locking, because this oracle cannot make Tet4 progressively
+    // lock. A locking-sensitive claim needs a bending oracle — `fbar_locking`
+    // is the in-tree one, where plain Tet4 at ν = 0.49 genuinely collapses.
+    let mut tet4 = Vec::new();
+    for (nu, rule, committed, label) in [
+        (
+            NU_DECISION,
+            LoadRule::Continuum,
+            TET4_NU_0_49,
+            "0.49 Continuum",
+        ),
+        (
+            NU_STRESS,
+            LoadRule::Continuum,
+            TET4_NU_0_499,
+            "0.499 Continuum",
+        ),
+        (
+            NU_DECISION,
+            LoadRule::Facet,
+            TET4_NU_0_49_FACET,
+            "0.49 Facet",
+        ),
+        (
+            NU_STRESS,
+            LoadRule::Facet,
+            TET4_NU_0_499_FACET,
+            "0.499 Facet",
+        ),
+    ] {
+        let reading = solve_and_read(ElementOrder::Tet4, nu, CELL_SIZE_DECISION, rule)
+            .expect("the Tet4 sensitivity solves converge");
+        report_and_check_physical(&format!("probe Tet4 ν={label} @ h/2"), &reading);
+        assert_committed(&format!("Tet4 ν={label}"), reading.rel_err.abs(), committed);
+        tet4.push(reading.rel_err.abs());
+    }
+
+    // The falsification itself: 10× the volumetric stiffness, no growth.
+    for (rule_label, at_49, at_499) in
+        [("Continuum", tet4[0], tet4[1]), ("Facet", tet4[2], tet4[3])]
+    {
+        assert!(
+            at_499 <= at_49,
+            "probe ({rule_label}): Tet4 grew from {at_49:.4} at ν = {NU_DECISION} to \
+             {at_499:.4} at ν = {NU_STRESS}. If this oracle HAS become \
+             locking-sensitive, that is a material change to what rung 6c certifies — \
+             revisit the 6c caveat block, do not simply widen this assertion.",
+        );
+        eprintln!(
+            "probe locking sensitivity ({rule_label}): Tet4 |rel_err| {at_49:.4} at λ/μ=49 → \
+             {at_499:.4} at λ/μ=499 — SATURATED, so this oracle does not express progressive \
+             volumetric locking"
+        );
+    }
+
+    // Tet10 at the same stress point, for completeness: still well inside the
+    // decision bar, which is the one thing the ν = 0.499 step does support.
+    for (rule, committed, label) in [
+        (LoadRule::Continuum, TET10_NU_0_499, "Continuum"),
+        (LoadRule::Facet, TET10_NU_0_499_FACET, "Facet"),
+    ] {
+        let reading = solve_and_read(ElementOrder::Tet10, NU_STRESS, CELL_SIZE_DECISION, rule)
+            .expect("the Tet10 ν = 0.499 solves converge");
+        report_and_check_physical(&format!("probe Tet10 ν=0.499 @ h/2 ({label})"), &reading);
+        assert_committed(
+            &format!("Tet10 ν=0.499 {label}"),
+            reading.rel_err.abs(),
+            committed,
+        );
+        assert!(
+            reading.rel_err.abs() <= ACCEPT_BAR,
+            "probe: Tet10 at ν = {NU_STRESS} ({label}) reads {mag:.4}, outside the \
+             {ACCEPT_BAR} decision bar — the ν = 0.49 ACCEPT does not extend as far as this \
+             file's caveats claim",
+            mag = reading.rel_err.abs(),
         );
     }
 }
