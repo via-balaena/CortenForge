@@ -73,10 +73,40 @@
 //!   inherits the convention outright, though, and 6c decides against it:
 //!   `max(2·e₄₀, 0.10)` is **0.100** under [`LoadRule::EqualSplit`], **0.123**
 //!   under [`LoadRule::Continuum`], **0.251** under [`LoadRule::Facet`].
-//! - Note the plan's three rules **overlap** on `[0.10, max(2·e₄₀, 0.10)]`
-//!   for any `e₄₀ > 0.05`: a reading of 0.12 satisfies ACCEPT *and* falls in
-//!   the gray zone that defaults to REJECT. 6c must pre-register a
-//!   tie-break before it reads a ν = 0.49 number, not after.
+//! - Note the plan's three rules **overlap**: ACCEPT admits
+//!   `rel_err ≤ max(2·e₄₀, 0.10)` while the gray zone `(0.10, 0.20]` defaults
+//!   to REJECT, so any `e₄₀ > 0.05` leaves a band that satisfies both. And the
+//!   band inherits the load rule outright: `max(2·e₄₀, 0.10)` is **0.100**
+//!   under [`LoadRule::EqualSplit`], **0.123** under [`LoadRule::Continuum`],
+//!   **0.251** under [`LoadRule::Facet`].
+//!
+//! ### ★ Pre-registered for 6c, fixed here in rung 6b — before any ν = 0.49
+//! ### number is committed
+//!
+//! Rung 6b measured that the load rule moves the Tet10 anchor by 17× and the
+//! ACCEPT band by 2×, which makes the rule the largest remaining lever on the
+//! verdict. Choosing it after seeing a ν = 0.49 reading would be the whole
+//! game. So it is fixed now, while only ν = 0.4 data exists:
+//!
+//! 1. **6c must ACCEPT under BOTH consistent rules** — [`LoadRule::Continuum`]
+//!    *and* [`LoadRule::Facet`], each against its own `2·e₄₀` band (0.123 and
+//!    0.251). Passing one and failing the other is a REJECT. This removes the
+//!    `Continuum`-vs-`Facet` choice as a lever instead of letting the author
+//!    pick the flattering one: `Continuum` is the rule under which Tet10's
+//!    margin is largest, and it is the shipped default, so requiring `Facet`
+//!    too is the strictly conservative direction. Cost is two extra solves.
+//! 2. **The overlap resolves toward REJECT.** In `[0.10, max(2·e₄₀, 0.10)]`
+//!    the gray-zone rule wins over the ACCEPT rule, because it is the more
+//!    specific of the two and the plan states gray "defaults to REJECT". In
+//!    effect: ACCEPT needs `rel_err ≤ 0.10`; `(0.10, 0.20]` is gray and
+//!    REJECTs unless h/2 → h/4 converges downward through 0.10; `> 0.20` or a
+//!    stall REJECTs. The `2·e₄₀` term can therefore only ever *tighten* the
+//!    bar, never loosen it below 0.10 — again the conservative reading.
+//! 3. **`EqualSplit` is disqualified as a verdict rule**, on the rung-6b
+//!    evidence rather than on theory: it inverts the element ordering at
+//!    ν = 0.4 (see [`TET10_NU_0_4_EQUAL_SPLIT`]), so a verdict read under it
+//!    would be a statement about the load, not the element. It stays committed
+//!    as a control.
 //!
 //! So 6c is best understood as a *committed, re-runnable confirmation* of a
 //! spike result under conventions chosen in the open, not as a blind gate.
@@ -137,10 +167,14 @@
 //! areas — and its radial direction adds more still, because facet normals
 //! tilt away from `r̂`. The directly measured consequence at ν = 0.4: Tet4
 //! reads **0.0615 under `Continuum` and 0.1257 under
-//! [`LoadRule::Facet`]** — a 6.4-point swing, larger than the Tet4→Tet10
-//! element-order gap. [`tet4_load_rule_ab_at_nu_0_4`] commits all three rules
-//! so the convention factor stays visible and re-runnable. The *ordering* of
-//! the elements is robust to the choice; the *absolute* number `e₄₀` is not.
+//! [`LoadRule::Facet`]** — a 6.4-point swing, comparable to the Tet4→Tet10
+//! element-order gap itself (5.8 points under `Continuum`, 7.3 under `Facet`).
+//! The A/B tests commit every rule for both elements so the convention factor
+//! stays visible and re-runnable. The element *ordering* is robust across the
+//! two **consistent** rules — Tet10 beats Tet4 under both — but **not** across
+//! all three: under `EqualSplit` it inverts outright, see
+//! [`TET10_NU_0_4_EQUAL_SPLIT`]. The *absolute* numbers are not robust to the
+//! choice at all.
 //!
 //! ## ★ The residual tolerance must scale with the load
 //!
@@ -321,37 +355,70 @@ const E40_FACET: f64 = 0.1257;
 /// ⚠ **Do not read the smallness of this number as "Tet10 is 0.3 % accurate".**
 /// It is small partly because two effects cancel under
 /// [`LoadRule::Continuum`]: the element is over-stiff, and the load rule
-/// applies ~5 % more thrust than the discrete boundary warrants, which pushes
-/// the reading soft. [`TET10_NU_0_4_FACET`] is the same element under the
-/// variationally consistent load and is **17× larger** (0.0525). The
-/// *element-order comparison* is what this file supports — Tet10 beats Tet4
-/// under both consistent rules, by 20× under `Continuum` and 2.4× under
-/// `Facet` — but a standalone absolute accuracy claim for Tet10 is not.
+/// applies +5.3 % more thrust than the discrete boundary warrants (the Tet10
+/// figure; it is +7.4 % for Tet4), which pushes the reading soft. [`TET10_NU_0_4_FACET`] is the same element under the
+/// variationally consistent load and is **17× larger** (0.0525).
+///
+/// The honest margin over Tet4 is therefore the `Facet` one: **2.4×**
+/// (0.0525 vs 0.1257). The 20× that `Continuum` shows (0.0031 vs 0.0615) is
+/// the *same* cancellation this warning names, applied to a ratio — do not
+/// quote it as the element-order margin. And note the load rule is not the
+/// only convention larger than this anchor: the readout-convention systematic
+/// rung 6a retired (a per-node analytic target) was +1.15 % on this node set,
+/// **3.7× the anchor itself**. The *element-order comparison* is what this
+/// file supports; a standalone absolute accuracy claim for Tet10 is not.
 const TET10_NU_0_4: f64 = 0.0031;
 
-/// [`LoadRule::EqualSplit`] counterpart of [`TET10_NU_0_4`] — IV-5's rule on a
+/// [`LoadRule::EqualSplit`] counterpart of [`TET10_NU_0_4`] — an equal per-node
+/// split *generalised to the face-membership band* (a proxy for IV-5's shipped
+/// rule, not that rule itself; see [`LoadRule::EqualSplit`]) on a
 /// quadratic surface, where `∫N_corner dA = 0` makes it not merely imprecise
 /// but structurally wrong — and the damage is *element-specific*: against
 /// [`E40_EQUAL_SPLIT`] (0.0140) this is **17× worse than Tet4 under the same
-/// rule**, an inversion of the true element ordering. Under IV-5's shipped
-/// load rule, Tet10 would FAIL the 6b match-or-beat gate for a reason that has
-/// nothing to do with the element. That is the committed evidence for why 6c
-/// may not read its verdict off the shipped load rule.
+/// rule**, an inversion of the true element ordering. Under an equal-split
+/// load, Tet10 would FAIL the 6b match-or-beat gate for a reason that is
+/// mostly not about the element — see [`TET10_NU_0_4_EQUAL_SPLIT_SUPPORT`] for
+/// the part that is not about the P2 corner identity either. That is the
+/// committed evidence for why 6c may not read its verdict off an equal split.
 const TET10_NU_0_4_EQUAL_SPLIT: f64 = 0.2405;
 
 /// [`LoadRule::Facet`] counterpart of [`TET10_NU_0_4`] — true facet areas and
 /// normals, i.e. the load consistent with the *discrete* boundary.
 const TET10_NU_0_4_FACET: f64 = 0.0525;
 
-/// Half-width of the acceptance band around a committed measurement. The
-/// solves are deterministic (the assembler is serial by design and the
-/// mesher is gated for run-to-run bit-equality by IV-5), so this bounds
-/// cross-platform floating-point drift, not run-to-run noise: re-running the
-/// baseline reproduces `measured` to all 17 digits, in both profiles. Sized
-/// against the effects the file actually discriminates — the load rule spans
-/// 0.0140 to 0.1257, and h → h/2 moves the Tet4 reading by several points —
-/// so `0.005` separates those without pinning a cross-platform ULP.
-const COMMITTED_BAND: f64 = 0.005;
+/// [`LoadRule::EqualSplitSupport`] counterpart — equal split over the midsides
+/// only, i.e. [`LoadRule::EqualSplit`] with the P2 corner loading removed.
+///
+/// The decomposition this constant exists for: of the total departure from
+/// `Continuum`, roughly two thirds is diverting ~25 % of the thrust onto
+/// corners where `∫N dA = 0` (the P2-specific cause), and the remaining third
+/// is equal-vs-area weighting *among the midsides* — an effect with no
+/// connection to the corner identity, which Tet4 shows too. Decisive detail:
+/// even with corner loading removed entirely this still inverts the element
+/// ordering against Tet4's own equal-split reading, so the P2 corner identity
+/// is the dominant cause but **not the whole cause**.
+const TET10_NU_0_4_EQUAL_SPLIT_SUPPORT: f64 = 0.0761;
+
+/// Acceptance band around a committed measurement, as a **fraction of the
+/// committed value** (see [`assert_committed`]).
+///
+/// The solves are deterministic — re-running reproduces `measured` to all 17
+/// digits, in both profiles — so this bounds cross-platform floating-point
+/// drift, not run-to-run noise, and 5 % leaves several orders of headroom over
+/// any plausible x86-vs-ARM difference in a 3-iteration solve.
+///
+/// **Relative, not absolute, because a fixed half-width does not scale.** An
+/// earlier `±0.005` was 36 % of the smallest constant it then guarded; rung 6b
+/// added `TET10_NU_0_4 = 0.0031`, which that band was **161 %** of — it
+/// admitted a 2.6× degradation of the file's headline anchor as green, and a
+/// measured 5 % Gauss-weight error in the Tet10 element (which moves the
+/// reading to −0.0504) sailed through the match-or-beat gate with only this
+/// assertion catching it.
+const COMMITTED_BAND_FRACTION: f64 = 0.05;
+
+/// Floor on the acceptance band, so a constant near zero does not demand a
+/// bit-pin. At the current constants only [`TET10_NU_0_4`] is near it.
+const COMMITTED_BAND_FLOOR: f64 = 2.0e-4;
 
 // ── Closed-form single-shell Lamé oracle ─────────────────────────────────
 
@@ -495,13 +562,35 @@ enum LoadRule {
     /// discrete faceted boundary the FEM actually solves on — and therefore
     /// the rule under which the Galerkin over-stiffness argument strictly
     /// applies — but it charges the mesher's `O((h/R)²)` faceting deficit to
-    /// the element. Measured, it applies ~5 % less total load than
-    /// [`Self::Continuum`] (4.8 % by force magnitude, 5.0 % by radial thrust).
+    /// the element. Measured radial thrust: `Continuum` is a flat 100.53 N for
+    /// both elements, while `Facet` is 95.51 N for Tet10 and 93.58 N for Tet4
+    /// — so `Continuum`'s excess is **element-dependent**, +5.3 % for Tet10 and
+    /// +7.4 % for Tet4, because a corner node accumulates ~6 facet normals
+    /// (more directional cancellation) against a midside's exactly 2. Do not
+    /// quote a single "~5 %" across both elements.
     Facet,
-    /// IV-5's rule: the exact analytic cavity area split **equally** over
-    /// every cavity-surface node, along `r̂`. The control. Inconsistent for a
-    /// quadratic surface, where `∫N_corner dA = 0` exactly.
+    /// A **proxy** for IV-5's rule: the exact analytic cavity area split
+    /// **equally** over every cavity-surface node, along `r̂`. The control.
+    ///
+    /// ⚠ Proxy, not IV-5's shipped rule: IV-5 selects its band with the
+    /// `0.5·cell_size` per-vertex radial predicate, which loads **134** nodes
+    /// here rather than 110 and sweeps in radial-edge midsides that are not on
+    /// the cavity surface at all (module docs §"Why a second Lamé file"). This
+    /// variant substitutes the harness's face-membership band, isolating the
+    /// *distribution* rule. The reading under IV-5's band selection is
+    /// unmeasured.
     EqualSplit,
+    /// Equal split over only the nodes the consistent rules put load on —
+    /// midsides for Tet10, corners for Tet4 — i.e. [`Self::EqualSplit`] with
+    /// the P2 corner-loading removed but the equal-vs-area-weighted
+    /// distribution kept.
+    ///
+    /// The counterfactual that decomposes [`Self::EqualSplit`]'s error into
+    /// its two independent causes, so the attribution is a measurement rather
+    /// than an argument. For Tet4 it is identical to [`Self::EqualSplit`] by
+    /// construction (both split over the same corners), which is a free
+    /// self-check on the decomposition.
+    EqualSplitSupport,
 }
 
 // ── Surface conditions: pinned band, consistent load, readout node set ────
@@ -626,6 +715,13 @@ fn surface_conditions(mesh: &dyn Mesh, cell_size: f64, rule: LoadRule) -> Surfac
                 .map(|&v| (v, radial_force(v, PRESSURE * per_node)))
                 .collect()
         }
+        LoadRule::EqualSplitSupport => {
+            let per_node = exact_cavity_area() / tributary.len() as f64;
+            tributary
+                .keys()
+                .map(|&v| (v, radial_force(v, PRESSURE * per_node)))
+                .collect()
+        }
     };
 
     let loaded: Vec<VertexId> = forces.keys().copied().collect();
@@ -666,6 +762,11 @@ struct Reading {
     n_nodes: usize,
     n_loaded: usize,
     n_cavity_corners: usize,
+    /// Sum of the cavity-corner `VertexId`s — a fingerprint of the readout
+    /// *set*, not just its size, so the 6b comparison can assert the two
+    /// elements were read on the same nodes rather than merely on the same
+    /// number of nodes.
+    cavity_corner_fingerprint: u64,
 }
 
 /// Build the uniform sphere at `cell_size`, solve one static step with
@@ -780,6 +881,7 @@ fn solve_and_read(
         n_nodes: surface.rest.len(),
         n_loaded: surface.loaded.len(),
         n_cavity_corners: surface.cavity_corners.len(),
+        cavity_corner_fingerprint: surface.cavity_corners.iter().map(|&v| u64::from(v)).sum(),
     })
 }
 
@@ -828,11 +930,13 @@ fn report_and_check_physical(label: &str, reading: &Reading) {
     );
 }
 
-/// Assert a measurement matches its committed constant.
+/// Assert a measurement matches its committed constant, within a band that is
+/// a fixed *fraction* of the constant (floored by [`COMMITTED_BAND_FLOOR`]).
 fn assert_committed(label: &str, measured: f64, committed: f64) {
+    let band = (COMMITTED_BAND_FRACTION * committed).max(COMMITTED_BAND_FLOOR);
     assert!(
-        (measured - committed).abs() < COMMITTED_BAND,
-        "{label}: committed {committed:.4} but measured {measured:.4} (band ±{COMMITTED_BAND}). \
+        (measured - committed).abs() < band,
+        "{label}: committed {committed:.5} but measured {measured:.5} (band ±{band:.5}). \
          Rung-6 thresholds are computed from these numbers — do NOT re-bake a constant to make \
          the test green without first establishing WHY the discretisation error moved (mesher, \
          load rule, measurement convention, or element)."
@@ -861,8 +965,9 @@ fn tet4_baseline_at_nu_0_4_is_committed_e40() {
     // measured (h, h/2, h/4 × ν ∈ {0.4, 0.49, 0.499}). The Galerkin
     // over-stiffness argument points the same way but does not strictly carry
     // it here: that argument wants the load consistent with the *discrete*
-    // faceted domain, and `LoadRule::Continuum` deliberately applies ~5 %
-    // more than that (module docs). So this is an empirical regularity worth
+    // faceted domain, and `LoadRule::Continuum` deliberately applies more than
+    // that — measured +7.4 % of radial thrust for Tet4 (module docs). So this
+    // is an empirical regularity worth
     // pinning, not a theorem — a flip means the harness changed character.
     assert!(
         reading.rel_err < 0.0,
@@ -877,7 +982,7 @@ fn tet4_load_rule_ab_at_nu_0_4() {
     // The load rule moves the measured error by more than the element order
     // does, so it gets a committed A/B rather than a docstring claim. This is
     // the re-runnable form of "the equal-split rule is inconsistent for a
-    // quadratic surface" — 6b/6c extend it to Tet10, where the P2 corner
+    // quadratic surface" — rung 6b extends it to Tet10, where the P2 corner
     // weight is exactly zero and the rule decides the verdict.
     for (rule, committed, label) in [
         (LoadRule::EqualSplit, E40_EQUAL_SPLIT, "EqualSplit"),
@@ -901,7 +1006,7 @@ fn boundary_face_midsides_sit_at_edge_midpoints() {
     // the arithmetic midpoint of the two corners of its own edge.
     //
     // This is also what keeps the harness's quadratic path exercised in CI
-    // while the Tet10 *solves* wait for 6b/6c.
+    // independently of the ν = 0.49 solves that land in 6c.
     let (mesh4, _bc, _initial, _theta) = SoftScene::layered_silicone_sphere(
         MaterialField::uniform(MU, lambda_from_nu(NU_BASELINE)),
         CELL_SIZE_DECISION,
@@ -946,89 +1051,166 @@ fn boundary_face_midsides_sit_at_edge_midpoints() {
 
 // ── 6b — the Tet10 ν = 0.4 match-or-beat anchor ──────────────────────────
 
-#[test]
-fn tet10_at_nu_0_4_matches_or_beats_tet4() {
-    // Ladder rung 6b, and deliberately a BUG-LOCALIZER rather than an
-    // accuracy claim. Tet10 carries 2.5× Tet4's DOF-to-constraint ratio on
-    // identical geometry, so at a compressible ν where neither element locks
-    // it must not do *worse*. If it did, the fault would be in the rung-4
-    // multi-Gauss-point assembly, the rung-3b unpin trio, or the enrichment —
-    // not in near-incompressibility. Running this before the ν = 0.49 gate is
-    // what lets 6c attribute a bad reading to locking at all.
-    //
-    // Both elements are solved live in this test rather than comparing
-    // against the committed `E40`, so a harness change that moved both
-    // readings together cannot masquerade as an element-order result.
-    let tet4 = solve_and_read(
-        ElementOrder::Tet4,
-        NU_BASELINE,
-        CELL_SIZE_DECISION,
-        LoadRule::Continuum,
-    )
-    .expect("the ν = 0.4 Tet4 baseline solve converges");
-    let tet10 = solve_and_read(
-        ElementOrder::Tet10,
-        NU_BASELINE,
-        CELL_SIZE_DECISION,
-        LoadRule::Continuum,
-    )
-    .expect("the ν = 0.4 Tet10 solve converges");
-    report_and_check_physical("6b Tet4 ν=0.4 @ h/2 (Continuum)", &tet4);
-    report_and_check_physical("6b Tet10 ν=0.4 @ h/2 (Continuum)", &tet10);
+/// Solve both elements at ν = 0.4 under `rule` and assert Tet10 match-or-beats
+/// Tet4 on the same oracle. Returns the Tet10 reading.
+///
+/// Both are solved live rather than compared against the committed [`E40`], so
+/// the two readings come from one build of one harness. ⚠ That is a weaker
+/// guarantee than it looks: it only neutralises a harness change that moves
+/// *both* readings equally, and this file's own A/B is a counterexample — a
+/// pure load-rule change moves Tet4 by +0.047 and Tet10 by +0.244 and flips
+/// the ordering. Still the right design; not a shield against harness error.
+fn assert_tet10_matches_or_beats_tet4(rule: LoadRule, label: &str) -> Reading {
+    let tet4 = solve_and_read(ElementOrder::Tet4, NU_BASELINE, CELL_SIZE_DECISION, rule)
+        .expect("the ν = 0.4 Tet4 solve converges");
+    let tet10 = solve_and_read(ElementOrder::Tet10, NU_BASELINE, CELL_SIZE_DECISION, rule)
+        .expect("the ν = 0.4 Tet10 solve converges");
+    report_and_check_physical(&format!("6b Tet4 ν=0.4 @ h/2 ({label})"), &tet4);
+    report_and_check_physical(&format!("6b Tet10 ν=0.4 @ h/2 ({label})"), &tet10);
 
-    // The Tet10 mesh must actually be the enriched one — same corner count,
-    // ~2.8× the nodes. Guards against a silent fallback to the Tet4 path
-    // that would make the comparison vacuous.
+    // The Tet10 mesh must really be the enriched one. A bare `>` would pass at
+    // one extra node; enrichment adds a midpoint per element edge, so the true
+    // factor is ~2.8× (13,336 vs 4,682).
     assert!(
-        tet10.n_nodes > tet4.n_nodes,
-        "6b: the Tet10 mesh has {n10} nodes against Tet4's {n4} — enrichment did not happen, so \
-         this comparison is vacuous",
+        tet10.n_nodes > 2 * tet4.n_nodes,
+        "6b ({label}): the Tet10 mesh has {n10} nodes against Tet4's {n4} — enrichment did not \
+         happen (expected ~2.8×), so this comparison is vacuous",
         n10 = tet10.n_nodes,
         n4 = tet4.n_nodes,
     );
+    // The same readout SET, not merely the same count: enrichment preserves
+    // corner ids, so the id fingerprints must match too.
     assert_eq!(
-        tet10.n_cavity_corners,
-        tet4.n_cavity_corners,
-        "6b: the two elements must be read on the SAME cavity-corner nodes ({c10} vs {c4}); \
-         enrichment preserves corner ids, so a mismatch means the readout set drifted and the \
-         comparison is no longer apples-to-apples",
-        c10 = tet10.n_cavity_corners,
-        c4 = tet4.n_cavity_corners,
+        (tet10.n_cavity_corners, tet10.cavity_corner_fingerprint),
+        (tet4.n_cavity_corners, tet4.cavity_corner_fingerprint),
+        "6b ({label}): the two elements must be read on the SAME cavity-corner nodes; the counts \
+         or id fingerprints differ, so the readout set drifted between the two solves"
     );
-
-    // The gate itself: match-or-beat on the same oracle.
     assert!(
         tet10.rel_err.abs() <= tet4.rel_err.abs(),
-        "6b MISS — Tet10 ({rel10:+.4}) is worse than Tet4 ({rel4:+.4}) at ν = {NU_BASELINE}, \
-         where neither element locks. This localizes to the FORWARD path (rung-4 multi-Gauss-point \
-         assembly, rung-3b unpin trio, or enrichment), NOT to near-incompressibility — fix it \
-         before reading anything from the ν = 0.49 gate.",
+        "6b MISS ({label}) — Tet10 ({rel10:+.4}) is worse than Tet4 ({rel4:+.4}) at \
+         ν = {NU_BASELINE}, where neither element locks. This localizes to the FORWARD path \
+         (rung-4 multi-Gauss-point assembly, rung-3b unpin trio, or enrichment), NOT to \
+         near-incompressibility — fix it before reading anything from the ν = 0.49 gate.",
         rel10 = tet10.rel_err,
         rel4 = tet4.rel_err,
     );
-    assert_committed("e₁₀,₄₀", tet10.rel_err.abs(), TET10_NU_0_4);
+    tet10
 }
 
 #[test]
-fn tet10_load_rule_ab_at_nu_0_4() {
-    // The Tet4 A/B (`tet4_load_rule_ab_at_nu_0_4`) shows the load rule moves
-    // the reading. On a QUADRATIC surface the equal-split rule is not merely
-    // imprecise but structurally wrong — `∫N_corner dA = 0` exactly, so
-    // loading corners at all is loading nodes the consistent formulation says
-    // carry none. Committing the size of that error here is what licenses 6c
-    // to reject the shipped load rule on evidence rather than on theory.
+fn tet10_at_nu_0_4_matches_or_beats_tet4() {
+    // Ladder rung 6b, and deliberately a BUG-LOCALIZER rather than an accuracy
+    // claim. On the same mesh the P2 space *contains* the P1 space, so Tet10's
+    // Galerkin solution is no worse in energy norm, and at a compressible ν —
+    // where neither element locks — it must not read worse. (Nesting is
+    // suggestive rather than a strict guarantee on this pointwise readout,
+    // because the two discrete load functionals differ — 110 corner loads
+    // versus 324 midside loads — which is exactly why the gate is empirical.)
+    // A miss here localizes to the forward path, not to incompressibility,
+    // which is what lets 6c attribute a bad ν = 0.49 reading to locking.
     //
-    // ★ Read the EqualSplit constant against `E40_EQUAL_SPLIT`: 0.2405 versus
-    // 0.0140 means the shipped rule INVERTS the element ordering, and Tet10
-    // would fail 6b's match-or-beat under it. The load rule, not the element,
-    // would have produced that verdict.
+    // ★ Asserted under BOTH consistent rules. Under `Continuum` alone a
+    // forward-path bug making Tet10 ~5 % over-stiff would be masked by that
+    // rule's excess thrust — a real hole in a bug-localizer. `Facet` is the
+    // un-cancelled read and carries the honest margin (2.4×, not 20×).
+    let continuum = assert_tet10_matches_or_beats_tet4(LoadRule::Continuum, "Continuum");
+    let facet = assert_tet10_matches_or_beats_tet4(LoadRule::Facet, "Facet");
+
+    // Over-stiff (negative) is the pinned empirical regularity at ν = 0.4 — 6a
+    // asserts it for Tet4. Without this, a ± band on an anchor as small as
+    // `TET10_NU_0_4` admits either sign, and that constant's cancellation
+    // argument is a SIGNED argument.
+    for (label, reading) in [("Continuum", &continuum), ("Facet", &facet)] {
+        assert!(
+            reading.rel_err < 0.0,
+            "6b ({label}): Tet10 at ν = 0.4 should read over-stiff (negative), got {rel:+.4}",
+            rel = reading.rel_err,
+        );
+    }
+    assert_committed("e₁₀,₄₀ (Continuum)", continuum.rel_err.abs(), TET10_NU_0_4);
+    assert_committed("e₁₀,₄₀ (Facet)", facet.rel_err.abs(), TET10_NU_0_4_FACET);
+}
+
+#[test]
+fn tet10_equal_split_load_inverts_the_element_ordering() {
+    // On a QUADRATIC surface the equal-split rule is not merely imprecise but
+    // structurally wrong — `∫N_corner dA = 0` exactly, so it loads nodes the
+    // consistent formulation says carry none. Committing the size of that
+    // error, and its DECOMPOSITION, is what licenses 6c to reject the shipped
+    // load rule on evidence rather than theory.
+    //
+    // ★ The decomposition matters because the single-cause story is only
+    // partly true. `EqualSplitSupport` drops the corner loading but keeps
+    // equal-vs-area weighting among the midsides; the error it still shows is
+    // the part that has nothing to do with the P2 corner identity — and it
+    // inverts the ordering on its own.
+    let tet4_equal = solve_and_read(
+        ElementOrder::Tet4,
+        NU_BASELINE,
+        CELL_SIZE_DECISION,
+        LoadRule::EqualSplit,
+    )
+    .expect("the ν = 0.4 Tet4 EqualSplit solve converges");
+    report_and_check_physical("6b Tet4 ν=0.4 @ h/2 (EqualSplit)", &tet4_equal);
+
+    let mut tet10_readings = Vec::new();
     for (rule, committed, label) in [
         (LoadRule::EqualSplit, TET10_NU_0_4_EQUAL_SPLIT, "EqualSplit"),
-        (LoadRule::Facet, TET10_NU_0_4_FACET, "Facet"),
+        (
+            LoadRule::EqualSplitSupport,
+            TET10_NU_0_4_EQUAL_SPLIT_SUPPORT,
+            "EqualSplitSupport",
+        ),
     ] {
         let reading = solve_and_read(ElementOrder::Tet10, NU_BASELINE, CELL_SIZE_DECISION, rule)
             .expect("the ν = 0.4 Tet10 solve converges under every load rule");
         report_and_check_physical(&format!("6b Tet10 ν=0.4 @ h/2 ({label})"), &reading);
-        assert_committed(label, reading.rel_err.abs(), committed);
+        assert_committed(&format!("Tet10 {label}"), reading.rel_err.abs(), committed);
+        // The sign IS the finding: every consistent reading in this file is
+        // negative (over-stiff); these are the only positive ones, and the
+        // sign is what makes them an INVERSION rather than a magnitude.
+        assert!(
+            reading.rel_err > 0.0,
+            "6b: Tet10 under {label} should read over-SOFT (positive) — that sign is what makes \
+             it an inversion of the element ordering; got {rel:+.4}",
+            rel = reading.rel_err,
+        );
+        assert!(
+            reading.rel_err.abs() > tet4_equal.rel_err.abs(),
+            "6b: under {label} Tet10 ({rel10:+.4}) should be WORSE than Tet4 under the same \
+             equal-split rule ({rel4:+.4}) — that inversion is the committed evidence that the \
+             load rule, not the element, would decide such a verdict",
+            rel10 = reading.rel_err,
+            rel4 = tet4_equal.rel_err,
+        );
+        tet10_readings.push(reading.rel_err);
     }
+
+    // Tet4's consistent support IS its corner set, so the two equal-split
+    // variants must coincide exactly for Tet4 — a free self-check that
+    // `EqualSplitSupport` isolates what it claims to.
+    let tet4_support = solve_and_read(
+        ElementOrder::Tet4,
+        NU_BASELINE,
+        CELL_SIZE_DECISION,
+        LoadRule::EqualSplitSupport,
+    )
+    .expect("the ν = 0.4 Tet4 EqualSplitSupport solve converges");
+    assert_eq!(
+        tet4_support.rel_err.to_bits(),
+        tet4_equal.rel_err.to_bits(),
+        "6b: for Tet4 the consistent support IS the corner set, so EqualSplitSupport must be \
+         bit-identical to EqualSplit; a difference means the variant is not isolating the P2 \
+         corner-loading effect it exists to isolate"
+    );
+    eprintln!(
+        "rung-6 6b equal-split decomposition: Tet10 Continuum {c:+.4} -> EqualSplitSupport \
+         {s:+.4} (equal-vs-area weighting among midsides alone) -> EqualSplit {e:+.4} (plus P2 \
+         corner loading); Tet4 EqualSplit {t4:+.4}",
+        c = -TET10_NU_0_4,
+        s = tet10_readings[1],
+        e = tet10_readings[0],
+        t4 = tet4_equal.rel_err,
+    );
 }
