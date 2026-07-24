@@ -539,11 +539,17 @@ where
     }
 }
 
-/// The per-element 3×3 tangent block `V·(Bₐᵀ ℂ B_b)` coupling tet-vertices `a` and `b`:
+/// The per-Gauss-point 3×3 tangent block `w·(Bₐᵀ ℂ B_b)` coupling element nodes
+/// `a` and `b` at one Gauss point:
 ///
 /// ```text
-///     block[i,j] = V · Σ_{l,l'} (∇ₓNₐ)_l · ℂ[i+3l, j+3l'] · (∇ₓN_b)_{l'}     (BF-5 flattening)
+///     block[i,j] = w · Σ_{l,l'} (∇ₓNₐ)_l · ℂ[i+3l, j+3l'] · (∇ₓN_b)_{l'}     (BF-5 flattening)
 /// ```
+///
+/// `weight` is that point's integration weight `w_q·|detJ|`; the caller sums the
+/// blocks over the element's `G` Gauss points. (For Tet4's single centroid point
+/// `weight` is the element rest volume `|detJ|/6`, so this reproduces the
+/// pre-rung-4 `V·(BᵀℂB)` element block.)
 ///
 /// Single-sourced by [`CpuNewtonSolver::assemble_free_hessian_triplets`] (which scatters
 /// its free-DOF, lower-triangle entries into the sparse tangent) and
@@ -558,7 +564,7 @@ where
 fn element_tangent_block<const N: usize>(
     grad_x_n: &SMatrix<f64, N, 3>,
     tangent_9x9: &SMatrix<f64, 9, 9>,
-    volume: f64,
+    weight: f64,
     a: usize,
     b: usize,
 ) -> Matrix3<f64> {
@@ -572,7 +578,7 @@ fn element_tangent_block<const N: usize>(
                         grad_x_n[(a, l)] * tangent_9x9[(i + 3 * l, j + 3 * lp)] * grad_x_n[(b, lp)];
                 }
             }
-            block[(i, j)] = volume * s;
+            block[(i, j)] = weight * s;
         }
     }
     block

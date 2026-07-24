@@ -1061,7 +1061,7 @@ fn dirichlet_reaction_matvec_and_sensitivity_lib_smoke() {
     assert!(live > 1.0, "dR must be live (max |dR| = {live:.3e})");
 }
 
-// ── Rung 3b: the Tet10 unpin-trio dynamics gate ────────────────────────────
+// ── Rung 3b/4: the Tet10 unpin-trio + multi-Gauss-point dynamics gate ───────
 //
 // {free-DOF unpin + HRZ mass + Hessian-incidence widening} lands atomically:
 // the moment a midside DOF is freed, its mass-diagonal `(k, k)` needs both a
@@ -1071,7 +1071,9 @@ fn dirichlet_reaction_matvec_and_sensitivity_lib_smoke() {
 // landmine: naive row-sum lumping gives NEGATIVE Tet10 corner masses), and the
 // free tangent factors PD (Llt, non-singular) at a small DYNAMIC dt. STATIC_DT
 // would be mass-blind (`M/Δt² ≈ 0` swamps a bad mass), so the factor gate MUST
-// run dynamically.
+// run dynamically. Since rung 4 the freed midsides also carry REAL multi-Gauss-
+// point stiffness (not the earlier stiffness-free scaffold); the tangent these
+// gates factor is the full 10-node element stiffness + HRZ mass.
 
 /// A small uniform Tet10 solver: enrich a `uniform_block` cube into a
 /// [`Tet10Mesh`], pin its bottom face, and free everything above — corners
@@ -1153,11 +1155,18 @@ fn tet10_mass_diagonal_is_strictly_positive() {
     }
 }
 
-/// The construct + FACTOR gate: the free-DOF tangent (corner constant-strain
-/// stiffness + HRZ mass on the freed midsides) must factor PD — the `Llt`
-/// happy path, NOT the `Lu` rescue — at a small DYNAMIC dt. The mass term
-/// `M/Δt²` is what keeps the stiffness-free midside DOFs non-singular; at
-/// `STATIC_DT` it is ≈ 0 and this gate would be mass-blind.
+/// The construct + FACTOR gate: the Tet10 free-DOF tangent (the multi-Gauss-
+/// point element stiffness over all 10 nodes — rung 4 — plus HRZ mass) must
+/// factor PD — the `Llt` happy path, NOT the `Lu` rescue — at a small DYNAMIC
+/// dt. It guards two failure modes: (1) a symbolic/numeric sparsity-pattern
+/// disagreement (a symbolic entry the numeric never fills corrupts faer's read
+/// → spurious non-PD → Lu fallback — the rung-3b `is_llt` landmine, now that
+/// rung 4 fills the corner↔midside blocks the symbolic must match); and (2) a
+/// non-positive HRZ mass diagonal — the small dt keeps `M/Δt²` significant so a
+/// negative nodal mass surfaces as non-PD even where the real stiffness would
+/// otherwise dominate (at `STATIC_DT` the mass term ≈ 0 and this would be
+/// mass-blind). Stiffness *correctness* (vs a stiffness-free element) is the
+/// separate job of `tet10_multigp_tangent_matches_bt_d_b_reference`.
 #[test]
 fn tet10_free_tangent_factors_pd_at_dynamic_dt() {
     // Small + dynamic: `M/Δt²` is significant (STATIC_DT ≈ 1.0 would swamp it).
@@ -1167,19 +1176,21 @@ fn tet10_free_tangent_factors_pd_at_dynamic_dt() {
 
     let triplets = solver.assemble_free_hessian_triplets(&x_rest, None, dt);
     let mut lm_state = LmState::disabled();
-    let factor = solver.factor_free_tangent(&triplets, &mut lm_state, "rung 3b dynamics gate");
+    let factor = solver.factor_free_tangent(&triplets, &mut lm_state, "rung 3b/4 dynamics gate");
     assert!(
         factor.is_llt(),
         "the Tet10 free tangent must factor PD (Llt) at a small dynamic dt — an Lu \
-         fallback means the freed midside mass diagonal is non-positive or the widened \
-         symbolic incidence is missing a free-DOF (k, k) slot",
+         fallback means the HRZ mass diagonal is non-positive, or the symbolic incidence \
+         and the numeric multi-Gauss-point stiffness assembly disagree on the sparsity \
+         pattern (a superset symbolic entry corrupts faer's numeric read)",
     );
 }
 
 /// End-to-end forward path: a dynamic `replay_step` under gravity must
-/// converge (non-singular through every Newton factor) on the Tet10 mesh,
-/// with the freed, stiffness-free midsides carried as floating masses. A
-/// singular midside would trip the LU-doubly-failed panic instead.
+/// converge (non-singular through every Newton factor) on the Tet10 mesh, with
+/// the freed midsides carried by the real multi-Gauss-point element stiffness
+/// (rung 4) plus their HRZ mass. A singular midside would trip the
+/// LU-doubly-failed panic instead.
 #[test]
 fn tet10_dynamic_replay_step_converges() {
     let mut cfg = SolverConfig::skeleton();
