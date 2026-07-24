@@ -473,6 +473,8 @@ mod tests {
     /// consistent slot permutation. This is why the ordering detector needs the
     /// quadratic field above (and the production gate in
     /// `solver::backward_euler::tests`), not a constant strain.
+    // Non-degenerate test element ⇒ a failed inverse is a test-authoring bug
+    // worth panicking on (as in `element_stiffness`).
     #[allow(clippy::expect_used)]
     #[test]
     fn constant_strain_patch_reproduces_linear_field() {

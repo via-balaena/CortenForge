@@ -1400,8 +1400,10 @@ fn build_tet10_two_tet_solver() -> CpuTet10NHSolver<Tet10Mesh> {
 /// translation null-space. The zero is asserted RELATIVE to the force under a
 /// real 2% stretch, so the tolerance is physically scaled rather than an
 /// arbitrary absolute.
-#[test]
+// Index loops walk DOFs/nodes by position (`x_rot[3 * v + k]`) — the assembler's
+// own idiom; an iterator adaptor would obscure the xyz stride.
 #[allow(clippy::needless_range_loop)]
+#[test]
 fn tet10_rigid_rotation_yields_zero_internal_force() {
     let solver = build_tet10_two_tet_solver();
     let rest = tet10_rest_dofs(&solver);
@@ -1464,10 +1466,11 @@ fn tet10_rigid_rotation_yields_zero_internal_force() {
 /// AND (ii) integrate a corrupted geometry — `f_prod ≠ f_ref`. A constant-strain
 /// field could not catch this (the `A·X` map self-cancels any consistent
 /// permutation — see `element::tet10::constant_strain_patch_reproduces_linear_field`).
-// Short index names (i, j = tensor axes; k, s = element node slots) match the
-// assembler's own convention — same rationale as `assembly.rs`'s allow.
-#[test]
+// Short index names (i, j = tensor axes; k, s = element node slots) and
+// by-position index loops match the assembler's own convention — same rationale
+// as `assembly.rs`'s allow.
 #[allow(clippy::needless_range_loop, clippy::many_single_char_names)]
+#[test]
 fn tet10_quadratic_field_internal_force_matches_analytic() {
     use crate::material::Material; // first_piola
 
