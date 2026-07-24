@@ -4,8 +4,11 @@
 > code-grounded pressure-test (every load-bearing claim verified against the
 > actual source at `main`). The implementation roadmap for adding the
 > **Tet10** (10-node quadratic tetrahedron) element to `sim-soft`. Status:
-> **QUEUED, not started — this doc is the plan the build follows, not a
-> record of work done.**
+> **IN PROGRESS — rungs 1–3b merged (#680/#681/#682/#683); the forward solver
+> now frees the Tet10 midside DOFs (unpin + HRZ mass + incidence). NEXT = rung
+> 4 (multi-Gauss-point stiffness).** This doc is the forward plan the build
+> follows; the merged rungs' code-verified deltas (and the rung-4 hand-off)
+> live in the `project-tet10-fbar-element-upgrade` session memory.
 >
 > The element *design* already lives in the spec book
 > ([`30-discretization/00-element-choice/01-tet10.md`](studies/soft_body_architecture/src/30-discretization/00-element-choice/01-tet10.md), path relative to `docs/`):
@@ -227,6 +230,21 @@ intermediate — split this into 3a (plumbing) and 3b (the unpin-trio).**
   mass diagonal is mandatory to factor — the negative-corner-mass landmine
   (§2 mass row) bites exactly here. Land 3b together with, or immediately
   before, the step-4 per-GP geometry.
+  - **★ CODE-VERIFIED (rung 3b, merged #683) — two refinements the build
+    proved.** (a) **The 3b incidence widening is NOT `0..N`.** It is the
+    corner-corner element incidence **plus one `(k,k)` per free DOF** (mirroring
+    the mass-diagonal scatter exactly). Load-bearing invariant: **the symbolic
+    pattern must equal the assembled numeric pattern *exactly* — a superset
+    (e.g. the corner↔midside blocks a naive `0..N` adds but 3b's stiffness-free
+    midsides never fill) silently CORRUPTS faer's `try_new_with_symbolic`
+    numeric read (a wrong factor, not a crash).** Rung 4 reaches `0..N`
+    legitimately because its multi-GP stiffness *fills* those blocks — so **rung
+    4 widens the symbolic AND numeric patterns in lockstep** (never symbolic
+    alone). (b) **"Still mechanically Tet4" needed a 4th sub-item.** Tet10's
+    shape gradients VANISH on the four corners at the centroid (∂N=0 there), so
+    the direct-form `F = Σ xₐ⊗∇Nₐ` would give `F=0` → NaN. 3b's corner geometry
+    therefore uses the linear barycentric gradients (a Tet4 constant-strain
+    block); rung 4's per-Gauss-point geometry (§3.3) replaces it.
 - **Per-GP geometry and boundary extraction are NOT part of the atomic core**
   — they are *correctness* concerns (real Tet10 stiffness / valid pressure
   diagnostics), stageable separately. A midside that is free + has a positive
@@ -312,11 +330,14 @@ friction **or** guard face contact frictionless (the #676 gate is frictionless
 — verified — so the guard is safe for validation). Step 8's FD list must
 include friction, not just the barrier. (ii) **Hidden ordering dependency:**
 the face contact Hessian's cross-node blocks are in the symbolic pattern only
-because step 3b widened element incidence to `0..N` — the `ContactHessian`
-type and scatter already accept arbitrary `(row,col,block)`
-triplets (`contact/mod.rs:71`, `assembly.rs:377-394`), and a boundary face's
-nodes are all co-element, so no contact-specific sparsity change is needed —
-*provided 3b landed first*. Order is already 3b→rung 8; just don't reorder.
+once the element incidence reaches the full `0..N` node coupling — which lands
+in **rung 4** (multi-GP stiffness fills the corner↔midside blocks), *not* 3b
+(3b widens only to corner-corner + the free-DOF mass diagonal — see the
+rung-3b code-verified note in §3.2). The `ContactHessian` type and scatter
+already accept arbitrary `(row,col,block)` triplets (`contact/mod.rs:71`,
+`assembly.rs:377-394`), and a boundary face's nodes are all co-element, so no
+contact-specific sparsity change is needed — *provided rung 4 landed first*.
+Order is already 3b→4→rung 8; just don't reorder.
 
 **The gradient silent-wrong surface is real but *concentrated*, not diffuse.**
 Most shape mismatches are caught at **compile time** — `tet_vertices →
