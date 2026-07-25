@@ -13,8 +13,8 @@
 //! | Tet4 | 1.1303 | +13.0 % | 0.04213 | 4 375 |
 //! | Tet10 | 1.0803 | +8.0 % | 0.04607 | 31 213 |
 //!
-//! The Tet4 arm reproduces `#676`'s committed `RATIO = 1.130` to four decimals
-//! (harness validation — same binary as the Tet10 arm). The Tet10 element pulls
+//! The Tet4 arm reproduces `#676`'s committed `RATIO = 1.130` to its three
+//! recorded decimals (harness validation — same binary as the Tet10 arm). The Tet10 element pulls
 //! the χ = 0.50 over-stiffness from **+13.0 % down to +8.0 %** — a real ≈5-point
 //! improvement, of which the differential contact-discretisation confound
 //! accounts for at most ~0.6 points (see the control section), so it is
@@ -31,11 +31,11 @@
 //! *mesh-converged* floor (extrapolated over three χ); the numbers here are a
 //! *single* χ (= 0.50), where Tet4 itself reads +13 %, not +9 %. A Tet10
 //! mesh-converged floor would need its own three-χ sweep at ~3× the 60-min
-//! cost and is **not** measured. So: demand #1 is *improved and localised*,
-//! not settled.
+//! cost and is **not** measured. So: demand #1 is *improved*, not settled —
+//! and the residual is not yet attributed.
 //!
 //! **Cost reality, measured:** `#676`'s Tet4 3-χ sweep is **24.2 min**; the
-//! single-χ Tet4 arm here is **62 s**; the Tet10 arm at **~7× the DOF**
+//! single-χ Tet4 arm here is **61 s**; the Tet10 arm at **~7× the DOF**
 //! (93 639 vs 13 125) ran **59.6 min** single-threaded — 100 % of one core, the
 //! assembly being serial by design for bit-determinism. The Tet10 arm is
 //! therefore a **deliberately-run one-shot measurement**, `#[ignore]`d
@@ -83,7 +83,7 @@
 //!
 //! **The absolute standoff is common to both elements and cancels; only the
 //! *differential* biases the RATIO comparison.** Both elements sit at a mean
-//! `sd/δ ≈ 0.042–0.046` (~85–92 % of the `d̂/δ = 0.05` band) — so the barrier is
+//! `sd/δ ≈ 0.042–0.046` (~84–92 % of the `d̂/δ = 0.05` band) — so the barrier is
 //! *not* near-rigid at the shipped κ, but that compliance is shared. The
 //! confound is the difference: `1.5·|0.04607 − 0.04213| = 0.59 %`, against a
 //! **5.0-point** (Tet4 − Tet10 `RATIO`) element-order signal — ~12 % of it. Real
@@ -95,7 +95,8 @@
 //! ## Why one χ, and which
 //!
 //! `#676` sweeps three χ over a 71-increment displacement ramp — 213 solves,
-//! and it is already the slow route (minutes in release, CI-dark). Tet10 at
+//! and it is already the slow route (minutes in release; now gated by the
+//! path-filtered `soft-contact-heavy` CI job, #692). Tet10 at
 //! ~7× the DOF (measured) is not viable across the full sweep. This file runs
 //! **χ = 0.50**, which is both the cheapest mesh (20,736 tets against 55,296 at
 //! χ = 0.20) *and* the strongest signal — `#676` measures Tet4's largest
@@ -158,7 +159,7 @@ const MAX_EXPECTED_ITERS: usize = 40;
 // ── Committed measurements (rung 6d, χ = 0.50; one release build, 2026-07-25) ─
 //
 // Both arms come from a single binary. The Tet4 arm reproduces `#676`'s
-// committed RATIO = 1.1303 to four decimals (harness validation); see the module
+// committed RATIO = 1.130 to its three recorded decimals (harness validation); see the module
 // header for the full table and what the numbers do and do not establish. The
 // two heavy `probe_*` tests re-derive these live when deliberately run; the
 // cheap `node_density_control_confound_is_small` test enforces the differential
@@ -177,7 +178,9 @@ const TET10_MEAN_SD_OVER_DELTA: f64 = 0.04607;
 /// (both `#[ignore]`d in debug; not in any release `--test` list), so this only
 /// bites a deliberate re-run; 2 % catches a real element/contact regression —
 /// the Tet4↔Tet10 `RATIO` gap alone is 4.4 % of the value — while absorbing
-/// cross-platform faer drift over 71 warm-started nonlinear increments.
+/// cross-platform faer drift over 71 warm-started nonlinear increments. The same
+/// band covers the standoff means (2 % of ~0.046 ≈ 9e-4, orders above solver
+/// drift on a geometric quantity read from converged positions).
 const COMMITTED_REL: f64 = 0.02;
 
 // ── Analytic oracle — the bonded bottom-effect correction to Hertz ────────
@@ -428,6 +431,8 @@ fn assert_committed(actual: f64, committed: f64, what: &str) {
 /// element-order signal (the Tet4 − Tet10 `RATIO` gap): if a future re-measure
 /// edits a committed mean so the confound rivals the signal, the `RATIO`
 /// improvement can no longer be read as element order, and this fails loudly.
+/// The 20 % bar is a chosen "cannot-flip-the-finding" margin, not a derived
+/// bound — the measured confound is ~12 % of the signal (~1.7× headroom).
 #[test]
 fn node_density_control_confound_is_small() {
     let signal = TET4_RATIO - TET10_RATIO;
@@ -446,7 +451,7 @@ fn node_density_control_confound_is_small() {
 
 // ── Measurement probes — deliberate-run, pin the committed scalars ───────────
 
-/// Tet4 arm, ~62 s in release. Validates the harness against `#676`'s committed
+/// Tet4 arm, ~61 s in release. Validates the harness against `#676`'s committed
 /// `RATIO = 1.130` and pins the Tet4 standoff. `#[ignore]`d in debug only; not
 /// in any release `--test` list, so it never runs in CI either.
 #[cfg_attr(debug_assertions, ignore = "release-only heavy IPC ramp")]

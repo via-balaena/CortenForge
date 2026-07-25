@@ -694,13 +694,13 @@ capture — the isoparametric-surface piece is deferred, §7).
      element-order signal (~12 % of it). Real but not dominant — it cannot flip
      the finding, so the refined-Tet4 fallback (`contact_stability.rs`: κ has a
      convergence ceiling, raising it is not free) is **not** triggered. Both
-     elements sit at mean `sd/δ ≈ 0.042–0.046` (~85–92 % of the `d̂/δ = 0.05`
+     elements sit at mean `sd/δ ≈ 0.042–0.046` (~84–92 % of the `d̂/δ = 0.05`
      band → barrier not near-rigid, but that compliance is shared). Asserted over
      the committed constants in `node_density_control_confound_is_small`, which
      runs in `tests-debug`.
    - **Cost + CI shape.** Tet10 arm = **59.6 min single-threaded** (~7× the DOF,
      93 639 vs 13 125; 100 % of one core, assembly serial for bit-determinism) →
-     `#[ignore]`d unconditionally, a deliberate-run one-shot; the ~62 s Tet4 arm
+     `#[ignore]`d unconditionally, a deliberate-run one-shot; the ~61 s Tet4 arm
      is `#[ignore]`d in debug and in no release `--test` list. Neither probe runs
      in CI; the cheap control test does. (#676's own CI darkness was separately
      ended by the `soft-contact-heavy` job, #692 — so the earlier "24-min gate
@@ -748,11 +748,11 @@ Per the standing covenant: per-crate cargo only, soft tests `--release`,
 goldens/ν=0.4) **auto-run** in tests-debug (it discovers every `tests/*.rs`).
 But **release-only tests are hand-registered** in the `--test` list in
 `.github/workflows/quality-gate.yml` — anything `#[cfg_attr(debug_assertions,
-ignore)]` (the ν=0.49 gate, the dynamics mass-gate, #676) runs in **no
-CI job** unless added there. **Note the #676 demand-#1 gate is *already*
-CI-dark** (release-only, unregistered — a pre-push-only gate today); decide
+ignore)]` (the ν=0.49 gate, the dynamics mass-gate) runs in **no
+CI job** unless added there. **The #676 demand-#1 gate WAS such a dark test but
+is now CI-gated** by the path-filtered `soft-contact-heavy` job (#692). Decide
 explicitly whether the ν=0.49 **h/2 decision** solve (~28k DOF, CI-feasible)
-and #676 become CI-run, while the ν=0.49 **h/4 confirmation** (MEASURED 284k DOF,
+also becomes CI-run, while the ν=0.49 **h/4 confirmation** (MEASURED 284k DOF,
 GB-scale, OOM-risk) stays **pre-push one-shot, never CI**. Register whatever
 becomes CI-run in the release `--test` list. Coverage is **skipped** for sim-soft (`grading_profile =
 "integration-only"`), so there is *no unit-coverage net* — correctness rests
