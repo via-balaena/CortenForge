@@ -151,6 +151,8 @@ use sim_soft::{
     Solver, SolverConfig, SphereSdf, Tet4, TranslatedSdf, Vec3,
 };
 
+mod common;
+
 // ── Material (ν = 0.4 avoids Tet4 volumetric locking; λ = 4μ ⇒ ν = 0.4) ────
 const MU: f64 = 1.0e5;
 const LAMBDA: f64 = 4.0 * MU;
@@ -213,24 +215,12 @@ fn hertz_halfspace(delta: f64) -> f64 {
     4.0 / 3.0 * e_star() * RADIUS.sqrt() * delta.powf(1.5)
 }
 
-/// Garcia bonded bottom-effect correction `Δ_G(ν, χ)` (arXiv:2406.17157 Note S2
-/// Eq. S4). Verified against the source's published coefficients at ν = 0.5 /
-/// 0.49 (see module docstring). `χ = √(Rδ)/h`.
+/// Garcia bonded bottom-effect correction — delegates to the shared
+/// implementation in `tests/common`, which `tet10_indentation_demand1.rs`
+/// (the rung-6d Tet10 arm) also uses, so the two elements are compared
+/// against one oracle and cannot drift apart.
 fn delta_garcia(nu: f64, chi: f64) -> f64 {
-    let a0 = -(1.3442f64.mul_add(nu * nu, 1.4678f64.mul_add(-nu, 1.2876))) / (1.0 - nu);
-    let b0 = 1.5164f64.mul_add(nu * nu, 1.0277f64.mul_add(-nu, 0.6387)) / (1.0 - nu);
-    let pi = std::f64::consts::PI;
-    let ca = (2.0 * a0 / pi).abs(); // leading, analytically exact
-    let cb = 301.0 * pi * a0 * a0 / 2000.0;
-    let cc = -pi * (31.0 * a0.powi(3) / 255.0 + 106.0 * b0 / 491.0);
-    let cd = pi * (24.0 * a0.powi(4) / 245.0 + 40.0 * b0 * a0 / 97.0);
-    let ce = -pi * (a0.powi(5) / 22.0 + 2.0 * b0 * a0 * a0 / 9.0);
-    // Horner in χ.
-    ce.mul_add(chi, cd)
-        .mul_add(chi, cc)
-        .mul_add(chi, cb)
-        .mul_add(chi, ca)
-        .mul_add(chi, 1.0)
+    common::garcia_bonded_correction(nu, chi)
 }
 
 fn material_field() -> MaterialField {
