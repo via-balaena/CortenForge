@@ -798,6 +798,11 @@ pub fn filter_pair_readouts_to_referenced(
         .into_iter()
         .filter(|r| match r.pair {
             ContactPair::Vertex { vertex_id, .. } => set.contains(&vertex_id),
+            // Penalty produces no face pairs (vertex-only); a `Face` readout here
+            // would be a wiring bug, not a filter case.
+            ContactPair::Face { .. } => {
+                unreachable!("PenaltyRigidContact is vertex-contact-only; no ContactPair::Face")
+            }
         })
         .collect()
 }
@@ -807,7 +812,13 @@ impl ContactModel for PenaltyRigidContact {
         let &ContactPair::Vertex {
             vertex_id,
             primitive_id,
-        } = pair;
+        } = pair
+        else {
+            // Penalty is the vertex-only stepping-stone to IPC (BF-12); it never
+            // emits `ContactPair::Face`, so this arm is unreachable by construction
+            // — permanently, unlike IPC's rung-8b face path.
+            unreachable!("PenaltyRigidContact is vertex-contact-only; no ContactPair::Face")
+        };
         let p = Point3::from(positions[vertex_id as usize]);
         let d = self.primitives[primitive_id as usize].eval(p);
         self.pair_contribution(d).map_or(0.0, |c| c.energy)
@@ -817,7 +828,13 @@ impl ContactModel for PenaltyRigidContact {
         let &ContactPair::Vertex {
             vertex_id,
             primitive_id,
-        } = pair;
+        } = pair
+        else {
+            // Penalty is the vertex-only stepping-stone to IPC (BF-12); it never
+            // emits `ContactPair::Face`, so this arm is unreachable by construction
+            // — permanently, unlike IPC's rung-8b face path.
+            unreachable!("PenaltyRigidContact is vertex-contact-only; no ContactPair::Face")
+        };
         let p = Point3::from(positions[vertex_id as usize]);
         let prim = &self.primitives[primitive_id as usize];
         let d = prim.eval(p);
@@ -835,7 +852,13 @@ impl ContactModel for PenaltyRigidContact {
         let &ContactPair::Vertex {
             vertex_id,
             primitive_id,
-        } = pair;
+        } = pair
+        else {
+            // Penalty is the vertex-only stepping-stone to IPC (BF-12); it never
+            // emits `ContactPair::Face`, so this arm is unreachable by construction
+            // — permanently, unlike IPC's rung-8b face path.
+            unreachable!("PenaltyRigidContact is vertex-contact-only; no ContactPair::Face")
+        };
         let p = Point3::from(positions[vertex_id as usize]);
         let prim = &self.primitives[primitive_id as usize];
         let d = prim.eval(p);
@@ -870,7 +893,13 @@ impl ContactModel for PenaltyRigidContact {
         let &ContactPair::Vertex {
             vertex_id,
             primitive_id,
-        } = pair;
+        } = pair
+        else {
+            // Penalty is the vertex-only stepping-stone to IPC (BF-12); it never
+            // emits `ContactPair::Face`, so this arm is unreachable by construction
+            // — permanently, unlike IPC's rung-8b face path.
+            unreachable!("PenaltyRigidContact is vertex-contact-only; no ContactPair::Face")
+        };
         let p = Point3::from(positions[vertex_id as usize]);
         let prim = &self.primitives[primitive_id as usize];
         let d = prim.eval(p);
@@ -907,7 +936,13 @@ impl ContactModel for PenaltyRigidContact {
         let &ContactPair::Vertex {
             vertex_id,
             primitive_id,
-        } = pair;
+        } = pair
+        else {
+            // Penalty is the vertex-only stepping-stone to IPC (BF-12); it never
+            // emits `ContactPair::Face`, so this arm is unreachable by construction
+            // — permanently, unlike IPC's rung-8b face path.
+            unreachable!("PenaltyRigidContact is vertex-contact-only; no ContactPair::Face")
+        };
         // The curvature of the contact-FORCE direction, `∂n̂/∂x_v` for `n̂ = force.normalize()`
         // (the normal the friction frame is built from). The force is `dE/dsd·n̂_sdf`, so its unit
         // direction is `sign(dE/dsd)·n̂_sdf` and `∂n̂/∂x_v = sign(dE/dsd)·∇²sd` (the `d²E·n̂n̂ᵀ`

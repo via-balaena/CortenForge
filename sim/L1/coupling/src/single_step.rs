@@ -32,7 +32,12 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             .pair_readout(&self.fresh_mesh(), positions)
             .iter()
             .map(|r| {
-                let ContactPair::Vertex { vertex_id, .. } = r.pair;
+                let ContactPair::Vertex { vertex_id, .. } = r.pair else {
+                    // Coupling scenes are Tet4 (`HandBuiltTetMesh`) vertex contact;
+                    // `ContactPair::Face` is Tet10-only (sim-soft rung 8) and never
+                    // reaches here. `#[non_exhaustive]` still requires this arm.
+                    unreachable!("coupling uses Tet4 vertex contact; no ContactPair::Face")
+                };
                 // H_pair = cᵥ·n̂⊗n̂ ⇒ cᵥ = n̂·(H·n̂), the per-pair contact stiffness.
                 let curv = contact
                     .hessian(&r.pair, positions)

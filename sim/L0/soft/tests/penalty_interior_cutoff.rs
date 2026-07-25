@@ -74,7 +74,10 @@ fn penalty_with_interior_cutoff_keeps_within_band_pair() {
     let &ContactPair::Vertex {
         vertex_id,
         primitive_id,
-    } = &pairs[0];
+    } = &pairs[0]
+    else {
+        unreachable!("penalty vertex contact emits only ContactPair::Vertex")
+    };
     assert_eq!((vertex_id, primitive_id), (0, 0));
 }
 
@@ -108,7 +111,10 @@ fn penalty_per_pair_readout_respects_interior_cutoff() {
     let ContactPair::Vertex {
         vertex_id,
         primitive_id,
-    } = r.pair;
+    } = r.pair
+    else {
+        unreachable!("penalty vertex contact emits only ContactPair::Vertex")
+    };
     assert_eq!((vertex_id, primitive_id), (1, 0));
     assert!(
         (r.sd - (-3.0e-3)).abs() < 1.0e-12,

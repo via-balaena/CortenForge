@@ -204,7 +204,13 @@ impl ContactModel for IpcRigidContact {
         let &ContactPair::Vertex {
             vertex_id,
             primitive_id,
-        } = pair;
+        } = pair
+        else {
+            // Rung 8a plumbing: `active_pairs` emits no `ContactPair::Face` yet,
+            // so this arm is unreachable. Rung 8b replaces it with the
+            // surface-integrated face-barrier physics (`E = ∫ b(sd) dA`).
+            unreachable!("IpcRigidContact has no ContactPair::Face producer until rung 8b")
+        };
         let p = Point3::from(positions[vertex_id as usize]);
         let sd = self.primitives[primitive_id as usize].eval(p);
         self.barrier(sd).map_or(0.0, |c| c.energy)
@@ -214,7 +220,13 @@ impl ContactModel for IpcRigidContact {
         let &ContactPair::Vertex {
             vertex_id,
             primitive_id,
-        } = pair;
+        } = pair
+        else {
+            // Rung 8a plumbing: `active_pairs` emits no `ContactPair::Face` yet,
+            // so this arm is unreachable. Rung 8b replaces it with the
+            // surface-integrated face-barrier physics (`E = ∫ b(sd) dA`).
+            unreachable!("IpcRigidContact has no ContactPair::Face producer until rung 8b")
+        };
         let p = Point3::from(positions[vertex_id as usize]);
         let prim = &self.primitives[primitive_id as usize];
         let sd = prim.eval(p);
@@ -231,7 +243,13 @@ impl ContactModel for IpcRigidContact {
         let &ContactPair::Vertex {
             vertex_id,
             primitive_id,
-        } = pair;
+        } = pair
+        else {
+            // Rung 8a plumbing: `active_pairs` emits no `ContactPair::Face` yet,
+            // so this arm is unreachable. Rung 8b replaces it with the
+            // surface-integrated face-barrier physics (`E = ∫ b(sd) dA`).
+            unreachable!("IpcRigidContact has no ContactPair::Face producer until rung 8b")
+        };
         let p = Point3::from(positions[vertex_id as usize]);
         let prim = &self.primitives[primitive_id as usize];
         let sd = prim.eval(p);
@@ -259,7 +277,13 @@ impl ContactModel for IpcRigidContact {
         let &ContactPair::Vertex {
             vertex_id,
             primitive_id,
-        } = pair;
+        } = pair
+        else {
+            // Rung 8a plumbing: `active_pairs` emits no `ContactPair::Face` yet,
+            // so this arm is unreachable. Rung 8b replaces it with the
+            // surface-integrated face-barrier physics (`E = ∫ b(sd) dA`).
+            unreachable!("IpcRigidContact has no ContactPair::Face producer until rung 8b")
+        };
         let p = Point3::from(positions[vertex_id as usize]);
         let prim = &self.primitives[primitive_id as usize];
         let sd = prim.eval(p);

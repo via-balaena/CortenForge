@@ -860,6 +860,7 @@ fn solve_ramp(
             .iter()
             .map(|r| match r.pair {
                 sim_soft::ContactPair::Vertex { vertex_id, .. } => vertex_id,
+                _ => unreachable!("example scene uses vertex contact only"),
             })
             .collect();
         let cavity_disp: Vec<f64> = cavity_vertex_ids
@@ -940,7 +941,10 @@ fn solve_ramp(
                     let sim_soft::ContactPair::Vertex {
                         vertex_id,
                         primitive_id,
-                    } = r.pair;
+                    } = r.pair
+                    else {
+                        unreachable!("example scene uses vertex contact only")
+                    };
                     json!({
                         "vertex_id": vertex_id,
                         "primitive_id": primitive_id,

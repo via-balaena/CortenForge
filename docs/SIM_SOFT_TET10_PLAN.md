@@ -364,6 +364,20 @@ primitive (samples the SDF at non-nodal points), so it needs a new
 non-`#[non_exhaustive]`; coupling uses irrefutable `let Vertex{..}` matches
 — `contact_readout.rs:154`, `single_step.rs:35`), requiring `#[non_exhaustive]`
 + downstream fixes.
+> **⚠ CORRECTION (rung 8a landed): the break is ~7× wider than "only
+> coupling."** Adding *any* second `ContactPair` variant makes every
+> single-variant `Vertex` destructure refutable — including **inside
+> `sim-soft` itself** (`#[non_exhaustive]` is not even required for that; a
+> second variant alone does it). The actual rung-8a blast radius was
+> ~20 sites across three crates + examples: `sim-soft` src
+> (`contact/{ipc,penalty}.rs`, ~11 `let`/`match`), `sim-soft` integration
+> tests (5 crates: `penalty_interior_cutoff`, `penalty_pair_readout`,
+> `contact_scenes`, `contact_unit`, `penalty_smoothing`), the 7 `sim-soft`
+> examples, and coupling's 2 sites. `cf-sim-research` genuinely does **not**
+> break (it only *constructs* `Vertex{..}`, which stays legal under
+> `#[non_exhaustive]` — spike-confirmed). Each site became a `let … else {
+> unreachable!(…) }` (or a `_ =>` wildcard for `match`), fail-loud and
+> byte-identical (no producer emits `Face` until rung 8b).
 It also **shares machinery with the isoparametric curved surface**, so both
 build together as **rung 8** (the isolated-rung decision). (b) A midside
 node gets `tributary_area = 0` → `pressure = NaN` → `peak_contact_pressure`

@@ -1202,11 +1202,15 @@ fn verify_per_pair_invariants(snapshot: &ReadoutSnapshot) {
             normal_drift,
             LATERAL_FORCE_TOL,
         );
-        // Pair variant — Phase 5 only ships `ContactPair::Vertex`;
-        // future IPC will add `EdgeEdge` / `VertexFace`. This gate
-        // pins the row's expectations at the variant level so a
-        // future variant addition forces a row-18 review.
-        let ContactPair::Vertex { vertex_id, .. } = r.pair;
+        // Pair variant — this row exercises `ContactPair::Vertex` (Tet4
+        // vertex contact); `ContactPair::Face` is Tet10-only (sim-soft
+        // rung 8) and never arises here, and future IPC self-contact adds
+        // `EdgeEdge` / `VertexFace`. The `else` arm pins the row's
+        // expectations at the variant level so a new variant forces a
+        // row-18 review.
+        let ContactPair::Vertex { vertex_id, .. } = r.pair else {
+            unreachable!("row-18 readout example uses Tet4 vertex contact only")
+        };
         assert!(
             (vertex_id as usize) < snapshot.n_vertices,
             "readout[{idx}] pair vertex_id = {vertex_id} out of range [0, {})",
@@ -1375,7 +1379,10 @@ fn save_readout_json(snapshot: &ReadoutSnapshot, path: &Path) -> Result<()> {
             let ContactPair::Vertex {
                 vertex_id,
                 primitive_id,
-            } = r.pair;
+            } = r.pair
+            else {
+                unreachable!("row-18 readout example uses Tet4 vertex contact only")
+            };
             json!({
                 "vertex_id":    vertex_id,
                 "primitive_id": primitive_id,
@@ -1445,7 +1452,9 @@ fn save_finest_frame_ply(snapshot: &ReadoutSnapshot, path: &Path) -> Result<()> 
     // (vs row 14's force_z units).
     let mut contact_pressure: Vec<f32> = vec![0.0; n_vertices];
     for (r, &p) in snapshot.readouts.iter().zip(snapshot.pressures.iter()) {
-        let ContactPair::Vertex { vertex_id, .. } = r.pair;
+        let ContactPair::Vertex { vertex_id, .. } = r.pair else {
+            unreachable!("row-18 readout example uses Tet4 vertex contact only")
+        };
         contact_pressure[vertex_id as usize] = p as f32;
     }
     mesh.insert_extra("contact_pressure", contact_pressure)

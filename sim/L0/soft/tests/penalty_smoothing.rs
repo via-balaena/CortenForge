@@ -550,6 +550,9 @@ fn penalty_smoothing_and_interior_cutoff_compose_orthogonally() {
         .iter()
         .map(|p| match p {
             ContactPair::Vertex { vertex_id, .. } => *vertex_id,
+            // `#[non_exhaustive]` requires a wildcard from this downstream test
+            // crate; penalty emits only `Vertex`, so any other pair is a bug.
+            _ => unreachable!("penalty vertex contact emits only ContactPair::Vertex"),
         })
         .collect();
     assert_eq!(vids, vec![1, 2], "wrong vertex set included");
