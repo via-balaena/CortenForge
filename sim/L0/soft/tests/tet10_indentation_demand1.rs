@@ -1,20 +1,48 @@
 //! Tet10 ladder rung 6d — **demand #1**, the curved-contact-patch over-stiffness
 //! floor, measured on the net-force metric.
 //!
-//! # ⚠ WORK IN PROGRESS — not a gate yet
+//! # Result — Tet10 improves demand #1 but does not close it
 //!
-//! Landed state (2026-07-24): the harness is **validated** — its Tet4 arm
-//! reproduces `#676`'s committed `RATIO = 1.130` at χ = 0.50 to four decimals.
-//! What is NOT done: the Tet10 arm has no committed number (its first run
-//! exceeded 40 min and was not allowed to finish), so the node-density control
-//! is unresolved and there is no assertion gate. The two `probe_*` tests below
-//! are measurement harnesses, not gates. See the session memory
-//! `project-tet10-fbar-element-upgrade` for the full carry-forward.
+//! Measured 2026-07-25, both arms from **one release build**. The scalars are
+//! pinned as committed constants below and re-derived by running the two
+//! `probe_*` tests; the differential node-density control is executable in
+//! [`node_density_control_confound_is_small`].
+//!
+//! | element | `RATIO` (χ = 0.50) | over-stiffness | mean `sd/δ` | nodes |
+//! |---|---|---|---|---|
+//! | Tet4 | 1.1303 | +13.0 % | 0.04213 | 4 375 |
+//! | Tet10 | 1.0803 | +8.0 % | 0.04607 | 31 213 |
+//!
+//! The Tet4 arm reproduces `#676`'s committed `RATIO = 1.130` to four decimals
+//! (harness validation — same binary as the Tet10 arm). The Tet10 element pulls
+//! the χ = 0.50 over-stiffness from **+13.0 % down to +8.0 %** — a real ≈5-point
+//! improvement, of which the differential contact-discretisation confound
+//! accounts for at most ~0.6 points (see the control section), so it is
+//! predominantly element order. But a **+8 % residual remains**: the element
+//! upgrade alone does **not** close demand #1.
+//!
+//! **What this rung does and does not establish.** It establishes that a
+//! higher-order element materially reduces the curved-patch over-stiffness at
+//! this χ. It does **not** attribute the +8 % residual — a single-χ net-force
+//! measurement cannot separate the still-inconsistent node-collocated contact
+//! patch (a known un-fixed contributor, ladder **rung 8**'s remit) from oracle
+//! (Garcia-correction) error, residual element stiffness, or incomplete mesh
+//! convergence. And note the basis: `#676`'s headline "~9 %" is Tet4's
+//! *mesh-converged* floor (extrapolated over three χ); the numbers here are a
+//! *single* χ (= 0.50), where Tet4 itself reads +13 %, not +9 %. A Tet10
+//! mesh-converged floor would need its own three-χ sweep at ~3× the 60-min
+//! cost and is **not** measured. So: demand #1 is *improved and localised*,
+//! not settled.
 //!
 //! **Cost reality, measured:** `#676`'s Tet4 3-χ sweep is **24.2 min**; the
-//! single-χ Tet4 arm here is **64 s**; the Tet10 arm at ~2.8× the nodes ran
-//! **>40 min** at 1.86 GB without finishing. Whatever 6d becomes, it is not a
-//! test anyone runs routinely, and almost certainly not a CI test.
+//! single-χ Tet4 arm here is **62 s**; the Tet10 arm at **~7× the DOF**
+//! (93 639 vs 13 125) ran **59.6 min** single-threaded — 100 % of one core, the
+//! assembly being serial by design for bit-determinism. The Tet10 arm is
+//! therefore a **deliberately-run one-shot measurement**, `#[ignore]`d
+//! unconditionally: never a routine or CI test. What CI *does* run is the cheap
+//! [`node_density_control_confound_is_small`] relationship guard over the pinned
+//! constants. See the session memory `project-tet10-fbar-element-upgrade` for
+//! the full carry-forward.
 //!
 //! ## What this rung answers
 //!
@@ -51,19 +79,24 @@
 //! contact vertex, and that standoff *is* the error in effective indentation:
 //! a vertex held off the indenter by `sd` is one whose material never saw that
 //! part of the indentation, so `δ_eff ≈ δ − sd`. With `F ∝ δ^{3/2}` the induced
-//! force error is `≈ 1.5·sd/δ`. So the control is a direct bound, not a
-//! plausibility claim: measure the `sd` distribution for **both** elements at
-//! the final pose, convert to a force-error bound, and require it to be small
-//! against the ~9 % signal being claimed. If the barrier turns out compliant at
-//! the shipped κ, this fails loudly and the refined-Tet4 baseline is the
-//! fallback — `contact_stability.rs` shows κ has a convergence ceiling, so
-//! simply raising it is not free.
+//! force error is `≈ 1.5·sd/δ`.
+//!
+//! **The absolute standoff is common to both elements and cancels; only the
+//! *differential* biases the RATIO comparison.** Both elements sit at a mean
+//! `sd/δ ≈ 0.042–0.046` (~85–92 % of the `d̂/δ = 0.05` band) — so the barrier is
+//! *not* near-rigid at the shipped κ, but that compliance is shared. The
+//! confound is the difference: `1.5·|0.04607 − 0.04213| = 0.59 %`, against a
+//! **5.0-point** (Tet4 − Tet10 `RATIO`) element-order signal — ~12 % of it. Real
+//! but not dominant: it cannot flip the finding, so the refined-Tet4 fallback
+//! (`contact_stability.rs` shows κ has a convergence ceiling, so raising it is
+//! not free) is **not** triggered. This relationship is asserted over the
+//! committed constants in [`node_density_control_confound_is_small`].
 //!
 //! ## Why one χ, and which
 //!
 //! `#676` sweeps three χ over a 71-increment displacement ramp — 213 solves,
 //! and it is already the slow route (minutes in release, CI-dark). Tet10 at
-//! ~2.8× the nodes is not viable across the full sweep. This file runs
+//! ~7× the DOF (measured) is not viable across the full sweep. This file runs
 //! **χ = 0.50**, which is both the cheapest mesh (20,736 tets against 55,296 at
 //! χ = 0.20) *and* the strongest signal — `#676` measures Tet4's largest
 //! over-stiffness there (`RATIO` 1.130). Cheapest and most discriminating is a
@@ -112,6 +145,40 @@ const CHI: f64 = 0.50;
 /// raised deliberately rather than inherited — but ν = 0.4 here, well away from
 /// that regime, and [`MAX_EXPECTED_ITERS`] is the bound that discriminates.
 const MAX_NEWTON_ITER: usize = 400;
+
+/// Healthy-convergence bound on Newton iterations per increment, asserted by
+/// both probes. Measured maxima at χ = 0.50, ν = 0.4: **Tet4 = 8, Tet10 = 10**.
+/// A solve needing many more is stalling (the near-incompressible 272-iteration
+/// regime rung 6c hit) — this bound, not the [`MAX_NEWTON_ITER`] solver cap
+/// (400), discriminates a healthy measurement from a degenerate one. The 4×
+/// headroom over the measured maximum absorbs active-set churn without masking a
+/// real convergence regression.
+const MAX_EXPECTED_ITERS: usize = 40;
+
+// ── Committed measurements (rung 6d, χ = 0.50; one release build, 2026-07-25) ─
+//
+// Both arms come from a single binary. The Tet4 arm reproduces `#676`'s
+// committed RATIO = 1.1303 to four decimals (harness validation); see the module
+// header for the full table and what the numbers do and do not establish. The
+// two heavy `probe_*` tests re-derive these live when deliberately run; the
+// cheap `node_density_control_confound_is_small` test enforces the differential
+// control over them in CI without solving.
+
+/// Tet4 `RATIO` at χ = 0.50 — equals `#676`'s committed value (harness check).
+const TET4_RATIO: f64 = 1.1303;
+/// Tet10 `RATIO` at χ = 0.50 — the demand-#1 measurement.
+const TET10_RATIO: f64 = 1.0803;
+/// Tet4 mean standoff `sd/δ` over active pairs at the final pose.
+const TET4_MEAN_SD_OVER_DELTA: f64 = 0.04213;
+/// Tet10 mean standoff `sd/δ` over active pairs at the final pose.
+const TET10_MEAN_SD_OVER_DELTA: f64 = 0.04607;
+
+/// Relative regression band on the pinned scalars. The probes never run in CI
+/// (both `#[ignore]`d in debug; not in any release `--test` list), so this only
+/// bites a deliberate re-run; 2 % catches a real element/contact regression —
+/// the Tet4↔Tet10 `RATIO` gap alone is 4.4 % of the value — while absorbing
+/// cross-platform faer drift over 71 warm-started nonlinear increments.
+const COMMITTED_REL: f64 = 0.02;
 
 // ── Analytic oracle — the bonded bottom-effect correction to Hertz ────────
 
@@ -336,21 +403,87 @@ fn report(order: ElementOrder, r: &Indentation) {
     );
 }
 
-// ── Measurement probes (NOT gates — see the WIP header) ──────────────────
+// ── Committed-value regression helper ────────────────────────────────────
 
-// 64 s in release. Validates the harness against `#676`'s committed 1.130.
+/// Assert a freshly-measured scalar matches its committed value within
+/// [`COMMITTED_REL`], naming both in the failure message.
+fn assert_committed(actual: f64, committed: f64, what: &str) {
+    let rel = (actual - committed).abs() / committed.abs();
+    assert!(
+        rel <= COMMITTED_REL,
+        "{what}: measured {actual:.5} vs committed {committed:.5} \
+         (relative {rel:.4} > band {COMMITTED_REL})",
+    );
+}
+
+// ── The node-density control, executable in CI over the committed constants ──
+
+/// The differential node-density control (module header, "node-density control"
+/// section), as an always-run guard over the pinned constants — no solve, so it
+/// runs in `tests-debug` where the heavy probes cannot.
+///
+/// The absolute standoff is common to both elements and cancels; only the
+/// *differential* biases the `RATIO` comparison. With `F ∝ δ^{3/2}` the induced
+/// force-error bound is `1.5·|Δ(mean sd/δ)|`. Require it small against the
+/// element-order signal (the Tet4 − Tet10 `RATIO` gap): if a future re-measure
+/// edits a committed mean so the confound rivals the signal, the `RATIO`
+/// improvement can no longer be read as element order, and this fails loudly.
+#[test]
+fn node_density_control_confound_is_small() {
+    let signal = TET4_RATIO - TET10_RATIO;
+    assert!(
+        signal > 0.0,
+        "element-order signal must be positive (Tet10 softer than Tet4)"
+    );
+    let confound = 1.5 * (TET10_MEAN_SD_OVER_DELTA - TET4_MEAN_SD_OVER_DELTA).abs();
+    assert!(
+        confound < 0.20 * signal,
+        "differential contact-discretisation confound {confound:.4} is not small against the \
+         {signal:.4} element-order signal (≥20 %) — the RATIO improvement can no longer be \
+         attributed to element order; the refined-Tet4 baseline would then be required",
+    );
+}
+
+// ── Measurement probes — deliberate-run, pin the committed scalars ───────────
+
+/// Tet4 arm, ~62 s in release. Validates the harness against `#676`'s committed
+/// `RATIO = 1.130` and pins the Tet4 standoff. `#[ignore]`d in debug only; not
+/// in any release `--test` list, so it never runs in CI either.
 #[cfg_attr(debug_assertions, ignore = "release-only heavy IPC ramp")]
 #[test]
 fn probe_tet4_arm_reproduces_676() {
     let r = run_indentation(ElementOrder::Tet4);
     report(ElementOrder::Tet4, &r);
+    assert!(
+        r.max_iters <= MAX_EXPECTED_ITERS,
+        "Tet4 convergence regressed: {} iters > {MAX_EXPECTED_ITERS}",
+        r.max_iters,
+    );
+    assert_committed(r.ratio, TET4_RATIO, "Tet4 RATIO");
+    assert_committed(
+        r.mean_sd_over_delta,
+        TET4_MEAN_SD_OVER_DELTA,
+        "Tet4 mean sd/δ",
+    );
 }
 
-// ⚠ >40 min and unfinished on first attempt. `#[ignore]` unconditionally so
-// it is never picked up by a routine run in either profile.
-#[ignore = "rung-6d WIP: exceeded 40 min unfinished — run deliberately, never routinely"]
+/// Tet10 arm, ~60 min single-threaded (see the module header's cost note).
+/// `#[ignore]`d unconditionally: a deliberately-run one-shot measurement, never
+/// routine. Pins the Tet10 `RATIO` and standoff.
+#[ignore = "rung-6d: ~60 min single-threaded one-shot measurement — run deliberately, never routinely"]
 #[test]
 fn probe_tet10_arm() {
     let r = run_indentation(ElementOrder::Tet10);
     report(ElementOrder::Tet10, &r);
+    assert!(
+        r.max_iters <= MAX_EXPECTED_ITERS,
+        "Tet10 convergence regressed: {} iters > {MAX_EXPECTED_ITERS}",
+        r.max_iters,
+    );
+    assert_committed(r.ratio, TET10_RATIO, "Tet10 RATIO");
+    assert_committed(
+        r.mean_sd_over_delta,
+        TET10_MEAN_SD_OVER_DELTA,
+        "Tet10 mean sd/δ",
+    );
 }

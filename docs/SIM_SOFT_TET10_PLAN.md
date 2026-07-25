@@ -675,41 +675,38 @@ capture — the isoparametric-surface piece is deferred, §7).
      radial-edge midsides into both the load and `cavity_wall_mean`). Or, at
      minimum, A/B equal-split vs consistent-P2 on the uniform sphere and
      pre-register the bias bound.
-   - **6d — ▶ IN PROGRESS (branch `test/sim-soft-tet10-indentation-demand1`,
-     NOT merged).** Harness `tests/tet10_indentation_demand1.rs` at χ = 0.50 is
-     **validated** — its Tet4 arm reproduces #676's committed `RATIO = 1.130`
-     to four decimals. The Tet10 arm is **unmeasured**: it ran >42 min at
-     1.86 GB without finishing (~40× the Tet4 cost), so the node-density control
-     is unresolved and there is no gate. **★ Measured costs that reshape this
-     step:** #676's Tet4 3-χ sweep is **24.2 min**, so it **cannot** join
-     `tests-debug` (30-min shard) — the auto-discovery fix used for the Lamé and
-     bending files is unavailable, and registering it costs ~24 min of CI per
-     affected run (an open cost decision). A Tet10 arm at ~40× is not a routine
-     gate under any scheme; 6d likely ends as a committed one-shot plus an
-     `#[ignore]`d test. **★ The control is the DIFFERENTIAL standoff, not the
-     absolute one:** `ContactPairReadout.sd` is the effective-indentation error,
-     so the confound is `1.5·|Δ(mean sd)|/δ` between elements — a large common
-     offset cancels. Measured Tet4: mean `sd/δ = 0.0421` against a band
-     `d̂/δ = 0.05`, i.e. the barrier is NOT near-rigid at the shipped κ, but that
-     offset is shared. ⚠ Also: the Garcia oracle was **fabricated** on the first
-     attempt (RATIO 3.4324 vs the true 1.130) and is now single-sourced in
-     `tests/common/mod.rs`, used by both #676 and the Tet10 arm.
-   - **6d (original text).** Demand #1: the #676 gate validates the element-stiffness cure on
-     **net force only** (bare Tet10 with per-vertex contact already moves the
-     ratio via displacement order; correct *local* mechanics come with rung 8).
-     **★ Node-density control (required — the barrier is fixed-κ, non-area-
-     weighted, `ipc.rs:37`).** `F_FEM(δ)` is node-density-dependent: Tet10
-     ~doubles surface nodes, and a fixed-κ barrier's effective compliance scales
-     with node count, shifting `δ_eff` by up to `O(d̂)` (`d̂/δ ≈ 5%` here) — a
-     *contact-discretization* shift the gate would otherwise misattribute to
-     element order. So the 6d comparison must either (a) run a Tet4 mesh refined
-     to Tet10's surface-node count as the baseline (isolating the element-order
-     shift), or (b) verify the barrier is near-rigid (`sd_v ≪ d̂`) at this κ so
-     `δ_eff ≈ δ` independent of node count (note `contact_stability.rs` shows κ
-     has a convergence ceiling — raising it is not free). Without this control
-     the ~9% signal is confounded at the few-percent level. Still the slow IPC
-     route — and **already CI-dark** (release-only, unregistered): accept it as
-     pre-push, register it, or add a cheap contact micro-oracle.
+   - **6d — ✅ DONE (measured 2026-07-25; demand #1 IMPROVED, not closed).**
+     Harness `tests/tet10_indentation_demand1.rs` at χ = 0.50, both arms from one
+     release build. **Tet4 `RATIO` = 1.1303** (reproduces #676's committed value
+     to four decimals — harness validation) vs **Tet10 `RATIO` = 1.0803**: the
+     element pulls the χ = 0.50 curved-patch over-stiffness from **+13.0 % to
+     +8.0 %**, a real ≈5-point improvement. **It does not close demand #1** — a
+     +8 % residual remains, and a single-χ net-force measurement does **not**
+     attribute it (inconsistent node-collocated contact patch = rung 8's remit,
+     Garcia-oracle error, residual element stiffness, or incomplete mesh
+     convergence all remain in play). Note the basis: #676's headline "~9 %" is
+     Tet4's *mesh-converged* floor (extrapolated over 3 χ); this is a *single* χ
+     where Tet4 itself reads +13 %. A Tet10 converged floor would need its own
+     3-χ sweep (~3× the 60-min cost) and is not measured.
+   - **Node-density control — RESOLVED (differential, not absolute).** The
+     absolute standoff is common to both elements and cancels; the confound is
+     the difference: `1.5·|0.04607 − 0.04213| = 0.59 %` against a 5.0-point
+     element-order signal (~12 % of it). Real but not dominant — it cannot flip
+     the finding, so the refined-Tet4 fallback (`contact_stability.rs`: κ has a
+     convergence ceiling, raising it is not free) is **not** triggered. Both
+     elements sit at mean `sd/δ ≈ 0.042–0.046` (~85–92 % of the `d̂/δ = 0.05`
+     band → barrier not near-rigid, but that compliance is shared). Asserted over
+     the committed constants in `node_density_control_confound_is_small`, which
+     runs in `tests-debug`.
+   - **Cost + CI shape.** Tet10 arm = **59.6 min single-threaded** (~7× the DOF,
+     93 639 vs 13 125; 100 % of one core, assembly serial for bit-determinism) →
+     `#[ignore]`d unconditionally, a deliberate-run one-shot; the ~62 s Tet4 arm
+     is `#[ignore]`d in debug and in no release `--test` list. Neither probe runs
+     in CI; the cheap control test does. (#676's own CI darkness was separately
+     ended by the `soft-contact-heavy` job, #692 — so the earlier "24-min gate
+     can't join tests-debug" cost decision is moot.) The Garcia oracle —
+     **fabricated** on the first attempt (`RATIO` 3.4324 vs the true 1.130) — is
+     single-sourced in `tests/common/mod.rs`, used by both #676 and the Tet10 arm.
 7. **Gradient + dynamics path (§3.5).** Per-GP adjoint RHS + tangent, lift the
    fbar/`N==4` guards for Tet10 as each is made Tet10-correct, **FD-gradcheck**
    every channel — `material_sensitivity`, `dirichlet_reaction_sensitivity`,
