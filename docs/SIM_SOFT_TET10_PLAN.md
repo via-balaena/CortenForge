@@ -364,6 +364,22 @@ primitive (samples the SDF at non-nodal points), so it needs a new
 non-`#[non_exhaustive]`; coupling uses irrefutable `let Vertex{..}` matches
 — `contact_readout.rs:154`, `single_step.rs:35`), requiring `#[non_exhaustive]`
 + downstream fixes.
+> **⚠ CORRECTION (rung 8a landed): the break spans three crates + the
+> examples, not "only coupling."** Adding *any* second `ContactPair` variant
+> makes every single-variant `Vertex` destructure refutable — including
+> **inside `sim-soft` itself** (`#[non_exhaustive]` is not required for that;
+> a second variant alone does it — `#[non_exhaustive]` only *additionally*
+> forces a wildcard on *downstream* `match`es). The measured rung-8a blast
+> radius was **38 fail-loud conversions across 16 code files**: `sim-soft`
+> src (`ipc.rs` 4 + `penalty.rs` 6 = 10), `sim-soft` integration tests (11
+> across 5 crates: `penalty_interior_cutoff`, `penalty_pair_readout`,
+> `contact_scenes`, `contact_unit`, `penalty_smoothing`), the 7 `sim-soft`
+> examples (15), and coupling's 2 — versus the plan's "only coupling" = 1
+> crate / 2 sites. `cf-sim-research` genuinely does **not** break (it only
+> *constructs* `Vertex{..}`, which stays legal under an enum-level
+> `#[non_exhaustive]` — spike-confirmed). Each site became a `let … else {
+> unreachable!(…) }` (or a `_ =>` wildcard for `match`), fail-loud and
+> byte-identical (no producer emits `Face` until rung 8b).
 It also **shares machinery with the isoparametric curved surface**, so both
 build together as **rung 8** (the isolated-rung decision). (b) A midside
 node gets `tributary_area = 0` → `pressure = NaN` → `peak_contact_pressure`

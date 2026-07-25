@@ -151,7 +151,12 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         let mut any_pair = vec![false; self.n_vertices];
         let mut any_finite = vec![false; self.n_vertices];
         for r in readouts {
-            let ContactPair::Vertex { vertex_id, .. } = r.pair;
+            let ContactPair::Vertex { vertex_id, .. } = r.pair else {
+                // Coupling scenes are Tet4 (`HandBuiltTetMesh`) vertex contact;
+                // `ContactPair::Face` is Tet10-only (sim-soft rung 8) and never
+                // reaches here. `#[non_exhaustive]` still requires this arm.
+                unreachable!("coupling uses Tet4 vertex contact; no ContactPair::Face")
+            };
             let v = vertex_id as usize;
             any_pair[v] = true;
             if r.pressure.is_finite() {

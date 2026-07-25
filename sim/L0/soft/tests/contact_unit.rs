@@ -374,11 +374,17 @@ fn penalty_active_pairs_filters_by_d_hat() {
     let &ContactPair::Vertex {
         vertex_id: v0,
         primitive_id: p0,
-    } = &pairs[0];
+    } = &pairs[0]
+    else {
+        unreachable!("penalty vertex contact emits only ContactPair::Vertex")
+    };
     let &ContactPair::Vertex {
         vertex_id: v1,
         primitive_id: p1,
-    } = &pairs[1];
+    } = &pairs[1]
+    else {
+        unreachable!("penalty vertex contact emits only ContactPair::Vertex")
+    };
     assert_eq!((v0, p0), (1, 0));
     assert_eq!((v1, p1), (2, 0));
 }
@@ -411,7 +417,10 @@ fn penalty_active_pairs_deterministic_ordering() {
             let &ContactPair::Vertex {
                 vertex_id,
                 primitive_id,
-            } = p;
+            } = p
+            else {
+                unreachable!("penalty vertex contact emits only ContactPair::Vertex")
+            };
             (vertex_id, primitive_id)
         })
         .collect();

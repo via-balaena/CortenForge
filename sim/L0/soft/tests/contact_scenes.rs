@@ -230,7 +230,9 @@ fn sphere_on_plane_loaded_band_absent_from_active_pairs_at_rest() {
 
     let loaded_set: BTreeSet<u32> = bc.loaded_vertices.iter().map(|&(v, _)| v).collect();
     for pair in &pairs {
-        let ContactPair::Vertex { vertex_id, .. } = *pair;
+        let ContactPair::Vertex { vertex_id, .. } = *pair else {
+            unreachable!("this scene exercises vertex contact only")
+        };
         assert!(
             !loaded_set.contains(&vertex_id),
             "loaded top-of-sphere vertex {vertex_id} (rest position {:?}) should not be in \

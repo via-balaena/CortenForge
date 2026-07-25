@@ -98,11 +98,17 @@ fn per_pair_readout_matches_active_pairs_and_gradient() {
         let ContactPair::Vertex {
             vertex_id: rid_v,
             primitive_id: rid_p,
-        } = readout.pair;
+        } = readout.pair
+        else {
+            unreachable!("penalty vertex contact emits only ContactPair::Vertex")
+        };
         let ContactPair::Vertex {
             vertex_id: pid_v,
             primitive_id: pid_p,
-        } = *pair;
+        } = *pair
+        else {
+            unreachable!("penalty vertex contact emits only ContactPair::Vertex")
+        };
         assert_eq!(
             (rid_v, rid_p),
             (pid_v, pid_p),
@@ -208,7 +214,9 @@ fn per_pair_readout_matches_active_pairs_and_gradient() {
     let sum_readout_z: f64 = readouts.iter().map(|r| r.force_on_soft.z).sum();
     let mut sum_manual_reaction: f64 = 0.0;
     for r in &readouts {
-        let ContactPair::Vertex { vertex_id, .. } = r.pair;
+        let ContactPair::Vertex { vertex_id, .. } = r.pair else {
+            unreachable!("penalty vertex contact emits only ContactPair::Vertex")
+        };
         let z_v = positions[vertex_id as usize].z;
         let sd_manual = EDGE_LEN - DISPLACEMENT - z_v;
         // Manual reconstruction mirrors row 14
@@ -265,7 +273,9 @@ fn per_pair_readout_pressure_decomposes_total_force() {
     let mut reconstructed_total = Vec3::zeros();
     let mut force_total = Vec3::zeros();
     for (idx, r) in readouts.iter().enumerate() {
-        let ContactPair::Vertex { vertex_id, .. } = r.pair;
+        let ContactPair::Vertex { vertex_id, .. } = r.pair else {
+            unreachable!("penalty vertex contact emits only ContactPair::Vertex")
+        };
 
         // The readout's tributary area is exactly PR1's per-vertex area
         // (bit-compare — both come from the same `boundary_vertex_areas`

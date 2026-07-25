@@ -39,6 +39,12 @@
 // regular `//` comment block; row 24's doc-comment-attached Ψ̄ refs
 // trip the lint where row 23's plain-comment refs do not.
 #![allow(clippy::doc_markdown)]
+// Rung-8a exhaustiveness fill-ins: `#[non_exhaustive]` `sim_soft::ContactPair`
+// forces a `_ => unreachable!(…)` / `let … else { unreachable!(…) }` on every
+// `Vertex` match; this vertex-contact example never produces a `Face` pair.
+// Justifies them for the xtask Safety grader (clippy does not lint
+// `unreachable!`). Same file-level allowance precedent as `expect_used`.
+#![allow(clippy::unreachable)]
 
 //! scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp — row 24 (F4.1+v3
 //! axial-zoned variation): the first user of the `BlendedScalarField`
@@ -860,6 +866,7 @@ fn solve_ramp(
             .iter()
             .map(|r| match r.pair {
                 sim_soft::ContactPair::Vertex { vertex_id, .. } => vertex_id,
+                _ => unreachable!("example scene uses vertex contact only"),
             })
             .collect();
         let cavity_disp: Vec<f64> = cavity_vertex_ids
@@ -940,7 +947,10 @@ fn solve_ramp(
                     let sim_soft::ContactPair::Vertex {
                         vertex_id,
                         primitive_id,
-                    } = r.pair;
+                    } = r.pair
+                    else {
+                        unreachable!("example scene uses vertex contact only")
+                    };
                     json!({
                         "vertex_id": vertex_id,
                         "primitive_id": primitive_id,
