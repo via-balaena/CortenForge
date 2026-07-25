@@ -71,9 +71,12 @@ pub enum ContactPair {
     Face {
         /// The six P2 face nodes in canonical order: the three corners
         /// `[c0, c1, c2]` followed by the three edge-midsides
-        /// `[m01, m12, m20]` — the midside of each corner edge, matching
-        /// the element's `TET10_EDGE_NODES` convention restricted to this
-        /// boundary face.
+        /// `[m01, m12, m02]` — the midsides of face edges `(c0,c1)`,
+        /// `(c1,c2)`, `(c0,c2)`, matching the element's `TET10_EDGE_NODES`
+        /// low-index-first convention (edge `(0,2)`, never `(2,0)`)
+        /// restricted to this boundary face. Rung 8b's face P2 shape
+        /// functions `N_{3+i}` must index the same edge order (an
+        /// oracle-matches-SUT conformance test pins it).
         nodes: [VertexId; 6],
         /// Index of the rigid primitive into the contact model's
         /// primitive list — as for [`Vertex`](Self::Vertex).
