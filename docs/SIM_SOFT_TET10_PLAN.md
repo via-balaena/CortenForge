@@ -15,8 +15,9 @@
 > sphere alone is locking-INSENSITIVE, §5 step 6c), **rung 6d measured demand #1
 > (Tet10 IMPROVES the #676 contact-patch floor +13 %→+8 %, does NOT close it)**,
 > and **★ rung 7 made the Tet10 gradient path differentiable**: all four adjoint
-> channels (material / reaction / state / load-θ) are FD-gated to ~1e-9 and the
-> `N==4` diff-guards are lifted (§5 step 7 — recon found only ONE RHS,
+> channels (material / reaction / state / load-θ) are FD-gated against a re-solve
+> (enforced bars 1e-5/1e-6; observed residuals ~1e-9) and the
+> `N==4` diff-guards are lifted for the frictionless adjoint (§5 step 7 — recon found only ONE RHS,
 > `assemble_material_residual_grad`, was single-point; the tangent + reaction +
 > state were already per-GP since rung 4/3b). **NEXT = rung 8 (consistent
 > contact).** ⚠ **Rung 4 landed
@@ -272,10 +273,13 @@ unpin-trio + that geometry).**
     the direct-form `F = Σ xₐ⊗∇Nₐ` would give `F=0` → NaN. 3b's corner geometry
     therefore uses the linear barycentric gradients (a Tet4 constant-strain
     block). **Rung 4 landed (design delta): this single-point corner block is
-    RETAINED in `ElementGeometry` — it still feeds the validity gate, the
-    rung-7-guarded material adjoint, F-bar, and the lumped mass — while the real
-    per-Gauss-point stiffness geometry lives in a separate `GaussGeometry<N,G>`
-    cache the forward kernels integrate over (§3.3). The forward *stiffness* is
+    RETAINED in `ElementGeometry` — it feeds the validity gate, F-bar, and the
+    lumped mass — while the real per-Gauss-point stiffness geometry lives in a
+    separate `GaussGeometry<N,G>` cache the forward kernels integrate over (§3.3).
+    (⚠ Rung 7 UPDATE: the material adjoint `assemble_material_residual_grad`
+    used to read this single-point block too, but rung 7 repointed it to
+    `GaussGeometry` per-GP — so `ElementGeometry` no longer feeds any adjoint.)
+    The forward *stiffness* is
     replaced by per-GP; the corner block is not deleted.**
 - **Per-GP geometry and boundary extraction are NOT part of the atomic core**
   — they are *correctness* concerns (real Tet10 stiffness / valid pressure
@@ -714,15 +718,17 @@ capture — the isoparametric-surface piece is deferred, §7).
    lift the `N==4` guards for Tet10, **FD-gradcheck** every channel —
    `material_sensitivity`, `dirichlet_reaction_sensitivity`, `state_sensitivity`
    (the per-vertex contact path is unchanged; friction FD moves to rung 8 with
-   the face barrier). **Add a Tet10 dynamics mass-gate.**
+   the face barrier — and Tet10 + friction is now fail-loud-guarded via
+   `mu == 0 || N == 4` in `factor_at_position` until then). **Add a Tet10
+   dynamics mass-gate.**
    **★ WHAT ACTUALLY LANDED (recon + a guard-lift spike narrowed the surface far
    below the plan's fear):**
    - **★★ The silent-wrong surface was ONE function.** The adjoint *tangent* `A`
      (`assemble_free_hessian_triplets`), the reaction RHS
      (`internal_force_tangent_matvec`), and the state RHS (the HRZ `mass_per_dof`
      diagonal) were **already per-Gauss-point since rung 4 / 3b** — a throwaway
-     guard-lift spike matched a re-solve FD to ~1e-10 on the reaction and state
-     channels with **zero** code change. The only genuinely single-point adjoint
+     guard-lift spike matched a re-solve FD to an observed ~1e-10 residual on the
+     reaction and state channels with **zero** code change. The only genuinely single-point adjoint
      RHS was `assemble_material_residual_grad`; rung 7 widens just that (mirror
      `assemble_global_int_force` with `∂P/∂p_k`, Tet4 byte-identical). Both
      `factor_at_position` `N==4` guards lifted; the `!config.fbar` guard stays.
@@ -730,12 +736,14 @@ capture — the isoparametric-surface piece is deferred, §7).
      plan's expectation, corrected): `assemble_external_force` applies θ as a
      NODAL point force straight onto the loaded DOF (no shape-fn integration), so
      `∂r/∂θ = −e` is element-order-independent. FD-gated anyway
-     (`tests/tet10_load_theta_gradcheck.rs`, rel ~4e-7).
-   - **Gates (all fast/debug, auto-CI):** `tet10_material_sensitivity.rs`
-     (forward+reverse FD, `rel ~1e-9`, + Tet4 byte-identity fingerprints),
-     `tet10_state_sensitivity.rs` (forward+reverse, `rel ~5e-10`),
-     `tet10_dirichlet_reaction_sensitivity.rs` (`rel ~1e-10`),
-     `tet10_load_theta_gradcheck.rs`. **★ Mass-gate = two INDEPENDENT crate-
+     (`tests/tet10_load_theta_gradcheck.rs`).
+   - **Gates (all fast/debug, auto-CI). Enforced FD bars are 1e-5 (material,
+     state, load-θ) / 1e-6 (reaction); the parenthetical numbers are the OBSERVED
+     analytic-vs-re-solve residuals, ~4 orders under the bar (NOT the enforced
+     tolerance):** `tet10_material_sensitivity.rs` (forward+reverse FD, obs
+     `~1e-9`, + Tet4 byte-identity fingerprints), `tet10_state_sensitivity.rs`
+     (forward+reverse, obs `~5e-10`), `tet10_dirichlet_reaction_sensitivity.rs`
+     (obs `~1e-10`), `tet10_load_theta_gradcheck.rs` (obs `~4e-7`). **★ Mass-gate = two INDEPENDENT crate-
      internal checks** (`tet10_hrz_mass_conserves_total`,
      `tet10_hrz_mass_distribution`): the state FD shares `mass_per_dof` between
      its forward re-solve and its analytic adjoint, so a *consistently*-wrong
@@ -811,9 +819,12 @@ blast radius is in-crate only.
   repo** — `SolverConfig::skeleton` defaults to 10, coupling uses 50/80, and the
   three FD gates step 7 names (`material_sensitivity`,
   `dirichlet_reaction_sensitivity`, `state_sensitivity`) budget 50. The adjoint
-  replays the forward Newton, so rung 7 should expect ~40× the tangent
-  factorisations at ν≈0.49 and must size its budgets deliberately rather than
-  inherit them. The original framing follows.
+  replays the forward Newton, so a Tet10 adjoint AT ν≈0.49 should expect ~40× the
+  tangent factorisations and must size its budgets deliberately. **✅ Rung 7 sidestepped
+  this: its FD gates run at ν = 0.4 (`μ=3e4, λ=1.2e5`) on small `uniform_block(2)`
+  fixtures, where the forward Newton is ~3–8 iters — so the 272-iter budget landmine
+  is NOT triggered. It remains a live warning for any FUTURE Tet10 adjoint run near
+  ν→0.5.** The original framing follows.
   The Lamé docstring says the pressure-inflation mode makes "convergence collapse";
   pure Tet10 may stall before producing a number. The 6c gate is three-way
   (converged-accurate / converged-locked / didn't-converge), budget ~150 iters,

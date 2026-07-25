@@ -470,15 +470,27 @@ where
              would be silently wrong. Use `replay_step` for forward-only F-bar; the \
              differentiability leaf (PR2) carries F* into the adjoint RHS."
         );
-        // Rung 7: the `N == 4` diff-guard is lifted. The adjoint tangent `A` this
-        // factors is `assemble_free_hessian_triplets`, which has been per-Gauss-point
-        // over all `N` nodes since rung 4, so it IS the exact Tet10 `∂r/∂x` (FD-gated
-        // in `tests/tet10_state_sensitivity.rs` / `tet10_dirichlet_reaction_sensitivity.rs`
-        // to ~1e-10 vs a re-solve). The one adjoint RHS that was single-point,
-        // `assemble_material_residual_grad`, is widened to per-GP in the same rung
-        // (FD-gated in `tests/tet10_material_sensitivity.rs`). The `!config.fbar`
-        // guard above stays: F-bar on Tet10 is out of scope (rung 8+).
+        // Rung 7: the `N == 4` diff-guard is lifted for the FRICTIONLESS adjoint. The
+        // adjoint tangent `A` this factors is `assemble_free_hessian_triplets`, which
+        // has been per-Gauss-point over all `N` nodes since rung 4, so it IS the exact
+        // Tet10 `∂r/∂x`; the one adjoint RHS that was single-point,
+        // `assemble_material_residual_grad`, is widened to per-GP in the same rung.
+        // Both are FD-gated against a re-solve (`tests/tet10_{material,state,
+        // dirichlet_reaction}_sensitivity.rs`; enforced bars 1e-5/1e-6, observed
+        // residuals ~1e-9). The `!config.fbar` guard above stays (F-bar on Tet10 =
+        // rung 8+).
         let mu = self.config.friction_mu;
+        // Tet10 + friction adjoint is NOT yet validated: the friction Woodbury path is
+        // per-contacted-vertex (structurally element-order-independent), but it has no
+        // Tet10 FD gate — friction FD is deferred to rung 8. Keep it fail-loud rather
+        // than silently unlocked (the N==4 assert lifted above used to block it).
+        assert!(
+            mu == 0.0 || N == 4,
+            "Tet10 friction-exact gradients arrive with rung 8 (consistent contact + \
+             friction FD gates): the frictionless Tet10 adjoint is validated (rung 7), but \
+             the friction Woodbury path has no Tet10 FD coverage yet, so a gradient here \
+             would be unverified. Use a frictionless Tet10 solve, or Tet4; got N={N}, mu={mu}."
+        );
         assert!(
             mu == 0.0 || x_prev.is_some(),
             "friction-exact gradient requested without x_prev: the friction adjoint needs the \
@@ -878,9 +890,17 @@ where
              would be silently wrong. Use `replay_step` for forward-only F-bar; the \
              differentiability leaf (PR2) carries F* into the adjoint RHS."
         );
-        // Rung 7: `N == 4` diff-guard lifted — see `factor_at_position` for why the
-        // Tet10 adjoint tangent + RHS are correct (`!config.fbar` guard stays).
+        // Rung 7: `N == 4` diff-guard lifted for the FRICTIONLESS adjoint — see
+        // `factor_at_position` for why the Tet10 tangent + RHS are correct
+        // (`!config.fbar` guard stays). Tet10 + friction stays fail-loud until rung 8.
         let mu = self.config.friction_mu;
+        assert!(
+            mu == 0.0 || N == 4,
+            "Tet10 friction-exact gradients arrive with rung 8 (friction FD gates): the \
+             frictionless Tet10 adjoint is validated (rung 7), but the friction Woodbury \
+             path has no Tet10 FD coverage yet. Use a frictionless Tet10 solve, or Tet4; \
+             got N={N}, mu={mu}."
+        );
         assert!(
             mu == 0.0 || x_prev.is_some(),
             "friction-exact gradient requested without x_prev: the friction adjoint needs the \

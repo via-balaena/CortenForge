@@ -1658,3 +1658,21 @@ fn tet10_hrz_mass_distribution() {
     // landmine: MID_W (0.1487) strictly exceeds CORNER_W (0.0269) — a row-sum lump
     // would instead drive the corner masses NEGATIVE.
 }
+
+/// Rung 7 fail-loud guard: a Tet10 FRICTION adjoint must PANIC (not silently run
+/// an unverified gradient). The frictionless Tet10 adjoint is validated (rung 7),
+/// but the friction Woodbury path has no Tet10 FD coverage yet (rung 8) — the
+/// lifted `N == 4` guard used to block it, so `factor_at_position` now carries a
+/// dedicated `mu == 0 || N == 4` assert. Any adjoint call routes through it.
+#[test]
+#[should_panic(expected = "Tet10 friction-exact gradients arrive with rung 8")]
+fn tet10_friction_adjoint_is_fail_loud() {
+    let mut cfg = SolverConfig::skeleton();
+    cfg.dt = 1.0e-2;
+    cfg.friction_mu = 0.5;
+    let (solver, _) = build_tet10_block(cfg);
+    let x = tet10_rest_dofs(&solver);
+    let zeros = vec![0.0; x.len()];
+    // Routes through factor_at_position → the mu==0||N==4 guard (panics before return).
+    let _sensitivity = solver.equilibrium_state_sensitivity(&x, None, cfg.dt, &zeros, &zeros);
+}
