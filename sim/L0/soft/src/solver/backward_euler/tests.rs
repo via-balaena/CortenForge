@@ -1204,7 +1204,7 @@ fn tet10_dynamic_replay_step_converges() {
     let v_prev = Tensor::zeros(&[n_dof]);
     let theta = Tensor::zeros(&[0]);
 
-    // Forward-only: `replay_step` never touches the (rung-7-guarded) adjoint.
+    // Forward-only: `replay_step` never touches the differentiable adjoint.
     let step = solver.replay_step(&x_prev, &v_prev, &theta, cfg.dt);
     assert_eq!(step.x_final.len(), n_dof);
     assert!(

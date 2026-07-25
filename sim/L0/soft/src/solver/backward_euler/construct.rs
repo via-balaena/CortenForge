@@ -297,8 +297,9 @@ where
 
         // 1. Per-element reference geometry — TWO caches from one Jacobian:
         //    (a) `element_geometries`: the single-point corner geometry the
-        //        Tet4-flavored consumers read (F-bar, adjoint, validity, mass) —
-        //        byte-identical to rung 3b.
+        //        Tet4-flavored consumers read (F-bar, validity, mass) —
+        //        byte-identical to rung 3b. (Rung 7 moved the material adjoint
+        //        onto (b), so no adjoint reads this cache.)
         //    (b) `gauss_geometries`: the per-Gauss-point stiffness geometry the
         //        multi-Gauss-point forward kernels integrate over (rung 4).
         //
@@ -319,8 +320,9 @@ where
         // identical to the pre-Tet10 path); a Tet10 element's gradients VANISH
         // on the corners at the centroid, so `N > 4` uses the linear barycentric
         // corner gradient — the affine constant-strain block. This is the
-        // single-point proxy for the validity / adjoint / F-bar consumers; the
-        // real (linearly-varying) Tet10 strain lives in (b).
+        // single-point proxy for the validity / F-bar / mass consumers; the
+        // real (linearly-varying) Tet10 strain lives in (b), which the forward
+        // stiffness and (since rung 7) the material adjoint read.
         let grad_xi_corner: SMatrix<f64, 4, 3> = if N > 4 {
             SMatrix::<f64, 4, 3>::new(
                 -1.0, -1.0, -1.0, // ∂N_0/∂ξ (complement barycentric)
