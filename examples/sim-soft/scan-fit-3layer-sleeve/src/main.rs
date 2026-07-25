@@ -27,6 +27,12 @@
 // operand-vs-receiver across the heterogeneous-CSG and multi-field
 // composition sites. Same allowance as rows 6+10+11+16+20.
 #![allow(clippy::similar_names)]
+// Rung-8a exhaustiveness fill-ins: `#[non_exhaustive]` `sim_soft::ContactPair`
+// forces a `_ => unreachable!(…)` / `let … else { unreachable!(…) }` on every
+// `Vertex` match; this vertex-contact example never produces a `Face` pair.
+// Justifies them for the xtask Safety grader (clippy does not lint
+// `unreachable!`). Same file-level allowance precedent as `expect_used`.
+#![allow(clippy::unreachable)]
 
 //! scan-fit-3layer-sleeve — the row 21 Tier 6 synthesis row, the second
 //! end-to-end relative-comparison sim of the [layered silicone device][mem]

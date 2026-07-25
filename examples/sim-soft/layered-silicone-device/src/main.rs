@@ -30,6 +30,12 @@
 // the heterogeneous-CSG and contact-readout sites. Same allowance as
 // rows 6+10+11+16.
 #![allow(clippy::similar_names)]
+// Rung-8a exhaustiveness fill-ins: `#[non_exhaustive]` `sim_soft::ContactPair`
+// forces a `_ => unreachable!(…)` / `let … else { unreachable!(…) }` on every
+// `Vertex` match; this vertex-contact example never produces a `Face` pair.
+// Justifies them for the xtask Safety grader (clippy does not lint
+// `unreachable!`). Same file-level allowance precedent as `expect_used`.
+#![allow(clippy::unreachable)]
 
 //! layered-silicone-device — the PR3 Tier 6 synthesis row, closing
 //! the entire sim-soft examples arc by composing every PR3 foundation

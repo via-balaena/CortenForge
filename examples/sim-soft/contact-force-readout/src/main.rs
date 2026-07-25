@@ -1209,6 +1209,7 @@ fn verify_per_pair_invariants(snapshot: &ReadoutSnapshot) {
         // expectations at the variant level so a new variant forces a
         // row-18 review.
         let ContactPair::Vertex { vertex_id, .. } = r.pair else {
+            // No Face pairs in this Tet4 vertex-contact example (non_exhaustive fill-in).
             unreachable!("row-18 readout example uses Tet4 vertex contact only")
         };
         assert!(
@@ -1381,6 +1382,7 @@ fn save_readout_json(snapshot: &ReadoutSnapshot, path: &Path) -> Result<()> {
                 primitive_id,
             } = r.pair
             else {
+                // No Face pairs in this Tet4 vertex-contact example (non_exhaustive fill-in).
                 unreachable!("row-18 readout example uses Tet4 vertex contact only")
             };
             json!({
@@ -1453,6 +1455,7 @@ fn save_finest_frame_ply(snapshot: &ReadoutSnapshot, path: &Path) -> Result<()> 
     let mut contact_pressure: Vec<f32> = vec![0.0; n_vertices];
     for (r, &p) in snapshot.readouts.iter().zip(snapshot.pressures.iter()) {
         let ContactPair::Vertex { vertex_id, .. } = r.pair else {
+            // No Face pairs in this Tet4 vertex-contact example (non_exhaustive fill-in).
             unreachable!("row-18 readout example uses Tet4 vertex contact only")
         };
         contact_pressure[vertex_id as usize] = p as f32;

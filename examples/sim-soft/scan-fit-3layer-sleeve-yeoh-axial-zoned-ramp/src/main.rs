@@ -39,6 +39,12 @@
 // regular `//` comment block; row 24's doc-comment-attached Ψ̄ refs
 // trip the lint where row 23's plain-comment refs do not.
 #![allow(clippy::doc_markdown)]
+// Rung-8a exhaustiveness fill-ins: `#[non_exhaustive]` `sim_soft::ContactPair`
+// forces a `_ => unreachable!(…)` / `let … else { unreachable!(…) }` on every
+// `Vertex` match; this vertex-contact example never produces a `Face` pair.
+// Justifies them for the xtask Safety grader (clippy does not lint
+// `unreachable!`). Same file-level allowance precedent as `expect_used`.
+#![allow(clippy::unreachable)]
 
 //! scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp — row 24 (F4.1+v3
 //! axial-zoned variation): the first user of the `BlendedScalarField`
