@@ -65,9 +65,10 @@ pub(crate) use factor::FactoredFreeTangent;
 /// corner block (the barycentric constant-strain gradient) — a *single-point*
 /// proxy, NOT the element's real (linearly-varying) strain, which lives in the
 /// per-Gauss-point [`GaussGeometry`]. It is read by the Tet4-flavored, single-
-/// point consumers only: the F-bar assembler, the rung-7-guarded material
-/// adjoint, the feasibility (validity) gate, and the lumped-mass volume — none
-/// of which the multi-Gauss-point forward stiffness touches.
+/// point consumers only: the F-bar assembler, the feasibility (validity) gate,
+/// and the lumped-mass volume — none of which the multi-Gauss-point forward
+/// stiffness touches. (Rung 7 repointed the material adjoint off this cache
+/// onto the per-GP [`GaussGeometry`], so no adjoint reads `ElementGeometry`.)
 #[derive(Clone, Debug)]
 struct ElementGeometry {
     grad_x_n: SMatrix<f64, 4, 3>,
@@ -142,8 +143,8 @@ pub struct CpuNewtonSolver<
     // per-iter `reference_geometry` recomputation.
     /// One entry per mesh tet — the single-point corner shape gradient and
     /// rest volume. Feeds the Tet4-flavored single-point consumers (F-bar,
-    /// material adjoint, validity gate, lumped mass); the forward stiffness
-    /// reads [`Self::gauss_geometries`] instead.
+    /// validity gate, lumped mass); the forward stiffness and (since rung 7)
+    /// the material adjoint read [`Self::gauss_geometries`] instead.
     element_geometries: Vec<ElementGeometry>,
     /// One entry per mesh tet — the per-Gauss-point stiffness geometry
     /// (`(grad_x_n, weight)` × `G`) the multi-Gauss-point forward kernels

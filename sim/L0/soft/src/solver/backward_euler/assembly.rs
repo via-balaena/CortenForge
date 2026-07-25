@@ -476,8 +476,8 @@ where
     /// or the reaction sensitivity would be silently plain-tangent under F-bar.
     //
     // Lint allows mirror `assemble_free_hessian_triplets` (the loop this contracts):
-    // `as TetId` is the Mesh-trait API tax, the `for a/b in 0..4` node loops index
-    // both `verts[a]` and `grad_x_n[(a, l)]`, and `va`/`vb` mirror the (a, b) block
+    // `as TetId` is the Mesh-trait API tax, the `for a/b in 0..N` node loops index
+    // both `nodes[a]` and `grad_x_n[(a, l)]`, and `va`/`vb` mirror the (a, b) block
     // symmetry.
     #[allow(
         clippy::cast_possible_truncation,

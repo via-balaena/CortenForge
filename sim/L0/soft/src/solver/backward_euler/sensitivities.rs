@@ -15,7 +15,9 @@ use crate::readout::LoadAxis;
 use crate::solver::{CpuTape, NewtonStep};
 
 use super::CpuNewtonSolver;
-use super::helpers::{deformation_gradient, extract_element_dof_values, slice_to_vec3s};
+use super::helpers::{
+    deformation_gradient, element_node_ids, extract_element_dof_values, slice_to_vec3s,
+};
 use super::{FactoredFreeTangent, FrictionReactionGradients, FrictionVertexForce};
 
 impl<E, Msh, C, M, const N: usize, const G: usize> CpuNewtonSolver<E, Msh, C, M, N, G>
@@ -579,8 +581,8 @@ where
     //
     // Lint allows mirror `assemble_global_int_force` (the loop this method
     // re-runs with ∂P/∂p_k for P): `as TetId` is the Mesh-trait API tax,
-    // `for a in 0..4` iterates Tet4's 4 nodes by index (used for both verts[a]
-    // and grad_x_n[(a, j)]).
+    // `for a in 0..N` iterates the element's nodes by index (used for both
+    // nodes[a] and grad_x_n[(a, j)]).
     #[must_use]
     pub fn equilibrium_material_sensitivity(
         &self,
@@ -825,34 +827,42 @@ where
     fn assemble_material_residual_grad(&self, x_final: &[f64], param_idx: usize) -> Vec<f64> {
         let materials = self.mesh.materials();
         let mut dr_dp = vec![0.0_f64; self.n_dof];
-        // Single-point (Tet4) material-adjoint RHS. Reached only through the
-        // rung-7-guarded differentiable factor (`factor_at_position` asserts
-        // `N == 4`), so it reads the single-point corner geometry; rung 7 widens
-        // it to the per-Gauss-point Tet10 adjoint with the rest of the gradient
-        // path.
-        for (tet_id, geom) in self.element_geometries.iter().enumerate() {
-            let verts = self.mesh.tet_vertices(tet_id as TetId);
-            let x_elem = extract_element_dof_values(x_final, &verts);
-            let f = deformation_gradient(&x_elem, &geom.grad_x_n);
-            let dp = materials[tet_id].first_piola_param_grad(&f);
-            if dp.is_empty() {
-                continue; // material exposes no differentiable params → zero
-            }
-            assert!(
-                param_idx < dp.len(),
-                "material param index {param_idx} out of range for tet {tet_id}'s material \
-                 ({} differentiable parameter(s) per first_piola_param_grad)",
-                dp.len(),
-            );
-            let dp_dpk = dp[param_idx];
-            for a in 0..4 {
-                let v = verts[a] as usize;
-                for i in 0..3 {
-                    let mut sum = 0.0;
-                    for j in 0..3 {
-                        sum += dp_dpk[(i, j)] * geom.grad_x_n[(a, j)];
+        // Per-Gauss-point material-adjoint RHS (rung 7) — the
+        // `assemble_global_int_force` internal-force loop re-run with `∂P/∂p_k`
+        // (the `param_idx` entry of `first_piola_param_grad(F_q)`) in place of
+        // `P`, integrated over the element's `G` Gauss points. For Tet4 (`G = 1`)
+        // `geom.gauss[0]` is bit-identical to the old single-point
+        // `ElementGeometry` (`element_node_ids::<_, _, 4>` returns exactly
+        // `tet_vertices`, and `weight == volume`), so this reproduces the
+        // pre-rung-7 single-point RHS exactly — byte-identity gated in
+        // `tests/tet10_material_sensitivity.rs`. For Tet10 it reads the per-GP
+        // deformation gradient and shape gradients over all `N` nodes, the widen
+        // that makes the material channel Tet10-correct.
+        for (tet_id, geom) in self.gauss_geometries.iter().enumerate() {
+            let nodes = element_node_ids::<M, Msh, N>(&self.mesh, tet_id as TetId);
+            let x_elem = extract_element_dof_values(x_final, &nodes);
+            for (grad_x_n, weight) in &geom.gauss {
+                let f = deformation_gradient(&x_elem, grad_x_n);
+                let dp = materials[tet_id].first_piola_param_grad(&f);
+                if dp.is_empty() {
+                    continue; // material exposes no differentiable params → zero
+                }
+                assert!(
+                    param_idx < dp.len(),
+                    "material param index {param_idx} out of range for tet {tet_id}'s material \
+                     ({} differentiable parameter(s) per first_piola_param_grad)",
+                    dp.len(),
+                );
+                let dp_dpk = dp[param_idx];
+                for a in 0..N {
+                    let v = nodes[a] as usize;
+                    for i in 0..3 {
+                        let mut sum = 0.0;
+                        for j in 0..3 {
+                            sum += dp_dpk[(i, j)] * grad_x_n[(a, j)];
+                        }
+                        dr_dp[3 * v + i] += weight * sum;
                     }
-                    dr_dp[3 * v + i] += geom.volume * sum;
                 }
             }
         }
