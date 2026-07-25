@@ -470,13 +470,14 @@ where
              would be silently wrong. Use `replay_step` for forward-only F-bar; the \
              differentiability leaf (PR2) carries F* into the adjoint RHS."
         );
-        assert!(
-            N == 4,
-            "Tet10 differentiable gradients arrive in ladder rung 7: the forward primal solve \
-             supports Tet10 from rung 3b, but the adjoint RHS/tangent here is still Tet4-shaped \
-             (single-Gauss-point, 4-node), so a gradient would be silently wrong. Use \
-             `replay_step` for forward-only Tet10; got N={N}."
-        );
+        // Rung 7: the `N == 4` diff-guard is lifted. The adjoint tangent `A` this
+        // factors is `assemble_free_hessian_triplets`, which has been per-Gauss-point
+        // over all `N` nodes since rung 4, so it IS the exact Tet10 `∂r/∂x` (FD-gated
+        // in `tests/tet10_state_sensitivity.rs` / `tet10_dirichlet_reaction_sensitivity.rs`
+        // to ~1e-10 vs a re-solve). The one adjoint RHS that was single-point,
+        // `assemble_material_residual_grad`, is widened to per-GP in the same rung
+        // (FD-gated in `tests/tet10_material_sensitivity.rs`). The `!config.fbar`
+        // guard above stays: F-bar on Tet10 is out of scope (rung 8+).
         let mu = self.config.friction_mu;
         assert!(
             mu == 0.0 || x_prev.is_some(),
@@ -877,13 +878,8 @@ where
              would be silently wrong. Use `replay_step` for forward-only F-bar; the \
              differentiability leaf (PR2) carries F* into the adjoint RHS."
         );
-        assert!(
-            N == 4,
-            "Tet10 differentiable gradients arrive in ladder rung 7: the forward primal solve \
-             supports Tet10 from rung 3b, but the adjoint RHS/tangent here is still Tet4-shaped \
-             (single-Gauss-point, 4-node), so a gradient would be silently wrong. Use \
-             `replay_step` for forward-only Tet10; got N={N}."
-        );
+        // Rung 7: `N == 4` diff-guard lifted — see `factor_at_position` for why the
+        // Tet10 adjoint tangent + RHS are correct (`!config.fbar` guard stays).
         let mu = self.config.friction_mu;
         assert!(
             mu == 0.0 || x_prev.is_some(),

@@ -1575,3 +1575,86 @@ fn tet10_quadratic_field_internal_force_matches_analytic() {
          Gauss weight, or a corrupted element geometry would surface here.",
     );
 }
+
+// ── Rung 7: independent HRZ mass gates ──────────────────────────────────────
+//
+// The static Lamé/#676 oracles are `STATIC_DT` and mass-blind, and the dynamic
+// state-sensitivity FD gate (`tests/tet10_state_sensitivity.rs`) shares
+// `mass_per_dof` between its forward re-solve and its analytic adjoint — so a
+// consistently-wrong Tet10 mass would pass BOTH sides of that FD (wrong-but-
+// matching). These two gates pin the mass INDEPENDENTLY: the total (against the
+// trusted Tet4 lump + the analytic `ρ·V`) and the per-node HRZ distribution.
+
+/// Total-mass conservation: the HRZ lump must sum to `ρ·V_total`, matching the
+/// byte-golden'd Tet4 `ρV_e/4` lump on the same cube (the "free-fall total-mass"
+/// check — free-fall momentum measures exactly this total, since `M` cancels
+/// from the per-node displacement). `V = 0.1³ m³`, `ρ = 1030` → `1.03 kg`.
+#[test]
+fn tet10_hrz_mass_conserves_total() {
+    let edge = 0.1;
+    let field = MaterialField::uniform(1.0e5, 4.0e5);
+    let cube = HandBuiltTetMesh::uniform_block(2, edge, &field);
+    let pos = cube.positions().to_vec();
+    let n_corners = cube.n_vertices();
+    let pinned: Vec<VertexId> = (0..n_corners as VertexId)
+        .filter(|&v| pos[v as usize].z < 0.25 * edge)
+        .collect();
+
+    // Tet10 total (each vertex's 3 DOFs carry equal mass, so /3).
+    let (s10, _) = build_tet10_block(SolverConfig::skeleton());
+    let total10: f64 = s10.mass_per_dof.iter().sum::<f64>() / 3.0;
+
+    // Tet4 total on the same cube (the trusted, byte-golden'd lumping).
+    let bc = BoundaryConditions {
+        pinned_vertices: pinned,
+        roller_vertices: Vec::new(),
+        loaded_vertices: Vec::new(),
+    };
+    let s4 = CpuNewtonSolver::new(Tet4, cube, NullContact, SolverConfig::skeleton(), bc);
+    let total4: f64 = s4.mass_per_dof.iter().sum::<f64>() / 3.0;
+
+    let expected = SolverConfig::skeleton().density * edge.powi(3); // ρ·V_total
+    assert!(
+        (total10 - total4).abs() / total4 < 1e-12,
+        "Tet10 HRZ total mass {total10} != Tet4 lump {total4} — the HRZ scaling or          accumulation is wrong (naive row-sum would also go negative on corners)",
+    );
+    assert!(
+        (total10 - expected).abs() / expected < 1e-12,
+        "Tet10 HRZ total mass {total10} != analytic ρ·V {expected}",
+    );
+}
+
+/// HRZ distribution: the per-node weights `∫N_i² / Σ∫N_k²` (evaluated at the 4
+/// Stroud points) must be the correct quadratic-tet lump — symmetric (4 equal
+/// corners, 6 equal midsides), strictly positive, midsides heavier than corners
+/// (the HRZ landmine that a naive row-sum inverts into negative corners), and
+/// summing to 1. The exact values are pinned as a golden because `hrz_mass_weights`
+/// is otherwise only exercised through the positive/PD gates, which a wrong-but-
+/// still-positive distribution would pass. (The state-sensitivity FD is
+/// distribution-blind for the same wrong-but-matching reason as the total.)
+#[test]
+fn tet10_hrz_mass_distribution() {
+    const CORNER_W: f64 = 2.690_545_489_632_625_5e-2;
+    const MID_W: f64 = 1.487_296_967_357_824_6e-1;
+    let w = super::construct::hrz_mass_weights::<_, 10, 4>(&Tet10);
+
+    let sum: f64 = w.iter().sum();
+    assert!(
+        (sum - 1.0).abs() < 1e-12,
+        "HRZ weights must sum to 1, got {sum}"
+    );
+    for (i, &wi) in w.iter().enumerate() {
+        assert!(
+            wi > 0.0,
+            "HRZ weight w[{i}] = {wi} must be strictly positive"
+        );
+        let target = if i < 4 { CORNER_W } else { MID_W };
+        assert!(
+            (wi - target).abs() < 1e-13,
+            "HRZ weight w[{i}] = {wi:.17e} != golden {target:.17e} (corners i<4, midsides i>=4)",
+        );
+    }
+    // The golden pins themselves encode the physics that guards the naive-row-sum
+    // landmine: MID_W (0.1487) strictly exceeds CORNER_W (0.0269) — a row-sum lump
+    // would instead drive the corner masses NEGATIVE.
+}

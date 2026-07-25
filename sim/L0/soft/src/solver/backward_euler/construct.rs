@@ -26,7 +26,7 @@ use super::{ElementGeometry, GaussGeometry, SolverConfig};
 /// (`N_i² ≥ 0`, positive quadrature weights) — which is what keeps the Tet10
 /// corner masses positive where naive row-sum lumping (`∫N_i`) goes negative
 /// and would break the Cholesky factor at a dynamic dt.
-fn hrz_mass_weights<E, const N: usize, const G: usize>(element: &E) -> [f64; N]
+pub(super) fn hrz_mass_weights<E, const N: usize, const G: usize>(element: &E) -> [f64; N]
 where
     E: Element<N, G>,
 {
