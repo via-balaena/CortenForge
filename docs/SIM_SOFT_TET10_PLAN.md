@@ -19,8 +19,22 @@
 > (enforced bars 1e-5/1e-6; observed residuals ~1e-9) and the
 > `N==4` diff-guards are lifted for the frictionless adjoint (§5 step 7 — recon found only ONE RHS,
 > `assemble_material_residual_grad`, was single-point; the tangent + reaction +
-> state were already per-GP since rung 4/3b). **NEXT = rung 8 (consistent
-> contact).** ⚠ **Rung 4 landed
+> state were already per-GP since rung 4/3b), and **rung 8a/8b landed the
+> face-contact barrier** (8a = the `ContactPair::Face` + `#[non_exhaustive]`
+> plumbing; 8b = the surface-integrated face barrier physics — §5 step 8).
+> **★ RUNG 8b DECISION (a build-time finding that reverses the §3.5/§5-8/§7
+> "deformed-area" framing): the face barrier is weighted by the face's REST
+> area, `E = A_rest · Σ_q ŵ_q b(sd(x_q))`, NOT the deformed area.** A spike
+> measured that deformed-area weighting (`∫ b dA_current`) exerts a spurious
+> ~4.7 % *tangential* surface-tension force under uniform normal pressure and
+> loads the corners — an artifact, since a non-penetration barrier depends only
+> on the normal gap. Rest area gives the physically-correct **normal-only**
+> consistent P2 load (tangential exactly 0, corners exactly 0 by integration),
+> the codim-IPC choice. So the round-4 audit's `∂E/∂x_i = ∫ b'·n̂·N_i dA` is
+> *exactly right for rest area* (constant `dA_rest`), and its flagged
+> "area-variation term" is deliberately **NOT** carried (it is the artifact).
+> **NEXT = rung 8c (isoparametric curved surface + `boundary_vertex_areas`
+> 6-node).** ⚠ **Rung 4 landed
 > via a TWO-CACHE design, not the in-place `ElementGeometry` generalization the
 > §3.3/§3.4 forward text below describes** — see the "★ RUNG 4 LANDED (design
 > delta)" note in §3.3: generalizing `ElementGeometry` in place would have forced
@@ -770,20 +784,41 @@ capture — the isoparametric-surface piece is deferred, §7).
      foundation is now complete and validated (forward + all four adjoint
      channels + dynamics mass); rung 8 builds consistent contact ON it.**
 8. **★ CONSISTENT-CONTACT RUNG (the isolated-rung decision — its own isolated rung on the
-   proven foundation).** The genuinely-consistent scheme, done once, properly:
-   **surface-integrated barrier `E=∫b(sd)dA` at face Gauss points** (gradient
-   distributed via P2 face shape functions) **+ isoparametric curved surface**
-   (project boundary midside nodes onto the true surface) **+
-   `boundary_vertex_areas` 6-node** (restores pressure readouts) — they share
-   the face-primitive machinery, so build them together. Requires a new
-   `#[non_exhaustive]` `ContactPair::Face` variant + downstream fixes to the
-   irrefutable `let Vertex{..}` matches in coupling; friction
-   reconciled with the face-distributed force (FD-gate `contact_fd.rs` /
-   `friction_*` here). Gate: uniform-pressure face → P2 load (corners ≈ 0) *by
-   integration*; a varying-`b(sd)` face (flat face on the curved indenter)
-   recovers the correct sub-face distribution; and #676 *local* patch mechanics
-   (not just net force) tighten. This is the "obsessively-perfect contacts" work
-   — isolated from the element bring-up so a failure localizes cleanly.
+   proven foundation).** SPLIT into **8a ✅ (plumbing) / 8b ✅ (face-barrier
+   physics) / 8c (curved surface + `boundary_vertex_areas` 6-node)**; face-friction
+   reconciliation deferred to a later named rung. The genuinely-consistent scheme,
+   done once, properly:
+   **surface-integrated barrier at face Gauss points** (gradient distributed via
+   P2 face shape functions) **+ isoparametric curved surface** (project boundary
+   midside nodes onto the true surface, 8c) **+ `boundary_vertex_areas` 6-node**
+   (restores pressure readouts, 8c) — they share the face-primitive machinery.
+   Requires a new `#[non_exhaustive]` `ContactPair::Face` variant + downstream
+   fixes to the irrefutable `let Vertex{..}` matches; friction reconciled with the
+   face-distributed force **(deferred — 8b ships frictionless, fail-loud-guarded)**.
+   Gate: uniform-pressure face → P2 load (corners ≈ 0) *by integration*; a
+   varying-`b(sd)` face (a tilted plane — varying gap, constant normal) recovers
+   the correct sub-face distribution; and #676 *local* patch mechanics (not just
+   net force) tighten. This is the "obsessively-perfect contacts" work — isolated
+   from the element bring-up so a failure localizes cleanly.
+
+   **★ RUNG 8a/8b LANDED (build-verified deltas):**
+   - **8a** added `ContactPair::Face { nodes:[VertexId;6], primitive_id, rest_area }`
+     + `#[non_exhaustive]` (measured blast radius = 38 fail-loud conversions across
+     16 files, not "only coupling"; `cf-sim-research` construct-only is safe).
+   - **8b** ships the barrier as **`E = A_rest · Σ_q ŵ_q b(sd(x_q))`, REST-area
+     weighted (NOT deformed area)** — a spike measured that `∫ b dA_current` exerts
+     a spurious ~4.7 % *tangential* surface-tension force and loads corners; rest
+     area gives the correct **normal-only** consistent P2 load. Delivered:
+     `Mesh::boundary_faces6()` (default `None`, `Some` on `Tet10Mesh`), the
+     `contact/face.rs` P2 primitive (shape fns + degree-2 triangle quadrature +
+     rest-area weight), `IpcRigidContact::active_pairs` branching Some→face /
+     None→per-vertex (Tet4 byte-identical), the `Face` arms of
+     energy/gradient/hessian, and a fail-loud frictionless guard. FD-gated: the
+     primitive gradient AND Hessian vs FD (`contact::face` unit tests), plus the
+     integrated Dirichlet-reaction JVP with face contact active vs a re-solve FD
+     (`tet10_face_contact.rs`). The gradient/Hessian are normal-only, so the block
+     is naturally PSD (no SPD projection). The `rung 8b` `∂E/∂x_i = ∫ b'·n̂·N_i dA_rest`
+     is exactly the round-4 audit formula for constant `dA_rest`.
 
    *(Interim note: between 3b and rung 8, Tet10 runs with per-vertex contact —
    correct net force, but `peak_contact_pressure` readouts NaN-drop midside
@@ -881,17 +916,20 @@ blast radius is in-crate only.
 
 **Consistent contact is rung 8, not a deferral (the isolated-rung decision).** It is a
 first-class rung of this plan — *sequenced after* the element foundation, not
-dropped. The round-2 "nodal lumping" shortcut was falsified (§3.5); the real
-work is the **surface-integrated barrier + isoparametric curved surface +
-`boundary_vertex_areas` 6-node**, built together on the proven foundation
-(§5 rung 8). Listed here only to record what rung 8 contains, not as a
-someday-maybe:
-- **Rung 8 = surface-integrated barrier `E=∫b(sd)dA` at face GPs** (makes
-  contact *forces* consistent — needed even for a straight-edged face on the
-  curved indenter, where `b(sd)` varies across the face) **+ curved surface**
-  (geometric curvature) **+ `boundary_vertex_areas` 6-node** (pressure
-  readouts) **+ a `#[non_exhaustive]` `ContactPair::Face` variant** + downstream
-  fixes + friction reconciliation. The "obsessively-perfect contacts" work.
+dropped. The round-2 "nodal lumping" shortcut was falsified (§3.5). Rung 8 splits
+into 8a ✅ / 8b ✅ / 8c, built on the proven foundation (§5 rung 8):
+- **Rung 8a ✅ / 8b ✅ = surface-integrated face barrier.** 8a = the
+  `#[non_exhaustive]` `ContactPair::Face` variant + downstream fail-loud fixes.
+  8b = the barrier `E = A_rest · Σ_q ŵ_q b(sd(x_q))`, **rest-area weighted** (a
+  spike falsified deformed-area weighting — it exerts a spurious ~4.7 %
+  tangential surface-tension force; rest area is normal-only, corners ≈ 0). Ships
+  **frictionless, fail-loud-guarded** (face-friction reconciliation is a deferred
+  later rung). See the §5-step-8 "RUNG 8a/8b LANDED" note.
+- **Rung 8c (next) = isoparametric curved surface** (project boundary midside
+  nodes onto the true surface; adds the curved-SDF `∂n̂/∂x` Hessian term the flat
+  scope defers) **+ `boundary_vertex_areas` 6-node** (restore the pressure
+  readouts that NaN-drop midsides in the interim). These share the face-primitive
+  machinery. The "obsessively-perfect contacts" work continues here.
 
 **Genuinely deferred (out of this plan entirely):**
 - **`fbar.rs` on Tet10 / mixed-u-p.** F-bar's single-GP premise breaks; if a

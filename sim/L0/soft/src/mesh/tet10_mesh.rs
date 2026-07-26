@@ -30,7 +30,10 @@
 //!   by construction. (The three-node boundary faces stay corner-only; the
 //!   six-node quadratic boundary faces are ladder rung 8, deferred.)
 
-use super::{Mesh, MeshAdjacency, QualityMetrics, TetId, VertexId, enrich::enrich_tet4_to_tet10};
+use super::{
+    Mesh, MeshAdjacency, QualityMetrics, TetId, VertexId, boundary_faces6_from_tet10,
+    enrich::enrich_tet4_to_tet10,
+};
 use crate::Vec3;
 use crate::material::NeoHookean;
 
@@ -61,6 +64,10 @@ pub struct Tet10Mesh {
     material_cache: Vec<NeoHookean>,
     interface_flags: Vec<bool>,
     boundary_faces: Vec<[VertexId; 3]>,
+    /// Six-node (P2) boundary faces, built from the ten-node connectivity
+    /// (rung 8b). Corner triples match `boundary_faces` one-for-one; the
+    /// three trailing midsides complete each `[c0,c1,c2,m01,m12,m02]` face.
+    boundary_faces6: Vec<[VertexId; 6]>,
 }
 
 impl Tet10Mesh {
@@ -108,6 +115,7 @@ impl Tet10Mesh {
             .collect();
 
         let enriched = enrich_tet4_to_tet10(mesh.positions(), &corner_tets);
+        let boundary_faces6 = boundary_faces6_from_tet10(&enriched.tets);
 
         Self {
             positions: enriched.positions,
@@ -118,6 +126,7 @@ impl Tet10Mesh {
             material_cache,
             interface_flags,
             boundary_faces,
+            boundary_faces6,
         }
     }
 
@@ -172,6 +181,10 @@ impl Mesh for Tet10Mesh {
 
     fn boundary_faces(&self) -> &[[VertexId; 3]] {
         &self.boundary_faces
+    }
+
+    fn boundary_faces6(&self) -> Option<&[[VertexId; 6]]> {
+        Some(&self.boundary_faces6)
     }
 
     // Mirror of `HandBuiltTetMesh::equals_structurally`: same vertex count,
@@ -305,6 +318,51 @@ mod tests {
         let tet4 = HandBuiltTetMesh::two_tet_shared_face(&canonical_field());
         for tet_id in 0..tet4.n_tets() as TetId {
             assert_eq!(tet4.tet_midside_nodes(tet_id), None);
+        }
+        // A linear mesh also exposes no six-node boundary faces.
+        assert!(tet4.boundary_faces6().is_none());
+    }
+
+    /// The six-node boundary faces' corner triples equal the three-node
+    /// `boundary_faces` one-for-one and in the same order (rung 8b builds them
+    /// with the identical winding + boundary cull), and each carries three
+    /// trailing midsides.
+    #[test]
+    fn boundary_faces6_corner_triples_match_boundary_faces() {
+        let cube = HandBuiltTetMesh::uniform_block(2, 0.1, &canonical_field());
+        let tet10 = Tet10Mesh::from_tet4(&cube);
+        let faces3 = tet10.boundary_faces();
+        let faces6 = tet10
+            .boundary_faces6()
+            .expect("Tet10Mesh surfaces 6-node faces");
+        assert_eq!(faces6.len(), faces3.len(), "same face count");
+        for (f6, f3) in faces6.iter().zip(faces3) {
+            assert_eq!(&[f6[0], f6[1], f6[2]], f3, "corner triple must match");
+        }
+        // A closed surface (cube boundary) has more than a handful of faces.
+        assert!(faces6.len() >= 12, "unexpectedly few boundary faces");
+    }
+
+    /// Oracle-matches-SUT: each six-node face's trailing midsides are the actual
+    /// edge midpoints of its edges `(c0,c1)`, `(c1,c2)`, `(c0,c2)` at rest, and
+    /// each midside id equals the owning tet's `tet_midside_nodes` entry for that
+    /// edge — the `[c0,c1,c2,m01,m12,m02]` order the face barrier relies on.
+    #[test]
+    fn boundary_faces6_midsides_are_edge_midpoints_in_canonical_order() {
+        let cube = HandBuiltTetMesh::uniform_block(2, 0.1, &canonical_field());
+        let tet10 = Tet10Mesh::from_tet4(&cube);
+        let pos = tet10.positions();
+        for f in tet10.boundary_faces6().expect("6-node faces") {
+            let [c0, c1, c2, m01, m12, m02] = *f;
+            let mid = |a: VertexId, b: VertexId| (pos[a as usize] + pos[b as usize]) * 0.5;
+            for (m, (a, b)) in [(m01, (c0, c1)), (m12, (c1, c2)), (m02, (c0, c2))] {
+                let got = pos[m as usize];
+                let expected = mid(a, b);
+                assert!(
+                    (got - expected).norm() < 1e-14,
+                    "midside {m} of edge ({a},{b}): got {got:?}, expected {expected:?}",
+                );
+            }
         }
     }
 }

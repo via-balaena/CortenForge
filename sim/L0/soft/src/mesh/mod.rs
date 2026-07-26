@@ -169,6 +169,27 @@ pub trait Mesh<M: Material = NeoHookean>: Send + Sync {
     /// exposed by reference for zero-copy access).
     fn boundary_faces(&self) -> &[[VertexId; 3]];
 
+    /// Six-node (P2) boundary faces for a quadratic
+    /// ([`Tet10`](crate::element::Tet10)) mesh, or `None` on a linear
+    /// (Tet4) mesh — the default (Tet10 ladder rung 8b).
+    ///
+    /// Each entry is one boundary face's six nodes in the canonical order
+    /// `[c0, c1, c2, m01, m12, m02]`: the three corners in the same
+    /// outward winding as [`Mesh::boundary_faces`], followed by the three
+    /// edge-midsides of edges `(c0,c1)`, `(c1,c2)`, `(c0,c2)` — the
+    /// `TET10_EDGE_NODES` low-index-first convention restricted to this
+    /// face. The corner triples (first three entries) match
+    /// [`Mesh::boundary_faces`] one-for-one and in the same order.
+    ///
+    /// The surface-integrated face barrier (rung 8b) consumes this to emit
+    /// [`ContactPair::Face`](crate::contact::ContactPair::Face) pairs; a
+    /// contact model's `active_pairs` branches on `Some` (face contact) vs
+    /// `None` (the per-vertex loop, Tet4 byte-identical). The default
+    /// `None` keeps every linear mesh on the per-vertex path.
+    fn boundary_faces6(&self) -> Option<&[[VertexId; 6]]> {
+        None
+    }
+
     /// Structural equality: two meshes are structurally equal when they
     /// share vertex count, tet count, and per-tet vertex indices (Ch 00
     /// §02 mesh claim 3).
@@ -302,6 +323,73 @@ pub(crate) fn boundary_faces_from_topology(tets: &[[VertexId; 4]]) -> Vec<[Verte
         .into_iter()
         .filter(|face| {
             let mut key = *face;
+            key.sort_unstable();
+            counts[&key] == 1
+        })
+        .collect()
+}
+
+/// Compute the six-node (P2) boundary-face cache that backs
+/// [`Mesh::boundary_faces6`] on a [`Tet10Mesh`], from its ten-node
+/// connectivity.
+///
+/// A sibling of [`boundary_faces_from_topology`]: it applies the exact
+/// same outward-winding face convention and sorted-corner-key count-of-1
+/// boundary cull to the four corner slots of each ten-node tet, so the
+/// corner triples it emits equal that function's three-node faces
+/// one-for-one and in the same order. Each boundary face additionally
+/// carries the three edge-midside nodes of its edges, looked up from the
+/// tet's midside slots via [`TET10_EDGE_NODES`](crate::element::TET10_EDGE_NODES),
+/// producing the canonical `[c0, c1, c2, m01, m12, m02]` order (corners in
+/// winding order; `m01`/`m12`/`m02` the midsides of edges `(c0,c1)`,
+/// `(c1,c2)`, `(c0,c2)`).
+#[must_use]
+pub(crate) fn boundary_faces6_from_tet10(tets: &[[VertexId; 10]]) -> Vec<[VertexId; 6]> {
+    // Per tet face: (winding-ordered LOCAL corner slots, LOCAL midside slots in
+    // the `[m01,m12,m02]` order). The corner slots mirror the three-node
+    // opposite-vertex convention in `boundary_faces_from_topology`; the midside
+    // slots (into the tet's `4 + k` positions) are the `TET10_EDGE_NODES`
+    // indices of the face edges `(c0,c1)`, `(c1,c2)`, `(c0,c2)` — precomputed
+    // from that table (`[(0,1),(1,2),(0,2),(0,3),(1,3),(2,3)] → 0..6`) so no
+    // per-edge lookup is needed:
+    //   opp v0: corners (1,2,3), edges (1,2)=1 (2,3)=5 (1,3)=4
+    //   opp v1: corners (0,3,2), edges (0,3)=3 (2,3)=5 (0,2)=2
+    //   opp v2: corners (0,1,3), edges (0,1)=0 (1,3)=4 (0,3)=3
+    //   opp v3: corners (0,2,1), edges (0,2)=2 (1,2)=1 (0,1)=0
+    const FACE_DEF: [([usize; 3], [usize; 3]); 4] = [
+        ([1, 2, 3], [1, 5, 4]),
+        ([0, 3, 2], [3, 5, 2]),
+        ([0, 1, 3], [0, 4, 3]),
+        ([0, 2, 1], [2, 1, 0]),
+    ];
+
+    let mut oriented: Vec<[VertexId; 6]> = Vec::with_capacity(tets.len() * 4);
+    for t in tets {
+        for (corners, mids) in FACE_DEF {
+            oriented.push([
+                t[corners[0]],
+                t[corners[1]],
+                t[corners[2]],
+                t[4 + mids[0]], // m01 — edge (c0, c1)
+                t[4 + mids[1]], // m12 — edge (c1, c2)
+                t[4 + mids[2]], // m02 — edge (c0, c2)
+            ]);
+        }
+    }
+
+    // Boundary cull on the sorted CORNER triple — identical key to the
+    // three-node builder, so the retained set matches it exactly.
+    let mut counts: HashMap<[VertexId; 3], u32> = HashMap::with_capacity(oriented.len());
+    for face in &oriented {
+        let mut key = [face[0], face[1], face[2]];
+        key.sort_unstable();
+        *counts.entry(key).or_insert(0) += 1;
+    }
+
+    oriented
+        .into_iter()
+        .filter(|face| {
+            let mut key = [face[0], face[1], face[2]];
             key.sort_unstable();
             counts[&key] == 1
         })

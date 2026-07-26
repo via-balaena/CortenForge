@@ -14,6 +14,7 @@ use crate::Vec3;
 use crate::mesh::VertexId;
 use nalgebra::Matrix3;
 
+pub mod face;
 pub mod friction;
 pub mod ipc;
 pub mod null;
@@ -56,18 +57,15 @@ pub enum ContactPair {
         primitive_id: u32,
     },
     /// A P2 (6-node) boundary face of a Tet10 mesh contacting a rigid
-    /// primitive — the surface-integrated barrier `E = ∫ b(sd) dA`
-    /// sampled at the face's Gauss points (rung 8). Emitted only by a
-    /// contact model's `active_pairs` on a mesh that exposes 6-node
-    /// boundary faces; the barrier gradient distributes over all six
-    /// nodes via the P2 face shape functions and the Hessian couples
-    /// them (both [`ContactGradient`] and [`ContactHessian`] are already
-    /// sparse-cross-node capable, so no representation change is needed).
-    ///
-    /// The face-barrier *physics* lands in rung 8b — until a producer
-    /// emits this variant, every consumer's `Face` arm is an unreachable
-    /// fail-loud (this variant is the rung-8a plumbing that isolates the
-    /// downstream break from that physics).
+    /// primitive — the surface-integrated barrier `E = A_rest · Σ_q ŵ_q
+    /// b(sd(x_q))` sampled at the face's Gauss points, weighted by the
+    /// face's rest (reference) area (rung 8b). Emitted only by a contact
+    /// model's `active_pairs` on a mesh that exposes 6-node boundary
+    /// faces; the barrier gradient distributes over all six nodes via the
+    /// P2 face shape functions (purely along the SDF normal) and the
+    /// Hessian couples them (both [`ContactGradient`] and
+    /// [`ContactHessian`] are already sparse-cross-node capable, so no
+    /// representation change is needed).
     Face {
         /// The six P2 face nodes in canonical order: the three corners
         /// `[c0, c1, c2]` followed by the three edge-midsides
@@ -75,12 +73,19 @@ pub enum ContactPair {
         /// `(c1,c2)`, `(c0,c2)`, matching the element's `TET10_EDGE_NODES`
         /// low-index-first convention (edge `(0,2)`, never `(2,0)`)
         /// restricted to this boundary face. Rung 8b's face P2 shape
-        /// functions `N_{3+i}` must index the same edge order (an
+        /// functions `N_{3+i}` index the same edge order (an
         /// oracle-matches-SUT conformance test pins it).
         nodes: [VertexId; 6],
         /// Index of the rigid primitive into the contact model's
         /// primitive list — as for [`Vertex`](Self::Vertex).
         primitive_id: u32,
+        /// The face's **rest (reference) area** — the constant weight
+        /// `A_rest` on the surface-integrated barrier. Computed by the
+        /// producer's `active_pairs` from the rest mesh positions (the
+        /// straight-edged rest face's corner-triangle area), so the
+        /// barrier is a function of the normal gap only and exerts no
+        /// spurious tangential (deformed-area) force.
+        rest_area: f64,
     },
 }
 
