@@ -36,20 +36,36 @@
 //!
 //! # Gradient and Hessian
 //!
-//! With `n̂ = ∂sd/∂x` (the rigid SDF normal — evaluated, not differentiated: this
-//! primitive shares the per-vertex path's documented flat-primitive scope, so the
-//! curved-SDF `∂n̂/∂x` Hessian term is deferred to the curved surface, rung 8c),
-//! and κ folded into the barrier scalars:
+//! With `n̂ = ∂sd/∂x` the rigid SDF normal, `∇²sd = ∂n̂/∂x` its curvature
+//! ([`Sdf::hessian`](cf_geometry::Sdf::hessian)), and κ folded into the barrier
+//! scalars:
 //!
 //! ```text
 //!     ∂E/∂x_i = A_rest · Σ_q ŵ_q  b'(sd) N_i n̂
-//!     H_{ij}  = A_rest · Σ_q ŵ_q  b''(sd) N_i N_j (n̂⊗n̂)
+//!     H_{ij}  = A_rest · Σ_q ŵ_q  N_i N_j ( b''(sd) n̂⊗n̂ + b'(sd) ∇²sd )
 //! ```
 //!
-//! Both are normal-only; the Hessian block set is the barrier's rank-1
-//! `n̂⊗n̂` structure scaled by the PSD shape-function outer product `N_i N_j`, so
-//! it is PSD wherever `b'' ≥ 0` (the convex barrier support) — no SPD projection
-//! needed, matching the per-vertex path.
+//! The **gradient is normal-only** (the rest-area weight is a per-face constant,
+//! so no tangential/area-variation term). The **Hessian carries the curved-SDF
+//! `∂n̂/∂x` term** `b'·∇²sd` (rung 8c) — the contact normal turns as the sampled
+//! face point slides over a *curved* rigid primitive, so the barrier's tangent
+//! must differentiate `n̂`, not just its magnitude. For a **plane** `∇²sd = 0` and
+//! this reduces to the rank-1 `b''·n̂⊗n̂` form byte-for-byte (the pre-8c scope). For
+//! a **sphere** `∇²sd = (I − n̂n̂ᵀ)/‖p − c‖`.
+//!
+//! **PSD note.** In the engaged band `b' < 0` (the barrier pushes outward) while
+//! `∇²sd` is PSD (a tangential projector, positive-scaled), so `b'·∇²sd` is
+//! *negative*-semidefinite in the tangent plane — the per-GP barrier material
+//! `b''·n̂⊗n̂ + b'·∇²sd` is **indefinite** (positive `b''` along `n̂`, negative
+//! `b'/‖p−c‖` transverse). This is the *true* tangent (the exact `d(gradient)/dx`
+//! the differentiable adjoint consumes), matching what
+//! [`PenaltyRigidContact`](super::PenaltyRigidContact) already ships via
+//! [`Sdf::hessian`](cf_geometry::Sdf::hessian) — **no SPD projection**. The
+//! assembled global tangent (material stiffness + contact) stays PD in a realistic
+//! contact config because the material stiffness dominates the transverse
+//! directions; forward robustness rests on the solver's `is_llt` factor check, and
+//! an eigenvalue projection is a named forward-only follow-on if a future
+//! high-κ / compliant config ever loses global PD.
 
 use crate::Vec3;
 use nalgebra::Matrix3;
@@ -65,6 +81,11 @@ use nalgebra::Matrix3;
 pub(crate) struct FaceBarrierEval {
     /// Outward rigid-primitive normal `n̂ = ∂sd/∂x` at the point.
     pub normal: Vec3,
+    /// Curvature of the SDF, `∇²sd = ∂n̂/∂x` (the rigid primitive's
+    /// [`Sdf::hessian`](cf_geometry::Sdf::hessian)) — `0` for a plane,
+    /// `(I − n̂n̂ᵀ)/‖p − c‖` for a sphere. Enters only the Hessian's curved-normal
+    /// term `b'·∇²sd`; the gradient is normal-only and does not read it.
+    pub curvature: Matrix3<f64>,
     /// `κ · b(sd)` — barrier energy density.
     pub b: f64,
     /// `κ · b'(sd)` — first derivative w.r.t. signed distance.
@@ -157,13 +178,17 @@ pub(crate) fn face_hessian<F: Fn(Vec3) -> FaceBarrierEval>(
     for &(u, v, w) in &FACE_GP {
         let n = face_shape(u, v);
         let be = eval(face_point(nodes, &n));
-        let nn = be.normal * be.normal.transpose();
-        let s = rest_area * w * be.b_dd;
+        // Per-Gauss-point barrier material `∂²b/∂x²` (the 3×3 shared by every
+        // node pair, before the `N_i N_j` shape weighting): the rank-1
+        // `b''·n̂⊗n̂` PLUS the curved-normal term `b'·∇²sd` (`∂n̂/∂x`, rung 8c).
+        // `∇²sd = 0` for a plane → this is the pre-8c `b''·n̂⊗n̂`.
+        let material = be.b_dd * (be.normal * be.normal.transpose()) + be.b_d * be.curvature;
+        let s = rest_area * w;
         // `h_row` is block-row i (paired with N_i); `h_ij` is block (i,j)
-        // (paired with N_j) — the rank-1 `n̂⊗n̂` scaled by `N_i N_j`.
+        // (paired with N_j) — the per-GP material scaled by `N_i N_j`.
         for (h_row, &ni) in h.iter_mut().zip(&n) {
             for (h_ij, &nj) in h_row.iter_mut().zip(&n) {
-                *h_ij += (s * ni * nj) * nn;
+                *h_ij += (s * ni * nj) * material;
             }
         }
     }
@@ -230,6 +255,7 @@ mod tests {
         ];
         let eval = |_x: Vec3| FaceBarrierEval {
             normal: Vec3::new(0.0, 0.0, 1.0),
+            curvature: Matrix3::zeros(),
             b: 3.0,
             b_d: -7.0,
             b_dd: 5.0,
@@ -322,6 +348,7 @@ mod tests {
         // Shipped rest-area gradient: purely normal.
         let g_rest = face_gradient(&nodes, rest_area, |x: Vec3| FaceBarrierEval {
             normal: Vec3::new(0.0, 0.0, 1.0),
+            curvature: Matrix3::zeros(),
             b: b(x.z),
             b_d: b_d(x.z),
             b_dd: 0.0,
@@ -486,6 +513,7 @@ mod tests {
             if sd >= d_hat {
                 return FaceBarrierEval {
                     normal: n,
+                    curvature: Matrix3::zeros(),
                     b: 0.0,
                     b_d: 0.0,
                     b_dd: 0.0,
@@ -496,10 +524,165 @@ mod tests {
             let ln = (d / d_hat).ln();
             FaceBarrierEval {
                 normal: n,
+                curvature: Matrix3::zeros(), // plane: ∇²sd = 0
                 b: kappa * (-(r * r) * ln),
                 b_d: kappa * (-2.0 * r * ln - r * r / d),
                 b_dd: kappa * (r * r / (d * d) - 4.0 * r / d - 2.0 * ln),
             }
         }
+    }
+
+    /// A sphere barrier: centre `c`, radius `radius`, the real IPC log-barrier —
+    /// the normal `n̂ = (x−c)/‖x−c‖` and curvature `∇²sd = (I − n̂n̂ᵀ)/‖x−c‖` both
+    /// vary across the face, so this exercises the curved-normal Hessian term
+    /// `b'·∇²sd` (rung 8c). Mirrors `SphereSdf` + the IPC barrier.
+    fn sphere_barrier(c: Vec3, radius: f64) -> impl Fn(Vec3) -> FaceBarrierEval {
+        let d_hat = 0.05_f64;
+        let kappa = 1.0e4_f64;
+        move |x: Vec3| {
+            let dvec = x - c;
+            let rnorm = dvec.norm();
+            let nhat = dvec / rnorm;
+            let curvature = (Matrix3::identity() - nhat * nhat.transpose()) / rnorm;
+            let sd = rnorm - radius;
+            if sd >= d_hat {
+                return FaceBarrierEval {
+                    normal: nhat,
+                    curvature,
+                    b: 0.0,
+                    b_d: 0.0,
+                    b_dd: 0.0,
+                };
+            }
+            let d = sd.max(d_hat * 1e-6);
+            let r = d - d_hat;
+            let ln = (d / d_hat).ln();
+            FaceBarrierEval {
+                normal: nhat,
+                curvature,
+                b: kappa * (-(r * r) * ln),
+                b_d: kappa * (-2.0 * r * ln - r * r / d),
+                b_dd: kappa * (r * r / (d * d) - 4.0 * r / d - 2.0 * ln),
+            }
+        }
+    }
+
+    /// A P2 face pressed against a sphere from outside: corners on a small
+    /// triangle over the sphere's apex, all within the barrier band, so `n̂` and
+    /// `∇²sd` genuinely vary across the face.
+    fn sphere_indent_face(c: Vec3, radius: f64) -> [Vec3; 6] {
+        let apex = c + Vec3::new(0.0, 0.0, radius);
+        let c0 = apex + Vec3::new(-0.010, -0.006, 0.020);
+        let c1 = apex + Vec3::new(0.012, -0.004, 0.028);
+        let c2 = apex + Vec3::new(-0.002, 0.011, 0.024);
+        [
+            c0,
+            c1,
+            c2,
+            (c0 + c1) * 0.5,
+            (c1 + c2) * 0.5,
+            (c0 + c2) * 0.5,
+        ]
+    }
+
+    /// **Rung 8c — the curved-normal Hessian gate.** On a face contacting a
+    /// genuinely CURVED (sphere) primitive, the analytic Hessian (now carrying
+    /// `b'·∇²sd`) matches a central-difference FD of the gradient. A wrong or
+    /// dropped curvature term fails this — and the pre-8c flat Hessian (only
+    /// `b''·n̂⊗n̂`) does not pass here (asserted below), so the gate is
+    /// non-vacuous.
+    #[test]
+    fn curved_hessian_matches_fd_gradient_sphere() {
+        let c = Vec3::new(0.05, 0.03, -0.10);
+        let radius = 0.12;
+        let nodes = sphere_indent_face(c, radius);
+        let eval = sphere_barrier(c, radius);
+        let rest_area = 0.5 * (nodes[1] - nodes[0]).cross(&(nodes[2] - nodes[0])).norm();
+
+        let analytic = face_hessian(&nodes, rest_area, &eval);
+        let eps = 1e-7;
+        let mut max_diff = 0.0f64;
+        let mut max_mag = 0.0f64;
+        for j in 0..6 {
+            for e in 0..3 {
+                let mut np = nodes;
+                np[j][e] += eps;
+                let gp = face_gradient(&np, rest_area, &eval);
+                let mut nm = nodes;
+                nm[j][e] -= eps;
+                let gm = face_gradient(&nm, rest_area, &eval);
+                for i in 0..6 {
+                    for d in 0..3 {
+                        let fd = (gp[i][d] - gm[i][d]) / (2.0 * eps);
+                        let a = analytic[i][j][(d, e)];
+                        assert!(
+                            a.is_finite() && fd.is_finite(),
+                            "H[{i}][{j}]({d},{e}) non-finite: analytic {a}, fd {fd}",
+                        );
+                        max_diff = max_diff.max((a - fd).abs());
+                        max_mag = max_mag.max(a.abs());
+                    }
+                }
+            }
+        }
+        assert!(
+            max_diff < 1e-5 * max_mag,
+            "curved Hessian must match FD: max|H-FD| = {max_diff:e} vs max|H| = {max_mag:e}",
+        );
+
+        // Non-vacuity: the flat (b''·n̂⊗n̂ only) Hessian MISSES the FD by ≫ the
+        // curved residual — i.e. the `b'·∇²sd` term is non-negligible here.
+        let mut flat_diff = 0.0f64;
+        let mut flat = [[Matrix3::zeros(); 6]; 6];
+        for &(u, v, w) in &FACE_GP {
+            let nsh = face_shape(u, v);
+            let be = eval(face_point(&nodes, &nsh));
+            let nn = be.normal * be.normal.transpose();
+            let s = rest_area * w * be.b_dd;
+            for (fr, &ni) in flat.iter_mut().zip(&nsh) {
+                for (fij, &nj) in fr.iter_mut().zip(&nsh) {
+                    *fij += (s * ni * nj) * nn;
+                }
+            }
+        }
+        for j in 0..6 {
+            for e in 0..3 {
+                let mut np = nodes;
+                np[j][e] += eps;
+                let gp = face_gradient(&np, rest_area, &eval);
+                let mut nm = nodes;
+                nm[j][e] -= eps;
+                let gm = face_gradient(&nm, rest_area, &eval);
+                for i in 0..6 {
+                    for d in 0..3 {
+                        let fd = (gp[i][d] - gm[i][d]) / (2.0 * eps);
+                        flat_diff = flat_diff.max((flat[i][j][(d, e)] - fd).abs());
+                    }
+                }
+            }
+        }
+        assert!(
+            flat_diff > 100.0 * max_diff,
+            "flat Hessian must miss the curvature term (flat_diff {flat_diff:e} vs curved {max_diff:e})",
+        );
+    }
+
+    /// The per-Gauss-point barrier material `b''·n̂⊗n̂ + b'·∇²sd` is genuinely
+    /// INDEFINITE in the engaged band on a sphere (positive along `n̂`, negative
+    /// transverse) — documenting the true tangent 8c ships (no SPD projection).
+    #[test]
+    fn curved_barrier_material_is_indefinite_on_sphere() {
+        let c = Vec3::new(0.05, 0.03, -0.10);
+        let radius = 0.12;
+        let nodes = sphere_indent_face(c, radius);
+        let eval = sphere_barrier(c, radius);
+        let mid = face_shape(1.0 / 3.0, 1.0 / 3.0);
+        let be = eval(face_point(&nodes, &mid));
+        let material = be.b_dd * (be.normal * be.normal.transpose()) + be.b_d * be.curvature;
+        let eigs = material.symmetric_eigenvalues();
+        assert!(
+            eigs.min() < 0.0 && eigs.max() > 0.0,
+            "engaged curved barrier material must be indefinite, eigs = {eigs:?}",
+        );
     }
 }

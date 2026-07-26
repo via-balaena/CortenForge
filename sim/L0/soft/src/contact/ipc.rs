@@ -210,15 +210,22 @@ impl IpcRigidContact {
         move |x: Vec3| {
             let p = Point3::from(x);
             let normal = prim.grad(p);
+            // Curved-SDF term `∇²sd = ∂n̂/∂x` (rung 8c) — `0` for a plane, so the
+            // face Hessian reduces to the pre-8c `b''·n̂⊗n̂`. Cheap to sample even
+            // for an inactive point; the Hessian scales it by `b'`, which is `0`
+            // there, so it costs nothing.
+            let curvature = prim.hessian(p);
             self.barrier(prim.eval(p)).map_or_else(
                 || FaceBarrierEval {
                     normal,
+                    curvature,
                     b: 0.0,
                     b_d: 0.0,
                     b_dd: 0.0,
                 },
                 |c| FaceBarrierEval {
                     normal,
+                    curvature,
                     b: c.energy,
                     b_d: c.d_energy_d_sd,
                     b_dd: c.d2_energy_d_sd2,
@@ -300,9 +307,19 @@ impl ContactModel for IpcRigidContact {
                 let prim = &self.primitives[*primitive_id as usize];
                 let sd = prim.eval(p);
                 self.barrier(sd).map_or_else(ContactHessian::default, |c| {
-                    // Rank-1 SPD block κ·b''·n̂⊗n̂ (plane: ∂²sd/∂x² = 0, b'' > 0 on (0,d̂)).
+                    // ∂(g_v)/∂x_v = b''·n̂n̂ᵀ + b'·∂n̂/∂x_v. The first term is the
+                    // rank-1 barrier block; the second is the GEOMETRIC stiffness —
+                    // as the vertex slides over a CURVED primitive its contact
+                    // normal turns, `∂n̂/∂x_v = ∇²sd` ([`Sdf::hessian`]). `∇²sd = 0`
+                    // for a plane (constant normal) → the historical `b''·n̂n̂ᵀ`;
+                    // for a sphere it adds `b'·∇²sd` (rung 8c — reconciled with the
+                    // `PenaltyRigidContact` vertex path, which already carries it).
+                    // Indefinite in the band (`b' < 0`, `∇²sd` PSD) — the true
+                    // tangent the differentiable adjoint needs; the global tangent
+                    // stays PD via material stiffness.
                     let n = prim.grad(p);
-                    let block: Matrix3<f64> = c.d2_energy_d_sd2 * (n * n.transpose());
+                    let block: Matrix3<f64> =
+                        c.d2_energy_d_sd2 * (n * n.transpose()) + c.d_energy_d_sd * prim.hessian(p);
                     ContactHessian {
                         contributions: vec![(*vertex_id, *vertex_id, block)],
                     }
@@ -363,28 +380,55 @@ impl ContactModel for IpcRigidContact {
         let prim = &self.primitives[primitive_id as usize];
         let sd = prim.eval(p);
         self.barrier(sd).map_or_else(ContactGradient::default, |c| {
-            // Under an infinitesimal rigid motion (spatial twist `(ω, v)`) of the
-            // primitive the normal rotates `δn̂ = ω×n̂` and `sd = p·n̂ − offset`
-            // changes by `∂sd/∂s = p·δn̂ − v·n̂`, so the per-vertex residual
-            // derivative is `d²E/dsd²·(∂sd/∂s)·n̂ + (dE/dsd)·δn̂` (`d²E/dsd² = κ·b''`).
-            // The direction term vanishes for a pure translation (`ω = 0`),
-            // recovering `κ·b''·(−n̂·dir)·n̂` exactly.
-            //
-            // FLAT-PRIMITIVE scope (deferred for IPC): this drops the curved-primitive
-            // `−H·u` curvature term (and the dual `dE·H` in `hessian`) that
-            // `PenaltyRigidContact` carries via [`Sdf::hessian`] — exact for a plane
-            // (`H = 0`) but ~0.7% off for a sphere. The differentiated keystone path uses
-            // the penalty contact; lift the same two terms here when IPC is differentiated
-            // through a curved primitive.
+            // Under an infinitesimal rigid motion (spatial twist `(ω, v)`; the
+            // primitive's velocity at the fixed world point `p` is `u = v + ω×p`)
+            // the per-vertex residual derivative is
+            // `d²E/dsd²·(∂sd/∂s)·n̂ + (dE/dsd)·δn̂` (`d²E/dsd² = κ·b''`), with
+            //   `∂sd/∂s = p·(ω×n̂) − v·n̂`   (= `−u·n̂`)
+            //   `δn̂     = ω×n̂ − H·u`        (`H = ∇²sd`, the [`Sdf::hessian`])
+            // The normal both ROTATES with the primitive (`ω×n̂`) and CONVECTS as
+            // the contact point slides over a CURVED primitive (`−H·u`, rung 8c —
+            // reconciled with `PenaltyRigidContact`). For a PLANE `H = 0` and a
+            // pure translation `ω = 0`, recovering `κ·b''·(−n̂·dir)·n̂` exactly.
             let n = prim.grad(p);
-            let dn = twist.angular.cross(&n);
-            let dsd = p.coords.dot(&dn) - twist.linear.dot(&n);
+            let omega_x_n = twist.angular.cross(&n);
+            let dsd = p.coords.dot(&omega_x_n) - twist.linear.dot(&n);
+            let u = twist.linear + twist.angular.cross(&p.coords);
+            let dn = omega_x_n - prim.hessian(p) * u;
             ContactGradient {
                 contributions: vec![(
                     vertex_id,
                     c.d2_energy_d_sd2 * dsd * n + c.d_energy_d_sd * dn,
                 )],
             }
+        })
+    }
+
+    fn normal_curvature(&self, pair: &ContactPair, positions: &[Vec3]) -> Matrix3<f64> {
+        let ContactPair::Vertex {
+            vertex_id,
+            primitive_id,
+        } = pair
+        else {
+            // A `Face` pair only reaches `normal_curvature` through the friction
+            // path, which is frictionless-guarded (fail-loud) for face contact
+            // (rung 8b) — so this is unreachable in the current wiring. Face
+            // friction (with its own face normal-curvature) is a deferred rung.
+            unreachable!(
+                "ContactPair::Face normal_curvature is unreachable (face contact is \
+                 frictionless-guarded); face-friction reconciliation is a deferred rung"
+            )
+        };
+        // The curvature of the contact-FORCE direction `∂n̂/∂x_v` for
+        // `n̂ = force.normalize() = sign(dE/dsd)·n̂_sdf`, so `∂n̂/∂x_v =
+        // sign(dE/dsd)·∇²sd`. Same `∇²sd` the Hessian folds into `b'·∇²sd`; the
+        // sign is load-bearing because the friction normal-rotation Jacobian
+        // chains w.r.t. that exact force direction (rung 8c — matches
+        // `PenaltyRigidContact::normal_curvature`). Zero off the active band.
+        let p = Point3::from(positions[*vertex_id as usize]);
+        let prim = &self.primitives[*primitive_id as usize];
+        self.barrier(prim.eval(p)).map_or_else(Matrix3::zeros, |c| {
+            c.d_energy_d_sd.signum() * prim.hessian(p)
         })
     }
 }
@@ -494,5 +538,183 @@ mod tests {
         let face = [0, 1, 2, 3, 4, 5];
         let a = IpcRigidContact::face_rest_area(&face, &pos);
         assert!((a - 6.0).abs() < 1e-14, "expected triangle area 6, got {a}");
+    }
+
+    // ---- Rung 8c: the reconciled curved vertex path (Hessian / pose /
+    // normal_curvature) FD-gated directly on a sphere, so no lifted `∇²sd` term
+    // ships unverified. `∇²sd = 0` for a plane makes each a `+0`, so these gate
+    // exactly the new curved contribution. ----
+
+    use crate::sdf_bridge::{SphereSdf, TranslatedSdf};
+
+    const SPHERE_R: f64 = 0.12;
+    const SP_KAPPA: f64 = 1.0e4;
+    const SP_DHAT: f64 = 0.05;
+
+    /// A vertex off-axis over a sphere at `centre`, at a gap inside the band, so
+    /// `n̂` and `∇²sd` are non-trivial (off-diagonal `∇²sd`).
+    fn sphere_vertex(centre: Vec3) -> Vec3 {
+        centre + Vec3::new(0.018, -0.011, SPHERE_R + 0.020)
+    }
+
+    /// IPC vertex Hessian on a sphere matches a central FD of its gradient — the
+    /// gate on the lifted `b'·∇²sd` term. Non-vacuous: also asserts the flat
+    /// (`b''·n̂n̂ᵀ` only) block misses the FD by far more than the full block.
+    // Conventional single-letter names for the geometry/FD loop (vertex `v`,
+    // Hessian `h`, normal `n`, perturbed `vp`/`vm`, axes `d`/`e`) read clearest;
+    // renaming them would obscure the finite-difference structure.
+    #[allow(clippy::many_single_char_names)]
+    #[test]
+    fn vertex_hessian_matches_fd_on_sphere() {
+        let contact =
+            IpcRigidContact::with_params(vec![SphereSdf { radius: SPHERE_R }], SP_KAPPA, SP_DHAT);
+        let v = sphere_vertex(Vec3::zeros());
+        let pair = ContactPair::Vertex {
+            vertex_id: 0,
+            primitive_id: 0,
+        };
+        let grad_force = |x: Vec3| -> Vec3 { contact.gradient(&pair, &[x]).contributions[0].1 };
+        let h = contact.hessian(&pair, &[v]).contributions[0].2;
+        let eps = 1e-7;
+        let mut max_diff = 0.0f64;
+        let mut max_mag = 0.0f64;
+        for e in 0..3 {
+            let (mut vp, mut vm) = (v, v);
+            vp[e] += eps;
+            vm[e] -= eps;
+            let fd = (grad_force(vp) - grad_force(vm)) / (2.0 * eps);
+            for d in 0..3 {
+                assert!(h[(d, e)].is_finite() && fd[d].is_finite());
+                max_diff = max_diff.max((h[(d, e)] - fd[d]).abs());
+                max_mag = max_mag.max(h[(d, e)].abs());
+            }
+        }
+        assert!(
+            max_diff < 1e-5 * max_mag,
+            "IPC vertex Hessian on a sphere must match FD: {max_diff:e} vs {max_mag:e}",
+        );
+        // Non-vacuity: the block is INDEFINITE (a negative eigenvalue). The flat
+        // `b''·n̂n̂ᵀ` term is PSD rank-1 and can NEVER be indefinite, so a negative
+        // eigenvalue proves the curved `b'·∇²sd` term (`b' < 0`, `∇²sd` PSD) is
+        // present and non-negligible.
+        let eigs = h.symmetric_eigenvalues();
+        assert!(
+            eigs.min() < 0.0,
+            "curved vertex Hessian must be indefinite (flat n̂n̂ᵀ is PSD), eigs = {eigs:?}",
+        );
+    }
+
+    /// IPC vertex pose derivative (translation twist) matches a central FD of the
+    /// residual under translating the sphere — gates the lifted `−H·u` term.
+    #[test]
+    fn vertex_pose_derivative_matches_fd_on_sphere_translation() {
+        let centre = Vec3::new(0.0, 0.0, 0.0);
+        let v = sphere_vertex(centre);
+        let dir = Vec3::new(0.4, -0.6, 0.7).normalize();
+        let sphere = |offset: Vec3| TranslatedSdf {
+            inner: SphereSdf { radius: SPHERE_R },
+            offset,
+        };
+        let contact = IpcRigidContact::with_params(vec![sphere(centre)], SP_KAPPA, SP_DHAT);
+        let pair = ContactPair::Vertex {
+            vertex_id: 0,
+            primitive_id: 0,
+        };
+        // Analytic: residual sensitivity to a pure translation of the primitive.
+        let an = contact
+            .pose_residual_derivative(&pair, &[v], RigidTwist::translation(dir))
+            .contributions[0]
+            .1;
+        // FD: translate the sphere offset by ±ε·dir, re-read the residual (gradient).
+        let eps = 1e-7;
+        let residual = |offset: Vec3| -> Vec3 {
+            IpcRigidContact::with_params(vec![sphere(offset)], SP_KAPPA, SP_DHAT)
+                .gradient(&pair, &[v])
+                .contributions[0]
+                .1
+        };
+        let fd = (residual(centre + eps * dir) - residual(centre - eps * dir)) / (2.0 * eps);
+        let diff = (an - fd).norm();
+        let mag = an.norm().max(fd.norm());
+        assert!(
+            diff < 1e-5 * mag.max(1e-6),
+            "IPC vertex pose derivative on a sphere must match FD: {diff:e} vs mag {mag:e}",
+        );
+    }
+
+    /// IPC `normal_curvature` on a sphere equals `∂(force.normalize())/∂x_v` by
+    /// FD — gates the overridden `sign(b')·∇²sd` (was the default zeros).
+    #[test]
+    fn vertex_normal_curvature_matches_fd_on_sphere() {
+        let contact =
+            IpcRigidContact::with_params(vec![SphereSdf { radius: SPHERE_R }], SP_KAPPA, SP_DHAT);
+        let v = sphere_vertex(Vec3::zeros());
+        let pair = ContactPair::Vertex {
+            vertex_id: 0,
+            primitive_id: 0,
+        };
+        let force_dir =
+            |x: Vec3| -> Vec3 { contact.gradient(&pair, &[x]).contributions[0].1.normalize() };
+        let c = contact.normal_curvature(&pair, &[v]);
+        let eps = 1e-7;
+        let mut max_diff = 0.0f64;
+        let mut max_mag = 0.0f64;
+        for e in 0..3 {
+            let (mut vp, mut vm) = (v, v);
+            vp[e] += eps;
+            vm[e] -= eps;
+            let fd = (force_dir(vp) - force_dir(vm)) / (2.0 * eps);
+            for d in 0..3 {
+                max_diff = max_diff.max((c[(d, e)] - fd[d]).abs());
+                max_mag = max_mag.max(c[(d, e)].abs());
+            }
+        }
+        assert!(
+            max_diff < 1e-5 * max_mag.max(1e-6),
+            "IPC normal_curvature on a sphere must match FD: {max_diff:e} vs {max_mag:e}",
+        );
+        // And it is non-zero (was the default zeros before 8c).
+        assert!(
+            max_mag > 1.0,
+            "normal_curvature must be non-trivial, got {max_mag:e}"
+        );
+    }
+
+    /// A PLANE keeps every curved term at exactly `∇²sd = 0` — the pre-8c path,
+    /// bit-for-bit. `normal_curvature` is the zero matrix; the Hessian is the
+    /// pure rank-1 `b''·n̂n̂ᵀ`.
+    #[test]
+    fn plane_curved_terms_are_exactly_zero() {
+        let plane = super::super::rigid::RigidPlane::new(Vec3::new(0.0, 0.0, 1.0), 0.0);
+        let contact = IpcRigidContact::with_params(vec![plane], SP_KAPPA, SP_DHAT);
+        let v = Vec3::new(0.01, -0.02, 0.4 * SP_DHAT); // inside the band above the plane
+        let pair = ContactPair::Vertex {
+            vertex_id: 0,
+            primitive_id: 0,
+        };
+        let nc = contact.normal_curvature(&pair, &[v]);
+        assert_eq!(
+            nc,
+            Matrix3::zeros(),
+            "plane normal_curvature must be exactly zero"
+        );
+        // With the curved term at exactly `∇²sd = 0`, the Hessian is the pure
+        // rank-1 `b''·n̂n̂ᵀ` with `n̂ = ẑ` — i.e. `diag(0, 0, h_zz)`. Every off-`z`
+        // entry must be BIT-exactly zero (a leaked curvature term would perturb
+        // them); `h_zz` is the only non-zero entry.
+        let h = contact.hessian(&pair, &[v]).contributions[0].2;
+        for d in 0..3 {
+            for e in 0..3 {
+                if d == 2 && e == 2 {
+                    assert!(h[(2, 2)] > 0.0, "b''·n̂n̂ᵀ z-block must be positive");
+                } else {
+                    assert_eq!(
+                        h[(d, e)].to_bits(),
+                        0.0_f64.to_bits(),
+                        "plane Hessian off-z entry ({d},{e}) must be exactly zero",
+                    );
+                }
+            }
+        }
     }
 }

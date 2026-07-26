@@ -34,8 +34,31 @@
 > Because `dA_rest` is a per-face constant, `∂E/∂x_i = A_rest · Σ_q ŵ_q b'·N_i n̂`
 > is purely normal — the deformed-area gradient's extra area-variation term
 > (`∝ b · ∂(dA)/∂x`) is exactly the artifact, and is deliberately **NOT** carried.
-> **NEXT = rung 8c (isoparametric curved surface + `boundary_vertex_areas`
-> 6-node).** ⚠ **Rung 4 landed
+> **★ RUNG 8c LANDED (curved-SDF `∂n̂/∂x` Hessian term):** the flat-primitive
+> scope's dropped curvature term `b'·∇²sd` (the rigid primitive's `Sdf::hessian`)
+> is now carried in the IPC face barrier Hessian AND reconciled into the IPC
+> per-vertex path (Hessian `dE·∇²sd`, pose `−H·u`,
+> `normal_curvature = sign(b')·∇²sd`) — matching what `PenaltyRigidContact` already
+> shipped. The term is INDEFINITE (the true tangent the differentiable adjoint
+> needs; no SPD projection — the assembled global tangent stays PD via material
+> stiffness), FD-gated on a genuinely curved (sphere) indenter (unit + the sphere
+> reaction-JVP that 8b's plane could not exercise), and a plane keeps every curved
+> term at exactly `∇²sd = 0` (plane/Tet4 byte-identical). **The forward residual is
+> curvature-free, so this does NOT change the forward patch or the #676 RATIO — it
+> makes the differentiable tangent/adjoint exact through curved rigid contact (the
+> co-design gradient) and speeds Newton.** ⚠ **Scoping correction (build-time
+> finding): the plan CONFLATED two orthogonal curvatures.** Piece 1 (this rung) is
+> the *rigid* SDF's `∇²sd` — a property of the indenter, living purely in the
+> contact Hessian/pose. The "isoparametric curved *soft* surface" is a decoupled
+> ELEMENT-level change (per-GP Jacobian `J(ξ)=ΣXᵢ⊗∇Nᵢ`, which breaks the
+> affine/constant-`detJ` foundation rungs 4–7 rest on — `construct.rs` builds `j_0`
+> from the 4 corners only) → split off as its own future element rung. The
+> `boundary_vertex_areas` 6-node pressure readout is also split off: not a
+> one-function area helper but a face-consistent `per_pair_readout` rewrite (the
+> current per-vertex diagnostic reports vertex-barrier forces that don't match the
+> Tet10 solver's face-integrated forces) → its own diagnostic rung. **NEXT = those
+> two split-off rungs (face-consistent pressure readout; isoparametric curved soft
+> surface).** ⚠ **Rung 4 landed
 > via a TWO-CACHE design, not the in-place `ElementGeometry` generalization the
 > §3.3/§3.4 forward text below describes** — see the "★ RUNG 4 LANDED (design
 > delta)" note in §3.3: generalizing `ElementGeometry` in place would have forced
@@ -791,13 +814,16 @@ capture — the isoparametric-surface piece is deferred, §7).
      channels + dynamics mass); rung 8 builds consistent contact ON it.**
 8. **★ CONSISTENT-CONTACT RUNG (the isolated-rung decision — its own isolated rung on the
    proven foundation).** SPLIT into **8a ✅ (plumbing) / 8b ✅ (face-barrier
-   physics) / 8c (curved surface + `boundary_vertex_areas` 6-node)**; face-friction
-   reconciliation deferred to a later named rung. The genuinely-consistent scheme,
-   done once, properly:
+   physics) / 8c ✅ (curved-SDF `∂n̂/∂x` Hessian term)** + two split-off follow-on
+   rungs (face-consistent pressure readout; isoparametric curved soft surface);
+   face-friction reconciliation deferred to a later named rung. The
+   genuinely-consistent scheme, done once, properly:
    **surface-integrated barrier at face Gauss points** (gradient distributed via
-   P2 face shape functions) **+ isoparametric curved surface** (project boundary
-   midside nodes onto the true surface, 8c) **+ `boundary_vertex_areas` 6-node**
-   (restores pressure readouts, 8c) — they share the face-primitive machinery.
+   P2 face shape functions, 8b) **+ curved-SDF `∂n̂/∂x` Hessian term** (8c — see
+   below) **+ [split off] isoparametric curved soft surface** (project boundary
+   midside nodes onto the true surface — an ELEMENT change, decoupled from the
+   `∂n̂/∂x` term) **+ [split off] `boundary_vertex_areas` 6-node face-consistent
+   pressure readout**.
    Requires a new `#[non_exhaustive]` `ContactPair::Face` variant + downstream
    fixes to the irrefutable `let Vertex{..}` matches; friction reconciled with the
    face-distributed force **(deferred — 8b ships frictionless, fail-loud-guarded)**.
@@ -829,10 +855,60 @@ capture — the isoparametric-surface piece is deferred, §7).
      ∫ b'·n̂·N_i dA_rest` is the standard consistent-load form `∫ p·N_i dA` for
      the normal traction `p = b'·n̂` over a constant reference area.
 
-   *(Interim note: between 3b and rung 8, Tet10 runs with per-vertex contact —
-   correct net force, but `peak_contact_pressure` readouts NaN-drop midside
-   contacts. That is a known, diagnostic-only degradation, not a solve error;
-   #676 measures net force, not peak pressure.)*
+   **★ RUNG 8c LANDED (build-verified deltas):**
+   - **What it is.** 8b evaluated the contact normal `n̂` per Gauss point but did
+     NOT differentiate it, so the face Hessian dropped the curved-SDF term
+     `b'·∇²sd` (`∇²sd = ∂n̂/∂x`, the rigid primitive's `Sdf::hessian`) — the same
+     documented flat-primitive deferral the per-vertex IPC path carried. 8c lifts
+     it: the face Hessian is now
+     `H_ij = A_rest·Σ_q ŵ_q N_iN_j (b''·n̂⊗n̂ + b'·∇²sd)`, and the IPC per-vertex
+     path is reconciled with `PenaltyRigidContact` (which already carried it) —
+     vertex Hessian `+ dE·∇²sd`, pose `δn̂ = ω×n̂ − H·u`, and `normal_curvature`
+     overridden from default-zeros to `sign(b')·∇²sd`.
+   - **★ Scoping correction (the plan conflated two orthogonal curvatures).** The
+     `∂n̂/∂x` term is the *rigid* SDF's curvature — a property of the indenter,
+     living purely in the contact Hessian/pose. It is INDEPENDENT of the
+     "isoparametric curved *soft* surface" (where the soft midsides sit), which the
+     §3.5/§7 text bundled with it. That soft-surface piece is an ELEMENT change
+     (`construct.rs` builds the element Jacobian `j_0` from the 4 corners ONLY, once,
+     with constant `detJ` — moving midsides onto a curve forces the per-GP
+     `J(ξ)=ΣXᵢ⊗∇Nᵢ` rewrite that breaks the affine byte-identity foundation rungs
+     4–7 rest on) → SPLIT into its own future element rung. The
+     `boundary_vertex_areas` 6-node pressure readout also SPLIT off: the current
+     `per_pair_readout` is per-vertex and reports vertex-barrier forces that don't
+     match the Tet10 solver's face-integrated forces, so restoring midside pressure
+     honestly is a face-consistent readout rewrite, not a one-function area helper
+     → its own diagnostic rung.
+   - **★ SPD / indefiniteness.** In the engaged band `b' < 0` while `∇²sd` is PSD, so
+     `b'·∇²sd` is negative-semidefinite transverse — the per-GP barrier material is
+     INDEFINITE (positive `b''` along `n̂`, negative `b'/‖p−c‖` transverse). This is
+     the TRUE tangent (the exact `d(gradient)/dx` the differentiable adjoint
+     consumes), matching penalty — **no SPD projection**. A spike confirmed the
+     assembled global tangent (material stiffness + contact) still factors
+     (Cholesky) at realistic configs; forward robustness rests on the solver's
+     `is_llt` check, with eigenvalue projection a named forward-only follow-on.
+   - **★ Honest scope.** The forward *residual* is curvature-free (`n̂` evaluated
+     per-GP), so Newton converges to the same root regardless of the Hessian — 8c
+     does NOT change the forward contact patch or the #676 net-force RATIO. Its
+     value is the **exact differentiable tangent/adjoint through curved rigid
+     contact** (the co-design gradient — ~7 % off in the flat scope, spike-measured
+     at one config) plus faster Newton on curved contact.
+   - **Gates (all green).** Curved-sphere Hessian FD (unit, face + vertex;
+     non-vacuous — the flat block misses FD by ≫ the curved residual, asserted) ·
+     **sphere reaction-JVP vs re-solve FD** (`tet10_face_contact.rs` — the curved
+     counterpart of 8b's plane gate, proven non-vacuous: dropping the term fails it
+     at `4.3e-3` while the plane stays green) · pose & `normal_curvature` FD on a
+     sphere · per-GP material indefiniteness · **plane keeps every curved term at
+     exactly `∇²sd = 0`** (`normal_curvature == 0`, plane Hessian bit-exactly
+     `diag(0,0,h_zz)` — plane/Tet4 byte-identical). Ships **frictionless**
+     (`normal_curvature`'s `Face` arm is `unreachable!` — face contact is
+     frictionless-guarded; face-friction with its own face normal-curvature is a
+     deferred rung).
+
+   *(Interim note: between 3b and the split-off pressure-readout rung, Tet10 runs
+   with per-vertex `peak_contact_pressure` readouts that NaN-drop midside contacts.
+   That is a known, diagnostic-only degradation, not a solve error; #676 measures
+   net force, not peak pressure.)*
 
 Per the standing covenant: per-crate cargo only, soft tests `--release`,
 `xtask grade` before push, gating cold-reads before merge.
@@ -926,7 +1002,8 @@ blast radius is in-crate only.
 **Consistent contact is rung 8, not a deferral (the isolated-rung decision).** It is a
 first-class rung of this plan — *sequenced after* the element foundation, not
 dropped. The round-2 "nodal lumping" shortcut was falsified (§3.5). Rung 8 splits
-into 8a ✅ / 8b ✅ / 8c, built on the proven foundation (§5 rung 8):
+into 8a ✅ / 8b ✅ / 8c ✅ + two split-off follow-on rungs, built on the proven
+foundation (§5 rung 8):
 - **Rung 8a ✅ / 8b ✅ = surface-integrated face barrier.** 8a = the
   `#[non_exhaustive]` `ContactPair::Face` variant + downstream fail-loud fixes.
   8b = the barrier `E = A_rest · Σ_q ŵ_q b(sd(x_q))`, **rest-area weighted** (a
@@ -934,11 +1011,30 @@ into 8a ✅ / 8b ✅ / 8c, built on the proven foundation (§5 rung 8):
   tangential surface-tension force; rest area is normal-only, corners ≈ 0). Ships
   **frictionless, fail-loud-guarded** (face-friction reconciliation is a deferred
   later rung). See the §5-step-8 "RUNG 8a/8b LANDED" note.
-- **Rung 8c (next) = isoparametric curved surface** (project boundary midside
-  nodes onto the true surface; adds the curved-SDF `∂n̂/∂x` Hessian term the flat
-  scope defers) **+ `boundary_vertex_areas` 6-node** (restore the pressure
-  readouts that NaN-drop midsides in the interim). These share the face-primitive
-  machinery. The "obsessively-perfect contacts" work continues here.
+- **Rung 8c ✅ = curved-SDF `∂n̂/∂x` Hessian term.** The flat scope's dropped
+  `b'·∇²sd` (`Sdf::hessian`) is now carried in the IPC face barrier Hessian and
+  reconciled into the IPC per-vertex path (matching penalty). Indefinite true
+  tangent, no SPD projection; FD-gated on a sphere; plane/Tet4 byte-identical;
+  frictionless. **★ It does NOT change the forward patch or the #676 RATIO** (the
+  residual is curvature-free) — it makes the differentiable adjoint exact through
+  curved rigid contact. See the §5-step-8 "RUNG 8c LANDED" note. **★ The plan
+  conflated this with the soft-surface curvature; they are orthogonal (see that
+  note), so the original "8c = curved surface + 6-node" bundle was re-split.**
+- **[split off] Face-consistent pressure readout (next, small, diagnostic).**
+  Restore midside `peak_contact_pressure`. NOT a one-function `boundary_vertex_areas`
+  6-node helper: the current `per_pair_readout` is per-vertex and reports
+  vertex-barrier forces that don't match the Tet10 solver's face-integrated
+  forces, so the honest fix emits per-node readouts from the *face* barrier
+  (real solver forces) with consistent-P2 **deformed** tributary areas (barrier
+  weight is rest area; pressure tributary is the deformed patch). Its own rung.
+- **[split off] Isoparametric curved soft surface (an ELEMENT rung).** Project
+  boundary midside nodes onto the true soft surface so the boundary P2 elements
+  are genuinely curved. This is decoupled from the `∂n̂/∂x` term above — it is an
+  element change (per-GP Jacobian `J(ξ)=ΣXᵢ⊗∇Nᵢ`, breaking the affine/constant-`detJ`
+  foundation rungs 4–7 rest on) coupled to the mesher (what surface to project
+  onto), and needs the rung-5 element gates re-validated ("machine-precision only
+  for straight edges"). Matters for curved *soft* bodies (the Lamé sphere), not
+  #676's flat slab. The "obsessively-perfect contacts" work continues in these two.
 
 **Genuinely deferred (out of this plan entirely):**
 - **`fbar.rs` on Tet10 / mixed-u-p.** F-bar's single-GP premise breaks; if a
