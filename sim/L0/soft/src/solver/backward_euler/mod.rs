@@ -81,13 +81,18 @@ struct ElementGeometry {
 /// the material-frame shape gradient at that point (`SMatrix<f64, N, 3>`, one
 /// row per node) and `weight = w_q · |detJ|`. For a **straight-edged** element
 /// the isoparametric map is affine, so `|detJ|` is constant across the element
-/// and only `grad_x_n` differs per point (`∇_ξN(ξ_q)` is linear in `ξ`); a
-/// curved element (deferred rung 8) would additionally vary `detJ` per point.
+/// and only `grad_x_n` differs per point (`∇_ξN(ξ_q)` is linear in `ξ`). A
+/// **curved** higher-order element (midsides moved off the edge midpoints)
+/// instead varies `detJ(ξ_q)` per point too — the genuine isoparametric
+/// Jacobian built by
+/// [`curved_gauss_geometry`](super::construct); this cache holds those per-point
+/// weights when `construct` selects the curved path.
 ///
 /// - **Tet4** monomorphizes to `(N, G) = (4, 1)`: the single centroid point,
 ///   whose pair is bit-identical to the matching [`ElementGeometry`] fields.
 /// - **Tet10** is `(10, 4)`: four Stroud points, each with its own
-///   `SMatrix<f64, 10, 3>` gradient, sharing one constant `|detJ|`.
+///   `SMatrix<f64, 10, 3>` gradient — sharing one constant `|detJ|` when
+///   straight-edged, or a per-point `|detJ(ξ_q)|` when curved.
 ///
 /// Consumed only by the forward stiffness kernels
 /// (`assemble_global_int_force` / `assemble_free_hessian_triplets` /

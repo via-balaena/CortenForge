@@ -575,37 +575,6 @@ mod tests {
         assert!(max_err < 1e-7, "curved J vs FD(map): max |Δ| = {max_err:e}");
     }
 
-    /// Isoparametric completeness under curvature: `Xᵀ · grad_x_n = I` to machine
-    /// precision at every Gauss point. This is the identity that guarantees a
-    /// curved element still reproduces ANY linear (constant-strain) field
-    /// exactly — the basis for [`constant_strain_reproduces_on_curved_element`].
-    // Non-degenerate curved element ⇒ a failed inverse is a test-authoring bug.
-    #[allow(clippy::expect_used)]
-    #[test]
-    fn curved_element_completeness_is_machine_exact() {
-        let coords = curved_element_coords(0.10);
-        let node_x = SMatrix::<f64, 10, 3>::from_fn(|i, j| coords[i][j]);
-        let mut max_err = 0.0_f64;
-        for (xi, _) in Tet10.gauss_points() {
-            let grad_xi = Tet10.shape_gradients(xi);
-            let grad_x = grad_xi
-                * (node_x.transpose() * grad_xi)
-                    .try_inverse()
-                    .expect("non-degenerate curved element");
-            let m = node_x.transpose() * grad_x; // must equal I
-            for i in 0..3 {
-                for k in 0..3 {
-                    let want = f64::from(u8::from(i == k));
-                    max_err = max_err.max((m[(i, k)] - want).abs());
-                }
-            }
-        }
-        assert!(
-            max_err < 1e-12,
-            "Xᵀ·grad_x_n = I under curvature: max |Δ| = {max_err:e}",
-        );
-    }
-
     /// Rank/eigenspectrum survives curvature: a curved single-element `K^e`
     /// still has exactly 6 rigid-body zeros + 24 positive modes. Rigid modes
     /// give zero strain pointwise → zero energy at every Gauss point, so they
@@ -617,12 +586,23 @@ mod tests {
         assert_eq!(positive, 24, "expected 24 deformation modes (curved)");
     }
 
-    /// Constant-strain (linear field) reproduction is STILL machine-exact on a
-    /// CURVED element — the empirical correction to the plan's expectation that
-    /// it would only be approximate under curvature. It follows from
-    /// completeness above: with `x = A·X`,
-    /// `F = Σ (A·Xₐ) ⊗ ∇ₓNₐ = A·(Σ Xₐ ⊗ ∇ₓNₐ) = A·I = A` at every point,
-    /// independent of edge curvature.
+    /// Constant-strain (linear field) reproduction stays machine-exact on a
+    /// CURVED element — DOCUMENTING the structural isoparametric theorem, and the
+    /// correction to the plan's expectation that constant-strain would degrade
+    /// under curvature. With `x = A·X` the reconstructed
+    /// `F = Σ (A·Xₐ) ⊗ ∇ₓNₐ = A·(Σ Xₐ ⊗ ∇ₓNₐ) = A·(Xᵀ·grad_x) = A·I = A` at every
+    /// point, independent of edge curvature.
+    ///
+    /// ⚠ Like the straight-edged
+    /// [`constant_strain_patch_reproduces_linear_field`], this is BLIND by
+    /// construction: `Xᵀ·grad_x = I` holds for any full-rank `∇_ξN` (the two
+    /// factors cancel), so a wrong `shape_gradients` self-cancels here. It is
+    /// documentation of the theorem, not a gradient-correctness gate — the
+    /// gradient's numerical correctness is gated INDEPENDENTLY by
+    /// [`curved_jacobian_matches_fd_of_map`] (FD of the geometry map) and
+    /// [`quadratic_field_reproduction_degrades_with_curvature`] (a physical-space
+    /// quadratic the space cannot represent), plus the rung-1 partition-of-unity
+    /// and monomial-exactness tests.
     // Non-degenerate curved element ⇒ a failed inverse is a test-authoring bug.
     #[allow(clippy::expect_used)]
     #[test]

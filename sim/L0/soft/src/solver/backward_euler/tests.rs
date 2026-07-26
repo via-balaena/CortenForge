@@ -1585,8 +1585,9 @@ fn tet10_quadratic_field_internal_force_matches_analytic() {
 // bit-identical to the pre-curved cache. These gates exercise that selection and
 // the curved forward path THROUGH the production assembler. (The per-GP Jacobian
 // math itself is FD-verified at the element level in `element::tet10`.) This
-// rung is FORWARD-CHANGING: on a curved mesh the previously-inert midside
-// positions now set the element stiffness.
+// rung is FORWARD-CHANGING: on a curved mesh the midside positions now enter the
+// element's stiffness GEOMETRY (the affine path built `grad_x_n` from the corners
+// alone; it never carried a consistent per-GP curved Jacobian).
 
 /// A gently-curved variant of a straight Tet10 block: every midside is pushed a
 /// small amount off its edge midpoint (a valid, non-inverting perturbation).
@@ -1617,48 +1618,127 @@ fn curved_tet10_block(config: SolverConfig, amp: f64) -> CpuTet10NHSolver<Tet10M
     CpuNewtonSolver::new(Tet10, tet10, NullContact, config, bc)
 }
 
-/// Path selection + forward-change. (1) An IDENTITY curve map leaves every
-/// element straight → the affine fast path → a solve BIT-IDENTICAL to the plain
-/// straight block (the predicate must classify midpoints-recomputed-as-
-/// themselves as straight). (2) A genuinely curved mesh takes the per-GP path
-/// and moves the converged state by a committed, finite margin — the midside
-/// positions, inert on the affine path, now set the stiffness.
+/// Byte-golden for the STRAIGHT Tet10 ELEMENT forward path — the missing
+/// regression net the byte-identity review flagged. The affine fast path is
+/// textually unchanged from the pre-curved-rung code, but nothing else pins the
+/// straight *Tet10-element* bits: the passthrough goldens run the Tet4 element on
+/// a Tet10 mesh (never reach the `N > 4` branch), and every other Tet10 gate is
+/// tolerance-based. A future edit to the affine `else` branch in `construct`, to
+/// `element_is_straight`, or to `enrich`'s midpoint arithmetic that shifted a
+/// straight-Tet10 bit would slip through CI without this. The fingerprint was
+/// measured on this rung; the byte-identity review independently confirmed the
+/// same straight-Tet10 solve is bit-identical on the parent commit (05b2b28c).
+#[test]
+fn tet10_straight_element_byte_golden() {
+    // Frozen XOR-rotate fingerprint of a straight Tet10 gravity replay_step,
+    // measured on this rung AND re-measured bit-identical on parent 05b2b28c.
+    const FINGERPRINT: u64 = 0x8e8a_c298_17ed_5137;
+    const N_DOF: usize = 375;
+
+    let mut cfg = SolverConfig::skeleton();
+    cfg.dt = 1.0e-3;
+    cfg.gravity_z = -9.81;
+    let (solver, _) = build_tet10_block(cfg);
+    let rest = tet10_rest_dofs(&solver);
+    let n_dof = rest.len();
+    let step = solver.replay_step(
+        &Tensor::from_slice(&rest, &[n_dof]),
+        &Tensor::zeros(&[n_dof]),
+        &Tensor::zeros(&[0]),
+        cfg.dt,
+    );
+    let fp = step
+        .x_final
+        .as_slice()
+        .iter()
+        .fold(0_u64, |acc, &v| acc.rotate_left(1) ^ v.to_bits());
+    assert_eq!(n_dof, N_DOF, "straight Tet10 block DOF count changed");
+    assert_eq!(
+        fp, FINGERPRINT,
+        "straight Tet10 element bits drifted from the frozen golden — the affine \
+         fast path is no longer bit-identical to the pre-curved-rung code",
+    );
+}
+
+/// Curved-path SELECTION (with teeth) + forward-change, through the production
+/// assembler.
+///
+/// (1) **Stress-free rest = the path-selection gate.** A curved mesh's rest
+/// state must produce ~zero internal force: the isoparametric per-GP geometry
+/// makes `F = I` at rest, so `P(I) = 0`. If `construct` wrongly took the AFFINE
+/// path for a curved element, its corner-only `grad_x_n` disagrees with the
+/// moved midside rest positions (`Xᵀ·grad_x ≠ I`) → spurious rest strain → a
+/// LARGE rest force well above the machine-zero this asserts. So this arm FAILS
+/// if path selection breaks — a mutation forcing `element_is_straight = true`
+/// trips it. NOTE: the moved midsides are NOT "inert" on the affine path — they
+/// leak into the affine `grad_x_n` contraction as that spurious strain, which is
+/// exactly why a curved element MUST take the curved path.
+///
+/// (2) **Forward-change.** A genuinely curved solve differs from the straight
+/// solve by a finite margin — midside geometry now sets the stiffness. (This arm
+/// alone does not isolate path selection — the affine-with-moved-midsides state
+/// also differs — which is why (1) carries the teeth. Byte-identity of the
+/// straight path is frozen separately in `tet10_straight_element_byte_golden`.)
+// Index loops walk DOF/node strides by position — the assembler's idiom.
+#[allow(clippy::needless_range_loop)]
 #[test]
 fn tet10_curved_midsides_change_the_forward_solve() {
     let mut cfg = SolverConfig::skeleton();
     cfg.dt = 1.0e-3;
     cfg.gravity_z = -9.81;
 
+    // (1) Stress-free rest on the curved mesh — the teeth on path selection.
+    let curved_solver = curved_tet10_block(cfg, 0.03);
+    let rest = tet10_rest_dofs(&curved_solver);
+    let n = rest.len() / 3;
+    let mut f_rest = vec![0.0_f64; rest.len()];
+    curved_solver.assemble_global_int_force(&rest, &rest, 1.0, &mut f_rest);
+    let f_rest_max = f_rest.iter().fold(0.0_f64, |m, &v| m.max(v.abs()));
+    // Physical scale: internal force under a real 2% x-stretch of the curved mesh.
+    let mut x_stretch = rest.clone();
+    for v in 0..n {
+        x_stretch[3 * v] *= 1.02;
+    }
+    let mut f_stretch = vec![0.0_f64; rest.len()];
+    curved_solver.assemble_global_int_force(&x_stretch, &x_stretch, 1.0, &mut f_stretch);
+    let f_stretch_max = f_stretch.iter().fold(0.0_f64, |m, &v| m.max(v.abs()));
+    assert!(
+        f_rest.iter().chain(&f_stretch).all(|v| v.is_finite()),
+        "curved internal force has a non-finite entry",
+    );
+    assert!(
+        f_stretch_max > 0.0,
+        "the 2% stretch must produce a live scale"
+    );
+    assert!(
+        f_rest_max < 1e-8 * f_stretch_max,
+        "curved mesh must be stress-free at rest (isoparametric geometry consistent with the \
+         moved midsides); a large rest force means `construct` took the AFFINE path for a curved \
+         element: |f_rest| = {f_rest_max:e} vs 2%-stretch scale {f_stretch_max:e}",
+    );
+
+    // (2) Forward-change: the curved converged state differs from the straight one.
     let solve = |amp: f64| {
         let solver = curved_tet10_block(cfg, amp);
         let rest = tet10_rest_dofs(&solver);
         let n_dof = rest.len();
-        let step = solver.replay_step(
-            &Tensor::from_slice(&rest, &[n_dof]),
-            &Tensor::zeros(&[n_dof]),
-            &Tensor::zeros(&[0]),
-            cfg.dt,
-        );
-        step.x_final.as_slice().to_vec()
+        solver
+            .replay_step(
+                &Tensor::from_slice(&rest, &[n_dof]),
+                &Tensor::zeros(&[n_dof]),
+                &Tensor::zeros(&[0]),
+                cfg.dt,
+            )
+            .x_final
+            .as_slice()
+            .to_vec()
     };
-
     let straight = solve(0.0);
-    let identity = solve(0.0); // same amp — determinism + straight baseline
     let curved = solve(0.03);
-
     assert!(
-        straight.iter().all(|x| x.is_finite()) && curved.iter().all(|x| x.is_finite()),
+        straight.iter().chain(&curved).all(|x| x.is_finite()),
         "both solves must converge to a finite state",
     );
-    // Identity/straight are bit-identical (affine fast path is deterministic).
-    assert!(
-        straight
-            .iter()
-            .zip(&identity)
-            .all(|(a, b)| a.to_bits() == b.to_bits()),
-        "the straight-edged solve must be deterministic and take the affine path",
-    );
-    // The curved solve genuinely differs — the forward change.
     let max_delta = straight
         .iter()
         .zip(&curved)

@@ -1,10 +1,36 @@
 # sim-soft — Tet10 quadratic-element implementation plan
 
+> **★★ LADDER COMPLETE (2026-07-26) — all rungs 1–8 + both 8c split-offs LANDED.**
+> The final split-off, the **isoparametric curved soft-surface ELEMENT rung**, is
+> built: when a mesh carries midsides moved off the straight edge midpoints
+> (`Tet10Mesh::with_curved_midsides`), `construct` builds the genuine per-Gauss-
+> point Jacobian `J(ξ)=Σ Xᵢ⊗∇Nᵢ(ξ)` with per-point `detJ(ξ)` and weight
+> `w_ref·|detJ(ξ_q)|` in the `(b)` `GaussGeometry` cache; every straight-edged /
+> un-projected element keeps a **bit-identical** affine fast path (per-element
+> `element_is_straight` detection, frozen by `tet10_straight_element_byte_golden`).
+> This rung is **FORWARD-CHANGING** (midside positions now set the stiffness); the
+> `(a)` `ElementGeometry` proxy stays affine → F-bar / validity / mass untouched.
+> **Findings:** forward force == FD of the curved elastic energy; under the `Facet`
+> load rule, curving the Lamé boundary onto the true sphere moves the reading
+> TOWARD analytic (0.0525→0.0432, ~18 %); 4-pt (G=4) kept — the `K^e` 4pt-vs-dense
+> gap grows ~0.22·(sagitta/edge), adequate for a well-resolved boundary; and
+> **constant-strain reproduction stays MACHINE-EXACT under curvature** (the
+> isoparametric completeness identity `Xᵀ·grad_x_n = I` holds for a curved element
+> too) — the plan's original expectation that it would degrade was FALSIFIED and
+> is corrected in place below; it is the *quadratic-field* reproduction that
+> degrades. The
+> SDF-projection **mesher** (topological boundary selection, corner projection,
+> inversion guards) is the one remaining piece — a separate future *mesher* rung,
+> NOT part of this element rung. This doc is now a HISTORICAL build reference; any
+> "future / deferred / split off" label for the curved soft surface below is stale
+> — read it as LANDED.
+>
 > **Authored 2026-07-22; diamonded 2026-07-23** after a five-front
 > code-grounded pressure-test (every load-bearing claim verified against the
 > actual source at `main`). The implementation roadmap for adding the
 > **Tet10** (10-node quadratic tetrahedron) element to `sim-soft`. Status:
-> **IN PROGRESS — rungs 1–7 landed (#680–#693 + the rung-7 gradient PR).** The
+> **COMPLETE — rungs 1–8 + all split-offs landed (see the LADDER COMPLETE banner
+> at the top of this doc).** The
 > forward solver assembles the REAL multi-Gauss-point Tet10 stiffness over all 10
 > nodes (§3.3), the rung-5 element-correctness gates validate it (§5 step 5),
 > **★ rung 6 returned ACCEPT: pure-displacement Tet10 is adequate at ν = 0.49 and
@@ -193,7 +219,7 @@ stiffness assembly stays Tet4-shaped until rung 4.)**
 | Tet4→Tet10 edge-enrichment helper (a mesh *producer*; needs §3.2 connectivity to be consumable) | new; reuse the sorted-key dedup of `mesh/mod.rs:251` | **small / low** |
 | **`Mesh` connectivity — the load-bearing spine.** `tet_vertices → [VertexId;4]` is a *public trait signature*; every mesh impl (`single_tet.rs:99`, `hand_built.rs:328`, `sdf_meshed_tet_mesh.rs:391`) and every consumer reads exactly 4. Additive 10-node channel (`MeshTopology`) + the orphan-pin footgun. | `mesh/mod.rs:76`, `construct.rs:186-214` | **large / high** |
 | **Boundary/surface path — must move in lockstep with connectivity.** `boundary_faces_from_topology` emits 3-node faces from 4 corners; Tet10 surface midside nodes are otherwise classified *interior* → auto-pinned even if surfaced. Plus `boundary_vertex_areas`, BC/load position-predicates, cavity tributary-area (`N_loaded`). | `mesh/mod.rs:251`, `readout/scene.rs:226-296` | **medium / high** |
-| Per-Gauss-point geometry: `ElementGeometry{grad_x_n:SMatrix<4,3>, volume}` → array of `(grad_x_n, weight)` over G (cardinality **1→4**: the shape gradients `∇_ξN(ξ_q)` and material `F(ξ_q)` vary per-GP so `grad_x_n` genuinely differs across the 4 GPs). **⚠ For a straight-edged Tet10 the isoparametric map collapses to affine, so `J`, `J⁻¹`, `detJ` are CONSTANT** — do not describe the Jacobian as per-GP (it only becomes per-GP under the deferred rung-8 curved surface). Tet4's `(4,1)` path keeps the **edge-vector Jacobian** and the `det.abs()/6.0` weight — a distinct branch, not the Tet10 Σ-form monomorphized (§3.1). | `mod.rs:68`, `construct.rs:221-244` | **large / medium** |
+| Per-Gauss-point geometry: `ElementGeometry{grad_x_n:SMatrix<4,3>, volume}` → array of `(grad_x_n, weight)` over G (cardinality **1→4**: the shape gradients `∇_ξN(ξ_q)` and material `F(ξ_q)` vary per-GP so `grad_x_n` genuinely differs across the 4 GPs). **⚠ For a straight-edged Tet10 the isoparametric map collapses to affine, so `J`, `J⁻¹`, `detJ` are CONSTANT** — do not describe the Jacobian as per-GP for a straight element (it becomes per-GP only for a curved element — the built curved rung). Tet4's `(4,1)` path keeps the **edge-vector Jacobian** and the `det.abs()/6.0` weight — a distinct branch, not the Tet10 Σ-form monomorphized (§3.1). | `mod.rs:68`, `construct.rs:221-244` | **large / medium** |
 | Multi-GP forward assembly: `deformation_gradient`/`extract_element_dof_values` → 30-DOF (`[f64;12]→[f64;30]`, `SMatrix<4,3>→<10,3>`); the six kernels `for a in 0..4`→`0..N`, single-GP → `for q in 0..G`. **No `12×12`/`30×30` stiffness type exists** — stiffness is 3×3 blocks from a 9×9 *material* tangent; do not size a matrix-dim row that isn't there. | `mod.rs`, `helpers.rs:17,36`, `assembly.rs:150-558` | **large / medium** |
 | **Consistent-contact rung 8 (the isolated-rung decision — its own rung AFTER the element foundation).** ⚠ Round-3 meta-audit falsified the "nodal lumping" scheme (net-force smoothing, NOT the consistent P2 load — barrier is a force not a traction; P2 corner area = 0 → singular redistribution). The real scheme = **surface-integrated barrier `E=∫b(sd)dA` at face Gauss points (8b) + curved-SDF `∂n̂/∂x` Hessian term (8c) + [split off] `boundary_vertex_areas` 6-node face-consistent readout + [split off, ELEMENT-level, decoupled] isoparametric curved soft surface**. Needs a new `#[non_exhaustive]` `ContactPair::Face` variant = a **downstream break** (coupling uses irrefutable `let Vertex{..}` — `contact_readout.rs:154`, `single_step.rs:35`). **Friction reconciled with the face-distributed force.** | `contact/ipc.rs:213-310`, `mesh/mod.rs:313` | **large / high (rung 8)** |
 | Per-Gauss-point material sampling (bypass the per-tet centroid cache) | `mesh/mod.rs:154` (`materials_from_field`), spec `01-tet10.md:46` | **medium / medium** |
@@ -354,8 +380,8 @@ unpinned path is non-singular.
 `volume` — a single centroid Gauss point, valid only because Tet4's
 parametric gradients are constant. **For a straight-edged Tet10 the
 isoparametric map collapses to affine, so `J`, `J⁻¹`, `detJ` are CONSTANT
-across the element** (do not model the Jacobian as per-GP — that only happens
-under the deferred rung-8 curved surface). What *does* vary per-GP is the shape
+across the element** (do not model the Jacobian as per-GP for a STRAIGHT element —
+it becomes per-GP only for a curved element, the built curved rung). What *does* vary per-GP is the shape
 gradient `∇_xN^q = ∇_ξN(ξ_q)·J⁻¹` (because `∇_ξN(ξ_q)` is linear in ξ) and the
 material `F(ξ_q)`. So generalise `ElementGeometry` to *G entries* (`[…;G]`) of
 `(grad_x_n, weight)` — the 4 `grad_x_n` genuinely differ (cardinality 1→4) but
@@ -703,8 +729,13 @@ capture — the isoparametric-surface piece is deferred, §7).
    at a non-symmetric interior ξ on a distorted tet. **This is the ONLY gate
    that catches a midside-ordering bug** — a symmetric uniform-stretch patch is
    reproduced by the corners alone and passes despite a permutation. (A uniform
-   constant-strain patch is still worth keeping, but is machine-precision only
-   *for straight edges* and breaks under the rung-8 curved surface.)
+   constant-strain patch is still worth keeping. ⚠ **Correction (curved rung,
+   built): constant-strain reproduction stays MACHINE-EXACT under curvature** —
+   the isoparametric completeness identity `Xᵀ·grad_x_n = I` holds for a curved
+   element too, so a linear field gives `F = A` exactly at every point. It is the
+   *quadratic*-field reproduction that degrades on a curved element. Note both
+   constant-strain patches are BLIND to gradient errors by construction — the
+   gradient teeth live in the FD-of-map and quadratic-degradation gates.)
    (c) **Rank/eigenspectrum gate** — single-element 30×30 `K^e` at `F=I`,
    deformed, and distorted; assert **exactly 6 zero + 24 positive eigenvalues**
    (nalgebra `SymmetricEigen::eigenvalues` or an SVD null-count — both in-tree,
@@ -1042,14 +1073,20 @@ foundation (§5 rung 8):
   forces, so the honest fix emits per-node readouts from the *face* barrier
   (real solver forces) with consistent-P2 **deformed** tributary areas (barrier
   weight is rest area; pressure tributary is the deformed patch). Its own rung.
-- **[split off] Isoparametric curved soft surface (an ELEMENT rung).** Project
-  boundary midside nodes onto the true soft surface so the boundary P2 elements
-  are genuinely curved. This is decoupled from the `∂n̂/∂x` term above — it is an
-  element change (per-GP Jacobian `J(ξ)=ΣXᵢ⊗∇Nᵢ`, breaking the affine/constant-`detJ`
-  foundation rungs 4–7 rest on) coupled to the mesher (what surface to project
-  onto), and needs the rung-5 element gates re-validated ("machine-precision only
-  for straight edges"). Matters for curved *soft* bodies (the Lamé sphere), not
-  #676's flat slab. The "obsessively-perfect contacts" work continues in these two.
+- **[✅ LANDED] Isoparametric curved soft surface (the ELEMENT rung).** When a
+  mesh carries boundary midsides moved onto the true soft surface
+  (`Tet10Mesh::with_curved_midsides`), the boundary P2 elements are genuinely
+  curved: `construct` builds the per-GP Jacobian `J(ξ)=ΣXᵢ⊗∇Nᵢ` with per-point
+  `detJ(ξ)`, keeping the affine fast path bit-identical for straight elements.
+  Decoupled from the `∂n̂/∂x` term above. The rung-5 element gates were
+  re-validated under curvature: **constant-strain reproduction stays
+  machine-exact** (isoparametric completeness), finite-rotation RBM and rank
+  6-zeros survive, and it is the *quadratic*-field reproduction that degrades.
+  Matters for curved *soft* bodies (the Lamé sphere — the `Facet` reading moves
+  toward analytic), not #676's flat slab. **Still deferred to a future MESHER
+  rung:** the SDF-projection that decides WHERE boundary midsides go (topological
+  boundary selection, corner projection, inversion guards). The
+  "obsessively-perfect contacts" work continues there.
 
 **Genuinely deferred (out of this plan entirely):**
 - **`fbar.rs` on Tet10 / mixed-u-p.** F-bar's single-GP premise breaks; if a
