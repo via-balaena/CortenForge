@@ -222,6 +222,16 @@ where
         let pairs = self.contact.active_pairs(&self.mesh, &positions);
         let mut out = Vec::new();
         for pair in &pairs {
+            // Rung 8b ships Tet10 face contact FRICTIONLESS: the smoothed-Coulomb
+            // model reads a per-vertex `λ = |force|` from each gradient
+            // contribution, which a face pair's six distributed forces do not
+            // satisfy (face-friction reconciliation is a deferred rung). Fail
+            // loud rather than silently apply a wrong per-node friction.
+            assert!(
+                !matches!(pair, crate::contact::ContactPair::Face { .. }),
+                "Tet10 face contact with friction (μ = {mu}) is not reconciled — rung 8b ships \
+                 face contact frictionless (set friction_mu = 0); face-friction is a deferred rung",
+            );
             for (vid, force) in self.contact.gradient(pair, &positions).contributions {
                 let lambda = force.norm(); // |∇E_contact| = the normal-force magnitude λⁿ
                 if lambda == 0.0 {

@@ -548,6 +548,18 @@ where
         let mut u_cols: Vec<Vec<f64>> = Vec::new();
         let mut v_cols: Vec<Vec<f64>> = Vec::new();
         for pair in &pairs {
+            // Local fail-loud guard (defense-in-depth, not ordering-dependent):
+            // this Woodbury path reads a per-vertex `λ = |force|` from each
+            // gradient contribution, which a face pair's six distributed forces
+            // do not satisfy. `friction_blocks` (assembly.rs) also guards, and
+            // runs first via `assemble_free_hessian_triplets`, but that safety
+            // must not rest on call order — rung 8b ships face contact
+            // frictionless (face-friction reconciliation is a deferred rung).
+            assert!(
+                !matches!(pair, crate::contact::ContactPair::Face { .. }),
+                "Tet10 face contact with friction (μ = {mu}) is not reconciled — rung 8b ships \
+                 face contact frictionless (set friction_mu = 0); face-friction is a deferred rung",
+            );
             let grad = self.contact.gradient(pair, &positions);
             let hess = self.contact.hessian(pair, &positions);
             // Force-direction curvature `C = ∂n̂/∂x = sign(dE)·∇²sd` (0 for a plane) — feeds the

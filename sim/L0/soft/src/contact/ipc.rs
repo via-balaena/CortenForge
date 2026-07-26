@@ -43,6 +43,7 @@
 
 use super::{
     ContactGradient, ContactHessian, ContactModel, ContactPair, ContactPairReadout, RigidTwist,
+    face::{self, FaceBarrierEval},
 };
 use crate::{
     Vec3,
@@ -197,70 +198,136 @@ impl IpcRigidContact {
         }
         readouts
     }
+
+    /// Per-point barrier evaluator for a P2 face against primitive
+    /// `primitive_id` — the `(n̂, κb, κb', κb'')` closure the
+    /// [`face`](super::face) machinery samples at its Gauss points. All SDF and
+    /// κ knowledge stays here; the area/quadrature math stays in `face`. An
+    /// inactive point (`sd ≥ d̂`) returns zero scalars (continuously — the
+    /// barrier and its two derivatives vanish at `d̂`).
+    fn face_eval(&self, primitive_id: u32) -> impl Fn(Vec3) -> FaceBarrierEval + '_ {
+        let prim = &self.primitives[primitive_id as usize];
+        move |x: Vec3| {
+            let p = Point3::from(x);
+            let normal = prim.grad(p);
+            self.barrier(prim.eval(p)).map_or_else(
+                || FaceBarrierEval {
+                    normal,
+                    b: 0.0,
+                    b_d: 0.0,
+                    b_dd: 0.0,
+                },
+                |c| FaceBarrierEval {
+                    normal,
+                    b: c.energy,
+                    b_d: c.d_energy_d_sd,
+                    b_dd: c.d2_energy_d_sd2,
+                },
+            )
+        }
+    }
+
+    /// Gather the six face-node positions into the `[c0,c1,c2,m01,m12,m02]`
+    /// array the [`face`](super::face) machinery expects.
+    fn gather_face(nodes: &[VertexId; 6], positions: &[Vec3]) -> [Vec3; 6] {
+        nodes.map(|vid| positions[vid as usize])
+    }
 }
 
 impl ContactModel for IpcRigidContact {
     fn energy(&self, pair: &ContactPair, positions: &[Vec3]) -> f64 {
-        let &ContactPair::Vertex {
-            vertex_id,
-            primitive_id,
-        } = pair
-        else {
-            // Rung 8a plumbing: `active_pairs` emits no `ContactPair::Face` yet,
-            // so this arm is unreachable. Rung 8b replaces it with the
-            // surface-integrated face-barrier physics (`E = ∫ b(sd) dA`).
-            unreachable!("IpcRigidContact has no ContactPair::Face producer until rung 8b")
-        };
-        let p = Point3::from(positions[vertex_id as usize]);
-        let sd = self.primitives[primitive_id as usize].eval(p);
-        self.barrier(sd).map_or(0.0, |c| c.energy)
+        match pair {
+            ContactPair::Vertex {
+                vertex_id,
+                primitive_id,
+            } => {
+                let p = Point3::from(positions[*vertex_id as usize]);
+                let sd = self.primitives[*primitive_id as usize].eval(p);
+                self.barrier(sd).map_or(0.0, |c| c.energy)
+            }
+            ContactPair::Face {
+                nodes,
+                primitive_id,
+                rest_area,
+            } => {
+                // Surface-integrated barrier E = A_rest · Σ ŵ b(sd) over the P2 face.
+                let nodes6 = Self::gather_face(nodes, positions);
+                face::face_energy(&nodes6, *rest_area, self.face_eval(*primitive_id))
+            }
+        }
     }
 
     fn gradient(&self, pair: &ContactPair, positions: &[Vec3]) -> ContactGradient {
-        let &ContactPair::Vertex {
-            vertex_id,
-            primitive_id,
-        } = pair
-        else {
-            // Rung 8a plumbing: `active_pairs` emits no `ContactPair::Face` yet,
-            // so this arm is unreachable. Rung 8b replaces it with the
-            // surface-integrated face-barrier physics (`E = ∫ b(sd) dA`).
-            unreachable!("IpcRigidContact has no ContactPair::Face producer until rung 8b")
-        };
-        let p = Point3::from(positions[vertex_id as usize]);
-        let prim = &self.primitives[primitive_id as usize];
-        let sd = prim.eval(p);
-        self.barrier(sd).map_or_else(ContactGradient::default, |c| {
-            // Residual contribution +∂E/∂x = (κ·b')·n̂ (∂sd/∂x = n̂).
-            let n = prim.grad(p);
-            ContactGradient {
-                contributions: vec![(vertex_id, c.d_energy_d_sd * n)],
+        match pair {
+            ContactPair::Vertex {
+                vertex_id,
+                primitive_id,
+            } => {
+                let p = Point3::from(positions[*vertex_id as usize]);
+                let prim = &self.primitives[*primitive_id as usize];
+                let sd = prim.eval(p);
+                self.barrier(sd).map_or_else(ContactGradient::default, |c| {
+                    // Residual contribution +∂E/∂x = (κ·b')·n̂ (∂sd/∂x = n̂).
+                    let n = prim.grad(p);
+                    ContactGradient {
+                        contributions: vec![(*vertex_id, c.d_energy_d_sd * n)],
+                    }
+                })
             }
-        })
+            ContactPair::Face {
+                nodes,
+                primitive_id,
+                rest_area,
+            } => {
+                // +∂E/∂x_i distributed over all six P2 face nodes, purely along
+                // the SDF normal (rest-area weight → no tangential term).
+                let nodes6 = Self::gather_face(nodes, positions);
+                let g = face::face_gradient(&nodes6, *rest_area, self.face_eval(*primitive_id));
+                ContactGradient {
+                    contributions: (0..6).map(|i| (nodes[i], g[i])).collect(),
+                }
+            }
+        }
     }
 
     fn hessian(&self, pair: &ContactPair, positions: &[Vec3]) -> ContactHessian {
-        let &ContactPair::Vertex {
-            vertex_id,
-            primitive_id,
-        } = pair
-        else {
-            // Rung 8a plumbing: `active_pairs` emits no `ContactPair::Face` yet,
-            // so this arm is unreachable. Rung 8b replaces it with the
-            // surface-integrated face-barrier physics (`E = ∫ b(sd) dA`).
-            unreachable!("IpcRigidContact has no ContactPair::Face producer until rung 8b")
-        };
-        let p = Point3::from(positions[vertex_id as usize]);
-        let prim = &self.primitives[primitive_id as usize];
-        let sd = prim.eval(p);
-        self.barrier(sd).map_or_else(ContactHessian::default, |c| {
-            // Rank-1 SPD block κ·b''·n̂⊗n̂ (plane: ∂²sd/∂x² = 0, b'' > 0 on (0,d̂)).
-            let n = prim.grad(p);
-            let block: Matrix3<f64> = c.d2_energy_d_sd2 * (n * n.transpose());
-            ContactHessian {
-                contributions: vec![(vertex_id, vertex_id, block)],
+        match pair {
+            ContactPair::Vertex {
+                vertex_id,
+                primitive_id,
+            } => {
+                let p = Point3::from(positions[*vertex_id as usize]);
+                let prim = &self.primitives[*primitive_id as usize];
+                let sd = prim.eval(p);
+                self.barrier(sd).map_or_else(ContactHessian::default, |c| {
+                    // Rank-1 SPD block κ·b''·n̂⊗n̂ (plane: ∂²sd/∂x² = 0, b'' > 0 on (0,d̂)).
+                    let n = prim.grad(p);
+                    let block: Matrix3<f64> = c.d2_energy_d_sd2 * (n * n.transpose());
+                    ContactHessian {
+                        contributions: vec![(*vertex_id, *vertex_id, block)],
+                    }
+                })
             }
-        })
+            ContactPair::Face {
+                nodes,
+                primitive_id,
+                rest_area,
+            } => {
+                // 6×6 cross-node blocks (rank-1 b''·n̂⊗n̂ per Gauss point,
+                // distributed via the P2 shape functions). All 36 emitted; the
+                // assembler applies its own free-DOF lower-triangle filter and
+                // the block set is symmetric.
+                let nodes6 = Self::gather_face(nodes, positions);
+                let h = face::face_hessian(&nodes6, *rest_area, self.face_eval(*primitive_id));
+                let mut contributions = Vec::with_capacity(36);
+                for (i, &row) in nodes.iter().enumerate() {
+                    for (j, &col) in nodes.iter().enumerate() {
+                        contributions.push((row, col, h[i][j]));
+                    }
+                }
+                ContactHessian { contributions }
+            }
+        }
     }
 
     fn ccd_toi(&self, _pair: &ContactPair, _x0: &[Vec3], _x1: &[Vec3]) -> f64 {
@@ -274,16 +341,24 @@ impl ContactModel for IpcRigidContact {
         positions: &[Vec3],
         twist: RigidTwist,
     ) -> ContactGradient {
-        let &ContactPair::Vertex {
+        let ContactPair::Vertex {
             vertex_id,
             primitive_id,
         } = pair
         else {
-            // Rung 8a plumbing: `active_pairs` emits no `ContactPair::Face` yet,
-            // so this arm is unreachable. Rung 8b replaces it with the
-            // surface-integrated face-barrier physics (`E = ∫ b(sd) dA`).
-            unreachable!("IpcRigidContact has no ContactPair::Face producer until rung 8b")
+            // Unreachable in the current wiring: the rigid-pose (keystone)
+            // derivative is called only by the coupling pose-sensitivity, which
+            // runs on Tet4 meshes → `active_pairs` emits only `Vertex` pairs, so
+            // a `Face` pair never reaches here. Face rigid-pose is a separate
+            // adjoint channel deferred to a later rung (rung 8b ships the
+            // frictionless soft-side face barrier + its soft adjoint only); fail
+            // loud rather than return a silently-zero pose gradient.
+            unreachable!(
+                "ContactPair::Face rigid-pose derivative is unreachable (coupling pose path is \
+                 Tet4-only); face-pose reconciliation is a deferred rung"
+            )
         };
+        let (vertex_id, primitive_id) = (*vertex_id, *primitive_id);
         let p = Point3::from(positions[vertex_id as usize]);
         let prim = &self.primitives[primitive_id as usize];
         let sd = prim.eval(p);
@@ -317,7 +392,22 @@ impl ContactModel for IpcRigidContact {
 impl<M: crate::material::Material> super::ActivePairsFor<M> for IpcRigidContact {
     // `vid as VertexId` / `pid as u32` are Vec-iteration indices (see per_pair_readout).
     #[allow(clippy::cast_possible_truncation)]
-    fn active_pairs(&self, _mesh: &dyn Mesh<M>, positions: &[Vec3]) -> Vec<ContactPair> {
+    fn active_pairs(&self, mesh: &dyn Mesh<M>, positions: &[Vec3]) -> Vec<ContactPair> {
+        // A quadratic (Tet10) mesh surfaces six-node boundary faces → the
+        // surface-integrated face barrier (contact restricted to the boundary
+        // surface). A linear mesh returns `None` → the per-vertex loop, which
+        // is byte-identical to the pre-rung-8b path (Tet4 unchanged).
+        mesh.boundary_faces6().map_or_else(
+            || self.active_vertex_pairs(positions),
+            |faces6| self.active_face_pairs(faces6, positions, mesh.positions()),
+        )
+    }
+}
+
+impl IpcRigidContact {
+    // `vid as VertexId` / `pid as u32` are Vec-iteration indices (see per_pair_readout).
+    #[allow(clippy::cast_possible_truncation)]
+    fn active_vertex_pairs(&self, positions: &[Vec3]) -> Vec<ContactPair> {
         let mut pairs = Vec::new();
         for (vid, &p) in positions.iter().enumerate() {
             let p_pt = Point3::from(p);
@@ -331,5 +421,78 @@ impl<M: crate::material::Material> super::ActivePairsFor<M> for IpcRigidContact 
             }
         }
         pairs
+    }
+
+    // `pid as u32` is a Vec-iteration index (see per_pair_readout).
+    #[allow(clippy::cast_possible_truncation)]
+    fn active_face_pairs(
+        &self,
+        faces6: &[[VertexId; 6]],
+        positions: &[Vec3],
+        rest_positions: &[Vec3],
+    ) -> Vec<ContactPair> {
+        let mut pairs = Vec::new();
+        for face in faces6 {
+            // Rest (reference) area weight — the straight-edged rest face's
+            // corner-triangle area (rest positions, not the deformed ones), so
+            // the barrier weight is a per-face constant.
+            let rest_area = Self::face_rest_area(face, rest_positions);
+            for (pid, prim) in self.primitives.iter().enumerate() {
+                // Emit the face for this primitive if any of its six nodes is
+                // within the barrier band. A conservative over-approximation:
+                // an included-but-marginally-inactive face contributes ~0
+                // (every Gauss point outside the band yields zero scalars), so
+                // over-inclusion is harmless while never dropping an active
+                // face. (An interior-only dip below d̂ with all six nodes above
+                // is not represented — acceptable for the near-flat contact
+                // faces rung 8b targets; the curved surface is rung 8c.)
+                let active = face.iter().any(|&vid| {
+                    self.pair_is_active(prim.eval(Point3::from(positions[vid as usize])))
+                });
+                if active {
+                    pairs.push(ContactPair::Face {
+                        nodes: *face,
+                        primitive_id: pid as u32,
+                        rest_area,
+                    });
+                }
+            }
+        }
+        pairs
+    }
+
+    /// Rest-configuration physical area of a P2 face — the corner triangle's
+    /// area at the rest positions (the straight-edged rest face is planar, so
+    /// the midsides sit at edge midpoints and do not change the area).
+    fn face_rest_area(face: &[VertexId; 6], rest_positions: &[Vec3]) -> f64 {
+        let x0 = rest_positions[face[0] as usize];
+        let x1 = rest_positions[face[1] as usize];
+        let x2 = rest_positions[face[2] as usize];
+        0.5 * (x1 - x0).cross(&(x2 - x0)).norm()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Absolute pin on the rest-area weight: a right triangle with legs 3 and 4
+    /// has area 6. `rest_area` is a shared multiplicative scale on the face
+    /// energy/gradient/Hessian, so every self-consistency and FD gate cancels
+    /// it — only this independent check guards the `0.5·|cross|` formula
+    /// (triangle, not parallelogram) and the corner-node triple.
+    #[test]
+    fn face_rest_area_is_the_triangle_area() {
+        let pos = [
+            Vec3::new(0.0, 0.0, 0.0), // c0
+            Vec3::new(3.0, 0.0, 0.0), // c1
+            Vec3::new(0.0, 4.0, 0.0), // c2
+            Vec3::new(1.5, 0.0, 0.0), // midsides — not read by the corner-area formula
+            Vec3::new(1.5, 2.0, 0.0),
+            Vec3::new(0.0, 2.0, 0.0),
+        ];
+        let face = [0, 1, 2, 3, 4, 5];
+        let a = IpcRigidContact::face_rest_area(&face, &pos);
+        assert!((a - 6.0).abs() < 1e-14, "expected triangle area 6, got {a}");
     }
 }
