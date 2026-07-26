@@ -24,10 +24,10 @@
 //! **What this rung does and does not establish.** It establishes that a
 //! higher-order element materially reduces the curved-patch over-stiffness at
 //! this χ. It does **not** attribute the +8 % residual — a single-χ net-force
-//! measurement cannot separate the still-inconsistent node-collocated contact
-//! patch (a known un-fixed contributor, ladder **rung 8**'s remit) from oracle
-//! (Garcia-correction) error, residual element stiffness, or incomplete mesh
-//! convergence. And note the basis: `#676`'s headline "~9 %" is Tet4's
+//! measurement cannot separate the node-collocated contact patch (inconsistent
+//! as measured at 6d; the node-collocated contact was ladder **rung 8**'s remit,
+//! since landed at 8b–8d) from oracle (Garcia-correction) error, residual
+//! element stiffness, or incomplete mesh convergence. And note the basis: `#676`'s headline "~9 %" is Tet4's
 //! *mesh-converged* floor (extrapolated over three χ); the numbers here are a
 //! *single* χ (= 0.50), where Tet4 itself reads +13 %, not +9 %. A Tet10
 //! mesh-converged floor would need its own three-χ sweep at ~3× the 60-min
@@ -55,14 +55,17 @@
 //! own docstring attributes the floor to "Tet4 element over-stiffness on the
 //! curved contact patch" and names Tet10 as the fix. This file tests that.
 //!
-//! **Scope, stated up front: this is the NET-FORCE metric only.** Contact here
-//! is a blind per-vertex loop against an analytic rigid SDF, so Tet10's midside
-//! nodes automatically carry barrier force with zero contact-code change — but
-//! node-collocated barriers on a quadratic face are *inconsistent* (under
-//! uniform pressure a quadratic triangle loads midsides, not corners), so the
-//! **local** pressure/patch mechanics stay wrong until ladder rung 8's
-//! surface-integrated barrier. `F_FEM` is a robust force sum and is unaffected;
-//! `peak_contact_pressure` is not, and is not read here.
+//! **Scope, stated up front: this is the NET-FORCE metric only.** As measured
+//! (6d, before rung 8b), contact was a blind per-vertex loop against an analytic
+//! rigid SDF, so Tet10's midside nodes automatically carried barrier force with
+//! zero contact-code change — but node-collocated barriers on a quadratic face
+//! are *inconsistent* (under uniform pressure a quadratic triangle loads
+//! midsides, not corners), so the **local** pressure/patch mechanics were wrong.
+//! `F_FEM` is a robust force sum and is unaffected by that; `peak_contact_pressure`
+//! is not, and is not read here. (Rung 8b since replaced the solver's contact
+//! with a surface-integrated FACE barrier and 8d the readout with a
+//! face-consistent one, so a re-run differs from these committed numbers — see
+//! [`TET10_RATIO`].)
 //!
 //! ## ★ The node-density control, and why it is mandatory
 //!
@@ -169,22 +172,23 @@ const MAX_EXPECTED_ITERS: usize = 40;
 const TET4_RATIO: f64 = 1.1303;
 /// Tet10 `RATIO` at χ = 0.50 — the demand-#1 measurement.
 ///
-/// ⚠ **Stale for a deliberate re-run since rung 8d (face-consistent pressure
-/// readout).** These Tet10 constants were measured when `per_pair_readout`
-/// summed the PER-VERTEX barrier force over the deformed vertices; rung 8d makes
-/// the Tet10 readout FACE-consistent (per-node forces from the solver's
-/// face-integrated barrier, corners ~0), so `f_fem` (a `force_on_soft.z` sum)
-/// and the node set behind `mean_sd` both change on a re-run. The probe is
-/// `#[ignore]`d (never in CI), so this does not fail any live job; the number is
-/// left as the recorded per-vertex-readout measurement rather than paying the
-/// ~60-minute Tet10 solve to re-measure it under the face readout (as rung 8b
-/// likewise left it — the solver already used face contact from 8b). A
-/// face-readout demand-#1 re-measurement is a future revisit.
+/// ⚠ **Stale for a deliberate re-run since rung 8b.** The `RATIO`'s `f_fem` is a
+/// force sum over `per_pair_readout` at the *solved* positions, measured at 6d
+/// (#693) when the Tet10 solver used per-vertex contact. Two later rungs each
+/// move it: rung **8b** (#696) switched the *solver* to the surface-integrated
+/// FACE barrier → different converged positions → different `f_fem` already
+/// then; rung **8d** additionally makes the *readout* face-consistent (per-node
+/// forces from the solver's face barrier, corners ~0), changing the aggregation
+/// too. So both `f_fem` and the node set behind `mean_sd` change on a re-run.
+/// The probe is `#[ignore]`d (never in CI), so this fails no live job; the
+/// number is left as the recorded 6d per-vertex measurement rather than paying
+/// the ~60-minute Tet10 solve to re-measure. A face-contact demand-#1
+/// re-measurement is a future revisit.
 const TET10_RATIO: f64 = 1.0803;
 /// Tet4 mean standoff `sd/δ` over active pairs at the final pose.
 const TET4_MEAN_SD_OVER_DELTA: f64 = 0.04213;
 /// Tet10 mean standoff `sd/δ` over active pairs at the final pose.
-/// ⚠ Stale for a deliberate re-run since rung 8d — see [`TET10_RATIO`].
+/// ⚠ Stale for a deliberate re-run since rung 8b — see [`TET10_RATIO`].
 const TET10_MEAN_SD_OVER_DELTA: f64 = 0.04607;
 
 /// Relative regression band on the pinned scalars. The probes never run in CI

@@ -181,6 +181,12 @@ fn flat_plane_face_readout_is_faithful_and_matches_solver() {
 
     // (ii) faithful decomposition: pressure·area·n̂ reconstructs force_on_soft for
     // every well-defined (area > 0) node, and the sum reconstructs the total.
+    // NOTE: this is a by-CONSTRUCTION self-consistency check (pressure =
+    // |force|/area and normal = force/‖force‖, so p·a·n̂ ≡ force whenever area,
+    // ‖force‖ > 0) — it verifies the readout's own fields cohere, i.e. a
+    // consumer can decompose without leaking/inventing force. It carries no
+    // independent force-correctness power on its own; that lives in gate (iii)
+    // above (force == the independent solver residual). Both are asserted.
     let mut sum_recon = Vec3::zeros();
     let mut sum_force = Vec3::zeros();
     for r in &readouts {
