@@ -123,6 +123,33 @@ fn face_shape(u: f64, v: f64) -> [f64; 6] {
     ]
 }
 
+/// P2 triangle shape-function gradients `(∂N/∂u, ∂N/∂v)` at parametric
+/// `(u, v)`, canonical order `[c0, c1, c2, m01, m12, m02]` (`L0 = 1-u-v`). The
+/// isoparametric surface tangents are `∂x/∂u = Σ_i (∂N_i/∂u) x_i` and likewise
+/// for `v`, so the deformed area element is `J_A = ‖∂x/∂u × ∂x/∂v‖` — the
+/// weight [`face_node_areas`] integrates for the consistent-P2 tributary.
+fn face_shape_grad(u: f64, v: f64) -> ([f64; 6], [f64; 6]) {
+    let l0 = 1.0 - u - v;
+    (
+        [
+            -(4.0 * l0 - 1.0),
+            4.0 * u - 1.0,
+            0.0,
+            4.0 * (l0 - u),
+            4.0 * v,
+            -4.0 * v,
+        ],
+        [
+            -(4.0 * l0 - 1.0),
+            0.0,
+            4.0 * v - 1.0,
+            -4.0 * u,
+            4.0 * u,
+            4.0 * (l0 - v),
+        ],
+    )
+}
+
 /// Isoparametric current position at parametric `(u, v)`: `x = Σ_i N_i x_i`.
 fn face_point(nodes: &[Vec3; 6], n: &[f64; 6]) -> Vec3 {
     let mut x = Vec3::zeros();
@@ -130,6 +157,54 @@ fn face_point(nodes: &[Vec3; 6], n: &[f64; 6]) -> Vec3 {
         x += n[i] * nodes[i];
     }
     x
+}
+
+/// Consistent-P2 **deformed** tributary area per face node —
+/// `a_i = ∫_Γ_def N_i dA = 0.5 · Σ_q ŵ_q N_i(ξ_q) J_A(ξ_q)` over the *current*
+/// (deformed) face, where `J_A = ‖∂x/∂u × ∂x/∂v‖` is the deformed area element
+/// and `0.5` is the parametric reference-triangle area. Used by the
+/// **pressure readout** ([`IpcRigidContact::per_pair_readout`](super::IpcRigidContact::per_pair_readout),
+/// rung 8d) to spread each node's face-barrier force over its real-time surface
+/// patch.
+///
+/// **Deformed, not rest — deliberately.** The barrier *weight* is the face's
+/// **rest** area (rung 8b: a non-penetration barrier is a function of the normal
+/// gap only), but a pressure readout reports the force spread over the
+/// **deformed** patch as it is *now* (a squished buffer spreads over more area).
+/// These two areas differ on purpose; see the
+/// [`ContactPairReadout::pressure`](super::ContactPairReadout::pressure) field docs.
+///
+/// **Properties** (both held by tests below, and by the rung-8d invariant gate):
+/// - **Partition** — `Σ_i a_i` equals the face's same-rule deformed quadrature
+///   area exactly, because `Σ_i N_i ≡ 1` (partition of unity). Summed over a
+///   mesh's active faces, the node areas partition the whole deformed contact
+///   surface with no leaked or invented area.
+/// - **Flat special case** — on a straight-edged deformed face (midsides at edge
+///   midpoints, constant `J_A`) the corner areas vanish exactly
+///   (`∫ N_corner dA = 0`) and each midside carries `A_def / 3`. On a *curved*
+///   deformed patch a corner area is small and may be slightly negative
+///   (`N_corner < 0` near the mid-edges); such a node reports `NaN` pressure
+///   (`area ≤ 0`) and is filtered from
+///   [`peak_contact_pressure`](super::peak_contact_pressure) — the honest
+///   behaviour, since corners carry ~0 face-barrier force.
+pub(crate) fn face_node_areas(nodes: &[Vec3; 6]) -> [f64; 6] {
+    let mut areas = [0.0; 6];
+    for &(u, v, w) in &FACE_GP {
+        let n = face_shape(u, v);
+        let (dnu, dnv) = face_shape_grad(u, v);
+        let mut dxu = Vec3::zeros();
+        let mut dxv = Vec3::zeros();
+        for i in 0..6 {
+            dxu += dnu[i] * nodes[i];
+            dxv += dnv[i] * nodes[i];
+        }
+        let j_a = dxu.cross(&dxv).norm();
+        // 0.5 = area of the parametric reference triangle {u,v ≥ 0, u+v ≤ 1}.
+        for i in 0..6 {
+            areas[i] += 0.5 * w * n[i] * j_a;
+        }
+    }
+    areas
 }
 
 /// Surface-integrated barrier energy `E = A_rest · Σ_q ŵ_q b(sd(x_q))`.
@@ -233,6 +308,100 @@ mod tests {
         assert!((sum - 1.0).abs() < 1e-15);
     }
 
+    // ---- Rung 8d: the consistent-P2 deformed tributary `face_node_areas`,
+    // the pressure readout's area decomposition. ----
+
+    /// Same-rule deformed face area `0.5 · Σ_q ŵ_q J_A(ξ_q)` — the reference the
+    /// node areas must partition (a straight-edged face's area exactly; a curved
+    /// face's degree-2 quadrature estimate).
+    fn face_area_quadrature(nodes: &[Vec3; 6]) -> f64 {
+        let mut area = 0.0;
+        for &(u, v, w) in &FACE_GP {
+            let (dnu, dnv) = face_shape_grad(u, v);
+            let mut dxu = Vec3::zeros();
+            let mut dxv = Vec3::zeros();
+            for i in 0..6 {
+                dxu += dnu[i] * nodes[i];
+                dxv += dnv[i] * nodes[i];
+            }
+            area += 0.5 * w * dxu.cross(&dxv).norm();
+        }
+        area
+    }
+
+    /// A straight-edged (flat) P2 face: corner tributaries vanish exactly
+    /// (`∫ N_corner dA = 0`), each midside carries `A_def / 3`, and the six sum
+    /// to the deformed area. The absolute midside value is the independent pin
+    /// (a legs-3-4 right triangle has area 6, so each midside area is 2), read
+    /// straight off geometry — no re-solve, so a shared-scale error cannot hide.
+    #[test]
+    fn node_areas_flat_face_corners_zero_midsides_third() {
+        let z = 0.05;
+        let c = [
+            Vec3::new(0.0, 0.0, z),
+            Vec3::new(3.0, 0.0, z),
+            Vec3::new(0.0, 4.0, z),
+        ];
+        let nodes = [
+            c[0],
+            c[1],
+            c[2],
+            (c[0] + c[1]) * 0.5,
+            (c[1] + c[2]) * 0.5,
+            (c[0] + c[2]) * 0.5,
+        ];
+        let a = face_node_areas(&nodes);
+        let a_def = 6.0; // ½·|3·4| = 6
+        for (i, &ai) in a.iter().take(3).enumerate() {
+            assert!(ai.abs() < 1e-13, "corner {i} area {ai:e} must vanish");
+        }
+        for (i, &ai) in a.iter().enumerate().skip(3) {
+            assert!(
+                (ai - a_def / 3.0).abs() < 1e-13,
+                "midside {i} area {ai} must be A_def/3 = {}",
+                a_def / 3.0,
+            );
+        }
+        let sum: f64 = a.iter().sum();
+        assert!(
+            (sum - a_def).abs() < 1e-13,
+            "Σ area {sum} must equal deformed area {a_def}",
+        );
+    }
+
+    /// Partition of unity holds on a genuinely CURVED deformed patch (midsides
+    /// pushed off the edge midpoints, varied heights): `Σ_i a_i` equals the
+    /// same-rule deformed quadrature area *exactly* (`Σ_i N_i ≡ 1`), so the node
+    /// areas neither leak nor invent area. On such a patch a corner area may be
+    /// small and negative (the readout NaN-filters it) — asserted here so the
+    /// property is a committed record, not a claim.
+    #[test]
+    fn node_areas_partition_on_curved_patch() {
+        let nodes = [
+            Vec3::new(0.00, 0.00, 0.030),
+            Vec3::new(1.00, 0.10, 0.012),
+            Vec3::new(0.15, 0.90, 0.040),
+            Vec3::new(0.55, 0.02, 0.055),  // m01 bulged off the midpoint
+            Vec3::new(0.62, 0.55, -0.030), // m12 dented
+            Vec3::new(0.05, 0.50, 0.070),  // m02 bulged
+        ];
+        let a = face_node_areas(&nodes);
+        let sum: f64 = a.iter().sum();
+        let quad = face_area_quadrature(&nodes);
+        assert!(
+            (sum - quad).abs() < 1e-12,
+            "Σ area {sum} must equal same-rule face area {quad} (partition of unity)",
+        );
+        // A corner tributary is small on a curved patch, and here at least one
+        // is ≤ 0 — the readout maps that to a NaN pressure, filtered from the
+        // peak (corners carry ~0 barrier force).
+        assert!(
+            a.iter().take(3).any(|&ai| ai <= 0.0),
+            "a curved patch is expected to drive a corner area ≤ 0, got {:?}",
+            &a[..3],
+        );
+    }
+
     /// A flat face at uniform pressure: corner gradient contributions vanish
     /// exactly (`∫ N_corner dA = 0`), midsides carry the load, and every force is
     /// along the normal (no spurious tangential component — the rest-area
@@ -321,29 +490,9 @@ mod tests {
             let r = sd - d_hat;
             -2.0 * r * (sd / d_hat).ln() - r * r / sd
         };
-        // Test-local P2 shape gradients (∂N/∂u, ∂N/∂v) for the deformed area
-        // element J_A = ‖∂x/∂u × ∂x/∂v‖.
-        let shape_grad = |u: f64, v: f64| -> ([f64; 6], [f64; 6]) {
-            let l0 = 1.0 - u - v;
-            (
-                [
-                    -(4.0 * l0 - 1.0),
-                    4.0 * u - 1.0,
-                    0.0,
-                    4.0 * (l0 - u),
-                    4.0 * v,
-                    -4.0 * v,
-                ],
-                [
-                    -(4.0 * l0 - 1.0),
-                    0.0,
-                    4.0 * v - 1.0,
-                    -4.0 * u,
-                    4.0 * u,
-                    4.0 * (l0 - v),
-                ],
-            )
-        };
+        // P2 shape gradients (∂N/∂u, ∂N/∂v) for the deformed area element
+        // J_A = ‖∂x/∂u × ∂x/∂v‖ (the same production helper `face_node_areas` uses).
+        let shape_grad = face_shape_grad;
         let rest_area = 0.5; // unit right triangle
         // Shipped rest-area gradient: purely normal.
         let g_rest = face_gradient(&nodes, rest_area, |x: Vec3| FaceBarrierEval {

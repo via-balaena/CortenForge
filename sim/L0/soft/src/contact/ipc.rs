@@ -51,6 +51,7 @@ use crate::{
     sdf_bridge::Sdf,
 };
 use nalgebra::{Matrix3, Point3};
+use std::collections::BTreeMap;
 
 /// Default barrier stiffness (the `κ` multiplier on `b`).
 pub(crate) const IPC_KAPPA_DEFAULT: f64 = 1.0e4;
@@ -144,23 +145,53 @@ impl IpcRigidContact {
         })
     }
 
-    /// Per-active-pair readout (vertex position, signed distance, outward normal,
-    /// and barrier force on the soft side `−κ·b'·n̂`) — the IPC analog of
+    /// Per-active-pair readout (position, signed distance, contact-force
+    /// direction, and barrier force on the soft side) — the IPC analog of
     /// `PenaltyRigidContact::per_pair_readout`, the surface the coupling and the
-    /// keystone factors consume. Same walk order / band gate as
-    /// [`ActivePairsFor::active_pairs`](super::ActivePairsFor::active_pairs).
+    /// keystone factors consume.
+    ///
+    /// **Element-order aware (rung 8d).** On a linear (Tet4) mesh — no six-node
+    /// boundary faces — this is the historical **per-vertex** walk: each vertex
+    /// tested against every primitive, the per-vertex barrier force
+    /// `−κ·b'·n̂`, and a `boundary_vertex_areas` tributary (same walk order /
+    /// band gate as [`ActivePairsFor::active_pairs`](super::ActivePairsFor::active_pairs)
+    /// on a linear mesh). On a quadratic (Tet10) mesh — where the *solver*
+    /// contact is the surface-integrated [`ContactPair::Face`] barrier (corners
+    /// carry ~0, midsides carry the load) — a per-vertex readout would report the
+    /// wrong force distribution and NaN-drop the loaded midsides (they lie on no
+    /// three-node corner face → zero tributary). So a Tet10 mesh takes the
+    /// **face-consistent** path (`per_face_node_readout`): per-node forces
+    /// reconstructed from the same face barrier the solver scatters, with a
+    /// consistent-P2 deformed tributary. The two paths coincide on a linear mesh
+    /// (which has no `boundary_faces6`), so Tet4 output is byte-identical to the
+    /// pre-8d path.
     ///
     /// # Panics
     ///
     /// `positions` must cover the mesh's full `VertexId` space (see
     /// [`PenaltyRigidContact::per_pair_readout`](super::PenaltyRigidContact::per_pair_readout)
-    /// for the shared precondition) — the per-pair tributary areas index
-    /// `mesh.boundary_faces()` into `positions`.
+    /// for the shared precondition) — both paths index `positions` by
+    /// `VertexId` (the per-vertex path additionally indexes
+    /// `mesh.boundary_faces()`; the face path `mesh.boundary_faces6()`).
+    #[must_use]
+    pub fn per_pair_readout<M: crate::material::Material>(
+        &self,
+        mesh: &dyn Mesh<M>,
+        positions: &[Vec3],
+    ) -> Vec<ContactPairReadout> {
+        mesh.boundary_faces6().map_or_else(
+            || self.per_vertex_readout(mesh, positions),
+            |faces6| self.per_face_node_readout(faces6, mesh, positions),
+        )
+    }
+
+    /// The historical per-vertex readout — the pre-rung-8d path, unchanged.
+    /// Selected by [`Self::per_pair_readout`] for any mesh without six-node
+    /// boundary faces (every linear mesh), so its output stays byte-identical.
     // `vid as VertexId` / `pid as u32` are Vec-iteration indices, bounded by mesh /
     // primitive counts that fit in u32 (mirrors the penalty/active_pairs idiom).
     #[allow(clippy::cast_possible_truncation)]
-    #[must_use]
-    pub fn per_pair_readout<M: crate::material::Material>(
+    fn per_vertex_readout<M: crate::material::Material>(
         &self,
         mesh: &dyn Mesh<M>,
         positions: &[Vec3],
@@ -197,6 +228,111 @@ impl IpcRigidContact {
             }
         }
         readouts
+    }
+
+    /// Face-consistent per-node readout (rung 8d) — one readout per
+    /// `(node, primitive)` reached by an active six-node boundary face.
+    ///
+    /// For each active `(face, primitive)` (any of the six nodes within the
+    /// barrier band — the same predicate as
+    /// [`active_face_pairs`](Self::active_face_pairs)) this accumulates, per
+    /// node:
+    /// - **force** `= −Σ_faces face_gradient_i` — the negation of the *same*
+    ///   [`face::face_gradient`] the solver scatters as the contact residual, so
+    ///   the reported per-node forces match the FACE-integrated contact
+    ///   (corners ~0, midsides loaded), *not* the per-vertex barrier;
+    /// - **tributary** `= Σ_faces ∫ N_i dA_def` — the consistent-P2 deformed
+    ///   tributary ([`face::face_node_areas`]) over the node's active incident
+    ///   faces (a partition of the deformed contact surface).
+    ///
+    /// The reported `normal` is the **contact-force direction** `force / ‖force‖`
+    /// (a corner's ~0 force falls back to the SDF normal). The per-node force is
+    /// a Gauss-point sum whose direction is not any single SDF normal on a
+    /// *curved* primitive, so reporting the force direction is what makes
+    /// `pressure · area · n̂` reconstruct `force_on_soft` exactly (the
+    /// faithful-decomposition invariant); on a flat/near-flat face it equals the
+    /// primitive normal. Corner nodes report a `NaN` pressure (`area ≤ 0`) and
+    /// are filtered from [`peak_contact_pressure`](super::peak_contact_pressure)
+    /// — matching the solver, which loads them ~0.
+    ///
+    /// Emit order is ascending `(vertex_id, primitive_id)` (the `BTreeMap` key),
+    /// so the readout is deterministic.
+    // `pid as u32` is a Vec-iteration index (see `per_vertex_readout`).
+    #[allow(clippy::cast_possible_truncation)]
+    fn per_face_node_readout<M: crate::material::Material>(
+        &self,
+        faces6: &[[VertexId; 6]],
+        mesh: &dyn Mesh<M>,
+        positions: &[Vec3],
+    ) -> Vec<ContactPairReadout> {
+        let rest_positions = mesh.positions();
+        // Per (node, primitive): accumulated (force_on_soft, deformed tributary),
+        // over the node's active incident faces. BTreeMap → deterministic order.
+        let mut acc: BTreeMap<(VertexId, u32), (Vec3, f64)> = BTreeMap::new();
+        for face in faces6 {
+            // Barrier weight = REST area (rung 8b); the tributary below is the
+            // DEFORMED patch — the two differ on purpose (see the readout docs).
+            let rest_area = Self::face_rest_area(face, rest_positions);
+            let deformed = Self::gather_face(face, positions);
+            let areas = face::face_node_areas(&deformed);
+            for (pid, prim) in self.primitives.iter().enumerate() {
+                let pid = pid as u32;
+                // Match the SOLVER's active-face set exactly (node-based
+                // predicate, as in `active_face_pairs`) so the reported forces
+                // reconstruct its residual.
+                let node_active = face.iter().any(|&vid| {
+                    self.pair_is_active(prim.eval(Point3::from(positions[vid as usize])))
+                });
+                if !node_active {
+                    continue;
+                }
+                let g = face::face_gradient(&deformed, rest_area, self.face_eval(pid));
+                // A node-active face whose Gauss points are all outside the band
+                // (e.g. a side face merely touching the contact edge) exerts no
+                // barrier force — its gradient is exactly zero. It contributes ~0
+                // to the solver residual, so to keep the pressure tributary the
+                // genuine contact patch it must not spread phantom area either;
+                // skip it (`norm_squared > 0.0` is a relational test — not a
+                // float-equality lint site).
+                if !g.iter().any(|gi| gi.norm_squared() > 0.0) {
+                    continue;
+                }
+                for i in 0..6 {
+                    let entry = acc
+                        .entry((face[i], pid))
+                        .or_insert_with(|| (Vec3::zeros(), 0.0));
+                    entry.0 -= g[i]; // force_on_soft = −gradient
+                    entry.1 += areas[i];
+                }
+            }
+        }
+        acc.into_iter()
+            .map(
+                |((vertex_id, primitive_id), (force_on_soft, tributary_area))| {
+                    let position = positions[vertex_id as usize];
+                    let prim = &self.primitives[primitive_id as usize];
+                    let sd = prim.eval(Point3::from(position));
+                    let fmag = force_on_soft.norm();
+                    let normal = if fmag > 0.0 {
+                        force_on_soft / fmag
+                    } else {
+                        prim.grad(Point3::from(position))
+                    };
+                    ContactPairReadout {
+                        pair: ContactPair::Vertex {
+                            vertex_id,
+                            primitive_id,
+                        },
+                        position,
+                        sd,
+                        normal,
+                        force_on_soft,
+                        tributary_area,
+                        pressure: super::contact_pressure(force_on_soft, tributary_area),
+                    }
+                },
+            )
+            .collect()
     }
 
     /// Per-point barrier evaluator for a P2 face against primitive

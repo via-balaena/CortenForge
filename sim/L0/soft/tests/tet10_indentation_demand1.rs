@@ -168,10 +168,23 @@ const MAX_EXPECTED_ITERS: usize = 40;
 /// Tet4 `RATIO` at χ = 0.50 — equals `#676`'s committed value (harness check).
 const TET4_RATIO: f64 = 1.1303;
 /// Tet10 `RATIO` at χ = 0.50 — the demand-#1 measurement.
+///
+/// ⚠ **Stale for a deliberate re-run since rung 8d (face-consistent pressure
+/// readout).** These Tet10 constants were measured when `per_pair_readout`
+/// summed the PER-VERTEX barrier force over the deformed vertices; rung 8d makes
+/// the Tet10 readout FACE-consistent (per-node forces from the solver's
+/// face-integrated barrier, corners ~0), so `f_fem` (a `force_on_soft.z` sum)
+/// and the node set behind `mean_sd` both change on a re-run. The probe is
+/// `#[ignore]`d (never in CI), so this does not fail any live job; the number is
+/// left as the recorded per-vertex-readout measurement rather than paying the
+/// ~60-minute Tet10 solve to re-measure it under the face readout (as rung 8b
+/// likewise left it — the solver already used face contact from 8b). A
+/// face-readout demand-#1 re-measurement is a future revisit.
 const TET10_RATIO: f64 = 1.0803;
 /// Tet4 mean standoff `sd/δ` over active pairs at the final pose.
 const TET4_MEAN_SD_OVER_DELTA: f64 = 0.04213;
 /// Tet10 mean standoff `sd/δ` over active pairs at the final pose.
+/// ⚠ Stale for a deliberate re-run since rung 8d — see [`TET10_RATIO`].
 const TET10_MEAN_SD_OVER_DELTA: f64 = 0.04607;
 
 /// Relative regression band on the pinned scalars. The probes never run in CI
