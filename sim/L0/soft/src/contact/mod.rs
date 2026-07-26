@@ -158,21 +158,39 @@ pub struct ContactPairReadout {
     pub sd: f64,
     /// Outward-pointing unit normal of the rigid primitive evaluated
     /// at `position`.
+    ///
+    /// **Face-consistent (Tet10) readouts report the contact-FORCE
+    /// direction** `force_on_soft / ‖force_on_soft‖` instead (rung 8d).
+    /// A face node's force is a Gauss-point sum of barrier contributions
+    /// whose direction is not any single SDF normal on a *curved*
+    /// primitive; reporting the force direction is what keeps the
+    /// [`pressure`](Self::pressure) decomposition invariant exact. On a
+    /// flat/near-flat face the two coincide (the SDF normal is constant),
+    /// so this only diverges from the primitive normal under genuinely
+    /// curved contact.
     pub normal: Vec3,
     /// Force the contact model exerts on the soft side at this pair —
     /// see "Sign convention" in the type docs.
     pub force_on_soft: Vec3,
     /// Tributary surface area carried by the contacted vertex on the
-    /// deformed boundary — the barycentric lumped area
-    /// `⅓·Σ area(f)` over boundary triangles incident to the vertex
-    /// (see [`boundary_vertex_areas`](crate::boundary_vertex_areas)),
-    /// evaluated at the same readout-time `positions`.
+    /// deformed boundary. For a per-vertex (linear-mesh) readout this is
+    /// the barycentric lumped area `⅓·Σ area(f)` over boundary triangles
+    /// incident to the vertex (see
+    /// [`boundary_vertex_areas`](crate::boundary_vertex_areas)); for a
+    /// face-consistent (Tet10) readout it is the consistent-P2 deformed
+    /// tributary `Σ_faces ∫ N_i dA_def` over the node's active incident
+    /// faces (rung 8d). Both are evaluated at the same readout-time
+    /// `positions` (the *deformed* patch) — note the surface-integrated
+    /// barrier is weighted by the face's *rest* area, so the barrier
+    /// weight and this pressure tributary are deliberately different
+    /// measures.
     ///
-    /// `0.0` when the contacted vertex lies on no boundary face — an
-    /// *interior* vertex that entered the contact band (the
-    /// `per_pair_readout` walk tests every vertex, not only boundary
-    /// ones), or a degenerate/collapsed surface triangle. This is the
-    /// off-nominal case that drives the [`pressure`](Self::pressure)
+    /// `≤ 0.0` for a vertex with no surface patch — an *interior* vertex
+    /// that entered the band (the per-vertex walk tests every vertex, not
+    /// only boundary ones), a degenerate/collapsed triangle, or a P2
+    /// **corner** node whose consistent tributary `∫ N_corner dA` is zero
+    /// on a flat face and can be slightly negative on a curved one. This
+    /// is the off-nominal case that drives the [`pressure`](Self::pressure)
     /// `NaN` sentinel below.
     pub tributary_area: f64,
     /// Contact pressure at this pair — `|force_on_soft| / tributary_area`,
@@ -206,9 +224,10 @@ pub struct ContactPairReadout {
     ///
     /// The triple `pressure · tributary_area · normal` reconstructs
     /// `force_on_soft` for every well-defined (area `> 0`) pair — exact
-    /// because `normal` is the unit primitive normal (its field
-    /// contract) and the contact force is parallel to it — so
-    /// `Σ pressure·area·n̂ == Σ force_on_soft` over a boundary contact,
+    /// because `normal` is the unit direction of `force_on_soft` (the
+    /// primitive normal for a per-vertex pair, the net force direction for
+    /// a face node; parallel to the force in both cases by construction) —
+    /// so `Σ pressure·area·n̂ == Σ force_on_soft` over a boundary contact,
     /// the faithful-decomposition invariant. (This sum is unaffected by
     /// the per-pair caveat above: the full area cancels in each term.)
     pub pressure: f64,
