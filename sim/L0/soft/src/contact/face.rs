@@ -22,12 +22,17 @@
 //! A non-penetration barrier depends only on the *normal* gap, so it must produce
 //! **normal forces only**. Weighting by the *current* (deformed) area couples the
 //! barrier to tangential stretch and injects a spurious in-plane surface-tension
-//! force (measured ~4.7 % of the normal force, and it loads the corners) — an
-//! artifact, not fidelity. The **rest-area** weight `A_rest` is a per-face
-//! constant, so the barrier gradient is purely `∝ n̂` and the corner shape
-//! functions integrate to exactly zero under uniform pressure (`∫ N_corner dA = 0`)
-//! — the clean consistent P2 load. This is the codimensional-IPC choice, for the
-//! same reason.
+//! force — an artifact, not fidelity. The
+//! `deformed_area_weighting_injects_a_tangential_force` gate below measures this
+//! tangential force at **4.7 %** of the normal force on a flat uniform-pressure
+//! face (a configuration-dependent figure, not a universal constant); deformed
+//! weighting also loads the corners. The **rest-area** weight `A_rest` is a
+//! per-face constant, so the barrier gradient is purely `∝ n̂` and the corner
+//! shape functions integrate to exactly zero under uniform pressure
+//! (`∫ N_corner dA = 0`, held by `uniform_pressure_is_normal_only_corners_zero`)
+//! — the clean consistent P2 load.
+//! (Weighting a contact barrier by a *fixed reference* measure rather than the
+//! deformed one is the standard way to keep it a pure function of the gap.)
 //!
 //! # Gradient and Hessian
 //!
@@ -250,6 +255,126 @@ mod tests {
         );
     }
 
+    /// The decision record for rest- vs deformed-area weighting, held as a
+    /// re-runnable measurement (not a prose claim). On a flat face at uniform
+    /// normal pressure, the shipped **rest-area** gradient is purely normal
+    /// (tangential exactly 0), while the **deformed-area** alternative
+    /// `E = Σ_q ŵ_q b(sd(x_q)) · J_A(x)` injects a spurious *tangential*
+    /// surface-tension force — measured here as a fraction of the normal force.
+    /// A non-penetration barrier depends only on the normal gap, so that
+    /// tangential force is an artifact; this test is why rung 8b weights by rest
+    /// area. (The `~4.7 %` figure cited in the module docs is this measurement.)
+    // The barrier/geometry math reads clearest with conventional single-letter
+    // names (gap `z`, barrier `b`, position `x`, parametric `u`/`v`, corner set
+    // `c`); renaming them would obscure the formulas.
+    #[allow(clippy::many_single_char_names)]
+    #[test]
+    fn deformed_area_weighting_injects_a_tangential_force() {
+        // Flat unit-right-triangle face at a uniform gap z over the plane z = 0.
+        let z = 0.02_f64;
+        let d_hat = 0.05_f64;
+        let c = [
+            Vec3::new(0.0, 0.0, z),
+            Vec3::new(1.0, 0.0, z),
+            Vec3::new(0.0, 1.0, z),
+        ];
+        let nodes = [
+            c[0],
+            c[1],
+            c[2],
+            (c[0] + c[1]) * 0.5,
+            (c[1] + c[2]) * 0.5,
+            (c[0] + c[2]) * 0.5,
+        ];
+        // Real IPC log-barrier scalars at signed distance sd (plane normal ẑ).
+        let b = |sd: f64| -> f64 {
+            let r = sd - d_hat;
+            -(r * r) * (sd / d_hat).ln()
+        };
+        let b_d = |sd: f64| -> f64 {
+            let r = sd - d_hat;
+            -2.0 * r * (sd / d_hat).ln() - r * r / sd
+        };
+        // Test-local P2 shape gradients (∂N/∂u, ∂N/∂v) for the deformed area
+        // element J_A = ‖∂x/∂u × ∂x/∂v‖.
+        let shape_grad = |u: f64, v: f64| -> ([f64; 6], [f64; 6]) {
+            let l0 = 1.0 - u - v;
+            (
+                [
+                    -(4.0 * l0 - 1.0),
+                    4.0 * u - 1.0,
+                    0.0,
+                    4.0 * (l0 - u),
+                    4.0 * v,
+                    -4.0 * v,
+                ],
+                [
+                    -(4.0 * l0 - 1.0),
+                    0.0,
+                    4.0 * v - 1.0,
+                    -4.0 * u,
+                    4.0 * u,
+                    4.0 * (l0 - v),
+                ],
+            )
+        };
+        let rest_area = 0.5; // unit right triangle
+        // Shipped rest-area gradient: purely normal.
+        let g_rest = face_gradient(&nodes, rest_area, |x: Vec3| FaceBarrierEval {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            b: b(x.z),
+            b_d: b_d(x.z),
+            b_dd: 0.0,
+        });
+        let rest_tang = g_rest.iter().map(|g| g.x.hypot(g.y)).fold(0.0, f64::max);
+        assert!(
+            rest_tang < 1e-14,
+            "rest-area gradient must be normal-only, tangential = {rest_tang:e}",
+        );
+
+        // Deformed-area energy E = Σ_q ŵ_q b(sd(x_q)) J_A(x), gradient via FD.
+        let energy_def = |nn: &[Vec3; 6]| -> f64 {
+            let mut e = 0.0;
+            for &(u, v, w) in &FACE_GP {
+                let sh = face_shape(u, v);
+                let (dnu, dnv) = shape_grad(u, v);
+                let x = face_point(nn, &sh);
+                let mut g_u = Vec3::zeros();
+                let mut g_v = Vec3::zeros();
+                for i in 0..6 {
+                    g_u += dnu[i] * nn[i];
+                    g_v += dnv[i] * nn[i];
+                }
+                let j_a = g_u.cross(&g_v).norm();
+                e += w * b(x.z) * j_a;
+            }
+            e
+        };
+        let eps = 1e-7;
+        let mut def_tang = 0.0_f64;
+        let mut def_norm = 0.0_f64;
+        for i in 0..6 {
+            let mut g = Vec3::zeros();
+            for d in 0..3 {
+                let mut np = nodes;
+                np[i][d] += eps;
+                let mut nm = nodes;
+                nm[i][d] -= eps;
+                g[d] = (energy_def(&np) - energy_def(&nm)) / (2.0 * eps);
+            }
+            def_tang = def_tang.max(g.x.hypot(g.y));
+            def_norm = def_norm.max(g.z.abs());
+        }
+        let frac = def_tang / def_norm;
+        eprintln!("deformed-area spurious tangential fraction = {frac:.4}");
+        // The spurious tangential force is ~4.7% of the normal force here —
+        // real, non-negligible, and exactly what rest-area weighting removes.
+        assert!(
+            (0.03..0.06).contains(&frac),
+            "deformed-area tangential fraction {frac:.4} outside the expected ~4.7% band",
+        );
+    }
+
     /// The analytic Face gradient matches a central-difference FD of the exact
     /// energy (a face with `sd` varying across it — varying `b` — against a flat
     /// plane; rest area a fixed weight).
@@ -301,7 +426,13 @@ mod tests {
                     for d in 0..3 {
                         let fd = (gp[i][d] - gm[i][d]) / (2.0 * eps);
                         let a = analytic[i][j][(d, e)];
-                        assert!(a.is_finite(), "H[{i}][{j}]({d},{e}) not finite");
+                        // Assert finiteness of BOTH sides first: `f64::max(x, NaN)
+                        // == x` would otherwise let a NaN slip through the
+                        // max-reduction as a false green.
+                        assert!(
+                            a.is_finite() && fd.is_finite(),
+                            "H[{i}][{j}]({d},{e}) non-finite: analytic {a}, fd {fd}",
+                        );
                         max_diff = max_diff.max((a - fd).abs());
                         max_mag = max_mag.max(a.abs());
                     }

@@ -471,3 +471,28 @@ impl IpcRigidContact {
         0.5 * (x1 - x0).cross(&(x2 - x0)).norm()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Absolute pin on the rest-area weight: a right triangle with legs 3 and 4
+    /// has area 6. `rest_area` is a shared multiplicative scale on the face
+    /// energy/gradient/Hessian, so every self-consistency and FD gate cancels
+    /// it — only this independent check guards the `0.5·|cross|` formula
+    /// (triangle, not parallelogram) and the corner-node triple.
+    #[test]
+    fn face_rest_area_is_the_triangle_area() {
+        let pos = [
+            Vec3::new(0.0, 0.0, 0.0), // c0
+            Vec3::new(3.0, 0.0, 0.0), // c1
+            Vec3::new(0.0, 4.0, 0.0), // c2
+            Vec3::new(1.5, 0.0, 0.0), // midsides — not read by the corner-area formula
+            Vec3::new(1.5, 2.0, 0.0),
+            Vec3::new(0.0, 2.0, 0.0),
+        ];
+        let face = [0, 1, 2, 3, 4, 5];
+        let a = IpcRigidContact::face_rest_area(&face, &pos);
+        assert!((a - 6.0).abs() < 1e-14, "expected triangle area 6, got {a}");
+    }
+}

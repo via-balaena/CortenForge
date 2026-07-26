@@ -27,8 +27,10 @@
 //!   the four corners and the corner positions, which enrichment leaves
 //!   untouched — so [`Tet10Mesh::from_tet4`] copies them straight from the
 //!   source rather than re-deriving them, which keeps them bit-identical
-//!   by construction. (The three-node boundary faces stay corner-only; the
-//!   six-node quadratic boundary faces are ladder rung 8, deferred.)
+//!   by construction. (The three-node `boundary_faces` stay corner-only; the
+//!   six-node quadratic boundary faces are surfaced separately via
+//!   [`Mesh::boundary_faces6`], built from the ten-node connectivity — ladder
+//!   rung 8b, for the surface-integrated face-contact barrier.)
 
 use super::{
     Mesh, MeshAdjacency, QualityMetrics, TetId, VertexId, boundary_faces6_from_tet10,
@@ -305,8 +307,9 @@ mod tests {
         // Per-tet caches keep their length (n_tets is unchanged).
         assert_eq!(tet10.materials().len(), tet4.materials().len());
         assert_eq!(tet10.interface_flags(), tet4.interface_flags());
-        // Boundary faces stay the three-node corner faces (rung 8 upgrades
-        // these to six-node quadratic faces) — bit-identical to the source.
+        // The three-node `boundary_faces` stay corner-only, bit-identical to
+        // the source (the six-node faces live in the separate `boundary_faces6`
+        // cache — see `boundary_faces6_corner_triples_match_boundary_faces`).
         assert_eq!(tet10.boundary_faces(), tet4.boundary_faces());
         assert_eq!(tet10.quality().signed_volume, tet4.quality().signed_volume,);
     }

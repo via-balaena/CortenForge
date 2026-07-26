@@ -23,16 +23,17 @@
 > face-contact barrier** (8a = the `ContactPair::Face` + `#[non_exhaustive]`
 > plumbing; 8b = the surface-integrated face barrier physics — §5 step 8).
 > **★ RUNG 8b DECISION (a build-time finding that reverses the §3.5/§5-8/§7
-> "deformed-area" framing): the face barrier is weighted by the face's REST
-> area, `E = A_rest · Σ_q ŵ_q b(sd(x_q))`, NOT the deformed area.** A spike
-> measured that deformed-area weighting (`∫ b dA_current`) exerts a spurious
-> ~4.7 % *tangential* surface-tension force under uniform normal pressure and
+> "deformed-area" framing — see the ⚠ note in §3.5): the face barrier is
+> weighted by the face's REST area, `E = A_rest · Σ_q ŵ_q b(sd(x_q))`, NOT the
+> deformed area.** A committed gate (`deformed_area_weighting_injects_a_tangential_force`)
+> measures that deformed-area weighting (`∫ b dA_current`) exerts a spurious
+> **4.7 %** *tangential* surface-tension force under uniform normal pressure and
 > loads the corners — an artifact, since a non-penetration barrier depends only
 > on the normal gap. Rest area gives the physically-correct **normal-only**
-> consistent P2 load (tangential exactly 0, corners exactly 0 by integration),
-> the codim-IPC choice. So the round-4 audit's `∂E/∂x_i = ∫ b'·n̂·N_i dA` is
-> *exactly right for rest area* (constant `dA_rest`), and its flagged
-> "area-variation term" is deliberately **NOT** carried (it is the artifact).
+> consistent P2 load (tangential exactly 0, corners exactly 0 by integration).
+> Because `dA_rest` is a per-face constant, `∂E/∂x_i = A_rest · Σ_q ŵ_q b'·N_i n̂`
+> is purely normal — the deformed-area gradient's extra area-variation term
+> (`∝ b · ∂(dA)/∂x`) is exactly the artifact, and is deliberately **NOT** carried.
 > **NEXT = rung 8c (isoparametric curved surface + `boundary_vertex_areas`
 > 6-node).** ⚠ **Rung 4 landed
 > via a TWO-CACHE design, not the in-place `ElementGeometry` generalization the
@@ -372,7 +373,12 @@ smoothing, **not** the consistent load — and the old "quadrature only matters
 for varying `b(sd)`" excuse is false, since even *uniform* pressure needs the
 surface integral. **The genuinely-consistent fix is the SURFACE-INTEGRATED
 barrier `E = ∫ b(sd(x)) dA = Σ_q w_q b(sd(x(ξ_q)))` at face Gauss points**,
-gradient distributed via the face shape functions. It is a real face contact
+gradient distributed via the face shape functions. **⚠ SUPERSEDED BY RUNG 8b
+(see the §5 step-8 "RUNG 8a/8b LANDED" note): `dA` is the *rest* (reference)
+area, NOT the deformed area — deformed-area weighting injects a spurious
+tangential surface-tension force (measured 4.7 %), so the rest-area gradient
+`∫ b'·n̂·N_i dA_rest` is normal-only. This paragraph's "deformed-area"
+reading is the pre-8b framing.** It is a real face contact
 primitive (samples the SDF at non-nodal points), so it needs a new
 `ContactPair` variant — **a downstream break** (`ContactPair` is public,
 non-`#[non_exhaustive]`; coupling uses irrefutable `let Vertex{..}` matches
@@ -806,9 +812,11 @@ capture — the isoparametric-surface piece is deferred, §7).
      + `#[non_exhaustive]` (measured blast radius = 38 fail-loud conversions across
      16 files, not "only coupling"; `cf-sim-research` construct-only is safe).
    - **8b** ships the barrier as **`E = A_rest · Σ_q ŵ_q b(sd(x_q))`, REST-area
-     weighted (NOT deformed area)** — a spike measured that `∫ b dA_current` exerts
-     a spurious ~4.7 % *tangential* surface-tension force and loads corners; rest
-     area gives the correct **normal-only** consistent P2 load. Delivered:
+     weighted (NOT deformed area)** — a committed gate
+     (`deformed_area_weighting_injects_a_tangential_force`) measures that
+     `∫ b dA_current` exerts a spurious **4.7 %** *tangential* surface-tension
+     force and loads corners; rest area gives the correct **normal-only**
+     consistent P2 load. Delivered:
      `Mesh::boundary_faces6()` (default `None`, `Some` on `Tet10Mesh`), the
      `contact/face.rs` P2 primitive (shape fns + degree-2 triangle quadrature +
      rest-area weight), `IpcRigidContact::active_pairs` branching Some→face /
@@ -817,8 +825,9 @@ capture — the isoparametric-surface piece is deferred, §7).
      primitive gradient AND Hessian vs FD (`contact::face` unit tests), plus the
      integrated Dirichlet-reaction JVP with face contact active vs a re-solve FD
      (`tet10_face_contact.rs`). The gradient/Hessian are normal-only, so the block
-     is naturally PSD (no SPD projection). The `rung 8b` `∂E/∂x_i = ∫ b'·n̂·N_i dA_rest`
-     is exactly the round-4 audit formula for constant `dA_rest`.
+     is naturally PSD (no SPD projection). The gradient `∂E/∂x_i =
+     ∫ b'·n̂·N_i dA_rest` is the standard consistent-load form `∫ p·N_i dA` for
+     the normal traction `p = b'·n̂` over a constant reference area.
 
    *(Interim note: between 3b and rung 8, Tet10 runs with per-vertex contact —
    correct net force, but `peak_contact_pressure` readouts NaN-drop midside
@@ -921,7 +930,7 @@ into 8a ✅ / 8b ✅ / 8c, built on the proven foundation (§5 rung 8):
 - **Rung 8a ✅ / 8b ✅ = surface-integrated face barrier.** 8a = the
   `#[non_exhaustive]` `ContactPair::Face` variant + downstream fail-loud fixes.
   8b = the barrier `E = A_rest · Σ_q ŵ_q b(sd(x_q))`, **rest-area weighted** (a
-  spike falsified deformed-area weighting — it exerts a spurious ~4.7 %
+  committed gate falsified deformed-area weighting — it exerts a spurious 4.7 %
   tangential surface-tension force; rest area is normal-only, corners ≈ 0). Ships
   **frictionless, fail-loud-guarded** (face-friction reconciliation is a deferred
   later rung). See the §5-step-8 "RUNG 8a/8b LANDED" note.
