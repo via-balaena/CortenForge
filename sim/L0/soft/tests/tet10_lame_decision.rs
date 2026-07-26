@@ -920,6 +920,67 @@ fn solve_and_read(
     cell_size: f64,
     rule: LoadRule,
 ) -> Result<Reading, Box<SolverFailure>> {
+    solve_and_read_impl(order, nu, cell_size, rule, false)
+}
+
+/// The isoparametric forward oracle: curve the Tet10 boundary midsides onto the
+/// true analytic sphere before solving. See
+/// [`tet10_curved_boundary_moves_toward_analytic`].
+fn solve_and_read_curved(
+    order: ElementOrder,
+    nu: f64,
+    cell_size: f64,
+    rule: LoadRule,
+) -> Result<Reading, Box<SolverFailure>> {
+    solve_and_read_impl(order, nu, cell_size, rule, true)
+}
+
+/// Snap a boundary midside (the inscribed chord midpoint of a boundary-face
+/// edge) exactly onto the analytic sphere of its nearest shell. The caller has
+/// already established this is a TRUE boundary midside (topological, via
+/// `boundary_faces6`), so this only picks the shell by proximity.
+fn project_boundary_midside(p: Vec3) -> Vec3 {
+    let r = p.norm();
+    let target = if (r - LAYERED_SPHERE_R_CAVITY).abs() < (r - LAYERED_SPHERE_R_OUTER).abs() {
+        LAYERED_SPHERE_R_CAVITY
+    } else {
+        LAYERED_SPHERE_R_OUTER
+    };
+    p * (target / r)
+}
+
+/// Move the TRUE boundary midsides of a Tet10 sphere mesh onto the analytic
+/// sphere (the isoparametric curved surface). The boundary set is topological
+/// (`boundary_faces6` midside slots `3..6`), NOT a radius band — an interior
+/// midside can share a shell's radius and must stay straight.
+fn curve_sphere_boundary(mesh10: Tet10Mesh) -> Tet10Mesh {
+    let boundary: std::collections::HashSet<[u64; 3]> = mesh10
+        .boundary_faces6()
+        .expect("Tet10Mesh surfaces 6-node boundary faces")
+        .iter()
+        .flat_map(|f| [f[3], f[4], f[5]])
+        .map(|m| {
+            let p = mesh10.positions()[m as usize];
+            [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()]
+        })
+        .collect();
+    mesh10.with_curved_midsides(move |p| {
+        let key = [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
+        if boundary.contains(&key) {
+            project_boundary_midside(p)
+        } else {
+            p
+        }
+    })
+}
+
+fn solve_and_read_impl(
+    order: ElementOrder,
+    nu: f64,
+    cell_size: f64,
+    rule: LoadRule,
+    curve_boundary: bool,
+) -> Result<Reading, Box<SolverFailure>> {
     let lambda = lambda_from_nu(nu);
     // Only the mesh is taken from the scene helper — the harness builds its
     // own boundary conditions and load, because the helper's are Tet4-tuned
@@ -931,7 +992,13 @@ fn solve_and_read(
     let (surface, mesh10) = match order {
         ElementOrder::Tet4 => (surface_conditions(&mesh4, cell_size, rule), None),
         ElementOrder::Tet10 => {
-            let mesh10 = Tet10Mesh::from_tet4(&mesh4);
+            let mut mesh10 = Tet10Mesh::from_tet4(&mesh4);
+            if curve_boundary {
+                // Isoparametric: move the boundary midsides onto the true sphere
+                // so the soft surface the element integrates over is the real
+                // curved geometry, not the inscribed facet chords.
+                mesh10 = curve_sphere_boundary(mesh10);
+            }
             (surface_conditions(&mesh10, cell_size, rule), Some(mesh10))
         }
     };
@@ -1234,6 +1301,115 @@ fn assert_tet10_matches_or_beats_tet4(rule: LoadRule, label: &str) -> Reading {
         rel4 = tet4.rel_err,
     );
     tet10
+}
+
+/// ★ FORWARD ORACLE (the curved isoparametric rung — this rung is
+/// FORWARD-CHANGING, not forward-neutral). Curving the Tet10 boundary midsides
+/// onto the TRUE analytic sphere makes the soft surface the element integrates
+/// over the real curved geometry rather than the inscribed facet chords ("exact
+/// geometry IS the exact physics") — physical corroboration of the element-level
+/// FD gates on the in-tree Lamé oracle, at ν = 0.4 (no locking confound).
+///
+/// ★★ SPIKE-EARNED (do NOT re-derive): the projection must be TOPOLOGICAL. A
+/// first radius-band projector also snapped interior midsides that happened to
+/// share a shell's radius, which distorted interior elements and moved the
+/// reading the WRONG way by ~6e-2. Projecting only the true `boundary_faces6`
+/// midsides gives the sensible result below. (This is why the mesher-projection
+/// rung — topological boundary selection, corners too, inversion guards — is a
+/// separate, non-trivial concern: getting the projection right is its own job.)
+///
+/// ★★ THE FINDING: under the variationally-consistent `Facet` rule (the
+/// physically-meaningful arm, per rung 6c) curving the boundary onto the true
+/// sphere moves the reading TOWARD analytic — over-stiffness 0.0525 → 0.0432, ~18 %
+/// closer — with midside-only projection (corners stay inscribed; a consistent
+/// corners+midsides projection is the mesher rung, expected to help further).
+/// Under `Continuum` the reading OVERSHOOTS (−0.0031 → +0.0069): its straight
+/// accuracy is partly the ~5 % thrust-excess cancelling the element
+/// over-stiffness (rung 6a/6b), and curving reduces that over-stiffness so the
+/// cancellation breaks. So the clean physical signal is on `Facet`, as rung 6c
+/// established for the same reason.
+#[test]
+fn tet10_curved_boundary_moves_toward_analytic() {
+    // Committed curved-boundary readings (ν = 0.4, h/2, 3 Newton iters,
+    // deterministic). Band: 5 % relative / 2e-4 floor (the file's convention).
+    const CURVED_FACET: f64 = -0.04323;
+    const CURVED_CONTINUUM: f64 = 0.00686;
+    let band = |c: f64| (0.05 * c.abs()).max(2e-4);
+
+    // ── Facet: the variationally-consistent, physically-meaningful arm ──
+    let s_facet = solve_and_read(
+        ElementOrder::Tet10,
+        NU_BASELINE,
+        CELL_SIZE_DECISION,
+        LoadRule::Facet,
+    )
+    .expect("straight Tet10 Facet ν=0.4 converges");
+    let c_facet = solve_and_read_curved(
+        ElementOrder::Tet10,
+        NU_BASELINE,
+        CELL_SIZE_DECISION,
+        LoadRule::Facet,
+    )
+    .expect("curved Tet10 Facet ν=0.4 converges");
+    report_and_check_physical("forward-oracle straight (Facet)", &s_facet);
+    report_and_check_physical("forward-oracle curved   (Facet)", &c_facet);
+    eprintln!(
+        "FORWARD ORACLE Facet: straight {:+.5} → curved {:+.5}",
+        s_facet.rel_err, c_facet.rel_err
+    );
+
+    // Straight matches the committed straight-Tet10 Facet baseline (same solve).
+    assert!(
+        (s_facet.rel_err.abs() - TET10_NU_0_4_FACET).abs() < band(TET10_NU_0_4_FACET),
+        "straight Facet drifted from committed {TET10_NU_0_4_FACET}: {}",
+        s_facet.rel_err,
+    );
+    assert!(
+        (c_facet.rel_err - CURVED_FACET).abs() < band(CURVED_FACET),
+        "curved Facet drifted from committed {CURVED_FACET}: {}",
+        c_facet.rel_err,
+    );
+    // THE PHYSICAL FINDING: curving toward the true sphere moves the Facet
+    // reading TOWARD analytic (the over-stiffness magnitude shrinks).
+    assert!(
+        c_facet.rel_err.abs() < s_facet.rel_err.abs() - 5e-3,
+        "curving the boundary onto the true sphere must move the Facet reading toward \
+         analytic: |{:+.5}| is not meaningfully below |{:+.5}|",
+        c_facet.rel_err,
+        s_facet.rel_err,
+    );
+
+    // ── Continuum: documented overshoot (the load-rule cancellation) ──
+    let s_cont = solve_and_read(
+        ElementOrder::Tet10,
+        NU_BASELINE,
+        CELL_SIZE_DECISION,
+        LoadRule::Continuum,
+    )
+    .expect("straight Tet10 Continuum ν=0.4 converges");
+    let c_cont = solve_and_read_curved(
+        ElementOrder::Tet10,
+        NU_BASELINE,
+        CELL_SIZE_DECISION,
+        LoadRule::Continuum,
+    )
+    .expect("curved Tet10 Continuum ν=0.4 converges");
+    report_and_check_physical("forward-oracle straight (Continuum)", &s_cont);
+    report_and_check_physical("forward-oracle curved   (Continuum)", &c_cont);
+    eprintln!(
+        "FORWARD ORACLE Continuum: straight {:+.5} → curved {:+.5}",
+        s_cont.rel_err, c_cont.rel_err
+    );
+    assert!(
+        (s_cont.rel_err.abs() - TET10_NU_0_4).abs() < band(TET10_NU_0_4),
+        "straight Continuum drifted from committed {TET10_NU_0_4}: {}",
+        s_cont.rel_err,
+    );
+    assert!(
+        (c_cont.rel_err - CURVED_CONTINUUM).abs() < band(CURVED_CONTINUUM),
+        "curved Continuum drifted from committed {CURVED_CONTINUUM}: {}",
+        c_cont.rel_err,
+    );
 }
 
 #[test]

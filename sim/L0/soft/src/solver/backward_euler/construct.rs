@@ -9,7 +9,7 @@ use nalgebra::{Matrix3, SMatrix};
 
 use crate::Vec3;
 use crate::contact::{ActivePairsFor, ContactModel};
-use crate::element::Element;
+use crate::element::{Element, TET10_EDGE_NODES};
 use crate::material::Material;
 use crate::mesh::{Mesh, TetId, VertexId};
 use crate::readout::BoundaryConditions;
@@ -39,6 +39,92 @@ where
     }
     let total: f64 = numerator.iter().sum();
     numerator.map(|n| n / total)
+}
+
+/// Whether a higher-order element's midside nodes sit exactly on the straight
+/// edge midpoints — the affine (straight-edged) case.
+///
+/// Compares each midside rest position bit-for-bit against `(X_a + X_b)·0.5`
+/// for its canonical edge (row `i` of [`TET10_EDGE_NODES`]), recomputed with the exact
+/// arithmetic [`enrich_tet4_to_tet10`](crate::mesh::enrich_tet4_to_tet10) uses,
+/// so an enriched (un-projected) mesh is always classified straight and keeps
+/// the byte-identical affine fast path in `new()`. A mesh whose midsides have
+/// been moved off the midpoints — an isoparametric *curved* surface, e.g. via
+/// [`Tet10Mesh::with_curved_midsides`](crate::mesh::Tet10Mesh::with_curved_midsides)
+/// — is classified curved, routing the element through the genuine
+/// per-Gauss-point Jacobian [`curved_gauss_geometry`].
+//
+// expect_used: a higher-order (N > 4) element is only ever paired with a
+// midside-surfacing mesh (declared in `new()`'s `# Panics`); a `None` here is
+// the same construction-time programmer bug `element_node_ids` documents.
+#[allow(clippy::expect_used)]
+fn element_is_straight<M, Msh>(mesh: &Msh, tet_id: TetId, x_rest: &[Vec3]) -> bool
+where
+    M: Material,
+    Msh: Mesh<M>,
+{
+    let corners = mesh.tet_vertices(tet_id);
+    let mids = mesh
+        .tet_midside_nodes(tet_id)
+        .expect("a higher-order (N > 4) element requires midside nodes");
+    TET10_EDGE_NODES.iter().enumerate().all(|(i, &(a, b))| {
+        let midpoint = (x_rest[corners[a] as usize] + x_rest[corners[b] as usize]) * 0.5;
+        // Bit-exact: `enrich` produced these midsides with this same
+        // `(X_a + X_b)·0.5`, so an un-projected element matches exactly and
+        // takes the affine path; a projected (curved) midside differs and
+        // takes the per-GP path. `Vector3`'s `PartialEq` is the componentwise
+        // bitwise compare intended here (not a tolerance).
+        x_rest[mids[i] as usize] == midpoint
+    })
+}
+
+/// Per-Gauss-point stiffness geometry for a **curved** (isoparametric)
+/// higher-order element — the genuine per-point Jacobian
+/// `J(ξ) = Σ_a X_a ⊗ ∇_ξN_a(ξ)`, with per-point weight `w_ref·|detJ(ξ_q)|` and
+/// material-frame gradient `grad_x_n = ∇_ξN·J⁻¹`.
+///
+/// Used only when [`element_is_straight`] is false (a mesh carrying curved
+/// midside geometry). A straight-edged element keeps the affine fast path in
+/// `new()` (a constant edge-vector `J`, `|detJ|` shared across the Gauss
+/// points), which is bit-identical to the pre-curved cache. The returned pairs
+/// feed the `(b)` [`GaussGeometry`] cache the multi-Gauss-point forward
+/// stiffness and (since rung 7) the material adjoint integrate over; the `(a)`
+/// single-point [`ElementGeometry`] proxy stays affine (F-bar, validity, mass).
+//
+// expect_used: a singular curved Jacobian means an inverted or degenerate
+// midside placement — a malformed-mesh programmer bug at construction time,
+// the same rationale as `new()`'s reference-Jacobian expect.
+#[allow(clippy::expect_used)]
+fn curved_gauss_geometry<E, M, Msh, const N: usize, const G: usize>(
+    element: &E,
+    mesh: &Msh,
+    tet_id: TetId,
+    x_rest: &[Vec3],
+    gauss_points: &[(Vec3, f64); G],
+) -> [(SMatrix<f64, N, 3>, f64); G]
+where
+    E: Element<N, G>,
+    M: Material,
+    Msh: Mesh<M>,
+{
+    let nodes = element_node_ids::<M, Msh, N>(mesh, tet_id);
+    // The `N` rest node positions as an `N × 3` matrix (row `a` = X_a).
+    let x_ref = SMatrix::<f64, N, 3>::from_fn(|a, k| x_rest[nodes[a] as usize][k]);
+    std::array::from_fn(|q| {
+        let (xi, w_ref) = gauss_points[q];
+        let grad_xi = element.shape_gradients(xi); // N×3, row a = ∇_ξN_a(ξ_q)
+        // J(ξ_q) = Σ_a X_a ⊗ ∇_ξN_a = x_refᵀ · grad_xi  (3×3). For a curved
+        // element this varies per Gauss point (Σ-form over ALL N nodes),
+        // unlike the affine edge-vector J the straight path reuses.
+        let j = x_ref.transpose() * grad_xi;
+        let j_inv = j
+            .try_inverse()
+            .expect("singular curved element Jacobian — inverted or degenerate midside geometry");
+        // Chain rule: grad_X N_a = ∇_ξN_a · J⁻¹, per Gauss point.
+        let grad_x_n = grad_xi * j_inv;
+        let weight = w_ref * j.determinant().abs();
+        (grad_x_n, weight)
+    })
 }
 
 /// Build the Llt + Lu symbolic factors from the assembled free-DOF sparsity
@@ -309,8 +395,20 @@ where
         // Tet10, and constant across the element's Gauss points. Only the
         // parametric shape gradient `∇_ξN(ξ_q)` varies per point, so
         // `grad_x_n^q = ∇_ξN(ξ_q) · J⁻¹` differs per Gauss point while `|detJ|`
-        // is shared. (A curved element — deferred rung 8 — would make `J`
-        // per-point; do not add that here.)
+        // is shared. This is the affine FAST PATH, and every enriched (un-
+        // projected) mesh takes it — bit-identical to the pre-curved cache.
+        //
+        // A CURVED element (an isoparametric Tet10 whose midsides have been
+        // moved off the straight edge midpoints — the "exact geometry IS the
+        // exact physics" surface) instead needs the genuine per-Gauss-point
+        // `J(ξ_q) = Σ_a X_a ⊗ ∇_ξN_a(ξ_q)`, with `detJ(ξ_q)` and the weight
+        // `w_ref·|detJ(ξ_q)|` varying per point ([`curved_gauss_geometry`]).
+        // This changes the element's forward stiffness (and, via the shared
+        // `(b)` cache, its differentiable adjoint) — the one place in the two-
+        // cache design where curvature enters. The `(a)` `ElementGeometry`
+        // proxy stays affine, so F-bar / validity / mass are untouched.
+        // `element_is_straight` selects the path per element (bit-exact),
+        // so a mesh with only some elements curved keeps the rest affine.
         let x_rest = mesh.positions();
         let mut element_geometries = Vec::with_capacity(n_tets);
         let mut gauss_geometries = Vec::with_capacity(n_tets);
@@ -356,25 +454,41 @@ where
             let grad_x_n = grad_xi_corner * j_0_inv;
             element_geometries.push(ElementGeometry { grad_x_n, volume });
 
-            // (b) Per-Gauss-point stiffness geometry.
-            let gauss: [(SMatrix<f64, N, 3>, f64); G] = std::array::from_fn(|q| {
-                let (xi, w_ref) = gauss_points[q];
-                // Chain rule: grad_X N_a = grad_ξ N_a(ξ_q) · (∂ξ/∂X) = grad_ξ N_a · J⁻¹.
-                let grad_x_n = element.shape_gradients(xi) * j_0_inv;
-                // ★ Byte-identity (§3.1 trap): Tet4 (the single-Gauss-point
-                // linear element) keeps the literal `|det|/6.0`. Reconstructing
-                // it as `w_ref·|det|` would use `w_ref = 1/6`, which is not
-                // representable → a silent ULP break. Tet10's `w_ref = 1/24` is
-                // representable and applied directly (its weights are
-                // tolerance-checked, not byte-frozen). For Tet4 the single pair
-                // equals `element_geometries` above bit-for-bit.
-                let weight = if N == 4 {
-                    det.abs() / 6.0
+            // (b) Per-Gauss-point stiffness geometry. A curved higher-order
+            // element (midsides moved off the edge midpoints) takes the genuine
+            // per-GP Jacobian; everything else (all Tet4, and every straight-
+            // edged / un-projected Tet10) takes the affine fast path below,
+            // which is textually unchanged from the pre-curved cache → bit-
+            // identical.
+            let gauss: [(SMatrix<f64, N, 3>, f64); G] =
+                if N > 4 && !element_is_straight::<M, Msh>(&mesh, tet_id, x_rest) {
+                    curved_gauss_geometry::<E, M, Msh, N, G>(
+                        &element,
+                        &mesh,
+                        tet_id,
+                        x_rest,
+                        &gauss_points,
+                    )
                 } else {
-                    w_ref * det.abs()
+                    std::array::from_fn(|q| {
+                        let (xi, w_ref) = gauss_points[q];
+                        // Chain rule: grad_X N_a = grad_ξ N_a(ξ_q) · (∂ξ/∂X) = grad_ξ N_a · J⁻¹.
+                        let grad_x_n = element.shape_gradients(xi) * j_0_inv;
+                        // ★ Byte-identity (§3.1 trap): Tet4 (the single-Gauss-point
+                        // linear element) keeps the literal `|det|/6.0`. Reconstructing
+                        // it as `w_ref·|det|` would use `w_ref = 1/6`, which is not
+                        // representable → a silent ULP break. Tet10's `w_ref = 1/24` is
+                        // representable and applied directly (its weights are
+                        // tolerance-checked, not byte-frozen). For Tet4 the single pair
+                        // equals `element_geometries` above bit-for-bit.
+                        let weight = if N == 4 {
+                            det.abs() / 6.0
+                        } else {
+                            w_ref * det.abs()
+                        };
+                        (grad_x_n, weight)
+                    })
                 };
-                (grad_x_n, weight)
-            });
             gauss_geometries.push(GaussGeometry { gauss });
         }
 

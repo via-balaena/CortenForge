@@ -316,18 +316,28 @@ mod tests {
         d
     }
 
-    /// Build the 30×30 small-strain stiffness of one Tet10 with the given
-    /// nodal coordinates, integrating over the 4 Stroud points. Straight
-    /// edges ⇒ affine map ⇒ constant Jacobian, so K^e is exact here.
+    /// Build the 30×30 small-strain stiffness of one Tet10 with the given nodal
+    /// coordinates, integrating over the 4 Stroud points. Uses the per-Gauss-
+    /// point Σ-form Jacobian, so it is the same math the solver's
+    /// `curved_gauss_geometry` assembles — exact for a straight-edged element
+    /// (affine map ⇒ constant Jacobian) and the 4-point approximation for a
+    /// curved one (see [`curved_quadrature_4pt_adequacy`]).
+    fn element_stiffness(coords: &[Vec3; 10]) -> DMatrix<f64> {
+        element_stiffness_with_rule(coords, &Tet10.gauss_points())
+    }
+
+    /// [`element_stiffness`] over an arbitrary quadrature `rule` (`(ξ, weight)`
+    /// pairs on the reference tet) — lets the curved-quadrature gate integrate
+    /// the same `K^e` with a dense reference rule instead of the 4-point Stroud.
     // Test elements are constructed non-degenerate, so a failed inverse is a
     // test-authoring bug worth panicking on immediately.
     #[allow(clippy::expect_used)]
-    fn element_stiffness(coords: &[Vec3; 10]) -> DMatrix<f64> {
+    fn element_stiffness_with_rule(coords: &[Vec3; 10], rule: &[(Vec3, f64)]) -> DMatrix<f64> {
         let d_mat = elasticity_matrix(1.0, 0.3);
         let node_x = SMatrix::<f64, 10, 3>::from_fn(|i, j| coords[i][j]);
         let mut k_mat = DMatrix::<f64>::zeros(30, 30);
 
-        for (xi, weight) in Tet10.gauss_points() {
+        for &(xi, weight) in rule {
             let grad_xi = Tet10.shape_gradients(xi); // 10×3, ∂N/∂ξ
             let jac = node_x.transpose() * grad_xi; // 3×3, ∂X/∂ξ = Σ X_i ⊗ ∇_ξ N_i
             let jac_inv = jac.try_inverse().expect("non-degenerate element");
@@ -498,6 +508,285 @@ mod tests {
         assert!(
             max_diff < 1e-13,
             "linear field must reproduce F = I + G exactly; max |Δ| = {max_diff:e}",
+        );
+    }
+
+    // --- Curved (isoparametric) element gates ----------------------------
+    //
+    // The rung that lets a Tet10 honor a CURVED soft surface: with midsides
+    // moved off the straight edge midpoints, the isoparametric map is genuinely
+    // quadratic, so J(ξ) = Σ Xₐ ⊗ ∇_ξNₐ(ξ) — and detJ(ξ) — vary per Gauss
+    // point. These gates validate the per-GP geometry the solver's
+    // `curved_gauss_geometry` builds, and re-establish which rung-5 element
+    // invariants survive curvature. (`element_stiffness` above is already the
+    // per-GP Σ-form, so it doubles as the curved assembler.)
+
+    /// A distorted element with each midside pushed OFF the straight edge
+    /// midpoint, perpendicular to its edge, by `curv` × edge length — a
+    /// genuinely curved isoparametric Tet10. `curv = 0` is the straight element.
+    fn curved_element_coords(curv: f64) -> [Vec3; 10] {
+        let corners = [
+            Vec3::new(0.1, 0.0, -0.2),
+            Vec3::new(1.3, 0.2, 0.1),
+            Vec3::new(0.2, 1.1, 0.3),
+            Vec3::new(-0.1, 0.4, 1.2),
+        ];
+        let bias = Vec3::new(0.31, -0.57, 0.76).normalize();
+        let mut coords = [Vec3::zeros(); 10];
+        coords[..4].copy_from_slice(&corners);
+        for (i, &(a, b)) in TET10_EDGE_NODES.iter().enumerate() {
+            let mid = (corners[a] + corners[b]) * 0.5;
+            let edge = corners[b] - corners[a];
+            let e = edge / edge.norm();
+            // Component of `bias` ⟂ to the edge, so the midside bows the mapped
+            // edge rather than sliding along it.
+            let perp = bias - e * bias.dot(&e);
+            coords[4 + i] = mid + perp.normalize() * (curv * edge.norm());
+        }
+        coords
+    }
+
+    /// The per-GP Jacobian `J(ξ) = Σ Xₐ ⊗ ∇_ξNₐ` equals the finite difference of
+    /// the geometry map `X(ξ) = Σ Nₐ(ξ) Xₐ` — an INDEPENDENT check of the Σ-form
+    /// the curved assembler uses (FD never touches that form).
+    #[test]
+    fn curved_jacobian_matches_fd_of_map() {
+        let coords = curved_element_coords(0.10);
+        let node_x = SMatrix::<f64, 10, 3>::from_fn(|i, j| coords[i][j]);
+        let map = |xi: Vec3| {
+            let n = Tet10.shape_functions(xi);
+            (0..10).fold(Vec3::zeros(), |acc, i| acc + n[i] * coords[i])
+        };
+        let h = 1e-6;
+        let mut max_err = 0.0_f64;
+        for (xi, _) in Tet10.gauss_points() {
+            let j_analytic = node_x.transpose() * Tet10.shape_gradients(xi);
+            for k in 0..3 {
+                let mut ep = xi;
+                let mut em = xi;
+                ep[k] += h;
+                em[k] -= h;
+                let col = (map(ep) - map(em)) / (2.0 * h);
+                for i in 0..3 {
+                    max_err = max_err.max((j_analytic[(i, k)] - col[i]).abs());
+                }
+            }
+        }
+        assert!(max_err < 1e-7, "curved J vs FD(map): max |Δ| = {max_err:e}");
+    }
+
+    /// Rank/eigenspectrum survives curvature: a curved single-element `K^e`
+    /// still has exactly 6 rigid-body zeros + 24 positive modes. Rigid modes
+    /// give zero strain pointwise → zero energy at every Gauss point, so they
+    /// stay in the null space regardless of the per-GP Jacobian.
+    #[test]
+    fn rank_gate_curved_element() {
+        let (zero, positive) = eigen_counts(&element_stiffness(&curved_element_coords(0.10)));
+        assert_eq!(zero, 6, "expected 6 rigid-body modes (curved)");
+        assert_eq!(positive, 24, "expected 24 deformation modes (curved)");
+    }
+
+    /// Constant-strain (linear field) reproduction stays machine-exact on a
+    /// CURVED element — DOCUMENTING the structural isoparametric theorem, and the
+    /// correction to the plan's expectation that constant-strain would degrade
+    /// under curvature. With `x = A·X` the reconstructed
+    /// `F = Σ (A·Xₐ) ⊗ ∇ₓNₐ = A·(Σ Xₐ ⊗ ∇ₓNₐ) = A·(Xᵀ·grad_x) = A·I = A` at every
+    /// point, independent of edge curvature.
+    ///
+    /// ⚠ Like the straight-edged
+    /// [`constant_strain_patch_reproduces_linear_field`], this is BLIND by
+    /// construction: `Xᵀ·grad_x = I` holds for any full-rank `∇_ξN` (the two
+    /// factors cancel), so a wrong `shape_gradients` self-cancels here. It is
+    /// documentation of the theorem, not a gradient-correctness gate — the
+    /// gradient's numerical correctness is gated INDEPENDENTLY by
+    /// [`curved_jacobian_matches_fd_of_map`] (FD of the geometry map) and
+    /// [`quadratic_field_reproduction_degrades_with_curvature`] (a physical-space
+    /// quadratic the space cannot represent), plus the rung-1 partition-of-unity
+    /// and monomial-exactness tests.
+    // Non-degenerate curved element ⇒ a failed inverse is a test-authoring bug.
+    #[allow(clippy::expect_used)]
+    #[test]
+    fn constant_strain_reproduces_on_curved_element() {
+        let coords = curved_element_coords(0.10);
+        let xi = sample_point();
+        let node_x = SMatrix::<f64, 10, 3>::from_fn(|i, j| coords[i][j]);
+        let grad_xi = Tet10.shape_gradients(xi);
+        let grad_x = grad_xi
+            * (node_x.transpose() * grad_xi)
+                .try_inverse()
+                .expect("non-degenerate curved element");
+        let g = nalgebra::Matrix3::new(0.03, -0.02, 0.01, 0.00, 0.04, -0.01, 0.02, 0.01, -0.03);
+        let a_map = nalgebra::Matrix3::identity() + g;
+        let x_def = SMatrix::<f64, 10, 3>::from_fn(|i, j| (a_map * coords[i])[j]);
+        let f_recon = x_def.transpose() * grad_x;
+        let max_diff = (f_recon - a_map)
+            .iter()
+            .fold(0.0_f64, |m, &v| m.max(v.abs()));
+        assert!(
+            max_diff < 1e-12,
+            "curved element must still reproduce F = A exactly; max |Δ| = {max_diff:e}",
+        );
+    }
+
+    /// Quadratic-field reproduction DEGRADES on a curved element (the honest
+    /// redefinition of the straight-only [`deformation_gradient_reproduces_quadratic_field`]).
+    /// A physical-space quadratic composed with the quadratic geometry map is
+    /// degree-4 — outside the P2 space — so `F_recon ≠ I + ∇u`, and the error
+    /// vanishes as curvature → 0 (recovering the straight exact case).
+    /// Characterized as monotone convergence, not a fixed threshold.
+    // Non-degenerate curved element ⇒ a failed inverse is a test-authoring bug.
+    #[allow(clippy::expect_used)]
+    #[test]
+    fn quadratic_field_reproduction_degrades_with_curvature() {
+        let (a, b, c) = (1.5, 2.0, 1.0);
+        let u = |p: Vec3| Vec3::new(a * p.y * p.y, b * p.z, c * p.x * p.y);
+        let grad_u = |p: Vec3| {
+            nalgebra::Matrix3::new(0.0, 2.0 * a * p.y, 0.0, 0.0, 0.0, b, c * p.y, c * p.x, 0.0)
+        };
+        let xi = sample_point();
+        let err_at = |curv: f64| {
+            let coords = curved_element_coords(curv);
+            let node_x = SMatrix::<f64, 10, 3>::from_fn(|i, j| coords[i][j]);
+            let grad_xi = Tet10.shape_gradients(xi);
+            let grad_x = grad_xi
+                * (node_x.transpose() * grad_xi)
+                    .try_inverse()
+                    .expect("non-degenerate element");
+            let nvals = Tet10.shape_functions(xi);
+            let x_phys = (0..10).fold(Vec3::zeros(), |acc, i| acc + nvals[i] * coords[i]);
+            let x_def = SMatrix::<f64, 10, 3>::from_fn(|i, j| (coords[i] + u(coords[i]))[j]);
+            let f_recon = x_def.transpose() * grad_x;
+            let f_analytic = nalgebra::Matrix3::identity() + grad_u(x_phys);
+            (f_recon - f_analytic)
+                .iter()
+                .fold(0.0_f64, |m, &v| m.max(v.abs()))
+        };
+        let (e0, e_mid, e_hi) = (err_at(0.0), err_at(0.05), err_at(0.10));
+        assert!(
+            e0 < 1e-12,
+            "straight element must reproduce the quadratic exactly: {e0:e}"
+        );
+        assert!(
+            e_hi > e_mid && e_mid > e0,
+            "reproduction error must grow monotonically with curvature: {e0:e} < {e_mid:e} < {e_hi:e}",
+        );
+        assert!(
+            e_hi > 1e-3,
+            "degradation must be physically meaningful at curv 0.10: {e_hi:e}",
+        );
+    }
+
+    /// 1-D Gauss–Legendre nodes + weights on `[-1, 1]` (Newton on the Legendre
+    /// recurrence) — the building block of the dense reference tet rule.
+    // cast_precision_loss: the quadrature order `n` is ≤ 20 here, far inside
+    // f64's exact-integer range — no precision is lost.
+    #[allow(clippy::cast_precision_loss)]
+    fn gauss_legendre(n: usize) -> Vec<(f64, f64)> {
+        let mut out = Vec::with_capacity(n);
+        for i in 0..n {
+            let mut x = (std::f64::consts::PI * (i as f64 + 0.75) / (n as f64 + 0.5)).cos();
+            let mut dp = 0.0;
+            for _ in 0..100 {
+                let (mut p0, mut p1) = (1.0, x);
+                for k in 2..=n {
+                    let kf = k as f64;
+                    let p2 = ((2.0 * kf - 1.0) * x * p1 - (kf - 1.0) * p0) / kf;
+                    p0 = p1;
+                    p1 = p2;
+                }
+                dp = n as f64 * (x * p1 - p0) / (x * x - 1.0);
+                let dx = -p1 / dp;
+                x += dx;
+                if dx.abs() < 1e-15 {
+                    break;
+                }
+            }
+            out.push((x, 2.0 / ((1.0 - x * x) * dp * dp)));
+        }
+        out
+    }
+
+    /// A DENSE reference quadrature on the reference tet: an `n³` Gauss–Legendre
+    /// tensor rule mapped through the Duffy transform. Converges to the exact
+    /// integral of any smooth integrand — the ruler the 4-point Stroud rule is
+    /// measured against for curved elements.
+    fn dense_tet_rule(n: usize) -> Vec<(Vec3, f64)> {
+        let gl = gauss_legendre(n);
+        let mut rule = Vec::with_capacity(n * n * n);
+        for &(tu, wu0) in &gl {
+            let (u, wu) = (0.5 * (tu + 1.0), 0.5 * wu0);
+            for &(tv, wv0) in &gl {
+                let (v, wv) = (0.5 * (tv + 1.0), 0.5 * wv0);
+                for &(tw, ww0) in &gl {
+                    let (w, ww) = (0.5 * (tw + 1.0), 0.5 * ww0);
+                    let xi = Vec3::new(u, v * (1.0 - u), w * (1.0 - u) * (1.0 - v));
+                    let jac = (1.0 - u) * (1.0 - u) * (1.0 - v);
+                    rule.push((xi, jac * wu * wv * ww));
+                }
+            }
+        }
+        rule
+    }
+
+    /// Quadrature adequacy (Tet10 ladder Q3). The 4-point Stroud rule is
+    /// degree-2-exact only for a straight (affine) element; a curved element's
+    /// `grad_x_n` and `detJ(ξ)` make the `K^e` integrand rational, so no fixed
+    /// rule is exact. This gate MEASURES the 4-point-vs-dense-reference gap on
+    /// `K^e` and commits the characterization:
+    ///
+    /// - EXACT on a straight element (4-pt reproduces the dense rule).
+    /// - Grows ≈ linearly with curvature, `gap ≈ 0.22 · (sagitta/edge)`
+    ///   (committed points below). This element bows ALL SIX edges by
+    ///   `curv · edge`, so it is a CONSERVATIVE proxy for a boundary element,
+    ///   whose ~3 boundary-face edges alone are curved.
+    ///
+    /// CONCLUSION: keep 4-pt (`G = 4`) — for a well-resolved boundary
+    /// (sagitta/edge ≲ 2 %) the gap is ≲ 0.5 %, an order under the ~8 %
+    /// demand-#1 / few-% ν = 0.49 modeling floors. Escalating the rule would
+    /// change the const-generic `G` across the whole solver type; instead the
+    /// future SDF-projection rung inherits the budget "keep boundary
+    /// sagitta/edge modest, or escalate `G` for a strongly-curved surface".
+    #[test]
+    fn curved_quadrature_4pt_adequacy() {
+        let dense = dense_tet_rule(16);
+        // Self-check the reference rule against a KNOWN value: it must integrate
+        // the reference-tet volume ∫ 1 dV = 1/6 (harness-validates the ruler).
+        let wsum: f64 = dense.iter().map(|&(_, w)| w).sum();
+        assert!(
+            (wsum - 1.0 / 6.0).abs() < 1e-12,
+            "reference rule Σw = {wsum}"
+        );
+
+        let gap = |curv: f64| {
+            let c = curved_element_coords(curv);
+            let kref = element_stiffness_with_rule(&c, &dense);
+            (element_stiffness(&c) - &kref).norm() / kref.norm()
+        };
+
+        // (a) Straight element: 4-pt Stroud equals the dense rule exactly.
+        assert!(gap(0.0) < 1e-12, "straight: 4-pt must match dense exactly");
+
+        // (b) Committed growth (bands ±2 %; deterministic sqrt5 + GL-16 Newton).
+        let (g1, g2, g5) = (gap(0.01), gap(0.02), gap(0.05));
+        assert!(
+            (2.20e-3..2.29e-3).contains(&g1),
+            "gap(0.01) drifted: {g1:e}"
+        );
+        assert!(
+            (4.39e-3..4.57e-3).contains(&g2),
+            "gap(0.02) drifted: {g2:e}"
+        );
+        assert!(
+            (1.10e-2..1.15e-2).contains(&g5),
+            "gap(0.05) drifted: {g5:e}"
+        );
+
+        // (c) Monotone ~linear growth, and adequacy at a well-resolved boundary
+        // curvature (≤ 2 % sagitta/edge → gap well under the modeling floor).
+        assert!(g5 > g2 && g2 > g1, "gap must grow with curvature");
+        assert!(
+            g2 < 5.0e-3,
+            "4-pt must stay adequate for mild curvature: {g2:e}"
         );
     }
 }

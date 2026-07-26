@@ -140,6 +140,33 @@ impl Tet10Mesh {
     pub const fn n_corners(&self) -> usize {
         self.n_corners
     }
+
+    /// Move the midside nodes off the straight edge midpoints, remapping each
+    /// midside rest position through `project` — the seam that lets a mesh
+    /// carry a *curved* (isoparametric) soft surface so the
+    /// [`Tet10`](crate::element::Tet10) element honors it exactly ("exact
+    /// geometry IS the exact physics").
+    ///
+    /// Only midside positions (indices `>= n_corners`) are remapped; corner
+    /// positions and every tet's connectivity are unchanged, so a midside
+    /// shared across tets stays conforming (the one node moves once). The
+    /// solver picks up the curvature automatically:
+    /// [`construct`](crate::solver::backward_euler) detects midsides moved off
+    /// the midpoints and switches those elements to the per-Gauss-point
+    /// isoparametric Jacobian; an identity `project` leaves every element
+    /// straight-edged and byte-identical to the un-curved mesh.
+    ///
+    /// This is the geometry *carrier* only. Deciding WHERE a boundary midside
+    /// belongs — projecting onto a rigid `Sdf`, boundary-only selection,
+    /// inverted-element guards — is a separate mesher concern; here the caller
+    /// supplies the map (the identity for any midside it wants left straight).
+    #[must_use]
+    pub fn with_curved_midsides(mut self, project: impl Fn(Vec3) -> Vec3) -> Self {
+        for p in &mut self.positions[self.n_corners..] {
+            *p = project(*p);
+        }
+        self
+    }
 }
 
 impl Mesh for Tet10Mesh {
@@ -324,6 +351,44 @@ mod tests {
         }
         // A linear mesh also exposes no six-node boundary faces.
         assert!(tet4.boundary_faces6().is_none());
+    }
+
+    /// `with_curved_midsides` remaps only the midside positions (indices
+    /// `>= n_corners`), leaving corners and connectivity untouched, and a
+    /// shared midside moves exactly once (conforming preserved).
+    #[test]
+    fn with_curved_midsides_moves_only_midsides() {
+        let tet4 = HandBuiltTetMesh::two_tet_shared_face(&canonical_field());
+        let straight = Tet10Mesh::from_tet4(&tet4);
+        let n_corners = straight.n_corners();
+        let corners_before: Vec<Vec3> = straight.positions()[..n_corners].to_vec();
+
+        // A deterministic non-identity map (push every point out along +z).
+        let curved = straight
+            .clone()
+            .with_curved_midsides(|p| p + Vec3::new(0.0, 0.0, 0.1));
+
+        // Corners are byte-identical; connectivity unchanged.
+        assert_eq!(&curved.positions()[..n_corners], &corners_before[..]);
+        assert_eq!(curved.n_vertices(), straight.n_vertices());
+        for tet_id in 0..curved.n_tets() as TetId {
+            assert_eq!(curved.tet_vertices(tet_id), straight.tet_vertices(tet_id));
+            assert_eq!(
+                curved.tet_midside_nodes(tet_id),
+                straight.tet_midside_nodes(tet_id),
+                "connectivity (node ids) must be unchanged — only positions move",
+            );
+        }
+        // Every midside moved by exactly the map (once, even if shared).
+        for (before, after) in straight.positions()[n_corners..]
+            .iter()
+            .zip(&curved.positions()[n_corners..])
+        {
+            assert_eq!(*after, before + Vec3::new(0.0, 0.0, 0.1));
+        }
+        // The identity map is a genuine no-op (byte-identical positions).
+        let noop = straight.clone().with_curved_midsides(|p| p);
+        assert_eq!(noop.positions(), straight.positions());
     }
 
     /// The six-node boundary faces' corner triples equal the three-node
