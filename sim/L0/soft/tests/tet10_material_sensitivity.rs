@@ -36,7 +36,7 @@ use sim_ml_chassis::{Tape, Tensor};
 use sim_soft::element::Tet10;
 use sim_soft::{
     BoundaryConditions, CpuNewtonSolver, CpuTet10NHSolver, HandBuiltTetMesh, LoadAxis,
-    MaterialField, Mesh, NullContact, Solver, SolverConfig, Tet4, Tet10Mesh, VertexId,
+    MaterialField, Mesh, NullContact, Solver, SolverConfig, Tet4, Tet10Mesh, Vec3, VertexId,
 };
 
 // ── Scene constants (mirror the Tet4 `material_sensitivity.rs`) ────────────────
@@ -163,6 +163,75 @@ fn tet10_equilibrium_material_sensitivity_matches_resolve_fd() {
     assert!(
         rel_l < 1e-5,
         "Tet10 ∂x*/∂λ disagrees with re-solve FD: {rel_l:e}"
+    );
+}
+
+/// A smooth, deterministic, non-inverting midside curvature for the block —
+/// pushes each midside off its edge midpoint so `construct` routes those
+/// elements through the isoparametric per-Gauss-point path.
+fn curve_block_midsides(mesh: Tet10Mesh) -> Tet10Mesh {
+    mesh.with_curved_midsides(|p| p + Vec3::new(0.02 * p.y, -0.015 * p.z, 0.018 * p.x))
+}
+
+/// A CURVED Tet10 solver at material `(mu, lambda)` (same BCs as `tet10_solver`).
+fn curved_tet10_solver(mu: f64, lambda: f64) -> (CpuTet10NHSolver<Tet10Mesh>, Vec<f64>) {
+    let cube = tet4_block(mu, lambda);
+    let (pinned, loaded) = face_corners(&cube);
+    let mesh = curve_block_midsides(Tet10Mesh::from_tet4(&cube));
+    let rest = rest_dofs(&mesh);
+    let bc = BoundaryConditions {
+        pinned_vertices: pinned,
+        roller_vertices: Vec::new(),
+        loaded_vertices: loaded.into_iter().map(|v| (v, LoadAxis::AxisZ)).collect(),
+    };
+    let mut cfg = SolverConfig::skeleton();
+    cfg.dt = DT;
+    cfg.max_newton_iter = 80;
+    (
+        CpuNewtonSolver::new(Tet10, mesh, NullContact, cfg, bc),
+        rest,
+    )
+}
+
+/// `x_final` of one static loaded step on the CURVED Tet10 block.
+fn curved_solve(mu: f64, lambda: f64) -> Vec<f64> {
+    let (s, x0) = curved_tet10_solver(mu, lambda);
+    let n = x0.len();
+    s.replay_step(
+        &Tensor::from_slice(&x0, &[n]),
+        &Tensor::from_slice(&vec![0.0; n], &[n]),
+        &Tensor::from_slice(&[THETA], &[1]),
+        DT,
+    )
+    .x_final
+}
+
+/// The differentiable adjoint flows correctly through CURVED elements. The
+/// material sensitivity reads the per-Gauss-point `(b)` cache (rung 7), which
+/// curvature enters — so `∂x*/∂μ` on a curved Tet10 block must still match a
+/// re-solve central FD (each re-solve rebuilds the SAME curved mesh at `μ ± ε`).
+/// Confirms the curved per-GP geometry is consistent between the forward
+/// stiffness and the adjoint RHS.
+#[test]
+fn tet10_curved_material_sensitivity_matches_resolve_fd() {
+    let (solver, _) = curved_tet10_solver(MU0, LAMBDA0);
+    let x_final = curved_solve(MU0, LAMBDA0);
+
+    let an_mu = solver.equilibrium_material_sensitivity(&x_final, None, DT, 0);
+    let de = MU0 * 1e-6;
+    let fd_mu: Vec<f64> = curved_solve(MU0 + de, LAMBDA0)
+        .iter()
+        .zip(&curved_solve(MU0 - de, LAMBDA0))
+        .map(|(a, b)| (a - b) / (2.0 * de))
+        .collect();
+    let rel_mu = rel_l2(&an_mu, &fd_mu);
+    let max_mu = an_mu.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+
+    eprintln!("Curved Tet10 ∂x*/∂μ: ‖·‖_∞={max_mu:.3e} rel={rel_mu:.3e}");
+    assert!(max_mu > 1e-9, "curved sensitivity implausibly small");
+    assert!(
+        rel_mu < 1e-5,
+        "curved Tet10 ∂x*/∂μ disagrees with re-solve FD: {rel_mu:e}",
     );
 }
 

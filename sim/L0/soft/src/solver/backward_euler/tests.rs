@@ -1576,6 +1576,213 @@ fn tet10_quadratic_field_internal_force_matches_analytic() {
     );
 }
 
+// ── Curved (isoparametric) soft-surface: production-path gates ──────────────
+//
+// The rung that lets a Tet10 honor a CURVED soft surface. `construct` detects an
+// element whose midsides sit OFF the straight edge midpoints and switches it to
+// the genuine per-Gauss-point Jacobian `J(ξ) = Σ Xₐ ⊗ ∇_ξNₐ` (detJ per point);
+// every straight-edged / un-projected element keeps the affine fast path,
+// bit-identical to the pre-curved cache. These gates exercise that selection and
+// the curved forward path THROUGH the production assembler. (The per-GP Jacobian
+// math itself is FD-verified at the element level in `element::tet10`.) This
+// rung is FORWARD-CHANGING: on a curved mesh the previously-inert midside
+// positions now set the element stiffness.
+
+/// A gently-curved variant of a straight Tet10 block: every midside is pushed a
+/// small amount off its edge midpoint (a valid, non-inverting perturbation).
+/// `amp = 0` (identity) leaves it straight-edged.
+fn curved_tet10_block(config: SolverConfig, amp: f64) -> CpuTet10NHSolver<Tet10Mesh> {
+    let edge = 0.1;
+    let field = MaterialField::uniform(1.0e5, 4.0e5);
+    let cube = HandBuiltTetMesh::uniform_block(2, edge, &field);
+    let n_corners = cube.n_vertices();
+    let positions = cube.positions().to_vec();
+    let pinned: Vec<VertexId> = (0..n_corners as VertexId)
+        .filter(|&v| positions[v as usize].z < 0.25 * edge)
+        .collect();
+    // Smooth position-dependent midside displacement (bounded by `amp·edge`),
+    // small enough to keep every element non-inverted.
+    let tet10 = Tet10Mesh::from_tet4(&cube).with_curved_midsides(|p| {
+        p + Vec3::new(
+            amp * edge * (p.y / edge - 0.5),
+            amp * edge * (p.z / edge - 0.5),
+            amp * edge * (p.x / edge - 0.5),
+        )
+    });
+    let bc = BoundaryConditions {
+        pinned_vertices: pinned,
+        roller_vertices: Vec::new(),
+        loaded_vertices: Vec::new(),
+    };
+    CpuNewtonSolver::new(Tet10, tet10, NullContact, config, bc)
+}
+
+/// Path selection + forward-change. (1) An IDENTITY curve map leaves every
+/// element straight → the affine fast path → a solve BIT-IDENTICAL to the plain
+/// straight block (the predicate must classify midpoints-recomputed-as-
+/// themselves as straight). (2) A genuinely curved mesh takes the per-GP path
+/// and moves the converged state by a committed, finite margin — the midside
+/// positions, inert on the affine path, now set the stiffness.
+#[test]
+fn tet10_curved_midsides_change_the_forward_solve() {
+    let mut cfg = SolverConfig::skeleton();
+    cfg.dt = 1.0e-3;
+    cfg.gravity_z = -9.81;
+
+    let solve = |amp: f64| {
+        let solver = curved_tet10_block(cfg, amp);
+        let rest = tet10_rest_dofs(&solver);
+        let n_dof = rest.len();
+        let step = solver.replay_step(
+            &Tensor::from_slice(&rest, &[n_dof]),
+            &Tensor::zeros(&[n_dof]),
+            &Tensor::zeros(&[0]),
+            cfg.dt,
+        );
+        step.x_final.as_slice().to_vec()
+    };
+
+    let straight = solve(0.0);
+    let identity = solve(0.0); // same amp — determinism + straight baseline
+    let curved = solve(0.03);
+
+    assert!(
+        straight.iter().all(|x| x.is_finite()) && curved.iter().all(|x| x.is_finite()),
+        "both solves must converge to a finite state",
+    );
+    // Identity/straight are bit-identical (affine fast path is deterministic).
+    assert!(
+        straight
+            .iter()
+            .zip(&identity)
+            .all(|(a, b)| a.to_bits() == b.to_bits()),
+        "the straight-edged solve must be deterministic and take the affine path",
+    );
+    // The curved solve genuinely differs — the forward change.
+    let max_delta = straight
+        .iter()
+        .zip(&curved)
+        .fold(0.0_f64, |m, (&s, &c)| m.max((s - c).abs()));
+    let scale = straight.iter().fold(0.0_f64, |m, &s| m.max(s.abs()));
+    assert!(
+        max_delta > 1e-6 * scale,
+        "curving the midsides must change the converged state (forward-changing \
+         rung): max|Δ| = {max_delta:e} vs scale {scale:e}",
+    );
+}
+
+/// Curved forward path is the exact gradient of the curved elastic energy. On a
+/// curved two-tet mesh, the production internal force `assemble_global_int_force`
+/// must equal a central-FD of the elastic energy `E = Σ_e Σ_q w_q·|detJ(ξ_q)|·
+/// Ψ(F_q)` computed from an INDEPENDENT recomputation of the per-GP curved
+/// geometry — so a wrong per-GP weight, `J⁻¹`, or `detJ` in the production
+/// `curved_gauss_geometry` diverges here. The FD (energy → force) touches none
+/// of the assembler's analytic Piola path.
+// Index loops walk DOF/node/tensor strides by position — the assembler's idiom.
+#[allow(
+    clippy::needless_range_loop,
+    clippy::many_single_char_names,
+    clippy::similar_names
+)]
+#[test]
+fn tet10_curved_internal_force_is_energy_gradient() {
+    use crate::material::Material; // energy()
+
+    let field = MaterialField::uniform(1.0e5, 4.0e5);
+    let tet4 = HandBuiltTetMesh::two_tet_shared_face(&field);
+    // Curve the midsides (small ⟂-ish smooth push, non-inverting).
+    let tet10 = Tet10Mesh::from_tet4(&tet4)
+        .with_curved_midsides(|p| p + Vec3::new(0.015 * p.y, -0.01 * p.z, 0.012 * p.x));
+    let solver: CpuTet10NHSolver<Tet10Mesh> = CpuNewtonSolver::new(
+        Tet10,
+        tet10,
+        NullContact,
+        SolverConfig::skeleton(),
+        BoundaryConditions {
+            pinned_vertices: Vec::new(),
+            roller_vertices: Vec::new(),
+            loaded_vertices: Vec::new(),
+        },
+    );
+
+    let rest = tet10_rest_dofs(&solver);
+    let n = rest.len() / 3;
+    // A moderate nonlinear deformation (small enough to keep det F > 0).
+    let pos = solver.mesh.positions().to_vec();
+    let disp = |p: Vec3| Vec3::new(0.05 * (p.y + 0.2 * p.x), -0.04 * p.z, 0.03 * p.x);
+    let mut x = rest;
+    for v in 0..n {
+        let d = disp(pos[v]);
+        x[3 * v] += d.x;
+        x[3 * v + 1] += d.y;
+        x[3 * v + 2] += d.z;
+    }
+
+    // Production internal force at x.
+    let mut f_prod = vec![0.0_f64; 3 * n];
+    solver.assemble_global_int_force(&x, &x, 1.0, &mut f_prod);
+
+    // Independent curved elastic energy E(x) = Σ_e Σ_q w_q·|detJ|·Ψ(F_q).
+    let materials = solver.mesh.materials();
+    let energy = |x_flat: &[f64]| -> f64 {
+        let mut e = 0.0;
+        for tet in 0..solver.mesh.n_tets() {
+            let corners = solver.mesh.tet_vertices(tet as TetId);
+            let mids = solver
+                .mesh
+                .tet_midside_nodes(tet as TetId)
+                .expect("Tet10 mesh surfaces midsides");
+            let mut node = [0usize; 10];
+            for k in 0..4 {
+                node[k] = corners[k] as usize;
+            }
+            for k in 0..6 {
+                node[4 + k] = mids[k] as usize;
+            }
+            let x_ref = nalgebra::SMatrix::<f64, 10, 3>::from_fn(|a, j| pos[node[a]][j]);
+            let x_def = nalgebra::SMatrix::<f64, 10, 3>::from_fn(|a, j| x_flat[3 * node[a] + j]);
+            let mat = &materials[tet];
+            for (xi, w_ref) in Tet10.gauss_points() {
+                let grad_xi = Tet10.shape_gradients(xi);
+                let jac = x_ref.transpose() * grad_xi; // Σ-form curved J(ξ_q)
+                let jac_inv = jac.try_inverse().expect("non-degenerate curved element");
+                let grad_x = grad_xi * jac_inv;
+                let f_q = x_def.transpose() * grad_x;
+                e += w_ref * jac.determinant().abs() * mat.energy(&f_q);
+            }
+        }
+        e
+    };
+
+    // Central FD of E → reference internal force.
+    let h = 1e-7;
+    let mut f_fd = vec![0.0_f64; 3 * n];
+    for d in 0..3 * n {
+        let mut xp = x.clone();
+        let mut xm = x.clone();
+        xp[d] += h;
+        xm[d] -= h;
+        f_fd[d] = (energy(&xp) - energy(&xm)) / (2.0 * h);
+    }
+
+    assert!(
+        f_prod.iter().all(|v| v.is_finite()),
+        "curved production force has a non-finite entry",
+    );
+    let scale = f_fd.iter().fold(0.0_f64, |m, &v| m.max(v.abs()));
+    assert!(scale > 0.0, "the FD reference force must be live");
+    let max_diff = f_prod
+        .iter()
+        .zip(&f_fd)
+        .fold(0.0_f64, |m, (&p, &r)| m.max((p - r).abs()));
+    assert!(
+        max_diff <= 1e-6 * scale,
+        "curved production internal force deviates from the FD of the curved elastic \
+         energy: max |Δ| = {max_diff:e} (scale {scale:e}). A wrong per-GP weight, detJ, \
+         or J⁻¹ in curved_gauss_geometry would surface here.",
+    );
+}
+
 // ── Rung 7: independent HRZ mass gates ──────────────────────────────────────
 //
 // The static Lamé/#676 oracles are `STATIC_DT` and mass-blind, and the dynamic
