@@ -60,12 +60,12 @@
 //! `b'/‖p−c‖` transverse). This is the *true* tangent (the exact `d(gradient)/dx`
 //! the differentiable adjoint consumes), matching what
 //! [`PenaltyRigidContact`](super::PenaltyRigidContact) already ships via
-//! [`Sdf::hessian`](cf_geometry::Sdf::hessian) — **no SPD projection**. The
-//! assembled global tangent (material stiffness + contact) stays PD in a realistic
-//! contact config because the material stiffness dominates the transverse
-//! directions; forward robustness rests on the solver's `is_llt` factor check, and
-//! an eigenvalue projection is a named forward-only follow-on if a future
-//! high-κ / compliant config ever loses global PD.
+//! [`Sdf::hessian`](cf_geometry::Sdf::hessian) — **no SPD projection needed**. PD
+//! is not required for the forward solve: it factors the tangent with `is_llt`
+//! (Cholesky) and **falls back to LU** on a non-PD assembled tangent (a documented
+//! benign path), so an indefinite contact block does not stall it. Eigenvalue
+//! projection is a named forward-only follow-on only if that fallback ever proves
+//! inadequate for a curved-contact config.
 
 use crate::Vec3;
 use nalgebra::Matrix3;

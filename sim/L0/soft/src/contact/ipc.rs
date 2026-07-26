@@ -315,8 +315,9 @@ impl ContactModel for IpcRigidContact {
                     // for a sphere it adds `b'·∇²sd` (rung 8c — reconciled with the
                     // `PenaltyRigidContact` vertex path, which already carries it).
                     // Indefinite in the band (`b' < 0`, `∇²sd` PSD) — the true
-                    // tangent the differentiable adjoint needs; the global tangent
-                    // stays PD via material stiffness.
+                    // tangent the differentiable adjoint needs. PD is not required:
+                    // the forward solve's `is_llt`→LU fallback handles a non-PD
+                    // assembled tangent.
                     let n = prim.grad(p);
                     let block: Matrix3<f64> =
                         c.d2_energy_d_sd2 * (n * n.transpose()) + c.d_energy_d_sd * prim.hessian(p);
@@ -665,6 +666,15 @@ mod tests {
             vm[e] -= eps;
             let fd = (force_dir(vp) - force_dir(vm)) / (2.0 * eps);
             for d in 0..3 {
+                // Assert finiteness BEFORE the max-reduction: `f64::max(x, NaN)==x`
+                // would otherwise let a NaN slip through as a false green (matching
+                // the finiteness-first guard in the sibling Hessian FD gates).
+                assert!(
+                    c[(d, e)].is_finite() && fd[d].is_finite(),
+                    "normal_curvature[{d}][{e}] non-finite: analytic {}, fd {}",
+                    c[(d, e)],
+                    fd[d],
+                );
                 max_diff = max_diff.max((c[(d, e)] - fd[d]).abs());
                 max_mag = max_mag.max(c[(d, e)].abs());
             }

@@ -40,10 +40,13 @@
 > per-vertex path (Hessian `dE·∇²sd`, pose `−H·u`,
 > `normal_curvature = sign(b')·∇²sd`) — matching what `PenaltyRigidContact` already
 > shipped. The term is INDEFINITE (the true tangent the differentiable adjoint
-> needs; no SPD projection — the assembled global tangent stays PD via material
-> stiffness), FD-gated on a genuinely curved (sphere) indenter (unit + the sphere
+> needs; no SPD projection — PD is not required, since the forward solve's
+> `is_llt`→LU fallback handles a non-PD assembled tangent, a documented benign
+> path), FD-gated on a genuinely curved (sphere) indenter (unit + the sphere
 > reaction-JVP that 8b's plane could not exercise), and a plane keeps every curved
-> term at exactly `∇²sd = 0` (plane/Tet4 byte-identical). **The forward residual is
+> term at exactly `∇²sd = 0` (the vertex/Tet4 Hessian block is bit-identical —
+> `b'·(+0.0) = −0.0`, `x + (−0.0) == x`; the Tet10 face-path plane Hessian
+> reassociates arithmetic but has no byte-golden and the same root). **The forward residual is
 > curvature-free, so this does NOT change the forward patch or the #676 RATIO — it
 > makes the differentiable tangent/adjoint exact through curved rigid contact (the
 > co-design gradient) and speeds Newton.** ⚠ **Scoping correction (build-time
@@ -150,9 +153,11 @@ validated on the robust #676 *net-force* metric), then the real
 surface-integrated barrier + curved surface land as **rung 8**, its own
 isolated consistent-contact rung on the proven foundation — the
 obsessively-perfect-contacts work, sequenced right after the base rather than
-tangled into it. (The isoparametric curved surface — projecting boundary
-midside nodes onto the true surface — shares rung 8's face-primitive machinery
-and lands with it.)
+tangled into it. (⚠ **Superseded by the rung-8c build — see §5 step 8 / §7:** the
+isoparametric curved *soft* surface — projecting boundary midside nodes onto the
+true surface — is NOT part of the face-primitive machinery; it is a decoupled
+ELEMENT change and was split off into its own future rung. The rigid-SDF `∂n̂/∂x`
+Hessian term that DID share the face primitive is rung 8c ✅.)
 
 **Why not the cheaper Tet4-only cures (recorded so we don't relitigate):**
 the shipped **nodal-averaged F-bar over-softens** (measured vs the Lamé
@@ -190,7 +195,7 @@ stiffness assembly stays Tet4-shaped until rung 4.)**
 | **Boundary/surface path — must move in lockstep with connectivity.** `boundary_faces_from_topology` emits 3-node faces from 4 corners; Tet10 surface midside nodes are otherwise classified *interior* → auto-pinned even if surfaced. Plus `boundary_vertex_areas`, BC/load position-predicates, cavity tributary-area (`N_loaded`). | `mesh/mod.rs:251`, `readout/scene.rs:226-296` | **medium / high** |
 | Per-Gauss-point geometry: `ElementGeometry{grad_x_n:SMatrix<4,3>, volume}` → array of `(grad_x_n, weight)` over G (cardinality **1→4**: the shape gradients `∇_ξN(ξ_q)` and material `F(ξ_q)` vary per-GP so `grad_x_n` genuinely differs across the 4 GPs). **⚠ For a straight-edged Tet10 the isoparametric map collapses to affine, so `J`, `J⁻¹`, `detJ` are CONSTANT** — do not describe the Jacobian as per-GP (it only becomes per-GP under the deferred rung-8 curved surface). Tet4's `(4,1)` path keeps the **edge-vector Jacobian** and the `det.abs()/6.0` weight — a distinct branch, not the Tet10 Σ-form monomorphized (§3.1). | `mod.rs:68`, `construct.rs:221-244` | **large / medium** |
 | Multi-GP forward assembly: `deformation_gradient`/`extract_element_dof_values` → 30-DOF (`[f64;12]→[f64;30]`, `SMatrix<4,3>→<10,3>`); the six kernels `for a in 0..4`→`0..N`, single-GP → `for q in 0..G`. **No `12×12`/`30×30` stiffness type exists** — stiffness is 3×3 blocks from a 9×9 *material* tangent; do not size a matrix-dim row that isn't there. | `mod.rs`, `helpers.rs:17,36`, `assembly.rs:150-558` | **large / medium** |
-| **Consistent-contact rung 8 (the isolated-rung decision — its own rung AFTER the element foundation).** ⚠ Round-3 meta-audit falsified the "nodal lumping" scheme (net-force smoothing, NOT the consistent P2 load — barrier is a force not a traction; P2 corner area = 0 → singular redistribution). The real scheme = **surface-integrated barrier `E=∫b(sd)dA` at face Gauss points + isoparametric curved surface + `boundary_vertex_areas` 6-node**, together (shared face primitive). Needs a new `#[non_exhaustive]` `ContactPair::Face` variant = a **downstream break** (coupling uses irrefutable `let Vertex{..}` — `contact_readout.rs:154`, `single_step.rs:35`). **Friction reconciled with the face-distributed force.** | `contact/ipc.rs:213-310`, `mesh/mod.rs:313` | **large / high (rung 8)** |
+| **Consistent-contact rung 8 (the isolated-rung decision — its own rung AFTER the element foundation).** ⚠ Round-3 meta-audit falsified the "nodal lumping" scheme (net-force smoothing, NOT the consistent P2 load — barrier is a force not a traction; P2 corner area = 0 → singular redistribution). The real scheme = **surface-integrated barrier `E=∫b(sd)dA` at face Gauss points (8b) + curved-SDF `∂n̂/∂x` Hessian term (8c) + [split off] `boundary_vertex_areas` 6-node face-consistent readout + [split off, ELEMENT-level, decoupled] isoparametric curved soft surface**. Needs a new `#[non_exhaustive]` `ContactPair::Face` variant = a **downstream break** (coupling uses irrefutable `let Vertex{..}` — `contact_readout.rs:154`, `single_step.rs:35`). **Friction reconciled with the face-distributed force.** | `contact/ipc.rs:213-310`, `mesh/mod.rs:313` | **large / high (rung 8)** |
 | Per-Gauss-point material sampling (bypass the per-tet centroid cache) | `mesh/mod.rs:154` (`materials_from_field`), spec `01-tet10.md:46` | **medium / medium** |
 | **Mass lumping — use HRZ (Hinton–Rock–Zienkiewicz) diagonal-scaling, NOT a divisor swap.** `density * volume / 4.0` (`construct.rs:263`) is Tet4-specific; naive row-sum lumping of Tet10 gives **negative corner masses** (→ indefinite tangent → Cholesky failure at small dt). HRZ takes the positive consistent-mass diagonal `∫ρN_i²dV` (evaluated at the 4 Stroud GPs — **rides on §3.3 multi-GP weights**) scaled to preserve total mass. Only a diagonal `Vec<f64>` is ever needed (no consistent matrix). **⚠ Every current oracle is `STATIC_DT` → mass-blind; needs a dynamics gate (§5 steps 3b/7).** | `construct.rs:259-270` | **medium / medium** |
 | Gradient / adjoint RHS per-GP (the silent-wrong risk, but *narrower* than diffuse — §3.5) | `sensitivities.rs:825`, `assembly.rs:472` | **medium / high** |
@@ -423,8 +428,11 @@ non-`#[non_exhaustive]`; coupling uses irrefutable `let Vertex{..}` matches
 > `#[non_exhaustive]` — spike-confirmed). Each site became a `let … else {
 > unreachable!(…) }` (or a `_ =>` wildcard for `match`), fail-loud and
 > byte-identical (no producer emits `Face` until rung 8b).
-It also **shares machinery with the isoparametric curved surface**, so both
-build together as **rung 8** (the isolated-rung decision). (b) A midside
+⚠ **Superseded (rung-8c build):** the surface-integrated barrier (8b) and its
+curved-SDF `∂n̂/∂x` Hessian term (8c) do share the face primitive, but the
+**isoparametric curved *soft* surface does NOT** — it is a decoupled ELEMENT
+change (per-GP Jacobian, breaking the affine foundation) split into its own rung
+(§5 step 8 / §7). (b) A midside
 node gets `tributary_area = 0` → `pressure = NaN` → `peak_contact_pressure`
 silently drops it — the pressure *readouts* regress from 3b until rung 8's
 `boundary_vertex_areas` (`mesh/mod.rs:313`) 6-node upgrade (a known,
@@ -883,24 +891,31 @@ capture — the isoparametric-surface piece is deferred, §7).
      `b'·∇²sd` is negative-semidefinite transverse — the per-GP barrier material is
      INDEFINITE (positive `b''` along `n̂`, negative `b'/‖p−c‖` transverse). This is
      the TRUE tangent (the exact `d(gradient)/dx` the differentiable adjoint
-     consumes), matching penalty — **no SPD projection**. A spike confirmed the
-     assembled global tangent (material stiffness + contact) still factors
-     (Cholesky) at realistic configs; forward robustness rests on the solver's
-     `is_llt` check, with eigenvalue projection a named forward-only follow-on.
+     consumes), matching penalty — **no SPD projection needed**: PD is not required
+     for the forward solve, which falls back from `is_llt` (Cholesky) to LU on a
+     non-PD assembled tangent (a documented benign path). Eigenvalue projection is
+     a named forward-only follow-on only if that fallback ever proves inadequate.
    - **★ Honest scope.** The forward *residual* is curvature-free (`n̂` evaluated
      per-GP), so Newton converges to the same root regardless of the Hessian — 8c
      does NOT change the forward contact patch or the #676 net-force RATIO. Its
      value is the **exact differentiable tangent/adjoint through curved rigid
-     contact** (the co-design gradient — ~7 % off in the flat scope, spike-measured
-     at one config) plus faster Newton on curved contact.
+     contact** (the co-design gradient) plus faster Newton on curved contact. The
+     dropped term is non-negligible — the committed non-vacuity gate asserts the
+     flat (`b''·n̂⊗n̂`-only) Hessian misses FD by `>100×` the curved residual, and
+     the per-GP material is indefinite (a flat block is PSD rank-1, never
+     indefinite) — but its magnitude is **not** quoted as a "% gradient error" (the
+     gradient itself is exact; only the tangent/adjoint moves).
    - **Gates (all green).** Curved-sphere Hessian FD (unit, face + vertex;
-     non-vacuous — the flat block misses FD by ≫ the curved residual, asserted) ·
+     committed non-vacuity — the flat block misses FD by `>100×` the curved
+     residual; and the curved block is asserted indefinite) ·
      **sphere reaction-JVP vs re-solve FD** (`tet10_face_contact.rs` — the curved
-     counterpart of 8b's plane gate, proven non-vacuous: dropping the term fails it
-     at `4.3e-3` while the plane stays green) · pose & `normal_curvature` FD on a
+     counterpart of 8b's plane gate; the FD re-solve reconstructs the true tangent
+     through the curvature-free root, so a dropped term makes analytic ≠ FD, which
+     the committed unit non-vacuity gates pin) · pose & `normal_curvature` FD on a
      sphere · per-GP material indefiniteness · **plane keeps every curved term at
      exactly `∇²sd = 0`** (`normal_curvature == 0`, plane Hessian bit-exactly
-     `diag(0,0,h_zz)` — plane/Tet4 byte-identical). Ships **frictionless**
+     `diag(0,0,h_zz)`; the vertex/Tet4 block is bit-identical — the Tet10 face-path
+     plane Hessian reassociates arithmetic but has no byte-golden). Ships **frictionless**
      (`normal_curvature`'s `Face` arm is `unreachable!` — face contact is
      frictionless-guarded; face-friction with its own face normal-curvature is a
      deferred rung).
