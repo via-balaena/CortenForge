@@ -317,6 +317,17 @@ const SI_CONFORM_MIN_ALIGN: f64 = 0.34;
 /// A vertex already within this distance of the bone (mm) is left as-is (already seated; the
 /// direction guard does not apply). Sub-10-µm — the disc's median native endplate gap.
 const SI_CONFORM_ON_SURFACE: f64 = 1.0e-3;
+/// Move cap (mm) for the **bonded-band node** conform ([`bonded_conform_target`]).
+///
+/// Looser than the render-surface [`SI_CONFORM_CAP`]: the bonded FEM nodes float a measured
+/// p90 ≈ 5.8 mm off the bone (a longer registration gap than the drawn face, which is caught at
+/// its own extremes), so a hard 3–4 mm cap would wrongly decline genuine endplate-facing nodes
+/// 3–5 mm out. The
+/// SI-alignment guard — not this distance — is the primary discriminator between a face node
+/// (seat it) and an annular-rim node reaching sideways for the body wall (leave it straight); the
+/// cap is only a loose backstop against a runaway projection. Still well inside the ~9 mm disc
+/// half-thickness, so the two endplate bands never meet.
+pub const SI_CONFORM_CAP_BONDED: f64 = 6.0;
 
 /// Conform the disc's endplate-facing vertices onto the **real** L4/L5 endplate surfaces
 /// (native mm), so the rendered disc *is* the contact geometry — no proxy gap.
@@ -391,6 +402,50 @@ fn project_to_nearest_endplate(
     o4: &MeshOracle,
     o5: &MeshOracle,
 ) -> Option<Point3<f64>> {
+    conform_target(v, si, o4, o5, SI_CONFORM_CAP, SI_CONFORM_MIN_ALIGN)
+}
+
+/// The conform target for a single **bonded-band node**: the point on the nearer real endplate
+/// this node should seat on, or `None` to leave it straight.
+///
+/// Same discriminator as the render-surface [`conform_disc_to_endplates`] (nearest of the two
+/// endplates, SI-alignment direction guard) but with the looser [`SI_CONFORM_CAP_BONDED`]
+/// backstop — the FEM nodes sit a larger registration gap off the bone than the drawn face does.
+///
+/// This is the node-level primitive `cf_fsu_model::build_bonded_disc` uses to bond the disc to the
+/// exact vertebral endplate (Strategy B: mesh the raw disc, then project its bonded-band nodes),
+/// so the physics runs on the real bone rather than a floating raw disc. `v` and the returned
+/// point are in the caller's frame; `si` is the (unit) SI axis ([`SegmentFrame::superior_axis`]),
+/// invariant under the disc's translate + uniform-scale solver bridge so the alignment guard holds
+/// in either frame. The caller is responsible for keeping the resulting move mesh-valid (a
+/// quality-floor back-off); leaving the overhanging annular rim straight is intentional — the
+/// outer annulus attaches to the ring apophysis, not the endplate face.
+#[must_use]
+pub fn bonded_conform_target(
+    v: Point3<f64>,
+    si: Vector3<f64>,
+    o4: &MeshOracle,
+    o5: &MeshOracle,
+) -> Option<Point3<f64>> {
+    conform_target(v, si, o4, o5, SI_CONFORM_CAP_BONDED, SI_CONFORM_MIN_ALIGN)
+}
+
+/// Shared core of [`project_to_nearest_endplate`] (render surface, [`SI_CONFORM_CAP`]) and
+/// [`bonded_conform_target`] (bonded band, [`SI_CONFORM_CAP_BONDED`]): project `v` onto its
+/// nearest point on whichever endplate (`o4` = L4 or `o5` = L5) is closer, following the LOCAL
+/// surface normal ([`MeshOracle::closest_point`]), subject to a `cap` on the move distance and a
+/// `min_align` SI-direction guard (`si` = the SI axis). Returns the surface point, or `None` —
+/// leaving the vertex in place — when the nearest endplate is past the cap (the disc interior /
+/// annulus middle) or is reached by a near-lateral move onto a side wall rather than an endplate
+/// face.
+fn conform_target(
+    v: Point3<f64>,
+    si: Vector3<f64>,
+    o4: &MeshOracle,
+    o5: &MeshOracle,
+    cap: f64,
+    min_align: f64,
+) -> Option<Point3<f64>> {
     // Nearer of the two endplates — no band / SI-orientation convention needed.
     let (p4, p5) = (o4.closest_point(v), o5.closest_point(v));
     let p = if (p4 - v).norm_squared() <= (p5 - v).norm_squared() {
@@ -403,11 +458,11 @@ fn project_to_nearest_endplate(
     if dist < SI_CONFORM_ON_SURFACE {
         return Some(p); // already on the surface — no meaningful direction to guard
     }
-    if dist > SI_CONFORM_CAP {
+    if dist > cap {
         return None; // nearest endplate is too far — disc interior / annulus middle
     }
     // Endplate FACE ⇒ move ≈ along SI (alignment ~1); side WALL ⇒ move ≈ ⟂ SI (alignment ~0).
-    if (d.dot(&si) / dist).abs() < SI_CONFORM_MIN_ALIGN {
+    if (d.dot(&si) / dist).abs() < min_align {
         return None; // near-lateral move — would wrap onto the body wall, decline
     }
     Some(p)

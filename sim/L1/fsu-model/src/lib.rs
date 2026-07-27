@@ -39,7 +39,7 @@
 //! consumer must drive to genuinely unknown angles.
 
 use anyhow::{Context, Result, bail};
-use cf_fsu_geometry::oracle;
+use cf_fsu_geometry::{MeshOracle, bonded_conform_target, oracle};
 use cf_geometry::{Aabb, IndexedMesh};
 use nalgebra::{Point3, Unit, UnitQuaternion, Vector3};
 use sim_coupling::BondedSandwich;
@@ -62,6 +62,14 @@ pub use coupled::{
 const LOWER: usize = 1;
 /// Body index of the superior (upper) vertebra box.
 const UPPER: usize = 2;
+
+/// Quality floor for the endplate conform's back-off: a projected bonded-band node is
+/// backed off until every incident tet's rest Jacobian is at least this fraction of its
+/// original value. A bare `> 0` bisects onto the `detJ → 0⁺` degeneracy boundary and
+/// manufactures slivers; 5 % keeps the seated elements well-shaped (spike-measured: 0
+/// inverted / 0 sliver at this floor on the real disc). See
+/// `sim_soft::SdfMeshedTetMesh::with_projected_nodes`.
+const DISC_CONFORM_QUALITY_FLOOR: f64 = 0.05;
 
 /// Tunable parameters for [`build_bonded_disc`]. [`Default`] reproduces the
 /// rung-6c/7 disc recipe exactly.
@@ -97,6 +105,24 @@ impl Default for DiscParams {
             static_dt: 1.0e3,
         }
     }
+}
+
+/// The vertebral endplate oracles + SI axis that seat a bonded disc onto the **real** bone.
+///
+/// Strategy B: mesh the raw disc, then conform its bonded-band boundary nodes onto the endplate.
+/// Pass `Some(...)` to [`build_bonded_disc`] to bond the disc to the exact endplate surface
+/// (exact geometry === exact physics); pass `None` to bond the raw floating disc (the
+/// pre-conform baseline). The oracles are native-mm [`cf_fsu_geometry::oracle`]s of the two
+/// vertebrae; nearest-of-the-two is chosen per node, so which is `o4`/`o5` only labels them.
+#[derive(Clone, Copy)]
+pub struct EndplateConform<'a> {
+    /// Native-mm signed-distance oracle of the superior (L4) vertebra.
+    pub o4: &'a MeshOracle,
+    /// Native-mm signed-distance oracle of the inferior (L5) vertebra.
+    pub o5: &'a MeshOracle,
+    /// The unit SI (superior) axis — `cf_fsu_geometry::SegmentFrame::superior_axis`. Used by
+    /// the alignment guard; invariant under the disc's translate + uniform-scale solver bridge.
+    pub superior_axis: Vector3<f64>,
 }
 
 /// A live bonded intervertebral disc.
@@ -157,12 +183,56 @@ fn ml_axis_from_points(vertices: &[Point3<f64>]) -> Vector3<f64> {
     ml
 }
 
+/// The endplate-conform moves for a bonded disc's band nodes: each endplate-facing SURFACE node
+/// in the inferior/superior bands, projected onto the nearer real endplate via
+/// [`bonded_conform_target`] (SI-alignment-gated), as `(node, target)` in the solver SI frame.
+///
+/// Interior band nodes are omitted (restricted to the mesh boundary — they are not endplate-facing
+/// and the alignment guard would decline them anyway) and rim nodes the guard declines are left
+/// straight, so the overhanging annular rim (which attaches to the ring apophysis, not the
+/// endplate face) stays put. The frame bridge (rung-6c discipline) lifts each node from the disc's
+/// SI-metre solver frame to the native-mm oracle and brings the target back; the SI axis is a
+/// coordinate direction, identical in both frames (translate + uniform scale).
+fn endplate_conform_moves(
+    tet: &SdfMeshedTetMesh,
+    inferior: &[VertexId],
+    superior: &[VertexId],
+    ep: EndplateConform,
+    center_native: Point3<f64>,
+    scale: f64,
+) -> Vec<(VertexId, Vec3)> {
+    let surface: std::collections::HashSet<VertexId> =
+        tet.boundary_faces().iter().flatten().copied().collect();
+    let mut moves: Vec<(VertexId, Vec3)> = Vec::new();
+    for &node in inferior.iter().chain(superior) {
+        if !surface.contains(&node) {
+            continue;
+        }
+        let p_si = tet.positions()[node as usize];
+        let n_native = center_native + p_si / scale;
+        if let Some(target_native) = bonded_conform_target(n_native, ep.superior_axis, ep.o4, ep.o5)
+        {
+            let target_si = (target_native - center_native) * scale;
+            moves.push((node, target_si));
+        }
+    }
+    moves
+}
+
 /// Tet-mesh the real intervertebral disc `mesh` (native mm) and bond it between two
 /// field-posed rigid endplate boxes, returning the live [`BondedDisc`].
 ///
 /// The disc is recentred to its AABB centre and scaled by `params.scale` into the
 /// solver's SI-metre frame; its principal axes are derived from the AABB (SI =
 /// thinnest, ML/flexion = widest — no axis taken on faith).
+///
+/// With `endplates = Some(...)`, the bonded-band boundary nodes are seated onto the
+/// **real** vertebral endplate before bonding (Strategy B): the raw disc is meshed first
+/// (well-conditioned), then its endplate-facing surface nodes are projected onto the nearer
+/// endplate oracle — SI-alignment-gated so the overhanging annular rim stays straight — and
+/// backed off to keep every incident tet well-shaped, so the physics runs on the exact bone
+/// rather than a floating raw disc. With `endplates = None` the raw floating disc is bonded
+/// unchanged (the pre-conform baseline).
 ///
 /// # Errors
 /// Returns an error if the disc's thinnest extent is not its native `z` (a
@@ -173,7 +243,11 @@ fn ml_axis_from_points(vertices: &[Point3<f64>]) -> Vector3<f64> {
 // `vs.len()` (an endplate vertex count) is tiny; the usize→f64 cast for its centroid
 // is exact for any real mesh.
 #[allow(clippy::cast_precision_loss)]
-pub fn build_bonded_disc(mut mesh: IndexedMesh, params: &DiscParams) -> Result<BondedDisc> {
+pub fn build_bonded_disc(
+    mut mesh: IndexedMesh,
+    params: &DiscParams,
+    endplates: Option<EndplateConform>,
+) -> Result<BondedDisc> {
     let bbox0 = Aabb::from_points(mesh.vertices.iter());
     let center_native = Point3::from(bbox0.min.coords + (bbox0.max - bbox0.min) * 0.5);
     for v in &mut mesh.vertices {
@@ -213,7 +287,7 @@ pub fn build_bonded_disc(mut mesh: IndexedMesh, params: &DiscParams) -> Result<B
     // fragments the disc's sub-cell-thin tapering rim into disconnected islands — which
     // both scatter the rendered surface and poison the Newton tangent's conditioning
     // (a floating tet component carries unconstrained rigid modes). Keep the main body.
-    let tet = tet.largest_component();
+    let mut tet = tet.largest_component();
 
     // Endplate faces = bands at the SI surface extremes (field-derived, not z=const).
     let (lo_z, hi_z) = (bbox.min.z, bbox.max.z);
@@ -251,6 +325,21 @@ pub fn build_bonded_disc(mut mesh: IndexedMesh, params: &DiscParams) -> Result<B
             params.band_frac
         );
     }
+
+    // Strategy B: with the raw disc meshed (well-conditioned), seat the bonded-band boundary
+    // nodes onto the REAL vertebral endplate so the bond ties to the exact bone rather than a
+    // floating raw disc (exact geometry === exact physics). The quality-floor back-off keeps
+    // every incident tet well-shaped; the rest offset the bond snapshots
+    // (`BondedSandwich::from_tet_mesh`, below) is read from these conformed positions, so the
+    // bond ties to the seated surface with NO change to the bond math.
+    if let Some(ep) = endplates {
+        let moves =
+            endplate_conform_moves(&tet, &inferior, &superior, ep, center_native, params.scale);
+        tet = tet.with_projected_nodes(&moves, DISC_CONFORM_QUALITY_FLOOR);
+    }
+
+    // Endplate-box poses derive from the (now possibly conformed) band centroids, so the
+    // rigid carriers meet the seated disc faces.
     let cen = |vs: &[VertexId]| -> Vec3 {
         let s: Vec3 = vs.iter().map(|&v| tet.positions()[v as usize]).sum();
         s / vs.len() as f64
@@ -519,7 +608,7 @@ mod tests {
 
     #[test]
     fn builds_and_derives_the_ml_axis_and_pivot() {
-        let disc = build_bonded_disc(synthetic_disc(), &DiscParams::default()).unwrap();
+        let disc = build_bonded_disc(synthetic_disc(), &DiscParams::default(), None).unwrap();
         // ML = widest extent = native x; pivot = the AABB centre in native mm.
         assert_eq!(
             disc.ml_axis(),
@@ -625,11 +714,11 @@ mod tests {
         // (2) Bonds + probes to a restoring, symmetric, self-equilibrated k_disc,
         // and the exact-bone conform leaves it intact (no ~6× shift).
         let theta = 0.5_f64.to_radians();
-        let mut raw_bond = build_bonded_disc(disc, &params).expect("lofted disc bonds");
+        let mut raw_bond = build_bonded_disc(disc, &params, None).expect("lofted disc bonds");
         let (m_flex, resid_flex) = raw_bond.flexion_moment(theta);
         let (m_ext, resid_ext) = raw_bond.flexion_moment(-theta);
         let (k_flex, k_ext) = (m_flex / theta, m_ext / -theta);
-        let k_conformed = build_bonded_disc(conformed, &params)
+        let k_conformed = build_bonded_disc(conformed, &params, None)
             .expect("conformed disc bonds")
             .flexion_moment(theta)
             .0
@@ -748,7 +837,7 @@ mod tests {
 
     #[test]
     fn flexion_is_restoring_conserving_and_antisymmetric() {
-        let mut disc = build_bonded_disc(synthetic_disc(), &DiscParams::default()).unwrap();
+        let mut disc = build_bonded_disc(synthetic_disc(), &DiscParams::default(), None).unwrap();
         let theta = 0.3_f64.to_radians(); // sub-degree: stay in the SPD region
 
         let (m_pos, resid_pos) = disc.flexion_moment(theta);
@@ -776,7 +865,7 @@ mod tests {
     fn rejects_a_misoriented_disc() {
         // Thinnest extent along x (not z) — the SI-axis guard must reject it.
         let bad = box_mesh(Point3::origin(), Vector3::new(3.0, 10.0, 12.0));
-        let Err(err) = build_bonded_disc(bad, &DiscParams::default()) else {
+        let Err(err) = build_bonded_disc(bad, &DiscParams::default(), None) else {
             panic!("expected the SI-orientation guard to reject a mis-oriented disc");
         };
         assert!(
@@ -852,7 +941,7 @@ mod tests {
         // License-free coverage of the capture seam on the synthetic disc: exercises
         // capture_flexion + deformed_nodes_native + boundary_faces (the real-anatomy
         // build+measure gate is the #[ignore]d test below).
-        let mut disc = build_bonded_disc(synthetic_disc(), &DiscParams::default()).unwrap();
+        let mut disc = build_bonded_disc(synthetic_disc(), &DiscParams::default(), None).unwrap();
         let angles: Vec<f64> = [-0.3_f64, 0.0, 0.3]
             .iter()
             .map(|d| d.to_radians())
@@ -880,7 +969,8 @@ mod tests {
         // sweep and assert the trajectory a viewer will replay is physically sound and
         // deterministic — no proxy. Gated + license-clean like the rung tests.
         let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
-        let mut disc = build_bonded_disc(disc_mesh, &DiscParams::default()).expect("build disc");
+        let mut disc =
+            build_bonded_disc(disc_mesh, &DiscParams::default(), None).expect("build disc");
 
         // Symmetric, all within rung-7's validated SPD range (|θ| ≤ 0.86°).
         let angles: Vec<f64> = [-0.86_f64, -0.5, 0.0, 0.5, 0.86]
@@ -937,6 +1027,211 @@ mod tests {
         );
     }
 
+    /// License-free coverage of the endplate-conform wiring (`EndplateConform` →
+    /// `endplate_conform_moves` → `SdfMeshedTetMesh::with_projected_nodes`): two box "endplates"
+    /// straddling the synthetic disc pull its bonded-band faces onto their inner surfaces, and the
+    /// conformed disc still bonds and sweeps soundly while its rest surface differs from the raw
+    /// build (the conform engaged). The real-anatomy moment-rotation FOM is the `#[ignore]`d gate
+    /// below.
+    #[test]
+    fn endplate_conform_seats_the_band_and_still_sweeps() {
+        // Disc: centre (100,100,950), half (12,10,3) → z ∈ [947, 953], SI = z. The two box
+        // "endplates" sit at DELIBERATELY ASYMMETRIC gaps from the disc faces (superior 0.5 mm,
+        // inferior 2 mm) so the frame-bridge gate below has teeth: a bridge that collapses every
+        // node toward the disc centre would seat them all to the NEARER (superior) face, which the
+        // asymmetry exposes (the far inferior face is left empty).
+        let o_sup = oracle(&box_mesh(
+            Point3::new(100.0, 100.0, 955.0),
+            Vector3::new(20.0, 20.0, 1.5), // bottom face z = 953.5, 0.5 mm above the disc top (953)
+        ))
+        .unwrap();
+        let o_inf = oracle(&box_mesh(
+            Point3::new(100.0, 100.0, 943.0),
+            Vector3::new(20.0, 20.0, 2.0), // top face z = 945.0, 2 mm below the disc bottom (947)
+        ))
+        .unwrap();
+        let params = DiscParams::default();
+        let endplates = EndplateConform {
+            o4: &o_sup,
+            o5: &o_inf,
+            superior_axis: Vector3::z(),
+        };
+
+        let mut conf = build_bonded_disc(synthetic_disc(), &params, Some(endplates))
+            .expect("conformed synthetic disc bonds");
+        let angles: Vec<f64> = [-0.3_f64, 0.0, 0.3]
+            .iter()
+            .map(|d| d.to_radians())
+            .collect();
+        let traj = conf.capture_flexion(&angles);
+        assert_restoring_sweep(&traj, 2e-2);
+
+        // The conform engaged: the θ=0 rest surface differs from the raw (un-conformed) build,
+        // node-for-node (same deterministic topology), by a real (> noise) endplate-seat move.
+        let raw_rest = build_bonded_disc(synthetic_disc(), &params, None)
+            .expect("raw synthetic disc bonds")
+            .capture_flexion(&[0.0])
+            .rest_nodes_native;
+        assert_eq!(
+            raw_rest.len(),
+            traj.rest_nodes_native.len(),
+            "same topology"
+        );
+        // Strongly-seated (pinned band) nodes and the native-mm z-band they land in. Aligned node
+        // arrays: the raw and conformed builds share topology/ordering (deterministic mesher, same
+        // input). A band node moves ≥ 0.5 mm onto its box face; the 0.4 mm cut excludes the padded-
+        // lattice orphan nodes (which the conform never touches) and interior solve-relaxation.
+        let (mut hi, mut lo, mut seated) = (f64::MIN, f64::MAX, 0usize);
+        for (raw, conf) in raw_rest.iter().zip(&traj.rest_nodes_native) {
+            if (raw - conf).norm() > 0.4 {
+                hi = hi.max(conf.z);
+                lo = lo.min(conf.z);
+                seated += 1;
+            }
+        }
+        assert!(
+            seated > 0,
+            "the endplate conform must seat at least one band node"
+        );
+
+        // FRAME-BRIDGE gate: BOTH bands must seat on their OWN box face in native mm — the superior
+        // band on the superior box's bottom face (z = 953.5) and the inferior band on the inferior
+        // box's top face (z = 945.0). This is the check `max_seat` cannot make: a broken SI↔native
+        // bridge collapses every node toward the disc centre and (given the asymmetric gaps) seats
+        // them all to the nearer superior face, so the far inferior face is left empty and `lo`
+        // never reaches 945.
+        assert!(
+            (hi - 953.5).abs() < 0.2,
+            "superior band must seat on the superior box face z ≈ 953.5, got {hi:.3}"
+        );
+        assert!(
+            (lo - 945.0).abs() < 0.2,
+            "inferior band must seat on the inferior box face z ≈ 945.0, got {lo:.3}"
+        );
+    }
+
+    /// The exact-geometry FOM gate: bonding the disc's endplate band onto the **real**
+    /// vertebral endplate (Strategy B) still produces a physically sound flexion/extension
+    /// moment-rotation response, and does not regress vs the raw floating-disc baseline. The
+    /// win — the bond ties to the exact bone, not a proxy gap — is MEASURED here (both
+    /// moment-rotation curves committed), not asserted.
+    ///
+    /// This is the rung's headline: the settled modeling call gates the exact-geometry claim
+    /// on this FOM, not on the conform distances. The conform moves are sub-mm to a few mm, so
+    /// a large moment shift is not expected; the gate demands soundness + no regression and
+    /// records the comparison.
+    #[test]
+    #[ignore = "needs $CF_L4_STL/$CF_L5_STL/$CF_DISC_STL (BodyParts3D, CC BY-SA, not committed)"]
+    fn disc_endplate_conform_moment_rotation_fom() {
+        use cf_fsu_geometry::{load_from_env, segment_frame};
+
+        let l4 = load_from_env("CF_L4_STL").unwrap();
+        let l5 = load_from_env("CF_L5_STL").unwrap();
+        let disc_mesh = load_from_env("CF_DISC_STL").unwrap();
+        let o4 = oracle(&l4).unwrap();
+        let o5 = oracle(&l5).unwrap();
+        let frame = segment_frame(&l4, &l5, &o4, &o5).unwrap();
+        let params = DiscParams::default();
+
+        // Symmetric sub-degree sweep, inside the spike-validated conformed SPD range (±0.5°).
+        let angles: Vec<f64> = [-0.5_f64, -0.25, 0.0, 0.25, 0.5]
+            .iter()
+            .map(|d| d.to_radians())
+            .collect();
+
+        // BASELINE arm: raw floating disc (the pre-conform physics).
+        let mut raw = build_bonded_disc(disc_mesh.clone(), &params, None).expect("raw disc bonds");
+        let traj_raw = raw.capture_flexion(&angles);
+
+        // CONFORMED arm: bonded band seated on the real endplate.
+        let endplates = EndplateConform {
+            o4: &o4,
+            o5: &o5,
+            superior_axis: frame.superior_axis,
+        };
+        let mut conf =
+            build_bonded_disc(disc_mesh, &params, Some(endplates)).expect("conformed disc bonds");
+        let traj_conf = conf.capture_flexion(&angles);
+
+        // (1) NON-VACUITY: the conform actually seated nodes — the two rest surfaces differ
+        // (same topology/ordering: deterministic mesher, same input). A move above the ~0.02 mm
+        // solve-noise floor and inside the 6 mm bonded cap proves the endplate band moved onto
+        // the bone rather than the test comparing two identical meshes.
+        assert_eq!(
+            traj_raw.rest_nodes_native.len(),
+            traj_conf.rest_nodes_native.len(),
+            "raw and conformed discs must share topology for a node-wise comparison"
+        );
+        let max_seat = traj_raw
+            .rest_nodes_native
+            .iter()
+            .zip(&traj_conf.rest_nodes_native)
+            .map(|(a, b)| (a - b).norm())
+            .fold(0.0_f64, f64::max);
+        println!("max endplate-seat move: {max_seat:.3} mm");
+        // COMMITTED (BodyParts3D L4/L5/disc, DiscParams::default): the deepest seated node
+        // moves 4.457 mm onto the bone — a genuine central endplate node the old hard 3–4 mm
+        // cap would have clipped, seated by the loose 6 mm backstop + SI-alignment guard.
+        assert!(
+            (4.3..=4.6).contains(&max_seat),
+            "the conform must seat nodes onto the bone (committed 4.457 mm), got {max_seat:.3} mm"
+        );
+
+        // (2) BOTH arms are physically sound (valid surface, conservation, strictly restoring
+        // off neutral, real imposed deformation). This is the spike's central worry — that the
+        // conform breaks the bonded solve — retired as a hard gate.
+        let disp_raw = assert_restoring_sweep(&traj_raw, 5e-2);
+        let disp_conf = assert_restoring_sweep(&traj_conf, 5e-2);
+
+        // (3) MOMENT-ROTATION FOM: small-strain stiffness each way, both arms. Report the full
+        // curves; gate on soundness + no regression (same restoring sense, finite, same order).
+        let k = |traj: &FlexionTrajectory, theta: f64| -> f64 {
+            let f = traj
+                .frames
+                .iter()
+                .find(|f| (f.theta - theta).abs() < 1e-12)
+                .expect("swept angle present");
+            f.moment / theta
+        };
+        let (flex, ext) = (0.5_f64.to_radians(), -0.5_f64.to_radians());
+        let (k_flex_raw, k_ext_raw) = (k(&traj_raw, flex), k(&traj_raw, ext));
+        let (k_flex_conf, k_ext_conf) = (k(&traj_conf, flex), k(&traj_conf, ext));
+        println!(
+            "k_disc (N·m/rad) — raw: flex {k_flex_raw:.2} / ext {k_ext_raw:.2} (disp {disp_raw:.3} mm); \
+             conformed: flex {k_flex_conf:.2} / ext {k_ext_conf:.2} (disp {disp_conf:.3} mm)"
+        );
+
+        // Restoring (k > 0 for a restoring spring: M = k·θ opposes θ ⇒ M/θ < 0? here moment is
+        // the reaction, negative-restoring, so k < 0 — assert the CONFORMED matches the raw
+        // sign and stays a consistent spring). Both arms already passed the strict per-frame
+        // restoring check in assert_restoring_sweep; here we compare the linearised stiffnesses.
+        // COMMITTED: both arms read k_disc ≈ −0.28 N·m/rad each way (restoring); seating the
+        // band onto the real endplate shifts it at most ~4 % (ext −0.28 → −0.27). The FOM is
+        // essentially unchanged — the exact-geometry win is that the bond ties to the REAL bone,
+        // not a moment shift, which is why the gate is soundness + no-regression, not "improves".
+        for (kc, kr, name) in [
+            (k_flex_conf, k_flex_raw, "flexion"),
+            (k_ext_conf, k_ext_raw, "extension"),
+        ] {
+            assert!(kc.is_finite(), "conformed {name} k_disc must be finite");
+            assert!(
+                kc.signum() == kr.signum(),
+                "conformed {name} k_disc must keep the raw restoring sense ({kc:.3} vs {kr:.3})"
+            );
+            assert!(
+                (-0.34..=-0.22).contains(&kc) && (-0.34..=-0.22).contains(&kr),
+                "k_disc {name} outside the committed ≈ −0.28 N·m/rad band (conf {kc:.3}, raw {kr:.3})"
+            );
+            // No-regression: the seated band shifts the linearised stiffness by < ~10 % (observed
+            // ~4 %). Loose enough to record a legitimate shift, tight enough to catch a collapse.
+            let ratio = (kc / kr).abs();
+            assert!(
+                (0.9..=1.1).contains(&ratio),
+                "conformed {name} k_disc must not regress vs raw (ratio {ratio:.3}: {kc:.3} vs {kr:.3})"
+            );
+        }
+    }
+
     #[test]
     fn rejects_overlapping_endplate_bands() {
         // band_frac ≥ 0.5 makes the two bands meet at the mid-plane and share vertices;
@@ -946,7 +1241,7 @@ mod tests {
             band_frac: 0.6,
             ..DiscParams::default()
         };
-        let Err(err) = build_bonded_disc(synthetic_disc(), &params) else {
+        let Err(err) = build_bonded_disc(synthetic_disc(), &params, None) else {
             panic!("expected overlapping endplate bands to be rejected");
         };
         assert!(format!("{err}").contains("overlap"), "got: {err}");

@@ -135,7 +135,8 @@ pub struct CoupledFsu {
     /// [`Self::render_disc`] and baked into `model`'s hinge (the equilibrium the ROM solve uses).
     k_disc: f64,
     /// The live bonded disc (RAW geometry — well-conditioned, so its FEM solves incrementally to
-    /// the full ROM; a conformed mesh spawns sliver tets that fail the sweep). [`Self::capture_ramp`]
+    /// the full ROM; a whole-face-conformed mesh spawns sliver tets that fail the sweep, and the
+    /// node-level Strategy-B conform is deferred here). [`Self::capture_ramp`]
     /// drives it to each equilibrium angle and reads the REAL deformed nodes, which the whole-face-
     /// conformed [`Self::conformed_disc_surface`] is skinned onto. Also the source of `k_disc`.
     render_disc: BondedDisc,
@@ -146,17 +147,18 @@ pub struct CoupledFsu {
 }
 
 impl CoupledFsu {
-    /// Assemble the coupled FSU from the three meshes (native mm): **conform the disc's
-    /// endplate bands onto the real L4/L5 surfaces**, tet-mesh + bond the (conformed) disc,
-    /// measure its `k_disc` bushing, build the ligament + bushing hinge model, and sample
-    /// the two articular SDF grids. The flexion sense is derived from the facet engagement
-    /// asymmetry (never hardcoded).
+    /// Assemble the coupled FSU from the three meshes (native mm): conform the disc's endplate
+    /// face onto the real L4/L5 surfaces for rendering, tet-mesh + bond the disc, measure its
+    /// `k_disc` bushing, build the ligament + bushing hinge model, and sample the two articular
+    /// SDF grids. The flexion sense is derived from the facet engagement asymmetry (never
+    /// hardcoded).
     ///
-    /// The conform ([`conform_disc_to_endplates`]) projects the disc's endplate face onto the
-    /// exact bone surfaces, so the disc (via [`Self::conformed_disc_surface`]) *renders* on the
-    /// real endplates — no proxy gap. The bonded FEM disc keeps the raw geometry (a conformed
-    /// mesh spawns sliver tets that fail the large-angle deform sweep); `k_disc` on it is rung
-    /// 7's, the conform shifting it a negligible ~0.5%.
+    /// The render surface ([`conform_disc_to_endplates`]) projects the disc's whole endplate face
+    /// onto the exact bone, so the disc (via [`Self::conformed_disc_surface`]) *renders* on the
+    /// real endplates — no proxy gap. The bonded FEM disc, by contrast, keeps the RAW geometry
+    /// here: the node-level Strategy-B endplate conform exists (`build_bonded_disc(.., Some(..))`)
+    /// but flipping it would shift the `k_disc` baked into the rung-7-validated ROM equilibrium,
+    /// so it is deferred to its own ROM re-validation (see the call site).
     ///
     /// # Errors
     /// Propagates a failure to derive the segment frame, build the bonded disc, or
@@ -174,15 +176,16 @@ impl CoupledFsu {
 
         // The RENDER SURFACE conforms onto the real endplates (rendered === contacts) — its
         // whole top/bottom face is seated on the bone so the drawn disc hugs it edge-to-edge.
-        // The BONDED FEM disc, by contrast, stays on the RAW (un-conformed) geometry: conforming
-        // the mesh drags surface vertices onto the bumpy bone and spawns sliver tets that fail
-        // the incremental deform sweep past a few degrees, whereas the raw disc's well-shaped
-        // tets solve cleanly to the full ROM (and its k_disc = rung 7's, the conform shifting it
-        // a negligible ~0.5% anyway). So: real deformation on raw tets, rendered on a conformed
-        // surface skinned to it.
+        // The BONDED FEM disc here stays on the RAW (un-conformed) geometry (`None`): the
+        // node-level Strategy-B endplate conform now exists (`build_bonded_disc(.., Some(..))`),
+        // and the standalone FOM measures its effect on `k_disc` as small (~4% in extension,
+        // ~0% in flexion). Even so, seating this path changes the measured `k_disc` baked into
+        // the rung-7-validated ROM equilibrium, so flipping it is a deliberate follow-up gated on
+        // its own ROM re-validation rather than a silent change here. So for now: real
+        // deformation on raw tets, rendered on a conformed surface skinned to it.
         let conformed_disc_surface = conform_disc_to_endplates(disc_mesh, &o4, &o5, &frame, None);
-        let mut render_disc =
-            build_bonded_disc(disc_mesh.clone(), &params.disc).context("build bonded disc")?;
+        let mut render_disc = build_bonded_disc(disc_mesh.clone(), &params.disc, None)
+            .context("build bonded disc")?;
         let pivot = render_disc.center_native();
         let ml = render_disc.ml_axis();
         // Small-strain disc bending stiffness (linear bushing), measured sub-degree.
@@ -809,7 +812,7 @@ mod tests {
         // The render disc is a bonded synthetic disc (its shape is what `capture_ramp` reads);
         // the real build conforms the whole face onto the bones.
         let render_disc =
-            build_bonded_disc(synthetic_disc(), &DiscParams::default()).expect("render disc");
+            build_bonded_disc(synthetic_disc(), &DiscParams::default(), None).expect("render disc");
         let scratch = RefCell::new(model.make_data());
         CoupledFsu {
             model,

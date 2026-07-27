@@ -303,6 +303,7 @@ fn l4_l5_fsu_segmental_response_vs_literature() {
             mu: DEFAULT_MU,
             ..DiscParams::default()
         },
+        None,
     )
     .expect("build bonded disc");
     let pivot = disc.center_native(); // shared pivot (native mm)
@@ -523,6 +524,7 @@ fn l4_l5_fsu_segmental_response_vs_literature() {
                     mu,
                     ..DiscParams::default()
                 },
+                None,
             )
             .expect("build bonded disc");
             let (m_probe, _) = d.flexion_moment(DISC_PROBE_DEG[1].to_radians());
