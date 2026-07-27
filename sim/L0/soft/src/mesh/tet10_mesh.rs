@@ -1,7 +1,7 @@
 //! [`Tet10Mesh`] — the enriched quadratic (Tet10) tet mesh (ladder rung 3a).
 //!
 //! Wraps a linear (Tet4) mesh's four-corner connectivity with the six
-//! edge-midpoint nodes a [`Tet10`](crate::element::Tet10) element needs,
+//! edge-midpoint nodes a [`Tet10`] element needs,
 //! produced by [`enrich_tet4_to_tet10`]. Built with
 //! [`Tet10Mesh::from_tet4`] from any linear [`Mesh`].
 //!
@@ -37,7 +37,11 @@ use super::{
     enrich::enrich_tet4_to_tet10,
 };
 use crate::Vec3;
+use crate::element::{Element, Tet10};
 use crate::material::NeoHookean;
+use crate::sdf_bridge::{Sdf, project_point_onto_sdf};
+use nalgebra::{Point3, SMatrix};
+use std::collections::{HashMap, HashSet};
 
 /// Enriched quadratic (Tet10) tet mesh — four corners plus six
 /// edge-midpoint nodes per tet.
@@ -144,7 +148,7 @@ impl Tet10Mesh {
     /// Move the midside nodes off the straight edge midpoints, remapping each
     /// midside rest position through `project` — the seam that lets a mesh
     /// carry a *curved* (isoparametric) soft surface so the
-    /// [`Tet10`](crate::element::Tet10) element honors it exactly ("exact
+    /// [`Tet10`] element honors it exactly ("exact
     /// geometry IS the exact physics").
     ///
     /// Only midside positions (indices `>= n_corners`) are remapped; corner
@@ -165,6 +169,144 @@ impl Tet10Mesh {
         for p in &mut self.positions[self.n_corners..] {
             *p = project(*p);
         }
+        self
+    }
+
+    /// Move the boundary midside nodes onto the true rigid surface `sdf` so the
+    /// [`Tet10`] element integrates over the real curved
+    /// geometry rather than the inscribed facet chords — the SDF-projection
+    /// mesher rung of "exact geometry IS the exact physics". The intelligent
+    /// counterpart of [`with_curved_midsides`](Self::with_curved_midsides),
+    /// which takes a raw closure.
+    ///
+    /// # What moves
+    ///
+    /// Only the midside nodes that lie on the mesh boundary — the trailing
+    /// three slots of every [`Mesh::boundary_faces6`] face — are candidates.
+    /// Every interior midside and every corner stays exactly where enrichment
+    /// (and, upstream, the stuffing mesher) placed it, so this touches only the
+    /// surface curvature. Corners are left inscribed: a fully consistent
+    /// corner-and-midside projection reshapes the whole boundary layer and
+    /// carries far higher inversion risk, so it is a separate, later rung.
+    ///
+    /// # Projection and inversion back-off
+    ///
+    /// Each candidate is projected onto `sdf` with
+    /// [`project_point_onto_sdf`]. A projected move smaller than a snap
+    /// tolerance (larger than the Newton residual, far below any real curvature
+    /// displacement) leaves the node exactly at its straight midpoint, so a
+    /// boundary that already lies on — or within that tolerance of — the
+    /// surface keeps the byte-identical affine fast path (the solver's
+    /// `element_is_straight` bit-exact test). Otherwise the node is placed as
+    /// far along the segment `straight → projected` as keeps every incident
+    /// element's rest Jacobian positive at all Gauss points
+    /// ([`Element::rest_jacobian_dets`]).
+    /// This bisection back-off guarantees a valid (non-inverted) mesh: the
+    /// straight position is always feasible, so in the worst case a node simply
+    /// stays straight. Nodes are swept in ascending `VertexId` order, so the
+    /// result is deterministic. A projection that fails to converge onto the
+    /// surface (a gradient singularity, or a point too far away) also leaves
+    /// the node straight.
+    ///
+    /// # Precondition
+    ///
+    /// Assumes the input elements are positively oriented (as every in-tree
+    /// mesher produces). The "always valid" guarantee rests on the straight
+    /// position being feasible; a *pre-inverted* input element has no feasible
+    /// blend, and the back-off leaves it straight (still inverted) rather than
+    /// detecting it. It never *introduces* an inversion.
+    #[must_use]
+    pub fn with_sdf_projected_boundary(mut self, sdf: &dyn Sdf) -> Self {
+        /// Newton convergence tolerance for the surface projection (metres).
+        const PROJECT_TOL: f64 = 1e-12;
+        /// Newton iteration cap; a node that fails to converge stays straight.
+        const PROJECT_ITERS: usize = 32;
+        /// A projected move below this keeps the node exactly straight (above
+        /// the Newton residual, below any real curvature displacement).
+        const SNAP: f64 = 1e-10;
+        /// Bisection steps for the back-off (~`2⁻⁴⁰` blend resolution).
+        const BISECT_ITERS: usize = 40;
+
+        // Boundary midside VertexIds (trailing three slots of each 6-node
+        // face), deduplicated and sorted for a deterministic sweep.
+        let mut boundary: Vec<VertexId> = self
+            .boundary_faces6
+            .iter()
+            .flat_map(|f| [f[3], f[4], f[5]])
+            .collect();
+        boundary.sort_unstable();
+        boundary.dedup();
+        let boundary_set: HashSet<VertexId> = boundary.iter().copied().collect();
+
+        // Incident tets per boundary midside: validity is an element property,
+        // so a moved node must keep every tet that references it non-inverted.
+        let mut incident: HashMap<VertexId, Vec<usize>> = HashMap::new();
+        for (ti, t) in self.tets.iter().enumerate() {
+            for &v in &t[4..10] {
+                if boundary_set.contains(&v) {
+                    incident.entry(v).or_default().push(ti);
+                }
+            }
+        }
+
+        let element = Tet10;
+        let tets = &self.tets;
+
+        // Positive-Jacobian check over a node's incident elements against the
+        // (in-progress) `positions`. Finiteness is asserted first: a NaN
+        // determinant must read as invalid, never slip through a bare `> 0.0`.
+        let incident_valid = |positions: &[Vec3], m_tets: &[usize]| -> bool {
+            m_tets.iter().all(|&ti| {
+                let x_ref =
+                    SMatrix::<f64, 10, 3>::from_fn(|a, k| positions[tets[ti][a] as usize][k]);
+                element
+                    .rest_jacobian_dets(&x_ref)
+                    .iter()
+                    .all(|d| d.is_finite() && *d > 0.0)
+            })
+        };
+
+        // `tets`/`incident` borrow disjoint state, so take `positions` out to
+        // mutate it in place through the sweep.
+        let mut positions = std::mem::take(&mut self.positions);
+        for m in boundary {
+            let Some(m_tets) = incident.get(&m) else {
+                // Unreachable for a well-formed Tet10Mesh: a boundary midside
+                // is always referenced by the tet whose face carries it.
+                continue;
+            };
+            let mi = m as usize;
+            let straight = positions[mi];
+            let projected = project_point_onto_sdf(sdf, straight, PROJECT_TOL, PROJECT_ITERS);
+            if sdf.eval(Point3::from(projected)).abs() > PROJECT_TOL {
+                continue; // did not reach the surface — leave straight
+            }
+            let delta = projected - straight;
+            if delta.norm() < SNAP {
+                continue; // already on the surface — keep the affine fast path
+            }
+            // Fast path: the full projection keeps every incident element valid.
+            positions[mi] = projected;
+            if incident_valid(&positions, m_tets) {
+                continue;
+            }
+            // Back off: largest blend `t ∈ [0, 1]` with `straight + t·delta`
+            // valid. `t = 0` (straight) is always feasible, so `lo` stays a
+            // valid lower bound throughout.
+            let mut lo = 0.0_f64;
+            let mut hi = 1.0_f64;
+            for _ in 0..BISECT_ITERS {
+                let t = 0.5 * (lo + hi);
+                positions[mi] = straight + delta * t;
+                if incident_valid(&positions, m_tets) {
+                    lo = t;
+                } else {
+                    hi = t;
+                }
+            }
+            positions[mi] = straight + delta * lo;
+        }
+        self.positions = positions;
         self
     }
 }
@@ -254,9 +396,10 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::*;
-    use crate::element::TET10_EDGE_NODES;
+    use crate::element::{TET10_EDGE_NODES, Tet10};
     use crate::material::MaterialField;
-    use crate::mesh::HandBuiltTetMesh;
+    use crate::mesh::{HandBuiltTetMesh, SingleTetMesh};
+    use crate::sdf_bridge::{SphereSdf, project_point_onto_sdf};
 
     fn canonical_field() -> MaterialField {
         MaterialField::uniform(1.0e5, 4.0e5)
@@ -389,6 +532,189 @@ mod tests {
         // The identity map is a genuine no-op (byte-identical positions).
         let noop = straight.clone().with_curved_midsides(|p| p);
         assert_eq!(noop.positions(), straight.positions());
+    }
+
+    // --- with_sdf_projected_boundary: the SDF-projection mesher rung ---
+
+    /// A single reference tet enriched to Tet10: all four faces are boundary,
+    /// so all six midsides are boundary candidates — a fully-controlled fixture
+    /// for the projection and its inversion back-off.
+    fn single_tet10() -> Tet10Mesh {
+        Tet10Mesh::from_tet4(&SingleTetMesh::new(&canonical_field()))
+    }
+
+    /// Projecting onto an SDF moves only boundary midsides: every corner and
+    /// every INTERIOR midside stays bit-identical. This is the topological
+    /// boundary-selection guarantee — the element rung's false "degradation"
+    /// came from a projector that also snapped interior midsides.
+    #[test]
+    fn projection_leaves_corners_and_interior_midsides_bit_identical() {
+        let cube4 = HandBuiltTetMesh::uniform_block(2, 0.1, &canonical_field());
+        let straight = Tet10Mesh::from_tet4(&cube4);
+        let n_corners = straight.n_corners();
+
+        let boundary: HashSet<VertexId> = straight
+            .boundary_faces6()
+            .expect("6-node faces")
+            .iter()
+            .flat_map(|f| [f[3], f[4], f[5]])
+            .collect();
+
+        // A sphere the inscribed boundary midsides do not already lie on, so
+        // the projection genuinely moves them.
+        let curved = straight
+            .clone()
+            .with_sdf_projected_boundary(&SphereSdf { radius: 0.12 });
+
+        assert_eq!(
+            &curved.positions()[..n_corners],
+            &straight.positions()[..n_corners],
+            "corners must never move",
+        );
+        let mut moved = 0usize;
+        for v in n_corners..straight.n_vertices() {
+            if boundary.contains(&(v as VertexId)) {
+                if curved.positions()[v] != straight.positions()[v] {
+                    moved += 1;
+                }
+            } else {
+                assert_eq!(
+                    curved.positions()[v],
+                    straight.positions()[v],
+                    "interior midside {v} must not move",
+                );
+            }
+        }
+        assert!(moved > 0, "the projection must move some boundary midside");
+    }
+
+    /// A boundary midside *exactly* on the surface is returned unchanged — the
+    /// projector converges on its first iteration (`|eval| ≤ tol`) and returns
+    /// the input bit-for-bit, so the node keeps the affine fast path. (This is
+    /// projector idempotence; the SNAP skip's own teeth are in
+    /// [`snap_back_keeps_a_near_surface_midside_exactly_straight`].)
+    #[test]
+    fn on_surface_boundary_midside_is_left_straight() {
+        let straight = single_tet10();
+        let before = straight.positions().to_vec();
+        // The reference tet's edge-`(0,i)` midsides sit at radius 0.05 from the
+        // origin, so a sphere of that radius already contains them.
+        let curved = straight.with_sdf_projected_boundary(&SphereSdf { radius: 0.05 });
+        let mut snapped = 0usize;
+        for (v, p) in before.iter().enumerate() {
+            if (p.norm() - 0.05).abs() < 1e-12 {
+                assert_eq!(
+                    curved.positions()[v],
+                    *p,
+                    "an on-surface midside must be left straight (node {v})",
+                );
+                snapped += 1;
+            }
+        }
+        assert!(
+            snapped >= 3,
+            "expected the three origin-edge midsides to snap"
+        );
+    }
+
+    /// The SNAP skip has teeth only for a midside that is *near but not within
+    /// the Newton tolerance* of the surface: the projector then takes a real
+    /// step (larger than `PROJECT_TOL = 1e-12`) that SNAP (`1e-10`) must
+    /// nonetheless discard to preserve the affine fast path. A sphere whose
+    /// radius sits `5e-11` outside the origin-edge midsides (radius `0.05`)
+    /// puts them in exactly that band: the projector would move them `~5e-11`,
+    /// and SNAP must leave them bit-for-bit straight. Removing the SNAP skip
+    /// fails this (the nodes then move `~5e-11`); the idempotence test above
+    /// would not, because there the move is below `PROJECT_TOL`.
+    #[test]
+    fn snap_back_keeps_a_near_surface_midside_exactly_straight() {
+        let straight = single_tet10();
+        let before = straight.positions().to_vec();
+        // 5e-11 is between PROJECT_TOL (1e-12) and SNAP (1e-10).
+        let curved = straight.with_sdf_projected_boundary(&SphereSdf {
+            radius: 0.05 + 5e-11,
+        });
+        let mut checked = 0usize;
+        for (v, p) in before.iter().enumerate() {
+            if (p.norm() - 0.05).abs() < 1e-12 {
+                assert_eq!(
+                    curved.positions()[v],
+                    *p,
+                    "a within-SNAP midside must stay bit-for-bit straight (node {v})",
+                );
+                checked += 1;
+            }
+        }
+        assert!(
+            checked >= 3,
+            "expected the three origin-edge midsides in band"
+        );
+    }
+
+    /// The inversion back-off keeps the mesh valid even when a full projection
+    /// would grossly invert an element, and it genuinely engages (a node ends
+    /// short of its projected target, still on the straight→target segment).
+    #[test]
+    fn inversion_back_off_keeps_the_mesh_valid_and_engages() {
+        let straight = single_tet10();
+        let n_corners = straight.n_corners();
+        let before = straight.positions().to_vec();
+        // A sphere ten times the tet size: a full radial projection flings each
+        // boundary midside far outside the tet, grossly inverting it.
+        let sdf = SphereSdf { radius: 0.5 };
+        let curved = straight.with_sdf_projected_boundary(&sdf);
+
+        // 1. Every element stays non-inverted at every Gauss point.
+        let element = Tet10;
+        for t in 0..curved.n_tets() as TetId {
+            let corners = curved.tet_vertices(t);
+            let mids = curved.tet_midside_nodes(t).expect("midsides");
+            let mut nodes = [Vec3::zeros(); 10];
+            for (a, &c) in corners.iter().enumerate() {
+                nodes[a] = curved.positions()[c as usize];
+            }
+            for (i, &m) in mids.iter().enumerate() {
+                nodes[4 + i] = curved.positions()[m as usize];
+            }
+            let x_ref = SMatrix::<f64, 10, 3>::from_fn(|a, k| nodes[a][k]);
+            for (q, d) in element.rest_jacobian_dets(&x_ref).iter().enumerate() {
+                assert!(
+                    d.is_finite() && *d > 0.0,
+                    "tet {t} Gauss point {q} inverted after back-off: detJ = {d}",
+                );
+            }
+        }
+
+        // 2. Back-off engaged: at least one boundary midside ended short of its
+        //    projected target, and every moved node stayed on the
+        //    straight→target segment (never off it).
+        let mut engaged = false;
+        for (v, &s) in before.iter().enumerate().skip(n_corners) {
+            let target = project_point_onto_sdf(&sdf, s, 1e-12, 32);
+            let seg = target - s;
+            let moved = curved.positions()[v] - s;
+            if seg.norm() < 1e-6 {
+                continue; // no meaningful projection for this node
+            }
+            if moved.norm() < seg.norm() - 1e-9 {
+                engaged = true;
+            }
+            if moved.norm() > 1e-12 {
+                // Colinearity with the segment holds by construction (the code
+                // places the node at `straight + delta·t`), so this cannot fail
+                // for any output the current code produces — it is a guard
+                // against a future refactor placing a backed-off node OFF the
+                // straight→target ray, not independent evidence. The load-
+                // bearing checks are the per-Gauss-point validity loop above
+                // and the `engaged` flag below.
+                let t = moved.dot(&seg) / seg.dot(&seg);
+                assert!(
+                    (moved - seg * t).norm() < 1e-9 * seg.norm(),
+                    "node {v} left the straight→target segment",
+                );
+            }
+        }
+        assert!(engaged, "the aggressive projection must trigger back-off");
     }
 
     /// The six-node boundary faces' corner triples equal the three-node
