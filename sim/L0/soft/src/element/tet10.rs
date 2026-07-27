@@ -220,6 +220,74 @@ mod tests {
     }
 
     #[test]
+    fn rest_jacobian_dets_match_edge_vector_jacobian_when_straight() {
+        // For a straight-edged (affine) element the isoparametric Jacobian is
+        // constant across the Gauss points and equals the linear edge-vector
+        // Jacobian `[X1-X0, X2-X0, X3-X0]` — an INDEPENDENT route (Tet4 corner
+        // geometry) to the same determinant the quadratic shape-gradient sum
+        // in `rest_jacobian_dets` produces. Agreement is the isoparametric
+        // completeness of the straight element.
+        let coords = distorted_element_coords();
+        let x_ref = SMatrix::<f64, 10, 3>::from_fn(|a, k| coords[a][k]);
+        let dets = Tet10.rest_jacobian_dets(&x_ref);
+
+        let edge = nalgebra::Matrix3::from_columns(&[
+            coords[1] - coords[0],
+            coords[2] - coords[0],
+            coords[3] - coords[0],
+        ]);
+        let expected = edge.determinant();
+        assert!(expected > 0.0, "reference corners are positively oriented");
+        for (q, &d) in dets.iter().enumerate() {
+            assert!(d.is_finite(), "detJ[{q}] must be finite");
+            assert!(
+                (d - expected).abs() < 1e-12 * expected,
+                "straight-element detJ[{q}] = {d}, edge-vector det = {expected}",
+            );
+        }
+    }
+
+    #[test]
+    fn rest_jacobian_dets_are_negative_for_an_inverted_element() {
+        // Mirroring every node through x = 0 flips the element orientation but
+        // keeps it straight-edged (mirroring is linear, so midsides stay at the
+        // midpoints of the mirrored corners). Every detJ must go strictly
+        // negative — the sign the mesher's inversion guard rejects, and the one
+        // the solver's `.abs()` would otherwise hide.
+        let mut coords = distorted_element_coords();
+        for p in &mut coords {
+            p.x = -p.x;
+        }
+        let x_ref = SMatrix::<f64, 10, 3>::from_fn(|a, k| coords[a][k]);
+        let dets = Tet10.rest_jacobian_dets(&x_ref);
+        assert!(
+            dets.iter().all(|d| d.is_finite() && *d < 0.0),
+            "a mirror-inverted straight element must give negative detJ, got {dets:?}",
+        );
+    }
+
+    #[test]
+    fn rest_jacobian_dets_vary_per_gauss_point_when_curved() {
+        // A genuinely curved element has a per-Gauss-point Jacobian, so the
+        // determinants differ across the quadrature points (unlike the straight
+        // case above, where they are identical).
+        let coords = curved_element_coords(0.10);
+        let x_ref = SMatrix::<f64, 10, 3>::from_fn(|a, k| coords[a][k]);
+        let dets = Tet10.rest_jacobian_dets(&x_ref);
+        assert!(
+            dets.iter().all(|d| d.is_finite() && *d > 0.0),
+            "mildly-curved element stays positively oriented, got {dets:?}",
+        );
+        let max = dets.iter().copied().fold(f64::MIN, f64::max);
+        let min = dets.iter().copied().fold(f64::MAX, f64::min);
+        assert!(
+            max - min > 1e-6,
+            "curved-element detJ should vary across Gauss points, spread = {}",
+            max - min,
+        );
+    }
+
+    #[test]
     fn shape_gradients_match_finite_difference() {
         // Central FD of shape_functions must match analytic shape_gradients.
         let xi = sample_point();

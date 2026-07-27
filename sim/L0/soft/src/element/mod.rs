@@ -32,4 +32,24 @@ pub trait Element<const N: usize, const G: usize>: Send + Sync {
     fn n_dof(&self) -> usize {
         3 * N
     }
+
+    /// Signed determinant of the rest-frame Jacobian `J(ξ_q) = x_refᵀ · ∇_ξN(ξ_q)`
+    /// at each of the `G` Gauss points, where row `a` of `x_ref` is the rest
+    /// position of node `a`.
+    ///
+    /// This is the *same* `J` the curved per-Gauss-point stiffness geometry
+    /// assembles in the solver (`curved_gauss_geometry`), which then takes
+    /// `|detJ|` — so a non-positive entry here marks an inverted or degenerate
+    /// element at that Gauss point, the sign flip the solver's `.abs()` would
+    /// silently hide. A mesher that moves nodes (e.g. projecting boundary
+    /// midsides onto an SDF) uses this to reject a placement before it reaches
+    /// the assembler. For a straight-edged element `J` is constant, so all `G`
+    /// entries are equal.
+    fn rest_jacobian_dets(&self, x_ref: &SMatrix<f64, N, 3>) -> [f64; G] {
+        let gps = self.gauss_points();
+        std::array::from_fn(|q| {
+            let grad_xi = self.shape_gradients(gps[q].0);
+            (x_ref.transpose() * grad_xi).determinant()
+        })
+    }
 }

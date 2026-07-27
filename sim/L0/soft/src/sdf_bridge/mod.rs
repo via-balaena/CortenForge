@@ -19,11 +19,13 @@
 
 mod difference;
 mod lattice;
+mod project;
 mod sdf;
 mod sdf_meshed_tet_mesh;
 mod stuffing;
 
 pub use difference::DifferenceSdf;
+pub use project::project_point_onto_sdf;
 pub use sdf::{Sdf, SphereSdf, TranslatedSdf};
 pub use sdf_meshed_tet_mesh::{MeshingError, SdfMeshedTetMesh};
 

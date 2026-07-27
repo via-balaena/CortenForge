@@ -110,6 +110,13 @@ where
     let nodes = element_node_ids::<M, Msh, N>(mesh, tet_id);
     // The `N` rest node positions as an `N × 3` matrix (row `a` = X_a).
     let x_ref = SMatrix::<f64, N, 3>::from_fn(|a, k| x_rest[nodes[a] as usize][k]);
+    // Lockstep reference: the mesher's inversion guard rejects a node placement
+    // using `Element::rest_jacobian_dets` — the SAME per-Gauss-point `detJ` this
+    // assembly then takes `|·|` of. Pin the two formulas together so a future
+    // edit to either the guard or this assembly cannot silently diverge (which
+    // would let the mesher bless a placement this path then mis-weights).
+    #[cfg(debug_assertions)]
+    let lockstep_dets = element.rest_jacobian_dets(&x_ref);
     std::array::from_fn(|q| {
         let (xi, w_ref) = gauss_points[q];
         let grad_xi = element.shape_gradients(xi); // N×3, row a = ∇_ξN_a(ξ_q)
@@ -117,6 +124,12 @@ where
         // element this varies per Gauss point (Σ-form over ALL N nodes),
         // unlike the affine edge-vector J the straight path reuses.
         let j = x_ref.transpose() * grad_xi;
+        debug_assert!(
+            (j.determinant() - lockstep_dets[q]).abs() <= 1e-9 * lockstep_dets[q].abs().max(1.0),
+            "curved-element Jacobian determinant drifted from \
+             Element::rest_jacobian_dets — the mesher inversion guard and this \
+             assembly must share the rest-Jacobian formula",
+        );
         let j_inv = j
             .try_inverse()
             .expect("singular curved element Jacobian — inverted or degenerate midside geometry");
