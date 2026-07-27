@@ -33,8 +33,8 @@ time correcting a bond confound the diamond-review caught). All numbers below ar
 
 A spike meshed the real disc once and ran an *identical* node-based bonded flexion probe
 (pin both endplate bands, rotate the superior band by θ = ±0.5°, read the reaction moment)
-through arms differing only in the element. **Three arms, one shared 7849-corner mesh,
-`DiscParams::default`, all fully converged to the solver tol (1e-10):**
+through arms differing only in the element. **Three arms, one shared mesh (7849 nodes /
+2257 referenced corners), `DiscParams::default`, all fully converged to the solver tol (1e-10):**
 
 | arm | element + bond | mean k_disc (N·m/rad) | ratio vs Tet4 |
 |---|---|---|---|
@@ -74,9 +74,11 @@ through arms differing only in the element. **Three arms, one shared 7849-corner
 - **★ Band on the SURFACE-AABB z-range, not the tet-mesh z-range.** `build_bonded_disc`
   bands off the scaled input-surface AABB (`lib.rs:256/293`); banding off tet-mesh positions
   gives wrong, ~2.4× softer thresholds. (Spike footgun; the migration must band on the surface.)
-- Mesh: Tet4 7849 nodes → Tet10 19449 (2257 corners + ~17k midsides). **Full-face bonded
-  bands: inferior 228→1005, superior 367→1598** (corners + the face midsides between two
-  bonded corners). The first-pass "228/367 identical on both meshes" was the confound
+- Mesh: Tet4 7849 nodes (2257 referenced corners; the rest padded-lattice orphans, retained
+  by `largest_component`) → enrich preserves all corners + adds edge midsides → Tet10 19449
+  (7849 corners incl. orphans + 11600 midsides; still 2257 *referenced* corners). **Full-face
+  bonded bands: inferior 228→1005, superior 367→1598** (corners + the face midsides between
+  two bonded corners). The first-pass "228/367 identical on both meshes" was the confound
   (corners-only) — the correct Tet10 bond has strictly more nodes.
 - Cost: full 3-arm spike ~3–4 min release; Tet10 solves dominate (~10× Tet4, indefinite LU).
 
@@ -93,7 +95,7 @@ generic (`impl<E,Msh,C,M,const N,const G>`), and the Tet10 bonded **forward** pa
 a keystone rewrite.** Two diamond-review fixes folded in:
 - **Parameter order must be `Msh`-first.** `BondedSandwich<E, Msh, ..>` (E first) would
   *source-break* 5 explicit `BondedSandwich<SdfMeshedTetMesh>` sites (prod field
-  `fsu-model/lib.rs:133` + 4 in `rung6c_disc_geometry.rs`). `<Msh, E, N, G>` keeps
+  `fsu-model/lib.rs:133` + 4 in `coupling/tests/rung6c_disc_geometry.rs`). `<Msh, E, N, G>` keeps
   `<SdfMeshedTetMesh>` binding `Msh` → byte-identical (§2.1).
 - **The differentiable `probe_with_pose_gradient` is UNGATED for Tet10.** Its VJP
   (`equilibrium_dirichlet_reaction_vjp`) passes the frictionless guard (`mu==0`) for any N,
