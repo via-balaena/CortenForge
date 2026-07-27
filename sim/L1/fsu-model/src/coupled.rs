@@ -135,7 +135,8 @@ pub struct CoupledFsu {
     /// [`Self::render_disc`] and baked into `model`'s hinge (the equilibrium the ROM solve uses).
     k_disc: f64,
     /// The live bonded disc (RAW geometry — well-conditioned, so its FEM solves incrementally to
-    /// the full ROM; a conformed mesh spawns sliver tets that fail the sweep). [`Self::capture_ramp`]
+    /// the full ROM; a whole-face-conformed mesh spawns sliver tets that fail the sweep, and the
+    /// node-level Strategy-B conform is deferred here). [`Self::capture_ramp`]
     /// drives it to each equilibrium angle and reads the REAL deformed nodes, which the whole-face-
     /// conformed [`Self::conformed_disc_surface`] is skinned onto. Also the source of `k_disc`.
     render_disc: BondedDisc,
@@ -146,17 +147,18 @@ pub struct CoupledFsu {
 }
 
 impl CoupledFsu {
-    /// Assemble the coupled FSU from the three meshes (native mm): **conform the disc's
-    /// endplate bands onto the real L4/L5 surfaces**, tet-mesh + bond the (conformed) disc,
-    /// measure its `k_disc` bushing, build the ligament + bushing hinge model, and sample
-    /// the two articular SDF grids. The flexion sense is derived from the facet engagement
-    /// asymmetry (never hardcoded).
+    /// Assemble the coupled FSU from the three meshes (native mm): conform the disc's endplate
+    /// face onto the real L4/L5 surfaces for rendering, tet-mesh + bond the disc, measure its
+    /// `k_disc` bushing, build the ligament + bushing hinge model, and sample the two articular
+    /// SDF grids. The flexion sense is derived from the facet engagement asymmetry (never
+    /// hardcoded).
     ///
-    /// The conform ([`conform_disc_to_endplates`]) projects the disc's endplate face onto the
-    /// exact bone surfaces, so the disc (via [`Self::conformed_disc_surface`]) *renders* on the
-    /// real endplates — no proxy gap. The bonded FEM disc keeps the raw geometry (a conformed
-    /// mesh spawns sliver tets that fail the large-angle deform sweep); `k_disc` on it is rung
-    /// 7's, the conform shifting it a negligible ~0.5%.
+    /// The render surface ([`conform_disc_to_endplates`]) projects the disc's whole endplate face
+    /// onto the exact bone, so the disc (via [`Self::conformed_disc_surface`]) *renders* on the
+    /// real endplates — no proxy gap. The bonded FEM disc, by contrast, keeps the RAW geometry
+    /// here: the node-level Strategy-B endplate conform exists (`build_bonded_disc(.., Some(..))`)
+    /// but flipping it would shift the `k_disc` baked into the rung-7-validated ROM equilibrium,
+    /// so it is deferred to its own ROM re-validation (see the call site).
     ///
     /// # Errors
     /// Propagates a failure to derive the segment frame, build the bonded disc, or
