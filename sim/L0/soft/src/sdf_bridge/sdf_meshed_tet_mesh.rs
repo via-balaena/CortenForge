@@ -39,11 +39,12 @@
 //! sub-tets), Decision I (`QualityMetrics` four `Vec<f64>`), Decision
 //! J (`MeshAdjacency` unit struct), Decision M (D-8/D-9/D-10/D-11).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
-use nalgebra::Point3;
+use nalgebra::{Point3, SMatrix};
 
 use crate::Vec3;
+use crate::element::{Element, Tet4};
 use crate::material::{BuildableFromField, MaterialField, NeoHookean, Yeoh};
 use crate::mesh::{
     Mesh, MeshAdjacency, QualityMetrics, TetId, VertexId, boundary_faces_from_topology,
@@ -305,6 +306,146 @@ impl<M: BuildableFromField + Clone> SdfMeshedTetMesh<M> {
             interface_flags,
             boundary_faces,
         }
+    }
+
+    /// Return a copy with the given nodes projected toward new positions, backing
+    /// each move off just far enough to keep every incident tet's rest Jacobian
+    /// above a fraction `quality_floor` of its original value — so no element
+    /// inverts or collapses to a sliver.
+    ///
+    /// `moves` lists `(vertex, target)` pairs; each named vertex is moved toward
+    /// its `target`. This is the Tet4 companion to
+    /// [`Tet10Mesh::with_sdf_projected_boundary`](crate::Tet10Mesh::with_sdf_projected_boundary),
+    /// with two differences suited to conforming a bonded surface onto a real body:
+    ///
+    /// - the caller supplies explicit targets, so the projection can honour a
+    ///   direction / anatomy gate the mesh layer knows nothing about (which of two
+    ///   candidate surfaces, an SI-alignment test) rather than projecting onto one
+    ///   [`Sdf`](crate::Sdf);
+    /// - the validity bar is a *quality floor* `detJ ≥ quality_floor · detJ_rest`,
+    ///   not merely `detJ > 0`. A bare `detJ > 0` bisects each backed-off node onto
+    ///   the `detJ → 0⁺` degeneracy boundary — manufacturing slivers exactly where
+    ///   the move was largest; holding `detJ` above a fraction of its healthy rest
+    ///   value keeps the backed-off elements well-shaped.
+    ///
+    /// For each move the full target is tried first; if it would drop an incident
+    /// element below the floor, the node is bisected back along the segment
+    /// `original → target` to the furthest point that keeps every incident element
+    /// above the floor. The original position (`t = 0`) is always feasible
+    /// (`detJ_rest ≥ quality_floor · detJ_rest` for `quality_floor < 1`), so a node
+    /// in the worst case simply stays put. Nodes are swept in ascending `VertexId`
+    /// order for a deterministic result.
+    ///
+    /// The reference `detJ_rest` per element is captured once, from `self`, before
+    /// any node moves — so projecting several nodes of the same element still
+    /// measures each against that element's original, healthy volume.
+    ///
+    /// Vertices not named in `moves` are untouched; the topology (tets, boundary
+    /// faces, materials, interface flags) is unchanged, and per-tet
+    /// [`QualityMetrics`] are recomputed from the new positions. Like
+    /// [`Self::largest_component`], the per-tet material and interface caches are
+    /// kept as-is: a conforming move is sub-element in scale, so a tet's centroid
+    /// stays in the same material region (the disc's field is uniform regardless).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `quality_floor` is not in `[0, 1)` — a floor `≥ 1` would reject the
+    /// original mesh and a negative floor is meaningless — or if a move names a
+    /// vertex out of range.
+    #[must_use]
+    pub fn with_projected_nodes(mut self, moves: &[(VertexId, Vec3)], quality_floor: f64) -> Self {
+        /// Bisection steps for the back-off (~`2⁻⁴⁰` blend resolution).
+        const BISECT_ITERS: usize = 40;
+
+        assert!(
+            (0.0..1.0).contains(&quality_floor),
+            "quality_floor must be in [0, 1); got {quality_floor}"
+        );
+
+        if moves.is_empty() {
+            return self;
+        }
+
+        // Take positions and tets out so the sweep can mutate positions in place
+        // while reading the (fixed) connectivity — disjoint borrows, put back after.
+        let tets = std::mem::take(&mut self.tets);
+        let mut positions = std::mem::take(&mut self.vertices);
+
+        let to_project: HashSet<VertexId> = moves.iter().map(|&(v, _)| v).collect();
+        // Incident tets per moved node: validity is an element property, so a moved
+        // node must keep every tet that references it above the floor.
+        let mut incident: HashMap<VertexId, Vec<usize>> = HashMap::new();
+        for (ti, t) in tets.iter().enumerate() {
+            for &v in t {
+                if to_project.contains(&v) {
+                    incident.entry(v).or_default().push(ti);
+                }
+            }
+        }
+
+        // Tet4's affine map gives one rest-Jacobian determinant per element.
+        let element = Tet4;
+        let det_of = |positions: &[Vec3], ti: usize| -> f64 {
+            let t = tets[ti];
+            let x_ref = SMatrix::<f64, 4, 3>::from_fn(|a, k| positions[t[a] as usize][k]);
+            element.rest_jacobian_dets(&x_ref)[0]
+        };
+        // Reference determinant per incident tet, captured from the ORIGINAL mesh
+        // before any node moves — the healthy volume each back-off is measured
+        // against.
+        let mut orig_det: HashMap<usize, f64> = HashMap::new();
+        for tis in incident.values() {
+            for &ti in tis {
+                orig_det.entry(ti).or_insert_with(|| det_of(&positions, ti));
+            }
+        }
+
+        // A move keeps element `ti` valid iff its current determinant is finite and
+        // at least `quality_floor` of its original. Finiteness is asserted first: a
+        // NaN determinant must read as invalid, never slip through a bare `≥`.
+        let incident_ok = |positions: &[Vec3], tis: &[usize]| -> bool {
+            tis.iter().all(|&ti| {
+                let d = det_of(positions, ti);
+                d.is_finite() && d >= quality_floor * orig_det[&ti]
+            })
+        };
+
+        // Deterministic sweep in ascending VertexId order.
+        let mut sorted = moves.to_vec();
+        sorted.sort_by_key(|&(v, _)| v);
+        for (v, target) in sorted {
+            let Some(tis) = incident.get(&v) else {
+                continue; // an orphan vertex, referenced by no tet — nothing to keep valid
+            };
+            let vi = v as usize;
+            let straight = positions[vi];
+            let delta = target - straight;
+            // Fast path: the full target keeps every incident element above the floor.
+            positions[vi] = target;
+            if incident_ok(&positions, tis) {
+                continue;
+            }
+            // Back off: largest blend `t ∈ [0, 1]` with `straight + t·delta` valid.
+            // `t = 0` (straight) is always feasible, so `lo` stays a valid lower bound.
+            let mut lo = 0.0_f64;
+            let mut hi = 1.0_f64;
+            for _ in 0..BISECT_ITERS {
+                let t = 0.5 * (lo + hi);
+                positions[vi] = straight + delta * t;
+                if incident_ok(&positions, tis) {
+                    lo = t;
+                } else {
+                    hi = t;
+                }
+            }
+            positions[vi] = straight + delta * lo;
+        }
+
+        let q = quality::compute_metrics(&positions, &tets);
+        self.tets = tets;
+        self.vertices = positions;
+        self.q = q;
+        self
     }
 }
 
@@ -597,5 +738,149 @@ mod largest_component_tests {
             "a single-component mesh must lose no tets"
         );
         assert_eq!(n_components(&filtered), 1);
+    }
+}
+
+#[cfg(test)]
+mod projected_nodes_tests {
+    #![allow(clippy::expect_used, clippy::cast_possible_truncation)]
+
+    use super::{MeshingHints, SdfMeshedTetMesh};
+    use crate::Vec3;
+    use crate::material::MaterialField;
+    use crate::mesh::{Mesh, VertexId};
+    use crate::sdf_bridge::{Aabb3, SphereSdf};
+
+    fn hints(min: Vec3, max: Vec3) -> MeshingHints {
+        MeshingHints {
+            bbox: Aabb3::new(min, max),
+            cell_size: 0.03,
+            material_field: Some(MaterialField::uniform(1.0e5, 4.0e5)),
+        }
+    }
+
+    /// Signed rest-Jacobian determinant of a tet — the SAME quantity the back-off
+    /// gates on (`Tet4::rest_jacobian_dets`), written independently here as the
+    /// triple product of the edge vectors so the test cross-checks rather than
+    /// mirrors production.
+    fn tet_det(positions: &[Vec3], tet: [VertexId; 4]) -> f64 {
+        let p = |i: usize| positions[tet[i] as usize];
+        let (e1, e2, e3) = (p(1) - p(0), p(2) - p(0), p(3) - p(0));
+        e1.cross(&e2).dot(&e3)
+    }
+
+    /// The worst per-element determinant ratio `det / det_orig` over every tet —
+    /// the quantity the floor bounds. `< quality_floor` anywhere means an element
+    /// dropped below its healthy fraction (a sliver or an inversion).
+    fn worst_ratio(orig: &SdfMeshedTetMesh, moved: &SdfMeshedTetMesh) -> f64 {
+        (0..orig.n_tets())
+            .map(|ti| {
+                let tet = orig.tet_vertices(ti as u32);
+                let d0 = tet_det(orig.positions(), tet);
+                let d1 = tet_det(moved.positions(), tet);
+                d1 / d0
+            })
+            .fold(f64::INFINITY, f64::min)
+    }
+
+    fn sphere_mesh() -> SdfMeshedTetMesh {
+        SdfMeshedTetMesh::from_sdf(
+            &SphereSdf { radius: 0.1 },
+            &hints(Vec3::new(-0.13, -0.13, -0.13), Vec3::new(0.13, 0.13, 0.13)),
+        )
+        .expect("sphere scene meshes")
+    }
+
+    #[test]
+    fn quality_floor_back_off_prevents_slivers_and_inversions() {
+        const FLOOR: f64 = 0.05;
+        let mesh = sphere_mesh();
+        // A boundary vertex (radius ≈ 0.1) dragged to the sphere centre — a ~0.1 m
+        // inward move that would collapse and invert its incident tets if applied
+        // in full.
+        let v0 = mesh.boundary_faces()[0][0];
+        let center = Vec3::zeros();
+
+        let moved = mesh.clone().with_projected_nodes(&[(v0, center)], FLOOR);
+
+        // No element fell below the floor (nor inverted — that would be a NEGATIVE
+        // ratio, also caught).
+        let worst = worst_ratio(&mesh, &moved);
+        assert!(
+            worst >= FLOOR - 1e-9,
+            "an element dropped below the {FLOOR} quality floor (worst ratio {worst:.4})"
+        );
+
+        // The back-off actually engaged: the node neither reached the target nor
+        // stayed put, and it lies on the straight `original → target` segment.
+        let p0 = mesh.positions()[v0 as usize];
+        let pf = moved.positions()[v0 as usize];
+        assert!(
+            (pf - center).norm() > 1e-6,
+            "node reached the target — the move should have been backed off"
+        );
+        assert!((pf - p0).norm() > 1e-6, "node did not move at all");
+        let seg = (center - p0).normalize();
+        assert!(
+            (pf - p0).cross(&seg).norm() < 1e-9,
+            "backed-off node left the original→target segment"
+        );
+    }
+
+    #[test]
+    fn a_gentle_move_is_applied_in_full() {
+        let mesh = sphere_mesh();
+        let v0 = mesh.boundary_faces()[0][0];
+        let p0 = mesh.positions()[v0 as usize];
+        // A tiny outward nudge (0.1 mm) keeps every incident tet well above the
+        // floor, so the full target is taken exactly — no back-off.
+        let target = p0 + p0.normalize() * 1.0e-4;
+        let moved = mesh.with_projected_nodes(&[(v0, target)], 0.05);
+        let pf = moved.positions()[v0 as usize];
+        assert_eq!(pf, target, "a valid move must be applied exactly");
+    }
+
+    #[test]
+    fn the_quality_floor_is_the_operative_bar() {
+        // Mutation guard: relaxing the floor to 0 (bare `detJ > 0`) lets the same
+        // node travel strictly further toward the target than the 0.05 floor does.
+        // If the floor were inert the two placements would coincide.
+        let mesh = sphere_mesh();
+        let v0 = mesh.boundary_faces()[0][0];
+        let center = Vec3::zeros();
+
+        let floored = mesh.clone().with_projected_nodes(&[(v0, center)], 0.05);
+        let unfloored = mesh.with_projected_nodes(&[(v0, center)], 0.0);
+
+        let d_floored = (floored.positions()[v0 as usize] - center).norm();
+        let d_unfloored = (unfloored.positions()[v0 as usize] - center).norm();
+        assert!(
+            d_unfloored < d_floored - 1e-6,
+            "floor 0 should push the node further in (dist {d_unfloored:.4}) than floor 0.05 (dist {d_floored:.4})"
+        );
+    }
+
+    #[test]
+    fn projection_is_deterministic() {
+        let mesh = sphere_mesh();
+        let v0 = mesh.boundary_faces()[0][0];
+        let center = Vec3::zeros();
+        let a = mesh.clone().with_projected_nodes(&[(v0, center)], 0.05);
+        let b = mesh.with_projected_nodes(&[(v0, center)], 0.05);
+        for (pa, pb) in a.positions().iter().zip(b.positions()) {
+            assert_eq!(
+                pa.as_slice(),
+                pb.as_slice(),
+                "projection must be deterministic"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_moves_is_a_noop() {
+        let mesh = sphere_mesh();
+        let before: Vec<Vec3> = mesh.positions().to_vec();
+        let after = mesh.with_projected_nodes(&[], 0.05);
+        assert_eq!(after.positions(), before.as_slice());
     }
 }

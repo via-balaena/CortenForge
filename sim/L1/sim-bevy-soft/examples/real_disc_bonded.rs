@@ -190,8 +190,8 @@ fn capture() -> Scene {
     // Keep the CLEAN STL surface for rendering (native mm); the tet mesh built below shares this
     // frame (`build_bonded_disc` inverts its recenter+scale back to native mm for the readout).
     let render_surface = disc_mesh.clone();
-    let mut bonded =
-        build_bonded_disc(disc_mesh, &DiscParams::default()).expect("tet-mesh + bond the disc");
+    let mut bonded = build_bonded_disc(disc_mesh, &DiscParams::default(), None)
+        .expect("tet-mesh + bond the disc");
 
     // Fine monotone chain 0 → PEAK → 0 (each step warm-starts the previous solve — crux #1).
     let n = (PEAK_DEG / STEP_DEG).round() as usize;

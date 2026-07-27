@@ -174,15 +174,15 @@ impl CoupledFsu {
 
         // The RENDER SURFACE conforms onto the real endplates (rendered === contacts) — its
         // whole top/bottom face is seated on the bone so the drawn disc hugs it edge-to-edge.
-        // The BONDED FEM disc, by contrast, stays on the RAW (un-conformed) geometry: conforming
-        // the mesh drags surface vertices onto the bumpy bone and spawns sliver tets that fail
-        // the incremental deform sweep past a few degrees, whereas the raw disc's well-shaped
-        // tets solve cleanly to the full ROM (and its k_disc = rung 7's, the conform shifting it
-        // a negligible ~0.5% anyway). So: real deformation on raw tets, rendered on a conformed
-        // surface skinned to it.
+        // The BONDED FEM disc here stays on the RAW (un-conformed) geometry (`None`): the
+        // node-level Strategy-B endplate conform now exists (`build_bonded_disc(.., Some(..))`),
+        // but seating the coupled disc's band would shift the measured `k_disc` and hence the
+        // rung-7-validated ROM band, so flipping this path is a deliberate follow-up gated on its
+        // own literature re-validation — not a silent side effect. So for now: real deformation
+        // on raw tets, rendered on a conformed surface skinned to it.
         let conformed_disc_surface = conform_disc_to_endplates(disc_mesh, &o4, &o5, &frame, None);
-        let mut render_disc =
-            build_bonded_disc(disc_mesh.clone(), &params.disc).context("build bonded disc")?;
+        let mut render_disc = build_bonded_disc(disc_mesh.clone(), &params.disc, None)
+            .context("build bonded disc")?;
         let pivot = render_disc.center_native();
         let ml = render_disc.ml_axis();
         // Small-strain disc bending stiffness (linear bushing), measured sub-degree.
@@ -809,7 +809,7 @@ mod tests {
         // The render disc is a bonded synthetic disc (its shape is what `capture_ramp` reads);
         // the real build conforms the whole face onto the bones.
         let render_disc =
-            build_bonded_disc(synthetic_disc(), &DiscParams::default()).expect("render disc");
+            build_bonded_disc(synthetic_disc(), &DiscParams::default(), None).expect("render disc");
         let scratch = RefCell::new(model.make_data());
         CoupledFsu {
             model,
