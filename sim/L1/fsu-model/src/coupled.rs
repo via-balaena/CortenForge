@@ -176,10 +176,11 @@ impl CoupledFsu {
         // whole top/bottom face is seated on the bone so the drawn disc hugs it edge-to-edge.
         // The BONDED FEM disc here stays on the RAW (un-conformed) geometry (`None`): the
         // node-level Strategy-B endplate conform now exists (`build_bonded_disc(.., Some(..))`),
-        // but seating the coupled disc's band would shift the measured `k_disc` and hence the
-        // rung-7-validated ROM band, so flipping this path is a deliberate follow-up gated on its
-        // own literature re-validation — not a silent side effect. So for now: real deformation
-        // on raw tets, rendered on a conformed surface skinned to it.
+        // and the standalone FOM measures its effect on `k_disc` as small (~4% in extension,
+        // ~0% in flexion). Even so, seating this path changes the measured `k_disc` baked into
+        // the rung-7-validated ROM equilibrium, so flipping it is a deliberate follow-up gated on
+        // its own ROM re-validation rather than a silent change here. So for now: real
+        // deformation on raw tets, rendered on a conformed surface skinned to it.
         let conformed_disc_surface = conform_disc_to_endplates(disc_mesh, &o4, &o5, &frame, None);
         let mut render_disc = build_bonded_disc(disc_mesh.clone(), &params.disc, None)
             .context("build bonded disc")?;

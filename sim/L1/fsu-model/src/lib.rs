@@ -1035,16 +1035,19 @@ mod tests {
     /// below.
     #[test]
     fn endplate_conform_seats_the_band_and_still_sweeps() {
-        // Disc: centre (100,100,950), half (12,10,3) → z ∈ [947, 953], SI = z. Box "endplates"
-        // sit ~0.5 mm off each disc face so the endplate-facing band conforms a small SI move.
+        // Disc: centre (100,100,950), half (12,10,3) → z ∈ [947, 953], SI = z. The two box
+        // "endplates" sit at DELIBERATELY ASYMMETRIC gaps from the disc faces (superior 0.5 mm,
+        // inferior 2 mm) so the frame-bridge gate below has teeth: a bridge that collapses every
+        // node toward the disc centre would seat them all to the NEARER (superior) face, which the
+        // asymmetry exposes (the far inferior face is left empty).
         let o_sup = oracle(&box_mesh(
             Point3::new(100.0, 100.0, 955.0),
-            Vector3::new(20.0, 20.0, 1.5), // bottom face z = 953.5, just above the disc top (953)
+            Vector3::new(20.0, 20.0, 1.5), // bottom face z = 953.5, 0.5 mm above the disc top (953)
         ))
         .unwrap();
         let o_inf = oracle(&box_mesh(
-            Point3::new(100.0, 100.0, 945.0),
-            Vector3::new(20.0, 20.0, 1.5), // top face z = 946.5, just below the disc bottom (947)
+            Point3::new(100.0, 100.0, 943.0),
+            Vector3::new(20.0, 20.0, 2.0), // top face z = 945.0, 2 mm below the disc bottom (947)
         ))
         .unwrap();
         let params = DiscParams::default();
@@ -1074,14 +1077,36 @@ mod tests {
             traj.rest_nodes_native.len(),
             "same topology"
         );
-        let max_seat = raw_rest
-            .iter()
-            .zip(&traj.rest_nodes_native)
-            .map(|(a, b)| (a - b).norm())
-            .fold(0.0_f64, f64::max);
+        // Strongly-seated (pinned band) nodes and the native-mm z-band they land in. Aligned node
+        // arrays: the raw and conformed builds share topology/ordering (deterministic mesher, same
+        // input). A band node moves ≥ 0.5 mm onto its box face; the 0.4 mm cut excludes the padded-
+        // lattice orphan nodes (which the conform never touches) and interior solve-relaxation.
+        let (mut hi, mut lo, mut seated) = (f64::MIN, f64::MAX, 0usize);
+        for (raw, conf) in raw_rest.iter().zip(&traj.rest_nodes_native) {
+            if (raw - conf).norm() > 0.4 {
+                hi = hi.max(conf.z);
+                lo = lo.min(conf.z);
+                seated += 1;
+            }
+        }
         assert!(
-            max_seat > 0.1,
-            "the endplate conform must move the band onto the box faces, got {max_seat:.3} mm"
+            seated > 0,
+            "the endplate conform must seat at least one band node"
+        );
+
+        // FRAME-BRIDGE gate: BOTH bands must seat on their OWN box face in native mm — the superior
+        // band on the superior box's bottom face (z = 953.5) and the inferior band on the inferior
+        // box's top face (z = 945.0). This is the check `max_seat` cannot make: a broken SI↔native
+        // bridge collapses every node toward the disc centre and (given the asymmetric gaps) seats
+        // them all to the nearer superior face, so the far inferior face is left empty and `lo`
+        // never reaches 945.
+        assert!(
+            (hi - 953.5).abs() < 0.2,
+            "superior band must seat on the superior box face z ≈ 953.5, got {hi:.3}"
+        );
+        assert!(
+            (lo - 945.0).abs() < 0.2,
+            "inferior band must seat on the inferior box face z ≈ 945.0, got {lo:.3}"
         );
     }
 

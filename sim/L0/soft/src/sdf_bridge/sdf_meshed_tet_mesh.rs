@@ -877,6 +877,41 @@ mod projected_nodes_tests {
     }
 
     #[test]
+    fn multi_node_back_off_keeps_shared_tets_valid_and_is_order_independent() {
+        const FLOOR: f64 = 0.05;
+        // Two vertices of the SAME boundary face share an incident tet, so dragging BOTH to the
+        // centre exercises the interacting greedy-sweep path a single-node move never reaches (a
+        // tet with two moving vertices, each back-off re-validating against the other's placement).
+        let mesh = sphere_mesh();
+        let face = mesh.boundary_faces()[0];
+        let (v0, v1) = (face[0], face[1]);
+        let center = Vec3::zeros();
+
+        let moved = mesh
+            .clone()
+            .with_projected_nodes(&[(v0, center), (v1, center)], FLOOR);
+        let worst = worst_ratio(&mesh, &moved);
+        assert!(
+            worst >= FLOOR - 1e-9,
+            "a tet with two moved vertices dropped below the {FLOOR} floor (worst {worst:.4})"
+        );
+
+        // Reversing the caller's move order yields a byte-identical mesh: the sweep sorts by
+        // ascending `VertexId` internally, so it is order-independent. (A determinism/property
+        // check — in this symmetric two-node config the interacting back-offs happen to resolve
+        // identically regardless of sweep order, so it does not by itself pin the sort; the
+        // single-node gates carry the floor and fast-path teeth.)
+        let reversed = mesh.with_projected_nodes(&[(v1, center), (v0, center)], FLOOR);
+        for (a, b) in moved.positions().iter().zip(reversed.positions()) {
+            assert_eq!(
+                a.as_slice(),
+                b.as_slice(),
+                "the sweep must be order-independent (sorted by VertexId)"
+            );
+        }
+    }
+
+    #[test]
     fn empty_moves_is_a_noop() {
         let mesh = sphere_mesh();
         let before: Vec<Vec3> = mesh.positions().to_vec();
