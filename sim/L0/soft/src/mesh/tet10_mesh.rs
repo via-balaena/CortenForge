@@ -192,10 +192,11 @@ impl Tet10Mesh {
     /// # Projection and inversion back-off
     ///
     /// Each candidate is projected onto `sdf` with
-    /// [`project_point_onto_sdf`]. A
-    /// projected move smaller than a snap tolerance leaves the node exactly at
-    /// its straight midpoint, so a boundary that already lies on the surface
-    /// keeps the byte-identical affine fast path (the solver's
+    /// [`project_point_onto_sdf`]. A projected move smaller than a snap
+    /// tolerance (larger than the Newton residual, far below any real curvature
+    /// displacement) leaves the node exactly at its straight midpoint, so a
+    /// boundary that already lies on — or within that tolerance of — the
+    /// surface keeps the byte-identical affine fast path (the solver's
     /// `element_is_straight` bit-exact test). Otherwise the node is placed as
     /// far along the segment `straight → projected` as keeps every incident
     /// element's rest Jacobian positive at all Gauss points
@@ -206,6 +207,14 @@ impl Tet10Mesh {
     /// result is deterministic. A projection that fails to converge onto the
     /// surface (a gradient singularity, or a point too far away) also leaves
     /// the node straight.
+    ///
+    /// # Precondition
+    ///
+    /// Assumes the input elements are positively oriented (as every in-tree
+    /// mesher produces). The "always valid" guarantee rests on the straight
+    /// position being feasible; a *pre-inverted* input element has no feasible
+    /// blend, and the back-off leaves it straight (still inverted) rather than
+    /// detecting it. It never *introduces* an inversion.
     #[must_use]
     pub fn with_sdf_projected_boundary(mut self, sdf: &dyn Sdf) -> Self {
         /// Newton convergence tolerance for the surface projection (metres).
@@ -579,9 +588,11 @@ mod tests {
         assert!(moved > 0, "the projection must move some boundary midside");
     }
 
-    /// A boundary midside already on the surface is left exactly straight
-    /// (snap-back), so the affine fast path survives for a flat-on-surface
-    /// boundary.
+    /// A boundary midside *exactly* on the surface is returned unchanged — the
+    /// projector converges on its first iteration (`|eval| ≤ tol`) and returns
+    /// the input bit-for-bit, so the node keeps the affine fast path. (This is
+    /// projector idempotence; the SNAP skip's own teeth are in
+    /// [`snap_back_keeps_a_near_surface_midside_exactly_straight`].)
     #[test]
     fn on_surface_boundary_midside_is_left_straight() {
         let straight = single_tet10();
@@ -603,6 +614,40 @@ mod tests {
         assert!(
             snapped >= 3,
             "expected the three origin-edge midsides to snap"
+        );
+    }
+
+    /// The SNAP skip has teeth only for a midside that is *near but not within
+    /// the Newton tolerance* of the surface: the projector then takes a real
+    /// step (larger than `PROJECT_TOL = 1e-12`) that SNAP (`1e-10`) must
+    /// nonetheless discard to preserve the affine fast path. A sphere whose
+    /// radius sits `5e-11` outside the origin-edge midsides (radius `0.05`)
+    /// puts them in exactly that band: the projector would move them `~5e-11`,
+    /// and SNAP must leave them bit-for-bit straight. Removing the SNAP skip
+    /// fails this (the nodes then move `~5e-11`); the idempotence test above
+    /// would not, because there the move is below `PROJECT_TOL`.
+    #[test]
+    fn snap_back_keeps_a_near_surface_midside_exactly_straight() {
+        let straight = single_tet10();
+        let before = straight.positions().to_vec();
+        // 5e-11 is between PROJECT_TOL (1e-12) and SNAP (1e-10).
+        let curved = straight.with_sdf_projected_boundary(&SphereSdf {
+            radius: 0.05 + 5e-11,
+        });
+        let mut checked = 0usize;
+        for (v, p) in before.iter().enumerate() {
+            if (p.norm() - 0.05).abs() < 1e-12 {
+                assert_eq!(
+                    curved.positions()[v],
+                    *p,
+                    "a within-SNAP midside must stay bit-for-bit straight (node {v})",
+                );
+                checked += 1;
+            }
+        }
+        assert!(
+            checked >= 3,
+            "expected the three origin-edge midsides in band"
         );
     }
 
@@ -655,7 +700,13 @@ mod tests {
                 engaged = true;
             }
             if moved.norm() > 1e-12 {
-                // Colinear with the segment: `moved = t·seg` for some `t`.
+                // Colinearity with the segment holds by construction (the code
+                // places the node at `straight + delta·t`), so this cannot fail
+                // for any output the current code produces — it is a guard
+                // against a future refactor placing a backed-off node OFF the
+                // straight→target ray, not independent evidence. The load-
+                // bearing checks are the per-Gauss-point validity loop above
+                // and the `engaged` flag below.
                 let t = moved.dot(&seg) / seg.dot(&seg);
                 assert!(
                     (moved - seg * t).norm() < 1e-9 * seg.norm(),

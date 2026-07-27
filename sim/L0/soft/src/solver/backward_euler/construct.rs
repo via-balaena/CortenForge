@@ -124,6 +124,10 @@ where
         // element this varies per Gauss point (Σ-form over ALL N nodes),
         // unlike the affine edge-vector J the straight path reuses.
         let j = x_ref.transpose() * grad_xi;
+        // `#[cfg]` on the statement (not just `debug_assert!`'s runtime no-op)
+        // so the `lockstep_dets` reference is removed in release too — matching
+        // its `#[cfg(debug_assertions)]` binding above, which release deletes.
+        #[cfg(debug_assertions)]
         debug_assert!(
             (j.determinant() - lockstep_dets[q]).abs() <= 1e-9 * lockstep_dets[q].abs().max(1.0),
             "curved-element Jacobian determinant drifted from \

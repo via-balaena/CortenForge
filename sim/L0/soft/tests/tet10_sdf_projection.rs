@@ -134,8 +134,9 @@ fn reproduces_the_closed_form_radial_projection() {
         "productized projection must reproduce the closed-form radial snap; \
          max node error = {max_err:e}",
     );
-    // Non-vacuous: the inscribed boundary genuinely moves (sagitta ~ 1e-4 m at
-    // this cell size), so the gate is testing a real displacement.
+    // Non-vacuous: the inscribed boundary genuinely moves (the largest move is
+    // of order 1e-2 m at this cell size), so the gate is testing a real
+    // displacement, not a no-op.
     assert!(
         max_move > 1e-5,
         "the projection must genuinely move the inscribed boundary; \

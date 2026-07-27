@@ -60,8 +60,52 @@ pub fn project_point_onto_sdf(sdf: &dyn Sdf, p: Vec3, tol: f64, max_iter: usize)
 mod tests {
     use super::*;
     use crate::sdf_bridge::{DifferenceSdf, SphereSdf};
+    use nalgebra::Matrix3;
 
     const TOL: f64 = 1e-12;
+
+    /// A deliberately NON-distance field: `eval = k·(‖p‖ − r)`, so
+    /// `‖grad‖ = k ≠ 1`. Every other test SDF is a true distance field (unit
+    /// gradient at its surface), which makes the `1/‖g‖²` step normalization a
+    /// no-op there; this is the only fixture with teeth on it. With the
+    /// normalization the Newton step is the exact first-order projection and
+    /// converges; dropping it (a `q -= g·f` step) scales each step by `k²` and
+    /// diverges.
+    struct ScaledSphereSdf {
+        radius: f64,
+        scale: f64,
+    }
+
+    impl Sdf for ScaledSphereSdf {
+        fn eval(&self, p: Point3<f64>) -> f64 {
+            self.scale * (p.coords.norm() - self.radius)
+        }
+        fn grad(&self, p: Point3<f64>) -> Vec3 {
+            self.scale * p.coords / p.coords.norm()
+        }
+        fn hessian(&self, p: Point3<f64>) -> Matrix3<f64> {
+            let n = p.coords.norm();
+            let nhat = p.coords / n;
+            self.scale * (Matrix3::identity() - nhat * nhat.transpose()) / n
+        }
+    }
+
+    #[test]
+    fn converges_on_a_non_unit_gradient_sdf() {
+        // scale 5 → ‖grad‖ = 5 at the surface; only the `1/‖g‖²` normalization
+        // keeps this convergent.
+        let sdf = ScaledSphereSdf {
+            radius: 1.0,
+            scale: 5.0,
+        };
+        let p = Vec3::new(1.3, -0.4, 0.2);
+        let q = project_point_onto_sdf(&sdf, p, TOL, 64);
+        assert!(
+            sdf.eval(Point3::from(q)).abs() <= TOL,
+            "must reach the surface of a non-unit-gradient field",
+        );
+        assert!((q.norm() - 1.0).abs() < 1e-9, "projected onto unit radius");
+    }
 
     #[test]
     fn projects_exterior_point_onto_sphere() {
