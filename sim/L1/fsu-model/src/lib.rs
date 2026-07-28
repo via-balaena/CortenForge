@@ -468,6 +468,55 @@ struct PreparedDisc {
     center_native: Point3<f64>,
 }
 
+impl PreparedDisc {
+    /// A second bondable copy of this prepared disc.
+    ///
+    /// **Cloning the tet mesh is the point.** Re-running `prepare_disc` to obtain a second arm
+    /// rebuilds the exact SDF, re-stuffs the BCC lattice and re-runs `largest_component` — the
+    /// dominant cost of every two-arm gate in this crate, paid to reproduce a mesh that is
+    /// deterministic anyway.
+    ///
+    /// It is also **stricter, not merely cheaper**: rung 1's attribution argument is that the
+    /// linear and quadratic arms differ in the element and in nothing else, which today holds
+    /// because both call the same constructor and a reader checks that they match. After this
+    /// the two arms share one mesh *object*, so the property is structural.
+    ///
+    /// [`Data`] is not [`Clone`] and does not need to be — it is a pure function of `model` at
+    /// rest (`make_data` then `forward`), so re-deriving it is exact rather than approximate,
+    /// and the two-body scene makes it free. `rest_upper` is read back from the fresh `Data`
+    /// exactly as `prepare_disc_at` does rather than copied across, so the arms cannot end up
+    /// disagreeing about the rest pose; the `debug_assert` states that as a checked invariant.
+    ///
+    /// `#[cfg(test)]`: the production builders each prepare and bond once, so the only callers
+    /// that need a second arm from one mesh are the gates that *compare* arms. Shipping it on
+    /// the production path with no production consumer would be surface nobody asked for.
+    ///
+    /// # Errors
+    /// Propagates a failure of the two-box scene's forward solve — the same call
+    /// `prepare_disc_at` makes, and unreachable for this fixed, valid scene.
+    #[cfg(test)]
+    fn duplicate(&self) -> Result<Self> {
+        let model = self.model.clone();
+        let mut data = model.make_data();
+        data.forward(&model).context("disc scene forward")?;
+        let rest_upper = data.xpos[UPPER];
+        debug_assert!(
+            (rest_upper - self.rest_upper).norm() < 1e-12,
+            "a re-derived rest pose must reproduce the original"
+        );
+        Ok(Self {
+            tet: self.tet.clone(),
+            inferior: self.inferior.clone(),
+            superior: self.superior.clone(),
+            model,
+            data,
+            rest_upper,
+            ml_axis: self.ml_axis,
+            center_native: self.center_native,
+        })
+    }
+}
+
 /// [`prepare_disc_at`] at the shipped quality floors.
 ///
 /// `#[cfg(test)]` because the production builders thread their floors explicitly; the gates
@@ -1438,6 +1487,323 @@ mod tests {
         assert!(
             traj.frames.last().unwrap().facet_points.is_empty(),
             "facets must open at the flexion peak"
+        );
+    }
+
+    /// The largest flexion angle (rad) a disc survives being **walked** to, in production
+    /// sub-steps, before the fail-closed solver refuses — capped at `limit`.
+    ///
+    /// ★ **One definition of "drives", because until rung 4 there were several.** The
+    /// drivability columns of `DISC_CONFORM_QUALITY_FLOOR`'s and
+    /// `DISC_MIDSIDE_CONFORM_QUALITY_FLOOR`'s tables, and rung 4b's entry criterion, were each
+    /// produced by a bespoke walker with its own probe angle and step rule (0.86° vs 0.9°,
+    /// `ceil()` steps vs a fixed count). They reported the same word for measurably different
+    /// experiments, so the tables could not be compared to one another. They can now.
+    ///
+    /// Walks in [`crate::coupled::CAPTURE_SUBSTEP`] increments — the step
+    /// `CoupledFsu::capture_ramp` actually uses — so "drivable" means drivable by production,
+    /// not by a test-only regime.
+    ///
+    /// Takes the disc **by value**: the soft solver is fail-closed, so a refusal unwinds out of
+    /// `set_flexion` and leaves the disc indeterminate. Owning it makes reuse impossible rather
+    /// than merely discouraged.
+    // Sub-step counts are small; the usize→f64 casts are exact.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    fn max_drivable_angle<Msh, E, const N: usize, const G: usize>(
+        mut disc: BondedDisc<Msh, E, N, G>,
+        limit: f64,
+    ) -> f64
+    where
+        Msh: Mesh,
+        E: Element<N, G> + Default,
+    {
+        let steps = (limit.abs() / crate::coupled::CAPTURE_SUBSTEP)
+            .ceil()
+            .max(1.0) as usize;
+        let mut reached = 0.0_f64;
+        // The refusal IS the measurement: an `Err` means the solver fail-closed one
+        // sub-step past `reached`, which is precisely what this reports. Discarding the
+        // `Result` is deliberate.
+        drop(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            || {
+                for s in 1..=steps {
+                    let theta = limit * (s as f64 / steps as f64);
+                    disc.set_flexion(theta);
+                    reached = theta;
+                }
+            },
+        )));
+        reached
+    }
+
+    /// The floor rows both quality-floor tables are built from.
+    ///
+    /// The gate's list and the doc tables' rows are the **same list**, so a row cannot appear
+    /// in a constant's justification without this test regenerating it.
+    const SWEPT_CORNER_FLOORS: [f64; 7] = [0.05, 0.08, 0.10, 0.15, 0.20, 0.25, 0.40];
+    /// The probe angle the drivability column is measured at — `K_DISC_PROBE` rounded up, since
+    /// surviving the production `k_disc` probe is the property that matters.
+    const DRIVABILITY_PROBE_DEG: f64 = 0.9;
+
+    /// `(Tet4 drives, Tet10 drives)` for a **conformed lofted** disc at `floors`, walked to
+    /// `probe` in production sub-steps.
+    ///
+    /// ONE prepare feeds both arms ([`PreparedDisc::duplicate`]), so the elements are compared
+    /// over one mesh *object* rather than two identically-built ones — and the expensive SDF +
+    /// BCC stuffing is paid once per floor instead of twice.
+    fn lofted_drivability(
+        lofted: &IndexedMesh,
+        params: &DiscParams,
+        ep: EndplateConform,
+        floors: ConformFloors,
+        probe: f64,
+    ) -> (bool, bool) {
+        let p = prepare_disc_at(lofted.clone(), params, Some(ep), floors).unwrap();
+        let lin = bond_prepared_tet4(p.duplicate().unwrap(), params);
+        let quad = bond_prepared_tet10(p, params, Some(ep), floors);
+        (
+            max_drivable_angle(lin, probe) >= probe - 1e-12,
+            max_drivable_angle(quad, probe) >= probe - 1e-12,
+        )
+    }
+
+    /// `(authorised corner RMS, authorised midside RMS)` in mm for the **scanned** disc at
+    /// `floors` — what a stricter floor costs in exact-geometry fidelity.
+    ///
+    /// Both columns come from one conformed prepare, so the corner and midside populations are
+    /// measured over the same mesh. `moves` IS the authorised midside set: a midside is in it
+    /// exactly when the discriminator gave it a target.
+    fn scanned_fidelity(
+        scanned: &IndexedMesh,
+        params: &DiscParams,
+        ep: EndplateConform,
+        floors: ConformFloors,
+        o4: &MeshOracle,
+        o5: &MeshOracle,
+    ) -> (f64, f64) {
+        let raw = build_bonded_disc_at(scanned.clone(), params, None, floors).unwrap();
+        let cp = prepare_disc_at(scanned.clone(), params, Some(ep), floors).unwrap();
+        let conf = bond_prepared_tet4(cp.duplicate().unwrap(), params);
+        let (p_raw, p_conf) = (raw.deformed_nodes_native(), conf.deformed_nodes_native());
+        let split = conform_split(&conf, &p_raw, &p_conf, ep);
+        let corner_rms = residual_stats(
+            &split
+                .authorised
+                .iter()
+                .map(|&v| endplate_residual(p_conf[v as usize], o4, o5))
+                .collect::<Vec<_>>(),
+        )
+        .1;
+
+        let straight = Tet10Mesh::from_tet4(&cp.tet);
+        let moves = endplate_midside_conform_moves(
+            &straight,
+            &cp.inferior,
+            &cp.superior,
+            ep,
+            cp.center_native,
+            params.scale,
+        );
+        let curved = straight.with_projected_midsides(&moves, floors.midside);
+        let pos = curved.positions();
+        let midside_rms = residual_stats(
+            &moves
+                .iter()
+                .map(|&(v, _)| {
+                    endplate_residual(cp.center_native + pos[v as usize] / params.scale, o4, o5)
+                })
+                .collect::<Vec<_>>(),
+        )
+        .1;
+        (corner_rms, midside_rms)
+    }
+
+    /// **Regenerates the measured tables in `DISC_CONFORM_QUALITY_FLOOR` and
+    /// `DISC_MIDSIDE_CONFORM_QUALITY_FLOOR`** — the gate those two constants were chosen
+    /// without.
+    ///
+    /// ★ **Why this exists.** Both are production constants justified by measured tables in
+    /// their doc comments, and until rung 4 *nothing in the tree could regenerate either*: rung
+    /// 3's seven rows and rung 4's two-geometry sweep were both produced by throwaway
+    /// scaffolding that was then deleted. That fails this arc's own standard — **a committed
+    /// re-runnable measurement, or it is unverified** — and the cost is concrete: either floor
+    /// could be reverted to a value that ships an undrivable mesh, and no test would notice.
+    /// Rung 4 found exactly that, the hard way, from a panic in an unrelated gate.
+    ///
+    /// **Two geometries, because that is the finding.** The shipped 0.05 was measured on the
+    /// **scanned** disc alone and does not transfer to a **lofted** (painted) one — the geometry
+    /// `cf-spine-studio` actually builds. So drivability is measured on the lofted disc (the
+    /// strict one) and fidelity on the scanned disc (where the conform has real work to do).
+    ///
+    /// ⚠ The asserts deliberately land on rows **clear of the cliff** (0.05 and the shipped
+    /// value, against a cliff at 0.10). The cliff-adjacent row is reported, never asserted: a
+    /// drivability cell is a converge/refuse boundary, so a row sitting on it could flip on a
+    /// numerics change without anything being wrong.
+    #[test]
+    #[ignore = "needs $CF_L4_STL $CF_L5_STL $CF_DISC_STL (BodyParts3D, CC BY-SA, not committed)"]
+    fn conform_quality_floor_selection_fom() {
+        use cf_fsu_geometry::{load_from_env, segment_frame};
+
+        let l4 = load_from_env("CF_L4_STL").unwrap();
+        let l5 = load_from_env("CF_L5_STL").unwrap();
+        let scanned = load_from_env("CF_DISC_STL").unwrap();
+        let o4 = oracle(&l4).unwrap();
+        let o5 = oracle(&l5).unwrap();
+        let frame = segment_frame(&l4, &l5, &o4, &o5).unwrap();
+        let ep = EndplateConform {
+            o4: &o4,
+            o5: &o5,
+            superior_axis: frame.superior_axis,
+        };
+        let lofted = lofted_disc(&l4, &l5);
+        let params = DiscParams::default();
+        let probe = DRIVABILITY_PROBE_DEG.to_radians();
+
+        println!(
+            "\n{:>6} {:>13} {:>13} {:>15} {:>15}",
+            "floor", "lofted Tet4", "lofted Tet10", "corner RMS mm", "midside RMS mm"
+        );
+        let rows: Vec<(f64, bool, bool, f64, f64)> = SWEPT_CORNER_FLOORS
+            .iter()
+            .map(|&corner| {
+                let floors = ConformFloors {
+                    corner,
+                    midside: DISC_MIDSIDE_CONFORM_QUALITY_FLOOR,
+                };
+                let (t4, t10) = lofted_drivability(&lofted, &params, ep, floors, probe);
+                let (corner_rms, midside_rms) =
+                    scanned_fidelity(&scanned, &params, ep, floors, &o4, &o5);
+                println!(
+                    "{corner:>6.2} {:>13} {:>13} {corner_rms:>15.3} {midside_rms:>15.3}",
+                    if t4 { "drives" } else { "STALLS" },
+                    if t10 { "drives" } else { "STALLS" },
+                );
+                (corner, t4, t10, corner_rms, midside_rms)
+            })
+            .collect();
+
+        let row = |f: f64| -> &(f64, bool, bool, f64, f64) {
+            rows.iter()
+                .find(|r| (r.0 - f).abs() < 1e-12)
+                .expect("swept row")
+        };
+
+        // ── (1) The shipped floor drives BOTH elements on the strict geometry. ──
+        let shipped = row(DISC_CONFORM_QUALITY_FLOOR);
+        assert!(
+            shipped.1 && shipped.2,
+            "the SHIPPED corner floor {DISC_CONFORM_QUALITY_FLOOR} must drive a conformed lofted \
+             disc on both elements — the property it was raised to guarantee"
+        );
+
+        // ── (2) The raise EARNS ITS KEEP: the value it replaced does not drive. ──
+        //
+        // Without this, the constant could be reverted to 0.05 and every other gate in the
+        // crate would stay green — which is exactly the state that let an undrivable mesh reach
+        // a shipped default in the first place. This assert IS the floor-regression mutant,
+        // committed, rather than a mutation someone has to remember to re-run by hand.
+        assert!(
+            !(row(0.05).1 && row(0.05).2),
+            "0.05 must NOT drive both elements on a lofted disc. If it now does, the reason this \
+             floor was raised has gone away and the constant should be re-derived — not kept out \
+             of habit, and not widened because a table says so."
+        );
+
+        // ── (3) Fidelity is monotone in the floor: a stricter back-off cannot seat BETTER. ──
+        for w in rows.windows(2) {
+            assert!(
+                w[1].3 >= w[0].3 - 1e-9 && w[1].4 >= w[0].4 - 1e-9,
+                "a stricter floor cannot reduce the residual: corner {:.3} -> {:.3}, midside \
+                 {:.3} -> {:.3} across floors {:.2} -> {:.2}",
+                w[0].3,
+                w[1].3,
+                w[0].4,
+                w[1].4,
+                w[0].0,
+                w[1].0
+            );
+        }
+
+        // ── (4) The shipped row reproduces what rungs 2 and 3 committed. ──
+        assert_within_5_percent(&[
+            (shipped.3, 0.750, "shipped-floor authorised corner RMS (mm)"),
+            (
+                shipped.4,
+                0.767,
+                "shipped-floor authorised midside RMS (mm)",
+            ),
+        ]);
+    }
+
+    /// **Rung 4b's entry criterion, made checkable** — how far a *conformed* lofted disc can be
+    /// driven before an element inverts.
+    ///
+    /// Rung 4 ships `CoupledFsu` on a STRAIGHT quadratic disc because seating it breaks this
+    /// geometry at production angles. That deferral is only honest if the blocker is a measured
+    /// number rather than a sentence, and only useful if fixing it forces the docs to change —
+    /// so this pins the angles reached. When 4b improves the conform, these pins fire and the
+    /// plan, `CoupledFsu::build`'s table and this test must all be re-anchored together.
+    ///
+    /// The RAW arms are the control: they reach the full ±6° on the same mesh, which is what
+    /// makes this the conform's fault and not the element's or the geometry's.
+    #[test]
+    #[ignore = "needs $CF_L4_STL/$CF_L5_STL (BodyParts3D, CC BY-SA, not committed)"]
+    fn lofted_conformed_disc_angle_envelope_fom() {
+        use cf_fsu_geometry::{load_from_env, segment_frame};
+
+        let l4 = load_from_env("CF_L4_STL").unwrap();
+        let l5 = load_from_env("CF_L5_STL").unwrap();
+        let o4 = oracle(&l4).unwrap();
+        let o5 = oracle(&l5).unwrap();
+        let frame = segment_frame(&l4, &l5, &o4, &o5).unwrap();
+        let ep = EndplateConform {
+            o4: &o4,
+            o5: &o5,
+            superior_axis: frame.superior_axis,
+        };
+        let disc = lofted_disc(&l4, &l5);
+        let params = DiscParams::default();
+        let full = 6.0_f64.to_radians();
+
+        // Control: both RAW arms reach the full envelope, from one prepared mesh.
+        let rp = prepare_disc_at(disc.clone(), &params, None, ConformFloors::SHIPPED).unwrap();
+        let raw4 = max_drivable_angle(bond_prepared_tet4(rp.duplicate().unwrap(), &params), full);
+        let raw10 = max_drivable_angle(
+            bond_prepared_tet10(rp, &params, None, ConformFloors::SHIPPED),
+            full,
+        );
+
+        // The blocker: both CONFORMED arms stop short.
+        let cp = prepare_disc_at(disc, &params, Some(ep), ConformFloors::SHIPPED).unwrap();
+        let conf4 = max_drivable_angle(bond_prepared_tet4(cp.duplicate().unwrap(), &params), full);
+        let conf10 = max_drivable_angle(
+            bond_prepared_tet10(cp, &params, Some(ep), ConformFloors::SHIPPED),
+            -full,
+        );
+
+        println!(
+            "lofted envelope (deg): raw Tet4 {:.2}, raw Tet10 {:.2} | conformed Tet4 {:.2}, \
+             curved Tet10 {:.2}",
+            raw4.to_degrees(),
+            raw10.to_degrees(),
+            conf4.to_degrees(),
+            conf10.to_degrees()
+        );
+
+        assert!(
+            raw4 >= full - 1e-12 && raw10 >= full - 1e-12,
+            "the RAW arms must reach the full ±6° — they are the control that makes the \
+             conformed arms' failure attributable to the conform"
+        );
+        assert!(
+            conf4 < full && conf10.abs() < full,
+            "rung 4b's entry criterion is that a CONFORMED lofted disc completes ±6° on both \
+             elements. If this now passes, 4b's blocker is gone: seat `CoupledFsu`'s disc, \
+             re-anchor RUNG7_K_DISC, and delete this assert rather than relaxing it."
         );
     }
 
