@@ -404,6 +404,27 @@ untouched.**
 cross-check, soundness. This is the rung that converts §0.1's reverted spike into a re-runnable
 measurement.
 
+> **✅ BUILT (2026-07-28).** `build_bonded_disc_tet10` + `full_face_band`, both arms fed by one
+> new private `prepare_disc` (mesh → bands → conform → posed two-box scene) so the element is
+> the *only* difference between them by construction, not by inspection. **The spike is
+> reproduced exactly:** bands `228 → 1005` / `367 → 1598`, nodes `7849 → 19449`, and
+> `k_disc` Tet4 −0.2811 flex / −0.2788 ext vs Tet10 full-face −0.1873 / −0.1849 ⇒ **ratio
+> 0.666 flex / 0.663 ext** (pre-registered bracket 0.60..=0.73, then tightened to ±5 % of the
+> measured values). FOM cost **122 s**, close to §5.1's ~3 min estimate.
+>
+> **★ One §4.2 correction the build found:** step 3's "the same set computed a second way —
+> every midside slot of every `boundary_faces6` face whose 3 corners are all in the corner
+> band — asserted **identical**" cannot hold. §2.2 itself says the band is a volumetric slab
+> whose pinned midsides are *mostly interior*, and an interior midside appears on no boundary
+> face — so equality is false by construction and that assert would have failed on day one
+> (the same shape of defect as v1's day-one ROM assert, §4.6). The built cross-check instead
+> identifies each midside's parent corners **geometrically** (a straight Tet10 midside sits at
+> exactly `(p[a] + p[b]) · 0.5`, so midpoint coincidence names its parents with no reference to
+> `TET10_EDGE_NODES`) and asserts set equality against the band actually bonded; the
+> boundary-face route is kept as the **subset** check it can be. **Teeth measured, not
+> asserted:** a permuted slot table gives 413 vs 647 ids and a `referenced_vertices` filter
+> gives 413 vs 111 — both fail, on the license-free synthetic disc, in CI.
+
 **Rung 2 — Strategy-B endplate conform, measured on BOTH elements, standalone.** Reuses #701's
 `with_projected_nodes` + `bonded_conform_target` machinery on the Tet4 corner band, then
 enriches (§2.5).
@@ -505,11 +526,18 @@ element + band:
 3. **★ Full-face-tie cross-check (hard, non-vacuity):** exact band sizes asserted `==`. The
    spike's 228→1005 / 367→1598 are **expected values from reverted code, not anchors** — measure
    them in this rung and commit the measured numbers; a mismatch against the spike is itself the
-   finding. **Plus the same set computed a second way** — every midside slot of every
-   `boundary_faces6` face whose 3 corners are all in
-   the corner band — asserted identical. This is the only gate that catches a `TET10_EDGE_NODES`
-   mis-index or a silent `referenced_vertices` filter (§2.2); a ratio band cannot, since a partial
-   tie moves the ratio *toward* 0.570 and lands comfortably inside any band drawn around 0.665.
+   finding. **Plus the same set computed a second way**, asserted identical. This is the only
+   gate that catches a `TET10_EDGE_NODES` mis-index or a silent `referenced_vertices` filter
+   (§2.2); a ratio band cannot, since a partial tie moves the ratio *toward* 0.570 and lands
+   comfortably inside any band drawn around 0.665.
+   **⚠ Corrected during the build:** the "second way" **cannot** be the `boundary_faces6` route
+   this plan originally named (every midside slot of every face whose 3 corners are in the band).
+   The band is a volumetric slab and its pinned midsides are mostly *interior* (§2.2), so they
+   appear on no boundary face and set equality is false by construction. The independent
+   recomputation is **geometric** instead — midpoint coincidence identifies each midside's parent
+   corners without consulting the slot table, which is what makes it independent of the code
+   under test — and the boundary-face route survives as a *subset* assert. See rung 1's BUILT
+   note in §3.
 4. **Pin (fixup commit, after the first green run):** tighten step 2 to a ±5% no-regression
    assert around the measured value, measurement in the doc comment — the #701 shape
    (`fsu-model/src/lib.rs:1222`, `:1229`).
