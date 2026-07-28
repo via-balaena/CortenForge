@@ -603,8 +603,9 @@ additive shift committed.
 >   the other 982 are the rim, left straight by design. Over the *authorised* set the distance
 >   to the nearer vertebra falls **max 3.860 → 3.842 mm, RMS 0.796 → 0.694**. ★ The endpoint is
 >   the result worth quoting: rung 2 left the authorised **corners** at 0.656 mm RMS, so the
->   midsides now sit at the same distance from the bone as the corners they span — **the bonded
->   face is uniformly seated instead of seated at its corners and chording between them.** The
+>   midsides now sit essentially as close to the bone as the corners they span (0.694 vs 0.656,
+>   6 % apart) — **the bonded face is uniformly seated instead of seated at its corners and
+>   chording between them.** The
 >   relative move is smaller than rung 2's (which halved 1.332 → 0.656) for a structural reason:
 >   the corners were conformed before enrichment, so a straight midside starts at 0.796, not
 >   1.332. The max barely moves because the worst authorised midside is one the quality floor
@@ -617,7 +618,8 @@ additive shift committed.
 > - **§4.4, written so neither half can be tautological.** *Coverage:* **67.9 %** of the
 >   authorised midsides reach their FULL projection (max move 1.388 mm, mean 0.127), committed
 >   two-sided — both helpers back off silently, so a run where most midsides stayed straight
->   passes any max-move gate. *Element validity:* `detJ ≥ 0.4·detJ_rest` at every Gauss point of
+>   passes a non-vacuity gate. (Which of the three members catches which failure is *not* the
+>   tidy story it looks like — see the mutant record below.) *Element validity:* `detJ ≥ 0.4·detJ_rest` at every Gauss point of
 >   **every** element, not merely the ones the projector's own incidence map covers — that
 >   difference is the falsifiable content, and it is stated on the helper. ⚠ **The validity
 >   *value* is NOT committed, on purpose:** bisection converges onto the constraint boundary, so
@@ -900,8 +902,10 @@ Tet4 one does (`DISC_CONFORM_QUALITY_FLOOR = 0.05`, `fsu-model/src/lib.rs:72`); 
 
 > **✅ BUILT — and "port it" was the trap.** Porting the *mechanism* was right; porting the
 > *value* produced a valid-but-undrivable mesh (§3's rung-3 note). The risk this section names
-> did not materialise as inversion — no element ever inverted — but as a collapsed **step
-> envelope**, which no geometric gate observes. `DISC_MIDSIDE_CONFORM_QUALITY_FLOOR = 0.4`.
+> did not materialise as inversion — no element inverted in any shipped configuration, at either
+> floor — but as a collapsed **step envelope**, which no geometric gate observes. (Inversion is
+> reachable: the §4.4 mutant that breaks the projector's incidence map drives elements to
+> `detJ/detJ_rest = −9.787`. The guard works; it is the *floor value* that was wrong.) `DISC_MIDSIDE_CONFORM_QUALITY_FLOOR = 0.4`.
 
 ### 5.3 The parameterization silently changes Tet4 (rung 0) — mitigated by §4.1's golden
 
