@@ -133,9 +133,22 @@ const UPPER: usize = 2;
 /// above the last floor known to stall and **1.67× above the first known to drive**; the
 /// conservative reading is the second, and it is still above the 1.6× rung 3 chose. The margin
 /// costs 0.094 mm of RMS residual, and the conform still nearly halves the seated population's
-/// distance to the bone (raw 1.332 → 0.750 mm). `k_disc` varies by **&lt;0.1 %** across the
-/// whole range on the lofted disc: like `DISC_MIDSIDE_CONFORM_QUALITY_FLOOR`, this floor moves
-/// the *conditioning*, not the physics.
+/// distance to the bone (raw 1.332 → 0.750 mm).
+///
+/// **The floor moves the *conditioning*, not the physics** — measured, and asserted by
+/// `assert_floor_is_conditioning_only`: across every floor the lofted disc can actually be
+/// driven at, `k_disc` spans **0.07 % (Tet4, −24.8449 … −24.8269)** and **0.14 % (Tet10,
+/// −22.3225 … −22.2903)**. That is the claim which makes a quality floor a conditioning knob
+/// rather than a modelling parameter, and every `k_disc` anchor downstream would silently
+/// inherit a violation of it.
+///
+/// ⚠ This read "&lt;0.1 %" until rung 4's numeric audit gave it a producer — a figure that was
+/// **both wrong and self-contradicting**: the range quoted beside it (−24.83 … −24.86,
+/// −22.28 … −22.35) works out to 0.12 % and 0.31 %, so the parenthetical refuted the headline
+/// and nothing recomputed either. The measured spread is *tighter* than that old range for a
+/// substantive reason: the old one averaged in floors where an arm never reached the probe, so
+/// its `k_disc` came from a partial walk. Only drivable floors have a stiffness to compare,
+/// which is why the sweep reports `Option`.
 ///
 /// ⚠ **The 0.10 row read "drives" until the gate landed**, because the throwaway sweep that
 /// first produced this table walked to 0.86° in nine ~0.0956° steps while production walks in
