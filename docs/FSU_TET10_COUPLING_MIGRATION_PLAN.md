@@ -623,13 +623,28 @@ additive shift committed.
 >   *value* is NOT committed, on purpose:** bisection converges onto the constraint boundary, so
 >   the worst ratio equals the floor exactly whenever any node backs off at all. Committing
 >   0.4000 with a ±5 % band would read as a measurement and be a tautology — the very shape §4.4
->   exists to replace. The inequality is asserted; the coverage fraction is the statistic that
->   moves.
+>   exists to replace. The inequality is asserted; the coverage triple is the statistic that
+>   moves — though *which member* moves depends on the failure, see the mutant record below.
 > - **★ A selection variant was measured and REFUTED, not argued.** The natural hypothesis for
 >   the 32 % non-delivery is that it concentrates in midsides whose parent corners were
 >   themselves guard-declined. Gating on both parents being authorised gives 484 of 580 at
 >   **79.5 %** delivered — barely better — while dropping 96 midsides that were *improving*
->   (RMS 1.477 → 1.198). The simpler rule ships.
+>   (RMS 1.477 → 1.198). The simpler rule ships. ⚠ That pair was measured at the corner floor
+>   0.05, before the constant split (72.4 % ungated vs 79.5 % parent-gated) — do not read 79.5 %
+>   against the 67.9 % committed above.
+> - **★★ THE COLD-READ MUTANTS (three, all measured on the real disc).** (1) *Incidence map
+>   narrowed* from `t[4..10]` to `t[4..7]`: worst `detJ/detJ_rest` → **−9.7870** — genuinely
+>   inverted elements — while the §4.3 residual gate still IMPROVES (0.796 → 0.711) and passes.
+>   A geometry gate cannot see a folded element; the whole-mesh validity sweep can. It also
+>   exposed an ordering defect (the coverage pin fired first, so an inverted mesh was reported as
+>   a coverage failure), fixed by asserting validity first. (2) *Silent 0.2 mm cap*: the
+>   delivered fraction moves the WRONG way (67.9 % → 68.6 %) and `max_move`/`mean_move` plus the
+>   §4.3 pin catch it — which **refutes this rung's own advertised justification** for the
+>   fraction. (3) *Projection disabled outright* (the whole rung silently reverted): **six of the
+>   seven** licence-gated anatomy gates stay GREEN — rung 2's corner residual gate, rung 1's
+>   element-order FOM, #701's conform FOM, the replayable sweep, both lofted-disc gates — and
+>   only this rung's gate fails, plus the license-free arm, so CI catches it too. That is the
+>   separating mutant: it survives every pre-existing assert.
 > - **k_disc additive shift, committed:** the conformed Tet10 arm goes −0.1844 / −0.1820
 >   (straight midsides, rung 2) → **−0.1845 / −0.1821** (curved), a **0.05 %** shift — an order
 >   of magnitude below the conform's own ~1.5-1.8 % and two below the element order's ~33 %.
@@ -772,8 +787,11 @@ is the physics consequence, not the geometric claim.
 > `quality_floor` exactly whenever any node backs off. Committing it two-sided would have been
 > the same defect this section replaced, one level down. What ships is the **inequality over
 > every element** (falsifiable against the projector's own incidence bookkeeping — see
-> `worst_gauss_det_ratio`) plus the **coverage fraction**, which is a genuine measurement and
-> the one that moves. See rung 3's BUILT note in §3.
+> `worst_gauss_det_ratio`) plus the **coverage triple**. ⚠ And the tidy version of *that* claim
+> — "the delivered fraction is the member with the teeth" — was itself refuted by a cold-read
+> mutant: a silent 0.2 mm cap on every move takes the fraction the WRONG way (67.9 % → 68.6 %),
+> because a smaller request is easier to satisfy. The fraction covers the back-off-engages-more
+> direction; `max_move`/`mean_move` and the §4.3 pin cover the other. See rung 3's BUILT note.
 
 v1's "0 inverted / 0 sliver" was **tautological** (the projection back-off makes the straight
 position always feasible, so non-inversion is a construction guarantee) and its sliver half was

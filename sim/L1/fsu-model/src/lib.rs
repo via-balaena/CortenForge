@@ -2917,10 +2917,10 @@ mod tests {
         //
         // Read these honestly, and read the RMS as the payoff — the max is not the story here.
         //
-        // **The payoff.** The seated population's RMS distance to the bone falls 0.796 → 0.658
+        // **The payoff.** The seated population's RMS distance to the bone falls 0.796 → 0.694
         // mm, and that endpoint is the point: rung 2 left the *corners* of the authorised region
-        // at 0.656 mm RMS, so after this rung the midsides sit at the same distance from the
-        // bone as the corners they span (0.658 vs 0.656). The bonded face is now uniformly
+        // at 0.656 mm RMS, so after this rung the midsides sit at essentially the same distance
+        // from the bone as the corners they span (0.694 vs 0.656). The bonded face is now uniformly
         // seated instead of seated at its corners and chording between them. That is a smaller
         // relative move than rung 2's (which halved 1.332 → 0.656) for a structural reason,
         // not a disappointing one: the corners were already conformed before enrichment, so a
@@ -2985,7 +2985,7 @@ mod tests {
         // the number this statistic exists to make impossible to hide: both projection helpers
         // back off silently, so a "did anything move / how far did the furthest node move" gate
         // would have reported this run as a clean success. The non-delivery is real geometry,
-        // not a bug — a midside asked to move 1.657 mm across a 3 mm cell is asked to fold its
+        // not a bug — a midside asked to move 1.388 mm across a 3 mm cell is asked to fold its
         // element, and the quality floor refuses. Compare the corner conform, where 231 of 233
         // authorised nodes were delivered: corner moves are sparser and a Tet4 element's
         // Jacobian is affine, so the floor almost never binds there.
@@ -2997,6 +2997,9 @@ mod tests {
         // authorised gives 484 of 580 midsides at **79.5 %** delivered — barely better — while
         // dropping 96 midsides that were *improving* (their RMS falls 1.477 → 1.198). So the
         // simpler rule ships: project every authorised bonded-face boundary midside.
+        // ⚠ Both halves of that comparison were measured at the *corner* floor 0.05, before this
+        // rung split the constant (72.4 % ungated vs 79.5 % parent-gated), so read it as the
+        // like-for-like pair it is and not against the 67.9 % committed above.
         //
         // ⚠⚠ **And a second mutant refuted this gate's own advertised justification.** The
         // fraction is *not* the member with the teeth in every direction: a silent 0.2 mm cap
