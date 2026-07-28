@@ -27,15 +27,22 @@
 //!
 //! ## Scope / honesty
 //!
-//! The bonded disc only converges at **sub-degree** strains — beyond ~1° the boundary
-//! tets leave their SPD region and the soft solve diverges (and panics) — so
-//! [`BondedDisc::flexion_moment`] is a small-angle probe, and a segment's larger-angle
-//! range of motion is a linear extrapolation of it (see rung 7).
+//! The limit is on the size of a **single step**, not on the angle reached. A lone jump
+//! from rest past ~1° drives the boundary tets out of their SPD region and the soft solve
+//! diverges (and panics), so [`BondedDisc::flexion_moment`] is a small-angle probe and
+//! rung 7's larger-angle range of motion is a linear extrapolation of it. But a *chain* of
+//! small warm-started steps goes much further: `CoupledFsu::capture_ramp` walks the linear
+//! disc to the full ±ROM in 0.1° sub-steps, and rung 2 of
+//! `docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` measured the same chain reaching **±6.0° on
+//! the endplate-conformed disc for BOTH elements** — every step converging, conserving and
+//! strictly restoring (`conformed_disc_survives_a_large_angle_sweep`). So the quadratic
+//! arm's large-angle envelope is no longer unmeasured, and it is not narrower than the
+//! linear arm's.
 //!
-//! That ~1° envelope was measured on the **linear** arm. The quadratic arm is exercised
-//! only to ±0.5° so far, and its own large-angle envelope is **unmeasured** — the
-//! large-angle sweep is rung 2 of `docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md`. Do not read
-//! the Tet4 number as covering it.
+//! The single-step limit is *tighter* on a conformed disc, which is measured rather than
+//! assumed: the raw linear disc survives a single +0.5° → −0.5° jump (rung 1's FOM probes
+//! it exactly that way) while the conformed one does not — the same 1° jump trips the
+//! solver's fail-closed validity bound. Drive a conformed disc in steps.
 //!
 //! Note the deliberate API asymmetry: [`build_bonded_disc`] returns [`Result`], but the
 //! drive methods **panic** on non-convergence rather than returning one — they inherit
@@ -809,6 +816,8 @@ pub(crate) mod test_support {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // tests may unwrap/expect/panic.
 
+    use cf_geometry::Sdf;
+
     use super::test_support::{box_mesh, synthetic_disc};
     use super::*;
 
@@ -1315,6 +1324,43 @@ mod tests {
             "inferior band must seat on the inferior box face z ≈ 945.0, got {lo:.3}"
         );
 
+        // EXACT-GEOMETRY RESIDUAL, license-free (rung 2's §4.3 gate on the real anatomy is
+        // `#[ignore]`d, so this is the only arm of it CI runs). Both discs are read at rest,
+        // before any solve — `from_tet_mesh` initialises the solve configuration to the mesh
+        // positions it snapshots the bond offsets from. Against flat box "endplates" a seated
+        // node lands exactly on the face, so the conformed residual collapses to the quality
+        // floor's back-off while the raw one still carries the 0.5 / 2 mm build gaps.
+        let raw_disc = build_bonded_disc(synthetic_disc(), &params, None).unwrap();
+        let conf_disc = build_bonded_disc(synthetic_disc(), &params, Some(endplates)).unwrap();
+        let (q_raw, q_conf) = (
+            raw_disc.deformed_nodes_native(),
+            conf_disc.deformed_nodes_native(),
+        );
+        let cand = bonded_face_boundary_nodes(&conf_disc);
+        let stats = |nodes: &[VertexId], p: &[Point3<f64>]| {
+            residual_stats(
+                &nodes
+                    .iter()
+                    .map(|&v| endplate_residual(p[v as usize], &o_sup, &o_inf))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let (max_raw, rms_raw) = stats(&cand, &q_raw);
+        let (max_conf, rms_conf) = stats(&cand, &q_conf);
+        assert!(!cand.is_empty(), "the bonded band must reach the surface");
+        // The raw gaps are real (≥ the 0.5 mm superior build gap), and the conform closes them
+        // to a fraction of that — asserted on both the extreme and the population statistic, so
+        // a conform that seated only a few nodes would fail the RMS half.
+        assert!(
+            max_raw > 0.4 && rms_raw > 0.4,
+            "the raw bonded face must sit off the boxes (max {max_raw:.4}, rms {rms_raw:.4} mm)"
+        );
+        assert!(
+            max_conf < 0.1 * max_raw && rms_conf < 0.1 * rms_raw,
+            "the conform must seat the bonded face on the boxes \
+             (max {max_raw:.4} -> {max_conf:.4}, rms {rms_raw:.4} -> {rms_conf:.4} mm)"
+        );
+
         // The QUADRATIC arm of the same conform. `build_bonded_disc_tet10` accepts
         // `endplates` because rung 2 measures the conform on both elements, and shipping an
         // accepted-but-unexercised argument is how a silent break gets in: everything before
@@ -1356,7 +1402,10 @@ mod tests {
         let frame = segment_frame(&l4, &l5, &o4, &o5).unwrap();
         let params = DiscParams::default();
 
-        // Symmetric sub-degree sweep, inside the spike-validated conformed SPD range (±0.5°).
+        // Symmetric sub-degree sweep at ±0.5°. This is the small-strain LINEARISATION range the
+        // k_disc figure of merit is defined on, not a limit on the conformed disc — rung 2's
+        // `conformed_disc_survives_a_large_angle_sweep` drives the same conformed disc to ±6.0°
+        // in 0.1° steps.
         let angles: Vec<f64> = [-0.5_f64, -0.25, 0.0, 0.25, 0.5]
             .iter()
             .map(|d| d.to_radians())
@@ -1429,9 +1478,13 @@ mod tests {
         // sign and stays a consistent spring). Both arms already passed the strict per-frame
         // restoring check in assert_restoring_sweep; here we compare the linearised stiffnesses.
         // COMMITTED: both arms read k_disc ≈ −0.28 N·m/rad each way (restoring); seating the
-        // band onto the real endplate shifts it at most ~4 % (ext −0.28 → −0.27). The FOM is
-        // essentially unchanged — the exact-geometry win is that the bond ties to the REAL bone,
-        // not a moment shift, which is why the gate is soundness + no-regression, not "improves".
+        // band onto the real endplate shifts it ~1.8 % (−0.2811 → −0.2760 flexion, −0.2788 →
+        // −0.2738 extension — the four-decimal figures come from rung 2's
+        // `conform_delta_by_element_fom`; this test's own two-decimal print of the same arms,
+        // −0.28 → −0.27, was originally read as "~4 %", which was a rounding artifact). The FOM
+        // is essentially unchanged — the exact-geometry win is that the bond ties to the REAL
+        // bone, not a moment shift, which is why the gate is soundness + no-regression, not
+        // "improves"; the direct geometric gate is `conform_seats_the_bonded_face_on_the_bone_fom`.
         for (kc, kr, name) in [
             (k_flex_conf, k_flex_raw, "flexion"),
             (k_ext_conf, k_ext_raw, "extension"),
@@ -1446,7 +1499,7 @@ mod tests {
                 "k_disc {name} outside the committed ≈ −0.28 N·m/rad band (conf {kc:.3}, raw {kr:.3})"
             );
             // No-regression: the seated band shifts the linearised stiffness by < ~10 % (observed
-            // ~4 %). Loose enough to record a legitimate shift, tight enough to catch a collapse.
+            // ~1.8 %). Loose enough to record a legitimate shift, tight enough to catch a collapse.
             let ratio = (kc / kr).abs();
             assert!(
                 (0.9..=1.1).contains(&ratio),
@@ -1757,6 +1810,711 @@ mod tests {
                 ((0.95 * expect)..=(1.05 * expect)).contains(&ratio),
                 "{name}: k_disc ratio {ratio:.3} is outside ±5 % of the committed {expect:.3} \
                  — debug the band and the enrichment; do NOT widen the band to admit it"
+            );
+        }
+    }
+
+    /// Distance from a native-mm point to the **real bone surface**: the nearer of the two
+    /// vertebra oracles' `|eval|`.
+    ///
+    /// This is the exact-geometry residual — how far the geometry the bond actually ties to
+    /// still sits off the endplate. Deliberately read through [`Sdf::eval`] and *not*
+    /// `MeshOracle::closest_point`, which is the primitive `bonded_conform_target` projects
+    /// with: a residual computed from the projector could not falsify the projector.
+    fn endplate_residual(p: Point3<f64>, o4: &MeshOracle, o5: &MeshOracle) -> f64 {
+        o4.eval(p).abs().min(o5.eval(p).abs())
+    }
+
+    /// `(max, RMS)` of a residual sample, both reported and both gated: the max catches a
+    /// single node left off the bone, the RMS catches a population that only *mostly* seated
+    /// (a max-only gate passes a run where 95 % of nodes never moved).
+    // Node counts are in the thousands — exact in f64.
+    #[allow(clippy::cast_precision_loss)]
+    fn residual_stats(rs: &[f64]) -> (f64, f64) {
+        let max = rs.iter().copied().fold(0.0_f64, f64::max);
+        let rms = (rs.iter().map(|r| r * r).sum::<f64>() / rs.len() as f64).sqrt();
+        (max, rms)
+    }
+
+    /// The bonded-face **boundary** nodes of a built disc: the bonded band restricted to the
+    /// mesh surface. Read off the sandwich's own vertex sets and boundary triangulation, so it
+    /// is the set the shipped bond ties, not a re-derivation — and it is exactly the candidate
+    /// set `endplate_conform_moves` walks (interior band nodes are inside the disc and have no
+    /// endplate to sit on).
+    fn bonded_face_boundary_nodes<Msh, E, const N: usize, const G: usize>(
+        disc: &BondedDisc<Msh, E, N, G>,
+    ) -> Vec<VertexId>
+    where
+        Msh: Mesh,
+        E: Element<N, G> + Default,
+    {
+        let surface: std::collections::HashSet<VertexId> =
+            disc.boundary_faces().iter().flatten().copied().collect();
+        disc.sandwich
+            .lower_face()
+            .iter()
+            .chain(disc.sandwich.upper_face())
+            .copied()
+            .filter(|v| surface.contains(v))
+            .collect()
+    }
+
+    /// The bonded-face boundary nodes split by what the conform *intended* versus what it
+    /// *delivered* — three sets, not two, because the difference between them is where the
+    /// silent failures live.
+    ///
+    /// - `authorised` — what the SI-alignment discriminator said should seat, read from
+    ///   `bonded_conform_target` on the RAW positions (INTENT).
+    /// - `moved` — what the pipeline actually delivered, read from the two node arrays (OUTCOME).
+    /// - `backed_off` — `authorised` minus `moved`: nodes the quality-floor back-off gave up on
+    ///   entirely. No "max move" statistic can show these, because they did not move.
+    /// - `guard_declined` — candidates the discriminator refused, i.e. the overhanging annular
+    ///   rim that #701's settled call leaves straight on purpose.
+    struct ConformSplit {
+        candidates: Vec<VertexId>,
+        authorised: Vec<VertexId>,
+        guard_declined: Vec<VertexId>,
+        moved: Vec<VertexId>,
+        backed_off: usize,
+    }
+
+    /// Compute the [`ConformSplit`] for a built conformed disc against its raw twin's node
+    /// positions (both native mm, same topology).
+    fn conform_split(
+        conf: &BondedDisc,
+        p_raw: &[Point3<f64>],
+        p_conf: &[Point3<f64>],
+        ep: EndplateConform,
+    ) -> ConformSplit {
+        let candidates = bonded_face_boundary_nodes(conf);
+        assert!(
+            !candidates.is_empty(),
+            "the bonded band must reach the disc surface"
+        );
+        let authorised: Vec<VertexId> = candidates
+            .iter()
+            .copied()
+            .filter(|&v| {
+                bonded_conform_target(p_raw[v as usize], ep.superior_axis, ep.o4, ep.o5).is_some()
+            })
+            .collect();
+        let authorised_set: std::collections::HashSet<VertexId> =
+            authorised.iter().copied().collect();
+        let guard_declined: Vec<VertexId> = candidates
+            .iter()
+            .copied()
+            .filter(|v| !authorised_set.contains(v))
+            .collect();
+        let moved: Vec<VertexId> = candidates
+            .iter()
+            .copied()
+            .filter(|&v| (p_raw[v as usize] - p_conf[v as usize]).norm() > 1e-12)
+            .collect();
+        // `with_projected_nodes` only touches the nodes it is handed, so a moved node must have
+        // been authorised — asserted rather than assumed, since it is what makes `backed_off`
+        // readable as "the back-off gave up", not "something else moved a node".
+        assert!(
+            moved.iter().all(|v| authorised_set.contains(v)),
+            "a node moved without the SI-alignment guard authorising it"
+        );
+        let backed_off = authorised.len() - moved.len();
+        ConformSplit {
+            candidates,
+            authorised,
+            guard_declined,
+            moved,
+            backed_off,
+        }
+    }
+
+    /// **The rung-2 exact-geometry residual gate**
+    /// (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §4.3): how close the bonded-face boundary
+    /// nodes *ended up* to the real bone.
+    ///
+    /// This is the arc's own stated payoff, and until this rung nothing measured it. #701's FOM
+    /// commits `max_seat` — how far nodes **moved** — which is a different quantity: a node can
+    /// move 4 mm and still stop 2 mm short, and a conform that seated nothing would report a
+    /// `max_seat` of 0 rather than a residual.
+    ///
+    /// Both arms are read **at rest, before any solve**: `BondedSandwich::from_tet_mesh`
+    /// initialises the solve configuration to the same mesh positions it snapshots the bond's
+    /// body-frame offsets from, so `deformed_nodes_native()` on a freshly built disc is
+    /// literally the geometry the bond ties to.
+    ///
+    /// ## Which population the gate is on, and why it is not selected on the outcome
+    ///
+    /// The SI-alignment guard declines nodes silently, and by the #701 settled modeling call it
+    /// is *supposed* to: the overhanging annular rim attaches to the ring apophysis, not the
+    /// endplate face, so its residual is a modeling choice rather than a defect. Averaging that
+    /// rim into the payoff metric would let a population that never moves mask (or manufacture) a
+    /// change in the seated one. So the strict-decrease assert is on the **authorised** nodes —
+    /// the ones the discriminator said should seat — with the guard-declined population reported
+    /// alongside, and the whole candidate set *also* gated on RMS strictly down and max
+    /// non-increasing (which is what "no node ended up further from the bone" means).
+    ///
+    /// Authorised, deliberately, and **not** "nodes that moved": the moved set is selected on the
+    /// outcome, so it cannot fail when the quality-floor back-off silently drops a node, whereas
+    /// the authorised set carries those dropped nodes into the statistic. The two are read
+    /// independently — `bonded_conform_target` on the raw positions says what the discriminator
+    /// intended, the two node arrays say what the pipeline delivered — and their difference (2
+    /// nodes here) is precisely the failure a "max move" number cannot show.
+    ///
+    /// ⚠ This is a **require-improvement** gate, deliberately unlike #701's `k_disc` gate
+    /// (sound + measured + no-regression). The two must not be merged: `k_disc` is a physics
+    /// consequence whose more-correct value may legitimately move either way, so requiring it to
+    /// improve would false-fail better geometry. The residual is the *geometric* claim itself —
+    /// if seating the band on the bone does not reduce the distance to the bone, the conform did
+    /// not happen.
+    #[test]
+    #[ignore = "needs $CF_L4_STL/$CF_L5_STL/$CF_DISC_STL (BodyParts3D, CC BY-SA, not committed)"]
+    fn conform_seats_the_bonded_face_on_the_bone_fom() {
+        use cf_fsu_geometry::{load_from_env, segment_frame};
+
+        let l4 = load_from_env("CF_L4_STL").unwrap();
+        let l5 = load_from_env("CF_L5_STL").unwrap();
+        let disc_mesh = load_from_env("CF_DISC_STL").unwrap();
+        let (o4, o5) = (oracle(&l4).unwrap(), oracle(&l5).unwrap());
+        let frame = segment_frame(&l4, &l5, &o4, &o5).unwrap();
+        let params = DiscParams::default();
+        let ep = EndplateConform {
+            o4: &o4,
+            o5: &o5,
+            superior_axis: frame.superior_axis,
+        };
+
+        let raw = build_bonded_disc(disc_mesh.clone(), &params, None).expect("raw disc bonds");
+        let conf = build_bonded_disc(disc_mesh, &params, Some(ep)).expect("conformed disc bonds");
+
+        let (p_raw, p_conf) = (raw.deformed_nodes_native(), conf.deformed_nodes_native());
+        assert_eq!(p_raw.len(), p_conf.len(), "the conform preserves topology");
+        // The band is computed BEFORE the conform (`prepare_disc`), so both arms bond the same
+        // ids — which is what makes the node-wise comparison below well-posed.
+        assert_eq!(
+            raw.sandwich.lower_face(),
+            conf.sandwich.lower_face(),
+            "both arms must bond the same inferior band"
+        );
+        assert_eq!(
+            raw.sandwich.upper_face(),
+            conf.sandwich.upper_face(),
+            "both arms must bond the same superior band"
+        );
+
+        let ConformSplit {
+            candidates,
+            authorised,
+            guard_declined,
+            moved,
+            backed_off,
+        } = conform_split(&conf, &p_raw, &p_conf, ep);
+
+        let res = |nodes: &[VertexId], p: &[Point3<f64>]| -> (f64, f64) {
+            let rs: Vec<f64> = nodes
+                .iter()
+                .map(|&v| endplate_residual(p[v as usize], &o4, &o5))
+                .collect();
+            residual_stats(&rs)
+        };
+        let (all_max_raw, all_rms_raw) = res(&candidates, &p_raw);
+        let (all_max_conf, all_rms_conf) = res(&candidates, &p_conf);
+        let (au_max_raw, au_rms_raw) = res(&authorised, &p_raw);
+        let (au_max_conf, au_rms_conf) = res(&authorised, &p_conf);
+        let (dec_max, dec_rms) = res(&guard_declined, &p_conf);
+
+        println!(
+            "bonded-face boundary nodes: {} candidates = {} authorised ({} moved, {backed_off} \
+             fully backed off by the quality floor) + {} guard-declined",
+            candidates.len(),
+            authorised.len(),
+            moved.len(),
+            guard_declined.len(),
+        );
+        println!(
+            "residual |eval| to the nearer vertebra (mm) — \
+             AUTHORISED: raw max {au_max_raw:.3} rms {au_rms_raw:.3} -> conformed max {au_max_conf:.3} rms {au_rms_conf:.3}; \
+             ALL: raw max {all_max_raw:.3} rms {all_rms_raw:.3} -> conformed max {all_max_conf:.3} rms {all_rms_conf:.3}; \
+             GUARD-DECLINED (left straight by design): max {dec_max:.3} rms {dec_rms:.3}"
+        );
+
+        // (1) NON-VACUITY, committed exactly. A conform that declined everything would satisfy a
+        // "no node got worse" gate trivially, and these counts pin the whole population split —
+        // so a silent change in the mesh, the band rule, or the discriminator fails here rather
+        // than diluting the statistics below.
+        //
+        // COMMITTED (BodyParts3D L4/L5/disc, DiscParams::default): of 583 bonded-face boundary
+        // nodes the SI-alignment guard authorises 233; 231 of those are delivered and **2 are
+        // backed off entirely** by the quality floor. That 2 is the number this split exists to
+        // surface — it is invisible to a max-move statistic, and it is the failure mode that
+        // grows if a future mesh is worse conditioned.
+        assert_eq!(
+            (
+                candidates.len(),
+                authorised.len(),
+                moved.len(),
+                backed_off,
+                guard_declined.len()
+            ),
+            (583, 233, 231, 2, 350),
+            "the bonded-face population split changed"
+        );
+
+        // (2) THE PAYOFF: the population the discriminator INTENDED to seat ends up strictly
+        // closer to the bone, on both the extreme and the population statistic. Gating on the
+        // authorised set rather than the moved set is deliberate — "nodes that moved" is
+        // selected on the outcome, so it cannot fail when the back-off silently drops a node,
+        // whereas the authorised set carries those two dropped nodes into the statistic.
+        assert!(
+            au_max_conf < au_max_raw && au_rms_conf < au_rms_raw,
+            "the authorised nodes must end up closer to the bone \
+             (max {au_max_raw:.3} -> {au_max_conf:.3}, rms {au_rms_raw:.3} -> {au_rms_conf:.3} mm)"
+        );
+
+        // (3) The whole candidate population improves and no node is pushed further off the
+        // bone. The max is only required not to INCREASE: it is set by a guard-declined rim
+        // node, whose residual is identical in both arms by construction.
+        assert!(
+            all_rms_conf < all_rms_raw,
+            "the bonded face as a whole must end up closer to the bone \
+             (rms {all_rms_raw:.3} -> {all_rms_conf:.3} mm)"
+        );
+        assert!(
+            all_max_conf <= all_max_raw,
+            "no bonded-face node may end up further from the bone \
+             (max {all_max_raw:.3} -> {all_max_conf:.3} mm)"
+        );
+
+        // (4) COMMITTED VALUES, two-sided at ±5 % (the #701 / rung-1 shape), so a regression AND
+        // a silent geometry change both fail rather than only the first.
+        //
+        // COMMITTED (as above), residual in mm:
+        //   AUTHORISED       raw max 5.724  rms 1.332  ->  conformed max 3.575  rms 0.656
+        //   ALL candidates   raw max 12.577 rms 3.494  ->  conformed max 12.577 rms 3.416
+        //   GUARD-DECLINED   (unchanged by construction) max 12.577 rms 4.377
+        //
+        // Read these honestly. The conform halves the seated population's RMS distance to the
+        // bone (1.332 -> 0.656) and that is the arc's payoff measured directly for the first
+        // time. It does NOT drive the residual to zero: the worst authorised node still ends up
+        // 3.575 mm out, because the quality floor backs a move off rather than invert a tet. And
+        // the ALL-candidate figures barely move because 350 of 583 nodes are the overhanging
+        // annular rim, left straight ON PURPOSE (#701's settled call — Sharpey's fibres attach
+        // to the ring apophysis, not the endplate face); their 12.577 mm max is a closest-point
+        // artifact of reaching sideways for the vertebral body wall, not an unmet target.
+        for (v, expect, name) in [
+            (au_max_raw, 5.724, "authorised raw max"),
+            (au_rms_raw, 1.332, "authorised raw rms"),
+            (au_max_conf, 3.575, "authorised conformed max"),
+            (au_rms_conf, 0.656, "authorised conformed rms"),
+            (all_rms_raw, 3.494, "all raw rms"),
+            (all_rms_conf, 3.416, "all conformed rms"),
+        ] {
+            assert!(
+                ((0.95 * expect)..=(1.05 * expect)).contains(&v),
+                "{name} {v:.3} mm is outside ±5 % of the committed {expect:.3} mm"
+            );
+        }
+    }
+    /// **Rung 3's committed "before" arm** (§4.3): how far the *straight* Tet10 bonded-face
+    /// boundary midsides sit off the real endplate.
+    ///
+    /// A straight quadratic midside sits at the chord midpoint of its edge, so it chords across
+    /// the curved endplate even when both of its parent corners are seated exactly on the bone.
+    /// That gap is what rung 3's midside projection exists to close, and this records it before
+    /// rung 3 touches anything — the measurement rung 3's residual gate has to strictly beat.
+    ///
+    /// The mesh is re-derived through `prepare_disc` rather than read off a built disc (only the
+    /// linear corners are reachable there), so the first assert checks the re-derivation is
+    /// faithful: its corner positions must reproduce the built conformed disc's, node for node.
+    #[test]
+    #[ignore = "needs $CF_L4_STL/$CF_L5_STL/$CF_DISC_STL (BodyParts3D, CC BY-SA, not committed)"]
+    fn straight_tet10_midsides_chord_across_the_endplate_fom() {
+        use cf_fsu_geometry::{load_from_env, segment_frame};
+
+        let l4 = load_from_env("CF_L4_STL").unwrap();
+        let l5 = load_from_env("CF_L5_STL").unwrap();
+        let disc_mesh = load_from_env("CF_DISC_STL").unwrap();
+        let (o4, o5) = (oracle(&l4).unwrap(), oracle(&l5).unwrap());
+        let frame = segment_frame(&l4, &l5, &o4, &o5).unwrap();
+        let params = DiscParams::default();
+        let ep = EndplateConform {
+            o4: &o4,
+            o5: &o5,
+            superior_axis: frame.superior_axis,
+        };
+
+        let built = build_bonded_disc(disc_mesh.clone(), &params, Some(ep))
+            .expect("conformed disc bonds")
+            .deformed_nodes_native();
+        let prepared =
+            prepare_disc(disc_mesh, &params, Some(ep)).expect("prepare the conformed disc");
+        let native = |p: Vec3| prepared.center_native + p / params.scale;
+        assert!(
+            prepared
+                .tet
+                .positions()
+                .iter()
+                .zip(&built)
+                .all(|(&p, &q)| (native(p) - q).norm() < 1e-12),
+            "the re-derived conformed mesh must reproduce the built disc's corner positions"
+        );
+
+        let mesh10 = Tet10Mesh::from_tet4(&prepared.tet);
+        let band: std::collections::HashSet<VertexId> = prepared
+            .inferior
+            .iter()
+            .chain(&prepared.superior)
+            .copied()
+            .collect();
+        let faces6 = mesh10
+            .boundary_faces6()
+            .expect("a Tet10Mesh carries six-node boundary faces");
+        let mids: BTreeSet<VertexId> = faces6
+            .iter()
+            .filter(|f| f[..3].iter().all(|v| band.contains(v)))
+            .flat_map(|f| f[3..].iter().copied())
+            .collect();
+        assert!(
+            !mids.is_empty(),
+            "the bonded band must reach the quadratic boundary"
+        );
+        let pos10 = mesh10.positions();
+        let residuals: Vec<f64> = mids
+            .iter()
+            .map(|&v| endplate_residual(native(pos10[v as usize]), &o4, &o5))
+            .collect();
+        let (worst, rms) = residual_stats(&residuals);
+        println!(
+            "rung-3 baseline — straight-Tet10 bonded-face boundary midsides ({}): \
+             residual max {worst:.3} rms {rms:.3} mm",
+            mids.len()
+        );
+        // COMMITTED: 1562 midsides, max 12.464 / rms 3.366 mm. ⚠ This is the WHOLE bonded-face
+        // boundary midside population, so — like the all-candidate corner figures in
+        // `conform_seats_the_bonded_face_on_the_bone_fom` — it is dominated by the same
+        // overhanging rim that stays straight by design. Rung 3 must compare like for like (the
+        // midsides of the *authorised* corner region), not quote a drop in this aggregate as its
+        // payoff.
+        assert_eq!(
+            mids.len(),
+            1562,
+            "the bonded-face boundary midside count changed"
+        );
+        for (v, expect, name) in [
+            (worst, 12.464, "straight-Tet10 midside max"),
+            (rms, 3.366, "straight-Tet10 midside rms"),
+        ] {
+            assert!(
+                ((0.95 * expect)..=(1.05 * expect)).contains(&v),
+                "{name} {v:.3} mm is outside ±5 % of the committed {expect:.3} mm"
+            );
+        }
+    }
+
+    /// Drive `disc` through a chained, warm-started large-angle sweep and return the peak
+    /// |moment| reached.
+    ///
+    /// The shape is `CoupledFsu::capture_ramp`'s: one continuous monotone chain from rest down
+    /// to `-peak` and back up through neutral to `+peak`, every step at most `substep`. Chaining
+    /// is load-bearing — resetting to rest between the legs would warm-start the next solve from
+    /// the far-deformed state, a jump large enough to leave the SPD region on its own and turn a
+    /// geometry finding into a stepping artifact.
+    ///
+    /// Every step is a hard check: `flexion_moment` panics on a diverged solve, so reaching the
+    /// end at all is the envelope result, and each step's angle is printed so a panic names the
+    /// angle it failed at rather than only the solver's message.
+    fn assert_large_angle_sweep<Msh, E, const N: usize, const G: usize>(
+        disc: &mut BondedDisc<Msh, E, N, G>,
+        peak: f64,
+        substep: f64,
+        label: &str,
+    ) -> f64
+    where
+        Msh: Mesh,
+        E: Element<N, G> + Default,
+    {
+        disc.set_flexion(0.0);
+        let mut cur = 0.0_f64;
+        let mut peak_moment = 0.0_f64;
+        for target in [-peak, peak] {
+            // usize step count from a small angle ratio — exact in f64.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let steps = ((target - cur).abs() / substep).ceil().max(1.0) as usize;
+            for s in 1..=steps {
+                #[allow(clippy::cast_precision_loss)]
+                let frac = s as f64 / steps as f64;
+                let theta = cur + (target - cur) * frac;
+                let (moment, resid) = disc.flexion_moment(theta);
+                println!(
+                    "{label}: θ = {:+.3}° M = {moment:+.5} N·m resid {resid:.2e}",
+                    theta.to_degrees()
+                );
+                assert!(
+                    resid < 1e-8,
+                    "{label}: θ = {:+.3}° bond must conserve (resid {resid:.2e})",
+                    theta.to_degrees()
+                );
+                // The −peak → +peak leg lands exactly on θ = 0, where `θ·M < 0` is false for any
+                // moment; require the response to vanish there instead (checked explicitly, since
+                // `0·M ≤ ε` is vacuous).
+                if theta.abs() > 1e-12 {
+                    assert!(
+                        theta * moment < 0.0,
+                        "{label}: θ = {:+.3}° must stay restoring (θ·M = {:.2e})",
+                        theta.to_degrees(),
+                        theta * moment
+                    );
+                    peak_moment = peak_moment.max(moment.abs());
+                } else {
+                    assert!(
+                        moment.abs() < 0.1 * peak_moment,
+                        "{label}: the neutral moment must be ~0, got {moment:.2e} \
+                         (scale {peak_moment:.2e})"
+                    );
+                }
+            }
+            cur = target;
+        }
+        peak_moment
+    }
+
+    /// **The rung-2 large-angle gate** (§4.5): the first measurement of the angle envelope of
+    /// the conformed disc, on both elements.
+    ///
+    /// Every FOM in this crate before this one is a **sub-degree** probe, and the Tet10 arm has
+    /// only ever been driven to ±0.5°. But `CoupledFsu::capture_ramp` walks the FEM disc to the
+    /// full ±ROM (~6° flexion / ~4.5° extension), and this crate's own deferral note names
+    /// large-angle failure as the reason the bonded conform was not adopted there: *"a
+    /// whole-face-conformed mesh spawns sliver tets that fail the sweep"* (`coupled.rs`). Rung 4
+    /// flips `CoupledFsu` onto the conformed quadratic disc, so the envelope has to be measured
+    /// on the standalone disc first, where a failure is cheap and diagnosable.
+    ///
+    /// ⚠ If an arm does not reach ±6°, that is a **finding** about the conformed mesh's envelope
+    /// — the peak is to be reported and rung 4 re-scoped, never the target quietly lowered.
+    #[test]
+    #[ignore = "needs $CF_L4_STL/$CF_L5_STL/$CF_DISC_STL (BodyParts3D, CC BY-SA, not committed)"]
+    fn conformed_disc_survives_a_large_angle_sweep() {
+        use cf_fsu_geometry::{load_from_env, segment_frame};
+
+        let l4 = load_from_env("CF_L4_STL").unwrap();
+        let l5 = load_from_env("CF_L5_STL").unwrap();
+        let disc_mesh = load_from_env("CF_DISC_STL").unwrap();
+        let (o4, o5) = (oracle(&l4).unwrap(), oracle(&l5).unwrap());
+        let frame = segment_frame(&l4, &l5, &o4, &o5).unwrap();
+        let params = DiscParams::default();
+        let ep = EndplateConform {
+            o4: &o4,
+            o5: &o5,
+            superior_axis: frame.superior_axis,
+        };
+
+        // ±6° = the flexion end of `CoupledFsu`'s ROM, in `CAPTURE_SUBSTEP`-sized steps — the
+        // production stepping, so the envelope measured here is the one rung 4 will drive.
+        let peak = 6.0_f64.to_radians();
+        let substep = 0.1_f64.to_radians();
+
+        let mut tet4 = build_bonded_disc(disc_mesh.clone(), &params, Some(ep))
+            .expect("conformed Tet4 disc bonds");
+        let m4 = assert_large_angle_sweep(&mut tet4, peak, substep, "Tet4 conformed");
+
+        let mut tet10 = build_bonded_disc_tet10(disc_mesh, &params, Some(ep))
+            .expect("conformed Tet10 disc bonds");
+        let m10 = assert_large_angle_sweep(&mut tet10, peak, substep, "Tet10 conformed");
+
+        println!(
+            "large-angle envelope: both conformed arms reached ±6.0° — peak |M| \
+             Tet4 {m4:.4} / Tet10 {m10:.4} N·m"
+        );
+
+        // COMMITTED (BodyParts3D L4/L5/disc, DiscParams::default, 0.1° steps, 180 solves/arm):
+        // **both conformed arms complete the full ±6.0° chain**, every step converging,
+        // conserving and strictly restoring; peak |M| = 0.0300 (Tet4) / 0.0205 (Tet10) N·m.
+        //
+        // Two things follow, and neither was known before this rung.
+        //
+        // 1. **The deferral note in `coupled.rs` does not apply to this path.** It says a
+        //    "whole-face-conformed mesh spawns sliver tets that fail the sweep" — true of
+        //    STRATEGY A (conform the surface, then re-mesh, which the #701 record measured
+        //    directly), and it is what kept `CoupledFsu` on raw geometry. The STRATEGY-B
+        //    node-level conform measured here reaches the full ROM on both elements, so that
+        //    reason for the deferral is retired. (What remains is the `RUNG7_K_DISC` re-anchor,
+        //    which is rung 4's own deliverable.)
+        // 2. **The Tet10 angle envelope is no longer unmeasured.** Before this rung the
+        //    quadratic arm had only ever been driven to ±0.5°; it reaches ±6.0°.
+        //
+        // The peaks are a cross-check as well as a record: linear extrapolation of the
+        // small-angle stiffnesses (`conform_delta_by_element_fom`: −0.2760 / −0.1844 N·m/rad)
+        // to 6° = 0.1047 rad predicts 0.0289 / 0.0193 N·m, so the disc is ~4-6 % stiffer at the
+        // ROM extreme than a linear spring — mild, monotone hardening, not a divergence.
+        //
+        // COST, measured: the pair takes **897 s** wall (`--release`) on an otherwise-idle
+        // machine — a second run sharing the machine with other work took 1138 s, so read this
+        // as ~15-19 min. Tet10-dominated at ~5 s per warm-started 0.1° solve against sub-second
+        // for Tet4. That is a same-shape,
+        // same-order measurement of what `docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §5.1
+        // *estimated* for a Tet10 `capture_ramp` (150-175 solves, 14-45 min): 180 solves here in
+        // ~15 min lands at the bottom of that band. It is not a substitute for §5.1's own
+        // measurement at rung 4 — `capture_ramp` also runs the equilibrium bisection per frame.
+        for (m, expect, name) in [(m4, 0.0300, "Tet4"), (m10, 0.0205, "Tet10")] {
+            assert!(
+                ((0.95 * expect)..=(1.05 * expect)).contains(&m),
+                "{name} conformed peak |M| {m:.4} is outside ±5 % of the committed {expect:.4} N·m"
+            );
+        }
+    }
+
+    /// `(k_flex, k_ext)` at ±0.5° for a bonded disc, measured through the **stepped**
+    /// `capture_flexion` sweep #701's conform FOM uses (−0.5, −0.25, 0, +0.25, +0.5°).
+    ///
+    /// ⚠ The stepping is load-bearing, not a stylistic choice — **measured while building this
+    /// rung.** The RAW Tet4 disc survives a single +0.5° → −0.5° jump (that is exactly how rung
+    /// 1's element-order FOM probes it), but the **conformed** Tet4 disc does not: the same 1°
+    /// jump drives tet 7495 to a principal stretch of 2.845 and trips the solver's fail-closed
+    /// validity bound. Seating the band on the real endplate leaves the boundary elements less
+    /// tolerant of a large single step. So every arm here is walked in ≤ 0.5° increments, which
+    /// is also what makes the 2×2 table internally comparable.
+    ///
+    /// The stepping does not move the measurement, which was checked rather than assumed: the raw
+    /// column below reproduces rung 1's two-probe numbers to four decimals (−0.2811 / −0.2788
+    /// Tet4, −0.1873 / −0.1849 Tet10). It only makes the conformed arms solvable at all.
+    fn k_disc_flex_ext<Msh, E, const N: usize, const G: usize>(
+        disc: &mut BondedDisc<Msh, E, N, G>,
+    ) -> (f64, f64)
+    where
+        Msh: Mesh,
+        E: Element<N, G> + Default,
+    {
+        let angles: Vec<f64> = [-0.5_f64, -0.25, 0.0, 0.25, 0.5]
+            .iter()
+            .map(|d| d.to_radians())
+            .collect();
+        let traj = disc.capture_flexion(&angles);
+        let k = |theta: f64| -> f64 {
+            let f = traj
+                .frames
+                .iter()
+                .find(|f| (f.theta - theta).abs() < 1e-12)
+                .expect("swept angle present");
+            assert!(
+                f.conservation_resid < 1e-8,
+                "bond must conserve (resid {:.2e})",
+                f.conservation_resid
+            );
+            f.moment / theta
+        };
+        (k(0.5_f64.to_radians()), k(-0.5_f64.to_radians()))
+    }
+
+    /// **The rung-2 per-element conform delta** (§4.3 sanity column): what seating the bonded
+    /// band on the real endplate does to `k_disc`, measured on *both* elements over one 2×2
+    /// table so the conform axis and the element axis are separable.
+    ///
+    /// Gate shape is #701's, deliberately: sound + measured + **no-regression**, not
+    /// require-improvement. A more-correct geometry may legitimately move `k_disc` either way,
+    /// and a require-improvement gate on it would false-fail exactly the change this arc is
+    /// making. The require-improvement gate in this rung is the geometric one
+    /// (`conform_seats_the_bonded_face_on_the_bone_fom`) — the residual is the claim, `k_disc`
+    /// is its physics consequence.
+    #[test]
+    #[ignore = "needs $CF_L4_STL/$CF_L5_STL/$CF_DISC_STL (BodyParts3D, CC BY-SA, not committed)"]
+    fn conform_delta_by_element_fom() {
+        use cf_fsu_geometry::{load_from_env, segment_frame};
+
+        let l4 = load_from_env("CF_L4_STL").unwrap();
+        let l5 = load_from_env("CF_L5_STL").unwrap();
+        let disc_mesh = load_from_env("CF_DISC_STL").unwrap();
+        let (o4, o5) = (oracle(&l4).unwrap(), oracle(&l5).unwrap());
+        let frame = segment_frame(&l4, &l5, &o4, &o5).unwrap();
+        let params = DiscParams::default();
+        let ep = EndplateConform {
+            o4: &o4,
+            o5: &o5,
+            superior_axis: frame.superior_axis,
+        };
+        let (k4_raw_f, k4_raw_e) =
+            k_disc_flex_ext(&mut build_bonded_disc(disc_mesh.clone(), &params, None).unwrap());
+        let (k4_con_f, k4_con_e) =
+            k_disc_flex_ext(&mut build_bonded_disc(disc_mesh.clone(), &params, Some(ep)).unwrap());
+        let (k10_raw_f, k10_raw_e) = k_disc_flex_ext(
+            &mut build_bonded_disc_tet10(disc_mesh.clone(), &params, None).unwrap(),
+        );
+        let (k10_con_f, k10_con_e) =
+            k_disc_flex_ext(&mut build_bonded_disc_tet10(disc_mesh, &params, Some(ep)).unwrap());
+
+        println!(
+            "k_disc (N·m/rad), flex / ext —\n  \
+             Tet4  raw {k4_raw_f:.4} / {k4_raw_e:.4}   conformed {k4_con_f:.4} / {k4_con_e:.4}\n  \
+             Tet10 raw {k10_raw_f:.4} / {k10_raw_e:.4}   conformed {k10_con_f:.4} / {k10_con_e:.4}\n  \
+             conform ratio (conformed/raw): Tet4 {:.3} / {:.3}, Tet10 {:.3} / {:.3}\n  \
+             element ratio (Tet10/Tet4):    raw  {:.3} / {:.3}, conformed {:.3} / {:.3}",
+            k4_con_f / k4_raw_f,
+            k4_con_e / k4_raw_e,
+            k10_con_f / k10_raw_f,
+            k10_con_e / k10_raw_e,
+            k10_raw_f / k4_raw_f,
+            k10_raw_e / k4_raw_e,
+            k10_con_f / k4_con_f,
+            k10_con_e / k4_con_e,
+        );
+
+        // Every arm is a restoring spring.
+        for (k, name) in [
+            (k4_raw_f, "Tet4 raw flexion"),
+            (k4_raw_e, "Tet4 raw extension"),
+            (k4_con_f, "Tet4 conformed flexion"),
+            (k4_con_e, "Tet4 conformed extension"),
+            (k10_raw_f, "Tet10 raw flexion"),
+            (k10_raw_e, "Tet10 raw extension"),
+            (k10_con_f, "Tet10 conformed flexion"),
+            (k10_con_e, "Tet10 conformed extension"),
+        ] {
+            assert!(
+                k < 0.0 && k.is_finite(),
+                "{name} k_disc must restore ({k:.4})"
+            );
+        }
+
+        // COMMITTED (BodyParts3D L4/L5/disc, DiscParams::default, stepped ±0.5° sweep), N·m/rad:
+        //
+        //           flex      ext          flex      ext        conform ratio
+        //   Tet4    raw −0.2811 / −0.2788  conf −0.2760 / −0.2738   0.982 / 0.982
+        //   Tet10   raw −0.1873 / −0.1849  conf −0.1844 / −0.1820   0.984 / 0.984
+        //   element ratio (Tet10/Tet4): raw 0.666 / 0.663, conformed 0.668 / 0.665
+        //
+        // Two things this table settles. (a) **The conform costs ~1.8 % of `k_disc`, not ~4 %.**
+        // #701's FOM printed its arms at two decimals (−0.28 → −0.27) and the ~4 % figure was
+        // read off that rounding; at four decimals the same comparison is −0.2811 → −0.2760.
+        // (b) **The two axes are very nearly orthogonal**: the conform ratio is the same to
+        // within 0.2 % on both elements, and the element ratio is the same to within 0.3 %
+        // conformed vs raw. Seating the band on the bone and raising the element order are
+        // therefore separable changes, which is what lets rung 3 and rung 4 reason about them
+        // one at a time.
+        for (kc, kr, expect, name) in [
+            (k4_con_f, k4_raw_f, 0.982, "Tet4 flexion"),
+            (k4_con_e, k4_raw_e, 0.982, "Tet4 extension"),
+            (k10_con_f, k10_raw_f, 0.984, "Tet10 flexion"),
+            (k10_con_e, k10_raw_e, 0.984, "Tet10 extension"),
+        ] {
+            let ratio = kc / kr;
+            assert!(
+                ((0.95 * expect)..=(1.05 * expect)).contains(&ratio),
+                "{name}: conform ratio {ratio:.3} is outside ±5 % of the committed {expect:.3} \
+                 ({kc:.4} vs {kr:.4})"
+            );
+        }
+        // The raw column must still be rung 1's, so a drift in the shared geometry pipeline
+        // fails here as well as there.
+        for (k, expect, name) in [
+            (k4_raw_f, -0.2811, "Tet4 raw flexion"),
+            (k4_raw_e, -0.2788, "Tet4 raw extension"),
+            (k10_raw_f, -0.1873, "Tet10 raw flexion"),
+            (k10_raw_e, -0.1849, "Tet10 raw extension"),
+            (k4_con_f, -0.2760, "Tet4 conformed flexion"),
+            (k4_con_e, -0.2738, "Tet4 conformed extension"),
+            (k10_con_f, -0.1844, "Tet10 conformed flexion"),
+            (k10_con_e, -0.1820, "Tet10 conformed extension"),
+        ] {
+            assert!(
+                ((1.05 * expect)..=(0.95 * expect)).contains(&k),
+                "{name} k_disc {k:.4} is outside ±5 % of the committed {expect:.4} N·m/rad"
             );
         }
     }
