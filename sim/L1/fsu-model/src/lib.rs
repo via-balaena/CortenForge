@@ -6,7 +6,9 @@
 //! - the **bonded soft disc** ([`build_bonded_disc`] / [`BondedDisc`]): tet-meshes the
 //!   real intervertebral disc from its own signed field and bonds it between two rigid
 //!   vertebra-endplate boxes ([`BondedSandwich`]), then drives its quasi-static
-//!   flexion/extension response;
+//!   flexion/extension response. It comes in two element arms over one shared geometry
+//!   pipeline — the linear [`Tet4`] disc and the quadratic [`build_bonded_disc_tet10`]
+//!   one, which is ~1/3 softer in bending because the linear element bending-locks;
 //! - the **coupled FSU** ([`CoupledFsu`]): assembles the disc (as a
 //!   linearised bushing), the ligaments (tendons), and the facets (oriented SDF contact)
 //!   into ONE model and solves for the equilibrium pose under an applied moment — the
@@ -29,6 +31,11 @@
 //! tets leave their SPD region and the soft solve diverges (and panics) — so
 //! [`BondedDisc::flexion_moment`] is a small-angle probe, and a segment's larger-angle
 //! range of motion is a linear extrapolation of it (see rung 7).
+//!
+//! That ~1° envelope was measured on the **linear** arm. The quadratic arm is exercised
+//! only to ±0.5° so far, and its own large-angle envelope is **unmeasured** — the
+//! large-angle sweep is rung 2 of `docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md`. Do not read
+//! the Tet4 number as covering it.
 //!
 //! Note the deliberate API asymmetry: [`build_bonded_disc`] returns [`Result`], but the
 //! drive methods **panic** on non-convergence rather than returning one — they inherit
@@ -1651,9 +1658,12 @@ mod tests {
         let mut tet10 = build_bonded_disc_tet10(disc_mesh.clone(), &params, None)
             .expect("Tet10 raw disc bonds");
 
-        // (1) BAND CROSS-CHECK — the non-vacuity gate. Re-derive the shared linear mesh
-        // (deterministic: same input, same mesher) and check the bonded sets against a
-        // table-free recomputation, then commit their exact sizes.
+        // (1) BAND CROSS-CHECK — the non-vacuity gate. Re-derive the shared linear mesh and
+        // check the bonded sets against a table-free recomputation, then commit their exact
+        // sizes. Note the re-derivation does not *assume* the mesher is deterministic: it
+        // builds a second mesh from the same input and asserts id-for-id set equality against
+        // the band the first one bonded, so non-determinism in the mesher would fail this
+        // gate rather than hide inside it.
         let prepared = prepare_disc(disc_mesh, &params, None).expect("prepare raw disc");
         let mesh10 = Tet10Mesh::from_tet4(&prepared.tet);
         assert_eq!(
@@ -1711,7 +1721,8 @@ mod tests {
         println!(
             "k_disc (N·m/rad) — Tet4: flex {k_flex4:.4} / ext {k_ext4:.4}; \
              Tet10 full-face: flex {k_flex10:.4} / ext {k_ext10:.4}; \
-             ratio flex {:.3} / ext {:.3}",
+             ratio flex {:.3} / ext {:.3}; \
+             conservation resid Tet4 {r_flex4:.2e}/{r_ext4:.2e}, Tet10 {r_flex10:.2e}/{r_ext10:.2e}",
             k_flex10 / k_flex4,
             k_ext10 / k_ext4
         );
