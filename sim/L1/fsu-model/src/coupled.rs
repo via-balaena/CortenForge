@@ -62,7 +62,12 @@ const K_DISC_PROBE: f64 = 0.86_f64 * std::f64::consts::PI / 180.0;
 /// Sub-step (rad) for the incremental disc-render sweep in [`CoupledFsu::capture_ramp`]. Each
 /// warm-started soft solve advances at most this far, so the disc FEM stays inside its validity
 /// region all the way to the full ROM — the "sub-degree wall" is only a from-rest-jump artifact.
-const CAPTURE_SUBSTEP: f64 = 0.1_f64 * std::f64::consts::PI / 180.0;
+///
+/// Visible to the crate (the module itself is private, so this is not exported) so the
+/// drivability gates walk at the **production** step rather than a test-local one. "This mesh is drivable" is only a useful claim if it means drivable by the
+/// thing that actually drives it; before rung 4 each gate picked its own step and the resulting
+/// tables were not comparable to each other.
+pub const CAPTURE_SUBSTEP: f64 = 0.1_f64 * std::f64::consts::PI / 180.0;
 /// Angular bracket for the equilibrium bisection (rad). Comfortably spans the
 /// physiological ROM (flexion ~6°, extension ~4.5°) on both sides of neutral.
 const EQUILIBRIUM_BRACKET: f64 = 12.0_f64 * std::f64::consts::PI / 180.0;
