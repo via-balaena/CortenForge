@@ -1351,6 +1351,14 @@ mod tests {
         // The raw gaps are real (≥ the 0.5 mm superior build gap), and the conform closes them
         // to a fraction of that — asserted on both the extreme and the population statistic, so
         // a conform that seated only a few nodes would fail the RMS half.
+        //
+        // ★ TEETH MEASURED, not asserted, and specifically teeth NOTHING ELSE HERE HAS: a mutant
+        // that seats only every other band node survives every #701 assert above — `seated > 0`
+        // holds, both frame-bridge z-extremes still land on their box faces (the nodes that do
+        // seat set them), and the sweep still solves — and is caught here alone, at
+        // max 2.0000 -> 2.0000 (an unseated inferior node still sits its full 2 mm off) with rms
+        // only halved, 1.4577 -> 1.0349. That is the partial-seat failure mode a "did anything
+        // move" gate structurally cannot see.
         assert!(
             max_raw > 0.4 && rms_raw > 0.4,
             "the raw bonded face must sit off the boxes (max {max_raw:.4}, rms {rms_raw:.4} mm)"

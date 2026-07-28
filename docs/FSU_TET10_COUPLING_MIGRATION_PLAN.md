@@ -459,10 +459,16 @@ no `CoupledFsu`.
 >   nearer vertebra falls **max 5.724 → 3.575 mm, RMS 1.332 → 0.656 mm** — the conform halves the
 >   seated population's distance to the bone. It does not zero it: the back-off refuses to invert
 >   a tet, so the worst authorised node still ends up 3.575 mm out.
-> - **★ The gate is on the AUTHORISED set, not the moved set.** "Nodes that moved" is selected on
->   the outcome, so it cannot fail when the back-off silently drops a node; the authorised set
->   carries those 2 into the statistic. This is what the plan meant by watching for vacuity, and
->   the 2 dropped nodes are invisible to #701's committed `max_seat`.
+> - **★ The gate is on the AUTHORISED set, not the moved set** — "nodes that moved" is selected on
+>   the outcome. This is what the plan meant by watching for vacuity, and the 2 dropped nodes are
+>   invisible to #701's committed `max_seat`. **★★ What the choice buys was MEASURED on two
+>   mutants, and it is narrower than the tidy argument:** with 214 of 233 authorised nodes silently
+>   dropped and the survivors untouched, a strict-decrease gate on the *moved* set still improves
+>   (RMS 2.000 → 1.103) and **passes**, while the authorised set's max stays 5.724 → 5.724 and
+>   **fails** — that is the case the definition exists for. But against a back-off that degrades
+>   every node alike (`DISC_CONFORM_QUALITY_FLOOR` 0.05 → 0.50) the two sets move together (moved
+>   RMS 0.659 → 0.908 vs authorised 0.656 → 0.901) and the choice buys **nothing**; there it is the
+>   committed population split and the ±5 % pins that catch it. Both mutants trip the split assert.
 > - **★ The rim is reported, never averaged in.** 350 of 583 candidates are guard-declined (the
 >   overhanging annulus, max 12.577 mm — a closest-point artifact of reaching sideways for the
 >   body wall), left straight by #701's settled call. They are reported separately; the
