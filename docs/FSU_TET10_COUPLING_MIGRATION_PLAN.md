@@ -518,6 +518,31 @@ no `CoupledFsu`.
 >   pre-existing assert instead and so proved nothing about the new one — the separating mutant is
 >   the one recorded.) ⚠ The synthetic geometry has *no* declined nodes, so the guard-decline path
 >   itself is exercised only on real anatomy.
+> - **★ COVERAGE: this rung cost the crate a letter grade, and the fix is where the gates LIVE.**
+>   `cargo xtask grade` Coverage runs `cargo llvm-cov --lib`, which instruments the whole library
+>   target *including* `#[cfg(test)] mod tests` — so an `#[ignore]`d, licence-gated FOM charges its
+>   entire body to the grade while executing in no coverage run, ever. Measured with the identical
+>   command on both trees (baseline in an isolated worktree, so the working tree was never at
+>   risk): `lib.rs` regions **1562 → 2254**, of which **596 of the 692 added are uncovered (86 %)**;
+>   crate lines **71.9 % → 57.9 %**, a B → C drop. `coupled.rs` came back **byte-identical**
+>   (697 regions / 137 missed on both sides), which independently re-confirms that no production
+>   code changed. **Do not read this as pre-existing** — `main` was already under the 75 % A bar,
+>   but the 14-point fall is this rung's.
+>   **Fix applied here:** `sim-coupling` keeps all 35 of its gates in `tests/`, including its own
+>   licence-gated ones, and `cf-fsu-model` had no `tests/` directory at all. The two rung-2 gates
+>   that touch **no private item** — `conform_delta_by_element` and
+>   `conformed_disc_large_angle_envelope` — moved there, which costs **no API surface** and keeps
+>   this rung's zero-production-diff property. The other two genuinely need `prepare_disc` /
+>   `BondedDisc.sandwich` and so must stay in the library target.
+>   **Measured, and it is a partial fix — stated as such:** lines **57.9 % → 63.9 %** (regions
+>   54.7 % → 60.1 %), so the move recovers **6 of the 13.9 points** and the branch still sits
+>   **−8.0 pts** under `main`. That remaining 8 is precisely the two library-bound gates. Both
+>   moved gates re-run identical (`k_disc` table unchanged to four decimals; the sweep still
+>   reaches ±6.0° at peak |M| 0.0300 / 0.0205, 936 s), so the move is behaviour-preserving.
+>   **⚠ Named, not silently absorbed:** the residual and rung-3-baseline gates still sit in
+>   `src/lib.rs`, as do rung 1's `tet10_full_face_bond_element_order_fom` and #701's FOMs. Moving
+>   *those* needs `prepare_disc` and a bonded-band accessor made public — a crate-wide change with
+>   nothing to do with the Tet10 ladder, so it belongs in its own PR, not in this rung.
 > - **Also committed as rung 3's "before" arm:** the straight-Tet10 bonded-face boundary midsides
 >   (1562 of them) sit max 12.464 / RMS 3.366 mm off the bone. ⚠ Like the all-candidate corner
 >   figures, that aggregate is dominated by the rim that stays straight by design — rung 3 must
