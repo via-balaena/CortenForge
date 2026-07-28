@@ -17,6 +17,9 @@
 //!   linearised bushing), the ligaments (tendons), and the facets (oriented SDF contact)
 //!   into ONE model and solves for the equilibrium pose under an applied moment — the
 //!   force-driven, ROM-limited segment, vs rung 7's analytic superposition of the parts.
+//!   Since rung 4 it assembles on the **curved quadratic** disc: the segment's physics runs
+//!   on the real endplate, not on a floating raw mesh, and the linear arm remains available
+//!   as [`CoupledFsuTet4`] so the effect of that flip stays measurable.
 //!
 //! ## Two frames, one bridge
 //!
@@ -48,6 +51,13 @@
 //! it exactly that way) while the conformed one does not — the same 1° jump trips the
 //! solver's fail-closed validity bound. Drive a conformed disc in steps.
 //!
+//! ⚠ That is why [`CoupledFsu`] tracks the angle its disc is sitting at and routes **every**
+//! drive — the `k_disc` probe, the return to rest, each leg of a capture — through one
+//! stepping driver. Once the segment assembles on a conformed disc, "jump straight to θ"
+//! stops being safe anywhere, including in code that used to do it: the 0.86° `k_disc` probe
+//! is itself past the conformed disc's single-jump envelope. Rung 4 measured that walking
+//! there does not move the number (the linear arm still reads −0.2819 to four decimals).
+//!
 //! Note the deliberate API asymmetry: [`build_bonded_disc`] returns [`Result`], but the
 //! drive methods **panic** on non-convergence rather than returning one — they inherit
 //! the fail-close contract of [`BondedSandwich::probe`](sim_coupling::BondedSandwich),
@@ -76,8 +86,8 @@ pub use sim_soft::VertexId;
 
 mod coupled;
 pub use coupled::{
-    CoupledFrame, CoupledFsu, CoupledParams, CoupledTrajectory, PHYSIOLOGIC_MOMENT, RAMP_FRAMES,
-    is_engaged, moment_ramp, posed_facet_contacts,
+    CoupledFrame, CoupledFsu, CoupledFsuTet4, CoupledParams, CoupledTrajectory, PHYSIOLOGIC_MOMENT,
+    RAMP_FRAMES, is_engaged, moment_ramp, posed_facet_contacts,
 };
 
 /// Body index of the inferior (lower) vertebra box in the disc scene (world = 0).
@@ -88,14 +98,48 @@ const UPPER: usize = 2;
 /// Quality floor for the endplate conform's back-off: a projected bonded-band node is
 /// backed off until every incident tet's rest Jacobian is at least this fraction of its
 /// original value. A bare `> 0` bisects onto the `detJ → 0⁺` degeneracy boundary and
-/// manufactures slivers; 5 % keeps the seated elements well-shaped (spike-measured: 0
-/// inverted / 0 sliver at this floor on the real disc). See
-/// `sim_soft::SdfMeshedTetMesh::with_projected_nodes`.
-const DISC_CONFORM_QUALITY_FLOOR: f64 = 0.05;
+/// manufactures slivers, so the floor holds `detJ` above a fraction of its healthy rest
+/// value instead. See `sim_soft::SdfMeshedTetMesh::with_projected_nodes`.
+///
+/// **Raised 0.05 → 0.25 at rung 4, because 0.05 was measured on ONE disc and does not
+/// transfer.** At 0.05 the conform produces a mesh that is valid by the projector's own rule
+/// and **cannot be driven at all** on a *lofted* (painted) disc — `CoupledFsu::build`'s 0.86°
+/// `k_disc` probe dies on a fail-closed validity violation (principal stretch 2.055). The
+/// scanned `BodyParts3D` disc happens to tolerate 0.05; a second geometry does not. Since
+/// `build_bonded_disc` accepts any disc mesh, a floor that only works on one of them is a
+/// defect in the default, not a property of the input.
+///
+/// **Measured on BOTH geometries.** Drivability is the largest single from-rest jump the
+/// conformed disc survives, probed to 0.86° in 0.1° warm-started sub-steps (the production
+/// path). Fidelity is the authorised bonded-face residual to the real bone on the scanned
+/// disc — the arc's payoff metric, which a higher floor costs:
+///
+/// | floor | lofted Tet4 | lofted Tet10 | scanned corner RMS (mm) | scanned midside RMS |
+/// |---|---|---|---|---|
+/// | 0.05 | **stalls** | **stalls** | 0.656 | 0.694 |
+/// | 0.08 | drives | **stalls** | — | — |
+/// | 0.10 | drives | drives | — | — |
+/// | 0.15 | drives | drives | 0.700 | 0.729 |
+/// | 0.20 | drives | drives | 0.724 | 0.748 |
+/// | **0.25** | **drives** | **drives** | **0.750** | **0.767** |
+/// | 0.40 | drives | drives | 0.836 | — |
+///
+/// So the cliff sits at **0.10** (the quadratic element is the stricter constraint — the same
+/// direction rung 3 found for midsides), and 0.25 buys **2.5× margin** for 0.094 mm of RMS
+/// residual. The conform still nearly halves the seated population's distance to the bone
+/// (raw 1.332 → 0.750 mm). `k_disc` varies by **&lt;0.1 %** across the whole 0.05–0.60 range on
+/// the lofted disc (−24.83 … −24.86 Tet4, −22.28 … −22.35 Tet10): like
+/// `DISC_MIDSIDE_CONFORM_QUALITY_FLOOR`, this floor moves the *conditioning*, not the physics.
+///
+/// Chosen with margin above the cliff rather than at its edge, for the reason rung 3 gives: a
+/// cliff's location is a property of the meshes it was measured on, and only two are known
+/// here. It generalizes rung 3's rule from "do not inherit a tuning constant across element
+/// orders" to "**or across input geometries**".
+const DISC_CONFORM_QUALITY_FLOOR: f64 = 0.25;
 
 /// Quality floor for the **midside** projection of a curved quadratic disc (rung 3) — the
-/// same rule as [`DISC_CONFORM_QUALITY_FLOOR`], but held **eight times higher**, and the
-/// difference is measured rather than inherited.
+/// same rule as [`DISC_CONFORM_QUALITY_FLOOR`], but held higher, and the difference is
+/// measured rather than inherited.
 ///
 /// A Tet4 corner move perturbs an affine element's single Jacobian; a Tet10 midside move bends
 /// the element's Jacobian at four interior Gauss points, so the *same* fractional floor is not
@@ -125,6 +169,16 @@ const DISC_CONFORM_QUALITY_FLOOR: f64 = 0.05;
 /// 0.40 is chosen with margin rather than at the measured cliff (0.20 → 0.25): the cliff's
 /// location is a property of this mesh, and tuning to its edge would make the next mesh's
 /// failure a surprise.
+///
+/// ⚠ **The whole table above was measured at the rung-3 corner floor of 0.05**, which rung 4
+/// then raised to 0.25 (see [`DISC_CONFORM_QUALITY_FLOOR`]). Since the midsides are projected
+/// from *conformed corners*, every row's absolute numbers shift — the shipped row now reads
+/// 0.767 mm RMS at 67.4 % delivered. Read the rows as the *comparison between floors* they were
+/// built to be. The **choice** of 0.40 is re-verified rather than assumed: it drives on both the
+/// scanned and the lofted disc at the new corner floor. Re-deriving the midside cliff there is
+/// not done, and would only be able to move it in the permissive direction — a better-conditioned
+/// corner mesh cannot make a midside floor *more* necessary — so 0.40 keeps at least the margin
+/// it was chosen with.
 const DISC_MIDSIDE_CONFORM_QUALITY_FLOOR: f64 = 0.4;
 
 /// Tunable parameters for [`build_bonded_disc`]. [`Default`] reproduces the
@@ -838,6 +892,20 @@ impl<Msh: Mesh, E: Element<N, G> + Default, const N: usize, const G: usize>
         }
     }
 
+    /// Element validity at the disc's **current deformed** configuration: the worst
+    /// `detJ / detJ_rest` over every element and every Gauss point.
+    ///
+    /// `> 0` means no element has folded at the pose the last
+    /// [`Self::set_flexion`] solved; `≤ 0` means one has. This is a **different invariant**
+    /// from the quality floors `DISC_CONFORM_QUALITY_FLOOR` /
+    /// `DISC_MIDSIDE_CONFORM_QUALITY_FLOOR` enforce, which bound the *rest* mesh the
+    /// projectors produce and say nothing about what a drive does to it. Nothing in this
+    /// arc checked the deformed configuration before rung 4.
+    #[must_use]
+    pub fn min_jacobian_ratio(&self) -> f64 {
+        self.sandwich.min_gauss_det_ratio()
+    }
+
     /// Impose flexion angle `theta` (rad) about the ML axis through the disc centre
     /// and re-solve the quasi-static bond: the superior endplate box rotates about the
     /// SI-frame origin (the bonded face follows rigidly), the inferior stays at rest.
@@ -1165,6 +1233,52 @@ mod tests {
         println!(
             "sweep: {} frames, max node displacement {max_disp:.3} mm",
             traj.frames.len()
+        );
+
+        // ── (4) The **Strategy-B node conform** on a lofted disc, DRIVEN, on both elements. ──
+        //
+        // ★ This arm exists because its absence cost rung 4 a shipped panic. Everything above
+        // exercises the lofted disc either RAW (`None`) or against a Strategy-A *surface*
+        // conform — so the node conform, which is what `CoupledFsu` actually uses, had no
+        // lofted coverage at all. At `DISC_CONFORM_QUALITY_FLOOR = 0.05` it produced a mesh
+        // that is valid by the projector's rule and undrivable: the coupled build's 0.86°
+        // probe died on a fail-closed validity violation, on BOTH elements. The element was
+        // innocent; the floor was wrong for this discretization (see that constant).
+        //
+        // So the gate DRIVES rather than inspects, and it drives past `K_DISC_PROBE` (0.86°)
+        // because that is the first thing production asks of a conformed disc. A geometric
+        // check here would have gone green on the mesh that panicked.
+        let ep = EndplateConform {
+            o4: &o4,
+            o5: &o5,
+            superior_axis: frame.superior_axis,
+        };
+        let disc = lofted_disc(&l4, &l5); // rebuilt: the arms above consumed theirs
+        let probe = 0.9_f64.to_radians();
+        let steps = 9;
+        let walk = |k: f64| {
+            assert!(
+                k.is_finite() && k < 0.0,
+                "the conformed lofted disc must reach {:.2}° and stay restoring, got k = {k}",
+                probe.to_degrees()
+            );
+            k
+        };
+        let mut lin = build_bonded_disc(disc.clone(), &params, Some(ep))
+            .expect("lofted disc takes the node conform");
+        let mut quad = build_bonded_disc_tet10(disc, &params, Some(ep))
+            .expect("lofted disc takes the curved node conform");
+        let (mut k_lin, mut k_quad) = (0.0, 0.0);
+        for s in 1..=steps {
+            let t = probe * f64::from(s) / f64::from(steps);
+            k_lin = lin.flexion_moment(t).0 / t;
+            k_quad = quad.flexion_moment(t).0 / t;
+        }
+        println!(
+            "lofted + node conform, walked to {:.2}°: Tet4 k {:.1}, curved Tet10 k {:.1} N·m/rad",
+            probe.to_degrees(),
+            walk(k_lin),
+            walk(k_quad)
         );
     }
 
@@ -1654,6 +1768,12 @@ mod tests {
     /// takes the fraction the WRONG WAY, 67.9 % → 68.6 %, and is caught by `max_move`
     /// (1.388 → 0.867) and `mean_move` (0.127 → 0.096) instead — and, first, by the §4.3
     /// residual pin. Report and gate all three; do not quote the fraction as the instrument.
+    ///
+    /// ⚠ Every number in this doc comment is a **mutation delta measured at the rung-3 corner
+    /// floor (0.05)**, before rung 4 raised it to 0.25. Read them as the before/after PAIRS they
+    /// are — what each mutant does to each statistic — not against the values committed today
+    /// (67.4 %, 1.533, 0.141). Re-running the mutants at the new floor would move both sides of
+    /// every arrow and change none of the conclusions.
     // Node counts are in the thousands — exact in f64.
     #[allow(clippy::cast_precision_loss)]
     fn projection_coverage(
@@ -1884,11 +2004,13 @@ mod tests {
             .fold(0.0_f64, f64::max);
         println!("max endplate-seat move: {max_seat:.3} mm");
         // COMMITTED (BodyParts3D L4/L5/disc, DiscParams::default): the deepest seated node
-        // moves 4.457 mm onto the bone — a genuine central endplate node the old hard 3–4 mm
+        // moves 4.156 mm onto the bone — a genuine central endplate node the old hard 3–4 mm
         // cap would have clipped, seated by the loose 6 mm backstop + SI-alignment guard.
+        // (4.457 mm before rung 4 raised `DISC_CONFORM_QUALITY_FLOOR` 0.05 -> 0.25; the deepest
+        // node is exactly where a stricter back-off bites hardest, and it still clears 4 mm.)
         assert!(
-            (4.3..=4.6).contains(&max_seat),
-            "the conform must seat nodes onto the bone (committed 4.457 mm), got {max_seat:.3} mm"
+            (3.95..=4.37).contains(&max_seat),
+            "the conform must seat nodes onto the bone (committed 4.156 mm), got {max_seat:.3} mm"
         );
 
         // (2) BOTH arms are physically sound (valid surface, conservation, strictly restoring
@@ -2409,8 +2531,9 @@ mod tests {
     ///   set carries the dropped nodes at their raw residual, so its max goes 5.724 → 5.724 and
     ///   the same gate **FAILS**. This is the case the definition exists for.
     /// - *Back-off degrades everything proportionally* (mutant: `DISC_CONFORM_QUALITY_FLOOR`
-    ///   0.05 → 0.50). Here the two sets move together — moved RMS 0.659 → 0.908 against
-    ///   authorised 0.656 → 0.901 — so the choice of population buys **nothing**, because the
+    ///   0.05 → 0.50, measured when the shipped floor was still 0.05 — a before/after pair, not
+    ///   today's committed values). Here the two sets move together — moved RMS 0.659 → 0.908
+    ///   against authorised 0.656 → 0.901 — so the choice of population buys **nothing**, because the
     ///   same mechanism degrades the survivors too. What catches this one is the committed
     ///   population split and the ±5 % pins, not the authorised-vs-moved distinction.
     ///
@@ -2501,10 +2624,14 @@ mod tests {
         // than diluting the statistics below.
         //
         // COMMITTED (BodyParts3D L4/L5/disc, DiscParams::default): of 583 bonded-face boundary
-        // nodes the SI-alignment guard authorises 233; 231 of those are delivered and **2 are
-        // backed off entirely** by the quality floor. That 2 is the number this split exists to
+        // nodes the SI-alignment guard authorises 233; 230 of those are delivered and **3 are
+        // backed off entirely** by the quality floor. That 3 is the number this split exists to
         // surface — it is invisible to a max-move statistic, and it is the failure mode that
         // grows if a future mesh is worse conditioned.
+        //
+        // ⚠ It grew from 2 to 3 at rung 4 when `DISC_CONFORM_QUALITY_FLOOR` went 0.05 -> 0.25,
+        // which is the split doing its job: a stricter floor refuses more moves, and that is
+        // precisely the "worse conditioned" direction this assert was written to make visible.
         assert_eq!(
             (
                 candidates.len(),
@@ -2513,7 +2640,7 @@ mod tests {
                 backed_off,
                 guard_declined.len()
             ),
-            (583, 233, 231, 2, 350),
+            (583, 233, 230, 3, 350),
             "the bonded-face population split changed"
         );
 
@@ -2547,14 +2674,19 @@ mod tests {
         // a silent geometry change both fail rather than only the first.
         //
         // COMMITTED (as above), residual in mm:
-        //   AUTHORISED       raw max 5.724  rms 1.332  ->  conformed max 3.575  rms 0.656
-        //   ALL candidates   raw max 12.577 rms 3.494  ->  conformed max 12.577 rms 3.416
+        //   AUTHORISED       raw max 5.724  rms 1.332  ->  conformed max 3.833  rms 0.750
+        //   ALL candidates   raw max 12.577 rms 3.494  ->  conformed max 12.577 rms 3.424
+        //
+        // ⚠ RE-ANCHORED at rung 4, once, when `DISC_CONFORM_QUALITY_FLOOR` went 0.05 -> 0.25
+        // (0.05 produced an undrivable mesh on a lofted disc — see that constant). The conform
+        // is 0.094 mm of RMS less tight than it was and still nearly halves the residual; the
+        // trade is stated in full in the constant's measured table.
         //   GUARD-DECLINED   (unchanged by construction) max 12.577 rms 4.377
         //
-        // Read these honestly. The conform halves the seated population's RMS distance to the
-        // bone (1.332 -> 0.656) and that is the arc's payoff measured directly for the first
+        // Read these honestly. The conform nearly halves the seated population's RMS distance to
+        // the bone (1.332 -> 0.750) and that is the arc's payoff measured directly for the first
         // time. It does NOT drive the residual to zero: the worst authorised node still ends up
-        // 3.575 mm out, because the quality floor backs a move off rather than invert a tet. And
+        // 3.833 mm out, because the quality floor backs a move off rather than invert a tet. And
         // the ALL-candidate figures barely move because 350 of 583 nodes are the overhanging
         // annular rim, left straight ON PURPOSE (#701's settled call — Sharpey's fibres attach
         // to the ring apophysis, not the endplate face); their 12.577 mm max is a closest-point
@@ -2562,10 +2694,10 @@ mod tests {
         for (v, expect, name) in [
             (au_max_raw, 5.724, "authorised raw max"),
             (au_rms_raw, 1.332, "authorised raw rms"),
-            (au_max_conf, 3.575, "authorised conformed max"),
-            (au_rms_conf, 0.656, "authorised conformed rms"),
+            (au_max_conf, 3.833, "authorised conformed max"),
+            (au_rms_conf, 0.750, "authorised conformed rms"),
             (all_rms_raw, 3.494, "all raw rms"),
-            (all_rms_conf, 3.416, "all conformed rms"),
+            (all_rms_conf, 3.424, "all conformed rms"),
         ] {
             assert!(
                 ((0.95 * expect)..=(1.05 * expect)).contains(&v),
@@ -2758,7 +2890,7 @@ mod tests {
     /// ## Like for like, and why the aggregate would have been self-deception
     ///
     /// Rung 2 committed the "before" arm as a single aggregate over **all 1562** bonded-face
-    /// boundary midsides (max 12.464 / RMS 3.366 mm) and flagged the trap on the way past: that
+    /// boundary midsides (max 12.464 / RMS 3.375 mm) and flagged the trap on the way past: that
     /// number is dominated by the overhanging annular rim, which stays straight **by design**
     /// (#701's settled call — Sharpey's fibres attach to the ring apophysis, not the endplate
     /// face). Quoting a drop in it would be measuring how much rim happens to be in the average.
@@ -2910,41 +3042,45 @@ mod tests {
         // (6) COMMITTED VALUES, two-sided at ±5 % (the #701 / rung-1 / rung-2 shape).
         //
         // COMMITTED (as above), residual in mm:
-        //   AUTHORISED       straight max 3.860  rms 0.796  ->  curved max 3.842  rms 0.694
-        //   ALL candidates   straight max 12.464 rms 3.366  ->  curved max 12.464 rms 3.357
-        //   GUARD-DECLINED   (unchanged by construction) max 12.464 rms 4.200
-        //   COVERAGE         67.9 % delivered in full; max move 1.388, mean 0.127 mm
+        //   AUTHORISED       straight max 3.973  rms 0.881  ->  curved max 3.971  rms 0.767
+        //   ALL candidates   straight max 12.464 rms 3.375  ->  curved max 12.464 rms 3.364
+        //   GUARD-DECLINED   (unchanged by construction) max 12.464 rms 4.202
+        //   COVERAGE         67.4 % delivered in full; max move 1.533, mean 0.141 mm
+        //
+        // ⚠ RE-ANCHORED at rung 4 with the corner floor (0.05 -> 0.25): the midsides start from
+        // conformed CORNERS, so a corner-floor change moves this whole table. The structural
+        // result is unchanged — see below.
         //   VALIDITY         worst detJ/detJ_rest 0.4000 over every element and Gauss point
         //
         // Read these honestly, and read the RMS as the payoff — the max is not the story here.
         //
-        // **The payoff.** The seated population's RMS distance to the bone falls 0.796 → 0.694
+        // **The payoff.** The seated population's RMS distance to the bone falls 0.881 → 0.767
         // mm, and that endpoint is the point: rung 2 left the *corners* of the authorised region
-        // at 0.656 mm RMS, so after this rung the midsides sit at essentially the same distance
-        // from the bone as the corners they span (0.694 vs 0.656). The bonded face is now uniformly
+        // at 0.750 mm RMS, so after this rung the midsides sit at essentially the same distance
+        // from the bone as the corners they span (0.767 vs 0.750). The bonded face is now uniformly
         // seated instead of seated at its corners and chording between them. That is a smaller
-        // relative move than rung 2's (which halved 1.332 → 0.656) for a structural reason,
+        // relative move than rung 2's (which nearly halved 1.332 → 0.750) for a structural reason,
         // not a disappointing one: the corners were already conformed before enrichment, so a
-        // straight midside starts much closer to the bone (0.796) than a raw corner did (1.332).
+        // straight midside starts much closer to the bone (0.881) than a raw corner did (1.332).
         //
-        // **The max barely moves (3.860 → 3.842), and that is the same fact rung 2 recorded one
+        // **The max barely moves (3.973 → 3.971), and that is the same fact rung 2 recorded one
         // level down.** The worst authorised midside is one the quality floor refuses to seat —
-        // the same reason rung 2's worst authorised corner stopped at 3.575 mm. The assert is a
+        // the same reason rung 2's worst authorised corner stopped at 3.833 mm. The assert is a
         // strict decrease, not a target: a projection that stopped seating this node entirely
         // would fail it, but no gate here claims the extreme is closed.
         //
         // **The ALL-candidate straight figures are rung 2's committed baseline reproduced**
-        // (1562 midsides, max 12.464 / RMS 3.366 — `straight_tet10_midsides_chord_across_the_
+        // (1562 midsides, max 12.464 / RMS 3.375 — `straight_tet10_midsides_chord_across_the_
         // endplate_fom`, which this test replaces by measuring both arms in one run). That is
         // what makes this a like-for-like comparison rather than a new measurement of a new
         // population. They barely move because 982 of 1562 midsides are the rim, whose 12.464 mm
         // max is a closest-point artifact of reaching sideways for the vertebral body wall.
         assert_within_5_percent(&[
-            (au_max_s, 3.860, "authorised straight max (mm)"),
-            (au_rms_s, 0.796, "authorised straight rms (mm)"),
-            (au_max_c, 3.842, "authorised curved max (mm)"),
-            (au_rms_c, 0.694, "authorised curved rms (mm)"),
-            (all_rms_s, 3.366, "all straight rms (mm)"),
+            (au_max_s, 3.973, "authorised straight max (mm)"),
+            (au_rms_s, 0.881, "authorised straight rms (mm)"),
+            (au_max_c, 3.971, "authorised curved max (mm)"),
+            (au_rms_c, 0.767, "authorised curved rms (mm)"),
+            (all_rms_s, 3.375, "all straight rms (mm)"),
             (all_rms_c, 3.357, "all curved rms (mm)"),
             (all_max_s, 12.464, "all straight max (mm)"),
             (dec_rms, 4.200, "guard-declined rms (mm)"),
@@ -3002,19 +3138,22 @@ mod tests {
         // rung split the constant (72.4 % ungated vs 79.5 % parent-gated), so read it as the
         // like-for-like pair it is and not against the 67.9 % committed above.
         //
-        // ⚠⚠ **And a second mutant refuted this gate's own advertised justification.** The
+        // ⚠⚠ **And a second mutant refuted this gate's own advertised justification.** (Measured
+        // at the rung-3 corner floor 0.05, like the parent-gating pair above — before/after
+        // pairs, not today's committed values.) The
         // fraction is *not* the member with the teeth in every direction: a silent 0.2 mm cap
         // inside `with_projected_midsides` (the archetypal "backs off without telling you" bug)
         // moves it the WRONG way, 67.9 % → 68.6 %, because a smaller request is easier to
         // satisfy. What catches that mutant is the pair `max_move` 1.388 → 0.867 and `mean_move`
         // 0.127 → 0.096 — and, firing first, the §4.3 residual pin (authorised curved RMS
-        // 0.694 → 0.733, which still *improves* on the straight arm and so passes the
+        // 0.694 → 0.733 at the then-current corner floor, which still *improves* on the straight
+        // arm and so passes the
         // strict-decrease assert; only the two-sided pin sees it). Gate all three, and read the
         // fraction as covering the back-off-engages-more direction only.
         assert_within_5_percent(&[
-            (delivered, 0.679, "delivered fraction"),
-            (max_move, 1.388, "max midside move (mm)"),
-            (mean_move, 0.127, "mean midside move (mm)"),
+            (delivered, 0.674, "delivered fraction"),
+            (max_move, 1.533, "max midside move (mm)"),
+            (mean_move, 0.141, "mean midside move (mm)"),
         ]);
     }
 

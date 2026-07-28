@@ -20,6 +20,15 @@
 //! SDF gradient makes the facet moment restoring by construction — the fix
 //! `CoupledFsu` carries, asserted below.
 //!
+//! ⚠ **What the flexion agreement means changed at rung 4, and it is weaker than it reads.**
+//! `CoupledFsu` now assembles on a quadratic disc while `rung7_fsu_validation.rs`
+//! still superposes a linear one, so the two no longer share a disc — yet the coupled
+//! flexion ROM still lands on rung 7's 6.13°. That is not a tighter proof of "coupled ≡
+//! superposition"; it is the same
+//! evidence as before *plus* a demonstration that the disc contributes ~0.4 % of the flexion
+//! restoring moment at ROM, so a 33 % change in it is nearly invisible here. The disc-level
+//! claim is anchored by `k_disc` below, which moved by 4.69 × its tolerance.
+//!
 //! Env-gated + license-clean like the other rungs: `#[ignore]` + `$CF_L4_STL` +
 //! `$CF_L5_STL` + `$CF_DISC_STL` (`BodyParts3D` meshes are CC BY-SA, not committed).
 //! Run with:
@@ -39,11 +48,46 @@ use cf_fsu_model::{CoupledFsu, CoupledParams, PHYSIOLOGIC_MOMENT, moment_ramp};
 // PHYSIOLOGIC_MOMENT (7.5 N·m) is shared with the viewer via cf_fsu_model::moment_ramp.
 const RUNG7_FLEXION_ROM_DEG: f64 = 6.13; // rung 7's headline flexion ROM at 7.5 N·m
 const ROM_TOL_DEG: f64 = 0.15; // agreement window vs rung 7's grid-interpolated ROM
-const RUNG7_K_DISC: f64 = -0.2819; // rung 7's disc bending stiffness (N·m/rad)
-// k_disc is measured on the bonded FEM disc, which keeps the RAW (un-conformed) geometry: the
-// exact-geometry conform is applied to the RENDER surface only (a conformed FEM mesh spawns
-// sliver tets that fail the large-angle incremental deform sweep). So k_disc reproduces rung 7's
-// value; the guard is a gross-regression bound around it.
+
+/// The disc's small-strain bending stiffness (N·m/rad) the coupled bushing is built from.
+///
+/// **Re-anchored once, at rung 4 of `docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md`, from
+/// −0.2819 to −0.1882** — the single deliberate re-anchor that whole ladder was sequenced
+/// around. `CoupledFsu::build` now assembles the segment on the **quadratic** disc (Tet10)
+/// instead of a linear one, and a quadratic element does not bend-lock the way a linear one
+/// does, so the same disc measures genuinely softer. The old value was not wrong; it was the
+/// linear element's answer.
+///
+/// ⚠ The bonded disc is **straight** — seating it on the real endplate is rung 4b, deferred on
+/// a measurement (the conform inverts a lofted disc at production angles, on both elements).
+/// So this anchor is the *element's* answer on the same raw geometry rung 7 used, which is
+/// what makes the comparison below one-variable.
+///
+/// **Measured** (`cf-fsu-model`'s `coupled_element_shift` gate, both arms assembled in one run
+/// from the same three BodyParts3D meshes, `CoupledParams::default`, probe 0.86°):
+///
+/// | arm | `k_disc` (N·m/rad) | flexion ROM | extension ROM |
+/// |---|---|---|---|
+/// | raw Tet4 (pre-rung-4, `CoupledFsuTet4::build_baseline`) | **−0.2819** | 6.1321° | 4.4731° |
+/// | straight Tet10 (shipped, `CoupledFsu::build`) | **−0.1882** | 6.1403° | 4.4739° |
+///
+/// Two things that measurement settles, neither of them assumed:
+///
+/// - **The linear arm reproduces −0.2819 to four decimals**, so the re-anchor is attributable
+///   to the element and not to anything else rung 4 changed (the probe is now *walked* to
+///   0.86° rather than jumped there, because a conformed disc does not survive the jump).
+/// - **The plan's prediction held.** §0.3 derived that the disc is only ~0.4 % of the flexion
+///   restoring moment at ROM, so a ~33 % softer disc should move segment flexion ROM by
+///   ~0.008°. Measured: **+0.0082°**. That is why [`ROM_TOL_DEG`] and [`LIT_EXTENSION_DEG`]
+///   below did **not** move — they are the arc's tripwires, not its payoff metric.
+///
+/// The displacement is 4.69 × [`K_DISC_TOL`], which is why this is a re-anchor and not a
+/// tolerance question. **Never widen `K_DISC_TOL` to absorb an element change**: the tolerance
+/// is a gross-regression bound around a measured value, and widening it would trade the only
+/// guard on this quantity for the convenience of not restating the value.
+const RUNG7_K_DISC: f64 = -0.1882;
+/// Gross-regression bound around [`RUNG7_K_DISC`]. Unchanged across the Tet4 → Tet10 migration
+/// — deliberately, see that constant.
 const K_DISC_TOL: f64 = 0.02;
 // Literature extension corridor (Yamamoto 1989 / Panjabi–White, widened for 7.5–10 N·m).
 const LIT_EXTENSION_DEG: (f64, f64) = (2.5, 5.5);
@@ -59,18 +103,21 @@ fn l4_l5_coupled_flexion_extension_equilibrium() {
     let fsu =
         CoupledFsu::build(&l4, &l5, &disc, &CoupledParams::default()).expect("build coupled FSU");
 
-    // ── Disc bushing: k_disc measured on the bonded FEM disc (raw geometry — the conform is
-    //    render-surface-only), so it reproduces rung 7's value; flexion sense still derived,
-    //    not hardcoded. The bound is a gross-regression guard. ──
+    // ── Disc bushing: k_disc measured on the bonded FEM disc, which since rung 4 is the
+    //    QUADRATIC disc (straight — seating it is rung 4b) — so it reproduces the re-anchored
+    //    value, not rung 7's linear one (see RUNG7_K_DISC). Flexion sense still derived, not
+    //    hardcoded. The bound is a gross-regression guard. ──
     let k_disc = fsu.k_disc();
-    println!("[disc]  k_disc = {k_disc:+.4} N·m/rad  (rung 7 {RUNG7_K_DISC:+.4})");
+    println!("[disc]  k_disc = {k_disc:+.4} N·m/rad  (anchor {RUNG7_K_DISC:+.4})");
     assert!(
         k_disc < 0.0,
         "disc bending must be restoring, got {k_disc:+.4}"
     );
     assert!(
         (k_disc - RUNG7_K_DISC).abs() < K_DISC_TOL,
-        "k_disc must reproduce rung 7's {RUNG7_K_DISC:+.4} within {K_DISC_TOL}, got {k_disc:+.4}"
+        "k_disc must reproduce the rung-4 anchor {RUNG7_K_DISC:+.4} within {K_DISC_TOL}, got \
+         {k_disc:+.4}. If the element changed again this is a re-anchor (measure it and restate \
+         the constant with the measurement); never widen K_DISC_TOL to absorb it."
     );
 
     // Neutral pose is force-free (ligaments at slack, disc spring at reference).

@@ -2,8 +2,8 @@
 //!
 //! [`StudioState::Design`] (the default) paints the two endplate patches (the
 //! [`cf_mesh_paint`] brush); `Enter` lofts + **builds** them ([`StudioState::Building`],
-//! the ~5 s background assembly) and shows the conformed disc ([`StudioState::Preview`]).
-//! `S` in Preview runs the ~85 s **capture** ([`StudioState::Solving`]) and replays it
+//! a background assembly) and shows the conformed disc ([`StudioState::Preview`]).
+//! `S` in Preview runs the **capture** ([`StudioState::Solving`]) and replays it
 //! ([`StudioState::Simulate`]). Splitting build from capture catches a bad painting in
 //! seconds (see [`crate::solve`]). The camera persists; the paint bodies (Design →
 //! Solving) and the bones+disc (Simulate) are mode-scoped, with the Preview disc additive
@@ -13,6 +13,7 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 use cf_mesh_paint::prelude::{Brush, BrushMode, NormalFilter, PaintBody, PaintTargets};
 
+use crate::scene::{BUILD_HINT, CAPTURE_HINT};
 use crate::solve::{HeldBuildSlot, SolveError};
 
 /// The Studio's top-level modes, in the order the tweak loop walks them.
@@ -21,11 +22,12 @@ pub(crate) enum StudioState {
     /// Paint the two endplate patches; `Enter` lofts + builds them.
     #[default]
     Design,
-    /// The background ~5 s build phase (tet-mesh + `k_disc` probe + guards) is in flight.
+    /// The background build phase (tet-mesh + `k_disc` probe + guards) is in flight.
+    /// Costs [`BUILD_HINT`].
     Building,
     /// The build succeeded: inspect the conformed disc. `S` captures, `Esc`/`D` repaints.
     Preview,
-    /// The background ~85 s capture phase (the moment ramp) is in flight.
+    /// The background capture phase (the moment ramp) is in flight. Costs [`CAPTURE_HINT`].
     Solving,
     /// Replay the solved moment-driven coupled FSU.
     Simulate,
@@ -128,7 +130,7 @@ pub(crate) fn design_panel(
                 ui.monospace(format!("{action:<14}{key}"));
             }
             ui.separator();
-            ui.monospace(format!("{:<14}{}", "build disc", "Enter  (~5 s)"));
+            ui.monospace(format!("{:<14}Enter  ({BUILD_HINT})", "build disc"));
             ui.monospace(format!("{:<14}{}", "quit", "Esc"));
             if let Some(msg) = &error.0 {
                 ui.separator();
@@ -162,26 +164,28 @@ fn spinner_panel(
     Ok(())
 }
 
-/// The Building-mode overlay: a spinner while the ~5 s build phase runs.
+/// The Building-mode overlay: a spinner while the build phase runs.
 pub(crate) fn building_panel(mut contexts: EguiContexts) -> bevy::ecs::error::Result {
     spinner_panel(
         &mut contexts,
         "Building…",
-        "Tet-meshing + bonding the disc (~5 s). This window stays responsive.",
+        &format!("Tet-meshing + bonding the disc ({BUILD_HINT}). This window stays responsive."),
     )
 }
 
-/// The Solving-mode overlay: a spinner while the ~85 s capture phase runs.
+/// The Solving-mode overlay: a spinner while the capture phase runs.
 pub(crate) fn solving_panel(mut contexts: EguiContexts) -> bevy::ecs::error::Result {
     spinner_panel(
         &mut contexts,
         "Solving…",
-        "Capturing the coupled FSU moment ramp (~85 s). This window stays responsive.",
+        &format!(
+            "Capturing the coupled FSU moment ramp ({CAPTURE_HINT}). This window stays responsive."
+        ),
     )
 }
 
 /// The Preview-mode panel: the conformed disc is on screen (a static teal lens seated on
-/// the painted vertebrae). `S` runs the ~85 s capture; `Esc`/`D` returns to Design to
+/// the painted vertebrae). `S` runs the capture ([`CAPTURE_HINT`]); `Esc`/`D` returns to Design to
 /// repaint. Any co-registration warnings from the build are surfaced here.
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
 pub(crate) fn preview_panel(
@@ -196,7 +200,7 @@ pub(crate) fn preview_panel(
             ui.heading("Preview — the built disc");
             ui.label("The conformed disc is seated on the vertebrae.");
             ui.separator();
-            ui.monospace(format!("{:<14}{}", "simulate", "S  (~85 s)"));
+            ui.monospace(format!("{:<14}S  ({CAPTURE_HINT})", "simulate"));
             ui.monospace(format!("{:<14}{}", "repaint", "Esc / D"));
             if let Some(build) = held.0.as_ref() {
                 if !build.warnings.is_empty() {

@@ -10,8 +10,11 @@
 //!
 //! The three ingredients, each a piece rung 7 already validated in isolation:
 //! - **disc bending** → a hinge spring ([`BondedDisc`]'s small-strain `k_disc`, a
-//!   linearised bushing — the disc FEM only converges sub-degree, so across the ROM
-//!   it is exactly the linear extrapolation rung 7 uses);
+//!   linearised bushing, so across the ROM it is exactly the linear extrapolation rung 7
+//!   uses — the equilibrium solve reads this spring, never the FEM. ⚠ Not because the FEM
+//!   *cannot* reach those angles: it walks the full ±ROM in [`CoupledFsu::capture_ramp`]. The
+//!   limit is on the size of a single step, not the angle reached, and the linearisation is
+//!   what keeps the equilibrium bisection cheap enough to run ~60 times per frame);
 //! - **ligaments** → two pull-only `<spatial>` tendons (anterior ALL + posterior
 //!   interspinous), field-derived attachment sites;
 //! - **facets** → an SDF penalty over the two articular `ShapeConcave` grids, with
@@ -32,20 +35,29 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use cf_fsu_geometry::{
-    BODY_RADIUS, FACET_CELL, FACET_MAX_CONTACTS, SegmentFrame, conform_disc_to_endplates,
-    extreme_vertex, facet_grid, oracle, segment_frame,
+    BODY_RADIUS, FACET_CELL, FACET_MAX_CONTACTS, MeshOracle, SegmentFrame,
+    conform_disc_to_endplates, extreme_vertex, facet_grid, oracle, segment_frame,
 };
 use cf_geometry::IndexedMesh;
 use nalgebra::{Point3, Unit, UnitQuaternion, Vector3};
 use sim_core::sdf::compute_shape_contact;
 use sim_core::{Data, Pose, SdfContact, SdfGrid, ShapeConcave};
 use sim_mjcf::load_model;
-use sim_soft::{Element, Mesh, SdfMeshedTetMesh, Tet4};
+use sim_soft::{Element, Mesh, SdfMeshedTetMesh, Tet4, Tet10Mesh, element::Tet10};
 
-use crate::{BondedDisc, DiscParams, build_bonded_disc};
+use crate::{BondedDisc, DiscParams, build_bonded_disc, build_bonded_disc_tet10};
 
 /// The flexion-probe angle (rad) at which the disc's small-strain bending stiffness
-/// `k_disc` is measured — kept inside the bonded disc's validated sub-degree SPD range.
+/// `k_disc` is measured.
+///
+/// ⚠ **Reached in `CAPTURE_SUBSTEP` steps, not as a single jump** (see `drive_disc`).
+/// At 0.86° this angle is past every from-rest jump the conformed disc has been *measured*
+/// to survive: rung 2 found the conformed Tet4 disc failing a single ±0.5° jump the raw one
+/// survives, and rung 3's floor table records the curved Tet10 disc solving a single 0.5°
+/// jump — the largest tested, not a demonstrated ceiling. Either way 0.86° is outside what
+/// is known to work. The stepped path is warm-started and converges to the same quasi-static
+/// equilibrium — rung 2 measured the stepped and single-jump arms agreeing to four
+/// decimals on the raw disc, which is why the probe angle itself did not have to move.
 const K_DISC_PROBE: f64 = 0.86_f64 * std::f64::consts::PI / 180.0;
 /// Sub-step (rad) for the incremental disc-render sweep in [`CoupledFsu::capture_ramp`]. Each
 /// warm-started soft solve advances at most this far, so the disc FEM stays inside its validity
@@ -113,21 +125,20 @@ impl Default for CoupledParams {
 /// bonded disc so a viewer can capture the coupled ROM together with the disc's
 /// deformation ([`CoupledFsu::capture_ramp`]).
 ///
-/// Carries the [`BondedDisc`] element parameters so the whole segment can later be assembled
-/// on a quadratic disc without a parallel type. **The defaults are the shipped linear Tet4
-/// disc**, so `CoupledFsu` still names itself unparameterized at every existing call site —
-/// including `cf-spine-studio`'s `pub fsu: CoupledFsu` field, which is why the parameters are
-/// reserved now: proving the public type stays source-compatible is rung 0's job.
+/// **The default element is the quadratic disc** (`Tet10` on a [`Tet10Mesh`], rung 4 of
+/// `docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md`): the segment's disc physics runs on a
+/// curved-capable element instead of a bend-locking linear one. Every existing call site still
+/// names the type unparameterized (including `cf-spine-studio`'s `pub fsu: CoupledFsu` field),
+/// so the flip is a change of *which element the default is*, not a source break.
 ///
-/// **Scope, stated honestly: only the *struct* is parameterized.** The `impl` below is still
-/// concrete (`Msh = SdfMeshedTetMesh, E = Tet4`), because [`Self::build`] assembles the disc
-/// via [`build_bonded_disc`], which returns the Tet4 arm — so a `CoupledFsu` over another
-/// element has no methods and nothing constructs one. Genericizing the methods is rung 4 of
-/// `docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md`, where a real Tet10 consumer arrives to gate
-/// it (that rung also re-anchors `RUNG7_K_DISC` and is conditioned on a measured
-/// `capture_ramp` cost). Rungs 1–3 exercise the quadratic disc **standalone**, through
-/// [`BondedDisc`], whose `impl` *is* generic.
-pub struct CoupledFsu<Msh = SdfMeshedTetMesh, E = Tet4, const N: usize = 4, const G: usize = 1>
+/// ⚠ The bonded disc is **straight** — seating it on the real endplate is rung 4b, deferred on
+/// a measurement rather than a preference. See [`CoupledFsu::build`].
+///
+/// The linear arm remains constructible as [`CoupledFsuTet4`], which reproduces the
+/// pre-rung-4 assembly exactly (raw, un-conformed Tet4). It is not dead weight: it is what
+/// makes the segment-level effect of the flip a **measurement** rather than an inference —
+/// the plan (§0.3) predicts a ~0.008° ROM shift, and only two live arms can check it.
+pub struct CoupledFsu<Msh = Tet10Mesh, E = Tet10, const N: usize = 10, const G: usize = 4>
 where
     Msh: Mesh,
     E: Element<N, G>,
@@ -154,31 +165,117 @@ where
     /// The disc's small-strain bending stiffness (N·m/rad, negative = restoring), measured from
     /// [`Self::render_disc`] and baked into `model`'s hinge (the equilibrium the ROM solve uses).
     k_disc: f64,
-    /// The live bonded disc (RAW geometry — well-conditioned, so its FEM solves incrementally to
-    /// the full ROM; a whole-face-conformed mesh spawns sliver tets that fail the sweep, and the
-    /// node-level Strategy-B conform is deferred here). [`Self::capture_ramp`]
-    /// drives it to each equilibrium angle and reads the REAL deformed nodes, which the whole-face-
-    /// conformed [`Self::conformed_disc_surface`] is skinned onto. Also the source of `k_disc`.
+    /// The live bonded disc. [`Self::capture_ramp`] drives it to each equilibrium angle and
+    /// reads the REAL deformed nodes, which the whole-face-conformed
+    /// [`Self::conformed_disc_surface`] is skinned onto. Also the source of `k_disc` — so the
+    /// element this is built with is the element the segment's disc bushing is measured on,
+    /// not merely the one it is *drawn* from.
     render_disc: BondedDisc<Msh, E, N, G>,
+    /// The flexion angle (rad) the `render_disc`'s FEM currently sits at. Tracked because a
+    /// conformed disc must be *walked* to a new angle rather than jumped there, so every
+    /// driver needs to know where the disc is starting from. Either `build` leaves it at 0.
+    disc_theta: f64,
     /// The disc surface (native mm) with its WHOLE top/bottom face conformed onto the real
     /// L4/L5 surfaces — the exact contact geometry, retained so a viewer renders *this* (not
     /// the raw STL) and the drawn disc IS what the bond sits on (rendered === contacts).
     conformed_disc_surface: IndexedMesh,
 }
 
-impl CoupledFsu {
-    /// Assemble the coupled FSU from the three meshes (native mm): conform the disc's endplate
-    /// face onto the real L4/L5 surfaces for rendering, tet-mesh + bond the disc, measure its
-    /// `k_disc` bushing, build the ligament + bushing hinge model, and sample the two articular
-    /// SDF grids. The flexion sense is derived from the facet engagement asymmetry (never
-    /// hardcoded).
+/// The linear-disc coupled FSU — the **pre-rung-4 baseline**: a raw, un-conformed [`Tet4`]
+/// bonded disc, exactly the assembly that shipped before the segment moved onto the curved
+/// quadratic element.
+///
+/// Retained deliberately, and for one purpose: the flip's effect on segment ROM and on
+/// `k_disc` is then something this repo can **measure** with both arms live in one run,
+/// instead of a number inferred from a band that used to pass. It is also the named fallback
+/// if a cost measurement ever forces the studio back to a linear disc — in which case the
+/// coupling this type makes explicit (the render disc *is* the `k_disc` source) is the thing
+/// that must be decided deliberately rather than inherited.
+pub type CoupledFsuTet4 = CoupledFsu<SdfMeshedTetMesh, Tet4, 4, 1>;
+
+/// The element-agnostic prologue of a coupled build: both vertebra oracles, the segment
+/// frame derived from them, and the whole-face-conformed disc *render* surface.
+///
+/// Split out so the two element arms share one geometry derivation by construction — the
+/// same discipline `prepare_disc` applies one level down (`lib.rs`), and for the same reason:
+/// a difference between the arms should be the element, not an accident of two code paths.
+struct SegmentPrologue {
+    /// Native-mm signed-distance oracle of the superior (L4) vertebra.
+    o4: MeshOracle,
+    /// Native-mm signed-distance oracle of the inferior (L5) vertebra.
+    o5: MeshOracle,
+    /// The segment's anatomical frame (body centres + SI/posterior/ML axes).
+    frame: SegmentFrame,
+    /// The disc surface with its whole top/bottom face conformed onto the real L4/L5
+    /// surfaces — the exact contact geometry a viewer draws.
+    conformed_disc_surface: IndexedMesh,
+}
+
+impl SegmentPrologue {
+    /// Derive the oracles, the segment frame, and the conformed render surface.
     ///
-    /// The render surface ([`conform_disc_to_endplates`]) projects the disc's whole endplate face
-    /// onto the exact bone, so the disc (via [`Self::conformed_disc_surface`]) *renders* on the
-    /// real endplates — no proxy gap. The bonded FEM disc, by contrast, keeps the RAW geometry
-    /// here: the node-level Strategy-B endplate conform exists (`build_bonded_disc(.., Some(..))`)
-    /// but flipping it would shift the `k_disc` baked into the rung-7-validated ROM equilibrium,
-    /// so it is deferred to its own ROM re-validation (see the call site).
+    /// # Errors
+    /// Propagates an oracle or segment-frame failure.
+    fn build(l4: &IndexedMesh, l5: &IndexedMesh, disc_mesh: &IndexedMesh) -> Result<Self> {
+        let o4 = oracle(l4).context("L4 oracle")?;
+        let o5 = oracle(l5).context("L5 oracle")?;
+        let frame = segment_frame(l4, l5, &o4, &o5).context("segment frame")?;
+        // The RENDER SURFACE conforms onto the real endplates (rendered === contacts) — its
+        // whole top/bottom face is seated on the bone so the drawn disc hugs it edge-to-edge.
+        let conformed_disc_surface = conform_disc_to_endplates(disc_mesh, &o4, &o5, &frame, None);
+        Ok(Self {
+            o4,
+            o5,
+            frame,
+            conformed_disc_surface,
+        })
+    }
+}
+
+impl CoupledFsu<Tet10Mesh, Tet10, 10, 4> {
+    /// Assemble the coupled FSU from the three meshes (native mm): conform the disc's endplate
+    /// face onto the real L4/L5 surfaces for rendering, tet-mesh + bond the disc onto the
+    /// **real endplate**, measure its `k_disc` bushing, build the ligament + bushing hinge
+    /// model, and sample the two articular SDF grids. The flexion sense is derived from the
+    /// facet engagement asymmetry (never hardcoded).
+    ///
+    /// **The bonded FEM disc is the quadratic one** (`build_bonded_disc_tet10`, rung 4): the
+    /// segment's disc physics runs on a curved-capable element instead of a bend-locking linear
+    /// one, which softens the standalone disc ~33 % and is why the arc re-anchors `RUNG7_K_DISC`
+    /// exactly once, here. It moves segment ROM far less: the disc is only ~0.4 % of the flexion
+    /// restoring moment at ROM, which is ligament-dominated.
+    ///
+    /// ## ⚠ The bonded disc is STRAIGHT — the endplate conform is deliberately not applied here
+    ///
+    /// `build_bonded_disc_tet10(.., None)`, not `Some(..)`. The node conform exists and is
+    /// gated (`build_bonded_disc*(.., Some(..))`, rungs 2–3), and seating this path on the real
+    /// bone is the arc's stated payoff — but it is **not validated across the disc geometries
+    /// this constructor accepts**, and rung 4 measured exactly how it fails:
+    ///
+    /// | lofted (painted) disc, ±6° in 0.1° steps | result |
+    /// |---|---|
+    /// | Tet4 raw / Tet10 raw | reach ±6.0° |
+    /// | Tet4 **conformed** | element inverts at **3.70°** |
+    /// | Tet10 **curved** | element inverts at **−2.80°** |
+    ///
+    /// Both raw arms are fine, so this is the **conform**, not the element — the same
+    /// discriminator that a separate small-angle failure had (fixed by raising
+    /// `DISC_CONFORM_QUALITY_FLOOR`; this one survives that fix and is a distinct mechanism,
+    /// deformation-time inversion rather than rest-mesh conditioning). Since `cf-spine-studio`
+    /// paints and lofts its disc, conforming here would break the flagship viewer at production
+    /// angles.
+    ///
+    /// **So rung 4 moves ONE variable — the element — and the conform becomes rung 4b**, whose
+    /// entry criterion is measured and stated: *a conformed lofted disc completes ±6° on both
+    /// elements*. That is the ladder's own discipline, which the plan's original rung-4 wording
+    /// quietly broke by flipping element and conform together (`CoupledFsu` previously passed
+    /// `None`, so "flip to the curved conformed disc" was always two changes).
+    ///
+    /// The render surface is unaffected: [`Self::conformed_disc_surface`] is whole-face
+    /// conformed onto the real bone as before, so the *drawn* disc still sits on the endplates.
+    /// What waits for 4b is the *solved* disc joining it.
+    ///
+    /// [`CoupledFsuTet4::build_baseline`] assembles the pre-rung-4 linear baseline.
     ///
     /// # Errors
     /// Propagates a failure to derive the segment frame, build the bonded disc, or
@@ -190,27 +287,79 @@ impl CoupledFsu {
         disc_mesh: &IndexedMesh,
         params: &CoupledParams,
     ) -> Result<Self> {
-        let o4 = oracle(l4).context("L4 oracle")?;
-        let o5 = oracle(l5).context("L5 oracle")?;
-        let frame = segment_frame(l4, l5, &o4, &o5).context("segment frame")?;
+        let pro = SegmentPrologue::build(l4, l5, disc_mesh)?;
+        // `None`, not `Some(..)` — see the ⚠ section above. A measured deferral to rung 4b,
+        // not an oversight. Rung 4b builds an `EndplateConform` from `pro`'s two oracles and
+        // `pro.frame.superior_axis` (all three are already here) and passes it instead.
+        let render_disc = build_bonded_disc_tet10(disc_mesh.clone(), &params.disc, None)
+            .context("build quadratic bonded disc")?;
+        Self::assemble(l4, l5, pro, render_disc, params)
+    }
+}
 
-        // The RENDER SURFACE conforms onto the real endplates (rendered === contacts) — its
-        // whole top/bottom face is seated on the bone so the drawn disc hugs it edge-to-edge.
-        // The BONDED FEM disc here stays on the RAW (un-conformed) geometry (`None`): the
-        // node-level Strategy-B endplate conform now exists (`build_bonded_disc(.., Some(..))`),
-        // and the standalone FOM measures its effect on `k_disc` as small (~1.8 % each way —
-        // `conform_delta_by_element_fom`, rung 2). Even so, seating this path changes the measured `k_disc` baked into
-        // the rung-7-validated ROM equilibrium, so flipping it is a deliberate follow-up gated on
-        // its own ROM re-validation rather than a silent change here. So for now: real
-        // deformation on raw tets, rendered on a conformed surface skinned to it.
-        let conformed_disc_surface = conform_disc_to_endplates(disc_mesh, &o4, &o5, &frame, None);
-        let mut render_disc = build_bonded_disc(disc_mesh.clone(), &params.disc, None)
-            .context("build bonded disc")?;
+impl CoupledFsuTet4 {
+    /// Assemble the **pre-rung-4 linear baseline**: a raw, un-conformed [`Tet4`] bonded disc.
+    ///
+    /// Identical to [`CoupledFsu::build`] in every other respect — same prologue, same
+    /// `k_disc` probe, same ligament/facet assembly — so a difference between the two arms is
+    /// the disc, and nothing else. See [`CoupledFsuTet4`] for why this arm is kept.
+    ///
+    /// ⚠ **Deliberately not called `build`.** A type parameter's *default* does not
+    /// disambiguate inherent-method resolution: with a `build` on both concrete impls, every
+    /// existing `CoupledFsu::build(..)` call site fails to compile with `E0034 multiple
+    /// applicable items in scope` (measured, not predicted — it is what made this rename
+    /// necessary). Defaults keep the *type* `CoupledFsu` source-compatible, which is what
+    /// rung 0 proved; they do not extend that to an overloaded associated function.
+    ///
+    /// # Errors
+    /// As [`CoupledFsu::build`].
+    pub fn build_baseline(
+        l4: &IndexedMesh,
+        l5: &IndexedMesh,
+        disc_mesh: &IndexedMesh,
+        params: &CoupledParams,
+    ) -> Result<Self> {
+        let pro = SegmentPrologue::build(l4, l5, disc_mesh)?;
+        let render_disc = build_bonded_disc(disc_mesh.clone(), &params.disc, None)
+            .context("build raw Tet4 bonded disc")?;
+        Self::assemble(l4, l5, pro, render_disc, params)
+    }
+}
+
+impl<Msh, E, const N: usize, const G: usize> CoupledFsu<Msh, E, N, G>
+where
+    Msh: Mesh,
+    E: Element<N, G> + Default,
+{
+    /// Assemble the segment around an already-built bonded disc — everything in a coupled
+    /// build that does not depend on the element: the `k_disc` probe, the flexion-sense
+    /// derivation, and the ligament/bushing model.
+    ///
+    /// # Errors
+    /// Propagates the ligament MJCF build, and errors if the facets do not engage on exactly
+    /// one rotation sense.
+    fn assemble(
+        l4: &IndexedMesh,
+        l5: &IndexedMesh,
+        pro: SegmentPrologue,
+        mut render_disc: BondedDisc<Msh, E, N, G>,
+        params: &CoupledParams,
+    ) -> Result<Self> {
+        let SegmentPrologue {
+            o4,
+            o5,
+            frame,
+            conformed_disc_surface,
+        } = pro;
         let pivot = render_disc.center_native();
         let ml = render_disc.ml_axis();
-        // Small-strain disc bending stiffness (linear bushing), measured sub-degree.
-        let (m, _) = render_disc.flexion_moment(K_DISC_PROBE);
+        // Small-strain disc bending stiffness (linear bushing). WALKED to the probe angle and
+        // back to rest: a conformed disc does not survive a single from-rest jump this far
+        // (see K_DISC_PROBE), and leaving the disc anywhere but rest would hand the next
+        // driver a jump of its own.
+        let (m, _) = drive_disc(&mut render_disc, 0.0, K_DISC_PROBE);
         let k_disc = m / K_DISC_PROBE;
+        drive_disc(&mut render_disc, K_DISC_PROBE, 0.0);
 
         // Orient the ML axis so +θ is flexion: probe the facet engagement asymmetry —
         // the articular surfaces open in flexion and engage in extension.
@@ -242,6 +391,7 @@ impl CoupledFsu {
             k_facet: params.k_facet,
             k_disc,
             render_disc,
+            disc_theta: 0.0,
             conformed_disc_surface,
         })
     }
@@ -262,12 +412,13 @@ impl CoupledFsu {
     }
 
     /// The render disc's tet-mesh boundary faces — the fragmentation signal available
-    /// **immediately after [`Self::build`]**, before the far more expensive
-    /// [`Self::capture_ramp`] (~85 s vs the ~5 s build). This is exactly the triangulation
-    /// `capture_ramp` copies
+    /// **immediately after the build**, before the far more expensive
+    /// [`Self::capture_ramp`] (measured on the curved quadratic disc: **764 s** of capture
+    /// against an **86 s** build; on the linear one, 33 s against 7 s). This is exactly the
+    /// triangulation `capture_ramp` copies
     /// into [`CoupledTrajectory::boundary_faces`] (it is tet-mesh topology, fixed at build
     /// and invariant under deformation), so a caller can run its degeneracy / fragmentation
-    /// guard on the ~5 s build and reject a bad painting without paying for the full ramp.
+    /// guard on the build and reject a bad painting without paying for the full ramp.
     #[must_use]
     pub fn render_boundary_faces(&self) -> &[[crate::VertexId; 3]] {
         self.render_disc.boundary_faces()
@@ -432,12 +583,6 @@ impl CoupledFsu {
     /// # Panics
     /// Panics if the incremental soft solve fails to converge at a sub-degree step — it does
     /// not on the validated geometry (a fine warm-started sweep reaches the full ROM).
-    // usize→f64 casts are small sub-step counts, exact in f64.
-    #[allow(
-        clippy::cast_precision_loss,
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss
-    )]
     pub fn capture_ramp(&mut self, applied_moments: &[f64]) -> Result<CoupledTrajectory> {
         // Equilibrium angle per applied moment (monotone increasing: extension → flexion).
         let thetas: Vec<f64> = applied_moments
@@ -456,9 +601,12 @@ impl CoupledFsu {
         // deformed nodes (no extrapolation). One continuous chain from rest keeps every step small.
         let n = thetas.len();
         let mut deformed: Vec<Vec<Point3<f64>>> = vec![Vec::new(); n];
+        let mut det_ratio: Vec<f64> = vec![f64::NAN; n];
         let (rest_nodes_native, boundary_faces) = {
             let disc = &mut self.render_disc;
-            disc.set_flexion(0.0);
+            // Walk (never jump) back to rest from wherever the disc was left, then read the
+            // rest surface. On a freshly built FSU this is already rest and costs one solve.
+            drive_disc(disc, self.disc_theta, 0.0);
             let rest = disc.deformed_nodes_native();
             let faces = disc.boundary_faces().to_vec();
             // ONE continuous monotone sweep from rest: down to the extension peak, then up
@@ -470,14 +618,12 @@ impl CoupledFsu {
             let flex: Vec<usize> = (0..n).filter(|&i| thetas[i] >= 0.0).collect(); // −peak → +peak
             let mut cur = 0.0;
             for &fi in ext.iter().chain(&flex) {
-                let target = thetas[fi];
-                let steps = ((target - cur).abs() / CAPTURE_SUBSTEP).ceil().max(1.0) as usize;
-                for s in 1..=steps {
-                    disc.set_flexion(cur + (target - cur) * (s as f64 / steps as f64));
-                }
-                cur = target;
+                drive_disc(disc, cur, thetas[fi]);
+                cur = thetas[fi];
                 deformed[fi] = disc.deformed_nodes_native();
+                det_ratio[fi] = disc.min_jacobian_ratio();
             }
+            self.disc_theta = cur;
             (rest, faces)
         };
 
@@ -487,6 +633,7 @@ impl CoupledFsu {
                 theta: thetas[i],
                 deformed_nodes_native: std::mem::take(&mut deformed[i]),
                 facet_points: std::mem::take(&mut facet_points[i]),
+                min_jacobian_ratio: det_ratio[i],
             })
             .collect();
 
@@ -514,6 +661,16 @@ pub struct CoupledFrame {
     /// actually touch. Empty in flexion (facets open); grows into extension. The engaged
     /// count a viewer reports is `facet_points.len()`.
     pub facet_points: Vec<Point3<f64>>,
+    /// Element validity **at this frame's deformed configuration**: the worst
+    /// `detJ / detJ_rest` over every element and Gauss point of the disc
+    /// ([`BondedDisc::min_jacobian_ratio`]). Strictly positive means no element folded to
+    /// reach this pose; `≤ 0` means one did.
+    ///
+    /// Recorded per frame because it is the invariant the rest-configuration quality floors
+    /// cannot see: they bound the mesh the projectors *produce*, not what a drive to ±ROM
+    /// does to it. Newton converging is necessary but not sufficient — it can converge onto
+    /// a folded element.
+    pub min_jacobian_ratio: f64,
 }
 
 /// A replayable capture of the coupled FSU swept over a moment ramp.
@@ -536,6 +693,43 @@ pub struct CoupledTrajectory {
 }
 
 // ─────────────────────────── internal assembly helpers ───────────────────────────
+
+/// Drive a bonded disc's FEM from flexion `from` to `to` (rad) in warm-started steps of at
+/// most [`CAPTURE_SUBSTEP`], returning the final step's `(restoring moment, conservation
+/// residual)`.
+///
+/// **The single driver in this module** — the `k_disc` probe, the return to rest, and every
+/// leg of [`CoupledFsu::capture_ramp`] all route through it, so no path can accidentally
+/// jump the disc somewhere in one step. That matters because the drivable envelope is a
+/// property of the *mesh*, not of the angle reached: a conformed disc walks to ±6° happily
+/// and stalls on a single 0.5° jump from rest (rung 2/3 measured both). A caller that knows
+/// its start angle can always reach any end angle; one that does not, cannot.
+///
+/// # Panics
+/// Panics if the soft solve fails to converge at a sub-step — see
+/// [`BondedDisc::set_flexion`].
+// usize→f64 casts are small sub-step counts, exact in f64.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn drive_disc<Msh, E, const N: usize, const G: usize>(
+    disc: &mut BondedDisc<Msh, E, N, G>,
+    from: f64,
+    to: f64,
+) -> (f64, f64)
+where
+    Msh: Mesh,
+    E: Element<N, G> + Default,
+{
+    let steps = ((to - from).abs() / CAPTURE_SUBSTEP).ceil().max(1.0) as usize;
+    let mut last = (0.0, 0.0);
+    for s in 1..=steps {
+        last = disc.flexion_moment(from + (to - from) * (s as f64 / steps as f64));
+    }
+    last
+}
 
 /// Build the coupled 1-DOF model: L5 fixed, L4 on a flexion hinge about `axis` through
 /// `pivot` carrying the disc bushing (`disc_stiffness_nmm`, N·mm/rad) plus the two
@@ -807,10 +1001,40 @@ mod tests {
         }
     }
 
-    /// Assemble a synthetic [`CoupledFsu`] directly (the test submodule can name the
+    /// Assemble a synthetic [`CoupledFsuTet4`] directly (the test submodule can name the
     /// private fields), exercising `build_coupled_model` + a real (synthetic) bonded disc
     /// + overlapping facet grids — without the licensed anatomy `build` needs.
-    fn synthetic_fsu() -> CoupledFsu {
+    fn synthetic_fsu() -> CoupledFsuTet4 {
+        synthetic_fsu_with(
+            build_bonded_disc(synthetic_disc(), &DiscParams::default(), None)
+                .expect("synthetic Tet4 render disc"),
+        )
+    }
+
+    /// The **quadratic** sibling of [`synthetic_fsu`]: a synthetic coupled FSU over a Tet10
+    /// bonded disc.
+    ///
+    /// This is the license-free arm that puts rung 4's flipped path into a CI job. Every real
+    /// consumer of the quadratic `CoupledFsu` is `#[ignore]`d and env-gated on the `BodyParts3D`
+    /// triad, so without this the generic `impl`, the shared `drive_disc`, and the per-frame
+    /// deformed-configuration validity readout would execute in **no** CI run at all — the
+    /// plan's §4.7 point, applied to the rung that finally has a `CoupledFsu` consumer.
+    fn synthetic_fsu_tet10() -> CoupledFsu {
+        synthetic_fsu_with(
+            build_bonded_disc_tet10(synthetic_disc(), &DiscParams::default(), None)
+                .expect("synthetic Tet10 render disc"),
+        )
+    }
+
+    /// The shared synthetic assembly, over whatever bonded disc it is handed — so the two
+    /// fixtures above differ in the element and in nothing else, by construction.
+    fn synthetic_fsu_with<Msh, E, const N: usize, const G: usize>(
+        render_disc: BondedDisc<Msh, E, N, G>,
+    ) -> CoupledFsu<Msh, E, N, G>
+    where
+        Msh: Mesh,
+        E: Element<N, G> + Default,
+    {
         let (l4, l5) = (vertebra_cloud(20.0), vertebra_cloud(0.0));
         let frame = SegmentFrame {
             b4: Point3::new(0.0, 0.0, 20.0),
@@ -829,10 +1053,6 @@ mod tests {
         // `overlapping_spheres` tests.
         let g5 = Arc::new(SdfGrid::sphere(Point3::origin(), 10.0, 24, 2.0));
         let g4 = Arc::new(SdfGrid::sphere(Point3::new(80.0, 0.0, 0.0), 10.0, 24, 2.0));
-        // The render disc is a bonded synthetic disc (its shape is what `capture_ramp` reads);
-        // the real build conforms the whole face onto the bones.
-        let render_disc =
-            build_bonded_disc(synthetic_disc(), &DiscParams::default(), None).expect("render disc");
         let scratch = RefCell::new(model.make_data());
         CoupledFsu {
             model,
@@ -845,6 +1065,7 @@ mod tests {
             k_facet: 200.0,
             k_disc,
             render_disc,
+            disc_theta: 0.0,
             conformed_disc_surface: synthetic_disc(),
         }
     }
@@ -892,7 +1113,7 @@ mod tests {
 
         // The post-build fragmentation signal is present before any ramp and is exactly
         // what the ramp will copy into the trajectory (the split's load-bearing invariant:
-        // the ~5 s build can guard on this without paying for the ~85 s capture).
+        // the build can guard on this without paying for the far longer capture).
         let boundary_post_build = fsu.render_boundary_faces().to_vec();
         assert!(
             !boundary_post_build.is_empty(),
@@ -917,6 +1138,72 @@ mod tests {
                 .all(|f| f.deformed_nodes_native.len() == traj.rest_nodes_native.len()),
             "every frame's deformed surface matches the rest node count"
         );
+    }
+
+    /// Rung 4's flipped path, license-free: a coupled FSU over a **quadratic** disc captures a
+    /// ramp, and every captured frame is valid at its **deformed** configuration.
+    ///
+    /// The deformed-configuration check is the invariant nothing in this arc had before rung 4.
+    /// The mesh projectors' quality floors bound the mesh they *produce* (`detJ ≥ floor ·
+    /// detJ_rest` at rest); the ±6° sweeps gate the same rest mesh at more angles. Neither
+    /// looks at whether driving the disc folds an element, and a converged Newton solve does
+    /// not rule that out — it can converge onto a folded one.
+    #[test]
+    fn coupled_tet10_ramp_stays_valid_in_the_deformed_configuration() {
+        let mut fsu = synthetic_fsu_tet10();
+        // A quadratic disc carries midside DOFs the linear one does not, so the node buffer
+        // must genuinely be the bigger one — otherwise this fixture is silently a Tet4 test.
+        let corners = synthetic_fsu().render_disc.deformed_nodes_native().len();
+        let quadratic = fsu.render_disc.deformed_nodes_native().len();
+        assert!(
+            quadratic > corners,
+            "the quadratic fixture must carry midside nodes ({quadratic} vs {corners} linear)"
+        );
+
+        // A deliberately NARROW ramp. What needs covering here is the flipped code — the
+        // generic methods, `drive_disc`'s stepping, the per-frame readout, the angle tracking —
+        // and every one of those runs identically at 0.4° as at 4°. Widening it only buys more
+        // Tet10 solves: at ±0.5 N·m this test cost 99 s of a CI job and exercised no line this
+        // one does not. Large-angle Tet10 behaviour is the anatomy gates' job (rungs 2/3's ±6°
+        // sweeps, rung 4's full ramp).
+        let traj = fsu
+            .capture_ramp(&[-0.1, 0.0, 0.1])
+            .expect("all three moments have equilibria in the bracket");
+        assert_eq!(traj.frames.len(), 3);
+        assert!(
+            traj.frames.iter().any(|f| f
+                .deformed_nodes_native
+                .iter()
+                .zip(&traj.rest_nodes_native)
+                .any(|(d, r)| (d - r).norm() > 1e-9)),
+            "the ramp must actually deform the disc — a validity check over an undeformed \
+             configuration is vacuous"
+        );
+        for f in &traj.frames {
+            assert!(
+                f.min_jacobian_ratio > 0.0,
+                "an element folded at {:.3}° — worst deformed detJ/detJ_rest = {:.4}",
+                f.theta.to_degrees(),
+                f.min_jacobian_ratio
+            );
+            assert_eq!(
+                f.deformed_nodes_native.len(),
+                traj.rest_nodes_native.len(),
+                "every frame carries the full (corner + midside) node buffer"
+            );
+        }
+        // Re-capturing must work too: `capture_ramp` leaves the disc at the flexion peak, and
+        // the second call has to WALK back to rest rather than jump there. A driver that
+        // ignored where the disc was left would put a full-ROM jump into the second capture.
+        let again = fsu.capture_ramp(&[-0.1, 0.0, 0.1]).expect("second capture");
+        for (a, b) in again.frames.iter().zip(&traj.frames) {
+            assert!(
+                (a.theta - b.theta).abs() < 1e-12,
+                "a re-capture must reproduce the same equilibria: {:.6}° vs {:.6}°",
+                a.theta.to_degrees(),
+                b.theta.to_degrees()
+            );
+        }
     }
 
     #[test]

@@ -1832,6 +1832,15 @@ fn bonded_sandwich_conserves_and_is_two_way() {
         flex.moment_upper.x < 0.0,
         "flexion must produce a restoring moment"
     );
+    // Element validity at the DEFORMED configuration this flexion just solved — a strictly
+    // different invariant from the mesh's rest quality, and the readout `cf-fsu-model` gates
+    // a full-ROM sweep on. Strictly below 1.0 as well as above 0: at exactly 1.0 the disc
+    // would not have deformed at all and the check would be vacuous.
+    let ratio = c.min_gauss_det_ratio();
+    assert!(
+        ratio > 0.0 && ratio < 1.0,
+        "a flexed bond must deform without folding an element, got detJ/detJ_rest = {ratio}"
+    );
 
     // The coupled loop through the rigid engine runs (round-trip forward).
     let mut c = bonded_fsu();
