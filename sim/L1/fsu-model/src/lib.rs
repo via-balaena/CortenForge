@@ -1602,6 +1602,11 @@ mod tests {
     /// incidence map that missed an element (a wrong slot range, a midside reached through a
     /// tet the map never visited) shows up here as a sub-floor ratio, while every element the
     /// projector did check contributes exactly its guarantee.
+    ///
+    /// ★ Measured, not argued: narrowing that walk to `t[4..7]` drives the worst ratio to
+    /// **−9.7870** on the real disc — genuinely inverted elements — while the §4.3 residual gate
+    /// still *improves* (authorised RMS 0.796 → 0.711) and passes. The mutation record is in
+    /// [`curved_tet10_midsides_seat_on_the_endplate_fom`].
     fn worst_gauss_det_ratio(curved: &Tet10Mesh, straight: &Tet10Mesh) -> f64 {
         let element = Tet10;
         let dets = |mesh: &Tet10Mesh, t: TetId| -> [f64; 4] {
@@ -1779,15 +1784,15 @@ mod tests {
              (max {max_s:.4} -> {max_c:.4}, rms {rms_s:.4} -> {rms_c:.4} mm)",
         );
         assert!(
+            worst >= DISC_MIDSIDE_CONFORM_QUALITY_FLOOR,
+            "an element fell below the quality floor at some Gauss point \
+             (worst detJ/detJ_rest {worst:.4})",
+        );
+        assert!(
             delivered > 0.9,
             "only {:.1} % of the authorised midsides reached their full projection — the \
              back-off is silent, so a mostly-straight run must fail here",
             100.0 * delivered,
-        );
-        assert!(
-            worst >= DISC_MIDSIDE_CONFORM_QUALITY_FLOOR,
-            "an element fell below the quality floor at some Gauss point \
-             (worst detJ/detJ_rest {worst:.4})",
         );
 
         // (4) The shipped path builds exactly this mesh, and the curved disc still bonds and
@@ -2926,7 +2931,37 @@ mod tests {
             (dec_rms, 4.200, "guard-declined rms (mm)"),
         ]);
 
-        // (7) §4.4 COVERAGE — the falsifiable half of the validity gate, two-sided.
+        // (7) §4.4 ELEMENT VALIDITY, asserted FIRST because it is the more severe fact: an
+        // element folded over makes every statistic below meaningless. The assert is the
+        // INEQUALITY, not the value.
+        //
+        // ⚠ The value is pinned to the floor by construction whenever any node backs off at all:
+        // the bisection converges onto the constraint boundary, so *some* element ends at
+        // exactly `quality_floor`. Committing 0.4000 with a two-sided band would therefore be a
+        // gate that reads as a measurement and is really a tautology — the very shape §4.4
+        // exists to replace. What is falsifiable is the inequality holding over **every**
+        // element rather than only over the projector's own incidence map.
+        //
+        // ★★ **MEASURED, on a mutant that survives every other assert in this test.** Narrowing
+        // `with_projected_midsides`' incidence walk from `t[4..10]` to `t[4..7]` — an incidence
+        // map that misses elements, exactly the bookkeeping error this sweep exists for — drives
+        // the worst ratio to **−9.7870**, i.e. genuinely inverted elements, while the §4.3
+        // residual gate above still *improves* (authorised RMS 0.796 → 0.711) and **passes**.
+        // A geometry gate cannot see an inverted element; this one can. (On the synthetic arm
+        // the same mutant leaves the worst ratio at 0.9307 and shows up only as lost coverage —
+        // the back-off never engages at that curvature, so the real disc is where this bites.)
+        assert!(
+            worst_det >= DISC_MIDSIDE_CONFORM_QUALITY_FLOOR,
+            "an element fell below the quality floor at some Gauss point \
+             (worst detJ/detJ_rest {worst_det:.4}) — fix the projection, not this gate",
+        );
+        assert!(
+            worst_det < 1.0,
+            "no element's rest Jacobian shrank at all (worst ratio {worst_det:.4}) — the \
+             projection cannot have engaged, so nothing above is measuring it",
+        );
+
+        // (8) §4.4 COVERAGE — the falsifiable half of the validity gate, two-sided.
         //
         // **27.6 % of the authorised midsides do NOT reach their full projection**, and that is
         // the number this statistic exists to make impossible to hide: both projection helpers
@@ -2949,27 +2984,6 @@ mod tests {
             (max_move, 1.388, "max midside move (mm)"),
             (mean_move, 0.127, "mean midside move (mm)"),
         ]);
-
-        // (8) §4.4 ELEMENT VALIDITY. The assert is the INEQUALITY, not the value.
-        //
-        // ⚠ The value is pinned to the floor by construction whenever any node backs off at all:
-        // the bisection converges onto the constraint boundary, so *some* element ends at
-        // exactly `quality_floor`. Committing 0.0500 with a two-sided band would therefore be a
-        // gate that reads as a measurement and is really a tautology — the very shape §4.4
-        // exists to replace. What is falsifiable is the inequality holding over **every**
-        // element rather than only over the projector's own incidence map (see
-        // `worst_gauss_det_ratio`'s doc comment), and the coverage statistic above, which moves
-        // whenever the back-off's behaviour does.
-        assert!(
-            worst_det >= DISC_MIDSIDE_CONFORM_QUALITY_FLOOR,
-            "an element fell below the quality floor at some Gauss point \
-             (worst detJ/detJ_rest {worst_det:.4}) — fix the projection, not this gate",
-        );
-        assert!(
-            worst_det < 1.0,
-            "no element's rest Jacobian shrank at all (worst ratio {worst_det:.4}) — the \
-             projection cannot have engaged, so nothing above is measuring it",
-        );
     }
 
     #[test]
