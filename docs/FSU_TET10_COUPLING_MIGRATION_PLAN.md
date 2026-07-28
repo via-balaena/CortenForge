@@ -19,9 +19,10 @@ higher-order element on the genuinely-curved bone.
 > plus a **direct exact-geometry residual gate** (§4.3 — new in v2; v1 had no gate on the
 > arc's own stated payoff).
 
-> **Checkpoint:** `main` @ `59e61daa`. This is a **plan**, hardened by two adversarial
-> review rounds: a 5-front diamond-review (v1, §8.1) and a 4-front stress-test that
-> reshaped the ladder (v2, §8.2). Next action: rung 0.
+> **Checkpoint:** written against `main` @ `59e61daa`, hardened by two adversarial review
+> rounds: a 5-front diamond-review (v1, §8.1) and a 4-front stress-test that reshaped the
+> ladder (v2, §8.2). **Rungs 0 (#704), 1 (#705) and 2 are built — see each rung's BUILT note
+> in §3, which records what the build changed about the plan. Next action: rung 3.**
 
 > **★★ v2 CHANGED THE LADDER, not just the wording.** The stress-test found that v1's
 > rung 1 gate could not fail, v1's ROM sanity assert could not trip *and* would fail on
@@ -445,6 +446,118 @@ enriches (§2.5).
 v1 gated it nowhere) + the per-element conform delta + **the large-angle sweep** (§4.5). Still
 no `CoupledFsu`.
 
+> **✅ BUILT (2026-07-28).** Gates only — **no production code changed.** The plumbing rung 1
+> shipped (`build_bonded_disc_tet10(.., Some(endplates))`, and `prepare_disc` conforming corners
+> *before* the enrichment) already had the right shape, so this rung is measurements, not
+> machinery: the §4.3 residual gate, the §4.5 sweep, the per-element delta table, rung 3's
+> committed "before" arm, and a license-free residual arm for CI.
+>
+> **The byte-identity in the table above is structural, and that was verified mechanically rather
+> than by eye:** diffing hunk line numbers against the start of `mod tests`, the only changes
+> outside the test module are `//!` module-doc comments in `lib.rs` and one `//` comment in
+> `coupled.rs::build` — no code line outside the tests module changed. Rung 1's FOM re-runs
+> unchanged (0.666 / 0.663) to confirm it behaviourally as well.
+>
+> - **§4.3 residual (the arc's payoff, gated for the first time).** Of **583** bonded-face
+>   boundary nodes the SI-alignment guard authorises **233**; **231** are delivered and **2 are
+>   backed off entirely** by the quality floor. Over the *authorised* set the distance to the
+>   nearer vertebra falls **max 5.724 → 3.575 mm, RMS 1.332 → 0.656 mm** — the conform halves the
+>   seated population's distance to the bone. It does not zero it: the back-off refuses to invert
+>   a tet, so the worst authorised node still ends up 3.575 mm out.
+> - **★ The gate is on the AUTHORISED set, not the moved set** — "nodes that moved" is selected on
+>   the outcome. This is what the plan meant by watching for vacuity, and the 2 dropped nodes are
+>   invisible to #701's committed `max_seat`. **★★ What the choice buys was MEASURED on two
+>   mutants, and it is narrower than the tidy argument:** with 214 of 233 authorised nodes dropped
+>   from the move list, a strict-decrease gate on the *moved* set still improves
+>   (RMS 2.000 → 1.103) and **passes**, while the authorised set's max stays 5.724 → 5.724 and
+>   **fails** — that is the case the definition exists for. But against a back-off that degrades
+>   every node alike (`DISC_CONFORM_QUALITY_FLOOR` 0.05 → 0.50) the two sets move together (moved
+>   RMS 0.659 → 0.908 vs authorised 0.656 → 0.901) and the choice buys **nothing**; there it is the
+>   committed population split and the ±5 % pins that catch it. Both mutants trip the split assert.
+> - **★ The rim is reported, never averaged in.** 350 of 583 candidates are guard-declined (the
+>   overhanging annulus, max 12.577 mm — a closest-point artifact of reaching sideways for the
+>   body wall), left straight by #701's settled call. They are reported separately; the
+>   all-candidate figures (RMS 3.494 → 3.416) are gated only on *non-increase*, since a declined
+>   node's residual is identical in both arms by construction.
+> - **§4.5 large-angle sweep — PASSED, and it retires a deferral.** Both conformed arms complete
+>   the full **±6.0°** chain in 0.1° steps (180 solves/arm), every step converging, conserving and
+>   strictly restoring; peak |M| 0.0300 (Tet4) / 0.0205 (Tet10) N·m. So **`coupled.rs`'s "a
+>   whole-face-conformed mesh spawns sliver tets that fail the sweep" is a STRATEGY-A fact and
+>   does not apply to the Strategy-B node conform** — that reason for rung 4's deferral is gone,
+>   leaving only the `RUNG7_K_DISC` re-anchor. And the Tet10 angle envelope, previously driven
+>   only to ±0.5°, is measured and is not narrower than the linear arm's.
+> - **Per-element conform delta.** `k_disc` (N·m/rad), flex / ext: Tet4 raw −0.2811 / −0.2788 →
+>   conformed −0.2760 / −0.2738; Tet10 raw −0.1873 / −0.1849 → conformed −0.1844 / −0.1820.
+>   **The two axes are nearly orthogonal** — conform ratio 0.982 / 0.984 (same to within 0.2 % on
+>   both elements), element ratio 0.666/0.663 raw vs 0.668/0.665 conformed.
+> - **★ CLAIM CORRECTED: the conform costs ~1.8 % of `k_disc`, not ~4 %.** #701's FOM printed its
+>   arms at two decimals (−0.28 → −0.27) and the ~4 % figure was read off that rounding; at four
+>   decimals it is −0.2811 → −0.2760. Corrected at both twins (`lib.rs` FOM comment and
+>   `coupled.rs::build`) — the #701/rung-0/rung-1 half-fixed-twin pattern, caught by grepping for
+>   the number rather than re-reading the file.
+> - **★ A stepping fact the build measured, and the reason the delta FOM is stepped:** the RAW
+>   Tet4 disc survives a single +0.5° → −0.5° jump (rung 1 probes it exactly that way) but the
+>   **conformed** one does not — the same 1° jump drives tet 7495 to a principal stretch of 2.845
+>   and trips the solver's fail-closed validity bound. Every arm of the delta table is therefore
+>   walked in ≤ 0.5° increments, and the raw column still reproduces rung 1's two-probe numbers to
+>   four decimals, so the stepping does not move the measurement.
+> - **Cost, measured:** residual FOM **0.8 s** (no solve — it reads the rest configuration the
+>   bond snapshots), delta FOM **96 s**, large-angle sweep **897 s idle / 1138 s under load**
+>   (Tet10-dominated, ~5 s per warm-started 0.1° solve). The sweep is a same-shape check on §5.1's *estimate* for a Tet10
+>   `capture_ramp` (150-175 solves, 14-45 min): 180 solves in ~15 min lands at the bottom of that
+>   band. Not a substitute for rung 4 measuring `capture_ramp` itself, which also runs the
+>   per-frame equilibrium bisection.
+> - **§4.7 license-free coverage, with teeth NOTHING ELSE IN THE CRATE HAS — measured.** The
+>   synthetic conform test now also gates the residual against its box "endplates" (conformed
+>   max/RMS < 10 % of raw), so the residual machinery is CI-enforced even though every anatomy gate
+>   here is `#[ignore]`d. A mutant that seats only every other band node **survives every #701
+>   assert in that test** — `seated > 0` holds, both frame-bridge z-extremes still land on their
+>   box faces because the nodes that do seat set them, and the sweep still solves — and is caught
+>   by the new residual assert alone, at max 2.0000 → 2.0000 with RMS only halved
+>   (1.4577 → 1.0349). (A first mutant, disabling the conform outright, was caught by #701's
+>   pre-existing assert instead and so proved nothing about the new one — the separating mutant is
+>   the one recorded.) ⚠ The synthetic geometry has *no* declined nodes, so the guard-decline path
+>   itself is exercised only on real anatomy.
+> - **★ COVERAGE: this rung cost the crate a letter grade, and the fix is where the gates LIVE.**
+>   `cargo xtask grade` Coverage runs `cargo llvm-cov --lib`, which instruments the whole library
+>   target *including* `#[cfg(test)] mod tests` — so an `#[ignore]`d, licence-gated FOM charges its
+>   entire body to the grade while executing in no coverage run, ever. Measured with the identical
+>   command on both trees (baseline in an isolated worktree, so the working tree was never at
+>   risk): `lib.rs` regions **1562 → 2254**, of which **596 of the 692 added are uncovered (86 %)**;
+>   crate lines **71.9 % → 57.9 %**, a B → C drop. `coupled.rs` came back **byte-identical**
+>   (697 regions / 137 missed on both sides), which independently re-confirms that no production
+>   code changed. **Do not read this as pre-existing** — `main` was already under the 75 % A bar,
+>   but the 14-point fall is this rung's.
+>   **Fix applied here:** `sim-coupling` keeps all 35 of its gates in `tests/`, including its own
+>   licence-gated ones, and `cf-fsu-model` had no `tests/` directory at all. The two rung-2 gates
+>   that touch **no private item** — `conform_delta_by_element` and
+>   `conformed_disc_large_angle_envelope` — moved there, which costs **no API surface** and keeps
+>   this rung's zero-production-diff property. The other two genuinely need `prepare_disc` /
+>   `BondedDisc.sandwich` and so must stay in the library target.
+>   **Measured:** lines **57.9 % → 63.9 %** (regions 54.7 % → 60.1 %), so the move recovers **6 of
+>   the 13.9 points**, and `cargo xtask grade cf-fsu-model` goes **F → B**: Coverage 63.9 % **B**,
+>   Clippy 0 **A**, Documentation 0 **A**, Safety **A**, Dependencies **A**. **That is the same
+>   letter `main` carries** (71.9 % is also B), so the rung ships at grade parity — the C was only
+>   ever the pre-move state. Both moved gates re-run identical (`k_disc` table unchanged to four
+>   decimals; the sweep still reaches ±6.0° at peak |M| 0.0300 / 0.0205, 936 s), so the move is
+>   behaviour-preserving.
+>   **⚠ Parity is not the bar, and the gap is real:** the branch still sits **−8.0 pts** under
+>   `main` inside that band, and B is not A. That remaining 8 is precisely the two library-bound
+>   gates.
+>   **New CI surface, verified not assumed:** this gives `cf-fsu-model` its first integration-test
+>   binaries. `quality-gate.yml:471` puts the crate in `tests-release` shard 1 and that step runs
+>   `cargo nextest`, which schedules "across ALL test binaries" — so the two new files are compiled
+>   and run by CI (their `#[ignore]`d bodies skipped, exactly like the lib gates). No
+>   `tests-debug` enum registration is needed; the crate is in no debug shard.
+>   **⚠ Named, not silently absorbed:** the residual and rung-3-baseline gates still sit in
+>   `src/lib.rs`, as do rung 1's `tet10_full_face_bond_element_order_fom` and #701's FOMs. Moving
+>   *those* needs `prepare_disc` and a bonded-band accessor made public — a crate-wide change with
+>   nothing to do with the Tet10 ladder, so it belongs in its own PR, not in this rung.
+> - **Also committed as rung 3's "before" arm:** the straight-Tet10 bonded-face boundary midsides
+>   (1562 of them) sit max 12.464 / RMS 3.366 mm off the bone. ⚠ Like the all-candidate corner
+>   figures, that aggregate is dominated by the rim that stays straight by design — rung 3 must
+>   compare the *authorised* region like for like, not quote a drop in this number as its payoff.
+
 **Rung 3 — curved Tet10: project bonded-face boundary midsides onto the real endplate.** The
 exact-geometry endgame. New `sim-soft` helper (§2.6) + `fsu-model` wiring; interior-band
 midsides stay at edge midpoints (projecting them was the #699 false-degradation bug); the
@@ -736,12 +849,18 @@ planned, single, documented re-anchor at rung 4, not a surprise.
 - `sim/L1/fsu-model/src/coupled.rs:135-186` — the ~10-line block stating *"The BONDED FEM disc
   here stays on the RAW (un-conformed) geometry (`None`)"*, including the claim *"flipping it
   would shift the `k_disc` baked into the rung-7-validated ROM equilibrium"* — **already
-  inaccurate today**, since rung 7 does not use `CoupledFsu` (§4.6).
+  inaccurate today**, since rung 7 does not use `CoupledFsu` (§4.6). ⚠ **Rung 2 discharged two
+  parts of this early**, because leaving them would have been drift rather than deferral: the
+  "~4 %" shift is measured at ~1.8 %, and the *"a whole-face-conformed mesh spawns sliver tets
+  that fail the sweep"* rationale is a Strategy-A fact that the ±6.0° Strategy-B sweep retires.
+  What is left for rung 4 is the `None` → conformed-Tet10 flip itself and the `RUNG7_K_DISC`
+  re-anchor.
 - The "~85 s" / "~5 s" capture figures: `coupled.rs:246`, `coupled.rs:875`,
   `tools/cf-spine-studio/src/scene.rs:267, 314` (and the `:7`, `:14`, `:214`, `:234` prose).
 - Module docs: `sim/L1/fsu-model/src/lib.rs:8, 30, 35`; `tools/cf-spine-studio/src/main.rs:8, 21, 30`.
-- `sim/L1/fsu-model/src/lib.rs:1136`'s "±0.5° spike-validated conformed SPD range" scope note,
-  once §4.5's large-angle sweep supersedes it.
+- ~~`sim/L1/fsu-model/src/lib.rs:1136`'s "±0.5° spike-validated conformed SPD range" scope
+  note~~ — **done at rung 2**, along with the module-level "the quadratic arm's large-angle
+  envelope is unmeasured" note, both superseded by §4.5's measured ±6.0°.
 
 ---
 
