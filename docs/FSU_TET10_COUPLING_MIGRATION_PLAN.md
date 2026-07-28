@@ -534,11 +534,21 @@ no `CoupledFsu`.
 >   `conformed_disc_large_angle_envelope` — moved there, which costs **no API surface** and keeps
 >   this rung's zero-production-diff property. The other two genuinely need `prepare_disc` /
 >   `BondedDisc.sandwich` and so must stay in the library target.
->   **Measured, and it is a partial fix — stated as such:** lines **57.9 % → 63.9 %** (regions
->   54.7 % → 60.1 %), so the move recovers **6 of the 13.9 points** and the branch still sits
->   **−8.0 pts** under `main`. That remaining 8 is precisely the two library-bound gates. Both
->   moved gates re-run identical (`k_disc` table unchanged to four decimals; the sweep still
->   reaches ±6.0° at peak |M| 0.0300 / 0.0205, 936 s), so the move is behaviour-preserving.
+>   **Measured:** lines **57.9 % → 63.9 %** (regions 54.7 % → 60.1 %), so the move recovers **6 of
+>   the 13.9 points**, and `cargo xtask grade cf-fsu-model` goes **F → B**: Coverage 63.9 % **B**,
+>   Clippy 0 **A**, Documentation 0 **A**, Safety **A**, Dependencies **A**. **That is the same
+>   letter `main` carries** (71.9 % is also B), so the rung ships at grade parity — the C was only
+>   ever the pre-move state. Both moved gates re-run identical (`k_disc` table unchanged to four
+>   decimals; the sweep still reaches ±6.0° at peak |M| 0.0300 / 0.0205, 936 s), so the move is
+>   behaviour-preserving.
+>   **⚠ Parity is not the bar, and the gap is real:** the branch still sits **−8.0 pts** under
+>   `main` inside that band, and B is not A. That remaining 8 is precisely the two library-bound
+>   gates.
+>   **New CI surface, verified not assumed:** this gives `cf-fsu-model` its first integration-test
+>   binaries. `quality-gate.yml:471` puts the crate in `tests-release` shard 1 and that step runs
+>   `cargo nextest`, which schedules "across ALL test binaries" — so the two new files are compiled
+>   and run by CI (their `#[ignore]`d bodies skipped, exactly like the lib gates). No
+>   `tests-debug` enum registration is needed; the crate is in no debug shard.
 >   **⚠ Named, not silently absorbed:** the residual and rung-3-baseline gates still sit in
 >   `src/lib.rs`, as do rung 1's `tet10_full_face_bond_element_order_fom` and #701's FOMs. Moving
 >   *those* needs `prepare_disc` and a bonded-band accessor made public — a crate-wide change with

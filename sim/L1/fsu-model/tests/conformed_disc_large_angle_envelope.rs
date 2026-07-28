@@ -154,14 +154,14 @@ fn conformed_disc_survives_a_large_angle_sweep() {
     // to 6° = 0.1047 rad predicts 0.0289 / 0.0193 N·m, so the disc is ~4-6 % stiffer at the
     // ROM extreme than a linear spring — mild, monotone hardening, not a divergence.
     //
-    // COST, measured: the pair takes **897 s** wall (`--release`) on an otherwise-idle
-    // machine — a second run sharing the machine with other work took 1138 s, so read this
-    // as ~15-19 min. Tet10-dominated at ~5 s per warm-started 0.1° solve against sub-second
-    // for Tet4. That is a same-shape,
-    // same-order measurement of what `docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §5.1
-    // *estimated* for a Tet10 `capture_ramp` (150-175 solves, 14-45 min): 180 solves here in
-    // ~15 min lands at the bottom of that band. It is not a substitute for §5.1's own
-    // measurement at rung 4 — `capture_ramp` also runs the equilibrium bisection per frame.
+    // COST, measured over three runs: **897 s** wall (`--release`) on an otherwise-idle
+    // machine, 936 s, and 1138 s while sharing the machine with other work — read it as
+    // ~15-19 min. Tet10-dominated at ~5 s per warm-started 0.1° solve against sub-second for
+    // Tet4. That is a same-shape, same-order measurement of what
+    // `docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §5.1 *estimated* for a Tet10 `capture_ramp`
+    // (150-175 solves, 14-45 min): 180 solves here in ~15 min lands at the bottom of that
+    // band. It is not a substitute for §5.1's own measurement at rung 4 — `capture_ramp` also
+    // runs the equilibrium bisection per frame.
     for (m, expect, name) in [(m4, 0.0300, "Tet4"), (m10, 0.0205, "Tet10")] {
         assert!(
             ((0.95 * expect)..=(1.05 * expect)).contains(&m),
