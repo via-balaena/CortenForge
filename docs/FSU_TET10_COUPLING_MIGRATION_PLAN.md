@@ -448,10 +448,15 @@ no `CoupledFsu`.
 
 > **✅ BUILT (2026-07-28).** Gates only — **no production code changed.** The plumbing rung 1
 > shipped (`build_bonded_disc_tet10(.., Some(endplates))`, and `prepare_disc` conforming corners
-> *before* the enrichment) already had the right shape, so this rung is four measurements, three
-> of them new. The `git diff` is `sim/L1/fsu-model/src/lib.rs` test module plus three comment
-> corrections; the Tet4+raw byte-identity in the table above is therefore structural, and rung 1's
-> FOM re-runs unchanged (0.666 / 0.663) to confirm it.
+> *before* the enrichment) already had the right shape, so this rung is measurements, not
+> machinery: the §4.3 residual gate, the §4.5 sweep, the per-element delta table, rung 3's
+> committed "before" arm, and a license-free residual arm for CI.
+>
+> **The byte-identity in the table above is structural, and that was verified mechanically rather
+> than by eye:** diffing hunk line numbers against the start of `mod tests`, the only changes
+> outside the test module are `//!` module-doc comments in `lib.rs` and one `//` comment in
+> `coupled.rs::build` — no code line outside the tests module changed. Rung 1's FOM re-runs
+> unchanged (0.666 / 0.663) to confirm it behaviourally as well.
 >
 > - **§4.3 residual (the arc's payoff, gated for the first time).** Of **583** bonded-face
 >   boundary nodes the SI-alignment guard authorises **233**; **231** are delivered and **2 are
@@ -462,8 +467,8 @@ no `CoupledFsu`.
 > - **★ The gate is on the AUTHORISED set, not the moved set** — "nodes that moved" is selected on
 >   the outcome. This is what the plan meant by watching for vacuity, and the 2 dropped nodes are
 >   invisible to #701's committed `max_seat`. **★★ What the choice buys was MEASURED on two
->   mutants, and it is narrower than the tidy argument:** with 214 of 233 authorised nodes silently
->   dropped and the survivors untouched, a strict-decrease gate on the *moved* set still improves
+>   mutants, and it is narrower than the tidy argument:** with 214 of 233 authorised nodes dropped
+>   from the move list, a strict-decrease gate on the *moved* set still improves
 >   (RMS 2.000 → 1.103) and **passes**, while the authorised set's max stays 5.724 → 5.724 and
 >   **fails** — that is the case the definition exists for. But against a back-off that degrades
 >   every node alike (`DISC_CONFORM_QUALITY_FLOOR` 0.05 → 0.50) the two sets move together (moved
@@ -502,10 +507,17 @@ no `CoupledFsu`.
 >   `capture_ramp` (150-175 solves, 14-45 min): 180 solves in ~15 min lands at the bottom of that
 >   band. Not a substitute for rung 4 measuring `capture_ramp` itself, which also runs the
 >   per-frame equilibrium bisection.
-> - **§4.7 license-free coverage:** the synthetic conform test now also gates the residual against
->   its box "endplates" (conformed max/RMS < 10 % of raw), so the residual machinery is
->   CI-enforced even though every anatomy gate here is `#[ignore]`d. ⚠ The synthetic geometry has
->   *no* declined nodes, so the guard-decline path itself is exercised only on real anatomy.
+> - **§4.7 license-free coverage, with teeth NOTHING ELSE IN THE CRATE HAS — measured.** The
+>   synthetic conform test now also gates the residual against its box "endplates" (conformed
+>   max/RMS < 10 % of raw), so the residual machinery is CI-enforced even though every anatomy gate
+>   here is `#[ignore]`d. A mutant that seats only every other band node **survives every #701
+>   assert in that test** — `seated > 0` holds, both frame-bridge z-extremes still land on their
+>   box faces because the nodes that do seat set them, and the sweep still solves — and is caught
+>   by the new residual assert alone, at max 2.0000 → 2.0000 with RMS only halved
+>   (1.4577 → 1.0349). (A first mutant, disabling the conform outright, was caught by #701's
+>   pre-existing assert instead and so proved nothing about the new one — the separating mutant is
+>   the one recorded.) ⚠ The synthetic geometry has *no* declined nodes, so the guard-decline path
+>   itself is exercised only on real anatomy.
 > - **Also committed as rung 3's "before" arm:** the straight-Tet10 bonded-face boundary midsides
 >   (1562 of them) sit max 12.464 / RMS 3.366 mm off the bone. ⚠ Like the all-candidate corner
 >   figures, that aggregate is dominated by the rim that stays straight by design — rung 3 must

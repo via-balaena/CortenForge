@@ -1961,11 +1961,28 @@ mod tests {
     /// non-increasing (which is what "no node ended up further from the bone" means).
     ///
     /// Authorised, deliberately, and **not** "nodes that moved": the moved set is selected on the
-    /// outcome, so it cannot fail when the quality-floor back-off silently drops a node, whereas
-    /// the authorised set carries those dropped nodes into the statistic. The two are read
-    /// independently — `bonded_conform_target` on the raw positions says what the discriminator
-    /// intended, the two node arrays say what the pipeline delivered — and their difference (2
-    /// nodes here) is precisely the failure a "max move" number cannot show.
+    /// outcome. The two are read independently — `bonded_conform_target` on the raw positions
+    /// says what the discriminator *intended*, the two node arrays say what the pipeline
+    /// *delivered* — and their difference (2 nodes here) is a failure no "max move" number shows.
+    ///
+    /// **What that buys was measured on two mutants rather than argued** — and it is narrower
+    /// than the tidy version of the argument:
+    ///
+    /// - *Nodes dropped from the move list* (mutant: skip most authorised nodes in
+    ///   `endplate_conform_moves`, so 214 of 233 never seat). The moved-set statistic still
+    ///   improves — RMS 2.000 → 1.103, max 5.037 → 3.255 — so a **strict-decrease gate on the
+    ///   moved set PASSES** while 92 % of the intended seating silently vanished. The authorised
+    ///   set carries the dropped nodes at their raw residual, so its max goes 5.724 → 5.724 and
+    ///   the same gate **FAILS**. This is the case the definition exists for.
+    /// - *Back-off degrades everything proportionally* (mutant: `DISC_CONFORM_QUALITY_FLOOR`
+    ///   0.05 → 0.50). Here the two sets move together — moved RMS 0.659 → 0.908 against
+    ///   authorised 0.656 → 0.901 — so the choice of population buys **nothing**, because the
+    ///   same mechanism degrades the survivors too. What catches this one is the committed
+    ///   population split and the ±5 % pins, not the authorised-vs-moved distinction.
+    ///
+    /// Both mutants trip the exact population-split assert in (1), which is the broadest-teeth
+    /// instrument here; the authorised-set choice is what additionally makes the *residual
+    /// statistic itself* falsifiable in the drop case.
     ///
     /// ⚠ This is a **require-improvement** gate, deliberately unlike #701's `k_disc` gate
     /// (sound + measured + no-regression). The two must not be merged: `k_disc` is a physics
@@ -2068,9 +2085,10 @@ mod tests {
 
         // (2) THE PAYOFF: the population the discriminator INTENDED to seat ends up strictly
         // closer to the bone, on both the extreme and the population statistic. Gating on the
-        // authorised set rather than the moved set is deliberate — "nodes that moved" is
-        // selected on the outcome, so it cannot fail when the back-off silently drops a node,
-        // whereas the authorised set carries those two dropped nodes into the statistic.
+        // authorised set rather than the moved set is deliberate, and what that buys is measured
+        // on two mutants in this test's doc comment — decisive for nodes dropped from the move
+        // list (where a moved-set gate still improves and PASSES) and worth nothing against a
+        // back-off that degrades every node alike. Read the doc comment before widening this.
         assert!(
             au_max_conf < au_max_raw && au_rms_conf < au_rms_raw,
             "the authorised nodes must end up closer to the bone \
