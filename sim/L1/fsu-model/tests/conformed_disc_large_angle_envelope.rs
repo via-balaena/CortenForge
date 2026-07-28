@@ -1,4 +1,4 @@
-//! **Rung-2 §4.5 large-angle gate** of `docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md`: the angle
+//! **§4.5 large-angle gate** of `docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md`: the angle
 //! envelope of the endplate-conformed disc, on both elements.
 //!
 //! Lives here rather than in `src/lib.rs`'s test module for the reason `sim-coupling` keeps all
@@ -6,9 +6,9 @@
 //! under `cargo llvm-cov --lib`, so hosting it in the library target charges its whole body to
 //! the crate's coverage grade while testing nothing there. It needs no private item — only
 //! `build_bonded_disc`, `build_bonded_disc_tet10` and the public drive methods — so moving it
-//! costs no API surface. (The two rung-2 gates that *do* reach private items,
-//! `conform_seats_the_bonded_face_on_the_bone_fom` and
-//! `straight_tet10_midsides_chord_across_the_endplate_fom`, necessarily stay in the library.)
+//! costs no API surface. (The two anatomy gates that *do* reach private items,
+//! `conform_seats_the_bonded_face_on_the_bone_fom` and rung 3's
+//! `curved_tet10_midsides_seat_on_the_endplate_fom`, necessarily stay in the library.)
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // tests may unwrap/expect/panic.
 
@@ -136,6 +136,15 @@ fn conformed_disc_survives_a_large_angle_sweep() {
     // COMMITTED (BodyParts3D L4/L5/disc, DiscParams::default, 0.1° steps, 180 solves/arm):
     // **both conformed arms complete the full ±6.0° chain**, every step converging,
     // conserving and strictly restoring; peak |M| = 0.0300 (Tet4) / 0.0205 (Tet10) N·m.
+    //
+    // ★ **RE-RUN AT RUNG 3, on the CURVED disc, and the numbers did not move.** The Tet10 arm
+    // here is now the curved disc (bonded-face boundary midsides projected onto the real
+    // endplate), which is exactly the thing that could have narrowed this envelope — a curved
+    // element is more distortion-sensitive than a straight one, and at the *corner* quality
+    // floor it visibly was: that mesh cannot take a 0.15° single jump at all. At
+    // `DISC_MIDSIDE_CONFORM_QUALITY_FLOOR` = 0.4 the full ±6.0° chain completes again and the
+    // peak |M| reproduces rung 2's 0.0300 / 0.0205 to four decimals. So curving the bonded face
+    // costs no angle envelope, measured rather than assumed (853 s, `--release`, idle machine).
     //
     // Two things follow, and neither was known before this rung.
     //

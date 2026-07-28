@@ -172,6 +172,172 @@ impl Tet10Mesh {
         self
     }
 
+    /// Move the named midside nodes toward caller-supplied targets, backing each move off
+    /// just far enough to keep every incident element's rest Jacobian above a fraction
+    /// `quality_floor` of its original value at **every Gauss point** — so no element
+    /// inverts or collapses to a sliver.
+    ///
+    /// `moves` lists `(midside, target)` pairs. This is the quadratic companion to
+    /// [`SdfMeshedTetMesh::with_projected_nodes`](crate::SdfMeshedTetMesh::with_projected_nodes)
+    /// and the *intelligent-caller* companion to
+    /// [`Self::with_sdf_projected_boundary`], differing from the latter in the two ways a
+    /// bonded anatomical surface needs:
+    ///
+    /// - **the caller supplies explicit targets**, so the projection can honour a direction
+    ///   or anatomy gate this layer knows nothing about (which of two candidate surfaces, an
+    ///   alignment test, a subset of the boundary left deliberately straight) rather than
+    ///   projecting every boundary midside onto one [`Sdf`];
+    /// - **the validity bar is a quality floor** `detJ ≥ quality_floor · detJ_rest`, not
+    ///   merely `detJ > 0`. A bare `detJ > 0` bisects each backed-off node onto the
+    ///   `detJ → 0⁺` degeneracy boundary — manufacturing slivers exactly where the move was
+    ///   largest; holding `detJ` above a fraction of its healthy rest value keeps the
+    ///   backed-off elements well-shaped.
+    ///
+    /// For each move the full target is tried first; if it would drop an incident element
+    /// below the floor at any Gauss point, the node is bisected back along the segment
+    /// `straight → target` to the furthest point that keeps every incident element above the
+    /// floor. The original position (`t = 0`) is always feasible for `quality_floor < 1`, so
+    /// in the worst case a node simply stays put. Nodes are swept in ascending `VertexId`
+    /// order, so the result is deterministic. The reference `detJ_rest` per element is
+    /// captured once, from `self`, before any node moves — so curving several midsides of the
+    /// same element still measures each against that element's original, healthy geometry.
+    ///
+    /// **All four Gauss points are checked, not one.** A quadratic element's Jacobian is
+    /// *not* constant once a midside leaves its edge midpoint
+    /// ([`Element::rest_jacobian_dets`], and `tet10::rest_jacobian_dets_vary_per_gauss_point_when_curved`),
+    /// so a single-point check would miss a corner of the element folding over.
+    ///
+    /// Vertices not named in `moves` are untouched, and the topology (connectivity, boundary
+    /// faces, materials, interface flags) is unchanged. [`QualityMetrics`] are deliberately
+    /// **not** recomputed: they are four-corner quantities (`quality::compute_metrics` reads
+    /// `tet_vertices` only) and corners never move here, so recomputing them would be a
+    /// no-op. That is also why [`Mesh::quality`] cannot serve as this method's validity
+    /// oracle — it is structurally blind to midside-induced degeneracy, and
+    /// [`Element::rest_jacobian_dets`] is the oracle that is not.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `quality_floor` is not in `[0, 1)` — a floor `≥ 1` would reject the original
+    /// mesh and a negative floor is meaningless — if a move names a vertex out of range, or
+    /// if a move names a **corner** (`VertexId < n_corners`). The corner case is rejected
+    /// rather than honoured: moving a corner while its midsides stay at their old positions
+    /// silently curves every incident element, which is a different (and much riskier)
+    /// operation than curving a surface. Conform corners *before* enrichment, with
+    /// [`SdfMeshedTetMesh::with_projected_nodes`](crate::SdfMeshedTetMesh::with_projected_nodes).
+    #[must_use]
+    pub fn with_projected_midsides(
+        mut self,
+        moves: &[(VertexId, Vec3)],
+        quality_floor: f64,
+    ) -> Self {
+        /// Bisection steps for the back-off (~`2⁻⁴⁰` blend resolution).
+        const BISECT_ITERS: usize = 40;
+
+        assert!(
+            (0.0..1.0).contains(&quality_floor),
+            "quality_floor must be in [0, 1); got {quality_floor}"
+        );
+        for &(v, _) in moves {
+            assert!(
+                (v as usize) >= self.n_corners,
+                "with_projected_midsides moves midside nodes only, but {v} is a corner \
+                 (< n_corners {}) — conform corners before enrichment, with \
+                 SdfMeshedTetMesh::with_projected_nodes",
+                self.n_corners,
+            );
+            assert!(
+                (v as usize) < self.positions.len(),
+                "move names vertex {v} but the mesh has {} vertices",
+                self.positions.len(),
+            );
+        }
+        if moves.is_empty() {
+            return self;
+        }
+
+        let to_project: HashSet<VertexId> = moves.iter().map(|&(v, _)| v).collect();
+        // Incident tets per moved midside: validity is an element property, so a moved node
+        // must keep every element that references it above the floor.
+        let mut incident: HashMap<VertexId, Vec<usize>> = HashMap::new();
+        for (ti, t) in self.tets.iter().enumerate() {
+            for &v in &t[4..10] {
+                if to_project.contains(&v) {
+                    incident.entry(v).or_default().push(ti);
+                }
+            }
+        }
+
+        let element = Tet10;
+        let tets = &self.tets;
+        let dets_of = |positions: &[Vec3], ti: usize| -> [f64; 4] {
+            let x_ref = SMatrix::<f64, 10, 3>::from_fn(|a, k| positions[tets[ti][a] as usize][k]);
+            element.rest_jacobian_dets(&x_ref)
+        };
+
+        // `tets` is borrowed above, so take `positions` out to mutate it in place through the
+        // sweep (disjoint state), and put it back after.
+        let mut positions = std::mem::take(&mut self.positions);
+
+        // Reference determinants per incident element, captured from the ORIGINAL mesh before
+        // any node moves — the healthy geometry each back-off is measured against.
+        let mut orig_dets: HashMap<usize, [f64; 4]> = HashMap::new();
+        for tis in incident.values() {
+            for &ti in tis {
+                orig_dets
+                    .entry(ti)
+                    .or_insert_with(|| dets_of(&positions, ti));
+            }
+        }
+
+        // A placement keeps element `ti` valid iff every Gauss point's determinant is finite
+        // and at least `quality_floor` of its original. Finiteness is asserted first: a NaN
+        // determinant must read as invalid, never slip through a bare `≥`.
+        let incident_ok = |positions: &[Vec3], tis: &[usize]| -> bool {
+            tis.iter().all(|&ti| {
+                let orig = orig_dets[&ti];
+                dets_of(positions, ti)
+                    .iter()
+                    .zip(&orig)
+                    .all(|(d, o)| d.is_finite() && *d >= quality_floor * o)
+            })
+        };
+
+        // Deterministic sweep in ascending VertexId order.
+        let mut sorted = moves.to_vec();
+        sorted.sort_by_key(|&(v, _)| v);
+        for (v, target) in sorted {
+            let Some(tis) = incident.get(&v) else {
+                // Unreachable for a well-formed Tet10Mesh (every midside is referenced by the
+                // tet that created it), but a midside of no element has nothing to keep valid.
+                continue;
+            };
+            let vi = v as usize;
+            let straight = positions[vi];
+            let delta = target - straight;
+            // Fast path: the full target keeps every incident element above the floor.
+            positions[vi] = target;
+            if incident_ok(&positions, tis) {
+                continue;
+            }
+            // Back off: largest blend `t ∈ [0, 1]` with `straight + t·delta` valid. `t = 0`
+            // (straight) is always feasible, so `lo` stays a valid lower bound throughout.
+            let mut lo = 0.0_f64;
+            let mut hi = 1.0_f64;
+            for _ in 0..BISECT_ITERS {
+                let t = 0.5 * (lo + hi);
+                positions[vi] = straight + delta * t;
+                if incident_ok(&positions, tis) {
+                    lo = t;
+                } else {
+                    hi = t;
+                }
+            }
+            positions[vi] = straight + delta * lo;
+        }
+        self.positions = positions;
+        self
+    }
+
     /// Move the boundary midside nodes onto the true rigid surface `sdf` so the
     /// [`Tet10`] element integrates over the real curved
     /// geometry rather than the inscribed facet chords — the SDF-projection
@@ -400,6 +566,7 @@ mod tests {
     use crate::material::MaterialField;
     use crate::mesh::{HandBuiltTetMesh, SingleTetMesh};
     use crate::sdf_bridge::{SphereSdf, project_point_onto_sdf};
+    use std::collections::BTreeSet;
 
     fn canonical_field() -> MaterialField {
         MaterialField::uniform(1.0e5, 4.0e5)
@@ -715,6 +882,181 @@ mod tests {
             }
         }
         assert!(engaged, "the aggressive projection must trigger back-off");
+    }
+
+    // --- with_projected_midsides: the caller-targeted, quality-floored rung ---
+
+    /// Rest-Jacobian determinants of every element at every Gauss point.
+    fn all_dets(mesh: &Tet10Mesh) -> Vec<[f64; 4]> {
+        let element = Tet10;
+        (0..mesh.n_tets() as TetId)
+            .map(|t| {
+                let corners = mesh.tet_vertices(t);
+                let mids = mesh.tet_midside_nodes(t).expect("midsides");
+                let mut nodes = [Vec3::zeros(); 10];
+                for (a, &c) in corners.iter().enumerate() {
+                    nodes[a] = mesh.positions()[c as usize];
+                }
+                for (i, &m) in mids.iter().enumerate() {
+                    nodes[4 + i] = mesh.positions()[m as usize];
+                }
+                let x_ref = SMatrix::<f64, 10, 3>::from_fn(|a, k| nodes[a][k]);
+                element.rest_jacobian_dets(&x_ref)
+            })
+            .collect()
+    }
+
+    /// The worst `detJ / detJ_rest` over every element and Gauss point.
+    fn worst_det_ratio(curved: &Tet10Mesh, straight: &Tet10Mesh) -> f64 {
+        all_dets(curved)
+            .iter()
+            .zip(all_dets(straight))
+            .flat_map(|(c, s)| c.iter().zip(s).map(|(d, o)| d / o).collect::<Vec<_>>())
+            .fold(f64::INFINITY, f64::min)
+    }
+
+    /// A reachable target is delivered exactly, and nothing else moves: corners, unnamed
+    /// midsides and the connectivity are all bit-identical.
+    #[test]
+    fn with_projected_midsides_moves_only_the_named_midsides() {
+        let straight = single_tet10();
+        let n_corners = straight.n_corners();
+        let before = straight.positions().to_vec();
+
+        // A small bulge on one midside — far below any inversion threshold, so the back-off
+        // never engages and the node lands on its target bit-for-bit.
+        let named = n_corners as VertexId;
+        let target = before[named as usize] + Vec3::new(0.0, 0.0, 1.0e-4);
+        let curved = straight
+            .clone()
+            .with_projected_midsides(&[(named, target)], 0.05);
+
+        assert_eq!(
+            curved.positions()[named as usize],
+            target,
+            "a feasible target must be delivered exactly (the coverage the FSU gate counts)",
+        );
+        for (v, p) in before.iter().enumerate() {
+            if v as VertexId != named {
+                assert_eq!(
+                    curved.positions()[v],
+                    *p,
+                    "vertex {v} must not move — only the named midside does",
+                );
+            }
+        }
+        for t in 0..curved.n_tets() as TetId {
+            assert_eq!(curved.tet_vertices(t), straight.tet_vertices(t));
+            assert_eq!(
+                curved.tet_midside_nodes(t),
+                straight.tet_midside_nodes(t),
+                "connectivity must be unchanged — only positions move",
+            );
+        }
+        // An empty move list is a byte-identical no-op.
+        let noop = straight.clone().with_projected_midsides(&[], 0.05);
+        assert_eq!(noop.positions(), straight.positions());
+    }
+
+    /// The back-off engages on a grossly-inverting target and holds the quality floor at
+    /// EVERY Gauss point — and the floor is what stops it, not slack: the worst
+    /// determinant ratio lands just above `quality_floor`, where a bare `detJ > 0`
+    /// predicate (the `with_sdf_projected_boundary` rule) would have bisected onto the
+    /// `detJ → 0⁺` degeneracy boundary instead.
+    #[test]
+    fn with_projected_midsides_backs_off_to_the_quality_floor_not_to_degeneracy() {
+        let floor = 0.05_f64;
+        let cube4 = HandBuiltTetMesh::uniform_block(2, 0.1, &canonical_field());
+        let straight = Tet10Mesh::from_tet4(&cube4);
+        let n_corners = straight.n_corners();
+        let before = straight.positions().to_vec();
+
+        // Fling every boundary midside ten edge-lengths along +x: wildly infeasible, so every
+        // move is decided by the back-off rather than by the target.
+        let boundary: BTreeSet<VertexId> = straight
+            .boundary_faces6()
+            .expect("6-node faces")
+            .iter()
+            .flat_map(|f| [f[3], f[4], f[5]])
+            .collect();
+        let moves: Vec<(VertexId, Vec3)> = boundary
+            .iter()
+            .map(|&m| (m, before[m as usize] + Vec3::new(1.0, 0.0, 0.0)))
+            .collect();
+        let curved = straight.clone().with_projected_midsides(&moves, floor);
+
+        // Corners never move; only the named midsides do.
+        assert_eq!(
+            &curved.positions()[..n_corners],
+            &before[..n_corners],
+            "corners must never move",
+        );
+        for (v, p) in before.iter().enumerate().skip(n_corners) {
+            if !boundary.contains(&(v as VertexId)) {
+                assert_eq!(
+                    curved.positions()[v],
+                    *p,
+                    "interior midside {v} was not named and must not move",
+                );
+            }
+        }
+
+        // The floor holds everywhere — every element, every Gauss point.
+        let worst = worst_det_ratio(&curved, &straight);
+        assert!(
+            worst >= floor,
+            "worst detJ/detJ_rest {worst:.4} fell below the quality floor {floor}",
+        );
+        // ...and it is the floor doing the work: at least one element sits within a
+        // bisection-resolution sliver of it. A `detJ > 0` back-off would report ~0 here.
+        assert!(
+            worst < 2.0 * floor,
+            "the back-off did not bind (worst ratio {worst:.4}) — this fixture must exercise it",
+        );
+        // The back-off engaged, and every node it moved stayed on the straight→target segment.
+        // Not *every* node backs off, and that is a property of the oracle worth stating: the
+        // rest Jacobian is sampled at four interior Gauss points, so a midside displaced away
+        // from its element's interior can leave all four determinants comfortably positive.
+        // The floor bounds degeneracy; it does not bound absurdity.
+        let mut engaged = 0usize;
+        for &(m, target) in &moves {
+            let start = before[m as usize];
+            let step = curved.positions()[m as usize] - start;
+            let seg = target - start;
+            if step.norm() < seg.norm() - 1e-9 {
+                engaged += 1;
+            }
+            if step.norm() > 1e-12 {
+                let t = step.dot(&seg) / seg.dot(&seg);
+                assert!(
+                    (step - seg * t).norm() < 1e-9 * seg.norm(),
+                    "midside {m} left the straight→target segment",
+                );
+            }
+        }
+        assert!(
+            engaged > 0,
+            "this fixture must drive the back-off — none of {} moves was cut short",
+            moves.len(),
+        );
+    }
+
+    /// A corner id is rejected loudly rather than honoured: moving a corner while its
+    /// midsides stay put silently curves every incident element.
+    #[test]
+    #[should_panic(expected = "moves midside nodes only")]
+    fn with_projected_midsides_rejects_a_corner_id() {
+        let straight = single_tet10();
+        drop(straight.with_projected_midsides(&[(0, Vec3::new(0.0, 0.0, 1.0))], 0.05));
+    }
+
+    /// A floor `≥ 1` would reject the original mesh — rejected up front.
+    #[test]
+    #[should_panic(expected = "quality_floor must be in [0, 1)")]
+    fn with_projected_midsides_rejects_an_out_of_range_floor() {
+        let straight = single_tet10();
+        let m = straight.n_corners() as VertexId;
+        drop(straight.with_projected_midsides(&[(m, Vec3::zeros())], 1.0));
     }
 
     /// The six-node boundary faces' corner triples equal the three-node

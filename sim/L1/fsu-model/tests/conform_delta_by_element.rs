@@ -1,6 +1,10 @@
-//! **Rung-2 per-element conform delta** of `docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` (§4.3's
-//! sanity column): what seating the bonded band on the real endplate does to `k_disc`, on both
+//! **Per-element conform delta** of `docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` (§4.3's sanity
+//! column): what seating the bonded band on the real endplate does to `k_disc`, on both
 //! elements, over one 2x2 table.
+//!
+//! Built at rung 2; it also carries **rung 3's committed `k_disc` shift**, because the
+//! conformed Tet10 arm is exactly the disc rung 3 curved — see the shift note at the committed
+//! table below.
 //!
 //! Lives here rather than in `src/lib.rs`'s test module for the reason `sim-coupling` keeps all
 //! of its gates in `tests/`: an `#[ignore]`d, licence-gated figure of merit can never execute
@@ -30,6 +34,13 @@ use sim_soft::{Element, Mesh};
 /// The stepping does not move the measurement, which was checked rather than assumed: the raw
 /// column below reproduces rung 1's two-probe numbers to four decimals (−0.2811 / −0.2788
 /// Tet4, −0.1873 / −0.1849 Tet10). It only makes the conformed arms solvable at all.
+///
+/// ⚠ **Rung 3 nearly cost this stepping too, and that is why the curved disc has its own
+/// quality floor.** With the midside projection held to the *corner* floor (0.05) the curved
+/// disc no longer survives even a 0.15° jump from rest — it walks in 0.05° steps and stalls
+/// Newton with a `NaN` residual at anything larger, which is what this test found first. At
+/// `cf_fsu_model`'s `DISC_MIDSIDE_CONFORM_QUALITY_FLOOR` (0.4, chosen on the measured table in
+/// that constant's doc) the 0.5° stepping below solves again, on the curved disc, unchanged.
 fn k_disc_flex_ext<Msh, E, const N: usize, const G: usize>(
     disc: &mut BondedDisc<Msh, E, N, G>,
 ) -> (f64, f64)
@@ -130,8 +141,19 @@ fn conform_delta_by_element_fom() {
     //
     //           flex      ext          flex      ext        conform ratio
     //   Tet4    raw −0.2811 / −0.2788  conf −0.2760 / −0.2738   0.982 / 0.982
-    //   Tet10   raw −0.1873 / −0.1849  conf −0.1844 / −0.1820   0.984 / 0.984
+    //   Tet10   raw −0.1873 / −0.1849  conf −0.1845 / −0.1821   0.985 / 0.985
     //   element ratio (Tet10/Tet4): raw 0.666 / 0.663, conformed 0.668 / 0.665
+    //
+    // ★ **The rung-3 `k_disc` shift, which is this table's job to record.** The conformed Tet10
+    // arm is now the *curved* disc (its bonded-face boundary midsides are projected onto the
+    // real endplate, not left at their edge midpoints). Rung 2 measured the same arm with
+    // straight midsides at −0.1844 / −0.1820; curving them moves it to −0.1845 / −0.1821, a
+    // shift of **0.05 %** — an order of magnitude smaller than the conform's own ~1.5-1.8 % and two
+    // orders below the element order's ~33 %. Read that as the arc's framing holding rather
+    // than as a null result: the geometric claim is measured directly by
+    // `curved_tet10_midsides_seat_on_the_endplate_fom` (the bonded face's RMS distance to the
+    // bone falls 0.796 → 0.694 mm), and `k_disc` is its physics consequence, which a
+    // require-improvement gate would have false-failed in either direction.
     //
     // Two things this table settles. (a) **The conform costs ~1.8 % of `k_disc`, not ~4 %.**
     // #701's FOM printed its arms at two decimals (−0.28 → −0.27) and the ~4 % figure was
@@ -144,8 +166,8 @@ fn conform_delta_by_element_fom() {
     for (kc, kr, expect, name) in [
         (k4_con_f, k4_raw_f, 0.982, "Tet4 flexion"),
         (k4_con_e, k4_raw_e, 0.982, "Tet4 extension"),
-        (k10_con_f, k10_raw_f, 0.984, "Tet10 flexion"),
-        (k10_con_e, k10_raw_e, 0.984, "Tet10 extension"),
+        (k10_con_f, k10_raw_f, 0.985, "Tet10 flexion"),
+        (k10_con_e, k10_raw_e, 0.985, "Tet10 extension"),
     ] {
         let ratio = kc / kr;
         assert!(
@@ -163,8 +185,8 @@ fn conform_delta_by_element_fom() {
         (k10_raw_e, -0.1849, "Tet10 raw extension"),
         (k4_con_f, -0.2760, "Tet4 conformed flexion"),
         (k4_con_e, -0.2738, "Tet4 conformed extension"),
-        (k10_con_f, -0.1844, "Tet10 conformed flexion"),
-        (k10_con_e, -0.1820, "Tet10 conformed extension"),
+        (k10_con_f, -0.1845, "Tet10 conformed flexion"),
+        (k10_con_e, -0.1821, "Tet10 conformed extension"),
     ] {
         assert!(
             ((1.05 * expect)..=(0.95 * expect)).contains(&k),
