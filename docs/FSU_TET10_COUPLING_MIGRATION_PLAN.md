@@ -297,9 +297,15 @@ never via a separate `BoundaryConditions` path. State that as the invariant.
 the shape functions node-for-node, pinned by `tet10_mesh.rs::tet_midside_nodes_match_canonical_table`
 and `enrich.rs::local_slots_match_canonical_table`. Never use the `(min,max)` global dedup key
 for the local slot (`enrich.rs:18-26` warns about exactly this). **A permuted table would be
-caught by no k_disc gate** — it pins roughly the same *number* of midsides but the wrong ones,
-a partially self-cancelling error that lands inside any plausible ratio band. The §4.2 band-count
-cross-check exists for this.
+caught by no k_disc gate** — it pins the wrong midsides, a partially self-cancelling error that
+lands inside any plausible ratio band. The §4.2 cross-check exists for this.
+
+> **⚠ Measured at rung 1 — correcting this paragraph's original claim that a permuted table
+> "pins roughly the same *number* of midsides".** Rotating the slot index by one on the synthetic
+> disc moved the band from 413 to 647 ids, so *that* permutation would also have tripped an exact
+> size assert. Set equality is still the right instrument (a size-preserving permutation is
+> possible, and a size assert would then see nothing), but do not repeat the claim that a permuted
+> table is invisible to the band counts.
 
 ### 2.3 Differentiable bond — restrict at the type level, not with a runtime panic
 

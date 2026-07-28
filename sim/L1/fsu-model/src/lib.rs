@@ -522,11 +522,17 @@ pub fn build_bonded_disc_tet10(
 /// - **[`BTreeSet`], not a `HashSet`** — it dedups (a midside is shared by every incident
 ///   tet, and `BondedSandwich::from_tet_mesh` rejects a repeated id because it would
 ///   double-count that node's reaction) *and* it fixes iteration order, which the bond's
-///   wrench sum `Σ rᵢ × fᵢ` walks — so a `HashSet` would make `k_disc` non-reproducible.
+///   wrench sum walks (`face_wrench` accumulates `w[3..] += f` and the moment term in
+///   `verts.iter()` order, `sim/L1/coupling/src/bonded.rs`) — so a `HashSet`, whose order is
+///   randomly seeded per process, would make `k_disc` non-reproducible run to run.
 ///
-/// The local edge→midside slot mapping is [`TET10_EDGE_NODES`], cited rather than re-typed
-/// (a permuted table pins the same *number* of midsides but the wrong ones, which no
-/// stiffness band can catch — the band cross-check in the rung-1 gate exists for that).
+/// The local edge→midside slot mapping is [`TET10_EDGE_NODES`], cited rather than re-typed: a
+/// permuted table pins the *wrong* midsides, and the instrument for that is the rung-1 gate's
+/// set-equality cross-check, not a stiffness band. (Measured, so the limits are known rather
+/// than assumed: rotating the slot index by one on the synthetic disc changed the band from
+/// 413 to 647 ids, which an exact size assert would also have caught — the reason equality is
+/// still the right instrument is that a size-preserving permutation is possible and a size
+/// assert would then see nothing.)
 fn full_face_band(tet10: &Tet10Mesh, corner_band: &[VertexId]) -> Vec<VertexId> {
     let corners: std::collections::HashSet<VertexId> = corner_band.iter().copied().collect();
     let mut band: BTreeSet<VertexId> = corner_band.iter().copied().collect();
@@ -1301,6 +1307,23 @@ mod tests {
             (lo - 945.0).abs() < 0.2,
             "inferior band must seat on the inferior box face z ≈ 945.0, got {lo:.3}"
         );
+
+        // The QUADRATIC arm of the same conform. `build_bonded_disc_tet10` accepts
+        // `endplates` because rung 2 measures the conform on both elements, and shipping an
+        // accepted-but-unexercised argument is how a silent break gets in: everything before
+        // the element choice is the same `prepare_disc` code, but enrichment reads the
+        // *conformed* corner positions, so the midsides land on moved edges. Assert the
+        // conformed quadratic disc bonds, still ties full-face (the band closure is a
+        // topological property, unchanged by the conform), and still sweeps soundly. The
+        // exact-geometry residual FOM this feeds is rung 2's gate, not this test's.
+        let mut conf10 = build_bonded_disc_tet10(synthetic_disc(), &params, Some(endplates))
+            .expect("conformed synthetic Tet10 disc bonds");
+        let prepared = prepare_disc(synthetic_disc(), &params, Some(endplates))
+            .expect("prepare conformed synthetic disc");
+        let mesh10 = Tet10Mesh::from_tet4(&prepared.tet);
+        assert_full_face_band(&mesh10, &prepared.inferior, conf10.sandwich.lower_face());
+        assert_full_face_band(&mesh10, &prepared.superior, conf10.sandwich.upper_face());
+        assert_restoring_sweep(&conf10.capture_flexion(&angles), 2e-2);
     }
 
     /// The exact-geometry FOM gate: bonding the disc's endplate band onto the **real**
@@ -1605,11 +1628,14 @@ mod tests {
     /// so the settled claim is that the quadratic element relaxes this bending mode by ~1/3
     /// at fixed geometry. Earning the accuracy claim is rung 5's h-refinement.
     ///
-    /// **The band cross-check, not the ratio, is the assertion with teeth.** A partial
-    /// (corner-only) tie drifts the ratio *toward* 0.570 and sits comfortably inside any
-    /// band drawn around 0.665, so the stiffness cannot tell a full-face tie from a
-    /// spot-welded one; `assert_full_face_band` can, and does (mutation-verified: the
-    /// corner-only trap and a permuted slot table both fail it).
+    /// **The band cross-check, not the ratio, is the assertion with teeth.** An under-tied
+    /// band drifts the ratio from 0.665 *toward* the corner-only 0.570, so a *partial*
+    /// under-tie — some midsides missed, or a mis-indexed slot table — lands between the two
+    /// and sits comfortably inside any band drawn around 0.665. (To be exact about what the
+    /// stiffness band does cover: a *fully* corner-only tie at 0.570 would fall outside both
+    /// the pre-registered bracket and the ±5 % pin. It is the partial case, and a permuted
+    /// table, that the stiffness cannot see.) `assert_full_face_band` sees all of them, and
+    /// is mutation-verified against both traps.
     #[test]
     #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
     fn tet10_full_face_bond_element_order_fom() {
