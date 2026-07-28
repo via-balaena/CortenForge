@@ -123,8 +123,10 @@ impl BondStep {
 ///
 /// **`Msh` comes first deliberately:** every existing annotation spells
 /// `BondedSandwich<SdfMeshedTetMesh>`, so binding the *mesh* to the first parameter keeps
-/// those source-compatible and the Tet4 monomorphization byte-identical (pinned by
-/// `bonded_tet4_reaction_byte_identical_golden`).
+/// those source-compatible and the Tet4 monomorphization byte-identical. Pinned by
+/// `bonded_tet4_reaction_byte_identical_golden` **for the `HandBuiltTetMesh` arm** — the
+/// `SdfMeshedTetMesh` arm is license-gated and cannot carry a CI golden, so its identity
+/// follows from both arms instantiating the same (mesh-independent) generic bodies.
 ///
 /// Construct a primitive block disc with [`BondedSandwich::new`] or
 /// bond an arbitrary tet mesh — e.g. the real intervertebral disc
@@ -237,8 +239,10 @@ impl<Msh: Mesh, E: Element<N, G> + Default, const N: usize, const G: usize>
     /// same `tol` under stiff near-incompressible modes; easy problems early-exit
     /// unaffected.
     ///
-    /// **N-aware.** Linear elements keep the original 50 — a cap, and one the validated
-    /// Tet4 scenes do not reach, so the Tet4 path is unchanged. Higher-order elements get
+    /// **N-aware.** Linear elements keep 50 — literally the same value as the module-level
+    /// const this replaced, so the Tet4 path is unchanged *by construction*, not merely by
+    /// measurement (whether any Tet4 scene approaches the cap is unmeasured and, at an
+    /// unchanged value, irrelevant). Higher-order elements get
     /// far more headroom: a Tet10 bonded solve has an indefinite tangent and falls back
     /// to LU on most iterations, converging at a much higher iteration count. Note the
     /// cap **hard-fails** rather than truncating (`replay_step` panics on

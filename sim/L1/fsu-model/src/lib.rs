@@ -456,6 +456,16 @@ impl<Msh: Mesh, E: Element<N, G> + Default, const N: usize, const G: usize>
     /// The disc surface triangulation (outward-oriented boundary faces), indexing into
     /// [`Self::deformed_nodes_native`]. Constant across a flexion sweep — only the vertex
     /// positions deform — so a viewer snapshots it once and rebuilds each frame's mesh.
+    ///
+    /// ⚠ **Corner-only for higher-order elements.** These are 3-vertex triangles over
+    /// *corner* nodes. On a quadratic disc, [`Self::deformed_nodes_native`] returns every
+    /// node (corners *and* midsides) while this triangulation still references corners
+    /// alone — the indices stay valid (enrichment preserves the corner id-space and keeps
+    /// it first), but the rendered surface silently reflects the **linear** field and
+    /// omits the quadratic enrichment. Nothing breaks; the picture is just less curved
+    /// than the physics. Skinning against the 6-node boundary faces is the named viz
+    /// follow-on in `docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §6 — until it lands, do
+    /// not read a Tet10 disc's rendered surface as `rendered === contacts`.
     #[must_use]
     pub fn boundary_faces(&self) -> &[[VertexId; 3]] {
         self.sandwich.soft_boundary_faces()
