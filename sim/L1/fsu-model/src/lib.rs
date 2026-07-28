@@ -1643,9 +1643,17 @@ mod tests {
     ///
     /// "Delivered" means the node reached its *full* projected target (`|moved − target| <
     /// 1e-9` in the solver frame), not merely that it moved. Both projection helpers back off
-    /// **silently**, so a run in which 95 % of the midsides quietly stayed straight would
-    /// satisfy any non-vacuity-plus-max-move gate while delivering almost none of the
-    /// geometry — the fraction is what makes that visible.
+    /// **silently**, so a run in which most midsides quietly stayed straight would satisfy any
+    /// non-vacuity-plus-max-move gate while delivering little of the geometry.
+    ///
+    /// ★★ **The three members catch different things, and which catches which was measured —
+    /// the tidy story that "the fraction is the one with teeth" is FALSE.** The fraction sees
+    /// the back-off engaging *more* (a mutant that breaks the projector's incidence map takes it
+    /// 67.9 % → 49.5 %). It is blind to a mutation that changes what the projector is *asked*
+    /// for, because a smaller request is easier to satisfy: a silent 0.2 mm cap on every move
+    /// takes the fraction the WRONG WAY, 67.9 % → 68.6 %, and is caught by `max_move`
+    /// (1.388 → 0.867) and `mean_move` (0.127 → 0.096) instead — and, first, by the §4.3
+    /// residual pin. Report and gate all three; do not quote the fraction as the instrument.
     // Node counts are in the thousands — exact in f64.
     #[allow(clippy::cast_precision_loss)]
     fn projection_coverage(
@@ -2979,6 +2987,16 @@ mod tests {
         // authorised gives 484 of 580 midsides at **79.5 %** delivered — barely better — while
         // dropping 96 midsides that were *improving* (their RMS falls 1.477 → 1.198). So the
         // simpler rule ships: project every authorised bonded-face boundary midside.
+        //
+        // ⚠⚠ **And a second mutant refuted this gate's own advertised justification.** The
+        // fraction is *not* the member with the teeth in every direction: a silent 0.2 mm cap
+        // inside `with_projected_midsides` (the archetypal "backs off without telling you" bug)
+        // moves it the WRONG way, 67.9 % → 68.6 %, because a smaller request is easier to
+        // satisfy. What catches that mutant is the pair `max_move` 1.388 → 0.867 and `mean_move`
+        // 0.127 → 0.096 — and, firing first, the §4.3 residual pin (authorised curved RMS
+        // 0.694 → 0.733, which still *improves* on the straight arm and so passes the
+        // strict-decrease assert; only the two-sided pin sees it). Gate all three, and read the
+        // fraction as covering the back-off-engages-more direction only.
         assert_within_5_percent(&[
             (delivered, 0.679, "delivered fraction"),
             (max_move, 1.388, "max midside move (mm)"),
