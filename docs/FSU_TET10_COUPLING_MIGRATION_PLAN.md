@@ -180,7 +180,8 @@ a segment-ROM swing.** Gate on the standalone k_disc FOM **and** the exact-geome
   (§2.2). `CoupledFsu::build` flips to the curved Tet10 conformed disc at rung 4.
 - **`tools/cf-spine-studio`** — *not in v1's scope list, but it is in scope.* `pub fsu:
   CoupledFsu` (`scene.rs:222`) is a public field; and its `capture_ramp` capture is documented
-  at ~85 s (`scene.rs:314`, `coupled.rs:246`) — a Tet10 disc makes that ~14 min (§5.1).
+  at ~85 s (`scene.rs:314`, `coupled.rs:246`) — a Tet10 disc makes that an estimated ~14 min
+  (§5.1 shows the arithmetic and its 14–45 min band).
 
 **Downstream re-grade list** ([[feedback_grade_downstream_crates_on_public_type_change]] —
 `BondedSandwich`/`BondedDisc`/`CoupledFsu` are public types): `sim-coupling`, `cf-fsu-model`,
@@ -368,7 +369,7 @@ Each rung: recon-confirm → commit → gating cold-reads → fixes-on-top → A
 - **Tet10 lands on the RAW mesh first (rung 1), conform comes after (rung 2).** v1 gated
   rung 2a on `ratio ≈ 0.665` but *re-measured on the conformed mesh*, where nobody has measured
   anything — an anchor against an unmeasured baseline. On the raw mesh the expected value is
-  **known** (0.665, §0.1), so the first Tet10 gate becomes a
+  **predicted in advance** (0.665, §0.1), so the first Tet10 gate becomes a
   validate-the-harness-against-a-known-value ([[feedback_validate_new_harness_against_known_value]])
   instead of a guess. The two axes are independent: conform touches `fsu-model/src/lib.rs:338`, element
   touches `bonded.rs:165`.
@@ -487,12 +488,15 @@ element + band:
    solver tol — asserted, not printed.
 2. **Direction + magnitude (hard, pre-registered):** `|k_tet10| < |k_tet4|` **and**
    `ratio ∈ 0.60..=0.73`, asserted **per direction** (flexion and extension separately — §0.1
-   quoted a *mean*, and the arms differed 1.3%). The bracket is pre-registered around the known
-   0.665 because this rung reproduces the spike's exact configuration; a value outside it means
-   the harness does not reproduce the spike and the rung stops.
-3. **★ Full-face-tie cross-check (hard, non-vacuity):** committed exact band sizes
-   (`inferior == 1005`, `superior == 1598`), asserted `==`; **plus the same set computed a
-   second way** — every midside slot of every `boundary_faces6` face whose 3 corners are all in
+   quoted a *mean*, and the arms differed 1.3%). The bracket is pre-registered around the spike's
+   0.665 — **a prediction from reverted code (§0.1), not a verified anchor** — because this rung
+   reproduces the spike's exact configuration; a value outside it means the harness does not
+   reproduce the spike and the rung stops.
+3. **★ Full-face-tie cross-check (hard, non-vacuity):** exact band sizes asserted `==`. The
+   spike's 228→1005 / 367→1598 are **expected values from reverted code, not anchors** — measure
+   them in this rung and commit the measured numbers; a mismatch against the spike is itself the
+   finding. **Plus the same set computed a second way** — every midside slot of every
+   `boundary_faces6` face whose 3 corners are all in
    the corner band — asserted identical. This is the only gate that catches a `TET10_EDGE_NODES`
    mis-index or a silent `referenced_vertices` filter (§2.2); a ratio band cannot, since a partial
    tie moves the ratio *toward* 0.570 and lands comfortably inside any band drawn around 0.665.
@@ -630,7 +634,9 @@ The disc is ~0.4% of ROM, so a 33% softer disc cannot move the band; `ROM_TOL_DE
 `LIT_EXTENSION_DEG` are tripwires, not payoff gates, and if they move the *prediction* was wrong
 — re-anchor honestly, never tune Tet10 to the old number
 ([[feedback_anti_rot_invariants_vs_exact_anchors]]). **What does break is `RUNG7_K_DISC ± 0.02`
-(§0.3), by ~4.8×** — that is a planned, single, documented re-anchor at rung 4, not a surprise.
+(§0.3), by roughly 4.8× the tolerance** — an indicative magnitude, not an exact prediction
+(§0.3 states why: raw-mesh ±0.5° mean vs a 0.86° probe on a conformed, curved disc). That is a
+planned, single, documented re-anchor at rung 4, not a surprise.
 
 ### 5.5 Rollback — what happens if a gate comes out wrong (v1 had no clause)
 
@@ -707,7 +713,8 @@ of `fsu_coupled_contact.rs`). Ladder-changing catches:
 - **v1's rung-1 gate could not fail** — `disc_endplate_conform_moment_rotation_fom` builds its
   own raw and conformed discs and never mentions `CoupledFsu`, so it passes bit-identically
   before and after the flip it was meant to gate. → §3 (rungs decoupled from `CoupledFsu`).
-- **A hard `k_disc` assert v1 missed**, which rung 2a would have broken by ~4.8×. → §0.3, rung 4.
+- **A hard `k_disc` assert v1 missed**, which *v1's* rung 2a would have broken by roughly 4.8×
+  the tolerance (indicative magnitude — see §0.3's caveat). → §0.3, rung 4.
 - **v1's ROM sanity assert could not trip and would fail on day one.** → §4.6.
 - **v1's rung-0 golden could never have run in CI.** → §4.1.
 - **v1's §2.2 recipe would have panicked** (duplicate midside ids), and reusing today's band
