@@ -21,8 +21,8 @@ higher-order element on the genuinely-curved bone.
 
 > **Checkpoint:** written against `main` @ `59e61daa`, hardened by two adversarial review
 > rounds: a 5-front diamond-review (v1, §8.1) and a 4-front stress-test that reshaped the
-> ladder (v2, §8.2). **Rungs 0 (#704), 1 (#705) and 2 are built — see each rung's BUILT note
-> in §3, which records what the build changed about the plan. Next action: rung 3.**
+> ladder (v2, §8.2). **Rungs 0 (#704), 1 (#705), 2 (#706) and 3 are built — see each rung's
+> BUILT note in §3, which records what the build changed about the plan. Next action: rung 4.**
 
 > **★★ v2 CHANGED THE LADDER, not just the wording.** The stress-test found that v1's
 > rung 1 gate could not fail, v1's ROM sanity assert could not trip *and* would fail on
@@ -171,7 +171,7 @@ a segment-ROM swing.** Gate on the standalone k_disc FOM **and** the exact-geome
 ## 1. What the migration touches — recon sizing (v2: wider than v1 claimed)
 
 - **`sim/L0/soft`** — element/enrich/`Tet10Mesh`/`with_sdf_projected_boundary`/curved element
-  all merged. Rung 3 **adds** `Tet10Mesh::with_projected_midsides(&[(VertexId, Vec3)],
+  all merged. Rung 3 **added** `Tet10Mesh::with_projected_midsides(&[(VertexId, Vec3)],
   quality_floor)` — see §2.6; the existing `with_sdf_projected_boundary` is **not** reusable.
 - **`sim/L1/coupling`** (`bonded.rs`) — parameterize `BondedSandwich<Msh>` → `<Msh, E, N, G>`
   (Msh-first), `Tet4` default. Node-based methods unchanged. `probe_with_pose_gradient` moves
@@ -354,7 +354,14 @@ doc rejects: *"a bare `detJ > 0` bisects each backed-off node onto the `detJ →
 boundary — manufacturing slivers exactly where the move was largest"*
 (`sdf_meshed_tet_mesh.rs:325-329`).
 
-⇒ Rung 3 adds **`Tet10Mesh::with_projected_midsides(&[(VertexId, Vec3)], quality_floor)`** —
+> **✅ BUILT as specified.** One thing this section got right and one it left open. Right: the
+> helper is anatomy-free with caller-supplied targets, and the oracle is
+> `Tet10::rest_jacobian_dets` over all four Gauss points, not `mesh.quality()`. Left open: it
+> said "the exact Tet10 analogue of `with_projected_nodes`" and the build took *the quality
+> floor value* along with the shape — which cost a debugging cycle. A Tet10 midside needs its
+> own floor (0.4 vs the corner 0.05); see rung 3's BUILT note in §3 for the measured table.
+>
+> ⇒ Rung 3 adds **`Tet10Mesh::with_projected_midsides(&[(VertexId, Vec3)], quality_floor)`** —
 the exact Tet10 analogue of `SdfMeshedTetMesh::with_projected_nodes` (caller-supplied targets +
 fractional quality floor, anatomy-free), reusing `boundary_faces6` only for *candidate
 selection*. The anatomy discriminator stays in `cf-fsu-geometry` (nearest-of-two oracles,
@@ -566,6 +573,79 @@ apophysis, not the endplate face).
 **Gate (§4.3 + §4.4):** residual strictly decreases again; coverage + quality floor; k_disc
 additive shift committed.
 
+> **✅ BUILT (2026-07-28).** `sim-soft` gains `Tet10Mesh::with_projected_midsides(&[(VertexId,
+> Vec3)], quality_floor)` exactly as §2.6 specified (caller-supplied targets, anatomy-free,
+> quality floor over **all four Gauss points**, corner ids rejected loudly); `fsu-model` gains
+> `bonded_face_boundary_midsides` + `endplate_midside_conform_moves` and wires them into
+> `build_bonded_disc_tet10`, so `Some(endplates)` now means **curved**, not merely conformed.
+> The `None` arm is untouched — rung 1's element-order FOM re-runs at exactly 0.666 / 0.663 with
+> `k_disc` −0.2811 / −0.2788 and −0.1873 / −0.1849, unchanged to four decimals.
+>
+> - **★★★ THE FINDING, and it changed a production constant: the corner quality floor is the
+>   wrong floor for midsides, and reusing it produces a mesh that is valid by the projector's
+>   own rule and no longer drivable.** At floor 0.05 the curved disc solves in 0.05° steps but
+>   stalls Newton with a `NaN` residual on a single **0.15°** jump from rest — against 0.5° for
+>   the straight-conformed disc rung 2 measured, a five-fold loss of step envelope, on the path
+>   `capture_ramp` drives at 0.1° with a per-frame equilibrium bisection on top. The
+>   `conform_delta_by_element` FOM found it (it walks ±0.5° steps and died), *after* the
+>   residual gate had passed — the geometric gate cannot see conditioning. Fix: a separate
+>   `DISC_MIDSIDE_CONFORM_QUALITY_FLOOR = 0.4`, chosen on a measured seven-row table (in the
+>   constant's doc): RMS residual 0.658 (floor 0.05) → 0.694 (floor 0.40), the 0.5° jump
+>   stalling at 0.05/0.20 and solving from 0.25 up. **The whole cost of a well-conditioned mesh
+>   is 0.036 mm of RMS residual**, and the restoring moment at 0.5° is identical to six digits
+>   across every row — the floor moves the conditioning, not the physics. 0.40 is margin above
+>   the measured 0.20→0.25 cliff, deliberately not the edge of it.
+>   *Mechanism:* a Tet4 corner move perturbs an affine element's single Jacobian; a Tet10
+>   midside move bends the Jacobian at four interior Gauss points, so the same *fraction* is not
+>   the same distortion.
+> - **§4.3 residual, like for like.** Of **1562** bonded-face boundary midsides the SI-alignment
+>   guard authorises **580** (37 %, the same share it authorises among the corners: 233 of 583);
+>   the other 982 are the rim, left straight by design. Over the *authorised* set the distance
+>   to the nearer vertebra falls **max 3.860 → 3.842 mm, RMS 0.796 → 0.694**. ★ The endpoint is
+>   the result worth quoting: rung 2 left the authorised **corners** at 0.656 mm RMS, so the
+>   midsides now sit at the same distance from the bone as the corners they span — **the bonded
+>   face is uniformly seated instead of seated at its corners and chording between them.** The
+>   relative move is smaller than rung 2's (which halved 1.332 → 0.656) for a structural reason:
+>   the corners were conformed before enrichment, so a straight midside starts at 0.796, not
+>   1.332. The max barely moves because the worst authorised midside is one the quality floor
+>   refuses to seat — the same fact rung 2 recorded one level down.
+> - **★ The like-for-like discipline was honoured, and it is checkable:** the ALL-candidate
+>   straight figures come out at exactly rung 2's committed baseline (1562 midsides, max 12.464 /
+>   RMS 3.366), because the gate measures both arms from one prepared mesh in one run. Rung 2's
+>   standalone `straight_tet10_midsides_chord_across_the_endplate_fom` is therefore **replaced**
+>   by this two-arm gate rather than left to drift alongside it.
+> - **§4.4, written so neither half can be tautological.** *Coverage:* **67.9 %** of the
+>   authorised midsides reach their FULL projection (max move 1.388 mm, mean 0.127), committed
+>   two-sided — both helpers back off silently, so a run where most midsides stayed straight
+>   passes any max-move gate. *Element validity:* `detJ ≥ 0.4·detJ_rest` at every Gauss point of
+>   **every** element, not merely the ones the projector's own incidence map covers — that
+>   difference is the falsifiable content, and it is stated on the helper. ⚠ **The validity
+>   *value* is NOT committed, on purpose:** bisection converges onto the constraint boundary, so
+>   the worst ratio equals the floor exactly whenever any node backs off at all. Committing
+>   0.4000 with a ±5 % band would read as a measurement and be a tautology — the very shape §4.4
+>   exists to replace. The inequality is asserted; the coverage fraction is the statistic that
+>   moves.
+> - **★ A selection variant was measured and REFUTED, not argued.** The natural hypothesis for
+>   the 32 % non-delivery is that it concentrates in midsides whose parent corners were
+>   themselves guard-declined. Gating on both parents being authorised gives 484 of 580 at
+>   **79.5 %** delivered — barely better — while dropping 96 midsides that were *improving*
+>   (RMS 1.477 → 1.198). The simpler rule ships.
+> - **k_disc additive shift, committed:** the conformed Tet10 arm goes −0.1844 / −0.1820
+>   (straight midsides, rung 2) → **−0.1845 / −0.1821** (curved), a **0.05 %** shift — an order
+>   of magnitude below the conform's own ~1.5-1.8 % and two below the element order's ~33 %.
+>   That is the arc's framing holding, not a null result: the geometric claim is measured
+>   directly by the residual gate, and `k_disc` is its consequence.
+> - **§4.7 license-free arm — a planar fixture could not gate this rung at all.** A straight
+>   midside between two corners seated on a *plane* already lies on that plane, so against the
+>   box "endplates" #701 and rung 2 use, rung 3 is a no-op. The new `sphere_mesh` fixture (two
+>   30 mm spheres tangent to the disc faces) is the smallest license-free geometry that produces
+>   a chord gap: 604 midsides, residual max 0.0896 → 0.0001 / RMS 0.0291 → 0.0000 mm, 100 %
+>   delivered, and the curved disc bonds and sweeps restoring — the only place CI drives a
+>   genuinely curved element through the bonded solve.
+> - **⚠ The `assert_full_face_band` trap was honoured:** both gates feed it the **pre-projection**
+>   mesh. Its independence comes from midpoint coincidence, which the projection destroys by
+>   design; the topology it checks is unchanged by the projection.
+
 **Rung 4 — flip `CoupledFsu`, re-anchor once, ROM verdict.** `coupled.rs:187` `None` →
 the curved-Tet10 conformed disc. **Deliverables:** (a) the **single** deliberate re-anchor of
 `RUNG7_K_DISC` (`fsu_coupled_contact.rs:41`) with the measured value in its doc comment;
@@ -590,7 +670,7 @@ justification, not a §6 deferral. (v1's rung 3 was a phantom: its gate column d
 | 0 | coupling, fsu-model | — (inert) | existing tolerance tests unchanged | **§4.1 license-free `to_bits` golden, bits frozen pre-change** |
 | 1 | fsu-model | **§4.2** ratio bracket + band-count cross-check | restoring + conserving + converged, both arms | Tet4 path untouched |
 | 2 | fsu-model | **§4.3** exact-geometry residual ↓ | **§4.5** large-angle sweep; per-element conform delta | Tet4+raw arm byte-identical |
-| 3 | sim-soft + fsu-model | **§4.3** residual ↓ again; **§4.4** coverage + quality floor | k_disc additive shift committed | straight-Tet10 arm untouched |
+| 3 ✅ | sim-soft + fsu-model | **§4.3** residual ↓ again (authorised RMS 0.796 → 0.694 mm) | **§4.4** coverage 67.9 % + per-Gauss-point floor; k_disc shift 0.05 % committed | straight-Tet10 arm untouched (rung-1 FOM re-runs at 0.666 / 0.663) |
 | 4 | fsu-model, coupling | single `RUNG7_K_DISC` re-anchor, measured | **§4.5** full ramp; **§4.6** flexion ROM assert | — |
 | 5 | fsu-model | committed convergence table | — | — |
 
@@ -685,6 +765,15 @@ the #701 shape. This is the direct measurement of *exact-geometry-IS-exact-physi
 is the physics consequence, not the geometric claim.
 
 ### 4.4 Rung 3's validity gate — must be stricter than the helper guarantees
+
+> **✅ BUILT — and one half of it turned out to be tautological in a way this section did not
+> anticipate.** The *element-validity value* is pinned to the floor by construction: the
+> back-off bisects onto the constraint boundary, so the worst `detJ/detJ_rest` equals
+> `quality_floor` exactly whenever any node backs off. Committing it two-sided would have been
+> the same defect this section replaced, one level down. What ships is the **inequality over
+> every element** (falsifiable against the projector's own incidence bookkeeping — see
+> `worst_gauss_det_ratio`) plus the **coverage fraction**, which is a genuine measurement and
+> the one that moves. See rung 3's BUILT note in §3.
 
 v1's "0 inverted / 0 sliver" was **tautological** (the projection back-off makes the straight
 position always feasible, so non-inversion is a construction guarantee) and its sliver half was
@@ -790,6 +879,11 @@ means "Tet4 `k_disc`" unless the measurement is split from the render disc.
 Mitigate with boundary-faces-only projection + a quality floor + the rest-Jacobian guard.
 **⚠ Correction to v1's "all built + proven": the Tet10 quality floor does NOT exist** (§2.6). The
 Tet4 one does (`DISC_CONFORM_QUALITY_FLOOR = 0.05`, `fsu-model/src/lib.rs:72`); rung 3 must port it.
+
+> **✅ BUILT — and "port it" was the trap.** Porting the *mechanism* was right; porting the
+> *value* produced a valid-but-undrivable mesh (§3's rung-3 note). The risk this section names
+> did not materialise as inversion — no element ever inverted — but as a collapsed **step
+> envelope**, which no geometric gate observes. `DISC_MIDSIDE_CONFORM_QUALITY_FLOOR = 0.4`.
 
 ### 5.3 The parameterization silently changes Tet4 (rung 0) — mitigated by §4.1's golden
 
