@@ -1455,11 +1455,13 @@ mod tests {
     /// through the canonical [`TET10_EDGE_NODES`] slot table, while this identifies each
     /// midside's parent corners **geometrically** — a straight Tet10 midside is placed at
     /// exactly `(p[a] + p[b]) * 0.5`, so the corner pair whose midpoint coincides with it
-    /// names its parents without consulting any table. A permuted slot table pins the same
-    /// *number* of midsides but the wrong ones, and a stiffness band cannot see that; this
-    /// can. So can the other trap: a band accidentally filtered through
-    /// `referenced_vertices` (corner-only) loses every midside, and the recomputed set
-    /// still has them.
+    /// names its parents without consulting any table. A permuted slot table pins the *wrong*
+    /// midsides, which the ratio band cannot see; this can, whether or not the permutation
+    /// happens to change the band's size (the one measured did — 413 → 647 — so a size assert
+    /// would have caught that particular rotation, but a size-preserving one would slip past
+    /// it). So does the other trap: a band accidentally filtered through
+    /// `referenced_vertices` (corner-only) loses every midside, and the recomputed set still
+    /// has them.
     ///
     /// Also checks the boundary-face route as a **subset**, not an equality: the midsides of
     /// a fully-in-band `boundary_faces6` face must all be bonded, but the band is a

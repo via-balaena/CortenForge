@@ -416,7 +416,14 @@ measurement.
 > reproduced exactly:** bands `228 → 1005` / `367 → 1598`, nodes `7849 → 19449`, and
 > `k_disc` Tet4 −0.2811 flex / −0.2788 ext vs Tet10 full-face −0.1873 / −0.1849 ⇒ **ratio
 > 0.666 flex / 0.663 ext** (pre-registered bracket 0.60..=0.73, then tightened to ±5 % of the
-> measured values). FOM cost **122 s**, close to §5.1's ~3 min estimate.
+> measured values). Per-direction means reproduce the spike to four decimals (Tet4 −0.27995 vs
+> −0.2800; Tet10 −0.1861 vs −0.1861). FOM cost **122 s**, close to §5.1's ~3 min estimate.
+>
+> **The table's "Tet4 path untouched" was PROVEN, not argued.** Both arms share one new private
+> `prepare_disc`, and the refactor is a *pure move*: a sorted code-line multiset diff of the old
+> `build_bonded_disc` body against `prepare_disc` + the new Tet4 tail removes **zero** old code
+> lines (the only additions are the struct signature and field forwarding), so no floating-point
+> operation changed position — the recipe from `feedback-pure-move-refactor-recipe`.
 >
 > **★ One §4.2 correction the build found:** step 3's "the same set computed a second way —
 > every midside slot of every `boundary_faces6` face whose 3 corners are all in the corner
@@ -532,10 +539,13 @@ element + band:
 3. **★ Full-face-tie cross-check (hard, non-vacuity):** exact band sizes asserted `==`. The
    spike's 228→1005 / 367→1598 are **expected values from reverted code, not anchors** — measure
    them in this rung and commit the measured numbers; a mismatch against the spike is itself the
-   finding. **Plus the same set computed a second way**, asserted identical. This is the only
-   gate that catches a `TET10_EDGE_NODES` mis-index or a silent `referenced_vertices` filter
-   (§2.2); a ratio band cannot, since a partial tie moves the ratio *toward* 0.570 and lands
-   comfortably inside any band drawn around 0.665.
+   finding. **Plus the same set computed a second way**, asserted identical. This is the gate that
+   *reliably* catches a `TET10_EDGE_NODES` mis-index or a silent `referenced_vertices` filter
+   (§2.2) — the size assert catches some of those too, but only when they happen to change the
+   size (see §2.2's rung-1 measurement). A ratio band catches neither reliably: a **partial**
+   under-tie moves the ratio *toward* 0.570 and lands comfortably inside any band drawn around
+   0.665. (A *fully* corner-only tie at 0.570 does fall outside both the bracket and the shipped
+   ±5 % pin — it is the partial case and the permuted table that the stiffness cannot see.)
    **⚠ Corrected during the build:** the "second way" **cannot** be the `boundary_faces6` route
    this plan originally named (every midside slot of every face whose 3 corners are in the band).
    The band is a volumetric slab and its pinned midsides are mostly *interior* (§2.2), so they
