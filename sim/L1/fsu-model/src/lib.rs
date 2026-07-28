@@ -1502,8 +1502,12 @@ mod tests {
         );
     }
 
-    /// The largest flexion angle (rad) a disc survives being **walked** to, in production
-    /// sub-steps, before the fail-closed solver refuses — capped at `limit`.
+    /// `(largest flexion angle survived, restoring moment there)` for a disc **walked** in
+    /// production sub-steps until the fail-closed solver refuses — capped at `limit`.
+    ///
+    /// The moment is what makes "this knob is *only* a conditioning knob" checkable: if the
+    /// physics moved with a quality floor, `moment / angle` would move with it too. That claim
+    /// sits in [`DISC_CONFORM_QUALITY_FLOOR`]'s doc and had no producer until this returned it.
     ///
     /// ★ **One definition of "drives", because until rung 4 there were several.** The
     /// drivability columns of `DISC_CONFORM_QUALITY_FLOOR`'s and
@@ -1525,10 +1529,10 @@ mod tests {
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss
     )]
-    fn max_drivable_angle<Msh, E, const N: usize, const G: usize>(
+    fn drivable_envelope<Msh, E, const N: usize, const G: usize>(
         mut disc: BondedDisc<Msh, E, N, G>,
         limit: f64,
-    ) -> f64
+    ) -> (f64, f64)
     where
         Msh: Mesh,
         E: Element<N, G> + Default,
@@ -1536,7 +1540,7 @@ mod tests {
         let steps = (limit.abs() / crate::coupled::CAPTURE_SUBSTEP)
             .ceil()
             .max(1.0) as usize;
-        let mut reached = 0.0_f64;
+        let (mut reached, mut moment) = (0.0_f64, 0.0_f64);
         // The refusal IS the measurement: an `Err` means the solver fail-closed one
         // sub-step past `reached`, which is precisely what this reports. Discarding the
         // `Result` is deliberate.
@@ -1544,13 +1548,29 @@ mod tests {
             || {
                 for s in 1..=steps {
                     let theta = limit * (s as f64 / steps as f64);
-                    disc.set_flexion(theta);
+                    moment = disc.flexion_moment(theta).0;
                     reached = theta;
                 }
             },
         )));
-        reached
+        (reached, moment)
     }
+
+    /// [`drivable_envelope`]'s angle alone, for callers that only ask "how far".
+    fn max_drivable_angle<Msh, E, const N: usize, const G: usize>(
+        disc: BondedDisc<Msh, E, N, G>,
+        limit: f64,
+    ) -> f64
+    where
+        Msh: Mesh,
+        E: Element<N, G> + Default,
+    {
+        drivable_envelope(disc, limit).0
+    }
+
+    /// One swept row: `(floor, Tet4 k_disc if it drove, Tet10 k_disc if it drove, scanned
+    /// corner RMS, scanned midside RMS)`. `None` means that arm refused the probe.
+    type FloorRow = (f64, Option<f64>, Option<f64>, f64, f64);
 
     /// The floor rows both quality-floor tables are built from.
     ///
@@ -1573,13 +1593,18 @@ mod tests {
         ep: EndplateConform,
         floors: ConformFloors,
         probe: f64,
-    ) -> (bool, bool) {
+    ) -> (Option<f64>, Option<f64>) {
         let p = prepare_disc_at(lofted.clone(), params, Some(ep), floors).unwrap();
         let lin = bond_prepared_tet4(p.duplicate().unwrap(), params);
         let quad = bond_prepared_tet10(p, params, Some(ep), floors);
+        // `Some(k_disc)` when the arm reached the probe, `None` when it refused — so no caller
+        // can read a stiffness off a disc that never got there.
+        let k = |(reached, moment): (f64, f64)| -> Option<f64> {
+            (reached >= probe - 1e-12).then(|| moment / reached)
+        };
         (
-            max_drivable_angle(lin, probe) >= probe - 1e-12,
-            max_drivable_angle(quad, probe) >= probe - 1e-12,
+            k(drivable_envelope(lin, probe)),
+            k(drivable_envelope(quad, probe)),
         )
     }
 
@@ -1634,6 +1659,42 @@ mod tests {
         (corner_rms, midside_rms)
     }
 
+    /// A quality floor must move the **conditioning**, not the physics: `k_disc` has to hold
+    /// still across every floor the disc can actually be driven at.
+    ///
+    /// This is `DISC_CONFORM_QUALITY_FLOOR`'s central claim, and until rung 4's audit it had no
+    /// producer at all — the "<0.1 %" in its doc came from a throwaway diagnostic that was
+    /// deleted. If a quality floor were quietly changing the disc's stiffness, every `k_disc`
+    /// anchor downstream would silently inherit it, so the claim is worth checking rather than
+    /// repeating.
+    fn assert_floor_is_conditioning_only(rows: &[FloorRow]) {
+        for (element, ks) in [
+            ("Tet4", rows.iter().filter_map(|r| r.1).collect::<Vec<_>>()),
+            ("Tet10", rows.iter().filter_map(|r| r.2).collect::<Vec<_>>()),
+        ] {
+            assert!(
+                ks.len() >= 2,
+                "{element}: need two drivable floors to compare"
+            );
+            let (lo, hi) = ks
+                .iter()
+                .fold((f64::MAX, f64::MIN), |(l, h), &k| (l.min(k), h.max(k)));
+            let spread = (hi - lo).abs() / lo.abs();
+            println!(
+                "[{element}] k_disc across drivable floors: {lo:+.4} … {hi:+.4} ({:.2} %)",
+                100.0 * spread
+            );
+            assert!(
+                spread < 0.01,
+                "{element}: k_disc varies {:.2} % across the drivable floors ({lo:+.4} … \
+                 {hi:+.4}). A quality floor is supposed to move the CONDITIONING, not the \
+                 physics; if it moves the stiffness this much it is a modelling parameter and \
+                 must be justified as one.",
+                100.0 * spread
+            );
+        }
+    }
+
     /// **Regenerates the measured tables in `DISC_CONFORM_QUALITY_FLOOR` and
     /// `DISC_MIDSIDE_CONFORM_QUALITY_FLOOR`** — the gate those two constants were chosen
     /// without.
@@ -1677,9 +1738,9 @@ mod tests {
 
         println!(
             "\n{:>6} {:>13} {:>13} {:>15} {:>15}",
-            "floor", "lofted Tet4", "lofted Tet10", "corner RMS mm", "midside RMS mm"
+            "floor", "Tet4 k_disc", "Tet10 k_disc", "corner RMS mm", "midside RMS mm"
         );
-        let rows: Vec<(f64, bool, bool, f64, f64)> = SWEPT_CORNER_FLOORS
+        let rows: Vec<FloorRow> = SWEPT_CORNER_FLOORS
             .iter()
             .map(|&corner| {
                 let floors = ConformFloors {
@@ -1689,16 +1750,18 @@ mod tests {
                 let (t4, t10) = lofted_drivability(&lofted, &params, ep, floors, probe);
                 let (corner_rms, midside_rms) =
                     scanned_fidelity(&scanned, &params, ep, floors, &o4, &o5);
+                let cell =
+                    |k: Option<f64>| k.map_or_else(|| "STALLS".to_string(), |v| format!("{v:+.3}"));
                 println!(
                     "{corner:>6.2} {:>13} {:>13} {corner_rms:>15.3} {midside_rms:>15.3}",
-                    if t4 { "drives" } else { "STALLS" },
-                    if t10 { "drives" } else { "STALLS" },
+                    cell(t4),
+                    cell(t10),
                 );
                 (corner, t4, t10, corner_rms, midside_rms)
             })
             .collect();
 
-        let row = |f: f64| -> &(f64, bool, bool, f64, f64) {
+        let row = |f: f64| -> &FloorRow {
             rows.iter()
                 .find(|r| (r.0 - f).abs() < 1e-12)
                 .expect("swept row")
@@ -1707,7 +1770,7 @@ mod tests {
         // ── (1) The shipped floor drives BOTH elements on the strict geometry. ──
         let shipped = row(DISC_CONFORM_QUALITY_FLOOR);
         assert!(
-            shipped.1 && shipped.2,
+            shipped.1.is_some() && shipped.2.is_some(),
             "the SHIPPED corner floor {DISC_CONFORM_QUALITY_FLOOR} must drive a conformed lofted \
              disc on both elements — the property it was raised to guarantee"
         );
@@ -1719,7 +1782,7 @@ mod tests {
         // a shipped default in the first place. This assert IS the floor-regression mutant,
         // committed, rather than a mutation someone has to remember to re-run by hand.
         assert!(
-            !(row(0.05).1 && row(0.05).2),
+            !(row(0.05).1.is_some() && row(0.05).2.is_some()),
             "0.05 must NOT drive both elements on a lofted disc. If it now does, the reason this \
              floor was raised has gone away and the constant should be re-derived — not kept out \
              of habit, and not widened because a table says so."
@@ -1739,6 +1802,8 @@ mod tests {
                 w[1].0
             );
         }
+
+        assert_floor_is_conditioning_only(&rows);
 
         // ── (4) The shipped row reproduces what rungs 2 and 3 committed. ──
         assert_within_5_percent(&[
