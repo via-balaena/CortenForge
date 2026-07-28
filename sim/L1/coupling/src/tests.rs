@@ -1843,6 +1843,11 @@ fn bonded_sandwich_conserves_and_is_two_way() {
 /// idiom from `sim-soft`'s `tet10_material_sensitivity.rs`. The XOR catches a ULP drift
 /// anywhere in the slice; the L2 catches the (vanishingly unlikely) XOR collision and
 /// gives a human-readable magnitude when the golden trips.
+///
+/// The caller below asserts both stats for the **reactions** (solver outputs, the thing
+/// actually at risk from a code change) and the XOR alone for the **targets**, which are
+/// caller-written poses rather than solved values — so they get the drift check without a
+/// second constant to maintain.
 fn fingerprint(v: &[f64]) -> (u64, f64) {
     let xor = v.iter().map(|x| x.to_bits()).fold(0_u64, |a, b| a ^ b);
     let l2 = v.iter().map(|x| x * x).sum::<f64>().sqrt();

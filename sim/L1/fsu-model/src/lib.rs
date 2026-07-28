@@ -132,10 +132,14 @@ pub struct EndplateConform<'a> {
 ///
 /// Carries the same `<Msh, E, N, G>` parameters as the underlying
 /// [`BondedSandwich`], defaulting to the linear [`Tet4`] disc on an
-/// [`SdfMeshedTetMesh`] — every method here is node-based and element-agnostic, so the
-/// quadratic arm of the Tet10 migration is a type substitution rather than a fork
+/// [`SdfMeshedTetMesh`] — every method here is node-based, so the quadratic arm of the
+/// Tet10 migration is a type substitution rather than a fork
 /// (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` rung 1, which needs both element arms
 /// live at once to measure the `k_disc` ratio).
+///
+/// **One method is not element-neutral in its *semantics*:** [`Self::boundary_faces`]
+/// returns corner-only triangles, so on a quadratic disc the rendered surface reflects
+/// the linear field. It compiles and the indices stay valid — see that method's warning.
 pub struct BondedDisc<Msh = SdfMeshedTetMesh, E = Tet4, const N: usize = 4, const G: usize = 1>
 where
     Msh: Mesh,

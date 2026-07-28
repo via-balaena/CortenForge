@@ -40,7 +40,6 @@ use nalgebra::{Point3, Unit, UnitQuaternion, Vector3};
 use sim_core::sdf::compute_shape_contact;
 use sim_core::{Data, Pose, SdfContact, SdfGrid, ShapeConcave};
 use sim_mjcf::load_model;
-
 use sim_soft::{Element, Mesh, SdfMeshedTetMesh, Tet4};
 
 use crate::{BondedDisc, DiscParams, build_bonded_disc};

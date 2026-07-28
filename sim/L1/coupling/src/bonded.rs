@@ -242,12 +242,12 @@ impl<Msh: Mesh, E: Element<N, G> + Default, const N: usize, const G: usize>
     /// **N-aware.** Linear elements keep 50 — literally the same value as the module-level
     /// const this replaced, so the Tet4 path is unchanged *by construction*, not merely by
     /// measurement (whether any Tet4 scene approaches the cap is unmeasured and, at an
-    /// unchanged value, irrelevant). Higher-order elements get
-    /// far more headroom: a Tet10 bonded solve has an indefinite tangent and falls back
-    /// to LU on most iterations, converging at a much higher iteration count. Note the
-    /// cap **hard-fails** rather than truncating (`replay_step` panics on
-    /// `SolverFailure::NewtonIterCap`), so raising it can only turn a loud failure into a
-    /// result — it can never silently change a converged answer.
+    /// unchanged value, irrelevant). Higher-order elements get far more headroom: a Tet10
+    /// bonded solve has an indefinite tangent and falls back to LU on most iterations,
+    /// converging at a much higher iteration count. Note the cap **hard-fails** rather than
+    /// truncating (`replay_step` panics on `SolverFailure::NewtonIterCap`), so raising it
+    /// can only turn a loud failure into a result — it can never silently change a
+    /// converged answer.
     const MAX_NEWTON_ITER: usize = if N == 4 { 50 } else { 400 };
 
     /// Bond an **arbitrary** tet mesh between `lower_body` and `upper_body`, with the
