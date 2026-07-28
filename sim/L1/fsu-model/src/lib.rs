@@ -2873,8 +2873,9 @@ mod tests {
         //
         // COMMITTED (BodyParts3D L4/L5/disc, DiscParams::default): of 1562 bonded-face boundary
         // midsides the SI-alignment guard authorises 580; the other 982 are the overhanging
-        // annular rim, left straight on purpose. (37 % authorised, the same share the guard
-        // authorises among the corners at rung 2 — 233 of 583.)
+        // annular rim, left straight on purpose. (37 % authorised, close to but not the same as
+        // the 40 % the guard authorises among the corners at rung 2 — 233 of 583 — which is what
+        // a rim occupying a slightly larger share of the midside population looks like.)
         assert_eq!(
             (
                 split.candidates.len(),

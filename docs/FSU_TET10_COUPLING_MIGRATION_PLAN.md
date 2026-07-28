@@ -599,7 +599,7 @@ additive shift committed.
 >   midside move bends the Jacobian at four interior Gauss points, so the same *fraction* is not
 >   the same distortion.
 > - **§4.3 residual, like for like.** Of **1562** bonded-face boundary midsides the SI-alignment
->   guard authorises **580** (37 %, the same share it authorises among the corners: 233 of 583);
+>   guard authorises **580** (37 %, close to the 40 % it authorises among the corners — 233 of 583);
 >   the other 982 are the rim, left straight by design. Over the *authorised* set the distance
 >   to the nearer vertebra falls **max 3.860 → 3.842 mm, RMS 0.796 → 0.694**. ★ The endpoint is
 >   the result worth quoting: rung 2 left the authorised **corners** at 0.656 mm RMS, so the
