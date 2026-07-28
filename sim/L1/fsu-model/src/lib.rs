@@ -6,7 +6,9 @@
 //! - the **bonded soft disc** ([`build_bonded_disc`] / [`BondedDisc`]): tet-meshes the
 //!   real intervertebral disc from its own signed field and bonds it between two rigid
 //!   vertebra-endplate boxes ([`BondedSandwich`]), then drives its quasi-static
-//!   flexion/extension response;
+//!   flexion/extension response. It comes in two element arms over one shared geometry
+//!   pipeline — the linear [`Tet4`] disc and the quadratic [`build_bonded_disc_tet10`]
+//!   one, which is ~1/3 softer in bending because the linear element bending-locks;
 //! - the **coupled FSU** ([`CoupledFsu`]): assembles the disc (as a
 //!   linearised bushing), the ligaments (tendons), and the facets (oriented SDF contact)
 //!   into ONE model and solves for the equilibrium pose under an applied moment — the
@@ -30,6 +32,11 @@
 //! [`BondedDisc::flexion_moment`] is a small-angle probe, and a segment's larger-angle
 //! range of motion is a linear extrapolation of it (see rung 7).
 //!
+//! That ~1° envelope was measured on the **linear** arm. The quadratic arm is exercised
+//! only to ±0.5° so far, and its own large-angle envelope is **unmeasured** — the
+//! large-angle sweep is rung 2 of `docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md`. Do not read
+//! the Tet4 number as covering it.
+//!
 //! Note the deliberate API asymmetry: [`build_bonded_disc`] returns [`Result`], but the
 //! drive methods **panic** on non-convergence rather than returning one — they inherit
 //! the fail-close contract of [`BondedSandwich::probe`](sim_coupling::BondedSandwich),
@@ -38,15 +45,19 @@
 //! recoverable `Result` through the probe is a sim-coupling change deferred until a
 //! consumer must drive to genuinely unknown angles.
 
+use std::collections::BTreeSet;
+
 use anyhow::{Context, Result, bail};
 use cf_fsu_geometry::{MeshOracle, bonded_conform_target, oracle};
 use cf_geometry::{Aabb, IndexedMesh};
 use nalgebra::{Point3, Unit, UnitQuaternion, Vector3};
+use sim_core::{Data, Model};
 use sim_coupling::BondedSandwich;
 use sim_mjcf::load_model;
 use sim_soft::{
-    Aabb3, Element, MaterialField, Mesh, MeshingHints, SdfMeshedTetMesh, Tet4, Vec3,
-    pick_vertices_by_predicate, referenced_vertices,
+    Aabb3, Element, MaterialField, Mesh, MeshingHints, SdfMeshedTetMesh, Tet4, Tet10Mesh, TetId,
+    Vec3, element::TET10_EDGE_NODES, element::Tet10, pick_vertices_by_predicate,
+    referenced_vertices,
 };
 // Re-exported: `FlexionTrajectory::boundary_faces` is `Vec<[VertexId; 3]>`, so consumers
 // (e.g. a viewer building a mesh from it) need to name the vertex-index type.
@@ -234,35 +245,48 @@ fn endplate_conform_moves(
     moves
 }
 
-/// Tet-mesh the real intervertebral disc `mesh` (native mm) and bond it between two
-/// field-posed rigid endplate boxes, returning the live [`BondedDisc`].
+/// Everything the linear and quadratic disc arms share: the meshed (and optionally
+/// endplate-conformed) **linear** tet mesh, its two *corner* endplate bands, the posed
+/// two-box rigid scene, and the frame data a flexion probe needs.
 ///
-/// The disc is recentred to its AABB centre and scaled by `params.scale` into the
-/// solver's SI-metre frame; its principal axes are derived from the AABB (SI =
-/// thinnest, ML/flexion = widest — no axis taken on faith).
-///
-/// With `endplates = Some(...)`, the bonded-band boundary nodes are seated onto the
-/// **real** vertebral endplate before bonding (Strategy B): the raw disc is meshed first
-/// (well-conditioned), then its endplate-facing surface nodes are projected onto the nearer
-/// endplate oracle — SI-alignment-gated so the overhanging annular rim stays straight — and
-/// backed off to keep every incident tet well-shaped, so the physics runs on the exact bone
-/// rather than a floating raw disc. With `endplates = None` the raw floating disc is bonded
-/// unchanged (the pre-conform baseline).
+/// The element choice enters strictly *after* this point — [`build_bonded_disc`] bonds
+/// `tet` directly, [`build_bonded_disc_tet10`] enriches it and widens the bands — so the
+/// two arms are guaranteed to share one geometry, one band rule, and one rigid scene. That
+/// is what makes their `k_disc` ratio a measurement of the **element order alone**
+/// (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §0.1 attribution bound 1).
+struct PreparedDisc {
+    /// The linear disc mesh, conformed onto the endplates if `endplates` was `Some`.
+    tet: SdfMeshedTetMesh,
+    /// The inferior endplate band — orphan-filtered **corner** vertex ids.
+    inferior: Vec<VertexId>,
+    /// The superior endplate band — orphan-filtered **corner** vertex ids.
+    superior: Vec<VertexId>,
+    /// The two-box rigid scene, already `forward`-ed so both endplate poses are current.
+    model: Model,
+    /// The scene's forward-ed state (the pose snapshot each bond's rest offsets read).
+    data: Data,
+    /// The superior box's body-origin position at rest, in the solver SI frame.
+    rest_upper: Vec3,
+    /// The medio-lateral (flexion/extension) axis.
+    ml_axis: Vector3<f64>,
+    /// The disc AABB centre in native mm — the shared flexion pivot.
+    center_native: Point3<f64>,
+}
+
+/// Tet-mesh the real intervertebral disc `mesh` (native mm), optionally seat its bonded
+/// band on the real endplate, and pose the two rigid endplate boxes around it — the
+/// element-agnostic half of [`build_bonded_disc`] / [`build_bonded_disc_tet10`].
 ///
 /// # Errors
-/// Returns an error if the disc's thinnest extent is not its native `z` (a
-/// mis-oriented mesh), if an endplate band captures no vertices (band/cell too coarse
-/// for the mesh), if the two endplate bands overlap (`band_frac` too large — they
-/// would share a vertex), or if the signed-distance oracle, tet-mesher, or MJCF scene
-/// build fails.
+/// See [`build_bonded_disc`] — every failure mode listed there originates here.
 // `vs.len()` (an endplate vertex count) is tiny; the usize→f64 cast for its centroid
 // is exact for any real mesh.
 #[allow(clippy::cast_precision_loss)]
-pub fn build_bonded_disc(
+fn prepare_disc(
     mut mesh: IndexedMesh,
     params: &DiscParams,
     endplates: Option<EndplateConform>,
-) -> Result<BondedDisc> {
+) -> Result<PreparedDisc> {
     let bbox0 = Aabb::from_points(mesh.vertices.iter());
     let center_native = Point3::from(bbox0.min.coords + (bbox0.max - bbox0.min) * 0.5);
     for v in &mut mesh.vertices {
@@ -365,23 +389,178 @@ pub fn build_bonded_disc(
     let mut data = model.make_data();
     data.forward(&model).context("disc scene forward")?;
     let rest_upper = data.xpos[UPPER];
-    let sandwich = BondedSandwich::from_tet_mesh(
+    Ok(PreparedDisc {
+        tet,
+        inferior,
+        superior,
         model,
         data,
+        rest_upper,
+        ml_axis,
+        center_native,
+    })
+}
+
+/// Tet-mesh the real intervertebral disc `mesh` (native mm) and bond it between two
+/// field-posed rigid endplate boxes, returning the live [`BondedDisc`].
+///
+/// This is the **linear** ([`Tet4`]) arm; [`build_bonded_disc_tet10`] is the quadratic one.
+///
+/// The disc is recentred to its AABB centre and scaled by `params.scale` into the
+/// solver's SI-metre frame; its principal axes are derived from the AABB (SI =
+/// thinnest, ML/flexion = widest — no axis taken on faith).
+///
+/// With `endplates = Some(...)`, the bonded-band boundary nodes are seated onto the
+/// **real** vertebral endplate before bonding (Strategy B): the raw disc is meshed first
+/// (well-conditioned), then its endplate-facing surface nodes are projected onto the nearer
+/// endplate oracle — SI-alignment-gated so the overhanging annular rim stays straight — and
+/// backed off to keep every incident tet well-shaped, so the physics runs on the exact bone
+/// rather than a floating raw disc. With `endplates = None` the raw floating disc is bonded
+/// unchanged (the pre-conform baseline).
+///
+/// # Errors
+/// Returns an error if the disc's thinnest extent is not its native `z` (a
+/// mis-oriented mesh), if an endplate band captures no vertices (band/cell too coarse
+/// for the mesh), if the two endplate bands overlap (`band_frac` too large — they
+/// would share a vertex), or if the signed-distance oracle, tet-mesher, or MJCF scene
+/// build fails.
+pub fn build_bonded_disc(
+    mesh: IndexedMesh,
+    params: &DiscParams,
+    endplates: Option<EndplateConform>,
+) -> Result<BondedDisc> {
+    let p = prepare_disc(mesh, params, endplates)?;
+    let sandwich = BondedSandwich::from_tet_mesh(
+        p.model,
+        p.data,
         LOWER,
         UPPER,
-        tet,
+        p.tet,
+        p.inferior,
+        p.superior,
+        params.static_dt,
+    );
+    Ok(BondedDisc {
+        sandwich,
+        ml_axis: p.ml_axis,
+        rest_upper: p.rest_upper,
+        center_native: p.center_native,
+        scale: params.scale,
+    })
+}
+
+/// The **quadratic** ([`Tet10`]) sibling of [`build_bonded_disc`].
+///
+/// The identical disc geometry, band rule and rigid scene, enriched to a curved-capable
+/// quadratic element and bonded with a **full-face tie**.
+///
+/// Everything before the element choice is literally the same code (one shared private
+/// `prepare_disc`), so a `k_disc` comparison between the two arms isolates the element
+/// order (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` rung 1). Two things differ:
+///
+/// - the mesh is enriched with [`Tet10Mesh::from_tet4`], which preserves every corner id
+///   and position bit-for-bit and appends the shared edge midsides after them;
+/// - each bonded band is widened to a **full-face tie** (`full_face_band`) — the band
+///   corners *plus* every midside interior to the band. Pinning corners alone would
+///   corner-spot-weld a quadratic band and soften `k_disc` on top of the element effect
+///   (the retracted 43 % artifact, plan §0.1); this is the modeling choice that keeps the
+///   measurement about the element.
+///
+/// The midside nodes stay at their straight edge midpoints — this rung is the *straight*
+/// Tet10 disc. Projecting the bonded-face midsides onto the real curved endplate (the
+/// exact-geometry endgame) is rung 3.
+///
+/// # Errors
+/// Same as [`build_bonded_disc`].
+pub fn build_bonded_disc_tet10(
+    mesh: IndexedMesh,
+    params: &DiscParams,
+    endplates: Option<EndplateConform>,
+) -> Result<BondedDisc<Tet10Mesh, Tet10, 10, 4>> {
+    let p = prepare_disc(mesh, params, endplates)?;
+    let tet10 = Tet10Mesh::from_tet4(&p.tet);
+    let inferior = full_face_band(&tet10, &p.inferior);
+    let superior = full_face_band(&tet10, &p.superior);
+    let sandwich = BondedSandwich::from_tet_mesh(
+        p.model,
+        p.data,
+        LOWER,
+        UPPER,
+        tet10,
         inferior,
         superior,
         params.static_dt,
     );
     Ok(BondedDisc {
         sandwich,
-        ml_axis,
-        rest_upper,
-        center_native,
+        ml_axis: p.ml_axis,
+        rest_upper: p.rest_upper,
+        center_native: p.center_native,
         scale: params.scale,
     })
+}
+
+/// Widen a linear (corner-only) endplate band into the **full-face tie** a quadratic band
+/// needs: `corner_band` plus every midside node whose *two parent corners are both in the
+/// band* (the topological closure of the band over element edges).
+///
+/// ## Why the closure, and why not the geometric predicate
+///
+/// `DiscParams::band_frac` makes each bonded band a volumetric **slab**, not a surface, so
+/// most of the midsides added here are *interior* to the slab rather than on the bonded
+/// face. The honest statement of the rule is therefore: *a quadratic slab tie must pin the
+/// midsides interior to the slab as well as those on its face — otherwise the slab is
+/// corner-spot-welded and softens for a bond reason rather than an element reason.*
+///
+/// The linear band rule is **geometric** (a z-slab predicate over positions); this one is
+/// **topological**. They are deliberately different sets: a midside between an in-band and
+/// an out-of-band corner can sit inside the slab yet stay free here. The closure is chosen
+/// because it guarantees *element fully inside the band ⇒ element fully pinned* and never
+/// leaves a half-pinned edge — so the measured band sizes and `k_disc` ratio are specific
+/// to **this** rule (plan §2.2).
+///
+/// ## Two structural traps this avoids
+///
+/// - **Never filter the result through [`referenced_vertices`]** — it walks four-corner
+///   connectivity only (`sim_soft::referenced_vertices`), so it would silently delete every
+///   midside and reproduce the corner-spot-weld by omission. It is unnecessary here anyway:
+///   midsides are created only inside the tet walk, so an *orphan* midside cannot exist, and
+///   `corner_band` is already orphan-filtered.
+/// - **[`BTreeSet`], not a `HashSet`** — it dedups (a midside is shared by every incident
+///   tet, and `BondedSandwich::from_tet_mesh` rejects a repeated id because it would
+///   double-count that node's reaction) *and* it fixes iteration order, which the bond's
+///   wrench sum walks (`face_wrench` accumulates `w[3..] += f` and the moment term in
+///   `verts.iter()` order, `sim/L1/coupling/src/bonded.rs`) — so a `HashSet`, whose order is
+///   randomly seeded per process, would make `k_disc` non-reproducible run to run.
+///
+/// The local edge→midside slot mapping is [`TET10_EDGE_NODES`], cited rather than re-typed: a
+/// permuted table pins the *wrong* midsides, and the instrument for that is the rung-1 gate's
+/// set-equality cross-check, not a stiffness band. (Measured, so the limits are known rather
+/// than assumed: rotating the slot index by one on the synthetic disc changed the band from
+/// 413 to 647 ids, which an exact size assert would also have caught — the reason equality is
+/// still the right instrument is that a size-preserving permutation is possible and a size
+/// assert would then see nothing.)
+fn full_face_band(tet10: &Tet10Mesh, corner_band: &[VertexId]) -> Vec<VertexId> {
+    let corners: std::collections::HashSet<VertexId> = corner_band.iter().copied().collect();
+    let mut band: BTreeSet<VertexId> = corner_band.iter().copied().collect();
+    // `as TetId` is the Mesh-trait API tax (`n_tets()` is usize, `tet_vertices` takes u32);
+    // tet counts stay far below u32::MAX.
+    #[allow(clippy::cast_possible_truncation)]
+    let n_tets = tet10.n_tets() as TetId;
+    for t in 0..n_tets {
+        let c = tet10.tet_vertices(t);
+        // A `Tet10Mesh` always surfaces midsides; skip rather than unwrap so this stays a
+        // total function over the `Mesh` trait (grade Safety: no `unwrap` in library code).
+        let Some(m) = tet10.tet_midside_nodes(t) else {
+            continue;
+        };
+        for (slot, &(a, b)) in TET10_EDGE_NODES.iter().enumerate() {
+            if corners.contains(&c[a]) && corners.contains(&c[b]) {
+                band.insert(m[slot]);
+            }
+        }
+    }
+    band.into_iter().collect()
 }
 
 /// One captured flexion pose: the imposed angle, the disc's deformed surface (native
@@ -1135,6 +1314,23 @@ mod tests {
             (lo - 945.0).abs() < 0.2,
             "inferior band must seat on the inferior box face z ≈ 945.0, got {lo:.3}"
         );
+
+        // The QUADRATIC arm of the same conform. `build_bonded_disc_tet10` accepts
+        // `endplates` because rung 2 measures the conform on both elements, and shipping an
+        // accepted-but-unexercised argument is how a silent break gets in: everything before
+        // the element choice is the same `prepare_disc` code, but enrichment reads the
+        // *conformed* corner positions, so the midsides land on moved edges. Assert the
+        // conformed quadratic disc bonds, still ties full-face (the band closure is a
+        // topological property, unchanged by the conform), and still sweeps soundly. The
+        // exact-geometry residual FOM this feeds is rung 2's gate, not this test's.
+        let mut conf10 = build_bonded_disc_tet10(synthetic_disc(), &params, Some(endplates))
+            .expect("conformed synthetic Tet10 disc bonds");
+        let prepared = prepare_disc(synthetic_disc(), &params, Some(endplates))
+            .expect("prepare conformed synthetic disc");
+        let mesh10 = Tet10Mesh::from_tet4(&prepared.tet);
+        assert_full_face_band(&mesh10, &prepared.inferior, conf10.sandwich.lower_face());
+        assert_full_face_band(&mesh10, &prepared.superior, conf10.sandwich.upper_face());
+        assert_restoring_sweep(&conf10.capture_flexion(&angles), 2e-2);
     }
 
     /// The exact-geometry FOM gate: bonding the disc's endplate band onto the **real**
@@ -1255,6 +1451,312 @@ mod tests {
             assert!(
                 (0.9..=1.1).contains(&ratio),
                 "conformed {name} k_disc must not regress vs raw (ratio {ratio:.3}: {kc:.3} vs {kr:.3})"
+            );
+        }
+    }
+
+    /// Recompute a full-face bonded band a **second, independent way** and assert it equals
+    /// the set that was actually bonded.
+    ///
+    /// The teeth are in the independence: [`full_face_band`] maps an edge to its midside
+    /// through the canonical [`TET10_EDGE_NODES`] slot table, while this identifies each
+    /// midside's parent corners **geometrically** — a straight Tet10 midside is placed at
+    /// exactly `(p[a] + p[b]) * 0.5`, so the corner pair whose midpoint coincides with it
+    /// names its parents without consulting any table. A permuted slot table pins the *wrong*
+    /// midsides, which the ratio band cannot see; this can, whether or not the permutation
+    /// happens to change the band's size (the one measured did — 413 → 647 — so a size assert
+    /// would have caught that particular rotation, but a size-preserving one would slip past
+    /// it). So does the other trap: a band accidentally filtered through
+    /// `referenced_vertices` (corner-only) loses every midside, and the recomputed set still
+    /// has them.
+    ///
+    /// Also checks the boundary-face route as a **subset**, not an equality: the midsides of
+    /// a fully-in-band `boundary_faces6` face must all be bonded, but the band is a
+    /// volumetric slab, so its interior midsides have no boundary face to appear on and
+    /// equality would be false by construction.
+    ///
+    /// ⚠ **Straight-Tet10 only.** The midpoint-coincidence step is what makes the
+    /// recomputation table-free, and it holds precisely because this rung leaves every
+    /// midside at its edge midpoint. Rung 3 projects the bonded-face midsides onto the real
+    /// endplate, at which point this helper must be given the band from the *pre-projection*
+    /// mesh (the topology it checks is unchanged by the projection) rather than silently
+    /// reused on the curved one.
+    fn assert_full_face_band(tet10: &Tet10Mesh, corner_band: &[VertexId], bonded: &[VertexId]) {
+        let corners: std::collections::HashSet<VertexId> = corner_band.iter().copied().collect();
+        let pos = tet10.positions();
+        let bonded_set: std::collections::HashSet<VertexId> = bonded.iter().copied().collect();
+        assert_eq!(
+            bonded_set.len(),
+            bonded.len(),
+            "bonded band has a duplicate id"
+        );
+
+        // Geometric route: every midside whose two (geometrically identified) parent corners
+        // are both in the corner band.
+        let mut expected: BTreeSet<VertexId> = corner_band.iter().copied().collect();
+        let n_corners = tet10.n_corners();
+        #[allow(clippy::cast_possible_truncation)]
+        let n_tets = tet10.n_tets() as TetId;
+        let mut midsides_seen = 0usize;
+        for t in 0..n_tets {
+            let c = tet10.tet_vertices(t);
+            let m = tet10
+                .tet_midside_nodes(t)
+                .expect("a Tet10Mesh surfaces midside nodes");
+            for &mid in &m {
+                assert!(
+                    mid as usize >= n_corners,
+                    "midside id {mid} must live above the {n_corners} corner ids"
+                );
+                midsides_seen += 1;
+                // Identify the parent edge by midpoint coincidence — table-free.
+                let mut parents = None;
+                for a in 0..4 {
+                    for b in (a + 1)..4 {
+                        let midpoint = (pos[c[a] as usize] + pos[c[b] as usize]) * 0.5;
+                        if (midpoint - pos[mid as usize]).norm() < 1e-12 {
+                            assert!(
+                                parents.is_none(),
+                                "midside {mid} has two candidate parent edges (degenerate tet {t})"
+                            );
+                            parents = Some((c[a], c[b]));
+                        }
+                    }
+                }
+                let (pa, pb) =
+                    parents.unwrap_or_else(|| panic!("no parent edge found for midside {mid}"));
+                if corners.contains(&pa) && corners.contains(&pb) {
+                    expected.insert(mid);
+                }
+            }
+        }
+        assert!(midsides_seen > 0, "the enriched mesh has no midside nodes");
+
+        let expected: Vec<VertexId> = expected.into_iter().collect();
+        assert_eq!(
+            expected,
+            bonded,
+            "the bonded band must match its independent (geometric) recomputation — \
+             {} vs {} ids",
+            expected.len(),
+            bonded.len()
+        );
+        // NON-VACUITY: the tie is genuinely full-face, i.e. midsides were added at all. A
+        // corner-only band would pass every soundness and stiffness check while measuring a
+        // spot-welded bond.
+        assert!(
+            bonded.len() > corner_band.len(),
+            "a full-face tie must add midsides to the {} corner band, got {}",
+            corner_band.len(),
+            bonded.len()
+        );
+
+        // Boundary route (subset — see the doc comment): the three midsides of any
+        // boundary face whose corners are all in the band must be bonded.
+        let faces6 = tet10
+            .boundary_faces6()
+            .expect("a Tet10Mesh carries six-node boundary faces");
+        for f in faces6 {
+            if f[..3].iter().all(|v| corners.contains(v)) {
+                for &mid in &f[3..] {
+                    assert!(
+                        bonded_set.contains(&mid),
+                        "midside {mid} of a fully-in-band boundary face is not bonded"
+                    );
+                }
+            }
+        }
+    }
+
+    /// License-free Tet10 coverage of the rung-1 seam — the **only** arm of this rung CI can
+    /// run (every real-anatomy gate is `#[ignore]`d + env-gated).
+    ///
+    /// Asserts what does not need the real disc: the enrichment preserves the corner
+    /// id-space and adds midsides, the full-face band matches its independent recomputation
+    /// (`assert_full_face_band` — the assertion with teeth), and the quadratic bonded solve
+    /// is sound (converges, conserves, strictly restoring, really deforms). The `k_disc`
+    /// ratio bracket is measured on the real disc in the `#[ignore]`d gate below; the
+    /// synthetic slab's ratio is *reported* here, not asserted, because the pre-registered
+    /// 0.665 is a real-anatomy number and a 24×20×6 mm box at `cell = 3 mm` is a different
+    /// bending problem.
+    #[test]
+    fn tet10_full_face_bond_is_sound_on_the_synthetic_disc() {
+        let params = DiscParams::default();
+        let theta = 0.3_f64.to_radians(); // sub-degree: stay in the SPD region
+
+        let mut tet4 = build_bonded_disc(synthetic_disc(), &params, None).unwrap();
+        let mut tet10 = build_bonded_disc_tet10(synthetic_disc(), &params, None).unwrap();
+
+        // Enrichment preserved the corner id-space and appended midsides.
+        let prepared = prepare_disc(synthetic_disc(), &params, None).unwrap();
+        let n_corners = prepared.tet.n_vertices();
+        let mesh10 = Tet10Mesh::from_tet4(&prepared.tet);
+        assert_eq!(mesh10.n_corners(), n_corners, "corner count preserved");
+        assert!(
+            mesh10.n_vertices() > n_corners,
+            "enrichment must add midside nodes ({} vs {n_corners})",
+            mesh10.n_vertices()
+        );
+
+        // The full-face tie, cross-checked against its table-free recomputation.
+        assert_full_face_band(&mesh10, &prepared.inferior, tet10.sandwich.lower_face());
+        assert_full_face_band(&mesh10, &prepared.superior, tet10.sandwich.upper_face());
+
+        // The quadratic bonded solve is sound: converges (no panic), conserves, strictly
+        // restoring off neutral, and imposes a real deformation.
+        let angles: Vec<f64> = [-0.3_f64, 0.0, 0.3]
+            .iter()
+            .map(|d| d.to_radians())
+            .collect();
+        let traj = tet10.capture_flexion(&angles);
+        assert_restoring_sweep(&traj, 2e-2);
+
+        // Reported, not asserted (see the doc comment).
+        let k4 = tet4.flexion_moment(theta).0 / theta;
+        let k10 = tet10.flexion_moment(theta).0 / theta;
+        println!(
+            "synthetic k_disc: Tet4 {k4:.4}, Tet10 {k10:.4} N·m/rad (ratio {:.3})",
+            k10 / k4
+        );
+    }
+
+    /// **The rung-1 payoff gate** (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §4.2): the
+    /// element-order effect on the disc's bending stiffness, re-earned as committed,
+    /// re-runnable code.
+    ///
+    /// Two arms on the **raw** (un-conformed) real disc, sharing one mesh, one band rule and
+    /// one rigid scene ([`prepare_disc`]) and differing *only* in the element + its full-face
+    /// tie — so the ratio attributes to element order at fixed geometry.
+    ///
+    /// A reverted spike predicted 0.665 (≈ 33 % softer), and the gate was written with that
+    /// **pre-registered** as a 0.60..=0.73 bracket — validate-the-harness-against-a-known-
+    /// value, not a guess. The first run landed at 0.666 / 0.663 with the band sizes matching
+    /// the spike id-for-id, so the assert was then tightened to ±5 % of the measured values
+    /// (the numbers are committed at the assert). Note what the ratio is *not*: the spike's
+    /// −0.1861 is not proven to be the converged truth — a refined Tet4 would soften too —
+    /// so the settled claim is that the quadratic element relaxes this bending mode by ~1/3
+    /// at fixed geometry. Earning the accuracy claim is rung 5's h-refinement.
+    ///
+    /// **The band cross-check, not the ratio, is the assertion with teeth.** An under-tied
+    /// band drifts the ratio from 0.665 *toward* the corner-only 0.570, so a *partial*
+    /// under-tie — some midsides missed, or a mis-indexed slot table — lands between the two
+    /// and sits comfortably inside any band drawn around 0.665. (To be exact about what the
+    /// stiffness band does cover: a *fully* corner-only tie at 0.570 would fall outside both
+    /// the pre-registered bracket and the ±5 % pin. It is the partial case, and a permuted
+    /// table, that the stiffness cannot see.) `assert_full_face_band` sees all of them, and
+    /// is mutation-verified against both traps.
+    #[test]
+    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
+    fn tet10_full_face_bond_element_order_fom() {
+        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
+        let params = DiscParams::default();
+        // ±0.5°: the spike's configuration, and inside the validated SPD range.
+        let (flex, ext) = (0.5_f64.to_radians(), -0.5_f64.to_radians());
+
+        let mut tet4 =
+            build_bonded_disc(disc_mesh.clone(), &params, None).expect("Tet4 raw disc bonds");
+        let mut tet10 = build_bonded_disc_tet10(disc_mesh.clone(), &params, None)
+            .expect("Tet10 raw disc bonds");
+
+        // (1) BAND CROSS-CHECK — the non-vacuity gate. Re-derive the shared linear mesh and
+        // check the bonded sets against a table-free recomputation, then commit their exact
+        // sizes. Note the re-derivation does not *assume* the mesher is deterministic: it
+        // builds a second mesh from the same input and asserts id-for-id set equality against
+        // the band the first one bonded, so non-determinism in the mesher would fail this
+        // gate rather than hide inside it.
+        let prepared = prepare_disc(disc_mesh, &params, None).expect("prepare raw disc");
+        let mesh10 = Tet10Mesh::from_tet4(&prepared.tet);
+        assert_eq!(
+            mesh10.n_corners(),
+            prepared.tet.n_vertices(),
+            "enrichment preserves the corner id-space"
+        );
+        let (inf4, sup4) = (prepared.inferior.len(), prepared.superior.len());
+        let (inf10, sup10) = (
+            tet10.sandwich.lower_face().len(),
+            tet10.sandwich.upper_face().len(),
+        );
+        println!(
+            "bands: inferior {inf4} -> {inf10}, superior {sup4} -> {sup10}; \
+             nodes {} -> {}",
+            prepared.tet.n_vertices(),
+            mesh10.n_vertices()
+        );
+        assert_full_face_band(&mesh10, &prepared.inferior, tet10.sandwich.lower_face());
+        assert_full_face_band(&mesh10, &prepared.superior, tet10.sandwich.upper_face());
+        // COMMITTED (BodyParts3D FMA16036, DiscParams::default): the corner bands are 228 /
+        // 367 and the full-face tie widens them to 1005 / 1598 — the same sizes the reverted
+        // spike reported, which is itself the confirmation that this harness reproduces it.
+        assert_eq!(
+            (inf4, sup4, inf10, sup10),
+            (228, 367, 1005, 1598),
+            "committed band sizes changed — the mesh or the band rule moved, and the ratio \
+             below is no longer comparable to the spike"
+        );
+        assert_eq!(
+            (prepared.tet.n_vertices(), mesh10.n_vertices()),
+            (7849, 19449),
+            "committed node counts changed (7849 corners -> 19449 with midsides)"
+        );
+
+        // (2) SOUNDNESS + (3) the stiffnesses, both arms, both directions. The probe
+        // converging at all is itself a hard check — a diverged solve panics.
+        let (m_flex4, r_flex4) = tet4.flexion_moment(flex);
+        let (m_ext4, r_ext4) = tet4.flexion_moment(ext);
+        let (m_flex10, r_flex10) = tet10.flexion_moment(flex);
+        let (m_ext10, r_ext10) = tet10.flexion_moment(ext);
+        for (resid, name) in [
+            (r_flex4, "Tet4 flexion"),
+            (r_ext4, "Tet4 extension"),
+            (r_flex10, "Tet10 flexion"),
+            (r_ext10, "Tet10 extension"),
+        ] {
+            assert!(
+                resid < 1e-8,
+                "{name} bond must conserve (‖ΣF‖+‖ΣM‖ = {resid:.2e})"
+            );
+        }
+        let (k_flex4, k_ext4) = (m_flex4 / flex, m_ext4 / ext);
+        let (k_flex10, k_ext10) = (m_flex10 / flex, m_ext10 / ext);
+        println!(
+            "k_disc (N·m/rad) — Tet4: flex {k_flex4:.4} / ext {k_ext4:.4}; \
+             Tet10 full-face: flex {k_flex10:.4} / ext {k_ext10:.4}; \
+             ratio flex {:.3} / ext {:.3}; \
+             conservation resid Tet4 {r_flex4:.2e}/{r_ext4:.2e}, Tet10 {r_flex10:.2e}/{r_ext10:.2e}",
+            k_flex10 / k_flex4,
+            k_ext10 / k_ext4
+        );
+
+        // (4) DIRECTION + MAGNITUDE, asserted PER DIRECTION (the spike quoted a mean and the
+        // two directions differ ~0.5 %, so a mean would hide a one-sided failure).
+        //
+        // COMMITTED (BodyParts3D FMA16036, DiscParams::default, raw un-conformed mesh, ±0.5°):
+        //   Tet4            flex −0.2811  ext −0.2788  N·m/rad
+        //   Tet10 full-face flex −0.1873  ext −0.1849  N·m/rad
+        //   ratio           flex  0.666   ext  0.663
+        // The pre-registered bracket was 0.60..=0.73 around the reverted spike's 0.665; both
+        // directions landed inside it, so the harness reproduces the spike and the bands
+        // (228→1005 / 367→1598) match it id-for-id. The live assert below is the *tightened*
+        // ±5 % no-regression band around these measured values — a change big enough to leave
+        // it is a real shift in the element effect, not noise (the bonded moment reproduces to
+        // < 1e-3 relative across captures).
+        for (k10, k4, expect, name) in [
+            (k_flex10, k_flex4, 0.666, "flexion"),
+            (k_ext10, k_ext4, 0.663, "extension"),
+        ] {
+            assert!(
+                k10 < 0.0 && k4 < 0.0,
+                "{name}: both arms must be restoring ({k10:.4} / {k4:.4})"
+            );
+            assert!(
+                k10.abs() < k4.abs(),
+                "{name}: the quadratic element must relax the bending mode ({k10:.4} vs {k4:.4})"
+            );
+            let ratio = k10 / k4;
+            assert!(
+                ((0.95 * expect)..=(1.05 * expect)).contains(&ratio),
+                "{name}: k_disc ratio {ratio:.3} is outside ±5 % of the committed {expect:.3} \
+                 — debug the band and the enrichment; do NOT widen the band to admit it"
             );
         }
     }
