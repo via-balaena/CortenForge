@@ -141,13 +141,17 @@ invisible.
 
 **★ v2 correction to the supporting claim.** v1 said the ROM verdict is "a `println!` in an
 `#[ignore]`d, non-CI test — **not an enforced gate today**". That is true of
-`rung7_fsu_validation.rs:282`, but v1 **missed a hard assert elsewhere**:
+`rung7_fsu_validation.rs` (`#[ignore]` at `:282`; the two `report_rom` calls at `:465-471`),
+but v1 **missed a hard assert elsewhere**:
 
 - `sim/L1/coupling/tests/fsu_coupled_contact.rs:40-47,72` asserts `CoupledFsu::build`'s
   `k_disc` to `RUNG7_K_DISC = -0.2819 ± K_DISC_TOL = 0.02`, plus flexion ROM to
   `6.13 ± 0.15°` (`:118`) and the extension ROM literature band (`:246-251`).
 - A Tet10 disc gives `k ≈ -0.186`; `|−0.186 − (−0.2819)| = 0.096` — **that assert fails by
-  ~4.8×.**
+  ~4.8×.** *(Magnitude is indicative, not exact: −0.186 is the spike's ±0.5° mean on the
+  **raw** mesh, whereas `K_DISC_PROBE` is 0.86° flexion on what will by rung 4 be a curved,
+  conformed disc. The direction and the order of magnitude are solid; the re-anchor value
+  comes from rung 4's own measurement.)*
 
 The reframe itself **survives**: `fsu_coupled_contact.rs:52` is *also* `#[ignore]`d and
 env-gated on the BodyParts3D triad, so it is not CI-enforced either. What changes is the
@@ -217,7 +221,7 @@ Three mechanical corrections the stress-test found in v1's §2.1:
    today (`bonded.rs:54`); a free `const` item cannot reference an impl's generic `N` (E0401).
    Use `const MAX_NEWTON_ITER: usize = if N == 4 { 50 } else { 400 };` on the generic impl.
    v1's parenthetical *"(a cap, not a byte-identity risk either way)"* was wrong: the cap is
-   hard-failing, not truncating (`newton.rs:541-545` returns `SolverFailure::NewtonIterCap`,
+   hard-failing, not truncating (`newton.rs:537` returns `SolverFailure::NewtonIterCap`,
    and `replay_step` panics on it). Honest phrasing: **Tet4 keeps 50 → identical; the only
    path raising it could change is one that currently hard-fails.**
 
@@ -256,10 +260,10 @@ ascending (`pick_vertices_by_predicate` walks `positions()` in id order); keep t
 
 **★★ THE SILENT TRAP — `referenced_vertices` is corner-only by construction.** It walks
 `mesh.tet_vertices` only (`sim/L0/soft/src/mesh/mod.rs:472-480`), so if the migration keeps
-today's band code (`lib.rs:298-308`) and merely swaps the mesh type, `pick_vertices_by_predicate`
+today's band code (`fsu-model/src/lib.rs:298-308`) and merely swaps the mesh type, `pick_vertices_by_predicate`
 **will** pick midsides and the `referenced.contains(v)` filter **will** silently delete every
 one of them — **reproducing the exact under-tie that inflated 43%, this time by omission.**
-Note the solver's *internal* referenced set does add midsides (`construct.rs:356-376`, `if N > 4`)
+Note the solver's *internal* referenced set does add midsides (`backward_euler/construct.rs:356-376`, `if N > 4`)
 but it is private, so the two disagree by design. **Do not reuse `referenced_vertices` to filter
 a Tet10 band.** (Orphan midsides cannot exist — midsides are created only inside the tet walk,
 `enrich.rs:83-103` — so no midside analogue of the orphan filter is needed.)
@@ -274,7 +278,7 @@ half-pinned edges. **1005/1598 and 0.665 are specific to this rule** — this is
 instance of [[feedback_spike_verifies_math_gate_verifies_modeling_choice]].
 
 **★ Correct the rationale.** v1 said "a midside between two bonded corners lies on the bonded
-face". It does not: `DiscParams::band_frac = 0.18` (`lib.rs:105`) makes the bonded set a
+face". It does not: `DiscParams::band_frac = 0.18` (`fsu-model/src/lib.rs:103`, "band thickness as a fraction of the disc's SI extent", one band each side) makes the bonded set a
 **volumetric slab** (~36% of the disc rigidly tied), so most pinned midsides are *interior*.
 The honest statement: *a Tet10 slab tie must pin the midsides interior to the slab as well as
 those on its face — otherwise the slab is corner-spot-welded.* This matters at rung 3, where
@@ -366,7 +370,7 @@ Each rung: recon-confirm → commit → gating cold-reads → fixes-on-top → A
   anything — an anchor against an unmeasured baseline. On the raw mesh the expected value is
   **known** (0.665, §0.1), so the first Tet10 gate becomes a
   validate-the-harness-against-a-known-value ([[feedback_validate_new_harness_against_known_value]])
-  instead of a guess. The two axes are independent: conform touches `lib.rs:338`, element
+  instead of a guess. The two axes are independent: conform touches `fsu-model/src/lib.rs:338`, element
   touches `bonded.rs:165`.
 - **`CoupledFsu` is flipped exactly ONCE, at the end (rung 4).** v1 flipped it at rung 1 and
   again at rung 2a, which would have required two separate `RUNG7_K_DISC` re-anchors — and
@@ -380,7 +384,7 @@ Each rung: recon-confirm → commit → gating cold-reads → fixes-on-top → A
 (the `BondedDisc`/`CoupledFsu` defaults, §2.1) + `probe_with_pose_gradient` into a Tet4-only
 impl block (§2.3). Forward-inert.
 **Gate:** existing tolerance tests unchanged **+ a new `to_bits` golden** — see §4.1 for why
-v1's version could not be built. Re-grade the 11 downstream crates (§1).
+v1's version could not be built. Re-grade the 12 downstream crates (§1).
 
 **Rung 1 — straight Tet10 + full-face bond, STANDALONE, on the RAW mesh.** `fsu-model` builds a
 `BondedDisc<Tet10Mesh, Tet10, 10, 4>` (enrich §2.5, full-face band §2.2). **`CoupledFsu`
@@ -464,7 +468,9 @@ mitigate. Replacement:
 - **Do NOT** implement it as an in-binary A/B between `BondedSandwich<SdfMeshedTetMesh>` and
   `BondedSandwich<SdfMeshedTetMesh, Tet4, 4, 1>` — after the change those are the *same type* and
   the comparison is vacuous. The only meaningful comparison crosses the refactor boundary in time.
-- **No literal `to_bits` on any ≳10k-DOF solve.** Determinism was *measured*, not assumed: three
+- **No literal `to_bits` on any ≳10k-DOF solve.** Determinism was *measured*, not assumed —
+  but by the v2 review, **not** by a committed test (which is exactly what this golden fixes;
+  until it lands, the precondition is unverified by this repo's own standard): three
   consecutive runs of `bonded_sandwich_fsu` are byte-identical, every `HashSet` on the bonded path
   is `len`/`contains`-only, `largest_component` carries an explicit deterministic tie-break, and
   faer is built without rayon (`sim/L0/soft/Cargo.toml:74`) so parallelism is `Par::Seq`. But at
@@ -492,14 +498,14 @@ element + band:
    tie moves the ratio *toward* 0.570 and lands comfortably inside any band drawn around 0.665.
 4. **Pin (fixup commit, after the first green run):** tighten step 2 to a ±5% no-regression
    assert around the measured value, measurement in the doc comment — the #701 shape
-   (`lib.rs:1222`, `:1229`).
+   (`fsu-model/src/lib.rs:1222`, `:1229`).
 
 ### 4.3 The exact-geometry residual gate (rungs 2 and 3) — NEW; the arc's payoff had no gate
 
 Every gate in v1 measured `k_disc`, node-move magnitude, or ROM. **None measured the arc's
 stated justification.** #701's FOM commits `max_seat` — how far nodes *moved* — not how close
 they *ended up* to the bone, and the SI-alignment guard can silently decline nodes
-(`lib.rs:186-195`).
+(`fsu-model/src/lib.rs:186-195`).
 
 **Gate:** committed **max and RMS `|oracle.eval(node)|`** over the bonded-face boundary nodes,
 asserted (a) below a committed threshold and (b) **strictly smaller than the previous rung's
@@ -527,7 +533,7 @@ position always feasible, so non-inversion is a construction guarantee) and its 
 ### 4.5 The large-angle gate — rungs 2 and 4 (v1 had no rung exercising production angles)
 
 Every FOM in v1 is a **sub-degree** probe, explicitly scoped: *"inside the spike-validated
-conformed SPD range (±0.5°)"* (`lib.rs:1136`). But `K_DISC_PROBE` is **0.86°**
+conformed SPD range (±0.5°)"* (`fsu-model/src/lib.rs:1136`). But `K_DISC_PROBE` is **0.86°**
 (`coupled.rs:48`) — already outside it — and `capture_ramp` walks the FEM disc to the full
 ±ROM (~6° flexion / ~4.5° extension) in 0.1° sub-steps (`coupled.rs:52, 454`). The repo's own
 deferral note names large-angle failure as the reason the conform was deferred: *"a whole-face-
@@ -567,7 +573,7 @@ silently converting a reporting harness into an exact anchor.
 
 `cargo test --release -p cf-fsu-model --lib` is **1.64 s** (13 passed / 4 ignored; the 4 are the
 anatomy gates). All 13 passing tests run on `synthetic_disc()` — a 24×20×6 mm box at `cell = 3 mm`
-(`lib.rs:594-599`) — and `synthetic_fsu()` passes `None` explicitly (`coupled.rs:814-815`), so
+(`fsu-model/src/lib.rs:594-599`) — and `synthetic_fsu()` passes `None` explicitly (`coupled.rs:814-815`), so
 **with no action the Tet10 path would execute in no CI job at all.**
 
 Add, per rung, a `synthetic_disc()`-based Tet10 bonded probe asserting: restoring + conserving +
@@ -592,7 +598,7 @@ roundings ⇒ 150–175 solves ⇒ Tet4 per-solve ≈ 85/160 ≈ **0.53 s**):
 | **`capture_ramp`** (150–175 solves) | ~85 s | **~14 min** (band 14–45 min) |
 
 The 14–45 min band accounts for referenced DOF going 6 771 → ~41 600 and the iteration cap
-rising 50 → 400. **The inherited "~60 min" figure is from `tet10_indentation_demand1.rs:495`** —
+rising 50 → 400. **The inherited "~60 min" figure is from `tet10_indentation_demand1.rs:492`** —
 a face-contact indentation test, single-threaded, no warm start, different mesh. Not transferable
 in either direction; do not quote it for this path.
 
@@ -612,7 +618,7 @@ means "Tet4 `k_disc`" unless the measurement is split from the render disc.
 
 Mitigate with boundary-faces-only projection + a quality floor + the rest-Jacobian guard.
 **⚠ Correction to v1's "all built + proven": the Tet10 quality floor does NOT exist** (§2.6). The
-Tet4 one does (`DISC_CONFORM_QUALITY_FLOOR = 0.05`, `lib.rs:72`); rung 3 must port it.
+Tet4 one does (`DISC_CONFORM_QUALITY_FLOOR = 0.05`, `fsu-model/src/lib.rs:72`); rung 3 must port it.
 
 ### 5.3 The parameterization silently changes Tet4 (rung 0) — mitigated by §4.1's golden
 
@@ -708,7 +714,10 @@ of `fsu_coupled_contact.rs`). Ladder-changing catches:
   code would silently re-create the corners-only under-tie. → §2.2.
 - **v1's scope claim was false** — `Msh` changes too, breaking a downstream public field. → §0.2, §1, §2.1.
 - **The arc's own stated payoff had no gate.** → §4.3.
-- **The cost risk pointed at the wrong target** (the FOM is ~3 min; the studio is ~14 min). → §5.1.
+- **The cost risk pointed at the wrong target** (the FOM gate is ~3 min; the ~14 min lands on
+  the studio's `capture_ramp`). **Both are ESTIMATES** from the committed ~85 s / ~5 s anchors,
+  not measurements of a Tet10 run — see §5.1's arithmetic and its 14–45 min band, and do not
+  let the hedge drop in a summary ([[feedback_hedges_compress_out_in_summaries]]). → §5.1.
 - Plus: rung ordering (Tet10-on-raw first, validate against a known value), v1's rung 3 was a
   phantom (replaced by h-refinement), the `MAX_NEWTON_ITER`/alias/`Default`-bound mechanics,
   the missing rollback clause, doc-drift list, and downstream re-grade list.
