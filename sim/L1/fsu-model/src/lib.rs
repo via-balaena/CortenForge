@@ -2809,6 +2809,16 @@ mod tests {
         // (0) FAITHFULNESS: the shipped builder bonds *this* mesh. Without it the gate could
         // measure a geometry no production path ever produces (and it also re-checks the
         // re-derivation against the built disc node-for-node, midsides included).
+        //
+        // ★★ **This gate has teeth nothing else in the crate has, and that is measured, not
+        // asserted.** Disabling the midside projection in `build_bonded_disc_tet10` outright —
+        // the whole rung reverted, silently — leaves **six of the seven** licence-gated anatomy
+        // gates GREEN: rung 2's corner residual gate, rung 1's element-order FOM, #701's
+        // conform moment-rotation FOM, the replayable sweep, and both lofted-disc gates all
+        // pass, because none of them observes a midside. This test fails on the assert below,
+        // and the license-free `curved_midsides_seat_on_a_curved_synthetic_endplate` fails too,
+        // so CI catches it as well. (Per rung 2's lesson, a mutation only proves something if it
+        // SURVIVES the pre-existing asserts — this one survives all of them.)
         assert_builder_bonds_this_mesh(
             &build_bonded_disc_tet10(disc_mesh, &params, Some(ep))
                 .expect("curved Tet10 disc bonds"),
