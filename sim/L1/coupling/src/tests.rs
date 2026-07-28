@@ -1839,6 +1839,97 @@ fn bonded_sandwich_conserves_and_is_two_way() {
     assert!(step.force_upper.z.is_finite() && c.data().qpos.iter().all(|q| q.is_finite()));
 }
 
+/// XOR-of-`to_bits` plus L2 fingerprint of a solver output slice — the byte-identity
+/// idiom from `sim-soft`'s `tet10_material_sensitivity.rs`. The XOR catches a ULP drift
+/// anywhere in the slice; the L2 catches the (vanishingly unlikely) XOR collision and
+/// gives a human-readable magnitude when the golden trips.
+fn fingerprint(v: &[f64]) -> (u64, f64) {
+    let xor = v.iter().map(|x| x.to_bits()).fold(0_u64, |a, b| a ^ b);
+    let l2 = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+    (xor, l2)
+}
+
+/// **Tet4 bonded byte-identity golden** — the rung-0 gate of the Tet4→Tet10 coupling
+/// migration (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §4.1).
+///
+/// Rung 0 parameterizes [`BondedSandwich`] over the element (`<Msh, E, N, G>`, `Tet4`
+/// default). That is a type-level change that must leave the Tet4 monomorphization
+/// **bit-identical**, and before this test there was no byte-identity gate anywhere on
+/// the bonded path — only tolerance assertions, which a ULP-level perturbation slips
+/// through. Fingerprints are frozen from the **pre-parameterization** code (`main` @
+/// `daf611c6`): captured after the refactor they would be tautologically green.
+///
+/// Deliberately on the license-free 2-cell [`bonded_fsu`] block rather than the real
+/// BodyParts3D disc: every real-anatomy probe is `#[ignore]`d + env-gated, so a golden
+/// there could never run in CI. The parameterization is purely type-level and both
+/// monomorphizations instantiate the *same* generic bodies in `resolve` / `face_wrench` /
+/// `Bond`, so the small fixture exercises the identical code path. (A literal `to_bits`
+/// golden is only sound at this scale — at the real disc's ~23.5k DOF, faer's supernodal
+/// kernels dispatch on runtime CPU features and a partial-pivot LU can amplify a
+/// reduction-order difference into a pivot flip. Real-disc numbers get a relative
+/// tolerance, never `to_bits`.)
+///
+/// Covers the **full** `resolve` output surface — both the reaction and the Dirichlet
+/// targets, over a compression probe and a flexion probe on one warm-started sandwich —
+/// rather than a single reduced scalar.
+#[test]
+fn bonded_tet4_reaction_byte_identical_golden() {
+    use nalgebra::UnitQuaternion;
+    use sim_soft::Vec3;
+
+    // Frozen pre-parameterization fingerprints (`main` @ `daf611c6`, this machine,
+    // reproduced byte-identically over 3 consecutive runs before the refactor landed).
+    const XOR_REACT_COMPRESS: u64 = 0x3d45_7766_0000_0411;
+    const L2_REACT_COMPRESS: f64 = 5.287_757_712_059_271;
+    const XOR_TARGETS_COMPRESS: u64 = 0x0017_0e5d_2dd0_eda0;
+    const XOR_REACT_FLEX: u64 = 0xbdcc_3c82_bc2e_7dee;
+    const L2_REACT_FLEX: f64 = 3.633_674_450_912_476_3;
+    const XOR_TARGETS_FLEX: u64 = 0x3f11_c325_7160_ed01;
+
+    let mut c = bonded_fsu();
+
+    // (1) compression: press L4 down 5%.
+    c.set_body_pose(
+        2,
+        Vec3::new(0.01, 0.01, 0.03 - 0.001),
+        UnitQuaternion::identity(),
+    );
+    let _ = c.probe();
+    let (xor_rc, l2_rc) = fingerprint(c.last_reaction());
+    let (xor_tc, _) = fingerprint(c.last_targets());
+
+    // (2) flexion on the SAME sandwich, so the warm-start carry is in the fingerprint too.
+    let rot = UnitQuaternion::from_axis_angle(&Vec3::x_axis(), 0.08);
+    let pivot = Vec3::new(0.01, 0.01, 0.02);
+    c.set_body_pose(2, pivot + rot * (Vec3::new(0.01, 0.01, 0.03) - pivot), rot);
+    let _ = c.probe();
+    let (xor_rf, l2_rf) = fingerprint(c.last_reaction());
+    let (xor_tf, _) = fingerprint(c.last_targets());
+
+    for (label, got, want) in [
+        ("compression reaction XOR", xor_rc, XOR_REACT_COMPRESS),
+        ("compression targets XOR", xor_tc, XOR_TARGETS_COMPRESS),
+        ("flexion reaction XOR", xor_rf, XOR_REACT_FLEX),
+        ("flexion targets XOR", xor_tf, XOR_TARGETS_FLEX),
+    ] {
+        assert_eq!(
+            got, want,
+            "Tet4 bonded {label} changed: {got:#018x} != {want:#018x} — the element \
+             parameterization perturbed the Tet4 path (see the migration plan §4.1)"
+        );
+    }
+    for (label, got, want) in [
+        ("compression reaction", l2_rc, L2_REACT_COMPRESS),
+        ("flexion reaction", l2_rf, L2_REACT_FLEX),
+    ] {
+        assert_eq!(
+            got.to_bits(),
+            want.to_bits(),
+            "Tet4 bonded {label} L2 changed: {got:e} != {want:e}"
+        );
+    }
+}
+
 /// Rung 6d: the reverse-mode pose gradient of the bonded wrench is finite, live, and has
 /// the right physical sign — pinned in-crate for `--lib` coverage. The full 6-twist FD
 /// match (both bodies) lives in `tests/bonded_pose_gradient.rs`.
