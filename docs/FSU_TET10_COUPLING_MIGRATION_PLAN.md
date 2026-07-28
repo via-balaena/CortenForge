@@ -387,6 +387,16 @@ impl block (§2.3). Forward-inert.
 **Gate:** existing tolerance tests unchanged **+ a new `to_bits` golden** — see §4.1 for why
 v1's version could not be built. Re-grade the 12 downstream crates (§1).
 
+> **✅ BUILT (2026-07-28).** One refinement found during the build, recorded so a later reader
+> does not over-read this rung: **`CoupledFsu` gained the type parameters but kept a CONCRETE
+> `impl`.** `CoupledFsu::build` assembles through `build_bonded_disc`, which returns the Tet4
+> arm, so a `CoupledFsu` over another element would have no methods and nothing constructs
+> one — genericizing those methods with no consumer to gate them would be speculative
+> ([[feedback_consumer_gated_completeness]]). The struct parameters still discharge rung 0's
+> actual job (proving the public type stays source-compatible, incl. `cf-spine-studio`'s
+> `pub fsu: CoupledFsu`). `BondedDisc`'s `impl` **is** generic, which is what rung 1 needs.
+> Method genericization moves to rung 4, with its real Tet10 consumer.
+
 **Rung 1 — straight Tet10 + full-face bond, STANDALONE, on the RAW mesh.** `fsu-model` builds a
 `BondedDisc<Tet10Mesh, Tet10, 10, 4>` (enrich §2.5, full-face band §2.2). **`CoupledFsu`
 untouched.**

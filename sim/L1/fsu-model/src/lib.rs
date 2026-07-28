@@ -45,8 +45,8 @@ use nalgebra::{Point3, Unit, UnitQuaternion, Vector3};
 use sim_coupling::BondedSandwich;
 use sim_mjcf::load_model;
 use sim_soft::{
-    Aabb3, MaterialField, Mesh, MeshingHints, SdfMeshedTetMesh, Vec3, pick_vertices_by_predicate,
-    referenced_vertices,
+    Aabb3, Element, MaterialField, Mesh, MeshingHints, SdfMeshedTetMesh, Tet4, Vec3,
+    pick_vertices_by_predicate, referenced_vertices,
 };
 // Re-exported: `FlexionTrajectory::boundary_faces` is `Vec<[VertexId; 3]>`, so consumers
 // (e.g. a viewer building a mesh from it) need to name the vertex-index type.
@@ -129,8 +129,23 @@ pub struct EndplateConform<'a> {
 ///
 /// The real disc geometry tet-meshed and bonded between two rigid vertebra-endplate
 /// boxes, plus the frame data a flexion probe needs. Build it with [`build_bonded_disc`].
-pub struct BondedDisc {
-    sandwich: BondedSandwich<SdfMeshedTetMesh>,
+///
+/// Carries the same `<Msh, E, N, G>` parameters as the underlying
+/// [`BondedSandwich`], defaulting to the linear [`Tet4`] disc on an
+/// [`SdfMeshedTetMesh`] — every method here is node-based, so the quadratic arm of the
+/// Tet10 migration is a type substitution rather than a fork
+/// (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` rung 1, which needs both element arms
+/// live at once to measure the `k_disc` ratio).
+///
+/// **One method is not element-neutral in its *semantics*:** [`Self::boundary_faces`]
+/// returns corner-only triangles, so on a quadratic disc the rendered surface reflects
+/// the linear field. It compiles and the indices stay valid — see that method's warning.
+pub struct BondedDisc<Msh = SdfMeshedTetMesh, E = Tet4, const N: usize = 4, const G: usize = 1>
+where
+    Msh: Mesh,
+    E: Element<N, G>,
+{
+    sandwich: BondedSandwich<Msh, E, N, G>,
     /// The medio-lateral (flexion/extension) axis: a coordinate unit vector.
     ml_axis: Vector3<f64>,
     /// The superior box's body-origin position at rest, in the solver SI frame.
@@ -408,7 +423,9 @@ pub struct FlexionTrajectory {
     pub frames: Vec<FlexionFrame>,
 }
 
-impl BondedDisc {
+impl<Msh: Mesh, E: Element<N, G> + Default, const N: usize, const G: usize>
+    BondedDisc<Msh, E, N, G>
+{
     /// The medio-lateral (flexion/extension) axis — a coordinate unit vector,
     /// identical in the solver SI frame and native mm (the map is translate + scale).
     #[must_use]
@@ -443,6 +460,16 @@ impl BondedDisc {
     /// The disc surface triangulation (outward-oriented boundary faces), indexing into
     /// [`Self::deformed_nodes_native`]. Constant across a flexion sweep — only the vertex
     /// positions deform — so a viewer snapshots it once and rebuilds each frame's mesh.
+    ///
+    /// ⚠ **Corner-only for higher-order elements.** These are 3-vertex triangles over
+    /// *corner* nodes. On a quadratic disc, [`Self::deformed_nodes_native`] returns every
+    /// node (corners *and* midsides) while this triangulation still references corners
+    /// alone — the indices stay valid (enrichment preserves the corner id-space and keeps
+    /// it first), but the rendered surface silently reflects the **linear** field and
+    /// omits the quadratic enrichment. Nothing breaks; the picture is just less curved
+    /// than the physics. Skinning against the 6-node boundary faces is the named viz
+    /// follow-on in `docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §6 — until it lands, do
+    /// not read a Tet10 disc's rendered surface as `rendered === contacts`.
     #[must_use]
     pub fn boundary_faces(&self) -> &[[VertexId; 3]] {
         self.sandwich.soft_boundary_faces()
