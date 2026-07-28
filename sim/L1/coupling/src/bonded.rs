@@ -42,16 +42,11 @@ use nalgebra::UnitQuaternion;
 use sim_core::{Data, MjJointType, Model, SpatialVector};
 use sim_ml_chassis::Tensor;
 use sim_soft::{
-    BoundaryConditions, CpuNewtonSolver, HandBuiltTetMesh, MaterialField, Mesh, NullContact,
-    Solver, SolverConfig, Tet4, Vec3, VertexId,
+    BoundaryConditions, CpuNewtonSolver, Element, HandBuiltTetMesh, MaterialField, Mesh,
+    NeoHookean, NullContact, Solver, SolverConfig, Tet4, Vec3, VertexId,
 };
 
 use crate::vjp::add_contact_moment;
-
-/// Newton-iteration budget for the quasi-static disc solve. Generous headroom over the
-/// skeleton's block-tuned 10 so a real many-thousand-tet disc converges to the same
-/// `tol` under stiff near-incompressible modes; easy problems early-exit unaffected.
-const MAX_NEWTON_ITER: usize = 50;
 
 /// One rigid endplate's bond: which rigid body, which disc nodes glue to it, and
 /// each node's rest offset expressed in the body frame (so the target tracks the
@@ -118,7 +113,20 @@ impl BondStep {
 /// A soft disc bonded between two rigid bodies (rung 6b / 6c).
 ///
 /// Generic over the tet-mesh type `Msh` (defaults to [`HandBuiltTetMesh`], the rung-6b
-/// primitive block). Construct a primitive block disc with [`BondedSandwich::new`] or
+/// primitive block) **and over the element `E` / its node & Gauss-point counts `N`, `G`**
+/// (defaulting to linear [`Tet4`], `N = 4`, `G = 1`). The bond math itself is entirely
+/// node-based — `Bond` is a vertex-id set plus body-frame rest offsets, and the reaction
+/// readout indexes by `3 · n_vertices` — so nothing here is element-order-specific; `E`
+/// only selects which element the interior disc solver assembles with. This is what lets
+/// the FSU disc migrate to a quadratic [`Tet10`](sim_soft::element::Tet10) without
+/// touching the coupling (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` rung 0).
+///
+/// **`Msh` comes first deliberately:** every existing annotation spells
+/// `BondedSandwich<SdfMeshedTetMesh>`, so binding the *mesh* to the first parameter keeps
+/// those source-compatible and the Tet4 monomorphization byte-identical (pinned by
+/// `bonded_tet4_reaction_byte_identical_golden`).
+///
+/// Construct a primitive block disc with [`BondedSandwich::new`] or
 /// bond an arbitrary tet mesh — e.g. the real intervertebral disc
 /// ([`SdfMeshedTetMesh`](sim_soft::SdfMeshedTetMesh)) — with
 /// [`BondedSandwich::from_tet_mesh`]; then drive the coupled system with
@@ -126,9 +134,10 @@ impl BondStep {
 /// `lower_body` and the upper to `upper_body`; both bodies must already be posed so
 /// those faces coincide with their endplates (see the FSU gates for the canonical
 /// scenes). Forward only — see the module docs for scope.
-pub struct BondedSandwich<Msh = HandBuiltTetMesh>
+pub struct BondedSandwich<Msh = HandBuiltTetMesh, E = Tet4, const N: usize = 4, const G: usize = 1>
 where
     Msh: Mesh,
+    E: Element<N, G>,
 {
     model: Model,
     data: Data,
@@ -137,7 +146,7 @@ where
     /// topology are constant, and [`Solver::replay_step`] / `nodal_reaction_forces`
     /// are pure functions of the per-step Dirichlet targets (`&self`), so only
     /// `x_prev` changes step to step — no per-step rebuild.
-    solver: DiscSolver<Msh>,
+    solver: DiscSolver<Msh, E, N, G>,
     /// The large quasi-static timestep (inertial term `M/dt²` negligible).
     static_dt: f64,
     n_vertices: usize,
@@ -162,7 +171,13 @@ where
     last_targets: Vec<f64>,
 }
 
-type DiscSolver<Msh> = CpuNewtonSolver<Tet4, Msh, NullContact>;
+/// The interior disc solver. Spelled out in full rather than via `CpuTet4NHSolver` /
+/// `CpuTet10NHSolver`: those aliases are each pinned to one concrete element, so a
+/// generic alias cannot select between them. The constitutive law stays fixed at
+/// [`NeoHookean`] (naming it is required to reach the trailing `N`/`G` positionally);
+/// for `E = Tet4, N = 4, G = 1` this is exactly the pre-parameterization type.
+type DiscSolver<Msh, E, const N: usize, const G: usize> =
+    CpuNewtonSolver<E, Msh, NullContact, NeoHookean, N, G>;
 
 impl BondedSandwich<HandBuiltTetMesh> {
     /// Bond a primitive Neo-Hookean disc of `n_per_edge` cells and `edge` length
@@ -214,7 +229,23 @@ impl BondedSandwich<HandBuiltTetMesh> {
     }
 }
 
-impl<Msh: Mesh> BondedSandwich<Msh> {
+impl<Msh: Mesh, E: Element<N, G> + Default, const N: usize, const G: usize>
+    BondedSandwich<Msh, E, N, G>
+{
+    /// Newton-iteration budget for the quasi-static disc solve. Generous headroom over
+    /// the skeleton's block-tuned 10 so a real many-thousand-tet disc converges to the
+    /// same `tol` under stiff near-incompressible modes; easy problems early-exit
+    /// unaffected.
+    ///
+    /// **N-aware.** Linear elements keep the original 50 — a cap, and one the validated
+    /// Tet4 scenes do not reach, so the Tet4 path is unchanged. Higher-order elements get
+    /// far more headroom: a Tet10 bonded solve has an indefinite tangent and falls back
+    /// to LU on most iterations, converging at a much higher iteration count. Note the
+    /// cap **hard-fails** rather than truncating (`replay_step` panics on
+    /// `SolverFailure::NewtonIterCap`), so raising it can only turn a loud failure into a
+    /// result — it can never silently change a converged answer.
+    const MAX_NEWTON_ITER: usize = if N == 4 { 50 } else { 400 };
+
     /// Bond an **arbitrary** tet mesh between `lower_body` and `upper_body`, with the
     /// two endplate faces supplied as vertex-id sets (rung 6c — the real disc geometry).
     ///
@@ -296,9 +327,9 @@ impl<Msh: Mesh> BondedSandwich<Msh> {
         pinned.extend_from_slice(&upper.verts);
         let mut cfg = SolverConfig::skeleton();
         cfg.dt = static_dt;
-        cfg.max_newton_iter = MAX_NEWTON_ITER; // real-mesh headroom; see the const's doc.
-        let solver: DiscSolver<Msh> = CpuNewtonSolver::new(
-            Tet4,
+        cfg.max_newton_iter = Self::MAX_NEWTON_ITER; // real-mesh headroom; see the const's doc.
+        let solver: DiscSolver<Msh, E, N, G> = CpuNewtonSolver::new(
+            E::default(),
             mesh,
             NullContact,
             cfg,
@@ -491,6 +522,39 @@ impl<Msh: Mesh> BondedSandwich<Msh> {
         &self.boundary_faces
     }
 
+    /// Per-DOF reaction (`−f_int`, vertex-major xyz) read at the last [`Self::step`]
+    /// or [`Self::probe`] — the force the disc exerts on its Dirichlet anchors. Length
+    /// `3 · n_vertices`.
+    #[must_use]
+    pub fn last_reaction(&self) -> &[f64] {
+        &self.last_reaction
+    }
+
+    /// The world-frame target positions (vertex-major xyz) the bonded nodes were held
+    /// at during the last [`Self::step`] or [`Self::probe`] — the deformed moment arms
+    /// for a conservation check. Length `3 · n_vertices`.
+    #[must_use]
+    pub fn last_targets(&self) -> &[f64] {
+        &self.last_targets
+    }
+}
+
+/// The **differentiable** bonded path — deliberately restricted to linear [`Tet4`].
+///
+/// The forward bond (`step` / `probe`) is fully element-generic, but this reverse pass
+/// is not yet gated for higher-order elements: its VJP
+/// ([`CpuNewtonSolver::equilibrium_dirichlet_reaction_vjp`](sim_soft::CpuNewtonSolver::equilibrium_dirichlet_reaction_vjp))
+/// clears the frictionless guard for *any* node count, so a `Tet10` pose gradient would
+/// run silently rather than fail. The underlying Dirichlet-reaction channel is FD-gated
+/// at `N = 10` in `sim-soft`, but this *composed* bonded pose gradient is only FD-gated
+/// at `N = 4` (`tests/bonded_pose_gradient.rs`).
+///
+/// Restricting the `impl` rather than asserting inside the method makes the restriction a
+/// **compile-time** one: a `Tet10` sandwich simply does not have the method, so there is
+/// no runtime panic branch to test and no way for a future consumer to reach it by
+/// accident. Lift this to the generic impl when a co-design consumer needs a Tet10 disc
+/// pose gradient — *and* FD-gates it (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §2.3).
+impl<Msh: Mesh> BondedSandwich<Msh, Tet4, 4, 1> {
     /// Reverse-mode gradient of the bonded reaction wrenches w.r.t. the two body poses
     /// (rung 6d — the differentiable bond). Resolves the disc at the current poses (like
     /// [`Self::probe`]) and, given a cotangent on each endplate's wrench, returns the
@@ -599,22 +663,6 @@ impl<Msh: Mesh> BondedSandwich<Msh> {
         g[4] = d_lin.y;
         g[5] = d_lin.z;
         g
-    }
-
-    /// Per-DOF reaction (`−f_int`, vertex-major xyz) read at the last [`Self::step`]
-    /// or [`Self::probe`] — the force the disc exerts on its Dirichlet anchors. Length
-    /// `3 · n_vertices`.
-    #[must_use]
-    pub fn last_reaction(&self) -> &[f64] {
-        &self.last_reaction
-    }
-
-    /// The world-frame target positions (vertex-major xyz) the bonded nodes were held
-    /// at during the last [`Self::step`] or [`Self::probe`] — the deformed moment arms
-    /// for a conservation check. Length `3 · n_vertices`.
-    #[must_use]
-    pub fn last_targets(&self) -> &[f64] {
-        &self.last_targets
     }
 }
 

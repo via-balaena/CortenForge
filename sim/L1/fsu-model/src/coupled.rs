@@ -41,6 +41,8 @@ use sim_core::sdf::compute_shape_contact;
 use sim_core::{Data, Pose, SdfContact, SdfGrid, ShapeConcave};
 use sim_mjcf::load_model;
 
+use sim_soft::{Element, Mesh, SdfMeshedTetMesh, Tet4};
+
 use crate::{BondedDisc, DiscParams, build_bonded_disc};
 
 /// The flexion-probe angle (rad) at which the disc's small-strain bending stiffness
@@ -111,7 +113,26 @@ impl Default for CoupledParams {
 /// equilibrium ([`CoupledFsu::equilibrium`]) under an applied moment. Retains the live
 /// bonded disc so a viewer can capture the coupled ROM together with the disc's
 /// deformation ([`CoupledFsu::capture_ramp`]).
-pub struct CoupledFsu {
+///
+/// Carries the [`BondedDisc`] element parameters so the whole segment can later be assembled
+/// on a quadratic disc without a parallel type. **The defaults are the shipped linear Tet4
+/// disc**, so `CoupledFsu` still names itself unparameterized at every existing call site —
+/// including `cf-spine-studio`'s `pub fsu: CoupledFsu` field, which is why the parameters are
+/// reserved now: proving the public type stays source-compatible is rung 0's job.
+///
+/// **Scope, stated honestly: only the *struct* is parameterized.** The `impl` below is still
+/// concrete (`Msh = SdfMeshedTetMesh, E = Tet4`), because [`Self::build`] assembles the disc
+/// via [`build_bonded_disc`], which returns the Tet4 arm — so a `CoupledFsu` over another
+/// element has no methods and nothing constructs one. Genericizing the methods is rung 4 of
+/// `docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md`, where a real Tet10 consumer arrives to gate
+/// it (that rung also re-anchors `RUNG7_K_DISC` and is conditioned on a measured
+/// `capture_ramp` cost). Rungs 1–3 exercise the quadratic disc **standalone**, through
+/// [`BondedDisc`], whose `impl` *is* generic.
+pub struct CoupledFsu<Msh = SdfMeshedTetMesh, E = Tet4, const N: usize = 4, const G: usize = 1>
+where
+    Msh: Mesh,
+    E: Element<N, G>,
+{
     /// Disc bushing (hinge spring) + the two ligament tendons, in native mm.
     model: sim_core::Model,
     /// Reused solver scratch for [`Self::restoring_moment`], so the equilibrium bisection
@@ -139,7 +160,7 @@ pub struct CoupledFsu {
     /// node-level Strategy-B conform is deferred here). [`Self::capture_ramp`]
     /// drives it to each equilibrium angle and reads the REAL deformed nodes, which the whole-face-
     /// conformed [`Self::conformed_disc_surface`] is skinned onto. Also the source of `k_disc`.
-    render_disc: BondedDisc,
+    render_disc: BondedDisc<Msh, E, N, G>,
     /// The disc surface (native mm) with its WHOLE top/bottom face conformed onto the real
     /// L4/L5 surfaces — the exact contact geometry, retained so a viewer renders *this* (not
     /// the raw STL) and the drawn disc IS what the bond sits on (rendered === contacts).
