@@ -689,11 +689,17 @@ studio-element decision, *measured* (§5.1); (e) the doc-drift sweep (§7).
 > bisections to find out why the studio path was failing. Measured, on a **lofted** (painted)
 > disc — the `cf-spine-studio` geometry — driven ±6° in 0.1° steps:
 >
-> | arm | lofted disc |
-> |---|---|
-> | Tet4 raw / Tet10 raw | reach ±6.0° |
-> | Tet4 **conformed** | element inverts at **3.70°** |
-> | Tet10 **curved** | element inverts at **−2.80°** |
+> | arm | flexion | extension |
+> |---|---|---|
+> | Tet4 raw / Tet10 raw | +6.00° | −6.00° |
+> | Tet4 **conformed** | inverts at **+3.70°** | −6.00° |
+> | Tet10 **curved** | inverts at **+2.40°** | inverts at **−2.80°** |
+>
+> ⚠ Both senses, and it matters: Tet4's conform fails in **flexion only** (it takes the full
+> extension travel), and Tet10's worst direction is **flexion at +2.40°**, not the −2.80° this
+> arc quoted while each arm was driven in a single sense. The earlier measurement also compared
+> a +6° control against a −6° subject — two variables at once, in the gate built to enforce
+> one-variable attribution.
 >
 > Both raw arms are fine ⇒ **the conform is the failing variable, not the element**, on both.
 > So rung 4 ships the element and **rung 4b** ships the conform, with a measured entry
@@ -789,8 +795,8 @@ studio-element decision, *measured* (§5.1); (e) the doc-drift sweep (§7).
 **Rung 4b — seat the coupled disc on the real endplate.** `CoupledFsu::build`'s `None` →
 `Some(..)`, i.e. the exact-geometry payoff for the assembled segment. **Blocked on a measured
 entry criterion, not a preference:** the Strategy-B conform must survive ±6° in 0.1° steps on a
-**lofted** disc on both elements (today: Tet4 inverts at 3.70°, Tet10 at −2.80°; both raw arms
-reach ±6°). Note this is a *distinct* mechanism from the rest-mesh conditioning rung 4 fixed by
+**lofted** disc on both elements *in both senses* (today: Tet4 +3.70° flexion but a full
+−6.00° extension; Tet10 +2.40° / −2.80°; both raw arms reach ±6° both ways). Note this is a *distinct* mechanism from the rest-mesh conditioning rung 4 fixed by
 raising `DISC_CONFORM_QUALITY_FLOOR` — it is deformation-time inversion and survives that fix.
 Likely lines of attack, none yet measured: do not move a node already seated (a lofted disc's
 caps *are* the endplates, so most of its conform is a no-op that only adds risk); revisit the

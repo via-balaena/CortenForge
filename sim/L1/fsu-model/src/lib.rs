@@ -1844,8 +1844,24 @@ mod tests {
     /// so this pins the angles reached. When 4b improves the conform, these pins fire and the
     /// plan, `CoupledFsu::build`'s table and this test must all be re-anchored together.
     ///
-    /// The RAW arms are the control: they reach the full ±6° on the same mesh, which is what
-    /// makes this the conform's fault and not the element's or the geometry's.
+    /// The RAW arms are the control: they reach the full ±6° **in both senses** on the same
+    /// mesh, which is what makes this the conform's fault and not the element's or the
+    /// geometry's.
+    ///
+    /// **Measured** (lofted disc, flexion / extension):
+    ///
+    /// | arm | flexion | extension |
+    /// |---|---|---|
+    /// | raw Tet4 | +6.00° | −6.00° |
+    /// | raw Tet10 | +6.00° | −6.00° |
+    /// | conformed Tet4 | **+3.70°** | −6.00° |
+    /// | conformed Tet10 | **+2.40°** | **−2.80°** |
+    ///
+    /// ⚠ Driving both senses is not decoration. Tet4's conform fails in flexion *only* — it
+    /// takes the full extension travel — and Tet10's worst direction is **flexion at +2.40°**,
+    /// not the −2.80° extension figure this gate reported while it drove each arm in one sense.
+    /// The earlier single-sense version also compared a +6° control against a −6° subject,
+    /// differing in two variables at once.
     #[test]
     #[ignore = "needs $CF_L4_STL/$CF_L5_STL (BodyParts3D, CC BY-SA, not committed)"]
     fn lofted_conformed_disc_angle_envelope_fom() {
@@ -1907,11 +1923,21 @@ mod tests {
             "the RAW arms must reach the full ±6° — they are the control that makes the \
              conformed arms' failure attributable to the conform"
         );
+        // All FOUR conformed measurements, because the criterion is "±6° on both elements" and
+        // three of the four fall short in different ways: Tet4 fails in flexion but reaches the
+        // full extension travel, while Tet10 fails in both senses and its WORSE direction is
+        // flexion (+2.40°), not the −2.80° extension figure this gate reported before it drove
+        // both senses. Asserting only two of the four would have kept that hidden.
         assert!(
-            conf4 < full && conf10.abs() < full,
-            "rung 4b's entry criterion is that a CONFORMED lofted disc completes ±6° on both \
-             elements. If this now passes, 4b's blocker is gone: seat `CoupledFsu`'s disc, \
-             re-anchor RUNG7_K_DISC, and delete this assert rather than relaxing it."
+            conf4 < full && conf4_ext.abs() < full || conf10_flex < full && conf10.abs() < full,
+            "rung 4b's entry criterion is that a CONFORMED lofted disc completes ±6° on BOTH \
+             elements in BOTH senses. Measured: Tet4 {:+.2}°/{:+.2}°, Tet10 {:+.2}°/{:+.2}°. If \
+             all four now reach ±6°, 4b's blocker is gone: seat `CoupledFsu`'s disc, re-anchor \
+             RUNG7_K_DISC, and DELETE this assert rather than relaxing it.",
+            conf4.to_degrees(),
+            conf4_ext.to_degrees(),
+            conf10_flex.to_degrees(),
+            conf10.to_degrees()
         );
     }
 

@@ -257,11 +257,11 @@ impl CoupledFsu<Tet10Mesh, Tet10, 10, 4> {
     /// bone is the arc's stated payoff — but it is **not validated across the disc geometries
     /// this constructor accepts**, and rung 4 measured exactly how it fails:
     ///
-    /// | lofted (painted) disc, ±6° in 0.1° steps | result |
-    /// |---|---|
-    /// | Tet4 raw / Tet10 raw | reach ±6.0° |
-    /// | Tet4 **conformed** | element inverts at **3.70°** |
-    /// | Tet10 **curved** | element inverts at **−2.80°** |
+    /// | lofted (painted) disc, ±6° in 0.1° steps | flexion | extension |
+    /// |---|---|---|
+    /// | Tet4 raw / Tet10 raw | +6.00° | −6.00° |
+    /// | Tet4 **conformed** | inverts at **+3.70°** | −6.00° |
+    /// | Tet10 **curved** | inverts at **+2.40°** | inverts at **−2.80°** |
     ///
     /// Both raw arms are fine, so this is the **conform**, not the element — the same
     /// discriminator that a separate small-angle failure had (fixed by raising
@@ -708,8 +708,9 @@ pub struct CoupledTrajectory {
 /// jump the disc somewhere in one step. That matters because the drivable envelope is a
 /// property of the *mesh*, not of the angle reached: the **scanned** conformed disc walks to
 /// ±6° happily and stalls on a single 0.5° jump from rest (rung 2/3 measured both). ⚠ That is
-/// mesh-specific, not general — the **lofted** conformed disc inverts at 3.70° (Tet4) and
-/// −2.80° (Tet10) even when walked, which is why rung 4 ships a straight disc. A caller that knows
+/// mesh-specific, not general — the **lofted** conformed disc inverts at +3.70° (Tet4,
+/// flexion only) and +2.40°/−2.80° (Tet10, both senses) even when walked, which is why rung 4
+/// ships a straight disc. A caller that knows
 /// its start angle can always reach any end angle; one that does not, cannot.
 ///
 /// # Panics
