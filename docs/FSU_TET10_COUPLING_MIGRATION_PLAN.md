@@ -792,6 +792,22 @@ studio-element decision, *measured* (§5.1); (e) the doc-drift sweep (§7).
 > now DRIVES the Strategy-B conformed lofted disc past `K_DISC_PROBE` on both elements. It
 > extends an existing licence-gated test rather than adding one, so it costs no coverage.
 
+> **⚠ COVERAGE COST, accepted deliberately (user call, 2026-07-28).** `cf-fsu-model` grades
+> **C (58.2 %)** against `main`'s **B (71.9 %)** — Coverage alone; Clippy / Documentation /
+> Safety / Dependencies are all A, and `sim-soft`, `sim-coupling` and `cf-spine-studio` are all
+> A. The cause is the structural trap rung 2 documented: `cargo llvm-cov --lib` instruments
+> `#[cfg(test)] mod tests`, so an `#[ignore]`d licence-gated gate charges its whole body to the
+> grade while executing in **no** coverage run, ever.
+>
+> Unlike rung 2's, these gates **cannot** be moved to `tests/`: they need `lofted_disc`,
+> `prepare_disc_at`, `ConformFloors` and `bond_prepared_*`, all private, and exporting them
+> would mean adding public API whose only consumer is a test. The trade was made with the cost
+> known: those gates are what caught the stale `0.10` drivability row and the false "<0.1 %"
+> conditioning claim, and deleting them to protect a letter would optimise the metric against
+> the thing the metric exists to measure. The crate-wide `tests/` migration
+> ([[project-ci-per-crate-coverage-blind-spot]]) recovers ~8 of the 13.7 points and remains its
+> own PR. CI runs `--skip-coverage`, so this gates no merge.
+
 **Rung 4b — seat the coupled disc on the real endplate.** `CoupledFsu::build`'s `None` →
 `Some(..)`, i.e. the exact-geometry payoff for the assembled segment. **Blocked on a measured
 entry criterion, not a preference:** the Strategy-B conform must survive ±6° in 0.1° steps on a
