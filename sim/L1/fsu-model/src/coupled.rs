@@ -239,9 +239,9 @@ impl SegmentPrologue {
 
 impl CoupledFsu<Tet10Mesh, Tet10, 10, 4> {
     /// Assemble the coupled FSU from the three meshes (native mm): conform the disc's endplate
-    /// face onto the real L4/L5 surfaces for rendering, tet-mesh + bond the disc onto the
-    /// **real endplate**, measure its `k_disc` bushing, build the ligament + bushing hinge
-    /// model, and sample the two articular SDF grids. The flexion sense is derived from the
+    /// face onto the real L4/L5 surfaces **for rendering**, tet-mesh + bond the disc, measure
+    /// its `k_disc` bushing, build the ligament + bushing hinge model, and sample the two
+    /// articular SDF grids. The flexion sense is derived from the
     /// facet engagement asymmetry (never hardcoded).
     ///
     /// **The bonded FEM disc is the quadratic one** (`build_bonded_disc_tet10`, rung 4): the
@@ -418,8 +418,8 @@ where
 
     /// The render disc's tet-mesh boundary faces — the fragmentation signal available
     /// **immediately after the build**, before the far more expensive
-    /// [`Self::capture_ramp`] (measured on the curved quadratic disc: **764 s** of capture
-    /// against an **86 s** build; on the linear one, 33 s against 7 s). This is exactly the
+    /// [`Self::capture_ramp`] (measured on the shipped straight quadratic disc: **583 s** of
+    /// capture against a **68 s** build; on the linear one, 32 s against 7 s). This is exactly the
     /// triangulation `capture_ramp` copies
     /// into [`CoupledTrajectory::boundary_faces`] (it is tet-mesh topology, fixed at build
     /// and invariant under deformation), so a caller can run its degeneracy / fragmentation
@@ -706,8 +706,10 @@ pub struct CoupledTrajectory {
 /// **The single driver in this module** — the `k_disc` probe, the return to rest, and every
 /// leg of [`CoupledFsu::capture_ramp`] all route through it, so no path can accidentally
 /// jump the disc somewhere in one step. That matters because the drivable envelope is a
-/// property of the *mesh*, not of the angle reached: a conformed disc walks to ±6° happily
-/// and stalls on a single 0.5° jump from rest (rung 2/3 measured both). A caller that knows
+/// property of the *mesh*, not of the angle reached: the **scanned** conformed disc walks to
+/// ±6° happily and stalls on a single 0.5° jump from rest (rung 2/3 measured both). ⚠ That is
+/// mesh-specific, not general — the **lofted** conformed disc inverts at 3.70° (Tet4) and
+/// −2.80° (Tet10) even when walked, which is why rung 4 ships a straight disc. A caller that knows
 /// its start angle can always reach any end angle; one that does not, cannot.
 ///
 /// # Panics
@@ -1213,9 +1215,16 @@ mod tests {
                 "every frame carries the full (corner + midside) node buffer"
             );
         }
-        // Re-capturing must work too: `capture_ramp` leaves the disc at the flexion peak, and
-        // the second call has to WALK back to rest rather than jump there. A driver that
-        // ignored where the disc was left would put a full-ROM jump into the second capture.
+        // A second capture must also succeed and reproduce the first.
+        //
+        // ⚠ **This does NOT gate the walk-back to rest, and an earlier version of this comment
+        // claimed it did.** `capture_ramp` derives its angles from `equilibrium`, which roots
+        // on the analytic bushing plus the facet SDF and never touches `render_disc` or
+        // `disc_theta` — so the two runs produce bit-identical `theta` by construction, whatever
+        // the driver does. Deleting the `disc_theta` bookkeeping entirely leaves this test
+        // green. What it does gate is that a second capture RUNS (the disc is left usable, not
+        // wedged) and is deterministic. The walk-back itself is exercised where the angles are
+        // large enough for a jump to matter: the anatomy full-ROM ramp, at ±6°.
         let again = fsu.capture_ramp(&[-0.1, 0.0, 0.1]).expect("second capture");
         for (a, b) in again.frames.iter().zip(&traj.frames) {
             assert!(

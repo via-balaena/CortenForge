@@ -21,7 +21,7 @@ higher-order element on the genuinely-curved bone.
 
 > **Checkpoint:** written against `main` @ `59e61daa`, hardened by two adversarial review
 > rounds: a 5-front diamond-review (v1, §8.1) and a 4-front stress-test that reshaped the
-> ladder (v2, §8.2). **Rungs 0 (#704), 1 (#705), 2 (#706) and 3 are built — see each rung's
+> ladder (v2, §8.2). **Rungs 0 (#704), 1 (#705), 2 (#706), 3 (#707) and 4 are built — see each rung's
 > BUILT note in §3, which records what the build changed about the plan. Next action: rung 4b or
 > rung 5 (independent — 4b seats the coupled disc, 5 refines it).**
 
@@ -603,7 +603,11 @@ additive shift committed.
 > - **§4.3 residual, like for like.** Of **1562** bonded-face boundary midsides the SI-alignment
 >   guard authorises **580** (37 %, close to the 40 % it authorises among the corners — 233 of 583);
 >   the other 982 are the rim, left straight by design. Over the *authorised* set the distance
->   to the nearer vertebra falls **max 3.860 → 3.842 mm, RMS 0.796 → 0.694**. ★ The endpoint is
+>   to the nearer vertebra falls **max 3.860 → 3.842 mm, RMS 0.796 → 0.694**. ⚠ *Rung 4
+>   re-anchored these when it raised `DISC_CONFORM_QUALITY_FLOOR` 0.05 → 0.25 — the midsides
+>   are projected from conformed CORNERS, so the whole table moved (now 3.973 → 3.971 mm,
+>   RMS 0.881 → 0.767, coverage 67.4 %). The numbers in this note are what RUNG 3 measured;
+>   the committed pins are rung 4's.* ★ The endpoint is
 >   the result worth quoting: rung 2 left the authorised **corners** at 0.656 mm RMS, so the
 >   midsides now sit essentially as close to the bone as the corners they span (0.694 vs 0.656,
 >   6 % apart) — **the bonded face is uniformly seated instead of seated at its corners and
@@ -741,7 +745,9 @@ studio-element decision, *measured* (§5.1); (e) the doc-drift sweep (§7).
 >   now derive from `scene::BUILD_HINT` / `CAPTURE_HINT`.
 > - **§4.7 license-free arm:** a synthetic quadratic `CoupledFsu` (sharing one assembly with the
 >   linear fixture) captures a ramp in `--lib`, asserting deformed-configuration validity and
->   that a **re-capture** walks back to rest instead of jumping. Narrowed from ±0.5 to ±0.1 N·m
+>   that a **re-capture** runs and is deterministic (⚠ not that it walks back — the ramp's angles
+>   come from the analytic bushing, so they match by construction; the walk-back is exercised by
+>   the anatomy ramp at ±6°). Narrowed from ±0.5 to ±0.1 N·m
 >   after measuring that the wider ramp cost 99 s of CI for coverage the narrow one gives
 >   identically (15.6 s).
 >
@@ -790,8 +796,9 @@ Likely lines of attack, none yet measured: do not move a node already seated (a 
 caps *are* the endplates, so most of its conform is a no-op that only adds risk); revisit the
 band selection on a disc whose caps coincide with the bone; or a deformation-aware back-off.
 **Gate:** the lofted arm of `b6_lofted_disc_bonds_seats_and_sweeps` extended to ±6°, plus the
-`RUNG7_K_DISC` re-anchor that seating will force (measured −0.1855 on the scanned disc at the
-new floor, vs −0.1882 straight).
+`RUNG7_K_DISC` re-anchor that seating will force. ⚠ Do NOT carry a predicted value here: an
+earlier draft quoted −0.1855 for the conformed arm, which no gate in the tree produces. 4b
+measures it.
 
 **Rung 5 — h-refinement: does `k_disc` converge?** §0.1 bound 3 admits −0.186 is not proven
 converged, which is precisely why rung 1 gates a bracket rather than a point. One refinement
@@ -811,7 +818,7 @@ justification, not a §6 deferral. (v1's rung 3 was a phantom: its gate column d
 | 0 | coupling, fsu-model | — (inert) | existing tolerance tests unchanged | **§4.1 license-free `to_bits` golden, bits frozen pre-change** |
 | 1 | fsu-model | **§4.2** ratio bracket + band-count cross-check | restoring + conserving + converged, both arms | Tet4 path untouched |
 | 2 | fsu-model | **§4.3** exact-geometry residual ↓ | **§4.5** large-angle sweep; per-element conform delta | Tet4+raw arm byte-identical |
-| 3 ✅ | sim-soft + fsu-model | **§4.3** residual ↓ again (authorised RMS 0.796 → 0.694 mm) | **§4.4** coverage 67.9 % + per-Gauss-point floor; k_disc shift 0.05 % committed | straight-Tet10 arm untouched (rung-1 FOM re-runs at 0.666 / 0.663) |
+| 3 ✅ | sim-soft + fsu-model | **§4.3** residual ↓ again (authorised RMS 0.881 → 0.767 mm, re-anchored at rung 4) | **§4.4** coverage 67.4 % + per-Gauss-point floor; k_disc shift 0.05 % committed | straight-Tet10 arm untouched (rung-1 FOM re-runs at 0.666 / 0.663) |
 | 4 ✅ | fsu-model, coupling | single `RUNG7_K_DISC` re-anchor, measured (−0.2819 → −0.1882) | **§4.5** full ramp completes, `detJ > 0` on the DEFORMED config; **§4.6** flexion ROM assert; segment shift +0.0082° vs predicted ~0.008° | — |
 | 4b | fsu-model | **§4.3** residual, on the COUPLED disc | lofted disc completes ±6° conformed, both elements | — |
 | 5 | fsu-model | committed convergence table | — | — |

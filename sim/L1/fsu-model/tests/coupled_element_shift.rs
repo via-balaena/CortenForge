@@ -53,8 +53,7 @@ use cf_fsu_model::{CoupledFsu, CoupledFsuTet4, CoupledParams, PHYSIOLOGIC_MOMENT
 /// The flexion ROM shift the flip is allowed to introduce (degrees), **pre-registered before
 /// the first run** rather than fitted to it.
 ///
-/// Sits deliberately between the two numbers that matter: an order of magnitude above §0.3's
-/// predicted ~0.008°, and a third of `fsu_coupled_contact.rs`'s `ROM_TOL_DEG` (0.15°) — the
+/// Sits deliberately between the two numbers that matter: 6× §0.3's predicted ~0.008°, and a third of `fsu_coupled_contact.rs`'s `ROM_TOL_DEG` (0.15°) — the
 /// literature tripwire the plan insists must not move. So a shift that lands here is
 /// "prediction confirmed"; a shift that clears it is a finding *before* it becomes a
 /// tripwire failure, which is the only way this gate is worth more than that one.

@@ -39,9 +39,10 @@
 //! - **★ The plan's ~85 s Tet4 capture anchor was wrong: it is 32.2 s.** §5.1 derived its
 //!   whole cost model from that figure (`85/160 ≈ 0.53 s` per solve) and predicted 14–45 min
 //!   for Tet10. Measured: **9.7 min**, below the band's floor — the estimate was close only
-//!   because the stale anchor overstated Tet4 by ~2.6× while the per-solve element ratio
-//!   (18.1×, not the assumed ~10×) understated Tet10 by about as much. Two compensating
-//!   errors are not a validated model: quote the measurements here, not §5.1's arithmetic.
+//!   because the stale anchor overstated Tet4 by 2.6× while the per-solve element ratio
+//!   (18.1×, not the assumed ~10×) understated Tet10 by 1.8×. The errors are compensating but
+//!   NOT equal, and the residual shows: §5.1's model predicts ~850 s where 583 s is measured.
+//!   Two partly-cancelling errors are not a validated model — quote the measurements here.
 //!
 //! ```text
 //! CF_L4_STL=/path/FMA13075.stl CF_L5_STL=/path/FMA13076.stl CF_DISC_STL=/path/FMA16036.stl \
@@ -127,11 +128,6 @@ fn assert_sound_ramp(traj: &CoupledTrajectory, label: &str, expect_max_disp: f64
             w[0].theta.to_degrees(),
             w[1].theta.to_degrees()
         );
-        assert_eq!(
-            w[0].deformed_nodes_native.len(),
-            traj.rest_nodes_native.len(),
-            "{label}: every frame carries the full node buffer"
-        );
     }
     // ⚠ The validity readout must be wired to the DEFORMED configuration, and `> 0` cannot
     // tell you that it is: a readout accidentally reporting the REST mesh would be exactly
@@ -145,6 +141,16 @@ fn assert_sound_ramp(traj: &CoupledTrajectory, label: &str, expect_max_disp: f64
         "{label}: worst detJ/detJ_rest is {worst:.4} — at or above 1.0 means the readout is \
          not seeing deformation, so `> 0` was never testing the deformed configuration"
     );
+    // Every frame, including the last — this used to live inside a `windows(2)` loop reading
+    // only `w[0]`, so the flexion peak (the most deformed frame) was never checked despite the
+    // message saying "every frame".
+    for f in &traj.frames {
+        assert_eq!(
+            f.deformed_nodes_native.len(),
+            traj.rest_nodes_native.len(),
+            "{label}: every frame carries the full node buffer"
+        );
+    }
     println!(
         "[{label}] {} frames, {:.3}° … {:+.3}°; max node displacement {max_disp:.4} mm; \
          worst deformed detJ/detJ_rest {worst:.4}",
