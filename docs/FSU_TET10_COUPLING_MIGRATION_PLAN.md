@@ -1004,11 +1004,16 @@ roundings ⇒ 150–175 solves ⇒ Tet4 per-solve ≈ 85/160 ≈ **0.53 s**):
 
 > **⚠ MEASURED AT RUNG 4 — both factors above are wrong, and they cancelled.** The `~85 s`
 > Tet4 anchor this arithmetic rests on was never measured: `capture_ramp` on the linear disc
-> is **33.0 s**, 2.6× less. The per-solve element ratio is **23.2×**, not `~10×`. The
-> quadratic capture is **764.3 s (12.7 min)** — just below this band's floor, reached only
-> because the two errors offset. The build phase, which this section did not cost at all,
-> goes **7.1 s → 85.7 s** (the `k_disc` probe is now 18 warm-started Tet10 solves). Quote the
+> is **32.2 s**, 2.6× less. The per-solve element ratio is **18.1×**, not `~10×`. The
+> quadratic capture is **583.1 s (9.7 min)** — below this band's floor, and close only because
+> the two errors offset. The build phase, which this section did not cost at all, goes
+> **6.9 s → 67.8 s** (the `k_disc` probe is now 18 warm-started Tet10 solves). Quote the
 > rung-4 measurements, not this arithmetic.
+>
+> *(Superseded once during rung 4 itself: the first measurement — 33.0 s / 23.2× / 764.3 s /
+> 85.7 s — was taken on the CONFORMED quadratic disc, before the rung split to the straight
+> arm. The figures above are the shipped configuration. Both sets are real; only one describes
+> what `CoupledFsu::build` does.)*
 
 The 14–45 min band accounts for referenced DOF going 6 771 → ~41 600 and the iteration cap
 rising 50 → 400. **The inherited "~60 min" figure is from `tet10_indentation_demand1.rs:492`** —
@@ -1119,7 +1124,7 @@ below, with one addition the checklist had missed. Rung 4 invalidated:
   `cf-spine-studio`, **four of them UI strings a user reads while waiting** (a key hint and two
   spinner captions) — user-visible drift, not just prose. They now derive from two measured
   constants, `cf-spine-studio`'s `scene::BUILD_HINT` / `CAPTURE_HINT`, so the next cost change
-  moves one place. ⚠ Both figures were also *wrong before the flip*: the linear capture is 33.0 s,
+  moves one place. ⚠ Both figures were also *wrong before the flip*: the linear capture is 32.2 s,
   not 85 s (see §5.1).
 - ~~Module docs: `sim/L1/fsu-model/src/lib.rs:8, 30, 35`; `tools/cf-spine-studio/src/main.rs:8, 21, 30`~~ — **done**.
 - **★ Addition this checklist missed** — `coupled.rs`'s module doc claimed the bushing is

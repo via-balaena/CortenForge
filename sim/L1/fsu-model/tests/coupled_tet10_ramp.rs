@@ -133,6 +133,18 @@ fn assert_sound_ramp(traj: &CoupledTrajectory, label: &str, expect_max_disp: f64
             "{label}: every frame carries the full node buffer"
         );
     }
+    // ⚠ The validity readout must be wired to the DEFORMED configuration, and `> 0` cannot
+    // tell you that it is: a readout accidentally reporting the REST mesh would be exactly
+    // 1.0 at every frame and sail through. At rest the ratio IS 1.0 by construction (the L0
+    // unit test pins that), so a worst below 1 across the sweep is the cheapest available
+    // proof that these numbers describe a deformed disc at all. Mutation-checked: rewiring
+    // `capture_ramp` to record the rest ratio takes `worst` to exactly 1.0000 and fires here,
+    // while every other assert in this gate still passes.
+    assert!(
+        worst < 1.0,
+        "{label}: worst detJ/detJ_rest is {worst:.4} — at or above 1.0 means the readout is \
+         not seeing deformation, so `> 0` was never testing the deformed configuration"
+    );
     println!(
         "[{label}] {} frames, {:.3}° … {:+.3}°; max node displacement {max_disp:.4} mm; \
          worst deformed detJ/detJ_rest {worst:.4}",
