@@ -10,10 +10,11 @@
 //!
 //! This module keeps the viewer-specific assembly on top of the FSU: the two ligament lines
 //! (field-derived attachment sites), the co-registration warnings, and the two-phase
-//! orchestrator — [`build_fsu`] (the ~5 s assembly + disc-mesh guards, held as a
-//! [`HeldBuild`]) then [`capture_scene`] (the ~85 s moment ramp) — that stitches the FSU +
-//! overlays + render surfaces into an [`FsuScene`]. Splitting the phases lets the Studio
-//! validate a painting cheaply (`Enter`) before committing to the expensive capture (`S`).
+//! orchestrator — [`build_fsu`] (the assembly + disc-mesh guards, held as a [`HeldBuild`])
+//! then [`capture_scene`] (the moment ramp) — that stitches the FSU + overlays + render
+//! surfaces into an [`FsuScene`]. Splitting the phases lets the Studio validate a painting
+//! cheaply (`Enter`) before committing to the expensive capture (`S`). See [`BUILD_HINT`] /
+//! [`CAPTURE_HINT`] for what each phase costs and why.
 
 use anyhow::{Result, ensure};
 use cf_fsu_geometry::{BODY_RADIUS, MeshOracle, SegmentFrame, extreme_vertex, oracle};
@@ -23,6 +24,52 @@ use cf_fsu_model::{
 };
 use mesh_types::{Aabb, IndexedMesh};
 use nalgebra::{Point3, Vector3};
+
+/// How long the **build** phase ([`build_fsu`], `Enter`) takes, as shown to the user.
+///
+/// **The single source for this figure** — it was previously written out at a dozen sites in
+/// doc comments and key hints, and when the cost changed they drifted apart. Anything that
+/// tells a user how long to wait reads it from here.
+///
+/// **Measured: 67.8 s** on the BodyParts3D L4–L5 disc (`cf-fsu-model`'s `coupled_tet10_ramp`
+/// gate, `CoupledParams::default`), up from **6.9 s** before the Studio's disc became the
+/// quadratic element. Almost all of the increase is the `k_disc` probe, which walks the disc
+/// to 0.86° and back in 0.1° sub-steps — 18 warm-started Tet10 solves.
+///
+/// # Why the Studio pays it — the rung-4 §5.1 decision, settled on this measurement
+///
+/// The Studio names [`CoupledFsu`] unparameterized, so it takes whatever that type defaults
+/// to, which since rung 4 is `Tet10`. Leaving it there, rather than pinning the Studio to
+/// `CoupledFsuTet4`, was decided on the measured cost — not on the plan's estimate:
+///
+/// | phase | linear disc | quadratic disc |
+/// |---|---|---|
+/// | build (`Enter`) | 6.9 s | 67.8 s |
+/// | capture (`S`) | 32.2 s | 583.1 s (9.7 min) |
+///
+/// A ~11 min Design→Simulate round trip is a real cost and it is not hidden — it is why these
+/// hint constants exist and why the build/capture split matters more than it did. It is paid
+/// because the alternative is worse in a way a stopwatch does not show: `k_disc` is measured
+/// off the *render* disc, so pinning the Studio to the linear element would silently give the
+/// picture a different disc physics from the library's, and a viewer whose physics diverges
+/// from the engine cannot be trusted to show a regression. Exact geometry is the point of this
+/// arc; cost is not the decider.
+///
+/// **The named lever, deliberately not pulled:** `cf_fsu_model`'s `CAPTURE_SUBSTEP` (0.1°)
+/// could be made `N`-aware the way `MAX_NEWTON_ITER` is — ~0.3° would cut the capture to
+/// ~3 min. That is a change to how hard the solver is driven per step, i.e. a *conditioning*
+/// change, and rung 3 is the standing evidence that those need their own measured
+/// step-envelope table rather than a plausible argument. Bundling it into the rung that flips
+/// the element would move two variables at once, which is exactly what this ladder was
+/// sequenced to avoid. Its own rung, with its own measurement.
+pub const BUILD_HINT: &str = "~70 s";
+/// How long the **capture** phase ([`capture_scene`], `S`) takes, as shown to the user.
+/// Single source, as [`BUILD_HINT`].
+///
+/// **Measured: 583.1 s** (9.7 min) for ~160 warm-started Tet10 solves across the full ±ROM,
+/// against **32.2 s** on the linear disc. ⚠ The "~85 s" this repo previously documented for
+/// the linear capture was never measured and is 2.6× too high.
+pub const CAPTURE_HINT: &str = "~10 min";
 
 /// A ligament rendered as a straight line between two field-derived sites.
 pub struct Ligament {
@@ -206,12 +253,12 @@ fn weighted_tet_nodes(
         .collect()
 }
 
-/// A **built, not-yet-captured** coupled FSU: the ~5 s assembly ([`build_fsu`]) held
+/// A **built, not-yet-captured** coupled FSU: the assembly ([`build_fsu`], [`BUILD_HINT`]) held
 /// between the Design build (`Enter`) and the Simulate capture (`S`).
 ///
 /// Retains the live [`CoupledFsu`] (its tet-meshed, bonded disc + SDF grids), the
 /// conformed render surface, and the overlays — everything [`capture_scene`] needs to
-/// run only the ~85 s moment ramp on top. The fragmentation / degeneracy guards have
+/// run only the moment ramp ([`CAPTURE_HINT`]) on top. The fragmentation / degeneracy guards have
 /// already passed by the time this exists (they run in `build_fsu`), so holding one is
 /// proof the painting tet-meshes cleanly.
 ///
@@ -229,9 +276,9 @@ pub struct HeldBuild {
     pub warnings: Vec<String>,
 }
 
-/// **Build phase (~5 s):** assemble the coupled FSU from three **in-memory** meshes
+/// **Build phase** ([`BUILD_HINT`]): assemble the coupled FSU from three **in-memory** meshes
 /// (native mm) and validate that its disc tet-meshed into a renderable surface — the
-/// cheap gate that catches a bad painting *before* the ~85 s [`capture_scene`] ramp.
+/// cheap gate that catches a bad painting *before* the far longer [`capture_scene`] ramp ([`CAPTURE_HINT`]).
 ///
 /// Runs everything except the moment-ramp capture: [`CoupledFsu::build`] (tet-mesh + SDF
 /// grids + `k_disc` probe), the conformed render surface, the co-registration warnings,
@@ -264,8 +311,8 @@ pub fn build_fsu(l4: &IndexedMesh, l5: &IndexedMesh, disc: IndexedMesh) -> Resul
     let disc_surface = fsu.conformed_disc_surface().clone();
 
     // Disc-mesh guards, run here on the post-build tet boundary (the SAME triangulation
-    // `capture_ramp` would copy into its trajectory), so a bad painting is caught in ~5 s
-    // rather than after the full ~85 s ramp.
+    // `capture_ramp` would copy into its trajectory), so a bad painting is caught at build cost
+    // rather than after the full ramp.
     let boundary = fsu.render_boundary_faces();
     // (1) A disc that tet-meshed to nothing (all components dropped): with no boundary
     // faces, `weighted_tet_nodes` would silently collapse the disc onto node 0. A non-empty
@@ -312,7 +359,7 @@ pub fn build_fsu(l4: &IndexedMesh, l5: &IndexedMesh, disc: IndexedMesh) -> Resul
     })
 }
 
-/// **Capture phase (~85 s):** run the coupled force-driven moment ramp on a
+/// **Capture phase** ([`CAPTURE_HINT`]): run the coupled force-driven moment ramp on a
 /// [`HeldBuild`] and stitch the result into a replayable [`FsuScene`].
 ///
 /// Drives the held FSU's disc FEM through [`CoupledFsu::capture_ramp`], skins the

@@ -44,10 +44,10 @@
 //!
 //! The app opens in `Design`: it loads the two vertebrae and lets you **paint the
 //! two endplate patches** on them (the [`cf_mesh_paint`] brush). `Enter` lofts the
-//! patches into the disc and dispatches the ~5 s **build** (tet-mesh + `k_disc` probe +
+//! patches into the disc and dispatches the **build** (tet-mesh + `k_disc` probe +
 //! fragmentation guards) to a background thread (`Building`), then shows the conformed
 //! disc (`Preview`) — so a bad painting is caught in seconds. `S` in Preview dispatches
-//! only the ~85 s moment-ramp **capture** (`Solving`) on the held build, then replays it
+//! only the moment-ramp **capture** (`Solving`) on the held build, then replays it
 //! (`Simulate`); `Esc`/`D` from Preview or Simulate returns to Design to repaint. The
 //! camera persists; the paint bodies (Design → Solving), the Preview disc, and the
 //! bones+disc (Simulate) are mode-scoped. The visual pass is user-side (this session

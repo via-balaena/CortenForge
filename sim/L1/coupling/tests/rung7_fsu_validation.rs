@@ -240,7 +240,18 @@ fn rom_at(curve: &[(f64, f64)], target: f64, sign: f64) -> Option<f64> {
 /// beyond it) or too STIFF (already above target at the smallest swept angle → ROM
 /// below it) — by reporting the peak `|M|` and the angle it occurred at. `note` explains
 /// a known cause (e.g. facet force excluded from the headline).
-fn report_rom(label: &str, curve: &[(f64, f64)], sign: f64, corridor: (f64, f64), note: &str) {
+///
+/// Returns the ROM it reported, or `None` when the curve never crossed the target — so a
+/// caller that wants band membership *asserted* rather than printed can do so without
+/// re-deriving the number this printed (rung 4, §4.6). Only the **flexion** call does; see
+/// that call site for why the extension one cannot.
+fn report_rom(
+    label: &str,
+    curve: &[(f64, f64)],
+    sign: f64,
+    corridor: (f64, f64),
+    note: &str,
+) -> Option<f64> {
     let (lo, hi) = corridor;
     if let Some(deg) = rom_at(curve, PHYSIOLOGIC_MOMENT, sign) {
         let verdict = if deg >= lo && deg <= hi {
@@ -250,7 +261,7 @@ fn report_rom(label: &str, curve: &[(f64, f64)], sign: f64, corridor: (f64, f64)
             format!("GAP {:+.1}° from [{lo:.1},{hi:.1}]", deg - nearest)
         };
         println!("[{label}] ROM = {deg:.2}°  (lit band [{lo:.1},{hi:.1}]°)  -> {verdict}");
-        return;
+        return Some(deg);
     }
     // Never crossed the target: report the peak achieved so lax vs stiff is unambiguous.
     let side: Vec<(f64, f64)> = curve
@@ -276,6 +287,7 @@ fn report_rom(label: &str, curve: &[(f64, f64)], sign: f64, corridor: (f64, f64)
             pk_deg.abs()
         );
     }
+    None
 }
 
 #[test]
@@ -462,8 +474,42 @@ fn l4_l5_fsu_segmental_response_vs_literature() {
     println!(
         "\n── L4–L5 segmental ROM at {PHYSIOLOGIC_MOMENT} N·m (headline = disc + ligaments, UNCALIBRATED) ──"
     );
-    report_rom("flexion ", &headline, flexion_sign, LIT_FLEXION_DEG, "");
-    report_rom(
+    let flexion_rom = report_rom("flexion ", &headline, flexion_sign, LIT_FLEXION_DEG, "");
+    // ── §4.6: the flexion band membership is ASSERTED, not merely printed (rung 4). ──
+    // Three things this assert is not, stated so it cannot be over-read:
+    //
+    // (1) It is a **band-membership sanity check on an uncalibrated K_LIG = 20 N/mm**, not a
+    //     calibrated point-match and not a payoff metric. The flexion ROM is dominated by that
+    //     ligament stiffness (see the sensitivity sweep below), so this pins "the assembled
+    //     segment still lands in the literature corridor", nothing finer.
+    // (2) It sits in **tension with this harness's own match-or-REPORT design** — everywhere
+    //     else here a measured gap is a valid result rather than a failure, which is why
+    //     `report_rom` prints a GAP instead of failing. Promoting one of the two calls is a
+    //     deliberate exception: an anchor that never fails also never notices rot. The
+    //     exception is kept to the one side that HAS a band to be inside.
+    // (3) ⚠ It does **not** observe rung 4's `CoupledFsu` flip, and must not be read as the
+    //     gate for it. This test assembles its OWN disc above (`build_bonded_disc(.., None)` —
+    //     raw, linear) and contains zero `CoupledFsu` references, so it is bit-identical
+    //     before and after that flip. (The plan's §4.6 said "only rung 4 changes anything it
+    //     observes"; measuring it says otherwise — rung 4 changes nothing here.) The asserts
+    //     that DO observe the flip are in `fsu_coupled_contact.rs`: `RUNG7_K_DISC`, the
+    //     flexion `ROM_TOL_DEG` window, and the `LIT_EXTENSION_DEG` corridor.
+    assert!(
+        flexion_rom.is_some_and(|d| d >= LIT_FLEXION_DEG.0 && d <= LIT_FLEXION_DEG.1),
+        "flexion ROM must reach {PHYSIOLOGIC_MOMENT} N·m inside the literature corridor \
+         [{:.1},{:.1}]°, got {flexion_rom:?} — a band-membership sanity check on an \
+         UNCALIBRATED K_LIG = {K_LIG} N/mm, not a calibrated match. `None` means the swept \
+         range never crossed the physiologic moment at all.",
+        LIT_FLEXION_DEG.0,
+        LIT_FLEXION_DEG.1,
+    );
+    // The EXTENSION call stays a `println!` and cannot be promoted: the physiological
+    // extension limiter is facet contact, which is excluded from the headline by design, so
+    // disc + ligaments never reach 7.5 N·m, `rom_at` returns `None`, and there is no band to
+    // be inside — a naive band assert would fail on day one and does not even type-check
+    // without deciding what `None` means. The enforced extension band lives where the facets
+    // are actually in the solve: `fsu_coupled_contact.rs`'s `LIT_EXTENSION_DEG`.
+    let _ = report_rom(
         "extension",
         &headline,
         -flexion_sign,

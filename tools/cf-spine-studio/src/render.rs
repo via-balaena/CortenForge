@@ -40,8 +40,8 @@ pub(crate) struct FlexedL4;
 #[derive(Component)]
 pub(crate) struct DiscMesh;
 
-/// Marks the static **Preview** disc — the conformed render surface shown after the ~5 s
-/// build, while the user decides whether to run the ~85 s capture. Kept distinct from the
+/// Marks the static **Preview** disc — the conformed render surface shown after the
+/// build, while the user decides whether to run the capture. Kept distinct from the
 /// deforming [`DiscMesh`] so it is despawned when leaving the built state (entering Design
 /// or Simulate) without touching the sim disc.
 #[derive(Component)]
@@ -267,7 +267,7 @@ pub(crate) fn spawn_disc(
 
 /// Spawn the static **Preview** disc on entering Preview — the conformed render surface
 /// from the held build, shown (over the resident paint bodies) so the user sees the real
-/// lofted + conformed disc before committing to the ~85 s capture. Despawned by
+/// lofted + conformed disc before committing to the capture. Despawned by
 /// [`despawn_preview_disc`] on leaving the built state.
 pub(crate) fn spawn_preview_disc(
     mut commands: Commands,

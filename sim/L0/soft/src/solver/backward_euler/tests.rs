@@ -1114,6 +1114,49 @@ fn tet10_rest_dofs(solver: &CpuTet10NHSolver<Tet10Mesh>) -> Vec<f64> {
     x
 }
 
+/// `min_gauss_det_ratio` validated against configurations whose answer is known in closed
+/// form, before it is trusted on a deformed anatomical mesh.
+///
+/// Three cases, each pinning a different property:
+/// - the **rest** configuration is exactly `1.0` (the ratio is against rest, so this is the
+///   only value it can take — a scale-invariance check on the whole formulation);
+/// - a **uniform dilation** by `s` gives exactly `s³`, because the Jacobian determinant is a
+///   volume ratio — this is what proves the readout tracks deformation rather than reporting
+///   a constant;
+/// - a **mirror** gives a negative ratio, which is the inversion case the gate exists to catch.
+#[test]
+fn min_gauss_det_ratio_is_one_at_rest_and_cubes_a_uniform_dilation() {
+    let (solver, _) = build_tet10_block(SolverConfig::skeleton());
+    let rest = tet10_rest_dofs(&solver);
+    let at_rest = solver.min_gauss_det_ratio(&rest);
+    assert!(
+        (at_rest - 1.0).abs() < 1e-12,
+        "the rest configuration must give exactly 1.0, got {at_rest}"
+    );
+
+    for s in [0.5_f64, 1.5] {
+        let scaled: Vec<f64> = rest.iter().map(|v| v * s).collect();
+        let got = solver.min_gauss_det_ratio(&scaled);
+        assert!(
+            (got - s.powi(3)).abs() < 1e-9,
+            "a uniform dilation by {s} must give s³ = {}, got {got}",
+            s.powi(3)
+        );
+    }
+
+    // Mirror through the x = 0 plane: every element turns inside out.
+    let mirrored: Vec<f64> = rest
+        .iter()
+        .enumerate()
+        .map(|(i, v)| if i % 3 == 0 { -v } else { *v })
+        .collect();
+    let got = solver.min_gauss_det_ratio(&mirrored);
+    assert!(
+        got < 0.0,
+        "a mirrored configuration must report an inverted element (negative ratio), got {got}"
+    );
+}
+
 /// The unpin: a Tet10 solve must FREE the midside DOFs (rung 3a auto-pinned
 /// them). At least one free DOF must belong to a midside vertex, and every
 /// free DOF must round-trip through `full_to_free_idx`.

@@ -21,8 +21,9 @@ higher-order element on the genuinely-curved bone.
 
 > **Checkpoint:** written against `main` @ `59e61daa`, hardened by two adversarial review
 > rounds: a 5-front diamond-review (v1, §8.1) and a 4-front stress-test that reshaped the
-> ladder (v2, §8.2). **Rungs 0 (#704), 1 (#705), 2 (#706) and 3 are built — see each rung's
-> BUILT note in §3, which records what the build changed about the plan. Next action: rung 4.**
+> ladder (v2, §8.2). **Rungs 0 (#704), 1 (#705), 2 (#706), 3 (#707) and 4 are built — see each rung's
+> BUILT note in §3, which records what the build changed about the plan. Next action: rung 4b or
+> rung 5 (independent — 4b seats the coupled disc, 5 refines it).**
 
 > **★★ v2 CHANGED THE LADDER, not just the wording.** The stress-test found that v1's
 > rung 1 gate could not fail, v1's ROM sanity assert could not trip *and* would fail on
@@ -152,7 +153,8 @@ but v1 **missed a hard assert elsewhere**:
   ~4.8×.** *(Magnitude is indicative, not exact: −0.186 is the spike's ±0.5° mean on the
   **raw** mesh, whereas `K_DISC_PROBE` is 0.86° flexion on what will by rung 4 be a curved,
   conformed disc. The direction and the order of magnitude are solid; the re-anchor value
-  comes from rung 4's own measurement.)*
+  comes from rung 4's own measurement.)* **✅ MEASURED at rung 4: −0.1882 (straight Tet10, the
+  shipped arm), i.e. 4.69 × the tolerance — the indicative figure was right.**
 
 The reframe itself **survives**: `fsu_coupled_contact.rs:52` is *also* `#[ignore]`d and
 env-gated on the BodyParts3D triad, so it is not CI-enforced either. What changes is the
@@ -601,7 +603,11 @@ additive shift committed.
 > - **§4.3 residual, like for like.** Of **1562** bonded-face boundary midsides the SI-alignment
 >   guard authorises **580** (37 %, close to the 40 % it authorises among the corners — 233 of 583);
 >   the other 982 are the rim, left straight by design. Over the *authorised* set the distance
->   to the nearer vertebra falls **max 3.860 → 3.842 mm, RMS 0.796 → 0.694**. ★ The endpoint is
+>   to the nearer vertebra falls **max 3.860 → 3.842 mm, RMS 0.796 → 0.694**. ⚠ *Rung 4
+>   re-anchored these when it raised `DISC_CONFORM_QUALITY_FLOOR` 0.05 → 0.25 — the midsides
+>   are projected from conformed CORNERS, so the whole table moved (now 3.973 → 3.971 mm,
+>   RMS 0.881 → 0.767, coverage 67.4 %). The numbers in this note are what RUNG 3 measured;
+>   the committed pins are rung 4's.* ★ The endpoint is
 >   the result worth quoting: rung 2 left the authorised **corners** at 0.656 mm RMS, so the
 >   midsides now sit essentially as close to the bone as the corners they span (0.694 vs 0.656,
 >   6 % apart) — **the bonded face is uniformly seated instead of seated at its corners and
@@ -669,6 +675,153 @@ the curved-Tet10 conformed disc. **Deliverables:** (a) the **single** deliberate
 (b) the **full-ROM ramp gate** (§4.5); (c) the flexion-only ROM assert (§4.6); (d) the
 studio-element decision, *measured* (§5.1); (e) the doc-drift sweep (§7).
 
+> **✅ BUILT (2026-07-28) — and SPLIT. Rung 4 ships the ELEMENT; the conform becomes rung 4b.**
+> `CoupledFsu::build` assembles on `build_bonded_disc_tet10(.., None)`. The method
+> genericization rung 0 deferred landed with it: the `impl` is now generic over `<Msh, E, N, G>`,
+> the struct's **defaults flipped to `Tet10Mesh/Tet10/10/4`**, and the linear arm stays
+> constructible as `CoupledFsuTet4`. `cf-spine-studio`'s `pub fsu: CoupledFsu` compiles
+> untouched, as rung 0 predicted.
+>
+> **★★★ THE SPLIT, and why this rung's own wording caused the trouble.** As specified, "flip to
+> the curved Tet10 conformed disc" moves **two** variables — `CoupledFsu` previously passed
+> `None`, so the flip changed the element *and* switched the conform on. Rungs 1–3 moved one
+> variable each, deliberately; rung 4 quietly broke that discipline, and it cost three
+> bisections to find out why the studio path was failing. Measured, on a **lofted** (painted)
+> disc — the `cf-spine-studio` geometry — driven ±6° in 0.1° steps:
+>
+> | arm | flexion | extension |
+> |---|---|---|
+> | Tet4 raw / Tet10 raw | +6.00° | −6.00° |
+> | Tet4 **conformed** | inverts at **+3.70°** | −6.00° |
+> | Tet10 **curved** | inverts at **+2.40°** | inverts at **−2.80°** |
+>
+> ⚠ Both senses, and it matters: Tet4's conform fails in **flexion only** (it takes the full
+> extension travel), and Tet10's worst direction is **flexion at +2.40°**, not the −2.80° this
+> arc quoted while each arm was driven in a single sense. The earlier measurement also compared
+> a +6° control against a −6° subject — two variables at once, in the gate built to enforce
+> one-variable attribution.
+>
+> Both raw arms are fine ⇒ **the conform is the failing variable, not the element**, on both.
+> So rung 4 ships the element and **rung 4b** ships the conform, with a measured entry
+> criterion: *a conformed lofted disc completes ±6° on both elements*.
+>
+> - **(a) The flip + a source-compatibility limit rung 0's claim does NOT cover.** A type
+>   parameter's **default does not disambiguate inherent-method resolution**: with `build` on
+>   both concrete impls, every existing `CoupledFsu::build(..)` call site fails with `E0034
+>   multiple applicable items in scope`. Measured, not predicted — it forced the baseline
+>   constructor to be named `CoupledFsuTet4::build_baseline`. Defaults keep the *type*
+>   source-compatible; they do not extend that to an overloaded associated function.
+> - **★ An unplanned production change the flip forced: every drive must be WALKED.**
+>   `K_DISC_PROBE` is 0.86°, past any from-rest jump a conformed disc is measured to survive.
+>   `CoupledFsu` now tracks its disc's angle and routes the probe, the return to rest, and every
+>   capture leg through one `drive_disc` stepper. Verified element-neutral: the linear arm still
+>   reads **−0.2819 to four decimals**.
+> - **(b) The single re-anchor: `RUNG7_K_DISC` −0.2819 → −0.1882** (4.69 × `K_DISC_TOL`;
+>   `K_DISC_TOL` unchanged). The ratio **0.668** lands on rung 1's standalone straight-Tet10
+>   ratio (0.666 / 0.663) — the cross-check that the flip carried the element effect into the
+>   assembly without adding an assembly-level artifact.
+> - **★★ §0.3's prediction HELD, measured rather than derived.** Both arms in one run
+>   (`coupled_element_shift`): a **33 % softer** disc moves segment flexion ROM
+>   **6.1321° → 6.1403° = +0.0082°** against a predicted ~0.008°. Extension moves +0.0008° —
+>   10× less, because it is facet-capped, which is the mechanism the reframe claimed.
+>   **`ROM_TOL_DEG` and `LIT_EXTENSION_DEG` did not move.**
+> - **(c) §4.5 full ramp PASSES** (`coupled_tet10_ramp`): 25 frames, −4.474° … +6.140°, max node
+>   displacement **2.5908 mm** (pinned ±5 %), and `detJ > 0` at every Gauss point of every
+>   element **on each frame's deformed configuration** — an invariant nothing in this arc had
+>   checked (floors and ±6° sweeps all gate the *rest* mesh). **The quadratic disc deforms with
+>   *less* element distortion than the linear one** (0.8751 vs 0.8484).
+> - **⚠ A trap that did not apply, recorded so it is not re-inherited:** `capture_ramp`'s
+>   per-frame equilibrium bisection never touches the FEM — it roots on the analytic bushing
+>   plus the facet SDF. The FEM only sees the monotone ≤0.1° chain.
+> - **(d) §4.6 flexion-only promotion done — and its stated premise is FALSE.** §4.6 claims
+>   "only rung 4 changes anything [`rung7_fsu_validation.rs`] observes". That test builds its own
+>   disc (`build_bonded_disc(.., None)`) and has **zero** `CoupledFsu` references, so rung 4
+>   changes *nothing* it observes. The promotion ships as an anti-rot anchor with that stated at
+>   the call site. The asserts that **do** observe the flip are all in `fsu_coupled_contact.rs`.
+> - **(e) §5.1 settled on MEASUREMENT: the Studio keeps the quadratic disc.** Build 6.9 s →
+>   **67.8 s**; capture 32.2 s → **583.1 s (9.7 min)**. Rationale in `scene.rs`'s `BUILD_HINT`:
+>   `k_disc` is read off the *render* disc, so a linear Studio would silently give the picture
+>   different disc physics from the library's. `CAPTURE_SUBSTEP` N-awareness is named and **not
+>   pulled** — a conditioning change needs its own measured envelope.
+> - **★ §5.1's cost model was wrong in both factors, and they cancelled.** The committed "~85 s"
+>   linear capture anchor was never measured: it is **32.2 s** (2.6× high). The per-solve element
+>   ratio is **18.1×**, not ~10×. The 14–45 min estimate was close only by offset. Quote the
+>   measurements, not the arithmetic.
+> - **§7 doc-drift discharged**, including four **UI strings a user reads while waiting**; they
+>   now derive from `scene::BUILD_HINT` / `CAPTURE_HINT`.
+> - **§4.7 license-free arm:** a synthetic quadratic `CoupledFsu` (sharing one assembly with the
+>   linear fixture) captures a ramp in `--lib`, asserting deformed-configuration validity and
+>   that a **re-capture** runs and is deterministic (⚠ not that it walks back — the ramp's angles
+>   come from the analytic bushing, so they match by construction; the walk-back is exercised by
+>   the anatomy ramp at ±6°). Narrowed from ±0.5 to ±0.1 N·m
+>   after measuring that the wider ramp cost 99 s of CI for coverage the narrow one gives
+>   identically (15.6 s).
+>
+> **★★★ A DEFECT THIS RUNG FOUND IN RUNG-2 MACHINERY — `DISC_CONFORM_QUALITY_FLOOR` 0.05 → 0.25.**
+> Before the split was settled, the first failure was at the *small-angle* probe, and it was a
+> different bug: **0.05 was measured on ONE disc and does not transfer.** On a lofted disc it
+> produces a mesh valid by the projector's own rule and undrivable — the 0.86° probe died on a
+> fail-closed validity violation, on both elements. The quadratic element is the stricter
+> constraint (the same direction rung 3 found for midsides) and its cliff is **bracketed in
+> (0.10, 0.15]** — bracketed, not located, since drivability is a converge/refuse boundary the
+> sweep only samples. 0.25 therefore sits 2.5× above the last floor known to stall and 1.67×
+> above the first known to drive; the conservative reading is the second, still above rung 3's
+> 1.6×. It costs 0.094 mm of RMS residual, and `k_disc` holds still across every drivable
+> floor — **0.07 % (Tet4) / 0.14 % (Tet10)**, measured and asserted, so the floor moves the
+> conditioning and not the physics. (That read "<0.1 %" until the audit gave it a producer:
+> it was wrong, and the range quoted beside it — 0.12 % / 0.31 % — had refuted it in place
+> all along, because nothing recomputed either.)
+> This **generalizes rung 3's rule** from "do not inherit a tuning constant across element
+> orders" to "**or across input geometries**". The full two-geometry table lives in the
+> constant's doc, regenerated by `conform_quality_floor_selection_fom`.
+>
+> **★ The gate corrected the table on its first run.** The row for 0.10 read "Tet10 drives"
+> — measured through the *production* step walker it stalls. The throwaway sweep that first
+> produced the table walked to 0.86° in nine ~0.0956° steps; production walks 0.1° steps to
+> 0.9°. A slightly further, slightly coarser walk answers differently at the margin. This is
+> the concrete payoff of `max_drivable_angle` (one definition of "drives", at the production
+> step) and of committing the sweep: a table nothing regenerates cannot notice it is stale. Consequently **rungs 2 and 3's committed tables were re-anchored** (corner
+> residual max/RMS 3.575/0.656 → 3.833/0.750; midside 0.796→0.694 becomes 0.881→0.767; coverage
+> 67.9 % → 67.4 %; #701 max seat 4.457 → 4.156 mm; population split 231+2 → 230+3, the split
+> assert doing exactly the job rung 2 built it for). Rung 3's seven-row midside-floor table was
+> measured *at* the old corner floor and is marked as the floor-to-floor comparison it is; the
+> shipped 0.40 is re-verified drivable on both geometries, and the midside cliff was **not**
+> re-derived (it could only move permissively).
+>
+> **New gate so this input is never untested again:** `b6_lofted_disc_bonds_seats_and_sweeps`
+> now DRIVES the Strategy-B conformed lofted disc past `K_DISC_PROBE` on both elements. It
+> extends an existing licence-gated test rather than adding one, so it costs no coverage.
+
+> **⚠ COVERAGE COST, accepted deliberately (user call, 2026-07-28).** `cf-fsu-model` grades
+> **C (58.2 %)** against `main`'s **B (71.9 %)** — Coverage alone; Clippy / Documentation /
+> Safety / Dependencies are all A, and `sim-soft`, `sim-coupling` and `cf-spine-studio` are all
+> A. The cause is the structural trap rung 2 documented: `cargo llvm-cov --lib` instruments
+> `#[cfg(test)] mod tests`, so an `#[ignore]`d licence-gated gate charges its whole body to the
+> grade while executing in **no** coverage run, ever.
+>
+> Unlike rung 2's, these gates **cannot** be moved to `tests/`: they need `lofted_disc`,
+> `prepare_disc_at`, `ConformFloors` and `bond_prepared_*`, all private, and exporting them
+> would mean adding public API whose only consumer is a test. The trade was made with the cost
+> known: those gates are what caught the stale `0.10` drivability row and the false "<0.1 %"
+> conditioning claim, and deleting them to protect a letter would optimise the metric against
+> the thing the metric exists to measure. The crate-wide `tests/` migration
+> ([[project-ci-per-crate-coverage-blind-spot]]) recovers ~8 of the 13.7 points and remains its
+> own PR. CI runs `--skip-coverage`, so this gates no merge.
+
+**Rung 4b — seat the coupled disc on the real endplate.** `CoupledFsu::build`'s `None` →
+`Some(..)`, i.e. the exact-geometry payoff for the assembled segment. **Blocked on a measured
+entry criterion, not a preference:** the Strategy-B conform must survive ±6° in 0.1° steps on a
+**lofted** disc on both elements *in both senses* (today: Tet4 +3.70° flexion but a full
+−6.00° extension; Tet10 +2.40° / −2.80°; both raw arms reach ±6° both ways). Note this is a *distinct* mechanism from the rest-mesh conditioning rung 4 fixed by
+raising `DISC_CONFORM_QUALITY_FLOOR` — it is deformation-time inversion and survives that fix.
+Likely lines of attack, none yet measured: do not move a node already seated (a lofted disc's
+caps *are* the endplates, so most of its conform is a no-op that only adds risk); revisit the
+band selection on a disc whose caps coincide with the bone; or a deformation-aware back-off.
+**Gate:** the lofted arm of `b6_lofted_disc_bonds_seats_and_sweeps` extended to ±6°, plus the
+`RUNG7_K_DISC` re-anchor that seating will force. ⚠ Do NOT carry a predicted value here: an
+earlier draft quoted −0.1855 for the conformed arm, which no gate in the tree produces. 4b
+measures it.
+
 **Rung 5 — h-refinement: does `k_disc` converge?** §0.1 bound 3 admits −0.186 is not proven
 converged, which is precisely why rung 1 gates a bracket rather than a point. One refinement
 arm (`cell` 0.003 → 0.002) on the curved Tet10 disc, plus a refined **Tet4** arm to check it
@@ -687,8 +840,9 @@ justification, not a §6 deferral. (v1's rung 3 was a phantom: its gate column d
 | 0 | coupling, fsu-model | — (inert) | existing tolerance tests unchanged | **§4.1 license-free `to_bits` golden, bits frozen pre-change** |
 | 1 | fsu-model | **§4.2** ratio bracket + band-count cross-check | restoring + conserving + converged, both arms | Tet4 path untouched |
 | 2 | fsu-model | **§4.3** exact-geometry residual ↓ | **§4.5** large-angle sweep; per-element conform delta | Tet4+raw arm byte-identical |
-| 3 ✅ | sim-soft + fsu-model | **§4.3** residual ↓ again (authorised RMS 0.796 → 0.694 mm) | **§4.4** coverage 67.9 % + per-Gauss-point floor; k_disc shift 0.05 % committed | straight-Tet10 arm untouched (rung-1 FOM re-runs at 0.666 / 0.663) |
-| 4 | fsu-model, coupling | single `RUNG7_K_DISC` re-anchor, measured | **§4.5** full ramp; **§4.6** flexion ROM assert | — |
+| 3 ✅ | sim-soft + fsu-model | **§4.3** residual ↓ again (authorised RMS 0.881 → 0.767 mm, re-anchored at rung 4) | **§4.4** coverage 67.4 % + per-Gauss-point floor; k_disc shift 0.05 % committed | straight-Tet10 arm untouched (rung-1 FOM re-runs at 0.666 / 0.663) |
+| 4 ✅ | fsu-model, coupling | single `RUNG7_K_DISC` re-anchor, measured (−0.2819 → −0.1882) | **§4.5** full ramp completes, `detJ > 0` on the DEFORMED config; **§4.6** flexion ROM assert; segment shift +0.0082° vs predicted ~0.008° | — |
+| 4b | fsu-model | **§4.3** residual, on the COUPLED disc | lofted disc completes ±6° conformed, both elements | — |
 | 5 | fsu-model | committed convergence table | — | — |
 
 **★ CI reality, stated plainly** (v1's table implied protection that does not exist): `sim-coupling`
@@ -877,6 +1031,19 @@ roundings ⇒ 150–175 solves ⇒ Tet4 per-solve ≈ 85/160 ≈ **0.53 s**):
 | **rung-1/2/3 k_disc FOM** (2 arms × ~6 solves) | ~25 s | **~3 min** — not a blocker |
 | **`capture_ramp`** (150–175 solves) | ~85 s | **~14 min** (band 14–45 min) |
 
+> **⚠ MEASURED AT RUNG 4 — both factors above are wrong, and they cancelled.** The `~85 s`
+> Tet4 anchor this arithmetic rests on was never measured: `capture_ramp` on the linear disc
+> is **32.2 s**, 2.6× less. The per-solve element ratio is **18.1×**, not `~10×`. The
+> quadratic capture is **583.1 s (9.7 min)** — below this band's floor, and close only because
+> the two errors offset. The build phase, which this section did not cost at all, goes
+> **6.9 s → 67.8 s** (the `k_disc` probe is now 18 warm-started Tet10 solves). Quote the
+> rung-4 measurements, not this arithmetic.
+>
+> *(Superseded once during rung 4 itself: the first measurement — 33.0 s / 23.2× / 764.3 s /
+> 85.7 s — was taken on the CONFORMED quadratic disc, before the rung split to the straight
+> arm. The figures above are the shipped configuration. Both sets are real; only one describes
+> what `CoupledFsu::build` does.)*
+
 The 14–45 min band accounts for referenced DOF going 6 771 → ~41 600 and the iteration cap
 rising 50 → 400. **The inherited "~60 min" figure is from `tet10_indentation_demand1.rs:492`** —
 a face-contact indentation test, single-threaded, no warm start, different mesh. Not transferable
@@ -885,7 +1052,9 @@ in either direction; do not quote it for this path.
 That ~14 min lands on **`tools/cf-spine-studio`** (`scene.rs:333` drives `capture_ramp`), whose
 capture is documented at ~85 s in three places (`coupled.rs:246`, `scene.rs:267`, `scene.rs:314`).
 
-**★ OPEN DECISION for rung 4 — what does the studio's disc default to?** Recommendation:
+**★ DECISION for rung 4 — what does the studio's disc default to?** *(SETTLED at rung 4 on
+the measurement below: **the quadratic disc**. See the rung-4 BUILT note in §3 and
+`cf-spine-studio`'s `scene::BUILD_HINT`.)* Recommendation:
 **Tet10, consistent with [[feedback_exact_geometry_is_exact_physics]]** (cost is explicitly not
 the decider for contact fidelity), with `CAPTURE_SUBSTEP` made N-aware the way `MAX_NEWTON_ITER`
 is (0.1° → ~0.3° cuts to ~5 min) **and the coarser step re-validated against §4.5's sweep**.
@@ -919,7 +1088,10 @@ The disc is ~0.4% of ROM, so a 33% softer disc cannot move the band; `ROM_TOL_DE
 ([[feedback_anti_rot_invariants_vs_exact_anchors]]). **What does break is `RUNG7_K_DISC ± 0.02`
 (§0.3), by roughly 4.8× the tolerance** — an indicative magnitude, not an exact prediction
 (§0.3 states why: raw-mesh ±0.5° mean vs a 0.86° probe on a conformed, curved disc). That is a
-planned, single, documented re-anchor at rung 4, not a surprise.
+planned, single, documented re-anchor at rung 4, not a surprise. **✅ Both halves confirmed by
+measurement at rung 4: `k_disc` moved 4.69 × its tolerance (re-anchored −0.2819 → −0.1882),
+and segment flexion ROM moved +0.0082° against a predicted ~0.008° — so `ROM_TOL_DEG` and
+`LIT_EXTENSION_DEG` never had to move.**
 
 ### 5.5 Rollback — what happens if a gate comes out wrong (v1 had no clause)
 
@@ -940,7 +1112,11 @@ planned, single, documented re-anchor at rung 4, not a surprise.
 - **Differentiable Tet10 bond** (`probe_with_pose_gradient` at N=10) — type-restricted to Tet4
   now (§2.3); FD-gate when a co-design consumer needs it. **Verified not a regression:** no
   production caller exists (`cf-codesign` consumes `StaggeredCoupling`).
-- **Studio disc element default** — §5.1, decided on measurement at rung 4.
+- ~~**Studio disc element default**~~ — **DECIDED at rung 4 on the measured cost: the quadratic
+  disc**, so the Studio simulates what the SDK ships. `k_disc` is read off the *render* disc, so
+  a linear Studio would silently give the picture different disc physics from the library's.
+  The `CAPTURE_SUBSTEP` N-awareness lever is named but deliberately unpulled — a conditioning
+  change needs its own measured envelope (rung 3), not a plausible argument.
 - **Viz: the studio renders the Tet4 field even with a Tet10 disc.** v1 noted only that
   `soft_boundary_faces` is corner-only so edges render straight. It is worse than that: the
   skinning weights at `scene.rs:178-204` are inverse-distance over the *corner-only* candidate
@@ -960,9 +1136,10 @@ planned, single, documented re-anchor at rung 4, not a surprise.
 
 ## 7. Doc-drift checklist (a rung deliverable, not an afterthought)
 
-[[feedback_no_rationalizing_doc_drift]]. Rung 4 invalidates:
+[[feedback_no_rationalizing_doc_drift]]. **✅ ALL DISCHARGED at rung 4** — struck through
+below, with one addition the checklist had missed. Rung 4 invalidated:
 
-- `sim/L1/fsu-model/src/coupled.rs:135-186` — the ~10-line block stating *"The BONDED FEM disc
+- ~~`sim/L1/fsu-model/src/coupled.rs:135-186`~~ — **done**: the ~10-line block stating *"The BONDED FEM disc
   here stays on the RAW (un-conformed) geometry (`None`)"*, including the claim *"flipping it
   would shift the `k_disc` baked into the rung-7-validated ROM equilibrium"* — **already
   inaccurate today**, since rung 7 does not use `CoupledFsu` (§4.6). ⚠ **Rung 2 discharged two
@@ -971,9 +1148,19 @@ planned, single, documented re-anchor at rung 4, not a surprise.
   that fail the sweep"* rationale is a Strategy-A fact that the ±6.0° Strategy-B sweep retires.
   What is left for rung 4 is the `None` → conformed-Tet10 flip itself and the `RUNG7_K_DISC`
   re-anchor.
-- The "~85 s" / "~5 s" capture figures: `coupled.rs:246`, `coupled.rs:875`,
-  `tools/cf-spine-studio/src/scene.rs:267, 314` (and the `:7`, `:14`, `:214`, `:234` prose).
-- Module docs: `sim/L1/fsu-model/src/lib.rs:8, 30, 35`; `tools/cf-spine-studio/src/main.rs:8, 21, 30`.
+- ~~The "~85 s" / "~5 s" capture figures~~ — **done**, and the checklist **undercounted the
+  blast radius by 3×**: the two figures were written out at ~24 sites across `cf-fsu-model` and
+  `cf-spine-studio`, **four of them UI strings a user reads while waiting** (a key hint and two
+  spinner captions) — user-visible drift, not just prose. They now derive from two measured
+  constants, `cf-spine-studio`'s `scene::BUILD_HINT` / `CAPTURE_HINT`, so the next cost change
+  moves one place. ⚠ Both figures were also *wrong before the flip*: the linear capture is 32.2 s,
+  not 85 s (see §5.1).
+- ~~Module docs: `sim/L1/fsu-model/src/lib.rs:8, 30, 35`; `tools/cf-spine-studio/src/main.rs:8, 21, 30`~~ — **done**.
+- **★ Addition this checklist missed** — `coupled.rs`'s module doc claimed the bushing is
+  linearised because *"the disc FEM only converges sub-degree"*. That was already false when it
+  was written (the limit is on the **step size**, not the angle reached — `capture_ramp` walks
+  the full ±ROM), and rung 4 makes it conspicuous. Corrected: the linearisation is what keeps the
+  equilibrium bisection cheap, and the bisection never touches the FEM at all.
 - ~~`sim/L1/fsu-model/src/lib.rs:1136`'s "±0.5° spike-validated conformed SPD range" scope
   note~~ — **done at rung 2**, along with the module-level "the quadratic arm's large-angle
   envelope is unmeasured" note, both superseded by §4.5's measured ±6.0°.

@@ -541,6 +541,19 @@ impl<Msh: Mesh, E: Element<N, G> + Default, const N: usize, const G: usize>
     pub fn last_targets(&self) -> &[f64] {
         &self.last_targets
     }
+
+    /// Element validity **at the current deformed configuration**: the worst
+    /// `detJ / detJ_rest` over every element and Gauss point of the disc
+    /// ([`CpuNewtonSolver::min_gauss_det_ratio`](sim_soft::CpuNewtonSolver::min_gauss_det_ratio)).
+    ///
+    /// `> 0` means no element has folded; `≤ 0` means one has. This reads the *deformed*
+    /// mesh, which is a different invariant from the rest-configuration quality floors the
+    /// mesh projectors enforce: a mesh can be valid at rest and still fold under a drive.
+    /// Rung 4 of `docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` gates a full-ROM sweep on it.
+    #[must_use]
+    pub fn min_gauss_det_ratio(&self) -> f64 {
+        self.solver.min_gauss_det_ratio(&self.x)
+    }
 }
 
 /// The **differentiable** bonded path — deliberately restricted to linear [`Tet4`].

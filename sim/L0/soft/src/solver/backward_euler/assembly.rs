@@ -293,6 +293,53 @@ where
         f_int
     }
 
+    /// The worst `detJ(x) / detJ(rest)` over **every element and every Gauss point** at
+    /// the configuration `x` — an element-validity readout on a *deformed* mesh.
+    ///
+    /// `1.0` means the configuration is as well-shaped as the rest mesh; a value in
+    /// `(0, 1)` means some element has been squashed by that factor at some quadrature
+    /// point; `≤ 0` means an element has folded through itself (inverted) there.
+    ///
+    /// ⚠ **This is not [`Mesh::quality`], and the difference matters for higher-order
+    /// elements.** `QualityMetrics` is a four-*corner* statistic cached at mesh
+    /// construction, so it is structurally blind both to deformation and (on a Tet10 mesh)
+    /// to a midside that has moved. [`Element::rest_jacobian_dets`] evaluates the
+    /// isoparametric map at each of the element's `G` Gauss points from the node positions
+    /// it is handed, so passing it a deformed configuration measures *that* configuration.
+    /// (The method name says "rest" because its usual argument is the rest mesh; it is a
+    /// pure function of the coordinates given.)
+    ///
+    /// Node ordering comes from `element_node_ids`, the same composer the assembly kernels
+    /// use, so this can never disagree with the forward solve about which node fills which
+    /// slot.
+    ///
+    /// # Panics
+    /// Panics if `x` is shorter than `3 · n_vertices` (a configuration for a different
+    /// mesh), or — via `element_node_ids` — if a higher-order element is paired with a
+    /// mesh that surfaces no midsides.
+    #[must_use]
+    pub fn min_gauss_det_ratio(&self, x: &[f64]) -> f64 {
+        assert!(
+            x.len() >= 3 * self.mesh.n_vertices(),
+            "configuration has {} DOFs, mesh needs {}",
+            x.len(),
+            3 * self.mesh.n_vertices()
+        );
+        let rest = self.mesh.positions();
+        #[allow(clippy::cast_possible_truncation)] // tet counts are far below u32::MAX.
+        let n_tets = self.mesh.n_tets() as TetId;
+        (0..n_tets).fold(f64::INFINITY, |worst, t| {
+            let nodes = element_node_ids::<M, Msh, N>(&self.mesh, t);
+            let deformed = SMatrix::<f64, N, 3>::from_fn(|a, k| x[3 * nodes[a] as usize + k]);
+            let reference = SMatrix::<f64, N, 3>::from_fn(|a, k| rest[nodes[a] as usize][k]);
+            let (d, r) = (
+                self.element.rest_jacobian_dets(&deformed),
+                self.element.rest_jacobian_dets(&reference),
+            );
+            (0..G).fold(worst, |w, q| w.min(d[q] / r[q]))
+        })
+    }
+
     /// Assemble the lower-triangle triplets of the free-DOF Hessian
     /// `A_free = M_free / Δt² + K_free(x_curr) + K_contact(x_curr)`
     /// per Decision J + Phase 5 commit 5.

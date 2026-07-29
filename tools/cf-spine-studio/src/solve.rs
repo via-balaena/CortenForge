@@ -1,10 +1,10 @@
 //! The two-phase on-demand FSU solve, split so a bad painting is caught cheaply.
 //!
-//! `Enter` in Design runs the **build phase** ([`scene::build_fsu`], ~5 s: tet-mesh + SDF
+//! `Enter` in Design runs the **build phase** ([`scene::build_fsu`], tet-mesh + SDF
 //! grids + `k_disc` probe + the disc-mesh fragmentation guards) on a background thread and,
 //! on success, parks the built FSU in [`HeldBuildSlot`] and shows the conformed disc
 //! (Preview). `S` in Preview then runs only the **capture phase** ([`scene::capture_scene`],
-//! ~85 s: the moment ramp) on the held build. Splitting the phases means the expensive
+//! the moment ramp) on the held build. Splitting the phases means the expensive
 //! ramp is only ever paid for a painting that already tet-meshed cleanly.
 //!
 //! Both phases run off the main thread so the window stays responsive (no macOS
@@ -48,7 +48,7 @@ pub(crate) struct HeldBuildSlot(pub(crate) Option<HeldBuild>);
 pub(crate) struct SolveError(pub(crate) Option<String>);
 
 /// `Enter` in Design lofts the two painted endplate patches into the disc, then dispatches
-/// the ~5 s build phase to the `AsyncComputeTaskPool` and enters Building. Ignored while a
+/// the build phase to the `AsyncComputeTaskPool` and enters Building. Ignored while a
 /// build is in flight; if a patch is unpainted it surfaces a message and stays in Design.
 /// The meshes are cloned into the task so the ECS world isn't borrowed across the compute.
 #[allow(clippy::needless_pass_by_value)] // Bevy systems take resources by value.
@@ -133,7 +133,7 @@ pub(crate) fn poll_build(
     }
 }
 
-/// `S` in Preview dispatches the ~85 s capture phase on the held build and enters Solving.
+/// `S` in Preview dispatches the capture phase on the held build and enters Solving.
 /// Ignored while a capture is in flight or if the slot is somehow empty. The build is moved
 /// out of the slot into the task (it drives the disc FEM), so returning to Preview requires
 /// a fresh build — matching the tweak loop (repaint → `Enter` → `S`).
