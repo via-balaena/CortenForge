@@ -1175,6 +1175,22 @@ mod tests {
             .capture_ramp(&[-0.1, 0.0, 0.1])
             .expect("all three moments have equilibria in the bracket");
         assert_eq!(traj.frames.len(), 3);
+        // ⚠ `> 0` alone does NOT test that the readout sees the deformed configuration: one
+        // wired to the REST mesh reports exactly 1.0 every frame and is comfortably positive.
+        // Measured, not supposed — this arm SURVIVED that mutant until this assert existed,
+        // while sim-soft's unit test, sim-coupling's bonded probe and the anatomy ramp all
+        // caught it. The gate whose whole purpose is putting this path in CI was the weakest
+        // of the four.
+        let worst = traj
+            .frames
+            .iter()
+            .map(|f| f.min_jacobian_ratio)
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            worst < 1.0,
+            "worst detJ/detJ_rest is {worst:.4} — at or above 1.0 means the readout is not \
+             seeing deformation at all"
+        );
         assert!(
             traj.frames.iter().any(|f| f
                 .deformed_nodes_native
