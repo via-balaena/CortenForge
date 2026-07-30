@@ -2982,6 +2982,98 @@ mod tests {
         }
     }
 
+    /// **Rung 5.0 step 0** (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §3): the disc's SI
+    /// extent and the **realized** bonded band, at every candidate `cell` of the rung-5 ladder.
+    ///
+    /// **This gates the ladder itself, and it is the cheapest measurement in the rung** — one
+    /// mesh per level, no solve. The rung-5 spec's clamp-quantization confound says the pinned
+    /// Dirichlet band is a fixed *physical* slab (`band_frac · SI extent`) while the BCC lattice
+    /// is anchored to the **world origin** (`sdf_bridge/lattice.rs`), so the *realized* clamp
+    /// planes are quantized in steps of `cell/2` and their depth need not vary monotonically —
+    /// or even vary at all — with `cell`. A ladder whose levels alias onto the same layer count
+    /// measures nothing; a ladder whose free height swings is measuring the boundary condition
+    /// rather than the element.
+    ///
+    /// ⚠ **The spec's worked figures (a ~1.8 mm band, 1.5/1.0/1.5 mm clamp depths, a ±13 %
+    /// swing) are an ILLUSTRATION at an assumed ~10 mm SI extent — the disc's real extent is
+    /// committed nowhere, because `band_frac` is a fraction precisely so no absolute ever had
+    /// to be.** This test is the producer. Do not quote the illustration.
+    ///
+    /// Prints the table and asserts only what must hold for the ladder to be *measurable at
+    /// all* (non-empty disjoint bands, a positive free height, strictly-increasing refinement).
+    /// The ladder decision is a head-engineer call on the printed numbers, not an assert here.
+    #[test]
+    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
+    fn rung5_step0_realized_band_across_the_ladder_fom() {
+        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
+        let base = DiscParams::default();
+
+        // The SI extent of the *scaled* surface AABB, derived from the native mesh rather than
+        // by re-running production's recentre: recentring cannot change an extent and the scale
+        // is uniform, so `extent_scaled == extent_native · scale` exactly. That keeps this
+        // measurement off a reimplementation of `prepare_disc_at`'s framing.
+        let (nz_lo, nz_hi) = disc_mesh
+            .vertices
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+                (lo.min(v.z), hi.max(v.z))
+            });
+        let si_extent = (nz_hi - nz_lo) * base.scale;
+        let band = base.band_frac * si_extent;
+        println!(
+            "disc SI extent: {:.4} mm native -> {si_extent:.6} m scaled; \
+             band_frac {:.2} => band {:.6} m ({:.4} mm)",
+            nz_hi - nz_lo,
+            base.band_frac,
+            band,
+            band * 1e3,
+        );
+
+        let mut prev_corners = 0usize;
+        for cell in [0.003, 0.002, 0.0015] {
+            let params = DiscParams { cell, ..base };
+            let p = prepare_disc(disc_mesh.clone(), &params, None)
+                .unwrap_or_else(|e| panic!("prepare raw disc at cell {cell}: {e:?}"));
+            let pos = p.tet.positions();
+            let z = |v: &VertexId| pos[*v as usize].z;
+
+            // The REALIZED clamp planes: the deepest pinned layer on each face. These, not the
+            // nominal `band`, are the boundary condition the solve actually sees.
+            let inf_max = p.inferior.iter().map(z).fold(f64::NEG_INFINITY, f64::max);
+            let sup_min = p.superior.iter().map(z).fold(f64::INFINITY, f64::min);
+            let free = sup_min - inf_max;
+            let referenced = referenced_vertices(&p.tet).len();
+
+            assert!(
+                !p.inferior.is_empty() && !p.superior.is_empty(),
+                "cell {cell}: an endplate band captured no vertices"
+            );
+            assert!(
+                free > 0.0,
+                "cell {cell}: bands meet or cross (free height {free:.6} m)"
+            );
+            assert!(
+                referenced > prev_corners,
+                "cell {cell}: refinement must strictly increase referenced corners \
+                 ({referenced} vs {prev_corners}) — otherwise the ladder has an inert level"
+            );
+            prev_corners = referenced;
+
+            println!(
+                "cell {cell:.4} m | corners {referenced:5} (verts {:5}) | \
+                 band {:.3} cell/2 units | inf {:3} nodes, clamp z {inf_max:+.6} | \
+                 sup {:3} nodes, clamp z {sup_min:+.6} | free {:.6} m = {:.3} cell/2 = {:.3} mm",
+                p.tet.n_vertices(),
+                band / (cell / 2.0),
+                p.inferior.len(),
+                p.superior.len(),
+                free,
+                free / (cell / 2.0),
+                free * 1e3,
+            );
+        }
+    }
+
     /// Distance from a native-mm point to the **real bone surface**: the nearer of the two
     /// vertebra oracles' `|eval|`.
     ///
