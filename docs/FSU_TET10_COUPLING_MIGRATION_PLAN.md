@@ -1161,6 +1161,13 @@ mandated are unreachable there: `BondedDisc.sandwich` is private with no accesso
 no tet connectivity is exposed, and `PreparedDisc`/`duplicate` are `#[cfg(test)]`-private
 (`lib.rs:483,528`) — so the "one shared mesh object" argument does not even apply from `tests/`.
 
+> **✅ MEASURED (2026-07-30, `cargo xtask grade cf-fsu-model`, 2864 s):** **Coverage 58.2 % → 54.5 %,
+> letter C → C.** Documentation / Clippy / Safety / Dependencies all **A** (0 warnings, 0
+> violations, 9 justified deps). So rung 5.0's two FOMs cost **3.7 coverage points at letter
+> PARITY** with the baseline rung 4 accepted by explicit user call — the same shape as rung 2,
+> which also shipped at parity. CI runs `--skip-coverage`, so it gates no merge. No public type
+> changed ⇒ no downstream re-grade.
+
 **⇒ The licensed FOM lives in `src/lib.rs`'s test module**, where the domain metrics, the band
 sizes and `PreparedDisc::duplicate` are all reachable. **Coverage cost accepted deliberately**, on
 the same terms as rung 4's: `cf-fsu-model` already grades **C (58.2 %)** by a recorded user call,
