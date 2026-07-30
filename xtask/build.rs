@@ -23,6 +23,33 @@ echo "╔═══════════════════════�
 echo "║                  CortenForge Pre-Commit Check                  ║"
 echo "╚═══════════════════════════════════════════════════════════════╝"
 
+# ── Scan/mesh guard — FIRST, because it is a safety rule, not a quality one ──
+# This repository is PUBLIC, and the casting pipeline's inputs are anatomical scans
+# of a real person. They live outside the repo by design: reached via
+# CF_CAST_ITER1_DIR (design/cf-cast/tests/iter1_gate.rs, #[ignore]d) or regenerated
+# by cf-cast. Zero meshes have ever been tracked here — but that was habit, not a
+# rule. Verified 2026-07-29: `git add` accepted a 29 MB anatomical scan without
+# complaint, and once such a blob is pushed it is in the public history permanently.
+#
+# .gitignore now blocks these extensions; this check catches `git add -f`, which
+# .gitignore cannot. Both layers, because the cost of one miss is unrecoverable.
+#
+# Escape hatch for a genuinely non-personal fixture mesh:
+#     CF_ALLOW_MESH=1 git commit ...
+echo "→ Checking for scan/mesh binaries..."
+staged_meshes=$(git diff --cached --name-only --diff-filter=ACMR \
+    -- '*.stl' '*.obj' '*.ply' '*.3mf' '*.mtl' || true)
+if [ -n "$staged_meshes" ] && [ "${CF_ALLOW_MESH:-0}" != "1" ]; then
+    echo "✗ Refusing to commit mesh/scan binaries to a PUBLIC repository:"
+    echo "$staged_meshes" | sed 's/^/      /'
+    echo ""
+    echo "  Scan inputs are anatomical and must stay outside this repo (~/scans)."
+    echo "  Generated meshes are reproducible and have no browse value."
+    echo "  If this really is a non-personal fixture:  CF_ALLOW_MESH=1 git commit ..."
+    exit 1
+fi
+echo "✓ No scan/mesh binaries staged"
+
 # Format check (fast — only checks already-formatted files, <1s)
 echo "→ Checking formatting..."
 if ! cargo fmt --all -- --check 2>/dev/null; then
