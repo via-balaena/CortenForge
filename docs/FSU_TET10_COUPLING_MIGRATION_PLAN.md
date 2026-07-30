@@ -1197,7 +1197,7 @@ transfer — the behaviour does, and behaviour is what this rung asks about.
 | 3 ✅ | sim-soft + fsu-model | **§4.3** residual ↓ again (authorised RMS 0.881 → 0.767 mm, re-anchored at rung 4) | **§4.4** coverage 67.4 % + per-Gauss-point floor; k_disc shift 0.05 % committed | straight-Tet10 arm untouched (rung-1 FOM re-runs at 0.666 / 0.663) |
 | 4 ✅ | fsu-model, coupling | single `RUNG7_K_DISC` re-anchor, measured (−0.2819 → −0.1882) | **§4.5** full ramp completes, `detJ > 0` on the DEFORMED config; **§4.6** flexion ROM assert; segment shift +0.0082° vs predicted ~0.008° | — |
 | 4b | fsu-model | **§4.3** residual, on the COUPLED disc | lofted disc completes ±6° conformed, both elements | — |
-| 5 | fsu-model | **§4.8** the bracket `\|k*\| ≤ \|k10(fine)\| ≤ \|k10(coarse)\| ≤ \|k4\|`, ±5 % two-sided pins; headline = a lower bound on the shipped `RUNG7_K_DISC` error | liveness (strictly-monotone DOFs per arm) → rung-1 known-value reproduction → **clamp-plane constancy** → `min_jacobian_ratio` → domain metrics | zero production diff; rung-2 `llvm-cov` oracle on **`coupled.rs` + `coupling/src/bonded.rs`** (NOT `src/lib.rs` — this rung adds tests to it) |
+| 5 ⛔ | fsu-model | **BLOCKED** (§3 confound 1: `k_disc` ~100 % p2p over ±3.4 % `cell`). When unblocked — **§4.8** the bracket `\|k*\| ≤ \|k10(fine)\| ≤ \|k10(coarse)\| ≤ \|k4\|`, ±5 % two-sided pins; headline = a lower bound on the shipped `RUNG7_K_DISC` error | liveness (strictly-monotone DOFs per arm) → rung-1 known-value reproduction → **clamp-plane constancy** → `min_jacobian_ratio` → domain metrics | zero production diff; rung-2 `llvm-cov` oracle on **`coupled.rs` + `coupling/src/bonded.rs`** (NOT `src/lib.rs` — this rung adds tests to it) |
 
 **★ CI reality, stated plainly** (v1's table implied protection that does not exist): `sim-coupling`
 and `cf-fsu-model` run only in `tests-release` shard 1 (`.github/workflows/quality-gate.yml:471`);
@@ -1370,6 +1370,15 @@ converged, corner count preserved, midside count added, and the §4.2 band-count
 
 ### 4.8 Rung 5's gate — a bracket with two-sided pins, ordered so the cheap checks fire first
 
+> **⛔ THIS GATE IS SPECIFIED BUT NOT EXECUTABLE — RUNG 5 IS BLOCKED (§3 confound 1).** Rung 5.0
+> step 1 measured `k_disc` varying **~100 % peak-to-peak** over a ±3.4 % `cell` window, driven by
+> `largest_component`'s retained domain swinging **49.5 % non-monotonically**. No convergence gate
+> below can mean anything until a meshing-stability rung makes the retained domain converge. Read
+> §4.8 as **the design to execute once unblocked**, not as a live checklist — and re-derive its
+> pinned numbers then, because a stability fix will move them. What rung 5 can ship *today* is the
+> measured uncertainty statement, not this ladder.
+
+
 **★★ THE FAILURE THIS GATE EXISTS TO CATCH FIRST (stress-test front 1): an arm that silently does
 not refine passes every payoff assert, and a naive domain gate reads it as the STRONGEST evidence
 of validity.** If the fine Tet10 arm is built from unmodified `params` — one shadowed variable —
@@ -1404,10 +1413,14 @@ is worse than no number; its incidence-walk mutant improved the residual while i
    0.19 % spread (12.392 / 12.404 / 12.381 mm), not a guessed tolerance. Commit the per-level band
    sizes alongside; note the **sup/inf asymmetry grows 1.61 → 2.84 → 3.55**, so a symmetric
    expectation on the two faces would be wrong.
-   ⚠ **What this gate is FOR has changed, and saying so matters:** step 0 settled that the
-   lattice-phase confound is negligible at these cells, so this is no longer the gate that decides
-   whether the ladder is valid — it is the gate that catches a *future* change (a new `band_frac`,
-   a different disc, a mesher change) silently re-opening it. **If it ever fires, `band_frac` is
+   ⚠⚠ **SCOPE, corrected by step 1 — this gate covers the clamp DEPTH and nothing else.** Step 0
+   settled that the depth is stable (0.20 % across every cell measured), and I wrongly read that as
+   "the lattice-phase confound is negligible". It is not: the same phase effect moves the retained
+   **domain** ~49.5 % non-monotonically, which is what actually drives `k_disc`, and this gate is
+   blind to it. **Pair it with a retained-domain gate** (retained tets and `∫r² dV`, per §3
+   confound 2) or it will pass on exactly the failure that blocked the rung. What it *does* buy is
+   catching a future change (a new `band_frac`, a different disc, a mesher change) that moves the
+   depth too. **If it ever fires, `band_frac` is
    re-registered per level to hold the realized planes fixed** — the arc's rule that a tuning
    constant is never inherited across element orders *or input geometries*, now extended to
    *resolutions* — and that adjustment is pre-registered, not discovered mid-run.
