@@ -29,11 +29,14 @@ higher-order element on the genuinely-curved bone.
 > is *shipped and load-bearing* while §0.1 bound 3 still admits it is not proven converged — rung 5
 > hardens the layer underneath 4b. ⚠ **The stress-test changed the rung's QUESTION:** "is Tet10
 > more accurate here" is a **theorem** (§3), so rung 5 measures *how much error is left* and
-> delivers a **bracket**, not an h-refinement convergence claim. **Rung 5.0 step 0 is ✅ DONE and
-> the ladder {0.003, 0.002, 0.0015} stands as measured** (§3 confound 1 — the clamp-quantization
-> magnitude was falsified by ~70× on first run; the free height is constant to 0.19 %).
-> **▶ NEXT: rung 5.0 step 1**, the mesh-realization noise floor (`cell = 0.003` vs `0.00305`) —
-> nothing in the convergence table is interpretable before it.**
+> delivers a **bracket**, not an h-refinement convergence claim. **Rung 5.0 steps 0 and 1 are ✅
+> DONE, and step 1 BLOCKED the h-ladder on the real disc** (§3 confound 1): a **1.67 % cell change
+> moves `k4` by 16.7 %**, because the superior bonded band loses **47 % of its pinned nodes** — the
+> clamp *depth* is stable (0.065 %) but the pinned *population* is not, and the §4.8 gate as
+> written would have missed it. **▶ NEXT: a head-engineer call on the fork** — ship the measured
+> **mesh-realization uncertainty band** on `RUNG7_K_DISC` (~9 % on `k10`: ~¼ of the whole element
+> effect, ~180× rung 3's curving effect), and defer h-convergence to a rung that first makes the
+> band population converge.**
 
 > **★★ v2 CHANGED THE LADDER, not just the wording.** The stress-test found that v1's
 > rung 1 gate could not fail, v1's ROM sanity assert could not trip *and* would fail on
@@ -928,9 +931,11 @@ realized clamp depth is therefore quantized with a `cell`-dependent quantum.
 > pre-measurement text assumed a ~10 mm disc, giving a ~1.8 mm band *smaller than the coarse
 > cell* and a **±13 %** non-monotone swing in free height. Measured: the disc is **19.32 mm**, the
 > band is **3.48 mm — LARGER than the coarse cell**, and the free height is constant to
-> **0.19 %** (12.392 / 12.404 / 12.381 mm). ⇒ **The confound is real in MECHANISM and negligible
-> in MAGNITUDE here. The ladder stands as specified: no `band_frac` re-registration, no cell
-> re-choice.** *Why the illustration failed: it assumed near-surface node `z` is confined to
+> **0.19 %** (12.392 / 12.404 / 12.381 mm). ⇒ **The clamp-DEPTH confound is real in mechanism and
+> negligible in magnitude.** ⚠⚠ **But do NOT read that as "the ladder stands" — I did, and step 1
+> falsified it below.** Free height is one of *two* things the lattice phase controls, and it is
+> the stable one; the pinned *population* is the other. *Why the illustration failed: it assumed
+> near-surface node `z` is confined to
 > multiples of `cell/2`. It is not — `warp_lattice`, boundary secant-interpolation and the BCC
 > odd sublattice all break that layering — and the band spans 2.3–4.6 layer-spacings at every
 > level, so it never sits inside a single layer gap.*
@@ -1074,8 +1079,12 @@ graceful**: `SymbolicLu::try_new(..).expect("symbolic LU factorization of free-b
 **The spike, in order:**
 0. **✅ DONE — the disc's SI extent and the REALIZED band, at all three candidate cells.**
    `rung5_step0_realized_band_across_the_ladder_fom` (committed before it ran; **0.4 s**, meshing
-   only, no solve). **VERDICT: the ladder stands as specified** — free height constant to 0.19 %,
+   only, no solve). **VERDICT AS OF STEP 0: the ladder stands** — free height constant to 0.19 %,
    all three levels live and distinct, so no `band_frac` re-registration and no cell re-choice.
+   ⚠⚠ **STEP 1 THEN FALSIFIED THAT VERDICT — though not this measurement.** The clamp *depth* is
+   stable exactly as measured here; it was never the moving part. The pinned *population* is
+   (superior band −47 % across a 1.67 % cell change), and the h-ladder is blocked on the real disc.
+   **Read this row as "the depth is fine", never as "the ladder is fine."**
    Full table and the ~70× correction it forced are in §3 confound 1. ★ It also reproduced rung
    1's committed 7 849 verts / 228 / 367 for free, which is what says it is measuring the same
    artifact rung 1 did. **This step cost 0.4 s and settled the confound that reshaped the rung —
