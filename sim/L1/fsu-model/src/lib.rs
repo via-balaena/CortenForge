@@ -3196,11 +3196,15 @@ mod tests {
             band * 1e3,
         );
 
-        // 0.00305 is not a ladder level: it is step 1's re-realization probe, carried here so the
-        // domain and the boundary condition are attributable when step 1's k_disc swing is read.
-        // Listed FIRST so the strictly-increasing-corners assert below still describes the ladder.
+        // Two groups. The LADDER proper is {0.003, 0.002, 0.0015} and must strictly refine. The
+        // PROBE cells are step 1's re-realization window: they are deliberately NOT asserted
+        // monotone, because whether retention is monotone there is exactly what is in question.
+        let ladder = [0.003, 0.002, 0.0015];
         let mut prev_corners = 0usize;
-        for cell in [0.003_05, 0.003, 0.002, 0.0015] {
+        for cell in [
+            0.002_90, 0.002_95, 0.003_05, 0.003_10, // step-1 probe window
+            0.003, 0.002, 0.0015, // the ladder
+        ] {
             let params = DiscParams { cell, ..base };
             let p = prepare_disc(disc_mesh.clone(), &params, None)
                 .unwrap_or_else(|e| panic!("prepare raw disc at cell {cell}: {e:?}"));
@@ -3223,12 +3227,14 @@ mod tests {
                 free > 0.0,
                 "cell {cell}: bands meet or cross (free height {free:.6} m)"
             );
-            assert!(
-                referenced > prev_corners,
-                "cell {cell}: refinement must strictly increase referenced corners \
-                 ({referenced} vs {prev_corners}) — otherwise the ladder has an inert level"
-            );
-            prev_corners = referenced;
+            if ladder.contains(&cell) {
+                assert!(
+                    referenced > prev_corners,
+                    "cell {cell}: refinement must strictly increase referenced corners \
+                     ({referenced} vs {prev_corners}) — otherwise the ladder has an inert level"
+                );
+                prev_corners = referenced;
+            }
 
             println!(
                 "cell {cell:.5} m | corners {referenced:5} tets {tets:6} (verts {:5}) | \
