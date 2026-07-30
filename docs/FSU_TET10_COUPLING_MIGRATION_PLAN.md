@@ -32,11 +32,17 @@ higher-order element on the genuinely-curved bone.
 > delivers a **bracket**, not an h-refinement convergence claim. **Rung 5.0 steps 0 and 1 are ✅
 > DONE, and step 1 BLOCKED the h-ladder on the real disc** (§3 confound 1): a **1.67 % cell change
 > moves `k4` by 16.7 %**, because the superior bonded band loses **47 % of its pinned nodes** — the
-> clamp *depth* is stable (0.065 %) but the pinned *population* is not, and the §4.8 gate as
-> written would have missed it. **▶ NEXT: a head-engineer call on the fork** — ship the measured
-> **mesh-realization uncertainty band** on `RUNG7_K_DISC` (~9 % on `k10`: ~¼ of the whole element
-> effect, ~180× rung 3's curving effect), and defer h-convergence to a rung that first makes the
-> band population converge.**
+> clamp *depth* is stable (0.065 %) but the retained *domain* is not. A follow-up **5-point sweep
+> then measured the real spread at ~100 %** — `k4` 106 %, `k10` 101 %, ratio 15 % over a ±3.4 %
+> cell window — attributed to **`largest_component`'s retained tets swinging 49.5 %
+> non-monotonically**, with `|k4|` perfectly monotone in retained tets.
+> **⇒⇒ ARC-LEVEL: the disc being simulated is not a stable function of `cell`, so every ABSOLUTE
+> `k_disc` this arc has published — `RUNG7_K_DISC = −0.1882` included — is one draw from a wide
+> distribution.** Differences measured at fixed mesh (rung 1's ratio, rung 2's conform, rung 3's
+> curving) are unaffected; the element finding survives as a **range, 23–34 % softer**.
+> **▶ NEXT: a head-engineer call.** Rung 5 is blocked on a **meshing-stability fix** that is bigger
+> than rung 5 and moves `RUNG7_K_DISC` — its own rung. What rung 5 can ship today is the measured
+> uncertainty statement.**
 
 > **★★ v2 CHANGED THE LADDER, not just the wording.** The stress-test found that v1's
 > rung 1 gate could not fail, v1's ROM sanity assert could not trip *and* would fail on
@@ -993,13 +999,48 @@ realized clamp depth is therefore quantized with a `cell`-dependent quantum.
 > not immune. What survives of that claim is only the narrow version — *at a fixed `cell`* both arms
 > share one mesh, so the per-level ratio attributes to element order. Across levels it does not.
 >
-> **⇒ WHAT RUNG 5 CAN STILL DELIVER, HONESTLY:** a **mesh-realization uncertainty band on the
-> shipped `RUNG7_K_DISC`** — ~9 % on `k10` for a 1.7 % cell perturbation. That is a real and useful
-> number: it **dwarfs rung 3's 0.05 % curving effect and is ~¼ of the whole element effect**, and it
-> says the shipped `−0.1882` is a point estimate carrying far more mesh uncertainty than the arc has
-> been quoting ([[project-uq-ensemble-stochastic-direction]] — report distributions, not
-> false-precision points). The h-convergence claim is **BLOCKED pending a band-selection rule whose
-> pinned population converges**, which is a production change and its own rung.
+> **⚠⚠⚠ THE PAIR UNDERSTATED IT BY >10×. A 5-POINT SWEEP MEASURED THE REAL SPREAD, AND IT IS
+> ~100 %.** The "~9 %" above came from `n = 1`, which is one sample of the jitter, not a
+> distribution — so it was itself the false-precision point this repo's UQ position refuses.
+> Re-measured over `cell ∈ {0.00290, 0.00295, 0.00300, 0.00305, 0.00310}` (±3.4 % window, 222 s):
+>
+> | `cell` | corners | tets | inf / sup band | free height | Tet4 flex | Tet10 flex | ratio |
+> |---|---|---|---|---|---|---|---|
+> | 0.00290 | 3 353 | 11 021 | 345 / 817 | 12.3815 mm | **−0.6087** | −0.4228 | 0.6947 |
+> | 0.00295 | 2 527 | 8 613 | 180 / 584 | 12.3674 mm | −0.3488 | −0.2476 | 0.7099 |
+> | 0.00300 | 2 257 | 7 759 | 228 / 367 | 12.3922 mm | **−0.2811** | −0.1873 | 0.6664 |
+> | 0.00305 | 1 893 | 6 818 | 231 / 193 | 12.3841 mm | −0.2341 | −0.1699 | 0.7259 |
+> | 0.00310 | 2 508 | 8 216 | 161 / 824 | 12.3780 mm | −0.2942 | −0.2272 | 0.7721 |
+>
+> **`k4` peak-to-peak 106 %, `k10` 101 %, RATIO 15 %.** The `cell = 0.003` row reproduces rung 1's
+> committed `−0.2811 / −0.2788 / −0.1873 / −0.1849` (asserted in the FOM), so the harness is right
+> and the spread is real.
+>
+> **★★★ ATTRIBUTION, MEASURED (step 0 re-run over the same window):** free height is stable to
+> **0.20 %** — the clamp depth is *not* the driver, at any cell. **Retained tets swing 49.5 %
+> peak-to-peak and NON-MONOTONICALLY** (11 021 / 8 613 / 7 759 / 6 818 / 8 216), and sorting the
+> rows by retained tets makes `|k4|` **perfectly monotone** (6 818→0.2341, 7 759→0.2811,
+> 8 216→0.2942, 8 613→0.3488, 11 021→0.6087). ⇒ **`largest_component`'s retained domain is the
+> driver**, amplified superlinearly because the material it gains and loses is the rim, at maximum
+> radius, where bending weights it by `r²`. This is the percolation failure mode the stress-test
+> predicted when it retracted the "finer retains more" direction — it retains *differently*, not
+> monotonically.
+>
+> **⇒⇒ THIS IS AN ARC-LEVEL FINDING, NOT A RUNG-5 ONE, AND IT PREDATES THE TET10 WORK.** The disc
+> being simulated is **not a stable function of `cell`**: a ±3.4 % mesh-parameter window changes
+> `k_disc` by a factor of ~2.6. So **every absolute `k_disc` this arc has published — including the
+> shipped `RUNG7_K_DISC = −0.1882` — is one draw from a very wide distribution.**
+> ⚠ **What this does NOT invalidate:** every *difference* measured at fixed mesh. Rung 2's ~1.8 %
+> conform, rung 3's 0.05 % curving and rung 1's element ratio all compare arms on **one** prepared
+> mesh, so they remain valid as differences. The element finding survives as a **range: 23–34 %
+> softer** (ratio 0.663–0.774), and §3's theorem still fixes its sign. It is the **absolutes** that
+> carry the ~100 %.
+>
+> **⇒ RUNG 5 IS BLOCKED, and on something bigger than it.** No h-convergence claim is reachable
+> until the meshing pipeline yields a stable retained domain — that is a production fix to
+> `largest_component`/geometry cleanup, it moves `RUNG7_K_DISC`, and it is its own rung with its own
+> gates. The deliverable rung 5 *can* still ship is the honest uncertainty statement above
+> ([[project-uq-ensemble-stochastic-direction]] — report distributions, not false-precision points).
 >
 > **★★ PROCESS: the ordering worked, and cheaply.** Step 0 (0.4 s) said proceed; step 1 (90 s) said
 > stop. Neither is wasted and the sequence cost 90 seconds — against a ladder that would have
