@@ -3143,8 +3143,11 @@ mod tests {
             band * 1e3,
         );
 
+        // 0.00305 is not a ladder level: it is step 1's re-realization probe, carried here so the
+        // domain and the boundary condition are attributable when step 1's k_disc swing is read.
+        // Listed FIRST so the strictly-increasing-corners assert below still describes the ladder.
         let mut prev_corners = 0usize;
-        for cell in [0.003, 0.002, 0.0015] {
+        for cell in [0.003_05, 0.003, 0.002, 0.0015] {
             let params = DiscParams { cell, ..base };
             let p = prepare_disc(disc_mesh.clone(), &params, None)
                 .unwrap_or_else(|e| panic!("prepare raw disc at cell {cell}: {e:?}"));
@@ -3157,6 +3160,7 @@ mod tests {
             let sup_min = p.superior.iter().map(z).fold(f64::INFINITY, f64::min);
             let free = sup_min - inf_max;
             let referenced = referenced_vertices(&p.tet).len();
+            let tets = p.tet.n_tets();
 
             assert!(
                 !p.inferior.is_empty() && !p.superior.is_empty(),
@@ -3174,9 +3178,9 @@ mod tests {
             prev_corners = referenced;
 
             println!(
-                "cell {cell:.4} m | corners {referenced:5} (verts {:5}) | \
-                 band {:.3} cell/2 units | inf {:3} nodes, clamp z {inf_max:+.6} | \
-                 sup {:3} nodes, clamp z {sup_min:+.6} | free {:.6} m = {:.3} cell/2 = {:.3} mm",
+                "cell {cell:.5} m | corners {referenced:5} tets {tets:6} (verts {:5}) | \
+                 band {:.3} cell/2 units | inf {:4} nodes, clamp z {inf_max:+.6} | \
+                 sup {:4} nodes, clamp z {sup_min:+.6} | free {:.6} m = {:.3} cell/2 = {:.4} mm",
                 p.tet.n_vertices(),
                 band / (cell / 2.0),
                 p.inferior.len(),
