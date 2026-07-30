@@ -958,6 +958,50 @@ realized clamp depth is therefore quantized with a `cell`-dependent quantum.
   clamp planes and free height per level; assert the free height's constancy against the measured
   0.19 % rather than assuming it.
 
+> **★★★ STEP 1 FALSIFIED THE STEP-0 VERDICT. THE LADDER IS BLOCKED ON THE REAL DISC.**
+> Step 0 measured the clamp *depth* and found it stable, and I concluded from that "the confound
+> is negligible, the ladder stands". **Step 1 falsified the conclusion, not the measurement** —
+> the depth was never the moving part.
+>
+> **MEASURED (`rung5_step1_mesh_realization_noise_floor_fom`, 90 s, 1.77 GB peak RSS):**
+>
+> | `cell` | corners | tets | inf band | **sup band** | free height | Tet4 flex/ext | Tet10 flex/ext | ratio |
+> |---|---|---|---|---|---|---|---|---|
+> | 0.00300 | 2 257 | 7 759 | 228 | **367** | 12.3922 mm | −0.2811 / −0.2788 | −0.1873 / −0.1849 | 0.6664 / 0.6630 |
+> | 0.00305 | 1 893 | 6 818 | 231 | **193** | 12.3841 mm | −0.2341 / −0.2335 | −0.1699 / −0.1687 | 0.7259 / 0.7225 |
+>
+> **A 1.67 % cell change moves `k4` by 16.7 %, `k10` by 9.3 %, and the RATIO by 8.9 %.**
+>
+> **★★★ THE MECHANISM IS THE PINNED POPULATION, NOT THE CLAMP PLANE.** Free height moved
+> **0.065 %** — the boundary's *depth* is stable, exactly as step 0 said. But the **superior band
+> lost 47 % of its nodes (367 → 193)**: the disc's superior surface sits near-tangent to a lattice
+> layer, so a 1.67 % cell change sweeps a whole layer of nodes out of the Dirichlet set. Half the
+> constraints on the top face vanish ⇒ a softer disc. **The §4.8 gate as designed would have MISSED
+> this**, because it asserts the clamp *plane* and this is the pinned *population*.
+> ⇒ **Gate the POPULATION, not just the plane** — and normalize it, since the raw count must grow
+> under refinement.
+>
+> **⇒ The ladder cannot separate element convergence from a non-converging Dirichlet population.**
+> Across the ladder the superior band grows *faster* than volume (367 → 1 895 → 4 717) while the
+> inferior grows *slower* (228 → 667 → 1 328); sup/inf runs **1.61 → 2.84 → 3.55**. The §3
+> "unpredicted but common-mode in the ratio" note is **retracted**: the ratio moved 8.9 %, so it is
+> not immune. What survives of that claim is only the narrow version — *at a fixed `cell`* both arms
+> share one mesh, so the per-level ratio attributes to element order. Across levels it does not.
+>
+> **⇒ WHAT RUNG 5 CAN STILL DELIVER, HONESTLY:** a **mesh-realization uncertainty band on the
+> shipped `RUNG7_K_DISC`** — ~9 % on `k10` for a 1.7 % cell perturbation. That is a real and useful
+> number: it **dwarfs rung 3's 0.05 % curving effect and is ~¼ of the whole element effect**, and it
+> says the shipped `−0.1882` is a point estimate carrying far more mesh uncertainty than the arc has
+> been quoting ([[project-uq-ensemble-stochastic-direction]] — report distributions, not
+> false-precision points). The h-convergence claim is **BLOCKED pending a band-selection rule whose
+> pinned population converges**, which is a production change and its own rung.
+>
+> **★★ PROCESS: the ordering worked, and cheaply.** Step 0 (0.4 s) said proceed; step 1 (90 s) said
+> stop. Neither is wasted and the sequence cost 90 seconds — against a ladder that would have
+> produced a plausible, publishable, *wrong* convergence table. **A gate on the property you
+> changed misses the one you broke** ([[feedback_gate_on_the_property_misses_conditioning]]) fired
+> here on my own gate, one turn after I wrote it.
+
 **(2) `largest_component` moves the domain — direction UNKNOWN, and pre-registering one is
 harmful.** A finer cell may resolve the disc's sub-cell-thin tapering rim better and retain more —
 but selection is by **tet COUNT, not volume** (`sdf_meshed_tet_mesh.rs:282-291`), so a count-winner
