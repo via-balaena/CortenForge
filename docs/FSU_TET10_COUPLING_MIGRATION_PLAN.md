@@ -908,10 +908,19 @@ fronts, and it rides directly on every absolute-trend claim.** `BccLattice::new`
 planes to **global multiples of `cell`**, not to the disc bbox (`sim/L0/soft/src/sdf_bridge/lattice.rs:257-262,296-300`),
 so the geometry↔lattice phase changes discontinuously with `cell`. The bonded band is a fixed
 physical slab — `band = band_frac·(hi_z − lo_z)`, `band_frac = 0.18` off the *surface* AABB
-(`lib.rs:587,624-625`) — which for a ~10 mm disc is **~1.8 mm, SMALLER than the coarse cell.** The
-pinned set is whichever `cell/2`-spaced node layers land inside it, so the realized clamp depth
-goes ≈ 1.5 / 1.0 / 1.5 mm across a 3.0 / 2.0 / 1.5 mm ladder — a **non-monotone ±13 % swing in
-free bending length with ZERO element content**, comparable to the whole predicted signal.
+(`lib.rs:587,624-625`). The pinned set is whichever `cell/2`-spaced node layers land inside that
+slab, so the realized clamp depth is **quantized, and its quantum changes with `cell`.**
+
+> **⚠⚠ THE MECHANISM IS VERIFIED; THE MAGNITUDE BELOW IS AN ILLUSTRATION, NOT A MEASUREMENT.**
+> Worked for an assumed ~10 mm SI extent: `band` ≈ 1.8 mm — *smaller than the coarse cell* — so
+> the deepest pinned layer goes ≈ 1.5 / 1.0 / 1.5 mm across a 3.0 / 2.0 / 1.5 mm ladder, a
+> **non-monotone ±13 % swing in free bending length with ZERO element content**, comparable to the
+> whole predicted signal. **The disc's actual SI extent is committed NOWHERE in this repo** — it
+> is licensed geometry, and `band_frac` is defined as a *fraction* precisely so no absolute ever
+> had to be written down. So the swing's size, its sign, and even whether the ladder's three
+> levels alias onto the same layer count are all **unknown until measured**. Rung 5.0 step 0
+> measures it. Do not quote 1.8 mm, 1.5/1.0/1.5, or ±13 % as findings
+> ([[feedback_a_number_without_a_producer_is_not_a_measurement]]).
 - Already-committed corroboration: the band corner counts are **228 vs 367** for two nominally
   similar slabs — a 61 % asymmetry consistent with exactly this phase sensitivity.
 - **A domain gate cannot see it**: retained volume, corner count and retained fraction are all
@@ -971,10 +980,16 @@ drive path is identical.
 
 **★ Cost is not the risk; the first draft aimed the spike wrong.** Quoting the *measured* anchors
 rather than re-deriving from `O(N²)` (§5.1's own instruction, which the first draft disregarded):
-rung 4 measured 6.14× DOF → 18.1× cost, an empirical exponent of **1.60**, so 3.375× cells is
-**~7×**, not the ~11× first written. Working from measured per-solve times (~0.20 s warm Tet4,
-~3.6 s warm Tet10, ~3.3 s meshing at `cell = 0.003`), the full ladder is **~4–10 min in release —
-smaller than the ±6° sweep this crate already runs.** The ladder was never cost-gated.
+rung 4 measured referenced DOF 6 771 → ~41 600 (**6.14×**) at **18.1×** cost, an empirical exponent
+of **1.60**, so 3.375× cells is **~7×**, not the ~11× first written.
+
+⚠ **The per-solve figures below are DERIVED from committed aggregates, not measured** — each is a
+total ÷ a count, and one of those counts is a *range*: `capture_ramp` 32.2 s over "150–175 solves"
+⇒ **~0.20 s** per warm Tet4 solve (**±8 % from the range alone**); ×18.1 ⇒ **~3.6 s** per warm
+Tet10 solve; Tet4 build 6.9 s less its 18 warm solves ⇒ **~3.3 s** meshing at `cell = 0.003`. On
+those, the full ladder is **~4–10 min in release — smaller than the ±6° sweep this crate already
+runs**, so the ladder is not cost-gated. But this is the third cost model in this document and the
+first two were wrong; treat the range as an order-of-magnitude and let rung 5.0 replace it.
 
 **The real ceiling is memory.** Tet10 at `cell = 0.002` is ~140k DOF; the solver holds **two**
 symbolic factorizations for its lifetime — `SymbolicLlt` on the lower triangle *and* `SymbolicLu`
@@ -985,7 +1000,14 @@ graceful**: `SymbolicLu::try_new(..).expect("symbolic LU factorization of free-b
 (`construct.rs:188-189`) panics with a message that reads as a pattern bug.
 
 **The spike, in order:**
-1. **The mesh-realization NOISE FLOOR, first — nothing in the table is interpretable without it.**
+0. **Measure the disc's SI extent and the REALIZED band — one build, no solve, seconds.** Print
+   the surface-AABB extents, `band = 0.18·(hi_z − lo_z)`, `band` **in units of `cell/2`**, the
+   realized clamp planes and free height, and the band corner counts, **at all three candidate
+   cells**. This is the cheapest measurement in the rung and it gates the ladder itself: if two
+   levels alias onto the same layer count, or the free height swings, **the ladder is re-chosen or
+   `band_frac` is re-registered per level before anything else runs** (§3 confound 1, whose
+   magnitude is an illustration until this lands). No licensed solve required — meshing only.
+1. **The mesh-realization NOISE FLOOR — nothing in the table is interpretable without it.**
    Run the coarse level twice, at `cell = 0.003` and `cell = 0.00305`: a 1.7 % resolution change
    against a 33 % signal. Anything beyond `1.7 % × dk/dh` is pure realization noise — and because
    the lattice is origin-anchored, a 1.7 % cell change can flip a node layer in or out of the band,
@@ -1635,6 +1657,27 @@ rung's **question**, not just its gates. Recorded so the same errors are not re-
   `largest_component`'s direction being **unknown** (tet-count selection, percolation) rather than
   the direction the draft asserted, the noise floor needing to be measured **first**, and the
   synthetic/licensed arms being the wrong way round.
+
+**★★ THE REVIEW PASS ON THE RESHAPE ITSELF (same day) — the rewrite introduced two of its own.**
+The reshape adopted the fronts' `file:line` citations wholesale into an authoritative doc *before*
+checking them — the exact failure the arc keeps catching, committed inside the commit that
+documents it ([[feedback_meta_audit_introduced_claims]]). Re-verified afterwards, and all of these
+**hold**: world-origin lattice anchoring (`lattice.rs:257-262,296-300`), `largest_component`
+selecting by **tet count** (`max_by(count_a.cmp(count_b))`, `sdf_meshed_tet_mesh.rs:282-291`), the
+Stroud rule's *"degree-of-precision 2 … a curved/isoparametric Tet10 would not be exact"*
+(`tet10.rs:41-53`, verbatim), both symbolic factorizations held for the solver's lifetime
+(`construct.rs` returns `(SymbolicLlt, SymbolicLu)`), orphan referencing (`construct.rs:354-362`),
+and rung 1's *"reproduces to < 1e-3 relative across captures"* (`lib.rs:2962-2963`). The
+1.60 exponent is genuinely derivable: 41 600/6 771 = 6.145, log(18.1)/log(6.145) = 1.595. **Two did
+NOT hold as written:**
+- **The disc's SI extent is committed NOWHERE**, so the clamp-quantization *magnitude* (~1.8 mm
+  band, 1.5/1.0/1.5 depths, ±13 %) was an inherited assumption stated as fact. Mechanism verified,
+  magnitude demoted to an illustration, and measuring it is now **rung 5.0 step 0**.
+- **"Measured per-solve times" were DERIVED** — aggregates ÷ counts, one count being the range
+  "150–175 solves" (±8 % before compounding). Relabelled.
+**⇒ The lesson generalizes past this rung: adopting a reviewer's citation is authoring it.** Four
+independent fronts agreeing raises the odds a claim is true; it does not make it *verified*, and a
+plan doc is where unverified claims become load-bearing.
 
 Prior arcs: [[project-tet10-fbar-element-upgrade]] (element ladder),
 [[project-fsu-disc-endplate-conform]] (#701 conform machinery),
