@@ -2982,6 +2982,120 @@ mod tests {
         }
     }
 
+    /// **Rung 5.0 step 1** (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §3): the **mesh-realization
+    /// noise floor** — how much `k_disc` moves when the mesh is re-realized at essentially the
+    /// same resolution.
+    ///
+    /// **Nothing in rung 5's convergence table is interpretable without this number.** The BCC
+    /// lattice is anchored to the world origin, so the *only* public knob that re-phases it
+    /// against fixed geometry is `cell` itself. A **1.7 %** cell change (0.003 → 0.00305) is
+    /// therefore a re-realization at nearly-fixed resolution: whatever `k_disc` does across it is
+    /// (a smooth h-effect over 1.7 %) **+** (re-meshing jitter), and the sum is an **upper bound
+    /// on the jitter**. Compare it against the ladder's intended signals — 33 % and 50 % cell
+    /// steps — and against the element effect the rung exists to bound (~33 %).
+    ///
+    /// ⚠ **This measures an upper bound, not the jitter itself**, and it cannot separate the two
+    /// terms: a 3-point ladder has no way to tell a small smooth slope from realization noise.
+    /// That is exactly why rung 5 delivers a bracket rather than an extrapolated `k*` — an order
+    /// fitted through differences this size would be fitting noise.
+    ///
+    /// Both arms at each cell come from **one** prepared mesh (`PreparedDisc::duplicate`), so the
+    /// per-cell ratio `k10/k4` is attributable to element order by construction; the ratio's
+    /// stability across the two realizations is the headline, because the ratio is the quantity
+    /// every §3 confound is common-mode in.
+    ///
+    /// Prints the table and asserts only that the two realizations are genuinely *different
+    /// meshes* (else the comparison is vacuous) and that every arm converged. The floor itself is
+    /// a measurement to be read, then pre-registered into §4.8 — not a threshold to assert here.
+    #[test]
+    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
+    fn rung5_step1_mesh_realization_noise_floor_fom() {
+        /// One realization: the stiffnesses both arms report off a single prepared mesh.
+        struct Realization {
+            cell: f64,
+            corners: usize,
+            linear: (f64, f64),    // (flexion, extension)
+            quadratic: (f64, f64), // (flexion, extension)
+        }
+        impl Realization {
+            fn ratio(&self) -> (f64, f64) {
+                (
+                    self.quadratic.0 / self.linear.0,
+                    self.quadratic.1 / self.linear.1,
+                )
+            }
+        }
+
+        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
+        let base = DiscParams::default();
+        let (flex, ext) = (0.5_f64.to_radians(), -0.5_f64.to_radians());
+
+        let mut rows: Vec<Realization> = Vec::new();
+        for cell in [0.003, 0.003_05] {
+            let params = DiscParams { cell, ..base };
+            let p = prepare_disc(disc_mesh.clone(), &params, None)
+                .unwrap_or_else(|e| panic!("prepare raw disc at cell {cell}: {e:?}"));
+            let corners = referenced_vertices(&p.tet).len();
+
+            // ONE mesh, both arms — rung 1's attribution argument, made structural.
+            let mut tet4 = bond_prepared_tet4(p.duplicate().expect("duplicate"), &params);
+            let mut tet10 = bond_prepared_tet10(p, &params, None, ConformFloors::SHIPPED);
+
+            // `(moment, conservation residual)` per arm per direction.
+            let lin_flex = tet4.flexion_moment(flex);
+            let lin_ext = tet4.flexion_moment(ext);
+            let quad_flex = tet10.flexion_moment(flex);
+            let quad_ext = tet10.flexion_moment(ext);
+            for (probe, name) in [
+                (lin_flex, "Tet4 flexion"),
+                (lin_ext, "Tet4 extension"),
+                (quad_flex, "Tet10 flexion"),
+                (quad_ext, "Tet10 extension"),
+            ] {
+                assert!(
+                    probe.1 < 1e-8,
+                    "cell {cell}: {name} bond must conserve (‖ΣF‖+‖ΣM‖ = {:.2e})",
+                    probe.1
+                );
+            }
+            rows.push(Realization {
+                cell,
+                corners,
+                linear: (lin_flex.0 / flex, lin_ext.0 / ext),
+                quadratic: (quad_flex.0 / flex, quad_ext.0 / ext),
+            });
+        }
+
+        let (a, b) = (&rows[0], &rows[1]);
+        assert_ne!(
+            a.corners, b.corners,
+            "both cells produced the SAME referenced-corner count — the mesh was not re-realized, \
+             so this measures nothing"
+        );
+
+        let rel = |x: f64, y: f64| (y - x).abs() / x.abs() * 100.0;
+        for r in &rows {
+            let (rf, re) = r.ratio();
+            println!(
+                "cell {:.5} ({:5} corners): Tet4 {:.4}/{:.4}  Tet10 {:.4}/{:.4}  ratio {rf:.4}/{re:.4}",
+                r.cell, r.corners, r.linear.0, r.linear.1, r.quadratic.0, r.quadratic.1,
+            );
+        }
+        println!(
+            "--- realization delta over a {:.2} % cell change ---\n\
+             k4    flex {:.3} %   ext {:.3} %\n\
+             k10   flex {:.3} %   ext {:.3} %\n\
+             RATIO flex {:.3} %   ext {:.3} %   <-- the confound-immune quantity",
+            rel(a.cell, b.cell),
+            rel(a.linear.0, b.linear.0),
+            rel(a.linear.1, b.linear.1),
+            rel(a.quadratic.0, b.quadratic.0),
+            rel(a.quadratic.1, b.quadratic.1),
+            rel(a.ratio().0, b.ratio().0),
+            rel(a.ratio().1, b.ratio().1),
+        );
+    }
+
     /// **Rung 5.0 step 0** (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §3): the disc's SI
     /// extent and the **realized** bonded band, at every candidate `cell` of the rung-5 ladder.
     ///
