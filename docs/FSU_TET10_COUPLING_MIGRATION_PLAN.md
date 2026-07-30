@@ -29,8 +29,11 @@ higher-order element on the genuinely-curved bone.
 > is *shipped and load-bearing* while §0.1 bound 3 still admits it is not proven converged — rung 5
 > hardens the layer underneath 4b. ⚠ **The stress-test changed the rung's QUESTION:** "is Tet10
 > more accurate here" is a **theorem** (§3), so rung 5 measures *how much error is left* and
-> delivers a **bracket**, not an h-refinement convergence claim. **Start at rung 5.0** — the
-> noise-floor and memory spike — not at the ladder.**
+> delivers a **bracket**, not an h-refinement convergence claim. **Rung 5.0 step 0 is ✅ DONE and
+> the ladder {0.003, 0.002, 0.0015} stands as measured** (§3 confound 1 — the clamp-quantization
+> magnitude was falsified by ~70× on first run; the free height is constant to 0.19 %).
+> **▶ NEXT: rung 5.0 step 1**, the mesh-realization noise floor (`cell = 0.003` vs `0.00305`) —
+> nothing in the convergence table is interpretable before it.**
 
 > **★★ v2 CHANGED THE LADDER, not just the wording.** The stress-test found that v1's
 > rung 1 gate could not fail, v1's ROM sanity assert could not trip *and* would fail on
@@ -903,32 +906,57 @@ precisely at the singular clamp ring where the rate is set. Rungs 2/3's 0.982/0.
 
 ### ⚠⚠ The confounds — one named in the first draft, and it was NOT the big one
 
-**★★★ (1) THE CLAMP PLANE IS LATTICE-QUANTIZED — found independently by all four stress-test
-fronts, and it rides directly on every absolute-trend claim.** `BccLattice::new` anchors node
-planes to **global multiples of `cell`**, not to the disc bbox (`sim/L0/soft/src/sdf_bridge/lattice.rs:257-262,296-300`),
-so the geometry↔lattice phase changes discontinuously with `cell`. The bonded band is a fixed
-physical slab — `band = band_frac·(hi_z − lo_z)`, `band_frac = 0.18` off the *surface* AABB
-(`lib.rs:587,624-625`). The pinned set is whichever `cell/2`-spaced node layers land inside that
-slab, so the realized clamp depth is **quantized, and its quantum changes with `cell`.**
+**★★ (1) THE CLAMP PLANE IS LATTICE-QUANTIZED — the mechanism all four stress-test fronts found,
+and ✅ MEASURED AT RUNG 5.0 STEP 0 TO BE NEGLIGIBLE AT THESE CELLS.** `BccLattice::new` anchors
+node planes to **global multiples of `cell`**, not to the disc bbox
+(`sim/L0/soft/src/sdf_bridge/lattice.rs:257-262,296-300`), so the geometry↔lattice phase changes
+discontinuously with `cell`; the bonded band is a fixed physical slab — `band = band_frac·(hi_z −
+lo_z)`, `band_frac = 0.18` off the *surface* AABB (`lib.rs:587,624-625`). The concern was that the
+realized clamp depth is therefore quantized with a `cell`-dependent quantum.
 
-> **⚠⚠ THE MECHANISM IS VERIFIED; THE MAGNITUDE BELOW IS AN ILLUSTRATION, NOT A MEASUREMENT.**
-> Worked for an assumed ~10 mm SI extent: `band` ≈ 1.8 mm — *smaller than the coarse cell* — so
-> the deepest pinned layer goes ≈ 1.5 / 1.0 / 1.5 mm across a 3.0 / 2.0 / 1.5 mm ladder, a
-> **non-monotone ±13 % swing in free bending length with ZERO element content**, comparable to the
-> whole predicted signal. **The disc's actual SI extent is committed NOWHERE in this repo** — it
-> is licensed geometry, and `band_frac` is defined as a *fraction* precisely so no absolute ever
-> had to be written down. So the swing's size, its sign, and even whether the ladder's three
-> levels alias onto the same layer count are all **unknown until measured**. Rung 5.0 step 0
-> measures it. Do not quote 1.8 mm, 1.5/1.0/1.5, or ±13 % as findings
-> ([[feedback_a_number_without_a_producer_is_not_a_measurement]]).
-- Already-committed corroboration: the band corner counts are **228 vs 367** for two nominally
-  similar slabs — a 61 % asymmetry consistent with exactly this phase sensitivity.
-- **A domain gate cannot see it**: retained volume, corner count and retained fraction are all
-  stable while the *boundary condition* moves. This is the arc's own lesson again — a gate on the
-  property you changed misses the one you broke ([[feedback_gate_on_the_property_misses_conditioning]]).
-- **⇒ `cell` is NOT the refinement parameter.** Commit the realized clamp planes per level (max z
-  over the inferior band, min z over the superior) and treat **node layers through the free
-  height** as the refinement measure. §4.8 gates it.
+> **✅ MEASURED (`rung5_step0_realized_band_across_the_ladder_fom`, committed BEFORE it ran):**
+>
+> | `cell` (m) | referenced corners | verts | band (`cell/2` units) | inferior band | superior band | **free height** |
+> |---|---|---|---|---|---|---|
+> | 0.0030 | 2 257 | 7 849 | 2.318 | 228 | 367 | **12.392 mm** |
+> | 0.0020 | 8 307 | 28 032 | 3.477 | 667 | 1 895 | **12.404 mm** |
+> | 0.0015 | 18 485 | 56 403 | 4.637 | 1 328 | 4 717 | **12.381 mm** |
+>
+> **Disc SI extent = 19.3190 mm** (native), so **`band` = 3.4774 mm.**
+>
+> **★★★ THE ILLUSTRATION THAT PRECEDED THIS WAS WRONG BY ~70×, AND WRONG IN ITS PREMISE.** The
+> pre-measurement text assumed a ~10 mm disc, giving a ~1.8 mm band *smaller than the coarse
+> cell* and a **±13 %** non-monotone swing in free height. Measured: the disc is **19.32 mm**, the
+> band is **3.48 mm — LARGER than the coarse cell**, and the free height is constant to
+> **0.19 %** (12.392 / 12.404 / 12.381 mm). ⇒ **The confound is real in MECHANISM and negligible
+> in MAGNITUDE here. The ladder stands as specified: no `band_frac` re-registration, no cell
+> re-choice.** *Why the illustration failed: it assumed near-surface node `z` is confined to
+> multiples of `cell/2`. It is not — `warp_lattice`, boundary secant-interpolation and the BCC
+> odd sublattice all break that layering — and the band spans 2.3–4.6 layer-spacings at every
+> level, so it never sits inside a single layer gap.*
+>
+> **✅ Free harness validation, unprompted:** the `cell = 0.003` row reproduces rung 1's committed
+> **7 849 verts and bands 228 / 367** exactly ⇒ this measurement is on the same artifact rung 1
+> measured ([[feedback_validate_new_harness_against_known_value]]). It also gives **2 257
+> referenced corners** a producer for the first time — §0.1 had carried it as prose.
+>
+> **✅ No aliasing:** corners go 2 257 → 8 307 → 18 485 (**3.68× / 8.19×** against cell ratios
+> 3.375× / 8×), strictly increasing and tracking volume scaling ⇒ all three levels are live and
+> distinct, which is the precondition the ladder needed.
+
+- **⚠ NEW, and nobody predicted it — the band asymmetry GROWS sharply under refinement.** sup/inf
+  goes **1.61 → 2.84 → 3.55** (228/367, 667/1 895, 1 328/4 717): the two endplate faces resolve at
+  very different rates. It is **common-mode in `k10/k4` at fixed `h`** so it does not threaten the
+  deliverable, but it is a real geometric fact about this disc and it means the two faces' pinned
+  populations are *not* interchangeable. Carry it into any per-face reasoning.
+- **A domain gate could not have seen any of this**: retained volume, corner count and retained
+  fraction are all stable while the *boundary condition* moves. The lesson stands even though the
+  magnitude came out small — a gate on the property you changed misses the one you broke
+  ([[feedback_gate_on_the_property_misses_conditioning]]). **The clamp-plane gate is retained**
+  (§4.8 assert 2) precisely because its cheapness is what let it be settled in 0.4 s.
+- **⇒ `cell` remains a *reported* refinement parameter, not the asserted one.** Commit the realized
+  clamp planes and free height per level; assert the free height's constancy against the measured
+  0.19 % rather than assuming it.
 
 **(2) `largest_component` moves the domain — direction UNKNOWN, and pre-registering one is
 harmful.** A finer cell may resolve the disc's sub-cell-thin tapering rim better and retain more —
@@ -1000,13 +1028,14 @@ graceful**: `SymbolicLu::try_new(..).expect("symbolic LU factorization of free-b
 (`construct.rs:188-189`) panics with a message that reads as a pattern bug.
 
 **The spike, in order:**
-0. **Measure the disc's SI extent and the REALIZED band — one build, no solve, seconds.** Print
-   the surface-AABB extents, `band = 0.18·(hi_z − lo_z)`, `band` **in units of `cell/2`**, the
-   realized clamp planes and free height, and the band corner counts, **at all three candidate
-   cells**. This is the cheapest measurement in the rung and it gates the ladder itself: if two
-   levels alias onto the same layer count, or the free height swings, **the ladder is re-chosen or
-   `band_frac` is re-registered per level before anything else runs** (§3 confound 1, whose
-   magnitude is an illustration until this lands). No licensed solve required — meshing only.
+0. **✅ DONE — the disc's SI extent and the REALIZED band, at all three candidate cells.**
+   `rung5_step0_realized_band_across_the_ladder_fom` (committed before it ran; **0.4 s**, meshing
+   only, no solve). **VERDICT: the ladder stands as specified** — free height constant to 0.19 %,
+   all three levels live and distinct, so no `band_frac` re-registration and no cell re-choice.
+   Full table and the ~70× correction it forced are in §3 confound 1. ★ It also reproduced rung
+   1's committed 7 849 verts / 228 / 367 for free, which is what says it is measuring the same
+   artifact rung 1 did. **This step cost 0.4 s and settled the confound that reshaped the rung —
+   the cheapest thing in the ladder was also the highest-value.**
 1. **The mesh-realization NOISE FLOOR — nothing in the table is interpretable without it.**
    Run the coarse level twice, at `cell = 0.003` and `cell = 0.00305`: a 1.7 % resolution change
    against a 33 % signal. Anything beyond `1.7 % × dk/dh` is pure realization noise — and because
@@ -1274,15 +1303,20 @@ is worse than no number; its incidence-walk mutant improved the residual while i
    available at zero cost on the exact quantity the rung measures, and it is the cheapest possible
    check that the multi-resolution harness is not silently a different probe (wrong `theta`, wrong
    pivot, `Some` instead of `None`, an arm wired to the wrong builder).
-2. **★★ THE CLAMP-PLANE GATE — the confound with teeth.** Per level, commit the realized clamp
-   planes (max z over the inferior band, min z over the superior), the resulting **free height**,
-   and the **node layers through it**. Assert the free height is constant across levels to a stated
-   tolerance. **If it is not, `band_frac` must be adjusted per level to hold the realized planes
-   fixed** — the arc's own rule that a tuning constant is never inherited across element orders *or
-   input geometries* now extends to *resolutions* — and that adjustment is **pre-registered, not
-   discovered mid-run**. Commit the per-level band sizes alongside (they are reachable from
-   `src/`; the first draft demoted them to un-cross-checked context from a location that could not
-   read them at all).
+2. **★★ THE CLAMP-PLANE GATE — ✅ ALREADY MEASURED AT RUNG 5.0 STEP 0; here it becomes a
+   REGRESSION gate.** Per level, commit the realized clamp planes (max z over the inferior band,
+   min z over the superior), the **free height**, and the **node layers through it**. **Assert the
+   free height is constant across levels to within 0.5 %** — a two-sided pin around the *measured*
+   0.19 % spread (12.392 / 12.404 / 12.381 mm), not a guessed tolerance. Commit the per-level band
+   sizes alongside; note the **sup/inf asymmetry grows 1.61 → 2.84 → 3.55**, so a symmetric
+   expectation on the two faces would be wrong.
+   ⚠ **What this gate is FOR has changed, and saying so matters:** step 0 settled that the
+   lattice-phase confound is negligible at these cells, so this is no longer the gate that decides
+   whether the ladder is valid — it is the gate that catches a *future* change (a new `band_frac`,
+   a different disc, a mesher change) silently re-opening it. **If it ever fires, `band_frac` is
+   re-registered per level to hold the realized planes fixed** — the arc's rule that a tuning
+   constant is never inherited across element orders *or input geometries*, now extended to
+   *resolutions* — and that adjustment is pre-registered, not discovered mid-run.
 3. **Mesh validity.** `BondedDisc::min_jacobian_ratio()` per arm per level — public, free (it reads
    the last solve), and precisely the deformed-configuration invariant rung 4 added because
    "nothing in this arc checked the deformed configuration before rung 4". A finer BCC lattice
@@ -1435,10 +1469,13 @@ and segment flexion ROM moved +0.0082° against a predicted ~0.008° — so `ROM
 - **Rung 5's liveness assert fires (§4.8 assert 0):** an arm did not actually refine. This is a
   harness bug, not a result — **do not read the payoff numbers at all**, because the failure mode
   it catches (`δ10 = 0` exactly) otherwise produces the arc's *ideal* headline.
-- **Rung 5's clamp-plane gate fires (free height not constant across levels):** the lattice-phase
-  confound is live and is contaminating every absolute. Re-register `band_frac` per level to hold
-  the realized planes fixed, then re-run — **do not** proceed and caveat it in prose. The per-level
-  ratio is still usable meanwhile (common-mode), the absolutes are not.
+- **Rung 5's clamp-plane gate fires (free height outside the measured 0.5 % pin):** ⚠ **this is
+  now a REGRESSION, not a discovery** — step 0 measured the spread at 0.19 % on the shipped
+  `band_frac` and disc, so a firing means something changed underneath (a new `band_frac`, a
+  different input mesh, a mesher change) and re-opened the lattice-phase confound. Re-register
+  `band_frac` per level to hold the realized planes fixed, then re-run — **do not** proceed and
+  caveat it in prose. The per-level ratio stays usable meanwhile (common-mode); the absolutes do
+  not.
 - **Rung 5's coarse level does not reproduce rung 1's committed numbers (§4.8 assert 1):** stop.
   The multi-resolution harness is a different probe from the one that produced `RUNG7_K_DISC`, and
   nothing downstream of it means anything.
@@ -1672,7 +1709,14 @@ and rung 1's *"reproduces to < 1e-3 relative across captures"* (`lib.rs:2962-296
 NOT hold as written:**
 - **The disc's SI extent is committed NOWHERE**, so the clamp-quantization *magnitude* (~1.8 mm
   band, 1.5/1.0/1.5 depths, ±13 %) was an inherited assumption stated as fact. Mechanism verified,
-  magnitude demoted to an illustration, and measuring it is now **rung 5.0 step 0**.
+  magnitude demoted to an illustration, and measuring it became **rung 5.0 step 0**.
+  **✅ THE ILLUSTRATION WAS THEN FALSIFIED BY ~70× ON FIRST RUN** — the disc is **19.32 mm**, so
+  the band (3.48 mm) is *larger* than the coarse cell rather than smaller, and the free height is
+  constant to **0.19 %**, not ±13 % (§3 confound 1). **★ Note which way the error ran: four
+  independent adversarial fronts converged on a confound, and their agreement was about the
+  MECHANISM — which held — while the magnitude every one of them carried was inherited from a
+  single unmeasured assumption and was wrong by two orders of magnitude.** Consensus among
+  reviewers is not evidence about a number; only a producer is.
 - **"Measured per-solve times" were DERIVED** — aggregates ÷ counts, one count being the range
   "150–175 solves" (±8 % before compounding). Relabelled.
 **⇒ The lesson generalizes past this rung: adopting a reviewer's citation is authoring it.** Four
