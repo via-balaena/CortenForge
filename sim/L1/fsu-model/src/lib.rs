@@ -2982,6 +2982,41 @@ mod tests {
         }
     }
 
+    /// One mesh realization of the disc: what both element arms report off a single prepared
+    /// mesh. Rung 5.0 step 1's unit of measurement.
+    struct Realization {
+        cell: f64,
+        corners: usize,
+        bands: (usize, usize), // (inferior, superior) pinned corner counts
+        linear: (f64, f64),    // (flexion, extension)
+        quadratic: (f64, f64), // (flexion, extension)
+    }
+
+    impl Realization {
+        fn ratio(&self) -> (f64, f64) {
+            (
+                self.quadratic.0 / self.linear.0,
+                self.quadratic.1 / self.linear.1,
+            )
+        }
+    }
+
+    /// `(min, max, mean, peak-to-peak as % of mean)` — what makes rung 5.0 step 1 a
+    /// distribution rather than a single delta.
+    ///
+    /// Counts fed through here (band populations) are in the thousands, so the `usize -> f64`
+    /// widening is exact; `f64`'s mantissa does not lose a bit below 2^53.
+    #[allow(clippy::cast_precision_loss)]
+    fn spread(xs: &[f64]) -> (f64, f64, f64, f64) {
+        let (lo, hi) = xs
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &x| {
+                (l.min(x), h.max(x))
+            });
+        let mean = xs.iter().sum::<f64>() / xs.len() as f64;
+        (lo, hi, mean, (hi - lo).abs() / mean.abs() * 100.0)
+    }
+
     /// **Rung 5.0 step 1** (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §3): the **mesh-realization
     /// noise floor** — how much `k_disc` moves when the mesh is re-realized at essentially the
     /// same resolution.
@@ -3010,32 +3045,17 @@ mod tests {
     #[test]
     #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
     fn rung5_step1_mesh_realization_noise_floor_fom() {
-        /// One realization: the stiffnesses both arms report off a single prepared mesh.
-        struct Realization {
-            cell: f64,
-            corners: usize,
-            linear: (f64, f64),    // (flexion, extension)
-            quadratic: (f64, f64), // (flexion, extension)
-        }
-        impl Realization {
-            fn ratio(&self) -> (f64, f64) {
-                (
-                    self.quadratic.0 / self.linear.0,
-                    self.quadratic.1 / self.linear.1,
-                )
-            }
-        }
-
         let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
         let base = DiscParams::default();
         let (flex, ext) = (0.5_f64.to_radians(), -0.5_f64.to_radians());
 
         let mut rows: Vec<Realization> = Vec::new();
-        for cell in [0.003, 0.003_05] {
+        for cell in [0.002_90, 0.002_95, 0.003_00, 0.003_05, 0.003_10] {
             let params = DiscParams { cell, ..base };
             let p = prepare_disc(disc_mesh.clone(), &params, None)
                 .unwrap_or_else(|e| panic!("prepare raw disc at cell {cell}: {e:?}"));
             let corners = referenced_vertices(&p.tet).len();
+            let p_bands = (p.inferior.len(), p.superior.len());
 
             // ONE mesh, both arms — rung 1's attribution argument, made structural.
             let mut tet4 = bond_prepared_tet4(p.duplicate().expect("duplicate"), &params);
@@ -3061,39 +3081,72 @@ mod tests {
             rows.push(Realization {
                 cell,
                 corners,
+                bands: (p_bands.0, p_bands.1),
                 linear: (lin_flex.0 / flex, lin_ext.0 / ext),
                 quadratic: (quad_flex.0 / flex, quad_ext.0 / ext),
             });
         }
 
-        let (a, b) = (&rows[0], &rows[1]);
-        assert_ne!(
-            a.corners, b.corners,
-            "both cells produced the SAME referenced-corner count — the mesh was not re-realized, \
-             so this measures nothing"
+        let distinct: std::collections::BTreeSet<usize> = rows.iter().map(|r| r.corners).collect();
+        assert!(
+            distinct.len() > 1,
+            "every cell produced the same referenced-corner count — the mesh was never \
+             re-realized, so this measures nothing"
         );
 
-        let rel = |x: f64, y: f64| (y - x).abs() / x.abs() * 100.0;
         for r in &rows {
             let (rf, re) = r.ratio();
             println!(
-                "cell {:.5} ({:5} corners): Tet4 {:.4}/{:.4}  Tet10 {:.4}/{:.4}  ratio {rf:.4}/{re:.4}",
-                r.cell, r.corners, r.linear.0, r.linear.1, r.quadratic.0, r.quadratic.1,
+                "cell {:.5} | corners {:5} | bands {:4}/{:4} | Tet4 {:.4}/{:.4} | \
+                 Tet10 {:.4}/{:.4} | ratio {rf:.4}/{re:.4}",
+                r.cell,
+                r.corners,
+                r.bands.0,
+                r.bands.1,
+                r.linear.0,
+                r.linear.1,
+                r.quadratic.0,
+                r.quadratic.1,
             );
         }
-        println!(
-            "--- realization delta over a {:.2} % cell change ---\n\
-             k4    flex {:.3} %   ext {:.3} %\n\
-             k10   flex {:.3} %   ext {:.3} %\n\
-             RATIO flex {:.3} %   ext {:.3} %   <-- the confound-immune quantity",
-            rel(a.cell, b.cell),
-            rel(a.linear.0, b.linear.0),
-            rel(a.linear.1, b.linear.1),
-            rel(a.quadratic.0, b.quadratic.0),
-            rel(a.quadratic.1, b.quadratic.1),
-            rel(a.ratio().0, b.ratio().0),
-            rel(a.ratio().1, b.ratio().1),
-        );
+
+        // ★ VALIDATE-AGAINST-A-KNOWN-VALUE, free: cell 0.003 IS the shipped configuration, so
+        // this sweep's middle row must reproduce rung 1's committed raw-disc numbers. If it does
+        // not, the sweep is a different probe and the spread below describes nothing.
+        let shipped = rows
+            .iter()
+            .find(|r| (r.cell - 0.003).abs() < 1e-12)
+            .expect("the sweep must contain the shipped cell");
+        for (got, want, name) in [
+            (shipped.linear.0, -0.2811, "Tet4 flexion"),
+            (shipped.linear.1, -0.2788, "Tet4 extension"),
+            (shipped.quadratic.0, -0.1873, "Tet10 flexion"),
+            (shipped.quadratic.1, -0.1849, "Tet10 extension"),
+        ] {
+            assert!(
+                (got - want).abs() < 5e-4,
+                "cell 0.003 {name} = {got:.4}, but rung 1 committed {want:.4} — this sweep is \
+                 not probing the shipped configuration"
+            );
+        }
+
+        let col = |f: fn(&Realization) -> f64| rows.iter().map(f).collect::<Vec<_>>();
+        for (label, xs) in [
+            ("k4    flex", col(|r| r.linear.0)),
+            ("k4    ext ", col(|r| r.linear.1)),
+            ("k10   flex", col(|r| r.quadratic.0)),
+            ("k10   ext ", col(|r| r.quadratic.1)),
+            ("RATIO flex", col(|r| r.ratio().0)),
+            ("RATIO ext ", col(|r| r.ratio().1)),
+            // Band populations are in the thousands — the widening is exact below 2^53.
+            #[allow(clippy::cast_precision_loss)]
+            ("sup band  ", col(|r| r.bands.1 as f64)),
+            #[allow(clippy::cast_precision_loss)]
+            ("inf band  ", col(|r| r.bands.0 as f64)),
+        ] {
+            let (lo, hi, mean, pp) = spread(&xs);
+            println!("{label}: min {lo:.4}  max {hi:.4}  mean {mean:.4}  peak-to-peak {pp:.2} %");
+        }
     }
 
     /// **Rung 5.0 step 0** (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §3): the disc's SI
