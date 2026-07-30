@@ -33,7 +33,7 @@ higher-order element on the genuinely-curved bone.
 > DONE, and step 1 BLOCKED the h-ladder on the real disc** (§3 confound 1): a **1.67 % cell change
 > moves `k4` by 16.7 %**, because the superior bonded band loses **47 % of its pinned nodes** — the
 > clamp *depth* is stable (0.065 %) but the retained *domain* is not. A follow-up **5-point sweep
-> then measured the real spread at ~100 %** — `k4` 106 %, `k10` 101 %, ratio 15 % over a ±3.4 %
+> then measured the real spread at ~100 %** — `k4` 106 %, `k10` 101 %, ratio 15 % over a ±3.3 %
 > cell window — attributed to **`largest_component`'s retained tets swinging 49.5 %
 > non-monotonically**, with `|k4|` perfectly monotone in retained tets.
 > **⇒⇒ ARC-LEVEL: the disc being simulated is not a stable function of `cell`, so every ABSOLUTE
@@ -937,7 +937,7 @@ realized clamp depth is therefore quantized with a `cell`-dependent quantum.
 > pre-measurement text assumed a ~10 mm disc, giving a ~1.8 mm band *smaller than the coarse
 > cell* and a **±13 %** non-monotone swing in free height. Measured: the disc is **19.32 mm**, the
 > band is **3.48 mm — LARGER than the coarse cell**, and the free height is constant to
-> **0.19 %** (12.392 / 12.404 / 12.381 mm). ⇒ **The clamp-DEPTH confound is real in mechanism and
+> **0.18 %** (12.392 / 12.404 / 12.381 mm). ⇒ **The clamp-DEPTH confound is real in mechanism and
 > negligible in magnitude.** ⚠⚠ **But do NOT read that as "the ladder stands" — I did, and step 1
 > falsified it below.** Free height is one of *two* things the lattice phase controls, and it is
 > the stable one; the pinned *population* is the other. *Why the illustration failed: it assumed
@@ -967,7 +967,7 @@ realized clamp depth is therefore quantized with a `cell`-dependent quantum.
   (§4.8 assert 2) precisely because its cheapness is what let it be settled in 0.4 s.
 - **⇒ `cell` remains a *reported* refinement parameter, not the asserted one.** Commit the realized
   clamp planes and free height per level; assert the free height's constancy against the measured
-  0.19 % rather than assuming it.
+  0.18 % rather than assuming it.
 
 > **★★★ STEP 1 FALSIFIED THE STEP-0 VERDICT. THE LADDER IS BLOCKED ON THE REAL DISC.**
 > Step 0 measured the clamp *depth* and found it stable, and I concluded from that "the confound
@@ -1002,7 +1002,7 @@ realized clamp depth is therefore quantized with a `cell`-dependent quantum.
 > **⚠⚠⚠ THE PAIR UNDERSTATED IT BY >10×. A 5-POINT SWEEP MEASURED THE REAL SPREAD, AND IT IS
 > ~100 %.** The "~9 %" above came from `n = 1`, which is one sample of the jitter, not a
 > distribution — so it was itself the false-precision point this repo's UQ position refuses.
-> Re-measured over `cell ∈ {0.00290, 0.00295, 0.00300, 0.00305, 0.00310}` (±3.4 % window, 222 s):
+> Re-measured over `cell ∈ {0.00290, 0.00295, 0.00300, 0.00305, 0.00310}` (±3.3 % window, 222 s):
 >
 > | `cell` | corners | tets | inf / sup band | free height | Tet4 flex | Tet10 flex | ratio |
 > |---|---|---|---|---|---|---|---|
@@ -1027,7 +1027,7 @@ realized clamp depth is therefore quantized with a `cell`-dependent quantum.
 > monotonically.
 >
 > **⇒⇒ THIS IS AN ARC-LEVEL FINDING, NOT A RUNG-5 ONE, AND IT PREDATES THE TET10 WORK.** The disc
-> being simulated is **not a stable function of `cell`**: a ±3.4 % mesh-parameter window changes
+> being simulated is **not a stable function of `cell`**: a ±3.3 % mesh-parameter window changes
 > `k_disc` by a factor of ~2.6. So **every absolute `k_disc` this arc has published — including the
 > shipped `RUNG7_K_DISC = −0.1882` — is one draw from a very wide distribution.**
 > ⚠ **What this does NOT invalidate:** every *difference* measured at fixed mesh. Rung 2's ~1.8 %
@@ -1120,7 +1120,7 @@ graceful**: `SymbolicLu::try_new(..).expect("symbolic LU factorization of free-b
 **The spike, in order:**
 0. **✅ DONE — the disc's SI extent and the REALIZED band, at all three candidate cells.**
    `rung5_step0_realized_band_across_the_ladder_fom` (committed before it ran; **0.4 s**, meshing
-   only, no solve). **VERDICT AS OF STEP 0: the ladder stands** — free height constant to 0.19 %,
+   only, no solve). **VERDICT AS OF STEP 0: the ladder stands** — free height constant to 0.18 %,
    all three levels live and distinct, so no `band_frac` re-registration and no cell re-choice.
    ⚠⚠ **STEP 1 THEN FALSIFIED THAT VERDICT — though not this measurement.** The clamp *depth* is
    stable exactly as measured here; it was never the moving part. The pinned *population* is
@@ -1204,7 +1204,7 @@ transfer — the behaviour does, and behaviour is what this rung asks about.
 | 3 ✅ | sim-soft + fsu-model | **§4.3** residual ↓ again (authorised RMS 0.881 → 0.767 mm, re-anchored at rung 4) | **§4.4** coverage 67.4 % + per-Gauss-point floor; k_disc shift 0.05 % committed | straight-Tet10 arm untouched (rung-1 FOM re-runs at 0.666 / 0.663) |
 | 4 ✅ | fsu-model, coupling | single `RUNG7_K_DISC` re-anchor, measured (−0.2819 → −0.1882) | **§4.5** full ramp completes, `detJ > 0` on the DEFORMED config; **§4.6** flexion ROM assert; segment shift +0.0082° vs predicted ~0.008° | — |
 | 4b | fsu-model | **§4.3** residual, on the COUPLED disc | lofted disc completes ±6° conformed, both elements | — |
-| 5 ⛔ | fsu-model | **BLOCKED** (§3 confound 1: `k_disc` ~100 % p2p over ±3.4 % `cell`). When unblocked — **§4.8** the bracket `\|k*\| ≤ \|k10(fine)\| ≤ \|k10(coarse)\| ≤ \|k4\|`, ±5 % two-sided pins; headline = a lower bound on the shipped `RUNG7_K_DISC` error | liveness (strictly-monotone DOFs per arm) → rung-1 known-value reproduction → **clamp-plane constancy** → `min_jacobian_ratio` → domain metrics | zero production diff; rung-2 `llvm-cov` oracle on **`coupled.rs` + `coupling/src/bonded.rs`** (NOT `src/lib.rs` — this rung adds tests to it) |
+| 5 ⛔ | fsu-model | **BLOCKED** (§3 confound 1: `k_disc` ~100 % p2p over ±3.3 % `cell`). When unblocked — **§4.8** the bracket `\|k*\| ≤ \|k10(fine)\| ≤ \|k10(coarse)\| ≤ \|k4\|`, ±5 % two-sided pins; headline = a lower bound on the shipped `RUNG7_K_DISC` error | liveness (strictly-monotone DOFs per arm) → rung-1 known-value reproduction → **clamp-plane constancy** → `min_jacobian_ratio` → domain metrics | zero production diff; rung-2 `llvm-cov` oracle on **`coupled.rs` + `coupling/src/bonded.rs`** (NOT `src/lib.rs` — this rung adds tests to it) |
 
 **★ CI reality, stated plainly** (v1's table implied protection that does not exist): `sim-coupling`
 and `cf-fsu-model` run only in `tests-release` shard 1 (`.github/workflows/quality-gate.yml:471`);
@@ -1378,7 +1378,7 @@ converged, corner count preserved, midside count added, and the §4.2 band-count
 ### 4.8 Rung 5's gate — a bracket with two-sided pins, ordered so the cheap checks fire first
 
 > **⛔ THIS GATE IS SPECIFIED BUT NOT EXECUTABLE — RUNG 5 IS BLOCKED (§3 confound 1).** Rung 5.0
-> step 1 measured `k_disc` varying **~100 % peak-to-peak** over a ±3.4 % `cell` window, driven by
+> step 1 measured `k_disc` varying **~100 % peak-to-peak** over a ±3.3 % `cell` window, driven by
 > `largest_component`'s retained domain swinging **49.5 % non-monotonically**. No convergence gate
 > below can mean anything until a meshing-stability rung makes the retained domain converge. Read
 > §4.8 as **the design to execute once unblocked**, not as a live checklist — and re-derive its
@@ -1417,7 +1417,7 @@ is worse than no number; its incidence-walk mutant improved the residual while i
    REGRESSION gate.** Per level, commit the realized clamp planes (max z over the inferior band,
    min z over the superior), the **free height**, and the **node layers through it**. **Assert the
    free height is constant across levels to within 0.5 %** — a two-sided pin around the *measured*
-   0.19 % spread (12.392 / 12.404 / 12.381 mm), not a guessed tolerance. Commit the per-level band
+   0.18 % spread (12.392 / 12.404 / 12.381 mm), not a guessed tolerance. Commit the per-level band
    sizes alongside; note the **sup/inf asymmetry grows 1.61 → 2.84 → 3.55**, so a symmetric
    expectation on the two faces would be wrong.
    ⚠⚠ **SCOPE, corrected by step 1 — this gate covers the clamp DEPTH and nothing else.** Step 0
@@ -1584,7 +1584,7 @@ and segment flexion ROM moved +0.0082° against a predicted ~0.008° — so `ROM
   harness bug, not a result — **do not read the payoff numbers at all**, because the failure mode
   it catches (`δ10 = 0` exactly) otherwise produces the arc's *ideal* headline.
 - **Rung 5's clamp-plane gate fires (free height outside the measured 0.5 % pin):** ⚠ **this is
-  now a REGRESSION, not a discovery** — step 0 measured the spread at 0.19 % on the shipped
+  now a REGRESSION, not a discovery** — step 0 measured the spread at 0.18 % on the shipped
   `band_frac` and disc, so a firing means something changed underneath (a new `band_frac`, a
   different input mesh, a mesher change) and re-opened the lattice-phase confound. Re-register
   `band_frac` per level to hold the realized planes fixed, then re-run — **do not** proceed and
@@ -1826,7 +1826,7 @@ NOT hold as written:**
   magnitude demoted to an illustration, and measuring it became **rung 5.0 step 0**.
   **✅ THE ILLUSTRATION WAS THEN FALSIFIED BY ~70× ON FIRST RUN** — the disc is **19.32 mm**, so
   the band (3.48 mm) is *larger* than the coarse cell rather than smaller, and the free height is
-  constant to **0.19 %**, not ±13 % (§3 confound 1). **★ Note which way the error ran: four
+  constant to **0.18 %**, not ±13 % (§3 confound 1). **★ Note which way the error ran: four
   independent adversarial fronts converged on a confound, and their agreement was about the
   MECHANISM — which held — while the magnitude every one of them carried was inherited from a
   single unmeasured assumption and was wrong by two orders of magnitude.** Consensus among
