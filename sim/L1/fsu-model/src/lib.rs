@@ -2982,6 +2982,286 @@ mod tests {
         }
     }
 
+    /// One mesh realization of the disc: what both element arms report off a single prepared
+    /// mesh. Rung 5.0 step 1's unit of measurement.
+    struct Realization {
+        cell: f64,
+        corners: usize,
+        bands: (usize, usize), // (inferior, superior) pinned corner counts
+        linear: (f64, f64),    // (flexion, extension)
+        quadratic: (f64, f64), // (flexion, extension)
+    }
+
+    impl Realization {
+        fn ratio(&self) -> (f64, f64) {
+            (
+                self.quadratic.0 / self.linear.0,
+                self.quadratic.1 / self.linear.1,
+            )
+        }
+    }
+
+    /// `(min, max, mean, peak-to-peak as % of mean)` — what makes rung 5.0 step 1 a
+    /// distribution rather than a single delta.
+    ///
+    /// The `usize -> f64` here is `xs.len()`, the sample count (single digits), so the widening
+    /// is exact — nowhere near `f64`'s 2^53 mantissa limit. (Band populations are widened at the
+    /// *call sites*, which carry their own justification.)
+    #[allow(clippy::cast_precision_loss)]
+    fn spread(xs: &[f64]) -> (f64, f64, f64, f64) {
+        let (lo, hi) = xs
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &x| {
+                (l.min(x), h.max(x))
+            });
+        let mean = xs.iter().sum::<f64>() / xs.len() as f64;
+        (lo, hi, mean, (hi - lo).abs() / mean.abs() * 100.0)
+    }
+
+    /// **Rung 5.0 step 1** (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §3): the **mesh-realization
+    /// noise floor** — how much `k_disc` moves when the mesh is re-realized at essentially the
+    /// same resolution.
+    ///
+    /// **Nothing in rung 5's convergence table is interpretable without this number.** The BCC
+    /// lattice is anchored to the world origin, so the *only* public knob that re-phases it
+    /// against fixed geometry is `cell` itself. Sweeping `cell` across a narrow **±3.4 %** window
+    /// therefore re-realizes the mesh at nearly-fixed resolution: whatever `k_disc` does across it
+    /// is (a smooth h-effect over that window) **+** (re-meshing jitter), and the spread is an
+    /// **upper bound on the jitter**. Read it against the ladder's intended signals — 33 % and
+    /// 50 % cell steps — and against the ~33 % element effect the rung exists to bound.
+    ///
+    /// **Five points, not two, and that is load-bearing.** The first version of this measurement
+    /// compared a single pair (0.003 vs 0.00305) and reported ~9 %. That is one sample of the
+    /// jitter, not a distribution, and it **understated the real spread by more than 10×** — the
+    /// sweep measures ~100 % peak-to-peak. A single perturbation cannot distinguish a typical
+    /// lattice phase from a pathological one, and quoting it would have been exactly the
+    /// false-precision point this repo's UQ position refuses.
+    ///
+    /// ⚠ **This is an upper bound, not the jitter itself**, and it cannot separate the two terms:
+    /// a short ladder has no way to tell a small smooth slope from realization noise. That is
+    /// exactly why rung 5 delivers a bracket rather than an extrapolated `k*` — an order fitted
+    /// through differences this size would be fitting noise.
+    ///
+    /// Both arms at each cell come from **one** prepared mesh (`PreparedDisc::duplicate`), so the
+    /// per-cell ratio `k10/k4` is attributable to element order by construction — and the ratio's
+    /// spread (~15 %) being far below the absolutes' (~100 %) is the measured confirmation that
+    /// the §3 confounds are largely common-mode in it.
+    ///
+    /// **Asserts** that the sweep genuinely re-realized the mesh (else it measures nothing), that
+    /// every arm conserved, and — the free known-value check — that the `cell = 0.003` row
+    /// reproduces rung 1's committed raw-disc numbers, since 0.003 *is* the shipped configuration.
+    /// The spread itself is a measurement to read, not a threshold asserted here.
+    #[test]
+    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
+    fn rung5_step1_mesh_realization_noise_floor_fom() {
+        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
+        let base = DiscParams::default();
+        let (flex, ext) = (0.5_f64.to_radians(), -0.5_f64.to_radians());
+
+        let mut rows: Vec<Realization> = Vec::new();
+        for cell in [0.002_90, 0.002_95, 0.003_00, 0.003_05, 0.003_10] {
+            let params = DiscParams { cell, ..base };
+            let p = prepare_disc(disc_mesh.clone(), &params, None)
+                .unwrap_or_else(|e| panic!("prepare raw disc at cell {cell}: {e:?}"));
+            let corners = referenced_vertices(&p.tet).len();
+            let p_bands = (p.inferior.len(), p.superior.len());
+
+            // ONE mesh, both arms — rung 1's attribution argument, made structural.
+            let mut tet4 = bond_prepared_tet4(p.duplicate().expect("duplicate"), &params);
+            let mut tet10 = bond_prepared_tet10(p, &params, None, ConformFloors::SHIPPED);
+
+            // `(moment, conservation residual)` per arm per direction.
+            let lin_flex = tet4.flexion_moment(flex);
+            let lin_ext = tet4.flexion_moment(ext);
+            let quad_flex = tet10.flexion_moment(flex);
+            let quad_ext = tet10.flexion_moment(ext);
+            for (probe, name) in [
+                (lin_flex, "Tet4 flexion"),
+                (lin_ext, "Tet4 extension"),
+                (quad_flex, "Tet10 flexion"),
+                (quad_ext, "Tet10 extension"),
+            ] {
+                assert!(
+                    probe.1 < 1e-8,
+                    "cell {cell}: {name} bond must conserve (‖ΣF‖+‖ΣM‖ = {:.2e})",
+                    probe.1
+                );
+            }
+            rows.push(Realization {
+                cell,
+                corners,
+                bands: (p_bands.0, p_bands.1),
+                linear: (lin_flex.0 / flex, lin_ext.0 / ext),
+                quadratic: (quad_flex.0 / flex, quad_ext.0 / ext),
+            });
+        }
+
+        let distinct: std::collections::BTreeSet<usize> = rows.iter().map(|r| r.corners).collect();
+        assert!(
+            distinct.len() > 1,
+            "every cell produced the same referenced-corner count — the mesh was never \
+             re-realized, so this measures nothing"
+        );
+
+        for r in &rows {
+            let (rf, re) = r.ratio();
+            println!(
+                "cell {:.5} | corners {:5} | bands {:4}/{:4} | Tet4 {:.4}/{:.4} | \
+                 Tet10 {:.4}/{:.4} | ratio {rf:.4}/{re:.4}",
+                r.cell,
+                r.corners,
+                r.bands.0,
+                r.bands.1,
+                r.linear.0,
+                r.linear.1,
+                r.quadratic.0,
+                r.quadratic.1,
+            );
+        }
+
+        // ★ VALIDATE-AGAINST-A-KNOWN-VALUE, free: cell 0.003 IS the shipped configuration, so
+        // this sweep's middle row must reproduce rung 1's committed raw-disc numbers. If it does
+        // not, the sweep is a different probe and the spread below describes nothing.
+        let shipped = rows
+            .iter()
+            .find(|r| (r.cell - 0.003).abs() < 1e-12)
+            .expect("the sweep must contain the shipped cell");
+        for (got, want, name) in [
+            (shipped.linear.0, -0.2811, "Tet4 flexion"),
+            (shipped.linear.1, -0.2788, "Tet4 extension"),
+            (shipped.quadratic.0, -0.1873, "Tet10 flexion"),
+            (shipped.quadratic.1, -0.1849, "Tet10 extension"),
+        ] {
+            assert!(
+                (got - want).abs() < 5e-4,
+                "cell 0.003 {name} = {got:.4}, but rung 1 committed {want:.4} — this sweep is \
+                 not probing the shipped configuration"
+            );
+        }
+
+        let col = |f: fn(&Realization) -> f64| rows.iter().map(f).collect::<Vec<_>>();
+        for (label, xs) in [
+            ("k4    flex", col(|r| r.linear.0)),
+            ("k4    ext ", col(|r| r.linear.1)),
+            ("k10   flex", col(|r| r.quadratic.0)),
+            ("k10   ext ", col(|r| r.quadratic.1)),
+            ("RATIO flex", col(|r| r.ratio().0)),
+            ("RATIO ext ", col(|r| r.ratio().1)),
+            // Band populations are in the thousands — the widening is exact below 2^53.
+            #[allow(clippy::cast_precision_loss)]
+            ("sup band  ", col(|r| r.bands.1 as f64)),
+            #[allow(clippy::cast_precision_loss)]
+            ("inf band  ", col(|r| r.bands.0 as f64)),
+        ] {
+            let (lo, hi, mean, pp) = spread(&xs);
+            println!("{label}: min {lo:.4}  max {hi:.4}  mean {mean:.4}  peak-to-peak {pp:.2} %");
+        }
+    }
+
+    /// **Rung 5.0 step 0** (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §3): the disc's SI
+    /// extent and the **realized** bonded band, at every candidate `cell` of the rung-5 ladder.
+    ///
+    /// **This gates the ladder itself, and it is the cheapest measurement in the rung** — one
+    /// mesh per level, no solve. The rung-5 spec's clamp-quantization confound says the pinned
+    /// Dirichlet band is a fixed *physical* slab (`band_frac · SI extent`) while the BCC lattice
+    /// is anchored to the **world origin** (`sdf_bridge/lattice.rs`), so the *realized* clamp
+    /// planes are quantized in steps of `cell/2` and their depth need not vary monotonically —
+    /// or even vary at all — with `cell`. A ladder whose levels alias onto the same layer count
+    /// measures nothing; a ladder whose free height swings is measuring the boundary condition
+    /// rather than the element.
+    ///
+    /// ⚠ **The spec's worked figures (a ~1.8 mm band, 1.5/1.0/1.5 mm clamp depths, a ±13 %
+    /// swing) are an ILLUSTRATION at an assumed ~10 mm SI extent — the disc's real extent is
+    /// committed nowhere, because `band_frac` is a fraction precisely so no absolute ever had
+    /// to be.** This test is the producer. Do not quote the illustration.
+    ///
+    /// Prints the table and asserts only what must hold for the ladder to be *measurable at all*:
+    /// non-empty bands and a positive free height at **every** cell, plus strictly-increasing
+    /// refinement across **the ladder proper only** — the probe cells are exempt, because whether
+    /// retention is monotone *there* is precisely the open question and asserting it would beg it.
+    /// The ladder decision is a head-engineer call on the printed numbers, not an assert here.
+    #[test]
+    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
+    fn rung5_step0_realized_band_across_the_ladder_fom() {
+        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
+        let base = DiscParams::default();
+
+        // The SI extent of the *scaled* surface AABB, derived from the native mesh rather than
+        // by re-running production's recentre: recentring cannot change an extent and the scale
+        // is uniform, so `extent_scaled == extent_native · scale` exactly. That keeps this
+        // measurement off a reimplementation of `prepare_disc_at`'s framing.
+        let (nz_lo, nz_hi) = disc_mesh
+            .vertices
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+                (lo.min(v.z), hi.max(v.z))
+            });
+        let si_extent = (nz_hi - nz_lo) * base.scale;
+        let band = base.band_frac * si_extent;
+        println!(
+            "disc SI extent: {:.4} mm native -> {si_extent:.6} m scaled; \
+             band_frac {:.2} => band {:.6} m ({:.4} mm)",
+            nz_hi - nz_lo,
+            base.band_frac,
+            band,
+            band * 1e3,
+        );
+
+        // Two groups. The LADDER proper is {0.003, 0.002, 0.0015} and must strictly refine. The
+        // PROBE cells are step 1's re-realization window: they are deliberately NOT asserted
+        // monotone, because whether retention is monotone there is exactly what is in question.
+        let ladder = [0.003, 0.002, 0.0015];
+        let mut prev_corners = 0usize;
+        for cell in [
+            0.002_90, 0.002_95, 0.003_05, 0.003_10, // step-1 probe window
+            0.003, 0.002, 0.0015, // the ladder
+        ] {
+            let params = DiscParams { cell, ..base };
+            let p = prepare_disc(disc_mesh.clone(), &params, None)
+                .unwrap_or_else(|e| panic!("prepare raw disc at cell {cell}: {e:?}"));
+            let pos = p.tet.positions();
+            let z = |v: &VertexId| pos[*v as usize].z;
+
+            // The REALIZED clamp planes: the deepest pinned layer on each face. These, not the
+            // nominal `band`, are the boundary condition the solve actually sees.
+            let inf_max = p.inferior.iter().map(z).fold(f64::NEG_INFINITY, f64::max);
+            let sup_min = p.superior.iter().map(z).fold(f64::INFINITY, f64::min);
+            let free = sup_min - inf_max;
+            let referenced = referenced_vertices(&p.tet).len();
+            let tets = p.tet.n_tets();
+
+            assert!(
+                !p.inferior.is_empty() && !p.superior.is_empty(),
+                "cell {cell}: an endplate band captured no vertices"
+            );
+            assert!(
+                free > 0.0,
+                "cell {cell}: bands meet or cross (free height {free:.6} m)"
+            );
+            if ladder.contains(&cell) {
+                assert!(
+                    referenced > prev_corners,
+                    "cell {cell}: refinement must strictly increase referenced corners \
+                     ({referenced} vs {prev_corners}) — otherwise the ladder has an inert level"
+                );
+                prev_corners = referenced;
+            }
+
+            println!(
+                "cell {cell:.5} m | corners {referenced:5} tets {tets:6} (verts {:5}) | \
+                 band {:.3} cell/2 units | inf {:4} nodes, clamp z {inf_max:+.6} | \
+                 sup {:4} nodes, clamp z {sup_min:+.6} | free {:.6} m = {:.3} cell/2 = {:.4} mm",
+                p.tet.n_vertices(),
+                band / (cell / 2.0),
+                p.inferior.len(),
+                p.superior.len(),
+                free,
+                free / (cell / 2.0),
+                free * 1e3,
+            );
+        }
+    }
+
     /// Distance from a native-mm point to the **real bone surface**: the nearer of the two
     /// vertebra oracles' `|eval|`.
     ///
