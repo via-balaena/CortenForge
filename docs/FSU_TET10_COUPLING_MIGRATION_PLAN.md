@@ -23,11 +23,14 @@ higher-order element on the genuinely-curved bone.
 > rounds: a 5-front diamond-review (v1, §8.1) and a 4-front stress-test that reshaped the
 > ladder (v2, §8.2). **Rungs 0 (#704), 1 (#705), 2 (#706), 3 (#707) and 4 are built — see each rung's
 > BUILT note in §3, which records what the build changed about the plan. Rungs 4b and 5 are
-> independent — 4b seats the coupled disc, 5 refines it. **Next action: rung 5**, specced against
-> the shipped code on 2026-07-30 (§3's rung-5 entry, which amends three things the original
-> paragraph said, plus §4.8's gate). It goes first because `RUNG7_K_DISC = −0.1882` is *shipped
-> and load-bearing* while §0.1 bound 3 still admits it is not proven converged — rung 5 hardens
-> the layer underneath 4b, and it is the arc's only remaining falsifier (§5.5).**
+> independent — 4b seats the coupled disc, 5 bounds its error. **Next action: rung 5**, specced
+> against the shipped code on 2026-07-30 and then **reshaped by a 4-front adversarial stress-test**
+> (§3's rung-5 entry, §4.8's gate, §8.3's record). It goes first because `RUNG7_K_DISC = −0.1882`
+> is *shipped and load-bearing* while §0.1 bound 3 still admits it is not proven converged — rung 5
+> hardens the layer underneath 4b. ⚠ **The stress-test changed the rung's QUESTION:** "is Tet10
+> more accurate here" is a **theorem** (§3), so rung 5 measures *how much error is left* and
+> delivers a **bracket**, not an h-refinement convergence claim. **Start at rung 5.0** — the
+> noise-floor and memory spike — not at the ladder.**
 
 > **★★ v2 CHANGED THE LADDER, not just the wording.** The stress-test found that v1's
 > rung 1 gate could not fail, v1's ROM sanity assert could not trip *and* would fail on
@@ -66,7 +69,7 @@ through arms differing only in the element. **Three arms, one shared mesh (7849 
   the number; do not quote 0.570 as the element effect.**
 - Converged genuinely (full-face flex residual 2.8e-13 @ 10 Newton iters; ext 4.3e-11;
   flex/ext symmetry 1.013 = a real restoring equilibrium). The indefinite-tangent LU
-  fallback fires every iteration (benign, [[simsoft-nonpd-lu-fallback]]) but Newton reaches
+  fallback fires every iteration (benign, [[project-simsoft-nonpd-lu-fallback]]) but Newton reaches
   tol; pinning the face midsides *improved* conditioning vs corners-only.
 
 **★ 0.665 is NOT re-runnable today** — the spike was reverted, so by this repo's own rule
@@ -155,10 +158,16 @@ but v1 **missed a hard assert elsewhere**:
   `6.13 ± 0.15°` (`:118`) and the extension ROM literature band (`:246-251`).
 - A Tet10 disc gives `k ≈ -0.186`; `|−0.186 − (−0.2819)| = 0.096` — **that assert fails by
   ~4.8×.** *(Magnitude is indicative, not exact: −0.186 is the spike's ±0.5° mean on the
-  **raw** mesh, whereas `K_DISC_PROBE` is 0.86° flexion on what will by rung 4 be a curved,
-  conformed disc. The direction and the order of magnitude are solid; the re-anchor value
-  comes from rung 4's own measurement.)* **✅ MEASURED at rung 4: −0.1882 (straight Tet10, the
-  shipped arm), i.e. 4.69 × the tolerance — the indicative figure was right.**
+  **raw** mesh, whereas `K_DISC_PROBE` is a 0.86° flexion probe. The direction and the order of
+  magnitude are solid; the re-anchor value comes from rung 4's own measurement.)* **✅ MEASURED at
+  rung 4: −0.1882 (straight Tet10, the shipped arm), i.e. 4.69 × the tolerance — the indicative
+  figure was right.** ⚠ **STALE PREMISE CORRECTED (rung-5 spec, 2026-07-30):** this parenthetical
+  used to say the probe ran on "what will by rung 4 be a **curved, conformed** disc". It does not
+  — rung 4 SPLIT, and `CoupledFsu::build` passes `None` (`fsu-model/src/coupled.rs:299`), so the
+  shipped arm is **raw and straight**; conforming it is rung 4b. The half-fix was visible in place:
+  the ✅ MEASURED sentence was appended while the parenthetical's premise was left standing
+  ([[feedback_meta_audit_introduced_claims]]). This matters for rung 5, whose amendment 1 rests on
+  `RUNG7_K_DISC` tracing to the **raw** disc.
 
 The reframe itself **survives**: `fsu_coupled_contact.rs:52` is *also* `#[ignore]`d and
 env-gated on the BodyParts3D triad, so it is not CI-enforced either. What changes is the
@@ -326,7 +335,7 @@ only when a co-design consumer needs a Tet10 disc pose gradient. Out of ROM-vali
 ### 2.4 Newton budget + LU fallback are expected
 
 The Tet10 bonded solve is indefinite-tangent-heavy (LU fallback most iterations —
-[[simsoft-nonpd-lu-fallback]], benign, converging at the shipped resolution). Scale
+[[project-simsoft-nonpd-lu-fallback]], benign, converging at the shipped resolution). Scale
 `MAX_NEWTON_ITER` for N>4 as an associated const (§2.1); document on it. The plan does not
 chase PD-ness.
 
@@ -501,8 +510,11 @@ no `CoupledFsu`.
 >   only to ±0.5°, is measured and is not narrower than the linear arm's.
 > - **Per-element conform delta.** `k_disc` (N·m/rad), flex / ext: Tet4 raw −0.2811 / −0.2788 →
 >   conformed −0.2760 / −0.2738; Tet10 raw −0.1873 / −0.1849 → conformed −0.1844 / −0.1820.
->   **The two axes are nearly orthogonal** — conform ratio 0.982 / 0.984 (same to within 0.2 % on
->   both elements), element ratio 0.666/0.663 raw vs 0.668/0.665 conformed.
+>   **The two axes are nearly orthogonal** — conform ratio **0.982 / 0.982 (Tet4) and 0.985 /
+>   0.985 (Tet10)** (same to within 0.2 % on both elements), element ratio 0.666/0.663 raw vs
+>   0.668/0.665 conformed. ⚠ This line read "0.982 / 0.984" until the rung-5 spec's stress-test
+>   checked it against the committed asserts (`tests/conform_delta_by_element.rs:166-170`): **0.984
+>   appears nowhere in the crate** — it was a stale pre-rung-3 extension figure (0.1820/0.1849).
 > - **★ CLAIM CORRECTED: the conform costs ~1.8 % of `k_disc`, not ~4 %.** #701's FOM printed its
 >   arms at two decimals (−0.28 → −0.27) and the ~4 % figure was read off that rounding; at four
 >   decimals it is −0.2811 → −0.2760. Corrected at both twins (`lib.rs` FOM comment and
@@ -826,95 +838,207 @@ band selection on a disc whose caps coincide with the bone; or a deformation-awa
 earlier draft quoted −0.1855 for the conformed arm, which no gate in the tree produces. 4b
 measures it.
 
-**Rung 5 — h-refinement: does `k_disc` converge?** §0.1 bound 3 admits −0.186 is not proven
-converged, which is precisely why rung 1 gates a bracket rather than a point.
-**This is what promotes the claim from "we measured a delta" to "Tet10 is the more accurate
-element"** — it is the rung that earns the arc's justification, not a §6 deferral. (v1's rung 3
-was a phantom: its gate column duplicated rung 2b's with no independent falsifier. It is
-replaced by this.) Zero production diff, like rung 2 — this rung is measurement only.
+**Rung 5 — how much error is left in the shipped `k_disc`?** §0.1 bound 3 admits −0.186 is not
+proven converged, which is why rung 1 gates a bracket rather than a point. Zero production diff,
+like rung 2 — this rung is measurement only.
 
-Spec below written 2026-07-30 against the shipped code, and it **amends three things this
-paragraph originally said**. Each amendment is a head-engineer call with its reason; §4.8 holds
-the gate detail.
+> **★★★ SPECCED 2026-07-30, then RESHAPED by a 4-front adversarial stress-test (§8.3).** The first
+> draft asked "is Tet10 more accurate?" and answered it with an h-refinement ladder plus a
+> Richardson extrapolation. The stress-test falsified enough of that draft to change the rung's
+> *question*, not just its gates. Every correction below was earned against the shipped code; the
+> superseded draft's errors are recorded in §8.3 so they are not re-introduced.
 
-**★ AMENDMENT 1 — the RAW disc, not the curved one.** The original text said "one refinement arm
-on the curved Tet10 disc". Run rung 5 on `endplates = None`:
-- The conform's quality-floor back-off is **h-dependent** — a fixed physical move is a larger
-  fraction of a smaller cell, so the back-off engages differently at each resolution and the
-  geometry *actually achieved* differs per level. That entangles element convergence with conform
-  behaviour, in a rung whose whole job is to isolate the element.
-- The number under test is rung 1's raw-disc **0.666 / 0.663**, which is what `RUNG7_K_DISC`
-  traces to. Falsify *that*.
-- It is not a fidelity retreat: rung 2 measured the conform axis at ratio 0.982 / 0.984 and rung 3
-  measured curving at **0.05 %**, against the element's 33 %. Convergence of the 33 % effect does
-  not need the 2 % riding on top.
+**★★★ THE REFRAME — "Tet10 is more accurate here" is a THEOREM, not a measurement.** Verified in
+the code, not assumed:
+- `nodal_reaction_forces` returns exactly `−f_int` — the consistent variational flux, not a
+  recovered-stress surface integral (`sim/L0/soft/src/solver/backward_euler/assembly.rs:287-294`).
+- `flexion_moment` sums `target × react` over the upper face with the pose imposed as an exact
+  rigid rotation (`fsu-model/src/lib.rs:1104-1129`), and the box origin cancels.
 
-**★ AMENDMENT 2 — asymmetric resolution ladder (3 Tet4 points, 2 Tet10).** Tet10 is the expensive
-arm and its job is *to not move*; Tet4 is cheap and its job is *to move toward Tet10*. Two points
-show insensitivity; a trend needs three. `cell` ∈ **{0.003, 0.002, 0.0015}** (h ratios 1 : 0.667 :
-0.5; cell counts 1× / 3.375× / 8×), Tet10 on the first two only. Three Tet4 points also buy an
-*observed* order of convergence and a Richardson extrapolation to `k*` — §4.8.
+So the measured moment **is** `dU_h/dθ` to Newton tolerance, and `k_disc = U_h''(0)`. Two
+consequences follow with no experiment:
+1. Conforming displacement FEM under affine Dirichlet driving over-estimates stiffness:
+   **`|k_h| ≥ |k*|`, always.** The old draft's "prediction 1" asserted the *sign* of this — it was
+   never falsifiable content.
+2. On the **raw** disc the Tet10 is straight-sided on the *same partition*, so `P1 ⊂ P2`; a rigid
+   rotation is affine, so the Dirichlet data is represented exactly in both spaces (**this is what
+   the full-face midside tie buys**). Therefore **`|k10| ≤ |k4|` on every shared mesh, and Tet10
+   is strictly closer to `k*`.** Rung 1's `k10.abs() < k4.abs()` assert cannot fail for a correct
+   build.
 
-**★ AMENDMENT 3 — four falsifiable predictions, not one.** "Tet4 moves toward Tet10" is one
-consequence of the locking story; the same runs test all of it, and pre-registering all four
-costs nothing while a single prediction can pass for the wrong reason. As `h → 0` both elements
-converge to the *same* continuum `k*`, so:
+⚠ Two stated premises, both cheap to keep honest rather than assume: the arms differ in
+**quadrature** as well as element order (`Element<4,1>` vs `Element<10,4>`, and neo-Hookean is not
+polynomial), so the nesting is approximate and *a slice of the 33.5 % is integration, not element
+order, with nothing currently separating them*; and the bound needs the solver on an energy
+**minimizer**, not a saddle. See §6 for the one-line check that would settle the second.
 
-1. `|k4(h)|` **decreases monotonically** (Tet4 is over-stiff; refinement relaxes it).
-2. `|k10(h)|` moves **much less** than `|k4(h)|` over the same refinement. **★ This is the one
-   that earns the accuracy claim** — near-h-insensitivity *is* the definition of a resolved
-   solution. Prediction 1 alone would also hold if both elements were equally unconverged.
-3. The ratio `k10/k4` **rises toward 1.0** with refinement (it must, if the gap is a Tet4
-   discretization artifact rather than a difference in the physics being solved).
-4. Tet4's finest value lands **on the Tet10 side** of its own coarse value — the original text's
-   prediction, retained.
+**⇒ THE RUNG'S ACTUAL DELIVERABLE — a bracket, not an extrapolation:**
 
-⚠ Pre-register all four **before the first run**, per rung 1's bracket discipline
-([[feedback_build_measure_dont_assert_proxy]]). Prediction 3 is the one most likely to come out
-ambiguous at these resolutions: if the ratio is still ≈ 0.665 at every level, either the meshes
-are all far from asymptotic or the Tet10 arm is solving a different problem — that is a
-**stop-and-debug**, not a table to publish.
+```
+|k*|  ≤  |k10(fine)|  ≤  |k10(coarse)|  ≤  |k4|
+```
 
-**⚠ THE CONFOUND THIS RUNG MUST MEASURE, NOT ASSUME — `largest_component` moves the domain.**
-`prepare_disc_at` runs `SdfMeshedTetMesh::from_sdf` then `.largest_component()` to drop the
-islands the BCC stuffer fragments off the disc's sub-cell-thin tapering rim (`lib.rs:617-621`).
-**A finer cell resolves that taper better, so it fragments less and `largest_component` retains
-more disc.** Refinement therefore changes the *domain*, not only the discretization, and a naive
-reading would credit a geometric change to the element. Two consequences:
-- **Commit domain metrics at every level** — referenced-corner count, retained tet volume, and
-  retained volume as a fraction of the input STL's volume. Flat across levels ⇒ the domain is
-  stable and the `k_disc` trend is discretization only. Materially moving ⇒ say so, and
-  **Richardson is void** (it assumes one fixed domain).
-- **★ The RATIO survives the confound; the absolutes do not.** Both arms at a given `cell` share
-  one mesh object via `PreparedDisc::duplicate`, so rung 1's attribution argument holds
-  *per level* — `k10/k4` at fixed `h` is clean whatever the domain did. Prediction 3 is thus the
-  most robust of the four, and prediction 1 the most exposed.
-- Report **referenced corners**, never total nodes, as the DOF metric: `pad` is geometric
-  (1.5 mm, correctly held fixed — the domain must not move), so the padded-lattice orphan count
-  drifts with `cell` for reasons that carry no physics. §0.1's "7849 nodes" is 2257 referenced
-  corners plus orphans.
+and the gap **`|k10(coarse)| − |k10(fine)|` is a committed LOWER BOUND on the error in the shipped
+`RUNG7_K_DISC = −0.1882`.** That statement is monotone-free, noise-tolerant, needs no fixed
+refinement ratio, and survives every confound below — which is exactly why it replaces the
+extrapolated `k*`. **Richardson is DROPPED**, not deferred: see §8.3 finding 1 for why the
+superseded ladder could not compute it anyway, and §6 for the honest route to a two-sided bracket.
 
-**Two solver facts checked in the code, so the build does not re-derive them:**
-- **The Newton tolerance is an ABSOLUTE, unscaled ℓ2 norm over free DOFs** (`newton.rs:220-227`,
-  `tol = 1e-10`, no `/√N`). Refining adds terms to the sum, so a finer mesh must reach a
-  *stricter per-DOF* accuracy to pass the same number. **That direction is safe** — the failure
-  mode is refusing to converge, not silently converging loose. Still report final residual **and
-  iteration count per level**, so convergence quality is comparable rather than assumed.
-- **The iteration cap hard-fails.** `MAX_NEWTON_ITER = if N == 4 { 50 } else { 400 }`
-  (`bonded.rs:251`) panics via `SolverFailure::NewtonIterCap` rather than truncating, so a
-  refined arm cannot silently return an under-converged `k_disc`. The refined Tet10 arm exceeding
-  400 is a live possibility and a **loud** one.
+**★ AMENDMENT (retained, and better-founded than first argued) — the RAW disc, `endplates = None`.**
+The original spec said "the curved Tet10 disc". Three reasons, strongest first:
+- **Straight-sided is what makes `P1 ⊂ P2` hold**, and the nesting is the whole theorem above.
+- The 4-point Stroud rule is **degree-of-precision 2 — exact for the straight-sided linear-elastic
+  integrand and explicitly not exact for a curved isoparametric Tet10** (`element/tet10.rs:41-53`),
+  so a curved arm carries an extra, h-dependent variational crime.
+- The conform's quality-floor back-off is **h-dependent** — `with_projected_nodes` backs off against
+  the scale-free ratio `detJ ≥ floor·detJ_rest` while the target is a fixed physical point on the
+  bone, so a fixed move degrades a smaller tet more and each level achieves *different geometry*.
+- The number under test is rung 1's raw `0.666 / 0.663`, which is what `RUNG7_K_DISC` traces to
+  (`coupled.rs:299` passes `None`; the coupled probe's own ratio is 0.668 at 0.86°).
 
-**▶ RUNG 5.0 — SIZE IT BEFORE COMMITTING TO THE LADDER (a spike, not a deliverable).** §5.1's
-cost model was already wrong in both factors once and only survived because they cancelled; do
-not repeat the estimate. Build **one Tet10 arm at `cell = 0.002` and run one ±0.5° solve**, and
-record wall-clock, peak RSS, Newton iterations and final residual. That single arm is the rung's
-entire risk: ~3.4× the cells is ~11× a sparse 3D factorization, and the indefinite-tangent LU
-fallback fires *every* iteration ([[simsoft-nonpd-lu-fallback]]). If it does not fit, reshape the
-ladder (e.g. 0.0025 for the Tet10 arm) **before** writing the gate — do not discover it inside a
-20-minute FOM. Only after that measurement lands does the arm count get fixed.
+⚠ **The trade this makes, named:** the conclusion transfers from the raw disc to the shipped one on
+the assumption that conforming changes the *level* but not the *rate* — and the conform acts
+precisely at the singular clamp ring where the rate is set. Rungs 2/3's 0.982/0.985 and 0.05 % are
+**level** measurements at one `h`; they do not license a rate transfer. State this in the result.
 
-**Gate:** committed convergence table + the four pre-registered predictions — §4.8.
+### ⚠⚠ The confounds — one named in the first draft, and it was NOT the big one
+
+**★★★ (1) THE CLAMP PLANE IS LATTICE-QUANTIZED — found independently by all four stress-test
+fronts, and it rides directly on every absolute-trend claim.** `BccLattice::new` anchors node
+planes to **global multiples of `cell`**, not to the disc bbox (`sim/L0/soft/src/sdf_bridge/lattice.rs:257-262,296-300`),
+so the geometry↔lattice phase changes discontinuously with `cell`. The bonded band is a fixed
+physical slab — `band = band_frac·(hi_z − lo_z)`, `band_frac = 0.18` off the *surface* AABB
+(`lib.rs:587,624-625`) — which for a ~10 mm disc is **~1.8 mm, SMALLER than the coarse cell.** The
+pinned set is whichever `cell/2`-spaced node layers land inside it, so the realized clamp depth
+goes ≈ 1.5 / 1.0 / 1.5 mm across a 3.0 / 2.0 / 1.5 mm ladder — a **non-monotone ±13 % swing in
+free bending length with ZERO element content**, comparable to the whole predicted signal.
+- Already-committed corroboration: the band corner counts are **228 vs 367** for two nominally
+  similar slabs — a 61 % asymmetry consistent with exactly this phase sensitivity.
+- **A domain gate cannot see it**: retained volume, corner count and retained fraction are all
+  stable while the *boundary condition* moves. This is the arc's own lesson again — a gate on the
+  property you changed misses the one you broke ([[feedback_gate_on_the_property_misses_conditioning]]).
+- **⇒ `cell` is NOT the refinement parameter.** Commit the realized clamp planes per level (max z
+  over the inferior band, min z over the superior) and treat **node layers through the free
+  height** as the refinement measure. §4.8 gates it.
+
+**(2) `largest_component` moves the domain — direction UNKNOWN, and pre-registering one is
+harmful.** A finer cell may resolve the disc's sub-cell-thin tapering rim better and retain more —
+but selection is by **tet COUNT, not volume** (`sdf_meshed_tet_mesh.rs:282-291`), so a count-winner
+need not be a volume-winner in a sliver-rich refined mesh; and connectivity is **percolation-like**,
+so a coarse cell bridging a taper that a finer lattice severs makes retention **non-monotone**.
+⇒ Pre-register as **"direction unknown; measure and report"**. Stating a direction would license
+reading an unexpected result as a harness bug.
+- **★ Volume is the WRONG metric for it.** Bending stiffness weights material by `r²` about the ML
+  axis while volume does not; the dropped rim islands sit at **maximum radius**, where volume
+  sensitivity is lowest and stiffness sensitivity is highest. Report **`∫r² dV` about the ML axis**
+  and the retained SI extent, not volume alone.
+
+**(3) `stuffing::warp_lattice` displaces near-boundary lattice vertices before stuffing**
+(`sdf_meshed_tet_mesh.rs:150-152`), and boundary nodes are placed by **linear secant interpolation
+of φ, never projected** (`stuffing.rs:290-296,366-373`) — a third h-dependent effect on the achieved
+geometry. Named, not gated; it is subsumed by measuring the noise floor.
+
+**★ WHAT THE RATIO BUYS, PRECISELY.** Both arms at one `cell` come from one prepared mesh, and
+`full_face_band` widens the corner band **topologically** (`lib.rs:917-938`), so *every* confound
+above is common-mode in `k10/k4` at fixed `h`. The per-level ratio is clean; the absolutes are not.
+That is why the deliverable is a per-level bracket plus per-level ratios, and why no
+cross-level absolute trend is asserted.
+
+**★★ CONFOUNDS RULED OUT with code evidence — do not re-litigate** (stress-test front 3):
+- **Rigid box poses** (`lib.rs:672-678`) drift with `h`, but the Dirichlet data is `x ↦ Rx` and the
+  moment is taken about the origin, so the box origin cancels exactly; contact is `NullContact`.
+- **`MaterialField::uniform`** is a `ConstantField` sampled per element and position-ignoring —
+  bit-identical for every tet regardless of size (`material/material_field.rs:153-158,455-470`).
+- **Orphan DOFs** are auto-pinned into `effective_pinned` and condensed out before assembly
+  (`construct.rs:356-360,394-399,572-581`); no zero rows reach the tangent. (Reporting *referenced*
+  corners is still right, for a better reason than the first draft gave.)
+- **Warm-start inertia** is negligible: `M/Δt²` at `static_dt = 1e3` is `1e-6·M`.
+
+**★ Solver facts, corrected.** The Newton tolerance is an absolute unscaled ℓ2 over free DOFs
+(`newton.rs:220-227`, `tol = 1e-10`, no `/√N`) — but the first draft's inference from that was
+**wrong in the direction that matters**: per-node force ~ `h²` and DOF count ~ `h⁻³`, so at fixed
+*relative* accuracy `‖r‖₂ ~ h^{1/2}`, i.e. a fixed absolute tolerance is *relatively looser* on a
+finer mesh (≈ √2 over the whole ladder — practically irrelevant either way). **Drop the
+term-counting argument; it is not load-bearing.** What makes under-convergence impossible is that
+the iteration cap **hard-fails**: `MAX_NEWTON_ITER = if N == 4 {50} else {400}` (`bonded.rs:251`)
+→ `replay_step` → `solve_impl` → `NewtonIterCap` → `panic!` (`newton.rs:267-285`), traced
+end-to-end. Three sibling surfaces (`ArmijoStall`, `DoublyFailedFactor`, `ValidityViolation`) panic
+on the same path ⇒ **four loud failure modes, none silent.** ⚠ Also: the solve is warm-started
+(`bonded.rs:367`), so iteration counts are path-dependent and comparable across levels only if the
+drive path is identical.
+
+### ▶ RUNG 5.0 — the de-risking spike, aimed at MEMORY not wall-clock
+
+**★ Cost is not the risk; the first draft aimed the spike wrong.** Quoting the *measured* anchors
+rather than re-deriving from `O(N²)` (§5.1's own instruction, which the first draft disregarded):
+rung 4 measured 6.14× DOF → 18.1× cost, an empirical exponent of **1.60**, so 3.375× cells is
+**~7×**, not the ~11× first written. Working from measured per-solve times (~0.20 s warm Tet4,
+~3.6 s warm Tet10, ~3.3 s meshing at `cell = 0.003`), the full ladder is **~4–10 min in release —
+smaller than the ±6° sweep this crate already runs.** The ladder was never cost-gated.
+
+**The real ceiling is memory.** Tet10 at `cell = 0.002` is ~140k DOF; the solver holds **two**
+symbolic factorizations for its lifetime — `SymbolicLlt` on the lower triangle *and* `SymbolicLu`
+on the full reflected pattern (`construct.rs:160-191`) — and rebuilds the numeric LU every
+iteration, boxed because it is "substantially larger than `Llt`" (`factor.rs:56-60`). Fill ~`N^{4/3}`
+puts it plausibly at **3–8 GB before the simultaneously-live Tet4 arm.** ⚠ **OOM here is not
+graceful**: `SymbolicLu::try_new(..).expect("symbolic LU factorization of free-block pattern failed")`
+(`construct.rs:188-189`) panics with a message that reads as a pattern bug.
+
+**The spike, in order:**
+1. **The mesh-realization NOISE FLOOR, first — nothing in the table is interpretable without it.**
+   Run the coarse level twice, at `cell = 0.003` and `cell = 0.00305`: a 1.7 % resolution change
+   against a 33 % signal. Anything beyond `1.7 % × dk/dh` is pure realization noise — and because
+   the lattice is origin-anchored, a 1.7 % cell change can flip a node layer in or out of the band,
+   so this doubles as the direct probe of confound 1. **Pre-register the floor before the ladder
+   is fixed.** Context: rung 1 records the bonded moment reproducing to `< 1e-3` relative, and
+   §4.1 warns that past ~23.5k DOF faer switches to supernodal kernels where a pivot flip can move
+   the answer — **every rung-5 level except Tet4-at-0.003 is past that threshold.**
+2. **Tet10 at `cell = 0.002`: one build, one ±0.5° solve.** Record peak RSS, wall-clock, iterations.
+   **State a budget with a threshold action** — if peak RSS exceeds it, drop the Tet10 fine arm to
+   `cell = 0.0025` rather than reshaping mid-FOM.
+3. **Tet4 at `cell = 0.0015`: one build, one solve.** The *most refined mesh in the study*, against
+   a **50**-iteration cap. Nearly free, and the first draft omitted it. (Expected to be comfortable:
+   ~54k DOF, SPD tangent ⇒ `Llt` succeeds and the LU fallback never fires.)
+4. **Does a refined arm survive the single ±0.5° jump?** Rung 2 measured that the *raw* Tet4 disc
+   does and the *conformed* one does not — at `cell = 0.003` only. If a refined arm needs stepping,
+   every solve becomes 5–10 and the cost model moves; rung 2 also records that stepping does not
+   move the measurement (its raw column reproduces rung 1 to four decimals).
+
+⚠ Nothing above says to hold every level live at once. **Drop each level's arms before building
+the next**, or the ladder's peak RSS is the sum rather than the max.
+
+### ★ FILE PLACEMENT — decided, with the cost stated (user call, 2026-07-30)
+
+The first draft put the FOM in `tests/` claiming "zero private items, verified against the current
+signatures". **That was verified only for the payoff number.** The validity metrics it also
+mandated are unreachable there: `BondedDisc.sandwich` is private with no accessor (`lib.rs:318`),
+`deformed_nodes_native()` returns *total* nodes including orphans (the metric this rung forbids),
+no tet connectivity is exposed, and `PreparedDisc`/`duplicate` are `#[cfg(test)]`-private
+(`lib.rs:483,528`) — so the "one shared mesh object" argument does not even apply from `tests/`.
+
+**⇒ The licensed FOM lives in `src/lib.rs`'s test module**, where the domain metrics, the band
+sizes and `PreparedDisc::duplicate` are all reachable. **Coverage cost accepted deliberately**, on
+the same terms as rung 4's: `cf-fsu-model` already grades **C (58.2 %)** by a recorded user call,
+an `#[ignore]`d licence-gated FOM charges `llvm-cov --lib` while executing in no coverage run, and
+CI runs `--skip-coverage` so it gates no merge. Measure the new letter against the 58.2 % baseline
+and record it — do not delete gates to protect a letter.
+
+**⇒ Newton residual + iteration count are DROPPED as a gate.** They are unreachable from *either*
+location: `BondedSandwich::resolve` discards `NewtonStep` (`bonded.rs:375,388`) and `BondStep`
+carries only wrenches (`bonded.rs:88-99`), so reporting them needs new public API in **sim-coupling**
+— a keystone diff to serve one FOM, which is surface nobody asked for
+([[feedback_consumer_gated_completeness]]). The four hard-failing surfaces make under-convergence
+loud without it, and `min_jacobian_ratio()` + `flexion_moment`'s conservation residual are both
+free.
+
+**⇒ A license-free synthetic arm carries the CONVERGENCE ASSERTION** — the first draft had this
+backwards. `synthetic_disc()` is a 24×20×6 mm box: **no tapering rim, so no `largest_component`
+drift and a stable domain**, it retains the same clamp-ring singularity class, it is cheap enough
+to refine much further, and it is the only part of this rung **CI can run**. Let the box assert
+convergence *behaviour*; let the real disc commit per-level numbers. The magnitude does not
+transfer — the behaviour does, and behaviour is what this rung asks about.
+
+**Gate:** §4.8.
 
 ---
 
@@ -928,7 +1052,7 @@ ladder (e.g. 0.0025 for the Tet10 arm) **before** writing the gate — do not di
 | 3 ✅ | sim-soft + fsu-model | **§4.3** residual ↓ again (authorised RMS 0.881 → 0.767 mm, re-anchored at rung 4) | **§4.4** coverage 67.4 % + per-Gauss-point floor; k_disc shift 0.05 % committed | straight-Tet10 arm untouched (rung-1 FOM re-runs at 0.666 / 0.663) |
 | 4 ✅ | fsu-model, coupling | single `RUNG7_K_DISC` re-anchor, measured (−0.2819 → −0.1882) | **§4.5** full ramp completes, `detJ > 0` on the DEFORMED config; **§4.6** flexion ROM assert; segment shift +0.0082° vs predicted ~0.008° | — |
 | 4b | fsu-model | **§4.3** residual, on the COUPLED disc | lofted disc completes ±6° conformed, both elements | — |
-| 5 | fsu-model | **§4.8** committed convergence table + 4 pre-registered predictions | domain stability per level (voids the rest if it moves); per-level residual + iteration count | zero production diff (rung-2 `llvm-cov` oracle) |
+| 5 | fsu-model | **§4.8** the bracket `\|k*\| ≤ \|k10(fine)\| ≤ \|k10(coarse)\| ≤ \|k4\|`, ±5 % two-sided pins; headline = a lower bound on the shipped `RUNG7_K_DISC` error | liveness (strictly-monotone DOFs per arm) → rung-1 known-value reproduction → **clamp-plane constancy** → `min_jacobian_ratio` → domain metrics | zero production diff; rung-2 `llvm-cov` oracle on **`coupled.rs` + `coupling/src/bonded.rs`** (NOT `src/lib.rs` — this rung adds tests to it) |
 
 **★ CI reality, stated plainly** (v1's table implied protection that does not exist): `sim-coupling`
 and `cf-fsu-model` run only in `tests-release` shard 1 (`.github/workflows/quality-gate.yml:471`);
@@ -1099,63 +1223,104 @@ Add, per rung, a `synthetic_disc()`-based Tet10 bonded probe asserting: restorin
 converged, corner count preserved, midside count added, and the §4.2 band-count cross-check
 (on synthetic numbers). At 1.64 s today, even a 10× Tet10 arm costs ~16 s in a 45-min job — free.
 
-### 4.8 Rung 5's convergence gate — the arc's falsifier
+### 4.8 Rung 5's gate — a bracket with two-sided pins, ordered so the cheap checks fire first
 
-**What it asserts, in order** (validity before payoff, per rung 3's ordering fix — a payoff
-number read off an invalid mesh is worse than no number):
+**★★ THE FAILURE THIS GATE EXISTS TO CATCH FIRST (stress-test front 1): an arm that silently does
+not refine passes every payoff assert, and a naive domain gate reads it as the STRONGEST evidence
+of validity.** If the fine Tet10 arm is built from unmodified `params` — one shadowed variable —
+then `δ10 = 0` *exactly*: the headline becomes "Tet10 does not move at all", the per-level domain
+metrics come back bit-identical (and "flat" is what a domain gate wants), and the residual and
+iteration counts match perfectly. **⇒ Assert 0 is liveness, and it separates two things the first
+draft conflated under one heading:**
 
-1. **Domain stability, per level.** Referenced corners, retained tet volume, retained fraction of
-   the input STL volume — all committed. **This runs first and it can void the rest**: a
-   materially moving domain means `largest_component` changed the geometry under the refinement,
-   and no convergence claim survives it (§3, amendment note). Assert a band on the retained
-   *fraction*; commit the counts.
-2. **Solve quality, per level.** Final Newton residual, iteration count, and the bond conservation
-   residual `‖ΣF‖+‖ΣM‖ < 1e-8`. The iteration cap hard-fails on its own, so this is the
-   *comparability* record, not a safety net.
-3. **The four pre-registered predictions of §3**, each asserted separately with its own message.
-   ⚠ Assert them **individually, never as a conjunction** — a single combined assert reports "the
-   convergence story failed" when what you need to know is *which* of the four broke, and they
-   have different diagnoses (1 and 4 = the locking story; 2 = the accuracy claim; 3 = whether the
-   two arms are even solving the same problem).
-4. **The committed convergence table** — `cell` × element × direction `k_disc`, the ratio per
-   level, and the per-level deltas. Committed at 4 decimals: rung 2 established that a percentage
-   inferred from a rounded print is how the "~4 %" conform error entered the record.
+| | must be | asserted on |
+|---|---|---|
+| **did the DISCRETIZATION change?** | strictly **monotone** | referenced corners, per **arm**, per level |
+| **did the DOMAIN change?** | **flat** to a stated band | retained `∫r² dV`, SI extent, retained fraction |
 
-**Richardson extrapolation — the decisive form of the gate, and it must be allowed to abstain.**
-Three Tet4 points at fixed refinement ratio `r` give an *observed* order
-`p = log(|k(h₁)−k(h₂)| / |k(h₂)−k(h₃)|) / log r` and an extrapolated `k*`. Then the sharp
-question — **is Tet10 at the COARSE mesh already closer to `k*` than Tet4 at the FINEST?** A yes
-is the accuracy claim, earned, in one number.
+One gate cannot want both. Assert both, separately, on both the licensed and the synthetic arms.
 
-⚠ **But Richardson assumes monotone convergence in the asymptotic regime, and three points cannot
-prove they are in it.** If the observed `p` is nonsensical (negative, or > 4 for these elements)
-or the deltas are non-monotone, the gate must **report "not in the asymptotic regime" and quote
-no `k*`** — a fabricated extrapolation is exactly the false-precision this repo reports
-distributions to avoid ([[project-uq-ensemble-stochastic-direction]]). Richardson is also void if
-gate 1 fails. So: `k*` is a *conditional* deliverable, and predictions 1–4 are the unconditional
-ones. Do not let a summary promote the conditional to the headline
-([[feedback_hedges_compress_out_in_summaries]]).
+**Order — validity before payoff** (rung 3's ordering fix: a payoff number read off an invalid mesh
+is worse than no number; its incidence-walk mutant improved the residual while inverting tets):
 
-**Where the code lives — decided up front, because rung 4 cost a letter grade by not deciding.**
-An `#[ignore]`d licence-gated FOM in the library target charges its whole body to
-`cargo llvm-cov --lib` while executing in no coverage run, ever:
-- **`tests/disc_h_refinement.rs`** — the licensed real-anatomy convergence FOM. It needs only
-  `DiscParams`, `build_bonded_disc`, `build_bonded_disc_tet10` and `BondedDisc::flexion_moment`,
-  all public ⇒ **zero private items, zero API surface, zero coverage cost**. Verified against the
-  current signatures, not assumed.
-- **`src/lib.rs` test module** — a license-free two-resolution arm on `synthetic_disc()`,
-  deliberately hosted where it *earns* coverage back (rung 3 measured this: a CI-run synthetic
-  gate lifted the grade 63.9 → 65.3 %). It asserts harness soundness only — both resolutions
-  build, bond, converge, and the finer has strictly more referenced corners. **Its ratio is
-  reported, never asserted**: a 24×20×6 mm box at 3 mm cells is a different bending problem from
-  the real disc, exactly as §4.2 already records.
-- Deliberately **not** re-run at the refined resolution: `assert_full_face_band`. The band rule is
-  topological and cell-size independent, and rung 1 already mutation-verified it. Refinement
-  changes the band *counts*, so those are committed per level as context, not cross-checked again.
+0. **Liveness**, per arm per level, per the table above. Cheapest, and it gates everything.
+1. **Harness validation against a KNOWN value — free, and the first draft omitted it.** The coarse
+   level *is* the shipped configuration (`DiscParams::default().cell = 0.003`), so the ladder's
+   `h₁` must reproduce rung 1's committed raw-disc numbers: **Tet4 −0.2811 / −0.2788, Tet10
+   −0.1873 / −0.1849, ratio 0.666 / 0.663**, to four decimals. This is the repo's own
+   validate-a-new-harness-against-a-known-value rule ([[feedback_validate_new_harness_against_known_value]]),
+   available at zero cost on the exact quantity the rung measures, and it is the cheapest possible
+   check that the multi-resolution harness is not silently a different probe (wrong `theta`, wrong
+   pivot, `Some` instead of `None`, an arm wired to the wrong builder).
+2. **★★ THE CLAMP-PLANE GATE — the confound with teeth.** Per level, commit the realized clamp
+   planes (max z over the inferior band, min z over the superior), the resulting **free height**,
+   and the **node layers through it**. Assert the free height is constant across levels to a stated
+   tolerance. **If it is not, `band_frac` must be adjusted per level to hold the realized planes
+   fixed** — the arc's own rule that a tuning constant is never inherited across element orders *or
+   input geometries* now extends to *resolutions* — and that adjustment is **pre-registered, not
+   discovered mid-run**. Commit the per-level band sizes alongside (they are reachable from
+   `src/`; the first draft demoted them to un-cross-checked context from a location that could not
+   read them at all).
+3. **Mesh validity.** `BondedDisc::min_jacobian_ratio()` per arm per level — public, free (it reads
+   the last solve), and precisely the deformed-configuration invariant rung 4 added because
+   "nothing in this arc checked the deformed configuration before rung 4". A finer BCC lattice
+   against the disc's sub-cell-thin tapering rim is exactly where slivers appear. Plus
+   `flexion_moment`'s conservation residual `‖ΣF‖+‖ΣM‖ < 1e-8` — recorded for comparability, **not
+   counted as an independent assert**: for a gravity-free quasi-static Dirichlet-only scene it
+   follows from Newton convergence and cannot see a wrong band, wrong material or wrong element.
+4. **Domain metrics**, per the table above, with the direction **unregistered** (§3 confound 2).
+   Exceeding the band means **abstain and say so** — not widen.
+5. **The payoff: the bracket**, with two-sided pins.
 
-**Rung 5 must not touch `RUNG7_K_DISC`.** It measures the standalone disc; any re-anchor belongs
-to 4b. Zero production diff ⇒ rung 2's free byte-identity oracle applies (identical `llvm-cov`
-line/region counts on an untouched file).
+**★ The bracket, and its pins.** Commit `|k*| ≤ |k10(fine)| ≤ |k10(coarse)| ≤ |k4(coarse)|` and the
+headline number **`|k10(coarse)| − |k10(fine)|` = a lower bound on the error in the shipped
+`RUNG7_K_DISC`**. Then pin it the way every other payoff gate in this document is pinned — **±5 %
+two-sided around each measured value**, added in a fixup commit once measured (§4.2 step 4, §4.3's
+"#701 shape"). The first draft's "commit a convergence table" asserted nothing: committing a table
+is a record, and a refactor moving `k4(0.002)` from −0.26 to −0.20 would have tripped nothing.
+
+**★ The bracket's ordering asserts are NOT independent of the theorem** (§3): `|k10| ≤ |k4|` is
+entailed by `P1 ⊂ P2`, so it is a *wiring* check — it fails only if an arm is mis-built. Say that
+where the assert lives, so no summary counts it as evidence for the element.
+
+**★★ HOW MANY PREDICTIONS THERE HONESTLY ARE — the first draft claimed four and had one and a
+half.** Pred 4 ("Tet4's finest lands on Tet10's side") is strictly *entailed* by pred 1 ("`|k4|`
+decreases monotonically"); pred 3 ("ratio rises") is an arithmetic consequence of preds 1 + 2. Under
+a pure-noise null, "4/4 pre-registered predictions confirmed" had roughly a **1-in-8** chance of
+occurring by accident — the hedges-compress-out failure in structural form, since a summary would
+legitimately write "4/4". What survives, stated as the whole set:
+- **The bracket ordering** — wiring, per above.
+- **`|k10(coarse)| − |k10(fine)|` is small relative to `|k10| − |k4|`** — the one substantive
+  statement, and it needs a **pre-registered factor and a noise floor**, not the word "much".
+  Register both from rung 5.0's measured floor, before the ladder runs. Note a pure boundary-geometry
+  artifact softening both arms proportionally yields exactly `δ10 = 0.665·δ4`, which a motivated
+  reader could call "much less" — so the factor must sit well below that.
+- **Delta shrinkage on the Tet4 sequence** — `|k4(h₂)−k4(h₃)|` normalized for the refinement ratio
+  is smaller than `|k4(h₁)−k4(h₂)|`. **Genuinely independent of monotonicity** (a sequence can
+  decrease monotonically with *growing* steps, i.e. diverge) and it is the actual signature of
+  asymptotic convergence. Report; assert only if it clears the noise floor.
+- **No cross-level absolute trend is asserted at all** — confounds 1–3 sit on the absolutes, and
+  the theorem already fixes the sign. Absolutes are committed as numbers, not as a trend.
+
+**★ CI arm — the license-free `synthetic_disc()` box carries the convergence ASSERTION** (§3): a
+stable domain, the same clamp-ring singularity class, cheap enough to refine further, and the only
+part of this rung CI runs. It asserts liveness, the clamp-plane constancy, `min_jacobian_ratio`, and
+the bracket ordering. ⚠ Its **magnitude** is reported, never asserted against real-disc numbers — a
+24×20×6 mm box at 3 mm cells is a different bending problem, exactly as §4.2 already records.
+
+**Where the code lives:** licensed FOM in `src/lib.rs`'s test module (coverage cost accepted, §3);
+synthetic arm alongside it. **Neither `assert_full_face_band` nor the `to_bits` golden is re-run**:
+the band rule is topological and cell-size independent, rung 1 mutation-verified it, and §4.1
+forbids literal `to_bits` on any ≳10k-DOF solve (past ~23.5k DOF faer's supernodal kernels make a
+pivot flip realistic) — **use a 1e-10 relative tolerance for every real-disc number here.**
+
+**Byte-identity:** rung 5 touches no production code, so rung 2's free `llvm-cov` oracle applies —
+but scope it correctly: it holds for **`coupled.rs` and `sim/L1/coupling/src/bonded.rs`**, *not*
+for `src/lib.rs`, whose counts must change because this rung adds tests to it.
+
+**Rung 5 must not touch `RUNG7_K_DISC`'s value.** It measures the standalone disc; any re-anchor
+belongs to 4b. It **must** update that constant's provenance comment
+(`sim/L1/coupling/tests/fsu_coupled_contact.rs:60-88`) with the measured error bound — see §7.
 
 ---
 
@@ -1230,7 +1395,8 @@ The disc is ~0.4% of ROM, so a 33% softer disc cannot move the band; `ROM_TOL_DE
 — re-anchor honestly, never tune Tet10 to the old number
 ([[feedback_anti_rot_invariants_vs_exact_anchors]]). **What does break is `RUNG7_K_DISC ± 0.02`
 (§0.3), by roughly 4.8× the tolerance** — an indicative magnitude, not an exact prediction
-(§0.3 states why: raw-mesh ±0.5° mean vs a 0.86° probe on a conformed, curved disc). That is a
+(§0.3 states why: raw-mesh ±0.5° mean vs a 0.86° probe — ⚠ **not** "on a conformed, curved disc",
+the stale premise §0.3 now corrects; the shipped arm is raw and straight). That is a
 planned, single, documented re-anchor at rung 4, not a surprise. **✅ Both halves confirmed by
 measurement at rung 4: `k_disc` moved 4.69 × its tolerance (re-anchored −0.2819 → −0.1882),
 and segment flexion ROM moved +0.0082° against a predicted ~0.008° — so `ROM_TOL_DEG` and
@@ -1244,22 +1410,30 @@ and segment flexion ROM moved +0.0082° against a predicted ~0.008° — so `ROM
   opt-in and keep the surface ([[feedback_spec_falsified_revert_opt_in_keep_surface]]).
 - **Rung 2/3 residual does not decrease:** the conform/projection is not seating. Treat as a
   geometry bug, not a gate-tuning problem.
-- **Rung 5 shows Tet4-refined converging away from Tet10** (§4.8 prediction 4 or 1 fails): that
-  falsifies §0.1 bound 3's optimistic reading and the arc's accuracy claim must be *narrowed in
-  writing* to the measured delta. The element-order justification survives; the accuracy claim
-  does not. Narrow §0.1 bound 3 and rung 1's doc comment, both — the twins.
-- **Rung 5 prediction 2 fails (Tet10 moves as much as Tet4):** neither element is resolved at
-  these cells. This does **not** falsify the migration — Tet10 is still the higher-order element
-  — but it means `−0.1882` is no more converged than `−0.2819` was, and the honest record is
-  "unresolved at `cell` ≥ 0.0015", not a convergence table. Say that, and note the resolution
-  needed is out of reach at this cost.
-- **Rung 5 prediction 3 fails (ratio flat at ≈ 0.665 across every level):** **stop and debug — do
-  not publish the table.** Two elements discretizing one continuum problem must approach a common
-  answer; a ratio that will not budge under an 8× cell increase points at the arms solving
-  different problems (band, enrichment, or material assignment on the refined mesh), not at slow
-  convergence. Suspect the refined-mesh band first, as §4.2 step 3 does.
-- **The refined Tet10 arm does not fit (rung 5.0's spike):** reshape the ladder's cell sizes,
-  do not drop the arm — a convergence study with one element refined is not a convergence study.
+- **Rung 5's liveness assert fires (§4.8 assert 0):** an arm did not actually refine. This is a
+  harness bug, not a result — **do not read the payoff numbers at all**, because the failure mode
+  it catches (`δ10 = 0` exactly) otherwise produces the arc's *ideal* headline.
+- **Rung 5's clamp-plane gate fires (free height not constant across levels):** the lattice-phase
+  confound is live and is contaminating every absolute. Re-register `band_frac` per level to hold
+  the realized planes fixed, then re-run — **do not** proceed and caveat it in prose. The per-level
+  ratio is still usable meanwhile (common-mode), the absolutes are not.
+- **Rung 5's coarse level does not reproduce rung 1's committed numbers (§4.8 assert 1):** stop.
+  The multi-resolution harness is a different probe from the one that produced `RUNG7_K_DISC`, and
+  nothing downstream of it means anything.
+- **The bracket ordering fails (`|k10| > |k4|` at some level):** this contradicts a *theorem*
+  (§3's `P1 ⊂ P2` nesting), so it is a wiring bug — an arm mis-built, the wrong `endplates`, or a
+  band that dropped midsides. Debug the build; do not report it as an element finding.
+- **`|k10(coarse)| − |k10(fine)|` does not clear the measured noise floor:** the honest result is
+  **"the shipped Tet10 error is below what this harness can resolve"** — which is a *useful*
+  answer and must be reported as one, not padded into a convergence narrative. It does not falsify
+  the migration: §3's theorem still gives `|k10| ≤ |k4|`. Narrow §0.1 bound 3 and rung 1's doc
+  comment to say the error is *bounded but unresolved*, both — the twins.
+- **The Tet4 sequence is non-monotone:** **expected, not a failure.** The meshes are re-phased and
+  non-nested (§3 confounds 1–3), so the monotonicity that nested spaces would guarantee does not
+  apply. Report it; it is evidence about the confounds, not about the element.
+- **Tet10 at `cell = 0.002` exceeds the RSS budget (rung 5.0 step 2):** drop that arm to
+  `cell = 0.0025` — **do not** drop the Tet10 refinement entirely, since the fine Tet10 point *is*
+  the bracket's tightest bound and the rung's whole deliverable.
 
 ---
 
@@ -1287,6 +1461,23 @@ and segment flexion ROM moved +0.0082° against a predicted ~0.008° — so `ROM
 - **Curved-element quadrature budget** — 4-pt kept; the #699 rung measured K-error grows
   ~0.22·(sagitta/edge) *(inherited from the curved-element arc, not re-measured here)*; a
   bonded-face boundary element bows ~3 edges, adequate for a well-resolved disc surface.
+- **★ Is the converged bonded tangent actually PD? (rung 5's one loose premise.)** §3's energy
+  argument — the whole reason "Tet10 is more accurate here" is a theorem rather than a
+  measurement — needs the solver on a **minimiser**, not a saddle. Today the `Llt` → `Lu`
+  fallback fires on most iterations (`factor.rs:344,369,383`), but it is triggered by
+  `LltError::Numeric`, which faer raises on *any* non-positive pivot — indefinite,
+  semi-definite, or merely rank-deficient alike — so its firing is **not** evidence of a saddle.
+  The check is one line: report whether `Llt` succeeds at the **converged** state (or the LM
+  bump needed to make it). If it is PD there, the accuracy claim is proven for free. Deferred
+  because it needs a `sim-coupling` accessor and rung 5 is zero-production-diff (§3); the
+  theorem is stated *with* this premise named rather than assumed.
+- **★ A genuinely two-sided bracket on `k*` needs an INDEPENDENT solver.** Rung 5 delivers
+  `|k*| ≤ |k10(fine)| ≤ …` — an upper bound and a measured error *floor*, not a two-sided
+  bracket, because every arm shares this repo's element, mesher, and bond. The only honest route
+  to the other side is a second FEM on the same STL (CalculiX / FEniCS via `uv`) — the one
+  cross-check that does not route through the artifact under test
+  ([[feedback_cross_check_must_not_route_through_the_artifact_under_test]]). Expensive, and named
+  here as the deferral rather than letting an extrapolation stand in for it.
 
 ---
 
@@ -1320,6 +1511,32 @@ below, with one addition the checklist had missed. Rung 4 invalidated:
 - ~~`sim/L1/fsu-model/src/lib.rs:1136`'s "±0.5° spike-validated conformed SPD range" scope
   note~~ — **done at rung 2**, along with the module-level "the quadratic arm's large-angle
   envelope is unmeasured" note, both superseded by §4.5's measured ±6.0°.
+
+### 7.1 Rung 5's obligations — OPEN (added 2026-07-30 with the rung-5 spec)
+
+⚠ **The list above was "ALL DISCHARGED at rung 4"; rung 5 re-opens it.** Two of these were missed
+by the first draft, which wrote a narrowing instruction for the *failure* path only — so a
+**successful** rung 5 would have left both twins still asserting the claim is un-earned:
+- **`sim/L1/fsu-model/src/lib.rs:2857-2859`** — rung 1's FOM doc comment ("−0.1861 is not proven to
+  be the converged truth … Earning the accuracy claim is rung 5's h-refinement"). Rung 5 must
+  rewrite this **on either outcome**: the accuracy claim is a *theorem* (§3), and what rung 5 adds
+  is the measured **error bound**, not the claim.
+- **§0.1 bound 3** (this document) — same asymmetry, same fix. Bound 3's "a refined Tet4 would also
+  soften" is right; its implication that the accuracy claim awaits h-refinement is not.
+- **`sim/L1/coupling/tests/fsu_coupled_contact.rs:60-88`** — `RUNG7_K_DISC`'s provenance block.
+  §4.8 forbids touching the constant's **value**; the comment must still gain the measured error
+  bound, or the checkpoint's "rung 5 hardens the layer underneath 4b" is a claim with no trace at
+  the artifact it hardens.
+- **The checkpoint block (§ top) and §4's table row 5** — update on landing.
+- **Cross-doc, previously unlinked:** `docs/SIM_SOFT_ROADMAP.md:80` and `:140` still list
+  "❌ Convergence study (mesh-refinement sanity check) — Do finer cells give similar answers?
+  Credibility gate" as open. Rung 5 is that study **for the disc only**; say so in both places
+  rather than letting the roadmap read as though it were still untouched, and do not let it read
+  as though the whole engine were covered.
+- **Anything rung 5.0 measures that contradicts §5.1** — its cost model has now been wrong twice
+  (once at rung 4, once in the rung-5 first draft, which re-derived from theory in a section whose
+  own instruction is to quote the measurements). Fix §5.1 in place rather than adding a third
+  estimate beside it.
 
 ---
 
@@ -1360,6 +1577,64 @@ of `fsu_coupled_contact.rs`). Ladder-changing catches:
 - Plus: rung ordering (Tet10-on-raw first, validate against a known value), v1's rung 3 was a
   phantom (replaced by h-refinement), the `MAX_NEWTON_ITER`/alias/`Default`-bound mechanics,
   the missing rollback clause, doc-drift list, and downstream re-grade list.
+
+### 8.3 Rung 5's spec — the 4-front stress-test (2026-07-30)
+
+Four independent read-only adversarial fronts against the first rung-5 draft: **gate falsifiability
+· every code claim vs the tree · the numerics argument · cost/omissions/internal consistency.**
+Read-only by design — a prior round of this arc established that parallel *mutating* reviewers
+contaminate each other ([[feedback_parallel_mutating_coldreads_need_isolation]]). It reshaped the
+rung's **question**, not just its gates. Recorded so the same errors are not re-introduced:
+
+- **★★★ 4 of 4 fronts independently found the confound the draft did NOT name** — the
+  lattice-quantized clamp plane (§3 confound 1). The draft named `largest_component` and missed a
+  larger, non-monotone effect sitting on the same predictions. Convergence of four independent
+  fronts is why it is now the gate with teeth (§4.8 assert 2).
+- **★★★ The rung's premise was wrong.** "Is Tet10 more accurate here" is provable a priori from
+  the way `k_disc` is computed (§3's reframe) — the draft built a ladder to earn a claim already
+  earned, and staked it on an h-insensitivity heuristic that the clamp-ring singularity makes
+  unreliable (both elements can share a fractional order there). ⇒ bracket, not extrapolation.
+- **Richardson could not be computed on the draft's own ladder** — `{0.003, 0.002, 0.0015}` has
+  successive ratios **1.5 and 1.333**, and the quoted three-point formula requires a *fixed* `r`.
+  The draft's own "h ratios 1 : 0.667 : 0.5" is what hid it (ratios to `h₁`, not successive).
+  A meaningless `p` would have landed inside its own `[0, 4]` acceptance window.
+- **The draft's file placement made its own asserts uncomputable.** "Verified against the current
+  signatures" had been verified **only for the payoff number**; the validity and telemetry metrics
+  it also mandated are unreachable from `tests/`, and its "one shared mesh via
+  `PreparedDisc::duplicate`" argument does not apply there at all (`#[cfg(test)]`-private). ⇒ §3's
+  placement decision, and the telemetry gate dropped rather than taking a keystone diff.
+- **"Four pre-registered predictions" was one and a half** — pred 4 ⊂ pred 1, pred 3 ⊂ preds 1+2.
+  Under a pure-noise null, "4/4 confirmed" had ≈ 1-in-8 odds of occurring by accident, and a
+  summary would legitimately have written "4/4". → §4.8's honest count.
+- **A number with no producer, in a doc about numbers with no producers:** the draft cited "rung 3
+  lifted the grade 63.9 → 65.3 %". `git log --all -S"65.3"` matches **only that commit**; 63.9 % is
+  *rung 2's* post-move figure, produced by moving gates **out** of the lib target, and the current
+  baseline is **58.2 %**. It also re-narrated rung 4's *deliberate, recorded, user-approved*
+  coverage trade as an oversight. → [[feedback_a_number_without_a_producer_is_not_a_measurement]]
+- **Two hedges compressed out:** "the LU fallback fires **every** iteration" (the shipped const doc
+  says "**most**"; "every" traces to the reverted spike) and "conform ratio 0.982 / **0.984**"
+  (committed asserts say 0.982/0.982 and 0.985/0.985; 0.984 appears nowhere in the crate — a stale
+  pre-rung-3 figure the draft inherited from §0.1 and made load-bearing).
+  → [[feedback_hedges_compress_out_in_summaries]]
+- **The cost model was re-derived from theory in the section that says not to.** §5.1's own lesson
+  is "quote the rung-4 measurements, not this arithmetic"; the draft wrote `3.375² ≈ 11×` anyway
+  against a *measured* exponent of 1.60 (≈ 7×). Corrected, the ladder is **~4–10 min in release**
+  and was never cost-gated — **memory** is the ceiling, and the draft's spike measured the wrong
+  arm. → §3's rung 5.0.
+- **Two fronts DISAGREED on the Newton tolerance, and resolving it deleted the argument.** One said
+  refinement tightens the criterion, one said it loosens it. Per-node force ~ `h²` against DOF
+  count ~ `h⁻³` gives `‖r‖₂ ~ h^{1/2}` at fixed relative accuracy — *relatively looser*, ≈ √2 over
+  the whole ladder, i.e. negligible either way. The draft's stated reason was backwards and its
+  conclusion was right for a different reason (the cap hard-fails). **Where reviewers disagree,
+  check whether the claim is load-bearing at all before picking a winner.**
+- **Four confounds RULED OUT with code evidence** (box poses cancel, `MaterialField::uniform` is
+  position-independent, orphan DOFs are condensed pre-assembly, warm-start inertia is `1e-6·M`) —
+  gates that no longer need writing. → §3.
+- Plus: the liveness hole (§4.8 assert 0), the free rung-1 known-value reproduction the draft
+  omitted, `min_jacobian_ratio()` being public and free, `∫r² dV` over volume for a rim confound,
+  `largest_component`'s direction being **unknown** (tet-count selection, percolation) rather than
+  the direction the draft asserted, the noise floor needing to be measured **first**, and the
+  synthetic/licensed arms being the wrong way round.
 
 Prior arcs: [[project-tet10-fbar-element-upgrade]] (element ladder),
 [[project-fsu-disc-endplate-conform]] (#701 conform machinery),
