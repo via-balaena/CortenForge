@@ -3004,8 +3004,9 @@ mod tests {
     /// `(min, max, mean, peak-to-peak as % of mean)` — what makes rung 5.0 step 1 a
     /// distribution rather than a single delta.
     ///
-    /// Counts fed through here (band populations) are in the thousands, so the `usize -> f64`
-    /// widening is exact; `f64`'s mantissa does not lose a bit below 2^53.
+    /// The `usize -> f64` here is `xs.len()`, the sample count (single digits), so the widening
+    /// is exact — nowhere near `f64`'s 2^53 mantissa limit. (Band populations are widened at the
+    /// *call sites*, which carry their own justification.)
     #[allow(clippy::cast_precision_loss)]
     fn spread(xs: &[f64]) -> (f64, f64, f64, f64) {
         let (lo, hi) = xs
@@ -3023,25 +3024,33 @@ mod tests {
     ///
     /// **Nothing in rung 5's convergence table is interpretable without this number.** The BCC
     /// lattice is anchored to the world origin, so the *only* public knob that re-phases it
-    /// against fixed geometry is `cell` itself. A **1.7 %** cell change (0.003 → 0.00305) is
-    /// therefore a re-realization at nearly-fixed resolution: whatever `k_disc` does across it is
-    /// (a smooth h-effect over 1.7 %) **+** (re-meshing jitter), and the sum is an **upper bound
-    /// on the jitter**. Compare it against the ladder's intended signals — 33 % and 50 % cell
-    /// steps — and against the element effect the rung exists to bound (~33 %).
+    /// against fixed geometry is `cell` itself. Sweeping `cell` across a narrow **±3.4 %** window
+    /// therefore re-realizes the mesh at nearly-fixed resolution: whatever `k_disc` does across it
+    /// is (a smooth h-effect over that window) **+** (re-meshing jitter), and the spread is an
+    /// **upper bound on the jitter**. Read it against the ladder's intended signals — 33 % and
+    /// 50 % cell steps — and against the ~33 % element effect the rung exists to bound.
     ///
-    /// ⚠ **This measures an upper bound, not the jitter itself**, and it cannot separate the two
-    /// terms: a 3-point ladder has no way to tell a small smooth slope from realization noise.
-    /// That is exactly why rung 5 delivers a bracket rather than an extrapolated `k*` — an order
-    /// fitted through differences this size would be fitting noise.
+    /// **Five points, not two, and that is load-bearing.** The first version of this measurement
+    /// compared a single pair (0.003 vs 0.00305) and reported ~9 %. That is one sample of the
+    /// jitter, not a distribution, and it **understated the real spread by more than 10×** — the
+    /// sweep measures ~100 % peak-to-peak. A single perturbation cannot distinguish a typical
+    /// lattice phase from a pathological one, and quoting it would have been exactly the
+    /// false-precision point this repo's UQ position refuses.
+    ///
+    /// ⚠ **This is an upper bound, not the jitter itself**, and it cannot separate the two terms:
+    /// a short ladder has no way to tell a small smooth slope from realization noise. That is
+    /// exactly why rung 5 delivers a bracket rather than an extrapolated `k*` — an order fitted
+    /// through differences this size would be fitting noise.
     ///
     /// Both arms at each cell come from **one** prepared mesh (`PreparedDisc::duplicate`), so the
-    /// per-cell ratio `k10/k4` is attributable to element order by construction; the ratio's
-    /// stability across the two realizations is the headline, because the ratio is the quantity
-    /// every §3 confound is common-mode in.
+    /// per-cell ratio `k10/k4` is attributable to element order by construction — and the ratio's
+    /// spread (~15 %) being far below the absolutes' (~100 %) is the measured confirmation that
+    /// the §3 confounds are largely common-mode in it.
     ///
-    /// Prints the table and asserts only that the two realizations are genuinely *different
-    /// meshes* (else the comparison is vacuous) and that every arm converged. The floor itself is
-    /// a measurement to be read, then pre-registered into §4.8 — not a threshold to assert here.
+    /// **Asserts** that the sweep genuinely re-realized the mesh (else it measures nothing), that
+    /// every arm conserved, and — the free known-value check — that the `cell = 0.003` row
+    /// reproduces rung 1's committed raw-disc numbers, since 0.003 *is* the shipped configuration.
+    /// The spread itself is a measurement to read, not a threshold asserted here.
     #[test]
     #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
     fn rung5_step1_mesh_realization_noise_floor_fom() {
@@ -3166,8 +3175,10 @@ mod tests {
     /// committed nowhere, because `band_frac` is a fraction precisely so no absolute ever had
     /// to be.** This test is the producer. Do not quote the illustration.
     ///
-    /// Prints the table and asserts only what must hold for the ladder to be *measurable at
-    /// all* (non-empty disjoint bands, a positive free height, strictly-increasing refinement).
+    /// Prints the table and asserts only what must hold for the ladder to be *measurable at all*:
+    /// non-empty bands and a positive free height at **every** cell, plus strictly-increasing
+    /// refinement across **the ladder proper only** — the probe cells are exempt, because whether
+    /// retention is monotone *there* is precisely the open question and asserting it would beg it.
     /// The ladder decision is a head-engineer call on the printed numbers, not an assert here.
     #[test]
     #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
