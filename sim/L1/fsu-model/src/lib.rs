@@ -3563,11 +3563,39 @@ mod tests {
                     }
                 }
             }
+            // ★ THE PREDICTION. `parry3d` is the f32 build, so its `DEFAULT_EPSILON` is
+            // `f32::EPSILON`. `TriMesh::compute_pseudo_normals` accumulates a triangle's
+            // contribution only `if let Some(n) = tri.normal()`, and `Triangle::normal` is
+            // `Unit::try_new(ab × ac, DEFAULT_EPSILON)` — so a triangle is SILENTLY SKIPPED
+            // when ‖ab × ac‖ ≤ eps, i.e. when its AREA ≤ eps/2. Skipped triangles leave a
+            // ZERO pseudo-normal on their vertices and edges, and parry's inside test is
+            // `dpt.dot(&pseudo_normal) <= 0.0`, which a zero vector satisfies ⇒ "inside".
+            //
+            // The threshold is on AREA and is ABSOLUTE, so it scales as length²: shrinking
+            // a mesh 10× puts its triangles 100× closer to it. Count how many of this
+            // sphere's triangles are already under, and let the reader check the count
+            // against the sign-error column rather than take the mechanism on faith.
+            let eps_area = f64::from(f32::EPSILON) / 2.0;
+            let under = sphere
+                .faces
+                .iter()
+                .filter(|f| {
+                    let (a, b, cc) = (
+                        sphere.vertices[f[0] as usize],
+                        sphere.vertices[f[1] as usize],
+                        sphere.vertices[f[2] as usize],
+                    );
+                    0.5 * (b - a).cross(&(cc - a)).norm() <= eps_area
+                })
+                .count();
             println!(
                 "sphere r = {r:<8} | {total:5} samples | SIGN DISAGREEMENTS {sign_bad:5} \
-                 ({:6.3} %) | worst |φ| error {:.3e} r",
+                 ({:6.3} %) | worst |φ| error {:.3e} r | triangles under parry's area floor \
+                 {under:5} of {} ({:6.3} %)",
                 100.0 * sign_bad as f64 / total as f64,
                 worst_mag,
+                sphere.faces.len(),
+                100.0 * under as f64 / sphere.faces.len() as f64,
             );
             if let Some((p, got, truth)) = worst_sign {
                 println!(
@@ -3681,6 +3709,8 @@ mod tests {
         // scan rather than by asking about any particular tet. No interior point of a solid
         // of SI extent `t` can be deeper than `t/2` — the bound the census's reading must
         // clear to be believable.
+        report_area_floor_margin(disc_mesh);
+
         let native_sdf = oracle(disc_mesh).expect("native oracle");
         let (deepest, depth) = cf_fsu_geometry::body_center(disc_mesh, &native_sdf);
         println!(
@@ -3735,6 +3765,47 @@ mod tests {
             );
         }
         native_sdf
+    }
+
+    /// Where the input's triangles sit relative to the area floor parry silently drops
+    /// triangles at, in both the native-mm frame and the SI-metre frame the disc pipeline
+    /// rescales into.
+    ///
+    /// `Triangle::normal` is `Unit::try_new(ab × ac, parry3d::math::DEFAULT_EPSILON)`, and
+    /// `parry3d` is the f32 build, so that epsilon is `f32::EPSILON`. ‖ab × ac‖ is twice the
+    /// area, so a triangle whose area is at or under `f32::EPSILON / 2` never contributes to
+    /// `compute_pseudo_normals` — leaving a ZERO pseudo-normal on its vertices and edges,
+    /// which parry's `dpt.dot(&pseudo_normal) <= 0.0` inside test reads as "inside" at any
+    /// distance. The floor is ABSOLUTE and area goes as length², so the mm → m rescale moves
+    /// every triangle 1e6 times closer to it.
+    fn report_area_floor_margin(disc_mesh: &IndexedMesh) {
+        let eps_area = f64::from(f32::EPSILON) / 2.0;
+        let mut areas: Vec<f64> = disc_mesh
+            .faces
+            .iter()
+            .map(|f| {
+                let (a, b, c) = (
+                    disc_mesh.vertices[f[0] as usize],
+                    disc_mesh.vertices[f[1] as usize],
+                    disc_mesh.vertices[f[2] as usize],
+                );
+                0.5 * (b - a).cross(&(c - a)).norm()
+            })
+            .collect();
+        areas.sort_by(f64::total_cmp);
+        let scale = DiscParams::default().scale;
+        println!("parry area floor = f32::EPSILON/2 = {eps_area:.4e} (absolute, any unit)");
+        for (frame, factor) in [("native mm", 1.0), ("scaled  m", scale * scale)] {
+            let under = areas.iter().filter(|a| *a * factor <= eps_area).count();
+            println!(
+                "  {frame} | min {:.4e} median {:.4e} | margin of the SMALLEST triangle over \
+                 the floor: {:.1}x | under the floor: {under} of {}",
+                areas[0] * factor,
+                areas[areas.len() / 2] * factor,
+                areas[0] * factor / eps_area,
+                areas.len(),
+            );
+        }
     }
 
     /// Ask the **scaled** oracle (the one the mesher consumed) and the **native-mm** oracle
