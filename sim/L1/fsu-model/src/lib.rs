@@ -3500,111 +3500,11 @@ mod tests {
         }
     }
 
-    /// **Is the signed-distance oracle's SIGN sound?** — asked against analytic truth, on a
-    /// shape with no licence attached.
-    ///
-    /// The census turned up tet centroids reporting 15.13 mm *inside* a disc whose deepest
-    /// interior point is 5.74 mm down and whose SI half-extent is 9.66 mm — impossible, so
-    /// something in the chain is lying. This isolates the oracle from the disc entirely: a
-    /// tessellated sphere has `φ(p) = |p − c| − r` in closed form, so every sample has a
-    /// ground truth that owes nothing to a mesh, a mesher, or an STL.
-    ///
-    /// The sample box deliberately reaches into the **AABB corners**, because that is the
-    /// region the disc's bad reading came from and the region an axis-aligned probe never
-    /// visits: a corner point's closest feature is an edge or a vertex, not a face interior,
-    /// which is exactly where an angle-weighting mistake in a pseudo-normal shows up.
-    ///
-    /// Reports rather than gates, for now — recon does not get to freeze a threshold. When
-    /// the remedy lands, the sign-disagreement count becomes the assert.
-    #[test]
-    #[allow(clippy::cast_precision_loss)]
-    fn sdf_sign_against_analytic_truth_on_a_sphere_fom() {
-        // ★ THE SWEEP IS OVER SCALE, and that is the point. The FSU disc pipeline is the one
-        // place in the workspace that builds its oracle on a mesh already rescaled to SI
-        // METRES (`prepare_disc_at` recentres and multiplies by `params.scale` = 1e-3 before
-        // calling `oracle`); every other consumer — `body_center`, the endplate discriminator,
-        // the vertebra oracles — builds on native millimetres. Geometry is scale-free, so a
-        // correct oracle must give the same relative answer at every row below. If it does
-        // not, the disc pipeline is running the oracle outside the regime it works in, and
-        // the disagreement is a property of the CALLER, not of the anatomy.
-        let center = Point3::new(0.0, 0.0, 0.0);
-        for r in [
-            1000.0, 10.0, 1.0, 0.1, 0.05, 0.025, 0.01, 0.005, 0.003, 0.002, 0.001,
-        ] {
-            let sphere = test_support::sphere_mesh(center, r, 24, 48);
-            let sdf = oracle(&sphere).expect("sphere oracle");
-
-            // Reach to 1.6 r on every axis: the box corner sits at 1.6·√3 ≈ 2.77 r from the
-            // centre, deep in the region where the nearest feature is never a face interior.
-            let n = 24;
-            let (mut sign_bad, mut worst_mag, mut total) = (0usize, 0.0_f64, 0usize);
-            let mut worst_sign: Option<(Point3<f64>, f64, f64)> = None;
-            for i in 0..=n {
-                for j in 0..=n {
-                    for k in 0..=n {
-                        let q = |idx: usize| 1.6 * r * (2.0 * idx as f64 / n as f64 - 1.0);
-                        let p = Point3::new(q(i), q(j), q(k));
-                        let truth = (p - center).norm() - r;
-                        // Skip the tessellation's own uncertainty band, in units of r so the
-                        // rows stay comparable: within the chord error the polyhedron and the
-                        // ideal sphere genuinely disagree.
-                        if truth.abs() < 0.005 * r {
-                            continue;
-                        }
-                        let got = sdf.eval(p);
-                        total += 1;
-                        worst_mag = worst_mag.max((got - truth).abs() / r);
-                        if got.signum() != truth.signum() {
-                            sign_bad += 1;
-                            if worst_sign.is_none_or(|(_, _, t)| truth.abs() > t.abs()) {
-                                worst_sign = Some((p, got, truth));
-                            }
-                        }
-                    }
-                }
-            }
-            // ★ THE PREDICTION. `parry3d` is the f32 build, so its `DEFAULT_EPSILON` is
-            // `f32::EPSILON`. `TriMesh::compute_pseudo_normals` accumulates a triangle's
-            // contribution only `if let Some(n) = tri.normal()`, and `Triangle::normal` is
-            // `Unit::try_new(ab × ac, DEFAULT_EPSILON)` — so a triangle is SILENTLY SKIPPED
-            // when ‖ab × ac‖ ≤ eps, i.e. when its AREA ≤ eps/2. Skipped triangles leave a
-            // ZERO pseudo-normal on their vertices and edges, and parry's inside test is
-            // `dpt.dot(&pseudo_normal) <= 0.0`, which a zero vector satisfies ⇒ "inside".
-            //
-            // The threshold is on AREA and is ABSOLUTE, so it scales as length²: shrinking
-            // a mesh 10× puts its triangles 100× closer to it. Count how many of this
-            // sphere's triangles are already under, and let the reader check the count
-            // against the sign-error column rather than take the mechanism on faith.
-            let eps_area = f64::from(f32::EPSILON) / 2.0;
-            let under = sphere
-                .faces
-                .iter()
-                .filter(|f| {
-                    let (a, b, cc) = (
-                        sphere.vertices[f[0] as usize],
-                        sphere.vertices[f[1] as usize],
-                        sphere.vertices[f[2] as usize],
-                    );
-                    0.5 * (b - a).cross(&(cc - a)).norm() <= eps_area
-                })
-                .count();
-            println!(
-                "sphere r = {r:<8} | {total:5} samples | SIGN DISAGREEMENTS {sign_bad:5} \
-                 ({:6.3} %) | worst |φ| error {:.3e} r | triangles under parry's area floor \
-                 {under:5} of {} ({:6.3} %)",
-                100.0 * sign_bad as f64 / total as f64,
-                worst_mag,
-                sphere.faces.len(),
-                100.0 * under as f64 / sphere.faces.len() as f64,
-            );
-            if let Some((p, got, truth)) = worst_sign {
-                println!(
-                    "    worst at {p:?}: oracle {got:+.6}, truth {truth:+.6} (|p−c|/r = {:.4})",
-                    (p - center).norm() / r,
-                );
-            }
-        }
-    }
+    // The oracle's scale regime is now pinned where it belongs — `mesh-sdf`'s
+    // `pseudo_normal_sign_is_exact_across_the_scale_regime_consumers_use`, which gates the
+    // primitive for every consumer instead of only this one. What stays here is the
+    // disc-specific question that gate cannot answer: where THIS anatomy's triangles sit
+    // relative to parry's area floor, in each of the two frames (`report_area_floor_margin`).
 
     /// **Instrument check for the census** — run this before believing any of its numbers.
     ///
