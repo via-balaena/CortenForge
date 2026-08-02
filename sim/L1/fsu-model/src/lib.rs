@@ -564,21 +564,38 @@ fn prepare_disc(
     prepare_disc_at(mesh, params, endplates, ConformFloors::SHIPPED)
 }
 
-/// Tet-mesh the real intervertebral disc `mesh` (native mm), optionally seat its bonded
-/// band on the real endplate, and pose the two rigid endplate boxes around it — the
-/// element-agnostic half of [`build_bonded_disc`] / [`build_bonded_disc_tet10`].
+/// The disc as the BCC stuffer emitted it — **before**
+/// [`SdfMeshedTetMesh::largest_component`] filters it down to the main body — plus the
+/// frame the rest of the pipeline derives from it.
+///
+/// Split out of [`prepare_disc_at`] as a **pure move** (no float operation reordered) so
+/// the meshing-stability census can see the mesher's whole output, not only the part that
+/// survives. Everything downstream of the split still runs exactly where it did.
+struct MeshedDisc {
+    /// Straight from the stuffer: the main body **plus** every disconnected island.
+    raw: SdfMeshedTetMesh,
+    /// AABB of the recentred, scaled *surface* — the frame the endplate bands are cut in.
+    bbox: Aabb,
+    /// The medio-lateral (flexion/extension) axis.
+    ml_axis: Vector3<f64>,
+    /// The disc AABB centre in native mm — the shared flexion pivot.
+    center_native: Point3<f64>,
+    /// The exact oracle the mesher consumed, in the same scaled frame as `raw`'s positions.
+    ///
+    /// Test-only: production drops it the moment the mesh exists. The meshing-stability
+    /// census needs it to ask *how deep inside the surface* a discarded island sat, which
+    /// is the discriminator between "a sub-cell-thin tapering rim" and "an island anywhere".
+    #[cfg(test)]
+    sdf: MeshOracle,
+}
+
+/// Recentre, scale, and tet-mesh the disc surface — the head of [`prepare_disc_at`], up to
+/// but **not including** the `largest_component` filter.
 ///
 /// # Errors
-/// See [`build_bonded_disc`] — every failure mode listed there originates here.
-// `vs.len()` (an endplate vertex count) is tiny; the usize→f64 cast for its centroid
-// is exact for any real mesh.
-#[allow(clippy::cast_precision_loss)]
-fn prepare_disc_at(
-    mut mesh: IndexedMesh,
-    params: &DiscParams,
-    endplates: Option<EndplateConform>,
-    floors: ConformFloors,
-) -> Result<PreparedDisc> {
+/// Returns an error if the disc's thinnest extent is not its native `z` (a mis-oriented
+/// mesh), or if the signed-distance oracle or the tet-mesher fails.
+fn mesh_disc_raw(mut mesh: IndexedMesh, params: &DiscParams) -> Result<MeshedDisc> {
     let bbox0 = Aabb::from_points(mesh.vertices.iter());
     let center_native = Point3::from(bbox0.min.coords + (bbox0.max - bbox0.min) * 0.5);
     for v in &mut mesh.vertices {
@@ -614,11 +631,43 @@ fn prepare_disc_at(
     let sdf = oracle(&mesh).context("disc oracle")?;
     let tet = SdfMeshedTetMesh::from_sdf(&sdf, &hints)
         .map_err(|e| anyhow::anyhow!("tet-mesh disc: {e:?}"))?;
+    Ok(MeshedDisc {
+        raw: tet,
+        bbox,
+        ml_axis,
+        center_native,
+        #[cfg(test)]
+        sdf,
+    })
+}
+
+/// Tet-mesh the real intervertebral disc `mesh` (native mm), optionally seat its bonded
+/// band on the real endplate, and pose the two rigid endplate boxes around it — the
+/// element-agnostic half of [`build_bonded_disc`] / [`build_bonded_disc_tet10`].
+///
+/// # Errors
+/// See [`build_bonded_disc`] — every failure mode listed there originates here.
+// `vs.len()` (an endplate vertex count) is tiny; the usize→f64 cast for its centroid
+// is exact for any real mesh.
+#[allow(clippy::cast_precision_loss)]
+fn prepare_disc_at(
+    mesh: IndexedMesh,
+    params: &DiscParams,
+    endplates: Option<EndplateConform>,
+    floors: ConformFloors,
+) -> Result<PreparedDisc> {
+    let MeshedDisc {
+        raw,
+        bbox,
+        ml_axis,
+        center_native,
+        ..
+    } = mesh_disc_raw(mesh, params)?;
     // A physical disc is one connected solid, but the BCC isosurface-stuffing mesher
     // fragments the disc's sub-cell-thin tapering rim into disconnected islands — which
     // both scatter the rendered surface and poison the Newton tangent's conditioning
     // (a floating tet component carries unconstrained rigid modes). Keep the main body.
-    let mut tet = tet.largest_component();
+    let mut tet = raw.largest_component();
 
     // Endplate faces = bands at the SI surface extremes (field-derived, not z=const).
     let (lo_z, hi_z) = (bbox.min.z, bbox.max.z);
@@ -3260,6 +3309,296 @@ mod tests {
                 free * 1e3,
             );
         }
+    }
+
+    /// Face-connected components of a raw tet mesh, largest first.
+    ///
+    /// A **reimplementation** of the union-find inside
+    /// [`SdfMeshedTetMesh::largest_component`], and deliberately so: that method returns
+    /// only the survivors, so the discarded set is unobservable through it. Production
+    /// answers "which component is biggest"; the census needs "what are all the components",
+    /// which is strictly more information than the production API exposes.
+    ///
+    /// Being a reimplementation, it is **validated against production** at every cell of the
+    /// census — the largest component here must equal, tet for tet, the mesh
+    /// `prepare_disc` actually keeps. Without that check this function's output would
+    /// describe some other mesh's connectivity.
+    fn face_components(mesh: &SdfMeshedTetMesh) -> Vec<Vec<TetId>> {
+        fn find(parent: &mut [usize], mut x: usize) -> usize {
+            while parent[x] != x {
+                parent[x] = parent[parent[x]]; // path halving
+                x = parent[x];
+            }
+            x
+        }
+
+        let n = mesh.n_tets();
+        let mut parent: Vec<usize> = (0..n).collect();
+        // Two tets are connected when they share a triangular face — production's rule.
+        let mut owner: std::collections::HashMap<[VertexId; 3], usize> =
+            std::collections::HashMap::new();
+        for ti in 0..n {
+            let t = mesh.tet_vertices(u32::try_from(ti).expect("tet id fits u32"));
+            for mut f in [
+                [t[1], t[2], t[3]],
+                [t[0], t[2], t[3]],
+                [t[0], t[1], t[3]],
+                [t[0], t[1], t[2]],
+            ] {
+                f.sort_unstable();
+                if let Some(&other) = owner.get(&f) {
+                    let (ra, rb) = (find(&mut parent, ti), find(&mut parent, other));
+                    parent[rb] = ra;
+                } else {
+                    owner.insert(f, ti);
+                }
+            }
+        }
+
+        let mut by_root: std::collections::BTreeMap<usize, Vec<TetId>> =
+            std::collections::BTreeMap::new();
+        for t in 0..n {
+            let r = find(&mut parent, t);
+            by_root
+                .entry(r)
+                .or_default()
+                .push(u32::try_from(t).expect("tet id fits u32"));
+        }
+        let mut comps: Vec<Vec<TetId>> = by_root.into_values().collect();
+        // Size-descending, then by first member, so the order is total and reproducible
+        // (equal-sized islands must not be ordered by hash iteration).
+        comps.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a[0].cmp(&b[0])));
+        comps
+    }
+
+    /// Enclosed volume of a closed triangle surface, by the divergence theorem.
+    ///
+    /// Computed here rather than read from any pipeline stage: it is the census's only
+    /// **independent** yardstick, the one number that does not come from the mesher whose
+    /// output is under examination.
+    fn surface_volume(mesh: &IndexedMesh) -> f64 {
+        mesh.faces
+            .iter()
+            .map(|f| {
+                let a = mesh.vertices[f[0] as usize].coords;
+                let b = mesh.vertices[f[1] as usize].coords;
+                let c = mesh.vertices[f[2] as usize].coords;
+                a.dot(&b.cross(&c)) / 6.0
+            })
+            .sum::<f64>()
+            .abs()
+    }
+
+    /// Volume-weighted summary of one set of tets: where it sits and how thin it is.
+    struct Region {
+        volume: f64,
+        /// Volume-weighted mean radius from the SI axis, as a fraction of the surface's
+        /// own maximum radius. Rim material sits near 1.
+        mean_r_norm: f64,
+        max_r_norm: f64,
+        /// Volume-weighted mean interior depth `-φ(centroid)`, in mm. A sub-cell-thin
+        /// feature cannot be deep: every interior point of it is near the surface.
+        mean_depth_mm: f64,
+        max_depth_mm: f64,
+        /// Fraction of this region's volume inside the physical endplate band slab.
+        band_frac_of_volume: f64,
+    }
+
+    /// Summarise `tets` of `mesh` in the scaled frame (origin = the disc AABB centre).
+    #[allow(clippy::cast_precision_loss)]
+    fn summarise(
+        mesh: &SdfMeshedTetMesh,
+        tets: &[TetId],
+        sdf: &MeshOracle,
+        r_surface_max: f64,
+        band_z: (f64, f64),
+    ) -> Region {
+        let pos = mesh.positions();
+        let vols = &mesh.quality().signed_volume;
+        let (mut volume, mut wr, mut wd, mut band) = (0.0, 0.0, 0.0, 0.0);
+        let (mut max_r, mut max_d) = (0.0_f64, f64::NEG_INFINITY);
+        for &t in tets {
+            let v = vols[t as usize].abs();
+            let c = mesh.tet_vertices(t);
+            let centroid: Vec3 = c.iter().map(|&i| pos[i as usize]).sum::<Vec3>() / 4.0;
+            let r = centroid.x.hypot(centroid.y) / r_surface_max;
+            let depth_mm = -sdf.eval(Point3::from(centroid)) * 1e3;
+            volume += v;
+            wr += v * r;
+            wd += v * depth_mm;
+            if centroid.z < band_z.0 || centroid.z > band_z.1 {
+                band += v;
+            }
+            max_r = max_r.max(r);
+            max_d = max_d.max(depth_mm);
+        }
+        Region {
+            volume,
+            mean_r_norm: if volume > 0.0 { wr / volume } else { 0.0 },
+            max_r_norm: max_r,
+            mean_depth_mm: if volume > 0.0 { wd / volume } else { 0.0 },
+            max_depth_mm: if max_d.is_finite() { max_d } else { 0.0 },
+            band_frac_of_volume: if volume > 0.0 { band / volume } else { 0.0 },
+        }
+    }
+
+    /// **Meshing-stability rung, step 0 — RECON: a census of what `largest_component`
+    /// throws away.**
+    ///
+    /// Rung 5 established that `k_disc` is not a stable function of `cell`: over a ±3.4 %
+    /// window the absolutes move ~100 % peak-to-peak, and the mover is the *retained
+    /// domain* — the tet count swings ~49.5 % non-monotonically while the clamp depth holds
+    /// to 0.20 %, so it is not the boundary condition. That makes every absolute `k_disc`
+    /// the arc has published, `RUNG7_K_DISC` included, one draw from a wide distribution.
+    ///
+    /// This test does **not** fix that. It measures the discard, because the fix that is
+    /// correct depends on a fact nobody has measured yet. Two places in the tree —
+    /// `SdfMeshedTetMesh::largest_component`'s doc comment and `prepare_disc_at`'s inline
+    /// comment — already assert *as fact* that the stuffer "fragments the disc's sub-cell-thin
+    /// tapering rim into disconnected islands". That claim has never been run. It is the
+    /// hinge of the whole remedy choice, so the census either promotes it to a measurement
+    /// or kills it:
+    ///
+    /// - **Rim confirmed** (discarded material at high radius, shallow depth) ⇒ the islands
+    ///   are *real anatomy* per #701, and meshing stability and exact geometry are **one**
+    ///   fix, not two.
+    /// - **Rim refuted** (discards scattered, or deep) ⇒ the fragmentation is a mesher
+    ///   artefact and the remedy is a different one entirely.
+    ///
+    /// Three candidate remedies, and the numbers below discriminate them: **policy** (stop
+    /// discarding — right if the discard is real, connected-enough anatomy), **mesher** (stop
+    /// fragmenting — right if the raw output already loses volume against the surface), or
+    /// **input conditioning** (fix the geometry going in — right if the rim is sub-cell thin
+    /// at every cell we would ever ship).
+    ///
+    /// ⚠ **Asserts nothing about stability, on purpose.** The only assertions here are
+    /// harness-validity ones: that the components partition the mesh, and that this file's
+    /// reimplemented connectivity reproduces production's kept mesh *tet for tet*. A
+    /// threshold asserted before the mechanism is known would just freeze today's draw.
+    #[test]
+    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
+    #[allow(clippy::cast_precision_loss)]
+    fn mesh_stability_step0_discarded_component_census_fom() {
+        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
+        let base = DiscParams::default();
+
+        // The surface volume in the SOLVER frame. Recentring cannot change a volume and the
+        // scale is uniform, so `V_scaled == V_native · scale³` exactly — no need to re-run
+        // production's recentre to get it.
+        let v_surface = surface_volume(&disc_mesh) * base.scale.powi(3);
+        println!(
+            "disc surface: {} faces, enclosed volume {:.4} mm³ native -> {v_surface:.6e} m³ scaled",
+            disc_mesh.faces.len(),
+            surface_volume(&disc_mesh),
+        );
+
+        for cell in [
+            0.002_90, 0.002_95, 0.003_00, 0.003_05, 0.003_10, // rung 5's probe window
+            0.002, 0.001_5, // the refinement ladder
+        ] {
+            census_one_cell(&disc_mesh, &DiscParams { cell, ..base }, v_surface);
+        }
+    }
+
+    /// One `cell` of [`mesh_stability_step0_discarded_component_census_fom`]: mesh, decompose,
+    /// validate against production, report.
+    #[allow(clippy::cast_precision_loss)]
+    fn census_one_cell(disc_mesh: &IndexedMesh, params: &DiscParams, v_surface: f64) {
+        let cell = params.cell;
+        let m = mesh_disc_raw(disc_mesh.clone(), params)
+            .unwrap_or_else(|e| panic!("mesh raw disc at cell {cell}: {e:?}"));
+
+        // Radial normaliser from the SURFACE, not the tets: a tet-derived maximum would
+        // shrink with whatever the mesher dropped, hiding the very effect under study.
+        let r_surface_max = disc_mesh
+            .vertices
+            .iter()
+            .map(|v| {
+                ((v.x - m.center_native.x) * params.scale)
+                    .hypot((v.y - m.center_native.y) * params.scale)
+            })
+            .fold(0.0_f64, f64::max);
+        let band = params.band_frac * (m.bbox.max.z - m.bbox.min.z);
+        let band_z = (m.bbox.min.z + band, m.bbox.max.z - band);
+
+        let comps = face_components(&m.raw);
+        let total: usize = comps.iter().map(Vec::len).sum();
+        assert_eq!(
+            total,
+            m.raw.n_tets(),
+            "cell {cell}: components must partition the mesh ({total} vs {})",
+            m.raw.n_tets()
+        );
+
+        // ★ HARNESS VALIDATION, and the load-bearing assert of this test: production's kept
+        // mesh must BE this file's largest component, tet for tet. If it is not, every
+        // "discarded" number below describes a set production never discarded.
+        let kept_ids = &comps[0];
+        let production = prepare_disc(disc_mesh.clone(), params, None)
+            .unwrap_or_else(|e| panic!("prepare raw disc at cell {cell}: {e:?}"));
+        let mut mine: Vec<[VertexId; 4]> =
+            kept_ids.iter().map(|&t| m.raw.tet_vertices(t)).collect();
+        let mut theirs: Vec<[VertexId; 4]> = (0..production.tet.n_tets())
+            .map(|t| {
+                production
+                    .tet
+                    .tet_vertices(u32::try_from(t).expect("tet id fits u32"))
+            })
+            .collect();
+        mine.sort_unstable();
+        theirs.sort_unstable();
+        assert_eq!(
+            mine,
+            theirs,
+            "cell {cell}: this file's largest component is not the mesh production keeps \
+             ({} vs {} tets) — the census would be describing the wrong set",
+            mine.len(),
+            theirs.len()
+        );
+
+        let discarded: Vec<TetId> = comps[1..].iter().flatten().copied().collect();
+        let kept = summarise(&m.raw, kept_ids, &m.sdf, r_surface_max, band_z);
+        let lost = summarise(&m.raw, &discarded, &m.sdf, r_surface_max, band_z);
+        let v_raw = kept.volume + lost.volume;
+
+        println!(
+            "\ncell {cell:.5} m | components {:5} | tets raw {:6} kept {:6} ({:.2} %) \
+             discarded {:5}",
+            comps.len(),
+            m.raw.n_tets(),
+            kept_ids.len(),
+            100.0 * kept_ids.len() as f64 / m.raw.n_tets() as f64,
+            discarded.len(),
+        );
+        println!(
+            "  volume | raw {v_raw:.4e} ({:.2} % of surface) | kept {:.4e} ({:.2} % of surface, \
+             {:.2} % of raw) | DISCARDED {:.4e} ({:.3} % of raw)",
+            100.0 * v_raw / v_surface,
+            kept.volume,
+            100.0 * kept.volume / v_surface,
+            100.0 * kept.volume / v_raw,
+            lost.volume,
+            100.0 * lost.volume / v_raw,
+        );
+        for (name, reg) in [("kept     ", &kept), ("DISCARDED", &lost)] {
+            println!(
+                "  {name} | r/r_max mean {:.3} max {:.3} | depth mean {:.4} mm max {:.4} mm \
+                 | in endplate band {:.1} % of its volume",
+                reg.mean_r_norm,
+                reg.max_r_norm,
+                reg.mean_depth_mm,
+                reg.max_depth_mm,
+                100.0 * reg.band_frac_of_volume,
+            );
+        }
+        let sizes: Vec<usize> = comps[1..].iter().map(Vec::len).collect();
+        let singletons = sizes.iter().filter(|&&s| s == 1).count();
+        println!(
+            "  islands | {} of them, largest {:?}, singletons {singletons} ({:.1} %)",
+            sizes.len(),
+            sizes.iter().take(8).collect::<Vec<_>>(),
+            100.0 * singletons as f64 / sizes.len().max(1) as f64,
+        );
     }
 
     /// Distance from a native-mm point to the **real bone surface**: the nearer of the two
