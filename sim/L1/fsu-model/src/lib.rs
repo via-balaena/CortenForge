@@ -3500,6 +3500,365 @@ mod tests {
         }
     }
 
+    /// **Is the signed-distance oracle's SIGN sound?** — asked against analytic truth, on a
+    /// shape with no licence attached.
+    ///
+    /// The census turned up tet centroids reporting 15.13 mm *inside* a disc whose deepest
+    /// interior point is 5.74 mm down and whose SI half-extent is 9.66 mm — impossible, so
+    /// something in the chain is lying. This isolates the oracle from the disc entirely: a
+    /// tessellated sphere has `φ(p) = |p − c| − r` in closed form, so every sample has a
+    /// ground truth that owes nothing to a mesh, a mesher, or an STL.
+    ///
+    /// The sample box deliberately reaches into the **AABB corners**, because that is the
+    /// region the disc's bad reading came from and the region an axis-aligned probe never
+    /// visits: a corner point's closest feature is an edge or a vertex, not a face interior,
+    /// which is exactly where an angle-weighting mistake in a pseudo-normal shows up.
+    ///
+    /// Reports rather than gates, for now — recon does not get to freeze a threshold. When
+    /// the remedy lands, the sign-disagreement count becomes the assert.
+    #[test]
+    #[allow(clippy::cast_precision_loss)]
+    fn sdf_sign_against_analytic_truth_on_a_sphere_fom() {
+        // ★ THE SWEEP IS OVER SCALE, and that is the point. The FSU disc pipeline is the one
+        // place in the workspace that builds its oracle on a mesh already rescaled to SI
+        // METRES (`prepare_disc_at` recentres and multiplies by `params.scale` = 1e-3 before
+        // calling `oracle`); every other consumer — `body_center`, the endplate discriminator,
+        // the vertebra oracles — builds on native millimetres. Geometry is scale-free, so a
+        // correct oracle must give the same relative answer at every row below. If it does
+        // not, the disc pipeline is running the oracle outside the regime it works in, and
+        // the disagreement is a property of the CALLER, not of the anatomy.
+        let center = Point3::new(0.0, 0.0, 0.0);
+        for r in [
+            1000.0, 10.0, 1.0, 0.1, 0.05, 0.025, 0.01, 0.005, 0.003, 0.002, 0.001,
+        ] {
+            let sphere = test_support::sphere_mesh(center, r, 24, 48);
+            let sdf = oracle(&sphere).expect("sphere oracle");
+
+            // Reach to 1.6 r on every axis: the box corner sits at 1.6·√3 ≈ 2.77 r from the
+            // centre, deep in the region where the nearest feature is never a face interior.
+            let n = 24;
+            let (mut sign_bad, mut worst_mag, mut total) = (0usize, 0.0_f64, 0usize);
+            let mut worst_sign: Option<(Point3<f64>, f64, f64)> = None;
+            for i in 0..=n {
+                for j in 0..=n {
+                    for k in 0..=n {
+                        let q = |idx: usize| 1.6 * r * (2.0 * idx as f64 / n as f64 - 1.0);
+                        let p = Point3::new(q(i), q(j), q(k));
+                        let truth = (p - center).norm() - r;
+                        // Skip the tessellation's own uncertainty band, in units of r so the
+                        // rows stay comparable: within the chord error the polyhedron and the
+                        // ideal sphere genuinely disagree.
+                        if truth.abs() < 0.005 * r {
+                            continue;
+                        }
+                        let got = sdf.eval(p);
+                        total += 1;
+                        worst_mag = worst_mag.max((got - truth).abs() / r);
+                        if got.signum() != truth.signum() {
+                            sign_bad += 1;
+                            if worst_sign.is_none_or(|(_, _, t)| truth.abs() > t.abs()) {
+                                worst_sign = Some((p, got, truth));
+                            }
+                        }
+                    }
+                }
+            }
+            println!(
+                "sphere r = {r:<8} | {total:5} samples | SIGN DISAGREEMENTS {sign_bad:5} \
+                 ({:6.3} %) | worst |φ| error {:.3e} r",
+                100.0 * sign_bad as f64 / total as f64,
+                worst_mag,
+            );
+            if let Some((p, got, truth)) = worst_sign {
+                println!(
+                    "    worst at {p:?}: oracle {got:+.6}, truth {truth:+.6} (|p−c|/r = {:.4})",
+                    (p - center).norm() / r,
+                );
+            }
+        }
+    }
+
+    /// **Instrument check for the census** — run this before believing any of its numbers.
+    ///
+    /// The census reports quantities from three sources that could each be wrong
+    /// independently: an enclosed volume from the surface, an interior depth from the SDF
+    /// oracle, and a mesh volume from the stuffer's quality cache. Each is checked here
+    /// against something that does not come from the same place.
+    #[test]
+    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
+    #[allow(clippy::cast_precision_loss)]
+    fn mesh_stability_instrument_check_fom() {
+        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
+        let native_sdf = report_surface_health(&disc_mesh);
+
+        // Now the mesher, in production's own frame, at the shipped cell.
+        let params = DiscParams::default();
+        let meshed = mesh_disc_raw(disc_mesh.clone(), &params).expect("mesh raw disc");
+        report_scaled_frame_disagreement(&meshed, &native_sdf, &params);
+
+        // ★ THE SDF-FREE CHECK. Every φ above depends on the oracle's sign, and the depth
+        // reading already contradicts `body_center`, so the oracle cannot be the witness to
+        // its own reliability. A point outside the surface's AABB is outside the solid — no
+        // oracle, no winding number, no argument. This is a hard LOWER bound on how much of
+        // the mesh sits off the disc.
+        let v_surface = surface_volume(&disc_mesh) * params.scale.powi(3);
+        let kept = meshed.raw.largest_component();
+        report_phantom_material("raw ", &meshed.raw, &meshed.bbox, v_surface);
+        report_phantom_material("kept", &kept, &meshed.bbox, v_surface);
+
+        // ★ THE CAUSAL TEST for the open boundary the health report found. Consistency is not
+        // causation: close the hole and re-run the identical measurement. If the leak was the
+        // cause the phantom material goes away; if it was not, the numbers do not move.
+        // Nothing here is a production change — it is the experiment that tells the next rung
+        // which remedy to build.
+        println!("\n--- same measurement, with the boundary closed ---");
+        let mut filled = disc_mesh.clone();
+        let n_filled = mesh_repair::fill_holes(&mut filled, 64).expect("fill holes");
+        let after = mesh_repair::validate_mesh(&filled);
+        println!(
+            "filled {n_filled} hole(s) -> watertight {} manifold {} | boundary edges {} | \
+             enclosed volume {:.2} mm³ (was {:.2})",
+            after.is_watertight,
+            after.is_manifold,
+            after.boundary_edge_count,
+            surface_volume(&filled),
+            surface_volume(&disc_mesh),
+        );
+        let v_filled = surface_volume(&filled) * params.scale.powi(3);
+        let refilled = mesh_disc_raw(filled, &params).expect("mesh repaired disc");
+        let kept_f = refilled.raw.largest_component();
+        report_phantom_material("raw ", &refilled.raw, &refilled.bbox, v_filled);
+        report_phantom_material("kept", &kept_f, &refilled.bbox, v_filled);
+        println!(
+            "components: {} (was {}) | tets raw {} kept {} (was {} / {})",
+            face_components(&refilled.raw).len(),
+            face_components(&meshed.raw).len(),
+            refilled.raw.n_tets(),
+            kept_f.n_tets(),
+            meshed.raw.n_tets(),
+            kept.n_tets(),
+        );
+    }
+
+    /// Size, enclosed volume, repair health, and exterior sign probes of the input surface,
+    /// in its native millimetre frame. Returns the native-frame oracle for reuse.
+    fn report_surface_health(disc_mesh: &IndexedMesh) -> MeshOracle {
+        let bbox = Aabb::from_points(disc_mesh.vertices.iter());
+        let size = bbox.size();
+        println!(
+            "surface bbox (native mm): x {:.4} y {:.4} z {:.4} | {} verts {} faces",
+            size.x,
+            size.y,
+            size.z,
+            disc_mesh.vertices.len(),
+            disc_mesh.faces.len(),
+        );
+        println!(
+            "enclosed volume {:.2} mm³; AABB volume {:.2} mm³ (fill {:.1} %)",
+            surface_volume(disc_mesh),
+            size.x * size.y * size.z,
+            100.0 * surface_volume(disc_mesh) / (size.x * size.y * size.z),
+        );
+
+        // Mesh health of the input AS THE PIPELINE RECEIVES IT (post-`load`, which runs a
+        // repair pass and discards its statistics). The pseudo-normal sign is only defined
+        // for a closed, consistently-oriented, manifold surface, so if this says the disc is
+        // none of those, nothing downstream can be assumed to have a sign at all.
+        let report = mesh_repair::validate_mesh(disc_mesh);
+        println!(
+            "input health | watertight {} manifold {} inside-out {} | boundary edges {} \
+             non-manifold edges {} degenerate faces {} duplicate faces {}",
+            report.is_watertight,
+            report.is_manifold,
+            report.is_inside_out,
+            report.boundary_edge_count,
+            report.non_manifold_edge_count,
+            report.degenerate_face_count,
+            report.duplicate_face_count,
+        );
+
+        // INDEPENDENT max-depth oracle: the deepest interior point of the field, found by
+        // scan rather than by asking about any particular tet. No interior point of a solid
+        // of SI extent `t` can be deeper than `t/2` — the bound the census's reading must
+        // clear to be believable.
+        let native_sdf = oracle(disc_mesh).expect("native oracle");
+        let (deepest, depth) = cf_fsu_geometry::body_center(disc_mesh, &native_sdf);
+        println!(
+            "deepest interior point {deepest:?} at depth {:.4} mm | half SI extent {:.4} mm",
+            -depth,
+            size.z / 2.0,
+        );
+
+        // Probe points that are exterior BY CONSTRUCTION — each displaced from the surface
+        // AABB by a margin no solid inside that box can reach. Every φ must be positive.
+        // `body_center` scans only the AABB, so these cover the space it never looks at.
+        let ctr = Point3::from(bbox.min.coords + (bbox.max - bbox.min) * 0.5);
+        let half = size / 2.0;
+        for (name, probe) in [
+            (
+                "+x  10 mm out",
+                Point3::new(ctr.x + half.x + 10.0, ctr.y, ctr.z),
+            ),
+            (
+                "-x  10 mm out",
+                Point3::new(ctr.x - half.x - 10.0, ctr.y, ctr.z),
+            ),
+            (
+                "+y  10 mm out",
+                Point3::new(ctr.x, ctr.y + half.y + 10.0, ctr.z),
+            ),
+            (
+                "+z  10 mm out",
+                Point3::new(ctr.x, ctr.y, ctr.z + half.z + 10.0),
+            ),
+            (
+                "corner  4 mm",
+                Point3::new(
+                    ctr.x + half.x + 4.0,
+                    ctr.y + half.y + 4.0,
+                    ctr.z + half.z + 4.0,
+                ),
+            ),
+            (
+                "far  100 mm  ",
+                Point3::new(ctr.x + 100.0, ctr.y + 100.0, ctr.z + 100.0),
+            ),
+        ] {
+            let phi = native_sdf.eval(probe);
+            println!(
+                "  probe {name}: φ = {phi:+.4} mm  {}",
+                if phi > 0.0 {
+                    "ok (outside)"
+                } else {
+                    "★ WRONG SIGN — reported interior"
+                }
+            );
+        }
+        native_sdf
+    }
+
+    /// Ask the **scaled** oracle (the one the mesher consumed) and the **native-mm** oracle
+    /// (the one every other consumer in the workspace builds) about the same physical point
+    /// on the same anatomy.
+    ///
+    /// Geometry is scale-free, so a disagreement here is not a fact about the disc — it is a
+    /// fact about the frame the oracle was built in.
+    #[allow(clippy::cast_precision_loss)]
+    fn report_scaled_frame_disagreement(
+        meshed: &MeshedDisc,
+        native_sdf: &MeshOracle,
+        params: &DiscParams,
+    ) {
+        let pos = meshed.raw.positions();
+        let (mut outside_n, mut outside_v, mut total_v) = (0usize, 0.0, 0.0);
+        let (mut phi_lo, mut phi_hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        let mut deepest_centroid = Vec3::zeros();
+        for tid in 0..meshed.raw.n_tets() {
+            let tid = u32::try_from(tid).expect("tet id fits u32");
+            let corners = meshed.raw.tet_vertices(tid);
+            let centroid: Vec3 = corners.iter().map(|&i| pos[i as usize]).sum::<Vec3>() / 4.0;
+            let phi_mm = meshed.sdf.eval(Point3::from(centroid)) * 1e3;
+            if phi_mm < phi_lo {
+                phi_lo = phi_mm;
+                deepest_centroid = centroid;
+            }
+            phi_hi = phi_hi.max(phi_mm);
+            let vol = meshed.raw.quality().signed_volume[tid as usize].abs();
+            total_v += vol;
+            if phi_mm > 0.0 {
+                outside_n += 1;
+                outside_v += vol;
+            }
+        }
+        println!(
+            "surface bbox (scaled m): min ({:.6}, {:.6}, {:.6}) max ({:.6}, {:.6}, {:.6})",
+            meshed.bbox.min.x,
+            meshed.bbox.min.y,
+            meshed.bbox.min.z,
+            meshed.bbox.max.x,
+            meshed.bbox.max.y,
+            meshed.bbox.max.z,
+        );
+        println!(
+            "tet centroid φ range: {phi_lo:.4} .. {phi_hi:.4} mm (negative = inside)\n\
+             centroids OUTSIDE the surface: {outside_n} of {} ({:.2} %), carrying {:.2} % of \
+             the raw mesh volume",
+            meshed.raw.n_tets(),
+            100.0 * outside_n as f64 / meshed.raw.n_tets() as f64,
+            100.0 * outside_v / total_v,
+        );
+
+        // WHERE does the impossible depth sit? Inside the surface AABB it would contradict
+        // `body_center`'s scan of that same box; outside it, `body_center` never looked.
+        let over = Vec3::new(
+            deepest_centroid.x.abs() - meshed.bbox.max.x,
+            deepest_centroid.y.abs() - meshed.bbox.max.y,
+            deepest_centroid.z.abs() - meshed.bbox.max.z,
+        );
+        println!(
+            "  deepest centroid at {deepest_centroid:?} m | outside surface AABB: {} | \
+             per-axis overhang ({:.4}, {:.4}, {:.4}) mm",
+            over.x > 0.0 || over.y > 0.0 || over.z > 0.0,
+            over.x * 1e3,
+            over.y * 1e3,
+            over.z * 1e3,
+        );
+        let native_pt = Point3::from(deepest_centroid / params.scale + meshed.center_native.coords);
+        let native_phi = native_sdf.eval(native_pt);
+        println!(
+            "  same point, native-mm oracle: φ = {native_phi:+.4} mm (scaled oracle said \
+             {phi_lo:+.4} mm) — {}",
+            if native_phi.signum() == phi_lo.signum() {
+                "frames AGREE"
+            } else {
+                "★ FRAMES DISAGREE ON THE SIGN"
+            },
+        );
+    }
+
+    /// How much of `mesh` provably sits off the disc: tets whose centroid falls outside the
+    /// surface's own AABB. Outside the box is outside the solid, so this needs no oracle and
+    /// is a strict lower bound (the AABB is far larger than the lens it contains).
+    #[allow(clippy::cast_precision_loss)]
+    fn report_phantom_material(label: &str, mesh: &SdfMeshedTetMesh, bbox: &Aabb, v_surface: f64) {
+        let pos = mesh.positions();
+        let (mut out_v, mut all_v, mut out_n) = (0.0, 0.0, 0usize);
+        let mut reach = 0.0_f64;
+        for tid in 0..mesh.n_tets() {
+            let tid = u32::try_from(tid).expect("tet id fits u32");
+            let corners = mesh.tet_vertices(tid);
+            let centroid: Vec3 = corners.iter().map(|&i| pos[i as usize]).sum::<Vec3>() / 4.0;
+            all_v += mesh.quality().signed_volume[tid as usize].abs();
+            if centroid.x < bbox.min.x
+                || centroid.x > bbox.max.x
+                || centroid.y < bbox.min.y
+                || centroid.y > bbox.max.y
+                || centroid.z < bbox.min.z
+                || centroid.z > bbox.max.z
+            {
+                out_n += 1;
+                out_v += mesh.quality().signed_volume[tid as usize].abs();
+            }
+            for &i in &corners {
+                let pt = pos[i as usize];
+                reach = reach.max(
+                    (pt.x.abs() - bbox.max.x)
+                        .max(pt.y.abs() - bbox.max.y)
+                        .max(pt.z.abs() - bbox.max.z),
+                );
+            }
+        }
+        println!(
+            "{label} | volume {all_v:.4e} m³ = {:.2} % of the surface's | centroids beyond the \
+             surface AABB: {out_n} ({:.2} % of tets, {:.2} % of volume) | furthest corner \
+             overhang {:.4} mm",
+            100.0 * all_v / v_surface,
+            100.0 * out_n as f64 / mesh.n_tets() as f64,
+            100.0 * out_v / all_v,
+            reach * 1e3,
+        );
+    }
+
     /// One `cell` of [`mesh_stability_step0_discarded_component_census_fom`]: mesh, decompose,
     /// validate against production, report.
     #[allow(clippy::cast_precision_loss)]
