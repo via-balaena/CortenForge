@@ -3864,7 +3864,7 @@ mod tests {
             ("solver metres", &metre_health),
         ] {
             assert!(
-                h.is_fully_signable(),
+                !h.has_zeroed_features(),
                 "the {label} disc has unsignable features after internal normalisation, \
                  which is the defect remedy D was supposed to remove: {h}"
             );

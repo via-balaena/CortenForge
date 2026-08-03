@@ -100,7 +100,7 @@
 //! # fn f(mesh: mesh_types::IndexedMesh) -> Result<(), Box<dyn std::error::Error>> {
 //! let distance = TriMeshDistance::new(mesh)?;
 //! let health = distance.health();
-//! if !health.is_fully_signable() {
+//! if health.has_zeroed_features() {
 //!     eprintln!("surface has unsignable features: {health}");
 //! }
 //! # Ok(())

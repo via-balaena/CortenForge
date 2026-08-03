@@ -15,12 +15,15 @@
 //! sign oracle [`crate::FloodFillSign`] — see
 //! `docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md` for the rationale.
 //!
-//! **You do not have to take "fragile" on faith about your own mesh.**
-//! [`TriMeshDistance::health`] reports whether any feature of the surface
-//! parry actually built has been left unsignable — a zeroed pseudo-normal
-//! reports "inside" at any distance — so a consumer weighing this choice
-//! can measure the case in front of it rather than reason from the
-//! general warning above.
+//! ⚠ **[`TriMeshDistance::health`] does not settle this choice for you.**
+//! It censuses the built artifact for *zeroed* pseudo-normals — the
+//! area-floor and coordinate-cap failure mode — and is **blind to winding
+//! and manifoldness**, which is what the paragraph above is about. A
+//! globally reversed winding negates every cross product, so the census is
+//! byte-identical while every sign is inverted (measured on a unit cube).
+//! Use it to answer "did the scale rule leave this surface with unsignable
+//! features"; for a scan whose winding you do not trust, [`crate::FloodFillSign`]
+//! is still the answer.
 
 use std::sync::Arc;
 
@@ -368,15 +371,22 @@ pub(crate) fn scale_rule(mesh: &IndexedMesh, margin_binades: i32) -> SdfResult<S
     // The first version of this rule errored when `wanted > max_k`, on the argument that
     // handing back a signed oracle for a surface that cannot be signed is the defect this
     // arc exists to remove. Running it across mesh-sdf's dependents killed that argument
-    // in one shot: `mesh-lattice`'s marching-cubes output carries a sliver of area
+    // in one shot: `mesh-offset`'s marching-cubes output — which `mesh-lattice` consumes —
+    // carries a sliver of area
     // **1.537e-30** across a 48.8-unit mesh — routine output when an isosurface clips a
     // cell corner — and six of its gates went red.
     //
     // Two things were wrong, both proxy errors of the kind this arc keeps catching:
     //
-    // 1. **That mesh was never unsignable.** At `max_k = 48` its smallest triangle lands at
-    //    1.2e-1, twenty-one binades clear of the floor. The rule rejected it for failing to
-    //    reach forty. Greedy, then fatal about it.
+    // 1. **That mesh was never unsignable** — though the numbers first written here to say
+    //    so were themselves products of the cap α.2 deleted. They claimed the sliver landed
+    //    at 1.2e-1, twenty-one binades clear of the floor, computed in f64 from
+    //    `sqrt(f32::MAX)/1024`. Under the corrected `coordinate_cap` the fixture clamps at
+    //    2^16 and the sliver lands 43 binades UNDER the floor — see
+    //    `a_sliver_clamps_the_scale_instead_of_failing_the_mesh`, which now asserts exactly
+    //    that. What survives is the claim, not the arithmetic: the mesh signs correctly
+    //    everywhere except the isolated sliver's own three features. Bullet 2 is the
+    //    argument that never depended on the cap.
     // 2. **"Under the floor" does not mean "cannot be signed."** A skipped triangle only
     //    zeroes a pseudo-normal where *every* triangle incident to a vertex is skipped; the
     //    FSU disc needed ~30 % of its triangles under before it broke, and R1's sweep found
@@ -943,8 +953,9 @@ mod tests {
     ///
     /// Every other quantity in `scale_for_margin` tracks something real: `area_floor()`
     /// is `f32::EPSILON / 2` because that is where parry stops computing a pseudo-normal,
-    /// `coordinate_cap()` is `sqrt(f32::MAX)` because that is where f32 products overflow,
-    /// and `min_area` / `extent` come from the mesh. The margin is a choice.
+    /// `coordinate_cap()` is `f32::MAX^(1/4)` because that is where the cross product's
+    /// `norm_squared` overflows, and `min_area` / `extent` come from the mesh. The margin
+    /// is a choice.
     ///
     /// The temptation was to *measure* it — find the smallest margin that fixes the FSU
     /// disc. That would have been the arc's original defect one level up: a constant
@@ -1240,7 +1251,7 @@ mod tests {
 
             let h = sdf.distance.health();
             assert!(
-                h.is_fully_signable(),
+                !h.has_zeroed_features(),
                 "2^{k} is within the cap (2^{max_k}) yet the census found zeroed features: {h}"
             );
             assert!(

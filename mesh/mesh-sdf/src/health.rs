@@ -72,7 +72,13 @@ pub struct SurfaceHealth {
     /// them. Well below it means welded, where a vertex has many incident triangles and
     /// survives losing one: the FSU disc needed ~30 % of its triangles under the floor
     /// before it broke. **That 30 % is a welded-mesh figure and does not transfer.**
-    /// `mesh-offset`'s marching cubes emits soup and `mesh-lattice` consumes it.
+    ///
+    /// ⚠ Both kinds ship in this workspace, and which is which is not guessable:
+    /// `mesh-lattice`'s `extract_isosurface` emits **soup** (its own comment: *"could
+    /// deduplicate, but this is simpler"*), while `mesh-offset`'s marching cubes **welds**
+    /// through a global edge cache and documents "Manifold output". α.2 first recorded
+    /// these the wrong way round — the soup it measured came from `mesh-lattice`'s own
+    /// isosurface, and was mislabelled using a note about where a *sliver* came from.
     pub referenced_vertices: usize,
     /// The internal power-of-two scale the BVH was built at.
     pub scale: f64,
@@ -195,21 +201,39 @@ impl fmt::Display for SurfaceHealth {
 }
 
 impl SurfaceHealth {
-    /// Is every feature of this surface signable?
+    /// Did parry leave **any** feature of this surface at a zero pseudo-normal?
     ///
-    /// True iff no vertex, edge or face normal parry can pick as a closest feature is zero
-    /// — i.e. there is no point in space at which this oracle reports "inside"
-    /// unconditionally.
+    /// `false` iff every counted vertex, edge and face normal is non-zero.
     ///
-    /// ⚠ **Not a quality score, and deliberately not the negation of one.** It says nothing
-    /// about the margin, the clamp, or how close to the floor the mesh sits; a surface can
-    /// be fully signable with 99 % of its triangles under the floor, and `mesh-lattice`'s
-    /// output routinely is.
+    /// ## ★★ A CONSERVATIVE screen, not a verdict — it over-reports, and by design
+    ///
+    /// A zero here is *necessary* for the "inside at any distance" failure, not
+    /// *sufficient*: parry must also select that exact feature as some query's closest one.
+    /// Degenerate fan triangles — what many CAD/STL exporters emit at a pole from a
+    /// duplicated vertex ring — produce zeroed features that are **not selectable**, so a
+    /// mesh can report `true` here and still sign every probe correctly. Measured on a
+    /// 24×48 fan-pole sphere: 48 zeroed vertices, 96 zeroed edges, 48 zeroed face normals,
+    /// and **0 signs wrong out of 15577 probes**
+    /// (`a_fan_pole_over_reports_because_the_screen_is_conservative`).
+    ///
+    /// ⚠ **This method was called `is_fully_signable` and asserted the opposite direction**
+    /// — "there is no point in space at which this oracle reports 'inside'
+    /// unconditionally". That was false as written, and false in the dangerous direction
+    /// for an instrument whose whole purpose is to be believed. Narrowing the counters to
+    /// "selectable features only" was the alternative and was rejected: it would require
+    /// *proving* which features parry can never pick, which is reasoning where this crate
+    /// has been repeatedly wrong, and the counters are honest readings of parry's arrays.
+    /// So the method is named for what it measures and the caller is told what a `true`
+    /// costs them: look closer, not "broken".
+    ///
+    /// ⚠ **Not a quality score either.** It says nothing about the margin, the clamp, or
+    /// how close to the floor the mesh sits; a surface can be clean here with 99 % of its
+    /// triangles under the floor, and `mesh-lattice`'s output routinely is.
     #[must_use]
-    pub fn is_fully_signable(&self) -> bool {
-        self.zero_pseudo_normal_vertices == 0
-            && self.zero_pseudo_normal_edges == 0
-            && self.zero_face_normals == 0
+    pub fn has_zeroed_features(&self) -> bool {
+        self.zero_pseudo_normal_vertices > 0
+            || self.zero_pseudo_normal_edges > 0
+            || self.zero_face_normals > 0
     }
 }
 
@@ -555,9 +579,9 @@ mod tests {
              report: {broken_health}"
         );
         assert!(
-            !broken_health.is_fully_signable(),
-            "`is_fully_signable` says yes on an oracle that gets {broken_wrong} of {checked} \
-             signs wrong: {broken_health}"
+            broken_health.has_zeroed_features(),
+            "`has_zeroed_features` says NO zeroed features on an oracle that gets {broken_wrong} of \
+             {checked} signs wrong: {broken_health}"
         );
 
         // ── The fixed arm: no zeroed features, and no wrong signs to go with them. ──
@@ -566,7 +590,7 @@ mod tests {
             "the normalised oracle still gets {fixed_wrong} of {checked} signs wrong"
         );
         assert!(
-            fixed_health.is_fully_signable(),
+            !fixed_health.has_zeroed_features(),
             "the normalised oracle signs every probe correctly, yet the census still reports \
              zeroed features — it is crying wolf on a mesh that works: {fixed_health}"
         );
@@ -637,9 +661,67 @@ mod tests {
         // And the decision layer is untouched: parry skips it, exactly as it always did.
         assert!(
             health.faces_skipped >= 1,
-            "parry must still skip this sliver — the decision layer mirrors its f32 \
-             `norm_squared`, underflow included, and must not have been widened with the \
-             measurement: {health}"
+            "parry must still skip this sliver: {health}"
+        );
+
+        // ⚠ This deliberately does NOT claim to guard the f32/f64 split in the decision
+        //   layer. No mesh can falsify that: for the split to matter a cross product would
+        //   need an f32 `norm_squared` that underflows while its f64 value clears
+        //   `DEFAULT_EPSILON²` (1.42e-14), and underflow needs components below ~3e-23,
+        //   whose f64 square is ~1e-45 — forty orders the wrong side. Widening line 361 to
+        //   `f64::from(eps)` leaves every test in this crate green. The separation is held
+        //   by construction and by the doc on `internal_frame_areas`, not by a gate, and
+        //   saying otherwise in an assert message would be a gate that cannot fail for the
+        //   reason it names.
+    }
+
+    /// **The screen over-reports on degenerate fans, and that is pinned rather than hidden.**
+    ///
+    /// A fan pole built from a duplicated vertex ring — routine CAD/STL export output —
+    /// gives parry a band of exactly-degenerate triangles. They zero real entries in its
+    /// pseudo-normal arrays, so [`SurfaceHealth::has_zeroed_features`] says yes. But a
+    /// zero-area triangle has no interior to project into and its edges have zero length,
+    /// so parry never selects them as a closest feature and **every probe still signs
+    /// correctly**.
+    ///
+    /// This is the direction the predicate used to claim was impossible, back when it was
+    /// called `is_fully_signable`. It is asserted here so the over-report is a documented
+    /// property with a number attached rather than a surprise in someone's triage.
+    #[test]
+    fn a_fan_pole_over_reports_because_the_screen_is_conservative() {
+        let n_lon = 48u32;
+        let mut mesh = uv_sphere(1.0, 24, n_lon);
+        let base = u32::try_from(mesh.vertices.len()).expect("fits");
+        let pole = mesh.vertices[0];
+        for _ in 0..n_lon {
+            mesh.vertices.push(pole);
+        }
+        for j in 0..n_lon {
+            mesh.faces.push([0, base + j, base + (j + 1) % n_lon]);
+        }
+
+        let distance = TriMeshDistance::new(mesh).expect("scalable");
+        let health = distance.health();
+        let sign = PseudoNormalSign::from_distance(&distance);
+        let sdf = Signed { distance, sign };
+        let (wrong, checked) = wrong_signs(&sdf, 1.0);
+        println!("\n{health}\n  -> {wrong}/{checked} signs wrong");
+
+        assert!(
+            health.has_zeroed_features(),
+            "the fan pole produced no zeroed features, so this fixture does not reproduce \
+             the over-report and the assertion below is unearned: {health}"
+        );
+        assert!(
+            health.zero_face_normals > 0,
+            "the fan triangles are not exactly degenerate, so the case being pinned — a \
+             zeroed FACE normal that is nonetheless unselectable — is absent: {health}"
+        );
+        assert_eq!(
+            wrong, 0,
+            "{wrong} of {checked} signs are wrong on the fan-pole sphere. Then the zeroed \
+             features ARE selectable, the screen is not merely conservative, and its doc \
+             (which promises the opposite) is wrong in the dangerous direction: {health}"
         );
     }
 
@@ -700,7 +782,7 @@ mod tests {
              can ever land there — the QBVH is built from triangles: {stranded_health}"
         );
         assert!(
-            stranded_health.is_fully_signable(),
+            !stranded_health.has_zeroed_features(),
             "a mesh whose only oddity is an unreferenced vertex is reported unsignable: \
              {stranded_health}"
         );
@@ -718,9 +800,11 @@ mod tests {
     ///   skipped triangle zeroes three vertices and three edges *immediately*. There are no
     ///   neighbours to carry them.
     ///
-    /// So the "30 %" figure is a property of a welded mesh and **does not transfer**.
-    /// `mesh-offset`'s marching cubes emits soup, and `mesh-lattice` consumes it — measured
-    /// during α.2's sweep at exactly `3 × faces` for both counters, at every resolution.
+    /// So the "30 %" figure is a property of a welded mesh and **does not transfer**. The
+    /// soup producer in this workspace is `mesh-lattice`'s own `extract_isosurface`
+    /// (`marching_cubes.rs:456`, *"could deduplicate, but this is simpler"*); `mesh-offset`'s
+    /// marching cubes is the opposite — it welds through a global edge cache. This test
+    /// makes its own soup from `uv_sphere` rather than resting on either claim.
     ///
     /// This is pinned because it is the interpretation key for every count in the report,
     /// and because reading the numbers without it invites exactly the linear-extrapolation
@@ -789,14 +873,16 @@ mod tests {
             v - e + f,
             2,
             "the welded sphere is closed, so Euler's formula requires V - E + F = 2; got \
-             {v} - {e} + {f} = {}. An un-deduplicated edge count lands near -{f}, because \
-             parry indexes edge pseudo-normals per TRIANGLE and stores every interior edge \
-             twice: {welded_health}",
+             {v} - {e} + {f} = {}. An un-deduplicated edge count (E = 3F) lands near \
+             {}, i.e. about -1.5x the face count, because parry indexes edge \
+             pseudo-normals per TRIANGLE and stores every interior edge twice: \
+             {welded_health}",
             v - e + f,
+            v - 2 * f,
         );
 
         // Both are perfectly signable. Soup is not a defect; it only changes how far one
         // skipped triangle would propagate, which is what the counts are read against.
-        assert!(welded_health.is_fully_signable() && soup_health.is_fully_signable());
+        assert!(!welded_health.has_zeroed_features() && !soup_health.has_zeroed_features());
     }
 }
