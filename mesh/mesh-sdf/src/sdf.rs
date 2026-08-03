@@ -84,6 +84,14 @@ impl TriMeshDistance {
     ///
     /// Returns [`SdfError::EmptyMesh`] if `mesh` has no faces.
     pub(crate) fn with_scale(mesh: IndexedMesh, scale: f64) -> SdfResult<Self> {
+        // The contract lives in the doc above and nowhere else, which is not enough for a
+        // value that divides every result. Zero silently yields infinite distances,
+        // negative mirrors the mesh, and NaN poisons the field — all of which would read
+        // as a geometry problem rather than a caller passing the wrong number.
+        debug_assert!(
+            scale.is_finite() && scale > 0.0,
+            "internal scale must be finite and positive, got {scale}"
+        );
         if mesh.faces.is_empty() {
             return Err(SdfError::EmptyMesh);
         }
@@ -162,6 +170,16 @@ fn coordinate_cap() -> f64 {
 
 /// Smallest triangle area and largest absolute coordinate, in the caller's units.
 ///
+/// ⚠ **Both quantities are taken over FACE CORNERS, never over `mesh.vertices`.**
+/// `cf-cap-planes`'s `dome_wall_only_mesh` strips cap faces and deliberately leaves their
+/// vertices behind — its doc names the contract it is relying on: *"the SDF construction
+/// tolerates unreferenced vertices (`TriMeshDistance::new` walks faces, not vertices)"* —
+/// and it feeds `TriMeshDistance::new` from both `cf-device-geometry` and `cf-cast-cli`.
+/// A stranded vertex is not part of the surface parry meshes (the QBVH is built from
+/// triangle AABBs), so letting one inflate `extent` would shrink the scale cap on account
+/// of geometry that does not exist. `mesh-repair`'s own fixture shows the shape: a
+/// stranded vertex at `(99, 99, 99)` on an otherwise unit-scale mesh.
+///
 /// # Errors
 ///
 /// Returns [`SdfError::FaceIndexOutOfRange`] if a face names a vertex the mesh does not
@@ -170,9 +188,6 @@ fn coordinate_cap() -> f64 {
 fn mesh_scale_inputs(mesh: &IndexedMesh) -> SdfResult<(f64, f64)> {
     let vertex_count = mesh.vertices.len();
     let mut extent = 0.0_f64;
-    for v in &mesh.vertices {
-        extent = extent.max(v.x.abs()).max(v.y.abs()).max(v.z.abs());
-    }
     let mut min_area = f64::INFINITY;
     for f in &mesh.faces {
         let corner = |i: u32| {
@@ -185,6 +200,9 @@ fn mesh_scale_inputs(mesh: &IndexedMesh) -> SdfResult<(f64, f64)> {
                 })
         };
         let (a, b, c) = (corner(f[0])?, corner(f[1])?, corner(f[2])?);
+        for v in [&a, &b, &c] {
+            extent = extent.max(v.x.abs()).max(v.y.abs()).max(v.z.abs());
+        }
         let area = 0.5 * (b - a).cross(&(c - a)).norm();
         // `f64::min` propagates the non-NaN operand, so a NaN area would be silently
         // dropped and the scale derived from the rest of the mesh. Take it explicitly so
@@ -856,8 +874,24 @@ mod tests {
         // position so the geometry is identical at every radius.
         let dirs: Vec<f64> = (0..=12).map(|i| 0.25 + f64::from(i) * 0.125).collect();
 
-        for radius in [1e-3_f64, 1e-2, 1.0, 100.0] {
-            let mesh = uv_sphere(radius, 24, 48);
+        // ⚠ The last entry is CLAMPED and the others are not, which is the only reason
+        //   this sweep covers the interaction at all. None of the plain spheres come near
+        //   the cap — `wanted` tops out around 35 against a `max_k` of 47..64 — so without
+        //   a slivered fixture the margin sweep would only ever exercise the unclamped
+        //   path, and "the margin does not matter" would be unproven exactly where the
+        //   rule stops honouring it.
+        for (radius, sliver) in [
+            (1e-3_f64, false),
+            (1e-2, false),
+            (1.0, false),
+            (100.0, false),
+            (48.8, true),
+        ] {
+            let mesh = if sliver {
+                slivered_sphere(48.8)
+            } else {
+                uv_sphere(radius, 24, 48)
+            };
             let mut scales: Vec<u64> = Vec::new();
             let mut reference: Option<Vec<u64>> = None;
 
@@ -910,16 +944,61 @@ mod tests {
     /// ⚠ The `wanted > achieved` assert is the load-bearing half. Without it the fixture
     /// might not be clamping at all, and "the rule succeeded" would say nothing about the
     /// path this test exists to cover.
-    #[test]
-    fn a_sliver_clamps_the_scale_instead_of_failing_the_mesh() {
-        // Extent and sliver area both taken from the mesh that actually broke.
-        let mut mesh = uv_sphere(48.8, 24, 48);
+    /// A sphere of `radius` with one near-degenerate triangle appended — extent and
+    /// sliver area both taken from the `mesh-lattice` mesh that actually broke.
+    #[allow(clippy::cast_possible_truncation)]
+    fn slivered_sphere(radius: f64) -> IndexedMesh {
+        let mut mesh = uv_sphere(radius, 24, 48);
         let base = mesh.vertices.len() as u32;
         mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
         mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
         mesh.vertices.push(Point3::new(0.5, 3.074e-30, 0.0));
         mesh.faces.push([base, base + 1, base + 2]);
+        mesh
+    }
 
+    /// **An unreferenced vertex must not move the scale — the contract `cf-cap-planes`
+    /// names in its own docs.**
+    ///
+    /// `dome_wall_only_mesh` strips cap faces and deliberately leaves their vertices
+    /// behind, on the stated grounds that *"`TriMeshDistance::new` walks faces, not
+    /// vertices"*, and it feeds this constructor from both `cf-device-geometry` and
+    /// `cf-cast-cli`. α.1's first cut computed the coordinate extent over `mesh.vertices`
+    /// and broke that silently: a stranded vertex is not part of the surface parry meshes,
+    /// but it would shrink the scale cap as though it were.
+    ///
+    /// ⚠ **The fixture has to be one whose clamp is BINDING, and the obvious choice is
+    /// blind.** `extent` reaches the answer only through `max_k`, and `max_k` only changes
+    /// anything when it is below `wanted`. On a plain `uv_sphere(1.0)` the rule wants 2¹³
+    /// against a cap of 2⁵⁴, so a stranded vertex moves the cap to 2⁴⁷ and the chosen
+    /// scale does not budge — the test would pass with the defect fully reintroduced. It
+    /// did, when this gate was first written that way.
+    ///
+    /// The slivered sphere clamps at 2⁴⁸, so a vertex at 99x its extent drags it to 2⁴¹
+    /// and the difference is visible. Verified by reintroducing the defect and watching
+    /// this fail.
+    #[test]
+    fn an_unreferenced_vertex_does_not_move_the_chosen_scale() {
+        let clean = slivered_sphere(48.8);
+        let mut stranded = clean.clone();
+        let far = 48.8 * 99.0;
+        stranded.vertices.push(Point3::new(far, far, far));
+
+        let a = crate::sdf::choose_scale(&clean).expect("sphere is scalable");
+        let b = crate::sdf::choose_scale(&stranded).expect("sphere is scalable");
+        assert_eq!(
+            a.to_bits(),
+            b.to_bits(),
+            "a vertex no face references changed the internal scale ({a} -> {b}). Then the \
+             scale rule reads geometry that is not part of the surface, and \
+             `cf-cap-planes::dome_wall_only_mesh` — which leaves stranded vertices on \
+             purpose — silently gets a worse scale than the same surface compacted."
+        );
+    }
+
+    #[test]
+    fn a_sliver_clamps_the_scale_instead_of_failing_the_mesh() {
+        let mesh = slivered_sphere(48.8);
         let min_area = smallest_area(&mesh);
         assert!(
             min_area < 1e-29,
