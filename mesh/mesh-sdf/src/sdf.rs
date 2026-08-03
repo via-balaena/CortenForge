@@ -51,7 +51,13 @@ impl TriMeshDistance {
     /// **inside** the oracle: queries are lifted in and answers brought back, so results
     /// are in the caller's units and the caller's frame never moves. Building the same
     /// surface in millimetres or in metres now gives the same answers — which it did not
-    /// before, and is why the FSU disc meshed 30 % phantom material after a rescale to SI.
+    /// before, and is why the FSU disc meshed ~30 % phantom material after a rescale to SI.
+    ///
+    /// ⚠ That `~30 %` is inherited from #712 and **has not been reconciled with the
+    /// re-anchor list**, which records the same disc as 7759 tets (~999 phantom) → 6256
+    /// clean, i.e. 12.9 % of tets or 6.22 % of kept volume. It may be the fraction of
+    /// *triangles under the area floor* wearing a volume label. Rung β re-measures the
+    /// disc; resolve it there rather than by picking whichever number reads better.
     ///
     /// # Errors
     ///
