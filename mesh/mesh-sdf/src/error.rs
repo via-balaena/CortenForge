@@ -44,21 +44,19 @@ pub enum SdfError {
     )]
     NonFiniteDeviation,
 
-    /// No internal scale satisfies both ends of the normalisation rule, so this mesh
-    /// cannot be given a trustworthy sign.
+    /// The mesh carries no geometry an internal scale could be derived from — every
+    /// triangle is exactly degenerate, or a vertex is non-finite.
     ///
-    /// The rule is two-sided: the smallest triangle must be lifted clear of parry's f32
-    /// area floor (below it the pseudo-normal is zeroed and the oracle reports "inside"
-    /// at any distance), while the largest coordinate must stay where f32 cross products
-    /// and squared norms remain finite. A mesh whose triangle areas span more dynamic
-    /// range than f32 can hold has no scale that satisfies both.
-    ///
-    /// **This is a real answer, not a failure to cope.** The alternative — clamping to
-    /// the nearest feasible scale — hands back a signed oracle for a surface that cannot
-    /// be signed, which is the defect this whole arc exists to remove.
+    /// ⚠ **Narrower than it first looks, deliberately.** An earlier version of this
+    /// variant also fired when the scale rule could not reach its full area margin without
+    /// passing the f32 coordinate cap. That turned out to reject perfectly signable meshes
+    /// — `mesh-lattice`'s marching-cubes output has slivers around 1e-30 that still clear
+    /// the floor by twenty binades once lifted — so the rule now clamps and only this
+    /// genuinely-empty case remains fatal. Reporting a *partial* lift is the job of a
+    /// construction-time guard that can measure the consequence, not of the scale rule.
     #[error(
-        "mesh cannot be internally normalised (smallest triangle area {min_area:.3e}, \
-         coordinate extent {extent:.3e}): {reason}"
+        "mesh cannot be internally normalised (smallest positive triangle area \
+         {min_area:.3e}, coordinate extent {extent:.3e}): {reason}"
     )]
     UnscalableMesh {
         /// Smallest triangle area in the mesh, in the caller's units.

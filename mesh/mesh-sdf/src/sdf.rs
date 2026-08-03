@@ -56,7 +56,7 @@ impl TriMeshDistance {
     /// # Errors
     ///
     /// - [`SdfError::EmptyMesh`] if `mesh` has no faces.
-    /// - [`SdfError::UnscalableMesh`] if no scale can satisfy both ends of the rule.
+    /// - [`SdfError::UnscalableMesh`] if the mesh has no positive-area triangle to scale from.
     /// - [`SdfError::FaceIndexOutOfRange`] if a face names a missing vertex.
     pub fn new(mesh: IndexedMesh) -> SdfResult<Self> {
         if mesh.faces.is_empty() {
@@ -189,13 +189,17 @@ fn mesh_scale_inputs(mesh: &IndexedMesh) -> SdfResult<(f64, f64)> {
         // `f64::min` propagates the non-NaN operand, so a NaN area would be silently
         // dropped and the scale derived from the rest of the mesh. Take it explicitly so
         // a corrupt vertex surfaces as an unscalable mesh rather than a plausible number.
-        min_area = if area.is_nan() {
-            f64::NAN
-        } else {
-            min_area.min(area)
-        };
-        if min_area.is_nan() {
-            break;
+        if area.is_nan() {
+            return Ok((f64::NAN, extent));
+        }
+        // ⚠ Exact zeros are SKIPPED rather than minimised over. No scale lifts a zero off
+        //   the floor, so including one would hide the smallest *liftable* triangle behind
+        //   a shortfall the rule can never close. A degenerate triangle among many is also
+        //   the status quo — parry has always skipped it — so treating it as fatal would
+        //   break meshes that work today. The scale is chosen for the triangles it can
+        //   actually help.
+        if area > 0.0 {
+            min_area = min_area.min(area);
         }
     }
     Ok((min_area, extent))
@@ -215,9 +219,9 @@ fn mesh_scale_inputs(mesh: &IndexedMesh) -> SdfResult<(f64, f64)> {
 ///
 /// # Errors
 ///
-/// - [`SdfError::UnscalableMesh`] if the smallest triangle is zero-area or non-finite (no
-///   scale lifts a zero off the floor), or if clearing the floor would push coordinates
-///   past [`coordinate_cap`].
+/// - [`SdfError::UnscalableMesh`] if no triangle has positive finite area (nothing to
+///   derive a scale from). A shortfall against the margin is CLAMPED, not fatal — see
+///   the reasoning at the clamp.
 /// - [`SdfError::FaceIndexOutOfRange`] via [`mesh_scale_inputs`].
 pub(crate) fn choose_scale(mesh: &IndexedMesh) -> SdfResult<f64> {
     scale_for_margin(mesh, AREA_MARGIN_BINADES)
@@ -241,29 +245,47 @@ pub(crate) fn scale_for_margin(mesh: &IndexedMesh, margin_binades: i32) -> SdfRe
     let (min_area, extent) = mesh_scale_inputs(mesh)?;
     // Written as a positive test so NaN falls through to the error arm rather than
     // slipping past a negated comparison: NaN is neither `> 0.0` nor `<= 0.0`.
-    let liftable = min_area > 0.0 && min_area.is_finite() && extent.is_finite();
-    if !liftable {
+    // `min_area == INFINITY` means no triangle had positive finite area at all.
+    let usable = min_area > 0.0 && min_area.is_finite() && extent.is_finite() && extent > 0.0;
+    if !usable {
         return Err(SdfError::UnscalableMesh {
             min_area,
             extent,
-            reason: "a zero-area or non-finite triangle cannot be lifted off parry's area \
-                     floor by any scale",
+            reason: "no triangle has a positive finite area, so there is no geometry here to \
+                     scale — the mesh is fully degenerate or carries non-finite vertices",
         });
     }
 
     let target = area_floor() * 2.0_f64.powi(margin_binades);
     // Area goes as length², so the scale needed is the square root of the area shortfall.
-    let k = (target / min_area).sqrt().log2().ceil().max(0.0);
+    let wanted = (target / min_area).sqrt().log2().ceil();
     let max_k = (coordinate_cap() / extent).log2().floor();
-    if k > max_k {
-        return Err(SdfError::UnscalableMesh {
-            min_area,
-            extent,
-            reason: "clearing the area floor would push coordinates past the f32 \
-                     product-overflow cap — this mesh's triangle areas span more dynamic \
-                     range than f32 can hold",
-        });
-    }
+
+    // ★★ CLAMP, do not fail — and the reason is a measurement, not a preference.
+    //
+    // The first version of this rule errored when `wanted > max_k`, on the argument that
+    // handing back a signed oracle for a surface that cannot be signed is the defect this
+    // arc exists to remove. Running it across mesh-sdf's dependents killed that argument
+    // in one shot: `mesh-lattice`'s marching-cubes output carries a sliver of area
+    // **1.537e-30** across a 48.8-unit mesh — routine output when an isosurface clips a
+    // cell corner — and six of its gates went red.
+    //
+    // Two things were wrong, both proxy errors of the kind this arc keeps catching:
+    //
+    // 1. **That mesh was never unsignable.** At `max_k = 48` its smallest triangle lands at
+    //    1.2e-1, twenty-one binades clear of the floor. The rule rejected it for failing to
+    //    reach forty. Greedy, then fatal about it.
+    // 2. **"Under the floor" does not mean "cannot be signed."** A skipped triangle only
+    //    zeroes a pseudo-normal where *every* triangle incident to a vertex is skipped; the
+    //    FSU disc needed ~30 % of its triangles under before it broke, and R1's sweep found
+    //    targets leaving the smallest at 0.05x and 0.74x of the floor still meshing
+    //    correctly. Erroring on a single sliver measures the proxy, not the consequence.
+    //
+    // Clamping is also **monotone**: `k` is never below 0, so the result is never worse
+    // than the un-normalised oracle every consumer has today. Erroring, by contrast, is a
+    // strict regression for meshes that currently work. Reporting the residual belongs to
+    // remedy C's construction-time guard, which can measure the consequence properly.
+    let k = wanted.clamp(0.0, max_k.max(0.0));
     Ok(2.0_f64.powi(k as i32))
 }
 
@@ -871,6 +893,67 @@ mod tests {
                  bit-identity above is vacuous — widen the sweep until the scale moves"
             );
         }
+    }
+
+    /// **A sliver must clamp the scale, not kill the mesh — the regression gate for the
+    /// six `mesh-lattice` failures α.1's downstream sweep turned up.**
+    ///
+    /// The first version of the rule errored when it could not reach its full area margin
+    /// without passing the f32 coordinate cap, on the argument that a surface which cannot
+    /// be signed should not get a signed oracle. `mesh-lattice`'s marching-cubes output
+    /// refuted that in one run: a sliver of area **1.537e-30** across a 48.8-unit mesh —
+    /// what an isosurface produces whenever it clips a cell corner — took six gates red.
+    ///
+    /// The mesh was never unsignable. This fixture reproduces its shape and measures the
+    /// two things that make clamping right: the rule **succeeds**, and the sliver still
+    /// ends up comfortably clear of the floor even though the full margin was unreachable.
+    ///
+    /// ⚠ The `wanted > achieved` assert is the load-bearing half. Without it the fixture
+    /// might not be clamping at all, and "the rule succeeded" would say nothing about the
+    /// path this test exists to cover.
+    #[test]
+    fn a_sliver_clamps_the_scale_instead_of_failing_the_mesh() {
+        // Extent and sliver area both taken from the mesh that actually broke.
+        let mut mesh = uv_sphere(48.8, 24, 48);
+        let base = mesh.vertices.len() as u32;
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 3.074e-30, 0.0));
+        mesh.faces.push([base, base + 1, base + 2]);
+
+        let min_area = smallest_area(&mesh);
+        assert!(
+            min_area < 1e-29,
+            "fixture's sliver ({min_area:.3e}) is not small enough to force a clamp"
+        );
+
+        let scale = crate::sdf::choose_scale(&mesh)
+            .expect("a sliver must clamp the scale, not make the mesh unscalable");
+
+        // It really did clamp: the unclamped rule wanted more than the cap allows.
+        let floor = f64::from(f32::EPSILON) / 2.0;
+        let target = floor * 2.0_f64.powi(40);
+        let wanted = (target / min_area).sqrt().log2().ceil();
+        let achieved = scale.log2();
+        assert!(
+            wanted > achieved,
+            "fixture did not exercise the clamp — the rule wanted 2^{wanted} and got \
+             2^{achieved}, so nothing was capped"
+        );
+
+        // And the clamp still bought most of what mattered: the sliver clears the floor.
+        let internal = min_area * scale * scale;
+        let binades = (internal / floor).log2();
+        println!(
+            "\nsliver {min_area:.3e}, extent 48.8 -> wanted 2^{wanted}, clamped to \
+             2^{achieved}; sliver lands at {internal:.3e}, {binades:.1} binades over the floor"
+        );
+        assert!(
+            internal > floor,
+            "even after clamping to 2^{achieved} the sliver is at {internal:.3e}, under the \
+             {floor:.3e} floor — then clamping bought nothing and the mesh really is \
+             unsignable"
+        );
     }
 
     /// **The headline claim, in licence-free form: the oracle no longer depends on the
