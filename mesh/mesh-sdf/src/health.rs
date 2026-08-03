@@ -64,6 +64,15 @@ pub struct SurfaceHealth {
     /// `cf-cap-planes::dome_wall_only_mesh`, which strands vertices **on purpose** and says
     /// so in its own doc. This is the denominator `zero_pseudo_normal_vertices` is a
     /// numerator of.
+    ///
+    /// ★ **Against `3 * faces` it also tells you how the surface is welded, which is what
+    /// makes every count below interpretable.** Equal to `3 * faces` means triangle soup —
+    /// each triangle owns its vertices and shares no edge — and there a *single* skipped
+    /// triangle zeroes three vertices and three edges at once, with no neighbours to carry
+    /// them. Well below it means welded, where a vertex has many incident triangles and
+    /// survives losing one: the FSU disc needed ~30 % of its triangles under the floor
+    /// before it broke. **That 30 % is a welded-mesh figure and does not transfer.**
+    /// `mesh-offset`'s marching cubes emits soup and `mesh-lattice` consumes it.
     pub referenced_vertices: usize,
     /// The internal power-of-two scale the BVH was built at.
     pub scale: f64,
@@ -417,4 +426,284 @@ fn zeroed_features(tri_mesh: &TriMesh) -> (usize, usize, usize, usize) {
         zero_vertices,
         zero_edges.len(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    // `unwrap`/`expect` are denied in library code; tests may use them.
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use crate::oracle::Signed;
+    use crate::sdf::PseudoNormalSign;
+    use crate::test_fixtures::uv_sphere;
+    use nalgebra::Point3;
+
+    /// Build the standard signed pair at an explicit internal scale.
+    fn sdf_at(mesh: &IndexedMesh, scale: f64) -> Signed<TriMeshDistance, PseudoNormalSign> {
+        let distance = TriMeshDistance::with_scale(mesh.clone(), scale).expect("non-empty");
+        let sign = PseudoNormalSign::from_distance(&distance);
+        Signed { distance, sign }
+    }
+
+    /// Count probes on a lattice whose sign the oracle gets wrong against the analytic
+    /// sphere, skipping the tessellation's own uncertainty band.
+    fn wrong_signs(sdf: &Signed<TriMeshDistance, PseudoNormalSign>, radius: f64) -> (usize, usize) {
+        let n = 10;
+        let (mut wrong, mut checked) = (0usize, 0usize);
+        for i in 0..=n {
+            for j in 0..=n {
+                for k in 0..=n {
+                    let q = |idx: i32| 1.6 * radius * (f64::from(idx) / f64::from(n) - 0.5) * 2.0;
+                    let p = Point3::new(q(i), q(j), q(k));
+                    let truth = p.coords.norm() - radius;
+                    if truth.abs() < 0.005 * radius {
+                        continue;
+                    }
+                    checked += 1;
+                    if (sdf.distance(p) < 0.0) != (truth < 0.0) {
+                        wrong += 1;
+                    }
+                }
+            }
+        }
+        (wrong, checked)
+    }
+
+    /// **The census sees the same defect the sign test sees — that is the whole claim.**
+    ///
+    /// `SurfaceHealth` exists to report a consequence, so the thing worth pinning is not
+    /// that its counters move but that they move *with the oracle's actual wrongness*. A
+    /// counter that lit up on healthy meshes, or stayed dark on broken ones, would be worse
+    /// than no instrument: it would be an instrument that gets believed.
+    ///
+    /// So both arms are measured on both axes, on a fixture that genuinely has the bug — a
+    /// sphere of radius 1e-3, whose pole-fan triangles sit under parry's area floor:
+    ///
+    /// | | zeroed features | wrong signs |
+    /// |---|---|---|
+    /// | `with_scale(mesh, 1.0)` — the pre-α.1 oracle | **> 0** | **> 0** |
+    /// | `new(mesh)` — internally normalised | **0** | **0** |
+    ///
+    /// ⚠ **The broken arm is the load-bearing half.** Asserting only that the fixed oracle
+    /// is clean would pass just as well on a fixture that never had the bug, and on a
+    /// census hard-coded to return zero.
+    #[test]
+    fn the_census_moves_with_the_oracle_s_actual_wrongness() {
+        let radius = 1e-3;
+        let mesh = uv_sphere(radius, 24, 48);
+
+        let broken = sdf_at(&mesh, 1.0);
+        let broken_health = broken.distance.health();
+        let (broken_wrong, checked) = wrong_signs(&broken, radius);
+
+        let fixed_distance = TriMeshDistance::new(mesh.clone()).expect("sphere is scalable");
+        let fixed_sign = PseudoNormalSign::from_distance(&fixed_distance);
+        let fixed = Signed {
+            distance: fixed_distance,
+            sign: fixed_sign,
+        };
+        let fixed_health = fixed.distance.health();
+        let (fixed_wrong, _) = wrong_signs(&fixed, radius);
+
+        println!(
+            "\nbroken (scale 1.0): {broken_health}\n  -> {broken_wrong}/{checked} signs wrong"
+        );
+        println!("fixed  (normalised): {fixed_health}\n  -> {fixed_wrong}/{checked} signs wrong");
+
+        assert!(checked > 500, "only {checked} probes cleared the band");
+
+        // ── The broken arm: the census must SEE the defect the signs demonstrate. ──
+        assert!(
+            broken_wrong > 0,
+            "the pre-α.1 oracle got every sign right, so this fixture does not reproduce \
+             the area-floor bug and nothing below is earned"
+        );
+        assert!(
+            broken_health.zero_pseudo_normal_vertices > 0,
+            "the oracle gets {broken_wrong} of {checked} signs wrong, yet the census reports \
+             no zeroed vertices. Then the census is blind to the very defect it exists to \
+             report: {broken_health}"
+        );
+        assert!(
+            !broken_health.is_fully_signable(),
+            "`is_fully_signable` says yes on an oracle that gets {broken_wrong} of {checked} \
+             signs wrong: {broken_health}"
+        );
+
+        // ── The fixed arm: no zeroed features, and no wrong signs to go with them. ──
+        assert_eq!(
+            fixed_wrong, 0,
+            "the normalised oracle still gets {fixed_wrong} of {checked} signs wrong"
+        );
+        assert!(
+            fixed_health.is_fully_signable(),
+            "the normalised oracle signs every probe correctly, yet the census still reports \
+             zeroed features — it is crying wolf on a mesh that works: {fixed_health}"
+        );
+
+        // The proxy layer moved too, and in the direction that makes the caller-frame
+        // column worth carrying: the caller's own units were deep under the floor.
+        assert!(
+            broken_health.faces_under_floor_caller > 0,
+            "the fixture is not under the floor in the caller's frame: {broken_health}"
+        );
+    }
+
+    /// **A vertex no face references must not be counted as a defect.**
+    ///
+    /// `vertices_pseudo_normal` is sized to the whole vertex buffer, so a stranded vertex
+    /// keeps an all-zero entry for ever — while being no part of the surface parry meshes,
+    /// since the QBVH is built from triangle AABBs and no query can ever land on it.
+    /// Counting the raw array would report a fleet of unsignable features on
+    /// `cf-cap-planes::dome_wall_only_mesh`, which strands vertices **on purpose** and says
+    /// so in its own doc.
+    ///
+    /// This is α.1's `extent`-over-`mesh.vertices` bug one rung later, and the reason it is
+    /// worth a gate rather than a comment: the census would have been wrong in exactly the
+    /// way the scale rule already was, on exactly the same contract.
+    ///
+    /// ⚠ **The fixture must actually strand a vertex, and the obvious choice does not.**
+    /// The sweep tried `dome_wall_only_mesh` on a cube: stripping the cap leaves all eight
+    /// corners referenced by the remaining faces, so `referenced_vertices` is 8 either way
+    /// and the test would pass with the defect fully reintroduced. Hence the explicit
+    /// append, and the assert below that the mesh really does carry an unreferenced vertex.
+    #[test]
+    fn a_stranded_vertex_is_not_counted_as_an_unsignable_feature() {
+        let clean = uv_sphere(1.0, 24, 48);
+        let mut stranded = clean.clone();
+        stranded.vertices.push(Point3::new(99.0, 99.0, 99.0));
+
+        let clean_health = TriMeshDistance::new(clean.clone())
+            .expect("scalable")
+            .health();
+        let stranded_health = TriMeshDistance::new(stranded.clone())
+            .expect("scalable")
+            .health();
+
+        // Non-vacuity: there IS a stranded vertex here for a naive count to trip over.
+        assert_eq!(
+            stranded.vertices.len(),
+            clean.vertices.len() + 1,
+            "fixture did not gain a vertex"
+        );
+        assert!(
+            stranded_health.referenced_vertices < stranded.vertices.len(),
+            "the mesh carries no unreferenced vertex, so a count over the whole vertex \
+             buffer would agree with a count over face corners and this gate is blind: \
+             {stranded_health}"
+        );
+
+        assert_eq!(
+            stranded_health.referenced_vertices, clean_health.referenced_vertices,
+            "appending a vertex no face references changed the referenced-vertex count \
+             ({} -> {})",
+            clean_health.referenced_vertices, stranded_health.referenced_vertices,
+        );
+        assert_eq!(
+            stranded_health.zero_pseudo_normal_vertices, 0,
+            "a vertex no face references was counted as an unsignable feature. parry gives \
+             it an all-zero pseudo-normal because nothing accumulates into it, but no query \
+             can ever land there — the QBVH is built from triangles: {stranded_health}"
+        );
+        assert!(
+            stranded_health.is_fully_signable(),
+            "a mesh whose only oddity is an unreferenced vertex is reported unsignable: \
+             {stranded_health}"
+        );
+    }
+
+    /// **Whether the counts are alarming depends on how the mesh is welded, and the report
+    /// carries the tell.**
+    ///
+    /// `referenced_vertices` against `3 × faces` says whether a surface is welded or
+    /// triangle soup, and that decides how far one skipped triangle propagates:
+    ///
+    /// - **Welded** — a vertex has many incident triangles, so it survives losing one. The
+    ///   FSU disc needed **~30 %** of its triangles under the floor before it broke.
+    /// - **Soup** — every triangle owns its three vertices and shares no edge, so a single
+    ///   skipped triangle zeroes three vertices and three edges *immediately*. There are no
+    ///   neighbours to carry them.
+    ///
+    /// So the "30 %" figure is a property of a welded mesh and **does not transfer**.
+    /// `mesh-offset`'s marching cubes emits soup, and `mesh-lattice` consumes it — measured
+    /// during α.2's sweep at exactly `3 × faces` for both counters, at every resolution.
+    ///
+    /// This is pinned because it is the interpretation key for every count in the report,
+    /// and because reading the numbers without it invites exactly the linear-extrapolation
+    /// mistake the arc has already made once with the disc's 30 %.
+    #[test]
+    fn the_report_distinguishes_a_welded_surface_from_triangle_soup() {
+        let welded = uv_sphere(1.0, 24, 48);
+        let welded_health = TriMeshDistance::new(welded.clone())
+            .expect("scalable")
+            .health();
+
+        // Unweld it: give every triangle its own three vertices, changing no geometry.
+        let mut soup = IndexedMesh::new();
+        for f in &welded.faces {
+            let base = u32::try_from(soup.vertices.len()).expect("fits");
+            for &i in f {
+                soup.vertices.push(welded.vertices[i as usize]);
+            }
+            soup.faces.push([base, base + 1, base + 2]);
+        }
+        let soup_health = TriMeshDistance::new(soup.clone())
+            .expect("scalable")
+            .health();
+
+        println!("\nwelded: {welded_health}\nsoup:   {soup_health}");
+
+        assert_eq!(
+            soup.faces.len(),
+            welded.faces.len(),
+            "unwelding changed the face count"
+        );
+        assert_eq!(
+            soup_health.referenced_vertices,
+            soup_health.faces * 3,
+            "soup must reference exactly three vertices per face: {soup_health}"
+        );
+        assert_eq!(
+            soup_health.distinct_edges,
+            soup_health.faces * 3,
+            "in soup no edge is shared, so distinct edges must equal 3x faces: {soup_health}"
+        );
+        assert!(
+            welded_health.referenced_vertices * 4 < welded_health.faces * 3,
+            "the welded fixture is not meaningfully welded — {} referenced vertices against \
+             {} face corners — so the contrast this test draws is not visible: \
+             {welded_health}",
+            welded_health.referenced_vertices,
+            welded_health.faces * 3,
+        );
+
+        // ★ Euler's formula, `V - E + F = 2` for a closed surface — a known value from
+        //   outside this crate, and the only independent anchor the edge count has.
+        //
+        //   It is here because the edge dedup is otherwise unpinned: parry stores
+        //   `edges_pseudo_normal` per triangle, three per face, so every interior edge
+        //   appears twice and a census that forgot to dedupe would report ~2x. Nothing else
+        //   in the suite would notice — the soup asserts above pass either way, since soup
+        //   shares no edge for a dedup to collapse, and the zeroed-edge counts are only ever
+        //   compared against this same total.
+        let (v, e, f) = (
+            i64::try_from(welded_health.referenced_vertices).expect("fits"),
+            i64::try_from(welded_health.distinct_edges).expect("fits"),
+            i64::try_from(welded_health.faces).expect("fits"),
+        );
+        assert_eq!(
+            v - e + f,
+            2,
+            "the welded sphere is closed, so Euler's formula requires V - E + F = 2; got \
+             {v} - {e} + {f} = {}. An un-deduplicated edge count lands near -{f}, because \
+             parry indexes edge pseudo-normals per TRIANGLE and stores every interior edge \
+             twice: {welded_health}",
+            v - e + f,
+        );
+
+        // Both are perfectly signable. Soup is not a defect; it only changes how far one
+        // skipped triangle would propagate, which is what the counts are read against.
+        assert!(welded_health.is_fully_signable() && soup_health.is_fully_signable());
+    }
 }
