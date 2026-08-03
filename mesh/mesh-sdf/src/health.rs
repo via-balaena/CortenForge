@@ -356,7 +356,8 @@ fn internal_frame_areas(tri_mesh: &TriMesh) -> (f64, f64, usize, usize) {
             vertices[idx[2] as usize],
         );
         let cross = (b - a).cross(&(c - a));
-        // Parry's exact test, in parry's own precision.
+        // Parry's exact test, in parry's own precision. This is a DECISION and must be
+        // bit-for-bit the one parry makes, underflow included.
         if cross.norm_squared() <= eps * eps {
             skipped += 1;
         }
@@ -365,7 +366,21 @@ fn internal_frame_areas(tri_mesh: &TriMesh) -> (f64, f64, usize, usize) {
         if cross == ParryVector::zeros() {
             degenerate += 1;
         }
-        areas.push(f64::from(cross.norm()) / 2.0);
+        // ⚠ The MEASUREMENT widens to f64 first, and must not be written as
+        //   `f64::from(cross.norm())`. `norm()` squares the components in f32 before taking
+        //   the root, and that square underflows to zero for a sliver whose components are
+        //   perfectly representable: the fixture cross of 3.074e-30 squares to 9.4e-60,
+        //   below even f32's smallest subnormal, so the area comes back 0.0. It would then
+        //   be dropped from `min_area_internal` as if degenerate while `cross != 0` kept it
+        //   out of `zero_face_normals` — falling through both counters and reporting the
+        //   sphere's minimum as if the sliver were not there.
+        //
+        //   Widening the components first costs nothing and keeps the decision above
+        //   untouched: parry's f32 verdict stays parry's, and the number reported beside it
+        //   is the true area rather than an artefact of the intermediate.
+        let widened =
+            nalgebra::Vector3::new(f64::from(cross.x), f64::from(cross.y), f64::from(cross.z));
+        areas.push(widened.norm() / 2.0);
     }
 
     let min_positive = areas
@@ -561,6 +576,70 @@ mod tests {
         assert!(
             broken_health.faces_under_floor_caller > 0,
             "the fixture is not under the floor in the caller's frame: {broken_health}"
+        );
+    }
+
+    /// **A sliver's area must survive being measured — the f32 square root underflows.**
+    ///
+    /// `internal_frame_areas` reports areas from the f32 artifact, and the obvious way to
+    /// write that is `f64::from(cross.norm())`. It is wrong for exactly the meshes this
+    /// census exists for. `norm()` squares the components in f32 before taking the root,
+    /// and for a marching-cubes sliver that square underflows: components of 3.074e-30 are
+    /// comfortably representable, but their square is 9.4e-60 — below f32's smallest
+    /// subnormal — so the norm comes back **0.0**.
+    ///
+    /// The triangle then falls through *both* counters. `min_area_internal` drops it as if
+    /// degenerate, while `cross != 0` keeps it out of `zero_face_normals`, and the report
+    /// shows the sphere's minimum as though the sliver were not in the mesh at all.
+    ///
+    /// The fix widens the components before taking the norm, which leaves parry's own
+    /// verdict untouched — `faces_skipped` still uses `norm_squared()` in f32, because that
+    /// is a *decision* parry makes and the census must mirror it exactly, underflow and
+    /// all. Only the number reported alongside it becomes true.
+    ///
+    /// Scale 1.0 is load-bearing: at the scale `new` picks for this fixture the square is
+    /// subnormal-but-nonzero and the bug does not appear.
+    #[test]
+    fn a_slivers_area_survives_the_f32_square_root() {
+        // (0,0,0), (1,0,0), (0.5, 3.074e-30, 0) -> cross = (0, 0, 3.074e-30), area half it.
+        let mut mesh = uv_sphere(1.0, 24, 48);
+        let base = u32::try_from(mesh.vertices.len()).expect("fits");
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 3.074e-30, 0.0));
+        mesh.faces.push([base, base + 1, base + 2]);
+
+        let health = TriMeshDistance::with_scale(mesh, 1.0)
+            .expect("non-empty")
+            .health();
+        println!("\n{health}");
+
+        // Non-vacuity: the f32 square really does underflow at this scale, so the naive
+        // formulation would report 0.0 here rather than merely a slightly different value.
+        let component = 3.074e-30_f32;
+        assert_eq!(
+            component * component,
+            0.0,
+            "the f32 square no longer underflows, so this fixture no longer reproduces the \
+             bug and the assertion below is unearned"
+        );
+
+        assert!(
+            (health.min_area_internal - 1.537e-30).abs() < 1e-32,
+            "the sliver's area came back {:.3e}, not ~1.537e-30. Written as \
+             `f64::from(cross.norm())` this reports the SPHERE's minimum ({:.3e} would be \
+             ~1e-3) because the sliver's area underflowed to zero and was dropped from the \
+             positive-only minimum: {health}",
+            health.min_area_internal,
+            health.min_area_internal,
+        );
+
+        // And the decision layer is untouched: parry skips it, exactly as it always did.
+        assert!(
+            health.faces_skipped >= 1,
+            "parry must still skip this sliver — the decision layer mirrors its f32 \
+             `norm_squared`, underflow included, and must not have been widened with the \
+             measurement: {health}"
         );
     }
 
