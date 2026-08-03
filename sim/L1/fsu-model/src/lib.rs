@@ -3755,6 +3755,164 @@ mod tests {
         }
     }
 
+    /// **α.2's known-value check: does `SurfaceHealth` reproduce the census the frame-bug
+    /// diagnosis was written in?**
+    ///
+    /// `TriMeshDistance::health` is a brand-new instrument, and a new instrument with no
+    /// anchor is what this arc keeps being punished by. [`report_area_floor_margin`] above
+    /// already produces the number the whole diagnosis rests on — **0 of 14489 triangles
+    /// under parry's area floor in native mm, 4342 once rescaled to solver metres** — and
+    /// it is asserted, not merely printed, by
+    /// `frame_fix_step0_area_floor_margin_by_geometry_fom`.
+    ///
+    /// So the new census gets checked against it on the same geometry, as an **exact
+    /// integer match** rather than a resemblance. If the two disagree, one of them is
+    /// wrong and neither should be believed until that is settled.
+    ///
+    /// ## ★ Why the caller-frame column is the one that anchors
+    ///
+    /// Since α.1 the oracle normalises internally, so the *internal* census on the metre
+    /// disc reads a healthy zero — that is the repair working. The quantity comparable to
+    /// the diagnosis is `faces_under_floor_caller`: how many triangles parry **would** have
+    /// dropped had the oracle been built in the units the caller handed over, which is
+    /// exactly what happened before α.1.
+    ///
+    /// ## ⚠ This is a VALIDATION, not a regression gate
+    ///
+    /// It is `#[ignore]`d and licence-gated, so CI never runs it and a change to
+    /// `mesh-sdf` will not trip it. It was run by hand against the pinned, checksummed
+    /// `BodyParts3D` triad and its result recorded in the commit that added it. Read it as
+    /// "the instrument was checked against a known value once, here is how to redo it" —
+    /// **not** as ongoing protection. The instrument's live cover is `mesh-sdf`'s own
+    /// licence-free gates in `health.rs`.
+    ///
+    /// ## ⚠ What this does NOT close
+    ///
+    /// R3 asked whether real decimated scans carry sub-floor slivers. α.2's downstream
+    /// sweep answered the *mechanism* half — decimating a uniform body to
+    /// `SDF_SOURCE_TARGET_FACES` does not manufacture them; the frame does — but that sweep
+    /// was an uncommitted spike, so treat it as a recorded observation rather than a
+    /// standing result. What *is* reproducible is the gap measured below: a uniform body
+    /// has far less spread between its smallest and median triangle than this scan does.
+    /// This test measures one real scan. It does not survey the workspace's scan consumers,
+    /// and **R3 stays open.**
+    #[test]
+    #[ignore = "needs $CF_DISC_STL (BodyParts3D, CC BY-SA, not committed)"]
+    fn alpha2_surface_health_reproduces_the_area_floor_census_on_the_real_disc() {
+        use cf_fsu_geometry::load_from_env;
+
+        let scanned = load_from_env("CF_DISC_STL").unwrap();
+        let scale = DiscParams::default().scale;
+
+        // The known value, from the instrument the diagnosis was built on.
+        let (native_known, scaled_known, total_known) = report_area_floor_margin(&scanned);
+        assert_eq!(
+            (native_known, scaled_known, total_known),
+            (0, 4342, 14489),
+            "the reference instrument no longer reproduces the recon's census, so it cannot \
+             anchor anything — settle that before reading the comparison below"
+        );
+
+        // The metre frame, built by the pipeline's own transform: recentre to the AABB
+        // centre, then scale. Areas are translation-invariant, so the recentring cannot
+        // move the census — but it is reproduced rather than skipped, because the claim is
+        // about the mesh `prepare_disc_at` actually hands the oracle.
+        let bbox = Aabb::from_points(scanned.vertices.iter());
+        let center = Point3::from(bbox.min.coords + (bbox.max - bbox.min) * 0.5);
+        let mut metre = scanned.clone();
+        for v in &mut metre.vertices {
+            *v = Point3::from((v.coords - center.coords) * scale);
+        }
+
+        let native_health = cf_fsu_geometry::oracle(&scanned).unwrap().distance.health();
+        let metre_health = cf_fsu_geometry::oracle(&metre).unwrap().distance.health();
+        println!("\nnative mm : {native_health}");
+        println!("scaled  m : {metre_health}");
+
+        // ── The anchor: exact integers, both frames. ──
+        assert_eq!(
+            native_health.faces, total_known,
+            "the census counted a different number of faces than the reference instrument"
+        );
+        assert_eq!(
+            native_health.faces_under_floor_caller, native_known,
+            "native mm: SurfaceHealth says {} triangles under the floor, the reference \
+             instrument says {native_known}",
+            native_health.faces_under_floor_caller,
+        );
+        assert_eq!(
+            metre_health.faces_under_floor_caller, scaled_known,
+            "solver metres: SurfaceHealth says {} triangles under the floor, the reference \
+             instrument says {scaled_known}. These compute the same quantity two ways — f64 \
+             areas from the caller's vertices here, native areas times scale^2 there — so a \
+             mismatch is a real difference in where the rescale lands faces relative to the \
+             floor, not a tolerance to widen",
+            metre_health.faces_under_floor_caller,
+        );
+
+        // ── R3's reading on the real disc: is the metre-frame oracle actually signable? ──
+        println!(
+            "\nR3 on the real disc | native: {} zeroed vertices, {} zeroed edges | metre: {} \
+             zeroed vertices, {} zeroed edges",
+            native_health.zero_pseudo_normal_vertices,
+            native_health.zero_pseudo_normal_edges,
+            metre_health.zero_pseudo_normal_vertices,
+            metre_health.zero_pseudo_normal_edges,
+        );
+        for (label, h) in [
+            ("native mm", &native_health),
+            ("solver metres", &metre_health),
+        ] {
+            assert!(
+                h.is_fully_signable(),
+                "the {label} disc has unsignable features after internal normalisation, \
+                 which is the defect remedy D was supposed to remove: {h}"
+            );
+        }
+
+        // ★ Reported, not asserted: the NATIVE-mm disc is the clamped one, because it sits
+        //   near z = 970 mm in the whole-atlas frame and the coordinate cap bounds absolute
+        //   coordinates, not size. Recentring to the origin is what buys the metre frame a
+        //   larger margin than the millimetre frame gets. Left as a print because it is a
+        //   fact about where BodyParts3D happens to place this vertebra, not a property of
+        //   the pipeline worth freezing — but it is exactly the silent clamp α.1 shipped
+        //   with nothing able to report it.
+        println!(
+            "clamped? native {} (margin {:.1}) | metre {} (margin {:.1})",
+            native_health.clamped,
+            native_health.area_margin_binades_achieved,
+            metre_health.clamped,
+            metre_health.area_margin_binades_achieved,
+        );
+
+        // ── How far a synthetic body's answer can be carried to a real scan. ──
+        //
+        // ⚠ Measured here, on a licence-free fixture, rather than quoted. α.2's downstream
+        //   sweep found the same contrast on decimated icospheres, but that sweep was a
+        //   throwaway spike and left no producer in the tree — so the comparison is
+        //   recomputed against `synthetic_disc`, which every other test in this module
+        //   already uses and which anyone can run.
+        let synthetic = cf_fsu_geometry::oracle(&synthetic_disc())
+            .unwrap()
+            .distance
+            .health();
+        // Named by value rather than by type: `cf-fsu-model` has no direct `mesh-sdf`
+        // dependency, and a diagnostic print is not a reason to add one.
+        let scan_spread = metre_health.median_area_internal / metre_health.min_area_internal;
+        let synthetic_spread = synthetic.median_area_internal / synthetic.min_area_internal;
+        println!(
+            "area spread (median / min, internal): real scan {scan_spread:.1}x vs synthetic \
+             {synthetic_spread:.1}x"
+        );
+        assert!(
+            scan_spread > synthetic_spread * 20.0,
+            "the real scan's area spread ({scan_spread:.1}x) is not decisively wider than a \
+             synthetic body's ({synthetic_spread:.1}x). The claim that a uniform fixture \
+             cannot stand in for a scan when reasoning about sub-floor slivers rests on \
+             this gap being large"
+        );
+    }
+
     /// **Step 0b — why is the LOFTED disc ~40 % phantom in BOTH frames?**
     ///
     /// Step 0 measured that the frame fix moves the lofted disc's phantom material by exactly
