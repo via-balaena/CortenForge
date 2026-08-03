@@ -1070,14 +1070,17 @@ mod tests {
         use parry3d::math::Point as ParryPoint;
         use parry3d::shape::Triangle;
 
-        // A right triangle with legs of the swept coordinate magnitude — the simplest shape
-        // whose cross product is exactly the product of its two legs, so the fourth power
-        // enters through `norm_squared` and nothing else.
+        // ⚠ The triangle spans the FULL box `[-coord, +coord]`, so its legs are `2 * coord`.
+        //   That is what `coordinate_cap` actually bounds: the cap limits the largest
+        //   absolute coordinate, and a mesh sitting inside that limit may contain an edge
+        //   running the whole width of it. A probe with legs of only `coord` — the obvious
+        //   one, and the first thing written here — reports the break one binade late
+        //   (2^32 against the true 2^31), so it would bless a cap that is twice too high.
         let normal_is_usable = |coord: f32| {
             let tri = Triangle::new(
-                ParryPoint::new(0.0, 0.0, 0.0),
-                ParryPoint::new(coord, 0.0, 0.0),
-                ParryPoint::new(0.0, coord, 0.0),
+                ParryPoint::new(-coord, -coord, 0.0),
+                ParryPoint::new(coord, -coord, 0.0),
+                ParryPoint::new(-coord, coord, 0.0),
             );
             // `None` is the honest failure. `Some(zero)` is the dangerous one: parry's
             // inside test is `dpt.dot(&pn) <= 0.0`, which a zero vector satisfies for every
@@ -1133,14 +1136,43 @@ mod tests {
         let extent = 1.0_f64;
         let max_k = (coordinate_cap() / extent).log2().floor();
 
-        // At and below the cap: nothing zeroed, and the areas parry sees stay finite.
+        // At and below the cap: nothing zeroed, the areas parry sees stay finite, and — the
+        // half a census cannot see — the projection still returns the right answer.
+        //
+        // ⚠ The counter is not decoration. Every row here is skipped when it exceeds the
+        //   cap, so a future tightening could silently empty this loop and leave the test
+        //   asserting nothing at all. Same hole as the one
+        //   `the_chosen_scale_is_insensitive_to_the_margin_across_decades` grew when the
+        //   cap moved, caught here by looking for it rather than by being bitten twice.
+        let mut rows_within_the_cap = 0usize;
         for k in [0_i32, 4, 8, 12, 16, 20] {
             if f64::from(k) > max_k {
                 continue;
             }
-            let h = TriMeshDistance::with_scale(mesh.clone(), 2.0_f64.powi(k))
-                .expect("sphere is non-empty")
-                .health();
+            rows_within_the_cap += 1;
+            let oracle = TriMeshDistance::with_scale(mesh.clone(), 2.0_f64.powi(k))
+                .expect("sphere is non-empty");
+
+            // The pseudo-normal path is not the only thing the cap protects: parry's
+            // point-triangle projection carries the same fourth power in its barycentric
+            // determinants. A census clean of zeroed features would say nothing about that,
+            // so the distance is checked against the fixture's own analytic radius.
+            let sign = PseudoNormalSign::from_distance(&oracle);
+            let sdf = Signed {
+                distance: oracle,
+                sign,
+            };
+            for (probe, truth) in [(1.5_f64, 0.5_f64), (0.5, -0.5)] {
+                let got = sdf.distance(Point3::new(probe, 0.0, 0.0));
+                assert!(
+                    (got - truth).abs() < 0.01,
+                    "2^{k} is within the cap (2^{max_k}) yet the signed distance at x={probe} \
+                     came back {got:.6} instead of ~{truth} — the projection has degraded even \
+                     though the pseudo-normals have not"
+                );
+            }
+
+            let h = sdf.distance.health();
             assert!(
                 h.is_fully_signable(),
                 "2^{k} is within the cap (2^{max_k}) yet the census found zeroed features: {h}"
@@ -1150,6 +1182,12 @@ mod tests {
                 "2^{k}: parry's own areas overflowed to infinity inside the cap — {h}"
             );
         }
+        assert!(
+            rows_within_the_cap >= 4,
+            "only {rows_within_the_cap} of the sweep's scales fell inside the cap \
+             (2^{max_k}), so the within-cap arm barely ran — widen the sweep or this test's \
+             clean half means nothing"
+        );
 
         // Past it: the catastrophe, reproduced. Deliberately far past, because the point is
         // not to locate the edge (the sibling test does that) but to show this fixture can
