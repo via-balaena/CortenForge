@@ -6,6 +6,38 @@ use thiserror::Error;
 pub type SdfResult<T> = Result<T, SdfError>;
 
 /// Errors that can occur during SDF computation.
+///
+/// # ★ What may be an error here, and what may not
+///
+/// **Definitional impossibility may be fatal. A quality judgment may not.**
+///
+/// Ask of every variant added below: *am I saying "I cannot proceed," or am I saying "I
+/// think this input is bad"?* The first is an error. The second is a **report** — it
+/// belongs in a construction-time summary the caller can act on, and only something that
+/// measures the actual consequence may refuse on its strength.
+///
+/// The rule exists because a constructor sees **proxies**. `choose_scale` sees the
+/// smallest triangle area; it cannot see whether any vertex ends up with all of its
+/// incident triangles skipped, which is what actually zeroes a pseudo-normal. Giving a
+/// proxy the authority to fail the build means a merely-suspicious mesh gets rejected,
+/// and the caller has no recourse because the thing that refused could not measure what
+/// it was refusing over.
+///
+/// This is not hypothetical. [`SdfError::UnscalableMesh`] was first written to fire when
+/// the scale rule could not reach its full area margin — a quality judgment wearing an
+/// error's clothes. It rejected `mesh-lattice`'s marching-cubes output, whose slivers
+/// clear the floor by twenty binades once lifted, and took six gates red. Narrowed to the
+/// definitional case; the shortfall is now clamped and reported.
+///
+/// `mesh-sdf` already had the pattern right elsewhere, which is what makes the slip
+/// instructive: `inside_components > 1` is a genuine quality signal — a flood leak, or a
+/// body that is not one body — and [`crate::FloodFillReport`] **reports** it rather than
+/// refusing. That is the shape to copy.
+///
+/// Audited against this line: every variant here and in [`crate::FloodFillError`] is
+/// definitional. [`FloodFillError::NoOutsideSeed`](crate::FloodFillError::NoOutsideSeed)
+/// is the closest call — it reads like "your bounds are too tight" — but mechanically the
+/// BFS has no cell to start from, so there is no answer to compute rather than a poor one.
 #[derive(Debug, Error)]
 pub enum SdfError {
     /// Mesh has no faces (nothing to build a surface or BVH from).
@@ -13,6 +45,13 @@ pub enum SdfError {
     EmptyMesh,
 
     /// Grid dimensions are invalid.
+    ///
+    /// ⚠ **Dead: no code in the workspace constructs this.** Surfaced by the audit above.
+    /// Removing it is a breaking change to a public enum, so it is left for a deliberate
+    /// API pass rather than smuggled into a behaviour PR — but it is safe to remove when
+    /// that happens: every downstream consumer wraps `SdfError` with `#[from]`, so nothing
+    /// matches it exhaustively (`mesh-offset`, `cf-codesign`) and `mesh-lattice` keeps its
+    /// own `String` variant.
     #[error("invalid grid dimensions: {0}")]
     InvalidDimensions(String),
 
