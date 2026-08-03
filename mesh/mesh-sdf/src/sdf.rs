@@ -137,7 +137,7 @@ fn lift(p: Point3<f64>, scale: f64) -> Point3<f64> {
 /// `‖ab × ac‖` is twice the area, so a triangle at or under `f32::EPSILON / 2` is skipped
 /// — leaving a **zero** pseudo-normal, which parry's `dpt.dot(&pn) <= 0.0` inside test
 /// satisfies unconditionally. A zero pseudo-normal reports "inside" at any distance.
-fn area_floor() -> f64 {
+pub(crate) fn area_floor() -> f64 {
     f64::from(f32::EPSILON) / 2.0
 }
 
@@ -157,7 +157,7 @@ fn area_floor() -> f64 {
 /// middle of a feasible band tens of binades wide, and
 /// `the_chosen_scale_is_insensitive_to_the_margin_across_decades` asserts that the
 /// **result does not depend on it** — which is a stronger claim than any fitted number.
-const AREA_MARGIN_BINADES: i32 = 40;
+pub(crate) const AREA_MARGIN_BINADES: i32 = 40;
 
 /// Largest internal coordinate magnitude the BVH may be built at.
 ///
@@ -255,11 +255,51 @@ pub(crate) fn choose_scale(mesh: &IndexedMesh) -> SdfResult<f64> {
 /// # Errors
 ///
 /// As `choose_scale`.
-// `k` is clamped to `[0, max_k]`, and `max_k` is finite because the guard below
-// establishes `extent > 0` and `coordinate_cap()` is a finite constant — so the value cast
-// to i32 is a small non-negative integer and cannot truncate.
-#[allow(clippy::cast_possible_truncation)]
 pub(crate) fn scale_for_margin(mesh: &IndexedMesh, margin_binades: i32) -> SdfResult<f64> {
+    Ok(scale_rule(mesh, margin_binades)?.chosen())
+}
+
+/// The two exponents [`scale_for_margin`] decides between, before the clamp resolves them.
+///
+/// Split out because **the guard has to report the clamp, and a second copy of this
+/// arithmetic would drift from the one that ships.** `TriMeshDistance::health` needs to say
+/// how far short of the requested margin a mesh landed, which means it needs `wanted` — a
+/// number `scale_for_margin` used to compute and throw away. One producer, queried twice.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ScaleRule {
+    /// Power-of-two exponent that would put the smallest triangle the full margin above
+    /// [`area_floor`], ignoring the coordinate cap.
+    pub wanted: f64,
+    /// Largest exponent [`coordinate_cap`] permits for this mesh's extent.
+    pub max_k: f64,
+}
+
+impl ScaleRule {
+    /// The scale actually built at: `2^clamp(wanted, 0, max_k)`.
+    // `k` is clamped to `[0, max_k]`, and `max_k` is finite because `scale_rule`'s guard
+    // establishes `extent > 0` and `coordinate_cap()` is a finite constant — so the value
+    // cast to i32 is a small non-negative integer and cannot truncate.
+    #[allow(clippy::cast_possible_truncation)]
+    pub(crate) fn chosen(self) -> f64 {
+        let k = self.wanted.clamp(0.0, self.max_k.max(0.0));
+        2.0_f64.powi(k as i32)
+    }
+
+    /// Did the coordinate cap stop the rule reaching its requested margin?
+    ///
+    /// A property of the **mesh**, not of the scale that happened to be used, so it is
+    /// meaningful even for an oracle built through the `with_scale` test seam.
+    pub(crate) fn clamped(self) -> bool {
+        self.wanted > self.max_k
+    }
+}
+
+/// Evaluate the scale rule without resolving the clamp.
+///
+/// # Errors
+///
+/// As [`choose_scale`].
+pub(crate) fn scale_rule(mesh: &IndexedMesh, margin_binades: i32) -> SdfResult<ScaleRule> {
     let (min_area, extent) = mesh_scale_inputs(mesh)?;
     // Written as a positive test so NaN falls through to the error arm rather than
     // slipping past a negated comparison: NaN is neither `> 0.0` nor `<= 0.0`.
@@ -302,9 +342,9 @@ pub(crate) fn scale_for_margin(mesh: &IndexedMesh, margin_binades: i32) -> SdfRe
     // Clamping is also **monotone**: `k` is never below 0, so the result is never worse
     // than the un-normalised oracle every consumer has today. Erroring, by contrast, is a
     // strict regression for meshes that currently work. Reporting the residual belongs to
-    // remedy C's construction-time guard, which can measure the consequence properly.
-    let k = wanted.clamp(0.0, max_k.max(0.0));
-    Ok(2.0_f64.powi(k as i32))
+    // [`TriMeshDistance::health`], which measures the consequence properly — the clamp is
+    // resolved by `ScaleRule::chosen` and reported by `ScaleRule::clamped`.
+    Ok(ScaleRule { wanted, max_k })
 }
 
 impl UnsignedDistance for TriMeshDistance {

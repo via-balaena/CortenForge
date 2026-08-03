@@ -87,6 +87,7 @@
 
 mod error;
 mod flood_fill;
+mod health;
 mod metrics;
 mod oracle;
 mod sdf;
@@ -100,6 +101,7 @@ pub use flood_fill::{
     CachedGridSdf, FloodFillSign, FloodFilledSdfBuildError, WALL_THRESHOLD_FACTOR_DEFAULT,
     flood_filled_sdf,
 };
+pub use health::SurfaceHealth;
 pub use metrics::{
     DeviationReport, SampleOptions, SignedExtremes, hausdorff_distance, surface_deviation_to_sdf,
 };
