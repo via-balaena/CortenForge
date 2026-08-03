@@ -1,8 +1,14 @@
 //! Shared fixtures for mesh-sdf's test modules.
 //!
-//! Test-only (gated under `#[cfg(test)]` at the lib.rs mod declaration);
-//! `pub(crate)` so `sdf::tests` and `sdf_adapter::tests` can both
-//! consume the same definitions without duplicating fixture code.
+//! Test-only (gated under `#[cfg(test)]` at the lib.rs mod declaration); `pub(crate)` so
+//! `sdf::tests`, `sdf_adapter::tests` and `health::tests` can all consume the same
+//! definitions without duplicating fixture code.
+//!
+//! Two kinds live here, and the second is the newer one: **geometry** (`unit_tetrahedron`,
+//! `uv_sphere`) and **standard assembly** of the system under test (`build_sdf_at`). A
+//! helper earns its place here the moment a second module needs it — `build_sdf_at` was
+//! briefly copied into `health::tests` verbatim, which is precisely what this file exists
+//! to prevent.
 
 use mesh_types::{IndexedMesh, Point3};
 
