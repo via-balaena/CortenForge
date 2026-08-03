@@ -21,8 +21,13 @@
 //! | layer | fields | computed from |
 //! |---|---|---|
 //! | **proxy** | `min_area_caller`, `faces_under_floor_caller` | the caller's mesh, in f64 |
-//! | **decision** | `min_area_internal`, `median_area_internal`, `faces_skipped` | the built f32 artifact, by parry's own test |
+//! | **decision** | `min_area_internal`, `median_area_internal`, `faces_skipped`, `area_margin_binades_achieved`, `clamped` | the built f32 artifact, by parry's own test |
 //! | **consequence** | `zero_pseudo_normal_vertices` / `_edges`, `zero_face_normals` | parry's own pseudo-normal arrays |
+//!
+//! One invariant does hold across two of the layers, and it is worth knowing because it is
+//! the only inequality here that is not an empirical question: an exactly degenerate
+//! triangle has `‖ab × ac‖² = 0`, which is trivially under any epsilon, so
+//! `zero_face_normals <= faces_skipped` always.
 //!
 //! The consequence layer is the one that matters, and it is read off the artifact that will
 //! actually be queried rather than re-derived — `TriMesh::pseudo_normals()` is public, so
@@ -32,16 +37,20 @@ use std::collections::HashSet;
 use std::fmt;
 
 use mesh_types::IndexedMesh;
-use parry3d::math::Real as ParryReal;
+use parry3d::math::{DEFAULT_EPSILON, Vector as ParryVector};
 use parry3d::shape::TriMesh;
 
-use crate::sdf::{AREA_MARGIN_BINADES, TriMeshDistance, area_floor, scale_rule};
+use crate::sdf::{AREA_MARGIN_BINADES, ScaleRule, TriMeshDistance, area_floor, scale_rule};
 
 /// What [`TriMeshDistance::health`] found in the oracle's own BVH.
 ///
 /// Every field is a count or a measured quantity — there is no verdict, no score and no
 /// threshold. Read the module docs for why the three layers are kept apart.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// Plain public fields and `Debug + Clone`, matching [`crate::FloodFillReport`] — the
+/// crate's other construction-time diagnostic, and the one whose report-don't-refuse shape
+/// this deliberately copies.
+#[derive(Debug, Clone)]
 pub struct SurfaceHealth {
     // ── the artifact ──
     /// Triangles in the surface parry meshes.
@@ -65,18 +74,28 @@ pub struct SurfaceHealth {
     /// Positive-only, matching the scale rule: an exactly degenerate triangle is counted by
     /// `zero_face_normals` instead, because no scale can lift a zero off the floor.
     pub min_area_caller: f64,
-    /// Triangles at or under [`crate::TriMeshDistance::health`]'s area floor **in the
-    /// caller's frame** — i.e. how many parry would have skipped had the oracle been built
-    /// in the caller's units, as it was before internal normalisation.
+    /// Triangles at or under parry's area floor (`f32::EPSILON / 2`) **in the caller's
+    /// frame** — i.e. how many parry would have skipped had the oracle been built in the
+    /// caller's units, as it was before internal normalisation.
     ///
     /// This is the number the FSU diagnosis was written in (4342 of 14489 for the scanned
     /// L4–L5 disc, once rescaled to metres) and the reason the field is worth keeping: it
     /// says how much danger internal normalisation took the caller out of. It is an f64
     /// model of a decision parry makes in f32; `faces_skipped` is the real one.
+    ///
+    /// ⚠ **Includes exactly degenerate triangles, where `min_area_caller` excludes them.**
+    /// The asymmetry is deliberate and neither half is free to change: the minimum feeds
+    /// the scale rule, which has nothing to say about a zero, while the count reproduces
+    /// `cf_fsu_model::report_area_floor_margin`'s `area <= floor` — the definition the
+    /// known value this instrument is checked against was measured under.
     pub faces_under_floor_caller: usize,
 
     // ── layer 2: the decision, in the frame parry actually sees ──
     /// Smallest positive triangle area in the built f32 artifact.
+    ///
+    /// Positive-only for the same reason as `min_area_caller`, which means
+    /// `area_margin_binades_achieved` — derived from this — describes the margin of the
+    /// triangles a scale can actually help. The ones it cannot are `zero_face_normals`.
     pub min_area_internal: f64,
     /// Median triangle area in the built f32 artifact.
     ///
@@ -90,7 +109,8 @@ pub struct SurfaceHealth {
     ///
     /// A skipped triangle contributes nothing to its vertices' or edges' pseudo-normals. It
     /// is still meshed, still projected onto, and still signed correctly wherever its
-    /// *interior* is the closest feature — see `zero_face_normals`.
+    /// *interior* is the closest feature — see `zero_face_normals`, which is always a
+    /// subset of this count.
     pub faces_skipped: usize,
     /// Binades of area margin over the floor the smallest positive triangle actually
     /// achieved, `log2(min_area_internal / floor)`.
@@ -209,9 +229,12 @@ impl TriMeshDistance {
     ///
     /// # Panics
     ///
-    /// Does not panic. The scale rule cannot fail here — a `TriMeshDistance` only exists if
-    /// it already succeeded, or if a `pub(crate)` caller supplied an explicit scale for a
-    /// mesh the rule accepted.
+    /// Does not panic, but the guarantee is parry's rather than this function's and is
+    /// worth stating where it comes from. Walking the artifact indexes its vertex buffer by
+    /// face index — and a face naming a vertex the mesh does not have would already have
+    /// panicked *inside* `TriMesh::with_flags`, whose `compute_pseudo_normals` indexes
+    /// unguarded, long before any oracle existed to ask. `TriMeshDistance::new` rejects the
+    /// same input earlier still, with [`crate::SdfError::FaceIndexOutOfRange`].
     #[must_use]
     pub fn health(&self) -> SurfaceHealth {
         let tri_mesh = self.shared_tri_mesh();
@@ -244,7 +267,7 @@ impl TriMeshDistance {
             faces_skipped,
             area_margin_binades_achieved: (min_area_internal / floor).log2(),
             area_margin_binades_requested: AREA_MARGIN_BINADES,
-            clamped: rule.is_some_and(crate::sdf::ScaleRule::clamped),
+            clamped: rule.is_some_and(ScaleRule::clamped),
             zero_pseudo_normal_vertices: zero_v,
             zero_pseudo_normal_edges: zero_e,
             distinct_edges,
@@ -286,14 +309,20 @@ fn caller_frame_areas(mesh: &IndexedMesh, floor: f64) -> (f64, usize) {
 /// Areas of the built f32 artifact, and how many triangles parry drops.
 ///
 /// ⚠ **Computed the way parry computes it, not the way the caller's mesh would suggest.**
-/// `Triangle::normal` is `Unit::try_new(ab × ac, f32::EPSILON)`, and `Unit::try_new` keeps a
-/// vector iff `‖v‖² > eps²` — all in f32, on the narrowed coordinates. Modelling that in f64
-/// would agree almost everywhere and disagree exactly at the boundary this instrument exists
-/// to describe.
+/// `Triangle::normal` is `Unit::try_new(ab × ac, DEFAULT_EPSILON)`, and `Unit::try_new` keeps
+/// a vector iff `‖v‖² > eps²` — all in f32, on the narrowed coordinates. Modelling that in
+/// f64 would agree almost everywhere and disagree exactly at the boundary this instrument
+/// exists to describe.
+///
+/// The epsilon is taken from `parry3d::math::DEFAULT_EPSILON` rather than written out as
+/// `f32::EPSILON`. They are the same value today — `DEFAULT_EPSILON` is *defined* as
+/// `Real::EPSILON` — and that is exactly why the constant is read instead of reproduced: if
+/// parry ever moves it, a census that hardcoded the identity would keep reporting a decision
+/// parry had stopped making.
 ///
 /// Returns `(min positive area, median area, skipped, exactly degenerate)`.
 fn internal_frame_areas(tri_mesh: &TriMesh) -> (f64, f64, usize, usize) {
-    let eps = ParryReal::EPSILON;
+    let eps = DEFAULT_EPSILON;
     let vertices = tri_mesh.vertices();
     let mut areas: Vec<f64> = Vec::with_capacity(tri_mesh.indices().len());
     let mut skipped = 0usize;
@@ -312,7 +341,7 @@ fn internal_frame_areas(tri_mesh: &TriMesh) -> (f64, f64, usize, usize) {
         }
         // The face branch of the sign consults `scaled_normal()` directly, with no epsilon,
         // so only an exact zero breaks it.
-        if cross == parry3d::math::Vector::zeros() {
+        if cross == ParryVector::zeros() {
             degenerate += 1;
         }
         areas.push(f64::from(cross.norm()) / 2.0);
@@ -363,7 +392,7 @@ fn zeroed_features(tri_mesh: &TriMesh) -> (usize, usize, usize, usize) {
             let is_zero = pseudo_normals.is_some_and(|pn| {
                 pn.edges_pseudo_normal
                     .get(face)
-                    .is_some_and(|e| e[slot] == parry3d::math::Vector::zeros())
+                    .is_some_and(|e| e[slot] == ParryVector::zeros())
             });
             if is_zero {
                 zero_edges.insert(edge);
@@ -377,7 +406,7 @@ fn zeroed_features(tri_mesh: &TriMesh) -> (usize, usize, usize, usize) {
             .filter(|&&v| {
                 pn.vertices_pseudo_normal
                     .get(v as usize)
-                    .is_some_and(|n| *n == parry3d::math::Vector::zeros())
+                    .is_some_and(|n| *n == ParryVector::zeros())
             })
             .count()
     });
