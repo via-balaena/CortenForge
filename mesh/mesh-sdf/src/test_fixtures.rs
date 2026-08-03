@@ -6,6 +6,25 @@
 
 use mesh_types::{IndexedMesh, Point3};
 
+use crate::oracle::Signed;
+use crate::sdf::{PseudoNormalSign, TriMeshDistance};
+
+/// Compose the standard `Signed<TriMeshDistance, PseudoNormalSign>` pair at an **explicit**
+/// internal scale.
+///
+/// Lives here rather than in either test module because both need it: `sdf::tests` drives
+/// the scale rule through it, and `health::tests` uses `scale = 1.0` to reconstruct the
+/// pre-α.1 oracle as a control. It was briefly duplicated in the two modules, which is the
+/// exact thing this file's own doc says it exists to prevent.
+pub(crate) fn build_sdf_at(
+    mesh: &IndexedMesh,
+    scale: f64,
+) -> Signed<TriMeshDistance, PseudoNormalSign> {
+    let distance = TriMeshDistance::with_scale(mesh.clone(), scale).expect("fixture is non-empty");
+    let sign = PseudoNormalSign::from_distance(&distance);
+    Signed { distance, sign }
+}
+
 /// Regular tetrahedron with the bottom face on z=0 and apex above.
 ///
 /// Bottom face winding `[0, 2, 1]` is CCW from below — the outward

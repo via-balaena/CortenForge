@@ -436,15 +436,8 @@ mod tests {
     use super::*;
     use crate::oracle::Signed;
     use crate::sdf::PseudoNormalSign;
-    use crate::test_fixtures::uv_sphere;
+    use crate::test_fixtures::{build_sdf_at, uv_sphere};
     use nalgebra::Point3;
-
-    /// Build the standard signed pair at an explicit internal scale.
-    fn sdf_at(mesh: &IndexedMesh, scale: f64) -> Signed<TriMeshDistance, PseudoNormalSign> {
-        let distance = TriMeshDistance::with_scale(mesh.clone(), scale).expect("non-empty");
-        let sign = PseudoNormalSign::from_distance(&distance);
-        Signed { distance, sign }
-    }
 
     /// Count probes on a lattice whose sign the oracle gets wrong against the analytic
     /// sphere, skipping the tessellation's own uncertainty band.
@@ -488,12 +481,21 @@ mod tests {
     /// ⚠ **The broken arm is the load-bearing half.** Asserting only that the fixed oracle
     /// is clean would pass just as well on a fixture that never had the bug, and on a
     /// census hard-coded to return zero.
+    ///
+    /// ## Its relationship to `internal_normalisation_fixes_the_sign_below_the_area_floor`
+    ///
+    /// The two overlap on purpose and neither is redundant. That one is **α.1's** claim —
+    /// internal normalisation repairs the sign — and it owns the radius sweep (1e-3 and
+    /// 1e-4) and the sign counts. This is **α.2's**: the census reports what that repair
+    /// fixed. It borrows the sign measurement only as the anchor its counters are checked
+    /// against, because a census validated against nothing is the failure mode this whole
+    /// arc is about. Delete the sibling and this one still passes while meaning much less.
     #[test]
     fn the_census_moves_with_the_oracle_s_actual_wrongness() {
         let radius = 1e-3;
         let mesh = uv_sphere(radius, 24, 48);
 
-        let broken = sdf_at(&mesh, 1.0);
+        let broken = build_sdf_at(&mesh, 1.0);
         let broken_health = broken.distance.health();
         let (broken_wrong, checked) = wrong_signs(&broken, radius);
 

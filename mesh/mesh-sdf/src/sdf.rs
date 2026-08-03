@@ -524,7 +524,7 @@ fn parry_to_f64(p: ParryPoint<ParryReal>) -> Point3<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_fixtures::{unit_tetrahedron, uv_sphere};
+    use crate::test_fixtures::{build_sdf_at, unit_tetrahedron, uv_sphere};
     use approx::assert_relative_eq;
     use mesh_types::Point3;
 
@@ -1571,14 +1571,6 @@ mod tests {
                 0.5 * (b - a).cross(&(c - a)).norm()
             })
             .fold(f64::INFINITY, f64::min)
-    }
-
-    /// Compose the standard pair at an explicit internal scale.
-    fn build_sdf_at(mesh: &IndexedMesh, scale: f64) -> Signed<TriMeshDistance, PseudoNormalSign> {
-        let distance =
-            TriMeshDistance::with_scale(mesh.clone(), scale).expect("fixture is non-empty");
-        let sign = PseudoNormalSign::from_distance(&distance);
-        Signed { distance, sign }
     }
 
     /// Scale every vertex of `m` by exactly `s` — no re-tessellation, so the result is the
