@@ -155,12 +155,12 @@ mod tests {
     /// fixed *relative* position (`1.5·r`) so the geometry is identical across the sweep and
     /// only the coordinate magnitude changes.
     ///
-    /// ## Measured — and the band is about **one decade wide**
+    /// ## Measured — the band now runs from 1e-3, and the **upper** end is the live defect
     ///
     /// | radius | h/radius | max ‖g‖−1 | max ang° | |
     /// |---|---|---|---|---|
-    /// | 1e-3 | 1.0e-3 | **8.7e2** | **179.94** | sign broken: triangles under the area floor |
-    /// | 1e-2 | 1.0e-4 | 5.25e-4 | 2.92 | **best** |
+    /// | 1e-3 | 1.0e-3 | 5.566e-5 | 2.91 | **repaired by α.1** — was 8.7e2 / 179.94 |
+    /// | 1e-2 | 1.0e-4 | 5.25e-4 | 2.92 | |
     /// | 5e-2 | 2.0e-5 | 2.17e-3 | 2.92 | *the FSU disc's own metre-frame extent* |
     /// | 1e-1 | 1.0e-5 | 5.61e-3 | 2.93 | |
     /// | 1e0 | 1.0e-6 | 3.80e-2 | 4.83 | |
@@ -168,21 +168,27 @@ mod tests {
     /// | 1e2 | 1.0e-8 | 2.86e0 | 114.23 | |
     /// | 1e3 | 1.0e-9 | 2.62e1 | 129.93 | |
     ///
-    /// **Two failure modes, one at each end.** Below the band the *area floor* kills the sign,
-    /// and because `grad` central-differences a **signed** value a sign flip between the two
-    /// probes yields a spurious gradient of order `φ/h` — the 179.94° is the gradient pointing
-    /// backwards. Above the band the fixed step is swamped by the `f32` projection error,
-    /// growing **linearly in `E`** exactly as predicted (≈ ×10 per decade).
+    /// **There used to be two failure modes, one at each end. α.1 removed the lower one.**
+    /// Below the band the *area floor* killed the sign, and because `grad`
+    /// central-differences a **signed** value a flip between the two probes yielded a spurious
+    /// gradient of order `φ/h` — the 179.94° was the gradient pointing backwards. Internal
+    /// normalisation (`choose_scale`) lifts the mesh clear of that floor, and the row's angular
+    /// error fell to **2.91°, indistinguishable from the tessellation deviation of every other
+    /// row** — i.e. what remains there is facet geometry, with no numerical contribution left.
     ///
-    /// ⚠ **The FSU disc's metre-frame extent (0.0502) sits inside this band by accident** —
-    /// nobody chose it; it is where `scale = 1e-3` happened to land. That also means every
-    /// endplate projection in the arc carries a few × 1e-3 of gradient error, which had never
-    /// been measured.
+    /// ⚠ **The rows from 1e-2 up did not move by a single bit.** That is the point: the repair
+    /// is confined to where the answer was already wrong. Confirmed twice over — by
+    /// `internal_normalisation_leaves_grad_bit_identical` before the rule shipped, and by this
+    /// table reading identical values after it did.
     ///
-    /// ⚠⚠ **This is why normalising mesh coordinates internally is not sufficient on its own.**
-    /// A target extent chosen to clear the area floor with margin (≥ 4, per the disc's R1
-    /// sweep) lands `grad` at ~19 % error. The two constants have to be made *dimensionless* —
-    /// `h` relative first, normalisation second — or fixing one breaks the other.
+    /// ⚠⚠ **The upper end is still open, and it is `h`'s to fix, not normalisation's.** An
+    /// earlier version of this doc claimed the opposite — that internal normalisation would
+    /// land `grad` at ~19 % error and therefore had to wait for a relative `h`. **That was
+    /// refuted in #713**: the 19 % came from a test adapter (`cf_fsu_model`'s
+    /// `NormalisedOracle`) that queries the inner oracle *in the scaled frame*, which
+    /// normalisation does not do. The two constants are independent; `h` is still absolute and
+    /// still owed a fix, and its real home is `cf-design`'s `FieldNode::UserFn`, since
+    /// `Solid::from_sdf` captures `eval` and discards this `grad` entirely.
     ///
     /// ## What is asserted, and what deliberately is not
     ///
@@ -325,76 +331,81 @@ mod tests {
             .fold(f64::INFINITY, f64::min)
     }
 
-    /// **Remedy D, expressed exactly as it would land inside `mesh-sdf`.**
+    /// **The pre-α.1 oracle**: BVH built at the caller's own coordinates, no internal
+    /// normalisation, queried in the caller's frame.
     ///
-    /// The mesh is scaled by `2^k` at *construction*; every query is lifted into that
-    /// internal frame and the answer brought back. The load-bearing property is what
-    /// this adapter does **not** do: it never changes the frame the caller queries in.
-    ///
-    /// Implemented as an [`UnsignedDistance`] + [`Sign`] pair rather than as a direct
-    /// [`Sdf`] impl on purpose — composing them through [`Signed`] means the blanket
-    /// `impl Sdf for Signed<D, S>` **under test** supplies `grad`, unmodified. A
-    /// hand-written `grad` here would be a copy of the code it is meant to measure.
-    struct NormalisedDistance {
-        inner: crate::TriMeshDistance,
-        s: f64,
-    }
-
-    impl NormalisedDistance {
-        fn lift(p: Point3<f64>, s: f64) -> Point3<f64> {
-            Point3::new(p.x * s, p.y * s, p.z * s)
-        }
-    }
-
-    impl UnsignedDistance for NormalisedDistance {
-        fn distance(&self, p: Point3<f64>) -> f64 {
-            self.inner.distance(Self::lift(p, self.s)) / self.s
-        }
-        fn closest_point(&self, p: Point3<f64>) -> Point3<f64> {
-            let q = self.inner.closest_point(Self::lift(p, self.s));
-            Point3::new(q.x / self.s, q.y / self.s, q.z / self.s)
-        }
-    }
-
-    /// The sign half of the same internal normalisation — shares the scaled BVH with
-    /// [`NormalisedDistance`] the way `PseudoNormalSign::from_distance` shares the
-    /// unscaled one.
-    struct NormalisedSign {
-        inner: crate::PseudoNormalSign,
-        s: f64,
-    }
-
-    impl Sign for NormalisedSign {
-        fn is_inside(&self, p: Point3<f64>) -> bool {
-            self.inner.is_inside(NormalisedDistance::lift(p, self.s))
-        }
-    }
-
-    /// Today's composition: oracle built and queried in the caller's frame.
+    /// ⚠ Pinned to `with_scale(mesh, 1.0)` rather than `new`, and the distinction is the
+    /// whole reason these gates still measure anything. Once `new` chooses a scale, an
+    /// arm built with `new` would be internally normalised too, both arms would be
+    /// normalised, and every comparison below would pass **tautologically**. `1.0` makes
+    /// each lift and unlift an exact no-op, so this stays the behaviour #712 measured —
+    /// and `with_scale_1_reproduces_the_committed_pre_normalisation_column` is what
+    /// proves that claim rather than asserting it.
     #[allow(clippy::expect_used)]
     fn plain_sdf(
         mesh: &mesh_types::IndexedMesh,
     ) -> Signed<crate::TriMeshDistance, crate::PseudoNormalSign> {
-        let distance = crate::TriMeshDistance::new(mesh.clone()).expect("fixture is non-empty");
+        let distance =
+            crate::TriMeshDistance::with_scale(mesh.clone(), 1.0).expect("fixture is non-empty");
         let sign = crate::PseudoNormalSign::from_distance(&distance);
         Signed { distance, sign }
     }
 
-    /// Remedy D's composition: oracle built on the mesh times `s`, queried in the
-    /// caller's frame.
+    /// **Remedy D's composition — the production seam, not a replica of it.**
+    ///
+    /// Until α.1 this was a pair of test-only `UnsignedDistance` / `Sign` adapters that
+    /// reproduced what an internal normalisation *would* do. `TriMeshDistance::with_scale`
+    /// now does it, so the gates measure the shipped code path directly and the replica
+    /// is deleted.
+    ///
+    /// That is not tidying. The arc's "F must precede D" error came from measuring a
+    /// test-only adapter (`cf_fsu_model`'s `NormalisedOracle`) and reading its behaviour
+    /// as the primitive's; a replica that can drift from what ships is the same hazard
+    /// one crate over. There is now nothing to drift.
     #[allow(clippy::expect_used)]
     fn normalised_sdf(
         mesh: &mesh_types::IndexedMesh,
         s: f64,
-    ) -> Signed<NormalisedDistance, NormalisedSign> {
-        let inner = crate::TriMeshDistance::new(scaled(mesh, s)).expect("fixture is non-empty");
-        let sign = NormalisedSign {
-            inner: crate::PseudoNormalSign::from_distance(&inner),
-            s,
-        };
-        Signed {
-            distance: NormalisedDistance { inner, s },
-            sign,
+    ) -> Signed<crate::TriMeshDistance, crate::PseudoNormalSign> {
+        let distance =
+            crate::TriMeshDistance::with_scale(mesh.clone(), s).expect("fixture is non-empty");
+        let sign = crate::PseudoNormalSign::from_distance(&distance);
+        Signed { distance, sign }
+    }
+
+    /// **The anchor that keeps `plain_sdf` honest once `new` starts normalising.**
+    ///
+    /// Every gate in this module contrasts a pre-normalisation arm against a normalised
+    /// one, and both arms now come from the same constructor. If `with_scale(m, 1.0)`
+    /// were not *exactly* the pre-α.1 oracle, every one of those contrasts would be
+    /// comparing two normalised oracles and passing for no reason.
+    ///
+    /// The check costs nothing to state because the reference numbers already exist:
+    /// `grad_step_scale_regime`'s committed column was measured in #712, **before any of
+    /// this existed**, by a different function on a different sweep. Reproducing it is
+    /// therefore evidence about the seam, not a restatement of the seam's own arithmetic
+    /// — and it commits **no new golden literals**, which matters because the pre-α.1
+    /// value at the low end *is the bug* and freezing it would document a defect as
+    /// intended behaviour.
+    #[test]
+    fn with_scale_1_reproduces_the_committed_pre_normalisation_column() {
+        let dirs = probe_dirs();
+        for (radius, committed) in [
+            (1e-2_f64, 5.25e-4),
+            (5e-2, 2.17e-3),
+            (1e-1, 5.61e-3),
+            (1.0, 3.80e-2),
+            (10.0, 5.41e-1),
+            (100.0, 2.86e0),
+        ] {
+            let mesh = crate::test_fixtures::uv_sphere(radius, 24, 48);
+            let got = max_grad_magnitude_error(&plain_sdf(&mesh), radius, &dirs);
+            assert!(
+                (got - committed).abs() <= 0.02 * committed,
+                "r={radius}: `with_scale(mesh, 1.0)` reads {got:.3e}, but #712 committed \
+                 {committed:.3e} for the un-normalised oracle. Then scale 1.0 is not a no-op \
+                 and every pre-vs-post contrast in this module is comparing the wrong thing."
+            );
         }
     }
 

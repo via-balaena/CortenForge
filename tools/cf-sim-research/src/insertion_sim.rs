@@ -279,7 +279,9 @@ impl std::fmt::Display for SpikeReport {
 ///
 /// # Errors
 ///
-/// Propagates [`TriMeshDistance::new`] (empty mesh) and
+/// Propagates [`TriMeshDistance::new`] (empty mesh, no positive-area
+/// triangle to derive an internal scale from, or a face naming a
+/// missing vertex) and
 /// [`SdfMeshedTetMesh::from_sdf`] (empty mesh, non-finite SDF value)
 /// failures with context.
 pub fn run_sdf_bridge_spike(
@@ -1535,7 +1537,9 @@ fn gaussian_smooth_3d_separable(
 /// eight bbox corners landing within the wall band so no outside
 /// seed exists ([`mesh_sdf::FloodFillError::NoOutsideSeed`] —
 /// bbox margin too small or grid too coarse). Also forwards
-/// [`TriMeshDistance::new`] failure on an empty mesh.
+/// [`TriMeshDistance::new`] failures: an empty mesh, no positive-area
+/// triangle to derive an internal scale from, or a face naming a
+/// missing vertex.
 pub fn build_grid_sdf(
     scan: &IndexedMesh,
     bbox: Aabb,

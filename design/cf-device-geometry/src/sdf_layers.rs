@@ -441,8 +441,10 @@ fn decimate_via_baby_shark(
 ///
 /// # Errors
 ///
-/// Propagates [`TriMeshDistance::new`] failures (empty mesh, or
-/// open mesh empty after stripping all faces as cap faces) and
+/// Propagates [`TriMeshDistance::new`] failures (empty mesh; open
+/// mesh empty after stripping all faces as cap faces; a mesh with no
+/// positive-area triangle to derive an internal scale from; a face
+/// naming a missing vertex) and
 /// [`CachedGridSdf::build`] failures (bbox margin too small or grid
 /// too coarse to seed the outside flood) with context.
 pub fn build_cached_scan_sdf(

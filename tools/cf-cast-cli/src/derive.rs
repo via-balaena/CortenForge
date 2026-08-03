@@ -190,8 +190,9 @@ fn build_material(layer: &LayerConfig) -> Result<MoldingMaterial> {
 ///   defensive here too)
 /// - centerline polyline non-finite or too short for [`Ribbon::new`]
 /// - non-normalizable split-normal (caught by [`SplitNormal::new`])
-/// - cap-stripped open mesh empty or unsuitable for
-///   [`TriMeshDistance::new`] (only on the with-caps path)
+/// - cap-stripped open mesh empty, carrying no positive-area triangle
+///   to derive an internal scale from, or naming a missing vertex —
+///   all [`TriMeshDistance::new`] failures, only on the with-caps path
 pub fn derive_spec_and_ribbon(
     config: &CastConfig,
     scan_sdf: &SharedScanSdf,
