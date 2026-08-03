@@ -44,3 +44,7 @@ anyhow = { workspace = true }
 # `assemble_bushing` + patch prep — the human-paint → lofted-disc test helper
 # (`lofted_disc`) builds the disc from two endplate patches via the loft primitive.
 mesh-loft = { workspace = true }
+# `validate_mesh` — the meshing-stability recon asks whether the anatomy STL is
+# watertight/manifold before blaming anything downstream of it. `cf_fsu_geometry::load`
+# runs a repair pass but discards its statistics, so a consumer cannot otherwise tell.
+mesh-repair = { workspace = true }

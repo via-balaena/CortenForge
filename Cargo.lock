@@ -2430,6 +2430,7 @@ dependencies = [
  "cf-fsu-geometry",
  "cf-geometry",
  "mesh-loft",
+ "mesh-repair",
  "nalgebra 0.34.2",
  "sim-core",
  "sim-coupling",

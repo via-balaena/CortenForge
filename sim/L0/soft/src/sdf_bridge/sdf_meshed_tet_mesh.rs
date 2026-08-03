@@ -218,13 +218,26 @@ impl<M: BuildableFromField + Clone> SdfMeshedTetMesh<M> {
     /// Return a copy keeping only the tets of the **largest face-connected
     /// component**.
     ///
-    /// The BCC isosurface-stuffing pipeline fragments a sub-cell-thin feature — e.g.
-    /// a lens-shaped intervertebral disc's tapering rim — into a main body plus many
-    /// small disconnected islands. Those islands are structurally unconstrained
+    /// The BCC isosurface-stuffing pipeline can fragment a solid into a main body plus
+    /// many small disconnected islands. Those islands are structurally unconstrained
     /// (free rigid-body modes), so they poison the tangent's conditioning (a
     /// near-singular Newton system) and render as scattered surface fragments. A
     /// physical solid is a single connected component, so filtering to the largest
     /// one restores that model invariant.
+    ///
+    /// ⚠ **This doc used to attribute the fragmentation to "a sub-cell-thin feature —
+    /// e.g. a lens-shaped intervertebral disc's tapering rim". That attribution was never
+    /// measured, and for the FSU disc it is now measured to be WRONG.** The islands there
+    /// are material the stuffer emitted *outside* the solid, because the caller built its
+    /// signed-distance oracle on a mesh rescaled to SI metres — a frame in which parry
+    /// silently skips triangles under an absolute area floor and returns a zero
+    /// pseudo-normal, which its inside test reads as "inside". See `mesh-sdf`'s
+    /// `pseudo_normal_sign_is_exact_across_the_scale_regime_consumers_use` for the regime,
+    /// and `cf-fsu-model`'s `mesh_stability_instrument_check_fom` for the chain.
+    ///
+    /// So treat a large discarded fraction as a **symptom to investigate upstream**, not as
+    /// expected behaviour on thin features. Whether a correctly-signed oracle still
+    /// fragments a genuinely sub-cell-thin rim is **open** — nobody has run it.
     ///
     /// Two tets are connected when they share a triangular face. Vertices are
     /// retained as-is — the now-unreferenced island vertices are handled downstream by

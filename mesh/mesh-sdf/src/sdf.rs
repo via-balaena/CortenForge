@@ -173,7 +173,7 @@ fn parry_to_f64(p: ParryPoint<ParryReal>) -> Point3<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_fixtures::unit_tetrahedron;
+    use crate::test_fixtures::{unit_tetrahedron, uv_sphere};
     use approx::assert_relative_eq;
     use mesh_types::Point3;
 
@@ -472,5 +472,93 @@ mod tests {
             Arc::ptr_eq(distance.shared_tri_mesh(), &sign.tri_mesh),
             "from_distance must share the TriMeshDistance's Arc"
         );
+    }
+
+    /// **The scale regime `PseudoNormalSign` is valid in — pinned, because it is
+    /// narrower than it looks and nothing else in the tree says so.**
+    ///
+    /// `parry3d` is the **f32** build, so `parry3d::math::DEFAULT_EPSILON` is
+    /// `f32::EPSILON`. `TriMesh::compute_pseudo_normals` accumulates a triangle
+    /// only `if let Some(n) = tri.normal()`, and `Triangle::normal` is
+    /// `Unit::try_new(ab × ac, DEFAULT_EPSILON)`. Since `‖ab × ac‖` is twice the
+    /// triangle's area, **a triangle whose area is at or under `f32::EPSILON / 2`
+    /// ≈ 5.96e-8 is silently skipped** — and a skipped triangle leaves a **zero**
+    /// pseudo-normal on its vertices and edges. Parry's inside test is
+    /// `dpt.dot(&pseudo_normal) <= 0.0`, which a zero vector satisfies
+    /// unconditionally, so **a zero pseudo-normal reports "inside" at any
+    /// distance from the surface**.
+    ///
+    /// That floor is **absolute**, and it applies to a quantity with dimension:
+    /// area goes as length². Rescaling a mesh from millimetres to metres shrinks
+    /// every triangle's area by 1e6 and moves the whole mesh that much closer to
+    /// the floor, with no change to its shape. A caller who rescales before
+    /// building the oracle can therefore get **sign-inverted** results from
+    /// geometry that was fine a moment earlier.
+    ///
+    /// This is not hypothetical: it is how the FSU disc pipeline came to mesh
+    /// ~30 % phantom material, by building its oracle after rescaling to SI
+    /// metres while every other consumer in the workspace builds in native
+    /// millimetres.
+    ///
+    /// The assert covers the regime consumers **rely on** — radii from 1e3 down
+    /// to 1e-2, where no triangle of this fixture is near the floor — and
+    /// deliberately stops there. Below it the oracle is known-wrong, and pinning
+    /// a broken result would freeze it as intended behaviour rather than flag it.
+    #[test]
+    fn pseudo_normal_sign_is_exact_across_the_scale_regime_consumers_use() {
+        for radius in [1000.0, 10.0, 1.0, 0.1, 0.05, 0.025, 0.01] {
+            let mesh = uv_sphere(radius, 24, 48);
+
+            // Precondition, checked rather than assumed: this fixture is clear of
+            // the area floor at this radius. If it were not, the sign assert below
+            // would be testing the broken regime and would fail for a reason that
+            // has nothing to do with a regression.
+            let floor = f64::from(f32::EPSILON) / 2.0;
+            let smallest = mesh
+                .faces
+                .iter()
+                .map(|f| {
+                    let (a, b, c) = (
+                        mesh.vertices[f[0] as usize],
+                        mesh.vertices[f[1] as usize],
+                        mesh.vertices[f[2] as usize],
+                    );
+                    0.5 * (b - a).cross(&(c - a)).norm()
+                })
+                .fold(f64::INFINITY, f64::min);
+            assert!(
+                smallest > floor,
+                "r={radius}: fixture's smallest triangle ({smallest:.4e}) is at or under \
+                 parry's area floor ({floor:.4e}) — this radius is outside the valid regime"
+            );
+
+            let sdf = build_sdf(mesh);
+            // Sample a lattice reaching to 1.6 r per axis, so the box corners sit at
+            // 2.77 r — well into the region where the closest feature is an edge or a
+            // vertex, never a face interior. That is where an angle-weighted
+            // pseudo-normal is load-bearing and where a zeroed one shows up.
+            let n = 12;
+            for i in 0..=n {
+                for j in 0..=n {
+                    for k in 0..=n {
+                        let q =
+                            |idx: i32| 1.6 * radius * (f64::from(idx) / f64::from(n) - 0.5) * 2.0;
+                        let p = Point3::new(q(i), q(j), q(k));
+                        let truth = p.coords.norm() - radius;
+                        // Skip the tessellation's own uncertainty band: within the chord
+                        // error the polyhedron and the ideal sphere genuinely differ.
+                        if truth.abs() < 0.005 * radius {
+                            continue;
+                        }
+                        assert_eq!(
+                            sdf.distance(p) < 0.0,
+                            truth < 0.0,
+                            "r={radius}: sign wrong at {p:?} — oracle {:.6}, truth {truth:.6}",
+                            sdf.distance(p),
+                        );
+                    }
+                }
+            }
+        }
     }
 }
