@@ -155,12 +155,12 @@ mod tests {
     /// fixed *relative* position (`1.5·r`) so the geometry is identical across the sweep and
     /// only the coordinate magnitude changes.
     ///
-    /// ## Measured — and the band is about **one decade wide**
+    /// ## Measured — the band now runs from 1e-3, and the **upper** end is the live defect
     ///
     /// | radius | h/radius | max ‖g‖−1 | max ang° | |
     /// |---|---|---|---|---|
-    /// | 1e-3 | 1.0e-3 | **8.7e2** | **179.94** | sign broken: triangles under the area floor |
-    /// | 1e-2 | 1.0e-4 | 5.25e-4 | 2.92 | **best** |
+    /// | 1e-3 | 1.0e-3 | 5.566e-5 | 2.91 | **repaired by α.1** — was 8.7e2 / 179.94 |
+    /// | 1e-2 | 1.0e-4 | 5.25e-4 | 2.92 | |
     /// | 5e-2 | 2.0e-5 | 2.17e-3 | 2.92 | *the FSU disc's own metre-frame extent* |
     /// | 1e-1 | 1.0e-5 | 5.61e-3 | 2.93 | |
     /// | 1e0 | 1.0e-6 | 3.80e-2 | 4.83 | |
@@ -168,21 +168,27 @@ mod tests {
     /// | 1e2 | 1.0e-8 | 2.86e0 | 114.23 | |
     /// | 1e3 | 1.0e-9 | 2.62e1 | 129.93 | |
     ///
-    /// **Two failure modes, one at each end.** Below the band the *area floor* kills the sign,
-    /// and because `grad` central-differences a **signed** value a sign flip between the two
-    /// probes yields a spurious gradient of order `φ/h` — the 179.94° is the gradient pointing
-    /// backwards. Above the band the fixed step is swamped by the `f32` projection error,
-    /// growing **linearly in `E`** exactly as predicted (≈ ×10 per decade).
+    /// **There used to be two failure modes, one at each end. α.1 removed the lower one.**
+    /// Below the band the *area floor* killed the sign, and because `grad`
+    /// central-differences a **signed** value a flip between the two probes yielded a spurious
+    /// gradient of order `φ/h` — the 179.94° was the gradient pointing backwards. Internal
+    /// normalisation (`choose_scale`) lifts the mesh clear of that floor, and the row's angular
+    /// error fell to **2.91°, indistinguishable from the tessellation deviation of every other
+    /// row** — i.e. what remains there is facet geometry, with no numerical contribution left.
     ///
-    /// ⚠ **The FSU disc's metre-frame extent (0.0502) sits inside this band by accident** —
-    /// nobody chose it; it is where `scale = 1e-3` happened to land. That also means every
-    /// endplate projection in the arc carries a few × 1e-3 of gradient error, which had never
-    /// been measured.
+    /// ⚠ **The rows from 1e-2 up did not move by a single bit.** That is the point: the repair
+    /// is confined to where the answer was already wrong. Confirmed twice over — by
+    /// `internal_normalisation_leaves_grad_bit_identical` before the rule shipped, and by this
+    /// table reading identical values after it did.
     ///
-    /// ⚠⚠ **This is why normalising mesh coordinates internally is not sufficient on its own.**
-    /// A target extent chosen to clear the area floor with margin (≥ 4, per the disc's R1
-    /// sweep) lands `grad` at ~19 % error. The two constants have to be made *dimensionless* —
-    /// `h` relative first, normalisation second — or fixing one breaks the other.
+    /// ⚠⚠ **The upper end is still open, and it is `h`'s to fix, not normalisation's.** An
+    /// earlier version of this doc claimed the opposite — that internal normalisation would
+    /// land `grad` at ~19 % error and therefore had to wait for a relative `h`. **That was
+    /// refuted in #713**: the 19 % came from a test adapter (`cf_fsu_model`'s
+    /// `NormalisedOracle`) that queries the inner oracle *in the scaled frame*, which
+    /// normalisation does not do. The two constants are independent; `h` is still absolute and
+    /// still owed a fix, and its real home is `cf-design`'s `FieldNode::UserFn`, since
+    /// `Solid::from_sdf` captures `eval` and discards this `grad` entirely.
     ///
     /// ## What is asserted, and what deliberately is not
     ///

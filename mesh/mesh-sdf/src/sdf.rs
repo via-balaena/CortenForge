@@ -741,36 +741,40 @@ mod tests {
     /// metres while every other consumer in the workspace builds in native
     /// millimetres.
     ///
-    /// The assert covers the regime consumers **rely on** — radii from 1e3 down
-    /// to 1e-2, where no triangle of this fixture is near the floor — and
-    /// deliberately stops there. Below it the oracle is known-wrong, and pinning
-    /// a broken result would freeze it as intended behaviour rather than flag it.
+    /// ## ★ α.1 removed the lower bound this test used to stop at
+    ///
+    /// It previously swept 1e3 down to **1e-2** and said so explicitly: *"deliberately stops
+    /// there. Below it the oracle is known-wrong, and pinning a broken result would freeze it
+    /// as intended behaviour."* That was the correct posture while the caller's units decided
+    /// whether the oracle worked. `TriMeshDistance::new` now normalises internally, so there
+    /// is no "below" — the sweep runs down to **1e-6**, six decades past the old cliff, and
+    /// `internal_normalisation_fixes_the_sign_below_the_area_floor` measures the same repair
+    /// against analytic truth with the pre-α.1 oracle as its control.
+    ///
+    /// ⚠ **The precondition had to change with it, and the old one would now be actively
+    /// misleading.** It checked the smallest triangle in the *caller's* units against the
+    /// floor — which is exactly the quantity that no longer decides anything. Asserting it
+    /// would fail at every radius the repair added, for the very reason the repair exists. The
+    /// meaningful precondition is on the **internal** area, after the scale the oracle actually
+    /// picked, so that is what this now checks.
     #[test]
     fn pseudo_normal_sign_is_exact_across_the_scale_regime_consumers_use() {
-        for radius in [1000.0, 10.0, 1.0, 0.1, 0.05, 0.025, 0.01] {
+        for radius in [1000.0, 10.0, 1.0, 0.1, 0.05, 0.025, 0.01, 1e-3, 1e-4, 1e-6] {
             let mesh = uv_sphere(radius, 24, 48);
 
-            // Precondition, checked rather than assumed: this fixture is clear of
-            // the area floor at this radius. If it were not, the sign assert below
-            // would be testing the broken regime and would fail for a reason that
-            // has nothing to do with a regression.
+            // Precondition, checked rather than assumed: after internal normalisation this
+            // fixture is clear of the area floor. Stated on the INTERNAL area — the caller's
+            // is no longer the quantity parry sees, and at the small radii below it is far
+            // under the floor while the oracle is nonetheless exact.
             let floor = f64::from(f32::EPSILON) / 2.0;
-            let smallest = mesh
-                .faces
-                .iter()
-                .map(|f| {
-                    let (a, b, c) = (
-                        mesh.vertices[f[0] as usize],
-                        mesh.vertices[f[1] as usize],
-                        mesh.vertices[f[2] as usize],
-                    );
-                    0.5 * (b - a).cross(&(c - a)).norm()
-                })
-                .fold(f64::INFINITY, f64::min);
+            let scale = crate::sdf::choose_scale(&mesh).expect("sphere is scalable");
+            let smallest = smallest_area(&mesh);
+            let internal = smallest * scale * scale;
             assert!(
-                smallest > floor,
-                "r={radius}: fixture's smallest triangle ({smallest:.4e}) is at or under \
-                 parry's area floor ({floor:.4e}) — this radius is outside the valid regime"
+                internal > floor,
+                "r={radius}: after normalisation by {scale:.3e} the smallest triangle is \
+                 {internal:.4e}, still at or under parry's area floor ({floor:.4e}) — \
+                 `choose_scale` did not do its job"
             );
 
             let sdf = build_sdf(mesh);
@@ -1059,51 +1063,46 @@ mod tests {
             })
             .collect();
 
-        // ── Powers of two. Magnitude must be bit-identical at EVERY scale; the sign only
-        //    where the fixture is clear of the floor. ──
-        let (mut n_in, mut n_out) = (0usize, 0usize);
+        // ── Powers of two. Full SIGNED bit-identity at every scale. ──
+        //
+        // ★ α.1 collapsed the split this loop used to carry. It asserted magnitude
+        //   everywhere but sign only where `min_area * s * s > floor` — because below the
+        //   floor the sign genuinely was scale-dependent, and that was the finding. Now
+        //   `TriMeshDistance::new` normalises internally, so the caller-frame area decides
+        //   nothing and the weaker branch would be asserting less than is true.
+        //
+        //   The split's non-vacuity check went with it, and its removal is the load-bearing
+        //   part: it required the sweep to STRADDLE the floor, and `min_area * s * s` still
+        //   straddles it, so that assert would keep passing while guarding a distinction the
+        //   oracle no longer makes. A guard that cannot fail for the right reason is worse
+        //   than no guard, because it reads as coverage.
+        let mut total_checked = 0usize;
         for k in [-20_i32, -10, -3, -1, 1, 3, 10, 20] {
             let s = 2.0_f64.powi(k);
-            let in_regime = min_area * s * s > floor;
-            if in_regime {
-                n_in += 1;
-            } else {
-                n_out += 1;
-            }
+            // The scales at the low end are far under the floor in caller units — which is
+            // exactly why full signed identity there is the interesting claim now.
+            let caller_frame_area = min_area * s * s;
             let sdf_s = build_sdf(scaled(&base, s));
             let mut checked = 0usize;
             for &p in &probes {
                 let want = sdf1.distance(p);
                 let got = sdf_s.distance(Point3::new(p.x * s, p.y * s, p.z * s)) / s;
-                // THE ARITHMETIC CLAIM — holds even where the sign is broken, which is what
-                // isolates the epsilon decision as the sole scale-dependent step.
                 assert_eq!(
-                    got.abs().to_bits(),
-                    want.abs().to_bits(),
-                    "2^{k}: MAGNITUDE is not bit-neutral at {p:?} — got {got:.17e}, want \
-                     {want:.17e}. Then power-of-two scaling is not exact through this \
-                     pipeline and an internal normalisation would move goldens."
+                    got.to_bits(),
+                    want.to_bits(),
+                    "2^{k}: a power-of-two rescale changed the SIGNED distance at {p:?} — got \
+                     {got:.17e}, want {want:.17e}. The fixture's smallest triangle is \
+                     {caller_frame_area:.3e} in caller units against a {floor:.3e} floor, but \
+                     internal normalisation is supposed to make that irrelevant."
                 );
-                if in_regime {
-                    assert_eq!(
-                        got.to_bits(),
-                        want.to_bits(),
-                        "2^{k}: SIGN differs at {p:?} while the fixture is clear of the area \
-                         floor (min scaled area {:.3e} > {floor:.3e}) — got {got:.17e}, want \
-                         {want:.17e}. In-regime, a power-of-two rescale must change nothing.",
-                        min_area * s * s,
-                    );
-                }
                 checked += 1;
             }
             assert!(checked > 100, "2^{k}: too few probes to mean anything");
+            total_checked += checked;
         }
-        // Non-vacuity: the sweep has to straddle the boundary, or one of the two claims above
-        // was never exercised and this test proves half of what it says.
         assert!(
-            n_in > 0 && n_out > 0,
-            "the sweep must contain both in-regime ({n_in}) and out-of-regime ({n_out}) \
-             scales — otherwise one of the two assertions never ran"
+            total_checked > 1000,
+            "only {total_checked} probe comparisons ran across the power-of-two sweep"
         );
 
         // ── The control: a non-power-of-two scale must NOT be bit-neutral. ──
