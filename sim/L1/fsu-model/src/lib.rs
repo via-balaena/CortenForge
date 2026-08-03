@@ -3533,6 +3533,38 @@ mod tests {
     // disc-specific question that gate cannot answer: where THIS anatomy's triangles sit
     // relative to parry's area floor, in each of the two frames (`report_area_floor_margin`).
 
+    /// The remedy, expressed as an **experiment**: a scaled-frame view of an oracle that was
+    /// BUILT in native millimetres.
+    ///
+    /// `prepare_disc_at` rescales the disc and then builds its oracle on the rescaled mesh,
+    /// which puts 30 % of this disc's triangles under the area floor parry silently skips.
+    /// This adapter changes exactly one thing — the frame the oracle is *built* in — while
+    /// keeping the frame it is *queried* in identical, so the resulting tet mesh is directly
+    /// comparable to production's, tet count for tet count.
+    ///
+    /// Under a uniform scale `s` about `center_native`, `φ_scaled(p) = s · φ_native(p/s + c)`,
+    /// so the gradient passes through **unchanged**: `∇φ_scaled = s · ∇φ_native · (1/s)`.
+    struct NativeFrameOracle<'a> {
+        inner: &'a MeshOracle,
+        center_native: Point3<f64>,
+        scale: f64,
+    }
+
+    impl NativeFrameOracle<'_> {
+        fn to_native(&self, p: Point3<f64>) -> Point3<f64> {
+            Point3::from(p.coords / self.scale + self.center_native.coords)
+        }
+    }
+
+    impl Sdf for NativeFrameOracle<'_> {
+        fn eval(&self, p: Point3<f64>) -> f64 {
+            self.inner.eval(self.to_native(p)) * self.scale
+        }
+        fn grad(&self, p: Point3<f64>) -> Vector3<f64> {
+            self.inner.grad(self.to_native(p))
+        }
+    }
+
     /// **Instrument check for the census** — run this before believing any of its numbers.
     ///
     /// The census reports quantities from three sources that could each be wrong
@@ -3592,6 +3624,48 @@ mod tests {
             kept_f.n_tets(),
             meshed.raw.n_tets(),
             kept.n_tets(),
+        );
+
+        // ★★ THE CAUSAL TEST FOR THE FRAME, and the one this whole diagnosis rests on.
+        //
+        // Everything above is *consistent* with "the metre-frame oracle's wrong sign is what
+        // fills space with phantom tets", and consistency is exactly what the STL hole also
+        // had before filling it turned out to change nothing. So run the same experiment on
+        // the frame: build the oracle in native mm, query it in the scaled frame, change
+        // NOTHING else, and re-measure. If the frame is the cause the phantom material
+        // collapses; if it is not, these numbers barely move and the diagnosis is incomplete.
+        //
+        // This is a measurement, not the remedy — production still builds its own oracle.
+        println!("\n--- same measurement, oracle BUILT in native mm (the causal test) ---");
+        let adapter = NativeFrameOracle {
+            inner: &native_sdf,
+            center_native: meshed.center_native,
+            scale: params.scale,
+        };
+        let padded = meshed.bbox.expanded(params.pad);
+        let hints = MeshingHints {
+            bbox: Aabb3::new(
+                Vec3::new(padded.min.x, padded.min.y, padded.min.z),
+                Vec3::new(padded.max.x, padded.max.y, padded.max.z),
+            ),
+            cell_size: params.cell,
+            material_field: Some(MaterialField::uniform(params.mu, 4.0 * params.mu)),
+        };
+        let fixed = SdfMeshedTetMesh::from_sdf(&adapter, &hints).expect("mesh with native oracle");
+        let fixed_kept = fixed.largest_component();
+        report_phantom_material("raw ", &fixed, &meshed.bbox, v_surface);
+        report_phantom_material("kept", &fixed_kept, &meshed.bbox, v_surface);
+        println!(
+            "components: {} (was {}) | tets raw {} kept {} (was {} / {}) | retained {:.2} % \
+             (was {:.2} %)",
+            face_components(&fixed).len(),
+            face_components(&meshed.raw).len(),
+            fixed.n_tets(),
+            fixed_kept.n_tets(),
+            meshed.raw.n_tets(),
+            kept.n_tets(),
+            100.0 * fixed_kept.n_tets() as f64 / fixed.n_tets() as f64,
+            100.0 * kept.n_tets() as f64 / meshed.raw.n_tets() as f64,
         );
     }
 
