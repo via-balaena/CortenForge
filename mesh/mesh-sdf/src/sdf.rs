@@ -1123,27 +1123,34 @@ mod tests {
     /// **The consequence of the cap, measured end to end rather than on a bare triangle.**
     ///
     /// The sibling above locates parry's breaking point on a single triangle. This asks the
-    /// question a consumer cares about: build the *whole* oracle at rising scales and watch
-    /// [`TriMeshDistance::health`] — does the census stay clean right up to the cap, and
-    /// does it go catastrophic past it?
+    /// question a consumer cares about: build the *whole* oracle at rising scales and check
+    /// everything the cap is supposed to protect — the signed distance against an analytic
+    /// truth, its bit-identity across the band, and [`TriMeshDistance::health`]'s census —
+    /// right up to and including the boundary, then past it.
     ///
     /// The "past it" arm is what makes the cap's value meaningful rather than merely
     /// asserted, and it is the regression gate for α.1's defect: at 2⁴⁸ this fixture had
     /// **every** vertex and **every** edge zeroed while `faces_skipped` read 0.
     #[test]
-    fn the_census_stays_clean_up_to_the_cap_and_breaks_past_it() {
+    fn the_oracle_is_sound_up_to_the_cap_and_breaks_past_it() {
         let mesh = uv_sphere(1.0, 24, 48);
-        let extent = 1.0_f64;
+        // Taken from the mesh by the same helper the scale rule uses, not written down as
+        // "1.0 because it is a unit sphere". The cap is a bound on coordinates, so an
+        // extent assumed rather than measured would put every "within the cap" claim below
+        // on a number no one checked.
+        let (_, extent) = mesh_scale_inputs(&mesh).expect("sphere is scalable");
         let max_k = (coordinate_cap() / extent).log2().floor();
 
         // At and below the cap: nothing zeroed, the areas parry sees stay finite, and — the
         // half a census cannot see — the projection still returns the right answer.
         //
-        // ⚠ The counter is not decoration. Every row here is skipped when it exceeds the
-        //   cap, so a future tightening could silently empty this loop and leave the test
-        //   asserting nothing at all. Same hole as the one
-        //   `the_chosen_scale_is_insensitive_to_the_margin_across_decades` grew when the
-        //   cap moved, caught here by looking for it rather than by being bitten twice.
+        // ⚠ The counter guards the FIXED ladder below, not the sweep as a whole. Since the
+        //   cap became a swept row it always runs, so the loop can no longer be emptied
+        //   outright — but a tightening could still skip every fixed rung and leave the
+        //   boundary as the only scale tested, which would silently stop covering the band
+        //   the claim is about. Same hole `the_chosen_scale_is_insensitive_to_the_margin_
+        //   across_decades` grew when the cap moved, narrowed here to what is still
+        //   reachable rather than left overstating its own danger.
         // A lattice of probes spanning inside, surface-adjacent and well outside.
         let probes: Vec<Point3<f64>> = (0..=6)
             .flat_map(|i| {
