@@ -47,7 +47,7 @@ impl TriMeshDistance {
     /// Build the BVH over `mesh`, internally normalised so its smallest triangle clears
     /// parry's f32 area floor.
     ///
-    /// The scale is chosen from the mesh's own geometry ([`choose_scale`]) and applied
+    /// The scale is chosen from the mesh's own geometry (`choose_scale`) and applied
     /// **inside** the oracle: queries are lifted in and answers brought back, so results
     /// are in the caller's units and the caller's frame never moves. Building the same
     /// surface in millimetres or in metres now gives the same answers — which it did not
@@ -235,12 +235,11 @@ pub(crate) fn choose_scale(mesh: &IndexedMesh) -> SdfResult<f64> {
 ///
 /// # Errors
 ///
-/// As [`choose_scale`].
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "`k` is bounded above by `max_k`, itself finite because `extent > 0` is \
-              established by the zero-area guard, so the i32 cast cannot truncate"
-)]
+/// As `choose_scale`.
+// `k` is clamped to `[0, max_k]`, and `max_k` is finite because the guard below
+// establishes `extent > 0` and `coordinate_cap()` is a finite constant — so the value cast
+// to i32 is a small non-negative integer and cannot truncate.
+#[allow(clippy::cast_possible_truncation)]
 pub(crate) fn scale_for_margin(mesh: &IndexedMesh, margin_binades: i32) -> SdfResult<f64> {
     let (min_area, extent) = mesh_scale_inputs(mesh)?;
     // Written as a positive test so NaN falls through to the error arm rather than
@@ -337,7 +336,7 @@ impl PseudoNormalSign {
     ///
     /// - [`SdfError::EmptyMesh`] if `mesh` has no faces.
     /// - [`SdfError::UnscalableMesh`] / [`SdfError::FaceIndexOutOfRange`] via
-    ///   [`choose_scale`].
+    ///   `choose_scale`.
     pub fn new(mesh: &IndexedMesh) -> SdfResult<Self> {
         if mesh.faces.is_empty() {
             return Err(SdfError::EmptyMesh);
