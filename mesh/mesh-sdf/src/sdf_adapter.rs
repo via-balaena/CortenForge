@@ -155,9 +155,46 @@ mod tests {
     /// fixed *relative* position (`1.5·r`) so the geometry is identical across the sweep and
     /// only the coordinate magnitude changes.
     ///
-    /// Reports the whole sweep and asserts only the anchor: radius 1.0 — inside the regime
-    /// `sdf.rs`'s sibling scale-regime gate already covers — must give a unit-magnitude
-    /// gradient. The boundary is printed, not pinned, until it has been read once.
+    /// ## Measured — and the band is about **one decade wide**
+    ///
+    /// | radius | h/radius | max ‖g‖−1 | max ang° | |
+    /// |---|---|---|---|---|
+    /// | 1e-3 | 1.0e-3 | **8.7e2** | **179.94** | sign broken: triangles under the area floor |
+    /// | 1e-2 | 1.0e-4 | 5.25e-4 | 2.92 | **best** |
+    /// | 5e-2 | 2.0e-5 | 2.17e-3 | 2.92 | *the FSU disc's own metre-frame extent* |
+    /// | 1e-1 | 1.0e-5 | 5.61e-3 | 2.93 | |
+    /// | 1e0 | 1.0e-6 | 3.80e-2 | 4.83 | |
+    /// | 1e1 | 1.0e-7 | 5.41e-1 | 23.95 | |
+    /// | 1e2 | 1.0e-8 | 2.86e0 | 114.23 | |
+    /// | 1e3 | 1.0e-9 | 2.62e1 | 129.93 | |
+    ///
+    /// **Two failure modes, one at each end.** Below the band the *area floor* kills the sign,
+    /// and because `grad` central-differences a **signed** value a sign flip between the two
+    /// probes yields a spurious gradient of order `φ/h` — the 179.94° is the gradient pointing
+    /// backwards. Above the band the fixed step is swamped by the `f32` projection error,
+    /// growing **linearly in `E`** exactly as predicted (≈ ×10 per decade).
+    ///
+    /// ⚠ **The FSU disc's metre-frame extent (0.0502) sits inside this band by accident** —
+    /// nobody chose it; it is where `scale = 1e-3` happened to land. That also means every
+    /// endplate projection in the arc carries a few × 1e-3 of gradient error, which had never
+    /// been measured.
+    ///
+    /// ⚠⚠ **This is why normalising mesh coordinates internally is not sufficient on its own.**
+    /// A target extent chosen to clear the area floor with margin (≥ 4, per the disc's R1
+    /// sweep) lands `grad` at ~19 % error. The two constants have to be made *dimensionless* —
+    /// `h` relative first, normalisation second — or fixing one breaks the other.
+    ///
+    /// ## What is asserted, and what deliberately is not
+    ///
+    /// The anchor is **1e-2**, the measured best, at 2× headroom. The large-`E` rows are
+    /// **not** pinned by magnitude: they are a defect this crate intends to remove, and
+    /// freezing their values would document the bug as intended behaviour. Instead the
+    /// **presence** of the defect is asserted — so when `h` becomes relative that assert fires,
+    /// and whoever fixes it is forced to restate this regime rather than quietly widen it.
+    ///
+    /// ⚠ An earlier version anchored at radius 1.0 on the grounds that `sdf.rs`'s sibling gate
+    /// covers it. It does — for the **sign**. The sign and gradient regimes are different
+    /// bands, and 1.0 is comfortable for one while already 3.8 % wrong for the other.
     #[test]
     #[allow(clippy::cast_precision_loss)]
     fn grad_step_scale_regime() {
@@ -176,8 +213,10 @@ mod tests {
             "\n{:>10} {:>12} {:>14} {:>14} {:>12}",
             "radius", "h/radius", "max |‖g‖-1|", "rms |‖g‖-1|", "max ang°"
         );
-        let mut anchor_mag_err = f64::NAN;
-        for radius in [1e-3_f64, 1e-2, 1e-1, 1.0, 10.0, 100.0, 1000.0] {
+        let (mut anchor_mag_err, mut disc_mag_err, mut large_e_mag_err) =
+            (f64::NAN, f64::NAN, f64::NAN);
+        // 0.05 is the FSU disc's own extent once `prepare_disc_at` has rescaled it to metres.
+        for radius in [1e-3_f64, 1e-2, 5e-2, 1e-1, 1.0, 10.0, 100.0, 1000.0] {
             let distance =
                 crate::TriMeshDistance::new(crate::test_fixtures::uv_sphere(radius, 24, 48))
                     .expect("sphere fixture is non-empty");
@@ -201,20 +240,47 @@ mod tests {
                 "{radius:>10.0e} {:>12.2e} {max_mag:>14.3e} {rms:>14.3e} {max_ang:>12.4}",
                 1e-6 / radius,
             );
-            if (radius - 1.0).abs() < f64::EPSILON {
+            if (radius - 1e-2).abs() < 1e-12 {
                 anchor_mag_err = max_mag;
+            }
+            if (radius - 5e-2).abs() < 1e-12 {
+                disc_mag_err = max_mag;
+            }
+            if (radius - 100.0).abs() < 1e-12 {
+                large_e_mag_err = max_mag;
             }
         }
 
-        // The anchor, and only the anchor: radius 1.0 sits inside the regime the sibling
-        // scale-regime gate in `sdf.rs` already covers, so a unit-magnitude gradient there is
-        // the minimum this adapter must deliver. Everything else is reported so the boundary
-        // can be read off and pinned deliberately rather than frozen at whatever today gives.
+        // (1) THE ANCHOR — the measured best of the band, at ~2x headroom. A distance
+        //     function's gradient is a unit vector by definition, so this is the floor of what
+        //     the adapter must deliver anywhere it is usable at all.
         assert!(
             anchor_mag_err < 1e-3,
-            "at radius 1.0 the gradient magnitude must be 1 to within 1e-3 (a distance \
-             function's gradient is a unit vector by definition) — got an error of \
+            "at radius 1e-2 the gradient magnitude must be 1 to within 1e-3 — got \
              {anchor_mag_err:.3e}"
+        );
+
+        // (2) THE REGIME THE FSU DISC ACTUALLY RUNS IN. Its metre-frame extent is 0.0502, and
+        //     every endplate projection in that arc walks points along this gradient. Pinned
+        //     loosely (1e-2) because the point is that it is USABLE, not that it is precise.
+        assert!(
+            disc_mag_err < 1e-2,
+            "at radius 5e-2 — the FSU disc's own metre-frame extent — the gradient must still \
+             be usable, got {disc_mag_err:.3e}"
+        );
+
+        // (3) ⚠ THE DEFECT, ASSERTED AS PRESENT RATHER THAN PINNED BY VALUE.
+        //     A fixed absolute step cannot survive large coordinates, and today it does not.
+        //     This is deliberately NOT a magnitude pin: freezing 2.86e0 would document the bug
+        //     as intended behaviour. Asserting only that the defect EXISTS means that when `h`
+        //     is made relative to the geometry, THIS ASSERT FAILS — forcing whoever fixes it to
+        //     come here and restate the regime instead of quietly widening a tolerance.
+        assert!(
+            large_e_mag_err > 1.0,
+            "at radius 1e2 the fixed 1e-6 step is expected to be swamped by f32 projection \
+             error (measured 2.86e0), but the error is now {large_e_mag_err:.3e}. If `grad`'s \
+             step has been made relative to the geometry, this test has done its job — delete \
+             this assert and re-measure the whole band, do NOT relax it."
         );
     }
 
