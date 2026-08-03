@@ -10,6 +10,16 @@
 //! briefly copied into `health::tests` verbatim, which is precisely what this file exists
 //! to prevent.
 
+// The whole file is test-only. `lib.rs` already declares it `#[cfg(test)] mod
+// test_fixtures;`, so this inner attribute is redundant to the compiler — but it is what
+// `xtask grade`'s safety scanner reads. That scanner walks source text and tracks
+// `#[cfg(test)]` regions by brace depth *within a file*; it cannot see a gate that lives in
+// the parent module, so a fixture's `.expect(..)` here reads as an unwrap in library code
+// and takes the Safety criterion to F. Moving `build_sdf_at` into this file is what
+// surfaced it — `cargo clippy` never complained, because the crate's own
+// `cfg_attr(not(test), deny(..))` correctly exempts test builds.
+#![cfg(test)]
+
 use mesh_types::{IndexedMesh, Point3};
 
 use crate::oracle::Signed;
