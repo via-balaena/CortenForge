@@ -305,6 +305,12 @@ mod tests {
 
     /// Smallest triangle area in `m` — the quantity parry's `DEFAULT_EPSILON / 2` area
     /// floor is applied to.
+    ///
+    /// ⚠ Third copy of this computation in the crate (`sdf.rs` inlines it twice). Left
+    /// duplicated **here** on purpose: α.1 needs it as *production* code — remedy C's
+    /// construction-time guard and D's scale rule both key off it — so consolidating it
+    /// into a test helper now would only have to be undone. Consolidate when it moves out
+    /// of `#[cfg(test)]`, not before.
     fn min_triangle_area(m: &mesh_types::IndexedMesh) -> f64 {
         m.faces
             .iter()
@@ -460,12 +466,7 @@ mod tests {
             "\n{:>10} {:>6} {:>14} {:>14} {:>16}",
             "radius", "scale", "plain max err", "norm max err", "bit-equal comps"
         );
-        // ⚠ Bit-identity between two arms is BLIND to a bug in the instrument — a broken
-        //   `max_grad_magnitude_error` or `probe_dirs` would corrupt both arms equally and
-        //   the comparison would still pass. So the plain arm is checked against
-        //   `grad_step_scale_regime`'s already-committed column first. Those numbers were
-        //   produced by a different function on a different sweep; agreeing with them is
-        //   what says this harness measures the thing it claims to.
+        // The known-value anchor — see this test's doc comment for why it is here.
         for (radius, committed_plain_err) in [
             (1e-2_f64, 5.25e-4),
             (5e-2, 2.17e-3),
@@ -485,12 +486,20 @@ mod tests {
                  something else — resolve that before trusting the bit-identity result below."
             );
 
+            // ⚠ Only `s >= 1` is swept, deliberately. D's job is to LIFT geometry off the
+            //   area floor, so the shipping rule is `k = max(0, …)` and a shrinking scale is
+            //   out of its contract — a mesh already clear of the floor could be pushed under
+            //   it. Nothing here licenses a shrink; α.1 must not read one in.
             for k in [3_i32, 13] {
                 let s = 2.0_f64.powi(k);
                 let norm = normalised_sdf(&mesh, s);
-                // Counted, not asserted-then-printed: a hardcoded "yes" in this column would
-                // be a claim with no producer.
+                // ⚠ Compared and COUNTED first; asserted only after the row is printed. An
+                //   `assert_eq!` inside this loop would make the printed count structurally
+                //   incapable of reading anything but `3 * dirs.len()` — a constant wearing a
+                //   number's clothes, which is the defect this column has already had once.
                 let mut bit_equal = 0usize;
+                let mut compared = 0usize;
+                let mut first_mismatch: Option<String> = None;
                 for d in &dirs {
                     let p = Point3::from(d * (1.5 * radius));
                     let gp = Sdf::grad(&plain, p);
@@ -499,21 +508,31 @@ mod tests {
                         .into_iter()
                         .enumerate()
                     {
-                        assert_eq!(
-                            a.to_bits(),
-                            b.to_bits(),
-                            "r={radius}, 2^{k}, axis {axis} at {p:?}: internal normalisation \
-                             moved the gradient — plain {a:.17e}, normalised {b:.17e}. Then D is \
-                             NOT neutral for `grad` and the arc's forced F-then-D order stands."
-                        );
-                        bit_equal += 1;
+                        compared += 1;
+                        if a.to_bits() == b.to_bits() {
+                            bit_equal += 1;
+                        } else if first_mismatch.is_none() {
+                            first_mismatch = Some(format!(
+                                "axis {axis} at {p:?} — plain {a:.17e}, normalised {b:.17e}"
+                            ));
+                        }
                     }
                     checked += 1;
                 }
                 let norm_err = max_grad_magnitude_error(&norm, radius, &dirs);
                 println!(
-                    "{radius:>10.0e} {:>6} {plain_err:>14.3e} {norm_err:>14.3e} {bit_equal:>16}",
+                    "{radius:>10.0e} {:>6} {plain_err:>14.3e} {norm_err:>14.3e} {:>16}",
                     format!("2^{k}"),
+                    format!("{bit_equal}/{compared}"),
+                );
+                assert_eq!(
+                    bit_equal,
+                    compared,
+                    "r={radius}, 2^{k}: internal normalisation moved the gradient in {} of \
+                     {compared} components — first at {}. Then D is NOT neutral for `grad` and \
+                     the arc's forced F-then-D order stands.",
+                    compared - bit_equal,
+                    first_mismatch.unwrap_or_else(|| "<none recorded>".to_string()),
                 );
             }
         }
@@ -558,9 +577,23 @@ mod tests {
             "r={radius}: fixture's smallest triangle ({min_area:.3e}) already clears the floor \
              ({floor:.3e}) — this test is measuring nothing"
         );
+        // ⚠ The rule below divides by `min_area`, and `min_area == 0` satisfies the
+        //   precondition above. A zero-area triangle would send `sqrt(x/0)` to `inf`,
+        //   `inf as i32` saturates to `i32::MAX`, `2^i32::MAX` is `inf`, and every vertex
+        //   would become `inf` — a silently meaningless run. Unreachable for this fixture,
+        //   but this is the exact computation α.1 promotes to production, where a real
+        //   decimated scan CAN carry one. There is no scale that lifts a zero off the
+        //   floor, so that input belongs to remedy C's construction-time error, not to a
+        //   scale factor.
+        assert!(
+            min_area > 0.0,
+            "r={radius}: fixture carries a zero-area triangle — no power of two lifts it off \
+             the floor; that case is remedy C's loud construction-time failure"
+        );
 
         // s ≥ sqrt(MARGIN · floor / min_area), rounded up to a power of two so the rescale
-        // is a pure exponent shift.
+        // is a pure exponent shift. `min_area > 0` above is what keeps `k` finite, and the
+        // cast therefore in range.
         let k = (MARGIN * floor / min_area).sqrt().log2().ceil();
         let s = 2.0_f64.powi(k as i32);
         let norm = normalised_sdf(&mesh, s);
@@ -594,14 +627,28 @@ mod tests {
     /// does not affect `grad`", which is false and would make the first test prove
     /// nothing specific.
     ///
-    /// This arm rescales the **caller's frame**: the oracle is built on the mesh times
-    /// `s` *and queried at* `p·s`, which is what a caller-side rescale (remedy A) or
-    /// `cf_fsu_model`'s `NormalisedOracle` does. The geometry is identical; only the
-    /// coordinate magnitude the fixed `1e-6` step is measured against has changed, and
-    /// `grad` degrades ≈ ×10 per decade exactly as `grad_step_scale_regime` predicts.
+    /// ## Three arms, one variable
     ///
-    /// **The two arms differ in one thing only — the frame the caller queries in.** That
-    /// is the distinction the "F then D" ordering missed.
+    /// All three use the **same fixture** and the **same `s = 2¹⁰`**, and arms B and C
+    /// build their BVH over the **same scaled mesh**. The only thing that differs between
+    /// B and C is the frame the caller queries in:
+    ///
+    /// | arm | oracle built on | queried at | |
+    /// |---|---|---|---|
+    /// | A — today | `mesh` | `p` | the baseline |
+    /// | B — remedy D | `mesh · s` | `p` (caller's frame) | must be **bit-identical to A** |
+    /// | C — caller-side rescale | `mesh · s` | `p · s` (scaled frame) | must **degrade** |
+    ///
+    /// C is what remedy A, or `cf_fsu_model`'s `NormalisedOracle`, does. Holding the mesh
+    /// and `s` fixed across B and C is what makes "they differ in one thing only" a
+    /// property of the code rather than a claim in a comment — the earlier version of this
+    /// test compared C against A at a different scale from the bit-identity sweep, which
+    /// demonstrated the same fact but did not isolate the variable.
+    ///
+    /// The degradation is expected to be ≈ linear in coordinate magnitude — `2¹⁰` is 3.01
+    /// decades, so ≈ ×1000. It is asserted only as "≥ ×10", because the instrument is a
+    /// **max over 64 probes** and the max of a sample is noisy; pinning the ratio would
+    /// freeze sampling noise as if it were the law.
     #[test]
     fn caller_frame_rescale_moves_grad_where_internal_normalisation_does_not() {
         let dirs = probe_dirs();
@@ -609,24 +656,30 @@ mod tests {
         let s = 1024.0; // 2^10
         let mesh = crate::test_fixtures::uv_sphere(radius, 24, 48);
 
-        let plain = plain_sdf(&mesh);
-        let plain_err = max_grad_magnitude_error(&plain, radius, &dirs);
-
-        // Same geometry, but the caller now works in the scaled frame.
-        let rescaled = plain_sdf(&scaled(&mesh, s));
-        let rescaled_err = max_grad_magnitude_error(&rescaled, radius * s, &dirs);
+        // A — today: built and queried in the caller's frame.
+        let a_err = max_grad_magnitude_error(&plain_sdf(&mesh), radius, &dirs);
+        // B — remedy D: built on `mesh · s`, queried in the CALLER'S frame.
+        let b_err = max_grad_magnitude_error(&normalised_sdf(&mesh, s), radius, &dirs);
+        // C — caller-side rescale: built on `mesh · s`, queried in the SCALED frame.
+        let c_err = max_grad_magnitude_error(&plain_sdf(&scaled(&mesh, s)), radius * s, &dirs);
 
         println!(
-            "\ncaller-frame rescale by {s}: plain max |‖g‖-1| {plain_err:.3e}  ->  \
-             {rescaled_err:.3e}"
+            "\nsame fixture, same s = {s}\n  A today                {a_err:.3e}\n  \
+             B remedy D  (caller frame) {b_err:.3e}\n  C rescaled  (scaled frame) {c_err:.3e}"
         );
 
+        assert_eq!(
+            b_err.to_bits(),
+            a_err.to_bits(),
+            "arm B (internal normalisation) must leave `grad` untouched — A {a_err:.17e}, \
+             B {b_err:.17e}"
+        );
         assert!(
-            rescaled_err > 10.0 * plain_err,
-            "a 2^10 caller-frame rescale must visibly degrade `grad` (the fixed 1e-6 step is \
-             now 1024x smaller relative to the geometry) — plain {plain_err:.3e}, rescaled \
-             {rescaled_err:.3e}. If it does not, the bit-identity result above is consistent \
-             with `grad` being scale-insensitive in general and proves nothing specific."
+            c_err > 10.0 * a_err,
+            "arm C (caller-frame rescale by {s}) must visibly degrade `grad` — the fixed 1e-6 \
+             step is now 1024x smaller relative to the geometry. Got A {a_err:.3e}, C \
+             {c_err:.3e}. If C does not degrade, then B's bit-identity is consistent with \
+             `grad` being scale-insensitive in general and proves nothing specific."
         );
     }
 
