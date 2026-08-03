@@ -3843,6 +3843,124 @@ mod tests {
         phantom_by_frame("LOFTED-FILLED", &filled);
     }
 
+    /// Per-triangle soup: every face gets its own three vertices, destroying all shared
+    /// topology. `cf-spine-studio`'s `loft_painted_disc` does exactly this to the raw loft
+    /// before welding it back, because — its own comment — "the raw loft tet-meshes into a
+    /// shattered surface". Reproduced here so the fixture can be compared to production on
+    /// the one variable that differs.
+    fn explode_to_soup(m: &IndexedMesh) -> IndexedMesh {
+        let mut vertices = Vec::with_capacity(m.faces.len() * 3);
+        let mut faces = Vec::with_capacity(m.faces.len());
+        for f in &m.faces {
+            let base = u32::try_from(vertices.len()).expect("soup vertex count fits u32");
+            for &v in f {
+                vertices.push(m.vertices[v as usize]);
+            }
+            faces.push([base, base + 1, base + 2]);
+        }
+        IndexedMesh { vertices, faces }
+    }
+
+    /// **Step 0c — is the lofted disc's phantom material a FIXTURE defect?**
+    ///
+    /// Steps 0 and 0b established that the lofted disc is ~40 % phantom, that the frame fix
+    /// moves it by zero, that closing its boundary moves it by 0.2 %, and that its winding is
+    /// consistent. So neither of the SDF-side hypotheses survived — which turns the question
+    /// around: is the *input* a valid disc at all?
+    ///
+    /// Reading `cf-spine-studio`'s `loft_painted_disc` says probably not, in **two** ways:
+    ///
+    /// 1. **Face selection.** The Studio lofts from *painted* faces. [`lofted_disc`] lofts from
+    ///    [`select_endplate`]'s automatic `normal.z · sign > 0.7` predicate, which on a real
+    ///    vertebra can also take up-facing facets on the transverse and articular processes.
+    /// 2. **Topology.** The Studio explodes the raw loft to per-triangle soup and re-welds it
+    ///    (`repair_mesh`), because the raw loft "tet-meshes into a shattered surface".
+    ///    [`lofted_disc`] returns `assemble_bushing(..).mesh` **raw** and does neither.
+    ///
+    /// (2) is the one with a mechanism: unwelded seam vertices mean a position that should
+    /// carry one pseudo-normal instead carries several, each accumulated from only *some* of
+    /// its incident triangles — which is frame-independent, hole-independent and
+    /// winding-consistent, exactly the signature measured.
+    ///
+    /// This measures both. (1) by extent — a patch that reaches the process tips is wider than
+    /// the vertebral body. (2) by the causal test: run production's own repair over the
+    /// fixture's loft, change nothing else, and re-measure the identical quantity.
+    ///
+    /// Asserts nothing. It is a diagnosis, and the arc has twice been wrong about this disc by
+    /// reasoning instead of running.
+    #[test]
+    #[ignore = "needs $CF_L4_STL/$CF_L5_STL (BodyParts3D, CC BY-SA, not committed)"]
+    #[allow(clippy::cast_precision_loss)]
+    fn frame_fix_step0c_lofted_fixture_vs_production_pipeline_fom() {
+        use cf_fsu_geometry::load_from_env;
+
+        let (l4, l5) = (
+            load_from_env("CF_L4_STL").unwrap(),
+            load_from_env("CF_L5_STL").unwrap(),
+        );
+
+        // ── (1) Does `select_endplate` over-select? Compare the patch to the whole bone. ──
+        println!("════ PATCH EXTENT — is the auto-selected 'endplate' an endplate? ════");
+        for (label, mesh, sign) in [("L4 (inferior)", &l4, -1.0), ("L5 (superior)", &l5, 1.0)] {
+            let faces = select_endplate(mesh, sign);
+            let pts: Vec<Point3<f64>> = faces
+                .iter()
+                .flat_map(|&i| mesh.faces[i])
+                .map(|v| mesh.vertices[v as usize])
+                .collect();
+            let whole = Aabb::from_points(mesh.vertices.iter()).size();
+            let patch = Aabb::from_points(pts.iter()).size();
+            println!(
+                "{label} | whole bone x {:.2} y {:.2} z {:.2} | PATCH x {:.2} y {:.2} z {:.2} \
+                 ({:.0} % of bone width) | {} of {} faces selected",
+                whole.x,
+                whole.y,
+                whole.z,
+                patch.x,
+                patch.y,
+                patch.z,
+                100.0 * patch.x / whole.x,
+                faces.len(),
+                mesh.faces.len(),
+            );
+        }
+
+        // ── (2) THE CAUSAL TEST: production's repair, one variable, same measurement. ──
+        let raw_loft = lofted_disc(&l4, &l5);
+        let mut welded = explode_to_soup(&raw_loft);
+        let summary =
+            mesh_repair::repair_mesh(&mut welded, &mesh_repair::RepairParams::for_scans());
+        println!("\n════ TOPOLOGY — the fixture's raw loft vs production's welded one ════");
+        println!(
+            "repair: {} verts {} faces -> {} verts {} faces | {summary:?}",
+            raw_loft.vertices.len(),
+            raw_loft.faces.len(),
+            welded.vertices.len(),
+            welded.faces.len(),
+        );
+        for (label, m) in [
+            ("FIXTURE (raw loft)", &raw_loft),
+            ("PRODUCTION (welded)", &welded),
+        ] {
+            let r = mesh_repair::validate_mesh(m);
+            println!(
+                "{label} | watertight {} manifold {} inside-out {} | boundary edges {} \
+                 non-manifold {} degenerate {} duplicate {} | enclosed volume {:.2} mm³",
+                r.is_watertight,
+                r.is_manifold,
+                r.is_inside_out,
+                r.boundary_edge_count,
+                r.non_manifold_edge_count,
+                r.degenerate_face_count,
+                r.duplicate_face_count,
+                surface_volume(m),
+            );
+        }
+        for (label, m) in [("FIXTURE-RAW", &raw_loft), ("PRODUCTION-WELDED", &welded)] {
+            phantom_by_frame(label, m);
+        }
+    }
+
     /// Mesh `disc_mesh` twice — once in production's rescaled frame, once with the oracle built
     /// in native mm — and report how much provably-off-disc material each one stuffs.
     ///
