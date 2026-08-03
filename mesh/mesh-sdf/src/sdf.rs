@@ -36,6 +36,11 @@ use crate::oracle::{Sign, Signed, UnsignedDistance};
 pub struct TriMeshDistance {
     tri_mesh: Arc<TriMesh>,
     mesh: IndexedMesh,
+    /// Power-of-two factor the BVH's coordinates were built at, relative to `mesh`.
+    ///
+    /// The oracle lifts every query into this internal frame and brings the answer
+    /// back, so the **caller's frame never moves** — see [`Self::with_scale`].
+    scale: f64,
 }
 
 impl TriMeshDistance {
@@ -45,14 +50,46 @@ impl TriMeshDistance {
     ///
     /// Returns [`SdfError::EmptyMesh`] if `mesh` has no faces.
     pub fn new(mesh: IndexedMesh) -> SdfResult<Self> {
+        // ⚠ α.1 step 1 of 2: the scale SEAM exists, but the rule that picks a scale does
+        //   not yet. `1.0` makes every lift and unlift an exact no-op, so this commit is
+        //   behaviourally identical to pre-α.1 — deliberately, so the gates below can be
+        //   moved onto `with_scale` and anchored to #712's committed column BEFORE the
+        //   rule lands and changes what `new` returns.
+        Self::with_scale(mesh, 1.0)
+    }
+
+    /// Build the BVH over `mesh` scaled by `scale`, an explicit override of the factor
+    /// [`Self::new`] would choose.
+    ///
+    /// **The caller's frame is unaffected.** `scale` changes only the coordinates parry's
+    /// f32 BVH is built at; queries are lifted in and answers brought back, so every
+    /// public result is in the caller's units regardless of `scale`. For a power of two
+    /// this round trip is a pure exponent shift and therefore exact — measured over 2⁴⁰
+    /// by `power_of_two_rescale_is_bit_identical` and, for the gradient, across the whole
+    /// usable band by `internal_normalisation_leaves_grad_bit_identical`.
+    ///
+    /// `pub(crate)` on purpose. It is the seam the scale-regime gates need in order to
+    /// hold the scale fixed while the rule that chooses one varies — not a knob for
+    /// consumers, who should never have to know this frame exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SdfError::EmptyMesh`] if `mesh` has no faces.
+    pub(crate) fn with_scale(mesh: IndexedMesh, scale: f64) -> SdfResult<Self> {
         if mesh.faces.is_empty() {
             return Err(SdfError::EmptyMesh);
         }
-        let tri_mesh = Arc::new(build_tri_mesh(&mesh));
-        Ok(Self { tri_mesh, mesh })
+        let tri_mesh = Arc::new(build_tri_mesh(&mesh, scale));
+        Ok(Self {
+            tri_mesh,
+            mesh,
+            scale,
+        })
     }
 
     /// Borrow the underlying `IndexedMesh` the BVH was built over.
+    ///
+    /// Always in the **caller's** units — the internal scale is not applied here.
     #[must_use]
     pub fn mesh(&self) -> &IndexedMesh {
         &self.mesh
@@ -62,21 +99,39 @@ impl TriMeshDistance {
     pub(crate) fn shared_tri_mesh(&self) -> &Arc<TriMesh> {
         &self.tri_mesh
     }
+
+    /// The internal power-of-two scale this oracle's BVH was built at.
+    pub(crate) fn scale(&self) -> f64 {
+        self.scale
+    }
+}
+
+/// Lift a caller-frame point into the oracle's internal frame.
+#[inline]
+fn lift(p: Point3<f64>, scale: f64) -> Point3<f64> {
+    Point3::new(p.x * scale, p.y * scale, p.z * scale)
 }
 
 impl UnsignedDistance for TriMeshDistance {
     fn distance(&self, point: Point3<f64>) -> f64 {
+        // ⚠ The norm is taken in the INTERNAL frame and divided back, not taken between
+        //   the caller's point and an unlifted projection. The two differ in their
+        //   rounding, and this is the form `internal_normalisation_leaves_grad_bit_identical`
+        //   measured as bit-neutral — shipping the other one would ship something the
+        //   arc never measured.
+        let lifted = lift(point, self.scale);
         let projection = self
             .tri_mesh
-            .project_local_point(&f64_to_parry(point), false);
-        (point - parry_to_f64(projection.point)).norm()
+            .project_local_point(&f64_to_parry(lifted), false);
+        (lifted - parry_to_f64(projection.point)).norm() / self.scale
     }
 
     fn closest_point(&self, point: Point3<f64>) -> Point3<f64> {
         let projection = self
             .tri_mesh
-            .project_local_point(&f64_to_parry(point), false);
-        parry_to_f64(projection.point)
+            .project_local_point(&f64_to_parry(lift(point, self.scale)), false);
+        let q = parry_to_f64(projection.point);
+        Point3::new(q.x / self.scale, q.y / self.scale, q.z / self.scale)
     }
 }
 
@@ -89,6 +144,10 @@ impl UnsignedDistance for TriMeshDistance {
 #[derive(Debug, Clone)]
 pub struct PseudoNormalSign {
     tri_mesh: Arc<TriMesh>,
+    /// Must match the scale the shared `tri_mesh` was built at, or `is_inside` probes a
+    /// point that is not where the caller asked. [`Self::from_distance`] copies it from
+    /// the distance oracle, which is the only way it can disagree — see that method.
+    scale: f64,
 }
 
 impl PseudoNormalSign {
@@ -104,8 +163,12 @@ impl PseudoNormalSign {
         if mesh.faces.is_empty() {
             return Err(SdfError::EmptyMesh);
         }
+        // Same rule on the same mesh as `TriMeshDistance::new`, so a pair built this way
+        // agrees by construction even though it does not share a BVH.
+        let scale = 1.0;
         Ok(Self {
-            tri_mesh: Arc::new(build_tri_mesh(mesh)),
+            tri_mesh: Arc::new(build_tri_mesh(mesh, scale)),
+            scale,
         })
     }
 
@@ -114,10 +177,16 @@ impl PseudoNormalSign {
     /// Use this when constructing both oracles over the same mesh —
     /// the resulting `Signed<TriMeshDistance, PseudoNormalSign>` then
     /// owns exactly one BVH.
+    ///
+    /// **Takes the distance oracle's internal scale with the BVH.** The two travel
+    /// together because they must: probing the shared `tri_mesh` at a differently-scaled
+    /// point would return a sign for somewhere else entirely. Sharing the `Arc` and
+    /// copying the scale in one place is what makes that unrepresentable.
     #[must_use]
     pub fn from_distance(distance: &TriMeshDistance) -> Self {
         Self {
             tri_mesh: Arc::clone(distance.shared_tri_mesh()),
+            scale: distance.scale(),
         }
     }
 }
@@ -125,7 +194,7 @@ impl PseudoNormalSign {
 impl Sign for PseudoNormalSign {
     fn is_inside(&self, point: Point3<f64>) -> bool {
         self.tri_mesh
-            .project_local_point(&f64_to_parry(point), false)
+            .project_local_point(&f64_to_parry(lift(point, self.scale)), false)
             .is_inside
     }
 }
@@ -144,17 +213,32 @@ impl<S: Sign> Signed<TriMeshDistance, S> {
     }
 }
 
-/// Build a parry `TriMesh` from an `IndexedMesh`.
+/// Build a parry `TriMesh` from an `IndexedMesh`, with its coordinates scaled by
+/// `scale`.
 ///
 /// Sets `TriMeshFlags::ORIENTED` so pseudo-normals are computed; this
 /// is what makes [`PseudoNormalSign::is_inside`] meaningful on
 /// watertight meshes. On non-manifold input, pseudo-normal computation
 /// may be partial — `is_inside` then becomes undefined.
-fn build_tri_mesh(mesh: &IndexedMesh) -> TriMesh {
+///
+/// **The single f64 → f32 narrowing point in the crate**, and therefore the only place
+/// the internal scale is applied. `TriMeshDistance::with_scale` and
+/// `PseudoNormalSign::new` are its only callers, and `PseudoNormalSign::from_distance`
+/// shares the result — so one change here covers distance *and* sign.
+///
+/// The multiply happens in f64, before the narrowing, so for a power-of-two `scale` it
+/// is exact and the narrowing rounds the same way it would have at `scale = 1`.
+fn build_tri_mesh(mesh: &IndexedMesh, scale: f64) -> TriMesh {
     let vertices: Vec<ParryPoint<ParryReal>> = mesh
         .vertices
         .iter()
-        .map(|v| ParryPoint::new(v.x as ParryReal, v.y as ParryReal, v.z as ParryReal))
+        .map(|v| {
+            ParryPoint::new(
+                (v.x * scale) as ParryReal,
+                (v.y * scale) as ParryReal,
+                (v.z * scale) as ParryReal,
+            )
+        })
         .collect();
     let indices: Vec<[u32; 3]> = mesh.faces.to_vec();
     TriMesh::with_flags(vertices, indices, TriMeshFlags::ORIENTED)
