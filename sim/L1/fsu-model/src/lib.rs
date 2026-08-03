@@ -3669,6 +3669,77 @@ mod tests {
         );
     }
 
+    /// **Step 0 of the frame fix: does the LOFTED disc suffer the frame bug at all?**
+    ///
+    /// The recon measured the *scanned* disc (`FMA16036`) and found 30 % of its triangles under
+    /// parry's area floor once rescaled to metres. It says nothing about the **lofted** disc —
+    /// the surface [`lofted_disc`] assembles from L4/L5 endplate patches, which is a completely
+    /// different construction path and is what `cf-spine-studio` actually builds.
+    ///
+    /// **That distinction decides real scope**, which is why it is measured before anything is
+    /// re-anchored: every drivability cell in [`DISC_CONFORM_QUALITY_FLOOR`]'s and
+    /// [`DISC_MIDSIDE_CONFORM_QUALITY_FLOOR`]'s tables, and all four of rung 4b's entry-criterion
+    /// angles, are measured on the lofted disc. If it is clear of the floor those tables' *
+    /// drivability* columns do not move at all and only their scanned-disc fidelity columns do.
+    ///
+    /// **Validated against a known value, for free:** the scanned arm must reproduce the recon's
+    /// `0 of 14489` native / `4342 of 14489` scaled. That is what says this is the same
+    /// instrument the diagnosis was built on, rather than a second one that happens to print
+    /// similar-looking numbers.
+    ///
+    /// The lofted arm is **reported, never asserted**. Its answer selects a branch of the fix
+    /// rung's plan, and a threshold pinned before the mechanism is known would only freeze
+    /// today's draw — the mistake rung 5's step 0 made when it gated the clamp *depth* instead
+    /// of the pinned *population*.
+    #[test]
+    #[ignore = "needs $CF_L4_STL/$CF_L5_STL/$CF_DISC_STL (BodyParts3D, CC BY-SA, not committed)"]
+    fn frame_fix_step0_area_floor_margin_by_geometry_fom() {
+        use cf_fsu_geometry::load_from_env;
+
+        let (l4, l5) = (
+            load_from_env("CF_L4_STL").unwrap(),
+            load_from_env("CF_L5_STL").unwrap(),
+        );
+        let scanned = load_from_env("CF_DISC_STL").unwrap();
+        let lofted = lofted_disc(&l4, &l5);
+
+        // The KNOWN-VALUE arm first: if this does not reproduce, nothing below is comparable
+        // to the diagnosis.
+        println!("\n--- SCANNED disc (FMA16036) — the recon's geometry ---");
+        let (nat_s, scaled_s, total_s) = report_area_floor_margin(&scanned);
+        assert_eq!(
+            (nat_s, scaled_s, total_s),
+            (0, 4342, 14489),
+            "the scanned disc must reproduce the recon's area-floor census (0 / 4342 of 14489) \
+             — if it does not, this instrument is not the one the diagnosis was built on"
+        );
+
+        println!(
+            "\n--- LOFTED disc (assembled from L4/L5 endplate patches) — the open question ---"
+        );
+        let (nat_l, scaled_l, total_l) = report_area_floor_margin(&lofted);
+        #[allow(clippy::cast_precision_loss)]
+        let pct = |n: usize, d: usize| 100.0 * n as f64 / d as f64;
+        println!(
+            "\nVERDICT | scanned: native {nat_s} ({:.2} %) scaled {scaled_s} ({:.2} %) of {total_s} \
+             | lofted: native {nat_l} ({:.2} %) scaled {scaled_l} ({:.2} %) of {total_l}",
+            pct(nat_s, total_s),
+            pct(scaled_s, total_s),
+            pct(nat_l, total_l),
+            pct(scaled_l, total_l),
+        );
+        println!(
+            "{}",
+            if scaled_l == 0 {
+                "⇒ the LOFTED disc is CLEAR of the floor in both frames: the floor tables' \
+                 drivability columns and rung 4b's entry criterion do NOT move."
+            } else {
+                "⇒ the LOFTED disc is AFFECTED: the floor tables' drivability columns and rung \
+                 4b's entry criterion are both in the blast radius, and both must be re-measured."
+            }
+        );
+    }
+
     /// Size, enclosed volume, repair health, and exterior sign probes of the input surface,
     /// in its native millimetre frame. Returns the native-frame oracle for reuse.
     fn report_surface_health(disc_mesh: &IndexedMesh) -> MeshOracle {
@@ -3779,7 +3850,10 @@ mod tests {
     /// which parry's `dpt.dot(&pseudo_normal) <= 0.0` inside test reads as "inside" at any
     /// distance. The floor is ABSOLUTE and area goes as length², so the mm → m rescale moves
     /// every triangle 1e6 times closer to it.
-    fn report_area_floor_margin(disc_mesh: &IndexedMesh) {
+    ///
+    /// Returns `(under the floor in native mm, under the floor once scaled, total faces)` so a
+    /// caller can validate this instrument against a known value instead of reading its print.
+    fn report_area_floor_margin(disc_mesh: &IndexedMesh) -> (usize, usize, usize) {
         let eps_area = f64::from(f32::EPSILON) / 2.0;
         let mut areas: Vec<f64> = disc_mesh
             .faces
@@ -3796,8 +3870,13 @@ mod tests {
         areas.sort_by(f64::total_cmp);
         let scale = DiscParams::default().scale;
         println!("parry area floor = f32::EPSILON/2 = {eps_area:.4e} (absolute, any unit)");
-        for (frame, factor) in [("native mm", 1.0), ("scaled  m", scale * scale)] {
+        let mut under_by_frame = [0usize; 2];
+        for (i, (frame, factor)) in [("native mm", 1.0), ("scaled  m", scale * scale)]
+            .into_iter()
+            .enumerate()
+        {
             let under = areas.iter().filter(|a| *a * factor <= eps_area).count();
+            under_by_frame[i] = under;
             println!(
                 "  {frame} | min {:.4e} median {:.4e} | margin of the SMALLEST triangle over \
                  the floor: {:.1}x | under the floor: {under} of {}",
@@ -3807,6 +3886,7 @@ mod tests {
                 areas.len(),
             );
         }
+        (under_by_frame[0], under_by_frame[1], areas.len())
     }
 
     /// Ask the **scaled** oracle (the one the mesher consumed) and the **native-mm** oracle
