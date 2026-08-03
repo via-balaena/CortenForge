@@ -219,12 +219,25 @@ fn mesh_scale_inputs(mesh: &IndexedMesh) -> SdfResult<(f64, f64)> {
 ///   scale lifts a zero off the floor), or if clearing the floor would push coordinates
 ///   past [`coordinate_cap`].
 /// - [`SdfError::FaceIndexOutOfRange`] via [`mesh_scale_inputs`].
+pub(crate) fn choose_scale(mesh: &IndexedMesh) -> SdfResult<f64> {
+    scale_for_margin(mesh, AREA_MARGIN_BINADES)
+}
+
+/// [`choose_scale`] with the margin injectable, so
+/// `the_chosen_scale_is_insensitive_to_the_margin_across_decades` can vary the one input
+/// whose value is not derived from anything and show the result does not move.
+///
+/// A constant that cannot be varied cannot be shown not to matter.
+///
+/// # Errors
+///
+/// As [`choose_scale`].
 #[allow(
     clippy::cast_possible_truncation,
     reason = "`k` is bounded above by `max_k`, itself finite because `extent > 0` is \
               established by the zero-area guard, so the i32 cast cannot truncate"
 )]
-pub(crate) fn choose_scale(mesh: &IndexedMesh) -> SdfResult<f64> {
+pub(crate) fn scale_for_margin(mesh: &IndexedMesh, margin_binades: i32) -> SdfResult<f64> {
     let (min_area, extent) = mesh_scale_inputs(mesh)?;
     // Written as a positive test so NaN falls through to the error arm rather than
     // slipping past a negated comparison: NaN is neither `> 0.0` nor `<= 0.0`.
@@ -238,7 +251,7 @@ pub(crate) fn choose_scale(mesh: &IndexedMesh) -> SdfResult<f64> {
         });
     }
 
-    let target = area_floor() * 2.0_f64.powi(AREA_MARGIN_BINADES);
+    let target = area_floor() * 2.0_f64.powi(margin_binades);
     // Area goes as length², so the scale needed is the square root of the area shortfall.
     let k = (target / min_area).sqrt().log2().ceil().max(0.0);
     let max_k = (coordinate_cap() / extent).log2().floor();
@@ -788,6 +801,173 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// **`AREA_MARGIN_BINADES` is the one input to the scale rule that is not derived
+    /// from anything — so this asserts the answer does not depend on it.**
+    ///
+    /// Every other quantity in `scale_for_margin` tracks something real: `area_floor()`
+    /// is `f32::EPSILON / 2` because that is where parry stops computing a pseudo-normal,
+    /// `coordinate_cap()` is `sqrt(f32::MAX)` because that is where f32 products overflow,
+    /// and `min_area` / `extent` come from the mesh. The margin is a choice.
+    ///
+    /// The temptation was to *measure* it — find the smallest margin that fixes the FSU
+    /// disc. That would have been the arc's original defect one level up: a constant
+    /// validated on one geometry, which is precisely how `Sdf::grad`'s `1e-6` and parry's
+    /// area floor became load-bearing in the first place. And it answers the wrong
+    /// question, because the cost function is one-sided — too small silently fails to fix
+    /// the sign, too large costs nothing until a cliff tens of binades away.
+    ///
+    /// So the claim is insensitivity, not fitness: sweep the margin across a wide range
+    /// and require the signed distance to be **bit-identical** throughout. If that holds,
+    /// the value is provably not load-bearing, which is stronger than any fitted number.
+    ///
+    /// **The non-vacuity check is the load-bearing half.** If every margin in the sweep
+    /// happened to round to the same `2^k`, bit-identity would be trivially true and this
+    /// test would assert nothing. The sweep must actually move the scale.
+    #[test]
+    fn the_chosen_scale_is_insensitive_to_the_margin_across_decades() {
+        // Probes spanning inside, surface-adjacent and well outside, at a fixed relative
+        // position so the geometry is identical at every radius.
+        let dirs: Vec<f64> = (0..=12).map(|i| 0.25 + f64::from(i) * 0.125).collect();
+
+        for radius in [1e-3_f64, 1e-2, 1.0, 100.0] {
+            let mesh = uv_sphere(radius, 24, 48);
+            let mut scales: Vec<u64> = Vec::new();
+            let mut reference: Option<Vec<u64>> = None;
+
+            for margin in [0_i32, 8, 16, 24, 32, 40, 48, 56, 64] {
+                let s = crate::sdf::scale_for_margin(&mesh, margin).expect("sphere is scalable");
+                scales.push(s.to_bits());
+                let sdf = build_sdf_at(&mesh, s);
+
+                let got: Vec<u64> = dirs
+                    .iter()
+                    .map(|f| sdf.distance(Point3::new(f * radius, 0.0, 0.0)).to_bits())
+                    .collect();
+                match &reference {
+                    None => reference = Some(got),
+                    Some(want) => assert_eq!(
+                        &got,
+                        want,
+                        "r={radius}: margin {margin} binades gives a different signed distance \
+                         than the first margin in the sweep (scale 2^{}). Then \
+                         AREA_MARGIN_BINADES is load-bearing and picking it needs a \
+                         justification this crate does not have.",
+                        s.log2(),
+                    ),
+                }
+            }
+
+            scales.sort_unstable();
+            scales.dedup();
+            assert!(
+                scales.len() > 1,
+                "r={radius}: every margin in the sweep chose the SAME scale, so the \
+                 bit-identity above is vacuous — widen the sweep until the scale moves"
+            );
+        }
+    }
+
+    /// **The headline claim, in licence-free form: the oracle no longer depends on the
+    /// caller's units.**
+    ///
+    /// This is the FSU disc's bug reproduced on a fixture. A sphere of radius 1e-3 has
+    /// pole-fan triangles at ~1.1e-9, well under parry's 5.96e-8 area floor, so its
+    /// pseudo-normals are zeroed and the oracle reports "inside" at any distance — the
+    /// same mechanism that made the disc mesh ~30 % phantom material once
+    /// `prepare_disc_at` rescaled it to metres.
+    ///
+    /// Both arms are asserted, and the broken one is what gives the fixed one meaning:
+    /// `with_scale(mesh, 1.0)` (the pre-α.1 oracle) must still get the sign **wrong**,
+    /// and `new` must get it **right**. A test that only checked the second would pass
+    /// just as well on a fixture that never had the bug.
+    #[test]
+    fn internal_normalisation_fixes_the_sign_below_the_area_floor() {
+        // Sample a lattice reaching to 1.6 r per axis — corners land at 2.77 r, where the
+        // closest feature is an edge or a vertex and a zeroed pseudo-normal shows up.
+        let n = 10;
+        for radius in [1e-3_f64, 1e-4] {
+            let mesh = uv_sphere(radius, 24, 48);
+            let floor = f64::from(f32::EPSILON) / 2.0;
+            let min_area = smallest_area(&mesh);
+            assert!(
+                min_area < floor,
+                "r={radius}: fixture's smallest triangle ({min_area:.3e}) already clears the \
+                 floor ({floor:.3e}) — this radius never had the bug and proves nothing"
+            );
+
+            let fixed = build_sdf(mesh.clone());
+            let broken = build_sdf_at(&mesh, 1.0);
+            let (mut fixed_wrong, mut broken_wrong, mut checked) = (0usize, 0usize, 0usize);
+
+            for i in 0..=n {
+                for j in 0..=n {
+                    for k in 0..=n {
+                        let q =
+                            |idx: i32| 1.6 * radius * (f64::from(idx) / f64::from(n) - 0.5) * 2.0;
+                        let p = Point3::new(q(i), q(j), q(k));
+                        let truth = p.coords.norm() - radius;
+                        // Skip the tessellation's own uncertainty band, where the
+                        // polyhedron and the ideal sphere genuinely differ.
+                        if truth.abs() < 0.005 * radius {
+                            continue;
+                        }
+                        checked += 1;
+                        if (fixed.distance(p) < 0.0) != (truth < 0.0) {
+                            fixed_wrong += 1;
+                        }
+                        if (broken.distance(p) < 0.0) != (truth < 0.0) {
+                            broken_wrong += 1;
+                        }
+                    }
+                }
+            }
+
+            println!(
+                "r={radius:.0e}  min_area {min_area:.3e} / floor {floor:.3e} = \
+                 {:.3}  ->  pre-α.1 wrong at {broken_wrong}/{checked}, normalised wrong at \
+                 {fixed_wrong}/{checked}",
+                min_area / floor,
+            );
+            assert!(
+                checked > 500,
+                "r={radius}: only {checked} probes cleared the band"
+            );
+            assert!(
+                broken_wrong > 0,
+                "r={radius}: the pre-α.1 oracle got every sign RIGHT, so this fixture does \
+                 not reproduce the area-floor bug and the fix below is unearned"
+            );
+            assert_eq!(
+                fixed_wrong, 0,
+                "r={radius}: the internally normalised oracle still gets {fixed_wrong} of \
+                 {checked} signs wrong"
+            );
+        }
+    }
+
+    /// Smallest triangle area — the quantity parry's area floor applies to.
+    fn smallest_area(m: &IndexedMesh) -> f64 {
+        m.faces
+            .iter()
+            .map(|f| {
+                let (a, b, c) = (
+                    m.vertices[f[0] as usize],
+                    m.vertices[f[1] as usize],
+                    m.vertices[f[2] as usize],
+                );
+                0.5 * (b - a).cross(&(c - a)).norm()
+            })
+            .fold(f64::INFINITY, f64::min)
+    }
+
+    /// Compose the standard pair at an explicit internal scale.
+    fn build_sdf_at(mesh: &IndexedMesh, scale: f64) -> Signed<TriMeshDistance, PseudoNormalSign> {
+        let distance =
+            TriMeshDistance::with_scale(mesh.clone(), scale).expect("fixture is non-empty");
+        let sign = PseudoNormalSign::from_distance(&distance);
+        Signed { distance, sign }
     }
 
     /// Scale every vertex of `m` by exactly `s` — no re-tessellation, so the result is the
