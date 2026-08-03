@@ -43,4 +43,29 @@ pub enum SdfError {
         "non-finite deviation sample (NaN or infinite): corrupt mesh vertices or reference field"
     )]
     NonFiniteDeviation,
+
+    /// No internal scale satisfies both ends of the normalisation rule, so this mesh
+    /// cannot be given a trustworthy sign.
+    ///
+    /// The rule is two-sided: the smallest triangle must be lifted clear of parry's f32
+    /// area floor (below it the pseudo-normal is zeroed and the oracle reports "inside"
+    /// at any distance), while the largest coordinate must stay where f32 cross products
+    /// and squared norms remain finite. A mesh whose triangle areas span more dynamic
+    /// range than f32 can hold has no scale that satisfies both.
+    ///
+    /// **This is a real answer, not a failure to cope.** The alternative — clamping to
+    /// the nearest feasible scale — hands back a signed oracle for a surface that cannot
+    /// be signed, which is the defect this whole arc exists to remove.
+    #[error(
+        "mesh cannot be internally normalised (smallest triangle area {min_area:.3e}, \
+         coordinate extent {extent:.3e}): {reason}"
+    )]
+    UnscalableMesh {
+        /// Smallest triangle area in the mesh, in the caller's units.
+        min_area: f64,
+        /// Largest absolute vertex coordinate, in the caller's units.
+        extent: f64,
+        /// Which end of the two-sided rule could not be satisfied.
+        reason: &'static str,
+    },
 }

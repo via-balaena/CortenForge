@@ -44,18 +44,26 @@ pub struct TriMeshDistance {
 }
 
 impl TriMeshDistance {
-    /// Build the BVH over `mesh`.
+    /// Build the BVH over `mesh`, internally normalised so its smallest triangle clears
+    /// parry's f32 area floor.
+    ///
+    /// The scale is chosen from the mesh's own geometry ([`choose_scale`]) and applied
+    /// **inside** the oracle: queries are lifted in and answers brought back, so results
+    /// are in the caller's units and the caller's frame never moves. Building the same
+    /// surface in millimetres or in metres now gives the same answers — which it did not
+    /// before, and is why the FSU disc meshed 30 % phantom material after a rescale to SI.
     ///
     /// # Errors
     ///
-    /// Returns [`SdfError::EmptyMesh`] if `mesh` has no faces.
+    /// - [`SdfError::EmptyMesh`] if `mesh` has no faces.
+    /// - [`SdfError::UnscalableMesh`] if no scale can satisfy both ends of the rule.
+    /// - [`SdfError::FaceIndexOutOfRange`] if a face names a missing vertex.
     pub fn new(mesh: IndexedMesh) -> SdfResult<Self> {
-        // ⚠ α.1 step 1 of 2: the scale SEAM exists, but the rule that picks a scale does
-        //   not yet. `1.0` makes every lift and unlift an exact no-op, so this commit is
-        //   behaviourally identical to pre-α.1 — deliberately, so the gates below can be
-        //   moved onto `with_scale` and anchored to #712's committed column BEFORE the
-        //   rule lands and changes what `new` returns.
-        Self::with_scale(mesh, 1.0)
+        if mesh.faces.is_empty() {
+            return Err(SdfError::EmptyMesh);
+        }
+        let scale = choose_scale(&mesh)?;
+        Self::with_scale(mesh, scale)
     }
 
     /// Build the BVH over `mesh` scaled by `scale`, an explicit override of the factor
@@ -112,6 +120,140 @@ fn lift(p: Point3<f64>, scale: f64) -> Point3<f64> {
     Point3::new(p.x * scale, p.y * scale, p.z * scale)
 }
 
+/// The area at or below which `parry3d` silently skips a triangle.
+///
+/// `parry3d` is the **f32** build, so `parry3d::math::DEFAULT_EPSILON` is `f32::EPSILON`.
+/// `TriMesh::compute_pseudo_normals` accumulates a triangle only `if let Some(n) =
+/// tri.normal()`, and `Triangle::normal` is `Unit::try_new(ab × ac, DEFAULT_EPSILON)`.
+/// `‖ab × ac‖` is twice the area, so a triangle at or under `f32::EPSILON / 2` is skipped
+/// — leaving a **zero** pseudo-normal, which parry's `dpt.dot(&pn) <= 0.0` inside test
+/// satisfies unconditionally. A zero pseudo-normal reports "inside" at any distance.
+fn area_floor() -> f64 {
+    f64::from(f32::EPSILON) / 2.0
+}
+
+/// How far above [`area_floor`] the smallest triangle is placed, in binades.
+///
+/// **Not a fitted constant, and deliberately not measured against any particular mesh.**
+/// The cost function here is one-sided: too small silently fails to fix the sign bug,
+/// while too large costs *nothing* — a power-of-two rescale is an exponent shift, proven
+/// bit-neutral over 2⁴⁰ (`power_of_two_rescale_is_bit_identical`) and across the whole
+/// gradient band (`internal_normalisation_leaves_grad_bit_identical`). So there is no
+/// optimum to find: there is a floor to clear and a distant cliff to avoid, and the right
+/// move is to sit far from both.
+///
+/// Fitting this to the FSU disc would have reintroduced the arc's original defect one
+/// level up — a constant validated on one geometry, which is exactly how `Sdf::grad`'s
+/// `1e-6` and parry's own area floor became load-bearing. Instead the value sits near the
+/// middle of a feasible band tens of binades wide, and
+/// `the_chosen_scale_is_insensitive_to_the_margin_across_decades` asserts that the
+/// **result does not depend on it** — which is a stronger claim than any fitted number.
+const AREA_MARGIN_BINADES: i32 = 40;
+
+/// Largest internal coordinate magnitude the BVH may be built at.
+///
+/// parry computes `ab.cross(&ac)` and squared norms in **f32**, so intermediates grow as
+/// coordinate², and they overflow to infinity above `sqrt(f32::MAX)`. Ten binades of
+/// headroom below that, derived rather than hand-picked so it tracks the type instead of
+/// a remembered number.
+fn coordinate_cap() -> f64 {
+    f64::from(f32::MAX).sqrt() / 1024.0
+}
+
+/// Smallest triangle area and largest absolute coordinate, in the caller's units.
+///
+/// # Errors
+///
+/// Returns [`SdfError::FaceIndexOutOfRange`] if a face names a vertex the mesh does not
+/// have — indexing would otherwise panic here, and a scale derived from a mesh whose
+/// faces do not resolve is meaningless anyway.
+fn mesh_scale_inputs(mesh: &IndexedMesh) -> SdfResult<(f64, f64)> {
+    let vertex_count = mesh.vertices.len();
+    let mut extent = 0.0_f64;
+    for v in &mesh.vertices {
+        extent = extent.max(v.x.abs()).max(v.y.abs()).max(v.z.abs());
+    }
+    let mut min_area = f64::INFINITY;
+    for f in &mesh.faces {
+        let corner = |i: u32| {
+            mesh.vertices
+                .get(i as usize)
+                .copied()
+                .ok_or(SdfError::FaceIndexOutOfRange {
+                    index: i,
+                    vertex_count,
+                })
+        };
+        let (a, b, c) = (corner(f[0])?, corner(f[1])?, corner(f[2])?);
+        let area = 0.5 * (b - a).cross(&(c - a)).norm();
+        // `f64::min` propagates the non-NaN operand, so a NaN area would be silently
+        // dropped and the scale derived from the rest of the mesh. Take it explicitly so
+        // a corrupt vertex surfaces as an unscalable mesh rather than a plausible number.
+        min_area = if area.is_nan() {
+            f64::NAN
+        } else {
+            min_area.min(area)
+        };
+        if min_area.is_nan() {
+            break;
+        }
+    }
+    Ok((min_area, extent))
+}
+
+/// The power-of-two scale [`TriMeshDistance::new`] builds its BVH at.
+///
+/// Smallest `2^k`, `k >= 0`, that lifts the mesh's own smallest triangle
+/// [`AREA_MARGIN_BINADES`] above [`area_floor`] — **derived from the geometry, which is
+/// what makes it dimensionless.** A caller who rescales millimetres to metres shrinks
+/// every area by 1e6 and gets a `k` six binades larger; the oracle behaves identically
+/// either way, which is the property the whole remedy is for.
+///
+/// `k >= 0` is a contract, not an optimisation: the rule only ever **lifts**. Shrinking a
+/// mesh that already clears the floor could push it under, turning a working oracle into
+/// a broken one.
+///
+/// # Errors
+///
+/// - [`SdfError::UnscalableMesh`] if the smallest triangle is zero-area or non-finite (no
+///   scale lifts a zero off the floor), or if clearing the floor would push coordinates
+///   past [`coordinate_cap`].
+/// - [`SdfError::FaceIndexOutOfRange`] via [`mesh_scale_inputs`].
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "`k` is bounded above by `max_k`, itself finite because `extent > 0` is \
+              established by the zero-area guard, so the i32 cast cannot truncate"
+)]
+pub(crate) fn choose_scale(mesh: &IndexedMesh) -> SdfResult<f64> {
+    let (min_area, extent) = mesh_scale_inputs(mesh)?;
+    // Written as a positive test so NaN falls through to the error arm rather than
+    // slipping past a negated comparison: NaN is neither `> 0.0` nor `<= 0.0`.
+    let liftable = min_area > 0.0 && min_area.is_finite() && extent.is_finite();
+    if !liftable {
+        return Err(SdfError::UnscalableMesh {
+            min_area,
+            extent,
+            reason: "a zero-area or non-finite triangle cannot be lifted off parry's area \
+                     floor by any scale",
+        });
+    }
+
+    let target = area_floor() * 2.0_f64.powi(AREA_MARGIN_BINADES);
+    // Area goes as length², so the scale needed is the square root of the area shortfall.
+    let k = (target / min_area).sqrt().log2().ceil().max(0.0);
+    let max_k = (coordinate_cap() / extent).log2().floor();
+    if k > max_k {
+        return Err(SdfError::UnscalableMesh {
+            min_area,
+            extent,
+            reason: "clearing the area floor would push coordinates past the f32 \
+                     product-overflow cap — this mesh's triangle areas span more dynamic \
+                     range than f32 can hold",
+        });
+    }
+    Ok(2.0_f64.powi(k as i32))
+}
+
 impl UnsignedDistance for TriMeshDistance {
     fn distance(&self, point: Point3<f64>) -> f64 {
         // ⚠ The norm is taken in the INTERNAL frame and divided back, not taken between
@@ -158,14 +300,16 @@ impl PseudoNormalSign {
     ///
     /// # Errors
     ///
-    /// Returns [`SdfError::EmptyMesh`] if `mesh` has no faces.
+    /// - [`SdfError::EmptyMesh`] if `mesh` has no faces.
+    /// - [`SdfError::UnscalableMesh`] / [`SdfError::FaceIndexOutOfRange`] via
+    ///   [`choose_scale`].
     pub fn new(mesh: &IndexedMesh) -> SdfResult<Self> {
         if mesh.faces.is_empty() {
             return Err(SdfError::EmptyMesh);
         }
         // Same rule on the same mesh as `TriMeshDistance::new`, so a pair built this way
         // agrees by construction even though it does not share a BVH.
-        let scale = 1.0;
+        let scale = choose_scale(mesh)?;
         Ok(Self {
             tri_mesh: Arc::new(build_tri_mesh(mesh, scale)),
             scale,
