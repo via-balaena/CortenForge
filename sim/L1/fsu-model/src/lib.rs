@@ -3755,6 +3755,94 @@ mod tests {
         }
     }
 
+    /// **Step 0b — why is the LOFTED disc ~40 % phantom in BOTH frames?**
+    ///
+    /// Step 0 measured that the frame fix moves the lofted disc's phantom material by exactly
+    /// zero, while it takes the scanned disc's to zero. So the lofted disc has a **second,
+    /// independent** defect, and this is the discriminator for it.
+    ///
+    /// Two hypotheses, and they predict different things:
+    ///
+    /// 1. **Open surface.** The loft's arc-length wall correspondence leaves open seam edges,
+    ///    and `mesh-sdf`'s pseudo-normal sign is **undefined by contract** on a non-watertight
+    ///    surface. Predicts: closing the boundary collapses the phantom material.
+    /// 2. **Inverted / inconsistent winding.** `assemble_bushing` joins two auto-selected rims,
+    ///    one of them flipped (`flip_patch`); a wall wound inside-out flips the sign over a
+    ///    whole coherent region. Predicts: closing holes changes little, and `is_inside_out`
+    ///    or a large contiguous wrong-sign region shows up instead.
+    ///
+    /// The measured shape favours (2) — 40 % phantom that is **contiguous** with the body (2
+    /// components, 99.90 % retained) looks like a coherent sign flip, whereas a leak through a
+    /// seam would be local. But that is a reading, and this arc has already spent a hypothesis
+    /// on a surface defect that was real, present, and **irrelevant**: the scanned disc's
+    /// 3-edge hole, where filling it changed literally nothing. So the same causal test that
+    /// killed it runs here, before anything is built on either story.
+    #[test]
+    #[ignore = "needs $CF_L4_STL/$CF_L5_STL (BodyParts3D, CC BY-SA, not committed)"]
+    #[allow(clippy::cast_precision_loss)]
+    fn frame_fix_step0b_lofted_disc_phantom_diagnosis_fom() {
+        use cf_fsu_geometry::load_from_env;
+
+        let (l4, l5) = (
+            load_from_env("CF_L4_STL").unwrap(),
+            load_from_env("CF_L5_STL").unwrap(),
+        );
+        let lofted = lofted_disc(&l4, &l5);
+        let scanned = load_from_env("CF_DISC_STL").unwrap();
+
+        // (1) HEALTH of both surfaces, side by side — the scanned disc is the control, since
+        //     its defect is known and its phantom material is known to be frame-caused.
+        for (label, m) in [("SCANNED", &scanned), ("LOFTED ", &lofted)] {
+            let r = mesh_repair::validate_mesh(m);
+            println!(
+                "{label} health | watertight {} manifold {} INSIDE-OUT {} | boundary edges {} \
+                 non-manifold edges {} degenerate {} duplicate {} | {} verts {} faces | \
+                 enclosed volume {:.2} mm³",
+                r.is_watertight,
+                r.is_manifold,
+                r.is_inside_out,
+                r.boundary_edge_count,
+                r.non_manifold_edge_count,
+                r.degenerate_face_count,
+                r.duplicate_face_count,
+                m.vertices.len(),
+                m.faces.len(),
+                surface_volume(m),
+            );
+        }
+
+        // (2) EXTENT, so "8.6x the tets" cannot be explained away as "it is a bigger disc".
+        for (label, m) in [("SCANNED", &scanned), ("LOFTED ", &lofted)] {
+            let s = Aabb::from_points(m.vertices.iter()).size();
+            println!(
+                "{label} AABB (native mm) | x {:.3} y {:.3} z {:.3} | AABB volume {:.2} mm³",
+                s.x,
+                s.y,
+                s.z,
+                s.x * s.y * s.z
+            );
+        }
+
+        // (3) THE CAUSAL TEST. Close the boundary and re-measure the identical quantity. If
+        //     hypothesis (1) is right the phantom material collapses; if it is wrong these
+        //     numbers barely move, exactly as they did not move for the scanned disc's hole.
+        println!("\n--- LOFTED, boundary CLOSED (the causal test) ---");
+        let mut filled = lofted.clone();
+        let n_filled = mesh_repair::fill_holes(&mut filled, 512).expect("fill holes");
+        let after = mesh_repair::validate_mesh(&filled);
+        println!(
+            "filled {n_filled} hole(s) -> watertight {} manifold {} inside-out {} | boundary \
+             edges {} | enclosed volume {:.2} mm³ (was {:.2})",
+            after.is_watertight,
+            after.is_manifold,
+            after.is_inside_out,
+            after.boundary_edge_count,
+            surface_volume(&filled),
+            surface_volume(&lofted),
+        );
+        phantom_by_frame("LOFTED-FILLED", &filled);
+    }
+
     /// Mesh `disc_mesh` twice — once in production's rescaled frame, once with the oracle built
     /// in native mm — and report how much provably-off-disc material each one stuffs.
     ///
