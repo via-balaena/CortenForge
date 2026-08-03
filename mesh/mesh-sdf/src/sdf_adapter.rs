@@ -440,6 +440,12 @@ mod tests {
     /// approximate assert would pass for a normalisation that perturbs results
     /// slightly, and "does not perturb results" is the entire claim.
     ///
+    /// ⚠ **Anchored to a known value first.** Comparing two arms measured by the same
+    /// helper is blind to a bug in that helper — it would corrupt both equally and the
+    /// comparison would still pass. So the plain arm is checked against
+    /// `grad_step_scale_regime`'s already-committed column before the arms are compared
+    /// to each other.
+    ///
     /// ⚠ **This includes the radii where `grad` is already badly wrong** (1e1, 1e2 carry
     /// 5.4e-1 and 2.9e0 of magnitude error today). Bit-identity there says the
     /// normalised oracle is **equally wrong**, which is the honest statement of the
@@ -451,17 +457,40 @@ mod tests {
         let mut checked = 0usize;
 
         println!(
-            "\n{:>10} {:>14} {:>14} {:>10}",
-            "radius", "plain max err", "norm max err", "bit-equal"
+            "\n{:>10} {:>6} {:>14} {:>14} {:>16}",
+            "radius", "scale", "plain max err", "norm max err", "bit-equal comps"
         );
-        for radius in [1e-2_f64, 5e-2, 1e-1, 1.0, 10.0, 100.0] {
+        // ⚠ Bit-identity between two arms is BLIND to a bug in the instrument — a broken
+        //   `max_grad_magnitude_error` or `probe_dirs` would corrupt both arms equally and
+        //   the comparison would still pass. So the plain arm is checked against
+        //   `grad_step_scale_regime`'s already-committed column first. Those numbers were
+        //   produced by a different function on a different sweep; agreeing with them is
+        //   what says this harness measures the thing it claims to.
+        for (radius, committed_plain_err) in [
+            (1e-2_f64, 5.25e-4),
+            (5e-2, 2.17e-3),
+            (1e-1, 5.61e-3),
+            (1.0, 3.80e-2),
+            (10.0, 5.41e-1),
+            (100.0, 2.86e0),
+        ] {
             let mesh = crate::test_fixtures::uv_sphere(radius, 24, 48);
             let plain = plain_sdf(&mesh);
             let plain_err = max_grad_magnitude_error(&plain, radius, &dirs);
+            assert!(
+                (plain_err - committed_plain_err).abs() <= 0.02 * committed_plain_err,
+                "r={radius}: this harness reads the plain oracle's max |‖g‖-1| as \
+                 {plain_err:.3e}, but `grad_step_scale_regime` committed \
+                 {committed_plain_err:.3e}. The two disagree, so one of them is measuring \
+                 something else — resolve that before trusting the bit-identity result below."
+            );
 
             for k in [3_i32, 13] {
                 let s = 2.0_f64.powi(k);
                 let norm = normalised_sdf(&mesh, s);
+                // Counted, not asserted-then-printed: a hardcoded "yes" in this column would
+                // be a claim with no producer.
+                let mut bit_equal = 0usize;
                 for d in &dirs {
                     let p = Point3::from(d * (1.5 * radius));
                     let gp = Sdf::grad(&plain, p);
@@ -477,13 +506,14 @@ mod tests {
                              moved the gradient — plain {a:.17e}, normalised {b:.17e}. Then D is \
                              NOT neutral for `grad` and the arc's forced F-then-D order stands."
                         );
+                        bit_equal += 1;
                     }
                     checked += 1;
                 }
                 let norm_err = max_grad_magnitude_error(&norm, radius, &dirs);
                 println!(
-                    "{radius:>10.0e} {plain_err:>14.3e} {norm_err:>14.3e} {:>10}",
-                    "yes"
+                    "{radius:>10.0e} {:>6} {plain_err:>14.3e} {norm_err:>14.3e} {bit_equal:>16}",
+                    format!("2^{k}"),
                 );
             }
         }
