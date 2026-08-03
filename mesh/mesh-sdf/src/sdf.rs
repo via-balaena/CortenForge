@@ -1154,9 +1154,15 @@ mod tests {
             })
             .collect();
 
+        // ⚠ The last entry is the cap ITSELF, derived rather than written down. The fixed
+        //   rungs below it are a ladder; the boundary is the interesting scale, and a sweep
+        //   that stops "near" the cap leaves the one value the constant actually names
+        //   untested. It also keeps the sweep honest if the cap ever moves again.
+        #[allow(clippy::cast_possible_truncation)]
+        let cap_k = max_k as i32;
         let mut rows_within_the_cap = 0usize;
-        let mut reference: Option<Vec<u64>> = None;
-        for k in [0_i32, 4, 8, 12, 16, 20] {
+        let mut reference: Option<(i32, Vec<u64>)> = None;
+        for k in [0_i32, 4, 8, 12, 16, 20, cap_k] {
             if f64::from(k) > max_k {
                 continue;
             }
@@ -1199,13 +1205,15 @@ mod tests {
             // two arms are load-bearing in different directions and neither substitutes.
             let got: Vec<u64> = probes.iter().map(|p| sdf.distance(*p).to_bits()).collect();
             match &reference {
-                None => reference = Some(got),
-                Some(want) => assert_eq!(
+                None => reference = Some((k, got)),
+                // The reference scale is named from whichever row ran first rather than
+                // written as 2^0, so the message stays true if the sweep is ever trimmed.
+                Some((ref_k, want)) => assert_eq!(
                     &got, want,
                     "2^{k} is inside the cap (2^{max_k}) yet the signed distance is not \
-                     bit-identical to the same query at scale 2^0. A power-of-two internal \
-                     scale is an exponent shift and must be exact; if it is not, the cap is \
-                     already too high or the round trip has stopped commuting."
+                     bit-identical to the same query at scale 2^{ref_k}. A power-of-two \
+                     internal scale is an exponent shift and must be exact; if it is not, \
+                     the cap is already too high or the round trip has stopped commuting."
                 ),
             }
 
@@ -1237,7 +1245,7 @@ mod tests {
         // This also states arm 2's claim precisely. It is not "the internal scale does not
         // matter" — it is "a POWER-OF-TWO internal scale does not matter", which is the
         // property the whole remedy rests on.
-        let reference = reference.expect("the sweep ran at least four rows");
+        let (_, reference) = reference.expect("the sweep ran at least four rows");
         let odd = TriMeshDistance::with_scale(mesh.clone(), 3.0).expect("sphere is non-empty");
         let odd_sign = PseudoNormalSign::from_distance(&odd);
         let odd_sdf = Signed {
