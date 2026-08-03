@@ -213,8 +213,9 @@ impl SurfaceHealth {
     /// duplicated vertex ring — produce zeroed features that are **not selectable**, so a
     /// mesh can report `true` here and still sign every probe correctly. Measured on a
     /// 24×48 fan-pole sphere: 48 zeroed vertices, 96 zeroed edges, 48 zeroed face normals,
-    /// and **0 signs wrong out of 15577 probes**
-    /// (`a_fan_pole_over_reports_because_the_screen_is_conservative`).
+    /// and **0 signs wrong out of 1331 probes** —
+    /// `a_fan_pole_over_reports_because_the_screen_is_conservative`, which is where those
+    /// five numbers come from and the only place they should be read off.
     ///
     /// ⚠ **This method was called `is_fully_signable` and asserted the opposite direction**
     /// — "there is no point in space at which this oracle reports 'inside'
