@@ -284,6 +284,322 @@ mod tests {
         );
     }
 
+    // ── α.0: is remedy D independent of remedy F? ────────────────────────────────────
+    //
+    // `project-mesh-sdf-trust-arc` carries "★★ ORDER IS FORCED: F then D" on the
+    // grounds that normalising to clear the area floor puts `grad` at ~19 % error. The
+    // three tests below exist to check that, because the claim was measured on an
+    // adapter (`cf_fsu_model`'s test-only `NormalisedOracle`) that queries the inner
+    // oracle **in the scaled frame** — and remedy D does not.
+
+    /// Scale every vertex of `m` by exactly `s`. Mirrors `sdf.rs`'s helper of the same
+    /// name; duplicated rather than shared because the two modules pin different
+    /// properties and a shared fixture would couple them.
+    fn scaled(m: &mesh_types::IndexedMesh, s: f64) -> mesh_types::IndexedMesh {
+        let mut out = m.clone();
+        for v in &mut out.vertices {
+            *v = mesh_types::Point3::new(v.x * s, v.y * s, v.z * s);
+        }
+        out
+    }
+
+    /// Smallest triangle area in `m` — the quantity parry's `DEFAULT_EPSILON / 2` area
+    /// floor is applied to.
+    fn min_triangle_area(m: &mesh_types::IndexedMesh) -> f64 {
+        m.faces
+            .iter()
+            .map(|f| {
+                let (a, b, c) = (
+                    m.vertices[f[0] as usize],
+                    m.vertices[f[1] as usize],
+                    m.vertices[f[2] as usize],
+                );
+                0.5 * (b - a).cross(&(c - a)).norm()
+            })
+            .fold(f64::INFINITY, f64::min)
+    }
+
+    /// **Remedy D, expressed exactly as it would land inside `mesh-sdf`.**
+    ///
+    /// The mesh is scaled by `2^k` at *construction*; every query is lifted into that
+    /// internal frame and the answer brought back. The load-bearing property is what
+    /// this adapter does **not** do: it never changes the frame the caller queries in.
+    ///
+    /// Implemented as an [`UnsignedDistance`] + [`Sign`] pair rather than as a direct
+    /// [`Sdf`] impl on purpose — composing them through [`Signed`] means the blanket
+    /// `impl Sdf for Signed<D, S>` **under test** supplies `grad`, unmodified. A
+    /// hand-written `grad` here would be a copy of the code it is meant to measure.
+    struct NormalisedDistance {
+        inner: crate::TriMeshDistance,
+        s: f64,
+    }
+
+    impl NormalisedDistance {
+        fn lift(p: Point3<f64>, s: f64) -> Point3<f64> {
+            Point3::new(p.x * s, p.y * s, p.z * s)
+        }
+    }
+
+    impl UnsignedDistance for NormalisedDistance {
+        fn distance(&self, p: Point3<f64>) -> f64 {
+            self.inner.distance(Self::lift(p, self.s)) / self.s
+        }
+        fn closest_point(&self, p: Point3<f64>) -> Point3<f64> {
+            let q = self.inner.closest_point(Self::lift(p, self.s));
+            Point3::new(q.x / self.s, q.y / self.s, q.z / self.s)
+        }
+    }
+
+    /// The sign half of the same internal normalisation — shares the scaled BVH with
+    /// [`NormalisedDistance`] the way `PseudoNormalSign::from_distance` shares the
+    /// unscaled one.
+    struct NormalisedSign {
+        inner: crate::PseudoNormalSign,
+        s: f64,
+    }
+
+    impl Sign for NormalisedSign {
+        fn is_inside(&self, p: Point3<f64>) -> bool {
+            self.inner.is_inside(NormalisedDistance::lift(p, self.s))
+        }
+    }
+
+    /// Today's composition: oracle built and queried in the caller's frame.
+    #[allow(clippy::expect_used)]
+    fn plain_sdf(
+        mesh: &mesh_types::IndexedMesh,
+    ) -> Signed<crate::TriMeshDistance, crate::PseudoNormalSign> {
+        let distance = crate::TriMeshDistance::new(mesh.clone()).expect("fixture is non-empty");
+        let sign = crate::PseudoNormalSign::from_distance(&distance);
+        Signed { distance, sign }
+    }
+
+    /// Remedy D's composition: oracle built on the mesh times `s`, queried in the
+    /// caller's frame.
+    #[allow(clippy::expect_used)]
+    fn normalised_sdf(
+        mesh: &mesh_types::IndexedMesh,
+        s: f64,
+    ) -> Signed<NormalisedDistance, NormalisedSign> {
+        let inner = crate::TriMeshDistance::new(scaled(mesh, s)).expect("fixture is non-empty");
+        let sign = NormalisedSign {
+            inner: crate::PseudoNormalSign::from_distance(&inner),
+            s,
+        };
+        Signed {
+            distance: NormalisedDistance { inner, s },
+            sign,
+        }
+    }
+
+    /// The 64 deterministic probe directions `grad_step_scale_regime` uses — same
+    /// spread, no RNG, no coincidence with the sphere's own tessellation seams.
+    fn probe_dirs() -> Vec<Vector3<f64>> {
+        (0..64)
+            .map(|i| {
+                let z = 2.0f64.mul_add(f64::from(i) / 63.0, -1.0) * 0.98;
+                let phi = f64::from(i) * 2.399_963_229_728_653; // golden angle
+                let r = (1.0 - z * z).sqrt();
+                Vector3::new(r * phi.cos(), r * phi.sin(), z).normalize()
+            })
+            .collect()
+    }
+
+    /// Largest `|‖∇φ‖ − 1|` over the probe set at `1.5·radius` — the instrument
+    /// `grad_step_scale_regime` established. A polyhedron's signed distance is a genuine
+    /// distance function, so any departure from 1 is numerical and nothing else.
+    fn max_grad_magnitude_error<S: Sdf>(sdf: &S, radius: f64, dirs: &[Vector3<f64>]) -> f64 {
+        dirs.iter().fold(0.0_f64, |acc, d| {
+            let p = Point3::from(d * (1.5 * radius));
+            acc.max((Sdf::grad(sdf, p).norm() - 1.0).abs())
+        })
+    }
+
+    /// **α.0 — the arc's "F must precede D" is refuted, and this is the measurement.**
+    ///
+    /// ## The claim being tested
+    ///
+    /// `project-mesh-sdf-trust-arc` records "★★ ORDER IS FORCED: F then D", reasoning
+    /// that a target extent chosen to clear the area floor lands `grad` at ~19 % error.
+    /// That number came from `cf_fsu_model`'s test-only `NormalisedOracle`, whose own
+    /// doc comment says what it does: it queries the inner oracle **in the scaled
+    /// frame**, so the effective step becomes `1e-6 / s` *in that frame*.
+    ///
+    /// Remedy D is not that. D normalises **internally** — scale at construction,
+    /// unscale at query — so the frame the caller queries in never moves. `Sdf::grad`
+    /// still central-differences at `h = 1e-6` in caller units; the `f32` projection
+    /// error is still `~6e-8·E·s` internally and `~6e-8·E` after the unscale. Both
+    /// terms of the gradient's error budget are unchanged, so D should be **exactly**
+    /// neutral for `grad` — not approximately, bit for bit.
+    ///
+    /// ## What is asserted
+    ///
+    /// Componentwise `to_bits` equality between today's oracle and the internally
+    /// normalised one, at every radius in the band `grad_step_scale_regime` measured,
+    /// for two non-trivial scales. Bit-identity is the right strength here: an
+    /// approximate assert would pass for a normalisation that perturbs results
+    /// slightly, and "does not perturb results" is the entire claim.
+    ///
+    /// ⚠ **This includes the radii where `grad` is already badly wrong** (1e1, 1e2 carry
+    /// 5.4e-1 and 2.9e0 of magnitude error today). Bit-identity there says the
+    /// normalised oracle is **equally wrong**, which is the honest statement of the
+    /// finding: **D neither helps nor hurts `grad`.** It does not license shipping D as
+    /// a gradient fix — F remains owed. It licenses shipping them in either order.
+    #[test]
+    fn internal_normalisation_leaves_grad_bit_identical() {
+        let dirs = probe_dirs();
+        let mut checked = 0usize;
+
+        println!(
+            "\n{:>10} {:>14} {:>14} {:>10}",
+            "radius", "plain max err", "norm max err", "bit-equal"
+        );
+        for radius in [1e-2_f64, 5e-2, 1e-1, 1.0, 10.0, 100.0] {
+            let mesh = crate::test_fixtures::uv_sphere(radius, 24, 48);
+            let plain = plain_sdf(&mesh);
+            let plain_err = max_grad_magnitude_error(&plain, radius, &dirs);
+
+            for k in [3_i32, 13] {
+                let s = 2.0_f64.powi(k);
+                let norm = normalised_sdf(&mesh, s);
+                for d in &dirs {
+                    let p = Point3::from(d * (1.5 * radius));
+                    let gp = Sdf::grad(&plain, p);
+                    let gn = Sdf::grad(&norm, p);
+                    for (axis, (a, b)) in [(gp.x, gn.x), (gp.y, gn.y), (gp.z, gn.z)]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        assert_eq!(
+                            a.to_bits(),
+                            b.to_bits(),
+                            "r={radius}, 2^{k}, axis {axis} at {p:?}: internal normalisation \
+                             moved the gradient — plain {a:.17e}, normalised {b:.17e}. Then D is \
+                             NOT neutral for `grad` and the arc's forced F-then-D order stands."
+                        );
+                    }
+                    checked += 1;
+                }
+                let norm_err = max_grad_magnitude_error(&norm, radius, &dirs);
+                println!(
+                    "{radius:>10.0e} {plain_err:>14.3e} {norm_err:>14.3e} {:>10}",
+                    "yes"
+                );
+            }
+        }
+
+        // Non-vacuity: 6 radii × 2 scales × 64 probes.
+        assert!(
+            checked >= 700,
+            "only {checked} probe comparisons ran — the sweep collapsed and this test proves \
+             nothing"
+        );
+    }
+
+    /// **α.0's second half: D fixes what it is for, and the fix is visible in `grad`.**
+    ///
+    /// At radius 1e-3 this fixture's smallest triangles sit under parry's area floor, so
+    /// the pseudo-normal is zeroed and the sign reads "inside" at any distance.
+    /// `grad` central-differences a **signed** value, so a flip between the two probes
+    /// yields a spurious gradient of order `φ/h` — the 8.7e2 / 179.94° row of
+    /// `grad_step_scale_regime`.
+    ///
+    /// Internal normalisation lifts the mesh clear of the floor, and the scale is
+    /// **derived from the mesh's own smallest triangle** rather than fixed — which is
+    /// what makes D's constant dimensionless. `MARGIN` is deliberately generous and is
+    /// **not** the shipping value: R1's disc sweep showed targets that leave the
+    /// smallest triangle at 0.05× and 0.74× of the floor still meshing correctly, so
+    /// margin — not success — is the criterion, and choosing it is α.1's job.
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn internal_normalisation_repairs_the_sub_floor_grad() {
+        const MARGIN: f64 = 1.0e4;
+        let dirs = probe_dirs();
+        let radius = 1e-3;
+        let mesh = crate::test_fixtures::uv_sphere(radius, 24, 48);
+
+        let floor = f64::from(f32::EPSILON) / 2.0;
+        let min_area = min_triangle_area(&mesh);
+        // Precondition, checked rather than assumed: this radius really is in the broken
+        // regime. If the fixture ever changes so it is not, the repair assert below would
+        // pass vacuously.
+        assert!(
+            min_area < floor,
+            "r={radius}: fixture's smallest triangle ({min_area:.3e}) already clears the floor \
+             ({floor:.3e}) — this test is measuring nothing"
+        );
+
+        // s ≥ sqrt(MARGIN · floor / min_area), rounded up to a power of two so the rescale
+        // is a pure exponent shift.
+        let k = (MARGIN * floor / min_area).sqrt().log2().ceil();
+        let s = 2.0_f64.powi(k as i32);
+        let norm = normalised_sdf(&mesh, s);
+        let plain = plain_sdf(&mesh);
+
+        let plain_err = max_grad_magnitude_error(&plain, radius, &dirs);
+        let norm_err = max_grad_magnitude_error(&norm, radius, &dirs);
+        println!(
+            "\nr={radius:.0e}  min_area {min_area:.3e} vs floor {floor:.3e}  ->  2^{k} = {s}\n\
+             plain max |‖g‖-1| {plain_err:.3e}   normalised {norm_err:.3e}"
+        );
+
+        assert!(
+            plain_err > 1.0,
+            "at r={radius} today's oracle is expected to be sign-broken (measured 8.7e2), got \
+             {plain_err:.3e} — if the area floor no longer bites here, re-measure the whole band"
+        );
+        // Predicted before running: the surviving error is the f32 projection term,
+        // ~6e-8·E/(2h) ≈ 4.5e-5 at E ≈ 1.5e-3. Asserted at 1e-3 — 20x headroom over the
+        // prediction, and still three decades below the broken value it replaces.
+        assert!(
+            norm_err < 1e-3,
+            "internal normalisation should put r={radius} back inside the usable band, got \
+             {norm_err:.3e}"
+        );
+    }
+
+    /// **α.0's control — and the half that explains where the arc's 19 % came from.**
+    ///
+    /// Without this, the bit-identity above would be consistent with "scaling a mesh
+    /// does not affect `grad`", which is false and would make the first test prove
+    /// nothing specific.
+    ///
+    /// This arm rescales the **caller's frame**: the oracle is built on the mesh times
+    /// `s` *and queried at* `p·s`, which is what a caller-side rescale (remedy A) or
+    /// `cf_fsu_model`'s `NormalisedOracle` does. The geometry is identical; only the
+    /// coordinate magnitude the fixed `1e-6` step is measured against has changed, and
+    /// `grad` degrades ≈ ×10 per decade exactly as `grad_step_scale_regime` predicts.
+    ///
+    /// **The two arms differ in one thing only — the frame the caller queries in.** That
+    /// is the distinction the "F then D" ordering missed.
+    #[test]
+    fn caller_frame_rescale_moves_grad_where_internal_normalisation_does_not() {
+        let dirs = probe_dirs();
+        let radius = 1.0;
+        let s = 1024.0; // 2^10
+        let mesh = crate::test_fixtures::uv_sphere(radius, 24, 48);
+
+        let plain = plain_sdf(&mesh);
+        let plain_err = max_grad_magnitude_error(&plain, radius, &dirs);
+
+        // Same geometry, but the caller now works in the scaled frame.
+        let rescaled = plain_sdf(&scaled(&mesh, s));
+        let rescaled_err = max_grad_magnitude_error(&rescaled, radius * s, &dirs);
+
+        println!(
+            "\ncaller-frame rescale by {s}: plain max |‖g‖-1| {plain_err:.3e}  ->  \
+             {rescaled_err:.3e}"
+        );
+
+        assert!(
+            rescaled_err > 10.0 * plain_err,
+            "a 2^10 caller-frame rescale must visibly degrade `grad` (the fixed 1e-6 step is \
+             now 1024x smaller relative to the geometry) — plain {plain_err:.3e}, rescaled \
+             {rescaled_err:.3e}. If it does not, the bit-identity result above is consistent \
+             with `grad` being scale-insensitive in general and proves nothing specific."
+        );
+    }
+
     /// `impl Sdf for CachedGridSdf` — `eval` reads the cached signed
     /// grid directly; `grad` central-differences the trilinear
     /// interpolant. Verifies the adapter honors the [`Sdf`] sign
