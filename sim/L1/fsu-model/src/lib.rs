@@ -663,10 +663,20 @@ fn prepare_disc_at(
         center_native,
         ..
     } = mesh_disc_raw(mesh, params)?;
-    // A physical disc is one connected solid, but the BCC isosurface-stuffing mesher
-    // fragments the disc's sub-cell-thin tapering rim into disconnected islands — which
-    // both scatter the rendered surface and poison the Newton tangent's conditioning
-    // (a floating tet component carries unconstrained rigid modes). Keep the main body.
+    // A physical disc is one connected solid, but the mesher hands back a main body plus
+    // many disconnected islands — which both scatter the rendered surface and poison the
+    // Newton tangent's conditioning (a floating tet component carries unconstrained rigid
+    // modes). Keep the main body.
+    //
+    // ⚠ This used to say the islands are the disc's "sub-cell-thin tapering rim". MEASURED,
+    // and it is not: `oracle` is built above on the mesh AFTER the rescale to SI metres, and
+    // in that frame 30 % of this disc's triangles fall under the absolute area floor parry
+    // uses to decide whether to compute a pseudo-normal. Skipped triangles leave a zero
+    // pseudo-normal, parry's `dot(..) <= 0.0` inside test reads zero as "inside", and the
+    // stuffer fills space that is not disc — 60–135 islands, and ~6 % of even the KEPT
+    // mesh's volume sitting outside the disc's own AABB. The remedy is the frame, not this
+    // filter; `mesh_stability_step0_discarded_component_census_fom` is the measurement it
+    // has to move. Until then `largest_component` is load-bearing and must stay.
     let mut tet = raw.largest_component();
 
     // Endplate faces = bands at the SI surface extremes (field-derived, not z=const).
@@ -3390,14 +3400,23 @@ mod tests {
     }
 
     /// Volume-weighted summary of one set of tets: where it sits and how thin it is.
+    ///
+    /// ⚠ Every field but `volume` was designed to test the tapering-rim hypothesis, which
+    /// the branch went on to **refute** — and the two oracle-derived ones are measured
+    /// through the very oracle whose sign is wrong in this frame. They are kept as
+    /// diagnostics for the remedy to move, **not** as facts about the disc. Do not quote
+    /// them.
     struct Region {
         volume: f64,
-        /// Volume-weighted mean radius from the SI axis, as a fraction of the surface's
-        /// own maximum radius. Rim material sits near 1.
+        /// Volume-weighted mean radius from the SI axis, as a fraction of the surface's own
+        /// maximum radius. Values **above 1** mean material outside the disc's own radial
+        /// extent — which is the phantom material, not a rim.
         mean_r_norm: f64,
         max_r_norm: f64,
-        /// Volume-weighted mean interior depth `-φ(centroid)`, in mm. A sub-cell-thin
-        /// feature cannot be deep: every interior point of it is near the surface.
+        /// Volume-weighted `-φ(centroid)` in mm. ⚠ **NOT a depth.** It is signed by the
+        /// broken oracle, so exterior phantom material reports as deeply *interior* — the
+        /// reading that first exposed the bug (15.13 mm "inside" a disc whose deepest point
+        /// is 5.74 mm down).
         mean_depth_mm: f64,
         max_depth_mm: f64,
         /// Fraction of this region's volume inside the physical endplate band slab.
@@ -3457,19 +3476,27 @@ mod tests {
     /// comment — already assert *as fact* that the stuffer "fragments the disc's sub-cell-thin
     /// tapering rim into disconnected islands". That claim has never been run. It is the
     /// hinge of the whole remedy choice, so the census either promotes it to a measurement
-    /// or kills it:
+    /// or kills it.
     ///
-    /// - **Rim confirmed** (discarded material at high radius, shallow depth) ⇒ the islands
-    ///   are *real anatomy* per #701, and meshing stability and exact geometry are **one**
-    ///   fix, not two.
-    /// - **Rim refuted** (discards scattered, or deep) ⇒ the fragmentation is a mesher
-    ///   artefact and the remedy is a different one entirely.
+    /// **★ IT KILLED IT.** The discarded material is not anatomy: it is **phantom** material
+    /// the mesher emitted outside the disc, because `prepare_disc_at` builds its oracle on a
+    /// mesh already rescaled to SI metres, where 30 % of the disc's triangles fall under the
+    /// area floor parry silently skips (`mesh_stability_instrument_check_fom` has the chain,
+    /// and `mesh-sdf`'s `pseudo_normal_sign_is_exact_across_the_scale_regime_consumers_use`
+    /// pins the regime). So meshing stability and exact geometry are **NOT one fix**, and the
+    /// remedy is none of the three this census set out to discriminate — not **policy**, not
+    /// **mesher**, not **input conditioning**, but the frame the oracle is built in.
     ///
-    /// Three candidate remedies, and the numbers below discriminate them: **policy** (stop
-    /// discarding — right if the discard is real, connected-enough anatomy), **mesher** (stop
-    /// fragmenting — right if the raw output already loses volume against the surface), or
-    /// **input conditioning** (fix the geometry going in — right if the rim is sub-cell thin
-    /// at every cell we would ever ship).
+    /// The census stays because it is the producer for the island and volume numbers, and
+    /// because it is the measurement the remedy has to move: when the oracle is built in a
+    /// frame it works in, the discarded fraction here should collapse.
+    ///
+    /// ⚠ **Read the volume and component columns; distrust the `depth` and `r/r_max` ones.**
+    /// Volumes come from the mesh's own quality cache scored against an independent
+    /// divergence-theorem yardstick, and the components are pure topology — neither touches
+    /// the oracle. The depth and radius columns are computed **through the very oracle whose
+    /// sign is wrong here**, which is why they read as "discarded material is deeper than
+    /// kept material" — an artefact, not a fact about the disc.
     ///
     /// ⚠ **Asserts nothing about stability, on purpose.** The only assertions here are
     /// harness-validity ones: that the components partition the mesh, and that this file's
@@ -3713,7 +3740,13 @@ mod tests {
     /// on the same anatomy.
     ///
     /// Geometry is scale-free, so a disagreement here is not a fact about the disc — it is a
-    /// fact about the frame the oracle was built in.
+    /// fact about the frame the oracle was built in. The inverse transform is self-checking:
+    /// if the point were not the same one, the two magnitudes would not agree.
+    ///
+    /// ⚠ **The probed point is a SELECTED WORST CASE, not a sample** — it is the argmin of
+    /// the scaled oracle. It demonstrates that the frames disagree; it says nothing about
+    /// *how often*. For the rate, read `report_area_floor_margin` (30 % of triangles under
+    /// the floor) and `report_phantom_material` (32.94 % of tets outside the AABB).
     #[allow(clippy::cast_precision_loss)]
     fn report_scaled_frame_disagreement(
         meshed: &MeshedDisc,
@@ -3752,8 +3785,10 @@ mod tests {
         );
         println!(
             "tet centroid φ range: {phi_lo:.4} .. {phi_hi:.4} mm (negative = inside)\n\
-             centroids OUTSIDE the surface: {outside_n} of {} ({:.2} %), carrying {:.2} % of \
-             the raw mesh volume",
+             centroids the BROKEN oracle still admits are outside: {outside_n} of {} \
+             ({:.2} %), carrying {:.2} % of the raw mesh volume — a LOWER bound, since the \
+             misclassified exterior material is exactly what this count misses; \
+             `report_phantom_material`'s AABB test is the oracle-free number",
             meshed.raw.n_tets(),
             100.0 * outside_n as f64 / meshed.raw.n_tets() as f64,
             100.0 * outside_v / total_v,
