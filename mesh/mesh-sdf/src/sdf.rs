@@ -561,4 +561,163 @@ mod tests {
             }
         }
     }
+
+    /// Scale every vertex of `m` by exactly `s` — no re-tessellation, so the result is the
+    /// base mesh times `s` and nothing else.
+    fn scaled(m: &IndexedMesh, s: f64) -> IndexedMesh {
+        let mut out = m.clone();
+        for v in &mut out.vertices {
+            *v = Point3::new(v.x * s, v.y * s, v.z * s);
+        }
+        out
+    }
+
+    /// **Is this oracle bit-identical under a power-of-two rescale?**
+    ///
+    /// The scale sensitivity pinned by
+    /// `pseudo_normal_sign_is_exact_across_the_scale_regime_consumers_use` comes from a
+    /// **absolute** epsilon applied to a quantity with dimension. The obvious cure is for the
+    /// oracle to normalise internally instead of trusting the caller's units — but a
+    /// normalisation that perturbs results would churn every golden in the workspace, which
+    /// makes it far more expensive than the bug.
+    ///
+    /// **Unless the factor is a power of two.** Scaling a float by `2^k` only shifts its
+    /// exponent, so it is exact; every operation the query performs — subtraction, dot,
+    /// cross, `sqrt` (the exponent shift is even), division — commutes with that scaling; and
+    /// the `f64 -> f32` narrowing parry does at construction rounds the same way before and
+    /// after. If that reasoning holds end to end, an internal power-of-two normalisation is
+    /// **free**: bit-identical for every mesh already in a good regime, and different only
+    /// where the answer was already wrong.
+    ///
+    /// This measures whether it holds rather than trusting the argument, because the argument
+    /// runs through a third-party BVH build, an f32 narrowing and a pseudo-normal
+    /// accumulation, any of which could carry a scale-dependent decision the reasoning does
+    /// not see.
+    ///
+    /// The **non-power-of-two control is the load-bearing half**: without it, a pass here
+    /// would be consistent with "this oracle is insensitive to scale", which is exactly the
+    /// claim the sibling test refutes. The control has to lose bits for the power-of-two
+    /// property to be doing any work.
+    ///
+    /// ## The claim splits in two, and the split is the result
+    ///
+    /// The first version of this test swept `2^-20 … 2^20` demanding full signed bit-identity
+    /// and claimed in prose that radius 1.0 kept every copy clear of the area floor. It did
+    /// not: at `2^-20` this fixture's triangles land near `1e-15`, far under `5.96e-8`. So the
+    /// low rows sat in the *broken* regime, and the test failed there — but **it failed
+    /// informatively**: `got -1.94563862372096019e0` against `want 1.94563862372096019e0`.
+    /// Identical to all 17 digits, opposite sign.
+    ///
+    /// That is the whole answer. The **magnitude** survives a `2^-20` round trip bit for bit,
+    /// so the arithmetic genuinely is scale-neutral under powers of two; the only
+    /// scale-dependent thing in the entire pipeline is the epsilon **decision**. So this now
+    /// asserts magnitude-identity at *every* power-of-two scale, and full signed identity only
+    /// where the fixture is clear of the floor — with the regime **computed** from the
+    /// fixture's own smallest triangle rather than asserted in a comment.
+    ///
+    /// **What that buys the design:** an internal power-of-two normalisation cannot move a
+    /// magnitude, ever, and can only change a sign that was already decided by the floor. It
+    /// is free for every consumer currently in a good regime.
+    #[test]
+    fn power_of_two_rescale_is_bit_identical() {
+        let base = uv_sphere(1.0, 24, 48);
+        let sdf1 = build_sdf(base.clone());
+
+        // The regime boundary, computed from the fixture instead of assumed about it.
+        let floor = f64::from(f32::EPSILON) / 2.0;
+        let min_area = base
+            .faces
+            .iter()
+            .map(|f| {
+                let (a, b, c) = (
+                    base.vertices[f[0] as usize],
+                    base.vertices[f[1] as usize],
+                    base.vertices[f[2] as usize],
+                );
+                0.5 * (b - a).cross(&(c - a)).norm()
+            })
+            .fold(f64::INFINITY, f64::min);
+
+        // Probe points spanning inside, surface-adjacent, and well outside.
+        let n = 6;
+        let probes: Vec<Point3<f64>> = (0..=n)
+            .flat_map(|i| {
+                (0..=n).flat_map(move |j| {
+                    (0..=n).map(move |k| {
+                        let q = |idx: i32| 1.7 * (f64::from(idx) / f64::from(n) - 0.5) * 2.0;
+                        Point3::new(q(i), q(j), q(k))
+                    })
+                })
+            })
+            .collect();
+
+        // ── Powers of two. Magnitude must be bit-identical at EVERY scale; the sign only
+        //    where the fixture is clear of the floor. ──
+        let (mut n_in, mut n_out) = (0usize, 0usize);
+        for k in [-20_i32, -10, -3, -1, 1, 3, 10, 20] {
+            let s = 2.0_f64.powi(k);
+            let in_regime = min_area * s * s > floor;
+            if in_regime {
+                n_in += 1;
+            } else {
+                n_out += 1;
+            }
+            let sdf_s = build_sdf(scaled(&base, s));
+            let mut checked = 0usize;
+            for &p in &probes {
+                let want = sdf1.distance(p);
+                let got = sdf_s.distance(Point3::new(p.x * s, p.y * s, p.z * s)) / s;
+                // THE ARITHMETIC CLAIM — holds even where the sign is broken, which is what
+                // isolates the epsilon decision as the sole scale-dependent step.
+                assert_eq!(
+                    got.abs().to_bits(),
+                    want.abs().to_bits(),
+                    "2^{k}: MAGNITUDE is not bit-neutral at {p:?} — got {got:.17e}, want \
+                     {want:.17e}. Then power-of-two scaling is not exact through this \
+                     pipeline and an internal normalisation would move goldens."
+                );
+                if in_regime {
+                    assert_eq!(
+                        got.to_bits(),
+                        want.to_bits(),
+                        "2^{k}: SIGN differs at {p:?} while the fixture is clear of the area \
+                         floor (min scaled area {:.3e} > {floor:.3e}) — got {got:.17e}, want \
+                         {want:.17e}. In-regime, a power-of-two rescale must change nothing.",
+                        min_area * s * s,
+                    );
+                }
+                checked += 1;
+            }
+            assert!(checked > 100, "2^{k}: too few probes to mean anything");
+        }
+        // Non-vacuity: the sweep has to straddle the boundary, or one of the two claims above
+        // was never exercised and this test proves half of what it says.
+        assert!(
+            n_in > 0 && n_out > 0,
+            "the sweep must contain both in-regime ({n_in}) and out-of-regime ({n_out}) \
+             scales — otherwise one of the two assertions never ran"
+        );
+
+        // ── The control: a non-power-of-two scale must NOT be bit-neutral. ──
+        // Asserted as "at least one probe differs", not "all differ": individual points can
+        // coincide by luck, and requiring all of them would make this flake for a reason that
+        // has nothing to do with the property.
+        for s in [1.0e-3_f64, 0.3, 7.0] {
+            let sdf_s = build_sdf(scaled(&base, s));
+            let differing = probes
+                .iter()
+                .filter(|&&p| {
+                    let want = sdf1.distance(p);
+                    let got = sdf_s.distance(Point3::new(p.x * s, p.y * s, p.z * s)) / s;
+                    got.to_bits() != want.to_bits()
+                })
+                .count();
+            assert!(
+                differing > 0,
+                "scale {s} came out bit-identical everywhere — then this oracle is insensitive \
+                 to scale in general, the power-of-two result above proves nothing specific, \
+                 and the sibling scale-regime test should be failing too"
+            );
+        }
+    }
 }

@@ -3669,6 +3669,569 @@ mod tests {
         );
     }
 
+    /// **Step 0 of the frame fix: does the LOFTED disc suffer the frame bug at all?**
+    ///
+    /// The recon measured the *scanned* disc (`FMA16036`) and found 30 % of its triangles under
+    /// parry's area floor once rescaled to metres. It says nothing about the **lofted** disc —
+    /// the surface [`lofted_disc`] assembles from L4/L5 endplate patches, which is a completely
+    /// different construction path and is what `cf-spine-studio` actually builds.
+    ///
+    /// **That distinction decides real scope**, which is why it is measured before anything is
+    /// re-anchored: every drivability cell in [`DISC_CONFORM_QUALITY_FLOOR`]'s and
+    /// [`DISC_MIDSIDE_CONFORM_QUALITY_FLOOR`]'s tables, and all four of rung 4b's entry-criterion
+    /// angles, are measured on the lofted disc. If it is clear of the floor, those tables'
+    /// *drivability* columns do not move and only their scanned-disc fidelity columns do.
+    ///
+    /// **Validated against a known value, for free:** the scanned arm must reproduce the recon's
+    /// `0 of 14489` native / `4342 of 14489` scaled. That is what says this is the same
+    /// instrument the diagnosis was built on, rather than a second one that happens to print
+    /// similar-looking numbers.
+    ///
+    /// The lofted arm is **reported, never asserted**. Its answer selects a branch of the fix
+    /// rung's plan, and a threshold pinned before the mechanism is known would only freeze
+    /// today's draw — the mistake rung 5's step 0 made when it gated the clamp *depth* instead
+    /// of the pinned *population*.
+    ///
+    /// ## ⚠ The triangle census is a PROXY; the second half measures the consequence
+    ///
+    /// The fraction of triangles under the floor is not the quantity that matters, and the
+    /// relationship between the two is not linear: a **single** zeroed pseudo-normal reports
+    /// "inside" at *any* distance, so a mesh with 0.3 % of its triangles under the floor can
+    /// still stuff phantom material far from the surface. So the census is followed by the
+    /// SDF-free measurement it is a proxy for — tets whose centroids fall outside the surface's
+    /// own AABB — with the disc meshed in **both** frames so the difference is attributable.
+    #[test]
+    #[ignore = "needs $CF_L4_STL/$CF_L5_STL/$CF_DISC_STL (BodyParts3D, CC BY-SA, not committed)"]
+    fn frame_fix_step0_area_floor_margin_by_geometry_fom() {
+        use cf_fsu_geometry::load_from_env;
+
+        let (l4, l5) = (
+            load_from_env("CF_L4_STL").unwrap(),
+            load_from_env("CF_L5_STL").unwrap(),
+        );
+        let scanned = load_from_env("CF_DISC_STL").unwrap();
+        let lofted = lofted_disc(&l4, &l5);
+
+        // The KNOWN-VALUE arm first: if this does not reproduce, nothing below is comparable
+        // to the diagnosis.
+        println!("\n--- SCANNED disc (FMA16036) — the recon's geometry ---");
+        let (nat_s, scaled_s, total_s) = report_area_floor_margin(&scanned);
+        assert_eq!(
+            (nat_s, scaled_s, total_s),
+            (0, 4342, 14489),
+            "the scanned disc must reproduce the recon's area-floor census (0 / 4342 of 14489) \
+             — if it does not, this instrument is not the one the diagnosis was built on"
+        );
+
+        println!(
+            "\n--- LOFTED disc (assembled from L4/L5 endplate patches) — the open question ---"
+        );
+        let (nat_l, scaled_l, total_l) = report_area_floor_margin(&lofted);
+        #[allow(clippy::cast_precision_loss)]
+        let pct = |n: usize, d: usize| 100.0 * n as f64 / d as f64;
+        println!(
+            "\nVERDICT | scanned: native {nat_s} ({:.2} %) scaled {scaled_s} ({:.2} %) of {total_s} \
+             | lofted: native {nat_l} ({:.2} %) scaled {scaled_l} ({:.2} %) of {total_l}",
+            pct(nat_s, total_s),
+            pct(scaled_s, total_s),
+            pct(nat_l, total_l),
+            pct(scaled_l, total_l),
+        );
+        println!(
+            "{}",
+            if scaled_l == 0 {
+                "⇒ the LOFTED disc is CLEAR of the floor in both frames: the floor tables' \
+                 drivability columns and rung 4b's entry criterion do NOT move."
+            } else {
+                "⇒ the LOFTED disc is AFFECTED: the floor tables' drivability columns and rung \
+                 4b's entry criterion are both in the blast radius, and both must be re-measured."
+            }
+        );
+
+        // ── The consequence the census is a proxy for, measured on both geometries. ──
+        println!("\n════ PHANTOM MATERIAL — the SDF-free consequence, both frames ════");
+        for (label, mesh) in [("SCANNED", &scanned), ("LOFTED ", &lofted)] {
+            phantom_by_frame(label, mesh);
+        }
+    }
+
+    /// **Step 0b — why is the LOFTED disc ~40 % phantom in BOTH frames?**
+    ///
+    /// Step 0 measured that the frame fix moves the lofted disc's phantom material by exactly
+    /// zero, while it takes the scanned disc's to zero. So the lofted disc has a **second,
+    /// independent** defect, and this is the discriminator for it.
+    ///
+    /// Two hypotheses, and they predict different things:
+    ///
+    /// 1. **Open surface.** The loft's arc-length wall correspondence leaves open seam edges,
+    ///    and `mesh-sdf`'s pseudo-normal sign is **undefined by contract** on a non-watertight
+    ///    surface. Predicts: closing the boundary collapses the phantom material.
+    /// 2. **Inverted / inconsistent winding.** `assemble_bushing` joins two auto-selected rims,
+    ///    one of them flipped (`flip_patch`); a wall wound inside-out flips the sign over a
+    ///    whole coherent region. Predicts: closing holes changes little, and `is_inside_out`
+    ///    or a large contiguous wrong-sign region shows up instead.
+    ///
+    /// The measured shape favours (2) — 40 % phantom that is **contiguous** with the body (2
+    /// components, 99.90 % retained) looks like a coherent sign flip, whereas a leak through a
+    /// seam would be local. But that is a reading, and this arc has already spent a hypothesis
+    /// on a surface defect that was real, present, and **irrelevant**: the scanned disc's
+    /// 3-edge hole, where filling it changed literally nothing. So the same causal test that
+    /// killed it runs here, before anything is built on either story.
+    #[test]
+    #[ignore = "needs $CF_L4_STL/$CF_L5_STL (BodyParts3D, CC BY-SA, not committed)"]
+    #[allow(clippy::cast_precision_loss)]
+    fn frame_fix_step0b_lofted_disc_phantom_diagnosis_fom() {
+        use cf_fsu_geometry::load_from_env;
+
+        let (l4, l5) = (
+            load_from_env("CF_L4_STL").unwrap(),
+            load_from_env("CF_L5_STL").unwrap(),
+        );
+        let lofted = lofted_disc(&l4, &l5);
+        let scanned = load_from_env("CF_DISC_STL").unwrap();
+
+        // (1) HEALTH of both surfaces, side by side — the scanned disc is the control, since
+        //     its defect is known and its phantom material is known to be frame-caused.
+        for (label, m) in [("SCANNED", &scanned), ("LOFTED ", &lofted)] {
+            let r = mesh_repair::validate_mesh(m);
+            println!(
+                "{label} health | watertight {} manifold {} INSIDE-OUT {} | boundary edges {} \
+                 non-manifold edges {} degenerate {} duplicate {} | {} verts {} faces | \
+                 enclosed volume {:.2} mm³",
+                r.is_watertight,
+                r.is_manifold,
+                r.is_inside_out,
+                r.boundary_edge_count,
+                r.non_manifold_edge_count,
+                r.degenerate_face_count,
+                r.duplicate_face_count,
+                m.vertices.len(),
+                m.faces.len(),
+                surface_volume(m),
+            );
+        }
+
+        // (2) EXTENT, so "8.6x the tets" cannot be explained away as "it is a bigger disc".
+        for (label, m) in [("SCANNED", &scanned), ("LOFTED ", &lofted)] {
+            let s = Aabb::from_points(m.vertices.iter()).size();
+            println!(
+                "{label} AABB (native mm) | x {:.3} y {:.3} z {:.3} | AABB volume {:.2} mm³",
+                s.x,
+                s.y,
+                s.z,
+                s.x * s.y * s.z
+            );
+        }
+
+        // (3) THE CAUSAL TEST. Close the boundary and re-measure the identical quantity. If
+        //     hypothesis (1) is right the phantom material collapses; if it is wrong these
+        //     numbers barely move, exactly as they did not move for the scanned disc's hole.
+        println!("\n--- LOFTED, boundary CLOSED (the causal test) ---");
+        let mut filled = lofted.clone();
+        let n_filled = mesh_repair::fill_holes(&mut filled, 512).expect("fill holes");
+        let after = mesh_repair::validate_mesh(&filled);
+        println!(
+            "filled {n_filled} hole(s) -> watertight {} manifold {} inside-out {} | boundary \
+             edges {} | enclosed volume {:.2} mm³ (was {:.2})",
+            after.is_watertight,
+            after.is_manifold,
+            after.is_inside_out,
+            after.boundary_edge_count,
+            surface_volume(&filled),
+            surface_volume(&lofted),
+        );
+        phantom_by_frame("LOFTED-FILLED", &filled);
+    }
+
+    /// A **power-of-two normalised** view of an oracle that was built on the mesh rescaled by
+    /// `s = 2^k`. This is the shape a `mesh-sdf`-side fix would take, expressed as a test-only
+    /// adapter so it can be measured before any primitive changes.
+    ///
+    /// Distinct from [`NativeFrameOracle`] in the one way that matters for bookkeeping: that
+    /// adapter builds on the **native-mm** surface (scale 1), whereas this builds on the
+    /// **already-metre-scaled** surface times a power of two. `native × 1e-3` is *not* a power
+    /// of two, so the two do not have to agree bit for bit, and whether they agree
+    /// *mesh for mesh* is exactly what R1 asks.
+    struct NormalisedOracle<'a> {
+        inner: &'a MeshOracle,
+        s: f64,
+    }
+
+    impl Sdf for NormalisedOracle<'_> {
+        fn eval(&self, p: Point3<f64>) -> f64 {
+            self.inner
+                .eval(Point3::new(p.x * self.s, p.y * self.s, p.z * self.s))
+                / self.s
+        }
+        fn grad(&self, p: Point3<f64>) -> Vector3<f64> {
+            // ⚠ The blanket `Sdf::grad` central-differences with an ABSOLUTE 1e-6 step, so
+            // querying the inner oracle in the scaled frame makes the effective step
+            // `1e-6 / s` in this frame. Normalisation therefore changes `grad`'s step size —
+            // measured in `mesh-sdf`'s companion gate, not assumed here.
+            self.inner
+                .grad(Point3::new(p.x * self.s, p.y * self.s, p.z * self.s))
+        }
+    }
+
+    /// The two reference arms R1 compares against, plus the `MeshingHints` every arm must
+    /// share — production's own mesh (already in `meshed`) and the recon's native-frame
+    /// adapter. Returning the hints is what keeps the sweep on **one** lattice: a normalised
+    /// arm meshed over a different padded box would differ for a reason that has nothing to
+    /// do with the oracle.
+    fn native_frame_reference(
+        disc_mesh: &IndexedMesh,
+        meshed: &MeshedDisc,
+        params: &DiscParams,
+        v_surface: f64,
+    ) -> (SdfMeshedTetMesh, MeshingHints) {
+        println!("\n--- reference arms ---");
+        report_phantom_material(
+            "today  (metre oracle)  kept",
+            &meshed.raw.largest_component(),
+            &meshed.bbox,
+            v_surface,
+        );
+        let native_sdf = oracle(disc_mesh).expect("native oracle");
+        let adapter = NativeFrameOracle {
+            inner: &native_sdf,
+            center_native: meshed.center_native,
+            scale: params.scale,
+        };
+        let padded = meshed.bbox.expanded(params.pad);
+        let hints = MeshingHints {
+            bbox: Aabb3::new(
+                Vec3::new(padded.min.x, padded.min.y, padded.min.z),
+                Vec3::new(padded.max.x, padded.max.y, padded.max.z),
+            ),
+            cell_size: params.cell,
+            material_field: Some(MaterialField::uniform(params.mu, 4.0 * params.mu)),
+        };
+        let native_mesh = SdfMeshedTetMesh::from_sdf(&adapter, &hints).expect("native-frame mesh");
+        report_phantom_material(
+            "native (recon adapter) kept",
+            &native_mesh.largest_component(),
+            &meshed.bbox,
+            v_surface,
+        );
+        (native_mesh, hints)
+    }
+
+    /// Scale every vertex of `m` by exactly `s`.
+    fn scaled_mesh(m: &IndexedMesh, s: f64) -> IndexedMesh {
+        let mut out = m.clone();
+        for v in &mut out.vertices {
+            *v = Point3::new(v.x * s, v.y * s, v.z * s);
+        }
+        out
+    }
+
+    /// **R1 + R2 on the real disc — does a power-of-two normalisation reproduce the
+    /// native-frame mesh, and at which target extent?**
+    ///
+    /// The re-anchor targets this whole arc is about to be rebuilt on — 6256 tets, 97.00 % of
+    /// true volume, one component — were measured with [`NativeFrameOracle`], a *test* adapter
+    /// that builds at scale 1 on the native-mm surface. A fix inside `mesh-sdf` cannot do that:
+    /// it only ever sees the surface its caller handed it, which here is the metre-scaled one.
+    /// It would normalise *that* by a power of two.
+    ///
+    /// **`native × 1e-3` is not a power of two**, so the two paths' `f64` values — and hence
+    /// parry's `f64 -> f32` narrowing — differ. The meshes therefore need not be identical.
+    /// Physically that is irrelevant; for bookkeeping it is decisive, because **every Tier-A
+    /// re-anchor number must come from the path that actually ships**, not from the recon's
+    /// adapter. This measures whether those are the same path.
+    ///
+    /// Sweeps the normalisation target so R2 (what extent to normalise to) is answered on real
+    /// anatomy at the same time: too small and the area floor still bites, too large and
+    /// nothing is gained. Reports the floor margin per target so the boundary is visible rather
+    /// than inferred.
+    ///
+    /// Asserts only harness validity. Whether normalisation reproduces the native frame **is
+    /// the question**, so asserting it would assert the answer.
+    #[test]
+    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
+    #[allow(clippy::cast_precision_loss)]
+    fn frame_fix_r1_power_of_two_normalisation_vs_native_frame_fom() {
+        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
+        let params = DiscParams::default();
+        let v_surface = surface_volume(&disc_mesh) * params.scale.powi(3);
+        let floor = f64::from(f32::EPSILON) / 2.0;
+
+        // Production's own head: the metre-scaled surface and the oracle it builds on it.
+        let meshed = mesh_disc_raw(disc_mesh.clone(), &params).expect("mesh raw disc");
+        let scaled_surface = meshed.sdf.mesh().clone();
+        let extent = Aabb::from_points(scaled_surface.vertices.iter()).size();
+        let max_extent = extent.x.max(extent.y).max(extent.z);
+        let min_area = |m: &IndexedMesh| {
+            m.faces
+                .iter()
+                .map(|f| {
+                    let (a, b, c) = (
+                        m.vertices[f[0] as usize],
+                        m.vertices[f[1] as usize],
+                        m.vertices[f[2] as usize],
+                    );
+                    0.5 * (b - a).cross(&(c - a)).norm()
+                })
+                .fold(f64::INFINITY, f64::min)
+        };
+        println!(
+            "metre-scaled surface: extent {:.6} x {:.6} x {:.6} m (max {max_extent:.6}) | \
+             min triangle area {:.4e} vs floor {floor:.4e} ({:.3}x)",
+            extent.x,
+            extent.y,
+            extent.z,
+            min_area(&scaled_surface),
+            min_area(&scaled_surface) / floor,
+        );
+
+        // ── Reference arms: production today, and the native-frame adapter the recon used. ──
+        let kept_now = meshed.raw.largest_component();
+        let (native_mesh, hints) = native_frame_reference(&disc_mesh, &meshed, &params, v_surface);
+        let native_kept = native_mesh.largest_component();
+        println!(
+            "  today  raw {} kept {} components {}\n  native raw {} kept {} components {}",
+            meshed.raw.n_tets(),
+            kept_now.n_tets(),
+            face_components(&meshed.raw).len(),
+            native_mesh.n_tets(),
+            native_kept.n_tets(),
+            face_components(&native_mesh).len(),
+        );
+
+        // ── R2 sweep: normalise the METRE surface by 2^k for a range of target extents. ──
+        println!("\n--- power-of-two normalisation of the metre surface (R2 sweep) ---");
+        for target in [0.25_f64, 1.0, 4.0, 16.0, 64.0, 256.0] {
+            #[allow(clippy::cast_possible_truncation)]
+            let k = (target / max_extent).log2().round() as i32;
+            let s = 2.0_f64.powi(k);
+            let surf = scaled_mesh(&scaled_surface, s);
+            let a_min = min_area(&surf);
+            let norm_inner = oracle(&surf).expect("normalised oracle");
+            let adapter = NormalisedOracle {
+                inner: &norm_inner,
+                s,
+            };
+            let tet = SdfMeshedTetMesh::from_sdf(&adapter, &hints).expect("normalised mesh");
+            let kept = tet.largest_component();
+            let matches_native =
+                tet.n_tets() == native_mesh.n_tets() && kept.n_tets() == native_kept.n_tets();
+            println!(
+                "target {target:>7.2} | k {k:>3} (s = 2^{k}) | realised extent {:.4} | \
+                 min area {a_min:.4e} ({:.2}x floor) | raw {:>6} kept {:>6} components {:>4} | \
+                 vs native: {}",
+                max_extent * s,
+                a_min / floor,
+                tet.n_tets(),
+                kept.n_tets(),
+                face_components(&tet).len(),
+                if matches_native {
+                    "IDENTICAL counts"
+                } else {
+                    "DIFFERS"
+                },
+            );
+        }
+
+        // Harness validity only: the two reference arms must be the ones the recon measured,
+        // or the sweep above is being compared against the wrong thing.
+        assert_eq!(
+            (meshed.raw.n_tets(), kept_now.n_tets()),
+            (12517, 7759),
+            "production's own arm no longer reproduces the recon's 12517/7759"
+        );
+        assert_eq!(
+            (native_mesh.n_tets(), native_kept.n_tets()),
+            (6256, 6256),
+            "the native-frame adapter no longer reproduces the recon's 6256/6256"
+        );
+    }
+
+    /// Per-triangle soup: every face gets its own three vertices, destroying all shared
+    /// topology. `cf-spine-studio`'s `loft_painted_disc` does exactly this to the raw loft
+    /// before welding it back, because — its own comment — "the raw loft tet-meshes into a
+    /// shattered surface". Reproduced here so the fixture can be compared to production on
+    /// the one variable that differs.
+    fn explode_to_soup(m: &IndexedMesh) -> IndexedMesh {
+        let mut vertices = Vec::with_capacity(m.faces.len() * 3);
+        let mut faces = Vec::with_capacity(m.faces.len());
+        for f in &m.faces {
+            let base = u32::try_from(vertices.len()).expect("soup vertex count fits u32");
+            for &v in f {
+                vertices.push(m.vertices[v as usize]);
+            }
+            faces.push([base, base + 1, base + 2]);
+        }
+        IndexedMesh { vertices, faces }
+    }
+
+    /// **Step 0c — is the lofted disc's phantom material a FIXTURE defect?**
+    ///
+    /// Steps 0 and 0b established that the lofted disc is ~40 % phantom, that the frame fix
+    /// moves it by zero, that closing its boundary moves it by 0.2 %, and that its winding is
+    /// consistent. So neither of the SDF-side hypotheses survived — which turns the question
+    /// around: is the *input* a valid disc at all?
+    ///
+    /// Reading `cf-spine-studio`'s `loft_painted_disc` says probably not, in **two** ways:
+    ///
+    /// 1. **Face selection.** The Studio lofts from *painted* faces. [`lofted_disc`] lofts from
+    ///    [`select_endplate`]'s automatic `normal.z · sign > 0.7` predicate, which on a real
+    ///    vertebra can also take up-facing facets on the transverse and articular processes.
+    /// 2. **Topology.** The Studio explodes the raw loft to per-triangle soup and re-welds it
+    ///    (`repair_mesh`), because the raw loft "tet-meshes into a shattered surface".
+    ///    [`lofted_disc`] returns `assemble_bushing(..).mesh` **raw** and does neither.
+    ///
+    /// (2) is the one with a mechanism: unwelded seam vertices mean a position that should
+    /// carry one pseudo-normal instead carries several, each accumulated from only *some* of
+    /// its incident triangles — which is frame-independent, hole-independent and
+    /// winding-consistent, exactly the signature measured.
+    ///
+    /// This measures both. (1) by extent — a patch that reaches the process tips is wider than
+    /// the vertebral body. (2) by the causal test: run production's own repair over the
+    /// fixture's loft, change nothing else, and re-measure the identical quantity.
+    ///
+    /// Asserts nothing. It is a diagnosis, and the arc has twice been wrong about this disc by
+    /// reasoning instead of running.
+    #[test]
+    #[ignore = "needs $CF_L4_STL/$CF_L5_STL (BodyParts3D, CC BY-SA, not committed)"]
+    #[allow(clippy::cast_precision_loss)]
+    fn frame_fix_step0c_lofted_fixture_vs_production_pipeline_fom() {
+        use cf_fsu_geometry::load_from_env;
+
+        let (l4, l5) = (
+            load_from_env("CF_L4_STL").unwrap(),
+            load_from_env("CF_L5_STL").unwrap(),
+        );
+
+        // ── (1) Does `select_endplate` over-select? Compare the patch to the whole bone. ──
+        println!("════ PATCH EXTENT — is the auto-selected 'endplate' an endplate? ════");
+        for (label, mesh, sign) in [("L4 (inferior)", &l4, -1.0), ("L5 (superior)", &l5, 1.0)] {
+            let faces = select_endplate(mesh, sign);
+            let pts: Vec<Point3<f64>> = faces
+                .iter()
+                .flat_map(|&i| mesh.faces[i])
+                .map(|v| mesh.vertices[v as usize])
+                .collect();
+            let whole = Aabb::from_points(mesh.vertices.iter()).size();
+            let patch = Aabb::from_points(pts.iter()).size();
+            println!(
+                "{label} | whole bone x {:.2} y {:.2} z {:.2} | PATCH x {:.2} y {:.2} z {:.2} \
+                 ({:.0} % of bone width) | {} of {} faces selected",
+                whole.x,
+                whole.y,
+                whole.z,
+                patch.x,
+                patch.y,
+                patch.z,
+                100.0 * patch.x / whole.x,
+                faces.len(),
+                mesh.faces.len(),
+            );
+        }
+
+        // ── (2) THE CAUSAL TEST: production's repair, one variable, same measurement. ──
+        let raw_loft = lofted_disc(&l4, &l5);
+        let mut welded = explode_to_soup(&raw_loft);
+        let summary =
+            mesh_repair::repair_mesh(&mut welded, &mesh_repair::RepairParams::for_scans());
+        println!("\n════ TOPOLOGY — the fixture's raw loft vs production's welded one ════");
+        println!(
+            "repair: {} verts {} faces -> {} verts {} faces | {summary:?}",
+            raw_loft.vertices.len(),
+            raw_loft.faces.len(),
+            welded.vertices.len(),
+            welded.faces.len(),
+        );
+        for (label, m) in [
+            ("FIXTURE (raw loft)", &raw_loft),
+            ("PRODUCTION (welded)", &welded),
+        ] {
+            let r = mesh_repair::validate_mesh(m);
+            println!(
+                "{label} | watertight {} manifold {} inside-out {} | boundary edges {} \
+                 non-manifold {} degenerate {} duplicate {} | enclosed volume {:.2} mm³",
+                r.is_watertight,
+                r.is_manifold,
+                r.is_inside_out,
+                r.boundary_edge_count,
+                r.non_manifold_edge_count,
+                r.degenerate_face_count,
+                r.duplicate_face_count,
+                surface_volume(m),
+            );
+        }
+        for (label, m) in [("FIXTURE-RAW", &raw_loft), ("PRODUCTION-WELDED", &welded)] {
+            phantom_by_frame(label, m);
+        }
+    }
+
+    /// Mesh `disc_mesh` twice — once in production's rescaled frame, once with the oracle built
+    /// in native mm — and report how much provably-off-disc material each one stuffs.
+    ///
+    /// Everything reported is either SDF-free (centroids outside the surface's own AABB;
+    /// outside the box is outside the solid) or connectivity (`face_components`), so none of it
+    /// routes through the oracle whose sign is under test.
+    ///
+    /// ⚠ The `% of the surface's volume` column divides by a divergence-theorem volume, which
+    /// assumes a closed surface. The lofted disc carries a few open wall-seam edges, so read
+    /// **its** percentage as indicative and the AABB/component columns as the hard ones.
+    #[allow(clippy::cast_precision_loss)]
+    fn phantom_by_frame(label: &str, disc_mesh: &IndexedMesh) {
+        let params = DiscParams::default();
+        let v_surface = surface_volume(disc_mesh) * params.scale.powi(3);
+
+        // Arm 1: exactly what production does today.
+        let meshed = mesh_disc_raw(disc_mesh.clone(), &params).expect("mesh raw disc");
+        let kept = meshed.raw.largest_component();
+
+        // Arm 2: one variable changed — the frame the oracle is BUILT in.
+        let native_sdf = oracle(disc_mesh).expect("native oracle");
+        let adapter = NativeFrameOracle {
+            inner: &native_sdf,
+            center_native: meshed.center_native,
+            scale: params.scale,
+        };
+        let padded = meshed.bbox.expanded(params.pad);
+        let hints = MeshingHints {
+            bbox: Aabb3::new(
+                Vec3::new(padded.min.x, padded.min.y, padded.min.z),
+                Vec3::new(padded.max.x, padded.max.y, padded.max.z),
+            ),
+            cell_size: params.cell,
+            material_field: Some(MaterialField::uniform(params.mu, 4.0 * params.mu)),
+        };
+        let fixed = SdfMeshedTetMesh::from_sdf(&adapter, &hints).expect("mesh with native oracle");
+        let fixed_kept = fixed.largest_component();
+
+        println!("\n--- {label} ---");
+        let (out_now, vol_now, reach_now) = report_phantom_material(
+            "  today (rescaled frame) kept",
+            &kept,
+            &meshed.bbox,
+            v_surface,
+        );
+        let (out_fix, vol_fix, reach_fix) = report_phantom_material(
+            "  fixed (native frame)   kept",
+            &fixed_kept,
+            &meshed.bbox,
+            v_surface,
+        );
+        println!(
+            "  components {} -> {} | raw tets {} -> {} | kept tets {} -> {} | retained {:.2} % -> {:.2} %",
+            face_components(&meshed.raw).len(),
+            face_components(&fixed).len(),
+            meshed.raw.n_tets(),
+            fixed.n_tets(),
+            kept.n_tets(),
+            fixed_kept.n_tets(),
+            100.0 * kept.n_tets() as f64 / meshed.raw.n_tets() as f64,
+            100.0 * fixed_kept.n_tets() as f64 / fixed.n_tets() as f64,
+        );
+        println!(
+            "  ⇒ {label}: phantom tets {out_now} -> {out_fix} | volume {vol_now:.2} % -> \
+             {vol_fix:.2} % of true | overhang {reach_now:.4} -> {reach_fix:.4} mm"
+        );
+    }
+
     /// Size, enclosed volume, repair health, and exterior sign probes of the input surface,
     /// in its native millimetre frame. Returns the native-frame oracle for reuse.
     fn report_surface_health(disc_mesh: &IndexedMesh) -> MeshOracle {
@@ -3779,7 +4342,10 @@ mod tests {
     /// which parry's `dpt.dot(&pseudo_normal) <= 0.0` inside test reads as "inside" at any
     /// distance. The floor is ABSOLUTE and area goes as length², so the mm → m rescale moves
     /// every triangle 1e6 times closer to it.
-    fn report_area_floor_margin(disc_mesh: &IndexedMesh) {
+    ///
+    /// Returns `(under the floor in native mm, under the floor once scaled, total faces)` so a
+    /// caller can validate this instrument against a known value instead of reading its print.
+    fn report_area_floor_margin(disc_mesh: &IndexedMesh) -> (usize, usize, usize) {
         let eps_area = f64::from(f32::EPSILON) / 2.0;
         let mut areas: Vec<f64> = disc_mesh
             .faces
@@ -3796,8 +4362,13 @@ mod tests {
         areas.sort_by(f64::total_cmp);
         let scale = DiscParams::default().scale;
         println!("parry area floor = f32::EPSILON/2 = {eps_area:.4e} (absolute, any unit)");
-        for (frame, factor) in [("native mm", 1.0), ("scaled  m", scale * scale)] {
+        let mut under_by_frame = [0usize; 2];
+        for (i, (frame, factor)) in [("native mm", 1.0), ("scaled  m", scale * scale)]
+            .into_iter()
+            .enumerate()
+        {
             let under = areas.iter().filter(|a| *a * factor <= eps_area).count();
+            under_by_frame[i] = under;
             println!(
                 "  {frame} | min {:.4e} median {:.4e} | margin of the SMALLEST triangle over \
                  the floor: {:.1}x | under the floor: {under} of {}",
@@ -3807,6 +4378,7 @@ mod tests {
                 areas.len(),
             );
         }
+        (under_by_frame[0], under_by_frame[1], areas.len())
     }
 
     /// Ask the **scaled** oracle (the one the mesher consumed) and the **native-mm** oracle
@@ -3899,8 +4471,16 @@ mod tests {
     /// How much of `mesh` provably sits off the disc: tets whose centroid falls outside the
     /// surface's own AABB. Outside the box is outside the solid, so this needs no oracle and
     /// is a strict lower bound (the AABB is far larger than the lens it contains).
+    ///
+    /// Returns `(tets beyond the AABB, volume as % of the surface's, furthest overhang in mm)`
+    /// so a caller can compare two geometries on the numbers rather than on the prints.
     #[allow(clippy::cast_precision_loss)]
-    fn report_phantom_material(label: &str, mesh: &SdfMeshedTetMesh, bbox: &Aabb, v_surface: f64) {
+    fn report_phantom_material(
+        label: &str,
+        mesh: &SdfMeshedTetMesh,
+        bbox: &Aabb,
+        v_surface: f64,
+    ) -> (usize, f64, f64) {
         let pos = mesh.positions();
         let (mut out_v, mut all_v, mut out_n) = (0.0, 0.0, 0usize);
         let mut reach = 0.0_f64;
@@ -3937,6 +4517,7 @@ mod tests {
             100.0 * out_v / all_v,
             reach * 1e3,
         );
+        (out_n, 100.0 * all_v / v_surface, reach * 1e3)
     }
 
     /// One `cell` of [`mesh_stability_step0_discarded_component_census_fom`]: mesh, decompose,
