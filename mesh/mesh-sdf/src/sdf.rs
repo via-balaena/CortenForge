@@ -1144,7 +1144,18 @@ mod tests {
         //   asserting nothing at all. Same hole as the one
         //   `the_chosen_scale_is_insensitive_to_the_margin_across_decades` grew when the
         //   cap moved, caught here by looking for it rather than by being bitten twice.
+        // A lattice of probes spanning inside, surface-adjacent and well outside.
+        let probes: Vec<Point3<f64>> = (0..=6)
+            .flat_map(|i| {
+                (0..=6).map(move |j| {
+                    let q = |x: i32| 1.7 * (f64::from(x) / 6.0 - 0.5) * 2.0;
+                    Point3::new(q(i), q(j), 0.37)
+                })
+            })
+            .collect();
+
         let mut rows_within_the_cap = 0usize;
+        let mut reference: Option<Vec<u64>> = None;
         for k in [0_i32, 4, 8, 12, 16, 20] {
             if f64::from(k) > max_k {
                 continue;
@@ -1152,16 +1163,22 @@ mod tests {
             rows_within_the_cap += 1;
             let oracle = TriMeshDistance::with_scale(mesh.clone(), 2.0_f64.powi(k))
                 .expect("sphere is non-empty");
-
-            // The pseudo-normal path is not the only thing the cap protects: parry's
-            // point-triangle projection carries the same fourth power in its barycentric
-            // determinants. A census clean of zeroed features would say nothing about that,
-            // so the distance is checked against the fixture's own analytic radius.
             let sign = PseudoNormalSign::from_distance(&oracle);
             let sdf = Signed {
                 distance: oracle,
                 sign,
             };
+
+            // ── Arm 1: correctness, anchored OUTSIDE the artifact. ──
+            //
+            // The pseudo-normal path is not the only thing the cap protects: parry's
+            // point-triangle projection carries the same fourth power in its barycentric
+            // determinants, and a census clean of zeroed features says nothing about it.
+            // Coarse on purpose — the fixture is a polyhedron, so it differs from the ideal
+            // sphere by its own chord error (~2e-3 at this tessellation) no matter how
+            // exact the arithmetic is. What this arm exists to catch is a projection that
+            // has *degraded*, and it is the only assertion here that does not route through
+            // the oracle itself.
             for (probe, truth) in [(1.5_f64, 0.5_f64), (0.5, -0.5)] {
                 let got = sdf.distance(Point3::new(probe, 0.0, 0.0));
                 assert!(
@@ -1170,6 +1187,26 @@ mod tests {
                      came back {got:.6} instead of ~{truth} — the projection has degraded even \
                      though the pseudo-normals have not"
                 );
+            }
+
+            // ── Arm 2: invariance, exact. ──
+            //
+            // Measured before it was asserted: the signed distance is **bit-identical** at
+            // every internal scale inside the cap, which is α.0's power-of-two neutrality
+            // holding across the whole usable band rather than at the two scales it
+            // sampled. Exact where arm 1 is coarse — but it compares the artifact against
+            // itself, so it would happily pass on an oracle that was uniformly wrong. The
+            // two arms are load-bearing in different directions and neither substitutes.
+            let got: Vec<u64> = probes.iter().map(|p| sdf.distance(*p).to_bits()).collect();
+            match &reference {
+                None => reference = Some(got),
+                Some(want) => assert_eq!(
+                    &got, want,
+                    "2^{k} is inside the cap (2^{max_k}) yet the signed distance is not \
+                     bit-identical to the same query at scale 2^0. A power-of-two internal \
+                     scale is an exponent shift and must be exact; if it is not, the cap is \
+                     already too high or the round trip has stopped commuting."
+                ),
             }
 
             let h = sdf.distance.health();
@@ -1187,6 +1224,37 @@ mod tests {
             "only {rows_within_the_cap} of the sweep's scales fell inside the cap \
              (2^{max_k}), so the within-cap arm barely ran — widen the sweep or this test's \
              clean half means nothing"
+        );
+
+        // ★ The control that gives arm 2 its teeth.
+        //
+        // Every scale in the sweep above is a power of two, so bit-identity could hold for
+        // a reason that has nothing to do with the cap — the oracle might simply be
+        // insensitive to its internal scale, in which case arm 2 asserts nothing. It is
+        // not: a non-power-of-two scale is not an exponent shift, the round trip stops
+        // being exact, and the bits move while the answer stays right.
+        //
+        // This also states arm 2's claim precisely. It is not "the internal scale does not
+        // matter" — it is "a POWER-OF-TWO internal scale does not matter", which is the
+        // property the whole remedy rests on.
+        let reference = reference.expect("the sweep ran at least four rows");
+        let odd = TriMeshDistance::with_scale(mesh.clone(), 3.0).expect("sphere is non-empty");
+        let odd_sign = PseudoNormalSign::from_distance(&odd);
+        let odd_sdf = Signed {
+            distance: odd,
+            sign: odd_sign,
+        };
+        let differing = probes
+            .iter()
+            .zip(&reference)
+            .filter(|(p, want)| odd_sdf.distance(**p).to_bits() != **want)
+            .count();
+        assert!(
+            differing > 0,
+            "an internal scale of 3.0 gave bit-identical results at all {} probes — then \
+             this oracle is insensitive to its internal scale in general, and the \
+             bit-identity asserted above is vacuous rather than a property of powers of two",
+            probes.len(),
         );
 
         // Past it: the catastrophe, reproduced. Deliberately far past, because the point is
