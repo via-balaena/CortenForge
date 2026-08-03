@@ -51,13 +51,8 @@ impl TriMeshDistance {
     /// **inside** the oracle: queries are lifted in and answers brought back, so results
     /// are in the caller's units and the caller's frame never moves. Building the same
     /// surface in millimetres or in metres now gives the same answers — which it did not
-    /// before, and is why the FSU disc meshed ~30 % phantom material after a rescale to SI.
-    ///
-    /// ⚠ That `~30 %` is inherited from #712 and **has not been reconciled with the
-    /// re-anchor list**, which records the same disc as 7759 tets (~999 phantom) → 6256
-    /// clean, i.e. 12.9 % of tets or 6.22 % of kept volume. It may be the fraction of
-    /// *triangles under the area floor* wearing a volume label. Rung β re-measures the
-    /// disc; resolve it there rather than by picking whichever number reads better.
+    /// before, and is why the FSU disc meshed phantom material once a rescale to SI put
+    /// **30 % of its triangles** under parry's area floor.
     ///
     /// # Errors
     ///
@@ -782,9 +777,16 @@ mod tests {
     /// geometry that was fine a moment earlier.
     ///
     /// This is not hypothetical: it is how the FSU disc pipeline came to mesh
-    /// ~30 % phantom material, by building its oracle after rescaling to SI
-    /// metres while every other consumer in the workspace builds in native
-    /// millimetres.
+    /// phantom material, by building its oracle after rescaling to SI metres —
+    /// which put **30 % of the disc's triangles** under the floor — while every
+    /// other consumer in the workspace builds in native millimetres.
+    ///
+    /// ⚠ The 30 % is a count of TRIANGLES, produced by `cf_fsu_model`'s
+    /// `report_area_floor_margin`. It is not a measure of how much phantom
+    /// material resulted: the re-anchor list puts that at 999 tets, 6.22 % of
+    /// kept volume. Three docs in this crate previously attached the triangle
+    /// fraction to the word "material"; #711 introduced the conflation and it
+    /// propagated twice more before anyone chased the producer.
     ///
     /// ## ★ α.1 removed the lower bound this test used to stop at
     ///
@@ -1061,7 +1063,7 @@ mod tests {
     /// This is the FSU disc's bug reproduced on a fixture. A sphere of radius 1e-3 has
     /// pole-fan triangles at ~1.1e-9, well under parry's 5.96e-8 area floor, so its
     /// pseudo-normals are zeroed and the oracle reports "inside" at any distance — the
-    /// same mechanism that made the disc mesh ~30 % phantom material once
+    /// same mechanism that put 30 % of the FSU disc's triangles under the floor once
     /// `prepare_disc_at` rescaled it to metres.
     ///
     /// Both arms are asserted, and the broken one is what gives the fixed one meaning:
