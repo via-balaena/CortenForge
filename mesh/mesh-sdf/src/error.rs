@@ -16,6 +16,12 @@ pub type SdfResult<T> = Result<T, SdfError>;
 /// belongs in a construction-time summary the caller can act on, and only something that
 /// measures the actual consequence may refuse on its strength.
 ///
+/// That summary now exists: [`TriMeshDistance::health`](crate::TriMeshDistance::health)
+/// returns a [`SurfaceHealth`](crate::SurfaceHealth) census read off the artifact parry
+/// actually built. It is the layer *entitled* to refuse under the rule above — it measures
+/// the consequence — and it deliberately does not, because making a constructor fatal on a
+/// count nobody has surveyed yet is the mistake this very doc records one rung earlier.
+///
 /// The rule exists because a constructor decides on **proxies**. `choose_scale` decides
 /// from the smallest triangle area, while what actually zeroes a pseudo-normal is a vertex
 /// whose *every* incident triangle is skipped. It could compute that — it already walks

@@ -14,6 +14,13 @@
 //! SDF from a cf-scan-prep cleaned scan should prefer the flood-fill
 //! sign oracle [`crate::FloodFillSign`] — see
 //! `docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md` for the rationale.
+//!
+//! **You do not have to take "fragile" on faith about your own mesh.**
+//! [`TriMeshDistance::health`] reports whether any feature of the surface
+//! parry actually built has been left unsignable — a zeroed pseudo-normal
+//! reports "inside" at any distance — so a consumer weighing this choice
+//! can measure the case in front of it rather than reason from the
+//! general warning above.
 
 use std::sync::Arc;
 
@@ -187,9 +194,16 @@ pub(crate) const AREA_MARGIN_BINADES: i32 = 40;
 /// (`a_sliver_clamps_the_scale_instead_of_failing_the_mesh`) computed the lifted area in
 /// **f64 on the caller's mesh** and concluded the sliver cleared the floor — while the f32
 /// artifact parry had actually built held `inf` there. It measured a model of the artifact
-/// instead of the artifact. `TriMeshDistance::health` found it on its first real sweep:
-/// one live `mesh-lattice` mesh at scale 2⁴⁸ with **all 40836 vertices and all 122502 edges
-/// zeroed**, and `faces_skipped` reading a reassuring 0.
+/// instead of the artifact. `TriMeshDistance::health` found it on its first real sweep: a
+/// live mesh in `mesh-lattice`'s suite, built at scale 2⁴⁸, with **every** referenced vertex
+/// and **every** edge zeroed while `faces_skipped` read a reassuring 0.
+///
+/// ⚠ That sweep was a one-off — `TriMeshDistance::new` temporarily instrumented to print
+/// `health()` while `cargo test -p mesh-lattice` ran — so it left no producer in the tree
+/// and the counts it printed are a recorded observation, not a standing measurement. What
+/// *is* reproducible, and asserts the same mechanism on a licence-free fixture, is
+/// `the_oracle_is_sound_up_to_the_cap_and_breaks_past_it`: past the cap every vertex and
+/// every edge of a plain sphere is zeroed, with nothing skipped.
 ///
 /// So `the_coordinate_cap_sits_below_where_parry_overflows` no longer trusts the algebra
 /// above: it asks parry where it breaks and requires this constant to be below the answer.
@@ -1459,8 +1473,10 @@ mod tests {
 
         // ★ The real claim: the damage is confined to the sliver's own three vertices and
         //   three edges. They belong to a triangle appended in isolation, so nothing else
-        //   is incident to them and no scale can rescue them — whereas all 1106 vertices of
-        //   the sphere proper sign correctly.
+        //   is incident to them and no scale can rescue them — whereas every vertex of the
+        //   sphere proper signs correctly. (Stated as "every" rather than a count: the
+        //   assert below pins the fixture's size loosely, so a precise figure here would be
+        //   prose the test does not hold anyone to.)
         assert_eq!(
             (
                 health.zero_pseudo_normal_vertices,

@@ -259,6 +259,18 @@ impl TriMeshDistance {
         // ── layer 3: the consequence, from parry's own arrays ──
         let (referenced_vertices, distinct_edges, zero_v, zero_e) = zeroed_features(tri_mesh);
 
+        // The one relation between layers that is not an empirical question, enforced where
+        // it is computed rather than only asserted in the module docs. A prose invariant
+        // nothing checks is a prose invariant that rots — and this one is free: an exactly
+        // zero cross product is trivially at or under any epsilon, so a face counted in
+        // `zero_face_normals` must also have been counted in `faces_skipped`.
+        debug_assert!(
+            zero_face_normals <= faces_skipped,
+            "{zero_face_normals} faces have an exactly zero cross product but only \
+             {faces_skipped} were skipped — the two are computed from the same cross \
+             products and the first is a subset of the second by construction"
+        );
+
         // The clamp is a property of the mesh, evaluated by the same rule that ships. A
         // mesh with no positive-area triangle cannot reach here through `new`, and a
         // `with_scale` caller that forced one through gets `clamped = false` rather than a
