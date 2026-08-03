@@ -3843,6 +3843,209 @@ mod tests {
         phantom_by_frame("LOFTED-FILLED", &filled);
     }
 
+    /// A **power-of-two normalised** view of an oracle that was built on the mesh rescaled by
+    /// `s = 2^k`. This is the shape a `mesh-sdf`-side fix would take, expressed as a test-only
+    /// adapter so it can be measured before any primitive changes.
+    ///
+    /// Distinct from [`NativeFrameOracle`] in the one way that matters for bookkeeping: that
+    /// adapter builds on the **native-mm** surface (scale 1), whereas this builds on the
+    /// **already-metre-scaled** surface times a power of two. `native × 1e-3` is *not* a power
+    /// of two, so the two do not have to agree bit for bit, and whether they agree
+    /// *mesh for mesh* is exactly what R1 asks.
+    struct NormalisedOracle<'a> {
+        inner: &'a MeshOracle,
+        s: f64,
+    }
+
+    impl Sdf for NormalisedOracle<'_> {
+        fn eval(&self, p: Point3<f64>) -> f64 {
+            self.inner
+                .eval(Point3::new(p.x * self.s, p.y * self.s, p.z * self.s))
+                / self.s
+        }
+        fn grad(&self, p: Point3<f64>) -> Vector3<f64> {
+            // ⚠ The blanket `Sdf::grad` central-differences with an ABSOLUTE 1e-6 step, so
+            // querying the inner oracle in the scaled frame makes the effective step
+            // `1e-6 / s` in this frame. Normalisation therefore changes `grad`'s step size —
+            // measured in `mesh-sdf`'s companion gate, not assumed here.
+            self.inner
+                .grad(Point3::new(p.x * self.s, p.y * self.s, p.z * self.s))
+        }
+    }
+
+    /// The two reference arms R1 compares against, plus the `MeshingHints` every arm must
+    /// share — production's own mesh (already in `meshed`) and the recon's native-frame
+    /// adapter. Returning the hints is what keeps the sweep on **one** lattice: a normalised
+    /// arm meshed over a different padded box would differ for a reason that has nothing to
+    /// do with the oracle.
+    fn native_frame_reference(
+        disc_mesh: &IndexedMesh,
+        meshed: &MeshedDisc,
+        params: &DiscParams,
+        v_surface: f64,
+    ) -> (SdfMeshedTetMesh, MeshingHints) {
+        println!("\n--- reference arms ---");
+        report_phantom_material(
+            "today  (metre oracle)  kept",
+            &meshed.raw.largest_component(),
+            &meshed.bbox,
+            v_surface,
+        );
+        let native_sdf = oracle(disc_mesh).expect("native oracle");
+        let adapter = NativeFrameOracle {
+            inner: &native_sdf,
+            center_native: meshed.center_native,
+            scale: params.scale,
+        };
+        let padded = meshed.bbox.expanded(params.pad);
+        let hints = MeshingHints {
+            bbox: Aabb3::new(
+                Vec3::new(padded.min.x, padded.min.y, padded.min.z),
+                Vec3::new(padded.max.x, padded.max.y, padded.max.z),
+            ),
+            cell_size: params.cell,
+            material_field: Some(MaterialField::uniform(params.mu, 4.0 * params.mu)),
+        };
+        let native_mesh = SdfMeshedTetMesh::from_sdf(&adapter, &hints).expect("native-frame mesh");
+        report_phantom_material(
+            "native (recon adapter) kept",
+            &native_mesh.largest_component(),
+            &meshed.bbox,
+            v_surface,
+        );
+        (native_mesh, hints)
+    }
+
+    /// Scale every vertex of `m` by exactly `s`.
+    fn scaled_mesh(m: &IndexedMesh, s: f64) -> IndexedMesh {
+        let mut out = m.clone();
+        for v in &mut out.vertices {
+            *v = Point3::new(v.x * s, v.y * s, v.z * s);
+        }
+        out
+    }
+
+    /// **R1 + R2 on the real disc — does a power-of-two normalisation reproduce the
+    /// native-frame mesh, and at which target extent?**
+    ///
+    /// The re-anchor targets this whole arc is about to be rebuilt on — 6256 tets, 97.00 % of
+    /// true volume, one component — were measured with [`NativeFrameOracle`], a *test* adapter
+    /// that builds at scale 1 on the native-mm surface. A fix inside `mesh-sdf` cannot do that:
+    /// it only ever sees the surface its caller handed it, which here is the metre-scaled one.
+    /// It would normalise *that* by a power of two.
+    ///
+    /// **`native × 1e-3` is not a power of two**, so the two paths' `f64` values — and hence
+    /// parry's `f64 -> f32` narrowing — differ. The meshes therefore need not be identical.
+    /// Physically that is irrelevant; for bookkeeping it is decisive, because **every Tier-A
+    /// re-anchor number must come from the path that actually ships**, not from the recon's
+    /// adapter. This measures whether those are the same path.
+    ///
+    /// Sweeps the normalisation target so R2 (what extent to normalise to) is answered on real
+    /// anatomy at the same time: too small and the area floor still bites, too large and
+    /// nothing is gained. Reports the floor margin per target so the boundary is visible rather
+    /// than inferred.
+    ///
+    /// Asserts only harness validity. Whether normalisation reproduces the native frame **is
+    /// the question**, so asserting it would assert the answer.
+    #[test]
+    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
+    #[allow(clippy::cast_precision_loss)]
+    fn frame_fix_r1_power_of_two_normalisation_vs_native_frame_fom() {
+        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
+        let params = DiscParams::default();
+        let v_surface = surface_volume(&disc_mesh) * params.scale.powi(3);
+        let floor = f64::from(f32::EPSILON) / 2.0;
+
+        // Production's own head: the metre-scaled surface and the oracle it builds on it.
+        let meshed = mesh_disc_raw(disc_mesh.clone(), &params).expect("mesh raw disc");
+        let scaled_surface = meshed.sdf.mesh().clone();
+        let extent = Aabb::from_points(scaled_surface.vertices.iter()).size();
+        let max_extent = extent.x.max(extent.y).max(extent.z);
+        let min_area = |m: &IndexedMesh| {
+            m.faces
+                .iter()
+                .map(|f| {
+                    let (a, b, c) = (
+                        m.vertices[f[0] as usize],
+                        m.vertices[f[1] as usize],
+                        m.vertices[f[2] as usize],
+                    );
+                    0.5 * (b - a).cross(&(c - a)).norm()
+                })
+                .fold(f64::INFINITY, f64::min)
+        };
+        println!(
+            "metre-scaled surface: extent {:.6} x {:.6} x {:.6} m (max {max_extent:.6}) | \
+             min triangle area {:.4e} vs floor {floor:.4e} ({:.3}x)",
+            extent.x,
+            extent.y,
+            extent.z,
+            min_area(&scaled_surface),
+            min_area(&scaled_surface) / floor,
+        );
+
+        // ── Reference arms: production today, and the native-frame adapter the recon used. ──
+        let kept_now = meshed.raw.largest_component();
+        let (native_mesh, hints) = native_frame_reference(&disc_mesh, &meshed, &params, v_surface);
+        let native_kept = native_mesh.largest_component();
+        println!(
+            "  today  raw {} kept {} components {}\n  native raw {} kept {} components {}",
+            meshed.raw.n_tets(),
+            kept_now.n_tets(),
+            face_components(&meshed.raw).len(),
+            native_mesh.n_tets(),
+            native_kept.n_tets(),
+            face_components(&native_mesh).len(),
+        );
+
+        // ── R2 sweep: normalise the METRE surface by 2^k for a range of target extents. ──
+        println!("\n--- power-of-two normalisation of the metre surface (R2 sweep) ---");
+        for target in [0.25_f64, 1.0, 4.0, 16.0, 64.0, 256.0] {
+            #[allow(clippy::cast_possible_truncation)]
+            let k = (target / max_extent).log2().round() as i32;
+            let s = 2.0_f64.powi(k);
+            let surf = scaled_mesh(&scaled_surface, s);
+            let a_min = min_area(&surf);
+            let norm_inner = oracle(&surf).expect("normalised oracle");
+            let adapter = NormalisedOracle {
+                inner: &norm_inner,
+                s,
+            };
+            let tet = SdfMeshedTetMesh::from_sdf(&adapter, &hints).expect("normalised mesh");
+            let kept = tet.largest_component();
+            let matches_native =
+                tet.n_tets() == native_mesh.n_tets() && kept.n_tets() == native_kept.n_tets();
+            println!(
+                "target {target:>7.2} | k {k:>3} (s = 2^{k}) | realised extent {:.4} | \
+                 min area {a_min:.4e} ({:.2}x floor) | raw {:>6} kept {:>6} components {:>4} | \
+                 vs native: {}",
+                max_extent * s,
+                a_min / floor,
+                tet.n_tets(),
+                kept.n_tets(),
+                face_components(&tet).len(),
+                if matches_native {
+                    "IDENTICAL counts"
+                } else {
+                    "DIFFERS"
+                },
+            );
+        }
+
+        // Harness validity only: the two reference arms must be the ones the recon measured,
+        // or the sweep above is being compared against the wrong thing.
+        assert_eq!(
+            (meshed.raw.n_tets(), kept_now.n_tets()),
+            (12517, 7759),
+            "production's own arm no longer reproduces the recon's 12517/7759"
+        );
+        assert_eq!(
+            (native_mesh.n_tets(), native_kept.n_tets()),
+            (6256, 6256),
+            "the native-frame adapter no longer reproduces the recon's 6256/6256"
+        );
+    }
+
     /// Per-triangle soup: every face gets its own three vertices, destroying all shared
     /// topology. `cf-spine-studio`'s `loft_painted_disc` does exactly this to the raw loft
     /// before welding it back, because — its own comment — "the raw loft tet-meshes into a
