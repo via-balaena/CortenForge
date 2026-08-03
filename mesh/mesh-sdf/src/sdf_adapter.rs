@@ -284,6 +284,457 @@ mod tests {
         );
     }
 
+    // ── α.0: is remedy D independent of remedy F? ────────────────────────────────────
+    //
+    // `project-mesh-sdf-trust-arc` carries "★★ ORDER IS FORCED: F then D" on the
+    // grounds that normalising to clear the area floor puts `grad` at ~19 % error. The
+    // three tests below exist to check that, because the claim was measured on an
+    // adapter (`cf_fsu_model`'s test-only `NormalisedOracle`) that queries the inner
+    // oracle **in the scaled frame** — and remedy D does not.
+
+    /// Scale every vertex of `m` by exactly `s`. Mirrors `sdf.rs`'s helper of the same
+    /// name; duplicated rather than shared because the two modules pin different
+    /// properties and a shared fixture would couple them.
+    fn scaled(m: &mesh_types::IndexedMesh, s: f64) -> mesh_types::IndexedMesh {
+        let mut out = m.clone();
+        for v in &mut out.vertices {
+            *v = mesh_types::Point3::new(v.x * s, v.y * s, v.z * s);
+        }
+        out
+    }
+
+    /// Smallest triangle area in `m` — the quantity parry's `DEFAULT_EPSILON / 2` area
+    /// floor is applied to.
+    ///
+    /// ⚠ Third copy of this computation in the crate (`sdf.rs` inlines it twice). Left
+    /// duplicated **here** on purpose: α.1 needs it as *production* code — remedy C's
+    /// construction-time guard and D's scale rule both key off it — so consolidating it
+    /// into a test helper now would only have to be undone. Consolidate when it moves out
+    /// of `#[cfg(test)]`, not before.
+    fn min_triangle_area(m: &mesh_types::IndexedMesh) -> f64 {
+        m.faces
+            .iter()
+            .map(|f| {
+                let (a, b, c) = (
+                    m.vertices[f[0] as usize],
+                    m.vertices[f[1] as usize],
+                    m.vertices[f[2] as usize],
+                );
+                0.5 * (b - a).cross(&(c - a)).norm()
+            })
+            .fold(f64::INFINITY, f64::min)
+    }
+
+    /// **Remedy D, expressed exactly as it would land inside `mesh-sdf`.**
+    ///
+    /// The mesh is scaled by `2^k` at *construction*; every query is lifted into that
+    /// internal frame and the answer brought back. The load-bearing property is what
+    /// this adapter does **not** do: it never changes the frame the caller queries in.
+    ///
+    /// Implemented as an [`UnsignedDistance`] + [`Sign`] pair rather than as a direct
+    /// [`Sdf`] impl on purpose — composing them through [`Signed`] means the blanket
+    /// `impl Sdf for Signed<D, S>` **under test** supplies `grad`, unmodified. A
+    /// hand-written `grad` here would be a copy of the code it is meant to measure.
+    struct NormalisedDistance {
+        inner: crate::TriMeshDistance,
+        s: f64,
+    }
+
+    impl NormalisedDistance {
+        fn lift(p: Point3<f64>, s: f64) -> Point3<f64> {
+            Point3::new(p.x * s, p.y * s, p.z * s)
+        }
+    }
+
+    impl UnsignedDistance for NormalisedDistance {
+        fn distance(&self, p: Point3<f64>) -> f64 {
+            self.inner.distance(Self::lift(p, self.s)) / self.s
+        }
+        fn closest_point(&self, p: Point3<f64>) -> Point3<f64> {
+            let q = self.inner.closest_point(Self::lift(p, self.s));
+            Point3::new(q.x / self.s, q.y / self.s, q.z / self.s)
+        }
+    }
+
+    /// The sign half of the same internal normalisation — shares the scaled BVH with
+    /// [`NormalisedDistance`] the way `PseudoNormalSign::from_distance` shares the
+    /// unscaled one.
+    struct NormalisedSign {
+        inner: crate::PseudoNormalSign,
+        s: f64,
+    }
+
+    impl Sign for NormalisedSign {
+        fn is_inside(&self, p: Point3<f64>) -> bool {
+            self.inner.is_inside(NormalisedDistance::lift(p, self.s))
+        }
+    }
+
+    /// Today's composition: oracle built and queried in the caller's frame.
+    #[allow(clippy::expect_used)]
+    fn plain_sdf(
+        mesh: &mesh_types::IndexedMesh,
+    ) -> Signed<crate::TriMeshDistance, crate::PseudoNormalSign> {
+        let distance = crate::TriMeshDistance::new(mesh.clone()).expect("fixture is non-empty");
+        let sign = crate::PseudoNormalSign::from_distance(&distance);
+        Signed { distance, sign }
+    }
+
+    /// Remedy D's composition: oracle built on the mesh times `s`, queried in the
+    /// caller's frame.
+    #[allow(clippy::expect_used)]
+    fn normalised_sdf(
+        mesh: &mesh_types::IndexedMesh,
+        s: f64,
+    ) -> Signed<NormalisedDistance, NormalisedSign> {
+        let inner = crate::TriMeshDistance::new(scaled(mesh, s)).expect("fixture is non-empty");
+        let sign = NormalisedSign {
+            inner: crate::PseudoNormalSign::from_distance(&inner),
+            s,
+        };
+        Signed {
+            distance: NormalisedDistance { inner, s },
+            sign,
+        }
+    }
+
+    /// The 64 deterministic probe directions `grad_step_scale_regime` uses — same
+    /// spread, no RNG, no coincidence with the sphere's own tessellation seams.
+    fn probe_dirs() -> Vec<Vector3<f64>> {
+        (0..64)
+            .map(|i| {
+                let z = 2.0f64.mul_add(f64::from(i) / 63.0, -1.0) * 0.98;
+                let phi = f64::from(i) * 2.399_963_229_728_653; // golden angle
+                let r = (1.0 - z * z).sqrt();
+                Vector3::new(r * phi.cos(), r * phi.sin(), z).normalize()
+            })
+            .collect()
+    }
+
+    /// Largest `|‖∇φ‖ − 1|` over the probe set at `1.5·radius` — the instrument
+    /// `grad_step_scale_regime` established. A polyhedron's signed distance is a genuine
+    /// distance function, so any departure from 1 is numerical and nothing else.
+    fn max_grad_magnitude_error<S: Sdf>(sdf: &S, radius: f64, dirs: &[Vector3<f64>]) -> f64 {
+        dirs.iter().fold(0.0_f64, |acc, d| {
+            let p = Point3::from(d * (1.5 * radius));
+            acc.max((Sdf::grad(sdf, p).norm() - 1.0).abs())
+        })
+    }
+
+    /// **α.0 — the arc's "F must precede D" is refuted, and this is the measurement.**
+    ///
+    /// ## The claim being tested
+    ///
+    /// `project-mesh-sdf-trust-arc` records "★★ ORDER IS FORCED: F then D", reasoning
+    /// that a target extent chosen to clear the area floor lands `grad` at ~19 % error.
+    /// That number came from `cf_fsu_model`'s test-only `NormalisedOracle`, whose own
+    /// doc comment says what it does: it queries the inner oracle **in the scaled
+    /// frame**, so the effective step becomes `1e-6 / s` *in that frame*.
+    ///
+    /// Remedy D is not that. D normalises **internally** — scale at construction,
+    /// unscale at query — so the frame the caller queries in never moves. `Sdf::grad`
+    /// still central-differences at `h = 1e-6` in caller units; the `f32` projection
+    /// error is still `~6e-8·E·s` internally and `~6e-8·E` after the unscale. Both
+    /// terms of the gradient's error budget are unchanged, so D should be **exactly**
+    /// neutral for `grad` — not approximately, bit for bit.
+    ///
+    /// ## What is asserted
+    ///
+    /// Componentwise `to_bits` equality between today's oracle and the internally
+    /// normalised one, at every radius in the band `grad_step_scale_regime` measured,
+    /// for three non-trivial scales (2³, 2¹⁰, 2¹³). Bit-identity is the right strength
+    /// here: an approximate assert would pass for a normalisation that perturbs results
+    /// slightly, and "does not perturb results" is the entire claim.
+    ///
+    /// ⚠ **Anchored to a known value first.** Comparing two arms measured by the same
+    /// helper is blind to a bug in that helper — it would corrupt both equally and the
+    /// comparison would still pass. So the plain arm is checked against
+    /// `grad_step_scale_regime`'s already-committed column before the arms are compared
+    /// to each other.
+    ///
+    /// ⚠ **This includes the radii where `grad` is already badly wrong** (1e1, 1e2 carry
+    /// 5.4e-1 and 2.9e0 of magnitude error today). Bit-identity there says the
+    /// normalised oracle is **equally wrong**, which is the honest statement of the
+    /// finding: **D neither helps nor hurts `grad`.** It does not license shipping D as
+    /// a gradient fix — F remains owed. It licenses shipping them in either order.
+    #[test]
+    fn internal_normalisation_leaves_grad_bit_identical() {
+        let dirs = probe_dirs();
+        // ⚠ Every failure is COLLECTED, never asserted inside the sweep. This gate's value
+        //   is the whole 18-row table — which radii moved and which did not — and an assert
+        //   in the loop destroys rows 7..18 exactly when a failure at row 6 makes them most
+        //   worth reading. The table prints in full, then the three verdicts fire below in
+        //   precondition order: non-vacuity, then anchor, then bit-identity.
+        let mut anchor_failures: Vec<String> = Vec::new();
+        let mut bit_failures: Vec<String> = Vec::new();
+        let (mut total_compared, mut total_bit_equal) = (0usize, 0usize);
+
+        println!(
+            "\n{:>10} {:>6} {:>14} {:>14} {:>16}",
+            "radius", "scale", "plain max err", "norm max err", "bit-equal comps"
+        );
+        for (radius, committed_plain_err) in [
+            (1e-2_f64, 5.25e-4),
+            (5e-2, 2.17e-3),
+            (1e-1, 5.61e-3),
+            (1.0, 3.80e-2),
+            (10.0, 5.41e-1),
+            (100.0, 2.86e0),
+        ] {
+            let mesh = crate::test_fixtures::uv_sphere(radius, 24, 48);
+            let plain = plain_sdf(&mesh);
+            let plain_err = max_grad_magnitude_error(&plain, radius, &dirs);
+            // The known-value anchor — see this test's doc comment for why it is here.
+            if (plain_err - committed_plain_err).abs() > 0.02 * committed_plain_err {
+                anchor_failures.push(format!(
+                    "r={radius}: harness reads {plain_err:.3e}, `grad_step_scale_regime` \
+                     committed {committed_plain_err:.3e}"
+                ));
+            }
+
+            // ⚠ Only `s >= 1` is swept, deliberately. D's job is to LIFT geometry off the
+            //   area floor, so the shipping rule is `k = max(0, …)` and a shrinking scale is
+            //   out of its contract — a mesh already clear of the floor could be pushed under
+            //   it. Nothing here licenses a shrink; α.1 must not read one in.
+            //
+            //   2^10 is here because `caller_frame_rescale_moves_grad_where_internal_…`
+            //   runs its three arms at that scale and can only compare a MAX statistic.
+            //   Field identity at 2^10 has to come from this sweep or it is not established.
+            for k in [3_i32, 10, 13] {
+                let s = 2.0_f64.powi(k);
+                let norm = normalised_sdf(&mesh, s);
+                // ⚠ Compared and COUNTED first; the row prints before any verdict. An
+                //   `assert_eq!` inside this loop would make the printed count structurally
+                //   incapable of reading anything but `3 * dirs.len()` — a constant wearing a
+                //   number's clothes, which is the defect this column has already had twice:
+                //   once as a hardcoded "yes", once as a counter incremented after the assert.
+                let mut bit_equal = 0usize;
+                let mut compared = 0usize;
+                let mut first_mismatch: Option<String> = None;
+                for d in &dirs {
+                    let p = Point3::from(d * (1.5 * radius));
+                    let gp = Sdf::grad(&plain, p);
+                    let gn = Sdf::grad(&norm, p);
+                    for (axis, (a, b)) in [(gp.x, gn.x), (gp.y, gn.y), (gp.z, gn.z)]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        compared += 1;
+                        if a.to_bits() == b.to_bits() {
+                            bit_equal += 1;
+                        } else if first_mismatch.is_none() {
+                            first_mismatch = Some(format!(
+                                "axis {axis} at {p:?} — plain {a:.17e}, normalised {b:.17e}"
+                            ));
+                        }
+                    }
+                }
+                total_compared += compared;
+                total_bit_equal += bit_equal;
+
+                let norm_err = max_grad_magnitude_error(&norm, radius, &dirs);
+                println!(
+                    "{radius:>10.0e} {:>6} {plain_err:>14.3e} {norm_err:>14.3e} {:>16}",
+                    format!("2^{k}"),
+                    format!("{bit_equal}/{compared}"),
+                );
+                if bit_equal != compared {
+                    bit_failures.push(format!(
+                        "r={radius}, 2^{k}: {} of {compared} components moved — first at {}",
+                        compared - bit_equal,
+                        first_mismatch.unwrap_or_else(|| "<none recorded>".to_string()),
+                    ));
+                }
+            }
+        }
+
+        // ── Three verdicts, in precondition order. Each one is meaningless unless the
+        //    one before it holds, which is why they are ordered rather than combined.
+
+        // (1) Non-vacuity, stated on the quantity the table reports rather than on a
+        //     weaker proxy: 6 radii × 3 scales × 64 probes × 3 axes = 3456 components.
+        //     First, because on a collapsed sweep `bit_failures` is empty for the wrong
+        //     reason and (3) would pass vacuously. The threshold bites: dropping one
+        //     radius gives 2880 and dropping one scale gives 2304, both under it.
+        assert!(
+            total_compared >= 3000,
+            "only {total_compared} components were compared — the sweep collapsed and this \
+             test proves nothing"
+        );
+
+        // (2) The known-value anchor. If this harness disagrees with the committed column
+        //     then it is measuring something other than what it claims, and (3)'s verdict
+        //     — pass or fail — says nothing about normalisation either way.
+        assert!(
+            anchor_failures.is_empty(),
+            "this harness disagrees with `grad_step_scale_regime`'s committed column at \
+             {} radii, so one of the two is measuring something else — resolve that before \
+             reading the bit-identity result:\n  {}",
+            anchor_failures.len(),
+            anchor_failures.join("\n  "),
+        );
+
+        // (3) The claim itself.
+        assert!(
+            bit_failures.is_empty(),
+            "internal normalisation moved the gradient ({} of {total_compared} components \
+             across {} rows). Then D is NOT neutral for `grad` and the arc's forced \
+             F-then-D order stands:\n  {}",
+            total_compared - total_bit_equal,
+            bit_failures.len(),
+            bit_failures.join("\n  "),
+        );
+    }
+
+    /// **α.0's second half: D fixes what it is for, and the fix is visible in `grad`.**
+    ///
+    /// At radius 1e-3 this fixture's smallest triangles sit under parry's area floor, so
+    /// the pseudo-normal is zeroed and the sign reads "inside" at any distance.
+    /// `grad` central-differences a **signed** value, so a flip between the two probes
+    /// yields a spurious gradient of order `φ/h` — the 8.7e2 / 179.94° row of
+    /// `grad_step_scale_regime`.
+    ///
+    /// Internal normalisation lifts the mesh clear of the floor, and the scale is
+    /// **derived from the mesh's own smallest triangle** rather than fixed — which is
+    /// what makes D's constant dimensionless. `MARGIN` is deliberately generous and is
+    /// **not** the shipping value: R1's disc sweep showed targets that leave the
+    /// smallest triangle at 0.05× and 0.74× of the floor still meshing correctly, so
+    /// margin — not success — is the criterion, and choosing it is α.1's job.
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn internal_normalisation_repairs_the_sub_floor_grad() {
+        const MARGIN: f64 = 1.0e4;
+        let dirs = probe_dirs();
+        let radius = 1e-3;
+        let mesh = crate::test_fixtures::uv_sphere(radius, 24, 48);
+
+        let floor = f64::from(f32::EPSILON) / 2.0;
+        let min_area = min_triangle_area(&mesh);
+        // Precondition, checked rather than assumed: this radius really is in the broken
+        // regime. If the fixture ever changes so it is not, the repair assert below would
+        // pass vacuously.
+        assert!(
+            min_area < floor,
+            "r={radius}: fixture's smallest triangle ({min_area:.3e}) already clears the floor \
+             ({floor:.3e}) — this test is measuring nothing"
+        );
+        // ⚠ The rule below divides by `min_area`, and `min_area == 0` satisfies the
+        //   precondition above. A zero-area triangle would send `sqrt(x/0)` to `inf`,
+        //   `inf as i32` saturates to `i32::MAX`, `2^i32::MAX` is `inf`, and every vertex
+        //   would become `inf` — a silently meaningless run. Unreachable for this fixture,
+        //   but this is the exact computation α.1 promotes to production, where a real
+        //   decimated scan CAN carry one. There is no scale that lifts a zero off the
+        //   floor, so that input belongs to remedy C's construction-time error, not to a
+        //   scale factor.
+        assert!(
+            min_area > 0.0,
+            "r={radius}: fixture carries a zero-area triangle — no power of two lifts it off \
+             the floor; that case is remedy C's loud construction-time failure"
+        );
+
+        // s ≥ sqrt(MARGIN · floor / min_area), rounded up to a power of two so the rescale
+        // is a pure exponent shift. `min_area > 0` above is what keeps `k` finite, and the
+        // cast therefore in range.
+        let k = (MARGIN * floor / min_area).sqrt().log2().ceil();
+        let s = 2.0_f64.powi(k as i32);
+        let norm = normalised_sdf(&mesh, s);
+        let plain = plain_sdf(&mesh);
+
+        let plain_err = max_grad_magnitude_error(&plain, radius, &dirs);
+        let norm_err = max_grad_magnitude_error(&norm, radius, &dirs);
+        println!(
+            "\nr={radius:.0e}  min_area {min_area:.3e} vs floor {floor:.3e}  ->  2^{k} = {s}\n\
+             plain max |‖g‖-1| {plain_err:.3e}   normalised {norm_err:.3e}"
+        );
+
+        assert!(
+            plain_err > 1.0,
+            "at r={radius} today's oracle is expected to be sign-broken (measured 8.7e2), got \
+             {plain_err:.3e} — if the area floor no longer bites here, re-measure the whole band"
+        );
+        // Predicted before running: the surviving error is the f32 projection term,
+        // ~6e-8·E/(2h) ≈ 4.5e-5 at E ≈ 1.5e-3. Asserted at 1e-3 — 20x headroom over the
+        // prediction, and still three decades below the broken value it replaces.
+        assert!(
+            norm_err < 1e-3,
+            "internal normalisation should put r={radius} back inside the usable band, got \
+             {norm_err:.3e}"
+        );
+    }
+
+    /// **α.0's control — and the half that explains where the arc's 19 % came from.**
+    ///
+    /// Without this, the bit-identity above would be consistent with "scaling a mesh
+    /// does not affect `grad`", which is false and would make the first test prove
+    /// nothing specific.
+    ///
+    /// ## Three arms, one variable
+    ///
+    /// All three use the **same fixture** and the **same `s = 2¹⁰`**, and arms B and C
+    /// build their BVH over the **same scaled mesh**. The only thing that differs between
+    /// B and C is the frame the caller queries in:
+    ///
+    /// | arm | oracle built on | queried at | |
+    /// |---|---|---|---|
+    /// | A — today | `mesh` | `p` | the baseline |
+    /// | B — remedy D | `mesh · s` | `p` (caller's frame) | its **max statistic** must match A bit-for-bit |
+    /// | C — caller-side rescale | `mesh · s` | `p · s` (scaled frame) | must **degrade** |
+    ///
+    /// C is what remedy A, or `cf_fsu_model`'s `NormalisedOracle`, does. Holding the mesh
+    /// and `s` fixed across B and C is what makes "they differ in one thing only" a
+    /// property of the code rather than a claim in a comment — the earlier version of this
+    /// test compared C against A at a different scale from the bit-identity sweep, which
+    /// demonstrated the same fact but did not isolate the variable.
+    ///
+    /// ⚠ **What arm B checks here is weaker than it looks, and that is why 2¹⁰ is in the
+    /// sweep above.** `max_grad_magnitude_error` reduces 64 probes to a maximum, and two
+    /// different gradient fields can share a maximum while differing everywhere else. So
+    /// this assert establishes only that the statistic agrees at 2¹⁰. **Field identity at
+    /// 2¹⁰ comes from `internal_normalisation_leaves_grad_bit_identical`**, which compares
+    /// every component — the scale was added there specifically so this arm rests on it
+    /// rather than on a reduction that could hide a difference.
+    ///
+    /// The degradation is expected to be ≈ linear in coordinate magnitude — `2¹⁰` is 3.01
+    /// decades, so ≈ ×1000. It is asserted only as "≥ ×10", because the instrument is a
+    /// **max over 64 probes** and the max of a sample is noisy; pinning the ratio would
+    /// freeze sampling noise as if it were the law.
+    #[test]
+    fn caller_frame_rescale_moves_grad_where_internal_normalisation_does_not() {
+        let dirs = probe_dirs();
+        let radius = 1.0;
+        let s = 1024.0; // 2^10
+        let mesh = crate::test_fixtures::uv_sphere(radius, 24, 48);
+
+        // A — today: built and queried in the caller's frame.
+        let a_err = max_grad_magnitude_error(&plain_sdf(&mesh), radius, &dirs);
+        // B — remedy D: built on `mesh · s`, queried in the CALLER'S frame.
+        let b_err = max_grad_magnitude_error(&normalised_sdf(&mesh, s), radius, &dirs);
+        // C — caller-side rescale: built on `mesh · s`, queried in the SCALED frame.
+        let c_err = max_grad_magnitude_error(&plain_sdf(&scaled(&mesh, s)), radius * s, &dirs);
+
+        println!(
+            "\nsame fixture, same s = {s}\n  A today                {a_err:.3e}\n  \
+             B remedy D  (caller frame) {b_err:.3e}\n  C rescaled  (scaled frame) {c_err:.3e}"
+        );
+
+        // ⚠ This is the MAX statistic, not the field — see the doc comment. Field identity
+        //   at this scale is established by the sweep in
+        //   `internal_normalisation_leaves_grad_bit_identical`, which includes 2^10.
+        assert_eq!(
+            b_err.to_bits(),
+            a_err.to_bits(),
+            "arm B (internal normalisation) must leave `grad`'s max |‖g‖-1| untouched — \
+             A {a_err:.17e}, B {b_err:.17e}"
+        );
+        assert!(
+            c_err > 10.0 * a_err,
+            "arm C (caller-frame rescale by {s}) must visibly degrade `grad` — the fixed 1e-6 \
+             step is now 1024x smaller relative to the geometry. Got A {a_err:.3e}, C \
+             {c_err:.3e}. If C does not degrade, then B's bit-identity is consistent with \
+             `grad` being scale-insensitive in general and proves nothing specific."
+        );
+    }
+
     /// `impl Sdf for CachedGridSdf` — `eval` reads the cached signed
     /// grid directly; `grad` central-differences the trilinear
     /// interpolant. Verifies the adapter honors the [`Sdf`] sign
