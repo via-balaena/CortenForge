@@ -14,6 +14,16 @@
 //! SDF from a cf-scan-prep cleaned scan should prefer the flood-fill
 //! sign oracle [`crate::FloodFillSign`] — see
 //! `docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md` for the rationale.
+//!
+//! ⚠ **[`TriMeshDistance::health`] does not settle this choice for you.**
+//! It censuses the built artifact for *zeroed* pseudo-normals — the
+//! area-floor and coordinate-cap failure mode — and is **blind to winding
+//! and manifoldness**, which is what the paragraph above is about. A
+//! globally reversed winding negates every cross product, so the census is
+//! byte-identical while every sign is inverted (measured on a unit cube).
+//! Use it to answer "did the scale rule leave this surface with unsignable
+//! features"; for a scan whose winding you do not trust, [`crate::FloodFillSign`]
+//! is still the answer.
 
 use std::sync::Arc;
 
@@ -137,7 +147,7 @@ fn lift(p: Point3<f64>, scale: f64) -> Point3<f64> {
 /// `‖ab × ac‖` is twice the area, so a triangle at or under `f32::EPSILON / 2` is skipped
 /// — leaving a **zero** pseudo-normal, which parry's `dpt.dot(&pn) <= 0.0` inside test
 /// satisfies unconditionally. A zero pseudo-normal reports "inside" at any distance.
-fn area_floor() -> f64 {
+pub(crate) fn area_floor() -> f64 {
     f64::from(f32::EPSILON) / 2.0
 }
 
@@ -157,16 +167,53 @@ fn area_floor() -> f64 {
 /// middle of a feasible band tens of binades wide, and
 /// `the_chosen_scale_is_insensitive_to_the_margin_across_decades` asserts that the
 /// **result does not depend on it** — which is a stronger claim than any fitted number.
-const AREA_MARGIN_BINADES: i32 = 40;
+pub(crate) const AREA_MARGIN_BINADES: i32 = 40;
 
 /// Largest internal coordinate magnitude the BVH may be built at.
 ///
-/// parry computes `ab.cross(&ac)` and squared norms in **f32**, so intermediates grow as
-/// coordinate², and they overflow to infinity above `sqrt(f32::MAX)`. Ten binades of
-/// headroom below that, derived rather than hand-picked so it tracks the type instead of
-/// a remembered number.
+/// The binding operation is **`norm_squared` of a cross product**, which grows as
+/// coordinate⁴: `Triangle::normal` is `Unit::try_new(ab × ac, DEFAULT_EPSILON)`, and
+/// `try_new` decides on `value.norm_squared()`. The cross itself is only coordinate², and
+/// parry's point-triangle projection carries the same fourth power in its barycentric
+/// determinants. So the ceiling is the **fourth root** of `f32::MAX`, not its square root.
+///
+/// Dividing the coordinate by 2¹⁰ puts the fourth power **forty binades** below overflow —
+/// the same margin, and for the same one-sided reason, as [`AREA_MARGIN_BINADES`].
+///
+/// # ★★ This was wrong until α.2, and the failure is why it is now measured
+///
+/// It read `sqrt(f32::MAX) / 1024` on the stated grounds that "intermediates grow as
+/// coordinate²" — true of the cross, false of the `norm_squared` that actually decides.
+/// Six orders too permissive, and the consequence is **worse than an overflow**:
+///
+/// `Unit::try_new` sees `sq_norm = inf`, finds `inf > eps²`, takes `n = sqrt(inf) = inf`,
+/// and divides — so `Triangle::normal()` returns **`Some([0, 0, 0])`, not `None`.** The
+/// triangle is not skipped. It is accumulated *with a zero normal*, which zeroes the
+/// pseudo-normal of every vertex and edge it touches. It is the area floor's failure
+/// arriving from the opposite end of the scale: not "too small, dropped" but "too large,
+/// kept and zeroed".
+///
+/// α.1 shipped this and no gate caught it, because the gate that should have
+/// (`a_sliver_clamps_the_scale_instead_of_failing_the_mesh`) computed the lifted area in
+/// **f64 on the caller's mesh** and concluded the sliver cleared the floor — while the f32
+/// artifact parry had actually built held `inf` there. It measured a model of the artifact
+/// instead of the artifact. `TriMeshDistance::health` found it on its first real sweep: a
+/// live mesh in `mesh-lattice`'s suite, built at scale 2⁴⁸, with **every** referenced vertex
+/// and **every** edge zeroed while `faces_skipped` read a reassuring 0.
+///
+/// ⚠ That sweep was a one-off — `TriMeshDistance::new` temporarily instrumented to print
+/// `health()` while `cargo test -p mesh-lattice` ran — so it left no producer in the tree
+/// and the counts it printed are a recorded observation, not a standing measurement. What
+/// *is* reproducible, and asserts the same mechanism on a licence-free fixture, is
+/// `the_oracle_is_sound_up_to_the_cap_and_breaks_past_it`: past the cap every vertex and
+/// every edge of a plain sphere is zeroed, with nothing skipped.
+///
+/// So `the_coordinate_cap_sits_below_where_parry_overflows` no longer trusts the algebra
+/// above: it asks parry where it breaks and requires this constant to be below the answer.
 fn coordinate_cap() -> f64 {
-    f64::from(f32::MAX).sqrt() / 1024.0
+    // Fourth root, written as two square roots: `sqrt` is correctly rounded where `powf`
+    // is not, and it reads as the power it is.
+    f64::from(f32::MAX).sqrt().sqrt() / 1024.0
 }
 
 /// Smallest triangle area and largest absolute coordinate, in the caller's units.
@@ -255,11 +302,51 @@ pub(crate) fn choose_scale(mesh: &IndexedMesh) -> SdfResult<f64> {
 /// # Errors
 ///
 /// As `choose_scale`.
-// `k` is clamped to `[0, max_k]`, and `max_k` is finite because the guard below
-// establishes `extent > 0` and `coordinate_cap()` is a finite constant — so the value cast
-// to i32 is a small non-negative integer and cannot truncate.
-#[allow(clippy::cast_possible_truncation)]
 pub(crate) fn scale_for_margin(mesh: &IndexedMesh, margin_binades: i32) -> SdfResult<f64> {
+    Ok(scale_rule(mesh, margin_binades)?.chosen())
+}
+
+/// The two exponents [`scale_for_margin`] decides between, before the clamp resolves them.
+///
+/// Split out because **the guard has to report the clamp, and a second copy of this
+/// arithmetic would drift from the one that ships.** `TriMeshDistance::health` needs to say
+/// how far short of the requested margin a mesh landed, which means it needs `wanted` — a
+/// number `scale_for_margin` used to compute and throw away. One producer, queried twice.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ScaleRule {
+    /// Power-of-two exponent that would put the smallest triangle the full margin above
+    /// [`area_floor`], ignoring the coordinate cap.
+    pub wanted: f64,
+    /// Largest exponent [`coordinate_cap`] permits for this mesh's extent.
+    pub max_k: f64,
+}
+
+impl ScaleRule {
+    /// The scale actually built at: `2^clamp(wanted, 0, max_k)`.
+    // `k` is clamped to `[0, max_k]`, and `max_k` is finite because `scale_rule`'s guard
+    // establishes `extent > 0` and `coordinate_cap()` is a finite constant — so the value
+    // cast to i32 is a small non-negative integer and cannot truncate.
+    #[allow(clippy::cast_possible_truncation)]
+    pub(crate) fn chosen(self) -> f64 {
+        let k = self.wanted.clamp(0.0, self.max_k.max(0.0));
+        2.0_f64.powi(k as i32)
+    }
+
+    /// Did the coordinate cap stop the rule reaching its requested margin?
+    ///
+    /// A property of the **mesh**, not of the scale that happened to be used, so it is
+    /// meaningful even for an oracle built through the `with_scale` test seam.
+    pub(crate) fn clamped(self) -> bool {
+        self.wanted > self.max_k
+    }
+}
+
+/// Evaluate the scale rule without resolving the clamp.
+///
+/// # Errors
+///
+/// As [`choose_scale`].
+pub(crate) fn scale_rule(mesh: &IndexedMesh, margin_binades: i32) -> SdfResult<ScaleRule> {
     let (min_area, extent) = mesh_scale_inputs(mesh)?;
     // Written as a positive test so NaN falls through to the error arm rather than
     // slipping past a negated comparison: NaN is neither `> 0.0` nor `<= 0.0`.
@@ -284,15 +371,22 @@ pub(crate) fn scale_for_margin(mesh: &IndexedMesh, margin_binades: i32) -> SdfRe
     // The first version of this rule errored when `wanted > max_k`, on the argument that
     // handing back a signed oracle for a surface that cannot be signed is the defect this
     // arc exists to remove. Running it across mesh-sdf's dependents killed that argument
-    // in one shot: `mesh-lattice`'s marching-cubes output carries a sliver of area
+    // in one shot: `mesh-offset`'s marching-cubes output — which `mesh-lattice` consumes —
+    // carries a sliver of area
     // **1.537e-30** across a 48.8-unit mesh — routine output when an isosurface clips a
     // cell corner — and six of its gates went red.
     //
     // Two things were wrong, both proxy errors of the kind this arc keeps catching:
     //
-    // 1. **That mesh was never unsignable.** At `max_k = 48` its smallest triangle lands at
-    //    1.2e-1, twenty-one binades clear of the floor. The rule rejected it for failing to
-    //    reach forty. Greedy, then fatal about it.
+    // 1. **That mesh was never unsignable** — though the numbers first written here to say
+    //    so were themselves products of the cap α.2 deleted. They claimed the sliver landed
+    //    at 1.2e-1, twenty-one binades clear of the floor, computed in f64 from
+    //    `sqrt(f32::MAX)/1024`. Under the corrected `coordinate_cap` the fixture clamps at
+    //    2^16 and the sliver lands 43 binades UNDER the floor — see
+    //    `a_sliver_clamps_the_scale_instead_of_failing_the_mesh`, which now asserts exactly
+    //    that. What survives is the claim, not the arithmetic: the mesh signs correctly
+    //    everywhere except the isolated sliver's own three features. Bullet 2 is the
+    //    argument that never depended on the cap.
     // 2. **"Under the floor" does not mean "cannot be signed."** A skipped triangle only
     //    zeroes a pseudo-normal where *every* triangle incident to a vertex is skipped; the
     //    FSU disc needed ~30 % of its triangles under before it broke, and R1's sweep found
@@ -302,9 +396,9 @@ pub(crate) fn scale_for_margin(mesh: &IndexedMesh, margin_binades: i32) -> SdfRe
     // Clamping is also **monotone**: `k` is never below 0, so the result is never worse
     // than the un-normalised oracle every consumer has today. Erroring, by contrast, is a
     // strict regression for meshes that currently work. Reporting the residual belongs to
-    // remedy C's construction-time guard, which can measure the consequence properly.
-    let k = wanted.clamp(0.0, max_k.max(0.0));
-    Ok(2.0_f64.powi(k as i32))
+    // [`TriMeshDistance::health`], which measures the consequence properly — the clamp is
+    // resolved by `ScaleRule::chosen` and reported by `ScaleRule::clamped`.
+    Ok(ScaleRule { wanted, max_k })
 }
 
 impl UnsignedDistance for TriMeshDistance {
@@ -454,7 +548,7 @@ fn parry_to_f64(p: ParryPoint<ParryReal>) -> Point3<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_fixtures::{unit_tetrahedron, uv_sphere};
+    use crate::test_fixtures::{build_sdf_at, unit_tetrahedron, uv_sphere};
     use approx::assert_relative_eq;
     use mesh_types::Point3;
 
@@ -859,8 +953,9 @@ mod tests {
     ///
     /// Every other quantity in `scale_for_margin` tracks something real: `area_floor()`
     /// is `f32::EPSILON / 2` because that is where parry stops computing a pseudo-normal,
-    /// `coordinate_cap()` is `sqrt(f32::MAX)` because that is where f32 products overflow,
-    /// and `min_area` / `extent` come from the mesh. The margin is a choice.
+    /// `coordinate_cap()` is `f32::MAX^(1/4)` because that is where the cross product's
+    /// `norm_squared` overflows, and `min_area` / `extent` come from the mesh. The margin
+    /// is a choice.
     ///
     /// The temptation was to *measure* it — find the smallest margin that fixes the FSU
     /// disc. That would have been the arc's original defect one level up: a constant
@@ -876,6 +971,20 @@ mod tests {
     /// **The non-vacuity check is the load-bearing half.** If every margin in the sweep
     /// happened to round to the same `2^k`, bit-identity would be trivially true and this
     /// test would assert nothing. The sweep must actually move the scale.
+    ///
+    /// ## ★ α.2: non-vacuity is a claim about the SWEEP, not about every row
+    ///
+    /// It used to require *each* fixture's scale to move, which was right while the
+    /// coordinate cap sat six orders too high and nothing was ever fully clamped. With the
+    /// cap corrected the slivered row pins at one scale for **every** margin — and that is
+    /// the rule behaving correctly, not a hole in the test: once the clamp binds at every
+    /// margin, the margin genuinely cannot move the answer.
+    ///
+    /// Demanding movement there would force the fixture to be weakened until it stopped
+    /// clamping, which would delete the only row that covers the clamped path at all. So
+    /// each row now discharges non-vacuity one of two ways — **its scale moved**, or **it
+    /// is provably pinned by the clamp** — and the sweep as a whole must contain at least
+    /// one of each. A row that is pinned for neither reason still fails.
     #[test]
     fn the_chosen_scale_is_insensitive_to_the_margin_across_decades() {
         // Probes spanning inside, surface-adjacent and well outside, at a fixed relative
@@ -884,10 +993,10 @@ mod tests {
 
         // ⚠ The last entry is CLAMPED and the others are not, which is the only reason
         //   this sweep covers the interaction at all. None of the plain spheres come near
-        //   the cap — `wanted` tops out around 35 against a `max_k` of 47..64 — so without
-        //   a slivered fixture the margin sweep would only ever exercise the unclamped
-        //   path, and "the margin does not matter" would be unproven exactly where the
-        //   rule stops honouring it.
+        //   the cap, so without a slivered fixture the margin sweep would only ever
+        //   exercise the unclamped path, and "the margin does not matter" would be
+        //   unproven exactly where the rule stops honouring it.
+        let (mut rows_that_moved, mut rows_pinned_by_the_clamp) = (0usize, 0usize);
         for (radius, sliver) in [
             (1e-3_f64, false),
             (1e-2, false),
@@ -928,23 +1037,311 @@ mod tests {
 
             scales.sort_unstable();
             scales.dedup();
-            assert!(
-                scales.len() > 1,
-                "r={radius}: every margin in the sweep chose the SAME scale, so the \
-                 bit-identity above is vacuous — widen the sweep until the scale moves"
-            );
+            if scales.len() > 1 {
+                rows_that_moved += 1;
+            } else {
+                // The one other way a row may be pinned: the clamp binds at every margin in
+                // the sweep, including the smallest. Checked at margin 0 — if the rule is
+                // capped even when it asks for nothing, it is capped throughout, since
+                // `wanted` only grows with the margin.
+                let pinned = crate::sdf::scale_rule(&mesh, 0).expect("sphere is scalable");
+                assert!(
+                    pinned.clamped(),
+                    "r={radius}: every margin chose the same scale AND the coordinate cap \
+                     is not binding, so the bit-identity above is vacuous — the margin was \
+                     never actually exercised on this fixture"
+                );
+                rows_pinned_by_the_clamp += 1;
+            }
         }
+
+        // The sweep must cover both regimes. Without a moving row the insensitivity claim
+        // is untested; without a pinned row the clamped path — where the rule stops
+        // honouring the margin at all — is uncovered, which is the hole the slivered
+        // fixture was added to close.
+        assert!(
+            rows_that_moved > 0,
+            "no fixture in the sweep changed its scale as the margin varied, so every \
+             bit-identity assertion above is vacuous"
+        );
+        assert!(
+            rows_pinned_by_the_clamp > 0,
+            "no fixture in the sweep was pinned by the coordinate cap, so the clamped path \
+             is uncovered — the margin's irrelevance is unproven exactly where the rule \
+             stops honouring it"
+        );
     }
 
-    /// Coordinate extent of the slivered fixture, from the `mesh-lattice` mesh that
-    /// broke. Load-bearing: with the sliver's ~1e-30 area it puts `wanted` at 2^58
-    /// against a cap of 2^48, so the clamp BINDS — which is what both gates below
-    /// need in order to observe anything.
+    /// **Where does parry actually stop producing a usable normal? Ask it, then require
+    /// [`coordinate_cap`] to sit below the answer.**
+    ///
+    /// The cap's derivation is an argument about which f32 intermediate overflows first,
+    /// and α.1 shipped that argument wrong — it protected the cross product (coordinate²)
+    /// while the deciding operation was the cross's `norm_squared` (coordinate⁴). An
+    /// argument that has already been wrong once does not get to be the only thing standing
+    /// between the oracle and a mesh with every pseudo-normal zeroed.
+    ///
+    /// So this measures. It walks a triangle up the powers of two, asks parry for its
+    /// normal at each, and finds the first scale where the answer stops being a usable
+    /// direction — including the failure mode that is **not** `None`: `Unit::try_new`
+    /// divides by `sqrt(inf)` and hands back `Some([0, 0, 0])`, which every caller in parry
+    /// treats as a real normal.
+    ///
+    /// ⚠ **The non-vacuity check is the load-bearing half.** If the sweep never reached a
+    /// breaking scale, "the cap is below the break" would be trivially true and this would
+    /// assert nothing at all.
+    #[test]
+    fn the_coordinate_cap_sits_below_where_parry_overflows() {
+        use parry3d::math::Point as ParryPoint;
+        use parry3d::shape::Triangle;
+
+        // ⚠ The triangle spans the FULL box `[-coord, +coord]`, so its legs are `2 * coord`.
+        //   That is what `coordinate_cap` actually bounds: the cap limits the largest
+        //   absolute coordinate, and a mesh sitting inside that limit may contain an edge
+        //   running the whole width of it. A probe with legs of only `coord` — the obvious
+        //   one, and the first thing written here — reports the break one binade late
+        //   (2^32 against the true 2^31), so it would bless a cap that is twice too high.
+        let normal_is_usable = |coord: f32| {
+            let tri = Triangle::new(
+                ParryPoint::new(-coord, -coord, 0.0),
+                ParryPoint::new(coord, -coord, 0.0),
+                ParryPoint::new(-coord, coord, 0.0),
+            );
+            // `None` is the honest failure. `Some(zero)` is the dangerous one: parry's
+            // inside test is `dpt.dot(&pn) <= 0.0`, which a zero vector satisfies for every
+            // query point, so the surface reports "inside" at any distance.
+            tri.normal()
+                .is_some_and(|n| n.iter().any(|c| *c != 0.0) && n.iter().all(|c| c.is_finite()))
+        };
+
+        let mut first_broken: Option<i32> = None;
+        for k in 0..=127 {
+            if !normal_is_usable(2.0_f32.powi(k)) {
+                first_broken = Some(k);
+                break;
+            }
+        }
+
+        let first_broken = first_broken.expect(
+            "parry produced a usable normal at every coordinate up to 2^127 — then either \
+             this probe is not reaching the overflow or parry's arithmetic changed, and \
+             the assert below would be vacuous either way",
+        );
+
+        let break_coord = 2.0_f64.powi(first_broken);
+        let cap = coordinate_cap();
+        println!(
+            "\nparry's normal degenerates at coordinate 2^{first_broken} ({break_coord:.3e}); \
+             coordinate_cap() = {cap:.3e} = 2^{:.1}, {:.1} binades below",
+            cap.log2(),
+            break_coord.log2() - cap.log2(),
+        );
+        assert!(
+            cap < break_coord,
+            "coordinate_cap() is {cap:.3e}, at or above the {break_coord:.3e} where parry \
+             stops returning a usable normal. A mesh clamped to that cap gets an oracle \
+             whose pseudo-normals are all zero — which reports INSIDE at any distance. This \
+             is exactly the defect α.2 found on a live mesh-lattice mesh at scale 2^48."
+        );
+    }
+
+    /// **The consequence of the cap, measured end to end rather than on a bare triangle.**
+    ///
+    /// The sibling above locates parry's breaking point on a single triangle. This asks the
+    /// question a consumer cares about: build the *whole* oracle at rising scales and check
+    /// everything the cap is supposed to protect — the signed distance against an analytic
+    /// truth, its bit-identity across the band, and [`TriMeshDistance::health`]'s census —
+    /// right up to and including the boundary, then past it.
+    ///
+    /// The "past it" arm is what makes the cap's value meaningful rather than merely
+    /// asserted, and it is the regression gate for α.1's defect: at 2⁴⁸ this fixture had
+    /// **every** vertex and **every** edge zeroed while `faces_skipped` read 0.
+    #[test]
+    fn the_oracle_is_sound_up_to_the_cap_and_breaks_past_it() {
+        let mesh = uv_sphere(1.0, 24, 48);
+        // Taken from the mesh by the same helper the scale rule uses, not written down as
+        // "1.0 because it is a unit sphere". The cap is a bound on coordinates, so an
+        // extent assumed rather than measured would put every "within the cap" claim below
+        // on a number no one checked.
+        let (_, extent) = mesh_scale_inputs(&mesh).expect("sphere is scalable");
+        let max_k = (coordinate_cap() / extent).log2().floor();
+
+        // At and below the cap: nothing zeroed, the areas parry sees stay finite, and — the
+        // half a census cannot see — the projection still returns the right answer.
+        //
+        // ⚠ The counter guards the FIXED ladder below, not the sweep as a whole. Since the
+        //   cap became a swept row it always runs, so the loop can no longer be emptied
+        //   outright — but a tightening could still skip every fixed rung and leave the
+        //   boundary as the only scale tested, which would silently stop covering the band
+        //   the claim is about. This is the hole the margin-insensitivity sweep next door
+        //   grew when the cap moved; narrowed here to what is still reachable rather than
+        //   left overstating a danger the swept cap row already removed.
+        // A lattice of probes spanning inside, surface-adjacent and well outside.
+        let probes: Vec<Point3<f64>> = (0..=6)
+            .flat_map(|i| {
+                (0..=6).map(move |j| {
+                    let q = |x: i32| 1.7 * (f64::from(x) / 6.0 - 0.5) * 2.0;
+                    Point3::new(q(i), q(j), 0.37)
+                })
+            })
+            .collect();
+
+        // ⚠ The last entry is the cap ITSELF, derived rather than written down. The fixed
+        //   rungs below it are a ladder; the boundary is the interesting scale, and a sweep
+        //   that stops "near" the cap leaves the one value the constant actually names
+        //   untested. It also keeps the sweep honest if the cap ever moves again.
+        #[allow(clippy::cast_possible_truncation)]
+        let cap_k = max_k as i32;
+        let mut rows_within_the_cap = 0usize;
+        let mut reference: Option<(i32, Vec<u64>)> = None;
+        for k in [0_i32, 4, 8, 12, 16, 20, cap_k] {
+            if f64::from(k) > max_k {
+                continue;
+            }
+            rows_within_the_cap += 1;
+            let oracle = TriMeshDistance::with_scale(mesh.clone(), 2.0_f64.powi(k))
+                .expect("sphere is non-empty");
+            let sign = PseudoNormalSign::from_distance(&oracle);
+            let sdf = Signed {
+                distance: oracle,
+                sign,
+            };
+
+            // ── Arm 1: correctness, anchored OUTSIDE the artifact. ──
+            //
+            // The pseudo-normal path is not the only thing the cap protects: parry's
+            // point-triangle projection carries the same fourth power in its barycentric
+            // determinants, and a census clean of zeroed features says nothing about it.
+            // Coarse on purpose — the fixture is a polyhedron, so it differs from the ideal
+            // sphere by its own chord error (~2e-3 at this tessellation) no matter how
+            // exact the arithmetic is. What this arm exists to catch is a projection that
+            // has *degraded*, and it is the only assertion here that does not route through
+            // the oracle itself.
+            for (probe, truth) in [(1.5_f64, 0.5_f64), (0.5, -0.5)] {
+                let got = sdf.distance(Point3::new(probe, 0.0, 0.0));
+                assert!(
+                    (got - truth).abs() < 0.01,
+                    "2^{k} is within the cap (2^{max_k}) yet the signed distance at x={probe} \
+                     came back {got:.6} instead of ~{truth} — the projection has degraded even \
+                     though the pseudo-normals have not"
+                );
+            }
+
+            // ── Arm 2: invariance, exact. ──
+            //
+            // Measured before it was asserted: the signed distance is **bit-identical** at
+            // every internal scale inside the cap, which is α.0's power-of-two neutrality
+            // holding across the whole usable band rather than at the two scales it
+            // sampled. Exact where arm 1 is coarse — but it compares the artifact against
+            // itself, so it would happily pass on an oracle that was uniformly wrong. The
+            // two arms are load-bearing in different directions and neither substitutes.
+            let got: Vec<u64> = probes.iter().map(|p| sdf.distance(*p).to_bits()).collect();
+            match &reference {
+                None => reference = Some((k, got)),
+                // The reference scale is named from whichever row ran first rather than
+                // written as 2^0, so the message stays true if the sweep is ever trimmed.
+                Some((ref_k, want)) => assert_eq!(
+                    &got, want,
+                    "2^{k} is inside the cap (2^{max_k}) yet the signed distance is not \
+                     bit-identical to the same query at scale 2^{ref_k}. A power-of-two \
+                     internal scale is an exponent shift and must be exact; if it is not, \
+                     the cap is already too high or the round trip has stopped commuting."
+                ),
+            }
+
+            let h = sdf.distance.health();
+            assert!(
+                !h.has_zeroed_features(),
+                "2^{k} is within the cap (2^{max_k}) yet the census found zeroed features: {h}"
+            );
+            assert!(
+                h.median_area_internal.is_finite(),
+                "2^{k}: parry's own areas overflowed to infinity inside the cap — {h}"
+            );
+        }
+        assert!(
+            rows_within_the_cap >= 4,
+            "only {rows_within_the_cap} of the sweep's scales fell inside the cap \
+             (2^{max_k}), so the within-cap arm barely ran — widen the sweep or this test's \
+             clean half means nothing"
+        );
+
+        // ★ The control that gives arm 2 its teeth.
+        //
+        // Every scale in the sweep above is a power of two, so bit-identity could hold for
+        // a reason that has nothing to do with the cap — the oracle might simply be
+        // insensitive to its internal scale, in which case arm 2 asserts nothing. It is
+        // not: a non-power-of-two scale is not an exponent shift, the round trip stops
+        // being exact, and the bits move while the answer stays right.
+        //
+        // This also states arm 2's claim precisely. It is not "the internal scale does not
+        // matter" — it is "a POWER-OF-TWO internal scale does not matter", which is the
+        // property the whole remedy rests on.
+        let (_, reference) = reference.expect("the sweep ran at least four rows");
+        let odd = TriMeshDistance::with_scale(mesh.clone(), 3.0).expect("sphere is non-empty");
+        let odd_sign = PseudoNormalSign::from_distance(&odd);
+        let odd_sdf = Signed {
+            distance: odd,
+            sign: odd_sign,
+        };
+        let differing = probes
+            .iter()
+            .zip(&reference)
+            .filter(|(p, want)| odd_sdf.distance(**p).to_bits() != **want)
+            .count();
+        assert!(
+            differing > 0,
+            "an internal scale of 3.0 gave bit-identical results at all {} probes — then \
+             this oracle is insensitive to its internal scale in general, and the \
+             bit-identity asserted above is vacuous rather than a property of powers of two",
+            probes.len(),
+        );
+
+        // Past it: the catastrophe, reproduced. Deliberately far past, because the point is
+        // not to locate the edge (the sibling test does that) but to show this fixture can
+        // reach the state α.1 shipped — otherwise the arm above proves nothing.
+        let over = 2.0_f64.powi(48);
+        assert!(
+            over > coordinate_cap() / extent,
+            "the control scale must be OUTSIDE the cap or it is not a control"
+        );
+        let broken = TriMeshDistance::with_scale(mesh.clone(), over)
+            .expect("sphere is non-empty")
+            .health();
+        println!("\npast the cap, 2^48: {broken}");
+        assert_eq!(
+            broken.zero_pseudo_normal_vertices, broken.referenced_vertices,
+            "past the cap every vertex should be zeroed (parry divides by sqrt(inf) and \
+             stores Some([0,0,0])), but only {} of {} were — the mechanism this cap guards \
+             against is not the one being reproduced: {broken}",
+            broken.zero_pseudo_normal_vertices, broken.referenced_vertices,
+        );
+        assert_eq!(
+            broken.faces_skipped, 0,
+            "★ the whole point: past the cap parry skips NOTHING, so an instrument that \
+             only counted skipped faces would call this mesh healthy while every one of its \
+             pseudo-normals is zero: {broken}"
+        );
+    }
+
+    /// Coordinate extent of the slivered fixture, from the mesh that broke α.1 — output of
+    /// **`mesh-offset`'s** marching cubes (which has no degenerate filter), consumed by
+    /// `mesh-lattice`'s gates, which depend on that crate.
+    ///
+    /// ⚠ Earlier prose here credited `mesh-lattice`'s own `extract_isosurface`. That is a
+    /// different function and it *cannot* produce this shape: it drops degenerate triangles
+    /// at `cross.norm_squared() < f64::EPSILON`, forty-odd orders above this sliver. The
+    /// misattribution sent α.2 looking in the wrong crate; the number itself was always a
+    /// real measurement, printed by α.1's own `UnscalableMesh` error.
+    ///
+    /// Load-bearing: with the sliver's ~1e-30 area it puts `wanted` far above the cap, so
+    /// the clamp BINDS — which is what the gates below need in order to observe anything.
     const SLIVERED_FIXTURE_RADIUS: f64 = 48.8;
 
-    /// A sphere of `radius` with one near-degenerate triangle appended — sliver area
-    /// taken from the `mesh-lattice` mesh that actually broke, and `radius` chosen by the
-    /// caller to set the coordinate extent that decides the clamp.
+    /// A sphere of `radius` with one near-degenerate triangle appended — sliver area taken
+    /// from the mesh that actually broke α.1 (see [`SLIVERED_FIXTURE_RADIUS`] for which
+    /// crate produced it), and `radius` chosen by the caller to set the coordinate extent
+    /// that decides the clamp.
     ///
     /// Two gates share it: `a_sliver_clamps_the_scale_instead_of_failing_the_mesh` (which
     /// documents where the shape came from) and
@@ -981,9 +1378,14 @@ mod tests {
     /// scale does not budge — the test would pass with the defect fully reintroduced. It
     /// did, when this gate was first written that way.
     ///
-    /// The slivered sphere clamps at 2⁴⁸, so a vertex at 99x its extent drags it to 2⁴¹
+    /// The slivered sphere clamps at 2¹⁶, so a vertex at 99x its extent drags it to 2⁹
     /// and the difference is visible. Verified by reintroducing the defect and watching
     /// this fail.
+    ///
+    /// ⚠ Those two exponents were 2⁴⁸ and 2⁴¹ until α.2 corrected [`coordinate_cap`]. The
+    /// gate discriminates either way — what matters is that the clamp binds, not where —
+    /// but the numbers are restated rather than left to rot, because a reader checking them
+    /// against the code is exactly the reader this test is written for.
     #[test]
     fn an_unreferenced_vertex_does_not_move_the_chosen_scale() {
         let clean = slivered_sphere(SLIVERED_FIXTURE_RADIUS);
@@ -1008,17 +1410,35 @@ mod tests {
     ///
     /// The first version of the rule errored when it could not reach its full area margin
     /// without passing the f32 coordinate cap, on the argument that a surface which cannot
-    /// be signed should not get a signed oracle. `mesh-lattice`'s marching-cubes output
-    /// refuted that in one run: a sliver of area **1.537e-30** across a 48.8-unit mesh —
-    /// what an isosurface produces whenever it clips a cell corner — took six gates red.
+    /// be signed should not get a signed oracle. One run refuted that: a sliver of area
+    /// **1.537e-30** across a 48.8-unit mesh — what an isosurface produces whenever it
+    /// clips a cell corner — took six `mesh-lattice` gates red. The mesh itself is
+    /// `mesh-offset`'s marching-cubes output, which `mesh-lattice` consumes.
     ///
-    /// The mesh was never unsignable. This reproduces its shape and measures the two
-    /// things that make clamping right: the rule **succeeds**, and the sliver still ends
-    /// up comfortably clear of the floor even though the full margin was unreachable.
+    /// The mesh was never unsignable *as a whole*. This reproduces its shape and measures
+    /// what clamping actually buys: the rule **succeeds**, and the damage is **confined to
+    /// the sliver's own three features** while every other vertex signs correctly.
     ///
     /// ⚠ The `wanted > achieved` assert is the load-bearing half. Without it the fixture
     /// might not be clamping at all, and "the rule succeeded" would say nothing about the
     /// path this test exists to cover.
+    ///
+    /// ## ★★ α.2 replaced this test's other half, because that half is what hid a bug
+    ///
+    /// It used to close by computing `min_area * scale * scale` **in f64, from the caller's
+    /// mesh**, and asserting the result cleared the floor — concluding the clamp "bought
+    /// most of what mattered". Both the arithmetic and the conclusion were wrong, and they
+    /// were wrong in the way this whole arc is about: *it never looked at the artifact.*
+    ///
+    /// At the cap α.1 shipped, parry's f32 held `inf` where that f64 model said `1.2e-1`,
+    /// because `Unit::try_new` squares a cross product and the coordinates had gone past
+    /// `f32::MAX^(1/4)`. Every pseudo-normal in the mesh was zero. The test passed
+    /// throughout. See [`coordinate_cap`].
+    ///
+    /// With the cap corrected the sliver does **not** clear the floor — no scale can lift
+    /// it that far without overflowing — and that is the honest answer. What matters is not
+    /// the sliver's own margin but how far the damage spreads, so that is what is asserted
+    /// now, read off [`TriMeshDistance::health`] rather than modelled.
     #[test]
     fn a_sliver_clamps_the_scale_instead_of_failing_the_mesh() {
         let mesh = slivered_sphere(SLIVERED_FIXTURE_RADIUS);
@@ -1042,18 +1462,48 @@ mod tests {
              2^{achieved}, so nothing was capped"
         );
 
-        // And the clamp still bought most of what mattered: the sliver clears the floor.
-        let internal = min_area * scale * scale;
-        let binades = (internal / floor).log2();
+        // What the clamp actually bought, read off the artifact parry built rather than
+        // modelled in f64 from the caller's mesh.
+        let health = TriMeshDistance::new(mesh.clone())
+            .expect("a sliver must clamp the scale, not make the mesh unscalable")
+            .health();
         println!(
-            "\nsliver {min_area:.3e}, extent {SLIVERED_FIXTURE_RADIUS} -> wanted 2^{wanted}, clamped \
-             2^{achieved}; sliver lands at {internal:.3e}, {binades:.1} binades over the floor"
+            "\nsliver {min_area:.3e}, extent {SLIVERED_FIXTURE_RADIUS} -> wanted 2^{wanted}, \
+             clamped 2^{achieved}\n  {health}"
+        );
+
+        // The floor is genuinely out of reach for this sliver, and saying so is the point:
+        // the previous version of this test asserted the opposite and was believed.
+        assert!(
+            health.min_area_internal <= floor,
+            "the sliver now clears the floor ({:.3e} > {floor:.3e}). That may be good news, \
+             but this test's whole subject is what happens when it CANNOT be lifted — \
+             re-derive the fixture before deleting the case",
+            health.min_area_internal,
+        );
+
+        // ★ The real claim: the damage is confined to the sliver's own three vertices and
+        //   three edges. They belong to a triangle appended in isolation, so nothing else
+        //   is incident to them and no scale can rescue them — whereas every vertex of the
+        //   sphere proper signs correctly. (Stated as "every" rather than a count: the
+        //   assert below pins the fixture's size loosely, so a precise figure here would be
+        //   prose the test does not hold anyone to.)
+        assert_eq!(
+            (
+                health.zero_pseudo_normal_vertices,
+                health.zero_pseudo_normal_edges
+            ),
+            (3, 3),
+            "clamping left {} vertices and {} edges unsignable, not the 3 + 3 belonging to \
+             the isolated sliver. The damage has spread beyond the degenerate triangle, \
+             which is the coordinate-cap overflow this fixture also guards: {health}",
+            health.zero_pseudo_normal_vertices,
+            health.zero_pseudo_normal_edges,
         );
         assert!(
-            internal > floor,
-            "even after clamping to 2^{achieved} the sliver is at {internal:.3e}, under the \
-             {floor:.3e} floor — then clamping bought nothing and the mesh really is \
-             unsignable"
+            health.referenced_vertices > 1000 && health.median_area_internal.is_finite(),
+            "the sphere around the sliver must be intact and its areas finite, or the \
+             '3 + 3' above is confinement to a wreck rather than to a sliver: {health}"
         );
     }
 
@@ -1148,14 +1598,6 @@ mod tests {
                 0.5 * (b - a).cross(&(c - a)).norm()
             })
             .fold(f64::INFINITY, f64::min)
-    }
-
-    /// Compose the standard pair at an explicit internal scale.
-    fn build_sdf_at(mesh: &IndexedMesh, scale: f64) -> Signed<TriMeshDistance, PseudoNormalSign> {
-        let distance =
-            TriMeshDistance::with_scale(mesh.clone(), scale).expect("fixture is non-empty");
-        let sign = PseudoNormalSign::from_distance(&distance);
-        Signed { distance, sign }
     }
 
     /// Scale every vertex of `m` by exactly `s` — no re-tessellation, so the result is the

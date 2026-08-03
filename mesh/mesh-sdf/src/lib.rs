@@ -81,12 +81,38 @@
 //! - **Collision detection**: Quick inside/outside tests
 //! - **Ray marching**: Efficient rendering of implicit surfaces
 //! - **Boolean operations**: Combine meshes using SDF operations (union, intersection, difference)
+//!
+//! # Checking that an oracle is what it claims
+//!
+//! A signed oracle can be built over a surface it cannot actually sign — parry skips
+//! triangles under an absolute area floor, and a vertex whose every incident triangle was
+//! skipped keeps a **zero** pseudo-normal, which its inside test reads as "inside" at any
+//! distance. Nothing downstream notices until a physics assert several stages later.
+//!
+//! [`TriMeshDistance::health`] censuses the artifact that will actually be queried and
+//! returns a [`SurfaceHealth`]. It **reports and never refuses**, costs nothing unless
+//! called, and separates the proxy (how close the triangles sit to the floor) from the
+//! consequence (whether any feature was left unsignable) — because those two are not
+//! linearly related and treating them as one is how this crate shipped a bug.
+//!
+//! ```no_run
+//! # use mesh_sdf::TriMeshDistance;
+//! # fn f(mesh: mesh_types::IndexedMesh) -> Result<(), Box<dyn std::error::Error>> {
+//! let distance = TriMeshDistance::new(mesh)?;
+//! let health = distance.health();
+//! if health.has_zeroed_features() {
+//!     eprintln!("surface has unsignable features: {health}");
+//! }
+//! # Ok(())
+//! # }
+//! ```
 
 // Safety: Deny unwrap/expect in library code. Tests may use them (workspace warns).
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 mod error;
 mod flood_fill;
+mod health;
 mod metrics;
 mod oracle;
 mod sdf;
@@ -100,6 +126,7 @@ pub use flood_fill::{
     CachedGridSdf, FloodFillSign, FloodFilledSdfBuildError, WALL_THRESHOLD_FACTOR_DEFAULT,
     flood_filled_sdf,
 };
+pub use health::SurfaceHealth;
 pub use metrics::{
     DeviationReport, SampleOptions, SignedExtremes, hausdorff_distance, surface_deviation_to_sdf,
 };

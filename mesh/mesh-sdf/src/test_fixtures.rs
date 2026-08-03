@@ -1,10 +1,45 @@
 //! Shared fixtures for mesh-sdf's test modules.
 //!
-//! Test-only (gated under `#[cfg(test)]` at the lib.rs mod declaration);
-//! `pub(crate)` so `sdf::tests` and `sdf_adapter::tests` can both
-//! consume the same definitions without duplicating fixture code.
+//! Test-only (gated under `#[cfg(test)]` at the lib.rs mod declaration); `pub(crate)` so
+//! `sdf::tests`, `sdf_adapter::tests` and `health::tests` can all consume the same
+//! definitions without duplicating fixture code.
+//!
+//! Two kinds live here, and the second is the newer one: **geometry** (`unit_tetrahedron`,
+//! `uv_sphere`) and **standard assembly** of the system under test (`build_sdf_at`). A
+//! helper earns its place here the moment a second module needs it — `build_sdf_at` was
+//! briefly copied into `health::tests` verbatim, which is precisely what this file exists
+//! to prevent.
+
+// The whole file is test-only. `lib.rs` already declares it `#[cfg(test)] mod
+// test_fixtures;`, so this inner attribute is redundant to the compiler — but it is what
+// `xtask grade`'s safety scanner reads. That scanner walks source text and tracks
+// `#[cfg(test)]` regions by brace depth *within a file*; it cannot see a gate that lives in
+// the parent module, so a fixture's `.expect(..)` here reads as an unwrap in library code
+// and takes the Safety criterion to F. Moving `build_sdf_at` into this file is what
+// surfaced it — `cargo clippy` never complained, because the crate's own
+// `cfg_attr(not(test), deny(..))` correctly exempts test builds.
+#![cfg(test)]
 
 use mesh_types::{IndexedMesh, Point3};
+
+use crate::oracle::Signed;
+use crate::sdf::{PseudoNormalSign, TriMeshDistance};
+
+/// Compose the standard `Signed<TriMeshDistance, PseudoNormalSign>` pair at an **explicit**
+/// internal scale.
+///
+/// Lives here rather than in either test module because both need it: `sdf::tests` drives
+/// the scale rule through it, and `health::tests` uses `scale = 1.0` to reconstruct the
+/// pre-α.1 oracle as a control. It was briefly duplicated in the two modules, which is the
+/// exact thing this file's own doc says it exists to prevent.
+pub(crate) fn build_sdf_at(
+    mesh: &IndexedMesh,
+    scale: f64,
+) -> Signed<TriMeshDistance, PseudoNormalSign> {
+    let distance = TriMeshDistance::with_scale(mesh.clone(), scale).expect("fixture is non-empty");
+    let sign = PseudoNormalSign::from_distance(&distance);
+    Signed { distance, sign }
+}
 
 /// Regular tetrahedron with the bottom face on z=0 and apex above.
 ///
