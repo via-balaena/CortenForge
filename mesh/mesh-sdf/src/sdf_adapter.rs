@@ -460,13 +460,19 @@ mod tests {
     #[test]
     fn internal_normalisation_leaves_grad_bit_identical() {
         let dirs = probe_dirs();
-        let mut checked = 0usize;
+        // ⚠ Every failure is COLLECTED, never asserted inside the sweep. This gate's value
+        //   is the whole table — which radii moved and which did not — and an assert in the
+        //   loop destroys rows 7..12 exactly when a failure at row 6 makes them most worth
+        //   reading. The table prints in full, then the two verdicts fire below, anchor
+        //   first.
+        let mut anchor_failures: Vec<String> = Vec::new();
+        let mut bit_failures: Vec<String> = Vec::new();
+        let (mut total_compared, mut total_bit_equal) = (0usize, 0usize);
 
         println!(
             "\n{:>10} {:>6} {:>14} {:>14} {:>16}",
             "radius", "scale", "plain max err", "norm max err", "bit-equal comps"
         );
-        // The known-value anchor — see this test's doc comment for why it is here.
         for (radius, committed_plain_err) in [
             (1e-2_f64, 5.25e-4),
             (5e-2, 2.17e-3),
@@ -478,22 +484,26 @@ mod tests {
             let mesh = crate::test_fixtures::uv_sphere(radius, 24, 48);
             let plain = plain_sdf(&mesh);
             let plain_err = max_grad_magnitude_error(&plain, radius, &dirs);
-            assert!(
-                (plain_err - committed_plain_err).abs() <= 0.02 * committed_plain_err,
-                "r={radius}: this harness reads the plain oracle's max |‖g‖-1| as \
-                 {plain_err:.3e}, but `grad_step_scale_regime` committed \
-                 {committed_plain_err:.3e}. The two disagree, so one of them is measuring \
-                 something else — resolve that before trusting the bit-identity result below."
-            );
+            // The known-value anchor — see this test's doc comment for why it is here.
+            if (plain_err - committed_plain_err).abs() > 0.02 * committed_plain_err {
+                anchor_failures.push(format!(
+                    "r={radius}: harness reads {plain_err:.3e}, `grad_step_scale_regime` \
+                     committed {committed_plain_err:.3e}"
+                ));
+            }
 
             // ⚠ Only `s >= 1` is swept, deliberately. D's job is to LIFT geometry off the
             //   area floor, so the shipping rule is `k = max(0, …)` and a shrinking scale is
             //   out of its contract — a mesh already clear of the floor could be pushed under
             //   it. Nothing here licenses a shrink; α.1 must not read one in.
-            for k in [3_i32, 13] {
+            //
+            //   2^10 is here because `caller_frame_rescale_moves_grad_where_internal_…`
+            //   runs its three arms at that scale and can only compare a MAX statistic.
+            //   Field identity at 2^10 has to come from this sweep or it is not established.
+            for k in [3_i32, 10, 13] {
                 let s = 2.0_f64.powi(k);
                 let norm = normalised_sdf(&mesh, s);
-                // ⚠ Compared and COUNTED first; asserted only after the row is printed. An
+                // ⚠ Compared and COUNTED first; the row prints before any verdict. An
                 //   `assert_eq!` inside this loop would make the printed count structurally
                 //   incapable of reading anything but `3 * dirs.len()` — a constant wearing a
                 //   number's clothes, which is the defect this column has already had once.
@@ -517,31 +527,53 @@ mod tests {
                             ));
                         }
                     }
-                    checked += 1;
                 }
+                total_compared += compared;
+                total_bit_equal += bit_equal;
+
                 let norm_err = max_grad_magnitude_error(&norm, radius, &dirs);
                 println!(
                     "{radius:>10.0e} {:>6} {plain_err:>14.3e} {norm_err:>14.3e} {:>16}",
                     format!("2^{k}"),
                     format!("{bit_equal}/{compared}"),
                 );
-                assert_eq!(
-                    bit_equal,
-                    compared,
-                    "r={radius}, 2^{k}: internal normalisation moved the gradient in {} of \
-                     {compared} components — first at {}. Then D is NOT neutral for `grad` and \
-                     the arc's forced F-then-D order stands.",
-                    compared - bit_equal,
-                    first_mismatch.unwrap_or_else(|| "<none recorded>".to_string()),
-                );
+                if bit_equal != compared {
+                    bit_failures.push(format!(
+                        "r={radius}, 2^{k}: {} of {compared} components moved — first at {}",
+                        compared - bit_equal,
+                        first_mismatch.unwrap_or_else(|| "<none recorded>".to_string()),
+                    ));
+                }
             }
         }
 
-        // Non-vacuity: 6 radii × 2 scales × 64 probes.
+        // Anchor first: if the instrument disagrees with the committed column, the
+        // arm-to-arm comparison below is measuring something unknown and its verdict —
+        // pass or fail — means nothing.
         assert!(
-            checked >= 700,
-            "only {checked} probe comparisons ran — the sweep collapsed and this test proves \
-             nothing"
+            anchor_failures.is_empty(),
+            "this harness disagrees with `grad_step_scale_regime`'s committed column at \
+             {} radii, so one of the two is measuring something else — resolve that before \
+             reading the bit-identity result:\n  {}",
+            anchor_failures.len(),
+            anchor_failures.join("\n  "),
+        );
+        assert!(
+            bit_failures.is_empty(),
+            "internal normalisation moved the gradient ({} of {total_compared} components \
+             across {} rows). Then D is NOT neutral for `grad` and the arc's forced \
+             F-then-D order stands:\n  {}",
+            total_compared - total_bit_equal,
+            bit_failures.len(),
+            bit_failures.join("\n  "),
+        );
+
+        // Non-vacuity, stated on the quantity the table reports rather than on a weaker
+        // proxy: 6 radii × 3 scales × 64 probes × 3 axes = 3456 components.
+        assert!(
+            total_compared >= 3000,
+            "only {total_compared} components were compared — the sweep collapsed and this \
+             test proves nothing"
         );
     }
 
@@ -636,7 +668,7 @@ mod tests {
     /// | arm | oracle built on | queried at | |
     /// |---|---|---|---|
     /// | A — today | `mesh` | `p` | the baseline |
-    /// | B — remedy D | `mesh · s` | `p` (caller's frame) | must be **bit-identical to A** |
+    /// | B — remedy D | `mesh · s` | `p` (caller's frame) | its **max statistic** must match A bit-for-bit |
     /// | C — caller-side rescale | `mesh · s` | `p · s` (scaled frame) | must **degrade** |
     ///
     /// C is what remedy A, or `cf_fsu_model`'s `NormalisedOracle`, does. Holding the mesh
@@ -644,6 +676,14 @@ mod tests {
     /// property of the code rather than a claim in a comment — the earlier version of this
     /// test compared C against A at a different scale from the bit-identity sweep, which
     /// demonstrated the same fact but did not isolate the variable.
+    ///
+    /// ⚠ **What arm B checks here is weaker than it looks, and that is why 2¹⁰ is in the
+    /// sweep above.** `max_grad_magnitude_error` reduces 64 probes to a maximum, and two
+    /// different gradient fields can share a maximum while differing everywhere else. So
+    /// this assert establishes only that the statistic agrees at 2¹⁰. **Field identity at
+    /// 2¹⁰ comes from `internal_normalisation_leaves_grad_bit_identical`**, which compares
+    /// every component — the scale was added there specifically so this arm rests on it
+    /// rather than on a reduction that could hide a difference.
     ///
     /// The degradation is expected to be ≈ linear in coordinate magnitude — `2¹⁰` is 3.01
     /// decades, so ≈ ×1000. It is asserted only as "≥ ×10", because the instrument is a
@@ -668,11 +708,14 @@ mod tests {
              B remedy D  (caller frame) {b_err:.3e}\n  C rescaled  (scaled frame) {c_err:.3e}"
         );
 
+        // ⚠ This is the MAX statistic, not the field — see the doc comment. Field identity
+        //   at this scale is established by the sweep in
+        //   `internal_normalisation_leaves_grad_bit_identical`, which includes 2^10.
         assert_eq!(
             b_err.to_bits(),
             a_err.to_bits(),
-            "arm B (internal normalisation) must leave `grad` untouched — A {a_err:.17e}, \
-             B {b_err:.17e}"
+            "arm B (internal normalisation) must leave `grad`'s max |‖g‖-1| untouched — \
+             A {a_err:.17e}, B {b_err:.17e}"
         );
         assert!(
             c_err > 10.0 * a_err,
