@@ -885,10 +885,10 @@ mod tests {
             (1e-2, false),
             (1.0, false),
             (100.0, false),
-            (48.8, true),
+            (SLIVERED_FIXTURE_RADIUS, true),
         ] {
             let mesh = if sliver {
-                slivered_sphere(48.8)
+                slivered_sphere(radius)
             } else {
                 uv_sphere(radius, 24, 48)
             };
@@ -928,24 +928,23 @@ mod tests {
         }
     }
 
-    /// **A sliver must clamp the scale, not kill the mesh — the regression gate for the
-    /// six `mesh-lattice` failures α.1's downstream sweep turned up.**
+    /// Coordinate extent of the slivered fixture, from the `mesh-lattice` mesh that
+    /// broke. Load-bearing: with the sliver's ~1e-30 area it puts `wanted` at 2^58
+    /// against a cap of 2^48, so the clamp BINDS — which is what both gates below
+    /// need in order to observe anything.
+    const SLIVERED_FIXTURE_RADIUS: f64 = 48.8;
+
+    /// A sphere of `radius` with one near-degenerate triangle appended — sliver area
+    /// taken from the `mesh-lattice` mesh that actually broke, and `radius` chosen by the
+    /// caller to set the coordinate extent that decides the clamp.
     ///
-    /// The first version of the rule errored when it could not reach its full area margin
-    /// without passing the f32 coordinate cap, on the argument that a surface which cannot
-    /// be signed should not get a signed oracle. `mesh-lattice`'s marching-cubes output
-    /// refuted that in one run: a sliver of area **1.537e-30** across a 48.8-unit mesh —
-    /// what an isosurface produces whenever it clips a cell corner — took six gates red.
+    /// Two gates share it: `a_sliver_clamps_the_scale_instead_of_failing_the_mesh` (which
+    /// documents where the shape came from) and
+    /// `an_unreferenced_vertex_does_not_move_the_chosen_scale`, which needs a mesh whose
+    /// clamp is *binding* or it cannot see the defect it exists to catch.
     ///
-    /// The mesh was never unsignable. This fixture reproduces its shape and measures the
-    /// two things that make clamping right: the rule **succeeds**, and the sliver still
-    /// ends up comfortably clear of the floor even though the full margin was unreachable.
-    ///
-    /// ⚠ The `wanted > achieved` assert is the load-bearing half. Without it the fixture
-    /// might not be clamping at all, and "the rule succeeded" would say nothing about the
-    /// path this test exists to cover.
-    /// A sphere of `radius` with one near-degenerate triangle appended — extent and
-    /// sliver area both taken from the `mesh-lattice` mesh that actually broke.
+    /// The radius is [`SLIVERED_FIXTURE_RADIUS`] at every call site; it is a parameter
+    /// only so the value is stated once, at the constant, rather than at each caller.
     #[allow(clippy::cast_possible_truncation)]
     fn slivered_sphere(radius: f64) -> IndexedMesh {
         let mut mesh = uv_sphere(radius, 24, 48);
@@ -979,9 +978,9 @@ mod tests {
     /// this fail.
     #[test]
     fn an_unreferenced_vertex_does_not_move_the_chosen_scale() {
-        let clean = slivered_sphere(48.8);
+        let clean = slivered_sphere(SLIVERED_FIXTURE_RADIUS);
         let mut stranded = clean.clone();
-        let far = 48.8 * 99.0;
+        let far = SLIVERED_FIXTURE_RADIUS * 99.0;
         stranded.vertices.push(Point3::new(far, far, far));
 
         let a = crate::sdf::choose_scale(&clean).expect("sphere is scalable");
@@ -996,9 +995,25 @@ mod tests {
         );
     }
 
+    /// **A sliver must clamp the scale, not kill the mesh — the regression gate for the
+    /// six `mesh-lattice` failures α.1's downstream sweep turned up.**
+    ///
+    /// The first version of the rule errored when it could not reach its full area margin
+    /// without passing the f32 coordinate cap, on the argument that a surface which cannot
+    /// be signed should not get a signed oracle. `mesh-lattice`'s marching-cubes output
+    /// refuted that in one run: a sliver of area **1.537e-30** across a 48.8-unit mesh —
+    /// what an isosurface produces whenever it clips a cell corner — took six gates red.
+    ///
+    /// The mesh was never unsignable. This reproduces its shape and measures the two
+    /// things that make clamping right: the rule **succeeds**, and the sliver still ends
+    /// up comfortably clear of the floor even though the full margin was unreachable.
+    ///
+    /// ⚠ The `wanted > achieved` assert is the load-bearing half. Without it the fixture
+    /// might not be clamping at all, and "the rule succeeded" would say nothing about the
+    /// path this test exists to cover.
     #[test]
     fn a_sliver_clamps_the_scale_instead_of_failing_the_mesh() {
-        let mesh = slivered_sphere(48.8);
+        let mesh = slivered_sphere(SLIVERED_FIXTURE_RADIUS);
         let min_area = smallest_area(&mesh);
         assert!(
             min_area < 1e-29,
@@ -1023,7 +1038,7 @@ mod tests {
         let internal = min_area * scale * scale;
         let binades = (internal / floor).log2();
         println!(
-            "\nsliver {min_area:.3e}, extent 48.8 -> wanted 2^{wanted}, clamped to \
+            "\nsliver {min_area:.3e}, extent {SLIVERED_FIXTURE_RADIUS} -> wanted 2^{wanted}, clamped \
              2^{achieved}; sliver lands at {internal:.3e}, {binades:.1} binades over the floor"
         );
         assert!(
