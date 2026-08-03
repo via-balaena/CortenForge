@@ -442,8 +442,8 @@ mod tests {
     ///
     /// Componentwise `to_bits` equality between today's oracle and the internally
     /// normalised one, at every radius in the band `grad_step_scale_regime` measured,
-    /// for two non-trivial scales. Bit-identity is the right strength here: an
-    /// approximate assert would pass for a normalisation that perturbs results
+    /// for three non-trivial scales (2³, 2¹⁰, 2¹³). Bit-identity is the right strength
+    /// here: an approximate assert would pass for a normalisation that perturbs results
     /// slightly, and "does not perturb results" is the entire claim.
     ///
     /// ⚠ **Anchored to a known value first.** Comparing two arms measured by the same
@@ -461,10 +461,10 @@ mod tests {
     fn internal_normalisation_leaves_grad_bit_identical() {
         let dirs = probe_dirs();
         // ⚠ Every failure is COLLECTED, never asserted inside the sweep. This gate's value
-        //   is the whole table — which radii moved and which did not — and an assert in the
-        //   loop destroys rows 7..12 exactly when a failure at row 6 makes them most worth
-        //   reading. The table prints in full, then the two verdicts fire below, anchor
-        //   first.
+        //   is the whole 18-row table — which radii moved and which did not — and an assert
+        //   in the loop destroys rows 7..18 exactly when a failure at row 6 makes them most
+        //   worth reading. The table prints in full, then the three verdicts fire below in
+        //   precondition order: non-vacuity, then anchor, then bit-identity.
         let mut anchor_failures: Vec<String> = Vec::new();
         let mut bit_failures: Vec<String> = Vec::new();
         let (mut total_compared, mut total_bit_equal) = (0usize, 0usize);
@@ -506,7 +506,8 @@ mod tests {
                 // ⚠ Compared and COUNTED first; the row prints before any verdict. An
                 //   `assert_eq!` inside this loop would make the printed count structurally
                 //   incapable of reading anything but `3 * dirs.len()` — a constant wearing a
-                //   number's clothes, which is the defect this column has already had once.
+                //   number's clothes, which is the defect this column has already had twice:
+                //   once as a hardcoded "yes", once as a counter incremented after the assert.
                 let mut bit_equal = 0usize;
                 let mut compared = 0usize;
                 let mut first_mismatch: Option<String> = None;
@@ -547,9 +548,23 @@ mod tests {
             }
         }
 
-        // Anchor first: if the instrument disagrees with the committed column, the
-        // arm-to-arm comparison below is measuring something unknown and its verdict —
-        // pass or fail — means nothing.
+        // ── Three verdicts, in precondition order. Each one is meaningless unless the
+        //    one before it holds, which is why they are ordered rather than combined.
+
+        // (1) Non-vacuity, stated on the quantity the table reports rather than on a
+        //     weaker proxy: 6 radii × 3 scales × 64 probes × 3 axes = 3456 components.
+        //     First, because on a collapsed sweep `bit_failures` is empty for the wrong
+        //     reason and (3) would pass vacuously. The threshold bites: dropping one
+        //     radius gives 2880 and dropping one scale gives 2304, both under it.
+        assert!(
+            total_compared >= 3000,
+            "only {total_compared} components were compared — the sweep collapsed and this \
+             test proves nothing"
+        );
+
+        // (2) The known-value anchor. If this harness disagrees with the committed column
+        //     then it is measuring something other than what it claims, and (3)'s verdict
+        //     — pass or fail — says nothing about normalisation either way.
         assert!(
             anchor_failures.is_empty(),
             "this harness disagrees with `grad_step_scale_regime`'s committed column at \
@@ -558,6 +573,8 @@ mod tests {
             anchor_failures.len(),
             anchor_failures.join("\n  "),
         );
+
+        // (3) The claim itself.
         assert!(
             bit_failures.is_empty(),
             "internal normalisation moved the gradient ({} of {total_compared} components \
@@ -566,14 +583,6 @@ mod tests {
             total_compared - total_bit_equal,
             bit_failures.len(),
             bit_failures.join("\n  "),
-        );
-
-        // Non-vacuity, stated on the quantity the table reports rather than on a weaker
-        // proxy: 6 radii × 3 scales × 64 probes × 3 axes = 3456 components.
-        assert!(
-            total_compared >= 3000,
-            "only {total_compared} components were compared — the sweep collapsed and this \
-             test proves nothing"
         );
     }
 
