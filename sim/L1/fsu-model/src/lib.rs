@@ -3679,8 +3679,8 @@ mod tests {
     /// **That distinction decides real scope**, which is why it is measured before anything is
     /// re-anchored: every drivability cell in [`DISC_CONFORM_QUALITY_FLOOR`]'s and
     /// [`DISC_MIDSIDE_CONFORM_QUALITY_FLOOR`]'s tables, and all four of rung 4b's entry-criterion
-    /// angles, are measured on the lofted disc. If it is clear of the floor those tables' *
-    /// drivability* columns do not move at all and only their scanned-disc fidelity columns do.
+    /// angles, are measured on the lofted disc. If it is clear of the floor, those tables'
+    /// *drivability* columns do not move and only their scanned-disc fidelity columns do.
     ///
     /// **Validated against a known value, for free:** the scanned arm must reproduce the recon's
     /// `0 of 14489` native / `4342 of 14489` scaled. That is what says this is the same
@@ -3691,6 +3691,15 @@ mod tests {
     /// rung's plan, and a threshold pinned before the mechanism is known would only freeze
     /// today's draw — the mistake rung 5's step 0 made when it gated the clamp *depth* instead
     /// of the pinned *population*.
+    ///
+    /// ## ⚠ The triangle census is a PROXY; the second half measures the consequence
+    ///
+    /// The fraction of triangles under the floor is not the quantity that matters, and the
+    /// relationship between the two is not linear: a **single** zeroed pseudo-normal reports
+    /// "inside" at *any* distance, so a mesh with 0.3 % of its triangles under the floor can
+    /// still stuff phantom material far from the surface. So the census is followed by the
+    /// SDF-free measurement it is a proxy for — tets whose centroids fall outside the surface's
+    /// own AABB — with the disc meshed in **both** frames so the difference is attributable.
     #[test]
     #[ignore = "needs $CF_L4_STL/$CF_L5_STL/$CF_DISC_STL (BodyParts3D, CC BY-SA, not committed)"]
     fn frame_fix_step0_area_floor_margin_by_geometry_fom() {
@@ -3737,6 +3746,80 @@ mod tests {
                 "⇒ the LOFTED disc is AFFECTED: the floor tables' drivability columns and rung \
                  4b's entry criterion are both in the blast radius, and both must be re-measured."
             }
+        );
+
+        // ── The consequence the census is a proxy for, measured on both geometries. ──
+        println!("\n════ PHANTOM MATERIAL — the SDF-free consequence, both frames ════");
+        for (label, mesh) in [("SCANNED", &scanned), ("LOFTED ", &lofted)] {
+            phantom_by_frame(label, mesh);
+        }
+    }
+
+    /// Mesh `disc_mesh` twice — once in production's rescaled frame, once with the oracle built
+    /// in native mm — and report how much provably-off-disc material each one stuffs.
+    ///
+    /// Everything reported is either SDF-free (centroids outside the surface's own AABB;
+    /// outside the box is outside the solid) or connectivity (`face_components`), so none of it
+    /// routes through the oracle whose sign is under test.
+    ///
+    /// ⚠ The `% of the surface's volume` column divides by a divergence-theorem volume, which
+    /// assumes a closed surface. The lofted disc carries a few open wall-seam edges, so read
+    /// **its** percentage as indicative and the AABB/component columns as the hard ones.
+    #[allow(clippy::cast_precision_loss)]
+    fn phantom_by_frame(label: &str, disc_mesh: &IndexedMesh) {
+        let params = DiscParams::default();
+        let v_surface = surface_volume(disc_mesh) * params.scale.powi(3);
+
+        // Arm 1: exactly what production does today.
+        let meshed = mesh_disc_raw(disc_mesh.clone(), &params).expect("mesh raw disc");
+        let kept = meshed.raw.largest_component();
+
+        // Arm 2: one variable changed — the frame the oracle is BUILT in.
+        let native_sdf = oracle(disc_mesh).expect("native oracle");
+        let adapter = NativeFrameOracle {
+            inner: &native_sdf,
+            center_native: meshed.center_native,
+            scale: params.scale,
+        };
+        let padded = meshed.bbox.expanded(params.pad);
+        let hints = MeshingHints {
+            bbox: Aabb3::new(
+                Vec3::new(padded.min.x, padded.min.y, padded.min.z),
+                Vec3::new(padded.max.x, padded.max.y, padded.max.z),
+            ),
+            cell_size: params.cell,
+            material_field: Some(MaterialField::uniform(params.mu, 4.0 * params.mu)),
+        };
+        let fixed = SdfMeshedTetMesh::from_sdf(&adapter, &hints).expect("mesh with native oracle");
+        let fixed_kept = fixed.largest_component();
+
+        println!("\n--- {label} ---");
+        let (out_now, vol_now, reach_now) = report_phantom_material(
+            "  today (rescaled frame) kept",
+            &kept,
+            &meshed.bbox,
+            v_surface,
+        );
+        let (out_fix, vol_fix, reach_fix) = report_phantom_material(
+            "  fixed (native frame)   kept",
+            &fixed_kept,
+            &meshed.bbox,
+            v_surface,
+        );
+        println!(
+            "  components {} -> {} | raw tets {} -> {} | kept tets {} -> {} | retained {:.2} % -> {:.2} %",
+            face_components(&meshed.raw).len(),
+            face_components(&fixed).len(),
+            meshed.raw.n_tets(),
+            fixed.n_tets(),
+            kept.n_tets(),
+            fixed_kept.n_tets(),
+            100.0 * kept.n_tets() as f64 / meshed.raw.n_tets() as f64,
+            100.0 * fixed_kept.n_tets() as f64 / fixed.n_tets() as f64,
+        );
+        println!(
+            "  ⇒ {label}: phantom tets {out_now} -> {out_fix} | volume {vol_now:.2} % -> \
+             {vol_fix:.2} % of true | overhang {reach_now:.4} -> {reach_fix:.4} mm"
         );
     }
 
@@ -3979,8 +4062,16 @@ mod tests {
     /// How much of `mesh` provably sits off the disc: tets whose centroid falls outside the
     /// surface's own AABB. Outside the box is outside the solid, so this needs no oracle and
     /// is a strict lower bound (the AABB is far larger than the lens it contains).
+    ///
+    /// Returns `(tets beyond the AABB, volume as % of the surface's, furthest overhang in mm)`
+    /// so a caller can compare two geometries on the numbers rather than on the prints.
     #[allow(clippy::cast_precision_loss)]
-    fn report_phantom_material(label: &str, mesh: &SdfMeshedTetMesh, bbox: &Aabb, v_surface: f64) {
+    fn report_phantom_material(
+        label: &str,
+        mesh: &SdfMeshedTetMesh,
+        bbox: &Aabb,
+        v_surface: f64,
+    ) -> (usize, f64, f64) {
         let pos = mesh.positions();
         let (mut out_v, mut all_v, mut out_n) = (0.0, 0.0, 0usize);
         let mut reach = 0.0_f64;
@@ -4017,6 +4108,7 @@ mod tests {
             100.0 * out_v / all_v,
             reach * 1e3,
         );
+        (out_n, 100.0 * all_v / v_surface, reach * 1e3)
     }
 
     /// One `cell` of [`mesh_stability_step0_discarded_component_census_fom`]: mesh, decompose,
