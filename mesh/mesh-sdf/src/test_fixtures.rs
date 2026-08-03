@@ -34,17 +34,19 @@ pub(crate) fn unit_tetrahedron() -> IndexedMesh {
 /// are quads split in two. The **pole fans carry the smallest triangles**,
 /// which is what makes this fixture useful for probing the area floor below
 /// which parry stops computing a pseudo-normal.
-pub(crate) fn uv_sphere(radius: f64, n_lat: usize, n_lon: usize) -> IndexedMesh {
+///
+/// Counts are `u32` — the same type `IndexedMesh` indexes faces with — so the
+/// whole construction is cast-free: `f64::from(u32)` is lossless, and no vertex
+/// id is ever narrowed.
+pub(crate) fn uv_sphere(radius: f64, n_lat: u32, n_lon: u32) -> IndexedMesh {
     assert!(n_lat >= 2 && n_lon >= 3, "degenerate sphere tessellation");
     let mut mesh = IndexedMesh::new();
     mesh.vertices.push(Point3::new(0.0, 0.0, radius)); // north pole
     for i in 1..n_lat {
-        #[allow(clippy::cast_precision_loss)] // small loop counters
-        let theta = std::f64::consts::PI * (i as f64) / (n_lat as f64);
+        let theta = std::f64::consts::PI * f64::from(i) / f64::from(n_lat);
         let (st, ct) = theta.sin_cos();
         for j in 0..n_lon {
-            #[allow(clippy::cast_precision_loss)]
-            let phi = 2.0 * std::f64::consts::PI * (j as f64) / (n_lon as f64);
+            let phi = 2.0 * std::f64::consts::PI * f64::from(j) / f64::from(n_lon);
             let (sp, cp) = phi.sin_cos();
             mesh.vertices
                 .push(Point3::new(radius * st * cp, radius * st * sp, radius * ct));
@@ -52,29 +54,24 @@ pub(crate) fn uv_sphere(radius: f64, n_lat: usize, n_lon: usize) -> IndexedMesh 
     }
     mesh.vertices.push(Point3::new(0.0, 0.0, -radius)); // south pole
 
-    // Vertex ids are `(n_lat - 1) * n_lon + 2` at most — far below `u32::MAX`
-    // for any tessellation a test would ask for.
-    #[allow(clippy::cast_possible_truncation)]
-    let south = (mesh.vertices.len() - 1) as u32;
-    #[allow(clippy::cast_possible_truncation)]
-    let lon = n_lon as u32;
-    let ring = |i: u32, j: u32| 1 + (i - 1) * lon + j % lon; // 1-based interior stack
-    for j in 0..lon {
+    // Ring `i` (1-based interior stack), sector `j` wrapping. Vertex 0 is the
+    // north pole, so interior stack `i` starts at `1 + (i - 1) * n_lon`.
+    let ring = |i: u32, j: u32| 1 + (i - 1) * n_lon + j % n_lon;
+    let south = 1 + (n_lat - 1) * n_lon;
+    for j in 0..n_lon {
         mesh.faces.push([0, ring(1, j), ring(1, j + 1)]);
     }
-    #[allow(clippy::cast_possible_truncation)]
-    for i in 1..(n_lat as u32 - 1) {
-        for j in 0..lon {
+    for i in 1..(n_lat - 1) {
+        for j in 0..n_lon {
             let (a, b) = (ring(i, j), ring(i, j + 1));
             let (c, d) = (ring(i + 1, j), ring(i + 1, j + 1));
             mesh.faces.push([a, c, d]);
             mesh.faces.push([a, d, b]);
         }
     }
-    #[allow(clippy::cast_possible_truncation)]
-    let last = n_lat as u32 - 1;
-    for j in 0..lon {
-        mesh.faces.push([south, ring(last, j + 1), ring(last, j)]);
+    for j in 0..n_lon {
+        mesh.faces
+            .push([south, ring(n_lat - 1, j + 1), ring(n_lat - 1, j)]);
     }
     mesh
 }
