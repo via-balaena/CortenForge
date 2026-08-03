@@ -1148,9 +1148,9 @@ mod tests {
         //   cap became a swept row it always runs, so the loop can no longer be emptied
         //   outright — but a tightening could still skip every fixed rung and leave the
         //   boundary as the only scale tested, which would silently stop covering the band
-        //   the claim is about. Same hole `the_chosen_scale_is_insensitive_to_the_margin_
-        //   across_decades` grew when the cap moved, narrowed here to what is still
-        //   reachable rather than left overstating its own danger.
+        //   the claim is about. This is the hole the margin-insensitivity sweep next door
+        //   grew when the cap moved; narrowed here to what is still reachable rather than
+        //   left overstating a danger the swept cap row already removed.
         // A lattice of probes spanning inside, surface-adjacent and well outside.
         let probes: Vec<Point3<f64>> = (0..=6)
             .flat_map(|i| {
