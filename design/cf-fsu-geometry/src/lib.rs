@@ -30,8 +30,9 @@ use cf_design::Solid;
 use cf_geometry::{Aabb, IndexedMesh, Sdf, SdfGrid};
 use mesh_io::load_stl;
 use mesh_repair::{
-    RepairParams, TAUBIN_DEFAULT_LAMBDA, TAUBIN_DEFAULT_MU, keep_largest_component, repair_mesh,
-    taubin_smooth_vertices,
+    MeshReport, RepairParams, RepairSummary, TAUBIN_DEFAULT_LAMBDA, TAUBIN_DEFAULT_MU,
+    WindingCensus, keep_largest_component, repair_mesh, taubin_smooth_vertices, validate_mesh,
+    winding_census,
 };
 use mesh_sdf::{PseudoNormalSign, Signed, TriMeshDistance};
 use nalgebra::{Matrix3, Point3, Vector3};
@@ -62,9 +63,76 @@ const MIN_POSTERIOR_NORM: f64 = 1e-6;
 /// `|∇| ≈ 1` precondition the fidelity harness needs).
 pub type MeshOracle = Signed<TriMeshDistance, PseudoNormalSign>;
 
+/// What [`load`] found on the way in — the hand-off from a file to a surface,
+/// measured instead of assumed.
+///
+/// [`load`] welds a raw STL and hands the result to [`oracle`], which composes
+/// `PseudoNormalSign`. That sign is meaningful on watertight meshes and
+/// **undefined on non-manifold input** by its own contract, so whether it can
+/// be trusted is a property of the surface that came out of the weld. This
+/// report carries the three readings that bear on it, and **judges none of
+/// them** — see "Reading this" below.
+///
+/// | field | answers |
+/// |---|---|
+/// | `repair` | how much the weld changed (was this file already a mesh, or triangle soup?) |
+/// | `topology` | watertight? manifold? and `is_inside_out`, a **global** signed-volume test |
+/// | `winding` | are any faces **locally** flipped — the question signed volume cannot ask |
+///
+/// # Reading this
+///
+/// The two winding instruments are orthogonal and neither subsumes the other.
+/// `topology.is_inside_out` integrates signed volume over the whole surface,
+/// so it catches a mesh wound backwards *everywhere* and is structurally blind
+/// to a few flipped cap fans. `winding.inconsistent_edges` is per-edge, so it
+/// catches the fans and reads zero for a globally reversed mesh — which is,
+/// after all, consistently oriented. A surface is locally sound only when both
+/// are clean.
+///
+/// ⚠ **Order matters, and this report is taken after the weld.** An STL stores
+/// three vertex positions per facet with no shared indices, so a raw STL is
+/// triangle soup and no two triangles share an edge by index. A winding census
+/// on unwelded input has nothing to judge and reports zero inconsistencies for
+/// any input whatsoever; `winding.has_judgeable_edges()` is what distinguishes
+/// that from a clean bill.
+#[derive(Debug, Clone)]
+pub struct SurfaceReport {
+    /// What the weld itself did — vertices merged, degenerates and duplicates
+    /// dropped, before/after counts.
+    pub repair: RepairSummary,
+    /// Watertightness, manifoldness, and the global signed-volume orientation
+    /// flag.
+    pub topology: MeshReport,
+    /// Per-edge local orientation consistency.
+    pub winding: WindingCensus,
+}
+
+impl std::fmt::Display for SurfaceReport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} verts {} faces (welded {}, dropped {} degenerate / {} duplicate) | \
+             watertight {} manifold {} inside-out {} | {}",
+            self.topology.vertex_count,
+            self.topology.face_count,
+            self.repair.vertices_welded,
+            self.repair.degenerates_removed,
+            self.repair.duplicates_removed,
+            self.topology.is_watertight,
+            self.topology.is_manifold,
+            self.topology.is_inside_out,
+            self.winding,
+        )
+    }
+}
+
 /// Load + weld-repair a vertebra/disc STL at `path`, **keeping native
 /// coordinates** (do not recenter — sibling vertebrae must stay in their shared
 /// anatomical frame so they stack).
+///
+/// Equivalent to [`load_with_report`] with the report dropped. Use that one
+/// when you want to know what came in — this crate's oracle is only as
+/// trustworthy as the surface it is built on.
 ///
 /// # Errors
 /// Returns an error if the STL cannot be read, or if the mesh has no vertices
@@ -72,10 +140,28 @@ pub type MeshOracle = Signed<TriMeshDistance, PseudoNormalSign>;
 /// would otherwise yield a meaningless field or a `NaN` bounding-box centre
 /// downstream.
 pub fn load(path: &Path) -> Result<IndexedMesh> {
+    load_with_report(path).map(|(mesh, _)| mesh)
+}
+
+/// [`load`], plus the [`SurfaceReport`] describing what came in.
+///
+/// The repair statistics used to be discarded here — `let _stats = …`, on the
+/// stated grounds that they were diagnostic only. They are diagnostic, and the
+/// diagnosis is the point: nothing downstream of this function has any way to
+/// learn that the surface it is about to build a signed-distance oracle over
+/// is open, non-manifold, or locally inside-out.
+///
+/// **Report-only.** This function returns exactly the mesh [`load`] returns and
+/// fails in exactly the same cases; a non-clean report is never itself an
+/// error. Deciding what an unhealthy surface means is the caller's call, and
+/// making it fatal here without a census of what real inputs actually look
+/// like would be a guess dressed as a guarantee.
+///
+/// # Errors
+/// Identical to [`load`].
+pub fn load_with_report(path: &Path) -> Result<(IndexedMesh, SurfaceReport)> {
     let mut mesh = load_stl(path).with_context(|| format!("loading STL {}", path.display()))?;
-    // Repair mutates `mesh` in place; the returned weld statistics are diagnostic
-    // only and intentionally not surfaced by this (silent) library API.
-    let _stats = repair_mesh(&mut mesh, &RepairParams::for_scans());
+    let repair = repair_mesh(&mut mesh, &RepairParams::for_scans());
     // A usable oracle needs both vertices AND faces: a vertices-but-no-faces
     // mesh (all triangles degenerate) would build a `TriMeshDistance` over zero
     // triangles and yield a meaningless field, so reject it here with a clear
@@ -88,7 +174,14 @@ pub fn load(path: &Path) -> Result<IndexedMesh> {
             mesh.faces.len()
         );
     }
-    Ok(mesh)
+    // Measured on the WELDED surface, which is both the surface `oracle` will
+    // see and the only stage at which a winding census means anything.
+    let report = SurfaceReport {
+        repair,
+        topology: validate_mesh(&mesh),
+        winding: winding_census(&mesh),
+    };
+    Ok((mesh, report))
 }
 
 /// Load + weld-repair the STL whose path is held in environment variable `var`.
@@ -874,6 +967,119 @@ mod tests {
         let empty = dir.path().join("empty.stl");
         std::fs::write(&empty, "solid empty\nendsolid empty\n").unwrap();
         assert!(load(&empty).is_err(), "empty STL must error");
+    }
+
+    /// ★ The wiring gate for hand-off 1: a locally flipped face survives the
+    /// whole load path and is **visible in the report**, where the global
+    /// signed-volume flag the crate previously had no reason to consult reads
+    /// the surface as fine.
+    ///
+    /// This runs licence-free and therefore in CI, unlike the real-anatomy
+    /// census in `tests/winding_census_on_the_real_fsu_meshes.rs`. It is what
+    /// actually protects the wiring: `load` discarding its report again, or
+    /// the report being taken before the weld, both surface here.
+    ///
+    /// The flip is injected into the mesh *before* the STL round-trip so the
+    /// defect travels the production path — save, read back as soup, weld —
+    /// rather than being handed to the census directly.
+    #[test]
+    fn load_with_report_sees_a_local_flip_that_signed_volume_misses() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Control: the same box, untouched.
+        let clean_path = dir.path().join("clean.stl");
+        let clean = box_mesh(Point3::origin(), 10.0);
+        mesh_io::save_stl(&clean, &clean_path, false).unwrap();
+        let (_, clean_report) = load_with_report(&clean_path).unwrap();
+        assert_eq!(
+            clean_report.winding.inconsistent_edges, 0,
+            "the control box must be locally consistent, or the flipped arm \
+             below proves nothing",
+        );
+        assert!(
+            clean_report.winding.has_judgeable_edges(),
+            "welded, so judgeable"
+        );
+
+        // Inject one flipped face, and assert the injection landed.
+        let mut flipped = clean;
+        let before = flipped.faces[0];
+        flipped.faces[0].swap(1, 2);
+        assert_ne!(flipped.faces[0], before, "the flip must change face 0");
+
+        let flipped_path = dir.path().join("flipped.stl");
+        mesh_io::save_stl(&flipped, &flipped_path, false).unwrap();
+        let (_, report) = load_with_report(&flipped_path).unwrap();
+
+        assert_eq!(
+            report.winding.inconsistent_edges, 3,
+            "one flipped triangle disagrees with its neighbours on its own \
+             three edges, and that must survive save -> load -> weld",
+        );
+        assert!(report.winding.has_inconsistent_winding());
+
+        // THE POINT: the instrument this crate could already have consulted
+        // reads both surfaces identically. Wiring up `is_inside_out` alone
+        // would have closed the hand-off in name only.
+        assert_eq!(
+            report.topology.is_inside_out, clean_report.topology.is_inside_out,
+            "signed volume is global and must not distinguish these two \
+             surfaces — if it starts to, this gate is no longer evidence that \
+             the local census was needed",
+        );
+    }
+
+    /// A raw STL is triangle soup, so the census must be taken **after** the
+    /// weld or it judges nothing. Pins the ordering inside `load_with_report`
+    /// on the same synthetic path as the gate above.
+    #[test]
+    fn the_surface_report_is_measured_after_the_weld_not_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("box.stl");
+        mesh_io::save_stl(&box_mesh(Point3::origin(), 10.0), &path, false).unwrap();
+
+        // What the census would have said if taken at the raw stage.
+        let raw = mesh_io::load_stl(&path).unwrap();
+        let raw_census = winding_census(&raw);
+        assert!(
+            !raw_census.has_judgeable_edges(),
+            "raw STL is soup: {} interior edges",
+            raw_census.interior_edges,
+        );
+
+        let (mesh, report) = load_with_report(&path).unwrap();
+        assert!(
+            report.winding.has_judgeable_edges(),
+            "the report must be taken after the weld, where edges exist to judge",
+        );
+        assert!(
+            report.repair.vertices_welded > 0,
+            "and the weld must be the thing that created them",
+        );
+
+        // Every field must describe THE RETURNED SURFACE. Without this the
+        // report could be measured on some other mesh entirely and the gates
+        // above would still pass — a must-fail pass caught exactly that, by
+        // swapping in an empty mesh and breaking nothing.
+        assert_eq!(
+            (report.topology.vertex_count, report.topology.face_count),
+            (mesh.vertices.len(), mesh.faces.len()),
+            "the topology report must be of the mesh that was returned",
+        );
+        assert_eq!(
+            report.repair.final_faces,
+            mesh.faces.len(),
+            "and so must the repair summary",
+        );
+        assert!(
+            report.topology.is_watertight && report.topology.is_manifold,
+            "a welded box is closed and manifold — {report}",
+        );
+        assert_eq!(
+            report.winding.interior_edges,
+            mesh.faces.len() * 3 / 2,
+            "a closed triangle mesh has 3F/2 edges, all interior",
+        );
     }
 
     #[test]
