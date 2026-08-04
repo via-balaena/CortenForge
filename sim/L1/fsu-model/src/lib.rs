@@ -4103,8 +4103,24 @@ mod tests {
     /// nothing is gained. Reports the floor margin per target so the boundary is visible rather
     /// than inferred.
     ///
-    /// Asserts only harness validity. Whether normalisation reproduces the native frame **is
-    /// the question**, so asserting it would assert the answer.
+    /// ## ★ ANSWERED — and this is now a gate, not an open FOM
+    ///
+    /// When α.1 (#714) shipped remedy D, production stopped needing the adapter: it emits
+    /// **6256 raw / 6256 kept**, identical to the native-frame reference, at **every**
+    /// normalisation target from 0.25 to 256. `kept == raw` is the headline — the
+    /// largest-component filter discards **nothing**, because there is no phantom material
+    /// left to discard.
+    ///
+    /// **Pre-α.1 production was 12517 raw / 7759 kept**: 4758 tets, 38 % of the raw mesh,
+    /// emitted outside the disc and thrown away by the filter. The recon predicted in this
+    /// file that "when the oracle is built in a frame it works in, the discarded fraction
+    /// here should collapse". It went to zero.
+    ///
+    /// ⚠ **This test asserted the pre-α.1 pair for four merges (#714, #715, #717, #718) and
+    /// was red the whole time.** It is `#[ignore]`d and licence-gated, so CI never ran it and
+    /// nothing reported the failure — the prediction was carried in prose as unverified while
+    /// the artifact that verified it sat red on disk. The asserts below now pin the shipped
+    /// numbers, so the same drift fails loudly the next time someone runs this suite.
     #[test]
     #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
     #[allow(clippy::cast_precision_loss)]
@@ -4157,6 +4173,7 @@ mod tests {
         );
 
         // ── R2 sweep: normalise the METRE surface by 2^k for a range of target extents. ──
+        let (mut sweep_rows, mut sweep_matching) = (0_usize, 0_usize);
         println!("\n--- power-of-two normalisation of the metre surface (R2 sweep) ---");
         for target in [0.25_f64, 1.0, 4.0, 16.0, 64.0, 256.0] {
             #[allow(clippy::cast_possible_truncation)]
@@ -4173,6 +4190,8 @@ mod tests {
             let kept = tet.largest_component();
             let matches_native =
                 tet.n_tets() == native_mesh.n_tets() && kept.n_tets() == native_kept.n_tets();
+            sweep_rows += 1;
+            sweep_matching += usize::from(matches_native);
             println!(
                 "target {target:>7.2} | k {k:>3} (s = 2^{k}) | realised extent {:.4} | \
                  min area {a_min:.4e} ({:.2}x floor) | raw {:>6} kept {:>6} components {:>4} | \
@@ -4190,17 +4209,51 @@ mod tests {
             );
         }
 
-        // Harness validity only: the two reference arms must be the ones the recon measured,
-        // or the sweep above is being compared against the wrong thing.
-        assert_eq!(
+        assert_r1_production_matches_native_frame(
             (meshed.raw.n_tets(), kept_now.n_tets()),
-            (12517, 7759),
-            "production's own arm no longer reproduces the recon's 12517/7759"
-        );
-        assert_eq!(
             (native_mesh.n_tets(), native_kept.n_tets()),
+            (sweep_matching, sweep_rows),
+        );
+    }
+
+    /// ★ The R1 answer, pinned: production and the native-frame adapter emit the **same**
+    /// mesh, and `kept == raw` means the stuffer discards nothing — there is no phantom
+    /// material left to discard.
+    ///
+    /// Extracted from the test body so the assertions are nameable and the test stays under
+    /// the line limit; the numbers live here rather than inline for the same reason.
+    fn assert_r1_production_matches_native_frame(
+        production: (usize, usize),
+        native: (usize, usize),
+        sweep: (usize, usize),
+    ) {
+        let (matching, rows) = sweep;
+        assert_eq!(
+            native,
             (6256, 6256),
             "the native-frame adapter no longer reproduces the recon's 6256/6256"
+        );
+        assert_eq!(
+            production,
+            (6256, 6256),
+            "production must reproduce the native frame. Pre-α.1 this was 12517/7759 — \
+             4758 tets (38 %) of phantom material discarded by the largest-component \
+             filter. If this reads 12517/7759 again, remedy D has been reverted or \
+             bypassed; if it reads a third pair, the disc or the stuffer moved"
+        );
+        assert_eq!(
+            production.1, native.1,
+            "and the two arms must agree after filtering, not just before"
+        );
+        // Scale-insensitivity: EVERY normalisation target reproduces the native frame, not
+        // just the one production happens to pick. The row count is asserted too, so a
+        // future edit that empties the sweep cannot pass vacuously.
+        assert_eq!(rows, 6, "the R2 sweep must actually have run its rows");
+        assert_eq!(
+            matching, rows,
+            "every normalisation target must reproduce the native frame — the fix is \
+             insensitive to the target extent, which is why production does not have to \
+             pick a special one"
         );
     }
 

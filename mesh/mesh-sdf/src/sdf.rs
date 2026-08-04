@@ -886,10 +886,19 @@ mod tests {
     ///
     /// ⚠ The 30 % is a count of TRIANGLES, produced by `cf_fsu_model`'s
     /// `report_area_floor_margin`. It is not a measure of how much phantom
-    /// material resulted: the re-anchor list puts that at 999 tets, 6.22 % of
-    /// kept volume. Three docs in this crate previously attached the triangle
-    /// fraction to the word "material"; #711 introduced the conflation and it
-    /// propagated twice more before anyone chased the producer.
+    /// material resulted. Three docs in this crate previously attached the
+    /// triangle fraction to the word "material"; #711 introduced the
+    /// conflation and it propagated twice more before anyone chased the
+    /// producer.
+    ///
+    /// ✅ **Both numbers are now history.** Since α.1 normalised internally,
+    /// the FSU disc meshes to **6256 raw / 6256 kept, 97.00 % of true volume,
+    /// zero tets beyond the surface AABB** — the phantom material is gone, not
+    /// merely smaller. It was 12517 raw / 7759 kept, i.e. 4758 discarded tets.
+    /// Producer: `cf_fsu_model`'s
+    /// `frame_fix_r1_power_of_two_normalisation_vs_native_frame_fom`
+    /// (licence-gated). The paragraph above is kept because the *mechanism* it
+    /// describes is what this constant still guards against.
     ///
     /// ## ★ α.1 removed the lower bound this test used to stop at
     ///
