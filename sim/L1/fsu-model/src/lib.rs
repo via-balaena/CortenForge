@@ -4114,8 +4114,9 @@ mod tests {
     /// ⚠ **CI cannot run this test** — it is `#[ignore]`d and needs `$CF_DISC_STL`. A
     /// regression here surfaces only when someone runs the licence-gated suite by hand.
     ///
-    /// ⚠ The six swept targets all sit inside the working band, and every row is now
-    /// asserted to match, so this sweep no longer locates the band's edges; widening it
+    /// ⚠ All six swept targets sit in the range where the oracle already works, and every
+    /// row is now asserted to match, so this sweep no longer locates where the area floor
+    /// (small end) or the coordinate cap (large end) start to bite; widening it to look
     /// would fail those assertions by design.
     #[test]
     #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
@@ -4227,10 +4228,11 @@ mod tests {
             production,
             (6256, 6256),
             "production (raw, kept) must be the shipped pair. It read 12517/7759 before \
-             `TriMeshDistance` began normalising internally. Things that move it: that \
-             normalisation, `DiscParams::default()`'s `cell`/`pad` (they set the lattice), \
-             `mesh-sdf`'s coordinate cap, a parry point-query change under the caret \
-             range, or a different disc mesh"
+             `TriMeshDistance` began normalising internally. Things that move it include \
+             that normalisation, `DiscParams::default()`'s `cell`/`pad`/`scale` (they set \
+             the lattice and the disc's size in it), the stuffer itself, `mesh-sdf`'s \
+             coordinate cap, a parry point-query change under the caret range, or a \
+             different disc mesh"
         );
         // Compared against `production`, not against the literal — so this reports an
         // arm that has diverged rather than restating the pin above. (Production is
@@ -4238,8 +4240,8 @@ mod tests {
         assert_eq!(
             native, production,
             "the native-frame adapter must agree with production on both counts. These \
-             are the two paths the R1 question is about; if they part company the sweep \
-             below is being compared against the wrong reference"
+             are the two paths the R1 question is about; if they part company, the sweep \
+             rows already computed above were compared against the wrong reference"
         );
         // Scale-insensitivity: EVERY normalisation target reproduces the native frame, not
         // just the one production happens to pick. The row count is asserted too, so a

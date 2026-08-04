@@ -891,18 +891,22 @@ mod tests {
     /// conflation and it propagated twice more before anyone chased the
     /// producer.
     ///
-    /// ✅ **That phantom material is now zero.** Since `TriMeshDistance`
-    /// normalises internally, the FSU disc meshes to `(6256 raw, 6256 kept)` —
-    /// the largest-component filter discards nothing. It was `(12517, 7759)`.
-    /// Producer: `cf_fsu_model`'s
-    /// `frame_fix_r1_power_of_two_normalisation_vs_native_frame_fom`, which is
-    /// licence-gated, so CI cannot run it, and which asserts the **tet counts
-    /// only** — the volume and AABB figures it prints are unasserted.
+    /// ✅ **That phantom material is now zero** — measured as **zero tets with
+    /// centroids beyond the surface AABB**, which is the quantity that bears on
+    /// it. (Not `kept == raw`: the largest-component filter only removes
+    /// *disconnected* islands, so material joined to the body would survive it.
+    /// The counts did also go `(12517, 7759)` → `(6256, 6256)`.)
+    ///
+    /// Producer for both: `cf_fsu_model`'s
+    /// `frame_fix_r1_power_of_two_normalisation_vs_native_frame_fom`. ⚠ It is
+    /// licence-gated, so CI cannot run it, and it asserts the **tet counts
+    /// only** — the beyond-AABB and volume figures are printed, not asserted.
     ///
     /// ⚠ The 30 % itself is **not** history: still measured, still asserted
     /// (`0 / 4342 / 14489` faces, `cf_fsu_model`'s
-    /// `frame_fix_step0_area_floor_margin_by_geometry_fom`). Only its
-    /// consequence changed — which is why the mechanism above still matters.
+    /// `frame_fix_step0_area_floor_margin_by_geometry_fom` — also licence-gated
+    /// and `#[ignore]`d, so it is not live cover either). Only its consequence
+    /// changed, which is why the mechanism above still matters.
     ///
     /// ## ★ α.1 removed the lower bound this test used to stop at
     ///
