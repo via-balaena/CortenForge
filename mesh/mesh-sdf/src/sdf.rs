@@ -891,11 +891,12 @@ mod tests {
     /// conflation and it propagated twice more before anyone chased the
     /// producer.
     ///
-    /// ✅ **That phantom material is now zero** — measured as **zero tets with
-    /// centroids beyond the surface AABB**, which is the quantity that bears on
-    /// it. (Not `kept == raw`: the largest-component filter only removes
-    /// *disconnected* islands, so material joined to the body would survive it.
-    /// The counts did also go `(12517, 7759)` → `(6256, 6256)`.)
+    /// ✅ **The measured phantom material is now zero** — **zero tets with
+    /// centroids beyond the surface AABB**. ⚠ That count is a strict **lower
+    /// bound**: the AABB is far larger than the lens inside it, so material
+    /// between the two is not counted, and neither is `kept == raw` evidence
+    /// (the largest-component filter removes only *disconnected* islands). The
+    /// counts did also go `(12517, 7759)` → `(6256, 6256)`.
     ///
     /// Producer for both: `cf_fsu_model`'s
     /// `frame_fix_r1_power_of_two_normalisation_vs_native_frame_fom`. ⚠ It is
