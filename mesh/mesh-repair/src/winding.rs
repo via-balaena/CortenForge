@@ -1,7 +1,11 @@
-//! Normal consistency and winding order correction.
+//! Normal consistency and winding order: measurement and correction.
 //!
-//! This module provides tools for fixing inconsistent face winding in meshes.
-//! Consistent winding is required for correct normal computation and rendering.
+//! This module both **reports** inconsistent face winding ([`winding_census`],
+//! [`count_inconsistent_faces`]) and **fixes** it ([`fix_winding_order`],
+//! [`flip_winding`]). Consistent winding is required for correct normal
+//! computation, for rendering, and for any inside/outside test derived from
+//! face normals — see [`WindingCensus`] for which question each instrument
+//! actually answers.
 //!
 //! # Winding Convention
 //!

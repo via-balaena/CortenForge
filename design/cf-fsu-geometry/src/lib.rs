@@ -191,9 +191,10 @@ pub fn load(path: &Path) -> Result<IndexedMesh> {
 ///
 /// The repair statistics used to be discarded here — `let _stats = …`, on the
 /// stated grounds that they were diagnostic only. They are diagnostic, and the
-/// diagnosis is the point: nothing downstream of this function has any way to
-/// learn that the surface it is about to build a signed-distance oracle over
-/// is open, non-manifold, or locally inside-out.
+/// diagnosis is the point: without it, a caller has no way to learn that the
+/// surface it is about to build a signed-distance oracle over is open,
+/// non-manifold, or **locally flipped** — a defect distinct from the
+/// whole-mesh `is_inside_out` flag, and one that flag cannot reliably see.
 ///
 /// **Report-only.** This function returns exactly the mesh [`load`] returns and
 /// fails in exactly the same cases; a non-clean report is never itself an
