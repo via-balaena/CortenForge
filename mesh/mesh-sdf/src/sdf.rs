@@ -9,14 +9,15 @@
 //! # Sign contract
 //!
 //! **Neither oracle is the default answer. Choose by WHERE YOU QUERY.**
-//! The two fail in orthogonal ways, and picking on reputation rather than
-//! on query location is how both of this crate's sign bugs were reached.
+//! The two fail in orthogonal ways, so a choice made on reputation rather
+//! than on query location can land on the wrong one either way.
 //!
 //! | | [`PseudoNormalSign`] | [`crate::FloodFillSign`] |
 //! |---|---|---|
 //! | dirty topology (flipped cap fans, non-manifold edges) | **fragile** | **blind to it — its strength** |
 //! | at / near the surface | **exact** | **~48 % wrong at 0.05 cell; exact from 1 cell out** |
-//! | how you check your own mesh | [`TriMeshDistance::health`] | cell size vs query distance |
+//! | cost | no extra build; `O(log faces)` per query | one distance query **per lattice node** at build; `O(1)` after |
+//! | can you check your own mesh? | yes — [`TriMeshDistance::health`] | **no instrument**; compare your query distance against `cell_size` |
 //!
 //! So: **flood-fill for far-field sign on a scan whose winding you do not
 //! trust; pseudo-normal for contact, projection and zero-isosurface work.**
