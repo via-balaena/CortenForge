@@ -4114,10 +4114,8 @@ mod tests {
     /// ⚠ **CI cannot run this test** — it is `#[ignore]`d and needs `$CF_DISC_STL`. A
     /// regression here surfaces only when someone runs the licence-gated suite by hand.
     ///
-    /// ⚠ All six swept targets sit in the range where the oracle already works, and every
-    /// row is now asserted to match, so this sweep no longer locates where the area floor
-    /// (small end) or the coordinate cap (large end) start to bite; widening it to look
-    /// would fail those assertions by design.
+    /// ⚠ Every swept row is now asserted to match, so widening the sweep to probe where
+    /// the oracle stops working would fail those assertions by design.
     #[test]
     #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
     #[allow(clippy::cast_precision_loss)]
