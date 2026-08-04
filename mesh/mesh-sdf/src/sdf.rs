@@ -891,14 +891,25 @@ mod tests {
     /// conflation and it propagated twice more before anyone chased the
     /// producer.
     ///
-    /// ✅ **Both numbers are now history.** Since α.1 normalised internally,
-    /// the FSU disc meshes to **6256 raw / 6256 kept, 97.00 % of true volume,
-    /// zero tets beyond the surface AABB** — the phantom material is gone, not
-    /// merely smaller. It was 12517 raw / 7759 kept, i.e. 4758 discarded tets.
-    /// Producer: `cf_fsu_model`'s
+    /// ✅ **The phantom material those figures described is now zero.** Since
+    /// α.1 normalised internally, the FSU disc meshes to **6256 raw / 6256
+    /// kept** with **zero tets beyond the surface AABB** — that zero, not the
+    /// discard count, is what succeeds the 999. It was 12517 raw / 7759 kept,
+    /// i.e. 4758 *discarded* by the largest-component filter, of which 4123
+    /// were measured outside the AABB. Keeping those two apart is the point of
+    /// the warning above.
+    ///
+    /// ⚠ The **30 % is not history** — it is still measured and still asserted
+    /// (`0 / 4342 / 14489` faces, `cf_fsu_model`'s
+    /// `frame_fix_step0_area_floor_margin_by_geometry_fom`). What changed is
+    /// its consequence, which is why the paragraph above is kept: the mechanism
+    /// it describes is what this constant still guards against.
+    ///
+    /// Producer for the tet counts: `cf_fsu_model`'s
     /// `frame_fix_r1_power_of_two_normalisation_vs_native_frame_fom`
-    /// (licence-gated). The paragraph above is kept because the *mechanism* it
-    /// describes is what this constant still guards against.
+    /// (licence-gated, so CI cannot run it). ⚠ It asserts the **counts only**;
+    /// the volume fraction and AABB overhang it prints are not bound to
+    /// assertions and can drift silently.
     ///
     /// ## ★ α.1 removed the lower bound this test used to stop at
     ///
