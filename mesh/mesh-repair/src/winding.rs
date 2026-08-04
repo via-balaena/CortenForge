@@ -389,7 +389,7 @@ pub fn count_inconsistent_faces(mesh: &IndexedMesh) -> usize {
 ///
 /// A mesh with no interior edges — triangle soup, or a single triangle — has
 /// nothing to check, and reports `inconsistent_edges == 0` for that reason
-/// rather than because its winding was verified. Use [`Self::is_conclusive`]
+/// rather than because its winding was verified. Use [`Self::has_judgeable_edges`]
 /// before reading a zero as good news.
 ///
 /// # Example
@@ -411,7 +411,7 @@ pub fn count_inconsistent_faces(mesh: &IndexedMesh) -> usize {
 /// let census = winding_census(&mesh);
 /// assert_eq!(census.interior_edges, 6);
 /// assert_eq!(census.inconsistent_edges, 0);
-/// assert!(census.is_conclusive());
+/// assert!(census.has_judgeable_edges());
 ///
 /// // A global flip stays locally consistent — every edge still has one
 /// // traversal each way.
@@ -446,20 +446,28 @@ impl WindingCensus {
     /// Whether any interior edge is traversed the same way by both its faces.
     ///
     /// This direction is **sound**: `true` means a local orientation defect was
-    /// observed. The negation is only meaningful when [`Self::is_conclusive`]
+    /// observed. The negation is only meaningful when [`Self::has_judgeable_edges`]
     /// holds.
     #[must_use]
     pub const fn has_inconsistent_winding(&self) -> bool {
         self.inconsistent_edges > 0
     }
 
-    /// Whether there was anything to judge — at least one interior edge.
+    /// Whether **any** edge was in a position to be judged — that is, whether
+    /// `interior_edges` is non-zero.
     ///
     /// `false` means the mesh is soup (or a single triangle): a zero
     /// `inconsistent_edges` from such a mesh reports that no edge was
     /// examined, not that the winding is good.
+    ///
+    /// ⚠ **`true` is not a coverage claim.** A surface that is 99 % boundary
+    /// edges with a single interior edge reports `true`, having judged one
+    /// edge. This method answers non-vacuity only. If you need to know how
+    /// much of the surface the census actually saw, compare `interior_edges`
+    /// against `boundary_edges` yourself — the counters are there precisely
+    /// so that judgement stays with the caller.
     #[must_use]
-    pub const fn is_conclusive(&self) -> bool {
+    pub const fn has_judgeable_edges(&self) -> bool {
         self.interior_edges > 0
     }
 }
@@ -476,7 +484,7 @@ impl std::fmt::Display for WindingCensus {
             self.boundary_edges,
             self.non_manifold_edges,
             self.degenerate_edges,
-            if self.is_conclusive() {
+            if self.has_judgeable_edges() {
                 ""
             } else {
                 " | INCONCLUSIVE: no interior edges (soup?)"
@@ -491,7 +499,7 @@ impl std::fmt::Display for WindingCensus {
 /// this is not the same question as `is_inside_out`. Report-only: this function
 /// classifies, it never refuses and never mutates.
 ///
-/// Runs in one pass over the faces, `O(faces)` time and edges of space.
+/// Runs in one pass over the faces: `O(faces)` time, `O(edges)` space.
 ///
 /// # Example
 ///
@@ -523,7 +531,10 @@ pub fn winding_census(mesh: &IndexedMesh) -> WindingCensus {
     struct EdgeUse {
         forward: usize,
         backward: usize,
-        faces: Vec<usize>,
+        /// The first two incident faces. Only ever read for edges that turn
+        /// out to be interior — exactly two faces — so a fixed pair suffices
+        /// and the census stays allocation-free per edge.
+        faces: [usize; 2],
     }
 
     let mut edges: HashMap<(u32, u32), EdgeUse> = HashMap::new();
@@ -538,12 +549,15 @@ pub fn winding_census(mesh: &IndexedMesh) -> WindingCensus {
                 continue;
             }
             let use_ = edges.entry((a.min(b), a.max(b))).or_default();
+            let seen = use_.forward + use_.backward;
             if a < b {
                 use_.forward += 1;
             } else {
                 use_.backward += 1;
             }
-            use_.faces.push(face_idx);
+            if seen < 2 {
+                use_.faces[seen] = face_idx;
+            }
         }
     }
 
@@ -562,7 +576,7 @@ pub fn winding_census(mesh: &IndexedMesh) -> WindingCensus {
                 // faces walked the edge the same direction.
                 if use_.forward != 1 {
                     census.inconsistent_edges += 1;
-                    damaged_faces.extend(use_.faces.iter().copied());
+                    damaged_faces.extend(use_.faces);
                 }
             }
             _ => census.non_manifold_edges += 1,
@@ -803,106 +817,144 @@ mod tests {
     // `..._is_blind_to_a_global_flip...` / `..._counts_exactly_the_three_
     // edges...` pins the orthogonality in BOTH directions.
 
-    /// A closed tetrahedron whose four faces are consistently oriented:
-    /// every one of the six edges is traversed once each way. Verified as
+    /// A closed octahedron whose eight faces are consistently oriented:
+    /// every one of the twelve edges is traversed once each way. Verified as
     /// such by the first assertion of each gate that uses it, so a gate
     /// measuring a defect always starts from a clean baseline.
     ///
-    /// ⚠ Consistent, but **inward**-facing: `validate_mesh` reports
-    /// `is_inside_out == true` for this face order (measured — an earlier
-    /// draft of these gates asserted the opposite and failed). Consistency is
-    /// what the census judges and polarity is what `is_inside_out` judges;
-    /// this fixture deliberately separates the two, so gates here assert how
-    /// the global flag *moves*, never what it equals.
-    fn consistent_tetrahedron() -> IndexedMesh {
+    /// ⚠ **Why an octahedron and not the tetrahedron this started as.** The
+    /// census's headline claim is that it is seed-independent where
+    /// [`count_inconsistent_faces`] is not: one flipped face reports three
+    /// edges, while the seed-relative count reports `1` or `n - 1` depending
+    /// on where BFS began. On a tetrahedron `n - 1 == 3`, so the two
+    /// instruments return the *same number* and no assertion can tell them
+    /// apart — a must-fail pass caught the original gate passing with
+    /// `count_inconsistent_faces` substituted for the census. Eight faces is
+    /// the smallest closed fixture where the contrast is visible.
+    fn consistent_octahedron() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
-        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
-        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
-        mesh.vertices.push(Point3::new(0.5, 0.5, 1.0));
-        mesh.faces.push([0, 1, 2]);
-        mesh.faces.push([0, 3, 1]);
-        mesh.faces.push([1, 3, 2]);
-        mesh.faces.push([2, 3, 0]);
+        for v in [
+            (1.0, 0.0, 0.0),
+            (-1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, -1.0, 0.0),
+            (0.0, 0.0, 1.0),
+            (0.0, 0.0, -1.0),
+        ] {
+            mesh.vertices.push(Point3::new(v.0, v.1, v.2));
+        }
+        // Upper cap fan around vertex 4, then lower cap fan around vertex 5.
+        for f in [
+            [0, 2, 4],
+            [2, 1, 4],
+            [1, 3, 4],
+            [3, 0, 4],
+            [2, 0, 5],
+            [1, 2, 5],
+            [3, 1, 5],
+            [0, 3, 5],
+        ] {
+            mesh.faces.push(f);
+        }
         mesh
     }
 
-    /// Baseline: a consistently oriented closed surface reports six interior
-    /// edges, none inconsistent, and says so conclusively.
+    /// Baseline: a consistently oriented closed surface reports twelve
+    /// interior edges, none inconsistent, and says so conclusively.
     #[test]
     fn winding_census_is_clean_on_a_consistent_closed_surface() {
-        let census = winding_census(&consistent_tetrahedron());
-        assert_eq!(census.interior_edges, 6, "tetrahedron has 6 edges");
+        let mesh = consistent_octahedron();
+        let census = winding_census(&mesh);
+        assert_eq!(census.interior_edges, 12, "octahedron has 12 edges");
         assert_eq!(census.inconsistent_edges, 0);
         assert_eq!(census.faces_on_inconsistent_edges, 0);
         assert_eq!(census.boundary_edges, 0, "closed surface has no boundary");
         assert_eq!(census.non_manifold_edges, 0);
         assert_eq!(census.degenerate_edges, 0);
-        assert!(census.is_conclusive());
+        assert!(census.has_judgeable_edges());
         assert!(!census.has_inconsistent_winding());
+        // Euler characteristic is the independent check that the fixture is
+        // the closed surface it claims to be, rather than a face list that
+        // happens to satisfy the census.
+        assert_eq!(
+            mesh.vertices.len() + mesh.faces.len() - census.interior_edges,
+            2,
+            "V - E + F = 2 for a closed genus-0 surface",
+        );
     }
 
-    /// ★ The load-bearing gate. One flipped face must report **exactly its
-    /// own three edges** — seed-independently — where the signed-volume test
-    /// reports nothing at all.
+    /// ★ The load-bearing gate. One flipped face reports **exactly its own
+    /// three edges, wherever it sits** — where the signed-volume test reports
+    /// nothing at all and the seed-relative face count reports two different
+    /// numbers for the same defect.
     ///
-    /// The contrast with `count_inconsistent_faces` is the point, not a
-    /// footnote: that function answers "how many faces would the repair
-    /// swap?", which depends on which face BFS happened to seed from. Here
-    /// it seeds on the flipped face itself and therefore reports the other
-    /// three as the wrong ones. Both numbers describe one flipped triangle;
-    /// only the edge count says which three edges.
+    /// The three-way contrast is the whole claim:
+    ///
+    /// | | flip face 0 | flip face 3 |
+    /// |---|---|---|
+    /// | `winding_census` | 3 edges | 3 edges |
+    /// | `count_inconsistent_faces` | 7 | 1 |
+    /// | `is_inside_out` | unmoved | unmoved |
+    ///
+    /// The middle row is why the census exists and why the fixture has eight
+    /// faces: BFS seeds at face 0, so flipping face 0 makes the *other seven*
+    /// look wrong, while flipping face 3 makes only face 3 look wrong. Both
+    /// describe one flipped triangle. Only the census answers with the defect
+    /// rather than with the repair.
     #[test]
-    fn winding_census_counts_exactly_the_three_edges_of_one_flipped_face() {
-        let mut mesh = consistent_tetrahedron();
+    fn winding_census_counts_three_edges_per_flipped_face_wherever_it_sits() {
+        for flipped in [0_usize, 3] {
+            let mut mesh = consistent_octahedron();
 
-        // The baseline must be clean, or a non-zero reading below would not
-        // be attributable to the flip. (The fixture is consistently oriented
-        // but INWARD-facing — measured, see `consistent_tetrahedron` — which
-        // is why the signed-volume claim below is stated as "unchanged by the
-        // flip" rather than as a fixed polarity.)
-        assert_eq!(winding_census(&mesh).inconsistent_edges, 0);
-        let volume_flag_before = validate_mesh(&mesh).is_inside_out;
+            // The baseline must be clean, or a non-zero reading below would
+            // not be attributable to the flip.
+            assert_eq!(winding_census(&mesh).inconsistent_edges, 0);
+            let volume_flag_before = validate_mesh(&mesh).is_inside_out;
 
-        // Inject the defect, and assert the injection landed.
-        let before = mesh.faces[0];
-        mesh.faces[0].swap(1, 2);
-        assert_ne!(
-            mesh.faces[0], before,
-            "the flip must actually change face 0"
-        );
+            // Inject the defect, and assert the injection landed.
+            let before = mesh.faces[flipped];
+            mesh.faces[flipped].swap(1, 2);
+            assert_ne!(
+                mesh.faces[flipped], before,
+                "the flip must actually change face {flipped}",
+            );
 
-        let census = winding_census(&mesh);
-        assert_eq!(
-            census.inconsistent_edges, 3,
-            "a flipped triangle disagrees with its neighbours on exactly its \
-             own three edges",
-        );
-        assert_eq!(
-            census.faces_on_inconsistent_edges, 4,
-            "the flipped face plus its three neighbours",
-        );
-        assert_eq!(census.interior_edges, 6, "topology is unchanged by a swap");
-        assert!(census.has_inconsistent_winding());
+            let census = winding_census(&mesh);
+            assert_eq!(
+                census.inconsistent_edges, 3,
+                "face {flipped}: a flipped triangle disagrees with its \
+                 neighbours on exactly its own three edges, regardless of \
+                 where in the face list it sits",
+            );
+            assert_eq!(
+                census.faces_on_inconsistent_edges, 4,
+                "face {flipped}: the flipped face plus its three neighbours",
+            );
+            assert_eq!(census.interior_edges, 12, "topology is unchanged by a swap");
+            assert!(census.has_inconsistent_winding());
 
-        // THE GAP THIS INSTRUMENT EXISTS FOR: signed volume is unmoved. One
-        // flipped face out of four does not outweigh the other three, so the
-        // global flag reads exactly what it read before the defect existed.
-        assert_eq!(
-            validate_mesh(&mesh).is_inside_out,
-            volume_flag_before,
-            "is_inside_out is a global test and must not move for a local \
-             flip — if it ever starts moving here, the claim that it cannot \
-             see local flips is what needs revisiting, not this gate",
-        );
+            // THE GAP THIS INSTRUMENT EXISTS FOR: signed volume is unmoved.
+            // One flipped face out of eight does not outweigh the other seven,
+            // so the global flag reads what it read before the defect existed.
+            assert_eq!(
+                validate_mesh(&mesh).is_inside_out,
+                volume_flag_before,
+                "face {flipped}: is_inside_out is a global test and must not \
+                 move for a local flip — if it ever starts moving here, the \
+                 claim that it cannot see local flips is what needs \
+                 revisiting, not this gate",
+            );
 
-        // And the seed-relative count disagrees with the edge count, as
-        // documented: BFS seeds at face 0, which IS the flipped face.
-        assert_eq!(
-            count_inconsistent_faces(&mesh),
-            3,
-            "seeded on the flipped face, the repair would swap the other three",
-        );
+            // And the seed-relative count gives a DIFFERENT answer for each
+            // flip position, while the census above gave the same one twice.
+            assert_eq!(
+                count_inconsistent_faces(&mesh),
+                if flipped == 0 { 7 } else { 1 },
+                "face {flipped}: BFS seeds at face 0, so flipping the seed \
+                 makes every other face look wrong and flipping a non-seed \
+                 face makes only itself look wrong",
+            );
+        }
     }
 
     /// The other direction of the same orthogonality: a **globally** flipped
@@ -913,7 +965,7 @@ mod tests {
     /// subsumes the other, and a caller needs both readings.
     #[test]
     fn winding_census_is_blind_to_a_global_flip_where_signed_volume_is_not() {
-        let mut mesh = consistent_tetrahedron();
+        let mut mesh = consistent_octahedron();
         let before_volume_flag = validate_mesh(&mesh).is_inside_out;
         assert_eq!(winding_census(&mesh).inconsistent_edges, 0);
 
@@ -934,7 +986,7 @@ mod tests {
 
     /// Soup has no interior edges, so it has nothing to judge. The census
     /// says so; `count_inconsistent_faces` returns a clean-looking `0` for
-    /// the same mesh, which is the failure mode `is_conclusive` exists to
+    /// the same mesh, which is the failure mode `has_judgeable_edges` exists to
     /// make visible.
     ///
     /// This matters on the STL path specifically: an STL is soup until it is
@@ -961,7 +1013,7 @@ mod tests {
         assert_eq!(census.interior_edges, 0, "soup shares no edges");
         assert_eq!(census.boundary_edges, 9, "3 triangles x 3 unshared edges");
         assert!(
-            !census.is_conclusive(),
+            !census.has_judgeable_edges(),
             "nothing was checked, so a zero must not read as a clean bill",
         );
         assert_eq!(census.inconsistent_edges, 0, "vacuously, not verifiably");
@@ -997,20 +1049,36 @@ mod tests {
         );
         assert_eq!(census.inconsistent_edges, 0);
         assert_eq!(census.boundary_edges, 6, "each fin contributes two");
-        assert!(!census.is_conclusive());
+        assert!(!census.has_judgeable_edges());
     }
 
     /// A face listing the same vertex twice contributes a zero-length corner.
-    /// It is counted and excluded — not silently dropped.
+    /// It is counted and **excluded** — not silently dropped, and not folded
+    /// into a real edge class.
+    ///
+    /// Both halves are asserted. A must-fail pass caught the original version
+    /// checking only that the corner was *counted*: with the exclusion
+    /// removed, the `0 -> 0` corner became a self-edge with one traversal and
+    /// was tallied as a boundary edge, and nothing in the gate noticed.
     #[test]
-    fn winding_census_counts_degenerate_corners_separately() {
+    fn winding_census_counts_degenerate_corners_separately_and_excludes_them() {
         let mut mesh = IndexedMesh::new();
         mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
         mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
         mesh.faces.push([0, 0, 1]);
 
         let census = winding_census(&mesh);
-        assert_eq!(census.degenerate_edges, 1, "the 0 -> 0 corner");
+        assert_eq!(census.degenerate_edges, 1, "the 0 -> 0 corner is counted");
+        assert_eq!(
+            census.boundary_edges, 0,
+            "and excluded — a self-edge must not be tallied as a boundary edge",
+        );
+        assert_eq!(census.non_manifold_edges, 0);
         assert_eq!(census.inconsistent_edges, 0);
+        // The face's two real corners (0 -> 1 and 1 -> 0) are the same
+        // undirected edge traversed both ways by one face, so it classifies
+        // as a consistent interior edge. Recorded because it is surprising,
+        // not because it is load-bearing.
+        assert_eq!(census.interior_edges, 1);
     }
 }
