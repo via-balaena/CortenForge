@@ -401,9 +401,11 @@ struct ClassifiedGrid {
 /// # ⚠⚠ The sign is a LATTICE lookup, so it is unreliable NEAR THE SURFACE
 ///
 /// `is_inside` rounds to the nearest node (see below), which makes the
-/// sign **piecewise-constant on cell-sized boxes**. Within half a cell
-/// of the surface it approaches a coin flip; from one cell out it is
-/// exact. Measured on an analytic sphere at `cell = 0.1`
+/// sign **piecewise-constant on cell-sized boxes**. The error is worst
+/// *at* the surface — essentially a coin flip — and decays to exact by
+/// one cell out; at half a cell it is already down to a few per cent,
+/// so "within half a cell" understates how sharply it is concentrated
+/// on the zero crossing. Measured on an analytic sphere at `cell = 0.1`
 /// (`flood_fill_sign_is_unreliable_within_a_cell_of_the_surface`):
 ///
 /// | distance from surface | signs wrong |
@@ -765,8 +767,7 @@ mod tests {
     use mesh_types::{IndexedMesh, Point3};
 
     /// **`FloodFillSign::is_inside` is a LATTICE lookup, so its sign is piecewise-constant
-    /// on cell-sized boxes — and within half a cell of the surface it is close to a coin
-    /// flip.**
+    /// on cell-sized boxes — and AT the surface it is close to a coin flip.**
     ///
     /// `lookup_node` rounds the query to the nearest node and reads that node's label. The
     /// mechanism has always been documented; the *consequence* was not, and the type's own
@@ -779,6 +780,14 @@ mod tests {
     /// ⚠ **If this test fails because the near-surface arm got BETTER, that is the R4 fix
     /// landing — update this gate, do not delete it.** It pins a known defect on purpose,
     /// which is the only honest way to ship one.
+    ///
+    /// ⚠ **Is the fixture's own tessellation a confound?** It is the obvious objection: the
+    /// shells are placed against the *analytic* sphere while the flood fill was built from a
+    /// polyhedron. No — checked both ways. The polyhedron deviates inward by at most
+    /// `r(1 − cos(π/2n_lat))` ≈ 1.2e-3, against a closest sampling offset of 5.0e-3, so both
+    /// shells sit unambiguously on their intended side with ~4× margin. And empirically the
+    /// answer does not move with tessellation: 16×32 / 32×64 / 48×96 give 47.3 / 47.7 /
+    /// 47.7 % at 0.05 cell. The error is a property of the lattice, not of the mesh.
     #[test]
     fn flood_fill_sign_is_unreliable_within_a_cell_of_the_surface() {
         let r = 1.0_f64;
