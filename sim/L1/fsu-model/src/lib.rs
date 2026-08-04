@@ -4099,49 +4099,24 @@ mod tests {
     /// adapter. This measures whether those are the same path.
     ///
     /// Sweeps the normalisation target so R2 (what extent to normalise to) is answered on real
-    /// anatomy at the same time: too small and the area floor still bites, too large and
-    /// nothing is gained. Reports the floor margin per target so the boundary is visible rather
-    /// than inferred.
+    /// anatomy at the same time. Reports the floor margin per target.
     ///
-    /// ⚠ The six swept targets all land *inside* the working band, and the sweep now asserts
-    /// that every row matches — so this no longer finds the boundary, and extending it outward
-    /// to look for one would fail those assertions by design. For where the ends actually
-    /// bite, `mesh-sdf`'s `grad_step_scale_regime` is the committed producer.
+    /// ## What it asserts now
     ///
-    /// ## ★ ANSWERED — and this is now a gate, not an open FOM
+    /// Production emits `(6256 raw, 6256 kept)`, and the native-frame adapter emits the same
+    /// pair. **Tet counts are all that is compared** — equal counts do not imply equal
+    /// vertices. The sweep's six targets must each reproduce the native counts.
     ///
-    /// Production emits **6256 raw / 6256 kept**, matching the native-frame reference on
-    /// **both tet counts** — that is what is compared; equal counts do not imply equal
-    /// vertices, and the paragraph above is still right that the two paths' `f64` values
-    /// differ. Separately, the normalised-adapter sweep reproduces those same counts at all
-    /// six targets from 0.25 to 256; production itself has no target, it builds in one
-    /// frame. `kept == raw` is the headline: the largest-component filter discards
-    /// **nothing**.
+    /// It previously asserted `(12517, 7759)` for production, which is what the recon
+    /// measured before `TriMeshDistance` began normalising internally. That assert was red
+    /// when this gate was next run.
     ///
-    /// Before, production was **12517 raw / 7759 kept** — the filter discarded 4758 tets.
-    /// ⚠ 4758 is a *discard* count, not a measured phantom count: #711 measured **4123**
-    /// tets with centroids beyond the surface AABB, and its own instrument calls that a
-    /// strict lower bound. Both are now zero.
+    /// ⚠ **CI cannot run this test** — it is `#[ignore]`d and needs `$CF_DISC_STL`. A
+    /// regression here surfaces only when someone runs the licence-gated suite by hand.
     ///
-    /// #711's meshing-stability recon predicted, in this file, that "when the oracle is
-    /// built in a frame it works in, the discarded fraction here should collapse". It did —
-    /// **at this configuration**. The prediction was written about
-    /// `mesh_stability_step0_discarded_component_census_fom`'s eight-cell sweep, which has
-    /// not been re-run; this test measures `DiscParams::default()` only.
-    ///
-    /// ⚠ **This gate has been red since #714** — measured, not inferred. #714 shipped
-    /// remedy D; #715 also rewrote the scale rule (correcting `coordinate_cap` from 2^54 to
-    /// 2^22), which made it a second candidate. It is not: the metre disc — the frame
-    /// production builds in — is **unclamped** at scale 2^25, margin 41.6 of 40 binades
-    /// (producer: `alpha2_surface_health_reproduces_the_area_floor_census_on_the_real_disc`).
-    /// Unclamped under the tighter cap implies unclamped under the looser one, so `k` was 25
-    /// either way and #715 left this geometry untouched.
-    ///
-    /// The assert that would have said so is a harness tripwire, and it **did** fire — its
-    /// message named the drift correctly. Nothing *received* it: the suite is `#[ignore]`d
-    /// and licence-gated, so CI cannot run it and nobody ran it by hand. Note that the
-    /// prediction and the tripwire live in two different tests — the census that predicted
-    /// has no asserts at all and could not have gone red.
+    /// ⚠ The six swept targets all sit inside the working band, and every row is now
+    /// asserted to match, so this sweep no longer locates the band's edges; widening it
+    /// would fail those assertions by design.
     #[test]
     #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
     #[allow(clippy::cast_precision_loss)]
@@ -4237,12 +4212,11 @@ mod tests {
         );
     }
 
-    /// ★ The R1 answer, pinned: production and the native-frame adapter emit the **same**
-    /// mesh, and `kept == raw` means the stuffer discards nothing — there is no phantom
-    /// material left to discard.
+    /// The R1 answer, pinned: production and the native-frame adapter agree on both tet
+    /// counts, and `kept == raw` means the largest-component filter discards nothing.
     ///
     /// Extracted from the test body so the assertions are nameable and the test stays under
-    /// the line limit; the numbers live here rather than inline for the same reason.
+    /// the line limit.
     fn assert_r1_production_matches_native_frame(
         production: (usize, usize),
         native: (usize, usize),
@@ -4252,22 +4226,20 @@ mod tests {
         assert_eq!(
             production,
             (6256, 6256),
-            "production (raw, kept) must be the shipped pair. Before #714 it was \
-             12517/7759 — the largest-component filter discarded 4758 tets, of which \
-             4123 were measured outside the surface AABB. If this reads 12517/7759 \
-             again, remedy D has been reverted or bypassed; a third pair means the disc \
-             or the stuffer moved"
+            "production (raw, kept) must be the shipped pair. It read 12517/7759 before \
+             `TriMeshDistance` began normalising internally. Things that move it: that \
+             normalisation, `DiscParams::default()`'s `cell`/`pad` (they set the lattice), \
+             `mesh-sdf`'s coordinate cap, a parry point-query change under the caret \
+             range, or a different disc mesh"
         );
-        // Live cross-arm check: `native` is compared against `production`, not against
-        // the literal, so it fails whenever the two arms diverge for ANY reason. An
-        // earlier draft pinned both to the same constant and then compared them — which
-        // made this assertion a theorem, unable to fail, while its message advertised
-        // discriminating power it did not have.
+        // Compared against `production`, not against the literal — so this reports an
+        // arm that has diverged rather than restating the pin above. (Production is
+        // already pinned, so in practice this fires for the native arm.)
         assert_eq!(
             native, production,
-            "the native-frame adapter must agree with production on BOTH counts — raw \
-             and kept. These are the two paths the R1 question is about; if they part \
-             company the sweep below is being compared against the wrong reference"
+            "the native-frame adapter must agree with production on both counts. These \
+             are the two paths the R1 question is about; if they part company the sweep \
+             below is being compared against the wrong reference"
         );
         // Scale-insensitivity: EVERY normalisation target reproduces the native frame, not
         // just the one production happens to pick. The row count is asserted too, so a
