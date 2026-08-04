@@ -17,6 +17,13 @@
 //! pre-existing pseudo-normal sign branch was unreliable enough to
 //! motivate this defense.
 //!
+//! ⚠ **That motivation is real but one-sided, and reading it as
+//! "flood-fill superseded pseudo-normal" is a mistake.** This oracle
+//! trades a *topology* failure for a *spatial* one: its sign is a
+//! lattice lookup and is unreliable within a cell of the surface,
+//! where `PseudoNormalSign` is exact. See [`FloodFillSign`]'s
+//! near-surface table. Pick by where you query.
+//!
 //! [`TriMeshDistance`]: crate::TriMeshDistance
 
 use std::collections::VecDeque;
@@ -386,10 +393,38 @@ struct ClassifiedGrid {
 /// Composes with any [`UnsignedDistance`]; the typical pairing is
 /// [`Signed<TriMeshDistance, FloodFillSign>`](Signed) for an
 /// SDF whose magnitudes stay exact (parry queries the source mesh
-/// every call) but whose sign is rock-solid (the flood is topology-
-/// blind — non-manifold edges, inverted-winding cap fans, and
-/// high-valence apex vertices all evaluate the same way they would on
-/// a clean mesh).
+/// every call) and whose sign is **topology-blind** — non-manifold
+/// edges, inverted-winding cap fans, and high-valence apex vertices
+/// all evaluate the same way they would on a clean mesh. That is the
+/// property worth having, and `PseudoNormalSign` does not have it.
+///
+/// # ⚠⚠ The sign is a LATTICE lookup, so it is unreliable NEAR THE SURFACE
+///
+/// `is_inside` rounds to the nearest node (see below), which makes the
+/// sign **piecewise-constant on cell-sized boxes**. The error is worst
+/// *at* the surface — essentially a coin flip — and decays to exact by
+/// one cell out; at half a cell it is already down to a few per cent,
+/// so "within half a cell" understates how sharply it is concentrated
+/// on the zero crossing. Measured on an analytic sphere at `cell = 0.1`
+/// (`flood_fill_sign_is_unreliable_within_a_cell_of_the_surface`):
+///
+/// | distance from surface | signs wrong |
+/// |---|---|
+/// | 0.05 cell | **47.5 %** |
+/// | 0.30 cell | 21.8 % |
+/// | 0.50 cell | 6.8 % |
+/// | ≥ 1.00 cell | **0 %** |
+///
+/// This doc previously called the sign "rock-solid" with no spatial
+/// caveat. The rounding was documented; the consequence was not — and
+/// every near-surface consumer sits exactly in the band where the
+/// claim fails. **Choose by where you query**, not by which oracle
+/// sounds sturdier: topology-blind far from the surface, but for
+/// contact, projection-to-surface, or zero-isosurface extraction,
+/// `PseudoNormalSign` is exact at the surface and fails only when a
+/// pseudo-normal is zeroed — which
+/// [`TriMeshDistance::health`](crate::TriMeshDistance::health) now
+/// measures directly.
 ///
 /// Build via [`FloodFillSign::build`]. The build cost is one
 /// unsigned-distance query per lattice node plus three linear passes
@@ -646,6 +681,17 @@ impl UnsignedDistance for CachedGridSdf {
 }
 
 impl Sign for CachedGridSdf {
+    /// ⚠ **Delegates to [`FloodFillSign`], so this is the LATTICE lookup — not the
+    /// interpolated field [`CachedGridSdf::signed_distance`] answers from.** The same
+    /// object therefore reports differently near the surface depending on which method you
+    /// call: at 0.05 cell, ~48 % of `is_inside` answers are wrong against ~8 % of
+    /// `signed_distance` signs
+    /// (`cached_grid_signed_distance_does_not_inherit_the_lattice_sign_defect`).
+    ///
+    /// Interpolating is **a factor, not a fix** — the stored node values are
+    /// `magnitude × that node's own flood-fill label`, so a mislabelled node still puts the
+    /// zero crossing in the wrong place. Prefer `signed_distance` near the surface, and do
+    /// not treat either as exact there.
     fn is_inside(&self, p: Point3<f64>) -> bool {
         self.sign.is_inside(p)
     }
@@ -654,9 +700,17 @@ impl Sign for CachedGridSdf {
 // ── Convenience builders ──────────────────────────────────────────────
 
 /// Build a `Signed<TriMeshDistance, FloodFillSign>` from a triangle
-/// mesh — one BVH allocation, one flood-fill cache. The result is the
-/// recommended SDF for any consumer working from a cf-scan-prep
-/// cleaned scan: distance magnitudes stay exact via the parry BVH,
+/// mesh — one BVH allocation, one flood-fill cache.
+///
+/// ⚠ **Recommended for cleaned scans queried AWAY from the surface,
+/// not everywhere.** The composition inherits [`FloodFillSign`]'s
+/// lattice-lookup sign, so within a cell of the surface the signed
+/// distance carries an exact magnitude with a possibly-wrong sign —
+/// see that type's near-surface table. Consumers that query the zero
+/// band (contact, projection, iso-0 extraction) should read it before
+/// adopting this.
+///
+/// Otherwise: distance magnitudes stay exact via the parry BVH,
 /// sign comes from the topology-blind flood-fill so cap-fan winding
 /// flips and high-valence apex vertices can't poison far-field
 /// queries.
@@ -711,6 +765,184 @@ mod tests {
     use crate::{PseudoNormalSign, TriMeshDistance};
     use approx::assert_relative_eq;
     use mesh_types::{IndexedMesh, Point3};
+
+    /// **`FloodFillSign::is_inside` is a LATTICE lookup, so its sign is piecewise-constant
+    /// on cell-sized boxes — and AT the surface it is close to a coin flip.**
+    ///
+    /// `lookup_node` rounds the query to the nearest node and reads that node's label. The
+    /// mechanism has always been documented; the *consequence* was not, and the type's own
+    /// doc called the sign "rock-solid" with no spatial caveat while every near-surface
+    /// consumer sits exactly in the band where it is not.
+    ///
+    /// This pins the shape of the error rather than a single number, because the shape is
+    /// the thing a caller needs: **unusable at the surface, exact from one cell out.**
+    ///
+    /// ⚠ **If this test fails because the near-surface arm got BETTER, that is the R4 fix
+    /// landing — update this gate, do not delete it.** It pins a known defect on purpose,
+    /// which is the only honest way to ship one.
+    ///
+    /// ⚠ **Is the fixture's own tessellation a confound?** It is the obvious objection: the
+    /// shells are placed against the *analytic* sphere while the flood fill was built from a
+    /// polyhedron. No — checked both ways. The polyhedron deviates inward by at most
+    /// `r(1 − cos(π/2n_lat))` ≈ 1.2e-3, against a closest sampling offset of 5.0e-3, so both
+    /// shells sit unambiguously on their intended side with ~4× margin. And empirically the
+    /// answer does not move with tessellation: 16×32 / 32×64 / 48×96 give 47.3 / 47.7 /
+    /// 47.7 % at 0.05 cell. The error is a property of the lattice, not of the mesh.
+    #[test]
+    fn flood_fill_sign_is_unreliable_within_a_cell_of_the_surface() {
+        let r = 1.0_f64;
+        let cell = 0.1_f64;
+        let mesh = crate::test_fixtures::uv_sphere(r, 32, 64);
+        let bounds = Aabb::new(Point3::new(-2.0, -2.0, -2.0), Point3::new(2.0, 2.0, 2.0));
+        let (sdf, _report) =
+            flood_filled_sdf(mesh, bounds, cell, WALL_THRESHOLD_FACTOR_DEFAULT).expect("build");
+
+        // Shell sampler: points at `d` inside and outside the true sphere surface.
+        let wrong_at = |d: f64| {
+            let (mut wrong, mut total) = (0usize, 0usize);
+            let n = 40;
+            for i in 0..n {
+                for j in 0..n {
+                    let th = std::f64::consts::PI * (f64::from(i) + 0.5) / f64::from(n);
+                    let ph = 2.0 * std::f64::consts::PI * (f64::from(j) + 0.5) / f64::from(n);
+                    for (sgn, want_inside) in [(-1.0_f64, true), (1.0, false)] {
+                        let rr = r + sgn * d;
+                        let p = Point3::new(
+                            rr * th.sin() * ph.cos(),
+                            rr * th.sin() * ph.sin(),
+                            rr * th.cos(),
+                        );
+                        total += 1;
+                        if sdf.sign.is_inside(p) != want_inside {
+                            wrong += 1;
+                        }
+                    }
+                }
+            }
+            #[allow(clippy::cast_precision_loss)]
+            let pct = 100.0 * wrong as f64 / total as f64;
+            println!(
+                "  offset {:.3} = {:.2} cell | wrong {wrong}/{total} ({pct:.1} %)",
+                d,
+                d / cell
+            );
+            pct
+        };
+
+        println!("\nFloodFillSign::is_inside vs the analytic sphere:");
+        let at_005 = wrong_at(0.05 * cell);
+        let _ = wrong_at(0.30 * cell);
+        let at_050 = wrong_at(0.50 * cell);
+        let at_100 = wrong_at(1.00 * cell);
+        let at_200 = wrong_at(2.00 * cell);
+
+        // ── The defect, pinned. Non-vacuity: it must be LARGE, not merely non-zero. ──
+        assert!(
+            at_005 > 30.0,
+            "only {at_005:.1} % of signs are wrong at 0.05 cell from the surface. Either the \
+             lattice lookup stopped being piecewise-constant (good — see the note above) or \
+             this fixture no longer samples the band, in which case the assertions below \
+             prove nothing"
+        );
+        assert!(
+            at_050 > 1.0,
+            "the half-cell shell is already clean ({at_050:.1} %), so the fixture's cell is \
+             too coarse relative to the sampling to show the transition"
+        );
+
+        // ── The regime that IS trustworthy, which is what makes the caveat actionable. ──
+        assert!(
+            at_100 == 0.0 && at_200 == 0.0,
+            "signs are wrong beyond a full cell from the surface ({at_100:.1} %, {at_200:.1} %) \
+             — then the failure is not merely near-surface and the doc's promised safe \
+             regime does not exist"
+        );
+    }
+
+    /// **The same type answers with different fidelity depending on which method you call.**
+    ///
+    /// [`CachedGridSdf::signed_distance`] interpolates **stored signed values**, so it
+    /// crosses zero smoothly instead of stepping; `impl Sign for CachedGridSdf` delegates
+    /// straight to [`FloodFillSign`], so `is_inside` on the very same object does not.
+    ///
+    /// ★ **Measured, and the measurement corrected the hypothesis.** The first version of
+    /// this gate asserted the interpolated path was *clean*. It is not: at 0.05 cell it is
+    /// still ~8 % wrong, against ~48 % for the lattice lookup — **5–6× better, not fixed.**
+    /// The reason is that the stored node values are `magnitude × the node's own flood-fill
+    /// label`, so a mislabelled node contributes a wrongly-signed value and interpolation
+    /// merely puts the zero crossing in the wrong place instead of stepping to it.
+    ///
+    /// So the honest claim, which is what the docs now make: **both accessors degrade
+    /// within a cell of the surface**, and choosing the interpolated one buys a factor, not
+    /// a guarantee.
+    ///
+    /// ⚠ This gate measures the **contrast between the two accessors**, not correctness. A
+    /// fault that moves both equally — a globally inverted label set, say — leaves the
+    /// ratio intact and passes here; that is
+    /// `flood_fill_sign_is_unreliable_within_a_cell_of_the_surface`'s far-field arm to
+    /// catch, and it does (verified by inverting `inside_flags`).
+    #[test]
+    fn cached_grid_signed_distance_does_not_inherit_the_lattice_sign_defect() {
+        let r = 1.0_f64;
+        let cell = 0.1_f64;
+        let mesh = crate::test_fixtures::uv_sphere(r, 32, 64);
+        let bounds = Aabb::new(Point3::new(-2.0, -2.0, -2.0), Point3::new(2.0, 2.0, 2.0));
+        let distance = TriMeshDistance::new(mesh).expect("scalable");
+        let (grid, _report) =
+            CachedGridSdf::build(&distance, bounds, cell, WALL_THRESHOLD_FACTOR_DEFAULT)
+                .expect("build");
+
+        let d = 0.05 * cell;
+        let (mut interp_wrong, mut lookup_wrong, mut total) = (0usize, 0usize, 0usize);
+        let n = 40;
+        for i in 0..n {
+            for j in 0..n {
+                let th = std::f64::consts::PI * (f64::from(i) + 0.5) / f64::from(n);
+                let ph = 2.0 * std::f64::consts::PI * (f64::from(j) + 0.5) / f64::from(n);
+                for (sgn, want_inside) in [(-1.0_f64, true), (1.0, false)] {
+                    let rr = r + sgn * d;
+                    let p = Point3::new(
+                        rr * th.sin() * ph.cos(),
+                        rr * th.sin() * ph.sin(),
+                        rr * th.cos(),
+                    );
+                    total += 1;
+                    if (grid.signed_distance(p) < 0.0) != want_inside {
+                        interp_wrong += 1;
+                    }
+                    if grid.is_inside(p) != want_inside {
+                        lookup_wrong += 1;
+                    }
+                }
+            }
+        }
+        println!(
+            "\nat 0.05 cell: signed_distance wrong {interp_wrong}/{total} | is_inside wrong \
+             {lookup_wrong}/{total}"
+        );
+
+        assert!(
+            lookup_wrong * 3 > total,
+            "`CachedGridSdf::is_inside` is not reproducing the lattice defect \
+             ({lookup_wrong}/{total}), so the contrast this test draws is invisible and the \
+             doc it backs would be unearned"
+        );
+        assert!(
+            interp_wrong * 3 < lookup_wrong,
+            "`signed_distance` ({interp_wrong}/{total}) is not decisively better than \
+             `is_inside` ({lookup_wrong}/{total}). Then the two accessors must be documented \
+             as equally unsafe near the surface"
+        );
+        // ★ And the half that matters more, because it is the one a reader will get wrong:
+        //   interpolation is NOT a fix. Pinned so nobody upgrades "better" into "safe".
+        assert!(
+            interp_wrong * 100 > total,
+            "`signed_distance` is now under 1 % wrong at 0.05 cell ({interp_wrong}/{total}). \
+             If the trilinear path became genuinely clean that is good news and this gate \
+             should be re-anchored — but the doc that calls it 'a factor, not a guarantee' \
+             must be corrected in the same change"
+        );
+    }
 
     // ── Synthetic fixtures (spec §9) ──────────────────────────────────
 

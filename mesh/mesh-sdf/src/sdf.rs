@@ -8,22 +8,31 @@
 //!
 //! # Sign contract
 //!
-//! [`PseudoNormalSign`] is **fast** on watertight, well-formed meshes
-//! but **fragile** on decimated / cleaned scans with cap fans whose
-//! winding flipped during reconstruction. New consumers that derive an
-//! SDF from a cf-scan-prep cleaned scan should prefer the flood-fill
-//! sign oracle [`crate::FloodFillSign`] — see
-//! `docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md` for the rationale.
+//! **Neither oracle is the default answer. Choose by WHERE YOU QUERY.**
+//! The two fail in orthogonal ways, so a choice made on reputation rather
+//! than on query location can land on the wrong one either way.
 //!
-//! ⚠ **[`TriMeshDistance::health`] does not settle this choice for you.**
-//! It censuses the built artifact for *zeroed* pseudo-normals — the
-//! area-floor and coordinate-cap failure mode — and is **blind to winding
-//! and manifoldness**, which is what the paragraph above is about. A
-//! globally reversed winding negates every cross product, so the census is
-//! byte-identical while every sign is inverted (measured on a unit cube).
-//! Use it to answer "did the scale rule leave this surface with unsignable
-//! features"; for a scan whose winding you do not trust, [`crate::FloodFillSign`]
-//! is still the answer.
+//! | | [`PseudoNormalSign`] | [`crate::FloodFillSign`] |
+//! |---|---|---|
+//! | dirty topology (flipped cap fans, non-manifold edges) | **fragile** | **blind to it — its strength** |
+//! | at / near the surface | **exact** | **~48 % wrong at 0.05 cell; exact from 1 cell out** |
+//! | cost | no extra build; `O(log faces)` per query | one distance query **per lattice node** at build; `O(1)` after |
+//! | can you check your own mesh? | yes — [`TriMeshDistance::health`] | **no instrument**; compare your query distance against `cell_size` |
+//!
+//! So: **flood-fill for far-field sign on a scan whose winding you do not
+//! trust; pseudo-normal for contact, projection and zero-isosurface work.**
+//! A cleaned cf-scan-prep scan queried away from the surface is the
+//! flood-fill case — see `docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md` — but
+//! that recommendation is about the *scan*, not about every query on it.
+//!
+//! [`TriMeshDistance::health`] answers exactly one of those rows: **did the
+//! scale rule leave this surface with features parry cannot sign?** It
+//! censuses the built artifact for *zeroed* pseudo-normals — the area-floor
+//! and coordinate-cap failure mode. It is **blind to winding and
+//! manifoldness**: a globally reversed winding negates every cross product,
+//! so the census is byte-identical while every sign is inverted (measured on
+//! a unit cube). It cannot tell you which oracle to pick; it tells you
+//! whether the pseudo-normal one is safe on the mesh in front of you.
 
 use std::sync::Arc;
 
