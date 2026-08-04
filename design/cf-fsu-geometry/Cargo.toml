@@ -27,7 +27,9 @@ workspace = true
 cf-geometry = { workspace = true }
 # `load_stl` — read a vertebra/disc STL.
 mesh-io = { workspace = true }
-# `repair_mesh` / `RepairParams::for_scans` — weld raw triangle soup watertight.
+# `repair_mesh` / `RepairParams::for_scans` — weld raw triangle soup watertight;
+# `validate_mesh` / `winding_census` / `find_connected_components` — the three
+# instruments a `SurfaceReport` composes, whose types it also re-exports.
 mesh-repair = { workspace = true }
 # `Signed<TriMeshDistance, PseudoNormalSign>` — the exact mesh-derived metric oracle.
 mesh-sdf = { workspace = true }
