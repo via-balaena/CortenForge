@@ -783,7 +783,7 @@ mod tests {
     fn flood_fill_sign_is_unreliable_within_a_cell_of_the_surface() {
         let r = 1.0_f64;
         let cell = 0.1_f64;
-        let mesh = uv_sphere_local(r, 32, 64);
+        let mesh = crate::test_fixtures::uv_sphere(r, 32, 64);
         let bounds = Aabb::new(Point3::new(-2.0, -2.0, -2.0), Point3::new(2.0, 2.0, 2.0));
         let (sdf, _report) =
             flood_filled_sdf(mesh, bounds, cell, WALL_THRESHOLD_FACTOR_DEFAULT).expect("build");
@@ -876,7 +876,7 @@ mod tests {
     fn cached_grid_signed_distance_does_not_inherit_the_lattice_sign_defect() {
         let r = 1.0_f64;
         let cell = 0.1_f64;
-        let mesh = uv_sphere_local(r, 32, 64);
+        let mesh = crate::test_fixtures::uv_sphere(r, 32, 64);
         let bounds = Aabb::new(Point3::new(-2.0, -2.0, -2.0), Point3::new(2.0, 2.0, 2.0));
         let distance = TriMeshDistance::new(mesh).expect("scalable");
         let (grid, _report) =
@@ -933,13 +933,6 @@ mod tests {
              should be re-anchored — but the doc that calls it 'a factor, not a guarantee' \
              must be corrected in the same change"
         );
-    }
-
-    /// UV sphere, local copy — `crate::test_fixtures` is reachable, but this module's other
-    /// fixtures are all local and the near-surface gates want the radius/tessellation
-    /// stated where they are read.
-    fn uv_sphere_local(radius: f64, n_lat: u32, n_lon: u32) -> IndexedMesh {
-        crate::test_fixtures::uv_sphere(radius, n_lat, n_lon)
     }
 
     // ── Synthetic fixtures (spec §9) ──────────────────────────────────
