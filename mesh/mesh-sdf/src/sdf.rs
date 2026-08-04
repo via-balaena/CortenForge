@@ -21,9 +21,18 @@
 //! and manifoldness**, which is what the paragraph above is about. A
 //! globally reversed winding negates every cross product, so the census is
 //! byte-identical while every sign is inverted (measured on a unit cube).
-//! Use it to answer "did the scale rule leave this surface with unsignable
-//! features"; for a scan whose winding you do not trust, [`crate::FloodFillSign`]
-//! is still the answer.
+//!
+//! ⚠⚠ **And the alternative is not unconditionally safer — CHOOSE BY WHERE
+//! YOU QUERY.** [`crate::FloodFillSign`] is topology-blind, which is exactly
+//! what a winding-suspect scan needs, but its sign is a lattice lookup:
+//! within half a cell of the surface it approaches a coin flip, and it is
+//! exact only from one cell out (table on that type). `PseudoNormalSign` is
+//! the opposite — exact *at* the surface, failing only where a pseudo-normal
+//! was zeroed, which `health` now measures. So: flood-fill for far-field
+//! sign on dirty topology; pseudo-normal for contact, projection and
+//! zero-isosurface work, with `health` to check it is safe on your mesh.
+//! Neither is the default answer, and an earlier version of this paragraph
+//! said flood-fill was.
 
 use std::sync::Arc;
 
