@@ -1,5 +1,35 @@
 # FSU Tet4 → Tet10 coupling-migration plan
 
+> ## ⚠⚠ READ FIRST — every measured figure below rungs 1–4 is PRE-α.1 and most have moved
+>
+> `mesh-sdf`'s α.1 (#714) stopped the disc mesher emitting material that is not disc. That
+> invalidated a large share of this document's committed numbers, and rung β re-anchored them **in
+> the code**, which is the source of truth. This document is kept as the *record of what each rung
+> measured at the time*, not as a statement of current values.
+>
+> The changes are not uniform, and the shape of them matters more than any single figure:
+>
+> | quantity | pre-α.1 | now | reading |
+> |---|---|---|---|
+> | bonded-face corner split | 583 / 233 auth / 350 declined | **189 / 188 / 1** | the 350 "annular rim" was **phantom material**, not anatomy |
+> | boundary midside split | 1562 / 580 / 982 | **445 / 445 / 0** | same, independently |
+> | authorised corner residual | 1.332 → 0.750 mm | **0.530 → 0.170** | conform cuts 3.1× where it cut 1.8× |
+> | authorised midside residual | 0.881 → 0.767 mm | **0.197 → 0.111** | midsides now land closer than the corners they span |
+> | midside coverage | 67.4 % | **91.0 %** | smaller moves requested, so the floor refuses less |
+> | #701 max seat move | 4.156 mm | **1.734 mm** | ⚠ retires the evidence for the loose 6 mm cap |
+> | element ratio (Tet10/Tet4) | 0.666 / 0.663 | **0.827 / 0.829** | ⚠ **a physics change, not a stale anchor** — see below |
+> | absolute `k_disc` (Tet4 flex) | −0.2811 | **−0.1170** | one draw from a wide distribution, either way |
+> | lofted drivability + conditioning | — | **bit-identical** | the fabricated control never went through the fixed path |
+>
+> ★★ **The element-order claim in §0.3 — "the Tet10 disc is ~33 % softer" — is now ~17 %.** Four
+> independent harnesses agree on the new ratio. The mechanism is that Tet4's bending over-stiffness
+> grows with element distortion, so phantom slivers were inflating the gap; removing them narrows
+> it, and predicts Tet4 loses more absolute stiffness than Tet10 (measured −58 % vs −48 %). The
+> arc's *direction* is unchanged and its justification survives — the magnitude does not.
+>
+> ▶ Rung β's remaining work (absolute-`k_disc` single producer, `RUNG7_K_DISC`) is tracked in the
+> code, not here.
+
 Make the whole Tet10 element ladder (`docs/SIM_SOFT_TET10_PLAN.md`, rungs 1–8 + curved
 element + SDF-projection mesher, all merged #680–#700) **load-bearing in the flagship
 FSU segment**: a curved-isoparametric Tet10 intervertebral disc, bonded to the *real*
@@ -591,9 +621,12 @@ no `CoupledFsu`.
 >   *those* needs `prepare_disc` and a bonded-band accessor made public — a crate-wide change with
 >   nothing to do with the Tet10 ladder, so it belongs in its own PR, not in this rung.
 > - **Also committed as rung 3's "before" arm:** the straight-Tet10 bonded-face boundary midsides
->   (1562 of them) sit max 12.464 / RMS 3.366 mm off the bone. ⚠ Like the all-candidate corner
+>   (1562 of them) **sat** max 12.464 / RMS 3.366 mm off the bone. ⚠ Like the all-candidate corner
 >   figures, that aggregate is dominated by the rim that stays straight by design — rung 3 must
 >   compare the *authorised* region like for like, not quote a drop in this number as its payoff.
+>   ⚠⚠ **PRE-α.1.** There are now 445 boundary midsides at max 1.375 / RMS 0.197 mm, and the "rim"
+>   this warns about was phantom material — so the aggregate is no longer dominated by anything and
+>   the like-for-like continuity check across α.1 is **not available**. See the banner at the top.
 
 **Rung 3 — curved Tet10: project bonded-face boundary midsides onto the real endplate.** The
 exact-geometry endgame. New `sim-soft` helper (§2.6) + `fsu-model` wiring; interior-band
@@ -1201,7 +1234,7 @@ transfer — the behaviour does, and behaviour is what this rung asks about.
 | 0 | coupling, fsu-model | — (inert) | existing tolerance tests unchanged | **§4.1 license-free `to_bits` golden, bits frozen pre-change** |
 | 1 | fsu-model | **§4.2** ratio bracket + band-count cross-check | restoring + conserving + converged, both arms | Tet4 path untouched |
 | 2 | fsu-model | **§4.3** exact-geometry residual ↓ | **§4.5** large-angle sweep; per-element conform delta | Tet4+raw arm byte-identical |
-| 3 ✅ | sim-soft + fsu-model | **§4.3** residual ↓ again (authorised RMS 0.881 → 0.767 mm, re-anchored at rung 4) | **§4.4** coverage 67.4 % + per-Gauss-point floor; k_disc shift 0.05 % committed | straight-Tet10 arm untouched (rung-1 FOM re-runs at 0.666 / 0.663) |
+| 3 ✅ | sim-soft + fsu-model | **§4.3** residual ↓ again (authorised RMS 0.881 → 0.767 mm at rung 4; **0.197 → 0.111 at rung β**) | **§4.4** coverage 67.4 % (**91.0 % at rung β**) + per-Gauss-point floor; k_disc shift 0.05 % committed | straight-Tet10 arm untouched (rung-1 FOM re-runs at 0.666 / 0.663) |
 | 4 ✅ | fsu-model, coupling | single `RUNG7_K_DISC` re-anchor, measured (−0.2819 → −0.1882) | **§4.5** full ramp completes, `detJ > 0` on the DEFORMED config; **§4.6** flexion ROM assert; segment shift +0.0082° vs predicted ~0.008° | — |
 | 4b | fsu-model | **§4.3** residual, on the COUPLED disc | lofted disc completes ±6° conformed, both elements | — |
 | 5 ⛔ | fsu-model | **BLOCKED** (§3 confound 1: `k_disc` ~100 % p2p over ±3.3 % `cell`). When unblocked — **§4.8** the bracket `\|k*\| ≤ \|k10(fine)\| ≤ \|k10(coarse)\| ≤ \|k4\|`, ±5 % two-sided pins; headline = a lower bound on the shipped `RUNG7_K_DISC` error | liveness (strictly-monotone DOFs per arm) → rung-1 known-value reproduction → **clamp-plane constancy** → `min_jacobian_ratio` → domain metrics | zero production diff; rung-2 `llvm-cov` oracle on **`coupled.rs` + `coupling/src/bonded.rs`** (NOT `src/lib.rs` — this rung adds tests to it) |
