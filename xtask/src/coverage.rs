@@ -158,6 +158,16 @@ fn walk(items: &[Item], out: &mut Vec<(usize, usize)>) {
 /// doc comments included. That only widens the range upward across attribute
 /// and doc lines, which carry no executable code of their own; it would take
 /// two items sharing a source line for this to reach a neighbour's code.
+/// Checked rather than assumed: across the seven measured crates, **no**
+/// production function has a single excluded line.
+///
+/// ⚠ **Known limit: `#[cfg(test)]` in expression position is not seen.** This
+/// walks items, so a test-gated *field initialiser* inside a production
+/// function — `sim/L1/fsu-model/src/lib.rs:663` — stays in the denominator.
+/// Bounded by counting: of the 333 files under `sim/`, `design/` and `mesh/`
+/// that use `#[cfg(test)]`, that site is the only one, so the whole class is
+/// worth **one line workspace-wide**. Walking every function body to reclaim
+/// it would cost far more than it is worth.
 pub(crate) fn cfg_test_spans(src: &str) -> Option<Vec<(usize, usize)>> {
     let file = syn::parse_file(src).ok()?;
     let mut out = Vec::new();
@@ -288,6 +298,18 @@ fn is_start_of_region(s: &Seg) -> bool {
 /// between two boundaries carry the enclosing ("wrapped") region's count and
 /// must be filled in; counting only the lines that own a segment undercounts
 /// the denominator by 9-26 % across the seven crates measured here.
+///
+/// ★ **Validated against llvm-cov's own per-line output.** Checked against the
+/// `DA:` records of `cargo llvm-cov --lcov` for `sim-types`: identical on every
+/// file, line for line and count for count.
+///
+/// ⚠ That is *not* the same as the `summary` field in the JSON export, which
+/// this criterion no longer reads. For `sim/L0/types/src/body.rs` the summary
+/// claims 138 lines while llvm-cov's own per-line export emits 136 — the tool
+/// disagrees with itself, and the per-line data is the side `llvm-cov show`
+/// and lcov report. So the grade's percentage will sit a few tenths off a bare
+/// `cargo llvm-cov --summary-only`, for this reason on top of the
+/// `#[cfg(test)]` exclusion.
 pub(crate) fn mapped_lines(segments: &[serde_json::Value]) -> BTreeMap<usize, u64> {
     let mut out = BTreeMap::new();
     let mut segs: Vec<Seg> = segments
