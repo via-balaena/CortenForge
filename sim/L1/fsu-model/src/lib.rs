@@ -1365,6 +1365,14 @@ mod tests {
     use super::test_support::{box_mesh, sphere_mesh, synthetic_disc};
     use super::*;
 
+    // The committed disc-stiffness table, shared with `tests/conform_delta_by_element.rs`.
+    // `rung5_step1_mesh_realization_noise_floor_fom` below cross-checks its sweep's shipped
+    // row against the raw column, so the two gates must pin the same numbers by construction.
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/reference/committed_disc_stiffness.rs"
+    ));
+
     #[test]
     fn builds_and_derives_the_ml_axis_and_pivot() {
         let disc = build_bonded_disc(synthetic_disc(), &DiscParams::default(), None).unwrap();
@@ -3273,10 +3281,14 @@ mod tests {
             .find(|r| (r.cell - 0.003).abs() < 1e-12)
             .expect("the sweep must contain the shipped cell");
         for (got, want, name) in [
-            (shipped.linear.0, -0.2811, "Tet4 flexion"),
-            (shipped.linear.1, -0.2788, "Tet4 extension"),
-            (shipped.quadratic.0, -0.1873, "Tet10 flexion"),
-            (shipped.quadratic.1, -0.1849, "Tet10 extension"),
+            (shipped.linear.0, COMMITTED_TET4_RAW.0, "Tet4 flexion"),
+            (shipped.linear.1, COMMITTED_TET4_RAW.1, "Tet4 extension"),
+            (shipped.quadratic.0, COMMITTED_TET10_RAW.0, "Tet10 flexion"),
+            (
+                shipped.quadratic.1,
+                COMMITTED_TET10_RAW.1,
+                "Tet10 extension",
+            ),
         ] {
             assert!(
                 (got - want).abs() < 5e-4,

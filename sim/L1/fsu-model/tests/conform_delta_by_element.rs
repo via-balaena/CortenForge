@@ -20,6 +20,14 @@ use cf_fsu_model::{
 };
 use sim_soft::{Element, Mesh};
 
+// The committed disc-stiffness table, shared with `rung5_step1_mesh_realization_noise_floor_fom`
+// in `src/lib.rs`, which cross-checks its sweep's shipped row against the same raw column. One
+// definition so a re-anchor cannot land on one gate and miss the other.
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/reference/committed_disc_stiffness.rs"
+));
+
 /// `(k_flex, k_ext)` at ±0.5° for a bonded disc, measured through the **stepped**
 /// `capture_flexion` sweep #701's conform FOM uses (−0.5, −0.25, 0, +0.25, +0.5°).
 ///
@@ -179,14 +187,30 @@ fn conform_delta_by_element_fom() {
     // The raw column must still be rung 1's, so a drift in the shared geometry pipeline
     // fails here as well as there.
     for (k, expect, name) in [
-        (k4_raw_f, -0.2811, "Tet4 raw flexion"),
-        (k4_raw_e, -0.2788, "Tet4 raw extension"),
-        (k10_raw_f, -0.1873, "Tet10 raw flexion"),
-        (k10_raw_e, -0.1849, "Tet10 raw extension"),
-        (k4_con_f, -0.2760, "Tet4 conformed flexion"),
-        (k4_con_e, -0.2738, "Tet4 conformed extension"),
-        (k10_con_f, -0.1845, "Tet10 conformed flexion"),
-        (k10_con_e, -0.1821, "Tet10 conformed extension"),
+        (k4_raw_f, COMMITTED_TET4_RAW.0, "Tet4 raw flexion"),
+        (k4_raw_e, COMMITTED_TET4_RAW.1, "Tet4 raw extension"),
+        (k10_raw_f, COMMITTED_TET10_RAW.0, "Tet10 raw flexion"),
+        (k10_raw_e, COMMITTED_TET10_RAW.1, "Tet10 raw extension"),
+        (
+            k4_con_f,
+            COMMITTED_TET4_CONFORMED.0,
+            "Tet4 conformed flexion",
+        ),
+        (
+            k4_con_e,
+            COMMITTED_TET4_CONFORMED.1,
+            "Tet4 conformed extension",
+        ),
+        (
+            k10_con_f,
+            COMMITTED_TET10_CONFORMED.0,
+            "Tet10 conformed flexion",
+        ),
+        (
+            k10_con_e,
+            COMMITTED_TET10_CONFORMED.1,
+            "Tet10 conformed extension",
+        ),
     ] {
         assert!(
             ((1.05 * expect)..=(0.95 * expect)).contains(&k),
