@@ -74,7 +74,8 @@ pub struct CriterionResult {
     pub result: String,
     pub grade: Grade,
     pub threshold: &'static str,
-    /// Full descriptive string for COMPLETION.md (e.g., "96.2% line coverage").
+    /// Full descriptive string for COMPLETION.md
+    /// (e.g., "96.2% production line coverage (839/879 lines; 1225 #[cfg(test)] lines excluded)").
     /// Read by `complete.rs` (Step 9 of the grade tool rebuild).
     #[allow(dead_code)]
     pub measured_detail: String,
@@ -962,37 +963,38 @@ fn grade_coverage(
 
     // Parse JSON and filter to files belonging to the target crate.
     // The llvm-cov report includes all instrumented workspace members;
-    // we sum only files whose path contains the crate's directory
+    // we read only files whose path contains the crate's directory
     // (e.g. "sim/L0/thermostat/") to get the correct per-crate number.
-    let coverage = (|| -> Option<f64> {
-        let json: serde_json::Value = serde_json::from_str(&output).ok()?;
-        let files = json["data"][0]["files"].as_array()?;
-
-        let mut covered: u64 = 0;
-        let mut total: u64 = 0;
-        for file in files {
-            let filename = file["filename"].as_str().unwrap_or("");
-            if !filename.contains(crate_path) {
-                continue;
-            }
-            let lines = &file["summary"]["lines"];
-            covered += lines["covered"].as_u64().unwrap_or(0);
-            total += lines["count"].as_u64().unwrap_or(0);
-        }
-
-        if total == 0 {
-            return None;
-        }
-        Some(100.0 * covered as f64 / total as f64)
-    })();
-
-    let Some(coverage) = coverage else {
+    //
+    // Within those files the criterion counts PRODUCTION lines only. Running
+    // `--lib` instruments the test binary, so a crate's `#[cfg(test)]` code
+    // would otherwise be measured as if it were the code under test: bodies
+    // that run pad the numerator, and `#[ignore]`d gates pad the denominator
+    // while contributing nothing. See coverage.rs.
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&output) else {
         return Ok(CriterionResult {
             name: "1. Coverage",
             result: "(parse error)".to_string(),
             grade: Grade::F,
             threshold: "≥75%/≥90% A+",
             measured_detail: "(failed to parse llvm-cov JSON)".to_string(),
+        });
+    };
+    let measured = crate::coverage::production_coverage(&json, crate_path);
+
+    // No production lines is a different fact from bad coverage, and from a
+    // broken report. Grading it F would send a reader hunting for uncovered
+    // code, or for a parse bug, when neither exists.
+    let Some(coverage) = measured.percent() else {
+        return Ok(CriterionResult {
+            name: "1. Coverage",
+            result: "(no production lines)".to_string(),
+            grade: Grade::NotApplicable,
+            threshold: "≥75%/≥90% A+",
+            measured_detail: format!(
+                "no instrumented production lines ({} #[cfg(test)] lines excluded)",
+                measured.excluded
+            ),
         });
     };
 
@@ -1012,11 +1014,21 @@ fn grade_coverage(
         Grade::F
     };
 
-    let detail = if !heavy_passed {
-        format!("{:.1}% line coverage (heavy tests FAILED)", coverage)
-    } else {
-        format!("{:.1}% line coverage", coverage)
-    };
+    // Say what was left out. A metric that silently drops lines reads as
+    // "everything was measured" when it was not.
+    let mut detail = format!(
+        "{:.1}% production line coverage ({}/{} lines; {} #[cfg(test)] lines excluded)",
+        coverage, measured.covered, measured.total, measured.excluded
+    );
+    if !measured.unparsed.is_empty() {
+        detail.push_str(&format!(
+            " ⚠ {} file(s) unreadable, so their test code IS counted",
+            measured.unparsed.len()
+        ));
+    }
+    if !heavy_passed {
+        detail.push_str(" (heavy tests FAILED)");
+    }
 
     Ok(CriterionResult {
         name: "1. Coverage",

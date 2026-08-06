@@ -28,6 +28,7 @@
 mod affected;
 mod check;
 mod complete;
+mod coverage;
 mod grade;
 mod pr_scope;
 mod setup;
