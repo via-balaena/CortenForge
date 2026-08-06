@@ -300,8 +300,13 @@ fn is_start_of_region(s: &Seg) -> bool {
 /// the denominator by 9-26 % across the seven crates measured here.
 ///
 /// ★ **Validated against llvm-cov's own per-line output.** Checked against the
-/// `DA:` records of `cargo llvm-cov --lcov` for `sim-types`: identical on every
-/// file, line for line and count for count.
+/// `DA:` records of `cargo llvm-cov --lcov` for `sim-types` (409 lines) and
+/// `cf-fsu-model` (3152 lines): identical on every file, line for line and
+/// count for count.
+///
+/// That second crate is what caught the seeding rule. `sim-types` agreed under
+/// either reading, so one crate was not enough to pin it — the disagreement
+/// only appears where a dead branch closes inside a hot function.
 ///
 /// ⚠ That is *not* the same as the `summary` field in the JSON export, which
 /// this criterion no longer reads. For `sim/L0/types/src/body.rs` the summary
@@ -361,11 +366,12 @@ pub(crate) fn mapped_lines(segments: &[serde_json::Value]) -> BTreeMap<usize, u6
         let mapped = !skipped && (wrapped.is_some_and(|w| w.has_count) || entries > 0);
 
         if mapped {
-            let mut exec = if entries == 0 {
-                wrapped.map_or(0, |w| w.count)
-            } else {
-                0
-            };
+            // Seed from the enclosing region, then let any region opening on
+            // this line raise it. A line can *close* a zero-count region while
+            // still executing as part of the region that wraps it — the `}` of
+            // an `if let` whose body never ran, inside a hot function. Seeding
+            // at zero whenever a region opens here reports those as uncovered.
+            let mut exec = wrapped.filter(|w| w.has_count).map_or(0, |w| w.count);
             for s in &group {
                 if is_start_of_region(s) {
                     exec = exec.max(s.count);
@@ -568,6 +574,25 @@ mod tests {
             "every line of the region is mapped, not just the two with segments"
         );
         assert!(lines.values().all(|c| *c == 7));
+    }
+
+    /// Validated against llvm-cov's own `DA:` records: a line closing a
+    /// zero-count region inside an executing one is covered, not uncovered.
+    /// Seeding the count at zero whenever a region opens on the line got this
+    /// backwards on 4 lines of cf-fsu-model.
+    #[test]
+    fn a_line_closing_a_dead_branch_inside_a_live_region_is_covered() {
+        let segments = vec![
+            seg(10, 5, 7, true, true, false), // live region, executed 7x
+            seg(12, 9, 0, true, true, false), // a branch on line 12 that never ran
+            seg(12, 10, 0, false, false, false),
+        ];
+        let lines = mapped_lines(&segments);
+        assert_eq!(
+            lines.get(&12),
+            Some(&7),
+            "line 12 still executes as part of the wrapping region"
+        );
     }
 
     #[test]
