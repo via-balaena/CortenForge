@@ -500,22 +500,92 @@ pub const SI_CONFORM_CAP: f64 = 4.0;
 /// moves nearly perpendicular to SI (alignment near 0). This `cos 70°` threshold seats the
 /// faces (which the disc must render flush on) while declining an annulus vertex that would
 /// wrap sideways onto the body wall. Only applied to moves larger than
-/// [`SI_CONFORM_ON_SURFACE`] — a vertex already on the bone needs no direction.
+/// `SI_CONFORM_ON_SURFACE` — a vertex already on the bone needs no direction.
 const SI_CONFORM_MIN_ALIGN: f64 = 0.34;
 /// A vertex already within this distance of the bone (mm) is left as-is (already seated; the
 /// direction guard does not apply). Sub-10-µm — the disc's median native endplate gap.
 const SI_CONFORM_ON_SURFACE: f64 = 1.0e-3;
 /// Move cap (mm) for the **bonded-band node** conform ([`bonded_conform_target`]).
 ///
-/// Looser than the render-surface [`SI_CONFORM_CAP`]: the bonded FEM nodes float a measured
-/// p90 ≈ 5.8 mm off the bone (a longer registration gap than the drawn face, which is caught at
+/// Looser than the render-surface [`SI_CONFORM_CAP`]: the bonded FEM nodes float further off the
+/// bone than the drawn face does (a longer registration gap, which the render surface catches at
 /// its own extremes), so a hard 3–4 mm cap would wrongly decline genuine endplate-facing nodes
-/// 3–5 mm out. The
-/// SI-alignment guard — not this distance — is the primary discriminator between a face node
-/// (seat it) and an annular-rim node reaching sideways for the body wall (leave it straight); the
-/// cap is only a loose backstop against a runaway projection. Still well inside the ~9 mm disc
-/// half-thickness, so the two endplate bands never meet.
+/// 3–5 mm out. Still well inside the ~9 mm disc half-thickness, so the two endplate bands never
+/// meet.
+///
+/// ⚠ **Two claims this doc used to make are withdrawn, because nothing in the tree produces
+/// them.**
+///
+/// 1. *"the bonded FEM nodes float a measured p90 ≈ 5.8 mm off the bone."* No producer exists
+///    anywhere in the workspace — the figure appeared here without one, and the run that would
+///    have made it is gone. `cf_fsu_model`'s `conform_seats_the_bonded_face_on_the_bone_fom`
+///    is the gate that measures this population's distance to the bone; until it commits a
+///    distribution rather than a max, this cap's exact value is a judgement, not a measurement.
+/// 2. *"the SI-alignment guard — not this distance — is the primary discriminator ...; the cap is
+///    only a loose backstop against a runaway projection."* Which guard actually decides is now
+///    observable — [`bonded_conform_decision`] returns it — and it is observable precisely
+///    because it was **not** observable when that sentence was written. `conform_target` tests
+///    the cap **first** and returns immediately, so the cap cannot be "only a backstop" for any
+///    node past it: for those nodes it is the sole decision, and their alignment is never
+///    computed. Read [`ConformDecision::BeyondCap`].
 pub const SI_CONFORM_CAP_BONDED: f64 = 6.0;
+
+/// Which way `conform_target` decided, and — when it declined — **which guard decided it**.
+///
+/// The bare `Option` [`bonded_conform_target`] returns collapses two different refusals into one
+/// `None`, and they are not interchangeable: the two guards are applied **in a fixed order**, and
+/// only the second one looks at direction.
+///
+/// ★ **Why the distinction is load-bearing rather than cosmetic.** `conform_target` tests the
+/// distance cap first and returns immediately, so **a node past the cap has never had its
+/// alignment computed**. Describing such a node as "reaching sideways onto the vertebral body
+/// wall" is therefore an attribution the code cannot produce — and three call sites in this
+/// workspace stated it anyway, for a population whose committed maximum distance to the bone was
+/// twice the cap. Distinguishing the two is what makes those descriptions checkable.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ConformDecision {
+    /// Already within `SI_CONFORM_ON_SURFACE` of the bone. Seated as-is, with the direction
+    /// guard deliberately **not** applied: a move this small has no meaningful direction.
+    AlreadySeated(Point3<f64>),
+    /// Projected onto the nearer endplate — the move cleared the cap *and* the alignment guard.
+    Seated(Point3<f64>),
+    /// Declined by the **distance cap**: the nearer endplate is `distance` mm away, past the cap
+    /// this call was given.
+    ///
+    /// ⚠ The alignment guard was never reached, so this node's direction is **unmeasured**. This
+    /// variant is not evidence of a lateral reach, and must not be reported as one.
+    BeyondCap {
+        /// Distance (caller's units) to the nearer endplate — greater than the cap.
+        distance: f64,
+    },
+    /// Declined by the **SI-alignment guard**: the move is within the cap, but its `alignment`
+    /// (`|d·SI| / |d|`) is below the threshold — a near-lateral move that would wrap the node
+    /// sideways onto the vertebral body wall instead of seating it on an endplate face.
+    Lateral {
+        /// Distance (caller's units) to the nearer endplate — within the cap.
+        distance: f64,
+        /// `|d·SI| / |d|` for the declined move, below the threshold this call was given.
+        alignment: f64,
+    },
+}
+
+impl ConformDecision {
+    /// The point to seat this node on, or `None` to leave it where it is — the whole of what
+    /// [`bonded_conform_target`] and `project_to_nearest_endplate` return.
+    #[must_use]
+    pub const fn target(self) -> Option<Point3<f64>> {
+        match self {
+            Self::AlreadySeated(p) | Self::Seated(p) => Some(p),
+            Self::BeyondCap { .. } | Self::Lateral { .. } => None,
+        }
+    }
+
+    /// Whether the conform refused this node, by either guard.
+    #[must_use]
+    pub const fn declined(self) -> bool {
+        self.target().is_none()
+    }
+}
 
 /// Conform the disc's endplate-facing vertices onto the **real** L4/L5 endplate surfaces
 /// (native mm), so the rendered disc *is* the contact geometry — no proxy gap.
@@ -615,10 +685,28 @@ pub fn bonded_conform_target(
     o4: &MeshOracle,
     o5: &MeshOracle,
 ) -> Option<Point3<f64>> {
-    conform_target(v, si, o4, o5, SI_CONFORM_CAP_BONDED, SI_CONFORM_MIN_ALIGN)
+    bonded_conform_decision(v, si, o4, o5).target()
 }
 
-/// Shared core of [`project_to_nearest_endplate`] (render surface, [`SI_CONFORM_CAP`]) and
+/// [`bonded_conform_target`]'s decision with its **reason** retained — the same call, without
+/// collapsing the two refusals into one `None`.
+///
+/// Use this wherever the *population* of declined nodes is being described rather than merely
+/// skipped: which guard refused a node is the difference between "this node overhangs the
+/// endplate and reaches sideways for the body wall" (a modelling call) and "this node is simply
+/// too far from any bone" (a registration gap, or material that should not be there at all). See
+/// [`ConformDecision`] for why those cannot be inferred from each other.
+#[must_use]
+pub fn bonded_conform_decision(
+    v: Point3<f64>,
+    si: Vector3<f64>,
+    o4: &MeshOracle,
+    o5: &MeshOracle,
+) -> ConformDecision {
+    conform_decision(v, si, o4, o5, SI_CONFORM_CAP_BONDED, SI_CONFORM_MIN_ALIGN)
+}
+
+/// Shared core of `project_to_nearest_endplate` (render surface, [`SI_CONFORM_CAP`]) and
 /// [`bonded_conform_target`] (bonded band, [`SI_CONFORM_CAP_BONDED`]): project `v` onto its
 /// nearest point on whichever endplate (`o4` = L4 or `o5` = L5) is closer, following the LOCAL
 /// surface normal ([`MeshOracle::closest_point`]), subject to a `cap` on the move distance and a
@@ -634,6 +722,24 @@ fn conform_target(
     cap: f64,
     min_align: f64,
 ) -> Option<Point3<f64>> {
+    conform_decision(v, si, o4, o5, cap, min_align).target()
+}
+
+/// `conform_target`'s single decision path, returning **which** branch it took.
+///
+/// ⚠ **The order of the two guards is part of the contract, not an implementation detail.** The
+/// cap is tested first and returns immediately, so [`ConformDecision::BeyondCap`] carries no
+/// information about direction — `d.dot(&si)` is never evaluated on that path.
+/// `a_node_past_the_cap_is_attributed_to_the_cap_not_to_direction` pins the order, and it is the
+/// gate that stops the two refusals being conflated again.
+fn conform_decision(
+    v: Point3<f64>,
+    si: Vector3<f64>,
+    o4: &MeshOracle,
+    o5: &MeshOracle,
+    cap: f64,
+    min_align: f64,
+) -> ConformDecision {
     // Nearer of the two endplates — no band / SI-orientation convention needed.
     let (p4, p5) = (o4.closest_point(v), o5.closest_point(v));
     let p = if (p4 - v).norm_squared() <= (p5 - v).norm_squared() {
@@ -644,16 +750,23 @@ fn conform_target(
     let d = p - v;
     let dist = d.norm();
     if dist < SI_CONFORM_ON_SURFACE {
-        return Some(p); // already on the surface — no meaningful direction to guard
+        // Already on the surface — no meaningful direction to guard.
+        return ConformDecision::AlreadySeated(p);
     }
     if dist > cap {
-        return None; // nearest endplate is too far — disc interior / annulus middle
+        // Nearest endplate is too far — disc interior / annulus middle. Direction NOT consulted.
+        return ConformDecision::BeyondCap { distance: dist };
     }
     // Endplate FACE ⇒ move ≈ along SI (alignment ~1); side WALL ⇒ move ≈ ⟂ SI (alignment ~0).
-    if (d.dot(&si) / dist).abs() < min_align {
-        return None; // near-lateral move — would wrap onto the body wall, decline
+    let alignment = (d.dot(&si) / dist).abs();
+    if alignment < min_align {
+        // Near-lateral move — would wrap onto the body wall, decline.
+        return ConformDecision::Lateral {
+            distance: dist,
+            alignment,
+        };
     }
-    Some(p)
+    ConformDecision::Seated(p)
 }
 
 /// The disc's transverse cross-section at `z_mid`, extruded infinitely along the SI (native z)
@@ -828,8 +941,17 @@ pub fn model_disc_between_endplates(
 
 #[cfg(test)]
 mod tests {
-    // tests may unwrap; the small-count → f64 casts (vertex tallies) are exact.
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::cast_precision_loss)]
+    // Tests may unwrap; the small-count → f64 casts (vertex tallies) are exact. `panic!` is the
+    // non-matching arm of a `match` on `ConformDecision`: the variants carry floats, so an
+    // `assert_eq!` on the whole value would demand bit-exact payloads where only the variant (and
+    // a tolerance on its fields) is the contract — the match reports WHICH branch was taken
+    // instead, which is the thing under test.
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::cast_precision_loss,
+        clippy::panic
+    )]
 
     use super::*;
 
@@ -1343,6 +1465,129 @@ mod tests {
         assert_eq!(
             got, overhang,
             "an overhang vertex must not be projected, got {got:?}"
+        );
+    }
+
+    /// [`bonded_conform_decision`] names **which** of its four branches it took, on a fixture
+    /// placed so that each branch is reached by exactly one vertex.
+    ///
+    /// Until this existed the only observable was `Option`, so the two refusals were
+    /// indistinguishable — and the **alignment guard's decision path had no licence-free test at
+    /// all**: every decline the crate exercised was a cap decline. That gap is why a production
+    /// doc could call the alignment guard "the primary discriminator" and stay green.
+    #[test]
+    fn bonded_conform_decision_names_which_guard_decided() {
+        let (_, o4, o5, frame) = conform_scene();
+        let si = frame.superior_axis;
+        let decide = |p: Point3<f64>| bonded_conform_decision(p, si, &o4, &o5);
+
+        // (a) ON the bone already (L4's inferior face is z = 20) — seated, direction not consulted.
+        match decide(Point3::new(0.0, 0.0, 20.0)) {
+            ConformDecision::AlreadySeated(p) => assert!(
+                (p.z - 20.0).abs() < 1e-9,
+                "already-seated node must return its own surface point, got {p:?}"
+            ),
+            other => panic!("a node on the endplate must read AlreadySeated, got {other:?}"),
+        }
+
+        // (b) 2 mm below L4's face, moving straight up the SI axis — the case the conform exists
+        //     for: clears the cap, alignment 1.
+        match decide(Point3::new(0.0, 0.0, 18.0)) {
+            ConformDecision::Seated(p) => assert!(
+                (p.z - 20.0).abs() < 1e-9,
+                "a face node must seat on the endplate at z = 20, got {p:?}"
+            ),
+            other => panic!("an SI-aligned in-cap node must read Seated, got {other:?}"),
+        }
+
+        // (c) 3 mm off L4's LATERAL wall, at a z inside L4's own span — the anatomical case the
+        //     alignment guard was written for (an annular-rim node reaching sideways for the
+        //     vertebral body). In-cap, alignment 0.
+        match decide(Point3::new(13.0, 0.0, 25.0)) {
+            ConformDecision::Lateral {
+                distance,
+                alignment,
+            } => {
+                assert!(
+                    (distance - 3.0).abs() < 1e-9,
+                    "expected a 3 mm lateral move, got {distance}"
+                );
+                assert!(
+                    distance <= SI_CONFORM_CAP_BONDED,
+                    "this node must be declined by DIRECTION, not by the cap — otherwise the \
+                     Lateral arm is unreachable and this gate proves nothing (distance \
+                     {distance}, cap {SI_CONFORM_CAP_BONDED})"
+                );
+                assert!(
+                    alignment < SI_CONFORM_MIN_ALIGN,
+                    "a purely lateral move must read alignment ≈ 0, got {alignment}"
+                );
+            }
+            other => panic!("a near-lateral in-cap node must read Lateral, got {other:?}"),
+        }
+
+        // (d) Far outside the footprint — the cap, and nothing else, decides. See the order gate.
+        match decide(Point3::new(50.0, 0.0, 18.0)) {
+            ConformDecision::BeyondCap { distance } => assert!(
+                distance > SI_CONFORM_CAP_BONDED,
+                "BeyondCap must carry a distance past the cap, got {distance}"
+            ),
+            other => panic!("a node far off the footprint must read BeyondCap, got {other:?}"),
+        }
+    }
+
+    /// ★ **The order gate.** A node that satisfies **both** refusal conditions is attributed to
+    /// the **cap**, because the cap is tested first — and therefore its direction was never
+    /// measured.
+    ///
+    /// This is the assert that makes the withdrawn claim un-restatable. `SI_CONFORM_CAP_BONDED`'s
+    /// doc used to say the cap was "only a loose backstop" and the alignment guard "the primary
+    /// discriminator"; `cf_fsu_model`'s conform gates then described a guard-declined population
+    /// whose committed *maximum* distance to the bone was **twice the cap** as "reaching sideways
+    /// for the vertebral body wall". Both readings require the alignment guard to have run on
+    /// nodes for which it demonstrably cannot have.
+    ///
+    /// **The teeth are in the second assert**: the fixture node is independently shown to satisfy
+    /// the lateral condition too, so the verdict `BeyondCap` is a statement about *precedence*.
+    /// Swap the two guards in `conform_decision` and this gate fails; without the alignment
+    /// check the verdict would be indistinguishable from a node that simply points the right way.
+    #[test]
+    fn a_node_past_the_cap_is_attributed_to_the_cap_not_to_direction() {
+        let (_, o4, o5, frame) = conform_scene();
+        let si = frame.superior_axis;
+        // 40 mm off the footprint and 2 mm below L4's face: the nearest bone point is reached by a
+        // move that is almost entirely lateral.
+        let node = Point3::new(50.0, 0.0, 18.0);
+
+        let nearer = {
+            let (p4, p5) = (o4.closest_point(node), o5.closest_point(node));
+            if (p4 - node).norm_squared() <= (p5 - node).norm_squared() {
+                p4
+            } else {
+                p5
+            }
+        };
+        let d = nearer - node;
+        let (distance, alignment) = (d.norm(), (d.dot(&si) / d.norm()).abs());
+
+        // The node genuinely satisfies BOTH conditions — this is what makes the verdict below a
+        // claim about precedence rather than a restatement of the only condition it meets.
+        assert!(
+            distance > SI_CONFORM_CAP_BONDED,
+            "fixture must be past the cap ({distance} vs {SI_CONFORM_CAP_BONDED})"
+        );
+        assert!(
+            alignment < SI_CONFORM_MIN_ALIGN,
+            "fixture must ALSO be near-lateral, or this gate does not pin an order \
+             (alignment {alignment} vs {SI_CONFORM_MIN_ALIGN})"
+        );
+
+        assert_eq!(
+            bonded_conform_decision(node, si, &o4, &o5),
+            ConformDecision::BeyondCap { distance },
+            "a node satisfying both refusals must be attributed to the CAP — the guard the code \
+             actually reached. Its alignment ({alignment}) is real but UNCONSULTED, and reporting \
+             such a node as a lateral/rim decline is an attribution the code cannot produce."
         );
     }
 
