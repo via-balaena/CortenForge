@@ -2487,8 +2487,9 @@ mod tests {
     /// ⚠ Every number in this doc comment is a **mutation delta measured at the rung-3 corner
     /// floor (0.05)**, before rung 4 raised it to 0.25. Read them as the before/after PAIRS they
     /// are — what each mutant does to each statistic — not against the values committed today
-    /// (67.4 %, 1.533, 0.141). Re-running the mutants at the new floor would move both sides of
-    /// every arrow and change none of the conclusions.
+    /// (91.0 %, 0.818, 0.086 since rung β; they read 67.4 %, 1.533, 0.141 before it). Re-running
+    /// the mutants at the current floor and geometry would move both sides of every arrow and
+    /// change none of the conclusions.
     // Node counts are in the thousands — exact in f64.
     #[allow(clippy::cast_precision_loss)]
     fn projection_coverage(
@@ -5224,11 +5225,19 @@ mod tests {
         // **ZERO**: every remaining decline is a genuine near-lateral one.
         //
         // ★ Pre-α.1 this would have read ~350, with a committed maximum residual of 12.577 mm —
-        // **twice the cap** — and nothing reported it. Had this assert existed, the phantom
-        // material would have been visible from the endplate conform instead of being found by
-        // accident during a mesh-sdf audit four merges later. That is the whole case for it: a
-        // backstop that quietly swallows garbage is worse than no backstop, because it manufactures
-        // a plausible-looking population.
+        // **twice the cap** — and nothing reported it. A backstop that quietly swallows garbage is
+        // worse than no backstop, because it manufactures a plausible-looking population.
+        //
+        // ⚠ **Be precise about what this adds, because assert (1) above fires FIRST.** Any change
+        // that pushes nodes past the cap also moves `authorised`, so (1)'s exact tuple catches it
+        // and (1b) never runs — verified by mutation (cap 6.0 -> 1.0 gives 166 authorised, so (1)
+        // fires). What (1b) uniquely catches is a node moving between `lateral` and `beyond_cap`
+        // with the tuple unchanged: same `guard_declined` count, different guard. So (1b) is the
+        // DIAGNOSIS — it names the cap as the absorber — while (1) is the detector. Both earn their
+        // place; neither is the other.
+        //
+        // ★ **It can fail for the reason it claims** (mutation-verified): with (1) neutralised and
+        // the cap at 1.0, this assert fires reading `23 beyond the 1 mm cap`.
         assert_eq!(
             beyond_cap.len(),
             0,
@@ -5723,13 +5732,22 @@ mod tests {
     ///
     /// Rung 2 committed the "before" arm as a single aggregate over **all 1562** bonded-face
     /// boundary midsides (max 12.464 / RMS 3.375 mm) and flagged the trap on the way past: that
-    /// number is dominated by the overhanging annular rim, which stays straight **by design**
-    /// (#701's settled call — Sharpey's fibres attach to the ring apophysis, not the endplate
-    /// face). Quoting a drop in it would be measuring how much rim happens to be in the average.
-    /// So the payoff assert is on the **authorised** midsides — the ones the anatomy
-    /// discriminator (`bonded_conform_target`, the same primitive the corner conform uses) says
-    /// should seat — exactly as `conform_seats_the_bonded_face_on_the_bone_fom` does for
-    /// corners. The declined population is reported, never averaged in, and the all-candidate
+    /// number was dominated by a population that stays straight, so quoting a drop in it would be
+    /// measuring how much of that population happens to be in the average. So the payoff assert is
+    /// on the **authorised** midsides — the ones the discriminator says should seat — exactly as
+    /// `conform_seats_the_bonded_face_on_the_bone_fom` does for corners.
+    ///
+    /// ⚠⚠ **RUNG β RETIRED THE PREMISE, exactly as it did on the corner gate.** This paragraph used
+    /// to attribute the dominating population to "the overhanging annular rim, which stays straight
+    /// by design (#701's settled call — Sharpey's fibres attach to the ring apophysis)". Measured:
+    /// that population was **phantom material**, and there are now **445 candidates of which 445
+    /// are authorised and 0 declined**. So the aggregate cannot be dominated by anything, and the
+    /// self-deception this section warns about is no longer available.
+    ///
+    /// **The like-for-like structure stays, for the reason the corner gate gives:** with the two
+    /// populations identical, their coincidence is the instrument — a declined midside reappearing
+    /// separates them again and is the signature of phantom material returning. Assert (4b) pins it
+    /// as a set equality. The declined population is reported, never averaged in, and the all-candidate
     /// aggregate is kept as the continuity check against rung 2's committed number.
     ///
     /// ## The validity gate is written so it cannot be tautological (§4.4)
@@ -6014,9 +6032,13 @@ mod tests {
         // authorised gives 484 of 580 midsides at **79.5 %** delivered — barely better — while
         // dropping 96 midsides that were *improving* (their RMS falls 1.477 → 1.198). So the
         // simpler rule ships: project every authorised bonded-face boundary midside.
-        // ⚠ Both halves of that comparison were measured at the *corner* floor 0.05, before this
-        // rung split the constant (72.4 % ungated vs 79.5 % parent-gated), so read it as the
-        // like-for-like pair it is and not against the 67.4 % committed above.
+        // ⚠ Both halves of that comparison were measured at the *corner* floor 0.05 and pre-α.1,
+        // before this rung split the constant (72.4 % ungated vs 79.5 % parent-gated), so read it
+        // as the like-for-like pair it is and not against the 91.0 % committed above. ⚠⚠ Its
+        // premise is also gone: the hypothesis under test was that low delivery concentrates in
+        // midsides whose parents were guard-declined, and there are now **no declined parents** —
+        // so the parent-gated variant would today select the identical population. The comparison
+        // is kept as the record of why the simpler rule was chosen, not as a live alternative.
         //
         // ⚠⚠ **And a second mutant refuted this gate's own advertised justification.** (Measured
         // at the rung-3 corner floor 0.05, like the parent-gating pair above — before/after
