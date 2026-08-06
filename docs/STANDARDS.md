@@ -51,8 +51,8 @@ macOS (including Apple Silicon), and Windows.
 
 **Requirements:**
 
-- [ ] Line coverage ≥75% (A grade — ships)
-- [ ] Line coverage ≥90% (A+ grade — gold standard)
+- [ ] Production line coverage ≥75% (A grade — ships)
+- [ ] Production line coverage ≥90% (A+ grade — gold standard)
 - [ ] All public functions have at least one test
 - [ ] All error paths are tested
 - [ ] Edge cases are explicitly tested:
@@ -62,10 +62,28 @@ macOS (including Apple Silicon), and Windows.
   - Invalid input (for functions that validate)
 - [ ] Integration tests exist for cross-function workflows
 
-**What Counts:**
+**What Counts** (as a *test*, i.e. something that can cover a line):
 - Unit tests in `#[cfg(test)]` modules
 - Doc tests in `///` comments
 - Integration tests in `tests/` directory
+
+**What Is Measured** (the lines in the ratio): **production lines only.**
+
+`cargo llvm-cov --lib` instruments the *test* binary, so a crate's own
+`#[cfg(test)]` code appears in the report next to the code it exercises.
+`cargo xtask grade` subtracts it from both sides of the ratio, because counting
+it measures two unrelated things at once:
+
+- test bodies that run are ~100% covered, so they **inflate** the number —
+  measured across seven crates, worth up to +12 points;
+- test bodies that *cannot* run — `#[ignore]`d licence-gated gates and the
+  helpers reachable only from them — sit in the denominator contributing zero,
+  so improving a crate's instrumentation **lowers** its letter.
+
+⚠ Consequence: the grade's percentage is deliberately **not** the number a bare
+`cargo llvm-cov -p <crate> --fail-under-lines 75` prints — that one still counts
+test code. When the two disagree, the grade is the one that answers "how much of
+what I ship is tested".
 
 **Exceptions:** None for Layer 0 crates.
 

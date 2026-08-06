@@ -128,7 +128,7 @@ This records completion in the crate's `COMPLETION.md` and updates the project-w
 
 | Criterion | A Standard | Automated? |
 |-----------|------------|------------|
-| **Test Coverage** | ≥75% line coverage (target: 90%) | Yes |
+| **Test Coverage** | ≥75% **production** line coverage (target: 90%) — `#[cfg(test)]` code is excluded from the ratio; see STANDARDS.md | Yes |
 | **Documentation** | Zero doc warnings, all public items documented | Yes |
 | **Clippy** | Zero warnings | Yes |
 | **Safety** | Zero `unwrap()`/`expect()` in library code | Yes |
