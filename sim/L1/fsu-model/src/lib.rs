@@ -1322,6 +1322,7 @@ pub(crate) mod test_support {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // tests may unwrap/expect/panic.
 
+    use cf_fsu_geometry::ConformDecision;
     use cf_geometry::Sdf;
 
     use nalgebra::SMatrix;
@@ -4842,8 +4843,7 @@ mod tests {
     /// `(max, RMS)` of a residual sample, both reported and both gated: the max catches a
     /// single node left off the bone, the RMS catches a population that only *mostly* seated
     /// (a max-only gate passes a run where 95 % of nodes never moved).
-    // Node counts are in the thousands — exact in f64.
-    #[allow(clippy::cast_precision_loss)]
+    ///
     /// ⚠ **Undefined on an EMPTY population, and it fails silently**: the RMS divides by the
     /// count, so an empty slice returns `(0.0, NaN)` — which prints as a plausible-looking row and
     /// makes any `±5 %` comparison against it false rather than loud.
@@ -4855,6 +4855,8 @@ mod tests {
     /// set is not a quantity — it has to be retired in favour of a pin on the population *count*.
     /// Deliberately left standing here: it belongs with the re-anchor rung that has the run to
     /// justify what replaces it, not with the rung that added the decline instrument.
+    // Node counts are in the thousands — exact in f64.
+    #[allow(clippy::cast_precision_loss)]
     fn residual_stats(rs: &[f64]) -> (f64, f64) {
         let max = rs.iter().copied().fold(0.0_f64, f64::max);
         let rms = (rs.iter().map(|r| r * r).sum::<f64>() / rs.len() as f64).sqrt();
@@ -4926,17 +4928,15 @@ mod tests {
         authorised: usize,
         moved: usize,
         backed_off: usize,
-        (beyond_cap, lateral): (&[VertexId], &[VertexId]),
+        (beyond_cap, lateral): (usize, usize),
     ) {
         println!(
             "bonded-face boundary nodes: {candidates} candidates = {authorised} authorised \
              ({moved} moved, {backed_off} fully backed off by the quality floor) + {} \
-             guard-declined ({} beyond the {} mm cap — direction UNMEASURED; {} near-lateral, \
-             i.e. #701's rim)",
-            beyond_cap.len() + lateral.len(),
-            beyond_cap.len(),
+             guard-declined ({beyond_cap} beyond the {} mm cap — direction UNMEASURED; \
+             {lateral} near-lateral, i.e. #701's rim)",
+            beyond_cap + lateral,
             cf_fsu_geometry::SI_CONFORM_CAP_BONDED,
-            lateral.len(),
         );
     }
 
@@ -4956,36 +4956,35 @@ mod tests {
         // ONE decision per candidate, and the reason kept — rather than calling the discriminator
         // twice and re-deriving why it said no, which would measure a model of the production
         // decision instead of the decision.
-        let decisions: Vec<(VertexId, cf_fsu_geometry::ConformDecision)> = candidates
-            .iter()
-            .map(|&v| {
-                (
-                    v,
-                    cf_fsu_geometry::bonded_conform_decision(
-                        p_raw[v as usize],
-                        ep.superior_axis,
-                        ep.o4,
-                        ep.o5,
-                    ),
-                )
-            })
-            .collect();
-        let pick = |f: fn(&cf_fsu_geometry::ConformDecision) -> bool| -> Vec<VertexId> {
-            decisions
-                .iter()
-                .filter(|(_, d)| f(d))
-                .map(|&(v, _)| v)
-                .collect()
-        };
-        let authorised = pick(|d| !d.declined());
-        let guard_declined = pick(|d| d.declined());
-        let beyond_cap = pick(|d| matches!(d, cf_fsu_geometry::ConformDecision::BeyondCap { .. }));
-        let lateral = pick(|d| matches!(d, cf_fsu_geometry::ConformDecision::Lateral { .. }));
-        assert_eq!(
-            beyond_cap.len() + lateral.len(),
-            guard_declined.len(),
-            "every declined node must be attributed to exactly one guard"
-        );
+        //
+        // ★ The classification is an EXHAUSTIVE MATCH on purpose. The obvious alternative — three
+        // predicate passes plus `assert_eq!(beyond_cap + lateral, guard_declined)` — is a gate
+        // that CANNOT FAIL: `ConformDecision::declined()` is defined as exactly those two
+        // variants, so the equality is a theorem about the enum rather than a check on the data.
+        // A match makes a future variant a COMPILE error, which is the check that assert was
+        // pretending to be.
+        let (mut authorised, mut guard_declined) = (Vec::new(), Vec::new());
+        let (mut beyond_cap, mut lateral) = (Vec::new(), Vec::new());
+        for &v in &candidates {
+            match cf_fsu_geometry::bonded_conform_decision(
+                p_raw[v as usize],
+                ep.superior_axis,
+                ep.o4,
+                ep.o5,
+            ) {
+                ConformDecision::AlreadySeated(_) | ConformDecision::Seated(_) => {
+                    authorised.push(v);
+                }
+                ConformDecision::BeyondCap { .. } => {
+                    beyond_cap.push(v);
+                    guard_declined.push(v);
+                }
+                ConformDecision::Lateral { .. } => {
+                    lateral.push(v);
+                    guard_declined.push(v);
+                }
+            }
+        }
         let authorised_set: std::collections::HashSet<VertexId> =
             authorised.iter().copied().collect();
         let moved: Vec<VertexId> = candidates
@@ -5131,7 +5130,7 @@ mod tests {
             authorised.len(),
             moved.len(),
             backed_off,
-            (&beyond_cap, &lateral),
+            (beyond_cap.len(), lateral.len()),
         );
         println!(
             "residual |eval| to the nearer vertebra (mm) — \
@@ -5316,9 +5315,10 @@ mod tests {
         candidates: BTreeSet<VertexId>,
         authorised: BTreeSet<VertexId>,
         declined: BTreeSet<VertexId>,
-        /// `declined` split by which guard refused — see [`ConformSplit`] for why the two are not
-        /// interchangeable. Only `lateral` is #701's overhanging annular rim.
+        /// Refused by the distance cap. Direction UNMEASURED — not evidence of a rim. See
+        /// [`ConformSplit`] for why the two declines are not interchangeable.
         beyond_cap: BTreeSet<VertexId>,
+        /// Refused by the SI-alignment guard: in-cap, near-lateral. This is #701's rim.
         lateral: BTreeSet<VertexId>,
     }
 
@@ -5336,38 +5336,27 @@ mod tests {
             .filter(|f| f[..3].iter().all(|v| band.contains(v)))
             .flat_map(|f| f[3..].iter().copied())
             .collect();
-        // One decision per candidate, reason retained — the corner split's shape, one level up.
-        let decisions: Vec<(VertexId, cf_fsu_geometry::ConformDecision)> = candidates
-            .iter()
-            .map(|&v| {
-                let native = center_native + straight.positions()[v as usize] / scale;
-                (
-                    v,
-                    cf_fsu_geometry::bonded_conform_decision(
-                        native,
-                        ep.superior_axis,
-                        ep.o4,
-                        ep.o5,
-                    ),
-                )
-            })
-            .collect();
-        let pick = |f: fn(&cf_fsu_geometry::ConformDecision) -> bool| -> BTreeSet<VertexId> {
-            decisions
-                .iter()
-                .filter(|(_, d)| f(d))
-                .map(|&(v, _)| v)
-                .collect()
-        };
-        let authorised = pick(|d| !d.declined());
-        let declined = pick(|d| d.declined());
-        let beyond_cap = pick(|d| matches!(d, cf_fsu_geometry::ConformDecision::BeyondCap { .. }));
-        let lateral = pick(|d| matches!(d, cf_fsu_geometry::ConformDecision::Lateral { .. }));
-        assert_eq!(
-            beyond_cap.len() + lateral.len(),
-            declined.len(),
-            "every declined midside must be attributed to exactly one guard"
-        );
+        // One decision per candidate, reason retained, classified by an exhaustive match — the
+        // corner split's shape, one level up. See `conform_split` for why the match rather than a
+        // count assert.
+        let (mut authorised, mut declined) = (BTreeSet::new(), BTreeSet::new());
+        let (mut beyond_cap, mut lateral) = (BTreeSet::new(), BTreeSet::new());
+        for &v in &candidates {
+            let native = center_native + straight.positions()[v as usize] / scale;
+            match cf_fsu_geometry::bonded_conform_decision(native, ep.superior_axis, ep.o4, ep.o5) {
+                ConformDecision::AlreadySeated(_) | ConformDecision::Seated(_) => {
+                    authorised.insert(v);
+                }
+                ConformDecision::BeyondCap { .. } => {
+                    beyond_cap.insert(v);
+                    declined.insert(v);
+                }
+                ConformDecision::Lateral { .. } => {
+                    lateral.insert(v);
+                    declined.insert(v);
+                }
+            }
+        }
         MidsideSplit {
             candidates,
             authorised,

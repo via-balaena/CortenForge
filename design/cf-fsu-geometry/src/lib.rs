@@ -676,8 +676,16 @@ fn project_to_nearest_endplate(
 /// point are in the caller's frame; `si` is the (unit) SI axis ([`SegmentFrame::superior_axis`]),
 /// invariant under the disc's translate + uniform-scale solver bridge so the alignment guard holds
 /// in either frame. The caller is responsible for keeping the resulting move mesh-valid (a
-/// quality-floor back-off); leaving the overhanging annular rim straight is intentional — the
-/// outer annulus attaches to the ring apophysis, not the endplate face.
+/// quality-floor back-off).
+///
+/// ⚠ This doc used to end "leaving the overhanging annular rim straight is intentional — the
+/// outer annulus attaches to the ring apophysis, not the endplate face", which describes only the
+/// [`ConformDecision::Lateral`] arm. A `None` from this function is **either** arm, and on the
+/// shipped `BodyParts3D` geometry the rim is **1 corner node and 0 midsides** (producer:
+/// `cf_fsu_model`'s `conform_seats_the_bonded_face_on_the_bone_fom` and
+/// `curved_tet10_midsides_seat_on_the_endplate_fom`, both licence-gated, so CI cannot reproduce
+/// it). Read the decline through [`bonded_conform_decision`] rather than assuming which guard
+/// fired.
 #[must_use]
 pub fn bonded_conform_target(
     v: Point3<f64>,
@@ -1472,9 +1480,15 @@ mod tests {
     /// placed so that each branch is reached by exactly one vertex.
     ///
     /// Until this existed the only observable was `Option`, so the two refusals were
-    /// indistinguishable — and the **alignment guard's decision path had no licence-free test at
-    /// all**: every decline the crate exercised was a cap decline. That gap is why a production
-    /// doc could call the alignment guard "the primary discriminator" and stay green.
+    /// indistinguishable — and the **alignment guard's decision path had no licence-free test
+    /// anywhere in the workspace**: every decline either crate exercised was a *cap* decline.
+    ///
+    /// ★ **That is measured, not assumed.** Making the `Lateral` branch of `conform_decision`
+    /// `panic!` leaves all 24 other `cf-fsu-geometry` tests and **all 16** `cf-fsu-model`
+    /// licence-free tests green; this gate is the only thing that reaches it. (The order gate
+    /// below correctly does *not* fail under that mutant — its node is cap-declined, so it never
+    /// gets there.) That gap is why a production doc could call the alignment guard "the primary
+    /// discriminator" and stay green.
     #[test]
     fn bonded_conform_decision_names_which_guard_decided() {
         let (_, o4, o5, frame) = conform_scene();
