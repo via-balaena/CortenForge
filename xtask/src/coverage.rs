@@ -19,10 +19,12 @@
 //! only under `cfg(test)`; [`mapped_lines`] reproduces llvm-cov's own
 //! line-coverage rule so those ranges can be subtracted line by line.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
+use std::path::{Path, PathBuf};
 
+use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
-use syn::{Attribute, Fields, ImplItem, Item, Meta, TraitItem};
+use syn::{Attribute, Fields, ImplItem, Item, Meta, Token, TraitItem};
 
 /// Production line coverage for one crate, plus what it could not account for.
 #[derive(Debug, Default)]
@@ -33,7 +35,7 @@ pub(crate) struct ProductionCoverage {
     pub total: u64,
     /// `#[cfg(test)]` lines removed from both sides — reported, never silent.
     pub excluded: u64,
-    /// Files whose source could not be parsed, so their test code was *not*
+    /// Files whose source could not be read or parsed, so their test code was *not*
     /// excluded. Their lines are still counted, which understates coverage —
     /// the safe direction, but the grade must say so rather than imply a
     /// clean sweep.
@@ -47,21 +49,30 @@ impl ProductionCoverage {
     }
 }
 
-/// True if these attributes gate the item on `test`.
+/// True when this `cfg` predicate can hold *only* in a test build.
 ///
-/// `#[cfg(test)]` and `#[cfg(all(test, ...))]` both mean "test build only".
-/// `#[cfg(any(test, ...))]` does **not** — such an item still exists in a
-/// non-test build — so it stays in the denominator as production code.
+/// `all(...)` needs every conjunct, so one `test` conjunct settles it.
+/// `any(...)` and `not(...)` do not: the item still exists in some non-test
+/// build, so it stays in the denominator as production code.
+///
+/// This parses the predicate rather than matching on its text. A substring
+/// test reads `all(feature = "test-fixtures", ...)` — a feature this workspace
+/// actually has — as a test gate, and silently drops shipped code from the
+/// metric, which looks like a measured crate and is not.
+fn requires_test(meta: &Meta) -> bool {
+    match meta {
+        Meta::Path(p) => p.is_ident("test"),
+        Meta::List(l) if l.path.is_ident("all") => l
+            .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+            .is_ok_and(|inner| inner.iter().any(requires_test)),
+        _ => false,
+    }
+}
+
+/// True if these attributes gate the item on `test`.
 fn is_cfg_test(attrs: &[Attribute]) -> bool {
     attrs.iter().any(|a| {
-        if !a.path().is_ident("cfg") {
-            return false;
-        }
-        let Meta::List(list) = &a.meta else {
-            return false;
-        };
-        let s = list.tokens.to_string().replace(' ', "");
-        s == "test" || (s.starts_with("all(") && s.contains("test"))
+        a.path().is_ident("cfg") && a.parse_args::<Meta>().is_ok_and(|m| requires_test(&m))
     })
 }
 
@@ -144,13 +155,104 @@ fn walk(items: &[Item], out: &mut Vec<(usize, usize)>) {
 /// Returns `None` if the source does not parse.
 ///
 /// A range starts at the item's first token, which is its first attribute —
-/// doc comments included. That widens each range upward over non-executable
-/// lines only, so it cannot swallow a neighbouring item's code.
+/// doc comments included. That only widens the range upward across attribute
+/// and doc lines, which carry no executable code of their own; it would take
+/// two items sharing a source line for this to reach a neighbour's code.
 pub(crate) fn cfg_test_spans(src: &str) -> Option<Vec<(usize, usize)>> {
     let file = syn::parse_file(src).ok()?;
     let mut out = Vec::new();
     walk(&file.items, &mut out);
     Some(out)
+}
+
+/// Where `mod name;` inside `owner` puts the child's source.
+///
+/// Both spellings are returned; the caller keeps whichever exists.
+fn child_module_candidates(owner: &Path, name: &str) -> Vec<PathBuf> {
+    let Some(dir) = owner.parent() else {
+        return Vec::new();
+    };
+    // `mod.rs`, `lib.rs` and `main.rs` own their own directory; any other file
+    // owns a subdirectory named after itself.
+    let base = match owner.file_stem().and_then(|s| s.to_str()) {
+        Some("mod" | "lib" | "main") => dir.to_path_buf(),
+        Some(stem) => dir.join(stem),
+        None => return Vec::new(),
+    };
+    vec![
+        base.join(format!("{name}.rs")),
+        base.join(name).join("mod.rs"),
+    ]
+}
+
+/// Names declared by a non-inline `mod name;`, split by whether the
+/// declaration is `#[cfg(test)]`.
+fn declared_modules(src: &str) -> Option<(Vec<String>, Vec<String>)> {
+    let file = syn::parse_file(src).ok()?;
+    let (mut test, mut plain) = (Vec::new(), Vec::new());
+    fn visit(items: &[Item], test: &mut Vec<String>, plain: &mut Vec<String>) {
+        for it in items {
+            let Item::Mod(m) = it else { continue };
+            match &m.content {
+                // Inline modules keep their code in this file, where the span
+                // walk already sees it.
+                Some((_, inner)) => visit(inner, test, plain),
+                None => {
+                    let name = m.ident.to_string();
+                    if is_cfg_test(&m.attrs) {
+                        test.push(name);
+                    } else {
+                        plain.push(name);
+                    }
+                }
+            }
+        }
+    }
+    visit(&file.items, &mut test, &mut plain);
+    Some((test, plain))
+}
+
+/// Every source file that exists only for tests because some ancestor declared
+/// it with `#[cfg(test)] mod name;`.
+///
+/// Nothing *inside* such a file is attributed to `cfg(test)` — the gate is on
+/// the declaration, in a different file — so the span walk alone would score
+/// the whole file as production code. This workspace has 15 of them, including
+/// `sim/L0/mjcf/src/parser/tests.rs`.
+fn test_only_files(roots: &[String]) -> HashSet<PathBuf> {
+    let mut found = HashSet::new();
+    let mut queue: Vec<PathBuf> = Vec::new();
+
+    for root in roots {
+        let owner = Path::new(root);
+        let Some(src) = std::fs::read_to_string(owner).ok() else {
+            continue;
+        };
+        let Some((test_mods, _)) = declared_modules(&src) else {
+            continue;
+        };
+        for name in test_mods {
+            queue.extend(child_module_candidates(owner, &name));
+        }
+    }
+
+    // Once a file is test-only, everything it declares is too — `#[cfg(test)]`
+    // is not repeated on the children.
+    while let Some(path) = queue.pop() {
+        if !path.is_file() || !found.insert(path.clone()) {
+            continue;
+        }
+        let Some(src) = std::fs::read_to_string(&path).ok() else {
+            continue;
+        };
+        let Some((test_mods, plain_mods)) = declared_modules(&src) else {
+            continue;
+        };
+        for name in test_mods.iter().chain(plain_mods.iter()) {
+            queue.extend(child_module_candidates(&path, name));
+        }
+    }
+    found
 }
 
 /// One llvm-cov segment: `[line, col, count, hasCount, isRegionEntry, isGapRegion]`.
@@ -172,10 +274,10 @@ fn is_start_of_region(s: &Seg) -> bool {
 /// (`CoverageMapping.cpp`). Segments mark region **boundaries**, so lines
 /// between two boundaries carry the enclosing ("wrapped") region's count and
 /// must be filled in; counting only the lines that own a segment undercounts
-/// a file by roughly a third.
+/// the denominator by 9-26 % across the seven crates measured here.
 pub(crate) fn mapped_lines(segments: &[serde_json::Value]) -> BTreeMap<usize, u64> {
     let mut out = BTreeMap::new();
-    let segs: Vec<Seg> = segments
+    let mut segs: Vec<Seg> = segments
         .iter()
         .filter_map(|s| {
             let a = s.as_array()?;
@@ -191,6 +293,12 @@ pub(crate) fn mapped_lines(segments: &[serde_json::Value]) -> BTreeMap<usize, u6
             })
         })
         .collect();
+    // llvm-cov emits segments in source order. Sorting makes the walk
+    // independent of that promise: out-of-order input would leave `next`
+    // unable to advance while `line` climbed, spinning forever. The sort is
+    // stable, so within-line column order — which the skipped-region check
+    // reads off the first segment — is preserved.
+    segs.sort_by_key(|s| s.line);
     let Some(first) = segs.first() else {
         return out;
     };
@@ -248,6 +356,14 @@ pub(crate) fn production_coverage(
         return acc;
     };
 
+    let own: Vec<String> = files
+        .iter()
+        .filter_map(|f| f["filename"].as_str())
+        .filter(|name| name.contains(crate_path))
+        .map(str::to_string)
+        .collect();
+    let test_files = test_only_files(&own);
+
     for file in files {
         let name = file["filename"].as_str().unwrap_or("");
         if !name.contains(crate_path) {
@@ -256,6 +372,13 @@ pub(crate) fn production_coverage(
         let Some(segments) = file["segments"].as_array() else {
             continue;
         };
+
+        // A file pulled in by `#[cfg(test)] mod name;` is test code end to end,
+        // and carries no attribute of its own to say so.
+        if test_files.contains(Path::new(name)) {
+            acc.excluded += mapped_lines(segments).len() as u64;
+            continue;
+        }
 
         let spans = match std::fs::read_to_string(name)
             .ok()
@@ -337,6 +460,45 @@ mod tests {
 
         let all = cfg_test_spans("#[cfg(all(test, unix))]\nfn a() {}\n").unwrap();
         assert_eq!(all.len(), 1, "all(test, ..) is test-only");
+    }
+
+    /// A feature whose NAME contains "test" is not a test gate. Matching on the
+    /// substring drops shipped code out of the metric silently, which is worse
+    /// than any wrong percentage — the crate looks measured and is not.
+    #[test]
+    fn a_feature_named_like_test_is_not_a_test_gate() {
+        let spans =
+            cfg_test_spans("#[cfg(all(feature = \"test-fixtures\", unix))]\nfn a() {}\n").unwrap();
+        assert!(
+            spans.is_empty(),
+            "all(feature = \"test-fixtures\", ..) is production, not test-only"
+        );
+    }
+
+    /// `mod.rs`/`lib.rs` own their own directory; any other file owns a
+    /// subdirectory named after itself. Getting this backwards resolves to
+    /// nothing, and the test file silently scores as production code.
+    #[test]
+    fn child_modules_resolve_for_both_owner_shapes() {
+        let from_mod = child_module_candidates(Path::new("a/src/parser/mod.rs"), "tests");
+        assert_eq!(from_mod[0], Path::new("a/src/parser/tests.rs"));
+        assert_eq!(from_mod[1], Path::new("a/src/parser/tests/mod.rs"));
+
+        let from_leaf = child_module_candidates(Path::new("a/src/parser.rs"), "tests");
+        assert_eq!(from_leaf[0], Path::new("a/src/parser/tests.rs"));
+        assert_eq!(from_leaf[1], Path::new("a/src/parser/tests/mod.rs"));
+    }
+
+    /// The gate sits on the *declaration*, so the file it names contains
+    /// nothing that identifies it as test code.
+    #[test]
+    fn non_inline_test_modules_are_separated_from_ordinary_ones() {
+        let (test, plain) = declared_modules(
+            "#[cfg(test)]\nmod tests;\nmod parser;\n#[cfg(test)]\nmod inline { fn f() {} }\n",
+        )
+        .unwrap();
+        assert_eq!(test, vec!["tests".to_string()]);
+        assert_eq!(plain, vec!["parser".to_string()]);
     }
 
     #[test]

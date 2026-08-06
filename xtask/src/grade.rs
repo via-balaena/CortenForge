@@ -1016,15 +1016,14 @@ fn grade_coverage(
 
     // Say what was left out. A metric that silently drops lines reads as
     // "everything was measured" when it was not.
-    let m = &measured;
     let mut detail = format!(
         "{:.1}% production line coverage ({}/{} lines; {} #[cfg(test)] lines excluded)",
-        coverage, m.covered, m.total, m.excluded
+        coverage, measured.covered, measured.total, measured.excluded
     );
-    if !m.unparsed.is_empty() {
+    if !measured.unparsed.is_empty() {
         detail.push_str(&format!(
-            " ⚠ {} file(s) did not parse, so their test code IS counted",
-            m.unparsed.len()
+            " ⚠ {} file(s) unreadable, so their test code IS counted",
+            measured.unparsed.len()
         ));
     }
     if !heavy_passed {
