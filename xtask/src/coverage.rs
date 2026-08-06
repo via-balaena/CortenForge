@@ -217,8 +217,17 @@ fn declared_modules(src: &str) -> Option<(Vec<String>, Vec<String>)> {
 ///
 /// Nothing *inside* such a file is attributed to `cfg(test)` — the gate is on
 /// the declaration, in a different file — so the span walk alone would score
-/// the whole file as production code. This workspace has 15 of them, including
-/// `sim/L0/mjcf/src/parser/tests.rs`.
+/// the whole file as production code. This workspace has 15 such declarations.
+///
+/// ⚠ **This guard is defensive, not load-bearing today.** Measured on
+/// `sim-mjcf`, whose `src/parser/tests.rs` is 2370 lines: llvm-cov attributes
+/// 93 executed functions and 1951 regions to that file, yet omits it from the
+/// export's `files[]` array entirely — so it never reached the denominator in
+/// the first place, and adding this guard moved the crate's number by 0.0
+/// points. The omission is undocumented behaviour rather than a promise, and
+/// the classifier's answer ("that file is test code") is true either way, so
+/// the guard stays: if a future llvm-cov lists those files, the alternative is
+/// 2370 test lines silently entering the metric as production.
 fn test_only_files(roots: &[String]) -> HashSet<PathBuf> {
     let mut found = HashSet::new();
     let mut queue: Vec<PathBuf> = Vec::new();
