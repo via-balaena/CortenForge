@@ -17,7 +17,7 @@
 //!
 //! # What this module does
 //!
-//! [`scan`] derives the surface from the source tree instead of from anyone's
+//! [`survey`] derives the surface from the source tree instead of from anyone's
 //! memory of it: every `#[test]` carrying an `#[ignore = "…"]` whose reason
 //! names one of [`MESH_VARS`]. Deriving it means a gate added tomorrow is in
 //! the list tomorrow, with nothing to update — the failure mode a committed
@@ -27,7 +27,7 @@
 //!
 //! Deriving the list from ignore reasons makes the *reason string* load-bearing:
 //! a gate written `#[ignore = "needs the meshes"]` needs the meshes, is invisible
-//! to [`scan`], and silently shrinks the inventory back to a number narrower
+//! to [`survey`], and silently shrinks the inventory back to a number narrower
 //! than its name. So the invariant is enforced rather than documented —
 //! `--check` fails on any `#[ignore]`d test in a mesh-touching file that names
 //! no variable, with `IGNORED_FOR_OTHER_REASONS` as the explicit, rot-checked
@@ -207,23 +207,49 @@ fn source_files(root: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// A file's licence-gated gates, plus any `#[ignore]`d test that names no mesh
-/// variable despite the file referencing one (the soundness seam).
-fn gates_in_file(file: &Path) -> Option<(Vec<Gate>, Vec<String>)> {
-    let src = std::fs::read_to_string(file).ok()?;
+/// One pass over the workspace: what was found, and what could not be read.
+///
+/// The last field is the one that matters most. This module exists so that a
+/// licence-gated gate cannot go missing quietly, so **the survey must never
+/// report an empty answer it is not entitled to** — a mesh-touching file that
+/// fails to parse has an unknown number of gates, not zero, and saying "none"
+/// there would rebuild the exact blind spot in a new place.
+#[derive(Default)]
+struct Survey {
+    /// Licence-gated gates, sorted.
+    gates: Vec<Gate>,
+    /// `#[ignore]`d mesh-touching tests naming no variable, with their file.
+    unnamed: Vec<(String, PathBuf)>,
+    /// Mesh-touching test files `syn` could not parse. Their gates are UNKNOWN.
+    unparsed: Vec<PathBuf>,
+}
+
+/// Classify one file, appending to `out`.
+fn survey_file(file: &Path, out: &mut Survey) {
+    let Ok(src) = std::fs::read_to_string(file) else {
+        return;
+    };
     // Only files that reference a mesh variable can hold a licence-gated gate,
     // and parsing every file in the workspace to learn otherwise is wasted work.
     if !MESH_VARS.iter().any(|v| src.contains(v)) {
-        return None;
+        return;
     }
-    let (crate_root, krate) = owning_package(file)?;
-    let target = target_of(&crate_root, file)?;
-    let parsed = syn::parse_file(&src).ok()?;
+    let Some((crate_root, krate)) = owning_package(file) else {
+        return;
+    };
+    // `None` here is a deliberate classification, not a failure: examples and
+    // benches reference the meshes but hold no `cargo test` target.
+    let Some(target) = target_of(&crate_root, file) else {
+        return;
+    };
+    let Ok(parsed) = syn::parse_file(&src) else {
+        out.unparsed.push(file.to_path_buf());
+        return;
+    };
 
     let mut found = Vec::new();
     collect_tests(&parsed.items, "", &mut found);
 
-    let (mut gates, mut unnamed) = (Vec::new(), Vec::new());
     for t in found {
         let Some(reason) = t.ignore_reason else {
             // Not ignored: CI runs it, so it demonstrably needs no mesh.
@@ -231,9 +257,9 @@ fn gates_in_file(file: &Path) -> Option<(Vec<Gate>, Vec<String>)> {
         };
         let vars = vars_named_in(&reason);
         if vars.is_empty() {
-            unnamed.push(t.name);
+            out.unnamed.push((t.name, file.to_path_buf()));
         } else {
-            gates.push(Gate {
+            out.gates.push(Gate {
                 krate: krate.clone(),
                 target: target.clone(),
                 name: t.name,
@@ -241,37 +267,23 @@ fn gates_in_file(file: &Path) -> Option<(Vec<Gate>, Vec<String>)> {
             });
         }
     }
-    Some((gates, unnamed))
 }
 
-/// Every licence-gated gate in the workspace, sorted, derived from the source.
-pub(crate) fn scan(root: &Path) -> Vec<Gate> {
-    let mut gates: Vec<Gate> = source_files(root)
-        .iter()
-        .filter_map(|f| gates_in_file(f))
-        .flat_map(|(g, _)| g)
-        .collect();
-    gates.sort();
-    gates
-}
-
-/// `#[ignore]`d tests in mesh-touching files that name no mesh variable — the
-/// gates [`scan`] would miss. Returns `(test name, file)` pairs.
-fn unnamed_ignored_tests(root: &Path) -> Vec<(String, PathBuf)> {
-    let mut out = Vec::new();
+/// Survey the whole workspace in a single walk.
+fn survey(root: &Path) -> Survey {
+    let mut out = Survey::default();
     for f in source_files(root) {
-        if let Some((_, unnamed)) = gates_in_file(&f) {
-            out.extend(unnamed.into_iter().map(|n| (n, f.clone())));
-        }
+        survey_file(&f, &mut out);
     }
+    out.gates.sort();
     out
 }
 
-/// Gates invisible to [`scan`]: `#[ignore]`d, mesh-touching, naming no variable,
+/// Gates invisible to [`survey`]: `#[ignore]`d, mesh-touching, naming no variable,
 /// and not excused by `IGNORED_FOR_OTHER_REASONS`.
-fn invisible_gates(root: &Path) -> Vec<(String, PathBuf)> {
-    unnamed_ignored_tests(root)
-        .into_iter()
+fn invisible_gates(s: &Survey) -> Vec<&(String, PathBuf)> {
+    s.unnamed
+        .iter()
         .filter(|(name, _)| {
             let bare = name.rsplit("::").next().unwrap_or(name);
             !IGNORED_FOR_OTHER_REASONS.contains(&bare)
@@ -427,16 +439,35 @@ fn run_gates(gates: &[Gate], root: &Path) -> Result<()> {
 ///
 /// # Errors
 /// Returns an error naming every `#[ignore]`d mesh-touching test whose reason
-/// omits the variable it needs.
+/// omits the variable it needs, or every mesh-touching file that would not
+/// parse — both are ways a gate leaves the inventory without anyone noticing.
 fn check(root: &Path) -> Result<()> {
-    let offenders = invisible_gates(root);
+    let s = survey(root);
+    let rel = |p: &Path| p.strip_prefix(root).unwrap_or(p).display().to_string();
+
+    // Unparsed first: it is the more dangerous of the two, because it makes the
+    // count itself untrustworthy rather than short by a nameable amount.
+    if !s.unparsed.is_empty() {
+        let detail = s
+            .unparsed
+            .iter()
+            .map(|f| format!("  {}", rel(f)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        bail!(
+            "these files reference a licensed mesh and hold a cargo test target, but could not \
+             be parsed, so the number of licence-gated gates in them is UNKNOWN — not zero:\n\
+             {detail}\n\n\
+             Every count this tool prints would be silently short while this is true. Fix the \
+             file, or teach the scanner the syntax it now uses."
+        );
+    }
+
+    let offenders = invisible_gates(&s);
     if !offenders.is_empty() {
         let detail = offenders
             .iter()
-            .map(|(name, file)| {
-                let shown = file.strip_prefix(root).unwrap_or(file);
-                format!("  {name}  ({})", shown.display())
-            })
+            .map(|(name, file)| format!("  {name}  ({})", rel(file)))
             .collect::<Vec<_>>()
             .join("\n");
         bail!(
@@ -447,7 +478,8 @@ fn check(root: &Path) -> Result<()> {
              it to IGNORED_FOR_OTHER_REASONS in xtask/src/licensed_gates.rs with a reason."
         );
     }
-    let gates = scan(root);
+
+    let gates = &s.gates;
     let crates = gates
         .iter()
         .map(|g| &g.krate)
@@ -475,7 +507,17 @@ pub fn run(only: Option<String>, do_run: bool, do_check: bool) -> Result<()> {
         return check(&root);
     }
 
-    let mut gates = scan(&root);
+    let s = survey(&root);
+    // A list or a run that quietly skipped a file it could not read would be
+    // the failure this whole module is against. Say so on every path.
+    for f in &s.unparsed {
+        eprintln!(
+            "{} {} references a licensed mesh but did not parse — its gates are NOT in this list",
+            "warning:".yellow().bold(),
+            f.strip_prefix(&root).unwrap_or(f).display()
+        );
+    }
+    let mut gates = s.gates;
 
     if let Some(krate) = &only {
         gates.retain(|g| &g.krate == krate);
@@ -502,7 +544,7 @@ mod tests {
 
     /// The seam that keeps the enumeration honest.
     ///
-    /// [`scan`] recognises a licence-gated gate by the mesh variable named in
+    /// [`survey`] recognises a licence-gated gate by the mesh variable named in
     /// its ignore reason. A gate ignored with a vaguer reason still needs the
     /// meshes, still cannot run in CI, and is **invisible to every tool built
     /// on this module** — which is precisely how an inventory comes to be
@@ -515,10 +557,55 @@ mod tests {
         }
     }
 
+    /// A mesh-touching file that will not parse must be REPORTED, not counted
+    /// as zero gates.
+    ///
+    /// This is the module's own disease: an enumerator that answers "none" for
+    /// a file it could not read produces a number narrower than its name, which
+    /// is the exact failure it exists to prevent. `coverage.rs` learned the same
+    /// lesson and tracks its unparsed files for the same reason.
+    #[test]
+    fn an_unparseable_mesh_touching_file_is_reported_not_counted_as_zero() {
+        let dir = std::env::temp_dir().join("cf_licensed_gates_unparsed");
+        let krate = dir.join("crate-a");
+        std::fs::create_dir_all(krate.join("tests")).expect("temp dirs");
+        std::fs::write(
+            krate.join("Cargo.toml"),
+            "[package]\nname = \"crate-a\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("manifest");
+        // References a mesh variable, sits in tests/, and is not valid Rust.
+        std::fs::write(
+            krate.join("tests").join("broken.rs"),
+            "#[test]\n#[ignore = \"needs $CF_L4_STL\"]\nfn g() { this is not rust ((( }\n",
+        )
+        .expect("source");
+
+        let s = survey(&dir);
+        assert_eq!(
+            s.unparsed.len(),
+            1,
+            "the unreadable file must be surfaced, not skipped"
+        );
+        assert!(
+            s.gates.is_empty(),
+            "and it contributes no gates, which is exactly why it must be reported"
+        );
+        let err = check(&dir).expect_err("check must refuse to certify an unknown count");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("UNKNOWN") && msg.contains("broken.rs"),
+            "the error must name the file and refuse to call it zero, got: {msg}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// The allowlist must not outlive the tests it excuses.
     #[test]
     fn no_stale_entries_in_the_other_reasons_allowlist() {
-        let live: BTreeSet<String> = unnamed_ignored_tests(&workspace_root())
+        let live: BTreeSet<String> = survey(&workspace_root())
+            .unnamed
             .into_iter()
             .map(|(n, _)| n.rsplit("::").next().unwrap_or(&n).to_string())
             .collect();

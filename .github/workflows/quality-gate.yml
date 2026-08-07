@@ -1025,6 +1025,11 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
+
       - name: Every licence-gated test is still visible to the enumerator
         run: cargo run -q -p xtask -- licensed-gates --check
 

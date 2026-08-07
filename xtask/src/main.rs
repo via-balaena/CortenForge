@@ -202,8 +202,9 @@ enum Commands {
     /// pass `--run`.
     LicensedGates {
         /// Restrict to one crate (e.g. `cf-fsu-model`). Omit for the whole
-        /// workspace surface.
-        #[arg(long)]
+        /// workspace surface. Not meaningful with `--check`, which asserts a
+        /// workspace-wide property.
+        #[arg(long, conflicts_with = "check")]
         only: Option<String>,
 
         /// Run the gates instead of listing them. Requires the mesh paths in
