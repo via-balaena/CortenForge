@@ -83,12 +83,23 @@ A hand-kept list is the wrong instrument for that: twice in the rung-β arc an
 inventory was recorded that was narrower than its name, and both times the
 gates it omitted had already gone red.
 
-**Run it before merging a change to production code these gates exercise** —
-geometry, meshing, the solver path, or the FSU model — since nothing else will.
-A test-only or docs-only change to those crates does not need it, because the
-gates cannot observe one; scope with `--only <crate>` when the blast radius is
-one crate. The full surface is ~2 h 21 m, so applying the rule where it cannot
-matter is how it stops being followed where it does.
+**Run it before merging production-code changes these gates can observe.** Two
+questions, in order:
+
+1. **Test-only or docs-only?** Done — the gates cannot observe it, in any crate.
+2. **Otherwise, are the gates downstream?** `cargo xtask affected --base
+   origin/main` lists the crates a diff can break; `cargo xtask licensed-gates`
+   lists the crates holding gates. **If those sets intersect, run them.**
+   ⚠ `affected` is *path-based* and reports a crate when any file under it
+   changes, a README included — which is why question 1 comes first.
+
+⚠ Do not work from a remembered list of "the FSU crates". These 40 gates
+transitively exercise **~17 workspace crates** — routing, co-design, truss and
+the mesh pipeline included, not only the FSU cone — so any prose list would be
+narrower than the truth, which is the failure this tooling exists to prevent.
+
+Scope with `--only <crate>` when the blast radius is one crate; the full surface
+took 2 h 21 m on 2026-08-07.
 
 ## Coordinates
 
