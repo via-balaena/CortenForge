@@ -14765,6 +14765,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "sha2",
  "syn 2.0.117",
  "toml 1.1.0+spec-1.1.0",
  "walkdir",

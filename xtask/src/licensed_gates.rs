@@ -55,6 +55,43 @@ use walkdir::WalkDir;
 /// fetch-and-verify recipe — is `design/cf-fsu-geometry/BODYPARTS3D.md`.
 pub(crate) const MESH_VARS: [&str; 3] = ["CF_L4_STL", "CF_L5_STL", "CF_DISC_STL"];
 
+/// The pinned identity of each licensed mesh: `(env var, bytes, SHA-256)`.
+///
+/// **These are a copy, not the source.** `BODYPARTS3D.md` is the source, and
+/// `the_pinned_digests_match_the_provenance_doc` fails if this table drifts from
+/// it — so the doc stays the single place a human edits, while the tool gets a
+/// machine-readable form without parsing prose at runtime.
+///
+/// ★ Why the digests are enforced at all. The meshes were already *version*-
+/// locked — a commit-pinned URL plus these digests — but nothing verified them:
+/// `load_from_env` hands whatever path the variable names straight to the
+/// oracle. The whole guarantee was "the operator ran `shasum -c` correctly this
+/// time". ⚠ The threat here is **drift, not an attacker**: a stale copy, a
+/// half-finished download, a re-export, the wrong FMA id. Any of those moves
+/// every measured number in the FSU arc and reds every anchor-pinned gate —
+/// after which someone hunts a physics regression that was a bad file. That is
+/// precisely what α.1 turned out to be, and it cost four merges.
+const MESH_ASSETS: [(&str, u64, &str); 3] = [
+    (
+        "CF_L4_STL",
+        771_384,
+        "3464b94d03d42e43bf5ba01a741b7677bec8113a8359eb4a2caec960c6cf341c",
+    ),
+    (
+        "CF_L5_STL",
+        864_184,
+        "244f54f1388b1cb02014a6de9c1b32ef40d398967bc8e17ed56b46c637fe11c1",
+    ),
+    (
+        "CF_DISC_STL",
+        724_584,
+        "865f96b3f3bfed6536808edadd46c7ff742c6ee6e93eb7e8705863643cec7a94",
+    ),
+];
+
+/// Path to the provenance doc that owns the digests above.
+const PROVENANCE_DOC: &str = "design/cf-fsu-geometry/BODYPARTS3D.md";
+
 /// `#[ignore]`d tests that live in a mesh-touching file but are ignored for a
 /// reason unrelated to the licence, each needing its own justification.
 ///
@@ -368,6 +405,86 @@ fn required_vars(gates: &[Gate]) -> Vec<&'static str> {
         .collect()
 }
 
+/// Hex SHA-256 of a file, streamed so a 900 kB mesh never doubles in memory.
+fn sha256_of(path: &Path) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("cannot open {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher)
+        .with_context(|| format!("cannot read {}", path.display()))?;
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Verify every mesh the selected gates need against its pinned identity.
+///
+/// Runs BEFORE a single gate does, because a gate that runs on the wrong mesh
+/// does not fail — it silently reports different physics, which is the whole
+/// problem. Only the meshes the selection actually names are checked, so an
+/// L4-only crate still runs with L4 alone.
+///
+/// # Errors
+/// Returns an error naming every mesh whose size or digest does not match, and
+/// the pinned value it should have had.
+fn verify_meshes(vars: &[&str]) -> Result<()> {
+    let mut bad = Vec::new();
+    for var in vars {
+        let Some((_, want_len, want_sha)) = MESH_ASSETS.iter().find(|(v, _, _)| v == var) else {
+            // A variable with no pinned identity cannot be checked, and silently
+            // skipping it would be the "0 gates" failure in a new place.
+            bad.push(format!("  {var}: no pinned digest in MESH_ASSETS"));
+            continue;
+        };
+        let Some(raw) = std::env::var_os(var) else {
+            continue; // the unset check upstream already reports this
+        };
+        let path = PathBuf::from(raw);
+
+        // Size first: it is free, and a truncated download is the common case.
+        match std::fs::metadata(&path) {
+            Ok(m) if m.len() != *want_len => {
+                bad.push(format!(
+                    "  {var} -> {}\n      size {} bytes, pinned {want_len}",
+                    path.display(),
+                    m.len()
+                ));
+                continue;
+            }
+            Err(e) => {
+                bad.push(format!("  {var} -> {}: {e}", path.display()));
+                continue;
+            }
+            Ok(_) => {}
+        }
+
+        match sha256_of(&path) {
+            Ok(got) if got != *want_sha => bad.push(format!(
+                "  {var} -> {}\n      sha256 {got}\n      pinned {want_sha}",
+                path.display()
+            )),
+            Err(e) => bad.push(format!("  {var} -> {}: {e:#}", path.display())),
+            Ok(_) => {}
+        }
+    }
+
+    if bad.is_empty() {
+        println!(
+            "{} {} licensed mesh{} verified against the pin in {PROVENANCE_DOC}",
+            "OK".green().bold(),
+            vars.len(),
+            if vars.len() == 1 { "" } else { "es" }
+        );
+        return Ok(());
+    }
+    bail!(
+        "licensed mesh integrity check FAILED:\n{}\n\n\
+         These gates measure physics off these exact bytes — a stale copy, a truncated \
+         download or the wrong FMA id does not make them fail, it makes them report \
+         different numbers. Re-fetch and verify per {PROVENANCE_DOC}.",
+        bad.join("\n")
+    );
+}
+
 /// Run the surface (or one crate's slice of it), one `cargo test` per target.
 ///
 /// # Errors
@@ -386,6 +503,8 @@ fn run_gates(gates: &[Gate], root: &Path) -> Result<()> {
             missing.join(", ")
         );
     }
+
+    verify_meshes(&required_vars(gates))?;
 
     // One `cargo test` invocation per (crate, target) — the unit cargo accepts.
     let mut targets: Vec<(String, Target)> = gates
@@ -434,6 +553,91 @@ fn run_gates(gates: &[Gate], root: &Path) -> Result<()> {
     } else {
         bail!("licence-gated targets failed:\n  {}", failed.join("\n  "));
     }
+}
+
+/// The `(var, bytes, sha256)` rows of the provenance doc's asset table.
+///
+/// Parses the one Markdown table whose rows name a mesh variable. Returns the
+/// rows found — **an empty result is a parse failure, never "the doc has no
+/// pins"**, and every caller must treat it that way.
+fn provenance_rows(doc: &str) -> Vec<(String, u64, String)> {
+    let mut out = Vec::new();
+    for line in doc.lines() {
+        if !line.starts_with('|') || !line.contains("CF_") {
+            continue;
+        }
+        let cells: Vec<&str> = line
+            .split('|')
+            .map(|c| c.trim().trim_matches('`').trim())
+            .collect();
+        // | part | FMA | path | var | bytes | sha256 |  → 8 cells with the empty ends
+        let Some(var) = cells
+            .iter()
+            .find(|c| c.starts_with("CF_") && c.ends_with("_STL"))
+        else {
+            continue;
+        };
+        let sha = cells
+            .iter()
+            .find(|c| c.len() == 64 && c.chars().all(|b| b.is_ascii_hexdigit()));
+        let bytes = cells
+            .iter()
+            .filter(|c| !c.is_empty())
+            .find_map(|c| c.parse::<u64>().ok());
+        if let (Some(sha), Some(bytes)) = (sha, bytes) {
+            out.push(((*var).to_string(), bytes, (*sha).to_string()));
+        }
+    }
+    out
+}
+
+/// Assert `MESH_ASSETS` still agrees with the provenance doc that owns it.
+///
+/// The doc is where a human edits a pin; this table is the machine-readable
+/// copy. Without this they drift silently and the tool enforces yesterday's
+/// bytes. Licence-free — it reads two files — so `--check` runs it in CI.
+///
+/// # Errors
+/// Returns an error if the doc cannot be read or parsed, or if any row differs.
+fn verify_pins_match_doc(root: &Path) -> Result<()> {
+    let path = root.join(PROVENANCE_DOC);
+    let doc = std::fs::read_to_string(&path)
+        .with_context(|| format!("cannot read {}", path.display()))?;
+    let rows = provenance_rows(&doc);
+
+    // ⚠ Zero rows means the table moved or its format changed — NOT that there
+    // is nothing to check. Reporting "all pins agree" here would be the same
+    // silent-zero failure this module exists to prevent.
+    if rows.len() != MESH_ASSETS.len() {
+        bail!(
+            "{PROVENANCE_DOC} yielded {} asset rows, expected {} — the table moved or its \
+             format changed, so the pins in MESH_ASSETS are UNVERIFIED. Fix the parser or the \
+             doc; do not assume they still agree.",
+            rows.len(),
+            MESH_ASSETS.len()
+        );
+    }
+
+    let mut drift = Vec::new();
+    for (var, bytes, sha) in &MESH_ASSETS {
+        match rows.iter().find(|(v, _, _)| v == var) {
+            None => drift.push(format!("  {var}: pinned here but absent from the doc")),
+            Some((_, doc_bytes, doc_sha)) => {
+                if doc_bytes != bytes || doc_sha != sha {
+                    drift.push(format!(
+                        "  {var}\n      code {bytes} bytes / {sha}\n      doc  {doc_bytes} bytes / {doc_sha}"
+                    ));
+                }
+            }
+        }
+    }
+    if !drift.is_empty() {
+        bail!(
+            "MESH_ASSETS has drifted from {PROVENANCE_DOC}, which is the source:\n{}",
+            drift.join("\n")
+        );
+    }
+    Ok(())
 }
 
 /// Assert the enumeration can still see every licence-gated gate.
@@ -491,6 +695,8 @@ fn check(root: &Path) -> Result<()> {
              it to IGNORED_FOR_OTHER_REASONS in xtask/src/licensed_gates.rs with a reason."
         );
     }
+
+    verify_pins_match_doc(root)?;
 
     let gates = &s.gates;
     let crates = gates
@@ -646,6 +852,64 @@ mod tests {
             "the error must say the count is unknown and why, got: {msg}"
         );
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The pinned digests must still agree with the doc that owns them.
+    #[test]
+    fn the_pinned_digests_match_the_provenance_doc() {
+        if let Err(e) = verify_pins_match_doc(&workspace_root()) {
+            panic!("{e}");
+        }
+    }
+
+    /// The doc parser must find every asset row — and an empty parse must be
+    /// reported as a failure, never as "there is nothing to check".
+    #[test]
+    fn provenance_rows_reads_the_asset_table_and_refuses_to_read_nothing() {
+        let doc = "\
+| part | FMA ID | path | env var | bytes | SHA-256 |\n\
+|---|---|---|---|---|---|\n\
+| L4 | FMA13075 | `a/b.stl` | `CF_L4_STL` | 771384 | `3464b94d03d42e43bf5ba01a741b7677bec8113a8359eb4a2caec960c6cf341c` |\n\
+| unrelated | x | y | z | 1 | 2 |\n";
+        let rows = provenance_rows(doc);
+        assert_eq!(rows.len(), 1, "only rows naming a mesh variable count");
+        assert_eq!(rows[0].0, "CF_L4_STL");
+        assert_eq!(rows[0].1, 771_384);
+        assert!(rows[0].2.starts_with("3464b94d"));
+
+        // The load-bearing negative: a doc whose table has moved parses to zero
+        // rows, and `verify_pins_match_doc` must treat that as UNVERIFIED.
+        assert!(
+            provenance_rows("# no table here\n").is_empty(),
+            "a doc without the table yields no rows — the caller must not read that as agreement"
+        );
+    }
+
+    /// A mesh whose bytes do not match its pin must be refused before any gate
+    /// runs — the failure this whole feature exists for.
+    #[test]
+    fn a_mesh_that_does_not_match_its_pin_is_refused() {
+        let dir = std::env::temp_dir().join("cf_mesh_digest_check");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let bogus = dir.join("not_the_real_L4.stl");
+        std::fs::write(&bogus, b"this is not FMA13075").expect("write");
+
+        // SAFETY: single-threaded test process; the variable is restored below.
+        unsafe { std::env::set_var("CF_L4_STL", &bogus) };
+        let err = verify_meshes(&["CF_L4_STL"]).expect_err("a wrong mesh must be refused");
+        unsafe { std::env::remove_var("CF_L4_STL") };
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("CF_L4_STL") && msg.contains("771384"),
+            "the error must name the variable and the pinned size, got: {msg}"
+        );
+        assert!(
+            msg.contains("different numbers"),
+            "and must say WHY it matters — a wrong mesh reports different physics rather than \
+             failing, got: {msg}"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
