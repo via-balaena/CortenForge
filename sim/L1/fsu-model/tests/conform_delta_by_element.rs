@@ -154,10 +154,10 @@ fn conform_delta_by_element_fom() {
     // ⚠ RE-ANCHORED at β.4 (α.1 removed phantom material; same element, different domain).
     // The absolutes fell 48-58 %. The CONFORM ratios barely moved (0.982/0.985 → 0.979/0.979);
     // the ELEMENT ratio moved 0.666 → 0.827 for the mechanism recorded in
-    // `reference/committed_disc_stiffness.rs`. What localises the change to the geometry is
+    // `src/committed_anchors.rs`. What localises the change to the geometry is
     // that both element arms fell together with no element code touched. Source of truth for
     // the eight absolutes:
-    // `reference/committed_disc_stiffness.rs`, included above.
+    // `src/committed_anchors.rs`, imported above.
     //
     // ★ **The rung-3 `k_disc` shift, which is this table's job to record.** The conformed Tet10
     // arm is now the *curved* disc (its bonded-face boundary midsides are projected onto the

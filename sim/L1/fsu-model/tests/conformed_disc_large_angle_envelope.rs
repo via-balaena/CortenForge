@@ -137,12 +137,12 @@ fn conformed_disc_survives_a_large_angle_sweep() {
     // **both conformed arms complete the full ±6.0° chain**, every step converging,
     // conserving and strictly restoring; peak |M| = 0.0128 (Tet4) / 0.0105 (Tet10) N·m.
     //
-    // ⚠ RE-ANCHORED at β.4 from 0.0300 / 0.0205. ★ **The gate's CLAIM did not weaken — only its
-    // magnitudes moved.** Both arms still reach the full ±6.0° chain, every step converging,
-    // with residuals ~7e-12 throughout; α.1 removed phantom material, so the same sweep on the
-    // corrected domain simply carries less moment. Tet10/Tet4 = 0.820 here, alongside the 0.827
-    // element ratio the rest of the arc measures. Residuals stay ~7e-12 (Tet4) / ~1e-13 (Tet10)
-    // across the sweep, so nothing degraded numerically.
+    // ⚠ RE-ANCHORED at β.4 from 0.0300 / 0.0205. Both arms still reach the full ±6.0° chain,
+    // every step converging; α.1 removed phantom material, so the same sweep on the corrected
+    // domain carries less moment. Tet10/Tet4 = 0.820 here, alongside the 0.827
+    // element ratio the rest of the arc measures — 0.9 % below it, which is the large-angle
+    // nonlinearity this gate exists to probe, not a discrepancy. Residuals stay ~7e-12 (Tet4) /
+    // ~1e-13 (Tet10) across the sweep, so nothing degraded numerically.
     //
     // ★ **RE-RUN AT RUNG 3, on the CURVED disc, and the numbers did not move.** The Tet10 arm
     // here is now the curved disc (bonded-face boundary midsides projected onto the real

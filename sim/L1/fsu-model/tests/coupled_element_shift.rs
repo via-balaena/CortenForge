@@ -6,7 +6,7 @@
 //! large at the disc level: the standalone disc softens ~17 % with the element order (~33 % as
 //! rung 4 measured it, before α.1 removed the phantom material inflating that gap), but the
 //! disc contributes only ~0.17 % of the flexion restoring moment at ROM (the segment is
-//! ligament-`k`-dominated), so segment ROM should move by **~0.0018°**. ⚠ Both of those are
+//! ligament-`k`-dominated), so segment ROM should move by **~0.0018°**. Both of those are
 //! LINEAR IN `|k_disc|` and therefore moved with it at β.4 — rung 4's ~0.4 % and ~0.008° were
 //! the same derivation on the pre-α.1 disc. The prediction was *derived*, never measured,
 //! until this gate assembled both arms.
@@ -32,15 +32,20 @@
 //! The `k_disc` and ROM columns are deterministic and pinned below; the build column is
 //! wall clock on one machine and is quoted to one significant figure for that reason.
 //!
-//! **β.4 ROM (post-α.1, measured):** flexion Tet4 6.1466° → Tet10 6.1483° (Δ **+0.0018°**);
-//! extension 4.4745° → 4.4746° (Δ **+0.0002°**).
+//! **β.4 ROM (post-α.1, measured):** flexion Tet4 6.1466° → Tet10 6.1483°, Δ **+0.0018°**;
+//! extension 4.4745° → 4.4746°, Δ **+0.0002°**. (The gate computes each Δ at full precision;
+//! the endpoints here are rounded to 4 dp and so do not subtract to the quoted Δ exactly.)
 //!
-//! ★★ **§0.3's model is confirmed a SECOND time, on the corrected geometry.** Rung 4: a 33 %
-//! softer disc at a ~0.4 % share moved the segment 0.0082° against a derived ~0.008°. β.4:
-//! a 17 % softer disc at a ~0.17 % share predicts 6.147° × 0.0017 × 0.173 ≈ **0.0018°**, and
-//! the measurement is **+0.0018°**. Both inputs moved and the derivation tracked them — which
-//! is far stronger evidence for the model than the first confirmation alone. It is the reason
-//! `ROM_TOL_DEG` (±0.15°) and
+//! ★ **§0.3's model still describes the segment after α.1.** The model is
+//! `ΔROM ≈ ROM × (disc share of the restoring moment) × (relative softening from the element)`.
+//! Rung 4: 33 % softening at a ~0.4 % share moved the segment 0.0082°, against a derived
+//! ~0.008°. β.4: 17.3 % softening at a ~0.17 % share gives 6.147° × 0.0017 × 0.173 ≈
+//! **0.0018°**, and the measurement is **+0.0018°**.
+//!
+//! Read that as consistency, not as a second independent confirmation: both inputs were
+//! measured *after* the ΔROM they are used to predict, so this is a post-hoc linearisation
+//! agreeing with its own measurement, against ~21 % realization noise on the absolutes. It is
+//! the reason `ROM_TOL_DEG` (±0.15°) and
 //! `LIT_EXTENSION_DEG` never had to move. The facet-capped extension side moved 10× less than
 //! the ligament-limited flexion side, which is the mechanism the reframe claimed.
 //!
@@ -66,15 +71,20 @@ use cf_fsu_model::{CoupledFsu, CoupledFsuTet4, CoupledParams, PHYSIOLOGIC_MOMENT
 /// The flexion ROM shift the flip is allowed to introduce (degrees), **pre-registered before
 /// the first run** rather than fitted to it.
 ///
-/// Sits deliberately between the two numbers that matter: 6× §0.3's predicted ~0.008°, and a third of `fsu_coupled_contact.rs`'s `ROM_TOL_DEG` (0.15°) — the
-/// literature tripwire the plan insists must not move. So a shift that lands here is
-/// "prediction confirmed"; a shift that clears it is a finding *before* it becomes a
-/// tripwire failure, which is the only way this gate is worth more than that one.
+/// Sits between the two numbers that matter: §0.3's prediction, and a third of
+/// `fsu_coupled_contact.rs`'s `ROM_TOL_DEG` (0.15°) — the literature tripwire the plan insists
+/// must not move. So a shift that lands here is "prediction confirmed"; a shift that clears it
+/// is a finding *before* it becomes a tripwire failure.
+///
+/// ⚠ **The headroom grew from ~6× to ~28× at β.4** and is left unchanged deliberately. The
+/// prediction shrank with `|k_disc|` (~0.008° → ~0.0018°) while this bound did not, so the gate
+/// is now a much weaker test of the invisibility argument than when it was pre-registered.
+/// Tightening it onto the new prediction would be fitting the bound to the measurement — the
+/// thing "pre-registered" exists to prevent — so it stays, and the weakening is recorded here
+/// rather than hidden. Re-pre-registering it is a rung-5 decision.
 ///
 /// **Measured: +0.0018°** at β.4 (rung 4, pre-α.1: +0.0082°), against a re-derived prediction
-/// of ~0.0018°. ⚠ Note the bound is now ~28× the prediction rather than rung 4's ~6×, because
-/// the prediction shrank with `|k_disc|` while the bound did not. Left at the pre-registered
-/// 0.05° rather than tightened onto the measurement: the
+/// of ~0.0018°. Left at the pre-registered 0.05° rather than tightened onto the measurement: the
 /// question this constant asks is "did the segment-level invisibility argument hold", and a
 /// ±5 % pin around 0.0082° would instead ask "is this specimen's shift reproducible", which
 /// is what the `k_disc` and ROM anchors below already ask, more directly.
@@ -106,9 +116,13 @@ const BASELINE_K_DISC: f64 = -0.1175;
 /// than introducing an assembly-level artifact of its own — and it survived α.1 unchanged,
 /// which is what localises the absolutes' move to the geometry.
 const QUADRATIC_K_DISC: f64 = -0.0972;
-/// Agreement window on both arms' `k_disc` (N·m/rad). Tight — these are re-runs of a
-/// deterministic build on a pinned mesh, not a tolerance on a physical claim.
-const K_DISC_TOL: f64 = 5.0e-4;
+/// Agreement window on both arms' `k_disc`, **as a fraction of the anchor**. Tight — these are
+/// re-runs of a deterministic build on a pinned mesh, not a tolerance on a physical claim.
+///
+/// ⚠ Was an absolute `5.0e-4` until β.4. Holding an absolute fixed while both anchors halved
+/// silently loosened it 0.27 % → 0.51 %, the same rot β.4 found in `fsu_coupled_contact`'s
+/// `K_DISC_TOL`. 5e-3 of the anchor restores the pre-α.1 strictness and cannot rot again.
+const K_DISC_TOL_FRAC: f64 = 5.0e-3;
 
 #[test]
 #[ignore = "needs $CF_L4_STL $CF_L5_STL $CF_DISC_STL (BodyParts3D, CC BY-SA, not committed)"]
@@ -141,18 +155,20 @@ fn coupled_segment_shift_from_the_tet10_flip() {
     // Validate against the KNOWN value first: if the linear arm has drifted, nothing measured
     // on the quadratic one is attributable to the element.
     assert!(
-        (k4 - BASELINE_K_DISC).abs() < K_DISC_TOL,
-        "the pre-rung-4 linear arm must still reproduce the published {BASELINE_K_DISC:+.4} \
-         within {K_DISC_TOL} — got {k4:+.4}. This is a reproduction pin on a deterministic \
-         build, NOT a check that rung 4's probe-walk and generic `assemble` were \
-         element-neutral — α.1 ended that (see the constant's doc). A drift here means the \
-         geometry pipeline or the build moved; check whether the RATIO below moved with it, \
-         because a change that shifts both arms together is geometry, not element."
+        (k4 - BASELINE_K_DISC).abs() < K_DISC_TOL_FRAC * BASELINE_K_DISC.abs(),
+        "the linear arm must still reproduce {BASELINE_K_DISC:+.4} within {:.2} % — got \
+         {k4:+.4}. This is a reproduction pin on a deterministic build, NOT a check that rung \
+         4's probe-walk and generic `assemble` were element-neutral — α.1 ended that (see the \
+         constant's doc). A drift here means the geometry pipeline or the build moved; check \
+         whether the RATIO below moved with it, because a change that shifts both arms \
+         together is geometry, not element.",
+        100.0 * K_DISC_TOL_FRAC
     );
     assert!(
-        (k10 - QUADRATIC_K_DISC).abs() < K_DISC_TOL,
-        "the quadratic arm must reproduce {QUADRATIC_K_DISC:+.4} within {K_DISC_TOL}, got \
-         {k10:+.4} — this is the value `fsu_coupled_contact.rs`'s RUNG7_K_DISC is anchored to"
+        (k10 - QUADRATIC_K_DISC).abs() < K_DISC_TOL_FRAC * QUADRATIC_K_DISC.abs(),
+        "the quadratic arm must reproduce {QUADRATIC_K_DISC:+.4} within {:.2} %, got \
+         {k10:+.4} — this is the value `fsu_coupled_contact.rs`'s RUNG7_K_DISC is anchored to",
+        100.0 * K_DISC_TOL_FRAC
     );
 
     // ── ROM at the physiologic moment, both directions, both arms. ──

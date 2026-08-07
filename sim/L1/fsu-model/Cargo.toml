@@ -49,8 +49,11 @@ anyhow = { workspace = true }
 test-fixtures = []
 
 [dev-dependencies]
-# Self-dependency with `test-fixtures` on: the only way an integration test in `tests/` can
-# see a feature-gated item of its own crate. See `src/committed_anchors.rs`.
+# Self-dependency with `test-fixtures` on, so an integration test in `tests/` can see a
+# feature-gated item of its own crate. (`#[doc(hidden)] pub`, a separate anchors crate, or an
+# `include!` would also work; this keeps the item out of the shipped lib without a new crate.)
+# ⚠ The FEATURE follows sim-core's idiom; the SELF dev-dep is the only one in this workspace.
+# See `src/committed_anchors.rs`.
 cf-fsu-model = { path = ".", features = ["test-fixtures"] }
 # `assemble_bushing` + patch prep — the human-paint → lofted-disc test helper
 # (`lofted_disc`) builds the disc from two endplate patches via the loft primitive.

@@ -10,7 +10,7 @@
 //!   pipeline — the linear [`Tet4`] disc and the quadratic [`build_bonded_disc_tet10`]
 //!   one, which is ~17 % softer in bending because the linear element bending-locks (ratio
 //!   0.827; it read ~1/3 / 0.666 before α.1 removed the phantom material that was inflating
-//!   the gap — see `reference/committed_disc_stiffness.rs`). With
+//!   the gap — see `src/committed_anchors.rs`). With
 //!   endplates supplied, the quadratic arm is genuinely **curved**: its bonded-face
 //!   boundary midsides are projected onto the real endplate too, so the bonded face
 //!   follows the bone between its nodes instead of chording across it
@@ -2813,7 +2813,7 @@ mod tests {
         // ✅ **RESOLVED at β.4**, which anchored absolute `k_disc` across the arc. The band is
         // KEPT unchanged: β.4 measured the conformed Tet4 arm at −0.1146, comfortably inside
         // −0.150…−0.095, so the envelope derivation above still holds on measured values. The
-        // absolutes now have one producer (`reference/committed_disc_stiffness.rs`); the hand-copy
+        // absolutes now have one producer (`src/committed_anchors.rs`); the hand-copy
         // this note warned about is gone, and it was two files, not three. This band remains a
         // sanity envelope on a conform gate, not the arc's `k_disc` anchor — do not treat it as
         // the latter.
@@ -3137,7 +3137,7 @@ mod tests {
         // ⚠ RE-ANCHORED at β.4 from bands (228,367,1005,1598), nodes 7849→19449, and ratio
         // 0.666/0.663. α.1 stopped the mesher retaining phantom material: the domain shrank,
         // which is why the band and node counts fell together with the stiffnesses. The
-        // absolutes are the shared table in `reference/committed_disc_stiffness.rs`.
+        // absolutes are the shared table in `src/committed_anchors.rs`.
         // ⚠ The bracket below is RETIRED as a validation of the *current* values: post-α.1 the
         // ratio (0.827/0.829) falls outside 0.60..=0.73 and the bands no longer match the spike
         // id-for-id. The harness's live known-value check is now `rung5_step1`'s shipped row,

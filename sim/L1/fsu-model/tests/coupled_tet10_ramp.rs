@@ -47,7 +47,7 @@
 //!   whole cost model from that figure (`85/160 ≈ 0.53 s` per solve) and predicted 14–45 min
 //!   for Tet10. Measured: **9.3 min**, below the band's floor — the estimate was close only
 //!   because the stale anchor overstated Tet4 by 3.05× while the per-solve element ratio
-//!   (20.0×, not the assumed ~10×) understated Tet10. The errors are compensating but NOT
+//!   (20.0×, not the assumed ~10×) understated Tet10 by 2.0×. The errors are compensating but NOT
 //!   equal, and the residual shows: §5.1's model predicts ~850 s where 557 s is measured.
 //!   Two partly-cancelling errors are not a validated model — quote the measurements here.
 //!
@@ -73,11 +73,8 @@ use cf_fsu_model::{
 /// fixed — previously the Tet4 pin fired before the Tet10 arm was built, so only one number
 /// per run was obtainable.
 ///
-/// ★ The Tet10 value was measured, not extrapolated, and the difference matters: the old arm
-/// ratio (2.5908/2.5874 = 1.0013) would have predicted **2.0091** against a measured
-/// **2.0070**. That guess sits inside this ±5 % pin, so it would have passed the gate while
-/// being wrong in its last two digits — a committed value that is quietly wrong is worse than
-/// one that is visibly missing.
+/// The Tet10 value was measured, not extrapolated from the old arm ratio — which would have
+/// given 2.0091 against a measured 2.0070, inside this ±5 % pin and so undetectable here.
 const MAX_DISPLACEMENT_MM: (f64, f64) = (2.0065, 2.0070); // (raw Tet4, straight Tet10)
 /// Pin width on [`MAX_DISPLACEMENT_MM`], as a fraction.
 const DISPLACEMENT_PIN: f64 = 0.05;

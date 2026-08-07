@@ -142,7 +142,7 @@ impl Default for CoupledParams {
 /// The linear arm remains constructible as [`CoupledFsuTet4`], which reproduces the
 /// pre-rung-4 assembly exactly (raw, un-conformed Tet4). It is not dead weight: it is what
 /// makes the segment-level effect of the flip a **measurement** rather than an inference —
-/// the plan (§0.3) predicts a ~0.008° ROM shift, and only two live arms can check it.
+/// the plan (§0.3) predicts a ~0.0018° ROM shift (~0.008° pre-α.1), and only two live arms can check it.
 pub struct CoupledFsu<Msh = Tet10Mesh, E = Tet10, const N: usize = 10, const G: usize = 4>
 where
     Msh: Mesh,
@@ -422,8 +422,8 @@ where
 
     /// The render disc's tet-mesh boundary faces — the fragmentation signal available
     /// **immediately after the build**, before the far more expensive
-    /// [`Self::capture_ramp`] (measured on the shipped straight quadratic disc: **583 s** of
-    /// capture against a **68 s** build; on the linear one, 32 s against 7 s). This is exactly the
+    /// [`Self::capture_ramp`] (measured on the shipped straight quadratic disc: **557 s** of
+    /// capture against a **63 s** build; on the linear one, 28 s against 6 s). This is exactly the
     /// triangulation `capture_ramp` copies
     /// into [`CoupledTrajectory::boundary_faces`] (it is tet-mesh topology, fixed at build
     /// and invariant under deformation), so a caller can run its degeneracy / fragmentation
