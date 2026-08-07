@@ -8,7 +8,9 @@
 //!   vertebra-endplate boxes ([`BondedSandwich`]), then drives its quasi-static
 //!   flexion/extension response. It comes in two element arms over one shared geometry
 //!   pipeline — the linear [`Tet4`] disc and the quadratic [`build_bonded_disc_tet10`]
-//!   one, which is ~1/3 softer in bending because the linear element bending-locks. With
+//!   one, which is ~17 % softer in bending because the linear element bending-locks (ratio
+//!   0.827; it read ~1/3 / 0.666 before α.1 removed the phantom material that was inflating
+//!   the gap — see `reference/committed_disc_stiffness.rs`). With
 //!   endplates supplied, the quadratic arm is genuinely **curved**: its bonded-face
 //!   boundary midsides are projected onto the real endplate too, so the bonded face
 //!   follows the bone between its nodes instead of chording across it
@@ -58,7 +60,9 @@
 //! stepping driver. Once the segment assembles on a conformed disc, "jump straight to θ"
 //! stops being safe anywhere, including in code that used to do it: the 0.86° `k_disc` probe
 //! is itself past the conformed disc's single-jump envelope. Rung 4 measured that walking
-//! there does not move the number (the linear arm still reads −0.2819 to four decimals).
+//! there does not move the number. ⚠ Rung 4 evidenced that as "the linear arm still reads
+//! −0.2819 to four decimals"; post-α.1 it reads −0.1175, so quote the *ratio* (0.827, which
+//! survived the geometry change) rather than that absolute, which did not.
 //!
 //! Note the deliberate API asymmetry: [`build_bonded_disc`] returns [`Result`], but the
 //! drive methods **panic** on non-convergence rather than returning one — they inherit
@@ -2802,9 +2806,12 @@ mod tests {
         // will. The old `-0.34 ..= -0.22` was a hand-set window around a single draw with no stated
         // derivation — narrower in relative terms (±21 %) than the noise it was supposed to tolerate.
         //
-        // ▶ **The VALUE here is provisional pending β.4**, which owns absolute-`k_disc` anchoring
-        // (three files hand-copy −0.2811 today and must instead share one producer). This band is
-        // a sanity envelope on a conform gate, not the arc's `k_disc` anchor — do not treat it as
+        // ✅ **RESOLVED at β.4**, which anchored absolute `k_disc` across the arc. The band is
+        // KEPT unchanged: β.4 measured the conformed Tet4 arm at −0.1146, comfortably inside
+        // −0.150…−0.095, so the envelope derivation above still holds on measured values. The
+        // absolutes now have one producer (`reference/committed_disc_stiffness.rs`); the hand-copy
+        // this note warned about is gone, and it was two files, not three. This band remains a
+        // sanity envelope on a conform gate, not the arc's `k_disc` anchor — do not treat it as
         // the latter.
         for (kc, kr, name) in [
             (k_flex_conf, k_flex_raw, "flexion"),
@@ -2821,7 +2828,8 @@ mod tests {
                  rung 5 step 1 (conf {kc:.3}, raw {kr:.3})"
             );
             // No-regression: the seated band shifts the linearised stiffness by < ~10 % (observed
-            // ~1.8 %). Loose enough to record a legitimate shift, tight enough to catch a collapse.
+            // ~2.1 % at β.4; ~1.8 % pre-α.1). Loose enough to record a legitimate shift, tight
+            // enough to catch a collapse.
             let ratio = (kc / kr).abs();
             assert!(
                 (0.9..=1.1).contains(&ratio),
@@ -3009,8 +3017,12 @@ mod tests {
     /// the spike id-for-id, so the assert was then tightened to ±5 % of the measured values
     /// (the numbers are committed at the assert). Note what the ratio is *not*: the spike's
     /// −0.1861 is not proven to be the converged truth — a refined Tet4 would soften too —
-    /// so the settled claim is that the quadratic element relaxes this bending mode by ~1/3
-    /// at fixed geometry. Earning the accuracy claim is rung 5's h-refinement.
+    /// so the settled claim is that the quadratic element relaxes this bending mode at fixed
+    /// geometry — **by ~17 % (ratio 0.827) as of β.4**. ⚠ The 0.665 / ~1/3 figures in this
+    /// paragraph are rung 1's, measured before α.1 removed phantom material; the pre-registered
+    /// bracket and the first run are kept as the record of how the harness was validated, not as
+    /// current values. Phantom slivers inflated Tet4's bend-locking, so the *element* effect was
+    /// overstated by the geometry. Earning the accuracy claim is rung 5's h-refinement.
     ///
     /// **The band cross-check, not the ratio, is the assertion with teeth.** An under-tied
     /// band drifts the ratio from 0.665 *toward* the corner-only 0.570, so a *partial*
@@ -3059,20 +3071,11 @@ mod tests {
         );
         assert_full_face_band(&mesh10, &prepared.inferior, tet10.sandwich.lower_face());
         assert_full_face_band(&mesh10, &prepared.superior, tet10.sandwich.upper_face());
-        // COMMITTED (BodyParts3D FMA16036, DiscParams::default): the corner bands are 228 /
-        // 367 and the full-face tie widens them to 1005 / 1598 — the same sizes the reverted
-        // spike reported, which is itself the confirmation that this harness reproduces it.
-        assert_eq!(
-            (inf4, sup4, inf10, sup10),
-            (228, 367, 1005, 1598),
-            "committed band sizes changed — the mesh or the band rule moved, and the ratio \
-             below is no longer comparable to the spike"
-        );
-        assert_eq!(
-            (prepared.tet.n_vertices(), mesh10.n_vertices()),
-            (7849, 19449),
-            "committed node counts changed (7849 corners -> 19449 with midsides)"
-        );
+        // ★ The committed band/node sizes are asserted at the END of this gate, not here.
+        // `assert_full_face_band` above is a GUARD — if the band rule is incoherent nothing
+        // downstream means anything, so it fails fast. The committed *sizes*, by contrast, are
+        // a comparison, and asserting them here aborted the gate in ~1 s before the stiffnesses
+        // were ever computed, so a re-anchor could only learn one number per run.
 
         // (2) SOUNDNESS + (3) the stiffnesses, both arms, both directions. The probe
         // converging at all is itself a hard check — a diverged solve panics.
@@ -3102,13 +3105,34 @@ mod tests {
             k_ext10 / k_ext4
         );
 
-        // (4) DIRECTION + MAGNITUDE, asserted PER DIRECTION (the spike quoted a mean and the
+        // (4) COMMITTED VALUES — every one of them, after everything above has printed.
+        //
+        // COMMITTED (BodyParts3D FMA16036, DiscParams::default): the corner bands are 73 / 116
+        // and the full-face tie widens them to 276 / 402.
+        assert_eq!(
+            (inf4, sup4, inf10, sup10),
+            (73, 116, 276, 402),
+            "committed band sizes changed — the mesh or the band rule moved, and the ratio \
+             below is no longer comparable across runs"
+        );
+        assert_eq!(
+            (prepared.tet.n_vertices(), mesh10.n_vertices()),
+            (5551, 14296),
+            "committed node counts changed (5551 corners -> 14296 with midsides)"
+        );
+
+        // DIRECTION + MAGNITUDE, asserted PER DIRECTION (the spike quoted a mean and the
         // two directions differ ~0.5 %, so a mean would hide a one-sided failure).
         //
         // COMMITTED (BodyParts3D FMA16036, DiscParams::default, raw un-conformed mesh, ±0.5°):
-        //   Tet4            flex −0.2811  ext −0.2788  N·m/rad
-        //   Tet10 full-face flex −0.1873  ext −0.1849  N·m/rad
-        //   ratio           flex  0.666   ext  0.663
+        //   Tet4            flex −0.1170  ext −0.1156  N·m/rad
+        //   Tet10 full-face flex −0.0968  ext −0.0958  N·m/rad
+        //   ratio           flex  0.827   ext  0.829
+        //
+        // ⚠ RE-ANCHORED at β.4 from bands (228,367,1005,1598), nodes 7849→19449, and ratio
+        // 0.666/0.663. α.1 stopped the mesher retaining phantom material: the domain shrank,
+        // which is why the band and node counts fell together with the stiffnesses. The
+        // absolutes are the shared table in `reference/committed_disc_stiffness.rs`.
         // The pre-registered bracket was 0.60..=0.73 around the reverted spike's 0.665; both
         // directions landed inside it, so the harness reproduces the spike and the bands
         // (228→1005 / 367→1598) match it id-for-id. The live assert below is the *tightened*
@@ -3116,8 +3140,8 @@ mod tests {
         // it is a real shift in the element effect, not noise (the bonded moment reproduces to
         // < 1e-3 relative across captures).
         for (k10, k4, expect, name) in [
-            (k_flex10, k_flex4, 0.666, "flexion"),
-            (k_ext10, k_ext4, 0.663, "extension"),
+            (k_flex10, k_flex4, 0.827, "flexion"),
+            (k_ext10, k_ext4, 0.829, "extension"),
         ] {
             assert!(
                 k10 < 0.0 && k4 < 0.0,
@@ -3182,7 +3206,8 @@ mod tests {
     /// therefore re-realizes the mesh at nearly-fixed resolution: whatever `k_disc` does across it
     /// is (a smooth h-effect over that window) **+** (re-meshing jitter), and the spread is an
     /// **upper bound on the jitter**. Read it against the ladder's intended signals — 33 % and
-    /// 50 % cell steps — and against the ~33 % element effect the rung exists to bound.
+    /// 50 % cell steps (those two are step SIZES, unrelated to the element effect) — and against
+    /// the ~17 % element effect the rung exists to bound (~33 % as rung 1 measured it, pre-α.1).
     ///
     /// **Five points, not two, and that is load-bearing.** The first version of this measurement
     /// compared a single pair (0.003 vs 0.00305) and reported ~9 %. That is one sample of the

@@ -40,8 +40,8 @@ include!(concat!(
 /// is also what makes the 2×2 table internally comparable.
 ///
 /// The stepping does not move the measurement, which was checked rather than assumed: the raw
-/// column below reproduces rung 1's two-probe numbers to four decimals (−0.2811 / −0.2788
-/// Tet4, −0.1873 / −0.1849 Tet10). It only makes the conformed arms solvable at all.
+/// column below reproduces rung 1's two-probe numbers to four decimals (−0.1170 / −0.1156
+/// Tet4, −0.0968 / −0.0958 Tet10). It only makes the conformed arms solvable at all.
 ///
 /// ⚠ **Rung 3 nearly cost this stepping too, and that is why the curved disc has its own
 /// quality floor.** With the midside projection held to the *corner* floor (0.05) the curved
@@ -148,34 +148,45 @@ fn conform_delta_by_element_fom() {
     // COMMITTED (BodyParts3D L4/L5/disc, DiscParams::default, stepped ±0.5° sweep), N·m/rad:
     //
     //           flex      ext          flex      ext        conform ratio
-    //   Tet4    raw −0.2811 / −0.2788  conf −0.2760 / −0.2738   0.982 / 0.982
-    //   Tet10   raw −0.1873 / −0.1849  conf −0.1845 / −0.1821   0.985 / 0.985
-    //   element ratio (Tet10/Tet4): raw 0.666 / 0.663, conformed 0.668 / 0.665
+    //   Tet4    raw −0.1170 / −0.1156  conf −0.1146 / −0.1132   0.979 / 0.979
+    //   Tet10   raw −0.0968 / −0.0958  conf −0.0948 / −0.0938   0.979 / 0.979
+    //   element ratio (Tet10/Tet4): raw 0.827 / 0.829, conformed 0.827 / 0.828
+    //
+    // ⚠ RE-ANCHORED at β.4 (α.1 removed phantom material; same element, different domain).
+    // The absolutes fell 48-58 %; the ratios barely moved, which is what localises the change
+    // to the geometry. Source of truth for the eight absolutes:
+    // `reference/committed_disc_stiffness.rs`, included above.
     //
     // ★ **The rung-3 `k_disc` shift, which is this table's job to record.** The conformed Tet10
     // arm is now the *curved* disc (its bonded-face boundary midsides are projected onto the
     // real endplate, not left at their edge midpoints). Rung 2 measured the same arm with
     // straight midsides at −0.1844 / −0.1820; curving them moves it to −0.1845 / −0.1821, a
-    // shift of **0.05 %** — an order of magnitude smaller than the conform's own ~1.5-1.8 % and two
-    // orders below the element order's ~33 %. Read that as the arc's framing holding rather
+    // shift of **0.05 %**. ⚠ Those four figures and the RMS pair below are rung 2/3 measurements
+    // taken PRE-α.1 and were NOT re-measured at β.4 — the straight-midside arm is not built by
+    // this gate, so there is no post-α.1 number for it. They are a historical record of that
+    // comparison; do not read them as current absolutes. The *relation* they establish still
+    // holds: that shift is an order of magnitude smaller than the conform's own ~2.1 % and two
+    // orders below the element order's ~17 %. Read that as the arc's framing holding rather
     // than as a null result: the geometric claim is measured directly by
     // `curved_tet10_midsides_seat_on_the_endplate_fom` (the bonded face's RMS distance to the
     // bone falls 0.796 → 0.694 mm), and `k_disc` is its physics consequence, which a
     // require-improvement gate would have false-failed in either direction.
     //
-    // Two things this table settles. (a) **The conform costs ~1.8 % of `k_disc`, not ~4 %.**
-    // #701's FOM printed its arms at two decimals (−0.28 → −0.27) and the ~4 % figure was
-    // read off that rounding; at four decimals the same comparison is −0.2811 → −0.2760.
-    // (b) **The two axes are very nearly orthogonal**: the conform ratio is the same to
-    // within 0.2 % on both elements, and the element ratio is the same to within 0.3 %
+    // Two things this table settles. (a) **The conform costs ~2.1 % of `k_disc`, not ~4 %.**
+    // #701's FOM printed its arms at two decimals and the ~4 % figure was read off that
+    // rounding; at four decimals the same comparison is −0.1170 → −0.1146. (The reasoning is
+    // rung 2's and survives β.4 intact; only the figure moved, from ~1.8 % to ~2.1 %.)
+    // (b) **The two axes are orthogonal — more cleanly than when this was written.** The
+    // conform ratio was the same to within 0.2 % on both elements; post-α.1 it is **0.979 on
+    // both, identical to three decimals**. The element ratio is the same to within 0.3 %
     // conformed vs raw. Seating the band on the bone and raising the element order are
     // therefore separable changes, which is what lets rung 3 and rung 4 reason about them
     // one at a time.
     for (kc, kr, expect, name) in [
-        (k4_con_f, k4_raw_f, 0.982, "Tet4 flexion"),
-        (k4_con_e, k4_raw_e, 0.982, "Tet4 extension"),
-        (k10_con_f, k10_raw_f, 0.985, "Tet10 flexion"),
-        (k10_con_e, k10_raw_e, 0.985, "Tet10 extension"),
+        (k4_con_f, k4_raw_f, 0.979, "Tet4 flexion"),
+        (k4_con_e, k4_raw_e, 0.979, "Tet4 extension"),
+        (k10_con_f, k10_raw_f, 0.979, "Tet10 flexion"),
+        (k10_con_e, k10_raw_e, 0.979, "Tet10 extension"),
     ] {
         let ratio = kc / kr;
         assert!(

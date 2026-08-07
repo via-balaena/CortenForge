@@ -29,15 +29,40 @@
 // each item rather than as a `#![...]` header because an included file is spliced mid-module,
 // where inner attributes are not valid. Same reason this header is `//` and not `//!`.
 
+// ## RE-ANCHORED at rung β.4 — measured, and what caused it
+//
+// α.1 stopped the mesher retaining phantom material, so the disc these gates measure is a
+// different (correct) domain. Every absolute below fell 48–58 %; the previous values were
+// measured on a mesh carrying slivers that are not anatomy.
+//
+// ⚠ **This is a GEOMETRY change, and rung 4's re-anchor rationale does not transfer.** That
+// one justified itself as "the old value was not wrong; it was the linear *element's* answer"
+// — an element swap at fixed geometry. Here the element is unchanged and the geometry moved,
+// so the old value is not a different-but-valid reading: it is a reading of a mesh that
+// contained material the anatomy does not have.
+//
+// ★ The RATIOS, which carry the physics, moved far less than the absolutes — and one of them
+// got *cleaner*: the conform cost was 0.982 (Tet4) / 0.985 (Tet10) and is now **0.979 on both
+// elements to three decimals**, so the conform's cost is element-independent, which is a
+// stronger form of the orthogonality this crate already claimed. The element ratio moved
+// 0.666 → **0.827** for a stated mechanism: Tet4 over-stiffness in bending grows with element
+// distortion, so phantom slivers inflated the Tet4↔Tet10 gap, and removing them must cost
+// Tet4 more than Tet10. Measured −58 % vs −48 %, in the predicted direction and order.
+//
+// Measured at `e10005a4`, meshes SHA-256-verified against the pin in
+// `design/cf-fsu-geometry/BODYPARTS3D.md`. Two independent gates agree on the raw column to
+// four decimals (`rung5_step1`'s shipped sweep row and `conform_delta_by_element`), by
+// different code paths.
+
 /// Raw (un-conformed) disc, linear Tet4 element: (flexion, extension).
 #[allow(dead_code)]
-const COMMITTED_TET4_RAW: (f64, f64) = (-0.2811, -0.2788);
+const COMMITTED_TET4_RAW: (f64, f64) = (-0.1170, -0.1156);
 /// Raw (un-conformed) disc, quadratic Tet10 element: (flexion, extension).
 #[allow(dead_code)]
-const COMMITTED_TET10_RAW: (f64, f64) = (-0.1873, -0.1849);
+const COMMITTED_TET10_RAW: (f64, f64) = (-0.0968, -0.0958);
 /// Endplate-conformed disc, linear Tet4 element: (flexion, extension).
 #[allow(dead_code)]
-const COMMITTED_TET4_CONFORMED: (f64, f64) = (-0.2760, -0.2738);
+const COMMITTED_TET4_CONFORMED: (f64, f64) = (-0.1146, -0.1132);
 /// Endplate-conformed disc, quadratic Tet10 element: (flexion, extension).
 #[allow(dead_code)]
-const COMMITTED_TET10_CONFORMED: (f64, f64) = (-0.1845, -0.1821);
+const COMMITTED_TET10_CONFORMED: (f64, f64) = (-0.0948, -0.0938);

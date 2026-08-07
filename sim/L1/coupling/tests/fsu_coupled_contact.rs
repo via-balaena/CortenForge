@@ -26,8 +26,9 @@
 //! flexion ROM still lands on rung 7's 6.13°. That is not a tighter proof of "coupled ≡
 //! superposition"; it is the same
 //! evidence as before *plus* a demonstration that the disc contributes ~0.4 % of the flexion
-//! restoring moment at ROM, so a 33 % change in it is nearly invisible here. The disc-level
-//! claim is anchored by `k_disc` below, which moved by 4.69 × its tolerance.
+//! restoring moment at ROM, so even a large change in it is nearly invisible here. The
+//! disc-level claim is anchored by `k_disc` below, which moved by 4.55 × its tolerance at β.4
+//! (and 4.69 × at rung 4).
 //!
 //! Env-gated + license-clean like the other rungs: `#[ignore]` + `$CF_L4_STL` +
 //! `$CF_L5_STL` + `$CF_DISC_STL` (`BodyParts3D` meshes are CC BY-SA, not committed).
@@ -51,12 +52,34 @@ const ROM_TOL_DEG: f64 = 0.15; // agreement window vs rung 7's grid-interpolated
 
 /// The disc's small-strain bending stiffness (N·m/rad) the coupled bushing is built from.
 ///
-/// **Re-anchored once, at rung 4 of `docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md`, from
-/// −0.2819 to −0.1882** — the single deliberate re-anchor that whole ladder was sequenced
-/// around. `CoupledFsu::build` now assembles the segment on the **quadratic** disc (Tet10)
-/// instead of a linear one, and a quadratic element does not bend-lock the way a linear one
-/// does, so the same disc measures genuinely softer. The old value was not wrong; it was the
-/// linear element's answer.
+/// ★★ **What this constant IS: a reproduction pin, not a model input.** `CoupledFsu::build`
+/// *measures* it — `sim/L1/fsu-model/src/coupled.rs`'s `k_disc = m / K_DISC_PROBE` — from the
+/// FEM disc, on every build, and feeds that measurement to the bushing. Nothing reads the
+/// constant below except this gate. **Restating it cannot change any simulation result**; it
+/// changes only what this gate will accept. So a re-anchor here is bookkeeping, and the
+/// physics question it might look like it settles — *is the disc's bending stiffness right?* —
+/// lives upstream in the FEM disc's geometry and material, against literature, and is not
+/// answered anywhere in this file.
+///
+/// ⚠ **Nor does `rung7_fsu_validation` passing constrain it.** That gate holds across both
+/// re-anchors below because segmental flexion is ligament-dominated and the disc carries ~0.4 %
+/// of the restoring moment at ROM. Its staying green is evidence that `k_disc` barely matters
+/// to *that* claim — not evidence that this value is correct.
+///
+/// **Re-anchored twice.**
+///
+/// **Rung 4, −0.2819 → −0.1882** — the re-anchor that ladder was sequenced around.
+/// `CoupledFsu::build` began assembling the segment on the **quadratic** disc (Tet10) instead
+/// of a linear one, and a quadratic element does not bend-lock the way a linear one does, so
+/// the same disc measured genuinely softer. The old value was not wrong; it was the linear
+/// element's answer.
+///
+/// **Rung β.4, −0.1882 → −0.0972** — and ⚠ **rung 4's rationale does NOT transfer.** That was
+/// an *element* change at fixed geometry. This one is the reverse: same element, same
+/// parameters, and α.1 stopped the mesher retaining phantom material, so the disc is a
+/// different (correct) domain. The old value is therefore not a different-but-valid reading —
+/// it was measured on a mesh carrying slivers the anatomy does not have. The **ratio** held at
+/// 0.827 across the change, which is what localises it to the geometry rather than the element.
 ///
 /// ⚠ The bonded disc is **straight** — seating it on the real endplate is rung 4b, deferred on
 /// a measurement (the conform inverts a lofted disc at production angles, on both elements).
@@ -66,28 +89,33 @@ const ROM_TOL_DEG: f64 = 0.15; // agreement window vs rung 7's grid-interpolated
 /// **Measured** (`cf-fsu-model`'s `coupled_element_shift` gate, both arms assembled in one run
 /// from the same three BodyParts3D meshes, `CoupledParams::default`, probe 0.86°):
 ///
-/// | arm | `k_disc` (N·m/rad) | flexion ROM | extension ROM |
-/// |---|---|---|---|
-/// | raw Tet4 (pre-rung-4, `CoupledFsuTet4::build_baseline`) | **−0.2819** | 6.1321° | 4.4731° |
-/// | straight Tet10 (shipped, `CoupledFsu::build`) | **−0.1882** | 6.1403° | 4.4739° |
+/// | arm | rung 4 (pre-α.1) | rung β.4 (post-α.1) |
+/// |---|---|---|
+/// | raw Tet4 (`CoupledFsuTet4::build_baseline`) | −0.2819 | **−0.1175** |
+/// | straight Tet10 (shipped, `CoupledFsu::build`) | −0.1882 | **−0.0972** |
+/// | ratio | 0.668 | **0.827** |
 ///
-/// Two things that measurement settles, neither of them assumed:
+/// ⚠ **Rung 4's supporting claim is now falsified and must not be quoted.** It read *"the
+/// linear arm reproduces −0.2819 to four decimals, so the re-anchor is attributable to the
+/// element"*. The linear arm now reads **−0.1175**. That is not a regression in the probe: α.1
+/// moved **both** arms, which is exactly why the *ratio* survived, and the ratio is what makes
+/// the element claim attributable. The rung-4 ROM figures (6.1321°/6.1403° flexion,
+/// 4.4731°/4.4739° extension) are a **historical record of that measurement** and were not
+/// re-measured here — this gate fails at `k_disc` before reaching them.
 ///
-/// - **The linear arm reproduces −0.2819 to four decimals**, so the re-anchor is attributable
-///   to the element and not to anything else rung 4 changed (the probe is now *walked* to
-///   0.86° rather than jumped there, because a conformed disc does not survive the jump).
-/// - **The plan's prediction held.** §0.3 derived that the disc is only ~0.4 % of the flexion
-///   restoring moment at ROM, so a ~33 % softer disc should move segment flexion ROM by
-///   ~0.008°. Measured: **+0.0082°**. That is why [`ROM_TOL_DEG`] and [`LIT_EXTENSION_DEG`]
-///   below did **not** move — they are the arc's tripwires, not its payoff metric.
+/// **What still holds.** §0.3 derived that the disc carries only ~0.4 % of the flexion
+/// restoring moment at ROM. That is why [`ROM_TOL_DEG`] and [`LIT_EXTENSION_DEG`] did not move
+/// across *either* re-anchor, and why `rung7_fsu_validation` stayed green through both — they
+/// are the arc's tripwires, not its payoff metric. See the warning above about what that does
+/// and does not prove.
 ///
-/// The displacement is 4.69 × [`K_DISC_TOL`], which is why this is a re-anchor and not a
-/// tolerance question. **Never widen `K_DISC_TOL` to absorb an element change**: the tolerance
-/// is a gross-regression bound around a measured value, and widening it would trade the only
-/// guard on this quantity for the convenience of not restating the value.
-const RUNG7_K_DISC: f64 = -0.1882;
+/// The β.4 displacement is 0.0910, or **4.55 ×** [`K_DISC_TOL`] — a re-anchor, not a tolerance
+/// question. **Never widen `K_DISC_TOL` to absorb an element _or geometry_ change**: it is a
+/// gross-regression bound around a measured value, and widening it would trade the only guard
+/// on this quantity for the convenience of not restating the value.
+const RUNG7_K_DISC: f64 = -0.0972;
 /// Gross-regression bound around [`RUNG7_K_DISC`]. Unchanged across the Tet4 → Tet10 migration
-/// — deliberately, see that constant.
+/// AND across α.1's geometry correction — deliberately, both times, see that constant.
 const K_DISC_TOL: f64 = 0.02;
 // Literature extension corridor (Yamamoto 1989 / Panjabi–White, widened for 7.5–10 N·m).
 const LIT_EXTENSION_DEG: (f64, f64) = (2.5, 5.5);
@@ -116,7 +144,8 @@ fn l4_l5_coupled_flexion_extension_equilibrium() {
     assert!(
         (k_disc - RUNG7_K_DISC).abs() < K_DISC_TOL,
         "k_disc must reproduce the rung-4 anchor {RUNG7_K_DISC:+.4} within {K_DISC_TOL}, got \
-         {k_disc:+.4}. If the element changed again this is a re-anchor (measure it and restate \
+         {k_disc:+.4}. If the element OR the geometry changed again this is a re-anchor (measure \
+         it and restate \
          the constant with the measurement); never widen K_DISC_TOL to absorb it."
     );
 

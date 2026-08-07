@@ -3,7 +3,8 @@
 //! central prediction.
 //!
 //! The plan predicts the flip is nearly invisible at the segment level even though it is
-//! large at the disc level: the standalone disc softens ~33 % with the element order, but the
+//! large at the disc level: the standalone disc softens ~17 % with the element order (~33 % as
+//! rung 4 measured it, before α.1 removed the phantom material inflating that gap), but the
 //! disc contributes only ~0.4 % of the flexion restoring moment at ROM (the segment is
 //! ligament-`k`-dominated), so segment ROM should move by **~0.008°**. That number was
 //! *derived*, never measured — nothing in this repo has ever assembled both arms.
@@ -19,15 +20,20 @@
 //!
 //! | arm | `k_disc` (N·m/rad) | flexion ROM | extension ROM | build |
 //! |---|---|---|---|---|
-//! | raw Tet4 (pre-rung-4) | −0.2819 | 6.1321° | 4.4731° | ~7 s |
-//! | straight Tet10 (shipped) | −0.1882 | 6.1403° | 4.4739° | ~68 s |
-//! | **Δ** | **0.668×** | **+0.0082°** | **+0.0008°** | ~10× |
+//! | raw Tet4 (pre-rung-4) | −0.2819 → **−0.1175** | 6.1321° | 4.4731° | ~7 s |
+//! | straight Tet10 (shipped) | −0.1882 → **−0.0972** | 6.1403° | 4.4739° | ~68 s |
+//! | **Δ** | **0.668× → 0.827×** | **+0.0082°** | **+0.0008°** | ~10× |
+//!
+//! ⚠ The second `k_disc` column is β.4's re-measurement after α.1. **The ROM columns are rung
+//! 4's and were NOT re-measured** — this gate now fails at `k_disc` before it reaches them.
 //!
 //! The `k_disc` and ROM columns are deterministic and pinned below; the build column is
 //! wall clock on one machine and is quoted to one significant figure for that reason.
 //!
-//! So: the disc got **33 % softer** and the segment moved **0.0082°** — §0.3's derivation
-//! ("~0.008°") confirmed to the digit, and the reason `ROM_TOL_DEG` (±0.15°) and
+//! So (rung 4, pre-α.1): the disc got **33 % softer** and the segment moved **0.0082°** — §0.3's
+//! derivation ("~0.008°") confirmed to the digit. That confirmation stands as a historical
+//! result; post-α.1 the element effect is ~17 %, and the segment-level insensitivity it
+//! demonstrates is what still matters. It is the reason `ROM_TOL_DEG` (±0.15°) and
 //! `LIT_EXTENSION_DEG` never had to move. The facet-capped extension side moved 10× less than
 //! the ligament-limited flexion side, which is the mechanism the reframe claimed.
 //!
@@ -65,21 +71,32 @@ use cf_fsu_model::{CoupledFsu, CoupledFsuTet4, CoupledParams, PHYSIOLOGIC_MOMENT
 /// is what the `k_disc` and ROM anchors below already ask, more directly.
 const PREREGISTERED_ROM_SHIFT_DEG: f64 = 0.05;
 
-/// The pre-rung-4 linear arm's disc bushing (N·m/rad) — **the known value this whole gate is
-/// validated against**, not a fresh measurement.
+/// The pre-rung-4 linear arm's disc bushing (N·m/rad).
 ///
-/// `-0.2819` is the number `fsu_coupled_contact.rs` asserted before rung 4 and rung 7
-/// published. Rung 4 changed how the probe is driven (walked to 0.86° in 0.1° sub-steps
-/// instead of jumped there, because a conformed disc does not survive the jump) and moved the
-/// whole assembly through a new generic `assemble`. If the linear arm still lands here, both
-/// changes are element-neutral and the Tet10 number below is attributable to the element.
-/// **Measured after: −0.2819** — four decimals, unchanged.
-const BASELINE_K_DISC: f64 = -0.2819;
-/// The shipped quadratic arm's disc bushing (N·m/rad). **Measured: −0.1882** — 0.668 of the
-/// linear arm, which lands on the standalone straight-Tet10 ratio rung 1 committed (0.666 flex /
-/// 0.663 ext). That agreement is the cross-check: the flip carried the *standalone* element
-/// effect into the assembly rather than introducing an assembly-level artifact of its own.
-const QUADRATIC_K_DISC: f64 = -0.1882;
+/// ⚠⚠ **This constant's ROLE changed at β.4, and the change is a real loss of evidence.**
+///
+/// It used to be *the known value this whole gate is validated against, not a fresh
+/// measurement*: `-0.2819` was published by `fsu_coupled_contact.rs` **before** rung 4, so the
+/// linear arm reproducing it proved that rung 4's two changes — walking the probe to 0.86° in
+/// 0.1° sub-steps instead of jumping, and routing the build through a generic `assemble` —
+/// were element-neutral, which is what made the Tet10 number attributable to the element.
+/// **That check passed at rung 4** (−0.2819, four decimals, unchanged) and is a settled result.
+///
+/// α.1 then changed the disc's retained domain, so the linear arm can no longer reproduce an
+/// independently-published prior: **−0.1175 is this gate's own output.** Pinning it keeps a
+/// reproduction check, but it can no longer *validate rung 4's element-neutrality* — that
+/// question is closed by the rung-4 result above and is not re-testable here. Do not describe
+/// this constant as an independent oracle; it is now a pin
+/// (→ the cross-check-must-not-route-through-the-artifact-under-test rule).
+const BASELINE_K_DISC: f64 = -0.1175;
+/// The shipped quadratic arm's disc bushing (N·m/rad). **Measured: −0.0972** — 0.827 of the
+/// linear arm, which lands on the standalone straight-Tet10 ratio (0.827 flex / 0.829 ext).
+/// That agreement is the cross-check that still works, and it is the load-bearing one: the
+/// ratio is computed from two arms measured in the same run, so it does not depend on any
+/// published prior. The flip carries the *standalone* element effect into the assembly rather
+/// than introducing an assembly-level artifact of its own — and it survived α.1 unchanged,
+/// which is what localises the absolutes' move to the geometry.
+const QUADRATIC_K_DISC: f64 = -0.0972;
 /// Agreement window on both arms' `k_disc` (N·m/rad). Tight — these are re-runs of a
 /// deterministic build on a pinned mesh, not a tolerance on a physical claim.
 const K_DISC_TOL: f64 = 5.0e-4;
@@ -117,9 +134,11 @@ fn coupled_segment_shift_from_the_tet10_flip() {
     assert!(
         (k4 - BASELINE_K_DISC).abs() < K_DISC_TOL,
         "the pre-rung-4 linear arm must still reproduce the published {BASELINE_K_DISC:+.4} \
-         within {K_DISC_TOL} — got {k4:+.4}. Rung 4 walks the probe to 0.86° instead of jumping \
-         there and routes the build through a generic `assemble`; a drift here means one of \
-         those was NOT element-neutral, and the Tet10 anchor below is not attributable."
+         within {K_DISC_TOL} — got {k4:+.4}. This is a reproduction pin on a deterministic \
+         build, NOT a check that rung 4's probe-walk and generic `assemble` were \
+         element-neutral — α.1 ended that (see the constant's doc). A drift here means the \
+         geometry pipeline or the build moved; check whether the RATIO below moved with it, \
+         because a change that shifts both arms together is geometry, not element."
     );
     assert!(
         (k10 - QUADRATIC_K_DISC).abs() < K_DISC_TOL,

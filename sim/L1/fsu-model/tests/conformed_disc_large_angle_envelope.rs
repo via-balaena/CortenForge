@@ -135,7 +135,13 @@ fn conformed_disc_survives_a_large_angle_sweep() {
 
     // COMMITTED (BodyParts3D L4/L5/disc, DiscParams::default, 0.1° steps, 180 solves/arm):
     // **both conformed arms complete the full ±6.0° chain**, every step converging,
-    // conserving and strictly restoring; peak |M| = 0.0300 (Tet4) / 0.0205 (Tet10) N·m.
+    // conserving and strictly restoring; peak |M| = 0.0128 (Tet4) / 0.0105 (Tet10) N·m.
+    //
+    // ⚠ RE-ANCHORED at β.4 from 0.0300 / 0.0205. ★ **The gate's CLAIM did not weaken — only its
+    // magnitudes moved.** Both arms still reach the full ±6.0° chain, every step converging,
+    // with residuals ~7e-12 throughout; α.1 removed phantom material, so the same sweep on the
+    // corrected domain simply carries less moment. Tet10/Tet4 = 0.820 here, alongside the 0.827
+    // element ratio the rest of the arc measures.
     //
     // ★ **RE-RUN AT RUNG 3, on the CURVED disc, and the numbers did not move.** The Tet10 arm
     // here is now the curved disc (bonded-face boundary midsides projected onto the real
@@ -143,8 +149,11 @@ fn conformed_disc_survives_a_large_angle_sweep() {
     // element is more distortion-sensitive than a straight one, and at the *corner* quality
     // floor it visibly was: that mesh cannot take a 0.15° single jump at all. At
     // `DISC_MIDSIDE_CONFORM_QUALITY_FLOOR` = 0.4 the full ±6.0° chain completes again and the
-    // peak |M| reproduces rung 2's 0.0300 / 0.0205 to four decimals. So curving the bonded face
+    // peak |M| reproduced rung 2's 0.0300 / 0.0205 to four decimals. So curving the bonded face
     // costs no angle envelope, measured rather than assumed (853 s, `--release`, idle machine).
+    // ⚠ Those two figures are rung 2/3's, PRE-α.1, and are kept as the record of that
+    // comparison — the straight-midside arm is not built here, so β.4 has no number for it.
+    // The finding they support (curving costs no envelope) is unaffected by the re-anchor.
     //
     // Two things follow, and neither was known before this rung.
     //
@@ -171,7 +180,7 @@ fn conformed_disc_survives_a_large_angle_sweep() {
     // (150-175 solves, 14-45 min): 180 solves here in ~15 min lands at the bottom of that
     // band. It is not a substitute for §5.1's own measurement at rung 4 — `capture_ramp` also
     // runs the equilibrium bisection per frame.
-    for (m, expect, name) in [(m4, 0.0300, "Tet4"), (m10, 0.0205, "Tet10")] {
+    for (m, expect, name) in [(m4, 0.0128, "Tet4"), (m10, 0.0105, "Tet10")] {
         assert!(
             ((0.95 * expect)..=(1.05 * expect)).contains(&m),
             "{name} conformed peak |M| {m:.4} is outside ±5 % of the committed {expect:.4} N·m"
