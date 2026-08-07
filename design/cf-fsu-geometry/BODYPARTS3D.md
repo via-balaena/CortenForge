@@ -60,6 +60,30 @@ export CF_DISC_STL=/tmp/bp3d/FMA16036.stl
 cargo test -p sim-coupling --release --test rung7_fsu_validation -- --ignored --nocapture
 ```
 
+## Which gates need them
+
+Do not maintain that list by hand — ask for it. `cargo xtask licensed-gates`
+derives the surface from the source tree (every `#[test]` whose `#[ignore]`
+reason names one of the three variables) and prints it grouped by crate;
+`--run` executes it, and `--only <crate>` narrows to one:
+
+```sh
+cargo xtask licensed-gates                 # what exists, and which meshes each needs
+cargo xtask licensed-gates --run           # run all of it (needs the paths exported)
+cargo xtask licensed-gates --only cf-codesign --run
+```
+
+A run demands only the meshes its selected gates actually name, so an L4-only
+crate runs with L4 alone.
+
+**Why this is derived rather than listed.** These gates cannot run in CI and
+never will — the meshes are licensed and uncommittable — so the only thing
+standing between them and silent rot is somebody running them deliberately.
+A hand-kept list is the wrong instrument for that: twice in the rung-β arc an
+inventory was recorded that was narrower than its name, and both times the
+gates it omitted had already gone red. **Any PR touching the FSU cone should
+run this before merge**, since nothing else will.
+
 ## Coordinates
 
 The meshes are in **native millimetres**, positioned in the whole-atlas coordinate frame

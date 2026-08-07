@@ -30,6 +30,7 @@ mod check;
 mod complete;
 mod coverage;
 mod grade;
+mod licensed_gates;
 mod pr_scope;
 mod setup;
 mod validators;
@@ -190,6 +191,33 @@ enum Commands {
         record_timings: bool,
     },
 
+    /// List (or run) the gates that need the licensed anatomy meshes.
+    ///
+    /// These read the `BodyParts3D` meshes, which are CC BY-SA 2.1 JP and never
+    /// committed, so every one is `#[ignore]`d and CI cannot run any of them —
+    /// only a local run with the meshes fetched can. The surface is derived
+    /// from the source tree rather than a hand-kept list, so a gate added today
+    /// is enumerated today. Fetch the meshes per
+    /// `design/cf-fsu-geometry/BODYPARTS3D.md`, export the three paths, then
+    /// pass `--run`.
+    LicensedGates {
+        /// Restrict to one crate (e.g. `cf-fsu-model`). Omit for the whole
+        /// workspace surface.
+        #[arg(long)]
+        only: Option<String>,
+
+        /// Run the gates instead of listing them. Requires the mesh paths in
+        /// `$CF_L4_STL` / `$CF_L5_STL` / `$CF_DISC_STL`.
+        #[arg(long, conflicts_with = "check")]
+        run: bool,
+
+        /// Assert every licence-gated test is still visible to the enumerator,
+        /// and exit non-zero if any is not. Needs no meshes and no build, so
+        /// this is the part CI can enforce.
+        #[arg(long)]
+        check: bool,
+    },
+
     /// Set up development environment (git hooks, verify tools)
     Setup,
 
@@ -242,6 +270,7 @@ fn main() -> Result<()> {
             shard,
             record_timings,
         } => validators::run(only, shard, record_timings),
+        Commands::LicensedGates { only, run, check } => licensed_gates::run(only, run, check),
         Commands::Setup => setup::run(),
         Commands::Uninstall => setup::uninstall(),
     }
