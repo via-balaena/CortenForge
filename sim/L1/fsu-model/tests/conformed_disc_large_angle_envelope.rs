@@ -141,7 +141,8 @@ fn conformed_disc_survives_a_large_angle_sweep() {
     // magnitudes moved.** Both arms still reach the full ±6.0° chain, every step converging,
     // with residuals ~7e-12 throughout; α.1 removed phantom material, so the same sweep on the
     // corrected domain simply carries less moment. Tet10/Tet4 = 0.820 here, alongside the 0.827
-    // element ratio the rest of the arc measures.
+    // element ratio the rest of the arc measures. Residuals stay ~7e-12 (Tet4) / ~1e-13 (Tet10)
+    // across the sweep, so nothing degraded numerically.
     //
     // ★ **RE-RUN AT RUNG 3, on the CURVED disc, and the numbers did not move.** The Tet10 arm
     // here is now the curved disc (bonded-face boundary midsides projected onto the real
@@ -168,9 +169,13 @@ fn conformed_disc_survives_a_large_angle_sweep() {
     //    quadratic arm had only ever been driven to ±0.5°; it reaches ±6.0°.
     //
     // The peaks are a cross-check as well as a record: linear extrapolation of the
-    // small-angle stiffnesses (`conform_delta_by_element_fom`: −0.2760 / −0.1844 N·m/rad)
-    // to 6° = 0.1047 rad predicts 0.0289 / 0.0193 N·m, so the disc is ~4-6 % stiffer at the
+    // small-angle stiffnesses (`conform_delta_by_element_fom`: −0.1146 / −0.0948 N·m/rad)
+    // to 6° = 0.1047 rad predicts 0.0120 / 0.0099 N·m, so the disc is ~6-7 % stiffer at the
     // ROM extreme than a linear spring — mild, monotone hardening, not a divergence.
+    // ⚠ RE-DERIVED at β.4. It previously read −0.2760 / −0.1844 → 0.0289 / 0.0193 → ~4-6 %;
+    // those inputs are retired, and −0.1844 was never `conform_delta`'s committed value in any
+    // case (it was rung 2's straight-midside arm). The conclusion survives the re-derivation;
+    // the inputs and predictions did not.
     //
     // COST, measured over three runs: **897 s** wall (`--release`) on an otherwise-idle
     // machine, 936 s, and 1138 s while sharing the machine with other work — read it as

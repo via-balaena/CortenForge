@@ -5,9 +5,11 @@
 //! The plan predicts the flip is nearly invisible at the segment level even though it is
 //! large at the disc level: the standalone disc softens ~17 % with the element order (~33 % as
 //! rung 4 measured it, before α.1 removed the phantom material inflating that gap), but the
-//! disc contributes only ~0.4 % of the flexion restoring moment at ROM (the segment is
-//! ligament-`k`-dominated), so segment ROM should move by **~0.008°**. That number was
-//! *derived*, never measured — nothing in this repo has ever assembled both arms.
+//! disc contributes only ~0.17 % of the flexion restoring moment at ROM (the segment is
+//! ligament-`k`-dominated), so segment ROM should move by **~0.0018°**. ⚠ Both of those are
+//! LINEAR IN `|k_disc|` and therefore moved with it at β.4 — rung 4's ~0.4 % and ~0.008° were
+//! the same derivation on the pre-α.1 disc. The prediction was *derived*, never measured,
+//! until this gate assembled both arms.
 //!
 //! This test does, in one run: [`CoupledFsu::build`] (the shipped straight-Tet10 arm) and
 //! [`CoupledFsuTet4::build_baseline`] (the pre-rung-4 raw-Tet4 arm), same three meshes, same
@@ -25,15 +27,20 @@
 //! | **Δ** | **0.668× → 0.827×** | **+0.0082°** | **+0.0008°** | ~10× |
 //!
 //! ⚠ The second `k_disc` column is β.4's re-measurement after α.1. **The ROM columns are rung
-//! 4's and were NOT re-measured** — this gate now fails at `k_disc` before it reaches them.
+//! 4's**; β.4's are below.
 //!
 //! The `k_disc` and ROM columns are deterministic and pinned below; the build column is
 //! wall clock on one machine and is quoted to one significant figure for that reason.
 //!
-//! So (rung 4, pre-α.1): the disc got **33 % softer** and the segment moved **0.0082°** — §0.3's
-//! derivation ("~0.008°") confirmed to the digit. That confirmation stands as a historical
-//! result; post-α.1 the element effect is ~17 %, and the segment-level insensitivity it
-//! demonstrates is what still matters. It is the reason `ROM_TOL_DEG` (±0.15°) and
+//! **β.4 ROM (post-α.1, measured):** flexion Tet4 6.1466° → Tet10 6.1483° (Δ **+0.0018°**);
+//! extension 4.4745° → 4.4746° (Δ **+0.0002°**).
+//!
+//! ★★ **§0.3's model is confirmed a SECOND time, on the corrected geometry.** Rung 4: a 33 %
+//! softer disc at a ~0.4 % share moved the segment 0.0082° against a derived ~0.008°. β.4:
+//! a 17 % softer disc at a ~0.17 % share predicts 6.147° × 0.0017 × 0.173 ≈ **0.0018°**, and
+//! the measurement is **+0.0018°**. Both inputs moved and the derivation tracked them — which
+//! is far stronger evidence for the model than the first confirmation alone. It is the reason
+//! `ROM_TOL_DEG` (±0.15°) and
 //! `LIT_EXTENSION_DEG` never had to move. The facet-capped extension side moved 10× less than
 //! the ligament-limited flexion side, which is the mechanism the reframe claimed.
 //!
@@ -64,8 +71,10 @@ use cf_fsu_model::{CoupledFsu, CoupledFsuTet4, CoupledParams, PHYSIOLOGIC_MOMENT
 /// "prediction confirmed"; a shift that clears it is a finding *before* it becomes a
 /// tripwire failure, which is the only way this gate is worth more than that one.
 ///
-/// **Measured: +0.0082°**, against a prediction of ~0.008° derived before any of this was
-/// built. Left at the pre-registered 0.05° rather than tightened onto the measurement: the
+/// **Measured: +0.0018°** at β.4 (rung 4, pre-α.1: +0.0082°), against a re-derived prediction
+/// of ~0.0018°. ⚠ Note the bound is now ~28× the prediction rather than rung 4's ~6×, because
+/// the prediction shrank with `|k_disc|` while the bound did not. Left at the pre-registered
+/// 0.05° rather than tightened onto the measurement: the
 /// question this constant asks is "did the segment-level invisibility argument hold", and a
 /// ±5 % pin around 0.0082° would instead ask "is this specimen's shift reproducible", which
 /// is what the `k_disc` and ROM anchors below already ask, more directly.
@@ -173,8 +182,8 @@ fn coupled_segment_shift_from_the_tet10_flip() {
     let d_flex = (flex10 - flex4).abs();
     assert!(
         d_flex < PREREGISTERED_ROM_SHIFT_DEG,
-        "§0.3 predicts the disc is ~0.4 % of the flexion restoring moment at ROM, so a \
-         {:.1} % softer disc should shift segment flexion ROM by ~0.008° — measured {d_flex:.4}°, \
+        "§0.3 predicts the disc is ~0.17 % of the flexion restoring moment at ROM, so a \
+         {:.1} % softer disc should shift segment flexion ROM by ~0.0018° — measured {d_flex:.4}°, \
          beyond the pre-registered {PREREGISTERED_ROM_SHIFT_DEG}°. If this fires the prediction \
          was wrong: re-anchor honestly and record the measurement, never tune the element to the \
          old number.",

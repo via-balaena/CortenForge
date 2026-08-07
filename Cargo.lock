@@ -2428,6 +2428,7 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "cf-fsu-geometry",
+ "cf-fsu-model",
  "cf-geometry",
  "mesh-loft",
  "mesh-repair",

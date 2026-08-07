@@ -1242,6 +1242,13 @@ impl<Msh: Mesh, E: Element<N, G> + Default, const N: usize, const G: usize>
     }
 }
 
+/// Committed measurement anchors shared with this crate's integration tests.
+///
+/// See the module docs: gated on `any(test, feature = "test-fixtures")` so `tests/` can see it
+/// without the constants becoming public API of a shipped crate.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod committed_anchors;
+
 /// License-free geometry fixtures shared by this crate's test modules (`lib.rs` and
 /// `coupled.rs`), so the box triangulation lives in exactly one place.
 #[cfg(test)]
@@ -1372,10 +1379,7 @@ mod tests {
     // The committed disc-stiffness table, shared with `tests/conform_delta_by_element.rs`.
     // `rung5_step1_mesh_realization_noise_floor_fom` below cross-checks its sweep's shipped
     // row against the raw column, so the two gates must pin the same numbers by construction.
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/reference/committed_disc_stiffness.rs"
-    ));
+    use crate::committed_anchors::{COMMITTED_TET4_RAW, COMMITTED_TET10_RAW};
 
     #[test]
     fn builds_and_derives_the_ml_axis_and_pivot() {
@@ -2960,7 +2964,8 @@ mod tests {
     /// is sound (converges, conserves, strictly restoring, really deforms). The `k_disc`
     /// ratio bracket is measured on the real disc in the `#[ignore]`d gate below; the
     /// synthetic slab's ratio is *reported* here, not asserted, because the pre-registered
-    /// 0.665 is a real-anatomy number and a 24×20×6 mm box at `cell = 3 mm` is a different
+    /// pre-registered ratio is a real-anatomy number (0.665 at rung 1; **0.827** post-α.1) and a
+    /// 24×20×6 mm box at `cell = 3 mm` is a different
     /// bending problem.
     #[test]
     fn tet10_full_face_bond_is_sound_on_the_synthetic_disc() {
@@ -3025,7 +3030,7 @@ mod tests {
     /// overstated by the geometry. Earning the accuracy claim is rung 5's h-refinement.
     ///
     /// **The band cross-check, not the ratio, is the assertion with teeth.** An under-tied
-    /// band drifts the ratio from 0.665 *toward* the corner-only 0.570, so a *partial*
+    /// band drifts the ratio *toward* the corner-only tie, so a *partial*
     /// under-tie — some midsides missed, or a mis-indexed slot table — lands between the two
     /// and sits comfortably inside any band drawn around 0.665. (To be exact about what the
     /// stiffness band does cover: a *fully* corner-only tie at 0.570 would fall outside both
@@ -3133,6 +3138,10 @@ mod tests {
         // 0.666/0.663. α.1 stopped the mesher retaining phantom material: the domain shrank,
         // which is why the band and node counts fell together with the stiffnesses. The
         // absolutes are the shared table in `reference/committed_disc_stiffness.rs`.
+        // ⚠ The bracket below is RETIRED as a validation of the *current* values: post-α.1 the
+        // ratio (0.827/0.829) falls outside 0.60..=0.73 and the bands no longer match the spike
+        // id-for-id. The harness's live known-value check is now `rung5_step1`'s shipped row,
+        // which reproduces this gate's raw column to four decimals through a different probe.
         // The pre-registered bracket was 0.60..=0.73 around the reverted spike's 0.665; both
         // directions landed inside it, so the harness reproduces the spike and the bands
         // (228→1005 / 367→1598) match it id-for-id. The live assert below is the *tightened*
@@ -3211,8 +3220,10 @@ mod tests {
     ///
     /// **Five points, not two, and that is load-bearing.** The first version of this measurement
     /// compared a single pair (0.003 vs 0.00305) and reported ~9 %. That is one sample of the
-    /// jitter, not a distribution, and it **understated the real spread by more than 10×** — the
-    /// sweep measures ~100 % peak-to-peak. A single perturbation cannot distinguish a typical
+    /// jitter, not a distribution, and it **understated the real spread by ~6×** (post-α.1: that
+    /// pair gives 3.4 % against the sweep's 21.13 %; pre-α.1 the same comparison read >10×) — the
+    /// sweep measures **21.13 %** peak-to-peak post-α.1 (~100 % pre-α.1, which is the figure
+    /// this paragraph carried until β.4). A single perturbation cannot distinguish a typical
     /// lattice phase from a pathological one, and quoting it would have been exactly the
     /// false-precision point this repo's UQ position refuses.
     ///
@@ -3223,7 +3234,8 @@ mod tests {
     ///
     /// Both arms at each cell come from **one** prepared mesh (`PreparedDisc::duplicate`), so the
     /// per-cell ratio `k10/k4` is attributable to element order by construction — and the ratio's
-    /// spread (~15 %) being far below the absolutes' (~100 %) is the measured confirmation that
+    /// spread (**1.81 %**) being far below the absolutes' (**21.13 %**) is the measured
+    /// confirmation that
     /// the §3 confounds are largely common-mode in it.
     ///
     /// **Asserts** that the sweep genuinely re-realized the mesh (else it measures nothing), that
@@ -3589,7 +3601,8 @@ mod tests {
     /// throws away.**
     ///
     /// Rung 5 established that `k_disc` is not a stable function of `cell`: over a ±3.4 %
-    /// window the absolutes move ~100 % peak-to-peak, and the mover is the *retained
+    /// window the absolutes move **21.13 %** peak-to-peak post-α.1 (~100 % pre-α.1, when phantom
+    /// material amplified the swing), and the mover is the *retained
     /// domain* — the tet count swings ~49.5 % non-monotonically while the clamp depth holds
     /// to 0.20 %, so it is not the boundary condition. That makes every absolute `k_disc`
     /// the arc has published, `RUNG7_K_DISC` included, one draw from a wide distribution.

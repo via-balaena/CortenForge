@@ -23,10 +23,9 @@ use sim_soft::{Element, Mesh};
 // The committed disc-stiffness table, shared with `rung5_step1_mesh_realization_noise_floor_fom`
 // in `src/lib.rs`, which cross-checks its sweep's shipped row against the same raw column. One
 // definition so a re-anchor cannot land on one gate and miss the other.
-include!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/reference/committed_disc_stiffness.rs"
-));
+use cf_fsu_model::committed_anchors::{
+    COMMITTED_TET4_CONFORMED, COMMITTED_TET4_RAW, COMMITTED_TET10_CONFORMED, COMMITTED_TET10_RAW,
+};
 
 /// `(k_flex, k_ext)` at ±0.5° for a bonded disc, measured through the **stepped**
 /// `capture_flexion` sweep #701's conform FOM uses (−0.5, −0.25, 0, +0.25, +0.5°).
@@ -153,8 +152,11 @@ fn conform_delta_by_element_fom() {
     //   element ratio (Tet10/Tet4): raw 0.827 / 0.829, conformed 0.827 / 0.828
     //
     // ⚠ RE-ANCHORED at β.4 (α.1 removed phantom material; same element, different domain).
-    // The absolutes fell 48-58 %; the ratios barely moved, which is what localises the change
-    // to the geometry. Source of truth for the eight absolutes:
+    // The absolutes fell 48-58 %. The CONFORM ratios barely moved (0.982/0.985 → 0.979/0.979);
+    // the ELEMENT ratio moved 0.666 → 0.827 for the mechanism recorded in
+    // `reference/committed_disc_stiffness.rs`. What localises the change to the geometry is
+    // that both element arms fell together with no element code touched. Source of truth for
+    // the eight absolutes:
     // `reference/committed_disc_stiffness.rs`, included above.
     //
     // ★ **The rung-3 `k_disc` shift, which is this table's job to record.** The conformed Tet10

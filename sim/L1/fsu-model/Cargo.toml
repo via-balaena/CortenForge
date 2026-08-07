@@ -40,7 +40,18 @@ nalgebra = { workspace = true }
 # `Result` + context/`bail!` for the fallible build path.
 anyhow = { workspace = true }
 
+[features]
+# Test anchors shared across the crate boundary. `rung5_step1_...fom` lives in the crate's
+# inline `#[cfg(test)]` module (it needs private pipeline items), while
+# `conform_delta_by_element` is a separate integration-test crate; a feature is this
+# workspace's existing idiom for letting both see the same constants without making them
+# public API. `publish = false`, so no semver surface is created.
+test-fixtures = []
+
 [dev-dependencies]
+# Self-dependency with `test-fixtures` on: the only way an integration test in `tests/` can
+# see a feature-gated item of its own crate. See `src/committed_anchors.rs`.
+cf-fsu-model = { path = ".", features = ["test-fixtures"] }
 # `assemble_bushing` + patch prep — the human-paint → lofted-disc test helper
 # (`lofted_disc`) builds the disc from two endplate patches via the loft primitive.
 mesh-loft = { workspace = true }

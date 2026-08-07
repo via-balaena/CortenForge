@@ -248,8 +248,11 @@ impl CoupledFsu<Tet10Mesh, Tet10, 10, 4> {
     /// segment's disc physics runs on a curved-capable element instead of a bend-locking linear
     /// one, which softens the standalone disc ~17 % (ratio 0.827) and is why the arc re-anchors
     /// `RUNG7_K_DISC`. ⚠ That softening read ~33 % until α.1: phantom material inflated the
-    /// Tet4↔Tet10 gap, so the *element* effect was overstated by the geometry. It moves segment ROM far less: the disc is only ~0.4 % of the flexion
-    /// restoring moment at ROM, which is ligament-dominated.
+    /// Tet4↔Tet10 gap, so the *element* effect was overstated by the geometry.
+    ///
+    /// It moves segment ROM far less: the disc is only **~0.17 %** of the flexion restoring
+    /// moment at ROM (measured, `rung7_fsu_validation`), which is ligament-dominated. That
+    /// share is linear in `|k_disc|`, so it fell with it — it read ~0.4 % pre-α.1.
     ///
     /// ## ⚠ The bonded disc is STRAIGHT — the endplate conform is deliberately not applied here
     ///

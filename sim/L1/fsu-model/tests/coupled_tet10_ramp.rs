@@ -28,20 +28,27 @@
 //!
 //! | arm | frames | max node displacement | worst deformed `detJ/detJ_rest` | build | capture |
 //! |---|---|---|---|---|---|
-//! | raw Tet4 | 25, −4.473° … +6.132° | 2.0065 mm | 0.8484 | 6.9 s | 32.2 s |
-//! | straight Tet10 | 25, −4.475° … +6.148° | 2.0070 mm | **0.8741** | 62.6 s | **557.1 s** |
+//! | raw Tet4 | 25, −4.474° … +6.147° | 2.0065 mm | 0.8737 | 6.4 s | 27.9 s |
+//! | straight Tet10 | 25, −4.475° … +6.148° | 2.0070 mm | **0.8741** | 62.6 s | **557.2 s** |
 //!
-//! Two results worth naming, neither of them predicted:
+//! ⚠ RE-ANCHORED at β.4 — **every cell of both rows**, from one 656 s run. Rung 4's row read
+//! Tet4 `−4.473°…+6.132°, 0.8484, 6.9 s, 32.2 s` and Tet10 `2.5908 mm, 0.8751, 67.8 s,
+//! 583.1 s`. Updating only the displacement column would have left a table mixing two epochs
+//! on a mesh with 29 % fewer nodes.
 //!
-//! - **The quadratic disc deforms with *less* element distortion, not more** (0.8751 vs
-//!   0.8484 worst ratio). The risk this gate was written against — that a higher-order element
-//!   driven to ±ROM would degrade toward a fold — runs the other way on this geometry.
-//! - **★ The plan's ~85 s Tet4 capture anchor was wrong: it is 32.2 s.** §5.1 derived its
+//! Two results worth naming:
+//!
+//! - ⚠ **The pre-α.1 distortion gap has closed.** Rung 4 measured the quadratic arm distorting
+//!   *less* (0.8751 vs 0.8484) and named it an unpredicted result. Post-α.1 the two arms are
+//!   0.8741 vs **0.8737** — a 0.05 % gap, i.e. essentially identical. That earlier gap was a
+//!   property of the phantom material, not of the element. The risk this gate was written
+//!   against — a higher-order element degrading toward a fold at ±ROM — remains absent.
+//! - **★ The plan's ~85 s Tet4 capture anchor was wrong: it is 27.9 s.** §5.1 derived its
 //!   whole cost model from that figure (`85/160 ≈ 0.53 s` per solve) and predicted 14–45 min
-//!   for Tet10. Measured: **9.7 min**, below the band's floor — the estimate was close only
-//!   because the stale anchor overstated Tet4 by 2.6× while the per-solve element ratio
-//!   (18.1×, not the assumed ~10×) understated Tet10 by 1.8×. The errors are compensating but
-//!   NOT equal, and the residual shows: §5.1's model predicts ~850 s where 583 s is measured.
+//!   for Tet10. Measured: **9.3 min**, below the band's floor — the estimate was close only
+//!   because the stale anchor overstated Tet4 by 3.05× while the per-solve element ratio
+//!   (20.0×, not the assumed ~10×) understated Tet10. The errors are compensating but NOT
+//!   equal, and the residual shows: §5.1's model predicts ~850 s where 557 s is measured.
 //!   Two partly-cancelling errors are not a validated model — quote the measurements here.
 //!
 //! ```text
