@@ -167,7 +167,34 @@ cargo xtask licensed-gates          # what exists, grouped by crate
 cargo xtask licensed-gates --run    # run it (see design/cf-fsu-geometry/BODYPARTS3D.md)
 ```
 
-Run this before merging anything that touches the FSU cone. Nothing else will.
+Run this before merging **production-code changes these gates can observe**. Two
+questions, in this order:
+
+**1. Is the change test-only or docs-only?** Then you are done — the gates cannot
+observe it, in any crate.
+
+**2. Otherwise, are the gates downstream of it?** Decide mechanically, not from
+memory:
+
+```bash
+cargo xtask affected --base origin/main   # crates your diff can break
+cargo xtask licensed-gates                # crates that hold licensed gates
+```
+
+If those sets intersect, run the gates. ⚠ `affected` is **path-based**, so it
+reports a crate when *any* file under it changes, including a README — which is
+exactly why question 1 comes first and settles it.
+
+**Do not work from a remembered list of "the FSU crates."** The 40 gates
+transitively exercise ~17 workspace crates — routing, co-design, truss and the
+whole mesh pipeline, not just the FSU cone. Any prose list here would be narrower
+than the truth within a release, which is the failure this tooling exists to
+prevent.
+
+Scope the run when you can: `--only <crate>` covers one crate's slice in seconds
+to minutes, against hours for the full surface (2 h 21 m measured 2026-08-07). A
+rule applied where it cannot matter is a rule people learn to skip, and this one
+has to hold on the day it does.
 
 ### What Blocks Merging
 

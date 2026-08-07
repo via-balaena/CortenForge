@@ -81,8 +81,25 @@ never will — the meshes are licensed and uncommittable — so the only thing
 standing between them and silent rot is somebody running them deliberately.
 A hand-kept list is the wrong instrument for that: twice in the rung-β arc an
 inventory was recorded that was narrower than its name, and both times the
-gates it omitted had already gone red. **Any PR touching the FSU cone should
-run this before merge**, since nothing else will.
+gates it omitted had already gone red.
+
+**Run it before merging production-code changes these gates can observe.** Two
+questions, in order:
+
+1. **Test-only or docs-only?** Done — the gates cannot observe it, in any crate.
+2. **Otherwise, are the gates downstream?** `cargo xtask affected --base
+   origin/main` lists the crates a diff can break; `cargo xtask licensed-gates`
+   lists the crates holding gates. **If those sets intersect, run them.**
+   ⚠ `affected` is *path-based* and reports a crate when any file under it
+   changes, a README included — which is why question 1 comes first.
+
+⚠ Do not work from a remembered list of "the FSU crates". These 40 gates
+transitively exercise **~17 workspace crates** — routing, co-design, truss and
+the mesh pipeline included, not only the FSU cone — so any prose list would be
+narrower than the truth, which is the failure this tooling exists to prevent.
+
+Scope with `--only <crate>` when the blast radius is one crate; the full surface
+took 2 h 21 m on 2026-08-07.
 
 ## Coordinates
 
