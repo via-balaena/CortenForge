@@ -47,6 +47,12 @@ thiserror = { workspace = true }
 nalgebra = { workspace = true }
 
 [dev-dependencies]
+# SHA-256 for the fetched-dataset integrity checks. Three sim-to-real examples
+# fetch reference data at runtime and cache it in the temp dir; the cache was
+# trusted on sight, so a stale or foreign file at that path was read as the
+# real thing. Each example now pins the bytes it expects. Pure-Rust beats
+# shelling out to shasum/sha256sum, which differ by platform.
+sha2 = "0.10"
 # Reads the EMPS actuator benchmark's MATLAB v5 (.mat, zlib-compressed) data for
 # the `emps_sim_to_real` example — a pure-Rust reader so the sim-to-real example
 # stays self-contained (fetch-not-vendor). Example-only; not in the library graph.

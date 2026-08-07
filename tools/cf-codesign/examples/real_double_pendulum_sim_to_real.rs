@@ -31,6 +31,7 @@
 //! Requires `curl` + `unzip` and one-time network access (then cached).
 #![allow(clippy::expect_used, clippy::print_stdout)]
 
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -39,6 +40,32 @@ use sim_mjcf::load_model;
 
 /// Mendeley file listing → direct download URL for `Video_Tracking_Data.zip`.
 const ZIP_URL: &str = "https://data.mendeley.com/public-files/datasets/7yd2ntbh3w/files/91cc2fa5-2640-404b-8696-05f0aede2f88/file_downloaded";
+
+/// The extracted CSVs this example expects, as first pinned on 2026-08-07:
+/// `(stem, bytes, sha256)`.
+///
+/// ⚠ Pinned per EXTRACTED CSV, not on the zip, and that distinction is the whole
+/// point: `fetch_csv` caches the extracted files and returns early when they
+/// exist, so a digest on the archive would only ever guard a cold fetch and
+/// leave the warm cache — the case that actually recurs — unchecked.
+///
+/// ⚠ [`ZIP_URL`] is a Mendeley file UUID: stable in practice, but not
+/// content-addressed the way a git blob is, so unlike the Schmidt & Lipson
+/// pendulum data these digests rest on a single observed download. They
+/// guarantee this example reads today what it read then; they cannot
+/// independently prove those are the authors' intended bytes.
+const PINNED_CSVS: [(&str, u64, &str); 2] = [
+    (
+        "DPmean_data_RB0",
+        2_002_030,
+        "ca9de64e16c628343a53373d8ae42866976b7c20166fd9a6d32ae51c148a1bdd",
+    ),
+    (
+        "DPmean_data_RB1",
+        2_015_963,
+        "f3fe656ad12f6cba5839514263e6921581d788a4138408ceecda753e74eae89c",
+    ),
+];
 
 // Table 4 (SI) — Approximate Simplified double pendulum parameters.
 const M1: f64 = 0.311; // upper link mass (kg)
@@ -83,7 +110,9 @@ const RK4_DT: f64 = 5e-4;
 fn fetch_csv(name: &str) -> Option<PathBuf> {
     let cache = std::env::temp_dir().join(format!("cf_dp_{name}.csv"));
     if cache.exists() {
-        return Some(cache);
+        // Verify before reusing: this early return is exactly where a stale or
+        // foreign file at that temp path was previously read as tracking data.
+        return verify_pinned(name, &cache).then_some(cache);
     }
     let zip = std::env::temp_dir().join("cf_dp_video.zip");
     if !zip.exists() {
@@ -119,7 +148,56 @@ fn fetch_csv(name: &str) -> Option<PathBuf> {
         return None;
     }
     std::fs::write(&cache, &out.stdout).ok()?;
-    Some(cache)
+    // Cold path checks the same pin, so a bad extract cannot become a trusted cache.
+    // ⚠ Drop the ARCHIVE too when it fails: the extracted CSVs and the zip are
+    // cached separately, so removing only the CSV would leave the next run
+    // re-extracting the same bad archive forever.
+    if verify_pinned(name, &cache) {
+        return Some(cache);
+    }
+    let _ = std::fs::remove_file(&zip);
+    None
+}
+
+/// Refuse a cached CSV whose bytes are not the pinned ones.
+///
+/// ⚠ Distinct from the offline path above, deliberately. **No data** is a missing
+/// network or a missing `unzip`, and returns `None` quietly — an example must not
+/// panic on that. **Wrong data** would yield a sim-to-real comparison that means
+/// nothing, so it says so and drops the bad cache.
+///
+/// An unpinned `name` is refused rather than waved through: silently trusting a
+/// file no pin covers is how a check comes to certify less than it claims.
+fn verify_pinned(name: &str, path: &Path) -> bool {
+    use sha2::{Digest, Sha256};
+    let Some((_, want_bytes, want_sha)) = PINNED_CSVS.iter().find(|(n, _, _)| *n == name) else {
+        println!("\n  {name}.csv has no pinned digest — refusing to trust it.");
+        return false;
+    };
+    let Ok(bytes) = std::fs::read(path) else {
+        println!(
+            "\n  cannot read the cached {name}.csv at {}",
+            path.display()
+        );
+        return false;
+    };
+    if bytes.len() as u64 == *want_bytes {
+        let got = format!("{:x}", Sha256::digest(&bytes));
+        if got == *want_sha {
+            return true;
+        }
+        println!(
+            "\n  cached {name}.csv does not match its pin:\n    sha256 {got}\n    pinned {want_sha}"
+        );
+    } else {
+        println!(
+            "\n  cached {name}.csv is {} bytes, pinned {want_bytes}",
+            bytes.len()
+        );
+    }
+    println!("  removing {} — re-run to re-fetch.", path.display());
+    let _ = std::fs::remove_file(path);
+    false
 }
 
 /// Parse a `t,angle` CSV into parallel `(times, angles_deg)`.
