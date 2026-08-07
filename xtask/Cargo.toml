@@ -38,7 +38,7 @@ serde_json = "1"
 # has to know which line ranges exist only under `#[cfg(test)]`. Those appear on
 # modules, free functions, methods and struct fields alike, so a text scan is
 # not enough -- see coverage.rs.
-syn = { version = "2", features = ["full", "parsing", "printing"] }
+syn = { version = "3", features = ["full", "parsing", "printing"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
 
 # Walking directories

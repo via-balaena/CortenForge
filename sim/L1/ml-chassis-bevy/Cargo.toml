@@ -18,7 +18,7 @@ sim-ml-chassis = { workspace = true }
 # the same 0.18 line that the rest of the Bevy stack uses; pulling the
 # ecs sub-crate directly avoids dragging the full renderer/winit/wgpu
 # chain into this thin adapter.
-bevy_ecs = "0.18"
+bevy_ecs = "0.19"
 
 [dev-dependencies]
 # Pendulum / cart-pole / arm fixtures for SimEnv smoke tests
