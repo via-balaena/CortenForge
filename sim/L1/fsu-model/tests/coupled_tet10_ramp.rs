@@ -28,20 +28,27 @@
 //!
 //! | arm | frames | max node displacement | worst deformed `detJ/detJ_rest` | build | capture |
 //! |---|---|---|---|---|---|
-//! | raw Tet4 | 25, −4.473° … +6.132° | 2.5874 mm | 0.8484 | 6.9 s | 32.2 s |
-//! | straight Tet10 | 25, −4.474° … +6.140° | 2.5908 mm | **0.8751** | 67.8 s | **583.1 s** |
+//! | raw Tet4 | 25, −4.474° … +6.147° | 2.0065 mm | 0.8737 | 6.4 s | 27.9 s |
+//! | straight Tet10 | 25, −4.475° … +6.148° | 2.0070 mm | **0.8741** | 62.6 s | **557.2 s** |
 //!
-//! Two results worth naming, neither of them predicted:
+//! ⚠ RE-ANCHORED at β.4 — **every cell of both rows**, from one 656 s run. Rung 4's row read
+//! Tet4 `−4.473°…+6.132°, 0.8484, 6.9 s, 32.2 s` and Tet10 `2.5908 mm, 0.8751, 67.8 s,
+//! 583.1 s`. Updating only the displacement column would have left a table mixing two epochs
+//! on a mesh with 29 % fewer nodes.
 //!
-//! - **The quadratic disc deforms with *less* element distortion, not more** (0.8751 vs
-//!   0.8484 worst ratio). The risk this gate was written against — that a higher-order element
-//!   driven to ±ROM would degrade toward a fold — runs the other way on this geometry.
-//! - **★ The plan's ~85 s Tet4 capture anchor was wrong: it is 32.2 s.** §5.1 derived its
+//! Two results worth naming:
+//!
+//! - ⚠ **The pre-α.1 distortion gap has closed.** Rung 4 measured the quadratic arm distorting
+//!   *less* (0.8751 vs 0.8484) and named it an unpredicted result. Post-α.1 the two arms are
+//!   0.8741 vs **0.8737** — a 0.05 % gap, i.e. essentially identical. That earlier gap was a
+//!   property of the phantom material, not of the element. The risk this gate was written
+//!   against — a higher-order element degrading toward a fold at ±ROM — remains absent.
+//! - **★ The plan's ~85 s Tet4 capture anchor was wrong: it is 27.9 s.** §5.1 derived its
 //!   whole cost model from that figure (`85/160 ≈ 0.53 s` per solve) and predicted 14–45 min
-//!   for Tet10. Measured: **9.7 min**, below the band's floor — the estimate was close only
-//!   because the stale anchor overstated Tet4 by 2.6× while the per-solve element ratio
-//!   (18.1×, not the assumed ~10×) understated Tet10 by 1.8×. The errors are compensating but
-//!   NOT equal, and the residual shows: §5.1's model predicts ~850 s where 583 s is measured.
+//!   for Tet10. Measured: **9.3 min**, below the band's floor — the estimate was close only
+//!   because the stale anchor overstated Tet4 by 3.05× while the per-solve element ratio
+//!   (20.0×, not the assumed ~10×) understated Tet10 by 2.0×. The errors are compensating but NOT
+//!   equal, and the residual shows: §5.1's model predicts ~850 s where 557 s is measured.
 //!   Two partly-cancelling errors are not a validated model — quote the measurements here.
 //!
 //! ```text
@@ -60,13 +67,28 @@ use cf_fsu_model::{
 /// Committed max node displacement over the full ramp (native mm), per arm — the plan's
 /// "committed max node displacement", pinned to ±5 % of the measured value so that "the ramp
 /// ran" is backed by a number that moves when the deformation does.
-const MAX_DISPLACEMENT_MM: (f64, f64) = (2.5874, 2.5908); // (raw Tet4, straight Tet10)
+///
+/// ⚠ RE-ANCHORED at β.4: α.1 removed phantom material, so the same ramp on the corrected
+/// domain displaces less. **Both arms measured in one run** once the assert ordering below was
+/// fixed — previously the Tet4 pin fired before the Tet10 arm was built, so only one number
+/// per run was obtainable.
+///
+/// The Tet10 value was measured, not extrapolated from the old arm ratio — which would have
+/// given 2.0091 against a measured 2.0070, inside this ±5 % pin and so undetectable here.
+const MAX_DISPLACEMENT_MM: (f64, f64) = (2.0065, 2.0070); // (raw Tet4, straight Tet10)
 /// Pin width on [`MAX_DISPLACEMENT_MM`], as a fraction.
 const DISPLACEMENT_PIN: f64 = 0.05;
 
-/// Assert one captured trajectory is a sound full-ROM sweep against its committed
-/// `expect_max_disp`, and return its (max node displacement in native mm,
-/// worst per-frame `detJ/detJ_rest`).
+/// Assert one captured trajectory is a sound full-ROM sweep, and return its (max node
+/// displacement in native mm, worst per-frame `detJ/detJ_rest`).
+///
+/// ★ **Soundness only — the committed-value pin lives at the call site.** Both are needed, but
+/// they fail differently: a folded element makes every later number meaningless (fail fast,
+/// here), whereas a displacement outside its band is a *comparison* whose answer is worth
+/// having for BOTH arms before anything panics. Asserting the pin here meant the Tet4 arm
+/// aborted the test before the Tet10 arm was ever built, so a re-anchor could only ever learn
+/// one of the two numbers per run. The validity-first ordering *within* this function is
+/// unchanged and deliberate — see the note below.
 ///
 /// The validity check is asserted **first**, before the shape statistics — rung 3 measured why
 /// the order is part of the diagnostic: with the validity check last, an inverted mesh got
@@ -77,7 +99,7 @@ const DISPLACEMENT_PIN: f64 = 0.05;
 /// something ("no element folded"), while the exact worst ratio is a property of one
 /// specimen's mesh at one ROM. Pinning it would manufacture a tripwire that fires on
 /// re-meshing without telling anyone anything about validity.
-fn assert_sound_ramp(traj: &CoupledTrajectory, label: &str, expect_max_disp: f64) -> (f64, f64) {
+fn assert_sound_ramp(traj: &CoupledTrajectory, label: &str) -> (f64, f64) {
     assert_eq!(
         traj.frames.len(),
         RAMP_FRAMES,
@@ -114,12 +136,6 @@ fn assert_sound_ramp(traj: &CoupledTrajectory, label: &str, expect_max_disp: f64
                 .fold(0.0_f64, f64::max)
         })
         .fold(0.0_f64, f64::max);
-    assert!(
-        (max_disp - expect_max_disp).abs() <= DISPLACEMENT_PIN * expect_max_disp,
-        "{label}: max node displacement {max_disp:.4} mm is outside ±{:.0} % of the committed \
-         {expect_max_disp:.4} mm",
-        100.0 * DISPLACEMENT_PIN
-    );
     for w in traj.frames.windows(2) {
         assert!(
             w[1].theta > w[0].theta,
@@ -182,7 +198,7 @@ fn tet10_coupled_ramp_completes_over_the_full_rom() {
     let t0 = std::time::Instant::now();
     let ramp4 = tet4.capture_ramp(&moment_ramp()).expect("Tet4 ramp");
     let cap4 = t0.elapsed().as_secs_f64();
-    let (disp4, det4) = assert_sound_ramp(&ramp4, "raw Tet4", MAX_DISPLACEMENT_MM.0);
+    let (disp4, det4) = assert_sound_ramp(&ramp4, "raw Tet4");
 
     let t0 = std::time::Instant::now();
     let mut tet10 = CoupledFsu::build(&l4, &l5, &disc, &params).expect("quadratic arm");
@@ -190,7 +206,7 @@ fn tet10_coupled_ramp_completes_over_the_full_rom() {
     let t0 = std::time::Instant::now();
     let ramp10 = tet10.capture_ramp(&moment_ramp()).expect("quadratic ramp");
     let cap10 = t0.elapsed().as_secs_f64();
-    let (disp10, det10) = assert_sound_ramp(&ramp10, "straight Tet10", MAX_DISPLACEMENT_MM.1);
+    let (disp10, det10) = assert_sound_ramp(&ramp10, "straight Tet10");
 
     println!(
         "\n[cost] build   Tet4 {build4:.1} s → Tet10 {build10:.1} s  ({:.1}×)\n\
@@ -202,4 +218,18 @@ fn tet10_coupled_ramp_completes_over_the_full_rom() {
         "[shape] max node displacement: Tet4 {disp4:.4} mm, Tet10 {disp10:.4} mm; \
          worst deformed detJ ratio: Tet4 {det4:.4}, Tet10 {det10:.4}"
     );
+
+    // The committed pins, asserted last so the print above always lands: a re-anchor needs
+    // BOTH arms' numbers, and asserting per-arm inside the capture hid whichever came second.
+    for (disp, expect, label) in [
+        (disp4, MAX_DISPLACEMENT_MM.0, "raw Tet4"),
+        (disp10, MAX_DISPLACEMENT_MM.1, "straight Tet10"),
+    ] {
+        assert!(
+            (disp - expect).abs() <= DISPLACEMENT_PIN * expect,
+            "{label}: max node displacement {disp:.4} mm is outside ±{:.0} % of the committed \
+             {expect:.4} mm",
+            100.0 * DISPLACEMENT_PIN
+        );
+    }
 }

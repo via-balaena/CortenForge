@@ -135,7 +135,14 @@ fn conformed_disc_survives_a_large_angle_sweep() {
 
     // COMMITTED (BodyParts3D L4/L5/disc, DiscParams::default, 0.1° steps, 180 solves/arm):
     // **both conformed arms complete the full ±6.0° chain**, every step converging,
-    // conserving and strictly restoring; peak |M| = 0.0300 (Tet4) / 0.0205 (Tet10) N·m.
+    // conserving and strictly restoring; peak |M| = 0.0128 (Tet4) / 0.0105 (Tet10) N·m.
+    //
+    // ⚠ RE-ANCHORED at β.4 from 0.0300 / 0.0205. Both arms still reach the full ±6.0° chain,
+    // every step converging; α.1 removed phantom material, so the same sweep on the corrected
+    // domain carries less moment. Tet10/Tet4 = 0.820 here, alongside the 0.827
+    // element ratio the rest of the arc measures — 0.9 % below it, which is the large-angle
+    // nonlinearity this gate exists to probe, not a discrepancy. Residuals stay ~7e-12 (Tet4) /
+    // ~1e-13 (Tet10) across the sweep, so nothing degraded numerically.
     //
     // ★ **RE-RUN AT RUNG 3, on the CURVED disc, and the numbers did not move.** The Tet10 arm
     // here is now the curved disc (bonded-face boundary midsides projected onto the real
@@ -143,8 +150,11 @@ fn conformed_disc_survives_a_large_angle_sweep() {
     // element is more distortion-sensitive than a straight one, and at the *corner* quality
     // floor it visibly was: that mesh cannot take a 0.15° single jump at all. At
     // `DISC_MIDSIDE_CONFORM_QUALITY_FLOOR` = 0.4 the full ±6.0° chain completes again and the
-    // peak |M| reproduces rung 2's 0.0300 / 0.0205 to four decimals. So curving the bonded face
+    // peak |M| reproduced rung 2's 0.0300 / 0.0205 to four decimals. So curving the bonded face
     // costs no angle envelope, measured rather than assumed (853 s, `--release`, idle machine).
+    // ⚠ Those two figures are rung 2/3's, PRE-α.1, and are kept as the record of that
+    // comparison — the straight-midside arm is not built here, so β.4 has no number for it.
+    // The finding they support (curving costs no envelope) is unaffected by the re-anchor.
     //
     // Two things follow, and neither was known before this rung.
     //
@@ -159,9 +169,14 @@ fn conformed_disc_survives_a_large_angle_sweep() {
     //    quadratic arm had only ever been driven to ±0.5°; it reaches ±6.0°.
     //
     // The peaks are a cross-check as well as a record: linear extrapolation of the
-    // small-angle stiffnesses (`conform_delta_by_element_fom`: −0.2760 / −0.1844 N·m/rad)
-    // to 6° = 0.1047 rad predicts 0.0289 / 0.0193 N·m, so the disc is ~4-6 % stiffer at the
+    // small-angle stiffnesses (`conform_delta_by_element_fom`: −0.1146 / −0.0948 N·m/rad)
+    // to 6° = 0.1047 rad predicts 0.0120 / 0.0099 N·m, so the disc is ~6 % stiffer (6.7 % Tet4,
+    // 5.8 % Tet10) at the
     // ROM extreme than a linear spring — mild, monotone hardening, not a divergence.
+    // ⚠ RE-DERIVED at β.4. It previously read −0.2760 / −0.1844 → 0.0289 / 0.0193 → ~4-6 %;
+    // those inputs are retired, and −0.1844 was never `conform_delta`'s committed value in any
+    // case (it was rung 2's straight-midside arm). The conclusion survives the re-derivation;
+    // the inputs and predictions did not.
     //
     // COST, measured over three runs: **897 s** wall (`--release`) on an otherwise-idle
     // machine, 936 s, and 1138 s while sharing the machine with other work — read it as
@@ -171,7 +186,7 @@ fn conformed_disc_survives_a_large_angle_sweep() {
     // (150-175 solves, 14-45 min): 180 solves here in ~15 min lands at the bottom of that
     // band. It is not a substitute for §5.1's own measurement at rung 4 — `capture_ramp` also
     // runs the equilibrium bisection per frame.
-    for (m, expect, name) in [(m4, 0.0300, "Tet4"), (m10, 0.0205, "Tet10")] {
+    for (m, expect, name) in [(m4, 0.0128, "Tet4"), (m10, 0.0105, "Tet10")] {
         assert!(
             ((0.95 * expect)..=(1.05 * expect)).contains(&m),
             "{name} conformed peak |M| {m:.4} is outside ±5 % of the committed {expect:.4} N·m"

@@ -31,8 +31,8 @@ use nalgebra::{Point3, Vector3};
 /// doc comments and key hints, and when the cost changed they drifted apart. Anything that
 /// tells a user how long to wait reads it from here.
 ///
-/// **Measured: 67.8 s** on the BodyParts3D L4–L5 disc (`cf-fsu-model`'s `coupled_tet10_ramp`
-/// gate, `CoupledParams::default`), up from **6.9 s** before the Studio's disc became the
+/// **Measured: 62.6 s** on the BodyParts3D L4–L5 disc (`cf-fsu-model`'s `coupled_tet10_ramp`
+/// gate, `CoupledParams::default`), up from **6.4 s** before the Studio's disc became the
 /// quadratic element. Almost all of the increase is the `k_disc` probe, which walks the disc
 /// to 0.86° and back in 0.1° sub-steps — 18 warm-started Tet10 solves.
 ///
@@ -44,8 +44,13 @@ use nalgebra::{Point3, Vector3};
 ///
 /// | phase | linear disc | quadratic disc |
 /// |---|---|---|
-/// | build (`Enter`) | 6.9 s | 67.8 s |
-/// | capture (`S`) | 32.2 s | 583.1 s (9.7 min) |
+/// | build (`Enter`) | 6.4 s | 62.6 s |
+/// | capture (`S`) | 27.9 s | 557.2 s (9.3 min) |
+///
+/// ⚠ RE-ANCHORED at rung β.4: α.1 removed phantom material, so the disc is a smaller domain
+/// and every cell moved (rung 4 measured 6.9 / 67.8 / 32.2 / 583.1). This doc calls itself the
+/// single source for the figure — that only works if it is re-read when the gate it cites
+/// moves, which is what β.4 did.
 ///
 /// A ~11 min Design→Simulate round trip is a real cost and it is not hidden — it is why these
 /// hint constants exist and why the build/capture split matters more than it did. It is paid
@@ -62,14 +67,14 @@ use nalgebra::{Point3, Vector3};
 /// step-envelope table rather than a plausible argument. Bundling it into the rung that flips
 /// the element would move two variables at once, which is exactly what this ladder was
 /// sequenced to avoid. Its own rung, with its own measurement.
-pub const BUILD_HINT: &str = "~70 s";
+pub const BUILD_HINT: &str = "~60 s";
 /// How long the **capture** phase ([`capture_scene`], `S`) takes, as shown to the user.
 /// Single source, as [`BUILD_HINT`].
 ///
-/// **Measured: 583.1 s** (9.7 min) for ~160 warm-started Tet10 solves across the full ±ROM,
-/// against **32.2 s** on the linear disc. ⚠ The "~85 s" this repo previously documented for
-/// the linear capture was never measured and is 2.6× too high.
-pub const CAPTURE_HINT: &str = "~10 min";
+/// **Measured: 557.2 s** (9.3 min) for ~160 warm-started Tet10 solves across the full ±ROM,
+/// against **27.9 s** on the linear disc. ⚠ The "~85 s" this repo previously documented for
+/// the linear capture was never measured and is 3.05× too high.
+pub const CAPTURE_HINT: &str = "~9 min";
 
 /// A ligament rendered as a straight line between two field-derived sites.
 pub struct Ligament {
