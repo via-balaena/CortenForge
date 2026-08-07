@@ -3369,13 +3369,23 @@ mod tests {
     /// committed nowhere, because `band_frac` is a fraction precisely so no absolute ever had
     /// to be.** This test is the producer. Do not quote the illustration.
     ///
-    /// Prints the table and asserts only what must hold for the ladder to be *measurable at all*:
+    /// Prints the table and asserts what must hold for the ladder to be *measurable at all*:
     /// non-empty bands and a positive free height at **every** cell, plus strictly-increasing
     /// refinement across **the ladder proper only** — the probe cells are exempt, because whether
     /// retention is monotone *there* is precisely the open question and asserting it would beg it.
-    /// The ladder decision is a head-engineer call on the printed numbers, not an assert here.
+    ///
+    /// ★ **Plus assert 2b (added 2026-08-07): the pinned SHARE of the domain must not GROW**
+    /// across the ladder. That is the boundary condition converging or not, which is a
+    /// precondition for reading anything as element convergence — see the block at the assert.
+    /// It is directional and carries no tuned constant.
+    ///
+    /// Everything beyond those is a head-engineer call on the printed numbers, not an assert
+    /// here: this test does not decide whether the ladder is worth running.
     #[test]
     #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
+    // Band and corner counts are in the hundreds-to-thousands — the usize→f64 casts for the
+    // pinned share are exact.
+    #[allow(clippy::cast_precision_loss)]
     fn rung5_step0_realized_band_across_the_ladder_fom() {
         let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
         let base = DiscParams::default();
@@ -3406,6 +3416,10 @@ mod tests {
         // monotone, because whether retention is monotone there is exactly what is in question.
         let ladder = [0.003, 0.002, 0.0015];
         let mut prev_corners = 0usize;
+        // The COARSEST ladder level's `(cell, pinned share)` — the baseline every finer level
+        // is held against below. Comparing against the coarsest rather than step-wise costs
+        // nothing and is the more jitter-tolerant of the two.
+        let mut coarsest_share: Option<(f64, f64)> = None;
         for cell in [
             0.002_90, 0.002_95, 0.003_05, 0.003_10, // step-1 probe window
             0.003, 0.002, 0.0015, // the ladder
@@ -3439,6 +3453,60 @@ mod tests {
                      ({referenced} vs {prev_corners}) — otherwise the ladder has an inert level"
                 );
                 prev_corners = referenced;
+
+                // ── The PINNED SHARE of the domain must not GROW under refinement ──
+                //
+                // Step 1's mechanism was never the clamp plane, it was the Dirichlet
+                // population: a lattice-phase shift swept a whole layer of nodes out of the
+                // superior band and halved the constraints on the top face, while the free
+                // height moved 0.065 %. The step-0 gate as first written could not see that —
+                // it asserted the clamp *plane* — and the plan's own conclusion was "gate the
+                // POPULATION, not just the plane, and NORMALISE it, since the raw count must
+                // grow under refinement". This is that gate; the normalisation is the
+                // load-bearing half.
+                //
+                // ★ Why the SHARE, and not a growth rate against an ideal `r³`. The band is a
+                // fixed physical slab (`band_frac · SI extent`), so it is a sub-VOLUME of a
+                // fixed domain: it and the whole mesh fill at the same realized node density,
+                // making their ratio an h-independent geometric property. A raw growth rate
+                // would instead measure the MESHER — the domain's own corner count grows
+                // 2.93× across the first ladder step against an ideal 3.375×, so a band
+                // tracking its domain perfectly would still read "slow". Dividing by the
+                // domain removes that confound completely.
+                //
+                // ★★ No tuned constant appears here. The assertion is DIRECTIONAL: a boundary
+                // condition claiming an ever-larger share of the domain as you refine is by
+                // definition not converging, and no h-convergence reading taken across those
+                // levels can be separated from it. That is a property of the sequence, not a
+                // threshold someone had to choose.
+                //
+                // ★ It discriminates on the data that exists — pinned share across the ladder:
+                //   pre-α.1   0.2636 → 0.3084 → 0.3270   GROWS +24 %  ← the pathology
+                //   post-α.1  0.1196 → 0.1038 → 0.0984   falls −18 %
+                //
+                // ⚠ Margin, stated: the share's own jitter over a ±3.3 % `cell` window is
+                // ±12 % (0.1138…0.1457 at cell ≈ 0.003) against the 18 % margin here — thin,
+                // even though normalising already damps the raw superior band's ±36 % by ~3×.
+                // A re-mesh CAN false-fire this; it is gated anyway because the meshes are
+                // SHA-pinned and these cells are fixed constants. ⚠⚠ Read a failure as "the
+                // Dirichlet set is not converging", NEVER as "the elements converged
+                // differently". Note the asymmetry in what the data supports: the pre-α.1
+                // violation is trustworthy (+24 % against ±12 %), the post-α.1 conformance is
+                // suggestive only — which is precisely why rung 5 still needs replication per
+                // level before any bracket claim.
+                let pinned_share = (p.inferior.len() + p.superior.len()) as f64 / referenced as f64;
+                match coarsest_share {
+                    None => coarsest_share = Some((cell, pinned_share)),
+                    Some((coarse_cell, coarse_share)) => assert!(
+                        pinned_share <= coarse_share,
+                        "cell {coarse_cell} -> {cell}: the pinned share of the domain GREW, \
+                         {coarse_share:.4} -> {pinned_share:.4} ({} of {referenced} corners \
+                         pinned). A Dirichlet set that claims an increasing fraction of the \
+                         mesh as it refines is not converging, so no element-convergence \
+                         reading across these levels is separable from it.",
+                        p.inferior.len() + p.superior.len()
+                    ),
+                }
             }
 
             println!(

@@ -996,6 +996,15 @@ realized clamp depth is therefore quantized with a `cell`-dependent quantum.
   very different rates. It is **common-mode in `k10/k4` at fixed `h`** so it does not threaten the
   deliverable, but it is a real geometric fact about this disc and it means the two faces' pinned
   populations are *not* interchangeable. Carry it into any per-face reasoning.
+  > ⚠⚠ **RE-MEASURED POST-α.1 (2026-08-07) — and this bullet was never load-bearing in EITHER
+  > direction.** The ladder now runs sup/inf **1.589 → 1.880 → 1.917** (116/73, 314/167, 650/339).
+  > But the jitter in the *same ratio* over a ±3.3 % `cell` window at one refinement level is
+  > **1.589 … 2.772** (all five draws at `cell ≈ 0.003`, the ladder's own coarse point among them)
+  > — so the post-α.1 "flattening" AND the pre-α.1 "1.61 → 2.84 → 3.55" both sit
+  > inside the noise of a single level (pre-α.1's own probe window ran **0.835 … 5.118**, a 6×
+  > swing). ★ **Three points, one draw each, against a jitter band as wide as the trend.** Do not
+  > argue from this ratio in either direction; argue from the **pinned-share** bound below, which
+  > is normalised and directional.
 - **A domain gate could not have seen any of this**: retained volume, corner count and retained
   fraction are all stable while the *boundary condition* moves. The lesson stands even though the
   magnitude came out small — a gate on the property you changed misses the one you broke
@@ -1077,6 +1086,46 @@ realized clamp depth is therefore quantized with a `cell`-dependent quantum.
 > `largest_component`/geometry cleanup, it moves `RUNG7_K_DISC`, and it is its own rung with its own
 > gates. The deliverable rung 5 *can* still ship is the honest uncertainty statement above
 > ([[project-uq-ensemble-stochastic-direction]] — report distributions, not false-precision points).
+>
+> ### ⚠⚠⚠ RE-SCOPED 2026-08-07 — the named blocker is largely DISCHARGED; a different one replaces it
+>
+> α.1 was the meshing-stability fix this paragraph asks for. Measured against the same ±3.3 %
+> window and the same ladder:
+>
+> | the blocker's mechanism | pre-α.1 | post-α.1 | verdict |
+> |---|---|---|---|
+> | retained domain monotone in `cell`? | **NO** — 3 353 / 2 527 / 2 257 / 1 893 / 2 508, 49.5 % p2p | **YES** — 1 722 / 1 674 / 1 580 / 1 512 / 1 476, 15.4 % p2p | ✅ **discharged** |
+> | **pinned SHARE** of the domain across the ladder | **0.2636 → 0.3084 → 0.3270** — GROWS **+24 %** | **0.1196 → 0.1038 → 0.0984** — falls **−18 %** | ✅ now **gated** (§4.8 assert 2b) |
+> | sup/inf trend across levels | 1.61 → 2.84 → 3.55 | 1.589 → 1.880 → 1.917 | ⚠ **underdetermined both times** — inside single-level jitter |
+> | `k_disc` p2p over ±3.3 % `cell` | ~100 % | **21.13 %** | ⚠ improved ~5×, still large |
+>
+> ★★ **The retained-domain result is the strong one**: monotone ordering across five samples in
+> the same window where it was previously non-monotone. That is the mechanism this paragraph
+> declines rung 5 on, and it no longer holds.
+>
+> ★★★ **BUT THE REPLACEMENT BLOCKER IS REAL, AND IT IS METHODOLOGICAL, NOT MECHANICAL.**
+> **Every ladder-level quantity in this rung is n = 1**, and the jitter at a *fixed* refinement
+> level is comparable to the difference being claimed *between* levels — measured above for
+> sup/inf, and 21.13 % for `k_disc` itself. Step 1 already caught this once ("the pair understated
+> it by >10×; a 5-point sweep measured the real spread"), at the level of the pair. **The ladder
+> has the identical defect one level up, and re-running it post-α.1 would reproduce the same
+> mistake with better-looking numbers.**
+>
+> ⇒ **Rung 5 needs REPLICATION PER LEVEL, not more levels.** Before any bracket claim, measure the
+> realization spread of `k10` in a small `cell` window *around 0.002 and around 0.0015* — the
+> ±3.3 % spread is only known at 0.003, and there is no reason to assume it is level-independent
+> (more nodes should mean less relative quantization, but that is a hypothesis, not a measurement).
+>
+> ▶ **DECISION RULE, committed BEFORE the run** (so the outcome cannot be re-read afterwards):
+> let `σ(h)` be the measured p2p spread of `|k10|` at level `h`, and `Δ = |k10(coarse)| −
+> |k10(fine)|`. **If `Δ` exceeds the larger of the two levels' spreads, the bracket is earned and
+> `Δ` is a committed lower bound on the error in the shipped `RUNG7_K_DISC`. If it does not, rung 5
+> ships the uncertainty statement and the accuracy claim stays unearned** — and that is a result,
+> not a failure.
+>
+> ⚠ **Cost note, in rung 5's favour:** α.1 shrank the ladder ~45 % (fine level 18 485 → 10 048
+> referenced corners), so the recorded "Tet10 at `cell = 0.002` exceeds the RSS budget" constraint
+> (§5.5 rollback) should be re-measured before it is planned around — it may simply be gone.
 >
 > **★★ PROCESS: the ordering worked, and cheaply.** Step 0 (0.4 s) said proceed; step 1 (90 s) said
 > stop. Neither is wasted and the sequence cost 90 seconds — against a ladder that would have
@@ -1240,7 +1289,7 @@ transfer — the behaviour does, and behaviour is what this rung asks about.
 | 3 ✅ | sim-soft + fsu-model | **§4.3** residual ↓ again (authorised RMS 0.881 → 0.767 mm at rung 4; **0.197 → 0.111 at rung β**) | **§4.4** coverage 67.4 % (**91.0 % at rung β**) + per-Gauss-point floor; k_disc shift 0.05 % committed | straight-Tet10 arm untouched (rung-1 FOM re-runs at 0.666 / 0.663) |
 | 4 ✅ | fsu-model, coupling | single `RUNG7_K_DISC` re-anchor, measured (−0.2819 → −0.1882) | **§4.5** full ramp completes, `detJ > 0` on the DEFORMED config; **§4.6** flexion ROM assert; segment shift +0.0082° vs predicted ~0.008° | — |
 | 4b | fsu-model | **§4.3** residual, on the COUPLED disc | lofted disc completes ±6° conformed, both elements | — |
-| 5 ⛔ | fsu-model | **BLOCKED — ⚠ but the blocker's premise moved at α.1; RE-EXAMINE before assuming.** (§3 confound 1: `k_disc` p2p over ±3.3 % `cell` was ~100 % pre-α.1; rung β.4 **measured 21.13 %** post-α.1, and the *ratio*'s spread at **1.81 %**. α.1 cut the realization noise ~5×, so the argument that a refinement ladder would measure noise rather than signal is 5× weaker than when it was written. Whether 21 % is low enough is OPEN and not answered by that measurement — rung 5's gate is an ORDERING claim across refinement levels, so what matters is whether the levels separate cleanly, not the absolute spread.) When unblocked — **§4.8** the bracket `\|k*\| ≤ \|k10(fine)\| ≤ \|k10(coarse)\| ≤ \|k4\|`, ±5 % two-sided pins; headline = a lower bound on the shipped `RUNG7_K_DISC` error | liveness (strictly-monotone DOFs per arm) → rung-1 known-value reproduction → **clamp-plane constancy** → `min_jacobian_ratio` → domain metrics | zero production diff; rung-2 `llvm-cov` oracle on **`coupled.rs` + `coupling/src/bonded.rs`** (NOT `src/lib.rs` — this rung adds tests to it) |
+| 5 ⛔ | fsu-model | **BLOCKED, RE-SCOPED 2026-08-07 — on a NEW premise; the old one is discharged.** α.1 made the retained domain *monotone* in `cell` (15.4 % p2p, was 49.5 % non-monotone) and the superior band no longer outgrows the domain — now **gated** by assert 2b. `k_disc` spread ~100 % → **21.13 %**. ⇒ the meshing-stability blocker is spent. **What blocks it now: every ladder level is n = 1**, and the fixed-level jitter is comparable to the between-level signal (the spread is only known at `cell = 0.003`). ▶ NEXT = **replication per level**, with §3's decision rule (`Δ` vs the larger level spread) committed before the run. | When unblocked — **§4.8** the bracket `\|k*\| ≤ \|k10(fine)\| ≤ \|k10(coarse)\| ≤ \|k4\|`, ±5 % two-sided pins; headline = a lower bound on the shipped `RUNG7_K_DISC` error | liveness (strictly-monotone DOFs per arm) → rung-1 known-value reproduction → **clamp-plane constancy** → **pinned-population growth (assert 2b, LIVE)** → `min_jacobian_ratio` → domain metrics | zero production diff; rung-2 `llvm-cov` oracle on **`coupled.rs` + `coupling/src/bonded.rs`** (NOT `src/lib.rs` — this rung adds tests to it) |
 
 **★ CI reality, stated plainly** (v1's table implied protection that does not exist): `sim-coupling`
 and `cf-fsu-model` run only in `tests-release` shard 1 (`.github/workflows/quality-gate.yml:471`);
@@ -1418,16 +1467,24 @@ converged, corner count preserved, midside count added, and the §4.2 band-count
 > `largest_component`'s retained domain swinging **49.5 % non-monotonically**. No convergence gate
 > below can mean anything until a meshing-stability rung makes the retained domain converge.
 >
-> ⚠⚠ **α.1 WAS that meshing-stability change, and this blocker has not been re-examined since.**
-> α.1 stopped the mesher retaining phantom material; rung β.4 re-ran step 1 and measured the
-> spread at **21.13 %** (ratio **1.81 %**, corners 15.4 %) — roughly **5× tighter** than the
-> figure this paragraph is built on. That does not automatically unblock rung 5: the gate is an
-> *ordering* claim across refinement levels, so the question is whether the levels separate
-> cleanly at 21 %, not whether 21 % is "small". **But the stated premise is stale, and rung 5
-> should be re-scoped on the measured numbers rather than declined on these.** Read
-> §4.8 as **the design to execute once unblocked**, not as a live checklist — and re-derive its
-> pinned numbers then, because a stability fix will move them. What rung 5 can ship *today* is the
-> measured uncertainty statement, not this ladder.
+> ⚠⚠ **α.1 WAS that meshing-stability change. RE-SCOPED 2026-08-07 — see the re-scope block at the
+> end of §3 for the measurements; this is the summary.**
+>
+> **The premise above is discharged.** The retained domain is now *monotone* in `cell` across the
+> same ±3.3 % window that previously swung 49.5 % non-monotonically (1 722 / 1 674 / 1 580 / 1 512
+> / 1 476, 15.4 % p2p), and the **pinned share of the domain no longer grows** under refinement
+> (0.2636 → 0.3270 became 0.1196 → 0.0984) — which is now **gated** (assert 2b below), not merely
+> observed. `k_disc`'s own spread fell ~100 % → **21.13 %**.
+>
+> **⛔ But the gate is still not executable, for a DIFFERENT and better-stated reason:** every
+> ladder-level quantity here is **n = 1**, and the jitter at a fixed level is comparable to the
+> difference claimed between levels. The spread is only known at `cell = 0.003`. **Rung 5's next
+> step is replication per level, not more levels** — and §3 commits the decision rule (`Δ` vs the
+> larger level spread) *before* that run, so its outcome cannot be re-read afterwards.
+>
+> Read §4.8 as **the design to execute once that replication lands**, not as a live checklist, and
+> re-derive its pinned numbers then. What rung 5 can ship *today* is still the measured uncertainty
+> statement, not this ladder.
 
 
 **★★ THE FAILURE THIS GATE EXISTS TO CATCH FIRST (stress-test front 1): an arm that silently does
@@ -1466,8 +1523,21 @@ is worse than no number; its incidence-walk mutant improved the residual while i
    min z over the superior), the **free height**, and the **node layers through it**. **Assert the
    free height is constant across levels to within 0.5 %** — a two-sided pin around the *measured*
    0.18 % spread (12.392 / 12.404 / 12.381 mm), not a guessed tolerance. Commit the per-level band
-   sizes alongside; note the **sup/inf asymmetry grows 1.61 → 2.84 → 3.55**, so a symmetric
-   expectation on the two faces would be wrong.
+   sizes alongside. ⚠ The **sup/inf asymmetry** was described here as growing 1.61 → 2.84 → 3.55;
+   post-α.1 it runs 1.589 → 1.880 → 1.917, and **both readings sit inside one level's own jitter**
+   (see the re-scope note in §3) — so do not pin this ratio. A symmetric expectation on the two
+   faces is still wrong, which is the part that survives.
+   ★ **ASSERT 2b — the pinned SHARE, added 2026-08-07 and live in
+   `rung5_step0_realized_band_across_the_ladder_fom`.** The pinned fraction of the domain,
+   `(inferior + superior) / referenced corners`, must not GROW at any finer level relative to the
+   coarsest. **No tuned constant**: the assertion is directional, because a boundary condition
+   claiming an ever-larger share of the mesh as it refines is by definition not converging.
+   ⚠ Deliberately NOT a raw growth rate against an ideal `r³` — the domain's own corners grow
+   2.93× on the first step against that ideal, so a raw rate partly measures the mesher. It fires
+   on the pre-α.1 ladder (0.2636 → 0.3270, +24 %), which is the population pathology step 1
+   identified and this gate previously could not see. ⚠ Margin is thin: the share's jitter over a
+   ±3.3 % `cell` window is ±12 % against an 18 % margin, so read a failure as "the Dirichlet set
+   is not converging", never as an element-convergence result.
    ⚠⚠ **SCOPE, corrected by step 1 — this gate covers the clamp DEPTH and nothing else.** Step 0
    settled that the depth is stable (0.20 % across every cell measured), and I wrongly read that as
    "the lattice-phase confound is negligible". It is not: the same phase effect moves the retained
