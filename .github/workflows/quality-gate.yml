@@ -997,9 +997,45 @@ jobs:
         run: cargo test --release -p sim-soft --test bonded_layer_indentation
         shell: bash
 
+  # ============================================================================
+  # LICENSED GATES - the inventory of what CI can never run
+  # ============================================================================
+  # A set of this workspace's most load-bearing gates read the BodyParts3D
+  # anatomy meshes (CC BY-SA 2.1 JP, uncommittable), so every one is `#[ignore]`d
+  # and NO CI run will ever execute them. That is a licensing fact, not something
+  # to fix. What CI *can* do is guarantee they stay countable: `licensed-gates
+  # --check` derives the surface from the source and fails if any `#[ignore]`d
+  # mesh-touching test has stopped naming the variable it needs, which is the one
+  # way a gate can drop out of the inventory unnoticed. Enumeration is
+  # licence-free even though execution is not.
+  #
+  # DELIBERATELY UNSCOPED (no `affected` intersection). The same assertion is a
+  # unit test, but `cargo test -p xtask` only runs when xtask is in the affected
+  # set — a PR touching only sim/L1/fsu-model does not pull it in, so the test
+  # would fire on `main` a merge too late. Do NOT "optimise" this job by scoping
+  # it to affected crates: the PRs it exists to catch are exactly the ones that
+  # do not touch xtask. It is a source scan with no build, so it is cheap.
+  licensed-gates:
+    name: Licensed gate inventory
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
+
+      - name: Every licence-gated test is still visible to the enumerator
+        run: cargo run -q -p xtask -- licensed-gates --check
+
   quality-gate:
     name: Quality Gate
-    needs: [format, grade, tests-debug, tests-release, cross-os, feature-combos, dependencies, validate-examples, soft-contact-heavy]
+    needs: [format, grade, tests-debug, tests-release, cross-os, feature-combos, dependencies, validate-examples, soft-contact-heavy, licensed-gates]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10

@@ -156,6 +156,19 @@ Every push and PR runs:
 - no bevy in Layer 0         # Architecture enforced
 ```
 
+### What CI Cannot Check
+
+Some gates read licensed anatomy meshes (CC BY-SA, never committed), so they are
+`#[ignore]`d and **no CI run will ever execute them**. Enumerate and run them
+locally — the list is derived from the source, not hand-kept:
+
+```bash
+cargo xtask licensed-gates          # what exists, grouped by crate
+cargo xtask licensed-gates --run    # run it (see design/cf-fsu-geometry/BODYPARTS3D.md)
+```
+
+Run this before merging anything that touches the FSU cone. Nothing else will.
+
 ### What Blocks Merging
 
 - Any CI failure
