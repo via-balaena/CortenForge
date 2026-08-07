@@ -428,6 +428,10 @@ fn sha256_of(path: &Path) -> Result<String> {
 /// the pinned value it should have had.
 fn verify_meshes(vars: &[&str]) -> Result<()> {
     let mut bad = Vec::new();
+    // Count what was actually HASHED, not what was asked about. Those differ
+    // whenever a variable is unset, and reporting the larger number would
+    // announce verification that did not happen.
+    let mut verified = 0usize;
     for var in vars {
         let Some((_, want_len, want_sha)) = MESH_ASSETS.iter().find(|(v, _, _)| v == var) else {
             // A variable with no pinned identity cannot be checked, and silently
@@ -463,16 +467,27 @@ fn verify_meshes(vars: &[&str]) -> Result<()> {
                 path.display()
             )),
             Err(e) => bad.push(format!("  {var} -> {}: {e:#}", path.display())),
-            Ok(_) => {}
+            Ok(_) => verified += 1,
         }
     }
 
     if bad.is_empty() {
+        // Nothing hashed while meshes were expected means every path fell through
+        // a `continue` — a clean-looking pass over an empty set, which is the
+        // failure mode this module keeps having to design against.
+        if verified != vars.len() {
+            bail!(
+                "integrity check verified {verified} of {} expected mesh{} — the rest were \
+                 never hashed, so this is NOT a pass. Confirm every variable is set before \
+                 running gates that depend on them.",
+                vars.len(),
+                if vars.len() == 1 { "" } else { "es" }
+            );
+        }
         println!(
-            "{} {} licensed mesh{} verified against the pin in {PROVENANCE_DOC}",
+            "{} {verified} licensed mesh{} verified against the pin in {PROVENANCE_DOC}",
             "OK".green().bold(),
-            vars.len(),
-            if vars.len() == 1 { "" } else { "es" }
+            if verified == 1 { "" } else { "es" }
         );
         return Ok(());
     }
@@ -911,6 +926,25 @@ mod tests {
              failing, got: {msg}"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An unset variable must not be counted as a verified mesh.
+    ///
+    /// `verify_meshes` skips what it cannot read, so counting the vars it was
+    /// ASKED about rather than the ones it HASHED would announce verification
+    /// that never happened — a pass over an empty set, in the one place whose
+    /// entire job is refusing to do that.
+    #[test]
+    fn an_unset_mesh_is_not_counted_as_verified() {
+        // SAFETY: single-threaded test process; the variable is not set after.
+        unsafe { std::env::remove_var("CF_L5_STL") };
+        let err = verify_meshes(&["CF_L5_STL"])
+            .expect_err("a mesh that was never hashed must not read as verified");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("verified 0 of 1"),
+            "the error must say how many were actually hashed, got: {msg}"
+        );
     }
 
     /// The allowlist must not outlive the tests it excuses.
