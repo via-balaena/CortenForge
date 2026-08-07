@@ -55,7 +55,8 @@ higher-order element on the genuinely-curved bone.
 > BUILT note in §3, which records what the build changed about the plan. Rungs 4b and 5 are
 > independent — 4b seats the coupled disc, 5 bounds its error. **Next action: rung 5**, specced
 > against the shipped code on 2026-07-30 and then **reshaped by a 4-front adversarial stress-test**
-> (§3's rung-5 entry, §4.8's gate, §8.3's record). It goes first because `RUNG7_K_DISC = −0.1882`
+> (§3's rung-5 entry, §4.8's gate, §8.3's record). It goes first because `RUNG7_K_DISC` (−0.1882
+> at rung 4; **−0.0972 since β.4**)
 > is *shipped and load-bearing* while §0.1 bound 3 still admits it is not proven converged — rung 5
 > hardens the layer underneath 4b. ⚠ **The stress-test changed the rung's QUESTION:** "is Tet10
 > more accurate here" is a **theorem** (§3), so rung 5 measures *how much error is left* and
@@ -67,7 +68,8 @@ higher-order element on the genuinely-curved bone.
 > cell window — attributed to **`largest_component`'s retained tets swinging 49.5 %
 > non-monotonically**, with `|k4|` perfectly monotone in retained tets.
 > **⇒⇒ ARC-LEVEL: the disc being simulated is not a stable function of `cell`, so every ABSOLUTE
-> `k_disc` this arc has published — `RUNG7_K_DISC = −0.1882` included — is one draw from a wide
+> `k_disc` this arc has published — `RUNG7_K_DISC` (−0.1882 at rung 4, **−0.0972 since β.4**)
+> included — is one draw from a wide
 > distribution.** Differences measured at fixed mesh (rung 1's ratio, rung 2's conform, rung 3's
 > curving) are unaffected; the element finding survives as a **range, 23–34 % softer**.
 > **▶ NEXT: a head-engineer call.** Rung 5 is blocked on a **meshing-stability fix** that is bigger
@@ -196,7 +198,8 @@ invisible.
 but v1 **missed a hard assert elsewhere**:
 
 - `sim/L1/coupling/tests/fsu_coupled_contact.rs:40-47,72` asserts `CoupledFsu::build`'s
-  `k_disc` to `RUNG7_K_DISC = -0.2819 ± K_DISC_TOL = 0.02`, plus flexion ROM to
+  `k_disc` to `RUNG7_K_DISC` ± its tolerance (rung 7: −0.2819 ± 0.02; **now −0.0972 ±
+  `K_DISC_TOL_FRAC` = 5 %**, made dimensionless at β.4), plus flexion ROM to
   `6.13 ± 0.15°` (`:118`) and the extension ROM literature band (`:246-251`).
 - A Tet10 disc gives `k ≈ -0.186`; `|−0.186 − (−0.2819)| = 0.096` — **that assert fails by
   ~4.8×.** *(Magnitude is indicative, not exact: −0.186 is the spike's ±0.5° mean on the
@@ -215,7 +218,7 @@ The reframe itself **survives**: `fsu_coupled_contact.rs:52` is *also* `#[ignore
 env-gated on the BodyParts3D triad, so it is not CI-enforced either. What changes is the
 **ladder**: a deliberate, committed **re-anchor** of `RUNG7_K_DISC` is a required deliverable
 (rung 4, §3) — with the measurement in the constant's doc comment, per
-[[feedback_anti_rot_invariants_vs_exact_anchors]]. **Never widen `K_DISC_TOL`**, and never
+[[feedback_anti_rot_invariants_vs_exact_anchors]]. **Never widen that tolerance**, and never
 touch `ROM_TOL_DEG` / `LIT_EXTENSION_DEG`: those are the arc's real ROM tripwire, and the plan
 *predicts* a 0.008° shift — if they move, the prediction was wrong and that is a finding.
 
@@ -1440,8 +1443,12 @@ is worse than no number; its incidence-walk mutant improved the residual while i
 0. **Liveness**, per arm per level, per the table above. Cheapest, and it gates everything.
 1. **Harness validation against a KNOWN value — free, and the first draft omitted it.** The coarse
    level *is* the shipped configuration (`DiscParams::default().cell = 0.003`), so the ladder's
-   `h₁` must reproduce rung 1's committed raw-disc numbers: **Tet4 −0.2811 / −0.2788, Tet10
-   −0.1873 / −0.1849, ratio 0.666 / 0.663**, to four decimals. This is the repo's own
+   `h₁` must reproduce the committed raw-disc numbers: **Tet4 −0.1170 / −0.1156, Tet10
+   −0.0968 / −0.0958, ratio 0.827 / 0.829**, to four decimals. ⚠ RE-ANCHORED at rung β.4 — do
+   not use rung 1's −0.2811 / −0.2788 / −0.1873 / −0.1849 / 0.666 / 0.663, which were measured
+   before α.1 removed phantom material from the mesh. Read the live values from
+   `cf-fsu-model`'s `src/committed_anchors.rs`, which is their single producer, rather than
+   copying them from here. This is the repo's own
    validate-a-new-harness-against-a-known-value rule ([[feedback_validate_new_harness_against_known_value]]),
    available at zero cost on the exact quantity the rung measures, and it is the cheapest possible
    check that the multi-resolution harness is not silently a different probe (wrong `theta`, wrong
