@@ -19,6 +19,7 @@
 //! Requires `curl` + `unzip` and one-time network access (then cached in the temp dir).
 #![allow(clippy::expect_used, clippy::print_stdout)]
 
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -28,6 +29,20 @@ use sim_core::{DVector, Integrator, Model};
 /// The nonlinearbenchmark EMPS distribution (a zip containing `DATA_EMPS.mat`).
 const DATA_URL: &str =
     "https://drive.google.com/uc?export=download&id=1zwoXYa9-3f8NQ0ohzmjpF7UxbNgRTHkS";
+
+/// The `DATA_EMPS.mat` this example expects, as first pinned on 2026-08-07.
+///
+/// ⚠⚠ **This digest is doing more work here than for the other datasets, because
+/// [`DATA_URL`] is a Google Drive file ID: it pins a LOCATION, not CONTENT.** The
+/// owner can replace the bytes behind that id at any time and every URL in this
+/// file keeps resolving — there is no commit, no version, nothing to compare
+/// against. Unlike the Schmidt & Lipson pendulum data (a git blob inside a pinned
+/// commit, independently verifiable), this pin rests on a single observed
+/// download. It cannot prove the bytes are the authors' intended release; it can
+/// only guarantee that what this example reads today is what it read then, which
+/// is the difference between a reproducible example and one that quietly drifts.
+const MAT_BYTES: u64 = 626_039;
+const MAT_SHA256: &str = "6cf6814ae14618795da0101aae2bb97ff0c6351b0501b5492751b02b07facf7e";
 
 // EMPS reference model parameters (Janot et al., `Simulation_EMPS.m`).
 const M1: f64 = 95.1089; // effective mass
@@ -50,7 +65,10 @@ struct EmpsData {
 fn fetch_emps() -> Option<PathBuf> {
     let cache = std::env::temp_dir().join("cf_emps_DATA_EMPS.mat");
     if cache.exists() {
-        return Some(cache);
+        // Verify before reusing. Without this the cache was trusted on sight, so a
+        // stale file — or anything else at that temp path — was read as the
+        // benchmark. A digest on the download alone would never see it.
+        return verify_pinned(&cache).then_some(cache);
     }
     let zip = std::env::temp_dir().join("cf_emps.zip");
     if !zip.exists() {
@@ -88,7 +106,40 @@ fn fetch_emps() -> Option<PathBuf> {
         return None;
     }
     std::fs::write(&cache, &out.stdout).ok()?;
-    Some(cache)
+    // Cold path checks the same pin the warm path does, so a bad download cannot
+    // become a trusted cache.
+    verify_pinned(&cache).then_some(cache)
+}
+
+/// Refuse a cached dataset whose bytes are not the pinned ones.
+///
+/// ⚠ Distinct from the offline path above, deliberately. **No data** is a missing
+/// network and returns `None` quietly — an example must not panic on that.
+/// **Wrong data** is different: it would produce identification results that mean
+/// nothing, so it says so and removes the bad cache rather than letting the next
+/// run trust it again.
+fn verify_pinned(path: &Path) -> bool {
+    use sha2::{Digest, Sha256};
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    if bytes.len() as u64 == MAT_BYTES {
+        let got = format!("{:x}", Sha256::digest(&bytes));
+        if got == MAT_SHA256 {
+            return true;
+        }
+        println!(
+            "\n  cached DATA_EMPS.mat does not match its pin:\n    sha256 {got}\n    pinned {MAT_SHA256}"
+        );
+    } else {
+        println!(
+            "\n  cached DATA_EMPS.mat is {} bytes, pinned {MAT_BYTES}",
+            bytes.len()
+        );
+    }
+    println!("  removing {} — re-run to re-fetch.", path.display());
+    let _ = std::fs::remove_file(path);
+    false
 }
 
 /// Parse the required arrays out of the MATLAB v5 `.mat`.

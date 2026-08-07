@@ -32,6 +32,7 @@
 
 #![allow(clippy::expect_used, clippy::print_stdout)]
 
+use std::path::Path;
 use std::process::Command;
 
 use cf_codesign::{FrictionSystemId, Normalized, OptConfig};
@@ -40,6 +41,18 @@ use sim_core::{DVector, Model, Vector3};
 /// Pinned public mirror of the Schmidt-Lipson dataset (pinned to a commit so the
 /// bytes can't change underneath the example). Referenced, never vendored.
 const DATA_URL: &str = "https://raw.githubusercontent.com/erwincoumans/tiny-differentiable-simulator/8381b8c9ad7f0a959548e4982eb8a63431a842d2/data/schmidt-lipson-exp-data/real_pend_h_1.txt";
+
+/// The exact bytes [`DATA_URL`] served, as first pinned on 2026-08-07.
+///
+/// ★ **Cross-checked, not merely observed.** The URL names a path inside a git
+/// commit, so the file has an identity git itself computed: blob SHA-1
+/// `36832c7cfd8c5bea14af70099109795612ad047a`. GitHub's contents API reports that
+/// same blob for this path at commit `8381b8c9…`, and it matches `git
+/// hash-object` run locally on the downloaded bytes. So this digest records what
+/// the pinned commit *contains*, rather than merely what one download produced —
+/// two identifiers, two endpoints, two hash functions.
+const DATA_BYTES: u64 = 57_274;
+const DATA_SHA256: &str = "45d92988198b89a5933f5a53e67aa819d06937516f71a462ac09e1307d8b3411";
 
 /// Sub-step the ~6 Hz data 8× so Euler integrates the pendulum accurately and each
 /// data sample lands on a distinct model step.
@@ -71,7 +84,45 @@ fn fetch_data() -> Option<String> {
             return None;
         }
     }
+    // Verify the CACHE, not just a fresh download. `cache.exists()` above returns
+    // early, so before this a stale file — or anything else sitting at that temp
+    // path — was read as the dataset without question. That is the failure this
+    // check exists for; a digest on the download alone would miss it entirely.
+    if !verify_pinned(&cache) {
+        return None;
+    }
     std::fs::read_to_string(&cache).ok()
+}
+
+/// Refuse a cached dataset whose bytes are not the pinned ones.
+///
+/// ⚠ Distinct from the offline path above, deliberately. **No data** is a
+/// missing network and returns `None` quietly — an example must not panic on
+/// that. **Wrong data** is different: it would yield sim-to-real numbers that
+/// mean nothing, so it says so loudly and removes the bad cache rather than
+/// letting the next run trust it again.
+fn verify_pinned(path: &Path) -> bool {
+    use sha2::{Digest, Sha256};
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    if bytes.len() as u64 == DATA_BYTES {
+        let got = format!("{:x}", Sha256::digest(&bytes));
+        if got == DATA_SHA256 {
+            return true;
+        }
+        println!(
+            "\n  cached dataset does not match its pin:\n    sha256 {got}\n    pinned {DATA_SHA256}"
+        );
+    } else {
+        println!(
+            "\n  cached dataset is {} bytes, pinned {DATA_BYTES}",
+            bytes.len()
+        );
+    }
+    println!("  removing {} — re-run to re-fetch.", path.display());
+    let _ = std::fs::remove_file(path);
+    false
 }
 
 /// Parse `[trial, t, θ, ω]` rows, keeping `(t, θ, ω)`.
