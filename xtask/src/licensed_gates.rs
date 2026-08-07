@@ -209,11 +209,16 @@ fn source_files(root: &Path) -> Vec<PathBuf> {
 
 /// One pass over the workspace: what was found, and what could not be read.
 ///
-/// The last field is the one that matters most. This module exists so that a
-/// licence-gated gate cannot go missing quietly, so **the survey must never
-/// report an empty answer it is not entitled to** — a mesh-touching file that
-/// fails to parse has an unknown number of gates, not zero, and saying "none"
-/// there would rebuild the exact blind spot in a new place.
+/// The last two fields matter most. This module exists so that a licence-gated
+/// gate cannot go missing quietly, so **the survey must never report an empty
+/// answer it is not entitled to** — a mesh-touching file it could not read has
+/// an unknown number of gates, not zero, and saying "none" there would rebuild
+/// the exact blind spot in a new place.
+///
+/// This is not hypothetical. While this module was being written, a bad
+/// `Cargo.toml` parse made `owning_package` return `None` for *every* file;
+/// the tool reported "0 licence-gated gates across 0 crates" and looked
+/// perfectly healthy. A broken scanner must not read like an empty workspace.
 #[derive(Default)]
 struct Survey {
     /// Licence-gated gates, sorted.
@@ -222,6 +227,8 @@ struct Survey {
     unnamed: Vec<(String, PathBuf)>,
     /// Mesh-touching test files `syn` could not parse. Their gates are UNKNOWN.
     unparsed: Vec<PathBuf>,
+    /// Mesh-touching files whose owning package could not be resolved. Ditto.
+    unowned: Vec<PathBuf>,
 }
 
 /// Classify one file, appending to `out`.
@@ -235,6 +242,7 @@ fn survey_file(file: &Path, out: &mut Survey) {
         return;
     }
     let Some((crate_root, krate)) = owning_package(file) else {
+        out.unowned.push(file.to_path_buf());
         return;
     };
     // `None` here is a deliberate classification, not a failure: examples and
@@ -445,21 +453,26 @@ fn check(root: &Path) -> Result<()> {
     let s = survey(root);
     let rel = |p: &Path| p.strip_prefix(root).unwrap_or(p).display().to_string();
 
-    // Unparsed first: it is the more dangerous of the two, because it makes the
-    // count itself untrustworthy rather than short by a nameable amount.
-    if !s.unparsed.is_empty() {
-        let detail = s
-            .unparsed
+    // Unreadable files come first: they make the count itself untrustworthy,
+    // which is worse than a count short by a nameable amount.
+    let unreadable: Vec<(&PathBuf, &str)> = s
+        .unowned
+        .iter()
+        .map(|f| (f, "owning package could not be resolved"))
+        .chain(s.unparsed.iter().map(|f| (f, "did not parse")))
+        .collect();
+    if !unreadable.is_empty() {
+        let detail = unreadable
             .iter()
-            .map(|f| format!("  {}", rel(f)))
+            .map(|(f, why)| format!("  {}  ({why})", rel(f)))
             .collect::<Vec<_>>()
             .join("\n");
         bail!(
-            "these files reference a licensed mesh and hold a cargo test target, but could not \
-             be parsed, so the number of licence-gated gates in them is UNKNOWN — not zero:\n\
-             {detail}\n\n\
-             Every count this tool prints would be silently short while this is true. Fix the \
-             file, or teach the scanner the syntax it now uses."
+            "these files reference a licensed mesh but could not be read, so the number of \
+             licence-gated gates in them is UNKNOWN — not zero:\n{detail}\n\n\
+             Every count this tool prints is silently short while this is true, and a wholly \
+             broken scan reports a healthy-looking `0 gates across 0 crates`. Fix the file, or \
+             teach the scanner what it now needs to understand."
         );
     }
 
@@ -510,9 +523,10 @@ pub fn run(only: Option<String>, do_run: bool, do_check: bool) -> Result<()> {
     let s = survey(&root);
     // A list or a run that quietly skipped a file it could not read would be
     // the failure this whole module is against. Say so on every path.
-    for f in &s.unparsed {
+    for f in s.unparsed.iter().chain(&s.unowned) {
         eprintln!(
-            "{} {} references a licensed mesh but did not parse — its gates are NOT in this list",
+            "{} {} references a licensed mesh but could not be read — its gates are NOT in this \
+             list",
             "warning:".yellow().bold(),
             f.strip_prefix(&root).unwrap_or(f).display()
         );
@@ -596,6 +610,40 @@ mod tests {
         assert!(
             msg.contains("UNKNOWN") && msg.contains("broken.rs"),
             "the error must name the file and refuse to call it zero, got: {msg}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A scan that cannot resolve owning packages must not look like a healthy
+    /// empty workspace.
+    ///
+    /// This reproduces a bug hit while writing this module: a `Cargo.toml`
+    /// parse failure made `owning_package` return `None` for every file, and
+    /// the tool announced "0 licence-gated gates across 0 crates" — a green
+    /// light over a completely blind scan. The manifest here is unparseable
+    /// TOML, which is the same shape.
+    #[test]
+    fn a_scan_that_resolves_no_packages_refuses_to_report_zero() {
+        let dir = std::env::temp_dir().join("cf_licensed_gates_unowned");
+        let krate = dir.join("crate-b");
+        std::fs::create_dir_all(krate.join("tests")).expect("temp dirs");
+        std::fs::write(krate.join("Cargo.toml"), "this is not = = valid toml [[[\n")
+            .expect("manifest");
+        std::fs::write(
+            krate.join("tests").join("gate.rs"),
+            "#[test]\n#[ignore = \"needs $CF_L4_STL\"]\nfn g() {}\n",
+        )
+        .expect("source");
+
+        let s = survey(&dir);
+        assert_eq!(s.unowned.len(), 1, "the unresolvable file must be surfaced");
+        assert!(s.gates.is_empty());
+        let err = check(&dir).expect_err("a blind scan must not certify a count");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("UNKNOWN") && msg.contains("owning package"),
+            "the error must say the count is unknown and why, got: {msg}"
         );
 
         std::fs::remove_dir_all(&dir).ok();
