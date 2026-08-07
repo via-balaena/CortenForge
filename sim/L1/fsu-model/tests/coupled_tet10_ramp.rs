@@ -29,7 +29,7 @@
 //! | arm | frames | max node displacement | worst deformed `detJ/detJ_rest` | build | capture |
 //! |---|---|---|---|---|---|
 //! | raw Tet4 | 25, −4.473° … +6.132° | 2.0065 mm | 0.8484 | 6.9 s | 32.2 s |
-//! | straight Tet10 | 25, −4.474° … +6.140° | 2.5908 mm | **0.8751** | 67.8 s | **583.1 s** |
+//! | straight Tet10 | 25, −4.475° … +6.148° | 2.0070 mm | **0.8741** | 62.6 s | **557.1 s** |
 //!
 //! Two results worth naming, neither of them predicted:
 //!
@@ -62,12 +62,16 @@ use cf_fsu_model::{
 /// ran" is backed by a number that moves when the deformation does.
 ///
 /// ⚠ RE-ANCHORED at β.4: α.1 removed phantom material, so the same ramp on the corrected
-/// domain displaces less. The Tet4 arm measured **2.0065 mm**; the Tet10 arm is still the
-/// pre-α.1 figure because this gate asserted the Tet4 pin *before building the Tet10 arm*, so
-/// no post-α.1 Tet10 number exists yet. The assert ordering below is fixed so the next run
-/// measures both — and that run is what replaces the second value. It is deliberately NOT
-/// guessed from the old 1.0013 arm ratio.
-const MAX_DISPLACEMENT_MM: (f64, f64) = (2.0065, 2.5908); // (raw Tet4, straight Tet10)
+/// domain displaces less. **Both arms measured in one run** once the assert ordering below was
+/// fixed — previously the Tet4 pin fired before the Tet10 arm was built, so only one number
+/// per run was obtainable.
+///
+/// ★ The Tet10 value was measured, not extrapolated, and the difference matters: the old arm
+/// ratio (2.5908/2.5874 = 1.0013) would have predicted **2.0091** against a measured
+/// **2.0070**. That guess sits inside this ±5 % pin, so it would have passed the gate while
+/// being wrong in its last two digits — a committed value that is quietly wrong is worse than
+/// one that is visibly missing.
+const MAX_DISPLACEMENT_MM: (f64, f64) = (2.0065, 2.0070); // (raw Tet4, straight Tet10)
 /// Pin width on [`MAX_DISPLACEMENT_MM`], as a fraction.
 const DISPLACEMENT_PIN: f64 = 0.05;
 
