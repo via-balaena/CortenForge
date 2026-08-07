@@ -104,6 +104,7 @@ fn fetch_data() -> Option<String> {
 fn verify_pinned(path: &Path) -> bool {
     use sha2::{Digest, Sha256};
     let Ok(bytes) = std::fs::read(path) else {
+        println!("\n  cannot read the cached dataset at {}", path.display());
         return false;
     };
     if bytes.len() as u64 == DATA_BYTES {

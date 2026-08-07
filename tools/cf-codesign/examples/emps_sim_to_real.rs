@@ -107,8 +107,15 @@ fn fetch_emps() -> Option<PathBuf> {
     }
     std::fs::write(&cache, &out.stdout).ok()?;
     // Cold path checks the same pin the warm path does, so a bad download cannot
-    // become a trusted cache.
-    verify_pinned(&cache).then_some(cache)
+    // become a trusted cache. ⚠ Drop the ARCHIVE too when it fails: the extracted
+    // cache and the zip are cached separately, so removing only the extract would
+    // leave the next run re-extracting the same bad archive forever — and the
+    // message promising a re-fetch would be a lie.
+    if verify_pinned(&cache) {
+        return Some(cache);
+    }
+    let _ = std::fs::remove_file(&zip);
+    None
 }
 
 /// Refuse a cached dataset whose bytes are not the pinned ones.
@@ -121,6 +128,7 @@ fn fetch_emps() -> Option<PathBuf> {
 fn verify_pinned(path: &Path) -> bool {
     use sha2::{Digest, Sha256};
     let Ok(bytes) = std::fs::read(path) else {
+        println!("\n  cannot read the cached dataset at {}", path.display());
         return false;
     };
     if bytes.len() as u64 == MAT_BYTES {

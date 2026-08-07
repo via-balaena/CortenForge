@@ -149,7 +149,14 @@ fn fetch_csv(name: &str) -> Option<PathBuf> {
     }
     std::fs::write(&cache, &out.stdout).ok()?;
     // Cold path checks the same pin, so a bad extract cannot become a trusted cache.
-    verify_pinned(name, &cache).then_some(cache)
+    // ⚠ Drop the ARCHIVE too when it fails: the extracted CSVs and the zip are
+    // cached separately, so removing only the CSV would leave the next run
+    // re-extracting the same bad archive forever.
+    if verify_pinned(name, &cache) {
+        return Some(cache);
+    }
+    let _ = std::fs::remove_file(&zip);
+    None
 }
 
 /// Refuse a cached CSV whose bytes are not the pinned ones.
@@ -168,6 +175,10 @@ fn verify_pinned(name: &str, path: &Path) -> bool {
         return false;
     };
     let Ok(bytes) = std::fs::read(path) else {
+        println!(
+            "\n  cannot read the cached {name}.csv at {}",
+            path.display()
+        );
         return false;
     };
     if bytes.len() as u64 == *want_bytes {
