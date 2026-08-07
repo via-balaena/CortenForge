@@ -3369,14 +3369,22 @@ mod tests {
     /// committed nowhere, because `band_frac` is a fraction precisely so no absolute ever had
     /// to be.** This test is the producer. Do not quote the illustration.
     ///
-    /// Prints the table and asserts only what must hold for the ladder to be *measurable at all*:
+    /// Prints the table and asserts what must hold for the ladder to be *measurable at all*:
     /// non-empty bands and a positive free height at **every** cell, plus strictly-increasing
     /// refinement across **the ladder proper only** — the probe cells are exempt, because whether
     /// retention is monotone *there* is precisely the open question and asserting it would beg it.
-    /// The ladder decision is a head-engineer call on the printed numbers, not an assert here.
+    ///
+    /// ★ **Plus assert 2b (added 2026-08-07): the pinned SHARE of the domain must not GROW**
+    /// across the ladder. That is the boundary condition converging or not, which is a
+    /// precondition for reading anything as element convergence — see the block at the assert.
+    /// It is directional and carries no tuned constant.
+    ///
+    /// Everything beyond those is a head-engineer call on the printed numbers, not an assert
+    /// here: this test does not decide whether the ladder is worth running.
     #[test]
     #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
-    // Band node counts are in the hundreds — the usize→f64 cast for the growth ratio is exact.
+    // Band and corner counts are in the hundreds-to-thousands — the usize→f64 casts for the
+    // pinned share are exact.
     #[allow(clippy::cast_precision_loss)]
     fn rung5_step0_realized_band_across_the_ladder_fom() {
         let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
