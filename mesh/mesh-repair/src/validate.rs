@@ -66,8 +66,9 @@ pub struct MeshReport {
     /// see the type docs before reading this as "the winding is reversed".
     /// Prefer [`Self::winding`] for local orientation consistency.
     ///
-    /// `false` when [`ValidationOptions::check_winding`] is off, which is
-    /// indistinguishable from a genuine negative result.
+    /// `false` when [`ValidationOptions::check_winding`] is off —
+    /// indistinguishable from a mesh that was checked and found not to be
+    /// inside-out.
     pub is_inside_out: bool,
 
     /// Per-edge local orientation consistency — the question
@@ -90,7 +91,9 @@ impl MeshReport {
     /// previously claimed it required "correct winding"; it does not, and
     /// cannot, because [`Self::is_inside_out`] is unsound in both directions
     /// (type docs). A mesh with locally flipped faces can pass this, and a
-    /// correctly wound mesh far from the origin can fail it.
+    /// mesh with a single flipped face can fail it for no reason but its
+    /// distance from the origin. (A *consistently* wound mesh is safe at any
+    /// distance — translation invariance is exactly what a flip destroys.)
     ///
     /// ▶ **Deliberately unchanged for now.** [`Self::winding`] is reported but
     /// not yet judged here, because this predicate gates production refusals
@@ -147,8 +150,8 @@ impl std::fmt::Display for MeshReport {
         )?;
         // ⚠ These are two readings of two different questions, printed
         // separately on purpose. This block used to print a single
-        // `Winding: Correct` derived from `is_inside_out` alone — a claim that
-        // test could not support (see the type docs).
+        // `Winding: Correct` derived from `is_inside_out` alone — a claim the
+        // signed-volume test cannot support (see the type docs).
         writeln!(
             f,
             "    Signed volume: {} (global, origin-apex)",
@@ -165,7 +168,12 @@ impl std::fmt::Display for MeshReport {
                 self.winding.inconsistent_edges, self.winding.interior_edges
             )?;
         } else {
-            writeln!(f, "    Local winding: not examined (no interior edges)")?;
+            // ⚠ No cause is stated on purpose. An all-zero census means EITHER
+            // the mesh had no judgeable interior edge OR `check_winding` was
+            // off, and this report does not record which — so naming either
+            // one here would be the same kind of unsupported claim the line
+            // above was retired for.
+            writeln!(f, "    Local winding: not examined")?;
         }
 
         if self.has_issues() {
@@ -501,8 +509,14 @@ mod tests {
         // The per-edge census is not blind to it. All three of the flipped
         // face's edges are now traversed the same way by both incident faces.
         assert_eq!(report.winding.inconsistent_edges, 3);
-        assert!(report.winding.has_inconsistent_winding());
-        assert!(report.winding.has_judgeable_edges());
+        // ...out of all six, so the census judged the whole closed surface
+        // rather than reaching a verdict from a sliver of it.
+        //
+        // ⚠ `has_inconsistent_winding()` and `has_judgeable_edges()` are
+        // deliberately NOT asserted here: both are *defined* as `> 0` on
+        // counters the line above already pins, so beside it neither can fail
+        // and asserting them would read as verification while adding none.
+        assert_eq!(report.winding.interior_edges, 6);
 
         // ⇒ the exact claim the old `is_printable` doc made and could not
         //   support: a mesh whose winding is locally broken passes it. Pinned
@@ -562,8 +576,33 @@ mod tests {
         // A single triangle has no interior edge, so the census saw nothing.
         let display = format!("{}", validate_mesh(&simple_triangle()));
 
-        assert!(display.contains("Local winding: not examined (no interior edges)"));
+        assert!(display.contains("Local winding: not examined"));
         assert!(!display.contains("0 of 0"));
+    }
+
+    #[test]
+    fn display_names_no_cause_for_an_all_zero_census() {
+        // The same "not examined" line, reached the OTHER way — a mesh with
+        // six perfectly judgeable interior edges, whose census never ran. The
+        // line must not claim a cause it cannot distinguish: saying "no
+        // interior edges" here would be false.
+        let options = ValidationOptions {
+            check_winding: false,
+            ..Default::default()
+        };
+        let display = format!(
+            "{}",
+            validate_mesh_with_options(&unit_tetrahedron(), &options)
+        );
+
+        assert!(display.contains("Local winding: not examined"));
+        assert!(
+            !display.contains("no interior edges"),
+            "the mesh has six; the census simply did not run"
+        );
+        // The cross-check: those six edges are real and judgeable, so the
+        // absent cause really would have been a false statement.
+        assert_eq!(validate_mesh(&unit_tetrahedron()).winding.interior_edges, 6);
     }
 
     #[test]
