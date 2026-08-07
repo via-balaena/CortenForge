@@ -999,7 +999,8 @@ realized clamp depth is therefore quantized with a `cell`-dependent quantum.
   > ⚠⚠ **RE-MEASURED POST-α.1 (2026-08-07) — and this bullet was never load-bearing in EITHER
   > direction.** The ladder now runs sup/inf **1.589 → 1.880 → 1.917** (116/73, 314/167, 650/339).
   > But the jitter in the *same ratio* over a ±3.3 % `cell` window at one refinement level is
-  > **1.642 … 2.772** — so the post-α.1 "flattening" AND the pre-α.1 "1.61 → 2.84 → 3.55" both sit
+  > **1.589 … 2.772** (all five draws at `cell ≈ 0.003`, the ladder's own coarse point among them)
+  > — so the post-α.1 "flattening" AND the pre-α.1 "1.61 → 2.84 → 3.55" both sit
   > inside the noise of a single level (pre-α.1's own probe window ran **0.835 … 5.118**, a 6×
   > swing). ★ **Three points, one draw each, against a jitter band as wide as the trend.** Do not
   > argue from this ratio in either direction; argue from the growth-rate bound below, which is
@@ -1124,7 +1125,7 @@ realized clamp depth is therefore quantized with a `cell`-dependent quantum.
 >
 > ⚠ **Cost note, in rung 5's favour:** α.1 shrank the ladder ~45 % (fine level 18 485 → 10 048
 > referenced corners), so the recorded "Tet10 at `cell = 0.002` exceeds the RSS budget" constraint
-> (§ risk register) should be re-measured before it is planned around — it may simply be gone.
+> (§5.5 rollback) should be re-measured before it is planned around — it may simply be gone.
 >
 > **★★ PROCESS: the ordering worked, and cheaply.** Step 0 (0.4 s) said proceed; step 1 (90 s) said
 > stop. Neither is wasted and the sequence cost 90 seconds — against a ladder that would have
@@ -1288,7 +1289,7 @@ transfer — the behaviour does, and behaviour is what this rung asks about.
 | 3 ✅ | sim-soft + fsu-model | **§4.3** residual ↓ again (authorised RMS 0.881 → 0.767 mm at rung 4; **0.197 → 0.111 at rung β**) | **§4.4** coverage 67.4 % (**91.0 % at rung β**) + per-Gauss-point floor; k_disc shift 0.05 % committed | straight-Tet10 arm untouched (rung-1 FOM re-runs at 0.666 / 0.663) |
 | 4 ✅ | fsu-model, coupling | single `RUNG7_K_DISC` re-anchor, measured (−0.2819 → −0.1882) | **§4.5** full ramp completes, `detJ > 0` on the DEFORMED config; **§4.6** flexion ROM assert; segment shift +0.0082° vs predicted ~0.008° | — |
 | 4b | fsu-model | **§4.3** residual, on the COUPLED disc | lofted disc completes ±6° conformed, both elements | — |
-| 5 ⛔ | fsu-model | **BLOCKED, RE-SCOPED 2026-08-07 — on a NEW premise; the old one is discharged.** α.1 made the retained domain *monotone* in `cell` (15.4 % p2p, was 49.5 % non-monotone) and the superior band no longer outgrows the domain — now **gated** by assert 2b. `k_disc` spread ~100 % → **21.13 %**. ⇒ the meshing-stability blocker is spent. **What blocks it now: every ladder level is n = 1**, and the fixed-level jitter is comparable to the between-level signal (the spread is only known at `cell = 0.003`). ▶ NEXT = **replication per level**, with §3's decision rule (`Δ` vs the larger level spread) committed before the run. | When unblocked — **§4.8** the bracket `\|k*\| ≤ \|k10(fine)\| ≤ \|k10(coarse)\| ≤ \|k4\|`, ±5 % two-sided pins; headline = a lower bound on the shipped `RUNG7_K_DISC` error | liveness (strictly-monotone DOFs per arm) → rung-1 known-value reproduction → **clamp-plane constancy** → `min_jacobian_ratio` → domain metrics | zero production diff; rung-2 `llvm-cov` oracle on **`coupled.rs` + `coupling/src/bonded.rs`** (NOT `src/lib.rs` — this rung adds tests to it) |
+| 5 ⛔ | fsu-model | **BLOCKED, RE-SCOPED 2026-08-07 — on a NEW premise; the old one is discharged.** α.1 made the retained domain *monotone* in `cell` (15.4 % p2p, was 49.5 % non-monotone) and the superior band no longer outgrows the domain — now **gated** by assert 2b. `k_disc` spread ~100 % → **21.13 %**. ⇒ the meshing-stability blocker is spent. **What blocks it now: every ladder level is n = 1**, and the fixed-level jitter is comparable to the between-level signal (the spread is only known at `cell = 0.003`). ▶ NEXT = **replication per level**, with §3's decision rule (`Δ` vs the larger level spread) committed before the run. | When unblocked — **§4.8** the bracket `\|k*\| ≤ \|k10(fine)\| ≤ \|k10(coarse)\| ≤ \|k4\|`, ±5 % two-sided pins; headline = a lower bound on the shipped `RUNG7_K_DISC` error | liveness (strictly-monotone DOFs per arm) → rung-1 known-value reproduction → **clamp-plane constancy** → **pinned-population growth (assert 2b, LIVE)** → `min_jacobian_ratio` → domain metrics | zero production diff; rung-2 `llvm-cov` oracle on **`coupled.rs` + `coupling/src/bonded.rs`** (NOT `src/lib.rs` — this rung adds tests to it) |
 
 **★ CI reality, stated plainly** (v1's table implied protection that does not exist): `sim-coupling`
 and `cf-fsu-model` run only in `tests-release` shard 1 (`.github/workflows/quality-gate.yml:471`);
