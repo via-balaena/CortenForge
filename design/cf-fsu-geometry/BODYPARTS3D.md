@@ -81,8 +81,14 @@ never will — the meshes are licensed and uncommittable — so the only thing
 standing between them and silent rot is somebody running them deliberately.
 A hand-kept list is the wrong instrument for that: twice in the rung-β arc an
 inventory was recorded that was narrower than its name, and both times the
-gates it omitted had already gone red. **Any PR touching the FSU cone should
-run this before merge**, since nothing else will.
+gates it omitted had already gone red.
+
+**Run it before merging a change to production code these gates exercise** —
+geometry, meshing, the solver path, or the FSU model — since nothing else will.
+A test-only or docs-only change to those crates does not need it, because the
+gates cannot observe one; scope with `--only <crate>` when the blast radius is
+one crate. The full surface is ~2 h 21 m, so applying the rule where it cannot
+matter is how it stops being followed where it does.
 
 ## Coordinates
 

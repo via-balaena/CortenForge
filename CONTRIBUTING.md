@@ -167,7 +167,15 @@ cargo xtask licensed-gates          # what exists, grouped by crate
 cargo xtask licensed-gates --run    # run it (see design/cf-fsu-geometry/BODYPARTS3D.md)
 ```
 
-Run this before merging anything that touches the FSU cone. Nothing else will.
+Run this before merging a change to **production code these gates exercise** —
+geometry, meshing, the solver path, or the FSU model itself. Nothing else will
+catch a regression there.
+
+A **test-only or docs-only** change to those same crates does not need it: the
+gates cannot observe it. Scope the run when you can — `--only <crate>` covers one
+crate's slice in seconds to minutes, against ~2 h 21 m for the full surface. That
+distinction is deliberate. A rule applied where it cannot matter is a rule people
+learn to skip, and this one has to hold on the day it does matter.
 
 ### What Blocks Merging
 
