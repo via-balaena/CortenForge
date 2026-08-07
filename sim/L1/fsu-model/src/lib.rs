@@ -3376,6 +3376,8 @@ mod tests {
     /// The ladder decision is a head-engineer call on the printed numbers, not an assert here.
     #[test]
     #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
+    // Band node counts are in the hundreds — the usize→f64 cast for the growth ratio is exact.
+    #[allow(clippy::cast_precision_loss)]
     fn rung5_step0_realized_band_across_the_ladder_fom() {
         let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
         let base = DiscParams::default();
@@ -3406,6 +3408,9 @@ mod tests {
         // monotone, because whether retention is monotone there is exactly what is in question.
         let ladder = [0.003, 0.002, 0.0015];
         let mut prev_corners = 0usize;
+        // Previous ladder level's `(cell, inferior, superior)` populations, for the growth
+        // bound below.
+        let mut prev_band: Option<(f64, usize, usize)> = None;
         for cell in [
             0.002_90, 0.002_95, 0.003_05, 0.003_10, // step-1 probe window
             0.003, 0.002, 0.0015, // the ladder
@@ -3439,6 +3444,62 @@ mod tests {
                      ({referenced} vs {prev_corners}) — otherwise the ladder has an inert level"
                 );
                 prev_corners = referenced;
+
+                // ── The PINNED POPULATION must scale like the surface it lives on ──
+                //
+                // Step 1's mechanism was never the clamp plane, it was the Dirichlet
+                // population: a lattice-phase shift swept a whole layer of nodes out of the
+                // superior band and halved the constraints on the top face. The step-0 gate
+                // as first written could not see that — it asserted the clamp *plane* — and
+                // the plan's own conclusion was "gate the POPULATION, not just the plane".
+                // This is that gate.
+                //
+                // The bound is STRUCTURAL, not tuned. An endplate band is a fixed physical
+                // slab (`band_frac · SI extent`) on a 2-D face of a 3-D domain, so under a
+                // cell refinement of ratio `r` its node count must grow
+                //
+                //     at least  r²  (it is a surface: refining a face gains nodes like area)
+                //     at most   r³  (it cannot outgrow the domain that contains it)
+                //
+                // Nothing here is fitted to a measurement, which is the point — a threshold
+                // read off one realization would be an anchor set from n = 1, the exact error
+                // step 1 caught in its own predecessor.
+                //
+                // ★ It discriminates. On the PRE-α.1 mesh the superior band grew 5.163× and
+                // 2.489× against ceilings of 3.375× and 2.370× — over-volume at BOTH steps,
+                // which is the pathology that blocked rung 5. Post-α.1 the same two steps are
+                // 2.707× and 2.070×, inside the band, as is the inferior arm throughout.
+                //
+                // ⚠ The trade, stated: the post-α.1 superior margin to the ceiling is ~20 %,
+                // while the band population's own jitter over a ±3.3 % `cell` window is ~36 %
+                // (sup 116…158 at cell ≈ 0.003). So this gate CAN false-fire on a re-mesh, and
+                // "we are inside the ceiling" is suggestive rather than established — the
+                // pre-α.1 violation is trustworthy (a 53 % overshoot, larger than the jitter),
+                // the post-α.1 conformance is not yet. It is gated here anyway because the
+                // meshes are SHA-pinned and these cells are fixed constants, so the population
+                // is reproducible even though it is not robust. Read a failure as "the
+                // Dirichlet set moved", never as "the elements converged differently".
+                if let Some((prev_cell, prev_inf, prev_sup)) = prev_band {
+                    let r = prev_cell / cell;
+                    let (area, volume) = (r * r, r * r * r);
+                    for (face, prev_n, n) in [
+                        ("inferior", prev_inf, p.inferior.len()),
+                        ("superior", prev_sup, p.superior.len()),
+                    ] {
+                        let growth = n as f64 / prev_n as f64;
+                        assert!(
+                            (area..=volume).contains(&growth),
+                            "cell {prev_cell} -> {cell}: the {face} band grew {growth:.3}× \
+                             ({prev_n} -> {n}), outside the structural window \
+                             [{area:.3}× area, {volume:.3}× volume] for r = {r:.4}. A pinned \
+                             band that outgrows the domain means the lattice phase is adding \
+                             constraints faster than refinement adds material, and no \
+                             element-convergence reading across these levels is separable \
+                             from it."
+                        );
+                    }
+                }
+                prev_band = Some((cell, p.inferior.len(), p.superior.len()));
             }
 
             println!(
