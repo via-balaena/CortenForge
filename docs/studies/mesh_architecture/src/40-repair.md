@@ -8,7 +8,7 @@ What this part covers (when authored to depth):
 
 The crate covers eight categories of mesh hygiene:
 
-1. **Validation** — `validate_mesh` returns a `MeshReport` with manifold-edge counts, boundary-edge counts, watertight check, vertex-count diagnostics.
+1. **Validation** — `validate_mesh` returns a `MeshReport` with manifold-edge counts, boundary-edge counts, watertight check, vertex-count diagnostics, degenerate- and duplicate-face counts, the global `is_inside_out` signed-volume flag, and (since 2.0) a `winding` field carrying the per-edge `WindingCensus`. The last two answer different questions — see the `MeshReport` docs, which are the single home for how they differ and why neither substitutes for the other.
 2. **Vertex welding** — `weld_vertices` merges vertices within an epsilon distance, fusing duplicate-position vertices that arose from CAD imports or imprecise authoring.
 3. **Degenerate-triangle removal** — strips zero-area triangles (`remove_degenerate_triangles` plus an `_enhanced` variant for near-degenerate cases).
 4. **Duplicate-face removal** — strips faces that share the same vertex set, common in poorly-exported CAD meshes.

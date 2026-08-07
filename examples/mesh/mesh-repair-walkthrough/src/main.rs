@@ -176,6 +176,16 @@ fn print_defects(dup_idx: u32, unref_idx: u32, mid_idx: u32) {
 /// Print a stage-labeled validation block: the full `MeshReport` Display
 /// followed by the two extra scalars the report doesn't carry inline
 /// (`count_inconsistent_faces` and `detect_holes` count + sizes).
+///
+/// ⚠ **Two winding numbers appear here and they are not redundant.** Since
+/// `mesh-repair` 2.0 the `MeshReport` Display carries `Local winding: N of M
+/// interior edges inconsistent` — the per-edge, seed-free census. The
+/// `count_inconsistent_faces` line below is the *face*-oriented, BFS
+/// seed-dependent count, which answers "how many faces disagree with a chosen
+/// starting face" rather than "how many shared edges are traversed the same
+/// way". They count different populations and are expected to differ; on soup
+/// (no shared edges) the census is vacuous while the BFS count is zero for a
+/// different reason. Both are printed on purpose.
 fn print_diagnostics(label: &str, mesh: &IndexedMesh) {
     let report = validate_mesh(mesh);
     let inconsistent = count_inconsistent_faces(mesh);

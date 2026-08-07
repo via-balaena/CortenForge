@@ -113,8 +113,11 @@ pub mod prelude {
     // I/O
     pub use mesh_io::{MeshFormat, load_mesh, save_mesh};
 
-    // Repair
-    pub use mesh_repair::{MeshReport, repair_mesh, validate_mesh};
+    // Repair. `WindingCensus` comes along because `MeshReport` has a public
+    // field of that type — without it a prelude-only consumer can read
+    // `report.winding` but cannot NAME it: no signature, no typed binding, no
+    // struct field of their own.
+    pub use mesh_repair::{MeshReport, WindingCensus, repair_mesh, validate_mesh};
 
     // Shell (main use case)
     pub use mesh_shell::ShellBuilder;

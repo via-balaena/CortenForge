@@ -434,6 +434,13 @@ pub fn count_inconsistent_faces(mesh: &IndexedMesh) -> usize {
 /// surface, and a mesh whose only shared edges are non-manifold. Use
 /// [`Self::has_judgeable_edges`] before reading a zero as good news.
 ///
+/// ⚠ **There is a fifth cause, and it is not a property of any mesh:** a
+/// `WindingCensus` obtained from [`crate::MeshReport`] is
+/// [`Default`]-constructed — never run at all — when
+/// [`crate::ValidationOptions::check_winding`] is off. A value of this type no
+/// longer implies [`winding_census`] produced it, so an all-zero census cannot
+/// be attributed to the mesh without knowing how it was obtained.
+///
 /// # Example
 ///
 /// ```
@@ -508,9 +515,15 @@ impl WindingCensus {
     /// Whether **any** edge was in a position to be judged — that is, whether
     /// `interior_edges` is non-zero.
     ///
-    /// `false` means the mesh is soup (or a single triangle): a zero
-    /// `inconsistent_edges` from such a mesh reports that no edge was
-    /// examined, not that the winding is good.
+    /// `false` means no edge was judged, and a zero `inconsistent_edges`
+    /// alongside it reports exactly that — **not** that the winding is good.
+    ///
+    /// ⚠ **It does not tell you WHY.** The mesh may be soup, a single
+    /// triangle, fully open, or non-manifold-only — or the census may never
+    /// have run, which is the state a [`crate::MeshReport`] carries when
+    /// [`crate::ValidationOptions::check_winding`] is off. This method
+    /// separates "no verdict" from "clean verdict"; it does not separate the
+    /// causes of the former, and no counter on this type does.
     ///
     /// ⚠ **`true` is not a coverage claim.** A surface that is 99 % boundary
     /// edges with a single interior edge reports `true`, having judged one
@@ -536,10 +549,14 @@ impl std::fmt::Display for WindingCensus {
             self.boundary_edges,
             self.non_manifold_edges,
             self.degenerate_faces,
+            // ⚠ States the verdict's absence, NOT its cause. This used to read
+            // "no edge has two incident faces", which is false for the
+            // all-zero census a `MeshReport` carries when `check_winding` is
+            // off — that mesh may have thousands of interior edges.
             if self.has_judgeable_edges() {
                 ""
             } else {
-                " | INCONCLUSIVE: no edge has two incident faces"
+                " | INCONCLUSIVE: no edge was judged"
             },
         )
     }
