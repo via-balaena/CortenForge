@@ -302,6 +302,15 @@ pub fn validate_mesh(mesh: &IndexedMesh) -> MeshReport {
 ///
 /// * `mesh` - The mesh to validate
 /// * `options` - Validation options
+///
+/// # Cost
+///
+/// ⚠ **Two edge maps, not one**, when `check_winding` is on: the
+/// [`MeshAdjacency`] built here, and [`winding_census`]'s own. The census
+/// needs per-edge traversal *direction*, which `MeshAdjacency` does not
+/// record and cannot currently supply. Measured at **~27 % over the 1.0.0
+/// single-map version** across 12–5120 faces; see `CHANGELOG.md` for the
+/// numbers and for the `build_edges_only` offset that would likely repay it.
 #[must_use]
 pub fn validate_mesh_with_options(mesh: &IndexedMesh, options: &ValidationOptions) -> MeshReport {
     let adjacency = MeshAdjacency::build(&mesh.faces);

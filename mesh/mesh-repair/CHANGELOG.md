@@ -30,6 +30,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   two answer different questions and neither subsumes the other — see the
   `MeshReport` type docs.
 
+### Performance
+
+- ⚠ **`validate_mesh` is ~27 % slower.** Measured, not estimated, on
+  `mesh-repair-benches`' `Validation` group against the 1.0.0 baseline:
+  +29.5 % / +26.8 % / +28.4 % / +26.5 % / +27.7 % across 12 → 5120 faces
+  (p = 0.00). In absolute terms +0.4 µs on a 12-face cube and +204 µs on a
+  5120-face sphere, so roughly +0.6 ms on a 15k-face anatomical mesh.
+
+  **Cause:** `winding_census` builds its own edge map and cannot reuse the
+  `MeshAdjacency` that `validate_mesh` has already built three lines above —
+  the census needs per-edge traversal *direction*, which `MeshAdjacency` does
+  not record, and there is no all-edges iterator on it.
+
+  **Known offset, deliberately not taken here:** `MeshAdjacency::build`
+  allocates a `vertex_to_faces` map that `validate_mesh` never reads. A
+  `build_edges_only` constructor would cut roughly half the adjacency cost of
+  *every* `validate_mesh` caller and could pay for the census outright. It is
+  a separate change with its own measurement, and is not bundled with this
+  release.
+
+  Callers who only want topology can set `ValidationOptions::check_winding`
+  to `false` — but read that field's docs first, because it also disables
+  `is_inside_out`.
+
 ### Fixed
 
 - **`MeshReport::is_printable` no longer documents a guarantee it cannot
