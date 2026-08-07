@@ -23,40 +23,38 @@ use crate::winding::{WindingCensus, winding_census};
 ///   against each other. See [`WindingCensus`] for precisely which question it
 ///   answers and the several ways it can be vacuous — that type is the single
 ///   home for those semantics, and this doc does not restate them.
-/// * [`Self::is_inside_out`] sums origin-apex tetrahedra, so it is a *global*
-///   quantity and it is **frame-dependent**. Translating the mesh by `t` moves
-///   the sum by `(t/3) · Σ A_f n_f`, the area-weighted face-normal sum.
+/// * [`Self::is_inside_out`] is `V < 0` for `V = Σ det[v₀,v₁,v₂] / 6`, the
+///   origin-apex tetrahedron sum. It is *global* and **frame-dependent**:
+///   translating by `t` moves `V` by `(t/3) · Σ A_f n_f`, the area-weighted
+///   face-normal sum.
 ///
-/// ⚠ **Two consequences of that formula, both of which are easy to state
-/// wrongly:**
+/// Two consequences, both easy to state wrongly:
 ///
-/// 1. **The flag is translation-invariant exactly when `Σ A_f n_f = 0`** —
-///    which holds for a **closed** consistently-oriented surface. Consistent
-///    winding *alone* is not enough: `simple_triangle` in this file's tests is
-///    perfectly wound, and at `z = -1` its sum is `-100`, so the flag is set.
-///    Nor is it necessary — two antipodal flipped faces cancel in `Σ A_f n_f`
-///    and leave the sum invariant while the census counts six bad edges.
-/// 2. **Where it is not invariant, the flag is set on one side of a
-///    half-space in `t` — not "far from the origin".** Translating along a
-///    direction orthogonal to `Σ A_f n_f` never changes it at any magnitude,
-///    and translating the other way keeps it `false` however far you go, with
-///    the flip hidden inside. (Producer for one such traversal, in the `+z`
-///    half-space only: `signed_volume_sees_a_local_flip_once_the_mesh_is_off_origin`.)
+/// 1. **`V` is translation-invariant exactly when `Σ A_f n_f = 0`**, which
+///    holds for a **closed** consistently-oriented surface. Consistent winding
+///    alone does not suffice: `simple_triangle` is perfectly wound and open, and
+///    at `z = -1` has `V = -16.67`, so the flag is set. Consistent winding is
+///    also not *required* for invariance — two antipodal flipped faces cancel in
+///    `Σ A_f n_f`, leaving `V` fixed while the census counts six bad edges.
+/// 2. **Where `V` is not invariant, the flag is set on one side of a half-space
+///    in `t` — not "far from the origin".** Translating orthogonal to
+///    `Σ A_f n_f` never changes it at any magnitude, and translating the other
+///    way keeps it `false` however far you go, with the flip hidden inside.
+///    (Producer, `+z` half-space only:
+///    `signed_volume_sees_a_local_flip_once_the_mesh_is_off_origin`.)
 ///
-/// ⇒ **Do not read this flag as a winding verdict in either direction.**
-/// `false` is not evidence of correct winding, and `true` may mean a global
-/// reversal, a local flip, **or** a correctly-wound open surface in an unlucky
-/// frame.
+/// ⇒ **Not a winding verdict in either direction.** `false` is not evidence of
+/// correct winding; `true` may mean a global reversal, a local flip, **or** a
+/// correctly-wound open surface in an unlucky frame.
 ///
 /// ⚠ **`winding.degenerate_faces` and [`Self::degenerate_face_count`] are
-/// nested, not disjoint.** The census counts faces listing a vertex index
-/// twice (a connectivity defect); `degenerate_face_count` counts faces whose
-/// *area* is below [`ValidationOptions::degenerate_area_threshold`] (a
-/// geometric one). An index-repeating face has two coincident corners and so
-/// has exactly zero area — it is counted by **both**. For any positive
-/// threshold `winding.degenerate_faces <= degenerate_face_count`, so
-/// subtracting them to isolate "geometric-only" slivers works, but reading
-/// them as independent populations does not.
+/// nested, not disjoint.** The census counts index-repeating faces; the report
+/// counts faces below [`ValidationOptions::degenerate_area_threshold`]. An
+/// index-repeating face has two coincident corners, so its area is exactly
+/// zero and it is counted by **both** — hence
+/// `winding.degenerate_faces <= degenerate_face_count` at any positive
+/// threshold. At a threshold of exactly `0.0` the containment **inverts**
+/// (`0.0 < 0.0` is false), so the census can exceed the report.
 ///
 /// **Report-only.** These are readings, not verdicts; see
 /// [`Self::is_printable`] for what is and is not judged.
@@ -308,7 +306,7 @@ pub fn validate_mesh(mesh: &IndexedMesh) -> MeshReport {
 /// ⚠ **Two edge maps, not one**, when `check_winding` is on: the
 /// [`MeshAdjacency`] built here, and [`winding_census`]'s own. The census
 /// needs per-edge traversal *direction*, which `MeshAdjacency` does not
-/// record and cannot currently supply. Measured at **~27 % over the 1.0.0
+/// record and cannot currently supply. Measured at **~28 % over the 1.0.0
 /// single-map version** across 12–5120 faces; see `CHANGELOG.md` for the
 /// numbers and for the `build_edges_only` offset that would likely repay it.
 #[must_use]
@@ -587,6 +585,12 @@ mod tests {
             !report.has_issues(),
             "has_issues likewise excludes winding at this rung"
         );
+        assert_eq!(
+            report.issue_count(),
+            0,
+            "issue_count is documented as kept in step with has_issues; \
+             without this, adding winding to it alone fails nothing"
+        );
     }
 
     #[test]
@@ -620,28 +624,52 @@ mod tests {
     ///
     /// Without this, recentring `unit_tetrahedron` — an ordinary tidy-up —
     /// would leave every other test green while silently making the fixture's
-    /// "perturbs the sum by exactly nothing" claim false. Compares the flag
-    /// across the flip rather than pinning it absolutely, which is the form
-    /// that survives the fixture moving.
+    /// "perturbs the sum by exactly nothing" claim false.
+    ///
+    /// ⚠ **Compares the SCALAR, not the flag.** An earlier version compared
+    /// `is_inside_out` before and after, which a boolean cannot support: on the
+    /// recentred fixture the sum moves 0.1178 → 0.0589, destroying the claim,
+    /// while both values stay positive and the flag never budges. A boolean can
+    /// only witness a sign crossing.
     #[test]
     fn the_flip_leaves_the_signed_volume_sum_untouched() {
-        let before = validate_mesh(&unit_tetrahedron()).is_inside_out;
-        let after = validate_mesh(&tetrahedron_with_one_flipped_face()).is_inside_out;
+        // Computed here rather than read from the report: the claim is about
+        // the fixture's geometry, so routing it through the flag under
+        // discussion would make it circular.
+        fn origin_apex_volume(mesh: &IndexedMesh) -> f64 {
+            mesh.faces
+                .iter()
+                .map(|f| {
+                    let (a, b, c) = (
+                        mesh.vertices[f[0] as usize],
+                        mesh.vertices[f[1] as usize],
+                        mesh.vertices[f[2] as usize],
+                    );
+                    a.coords.dot(&b.coords.cross(&c.coords))
+                })
+                .sum::<f64>()
+                / 6.0
+        }
+
+        let before = origin_apex_volume(&unit_tetrahedron());
+        let after = origin_apex_volume(&tetrahedron_with_one_flipped_face());
 
         assert_eq!(
-            before, after,
-            "the flipped face's origin-apex volume must be exactly zero, or \
-             this fixture no longer demonstrates an exact blindness"
+            before.to_bits(),
+            after.to_bits(),
+            "the flipped face's origin-apex term must be exactly zero, or this \
+             fixture no longer demonstrates an exact blindness (before {before}, \
+             after {after})"
         );
     }
 
     /// The counter-example to "near the origin the flag misses a local flip".
     ///
     /// Face 2 is the only face of `unit_tetrahedron` not containing the origin
-    /// vertex, so its determinant is the sum's only non-zero term. Reversing
-    /// it takes the total from `+0.7067` to `-0.7067` — the flag fires on a
-    /// single local flip, at the origin. The dependence is a half-space in the
-    /// translation, not a distance.
+    /// vertex, so its determinant is the sum's only non-zero term. Reversing it
+    /// takes `V` from `+0.1178` to `-0.1178` — the flag fires on a single local
+    /// flip, at the origin. The dependence is a half-space in the translation,
+    /// not a distance.
     #[test]
     fn a_local_flip_can_set_the_flag_at_the_origin() {
         let mut mesh = unit_tetrahedron();
@@ -664,9 +692,9 @@ mod tests {
     /// The other counter-example: consistent winding does not buy invariance.
     ///
     /// `simple_triangle` has zero winding defects and is open. Translating it
-    /// to `z = -1` makes the origin-apex sum `-100`, so the flag fires on a
-    /// perfectly-wound mesh one unit from the origin. Invariance needs
-    /// `sum(A_f * n_f) == 0`, which needs CLOSURE — not just consistency.
+    /// to `z = -1` makes `V = -16.67`, so the flag fires on a perfectly-wound
+    /// mesh one unit from the origin. Invariance needs `sum(A_f * n_f) == 0`,
+    /// which needs CLOSURE — not just consistency.
     #[test]
     fn a_consistently_wound_open_mesh_can_set_the_flag_by_translation_alone() {
         assert!(
@@ -684,10 +712,15 @@ mod tests {
             report.is_inside_out,
             "an open, consistently-wound mesh fires purely on its frame"
         );
-        assert_eq!(
-            report.winding.inconsistent_edges, 0,
-            "and the census correctly reports no local defect, so the two \
-             instruments disagree without either being wrong"
+        // ⚠ NOT `inconsistent_edges == 0` — a single triangle has no interior
+        // edge, so that would follow from the counter's definition rather than
+        // from the census reaching a verdict. The census ABSTAINS here; it does
+        // not agree. Pinning the abstention is the honest claim, and it is the
+        // one that makes the contrast with the fired flag meaningful.
+        assert!(
+            !report.winding.has_judgeable_edges(),
+            "the census had nothing to judge, so the flag fired with no local \
+             defect present and none ruled out"
         );
     }
 
@@ -816,8 +849,11 @@ mod tests {
         // The area test sees BOTH — an index-repeating face has two coincident
         // corners, hence exactly zero area. This is the containment the docs
         // claim, and the reason the two must not be read as disjoint.
+        //
+        // ⚠ No trailing `degenerate_faces <= degenerate_face_count` assert: it
+        // would follow from the two numbers above and could not fail beside
+        // them.
         assert_eq!(report.degenerate_face_count, 2);
-        assert!(report.winding.degenerate_faces <= report.degenerate_face_count);
     }
 
     #[test]

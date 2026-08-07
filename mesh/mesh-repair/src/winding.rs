@@ -360,23 +360,22 @@ pub fn count_inconsistent_faces(mesh: &IndexedMesh) -> usize {
 /// test: it sums origin-apex tetrahedra over the faces and asks whether the
 /// total came out negative.
 ///
-/// ⚠ **That sum is translation-invariant only while the surface is consistently
-/// oriented.** Flip one face and the invariance is gone: that face's term then
-/// grows with the mesh's distance from the world origin, so the flag becomes a
-/// function of *where the mesh sits*. Measured, on the octahedron fixture in
-/// this file's tests, flipping a single face:
+/// ⚠ **That sum is frame-dependent**, so it is not a sound reading of local
+/// winding in either direction. [`crate::MeshReport`] states the mechanism and
+/// its two counter-examples; this doc does not restate them.
+///
+/// Measured here, on the octahedron fixture in this file's tests, translating
+/// a single-flipped mesh along `+z`:
 ///
 /// | z-offset | 0 | 1 | 2 | 3 | 4 | 10 | 970 |
 /// |---|---|---|---|---|---|---|---|
 /// | `is_inside_out` | false | false | false | false | **true** | **true** | **true** |
 ///
-/// (Producer: `signed_volume_sees_a_local_flip_once_the_mesh_is_off_origin`.)
-///
-/// So `is_inside_out` is **not** a sound reading of local winding in either
-/// direction. Near the origin it misses a local flip; far from it, a local flip
-/// can set the flag that a reader will interpret as "globally reversed". Meshes
-/// kept in a native anatomical frame sit far from the origin, which is exactly
-/// where the second failure lives.
+/// ⚠ **Read that as one traversal of one half-space, not as a distance law.**
+/// The sum moves as `t · Σ A_f n_f`, so this sweep crosses the boundary only
+/// because `+z` is not orthogonal to that vector; other directions never cross
+/// it at any magnitude. (Producer:
+/// `signed_volume_sees_a_local_flip_once_the_mesh_is_off_origin`.)
 ///
 /// This census asks the local question directly and answers it with no
 /// reference to the origin, or to any coordinate at all — it reads
@@ -1003,14 +1002,13 @@ mod tests {
     /// ★ The gate that replaces a false claim with a measurement.
     ///
     /// This file used to assert that `is_inside_out` is "structurally
-    /// incapable" of seeing a locally flipped face. It is not. The
-    /// signed-volume sum is translation-invariant only while the surface is
-    /// consistently oriented; once one face is flipped, that face's term grows
-    /// with distance from the world origin and eventually dominates.
+    /// incapable" of seeing a locally flipped face. It is not.
     ///
-    /// The transition is measured here rather than asserted in prose. It
-    /// matters because meshes kept in a native anatomical frame sit ~1e3 units
-    /// from the origin — the far end of this sweep, not the near end.
+    /// ⚠ **This sweep walks `+z` only, so it establishes that a boundary
+    /// exists along one direction — not that distance is what crosses it.**
+    /// The sum moves as `t · Σ A_f n_f`; see [`crate::MeshReport`] for the
+    /// mechanism and for the two cases this sweep cannot reach (a flip that
+    /// fires at the origin, and a translation that never fires at all).
     #[test]
     fn signed_volume_sees_a_local_flip_once_the_mesh_is_off_origin() {
         let mut saw_missed = false;
@@ -1066,8 +1064,8 @@ mod tests {
 
     /// ★ The load-bearing gate. One flipped face reports **exactly its own
     /// three edges, wherever it sits** — where the signed-volume test reports
-    /// nothing at all and the seed-relative face count reports two different
-    /// numbers for the same defect.
+    /// a frame-dependent answer and the seed-relative face count reports two
+    /// different numbers for the same defect.
     ///
     /// The three-way contrast is the whole claim:
     ///
@@ -1172,6 +1170,60 @@ mod tests {
             before_volume_flag,
             "signed volume must negate under a global flip — this is the case \
              is_inside_out DOES catch and the census does not",
+        );
+    }
+
+    /// `WindingCensus`'s own `Display` — previously untested, so its wording
+    /// and its argument order were both unpinned.
+    ///
+    /// It is public API and user-visible: `cf-fsu-geometry`'s `SurfaceReport`
+    /// prints it verbatim. The whole rendered string is asserted, so a
+    /// transposition among the six counters is caught by any pair that differ.
+    #[test]
+    fn winding_census_display_renders_every_counter_in_order() {
+        // A closed tetrahedron with one face reversed, plus a loose triangle
+        // (boundary edges) and an index-repeating face (degenerate). Chosen so
+        // five of the six counters hold DIFFERENT values — a fixture where they
+        // were all zero could not detect a swap.
+        let mut mesh = IndexedMesh::new();
+        for p in [
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (0.5, 0.866, 0.0),
+            (0.5, 0.289, 0.816),
+            (9.0, 0.0, 0.0),
+            (10.0, 0.0, 0.0),
+            (9.0, 1.0, 0.0),
+        ] {
+            mesh.vertices.push(Point3::new(p.0, p.1, p.2));
+        }
+        mesh.faces.push([0, 2, 1]);
+        mesh.faces.push([0, 3, 1]); // reversed: 3 inconsistent edges
+        mesh.faces.push([1, 2, 3]);
+        mesh.faces.push([2, 0, 3]);
+        mesh.faces.push([4, 5, 6]); // loose: 3 boundary edges
+        mesh.faces.push([4, 4, 5]); // index-repeat: 1 degenerate, skipped whole
+
+        let census = winding_census(&mesh);
+        assert_eq!(
+            census.to_string(),
+            "winding: 3 of 6 interior edges inconsistent (4 faces) | \
+             boundary-edges 3 non-manifold-edges 0 degenerate-faces 1"
+        );
+    }
+
+    /// The `INCONCLUSIVE` suffix, which the judgeable fixture above cannot
+    /// reach. Its wording is load-bearing: it must not name a cause, because a
+    /// `MeshReport` can carry an all-zero census that never ran.
+    #[test]
+    fn winding_census_display_marks_an_unjudged_census_without_naming_a_cause() {
+        let rendered = WindingCensus::default().to_string();
+
+        assert!(rendered.ends_with(" | INCONCLUSIVE: no edge was judged"));
+        assert!(
+            !rendered.contains("two incident faces"),
+            "the retired wording named a cause that is false for a census \
+             which was never run"
         );
     }
 

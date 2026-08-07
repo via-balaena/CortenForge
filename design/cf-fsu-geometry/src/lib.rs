@@ -192,15 +192,11 @@ impl std::fmt::Display for SurfaceReport {
 /// trustworthy as the surface it is built on.
 ///
 /// Note that the report is computed either way: this function pays for a
-/// `validate_mesh` over the welded surface and then discards it. On a ~15k-face
-/// vertebra that is two edge-map builds — `MeshAdjacency` plus the winding
-/// census `validate_mesh` now runs internally — small beside the parry BVH
-/// every caller constructs next, but it is not nothing, and it buys this
-/// caller nothing.
-///
-/// (It was three until the census stopped being computed a second time here;
-/// `mesh-repair` 2.0 moved it onto [`MeshReport`], and this function no longer
-/// duplicates it.)
+/// `validate_mesh` and a `find_connected_components` over the welded surface
+/// and then discards both. That is three edge-map builds — `MeshAdjacency`,
+/// the winding census inside `validate_mesh`, and the component walk's own —
+/// small beside the parry BVH every caller constructs next, but not nothing,
+/// and it buys this caller nothing.
 ///
 /// # Errors
 /// Returns an error if the STL cannot be read, or if the mesh has no vertices

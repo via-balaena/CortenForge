@@ -113,10 +113,11 @@ pub mod prelude {
     // I/O
     pub use mesh_io::{MeshFormat, load_mesh, save_mesh};
 
-    // Repair. `WindingCensus` comes along because `MeshReport` has a public
-    // field of that type — without it a prelude-only consumer can read
-    // `report.winding` but cannot NAME it: no signature, no typed binding, no
-    // struct field of their own.
+    // Repair. `WindingCensus` comes along because `MeshReport` now has a public
+    // field of that type, which a prelude-only consumer could otherwise read
+    // but not name. ⚠ This is not a general rule the block follows —
+    // `RepairParams` is a stronger case (it is a parameter of `repair_mesh`,
+    // so a prelude-only consumer cannot even call it) and is still absent.
     pub use mesh_repair::{MeshReport, WindingCensus, repair_mesh, validate_mesh};
 
     // Shell (main use case)

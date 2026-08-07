@@ -1,13 +1,13 @@
 [package]
 name = "mesh-repair"
-# ⚠ NOT `version.workspace` — this crate is the one workspace member with a
-# published crates.io baseline, so it is the only one `cargo-semver-checks`
-# can compare against (`.github/workflows/quality-gate.yml`, the `semver`
-# job). Adding `MeshReport::winding` is `struct_field_added` on an
-# exhaustive public struct: a MAJOR break for external literal-constructors,
-# even though no in-workspace caller constructs one. Pinned here so the
-# break is versioned rather than absorbed by the workspace number.
-# See CHANGELOG.md.
+# ⚠ NOT `version.workspace` — this is the only crate the `semver` CI job
+# checks (`.github/workflows/quality-gate.yml`), and 2.0 is a real break:
+# `MeshReport` gained a field and became `#[non_exhaustive]`. Pinned here so
+# the break is versioned rather than absorbed by the workspace number.
+#
+# ⚠ CONSEQUENCE: this crate no longer follows `[workspace.package] version`.
+# A future workspace-wide bump will skip it silently — nothing enforces the
+# relationship. Bump it explicitly, or re-inherit once its version catches up.
 version = "2.0.0"
 edition.workspace = true
 rust-version.workspace = true
