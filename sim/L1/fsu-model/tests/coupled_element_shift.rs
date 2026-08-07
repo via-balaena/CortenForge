@@ -113,8 +113,9 @@ const BASELINE_K_DISC: f64 = -0.1175;
 /// That agreement is the cross-check that still works, and it is the load-bearing one: the
 /// ratio is computed from two arms measured in the same run, so it does not depend on any
 /// published prior. The flip carries the *standalone* element effect into the assembly rather
-/// than introducing an assembly-level artifact of its own — and it survived α.1 unchanged,
-/// which is what localises the absolutes' move to the geometry.
+/// than introducing an assembly-level artifact of its own. ⚠ The ratio did NOT survive α.1
+/// unchanged — it moved 0.668 → 0.827, as the table above shows. What localises the absolutes'
+/// move to the geometry is that both arms fell together with no element code touched.
 const QUADRATIC_K_DISC: f64 = -0.0972;
 /// Agreement window on both arms' `k_disc`, **as a fraction of the anchor**. Tight — these are
 /// re-runs of a deterministic build on a pinned mesh, not a tolerance on a physical claim.

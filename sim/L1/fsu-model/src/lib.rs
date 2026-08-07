@@ -2963,10 +2963,9 @@ mod tests {
     /// (`assert_full_face_band` — the assertion with teeth), and the quadratic bonded solve
     /// is sound (converges, conserves, strictly restoring, really deforms). The `k_disc`
     /// ratio bracket is measured on the real disc in the `#[ignore]`d gate below; the
-    /// synthetic slab's ratio is *reported* here, not asserted, because the pre-registered
-    /// pre-registered ratio is a real-anatomy number (0.665 at rung 1; **0.827** post-α.1) and a
-    /// 24×20×6 mm box at `cell = 3 mm` is a different
-    /// bending problem.
+    /// synthetic slab's ratio is *reported* here, not asserted, because the real-anatomy ratio
+    /// (pre-registered as 0.665 at rung 1; **measured** at 0.827 post-α.1) and a 24×20×6 mm box
+    /// at `cell = 3 mm` are different bending problems.
     #[test]
     fn tet10_full_face_bond_is_sound_on_the_synthetic_disc() {
         let params = DiscParams::default();
@@ -3144,7 +3143,7 @@ mod tests {
         // which reproduces this gate's raw column to four decimals through a different probe.
         // The pre-registered bracket was 0.60..=0.73 around the reverted spike's 0.665; both
         // directions landed inside it, so the harness reproduces the spike and the bands
-        // (228→1005 / 367→1598) match it id-for-id. The live assert below is the *tightened*
+        // (228→1005 / 367→1598) matched it id-for-id AT RUNG 1. The live assert below is the
         // ±5 % no-regression band around these measured values — a change big enough to leave
         // it is a real shift in the element effect, not noise (the bonded moment reproduces to
         // < 1e-3 relative across captures).

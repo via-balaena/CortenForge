@@ -4,8 +4,9 @@
 //! `rung5_step1_mesh_realization_noise_floor_fom` lives in this crate's inline `#[cfg(test)]`
 //! module (it needs private pipeline items, so it cannot move to `tests/`), while
 //! `conform_delta_by_element` is a separate integration-test crate. The feature gate lets both
-//! see the same constants without them entering the shipped library; `sim-core` uses the same
-//! idiom. Rung β re-anchored two symmetric gates one at a time and left a retired rationale on
+//! see the same constants without them entering the shipped library. `sim-core` uses the same
+//! feature idiom (seven crates consume it); the *self* dev-dep that carries it into `tests/` is
+//! the only one in this workspace. Rung β re-anchored two symmetric gates one at a time and left a retired rationale on
 //! the second, so the point of one definition is that the next re-anchor of these four cannot
 //! half-apply.
 //!
@@ -41,7 +42,7 @@
 //! 0.982 / 0.985 and now rounds to 0.979 on both elements — consistent with the two axes being
 //! separable, though one realization inside 1.81 % measured jitter cannot establish that.
 //!
-//! Measured at `808d499b`, verified at `6071b6e7`; meshes SHA-256-verified against the pin in
+//! Measured and verified at `6071b6e7`; meshes SHA-256-verified against the pin in
 //! `design/cf-fsu-geometry/BODYPARTS3D.md`. `rung5_step1` and `conform_delta_by_element` agree
 //! on the raw column to four decimals through two different probe drivers — but they share the
 //! mesher, geometry pipeline, material and solver, so that cross-checks the **probe**, not the

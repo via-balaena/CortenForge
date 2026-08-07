@@ -170,7 +170,8 @@ fn conformed_disc_survives_a_large_angle_sweep() {
     //
     // The peaks are a cross-check as well as a record: linear extrapolation of the
     // small-angle stiffnesses (`conform_delta_by_element_fom`: −0.1146 / −0.0948 N·m/rad)
-    // to 6° = 0.1047 rad predicts 0.0120 / 0.0099 N·m, so the disc is ~6-7 % stiffer at the
+    // to 6° = 0.1047 rad predicts 0.0120 / 0.0099 N·m, so the disc is ~6 % stiffer (6.7 % Tet4,
+    // 5.8 % Tet10) at the
     // ROM extreme than a linear spring — mild, monotone hardening, not a divergence.
     // ⚠ RE-DERIVED at β.4. It previously read −0.2760 / −0.1844 → 0.0289 / 0.0193 → ~4-6 %;
     // those inputs are retired, and −0.1844 was never `conform_delta`'s committed value in any

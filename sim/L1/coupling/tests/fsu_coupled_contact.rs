@@ -99,12 +99,18 @@ const RUNG7_K_DISC: f64 = -0.0972;
 /// itself a widening** — the relative admission window went 10.6 % → 20.6 % with nobody
 /// editing a line. Worse, the failure this gate exists to catch is the Tet10→Tet4 element flip
 /// being reverted, and that arm now measures −0.1175: the margin to it collapsed from
-/// **4.68 × the tolerance to 1.01 ×**, so a ~2 % drift — far inside the ~21 % mesh-realization
-/// spread this arc measured — would have let a reverted flip pass.
+/// **4.68 × the tolerance to 1.01 ×**: the Tet4 arm sat just 0.0003 N·m/rad — **0.26 % of
+/// |k_disc|** — outside the old window, so a drift far smaller than this arc's measured
+/// realization spread would have let a reverted flip pass.
 ///
 /// Dimensionless so it cannot rot that way again. At 5 % the window is 0.0049 and the margin
-/// to the Tet4 arm is **4.2 ×**, restoring rung 4's discriminating power. This is a TIGHTENING
-/// (0.02 → 0.0049); it can only catch more.
+/// to the Tet4 arm is **4.2 ×**, restoring rung 4's discriminating power. This is a tightening
+/// (0.02 → 0.0049).
+///
+/// The trade, stated: ±5 % is ~4× narrower than the 21 % realization spread `rung5_step1`
+/// measures across its cell window, so this window would false-fire on a re-mesh. That is
+/// acceptable only because the meshes are SHA-pinned and `cell` is fixed — if either becomes
+/// free, this must widen to the measured envelope, not to whatever the new draw happens to be.
 const K_DISC_TOL_FRAC: f64 = 0.05;
 // Literature extension corridor (Yamamoto 1989 / Panjabi–White, widened for 7.5–10 N·m).
 const LIT_EXTENSION_DEG: (f64, f64) = (2.5, 5.5);
