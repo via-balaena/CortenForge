@@ -1003,8 +1003,8 @@ realized clamp depth is therefore quantized with a `cell`-dependent quantum.
   > — so the post-α.1 "flattening" AND the pre-α.1 "1.61 → 2.84 → 3.55" both sit
   > inside the noise of a single level (pre-α.1's own probe window ran **0.835 … 5.118**, a 6×
   > swing). ★ **Three points, one draw each, against a jitter band as wide as the trend.** Do not
-  > argue from this ratio in either direction; argue from the growth-rate bound below, which is
-  > structural.
+  > argue from this ratio in either direction; argue from the **pinned-share** bound below, which
+  > is normalised and directional.
 - **A domain gate could not have seen any of this**: retained volume, corner count and retained
   fraction are all stable while the *boundary condition* moves. The lesson stands even though the
   magnitude came out small — a gate on the property you changed misses the one you broke
@@ -1095,7 +1095,7 @@ realized clamp depth is therefore quantized with a `cell`-dependent quantum.
 > | the blocker's mechanism | pre-α.1 | post-α.1 | verdict |
 > |---|---|---|---|
 > | retained domain monotone in `cell`? | **NO** — 3 353 / 2 527 / 2 257 / 1 893 / 2 508, 49.5 % p2p | **YES** — 1 722 / 1 674 / 1 580 / 1 512 / 1 476, 15.4 % p2p | ✅ **discharged** |
-> | superior band growth vs the domain | **5.163× / 2.489×** (ceilings 3.375× / 2.370×) — **over-volume at both steps** | **2.707× / 2.070×** — inside | ✅ now **gated** (§4.8 assert 2b) |
+> | **pinned SHARE** of the domain across the ladder | **0.2636 → 0.3084 → 0.3270** — GROWS **+24 %** | **0.1196 → 0.1038 → 0.0984** — falls **−18 %** | ✅ now **gated** (§4.8 assert 2b) |
 > | sup/inf trend across levels | 1.61 → 2.84 → 3.55 | 1.589 → 1.880 → 1.917 | ⚠ **underdetermined both times** — inside single-level jitter |
 > | `k_disc` p2p over ±3.3 % `cell` | ~100 % | **21.13 %** | ⚠ improved ~5×, still large |
 >
@@ -1472,9 +1472,9 @@ converged, corner count preserved, midside count added, and the §4.2 band-count
 >
 > **The premise above is discharged.** The retained domain is now *monotone* in `cell` across the
 > same ±3.3 % window that previously swung 49.5 % non-monotonically (1 722 / 1 674 / 1 580 / 1 512
-> / 1 476, 15.4 % p2p), and the superior band no longer outgrows the domain under refinement —
-> which is now **gated** (assert 2b below), not merely observed. `k_disc`'s own spread fell
-> ~100 % → **21.13 %**.
+> / 1 476, 15.4 % p2p), and the **pinned share of the domain no longer grows** under refinement
+> (0.2636 → 0.3270 became 0.1196 → 0.0984) — which is now **gated** (assert 2b below), not merely
+> observed. `k_disc`'s own spread fell ~100 % → **21.13 %**.
 >
 > **⛔ But the gate is still not executable, for a DIFFERENT and better-stated reason:** every
 > ladder-level quantity here is **n = 1**, and the jitter at a fixed level is comparable to the
@@ -1527,11 +1527,17 @@ is worse than no number; its incidence-walk mutant improved the residual while i
    post-α.1 it runs 1.589 → 1.880 → 1.917, and **both readings sit inside one level's own jitter**
    (see the re-scope note in §3) — so do not pin this ratio. A symmetric expectation on the two
    faces is still wrong, which is the part that survives.
-   ★ **ASSERT 2b — the pinned POPULATION, added 2026-08-07 and live in
-   `rung5_step0_realized_band_across_the_ladder_fom`.** Each band's node count must grow between
-   `r²` (it is a surface) and `r³` (it cannot outgrow the domain) across a ladder step. Structural,
-   not tuned; it fires on the pre-α.1 superior band (5.163× against a 3.375× ceiling), which is the
-   population pathology step 1 identified and this gate previously could not see.
+   ★ **ASSERT 2b — the pinned SHARE, added 2026-08-07 and live in
+   `rung5_step0_realized_band_across_the_ladder_fom`.** The pinned fraction of the domain,
+   `(inferior + superior) / referenced corners`, must not GROW at any finer level relative to the
+   coarsest. **No tuned constant**: the assertion is directional, because a boundary condition
+   claiming an ever-larger share of the mesh as it refines is by definition not converging.
+   ⚠ Deliberately NOT a raw growth rate against an ideal `r³` — the domain's own corners grow
+   2.93× on the first step against that ideal, so a raw rate partly measures the mesher. It fires
+   on the pre-α.1 ladder (0.2636 → 0.3270, +24 %), which is the population pathology step 1
+   identified and this gate previously could not see. ⚠ Margin is thin: the share's jitter over a
+   ±3.3 % `cell` window is ±12 % against an 18 % margin, so read a failure as "the Dirichlet set
+   is not converging", never as an element-convergence result.
    ⚠⚠ **SCOPE, corrected by step 1 — this gate covers the clamp DEPTH and nothing else.** Step 0
    settled that the depth is stable (0.20 % across every cell measured), and I wrongly read that as
    "the lattice-phase confound is negligible". It is not: the same phase effect moves the retained
