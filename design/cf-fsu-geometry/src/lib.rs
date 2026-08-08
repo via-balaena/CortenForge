@@ -1383,6 +1383,29 @@ mod tests {
             Some(1),
             "exactly one shell encloses a negative volume: {report}",
         );
+
+        // ⚠ The control, and it is load-bearing rather than decorative: with
+        // one inward and one outward shell, `Some(1)` holds whichever sign the
+        // filter tests, so inverting the comparison would silently turn this
+        // instrument into a count of CORRECT shells. Both boxes outward must
+        // read `Some(0)`.
+        let mut clean = box_mesh(Point3::origin(), 10.0);
+        let far = box_mesh(Point3::new(100.0, 0.0, 0.0), 1.0);
+        let base = u32::try_from(clean.vertices.len()).unwrap();
+        clean.vertices.extend(far.vertices.iter().copied());
+        for f in &far.faces {
+            clean.faces.push([f[0] + base, f[1] + base, f[2] + base]);
+        }
+        let clean_path = dir.path().join("two_shells_clean.stl");
+        mesh_io::save_stl(&clean, &clean_path, false).unwrap();
+        let (_, clean_report) = load_with_report(&clean_path).unwrap();
+
+        assert_eq!(clean_report.components, 2);
+        assert_eq!(
+            clean_report.inward_facing_components,
+            Some(0),
+            "both shells are outward: {clean_report}",
+        );
     }
 
     /// The component reading must report `None`, not a number, when the

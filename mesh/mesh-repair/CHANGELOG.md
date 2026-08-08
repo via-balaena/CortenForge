@@ -51,13 +51,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of an exhaustive scan. `SelfIntersectionResult::intersecting_pairs` is **no
   longer ordered by face index**.
 
-  ⚠ **Uncapped** (`max_reported: 0`, i.e. `IntersectionParams::exhaustive()`)
-  the pair *set* is unchanged from 1.0.0 — only the order differs, so sort or
-  compare as a set. ⚠ **Under a cap — including `IntersectionParams::default()`,
-  which caps at 100 — *which* pairs are retained is nondeterministic**, because
-  the early-stop flag races across threads. Measured: 30 runs of a capped
-  search over the same mesh returned 30 different sets. Sorting does not help;
-  this is not an ordering problem.
+  **`truncated` tells you whether the result is comparable.** When it is
+  `false` the search ran to completion and the pair *set* is exactly 1.0.0's —
+  only the order differs, so sort or compare as a set. ⚠ **When it is `true`,
+  *which* pairs were retained is nondeterministic**: the early-stop flag races
+  across threads, and 30 runs of the same truncated search returned 30
+  different sets. Sorting does not help; it is not an ordering problem.
+
+  Note a cap alone does not make a result incomparable — under
+  `IntersectionParams::default()` (cap 100), a mesh with fewer than 100
+  intersecting pairs never truncates and is fully deterministic.
 
 - **`is_inside_out` and `fill_holes` can differ on near-degenerate input.**
   Two internal predicates were rewritten to use fused multiply-add between the
@@ -158,13 +161,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`detect_self_intersections` assertions.** Pairs are canonical (`a < b`)
   but no longer face-index ordered.
 
-  If you assert on *which* pairs came back, run uncapped
-  (`IntersectionParams::exhaustive()`) and compare as a set — under a cap the
-  retained subset varies run to run, so neither a set comparison nor a sort is
-  stable. Under a cap, assert only on `has_intersections` / `is_clean()`.
-  `intersection_count` is likewise a lower bound once `truncated` is set — and
-  `truncated` is also set when the count lands exactly on `max_reported` with
-  nothing dropped.
+  If you assert on *which* pairs came back, gate on `truncated`: while it is
+  `false` the set is complete and stable, so sorting or a set comparison is
+  sound — this covers any mesh whose true pair count stays under the cap. Once
+  it is `true`, the retained subset varies run to run and only
+  `has_intersections` / `is_clean()` are safe. `intersection_count` is likewise
+  exact until `truncated`, and a lower bound after. ⚠ `truncated` is set when
+  the count lands *exactly* on `max_reported` with nothing dropped, so it is a
+  conservative signal: `false` proves completeness, `true` does not prove
+  loss.
 
 - **If you re-export `MeshReport`**, re-export `WindingCensus` too, or your
   consumers can read the field without being able to name its type.
@@ -192,10 +197,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `is_printable`'s "correct winding" claim, as above.
 - **`SelfIntersectionResult::intersection_count` is documented as the lower
   bound it always was.** Unchanged from 1.0.0: it is incremented before the
-  `max_reported` cap is applied, so **once `truncated` is set** it can exceed
-  both the cap and `intersecting_pairs.len()` and is not reproducible run to
-  run. Uncapped it is exact. 1.0.0 documented it as "number of intersecting
-  triangle pairs found".
+  `max_reported` cap is applied, so **once `truncated` is set** it may exceed
+  both the cap and `intersecting_pairs.len()` and should not be relied on to
+  reproduce. While `truncated` is `false` it is exact. 1.0.0 documented it as
+  "number of intersecting triangle pairs found".
 
 ## [1.0.0] - 2026-05-03
 

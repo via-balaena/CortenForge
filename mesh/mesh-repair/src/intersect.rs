@@ -43,20 +43,23 @@ pub struct SelfIntersectionResult {
     pub has_intersections: bool,
     /// Number of intersecting triangle pairs found.
     ///
-    /// ⚠ **Once [`Self::truncated`] is set** this is a lower bound and is not
-    /// reproducible run to run: it is incremented before the `max_reported`
-    /// cap is applied, so it can exceed both the cap and
-    /// `intersecting_pairs.len()`. With `max_reported == 0` no cap applies and
-    /// the count is exact.
+    /// Exact while [`Self::truncated`] is `false`. ⚠ **Once it is set, treat
+    /// this as a lower bound and do not rely on reproducibility** — the
+    /// counter is incremented before the `max_reported` cap is applied, so if
+    /// the search really did overrun it can exceed both the cap and
+    /// `intersecting_pairs.len()` and vary run to run. (It is still exact in
+    /// the boundary case where the count landed *exactly* on the cap, but the
+    /// result does not tell you which case you are in.)
     pub intersection_count: usize,
     /// Intersecting triangle pairs, each canonical with `a < b`.
     ///
     /// ⚠ **Not ordered by face index** — this follows BVH traversal.
     ///
-    /// Uncapped, the *set* is deterministic, so sort or compare as a set.
-    /// ⚠ **Under a cap, which pairs are retained varies run to run** (the
-    /// early-stop flag races), so neither sorting nor a set comparison is
-    /// stable — assert on [`Self::has_intersections`] instead.
+    /// While [`Self::truncated`] is `false` the *set* is deterministic, so
+    /// sort or compare as a set. ⚠ **Once it is `true`, which pairs were
+    /// retained varies run to run** (the early-stop flag races), so neither
+    /// sorting nor a set comparison is stable — assert on
+    /// [`Self::has_intersections`] instead.
     pub intersecting_pairs: Vec<(u32, u32)>,
     /// Total faces checked.
     pub faces_checked: usize,
@@ -205,16 +208,20 @@ impl SimdSimultaneousVisitor<u32, u32, SimdAabb> for OverlapPairCollector<'_> {
 /// (~25 s → ~3 s per gasket on 400 k-face meshes).
 ///
 /// ⚠ **Uncapped (`max_reported == 0`), the same SET of pairs as the pre-2.0
-/// O(n²) scan — but never the same order**, since `intersecting_pairs`
-/// follows BVH traversal. Sort or compare as a set.
+/// O(n²) scan — but not, in general, the same order**, since
+/// `intersecting_pairs` follows BVH traversal. Sort or compare as a set.
 ///
-/// ⚠ **Under a cap, *which* pairs are retained varies run to run**: the
-/// early-stop flag races across threads, so repeated searches over the same
-/// mesh return different subsets. Neither sorting nor a set comparison is
-/// stable there — assert on `has_intersections` instead. `intersection_count`
-/// is likewise incremented before the cap is applied, so once `truncated` is
-/// set it may exceed both `max_reported` and `intersecting_pairs.len()` and is
-/// not reproducible.
+/// ⚠ **Once `truncated` is set, *which* pairs were retained varies run to
+/// run**: the early-stop flag races across threads, so repeated searches over
+/// the same mesh return different subsets. Neither sorting nor a set
+/// comparison is stable there — assert on `has_intersections` instead. A cap
+/// alone is not the problem: while `truncated` is `false` the search was
+/// exhaustive and the set is deterministic. `intersection_count` follows the
+/// same rule — exact while `truncated` is `false`, and afterwards a lower
+/// bound that may exceed both `max_reported` and `intersecting_pairs.len()`.
+/// ⚠ `truncated` is conservative: it is also set when the count lands exactly
+/// on the cap with nothing dropped, so it marks "cannot rely on this", not
+/// "this definitely overran".
 ///
 /// # Arguments
 ///
@@ -1012,9 +1019,12 @@ mod tests {
     /// The producer for `truncated`'s documented asymmetry: `false` proves the
     /// search was complete, `true` does not prove anything was dropped.
     ///
-    /// Nothing else pins this. The existing cap test uses `max_reported` BELOW
-    /// the true count, where `truncated` is `true` either way; only running
-    /// AT the true count separates `>=` from `>`.
+    /// Running AT the true count is what makes this deterministic: with the
+    /// cap equal to the number of pairs, the early-stop flag can only be set
+    /// by the last of them, so nothing is dropped and the comparison below is
+    /// stable. It is also the only test that kills `count < max_pairs` ->
+    /// `count + 1 < max_pairs`, which the existing cap test survives (its
+    /// `len() <= 5` holds at 4).
     #[test]
     fn truncated_is_set_even_when_the_cap_lands_exactly_on_the_true_count() {
         let (mesh, _) = make_intersecting_pairs_mesh(5);

@@ -132,6 +132,7 @@ impl MeshReport {
     /// ⚠ **An empty mesh is printable.** With no edges, watertight and
     /// manifold are vacuously true and the volume sum is zero, so a failed
     /// load reaching this predicate reports a green light.
+    ///
     /// [`Self::winding`] is reported but not judged here, nor by
     /// [`Self::has_issues`] or [`Self::issue_count`].
     #[must_use]

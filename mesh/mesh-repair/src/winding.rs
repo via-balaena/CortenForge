@@ -1313,9 +1313,26 @@ mod tests {
             mesh.vertices.push(Point3::new(off, 1.0, 0.0));
             mesh.faces.push([base, base + 1, base + 2]);
         }
-        // One index-repeating face -> 1 degenerate, skipped whole (contributes
-        // no edges, so it does not perturb the counts above).
+        // A three-face fan on one edge -> 1 non-manifold edge, 6 boundary.
+        // Without it the non-manifold slot is only ever rendered as `0`, and
+        // hardcoding that literal in the format string would survive.
+        let fan = u32::try_from(mesh.vertices.len()).unwrap();
+        for p in [
+            (40.0, 0.0, 0.0),
+            (41.0, 0.0, 0.0),
+            (40.0, 1.0, 0.0),
+            (40.0, 2.0, 0.0),
+            (40.0, 3.0, 0.0),
+        ] {
+            mesh.vertices.push(Point3::new(p.0, p.1, p.2));
+        }
+        mesh.faces.push([fan, fan + 1, fan + 2]);
+        mesh.faces.push([fan, fan + 1, fan + 3]);
+        mesh.faces.push([fan, fan + 1, fan + 4]);
+        // Two index-repeating faces -> 2 degenerate, skipped whole (they
+        // contribute no edges, so they do not perturb the counts above).
         mesh.faces.push([4, 4, 5]);
+        mesh.faces.push([7, 7, 8]);
 
         let c = winding_census(&mesh);
 
@@ -1345,7 +1362,7 @@ mod tests {
         assert_eq!(
             c.to_string(),
             "winding: 3 of 6 interior edges inconsistent (4 faces) | \
-             boundary-edges 9 non-manifold-edges 0 degenerate-faces 1"
+             boundary-edges 15 non-manifold-edges 1 degenerate-faces 2"
         );
     }
 
@@ -1454,6 +1471,27 @@ mod tests {
     /// slivers defeated it — see the sibling gate below.
     #[test]
     fn winding_census_skips_a_degenerate_face_whole() {
+        // ⚠ All three index-repeat SHAPES, not just `[a, a, b]`. The guard is
+        // a three-way disjunction and every other fixture in this crate uses
+        // the first shape only, so dropping either of the other two survives
+        // the suite — and a missed skip fabricates a judgeable interior edge
+        // out of a face that has none, which is what this skip exists to
+        // prevent.
+        for (label, face) in [
+            ("[a,a,b]", [0u32, 0, 1]),
+            ("[a,b,b]", [0, 1, 1]),
+            ("[a,b,a]", [0, 1, 0]),
+        ] {
+            let mut m = IndexedMesh::new();
+            m.vertices.push(Point3::new(0.0, 0.0, 0.0));
+            m.vertices.push(Point3::new(1.0, 0.0, 0.0));
+            m.faces.push(face);
+            let c = winding_census(&m);
+            assert_eq!(c.degenerate_faces, 1, "{label} must be skipped whole");
+            assert_eq!(c.interior_edges, 0, "{label} must fabricate no edge");
+            assert!(!c.has_judgeable_edges(), "{label} must stay inconclusive");
+        }
+
         let mut mesh = IndexedMesh::new();
         mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
         mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
