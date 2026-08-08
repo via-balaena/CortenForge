@@ -20,8 +20,9 @@ use crate::winding::{WindingCensus, winding_census};
 /// that share no edge, so an inverted *component* can escape both: the census
 /// never sees across shells, and the volume sum reports whichever way the
 /// total lands. [`WindingCensus`]'s "What this does NOT answer" enumerates the
-/// cases; [`crate::find_connected_components`] is what separates the shells so
-/// each can be checked on its own.
+/// cases, and [`crate::split_into_components`] separates the shells so each
+/// can be checked on its own — with the cavity caveat on
+/// [`crate::fix_winding_order`].
 ///
 /// To repair what the census reports, see [`crate::fix_winding_order`]
 /// (per-component) or [`crate::flip_winding`] (unconditional).

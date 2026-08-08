@@ -42,13 +42,25 @@ pub struct SelfIntersectionResult {
     /// Whether the mesh has any self-intersections.
     pub has_intersections: bool,
     /// Number of intersecting triangle pairs found.
+    ///
+    /// ⚠ **A lower bound once [`Self::truncated`] is set**, and not
+    /// reproducible run to run: it is incremented before the `max_reported`
+    /// cap is applied, so it can exceed both the cap and
+    /// `intersecting_pairs.len()`.
     pub intersection_count: usize,
-    /// List of intersecting triangle pairs as `(face_idx_a, face_idx_b)`.
-    /// Limited to first `max_reported` pairs.
+    /// Intersecting triangle pairs, each canonical with `a < b`.
+    ///
+    /// ⚠ **Not ordered by face index** — this follows BVH traversal, so with
+    /// `max_reported` set the retained subset is not the lowest-indexed one.
+    /// Sort if you depend on order.
     pub intersecting_pairs: Vec<(u32, u32)>,
     /// Total faces checked.
     pub faces_checked: usize,
-    /// Whether the search was terminated early due to reaching `max_reported`.
+    /// Whether the pair count reached `max_reported`.
+    ///
+    /// ⚠ `false` means the search was complete. `true` does **not** mean pairs
+    /// were dropped — at exactly the cap, everything was found and nothing was
+    /// omitted.
     pub truncated: bool,
 }
 

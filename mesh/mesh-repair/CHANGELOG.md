@@ -86,8 +86,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a multi-component mesh**. The census never compares faces across shells, and
   the volume sum reports whichever way the total lands — so an inverted shell
   may leave the flag clear, or set it while the surface is mostly correct. See
-  `WindingCensus`'s "What this does NOT answer", and split with
-  `find_connected_components` to check each shell on its own.
+  `WindingCensus`'s "What this does NOT answer", and `split_into_components`
+  to check each shell on its own — noting that a legitimate enclosed cavity is
+  correctly wound *inward*, so a per-shell check alone will flag hollow parts.
 - **`MeshReport::winding: Option<WindingCensus>`** — `validate_mesh` now runs
   the census and reports it. `None` when `winding_census` is off, which keeps
   "never ran" distinct from "ran and had nothing to judge".
@@ -105,15 +106,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   there is no way to construct a `MeshReport` from nothing: a struct expression
   fails with **E0639** (plus **E0277** from the `Default::default()` term if
   you used functional-update syntax), and an exhaustive pattern with **E0638**.
-  The direct replacement for `MeshReport::default()` is a measurement of an
-  empty mesh, which is all-zero and all-false; fields stay `pub`, so assign
-  from there:
+  The nearest replacement for `MeshReport::default()` is a measurement of an
+  empty mesh, and fields stay `pub` so you can assign from there — but ⚠ **it
+  is not the all-false value `Default` gave you.** An empty mesh has no edges,
+  so `is_watertight` and `is_manifold` are vacuously `true` and
+  `is_printable()` returns `true`; `winding` is `Some` of an all-zero census,
+  not `None`. **Set every field your fixture depends on, explicitly:**
 
   ```rust
+  use mesh_types::IndexedMesh;
+
   let mut report = validate_mesh(&IndexedMesh::new());
-  report.is_watertight = true;
+  report.is_watertight = false; // ⚠ the empty-mesh value is `true`
+  report.is_manifold = false;   // ⚠ likewise
   report.is_inside_out = true;
   ```
+
+  Functional update from a measured report — `MeshReport { is_watertight:
+  true, ..measured }` — is **E0639** too; `#[non_exhaustive]` blocks the
+  struct expression regardless of where the base came from.
 
   Where the mesh itself matters, build one with the property under test and
   validate it — `validate_mesh`'s own doc example does this for
@@ -135,6 +146,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   entry above — its *input* can change if you used the old flag. Its 1.0.0 doc
   also claimed it required "correct winding", which it never checked; add the
   census term above if you relied on that.
+
+- **`detect_self_intersections` assertions.** Pairs are canonical (`a < b`)
+  but no longer face-index ordered, so compare as a set or sort first. If you
+  assert on `intersection_count`, note it is a lower bound once `truncated` is
+  set — and `truncated` is also set when the count lands exactly on
+  `max_reported` with nothing dropped.
 
 - **If you re-export `MeshReport`**, re-export `WindingCensus` too, or your
   consumers can read the field without being able to name its type.

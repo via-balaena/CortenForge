@@ -55,9 +55,17 @@ use crate::error::RepairResult;
 /// recipe on a multi-component mesh:** [`flip_winding`] reverses every face,
 /// so it inverts the correct shells along with the wrong one, and
 /// `is_inside_out` may read clean anyway when the correct shells dominate the
-/// volume. [`crate::find_connected_components`] returns the face indices of
-/// each shell; orienting them is then the caller's own loop — this crate has
-/// no per-component orient, and [`flip_winding`] cannot be aimed at a subset.
+/// volume. Use [`crate::split_into_components`], which returns each shell as
+/// its own [`IndexedMesh`] — the form every instrument here accepts — then
+/// validate and [`flip_winding`] each in turn.
+/// ([`crate::find_connected_components`] returns face *indices*, which no
+/// function in this crate consumes, and `flip_winding` cannot be aimed at a
+/// subset.)
+///
+/// ⚠ **A per-shell `is_inside_out` is not by itself a defect test.** An
+/// enclosed cavity is *correctly* wound inward, so this procedure flags every
+/// hollow part. Distinguishing a cavity from an inverted shell needs a
+/// containment test, which this crate does not provide.
 ///
 /// This function handles disconnected meshes by processing each component separately.
 ///
@@ -480,6 +488,9 @@ pub fn count_inconsistent_faces(mesh: &IndexedMesh) -> usize {
 /// ⚠ **No `Default`, and `#[non_exhaustive]`**, so one cannot be conjured from
 /// nothing — it must start from [`winding_census`]. The fields stay `pub`, so a
 /// caller can still overwrite them afterwards. Match with a `..` rest pattern.
+///
+/// `Copy`, so reading it out of a [`crate::MeshReport`] — for instance with
+/// `report.winding.is_some_and(..)` — does not move the report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct WindingCensus {
