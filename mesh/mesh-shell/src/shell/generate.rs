@@ -223,7 +223,11 @@ fn generate_shell_normal(
     // Optionally validate the generated shell
     let validation = if params.validate_after_generation {
         let validation_result = validate_shell(&shell);
-        if !validation_result.is_printable() {
+        // Gate on the issue list, NOT on `is_printable()`. That predicate is
+        // watertight && manifold only, so a mis-wound or degenerate shell is
+        // "printable" and this warning went silent on exactly the defects worth
+        // reporting -- the historic rim-winding bug among them.
+        if validation_result.issue_count() > 0 {
             warn!(
                 "Generated shell has {} validation issue(s)",
                 validation_result.issue_count()
@@ -358,7 +362,11 @@ fn generate_shell_sdf(
     // Optionally validate the generated shell
     let validation = if params.validate_after_generation {
         let validation_result = validate_shell(&shell);
-        if !validation_result.is_printable() {
+        // Gate on the issue list, NOT on `is_printable()`. That predicate is
+        // watertight && manifold only, so a mis-wound or degenerate shell is
+        // "printable" and this warning went silent on exactly the defects worth
+        // reporting -- the historic rim-winding bug among them.
+        if validation_result.issue_count() > 0 {
             warn!(
                 "Generated shell has {} validation issue(s)",
                 validation_result.issue_count()
@@ -601,7 +609,8 @@ mod tests {
         );
         assert!(
             validation.is_printable(),
-            "shell should be printable (watertight + manifold + consistent winding)",
+            "shell should be printable (watertight + manifold; `is_printable` \
+             does NOT include winding — `is_valid` is the one that does)",
         );
         assert!(
             validation.issues.is_empty(),

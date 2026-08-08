@@ -1,6 +1,9 @@
 //! Shell validation utilities.
 //!
-//! Validates shell meshes to ensure they are suitable for 3D printing.
+//! Measures a shell's topology and reports what it finds. It does not *ensure*
+//! anything: [`validate_shell`] returns a [`ShellValidationResult`] whose two
+//! predicates deliberately answer different questions, and whose `issues` list
+//! carries defects that neither predicate consults.
 
 use mesh_repair::validate_mesh;
 use mesh_types::IndexedMesh;
@@ -13,7 +16,49 @@ pub struct ShellValidationResult {
     pub is_watertight: bool,
     /// Whether the shell is manifold (no edges with >2 faces).
     pub is_manifold: bool,
-    /// Whether the shell has consistent winding order.
+    /// Whether every judgeable edge agrees on winding direction.
+    ///
+    /// Measured by [`mesh_repair::winding_census`]: an edge is judgeable when
+    /// exactly two faces meet along it, and it is inconsistent when both
+    /// traverse it the same way. Faces listing a vertex twice are skipped
+    /// whole, so they neither create nor spoil a judgeable edge.
+    ///
+    /// ⚠ "Skipped" there means *repeated vertex index*, which is not what
+    /// `DegenerateTriangles` counts in this module — that one is a zero-**area**
+    /// test. A sliver triangle with three distinct indices is degenerate by area
+    /// and still judged here.
+    ///
+    /// ⚠ On a NON-EMPTY shell this is vacuously `true` when nothing is
+    /// judgeable: a mesh with no interior edge has no edge that disagrees.
+    ///
+    /// ⚠ [`Self::is_printable`] does **not** rule that out. The edge counters
+    /// come from `mesh_repair`'s adjacency, which counts a face listing a
+    /// vertex twice; the census skips such a face whole. The two therefore
+    /// disagree about what an edge is, and a mesh can read watertight AND
+    /// manifold while the census judged nothing. `[[0,0,1], [0,0,2]]` is the
+    /// smallest case: zero boundary edges, zero non-manifold edges, two
+    /// degenerate faces, no verdict. See
+    /// `is_printable_does_not_rule_out_a_vacuous_winding_verdict`.
+    ///
+    /// An empty [`Self::issues`] on a non-empty shell **does** rule it out: a
+    /// face listing a vertex twice has two identical corners, so it is also
+    /// zero-area and always raises `DegenerateTriangles`. No issues ⇒ no face
+    /// skipped ⇒ the census and the counters agree.
+    ///
+    /// Both statements were searched exhaustively over every mesh of up to
+    /// three faces on four vertices (137 280 meshes): 2 640 counterexamples to
+    /// the first, none to the second. That is bounded evidence, not proof — for
+    /// certainty on a given mesh, call [`mesh_repair::winding_census`] and read
+    /// `has_judgeable_edges()`, which answers it directly.
+    ///
+    /// ⚠ The EMPTY shell is the deliberate exception: it reports `false` here,
+    /// and for watertight and manifold too, without consulting the census. A
+    /// mesh with no faces is refused rather than passed on a technicality.
+    ///
+    /// ⚠ This is a **local** property. It is `true` for a shell whose faces are
+    /// uniformly wound the *wrong* way — a global flip leaves every edge in
+    /// agreement. `mesh_repair::MeshReport::is_inside_out` is the instrument for
+    /// that, and it is not part of this result.
     pub has_consistent_winding: bool,
     /// Number of boundary edges (should be 0 for printable shell).
     pub boundary_edge_count: usize,
@@ -28,13 +73,27 @@ pub struct ShellValidationResult {
 }
 
 impl ShellValidationResult {
-    /// Check if the shell passes all validation checks.
+    /// Watertight **and** manifold **and** locally consistent winding.
+    ///
+    /// ⚠ Not "passes every check". [`Self::issues`] can be non-empty while this
+    /// is `true`: `DegenerateTriangles` is reported but not consulted here, so a
+    /// closed, manifold, consistently wound shell containing a zero-area face is
+    /// `is_valid()`. Inspect `issues` for the complete picture.
     #[must_use]
     pub const fn is_valid(&self) -> bool {
         self.is_watertight && self.is_manifold && self.has_consistent_winding
     }
 
-    /// Check if the shell is suitable for 3D printing.
+    /// Watertight **and** manifold. Nothing else.
+    ///
+    /// ⚠ Deliberately weaker than [`Self::is_valid`] — winding is **not** a
+    /// term, so a shell whose faces disagree still reads as printable. Nor are
+    /// degenerate triangles. This answers "is the surface closed and
+    /// two-manifold", which is what a slicer needs to produce watertight
+    /// toolpaths; it is not a statement that the result will print *well*.
+    /// The three gates nest — this ⊆ [`Self::is_valid`] ⊆ an empty
+    /// [`Self::issues`] — so gate on the issue list when you want the strongest
+    /// statement; adding `is_valid()` to it is redundant.
     #[must_use]
     pub const fn is_printable(&self) -> bool {
         self.is_watertight && self.is_manifold
@@ -148,10 +207,16 @@ impl std::fmt::Display for ShellIssue {
 
 /// Validate a shell mesh for 3D printing suitability.
 ///
-/// Checks:
+/// Checks, each surfacing as a [`ShellIssue`]:
+/// - Emptiness (no faces) — returns immediately, refusing everything
 /// - Watertightness (no boundary edges)
 /// - Manifoldness (no edges with >2 adjacent faces)
-/// - Consistent winding order
+/// - Consistent winding order (per-edge, via [`mesh_repair::winding_census`])
+/// - Degenerate triangles (zero **area**, which the winding check does not see)
+///
+/// ⚠ The last of these is reported but is not a term in either
+/// [`ShellValidationResult::is_valid`] or
+/// [`ShellValidationResult::is_printable`]. Read `issues` for the full picture.
 ///
 /// # Arguments
 /// * `shell` - The shell mesh to validate
@@ -168,9 +233,11 @@ pub fn validate_shell(shell: &IndexedMesh) -> ShellValidationResult {
 
     let mut issues = Vec::new();
 
-    // Check for empty shell
+    // Check for empty shell. Refuses everything below rather than passing
+    // vacuously; see the note on `has_consistent_winding`.
     if shell.faces.is_empty() {
         issues.push(ShellIssue::EmptyShell);
+        warn!("Shell has no faces; refusing rather than validating vacuously");
         return ShellValidationResult {
             is_watertight: false,
             is_manifold: false,
@@ -213,8 +280,22 @@ pub fn validate_shell(shell: &IndexedMesh) -> ShellValidationResult {
         );
     }
 
-    // Check winding consistency
-    let has_consistent_winding = check_winding_consistency(shell);
+    // Check winding consistency. `validate_mesh` already censused the edges
+    // above, so read that rather than rebuilding the edge map.
+    //
+    // `None` means the census was not run. Treat that as NOT consistent: it is
+    // an absence of evidence, and reporting it as clean winding is exactly the
+    // overclaim `WindingCensus` was introduced to end.
+    //
+    // ⚠ The two empty cases are deliberately NOT symmetric. `None` is "the
+    // instrument never ran" and reads false. A census that ran and found no
+    // judgeable edge reads TRUE, because `inconsistent_edges == 0` is then a
+    // real measurement over an empty set — no edge disagrees. The field doc
+    // names that vacuity so callers can rule it out; `has_judgeable_edges()`
+    // is the discriminator if a caller needs to.
+    let has_consistent_winding = mesh_report
+        .winding
+        .is_some_and(|census| census.inconsistent_edges == 0);
     if !has_consistent_winding {
         issues.push(ShellIssue::InconsistentWinding);
         warn!("Shell has inconsistent winding order");
@@ -240,81 +321,23 @@ pub fn validate_shell(shell: &IndexedMesh) -> ShellValidationResult {
         issues,
     };
 
-    if result.is_printable() {
-        info!("Shell validation passed - mesh is printable");
+    // Report on the issue list, not on `is_printable()`. That predicate omits
+    // winding and degenerate faces, so branching on it logged "validation
+    // passed" for a mis-wound shell while swallowing its issues.
+    if result.issues.is_empty() {
+        info!("Shell validation found no issues");
     } else {
-        warn!("Shell validation found {} issue(s)", result.issue_count());
+        warn!(
+            "Shell validation found {} issue(s) (printable={}, valid={})",
+            result.issue_count(),
+            result.is_printable(),
+            result.is_valid()
+        );
     }
 
     debug!("{}", result);
 
     result
-}
-
-/// Check if the mesh has consistent winding order.
-///
-/// For a valid closed mesh, adjacent faces should have opposite winding
-/// along their shared edge (so normals point consistently outward).
-fn check_winding_consistency(mesh: &IndexedMesh) -> bool {
-    use hashbrown::HashMap;
-
-    // Build edge to faces mapping ourselves
-    let mut edge_to_faces: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
-
-    for (face_idx, face) in mesh.faces.iter().enumerate() {
-        for i in 0..3 {
-            let v0 = face[i];
-            let v1 = face[(i + 1) % 3];
-            // Normalize edge direction for grouping
-            let edge = if v0 < v1 { (v0, v1) } else { (v1, v0) };
-            edge_to_faces.entry(edge).or_default().push(face_idx);
-        }
-    }
-
-    // For each edge with exactly 2 adjacent faces, check winding consistency
-    for (&edge, face_indices) in &edge_to_faces {
-        if face_indices.len() != 2 {
-            // Skip boundary or non-manifold edges
-            continue;
-        }
-
-        let face_a = mesh.faces[face_indices[0]];
-        let face_b = mesh.faces[face_indices[1]];
-
-        // Find the shared edge orientation in each face
-        let edge_in_a = find_edge_direction(&face_a, edge);
-        let edge_in_b = find_edge_direction(&face_b, edge);
-
-        // For consistent winding, the edge should appear in opposite directions
-        // in the two adjacent faces
-        if edge_in_a == edge_in_b {
-            return false;
-        }
-    }
-
-    true
-}
-
-/// Find the direction of an edge in a face.
-/// Returns true if edge goes v0->v1 in the face's winding order, false if v1->v0.
-fn find_edge_direction(face: &[u32; 3], edge: (u32, u32)) -> bool {
-    let (v0, v1) = edge;
-
-    // Check all three edges of the triangle
-    for i in 0..3 {
-        let a = face[i];
-        let b = face[(i + 1) % 3];
-
-        if a == v0 && b == v1 {
-            return true; // Forward direction
-        }
-        if a == v1 && b == v0 {
-            return false; // Reverse direction
-        }
-    }
-
-    // Edge not found in face (shouldn't happen with valid adjacency)
-    true
 }
 
 /// Count degenerate triangles in the mesh.
@@ -405,16 +428,15 @@ mod tests {
     }
 
     #[test]
-    fn check_winding_consistency_detects_inconsistent_winding() {
-        // True-positive coverage for the winding detector: take a
+    fn a_single_reversed_face_is_reported_as_inconsistent_winding() {
+        // True-positive coverage for the winding verdict: take a
         // consistently-wound watertight tetrahedron and reverse a SINGLE
         // face's winding. The mesh stays watertight + manifold (same edges,
-        // each still shared by exactly 2 faces) but two of the flipped
-        // face's edges now run the SAME direction in both incident faces,
-        // so `check_winding_consistency` must fire. This guards the
-        // detector's positive path independently of any example — the
-        // `shell-generation` fold's rim-winding fix means no example
-        // produces a mis-wound shell anymore.
+        // each still shared by exactly 2 faces) but the flipped face's three
+        // edges now run the SAME direction in both incident faces, so the
+        // census must fire. This guards the positive path independently of any
+        // example — the `shell-generation` fold's rim-winding fix means no
+        // example produces a mis-wound shell anymore.
         let mut shell = create_watertight_tetrahedron();
         let [a, b, c] = shell.faces[0];
         shell.faces[0] = [a, c, b]; // reverse winding of one face
@@ -453,6 +475,293 @@ mod tests {
     }
 
     #[test]
+    fn a_degenerate_face_is_reported_as_degenerate_not_as_bad_winding() {
+        // Regression guard for the hand-rolled detector this check replaced.
+        //
+        // That version keyed edges by their sorted vertex pair. A face listing a
+        // vertex twice registers the edge `(0,1)` from BOTH its `(0,1)` and
+        // `(1,0)` traversals, so the face lands in that edge's bucket TWICE. The
+        // bucket then has length 2 — indistinguishable from a normal interior
+        // edge — and the detector compared the face against ITSELF, found the
+        // directions equal, and reported inconsistent winding.
+        //
+        // ⚠ The fixture must be the degenerate face ALONE. Adding a second face
+        // on `(0,1)` pushes the bucket to length 3, which the old code skipped
+        // as non-manifold — so it returned `true` and the guard would be
+        // vacuous. Measured, old vs new: `[[0,0,1]]` gives false vs true
+        // (discriminates); `[[0,0,1],[0,1,2]]` gives true vs true (does not).
+        //
+        // `winding_census` skips a face listing a vertex twice whole, so the
+        // defect is classified as what it is — a degenerate face.
+        let mut shell = IndexedMesh::new();
+        shell.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        shell.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        shell.vertices.push(Point3::new(0.0, 1.0, 0.0));
+        shell.faces.push([0, 0, 1]);
+
+        let result = validate_shell(&shell);
+
+        // ⚠ The winding verdict here is VACUOUS, and that is the point worth
+        // pinning: the only face is skipped whole, so NOTHING is judgeable.
+        // `has_consistent_winding` is true because no edge disagrees, not
+        // because winding was affirmatively verified. The old code reached the
+        // opposite verdict on this very mesh, which is what makes it a guard.
+        let census = mesh_repair::winding_census(&shell);
+        assert_eq!(
+            census.degenerate_faces, 1,
+            "oracle: one repeated-index face"
+        );
+        assert_eq!(
+            census.interior_edges, 0,
+            "oracle: no judgeable edge survives, so the verdict below is vacuous",
+        );
+
+        assert!(
+            result.has_consistent_winding,
+            "a repeated-index face is a degenerate face, not a winding defect; got: {:?}",
+            result.issues,
+        );
+        assert!(
+            !result
+                .issues
+                .iter()
+                .any(|i| matches!(i, ShellIssue::InconsistentWinding)),
+            "no InconsistentWinding issue should be raised; got: {:?}",
+            result.issues,
+        );
+        // Not merely "not misreported" — reported as the defect it actually is.
+        // Without this the test would still pass if the degenerate face were
+        // dropped from the report altogether.
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|i| matches!(i, ShellIssue::DegenerateTriangles { count: 1 })),
+            "the repeated-index face must surface as DegenerateTriangles; got: {:?}",
+            result.issues,
+        );
+    }
+
+    #[test]
+    fn an_empty_issue_list_implies_both_predicates() {
+        // The three gates are NESTED, not independent:
+        //   is_printable() ⊆ is_valid() ⊆ issues.is_empty()
+        //
+        // The crate-level example relies on the outermost implication, so pin
+        // it. It holds structurally — each predicate's failure pushes its own
+        // issue — and would break the moment a check reported an issue without
+        // a corresponding term, or gained a term without an issue.
+        //
+        // ⚠ One-directional. `is_valid()` does NOT imply an empty issue list;
+        // `is_valid_is_true_while_an_issue_is_reported` is the counterexample.
+        let mut flipped = create_watertight_tetrahedron();
+        flipped.faces[0] = {
+            let [a, b, c] = flipped.faces[0];
+            [a, c, b]
+        };
+        let mut duplicated = create_watertight_tetrahedron();
+        duplicated.faces = duplicated.faces.iter().flat_map(|f| [*f, *f]).collect();
+
+        let cases: Vec<(&str, IndexedMesh)> = vec![
+            ("empty", IndexedMesh::new()),
+            ("clean tetrahedron", create_watertight_tetrahedron()),
+            ("one face flipped", flipped),
+            ("open box", create_open_box()),
+            ("every face duplicated", duplicated),
+        ];
+
+        for (name, mesh) in cases {
+            let result = validate_shell(&mesh);
+            assert!(
+                !result.issues.is_empty() || result.is_valid(),
+                "{name}: empty issue list must imply is_valid(); got issues={:?} is_valid={}",
+                result.issues,
+                result.is_valid(),
+            );
+            assert!(
+                !result.issues.is_empty() || result.is_printable(),
+                "{name}: empty issue list must imply is_printable() too",
+            );
+        }
+    }
+
+    #[test]
+    fn is_valid_is_true_while_an_issue_is_reported() {
+        // Pins the caveat on `is_valid`: it is NOT "passes every check".
+        //
+        // A tetrahedron with one vertex nudged nearly onto the opposite edge
+        // stays closed, manifold and consistently wound, so all three terms of
+        // `is_valid` hold — while `DegenerateTriangles` is reported. A caller
+        // treating `is_valid()` as "no issues" would miss it.
+        let mut shell = IndexedMesh::new();
+        shell.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        shell.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        shell.vertices.push(Point3::new(0.5, 1e-14, 0.0));
+        shell.vertices.push(Point3::new(0.3, 0.4, 1.0));
+        shell.faces = vec![[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]];
+
+        let result = validate_shell(&shell);
+
+        assert!(result.is_valid(), "all three terms of is_valid hold");
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|i| matches!(i, ShellIssue::DegenerateTriangles { .. })),
+            "yet a degenerate triangle IS reported; got: {:?}",
+            result.issues,
+        );
+    }
+
+    #[test]
+    fn a_watertight_shell_can_still_judge_nothing() {
+        // Pins the field doc's caveat: `boundary_edge_count` alone does NOT
+        // rule out a vacuous winding verdict.
+        //
+        // A tetrahedron with every face duplicated has four incident faces on
+        // every edge. That is zero boundary edges — watertight — while nothing
+        // is judgeable, because the census excludes non-manifold edges.
+        let mut shell = create_watertight_tetrahedron();
+        shell.faces = shell.faces.iter().flat_map(|f| [*f, *f]).collect();
+
+        let census = mesh_repair::winding_census(&shell);
+        let result = validate_shell(&shell);
+
+        assert_eq!(result.boundary_edge_count, 0, "duplicating faces closes it");
+        assert!(result.is_watertight, "so it reads as watertight");
+        assert_eq!(
+            census.interior_edges, 0,
+            "yet nothing is judgeable — every edge is non-manifold",
+        );
+        assert!(
+            result.has_consistent_winding,
+            "the verdict is therefore vacuously true, not verified",
+        );
+        // Here `is_printable` happens to refuse, because these edges are
+        // non-manifold. ⚠ That is NOT general — see
+        // `is_printable_does_not_rule_out_a_vacuous_winding_verdict`.
+        assert!(!result.is_printable(), "not manifold ⇒ not printable");
+    }
+
+    #[test]
+    fn is_printable_does_not_rule_out_a_vacuous_winding_verdict() {
+        // Falsifies an earlier claim on `has_consistent_winding` that a
+        // printable non-empty shell always has something judgeable.
+        //
+        // The counters and the census disagree about what an edge is.
+        // `mesh_repair`'s adjacency counts a face that lists a vertex twice; the
+        // census skips it whole. Two such faces sharing the repeated vertex give
+        // every undirected edge exactly two incidences — watertight, manifold,
+        // therefore printable — while the census judged nothing at all.
+        //
+        // Smallest case, found by exhaustive search over every mesh of up to
+        // three faces on four vertices (137 280 meshes, 2 640 counterexamples).
+        let mut shell = IndexedMesh::new();
+        shell.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        shell.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        shell.vertices.push(Point3::new(0.0, 1.0, 0.0));
+        shell.faces.push([0, 0, 1]);
+        shell.faces.push([0, 0, 2]);
+
+        let result = validate_shell(&shell);
+        let census = mesh_repair::winding_census(&shell);
+
+        assert_eq!(result.boundary_edge_count, 0, "adjacency sees it as closed");
+        assert_eq!(result.non_manifold_edge_count, 0, "and as manifold");
+        assert!(
+            result.is_printable(),
+            "so the weak predicate passes it: {:?}",
+            result.issues,
+        );
+        assert_eq!(
+            census.degenerate_faces, 2,
+            "while the census skips both faces whole",
+        );
+        assert_eq!(
+            census.interior_edges, 0,
+            "leaving NOTHING judgeable — the verdict below is vacuous",
+        );
+        assert!(
+            result.has_consistent_winding,
+            "reported clean on a mesh where no edge was ever examined",
+        );
+    }
+
+    #[test]
+    fn the_two_senses_of_degenerate_in_this_module_do_not_coincide() {
+        // `DegenerateTriangles` counts zero-AREA faces. The census skips faces
+        // that list a vertex twice. Those are different sets, and the field doc
+        // on `has_consistent_winding` says so — this pins it.
+        //
+        // Two slivers sharing edge (0,1): three DISTINCT indices each, area ~0.
+        // Degenerate by area, invisible to the census's skip rule, and their
+        // shared edge is judged normally.
+        let mut shell = IndexedMesh::new();
+        shell.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        shell.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        shell.vertices.push(Point3::new(0.5, 1e-12, 0.0));
+        shell.vertices.push(Point3::new(0.5, -1e-12, 0.0));
+        shell.faces.push([0, 1, 2]);
+        shell.faces.push([1, 0, 3]);
+
+        let census = mesh_repair::winding_census(&shell);
+        assert_eq!(
+            census.degenerate_faces, 0,
+            "distinct indices ⇒ the census does not skip these",
+        );
+        assert_eq!(
+            census.interior_edges, 1,
+            "the shared edge is judged despite both faces having ~zero area",
+        );
+        assert_eq!(
+            count_degenerate_triangles(&shell),
+            2,
+            "both faces ARE degenerate by this module's area test",
+        );
+    }
+
+    #[test]
+    fn the_winding_verdict_comes_from_the_census_not_a_second_edge_map() {
+        // The census is computed once, by `validate_mesh`. Guard that this
+        // result reports the census's verdict rather than a recomputation.
+        //
+        // ⚠ BOTH polarities are required. Checking only the flipped mesh lets a
+        // substituted sibling field survive: on a flipped tetra `interior_edges`
+        // is 6 and `inconsistent_edges` is 3, so `== 0` is false either way. The
+        // clean mesh is what separates them — there `inconsistent_edges == 0` is
+        // true while `interior_edges == 0` is false. (Measured: the sibling
+        // mutant passed this test until the clean case was added.)
+        let clean = create_watertight_tetrahedron();
+        let clean_census = mesh_repair::winding_census(&clean);
+        assert_eq!(
+            clean_census.inconsistent_edges, 0,
+            "oracle: an unmodified tetrahedron is consistently wound",
+        );
+        assert!(
+            clean_census.interior_edges > 0,
+            "the clean case must have judgeable edges, or it cannot separate \
+             `inconsistent_edges` from `interior_edges`",
+        );
+        assert!(
+            validate_shell(&clean).has_consistent_winding,
+            "clean mesh must report consistent winding",
+        );
+
+        let mut flipped = create_watertight_tetrahedron();
+        let [a, b, c] = flipped.faces[0];
+        flipped.faces[0] = [a, c, b];
+        let flipped_census = mesh_repair::winding_census(&flipped);
+        assert_eq!(
+            flipped_census.inconsistent_edges, 3,
+            "oracle: one flipped face disagrees on its three edges",
+        );
+        assert!(
+            !validate_shell(&flipped).has_consistent_winding,
+            "flipped mesh must report inconsistent winding",
+        );
+    }
+
+    #[test]
     fn test_validate_open_shell() {
         let shell = create_open_box();
         let result = validate_shell(&shell);
@@ -481,6 +790,15 @@ mod tests {
                 .issues
                 .iter()
                 .any(|i| matches!(i, ShellIssue::EmptyShell))
+        );
+        // Pins the documented EXCEPTION to the vacuity rule. Everywhere else a
+        // census with nothing judgeable reports `true` — on an empty mesh the
+        // census would too (`inconsistent_edges == 0`, measured). The early
+        // return refuses instead, and never consults it. Without this assert the
+        // field doc and this path could drift apart unnoticed.
+        assert!(
+            !result.has_consistent_winding,
+            "the empty shell is refused, not passed vacuously",
         );
     }
 

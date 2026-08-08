@@ -383,9 +383,10 @@ fn verify_offsets(shell: &IndexedMesh, n: usize) {
 /// `mesh_shell::shell::rim::generate_rim` winds the rim quads to oppose
 /// the reversed-inner and original-outer surface edges, so the whole
 /// shell is a single consistently-oriented manifold. (This is what the
-/// `has_consistent_winding` check — a BFS over shared-edge traversal
-/// direction — verifies; before the fix it reported `false` with one
-/// `InconsistentWinding` issue.)
+/// `has_consistent_winding` check verifies — a per-edge census, not a
+/// traversal: every edge with exactly two faces is tested independently
+/// for whether both traverse it the same way. Before the fix it reported
+/// `false` with one `InconsistentWinding` issue.)
 fn verify_validation(stats: &mesh_shell::ShellGenerationResult) -> Result<()> {
     let validation = stats
         .validation
@@ -395,7 +396,8 @@ fn verify_validation(stats: &mesh_shell::ShellGenerationResult) -> Result<()> {
     assert!(validation.is_manifold);
     assert!(
         validation.is_printable(),
-        "shell is printable (watertight + manifold + consistent winding)",
+        "shell is printable (watertight + manifold; `is_printable` does NOT \
+         include winding — the separate assert below is what covers that)",
     );
     assert_eq!(validation.boundary_edge_count, 0);
     assert_eq!(validation.non_manifold_edge_count, 0);

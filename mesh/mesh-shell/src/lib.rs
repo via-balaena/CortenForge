@@ -68,9 +68,20 @@
 //! let params = ShellParams::fast();
 //! let (shell, stats) = generate_shell(&mesh, &params).expect("shell generation failed");
 //!
-//! // Validate the result
+//! // Validate the result.
+//! //
+//! // Three gates of increasing strength, NOT three independent checks:
+//! //   is_printable()     watertight + manifold only
+//! //   is_valid()         the above + consistent winding
+//! //   issues.is_empty()  the above + degenerate faces, which neither
+//! //                      predicate consults
+//! //
+//! // Each subsumes the one before, so an empty issue list is the strongest
+//! // statement available and implies both predicates. Use it for "ready to
+//! // print"; reach for the weaker two only when you deliberately want to
+//! // tolerate what they ignore.
 //! let validation = validate_shell(&shell);
-//! if validation.is_printable() {
+//! if validation.issues.is_empty() {
 //!     println!("Shell is ready for printing!");
 //! }
 //! ```
