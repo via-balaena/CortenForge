@@ -151,12 +151,16 @@ impl SurfaceReport {
     ///
     /// ⚠ **An accessor, not a field.** It was a field until `mesh-repair` 2.0
     /// put the census on [`MeshReport`] itself; keeping both would have meant
-    /// two public fields obliged to hold one value — computed by two separate
-    /// passes over the same mesh, and free to disagree the moment either one
-    /// was built differently. The name is kept because it reads better than
-    /// `topology.winding` at the call site; the storage is not duplicated.
+    /// two public fields obliged to hold one value, computed by two separate
+    /// passes and free to disagree.
+    ///
+    /// `None` only if the report was built with the census disabled, which
+    /// [`load_with_report`] never does — pinned by
+    /// `load_with_report_always_requests_the_census`. Returned as an `Option`
+    /// anyway rather than unwrapped, because the workspace bans `expect` in
+    /// production code and a panic path is worse than a match arm.
     #[must_use]
-    pub const fn winding(&self) -> WindingCensus {
+    pub const fn winding(&self) -> Option<WindingCensus> {
         self.topology.winding
     }
 }
@@ -178,7 +182,8 @@ impl std::fmt::Display for SurfaceReport {
             self.components,
             self.inward_facing_components
                 .map_or_else(|| "n/a (open surface)".to_string(), |n| n.to_string()),
-            self.winding(),
+            self.winding()
+                .map_or_else(|| "winding: not measured".to_string(), |c| c.to_string()),
         )
     }
 }
@@ -1229,6 +1234,27 @@ mod tests {
     /// The flip is injected into the mesh *before* the STL round-trip so the
     /// defect travels the production path — save, read back as soup, weld —
     /// rather than being handed to the census directly.
+    /// The invariant [`SurfaceReport::winding`] relies on to `expect`.
+    ///
+    /// `mesh-repair` 2.0 made the census optional, so the accessor is only
+    /// panic-free while this crate validates with it enabled. If a future edit
+    /// passes custom options that turn it off, that accessor starts panicking
+    /// in production — this fails first, and says why.
+    #[test]
+    fn load_with_report_always_requests_the_census() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("box.stl");
+        mesh_io::save_stl(&box_mesh(Point3::origin(), 1.0), &path, false).unwrap();
+
+        let (_, report) = load_with_report(&path).unwrap();
+
+        assert!(
+            report.topology.winding.is_some(),
+            "SurfaceReport::winding expects this to be Some; if validation \
+             options here ever disable the census, fix the accessor too"
+        );
+    }
+
     #[test]
     fn load_with_report_sees_a_local_flip_that_signed_volume_misses() {
         let dir = tempfile::tempdir().unwrap();
@@ -1239,13 +1265,13 @@ mod tests {
         mesh_io::save_stl(&clean, &clean_path, false).unwrap();
         let (_, clean_report) = load_with_report(&clean_path).unwrap();
         assert_eq!(
-            clean_report.winding().inconsistent_edges,
+            clean_report.winding().unwrap().inconsistent_edges,
             0,
             "the control box must be locally consistent, or the flipped arm \
              below proves nothing",
         );
         assert!(
-            clean_report.winding().has_judgeable_edges(),
+            clean_report.winding().unwrap().has_judgeable_edges(),
             "welded, so judgeable"
         );
 
@@ -1260,12 +1286,12 @@ mod tests {
         let (_, report) = load_with_report(&flipped_path).unwrap();
 
         assert_eq!(
-            report.winding().inconsistent_edges,
+            report.winding().unwrap().inconsistent_edges,
             3,
             "one flipped triangle disagrees with its neighbours on its own \
              three edges, and that must survive save -> load -> weld",
         );
-        assert!(report.winding().has_inconsistent_winding());
+        assert!(report.winding().unwrap().has_inconsistent_winding());
 
         // THE POINT: the instrument this crate could already have consulted
         // reads both surfaces identically. Wiring up `is_inside_out` alone
@@ -1309,11 +1335,11 @@ mod tests {
         // per-edge census cannot see it — the two shells share no edge — and
         // the global volume cannot either, since the big shell dominates.
         assert_eq!(
-            report.winding().inconsistent_edges,
+            report.winding().unwrap().inconsistent_edges,
             0,
             "the per-edge census cannot compare faces that share no edge",
         );
-        assert!(report.winding().has_judgeable_edges());
+        assert!(report.winding().unwrap().has_judgeable_edges());
         assert!(report.topology.is_watertight && report.topology.is_manifold);
         assert!(
             !report.topology.is_inside_out,
@@ -1376,7 +1402,7 @@ mod tests {
 
         let (mesh, report) = load_with_report(&path).unwrap();
         assert!(
-            report.winding().has_judgeable_edges(),
+            report.winding().unwrap().has_judgeable_edges(),
             "the report must be taken after the weld, where edges exist to judge",
         );
         assert!(
@@ -1403,7 +1429,7 @@ mod tests {
             "a welded box is closed and manifold — {report}",
         );
         assert_eq!(
-            report.winding().interior_edges,
+            report.winding().unwrap().interior_edges,
             mesh.faces.len() * 3 / 2,
             "a closed triangle mesh has 3F/2 edges, all interior",
         );

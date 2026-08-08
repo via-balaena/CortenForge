@@ -403,6 +403,14 @@ pub fn count_inconsistent_faces(mesh: &IndexedMesh) -> usize {
 /// volume. Per-component orientation is the instrument for that one; see
 /// [`crate::find_connected_components`].
 ///
+/// ⚠ **On a non-orientable surface, `inconsistent_edges` is a lower bound on a
+/// topological obstruction, not a repairable defect.** A Möbius band reports
+/// `1` and [`fix_winding_order`] leaves it at `1` however many times it is
+/// run, because no consistent orientation exists. A caller looping
+/// census → repair → census will not converge. Nothing on this type
+/// distinguishes that from a repairable flip; if you need to, check
+/// orientability separately.
+///
 /// # Seed-independence
 ///
 /// Unlike [`count_inconsistent_faces`], nothing here depends on a traversal
@@ -433,13 +441,6 @@ pub fn count_inconsistent_faces(mesh: &IndexedMesh) -> usize {
 /// surface, and a mesh whose only shared edges are non-manifold. Use
 /// [`Self::has_judgeable_edges`] before reading a zero as good news.
 ///
-/// ⚠ **There is a fifth cause, and it is not a property of any mesh:** a
-/// `WindingCensus` obtained from [`crate::MeshReport`] is
-/// [`Default`]-constructed — never run at all — when
-/// [`crate::ValidationOptions::check_winding`] is off. A value of this type no
-/// longer implies [`winding_census`] produced it, so an all-zero census cannot
-/// be attributed to the mesh without knowing how it was obtained.
-///
 /// # Example
 ///
 /// ```
@@ -466,7 +467,10 @@ pub fn count_inconsistent_faces(mesh: &IndexedMesh) -> usize {
 /// flip_winding(&mut mesh);
 /// assert_eq!(winding_census(&mesh).inconsistent_edges, 0);
 /// ```
+/// ⚠ **`#[non_exhaustive]`.** A census is the type most likely to grow
+/// counters; construct with [`winding_census`] and match with `..`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct WindingCensus {
     /// Edges with exactly two incident faces — the edges this census can judge.
     ///
@@ -517,12 +521,11 @@ impl WindingCensus {
     /// `false` means no edge was judged, and a zero `inconsistent_edges`
     /// alongside it reports exactly that — **not** that the winding is good.
     ///
-    /// ⚠ **It does not tell you WHY.** The mesh may be soup, a single
-    /// triangle, fully open, or non-manifold-only — or the census may never
-    /// have run, which is the state a [`crate::MeshReport`] carries when
-    /// [`crate::ValidationOptions::check_winding`] is off. This method
-    /// separates "no verdict" from "clean verdict"; it does not separate the
-    /// causes of the former, and no counter on this type does.
+    /// ⚠ **It does not tell you WHY** — soup, a single triangle, fully open,
+    /// or non-manifold-only all report `false`. It separates "no verdict" from
+    /// "clean verdict"; no counter on this type separates the causes of the
+    /// former. (A census that never *ran* is not one of them: that is
+    /// [`crate::MeshReport::winding`] being `None`, not a value of this type.)
     ///
     /// ⚠ **`true` is not a coverage claim.** A surface that is 99 % boundary
     /// edges with a single interior edge reports `true`, having judged one
@@ -548,10 +551,8 @@ impl std::fmt::Display for WindingCensus {
             self.boundary_edges,
             self.non_manifold_edges,
             self.degenerate_faces,
-            // ⚠ States the verdict's absence, NOT its cause. This used to read
-            // "no edge has two incident faces", which is false for the
-            // all-zero census a `MeshReport` carries when `check_winding` is
-            // off — that mesh may have thousands of interior edges.
+            // States the verdict's absence, not its cause: this type cannot
+            // distinguish soup from open from non-manifold-only.
             if self.has_judgeable_edges() {
                 ""
             } else {
@@ -921,8 +922,9 @@ mod tests {
         consistent_octahedron_at(0.0)
     }
 
-    /// The same octahedron translated along z, for the gate that measures how
-    /// `is_inside_out` responds to distance from the world origin.
+    /// The same octahedron translated along `+z`, for the gate that walks the
+    /// signed-volume flag across one half-space boundary. Not a distance
+    /// sweep — see [`crate::MeshReport::is_inside_out`].
     fn consistent_octahedron_at(z: f64) -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
         for v in [
@@ -1173,42 +1175,134 @@ mod tests {
         );
     }
 
-    /// `WindingCensus`'s own `Display` — previously untested, so its wording
-    /// and its argument order were both unpinned.
+    /// A closed strip of `n` segments. With `twist`, the seam joins back
+    /// swapped, making the surface non-orientable (a Möbius band).
+    fn closed_strip(n: u32, twist: bool) -> IndexedMesh {
+        let mut mesh = IndexedMesh::new();
+        for i in 0..n {
+            let t = f64::from(i) / f64::from(n) * std::f64::consts::TAU;
+            mesh.vertices.push(Point3::new(t.cos(), t.sin(), 0.0));
+            mesh.vertices
+                .push(Point3::new(t.cos() * 1.2, t.sin() * 1.2, 0.2));
+        }
+        for i in 0..n {
+            let j = (i + 1) % n;
+            let (a0, a1) = (2 * i, 2 * i + 1);
+            let (b0, b1) = if twist && j == 0 {
+                (2 * j + 1, 2 * j)
+            } else {
+                (2 * j, 2 * j + 1)
+            };
+            mesh.faces.push([a0, a1, b1]);
+            mesh.faces.push([a0, b1, b0]);
+        }
+        mesh
+    }
+
+    /// Producer for the type docs' claim that on a non-orientable surface
+    /// `inconsistent_edges` is a topological obstruction, not a repairable
+    /// defect — so a census → repair → census loop does not converge.
+    #[test]
+    fn a_non_orientable_surface_never_censuses_clean_however_often_it_is_repaired() {
+        // Control: the same strip without the twist IS orientable, and repair
+        // clears it. Without this, the assertion below would also pass on a
+        // mesh that `fix_winding_order` simply cannot handle at all.
+        let mut orientable = closed_strip(8, false);
+        fix_winding_order(&mut orientable).unwrap();
+        assert_eq!(
+            winding_census(&orientable).inconsistent_edges,
+            0,
+            "the orientable control must be repairable, or this test proves \
+             nothing about non-orientability"
+        );
+
+        let mut mobius = closed_strip(8, true);
+        assert!(winding_census(&mobius).has_judgeable_edges());
+        assert!(
+            winding_census(&mobius).inconsistent_edges > 0,
+            "a Möbius band has no consistent orientation"
+        );
+
+        for round in 1..=4 {
+            fix_winding_order(&mut mobius).unwrap();
+            assert!(
+                winding_census(&mobius).inconsistent_edges > 0,
+                "still non-orientable after {round} repair round(s); if this \
+                 ever reaches 0, the docs' non-convergence claim is wrong"
+            );
+        }
+    }
+
+    /// `WindingCensus`'s own `Display` — its wording and its argument order.
     ///
     /// It is public API and user-visible: `cf-fsu-geometry`'s `SurfaceReport`
-    /// prints it verbatim. The whole rendered string is asserted, so a
-    /// transposition among the six counters is caught by any pair that differ.
+    /// prints it verbatim.
+    ///
+    /// ⚠ **The fixture's job is to make all six counters PAIRWISE DISTINCT**, so
+    /// that any transposition of the six format arguments changes the rendered
+    /// string. An earlier version used one loose triangle, which left
+    /// `inconsistent_edges` and `boundary_edges` both at 3 — and swapping those
+    /// two (adjacent edge counts of the same magnitude, the likeliest authoring
+    /// slip) rendered byte-identically and survived. Three loose triangles put
+    /// `boundary_edges` at 9. The distinctness is asserted below, not assumed.
     #[test]
     fn winding_census_display_renders_every_counter_in_order() {
-        // A closed tetrahedron with one face reversed, plus a loose triangle
-        // (boundary edges) and an index-repeating face (degenerate). Chosen so
-        // five of the six counters hold DIFFERENT values — a fixture where they
-        // were all zero could not detect a swap.
         let mut mesh = IndexedMesh::new();
         for p in [
             (0.0, 0.0, 0.0),
             (1.0, 0.0, 0.0),
             (0.5, 0.866, 0.0),
             (0.5, 0.289, 0.816),
-            (9.0, 0.0, 0.0),
-            (10.0, 0.0, 0.0),
-            (9.0, 1.0, 0.0),
         ] {
             mesh.vertices.push(Point3::new(p.0, p.1, p.2));
         }
         mesh.faces.push([0, 2, 1]);
-        mesh.faces.push([0, 3, 1]); // reversed: 3 inconsistent edges
+        mesh.faces.push([0, 3, 1]); // reversed: 3 inconsistent edges, 4 faces touched
         mesh.faces.push([1, 2, 3]);
         mesh.faces.push([2, 0, 3]);
-        mesh.faces.push([4, 5, 6]); // loose: 3 boundary edges
-        mesh.faces.push([4, 4, 5]); // index-repeat: 1 degenerate, skipped whole
 
-        let census = winding_census(&mesh);
+        // Three disjoint loose triangles -> 9 boundary edges.
+        for i in 0..3u32 {
+            let off = f64::from(i).mul_add(10.0, 9.0);
+            let base = 4 + i * 3;
+            mesh.vertices.push(Point3::new(off, 0.0, 0.0));
+            mesh.vertices.push(Point3::new(off + 1.0, 0.0, 0.0));
+            mesh.vertices.push(Point3::new(off, 1.0, 0.0));
+            mesh.faces.push([base, base + 1, base + 2]);
+        }
+        // One index-repeating face -> 1 degenerate, skipped whole (contributes
+        // no edges, so it does not perturb the counts above).
+        mesh.faces.push([4, 4, 5]);
+
+        let c = winding_census(&mesh);
+
+        // The property the fixture exists to provide. Without this, a future
+        // tweak could collapse a pair and silently widen the blind spot rather
+        // than fail.
+        let counters = [
+            c.inconsistent_edges,
+            c.interior_edges,
+            c.faces_on_inconsistent_edges,
+            c.boundary_edges,
+            c.non_manifold_edges,
+            c.degenerate_faces,
+        ];
+        for i in 0..counters.len() {
+            for j in (i + 1)..counters.len() {
+                assert_ne!(
+                    counters[i], counters[j],
+                    "counters {i} and {j} collide at {}; a transposition of \
+                     those two format arguments would render identically and \
+                     this test could not see it",
+                    counters[i]
+                );
+            }
+        }
+
         assert_eq!(
-            census.to_string(),
+            c.to_string(),
             "winding: 3 of 6 interior edges inconsistent (4 faces) | \
-             boundary-edges 3 non-manifold-edges 0 degenerate-faces 1"
+             boundary-edges 9 non-manifold-edges 0 degenerate-faces 1"
         );
     }
 

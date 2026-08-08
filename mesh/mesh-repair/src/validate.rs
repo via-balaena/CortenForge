@@ -9,60 +9,40 @@ use crate::winding::{WindingCensus, winding_census};
 
 /// Report of mesh validation results.
 ///
-/// Contains counts of various mesh issues and methods to check
-/// overall mesh health.
+/// Counts of common mesh defects, plus two orientation readings that answer
+/// different questions and do not substitute for each other:
 ///
-/// # Reading the two winding instruments
+/// * [`Self::winding`] — are two neighbouring faces oriented against **each
+///   other**? Per-edge, coordinate-free. `None` when not requested.
+/// * [`Self::is_inside_out`] — is the whole surface wound **inward**? A global
+///   signed-volume test, and frame-dependent; read that field's docs before
+///   trusting it.
 ///
-/// This report carries **two** orientation readings, and neither subsumes the
-/// other. They answer different questions and can disagree without either
-/// being wrong.
+/// **The rule, in one sentence:** a *global* flip leaves the census clean and
+/// sets `is_inside_out`; a *local* flip does the reverse.
 ///
-/// * [`Self::winding`] is per-edge and **coordinate-free**. It is the only one
-///   of the two that can say whether two neighbouring faces are oriented
-///   against each other. See [`WindingCensus`] for precisely which question it
-///   answers and the several ways it can be vacuous — that type is the single
-///   home for those semantics, and this doc does not restate them.
-/// * [`Self::is_inside_out`] is `V < 0` for `V = Σ det[v₀,v₁,v₂] / 6`, the
-///   origin-apex tetrahedron sum. It is *global* and **frame-dependent**:
-///   translating by `t` moves `V` by `(t/3) · Σ A_f n_f`, the area-weighted
-///   face-normal sum.
+/// To repair what the census reports, see [`crate::fix_winding_order`]
+/// (per-component) or [`crate::flip_winding`] (unconditional).
 ///
-/// Two consequences, both easy to state wrongly:
+/// ```
+/// use mesh_repair::validate_mesh;
+/// # use mesh_types::{IndexedMesh, Point3};
+/// # let mut mesh = IndexedMesh::new();
+/// # mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// # mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// # mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
+/// # mesh.faces.push([0, 1, 2]);
+/// let report = validate_mesh(&mesh);
 ///
-/// 1. **`V` is translation-invariant exactly when `Σ A_f n_f = 0`**, which
-///    holds for a **closed** consistently-oriented surface. Consistent winding
-///    alone does not suffice: `simple_triangle` is perfectly wound and open, and
-///    at `z = -1` has `V = -16.67`, so the flag is set. Consistent winding is
-///    also not *required* for invariance — two antipodal flipped faces cancel in
-///    `Σ A_f n_f`, leaving `V` fixed while the census counts six bad edges.
-/// 2. **Where `V` is not invariant, the flag is set on one side of a half-space
-///    in `t` — not "far from the origin".** Translating orthogonal to
-///    `Σ A_f n_f` never changes it at any magnitude, and translating the other
-///    way keeps it `false` however far you go, with the flip hidden inside.
-///    (Producer, `+z` half-space only:
-///    `signed_volume_sees_a_local_flip_once_the_mesh_is_off_origin`.)
+/// // A census verdict is trustworthy only where it had edges to judge.
+/// let locally_clean = report
+///     .winding
+///     .is_some_and(|c| c.has_judgeable_edges() && !c.has_inconsistent_winding());
+/// # let _ = locally_clean;
+/// ```
 ///
-/// ⇒ **Not a winding verdict in either direction.** `false` is not evidence of
-/// correct winding; `true` may mean a global reversal, a local flip, **or** a
-/// correctly-wound open surface in an unlucky frame.
-///
-/// ⚠ **`winding.degenerate_faces` and [`Self::degenerate_face_count`] are
-/// nested, not disjoint.** The census counts index-repeating faces; the report
-/// counts faces below [`ValidationOptions::degenerate_area_threshold`]. An
-/// index-repeating face has two coincident corners, so its area is exactly
-/// zero and it is counted by **both** — hence
-/// `winding.degenerate_faces <= degenerate_face_count` at any positive
-/// threshold. At a threshold of exactly `0.0` the containment **inverts**
-/// (`0.0 < 0.0` is false), so the census can exceed the report.
-///
-/// **Report-only.** These are readings, not verdicts; see
-/// [`Self::is_printable`] for what is and is not judged.
-///
-/// ⚠ **`#[non_exhaustive]`.** Build one with [`validate_mesh`] rather than a
-/// struct literal; match with a `..` rest pattern. Added in 2.0.0 alongside
-/// the [`Self::winding`] field, so that the major break is paid once and
-/// later fields are additive.
+/// ⚠ **`#[non_exhaustive]`.** Build one with [`validate_mesh`], or from
+/// [`Default`] plus field assignment; match with a `..` rest pattern.
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct MeshReport {
@@ -86,58 +66,65 @@ pub struct MeshReport {
     pub is_watertight: bool,
     /// Whether the mesh is manifold (no non-manifold edges).
     pub is_manifold: bool,
-    /// Whether the mesh's origin-apex signed volume is negative.
+    /// Whether `V < 0`, for `V = Σ det[v₀,v₁,v₂] / 6` — the origin-apex
+    /// tetrahedron sum. Always measured.
     ///
-    /// ⚠ **A global test, and unsound as a winding check in both directions** —
-    /// see the type docs before reading this as "the winding is reversed".
-    /// Prefer [`Self::winding`] for local orientation consistency.
+    /// ⚠ **Frame-dependent, and not a winding verdict in either direction.**
+    /// This is the single home for that mechanism; other docs link here rather
+    /// than restate it. Translating by `t` moves `V` by `(t/3) · Σ A_f n_f`,
+    /// the area-weighted face-normal sum. Two consequences:
     ///
-    /// `false` when [`ValidationOptions::check_winding`] is off —
-    /// indistinguishable from a mesh that was checked and found not to be
-    /// inside-out.
+    /// 1. `V` is translation-invariant exactly when `Σ A_f n_f = 0`, which
+    ///    holds for a **closed** consistently-oriented surface. Consistent
+    ///    winding alone does not suffice — an open triangle is perfectly wound
+    ///    and its flag still moves with the frame. Nor is it required: two
+    ///    antipodal flipped faces cancel, leaving `V` fixed while the census
+    ///    counts six bad edges.
+    /// 2. Where `V` is not invariant, the flag is set on one side of a
+    ///    **half-space** in `t` — not "far from the origin". Translating
+    ///    orthogonal to `Σ A_f n_f` never changes it at any magnitude.
+    ///
+    /// ⇒ `false` is not evidence of correct winding, and `true` may mean a
+    /// global reversal, a local flip, **or** a correctly-wound open surface in
+    /// an unlucky frame. Producers:
+    /// `a_local_flip_can_set_the_flag_at_the_origin` and
+    /// `a_consistently_wound_open_mesh_can_set_the_flag_by_translation_alone`.
     pub is_inside_out: bool,
 
     /// Per-edge local orientation consistency — the question
-    /// [`Self::is_inside_out`] cannot ask.
+    /// [`Self::is_inside_out`] cannot ask. See [`WindingCensus`] for its
+    /// semantics and the several ways it can be vacuous.
     ///
-    /// All-zero when [`ValidationOptions::check_winding`] is off.
+    /// `None` when [`ValidationOptions::winding_census`] is off: the census
+    /// did not run, and no counter on it means anything. This is why the field
+    /// is an `Option` rather than an all-zero census — a zeroed census is
+    /// indistinguishable from a clean one on five of its six counters.
     ///
-    /// ⚠ **That state is self-identifying for the *verdict* only, and for
-    /// nothing else.** `winding.has_judgeable_edges()` is `false`, so a zero
-    /// `inconsistent_edges` reports "no edge was examined" rather than "the
-    /// winding is clean" — `is_inside_out` has no equivalent tell. But
-    /// `has_judgeable_edges()` reads `interior_edges` alone. The census's
-    /// other four counters — `boundary_edges`, `non_manifold_edges`,
-    /// `degenerate_faces`, `faces_on_inconsistent_edges` — are zeroed by the
-    /// option with **no tell at all**, and are indistinguishable from a mesh
-    /// genuinely free of those defects. A gate asserting
-    /// `winding.non_manifold_edges == 0` is silently satisfied by turning the
-    /// option off, exactly as `is_inside_out` is.
-    pub winding: WindingCensus,
+    /// ⚠ **Its edge and face counters are NOT the report's, and can disagree.**
+    /// The census skips a face listing a vertex twice *whole*; the adjacency
+    /// behind [`Self::boundary_edge_count`], [`Self::non_manifold_edge_count`]
+    /// and [`Self::is_manifold`] counts that face's traversals. One such face
+    /// is enough: the report reads `non_manifold_edge_count == 1` and
+    /// `is_manifold == false` while the census reads `non_manifold_edges == 0`.
+    /// Likewise `winding.degenerate_faces` (index-repeating) is a subset of
+    /// [`Self::degenerate_face_count`] (area below
+    /// [`ValidationOptions::degenerate_area_threshold`]) — an index-repeating
+    /// face has zero area, so it is counted by both, and the containment holds
+    /// at any positive threshold. At exactly `0.0` it inverts, since
+    /// `0.0 < 0.0` is false.
+    pub winding: Option<WindingCensus>,
 }
 
 impl MeshReport {
     /// Check if the mesh is ready for 3D printing.
     ///
-    /// Requires the mesh to be watertight, manifold, and to have a
-    /// **non-negative origin-apex signed volume**.
+    /// Watertight, manifold, and a non-negative origin-apex signed volume.
     ///
-    /// ⚠ **That last term is not a winding check.** This method's doc
-    /// previously claimed it required "correct winding"; it does not, and
-    /// cannot, because [`Self::is_inside_out`] is frame-dependent and unsound
-    /// as a winding verdict in both directions (type docs). A mesh with
-    /// locally flipped faces can pass this, and a correctly-wound **open**
-    /// mesh can fail it purely because of where it sits in its own frame.
-    ///
-    /// ▶ **Deliberately unchanged.** [`Self::winding`] is reported here but not
-    /// judged. Note what that does *not* rest on: this predicate has **no
-    /// caller in this workspace** outside tests, so the in-tree risk of
-    /// tightening it is nil. The reasons to defer are that (a) nothing has yet
-    /// measured what real meshes census at, and (b) it is a published
-    /// predicate, so changing its meaning is a behavioural break that deserves
-    /// its own evidence and its own release note rather than riding along with
-    /// a structural one. See also [`Self::has_issues`] and
-    /// [`Self::issue_count`], which exclude winding for the same reason.
+    /// ⚠ **That last term is not a winding check** — see
+    /// [`Self::is_inside_out`]. A mesh with locally flipped faces passes this
+    /// (producer: `census_sees_a_local_flip_that_the_signed_volume_test_misses`).
+    /// [`Self::winding`] is reported but not judged here, nor by
+    /// [`Self::has_issues`] or [`Self::issue_count`].
     #[must_use]
     pub const fn is_printable(&self) -> bool {
         self.is_watertight && self.is_manifold && !self.is_inside_out
@@ -145,10 +132,8 @@ impl MeshReport {
 
     /// Check if the mesh has any issues.
     ///
-    /// ▶ Counts connectivity and geometry defects only. Inconsistent winding
-    /// ([`Self::winding`]) is **excluded**, for the same reason it is excluded
-    /// from [`Self::is_printable`]: adding it would change what existing
-    /// callers see reported, ahead of any measurement of real inputs.
+    /// Connectivity and geometry defects only; winding is excluded, and
+    /// [`Self::issue_count`] is kept in step with this.
     #[must_use]
     pub const fn has_issues(&self) -> bool {
         self.boundary_edge_count > 0
@@ -157,11 +142,8 @@ impl MeshReport {
             || self.duplicate_face_count > 0
     }
 
-    /// Get a count of total issues found.
-    ///
-    /// ▶ Excludes inconsistent winding, for the same reason as
-    /// [`Self::has_issues`] — the two are deliberately kept in step, so a
-    /// change to one belongs to both.
+    /// Get a count of total issues found. Excludes winding, as
+    /// [`Self::has_issues`] does.
     #[must_use]
     pub const fn issue_count(&self) -> usize {
         self.boundary_edge_count
@@ -189,10 +171,7 @@ impl std::fmt::Display for MeshReport {
             "    Manifold: {}",
             if self.is_manifold { "Yes" } else { "No" }
         )?;
-        // ⚠ These are two readings of two different questions, printed
-        // separately on purpose. This block used to print a single
-        // `Winding: Correct` derived from `is_inside_out` alone — a claim the
-        // signed-volume test cannot support (see the type docs).
+        // Two readings of two different questions, labelled separately.
         writeln!(
             f,
             "    Signed volume: {} (global, origin-apex)",
@@ -202,20 +181,17 @@ impl std::fmt::Display for MeshReport {
                 "non-negative"
             }
         )?;
-        if self.winding.has_judgeable_edges() {
-            writeln!(
+        // Three states, each named for what actually happened. The `Option`
+        // is what makes the third distinguishable from the second.
+        match self.winding {
+            Some(c) if c.has_judgeable_edges() => writeln!(
                 f,
                 "    Local winding: {} of {} interior edges inconsistent",
-                self.winding.inconsistent_edges, self.winding.interior_edges
-            )?;
-        } else {
-            // ⚠ No cause is stated on purpose. An all-zero census means EITHER
-            // the mesh had no judgeable interior edge OR `check_winding` was
-            // off, and this report does not record which — so naming either
-            // one here would be the same kind of unsupported claim the line
-            // above was retired for.
-            writeln!(f, "    Local winding: not examined")?;
-        }
+                c.inconsistent_edges, c.interior_edges
+            ),
+            Some(_) => writeln!(f, "    Local winding: no judgeable interior edge"),
+            None => writeln!(f, "    Local winding: not measured"),
+        }?;
 
         if self.has_issues() {
             writeln!(f)?;
@@ -247,22 +223,21 @@ impl std::fmt::Display for MeshReport {
 pub struct ValidationOptions {
     /// Area threshold below which a face is considered degenerate.
     pub degenerate_area_threshold: f64,
-    /// Whether to run the two orientation instruments —
-    /// [`MeshReport::is_inside_out`] and [`MeshReport::winding`].
+    /// Whether to run the per-edge winding census — the expensive instrument,
+    /// and the whole of this crate's validation cost beyond adjacency.
     ///
-    /// ⚠ **Turning this off is not neutral.** `is_inside_out` becomes a
-    /// hardcoded `false`, which is indistinguishable from a mesh that was
-    /// checked and found fine — so any gate asserting it did *not* fire is
-    /// silently satisfied. [`MeshReport::winding`] does not share the defect:
-    /// its `has_judgeable_edges()` reports `false` when it was never run.
-    pub check_winding: bool,
+    /// Off ⇒ [`MeshReport::winding`] is `None`. Nothing else is affected:
+    /// [`MeshReport::is_inside_out`] is always measured, because it is a
+    /// single allocation-free pass and gating it bought nothing but a field
+    /// that could not tell you it had been skipped.
+    pub winding_census: bool,
 }
 
 impl Default for ValidationOptions {
     fn default() -> Self {
         Self {
             degenerate_area_threshold: 1e-12,
-            check_winding: true,
+            winding_census: true,
         }
     }
 }
@@ -303,7 +278,7 @@ pub fn validate_mesh(mesh: &IndexedMesh) -> MeshReport {
 ///
 /// # Cost
 ///
-/// ⚠ **Two edge maps, not one**, when `check_winding` is on: the
+/// ⚠ **Two edge maps, not one**, when `winding_census` is on: the
 /// [`MeshAdjacency`] built here, and [`winding_census`]'s own. The census
 /// needs per-edge traversal *direction*, which `MeshAdjacency` does not
 /// record and cannot currently supply. Measured at **~28 % over the 1.0.0
@@ -315,11 +290,11 @@ pub fn validate_mesh_with_options(mesh: &IndexedMesh, options: &ValidationOption
 
     let degenerate_face_count = count_degenerate_faces(mesh, options.degenerate_area_threshold);
     let duplicate_face_count = count_duplicate_faces(&mesh.faces);
-    let (is_inside_out, winding) = if options.check_winding {
-        (check_inside_out(mesh), winding_census(mesh))
-    } else {
-        (false, WindingCensus::default())
-    };
+    // ⚠ `is_inside_out` is NOT gated. It is one allocation-free pass, and a
+    // gated bool cannot report that it was skipped — the census can, via
+    // `None`, which is why only the census is optional.
+    let is_inside_out = check_inside_out(mesh);
+    let winding = options.winding_census.then(|| winding_census(mesh));
 
     MeshReport {
         vertex_count: mesh.vertices.len(),
@@ -424,6 +399,19 @@ fn check_inside_out(mesh: &IndexedMesh) -> bool {
 mod tests {
     use super::*;
     use mesh_types::Point3;
+
+    /// The census from a report that requested one. Panics if it did not —
+    /// which is the point: a test reading census counters is asserting the
+    /// census ran, and should fail loudly rather than silently read zeros.
+    ///
+    /// The panic is the contract, not an oversight, hence the narrow allow.
+    #[allow(clippy::panic, reason = "test helper whose failure mode IS a panic")]
+    fn census(report: &MeshReport) -> WindingCensus {
+        let Some(c) = report.winding else {
+            panic!("this report was built with the census enabled")
+        };
+        c
+    }
 
     fn simple_triangle() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
@@ -563,7 +551,7 @@ mod tests {
 
         // The per-edge census is not blind to it. All three of the flipped
         // face's edges are now traversed the same way by both incident faces.
-        assert_eq!(report.winding.inconsistent_edges, 3);
+        assert_eq!(census(&report).inconsistent_edges, 3);
         // ...out of all six, so the census judged the whole closed surface
         // rather than reaching a verdict from a sliver of it.
         //
@@ -571,7 +559,7 @@ mod tests {
         // deliberately NOT asserted here: both are *defined* as `> 0` on
         // counters the line above already pins, so beside it neither can fail
         // and asserting them would read as verification while adding none.
-        assert_eq!(report.winding.interior_edges, 6);
+        assert_eq!(census(&report).interior_edges, 6);
 
         // ⇒ the exact claim the old `is_printable` doc made and could not
         //   support: a mesh whose winding is locally broken passes it. Pinned
@@ -593,31 +581,44 @@ mod tests {
         );
     }
 
+    /// The option gates the census and NOTHING else.
+    ///
+    /// Round 3 caught the previous version of this test being unable to fail:
+    /// it asserted `!is_inside_out` on a fixture whose measured value was also
+    /// `false`, so it passed whether the value was hardcoded by the gate or
+    /// measured on the mesh — the very indistinguishability it claimed to
+    /// demonstrate. That is now structurally impossible (`is_inside_out` is
+    /// never gated), and this test proves it on a mesh where the two answers
+    /// DIFFER: face 2 flipped makes the mesh genuinely inside-out, so a
+    /// resurrected gate would report `false` and fail here.
     #[test]
-    fn disabling_the_winding_check_is_self_identifying_in_the_census() {
-        let mesh = tetrahedron_with_one_flipped_face();
-        let options = ValidationOptions {
-            check_winding: false,
-            ..Default::default()
-        };
-        let report = validate_mesh_with_options(&mesh, &options);
+    fn the_option_gates_the_census_and_leaves_the_volume_flag_measured() {
+        let mut mesh = unit_tetrahedron();
+        let f = mesh.faces[2];
+        mesh.faces[2] = [f[0], f[2], f[1]];
 
-        // Both instruments now read "clean" — but only one of them admits that
-        // it never ran, which is the whole difference between them.
-        assert!(
-            !report.is_inside_out,
-            "the documented trap: indistinguishable from a genuine result"
-        );
-        assert_eq!(report.winding.inconsistent_edges, 0);
-        assert!(
-            !report.winding.has_judgeable_edges(),
-            "a zero from an un-run census must report itself as un-examined"
+        let report = validate_mesh_with_options(
+            &mesh,
+            &ValidationOptions {
+                winding_census: false,
+                ..Default::default()
+            },
         );
 
-        // The same mesh, actually checked, is not clean — so the zero above is
-        // an artefact of the option and not a property of the mesh. Without
-        // this the assertions above would pass on a genuinely clean fixture.
-        assert_eq!(validate_mesh(&mesh).winding.inconsistent_edges, 3);
+        assert!(report.winding.is_none(), "the census was not requested");
+        assert!(
+            report.is_inside_out,
+            "the volume flag is measured regardless of the option — a gate on \
+             it would report the hardcoded `false` here"
+        );
+        // Cross-check that the two answers really do differ on this fixture,
+        // so the assert above cannot pass by coincidence.
+        assert_eq!(
+            census(&validate_mesh(&mesh)).inconsistent_edges,
+            3,
+            "fixture precondition: this mesh is BOTH inside-out and locally \
+             inconsistent, so neither instrument's answer is the default"
+        );
     }
 
     /// The fixture's stated rationale, pinned rather than asserted in prose.
@@ -686,7 +687,7 @@ mod tests {
         // Same defect, same magnitude, as the face-1 flip the other tests use
         // — so the two cases differ only in the GLOBAL test's response, which
         // is the point.
-        assert_eq!(report.winding.inconsistent_edges, 3);
+        assert_eq!(census(&report).inconsistent_edges, 3);
     }
 
     /// The other counter-example: consistent winding does not buy invariance.
@@ -718,7 +719,7 @@ mod tests {
         // not agree. Pinning the abstention is the honest claim, and it is the
         // one that makes the contrast with the fired flag meaningful.
         assert!(
-            !report.winding.has_judgeable_edges(),
+            !census(&report).has_judgeable_edges(),
             "the census had nothing to judge, so the flag fired with no local \
              defect present and none ruled out"
         );
@@ -746,7 +747,8 @@ mod tests {
         let report = validate_mesh(&tetrahedron_with_one_flipped_face());
 
         assert_ne!(
-            report.winding.inconsistent_edges, report.winding.faces_on_inconsistent_edges,
+            census(&report).inconsistent_edges,
+            census(&report).faces_on_inconsistent_edges,
             "precondition: the two counters must differ, or this test cannot \
              tell which one Display used"
         );
@@ -767,65 +769,62 @@ mod tests {
         assert!(display.contains("Signed volume: negative (global, origin-apex)"));
     }
 
+    /// The three census states must render as three different lines.
+    ///
+    /// This replaces three earlier tests that each guarded one half of a
+    /// wording problem: with a single all-zero census, "ran but had nothing to
+    /// judge" and "never ran" were indistinguishable, so any cause the line
+    /// named was false in one of the two cases. `Option` makes them distinct,
+    /// and this pins that they stay distinct.
     #[test]
-    fn display_marks_an_unjudgeable_census_rather_than_printing_a_clean_zero() {
-        // A single triangle has no interior edge, so the census saw nothing.
-        let display = format!("{}", validate_mesh(&simple_triangle()));
-
-        assert!(display.contains("Local winding: not examined"));
-        // Pin the ROUTE, not just the text: this test exists to cover the
-        // no-interior-edge cause, and would silently become a duplicate of
-        // `display_names_no_cause_for_an_all_zero_census` if the census stopped
-        // running here.
-        let census = validate_mesh(&simple_triangle()).winding;
-        assert_eq!(census.interior_edges, 0);
-        assert_eq!(
-            census.boundary_edges, 3,
-            "the census DID run and saw three boundary edges — the zero above \
-             is the mesh's shape, not a skipped check"
-        );
-    }
-
-    #[test]
-    fn display_names_no_cause_for_an_all_zero_census() {
-        // The same "not examined" line, reached the OTHER way — a mesh with
-        // six perfectly judgeable interior edges, whose census never ran. The
-        // line must not claim a cause it cannot distinguish: saying "no
-        // interior edges" here would be false.
-        let options = ValidationOptions {
-            check_winding: false,
-            ..Default::default()
-        };
-        let display = format!(
+    fn display_distinguishes_a_vacuous_census_from_an_absent_one() {
+        // (a) ran, and had judgeable edges.
+        let judged = format!("{}", validate_mesh(&unit_tetrahedron()));
+        // (b) ran, and had nothing to judge — a lone triangle has no interior edge.
+        let vacuous = format!("{}", validate_mesh(&simple_triangle()));
+        // (c) never ran.
+        let absent = format!(
             "{}",
-            validate_mesh_with_options(&unit_tetrahedron(), &options)
+            validate_mesh_with_options(
+                &unit_tetrahedron(),
+                &ValidationOptions {
+                    winding_census: false,
+                    ..Default::default()
+                },
+            )
         );
 
-        assert!(display.contains("Local winding: not examined"));
-        assert!(
-            !display.contains("no interior edges"),
-            "the mesh has six; the census simply did not run"
+        assert!(judged.contains("Local winding: 0 of 6 interior edges inconsistent"));
+        assert!(vacuous.contains("Local winding: no judgeable interior edge"));
+        assert!(absent.contains("Local winding: not measured"));
+
+        // The load-bearing part: (b) and (c) are the pair that used to collide.
+        // Same mesh in (a) and (c), so only the option differs.
+        assert_ne!(
+            vacuous.lines().find(|l| l.contains("Local winding")),
+            absent.lines().find(|l| l.contains("Local winding")),
+            "a census that ran and found nothing must not render like one that \
+             never ran"
         );
-        // The cross-check: those six edges are real and judgeable, so the
-        // absent cause really would have been a false statement.
-        assert_eq!(validate_mesh(&unit_tetrahedron()).winding.interior_edges, 6);
+        // And the census really did run in (b) — otherwise (b) would be (c).
+        assert_eq!(census(&validate_mesh(&simple_triangle())).boundary_edges, 3);
     }
 
-    /// The SYMMETRIC guard. The test above rules out one false cause; without
-    /// this one, naming the *other* cause — "`check_winding` disabled" — passes
-    /// every test in this file while being false for every single-triangle
-    /// mesh, whose census ran and simply had nothing to judge.
+    /// Producer for the type docs' claim that the census's edge counters and
+    /// the report's own can disagree. One index-repeating face is enough.
     #[test]
-    fn display_names_no_cause_for_a_census_that_ran_and_found_nothing() {
-        let display = format!("{}", validate_mesh(&simple_triangle()));
+    fn the_census_and_the_report_disagree_on_non_manifold_edges() {
+        let mut mesh = unit_tetrahedron();
+        mesh.faces.push([0, 0, 1]); // index-repeat: skipped whole by the census
 
-        assert!(display.contains("Local winding: not examined"));
-        assert!(
-            !display.contains("check_winding") && !display.contains("disabled"),
-            "the census DID run on this mesh; naming the option as the cause \
-             would be exactly the unsupported claim this line was rewritten to \
-             avoid"
-        );
+        let report = validate_mesh(&mesh);
+
+        // Adjacency counts the face's traversals...
+        assert_eq!(report.non_manifold_edge_count, 1);
+        assert!(!report.is_manifold);
+        // ...the census skipped it, so it sees no non-manifold edge at all.
+        assert_eq!(census(&report).non_manifold_edges, 0);
+        assert_eq!(census(&report).degenerate_faces, 1);
     }
 
     /// The two degenerate counters are NESTED, and the type docs say so — this
@@ -845,7 +844,7 @@ mod tests {
         let report = validate_mesh(&mesh);
 
         // The census judges connectivity, so it sees only the index-repeat.
-        assert_eq!(report.winding.degenerate_faces, 1);
+        assert_eq!(census(&report).degenerate_faces, 1);
         // The area test sees BOTH — an index-repeating face has two coincident
         // corners, hence exactly zero area. This is the containment the docs
         // claim, and the reason the two must not be read as disjoint.
