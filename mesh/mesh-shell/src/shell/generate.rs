@@ -601,7 +601,8 @@ mod tests {
         );
         assert!(
             validation.is_printable(),
-            "shell should be printable (watertight + manifold + consistent winding)",
+            "shell should be printable (watertight + manifold; `is_printable` \
+             does NOT include winding — `is_valid` is the one that does)",
         );
         assert!(
             validation.issues.is_empty(),
