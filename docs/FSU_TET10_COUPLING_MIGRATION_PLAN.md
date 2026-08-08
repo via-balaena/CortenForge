@@ -1263,18 +1263,24 @@ The replication sweep died at `cell = 0.002` with `free residual norm NaN` at Ne
 
 | hypothesis | verdict |
 |---|---|
-| memory pressure | **no** — 5.73 GB peak on a 24 GB machine |
-| accumulation across realizations | **no** — one realization reproduces it |
-| `duplicate()` | **no** — bit-identical to direct construction |
-| either element alone | **no** — both converge at `0.002` and `0.0015`, zero fallbacks |
-| the `faer` LU fallback | **no** — fires once, *at* the failure |
-| damage at construction | **no** — building a Tet10 arm and **dropping** it leaves the Tet4 solve bit-identical to never building one |
-| **two simultaneously live solvers** | **YES** |
+| memory pressure | **ruled out** — 5.73 GB peak on a 24 GB machine |
+| accumulation across realizations | **ruled out** — one realization reproduces it |
+| `duplicate()` | **ruled out** — bit-identical to direct construction |
+| either element alone | **ruled out** — both converge at `0.002` and `0.0015`, zero fallbacks |
+| damage at construction | **ruled out** — building a Tet10 arm and **dropping** it leaves the Tet4 solve bit-identical to never building one |
+| the `faer` LU fallback | ⚠ **NOT ruled out — it is in the causal path.** `Llt` reports a non-PD pivot, the LU fallback fires, and the residual is `NaN`, all on the same iteration. What the *single* firing shows is only that the storm seen in the sweep came from earlier realizations; it says nothing about whether the LU solve on that pattern is what produces the `NaN`. Untested. |
+| a Tet4 solve with a live Tet10 alongside | **reproduces, every time** |
 
 ★ The failing solve is **Tet4**, which alone converges in 0.6 s to 2.58e-12; it returns `NaN` on
 its *first* iteration only while a Tet10 arm is alive. Reproducer:
 `rung5_coresidency_minimal_reproducer_fom` (71 s); discriminator:
 `rung5_coresidency_discriminator_dropped_tet10_fom` (2 s).
+
+⚠ **The converse was never measured.** Every probe here solves **Tet4** while a Tet10 is live;
+Tet10-solved-while-Tet4-is-live has not been run — the reproducer would have reached it, but it
+panics on the first solve. So the finding is *not* the symmetric "two live solvers break each
+other"; it is the narrower statement in the table. Establishing symmetry needs one more probe
+that solves the arms in the opposite order.
 
 ⚠ **Unexplained: it is refinement-dependent.** Step 1 holds both arms live at `cell = 0.003` and
 is a shipped, passing test. §4.1 notes `faer` switches to supernodal kernels past ~23.5k DOF,
@@ -1337,7 +1343,7 @@ transfer — the behaviour does, and behaviour is what this rung asks about.
 | 3 ✅ | sim-soft + fsu-model | **§4.3** residual ↓ again (authorised RMS 0.881 → 0.767 mm at rung 4; **0.197 → 0.111 at rung β**) | **§4.4** coverage 67.4 % (**91.0 % at rung β**) + per-Gauss-point floor; k_disc shift 0.05 % committed | straight-Tet10 arm untouched (rung-1 FOM re-runs at 0.666 / 0.663) |
 | 4 ✅ | fsu-model, coupling | single `RUNG7_K_DISC` re-anchor, measured (−0.2819 → −0.1882) | **§4.5** full ramp completes, `detJ > 0` on the DEFORMED config; **§4.6** flexion ROM assert; segment shift +0.0082° vs predicted ~0.008° | — |
 | 4b | fsu-model | **§4.3** residual, on the COUPLED disc | lofted disc completes ±6° conformed, both elements | — |
-| 5 ⛔ | fsu-model | **BLOCKED, RE-SCOPED 2026-08-07 — on a NEW premise; the old one is discharged.** α.1 made the retained domain *monotone* in `cell` (15.4 % p2p, was 49.5 % non-monotone) and the superior band no longer outgrows the domain — now **gated** by assert 2b. `k_disc` spread ~100 % → **21.13 %**. ⇒ the meshing-stability blocker is spent. **BLOCKED AGAIN, 2026-08-08, on a THIRD premise — and this one is not methodological.** The n = 1 blocker stands, but replication cannot be run: two simultaneously live arms produce `free residual norm NaN` at Newton iter 0 above `cell = 0.003`. Bounded in §5.5 RESULTS — not memory, not accumulation, not `duplicate()`, not either element alone, not construction; **co-existence of two live solvers**. `σ` at the refined levels is therefore UNMEASURED and unmeasurable until it is fixed. ✅ The RSS constraint IS spent (4.99 GB vs an 8 GB pre-registered budget), so §5.5's rollback no longer applies. ▶ NEXT = fix the co-residency defect; it makes **any** paired-arm study above `cell = 0.003` unreliable, not just this rung. | When unblocked — **§4.8** the bracket `\|k*\| ≤ \|k10(fine)\| ≤ \|k10(coarse)\| ≤ \|k4\|`, ±5 % two-sided pins; headline = a lower bound on the shipped `RUNG7_K_DISC` error | liveness (strictly-monotone DOFs per arm) → rung-1 known-value reproduction → **clamp-plane constancy** → **pinned-population growth (assert 2b, LIVE)** → `min_jacobian_ratio` → domain metrics | zero production diff; rung-2 `llvm-cov` oracle on **`coupled.rs` + `coupling/src/bonded.rs`** (NOT `src/lib.rs` — this rung adds tests to it) |
+| 5 ⛔ | fsu-model | **BLOCKED, RE-SCOPED 2026-08-07 — on a NEW premise; the old one is discharged.** α.1 made the retained domain *monotone* in `cell` (15.4 % p2p, was 49.5 % non-monotone) and the superior band no longer outgrows the domain — now **gated** by assert 2b. `k_disc` spread ~100 % → **21.13 %**. ⇒ the meshing-stability blocker is spent. **BLOCKED AGAIN, 2026-08-08, on a THIRD premise — and this one is not methodological.** The n = 1 blocker stands, but replication cannot be run: above `cell = 0.003` a **Tet4 solve with a live Tet10 arm alongside** returns `free residual norm NaN` at Newton iter 0. Bounded in §5.5 RESULTS — memory, accumulation, `duplicate()`, either element alone and construction-time damage are all ruled out by measurement. ⚠ The `faer` LU fallback is NOT ruled out (it is in the causal path), and the converse ordering — Tet10 solved while Tet4 is live — was never run. `σ` at the refined levels is therefore UNMEASURED and unmeasurable until it is fixed. ✅ The RSS constraint IS spent (4.99 GB vs an 8 GB pre-registered budget), so §5.5's rollback no longer applies. ▶ NEXT = fix the co-residency defect; it makes **any** paired-arm study above `cell = 0.003` unreliable, not just this rung. | When unblocked — **§4.8** the bracket `\|k*\| ≤ \|k10(fine)\| ≤ \|k10(coarse)\| ≤ \|k4\|`, ±5 % two-sided pins; headline = a lower bound on the shipped `RUNG7_K_DISC` error | liveness (strictly-monotone DOFs per arm) → rung-1 known-value reproduction → **clamp-plane constancy** → **pinned-population growth (assert 2b, LIVE)** → `min_jacobian_ratio` → domain metrics | zero production diff; rung-2 `llvm-cov` oracle on **`coupled.rs` + `coupling/src/bonded.rs`** (NOT `src/lib.rs` — this rung adds tests to it) |
 
 **★ CI reality, stated plainly** (v1's table implied protection that does not exist): `sim-coupling`
 and `cf-fsu-model` run only in `tests-release` shard 1 (`.github/workflows/quality-gate.yml:471`);
