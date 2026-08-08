@@ -216,9 +216,11 @@ pub fn validate_shell(shell: &IndexedMesh) -> ShellValidationResult {
 
     let mut issues = Vec::new();
 
-    // Check for empty shell
+    // Check for empty shell. Refuses everything below rather than passing
+    // vacuously; see the note on `has_consistent_winding`.
     if shell.faces.is_empty() {
         issues.push(ShellIssue::EmptyShell);
+        warn!("Shell has no faces; refusing rather than validating vacuously");
         return ShellValidationResult {
             is_watertight: false,
             is_manifold: false,
@@ -302,10 +304,18 @@ pub fn validate_shell(shell: &IndexedMesh) -> ShellValidationResult {
         issues,
     };
 
-    if result.is_printable() {
-        info!("Shell validation passed - mesh is printable");
+    // Report on the issue list, not on `is_printable()`. That predicate omits
+    // winding and degenerate faces, so branching on it logged "validation
+    // passed" for a mis-wound shell while swallowing its issues.
+    if result.issues.is_empty() {
+        info!("Shell validation found no issues");
     } else {
-        warn!("Shell validation found {} issue(s)", result.issue_count());
+        warn!(
+            "Shell validation found {} issue(s) (printable={}, valid={})",
+            result.issue_count(),
+            result.is_printable(),
+            result.is_valid()
+        );
     }
 
     debug!("{}", result);
