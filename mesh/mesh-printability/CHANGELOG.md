@@ -9,14 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Degenerate-face detection.** Faces listing a vertex twice are zero-area
-  and unprintable, and until now nothing here detected them. Such a face
-  registers each of its edges from *both* traversals, so `build_edge_to_faces`
-  sees exactly two incidences and the manifold passes stay silent; the §5.5
-  directed-edge count was catching them incidentally and reporting them as a
-  *winding* inconsistency, which they are not. Now reported as its own
-  `NonManifold` Critical reading "N face(s) list a vertex twice (degenerate,
-  zero-area)".
+- **Degenerate-face detection.** Faces listing a vertex twice are necessarily
+  zero-area and unprintable. The §5.5 directed-edge count was catching them
+  incidentally and reporting them as a *winding* inconsistency, which they are
+  not. Now reported as its own `NonManifold` Critical reading "N face(s) list a
+  vertex twice (degenerate, zero-area)".
+
+  A lone such face was already caught: `[a,a,b]` presents `(a,b)` twice and the
+  self-loop `(a,a)` once, so the open-edge pass fires. It takes a *pair* sharing
+  the repeated vertex — `[[0,0,1],[0,0,2]]` — to lift the self-loop to two
+  incidences as well, at which point every edge looks interior and the manifold
+  passes see a closed mesh.
 
 ### Changed
 

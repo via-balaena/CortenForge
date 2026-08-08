@@ -1167,6 +1167,54 @@ fn the_thinwall_precondition_matches_the_directed_edge_formulation() {
 }
 
 #[test]
+fn one_degenerate_face_is_caught_by_the_open_edge_pass_but_two_are_not() {
+    // Pins the mechanism that makes the degenerate pass necessary, because the
+    // obvious reading of it is wrong.
+    //
+    // `[a,a,b]` does NOT present all its edges twice. It presents `(a,b)` twice
+    // — it traverses that pair itself, forwards and back — and the self-loop
+    // `(a,a)` once. One incidence is an OPEN edge, so a lone degenerate face
+    // was always caught, as `NotWatertight`.
+    //
+    // A second such face sharing the repeated vertex lifts `(a,a)` to two while
+    // contributing its own doubled pair, so every edge reaches exactly two and
+    // the open-edge pass goes quiet. That mesh is the one that needed a new
+    // detector.
+    let vertices = vec![
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(1.0, 0.0, 0.0),
+        Point3::new(0.0, 1.0, 0.0),
+    ];
+    let config = PrinterConfig::fdm_default();
+
+    let lone = IndexedMesh::from_parts(vertices.clone(), vec![[0, 0, 1]]);
+    let lone_result = validate_for_printing(&lone, &config).expect("validation should succeed");
+    assert!(
+        lone_result
+            .issues
+            .iter()
+            .any(|i| i.issue_type == PrintIssueType::NotWatertight),
+        "a lone degenerate face leaves its self-loop edge open; got: {:?}",
+        lone_result.issues,
+    );
+
+    let pair = IndexedMesh::from_parts(vertices, vec![[0, 0, 1], [0, 0, 2]]);
+    let pair_result = validate_for_printing(&pair, &config).expect("validation should succeed");
+    assert!(
+        !pair_result
+            .issues
+            .iter()
+            .any(|i| i.issue_type == PrintIssueType::NotWatertight),
+        "the pair closes the self-loop, so the open-edge pass sees nothing; got: {:?}",
+        pair_result.issues,
+    );
+    assert!(
+        !pair_result.is_printable(),
+        "and only the degenerate pass keeps it rejected",
+    );
+}
+
+#[test]
 fn a_degenerate_face_is_no_longer_reported_as_a_winding_inconsistency() {
     // §5.5 Gap F narrowed when it moved onto the census.
     //
@@ -1176,9 +1224,14 @@ fn a_degenerate_face_is_no_longer_reported_as_a_winding_inconsistency() {
     // census skips a repeated-index face whole, so no edge is judged and no
     // winding issue fires.
     //
-    // ⚠ It is still rejected, but NOT by anything that existed before. Pass 1
-    // is blind to it: each face registers its edges from both traversals, so
-    // `build_edge_to_faces` sees exactly two incidences and emits nothing.
+    // ⚠ It is still rejected, but NOT by anything that existed before.
+    //
+    // ⚠ The PAIR is essential, and this is why. `[0,0,1]` alone presents
+    // `(0,1) → 2` (it traverses that pair twice, by itself) and the self-loop
+    // `(0,0) → 1` — an open edge, which pass 1 catches. Adding `[0,0,2]` lifts
+    // the self-loop to 2 while contributing `(0,2) → 2`, so EVERY edge now has
+    // exactly two incidences, pass 1 sees a closed manifold and emits nothing.
+    //
     // Narrowing the winding pass without adding the degenerate pass flipped
     // 2 640 of 137 280 searched meshes from rejected to printable, all of this
     // shape. The degenerate Critical is what holds the verdict.

@@ -691,11 +691,12 @@ fn build_edge_to_faces(mesh: &IndexedMesh) -> HashMap<(u32, u32), Vec<u32>> {
 ///    so those meshes no longer collect a Critical that misdescribes them as a
 ///    winding problem.
 /// 3. **Degenerate faces** — faces listing a vertex twice, also from the
-///    census. Zero-area, unprintable, and **previously undetected here**: the
-///    directed-edge count was catching them incidentally under the winding
-///    description, and pass 1 cannot see them at all, because such a face
-///    registers each of its edges from both traversals and so presents exactly
-///    two incidences to `build_edge_to_faces`.
+///    census. Zero-area (necessarily: two of the three corners coincide),
+///    unprintable, and previously detected here only by accident, under the
+///    winding description. Pass 1 catches a LONE one — `[a,a,b]` presents
+///    `(a,b) → 2` and the self-loop `(a,a) → 1`, an open edge — but a pair
+///    sharing the repeated vertex lifts the self-loop to 2 as well, and then
+///    every edge looks interior and pass 1 stays silent.
 ///
 /// Verified exhaustively over every mesh of up to three faces on four vertices
 /// (137 280 meshes). Narrowing the winding pass alone would have flipped 2 640
@@ -756,10 +757,16 @@ fn check_basic_manifold(mesh: &IndexedMesh, validation: &mut PrintValidation) {
     // them: the directed-edge count caught them incidentally, and reported them
     // as a winding inconsistency, which they are not.
     //
-    // ⚠ Load-bearing, not cosmetic. Such a face registers each of its edges
-    // from both traversals, so `build_edge_to_faces` sees exactly two
-    // incidences and the passes above stay silent. Without this,
-    // `[[0,0,1],[0,0,2]]` — two zero-area slivers — reads as printable.
+    // ⚠ Load-bearing, not cosmetic, and the mechanism is narrower than it
+    // looks. A face `[a,a,b]` presents its edges to `build_edge_to_faces` as
+    // `(a,b) → 2` (it traverses that pair twice, itself) and `(a,a) → 1`. The
+    // self-loop is therefore an OPEN edge, so a LONE degenerate face is already
+    // caught above as `NotWatertight`.
+    //
+    // It takes a SECOND degenerate face sharing the repeated vertex to lift the
+    // self-loop to 2 as well — at which point every undirected edge has exactly
+    // two incidences, the passes above see a closed manifold, and nothing fires.
+    // `[[0,0,1],[0,0,2]]`, a pair of zero-area slivers, is that mesh.
     if census.degenerate_faces > 0 {
         let issue = PrintIssue::new(
             PrintIssueType::NonManifold,
