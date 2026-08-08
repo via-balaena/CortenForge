@@ -1081,6 +1081,280 @@ fn test_winding_consistent_watertight_cube() {
     );
 }
 
+/// Two tetrahedra sharing face `[1,2,3]`: the shared face's three edges each
+/// carry four incident faces, so the mesh is non-manifold with **zero**
+/// boundary edges and interior edges elsewhere. Isolates `non_manifold_edges`.
+fn glued_tetrahedra() -> IndexedMesh {
+    let vertices = vec![
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(1.0, 0.0, 0.0),
+        Point3::new(0.0, 1.0, 0.0),
+        Point3::new(0.0, 0.0, 1.0),
+        Point3::new(0.7, 0.7, 0.7),
+    ];
+    IndexedMesh::from_parts(
+        vertices,
+        vec![
+            [0, 2, 1],
+            [0, 1, 3],
+            [0, 3, 2],
+            [1, 2, 3],
+            [4, 1, 2],
+            [4, 2, 3],
+            [4, 3, 1],
+            [1, 3, 2],
+        ],
+    )
+}
+
+/// A closed, consistently wound tetrahedron plus two degenerate faces on
+/// vertices the tetrahedron does not use. The pair closes its own self-loop, so
+/// it adds no boundary and no non-manifold edge — leaving `degenerate_faces`
+/// as the only failing term.
+fn tetrahedron_with_disjoint_degenerate_pair() -> IndexedMesh {
+    let vertices = vec![
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(1.0, 0.0, 0.0),
+        Point3::new(0.0, 1.0, 0.0),
+        Point3::new(0.0, 0.0, 1.0),
+        Point3::new(5.0, 5.0, 5.0),
+        Point3::new(6.0, 5.0, 5.0),
+        Point3::new(5.0, 6.0, 5.0),
+    ];
+    IndexedMesh::from_parts(
+        vertices,
+        vec![
+            [0, 2, 1],
+            [0, 1, 3],
+            [0, 3, 2],
+            [1, 2, 3],
+            [4, 4, 5],
+            [4, 4, 6],
+        ],
+    )
+}
+
+#[test]
+fn the_two_isolating_fixtures_really_do_isolate_their_term() {
+    // Guards the guard. If either fixture drifts into tripping another counter,
+    // the mutants it was added to kill start surviving again — silently.
+    let glued = mesh_repair::winding_census(&glued_tetrahedra());
+    assert!(glued.non_manifold_edges > 0, "glued: non-manifold present");
+    assert_eq!(glued.boundary_edges, 0, "glued: but NOT via boundary edges");
+    assert_eq!(glued.degenerate_faces, 0, "glued: nor via degenerate faces");
+    assert!(
+        glued.interior_edges > 0,
+        "glued: and something is judgeable"
+    );
+
+    let disjoint = mesh_repair::winding_census(&tetrahedron_with_disjoint_degenerate_pair());
+    assert_eq!(disjoint.degenerate_faces, 2, "disjoint: degenerate present");
+    assert_eq!(disjoint.boundary_edges, 0, "disjoint: no boundary edges");
+    assert_eq!(disjoint.non_manifold_edges, 0, "disjoint: no non-manifold");
+    assert_eq!(disjoint.inconsistent_edges, 0, "disjoint: winding is clean");
+    assert!(
+        disjoint.interior_edges > 0,
+        "disjoint: tetra edges judgeable"
+    );
+}
+
+#[test]
+fn the_thinwall_precondition_matches_the_directed_edge_formulation() {
+    // `is_watertight_and_consistent_winding` now reads the census. It used to
+    // build its own edge maps and test "every undirected edge has exactly two
+    // faces AND every directed edge appears at most once". Pin that the two
+    // formulations agree, since the ThinWall detector silently produces a
+    // no-walls outcome when the precondition fails.
+    fn directed_edge_formulation(mesh: &IndexedMesh) -> bool {
+        let edge_to_faces = build_edge_to_faces(mesh);
+        if edge_to_faces.values().any(|faces| faces.len() != 2) {
+            return false;
+        }
+        let mut directed: HashMap<(u32, u32), u32> = HashMap::new();
+        for face in &mesh.faces {
+            let edges = [(face[0], face[1]), (face[1], face[2]), (face[2], face[0])];
+            for edge in &edges {
+                *directed.entry(*edge).or_insert(0) += 1;
+            }
+        }
+        directed.values().all(|&c| c <= 1)
+    }
+
+    let v = vec![
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(1.0, 0.0, 0.0),
+        Point3::new(0.0, 1.0, 0.0),
+        Point3::new(0.0, 0.0, 1.0),
+    ];
+    // ⚠ The EMPTY mesh is deliberately excluded, and the two formulations
+    // genuinely differ on it: the directed-edge version returns `true`
+    // (both of its checks pass vacuously over zero edges) while the
+    // census version returns `false` via `interior_edges > 0`. Unreachable
+    // through the public API — `validate_for_printing` rejects an empty mesh
+    // with `PrintabilityError::NoFaces` before any detector runs — and `false`
+    // is the safer answer for a precondition that gates ray-casting.
+    assert!(
+        !is_watertight_and_consistent_winding(&IndexedMesh::new()),
+        "empty mesh must not satisfy the precondition",
+    );
+    assert!(
+        validate_for_printing(&IndexedMesh::new(), &PrinterConfig::fdm_default()).is_err(),
+        "and the public API never lets one reach the detector anyway",
+    );
+
+    let cases: Vec<(&str, IndexedMesh)> = vec![
+        ("watertight cube", create_watertight_cube()),
+        (
+            "closed tetrahedron",
+            IndexedMesh::from_parts(v.clone(), vec![[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]]),
+        ),
+        (
+            "tetrahedron, one face flipped",
+            IndexedMesh::from_parts(v.clone(), vec![[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 3, 2]]),
+        ),
+        (
+            "open pair",
+            IndexedMesh::from_parts(v.clone(), vec![[0, 1, 2], [1, 0, 3]]),
+        ),
+        (
+            "same-direction pair",
+            IndexedMesh::from_parts(v.clone(), vec![[0, 1, 2], [0, 1, 3]]),
+        ),
+        (
+            "non-manifold: three faces on one edge",
+            IndexedMesh::from_parts(v.clone(), vec![[0, 1, 2], [0, 1, 3], [1, 0, 2]]),
+        ),
+        (
+            "two degenerate faces sharing the repeated vertex",
+            IndexedMesh::from_parts(v.clone(), vec![[0, 0, 1], [0, 0, 2]]),
+        ),
+        (
+            "degenerate face alone",
+            IndexedMesh::from_parts(v, vec![[0, 0, 1]]),
+        ),
+        // ⚠ The two below exist to make `non_manifold_edges` and
+        // `degenerate_faces` the SOLE failing term. Without them, mutation
+        // shows both conjuncts can be deleted with this test still green:
+        // every other fixture that trips them also trips `boundary_edges` or
+        // `interior_edges`, which mask them.
+        ("two tetrahedra glued on a shared face", glued_tetrahedra()),
+        (
+            "closed tetrahedron plus a disjoint degenerate pair",
+            tetrahedron_with_disjoint_degenerate_pair(),
+        ),
+    ];
+
+    for (name, mesh) in cases {
+        assert_eq!(
+            is_watertight_and_consistent_winding(&mesh),
+            directed_edge_formulation(&mesh),
+            "{name}: census-based precondition must match the directed-edge one",
+        );
+    }
+}
+
+#[test]
+fn one_degenerate_face_is_caught_by_the_open_edge_pass_but_two_are_not() {
+    // Pins the mechanism that makes the degenerate pass necessary, because the
+    // obvious reading of it is wrong.
+    //
+    // `[a,a,b]` does NOT present all its edges twice. It presents `(a,b)` twice
+    // — it traverses that pair itself, forwards and back — and the self-loop
+    // `(a,a)` once. One incidence is an OPEN edge, so a lone degenerate face
+    // was always caught, as `NotWatertight`.
+    //
+    // A second such face sharing the repeated vertex lifts `(a,a)` to two while
+    // contributing its own doubled pair, so every edge reaches exactly two and
+    // the open-edge pass goes quiet. That mesh is the one that needed a new
+    // detector.
+    let vertices = vec![
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(1.0, 0.0, 0.0),
+        Point3::new(0.0, 1.0, 0.0),
+    ];
+    let config = PrinterConfig::fdm_default();
+
+    let lone = IndexedMesh::from_parts(vertices.clone(), vec![[0, 0, 1]]);
+    let lone_result = validate_for_printing(&lone, &config).expect("validation should succeed");
+    assert!(
+        lone_result
+            .issues
+            .iter()
+            .any(|i| i.issue_type == PrintIssueType::NotWatertight),
+        "a lone degenerate face leaves its self-loop edge open; got: {:?}",
+        lone_result.issues,
+    );
+
+    let pair = IndexedMesh::from_parts(vertices, vec![[0, 0, 1], [0, 0, 2]]);
+    let pair_result = validate_for_printing(&pair, &config).expect("validation should succeed");
+    assert!(
+        !pair_result
+            .issues
+            .iter()
+            .any(|i| i.issue_type == PrintIssueType::NotWatertight),
+        "the pair closes the self-loop, so the open-edge pass sees nothing; got: {:?}",
+        pair_result.issues,
+    );
+    assert!(
+        !pair_result.is_printable(),
+        "and only the degenerate pass keeps it rejected",
+    );
+}
+
+#[test]
+fn a_degenerate_face_is_no_longer_reported_as_a_winding_inconsistency() {
+    // §5.5 Gap F narrowed when it moved onto the census.
+    //
+    // `[[0,0,1], [0,0,2]]`: both faces list vertex 0 twice, so each registers
+    // edge (0,1)/(0,2) from both its traversals. The old directed-edge count
+    // saw a repeated directed pair and reported a WINDING inconsistency. The
+    // census skips a repeated-index face whole, so no edge is judged and no
+    // winding issue fires.
+    //
+    // ⚠ It is still rejected, but NOT by anything that existed before.
+    //
+    // ⚠ The PAIR is essential, and this is why. `[0,0,1]` alone presents
+    // `(0,1) → 2` (it traverses that pair twice, by itself) and the self-loop
+    // `(0,0) → 1` — an open edge, which pass 1 catches. Adding `[0,0,2]` lifts
+    // the self-loop to 2 while contributing `(0,2) → 2`, so EVERY edge now has
+    // exactly two incidences, pass 1 sees a closed manifold and emits nothing.
+    //
+    // Narrowing the winding pass without adding the degenerate pass flipped
+    // 2 640 of 137 280 searched meshes from rejected to printable, all of this
+    // shape. The degenerate Critical is what holds the verdict.
+    let vertices = vec![
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(1.0, 0.0, 0.0),
+        Point3::new(0.0, 1.0, 0.0),
+    ];
+    let mesh = IndexedMesh::from_parts(vertices, vec![[0, 0, 1], [0, 0, 2]]);
+    let config = PrinterConfig::fdm_default();
+
+    let result = validate_for_printing(&mesh, &config).expect("validation should succeed");
+
+    assert!(
+        !result
+            .issues
+            .iter()
+            .any(|i| i.description.contains("winding inconsistency")),
+        "a repeated-index face is not a winding defect; got: {:?}",
+        result.issues,
+    );
+    assert!(
+        result
+            .issues
+            .iter()
+            .any(|i| i.severity == IssueSeverity::Critical
+                && i.description.contains("list a vertex twice")),
+        "it is rejected as a DEGENERATE face, which is what it is; got: {:?}",
+        result.issues,
+    );
+    assert!(
+        !result.is_printable(),
+        "so the verdict is unchanged by the narrowing",
+    );
+}
+
 #[test]
 fn test_winding_consistent_disjoint_faces() {
     // Two triangles sharing only a single vertex (vertex 2): no shared

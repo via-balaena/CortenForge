@@ -2077,8 +2077,9 @@ fn stress_cross_empty_mesh_full_pipeline() {
 #[test]
 fn stress_cross_inconsistent_winding_blocks_thin_wall_only() {
     // §9.3 row 2 + §9.1 row 11: watertight cube with one face's vertex
-    // order flipped → directed-edge collision → NonManifold Critical with
-    // "winding inconsistency" description. ThinWall's precondition
+    // order flipped → the flipped face's three edges are each traversed the
+    // same way by both incident faces → `winding_census` counts them →
+    // NonManifold Critical with "winding inconsistency". ThinWall's precondition
     // (`is_watertight_and_consistent_winding`, validation.rs:766) fails
     // → `DetectorSkipped`. TrappedVolume's precondition is `is_watertight`
     // ONLY (validation.rs:1424), which tolerates inconsistent winding per
