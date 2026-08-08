@@ -56,13 +56,8 @@ use crate::error::RepairResult;
 ///
 /// # Errors
 ///
-/// Currently always returns `Ok(())` — the function operates in-place
-/// on `mesh.faces` and the only failure modes are upstream
-/// adjacency-graph construction failures, which `MeshAdjacency::build`
-/// handles internally without surfacing through this signature. The
-/// `RepairResult<()>` shape is preserved for forward compatibility
-/// (future winding strategies that consult per-vertex normals or
-/// signed-volume diagnostics may surface error variants).
+/// Never, currently. The `RepairResult<()>` shape is reserved for winding
+/// strategies that could fail.
 ///
 /// # Example
 ///
@@ -467,9 +462,10 @@ pub fn count_inconsistent_faces(mesh: &IndexedMesh) -> usize {
 /// flip_winding(&mut mesh);
 /// assert_eq!(winding_census(&mesh).inconsistent_edges, 0);
 /// ```
-/// ⚠ **`#[non_exhaustive]`.** A census is the type most likely to grow
-/// counters; construct with [`winding_census`] and match with `..`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// ⚠ **No `Default`, and `#[non_exhaustive]`.** [`winding_census`] is the only
+/// way to obtain one: a hand-built census can report a clean verdict nothing
+/// ever measured. Match with a `..` rest pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct WindingCensus {
     /// Edges with exactly two incident faces — the edges this census can judge.
@@ -518,21 +514,13 @@ impl WindingCensus {
     /// Whether **any** edge was in a position to be judged — that is, whether
     /// `interior_edges` is non-zero.
     ///
-    /// `false` means no edge was judged, and a zero `inconsistent_edges`
-    /// alongside it reports exactly that — **not** that the winding is good.
+    /// `false` means no edge was judged — soup, a lone triangle, fully open,
+    /// or non-manifold-only — so a zero `inconsistent_edges` beside it is not
+    /// a clean bill. It does not say which of those applies.
     ///
-    /// ⚠ **It does not tell you WHY** — soup, a single triangle, fully open,
-    /// or non-manifold-only all report `false`. It separates "no verdict" from
-    /// "clean verdict"; no counter on this type separates the causes of the
-    /// former. (A census that never *ran* is not one of them: that is
-    /// [`crate::MeshReport::winding`] being `None`, not a value of this type.)
-    ///
-    /// ⚠ **`true` is not a coverage claim.** A surface that is 99 % boundary
-    /// edges with a single interior edge reports `true`, having judged one
-    /// edge. This method answers non-vacuity only. If you need to know how
-    /// much of the surface the census actually saw, compare `interior_edges`
-    /// against `boundary_edges` yourself — the counters are there precisely
-    /// so that judgement stays with the caller.
+    /// ⚠ **`true` is not a coverage claim:** one interior edge among thousands
+    /// of boundary edges reports `true`. Compare `interior_edges` against
+    /// `boundary_edges` if you need to know how much was seen.
     #[must_use]
     pub const fn has_judgeable_edges(&self) -> bool {
         self.interior_edges > 0
@@ -643,8 +631,12 @@ pub fn winding_census(mesh: &IndexedMesh) -> WindingCensus {
     }
 
     let mut census = WindingCensus {
+        interior_edges: 0,
+        inconsistent_edges: 0,
+        faces_on_inconsistent_edges: 0,
+        boundary_edges: 0,
+        non_manifold_edges: 0,
         degenerate_faces,
-        ..WindingCensus::default()
     };
     let mut damaged_faces: HashSet<usize> = HashSet::new();
 
@@ -1029,7 +1021,8 @@ mod tests {
             assert!(
                 !validate_mesh(&clean).is_inside_out,
                 "z={z}: the unflipped fixture is outward at every offset — \
-                 translation-invariance holds while winding is consistent",
+                 it is CLOSED and consistently oriented, so `Sum(A_f n_f)` is \
+                 zero and V does not move with the frame",
             );
 
             let mut flipped = consistent_octahedron_at(z);
@@ -1204,20 +1197,30 @@ mod tests {
     /// defect — so a census → repair → census loop does not converge.
     #[test]
     fn a_non_orientable_surface_never_censuses_clean_however_often_it_is_repaired() {
-        // Control: the same strip without the twist IS orientable, and repair
-        // clears it. Without this, the assertion below would also pass on a
-        // mesh that `fix_winding_order` simply cannot handle at all.
+        // Control: the untwisted strip is orientable, so repair CAN clear it.
+        //
+        // ⚠ It must start DIRTY. `closed_strip(8, false)` is already
+        // consistently wound, so repairing it and asserting 0 would pass even
+        // if `fix_winding_order` did nothing — the control has to exercise the
+        // repair, not just observe a mesh that never needed it.
         let mut orientable = closed_strip(8, false);
+        let f = orientable.faces[0];
+        orientable.faces[0] = [f[0], f[2], f[1]];
+        assert!(
+            winding_census(&orientable).inconsistent_edges > 0,
+            "control precondition: the fixture must be dirty before repair"
+        );
         fix_winding_order(&mut orientable).unwrap();
         assert_eq!(
             winding_census(&orientable).inconsistent_edges,
             0,
-            "the orientable control must be repairable, or this test proves \
-             nothing about non-orientability"
+            "repair clears a REPAIRABLE defect on this mesh class, so the \
+             Moebius result below is topology and not a broken repair"
         );
 
+        // (`has_judgeable_edges()` is not asserted: `inconsistent_edges > 0`
+        // already entails it, since only the two-faced arm increments either.)
         let mut mobius = closed_strip(8, true);
-        assert!(winding_census(&mobius).has_judgeable_edges());
         assert!(
             winding_census(&mobius).inconsistent_edges > 0,
             "a Möbius band has no consistent orientation"
@@ -1307,17 +1310,26 @@ mod tests {
     }
 
     /// The `INCONCLUSIVE` suffix, which the judgeable fixture above cannot
-    /// reach. Its wording is load-bearing: it must not name a cause, because a
-    /// `MeshReport` can carry an all-zero census that never ran.
+    /// reach. Its wording must not name a cause: this type cannot tell soup
+    /// from open from non-manifold-only.
+    ///
+    /// Built by censusing a real lone triangle rather than fabricating a
+    /// census — `WindingCensus` has no `Default` precisely so that a clean
+    /// verdict cannot be manufactured.
     #[test]
     fn winding_census_display_marks_an_unjudged_census_without_naming_a_cause() {
-        let rendered = WindingCensus::default().to_string();
+        let mut lone = IndexedMesh::new();
+        lone.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        lone.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        lone.vertices.push(Point3::new(0.0, 1.0, 0.0));
+        lone.faces.push([0, 1, 2]);
+
+        let rendered = winding_census(&lone).to_string();
 
         assert!(rendered.ends_with(" | INCONCLUSIVE: no edge was judged"));
         assert!(
             !rendered.contains("two incident faces"),
-            "the retired wording named a cause that is false for a census \
-             which was never run"
+            "the retired wording named a cause this type cannot determine"
         );
     }
 

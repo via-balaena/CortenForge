@@ -18,8 +18,12 @@ use crate::winding::{WindingCensus, winding_census};
 ///   signed-volume test, and frame-dependent; read that field's docs before
 ///   trusting it.
 ///
-/// **The rule, in one sentence:** a *global* flip leaves the census clean and
-/// sets `is_inside_out`; a *local* flip does the reverse.
+/// **Which to use:** [`Self::winding`] answers whether the winding is correct.
+/// [`Self::is_inside_out`] does not, ever — it is the sign of a frame-dependent
+/// volume integral. A local flip can set it
+/// (`a_local_flip_can_set_the_flag_at_the_origin`) and so can a correctly-wound
+/// open mesh (`a_consistently_wound_open_mesh_can_set_the_flag_by_translation_alone`),
+/// so it distinguishes neither.
 ///
 /// To repair what the census reports, see [`crate::fix_winding_order`]
 /// (per-component) or [`crate::flip_winding`] (unconditional).
@@ -41,9 +45,12 @@ use crate::winding::{WindingCensus, winding_census};
 /// # let _ = locally_clean;
 /// ```
 ///
-/// ⚠ **`#[non_exhaustive]`.** Build one with [`validate_mesh`], or from
-/// [`Default`] plus field assignment; match with a `..` rest pattern.
-#[derive(Debug, Clone, Default)]
+/// ⚠ **There is no way to build one except by measuring.** No `Default`, and
+/// `#[non_exhaustive]` blocks struct literals from outside this crate — a
+/// report is a measurement, and a fabricated one could assert
+/// [`Self::is_inside_out`] without ever having computed it. Match with a `..`
+/// rest pattern.
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct MeshReport {
     /// Total number of vertices.
@@ -95,10 +102,9 @@ pub struct MeshReport {
     /// [`Self::is_inside_out`] cannot ask. See [`WindingCensus`] for its
     /// semantics and the several ways it can be vacuous.
     ///
-    /// `None` when [`ValidationOptions::winding_census`] is off: the census
-    /// did not run, and no counter on it means anything. This is why the field
-    /// is an `Option` rather than an all-zero census — a zeroed census is
-    /// indistinguishable from a clean one on five of its six counters.
+    /// `None` when [`ValidationOptions::winding_census`] is off. The `Option`
+    /// exists so that "never ran" and "ran and had nothing to judge" stay
+    /// distinct — they are different facts, and a zeroed census collapses them.
     ///
     /// ⚠ **Its edge and face counters are NOT the report's, and can disagree.**
     /// The census skips a face listing a vertex twice *whole*; the adjacency
@@ -223,8 +229,9 @@ impl std::fmt::Display for MeshReport {
 pub struct ValidationOptions {
     /// Area threshold below which a face is considered degenerate.
     pub degenerate_area_threshold: f64,
-    /// Whether to run the per-edge winding census — the expensive instrument,
-    /// and the whole of this crate's validation cost beyond adjacency.
+    /// Whether to run the per-edge winding census — the single most expensive
+    /// thing `validate_mesh` does, though not the only one (duplicate- and
+    /// degenerate-face detection are each another `O(faces)` pass).
     ///
     /// Off ⇒ [`MeshReport::winding`] is `None`. Nothing else is affected:
     /// [`MeshReport::is_inside_out`] is always measured, because it is a
@@ -798,16 +805,10 @@ mod tests {
         assert!(vacuous.contains("Local winding: no judgeable interior edge"));
         assert!(absent.contains("Local winding: not measured"));
 
-        // The load-bearing part: (b) and (c) are the pair that used to collide.
-        // Same mesh in (a) and (c), so only the option differs.
-        assert_ne!(
-            vacuous.lines().find(|l| l.contains("Local winding")),
-            absent.lines().find(|l| l.contains("Local winding")),
-            "a census that ran and found nothing must not render like one that \
-             never ran"
-        );
-        // And the census really did run in (b) — otherwise (b) would be (c).
-        assert_eq!(census(&validate_mesh(&simple_triangle())).boundary_edges, 3);
+        // No trailing `assert_ne!` on the two "Local winding" lines: the three
+        // asserts above already pin three distinct strings, so distinctness
+        // follows from them and a fourth assert would read as verification
+        // while adding none.
     }
 
     /// Producer for the type docs' claim that the census's edge counters and
@@ -819,9 +820,10 @@ mod tests {
 
         let report = validate_mesh(&mesh);
 
-        // Adjacency counts the face's traversals...
+        // Adjacency counts the face's traversals... (`is_manifold` is not
+        // asserted beside this: it is `all(len <= 2)` over the same map that
+        // produced the count, so it cannot fail while the count holds.)
         assert_eq!(report.non_manifold_edge_count, 1);
-        assert!(!report.is_manifold);
         // ...the census skipped it, so it sees no non-manifold edge at all.
         assert_eq!(census(&report).non_manifold_edges, 0);
         assert_eq!(census(&report).degenerate_faces, 1);
@@ -853,22 +855,48 @@ mod tests {
         // would follow from the two numbers above and could not fail beside
         // them.
         assert_eq!(report.degenerate_face_count, 2);
+
+        // ...and the documented inversion at a threshold of exactly 0.0,
+        // where `area < threshold` admits nothing and the containment flips.
+        let strict = validate_mesh_with_options(
+            &mesh,
+            &ValidationOptions {
+                degenerate_area_threshold: 0.0,
+                ..Default::default()
+            },
+        );
+        assert_eq!(strict.degenerate_face_count, 0);
+        assert_eq!(census(&strict).degenerate_faces, 1);
     }
 
     #[test]
     fn has_issues_empty_mesh() {
-        let report = MeshReport::default();
-        assert!(!report.has_issues());
+        assert!(!validate_mesh(&IndexedMesh::new()).has_issues());
     }
 
+    /// `issue_count` sums the four connectivity/geometry counters.
+    ///
+    /// Built by measuring rather than by literal, since `MeshReport` no longer
+    /// has a `Default`. Only the TOTAL is asserted: pinning each part as well
+    /// would make the sum derivable from its own preconditions.
     #[test]
-    fn issue_count() {
-        let report = MeshReport {
-            boundary_edge_count: 3,
-            degenerate_face_count: 2,
-            ..Default::default()
-        };
+    fn issue_count_sums_the_connectivity_and_geometry_defects() {
+        let mut mesh = IndexedMesh::new();
+        for p in [
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (5.0, 0.0, 0.0),
+            (6.0, 0.0, 0.0),
+            (7.0, 0.0, 0.0), // collinear with the two above
+        ] {
+            mesh.vertices.push(Point3::new(p.0, p.1, p.2));
+        }
+        mesh.faces.push([0, 1, 2]); // 3 boundary edges
+        mesh.faces.push([3, 4, 5]); // zero-area
+        mesh.faces.push([3, 4, 5]); // zero-area AND duplicate
 
-        assert_eq!(report.issue_count(), 5);
+        // 3 boundary + 0 non-manifold + 2 degenerate + 1 duplicate.
+        assert_eq!(validate_mesh(&mesh).issue_count(), 6);
     }
 }

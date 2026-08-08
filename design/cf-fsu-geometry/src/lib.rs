@@ -1221,6 +1221,54 @@ mod tests {
         assert!(load(&empty).is_err(), "empty STL must error");
     }
 
+    /// `SurfaceReport`'s `Display` embeds the census verbatim.
+    ///
+    /// Previously untested: replacing the census arm with an empty string
+    /// removed the winding reading from every user-visible report and no test
+    /// noticed. Both arms are pinned here because the `None` arm is reachable
+    /// — `SurfaceReport`'s fields are public and it is not `#[non_exhaustive]`.
+    #[test]
+    fn surface_report_display_embeds_the_census_and_marks_its_absence() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("box.stl");
+        mesh_io::save_stl(&box_mesh(Point3::origin(), 1.0), &path, false).unwrap();
+        let (_, report) = load_with_report(&path).unwrap();
+
+        let census = report.winding().unwrap();
+        assert!(census.has_judgeable_edges(), "precondition: a real verdict");
+        assert!(
+            format!("{report}").contains(&census.to_string()),
+            "the report must print the census verbatim, not a summary of it"
+        );
+
+        // The absent arm, reachable by construction.
+        let mut blank = report;
+        blank.topology.winding = None;
+        assert!(format!("{blank}").contains("winding: not measured"));
+    }
+
+    /// This crate always requests the census, so [`SurfaceReport::winding`] is
+    /// always `Some` on a report it produced.
+    ///
+    /// `mesh-repair` 2.0 made the census optional. If a future edit passes
+    /// options that disable it, `SurfaceReport`'s `Display` silently degrades
+    /// to `winding: not measured` and every caller reading the census gets
+    /// `None`. This fails first, and says why.
+    #[test]
+    fn load_with_report_always_requests_the_census() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("box.stl");
+        mesh_io::save_stl(&box_mesh(Point3::origin(), 1.0), &path, false).unwrap();
+
+        let (_, report) = load_with_report(&path).unwrap();
+
+        assert!(
+            report.topology.winding.is_some(),
+            "the census must be requested; if validation options here ever \
+             disable it, SurfaceReport::winding starts returning None"
+        );
+    }
+
     /// ★ The wiring gate for hand-off 1: a locally flipped face survives the
     /// whole load path and is **visible in the report**, where the global
     /// signed-volume flag the crate previously had no reason to consult reads
@@ -1234,27 +1282,6 @@ mod tests {
     /// The flip is injected into the mesh *before* the STL round-trip so the
     /// defect travels the production path — save, read back as soup, weld —
     /// rather than being handed to the census directly.
-    /// The invariant [`SurfaceReport::winding`] relies on to `expect`.
-    ///
-    /// `mesh-repair` 2.0 made the census optional, so the accessor is only
-    /// panic-free while this crate validates with it enabled. If a future edit
-    /// passes custom options that turn it off, that accessor starts panicking
-    /// in production — this fails first, and says why.
-    #[test]
-    fn load_with_report_always_requests_the_census() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("box.stl");
-        mesh_io::save_stl(&box_mesh(Point3::origin(), 1.0), &path, false).unwrap();
-
-        let (_, report) = load_with_report(&path).unwrap();
-
-        assert!(
-            report.topology.winding.is_some(),
-            "SurfaceReport::winding expects this to be Some; if validation \
-             options here ever disable the census, fix the accessor too"
-        );
-    }
-
     #[test]
     fn load_with_report_sees_a_local_flip_that_signed_volume_misses() {
         let dir = tempfile::tempdir().unwrap();

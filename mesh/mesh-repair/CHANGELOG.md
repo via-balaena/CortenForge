@@ -7,45 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.0.0]
+## [2.0.0] - 2026-08-07
 
 ### Added
 
 - **`validate_mesh` now reports per-edge winding consistency.** `MeshReport`
-  carries `winding: Option<WindingCensus>` alongside `is_inside_out`. The two
-  answer different questions: a *global* flip leaves the census clean and sets
-  `is_inside_out`; a *local* flip does the reverse.
+  carries `winding: Option<WindingCensus>` alongside `is_inside_out`.
+
+  **`winding` answers whether the winding is correct. `is_inside_out` does
+  not** — it is the sign of a frame-dependent volume integral, which both a
+  local flip and a correctly-wound *open* mesh can set.
+
+  ⚠ **The census runs by default.** `validate_mesh` now performs it, so every
+  existing call pays for it — see Performance.
 
 ### Breaking
 
-- **`MeshReport` gains `winding`, and both it and `WindingCensus` are now
-  `#[non_exhaustive]`.** No caller outside this crate constructs either type,
-  so the break is invisible in-tree.
+- **`MeshReport` gains `winding`; both it and `WindingCensus` lose their
+  `Default` derive and become `#[non_exhaustive]`.**
 
-  `#[non_exhaustive]` lands on both *with* the field rather than after it: the
-  field already costs a major version, and `WindingCensus` is the type most
-  likely to grow counters, so paying once here makes later counters additive.
+  Together these mean **a report can only be obtained by measuring**. A
+  hand-built one could assert `is_inside_out` without ever computing it — the
+  same defect the `Option` on `winding` exists to prevent, reachable from the
+  construct side.
 
 - **`ValidationOptions::check_winding` is renamed `winding_census`, and now
   gates only the census.** `MeshReport::is_inside_out` is **always measured**.
 
-  Previously one flag gated both instruments, and a disabled `is_inside_out`
-  became a hardcoded `false` — indistinguishable from a measured result, so any
-  gate asserting it had not fired was silently satisfied. It is no longer
-  gated: it is a single allocation-free pass, and gating it bought nothing but
-  a field that could not report having been skipped. Callers who set the old
-  flag to `false` will now see a real value where they previously saw `false`.
-
-- **`MeshReport::winding` is an `Option`, not a bare census.** `None` means the
-  census did not run. An all-zero `WindingCensus` is indistinguishable from a
-  clean one on five of its six counters, so "not measured" needed to be
-  representable rather than documented.
+  In 1.0.0, `check_winding: false` made `is_inside_out` a hardcoded `false` —
+  indistinguishable from a measured result, so any gate asserting it had not
+  fired was silently satisfied. It is no longer gated: it is a single
+  allocation-free pass (measured at ~0.5 % of `validate_mesh`), and gating it
+  bought nothing but a field that could not report having been skipped.
+  **Callers who set `check_winding: false` will now see a measured value where
+  1.0.0 gave them `false`.**
 
 - **`MeshReport`'s `Display` no longer prints `Winding: Correct`.** That line
   was derived from `is_inside_out` alone, which cannot support it. It is
-  replaced by a signed-volume line plus one of three winding lines —
+  Anything parsing this output will see different text. The `  Status:` block
+  now ends with two lines instead of one:
+
+  ```text
+      Signed volume: non-negative (global, origin-apex)
+      Local winding: 0 of 6 interior edges inconsistent
+  ```
+
+  `Signed volume:` is `negative` or `non-negative`. `Local winding:` is
   `N of M interior edges inconsistent`, `no judgeable interior edge`, or
-  `not measured`. Anything parsing this output will see different text.
+  `not measured`.
 
 - **`WindingCensus`'s `Display` suffix** changed from
   `" | INCONCLUSIVE: no edge has two incident faces"` to
@@ -55,21 +64,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Migration
 
-- **Struct literals.** `#[non_exhaustive]` blocks the struct *expression* —
-  both `MeshReport { .. }` and functional-update syntax
-  `MeshReport { boundary_edge_count: 3, ..Default::default() }` (E0639).
-  It does **not** block `Default` or field assignment, and the fields stay
-  public, so a hand-built fixture becomes:
+- **Fixtures must be measured, not built.** `MeshReport` and `WindingCensus`
+  have no `Default` and are `#[non_exhaustive]`, so there is no
+  hand-construction route at all. A struct expression fails with **E0639**; a
+  functional update fails with **E0277** (no `Default`) as well. Replace a literal fixture with
+  `validate_mesh` over a mesh that actually has the property under test:
 
   ```rust
-  let mut report = MeshReport::default();
-  report.boundary_edge_count = 3;
+  // was: MeshReport { boundary_edge_count: 3, ..Default::default() }
+  let mut mesh = IndexedMesh::new();
+  // ...three vertices and one face: a lone triangle has three boundary edges
+  let report = validate_mesh(&mesh);
   ```
 
-  Use `validate_mesh` on a real mesh for integration fixtures; the snippet
-  above is the direct replacement for a unit-test literal.
+  This is deliberate rather than incidental: a fabricated report can assert
+  `is_inside_out` without ever having computed it.
 
-- **Exhaustive matches** need a `..` rest pattern.
+- **Exhaustive matches** on either type need a `..` rest pattern (**E0638**).
 
 - **`check_winding: false`** becomes `winding_census: false`. If you relied on
   it to suppress `is_inside_out`, note that it no longer does.
@@ -92,8 +103,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `mesh-repair-benches`' `Validation` group against the 1.0.0 baseline:
   +29.5 % / +26.8 % / +28.4 % / +26.5 % / +27.7 % across 12 → 5120 faces
   (p = 0.00; mean 27.8 %). Absolute: +0.4 µs on a 12-face cube, +204 µs on a
-  5120-face sphere, so roughly +0.6 ms on a 15k-face anatomical mesh. The
-  overhead is linear and holds to at least 200k faces.
+  5120-face sphere, so roughly +0.6 ms on a 15k-face anatomical mesh — the
+  range the committed bench covers.
 
   **Cause:** `winding_census` builds its own edge map and cannot reuse the
   `MeshAdjacency` `validate_mesh` already built — it needs per-edge traversal
@@ -112,7 +123,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`MeshReport::is_printable` no longer documents a guarantee it cannot
   make.** Its doc claimed the mesh must "have correct winding"; the
   implementation tests `!is_inside_out`, which is not a winding check. The
-  predicate's behaviour is unchanged.
+  predicate's behaviour is unchanged; if you wanted winding included, write it
+  explicitly:
+
+  ```rust
+  report.is_printable()
+      && report.winding.is_some_and(|c| {
+          c.has_judgeable_edges() && !c.has_inconsistent_winding()
+      })
+  ```
 - **The signed-volume mechanism is stated correctly, in one place.** Earlier
   docs said the sum is translation-invariant while the surface is consistently
   oriented, and that the flag tracks distance from the origin. Both are wrong:
@@ -125,7 +144,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   face is enough), and on a non-orientable surface `inconsistent_edges` is a
   topological obstruction that `fix_winding_order` cannot clear.
 
-## [1.0.0]
+## [1.0.0] - 2026-05-03
 
 ### Added
 
