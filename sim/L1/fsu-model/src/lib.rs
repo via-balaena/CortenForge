@@ -3388,6 +3388,8 @@ mod tests {
         // levels' spreads are comparable rather than merely both being called "the spread".
         const OFFSETS: [f64; 5] = [-0.033_33, -0.016_67, 0.0, 0.016_67, 0.033_33];
 
+        use std::io::Write as _;
+
         let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
         let base = DiscParams::default();
         let (flex, ext) = (0.5_f64.to_radians(), -0.5_f64.to_radians());
@@ -3424,13 +3426,34 @@ mod tests {
                     );
                 }
 
-                rows.push(Realization {
+                let row = Realization {
                     cell,
                     corners,
                     bands: p_bands,
                     linear: (lin_flex.0 / flex, lin_ext.0 / ext),
                     quadratic: (quad_flex.0 / flex, quad_ext.0 / ext),
-                });
+                };
+
+                // ⚠ Print AND FLUSH per realization, not per level. The first run of this test
+                // died on realization 2 of the second level after 20 minutes and lost every
+                // completed row: `println!` to a redirected stdout is BLOCK-buffered, and the
+                // panic discarded the buffer. A sweep this expensive must not be all-or-nothing.
+                let (rf, re) = row.ratio();
+                println!(
+                    "cell {:.5} | corners {:5} | bands {:3}/{:3} | Tet4 {:.4}/{:.4} | \
+                     Tet10 {:.4}/{:.4} | ratio {rf:.4}/{re:.4}",
+                    row.cell,
+                    row.corners,
+                    row.bands.0,
+                    row.bands.1,
+                    row.linear.0,
+                    row.linear.1,
+                    row.quadratic.0,
+                    row.quadratic.1,
+                );
+                std::io::stdout().flush().ok();
+
+                rows.push(row);
             }
 
             // Without this the sweep measures nothing: if every cell produced the same mesh,
@@ -3444,21 +3467,6 @@ mod tests {
             );
 
             println!("--- centre cell {centre:.4} ---");
-            for r in &rows {
-                let (rf, re) = r.ratio();
-                println!(
-                    "cell {:.5} | corners {:5} | bands {:3}/{:3} | Tet4 {:.4}/{:.4} | \
-                     Tet10 {:.4}/{:.4} | ratio {rf:.4}/{re:.4}",
-                    r.cell,
-                    r.corners,
-                    r.bands.0,
-                    r.bands.1,
-                    r.linear.0,
-                    r.linear.1,
-                    r.quadratic.0,
-                    r.quadratic.1,
-                );
-            }
             for (label, xs) in [
                 (
                     "Tet10 flex",
