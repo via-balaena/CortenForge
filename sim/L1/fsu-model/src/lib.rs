@@ -3352,6 +3352,139 @@ mod tests {
         }
     }
 
+    /// **Rung 5.0 REPLICATION** (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §3): the
+    /// mesh-realization spread `σ(h)` at the two **refined** ladder levels.
+    ///
+    /// This is what §3 declared rung 5 blocked on. Every ladder-level quantity is `n = 1`, and
+    /// the jitter at a *fixed* level is comparable to the difference claimed *between* levels.
+    /// Step 1 caught this once at the level of the pair — a single perturbation reported ~9 %
+    /// where a five-point sweep measured 21.13 % — and **the ladder has the identical defect one
+    /// level up**. Re-running it post-α.1 without this would reproduce the same mistake with
+    /// better-looking numbers.
+    ///
+    /// ⇒ **Replication per level, not more levels.** `σ` is known only at `cell = 0.003`
+    /// (21.13 % p2p). There is no reason to assume it is level-independent — more nodes *should*
+    /// mean less relative quantization, but that is a hypothesis, and this measures it.
+    ///
+    /// Each level sweeps the same **±3.3 %** relative window step 1 used at `0.003`, so the three
+    /// levels' spreads are comparable by construction. Both arms at each cell come from **one**
+    /// prepared mesh (`PreparedDisc::duplicate`), so the per-cell `k10/k4` ratio is attributable
+    /// to element order — rung 1's attribution argument, made structural.
+    ///
+    /// ▶ **The decision rule this feeds is committed in §3, before any of it ran:** with
+    /// `Δ = |k10(coarse)| − |k10(fine)|` and `σ(h)` the measured p2p spread, **`Δ > max(σ)` ⇒ the
+    /// bracket is earned** and `Δ` is a committed lower bound on the error in the shipped
+    /// `RUNG7_K_DISC`. **Otherwise the accuracy claim stays unearned, and that is a result, not a
+    /// failure.** This test prints `σ`; it does not decide, and deliberately asserts no threshold
+    /// on the spread — that would be reading the outcome back into the instrument.
+    ///
+    /// ⚠ Costed first (`rung5_step2_tet10_fine_cost_ceiling_fom`): ~3.5 min at `0.002`, ~23 min
+    /// at `0.0015`, peak RSS 4.98 GB single-arm against an 8 GB budget. Both arms are live here,
+    /// so the fine level's real peak is higher — run it under `/usr/bin/time -l`.
+    #[test]
+    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed); ~27 min"]
+    fn rung5_replication_realization_spread_at_refined_levels_fom() {
+        // The same ±3.3 % relative window step 1 swept at 0.003 (0.00290 … 0.00310), so the
+        // levels' spreads are comparable rather than merely both being called "the spread".
+        const OFFSETS: [f64; 5] = [-0.033_33, -0.016_67, 0.0, 0.016_67, 0.033_33];
+
+        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
+        let base = DiscParams::default();
+        let (flex, ext) = (0.5_f64.to_radians(), -0.5_f64.to_radians());
+
+        for centre in [0.002_f64, 0.001_5] {
+            let mut rows: Vec<Realization> = Vec::new();
+
+            for off in OFFSETS {
+                let cell = centre * (1.0 + off);
+                let params = DiscParams { cell, ..base };
+                let p = prepare_disc(disc_mesh.clone(), &params, None)
+                    .unwrap_or_else(|e| panic!("prepare raw disc at cell {cell}: {e:?}"));
+                let corners = referenced_vertices(&p.tet).len();
+                let p_bands = (p.inferior.len(), p.superior.len());
+
+                // ONE mesh, both arms — attribution by construction, as in step 1.
+                let mut tet4 = bond_prepared_tet4(p.duplicate().expect("duplicate"), &params);
+                let mut tet10 = bond_prepared_tet10(p, &params, None, ConformFloors::SHIPPED);
+
+                let lin_flex = tet4.flexion_moment(flex);
+                let lin_ext = tet4.flexion_moment(ext);
+                let quad_flex = tet10.flexion_moment(flex);
+                let quad_ext = tet10.flexion_moment(ext);
+                for (probe, name) in [
+                    (lin_flex, "Tet4 flexion"),
+                    (lin_ext, "Tet4 extension"),
+                    (quad_flex, "Tet10 flexion"),
+                    (quad_ext, "Tet10 extension"),
+                ] {
+                    assert!(
+                        probe.1 < 1e-8,
+                        "cell {cell}: {name} bond must conserve (‖ΣF‖+‖ΣM‖ = {:.2e})",
+                        probe.1
+                    );
+                }
+
+                rows.push(Realization {
+                    cell,
+                    corners,
+                    bands: p_bands,
+                    linear: (lin_flex.0 / flex, lin_ext.0 / ext),
+                    quadratic: (quad_flex.0 / flex, quad_ext.0 / ext),
+                });
+            }
+
+            // Without this the sweep measures nothing: if every cell produced the same mesh,
+            // the "spread" is solver noise, not realization jitter.
+            let distinct: std::collections::BTreeSet<usize> =
+                rows.iter().map(|r| r.corners).collect();
+            assert!(
+                distinct.len() > 1,
+                "centre {centre}: every cell produced the same referenced-corner count — the \
+                 mesh was never re-realized, so this measures nothing"
+            );
+
+            println!("--- centre cell {centre:.4} ---");
+            for r in &rows {
+                let (rf, re) = r.ratio();
+                println!(
+                    "cell {:.5} | corners {:5} | bands {:3}/{:3} | Tet4 {:.4}/{:.4} | \
+                     Tet10 {:.4}/{:.4} | ratio {rf:.4}/{re:.4}",
+                    r.cell,
+                    r.corners,
+                    r.bands.0,
+                    r.bands.1,
+                    r.linear.0,
+                    r.linear.1,
+                    r.quadratic.0,
+                    r.quadratic.1,
+                );
+            }
+            for (label, xs) in [
+                (
+                    "Tet10 flex",
+                    rows.iter().map(|r| r.quadratic.0).collect::<Vec<_>>(),
+                ),
+                (
+                    "Tet10 ext ",
+                    rows.iter().map(|r| r.quadratic.1).collect::<Vec<_>>(),
+                ),
+                (
+                    "Tet4  flex",
+                    rows.iter().map(|r| r.linear.0).collect::<Vec<_>>(),
+                ),
+                (
+                    "ratio flex",
+                    rows.iter().map(|r| r.ratio().0).collect::<Vec<_>>(),
+                ),
+            ] {
+                let (lo, hi, mean, pp) = spread(&xs);
+                println!(
+                    "  sigma {label}: min {lo:.4}  max {hi:.4}  mean {mean:.4}  p2p {pp:.2} %"
+                );
+            }
+        }
+    }
+
     /// **Rung 5.0 step 2** (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §5.5): do the refined
     /// Tet10 arms fit? One build, one ±0.5° solve, at `cell = 0.002` **and `0.0015`**.
     ///
