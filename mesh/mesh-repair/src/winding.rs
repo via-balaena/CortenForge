@@ -55,8 +55,9 @@ use crate::error::RepairResult;
 /// recipe on a multi-component mesh:** [`flip_winding`] reverses every face,
 /// so it inverts the correct shells along with the wrong one, and
 /// `is_inside_out` may read clean anyway when the correct shells dominate the
-/// volume. Split with [`crate::find_connected_components`] and orient each
-/// component on its own.
+/// volume. [`crate::find_connected_components`] returns the face indices of
+/// each shell; orienting them is then the caller's own loop — this crate has
+/// no per-component orient, and [`flip_winding`] cannot be aimed at a subset.
 ///
 /// This function handles disconnected meshes by processing each component separately.
 ///
@@ -383,8 +384,7 @@ pub fn count_inconsistent_faces(mesh: &IndexedMesh) -> usize {
 /// ⚠ **Read that as one traversal of one half-space, not as a distance law.**
 /// The sum moves as `t · Σ A_f n_f`, so this sweep crosses the boundary only
 /// because `+z` is not orthogonal to that vector; other directions never cross
-/// it at any magnitude. (Producer:
-/// `signed_volume_sees_a_local_flip_once_the_mesh_is_off_origin`.)
+/// it at any magnitude.
 ///
 /// This census asks the local question directly and answers it with no
 /// reference to the origin, or to any coordinate at all — it reads
@@ -414,8 +414,9 @@ pub fn count_inconsistent_faces(mesh: &IndexedMesh) -> usize {
 ///
 /// ⚠ **On a non-orientable surface, `inconsistent_edges` is a lower bound on a
 /// topological obstruction, not a repairable defect.** A Möbius band reports
-/// `1` and [`fix_winding_order`] leaves it at `1` however many times it is
-/// run, because no consistent orientation exists. A caller looping
+/// **at least** `1` — the exact count is the cycle rank of its dual graph —
+/// and [`fix_winding_order`] can never bring it to `0`, however many times it
+/// is run, because no consistent orientation exists. A caller looping
 /// census → repair → census will not converge. Nothing on this type
 /// distinguishes that from a repairable flip; if you need to, check
 /// orientability separately.

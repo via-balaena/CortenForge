@@ -35,8 +35,8 @@ use cf_geometry::{Aabb, IndexedMesh, Sdf, SdfGrid};
 use mesh_io::load_stl;
 // ⚠ `winding_census` is NOT imported here. `load_with_report` used to call it
 // directly; since `mesh-repair` 2.0 the census arrives inside `validate_mesh`'s
-// `MeshReport`, so the only remaining caller is a test that censuses a RAW
-// (pre-weld) mesh for comparison — it imports the symbol itself.
+// `MeshReport`. The remaining callers census a RAW (pre-weld) mesh for
+// comparison and import the symbol themselves.
 use mesh_repair::{
     RepairParams, TAUBIN_DEFAULT_LAMBDA, TAUBIN_DEFAULT_MU, find_connected_components,
     keep_largest_component, repair_mesh, taubin_smooth_vertices, validate_mesh,

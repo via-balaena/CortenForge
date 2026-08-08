@@ -9,17 +9,19 @@ use crate::winding::{WindingCensus, winding_census};
 
 /// Report of mesh validation results.
 ///
-/// Counts of common mesh defects, plus two orientation readings.
-/// **Neither subsumes the other:**
+/// Counts of common mesh defects, plus two orientation readings:
 ///
-/// * [`Self::winding`] — whether any face is oriented against its neighbours.
-///   Per-edge and coordinate-free. Blind to a surface that is *uniformly*
-///   inverted: a global flip preserves `inconsistent_edges` exactly.
-///   `None` when not requested.
-/// * [`Self::is_inside_out`] — on a mesh already known **closed and locally
-///   consistent**, whether the whole surface is inverted. That is precisely
-///   the case the census cannot see. Outside that precondition the flag is
-///   frame-dependent and says nothing about winding at all.
+/// * [`Self::winding`] — whether any face is oriented against a face it shares
+///   an edge with. `None` when not requested.
+/// * [`Self::is_inside_out`] — the sign of the origin-apex signed volume.
+///   Frame-dependent; see that field before trusting it.
+///
+/// ⚠ **Both can read clean on a mis-oriented mesh.** Neither compares faces
+/// that share no edge, so an inverted *component* can escape both: the census
+/// never sees across shells, and the volume sum reports whichever way the
+/// total lands. [`WindingCensus`]'s "What this does NOT answer" enumerates the
+/// cases; [`crate::find_connected_components`] is what separates the shells so
+/// each can be checked on its own.
 ///
 /// To repair what the census reports, see [`crate::fix_winding_order`]
 /// (per-component) or [`crate::flip_winding`] (unconditional).
@@ -81,8 +83,8 @@ pub struct MeshReport {
     ///    holds for a **closed** consistently-oriented surface. Consistent
     ///    winding alone does not suffice — an open triangle is perfectly wound
     ///    and its flag still moves with the frame. Nor is it required: two
-    ///    antipodal flipped faces cancel, leaving `V` fixed while the census
-    ///    counts six bad edges.
+    ///    antipodal flipped faces cancel in `Σ A_f n_f`, so `V` stays
+    ///    translation-invariant while the census counts six bad edges.
     /// 2. Where `V` is not invariant, the flag is set on one side of a
     ///    **half-space** in `t` — not "far from the origin". Translating
     ///    orthogonal to `Σ A_f n_f` never changes it at any magnitude.
@@ -121,7 +123,10 @@ impl MeshReport {
     /// Watertight, manifold, and a non-negative origin-apex signed volume.
     ///
     /// ⚠ **That last term is not a winding check** — see
-    /// [`Self::is_inside_out`]. A mesh with locally flipped faces passes this.
+    /// [`Self::is_inside_out`]. A mesh with locally flipped faces passes this,
+    /// and on such a mesh the answer is **not stable**: `Σ A_f n_f` is then
+    /// non-zero, so translating the mesh can flip it. Check [`Self::winding`]
+    /// first.
     /// [`Self::winding`] is reported but not judged here, nor by
     /// [`Self::has_issues`] or [`Self::issue_count`].
     #[must_use]
@@ -285,8 +290,8 @@ pub fn validate_mesh(mesh: &IndexedMesh) -> MeshReport {
 /// [`MeshAdjacency`] built here, and [`winding_census`]'s own. The census
 /// needs per-edge traversal *direction*, which `MeshAdjacency` does not
 /// record and cannot currently supply. Measured at **~28 % over the 1.0.0
-/// single-map version** across 12–5120 faces; see `CHANGELOG.md` for the
-/// numbers and for the `build_edges_only` offset that would likely repay it.
+/// single-map version** across 12–5120 faces (+0.4 µs at 12 faces, +204 µs at
+/// 5120).
 #[must_use]
 pub fn validate_mesh_with_options(mesh: &IndexedMesh, options: &ValidationOptions) -> MeshReport {
     let adjacency = MeshAdjacency::build(&mesh.faces);
@@ -924,6 +929,11 @@ mod tests {
             report.degenerate_face_count,
             report.duplicate_face_count,
         ];
+        // Two separate properties, and each kills a different mutant:
+        // non-zero kills "a term was dropped from the sum", pairwise-distinct
+        // kills "one field was substituted for another". An earlier fixture
+        // had each in turn and neither together.
+        assert!(terms.iter().all(|&t| t > 0), "every term must be non-zero");
         for i in 0..terms.len() {
             for j in (i + 1)..terms.len() {
                 assert_ne!(

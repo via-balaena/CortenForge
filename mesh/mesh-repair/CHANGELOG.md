@@ -9,8 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.0.0] - 2026-08-07
 
-This release covers everything since 1.0.0, not only the most recent work.
-
 ### Removed
 
 - **`Default` on `MeshReport`.** A report is a measurement, and a
@@ -55,6 +53,20 @@ This release covers everything since 1.0.0, not only the most recent work.
   *different subset* of pairs than 1.0.0 returned. Sort the result if you
   depend on order, and do not assume truncation keeps the lowest-indexed pairs.
 
+- **`is_inside_out` and `fill_holes` can differ on near-degenerate input.**
+  Two internal predicates were rewritten to use fused multiply-add between the
+  releases, changing floating-point association. On meshes whose signed volume
+  sits within rounding error of zero (open surfaces, balanced shells),
+  `is_inside_out` — and therefore `is_printable` — can differ from 1.0.0; on
+  holes with near-collinear boundary vertices, `fill_holes` can emit a
+  different, still-valid triangulation. Both regimes are ones where the result
+  was never well-determined, but they are not identical to 1.0.0.
+
+- **`SelfIntersectionResult::intersection_count` is a lower bound when
+  `truncated`.** It is incremented before the `max_reported` cap is applied, so
+  it can exceed both the cap and `intersecting_pairs.len()`, and is not
+  reproducible run to run.
+
 - **New dependency: `parry3d-f64`** (for the BVH above). It pulls in `nalgebra`
   0.33 alongside this crate's 0.34, so a duplicate-dependency policy that
   passed on 1.0.0 may fail on 2.0.0.
@@ -65,15 +77,17 @@ This release covers everything since 1.0.0, not only the most recent work.
 ### Added
 
 - **`winding_census` and `WindingCensus`** — per-edge orientation consistency,
-  with `has_inconsistent_winding()` and `has_judgeable_edges()`. New in this
-  release: it has no `Default`, is `#[non_exhaustive]`, and its `Display`
-  appends `" | INCONCLUSIVE: no edge was judged"` when nothing was judgeable.
+  with `has_inconsistent_winding()` and `has_judgeable_edges()`. It has no
+  `Default`, is `#[non_exhaustive]`, and its `Display` appends
+  `" | INCONCLUSIVE: no edge was judged"` when nothing was judgeable.
 
   This is the *local* instrument. `MeshReport::is_inside_out` is a global
   signed-volume test, and **neither, nor both together, verifies orientation on
-  a multi-component mesh** — an inverted shell escapes both. See
-  `WindingCensus`'s "What this does NOT answer", and `find_connected_components`
-  for the case they miss.
+  a multi-component mesh**. The census never compares faces across shells, and
+  the volume sum reports whichever way the total lands — so an inverted shell
+  may leave the flag clear, or set it while the surface is mostly correct. See
+  `WindingCensus`'s "What this does NOT answer", and split with
+  `find_connected_components` to check each shell on its own.
 - **`MeshReport::winding: Option<WindingCensus>`** — `validate_mesh` now runs
   the census and reports it. `None` when `winding_census` is off, which keeps
   "never ran" distinct from "ran and had nothing to judge".
@@ -91,10 +105,19 @@ This release covers everything since 1.0.0, not only the most recent work.
   there is no way to construct a `MeshReport` from nothing: a struct expression
   fails with **E0639** (plus **E0277** from the `Default::default()` term if
   you used functional-update syntax), and an exhaustive pattern with **E0638**.
-  Build a mesh with the property under test and validate it — `validate_mesh`'s
-  own doc example does this for `boundary_edge_count == 3`.
+  The direct replacement for `MeshReport::default()` is a measurement of an
+  empty mesh, which is all-zero and all-false; fields stay `pub`, so assign
+  from there:
 
-  Fields stay `pub`, so a report can still be modified after measuring.
+  ```rust
+  let mut report = validate_mesh(&IndexedMesh::new());
+  report.is_watertight = true;
+  report.is_inside_out = true;
+  ```
+
+  Where the mesh itself matters, build one with the property under test and
+  validate it — `validate_mesh`'s own doc example does this for
+  `boundary_edge_count == 3`.
 
 - **`check_winding: false`** becomes `winding_census: false`, and no longer
   suppresses `is_inside_out`.
@@ -129,12 +152,13 @@ This release covers everything since 1.0.0, not only the most recent work.
 
 ### Fixed
 
-- **Documentation only; no behaviour changed.** 1.0.0 documented
-  `is_inside_out` as "whether the mesh appears to be inside-out (majority of
-  volume is negative)". It is not a majority test — it is the sign of a single
+- **Documentation corrections** (numerical changes are under *Changed*). 1.0.0
+  documented `is_inside_out` as "whether the mesh appears to be inside-out
+  (majority of volume is negative)". It is not a majority test — it is the
+  sign of a single
   origin-apex signed-volume sum — and the result is frame-dependent unless
-  `Σ A_f n_f = 0`, which requires the surface to be closed as well as
-  consistently wound. The field now documents both.
+  `Σ A_f n_f = 0`, which holds for a closed, consistently-wound surface. The
+  field now documents both.
 - `is_printable`'s "correct winding" claim, as above.
 
 ## [1.0.0] - 2026-05-03

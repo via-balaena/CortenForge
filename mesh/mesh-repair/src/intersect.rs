@@ -188,9 +188,13 @@ impl SimdSimultaneousVisitor<u32, u32, SimdAabb> for OverlapPairCollector<'_> {
 /// algorithmic gain estimate on production gasket-mold meshes
 /// (~25 s → ~3 s per gasket on 400 k-face meshes).
 ///
-/// Bit-equivalent results to the pre-S1 O(n²) implementation,
-/// preserved as `detect_self_intersections_reference` for the regression
-/// test gate.
+/// ⚠ **The same SET of pairs as the pre-2.0 O(n²) scan, but not the same
+/// order.** `intersecting_pairs` follows BVH traversal, not face index, and
+/// under `max_reported` the retained subset is therefore not the
+/// lowest-indexed one. Sort if you depend on order. `intersection_count` is
+/// incremented before the cap is applied, so it may exceed both
+/// `max_reported` and `intersecting_pairs.len()`, and is not reproducible run
+/// to run once `truncated` is set.
 ///
 /// # Arguments
 ///
