@@ -25,12 +25,17 @@ pub struct ShellValidationResult {
     /// test. A sliver triangle with three distinct indices is degenerate by area
     /// and still judged here.
     ///
-    /// ⚠ Vacuously `true` when nothing is judgeable: a mesh with no interior
-    /// edge has no edge that disagrees. This needs BOTH other counters to rule
-    /// out, not just `boundary_edge_count` — a mesh whose every edge is
-    /// non-manifold is watertight with zero boundary edges and still judges
-    /// nothing. When [`Self::is_printable`] holds on a non-empty shell every
-    /// edge has exactly two faces, so the verdict is never vacuous there.
+    /// ⚠ On a NON-EMPTY shell this is vacuously `true` when nothing is
+    /// judgeable: a mesh with no interior edge has no edge that disagrees.
+    /// Ruling that out needs BOTH other counters, not just
+    /// `boundary_edge_count` — a mesh whose every edge is non-manifold is
+    /// watertight with zero boundary edges and still judges nothing. When
+    /// [`Self::is_printable`] holds on a non-empty shell every edge has exactly
+    /// two faces, so the verdict is never vacuous there.
+    ///
+    /// ⚠ The EMPTY shell is the deliberate exception: it reports `false` here,
+    /// and for watertight and manifold too, without consulting the census. A
+    /// mesh with no faces is refused rather than passed on a technicality.
     ///
     /// ⚠ This is a **local** property. It is `true` for a shell whose faces are
     /// uniformly wound the *wrong* way — a global flip leaves every edge in
@@ -182,10 +187,16 @@ impl std::fmt::Display for ShellIssue {
 
 /// Validate a shell mesh for 3D printing suitability.
 ///
-/// Checks:
+/// Checks, each surfacing as a [`ShellIssue`]:
+/// - Emptiness (no faces) — returns immediately, refusing everything
 /// - Watertightness (no boundary edges)
 /// - Manifoldness (no edges with >2 adjacent faces)
-/// - Consistent winding order
+/// - Consistent winding order (per-edge, via [`mesh_repair::winding_census`])
+/// - Degenerate triangles (zero **area**, which the winding check does not see)
+///
+/// ⚠ The last of these is reported but is not a term in either
+/// [`ShellValidationResult::is_valid`] or
+/// [`ShellValidationResult::is_printable`]. Read `issues` for the full picture.
 ///
 /// # Arguments
 /// * `shell` - The shell mesh to validate
@@ -664,6 +675,15 @@ mod tests {
                 .issues
                 .iter()
                 .any(|i| matches!(i, ShellIssue::EmptyShell))
+        );
+        // Pins the documented EXCEPTION to the vacuity rule. Everywhere else a
+        // census with nothing judgeable reports `true` — on an empty mesh the
+        // census would too (`inconsistent_edges == 0`, measured). The early
+        // return refuses instead, and never consults it. Without this assert the
+        // field doc and this path could drift apart unnoticed.
+        assert!(
+            !result.has_consistent_winding,
+            "the empty shell is refused, not passed vacuously",
         );
     }
 
