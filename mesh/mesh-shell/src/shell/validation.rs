@@ -1,6 +1,9 @@
 //! Shell validation utilities.
 //!
-//! Validates shell meshes to ensure they are suitable for 3D printing.
+//! Measures a shell's topology and reports what it finds. It does not *ensure*
+//! anything: [`validate_shell`] returns a [`ShellValidationResult`] whose two
+//! predicates deliberately answer different questions, and whose `issues` list
+//! carries defects that neither predicate consults.
 
 use mesh_repair::validate_mesh;
 use mesh_types::IndexedMesh;

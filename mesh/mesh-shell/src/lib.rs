@@ -68,9 +68,14 @@
 //! let params = ShellParams::fast();
 //! let (shell, stats) = generate_shell(&mesh, &params).expect("shell generation failed");
 //!
-//! // Validate the result
+//! // Validate the result.
+//! //
+//! // Pick the gate deliberately: `is_printable()` is watertight + manifold
+//! // ONLY -- blind to winding and to degenerate faces. `is_valid()` adds
+//! // consistent winding, and `issues` carries everything neither predicate
+//! // consults. For "ready to print", check all three.
 //! let validation = validate_shell(&shell);
-//! if validation.is_printable() {
+//! if validation.is_valid() && validation.issues.is_empty() {
 //!     println!("Shell is ready for printing!");
 //! }
 //! ```
