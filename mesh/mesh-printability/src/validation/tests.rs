@@ -1081,6 +1081,83 @@ fn test_winding_consistent_watertight_cube() {
     );
 }
 
+/// Two tetrahedra sharing face `[1,2,3]`: the shared face's three edges each
+/// carry four incident faces, so the mesh is non-manifold with **zero**
+/// boundary edges and interior edges elsewhere. Isolates `non_manifold_edges`.
+fn glued_tetrahedra() -> IndexedMesh {
+    let vertices = vec![
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(1.0, 0.0, 0.0),
+        Point3::new(0.0, 1.0, 0.0),
+        Point3::new(0.0, 0.0, 1.0),
+        Point3::new(0.7, 0.7, 0.7),
+    ];
+    IndexedMesh::from_parts(
+        vertices,
+        vec![
+            [0, 2, 1],
+            [0, 1, 3],
+            [0, 3, 2],
+            [1, 2, 3],
+            [4, 1, 2],
+            [4, 2, 3],
+            [4, 3, 1],
+            [1, 3, 2],
+        ],
+    )
+}
+
+/// A closed, consistently wound tetrahedron plus two degenerate faces on
+/// vertices the tetrahedron does not use. The pair closes its own self-loop, so
+/// it adds no boundary and no non-manifold edge — leaving `degenerate_faces`
+/// as the only failing term.
+fn tetrahedron_with_disjoint_degenerate_pair() -> IndexedMesh {
+    let vertices = vec![
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(1.0, 0.0, 0.0),
+        Point3::new(0.0, 1.0, 0.0),
+        Point3::new(0.0, 0.0, 1.0),
+        Point3::new(5.0, 5.0, 5.0),
+        Point3::new(6.0, 5.0, 5.0),
+        Point3::new(5.0, 6.0, 5.0),
+    ];
+    IndexedMesh::from_parts(
+        vertices,
+        vec![
+            [0, 2, 1],
+            [0, 1, 3],
+            [0, 3, 2],
+            [1, 2, 3],
+            [4, 4, 5],
+            [4, 4, 6],
+        ],
+    )
+}
+
+#[test]
+fn the_two_isolating_fixtures_really_do_isolate_their_term() {
+    // Guards the guard. If either fixture drifts into tripping another counter,
+    // the mutants it was added to kill start surviving again — silently.
+    let glued = mesh_repair::winding_census(&glued_tetrahedra());
+    assert!(glued.non_manifold_edges > 0, "glued: non-manifold present");
+    assert_eq!(glued.boundary_edges, 0, "glued: but NOT via boundary edges");
+    assert_eq!(glued.degenerate_faces, 0, "glued: nor via degenerate faces");
+    assert!(
+        glued.interior_edges > 0,
+        "glued: and something is judgeable"
+    );
+
+    let disjoint = mesh_repair::winding_census(&tetrahedron_with_disjoint_degenerate_pair());
+    assert_eq!(disjoint.degenerate_faces, 2, "disjoint: degenerate present");
+    assert_eq!(disjoint.boundary_edges, 0, "disjoint: no boundary edges");
+    assert_eq!(disjoint.non_manifold_edges, 0, "disjoint: no non-manifold");
+    assert_eq!(disjoint.inconsistent_edges, 0, "disjoint: winding is clean");
+    assert!(
+        disjoint.interior_edges > 0,
+        "disjoint: tetra edges judgeable"
+    );
+}
+
 #[test]
 fn the_thinwall_precondition_matches_the_directed_edge_formulation() {
     // `is_watertight_and_consistent_winding` now reads the census. It used to
@@ -1154,6 +1231,16 @@ fn the_thinwall_precondition_matches_the_directed_edge_formulation() {
         (
             "degenerate face alone",
             IndexedMesh::from_parts(v, vec![[0, 0, 1]]),
+        ),
+        // ⚠ The two below exist to make `non_manifold_edges` and
+        // `degenerate_faces` the SOLE failing term. Without them, mutation
+        // shows both conjuncts can be deleted with this test still green:
+        // every other fixture that trips them also trips `boundary_edges` or
+        // `interior_edges`, which mask them.
+        ("two tetrahedra glued on a shared face", glued_tetrahedra()),
+        (
+            "closed tetrahedron plus a disjoint degenerate pair",
+            tetrahedron_with_disjoint_degenerate_pair(),
         ),
     ];
 
