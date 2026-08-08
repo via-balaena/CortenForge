@@ -3592,6 +3592,77 @@ mod tests {
         }
     }
 
+    /// **Rung 5.0 — minimal co-residency reproducer** for the refined-level `NaN`.
+    ///
+    /// Isolation has cleared everything else: Tet4 alone converges at `0.002` and `0.0015` with
+    /// zero LU fallbacks, Tet10 alone likewise, and `duplicate()` is bit-identical to direct
+    /// construction. What remains is the two arms being live at once — which step 1 does at
+    /// `cell = 0.003` in a shipped, passing test, so the interaction is refinement-dependent.
+    ///
+    /// This is ONE realization at `cell = 0.002`, mirroring the sweep's structure exactly: both
+    /// arms built **before** either is solved (the Tet10 build lands between the Tet4 build and
+    /// the Tet4 solve), then the same four solves in the same order.
+    ///
+    /// ▶ **WHAT EACH OUTCOME MEANS — stated before the run, so neither can be talked into being
+    /// the interesting one:**
+    ///
+    /// - **Panics with `r_norm NaN`** ⇒ minimal reproducer. The defect needs nothing but two
+    ///   refined arms co-resident, and it is a `sim-soft` bug rather than a rung-5 artefact.
+    /// - **Passes** ⇒ co-residency alone is NOT sufficient, and the sweep's failure required
+    ///   accumulation across realizations (two meshes at `0.00193` and `0.00197` were built and
+    ///   solved, and dropped, before the failing one). That points at state surviving a
+    ///   `PreparedDisc`'s lifetime, and the next probe is two realizations rather than one.
+    ///
+    /// Asserts conservation only. Whether it panics IS the measurement.
+    #[test]
+    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
+    fn rung5_coresidency_minimal_reproducer_fom() {
+        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
+        let params = DiscParams {
+            cell: 0.002,
+            ..DiscParams::default()
+        };
+        let (flex, ext) = (0.5_f64.to_radians(), -0.5_f64.to_radians());
+
+        let p = prepare_disc(disc_mesh, &params, None).expect("prepare raw disc at cell 0.002");
+        let corners = referenced_vertices(&p.tet).len();
+
+        // Same order as the sweep: BOTH built before EITHER is solved.
+        let mut tet4 = bond_prepared_tet4(p.duplicate().expect("duplicate"), &params);
+        let mut tet10 = bond_prepared_tet10(p, &params, None, ConformFloors::SHIPPED);
+
+        let t = std::time::Instant::now();
+        let lin_flex = tet4.flexion_moment(flex);
+        let lin_ext = tet4.flexion_moment(ext);
+        let quad_flex = tet10.flexion_moment(flex);
+        let quad_ext = tet10.flexion_moment(ext);
+        let wall = t.elapsed();
+
+        println!(
+            "rung5 coresidency | cell 0.002 | corners {corners} | {:.1} s | \
+             Tet4 {:.4}/{:.4} | Tet10 {:.4}/{:.4}",
+            wall.as_secs_f64(),
+            lin_flex.0 / flex,
+            lin_ext.0 / ext,
+            quad_flex.0 / flex,
+            quad_ext.0 / ext,
+        );
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+
+        for (probe, name) in [
+            (lin_flex, "Tet4 flexion"),
+            (lin_ext, "Tet4 extension"),
+            (quad_flex, "Tet10 flexion"),
+            (quad_ext, "Tet10 extension"),
+        ] {
+            assert!(
+                probe.1 < 1e-8,
+                "{name} must conserve (‖ΣF‖+‖ΣM‖ = {:.2e})",
+                probe.1
+            );
+        }
+    }
+
     /// **Rung 5.0 step 2** (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §5.5): do the refined
     /// Tet10 arms fit? One build, one ±0.5° solve, at `cell = 0.002` **and `0.0015`**.
     ///
