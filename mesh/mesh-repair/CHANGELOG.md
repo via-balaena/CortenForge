@@ -54,17 +54,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **`truncated` tells you whether the result is comparable.** When it is
   `false` the search ran to completion and the pair *set* is exactly 1.0.0's —
   only the order differs, so sort or compare as a set. ⚠ **When it is `true`,
-  *which* pairs were retained is nondeterministic**: the early-stop flag races
-  across threads, and 30 runs of the same truncated search returned 30
-  different sets. Sorting does not help; it is not an ordering problem.
+  do not rely on which pairs came back**: if the search really overran, the
+  early-stop flag races across threads — 30 runs of the same truncated search
+  returned 30 different sets. Sorting does not help; it is not an ordering
+  problem. (`truncated` is conservative: it is also set when the count lands
+  exactly on the cap with nothing dropped, and that case *is* deterministic —
+  but the result does not tell you which case you are in.)
 
   Note a cap alone does not make a result incomparable — under
   `IntersectionParams::default()` (cap 100), a mesh with fewer than 100
   intersecting pairs never truncates and is fully deterministic.
 
 - **`is_inside_out` and `fill_holes` can differ on near-degenerate input.**
-  Two internal predicates were rewritten to use fused multiply-add between the
-  releases, which rounds once where a multiply-then-add rounds twice. On meshes whose signed volume
+  Two internal predicates were rewritten to use fused multiply-add between
+  the releases, which rounds once where a multiply-then-add rounds twice. On meshes whose signed volume
   sits within rounding error of zero (open surfaces, balanced shells),
   `is_inside_out` — and therefore `is_printable` — can differ from 1.0.0; on
   holes with near-collinear boundary vertices, `fill_holes` — and
@@ -78,6 +81,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **License is now `Apache-2.0`**, previously `MIT OR Apache-2.0`. If you
   relied on the MIT option, this removes it.
+
+- **Minimum supported Rust version is now declared: 1.87.** 1.0.0 declared
+  none, so a toolchain below 1.87 that previously resolved this crate will now
+  be refused by cargo. (The `repository` metadata also moved to
+  `via-balaena/CortenForge`.)
 
 ### Added
 

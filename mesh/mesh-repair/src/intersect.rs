@@ -56,10 +56,10 @@ pub struct SelfIntersectionResult {
     /// ⚠ **Not ordered by face index** — this follows BVH traversal.
     ///
     /// While [`Self::truncated`] is `false` the *set* is deterministic, so
-    /// sort or compare as a set. ⚠ **Once it is `true`, which pairs were
-    /// retained varies run to run** (the early-stop flag races), so neither
-    /// sorting nor a set comparison is stable — assert on
-    /// [`Self::has_intersections`] instead.
+    /// sort or compare as a set. ⚠ **Once it is `true`, do not rely on which
+    /// pairs came back** — if the search overran, the early-stop flag races
+    /// and the retained subset varies run to run, so neither sorting nor a set
+    /// comparison is stable. Assert on [`Self::has_intersections`] instead.
     pub intersecting_pairs: Vec<(u32, u32)>,
     /// Total faces checked.
     pub faces_checked: usize,
