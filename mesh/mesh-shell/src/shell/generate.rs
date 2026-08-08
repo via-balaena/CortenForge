@@ -305,7 +305,7 @@ fn generate_shell_sdf(
     // §Q-5), mesh-offset's MC output is already outward-winding;
     // the prior compensation is removed (a double-flip would
     // re-invert the shell). Test coverage:
-    // `shell_assembled_signed_volume_positive` below asserts
+    // `test_sdf_shell_outer_winding_outward_after_flip` below asserts
     // `!report.is_inside_out` post-S5 fix without the flip.
 
     let outer_vertex_count = outer_mesh.vertices.len();

@@ -527,7 +527,7 @@ mod tests {
         // A different aspect ratio, modulus, area, and load. Still a left-right
         // symmetric configuration (base at ±b), so the same closed form applies —
         // this checks the parameter scaling, not an asymmetric deflection (see
-        // `asymmetric_truss_sensitivity_matches_fd` for that).
+        // `asymmetric_sensitivity_matches_central_fd` for that).
         let (truss, a, expected_c, _) = trestle(2.0, 0.7, 7e10, 3e-4, 450.0);
         assert_relative_eq!(
             truss.compliance(&[a, a]).unwrap(),
