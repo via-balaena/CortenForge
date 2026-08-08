@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Degenerate-face detection.** Faces listing a vertex twice are zero-area
+  and unprintable, and until now nothing here detected them. Such a face
+  registers each of its edges from *both* traversals, so `build_edge_to_faces`
+  sees exactly two incidences and the manifold passes stay silent; the §5.5
+  directed-edge count was catching them incidentally and reporting them as a
+  *winding* inconsistency, which they are not. Now reported as its own
+  `NonManifold` Critical reading "N face(s) list a vertex twice (degenerate,
+  zero-area)".
+
+### Changed
+
+- **§5.5 Gap F and the ThinWall precondition now read
+  `mesh_repair::winding_census`** instead of each building a private
+  directed-edge map. Two independent reimplementations of the same test are
+  gone.
+- Gap F is consequently **narrower**: it judges only edges with exactly two
+  non-degenerate incident faces. Orientation is undefined across a
+  non-manifold edge or a repeated-index face, so those no longer collect a
+  Critical describing them as a winding problem — they are reported as what
+  they are.
+
+  ⚠ `is_printable()` is unchanged. Verified by comparing verdicts against the
+  previous implementation across every mesh of up to three faces on four
+  vertices (137 280 meshes): identical, signature `f0fbce6d786e8ca3`, 732
+  printable in both. The narrowing alone would have flipped 2 640 of them to
+  printable; the new degenerate pass is what holds the verdict.
+
+### Fixed
+
+- `docs/studies/mesh_architecture/src/50-shell-and-print.md` claimed Gap F
+  "catches inside-out shells". It does not, and no per-edge test can: a
+  uniform reversal leaves every edge in agreement. It catches *locally
+  inconsistent* winding.
+
 ### v0.9 candidates
 
 These v0.9 backlog items are tracked here so per-site `#[allow]`

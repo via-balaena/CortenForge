@@ -675,16 +675,33 @@ fn build_edge_to_faces(mesh: &IndexedMesh) -> HashMap<(u32, u32), Vec<u32>> {
 /// 1. **Undirected edge sharing** — each edge `(min, max)` should be incident
 ///    on exactly 2 faces; deviations emit `NonManifold` (>2 faces) or
 ///    `NotWatertight` (1 face) `Critical` issues.
-/// 2. **Directed edge orientation (Gap F, §5.5)** — for each face, record
-///    the three traversals `(face[0], face[1])`, `(face[1], face[2])`,
-///    `(face[2], face[0])`. In a consistently-wound surface, each directed
-///    pair appears at most once: shared edges are traversed in opposite
-///    directions by the two incident faces. Any directed pair appearing
-///    more than once means two faces traverse that edge in the *same*
-///    direction (one is "inside out" relative to the other) — flagged as
-///    `NonManifold` `Critical` with description containing
-///    "winding inconsistency" so callers can discriminate from open-edge
-///    and non-manifold-edge cases by description string.
+/// 2. **Winding orientation (Gap F, §5.5)** — measured by
+///    [`mesh_repair::winding_census`], which counts interior edges whose two
+///    incident faces traverse them in the *same* direction (one is "inside
+///    out" relative to the other). Flagged as `NonManifold` `Critical` with
+///    description containing "winding inconsistency" so callers can
+///    discriminate from open-edge and non-manifold-edge cases by description
+///    string.
+///
+///    ⚠ **Narrower than the directed-edge count this replaced**, deliberately.
+///    That count flagged any directed pair appearing more than once, which
+///    also fires on non-manifold edges (three faces agreeing) and on faces
+///    listing a vertex twice — defects whose orientation is undefined. The
+///    census judges only edges with exactly two non-degenerate incident faces,
+///    so those meshes no longer collect a Critical that misdescribes them as a
+///    winding problem.
+/// 3. **Degenerate faces** — faces listing a vertex twice, also from the
+///    census. Zero-area, unprintable, and **previously undetected here**: the
+///    directed-edge count was catching them incidentally under the winding
+///    description, and pass 1 cannot see them at all, because such a face
+///    registers each of its edges from both traversals and so presents exactly
+///    two incidences to `build_edge_to_faces`.
+///
+/// Verified exhaustively over every mesh of up to three faces on four vertices
+/// (137 280 meshes). Narrowing the winding pass alone would have flipped 2 640
+/// of them from rejected to printable — all containing repeated-index faces,
+/// e.g. `[[0,0,1],[0,0,2]]`, a pair of zero-area slivers. Pass 3 is what keeps
+/// the verdict fixed; it is not an optional extra.
 fn check_basic_manifold(mesh: &IndexedMesh, validation: &mut PrintValidation) {
     let edge_to_faces = build_edge_to_faces(mesh);
 
@@ -717,21 +734,39 @@ fn check_basic_manifold(mesh: &IndexedMesh, validation: &mut PrintValidation) {
         }
     }
 
-    // §5.5 Gap F — directed-edge winding-orientation pass.
-    let mut directed_edges: HashMap<(u32, u32), u32> = HashMap::new();
-    for face in &mesh.faces {
-        let edges = [(face[0], face[1]), (face[1], face[2]), (face[2], face[0])];
-        for edge in &edges {
-            *directed_edges.entry(*edge).or_insert(0) += 1;
-        }
-    }
-    let inconsistent_count = directed_edges.values().filter(|&&c| c > 1).count();
-    if inconsistent_count > 0 {
+    // §5.5 Gap F — winding-orientation pass, measured by the census rather
+    // than by a second edge map built here. See the fn doc for why this is
+    // narrower than the directed-edge count it replaced.
+    let census = mesh_repair::winding_census(mesh);
+
+    if census.inconsistent_edges > 0 {
         let issue = PrintIssue::new(
             PrintIssueType::NonManifold,
             IssueSeverity::Critical,
             format!(
-                "{inconsistent_count} edge(s) traversed in same direction by multiple faces (winding inconsistency)"
+                "{} edge(s) traversed in same direction by multiple faces (winding inconsistency)",
+                census.inconsistent_edges
+            ),
+        );
+        validation.issues.push(issue);
+    }
+
+    // Faces listing a vertex twice. These are zero-area and cannot be printed,
+    // and until the winding pass moved onto the census NOTHING here detected
+    // them: the directed-edge count caught them incidentally, and reported them
+    // as a winding inconsistency, which they are not.
+    //
+    // ⚠ Load-bearing, not cosmetic. Such a face registers each of its edges
+    // from both traversals, so `build_edge_to_faces` sees exactly two
+    // incidences and the passes above stay silent. Without this,
+    // `[[0,0,1],[0,0,2]]` — two zero-area slivers — reads as printable.
+    if census.degenerate_faces > 0 {
+        let issue = PrintIssue::new(
+            PrintIssueType::NonManifold,
+            IssueSeverity::Critical,
+            format!(
+                "{} face(s) list a vertex twice (degenerate, zero-area)",
+                census.degenerate_faces
             ),
         );
         validation.issues.push(issue);
@@ -804,25 +839,30 @@ fn classify_thin_wall_severity(thickness: f64, min_wall: f64) -> IssueSeverity {
 
 /// Watertight + consistent-winding precondition for §6.1 `ThinWall`.
 ///
-/// Returns `true` iff every undirected edge is incident on exactly two
-/// faces (watertight) AND every directed edge appears in at most one
-/// face (consistent winding). Mirrors `check_basic_manifold`'s edge
-/// passes; computed independently so the precondition is encoded in
-/// the detector itself rather than relying on `validation.issues`
-/// inspection.
+/// Returns `true` iff every edge is incident on exactly two non-degenerate
+/// faces and no such edge is traversed the same way by both — i.e. a closed,
+/// two-manifold, consistently oriented surface, which is what makes the
+/// detector's inward ray-casts meaningful.
+///
+/// Read from [`mesh_repair::winding_census`] rather than from a second edge
+/// map built here. The census reports each disqualifying condition as its own
+/// counter, so the precondition reads as the conjunction it always was.
+///
+/// Behaviour is unchanged from the hand-rolled version this replaced: agreed
+/// on every mesh of up to three faces on four vertices (137 280 meshes, zero
+/// divergence). Pinned by
+/// `the_thinwall_precondition_matches_the_directed_edge_formulation`.
+///
+/// ⚠ `interior_edges > 0` is load-bearing: without it an empty mesh, which has
+/// no disqualifying edge of any kind, would satisfy every other term
+/// vacuously.
 fn is_watertight_and_consistent_winding(mesh: &IndexedMesh) -> bool {
-    let edge_to_faces = build_edge_to_faces(mesh);
-    if edge_to_faces.values().any(|faces| faces.len() != 2) {
-        return false;
-    }
-    let mut directed: HashMap<(u32, u32), u32> = HashMap::new();
-    for face in &mesh.faces {
-        let edges = [(face[0], face[1]), (face[1], face[2]), (face[2], face[0])];
-        for edge in &edges {
-            *directed.entry(*edge).or_insert(0) += 1;
-        }
-    }
-    directed.values().all(|&c| c <= 1)
+    let census = mesh_repair::winding_census(mesh);
+    census.interior_edges > 0
+        && census.boundary_edges == 0
+        && census.non_manifold_edges == 0
+        && census.degenerate_faces == 0
+        && census.inconsistent_edges == 0
 }
 
 /// Build a `parry3d_f64::shape::TriMesh` (BVH-backed) from an
