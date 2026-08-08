@@ -26,7 +26,11 @@ pub struct ShellValidationResult {
     /// and still judged here.
     ///
     /// ⚠ Vacuously `true` when nothing is judgeable: a mesh with no interior
-    /// edge has no edge that disagrees. Read it with `boundary_edge_count`.
+    /// edge has no edge that disagrees. This needs BOTH other counters to rule
+    /// out, not just `boundary_edge_count` — a mesh whose every edge is
+    /// non-manifold is watertight with zero boundary edges and still judges
+    /// nothing. When [`Self::is_printable`] holds on a non-empty shell every
+    /// edge has exactly two faces, so the verdict is never vacuous there.
     ///
     /// ⚠ This is a **local** property. It is `true` for a shell whose faces are
     /// uniformly wound the *wrong* way — a global flip leaves every edge in
@@ -237,6 +241,13 @@ pub fn validate_shell(shell: &IndexedMesh) -> ShellValidationResult {
     // `None` means the census was not run. Treat that as NOT consistent: it is
     // an absence of evidence, and reporting it as clean winding is exactly the
     // overclaim `WindingCensus` was introduced to end.
+    //
+    // ⚠ The two empty cases are deliberately NOT symmetric. `None` is "the
+    // instrument never ran" and reads false. A census that ran and found no
+    // judgeable edge reads TRUE, because `inconsistent_edges == 0` is then a
+    // real measurement over an empty set — no edge disagrees. The field doc
+    // names that vacuity so callers can rule it out; `has_judgeable_edges()`
+    // is the discriminator if a caller needs to.
     let has_consistent_winding = mesh_report
         .winding
         .is_some_and(|census| census.inconsistent_edges == 0);
@@ -475,6 +486,38 @@ mod tests {
                 .any(|i| matches!(i, ShellIssue::DegenerateTriangles { count: 1 })),
             "the repeated-index face must surface as DegenerateTriangles; got: {:?}",
             result.issues,
+        );
+    }
+
+    #[test]
+    fn a_watertight_shell_can_still_judge_nothing() {
+        // Pins the field doc's caveat: `boundary_edge_count` alone does NOT
+        // rule out a vacuous winding verdict.
+        //
+        // A tetrahedron with every face duplicated has four incident faces on
+        // every edge. That is zero boundary edges — watertight — while nothing
+        // is judgeable, because the census excludes non-manifold edges.
+        let mut shell = create_watertight_tetrahedron();
+        shell.faces = shell.faces.iter().flat_map(|f| [*f, *f]).collect();
+
+        let census = mesh_repair::winding_census(&shell);
+        let result = validate_shell(&shell);
+
+        assert_eq!(result.boundary_edge_count, 0, "duplicating faces closes it");
+        assert!(result.is_watertight, "so it reads as watertight");
+        assert_eq!(
+            census.interior_edges, 0,
+            "yet nothing is judgeable — every edge is non-manifold",
+        );
+        assert!(
+            result.has_consistent_winding,
+            "the verdict is therefore vacuously true, not verified",
+        );
+        // `is_printable` is what actually rules the vacuous case out, and here
+        // it correctly refuses.
+        assert!(
+            !result.is_printable(),
+            "not manifold ⇒ not printable, which is the caveat's escape hatch",
         );
     }
 
