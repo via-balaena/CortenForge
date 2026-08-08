@@ -3663,6 +3663,57 @@ mod tests {
         }
     }
 
+    /// **Rung 5.0 — does DROPPING the Tet10 arm save the Tet4 solve?**
+    ///
+    /// `rung5_coresidency_minimal_reproducer_fom` is byte-for-byte this test plus one thing: it
+    /// keeps the Tet10 arm alive across the Tet4 solve. Here it is dropped first. That single
+    /// difference is the whole experiment.
+    ///
+    /// ▶ **Committed before the run:**
+    ///
+    /// - **Still `NaN`** ⇒ the damage is done at CONSTRUCTION and outlives the object. That
+    ///   points at process- or thread-global state — a shared workspace, a pool, a cached
+    ///   symbolic pattern — not at the two arms competing for anything.
+    /// - **Converges** ⇒ construction is harmless and CO-EXISTENCE during the solve is what
+    ///   matters. That points instead at aliasing between two live instances.
+    ///
+    /// Either way the bug report gains the one fact that decides where to look. ~2 s.
+    #[test]
+    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
+    fn rung5_coresidency_discriminator_dropped_tet10_fom() {
+        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
+        let params = DiscParams {
+            cell: 0.002,
+            ..DiscParams::default()
+        };
+        let flex = 0.5_f64.to_radians();
+
+        let p = prepare_disc(disc_mesh, &params, None).expect("prepare raw disc at cell 0.002");
+        let corners = referenced_vertices(&p.tet).len();
+
+        let mut tet4 = bond_prepared_tet4(p.duplicate().expect("duplicate"), &params);
+
+        // Built exactly as the reproducer builds it — then dropped, which is the one difference.
+        let tet10 = bond_prepared_tet10(p, &params, None, ConformFloors::SHIPPED);
+        drop(tet10);
+
+        let t = std::time::Instant::now();
+        let (moment, residual) = tet4.flexion_moment(flex);
+        let wall = t.elapsed();
+
+        println!(
+            "rung5 discriminator | cell 0.002 | corners {corners} | Tet10 built then DROPPED | \
+             {:.1} s | moment {moment:.6} | resid {residual:.2e}",
+            wall.as_secs_f64(),
+        );
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+
+        assert!(
+            residual < 1e-8,
+            "Tet4 must conserve after a dropped Tet10 arm (‖ΣF‖+‖ΣM‖ = {residual:.2e})"
+        );
+    }
+
     /// **Rung 5.0 step 2** (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §5.5): do the refined
     /// Tet10 arms fit? One build, one ±0.5° solve, at `cell = 0.002` **and `0.0015`**.
     ///
