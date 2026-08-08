@@ -870,42 +870,72 @@ mod tests {
 
     /// `issue_count` sums the four connectivity/geometry counters.
     ///
-    /// Built by measuring rather than by literal, since `MeshReport` no longer
-    /// has a `Default`. Only the TOTAL is asserted: pinning each part as well
-    /// would make the sum derivable from its own preconditions.
+    /// ⚠ **The four counters must be PAIRWISE DISTINCT**, and that is asserted
+    /// below rather than stated here. With any two equal, substituting one
+    /// field for another inside `issue_count` leaves the total unchanged and
+    /// the mutation ships green — a public reporting method could silently
+    /// stop counting non-manifold edges.
     #[test]
     fn issue_count_sums_the_connectivity_and_geometry_defects() {
         let mut mesh = IndexedMesh::new();
         for p in [
+            // two triangles, each duplicated: 2 duplicates, no boundary edges
             (0.0, 0.0, 0.0),
             (1.0, 0.0, 0.0),
             (0.0, 1.0, 0.0),
             (5.0, 0.0, 0.0),
             (6.0, 0.0, 0.0),
-            (7.0, 0.0, 0.0), // collinear with the two above
+            (5.0, 1.0, 0.0),
+            // three collinear triples: 3 zero-area faces, 9 boundary edges
+            (10.0, 0.0, 0.0),
+            (11.0, 0.0, 0.0),
+            (12.0, 0.0, 0.0),
+            (15.0, 0.0, 0.0),
+            (16.0, 0.0, 0.0),
+            (17.0, 0.0, 0.0),
+            (20.0, 0.0, 0.0),
+            (21.0, 0.0, 0.0),
+            (22.0, 0.0, 0.0),
+            // a three-face fan on one edge: 1 non-manifold edge, 6 boundary
+            (30.0, 0.0, 0.0),
+            (31.0, 0.0, 0.0),
+            (30.0, 1.0, 0.0),
+            (30.0, 2.0, 0.0),
+            (30.0, 3.0, 0.0),
         ] {
             mesh.vertices.push(Point3::new(p.0, p.1, p.2));
         }
-        mesh.faces.push([0, 1, 2]); // 3 boundary edges
-        mesh.faces.push([3, 4, 5]); // zero-area
-        mesh.faces.push([3, 4, 5]); // zero-area AND duplicate
-        mesh.faces.push([3, 4, 5]); // a third copy: those 3 edges become
-        mesh.faces.push([3, 5, 4]); // 4-faced, i.e. non-manifold
+        mesh.faces.push([0, 1, 2]);
+        mesh.faces.push([0, 1, 2]);
+        mesh.faces.push([3, 4, 5]);
+        mesh.faces.push([3, 4, 5]);
+        mesh.faces.push([6, 7, 8]);
+        mesh.faces.push([9, 10, 11]);
+        mesh.faces.push([12, 13, 14]);
+        mesh.faces.push([15, 16, 17]);
+        mesh.faces.push([15, 16, 18]);
+        mesh.faces.push([15, 16, 19]);
 
-        // ⚠ Every term must be NON-ZERO and the four must not be
-        // interchangeable, or dropping one from the sum goes unnoticed. An
-        // earlier fixture had no non-manifold edge, and deleting that term
-        // from `issue_count` survived the whole workspace.
         let report = validate_mesh(&mesh);
 
-        // Preconditions as PROPERTIES, so the total below stays independent of
-        // them. Pinning the four values instead would make `13` derivable
-        // in-test and the assert would stop discriminating.
-        assert!(report.boundary_edge_count > 0);
-        assert!(report.non_manifold_edge_count > 0);
-        assert!(report.degenerate_face_count > 0);
-        assert!(report.duplicate_face_count > 0);
+        let terms = [
+            report.boundary_edge_count,
+            report.non_manifold_edge_count,
+            report.degenerate_face_count,
+            report.duplicate_face_count,
+        ];
+        for i in 0..terms.len() {
+            for j in (i + 1)..terms.len() {
+                assert_ne!(
+                    terms[i], terms[j],
+                    "terms {i} and {j} both equal {}; substituting one for the \
+                     other in `issue_count` would leave the total unchanged",
+                    terms[i]
+                );
+            }
+        }
 
-        assert_eq!(report.issue_count(), 13);
+        assert_eq!(report.issue_count(), terms.iter().sum::<usize>());
+        assert_eq!(report.issue_count(), 21);
     }
 }

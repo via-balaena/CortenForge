@@ -48,8 +48,15 @@ use crate::error::RepairResult;
 /// component inherits the orientation of whichever face BFS happened to seed
 /// from, so a component can come out uniformly inverted — and a census of the
 /// result then reads perfectly clean, because uniform inversion is not a local
-/// defect. On a closed mesh, follow with [`crate::validate_mesh`] and apply
-/// [`flip_winding`] if `is_inside_out` is set.
+/// defect.
+///
+/// On a closed **single-component** mesh, follow with [`crate::validate_mesh`]
+/// and apply [`flip_winding`] if `is_inside_out` is set. ⚠ **Do not use that
+/// recipe on a multi-component mesh:** [`flip_winding`] reverses every face,
+/// so it inverts the correct shells along with the wrong one, and
+/// `is_inside_out` may read clean anyway when the correct shells dominate the
+/// volume. Split with [`crate::find_connected_components`] and orient each
+/// component on its own.
 ///
 /// This function handles disconnected meshes by processing each component separately.
 ///
@@ -1228,16 +1235,21 @@ mod tests {
 
         // (`has_judgeable_edges()` is not asserted: `inconsistent_edges > 0`
         // already entails it, since only the two-faced arm increments either.)
+        // Exactly 1, not merely non-zero: the dual graph of an 8-segment strip
+        // has cycle rank 16 - 16 + 1 = 1, so one edge is left unresolvable.
+        // The type docs state `1`, so `1` is what this pins.
         let mut mobius = closed_strip(8, true);
-        assert!(
-            winding_census(&mobius).inconsistent_edges > 0,
+        assert_eq!(
+            winding_census(&mobius).inconsistent_edges,
+            1,
             "a Möbius band has no consistent orientation"
         );
 
         for round in 1..=4 {
             fix_winding_order(&mut mobius).unwrap();
-            assert!(
-                winding_census(&mobius).inconsistent_edges > 0,
+            assert_eq!(
+                winding_census(&mobius).inconsistent_edges,
+                1,
                 "still non-orientable after {round} repair round(s); if this \
                  ever reaches 0, the docs' non-convergence claim is wrong"
             );
