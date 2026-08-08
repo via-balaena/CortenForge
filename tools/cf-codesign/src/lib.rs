@@ -2307,8 +2307,11 @@ impl<P: DiffPolicy> GripCoDesignTarget<P> {
     /// rigid geom `geom_id` (the arm's fist) each step, so the contact tracks the
     /// swinging tip instead of sitting over the block centroid. Pair with a
     /// `sphere_r` matching that geom's own size. The design+policy-friction gradient
-    /// is gated machine-exact on this tip-posed sphere
-    /// (`sim-coupling`'s `design_policy_friction_moving_ee_gradient_matches_fd`).
+    /// is gated on this tip-posed sphere by `sim-coupling`'s
+    /// `coupling_grad_harness.rs`, case `moving-ee·design-policy-friction[μ+θ]`
+    /// — central finite differences at `1e-5` relative, not machine-exact.
+    /// That harness reserves "machine-exact" for the single-hinge analytic
+    /// `J_state` sweep, which this configuration does not use.
     #[must_use]
     pub fn with_contact_geom(mut self, geom_id: usize) -> Self {
         self.contact_geom = Some(geom_id);
