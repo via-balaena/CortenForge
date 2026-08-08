@@ -55,12 +55,12 @@ use crate::error::RepairResult;
 /// recipe on a multi-component mesh:** [`flip_winding`] reverses every face,
 /// so it inverts the correct shells along with the wrong one, and
 /// `is_inside_out` may read clean anyway when the correct shells dominate the
-/// volume. Use [`crate::split_into_components`], which returns each shell as
-/// its own [`IndexedMesh`] — the form every instrument here accepts — then
-/// validate and [`flip_winding`] each in turn.
-/// ([`crate::find_connected_components`] returns face *indices*, which no
-/// function in this crate consumes, and `flip_winding` cannot be aimed at a
-/// subset.)
+/// volume. Either split the mesh with [`crate::split_into_components`], which
+/// returns each shell as its own [`IndexedMesh`] — the form the instruments
+/// here accept — and validate each; or walk
+/// [`crate::find_connected_components`]' face indices yourself and sum each
+/// shell's signed volume directly. ⚠ [`flip_winding`] reverses every face and
+/// cannot be aimed at one shell, so it is not the repair for this.
 ///
 /// ⚠ **A per-shell `is_inside_out` is not by itself a defect test.** An
 /// enclosed cavity is *correctly* wound inward, so this procedure flags every
@@ -417,11 +417,8 @@ pub fn count_inconsistent_faces(mesh: &IndexedMesh) -> usize {
 /// oppositely**. The census compares only faces that share an edge, so it never
 /// compares the two shells; it reports zero inconsistent edges, and
 /// `is_inside_out` reports clean too whenever the larger shell dominates the
-/// volume. Per-shell orientation is the instrument for that one:
-/// [`crate::split_into_components`] returns each shell as its own
-/// [`IndexedMesh`], which is the form every instrument here accepts.
-/// ([`crate::find_connected_components`] returns face *indices*, which nothing
-/// in this crate consumes.)
+/// volume. Per-shell orientation is the instrument for that one — see
+/// [`fix_winding_order`] for how to get at the shells.
 ///
 /// ⚠ **A per-shell verdict is not by itself a defect test.** An enclosed
 /// cavity is *correctly* wound inward, so this flags every hollow part.

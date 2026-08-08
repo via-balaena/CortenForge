@@ -49,9 +49,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`detect_self_intersections` now finds candidate pairs with a BVH** instead
   of an exhaustive scan. `SelfIntersectionResult::intersecting_pairs` is **no
-  longer ordered by face index**, and with `max_reported` set you may get a
-  *different subset* of pairs than 1.0.0 returned. Sort the result if you
-  depend on order, and do not assume truncation keeps the lowest-indexed pairs.
+  longer ordered by face index**.
+
+  ⚠ **Uncapped** (`max_reported: 0`, i.e. `IntersectionParams::exhaustive()`)
+  the pair *set* is unchanged from 1.0.0 — only the order differs, so sort or
+  compare as a set. ⚠ **Under a cap — including `IntersectionParams::default()`,
+  which caps at 100 — *which* pairs are retained is nondeterministic**, because
+  the early-stop flag races across threads. Measured: 30 runs of a capped
+  search over the same mesh returned 30 different sets. Sorting does not help;
+  this is not an ordering problem.
 
 - **`is_inside_out` and `fill_holes` can differ on near-degenerate input.**
   Two internal predicates were rewritten to use fused multiply-add between the
@@ -123,6 +129,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   true, ..measured }` — is **E0639** too; `#[non_exhaustive]` blocks the
   struct expression regardless of where the base came from.
 
+  ⚠ **`winding` cannot be assigned by literal either** — `WindingCensus` is
+  also `#[non_exhaustive]` with no `Default`, so
+  `Some(WindingCensus { .. })` is E0639. Measure the census you want:
+  `report.winding = Some(winding_census(&mesh_with_the_defect));`
+
   Where the mesh itself matters, build one with the property under test and
   validate it — `validate_mesh`'s own doc example does this for
   `boundary_edge_count == 3`.
@@ -145,10 +156,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   census term above if you relied on that.
 
 - **`detect_self_intersections` assertions.** Pairs are canonical (`a < b`)
-  but no longer face-index ordered, so compare as a set or sort first. If you
-  assert on `intersection_count`, note it is a lower bound once `truncated` is
-  set — and `truncated` is also set when the count lands exactly on
-  `max_reported` with nothing dropped.
+  but no longer face-index ordered.
+
+  If you assert on *which* pairs came back, run uncapped
+  (`IntersectionParams::exhaustive()`) and compare as a set — under a cap the
+  retained subset varies run to run, so neither a set comparison nor a sort is
+  stable. Under a cap, assert only on `has_intersections` / `is_clean()`.
+  `intersection_count` is likewise a lower bound once `truncated` is set — and
+  `truncated` is also set when the count lands exactly on `max_reported` with
+  nothing dropped.
 
 - **If you re-export `MeshReport`**, re-export `WindingCensus` too, or your
   consumers can read the field without being able to name its type.
@@ -176,9 +192,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `is_printable`'s "correct winding" claim, as above.
 - **`SelfIntersectionResult::intersection_count` is documented as the lower
   bound it always was.** Unchanged from 1.0.0: it is incremented before the
-  `max_reported` cap is applied, so it can exceed both the cap and
-  `intersecting_pairs.len()`, and is not reproducible run to run. 1.0.0
-  documented it as "number of intersecting triangle pairs found".
+  `max_reported` cap is applied, so **once `truncated` is set** it can exceed
+  both the cap and `intersecting_pairs.len()` and is not reproducible run to
+  run. Uncapped it is exact. 1.0.0 documented it as "number of intersecting
+  triangle pairs found".
 
 ## [1.0.0] - 2026-05-03
 

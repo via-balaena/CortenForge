@@ -43,16 +43,20 @@ pub struct SelfIntersectionResult {
     pub has_intersections: bool,
     /// Number of intersecting triangle pairs found.
     ///
-    /// ⚠ **A lower bound once [`Self::truncated`] is set**, and not
+    /// ⚠ **Once [`Self::truncated`] is set** this is a lower bound and is not
     /// reproducible run to run: it is incremented before the `max_reported`
     /// cap is applied, so it can exceed both the cap and
-    /// `intersecting_pairs.len()`.
+    /// `intersecting_pairs.len()`. With `max_reported == 0` no cap applies and
+    /// the count is exact.
     pub intersection_count: usize,
     /// Intersecting triangle pairs, each canonical with `a < b`.
     ///
-    /// ⚠ **Not ordered by face index** — this follows BVH traversal, so with
-    /// `max_reported` set the retained subset is not the lowest-indexed one.
-    /// Sort if you depend on order.
+    /// ⚠ **Not ordered by face index** — this follows BVH traversal.
+    ///
+    /// Uncapped, the *set* is deterministic, so sort or compare as a set.
+    /// ⚠ **Under a cap, which pairs are retained varies run to run** (the
+    /// early-stop flag races), so neither sorting nor a set comparison is
+    /// stable — assert on [`Self::has_intersections`] instead.
     pub intersecting_pairs: Vec<(u32, u32)>,
     /// Total faces checked.
     pub faces_checked: usize,
@@ -200,13 +204,17 @@ impl SimdSimultaneousVisitor<u32, u32, SimdAabb> for OverlapPairCollector<'_> {
 /// algorithmic gain estimate on production gasket-mold meshes
 /// (~25 s → ~3 s per gasket on 400 k-face meshes).
 ///
-/// ⚠ **The same SET of pairs as the pre-2.0 O(n²) scan, but not the same
-/// order.** `intersecting_pairs` follows BVH traversal, not face index, and
-/// under `max_reported` the retained subset is therefore not the
-/// lowest-indexed one. Sort if you depend on order. `intersection_count` is
-/// incremented before the cap is applied, so it may exceed both
-/// `max_reported` and `intersecting_pairs.len()`, and is not reproducible run
-/// to run once `truncated` is set.
+/// ⚠ **Uncapped (`max_reported == 0`), the same SET of pairs as the pre-2.0
+/// O(n²) scan — but never the same order**, since `intersecting_pairs`
+/// follows BVH traversal. Sort or compare as a set.
+///
+/// ⚠ **Under a cap, *which* pairs are retained varies run to run**: the
+/// early-stop flag races across threads, so repeated searches over the same
+/// mesh return different subsets. Neither sorting nor a set comparison is
+/// stable there — assert on `has_intersections` instead. `intersection_count`
+/// is likewise incremented before the cap is applied, so once `truncated` is
+/// set it may exceed both `max_reported` and `intersecting_pairs.len()` and is
+/// not reproducible.
 ///
 /// # Arguments
 ///
@@ -362,8 +370,9 @@ pub fn detect_self_intersections(
 /// Pre-S1 O(n²) reference implementation of
 /// [`detect_self_intersections`], preserved for the regression test
 /// gate at `docs/CF_CAST_F4_SELF_INTERSECT_BVH_RECON.md` §S-4 #1.
-/// Bit-equivalent results to the BVH path within FP precision; same
-/// `SelfIntersectionResult` shape + `IntersectionParams` semantics.
+/// Finds the same pair SET as the BVH path, in ascending face order, with the
+/// same `SelfIntersectionResult` shape and `IntersectionParams` semantics.
+/// ⚠ The two ORDERS differ — compare as sets; `pair_set` exists for this.
 #[cfg(test)]
 #[must_use]
 fn detect_self_intersections_reference(

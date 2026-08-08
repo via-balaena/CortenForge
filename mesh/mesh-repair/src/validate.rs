@@ -128,6 +128,10 @@ impl MeshReport {
     /// and unless that mesh is closed with `Σ A_f n_f = 0` the answer is not
     /// even **stable** — translating it can flip the verdict. Check
     /// [`Self::winding`] first.
+    ///
+    /// ⚠ **An empty mesh is printable.** With no edges, watertight and
+    /// manifold are vacuously true and the volume sum is zero, so a failed
+    /// load reaching this predicate reports a green light.
     /// [`Self::winding`] is reported but not judged here, nor by
     /// [`Self::has_issues`] or [`Self::issue_count`].
     #[must_use]
@@ -508,6 +512,57 @@ mod tests {
         assert!(report.is_printable());
     }
 
+    /// Two tetrahedra glued on a shared face: every edge has two or more
+    /// incident faces (watertight) and the three shared-face edges have four
+    /// (non-manifold).
+    fn watertight_but_non_manifold() -> IndexedMesh {
+        let mut mesh = IndexedMesh::new();
+        for p in [
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (0.5, 0.866, 0.0),
+            (0.5, 0.289, 0.816),
+            (0.5, 0.289, -0.816),
+        ] {
+            mesh.vertices.push(Point3::new(p.0, p.1, p.2));
+        }
+        for f in [
+            [0, 2, 1],
+            [0, 1, 3],
+            [1, 2, 3],
+            [2, 0, 3],
+            [0, 1, 2],
+            [0, 4, 1],
+            [1, 4, 2],
+            [2, 4, 0],
+        ] {
+            mesh.faces.push(f);
+        }
+        mesh
+    }
+
+    /// `is_printable` is a three-term conjunction, and each term needs a
+    /// fixture where it is the SOLE falsifier — otherwise dropping that term
+    /// from the expression survives.
+    ///
+    /// `!is_watertight` is covered by `printability_fails_with_holes`, and
+    /// `is_inside_out` by `the_option_gates_the_census_and_leaves_the_volume_flag_measured`.
+    /// This is the third: watertight and not inside-out, failing only on
+    /// manifoldness.
+    #[test]
+    fn printability_fails_on_non_manifold_alone() {
+        let report = validate_mesh(&watertight_but_non_manifold());
+
+        assert!(
+            report.is_watertight,
+            "precondition: the other two terms pass"
+        );
+        assert!(!report.is_inside_out, "precondition");
+        assert!(!report.is_manifold);
+
+        assert!(!report.is_printable());
+    }
+
     #[test]
     fn printability_fails_with_holes() {
         let mesh = simple_triangle();
@@ -617,12 +672,15 @@ mod tests {
             "the volume flag is measured regardless of the option — a gate on \
              it would report the hardcoded `false` here"
         );
-        // The other direction of `is_printable`. Every other assertion on it
-        // is `true`, so dropping the `!is_inside_out` term entirely would
-        // survive them all; this fixture is watertight and manifold, so only
-        // that term can make it false. It is also the producer for the
-        // CHANGELOG's migration claim that 1.0.0 reported this mesh printable
-        // and 2.0.0 does not.
+        // The `!is_inside_out` conjunct of `is_printable`, isolated: this
+        // fixture is watertight and manifold, so only that term can make the
+        // predicate false. (The other two conjuncts are isolated by
+        // `printability_fails_with_holes` and
+        // `printability_fails_on_non_manifold_alone` — between the three,
+        // dropping any single term from the expression fails a test.)
+        //
+        // It is also the producer for the CHANGELOG's migration claim that
+        // 1.0.0 reported this mesh printable and 2.0.0 does not.
         assert!(report.is_watertight && report.is_manifold);
         assert!(!report.is_printable());
     }
@@ -949,10 +1007,34 @@ mod tests {
         assert_eq!(report.issue_count(), terms.iter().sum::<usize>());
         assert_eq!(report.issue_count(), 21);
 
-        // The positive direction of `has_issues`, which nothing else asserts:
-        // both existing call sites check `!has_issues()`, so `fn has_issues()
-        // { false }` survived the workspace. Free here — all four counters are
-        // non-zero on this fixture.
+        // `has_issues` is a four-term disjunction. Asserting it on a report
+        // where ALL four counters are non-zero kills only the constant-fold
+        // mutant — the `||` is saturated, so dropping any single term still
+        // yields `true`. Each term needs to be the SOLE non-zero one.
+        //
+        // Fields are `pub`, so zero the other three in turn rather than
+        // building four meshes.
+        for (i, name) in ["boundary", "non-manifold", "degenerate", "duplicate"]
+            .iter()
+            .enumerate()
+        {
+            let mut solo = report.clone();
+            solo.boundary_edge_count = 0;
+            solo.non_manifold_edge_count = 0;
+            solo.degenerate_face_count = 0;
+            solo.duplicate_face_count = 0;
+            match i {
+                0 => solo.boundary_edge_count = report.boundary_edge_count,
+                1 => solo.non_manifold_edge_count = report.non_manifold_edge_count,
+                2 => solo.degenerate_face_count = report.degenerate_face_count,
+                _ => solo.duplicate_face_count = report.duplicate_face_count,
+            }
+            assert!(
+                solo.has_issues(),
+                "{name} alone must make has_issues() true, or dropping that \
+                 term from the disjunction goes unnoticed"
+            );
+        }
         assert!(report.has_issues());
 
         // ...and the `Issues:` block those counters render into, which was
