@@ -42,13 +42,32 @@ pub struct SelfIntersectionResult {
     /// Whether the mesh has any self-intersections.
     pub has_intersections: bool,
     /// Number of intersecting triangle pairs found.
+    ///
+    /// Exact while [`Self::truncated`] is `false`. ⚠ **Once it is set, treat
+    /// this as a lower bound and do not rely on reproducibility** — the
+    /// counter is incremented before the `max_reported` cap is applied, so if
+    /// the search really did overrun it can exceed both the cap and
+    /// `intersecting_pairs.len()` and vary run to run. (It is still exact in
+    /// the boundary case where the count landed *exactly* on the cap, but the
+    /// result does not tell you which case you are in.)
     pub intersection_count: usize,
-    /// List of intersecting triangle pairs as `(face_idx_a, face_idx_b)`.
-    /// Limited to first `max_reported` pairs.
+    /// Intersecting triangle pairs, each canonical with `a < b`.
+    ///
+    /// ⚠ **Not ordered by face index** — this follows BVH traversal.
+    ///
+    /// While [`Self::truncated`] is `false` the *set* is deterministic, so
+    /// sort or compare as a set. ⚠ **Once it is `true`, do not rely on which
+    /// pairs came back** — if the search overran, the early-stop flag races
+    /// and the retained subset varies run to run, so neither sorting nor a set
+    /// comparison is stable. Assert on [`Self::has_intersections`] instead.
     pub intersecting_pairs: Vec<(u32, u32)>,
     /// Total faces checked.
     pub faces_checked: usize,
-    /// Whether the search was terminated early due to reaching `max_reported`.
+    /// Whether the pair count reached `max_reported`.
+    ///
+    /// ⚠ `false` means the search was complete. `true` does **not** mean pairs
+    /// were dropped — at exactly the cap, everything was found and nothing was
+    /// omitted.
     pub truncated: bool,
 }
 
@@ -188,9 +207,21 @@ impl SimdSimultaneousVisitor<u32, u32, SimdAabb> for OverlapPairCollector<'_> {
 /// algorithmic gain estimate on production gasket-mold meshes
 /// (~25 s → ~3 s per gasket on 400 k-face meshes).
 ///
-/// Bit-equivalent results to the pre-S1 O(n²) implementation,
-/// preserved as `detect_self_intersections_reference` for the regression
-/// test gate.
+/// ⚠ **Uncapped (`max_reported == 0`), the same SET of pairs as the pre-2.0
+/// O(n²) scan — but not, in general, the same order**, since
+/// `intersecting_pairs` follows BVH traversal. Sort or compare as a set.
+///
+/// ⚠ **Once `truncated` is set, *which* pairs were retained varies run to
+/// run**: the early-stop flag races across threads, so repeated searches over
+/// the same mesh return different subsets. Neither sorting nor a set
+/// comparison is stable there — assert on `has_intersections` instead. A cap
+/// alone is not the problem: while `truncated` is `false` the search was
+/// exhaustive and the set is deterministic. `intersection_count` follows the
+/// same rule — exact while `truncated` is `false`, and afterwards a lower
+/// bound that may exceed both `max_reported` and `intersecting_pairs.len()`.
+/// ⚠ `truncated` is conservative: it is also set when the count lands exactly
+/// on the cap with nothing dropped, so it marks "cannot rely on this", not
+/// "this definitely overran".
 ///
 /// # Arguments
 ///
@@ -346,8 +377,9 @@ pub fn detect_self_intersections(
 /// Pre-S1 O(n²) reference implementation of
 /// [`detect_self_intersections`], preserved for the regression test
 /// gate at `docs/CF_CAST_F4_SELF_INTERSECT_BVH_RECON.md` §S-4 #1.
-/// Bit-equivalent results to the BVH path within FP precision; same
-/// `SelfIntersectionResult` shape + `IntersectionParams` semantics.
+/// Finds the same pair SET as the BVH path, in ascending face order, with the
+/// same `SelfIntersectionResult` shape and `IntersectionParams` semantics.
+/// ⚠ The two ORDERS differ — compare as sets; `pair_set` exists for this.
 #[cfg(test)]
 #[must_use]
 fn detect_self_intersections_reference(
@@ -981,6 +1013,56 @@ mod tests {
         assert_eq!(
             pair_set(&bvh_no_skip.intersecting_pairs),
             pair_set(&ref_no_skip.intersecting_pairs),
+        );
+    }
+
+    /// The producer for `truncated`'s documented asymmetry: `false` proves the
+    /// search was complete, `true` does not prove anything was dropped.
+    ///
+    /// Running AT the true count is what makes this deterministic: with the
+    /// cap equal to the number of pairs, the early-stop flag can only be set
+    /// by the last of them, so nothing is dropped and the comparison below is
+    /// stable. It is also the only test that kills `count < max_pairs` ->
+    /// `count + 1 < max_pairs`, which the existing cap test survives (its
+    /// `len() <= 5` holds at 4).
+    #[test]
+    fn truncated_is_set_even_when_the_cap_lands_exactly_on_the_true_count() {
+        let (mesh, _) = make_intersecting_pairs_mesh(5);
+        let unlimited = detect_self_intersections(
+            &mesh,
+            &IntersectionParams {
+                max_reported: 0,
+                epsilon: 1e-10,
+                skip_adjacent: true,
+            },
+        );
+        assert_eq!(
+            unlimited.intersecting_pairs.len(),
+            5,
+            "fixture precondition: exactly 5 pairs, so the cap below lands ON \
+             the true count rather than under it"
+        );
+        assert!(!unlimited.truncated, "no cap was set");
+
+        let at_cap = detect_self_intersections(
+            &mesh,
+            &IntersectionParams {
+                max_reported: 5,
+                epsilon: 1e-10,
+                skip_adjacent: true,
+            },
+        );
+
+        // Nothing was omitted...
+        let mut a = unlimited.intersecting_pairs;
+        let mut b = at_cap.intersecting_pairs;
+        a.sort_unstable();
+        b.sort_unstable();
+        assert_eq!(a, b, "the capped run found every pair");
+        // ...and `truncated` is still set. `>= max_pairs`, not `>`.
+        assert!(
+            at_cap.truncated,
+            "documented: `true` does not mean pairs were dropped"
         );
     }
 

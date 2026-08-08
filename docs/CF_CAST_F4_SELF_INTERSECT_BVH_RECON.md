@@ -355,10 +355,12 @@ Soft success criteria (informational, not blocking):
 1. Production iter-1 regen wall-clock < 1 min (was 2.18 min at
    F4-S3; 33.6 min pre-parallel-meshing).
 2. Per-gasket self_intersecting < 5 s (was ~25 s at F4-S3).
-3. `mesh_repair::detect_self_intersections` BVH path returns
-   bit-equivalent results to the O(n²) reference on ALL workspace
-   test fixtures (mesh-repair tests + the new regression test +
-   the mesh-printability tests + the cf-cast lib tests).
+3. `mesh_repair::detect_self_intersections` BVH path returns the same
+   pair SET as the O(n²) reference on ALL workspace test fixtures
+   (mesh-repair tests + the new regression test + the mesh-printability
+   tests + the cf-cast lib tests). ⚠ NOT the same order — the BVH emits
+   in traversal order — so paired comparisons canonicalise to a set;
+   see §S-4 and `pair_set`.
 4. No new clippy/-D-warnings or fmt regressions.
 
 ## §S-7 Bail-out priority
@@ -417,7 +419,7 @@ include this fixture case + canonicalize pair direction
   `#[cfg(test)] fn detect_self_intersections_reference` preserving
   the O(n²) impl. Add 5 paired regression tests. cf-cast lib
   test suite + mesh-repair lib test suite + mesh-printability
-  test suite all pass with bit-equivalent results.
+  test suite all pass with the same pair SET (not the same order).
 - **S2: cf-cast production iter-1 regen + verify wall-clock**.
   Run `cargo run --release ... -- cast.toml --output-dir
   cast_iter1_post_self_intersect_smoke`. Confirm sub-1-min wall.

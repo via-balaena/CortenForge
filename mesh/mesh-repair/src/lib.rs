@@ -7,9 +7,10 @@
 //! - Duplicate face removal
 //! - Unreferenced vertex removal
 //! - Hole detection and filling
-//! - Winding order correction, and per-edge winding **measurement**
-//!   ([`winding_census`] — the local instrument `MeshReport::is_inside_out`
-//!   cannot substitute for)
+//! - Winding order correction, and per-edge winding **measurement** —
+//!   [`MeshReport::winding`], which [`validate_mesh`] fills in, or
+//!   [`winding_census`] standalone. Either way it is the *local* instrument
+//!   that [`MeshReport::is_inside_out`] cannot substitute for.
 //! - Connected component analysis
 //! - Self-intersection detection
 //!

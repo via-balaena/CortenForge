@@ -44,6 +44,29 @@ use crate::error::RepairResult;
 /// Uses BFS flood fill from an arbitrary start face in each connected component.
 /// For each face, ensures that shared edges are traversed in opposite directions.
 ///
+/// ⚠ **Produces a *consistent* orientation, not an *outward* one.** Each
+/// component inherits the orientation of whichever face BFS happened to seed
+/// from, so a component can come out uniformly inverted — and a census of the
+/// result then reads perfectly clean, because uniform inversion is not a local
+/// defect.
+///
+/// On a closed **single-component** mesh, follow with [`crate::validate_mesh`]
+/// and apply [`flip_winding`] if `is_inside_out` is set. ⚠ **Do not use that
+/// recipe on a multi-component mesh:** [`flip_winding`] reverses every face,
+/// so it inverts the correct shells along with the wrong one, and
+/// `is_inside_out` may read clean anyway when the correct shells dominate the
+/// volume. Either split the mesh with [`crate::split_into_components`], which
+/// returns each shell as its own [`IndexedMesh`] — the form the instruments
+/// here accept — and validate each; or walk
+/// [`crate::find_connected_components`]' face indices yourself and sum each
+/// shell's signed volume directly. ⚠ [`flip_winding`] reverses every face and
+/// cannot be aimed at one shell, so it is not the repair for this.
+///
+/// ⚠ **A per-shell `is_inside_out` is not by itself a defect test.** An
+/// enclosed cavity is *correctly* wound inward, so this procedure flags every
+/// hollow part. Distinguishing a cavity from an inverted shell needs a
+/// containment test, which this crate does not provide.
+///
 /// This function handles disconnected meshes by processing each component separately.
 ///
 /// # Arguments
@@ -56,13 +79,8 @@ use crate::error::RepairResult;
 ///
 /// # Errors
 ///
-/// Currently always returns `Ok(())` — the function operates in-place
-/// on `mesh.faces` and the only failure modes are upstream
-/// adjacency-graph construction failures, which `MeshAdjacency::build`
-/// handles internally without surfacing through this signature. The
-/// `RepairResult<()>` shape is preserved for forward compatibility
-/// (future winding strategies that consult per-vertex normals or
-/// signed-volume diagnostics may surface error variants).
+/// Never, currently. The `RepairResult<()>` shape is reserved for winding
+/// strategies that could fail.
 ///
 /// # Example
 ///
@@ -360,23 +378,21 @@ pub fn count_inconsistent_faces(mesh: &IndexedMesh) -> usize {
 /// test: it sums origin-apex tetrahedra over the faces and asks whether the
 /// total came out negative.
 ///
-/// ⚠ **That sum is translation-invariant only while the surface is consistently
-/// oriented.** Flip one face and the invariance is gone: that face's term then
-/// grows with the mesh's distance from the world origin, so the flag becomes a
-/// function of *where the mesh sits*. Measured, on the octahedron fixture in
-/// this file's tests, flipping a single face:
+/// ⚠ **That sum is frame-dependent**, so it is not a sound reading of local
+/// winding in either direction. [`crate::MeshReport`] states the mechanism and
+/// its two counter-examples; this doc does not restate them.
+///
+/// Measured here, on the octahedron fixture in this file's tests, translating
+/// a single-flipped mesh along `+z`:
 ///
 /// | z-offset | 0 | 1 | 2 | 3 | 4 | 10 | 970 |
 /// |---|---|---|---|---|---|---|---|
 /// | `is_inside_out` | false | false | false | false | **true** | **true** | **true** |
 ///
-/// (Producer: `signed_volume_sees_a_local_flip_once_the_mesh_is_off_origin`.)
-///
-/// So `is_inside_out` is **not** a sound reading of local winding in either
-/// direction. Near the origin it misses a local flip; far from it, a local flip
-/// can set the flag that a reader will interpret as "globally reversed". Meshes
-/// kept in a native anatomical frame sit far from the origin, which is exactly
-/// where the second failure lives.
+/// ⚠ **Read that as one traversal of one half-space, not as a distance law.**
+/// The sum moves as `t · Σ A_f n_f`, so this sweep crosses the boundary only
+/// because `+z` is not orthogonal to that vector; other directions never cross
+/// it at any magnitude.
 ///
 /// This census asks the local question directly and answers it with no
 /// reference to the origin, or to any coordinate at all — it reads
@@ -401,8 +417,24 @@ pub fn count_inconsistent_faces(mesh: &IndexedMesh) -> usize {
 /// oppositely**. The census compares only faces that share an edge, so it never
 /// compares the two shells; it reports zero inconsistent edges, and
 /// `is_inside_out` reports clean too whenever the larger shell dominates the
-/// volume. Per-component orientation is the instrument for that one; see
-/// [`crate::find_connected_components`].
+/// volume. Per-shell orientation is the instrument for that one — see
+/// [`fix_winding_order`] for how to get at the shells.
+///
+/// ⚠ **A per-shell verdict is not by itself a defect test.** An enclosed
+/// cavity is *correctly* wound inward, so this flags every hollow part.
+/// Separating a cavity from an inverted shell needs a containment test, which
+/// this crate does not provide.
+///
+/// ⚠ **On a non-orientable surface, `inconsistent_edges` is a lower bound on a
+/// topological obstruction, not a repairable defect.** A Möbius band reports
+/// **at least** `1`, and [`fix_winding_order`] can never bring it to `0`,
+/// however many times it is run, because no consistent orientation exists.
+/// (The count depends on the mesh's actual winding, not only its topology;
+/// after a BFS repair it is the number of edges the spanning tree cannot
+/// reconcile.) A caller looping
+/// census → repair → census will not converge. Nothing on this type
+/// distinguishes that from a repairable flip; if you need to, check
+/// orientability separately.
 ///
 /// # Seed-independence
 ///
@@ -460,7 +492,14 @@ pub fn count_inconsistent_faces(mesh: &IndexedMesh) -> usize {
 /// flip_winding(&mut mesh);
 /// assert_eq!(winding_census(&mesh).inconsistent_edges, 0);
 /// ```
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// ⚠ **No `Default`, and `#[non_exhaustive]`**, so one cannot be conjured from
+/// nothing — it must start from [`winding_census`]. The fields stay `pub`, so a
+/// caller can still overwrite them afterwards. Match with a `..` rest pattern.
+///
+/// `Copy`, so reading it out of a [`crate::MeshReport`] — for instance with
+/// `report.winding.is_some_and(..)` — does not move the report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct WindingCensus {
     /// Edges with exactly two incident faces — the edges this census can judge.
     ///
@@ -479,8 +518,9 @@ pub struct WindingCensus {
     pub inconsistent_edges: usize,
     /// Distinct faces incident to at least one inconsistent edge.
     ///
-    /// Bounded by `inconsistent_edges` within a factor of ~3 either way, so it
-    /// is a coarse locality hint, not a concentration metric.
+    /// An inconsistent edge has exactly two incident faces and a face has three
+    /// edges, so this lies in `[2/3 * inconsistent_edges, 2 * inconsistent_edges]`
+    /// — a coarse locality hint, not a concentration metric.
     pub faces_on_inconsistent_edges: usize,
     /// Edges with exactly one incident face — holes and open boundaries.
     pub boundary_edges: usize,
@@ -508,16 +548,13 @@ impl WindingCensus {
     /// Whether **any** edge was in a position to be judged — that is, whether
     /// `interior_edges` is non-zero.
     ///
-    /// `false` means the mesh is soup (or a single triangle): a zero
-    /// `inconsistent_edges` from such a mesh reports that no edge was
-    /// examined, not that the winding is good.
+    /// `false` means no edge was judged — soup, a lone triangle, fully open,
+    /// or non-manifold-only — so a zero `inconsistent_edges` beside it is not
+    /// a clean bill. It does not say which of those applies.
     ///
-    /// ⚠ **`true` is not a coverage claim.** A surface that is 99 % boundary
-    /// edges with a single interior edge reports `true`, having judged one
-    /// edge. This method answers non-vacuity only. If you need to know how
-    /// much of the surface the census actually saw, compare `interior_edges`
-    /// against `boundary_edges` yourself — the counters are there precisely
-    /// so that judgement stays with the caller.
+    /// ⚠ **`true` is not a coverage claim:** one interior edge among thousands
+    /// of boundary edges reports `true`. Compare `interior_edges` against
+    /// `boundary_edges` if you need to know how much was seen.
     #[must_use]
     pub const fn has_judgeable_edges(&self) -> bool {
         self.interior_edges > 0
@@ -536,10 +573,12 @@ impl std::fmt::Display for WindingCensus {
             self.boundary_edges,
             self.non_manifold_edges,
             self.degenerate_faces,
+            // States the verdict's absence, not its cause: this type cannot
+            // distinguish soup from open from non-manifold-only.
             if self.has_judgeable_edges() {
                 ""
             } else {
-                " | INCONCLUSIVE: no edge has two incident faces"
+                " | INCONCLUSIVE: no edge was judged"
             },
         )
     }
@@ -626,8 +665,12 @@ pub fn winding_census(mesh: &IndexedMesh) -> WindingCensus {
     }
 
     let mut census = WindingCensus {
+        interior_edges: 0,
+        inconsistent_edges: 0,
+        faces_on_inconsistent_edges: 0,
+        boundary_edges: 0,
+        non_manifold_edges: 0,
         degenerate_faces,
-        ..WindingCensus::default()
     };
     let mut damaged_faces: HashSet<usize> = HashSet::new();
 
@@ -905,8 +948,9 @@ mod tests {
         consistent_octahedron_at(0.0)
     }
 
-    /// The same octahedron translated along z, for the gate that measures how
-    /// `is_inside_out` responds to distance from the world origin.
+    /// The same octahedron translated along `+z`, for the gate that walks the
+    /// signed-volume flag across one half-space boundary. Not a distance
+    /// sweep — see [`crate::MeshReport::is_inside_out`].
     fn consistent_octahedron_at(z: f64) -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
         for v in [
@@ -986,14 +1030,13 @@ mod tests {
     /// ★ The gate that replaces a false claim with a measurement.
     ///
     /// This file used to assert that `is_inside_out` is "structurally
-    /// incapable" of seeing a locally flipped face. It is not. The
-    /// signed-volume sum is translation-invariant only while the surface is
-    /// consistently oriented; once one face is flipped, that face's term grows
-    /// with distance from the world origin and eventually dominates.
+    /// incapable" of seeing a locally flipped face. It is not.
     ///
-    /// The transition is measured here rather than asserted in prose. It
-    /// matters because meshes kept in a native anatomical frame sit ~1e3 units
-    /// from the origin — the far end of this sweep, not the near end.
+    /// ⚠ **This sweep walks `+z` only, so it establishes that a boundary
+    /// exists along one direction — not that distance is what crosses it.**
+    /// The sum moves as `t · Σ A_f n_f`; see [`crate::MeshReport`] for the
+    /// mechanism and for the two cases this sweep cannot reach (a flip that
+    /// fires at the origin, and a translation that never fires at all).
     #[test]
     fn signed_volume_sees_a_local_flip_once_the_mesh_is_off_origin() {
         let mut saw_missed = false;
@@ -1012,7 +1055,8 @@ mod tests {
             assert!(
                 !validate_mesh(&clean).is_inside_out,
                 "z={z}: the unflipped fixture is outward at every offset — \
-                 translation-invariance holds while winding is consistent",
+                 it is CLOSED and consistently oriented, so `Sum(A_f n_f)` is \
+                 zero and V does not move with the frame",
             );
 
             let mut flipped = consistent_octahedron_at(z);
@@ -1049,8 +1093,8 @@ mod tests {
 
     /// ★ The load-bearing gate. One flipped face reports **exactly its own
     /// three edges, wherever it sits** — where the signed-volume test reports
-    /// nothing at all and the seed-relative face count reports two different
-    /// numbers for the same defect.
+    /// a frame-dependent answer and the seed-relative face count reports two
+    /// different numbers for the same defect.
     ///
     /// The three-way contrast is the whole claim:
     ///
@@ -1158,6 +1202,193 @@ mod tests {
         );
     }
 
+    /// A closed strip of `n` segments. With `twist`, the seam joins back
+    /// swapped, making the surface non-orientable (a Möbius band).
+    fn closed_strip(n: u32, twist: bool) -> IndexedMesh {
+        let mut mesh = IndexedMesh::new();
+        for i in 0..n {
+            let t = f64::from(i) / f64::from(n) * std::f64::consts::TAU;
+            mesh.vertices.push(Point3::new(t.cos(), t.sin(), 0.0));
+            mesh.vertices
+                .push(Point3::new(t.cos() * 1.2, t.sin() * 1.2, 0.2));
+        }
+        for i in 0..n {
+            let j = (i + 1) % n;
+            let (a0, a1) = (2 * i, 2 * i + 1);
+            let (b0, b1) = if twist && j == 0 {
+                (2 * j + 1, 2 * j)
+            } else {
+                (2 * j, 2 * j + 1)
+            };
+            mesh.faces.push([a0, a1, b1]);
+            mesh.faces.push([a0, b1, b0]);
+        }
+        mesh
+    }
+
+    /// Producer for the type docs' claim that on a non-orientable surface
+    /// `inconsistent_edges` is a topological obstruction, not a repairable
+    /// defect — so a census → repair → census loop does not converge.
+    #[test]
+    fn a_non_orientable_surface_never_censuses_clean_however_often_it_is_repaired() {
+        // Control: the untwisted strip is orientable, so repair CAN clear it.
+        //
+        // ⚠ It must start DIRTY. `closed_strip(8, false)` is already
+        // consistently wound, so repairing it and asserting 0 would pass even
+        // if `fix_winding_order` did nothing — the control has to exercise the
+        // repair, not just observe a mesh that never needed it.
+        let mut orientable = closed_strip(8, false);
+        let f = orientable.faces[0];
+        orientable.faces[0] = [f[0], f[2], f[1]];
+        assert!(
+            winding_census(&orientable).inconsistent_edges > 0,
+            "control precondition: the fixture must be dirty before repair"
+        );
+        fix_winding_order(&mut orientable).unwrap();
+        assert_eq!(
+            winding_census(&orientable).inconsistent_edges,
+            0,
+            "repair clears a REPAIRABLE defect on this mesh class, so the \
+             Moebius result below is topology and not a broken repair"
+        );
+
+        // (`has_judgeable_edges()` is not asserted: `inconsistent_edges > 0`
+        // already entails it, since only the two-faced arm increments either.)
+        // Exactly 1 for THIS fixture, not a general property of Möbius bands:
+        // the dual graph of an 8-segment strip has cycle rank 16 - 16 + 1 = 1,
+        // so exactly one edge is left unresolvable. The type doc states the
+        // general claim ("at least 1"); this pins the fixture's own value so a
+        // change in `closed_strip` cannot pass silently.
+        let mut mobius = closed_strip(8, true);
+        assert_eq!(
+            winding_census(&mobius).inconsistent_edges,
+            1,
+            "a Möbius band has no consistent orientation"
+        );
+
+        for round in 1..=4 {
+            fix_winding_order(&mut mobius).unwrap();
+            assert_eq!(
+                winding_census(&mobius).inconsistent_edges,
+                1,
+                "still non-orientable after {round} repair round(s); if this \
+                 ever reaches 0, the docs' non-convergence claim is wrong"
+            );
+        }
+    }
+
+    /// `WindingCensus`'s own `Display` — its wording and its argument order.
+    ///
+    /// It is public API and user-visible: `cf-fsu-geometry`'s `SurfaceReport`
+    /// prints it verbatim.
+    ///
+    /// ⚠ **The fixture's job is to make all six counters PAIRWISE DISTINCT**, so
+    /// that any transposition of the six format arguments changes the rendered
+    /// string. Three loose triangles are what put `boundary_edges` at 9; with
+    /// one, it collides with `inconsistent_edges` at 3 and swapping that pair
+    /// — two adjacent edge counts of the same magnitude — renders identically.
+    /// The distinctness is asserted below, not assumed.
+    #[test]
+    fn winding_census_display_renders_every_counter_in_order() {
+        let mut mesh = IndexedMesh::new();
+        for p in [
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (0.5, 0.866, 0.0),
+            (0.5, 0.289, 0.816),
+        ] {
+            mesh.vertices.push(Point3::new(p.0, p.1, p.2));
+        }
+        mesh.faces.push([0, 2, 1]);
+        mesh.faces.push([0, 3, 1]); // reversed: 3 inconsistent edges, 4 faces touched
+        mesh.faces.push([1, 2, 3]);
+        mesh.faces.push([2, 0, 3]);
+
+        // Three disjoint loose triangles -> 9 boundary edges.
+        for i in 0..3u32 {
+            let off = f64::from(i).mul_add(10.0, 9.0);
+            let base = 4 + i * 3;
+            mesh.vertices.push(Point3::new(off, 0.0, 0.0));
+            mesh.vertices.push(Point3::new(off + 1.0, 0.0, 0.0));
+            mesh.vertices.push(Point3::new(off, 1.0, 0.0));
+            mesh.faces.push([base, base + 1, base + 2]);
+        }
+        // A three-face fan on one edge -> 1 non-manifold edge, 6 boundary.
+        // Without it the non-manifold slot is only ever rendered as `0`, and
+        // hardcoding that literal in the format string would survive.
+        let fan = u32::try_from(mesh.vertices.len()).unwrap();
+        for p in [
+            (40.0, 0.0, 0.0),
+            (41.0, 0.0, 0.0),
+            (40.0, 1.0, 0.0),
+            (40.0, 2.0, 0.0),
+            (40.0, 3.0, 0.0),
+        ] {
+            mesh.vertices.push(Point3::new(p.0, p.1, p.2));
+        }
+        mesh.faces.push([fan, fan + 1, fan + 2]);
+        mesh.faces.push([fan, fan + 1, fan + 3]);
+        mesh.faces.push([fan, fan + 1, fan + 4]);
+        // Two index-repeating faces -> 2 degenerate, skipped whole (they
+        // contribute no edges, so they do not perturb the counts above).
+        mesh.faces.push([4, 4, 5]);
+        mesh.faces.push([7, 7, 8]);
+
+        let c = winding_census(&mesh);
+
+        // The property the fixture exists to provide. Without this, a future
+        // tweak could collapse a pair and silently widen the blind spot rather
+        // than fail.
+        let counters = [
+            c.inconsistent_edges,
+            c.interior_edges,
+            c.faces_on_inconsistent_edges,
+            c.boundary_edges,
+            c.non_manifold_edges,
+            c.degenerate_faces,
+        ];
+        for i in 0..counters.len() {
+            for j in (i + 1)..counters.len() {
+                assert_ne!(
+                    counters[i], counters[j],
+                    "counters {i} and {j} collide at {}; a transposition of \
+                     those two format arguments would render identically and \
+                     this test could not see it",
+                    counters[i]
+                );
+            }
+        }
+
+        assert_eq!(
+            c.to_string(),
+            "winding: 3 of 6 interior edges inconsistent (4 faces) | \
+             boundary-edges 15 non-manifold-edges 1 degenerate-faces 2"
+        );
+    }
+
+    /// The `INCONCLUSIVE` suffix, which the judgeable fixture above cannot
+    /// reach. Its wording must not name a cause: this type cannot tell soup
+    /// from open from non-manifold-only.
+    ///
+    /// Built by censusing a real lone triangle rather than fabricating a
+    /// census — `WindingCensus` has no `Default` precisely so that a clean
+    /// verdict cannot be manufactured.
+    #[test]
+    fn winding_census_display_marks_an_unjudged_census_without_naming_a_cause() {
+        let mut lone = IndexedMesh::new();
+        lone.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        lone.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        lone.vertices.push(Point3::new(0.0, 1.0, 0.0));
+        lone.faces.push([0, 1, 2]);
+
+        let rendered = winding_census(&lone).to_string();
+
+        // The byte-exact suffix is the whole claim: any reversion to wording
+        // that names a cause fails it, so a separate `!contains` guard could
+        // not fail while this one holds.
+        assert!(rendered.ends_with(" | INCONCLUSIVE: no edge was judged"));
+    }
+
     /// Soup has no interior edges, so it has nothing to judge. The census
     /// says so; `count_inconsistent_faces` returns a clean-looking `0` for
     /// the same mesh, which is the failure mode `has_judgeable_edges` exists to
@@ -1240,6 +1471,27 @@ mod tests {
     /// slivers defeated it — see the sibling gate below.
     #[test]
     fn winding_census_skips_a_degenerate_face_whole() {
+        // ⚠ All three index-repeat SHAPES, not just `[a, a, b]`. The guard is
+        // a three-way disjunction and every other fixture in this crate uses
+        // the first shape only, so dropping either of the other two survives
+        // the suite — and a missed skip fabricates a judgeable interior edge
+        // out of a face that has none, which is what this skip exists to
+        // prevent.
+        for (label, face) in [
+            ("[a,a,b]", [0u32, 0, 1]),
+            ("[a,b,b]", [0, 1, 1]),
+            ("[a,b,a]", [0, 1, 0]),
+        ] {
+            let mut m = IndexedMesh::new();
+            m.vertices.push(Point3::new(0.0, 0.0, 0.0));
+            m.vertices.push(Point3::new(1.0, 0.0, 0.0));
+            m.faces.push(face);
+            let c = winding_census(&m);
+            assert_eq!(c.degenerate_faces, 1, "{label} must be skipped whole");
+            assert_eq!(c.interior_edges, 0, "{label} must fabricate no edge");
+            assert!(!c.has_judgeable_edges(), "{label} must stay inconclusive");
+        }
+
         let mut mesh = IndexedMesh::new();
         mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
         mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));

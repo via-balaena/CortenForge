@@ -33,9 +33,13 @@ use anyhow::{Context, Result, bail};
 use cf_design::Solid;
 use cf_geometry::{Aabb, IndexedMesh, Sdf, SdfGrid};
 use mesh_io::load_stl;
+// ⚠ `winding_census` is NOT imported here. `load_with_report` used to call it
+// directly; since `mesh-repair` 2.0 the census arrives inside `validate_mesh`'s
+// `MeshReport`. The remaining callers census a RAW (pre-weld) mesh for
+// comparison and import the symbol themselves.
 use mesh_repair::{
     RepairParams, TAUBIN_DEFAULT_LAMBDA, TAUBIN_DEFAULT_MU, find_connected_components,
-    keep_largest_component, repair_mesh, taubin_smooth_vertices, validate_mesh, winding_census,
+    keep_largest_component, repair_mesh, taubin_smooth_vertices, validate_mesh,
 };
 
 // The three instrument types that make up a [`SurfaceReport`]. Re-exported so a
@@ -83,28 +87,33 @@ pub type MeshOracle = Signed<TriMeshDistance, PseudoNormalSign>;
 /// | field | answers |
 /// |---|---|
 /// | `repair` | how much the weld changed (was this file already a mesh, or triangle soup?) |
-/// | `topology` | watertight? manifold? and `is_inside_out`, a global signed-volume test |
-/// | `winding` | are any faces **locally** flipped — the question signed volume cannot ask |
+/// | `topology` | watertight? manifold? the global signed-volume flag, **and** the per-edge winding census |
+/// | [`Self::winding`] | shorthand for `topology.winding` — are any faces **locally** flipped |
 /// | `components` / `inward_facing_components` | are there disjoint shells, and do they agree on which way is out? |
 ///
 /// # Reading this
 ///
-/// The winding instruments are orthogonal and none subsumes another.
+/// Three instruments, and none subsumes another.
 ///
-/// * `winding.inconsistent_edges` is per-edge and **coordinate-free**. It is
-///   the only one of the three that answers "are two neighbouring faces
-///   oriented against each other".
-/// * `topology.is_inside_out` sums origin-apex tetrahedra. ⚠ **That sum is
-///   translation-invariant only while the surface is consistently oriented.**
-///   Once any face is flipped the flag depends on the mesh's distance from the
-///   world origin — and [`load`] deliberately keeps native anatomical
-///   coordinates, which are ~1e3 mm out. So on this crate's own inputs a `true`
-///   here may mean "globally reversed" **or** "locally flipped and far from the
-///   origin". Do not read it as the former. (Producer: `mesh-repair`'s
-///   `signed_volume_sees_a_local_flip_once_the_mesh_is_off_origin`.)
+/// * The **per-edge census** and the **global signed-volume flag** both live
+///   on `topology` now, and [`MeshReport`]'s own docs are the single home for
+///   how they differ, when the global flag is frame-dependent, and why a zero
+///   census is not always good news. Read them there rather than here — an
+///   earlier version of this paragraph restated the argument and got it
+///   wrong, claiming the flag tracks *distance* from the origin when the
+///   actual dependence is a half-space, and claiming consistent winding
+///   suffices for invariance when closure is also required.
+/// * ⚠ **What is specific to this crate** is the frame: [`load`] deliberately
+///   keeps native anatomical coordinates, ~1e3 mm from the origin. That is
+///   exactly the regime where `topology.is_inside_out` is least trustworthy on
+///   an open or locally-flipped surface, so prefer the census here.
 /// * `inward_facing_components` compares each connected shell against its own
 ///   volume, so it catches the case both of the above miss: two disjoint closed
-///   shells wound oppositely. Neither a per-edge census (the shells share no
+///   shells wound oppositely. ⚠ It cannot tell an inverted shell from a
+///   legitimate enclosed cavity, which is *correctly* wound inward — on the
+///   solid vertebra and disc surfaces this crate loads there are no cavities,
+///   so a non-zero count here is a defect, but that is a property of the input
+///   and not of the measurement. Neither a per-edge census (the shells share no
 ///   edge) nor a global volume (the larger shell dominates) can see that.
 ///
 /// # What this still does not answer
@@ -119,18 +128,17 @@ pub type MeshOracle = Signed<TriMeshDistance, PseudoNormalSign>;
 /// three vertex positions per facet with no shared indices, so a raw STL is
 /// triangle soup and no two triangles share an edge by index. A winding census
 /// on unwelded input has nothing to judge and reports zero inconsistencies for
-/// any input whatsoever; `winding.has_judgeable_edges()` is what distinguishes
-/// that from a clean bill.
+/// any input whatsoever. Calling `has_judgeable_edges()` on the census from
+/// [`Self::winding`] is what distinguishes that from a clean bill.
 #[derive(Debug, Clone)]
 pub struct SurfaceReport {
     /// What the weld itself did — vertices merged, degenerates and duplicates
     /// dropped, before/after counts.
     pub repair: RepairSummary,
-    /// Watertightness, manifoldness, and the global signed-volume orientation
-    /// flag. ⚠ See "Reading this" before trusting `is_inside_out`.
+    /// Watertightness, manifoldness, the global signed-volume orientation
+    /// flag, and the per-edge winding census.
+    /// ⚠ See "Reading this" before trusting `is_inside_out`.
     pub topology: MeshReport,
-    /// Per-edge local orientation consistency.
-    pub winding: WindingCensus,
     /// Number of connected components (disjoint shells).
     pub components: usize,
     /// How many components enclose a **negative** signed volume — i.e. are
@@ -140,6 +148,23 @@ pub struct SurfaceReport {
     /// is only translation-invariant, and therefore only meaningful, for a
     /// closed component. Reporting a number there would be inventing one.
     pub inward_facing_components: Option<usize>,
+}
+
+impl SurfaceReport {
+    /// Per-edge local orientation consistency.
+    ///
+    /// ⚠ **An accessor, not a field.** It was a field until `mesh-repair` 2.0
+    /// put the census on [`MeshReport`] itself; keeping both would have meant
+    /// two public fields obliged to hold one value, computed by two separate
+    /// passes and free to disagree.
+    ///
+    /// `None` when the census was not run. [`load_with_report`] always runs
+    /// it, so a report this crate produced carries `Some` — but the field is
+    /// `pub`, so a caller can set it to `None` afterwards.
+    #[must_use]
+    pub const fn winding(&self) -> Option<WindingCensus> {
+        self.topology.winding
+    }
 }
 
 impl std::fmt::Display for SurfaceReport {
@@ -159,7 +184,8 @@ impl std::fmt::Display for SurfaceReport {
             self.components,
             self.inward_facing_components
                 .map_or_else(|| "n/a (open surface)".to_string(), |n| n.to_string()),
-            self.winding,
+            self.winding()
+                .map_or_else(|| "winding: not measured".to_string(), |c| c.to_string()),
         )
     }
 }
@@ -173,10 +199,11 @@ impl std::fmt::Display for SurfaceReport {
 /// trustworthy as the surface it is built on.
 ///
 /// Note that the report is computed either way: this function pays for a
-/// `validate_mesh` and a `winding_census` over the welded surface and then
-/// discards them. On a ~15k-face vertebra that is a couple of edge-map builds,
-/// small beside the parry BVH every caller constructs next, but it is not
-/// nothing — and it buys this caller nothing.
+/// `validate_mesh` and a `find_connected_components` over the welded surface
+/// and then discards both. That is three edge-map builds — `MeshAdjacency`,
+/// the winding census inside `validate_mesh`, and the component walk's own —
+/// small beside the parry BVH every caller constructs next, but not nothing,
+/// and it buys this caller nothing.
 ///
 /// # Errors
 /// Returns an error if the STL cannot be read, or if the mesh has no vertices
@@ -235,7 +262,6 @@ pub fn load_with_report(path: &Path) -> Result<(IndexedMesh, SurfaceReport)> {
         }),
         components: parts.component_count,
         topology,
-        winding: winding_census(&mesh),
     };
     Ok((mesh, report))
 }
@@ -962,6 +988,9 @@ mod tests {
     )]
 
     use super::*;
+    // Only the raw/pre-weld comparison below still censuses a mesh directly;
+    // every other reading comes through `SurfaceReport`.
+    use mesh_repair::winding_census;
 
     /// A vertices-only mesh (the coordinate-free helpers read only `vertices`).
     /// A dummy face is added only at ≥3 vertices, so the helper never hands back
@@ -1194,6 +1223,54 @@ mod tests {
         assert!(load(&empty).is_err(), "empty STL must error");
     }
 
+    /// `SurfaceReport`'s `Display` embeds the census verbatim.
+    ///
+    /// Previously untested: replacing the census arm with an empty string
+    /// removed the winding reading from every user-visible report and no test
+    /// noticed. Both arms are pinned here because the `None` arm is reachable
+    /// — `SurfaceReport`'s fields are public and it is not `#[non_exhaustive]`.
+    #[test]
+    fn surface_report_display_embeds_the_census_and_marks_its_absence() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("box.stl");
+        mesh_io::save_stl(&box_mesh(Point3::origin(), 1.0), &path, false).unwrap();
+        let (_, report) = load_with_report(&path).unwrap();
+
+        let census = report.winding().unwrap();
+        assert!(census.has_judgeable_edges(), "precondition: a real verdict");
+        assert!(
+            format!("{report}").contains(&census.to_string()),
+            "the report must print the census verbatim, not a summary of it"
+        );
+
+        // The absent arm, reachable by construction.
+        let mut blank = report;
+        blank.topology.winding = None;
+        assert!(format!("{blank}").contains("winding: not measured"));
+    }
+
+    /// This crate always requests the census, so [`SurfaceReport::winding`] is
+    /// always `Some` on a report it produced.
+    ///
+    /// `mesh-repair` 2.0 made the census optional. If a future edit passes
+    /// options that disable it, `SurfaceReport`'s `Display` silently degrades
+    /// to `winding: not measured` and every caller reading the census gets
+    /// `None`. This fails first, and says why.
+    #[test]
+    fn load_with_report_always_requests_the_census() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("box.stl");
+        mesh_io::save_stl(&box_mesh(Point3::origin(), 1.0), &path, false).unwrap();
+
+        let (_, report) = load_with_report(&path).unwrap();
+
+        assert!(
+            report.topology.winding.is_some(),
+            "the census must be requested; if validation options here ever \
+             disable it, SurfaceReport::winding starts returning None"
+        );
+    }
+
     /// ★ The wiring gate for hand-off 1: a locally flipped face survives the
     /// whole load path and is **visible in the report**, where the global
     /// signed-volume flag the crate previously had no reason to consult reads
@@ -1217,12 +1294,13 @@ mod tests {
         mesh_io::save_stl(&clean, &clean_path, false).unwrap();
         let (_, clean_report) = load_with_report(&clean_path).unwrap();
         assert_eq!(
-            clean_report.winding.inconsistent_edges, 0,
+            clean_report.winding().unwrap().inconsistent_edges,
+            0,
             "the control box must be locally consistent, or the flipped arm \
              below proves nothing",
         );
         assert!(
-            clean_report.winding.has_judgeable_edges(),
+            clean_report.winding().unwrap().has_judgeable_edges(),
             "welded, so judgeable"
         );
 
@@ -1237,11 +1315,12 @@ mod tests {
         let (_, report) = load_with_report(&flipped_path).unwrap();
 
         assert_eq!(
-            report.winding.inconsistent_edges, 3,
+            report.winding().unwrap().inconsistent_edges,
+            3,
             "one flipped triangle disagrees with its neighbours on its own \
              three edges, and that must survive save -> load -> weld",
         );
-        assert!(report.winding.has_inconsistent_winding());
+        assert!(report.winding().unwrap().has_inconsistent_winding());
 
         // THE POINT: the instrument this crate could already have consulted
         // reads both surfaces identically. Wiring up `is_inside_out` alone
@@ -1285,10 +1364,11 @@ mod tests {
         // per-edge census cannot see it — the two shells share no edge — and
         // the global volume cannot either, since the big shell dominates.
         assert_eq!(
-            report.winding.inconsistent_edges, 0,
+            report.winding().unwrap().inconsistent_edges,
+            0,
             "the per-edge census cannot compare faces that share no edge",
         );
-        assert!(report.winding.has_judgeable_edges());
+        assert!(report.winding().unwrap().has_judgeable_edges());
         assert!(report.topology.is_watertight && report.topology.is_manifold);
         assert!(
             !report.topology.is_inside_out,
@@ -1302,6 +1382,29 @@ mod tests {
             report.inward_facing_components,
             Some(1),
             "exactly one shell encloses a negative volume: {report}",
+        );
+
+        // ⚠ The control, and it is load-bearing rather than decorative: with
+        // one inward and one outward shell, `Some(1)` holds whichever sign the
+        // filter tests, so inverting the comparison would silently turn this
+        // instrument into a count of CORRECT shells. Both boxes outward must
+        // read `Some(0)`.
+        let mut clean = box_mesh(Point3::origin(), 10.0);
+        let far = box_mesh(Point3::new(100.0, 0.0, 0.0), 1.0);
+        let base = u32::try_from(clean.vertices.len()).unwrap();
+        clean.vertices.extend(far.vertices.iter().copied());
+        for f in &far.faces {
+            clean.faces.push([f[0] + base, f[1] + base, f[2] + base]);
+        }
+        let clean_path = dir.path().join("two_shells_clean.stl");
+        mesh_io::save_stl(&clean, &clean_path, false).unwrap();
+        let (_, clean_report) = load_with_report(&clean_path).unwrap();
+
+        assert_eq!(clean_report.components, 2);
+        assert_eq!(
+            clean_report.inward_facing_components,
+            Some(0),
+            "both shells are outward: {clean_report}",
         );
     }
 
@@ -1351,7 +1454,7 @@ mod tests {
 
         let (mesh, report) = load_with_report(&path).unwrap();
         assert!(
-            report.winding.has_judgeable_edges(),
+            report.winding().unwrap().has_judgeable_edges(),
             "the report must be taken after the weld, where edges exist to judge",
         );
         assert!(
@@ -1378,7 +1481,7 @@ mod tests {
             "a welded box is closed and manifold — {report}",
         );
         assert_eq!(
-            report.winding.interior_edges,
+            report.winding().unwrap().interior_edges,
             mesh.faces.len() * 3 / 2,
             "a closed triangle mesh has 3F/2 edges, all interior",
         );

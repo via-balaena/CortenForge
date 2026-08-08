@@ -2293,10 +2293,10 @@ fn check_self_intersecting(mesh: &IndexedMesh, validation: &mut PrintValidation)
 
     let regions_before = validation.self_intersecting.len();
     for &(a, b) in &result.intersecting_pairs {
-        // mesh-repair's outer/inner-loop construction emits `(i, j)`
-        // with `i < j`, so canonicalization is defensive insurance —
-        // §6.4 line 1162 documents that mesh-repair does not guarantee
-        // canonical order in its output.
+        // mesh-repair 2.0 documents `intersecting_pairs` as canonical
+        // with `a < b`, so this is defensive insurance rather than a
+        // correction. (The pairs now come from a BVH visitor, not the
+        // outer/inner loop this comment used to describe.)
         let (face_a, face_b) = if a < b { (a, b) } else { (b, a) };
         let centroid_a = compute_face_centroid(mesh, face_a as usize);
         let centroid_b = compute_face_centroid(mesh, face_b as usize);
