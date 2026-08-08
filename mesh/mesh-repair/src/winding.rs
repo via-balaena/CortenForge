@@ -417,14 +417,24 @@ pub fn count_inconsistent_faces(mesh: &IndexedMesh) -> usize {
 /// oppositely**. The census compares only faces that share an edge, so it never
 /// compares the two shells; it reports zero inconsistent edges, and
 /// `is_inside_out` reports clean too whenever the larger shell dominates the
-/// volume. Per-component orientation is the instrument for that one; see
-/// [`crate::find_connected_components`].
+/// volume. Per-shell orientation is the instrument for that one:
+/// [`crate::split_into_components`] returns each shell as its own
+/// [`IndexedMesh`], which is the form every instrument here accepts.
+/// ([`crate::find_connected_components`] returns face *indices*, which nothing
+/// in this crate consumes.)
+///
+/// ⚠ **A per-shell verdict is not by itself a defect test.** An enclosed
+/// cavity is *correctly* wound inward, so this flags every hollow part.
+/// Separating a cavity from an inverted shell needs a containment test, which
+/// this crate does not provide.
 ///
 /// ⚠ **On a non-orientable surface, `inconsistent_edges` is a lower bound on a
 /// topological obstruction, not a repairable defect.** A Möbius band reports
-/// **at least** `1` — the exact count is the cycle rank of its dual graph —
-/// and [`fix_winding_order`] can never bring it to `0`, however many times it
-/// is run, because no consistent orientation exists. A caller looping
+/// **at least** `1`, and [`fix_winding_order`] can never bring it to `0`,
+/// however many times it is run, because no consistent orientation exists.
+/// (The count depends on the mesh's actual winding, not only its topology;
+/// after a BFS repair it is the number of edges the spanning tree cannot
+/// reconcile.) A caller looping
 /// census → repair → census will not converge. Nothing on this type
 /// distinguishes that from a repairable flip; if you need to, check
 /// orientability separately.
@@ -1247,9 +1257,11 @@ mod tests {
 
         // (`has_judgeable_edges()` is not asserted: `inconsistent_edges > 0`
         // already entails it, since only the two-faced arm increments either.)
-        // Exactly 1, not merely non-zero: the dual graph of an 8-segment strip
-        // has cycle rank 16 - 16 + 1 = 1, so one edge is left unresolvable.
-        // The type docs state `1`, so `1` is what this pins.
+        // Exactly 1 for THIS fixture, not a general property of Möbius bands:
+        // the dual graph of an 8-segment strip has cycle rank 16 - 16 + 1 = 1,
+        // so exactly one edge is left unresolvable. The type doc states the
+        // general claim ("at least 1"); this pins the fixture's own value so a
+        // change in `closed_strip` cannot pass silently.
         let mut mobius = closed_strip(8, true);
         assert_eq!(
             winding_census(&mobius).inconsistent_edges,

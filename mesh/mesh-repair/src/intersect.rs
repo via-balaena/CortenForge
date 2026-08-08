@@ -1000,6 +1000,53 @@ mod tests {
         );
     }
 
+    /// The producer for `truncated`'s documented asymmetry: `false` proves the
+    /// search was complete, `true` does not prove anything was dropped.
+    ///
+    /// Nothing else pins this. The existing cap test uses `max_reported` BELOW
+    /// the true count, where `truncated` is `true` either way; only running
+    /// AT the true count separates `>=` from `>`.
+    #[test]
+    fn truncated_is_set_even_when_the_cap_lands_exactly_on_the_true_count() {
+        let (mesh, _) = make_intersecting_pairs_mesh(5);
+        let unlimited = detect_self_intersections(
+            &mesh,
+            &IntersectionParams {
+                max_reported: 0,
+                epsilon: 1e-10,
+                skip_adjacent: true,
+            },
+        );
+        assert_eq!(
+            unlimited.intersecting_pairs.len(),
+            5,
+            "fixture precondition: exactly 5 pairs, so the cap below lands ON \
+             the true count rather than under it"
+        );
+        assert!(!unlimited.truncated, "no cap was set");
+
+        let at_cap = detect_self_intersections(
+            &mesh,
+            &IntersectionParams {
+                max_reported: 5,
+                epsilon: 1e-10,
+                skip_adjacent: true,
+            },
+        );
+
+        // Nothing was omitted...
+        let mut a = unlimited.intersecting_pairs;
+        let mut b = at_cap.intersecting_pairs;
+        a.sort_unstable();
+        b.sort_unstable();
+        assert_eq!(a, b, "the capped run found every pair");
+        // ...and `truncated` is still set. `>= max_pairs`, not `>`.
+        assert!(
+            at_cap.truncated,
+            "documented: `true` does not mean pairs were dropped"
+        );
+    }
+
     #[test]
     fn self_intersect_bvh_respects_max_reported() {
         // §S-4 #4: truncation semantics. 10 known intersecting pairs

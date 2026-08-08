@@ -55,17 +55,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`is_inside_out` and `fill_holes` can differ on near-degenerate input.**
   Two internal predicates were rewritten to use fused multiply-add between the
-  releases, changing floating-point association. On meshes whose signed volume
+  releases, which rounds once where a multiply-then-add rounds twice. On meshes whose signed volume
   sits within rounding error of zero (open surfaces, balanced shells),
   `is_inside_out` — and therefore `is_printable` — can differ from 1.0.0; on
-  holes with near-collinear boundary vertices, `fill_holes` can emit a
-  different, still-valid triangulation. Both regimes are ones where the result
+  holes with near-collinear boundary vertices, `fill_holes` — and
+  `holes::fill_hole_ear_clipping`, which is a separate public entry point —
+  can emit a different, still-valid triangulation. Both regimes are ones where the result
   was never well-determined, but they are not identical to 1.0.0.
-
-- **`SelfIntersectionResult::intersection_count` is a lower bound when
-  `truncated`.** It is incremented before the `max_reported` cap is applied, so
-  it can exceed both the cap and `intersecting_pairs.len()`, and is not
-  reproducible run to run.
 
 - **New dependency: `parry3d-f64`** (for the BVH above). It pulls in `nalgebra`
   0.33 alongside this crate's 0.34, so a duplicate-dependency policy that
@@ -114,6 +110,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not `None`. **Set every field your fixture depends on, explicitly:**
 
   ```rust
+  use mesh_repair::validate_mesh;
   use mesh_types::IndexedMesh;
 
   let mut report = validate_mesh(&IndexedMesh::new());
@@ -172,11 +169,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Documentation corrections** (numerical changes are under *Changed*). 1.0.0
   documented `is_inside_out` as "whether the mesh appears to be inside-out
   (majority of volume is negative)". It is not a majority test — it is the
-  sign of a single
-  origin-apex signed-volume sum — and the result is frame-dependent unless
+  sign of a single origin-apex signed-volume sum — and the result is
+  frame-dependent unless
   `Σ A_f n_f = 0`, which holds for a closed, consistently-wound surface. The
   field now documents both.
 - `is_printable`'s "correct winding" claim, as above.
+- **`SelfIntersectionResult::intersection_count` is documented as the lower
+  bound it always was.** Unchanged from 1.0.0: it is incremented before the
+  `max_reported` cap is applied, so it can exceed both the cap and
+  `intersecting_pairs.len()`, and is not reproducible run to run. 1.0.0
+  documented it as "number of intersecting triangle pairs found".
 
 ## [1.0.0] - 2026-05-03
 

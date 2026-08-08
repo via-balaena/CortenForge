@@ -125,9 +125,9 @@ impl MeshReport {
     ///
     /// ⚠ **That last term is not a winding check** — see
     /// [`Self::is_inside_out`]. A mesh with locally flipped faces passes this,
-    /// and on such a mesh the answer is **not stable**: `Σ A_f n_f` is then
-    /// non-zero, so translating the mesh can flip it. Check [`Self::winding`]
-    /// first.
+    /// and unless that mesh is closed with `Σ A_f n_f = 0` the answer is not
+    /// even **stable** — translating it can flip the verdict. Check
+    /// [`Self::winding`] first.
     /// [`Self::winding`] is reported but not judged here, nor by
     /// [`Self::has_issues`] or [`Self::issue_count`].
     #[must_use]
@@ -617,14 +617,14 @@ mod tests {
             "the volume flag is measured regardless of the option — a gate on \
              it would report the hardcoded `false` here"
         );
-        // Cross-check that the two answers really do differ on this fixture,
-        // so the assert above cannot pass by coincidence.
-        assert_eq!(
-            census(&validate_mesh(&mesh)).inconsistent_edges,
-            3,
-            "fixture precondition: this mesh is BOTH inside-out and locally \
-             inconsistent, so neither instrument's answer is the default"
-        );
+        // The other direction of `is_printable`. Every other assertion on it
+        // is `true`, so dropping the `!is_inside_out` term entirely would
+        // survive them all; this fixture is watertight and manifold, so only
+        // that term can make it false. It is also the producer for the
+        // CHANGELOG's migration claim that 1.0.0 reported this mesh printable
+        // and 2.0.0 does not.
+        assert!(report.is_watertight && report.is_manifold);
+        assert!(!report.is_printable());
     }
 
     /// The fixture's stated rationale, pinned rather than asserted in prose.
@@ -948,5 +948,19 @@ mod tests {
 
         assert_eq!(report.issue_count(), terms.iter().sum::<usize>());
         assert_eq!(report.issue_count(), 21);
+
+        // The positive direction of `has_issues`, which nothing else asserts:
+        // both existing call sites check `!has_issues()`, so `fn has_issues()
+        // { false }` survived the workspace. Free here — all four counters are
+        // non-zero on this fixture.
+        assert!(report.has_issues());
+
+        // ...and the `Issues:` block those counters render into, which was
+        // likewise never exercised.
+        let display = format!("{report}");
+        assert!(display.contains("Boundary edges: 15"));
+        assert!(display.contains("Non-manifold edges: 1"));
+        assert!(display.contains("Degenerate faces: 3"));
+        assert!(display.contains("Duplicate faces: 2"));
     }
 }

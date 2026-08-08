@@ -109,7 +109,11 @@ pub type MeshOracle = Signed<TriMeshDistance, PseudoNormalSign>;
 ///   an open or locally-flipped surface, so prefer the census here.
 /// * `inward_facing_components` compares each connected shell against its own
 ///   volume, so it catches the case both of the above miss: two disjoint closed
-///   shells wound oppositely. Neither a per-edge census (the shells share no
+///   shells wound oppositely. ⚠ It cannot tell an inverted shell from a
+///   legitimate enclosed cavity, which is *correctly* wound inward — on the
+///   solid vertebra and disc surfaces this crate loads there are no cavities,
+///   so a non-zero count here is a defect, but that is a property of the input
+///   and not of the measurement. Neither a per-edge census (the shells share no
 ///   edge) nor a global volume (the larger shell dominates) can see that.
 ///
 /// # What this still does not answer
