@@ -16,8 +16,17 @@ pub struct ShellValidationResult {
     /// Whether every judgeable edge agrees on winding direction.
     ///
     /// Measured by [`mesh_repair::winding_census`]: an edge is judgeable when
-    /// exactly two non-degenerate faces meet along it, and it is inconsistent
-    /// when both traverse it the same way.
+    /// exactly two faces meet along it, and it is inconsistent when both
+    /// traverse it the same way. Faces listing a vertex twice are skipped
+    /// whole, so they neither create nor spoil a judgeable edge.
+    ///
+    /// ⚠ "Skipped" there means *repeated vertex index*, which is not what
+    /// `DegenerateTriangles` counts in this module — that one is a zero-**area**
+    /// test. A sliver triangle with three distinct indices is degenerate by area
+    /// and still judged here.
+    ///
+    /// ⚠ Vacuously `true` when nothing is judgeable: a mesh with no interior
+    /// edge has no edge that disagrees. Read it with `boundary_edge_count`.
     ///
     /// ⚠ This is a **local** property. It is `true` for a shell whose faces are
     /// uniformly wound the *wrong* way — a global flip leaves every edge in
@@ -402,7 +411,7 @@ mod tests {
     }
 
     #[test]
-    fn a_degenerate_face_is_not_reported_as_inconsistent_winding() {
+    fn a_degenerate_face_is_reported_as_degenerate_not_as_bad_winding() {
         // Regression guard for the hand-rolled detector this check replaced.
         //
         // That version keyed edges by their sorted vertex pair, so a face
@@ -422,6 +431,21 @@ mod tests {
         shell.faces.push([0, 1, 2]);
 
         let result = validate_shell(&shell);
+
+        // ⚠ The winding verdict here is VACUOUS, and that is the point worth
+        // pinning: skipping `[0,0,1]` whole leaves the shared edge `(0,1)` with
+        // one surviving face, so it is a boundary edge and NOTHING is judgeable.
+        // `has_consistent_winding` is true because no edge disagrees, not
+        // because winding was affirmatively verified.
+        let census = mesh_repair::winding_census(&shell);
+        assert_eq!(
+            census.degenerate_faces, 1,
+            "oracle: one repeated-index face"
+        );
+        assert_eq!(
+            census.interior_edges, 0,
+            "oracle: no judgeable edge survives, so the verdict below is vacuous",
+        );
 
         assert!(
             result.has_consistent_winding,
@@ -446,6 +470,39 @@ mod tests {
                 .any(|i| matches!(i, ShellIssue::DegenerateTriangles { count: 1 })),
             "the repeated-index face must surface as DegenerateTriangles; got: {:?}",
             result.issues,
+        );
+    }
+
+    #[test]
+    fn the_two_senses_of_degenerate_in_this_module_do_not_coincide() {
+        // `DegenerateTriangles` counts zero-AREA faces. The census skips faces
+        // that list a vertex twice. Those are different sets, and the field doc
+        // on `has_consistent_winding` says so — this pins it.
+        //
+        // Two slivers sharing edge (0,1): three DISTINCT indices each, area ~0.
+        // Degenerate by area, invisible to the census's skip rule, and their
+        // shared edge is judged normally.
+        let mut shell = IndexedMesh::new();
+        shell.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        shell.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        shell.vertices.push(Point3::new(0.5, 1e-12, 0.0));
+        shell.vertices.push(Point3::new(0.5, -1e-12, 0.0));
+        shell.faces.push([0, 1, 2]);
+        shell.faces.push([1, 0, 3]);
+
+        let census = mesh_repair::winding_census(&shell);
+        assert_eq!(
+            census.degenerate_faces, 0,
+            "distinct indices ⇒ the census does not skip these",
+        );
+        assert_eq!(
+            census.interior_edges, 1,
+            "the shared edge is judged despite both faces having ~zero area",
+        );
+        assert_eq!(
+            count_degenerate_triangles(&shell),
+            2,
+            "both faces ARE degenerate by this module's area test",
         );
     }
 
