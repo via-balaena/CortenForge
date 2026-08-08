@@ -70,12 +70,18 @@
 //!
 //! // Validate the result.
 //! //
-//! // Pick the gate deliberately: `is_printable()` is watertight + manifold
-//! // ONLY -- blind to winding and to degenerate faces. `is_valid()` adds
-//! // consistent winding, and `issues` carries everything neither predicate
-//! // consults. For "ready to print", check all three.
+//! // Three gates of increasing strength, NOT three independent checks:
+//! //   is_printable()     watertight + manifold only
+//! //   is_valid()         the above + consistent winding
+//! //   issues.is_empty()  the above + degenerate faces, which neither
+//! //                      predicate consults
+//! //
+//! // Each subsumes the one before, so an empty issue list is the strongest
+//! // statement available and implies both predicates. Use it for "ready to
+//! // print"; reach for the weaker two only when you deliberately want to
+//! // tolerate what they ignore.
 //! let validation = validate_shell(&shell);
-//! if validation.is_valid() && validation.issues.is_empty() {
+//! if validation.issues.is_empty() {
 //!     println!("Shell is ready for printing!");
 //! }
 //! ```

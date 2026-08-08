@@ -169,8 +169,10 @@ impl<'a> ShellBuilder<'a> {
 
     /// Enable or disable post-generation validation.
     ///
-    /// When enabled, the generated shell is validated for
-    /// manifoldness, watertightness, and other quality metrics.
+    /// When enabled, the generated shell is passed through `validate_shell`,
+    /// which reports emptiness, watertightness, manifoldness, per-edge winding
+    /// consistency and degenerate (zero-area) triangles. The result lands in
+    /// `ShellGenerationResult::validation`; nothing is rejected on its account.
     #[must_use]
     pub const fn validate(mut self, enable: bool) -> Self {
         self.validate = enable;

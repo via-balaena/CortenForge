@@ -65,7 +65,13 @@ pub fn generate_rim(mesh: &IndexedMesh, inner_vertex_count: usize) -> (Vec<[u32;
     //   - outer surface has it as (v0+off) -> (v1+off), so the rim must
     //     traverse (v1+off) -> (v0+off).
     // Both triangles below are wound to satisfy that, giving
-    // `has_consistent_winding == true` (outward-facing everywhere).
+    // `has_consistent_winding == true`.
+    //
+    // ⚠ That predicate reports LOCAL agreement only — it is blind to a uniform
+    // flip, so it does not certify outward-facing. Outwardness here comes from
+    // the construction above (inner reversed, outer original), not from the
+    // check. `mesh_repair::MeshReport::is_inside_out` is what tests it, and the
+    // `shell-generation` example asserts it separately for that reason.
     for (v0, v1) in &boundary_edges {
         // Quad corners: inner v0/v1, outer v0/v1 (= v0+off / v1+off).
         // Triangle 1: inner v0, outer v1, outer v0

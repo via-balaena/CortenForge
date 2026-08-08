@@ -76,7 +76,9 @@ impl ShellValidationResult {
     /// degenerate triangles. This answers "is the surface closed and
     /// two-manifold", which is what a slicer needs to produce watertight
     /// toolpaths; it is not a statement that the result will print *well*.
-    /// Gate on `is_valid()` plus `issues` if you need more.
+    /// The three gates nest — this ⊆ [`Self::is_valid`] ⊆ an empty
+    /// [`Self::issues`] — so gate on the issue list when you want the strongest
+    /// statement; adding `is_valid()` to it is redundant.
     #[must_use]
     pub const fn is_printable(&self) -> bool {
         self.is_watertight && self.is_manifold
@@ -523,6 +525,49 @@ mod tests {
             "the repeated-index face must surface as DegenerateTriangles; got: {:?}",
             result.issues,
         );
+    }
+
+    #[test]
+    fn an_empty_issue_list_implies_both_predicates() {
+        // The three gates are NESTED, not independent:
+        //   is_printable() ⊆ is_valid() ⊆ issues.is_empty()
+        //
+        // The crate-level example relies on the outermost implication, so pin
+        // it. It holds structurally — each predicate's failure pushes its own
+        // issue — and would break the moment a check reported an issue without
+        // a corresponding term, or gained a term without an issue.
+        //
+        // ⚠ One-directional. `is_valid()` does NOT imply an empty issue list;
+        // `is_valid_is_true_while_an_issue_is_reported` is the counterexample.
+        let mut flipped = create_watertight_tetrahedron();
+        flipped.faces[0] = {
+            let [a, b, c] = flipped.faces[0];
+            [a, c, b]
+        };
+        let mut duplicated = create_watertight_tetrahedron();
+        duplicated.faces = duplicated.faces.iter().flat_map(|f| [*f, *f]).collect();
+
+        let cases: Vec<(&str, IndexedMesh)> = vec![
+            ("empty", IndexedMesh::new()),
+            ("clean tetrahedron", create_watertight_tetrahedron()),
+            ("one face flipped", flipped),
+            ("open box", create_open_box()),
+            ("every face duplicated", duplicated),
+        ];
+
+        for (name, mesh) in cases {
+            let result = validate_shell(&mesh);
+            assert!(
+                !result.issues.is_empty() || result.is_valid(),
+                "{name}: empty issue list must imply is_valid(); got issues={:?} is_valid={}",
+                result.issues,
+                result.is_valid(),
+            );
+            assert!(
+                !result.issues.is_empty() || result.is_printable(),
+                "{name}: empty issue list must imply is_printable() too",
+            );
+        }
     }
 
     #[test]
