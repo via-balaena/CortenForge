@@ -306,7 +306,12 @@ fn generate_shell_sdf(
     // the prior compensation is removed (a double-flip would
     // re-invert the shell). Test coverage:
     // `test_sdf_shell_outer_winding_outward_after_flip` below asserts
-    // `!report.is_inside_out` post-S5 fix without the flip.
+    // `!report.is_inside_out` with no compensation at this site.
+    //
+    // ⚠ "flip" means two different things across that boundary. The one in
+    // the test's name is mesh-offset's per-face e1/e2 swap inside marching
+    // cubes (§Q-5) — still present, and the reason no compensation is needed.
+    // The one removed here was mesh-shell's whole-mesh `flip_winding` call.
 
     let outer_vertex_count = outer_mesh.vertices.len();
     debug!(
