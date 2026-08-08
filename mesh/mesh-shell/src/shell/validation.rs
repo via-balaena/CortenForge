@@ -414,12 +414,18 @@ mod tests {
     fn a_degenerate_face_is_reported_as_degenerate_not_as_bad_winding() {
         // Regression guard for the hand-rolled detector this check replaced.
         //
-        // That version keyed edges by their sorted vertex pair, so a face
-        // listing a vertex twice contributed the self-loop `(a, a)` — and it
-        // contributed it TWICE, from its own two traversals. The edge therefore
-        // looked like a normal 2-face interior edge, the detector compared the
-        // face against ITSELF, found the directions equal, and reported
-        // inconsistent winding. Measured: it returned `false` here.
+        // That version keyed edges by their sorted vertex pair. A face listing a
+        // vertex twice registers the edge `(0,1)` from BOTH its `(0,1)` and
+        // `(1,0)` traversals, so the face lands in that edge's bucket TWICE. The
+        // bucket then has length 2 — indistinguishable from a normal interior
+        // edge — and the detector compared the face against ITSELF, found the
+        // directions equal, and reported inconsistent winding.
+        //
+        // ⚠ The fixture must be the degenerate face ALONE. Adding a second face
+        // on `(0,1)` pushes the bucket to length 3, which the old code skipped
+        // as non-manifold — so it returned `true` and the guard would be
+        // vacuous. Measured, old vs new: `[[0,0,1]]` gives false vs true
+        // (discriminates); `[[0,0,1],[0,1,2]]` gives true vs true (does not).
         //
         // `winding_census` skips a face listing a vertex twice whole, so the
         // defect is classified as what it is — a degenerate face.
@@ -428,15 +434,14 @@ mod tests {
         shell.vertices.push(Point3::new(1.0, 0.0, 0.0));
         shell.vertices.push(Point3::new(0.0, 1.0, 0.0));
         shell.faces.push([0, 0, 1]);
-        shell.faces.push([0, 1, 2]);
 
         let result = validate_shell(&shell);
 
         // ⚠ The winding verdict here is VACUOUS, and that is the point worth
-        // pinning: skipping `[0,0,1]` whole leaves the shared edge `(0,1)` with
-        // one surviving face, so it is a boundary edge and NOTHING is judgeable.
+        // pinning: the only face is skipped whole, so NOTHING is judgeable.
         // `has_consistent_winding` is true because no edge disagrees, not
-        // because winding was affirmatively verified.
+        // because winding was affirmatively verified. The old code reached the
+        // opposite verdict on this very mesh, which is what makes it a guard.
         let census = mesh_repair::winding_census(&shell);
         assert_eq!(
             census.degenerate_faces, 1,
