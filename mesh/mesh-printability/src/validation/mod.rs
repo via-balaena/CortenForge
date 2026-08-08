@@ -752,10 +752,10 @@ fn check_basic_manifold(mesh: &IndexedMesh, validation: &mut PrintValidation) {
         validation.issues.push(issue);
     }
 
-    // Faces listing a vertex twice. These are zero-area and cannot be printed,
-    // and until the winding pass moved onto the census NOTHING here detected
-    // them: the directed-edge count caught them incidentally, and reported them
-    // as a winding inconsistency, which they are not.
+    // Faces listing a vertex twice. These are zero-area and cannot be printed.
+    // Nothing here named them: a lone one was caught by the open-edge pass (see
+    // below), and the rest only by the directed-edge count, which reported them
+    // as a winding inconsistency — which they are not.
     //
     // ⚠ Load-bearing, not cosmetic, and the mechanism is narrower than it
     // looks. A face `[a,a,b]` presents its edges to `build_edge_to_faces` as
@@ -855,14 +855,19 @@ fn classify_thin_wall_severity(thickness: f64, min_wall: f64) -> IssueSeverity {
 /// map built here. The census reports each disqualifying condition as its own
 /// counter, so the precondition reads as the conjunction it always was.
 ///
-/// Behaviour is unchanged from the hand-rolled version this replaced: agreed
-/// on every mesh of up to three faces on four vertices (137 280 meshes, zero
-/// divergence). Pinned by
+/// Agrees with the hand-rolled version this replaced on every mesh of one to
+/// three faces on four vertices (137 280 searched, zero divergence) — but see
+/// the empty-mesh exception below, which that space excludes and which is a
+/// real difference, not a gap in the search. Pinned by
 /// `the_thinwall_precondition_matches_the_directed_edge_formulation`.
 ///
-/// ⚠ `interior_edges > 0` is load-bearing: without it an empty mesh, which has
-/// no disqualifying edge of any kind, would satisfy every other term
-/// vacuously.
+/// ⚠ `interior_edges > 0` is load-bearing, and is the one behaviour change.
+/// An empty mesh has no disqualifying edge of any kind, so it satisfies every
+/// other term vacuously — as it did the old formulation's two checks, which
+/// returned `true` for it. This returns `false` instead. Unreachable through
+/// the public API, which rejects an empty mesh with
+/// [`crate::error::PrintabilityError::NoFaces`] before any detector runs, and
+/// `false` is the safer answer for a gate on ray-casting.
 fn is_watertight_and_consistent_winding(mesh: &IndexedMesh) -> bool {
     let census = mesh_repair::winding_census(mesh);
     census.interior_edges > 0
