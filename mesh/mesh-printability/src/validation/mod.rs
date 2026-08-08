@@ -753,9 +753,10 @@ fn check_basic_manifold(mesh: &IndexedMesh, validation: &mut PrintValidation) {
     }
 
     // Faces listing a vertex twice. These are zero-area and cannot be printed.
-    // Nothing here named them: a lone one was caught by the open-edge pass (see
-    // below), and the rest only by the directed-edge count, which reported them
-    // as a winding inconsistency — which they are not.
+    // Nothing here named them as such: a lone one trips the open-edge pass
+    // above (for the reason set out below), and the rest were caught only by
+    // the directed-edge count, which called them a winding inconsistency —
+    // which they are not.
     //
     // ⚠ Load-bearing, not cosmetic, and the mechanism is narrower than it
     // looks. A face `[a,a,b]` presents its edges to `build_edge_to_faces` as

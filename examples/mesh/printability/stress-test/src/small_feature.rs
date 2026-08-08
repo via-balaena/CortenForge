@@ -266,10 +266,10 @@ fn build_main_cube() -> IndexedMesh {
 ///   midpoint `(cos 30°, sin 30°, 0)` is positive → outward.
 ///
 /// The CCW-rim/reversed-bottom-fan/CCW-lateral combination produces a
-/// consistently-wound watertight shell: each undirected edge is incident
-/// on exactly two faces, and each directed edge appears in at most one
-/// face. The `is_watertight_and_consistent_winding` precondition holds
-/// for both the burr alone and the combined cube + burr.
+/// consistently-wound watertight shell: every edge is incident on exactly
+/// two non-degenerate faces, and no such edge is traversed the same way by
+/// both. The `is_watertight_and_consistent_winding` precondition holds for
+/// both the burr alone and the combined cube + burr.
 fn build_hex_prism_burr() -> IndexedMesh {
     let mut vertices: Vec<Point3<f64>> = Vec::with_capacity(2 + 2 * HEX_SEGMENTS as usize);
 
