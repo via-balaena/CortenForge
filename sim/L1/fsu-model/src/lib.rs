@@ -3352,6 +3352,87 @@ mod tests {
         }
     }
 
+    /// **Rung 5.0 step 2** (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §5.5): does the Tet10
+    /// **fine** arm fit? One build, one ±0.5° solve, at `cell = 0.002`.
+    ///
+    /// §5.5 recorded "Tet10 at `cell = 0.002` exceeds the RSS budget" as a rollback constraint,
+    /// on a pre-α.1 estimate of ~140k DOF and 3–8 GB (the solver holds **two** symbolic
+    /// factorizations for its lifetime — `SymbolicLlt` on the lower triangle and `SymbolicLu` on
+    /// the full reflected pattern — and rebuilds the numeric LU every iteration). α.1 then shrank
+    /// the ladder ~45 % (fine level 18 485 → 10 048 referenced corners), so §3 flags that
+    /// constraint as needing re-measurement **before it is planned around — it may simply be
+    /// gone**. This is that measurement.
+    ///
+    /// ▶ **BUDGET, pre-registered here before the first run** (§5.5 asks for a budget *with a
+    /// threshold action*, so the outcome cannot be re-read afterwards):
+    ///
+    /// > **8 GB peak RSS.** If the single-arm probe exceeds it, the Tet10 fine arm drops to
+    /// > `cell = 0.0025` rather than reshaping mid-FOM.
+    ///
+    /// The 8 GB is not arbitrary: this arm is the *cheap* case. Step 1's replication sweep holds
+    /// a Tet4 arm live beside the Tet10 one at each of five realizations per level, and §5.5
+    /// warns that unless each level's arms are dropped before the next is built, the ladder's
+    /// peak is the **sum** rather than the max. On a 24 GB machine a single arm claiming more
+    /// than a third of physical memory makes that sweep unsafe.
+    ///
+    /// ⚠ **This test does not assert the budget, and deliberately so.** Peak RSS is not
+    /// observable from inside the process without `unsafe` libc (`getrusage`), which would spend
+    /// the crate's Safety criterion on a diagnostic. Run it under an external sampler and read
+    /// the number off that:
+    ///
+    /// ```sh
+    /// /usr/bin/time -l cargo test -p cf-fsu-model --release \
+    ///   rung5_step2_tet10_fine_cost_ceiling_fom -- --ignored --nocapture
+    /// ```
+    ///
+    /// ⚠ **OOM here is not graceful.** `SymbolicLu::try_new(..).expect("symbolic LU
+    /// factorization of free-block pattern failed")` (`construct.rs:188-189`) panics with a
+    /// message that reads as a *pattern* bug. If this test dies with that string, read it as
+    /// "the budget was exceeded", not as a solver defect.
+    ///
+    /// What it prints — referenced corners, meshing wall, solve wall, the moment and its
+    /// conservation residual — is the cost model §5.5 asks for. It asserts only conservation,
+    /// which must hold for the solve to mean anything at all.
+    #[test]
+    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
+    fn rung5_step2_tet10_fine_cost_ceiling_fom() {
+        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
+        let params = DiscParams {
+            cell: 0.002,
+            ..DiscParams::default()
+        };
+
+        let t_mesh = std::time::Instant::now();
+        let p = prepare_disc(disc_mesh, &params, None).expect("prepare raw disc at cell 0.002");
+        let corners = referenced_vertices(&p.tet).len();
+        let bands = (p.inferior.len(), p.superior.len());
+        let mesh_wall = t_mesh.elapsed();
+
+        let t_bond = std::time::Instant::now();
+        let mut tet10 = bond_prepared_tet10(p, &params, None, ConformFloors::SHIPPED);
+        let bond_wall = t_bond.elapsed();
+
+        let t_solve = std::time::Instant::now();
+        let (moment, residual) = tet10.flexion_moment(0.5_f64.to_radians());
+        let solve_wall = t_solve.elapsed();
+
+        println!(
+            "rung5 step2 | cell 0.002 | corners {corners} | bands {}/{} | \
+             mesh {:.1} s | bond {:.1} s | solve {:.1} s | moment {moment:.6} | resid {residual:.2e}",
+            bands.0,
+            bands.1,
+            mesh_wall.as_secs_f64(),
+            bond_wall.as_secs_f64(),
+            solve_wall.as_secs_f64(),
+        );
+
+        assert!(
+            residual < 1e-8,
+            "Tet10 fine arm must conserve (‖ΣF‖+‖ΣM‖ = {residual:.2e}) — a non-conserving solve \
+             makes the cost measurement meaningless"
+        );
+    }
+
     /// **Rung 5.0 step 0** (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §3): the disc's SI
     /// extent and the **realized** bonded band, at every candidate `cell` of the rung-5 ladder.
     ///
