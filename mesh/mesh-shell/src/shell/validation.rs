@@ -50,13 +50,25 @@ pub struct ShellValidationResult {
 }
 
 impl ShellValidationResult {
-    /// Check if the shell passes all validation checks.
+    /// Watertight **and** manifold **and** locally consistent winding.
+    ///
+    /// ⚠ Not "passes every check". [`Self::issues`] can be non-empty while this
+    /// is `true`: `DegenerateTriangles` is reported but not consulted here, so a
+    /// closed, manifold, consistently wound shell containing a zero-area face is
+    /// `is_valid()`. Inspect `issues` for the complete picture.
     #[must_use]
     pub const fn is_valid(&self) -> bool {
         self.is_watertight && self.is_manifold && self.has_consistent_winding
     }
 
-    /// Check if the shell is suitable for 3D printing.
+    /// Watertight **and** manifold. Nothing else.
+    ///
+    /// ⚠ Deliberately weaker than [`Self::is_valid`] — winding is **not** a
+    /// term, so a shell whose faces disagree still reads as printable. Nor are
+    /// degenerate triangles. This answers "is the surface closed and
+    /// two-manifold", which is what a slicer needs to produce watertight
+    /// toolpaths; it is not a statement that the result will print *well*.
+    /// Gate on `is_valid()` plus `issues` if you need more.
     #[must_use]
     pub const fn is_printable(&self) -> bool {
         self.is_watertight && self.is_manifold
@@ -485,6 +497,34 @@ mod tests {
                 .iter()
                 .any(|i| matches!(i, ShellIssue::DegenerateTriangles { count: 1 })),
             "the repeated-index face must surface as DegenerateTriangles; got: {:?}",
+            result.issues,
+        );
+    }
+
+    #[test]
+    fn is_valid_is_true_while_an_issue_is_reported() {
+        // Pins the caveat on `is_valid`: it is NOT "passes every check".
+        //
+        // A tetrahedron with one vertex nudged nearly onto the opposite edge
+        // stays closed, manifold and consistently wound, so all three terms of
+        // `is_valid` hold — while `DegenerateTriangles` is reported. A caller
+        // treating `is_valid()` as "no issues" would miss it.
+        let mut shell = IndexedMesh::new();
+        shell.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        shell.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        shell.vertices.push(Point3::new(0.5, 1e-14, 0.0));
+        shell.vertices.push(Point3::new(0.3, 0.4, 1.0));
+        shell.faces = vec![[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]];
+
+        let result = validate_shell(&shell);
+
+        assert!(result.is_valid(), "all three terms of is_valid hold");
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|i| matches!(i, ShellIssue::DegenerateTriangles { .. })),
+            "yet a degenerate triangle IS reported; got: {:?}",
             result.issues,
         );
     }
