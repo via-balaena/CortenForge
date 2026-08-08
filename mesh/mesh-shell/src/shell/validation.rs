@@ -13,7 +13,16 @@ pub struct ShellValidationResult {
     pub is_watertight: bool,
     /// Whether the shell is manifold (no edges with >2 faces).
     pub is_manifold: bool,
-    /// Whether the shell has consistent winding order.
+    /// Whether every judgeable edge agrees on winding direction.
+    ///
+    /// Measured by [`mesh_repair::winding_census`]: an edge is judgeable when
+    /// exactly two non-degenerate faces meet along it, and it is inconsistent
+    /// when both traverse it the same way.
+    ///
+    /// ⚠ This is a **local** property. It is `true` for a shell whose faces are
+    /// uniformly wound the *wrong* way — a global flip leaves every edge in
+    /// agreement. `mesh_repair::MeshReport::is_inside_out` is the instrument for
+    /// that, and it is not part of this result.
     pub has_consistent_winding: bool,
     /// Number of boundary edges (should be 0 for printable shell).
     pub boundary_edge_count: usize,
@@ -213,8 +222,15 @@ pub fn validate_shell(shell: &IndexedMesh) -> ShellValidationResult {
         );
     }
 
-    // Check winding consistency
-    let has_consistent_winding = check_winding_consistency(shell);
+    // Check winding consistency. `validate_mesh` already censused the edges
+    // above, so read that rather than rebuilding the edge map.
+    //
+    // `None` means the census was not run. Treat that as NOT consistent: it is
+    // an absence of evidence, and reporting it as clean winding is exactly the
+    // overclaim `WindingCensus` was introduced to end.
+    let has_consistent_winding = mesh_report
+        .winding
+        .is_some_and(|census| census.inconsistent_edges == 0);
     if !has_consistent_winding {
         issues.push(ShellIssue::InconsistentWinding);
         warn!("Shell has inconsistent winding order");
@@ -249,72 +265,6 @@ pub fn validate_shell(shell: &IndexedMesh) -> ShellValidationResult {
     debug!("{}", result);
 
     result
-}
-
-/// Check if the mesh has consistent winding order.
-///
-/// For a valid closed mesh, adjacent faces should have opposite winding
-/// along their shared edge (so normals point consistently outward).
-fn check_winding_consistency(mesh: &IndexedMesh) -> bool {
-    use hashbrown::HashMap;
-
-    // Build edge to faces mapping ourselves
-    let mut edge_to_faces: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
-
-    for (face_idx, face) in mesh.faces.iter().enumerate() {
-        for i in 0..3 {
-            let v0 = face[i];
-            let v1 = face[(i + 1) % 3];
-            // Normalize edge direction for grouping
-            let edge = if v0 < v1 { (v0, v1) } else { (v1, v0) };
-            edge_to_faces.entry(edge).or_default().push(face_idx);
-        }
-    }
-
-    // For each edge with exactly 2 adjacent faces, check winding consistency
-    for (&edge, face_indices) in &edge_to_faces {
-        if face_indices.len() != 2 {
-            // Skip boundary or non-manifold edges
-            continue;
-        }
-
-        let face_a = mesh.faces[face_indices[0]];
-        let face_b = mesh.faces[face_indices[1]];
-
-        // Find the shared edge orientation in each face
-        let edge_in_a = find_edge_direction(&face_a, edge);
-        let edge_in_b = find_edge_direction(&face_b, edge);
-
-        // For consistent winding, the edge should appear in opposite directions
-        // in the two adjacent faces
-        if edge_in_a == edge_in_b {
-            return false;
-        }
-    }
-
-    true
-}
-
-/// Find the direction of an edge in a face.
-/// Returns true if edge goes v0->v1 in the face's winding order, false if v1->v0.
-fn find_edge_direction(face: &[u32; 3], edge: (u32, u32)) -> bool {
-    let (v0, v1) = edge;
-
-    // Check all three edges of the triangle
-    for i in 0..3 {
-        let a = face[i];
-        let b = face[(i + 1) % 3];
-
-        if a == v0 && b == v1 {
-            return true; // Forward direction
-        }
-        if a == v1 && b == v0 {
-            return false; // Reverse direction
-        }
-    }
-
-    // Edge not found in face (shouldn't happen with valid adjacency)
-    true
 }
 
 /// Count degenerate triangles in the mesh.
@@ -405,16 +355,15 @@ mod tests {
     }
 
     #[test]
-    fn check_winding_consistency_detects_inconsistent_winding() {
-        // True-positive coverage for the winding detector: take a
+    fn a_single_reversed_face_is_reported_as_inconsistent_winding() {
+        // True-positive coverage for the winding verdict: take a
         // consistently-wound watertight tetrahedron and reverse a SINGLE
         // face's winding. The mesh stays watertight + manifold (same edges,
-        // each still shared by exactly 2 faces) but two of the flipped
-        // face's edges now run the SAME direction in both incident faces,
-        // so `check_winding_consistency` must fire. This guards the
-        // detector's positive path independently of any example — the
-        // `shell-generation` fold's rim-winding fix means no example
-        // produces a mis-wound shell anymore.
+        // each still shared by exactly 2 faces) but the flipped face's three
+        // edges now run the SAME direction in both incident faces, so the
+        // census must fire. This guards the positive path independently of any
+        // example — the `shell-generation` fold's rim-winding fix means no
+        // example produces a mis-wound shell anymore.
         let mut shell = create_watertight_tetrahedron();
         let [a, b, c] = shell.faces[0];
         shell.faces[0] = [a, c, b]; // reverse winding of one face
@@ -449,6 +398,84 @@ mod tests {
                 .any(|i| matches!(i, ShellIssue::InconsistentWinding)),
             "expected an InconsistentWinding issue; got: {:?}",
             result.issues,
+        );
+    }
+
+    #[test]
+    fn a_degenerate_face_is_not_reported_as_inconsistent_winding() {
+        // Regression guard for the hand-rolled detector this check replaced.
+        //
+        // That version keyed edges by their sorted vertex pair, so a face
+        // listing a vertex twice contributed the self-loop `(a, a)` — and it
+        // contributed it TWICE, from its own two traversals. The edge therefore
+        // looked like a normal 2-face interior edge, the detector compared the
+        // face against ITSELF, found the directions equal, and reported
+        // inconsistent winding. Measured: it returned `false` here.
+        //
+        // `winding_census` skips a face listing a vertex twice whole, so the
+        // defect is classified as what it is — a degenerate face.
+        let mut shell = IndexedMesh::new();
+        shell.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        shell.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        shell.vertices.push(Point3::new(0.0, 1.0, 0.0));
+        shell.faces.push([0, 0, 1]);
+        shell.faces.push([0, 1, 2]);
+
+        let result = validate_shell(&shell);
+
+        assert!(
+            result.has_consistent_winding,
+            "a repeated-index face is a degenerate face, not a winding defect; got: {:?}",
+            result.issues,
+        );
+        assert!(
+            !result
+                .issues
+                .iter()
+                .any(|i| matches!(i, ShellIssue::InconsistentWinding)),
+            "no InconsistentWinding issue should be raised; got: {:?}",
+            result.issues,
+        );
+    }
+
+    #[test]
+    fn the_winding_verdict_comes_from_the_census_not_a_second_edge_map() {
+        // The census is computed once, by `validate_mesh`. Guard that this
+        // result reports the census's verdict rather than a recomputation.
+        //
+        // ⚠ BOTH polarities are required. Checking only the flipped mesh lets a
+        // substituted sibling field survive: on a flipped tetra `interior_edges`
+        // is 6 and `inconsistent_edges` is 3, so `== 0` is false either way. The
+        // clean mesh is what separates them — there `inconsistent_edges == 0` is
+        // true while `interior_edges == 0` is false. (Measured: the sibling
+        // mutant passed this test until the clean case was added.)
+        let clean = create_watertight_tetrahedron();
+        let clean_census = mesh_repair::winding_census(&clean);
+        assert_eq!(
+            clean_census.inconsistent_edges, 0,
+            "oracle: an unmodified tetrahedron is consistently wound",
+        );
+        assert!(
+            clean_census.interior_edges > 0,
+            "the clean case must have judgeable edges, or it cannot separate \
+             `inconsistent_edges` from `interior_edges`",
+        );
+        assert!(
+            validate_shell(&clean).has_consistent_winding,
+            "clean mesh must report consistent winding",
+        );
+
+        let mut flipped = create_watertight_tetrahedron();
+        let [a, b, c] = flipped.faces[0];
+        flipped.faces[0] = [a, c, b];
+        let flipped_census = mesh_repair::winding_census(&flipped);
+        assert_eq!(
+            flipped_census.inconsistent_edges, 3,
+            "oracle: one flipped face disagrees on its three edges",
+        );
+        assert!(
+            !validate_shell(&flipped).has_consistent_winding,
+            "flipped mesh must report inconsistent winding",
         );
     }
 
