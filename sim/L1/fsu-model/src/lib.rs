@@ -3352,6 +3352,463 @@ mod tests {
         }
     }
 
+    /// **Rung 5.0 REPLICATION** (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §3): the
+    /// mesh-realization spread `σ(h)` at the two **refined** ladder levels.
+    ///
+    /// This is what §3 declared rung 5 blocked on. Every ladder-level quantity is `n = 1`, and
+    /// the jitter at a *fixed* level is comparable to the difference claimed *between* levels.
+    /// Step 1 caught this once at the level of the pair — a single perturbation reported ~9 %
+    /// where a five-point sweep measured 21.13 % — and **the ladder has the identical defect one
+    /// level up**. Re-running it post-α.1 without this would reproduce the same mistake with
+    /// better-looking numbers.
+    ///
+    /// ⇒ **Replication per level, not more levels.** `σ` is known only at `cell = 0.003`
+    /// (21.13 % p2p). There is no reason to assume it is level-independent — more nodes *should*
+    /// mean less relative quantization, but that is a hypothesis, and this measures it.
+    ///
+    /// Each level sweeps the same **±3.3 %** relative window step 1 used at `0.003`, so the three
+    /// levels' spreads are comparable by construction. Both arms at each cell come from **one**
+    /// prepared mesh (`PreparedDisc::duplicate`), so the per-cell `k10/k4` ratio is attributable
+    /// to element order — rung 1's attribution argument, made structural.
+    ///
+    /// ▶ **The decision rule this feeds is committed in §3, before any of it ran:** with
+    /// `Δ = |k10(coarse)| − |k10(fine)|` and `σ(h)` the measured p2p spread, **`Δ > max(σ)` ⇒ the
+    /// bracket is earned** and `Δ` is a committed lower bound on the error in the shipped
+    /// `RUNG7_K_DISC`. **Otherwise the accuracy claim stays unearned, and that is a result, not a
+    /// failure.** This test prints `σ`; it does not decide, and deliberately asserts no threshold
+    /// on the spread — that would be reading the outcome back into the instrument.
+    ///
+    /// ⚠ **Runs `0.002` only.** The fine level `0.0015` does not converge under the single
+    /// ±0.5° jump — see the note on `CENTRES` — so `σ` is measured at two levels (0.003 from
+    /// step 1, 0.002 here), not three.
+    ///
+    /// ⚠ Cost: ~6 min. `rung5_step2` costs ONE solve per level; this does FOUR per realization
+    /// (Tet4 flex/ext + Tet10 flex/ext), which is why the probe's figure understates it 2×.
+    /// Peak RSS with both arms live reached 9.39 GB on the two-level run — above the 8 GB budget
+    /// committed for the single-arm probe, which that budget never covered. Run under
+    /// `/usr/bin/time -l`.
+    #[test]
+    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed); ~27 min"]
+    fn rung5_replication_realization_spread_at_refined_levels_fom() {
+        // The same ±3.3 % relative window step 1 swept at 0.003 (0.00290 … 0.00310), so the
+        // levels' spreads are comparable rather than merely both being called "the spread".
+        const OFFSETS: [f64; 5] = [-0.033_33, -0.016_67, 0.0, 0.016_67, 0.033_33];
+
+        // ⚠ `0.0015` IS EXCLUDED, and that exclusion is a measurement, not a convenience.
+        //
+        // The first run of this sweep reached the fine level and died there: `free residual
+        // norm NaN` at Newton iter 0, "Armijo line-search stalled" (`newton.rs:273`). Not OOM —
+        // the documented OOM signature is `SymbolicLu::try_new`. The `faer` LU fallback fires
+        // throughout every level and is separately documented as benign; a NaN residual is not.
+        //
+        // §5.5 step 4 asked precisely this — "does a refined arm survive the single ±0.5°
+        // jump?" — and recorded that rung 2 had only ever answered it at `cell = 0.003`. At
+        // `0.0015` the answer is NO for at least one realization, so `σ(0.0015)` cannot be
+        // measured as specified: a spread needs every sample, and this level cannot supply them.
+        //
+        // §5.5 names the remedy (step the angle rather than jumping it; rung 2 records that
+        // stepping does not move the measurement) but notes it turns every solve into 5–10.
+        // That is a deliberate, separate decision — not something to slip into this sweep.
+        const CENTRES: [f64; 1] = [0.002];
+
+        use std::io::Write as _;
+
+        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
+        let base = DiscParams::default();
+        let (flex, ext) = (0.5_f64.to_radians(), -0.5_f64.to_radians());
+
+        for centre in CENTRES {
+            let mut rows: Vec<Realization> = Vec::new();
+
+            for off in OFFSETS {
+                let cell = centre * (1.0 + off);
+                let params = DiscParams { cell, ..base };
+                let p = prepare_disc(disc_mesh.clone(), &params, None)
+                    .unwrap_or_else(|e| panic!("prepare raw disc at cell {cell}: {e:?}"));
+                let corners = referenced_vertices(&p.tet).len();
+                let p_bands = (p.inferior.len(), p.superior.len());
+
+                // ONE mesh, both arms — attribution by construction, as in step 1.
+                let mut tet4 = bond_prepared_tet4(p.duplicate().expect("duplicate"), &params);
+                let mut tet10 = bond_prepared_tet10(p, &params, None, ConformFloors::SHIPPED);
+
+                let lin_flex = tet4.flexion_moment(flex);
+                let lin_ext = tet4.flexion_moment(ext);
+                let quad_flex = tet10.flexion_moment(flex);
+                let quad_ext = tet10.flexion_moment(ext);
+                for (probe, name) in [
+                    (lin_flex, "Tet4 flexion"),
+                    (lin_ext, "Tet4 extension"),
+                    (quad_flex, "Tet10 flexion"),
+                    (quad_ext, "Tet10 extension"),
+                ] {
+                    assert!(
+                        probe.1 < 1e-8,
+                        "cell {cell}: {name} bond must conserve (‖ΣF‖+‖ΣM‖ = {:.2e})",
+                        probe.1
+                    );
+                }
+
+                let row = Realization {
+                    cell,
+                    corners,
+                    bands: p_bands,
+                    linear: (lin_flex.0 / flex, lin_ext.0 / ext),
+                    quadratic: (quad_flex.0 / flex, quad_ext.0 / ext),
+                };
+
+                // ⚠ Print AND FLUSH per realization, not per level. The first run of this test
+                // died on realization 2 of the second level after 20 minutes and lost every
+                // completed row: `println!` to a redirected stdout is BLOCK-buffered, and the
+                // panic discarded the buffer. A sweep this expensive must not be all-or-nothing.
+                let (rf, re) = row.ratio();
+                println!(
+                    "cell {:.5} | corners {:5} | bands {:3}/{:3} | Tet4 {:.4}/{:.4} | \
+                     Tet10 {:.4}/{:.4} | ratio {rf:.4}/{re:.4}",
+                    row.cell,
+                    row.corners,
+                    row.bands.0,
+                    row.bands.1,
+                    row.linear.0,
+                    row.linear.1,
+                    row.quadratic.0,
+                    row.quadratic.1,
+                );
+                std::io::stdout().flush().ok();
+
+                rows.push(row);
+            }
+
+            // Without this the sweep measures nothing: if every cell produced the same mesh,
+            // the "spread" is solver noise, not realization jitter.
+            let distinct: std::collections::BTreeSet<usize> =
+                rows.iter().map(|r| r.corners).collect();
+            assert!(
+                distinct.len() > 1,
+                "centre {centre}: every cell produced the same referenced-corner count — the \
+                 mesh was never re-realized, so this measures nothing"
+            );
+
+            println!("--- centre cell {centre:.4} ---");
+            for (label, xs) in [
+                (
+                    "Tet10 flex",
+                    rows.iter().map(|r| r.quadratic.0).collect::<Vec<_>>(),
+                ),
+                (
+                    "Tet10 ext ",
+                    rows.iter().map(|r| r.quadratic.1).collect::<Vec<_>>(),
+                ),
+                (
+                    "Tet4  flex",
+                    rows.iter().map(|r| r.linear.0).collect::<Vec<_>>(),
+                ),
+                (
+                    "ratio flex",
+                    rows.iter().map(|r| r.ratio().0).collect::<Vec<_>>(),
+                ),
+            ] {
+                let (lo, hi, mean, pp) = spread(&xs);
+                println!(
+                    "  sigma {label}: min {lo:.4}  max {hi:.4}  mean {mean:.4}  p2p {pp:.2} %"
+                );
+            }
+        }
+    }
+
+    /// **Rung 5.0 step 3** (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §5.5): does the **Tet4**
+    /// arm survive refinement? One build, one ±0.5° solve, at `cell = 0.002` and `0.0015`.
+    ///
+    /// §5.5 listed this step ("Tet4 at `cell = 0.0015`: one build, one solve … nearly free, and
+    /// the first draft omitted it") and it was never run. The replication sweep then failed in a
+    /// way that points straight at it, so it is run here as an isolation.
+    ///
+    /// ▶ **WHAT THIS DISCRIMINATES.** The sweep panicked with `free residual norm NaN` at Newton
+    /// iter 0 on its third realization — whose *first* solve is the Tet4 arm at `cell = 0.002`.
+    /// Two facts make that surprising:
+    ///
+    /// - `rung5_step2` solved **Tet10** at that same cell cleanly (residual 1.23e-11), and used
+    ///   **zero** LU fallbacks — `Llt` succeeded on every iteration at both refined cells.
+    /// - The sweep fires the fallback continuously, and those messages precede the first printed
+    ///   row, i.e. they come from the Tet4 solves.
+    ///
+    /// So the non-SPD tangent belongs to the **Tet4** arm, and somewhere between `0.003` (where
+    /// the fallback is documented benign) and `0.002` it stops being benign. That is backwards
+    /// from the expectation that Tet4 is the cheap, robust arm — which is exactly why it needs
+    /// measuring rather than assuming.
+    ///
+    /// Builds Tet4 **alone**, with no `duplicate()` and no Tet10 alongside, so a failure here is
+    /// the arm itself rather than an interaction. If this passes at `0.002`, the sweep's failure
+    /// is in the pairing and not in the element.
+    ///
+    /// Nearly free — Tet4 is ~1/18 of a Tet10 solve.
+    #[test]
+    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
+    fn rung5_step3_tet4_refined_arms_fom() {
+        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
+        let flex = 0.5_f64.to_radians();
+
+        for cell in [0.002_f64, 0.001_5] {
+            let params = DiscParams {
+                cell,
+                ..DiscParams::default()
+            };
+            let p = prepare_disc(disc_mesh.clone(), &params, None)
+                .unwrap_or_else(|e| panic!("prepare raw disc at cell {cell}: {e:?}"));
+            let corners = referenced_vertices(&p.tet).len();
+
+            // ⚠ BOTH construction paths. The sweep feeds Tet4 a `duplicate()` (so the original
+            // can go to Tet10); this test originally fed it `p` directly and passed. That is the
+            // one structural difference between the passing isolation and the failing sweep, so
+            // it is the discriminator: if `duplicate` alone reproduces the NaN, the defect is in
+            // `duplicate`; if it does not, the defect is in the two arms' co-residency.
+            let dup = p.duplicate().expect("duplicate");
+
+            // A closure rather than an array of `(label, PreparedDisc)`: `PreparedDisc` is large
+            // enough that `large_stack_arrays` objects to the array and `useless_vec` objects to
+            // the `vec!` fix, so the two lints have no shared solution. Passing each one in
+            // avoids the container entirely.
+            let solve_one = |label: &str, prepared: PreparedDisc| {
+                let t = std::time::Instant::now();
+                let mut tet4 = bond_prepared_tet4(prepared, &params);
+                let (moment, residual) = tet4.flexion_moment(flex);
+                let wall = t.elapsed();
+
+                println!(
+                    "rung5 step3 | cell {cell:.4} | corners {corners:5} | Tet4 {label} | \
+                     {:5.1} s | moment {moment:.6} | resid {residual:.2e}",
+                    wall.as_secs_f64(),
+                );
+                std::io::Write::flush(&mut std::io::stdout()).ok();
+
+                assert!(
+                    residual < 1e-8,
+                    "cell {cell} ({label}): Tet4 arm must conserve (‖ΣF‖+‖ΣM‖ = {residual:.2e})"
+                );
+            };
+
+            solve_one("direct   ", p);
+            solve_one("duplicate", dup);
+        }
+    }
+
+    /// **Rung 5.0 — minimal co-residency reproducer** for the refined-level `NaN`.
+    ///
+    /// Isolation has cleared everything else: Tet4 alone converges at `0.002` and `0.0015` with
+    /// zero LU fallbacks, Tet10 alone likewise, and `duplicate()` is bit-identical to direct
+    /// construction. What remains is the two arms being live at once — which step 1 does at
+    /// `cell = 0.003` in a shipped, passing test, so the interaction is refinement-dependent.
+    ///
+    /// This is ONE realization at `cell = 0.002`, mirroring the sweep's structure exactly: both
+    /// arms built **before** either is solved (the Tet10 build lands between the Tet4 build and
+    /// the Tet4 solve), then the same four solves in the same order.
+    ///
+    /// ▶ **WHAT EACH OUTCOME MEANS — stated before the run, so neither can be talked into being
+    /// the interesting one:**
+    ///
+    /// - **Panics with `r_norm NaN`** ⇒ minimal reproducer. The defect needs nothing but two
+    ///   refined arms co-resident, and it is a `sim-soft` bug rather than a rung-5 artefact.
+    /// - **Passes** ⇒ co-residency alone is NOT sufficient, and the sweep's failure required
+    ///   accumulation across realizations (two meshes at `0.00193` and `0.00197` were built and
+    ///   solved, and dropped, before the failing one). That points at state surviving a
+    ///   `PreparedDisc`'s lifetime, and the next probe is two realizations rather than one.
+    ///
+    /// Asserts conservation only. Whether it panics IS the measurement.
+    #[test]
+    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
+    fn rung5_coresidency_minimal_reproducer_fom() {
+        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
+        let params = DiscParams {
+            cell: 0.002,
+            ..DiscParams::default()
+        };
+        let (flex, ext) = (0.5_f64.to_radians(), -0.5_f64.to_radians());
+
+        let p = prepare_disc(disc_mesh, &params, None).expect("prepare raw disc at cell 0.002");
+        let corners = referenced_vertices(&p.tet).len();
+
+        // Same order as the sweep: BOTH built before EITHER is solved.
+        let mut tet4 = bond_prepared_tet4(p.duplicate().expect("duplicate"), &params);
+        let mut tet10 = bond_prepared_tet10(p, &params, None, ConformFloors::SHIPPED);
+
+        let t = std::time::Instant::now();
+        let lin_flex = tet4.flexion_moment(flex);
+        let lin_ext = tet4.flexion_moment(ext);
+        let quad_flex = tet10.flexion_moment(flex);
+        let quad_ext = tet10.flexion_moment(ext);
+        let wall = t.elapsed();
+
+        println!(
+            "rung5 coresidency | cell 0.002 | corners {corners} | {:.1} s | \
+             Tet4 {:.4}/{:.4} | Tet10 {:.4}/{:.4}",
+            wall.as_secs_f64(),
+            lin_flex.0 / flex,
+            lin_ext.0 / ext,
+            quad_flex.0 / flex,
+            quad_ext.0 / ext,
+        );
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+
+        for (probe, name) in [
+            (lin_flex, "Tet4 flexion"),
+            (lin_ext, "Tet4 extension"),
+            (quad_flex, "Tet10 flexion"),
+            (quad_ext, "Tet10 extension"),
+        ] {
+            assert!(
+                probe.1 < 1e-8,
+                "{name} must conserve (‖ΣF‖+‖ΣM‖ = {:.2e})",
+                probe.1
+            );
+        }
+    }
+
+    /// **Rung 5.0 — does DROPPING the Tet10 arm save the Tet4 solve?**
+    ///
+    /// `rung5_coresidency_minimal_reproducer_fom` is byte-for-byte this test plus one thing: it
+    /// keeps the Tet10 arm alive across the Tet4 solve. Here it is dropped first. That single
+    /// difference is the whole experiment.
+    ///
+    /// ▶ **Committed before the run:**
+    ///
+    /// - **Still `NaN`** ⇒ the damage is done at CONSTRUCTION and outlives the object. That
+    ///   points at process- or thread-global state — a shared workspace, a pool, a cached
+    ///   symbolic pattern — not at the two arms competing for anything.
+    /// - **Converges** ⇒ construction is harmless and CO-EXISTENCE during the solve is what
+    ///   matters. That points instead at aliasing between two live instances.
+    ///
+    /// Either way the bug report gains the one fact that decides where to look. ~2 s.
+    #[test]
+    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
+    fn rung5_coresidency_discriminator_dropped_tet10_fom() {
+        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
+        let params = DiscParams {
+            cell: 0.002,
+            ..DiscParams::default()
+        };
+        let flex = 0.5_f64.to_radians();
+
+        let p = prepare_disc(disc_mesh, &params, None).expect("prepare raw disc at cell 0.002");
+        let corners = referenced_vertices(&p.tet).len();
+
+        let mut tet4 = bond_prepared_tet4(p.duplicate().expect("duplicate"), &params);
+
+        // Built exactly as the reproducer builds it — then dropped, which is the one difference.
+        let tet10 = bond_prepared_tet10(p, &params, None, ConformFloors::SHIPPED);
+        drop(tet10);
+
+        let t = std::time::Instant::now();
+        let (moment, residual) = tet4.flexion_moment(flex);
+        let wall = t.elapsed();
+
+        println!(
+            "rung5 discriminator | cell 0.002 | corners {corners} | Tet10 built then DROPPED | \
+             {:.1} s | moment {moment:.6} | resid {residual:.2e}",
+            wall.as_secs_f64(),
+        );
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+
+        assert!(
+            residual < 1e-8,
+            "Tet4 must conserve after a dropped Tet10 arm (‖ΣF‖+‖ΣM‖ = {residual:.2e})"
+        );
+    }
+
+    /// **Rung 5.0 step 2** (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §5.5): do the refined
+    /// Tet10 arms fit? One build, one ±0.5° solve, at `cell = 0.002` **and `0.0015`**.
+    ///
+    /// §5.5 recorded "Tet10 at `cell = 0.002` exceeds the RSS budget" as a rollback constraint,
+    /// on a pre-α.1 estimate of ~140k DOF and 3–8 GB (the solver holds **two** symbolic
+    /// factorizations for its lifetime — `SymbolicLlt` on the lower triangle and `SymbolicLu` on
+    /// the full reflected pattern — and rebuilds the numeric LU every iteration). α.1 then shrank
+    /// the ladder ~45 % (fine level 18 485 → 10 048 referenced corners), so §3 flags that
+    /// constraint as needing re-measurement **before it is planned around — it may simply be
+    /// gone**. This is that measurement.
+    ///
+    /// ▶ **BUDGET, pre-registered here before the first run** (§5.5 asks for a budget *with a
+    /// threshold action*, so the outcome cannot be re-read afterwards):
+    ///
+    /// > **8 GB peak RSS.** If the single-arm probe exceeds it, the Tet10 fine arm drops to
+    /// > `cell = 0.0025` rather than reshaping mid-FOM.
+    ///
+    /// The 8 GB is not arbitrary: this arm is the *cheap* case. Step 1's replication sweep holds
+    /// a Tet4 arm live beside the Tet10 one at each of five realizations per level, and §5.5
+    /// warns that unless each level's arms are dropped before the next is built, the ladder's
+    /// peak is the **sum** rather than the max. On a 24 GB machine a single arm claiming more
+    /// than a third of physical memory makes that sweep unsafe.
+    ///
+    /// ⚠ **This test does not assert the budget, and deliberately so.** Peak RSS is not
+    /// observable from inside the process without `unsafe` libc (`getrusage`), which would spend
+    /// the crate's Safety criterion on a diagnostic. Run it under an external sampler and read
+    /// the number off that:
+    ///
+    /// ```sh
+    /// /usr/bin/time -l cargo test -p cf-fsu-model --release \
+    ///   rung5_step2_tet10_fine_cost_ceiling_fom -- --ignored --nocapture
+    /// ```
+    ///
+    /// ⚠ **OOM here is not graceful.** `SymbolicLu::try_new(..).expect("symbolic LU
+    /// factorization of free-block pattern failed")` (`construct.rs:188-189`) panics with a
+    /// message that reads as a *pattern* bug. If this test dies with that string, read it as
+    /// "the budget was exceeded", not as a solver defect.
+    ///
+    /// What it prints — referenced corners, meshing wall, solve wall, the moment and its
+    /// conservation residual — is the cost model §5.5 asks for. It asserts only conservation,
+    /// which must hold for the solve to mean anything at all.
+    #[test]
+    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
+    fn rung5_step2_tet10_fine_cost_ceiling_fom() {
+        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
+
+        // ⚠ BOTH refined levels, not just §5.5's `0.002`. Step 0 puts the ladder at
+        // 1 580 / 4 632 / 10 048 referenced corners for `cell` = 0.003 / 0.002 / 0.0015, so
+        // `0.002` is the MIDDLE rung and the fine arm is `0.0015`. §4.8's bracket
+        // `|k*| ≤ |k10(fine)| ≤ |k10(coarse)| ≤ |k4|` needs `k10` at the fine level, but §5.5's
+        // cost spike costs Tet10 at `0.002` (step 2) and *Tet4* at `0.0015` (step 3) — the
+        // Tet10 fine arm the bracket depends on was never costed. Both are measured here.
+        //
+        // ⚠ Each level's arm is dropped before the next is built (§5.5: otherwise the ladder's
+        // peak RSS is the SUM rather than the max) — hence the inner scope.
+        for cell in [0.002_f64, 0.001_5] {
+            let params = DiscParams {
+                cell,
+                ..DiscParams::default()
+            };
+
+            let t_mesh = std::time::Instant::now();
+            let p = prepare_disc(disc_mesh.clone(), &params, None)
+                .unwrap_or_else(|e| panic!("prepare raw disc at cell {cell}: {e:?}"));
+            let corners = referenced_vertices(&p.tet).len();
+            let bands = (p.inferior.len(), p.superior.len());
+            let mesh_wall = t_mesh.elapsed();
+
+            let t_bond = std::time::Instant::now();
+            let mut tet10 = bond_prepared_tet10(p, &params, None, ConformFloors::SHIPPED);
+            let bond_wall = t_bond.elapsed();
+
+            let t_solve = std::time::Instant::now();
+            let (moment, residual) = tet10.flexion_moment(0.5_f64.to_radians());
+            let solve_wall = t_solve.elapsed();
+
+            println!(
+                "rung5 step2 | cell {cell:.4} | corners {corners:5} | bands {:3}/{:3} | \
+                 mesh {:5.1} s | bond {:5.1} s | solve {:6.1} s | moment {moment:.6} | \
+                 resid {residual:.2e}",
+                bands.0,
+                bands.1,
+                mesh_wall.as_secs_f64(),
+                bond_wall.as_secs_f64(),
+                solve_wall.as_secs_f64(),
+            );
+
+            assert!(
+                residual < 1e-8,
+                "cell {cell}: Tet10 arm must conserve (‖ΣF‖+‖ΣM‖ = {residual:.2e}) — a \
+                 non-conserving solve makes the cost measurement meaningless"
+            );
+        }
+    }
+
     /// **Rung 5.0 step 0** (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §3): the disc's SI
     /// extent and the **realized** bonded band, at every candidate `cell` of the rung-5 ladder.
     ///
