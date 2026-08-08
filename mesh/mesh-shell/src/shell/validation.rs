@@ -30,11 +30,26 @@ pub struct ShellValidationResult {
     ///
     /// ⚠ On a NON-EMPTY shell this is vacuously `true` when nothing is
     /// judgeable: a mesh with no interior edge has no edge that disagrees.
-    /// Ruling that out needs BOTH other counters, not just
-    /// `boundary_edge_count` — a mesh whose every edge is non-manifold is
-    /// watertight with zero boundary edges and still judges nothing. When
-    /// [`Self::is_printable`] holds on a non-empty shell every edge has exactly
-    /// two faces, so the verdict is never vacuous there.
+    ///
+    /// ⚠ [`Self::is_printable`] does **not** rule that out. The edge counters
+    /// come from `mesh_repair`'s adjacency, which counts a face listing a
+    /// vertex twice; the census skips such a face whole. The two therefore
+    /// disagree about what an edge is, and a mesh can read watertight AND
+    /// manifold while the census judged nothing. `[[0,0,1], [0,0,2]]` is the
+    /// smallest case: zero boundary edges, zero non-manifold edges, two
+    /// degenerate faces, no verdict. See
+    /// `is_printable_does_not_rule_out_a_vacuous_winding_verdict`.
+    ///
+    /// An empty [`Self::issues`] on a non-empty shell **does** rule it out: a
+    /// face listing a vertex twice has two identical corners, so it is also
+    /// zero-area and always raises `DegenerateTriangles`. No issues ⇒ no face
+    /// skipped ⇒ the census and the counters agree.
+    ///
+    /// Both statements were searched exhaustively over every mesh of up to
+    /// three faces on four vertices (137 280 meshes): 2 640 counterexamples to
+    /// the first, none to the second. That is bounded evidence, not proof — for
+    /// certainty on a given mesh, call [`mesh_repair::winding_census`] and read
+    /// `has_judgeable_edges()`, which answers it directly.
     ///
     /// ⚠ The EMPTY shell is the deliberate exception: it reports `false` here,
     /// and for watertight and manifold too, without consulting the census. A
@@ -622,11 +637,53 @@ mod tests {
             result.has_consistent_winding,
             "the verdict is therefore vacuously true, not verified",
         );
-        // `is_printable` is what actually rules the vacuous case out, and here
-        // it correctly refuses.
+        // Here `is_printable` happens to refuse, because these edges are
+        // non-manifold. ⚠ That is NOT general — see
+        // `is_printable_does_not_rule_out_a_vacuous_winding_verdict`.
+        assert!(!result.is_printable(), "not manifold ⇒ not printable");
+    }
+
+    #[test]
+    fn is_printable_does_not_rule_out_a_vacuous_winding_verdict() {
+        // Falsifies an earlier claim on `has_consistent_winding` that a
+        // printable non-empty shell always has something judgeable.
+        //
+        // The counters and the census disagree about what an edge is.
+        // `mesh_repair`'s adjacency counts a face that lists a vertex twice; the
+        // census skips it whole. Two such faces sharing the repeated vertex give
+        // every undirected edge exactly two incidences — watertight, manifold,
+        // therefore printable — while the census judged nothing at all.
+        //
+        // Smallest case, found by exhaustive search over every mesh of up to
+        // three faces on four vertices (137 280 meshes, 2 640 counterexamples).
+        let mut shell = IndexedMesh::new();
+        shell.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        shell.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        shell.vertices.push(Point3::new(0.0, 1.0, 0.0));
+        shell.faces.push([0, 0, 1]);
+        shell.faces.push([0, 0, 2]);
+
+        let result = validate_shell(&shell);
+        let census = mesh_repair::winding_census(&shell);
+
+        assert_eq!(result.boundary_edge_count, 0, "adjacency sees it as closed");
+        assert_eq!(result.non_manifold_edge_count, 0, "and as manifold");
         assert!(
-            !result.is_printable(),
-            "not manifold ⇒ not printable, which is the caveat's escape hatch",
+            result.is_printable(),
+            "so the weak predicate passes it: {:?}",
+            result.issues,
+        );
+        assert_eq!(
+            census.degenerate_faces, 2,
+            "while the census skips both faces whole",
+        );
+        assert_eq!(
+            census.interior_edges, 0,
+            "leaving NOTHING judgeable — the verdict below is vacuous",
+        );
+        assert!(
+            result.has_consistent_winding,
+            "reported clean on a mesh where no edge was ever examined",
         );
     }
 
