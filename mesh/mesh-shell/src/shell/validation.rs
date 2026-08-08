@@ -436,6 +436,17 @@ mod tests {
             "no InconsistentWinding issue should be raised; got: {:?}",
             result.issues,
         );
+        // Not merely "not misreported" — reported as the defect it actually is.
+        // Without this the test would still pass if the degenerate face were
+        // dropped from the report altogether.
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|i| matches!(i, ShellIssue::DegenerateTriangles { count: 1 })),
+            "the repeated-index face must surface as DegenerateTriangles; got: {:?}",
+            result.issues,
+        );
     }
 
     #[test]
