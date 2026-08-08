@@ -3352,8 +3352,8 @@ mod tests {
         }
     }
 
-    /// **Rung 5.0 step 2** (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §5.5): does the Tet10
-    /// **fine** arm fit? One build, one ±0.5° solve, at `cell = 0.002`.
+    /// **Rung 5.0 step 2** (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §5.5): do the refined
+    /// Tet10 arms fit? One build, one ±0.5° solve, at `cell = 0.002` **and `0.0015`**.
     ///
     /// §5.5 recorded "Tet10 at `cell = 0.002` exceeds the RSS budget" as a rollback constraint,
     /// on a pre-α.1 estimate of ~140k DOF and 3–8 GB (the solver holds **two** symbolic
@@ -3397,40 +3397,54 @@ mod tests {
     #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
     fn rung5_step2_tet10_fine_cost_ceiling_fom() {
         let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
-        let params = DiscParams {
-            cell: 0.002,
-            ..DiscParams::default()
-        };
 
-        let t_mesh = std::time::Instant::now();
-        let p = prepare_disc(disc_mesh, &params, None).expect("prepare raw disc at cell 0.002");
-        let corners = referenced_vertices(&p.tet).len();
-        let bands = (p.inferior.len(), p.superior.len());
-        let mesh_wall = t_mesh.elapsed();
+        // ⚠ BOTH refined levels, not just §5.5's `0.002`. Step 0 puts the ladder at
+        // 1 580 / 4 632 / 10 048 referenced corners for `cell` = 0.003 / 0.002 / 0.0015, so
+        // `0.002` is the MIDDLE rung and the fine arm is `0.0015`. §4.8's bracket
+        // `|k*| ≤ |k10(fine)| ≤ |k10(coarse)| ≤ |k4|` needs `k10` at the fine level, but §5.5's
+        // cost spike costs Tet10 at `0.002` (step 2) and *Tet4* at `0.0015` (step 3) — the
+        // Tet10 fine arm the bracket depends on was never costed. Both are measured here.
+        //
+        // ⚠ Each level's arm is dropped before the next is built (§5.5: otherwise the ladder's
+        // peak RSS is the SUM rather than the max) — hence the inner scope.
+        for cell in [0.002_f64, 0.001_5] {
+            let params = DiscParams {
+                cell,
+                ..DiscParams::default()
+            };
 
-        let t_bond = std::time::Instant::now();
-        let mut tet10 = bond_prepared_tet10(p, &params, None, ConformFloors::SHIPPED);
-        let bond_wall = t_bond.elapsed();
+            let t_mesh = std::time::Instant::now();
+            let p = prepare_disc(disc_mesh.clone(), &params, None)
+                .unwrap_or_else(|e| panic!("prepare raw disc at cell {cell}: {e:?}"));
+            let corners = referenced_vertices(&p.tet).len();
+            let bands = (p.inferior.len(), p.superior.len());
+            let mesh_wall = t_mesh.elapsed();
 
-        let t_solve = std::time::Instant::now();
-        let (moment, residual) = tet10.flexion_moment(0.5_f64.to_radians());
-        let solve_wall = t_solve.elapsed();
+            let t_bond = std::time::Instant::now();
+            let mut tet10 = bond_prepared_tet10(p, &params, None, ConformFloors::SHIPPED);
+            let bond_wall = t_bond.elapsed();
 
-        println!(
-            "rung5 step2 | cell 0.002 | corners {corners} | bands {}/{} | \
-             mesh {:.1} s | bond {:.1} s | solve {:.1} s | moment {moment:.6} | resid {residual:.2e}",
-            bands.0,
-            bands.1,
-            mesh_wall.as_secs_f64(),
-            bond_wall.as_secs_f64(),
-            solve_wall.as_secs_f64(),
-        );
+            let t_solve = std::time::Instant::now();
+            let (moment, residual) = tet10.flexion_moment(0.5_f64.to_radians());
+            let solve_wall = t_solve.elapsed();
 
-        assert!(
-            residual < 1e-8,
-            "Tet10 fine arm must conserve (‖ΣF‖+‖ΣM‖ = {residual:.2e}) — a non-conserving solve \
-             makes the cost measurement meaningless"
-        );
+            println!(
+                "rung5 step2 | cell {cell:.4} | corners {corners:5} | bands {:3}/{:3} | \
+                 mesh {:5.1} s | bond {:5.1} s | solve {:6.1} s | moment {moment:.6} | \
+                 resid {residual:.2e}",
+                bands.0,
+                bands.1,
+                mesh_wall.as_secs_f64(),
+                bond_wall.as_secs_f64(),
+                solve_wall.as_secs_f64(),
+            );
+
+            assert!(
+                residual < 1e-8,
+                "cell {cell}: Tet10 arm must conserve (‖ΣF‖+‖ΣM‖ = {residual:.2e}) — a \
+                 non-conserving solve makes the cost measurement meaningless"
+            );
+        }
     }
 
     /// **Rung 5.0 step 0** (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §3): the disc's SI
