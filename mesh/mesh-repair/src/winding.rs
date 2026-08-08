@@ -44,6 +44,13 @@ use crate::error::RepairResult;
 /// Uses BFS flood fill from an arbitrary start face in each connected component.
 /// For each face, ensures that shared edges are traversed in opposite directions.
 ///
+/// ⚠ **Produces a *consistent* orientation, not an *outward* one.** Each
+/// component inherits the orientation of whichever face BFS happened to seed
+/// from, so a component can come out uniformly inverted — and a census of the
+/// result then reads perfectly clean, because uniform inversion is not a local
+/// defect. On a closed mesh, follow with [`crate::validate_mesh`] and apply
+/// [`flip_winding`] if `is_inside_out` is set.
+///
 /// This function handles disconnected meshes by processing each component separately.
 ///
 /// # Arguments
@@ -462,9 +469,9 @@ pub fn count_inconsistent_faces(mesh: &IndexedMesh) -> usize {
 /// flip_winding(&mut mesh);
 /// assert_eq!(winding_census(&mesh).inconsistent_edges, 0);
 /// ```
-/// ⚠ **No `Default`, and `#[non_exhaustive]`.** [`winding_census`] is the only
-/// way to obtain one: a hand-built census can report a clean verdict nothing
-/// ever measured. Match with a `..` rest pattern.
+/// ⚠ **No `Default`, and `#[non_exhaustive]`**, so one cannot be conjured from
+/// nothing — it must start from [`winding_census`]. The fields stay `pub`, so a
+/// caller can still overwrite them afterwards. Match with a `..` rest pattern.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct WindingCensus {
@@ -485,8 +492,9 @@ pub struct WindingCensus {
     pub inconsistent_edges: usize,
     /// Distinct faces incident to at least one inconsistent edge.
     ///
-    /// Bounded by `inconsistent_edges` within a factor of ~3 either way, so it
-    /// is a coarse locality hint, not a concentration metric.
+    /// An inconsistent edge has exactly two incident faces and a face has three
+    /// edges, so this lies in `[2/3 * inconsistent_edges, 2 * inconsistent_edges]`
+    /// — a coarse locality hint, not a concentration metric.
     pub faces_on_inconsistent_edges: usize,
     /// Edges with exactly one incident face — holes and open boundaries.
     pub boundary_edges: usize,
@@ -1243,11 +1251,10 @@ mod tests {
     ///
     /// ⚠ **The fixture's job is to make all six counters PAIRWISE DISTINCT**, so
     /// that any transposition of the six format arguments changes the rendered
-    /// string. An earlier version used one loose triangle, which left
-    /// `inconsistent_edges` and `boundary_edges` both at 3 — and swapping those
-    /// two (adjacent edge counts of the same magnitude, the likeliest authoring
-    /// slip) rendered byte-identically and survived. Three loose triangles put
-    /// `boundary_edges` at 9. The distinctness is asserted below, not assumed.
+    /// string. Three loose triangles are what put `boundary_edges` at 9; with
+    /// one, it collides with `inconsistent_edges` at 3 and swapping that pair
+    /// — two adjacent edge counts of the same magnitude — renders identically.
+    /// The distinctness is asserted below, not assumed.
     #[test]
     fn winding_census_display_renders_every_counter_in_order() {
         let mut mesh = IndexedMesh::new();
@@ -1326,11 +1333,10 @@ mod tests {
 
         let rendered = winding_census(&lone).to_string();
 
+        // The byte-exact suffix is the whole claim: any reversion to wording
+        // that names a cause fails it, so a separate `!contains` guard could
+        // not fail while this one holds.
         assert!(rendered.ends_with(" | INCONCLUSIVE: no edge was judged"));
-        assert!(
-            !rendered.contains("two incident faces"),
-            "the retired wording named a cause this type cannot determine"
-        );
     }
 
     /// Soup has no interior edges, so it has nothing to judge. The census

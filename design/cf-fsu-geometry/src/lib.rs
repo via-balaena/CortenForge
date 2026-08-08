@@ -154,11 +154,9 @@ impl SurfaceReport {
     /// two public fields obliged to hold one value, computed by two separate
     /// passes and free to disagree.
     ///
-    /// `None` only if the report was built with the census disabled, which
-    /// [`load_with_report`] never does — pinned by
-    /// `load_with_report_always_requests_the_census`. Returned as an `Option`
-    /// anyway rather than unwrapped, because the workspace bans `expect` in
-    /// production code and a panic path is worse than a match arm.
+    /// `None` when the census was not run. [`load_with_report`] always runs
+    /// it, so a report this crate produced carries `Some` — but the field is
+    /// `pub`, so a caller can set it to `None` afterwards.
     #[must_use]
     pub const fn winding(&self) -> Option<WindingCensus> {
         self.topology.winding

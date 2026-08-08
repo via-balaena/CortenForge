@@ -9,21 +9,17 @@ use crate::winding::{WindingCensus, winding_census};
 
 /// Report of mesh validation results.
 ///
-/// Counts of common mesh defects, plus two orientation readings that answer
-/// different questions and do not substitute for each other:
+/// Counts of common mesh defects, plus two orientation readings.
+/// **Neither subsumes the other:**
 ///
-/// * [`Self::winding`] — are two neighbouring faces oriented against **each
-///   other**? Per-edge, coordinate-free. `None` when not requested.
-/// * [`Self::is_inside_out`] — is the whole surface wound **inward**? A global
-///   signed-volume test, and frame-dependent; read that field's docs before
-///   trusting it.
-///
-/// **Which to use:** [`Self::winding`] answers whether the winding is correct.
-/// [`Self::is_inside_out`] does not, ever — it is the sign of a frame-dependent
-/// volume integral. A local flip can set it
-/// (`a_local_flip_can_set_the_flag_at_the_origin`) and so can a correctly-wound
-/// open mesh (`a_consistently_wound_open_mesh_can_set_the_flag_by_translation_alone`),
-/// so it distinguishes neither.
+/// * [`Self::winding`] — whether any face is oriented against its neighbours.
+///   Per-edge and coordinate-free. Blind to a surface that is *uniformly*
+///   inverted: a global flip preserves `inconsistent_edges` exactly.
+///   `None` when not requested.
+/// * [`Self::is_inside_out`] — on a mesh already known **closed and locally
+///   consistent**, whether the whole surface is inverted. That is precisely
+///   the case the census cannot see. Outside that precondition the flag is
+///   frame-dependent and says nothing about winding at all.
 ///
 /// To repair what the census reports, see [`crate::fix_winding_order`]
 /// (per-component) or [`crate::flip_winding`] (unconditional).
@@ -45,11 +41,11 @@ use crate::winding::{WindingCensus, winding_census};
 /// # let _ = locally_clean;
 /// ```
 ///
-/// ⚠ **There is no way to build one except by measuring.** No `Default`, and
-/// `#[non_exhaustive]` blocks struct literals from outside this crate — a
-/// report is a measurement, and a fabricated one could assert
-/// [`Self::is_inside_out`] without ever having computed it. Match with a `..`
-/// rest pattern.
+/// ⚠ **Cannot be conjured from nothing.** No `Default`, and
+/// `#[non_exhaustive]` blocks struct expressions from outside this crate, so a
+/// report must start from [`validate_mesh`]. The fields stay `pub` and can be
+/// overwritten afterwards — that is a caller misleading themselves, not a
+/// value arriving from nowhere. Match with a `..` rest pattern.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct MeshReport {
@@ -93,9 +89,7 @@ pub struct MeshReport {
     ///
     /// ⇒ `false` is not evidence of correct winding, and `true` may mean a
     /// global reversal, a local flip, **or** a correctly-wound open surface in
-    /// an unlucky frame. Producers:
-    /// `a_local_flip_can_set_the_flag_at_the_origin` and
-    /// `a_consistently_wound_open_mesh_can_set_the_flag_by_translation_alone`.
+    /// an unlucky frame.
     pub is_inside_out: bool,
 
     /// Per-edge local orientation consistency — the question
@@ -127,8 +121,7 @@ impl MeshReport {
     /// Watertight, manifold, and a non-negative origin-apex signed volume.
     ///
     /// ⚠ **That last term is not a winding check** — see
-    /// [`Self::is_inside_out`]. A mesh with locally flipped faces passes this
-    /// (producer: `census_sees_a_local_flip_that_the_signed_volume_test_misses`).
+    /// [`Self::is_inside_out`]. A mesh with locally flipped faces passes this.
     /// [`Self::winding`] is reported but not judged here, nor by
     /// [`Self::has_issues`] or [`Self::issue_count`].
     #[must_use]
@@ -229,9 +222,12 @@ impl std::fmt::Display for MeshReport {
 pub struct ValidationOptions {
     /// Area threshold below which a face is considered degenerate.
     pub degenerate_area_threshold: f64,
-    /// Whether to run the per-edge winding census — the single most expensive
-    /// thing `validate_mesh` does, though not the only one (duplicate- and
-    /// degenerate-face detection are each another `O(faces)` pass).
+    /// Whether to run the per-edge winding census.
+    ///
+    /// It adds ~28 % to `validate_mesh` (see `CHANGELOG.md`). Several other
+    /// `O(faces)` passes run regardless — the adjacency build, duplicate-face
+    /// and degenerate-face detection — so this is a share of the cost, not all
+    /// of it.
     ///
     /// Off ⇒ [`MeshReport::winding`] is `None`. Nothing else is affected:
     /// [`MeshReport::is_inside_out`] is always measured, because it is a
@@ -590,14 +586,11 @@ mod tests {
 
     /// The option gates the census and NOTHING else.
     ///
-    /// Round 3 caught the previous version of this test being unable to fail:
-    /// it asserted `!is_inside_out` on a fixture whose measured value was also
-    /// `false`, so it passed whether the value was hardcoded by the gate or
-    /// measured on the mesh — the very indistinguishability it claimed to
-    /// demonstrate. That is now structurally impossible (`is_inside_out` is
-    /// never gated), and this test proves it on a mesh where the two answers
-    /// DIFFER: face 2 flipped makes the mesh genuinely inside-out, so a
-    /// resurrected gate would report `false` and fail here.
+    /// ⚠ The fixture must be one where the measured value differs from the
+    /// value a gate would hardcode. Face 2 flipped makes the mesh genuinely
+    /// inside-out, so a resurrected gate returning `false` fails here; on a
+    /// fixture that measures `false` anyway, this assert would pass either
+    /// way and prove nothing.
     #[test]
     fn the_option_gates_the_census_and_leaves_the_volume_flag_measured() {
         let mut mesh = unit_tetrahedron();
@@ -634,11 +627,10 @@ mod tests {
     /// would leave every other test green while silently making the fixture's
     /// "perturbs the sum by exactly nothing" claim false.
     ///
-    /// ⚠ **Compares the SCALAR, not the flag.** An earlier version compared
-    /// `is_inside_out` before and after, which a boolean cannot support: on the
-    /// recentred fixture the sum moves 0.1178 → 0.0589, destroying the claim,
-    /// while both values stay positive and the flag never budges. A boolean can
-    /// only witness a sign crossing.
+    /// ⚠ **Compares the SCALAR, not the flag.** The claim is that a value is
+    /// *exactly* unchanged, and a boolean can only witness a sign crossing:
+    /// recentring the fixture moves the sum 0.1178 → 0.0589 — destroying the
+    /// claim — while both values stay positive and the flag never budges.
     #[test]
     fn the_flip_leaves_the_signed_volume_sum_untouched() {
         // Computed here rather than read from the report: the claim is about
@@ -865,8 +857,10 @@ mod tests {
                 ..Default::default()
             },
         );
+        // Only the report's counter can respond to the threshold —
+        // `winding_census` takes none, so re-asserting the census here would
+        // be the same call on the same mesh as above.
         assert_eq!(strict.degenerate_face_count, 0);
-        assert_eq!(census(&strict).degenerate_faces, 1);
     }
 
     #[test]
@@ -895,8 +889,23 @@ mod tests {
         mesh.faces.push([0, 1, 2]); // 3 boundary edges
         mesh.faces.push([3, 4, 5]); // zero-area
         mesh.faces.push([3, 4, 5]); // zero-area AND duplicate
+        mesh.faces.push([3, 4, 5]); // a third copy: those 3 edges become
+        mesh.faces.push([3, 5, 4]); // 4-faced, i.e. non-manifold
 
-        // 3 boundary + 0 non-manifold + 2 degenerate + 1 duplicate.
-        assert_eq!(validate_mesh(&mesh).issue_count(), 6);
+        // ⚠ Every term must be NON-ZERO and the four must not be
+        // interchangeable, or dropping one from the sum goes unnoticed. An
+        // earlier fixture had no non-manifold edge, and deleting that term
+        // from `issue_count` survived the whole workspace.
+        let report = validate_mesh(&mesh);
+
+        // Preconditions as PROPERTIES, so the total below stays independent of
+        // them. Pinning the four values instead would make `13` derivable
+        // in-test and the assert would stop discriminating.
+        assert!(report.boundary_edge_count > 0);
+        assert!(report.non_manifold_edge_count > 0);
+        assert!(report.degenerate_face_count > 0);
+        assert!(report.duplicate_face_count > 0);
+
+        assert_eq!(report.issue_count(), 13);
     }
 }
