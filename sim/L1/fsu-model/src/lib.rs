@@ -3378,9 +3378,15 @@ mod tests {
     /// failure.** This test prints `σ`; it does not decide, and deliberately asserts no threshold
     /// on the spread — that would be reading the outcome back into the instrument.
     ///
-    /// ⚠ Costed first (`rung5_step2_tet10_fine_cost_ceiling_fom`): ~3.5 min at `0.002`, ~23 min
-    /// at `0.0015`, peak RSS 4.98 GB single-arm against an 8 GB budget. Both arms are live here,
-    /// so the fine level's real peak is higher — run it under `/usr/bin/time -l`.
+    /// ⚠ **Runs `0.002` only.** The fine level `0.0015` does not converge under the single
+    /// ±0.5° jump — see the note on `CENTRES` — so `σ` is measured at two levels (0.003 from
+    /// step 1, 0.002 here), not three.
+    ///
+    /// ⚠ Cost: ~6 min. `rung5_step2` costs ONE solve per level; this does FOUR per realization
+    /// (Tet4 flex/ext + Tet10 flex/ext), which is why the probe's figure understates it 2×.
+    /// Peak RSS with both arms live reached 9.39 GB on the two-level run — above the 8 GB budget
+    /// committed for the single-arm probe, which that budget never covered. Run under
+    /// `/usr/bin/time -l`.
     #[test]
     #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed); ~27 min"]
     fn rung5_replication_realization_spread_at_refined_levels_fom() {
@@ -3388,13 +3394,30 @@ mod tests {
         // levels' spreads are comparable rather than merely both being called "the spread".
         const OFFSETS: [f64; 5] = [-0.033_33, -0.016_67, 0.0, 0.016_67, 0.033_33];
 
+        // ⚠ `0.0015` IS EXCLUDED, and that exclusion is a measurement, not a convenience.
+        //
+        // The first run of this sweep reached the fine level and died there: `free residual
+        // norm NaN` at Newton iter 0, "Armijo line-search stalled" (`newton.rs:273`). Not OOM —
+        // the documented OOM signature is `SymbolicLu::try_new`. The `faer` LU fallback fires
+        // throughout every level and is separately documented as benign; a NaN residual is not.
+        //
+        // §5.5 step 4 asked precisely this — "does a refined arm survive the single ±0.5°
+        // jump?" — and recorded that rung 2 had only ever answered it at `cell = 0.003`. At
+        // `0.0015` the answer is NO for at least one realization, so `σ(0.0015)` cannot be
+        // measured as specified: a spread needs every sample, and this level cannot supply them.
+        //
+        // §5.5 names the remedy (step the angle rather than jumping it; rung 2 records that
+        // stepping does not move the measurement) but notes it turns every solve into 5–10.
+        // That is a deliberate, separate decision — not something to slip into this sweep.
+        const CENTRES: [f64; 1] = [0.002];
+
         use std::io::Write as _;
 
         let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
         let base = DiscParams::default();
         let (flex, ext) = (0.5_f64.to_radians(), -0.5_f64.to_radians());
 
-        for centre in [0.002_f64, 0.001_5] {
+        for centre in CENTRES {
             let mut rows: Vec<Realization> = Vec::new();
 
             for off in OFFSETS {
@@ -3490,6 +3513,82 @@ mod tests {
                     "  sigma {label}: min {lo:.4}  max {hi:.4}  mean {mean:.4}  p2p {pp:.2} %"
                 );
             }
+        }
+    }
+
+    /// **Rung 5.0 step 3** (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §5.5): does the **Tet4**
+    /// arm survive refinement? One build, one ±0.5° solve, at `cell = 0.002` and `0.0015`.
+    ///
+    /// §5.5 listed this step ("Tet4 at `cell = 0.0015`: one build, one solve … nearly free, and
+    /// the first draft omitted it") and it was never run. The replication sweep then failed in a
+    /// way that points straight at it, so it is run here as an isolation.
+    ///
+    /// ▶ **WHAT THIS DISCRIMINATES.** The sweep panicked with `free residual norm NaN` at Newton
+    /// iter 0 on its third realization — whose *first* solve is the Tet4 arm at `cell = 0.002`.
+    /// Two facts make that surprising:
+    ///
+    /// - `rung5_step2` solved **Tet10** at that same cell cleanly (residual 1.23e-11), and used
+    ///   **zero** LU fallbacks — `Llt` succeeded on every iteration at both refined cells.
+    /// - The sweep fires the fallback continuously, and those messages precede the first printed
+    ///   row, i.e. they come from the Tet4 solves.
+    ///
+    /// So the non-SPD tangent belongs to the **Tet4** arm, and somewhere between `0.003` (where
+    /// the fallback is documented benign) and `0.002` it stops being benign. That is backwards
+    /// from the expectation that Tet4 is the cheap, robust arm — which is exactly why it needs
+    /// measuring rather than assuming.
+    ///
+    /// Builds Tet4 **alone**, with no `duplicate()` and no Tet10 alongside, so a failure here is
+    /// the arm itself rather than an interaction. If this passes at `0.002`, the sweep's failure
+    /// is in the pairing and not in the element.
+    ///
+    /// Nearly free — Tet4 is ~1/18 of a Tet10 solve.
+    #[test]
+    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
+    fn rung5_step3_tet4_refined_arms_fom() {
+        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
+        let flex = 0.5_f64.to_radians();
+
+        for cell in [0.002_f64, 0.001_5] {
+            let params = DiscParams {
+                cell,
+                ..DiscParams::default()
+            };
+            let p = prepare_disc(disc_mesh.clone(), &params, None)
+                .unwrap_or_else(|e| panic!("prepare raw disc at cell {cell}: {e:?}"));
+            let corners = referenced_vertices(&p.tet).len();
+
+            // ⚠ BOTH construction paths. The sweep feeds Tet4 a `duplicate()` (so the original
+            // can go to Tet10); this test originally fed it `p` directly and passed. That is the
+            // one structural difference between the passing isolation and the failing sweep, so
+            // it is the discriminator: if `duplicate` alone reproduces the NaN, the defect is in
+            // `duplicate`; if it does not, the defect is in the two arms' co-residency.
+            let dup = p.duplicate().expect("duplicate");
+
+            // A closure rather than an array of `(label, PreparedDisc)`: `PreparedDisc` is large
+            // enough that `large_stack_arrays` objects to the array and `useless_vec` objects to
+            // the `vec!` fix, so the two lints have no shared solution. Passing each one in
+            // avoids the container entirely.
+            let solve_one = |label: &str, prepared: PreparedDisc| {
+                let t = std::time::Instant::now();
+                let mut tet4 = bond_prepared_tet4(prepared, &params);
+                let (moment, residual) = tet4.flexion_moment(flex);
+                let wall = t.elapsed();
+
+                println!(
+                    "rung5 step3 | cell {cell:.4} | corners {corners:5} | Tet4 {label} | \
+                     {:5.1} s | moment {moment:.6} | resid {residual:.2e}",
+                    wall.as_secs_f64(),
+                );
+                std::io::Write::flush(&mut std::io::stdout()).ok();
+
+                assert!(
+                    residual < 1e-8,
+                    "cell {cell} ({label}): Tet4 arm must conserve (‖ΣF‖+‖ΣM‖ = {residual:.2e})"
+                );
+            };
+
+            solve_one("direct   ", p);
+            solve_one("duplicate", dup);
         }
     }
 
