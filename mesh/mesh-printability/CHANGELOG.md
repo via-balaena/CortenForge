@@ -25,19 +25,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **§5.5 Gap F and the ThinWall precondition now read
   `mesh_repair::winding_census`** instead of each building a private
-  directed-edge map. Two independent reimplementations of the same test are
-  gone.
+  directed-edge map. Two private reimplementations of winding consistency are
+  gone; the crate now has one instrument for it, shared with `mesh-repair`.
+  ⚠ Not a pure substitution — the census is not the same test, as the next
+  entry describes. The precondition, however, is behaviourally identical on
+  every non-empty mesh searched.
 - Gap F is consequently **narrower**: it judges only edges with exactly two
   non-degenerate incident faces. Orientation is undefined across a
   non-manifold edge or a repeated-index face, so those no longer collect a
   Critical describing them as a winding problem — they are reported as what
   they are.
 
+  ⚠ **The description string moves for degenerate-face meshes**, and §5.5's
+  convention is that callers discriminate issues by that string. A mesh such as
+  `[[0,0,1],[0,0,2]]` previously raised a Critical containing
+  `"winding inconsistency"`; it now raises one containing
+  `"list a vertex twice"`. Code matching the former to catch such meshes will
+  stop seeing them. The severity, the issue type (`NonManifold`) and the
+  verdict are all unchanged — only which pass reports it, and under what name.
+
   ⚠ `is_printable()` is unchanged. Verified by comparing verdicts against the
-  previous implementation across every mesh of up to three faces on four
-  vertices (137 280 meshes): identical, signature `f0fbce6d786e8ca3`, 732
-  printable in both. The narrowing alone would have flipped 2 640 of them to
-  printable; the new degenerate pass is what holds the verdict.
+  previous implementation across every mesh of one to three faces on four
+  vertices (137 280): identical, signature `f0fbce6d786e8ca3`, 732 printable in
+  both. Re-checked on five vertices (1 000 125 meshes): zero verdicts moved.
+  The narrowing alone would have flipped 2 640 of the smaller set to printable;
+  the new degenerate pass is what holds the verdict.
 
 ### Fixed
 
