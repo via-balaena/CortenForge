@@ -464,6 +464,26 @@ where
         // already IS this sample. Evaluating it four more times would cost four
         // 3x3 inversions per element to reproduce a number we hold.
         //
+        // ⚠ Two assumptions live in this block, neither enforced by the type
+        // system. `Element<N, G>` is a PUBLIC trait, so a downstream impl could
+        // violate both:
+        //   * `N > 4` is used as a proxy for "higher order than linear";
+        //   * the four xi below assume a SIMPLEX reference domain with corner 0
+        //     at the origin, which is what `tet10.rs` and `tet4.rs` use.
+        // The crate is tet-only everywhere else (`TetId`, `tet_vertices`,
+        // `element_node_ids`'s hard-coded 4-corners-then-6-midsides split), so
+        // this is consistent with the rest rather than newly restrictive — but a
+        // hex or wedge element would silently sample non-corners here.
+        //
+        // Not cached, deliberately. `grad_xi`, `j_rest` and `j_inv` at these four
+        // points depend only on REST geometry and could be precomputed alongside
+        // `GaussGeometry`. Measured cost is ~1.5 kflop/element against a
+        // factorization that is 77.9% of a solve and runs per Newton iteration,
+        // where this runs twice per step — well under noise. Caching is the
+        // natural refactor if that ever stops being true; it would also let the
+        // degenerate-rest case below be decided once at construction rather than
+        // re-decided identically on every call.
+        //
         // Measured worth, on 4000 states with the six midsides perturbed by
         // sigma = 18 mm on a 100 mm tet, against a dense interior sample as
         // ground truth (3456 of them hide a genuine negative `det F`):
@@ -478,6 +498,14 @@ where
         // corner block catches corner-mirrored states (what `main` gated all
         // along), this stage catches midside-driven folds near a vertex. Neither
         // subsumes the other, which is why both are here.
+        //
+        // ⚠ Two caveats on that table, both understating the residual risk.
+        // The dense ground-truth lattice INCLUDES the reference corners, so it is
+        // not independent of the stage it scores: a state whose only negativity
+        // is exactly at a corner is counted as negative AND guaranteed caught.
+        // (The Gauss points are not lattice points, so stage (a) has no such
+        // coupling.) And the whole population is STRAIGHT-edged, so the curved
+        // path — where the degenerate-rest case above lives — is unmeasured.
         //
         // ⚠ 6% is not 0%. This makes the gate a denser SAMPLING, not a proof:
         // `det F` is a polynomial in `xi` for a curved element and nothing here
