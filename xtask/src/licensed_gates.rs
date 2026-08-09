@@ -601,7 +601,23 @@ fn run_gates(gates: &[Gate], root: &Path, jobs: Option<usize>) -> Result<()> {
                         Ok(o) => {
                             let mut body = String::from_utf8_lossy(&o.stdout).into_owned();
                             body.push_str(&String::from_utf8_lossy(&o.stderr));
-                            (o.status.success(), body)
+                            // A zero exit is NOT sufficient. `--exact <name>` on a
+                            // name libtest does not have exits 0 with "running 0
+                            // tests", so a typo — or a name this module qualified
+                            // wrongly — would report PASS having executed nothing,
+                            // across an unattended multi-hour run nobody reads
+                            // block by block. Demand the evidence of one test
+                            // actually running. The pre-fan-out code was immune to
+                            // this because it filtered nothing; the per-gate
+                            // invocation is what introduces the hazard.
+                            let ran_one = gate_ran_a_test(&body);
+                            if o.status.success() && !ran_one {
+                                body.push_str(
+                                    "\nxtask: gate exited 0 but no test ran — the filter \
+                                     matched nothing (check the gate's module path).\n",
+                                );
+                            }
+                            (o.status.success() && ran_one, body)
                         }
                         Err(e) => (false, format!("failed to spawn cargo test: {e}")),
                     };
@@ -638,12 +654,20 @@ fn run_gates(gates: &[Gate], root: &Path, jobs: Option<usize>) -> Result<()> {
         .filter_map(|(i, _, _)| gates.get(*i))
         .collect();
 
+    if results.len() != gates.len() {
+        bail!(
+            "internal: {} gate result(s) recorded for {} gates — refusing to report a \
+             summary that is not derived from the runs it claims to summarise",
+            results.len(),
+            gates.len()
+        );
+    }
     if failed.is_empty() {
         println!(
             "\n{} all {} gate{} green",
             "PASS".green().bold(),
-            gates.len(),
-            plural(gates.len())
+            results.len(),
+            plural(results.len())
         );
         Ok(())
     } else {
@@ -655,11 +679,21 @@ fn run_gates(gates: &[Gate], root: &Path, jobs: Option<usize>) -> Result<()> {
     }
 }
 
+/// Did this gate's `cargo test` output show a test actually running?
+///
+/// `--exact <name>` on a name libtest does not have exits **0** with
+/// `running 0 tests … 0 passed; N filtered out`, so the exit status alone
+/// cannot distinguish "gate green" from "gate never ran". Split out as a pure
+/// function so the distinction is testable without invoking cargo.
+fn gate_ran_a_test(body: &str) -> bool {
+    body.contains("1 passed")
+}
+
 /// Default gate concurrency: bounded by MEMORY, not cores.
 ///
 /// The heavy Tet10 arms in this surface peak around 5 GB resident each (rung-5
 /// recorded 4.99 GB at `cell = 0.0015`), so on a 24 GB machine the ceiling is
-/// ~4 concurrent gates — well under the core count. Picking `cores` here would
+/// 3 concurrent gates — `(24 - 4) / 6`, well under the core count. Picking `cores` here would
 /// swap and run SLOWER than serial. `--jobs` overrides; `--jobs 1` restores the
 /// old serial behaviour for debugging.
 fn default_jobs() -> usize {
@@ -902,6 +936,30 @@ pub fn run(only: Option<String>, do_run: bool, do_check: bool, jobs: Option<usiz
 
 #[cfg(test)]
 mod tests {
+    /// A gate that exits 0 having matched NO test must not count as green.
+    ///
+    /// This is the hazard the per-gate `--exact` fan-out introduced: the code it
+    /// replaced ran each target unfiltered, so a wrong name broke only the
+    /// display. Now a mis-qualified name would exit 0 with "running 0 tests" and,
+    /// on exit status alone, be reported PASS across an unattended multi-hour run.
+    #[test]
+    fn a_gate_that_matched_no_test_is_not_green() {
+        let vacuous = "\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; \
+                       0 ignored; 0 measured; 38 filtered out; finished in 0.00s\n";
+        assert!(
+            !super::gate_ran_a_test(vacuous),
+            "a run that executed no test must not be treated as a passing gate"
+        );
+
+        let real = "\nrunning 1 test\ntest tests::some_gate_fom ... ok\n\ntest result: ok. \
+                    1 passed; 0 failed; 0 ignored; 0 measured; 38 filtered out; \
+                    finished in 12.34s\n";
+        assert!(
+            super::gate_ran_a_test(real),
+            "a run that executed its gate must be treated as a real result"
+        );
+    }
+
     /// Concurrency is bounded by MEMORY, not cores — the property that makes
     /// this fan-out safe. A 12-core/24 GB box must NOT run 12 heavy gates at
     /// once: each peaks near 5 GB, so twelve would swap and finish slower than

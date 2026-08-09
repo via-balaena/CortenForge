@@ -141,7 +141,11 @@
     // Analytic-comparison test with an inlined coefficient oracle + a
     // multi-point sweep + per-point + cross-point asserts legitimately exceeds
     // clippy's 100-line soft cap (same as `hertz_sphere_plane.rs`).
-    clippy::too_many_lines
+    clippy::too_many_lines,
+    // A solve that panics on a worker thread surfaces as an opaque `Any`; the
+    // re-panic re-attaches the case (χ, a/cell) that produced it, which the
+    // concurrent solver stderr can no longer tell you.
+    clippy::panic
 )]
 
 use sim_ml_chassis::Tensor;
@@ -364,12 +368,27 @@ fn dims_for(chi: f64, a_over_cell: f64) -> (usize, usize, f64, f64) {
 /// convergence needs at `χ = 0.35`. `a/cell = 3, χ = 0.35` is shared between
 /// the two studies and solved once.
 const CASES: [(f64, f64); 5] = [
-    (0.20, A_OVER_CELL),
-    (0.35, A_OVER_CELL),
-    (0.50, A_OVER_CELL),
-    (0.35, 2.0),
-    (0.35, 4.0),
+    (CHI_SWEEP[0], A_OVER_CELL),
+    (CHI_SWEEP[1], A_OVER_CELL),
+    (CHI_SWEEP[2], A_OVER_CELL),
+    (CHI_CONV, 2.0),
+    (CHI_CONV, 4.0),
 ];
+
+/// The χ the cell-convergence study refines at. Must be one of [`CHI_SWEEP`] so
+/// `a/cell = 3` is shared with the sweep instead of solved twice.
+const CHI_CONV: f64 = CHI_SWEEP[1];
+
+// The sweep reads `solved[0..3]` positionally against `CHI_SWEEP`, and the
+// convergence study reads `solved[3]`/`solved[4]`. Adding a χ to `CHI_SWEEP`
+// without extending `CASES` would silently read the a/cell = 2 refinement as a
+// sweep point AND still use it as `ratio_c2` — comparing a mesh against itself,
+// collapsing `step_coarse`, and producing a garbage extrapolated limit that
+// still "passes". Fail the build instead.
+const _: () = assert!(
+    CASES.len() == CHI_SWEEP.len() + 2,
+    "CASES must be CHI_SWEEP at A_OVER_CELL plus exactly the two convergence refinements"
+);
 
 // Release-only gate. IPC + the multi-increment displacement ramp over several
 // meshes runs in minutes release-mode and `5-10×` slower in debug, over the CI
@@ -393,26 +412,50 @@ fn bonded_layer_indentation_matches_analytic_correction() {
     // single most expensive test in the workspace; run together the gate costs
     // its slowest case (the `a/cell = 4` refinement) instead of their sum.
     // Assertions below are unchanged and still see every case.
-    let solved: Vec<Indentation> = std::thread::scope(|scope| {
-        // needless_collect: NOT needless — it is the whole point. `map(spawn)` is
-        // lazy, so consuming it directly would spawn each thread and immediately
-        // join it, running the five solves one at a time while still looking
-        // concurrent. Collecting forces all five to start before the first join.
-        #[allow(clippy::needless_collect)]
-        let handles: Vec<_> = CASES
+    // Solver-internal warnings (`LM seeded λ`, `faer LU fallback fired`) name a
+    // Newton iteration, not a case, so once five solves emit concurrently those
+    // lines can no longer be attributed to a χ — and thread stdout is outside
+    // libtest's thread-local capture. That surface is how live solver defects
+    // get diagnosed, so keep the serial path one env var away.
+    let serial = std::env::var_os("CF_BLI_SERIAL").is_some();
+    let solved: Vec<Indentation> = if serial {
+        CASES
             .iter()
             .map(|&(chi, a_over_cell)| {
-                scope.spawn(move || {
-                    let (n_lat, nz, lateral, h) = dims_for(chi, a_over_cell);
-                    run_indentation(n_lat, n_lat, nz, lateral, lateral, h)
-                })
+                let (n_lat, nz, lateral, h) = dims_for(chi, a_over_cell);
+                run_indentation(n_lat, n_lat, nz, lateral, lateral, h)
             })
-            .collect();
-        handles
-            .into_iter()
-            .map(|h| h.join().expect("indentation solve panicked"))
-            .collect::<Vec<_>>()
-    });
+            .collect()
+    } else {
+        std::thread::scope(|scope| {
+            // needless_collect: NOT needless — it is the whole point. `map(spawn)` is
+            // lazy, so consuming it directly would spawn each thread and immediately
+            // join it, running the five solves one at a time while still looking
+            // concurrent. Collecting forces all five to start before the first join.
+            #[allow(clippy::needless_collect)]
+            let handles: Vec<_> = CASES
+                .iter()
+                .map(|&(chi, a_over_cell)| {
+                    scope.spawn(move || {
+                        let (n_lat, nz, lateral, h) = dims_for(chi, a_over_cell);
+                        run_indentation(n_lat, n_lat, nz, lateral, lateral, h)
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .zip(CASES)
+                .map(|(h, (chi, a_over_cell))| {
+                    h.join().unwrap_or_else(|_| {
+                        panic!(
+                            "indentation solve panicked at χ = {chi}, a/cell = {a_over_cell} \
+                             — rerun with CF_BLI_SERIAL=1 for attributable solver output"
+                        )
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+    };
 
     // ── χ-sweep at a/cell = 3 ────────────────────────────────────────────
     let mut fh_ratio = Vec::new(); // F_FEM / Hertz_halfspace
