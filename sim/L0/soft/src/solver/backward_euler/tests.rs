@@ -1229,6 +1229,104 @@ fn the_sweep_covers_every_element_not_just_the_first() {
     );
 }
 
+/// The sweep reports the FIRST non-positive Gauss point, as its `# Errors` says.
+///
+/// ⚠ Every other fixture inverts exactly one Gauss point, so first and last
+/// coincide and a mutant that scans all `G` and reports the LAST violator passes
+/// them all. Mirroring the whole element through `z = 0` makes `F = diag(1,1,-1)`
+/// at every point, so all four are inverted and the reported index is the only
+/// thing that distinguishes first-wins from last-wins.
+#[test]
+fn the_sweep_reports_the_first_inverted_gauss_point() {
+    let (solver, rest) = single_tet10_all_corners_pinned();
+    // Negate every z: a uniform reflection, det F = -1 at all four Gauss points.
+    let x: Vec<f64> = rest
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| if i % 3 == 2 { -v } else { v })
+        .collect();
+
+    let (_tet_id, message) = validity_message(&solver, &x);
+    assert!(
+        message.contains("at Gauss point 0 (0-based) of 4"),
+        "a uniformly reflected element inverts every Gauss point, so the FIRST one \
+         must be named — reporting a later index means the sweep is not \
+         first-violator-wins. Got: {message}"
+    );
+}
+
+/// The gate runs on a CURVED Tet10, reading the per-point Jacobian.
+///
+/// ⚠ Every other Tet10 fixture here is `Tet10Mesh::from_tet4`, i.e. straight-edged,
+/// where `element_is_straight` short-circuits to the affine fast path and every
+/// Gauss point shares one `|detJ|`. `mod.rs` states that on a curved element the
+/// gate reads the genuine per-point `curved_gauss_geometry` Jacobian, and nothing
+/// exercised that branch — the claim had zero coverage.
+///
+/// Scope, stated honestly: this pins that the gate FIRES correctly on a curved
+/// element. It does not construct a state that inverts only under the curved
+/// Jacobian and not the affine one — that would be the stronger test, and it is
+/// not attempted here.
+#[test]
+fn the_gate_runs_on_a_curved_tet10() {
+    let tet4 = SingleTetMesh::new(&MaterialField::uniform(1.0e5, 4.0e5));
+    let tet10 = Tet10Mesh::from_tet4(&tet4)
+        .with_curved_midsides(|p| p + Vec3::new(0.015 * p.y, -0.01 * p.z, 0.012 * p.x));
+    let solver: CpuTet10NHSolver<Tet10Mesh> = CpuNewtonSolver::new(
+        Tet10,
+        tet10,
+        NullContact,
+        SolverConfig::skeleton(),
+        BoundaryConditions {
+            pinned_vertices: vec![0, 1, 2, 3],
+            roller_vertices: Vec::new(),
+            loaded_vertices: Vec::new(),
+        },
+    );
+    let rest = tet10_rest_dofs(&solver);
+
+    // Premise, asserted rather than assumed: this fixture must actually be on the
+    // CURVED path. `element_is_straight` compares midsides bit-for-bit against the
+    // edge midpoints, and a displacement too small to change those bits would leave
+    // the element classified straight — the test would then silently re-cover the
+    // affine path every other fixture already covers. A straight element shares one
+    // `|detJ|` across its Gauss points, so distinct weights are the observable.
+    let weights: Vec<f64> = solver.gauss_geometries[0]
+        .gauss
+        .iter()
+        .map(|(_, w)| *w)
+        .collect();
+    assert!(
+        weights.windows(2).any(|w| w[0] != w[1]),
+        "fixture is not on the curved path: all four Gauss weights are {weights:?}, \
+         which is the affine fast path — increase the midside displacement"
+    );
+
+    // Rest state on a curved element must PASS — a curved rest configuration is
+    // valid geometry, not an inversion. If this fails, the curved per-point
+    // Jacobian is being built or read wrongly.
+    let x_t = Tensor::from_slice(&rest, &[rest.len()]);
+    let v_t = Tensor::zeros(&[rest.len()]);
+    let theta = Tensor::zeros(&[0]);
+    assert!(
+        solver.try_replay_step(&x_t, &v_t, &theta, 1e-3).is_ok(),
+        "a curved Tet10 at rest must satisfy the validity gate"
+    );
+
+    // Now fold it: negate every z, inverting the element under either Jacobian.
+    let folded: Vec<f64> = rest
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| if i % 3 == 2 { -v } else { v })
+        .collect();
+    let (tet_id, message) = validity_message(&solver, &folded);
+    assert_eq!(tet_id, 0);
+    assert!(
+        message.contains("inversion = det F"),
+        "expected the inversion slot on a curved element, got: {message}"
+    );
+}
+
 /// Run the step-start gate on `x` and return the `ValidityViolation` message, or panic
 /// with what came back instead.
 ///
