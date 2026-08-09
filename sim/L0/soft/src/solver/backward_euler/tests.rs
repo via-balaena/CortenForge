@@ -2116,25 +2116,47 @@ fn factorization_regime_probe(cells: usize) -> (usize, OrderingProbe, OrderingPr
     (n_free, amd, nested_dissection)
 }
 
-/// The numeric factorization must stay on faer's **supernodal** path.
+/// The numeric factorization must stay on faer's **supernodal** path, under an
+/// ordering that is actually reducing fill.
 ///
-/// This is the cheapest catastrophic-regression tripwire available. Numeric
-/// factorization is ~78 % of a solve (measured by profiling `run_indentation`),
-/// and faer picks simplicial vs supernodal automatically from
-/// `flops/nnz(L) > threshold × 40`. If a mesh, an element change or a faer
-/// upgrade ever moves us onto the simplicial path, the *only* symptom is that
-/// everything gets 4-6× slower — CHOLMOD's own Table I measures simplicial at
-/// 0.20-0.41 GFlop/s against supernodal's 1.34-3.93. Nothing else in the suite
-/// would notice.
+/// This is the cheapest catastrophic-regression tripwire available, and it
+/// guards the two ways the factorization can silently get much slower while
+/// every other test in the suite stays green.
+///
+/// **The regime.** Numeric factorization is ~78 % of a solve (measured by
+/// profiling `run_indentation`), and faer picks simplicial vs supernodal
+/// automatically from `flops/nnz(L) > threshold × 40`. If a mesh, an element
+/// change or a faer upgrade ever moves us onto the simplicial path, the *only*
+/// symptom is that everything gets 4-6× slower — CHOLMOD's own Table I measures
+/// simplicial at 0.20-0.41 GFlop/s against supernodal's 1.34-3.93.
+///
+/// **The ordering.** Every other gate on the nested-dissection path would pass
+/// if `metis_order` degenerated to the identity permutation: the solve would
+/// still be correct, the convention tests would still hold, and the factor
+/// would still be supernodal — it would just be slow again, which is precisely
+/// the failure this whole module exists to prevent. So this asserts the
+/// structural consequence of a working ordering: **ND admits strictly less fill
+/// than AMD** on a production-shaped pattern. `nnz(L)` is an integer count from
+/// the symbolic phase, not a timing, so the assertion is deterministic and
+/// machine-independent — it cannot flake on a busy laptop the way a speedup
+/// ratio would.
 #[test]
 fn factorization_stays_on_the_supernodal_path() {
-    let (n_free, _amd, nd) = factorization_regime_probe(6);
+    let (n_free, amd, nd) = factorization_regime_probe(6);
     assert!(
         nd.supernodal,
         "faer chose the SIMPLICIAL path at n_free = {n_free} (nnz(L) = {}) — that is a \
          4-6× factorization slowdown with no other symptom. Check the element/mesh change, \
          the nested-dissection ordering, or faer's supernodal_flop_ratio_threshold.",
         nd.nnz_l
+    );
+    assert!(
+        nd.nnz_l < amd.nnz_l,
+        "nested dissection admitted {} non-zeros against AMD's {} at n_free = {n_free} — \
+         the ordering has stopped reducing fill. A degenerate (e.g. identity) permutation \
+         passes every other gate in this crate and costs ~2× on every large solve.",
+        nd.nnz_l,
+        amd.nnz_l
     );
 }
 

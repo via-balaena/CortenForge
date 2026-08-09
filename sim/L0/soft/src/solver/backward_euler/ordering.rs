@@ -166,6 +166,12 @@ pub(super) fn compute_nested_dissection_permutation(
 ///
 /// The diagonal is emitted as-is; `feral-metis` drops self-loops when it
 /// builds its adjacency graph.
+///
+/// The solver's producers only ever insert the lower triangle
+/// (`construct.rs` and `fbar.rs` both guard on `row_free >= col_free`), but
+/// this does not depend on that: reflecting is orientation-agnostic, and an
+/// entry present in BOTH triangles would merely emit a duplicate, which
+/// `CscPattern` permits and `feral-metis`'s adjacency builder drops.
 fn full_symmetric_csc_i32(
     lower_triangle: &std::collections::BTreeSet<(usize, usize)>,
     n: usize,
@@ -194,7 +200,12 @@ fn full_symmetric_csc_i32(
         running += count;
         col_start.push(running);
     }
+    // Bail on an `i32`-overflowing pattern HERE, before the `row_idx`
+    // allocation below — the overflow case is the one where memory is already
+    // scarce, and allocating 4·nnz bytes only to discard them is the worst
+    // possible moment to do it.
     let nnz = running;
+    i32::try_from(nnz).ok()?;
 
     // Pass 3: scatter. `cursor[c]` is the next free slot in column `c`.
     let mut cursor: Vec<usize> = col_start[..n].to_vec();
