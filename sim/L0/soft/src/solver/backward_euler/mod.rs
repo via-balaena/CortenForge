@@ -10,16 +10,29 @@
 //! Dirichlet: `v_0`, `v_1`, `v_2` pinned) is factored — the free DOFs
 //! start at index `FREE_OFFSET = 9` (private module constant).
 //!
-//! Solve path: faer `SymbolicLlt::try_new` + `SymbolicLu::try_new`
-//! once per `step`-call (one symbolic factor per algorithm; both share
-//! the same element-vertex sparsity pattern with `Side::Lower` and full
-//! reflection respectively), then `Llt::try_new_with_symbolic` +
-//! `solve_in_place_with_conj` per Newton iteration. A2 LU fallback
+//! Solve path: a nested-dissection-ordered symbolic Cholesky
+//! (the private `ordering` module) alongside faer `SymbolicLu::try_new`, both built once
+//! per SOLVER CONSTRUCTION and cached for its lifetime — `step` never
+//! rebuilds them, and the ordering's break-even in `ordering` is priced
+//! on exactly that schedule
+//! (one symbolic factor per algorithm; both share the
+//! same element-vertex sparsity pattern with `Side::Lower` and full
+//! reflection respectively), then a numeric
+//! `OrderedLlt` plus `solve_in_place_with_conj`
+//! per Newton iteration. A2 LU fallback
 //! engages on `LltError::Numeric(NonPositivePivot)`: the helper
 //! `factor_free_tangent` symmetrizes the lower-tri triplets to full
-//! and factors via `Lu` against the cached `SymbolicLu`. Happy path
-//! stays bit-identical to the pre-A2 Llt-only code (scope §11 S-3
-//! Round-1-verified API shape preserved).
+//! and factors via `Lu` against the cached `SymbolicLu`. The A2 change
+//! left the happy path bit-identical to the pre-A2 Llt-only code
+//! (scope §11 S-3 Round-1-verified API shape preserved).
+//!
+//! ⚠ That A2 invariant is about A2, and does not extend forwards: the
+//! nested-dissection ordering DOES move the last bits of any solve
+//! above `ordering`'s size threshold, because it changes the order
+//! the factorization accumulates in. The **assembled** tangent is
+//! untouched — every bit-equality claim in `assembly.rs` is about the
+//! triplets going in, and those are unchanged. What moved is the
+//! factorization of them. See the `ordering` module's bit-exactness note.
 //!
 //! After convergence, `step` re-factors `A` at `x_final` via
 //! `factor_at_position` and pushes `NewtonStepVjp` onto the tape with
@@ -34,7 +47,7 @@
 // factorization-kind accessors + `factor_and_solve_free` alt-path ride the shape; not yet used.
 #![allow(dead_code)]
 
-use faer::sparse::linalg::solvers::{SymbolicLlt, SymbolicLu};
+use faer::sparse::linalg::solvers::SymbolicLu;
 use nalgebra::SMatrix;
 
 use crate::Vec3;
@@ -51,6 +64,7 @@ mod factor;
 mod fbar;
 mod helpers;
 mod newton;
+mod ordering;
 mod sensitivities;
 mod trait_impl;
 
@@ -178,10 +192,11 @@ pub struct CpuNewtonSolver<
     full_to_free_idx: Vec<Option<usize>>,
     /// Symbolic factor of the free-DOF Hessian sparsity pattern (Llt
     /// shape, `Side::Lower`), built once from element-vertex incidence
-    /// per Decision J. Per-iter numeric refactor consumes a `clone()`
-    /// of this (cheap — faer 0.24 wraps the symbolic in `Arc`
-    /// internally).
-    symbolic: SymbolicLlt<usize>,
+    /// per Decision J, under a nested-dissection fill-reducing ordering
+    /// (see the private `ordering` module for why faer's own AMD is not used).
+    /// Per-iter numeric refactor consumes a `clone()` of this (cheap —
+    /// it is an `Arc` refcount bump).
+    symbolic: ordering::SharedSymbolicCholesky,
     /// Symbolic factor of the same free-DOF Hessian pattern, in Lu
     /// shape (full matrix, no `Side`). Held alongside `symbolic` so
     /// the A2 LU fallback (Lu factorize when Llt hits a non-PD pivot)
@@ -190,6 +205,20 @@ pub struct CpuNewtonSolver<
     /// relative to the numeric factor; same `Arc`-internal sharing
     /// makes `clone()` cheap per fall-through.
     symbolic_lu: SymbolicLu<usize>,
+    /// Numeric Cholesky factorizations performed by this solver since
+    /// construction.
+    ///
+    /// The ordering in [`ordering`] costs a one-off SYMBOLIC charge per
+    /// construction and repays a little on every NUMERIC factorization, so its
+    /// break-even is denominated in this count — see
+    /// `NESTED_DISSECTION_MIN_FREE_DOF`. Without a counter the threshold rests
+    /// on a number nobody can regenerate, which is worse than one that is
+    /// wrong: a wrong number can be caught.
+    ///
+    /// `Relaxed` because nothing orders against it; it is a diagnostic tally,
+    /// not a synchronisation point. One relaxed increment against a
+    /// factorization measured in milliseconds is unmeasurable overhead.
+    factorizations: std::sync::atomic::AtomicUsize,
     /// Total DOF count (`3 * n_vertices`), cached for slice indexing.
     n_dof: usize,
     /// Free DOF count (`free_dof_indices.len()`), cached.

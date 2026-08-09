@@ -6403,7 +6403,9 @@ dependencies = [
  "num-traits",
  "private-gemm-x86",
  "pulp 0.22.2",
+ "rayon",
  "reborrow",
+ "spindle",
 ]
 
 [[package]]
@@ -6508,6 +6510,31 @@ dependencies = [
  "web-sys",
  "wgpu 28.0.0",
 ]
+
+[[package]]
+name = "feral-amd"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ead2f064dbcef0e0d3110202e9d6d7c293c1dffe6da5964513a20c5967e4d560"
+dependencies = [
+ "feral-ordering-core",
+]
+
+[[package]]
+name = "feral-metis"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16b34963682eaf680479bfd6018a5570bfd1ed9c1f05d8bf085ab49f13b308cb"
+dependencies = [
+ "feral-amd",
+ "feral-ordering-core",
+]
+
+[[package]]
+name = "feral-ordering-core"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca94ad929e23c0adaa6edda42474aa71b5b2bfb3930b1f6b202e4b37c8e9b763"
 
 [[package]]
 name = "field-offset"
@@ -6938,6 +6965,7 @@ dependencies = [
  "paste",
  "pulp 0.22.2",
  "raw-cpuid",
+ "rayon",
  "seq-macro",
  "sysctl",
 ]
@@ -6974,6 +7002,7 @@ dependencies = [
  "num-traits",
  "paste",
  "raw-cpuid",
+ "rayon",
  "seq-macro",
 ]
 
@@ -11765,6 +11794,7 @@ dependencies = [
  "bytemuck",
  "cf-geometry",
  "faer 0.24.0",
+ "feral-metis",
  "getrandom 0.3.4",
  "mesh-offset",
  "mesh-types",

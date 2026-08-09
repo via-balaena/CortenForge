@@ -3719,8 +3719,9 @@ mod tests {
     ///
     /// §5.5 recorded "Tet10 at `cell = 0.002` exceeds the RSS budget" as a rollback constraint,
     /// on a pre-α.1 estimate of ~140k DOF and 3–8 GB (the solver holds **two** symbolic
-    /// factorizations for its lifetime — `SymbolicLlt` on the lower triangle and `SymbolicLu` on
-    /// the full reflected pattern — and rebuilds the numeric LU every iteration). α.1 then shrank
+    /// factorizations for its lifetime — a Cholesky factor on the lower triangle and a
+    /// `SymbolicLu` on the full reflected pattern — and rebuilds the numeric LU every
+    /// iteration). α.1 then shrank
     /// the ladder ~45 % (fine level 18 485 → 10 048 referenced corners), so §3 flags that
     /// constraint as needing re-measurement **before it is planned around — it may simply be
     /// gone**. This is that measurement.

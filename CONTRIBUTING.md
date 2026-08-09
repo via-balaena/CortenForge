@@ -141,6 +141,49 @@ This records completion in the crate's `COMPLETION.md` and updates the project-w
 
 ---
 
+## Long Suites Run in Parallel — Non-Negotiable
+
+**A test suite that could run concurrently and does not is a defect, and it is
+reviewable as one.** This has cost real days. The licence-gated surface ran
+strictly serially — one `cargo test` at a time, `--test-threads=1` inside each —
+on a 12-core machine, pegging **one core**. Measured 2026-08-09: `cf-fsu-model`
+alone took **1 h 46 m to finish 12 of its 27 gates**, projecting to ~4 h for that
+one crate; the whole surface is longer still. (An earlier full-surface run is
+recorded at 2 h 21 m on 2026-08-07 in `design/cf-fsu-geometry/BODYPARTS3D.md`,
+but the surface has grown since and that figure no longer predicts a run — do not
+quote it as current.) Nothing about the workload required serial execution; it
+was scheduling loss, and it recurred because nothing in the repo said not to.
+
+The rule, for any suite or tool you add or touch:
+
+1. **Default to concurrent.** Serial is a choice that needs a written reason at
+   the call site — an actual shared resource (a fixed port, a temp path, a
+   global env var, a GPU), not "it was simpler."
+2. **Bound concurrency by the scarce resource, usually MEMORY, not cores.** The
+   heavy Tet10 arms peak near 5 GB resident; twelve at once on a 24 GB box would
+   swap and finish *slower* than serial. `licensed_gates::jobs_for` encodes this
+   and `gate_concurrency_is_bounded_by_memory_not_cores` pins it — if you
+   "optimise" the bound to the core count, that test fails, by design.
+3. **Parallelise at the granularity that actually holds the long pole.** Fanning
+   out per *target* left `cf-fsu-model`'s lib target — ~13 gates in one binary —
+   untouched. The unit that matters is the individual gate.
+4. **Keep output attributable.** The reason `--test-threads=1` was there at all
+   is that these gates print FOM tables through `--nocapture`, and concurrent
+   tests interleaved onto one stdout destroy them. One test per process, capture
+   each, print each as a labelled block. Parallelism must not cost readability —
+   solve both.
+5. **Warm the build once, serially, before fanning out.** Otherwise every worker
+   blocks on the same cargo build lock and the fan-out buys nothing.
+
+```bash
+cargo xtask licensed-gates --run            # concurrent; bound picked from RAM
+cargo xtask licensed-gates --run --jobs 1   # serial, for debugging one gate
+```
+
+**Before adding `--test-threads=1`, a `for` loop over test invocations, or any
+other serialisation to a long-running tool: don't, unless you can name the
+shared resource in a comment.**
+
 ## The Quality Gate
 
 ### What CI Checks
@@ -185,7 +228,7 @@ If those sets intersect, run the gates. ⚠ `affected` is **path-based**, so it
 reports a crate when *any* file under it changes, including a README — which is
 exactly why question 1 comes first and settles it.
 
-**Do not work from a remembered list of "the FSU crates."** The 40 gates
+**Do not work from a remembered list of "the FSU crates."** The 45 gates
 transitively exercise ~17 workspace crates — routing, co-design, truss and the
 whole mesh pipeline, not just the FSU cone. Any prose list here would be narrower
 than the truth within a release, which is the failure this tooling exists to

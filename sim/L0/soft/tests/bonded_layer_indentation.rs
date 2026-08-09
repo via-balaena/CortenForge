@@ -134,6 +134,30 @@
 //!   geometric-tail extrapolated limit stays `> 1.03` — mesh-converged to a
 //!   floor above 1, not a coincidence of one resolution and not heading to 1.
 
+//! ## Cost (measured 2026-08-09, 12-core / 24 GB, `--release`, machine idle)
+//!
+//! | shape | wall | vs serial |
+//! |---|---|---|
+//! | serial (one `for` loop over the five cases) | 1346.2 s | — |
+//! | concurrent (`std::thread::scope`, this file) | **669.7 s** | **2.01x** |
+//!
+//! The gate needs five INDEPENDENT solves — the three-point χ sweep at
+//! `a/cell = 3`, plus `a/cell` 2 and 4 for the convergence extrapolation — so
+//! concurrency costs the slowest single case rather than their sum. It cannot
+//! go below that case: the last ~3 min of the run is one solve on one core.
+//! Further gains need a faster solve, not more threads.
+//!
+//! ⚠ An op-count model (DOF^1.3 weighting) predicted 570-610 s and was ~10 %
+//! optimistic. Concurrent sparse solves contend for memory bandwidth, so they
+//! do NOT each run at solo speed. Measure parallel wins here; do not derive
+//! them. (A co-tenant model-checker on the first attempt cost only 23.8 s —
+//! 3.4 % — so contention with other work was the smaller effect by far.)
+//!
+//! Numerics are unaffected: this run reproduced the committed anchors above to
+//! four significant figures (`RATIO` 1.0509 / 1.1048 / 1.1303, `F/Hertz`
+//! 1.3085 / 1.6700 / 2.1121), which is what `faer`'s deliberately-disabled
+//! rayon buys — see `sim/L0/soft/Cargo.toml`.
+
 #![allow(
     // Helpers `.expect(...)` on the meshing/among-tuple returns — mirrors
     // `hertz_sphere_plane.rs` / `concentric_lame_shells.rs` precedent.
@@ -141,7 +165,11 @@
     // Analytic-comparison test with an inlined coefficient oracle + a
     // multi-point sweep + per-point + cross-point asserts legitimately exceeds
     // clippy's 100-line soft cap (same as `hertz_sphere_plane.rs`).
-    clippy::too_many_lines
+    clippy::too_many_lines,
+    // A solve that panics on a worker thread surfaces as an opaque `Any`; the
+    // re-panic re-attaches the case (χ, a/cell) that produced it, which the
+    // concurrent solver stderr can no longer tell you.
+    clippy::panic
 )]
 
 use sim_ml_chassis::Tensor;
@@ -292,6 +320,15 @@ fn run_indentation(nx: usize, ny: usize, nz: usize, lx: f64, ly: f64, h: f64) ->
     cfg.max_newton_iter = MAX_NEWTON_ITER;
     let empty_theta = Tensor::from_slice(&[], &[0]);
 
+    // Built ONCE for the whole ramp; only `replace_contact` varies per increment.
+    let mut solver: CpuNewtonSolver<Tet4, HandBuiltTetMesh, IpcRigidContact> = CpuNewtonSolver::new(
+        Tet4,
+        layer(nx, ny, nz, lx, ly, h),
+        IpcRigidContact::with_params(vec![indenter(lx, ly, z_start)], KAPPA, d_hat),
+        cfg,
+        BoundaryConditions::new(pins, Vec::new()),
+    );
+
     let mut z = z_start;
     let mut max_iters = 0usize;
     let mut max_res = 0.0f64;
@@ -299,14 +336,17 @@ fn run_indentation(nx: usize, ny: usize, nz: usize, lx: f64, ly: f64, h: f64) ->
         let target = if z - step <= z_end { z_end } else { z - step };
         z = target;
 
-        let contact = IpcRigidContact::with_params(vec![indenter(lx, ly, z)], KAPPA, d_hat);
-        let solver: CpuNewtonSolver<Tet4, HandBuiltTetMesh, IpcRigidContact> = CpuNewtonSolver::new(
-            Tet4,
-            layer(nx, ny, nz, lx, ly, h),
-            contact,
-            cfg,
-            BoundaryConditions::new(pins.clone(), Vec::new()),
-        );
+        // Only the indenter moves between increments. The mesh, mass, free-DOF
+        // maps and BOTH symbolic factorizations are functions of element
+        // incidence alone, so they are built once above and reused — see
+        // `CpuNewtonSolver::replace_contact` for why contact cannot widen the
+        // pattern. Rebuilding them per increment cost 71 constructions per case,
+        // 355 across the five.
+        solver.replace_contact(IpcRigidContact::with_params(
+            vec![indenter(lx, ly, z)],
+            KAPPA,
+            d_hat,
+        ));
         let out = solver.replay_step(
             &Tensor::from_slice(&x_prev, &[n_dof]),
             &Tensor::from_slice(&v_prev, &[n_dof]),
@@ -359,6 +399,33 @@ fn dims_for(chi: f64, a_over_cell: f64) -> (usize, usize, f64, f64) {
 
 // ── Test ─────────────────────────────────────────────────────────────────
 
+/// The five independent solves this gate needs: the three-point χ-sweep at
+/// `a/cell = 3`, plus the two extra refinements (`a/cell` 2 and 4) the cell
+/// convergence needs at `χ = 0.35`. `a/cell = 3, χ = 0.35` is shared between
+/// the two studies and solved once.
+const CASES: [(f64, f64); 5] = [
+    (CHI_SWEEP[0], A_OVER_CELL),
+    (CHI_SWEEP[1], A_OVER_CELL),
+    (CHI_SWEEP[2], A_OVER_CELL),
+    (CHI_CONV, 2.0),
+    (CHI_CONV, 4.0),
+];
+
+/// The χ the cell-convergence study refines at. Must be one of [`CHI_SWEEP`] so
+/// `a/cell = 3` is shared with the sweep instead of solved twice.
+const CHI_CONV: f64 = CHI_SWEEP[1];
+
+// The sweep reads `solved[0..3]` positionally against `CHI_SWEEP`, and the
+// convergence study reads `solved[3]`/`solved[4]`. Adding a χ to `CHI_SWEEP`
+// without extending `CASES` would silently read the a/cell = 2 refinement as a
+// sweep point AND still use it as `ratio_c2` — comparing a mesh against itself,
+// collapsing `step_coarse`, and producing a garbage extrapolated limit that
+// still "passes". Fail the build instead.
+const _: () = assert!(
+    CASES.len() == CHI_SWEEP.len() + 2,
+    "CASES must be CHI_SWEEP at A_OVER_CELL plus exactly the two convergence refinements"
+);
+
 // Release-only gate. IPC + the multi-increment displacement ramp over several
 // meshes runs in minutes release-mode and `5-10×` slower in debug, over the CI
 // 30-min budget. `#[cfg_attr(debug_assertions, ignore)]` skips it in
@@ -375,12 +442,76 @@ fn bonded_layer_indentation_matches_analytic_correction() {
     let f_hs = hertz_halfspace(DELTA);
     let a = (RADIUS * DELTA).sqrt();
 
+    // Solve all five cases CONCURRENTLY. `run_indentation` is a pure function of
+    // its dimensions — no shared state, no ordering between cases — so the only
+    // thing serialising them was the loop. They were ~22 min of one core, the
+    // single most expensive test in the workspace; run together the gate costs
+    // its slowest case (the `a/cell = 4` refinement) instead of their sum.
+    // Assertions below are unchanged and still see every case.
+    // Solver-internal warnings (`LM seeded λ`, `faer LU fallback fired`) name a
+    // Newton iteration, not a case, so once five solves emit concurrently those
+    // lines can no longer be attributed to a χ — and thread stdout is outside
+    // libtest's thread-local capture. That surface is how live solver defects
+    // get diagnosed, so keep the serial path one env var away.
+    let serial = std::env::var_os("CF_BLI_SERIAL").is_some();
+    let solved: Vec<Indentation> = if serial {
+        CASES
+            .iter()
+            .map(|&(chi, a_over_cell)| {
+                let (n_lat, nz, lateral, h) = dims_for(chi, a_over_cell);
+                run_indentation(n_lat, n_lat, nz, lateral, lateral, h)
+            })
+            .collect()
+    } else {
+        // Bounded, not unbounded — the same rule this branch added to
+        // CONTRIBUTING. These are Tet4 cases (largest ≈42.5k DOF, far below the
+        // multi-GB Tet10 arms), so cores are the sensible proxy here rather than
+        // a GB budget; on a 2-core CI runner this becomes 2 live solves, not 5.
+        let live = std::thread::available_parallelism()
+            .map_or(2, std::num::NonZeroUsize::get)
+            .min(CASES.len());
+        CASES
+            .chunks(live)
+            .flat_map(|chunk| {
+                std::thread::scope(|scope| {
+                    // needless_collect: NOT needless — it is the whole point. `map(spawn)` is
+                    // lazy, so consuming it directly would spawn each thread and immediately
+                    // join it, running the five solves one at a time while still looking
+                    // concurrent. Collecting forces all five to start before the first join.
+                    #[allow(clippy::needless_collect)]
+                    let handles: Vec<_> = chunk
+                        .iter()
+                        .map(|&(chi, a_over_cell)| {
+                            scope.spawn(move || {
+                                let (n_lat, nz, lateral, h) = dims_for(chi, a_over_cell);
+                                run_indentation(n_lat, n_lat, nz, lateral, lateral, h)
+                            })
+                        })
+                        .collect();
+                    handles
+                        .into_iter()
+                        .zip(chunk)
+                        .map(|(h, &(chi, a_over_cell))| {
+                            h.join().unwrap_or_else(|_| {
+                                panic!(
+                                    "indentation solve panicked at χ = {chi}, a/cell = \
+                                     {a_over_cell} — rerun with CF_BLI_SERIAL=1 for \
+                                     attributable solver output"
+                                )
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+
     // ── χ-sweep at a/cell = 3 ────────────────────────────────────────────
     let mut fh_ratio = Vec::new(); // F_FEM / Hertz_halfspace
     let mut oracle_ratio = Vec::new(); // F_FEM / (Δ_G · Hertz)
-    for &chi in &CHI_SWEEP {
-        let (n_lat, nz, lateral, h) = dims_for(chi, A_OVER_CELL);
-        let r = run_indentation(n_lat, n_lat, nz, lateral, lateral, h);
+    for (i, &chi) in CHI_SWEEP.iter().enumerate() {
+        let (n_lat, nz, _lateral, h) = dims_for(chi, A_OVER_CELL);
+        let r = &solved[i];
         let delta = delta_garcia(nu(), chi);
         let fh = r.f_fem / f_hs;
         let ratio = r.f_fem / (delta * f_hs);
@@ -455,13 +586,11 @@ fn bonded_layer_indentation_matches_analytic_correction() {
     // reused from the sweep; add a/cell = 2 (coarse) and a/cell = 4 (fine).
     let chi_c = 0.35;
     let delta_c = delta_garcia(nu(), chi_c);
-    let ratio_at = |div: f64| {
-        let (nl, nz, lat, h) = dims_for(chi_c, div);
-        run_indentation(nl, nl, nz, lat, lat, h).f_fem / (delta_c * f_hs)
-    };
-    let ratio_c2 = ratio_at(2.0);
-    let ratio_c3 = oracle_ratio[1]; // a/cell = 3, already computed in the sweep
-    let ratio_c4 = ratio_at(4.0);
+    // Indices 3 and 4 of `CASES` are the a/cell = 2 and 4 refinements, solved
+    // alongside the sweep above rather than after it.
+    let ratio_c2 = solved[3].f_fem / (delta_c * f_hs);
+    let ratio_c3 = oracle_ratio[1]; // a/cell = 3, shared with the sweep
+    let ratio_c4 = solved[4].f_fem / (delta_c * f_hs);
     let step_coarse = (ratio_c2 - ratio_c3).abs();
     let step_fine = (ratio_c3 - ratio_c4).abs();
     // Geometric-tail extrapolation of the converged limit from the last two

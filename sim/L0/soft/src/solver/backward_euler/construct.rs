@@ -2,8 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use faer::Side;
-use faer::sparse::linalg::solvers::{SymbolicLlt, SymbolicLu};
+use faer::sparse::linalg::solvers::SymbolicLu;
 use faer::sparse::{SparseColMat, Triplet};
 use nalgebra::{Matrix3, SMatrix};
 
@@ -16,6 +15,7 @@ use crate::readout::BoundaryConditions;
 
 use super::CpuNewtonSolver;
 use super::helpers::element_node_ids;
+use super::ordering::{SharedSymbolicCholesky, nested_dissection_permutation, symbolic_cholesky};
 use super::{ElementGeometry, GaussGeometry, SolverConfig};
 
 /// HRZ (Hinton–Rock–Zienkiewicz) diagonal mass-lumping weights — the per-node
@@ -150,6 +150,11 @@ where
 /// fallback needs the full pattern, so the lower triangle is reflected — the
 /// diagonal once, each off-diagonal at both `(r, c)` and `(c, r)` — exactly as
 /// the numeric Lu factor symmetrizes the assembled tangent at fall-through.
+///
+/// The Llt factor is ordered by nested dissection rather than faer's built-in
+/// AMD, which is the largest single performance lever in this crate — see
+/// [`ordering`](super::ordering) for the measurements and for why the Lu
+/// fallback keeps COLAMD.
 //
 // expect_used + panic: a pattern-build failure here is impossible for any valid
 // mesh + Dirichlet set (the same programmer-bug rationale as `new()`'s own
@@ -160,7 +165,7 @@ where
 fn build_symbolic_factors(
     triplet_set: &BTreeSet<(usize, usize)>,
     n_free: usize,
-) -> (SymbolicLlt<usize>, SymbolicLu<usize>) {
+) -> (SharedSymbolicCholesky, SymbolicLu<usize>) {
     let pattern_triplets: Vec<Triplet<usize, usize, f64>> = triplet_set
         .iter()
         .map(|&(c, r)| Triplet::new(r, c, 1.0))
@@ -168,7 +173,10 @@ fn build_symbolic_factors(
     let pattern_mat: SparseColMat<usize, f64> =
         SparseColMat::try_new_from_triplets(n_free, n_free, &pattern_triplets)
             .expect("malformed free-block triplet pattern");
-    let symbolic = SymbolicLlt::<usize>::try_new(pattern_mat.symbolic(), Side::Lower)
+    // `None` = the ordering could not be computed; faer's AMD then stands in,
+    // costing speed but never correctness.
+    let permutation = nested_dissection_permutation(triplet_set, n_free);
+    let symbolic = symbolic_cholesky(pattern_mat.symbolic(), permutation.as_ref())
         .expect("symbolic factorization of free-block pattern failed");
 
     // A2 LU fallback: reflect the structurally-symmetric lower-tri pattern into
@@ -668,12 +676,52 @@ where
             full_to_free_idx,
             symbolic,
             symbolic_lu,
+            factorizations: std::sync::atomic::AtomicUsize::new(0),
             n_dof,
             n_free,
             fbar_cache,
             friction_surface_drift: Vec3::zeros(),
             _material: std::marker::PhantomData,
         }
+    }
+
+    /// Swap the contact model, keeping every cached artefact [`Self::new`] built.
+    ///
+    /// For a displacement-controlled ramp — a rigid indenter lowered in
+    /// increments — only the contact changes between steps. Rebuilding the whole
+    /// solver each increment re-derives the element geometries, the mass, the
+    /// free-DOF maps and **both symbolic factorizations**, none of which depend
+    /// on where the indenter is.
+    ///
+    /// # Why this is sound, and the one way it could stop being
+    ///
+    /// The symbolic pattern is a function of ELEMENT INCIDENCE and the free-DOF
+    /// map alone (see [`Self::new`]'s `triplet_set`: an `N × N` node-pair loop
+    /// per tet, plus a `(k, k)` mass diagonal). Contact never contributes to it,
+    /// and every shipped contact model stays inside that pattern:
+    ///
+    /// - [`crate::contact::IpcRigidContact`] / [`crate::contact::PenaltyRigidContact`]
+    ///   vertex pairs emit a `(v, v)` self-block, covered by the element loop's
+    ///   `a == b` case;
+    /// - a face pair emits a 6 × 6 block over the P2 nodes of ONE boundary face,
+    ///   all of which belong to a single element, so every `(row, col)` is
+    ///   already covered by that element's `N × N` pairs.
+    ///
+    /// ⚠ A contact model coupling vertices from DIFFERENT elements — self
+    /// collision, or a stitched multi-body pair — would widen the pattern beyond
+    /// the cached symbolic factors and must build a fresh solver instead.
+    pub fn replace_contact(&mut self, contact: C) {
+        self.contact = contact;
+    }
+
+    /// Numeric Cholesky factorizations performed since construction.
+    ///
+    /// Crate-private: this exists to make the ordering's break-even
+    /// REPRODUCIBLE, not to widen the public surface. See
+    /// `factorizations_per_step_clears_the_ordering_break_even`.
+    pub(crate) fn factorization_count(&self) -> usize {
+        self.factorizations
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Set the rigid contact surface's within-step tangential drift `Δ_surf` (the

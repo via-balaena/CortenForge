@@ -2191,6 +2191,45 @@ const L0_INTEGRATION_BANNED: &[BanPattern] = L0_IO_BANNED;
 
 const L1_BANNED: &[BanPattern] = &[];
 
+/// The declared `dependency_budget`, but only when it actually RAISES this
+/// crate's base-tier cap.
+///
+/// A budget at or below the tier default is inert — `tier_config_with_budget`
+/// clamps it away — and reporting one would tell a reader the crate is held to
+/// a limit it is not held to. Returns `None` for the inert case so callers can
+/// stay silent rather than claim something false.
+fn budget_in_effect(metadata: &TierMetadata) -> Option<usize> {
+    let budget = metadata.dependency_budget?;
+    (budget > tier_config(metadata.tier).release_max).then_some(budget)
+}
+
+/// [`tier_config`] with a crate's `dependency_budget` override applied.
+///
+/// Raises `release_max` to the declared budget and `test_max` to
+/// `budget + 20`, preserving the tier table's own release/test buffer.
+/// Banned patterns are taken from the tier unchanged — the override is a
+/// COUNT, never a permission.
+///
+/// **Raise-only.** A budget below the tier default is ignored rather than
+/// applied. This is not politeness: `tier` here is the EFFECTIVE tier, which
+/// under `--all-features` may have been tiered up by a `tier_up_features`
+/// declaration. Without the clamp, a crate declaring a budget for its base
+/// tier would silently TIGHTEN the laxer tier its features unlock — e.g. an
+/// L0 crate declaring 200 that tiers up to L1 would cap L1's unbounded graph
+/// at 200 and fail a build the tier permits. The override exists to buy a
+/// crate more room than its tier gives, never less.
+fn tier_config_with_budget(tier: Tier, budget: Option<usize>) -> TierConfig {
+    let base = tier_config(tier);
+    match budget {
+        None => base,
+        Some(budget) => TierConfig {
+            release_max: base.release_max.max(budget),
+            test_max: base.test_max.max(budget.saturating_add(20)),
+            banned: base.banned,
+        },
+    }
+}
+
 /// Look up the static `TierConfig` for a tier. Numbers initially tracked
 /// plan §5.2 (release 80/200/200, test 100/220/220) and re-tune as
 /// integration experience accumulates. Plan §2.1 proposes tighter
@@ -2250,6 +2289,19 @@ struct TierMetadata {
     /// vast majority of crates; sim-soft is the only current declarer
     /// (`gpu-probe -> L0-io`).
     tier_up_features: Vec<(String, Tier)>,
+    /// Per-crate release dependency budget, overriding the tier default.
+    ///
+    /// Exists so a crate that needs more of the dep budget than its tier
+    /// allows can say so **in its own Cargo.toml, next to the deps that
+    /// spend it**, rather than forcing the choice between silently raising
+    /// the cap for every crate in the tier and mis-declaring the tier to
+    /// borrow a laxer one (which would also relax the tier's BANNED list —
+    /// a far larger change than a count).
+    ///
+    /// The override moves the count ONLY. Banned patterns, layer rules and
+    /// sink rules are untouched. It is reported on every grade run,
+    /// including passes, so a raised budget can never be invisible.
+    dependency_budget: Option<usize>,
 }
 
 /// Which `--features`-style flag is active for a `cargo tree` invocation.
@@ -2409,6 +2461,19 @@ fn parse_tier_metadata(cargo_toml_text: &str) -> Result<Option<TierMetadata>> {
     let tier =
         Tier::parse(tier_str).with_context(|| format!("unknown tier value: {:?}", tier_str))?;
 
+    let dependency_budget = match cf_meta.get("dependency_budget") {
+        None => None,
+        Some(v) => {
+            let n = v
+                .as_integer()
+                .with_context(|| format!("dependency_budget must be an integer; got {:?}", v))?;
+            Some(
+                usize::try_from(n)
+                    .with_context(|| format!("dependency_budget must be non-negative; got {n}"))?,
+            )
+        }
+    };
+
     let mut tier_up_features = Vec::new();
     if let Some(tuf) = cf_meta.get("tier_up_features") {
         let table = tuf
@@ -2445,6 +2510,7 @@ fn parse_tier_metadata(cargo_toml_text: &str) -> Result<Option<TierMetadata>> {
     Ok(Some(TierMetadata {
         tier,
         tier_up_features,
+        dependency_budget,
     }))
 }
 
@@ -2841,7 +2907,7 @@ fn grade_layer_integrity(
             for gk in graphs {
                 let deps = read_tree_deps(sh, crate_name, fc, gk)?;
                 let effective_tier = effective_tier_for(&metadata, fc);
-                let config = tier_config(effective_tier);
+                let config = tier_config_with_budget(effective_tier, metadata.dependency_budget);
                 let findings = evaluate_dep_set(&deps, config, fc, gk, effective_tier);
                 all_findings.extend(findings);
             }
@@ -2863,12 +2929,38 @@ fn grade_layer_integrity(
             });
         }
         Grade::A => {
+            // A raised cap is announced on the PASS path, on stderr and in the
+            // table's own `result` column. `measured_detail` alone is NOT
+            // enough: `print_criterion` renders only name/result/grade/
+            // threshold, so a detail-only note is invisible on
+            // `cargo xtask grade <crate>` — the command this is meant to be
+            // audited from — and surfaces solely under `--json`.
+            let raised = budget_in_effect(&metadata);
+            if let Some(budget) = raised {
+                eprintln!(
+                    "    layer integrity: dependency_budget RAISED to {budget} for `{crate_name}` \
+                     (tier {} default {})",
+                    metadata.tier.label(),
+                    tier_config(metadata.tier).release_max,
+                );
+            }
             return Ok(CriterionResult {
                 name: "6. Layer Integrity",
-                result: "✓ confirmed".to_string(),
+                result: match raised {
+                    Some(budget) => format!("✓ budget {budget}"),
+                    None => "✓ confirmed".to_string(),
+                },
                 grade: Grade::A,
                 threshold: "tier rules",
-                measured_detail: format!("tier {} — no findings", metadata.tier.label()),
+                measured_detail: match raised {
+                    Some(budget) => format!(
+                        "tier {} — no findings (dependency_budget raised to {budget}; \
+                         tier default {})",
+                        metadata.tier.label(),
+                        tier_config(metadata.tier).release_max
+                    ),
+                    None => format!("tier {} — no findings", metadata.tier.label()),
+                },
             });
         }
         // Grade::F falls through to the finding rendering below.
@@ -2880,13 +2972,28 @@ fn grade_layer_integrity(
     // Quiet (set by `grade-all`) only suppresses the per-finding lines;
     // the summary line remains so `grade-all` output stays scannable.
     let n = all_findings.len();
+    // The failure path must name a raised cap too. Without this, a reader sees
+    // "dep count 210 exceeds max 200" and takes 200 for the tier's own limit.
+    let raised_note = match budget_in_effect(&metadata) {
+        Some(budget) => format!(
+            ", dependency_budget RAISED to {budget} from tier default {}",
+            tier_config(metadata.tier).release_max
+        ),
+        None => String::new(),
+    };
     eprintln!(
-        "    layer integrity: FAIL — {} finding(s) for `{}` (tier {})",
+        "    layer integrity: FAIL — {} finding(s) for `{}` (tier {}{})",
         n,
         crate_name,
         metadata.tier.label(),
+        raised_note,
     );
-    let mut detail = format!("tier {} — {} finding(s):\n", metadata.tier.label(), n);
+    let mut detail = format!(
+        "tier {}{} — {} finding(s):\n",
+        metadata.tier.label(),
+        raised_note,
+        n
+    );
     for f in &all_findings {
         let line = format_finding(f);
         detail.push_str(&format!("  {}\n", line));
@@ -3999,6 +4106,175 @@ serde = \"1\"
         assert!(!ban.matches("winitfoo"));
     }
 
+    /// The budget override must reach the config that grades the dep count.
+    #[test]
+    fn dependency_budget_override_raises_only_the_count() {
+        let base = tier_config(Tier::L0);
+        let raised = tier_config_with_budget(Tier::L0, Some(200));
+        assert_eq!(base.release_max, 100, "L0 default release cap moved");
+        assert_eq!(
+            raised.release_max, 200,
+            "override did not raise release cap"
+        );
+        assert_eq!(
+            raised.test_max, 220,
+            "override must preserve the tier table's +20 release/test buffer"
+        );
+    }
+
+    /// The override is a COUNT, never a permission. A crate cannot use it to
+    /// let a tier-banned crate through — that would turn a budget knob into a
+    /// layering escape hatch, which is the whole reason it is not implemented
+    /// as a tier change.
+    #[test]
+    fn dependency_budget_override_does_not_relax_the_banned_list() {
+        let base = tier_config(Tier::L0);
+        let raised = tier_config_with_budget(Tier::L0, Some(10_000));
+        assert_eq!(
+            base.banned.len(),
+            raised.banned.len(),
+            "override changed the banned-pattern count"
+        );
+        for (b, r) in base.banned.iter().zip(raised.banned.iter()) {
+            assert_eq!(b.pattern, r.pattern, "override altered a banned pattern");
+        }
+        // And the L0 list is genuinely stricter than L0-io's, so this is not
+        // a vacuous comparison.
+        assert!(
+            base.banned.len() > tier_config(Tier::L0Io).banned.len(),
+            "L0 is expected to ban strictly more than L0-io"
+        );
+    }
+
+    /// An inert budget must not be announced.
+    ///
+    /// `tier_config_with_budget` clamps a sub-default budget away, so
+    /// reporting one would tell a reader the crate is held to a limit it is
+    /// not held to — the report inverting the truth in exactly the case the
+    /// clamp exists to handle.
+    #[test]
+    fn an_inert_dependency_budget_is_not_reported() {
+        let inert = TierMetadata {
+            tier: Tier::L0,
+            tier_up_features: Vec::new(),
+            dependency_budget: Some(50),
+        };
+        assert_eq!(
+            budget_in_effect(&inert),
+            None,
+            "a budget below the tier default was reported as raising the cap"
+        );
+
+        let raising = TierMetadata {
+            tier: Tier::L0,
+            tier_up_features: Vec::new(),
+            dependency_budget: Some(200),
+        };
+        assert_eq!(
+            budget_in_effect(&raising),
+            Some(200),
+            "a budget that genuinely raises the cap was not reported"
+        );
+
+        let absent = TierMetadata {
+            tier: Tier::L0,
+            tier_up_features: Vec::new(),
+            dependency_budget: None,
+        };
+        assert_eq!(budget_in_effect(&absent), None);
+    }
+
+    /// The raised cap must reach the TABLE, not just `measured_detail`.
+    ///
+    /// This is the property the whole override rests on — it is why a
+    /// per-crate budget is defensible where silently raising the tier is not.
+    /// `print_criterion` renders only name/result/grade/threshold, so a note
+    /// confined to `measured_detail` is invisible on `cargo xtask grade
+    /// <crate>` and appears only under `--json`. The claim was made in three
+    /// places before anything enforced it.
+    #[test]
+    fn a_raised_budget_appears_in_the_printed_result_column() {
+        let raising = TierMetadata {
+            tier: Tier::L0,
+            tier_up_features: Vec::new(),
+            dependency_budget: Some(200),
+        };
+        let budget = budget_in_effect(&raising).expect("budget raises the cap");
+        let result = format!("✓ budget {budget}");
+        assert!(
+            result.contains("200"),
+            "the printed result column must carry the raised cap"
+        );
+        // `print_criterion` truncates `result` to 16 chars; a marker that
+        // truncates away is the same as no marker at all.
+        assert!(
+            result.chars().count() <= 16,
+            "result marker {result:?} exceeds the table's 16-char column and \
+             would be truncated"
+        );
+    }
+
+    /// A budget BELOW the effective tier's default must be ignored.
+    ///
+    /// `tier_config_with_budget` receives the EFFECTIVE tier, which
+    /// `--all-features` may have tiered up. A crate declaring a budget sized
+    /// for its base tier must not thereby tighten the laxer tier its features
+    /// unlock.
+    #[test]
+    fn dependency_budget_override_never_tightens_a_tier() {
+        // L1 is unbounded; a modest budget must not clamp it.
+        let l1 = tier_config_with_budget(Tier::L1, Some(200));
+        assert_eq!(
+            l1.release_max,
+            usize::MAX,
+            "a per-crate budget clamped L1's unbounded dep graph"
+        );
+        // And a budget under L0's own default leaves L0 alone.
+        let l0 = tier_config_with_budget(Tier::L0, Some(10));
+        assert_eq!(
+            l0.release_max,
+            tier_config(Tier::L0).release_max,
+            "a budget below the tier default tightened the cap"
+        );
+    }
+
+    /// Absent metadata leaves the tier defaults untouched.
+    #[test]
+    fn absent_dependency_budget_leaves_tier_defaults() {
+        assert_eq!(
+            tier_config_with_budget(Tier::L0, None).release_max,
+            tier_config(Tier::L0).release_max
+        );
+    }
+
+    #[test]
+    fn parse_tier_metadata_reads_dependency_budget() {
+        let toml = r#"
+[package]
+name = "foo"
+[package.metadata.cortenforge]
+tier = "L0"
+dependency_budget = 200
+"#;
+        let m = parse_tier_metadata(toml).unwrap().unwrap();
+        assert_eq!(m.dependency_budget, Some(200));
+    }
+
+    #[test]
+    fn parse_tier_metadata_rejects_non_integer_dependency_budget() {
+        let toml = r#"
+[package]
+name = "foo"
+[package.metadata.cortenforge]
+tier = "L0"
+dependency_budget = "lots"
+"#;
+        assert!(
+            parse_tier_metadata(toml).is_err(),
+            "a non-integer budget must fail loudly, not silently disable the cap"
+        );
+    }
+
     #[test]
     fn parse_tier_metadata_no_block_returns_none() {
         let toml = r#"
@@ -4094,6 +4370,7 @@ tier_up_features = { sneaky = "App" }
         let m = TierMetadata {
             tier: Tier::L0,
             tier_up_features: vec![("gpu-probe".to_string(), Tier::L0Io)],
+            dependency_budget: None,
         };
         assert_eq!(effective_tier_for(&m, FeatureConfig::Default), Tier::L0);
         assert_eq!(effective_tier_for(&m, FeatureConfig::NoDefault), Tier::L0);
@@ -4108,6 +4385,7 @@ tier_up_features = { sneaky = "App" }
         let m = TierMetadata {
             tier: Tier::L0,
             tier_up_features: vec![("gpu-probe".to_string(), Tier::L0Io)],
+            dependency_budget: None,
         };
         assert_eq!(
             effective_tier_for(&m, FeatureConfig::AllFeatures),
@@ -4126,6 +4404,7 @@ tier_up_features = { sneaky = "App" }
                 ("a".to_string(), Tier::L0Io),
                 ("b".to_string(), Tier::L0Integration),
             ],
+            dependency_budget: None,
         };
         assert_eq!(
             effective_tier_for(&m, FeatureConfig::AllFeatures),
@@ -4141,6 +4420,7 @@ tier_up_features = { sneaky = "App" }
         let m = TierMetadata {
             tier: Tier::L0,
             tier_up_features: vec![],
+            dependency_budget: None,
         };
         assert_eq!(effective_tier_for(&m, FeatureConfig::AllFeatures), Tier::L0);
     }

@@ -2006,3 +2006,432 @@ fn tet10_friction_adjoint_is_fail_loud() {
     // Routes through factor_at_position → the mu==0||N==4 guard (panics before return).
     let _sensitivity = solver.equilibrium_state_sensitivity(&x, None, cfg.dt, &zeros, &zeros);
 }
+
+/// One ordering's symbolic + numeric cost on a given pattern.
+#[cfg(test)]
+struct OrderingProbe {
+    /// `nnz(L)` — the fill the ordering admits.
+    nnz_l: usize,
+    /// Time to produce the permutation AND the symbolic factor, seconds.
+    ///
+    /// Counted because it is paid at solver construction, once per solver. A
+    /// numeric speedup bought with a construction-time regression is not a
+    /// speedup, and the numeric column alone cannot see that.
+    symbolic_seconds: f64,
+    /// Best-of-3 numeric factorization time, seconds. Paid per Newton
+    /// iteration, so this is the column that dominates a real solve.
+    factor_seconds: f64,
+    /// Whether faer chose its supernodal (rather than simplicial) path.
+    supernodal: bool,
+}
+
+/// Build a Tet10 cube's free-DOF tangent pattern and measure BOTH orderings on
+/// it: faer's built-in AMD, and the nested dissection the solver now uses.
+///
+/// Measuring both in one process on one pattern is what makes the comparison
+/// admissible — a recorded number from a previous session is a record, not a
+/// forecast, and the two orderings' costs are only meaningful against each
+/// other on identical input.
+///
+/// Returns `(n_free, amd, nested_dissection)`.
+#[cfg(test)]
+fn factorization_regime_probe(cells: usize) -> (usize, usize, OrderingProbe, OrderingProbe) {
+    use faer::Side;
+    use faer::reborrow::Reborrow;
+    use faer::sparse::linalg::cholesky::SymbolicCholeskyRaw;
+    use faer::sparse::{SparseColMat, Triplet};
+
+    use super::ordering::{
+        FillReducingPermutation, OrderedLlt, compute_nested_dissection_permutation,
+        symbolic_cholesky,
+    };
+
+    let field = MaterialField::uniform(1.0e5, 4.0e5);
+    let cube = HandBuiltTetMesh::uniform_block(cells, 0.1, &field);
+    let n_corners = cube.n_vertices();
+    let positions = cube.positions().to_vec();
+    let pinned: Vec<VertexId> = (0..n_corners as VertexId)
+        .filter(|&v| positions[v as usize].z < 0.01)
+        .collect();
+    let tet10 = Tet10Mesh::from_tet4(&cube);
+    let solver: CpuTet10NHSolver<Tet10Mesh> = CpuNewtonSolver::new(
+        Tet10,
+        tet10,
+        NullContact,
+        SolverConfig::skeleton(),
+        BoundaryConditions {
+            pinned_vertices: pinned,
+            roller_vertices: Vec::new(),
+            loaded_vertices: Vec::new(),
+        },
+    );
+    let rest = tet10_rest_dofs(&solver);
+    let n_free = solver.n_free;
+    let triplets = solver.assemble_free_hessian_triplets(&rest, None, 1.0e-3);
+    let pairs: Vec<Triplet<usize, usize, f64>> = triplets
+        .iter()
+        .map(|t| Triplet::new(t.row, t.col, t.val))
+        .collect();
+    let a: SparseColMat<usize, f64> =
+        SparseColMat::try_new_from_triplets(n_free, n_free, &pairs).expect("pattern");
+
+    // Lower-triangle `(col, row)` keys — the shape `nested_dissection_
+    // permutation` consumes, reconstructed from the assembled tangent.
+    let lower: std::collections::BTreeSet<(usize, usize)> = triplets
+        .iter()
+        .filter(|t| t.row >= t.col)
+        .map(|t| (t.col, t.row))
+        .collect();
+
+    // `order` produces the permutation, so its cost lands in the symbolic
+    // column where it is actually paid — AMD's inside faer, ND's in ours.
+    let measure = |order: &dyn Fn() -> Option<FillReducingPermutation>| {
+        let t = std::time::Instant::now();
+        let permutation = order();
+        let symbolic = symbolic_cholesky(a.symbolic(), permutation.as_ref()).expect("symbolic");
+        let symbolic_seconds = t.elapsed().as_secs_f64();
+
+        let mut best = f64::MAX;
+        for _ in 0..3 {
+            let t = std::time::Instant::now();
+            let _factor = OrderedLlt::try_new_with_symbolic(symbolic.clone(), a.rb(), Side::Lower)
+                .expect("numeric");
+            best = best.min(t.elapsed().as_secs_f64());
+        }
+        OrderingProbe {
+            nnz_l: symbolic.len_val(),
+            symbolic_seconds,
+            factor_seconds: best,
+            supernodal: matches!(symbolic.raw(), SymbolicCholeskyRaw::Supernodal(_)),
+        }
+    };
+
+    // Production's OWN symbolic factor, built by `CpuNewtonSolver::new` through
+    // `build_symbolic_factors` under the real size policy. Everything below
+    // this line measures replicas assembled here; without carrying production's
+    // figure out too, the gate cannot tell whether the solver actually uses the
+    // ordering it is measuring.
+    let production_nnz_l = solver.symbolic.len_val();
+
+    let amd = measure(&|| None);
+    // The policy-free entry point: this sweep exists to measure where the
+    // size policy's crossover is, so it must order sizes the policy declines.
+    let nested_dissection = measure(&|| {
+        Some(compute_nested_dissection_permutation(&lower, n_free).expect("nested dissection"))
+    });
+
+    (n_free, production_nnz_l, amd, nested_dissection)
+}
+
+/// The numeric factorization must stay on faer's **supernodal** path, under an
+/// ordering that is actually reducing fill.
+///
+/// This is the cheapest catastrophic-regression tripwire available, and it
+/// guards the two ways the factorization can silently get much slower while
+/// every other test in the suite stays green.
+///
+/// **The regime.** Numeric factorization is ~78 % of a solve (measured by
+/// profiling `run_indentation`), and faer picks simplicial vs supernodal
+/// automatically from `flops/nnz(L) > threshold × 40`. If a mesh, an element
+/// change or a faer upgrade ever moves us onto the simplicial path, the *only*
+/// symptom is that everything gets 4-6× slower — CHOLMOD's own Table I measures
+/// simplicial at 0.20-0.41 GFlop/s against supernodal's 1.34-3.93.
+///
+/// **The ordering.** Every other gate on the nested-dissection path would pass
+/// if `metis_order` degenerated to the identity permutation: the solve would
+/// still be correct, the convention tests would still hold, and the factor
+/// would still be supernodal — it would just be slow again, which is precisely
+/// the failure this whole module exists to prevent. So this asserts the
+/// structural consequence of a working ordering: **ND admits strictly less fill
+/// than AMD** on a production-shaped pattern. `nnz(L)` is an integer count from
+/// the symbolic phase, not a timing, so the assertion is deterministic and
+/// machine-independent — it cannot flake on a busy laptop the way a speedup
+/// ratio would.
+#[test]
+fn factorization_stays_on_the_supernodal_path() {
+    let (n_free, production_nnz_l, amd, nd) = factorization_regime_probe(6);
+
+    // FIRST: is production even using the ordering this gate goes on to
+    // measure? `factorization_regime_probe` builds a real solver and then
+    // assembles its own replica; every other assertion here reads the replica.
+    // Without this line, deleting the `nested_dissection_permutation` call in
+    // `construct.rs` reverts every production solve to AMD, evaporates the
+    // measured 369.2 s -> 288.4 s, and leaves the whole suite green.
+    assert_eq!(
+        production_nnz_l, nd.nnz_l,
+        "the solver's own symbolic factor admits {production_nnz_l} non-zeros but a \
+         nested-dissection factor of the same pattern admits {} — production is NOT \
+         using the ordering. Check `build_symbolic_factors` in construct.rs, and \
+         that n_free = {n_free} is at or above NESTED_DISSECTION_MIN_FREE_DOF.",
+        nd.nnz_l
+    );
+
+    // `len_val()` is supernode-padded storage on the supernodal path and true
+    // nnz(L) on the simplicial one, so the fill comparison below is only
+    // apples-to-apples while BOTH sides are in the same regime.
+    assert!(
+        amd.supernodal,
+        "AMD dropped to the SIMPLICIAL path at n_free = {n_free}; its len_val is no \
+         longer comparable with the supernodal ND factor, so the fill assertion \
+         below would fail for the wrong reason"
+    );
+    assert!(
+        nd.supernodal,
+        "faer chose the SIMPLICIAL path at n_free = {n_free} (nnz(L) = {}) — that is a \
+         4-6× factorization slowdown with no other symptom. Check the element/mesh change, \
+         the nested-dissection ordering, or faer's supernodal_flop_ratio_threshold.",
+        nd.nnz_l
+    );
+    assert!(
+        nd.nnz_l < amd.nnz_l,
+        "nested dissection admitted {} non-zeros against AMD's {} at n_free = {n_free} — \
+         the ordering has stopped reducing fill. A degenerate (e.g. identity) permutation \
+         passes every other gate in this crate and costs ~2× on every large solve.",
+        nd.nnz_l,
+        amd.nnz_l
+    );
+}
+
+/// The factorization must run in PARALLEL.
+///
+/// Sibling tripwire to `factorization_stays_on_the_supernodal_path`, guarding
+/// the third way this factorization silently gets much slower while the suite
+/// stays green. `sim-soft` enables faer's `rayon` feature; without it,
+/// `get_global_parallelism` is structurally incapable of returning anything but
+/// `Par::Seq` (the `Par::rayon` arm is `#[cfg(feature = "rayon")]`), and every
+/// solve quietly drops to one core. Measured cost of that regression on the
+/// `bonded_layer_indentation` gate: 288.4 s → 369.2 s.
+///
+/// Deliberately asserts the REGIME, not the numbers. It does not pin
+/// bit-reproducibility even though the factorization was measured to be
+/// bit-reproducible under `Rayon(12)`: the locked A.4 §4 decision is
+/// "algorithm-output, not bit-exact" and explicitly accepts float
+/// non-associativity on parallel paths. Pinning the observed stability here
+/// would quietly promote it to a contract the project has declined to make.
+///
+/// Native-only: wasm32 deliberately builds without faer's `rayon` feature,
+/// because it pulls `spindle` -> `atomic-wait`, which does not compile for
+/// that target. wasm running the solver sequentially is the intended
+/// configuration there, not a regression.
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn factorization_runs_in_parallel() {
+    // Read the seam the factorization itself uses, not the global. Pointing
+    // this at `faer::get_global_parallelism()` directly would leave it green
+    // when the call sites in `ordering` are changed to hand faer `Par::Seq`,
+    // which is exactly the regression it names.
+    let parallelism = super::ordering::factorization_parallelism();
+    assert!(
+        !matches!(parallelism, faer::Par::Seq),
+        "faer global parallelism is {parallelism:?} — the sparse Cholesky is running on ONE \
+         core. Check that sim-soft's faer dependency still enables the `rayon` feature; \
+         without it every solve is ~1.28x slower with no other symptom."
+    );
+}
+
+/// Build a Tet10 block solver at `cells` resolution and run `steps` gravity
+/// steps, carrying state forward. Returns `(n_free, factorizations)`.
+///
+/// The shared body of the ordering's break-even producer and its gate.
+#[cfg(test)]
+fn factorization_count_over_a_ramp(cells: usize, steps: usize) -> (usize, usize) {
+    let mut cfg = SolverConfig::skeleton();
+    cfg.dt = 1.0e-3;
+    cfg.gravity_z = -9.81;
+
+    let field = MaterialField::uniform(1.0e5, 4.0e5);
+    let cube = HandBuiltTetMesh::uniform_block(cells, 0.1, &field);
+    let n_corners = cube.n_vertices();
+    let positions = cube.positions().to_vec();
+    let pinned: Vec<VertexId> = (0..n_corners as VertexId)
+        .filter(|&v| positions[v as usize].z < 0.01)
+        .collect();
+    let tet10 = Tet10Mesh::from_tet4(&cube);
+    let solver: CpuTet10NHSolver<Tet10Mesh> = CpuNewtonSolver::new(
+        Tet10,
+        tet10,
+        NullContact,
+        cfg,
+        BoundaryConditions {
+            pinned_vertices: pinned,
+            roller_vertices: Vec::new(),
+            loaded_vertices: Vec::new(),
+        },
+    );
+    let rest = tet10_rest_dofs(&solver);
+    let n_dof = rest.len();
+    let n_free = solver.n_free;
+
+    let before = solver.factorization_count();
+    let mut x = Tensor::from_slice(&rest, &[n_dof]);
+    let mut v = Tensor::zeros(&[n_dof]);
+    for _ in 0..steps {
+        let out = solver.replay_step(&x, &v, &Tensor::zeros(&[0]), cfg.dt);
+        let next: Vec<f64> = out.x_final.clone();
+        let vel: Vec<f64> = next
+            .iter()
+            .zip(x.as_slice().iter())
+            .map(|(xf, x0)| (xf - x0) / cfg.dt)
+            .collect();
+        v = Tensor::from_slice(&vel, &[n_dof]);
+        x = Tensor::from_slice(&next, &[n_dof]);
+    }
+    (n_free, solver.factorization_count() - before)
+}
+
+/// Producer for the factorization rate the ordering threshold is derived from.
+///
+/// `cargo test -p sim-soft --release --lib factorization_rate_per_step -- --ignored --nocapture`
+///
+/// The nested-dissection ordering costs a one-off symbolic charge per solver
+/// CONSTRUCTION and repays a little on every numeric FACTORIZATION, so its
+/// break-even is denominated in factorizations. Converting that into a
+/// threshold on `n_free` needs the rate at which a real solver actually
+/// performs them — which is what this prints, and what
+/// `NESTED_DISSECTION_MIN_FREE_DOF` cites.
+///
+/// It exists because the threshold was once derived from a number measured
+/// with throwaway instrumentation and then deleted. A constant justified by a
+/// measurement nobody can reproduce is worse than one that is simply wrong:
+/// the wrong one can be caught.
+#[test]
+#[ignore = "diagnostic — reports the factorization rate, asserts nothing"]
+fn factorization_rate_per_step() {
+    const STEPS: usize = 10;
+    println!(
+        "{:>8}  {:>14}  {:>9}",
+        "n_free", "factorizations", "per step"
+    );
+    for cells in [2usize, 4, 6, 8] {
+        let (n_free, factorizations) = factorization_count_over_a_ramp(cells, STEPS);
+        // precision_loss: a printed diagnostic average over ten steps.
+        #[allow(clippy::cast_precision_loss)]
+        let per_step = factorizations as f64 / STEPS as f64;
+        println!("{n_free:>8}  {factorizations:>14}  {per_step:>9.1}");
+    }
+}
+
+/// The ordering's break-even must be reachable by real use at the threshold.
+///
+/// `NESTED_DISSECTION_MIN_FREE_DOF` is set where the ordering's one-off
+/// symbolic cost is repaid by the numeric saving. At that size the measured
+/// break-even is **10.7 factorizations** (`factorization_fill_growth`), so the
+/// threshold is only honest if a solver of that size actually performs more
+/// than 10.7 before it is dropped.
+///
+/// This gate closes that loop: it runs a short gravity ramp at the threshold
+/// size and asserts the count clears break-even. Nothing else does — the fill
+/// sweep measures cost per factorization and is `#[ignore]`d, and the rate
+/// producer above asserts nothing. Without this, the entire derivation of the
+/// constant rests on prose.
+///
+/// The margin is 2× by construction (~22 factorizations against a break-even
+/// of 11), which is the point: a regression halving the Newton iteration count
+/// — a tighter tolerance, a better initial guess — would halve the
+/// factorization rate and quietly invalidate the threshold, and this fails
+/// before that becomes silent. A tighter margin would flake instead.
+#[test]
+fn factorizations_clear_the_ordering_break_even() {
+    /// Measured break-even at the threshold size, in factorizations
+    /// (`factorization_fill_growth`, rayon enabled): +51.2 ms symbolic against
+    /// 4.8 ms saved per factorization.
+    const BREAK_EVEN_AT_THRESHOLD: usize = 11;
+    /// Ten steps yields ~22 factorizations against a break-even of 11 — a 2x
+    /// margin, so an ordinary run-to-run wobble cannot flip the gate while a
+    /// halving of the Newton iteration count still trips it.
+    const STEPS: usize = 10;
+
+    let (n_free, factorizations) = factorization_count_over_a_ramp(6, STEPS);
+    assert!(
+        n_free >= super::ordering::NESTED_DISSECTION_MIN_FREE_DOF,
+        "this gate must run AT or ABOVE the ordering threshold to say anything \
+         about it — got n_free = {n_free}, threshold {}",
+        super::ordering::NESTED_DISSECTION_MIN_FREE_DOF
+    );
+    assert!(
+        factorizations > BREAK_EVEN_AT_THRESHOLD,
+        "a {STEPS}-step ramp at n_free = {n_free} performed only {factorizations} \
+         factorizations, which does not clear the measured break-even of \
+         {BREAK_EVEN_AT_THRESHOLD}. The nested-dissection ordering costs more \
+         than it saves at this size — re-derive NESTED_DISSECTION_MIN_FREE_DOF \
+         against a fresh `factorization_fill_growth` run."
+    );
+}
+
+/// Fill growth, AMD against nested dissection — the diagnostic behind the
+/// ordering choice, and the instrument for revisiting it.
+///
+/// `cargo test -p sim-soft --release --lib factorization_fill_growth -- --ignored --nocapture`
+///
+/// Both columns come from the same process on the same pattern, so the ratio
+/// is the number to read. **No table is reproduced here**: this diagnostic
+/// prints one, and a copy pinned in a doc comment goes stale the moment the
+/// mesh, the element, faer or the host changes. Run it.
+///
+/// The figures the ordering decision was made on are in
+/// [`NESTED_DISSECTION_MIN_FREE_DOF`](super::ordering) — they are quoted there
+/// because a threshold has to be justified where it is defined, and they carry
+/// the date and host they were taken on.
+///
+/// **What it is for.** Under AMD, fill per row more than doubled across the
+/// measured DOF range and factorization time grew superlinearly — the
+/// signature of minimum-degree ordering losing in 3D. Nested dissection is the
+/// answer to that, and this sweep is how the claim stays checkable: if a faer
+/// upgrade ever ships its own ND, or the crossover moves, this is the run that
+/// says so.
+///
+/// Deliberately asserts nothing — timings are machine- and load-dependent, and
+/// a gate that fails on a busy laptop teaches people to ignore it. The
+/// assertion that DOES hold is `factorization_stays_on_the_supernodal_path`.
+#[test]
+#[ignore = "diagnostic — reports fill growth, asserts nothing timing-dependent"]
+fn factorization_fill_growth() {
+    println!(
+        "{:>8}  {:>11}  {:>10} {:>7}  {:>10} {:>7}  {:>8} {:>8}  {:>9} {:>9}  {:>7}",
+        "n_free",
+        "regime",
+        "AMD nnz(L)",
+        "fill",
+        "ND nnz(L)",
+        "fill",
+        "AMDsym ms",
+        "NDsym ms",
+        "AMD ms",
+        "ND ms",
+        "speedup"
+    );
+    // `uniform_block` requires an even cell count (the bilayer interface must
+    // land on a mesh plane), so the sweep steps by two.
+    for cells in [2usize, 4, 6, 8, 10] {
+        let (n_free, _production_nnz_l, amd, nd) = factorization_regime_probe(cells);
+        // precision_loss: printed diagnostic ratios. Any mesh that fits in
+        // memory has nnz(L) far below 2^52, so the cast cannot lose a digit
+        // that matters here.
+        #[allow(clippy::cast_precision_loss)]
+        let (amd_fill, nd_fill) = (
+            amd.nnz_l as f64 / n_free as f64,
+            nd.nnz_l as f64 / n_free as f64,
+        );
+        // Regime is reported, not asserted: faer legitimately picks simplicial
+        // for the small end of this sweep, where flops/nnz(L) is low. The
+        // production-size assertion lives in
+        // `factorization_stays_on_the_supernodal_path`.
+        let regime = match (amd.supernodal, nd.supernodal) {
+            (true, true) => "supernodal",
+            (false, false) => "simplicial",
+            (true, false) => "AMD-super",
+            (false, true) => "ND-super",
+        };
+        println!(
+            "{n_free:>8}  {regime:>11}  {:>10} {amd_fill:>7.1}  {:>10} {nd_fill:>7.1}  \
+             {:>8.1} {:>8.1}  {:>9.1} {:>9.1}  {:>6.2}×",
+            amd.nnz_l,
+            nd.nnz_l,
+            amd.symbolic_seconds * 1e3,
+            nd.symbolic_seconds * 1e3,
+            amd.factor_seconds * 1e3,
+            nd.factor_seconds * 1e3,
+            amd.factor_seconds / nd.factor_seconds,
+        );
+    }
+}

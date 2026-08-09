@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use faer::linalg::solvers::SolveCore;
 use faer::prelude::Reborrow;
 use faer::sparse::linalg::LltError;
-use faer::sparse::linalg::solvers::{Llt, Lu};
+use faer::sparse::linalg::solvers::Lu;
 use faer::sparse::{SparseColMat, Triplet};
 use faer::{Conj, MatMut, Side};
 use nalgebra::{DMatrix, DVector, Matrix3};
@@ -20,6 +20,7 @@ use crate::solver::lm::LmState;
 
 use super::CpuNewtonSolver;
 use super::helpers::{slice_to_vec3s, triplets_max_diag, triplets_with_diagonal_offset};
+use super::ordering::OrderedLlt;
 
 /// Local info carrier for the doubly-failed-factor case (Llt non-PD
 /// AND Lu also failed) returned by the `try_*` factor methods (F3.3
@@ -52,7 +53,7 @@ pub(super) struct DoublyFailedFactorInfo {
 /// (or, rarely, at `x_final` for the IFT adjoint), which historically
 /// surfaced at row 21 v1.5's capsule-cap apex contact concentration.
 enum FactorInner {
-    Llt(Llt<usize, f64>),
+    Llt(OrderedLlt),
     /// Boxed because faer's `Lu` (carrying `NumericLu`'s row/col-perm
     /// vecs + factor data) is substantially larger than `Llt`. The Lu
     /// variant fires only on the cold A2 fallback path, so the
@@ -322,11 +323,10 @@ where
             let a_mat: SparseColMat<usize, f64> =
                 SparseColMat::try_new_from_triplets(self.n_free, self.n_free, &regularized)
                     .expect("malformed condensed-tangent triplet list");
-            match Llt::<usize, f64>::try_new_with_symbolic(
-                self.symbolic.clone(),
-                a_mat.rb(),
-                Side::Lower,
-            ) {
+            self.factorizations
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            match OrderedLlt::try_new_with_symbolic(self.symbolic.clone(), a_mat.rb(), Side::Lower)
+            {
                 Ok(llt) => {
                     // Post-retry success summary (only when we actually
                     // retried — disabled path has retry_count == 0
@@ -796,11 +796,10 @@ where
             let a_mat: SparseColMat<usize, f64> =
                 SparseColMat::try_new_from_triplets(self.n_free, self.n_free, &regularized)
                     .expect("malformed condensed-tangent triplet list");
-            match Llt::<usize, f64>::try_new_with_symbolic(
-                self.symbolic.clone(),
-                a_mat.rb(),
-                Side::Lower,
-            ) {
+            self.factorizations
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            match OrderedLlt::try_new_with_symbolic(self.symbolic.clone(), a_mat.rb(), Side::Lower)
+            {
                 Ok(llt) => {
                     if lm_state.retry_count() > 0 {
                         eprintln!(

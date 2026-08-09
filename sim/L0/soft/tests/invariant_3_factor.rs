@@ -1,11 +1,19 @@
 //! I-3 factor-on-tape: `faer::sparse::linalg::solvers::Llt` must own its
 //! data after the source matrix is dropped.
 //!
-//! The walking-skeleton VJP (step 5) stashes `Llt` on the chassis tape
-//! via `Tape::push_custom`; that only works if `Llt` is `Send + Sync`
-//! **and** doesn't borrow from the source matrix. Scope §11 S-3
-//! (Round 1) verified this from the `faer` 0.24 source; this test
+//! The VJP stashes its factor on the chassis tape inside `NewtonStepVjp`,
+//! and `VjpOp` is declared `Send + Sync`; that only works if the factor is
+//! `Send + Sync` **and** doesn't borrow from the source matrix. Scope §11
+//! S-3 (Round 1) verified this from the `faer` 0.24 source; this test
 //! verifies it operationally.
+//!
+//! ⚠ **What production actually stores is no longer this type.** The solver
+//! now factors through the in-crate `OrderedLlt`, which carries a
+//! nested-dissection ordering faer's `Llt` constructors cannot accept. This
+//! file still earns its place — `OrderedLlt` is built from the same faer
+//! primitives, so the property verified here is the one it inherits — but
+//! the gate that covers the production type directly is
+//! `solver::backward_euler::ordering::tests::factor_owns_its_data_and_crosses_threads`.
 //!
 //! Protocol per spec §6:
 //!

@@ -10,13 +10,23 @@
 //!   constructor is the bit-equal short-circuit when
 //!   `lm_regularization == None` (F3.2).
 //!
-//! Bit-equality invariant: with `SolverConfig::lm_regularization =
+//! Control-flow invariant: with `SolverConfig::lm_regularization =
 //! None` (the [`super::backward_euler::SolverConfig::skeleton`]
 //! default), `LmState::disabled` makes `can_bump` permanently false
 //! and `factor_free_tangent`'s retry loop reduces to a single Llt
-//! attempt followed by direct LU fallback — observably bit-equal vs
-//! pre-F3 including the existing `"sim-soft: faer LU fallback fired"`
-//! stderr line.
+//! attempt followed by direct LU fallback — the same control flow and
+//! the same stderr as pre-F3, including the existing
+//! `"sim-soft: faer LU fallback fired"` line.
+//!
+//! ⚠ This said "observably bit-equal vs pre-F3 **including** the stderr
+//! line", which claimed bit-equality of the RESULT with the stderr line
+//! as an extra. F3 itself still adds nothing to the numerics — but the
+//! nested-dissection ordering
+//! ([`backward_euler::ordering`](super::backward_euler)) since changed
+//! the elimination order above its size threshold, so the single Llt
+//! attempt this loop reduces to is no longer bit-equal to pre-F3 there.
+//! What F3 preserves is the control flow and the observable trace; the
+//! numerics moved for a reason that has nothing to do with LM.
 
 /// Tunables for the Marquardt-style `+λI` retry loop.
 ///

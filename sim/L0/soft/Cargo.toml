@@ -20,6 +20,36 @@ rust-version.workspace = true
 # sim-tests precedent. Full reasoning in scope §7 item 1 + §13 SD-5.
 [package.metadata.cortenforge]
 tier = "L0"
+# Raised from L0's default 100 (release) / 120 (test). This is a deliberate,
+# recorded trade, not a drift allowance.
+#
+# The crate sat at EXACTLY 100/100 after `feral-metis`. Enabling faer's
+# `rayon` feature adds 10 crates -- rayon, rayon-core, six crossbeam, and
+# `spindle` -> `atomic-wait` (the pair that costs wasm32, see the per-target
+# block below) -- putting it at 110. `either` is NOT among them; it was
+# already in the tree. Both spends are load-bearing and measured on the
+# `bonded_layer_indentation` gate, uncontended:
+#
+#                    sequential    rayon
+#     AMD               638.7 s   360.3 s
+#     nested diss.      369.2 s   288.4 s
+#
+# Either lever alone is worth ~1.75x; together 2.22x. Only dropping RAYON
+# actually reaches 100 -- `feral-metis` costs 3 crates, so dropping the
+# ordering instead leaves 107, still over -- and that costs 80.8 s per run of
+# a single gate, on a suite
+# whose slowness has twice let licensed gates rot undetected
+# (design/cf-fsu-geometry/BODYPARTS3D.md) — a detection failure, not a
+# convenience one.
+#
+# The override moves the COUNT ONLY. L0's banned-crate list still applies in
+# full, which is why this is declared here rather than by re-tiering the
+# crate to L0-io: that tier permits 200 deps but also unbans wgpu, image,
+# zip, zstd, mesh-io, sim-mjcf, sim-urdf, criterion and plotters, none of
+# which belong in a pure-compute solver. 200 leaves real headroom rather
+# than pinning to today's 110; `xtask grade` reports the override on every
+# run, including passes, so the slack cannot be spent invisibly.
+dependency_budget = 200
 tier_up_features = { gpu-probe = "L0-io" }
 grading_profile = "integration-only"
 
@@ -65,12 +95,31 @@ mesh-offset = { workspace = true }
 nalgebra = { workspace = true }
 # Sparse SPD factor-on-tape (Llt<I, f64>) + sparse CSR assembly.
 # Greenfield — this is the first workspace crate to depend on faer.
-# Round-6 determinism: disable `rayon` to keep solves single-threaded
-# (rayon work-stealing reorders floating-point reductions bit-non-
-# deterministically, violating γ Ch 00 determinism-in-θ on I-5). For
-# skeleton's 9-DOF system, rayon would provide no speedup anyway.
-# `std` + `sparse-linalg` is the minimum that exposes Llt<I, f64> +
-# solve_in_place_with_conj. All features remain pure Rust.
+#
+# `rayon` is ON. It was previously off, on a Round-6 rationale that both
+# halves of measurement have since contradicted:
+#
+#   1. "violates determinism-in-θ" — it does not. The locked A.4 §4
+#      decision is "algorithm-output, not bit-exact", and names this case
+#      explicitly: "Parallel paths (rayon) accept float non-associativity."
+#      Sequential bit-reproducibility is called out there as a side-effect,
+#      "not a project guarantee". Measured on top of that: the factorization
+#      IS bit-reproducible run-to-run under Rayon(12), and the full suite
+#      passes unchanged (591 tests, zero golden churn) — parallel and
+#      sequential differ from each other, but each is internally stable.
+#   2. "for skeleton's 9-DOF system, rayon would provide no speedup anyway"
+#      — true when written, stale by four orders of magnitude. The crate now
+#      solves 70k free DOF, and sparse Cholesky is the majority of a solve.
+#
+# Measured on the `bonded_layer_indentation` gate, uncontended: 638.7 s
+# sequential-AMD → 360.3 s with rayon alone → 288.4 s with rayon plus the
+# nested-dissection ordering. Rayon is the larger of the two levers.
+#
+# `std` + `sparse-linalg` expose Llt<I, f64> + solve_in_place_with_conj.
+# All features remain pure Rust.
+# ⚠ `rayon` is declared per-target, NOT here. faer's `rayon` feature pulls
+# `spindle` -> `atomic-wait`, which does not build for wasm32-unknown-unknown,
+# and every L0 crate must. See the two [target.'cfg(...)'] blocks below.
 faer = { version = "0.24", default-features = false, features = ["std", "sparse-linalg"] }
 
 # GPU probe deps — feature-gated via `gpu-probe`. Skeleton default build
@@ -78,6 +127,37 @@ faer = { version = "0.24", default-features = false, features = ["std", "sparse-
 wgpu = { workspace = true, optional = true }
 bytemuck = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }
+# Nested-dissection fill-reducing ordering for the sparse Cholesky symbolic
+# factorization. faer ships AMD and COLAMD only, and minimum-degree loses badly
+# on 3D meshes: measured on this crate's own Tet10 free-DOF tangent patterns,
+# AMD's fill per row runs 435 -> 714 -> 974 across a 4.25x DOF increase while
+# nested dissection holds 334 -> 458 -> 648, a 1.61x -> 2.12x numeric
+# factorization speedup still widening at 27k DOF. (These supersede the
+# offline-harness figures 322 / 1.65x / 2.14x this comment first carried;
+# the in-situ sweep in `ordering.rs` is the authority.) Factorization is ~78% of a
+# solve (profiled), so this is the largest single lever in the crate.
+#
+# Pure Rust — no C toolchain, no build script — and measured at parity with C
+# METIS on our own patterns: fill within +-4.4%, numeric time within noise, and
+# a symbolic phase CHEAPER than AMD's. Chosen over `metis-sys` to keep the L0
+# solver free of a C dependency. +3 transitive crates, landing the tier at
+# exactly 100/100.
+feral-metis = "0.2.1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Native builds add faer's `rayon` feature on top of the base declaration
+# above: the sparse Cholesky is the majority of a solve. In the configuration
+# this crate SHIPS -- nested dissection already on -- rayon is worth 1.28x
+# (`bonded_layer_indentation`, uncontended: 369.2 s -> 288.4 s). Against
+# sequential AMD it measures 1.77x (638.7 s -> 360.3 s), but that is not a
+# configuration we ship and is the wrong number to justify this line with.
+#
+# wasm32 deliberately does NOT get it. faer's `rayon` feature pulls `spindle`
+# -> `atomic-wait`, which fails to compile for wasm32-unknown-unknown, and
+# `xtask grade`'s WASM Compat criterion holds every L0 crate to that target.
+# wasm therefore runs the same solver single-threaded — correct, just slower,
+# which is the right trade for a target that has no threads to give.
+faer = { version = "0.24", default-features = false, features = ["std", "sparse-linalg", "rayon"] }
 
 [dev-dependencies]
 # 5-digit gradcheck tolerance assertions (Phase-B tests).
