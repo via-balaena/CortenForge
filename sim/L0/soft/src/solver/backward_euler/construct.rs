@@ -676,6 +676,35 @@ where
         }
     }
 
+    /// Swap the contact model, keeping every cached artefact [`Self::new`] built.
+    ///
+    /// For a displacement-controlled ramp — a rigid indenter lowered in
+    /// increments — only the contact changes between steps. Rebuilding the whole
+    /// solver each increment re-derives the element geometries, the mass, the
+    /// free-DOF maps and **both symbolic factorizations**, none of which depend
+    /// on where the indenter is.
+    ///
+    /// # Why this is sound, and the one way it could stop being
+    ///
+    /// The symbolic pattern is a function of ELEMENT INCIDENCE and the free-DOF
+    /// map alone (see [`Self::new`]'s `triplet_set`: an `N × N` node-pair loop
+    /// per tet, plus a `(k, k)` mass diagonal). Contact never contributes to it,
+    /// and every shipped contact model stays inside that pattern:
+    ///
+    /// - [`crate::contact::IpcRigidContact`] / [`crate::contact::PenaltyRigidContact`]
+    ///   vertex pairs emit a `(v, v)` self-block, covered by the element loop's
+    ///   `a == b` case;
+    /// - a face pair emits a 6 × 6 block over the P2 nodes of ONE boundary face,
+    ///   all of which belong to a single element, so every `(row, col)` is
+    ///   already covered by that element's `N × N` pairs.
+    ///
+    /// ⚠ A contact model coupling vertices from DIFFERENT elements — self
+    /// collision, or a stitched multi-body pair — would widen the pattern beyond
+    /// the cached symbolic factors and must build a fresh solver instead.
+    pub fn replace_contact(&mut self, contact: C) {
+        self.contact = contact;
+    }
+
     /// Set the rigid contact surface's within-step tangential drift `Δ_surf` (the
     /// `friction_surface_drift` field) and return the solver, builder-style. The
     /// drift is the kinematic collider's

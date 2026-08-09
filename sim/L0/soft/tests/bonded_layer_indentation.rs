@@ -320,6 +320,15 @@ fn run_indentation(nx: usize, ny: usize, nz: usize, lx: f64, ly: f64, h: f64) ->
     cfg.max_newton_iter = MAX_NEWTON_ITER;
     let empty_theta = Tensor::from_slice(&[], &[0]);
 
+    // Built ONCE for the whole ramp; only `replace_contact` varies per increment.
+    let mut solver: CpuNewtonSolver<Tet4, HandBuiltTetMesh, IpcRigidContact> = CpuNewtonSolver::new(
+        Tet4,
+        layer(nx, ny, nz, lx, ly, h),
+        IpcRigidContact::with_params(vec![indenter(lx, ly, z_start)], KAPPA, d_hat),
+        cfg,
+        BoundaryConditions::new(pins, Vec::new()),
+    );
+
     let mut z = z_start;
     let mut max_iters = 0usize;
     let mut max_res = 0.0f64;
@@ -327,14 +336,17 @@ fn run_indentation(nx: usize, ny: usize, nz: usize, lx: f64, ly: f64, h: f64) ->
         let target = if z - step <= z_end { z_end } else { z - step };
         z = target;
 
-        let contact = IpcRigidContact::with_params(vec![indenter(lx, ly, z)], KAPPA, d_hat);
-        let solver: CpuNewtonSolver<Tet4, HandBuiltTetMesh, IpcRigidContact> = CpuNewtonSolver::new(
-            Tet4,
-            layer(nx, ny, nz, lx, ly, h),
-            contact,
-            cfg,
-            BoundaryConditions::new(pins.clone(), Vec::new()),
-        );
+        // Only the indenter moves between increments. The mesh, mass, free-DOF
+        // maps and BOTH symbolic factorizations are functions of element
+        // incidence alone, so they are built once above and reused — see
+        // `CpuNewtonSolver::replace_contact` for why contact cannot widen the
+        // pattern. Rebuilding them per increment cost 71 constructions per case,
+        // 355 across the five.
+        solver.replace_contact(IpcRigidContact::with_params(
+            vec![indenter(lx, ly, z)],
+            KAPPA,
+            d_hat,
+        ));
         let out = solver.replay_step(
             &Tensor::from_slice(&x_prev, &[n_dof]),
             &Tensor::from_slice(&v_prev, &[n_dof]),
