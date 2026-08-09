@@ -835,46 +835,62 @@ mod tests {
     use crate::mesh::HandBuiltTetMesh;
     use crate::solver::backward_euler::ElementGeometry;
 
-    /// F-bar HIDES an inverted element from the `NaN` mechanism.
+    /// F-bar HIDES an inverted element from the `NaN` mechanism — asserted on
+    /// the PRODUCTION `theta`, not a recomputation of it.
     ///
     /// This is the load-bearing half of why the converged-state validity boundary
     /// is kept: the ordinary argument for that boundary being redundant is that a
     /// `NaN`-poisoned `f_int` cannot satisfy `r_norm < tol`. Under F-bar there is
     /// no `NaN` to poison it.
     ///
-    /// With `J_e < 0` and a healthy patch, `theta = (j_bar / j).cbrt()` is
-    /// NEGATIVE — `f64::cbrt` returns the real negative root, unlike
-    /// `powf(1.0/3.0)` which would yield `NaN` — so
-    /// `det(theta * F) = theta^3 * J = j_bar > 0`. `first_piola` therefore takes
-    /// `ln` of a POSITIVE determinant and returns finite values, Newton's
-    /// sufficient-decrease test is a real comparison rather than a `NaN`, and the
-    /// solve can converge with a folded element in it.
-    ///
-    /// Until this test the mechanism was argued in a doc comment and gated by
-    /// nothing. It is asserted here rather than end-to-end because reaching an
-    /// inverted CONVERGED state through a real solve needs the element to fold
-    /// during Newton rather than at the step boundary; this pins the step that
-    /// makes that possible.
+    /// ⚠ An earlier version of this test recomputed `(j_bar / j).cbrt()` inline in
+    /// its own body and never touched `fbar.rs` at all — replacing the production
+    /// expression with `powf(1.0/3.0)` would not have failed it. It asserted the
+    /// arithmetic while leaving the wiring ungated, which is the same defect it
+    /// was written to close. It now drives `FbarCache::forward` and reads
+    /// `ElementFbar::theta` off the result.
     #[test]
     fn fbar_hides_an_inversion_from_the_nan_mechanism() {
-        // An inverted element: reflection through z, J = -1.
-        let f = Matrix3::new(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, -1.0);
-        let j = f.determinant();
-        assert!(j < 0.0, "fixture must be inverted, got J = {j}");
+        let field = nu049_field();
+        let mesh = HandBuiltTetMesh::two_tet_shared_face(&field);
+        let (geoms, _vols) = geometries(&mesh);
+        let materials: Vec<NeoHookean> = mesh.materials().to_vec();
+        let cache = FbarCache::build(&mesh, &geoms);
 
-        // A healthy patch around it.
-        let j_bar = 0.8_f64;
-        let theta = (j_bar / j).cbrt();
+        // Fold tet 1 only: vertex 4 belongs to it alone, so pushing it through
+        // the shared face (the plane x + y + z = 0.1) inverts that element while
+        // tet 0 stays at rest and keeps the patch average positive.
+        let rest = mesh.positions();
+        let mut x: Vec<f64> = rest.iter().flat_map(|p| [p.x, p.y, p.z]).collect();
+        x[12] = 0.032;
+        x[13] = 0.032;
+        x[14] = 0.032;
+
+        let elems = cache.forward(&mesh, &x, &geoms);
+        let folded = elems
+            .iter()
+            .find(|e| e.j < 0.0)
+            .expect("vertex 4 through the shared face must invert one element");
+
         assert!(
-            theta < 0.0,
-            "cbrt of a negative ratio must return the real NEGATIVE root, got {theta}"
+            folded.j_bar > 0.0,
+            "the patch average must stay positive, else this tests the wrong \
+             mechanism: got j_bar = {}",
+            folded.j_bar
+        );
+        assert!(
+            folded.theta < 0.0,
+            "production `theta` must be the real NEGATIVE cube root for J < 0 — \
+             `powf(1.0/3.0)` would give NaN here. Got {}",
+            folded.theta
         );
 
-        let f_star = theta * f;
+        let f_star = folded.theta * folded.f;
         let det_star = f_star.determinant();
         assert!(
-            (det_star - j_bar).abs() < 1e-12,
-            "det(theta*F) must equal j_bar; got {det_star} vs {j_bar}"
+            (det_star - folded.j_bar).abs() < 1e-9 * folded.j_bar.abs(),
+            "det(theta*F) must equal j_bar; got {det_star} vs {}",
+            folded.j_bar
         );
         assert!(
             det_star > 0.0,
@@ -883,17 +899,16 @@ mod tests {
         );
 
         // The consequence: no NaN reaches the residual.
-        let nh = NeoHookean::from_lame(1.0e5, 4.0e5);
-        let p = nh.first_piola(&f_star);
+        let p_star = materials[0].first_piola(&f_star);
         assert!(
-            p.iter().all(|v| v.is_finite()),
-            "first_piola returned non-finite values for an F-bar-modified inverted \
-             element: {p:?} — if this ever holds, the NaN mechanism DOES catch F-bar \
-             inversions and the converged-state boundary's justification changes"
+            p_star.iter().all(|v| v.is_finite()),
+            "first_piola returned non-finite values for the F-bar-modified inverted \
+             element: {p_star:?} — if that ever holds, the NaN mechanism DOES catch \
+             F-bar inversions and the converged-state boundary's justification changes"
         );
 
-        // And for contrast: without F-bar the same element does poison it.
-        let p_raw = nh.first_piola(&f);
+        // Contrast: the un-modified inverted F does poison it.
+        let p_raw = materials[0].first_piola(&folded.f);
         assert!(
             p_raw.iter().any(|v| !v.is_finite()),
             "an un-modified inverted F must produce non-finite first_piola — that is \

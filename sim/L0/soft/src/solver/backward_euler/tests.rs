@@ -1330,6 +1330,49 @@ fn the_gate_runs_on_a_curved_tet10() {
     );
 }
 
+/// A fold at a reference CORNER that both other stages accept.
+///
+/// ⚠ Without this, the entire reference-corner stage is dead weight: every other
+/// Tet10 fixture in this file is rejected at the Gauss sweep or the corner block
+/// before that stage runs, so deleting the whole `if N > 4` block left the suite
+/// green. The stage was added on a measured 60% -> 6% miss-rate reduction and
+/// gated by nothing.
+///
+/// This state is chosen so the two cheaper stages have no opinion:
+///   Gauss points  +2.020, +5.208, +3.754, +0.856  — all comfortably positive
+///   corner block  +1.000                          — corners are exactly at rest
+///   ref corners   -12.765, +0.350, +9.479, +4.105 — corner 0 folded
+/// Only the reference-corner sweep can reject it, so it fails if that stage is
+/// removed, short-circuited, or reordered behind a stage that would accept.
+#[test]
+fn a_fold_at_a_reference_corner_is_caught_when_gauss_and_corner_block_accept() {
+    let (solver, _rest) = single_tet10_all_corners_pinned();
+    let x: Vec<f64> = vec![
+        0.000_000, 0.000_000, 0.000_000, 0.100_000, 0.000_000, 0.000_000, 0.000_000, 0.100_000,
+        0.000_000, 0.000_000, 0.000_000, 0.100_000, 0.098_477, -0.019_375, -0.023_585, 0.080_491,
+        0.030_776, -0.019_887, -0.008_067, 0.043_819, -0.047_582, -0.011_753, -0.060_364,
+        0.056_903, 0.051_271, -0.003_820, 0.058_899, 0.006_707, 0.023_206, 0.031_225,
+    ];
+
+    // Premise: the Gauss sweep must have no opinion on this state, or the test
+    // silently degenerates into a duplicate of the sweep tests.
+    let ratio = solver.min_gauss_det_ratio(&x);
+    assert!(
+        ratio > 0.0,
+        "fixture no longer isolates the reference-corner stage: min Gauss det \
+         ratio is {ratio}, so the sweep would reject it first"
+    );
+
+    let (tet_id, message) = validity_message(&solver, &x);
+    assert_eq!(tet_id, 0);
+    assert!(
+        message.contains("at reference corner"),
+        "expected the REFERENCE-CORNER stage to reject this — the Gauss points and \
+         the corner block both accept it, so any other slot naming it means the \
+         fixture stopped isolating that stage. Got: {message}"
+    );
+}
+
 /// Run the step-start gate on `x` and return the `ValidityViolation` message, or panic
 /// with what came back instead.
 ///
