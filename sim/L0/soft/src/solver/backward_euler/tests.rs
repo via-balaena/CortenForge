@@ -2012,7 +2012,14 @@ fn tet10_friction_adjoint_is_fail_loud() {
 struct OrderingProbe {
     /// `nnz(L)` — the fill the ordering admits.
     nnz_l: usize,
-    /// Best-of-3 numeric factorization time, seconds.
+    /// Time to produce the permutation AND the symbolic factor, seconds.
+    ///
+    /// Counted because it is paid at solver construction, once per solver. A
+    /// numeric speedup bought with a construction-time regression is not a
+    /// speedup, and the numeric column alone cannot see that.
+    symbolic_seconds: f64,
+    /// Best-of-3 numeric factorization time, seconds. Paid per Newton
+    /// iteration, so this is the column that dominates a real solve.
     factor_seconds: f64,
     /// Whether faer chose its supernodal (rather than simplicial) path.
     supernodal: bool,
@@ -2034,7 +2041,10 @@ fn factorization_regime_probe(cells: usize) -> (usize, OrderingProbe, OrderingPr
     use faer::sparse::linalg::cholesky::SymbolicCholeskyRaw;
     use faer::sparse::{SparseColMat, Triplet};
 
-    use super::ordering::{OrderedLlt, compute_nested_dissection_permutation, symbolic_cholesky};
+    use super::ordering::{
+        FillReducingPermutation, OrderedLlt, compute_nested_dissection_permutation,
+        symbolic_cholesky,
+    };
 
     let field = MaterialField::uniform(1.0e5, 4.0e5);
     let cube = HandBuiltTetMesh::uniform_block(cells, 0.1, &field);
@@ -2073,8 +2083,14 @@ fn factorization_regime_probe(cells: usize) -> (usize, OrderingProbe, OrderingPr
         .map(|t| (t.col, t.row))
         .collect();
 
-    let measure = |permutation: Option<&_>| {
-        let symbolic = symbolic_cholesky(a.symbolic(), permutation).expect("symbolic");
+    // `order` produces the permutation, so its cost lands in the symbolic
+    // column where it is actually paid — AMD's inside faer, ND's in ours.
+    let measure = |order: &dyn Fn() -> Option<FillReducingPermutation>| {
+        let t = std::time::Instant::now();
+        let permutation = order();
+        let symbolic = symbolic_cholesky(a.symbolic(), permutation.as_ref()).expect("symbolic");
+        let symbolic_seconds = t.elapsed().as_secs_f64();
+
         let mut best = f64::MAX;
         for _ in 0..3 {
             let t = std::time::Instant::now();
@@ -2084,17 +2100,18 @@ fn factorization_regime_probe(cells: usize) -> (usize, OrderingProbe, OrderingPr
         }
         OrderingProbe {
             nnz_l: symbolic.len_val(),
+            symbolic_seconds,
             factor_seconds: best,
             supernodal: matches!(symbolic.raw(), SymbolicCholeskyRaw::Supernodal(_)),
         }
     };
 
-    let amd = measure(None);
+    let amd = measure(&|| None);
     // The policy-free entry point: this sweep exists to measure where the
     // size policy's crossover is, so it must order sizes the policy declines.
-    let permutation =
-        compute_nested_dissection_permutation(&lower, n_free).expect("nested dissection");
-    let nested_dissection = measure(Some(&permutation));
+    let nested_dissection = measure(&|| {
+        Some(compute_nested_dissection_permutation(&lower, n_free).expect("nested dissection"))
+    });
 
     (n_free, amd, nested_dissection)
 }
@@ -2148,8 +2165,18 @@ fn factorization_stays_on_the_supernodal_path() {
 #[ignore = "diagnostic — reports fill growth, asserts nothing timing-dependent"]
 fn factorization_fill_growth() {
     println!(
-        "{:>8}  {:>11}  {:>10} {:>7}  {:>10} {:>7}  {:>9} {:>9}  {:>7}",
-        "n_free", "regime", "AMD nnz(L)", "fill", "ND nnz(L)", "fill", "AMD ms", "ND ms", "speedup"
+        "{:>8}  {:>11}  {:>10} {:>7}  {:>10} {:>7}  {:>8} {:>8}  {:>9} {:>9}  {:>7}",
+        "n_free",
+        "regime",
+        "AMD nnz(L)",
+        "fill",
+        "ND nnz(L)",
+        "fill",
+        "AMDsym ms",
+        "NDsym ms",
+        "AMD ms",
+        "ND ms",
+        "speedup"
     );
     // `uniform_block` requires an even cell count (the bilayer interface must
     // land on a mesh plane), so the sweep steps by two.
@@ -2175,9 +2202,11 @@ fn factorization_fill_growth() {
         };
         println!(
             "{n_free:>8}  {regime:>11}  {:>10} {amd_fill:>7.1}  {:>10} {nd_fill:>7.1}  \
-             {:>9.1} {:>9.1}  {:>6.2}×",
+             {:>8.1} {:>8.1}  {:>9.1} {:>9.1}  {:>6.2}×",
             amd.nnz_l,
             nd.nnz_l,
+            amd.symbolic_seconds * 1e3,
+            nd.symbolic_seconds * 1e3,
             amd.factor_seconds * 1e3,
             nd.factor_seconds * 1e3,
             amd.factor_seconds / nd.factor_seconds,

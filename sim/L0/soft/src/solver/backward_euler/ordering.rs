@@ -6,9 +6,10 @@
 //! `run_indentation`; assembly is 1.0 % and everything else under 0.5 %), and
 //! its cost is set almost entirely by the *fill* the elimination ordering
 //! admits. faer ships approximate-minimum-degree (AMD) and hard-wires it:
-//! [`SymbolicLlt::try_new`] passes `Default::default()` for the ordering and
-//! keeps its inner [`SymbolicCholesky`] private, so there is no way to hand it
-//! a different permutation through that type.
+//! [`SymbolicLlt::try_new`](faer::sparse::linalg::solvers::SymbolicLlt::try_new)
+//! passes `Default::default()` for the ordering and keeps its inner
+//! [`SymbolicCholesky`] private, so there is no way to hand it a different
+//! permutation through that type.
 //!
 //! Minimum-degree loses badly on 3D meshes. Measured on this crate's own Tet10
 //! free-DOF tangent patterns, AMD's fill per row runs 435 → 714 → 974 across a
@@ -24,7 +25,7 @@
 //!    `Llt`/`SymbolicLlt` wrappers would be if their constructors took an
 //!    ordering. It is a faithful re-implementation of those wrappers over the
 //!    public low-level API ([`factorize_symbolic_cholesky`],
-//!    [`SymbolicCholesky::factorize_numeric_llt`], [`LltRef`]) — same scratch
+//!    `SymbolicCholesky::factorize_numeric_llt`, [`LltRef`]) — same scratch
 //!    allocation, same global parallelism, same solve entry point.
 //!
 //! # What this does NOT cover
@@ -284,7 +285,16 @@ impl OrderedLlt {
         // the ordering.
         let regularization = LltRegularization::default();
         let params = Spec::<LltParams, f64>::default();
-        let mut values = vec![0.0_f64; symbolic.len_val()];
+        // `try_reserve_exact` rather than `vec![0.0; n]` so an oversized factor
+        // REPORTS `OutOfMemory` instead of aborting the process — the same
+        // contract faer's own wrapper offers, and the one this method's
+        // `# Errors` section promises.
+        let len_val = symbolic.len_val();
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(len_val)
+            .map_err(|_| faer::sparse::FaerError::OutOfMemory)?;
+        values.resize(len_val, 0.0_f64);
         symbolic.factorize_numeric_llt::<f64>(
             &mut values,
             mat,
@@ -442,6 +452,42 @@ mod tests {
             worst < 1.0e-12,
             "custom-ordered and AMD-ordered solves disagree by {worst:e}"
         );
+    }
+
+    /// The factor outlives the matrix it was built from, and crosses threads.
+    ///
+    /// Both properties are load-bearing and neither is obvious: the factor is
+    /// stashed on the autodiff tape inside `NewtonStepVjp`, and `VjpOp` is
+    /// declared `Send + Sync`, so a factor that borrowed from the assembled
+    /// tangent — or that held a non-`Sync` handle — would break reverse mode
+    /// rather than this module. `tests/invariant_3_factor.rs` pins the same
+    /// property one level down, on the faer types this wrapper is built from.
+    #[test]
+    fn factor_owns_its_data_and_crosses_threads() {
+        const fn require_send_sync<T: Send + Sync>() {}
+        require_send_sync::<OrderedLlt>();
+
+        let n = 2400;
+        let factor = {
+            let (lower, mat) = chain_pattern(n);
+            let perm = compute_nested_dissection_permutation(&lower, n).expect("ordering");
+            let symbolic = symbolic_cholesky(mat.symbolic(), Some(&perm)).expect("symbolic");
+            OrderedLlt::try_new_with_symbolic(symbolic, mat.as_ref(), Side::Lower).expect("numeric")
+            // `mat` and `perm` drop here — the factor must not have borrowed.
+        };
+
+        let mut x: Mat<f64> = Mat::from_fn(n, 1, |i, _| (i as f64).sin());
+        std::thread::spawn(move || {
+            factor.solve_in_place_with_conj(Conj::No, x.as_mut());
+            // A solve through a dangling factor would not reliably produce a
+            // finite answer; assert it did.
+            assert!(
+                (0..n).all(|i| x[(i, 0)].is_finite()),
+                "solve through a moved, source-dropped factor produced non-finite output"
+            );
+        })
+        .join()
+        .expect("solve thread panicked");
     }
 
     /// The size policy must actually gate. Without this, a threshold typo
