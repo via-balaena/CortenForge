@@ -359,6 +359,18 @@ fn dims_for(chi: f64, a_over_cell: f64) -> (usize, usize, f64, f64) {
 
 // ── Test ─────────────────────────────────────────────────────────────────
 
+/// The five independent solves this gate needs: the three-point χ-sweep at
+/// `a/cell = 3`, plus the two extra refinements (`a/cell` 2 and 4) the cell
+/// convergence needs at `χ = 0.35`. `a/cell = 3, χ = 0.35` is shared between
+/// the two studies and solved once.
+const CASES: [(f64, f64); 5] = [
+    (0.20, A_OVER_CELL),
+    (0.35, A_OVER_CELL),
+    (0.50, A_OVER_CELL),
+    (0.35, 2.0),
+    (0.35, 4.0),
+];
+
 // Release-only gate. IPC + the multi-increment displacement ramp over several
 // meshes runs in minutes release-mode and `5-10×` slower in debug, over the CI
 // 30-min budget. `#[cfg_attr(debug_assertions, ignore)]` skips it in
@@ -375,12 +387,39 @@ fn bonded_layer_indentation_matches_analytic_correction() {
     let f_hs = hertz_halfspace(DELTA);
     let a = (RADIUS * DELTA).sqrt();
 
+    // Solve all five cases CONCURRENTLY. `run_indentation` is a pure function of
+    // its dimensions — no shared state, no ordering between cases — so the only
+    // thing serialising them was the loop. They were ~22 min of one core, the
+    // single most expensive test in the workspace; run together the gate costs
+    // its slowest case (the `a/cell = 4` refinement) instead of their sum.
+    // Assertions below are unchanged and still see every case.
+    let solved: Vec<Indentation> = std::thread::scope(|scope| {
+        // needless_collect: NOT needless — it is the whole point. `map(spawn)` is
+        // lazy, so consuming it directly would spawn each thread and immediately
+        // join it, running the five solves one at a time while still looking
+        // concurrent. Collecting forces all five to start before the first join.
+        #[allow(clippy::needless_collect)]
+        let handles: Vec<_> = CASES
+            .iter()
+            .map(|&(chi, a_over_cell)| {
+                scope.spawn(move || {
+                    let (n_lat, nz, lateral, h) = dims_for(chi, a_over_cell);
+                    run_indentation(n_lat, n_lat, nz, lateral, lateral, h)
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("indentation solve panicked"))
+            .collect::<Vec<_>>()
+    });
+
     // ── χ-sweep at a/cell = 3 ────────────────────────────────────────────
     let mut fh_ratio = Vec::new(); // F_FEM / Hertz_halfspace
     let mut oracle_ratio = Vec::new(); // F_FEM / (Δ_G · Hertz)
-    for &chi in &CHI_SWEEP {
-        let (n_lat, nz, lateral, h) = dims_for(chi, A_OVER_CELL);
-        let r = run_indentation(n_lat, n_lat, nz, lateral, lateral, h);
+    for (i, &chi) in CHI_SWEEP.iter().enumerate() {
+        let (n_lat, nz, _lateral, h) = dims_for(chi, A_OVER_CELL);
+        let r = &solved[i];
         let delta = delta_garcia(nu(), chi);
         let fh = r.f_fem / f_hs;
         let ratio = r.f_fem / (delta * f_hs);
@@ -455,13 +494,11 @@ fn bonded_layer_indentation_matches_analytic_correction() {
     // reused from the sweep; add a/cell = 2 (coarse) and a/cell = 4 (fine).
     let chi_c = 0.35;
     let delta_c = delta_garcia(nu(), chi_c);
-    let ratio_at = |div: f64| {
-        let (nl, nz, lat, h) = dims_for(chi_c, div);
-        run_indentation(nl, nl, nz, lat, lat, h).f_fem / (delta_c * f_hs)
-    };
-    let ratio_c2 = ratio_at(2.0);
-    let ratio_c3 = oracle_ratio[1]; // a/cell = 3, already computed in the sweep
-    let ratio_c4 = ratio_at(4.0);
+    // Indices 3 and 4 of `CASES` are the a/cell = 2 and 4 refinements, solved
+    // alongside the sweep above rather than after it.
+    let ratio_c2 = solved[3].f_fem / (delta_c * f_hs);
+    let ratio_c3 = oracle_ratio[1]; // a/cell = 3, shared with the sweep
+    let ratio_c4 = solved[4].f_fem / (delta_c * f_hs);
     let step_coarse = (ratio_c2 - ratio_c3).abs();
     let step_fine = (ratio_c3 - ratio_c4).abs();
     // Geometric-tail extrapolation of the converged limit from the last two
