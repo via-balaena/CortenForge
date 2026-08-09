@@ -505,7 +505,7 @@ fn verify_meshes(vars: &[&str]) -> Result<()> {
 /// # Errors
 /// Returns an error if a mesh the selected gates need is unset, or if any gate
 /// fails.
-fn run_gates(gates: &[Gate], root: &Path) -> Result<()> {
+fn run_gates(gates: &[Gate], root: &Path, jobs: Option<usize>) -> Result<()> {
     let missing: Vec<&str> = required_vars(gates)
         .into_iter()
         .filter(|v| std::env::var_os(v).is_none())
@@ -521,25 +521,23 @@ fn run_gates(gates: &[Gate], root: &Path) -> Result<()> {
 
     verify_meshes(&required_vars(gates))?;
 
-    // One `cargo test` invocation per (crate, target) — the unit cargo accepts.
+    let jobs = jobs.unwrap_or_else(default_jobs).max(1);
+
+    // Warm the build ONCE, serially, before fanning out. Without this every
+    // worker's first `cargo test` blocks on the same build lock, so the fan-out
+    // would buy nothing until the last one finished compiling.
     let mut targets: Vec<(String, Target)> = gates
         .iter()
         .map(|g| (g.krate.clone(), g.target.clone()))
         .collect();
     targets.dedup();
-
-    let mut failed = Vec::new();
+    println!(
+        "{} building {} target{} …",
+        "▶".bold(),
+        targets.len(),
+        plural(targets.len())
+    );
     for (krate, target) in &targets {
-        let count = gates
-            .iter()
-            .filter(|g| &g.krate == krate && &g.target == target)
-            .count();
-        println!(
-            "\n{} {krate} :: {target} ({count} gate{})",
-            "▶".bold(),
-            plural(count)
-        );
-
         let mut cmd = std::process::Command::new("cargo");
         cmd.current_dir(root)
             .args(["test", "-p", krate, "--release"]);
@@ -547,15 +545,98 @@ fn run_gates(gates: &[Gate], root: &Path) -> Result<()> {
             Target::Lib => cmd.arg("--lib"),
             Target::Integration(name) => cmd.args(["--test", name]),
         };
-        cmd.args(["--", "--ignored", "--test-threads=1", "--nocapture"]);
-
+        cmd.arg("--no-run");
         let status = cmd
             .status()
-            .with_context(|| format!("failed to spawn cargo test for {krate} :: {target}"))?;
+            .with_context(|| format!("failed to build {krate} :: {target}"))?;
         if !status.success() {
-            failed.push(format!("{krate} :: {target}"));
+            bail!("build failed for {krate} :: {target}");
         }
     }
+
+    println!(
+        "{} running {} gate{}, {jobs} at a time\n",
+        "▶".bold(),
+        gates.len(),
+        plural(gates.len())
+    );
+
+    // One process per GATE, not per target: `cf-fsu-model`'s lib target alone
+    // holds ~13 gates, so per-target fan-out would leave the longest pole
+    // untouched. One test per process also keeps `--nocapture` usable — the FOM
+    // tables these gates print are the point of running them, and interleaving
+    // several onto one stdout would destroy them. Each worker captures its own
+    // output and it is printed as one block when that gate finishes.
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let results: std::sync::Mutex<Vec<(usize, bool, String)>> = std::sync::Mutex::new(Vec::new());
+
+    std::thread::scope(|scope| {
+        for _ in 0..jobs.min(gates.len()) {
+            scope.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let Some(gate) = gates.get(i) else { return };
+
+                    let mut cmd = std::process::Command::new("cargo");
+                    cmd.current_dir(root)
+                        .args(["test", "-p", &gate.krate, "--release"]);
+                    match &gate.target {
+                        Target::Lib => cmd.arg("--lib"),
+                        Target::Integration(name) => cmd.args(["--test", name]),
+                    };
+                    cmd.args([
+                        "--",
+                        &gate.name,
+                        "--exact",
+                        "--ignored",
+                        "--nocapture",
+                        "--test-threads=1",
+                    ]);
+
+                    let started = std::time::Instant::now();
+                    let out = cmd.output();
+                    let elapsed = started.elapsed();
+
+                    let (ok, body) = match out {
+                        Ok(o) => {
+                            let mut body = String::from_utf8_lossy(&o.stdout).into_owned();
+                            body.push_str(&String::from_utf8_lossy(&o.stderr));
+                            (o.status.success(), body)
+                        }
+                        Err(e) => (false, format!("failed to spawn cargo test: {e}")),
+                    };
+
+                    let mark = if ok {
+                        "PASS".green().bold().to_string()
+                    } else {
+                        "FAIL".red().bold().to_string()
+                    };
+                    let block = format!(
+                        "{mark} {} :: {} ({:.1} s)\n{}",
+                        gate.krate,
+                        gate.name,
+                        elapsed.as_secs_f64(),
+                        indent(&body)
+                    );
+                    // Print on completion so a long run streams progress rather
+                    // than going silent; the ordered summary below is what the
+                    // operator reads.
+                    println!("{block}");
+                    if let Ok(mut r) = results.lock() {
+                        r.push((i, ok, block));
+                    }
+                }
+            });
+        }
+    });
+
+    let mut results = results.into_inner().unwrap_or_else(|e| e.into_inner());
+    results.sort_by_key(|(i, _, _)| *i);
+    let failed: Vec<&Gate> = results
+        .iter()
+        .filter(|(_, ok, _)| !ok)
+        .filter_map(|(i, _, _)| gates.get(*i))
+        .collect();
 
     if failed.is_empty() {
         println!(
@@ -566,8 +647,54 @@ fn run_gates(gates: &[Gate], root: &Path) -> Result<()> {
         );
         Ok(())
     } else {
-        bail!("licence-gated targets failed:\n  {}", failed.join("\n  "));
+        let names: Vec<String> = failed
+            .iter()
+            .map(|g| format!("{} :: {}", g.krate, g.name))
+            .collect();
+        bail!("licence-gated gates failed:\n  {}", names.join("\n  "));
     }
+}
+
+/// Default gate concurrency: bounded by MEMORY, not cores.
+///
+/// The heavy Tet10 arms in this surface peak around 5 GB resident each (rung-5
+/// recorded 4.99 GB at `cell = 0.0015`), so on a 24 GB machine the ceiling is
+/// ~4 concurrent gates — well under the core count. Picking `cores` here would
+/// swap and run SLOWER than serial. `--jobs` overrides; `--jobs 1` restores the
+/// old serial behaviour for debugging.
+fn default_jobs() -> usize {
+    const GB: u64 = 1024 * 1024 * 1024;
+    let cores = std::thread::available_parallelism().map_or(4, std::num::NonZeroUsize::get);
+    let ram_gb = total_memory_bytes().unwrap_or(8 * GB) / GB;
+    jobs_for(ram_gb, cores)
+}
+
+/// Peak resident set of one heavy Tet10 gate, in GB, plus headroom. Rung 5
+/// measured 4.99 GB at `cell = 0.0015`; 6 buys margin for a worse one.
+const PEAK_PER_GATE_GB: u64 = 6;
+
+/// Gate concurrency from total RAM and core count. Split out from
+/// [`default_jobs`] so the bound can be tested without depending on the host.
+fn jobs_for(ram_gb: u64, cores: usize) -> usize {
+    // Leave ~4 GB for the OS and the operator's editor.
+    let by_memory = usize::try_from(ram_gb.saturating_sub(4) / PEAK_PER_GATE_GB).unwrap_or(1);
+    by_memory.clamp(1, cores.max(1))
+}
+
+/// Total physical memory in bytes, or `None` when it cannot be read.
+fn total_memory_bytes() -> Option<u64> {
+    let out = std::process::Command::new("sysctl")
+        .args(["-n", "hw.memsize"])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
+/// Indent a captured gate body so it reads as one block under its heading.
+fn indent(body: &str) -> String {
+    body.lines()
+        .map(|l| format!("    {l}\n"))
+        .collect::<String>()
 }
 
 /// The `(var, bytes, sha256)` rows of the provenance doc's asset table.
@@ -734,7 +861,7 @@ fn check(root: &Path) -> Result<()> {
 /// # Errors
 /// Returns an error if `only` names no crate in the surface, if the check finds
 /// an invisible gate, or if a run fails.
-pub fn run(only: Option<String>, do_run: bool, do_check: bool) -> Result<()> {
+pub fn run(only: Option<String>, do_run: bool, do_check: bool, jobs: Option<usize>) -> Result<()> {
     let root = workspace_root();
 
     if do_check {
@@ -762,7 +889,7 @@ pub fn run(only: Option<String>, do_run: bool, do_check: bool) -> Result<()> {
     }
 
     if do_run {
-        run_gates(&gates, &root)
+        run_gates(&gates, &root, jobs)
     } else {
         list(&gates);
         println!(
@@ -775,6 +902,32 @@ pub fn run(only: Option<String>, do_run: bool, do_check: bool) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// Concurrency is bounded by MEMORY, not cores — the property that makes
+    /// this fan-out safe. A 12-core/24 GB box must NOT run 12 heavy gates at
+    /// once: each peaks near 5 GB, so twelve would swap and finish slower than
+    /// serial. If someone "optimises" this to `cores`, this test fails.
+    #[test]
+    fn gate_concurrency_is_bounded_by_memory_not_cores() {
+        // The machine this surface was tuned on.
+        assert_eq!(
+            super::jobs_for(24, 12),
+            3,
+            "24 GB / 12 cores must give 3 — (24-4)/6 — not the core count"
+        );
+        // Cores bind only when memory is plentiful.
+        assert_eq!(super::jobs_for(256, 4), 4, "cores cap a big-RAM machine");
+        // Never zero, however little RAM is reported.
+        assert_eq!(super::jobs_for(4, 8), 1, "must never return 0 jobs");
+        assert_eq!(super::jobs_for(0, 8), 1, "must never return 0 jobs");
+        // Monotone in RAM: more memory never means fewer gates.
+        let mut prev = 0;
+        for ram in 0..64 {
+            let j = super::jobs_for(ram, 64);
+            assert!(j >= prev, "jobs must not decrease as RAM grows");
+            prev = j;
+        }
+    }
+
     use super::*;
 
     /// The seam that keeps the enumeration honest.

@@ -217,6 +217,12 @@ enum Commands {
         /// this is the part CI can enforce.
         #[arg(long)]
         check: bool,
+
+        /// How many gates to run concurrently. Default is bounded by MEMORY,
+        /// not cores (~6 GB per heavy Tet10 gate). `--jobs 1` is the serial
+        /// fallback for debugging an interleaving-sensitive gate.
+        #[arg(long, conflicts_with = "check")]
+        jobs: Option<usize>,
     },
 
     /// Set up development environment (git hooks, verify tools)
@@ -271,7 +277,12 @@ fn main() -> Result<()> {
             shard,
             record_timings,
         } => validators::run(only, shard, record_timings),
-        Commands::LicensedGates { only, run, check } => licensed_gates::run(only, run, check),
+        Commands::LicensedGates {
+            only,
+            run,
+            check,
+            jobs,
+        } => licensed_gates::run(only, run, check, jobs),
         Commands::Setup => setup::run(),
         Commands::Uninstall => setup::uninstall(),
     }
