@@ -50,12 +50,14 @@ where
     /// deformation gradient `F` evaluated at `x_curr` (Phase 4 commit
     /// 12, IV-7 per scope memo Decision Q).
     ///
-    /// First-violator-wins: walks tets in ascending `tet_id` order,
-    /// computes `F = Σ_a x_{a,i} · ∂N_a/∂X_j` per element, and panics
-    /// at the first tet whose `F` falls outside the declared
-    /// [`crate::ValidityDomain`]. The two slots checkable from `F`
+    /// First-violator-wins: walks tets in ascending `tet_id` order, evaluates
+    /// `F = Σ_a x_{a,i} · ∂N_a/∂X_j`, and returns
+    /// [`SolverFailure::ValidityViolation`] for the first tet whose `F` falls
+    /// outside the declared [`crate::ValidityDomain`] (the `step` /
+    /// `replay_step` wrappers turn that `Err` into the panic; this method
+    /// itself does not panic on a violation). The two slots checkable from `F`
     /// for every base [`Material`] impl Phase 4 ships are
-    /// `inversion` (`det F ≤ 0` under
+    /// `inversion` (`det F ≤ 0`, or non-finite, under
     /// [`InversionHandling::RequireOrientation`]) and
     /// `max_stretch_deviation` (max `|σ_i − 1|` over the three
     /// singular values `σ_i` of `F`).
@@ -94,8 +96,15 @@ where
     /// without this check, an invalid converged state silently
     /// flows to the next step's start check, making the failure
     /// step-delayed + the failed step's recorded output
-    /// physically meaningless).  Both boundaries panic on first
-    /// violation rather than degrading silently.  See
+    /// physically meaningless).  Both boundaries fail closed on the
+    /// first violation rather than degrading silently.
+    ///
+    /// ⚠ The two boundaries are not equally live per slot. For `inversion`,
+    /// boundary (2) is nearly unreachable: a non-positive `det F` on any element
+    /// owning a free DOF poisons `f_int` with `NaN`, so `r_norm < tol` is never
+    /// satisfied and the converged branch is never entered. Its inversion check
+    /// therefore only fires for elements with no free DOFs at all. The stretch
+    /// slot is live at both.  See
     /// `docs/CANDIDATE_E_B_FALSIFICATION_BOOKMARK.md` §10 for the
     /// motivating finding (cavity > 5 mm sliding-ramp step 1
     /// converged to `σ_max = 2.05` at tet 3206, was only caught at
@@ -125,7 +134,12 @@ where
         // stops at the SHORTER iterator, so a future divergence would silently
         // skip the trailing tets — fail-open, in a gate whose whole job is to
         // fail closed.
-        debug_assert_eq!(
+        //
+        // A full `assert!`, not a `debug_assert!`: release is the profile these
+        // solves actually run in, so a debug-only check would leave exactly the
+        // hole this comment describes open where it matters. One integer compare
+        // per call (not per tet) against a per-tet SVD is not a measurable cost.
+        assert_eq!(
             self.element_geometries.len(),
             self.gauss_geometries.len(),
             "validity gate would silently skip tets if the two geometry caches diverged"
@@ -138,13 +152,23 @@ where
         {
             let validity = materials[tet_id].validity();
 
-            // Inversion check first: a non-positive `det F` makes the
-            // SVD-based stretch check below ambiguous (singular values
-            // are non-negative), so the orientation slot is the
-            // structurally prior gate. Programs that allow `det F <=
-            // 0` declare a non-`RequireOrientation` inversion handler,
-            // and Phase 4 has none — Phase H may add `Barrier` /
-            // `OptIn` variants when an impl needs them.
+            // Inversion check first: singular values are non-negative and
+            // orientation-blind (`σ(F) = σ(RF)` for a reflection `R`), so the
+            // stretch check below cannot distinguish an inverted state from its
+            // mirror image — it would return a verdict, but not a meaningful one.
+            // Running the orientation slot first means the stretch slot is only
+            // ever asked about states whose orientation is already established.
+            // Programs that allow `det F <= 0` declare a non-`RequireOrientation`
+            // inversion handler, and Phase 4 has none — Phase H may add
+            // `Barrier` / `OptIn` variants when an impl needs them.
+            //
+            // ⚠ If such a variant is added, revisit the stretch check below: its
+            // `fold(0.0, f64::max)` / `fold(INFINITY, min)` reductions SWALLOW
+            // NaN (Rust's `f64::max`/`min` return the non-NaN operand), so a
+            // non-finite `σ` would report `max_dev = 0.0` and pass. That is
+            // unreachable today only because the sweep below rejects non-finite
+            // `det F` for every material — and every shipped material declares
+            // `RequireOrientation`. A variant that skips the sweep arms it.
             if matches!(validity.inversion, InversionHandling::RequireOrientation) {
                 self.check_orientation_at_gauss_points(x_curr, tet_id, gauss_geom)?;
             }
@@ -152,18 +176,16 @@ where
             // Principal-stretch bounds: SVD `F = U Σ V^T` gives
             // singular values `σ_i` which are the principal stretches.
             // `f.svd_unordered(false, false)` skips U/V (we only need
-            // σ); cheap O(27) FLOPs per tet. Singular values are
-            // non-negative; a reflection-only F has σ_i ≥ 0 with
-            // `det F < 0`.
+            // σ); cheap O(27) FLOPs per tet.
             //
-            // ⚠ For Tet4 that case is caught by the sweep above (its single
-            // Gauss pair IS this corner block). For Tet10 it is not: the sweep
+            // ⚠ Which orientations reach here differs by element. For Tet4 the
+            // sweep above IS this corner block (single Gauss pair), so nothing
+            // orientation-negative gets this far. For Tet10 it is not: the sweep
             // reads the Gauss points, so a corner block that is itself
-            // orientation-negative is no longer gated. That is deliberate —
+            // orientation-negative is no longer gated at all. Deliberate —
             // nothing evaluates the Tet10 corner `F` numerically, so its
-            // orientation is not a physical property of the state — and it does
-            // not disturb the stretch verdict either, because singular values
-            // are orientation-blind (`σ(F) = σ(RF)` for a reflection `R`).
+            // orientation is not a physical property of the state — and harmless
+            // to this slot, whose σ are orientation-blind either way.
             //
             // Two gate flavors (Yeoh arc memo D8): if either of the new
             // asymmetric bounds is `Some`, gate per-bound; else fall
@@ -265,14 +287,26 @@ where
     /// `det F* = J̄` is a positive-weighted average of exactly the per-element `J_e` this
     /// sweep checks, so `J̄ > 0` follows from the sweep passing.
     ///
-    /// For **Tet4** this is verdict-identical to the pre-sweep corner check (`G == 1`, the
-    /// centroid point, bit-identical to `ElementGeometry::grad_x_n`) — pinned by
-    /// `tet4_inversion_verdict_survives_the_gauss_sweep`. For **Tet10** the two differ:
-    /// the corner block is an affine proxy that cannot see a midside-driven inversion at
-    /// an interior Gauss point, and an inversion this gate misses does not stay missed —
-    /// `first_piola` takes `ln(det F)` of a negative determinant and returns `NaN`, which
-    /// reaches Newton as a `NaN` residual and surfaces much later as a misattributed
-    /// "non-SPD tangent" Armijo stall.
+    /// For **Tet4**, on a finite `det F`, this is verdict-identical to the pre-sweep
+    /// corner check (`G == 1`, the centroid point, bit-identical to
+    /// `ElementGeometry::grad_x_n`) — pinned by
+    /// `tet4_inversion_verdict_survives_the_gauss_sweep`, which passes against the
+    /// pre-sweep gate as well as this one. The `is_finite` clause is the one Tet4
+    /// verdict that *did* change: a non-finite `det F` used to pass the bare `<= 0.0`
+    /// predicate (every comparison against `NaN` is false). That is new for both element
+    /// types and is pinned by `non_finite_state_is_rejected_by_the_inversion_gate`.
+    ///
+    /// For **Tet10** the two `F`s differ outright: the corner block is an affine proxy
+    /// that cannot see a midside-driven inversion at an interior Gauss point, and such an
+    /// inversion does not stay missed — `first_piola` takes `ln(det F)` of a negative
+    /// determinant and returns `NaN`, which reaches Newton as a `NaN` residual and
+    /// surfaces much later as a misattributed "non-SPD tangent" Armijo stall.
+    ///
+    /// The exception to that last sentence is an element with **no free DOFs**:
+    /// `free_residual_norm` reads only `free_dof_indices`, so a `NaN` confined to pinned
+    /// entries is never observed and such a solve used to converge with an inverted
+    /// element in it. This sweep catches that case too — it is the one class of state
+    /// that changes from `Ok` to `Err` rather than merely being re-attributed.
     ///
     /// # Errors
     ///
@@ -642,6 +676,26 @@ where
     /// until `‖r(x + α δ)‖ ≤ (1 - c₁ α) ‖r‖`. Updates only the free
     /// DOFs of `x` (looked up via `self.free_dof_indices`); pinned
     /// DOFs stay at their `x_curr` values.
+    ///
+    /// **A non-finite `trial_norm` is a rejected trial, not a fault.** This is
+    /// why `Material::first_piola` returns `NaN` on an inverted `F` rather than
+    /// panicking: a trial state may legitimately overshoot into inversion, the
+    /// sufficient-decrease test below is false for `NaN` (every comparison
+    /// against `NaN` is), so control reaches `alpha *= 0.5` and the next trial
+    /// is rebuilt from `x_curr` — `assemble_global_int_force` re-zeroes `f_int`
+    /// and `residual_into` rewrites every index, so the `NaN` cannot persist
+    /// across trials. Panicking in the material would turn each such trial into
+    /// an aborted solve.
+    ///
+    /// ⚠ What that does NOT claim is that the search always escapes. The loop
+    /// is budgeted by `max_line_search_backtracks`, and even a non-inverted
+    /// trial must still satisfy sufficient decrease, which needs a descent
+    /// direction the tangent may not supply. A `NaN` trial can equally exhaust
+    /// the budget and return [`ArmijoStallInfo`]. The claim is only that
+    /// halving is reachable — so panicking would remove a usable outcome — not
+    /// that recovery is guaranteed. Keeping a state out of inversion in the
+    /// first place is `check_validity_at_step_start`'s job, at the boundaries
+    /// where the state is a candidate equilibrium rather than a trial.
     ///
     /// F3.3: returns `Result<Vec<f64>, ArmijoStallInfo>` so callers
     /// can choose their own failure response. `solve_impl` (the

@@ -809,7 +809,8 @@ fn frobenius(a: &Matrix3<f64>, b: &Matrix3<f64>) -> f64 {
 // F-bar shares `NeoHookean`'s `RequireOrientation` contract — including the
 // fact that this guard tests INVERTIBILITY (`det F != 0`), not orientation
 // (`det F > 0`), so it is a tripwire for a singular `F` only. Orientation is
-// enforced at the solve boundaries by `check_validity_at_step_start`; see
+// enforced at the solve boundaries by `check_validity_at_step_start` (which delegates
+// the sweep to `check_orientation_at_gauss_points`); see
 // `neo_hookean::invert_transpose` for why it lives there rather than here.
 #[allow(clippy::expect_used)]
 fn invert_transpose(f: &Matrix3<f64>) -> Matrix3<f64> {

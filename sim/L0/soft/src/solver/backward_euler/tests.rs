@@ -1135,24 +1135,22 @@ fn single_tet10_all_corners_pinned() -> (CpuTet10NHSolver<Tet10Mesh>, Vec<f64>) 
 }
 
 /// Run the step-start gate on `x` and return the `ValidityViolation` message, or panic
-/// with what came back instead. `SolverFailure` is not `Debug`-printable (its `Tape` field
-/// is not), so the non-violation arms are named rather than formatted.
+/// with what came back instead.
+///
+/// The failure arm formats the whole `SolverFailure` (it derives `Debug`) so a regression
+/// reports `x_partial` and `last_iter` too. It is the `Ok` type, `NewtonStep<Tape>`, that
+/// is not `Debug` — which is why the `Result` cannot simply be `unwrap`ped.
 fn validity_message(solver: &CpuTet10NHSolver<Tet10Mesh>, x: &[f64]) -> (usize, String) {
     let x_t = Tensor::from_slice(x, &[x.len()]);
     let v_t = Tensor::zeros(&[x.len()]);
     let theta = Tensor::zeros(&[0]);
     match solver.try_replay_step(&x_t, &v_t, &theta, 1e-3) {
         Err(SolverFailure::ValidityViolation { tet_id, message }) => (tet_id, message),
-        Err(SolverFailure::ArmijoStall { last_r_norm, .. }) => panic!(
-            "an inverted Gauss point surfaced as ArmijoStall (r_norm {last_r_norm}) — that \
-             misattribution to the linear algebra is exactly the defect this gate closes"
+        Err(other) => panic!(
+            "expected ValidityViolation, got {other:?} — an inverted or non-finite Gauss \
+             point surfacing as anything else (an ArmijoStall blaming the tangent, most \
+             of all) is exactly the misattribution this gate closes"
         ),
-        Err(SolverFailure::NewtonIterCap { .. }) => {
-            panic!("expected ValidityViolation, got NewtonIterCap")
-        }
-        Err(SolverFailure::DoublyFailedFactor { .. }) => {
-            panic!("expected ValidityViolation, got DoublyFailedFactor")
-        }
         Ok(_) => panic!("an inverted Gauss point must not solve"),
     }
 }
@@ -1240,13 +1238,21 @@ fn tet10_midside_inversion_is_gated_at_every_gauss_point() {
     }
 }
 
-/// A non-finite state must fail closed on the inversion slot, not slip through it.
+/// A non-finite state must fail closed on the inversion slot, not slip through it —
+/// **on both element types**.
 ///
-/// `det F` of a `NaN` configuration is `NaN`, and **every** float comparison against `NaN`
-/// is false — so the natural `det_f <= 0.0` predicate passes it straight through to
-/// `first_piola`, and the solve dies later as an `ArmijoStall` blaming the tangent. That
-/// is the same misattribution the Gauss sweep exists to remove, reachable through a
-/// different door, which is why the gate tests `is_finite` explicitly.
+/// `det F` of a `NaN` configuration is `NaN`, and every float comparison against `NaN` is
+/// false, so the pre-sweep `det_f <= 0.0` predicate passed it straight through to
+/// `first_piola`. This is the one inversion-slot verdict that changed for **Tet4** as well
+/// as Tet10 — everything else about the Tet4 path is bit-identical — so both are pinned
+/// here rather than leaving the linear element's behaviour to the argument that its `F` is
+/// the same tensor.
+///
+/// What the un-gated state does next depends on the profile, which is why this test
+/// asserts the gate rather than the downstream symptom: in `--release` it reaches the
+/// backtrack budget and reports an `ArmijoStall` blaming the tangent; under the debug/test
+/// profile `try_factor_free_tangent`'s `max diagonal entry must be positive (got 0)`
+/// debug-assert fires first. Both misattribute a bad state to the linear algebra.
 #[test]
 fn non_finite_state_is_rejected_by_the_inversion_gate() {
     let (solver, rest) = single_tet10_all_corners_pinned();
@@ -1254,11 +1260,38 @@ fn non_finite_state_is_rejected_by_the_inversion_gate() {
     x[12] = f64::NAN;
 
     let (tet_id, message) = validity_message(&solver, &x);
-    assert_eq!(tet_id, 0, "the single element is the violator");
+    assert_eq!(tet_id, 0, "Tet10: the single element is the violator");
     assert!(
         message.contains("inversion = det F"),
-        "a non-finite det F must be reported on the inversion slot, got: {message}"
+        "Tet10: a non-finite det F must be reported on the inversion slot, got: {message}"
     );
+
+    // Tet4: same predicate, same slot. `build` yields a one-element linear solver over
+    // `SingleTetMesh`; corner 3's z-coordinate is `x[11]`.
+    let tet4 = build(BoundaryConditions {
+        pinned_vertices: vec![0, 1, 2],
+        roller_vertices: Vec::new(),
+        loaded_vertices: Vec::new(),
+    });
+    let mut x4 = vec![0.0_f64; 12];
+    x4[3] = 0.1;
+    x4[7] = 0.1;
+    x4[11] = f64::NAN;
+    let x_t = Tensor::from_slice(&x4, &[x4.len()]);
+    let v_t = Tensor::zeros(&[x4.len()]);
+    let theta = Tensor::zeros(&[0]);
+    match tet4.try_replay_step(&x_t, &v_t, &theta, 1e-3) {
+        Err(SolverFailure::ValidityViolation { tet_id, message }) => {
+            assert_eq!(tet_id, 0, "Tet4: the single element is the violator");
+            assert!(
+                message.contains("inversion = det F"),
+                "Tet4: a non-finite det F must be reported on the inversion slot, got: \
+                 {message}"
+            );
+        }
+        Err(other) => panic!("Tet4: expected ValidityViolation on a NaN state, got {other:?}"),
+        Ok(_) => panic!("Tet4: a non-finite det F must not solve"),
+    }
 }
 
 /// The Gauss sweep must leave **Tet4** verdicts exactly where they were.

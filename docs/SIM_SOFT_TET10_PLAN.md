@@ -348,6 +348,14 @@ unpin-trio + that geometry).**
     (⚠ Rung 7 UPDATE: the material adjoint `assemble_material_residual_grad`
     used to read this single-point block too, but rung 7 repointed it to
     `GaussGeometry` per-GP — so `ElementGeometry` no longer feeds any adjoint.)
+    (⚠ UPDATE: "feeds the validity gate" is now only half true. The gate's
+    `inversion` slot was repointed to `GaussGeometry`, because orientation has
+    to hold where `first_piola` is actually evaluated — on Tet10 the corner
+    block cannot see a midside-driven inversion at an interior Gauss point, and
+    the miss surfaced as a NaN residual misattributed to a "non-SPD tangent".
+    The `max_stretch_deviation` slot still reads the corner block; moving it is
+    a separate, wider change. So `ElementGeometry` now feeds the stretch slot,
+    F-bar, and the lumped mass.)
     The forward *stiffness* is
     replaced by per-GP; the corner block is not deleted.**
 - **Per-GP geometry and boundary extraction are NOT part of the atomic core**

@@ -129,24 +129,18 @@ impl Material for NeoHookean {
 // invertible `F` (`det F < 0`) passes `try_inverse` and then reaches
 // `first_piola`'s `det F.ln()`, which returns NaN.
 //
-// Why not panic here instead. Armijo backtracking evaluates trial states that
-// may overshoot into inversion, and a NaN `trial_norm` fails the
-// sufficient-decrease test (`NaN <= x` is false), so control reaches
-// `alpha *= 0.5` and the next trial is computed from scratch — `f_int` is
-// re-zeroed and every residual index rewritten, so the NaN does not persist.
-// Panicking here would convert every such trial into an aborted solve.
-//
-// ⚠ What is NOT claimed: that the search always escapes. The loop is budgeted
-// (`max_line_search_backtracks`), and even a non-inverted trial must still
-// satisfy sufficient decrease, which needs a descent direction the tangent may
-// not supply. A NaN trial can therefore also just exhaust the budget and
-// return `ArmijoStallInfo`. The point is only that halving is reachable, so
-// the panic would remove a usable outcome — not that recovery is guaranteed.
+// Why not panic here instead: Armijo backtracking evaluates trial states that
+// may overshoot into inversion, and returning NaN keeps that a rejected trial
+// rather than an aborted solve. The mechanism (and what it does NOT promise)
+// is documented where it lives, beside
+// `CpuNewtonSolver::armijo_backtrack` in `solver/backward_euler/newton.rs`.
 //
 // The orientation guarantee belongs at the step boundaries, where the state is
 // a candidate equilibrium rather than a trial:
-// `CpuNewtonSolver::check_validity_at_step_start` sweeps `det F > 0` at the
-// Gauss points and fails closed with `SolverFailure::ValidityViolation`.
+// `CpuNewtonSolver::check_validity_at_step_start` (whose
+// `check_orientation_at_gauss_points` helper does the sweeping) requires a
+// finite, strictly positive `det F` at every Gauss point and fails closed with
+// `SolverFailure::ValidityViolation`.
 #[allow(clippy::expect_used)]
 fn invert_transpose(f: &Matrix3<f64>) -> Matrix3<f64> {
     f.try_inverse()
