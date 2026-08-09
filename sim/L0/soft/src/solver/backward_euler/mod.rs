@@ -10,11 +10,13 @@
 //! Dirichlet: `v_0`, `v_1`, `v_2` pinned) is factored — the free DOFs
 //! start at index `FREE_OFFSET = 9` (private module constant).
 //!
-//! Solve path: faer `SymbolicLlt::try_new` + `SymbolicLu::try_new`
-//! once per `step`-call (one symbolic factor per algorithm; both share
-//! the same element-vertex sparsity pattern with `Side::Lower` and full
-//! reflection respectively), then `Llt::try_new_with_symbolic` +
-//! `solve_in_place_with_conj` per Newton iteration. A2 LU fallback
+//! Solve path: a nested-dissection-ordered symbolic Cholesky
+//! ([`ordering`]) alongside faer `SymbolicLu::try_new`, both built once
+//! per `step`-call (one symbolic factor per algorithm; both share the
+//! same element-vertex sparsity pattern with `Side::Lower` and full
+//! reflection respectively), then a numeric
+//! [`OrderedLlt`](ordering::OrderedLlt) plus `solve_in_place_with_conj`
+//! per Newton iteration. A2 LU fallback
 //! engages on `LltError::Numeric(NonPositivePivot)`: the helper
 //! `factor_free_tangent` symmetrizes the lower-tri triplets to full
 //! and factors via `Lu` against the cached `SymbolicLu`. Happy path
@@ -34,7 +36,7 @@
 // factorization-kind accessors + `factor_and_solve_free` alt-path ride the shape; not yet used.
 #![allow(dead_code)]
 
-use faer::sparse::linalg::solvers::{SymbolicLlt, SymbolicLu};
+use faer::sparse::linalg::solvers::SymbolicLu;
 use nalgebra::SMatrix;
 
 use crate::Vec3;
@@ -51,6 +53,7 @@ mod factor;
 mod fbar;
 mod helpers;
 mod newton;
+mod ordering;
 mod sensitivities;
 mod trait_impl;
 
@@ -178,10 +181,11 @@ pub struct CpuNewtonSolver<
     full_to_free_idx: Vec<Option<usize>>,
     /// Symbolic factor of the free-DOF Hessian sparsity pattern (Llt
     /// shape, `Side::Lower`), built once from element-vertex incidence
-    /// per Decision J. Per-iter numeric refactor consumes a `clone()`
-    /// of this (cheap — faer 0.24 wraps the symbolic in `Arc`
-    /// internally).
-    symbolic: SymbolicLlt<usize>,
+    /// per Decision J, under a nested-dissection fill-reducing ordering
+    /// (see [`ordering`] for why faer's own AMD is not used).
+    /// Per-iter numeric refactor consumes a `clone()` of this (cheap —
+    /// it is an `Arc` refcount bump).
+    symbolic: ordering::SharedSymbolicCholesky,
     /// Symbolic factor of the same free-DOF Hessian pattern, in Lu
     /// shape (full matrix, no `Side`). Held alongside `symbolic` so
     /// the A2 LU fallback (Lu factorize when Llt hits a non-PD pivot)

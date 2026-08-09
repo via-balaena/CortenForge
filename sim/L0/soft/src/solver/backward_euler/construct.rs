@@ -2,8 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use faer::Side;
-use faer::sparse::linalg::solvers::{SymbolicLlt, SymbolicLu};
+use faer::sparse::linalg::solvers::SymbolicLu;
 use faer::sparse::{SparseColMat, Triplet};
 use nalgebra::{Matrix3, SMatrix};
 
@@ -16,6 +15,7 @@ use crate::readout::BoundaryConditions;
 
 use super::CpuNewtonSolver;
 use super::helpers::element_node_ids;
+use super::ordering::{SharedSymbolicCholesky, nested_dissection_permutation, symbolic_cholesky};
 use super::{ElementGeometry, GaussGeometry, SolverConfig};
 
 /// HRZ (Hinton–Rock–Zienkiewicz) diagonal mass-lumping weights — the per-node
@@ -150,6 +150,11 @@ where
 /// fallback needs the full pattern, so the lower triangle is reflected — the
 /// diagonal once, each off-diagonal at both `(r, c)` and `(c, r)` — exactly as
 /// the numeric Lu factor symmetrizes the assembled tangent at fall-through.
+///
+/// The Llt factor is ordered by nested dissection rather than faer's built-in
+/// AMD, which is the largest single performance lever in this crate — see
+/// [`ordering`](super::ordering) for the measurements and for why the Lu
+/// fallback keeps COLAMD.
 //
 // expect_used + panic: a pattern-build failure here is impossible for any valid
 // mesh + Dirichlet set (the same programmer-bug rationale as `new()`'s own
@@ -160,7 +165,7 @@ where
 fn build_symbolic_factors(
     triplet_set: &BTreeSet<(usize, usize)>,
     n_free: usize,
-) -> (SymbolicLlt<usize>, SymbolicLu<usize>) {
+) -> (SharedSymbolicCholesky, SymbolicLu<usize>) {
     let pattern_triplets: Vec<Triplet<usize, usize, f64>> = triplet_set
         .iter()
         .map(|&(c, r)| Triplet::new(r, c, 1.0))
@@ -168,7 +173,10 @@ fn build_symbolic_factors(
     let pattern_mat: SparseColMat<usize, f64> =
         SparseColMat::try_new_from_triplets(n_free, n_free, &pattern_triplets)
             .expect("malformed free-block triplet pattern");
-    let symbolic = SymbolicLlt::<usize>::try_new(pattern_mat.symbolic(), Side::Lower)
+    // `None` = the ordering could not be computed; faer's AMD then stands in,
+    // costing speed but never correctness.
+    let permutation = nested_dissection_permutation(triplet_set, n_free);
+    let symbolic = symbolic_cholesky(pattern_mat.symbolic(), permutation.as_ref())
         .expect("symbolic factorization of free-block pattern failed");
 
     // A2 LU fallback: reflect the structurally-symmetric lower-tri pattern into

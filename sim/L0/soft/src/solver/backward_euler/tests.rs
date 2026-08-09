@@ -2007,18 +2007,34 @@ fn tet10_friction_adjoint_is_fail_loud() {
     let _sensitivity = solver.equilibrium_state_sensitivity(&x, None, cfg.dt, &zeros, &zeros);
 }
 
-/// Build a Tet10 cube's free-DOF tangent pattern and report faer's symbolic choice.
-///
-/// Returns `(n_free, is_supernodal, nnz_L, factor_seconds)`.
+/// One ordering's symbolic + numeric cost on a given pattern.
 #[cfg(test)]
-fn factorization_regime_probe(cells: usize) -> (usize, bool, usize, f64) {
+struct OrderingProbe {
+    /// `nnz(L)` — the fill the ordering admits.
+    nnz_l: usize,
+    /// Best-of-3 numeric factorization time, seconds.
+    factor_seconds: f64,
+    /// Whether faer chose its supernodal (rather than simplicial) path.
+    supernodal: bool,
+}
+
+/// Build a Tet10 cube's free-DOF tangent pattern and measure BOTH orderings on
+/// it: faer's built-in AMD, and the nested dissection the solver now uses.
+///
+/// Measuring both in one process on one pattern is what makes the comparison
+/// admissible — a recorded number from a previous session is a record, not a
+/// forecast, and the two orderings' costs are only meaningful against each
+/// other on identical input.
+///
+/// Returns `(n_free, amd, nested_dissection)`.
+#[cfg(test)]
+fn factorization_regime_probe(cells: usize) -> (usize, OrderingProbe, OrderingProbe) {
     use faer::Side;
     use faer::reborrow::Reborrow;
-    use faer::sparse::linalg::cholesky::{
-        CholeskySymbolicParams, SymbolicCholeskyRaw, SymmetricOrdering, factorize_symbolic_cholesky,
-    };
-    use faer::sparse::linalg::solvers::{Llt, SymbolicLlt};
+    use faer::sparse::linalg::cholesky::SymbolicCholeskyRaw;
     use faer::sparse::{SparseColMat, Triplet};
+
+    use super::ordering::{OrderedLlt, nested_dissection_permutation, symbolic_cholesky};
 
     let field = MaterialField::uniform(1.0e5, 4.0e5);
     let cube = HandBuiltTetMesh::uniform_block(cells, 0.1, &field);
@@ -2049,36 +2065,35 @@ fn factorization_regime_probe(cells: usize) -> (usize, bool, usize, f64) {
     let a: SparseColMat<usize, f64> =
         SparseColMat::try_new_from_triplets(n_free, n_free, &pairs).expect("pattern");
 
-    // TEMP: dump the real pattern for the offline ordering experiment. REVERT.
-    if let Ok(dir) = std::env::var("CF_DUMP_PATTERN") {
-        use std::io::Write;
-        let path = format!("{dir}/pattern_{n_free}.txt");
-        let mut f = std::io::BufWriter::new(std::fs::File::create(&path).expect("dump"));
-        writeln!(f, "{n_free}").expect("hdr");
-        for t in &triplets {
-            writeln!(f, "{} {}", t.row, t.col).expect("row");
+    // Lower-triangle `(col, row)` keys — the shape `nested_dissection_
+    // permutation` consumes, reconstructed from the assembled tangent.
+    let lower: std::collections::BTreeSet<(usize, usize)> = triplets
+        .iter()
+        .filter(|t| t.row >= t.col)
+        .map(|t| (t.col, t.row))
+        .collect();
+
+    let measure = |permutation: Option<&_>| {
+        let symbolic = symbolic_cholesky(a.symbolic(), permutation).expect("symbolic");
+        let mut best = f64::MAX;
+        for _ in 0..3 {
+            let t = std::time::Instant::now();
+            let _factor = OrderedLlt::try_new_with_symbolic(symbolic.clone(), a.rb(), Side::Lower)
+                .expect("numeric");
+            best = best.min(t.elapsed().as_secs_f64());
         }
-        eprintln!("dumped {path} ({} triplets)", triplets.len());
-    }
+        OrderingProbe {
+            nnz_l: symbolic.len_val(),
+            factor_seconds: best,
+            supernodal: matches!(symbolic.raw(), SymbolicCholeskyRaw::Supernodal(_)),
+        }
+    };
 
-    let sym_low = factorize_symbolic_cholesky(
-        a.symbolic(),
-        Side::Lower,
-        SymmetricOrdering::Amd,
-        CholeskySymbolicParams::default(),
-    )
-    .expect("symbolic");
-    let supernodal = matches!(sym_low.raw(), SymbolicCholeskyRaw::Supernodal(_));
-    let nnz_l = sym_low.len_val();
+    let amd = measure(None);
+    let permutation = nested_dissection_permutation(&lower, n_free).expect("nested dissection");
+    let nested_dissection = measure(Some(&permutation));
 
-    let sym = SymbolicLlt::try_new(a.symbolic(), Side::Lower).expect("symbolic llt");
-    let mut best = f64::MAX;
-    for _ in 0..3 {
-        let t = std::time::Instant::now();
-        let _l = Llt::try_new_with_symbolic(sym.clone(), a.rb(), Side::Lower).expect("numeric");
-        best = best.min(t.elapsed().as_secs_f64());
-    }
-    (n_free, supernodal, nnz_l, best)
+    (n_free, amd, nested_dissection)
 }
 
 /// The numeric factorization must stay on faer's **supernodal** path.
@@ -2093,51 +2108,69 @@ fn factorization_regime_probe(cells: usize) -> (usize, bool, usize, f64) {
 /// would notice.
 #[test]
 fn factorization_stays_on_the_supernodal_path() {
-    let (n_free, supernodal, nnz_l, _) = factorization_regime_probe(6);
+    let (n_free, _amd, nd) = factorization_regime_probe(6);
     assert!(
-        supernodal,
-        "faer chose the SIMPLICIAL path at n_free = {n_free} (nnz(L) = {nnz_l}) — that is a \
-         4-6× factorization slowdown with no other symptom. Check the element/mesh change or \
-         faer's supernodal_flop_ratio_threshold."
+        nd.supernodal,
+        "faer chose the SIMPLICIAL path at n_free = {n_free} (nnz(L) = {}) — that is a \
+         4-6× factorization slowdown with no other symptom. Check the element/mesh change, \
+         the nested-dissection ordering, or faer's supernodal_flop_ratio_threshold.",
+        nd.nnz_l
     );
 }
 
-/// Fill growth under faer's ordering — the diagnostic that picks the next lever.
+/// Fill growth, AMD against nested dissection — the diagnostic behind the
+/// ordering choice, and the instrument for revisiting it.
 ///
 /// `cargo test -p sim-soft --release --lib factorization_fill_growth -- --ignored --nocapture`
 ///
-/// Measured 2026-08-09 (M4 Pro, idle, faer 0.24 with its hard-wired AMD ordering):
+/// Measured 2026-08-09 (M4 Pro, idle, faer 0.24). Both columns come from the
+/// same process on the same pattern, so the ratio is the number to read:
 ///
-/// | `n_free` | `nnz(L)` | fill = `nnz(L)/n` | numeric factor |
-/// |---|---|---|---|
-/// | 6,444 | 2.80 M | 435 | 34.5 ms |
-/// | 14,496 | 10.35 M | 714 | 191.8 ms |
-/// | 27,420 | 26.71 M | 974 | 739.8 ms |
+/// | `n_free` | AMD fill | ND fill | AMD factor | ND factor | speedup |
+/// |---|---|---|---|---|---|
+/// | (see the run — the table is regenerated, not asserted) | | | | | |
 ///
-/// **Read it as follows.** Supernodal at every size and ~17 GFlop/s at the top,
-/// so faer's kernel is fine. What is not fine is that fill per row more than
-/// DOUBLES over a 4.25× DOF increase, and factorization time grows 21× — the
-/// signature of minimum-degree ordering losing in 3D. A nested-dissection
-/// ordering is the lever this points at; faer ships AMD and COLAMD only.
+/// **What it is for.** Supernodal at every size and ~17 GFlop/s at the top, so
+/// faer's kernel is fine. What was not fine is that under AMD, fill per row
+/// more than DOUBLED over a 4.25× DOF increase and factorization time grew
+/// 21× — the signature of minimum-degree ordering losing in 3D. Nested
+/// dissection is the answer to that, and this sweep is how the claim stays
+/// checkable: if a faer upgrade ever ships its own ND, or the crossover moves,
+/// this is the run that says so.
+///
+/// Deliberately asserts nothing — timings are machine- and load-dependent, and
+/// a gate that fails on a busy laptop teaches people to ignore it. The
+/// assertion that DOES hold is `factorization_stays_on_the_supernodal_path`.
 #[test]
 #[ignore = "diagnostic — reports fill growth, asserts nothing timing-dependent"]
 fn factorization_fill_growth() {
-    for cells in [6usize, 8, 10] {
-        let (n_free, supernodal, nnz_l, secs) = factorization_regime_probe(cells);
-        // precision_loss: a printed diagnostic ratio. Any mesh that fits in
+    println!(
+        "{:>8}  {:>10} {:>7}  {:>10} {:>7}  {:>9} {:>9}  {:>7}",
+        "n_free", "AMD nnz(L)", "fill", "ND nnz(L)", "fill", "AMD ms", "ND ms", "speedup"
+    );
+    for cells in [2usize, 3, 4, 6, 8, 10] {
+        let (n_free, amd, nd) = factorization_regime_probe(cells);
+        // precision_loss: printed diagnostic ratios. Any mesh that fits in
         // memory has nnz(L) far below 2^52, so the cast cannot lose a digit
         // that matters here.
         #[allow(clippy::cast_precision_loss)]
-        let fill = nnz_l as f64 / n_free as f64;
-        let regime = if supernodal {
-            "SUPERNODAL"
-        } else {
-            "SIMPLICIAL"
-        };
+        let (amd_fill, nd_fill) = (
+            amd.nnz_l as f64 / n_free as f64,
+            nd.nnz_l as f64 / n_free as f64,
+        );
+        assert!(
+            amd.supernodal && nd.supernodal,
+            "simplicial path at n_free = {n_free} — see \
+             factorization_stays_on_the_supernodal_path"
+        );
         println!(
-            "n_free={n_free:>7}  {regime}  nnz(L)={nnz_l:>10}  fill={fill:>6.1}  \
-             factor={:>7.1} ms",
-            secs * 1e3,
+            "{n_free:>8}  {:>10} {amd_fill:>7.1}  {:>10} {nd_fill:>7.1}  \
+             {:>9.1} {:>9.1}  {:>6.2}×",
+            amd.nnz_l,
+            nd.nnz_l,
+            amd.factor_seconds * 1e3,
+            nd.factor_seconds * 1e3,
+            amd.factor_seconds / nd.factor_seconds,
         );
     }
 }
