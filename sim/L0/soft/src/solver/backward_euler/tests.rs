@@ -1114,6 +1114,86 @@ fn tet10_rest_dofs(solver: &CpuTet10NHSolver<Tet10Mesh>) -> Vec<f64> {
     x
 }
 
+/// A Tet10 inversion that the corner block **structurally cannot see** must still be
+/// gated — the state that motivated sweeping `inversion` at the Gauss points.
+///
+/// Construction makes the blindness exact rather than incidental: all four corners are
+/// left bit-identical to rest, so the affine corner `F` the gate used to read is exactly
+/// `I` (`det F = 1`, `σ = (1, 1, 1)`) — a pristine element by both the inversion slot and
+/// the still-corner-block stretch slot. One midside node is then pulled a full edge length
+/// past corner 0, which inverts the isoparametric map at an interior Gauss point.
+///
+/// `min_gauss_det_ratio` supplies the independent confirmation that the state really is
+/// inverted: it is a separate readout with its own closed-form validation in the test
+/// below, so the premise does not route through the gate under test.
+///
+/// Pre-sweep, this state reached `first_piola`, which takes `ln(det F)` of a negative
+/// determinant and returns `NaN`. Measured on the pre-sweep gate, this 30-DOF fixture
+/// reproduces the anatomical failure signature exactly: in `--release`, `sim-soft: faer
+/// LU fallback fired ... (free residual norm NaN)` followed by `ArmijoStall { last_iter:
+/// 0, last_r_norm: NaN }`; in the debug/test profile it trips `try_factor_free_tangent`'s
+/// `max diagonal entry must be positive (got 0)` first, because folding an all-NaN
+/// diagonal with `f64::max` yields `0`. Both blame the linear algebra for an inverted
+/// element. It must now fail closed, naming the element instead.
+#[test]
+fn tet10_midside_inversion_invisible_to_the_corner_block_is_gated() {
+    let tet4 = SingleTetMesh::new(&MaterialField::uniform(1.0e5, 4.0e5));
+    let tet10 = Tet10Mesh::from_tet4(&tet4);
+    let solver: CpuTet10NHSolver<Tet10Mesh> = CpuNewtonSolver::new(
+        Tet10,
+        tet10,
+        NullContact,
+        SolverConfig::skeleton(),
+        BoundaryConditions {
+            pinned_vertices: vec![0, 1, 2, 3],
+            roller_vertices: Vec::new(),
+            loaded_vertices: Vec::new(),
+        },
+    );
+
+    let rest = tet10_rest_dofs(&solver);
+    let mut x = rest.clone();
+    // Node 4 is the midside of edge (0, 1): corner 0 at the origin, corner 1 at
+    // `x = 0.1`. Asserted rather than assumed — the whole fixture depends on which
+    // node moves.
+    assert_eq!(
+        (x[12], x[13], x[14]),
+        (0.05, 0.0, 0.0),
+        "node 4 must be the (0, 1) edge midside at (0.05, 0, 0)"
+    );
+    x[12] = -0.05;
+
+    assert_eq!(
+        &x[..12],
+        &rest[..12],
+        "the four corners must stay exactly at rest — that is what makes the corner \
+         block read F = I and the blindness exact"
+    );
+    assert!(
+        solver.min_gauss_det_ratio(&x) < 0.0,
+        "fixture premise: the perturbed state must invert a Gauss point (got {})",
+        solver.min_gauss_det_ratio(&x)
+    );
+
+    let x_t = Tensor::from_slice(&x, &[x.len()]);
+    let v_t = Tensor::zeros(&[x.len()]);
+    let theta = Tensor::zeros(&[0]);
+    match solver.try_replay_step(&x_t, &v_t, &theta, 1e-3) {
+        Err(SolverFailure::ValidityViolation { tet_id, message }) => {
+            assert_eq!(tet_id, 0, "the single element is the violator");
+            assert!(
+                message.contains("inversion = det F"),
+                "must fail on the inversion slot, got: {message}"
+            );
+        }
+        Err(other) => panic!(
+            "an inverted Gauss point must surface as ValidityViolation, not {other:?} — \
+             that misattribution is the defect this gate closes"
+        ),
+        Ok(_) => panic!("an inverted Gauss point must not solve"),
+    }
+}
+
 /// `min_gauss_det_ratio` validated against configurations whose answer is known in closed
 /// form, before it is trusted on a deformed anatomical mesh.
 ///

@@ -114,12 +114,24 @@ impl Material for NeoHookean {
     }
 }
 
-// NH declares `InversionHandling::RequireOrientation`; non-invertible F
-// is an IPC-barrier failure upstream, not a constitutive branch.
+// NH declares `InversionHandling::RequireOrientation`, but this guard checks
+// INVERTIBILITY (`det F ≠ 0`), not orientation (`det F > 0`) — the two are not
+// the same condition and only the narrower one panics here. An inverted-but-
+// invertible `F` (`det F < 0`) passes `try_inverse` and then reaches
+// `first_piola`'s `det F.ln()`, which returns NaN.
+//
+// That asymmetry is deliberate, not an oversight. Inside Armijo backtracking a
+// trial state may legitimately overshoot into inversion; a NaN residual fails
+// the sufficient-decrease test, the step halves, and the search recovers — so
+// panicking here would turn a working line search into an aborted solve. The
+// orientation guarantee therefore belongs at the step boundaries, where the
+// state is a real candidate equilibrium rather than a trial:
+// `CpuNewtonSolver::check_validity_at_step_start` sweeps `det F > 0` at the
+// Gauss points and fails closed with `SolverFailure::ValidityViolation`.
 #[allow(clippy::expect_used)]
 fn invert_transpose(f: &Matrix3<f64>) -> Matrix3<f64> {
     f.try_inverse()
-        .expect("non-invertible F in NeoHookean; IPC barrier should prevent this")
+        .expect("singular F in NeoHookean (det F == 0); orientation is gated at the step boundary")
         .transpose()
 }
 

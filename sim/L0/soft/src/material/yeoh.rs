@@ -243,11 +243,13 @@ impl Material for Yeoh {
     }
 }
 
-// Yeoh declares `InversionHandling::RequireOrientation`; non-invertible
-// F is an IPC-barrier failure upstream, not a constitutive branch.
+// Yeoh declares `InversionHandling::RequireOrientation`, but this guard checks
+// INVERTIBILITY (`det F ≠ 0`), not orientation (`det F > 0`). See
+// `neo_hookean::invert_transpose` for why the asymmetry is deliberate and where
+// the orientation guarantee actually lives (the step-boundary validity sweep).
 #[allow(clippy::expect_used)]
 fn invert_transpose(f: &Matrix3<f64>) -> Matrix3<f64> {
     f.try_inverse()
-        .expect("non-invertible F in Yeoh; IPC barrier should prevent this")
+        .expect("singular F in Yeoh (det F == 0); orientation is gated at the step boundary")
         .transpose()
 }
