@@ -2206,17 +2206,26 @@ const L1_BANNED: &[BanPattern] = &[];
 /// L0Integration's 200/220 pattern.
 /// [`tier_config`] with a crate's `dependency_budget` override applied.
 ///
-/// Moves `release_max` to the declared budget and `test_max` to
+/// Raises `release_max` to the declared budget and `test_max` to
 /// `budget + 20`, preserving the tier table's own release/test buffer.
 /// Banned patterns are taken from the tier unchanged — the override is a
 /// COUNT, never a permission.
+///
+/// **Raise-only.** A budget below the tier default is ignored rather than
+/// applied. This is not politeness: `tier` here is the EFFECTIVE tier, which
+/// under `--all-features` may have been tiered up by a `tier_up_features`
+/// declaration. Without the clamp, a crate declaring a budget for its base
+/// tier would silently TIGHTEN the laxer tier its features unlock — e.g. an
+/// L0 crate declaring 200 that tiers up to L1 would cap L1's unbounded graph
+/// at 200 and fail a build the tier permits. The override exists to buy a
+/// crate more room than its tier gives, never less.
 fn tier_config_with_budget(tier: Tier, budget: Option<usize>) -> TierConfig {
     let base = tier_config(tier);
     match budget {
         None => base,
         Some(budget) => TierConfig {
-            release_max: budget,
-            test_max: budget.saturating_add(20),
+            release_max: base.release_max.max(budget),
+            test_max: base.test_max.max(budget.saturating_add(20)),
             banned: base.banned,
         },
     }
@@ -2918,7 +2927,7 @@ fn grade_layer_integrity(
                     // failure. A cap that is only visible when it is
                     // breached is a cap nobody can audit.
                     Some(budget) => format!(
-                        "tier {} — no findings (dependency_budget OVERRIDDEN to {budget},                          tier default {})",
+                        "tier {} — no findings (dependency_budget raised to {budget}; tier default {})",
                         metadata.tier.label(),
                         tier_config(metadata.tier).release_max
                     ),
@@ -4091,6 +4100,30 @@ serde = \"1\"
         assert!(
             base.banned.len() > tier_config(Tier::L0Io).banned.len(),
             "L0 is expected to ban strictly more than L0-io"
+        );
+    }
+
+    /// A budget BELOW the effective tier's default must be ignored.
+    ///
+    /// `tier_config_with_budget` receives the EFFECTIVE tier, which
+    /// `--all-features` may have tiered up. A crate declaring a budget sized
+    /// for its base tier must not thereby tighten the laxer tier its features
+    /// unlock.
+    #[test]
+    fn dependency_budget_override_never_tightens_a_tier() {
+        // L1 is unbounded; a modest budget must not clamp it.
+        let l1 = tier_config_with_budget(Tier::L1, Some(200));
+        assert_eq!(
+            l1.release_max,
+            usize::MAX,
+            "a per-crate budget clamped L1's unbounded dep graph"
+        );
+        // And a budget under L0's own default leaves L0 alone.
+        let l0 = tier_config_with_budget(Tier::L0, Some(10));
+        assert_eq!(
+            l0.release_max,
+            tier_config(Tier::L0).release_max,
+            "a budget below the tier default tightened the cap"
         );
     }
 
