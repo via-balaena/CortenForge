@@ -6,9 +6,18 @@
 //! - `P(F) = μ(F − F⁻ᵀ) + λ (ln J) F⁻ᵀ`
 //! - `C_ijkl = μ δ_ik δ_jl + (μ − λ ln J) F⁻ᵀ_il F⁻ᵀ_kj + λ F⁻ᵀ_ij F⁻ᵀ_kl`
 //!
-//! Inversion handling is `RequireOrientation` (spec §3; book 03-impl.md):
-//! `first_piola` / `tangent` panic on non-positive `det F`, which the
-//! IPC barrier is expected to prevent at contact time. The small-strain
+//! Inversion handling is `RequireOrientation` (spec §3; book 03-impl.md).
+//! ⚠ **The impls do not enforce it themselves, and the enforcement is not a
+//! contact concern.** `first_piola` / `tangent` guard only *invertibility*
+//! (`try_inverse`); a `det F < 0` is invertible, so it flows into
+//! `det F.ln()` and yields `NaN` rather than a panic. Orientation is enforced
+//! at the solve boundaries by
+//! [`CpuNewtonSolver::check_validity_at_step_start`](crate::CpuNewtonSolver),
+//! which sweeps `det F > 0` at the Gauss points and fails closed with
+//! `SolverFailure::ValidityViolation`. That is the right home for it: the
+//! inversion this guards against is reachable from a prescribed-displacement
+//! warm start with no contact involved, so no contact barrier — penalty or
+//! IPC — covers the case. See `invert_transpose` below. The small-strain
 //! cancellation-safe branch (log1p on `J`, Frobenius-decomposed `I₁ − 3`)
 //! from Part 2 Ch 04 03-impl.md §88 is deferred to the gradcheck session
 //! that first exercises `F ≈ I` at six-digit agreement with linear.
@@ -120,12 +129,22 @@ impl Material for NeoHookean {
 // invertible `F` (`det F < 0`) passes `try_inverse` and then reaches
 // `first_piola`'s `det F.ln()`, which returns NaN.
 //
-// That asymmetry is deliberate, not an oversight. Inside Armijo backtracking a
-// trial state may legitimately overshoot into inversion; a NaN residual fails
-// the sufficient-decrease test, the step halves, and the search recovers — so
-// panicking here would turn a working line search into an aborted solve. The
-// orientation guarantee therefore belongs at the step boundaries, where the
-// state is a real candidate equilibrium rather than a trial:
+// Why not panic here instead. Armijo backtracking evaluates trial states that
+// may overshoot into inversion, and a NaN `trial_norm` fails the
+// sufficient-decrease test (`NaN <= x` is false), so control reaches
+// `alpha *= 0.5` and the next trial is computed from scratch — `f_int` is
+// re-zeroed and every residual index rewritten, so the NaN does not persist.
+// Panicking here would convert every such trial into an aborted solve.
+//
+// ⚠ What is NOT claimed: that the search always escapes. The loop is budgeted
+// (`max_line_search_backtracks`), and even a non-inverted trial must still
+// satisfy sufficient decrease, which needs a descent direction the tangent may
+// not supply. A NaN trial can therefore also just exhaust the budget and
+// return `ArmijoStallInfo`. The point is only that halving is reachable, so
+// the panic would remove a usable outcome — not that recovery is guaranteed.
+//
+// The orientation guarantee belongs at the step boundaries, where the state is
+// a candidate equilibrium rather than a trial:
 // `CpuNewtonSolver::check_validity_at_step_start` sweeps `det F > 0` at the
 // Gauss points and fails closed with `SolverFailure::ValidityViolation`.
 #[allow(clippy::expect_used)]

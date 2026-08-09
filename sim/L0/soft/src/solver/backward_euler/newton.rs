@@ -11,11 +11,11 @@ use crate::mesh::{Mesh, TetId};
 use crate::solver::lm::LmState;
 use crate::solver::{CpuTape, NewtonStep, SolverFailure};
 
-use super::CpuNewtonSolver;
 use super::helpers::{
     armijo_stall_panic_message, deformation_gradient, element_node_ids, extract_element_dof_values,
     residual_into,
 };
+use super::{CpuNewtonSolver, GaussGeometry};
 
 /// Armijo sufficient-decrease constant (scope §5 R-1).
 const ARMIJO_C1: f64 = 1e-4;
@@ -65,9 +65,15 @@ where
     /// where [`Material::first_piola`] is actually evaluated — because a
     /// `det F ≤ 0` the gate does not see becomes a silent `NaN` downstream
     /// rather than a caught violation. `max_stretch_deviation` still reads
-    /// the single-point corner block; extending it per-Gauss-point is a
-    /// separate, wider change (it tightens what counts as valid for every
-    /// existing Tet10 consumer) and is deliberately not bundled here. For
+    /// the single-point corner block. Moving it too is a separate, wider
+    /// change and is deliberately not bundled here: unlike `inversion` — whose
+    /// corner-block reading is not a quantity anything evaluates — the corner
+    /// stretch is a real bound that existing Tet10 consumers currently satisfy,
+    /// and the two available shapes differ. *Adding* per-Gauss-point bounds can
+    /// only shrink the valid set; *replacing* the corner check with them is not
+    /// monotone in either direction, since the corner `F` is a function of the
+    /// four corner nodes alone and is not any combination of the Gauss-point
+    /// `F`s. Which shape is right wants its own measured pass. For
     /// Tet4 the distinction is vacuous: `G == 1` and the centroid gradient is
     /// bit-identical to the corner block, so both slots see one `F`.
     ///
@@ -114,9 +120,16 @@ where
     fn check_validity_at_step_start(&self, x_curr: &[f64]) -> Result<(), SolverFailure> {
         debug_assert!(x_curr.len() == self.n_dof);
         let materials = self.mesh.materials();
-        // Zipped rather than indexed: the two caches are built tet-by-tet in one
-        // pass in `construct`, and zipping makes that parallel-array invariant
-        // structural instead of a bare `[tet_id]` the reader has to trust.
+        // The two caches are filled once per tet in a single `construct` loop, so
+        // they are the same length. Pinned here rather than left implicit: `zip`
+        // stops at the SHORTER iterator, so a future divergence would silently
+        // skip the trailing tets — fail-open, in a gate whose whole job is to
+        // fail closed.
+        debug_assert_eq!(
+            self.element_geometries.len(),
+            self.gauss_geometries.len(),
+            "validity gate would silently skip tets if the two geometry caches diverged"
+        );
         for (tet_id, (geom, gauss_geom)) in self
             .element_geometries
             .iter()
@@ -132,38 +145,8 @@ where
             // 0` declare a non-`RequireOrientation` inversion handler,
             // and Phase 4 has none — Phase H may add `Barrier` /
             // `OptIn` variants when an impl needs them.
-            //
-            // Swept at the **Gauss points**, not on the corner block:
-            // orientation has to hold wherever the constitutive model is
-            // actually evaluated, and that is `gauss_geometries` — the same
-            // `(grad_x_n, weight)` pairs `assemble_global_int_force` feeds to
-            // `Material::first_piola`. For Tet4 the two are the same tensor
-            // (`G == 1`, the centroid point, bit-identical to
-            // `ElementGeometry::grad_x_n`), so this is verdict-identical to the
-            // pre-sweep corner check. For Tet10 they differ: the corner block
-            // is an affine proxy that cannot see a midside-driven inversion at
-            // an interior Gauss point, and an inversion the gate misses does
-            // not stay missed — `first_piola` takes `ln(det F)` of a negative
-            // determinant and returns NaN, which reaches Newton as a NaN
-            // residual and surfaces ~a minute later as a misattributed
-            // "non-SPD tangent" Armijo stall.
             if matches!(validity.inversion, InversionHandling::RequireOrientation) {
-                let nodes = element_node_ids::<M, Msh, N>(&self.mesh, tet_id as TetId);
-                let x_nodes = extract_element_dof_values(x_curr, &nodes);
-                for (q, (grad_x_n, _)) in gauss_geom.gauss.iter().enumerate() {
-                    let det_f = deformation_gradient(&x_nodes, grad_x_n).determinant();
-                    if det_f <= 0.0 {
-                        return Err(SolverFailure::ValidityViolation {
-                            tet_id,
-                            message: format!(
-                                "validity violation at tet {tet_id}: inversion = det F = \
-                                 {det_f:.3} at Gauss point {q} of {G} violates \
-                                 RequireOrientation handler (must be strictly positive). \
-                                 Phase 4 scope memo Decision Q fail-closed semantics."
-                            ),
-                        });
-                    }
-                }
+                self.check_orientation_at_gauss_points(x_curr, tet_id, gauss_geom)?;
             }
 
             // Principal-stretch bounds: SVD `F = U Σ V^T` gives
@@ -171,7 +154,16 @@ where
             // `f.svd_unordered(false, false)` skips U/V (we only need
             // σ); cheap O(27) FLOPs per tet. Singular values are
             // non-negative; a reflection-only F has σ_i ≥ 0 with
-            // `det F < 0`, already caught above.
+            // `det F < 0`.
+            //
+            // ⚠ For Tet4 that case is caught by the sweep above (its single
+            // Gauss pair IS this corner block). For Tet10 it is not: the sweep
+            // reads the Gauss points, so a corner block that is itself
+            // orientation-negative is no longer gated. That is deliberate —
+            // nothing evaluates the Tet10 corner `F` numerically, so its
+            // orientation is not a physical property of the state — and it does
+            // not disturb the stretch verdict either, because singular values
+            // are orientation-blind (`σ(F) = σ(RF)` for a reflection `R`).
             //
             // Two gate flavors (Yeoh arc memo D8): if either of the new
             // asymmetric bounds is `Some`, gate per-bound; else fall
@@ -254,6 +246,66 @@ where
                         }
                     }
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// The `inversion` slot for one element: `det F > 0` at **every Gauss point**.
+    ///
+    /// Swept over [`GaussGeometry`], not the corner block, because orientation has to
+    /// hold wherever the constitutive model is actually evaluated — these are the same
+    /// per-point `grad_x_n` that `assemble_global_int_force`'s elastic branch builds each
+    /// `F` from before handing it to [`Material::first_piola`].
+    ///
+    /// The F-bar branch of that assembly is the one exception, and it is covered rather
+    /// than missed: it evaluates a patch-modified `F*` off the corner block, but it is
+    /// Tet4-only (asserted in `try_solve_impl`, above both of this gate's call sites), and
+    /// for Tet4 the corner block and the single Gauss pair are the same tensor. Its
+    /// `det F* = J̄` is a positive-weighted average of exactly the per-element `J_e` this
+    /// sweep checks, so `J̄ > 0` follows from the sweep passing.
+    ///
+    /// For **Tet4** this is verdict-identical to the pre-sweep corner check (`G == 1`, the
+    /// centroid point, bit-identical to `ElementGeometry::grad_x_n`) — pinned by
+    /// `tet4_inversion_verdict_survives_the_gauss_sweep`. For **Tet10** the two differ:
+    /// the corner block is an affine proxy that cannot see a midside-driven inversion at
+    /// an interior Gauss point, and an inversion this gate misses does not stay missed —
+    /// `first_piola` takes `ln(det F)` of a negative determinant and returns `NaN`, which
+    /// reaches Newton as a `NaN` residual and surfaces much later as a misattributed
+    /// "non-SPD tangent" Armijo stall.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SolverFailure::ValidityViolation`] naming the tet and the 0-based Gauss
+    /// index of the first non-positive (or non-finite) `det F`.
+    //
+    // cast_possible_truncation: the Mesh-trait API tax, as in the assembly methods.
+    #[allow(clippy::cast_possible_truncation)]
+    fn check_orientation_at_gauss_points(
+        &self,
+        x_curr: &[f64],
+        tet_id: usize,
+        gauss_geom: &GaussGeometry<N, G>,
+    ) -> Result<(), SolverFailure> {
+        let nodes = element_node_ids::<M, Msh, N>(&self.mesh, tet_id as TetId);
+        let x_nodes = extract_element_dof_values(x_curr, &nodes);
+        for (q, (grad_x_n, _)) in gauss_geom.gauss.iter().enumerate() {
+            let det_f = deformation_gradient(&x_nodes, grad_x_n).determinant();
+            // `is_finite` as well as `<= 0.0`, because every float comparison
+            // against a NaN is false: the bare `<=` form lets a non-finite
+            // `det F` through, and a non-finite state is exactly what this gate
+            // exists to stop from reaching `first_piola`.
+            if !det_f.is_finite() || det_f <= 0.0 {
+                return Err(SolverFailure::ValidityViolation {
+                    tet_id,
+                    message: format!(
+                        "validity violation at tet {tet_id}: inversion = det F = \
+                         {det_f:.3} at Gauss point {q} (0-based) of {G} violates \
+                         RequireOrientation handler (must be finite and strictly \
+                         positive). Phase 4 scope memo Decision Q fail-closed \
+                         semantics."
+                    ),
+                });
             }
         }
         Ok(())

@@ -108,9 +108,12 @@ struct ElementGeometry {
 ///   `SMatrix<f64, 10, 3>` gradient — sharing one constant `|detJ|` when
 ///   straight-edged, or a per-point `|detJ(ξ_q)|` when curved.
 ///
-/// Consumed only by the forward stiffness kernels
+/// Consumed by the forward stiffness kernels
 /// (`assemble_global_int_force` / `assemble_free_hessian_triplets` /
-/// `internal_force_tangent_matvec`). Held alongside [`ElementGeometry`] rather
+/// `internal_force_tangent_matvec`) and by the step-boundary inversion sweep in
+/// `CpuNewtonSolver::check_validity_at_step_start`, which gates `det F > 0` at
+/// exactly the points those kernels evaluate the material at. Held alongside
+/// [`ElementGeometry`] rather
 /// than replacing it so the Tet4-flavored single-point consumers above — F-bar
 /// especially — stay byte-identical and untouched.
 #[derive(Clone, Debug)]

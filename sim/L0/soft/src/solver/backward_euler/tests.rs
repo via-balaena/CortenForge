@@ -1114,29 +1114,9 @@ fn tet10_rest_dofs(solver: &CpuTet10NHSolver<Tet10Mesh>) -> Vec<f64> {
     x
 }
 
-/// A Tet10 inversion that the corner block **structurally cannot see** must still be
-/// gated — the state that motivated sweeping `inversion` at the Gauss points.
-///
-/// Construction makes the blindness exact rather than incidental: all four corners are
-/// left bit-identical to rest, so the affine corner `F` the gate used to read is exactly
-/// `I` (`det F = 1`, `σ = (1, 1, 1)`) — a pristine element by both the inversion slot and
-/// the still-corner-block stretch slot. One midside node is then pulled a full edge length
-/// past corner 0, which inverts the isoparametric map at an interior Gauss point.
-///
-/// `min_gauss_det_ratio` supplies the independent confirmation that the state really is
-/// inverted: it is a separate readout with its own closed-form validation in the test
-/// below, so the premise does not route through the gate under test.
-///
-/// Pre-sweep, this state reached `first_piola`, which takes `ln(det F)` of a negative
-/// determinant and returns `NaN`. Measured on the pre-sweep gate, this 30-DOF fixture
-/// reproduces the anatomical failure signature exactly: in `--release`, `sim-soft: faer
-/// LU fallback fired ... (free residual norm NaN)` followed by `ArmijoStall { last_iter:
-/// 0, last_r_norm: NaN }`; in the debug/test profile it trips `try_factor_free_tangent`'s
-/// `max diagonal entry must be positive (got 0)` first, because folding an all-NaN
-/// diagonal with `f64::max` yields `0`. Both blame the linear algebra for an inverted
-/// element. It must now fail closed, naming the element instead.
-#[test]
-fn tet10_midside_inversion_invisible_to_the_corner_block_is_gated() {
+/// One Tet10 element with every corner at rest and one midside displaced, plus the
+/// rest-position accessor. Shared by the inversion-sweep tests below.
+fn single_tet10_all_corners_pinned() -> (CpuTet10NHSolver<Tet10Mesh>, Vec<f64>) {
     let tet4 = SingleTetMesh::new(&MaterialField::uniform(1.0e5, 4.0e5));
     let tet10 = Tet10Mesh::from_tet4(&tet4);
     let solver: CpuTet10NHSolver<Tet10Mesh> = CpuNewtonSolver::new(
@@ -1150,47 +1130,194 @@ fn tet10_midside_inversion_invisible_to_the_corner_block_is_gated() {
             loaded_vertices: Vec::new(),
         },
     );
-
     let rest = tet10_rest_dofs(&solver);
-    let mut x = rest.clone();
-    // Node 4 is the midside of edge (0, 1): corner 0 at the origin, corner 1 at
-    // `x = 0.1`. Asserted rather than assumed — the whole fixture depends on which
-    // node moves.
-    assert_eq!(
-        (x[12], x[13], x[14]),
-        (0.05, 0.0, 0.0),
-        "node 4 must be the (0, 1) edge midside at (0.05, 0, 0)"
-    );
-    x[12] = -0.05;
+    (solver, rest)
+}
 
-    assert_eq!(
-        &x[..12],
-        &rest[..12],
-        "the four corners must stay exactly at rest — that is what makes the corner \
-         block read F = I and the blindness exact"
-    );
-    assert!(
-        solver.min_gauss_det_ratio(&x) < 0.0,
-        "fixture premise: the perturbed state must invert a Gauss point (got {})",
-        solver.min_gauss_det_ratio(&x)
-    );
-
-    let x_t = Tensor::from_slice(&x, &[x.len()]);
+/// Run the step-start gate on `x` and return the `ValidityViolation` message, or panic
+/// with what came back instead. `SolverFailure` is not `Debug`-printable (its `Tape` field
+/// is not), so the non-violation arms are named rather than formatted.
+fn validity_message(solver: &CpuTet10NHSolver<Tet10Mesh>, x: &[f64]) -> (usize, String) {
+    let x_t = Tensor::from_slice(x, &[x.len()]);
     let v_t = Tensor::zeros(&[x.len()]);
     let theta = Tensor::zeros(&[0]);
     match solver.try_replay_step(&x_t, &v_t, &theta, 1e-3) {
-        Err(SolverFailure::ValidityViolation { tet_id, message }) => {
-            assert_eq!(tet_id, 0, "the single element is the violator");
-            assert!(
-                message.contains("inversion = det F"),
-                "must fail on the inversion slot, got: {message}"
-            );
-        }
-        Err(other) => panic!(
-            "an inverted Gauss point must surface as ValidityViolation, not {other:?} — \
-             that misattribution is the defect this gate closes"
+        Err(SolverFailure::ValidityViolation { tet_id, message }) => (tet_id, message),
+        Err(SolverFailure::ArmijoStall { last_r_norm, .. }) => panic!(
+            "an inverted Gauss point surfaced as ArmijoStall (r_norm {last_r_norm}) — that \
+             misattribution to the linear algebra is exactly the defect this gate closes"
         ),
+        Err(SolverFailure::NewtonIterCap { .. }) => {
+            panic!("expected ValidityViolation, got NewtonIterCap")
+        }
+        Err(SolverFailure::DoublyFailedFactor { .. }) => {
+            panic!("expected ValidityViolation, got DoublyFailedFactor")
+        }
         Ok(_) => panic!("an inverted Gauss point must not solve"),
+    }
+}
+
+/// A Tet10 inversion that the corner block **structurally cannot see** must be gated —
+/// at *every* Gauss point, not just the first one visited.
+///
+/// Construction makes the blindness structural rather than incidental: all four corners
+/// are left at their rest coordinates, and the corner-block `F` is a function of those
+/// four nodes alone, so no midside move can perturb it. It therefore reads the rest
+/// configuration (the identity, up to the floating-point of `j_0.try_inverse()`) — far
+/// from both corner-block slots' thresholds — while the quadratic map folds through
+/// itself at an interior Gauss point.
+///
+/// **Every Gauss index is covered, and that is the point.** Reflecting the midside of an
+/// edge through one of its endpoints inverts the Stroud point nearest that corner, so the
+/// table walks `q = 0, 1, 2, 3` and asserts the reported index each time. Without this, a
+/// gate that inspected only `gauss[0]` — the exact degeneration the sweep exists to
+/// prevent — would still pass.
+///
+/// `min_gauss_det_ratio` pins the premise. It is a genuinely different code path (it
+/// evaluates `Element::rest_jacobian_dets` on raw node coordinates and never reads
+/// `gauss_geometries` or the cached `j_0_inv`), so it catches a wiring or caching error in
+/// the gate — but it shares `Tet10::shape_gradients` and `Tet10::gauss_points`, so it is
+/// *not* independent evidence against a common-mode error in those. Its own closed-form
+/// validation sits in the test below.
+///
+/// Pre-sweep, this state reached `first_piola`, which takes `ln(det F)` of a negative
+/// determinant and returns `NaN`. Measured against `origin/main` at `7dc94aad`, the 30-DOF
+/// fixture reproduces the anatomical failure signature: in `--release`, `sim-soft: faer LU
+/// fallback fired ... (free residual norm NaN)` followed by an `ArmijoStall` carrying
+/// `last_iter: 0, last_r_norm: NaN` (plus its `x_partial`); in the debug/test profile it
+/// trips `try_factor_free_tangent`'s `max diagonal entry must be positive (got 0)` first,
+/// because folding an all-NaN diagonal with `f64::max` yields `0`. Both blame the linear
+/// algebra for an inverted element.
+#[test]
+fn tet10_midside_inversion_is_gated_at_every_gauss_point() {
+    // (edge index, endpoint corner to reflect that edge's midside through). The Stroud
+    // point nearest `corner` is the one that inverts, so this covers q = 0..4.
+    for (edge, corner) in [(0_usize, 0_usize), (1, 1), (5, 2), (3, 3)] {
+        let (solver, rest) = single_tet10_all_corners_pinned();
+        let mut x = rest.clone();
+
+        let (a, b) = TET10_EDGE_NODES[edge];
+        assert!(
+            corner == a || corner == b,
+            "edge {edge} = ({a}, {b}) does not touch corner {corner}; the reflection below \
+             is only a full-edge-length move when the corner is an endpoint"
+        );
+        let node = 4 + edge;
+        for k in 0..3 {
+            let v_corner = x[3 * corner + k];
+            // Reflect through the corner: one full edge length past it.
+            x[3 * node + k] = 2.0f64.mul_add(v_corner, -x[3 * node + k]);
+        }
+
+        assert_eq!(
+            &x[..12],
+            &rest[..12],
+            "guard for future edits to this fixture: only a MIDSIDE may move. The corner \
+             block reads corners alone, so moving one would destroy the blindness the \
+             test is built on"
+        );
+        let ratio = solver.min_gauss_det_ratio(&x);
+        assert!(
+            ratio < 0.0,
+            "fixture premise (edge {edge}, corner {corner}): the reflected midside must \
+             invert a Gauss point, got ratio {ratio}"
+        );
+
+        let (tet_id, message) = validity_message(&solver, &x);
+        assert_eq!(tet_id, 0, "the single element is the violator");
+        assert!(
+            message.contains("inversion = det F"),
+            "must fail on the inversion slot, got: {message}"
+        );
+        // The mutant-killer: pins WHICH point reported, so a sweep truncated to
+        // `gauss[0]` (or reversed, or mis-labelled) cannot pass the whole table.
+        let expected = format!("at Gauss point {corner} (0-based) of 4");
+        assert!(
+            message.contains(&expected),
+            "expected the violation to name the Gauss point nearest corner {corner} \
+             (\"{expected}\"), got: {message}"
+        );
+    }
+}
+
+/// A non-finite state must fail closed on the inversion slot, not slip through it.
+///
+/// `det F` of a `NaN` configuration is `NaN`, and **every** float comparison against `NaN`
+/// is false — so the natural `det_f <= 0.0` predicate passes it straight through to
+/// `first_piola`, and the solve dies later as an `ArmijoStall` blaming the tangent. That
+/// is the same misattribution the Gauss sweep exists to remove, reachable through a
+/// different door, which is why the gate tests `is_finite` explicitly.
+#[test]
+fn non_finite_state_is_rejected_by_the_inversion_gate() {
+    let (solver, rest) = single_tet10_all_corners_pinned();
+    let mut x = rest;
+    x[12] = f64::NAN;
+
+    let (tet_id, message) = validity_message(&solver, &x);
+    assert_eq!(tet_id, 0, "the single element is the violator");
+    assert!(
+        message.contains("inversion = det F"),
+        "a non-finite det F must be reported on the inversion slot, got: {message}"
+    );
+}
+
+/// The Gauss sweep must leave **Tet4** verdicts exactly where they were.
+///
+/// This is the back-compat half of the change, and until now nothing exercised it: every
+/// other validity test in the crate trips `max_stretch_deviation`, so no test fired the
+/// inversion branch on a linear element at all. For `N == 4` the swept `F` is bit-identical
+/// to the corner block (`Tet4::shape_gradients` discards its `xi`, `G == 1`, and both
+/// gradients are post-multiplied by the same `j_0_inv`), so these two states must be
+/// rejected exactly as they were before the sweep.
+///
+/// Both signs of the boundary are covered deliberately. Corner 3 pushed *through* the
+/// opposite face gives `det F < 0`; corner 3 laid *onto* that face gives `det F == 0`,
+/// which pins the `<=` in the predicate — under a `< 0.0` mutant the degenerate state
+/// would instead reach `invert_transpose` and panic as a singular `F`.
+#[test]
+fn tet4_inversion_verdict_survives_the_gauss_sweep() {
+    for (label, z3, expect_sign) in [
+        ("mirrored through the opposite face", -0.1_f64, "negative"),
+        ("collapsed onto the opposite face", 0.0_f64, "zero"),
+    ] {
+        let solver = build(BoundaryConditions {
+            pinned_vertices: vec![0, 1, 2],
+            roller_vertices: Vec::new(),
+            loaded_vertices: Vec::new(),
+        });
+        // SingleTetMesh corners: v0 origin, v1..v3 at 0.1 along x/y/z. The face
+        // (v0, v1, v2) is the plane z = 0, so corner 3's z alone sets the orientation.
+        let mut x = vec![0.0_f64; 12];
+        x[3] = 0.1;
+        x[7] = 0.1;
+        x[11] = z3;
+
+        let x_t = Tensor::from_slice(&x, &[x.len()]);
+        let v_t = Tensor::zeros(&[x.len()]);
+        let theta = Tensor::zeros(&[0]);
+        match solver.try_replay_step(&x_t, &v_t, &theta, 1e-3) {
+            Err(SolverFailure::ValidityViolation { tet_id, message }) => {
+                assert_eq!(tet_id, 0, "{label}: the single element is the violator");
+                assert!(
+                    message.contains("inversion = det F"),
+                    "{label}: a {expect_sign} det F must be reported on the inversion \
+                     slot, got: {message}"
+                );
+            }
+            Err(SolverFailure::ArmijoStall { .. }) => panic!(
+                "{label}: a {expect_sign} det F surfaced as ArmijoStall, not \
+                 ValidityViolation — a Tet4 verdict changed"
+            ),
+            Err(SolverFailure::NewtonIterCap { .. }) => panic!(
+                "{label}: a {expect_sign} det F surfaced as NewtonIterCap — a Tet4 \
+                 verdict changed"
+            ),
+            Err(SolverFailure::DoublyFailedFactor { .. }) => panic!(
+                "{label}: a {expect_sign} det F surfaced as DoublyFailedFactor — a Tet4 \
+                 verdict changed"
+            ),
+            Ok(_) => panic!("{label}: a {expect_sign} det F must not solve"),
+        }
     }
 }
 

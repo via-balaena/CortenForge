@@ -806,13 +806,17 @@ fn frobenius(a: &Matrix3<f64>, b: &Matrix3<f64>) -> f64 {
 
 /// `F^{-T}`.
 //
-// F-bar shares `NeoHookean`'s `RequireOrientation` contract: a non-invertible
-// `F` is an upstream IPC-barrier failure, not a branch here — so the expect is
-// a programmer-error tripwire, matching `neo_hookean::invert_transpose`.
+// F-bar shares `NeoHookean`'s `RequireOrientation` contract — including the
+// fact that this guard tests INVERTIBILITY (`det F != 0`), not orientation
+// (`det F > 0`), so it is a tripwire for a singular `F` only. Orientation is
+// enforced at the solve boundaries by `check_validity_at_step_start`; see
+// `neo_hookean::invert_transpose` for why it lives there rather than here.
 #[allow(clippy::expect_used)]
 fn invert_transpose(f: &Matrix3<f64>) -> Matrix3<f64> {
     f.try_inverse()
-        .expect("non-invertible F in F-bar transform; IPC barrier should prevent this")
+        .expect(
+            "singular F in F-bar transform (det F == 0); orientation is gated at the step boundary",
+        )
         .transpose()
 }
 

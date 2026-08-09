@@ -24,9 +24,13 @@
 //!
 //! Validation: `tests/yeoh_contract.rs`.
 //!
-//! Inversion handling matches `NeoHookean::RequireOrientation`: panic on
-//! non-positive `det F`, expected to be prevented upstream by the IPC
-//! barrier at contact time.
+//! Inversion handling matches `NeoHookean::RequireOrientation` — including
+//! the fact that the impl does **not** enforce it: `first_piola` / `tangent`
+//! guard invertibility, not orientation, so a `det F < 0` returns `NaN` via
+//! `det F.ln()` instead of panicking. Orientation is enforced at the solve
+//! boundaries by
+//! [`CpuNewtonSolver::check_validity_at_step_start`](crate::CpuNewtonSolver).
+//! See `neo_hookean`'s module doc for why that is the right home for it.
 //!
 //! ## Validity domain
 //!
