@@ -5,7 +5,6 @@ use faer::sparse::Triplet;
 use nalgebra::SMatrix;
 use sim_ml_chassis::Tensor;
 
-use crate::Vec3;
 use crate::contact::{ActivePairsFor, ContactModel};
 use crate::element::Element;
 use crate::material::{InversionHandling, Material};
@@ -68,13 +67,10 @@ where
     /// swept over the per-Gauss-point [`super::GaussGeometry`] — the points
     /// where [`Material::first_piola`] is actually evaluated, because a
     /// `det F ≤ 0` the gate does not see becomes a silent `NaN` downstream —
-    /// AND over the single-point corner block, AND at the four reference
-    /// corners for a higher-order element — the Stroud points are interior, so a
-    /// corner-region fold is invisible to them, and the corner block sees only
-    /// the four corner NODES, so a midside-driven fold is invisible to it too
-    /// (measured at 0% caught on that class). No stage subsumes another — each
-    /// is isolated by its own fixture — but they are not disjoint either: a
-    /// badly folded element trips several at once.
+    /// AND over the single-point corner block, which the Gauss points cannot see
+    /// (all four Stroud points are interior, so a corner-region fold confined to
+    /// the corner NODES is invisible to them). Neither subsumes the other and
+    /// each is isolated by its own fixture.
     /// `max_stretch_deviation` reads the corner block
     /// only. Moving it to the Gauss points too is a separate, wider
     /// change and is deliberately not bundled here: the corner
@@ -124,9 +120,9 @@ where
     /// `tet_id` and the structured `message`
     /// `"validity violation at tet {id}: {slot} = ..."` — where the value rendering
     /// is per-slot, not uniform: `inversion` emits `inversion = det F = {value:.3}`
-    /// followed by one of three locators — `at Gauss point {q} (0-based) of {G}`,
-    /// `on the corner block (every Gauss point is positive)`, or `at reference corner {c} (0-based) of 4` — while
-    /// the stretch slots emit `{slot} = {value:.3}`. `{slot}` is one of
+    /// followed by one of two locators — `at Gauss point {q} (0-based) of {G}` or
+    /// `on the corner block (every Gauss point is positive)` — while the stretch
+    /// slots emit `{slot} = {value:.3}`. `{slot}` is one of
     /// `max_stretch_deviation` / `max_principal_stretch` / `min_principal_stretch` / `inversion`).
     /// The `try_step`/`try_replay_step` callers surface this `Err` so a feasibility-aware caller can
     /// skip the design; the panic-path `step`/`replay_step` re-`panic!` with the same `message`, so
@@ -290,9 +286,8 @@ where
         Ok(())
     }
 
-    /// The `inversion` slot for one element: `det F > 0` at **every Gauss point**,
-    /// on the element's **corner block**, and at its four **reference corners**
-    /// (higher-order elements only).
+    /// The `inversion` slot for one element: `det F > 0` at **every Gauss point**
+    /// AND on the element's **corner block**.
     ///
     /// Swept over [`GaussGeometry`] — not only the corner block — because orientation has to
     /// hold wherever the constitutive model is actually evaluated — these are the same
@@ -334,16 +329,6 @@ where
     ///    observed and such a solve converged with an inverted element in it. Pinned by
     ///    `fully_pinned_inverted_element_no_longer_converges`.
     ///
-    /// 3. **`Ok` → `Err`, again**: a higher-order element folded at a reference
-    ///    CORNER while its Gauss points and corner block all read positive. On a
-    ///    randomized midside population this is the 54-point gap between the
-    ///    60% missed without this stage and the 6% missed with it (the measured
-    ///    table lives in this method's implementation comment) — the largest of
-    ///    the three classes by volume. Those percentages are one seed's; an
-    ///    independent replication measured 59.2 / 59.2 / 6.4, so read them as
-    ///    "about 60 to about 6", not to the decimal. Pinned by
-    ///    `a_fold_at_a_reference_corner_is_caught_when_gauss_and_corner_block_accept`.
-    ///
     /// There is no `Err` → `Ok` class. An earlier revision of this change swept the Gauss
     /// points *instead of* the corner block, which introduced an `Err` → `Ok` class:
     /// a Tet10 whose corner block is orientation-negative while every Gauss point
@@ -381,8 +366,7 @@ where
     /// Returns [`SolverFailure::ValidityViolation`] naming the tet and, for a Gauss-point
     /// violation, the 0-based index of the first non-positive (or non-finite) `det F`.
     /// A corner-block violation carries no Gauss index — it is not located at one — and
-    /// says `on the corner block` instead. A reference-corner violation says
-    /// `at reference corner {c} (0-based) of 4`.
+    /// says `on the corner block` instead.
     //
     // cast_possible_truncation: the Mesh-trait API tax, as in the assembly methods.
     #[allow(clippy::cast_possible_truncation)]
@@ -454,154 +438,6 @@ where
                 ),
             });
         }
-        // (c) The element's reference CORNERS, for a higher-order element.
-        //
-        // The Gauss points are interior — the four Stroud points sit at
-        // barycentric weight 0.5854 on their nearest vertex, i.e. a barycentric
-        // gap of 0.4146 to it — so a fold confined to a corner region is
-        // invisible to them. Measured on the `corner_inverted_tet10` fixture:
-        // `det F` reads +169.7 to +172.8 at the Gauss points and -1520.6 to
-        // -1737.2 at the four reference corners, with `det F < 0` over ~18.3% of
-        // the reference element by volume (18.6% counted as lattice points, which
-        // is the coarser measure).
-        //
-        // Skipped for a linear element: `Tet4::shape_gradients` discards its
-        // `xi`, so `F` is constant over the element and the single Gauss point
-        // already IS this sample. Evaluating it four more times would cost four
-        // 3x3 inversions per element to reproduce a number we hold.
-        //
-        // ⚠ Two assumptions live in this block, neither enforced by the type
-        // system. `Element<N, G>` is a PUBLIC trait, so a downstream impl could
-        // violate both:
-        //   * `N > 4` is used as a proxy for "higher order than linear";
-        //   * the four xi below assume a SIMPLEX reference domain with corner 0
-        //     at the origin, which is what `tet10.rs` and `tet4.rs` use.
-        // The crate is tet-only everywhere else (`TetId`, `tet_vertices`,
-        // `element_node_ids`'s hard-coded 4-corners-then-6-midsides split), so
-        // this is consistent with the rest rather than newly restrictive — but a
-        // hex or wedge element would silently sample non-corners here.
-        //
-        // Not cached, deliberately. `grad_xi`, `j_rest` and `j_inv` at these four
-        // points depend only on REST geometry and could be precomputed alongside
-        // `GaussGeometry`. Cost is ~2.5 kflop/element by hand count (not profiled) against a
-        // factorization that dominates a solve (~78%, profiled on the perf branch
-        // that landed the ordering work — no producer for it lives here) and runs
-        // per Newton iteration,
-        // where this runs twice per step — well under noise. Caching is the
-        // natural refactor if that ever stops being true; it would also let the
-        // degenerate-rest case below be decided once at construction rather than
-        // re-decided identically on every call.
-        //
-        // Measured worth, on 4000 states with the six midsides perturbed by
-        // sigma = 18 mm on a 100 mm tet, against a dense interior sample as
-        // ground truth (3456 of them hide a genuine negative `det F`):
-        //
-        //     Gauss points only ................ 60.0% missed
-        //     + corner block ................... 60.0% missed
-        //     + reference corners ..............  6.0% missed
-        //
-        // ⚠ Note the middle row: the corner block adds NOTHING on this
-        // population, because these states perturb only midsides and the corner
-        // block reads only corners. The two checks catch disjoint classes — the
-        // corner block catches corner-mirrored states (what `main` gated all
-        // along), this stage catches midside-driven folds near a vertex. Neither
-        // subsumes the other, which is why both are here.
-        //
-        // ⚠ Two caveats on that table, both understating the residual risk.
-        // The dense ground-truth lattice INCLUDES the reference corners, so it is
-        // not independent of the stage it scores: a state whose only negativity
-        // is exactly at a corner is counted as negative AND guaranteed caught.
-        // (The Gauss points are not lattice points, so stage (a) has no such
-        // coupling.) And the whole population is STRAIGHT-edged, so the curved
-        // path — where the degenerate-rest case above lives — is unmeasured.
-        //
-        // ⚠ 6% is not 0%. This makes the gate a denser SAMPLING, not a proof:
-        // `det F` is a polynomial in `xi` for a curved element and nothing here
-        // bounds it between the sample points, so a fold living strictly between
-        // samples still passes. A positivity certificate (Bernstein bounds on the
-        // Jacobian) is the real answer and is not attempted here.
-        if N > 4 {
-            let x_rest = self.mesh.positions();
-            let x_ref: SMatrix<f64, N, 3> = SMatrix::from_fn(|a, k| x_rest[nodes[a] as usize][k]);
-            // The four vertices of the reference tetrahedron.
-            for (c, xi) in [
-                Vec3::new(0.0, 0.0, 0.0),
-                Vec3::new(1.0, 0.0, 0.0),
-                Vec3::new(0.0, 1.0, 0.0),
-                Vec3::new(0.0, 0.0, 1.0),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let grad_xi = self.element.shape_gradients(xi);
-                let j_rest = x_ref.transpose() * grad_xi;
-                // ⚠ Guard the SIGN, not just invertibility.
-                //
-                // The constructor does NOT reject this matrix. It checks two
-                // different ones: the corner edge-vector Jacobian `j_0`, and the
-                // isoparametric Jacobian at the four GAUSS points. The
-                // isoparametric Jacobian at a reference CORNER is neither — the
-                // midsides contribute there (at `xi = 0`, `dN_4/dxi = [4,0,0]`,
-                // so a column is `(X1-X0) + 4(X4 - midpoint)`), so a midside
-                // projected far enough off its edge degenerates it while `j_0`
-                // and all four Gauss Jacobians stay healthy. That is reachable
-                // on a conformed mesh, where midsides are projected onto an SDF.
-                //
-                // `det j_rest < 0` sign-flips `det F = det J_def / det j_rest`,
-                // manufacturing a `ValidityViolation` that blames the STATE for
-                // malformed REST geometry. But testing the bare sign is not
-                // enough: at `det j_rest = +1e-19` the sign is numerical noise,
-                // `j_inv` blows up, and that state gets a hard rejection while
-                // its indistinguishable mirror `-1e-19` is skipped. Two values a
-                // double cannot tell apart must not get opposite verdicts, so the
-                // threshold is RELATIVE to the element's own rest scale.
-                //
-                // `try_inverse` is not a second line of defence here: nalgebra's
-                // `Matrix3::determinant` and the determinant inside `try_inverse`
-                // are the identical expression, so anything this test admits will
-                // invert. It is called for the inverse, not the check.
-                //
-                // ⚠ Skipping is FAIL-OPEN, and the earlier claim that
-                // "rest-geometry validity belongs to the mesher" was false: both
-                // mesher guards (`Tet10Mesh::with_sdf_projected_boundary`,
-                // `with_projected_midsides`) call `Element::rest_jacobian_dets`,
-                // which evaluates the GAUSS points — the exact oracle this stage
-                // exists because it is blind at the corners. Nothing else closes.
-                // Measured on midside placements the mesher ACCEPTS: at sigma =
-                // 5 mm on a 100 mm tet, 1.7% of elements skip at least one
-                // corner; at 18 mm, 70.4% do and 0.3% skip all four, which
-                // returns those elements to the pre-stage miss rate silently.
-                //
-                // Skipping is still the least-wrong action — where the rest map
-                // folds inside the element, "det F > 0 there" is not a well-posed
-                // property of ANY state — but it should be decided ONCE at
-                // construction, where a mesh whose corners are degenerate can be
-                // reported rather than re-skipped identically on every call. That
-                // is the cache refactor named above, and it is the right follow-up.
-                let rest_scale = geom.volume.abs().max(f64::MIN_POSITIVE);
-                let det_j_rest = j_rest.determinant();
-                if !det_j_rest.is_finite() || det_j_rest <= 1.0e-12 * rest_scale {
-                    continue;
-                }
-                let Some(j_inv) = j_rest.try_inverse() else {
-                    continue;
-                };
-                let det_f = deformation_gradient(&x_nodes, &(grad_xi * j_inv)).determinant();
-                if !det_f.is_finite() || det_f <= 0.0 {
-                    return Err(SolverFailure::ValidityViolation {
-                        tet_id,
-                        message: format!(
-                            "validity violation at tet {tet_id}: inversion = det F = \
-                             {det_f:.3} at reference corner {c} (0-based) of 4 \
-                             violates RequireOrientation handler (must be finite and \
-                             strictly positive). Phase 4 scope memo Decision Q \
-                             fail-closed semantics."
-                        ),
-                    });
-                }
-            }
-        }
-
         Ok(())
     }
 

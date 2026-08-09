@@ -173,8 +173,7 @@ pub enum SolverFailure {
     /// Validity-domain violation (Phase 4 Decision Q): a tet's
     /// deformation gradient left the material's validity domain —
     /// inversion (`det F` non-finite or `≤ 0`, tested at every Gauss
-    /// point, on the element's corner block, and at its four reference
-    /// corners for a higher-order element) or a principal-stretch /
+    /// point AND on the element's corner block) or a principal-stretch /
     /// stretch-deviation bound — detected by
     /// `check_validity_at_step_start` at step start or at the converged
     /// state. A non-finite `det F` reports on the inversion slot, which is

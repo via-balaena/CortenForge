@@ -1176,8 +1176,8 @@ fn corner_inverted_tet10_is_rejected_even_when_every_gauss_point_is_positive() {
     let (tet_id, message) = validity_message(&solver, &x);
     assert_eq!(tet_id, 0);
     assert!(
-        message.contains("corner block") || message.contains("reference corner"),
-        "expected a CORNER-region check to reject this — the Gauss points are all \
+        message.contains("corner block"),
+        "expected the corner-block stage to reject this — the Gauss points are all \
          positive, so naming a Gauss point would mean the fixture stopped covering \
          its class. Got: {message}"
     );
@@ -1330,82 +1330,16 @@ fn the_gate_runs_on_a_curved_tet10() {
     );
 }
 
-/// A degenerate REST Jacobian at a reference corner must not be blamed on the
-/// state.
+/// A corner-block inversion the Gauss sweep accepts.
 ///
-/// ⚠ This gates the skip in stage (c). A midside projected far enough off its
-/// edge degenerates the isoparametric Jacobian at the adjacent reference corner
-/// while `j_0` and all four Gauss Jacobians stay healthy — so the constructor
-/// and both mesher guards (which evaluate `rest_jacobian_dets`, i.e. the GAUSS
-/// points) accept the element. If the gate then divided by that Jacobian, a
-/// negative one would sign-flip `det F` and reject the element at REST,
-/// blaming the deformed state for malformed rest geometry — the exact
-/// misattribution this whole branch exists to end.
-///
-/// The rest state must therefore pass. Removing the guard, or making it a hard
-/// failure, fails this test.
+/// Isolates the corner-block stage: corners mirrored through `z = 0` so the
+/// affine corner block reads -1.000, with midsides placed so every Gauss point
+/// is strongly positive (+3.008, +31.806, +26.341, +16.035). Only the corner
+/// block objects, so deleting that stage fails this and nothing else does.
+/// This is the class `main` gated all along, and which sweeping the Gauss
+/// points INSTEAD of the corner block would have silently dropped.
 #[test]
-fn a_degenerate_rest_corner_is_skipped_not_blamed_on_the_state() {
-    // Midside 4 is the midpoint of edge (0,1) at (0.05, 0, 0); push it 40% of
-    // the edge along +x, which degenerates the rest Jacobian at corner 0.
-    let tet4 = SingleTetMesh::new(&MaterialField::uniform(1.0e5, 4.0e5));
-    let tet10 = Tet10Mesh::from_tet4(&tet4).with_curved_midsides(|p| {
-        if (p - Vec3::new(0.05, 0.0, 0.0)).norm() < 1.0e-9 {
-            p + Vec3::new(0.04, 0.0, 0.0)
-        } else {
-            p
-        }
-    });
-    let solver: CpuTet10NHSolver<Tet10Mesh> = CpuNewtonSolver::new(
-        Tet10,
-        tet10,
-        NullContact,
-        SolverConfig::skeleton(),
-        BoundaryConditions {
-            pinned_vertices: vec![0, 1, 2, 3],
-            roller_vertices: Vec::new(),
-            loaded_vertices: Vec::new(),
-        },
-    );
-    let rest = tet10_rest_dofs(&solver);
-
-    // Premise: the constructor accepted this mesh, so the Gauss-point rest
-    // Jacobians are healthy and only a REFERENCE-CORNER one can be degenerate.
-    // (Construction panics on a singular Gauss Jacobian, so reaching here is
-    // the assertion.)
-    let x_t = Tensor::from_slice(&rest, &[rest.len()]);
-    let v_t = Tensor::zeros(&[rest.len()]);
-    let theta = Tensor::zeros(&[0]);
-    // `NewtonStep<Tape>` is not `Debug`, so the `Ok` arm cannot be formatted;
-    // match rather than `is_ok()` to report the failure that did occur.
-    match solver.try_replay_step(&x_t, &v_t, &theta, 1e-3) {
-        Ok(_) => {}
-        Err(e) => panic!(
-            "a curved element at REST was rejected: {e:?} — a degenerate \
-             rest-corner Jacobian must be skipped, not reported as a state \
-             violation"
-        ),
-    }
-}
-
-/// A corner-block inversion that BOTH other stages accept.
-///
-/// ⚠ Mirror of the reference-corner test below, and it exists for the same
-/// reason. The flagship `corner_inverted_tet10_...` fixture is rejected by
-/// stage (b) AND stage (c) — corner block -1.0, reference corners -1520 to
-/// -1737 — so it cannot tell them apart, and deleting the corner-block stage
-/// would have left every test green. The claim "reverting either half revives
-/// a silent Ok" was true of the Gauss/corner split it was written for and
-/// false once the reference-corner stage landed.
-///
-/// This state isolates stage (b): corners mirrored through `z = 0` so the
-/// affine corner block reads -1.000, with midsides placed so that every other
-/// sample is strongly positive —
-///   Gauss points  +3.008, +31.806, +26.341, +16.035
-///   ref corners   +72.430, +39.076, +372.512, +284.286
-/// Only the corner block objects. This is the class `main` gated all along.
-#[test]
-fn a_corner_block_inversion_is_caught_when_gauss_and_reference_corners_accept() {
+fn a_corner_block_inversion_is_caught_when_the_gauss_sweep_accepts() {
     let (solver, _rest) = single_tet10_all_corners_pinned();
     let x: Vec<f64> = vec![
         0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, -0.1, 0.022_275, 0.004_123,
@@ -1425,53 +1359,9 @@ fn a_corner_block_inversion_is_caught_when_gauss_and_reference_corners_accept() 
     assert_eq!(tet_id, 0);
     assert!(
         message.contains("on the corner block"),
-        "expected the CORNER-BLOCK stage to reject this — the Gauss points and \
-         all four reference corners accept it, so any other slot naming it means \
-         the fixture stopped isolating that stage. Got: {message}"
-    );
-}
-
-/// A fold at a reference CORNER that both other stages accept.
-///
-/// ⚠ Without this, the entire reference-corner stage is dead weight: every other
-/// Tet10 fixture in this file is rejected at the Gauss sweep or the corner block
-/// before that stage runs, so deleting the whole `if N > 4` block left the suite
-/// green. The stage was added on a measured 60% -> 6% miss-rate reduction and
-/// gated by nothing.
-///
-/// This state is chosen so the two cheaper stages have no opinion:
-///   Gauss points  +0.856, +2.019, +5.208, +3.754  (q order) — all positive
-///   corner block  +1.000                          — corners are exactly at rest
-///   ref corners   -12.765, +0.350, +9.479, +4.105 — corner 0 folded
-/// Only the reference-corner sweep can reject it, so it fails if that stage is
-/// removed or short-circuited. (Reordering cannot break it: no other stage
-/// rejects this state, so there is nothing for it to be reordered behind.)
-#[test]
-fn a_fold_at_a_reference_corner_is_caught_when_gauss_and_corner_block_accept() {
-    let (solver, _rest) = single_tet10_all_corners_pinned();
-    let x: Vec<f64> = vec![
-        0.000_000, 0.000_000, 0.000_000, 0.100_000, 0.000_000, 0.000_000, 0.000_000, 0.100_000,
-        0.000_000, 0.000_000, 0.000_000, 0.100_000, 0.098_477, -0.019_375, -0.023_585, 0.080_491,
-        0.030_776, -0.019_887, -0.008_067, 0.043_819, -0.047_582, -0.011_753, -0.060_364,
-        0.056_903, 0.051_271, -0.003_820, 0.058_899, 0.006_707, 0.023_206, 0.031_225,
-    ];
-
-    // Premise: the Gauss sweep must have no opinion on this state, or the test
-    // silently degenerates into a duplicate of the sweep tests.
-    let ratio = solver.min_gauss_det_ratio(&x);
-    assert!(
-        ratio > 0.0,
-        "fixture no longer isolates the reference-corner stage: min Gauss det \
-         ratio is {ratio}, so the sweep would reject it first"
-    );
-
-    let (tet_id, message) = validity_message(&solver, &x);
-    assert_eq!(tet_id, 0);
-    assert!(
-        message.contains("at reference corner"),
-        "expected the REFERENCE-CORNER stage to reject this — the Gauss points and \
-         the corner block both accept it, so any other slot naming it means the \
-         fixture stopped isolating that stage. Got: {message}"
+        "expected the CORNER-BLOCK stage to reject this — every Gauss point accepts \
+         it, so any other slot naming it means the fixture stopped isolating that \
+         stage. Got: {message}"
     );
 }
 

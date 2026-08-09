@@ -437,10 +437,9 @@ where
         // `(b)` cache, its differentiable adjoint) — the one place in the two-
         // cache design where curvature enters. The `(a)` `ElementGeometry`
         // proxy stays affine, so F-bar / the stretch slot / mass are untouched.
-        // ⚠ The validity gate's INVERSION slot reads BOTH caches and more: it
-        // sweeps the `(b)` cache — so on a curved element it gates the curved
-        // per-GP Jacobian — then checks `(a)`, then evaluates the reference
-        // corners directly off rest positions, which is neither cache.
+        // ⚠ The validity gate's INVERSION slot reads BOTH: it sweeps the `(b)`
+        // cache — so on a curved element it gates the curved per-GP Jacobian —
+        // and then checks `(a)`, which the Gauss points cannot see past.
         // `element_is_straight` selects the path per element (bit-exact),
         // so a mesh with only some elements curved keeps the rest affine.
         let x_rest = mesh.positions();
