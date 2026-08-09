@@ -13,7 +13,7 @@
 //! `det F.ln()` and yields `NaN` rather than a panic. Orientation is enforced
 //! at the solve boundaries by
 //! [`CpuNewtonSolver::check_validity_at_step_start`](crate::CpuNewtonSolver),
-//! which sweeps `det F > 0` at the Gauss points and fails closed with
+//! which sweeps `det F > 0` at the Gauss points, the corner block and the reference corners and fails closed with
 //! `SolverFailure::ValidityViolation`. That is the right home for it: the
 //! inversion this guards against is reachable from a prescribed-displacement
 //! warm start with no contact involved, so no contact barrier — penalty or
@@ -139,8 +139,8 @@ impl Material for NeoHookean {
 // a candidate equilibrium rather than a trial:
 // `CpuNewtonSolver::check_validity_at_step_start` (whose
 // `check_orientation` helper does the sweeping) requires a
-// finite, strictly positive `det F` at every Gauss point AND on the element's
-// corner block, and fails closed with `SolverFailure::ValidityViolation`.
+// finite, strictly positive `det F` at every Gauss point, on the element's
+// corner block, AND at its four reference corners, and fails closed with `SolverFailure::ValidityViolation`.
 #[allow(clippy::expect_used)]
 fn invert_transpose(f: &Matrix3<f64>) -> Matrix3<f64> {
     f.try_inverse()

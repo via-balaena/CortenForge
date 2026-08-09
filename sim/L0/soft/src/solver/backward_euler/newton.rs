@@ -72,8 +72,10 @@ where
     /// corners for a higher-order element — the Stroud points are interior, so a
     /// corner-region fold is invisible to them, and the corner block sees only
     /// the four corner NODES, so a midside-driven fold is invisible to it too
-    /// (measured at 0% caught on that class). The three stages catch disjoint
-    /// things. `max_stretch_deviation` reads the corner block
+    /// (measured at 0% caught on that class). No stage subsumes another — each
+    /// is isolated by its own fixture — but they are not disjoint either: a
+    /// badly folded element trips several at once.
+    /// `max_stretch_deviation` reads the corner block
     /// only. Moving it to the Gauss points too is a separate, wider
     /// change and is deliberately not bundled here: the corner
     /// stretch is a real bound that existing Tet10 consumers currently satisfy,
@@ -123,7 +125,7 @@ where
     /// `"validity violation at tet {id}: {slot} = ..."` — where the value rendering
     /// is per-slot, not uniform: `inversion` emits `inversion = det F = {value:.3}`
     /// followed by one of three locators — `at Gauss point {q} (0-based) of {G}`,
-    /// `on the corner block`, or `at reference corner {c} (0-based) of 4` — while
+    /// `on the corner block (every Gauss point is positive)`, or `at reference corner {c} (0-based) of 4` — while
     /// the stretch slots emit `{slot} = {value:.3}`. `{slot}` is one of
     /// `max_stretch_deviation` / `max_principal_stretch` / `min_principal_stretch` / `inversion`).
     /// The `try_step`/`try_replay_step` callers surface this `Err` so a feasibility-aware caller can
@@ -334,9 +336,12 @@ where
     ///
     /// 3. **`Ok` → `Err`, again**: a higher-order element folded at a reference
     ///    CORNER while its Gauss points and corner block all read positive. On a
-    ///    randomized midside population this is 60% of the states that hide a
-    ///    negative `det F` (see [`Self::check_orientation`]'s measured table), so
-    ///    it is the largest of the three by volume. Pinned by
+    ///    randomized midside population this is the 54-point gap between the
+    ///    60% missed without this stage and the 6% missed with it (the measured
+    ///    table lives in this method's implementation comment) — the largest of
+    ///    the three classes by volume. Those percentages are one seed's; an
+    ///    independent replication measured 59.2 / 59.2 / 6.4, so read them as
+    ///    "about 60 to about 6", not to the decimal. Pinned by
     ///    `a_fold_at_a_reference_corner_is_caught_when_gauss_and_corner_block_accept`.
     ///
     /// There is no `Err` → `Ok` class. An earlier revision of this change swept the Gauss
@@ -456,8 +461,9 @@ where
         // gap of 0.4146 to it — so a fold confined to a corner region is
         // invisible to them. Measured on the `corner_inverted_tet10` fixture:
         // `det F` reads +169.7 to +172.8 at the Gauss points and -1520.6 to
-        // -1737.2 at the four reference corners, negative over 18.6% of the
-        // reference element.
+        // -1737.2 at the four reference corners, with `det F < 0` over ~18.3% of
+        // the reference element by volume (18.6% counted as lattice points, which
+        // is the coarser measure).
         //
         // Skipped for a linear element: `Tet4::shape_gradients` discards its
         // `xi`, so `F` is constant over the element and the single Gauss point
@@ -477,8 +483,10 @@ where
         //
         // Not cached, deliberately. `grad_xi`, `j_rest` and `j_inv` at these four
         // points depend only on REST geometry and could be precomputed alongside
-        // `GaussGeometry`. Measured cost is ~1.5 kflop/element against a
-        // factorization that is 77.9% of a solve and runs per Newton iteration,
+        // `GaussGeometry`. Cost is ~2.5 kflop/element by hand count (not profiled) against a
+        // factorization that dominates a solve (~78%, profiled on the perf branch
+        // that landed the ordering work — no producer for it lives here) and runs
+        // per Newton iteration,
         // where this runs twice per step — well under noise. Caching is the
         // natural refactor if that ever stops being true; it would also let the
         // degenerate-rest case below be decided once at construction rather than
@@ -539,16 +547,40 @@ where
                 // and all four Gauss Jacobians stay healthy. That is reachable
                 // on a conformed mesh, where midsides are projected onto an SDF.
                 //
-                // `det j_rest < 0` matters more than `det j_rest == 0`: zero is
-                // measure-zero and `try_inverse` catches it, whereas negative is
-                // an OPEN set that inverts fine and then sign-flips
-                // `det F = det J_def / det j_rest` — manufacturing a
-                // `ValidityViolation` that blames the STATE for malformed REST
-                // geometry. Skipping is fail-open at one sample point, which is
-                // the lesser error: this gate polices the deformed state, and
-                // rest-geometry validity belongs to the mesher.
+                // `det j_rest < 0` sign-flips `det F = det J_def / det j_rest`,
+                // manufacturing a `ValidityViolation` that blames the STATE for
+                // malformed REST geometry. But testing the bare sign is not
+                // enough: at `det j_rest = +1e-19` the sign is numerical noise,
+                // `j_inv` blows up, and that state gets a hard rejection while
+                // its indistinguishable mirror `-1e-19` is skipped. Two values a
+                // double cannot tell apart must not get opposite verdicts, so the
+                // threshold is RELATIVE to the element's own rest scale.
+                //
+                // `try_inverse` is not a second line of defence here: nalgebra's
+                // `Matrix3::determinant` and the determinant inside `try_inverse`
+                // are the identical expression, so anything this test admits will
+                // invert. It is called for the inverse, not the check.
+                //
+                // ⚠ Skipping is FAIL-OPEN, and the earlier claim that
+                // "rest-geometry validity belongs to the mesher" was false: both
+                // mesher guards (`Tet10Mesh::with_sdf_projected_boundary`,
+                // `with_projected_midsides`) call `Element::rest_jacobian_dets`,
+                // which evaluates the GAUSS points — the exact oracle this stage
+                // exists because it is blind at the corners. Nothing else closes.
+                // Measured on midside placements the mesher ACCEPTS: at sigma =
+                // 5 mm on a 100 mm tet, 1.7% of elements skip at least one
+                // corner; at 18 mm, 70.4% do and 0.3% skip all four, which
+                // returns those elements to the pre-stage miss rate silently.
+                //
+                // Skipping is still the least-wrong action — where the rest map
+                // folds inside the element, "det F > 0 there" is not a well-posed
+                // property of ANY state — but it should be decided ONCE at
+                // construction, where a mesh whose corners are degenerate can be
+                // reported rather than re-skipped identically on every call. That
+                // is the cache refactor named above, and it is the right follow-up.
+                let rest_scale = geom.volume.abs().max(f64::MIN_POSITIVE);
                 let det_j_rest = j_rest.determinant();
-                if !det_j_rest.is_finite() || det_j_rest <= 0.0 {
+                if !det_j_rest.is_finite() || det_j_rest <= 1.0e-12 * rest_scale {
                     continue;
                 }
                 let Some(j_inv) = j_rest.try_inverse() else {

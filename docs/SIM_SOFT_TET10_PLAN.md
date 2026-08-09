@@ -357,7 +357,7 @@ unpin-trio + that geometry).**
     the miss surfaced as a NaN residual misattributed to a "non-SPD tangent".
     The `max_stretch_deviation` slot still reads the corner block; moving it is
     a separate, wider change. So `ElementGeometry` now feeds the stretch slot,
-    F-bar, and the lumped mass.)
+    the corner-block stage of the inversion slot, F-bar, and the lumped mass.)
     The forward *stiffness* is
     replaced by per-GP; the corner block is not deleted.**
 - **Per-GP geometry and boundary extraction are NOT part of the atomic core**

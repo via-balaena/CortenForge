@@ -1330,6 +1330,49 @@ fn the_gate_runs_on_a_curved_tet10() {
     );
 }
 
+/// A corner-block inversion that BOTH other stages accept.
+///
+/// ⚠ Mirror of the reference-corner test below, and it exists for the same
+/// reason. The flagship `corner_inverted_tet10_...` fixture is rejected by
+/// stage (b) AND stage (c) — corner block -1.0, reference corners -1520 to
+/// -1737 — so it cannot tell them apart, and deleting the corner-block stage
+/// would have left every test green. The claim "reverting either half revives
+/// a silent Ok" was true of the Gauss/corner split it was written for and
+/// false once the reference-corner stage landed.
+///
+/// This state isolates stage (b): corners mirrored through `z = 0` so the
+/// affine corner block reads -1.000, with midsides placed so that every other
+/// sample is strongly positive —
+///   Gauss points  +3.008, +31.806, +26.341, +16.035
+///   ref corners   +72.430, +39.076, +372.512, +284.286
+/// Only the corner block objects. This is the class `main` gated all along.
+#[test]
+fn a_corner_block_inversion_is_caught_when_gauss_and_reference_corners_accept() {
+    let (solver, _rest) = single_tet10_all_corners_pinned();
+    let x: Vec<f64> = vec![
+        0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, -0.1, 0.022_275, 0.004_123,
+        0.062_635, 0.160_664, 0.062_528, 0.060_910, 0.084_516, -0.043_505, -0.137_927, 0.147_670,
+        0.121_098, 0.058_131, 0.084_446, -0.081_337, -0.070_843, 0.031_283, -0.080_082, 0.134_754,
+    ];
+
+    // Premise: the Gauss sweep must abstain, or this duplicates the sweep tests.
+    let ratio = solver.min_gauss_det_ratio(&x);
+    assert!(
+        ratio > 0.0,
+        "fixture no longer isolates the corner-block stage: min Gauss det ratio \
+         is {ratio}"
+    );
+
+    let (tet_id, message) = validity_message(&solver, &x);
+    assert_eq!(tet_id, 0);
+    assert!(
+        message.contains("on the corner block"),
+        "expected the CORNER-BLOCK stage to reject this — the Gauss points and \
+         all four reference corners accept it, so any other slot naming it means \
+         the fixture stopped isolating that stage. Got: {message}"
+    );
+}
+
 /// A fold at a reference CORNER that both other stages accept.
 ///
 /// ⚠ Without this, the entire reference-corner stage is dead weight: every other
@@ -1339,11 +1382,12 @@ fn the_gate_runs_on_a_curved_tet10() {
 /// gated by nothing.
 ///
 /// This state is chosen so the two cheaper stages have no opinion:
-///   Gauss points  +2.020, +5.208, +3.754, +0.856  — all comfortably positive
+///   Gauss points  +0.856, +2.019, +5.208, +3.754  (q order) — all positive
 ///   corner block  +1.000                          — corners are exactly at rest
 ///   ref corners   -12.765, +0.350, +9.479, +4.105 — corner 0 folded
 /// Only the reference-corner sweep can reject it, so it fails if that stage is
-/// removed, short-circuited, or reordered behind a stage that would accept.
+/// removed or short-circuited. (Reordering cannot break it: no other stage
+/// rejects this state, so there is nothing for it to be reordered behind.)
 #[test]
 fn a_fold_at_a_reference_corner_is_caught_when_gauss_and_corner_block_accept() {
     let (solver, _rest) = single_tet10_all_corners_pinned();

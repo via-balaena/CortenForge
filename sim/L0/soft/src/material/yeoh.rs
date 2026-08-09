@@ -97,7 +97,8 @@ impl Yeoh {
     /// `None`, so the solver gate at
     /// [`crate::solver::backward_euler`] `check_validity_at_step_start`
     /// performs only the tensile-direction check + falls back to the
-    /// `det F > 0` inversion handler (swept per Gauss point by
+    /// `det F > 0` inversion handler (swept per Gauss point, plus the corner
+    /// block and the four reference corners, by
     /// `check_orientation`) for compressive safety.
     ///
     /// **Why this exists**: per

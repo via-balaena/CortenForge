@@ -867,9 +867,10 @@ mod tests {
         x[14] = 0.032;
 
         let elems = cache.forward(&mesh, &x, &geoms);
-        let folded = elems
+        let (folded_id, folded) = elems
             .iter()
-            .find(|e| e.j < 0.0)
+            .enumerate()
+            .find(|(_, e)| e.j < 0.0)
             .expect("vertex 4 through the shared face must invert one element");
 
         assert!(
@@ -898,17 +899,24 @@ mod tests {
              inversion from `ln`"
         );
 
-        // The consequence: no NaN reaches the residual.
-        let p_star = materials[0].first_piola(&f_star);
+        // The consequence, asserted through the PRODUCTION scatter rather than by
+        // recomputing `theta * f` here: `scatter_internal_force` is what feeds
+        // `f_int`, and it is the wiring — `first_piola(&(ef.theta * ef.f))` — that
+        // has to hold. Re-deriving `f_star` in this body would leave a mutant that
+        // passes `first_piola(&ef.f)` undetected, which is the same replica defect
+        // this test was rewritten to escape.
+        let mut f_int = vec![0.0_f64; x.len()];
+        cache.scatter_internal_force(&mesh, &materials, &x, &geoms, &mut f_int);
         assert!(
-            p_star.iter().all(|v| v.is_finite()),
-            "first_piola returned non-finite values for the F-bar-modified inverted \
-             element: {p_star:?} — if that ever holds, the NaN mechanism DOES catch \
-             F-bar inversions and the converged-state boundary's justification changes"
+            f_int.iter().all(|v| v.is_finite()),
+            "the F-bar internal force carries a non-finite entry for an inverted \
+             element — if that ever holds, the NaN mechanism DOES catch F-bar \
+             inversions and the converged-state boundary's justification changes"
         );
 
-        // Contrast: the un-modified inverted F does poison it.
-        let p_raw = materials[0].first_piola(&folded.f);
+        // Contrast: the un-modified inverted F does poison `first_piola`, which is
+        // the mechanism F-bar bypasses.
+        let p_raw = materials[folded_id].first_piola(&folded.f);
         assert!(
             p_raw.iter().any(|v| !v.is_finite()),
             "an un-modified inverted F must produce non-finite first_piola — that is \
