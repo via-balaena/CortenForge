@@ -2049,6 +2049,18 @@ fn factorization_regime_probe(cells: usize) -> (usize, bool, usize, f64) {
     let a: SparseColMat<usize, f64> =
         SparseColMat::try_new_from_triplets(n_free, n_free, &pairs).expect("pattern");
 
+    // TEMP: dump the real pattern for the offline ordering experiment. REVERT.
+    if let Ok(dir) = std::env::var("CF_DUMP_PATTERN") {
+        use std::io::Write;
+        let path = format!("{dir}/pattern_{n_free}.txt");
+        let mut f = std::io::BufWriter::new(std::fs::File::create(&path).expect("dump"));
+        writeln!(f, "{n_free}").expect("hdr");
+        for t in &triplets {
+            writeln!(f, "{} {}", t.row, t.col).expect("row");
+        }
+        eprintln!("dumped {path} ({} triplets)", triplets.len());
+    }
+
     let sym_low = factorize_symbolic_cholesky(
         a.symbolic(),
         Side::Lower,

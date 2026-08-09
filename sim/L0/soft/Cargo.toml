@@ -78,6 +78,20 @@ faer = { version = "0.24", default-features = false, features = ["std", "sparse-
 wgpu = { workspace = true, optional = true }
 bytemuck = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }
+# Nested-dissection fill-reducing ordering for the sparse Cholesky symbolic
+# factorization. faer ships AMD and COLAMD only, and minimum-degree loses badly
+# on 3D meshes: measured on this crate's own Tet10 free-DOF tangent patterns,
+# AMD's fill per row runs 435 -> 714 -> 974 across a 4.25x DOF increase while
+# nested dissection holds 322 -> 458 -> 648, a 1.65x -> 2.14x numeric
+# factorization speedup still widening at 27k DOF. Factorization is ~78% of a
+# solve (profiled), so this is the largest single lever in the crate.
+#
+# Pure Rust — no C toolchain, no build script — and measured at parity with C
+# METIS on our own patterns: fill within +-4.4%, numeric time within noise, and
+# a symbolic phase CHEAPER than AMD's. Chosen over `metis-sys` to keep the L0
+# solver free of a C dependency. +3 transitive crates, landing the tier at
+# exactly 100/100.
+feral-metis = "0.2.1"
 
 [dev-dependencies]
 # 5-digit gradcheck tolerance assertions (Phase-B tests).
