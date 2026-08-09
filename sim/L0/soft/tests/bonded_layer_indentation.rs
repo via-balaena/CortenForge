@@ -427,34 +427,47 @@ fn bonded_layer_indentation_matches_analytic_correction() {
             })
             .collect()
     } else {
-        std::thread::scope(|scope| {
-            // needless_collect: NOT needless — it is the whole point. `map(spawn)` is
-            // lazy, so consuming it directly would spawn each thread and immediately
-            // join it, running the five solves one at a time while still looking
-            // concurrent. Collecting forces all five to start before the first join.
-            #[allow(clippy::needless_collect)]
-            let handles: Vec<_> = CASES
-                .iter()
-                .map(|&(chi, a_over_cell)| {
-                    scope.spawn(move || {
-                        let (n_lat, nz, lateral, h) = dims_for(chi, a_over_cell);
-                        run_indentation(n_lat, n_lat, nz, lateral, lateral, h)
-                    })
+        // Bounded, not unbounded — the same rule this branch added to
+        // CONTRIBUTING. These are Tet4 cases (largest ≈42.5k DOF, far below the
+        // multi-GB Tet10 arms), so cores are the sensible proxy here rather than
+        // a GB budget; on a 2-core CI runner this becomes 2 live solves, not 5.
+        let live = std::thread::available_parallelism()
+            .map_or(2, std::num::NonZeroUsize::get)
+            .min(CASES.len());
+        CASES
+            .chunks(live)
+            .flat_map(|chunk| {
+                std::thread::scope(|scope| {
+                    // needless_collect: NOT needless — it is the whole point. `map(spawn)` is
+                    // lazy, so consuming it directly would spawn each thread and immediately
+                    // join it, running the five solves one at a time while still looking
+                    // concurrent. Collecting forces all five to start before the first join.
+                    #[allow(clippy::needless_collect)]
+                    let handles: Vec<_> = chunk
+                        .iter()
+                        .map(|&(chi, a_over_cell)| {
+                            scope.spawn(move || {
+                                let (n_lat, nz, lateral, h) = dims_for(chi, a_over_cell);
+                                run_indentation(n_lat, n_lat, nz, lateral, lateral, h)
+                            })
+                        })
+                        .collect();
+                    handles
+                        .into_iter()
+                        .zip(chunk)
+                        .map(|(h, &(chi, a_over_cell))| {
+                            h.join().unwrap_or_else(|_| {
+                                panic!(
+                                    "indentation solve panicked at χ = {chi}, a/cell = \
+                                     {a_over_cell} — rerun with CF_BLI_SERIAL=1 for \
+                                     attributable solver output"
+                                )
+                            })
+                        })
+                        .collect::<Vec<_>>()
                 })
-                .collect();
-            handles
-                .into_iter()
-                .zip(CASES)
-                .map(|(h, (chi, a_over_cell))| {
-                    h.join().unwrap_or_else(|_| {
-                        panic!(
-                            "indentation solve panicked at χ = {chi}, a/cell = {a_over_cell} \
-                             — rerun with CF_BLI_SERIAL=1 for attributable solver output"
-                        )
-                    })
-                })
-                .collect::<Vec<_>>()
-        })
+            })
+            .collect::<Vec<_>>()
     };
 
     // ── χ-sweep at a/cell = 3 ────────────────────────────────────────────

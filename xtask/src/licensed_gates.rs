@@ -692,8 +692,8 @@ fn gate_ran_a_test(body: &str) -> bool {
 /// Default gate concurrency: bounded by MEMORY, not cores.
 ///
 /// The heavy Tet10 arms in this surface peak around 5 GB resident each (rung-5
-/// recorded 4.99 GB at `cell = 0.0015`), so on a 24 GB machine the ceiling is
-/// 3 concurrent gates — `(24 - 4) / 6`, well under the core count. Picking `cores` here would
+/// records 9.39 GB peak RSS), so on a 24 GB machine the ceiling is 2
+/// concurrent gates — `(24 - 4) / 10`, far under the core count. Picking `cores` here would
 /// swap and run SLOWER than serial. `--jobs` overrides; `--jobs 1` restores the
 /// old serial behaviour for debugging.
 fn default_jobs() -> usize {
@@ -703,9 +703,20 @@ fn default_jobs() -> usize {
     jobs_for(ram_gb, cores)
 }
 
-/// Peak resident set of one heavy Tet10 gate, in GB, plus headroom. Rung 5
-/// measured 4.99 GB at `cell = 0.0015`; 6 buys margin for a worse one.
-const PEAK_PER_GATE_GB: u64 = 6;
+/// Peak resident set of the WORST gate on this surface, in GB, plus headroom.
+///
+/// ⚠ Size this from the largest RECORDED figure, not a typical one. The first
+/// version used 6, from rung 5's 4.99 GB at `cell = 0.0015` — but
+/// `rung5_replication_realization_spread_at_refined_levels_fom` records **9.39
+/// GB** peak RSS with both arms live (`sim/L1/fsu-model/src/lib.rs`), and three
+/// of those concurrently is 28 GB on a 24 GB machine. The fan-out would have
+/// swapped and finished slower than serial — the exact failure this bound
+/// exists to prevent.
+///
+/// This is deliberately the worst case, so a run of only cheap gates is
+/// under-parallelised. That is the safe direction; raise it per-run with
+/// `--jobs` when you know the selected gates are small.
+const PEAK_PER_GATE_GB: u64 = 10;
 
 /// Gate concurrency from total RAM and core count. Split out from
 /// [`default_jobs`] so the bound can be tested without depending on the host.
@@ -969,8 +980,9 @@ mod tests {
         // The machine this surface was tuned on.
         assert_eq!(
             super::jobs_for(24, 12),
-            3,
-            "24 GB / 12 cores must give 3 — (24-4)/6 — not the core count"
+            2,
+            "24 GB / 12 cores must give 2 — (24-4)/10, sized from the 9.39 GB \
+             rung5_replication gate — not the core count"
         );
         // Cores bind only when memory is plentiful.
         assert_eq!(super::jobs_for(256, 4), 4, "cores cap a big-RAM machine");
