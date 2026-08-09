@@ -12,9 +12,11 @@
 //!
 //! Minimum-degree loses badly on 3D meshes. Measured on this crate's own Tet10
 //! free-DOF tangent patterns, AMD's fill per row runs 435 → 714 → 974 across a
-//! 4.25× DOF increase, while nested dissection holds 322 → 458 → 648 — a
-//! 1.65× → 2.14× numeric-factorization speedup that is still widening at 27k
-//! DOF. So this module does two things faer cannot:
+//! 4.25× DOF increase, while nested dissection holds 334 → 458 → 648 — a
+//! 1.61× → 2.12× numeric-factorization speedup that is still widening at 27k
+//! DOF. It is not a win at every size, though; see
+//! [`NESTED_DISSECTION_MIN_FREE_DOF`] for the measured crossover. So this
+//! module does two things faer cannot:
 //!
 //! 1. [`nested_dissection_permutation`] turns the assembled free-DOF sparsity
 //!    pattern into a nested-dissection permutation via `feral-metis`.
@@ -75,6 +77,29 @@ impl FillReducingPermutation {
     }
 }
 
+/// Free-DOF count below which faer's AMD is kept.
+///
+/// Nested dissection is an asymptotic win, not a universal one: its separators
+/// have to pay for themselves, and on a small system they do not. Measured by
+/// `factorization_fill_growth` (both orderings, one process, one pattern):
+///
+/// | `n_free` | AMD fill | ND fill | AMD ms | ND ms | speedup |
+/// |---|---|---|---|---|---|
+/// | 348 | 50.8 | 55.9 | 0.6 | 0.8 | **0.80×** |
+/// | 2,112 | 226.9 | 201.7 | 3.8 | 3.1 | 1.21× |
+/// | 6,444 | 434.6 | 333.9 | 37.0 | 23.0 | 1.61× |
+/// | 14,496 | 714.0 | 458.1 | 199.1 | 94.4 | 2.11× |
+/// | 27,420 | 974.0 | 648.2 | 767.7 | 362.1 | 2.12× |
+///
+/// At 348 free DOF nested dissection admits MORE fill than minimum degree and
+/// runs slower. So the switch sits just under the smallest size where it is
+/// measured to win. **The true crossover is somewhere in `(348, 2112]` and is
+/// not resolved** — this constant deliberately errs toward the measurement
+/// rather than interpolating between two points. Anything inside that band
+/// keeps AMD and gives up at most a fraction of a millisecond per
+/// factorization.
+const NESTED_DISSECTION_MIN_FREE_DOF: usize = 2000;
+
 /// Compute a nested-dissection permutation of an `n × n` symmetric pattern.
 ///
 /// `lower_triangle` holds `(col, row)` keys of the lower triangle — the same
@@ -82,12 +107,29 @@ impl FillReducingPermutation {
 /// sparsity pattern into. The full-symmetric graph `feral-metis` requires is
 /// reflected out of it here.
 ///
-/// Returns `None` — meaning *fall back to faer's AMD* — when the pattern
-/// cannot be handed to `feral-metis` at all: an index that does not fit `i32`,
-/// or an ordering failure. A `None` is a performance loss, never a correctness
-/// one, which is why it degrades silently rather than panicking inside an L0
-/// solver constructor.
+/// Returns `None` — meaning *use faer's AMD* — when `n` is below
+/// [`NESTED_DISSECTION_MIN_FREE_DOF`], or when the pattern cannot be handed to
+/// `feral-metis` at all: an index that does not fit `i32`, or an ordering
+/// failure. A `None` is a performance choice, never a correctness one, which is
+/// why it degrades silently rather than panicking inside an L0 solver
+/// constructor.
 pub(super) fn nested_dissection_permutation(
+    lower_triangle: &std::collections::BTreeSet<(usize, usize)>,
+    n: usize,
+) -> Option<FillReducingPermutation> {
+    if n < NESTED_DISSECTION_MIN_FREE_DOF {
+        return None;
+    }
+    compute_nested_dissection_permutation(lower_triangle, n)
+}
+
+/// [`nested_dissection_permutation`] without the size policy.
+///
+/// Exists for the `factorization_fill_growth` diagnostic, whose whole job is to
+/// measure where that policy's crossover actually is — it has to be able to
+/// order a pattern the policy would decline. Production goes through
+/// [`nested_dissection_permutation`].
+pub(super) fn compute_nested_dissection_permutation(
     lower_triangle: &std::collections::BTreeSet<(usize, usize)>,
     n: usize,
 ) -> Option<FillReducingPermutation> {
@@ -290,7 +332,10 @@ mod tests {
     use faer::sparse::{SparseColMat, Triplet};
     use faer::{Conj, Mat, Side};
 
-    use super::{OrderedLlt, nested_dissection_permutation, symbolic_cholesky};
+    use super::{
+        NESTED_DISSECTION_MIN_FREE_DOF, OrderedLlt, compute_nested_dissection_permutation,
+        nested_dissection_permutation, symbolic_cholesky,
+    };
 
     /// A 1D chain `n`-node Laplacian + diagonal shift: SPD, and sparse enough
     /// that an ordering has something to do.
@@ -316,7 +361,7 @@ mod tests {
     fn nested_dissection_permutation_is_a_valid_permutation() {
         let n = 200;
         let (lower, _) = chain_pattern(n);
-        let perm = nested_dissection_permutation(&lower, n).expect("ordering");
+        let perm = compute_nested_dissection_permutation(&lower, n).expect("ordering");
         let mut seen = vec![false; n];
         for (new, &old) in perm.forward.iter().enumerate() {
             assert!(!seen[old], "index {old} appears twice in the permutation");
@@ -337,7 +382,7 @@ mod tests {
     fn custom_ordered_solve_matches_the_original_system() {
         let n = 200;
         let (lower, mat) = chain_pattern(n);
-        let perm = nested_dissection_permutation(&lower, n).expect("ordering");
+        let perm = compute_nested_dissection_permutation(&lower, n).expect("ordering");
         let symbolic = symbolic_cholesky(mat.symbolic(), Some(&perm)).expect("symbolic");
         let factor = OrderedLlt::try_new_with_symbolic(symbolic, mat.as_ref(), Side::Lower)
             .expect("numeric");
@@ -375,7 +420,7 @@ mod tests {
 
         let n = 200;
         let (lower, mat) = chain_pattern(n);
-        let perm = nested_dissection_permutation(&lower, n).expect("ordering");
+        let perm = compute_nested_dissection_permutation(&lower, n).expect("ordering");
         let symbolic = symbolic_cholesky(mat.symbolic(), Some(&perm)).expect("symbolic");
         let ours = OrderedLlt::try_new_with_symbolic(symbolic, mat.as_ref(), Side::Lower)
             .expect("numeric");
@@ -399,12 +444,33 @@ mod tests {
         );
     }
 
+    /// The size policy must actually gate. Without this, a threshold typo
+    /// (or a later "simplify" that drops the check) silently changes which
+    /// ordering every small solve gets, and nothing else would notice.
+    #[test]
+    fn size_policy_gates_which_ordering_production_gets() {
+        let below = NESTED_DISSECTION_MIN_FREE_DOF - 1;
+        let (lower, _) = chain_pattern(below);
+        assert!(
+            nested_dissection_permutation(&lower, below).is_none(),
+            "n_free = {below} is below the measured crossover but still took \
+             nested dissection"
+        );
+
+        let at = NESTED_DISSECTION_MIN_FREE_DOF;
+        let (lower, _) = chain_pattern(at);
+        assert!(
+            nested_dissection_permutation(&lower, at).is_some(),
+            "n_free = {at} is at the threshold but fell back to AMD"
+        );
+    }
+
     /// An empty pattern must not panic — `n = 0` is reachable for a fully
     /// pinned mesh.
     #[test]
     fn empty_pattern_orders_without_panicking() {
         let lower = BTreeSet::new();
-        let perm = nested_dissection_permutation(&lower, 0).expect("empty ordering");
+        let perm = compute_nested_dissection_permutation(&lower, 0).expect("empty ordering");
         assert!(perm.forward.is_empty());
     }
 }

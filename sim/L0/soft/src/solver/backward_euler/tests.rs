@@ -2034,7 +2034,7 @@ fn factorization_regime_probe(cells: usize) -> (usize, OrderingProbe, OrderingPr
     use faer::sparse::linalg::cholesky::SymbolicCholeskyRaw;
     use faer::sparse::{SparseColMat, Triplet};
 
-    use super::ordering::{OrderedLlt, nested_dissection_permutation, symbolic_cholesky};
+    use super::ordering::{OrderedLlt, compute_nested_dissection_permutation, symbolic_cholesky};
 
     let field = MaterialField::uniform(1.0e5, 4.0e5);
     let cube = HandBuiltTetMesh::uniform_block(cells, 0.1, &field);
@@ -2090,7 +2090,10 @@ fn factorization_regime_probe(cells: usize) -> (usize, OrderingProbe, OrderingPr
     };
 
     let amd = measure(None);
-    let permutation = nested_dissection_permutation(&lower, n_free).expect("nested dissection");
+    // The policy-free entry point: this sweep exists to measure where the
+    // size policy's crossover is, so it must order sizes the policy declines.
+    let permutation =
+        compute_nested_dissection_permutation(&lower, n_free).expect("nested dissection");
     let nested_dissection = measure(Some(&permutation));
 
     (n_free, amd, nested_dissection)
@@ -2145,10 +2148,12 @@ fn factorization_stays_on_the_supernodal_path() {
 #[ignore = "diagnostic — reports fill growth, asserts nothing timing-dependent"]
 fn factorization_fill_growth() {
     println!(
-        "{:>8}  {:>10} {:>7}  {:>10} {:>7}  {:>9} {:>9}  {:>7}",
-        "n_free", "AMD nnz(L)", "fill", "ND nnz(L)", "fill", "AMD ms", "ND ms", "speedup"
+        "{:>8}  {:>11}  {:>10} {:>7}  {:>10} {:>7}  {:>9} {:>9}  {:>7}",
+        "n_free", "regime", "AMD nnz(L)", "fill", "ND nnz(L)", "fill", "AMD ms", "ND ms", "speedup"
     );
-    for cells in [2usize, 3, 4, 6, 8, 10] {
+    // `uniform_block` requires an even cell count (the bilayer interface must
+    // land on a mesh plane), so the sweep steps by two.
+    for cells in [2usize, 4, 6, 8, 10] {
         let (n_free, amd, nd) = factorization_regime_probe(cells);
         // precision_loss: printed diagnostic ratios. Any mesh that fits in
         // memory has nnz(L) far below 2^52, so the cast cannot lose a digit
@@ -2158,13 +2163,18 @@ fn factorization_fill_growth() {
             amd.nnz_l as f64 / n_free as f64,
             nd.nnz_l as f64 / n_free as f64,
         );
-        assert!(
-            amd.supernodal && nd.supernodal,
-            "simplicial path at n_free = {n_free} — see \
-             factorization_stays_on_the_supernodal_path"
-        );
+        // Regime is reported, not asserted: faer legitimately picks simplicial
+        // for the small end of this sweep, where flops/nnz(L) is low. The
+        // production-size assertion lives in
+        // `factorization_stays_on_the_supernodal_path`.
+        let regime = match (amd.supernodal, nd.supernodal) {
+            (true, true) => "supernodal",
+            (false, false) => "simplicial",
+            (true, false) => "AMD-super",
+            (false, true) => "ND-super",
+        };
         println!(
-            "{n_free:>8}  {:>10} {amd_fill:>7.1}  {:>10} {nd_fill:>7.1}  \
+            "{n_free:>8}  {regime:>11}  {:>10} {amd_fill:>7.1}  {:>10} {nd_fill:>7.1}  \
              {:>9.1} {:>9.1}  {:>6.2}×",
             amd.nnz_l,
             nd.nnz_l,
