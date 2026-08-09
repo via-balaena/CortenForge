@@ -11,17 +11,25 @@
 //! start at index `FREE_OFFSET = 9` (private module constant).
 //!
 //! Solve path: a nested-dissection-ordered symbolic Cholesky
-//! ([`ordering`]) alongside faer `SymbolicLu::try_new`, both built once
+//! (the private `ordering` module) alongside faer `SymbolicLu::try_new`, both built once
 //! per `step`-call (one symbolic factor per algorithm; both share the
 //! same element-vertex sparsity pattern with `Side::Lower` and full
 //! reflection respectively), then a numeric
-//! [`OrderedLlt`](ordering::OrderedLlt) plus `solve_in_place_with_conj`
+//! `OrderedLlt` plus `solve_in_place_with_conj`
 //! per Newton iteration. A2 LU fallback
 //! engages on `LltError::Numeric(NonPositivePivot)`: the helper
 //! `factor_free_tangent` symmetrizes the lower-tri triplets to full
-//! and factors via `Lu` against the cached `SymbolicLu`. Happy path
-//! stays bit-identical to the pre-A2 Llt-only code (scope §11 S-3
-//! Round-1-verified API shape preserved).
+//! and factors via `Lu` against the cached `SymbolicLu`. The A2 change
+//! left the happy path bit-identical to the pre-A2 Llt-only code
+//! (scope §11 S-3 Round-1-verified API shape preserved).
+//!
+//! ⚠ That A2 invariant is about A2, and does not extend forwards: the
+//! nested-dissection ordering DOES move the last bits of any solve
+//! above `ordering`'s size threshold, because it changes the order
+//! the factorization accumulates in. The **assembled** tangent is
+//! untouched — every bit-equality claim in `assembly.rs` is about the
+//! triplets going in, and those are unchanged. What moved is the
+//! factorization of them. See the `ordering` module's bit-exactness note.
 //!
 //! After convergence, `step` re-factors `A` at `x_final` via
 //! `factor_at_position` and pushes `NewtonStepVjp` onto the tape with
@@ -182,7 +190,7 @@ pub struct CpuNewtonSolver<
     /// Symbolic factor of the free-DOF Hessian sparsity pattern (Llt
     /// shape, `Side::Lower`), built once from element-vertex incidence
     /// per Decision J, under a nested-dissection fill-reducing ordering
-    /// (see [`ordering`] for why faer's own AMD is not used).
+    /// (see the private `ordering` module for why faer's own AMD is not used).
     /// Per-iter numeric refactor consumes a `clone()` of this (cheap —
     /// it is an `Arc` refcount bump).
     symbolic: ordering::SharedSymbolicCholesky,
