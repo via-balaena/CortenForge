@@ -12,7 +12,9 @@
 //! "assembly 1.0 %, everything else under 0.5 %" — attributed to a profiling
 //! run with no artefact in the repo, over a `run_indentation` that resolves to
 //! two different functions. The buckets did not sum, and nothing could
-//! regenerate them, so they are gone rather than dressed up.) faer ships approximate-minimum-degree (AMD) and hard-wires it:
+//! regenerate them, so they are gone rather than dressed up.)
+//!
+//! faer ships approximate-minimum-degree (AMD) and hard-wires it:
 //! [`SymbolicLlt::try_new`](faer::sparse::linalg::solvers::SymbolicLlt::try_new)
 //! passes `Default::default()` for the ordering and keeps its inner
 //! [`SymbolicCholesky`] private, so there is no way to hand it a different
@@ -413,7 +415,8 @@ mod tests {
 
     use super::{
         FillReducingPermutation, OrderedLlt, compute_nested_dissection_permutation,
-        invert_new_to_old, nested_dissection_permutation, symbolic_cholesky,
+        full_symmetric_csc_i32, invert_new_to_old, nested_dissection_permutation,
+        symbolic_cholesky,
     };
 
     /// A 3D 7-point Laplacian on a `k x k x k` grid: SPD, and the canonical
@@ -667,13 +670,32 @@ mod tests {
     /// `n < NESTED_DISSECTION_MIN_FREE_DOF` and so short-circuits long before
     /// `n = 0`. What is actually covered is
     /// [`compute_nested_dissection_permutation`] — which `factorization_fill_growth`
-    /// calls directly, bypassing the size policy — and `full_symmetric_csc_i32`'s
-    /// empty case, where the prefix-sum and the per-column sort both run over
-    /// zero-length slices.
+    /// calls directly, bypassing the size policy.
+    ///
+    /// What it covers is not a loop iteration anywhere: at `n = 0` every loop in
+    /// `full_symmetric_csc_i32` has an empty iterator — `col_start` is `[0]`, so
+    /// even `windows(2)` yields nothing. What is exercised is that the builder
+    /// returns `Some(([0], []))` rather than failing its `i32` conversions, that
+    /// `CscPattern::new` and `metis_order` accept a zero-vertex graph, and that
+    /// [`invert_new_to_old`] returns an empty permutation rather than `None` for
+    /// a zero-length input.
     #[test]
     fn empty_pattern_orders_without_panicking() {
         let lower = BTreeSet::new();
+
+        // The CSC shape the doc above claims, asserted rather than reasoned
+        // about: one column pointer and no rows. `CscPattern` requires
+        // `col_ptr.len() == n + 1`, so the lone `0` is load-bearing, not slack.
+        let (col_ptr, row_idx) = full_symmetric_csc_i32(&lower, 0).expect("empty csc");
+        assert_eq!(
+            col_ptr,
+            vec![0],
+            "empty pattern must still emit `n + 1` pointers"
+        );
+        assert!(row_idx.is_empty(), "empty pattern emitted rows");
+
         let perm = compute_nested_dissection_permutation(&lower, 0).expect("empty ordering");
         assert!(perm.forward.is_empty());
+        assert!(perm.inverse.is_empty());
     }
 }
