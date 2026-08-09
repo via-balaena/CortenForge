@@ -2176,7 +2176,13 @@ fn factorization_stays_on_the_supernodal_path() {
 /// "algorithm-output, not bit-exact" and explicitly accepts float
 /// non-associativity on parallel paths. Pinning the observed stability here
 /// would quietly promote it to a contract the project has declined to make.
+///
+/// Native-only: wasm32 deliberately builds without faer's `rayon` feature,
+/// because it pulls `spindle` -> `atomic-wait`, which does not compile for
+/// that target. wasm running the solver sequentially is the intended
+/// configuration there, not a regression.
 #[test]
+#[cfg(not(target_arch = "wasm32"))]
 fn factorization_runs_in_parallel() {
     let parallelism = faer::get_global_parallelism();
     assert!(
