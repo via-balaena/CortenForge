@@ -98,8 +98,7 @@ impl Yeoh {
     /// [`crate::solver::backward_euler`] `check_validity_at_step_start`
     /// performs only the tensile-direction check + falls back to the
     /// `det F > 0` inversion handler (swept per Gauss point, plus the corner
-    /// block, by
-    /// `check_orientation`) for compressive safety.
+    /// block, by `check_orientation`) for compressive safety.
     ///
     /// **Why this exists**: per
     /// `docs/archive/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5, the

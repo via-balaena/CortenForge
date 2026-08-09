@@ -1334,10 +1334,17 @@ fn the_gate_runs_on_a_curved_tet10() {
 ///
 /// Isolates the corner-block stage: corners mirrored through `z = 0` so the
 /// affine corner block reads -1.000, with midsides placed so every Gauss point
-/// is strongly positive (+3.008, +31.806, +26.341, +16.035). Only the corner
-/// block objects, so deleting that stage fails this and nothing else does.
-/// This is the class `main` gated all along, and which sweeping the Gauss
-/// points INSTEAD of the corner block would have silently dropped.
+/// is strongly positive (+3.008, +31.806, +26.341, +16.035). This is the class
+/// `main` gated all along, and which sweeping the Gauss points INSTEAD of the
+/// corner block would have silently dropped.
+///
+/// ⚠ Currently REDUNDANT with `corner_inverted_tet10_...`, which also isolates
+/// this stage now that the two-stage gate is what ships. It is kept because
+/// that redundancy is conditional: the reference-corner stage (preserved on
+/// `wip/tet10-reference-corner-stage`) also rejects the flagship fixture, so
+/// the moment that stage re-lands the flagship stops discriminating and this
+/// becomes the only fixture that does. Its margins are also far tighter —
+/// Gauss +3.0 rather than +170.
 #[test]
 fn a_corner_block_inversion_is_caught_when_the_gauss_sweep_accepts() {
     let (solver, _rest) = single_tet10_all_corners_pinned();

@@ -67,11 +67,12 @@ where
     /// swept over the per-Gauss-point [`super::GaussGeometry`] — the points
     /// where [`Material::first_piola`] is actually evaluated, because a
     /// `det F ≤ 0` the gate does not see becomes a silent `NaN` downstream —
-    /// AND over the single-point corner block, which the Gauss points cannot see
-    /// (all four Stroud points are interior, so a corner-region fold confined to
-    /// the corner NODES is invisible to them). Neither subsumes the other and
-    /// each is isolated by its own fixture.
-    /// `max_stretch_deviation` reads the corner block
+    /// AND over the single-point corner block, which the Gauss points cannot
+    /// see: the corner `F` is a function of the four corner nodes alone and is
+    /// not any combination of the Gauss-point `F`s, so an orientation flip of
+    /// the corner arrangement can sit behind Gauss points that the midsides
+    /// keep positive. Neither slot subsumes the other and each is isolated by
+    /// its own fixture. `max_stretch_deviation` reads the corner block
     /// only. Moving it to the Gauss points too is a separate, wider
     /// change and is deliberately not bundled here: the corner
     /// stretch is a real bound that existing Tet10 consumers currently satisfy,
@@ -319,7 +320,7 @@ where
     /// determinant and returns `NaN`, which reaches Newton as a `NaN` residual and
     /// surfaces much later as a misattributed "non-SPD tangent" Armijo stall.
     ///
-    /// ## The three verdict changes, stated plainly
+    /// ## The two verdict changes, stated plainly
     ///
     /// 1. **`Err` → `Err`, re-attributed** (the common case): a Tet10 Gauss-point
     ///    inversion that used to surface as an `ArmijoStall` blaming the tangent now
@@ -415,10 +416,6 @@ where
         // produces it, and the solve returned `Ok` with the folded element in
         // it. Gating both is the fail-closed reading of Decision Q, and it
         // costs one extra 3x3 determinant per element per step boundary.
-        //
-        // Ordered before the reference-corner sampling below because it is the
-        // cheaper test — one 3x3 determinant against four inversions — so the
-        // expensive stage only ever runs on states the cheap ones accept.
         //
         // For Tet4 this is redundant by construction — `G == 1` and the single
         // Gauss pair IS the corner block — so the verdict cannot change there.
