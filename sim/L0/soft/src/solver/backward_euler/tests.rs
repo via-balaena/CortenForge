@@ -2006,3 +2006,126 @@ fn tet10_friction_adjoint_is_fail_loud() {
     // Routes through factor_at_position → the mu==0||N==4 guard (panics before return).
     let _sensitivity = solver.equilibrium_state_sensitivity(&x, None, cfg.dt, &zeros, &zeros);
 }
+
+/// Build a Tet10 cube's free-DOF tangent pattern and report faer's symbolic choice.
+///
+/// Returns `(n_free, is_supernodal, nnz_L, factor_seconds)`.
+#[cfg(test)]
+fn factorization_regime_probe(cells: usize) -> (usize, bool, usize, f64) {
+    use faer::Side;
+    use faer::reborrow::Reborrow;
+    use faer::sparse::linalg::cholesky::{
+        CholeskySymbolicParams, SymbolicCholeskyRaw, SymmetricOrdering, factorize_symbolic_cholesky,
+    };
+    use faer::sparse::linalg::solvers::{Llt, SymbolicLlt};
+    use faer::sparse::{SparseColMat, Triplet};
+
+    let field = MaterialField::uniform(1.0e5, 4.0e5);
+    let cube = HandBuiltTetMesh::uniform_block(cells, 0.1, &field);
+    let n_corners = cube.n_vertices();
+    let positions = cube.positions().to_vec();
+    let pinned: Vec<VertexId> = (0..n_corners as VertexId)
+        .filter(|&v| positions[v as usize].z < 0.01)
+        .collect();
+    let tet10 = Tet10Mesh::from_tet4(&cube);
+    let solver: CpuTet10NHSolver<Tet10Mesh> = CpuNewtonSolver::new(
+        Tet10,
+        tet10,
+        NullContact,
+        SolverConfig::skeleton(),
+        BoundaryConditions {
+            pinned_vertices: pinned,
+            roller_vertices: Vec::new(),
+            loaded_vertices: Vec::new(),
+        },
+    );
+    let rest = tet10_rest_dofs(&solver);
+    let n_free = solver.n_free;
+    let triplets = solver.assemble_free_hessian_triplets(&rest, None, 1.0e-3);
+    let pairs: Vec<Triplet<usize, usize, f64>> = triplets
+        .iter()
+        .map(|t| Triplet::new(t.row, t.col, t.val))
+        .collect();
+    let a: SparseColMat<usize, f64> =
+        SparseColMat::try_new_from_triplets(n_free, n_free, &pairs).expect("pattern");
+
+    let sym_low = factorize_symbolic_cholesky(
+        a.symbolic(),
+        Side::Lower,
+        SymmetricOrdering::Amd,
+        CholeskySymbolicParams::default(),
+    )
+    .expect("symbolic");
+    let supernodal = matches!(sym_low.raw(), SymbolicCholeskyRaw::Supernodal(_));
+    let nnz_l = sym_low.len_val();
+
+    let sym = SymbolicLlt::try_new(a.symbolic(), Side::Lower).expect("symbolic llt");
+    let mut best = f64::MAX;
+    for _ in 0..3 {
+        let t = std::time::Instant::now();
+        let _l = Llt::try_new_with_symbolic(sym.clone(), a.rb(), Side::Lower).expect("numeric");
+        best = best.min(t.elapsed().as_secs_f64());
+    }
+    (n_free, supernodal, nnz_l, best)
+}
+
+/// The numeric factorization must stay on faer's **supernodal** path.
+///
+/// This is the cheapest catastrophic-regression tripwire available. Numeric
+/// factorization is ~78 % of a solve (measured by profiling `run_indentation`),
+/// and faer picks simplicial vs supernodal automatically from
+/// `flops/nnz(L) > threshold × 40`. If a mesh, an element change or a faer
+/// upgrade ever moves us onto the simplicial path, the *only* symptom is that
+/// everything gets 4-6× slower — CHOLMOD's own Table I measures simplicial at
+/// 0.20-0.41 GFlop/s against supernodal's 1.34-3.93. Nothing else in the suite
+/// would notice.
+#[test]
+fn factorization_stays_on_the_supernodal_path() {
+    let (n_free, supernodal, nnz_l, _) = factorization_regime_probe(6);
+    assert!(
+        supernodal,
+        "faer chose the SIMPLICIAL path at n_free = {n_free} (nnz(L) = {nnz_l}) — that is a \
+         4-6× factorization slowdown with no other symptom. Check the element/mesh change or \
+         faer's supernodal_flop_ratio_threshold."
+    );
+}
+
+/// Fill growth under faer's ordering — the diagnostic that picks the next lever.
+///
+/// `cargo test -p sim-soft --release --lib factorization_fill_growth -- --ignored --nocapture`
+///
+/// Measured 2026-08-09 (M4 Pro, idle, faer 0.24 with its hard-wired AMD ordering):
+///
+/// | `n_free` | `nnz(L)` | fill = `nnz(L)/n` | numeric factor |
+/// |---|---|---|---|
+/// | 6,444 | 2.80 M | 435 | 34.5 ms |
+/// | 14,496 | 10.35 M | 714 | 191.8 ms |
+/// | 27,420 | 26.71 M | 974 | 739.8 ms |
+///
+/// **Read it as follows.** Supernodal at every size and ~17 GFlop/s at the top,
+/// so faer's kernel is fine. What is not fine is that fill per row more than
+/// DOUBLES over a 4.25× DOF increase, and factorization time grows 21× — the
+/// signature of minimum-degree ordering losing in 3D. A nested-dissection
+/// ordering is the lever this points at; faer ships AMD and COLAMD only.
+#[test]
+#[ignore = "diagnostic — reports fill growth, asserts nothing timing-dependent"]
+fn factorization_fill_growth() {
+    for cells in [6usize, 8, 10] {
+        let (n_free, supernodal, nnz_l, secs) = factorization_regime_probe(cells);
+        // precision_loss: a printed diagnostic ratio. Any mesh that fits in
+        // memory has nnz(L) far below 2^52, so the cast cannot lose a digit
+        // that matters here.
+        #[allow(clippy::cast_precision_loss)]
+        let fill = nnz_l as f64 / n_free as f64;
+        let regime = if supernodal {
+            "SUPERNODAL"
+        } else {
+            "SIMPLICIAL"
+        };
+        println!(
+            "n_free={n_free:>7}  {regime}  nnz(L)={nnz_l:>10}  fill={fill:>6.1}  \
+             factor={:>7.1} ms",
+            secs * 1e3,
+        );
+    }
+}
