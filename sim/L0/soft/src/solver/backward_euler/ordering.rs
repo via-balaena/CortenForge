@@ -166,11 +166,25 @@ pub(super) fn compute_nested_dissection_permutation(
     let (col_ptr, row_idx) = full_symmetric_csc_i32(lower_triangle, n)?;
     let pattern = feral_metis::CscPattern::new(n, &col_ptr, &row_idx)?;
     let forward_i32 = feral_metis::metis_order(&pattern).ok()?;
+    invert_new_to_old(&forward_i32, n)
+}
 
-    // `metis_order` returns new-to-old. Invert it, and validate as we go: a
-    // permutation with a repeated or out-of-range entry would be accepted by
-    // `PermRef::new_checked` only to corrupt every solve, so it is checked
-    // here where the failure is still recoverable.
+/// Turn a new-to-old permutation into the validated `(forward, inverse)` pair
+/// faer consumes, or `None` if it is not a permutation of `0..n`.
+///
+/// Split out from [`compute_nested_dissection_permutation`] so the validation
+/// is reachable without going through `feral-metis`. That matters: METIS
+/// returns valid permutations, so a test that can only feed this function
+/// METIS output cannot tell whether the validation exists at all.
+///
+/// The check is not defensive padding. `PermRef::new_checked` would accept a
+/// repeated or out-of-range entry as a shape, and the corruption would surface
+/// as silently wrong solves rather than an error — so it is caught here, where
+/// falling back to AMD is still an option.
+fn invert_new_to_old(forward_i32: &[i32], n: usize) -> Option<FillReducingPermutation> {
+    if forward_i32.len() != n {
+        return None;
+    }
     let mut forward = Vec::with_capacity(n);
     let mut inverse = vec![usize::MAX; n];
     for (new, &old) in forward_i32.iter().enumerate() {
@@ -181,10 +195,6 @@ pub(super) fn compute_nested_dissection_permutation(
         inverse[old] = new;
         forward.push(old);
     }
-    if forward.len() != n {
-        return None;
-    }
-
     Some(FillReducingPermutation { forward, inverse })
 }
 
@@ -293,6 +303,17 @@ pub(super) fn symbolic_cholesky(
     .map(Arc::new)
 }
 
+/// The parallelism the numeric factorization and its solves run under.
+///
+/// Exists so the tripwire can observe what the factorization ACTUALLY uses
+/// rather than a global that merely correlates with it. `faer` is a dependency
+/// of this module, not of the test module, so a test reading
+/// `faer::get_global_parallelism()` directly would still pass if these call
+/// sites were changed to pass `Par::Seq` — the regression it exists to catch.
+pub(super) fn factorization_parallelism() -> faer::Par {
+    faer::get_global_parallelism()
+}
+
 /// A numeric `LLᵀ` factor over a [`SharedSymbolicCholesky`].
 ///
 /// This is faer's `Llt<usize, f64>` re-expressed over the low-level API so it
@@ -318,7 +339,7 @@ impl OrderedLlt {
         mat: SparseColMatRef<'_, usize, f64>,
         side: Side,
     ) -> Result<Self, LltError> {
-        let parallelism = faer::get_global_parallelism();
+        let parallelism = factorization_parallelism();
         // Every parameter faer's own `Llt::try_new_with_symbolic` leaves at its
         // default is left at its default here too — an unregularized factor,
         // stock `LltParams` — so the only difference between the two paths is
@@ -351,7 +372,7 @@ impl OrderedLlt {
 
     /// Solve `A x = rhs` in place through the stored factor.
     pub(super) fn solve_in_place_with_conj(&self, conj: Conj, rhs: MatMut<'_, f64>) {
-        let parallelism = faer::get_global_parallelism();
+        let parallelism = factorization_parallelism();
         let n_rhs_cols = rhs.ncols();
         LltRef::<'_, usize, f64>::new(&self.symbolic, &self.values).solve_in_place_with_conj(
             conj,
@@ -383,9 +404,45 @@ mod tests {
     use faer::{Conj, Mat, Side};
 
     use super::{
-        NESTED_DISSECTION_MIN_FREE_DOF, OrderedLlt, compute_nested_dissection_permutation,
-        nested_dissection_permutation, symbolic_cholesky,
+        FillReducingPermutation, OrderedLlt, compute_nested_dissection_permutation,
+        invert_new_to_old, nested_dissection_permutation, symbolic_cholesky,
     };
+
+    /// A 3D 7-point Laplacian on a `k x k x k` grid: SPD, and the canonical
+    /// shape where a fill-reducing ordering earns its keep.
+    ///
+    /// The chain fixture below cannot serve this purpose. A 1D chain is a
+    /// PERFECT-ELIMINATION graph — it admits zero fill under any ordering — so
+    /// every ordering agrees on it and no test built on it can distinguish a
+    /// good ordering from a bad one. It also happens to be row-sorted already,
+    /// which hides the reflection's sort. A 3D grid has neither property.
+    fn grid3d_pattern(k: usize) -> (BTreeSet<(usize, usize)>, SparseColMat<usize, f64>) {
+        let idx = |i: usize, j: usize, l: usize| (i * k + j) * k + l;
+        let n = k * k * k;
+        let mut lower = BTreeSet::new();
+        let mut triplets: Vec<Triplet<usize, usize, f64>> = Vec::new();
+        for i in 0..k {
+            for j in 0..k {
+                for l in 0..k {
+                    let v = idx(i, j, l);
+                    lower.insert((v, v));
+                    triplets.push(Triplet::new(v, v, 6.0));
+                    for (di, dj, dl) in [(1, 0, 0), (0, 1, 0), (0, 0, 1)] {
+                        let (ni, nj, nl) = (i + di, j + dj, l + dl);
+                        if ni < k && nj < k && nl < k {
+                            let w = idx(ni, nj, nl);
+                            let (lo, hi) = (v.min(w), v.max(w));
+                            // Lower-triangle key is `(col, row)` with row >= col.
+                            lower.insert((lo, hi));
+                            triplets.push(Triplet::new(hi, lo, -1.0));
+                        }
+                    }
+                }
+            }
+        }
+        let mat = SparseColMat::try_new_from_triplets(n, n, &triplets).expect("grid pattern");
+        (lower, mat)
+    }
 
     /// A 1D chain `n`-node Laplacian + diagonal shift: SPD, and sparse enough
     /// that an ordering has something to do.
@@ -405,58 +462,86 @@ mod tests {
         (lower, mat)
     }
 
-    /// The permutation must be a permutation: every index exactly once, and
-    /// `forward`/`inverse` mutually consistent.
+    /// The guard against a malformed permutation must actually reject one.
+    ///
+    /// ⚠ The previous version called `compute_nested_dissection_permutation`
+    /// and checked the result was a valid permutation — which tests
+    /// `feral_metis::metis_order`, not this module. The guard could be deleted
+    /// entirely and it stayed green, because METIS returns valid permutations.
+    /// Driving `invert_new_to_old` directly is what makes the guard reachable.
     #[test]
-    fn nested_dissection_permutation_is_a_valid_permutation() {
-        let n = 200;
-        let (lower, _) = chain_pattern(n);
-        let perm = compute_nested_dissection_permutation(&lower, n).expect("ordering");
-        let mut seen = vec![false; n];
+    fn a_malformed_permutation_is_rejected_rather_than_installed() {
+        // Valid: a cyclic shift.
+        const N: i32 = 8;
+        let shift: Vec<i32> = (0..N).map(|i| (i + 3) % N).collect();
+        let perm = invert_new_to_old(&shift, shift.len()).expect("a cyclic shift is a permutation");
         for (new, &old) in perm.forward.iter().enumerate() {
-            assert!(!seen[old], "index {old} appears twice in the permutation");
-            seen[old] = true;
-            assert_eq!(perm.inverse[old], new, "inverse disagrees with forward");
+            assert_eq!(perm.inverse[old], new, "forward/inverse disagree");
         }
-        assert!(seen.into_iter().all(|s| s), "permutation is not surjective");
+
+        // Repeated index — the case that would corrupt every solve if it
+        // reached `PermRef::new_checked`.
+        assert!(
+            invert_new_to_old(&[0, 1, 1, 3], 4).is_none(),
+            "a permutation with a repeated index was accepted"
+        );
+        // Out of range.
+        assert!(
+            invert_new_to_old(&[0, 1, 2, 9], 4).is_none(),
+            "a permutation with an out-of-range index was accepted"
+        );
+        // Wrong length.
+        assert!(
+            invert_new_to_old(&[0, 1, 2], 4).is_none(),
+            "a permutation of the wrong length was accepted"
+        );
+        // Negative index.
+        assert!(
+            invert_new_to_old(&[0, 1, -1, 3], 4).is_none(),
+            "a permutation with a negative index was accepted"
+        );
     }
 
-    /// End-to-end convention check: a solve through the custom-ordered factor
-    /// must reproduce the right-hand side.
+    /// The `forward`/`inverse` orientation must be the FILL-REDUCING one.
     ///
-    /// This is the test that pins the `forward`/`inverse` orientation. A
-    /// swapped convention still produces a valid-looking permutation and a
-    /// factorization that succeeds — it just solves the wrong system, which
-    /// only a residual catches.
+    /// ⚠ A residual check cannot establish this, and an earlier version of this
+    /// test claimed it could. faer's `SymmetricOrdering::Custom` copies both
+    /// arrays and uses the same pair to permute the matrix and to un-permute
+    /// the solution, so ANY mutually-consistent `(forward, inverse)` pair
+    /// solves the original system exactly — a swapped convention still returns
+    /// the right answer, to the last bit. What it loses is the fill reduction,
+    /// because the inverse of a nested-dissection order is not itself a
+    /// nested-dissection order.
+    ///
+    /// So the observable is `nnz(L)`, on a 3D grid where orderings actually
+    /// differ. On the chain fixture this test would be vacuous in a second way:
+    /// a chain admits no fill under any ordering at all.
     #[test]
-    fn custom_ordered_solve_matches_the_original_system() {
-        let n = 200;
-        let (lower, mat) = chain_pattern(n);
+    fn permutation_orientation_is_the_fill_reducing_one() {
+        let k = 18;
+        let (lower, mat) = grid3d_pattern(k);
+        let n = k * k * k;
         let perm = compute_nested_dissection_permutation(&lower, n).expect("ordering");
-        let symbolic = symbolic_cholesky(mat.symbolic(), Some(&perm)).expect("symbolic");
-        let factor = OrderedLlt::try_new_with_symbolic(symbolic, mat.as_ref(), Side::Lower)
-            .expect("numeric");
 
-        // Solve `A x = b` for a known `b`, then recompute `A x` and compare.
-        let b: Mat<f64> = Mat::from_fn(n, 1, |i, _| (i as f64).sin());
-        let mut x = b.clone();
-        factor.solve_in_place_with_conj(Conj::No, x.as_mut());
+        let correct = symbolic_cholesky(mat.symbolic(), Some(&perm)).expect("symbolic");
 
-        let mut residual = 0.0_f64;
-        for i in 0..n {
-            let mut ax = 4.0 * x[(i, 0)];
-            if i > 0 {
-                ax -= x[(i - 1, 0)];
-            }
-            if i + 1 < n {
-                ax -= x[(i + 1, 0)];
-            }
-            residual = residual.max((ax - b[(i, 0)]).abs());
-        }
+        // The same permutation with its two arrays exchanged: still a valid,
+        // mutually-consistent permutation, still solves correctly, no longer
+        // fill-reducing.
+        let swapped = FillReducingPermutation {
+            forward: perm.inverse,
+            inverse: perm.forward,
+        };
+        let swapped = symbolic_cholesky(mat.symbolic(), Some(&swapped)).expect("symbolic");
+
         assert!(
-            residual < 1.0e-12,
-            "custom-ordered solve left residual {residual:e} — the permutation \
-             convention is wrong, or the factor is not solving the original system"
+            correct.len_val() < swapped.len_val(),
+            "the permutation is installed with its arrays exchanged: as declared it \
+             admits {} non-zeros, exchanged it admits {}. Both solve correctly, so \
+             only fill reveals the swap — see `FillReducingPermutation`'s field docs \
+             for the new-to-old convention.",
+            correct.len_val(),
+            swapped.len_val()
         );
     }
 
@@ -530,24 +615,37 @@ mod tests {
         .expect("solve thread panicked");
     }
 
-    /// The size policy must actually gate. Without this, a threshold typo
-    /// (or a later "simplify" that drops the check) silently changes which
-    /// ordering every small solve gets, and nothing else would notice.
+    /// The size policy must gate at the sizes it was DERIVED from.
+    ///
+    /// ⚠ An earlier version computed both bounds from
+    /// `NESTED_DISSECTION_MIN_FREE_DOF` itself, so it held for any value of
+    /// the constant and could not catch the threshold typo its doc advertised.
+    /// The anchors here are the literal measured sizes from
+    /// `factorization_fill_growth`: 2,112, where break-even is ~46
+    /// factorizations and the ordering does not pay, and 6,444, where it is
+    /// ~10.7 and does. Setting the constant anywhere outside that bracket now
+    /// fails.
     #[test]
-    fn size_policy_gates_which_ordering_production_gets() {
-        let below = NESTED_DISSECTION_MIN_FREE_DOF - 1;
-        let (lower, _) = chain_pattern(below);
+    fn size_policy_gates_at_the_sizes_it_was_derived_from() {
+        /// Measured: break-even ~46 factorizations, ~21 steps. Too expensive.
+        const MEASURED_BELOW_CROSSOVER: usize = 2112;
+        /// Measured: break-even ~10.7 factorizations, ~5 steps. Pays off.
+        const MEASURED_AT_CROSSOVER: usize = 6444;
+
+        let (lower, _) = chain_pattern(MEASURED_BELOW_CROSSOVER);
         assert!(
-            nested_dissection_permutation(&lower, below).is_none(),
-            "n_free = {below} is below the measured crossover but still took \
-             nested dissection"
+            nested_dissection_permutation(&lower, MEASURED_BELOW_CROSSOVER).is_none(),
+            "n_free = {MEASURED_BELOW_CROSSOVER} took nested dissection, but at that \
+             size the ordering needs ~21 steps to repay itself — the threshold has \
+             dropped below the measurement it was derived from"
         );
 
-        let at = NESTED_DISSECTION_MIN_FREE_DOF;
-        let (lower, _) = chain_pattern(at);
+        let (lower, _) = chain_pattern(MEASURED_AT_CROSSOVER);
         assert!(
-            nested_dissection_permutation(&lower, at).is_some(),
-            "n_free = {at} is at the threshold but fell back to AMD"
+            nested_dissection_permutation(&lower, MEASURED_AT_CROSSOVER).is_some(),
+            "n_free = {MEASURED_AT_CROSSOVER} fell back to AMD, but that is the \
+             measured size where nested dissection starts paying — the threshold \
+             has risen above its own derivation and the ordering is dead weight"
         );
     }
 

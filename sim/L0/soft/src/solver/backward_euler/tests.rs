@@ -2035,7 +2035,7 @@ struct OrderingProbe {
 ///
 /// Returns `(n_free, amd, nested_dissection)`.
 #[cfg(test)]
-fn factorization_regime_probe(cells: usize) -> (usize, OrderingProbe, OrderingProbe) {
+fn factorization_regime_probe(cells: usize) -> (usize, usize, OrderingProbe, OrderingProbe) {
     use faer::Side;
     use faer::reborrow::Reborrow;
     use faer::sparse::linalg::cholesky::SymbolicCholeskyRaw;
@@ -2106,6 +2106,13 @@ fn factorization_regime_probe(cells: usize) -> (usize, OrderingProbe, OrderingPr
         }
     };
 
+    // Production's OWN symbolic factor, built by `CpuNewtonSolver::new` through
+    // `build_symbolic_factors` under the real size policy. Everything below
+    // this line measures replicas assembled here; without carrying production's
+    // figure out too, the gate cannot tell whether the solver actually uses the
+    // ordering it is measuring.
+    let production_nnz_l = solver.symbolic.len_val();
+
     let amd = measure(&|| None);
     // The policy-free entry point: this sweep exists to measure where the
     // size policy's crossover is, so it must order sizes the policy declines.
@@ -2113,7 +2120,7 @@ fn factorization_regime_probe(cells: usize) -> (usize, OrderingProbe, OrderingPr
         Some(compute_nested_dissection_permutation(&lower, n_free).expect("nested dissection"))
     });
 
-    (n_free, amd, nested_dissection)
+    (n_free, production_nnz_l, amd, nested_dissection)
 }
 
 /// The numeric factorization must stay on faer's **supernodal** path, under an
@@ -2142,7 +2149,32 @@ fn factorization_regime_probe(cells: usize) -> (usize, OrderingProbe, OrderingPr
 /// ratio would.
 #[test]
 fn factorization_stays_on_the_supernodal_path() {
-    let (n_free, amd, nd) = factorization_regime_probe(6);
+    let (n_free, production_nnz_l, amd, nd) = factorization_regime_probe(6);
+
+    // FIRST: is production even using the ordering this gate goes on to
+    // measure? `factorization_regime_probe` builds a real solver and then
+    // assembles its own replica; every other assertion here reads the replica.
+    // Without this line, deleting the `nested_dissection_permutation` call in
+    // `construct.rs` reverts every production solve to AMD, evaporates the
+    // measured 369.2 s -> 288.4 s, and leaves the whole suite green.
+    assert_eq!(
+        production_nnz_l, nd.nnz_l,
+        "the solver's own symbolic factor admits {production_nnz_l} non-zeros but a \
+         nested-dissection factor of the same pattern admits {} — production is NOT \
+         using the ordering. Check `build_symbolic_factors` in construct.rs, and \
+         that n_free = {n_free} is at or above NESTED_DISSECTION_MIN_FREE_DOF.",
+        nd.nnz_l
+    );
+
+    // `len_val()` is supernode-padded storage on the supernodal path and true
+    // nnz(L) on the simplicial one, so the fill comparison below is only
+    // apples-to-apples while BOTH sides are in the same regime.
+    assert!(
+        amd.supernodal,
+        "AMD dropped to the SIMPLICIAL path at n_free = {n_free}; its len_val is no \
+         longer comparable with the supernodal ND factor, so the fill assertion \
+         below would fail for the wrong reason"
+    );
     assert!(
         nd.supernodal,
         "faer chose the SIMPLICIAL path at n_free = {n_free} (nnz(L) = {}) — that is a \
@@ -2184,7 +2216,11 @@ fn factorization_stays_on_the_supernodal_path() {
 #[test]
 #[cfg(not(target_arch = "wasm32"))]
 fn factorization_runs_in_parallel() {
-    let parallelism = faer::get_global_parallelism();
+    // Read the seam the factorization itself uses, not the global. Pointing
+    // this at `faer::get_global_parallelism()` directly would leave it green
+    // when the call sites in `ordering` are changed to hand faer `Par::Seq`,
+    // which is exactly the regression it names.
+    let parallelism = super::ordering::factorization_parallelism();
     assert!(
         !matches!(parallelism, faer::Par::Seq),
         "faer global parallelism is {parallelism:?} — the sparse Cholesky is running on ONE \
@@ -2367,7 +2403,7 @@ fn factorization_fill_growth() {
     // `uniform_block` requires an even cell count (the bilayer interface must
     // land on a mesh plane), so the sweep steps by two.
     for cells in [2usize, 4, 6, 8, 10] {
-        let (n_free, amd, nd) = factorization_regime_probe(cells);
+        let (n_free, _production_nnz_l, amd, nd) = factorization_regime_probe(cells);
         // precision_loss: printed diagnostic ratios. Any mesh that fits in
         // memory has nnz(L) far below 2^52, so the cast cannot lose a digit
         // that matters here.
