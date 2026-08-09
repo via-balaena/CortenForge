@@ -219,7 +219,7 @@ enum Commands {
         check: bool,
 
         /// How many gates to run concurrently. Default is bounded by MEMORY,
-        /// not cores (~6 GB per heavy Tet10 gate). `--jobs 1` is the serial
+        /// not cores (~10 GB per heavy Tet10 gate). `--jobs 1` is the serial
         /// fallback for debugging an interleaving-sensitive gate.
         #[arg(long, conflicts_with = "check")]
         jobs: Option<usize>,

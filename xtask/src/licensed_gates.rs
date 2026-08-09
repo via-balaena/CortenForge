@@ -506,6 +506,22 @@ fn verify_meshes(vars: &[&str]) -> Result<()> {
 /// Returns an error if a mesh the selected gates need is unset, or if any gate
 /// fails.
 fn run_gates(gates: &[Gate], root: &Path, jobs: Option<usize>) -> Result<()> {
+    // An empty surface is a broken scan, not a clean bill of health. Without
+    // this, `run_gates` spawns zero workers, `results.len() == gates.len() == 0`
+    // and it prints "PASS all 0 gates green" with exit 0 — the same
+    // healthy-looking nothing that `check()` already refuses to report. `--run`
+    // is the operator's green signal, so it is the LAST place that should
+    // downgrade this to silence.
+    if gates.is_empty() {
+        bail!(
+            "no licence-gated tests found to run.\n\
+             That is a broken scan, not an empty surface: this repo has 45 of them. \
+             A `--only <crate>` filter that matches nothing, or a survey that failed \
+             to parse the source tree, both land here.\n\
+             Run `cargo xtask licensed-gates` (no --run) to see what the scan found."
+        );
+    }
+
     let missing: Vec<&str> = required_vars(gates)
         .into_iter()
         .filter(|v| std::env::var_os(v).is_none())
@@ -686,16 +702,31 @@ fn run_gates(gates: &[Gate], root: &Path, jobs: Option<usize>) -> Result<()> {
 /// cannot distinguish "gate green" from "gate never ran". Split out as a pure
 /// function so the distinction is testable without invoking cargo.
 fn gate_ran_a_test(body: &str) -> bool {
-    body.contains("1 passed")
+    // Parse the count rather than substring-matching it. `contains("1 passed")`
+    // is also true of "11 passed" and "101 passed" — harmless while every gate
+    // runs under `--exact`, and a live hole the moment one does not.
+    body.lines()
+        .filter_map(|l| l.trim().strip_prefix("test result:"))
+        .filter_map(|rest| rest.split(" passed").next())
+        .filter_map(|head| head.split_whitespace().last())
+        .filter_map(|n| n.parse::<usize>().ok())
+        .any(|passed| passed >= 1)
 }
 
 /// Default gate concurrency: bounded by MEMORY, not cores.
 ///
-/// The heavy Tet10 arms in this surface peak around 5 GB resident each (rung-5
-/// records 9.39 GB peak RSS), so on a 24 GB machine the ceiling is 2
-/// concurrent gates — `(24 - 4) / 10`, far under the core count. Picking `cores` here would
-/// swap and run SLOWER than serial. `--jobs` overrides; `--jobs 1` restores the
-/// old serial behaviour for debugging.
+/// The worst gate on this surface peaks at **9.39 GB** resident
+/// (`rung5_replication_realization_spread_at_refined_levels_fom`, recorded in
+/// `sim/L1/fsu-model/src/lib.rs`), which is what [`PEAK_PER_GATE_GB`] is sized
+/// from. On a 24 GB machine the ceiling is 2 concurrent gates —
+/// `(24 - 4) / 10` — far under the core count. Picking `cores` here would swap
+/// and run SLOWER than serial. `--jobs` overrides; `--jobs 1` restores the old
+/// serial behaviour for debugging.
+///
+/// ⚠ Do not re-describe these gates as "around 5 GB". That figure was the
+/// typical arm, and sizing the bound from it is exactly the mistake
+/// `PEAK_PER_GATE_GB` was raised to correct — three concurrent gates at the
+/// real peak is 28 GB on a 24 GB machine.
 fn default_jobs() -> usize {
     const GB: u64 = 1024 * 1024 * 1024;
     let cores = std::thread::available_parallelism().map_or(4, std::num::NonZeroUsize::get);
@@ -728,11 +759,30 @@ fn jobs_for(ram_gb: u64, cores: usize) -> usize {
 
 /// Total physical memory in bytes, or `None` when it cannot be read.
 fn total_memory_bytes() -> Option<u64> {
-    let out = std::process::Command::new("sysctl")
+    // macOS / BSD.
+    if let Ok(out) = std::process::Command::new("sysctl")
         .args(["-n", "hw.memsize"])
         .output()
+    {
+        if let Ok(bytes) = String::from_utf8_lossy(&out.stdout).trim().parse::<u64>() {
+            if bytes > 0 {
+                return Some(bytes);
+            }
+        }
+    }
+    // Linux. `sysctl` on Linux is a different tool with no `hw.memsize`, so the
+    // branch above fails there rather than erroring loudly — which is how this
+    // silently degraded every Linux run to one job, on a branch whose entire
+    // premise is that serial gate execution is a defect.
+    let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let kb: u64 = meminfo
+        .lines()
+        .find_map(|l| l.strip_prefix("MemTotal:"))?
+        .split_whitespace()
+        .next()?
+        .parse()
         .ok()?;
-    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+    Some(kb * 1024)
 }
 
 /// Indent a captured gate body so it reads as one block under its heading.
@@ -975,6 +1025,55 @@ mod tests {
     /// this fan-out safe. A 12-core/24 GB box must NOT run 12 heavy gates at
     /// once: each peaks near 5 GB, so twelve would swap and finish slower than
     /// serial. If someone "optimises" this to `cores`, this test fails.
+    /// The guard reads the passed COUNT out of the summary line.
+    ///
+    /// It exists because a filtered-out cargo run exits 0 while running
+    /// nothing, so exit status cannot distinguish "gate green" from "gate never
+    /// ran".
+    ///
+    /// ⚠ **Honest scope.** The previous implementation was
+    /// `body.contains("1 passed")`, and on every realistic cargo output the two
+    /// agree — `"11 passed"` matches the substring and also parses to 11;
+    /// `"0 passed; 1 ignored"` contains no `"1 passed"` at all. So this is
+    /// defensive robustness against a future where gates stop running under
+    /// `--exact` and a summary can report a count the substring would
+    /// misread — NOT the repair of a live hole, and no case below distinguishes
+    /// the two. Said plainly because a test whose doc claims a catch it cannot
+    /// make is worse than no test: it spends the reader's trust.
+    ///
+    /// What these cases DO pin is the contract: a real run is accepted, a
+    /// filtered-to-nothing run is rejected, and the rejection keys off the
+    /// count rather than the presence of digits elsewhere in the summary.
+    #[test]
+    fn the_no_test_guard_parses_the_count_rather_than_matching_a_substring() {
+        let ran = "running 1 test\ntest foo ... ok\n\ntest result: ok. 1 passed; \
+                   0 failed; 0 ignored; 0 measured; 38 filtered out;\n";
+        assert!(
+            gate_ran_a_test(ran),
+            "a genuine single-test run was rejected"
+        );
+
+        let none = "running 0 tests\n\ntest result: ok. 0 passed; 0 failed; \
+                    0 ignored; 0 measured; 38 filtered out;\n";
+        assert!(
+            !gate_ran_a_test(none),
+            "a run that executed no test was treated as a passing gate"
+        );
+
+        // The substring hazard: eleven tests passing contains "1 passed".
+        let eleven = "running 11 tests\n\ntest result: ok. 11 passed; 0 failed; \
+                      0 ignored; 0 measured; 0 filtered out;\n";
+        assert!(gate_ran_a_test(eleven), "a multi-test run must be accepted");
+
+        // Zero passed, with other 1s in the summary — rejected on the count.
+        let zero_with_ones = "running 0 tests\n\ntest result: ok. 0 passed; 0 failed; \
+                              1 ignored; 0 measured; 1 filtered out;\n";
+        assert!(
+            !gate_ran_a_test(zero_with_ones),
+            "a zero-passed summary containing other 1s was accepted"
+        );
+    }
+
     #[test]
     fn gate_concurrency_is_bounded_by_memory_not_cores() {
         // The machine this surface was tuned on.
