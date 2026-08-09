@@ -835,6 +835,72 @@ mod tests {
     use crate::mesh::HandBuiltTetMesh;
     use crate::solver::backward_euler::ElementGeometry;
 
+    /// F-bar HIDES an inverted element from the `NaN` mechanism.
+    ///
+    /// This is the load-bearing half of why the converged-state validity boundary
+    /// is kept: the ordinary argument for that boundary being redundant is that a
+    /// `NaN`-poisoned `f_int` cannot satisfy `r_norm < tol`. Under F-bar there is
+    /// no `NaN` to poison it.
+    ///
+    /// With `J_e < 0` and a healthy patch, `theta = (j_bar / j).cbrt()` is
+    /// NEGATIVE — `f64::cbrt` returns the real negative root, unlike
+    /// `powf(1.0/3.0)` which would yield `NaN` — so
+    /// `det(theta * F) = theta^3 * J = j_bar > 0`. `first_piola` therefore takes
+    /// `ln` of a POSITIVE determinant and returns finite values, Newton's
+    /// sufficient-decrease test is a real comparison rather than a `NaN`, and the
+    /// solve can converge with a folded element in it.
+    ///
+    /// Until this test the mechanism was argued in a doc comment and gated by
+    /// nothing. It is asserted here rather than end-to-end because reaching an
+    /// inverted CONVERGED state through a real solve needs the element to fold
+    /// during Newton rather than at the step boundary; this pins the step that
+    /// makes that possible.
+    #[test]
+    fn fbar_hides_an_inversion_from_the_nan_mechanism() {
+        // An inverted element: reflection through z, J = -1.
+        let f = Matrix3::new(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, -1.0);
+        let j = f.determinant();
+        assert!(j < 0.0, "fixture must be inverted, got J = {j}");
+
+        // A healthy patch around it.
+        let j_bar = 0.8_f64;
+        let theta = (j_bar / j).cbrt();
+        assert!(
+            theta < 0.0,
+            "cbrt of a negative ratio must return the real NEGATIVE root, got {theta}"
+        );
+
+        let f_star = theta * f;
+        let det_star = f_star.determinant();
+        assert!(
+            (det_star - j_bar).abs() < 1e-12,
+            "det(theta*F) must equal j_bar; got {det_star} vs {j_bar}"
+        );
+        assert!(
+            det_star > 0.0,
+            "the F-bar-modified determinant is POSITIVE — this is what hides the \
+             inversion from `ln`"
+        );
+
+        // The consequence: no NaN reaches the residual.
+        let nh = NeoHookean::from_lame(1.0e5, 4.0e5);
+        let p = nh.first_piola(&f_star);
+        assert!(
+            p.iter().all(|v| v.is_finite()),
+            "first_piola returned non-finite values for an F-bar-modified inverted \
+             element: {p:?} — if this ever holds, the NaN mechanism DOES catch F-bar \
+             inversions and the converged-state boundary's justification changes"
+        );
+
+        // And for contrast: without F-bar the same element does poison it.
+        let p_raw = nh.first_piola(&f);
+        assert!(
+            p_raw.iter().any(|v| !v.is_finite()),
+            "an un-modified inverted F must produce non-finite first_piola — that is \
+             the mechanism F-bar bypasses"
+        );
+    }
+
     /// ν = 0.49 Lamé pair (near-incompressible, the F-bar target regime),
     /// built via `from_lame` to bypass the standalone ν<0.45 gate.
     fn nu049_field() -> MaterialField {

@@ -1176,8 +1176,10 @@ fn corner_inverted_tet10_is_rejected_even_when_every_gauss_point_is_positive() {
     let (tet_id, message) = validity_message(&solver, &x);
     assert_eq!(tet_id, 0);
     assert!(
-        message.contains("corner block"),
-        "expected the corner-block slot to name itself, got: {message}"
+        message.contains("corner block") || message.contains("reference corner"),
+        "expected a CORNER-region check to reject this — the Gauss points are all \
+         positive, so naming a Gauss point would mean the fixture stopped covering \
+         its class. Got: {message}"
     );
     assert!(
         message.contains("inversion = det F ="),

@@ -5,6 +5,7 @@ use faer::sparse::Triplet;
 use nalgebra::SMatrix;
 use sim_ml_chassis::Tensor;
 
+use crate::Vec3;
 use crate::contact::{ActivePairsFor, ContactModel};
 use crate::element::Element;
 use crate::material::{InversionHandling, Material};
@@ -413,6 +414,10 @@ where
         // it. Gating both is the fail-closed reading of Decision Q, and it
         // costs one extra 3x3 determinant per element per step boundary.
         //
+        // Ordered before the reference-corner sampling below because it is the
+        // cheaper test — one 3x3 determinant against four inversions — so the
+        // expensive stage only ever runs on states the cheap ones accept.
+        //
         // For Tet4 this is redundant by construction — `G == 1` and the single
         // Gauss pair IS the corner block — so the verdict cannot change there.
         // `grad_x_n` is the 4x3 corner block, so pair it with the element's
@@ -431,6 +436,78 @@ where
                 ),
             });
         }
+        // (c) The element's reference CORNERS, for a higher-order element.
+        //
+        // The Gauss points are interior — the four Stroud points sit at
+        // barycentric distance ~0.138 from the nearest vertex — so a fold
+        // confined to a corner region is invisible to them. Measured on the
+        // `corner_inverted_tet10` fixture: `det F` reads +170 at all four Gauss
+        // points and -1701 to -1737 at the four reference corners, negative over
+        // a fifth of the element.
+        //
+        // Skipped for a linear element: `Tet4::shape_gradients` discards its
+        // `xi`, so `F` is constant over the element and the single Gauss point
+        // already IS this sample. Evaluating it four more times would cost four
+        // 3x3 inversions per element to reproduce a number we hold.
+        //
+        // Measured worth, on 4000 states with the six midsides perturbed by
+        // sigma = 18 mm on a 100 mm tet, against a dense interior sample as
+        // ground truth (3456 of them hide a genuine negative `det F`):
+        //
+        //     Gauss points only ................ 60.0% missed
+        //     + corner block ................... 60.0% missed
+        //     + reference corners ..............  6.0% missed
+        //
+        // ⚠ Note the middle row: the corner block adds NOTHING on this
+        // population, because these states perturb only midsides and the corner
+        // block reads only corners. The two checks catch disjoint classes — the
+        // corner block catches corner-mirrored states (what `main` gated all
+        // along), this stage catches midside-driven folds near a vertex. Neither
+        // subsumes the other, which is why both are here.
+        //
+        // ⚠ 6% is not 0%. This makes the gate a denser SAMPLING, not a proof:
+        // `det F` is a polynomial in `xi` for a curved element and nothing here
+        // bounds it between the sample points, so a fold living strictly between
+        // samples still passes. A positivity certificate (Bernstein bounds on the
+        // Jacobian) is the real answer and is not attempted here.
+        if N > 4 {
+            let x_rest = self.mesh.positions();
+            let x_ref: SMatrix<f64, N, 3> = SMatrix::from_fn(|a, k| x_rest[nodes[a] as usize][k]);
+            // The four vertices of the reference tetrahedron.
+            for (c, xi) in [
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let grad_xi = self.element.shape_gradients(xi);
+                let j_rest = x_ref.transpose() * grad_xi;
+                // A singular REST Jacobian is malformed geometry, not a state
+                // violation; the constructor already rejects it, so treat an
+                // uninvertible one here as "nothing to say" rather than failing
+                // the solve on it.
+                let Some(j_inv) = j_rest.try_inverse() else {
+                    continue;
+                };
+                let det_f = deformation_gradient(&x_nodes, &(grad_xi * j_inv)).determinant();
+                if !det_f.is_finite() || det_f <= 0.0 {
+                    return Err(SolverFailure::ValidityViolation {
+                        tet_id,
+                        message: format!(
+                            "validity violation at tet {tet_id}: inversion = det F = \
+                             {det_f:.3} at reference corner {c} (0-based) of 4 \
+                             violates RequireOrientation handler (must be finite and \
+                             strictly positive). Phase 4 scope memo Decision Q \
+                             fail-closed semantics."
+                        ),
+                    });
+                }
+            }
+        }
+
         Ok(())
     }
 
