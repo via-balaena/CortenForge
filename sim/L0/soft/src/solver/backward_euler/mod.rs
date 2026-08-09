@@ -83,8 +83,10 @@ pub(crate) use factor::FactoredFreeTangent;
 /// `max_stretch_deviation` slot, and the lumped-mass volume — none of which the
 /// multi-Gauss-point forward stiffness touches. (Rung 7 repointed the material
 /// adjoint off this cache onto the per-GP [`GaussGeometry`], so no adjoint reads
-/// `ElementGeometry`; the validity gate's `inversion` slot was likewise repointed
-/// there, since orientation has to hold where the material is evaluated.)
+/// `ElementGeometry`; the validity gate's `inversion` slot was likewise EXTENDED
+/// there, since orientation has to hold where the material is evaluated — it now
+/// reads both caches, because all four Stroud points are interior and cannot see
+/// a fold confined to the corner region.)
 #[derive(Clone, Debug)]
 struct ElementGeometry {
     grad_x_n: SMatrix<f64, 4, 3>,
@@ -170,9 +172,10 @@ pub struct CpuNewtonSolver<
     // per-iter `reference_geometry` recomputation.
     /// One entry per mesh tet — the single-point corner shape gradient and
     /// rest volume. Feeds the Tet4-flavored single-point consumers (F-bar, the
-    /// validity gate's `max_stretch_deviation` slot, lumped mass); the forward
-    /// stiffness, the material adjoint (since rung 7) and the validity gate's
-    /// `inversion` slot read [`Self::gauss_geometries`] instead.
+    /// validity gate's `max_stretch_deviation` slot, lumped mass, and the
+    /// corner-block half of its `inversion` slot); the forward stiffness, the
+    /// material adjoint (since rung 7) and the Gauss-point half of the
+    /// `inversion` slot read [`Self::gauss_geometries`] as well.
     element_geometries: Vec<ElementGeometry>,
     /// One entry per mesh tet — the per-Gauss-point stiffness geometry
     /// (`(grad_x_n, weight)` × `G`) the multi-Gauss-point forward kernels

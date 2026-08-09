@@ -63,14 +63,15 @@ where
     /// `max_stretch_deviation` (max `|σ_i − 1|` over the three
     /// singular values `σ_i` of `F`).
     ///
-    /// **The two slots read different `F`s, deliberately.** `inversion` is
+    /// **The two slots read overlapping but different `F`s.** `inversion` is
     /// swept over the per-Gauss-point [`super::GaussGeometry`] — the points
-    /// where [`Material::first_piola`] is actually evaluated — because a
-    /// `det F ≤ 0` the gate does not see becomes a silent `NaN` downstream
-    /// rather than a caught violation. `max_stretch_deviation` still reads
-    /// the single-point corner block. Moving it too is a separate, wider
-    /// change and is deliberately not bundled here: unlike `inversion` — whose
-    /// corner-block reading is not a quantity anything evaluates — the corner
+    /// where [`Material::first_piola`] is actually evaluated, because a
+    /// `det F ≤ 0` the gate does not see becomes a silent `NaN` downstream —
+    /// AND over the single-point corner block, which the Gauss points cannot
+    /// see (all four Stroud points are interior, so a corner-region fold is
+    /// invisible to them). `max_stretch_deviation` reads the corner block
+    /// only. Moving it to the Gauss points too is a separate, wider
+    /// change and is deliberately not bundled here: the corner
     /// stretch is a real bound that existing Tet10 consumers currently satisfy,
     /// and the two available shapes differ. *Adding* per-Gauss-point bounds can
     /// only shrink the valid set; *replacing* the corner check with them is not
@@ -100,7 +101,9 @@ where
     /// physically meaningless).  Both boundaries fail closed on the
     /// first violation rather than degrading silently.
     ///
-    /// (⚠ boundary (2)'s `inversion` slot is nearly dead — see
+    /// (⚠ boundary (2) is NOT redundant for the `inversion` slot: F-bar hides
+    /// an inversion from the `NaN` mechanism entirely, so that boundary is the
+    /// only thing that catches it within the step — see
     /// [`Self::check_orientation`].)  See
     /// `docs/archive/CANDIDATE_E_B_FALSIFICATION_BOOKMARK.md` §10 for the
     /// motivating finding (cavity > 5 mm sliding-ramp step 1
@@ -179,16 +182,20 @@ where
             // which today is all of them. Adding a variant that skips the sweep
             // means adding an `is_finite` guard here.
             //
-            // ⚠ Which orientations reach here differs by element. For Tet4 the
-            // sweep above IS this corner block (single Gauss pair), so nothing
-            // orientation-negative gets this far. For Tet10 it is not: the sweep
-            // reads the Gauss points, so a corner block that is itself
-            // orientation-negative is no longer gated at all — a state that was
-            // `Err` before this slot moved and is now `Ok`. Deliberate: no
-            // constitutive law is ever evaluated at the Tet10 corner `F` (only
-            // this bound is), so its orientation is not a property of the state
-            // that the physics can observe. Harmless to this slot too, whose σ
-            // are orientation-blind either way.
+            // Nothing orientation-negative reaches here, for either element
+            // type: the sweep above checks the Gauss points AND the corner
+            // block, so both `F`s this slot could read are already known
+            // positive-oriented.
+            //
+            // ⚠ An earlier revision of this comment said the opposite — that a
+            // corner-negative Tet10 was "no longer gated at all", and called
+            // that deliberate on the grounds that no constitutive law is
+            // evaluated at the corner `F`. That was the rationalization for a
+            // real hole: such an element passed the whole gate (this slot
+            // abstains too, since σ are orientation-blind, so `diag(1,1,-1)`
+            // reports `max_dev = 0`) and the solve returned `Ok` with a folded
+            // element in it. The corner block is gated again. Do not restore
+            // the argument.
             //
             // Two gate flavors (Yeoh arc memo D8): if either of the new
             // asymmetric bounds is `Some`, gate per-bound; else fall
@@ -276,9 +283,10 @@ where
         Ok(())
     }
 
-    /// The `inversion` slot for one element: `det F > 0` at **every Gauss point**.
+    /// The `inversion` slot for one element: `det F > 0` at **every Gauss point**
+    /// AND on the element's **corner block**.
     ///
-    /// Swept over [`GaussGeometry`], not the corner block, because orientation has to
+    /// Swept over [`GaussGeometry`] — not only the corner block — because orientation has to
     /// hold wherever the constitutive model is actually evaluated — these are the same
     /// per-point `grad_x_n` that `assemble_global_int_force`'s elastic branch builds each
     /// `F` from before handing it to [`Material::first_piola`].
@@ -323,8 +331,9 @@ where
     /// a Tet10 whose corner block is orientation-negative while every Gauss point
     /// stays positive. That revision documented the class as unreachable — "no
     /// fixture in the crate produces such a state". It is reachable in about two
-    /// element lengths (mirror the corners through a plane, leave the midsides
-    /// interior), the stretch slot abstains on it because singular values are
+    /// element widths (mirror the corners through a plane, leave the midsides within
+    /// a few element lengths — measured on the fixture: max coordinate 2.5 edge
+    /// lengths, largest midside displacement 4.1), the stretch slot abstains on it because singular values are
     /// orientation-blind, and the solve returned `Ok` with a fully folded element in
     /// the mesh. This gate now checks both, so the class is closed rather than
     /// documented — see `corner_inverted_tet10_is_rejected_even_when_every_gauss_point_is_positive`.
@@ -336,9 +345,13 @@ where
     /// a healthy patch, `theta = (j_bar / j).cbrt()` is NEGATIVE, so
     /// `det(theta * F) = theta^3 * J = J_bar > 0`, `first_piola` receives a positive
     /// determinant, `ln` stays finite and no `NaN` is ever produced. F-bar hides the
-    /// inversion from the `NaN` mechanism entirely, which makes the converged-state
-    /// check the SOLE gate for that class. Deleting it as redundant would turn every
-    /// F-bar inversion into a silently converged folded element.
+    /// inversion from the `NaN` mechanism entirely, so the converged-state check is
+    /// the only thing that catches that class WITHIN the step. Deleting it would not
+    /// lose the state outright — it flows to the next step's start check, as this
+    /// method's own summary notes — but the failure becomes step-delayed and
+    /// misattributed, and on the final step of a sequence there is no next check.
+    /// ⚠ Argued, not gated: no fixture here runs an F-bar solve to an inverted
+    /// converged state.
     ///
     /// [`CpuNewtonSolver::min_gauss_det_ratio`] reports the same quantity this gate
     /// tests (`det J_def(ξ_q) / det J_rest(ξ_q)` *is* `det F` at that point), by a
@@ -347,8 +360,10 @@ where
     ///
     /// # Errors
     ///
-    /// Returns [`SolverFailure::ValidityViolation`] naming the tet and the 0-based Gauss
-    /// index of the first non-positive (or non-finite) `det F`.
+    /// Returns [`SolverFailure::ValidityViolation`] naming the tet and, for a Gauss-point
+    /// violation, the 0-based index of the first non-positive (or non-finite) `det F`.
+    /// A corner-block violation carries no Gauss index — it is not located at one — and
+    /// says `on the corner block` instead.
     //
     // cast_possible_truncation: the Mesh-trait API tax, as in the assembly methods.
     #[allow(clippy::cast_possible_truncation)]

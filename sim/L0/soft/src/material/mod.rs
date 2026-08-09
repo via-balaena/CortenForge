@@ -156,7 +156,7 @@ pub enum InversionHandling {
     /// `NaN` silently. Enforcement lives at the solve boundaries, where the
     /// state is a candidate equilibrium rather than a line-search trial:
     /// `CpuNewtonSolver::check_validity_at_step_start` (via
-    /// `check_orientation`) sweeps `det F > 0` at
+    /// `check_orientation`) sweeps `det F > 0` at the corner block and at
     /// the Gauss points and fails closed with
     /// [`SolverFailure::ValidityViolation`](crate::solver::SolverFailure).
     ///

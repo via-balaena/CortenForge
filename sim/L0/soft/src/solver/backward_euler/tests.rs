@@ -1146,7 +1146,8 @@ fn single_tet10_all_corners_pinned() -> (CpuTet10NHSolver<Tet10Mesh>, Vec<f64>) 
 /// solve returned `Ok` with it in the mesh.
 ///
 /// It is also not exotic: the corners below are mirrored through `z = 0` and every
-/// midside sits inside a two-element-length box. `min_gauss_det_ratio` on this state
+/// midside sits within a few element lengths (measured: max coordinate 2.5 edge
+/// lengths, largest displacement from rest 4.1). `min_gauss_det_ratio` on this state
 /// is about +170, i.e. the Gauss points are nowhere near the boundary — the corner
 /// block alone is inverted.
 ///

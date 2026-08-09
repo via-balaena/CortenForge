@@ -176,8 +176,10 @@ pub enum SolverFailure {
     /// point AND on the element's corner block) or a principal-stretch /
     /// stretch-deviation bound — detected by
     /// `check_validity_at_step_start` at step start or at the converged
-    /// state. A non-finite `det F` reports on the inversion slot: the
-    /// stretch reductions swallow `NaN`, so the sweep rejects it first. `try_step`/`try_replay_step` ALWAYS return this as `Err`
+    /// state. A non-finite `det F` reports on the inversion slot, which is
+    /// the only slot that tests finiteness — the stretch reductions swallow
+    /// `NaN`. (Both slots run in the same pass, so this is about which slot
+    /// CAN reject it, not about which runs first.) `try_step`/`try_replay_step` ALWAYS return this as `Err`
     /// (no per-variant policy), so a feasibility-aware caller can treat
     /// the design as infeasible and skip it; `Solver::step` re-panics
     /// with `message` (the verbatim Decision Q fail-closed text).

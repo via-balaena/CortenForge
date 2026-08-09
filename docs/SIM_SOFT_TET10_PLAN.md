@@ -276,7 +276,7 @@ this doubles as the determinism-net extension (`sdf_pipeline_determinism.rs`
 is mesh-only, no solve-path coverage).
 
 **★ Load-bearing invariant the whole byte-identity strategy rests on: the
-assembler MUST stay serial.** rayon is deliberately disabled
+assembler MUST stay serial.** ⚠ The *assembler* claim stands; the parenthetical that followed did not — faer's rayon is now ENABLED on native targets (A.4 §4 accepts parallel non-associativity), so what is deliberately serial is this crate's own assembly loop, not the linear algebra beneath it. Historically rayon was disabled
 (`Cargo.toml`, "round-6 determinism") because work-stealing reorders FP
 reductions bit-non-deterministically; the `BTreeMap` sorts *keys* but does not
 rescue a parallel `+=` from FP-reorder. Do **not** introduce `rayon`/`par_iter`
