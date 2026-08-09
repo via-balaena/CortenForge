@@ -806,13 +806,18 @@ fn frobenius(a: &Matrix3<f64>, b: &Matrix3<f64>) -> f64 {
 
 /// `F^{-T}`.
 //
-// F-bar shares `NeoHookean`'s `RequireOrientation` contract: a non-invertible
-// `F` is an upstream IPC-barrier failure, not a branch here — so the expect is
-// a programmer-error tripwire, matching `neo_hookean::invert_transpose`.
+// F-bar shares `NeoHookean`'s `RequireOrientation` contract — including the
+// fact that this guard tests INVERTIBILITY (`det F != 0`), not orientation
+// (`det F > 0`), so it is a tripwire for a singular `F` only. Orientation is
+// enforced at the solve boundaries by `check_validity_at_step_start` (which delegates
+// the sweep to `check_orientation`); see
+// `neo_hookean::invert_transpose` for why it lives there rather than here.
 #[allow(clippy::expect_used)]
 fn invert_transpose(f: &Matrix3<f64>) -> Matrix3<f64> {
     f.try_inverse()
-        .expect("non-invertible F in F-bar transform; IPC barrier should prevent this")
+        .expect(
+            "singular F in F-bar transform (det F == 0); orientation is gated at the step boundary",
+        )
         .transpose()
 }
 
@@ -829,6 +834,95 @@ mod tests {
     use crate::material::{MaterialField, NeoHookean};
     use crate::mesh::HandBuiltTetMesh;
     use crate::solver::backward_euler::ElementGeometry;
+
+    /// F-bar HIDES an inverted element from the `NaN` mechanism — asserted on
+    /// the PRODUCTION `theta`, not a recomputation of it.
+    ///
+    /// This is the load-bearing half of why the converged-state validity boundary
+    /// is kept: the ordinary argument for that boundary being redundant is that a
+    /// `NaN`-poisoned `f_int` cannot satisfy `r_norm < tol`. Under F-bar there is
+    /// no `NaN` to poison it.
+    ///
+    /// ⚠ An earlier version of this test recomputed `(j_bar / j).cbrt()` inline in
+    /// its own body and never touched `fbar.rs` at all — replacing the production
+    /// expression with `powf(1.0/3.0)` would not have failed it. It asserted the
+    /// arithmetic while leaving the wiring ungated, which is the same defect it
+    /// was written to close. It now drives `FbarCache::forward` and reads
+    /// `ElementFbar::theta` off the result.
+    #[test]
+    fn fbar_hides_an_inversion_from_the_nan_mechanism() {
+        let field = nu049_field();
+        let mesh = HandBuiltTetMesh::two_tet_shared_face(&field);
+        let (geoms, _vols) = geometries(&mesh);
+        let materials: Vec<NeoHookean> = mesh.materials().to_vec();
+        let cache = FbarCache::build(&mesh, &geoms);
+
+        // Fold tet 1 only: vertex 4 belongs to it alone, so pushing it through
+        // the shared face (the plane x + y + z = 0.1) inverts that element while
+        // tet 0 stays at rest and keeps the patch average positive.
+        let rest = mesh.positions();
+        let mut x: Vec<f64> = rest.iter().flat_map(|p| [p.x, p.y, p.z]).collect();
+        x[12] = 0.032;
+        x[13] = 0.032;
+        x[14] = 0.032;
+
+        let elems = cache.forward(&mesh, &x, &geoms);
+        let (folded_id, folded) = elems
+            .iter()
+            .enumerate()
+            .find(|(_, e)| e.j < 0.0)
+            .expect("vertex 4 through the shared face must invert one element");
+
+        assert!(
+            folded.j_bar > 0.0,
+            "the patch average must stay positive, else this tests the wrong \
+             mechanism: got j_bar = {}",
+            folded.j_bar
+        );
+        assert!(
+            folded.theta < 0.0,
+            "production `theta` must be the real NEGATIVE cube root for J < 0 — \
+             `powf(1.0/3.0)` would give NaN here. Got {}",
+            folded.theta
+        );
+
+        let f_star = folded.theta * folded.f;
+        let det_star = f_star.determinant();
+        assert!(
+            (det_star - folded.j_bar).abs() < 1e-9 * folded.j_bar.abs(),
+            "det(theta*F) must equal j_bar; got {det_star} vs {}",
+            folded.j_bar
+        );
+        assert!(
+            det_star > 0.0,
+            "the F-bar-modified determinant is POSITIVE — this is what hides the \
+             inversion from `ln`"
+        );
+
+        // The consequence, asserted through the PRODUCTION scatter rather than by
+        // recomputing `theta * f` here: `scatter_internal_force` is what feeds
+        // `f_int`, and it is the wiring — `first_piola(&(ef.theta * ef.f))` — that
+        // has to hold. Re-deriving `f_star` in this body would leave a mutant that
+        // passes `first_piola(&ef.f)` undetected, which is the same replica defect
+        // this test was rewritten to escape.
+        let mut f_int = vec![0.0_f64; x.len()];
+        cache.scatter_internal_force(&mesh, &materials, &x, &geoms, &mut f_int);
+        assert!(
+            f_int.iter().all(|v| v.is_finite()),
+            "the F-bar internal force carries a non-finite entry for an inverted \
+             element — if that ever holds, the NaN mechanism DOES catch F-bar \
+             inversions and the converged-state boundary's justification changes"
+        );
+
+        // Contrast: the un-modified inverted F does poison `first_piola`, which is
+        // the mechanism F-bar bypasses.
+        let p_raw = materials[folded_id].first_piola(&folded.f);
+        assert!(
+            p_raw.iter().any(|v| !v.is_finite()),
+            "an un-modified inverted F must produce non-finite first_piola — that is \
+             the mechanism F-bar bypasses"
+        );
+    }
 
     /// ν = 0.49 Lamé pair (near-incompressible, the F-bar target regime),
     /// built via `from_lame` to bypass the standalone ν<0.45 gate.

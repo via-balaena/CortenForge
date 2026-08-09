@@ -172,10 +172,14 @@ pub enum SolverFailure {
     },
     /// Validity-domain violation (Phase 4 Decision Q): a tet's
     /// deformation gradient left the material's validity domain —
-    /// inversion (`det F ≤ 0`) or a principal-stretch /
+    /// inversion (`det F` non-finite or `≤ 0`, tested at every Gauss
+    /// point AND on the element's corner block) or a principal-stretch /
     /// stretch-deviation bound — detected by
     /// `check_validity_at_step_start` at step start or at the converged
-    /// state. `try_step`/`try_replay_step` ALWAYS return this as `Err`
+    /// state. A non-finite `det F` reports on the inversion slot, which is
+    /// the only slot that tests finiteness — the stretch reductions swallow
+    /// `NaN`. (Both slots run in the same pass, so this is about which slot
+    /// CAN reject it, not about which runs first.) `try_step`/`try_replay_step` ALWAYS return this as `Err`
     /// (no per-variant policy), so a feasibility-aware caller can treat
     /// the design as infeasible and skip it; `Solver::step` re-panics
     /// with `message` (the verbatim Decision Q fail-closed text).

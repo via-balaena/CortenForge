@@ -6,9 +6,18 @@
 //! - `P(F) = μ(F − F⁻ᵀ) + λ (ln J) F⁻ᵀ`
 //! - `C_ijkl = μ δ_ik δ_jl + (μ − λ ln J) F⁻ᵀ_il F⁻ᵀ_kj + λ F⁻ᵀ_ij F⁻ᵀ_kl`
 //!
-//! Inversion handling is `RequireOrientation` (spec §3; book 03-impl.md):
-//! `first_piola` / `tangent` panic on non-positive `det F`, which the
-//! IPC barrier is expected to prevent at contact time. The small-strain
+//! Inversion handling is `RequireOrientation` (spec §3; book 03-impl.md).
+//! ⚠ **The impls do not enforce it themselves, and the enforcement is not a
+//! contact concern.** `first_piola` / `tangent` guard only *invertibility*
+//! (`try_inverse`); a `det F < 0` is invertible, so it flows into
+//! `det F.ln()` and yields `NaN` rather than a panic. Orientation is enforced
+//! at the solve boundaries by
+//! [`CpuNewtonSolver::check_validity_at_step_start`](crate::CpuNewtonSolver),
+//! which sweeps `det F > 0` at the Gauss points and the corner block and fails closed with
+//! `SolverFailure::ValidityViolation`. That is the right home for it: the
+//! inversion this guards against is reachable from a prescribed-displacement
+//! warm start with no contact involved, so no contact barrier — penalty or
+//! IPC — covers the case. See `invert_transpose` below. The small-strain
 //! cancellation-safe branch (log1p on `J`, Frobenius-decomposed `I₁ − 3`)
 //! from Part 2 Ch 04 03-impl.md §88 is deferred to the gradcheck session
 //! that first exercises `F ≈ I` at six-digit agreement with linear.
@@ -114,12 +123,28 @@ impl Material for NeoHookean {
     }
 }
 
-// NH declares `InversionHandling::RequireOrientation`; non-invertible F
-// is an IPC-barrier failure upstream, not a constitutive branch.
+// NH declares `InversionHandling::RequireOrientation`, but this guard checks
+// INVERTIBILITY (`det F ≠ 0`), not orientation (`det F > 0`) — the two are not
+// the same condition and only the narrower one panics here. An inverted-but-
+// invertible `F` (`det F < 0`) passes `try_inverse` and then reaches
+// `first_piola`'s `det F.ln()`, which returns NaN.
+//
+// Why not panic here instead: Armijo backtracking evaluates trial states that
+// may overshoot into inversion, and returning NaN keeps that a rejected trial
+// rather than an aborted solve. The mechanism (and what it does NOT promise)
+// is documented where it lives, beside
+// `CpuNewtonSolver::armijo_backtrack` in `solver/backward_euler/newton.rs`.
+//
+// The orientation guarantee belongs at the step boundaries, where the state is
+// a candidate equilibrium rather than a trial:
+// `CpuNewtonSolver::check_validity_at_step_start` (whose
+// `check_orientation` helper does the sweeping) requires a
+// finite, strictly positive `det F` at every Gauss point AND on the element's
+// corner block, and fails closed with `SolverFailure::ValidityViolation`.
 #[allow(clippy::expect_used)]
 fn invert_transpose(f: &Matrix3<f64>) -> Matrix3<f64> {
     f.try_inverse()
-        .expect("non-invertible F in NeoHookean; IPC barrier should prevent this")
+        .expect("singular F in NeoHookean (det F == 0); orientation is gated at the step boundary")
         .transpose()
 }
 

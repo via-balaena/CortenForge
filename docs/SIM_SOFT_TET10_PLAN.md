@@ -9,7 +9,9 @@
 > un-projected element keeps a **bit-identical** affine fast path (per-element
 > `element_is_straight` detection, frozen by `tet10_straight_element_byte_golden`).
 > This rung is **FORWARD-CHANGING** (midside positions now set the stiffness); the
-> `(a)` `ElementGeometry` proxy stays affine → F-bar / validity / mass untouched.
+> `(a)` `ElementGeometry` proxy stays affine → F-bar / the validity gate's stretch
+> slot / mass untouched. (⚠ LATER UPDATE: the gate's *inversion* slot now sweeps the
+> per-GP cache, so on a curved element it does see the curved Jacobian.)
 > **Findings:** forward force == FD of the curved elastic energy; under the `Facet`
 > load rule, curving the Lamé boundary onto the true sphere moves the reading
 > TOWARD analytic (0.0525→0.0432, ~18 %); 4-pt (G=4) kept — the `K^e` 4pt-vs-dense
@@ -274,7 +276,7 @@ this doubles as the determinism-net extension (`sdf_pipeline_determinism.rs`
 is mesh-only, no solve-path coverage).
 
 **★ Load-bearing invariant the whole byte-identity strategy rests on: the
-assembler MUST stay serial.** rayon is deliberately disabled
+assembler MUST stay serial.** ⚠ The *assembler* claim stands; the parenthetical that followed did not — faer's rayon is now ENABLED on native targets (A.4 §4 accepts parallel non-associativity), so what is deliberately serial is this crate's own assembly loop, not the linear algebra beneath it. Historically rayon was disabled
 (`Cargo.toml`, "round-6 determinism") because work-stealing reorders FP
 reductions bit-non-deterministically; the `BTreeMap` sorts *keys* but does not
 rescue a parallel `+=` from FP-reorder. Do **not** introduce `rayon`/`par_iter`
@@ -348,6 +350,14 @@ unpin-trio + that geometry).**
     (⚠ Rung 7 UPDATE: the material adjoint `assemble_material_residual_grad`
     used to read this single-point block too, but rung 7 repointed it to
     `GaussGeometry` per-GP — so `ElementGeometry` no longer feeds any adjoint.)
+    (⚠ UPDATE: "feeds the validity gate" is now only half true. The gate's
+    `inversion` slot was repointed to `GaussGeometry`, because orientation has
+    to hold where `first_piola` is actually evaluated — on Tet10 the corner
+    block cannot see a midside-driven inversion at an interior Gauss point, and
+    the miss surfaced as a NaN residual misattributed to a "non-SPD tangent".
+    The `max_stretch_deviation` slot still reads the corner block; moving it is
+    a separate, wider change. So `ElementGeometry` now feeds the stretch slot,
+    the corner-block stage of the inversion slot, F-bar, and the lumped mass.)
     The forward *stiffness* is
     replaced by per-GP; the corner block is not deleted.**
 - **Per-GP geometry and boundary extraction are NOT part of the atomic core**

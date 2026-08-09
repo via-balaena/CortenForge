@@ -88,8 +88,11 @@ where
 /// `new()` (a constant edge-vector `J`, `|detJ|` shared across the Gauss
 /// points), which is bit-identical to the pre-curved cache. The returned pairs
 /// feed the `(b)` [`GaussGeometry`] cache the multi-Gauss-point forward
-/// stiffness and (since rung 7) the material adjoint integrate over; the `(a)`
-/// single-point [`ElementGeometry`] proxy stays affine (F-bar, validity, mass).
+/// stiffness and (since rung 7) the material adjoint integrate over — and, since
+/// the validity gate moved to the Gauss points, the inversion slot, which on a
+/// curved element therefore reads THIS per-point Jacobian rather than the affine
+/// proxy. The `(a)` single-point [`ElementGeometry`] proxy still serves F-bar,
+/// mass, and the gate's corner-block half.
 //
 // expect_used: a singular curved Jacobian means an inverted or degenerate
 // midside placement — a malformed-mesh programmer bug at construction time,
@@ -408,7 +411,9 @@ where
 
         // 1. Per-element reference geometry — TWO caches from one Jacobian:
         //    (a) `element_geometries`: the single-point corner geometry the
-        //        Tet4-flavored consumers read (F-bar, validity, mass) —
+        //        Tet4-flavored consumers read (F-bar, the validity gate's
+        //        STRETCH slot and the corner-block half of its INVERSION
+        //        slot, mass) —
         //        byte-identical to rung 3b. (Rung 7 moved the material adjoint
         //        onto (b), so no adjoint reads this cache.)
         //    (b) `gauss_geometries`: the per-Gauss-point stiffness geometry the
@@ -431,7 +436,10 @@ where
         // This changes the element's forward stiffness (and, via the shared
         // `(b)` cache, its differentiable adjoint) — the one place in the two-
         // cache design where curvature enters. The `(a)` `ElementGeometry`
-        // proxy stays affine, so F-bar / validity / mass are untouched.
+        // proxy stays affine, so F-bar / the stretch slot / mass are untouched.
+        // ⚠ The validity gate's INVERSION slot reads BOTH: it sweeps the `(b)`
+        // cache — so on a curved element it gates the curved per-GP Jacobian —
+        // and then checks `(a)`, which the Gauss points cannot see past.
         // `element_is_straight` selects the path per element (bit-exact),
         // so a mesh with only some elements curved keeps the rest affine.
         let x_rest = mesh.positions();
@@ -443,7 +451,7 @@ where
         // identical to the pre-Tet10 path); a Tet10 element's gradients VANISH
         // on the corners at the centroid, so `N > 4` uses the linear barycentric
         // corner gradient — the affine constant-strain block. This is the
-        // single-point proxy for the validity / F-bar / mass consumers; the
+        // single-point proxy for the stretch-slot / F-bar / mass consumers; the
         // real (linearly-varying) Tet10 strain lives in (b), which the forward
         // stiffness and (since rung 7) the material adjoint read.
         let grad_xi_corner: SMatrix<f64, 4, 3> = if N > 4 {
@@ -718,7 +726,7 @@ where
     ///
     /// Crate-private: this exists to make the ordering's break-even
     /// REPRODUCIBLE, not to widen the public surface. See
-    /// `factorizations_per_step_clears_the_ordering_break_even`.
+    /// `factorizations_clear_the_ordering_break_even`.
     pub(crate) fn factorization_count(&self) -> usize {
         self.factorizations
             .load(std::sync::atomic::Ordering::Relaxed)

@@ -138,15 +138,35 @@ pub struct ValidityDomain {
 /// How a `Material` impl responds to element inversion (`det F ≤ 0`).
 ///
 /// Phase A names only `RequireOrientation`, the policy hyperelastic laws
-/// (`NeoHookean`, `MooneyRivlin`, `Ogden`) share per Part 2 Ch 04: rely
-/// on the IPC barrier to keep `det F > 0`, panic if an inversion reaches
-/// constitutive evaluation. Additional variants (`Barrier`, `OptIn`,
-/// etc.) land with the impls that first require them.
+/// (`NeoHookean`, `MooneyRivlin`, `Ogden`) share per Part 2 Ch 04: the law
+/// is defined only where `det F > 0`. Additional variants (`Barrier`,
+/// `OptIn`, etc.) land with the impls that first require them.
+///
+/// ⚠ This is a **declaration of the law's domain, not a self-enforcing
+/// guard.** See [`InversionHandling::RequireOrientation`] for who actually
+/// enforces it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum InversionHandling {
-    /// Evaluation requires `det F > 0`; the impl panics on non-positive
-    /// `J` and surfaces as an IPC-barrier failure downstream rather
-    /// than a constitutive bug.
+    /// Evaluation requires `det F > 0`.
+    ///
+    /// ⚠ **The impl does not enforce this, and must not be relied on to.**
+    /// `NeoHookean` / `Yeoh` guard only invertibility (`try_inverse`), so a
+    /// `det F < 0` — which is invertible — reaches `det F.ln()` and returns
+    /// `NaN` silently. Enforcement lives at the solve boundaries, where the
+    /// state is a candidate equilibrium rather than a line-search trial:
+    /// `CpuNewtonSolver::check_validity_at_step_start` (via
+    /// `check_orientation`) sweeps `det F > 0` at the corner block and at
+    /// the Gauss points and fails closed with
+    /// [`SolverFailure::ValidityViolation`](crate::solver::SolverFailure).
+    ///
+    /// ⚠ Adding a variant that does NOT route through that sweep also arms a
+    /// latent hole in the sibling `max_stretch_deviation` slot, whose `f64::max` /
+    /// `f64::min` reductions silently swallow a non-finite `σ`. See the stretch
+    /// check's comment in `check_validity_at_step_start`.
+    ///
+    /// A `Material` impl declaring this variant is stating the domain its
+    /// closed form is valid on; it is the solver's job to keep the state
+    /// inside it.
     RequireOrientation,
 }

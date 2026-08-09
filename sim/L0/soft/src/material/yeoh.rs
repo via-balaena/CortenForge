@@ -24,9 +24,14 @@
 //!
 //! Validation: `tests/yeoh_contract.rs`.
 //!
-//! Inversion handling matches `NeoHookean::RequireOrientation`: panic on
-//! non-positive `det F`, expected to be prevented upstream by the IPC
-//! barrier at contact time.
+//! Inversion handling matches `NeoHookean::RequireOrientation` — including
+//! the fact that the impl does **not** enforce it: `first_piola` / `tangent`
+//! guard invertibility, not orientation, so a `det F < 0` returns `NaN` via
+//! `det F.ln()` instead of panicking. Orientation is enforced at the solve
+//! boundaries by
+//! [`CpuNewtonSolver::check_validity_at_step_start`](crate::CpuNewtonSolver),
+//! whose `check_orientation` helper does the sweeping.
+//! See `neo_hookean`'s module doc for why that is the right home for it.
 //!
 //! ## Validity domain
 //!
@@ -44,7 +49,7 @@
 //!   path sets ONLY the tensile bound via
 //!   [`Yeoh::with_max_principal_stretch_only`] per H4-2-C (asymmetric
 //!   one-sided; see
-//!   `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5).  The
+//!   `docs/archive/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5).  The
 //!   compressive direction defers to `det F > 0` inversion only.
 
 use nalgebra::{Matrix3, SMatrix};
@@ -92,10 +97,11 @@ impl Yeoh {
     /// `None`, so the solver gate at
     /// [`crate::solver::backward_euler`] `check_validity_at_step_start`
     /// performs only the tensile-direction check + falls back to the
-    /// `det F > 0` inversion handler for compressive safety.
+    /// `det F > 0` inversion handler (swept per Gauss point, plus the corner
+    /// block, by `check_orientation`) for compressive safety.
     ///
     /// **Why this exists**: per
-    /// `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5, the
+    /// `docs/archive/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5, the
     /// family-uniform compressive floor binds before the calibrated
     /// tensile cap at cavity > 5 mm in the iter-1 sliding-intruder
     /// sweep — Newton's preferred equilibrium pushes `σ_min` way past
@@ -243,11 +249,13 @@ impl Material for Yeoh {
     }
 }
 
-// Yeoh declares `InversionHandling::RequireOrientation`; non-invertible
-// F is an IPC-barrier failure upstream, not a constitutive branch.
+// Yeoh declares `InversionHandling::RequireOrientation`, but this guard checks
+// INVERTIBILITY (`det F ≠ 0`), not orientation (`det F > 0`). See
+// `neo_hookean::invert_transpose` for why the asymmetry is deliberate and where
+// the orientation guarantee actually lives (the step-boundary validity sweep).
 #[allow(clippy::expect_used)]
 fn invert_transpose(f: &Matrix3<f64>) -> Matrix3<f64> {
     f.try_inverse()
-        .expect("non-invertible F in Yeoh; IPC barrier should prevent this")
+        .expect("singular F in Yeoh (det F == 0); orientation is gated at the step boundary")
         .transpose()
 }

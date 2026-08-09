@@ -55,17 +55,19 @@
 //! `RequireOrientation`).
 //!
 //! `inversion` is checked by the solver (`check_validity_at_step_start`
-//! tests `det F ≤ 0` against `RequireOrientation`) but not exercised
-//! here as a triggered panic — `det F < 0` requires a
-//! left-handed reference tet, which `signed_volume()` assertions in
-//! [`HandBuiltTetMesh`] prevent at construction. A test that
-//! constructs `x_prev` with one vertex permutation that flips
-//! orientation is a valid follow-on; for Phase 4 the
-//! stretch-deviation gate is the discriminating panic test for the
-//! mechanism, and inversion is a structurally-prevented case (NH's
-//! own `first_piola` `expect`s on invertibility, but that fires
-//! _inside_ NH not in the solver-side check). Tracking as a commit
-//! 13 grader-fixup or Phase H follow-on candidate.
+//! requires a finite, strictly positive `det F` at every Gauss point
+//! under `RequireOrientation`) but is not exercised here — this file's
+//! discriminating cases are all `max_stretch_deviation`.
+//!
+//! ⚠ It is NOT, as this note previously claimed, a "structurally-prevented"
+//! case needing a left-handed reference tet. Rest handedness is irrelevant:
+//! `det F` is a property of the *deformed* configuration, so a perfectly
+//! right-handed rest tet inverts as soon as `x_prev` puts a corner through
+//! the opposite face. The follow-on this note tracked is now delivered in
+//! `sim-soft`'s unit tests — `tet4_inversion_verdict_survives_the_gauss_sweep`
+//! (a right-handed `SingleTetMesh` with corner 3 moved to `z = -0.1`, plus the
+//! degenerate `z = 0` case) and `non_finite_state_is_rejected_by_the_inversion_gate`
+//! — so the inversion slot is covered on both element types.
 //!
 //! [v]: ../../../../docs/studies/soft_body_architecture/src/20-materials/00-trait-hierarchy/02-validity.md
 

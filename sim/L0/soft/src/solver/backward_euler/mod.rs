@@ -79,10 +79,14 @@ pub(crate) use factor::FactoredFreeTangent;
 /// corner block (the barycentric constant-strain gradient) — a *single-point*
 /// proxy, NOT the element's real (linearly-varying) strain, which lives in the
 /// per-Gauss-point [`GaussGeometry`]. It is read by the Tet4-flavored, single-
-/// point consumers only: the F-bar assembler, the feasibility (validity) gate,
-/// and the lumped-mass volume — none of which the multi-Gauss-point forward
-/// stiffness touches. (Rung 7 repointed the material adjoint off this cache
-/// onto the per-GP [`GaussGeometry`], so no adjoint reads `ElementGeometry`.)
+/// point consumers only: the F-bar assembler, the validity gate's
+/// `max_stretch_deviation` slot, and the lumped-mass volume — none of which the
+/// multi-Gauss-point forward stiffness touches. (Rung 7 repointed the material
+/// adjoint off this cache onto the per-GP [`GaussGeometry`], so no adjoint reads
+/// `ElementGeometry`; the validity gate's `inversion` slot was likewise EXTENDED
+/// there, since orientation has to hold where the material is evaluated — it now
+/// reads both caches, because all four Stroud points are interior and cannot see
+/// a fold confined to the corner region.)
 #[derive(Clone, Debug)]
 struct ElementGeometry {
     grad_x_n: SMatrix<f64, 4, 3>,
@@ -108,9 +112,15 @@ struct ElementGeometry {
 ///   `SMatrix<f64, 10, 3>` gradient — sharing one constant `|detJ|` when
 ///   straight-edged, or a per-point `|detJ(ξ_q)|` when curved.
 ///
-/// Consumed only by the forward stiffness kernels
+/// Consumed by the forward stiffness kernels
 /// (`assemble_global_int_force` / `assemble_free_hessian_triplets` /
-/// `internal_force_tangent_matvec`). Held alongside [`ElementGeometry`] rather
+/// `internal_force_tangent_matvec`) and by the step-boundary inversion sweep in
+/// `CpuNewtonSolver::check_orientation`, which gates `det F > 0`
+/// at the points those kernels evaluate the material at — with one exception:
+/// `assemble_global_int_force`'s F-bar branch evaluates a patch-modified `F*`
+/// built from [`ElementGeometry`] instead. That branch is Tet4-only, where the
+/// two caches hold the same tensor, so the sweep still covers it. Held alongside
+/// [`ElementGeometry`] rather
 /// than replacing it so the Tet4-flavored single-point consumers above — F-bar
 /// especially — stay byte-identical and untouched.
 #[derive(Clone, Debug)]
@@ -161,9 +171,11 @@ pub struct CpuNewtonSolver<
     // hardcoded `N_DOF` / `N_FREE` / `FREE_OFFSET` constants and the
     // per-iter `reference_geometry` recomputation.
     /// One entry per mesh tet — the single-point corner shape gradient and
-    /// rest volume. Feeds the Tet4-flavored single-point consumers (F-bar,
-    /// validity gate, lumped mass); the forward stiffness and (since rung 7)
-    /// the material adjoint read [`Self::gauss_geometries`] instead.
+    /// rest volume. Feeds the Tet4-flavored single-point consumers (F-bar, the
+    /// validity gate's `max_stretch_deviation` slot, lumped mass, and the
+    /// corner-block half of its `inversion` slot); the forward stiffness, the
+    /// material adjoint (since rung 7) and the Gauss-point half of the
+    /// `inversion` slot read [`Self::gauss_geometries`] as well.
     element_geometries: Vec<ElementGeometry>,
     /// One entry per mesh tet — the per-Gauss-point stiffness geometry
     /// (`(grad_x_n, weight)` × `G`) the multi-Gauss-point forward kernels
