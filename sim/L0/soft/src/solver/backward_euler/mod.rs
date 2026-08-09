@@ -205,6 +205,20 @@ pub struct CpuNewtonSolver<
     /// relative to the numeric factor; same `Arc`-internal sharing
     /// makes `clone()` cheap per fall-through.
     symbolic_lu: SymbolicLu<usize>,
+    /// Numeric Cholesky factorizations performed by this solver since
+    /// construction.
+    ///
+    /// The ordering in [`ordering`] costs a one-off SYMBOLIC charge per
+    /// construction and repays a little on every NUMERIC factorization, so its
+    /// break-even is denominated in this count — see
+    /// `NESTED_DISSECTION_MIN_FREE_DOF`. Without a counter the threshold rests
+    /// on a number nobody can regenerate, which is worse than one that is
+    /// wrong: a wrong number can be caught.
+    ///
+    /// `Relaxed` because nothing orders against it; it is a diagnostic tally,
+    /// not a synchronisation point. One relaxed increment against a
+    /// factorization measured in milliseconds is unmeasurable overhead.
+    factorizations: std::sync::atomic::AtomicUsize,
     /// Total DOF count (`3 * n_vertices`), cached for slice indexing.
     n_dof: usize,
     /// Free DOF count (`free_dof_indices.len()`), cached.

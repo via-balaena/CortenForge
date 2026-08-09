@@ -323,6 +323,8 @@ where
             let a_mat: SparseColMat<usize, f64> =
                 SparseColMat::try_new_from_triplets(self.n_free, self.n_free, &regularized)
                     .expect("malformed condensed-tangent triplet list");
+            self.factorizations
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             match OrderedLlt::try_new_with_symbolic(self.symbolic.clone(), a_mat.rb(), Side::Lower)
             {
                 Ok(llt) => {
@@ -794,6 +796,8 @@ where
             let a_mat: SparseColMat<usize, f64> =
                 SparseColMat::try_new_from_triplets(self.n_free, self.n_free, &regularized)
                     .expect("malformed condensed-tangent triplet list");
+            self.factorizations
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             match OrderedLlt::try_new_with_symbolic(self.symbolic.clone(), a_mat.rb(), Side::Lower)
             {
                 Ok(llt) => {

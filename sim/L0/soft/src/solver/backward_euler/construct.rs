@@ -676,6 +676,7 @@ where
             full_to_free_idx,
             symbolic,
             symbolic_lu,
+            factorizations: std::sync::atomic::AtomicUsize::new(0),
             n_dof,
             n_free,
             fbar_cache,
@@ -711,6 +712,16 @@ where
     /// the cached symbolic factors and must build a fresh solver instead.
     pub fn replace_contact(&mut self, contact: C) {
         self.contact = contact;
+    }
+
+    /// Numeric Cholesky factorizations performed since construction.
+    ///
+    /// Crate-private: this exists to make the ordering's break-even
+    /// REPRODUCIBLE, not to widen the public surface. See
+    /// `factorizations_per_step_clears_the_ordering_break_even`.
+    pub(crate) fn factorization_count(&self) -> usize {
+        self.factorizations
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Set the rigid contact surface's within-step tangential drift `Δ_surf` (the

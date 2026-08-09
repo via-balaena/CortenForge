@@ -2,10 +2,17 @@
 //!
 //! # Why this module exists
 //!
-//! Numeric sparse Cholesky is **~78 % of a solve** (profiled on
-//! `run_indentation`; assembly is 1.0 % and everything else under 0.5 %), and
-//! its cost is set almost entirely by the *fill* the elimination ordering
-//! admits. faer ships approximate-minimum-degree (AMD) and hard-wires it:
+//! Numeric sparse Cholesky is **~78 % of a solve**, and its cost is set almost
+//! entirely by the *fill* the elimination ordering admits. That share is
+//! corroborated end-to-end rather than only by a profiler: a 2.12× isolated
+//! factorization speedup predicts `1/(0.22 + 0.78/2.12)` = 1.70× on a whole
+//! gate, and `bonded_layer_indentation` measured 1.73×.
+//!
+//! (An earlier version of this line also carried a per-bucket breakdown —
+//! "assembly 1.0 %, everything else under 0.5 %" — attributed to a profiling
+//! run with no artefact in the repo, over a `run_indentation` that resolves to
+//! two different functions. The buckets did not sum, and nothing could
+//! regenerate them, so they are gone rather than dressed up.) faer ships approximate-minimum-degree (AMD) and hard-wires it:
 //! [`SymbolicLlt::try_new`](faer::sparse::linalg::solvers::SymbolicLlt::try_new)
 //! passes `Default::default()` for the ordering and keeps its inner
 //! [`SymbolicCholesky`] private, so there is no way to hand it a different
@@ -80,11 +87,10 @@ impl FillReducingPermutation {
 
 /// Free-DOF count below which faer's AMD is kept.
 ///
-/// Nested dissection is an asymptotic win, not a universal one, and the price
-/// is paid on a different schedule from the benefit: the ordering costs a
-/// one-off **symbolic** charge per solver construction, while it repays a
-/// little on every **numeric** factorization. So the threshold is a
-/// break-even, not a speed comparison.
+/// Nested dissection is an asymptotic win, not a universal one, and it is paid
+/// for on a different schedule from the benefit: a one-off **symbolic** charge
+/// per solver construction, repaid a little on every **numeric**
+/// factorization. So the threshold is a break-even, not a speed comparison.
 ///
 /// Measured by `factorization_fill_growth` with rayon enabled — the shipped
 /// configuration, which matters because parallelism shrinks ND's numeric
@@ -93,27 +99,36 @@ impl FillReducingPermutation {
 /// | `n_free` | extra symbolic | saved per factorization | break-even |
 /// |---|---|---|---|
 /// | 348 | +1.1 ms | ND is SLOWER | never |
-/// | 2,112 | +13.7 ms | 0.3 ms | **46×** |
-/// | 6,444 | +51.2 ms | 4.8 ms | 10.7× |
-/// | 14,496 | +133.7 ms | 26.3 ms | 5.1× |
-/// | 27,420 | +272.6 ms | 82.5 ms | 3.3× |
+/// | 2,112 | +13.7 ms | 0.3 ms | 46 |
+/// | 6,444 | +51.2 ms | 4.8 ms | **10.7** |
+/// | 14,496 | +133.7 ms | 26.3 ms | 5.1 |
+/// | 27,420 | +272.6 ms | 82.5 ms | 3.3 |
 ///
-/// Against that, how many factorizations a solver actually performs per
-/// construction, counted across `tet10_bending_locking`, `bonded_bilayer_beam`
-/// and `uniaxial_roller_coupon`: **13–25** for ordinary solves (145 for a
-/// displacement ramp, which is the easy case).
+/// The other half is the rate at which a solver performs factorizations, from
+/// `factorization_rate_per_step`: **≈2.2 per `step`**, flat across 348 → 6,444
+/// free DOF (one Newton solve plus the IFT adjoint factor). Break-even
+/// therefore converts to *steps*: ~21 at 2,112, ~5 at 6,444, ~1.5 at 27,420.
 ///
-/// 6,444 is therefore the smallest measured size where break-even (10.7) sits
-/// safely inside ordinary usage — a solver of comparable size was measured at
-/// 23.5 factorizations. At 2,112 the requirement climbs to 46, which ordinary
-/// usage does NOT reach and only a long ramp repays; a short solve there would
-/// be made *slower* by ordering it.
+/// **6,444 is the smallest measured size where break-even lands inside
+/// ordinary use.** Every ramp, probe and envelope gate in this repo steps a
+/// solver far more than five times, so ND repays there — corroborated
+/// end-to-end by `bonded_layer_indentation`, which is 1.25× faster *including*
+/// the symbolic charge. Below it the requirement climbs steeply (~21 steps at
+/// 2,112) and a short solve would be made SLOWER by ordering it.
 ///
-/// ⚠ This constant was previously 2,000, derived from numeric time alone
-/// before the symbolic cost was measured and while the solver was still
-/// single-threaded. Both of those inputs changed. Re-derive it again if the
-/// parallelism configuration changes, rather than treating it as a tuned knob.
-const NESTED_DISSECTION_MIN_FREE_DOF: usize = 6000;
+/// The constant is the measurement, not a round number near it. It was
+/// previously 6,000 — and 2,000 before that — each set just BELOW the smallest
+/// size where ND was measured to win, quietly extending it into territory
+/// nothing had measured while the doc claimed the opposite.
+///
+/// ⚠ **Known limit, stated rather than hidden.** This is calibrated for
+/// multi-step use. A solver constructed for a SINGLE step performs ~2.2
+/// factorizations and repays the ordering at no size measured here; such a
+/// caller pays a small one-off penalty above the threshold. That is the right
+/// trade for this codebase, where solvers are reused, but it is a calibration
+/// and not a law — re-derive against fresh runs of both producers if the
+/// parallelism configuration or the Newton tolerances change.
+pub(super) const NESTED_DISSECTION_MIN_FREE_DOF: usize = 6444;
 
 /// Compute a nested-dissection permutation of an `n × n` symmetric pattern.
 ///

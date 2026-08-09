@@ -2193,6 +2193,135 @@ fn factorization_runs_in_parallel() {
     );
 }
 
+/// Build a Tet10 block solver at `cells` resolution and run `steps` gravity
+/// steps, carrying state forward. Returns `(n_free, factorizations)`.
+///
+/// The shared body of the ordering's break-even producer and its gate.
+#[cfg(test)]
+fn factorization_count_over_a_ramp(cells: usize, steps: usize) -> (usize, usize) {
+    let mut cfg = SolverConfig::skeleton();
+    cfg.dt = 1.0e-3;
+    cfg.gravity_z = -9.81;
+
+    let field = MaterialField::uniform(1.0e5, 4.0e5);
+    let cube = HandBuiltTetMesh::uniform_block(cells, 0.1, &field);
+    let n_corners = cube.n_vertices();
+    let positions = cube.positions().to_vec();
+    let pinned: Vec<VertexId> = (0..n_corners as VertexId)
+        .filter(|&v| positions[v as usize].z < 0.01)
+        .collect();
+    let tet10 = Tet10Mesh::from_tet4(&cube);
+    let solver: CpuTet10NHSolver<Tet10Mesh> = CpuNewtonSolver::new(
+        Tet10,
+        tet10,
+        NullContact,
+        cfg,
+        BoundaryConditions {
+            pinned_vertices: pinned,
+            roller_vertices: Vec::new(),
+            loaded_vertices: Vec::new(),
+        },
+    );
+    let rest = tet10_rest_dofs(&solver);
+    let n_dof = rest.len();
+    let n_free = solver.n_free;
+
+    let before = solver.factorization_count();
+    let mut x = Tensor::from_slice(&rest, &[n_dof]);
+    let mut v = Tensor::zeros(&[n_dof]);
+    for _ in 0..steps {
+        let out = solver.replay_step(&x, &v, &Tensor::zeros(&[0]), cfg.dt);
+        let next: Vec<f64> = out.x_final.clone();
+        let vel: Vec<f64> = next
+            .iter()
+            .zip(x.as_slice().iter())
+            .map(|(xf, x0)| (xf - x0) / cfg.dt)
+            .collect();
+        v = Tensor::from_slice(&vel, &[n_dof]);
+        x = Tensor::from_slice(&next, &[n_dof]);
+    }
+    (n_free, solver.factorization_count() - before)
+}
+
+/// Producer for the factorization rate the ordering threshold is derived from.
+///
+/// `cargo test -p sim-soft --release --lib factorization_rate_per_step -- --ignored --nocapture`
+///
+/// The nested-dissection ordering costs a one-off symbolic charge per solver
+/// CONSTRUCTION and repays a little on every numeric FACTORIZATION, so its
+/// break-even is denominated in factorizations. Converting that into a
+/// threshold on `n_free` needs the rate at which a real solver actually
+/// performs them — which is what this prints, and what
+/// `NESTED_DISSECTION_MIN_FREE_DOF` cites.
+///
+/// It exists because the threshold was once derived from a number measured
+/// with throwaway instrumentation and then deleted. A constant justified by a
+/// measurement nobody can reproduce is worse than one that is simply wrong:
+/// the wrong one can be caught.
+#[test]
+#[ignore = "diagnostic — reports the factorization rate, asserts nothing"]
+fn factorization_rate_per_step() {
+    const STEPS: usize = 10;
+    println!(
+        "{:>8}  {:>14}  {:>9}",
+        "n_free", "factorizations", "per step"
+    );
+    for cells in [2usize, 4, 6, 8] {
+        let (n_free, factorizations) = factorization_count_over_a_ramp(cells, STEPS);
+        // precision_loss: a printed diagnostic average over ten steps.
+        #[allow(clippy::cast_precision_loss)]
+        let per_step = factorizations as f64 / STEPS as f64;
+        println!("{n_free:>8}  {factorizations:>14}  {per_step:>9.1}");
+    }
+}
+
+/// The ordering's break-even must be reachable by real use at the threshold.
+///
+/// `NESTED_DISSECTION_MIN_FREE_DOF` is set where the ordering's one-off
+/// symbolic cost is repaid by the numeric saving. At that size the measured
+/// break-even is **10.7 factorizations** (`factorization_fill_growth`), so the
+/// threshold is only honest if a solver of that size actually performs more
+/// than 10.7 before it is dropped.
+///
+/// This gate closes that loop: it runs a short gravity ramp at the threshold
+/// size and asserts the count clears break-even. Nothing else does — the fill
+/// sweep measures cost per factorization and is `#[ignore]`d, and the rate
+/// producer above asserts nothing. Without this, the entire derivation of the
+/// constant rests on prose.
+///
+/// The margin is 2× by construction (~22 factorizations against a break-even
+/// of 11), which is the point: a regression halving the Newton iteration count
+/// — a tighter tolerance, a better initial guess — would halve the
+/// factorization rate and quietly invalidate the threshold, and this fails
+/// before that becomes silent. A tighter margin would flake instead.
+#[test]
+fn factorizations_clear_the_ordering_break_even() {
+    /// Measured break-even at the threshold size, in factorizations
+    /// (`factorization_fill_growth`, rayon enabled): +51.2 ms symbolic against
+    /// 4.8 ms saved per factorization.
+    const BREAK_EVEN_AT_THRESHOLD: usize = 11;
+    /// Ten steps yields ~22 factorizations against a break-even of 11 — a 2x
+    /// margin, so an ordinary run-to-run wobble cannot flip the gate while a
+    /// halving of the Newton iteration count still trips it.
+    const STEPS: usize = 10;
+
+    let (n_free, factorizations) = factorization_count_over_a_ramp(6, STEPS);
+    assert!(
+        n_free >= super::ordering::NESTED_DISSECTION_MIN_FREE_DOF,
+        "this gate must run AT or ABOVE the ordering threshold to say anything \
+         about it — got n_free = {n_free}, threshold {}",
+        super::ordering::NESTED_DISSECTION_MIN_FREE_DOF
+    );
+    assert!(
+        factorizations > BREAK_EVEN_AT_THRESHOLD,
+        "a {STEPS}-step ramp at n_free = {n_free} performed only {factorizations} \
+         factorizations, which does not clear the measured break-even of \
+         {BREAK_EVEN_AT_THRESHOLD}. The nested-dissection ordering costs more \
+         than it saves at this size — re-derive NESTED_DISSECTION_MIN_FREE_DOF \
+         against a fresh `factorization_fill_growth` run."
+    );
+}
+
 /// Fill growth, AMD against nested dissection — the diagnostic behind the
 /// ordering choice, and the instrument for revisiting it.
 ///
