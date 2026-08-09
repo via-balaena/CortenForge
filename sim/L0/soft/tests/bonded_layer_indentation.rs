@@ -155,8 +155,14 @@
 //!
 //! Numerics are unaffected: this run reproduced the committed anchors above to
 //! four significant figures (`RATIO` 1.0509 / 1.1048 / 1.1303, `F/Hertz`
-//! 1.3085 / 1.6700 / 2.1121), which is what `faer`'s deliberately-disabled
-//! rayon buys — see `sim/L0/soft/Cargo.toml`.
+//! 1.3085 / 1.6700 / 2.1121).
+//!
+//! ⚠ This sentence used to credit that to `faer`'s "deliberately-disabled"
+//! rayon. **rayon is now ENABLED on native targets** — the claim was falsified
+//! by a later commit in the same PR and survived the squash. Four-significant-
+//! figure agreement is a TOLERANCE statement and holds under either
+//! configuration; it was never evidence of bit-determinism, and this file
+//! asserts none. See `sim/L0/soft/Cargo.toml` for what rayon costs and buys.
 
 #![allow(
     // Helpers `.expect(...)` on the meshing/among-tuple returns — mirrors

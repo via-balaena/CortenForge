@@ -88,8 +88,11 @@ where
 /// `new()` (a constant edge-vector `J`, `|detJ|` shared across the Gauss
 /// points), which is bit-identical to the pre-curved cache. The returned pairs
 /// feed the `(b)` [`GaussGeometry`] cache the multi-Gauss-point forward
-/// stiffness and (since rung 7) the material adjoint integrate over; the `(a)`
-/// single-point [`ElementGeometry`] proxy stays affine (F-bar, validity, mass).
+/// stiffness and (since rung 7) the material adjoint integrate over — and, since
+/// the validity gate moved to the Gauss points, the inversion slot, which on a
+/// curved element therefore reads THIS per-point Jacobian rather than the affine
+/// proxy. The `(a)` single-point [`ElementGeometry`] proxy still serves F-bar,
+/// mass, and the gate's corner-block half.
 //
 // expect_used: a singular curved Jacobian means an inverted or degenerate
 // midside placement — a malformed-mesh programmer bug at construction time,
@@ -721,7 +724,7 @@ where
     ///
     /// Crate-private: this exists to make the ordering's break-even
     /// REPRODUCIBLE, not to widen the public surface. See
-    /// `factorizations_per_step_clears_the_ordering_break_even`.
+    /// `factorizations_clear_the_ordering_break_even`.
     pub(crate) fn factorization_count(&self) -> usize {
         self.factorizations
             .load(std::sync::atomic::Ordering::Relaxed)

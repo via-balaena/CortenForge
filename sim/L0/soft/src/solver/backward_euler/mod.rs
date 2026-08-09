@@ -113,7 +113,7 @@ struct ElementGeometry {
 /// Consumed by the forward stiffness kernels
 /// (`assemble_global_int_force` / `assemble_free_hessian_triplets` /
 /// `internal_force_tangent_matvec`) and by the step-boundary inversion sweep in
-/// `CpuNewtonSolver::check_orientation_at_gauss_points`, which gates `det F > 0`
+/// `CpuNewtonSolver::check_orientation`, which gates `det F > 0`
 /// at the points those kernels evaluate the material at — with one exception:
 /// `assemble_global_int_force`'s F-bar branch evaluates a patch-modified `F*`
 /// built from [`ElementGeometry`] instead. That branch is Tet4-only, where the

@@ -30,7 +30,7 @@
 //! `det F.ln()` instead of panicking. Orientation is enforced at the solve
 //! boundaries by
 //! [`CpuNewtonSolver::check_validity_at_step_start`](crate::CpuNewtonSolver),
-//! whose `check_orientation_at_gauss_points` helper does the sweeping.
+//! whose `check_orientation` helper does the sweeping.
 //! See `neo_hookean`'s module doc for why that is the right home for it.
 //!
 //! ## Validity domain
@@ -49,7 +49,7 @@
 //!   path sets ONLY the tensile bound via
 //!   [`Yeoh::with_max_principal_stretch_only`] per H4-2-C (asymmetric
 //!   one-sided; see
-//!   `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5).  The
+//!   `docs/archive/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5).  The
 //!   compressive direction defers to `det F > 0` inversion only.
 
 use nalgebra::{Matrix3, SMatrix};
@@ -98,10 +98,10 @@ impl Yeoh {
     /// [`crate::solver::backward_euler`] `check_validity_at_step_start`
     /// performs only the tensile-direction check + falls back to the
     /// `det F > 0` inversion handler (swept per Gauss point by
-    /// `check_orientation_at_gauss_points`) for compressive safety.
+    /// `check_orientation`) for compressive safety.
     ///
     /// **Why this exists**: per
-    /// `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5, the
+    /// `docs/archive/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5, the
     /// family-uniform compressive floor binds before the calibrated
     /// tensile cap at cavity > 5 mm in the iter-1 sliding-intruder
     /// sweep — Newton's preferred equilibrium pushes `σ_min` way past

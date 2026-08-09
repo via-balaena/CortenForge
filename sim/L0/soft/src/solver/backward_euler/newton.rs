@@ -2,6 +2,7 @@
 //! [`CpuNewtonSolver`](super::CpuNewtonSolver).
 
 use faer::sparse::Triplet;
+use nalgebra::SMatrix;
 use sim_ml_chassis::Tensor;
 
 use crate::contact::{ActivePairsFor, ContactModel};
@@ -15,7 +16,7 @@ use super::helpers::{
     armijo_stall_panic_message, deformation_gradient, element_node_ids, extract_element_dof_values,
     residual_into,
 };
-use super::{CpuNewtonSolver, GaussGeometry};
+use super::{CpuNewtonSolver, ElementGeometry, GaussGeometry};
 
 /// Armijo sufficient-decrease constant (scope §5 R-1).
 const ARMIJO_C1: f64 = 1e-4;
@@ -100,7 +101,7 @@ where
     /// first violation rather than degrading silently.
     ///
     /// (⚠ boundary (2)'s `inversion` slot is nearly dead — see
-    /// [`Self::check_orientation_at_gauss_points`].)  See
+    /// [`Self::check_orientation`].)  See
     /// `docs/archive/CANDIDATE_E_B_FALSIFICATION_BOOKMARK.md` §10 for the
     /// motivating finding (cavity > 5 mm sliding-ramp step 1
     /// converged to `σ_max = 2.05` at tet 3206, was only caught at
@@ -112,7 +113,10 @@ where
     ///
     /// Returns [`SolverFailure::ValidityViolation`] on the first violator, carrying the violated
     /// `tet_id` and the structured `message`
-    /// `"validity violation at tet {id}: {slot} = {value:.3} ..."` (where `{slot}` is one of
+    /// `"validity violation at tet {id}: {slot} = ..."` — where the value rendering
+    /// is per-slot, not uniform: `inversion` emits `inversion = det F = {value:.3}`
+    /// (and, on the corner-block half, `... on the corner block`), while the stretch
+    /// slots emit `{slot} = {value:.3}`. `{slot}` is one of
     /// `max_stretch_deviation` / `max_principal_stretch` / `min_principal_stretch` / `inversion`).
     /// The `try_step`/`try_replay_step` callers surface this `Err` so a feasibility-aware caller can
     /// skip the design; the panic-path `step`/`replay_step` re-`panic!` with the same `message`, so
@@ -148,14 +152,18 @@ where
             //      should be reported on the slot that names the actual defect
             //      rather than on whatever stretch bound it also happens to trip.
             //   2. The stretch reductions below SWALLOW non-finite values (see
-            //      their comment), so running the finiteness-checking slot first
-            //      is what keeps a `NaN` state from passing silently.
+            //      their comment), so SOME slot must reject a non-finite `det F`.
+            //      ⚠ Order is not what secures that: both slots run in the same
+            //      loop iteration, so a `NaN` is caught either way and only the
+            //      ATTRIBUTION depends on which runs first. Reason (1) is the
+            //      whole reason for the ordering; this is a reason the sweep must
+            //      EXIST, which is a different claim.
             // Programs that allow `det F <= 0` declare a non-`RequireOrientation`
             // inversion handler, and Phase 4 has none — Phase H may add
             // `Barrier` / `OptIn` variants when an impl needs them. ⚠ A variant
             // that skips this sweep arms the NaN hole named in (2).
             if matches!(validity.inversion, InversionHandling::RequireOrientation) {
-                self.check_orientation_at_gauss_points(x_curr, tet_id, gauss_geom)?;
+                self.check_orientation(x_curr, tet_id, geom, gauss_geom)?;
             }
 
             // Principal-stretch bounds: SVD `F = U Σ V^T` gives
@@ -279,8 +287,11 @@ where
     /// than missed: it evaluates a patch-modified `F*` off the corner block, but it is
     /// Tet4-only (asserted in `try_solve_impl`, above both of this gate's call sites), and
     /// for Tet4 the corner block and the single Gauss pair are the same tensor. Its
-    /// `det F* = J̄` is a positive-weighted average of exactly the per-element `J_e` this
-    /// sweep checks, so `J̄ > 0` follows from the sweep passing.
+    /// `det F* = J̄` is a positive-weighted average of the per-element `J_e` this sweep
+    /// checks, so `J̄ > 0` follows from the sweep passing. (One degenerate exception:
+    /// `fbar::element_j_bar` seeds a zero-volume node with a hard-coded `1.0` rather
+    /// than any `J_e`, so "exactly" would overstate it — the positivity conclusion is
+    /// unaffected, since `1.0 > 0`.)
     ///
     /// For **Tet4**, on a finite `det F`, this is verdict-identical to the pre-sweep
     /// corner check (`G == 1`, the centroid point, bit-identical to
@@ -306,14 +317,28 @@ where
     ///    only `free_dof_indices`, so a `NaN` confined to pinned entries was never
     ///    observed and such a solve converged with an inverted element in it. Pinned by
     ///    `fully_pinned_inverted_element_no_longer_converges`.
-    /// 3. **`Err` → `Ok`**: a Tet10 whose *corner block* is orientation-negative while
-    ///    every Gauss point stays positive. The corner block is no longer gated at all
-    ///    (see the stretch check's comment for why that is deliberate). No fixture in
-    ///    the crate produces such a state and none is added here.
     ///
-    /// Boundary (2) of the two the caller runs — the converged-state check — is nearly
-    /// dead for this slot: reaching it requires `r_norm < tol`, which a `NaN`-poisoned
-    /// `f_int` cannot satisfy, so only case 2 above can trip it there.
+    /// There is no third class. An earlier revision of this change swept the Gauss
+    /// points *instead of* the corner block, which introduced an `Err` → `Ok` class:
+    /// a Tet10 whose corner block is orientation-negative while every Gauss point
+    /// stays positive. That revision documented the class as unreachable — "no
+    /// fixture in the crate produces such a state". It is reachable in about two
+    /// element lengths (mirror the corners through a plane, leave the midsides
+    /// interior), the stretch slot abstains on it because singular values are
+    /// orientation-blind, and the solve returned `Ok` with a fully folded element in
+    /// the mesh. This gate now checks both, so the class is closed rather than
+    /// documented — see `corner_inverted_tet10_is_rejected_even_when_every_gauss_point_is_positive`.
+    ///
+    /// ⚠ Boundary (2) of the two the caller runs — the converged-state check — is
+    /// **not** redundant, and an earlier revision of this doc said it was "nearly
+    /// dead" on the reasoning that a `NaN`-poisoned `f_int` cannot satisfy
+    /// `r_norm < tol`. That reasoning fails for every F-bar solve: with `J_e < 0` and
+    /// a healthy patch, `theta = (j_bar / j).cbrt()` is NEGATIVE, so
+    /// `det(theta * F) = theta^3 * J = J_bar > 0`, `first_piola` receives a positive
+    /// determinant, `ln` stays finite and no `NaN` is ever produced. F-bar hides the
+    /// inversion from the `NaN` mechanism entirely, which makes the converged-state
+    /// check the SOLE gate for that class. Deleting it as redundant would turn every
+    /// F-bar inversion into a silently converged folded element.
     ///
     /// [`CpuNewtonSolver::min_gauss_det_ratio`] reports the same quantity this gate
     /// tests (`det J_def(ξ_q) / det J_rest(ξ_q)` *is* `det F` at that point), by a
@@ -327,14 +352,17 @@ where
     //
     // cast_possible_truncation: the Mesh-trait API tax, as in the assembly methods.
     #[allow(clippy::cast_possible_truncation)]
-    fn check_orientation_at_gauss_points(
+    fn check_orientation(
         &self,
         x_curr: &[f64],
         tet_id: usize,
+        geom: &ElementGeometry,
         gauss_geom: &GaussGeometry<N, G>,
     ) -> Result<(), SolverFailure> {
         let nodes = element_node_ids::<M, Msh, N>(&self.mesh, tet_id as TetId);
         let x_nodes = extract_element_dof_values(x_curr, &nodes);
+
+        // (a) Every Gauss point — where the constitutive model is evaluated.
         for (q, (grad_x_n, _)) in gauss_geom.gauss.iter().enumerate() {
             let det_f = deformation_gradient(&x_nodes, grad_x_n).determinant();
             // `is_finite` as well as `<= 0.0`, because every float comparison
@@ -353,6 +381,40 @@ where
                     ),
                 });
             }
+        }
+
+        // (b) The corner block — the element's own affine orientation.
+        //
+        // Sweeping the Gauss points is what this change is FOR, but sweeping
+        // them INSTEAD of the corner block narrowed the gate: a Tet10 can be
+        // corner-inverted (`det F = -1`) while every Gauss point stays strongly
+        // positive, and such an element passed the whole validity gate — the
+        // stretch slot abstains too, because singular values are
+        // orientation-blind, so `diag(1,1,-1)` reports `max_dev = 0`.
+        //
+        // That state is not hypothetical: mirroring the four corners through a
+        // plane and leaving the midsides inside a two-element-length box
+        // produces it, and the solve returned `Ok` with the folded element in
+        // it. Gating both is the fail-closed reading of Decision Q, and it
+        // costs one extra 3x3 determinant per element per step boundary.
+        //
+        // For Tet4 this is redundant by construction — `G == 1` and the single
+        // Gauss pair IS the corner block — so the verdict cannot change there.
+        // `grad_x_n` is the 4x3 corner block, so pair it with the element's
+        // first four rows — the corner nodes, which both element types order first.
+        let x_corners: SMatrix<f64, 4, 3> = x_nodes.fixed_rows::<4>(0).into_owned();
+        let det_corner = deformation_gradient(&x_corners, &geom.grad_x_n).determinant();
+        if !det_corner.is_finite() || det_corner <= 0.0 {
+            return Err(SolverFailure::ValidityViolation {
+                tet_id,
+                message: format!(
+                    "validity violation at tet {tet_id}: inversion = det F = \
+                     {det_corner:.3} on the corner block (every Gauss point is \
+                     positive) violates RequireOrientation handler (must be \
+                     finite and strictly positive). Phase 4 scope memo \
+                     Decision Q fail-closed semantics."
+                ),
+            });
         }
         Ok(())
     }
@@ -646,7 +708,7 @@ where
 
             if r_norm < self.config.tol {
                 // Decision Q validity check at converged state — sister
-                // of the step-start check at line 1525. Without this,
+                // of the step-start check above. Without this,
                 // Newton can converge to a deformation field where some
                 // tet's F violates max_stretch_deviation / inversion;
                 // the failure surfaces only at the NEXT step's start
@@ -690,14 +752,24 @@ where
     /// DOFs stay at their `x_curr` values.
     ///
     /// **A non-finite `trial_norm` is a rejected trial, not a fault.** This is
-    /// why `Material::first_piola` returns `NaN` on an inverted `F` rather than
-    /// panicking: a trial state may legitimately overshoot into inversion, the
+    /// why `Material::first_piola` returns `NaN` on an `F` with `det F < 0`
+    /// rather than panicking: a trial state may legitimately overshoot into
+    /// inversion, the
     /// sufficient-decrease test below is false for `NaN` (every comparison
     /// against `NaN` is), so control reaches `alpha *= 0.5` and the next trial
     /// is rebuilt from `x_curr` — `assemble_global_int_force` re-zeroes `f_int`
     /// and `residual_into` rewrites every index, so the `NaN` cannot persist
     /// across trials. Panicking in the material would turn each such trial into
     /// an aborted solve.
+    ///
+    /// ⚠ **`det F == 0` exactly is the exception, and it does panic.**
+    /// `invert_transpose`'s `try_inverse` tests `determinant().is_zero()` — an
+    /// exact comparison in nalgebra's 3x3 path, not a tolerance — so a trial
+    /// that lands a node exactly on the plane of its element's other three
+    /// aborts the solve from inside the material. (A `NaN` determinant is not
+    /// zero, so `NaN` states still flow through as described above.) The
+    /// halving argument therefore covers `det F < 0`, which is the overwhelmingly
+    /// likely overshoot, and not the measure-zero coplanar case.
     ///
     /// ⚠ What that does NOT claim is that the search always escapes. The loop
     /// is budgeted by `max_line_search_backtracks`, and even a non-inverted

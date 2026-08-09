@@ -138,9 +138,9 @@ impl Material for NeoHookean {
 // The orientation guarantee belongs at the step boundaries, where the state is
 // a candidate equilibrium rather than a trial:
 // `CpuNewtonSolver::check_validity_at_step_start` (whose
-// `check_orientation_at_gauss_points` helper does the sweeping) requires a
-// finite, strictly positive `det F` at every Gauss point and fails closed with
-// `SolverFailure::ValidityViolation`.
+// `check_orientation` helper does the sweeping) requires a
+// finite, strictly positive `det F` at every Gauss point AND on the element's
+// corner block, and fails closed with `SolverFailure::ValidityViolation`.
 #[allow(clippy::expect_used)]
 fn invert_transpose(f: &Matrix3<f64>) -> Matrix3<f64> {
     f.try_inverse()
