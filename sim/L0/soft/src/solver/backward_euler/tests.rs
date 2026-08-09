@@ -1330,6 +1330,64 @@ fn the_gate_runs_on_a_curved_tet10() {
     );
 }
 
+/// A degenerate REST Jacobian at a reference corner must not be blamed on the
+/// state.
+///
+/// ⚠ This gates the skip in stage (c). A midside projected far enough off its
+/// edge degenerates the isoparametric Jacobian at the adjacent reference corner
+/// while `j_0` and all four Gauss Jacobians stay healthy — so the constructor
+/// and both mesher guards (which evaluate `rest_jacobian_dets`, i.e. the GAUSS
+/// points) accept the element. If the gate then divided by that Jacobian, a
+/// negative one would sign-flip `det F` and reject the element at REST,
+/// blaming the deformed state for malformed rest geometry — the exact
+/// misattribution this whole branch exists to end.
+///
+/// The rest state must therefore pass. Removing the guard, or making it a hard
+/// failure, fails this test.
+#[test]
+fn a_degenerate_rest_corner_is_skipped_not_blamed_on_the_state() {
+    // Midside 4 is the midpoint of edge (0,1) at (0.05, 0, 0); push it 40% of
+    // the edge along +x, which degenerates the rest Jacobian at corner 0.
+    let tet4 = SingleTetMesh::new(&MaterialField::uniform(1.0e5, 4.0e5));
+    let tet10 = Tet10Mesh::from_tet4(&tet4).with_curved_midsides(|p| {
+        if (p - Vec3::new(0.05, 0.0, 0.0)).norm() < 1.0e-9 {
+            p + Vec3::new(0.04, 0.0, 0.0)
+        } else {
+            p
+        }
+    });
+    let solver: CpuTet10NHSolver<Tet10Mesh> = CpuNewtonSolver::new(
+        Tet10,
+        tet10,
+        NullContact,
+        SolverConfig::skeleton(),
+        BoundaryConditions {
+            pinned_vertices: vec![0, 1, 2, 3],
+            roller_vertices: Vec::new(),
+            loaded_vertices: Vec::new(),
+        },
+    );
+    let rest = tet10_rest_dofs(&solver);
+
+    // Premise: the constructor accepted this mesh, so the Gauss-point rest
+    // Jacobians are healthy and only a REFERENCE-CORNER one can be degenerate.
+    // (Construction panics on a singular Gauss Jacobian, so reaching here is
+    // the assertion.)
+    let x_t = Tensor::from_slice(&rest, &[rest.len()]);
+    let v_t = Tensor::zeros(&[rest.len()]);
+    let theta = Tensor::zeros(&[0]);
+    // `NewtonStep<Tape>` is not `Debug`, so the `Ok` arm cannot be formatted;
+    // match rather than `is_ok()` to report the failure that did occur.
+    match solver.try_replay_step(&x_t, &v_t, &theta, 1e-3) {
+        Ok(_) => {}
+        Err(e) => panic!(
+            "a curved element at REST was rejected: {e:?} — a degenerate \
+             rest-corner Jacobian must be skipped, not reported as a state \
+             violation"
+        ),
+    }
+}
+
 /// A corner-block inversion that BOTH other stages accept.
 ///
 /// ⚠ Mirror of the reference-corner test below, and it exists for the same
