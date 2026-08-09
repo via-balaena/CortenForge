@@ -24,16 +24,20 @@ tier = "L0"
 # recorded trade, not a drift allowance.
 #
 # The crate sat at EXACTLY 100/100 after `feral-metis`. Enabling faer's
-# `rayon` feature adds 9 crates (rayon, rayon-core, either, six crossbeam)
-# and puts it at 110. Both spends are load-bearing and measured on the
+# `rayon` feature adds 10 crates -- rayon, rayon-core, six crossbeam, and
+# `spindle` -> `atomic-wait` (the pair that costs wasm32, see the per-target
+# block below) -- putting it at 110. `either` is NOT among them; it was
+# already in the tree. Both spends are load-bearing and measured on the
 # `bonded_layer_indentation` gate, uncontended:
 #
 #                    sequential    rayon
 #     AMD               638.7 s   360.3 s
 #     nested diss.      369.2 s   288.4 s
 #
-# Either lever alone is worth ~1.75x; together 2.22x. Dropping one to stay
-# under 100 would give back ~72-81 s per run of a single gate, on a suite
+# Either lever alone is worth ~1.75x; together 2.22x. Only dropping RAYON
+# actually reaches 100 -- `feral-metis` costs 3 crates, so dropping the
+# ordering instead leaves 107, still over -- and that costs 80.8 s per run of
+# a single gate, on a suite
 # whose slowness has twice let licensed gates rot undetected
 # (design/cf-fsu-geometry/BODYPARTS3D.md) — a detection failure, not a
 # convenience one.
@@ -127,8 +131,10 @@ pollster = { workspace = true, optional = true }
 # factorization. faer ships AMD and COLAMD only, and minimum-degree loses badly
 # on 3D meshes: measured on this crate's own Tet10 free-DOF tangent patterns,
 # AMD's fill per row runs 435 -> 714 -> 974 across a 4.25x DOF increase while
-# nested dissection holds 322 -> 458 -> 648, a 1.65x -> 2.14x numeric
-# factorization speedup still widening at 27k DOF. Factorization is ~78% of a
+# nested dissection holds 334 -> 458 -> 648, a 1.61x -> 2.12x numeric
+# factorization speedup still widening at 27k DOF. (These supersede the
+# offline-harness figures 322 / 1.65x / 2.14x this comment first carried;
+# the in-situ sweep in `ordering.rs` is the authority.) Factorization is ~78% of a
 # solve (profiled), so this is the largest single lever in the crate.
 #
 # Pure Rust — no C toolchain, no build script — and measured at parity with C
@@ -140,8 +146,11 @@ feral-metis = "0.2.1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Native builds add faer's `rayon` feature on top of the base declaration
-# above: the sparse Cholesky is the majority of a solve and is worth ~1.77x
-# parallelised (measured, `bonded_layer_indentation`: 638.7 s -> 360.3 s).
+# above: the sparse Cholesky is the majority of a solve. In the configuration
+# this crate SHIPS -- nested dissection already on -- rayon is worth 1.28x
+# (`bonded_layer_indentation`, uncontended: 369.2 s -> 288.4 s). Against
+# sequential AMD it measures 1.77x (638.7 s -> 360.3 s), but that is not a
+# configuration we ship and is the wrong number to justify this line with.
 #
 # wasm32 deliberately does NOT get it. faer's `rayon` feature pulls `spindle`
 # -> `atomic-wait`, which fails to compile for wasm32-unknown-unknown, and

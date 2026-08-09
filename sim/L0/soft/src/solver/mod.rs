@@ -214,10 +214,23 @@ pub trait Solver: Send + Sync {
     ) -> NewtonStep<Self::Tape>;
 
     /// Re-solve the same step for backward-pass replay. Pure-function
-    /// counterpart to `step` — no `&mut tape`. Must be bit-reproducible
-    /// given the stored primal `(x, v, dt)` per Part 6 Ch 04. Takes θ
-    /// as a bare tensor (not a `Var`) because replay does not compose
-    /// onto any tape.
+    /// counterpart to `step` — no `&mut tape`. Reproducible given the
+    /// stored primal `(x, v, dt)` per Part 6 Ch 04. Takes θ as a bare
+    /// tensor (not a `Var`) because replay does not compose onto any
+    /// tape.
+    ///
+    /// ⚠ **Reproducible, not bit-identical across machines.** This read
+    /// "must be bit-reproducible" unqualified, which was never a project
+    /// guarantee and is now visibly narrower than it sounds. The locked
+    /// A.4 §4 decision is *"algorithm-output, not bit-exact"*: same θ on
+    /// the **same machine** is bit-reproducible as a side-effect, cross-
+    /// platform `libm` divergence is accepted within gradcheck tolerance,
+    /// and parallel paths accept float non-associativity. `sim-soft` now
+    /// factors under `faer`'s rayon feature, whose `Par::rayon(0)` follows
+    /// the *ambient* pool size — so the last bits additionally track the
+    /// host's core count. Replay on one machine reproduces itself, which
+    /// is what the checkpointed-adjoint machinery in Part 6 Ch 04 needs;
+    /// two machines agreeing bit-for-bit is not promised and never was.
     fn replay_step(
         &self,
         x_prev: &Tensor<f64>,

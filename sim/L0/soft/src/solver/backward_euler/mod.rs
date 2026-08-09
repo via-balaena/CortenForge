@@ -12,7 +12,10 @@
 //!
 //! Solve path: a nested-dissection-ordered symbolic Cholesky
 //! (the private `ordering` module) alongside faer `SymbolicLu::try_new`, both built once
-//! per `step`-call (one symbolic factor per algorithm; both share the
+//! per SOLVER CONSTRUCTION and cached for its lifetime — `step` never
+//! rebuilds them, and the ordering's break-even in `ordering` is priced
+//! on exactly that schedule
+//! (one symbolic factor per algorithm; both share the
 //! same element-vertex sparsity pattern with `Side::Lower` and full
 //! reflection respectively), then a numeric
 //! `OrderedLlt` plus `solve_in_place_with_conj`

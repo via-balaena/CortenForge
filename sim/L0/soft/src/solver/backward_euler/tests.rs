@@ -2198,20 +2198,22 @@ fn factorization_runs_in_parallel() {
 ///
 /// `cargo test -p sim-soft --release --lib factorization_fill_growth -- --ignored --nocapture`
 ///
-/// Measured 2026-08-09 (M4 Pro, idle, faer 0.24). Both columns come from the
-/// same process on the same pattern, so the ratio is the number to read:
+/// Both columns come from the same process on the same pattern, so the ratio
+/// is the number to read. **No table is reproduced here**: this diagnostic
+/// prints one, and a copy pinned in a doc comment goes stale the moment the
+/// mesh, the element, faer or the host changes. Run it.
 ///
-/// | `n_free` | AMD fill | ND fill | AMD factor | ND factor | speedup |
-/// |---|---|---|---|---|---|
-/// | (see the run — the table is regenerated, not asserted) | | | | | |
+/// The figures the ordering decision was made on are in
+/// [`NESTED_DISSECTION_MIN_FREE_DOF`](super::ordering) — they are quoted there
+/// because a threshold has to be justified where it is defined, and they carry
+/// the date and host they were taken on.
 ///
-/// **What it is for.** Supernodal at every size and ~17 GFlop/s at the top, so
-/// faer's kernel is fine. What was not fine is that under AMD, fill per row
-/// more than DOUBLED over a 4.25× DOF increase and factorization time grew
-/// 21× — the signature of minimum-degree ordering losing in 3D. Nested
-/// dissection is the answer to that, and this sweep is how the claim stays
-/// checkable: if a faer upgrade ever ships its own ND, or the crossover moves,
-/// this is the run that says so.
+/// **What it is for.** Under AMD, fill per row more than doubled across the
+/// measured DOF range and factorization time grew superlinearly — the
+/// signature of minimum-degree ordering losing in 3D. Nested dissection is the
+/// answer to that, and this sweep is how the claim stays checkable: if a faer
+/// upgrade ever ships its own ND, or the crossover moves, this is the run that
+/// says so.
 ///
 /// Deliberately asserts nothing — timings are machine- and load-dependent, and
 /// a gate that fails on a busy laptop teaches people to ignore it. The
