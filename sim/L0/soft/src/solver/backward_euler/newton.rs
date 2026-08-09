@@ -114,13 +114,15 @@ where
     fn check_validity_at_step_start(&self, x_curr: &[f64]) -> Result<(), SolverFailure> {
         debug_assert!(x_curr.len() == self.n_dof);
         let materials = self.mesh.materials();
-        for (tet_id, geom) in self.element_geometries.iter().enumerate() {
-            let verts = self.mesh.tet_vertices(tet_id as TetId);
-            let x_elem = extract_element_dof_values(x_curr, &verts);
-            // Stretch gate on the single-point corner geometry (for Tet4 the
-            // constant strain; for Tet10 the affine corner block). The
-            // inversion gate below does NOT use this `F` — see its comment.
-            let f = deformation_gradient(&x_elem, &geom.grad_x_n);
+        // Zipped rather than indexed: the two caches are built tet-by-tet in one
+        // pass in `construct`, and zipping makes that parallel-array invariant
+        // structural instead of a bare `[tet_id]` the reader has to trust.
+        for (tet_id, (geom, gauss_geom)) in self
+            .element_geometries
+            .iter()
+            .zip(&self.gauss_geometries)
+            .enumerate()
+        {
             let validity = materials[tet_id].validity();
 
             // Inversion check first: a non-positive `det F` makes the
@@ -148,7 +150,7 @@ where
             if matches!(validity.inversion, InversionHandling::RequireOrientation) {
                 let nodes = element_node_ids::<M, Msh, N>(&self.mesh, tet_id as TetId);
                 let x_nodes = extract_element_dof_values(x_curr, &nodes);
-                for (q, (grad_x_n, _)) in self.gauss_geometries[tet_id].gauss.iter().enumerate() {
+                for (q, (grad_x_n, _)) in gauss_geom.gauss.iter().enumerate() {
                     let det_f = deformation_gradient(&x_nodes, grad_x_n).determinant();
                     if det_f <= 0.0 {
                         return Err(SolverFailure::ValidityViolation {
@@ -181,6 +183,14 @@ where
             // `SiliconeMaterial::to_yeoh` sets both via
             // `with_principal_stretch_bounds`); future asymmetric-only
             // callers opt into the unchecked direction by construction.
+            //
+            // Still read from the single-point corner geometry (for Tet4 the
+            // constant strain; for Tet10 the affine corner block) — the
+            // inversion sweep above deliberately does not share this `F`. See
+            // this method's doc for why only one of the two slots moved.
+            let verts = self.mesh.tet_vertices(tet_id as TetId);
+            let x_elem = extract_element_dof_values(x_curr, &verts);
+            let f = deformation_gradient(&x_elem, &geom.grad_x_n);
             let svd = f.svd_unordered(false, false);
             let sigma = svd.singular_values;
             match (
