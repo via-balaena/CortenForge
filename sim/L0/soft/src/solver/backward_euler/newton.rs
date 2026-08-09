@@ -99,13 +99,9 @@ where
     /// physically meaningless).  Both boundaries fail closed on the
     /// first violation rather than degrading silently.
     ///
-    /// ⚠ The two boundaries are not equally live per slot. For `inversion`,
-    /// boundary (2) is nearly unreachable: a non-positive `det F` on any element
-    /// owning a free DOF poisons `f_int` with `NaN`, so `r_norm < tol` is never
-    /// satisfied and the converged branch is never entered. Its inversion check
-    /// therefore only fires for elements with no free DOFs at all. The stretch
-    /// slot is live at both.  See
-    /// `docs/CANDIDATE_E_B_FALSIFICATION_BOOKMARK.md` §10 for the
+    /// (⚠ boundary (2)'s `inversion` slot is nearly dead — see
+    /// [`Self::check_orientation_at_gauss_points`].)  See
+    /// `docs/archive/CANDIDATE_E_B_FALSIFICATION_BOOKMARK.md` §10 for the
     /// motivating finding (cavity > 5 mm sliding-ramp step 1
     /// converged to `σ_max = 2.05` at tet 3206, was only caught at
     /// step 2's start check pre-this-fix).  The book Part 2 §00
@@ -129,16 +125,8 @@ where
     fn check_validity_at_step_start(&self, x_curr: &[f64]) -> Result<(), SolverFailure> {
         debug_assert!(x_curr.len() == self.n_dof);
         let materials = self.mesh.materials();
-        // The two caches are filled once per tet in a single `construct` loop, so
-        // they are the same length. Pinned here rather than left implicit: `zip`
-        // stops at the SHORTER iterator, so a future divergence would silently
-        // skip the trailing tets — fail-open, in a gate whose whole job is to
-        // fail closed.
-        //
-        // A full `assert!`, not a `debug_assert!`: release is the profile these
-        // solves actually run in, so a debug-only check would leave exactly the
-        // hole this comment describes open where it matters. One integer compare
-        // per call (not per tet) against a per-tet SVD is not a measurable cost.
+        // `zip` truncates to the shorter iterator, and a gate that silently skips
+        // tets fails open. Hard `assert!` so that holds in release too.
         assert_eq!(
             self.element_geometries.len(),
             self.gauss_geometries.len(),
@@ -152,23 +140,20 @@ where
         {
             let validity = materials[tet_id].validity();
 
-            // Inversion check first: singular values are non-negative and
-            // orientation-blind (`σ(F) = σ(RF)` for a reflection `R`), so the
-            // stretch check below cannot distinguish an inverted state from its
-            // mirror image — it would return a verdict, but not a meaningful one.
-            // Running the orientation slot first means the stretch slot is only
-            // ever asked about states whose orientation is already established.
+            // Inversion check first, for two reasons — neither of which is that
+            // the stretch verdict would be wrong otherwise. `|σ − 1|` is a
+            // genuine bound whatever the orientation, since singular values are
+            // orientation-blind (`σ(F) = σ(RF)` for a reflection `R`).
+            //   1. Attribution: first-violator-wins, so an inverted element
+            //      should be reported on the slot that names the actual defect
+            //      rather than on whatever stretch bound it also happens to trip.
+            //   2. The stretch reductions below SWALLOW non-finite values (see
+            //      their comment), so running the finiteness-checking slot first
+            //      is what keeps a `NaN` state from passing silently.
             // Programs that allow `det F <= 0` declare a non-`RequireOrientation`
             // inversion handler, and Phase 4 has none — Phase H may add
-            // `Barrier` / `OptIn` variants when an impl needs them.
-            //
-            // ⚠ If such a variant is added, revisit the stretch check below: its
-            // `fold(0.0, f64::max)` / `fold(INFINITY, min)` reductions SWALLOW
-            // NaN (Rust's `f64::max`/`min` return the non-NaN operand), so a
-            // non-finite `σ` would report `max_dev = 0.0` and pass. That is
-            // unreachable today only because the sweep below rejects non-finite
-            // `det F` for every material — and every shipped material declares
-            // `RequireOrientation`. A variant that skips the sweep arms it.
+            // `Barrier` / `OptIn` variants when an impl needs them. ⚠ A variant
+            // that skips this sweep arms the NaN hole named in (2).
             if matches!(validity.inversion, InversionHandling::RequireOrientation) {
                 self.check_orientation_at_gauss_points(x_curr, tet_id, gauss_geom)?;
             }
@@ -178,14 +163,24 @@ where
             // `f.svd_unordered(false, false)` skips U/V (we only need
             // σ); cheap O(27) FLOPs per tet.
             //
+            // ⚠ These reductions SWALLOW non-finite values: Rust's `f64::max` /
+            // `f64::min` return the non-NaN operand, so a `NaN` σ would report
+            // `max_dev = 0.0` / `min_sigma = INFINITY` and PASS. Safe only
+            // because the inversion sweep above rejects a non-finite `det F`
+            // first, for every material that declares `RequireOrientation` —
+            // which today is all of them. Adding a variant that skips the sweep
+            // means adding an `is_finite` guard here.
+            //
             // ⚠ Which orientations reach here differs by element. For Tet4 the
             // sweep above IS this corner block (single Gauss pair), so nothing
             // orientation-negative gets this far. For Tet10 it is not: the sweep
             // reads the Gauss points, so a corner block that is itself
-            // orientation-negative is no longer gated at all. Deliberate —
-            // nothing evaluates the Tet10 corner `F` numerically, so its
-            // orientation is not a physical property of the state — and harmless
-            // to this slot, whose σ are orientation-blind either way.
+            // orientation-negative is no longer gated at all — a state that was
+            // `Err` before this slot moved and is now `Ok`. Deliberate: no
+            // constitutive law is ever evaluated at the Tet10 corner `F` (only
+            // this bound is), so its orientation is not a property of the state
+            // that the physics can observe. Harmless to this slot too, whose σ
+            // are orientation-blind either way.
             //
             // Two gate flavors (Yeoh arc memo D8): if either of the new
             // asymmetric bounds is `Some`, gate per-bound; else fall
@@ -290,11 +285,11 @@ where
     /// For **Tet4**, on a finite `det F`, this is verdict-identical to the pre-sweep
     /// corner check (`G == 1`, the centroid point, bit-identical to
     /// `ElementGeometry::grad_x_n`) — pinned by
-    /// `tet4_inversion_verdict_survives_the_gauss_sweep`, which passes against the
-    /// pre-sweep gate as well as this one. The `is_finite` clause is the one Tet4
-    /// verdict that *did* change: a non-finite `det F` used to pass the bare `<= 0.0`
-    /// predicate (every comparison against `NaN` is false). That is new for both element
-    /// types and is pinned by `non_finite_state_is_rejected_by_the_inversion_gate`.
+    /// `tet4_inversion_verdict_survives_the_gauss_sweep`, whose cases are ones the
+    /// corner check rejected too. The `is_finite` clause is the one Tet4 verdict that
+    /// *did* change: a non-finite `det F` used to pass the bare `<= 0.0` predicate
+    /// (every comparison against `NaN` is false). New for both element types, pinned by
+    /// `non_finite_state_is_rejected_by_the_inversion_gate`.
     ///
     /// For **Tet10** the two `F`s differ outright: the corner block is an affine proxy
     /// that cannot see a midside-driven inversion at an interior Gauss point, and such an
@@ -302,11 +297,28 @@ where
     /// determinant and returns `NaN`, which reaches Newton as a `NaN` residual and
     /// surfaces much later as a misattributed "non-SPD tangent" Armijo stall.
     ///
-    /// The exception to that last sentence is an element with **no free DOFs**:
-    /// `free_residual_norm` reads only `free_dof_indices`, so a `NaN` confined to pinned
-    /// entries is never observed and such a solve used to converge with an inverted
-    /// element in it. This sweep catches that case too — it is the one class of state
-    /// that changes from `Ok` to `Err` rather than merely being re-attributed.
+    /// ## The three verdict changes, stated plainly
+    ///
+    /// 1. **`Err` → `Err`, re-attributed** (the common case): a Tet10 Gauss-point
+    ///    inversion that used to surface as an `ArmijoStall` blaming the tangent now
+    ///    names the element and the point.
+    /// 2. **`Ok` → `Err`**: an element with **no free DOFs**. `free_residual_norm` reads
+    ///    only `free_dof_indices`, so a `NaN` confined to pinned entries was never
+    ///    observed and such a solve converged with an inverted element in it. Pinned by
+    ///    `fully_pinned_inverted_element_no_longer_converges`.
+    /// 3. **`Err` → `Ok`**: a Tet10 whose *corner block* is orientation-negative while
+    ///    every Gauss point stays positive. The corner block is no longer gated at all
+    ///    (see the stretch check's comment for why that is deliberate). No fixture in
+    ///    the crate produces such a state and none is added here.
+    ///
+    /// Boundary (2) of the two the caller runs — the converged-state check — is nearly
+    /// dead for this slot: reaching it requires `r_norm < tol`, which a `NaN`-poisoned
+    /// `f_int` cannot satisfy, so only case 2 above can trip it there.
+    ///
+    /// [`CpuNewtonSolver::min_gauss_det_ratio`] reports the same quantity this gate
+    /// tests (`det J_def(ξ_q) / det J_rest(ξ_q)` *is* `det F` at that point), by a
+    /// separate route that reads raw node coordinates rather than the cached
+    /// `grad_x_n`. Keep the two consistent.
     ///
     /// # Errors
     ///

@@ -42,7 +42,7 @@ impl Material for NeoHookean {
 
     fn first_piola(&self, f: &Matrix3<f64>) -> Matrix3<f64> {
         let f_inv_t = f.try_inverse()
-            .expect("non-inverted F required; IPC barrier should prevent this")
+            .expect("singular F in NeoHookean (det F == 0); orientation is gated at the step boundary")
             .transpose();
         let ln_j = f.determinant().ln();
         self.mu * (f - f_inv_t) + self.lambda * ln_j * f_inv_t
@@ -110,4 +110,4 @@ The last two are where a bug in the hand derivation shows up. Passing all four i
 - **`NeoHookean` is roughly 100 lines of Rust.** Struct + two constructors + four trait methods + validity declaration + small-strain branch + gradcheck hooks. No internal state, no history, no temperature coupling. The density matches Ch 00's "thin trait surface" claim.
 - **`EvaluationScratch` shares $F^{-T}$ and $\ln J$ between stress and tangent calls.** Listed here rather than on the base trait because it is a per-impl optimization, not a trait concern; the Ch 00 `Material` trait is pure in $F$.
 - **Standalone `NeoHookean` caps at $\nu < 0.45$.** Higher Poisson ratios require wrapping in the Ch 05 mixed-u-p or F-bar decorator; the `from_young_poisson` constructor asserts on $\nu \geq 0.45$ rather than silently constructing an instance outside its declared regime.
-- **Inversion handling is `RequireOrientation`, and the impl does not enforce it.** $\det F \le 0$ reaching the evaluation methods yields `NaN` (via $\ln$ of a non-positive determinant), not a panic. Enforcement lives in [the Newton loop](../../../50-time-integration/00-backward-euler.md)'s step-boundary validity sweep, which rejects a non-finite or non-positive $\det F$ at any Gauss point and names the offending element. Treating this as an IPC-barrier concern was the earlier framing and is wrong in both halves: the impl does not panic, and the motivating inversions are prescribed-displacement, not contact.
+- **Inversion handling is `RequireOrientation`, and the impl does not enforce it.** $\det F \le 0$ reaching the evaluation methods yields `NaN` (via $\ln$ of a non-positive determinant), not a panic. Enforcement lives in the solver's step-boundary validity sweep (`CpuNewtonSolver::check_validity_at_step_start` in `sim-soft`, whose `check_orientation_at_gauss_points` helper walks the Gauss points), which rejects a non-finite or non-positive $\det F$ and names the offending element. It runs at the two step boundaries only — [the Newton loop](../../../50-time-integration/00-backward-euler.md)'s intermediate trial states are not gated. Treating this as an IPC-barrier concern was the earlier framing and is wrong in both halves: the impl does not panic, and the motivating inversions are prescribed-displacement, not contact.

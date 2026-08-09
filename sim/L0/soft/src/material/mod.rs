@@ -160,6 +160,11 @@ pub enum InversionHandling {
     /// the Gauss points and fails closed with
     /// [`SolverFailure::ValidityViolation`](crate::solver::SolverFailure).
     ///
+    /// ⚠ Adding a variant that does NOT route through that sweep also arms a
+    /// latent hole in the sibling `max_stretch_deviation` slot, whose `f64::max` /
+    /// `f64::min` reductions silently swallow a non-finite `σ`. See the stretch
+    /// check's comment in `check_validity_at_step_start`.
+    ///
     /// A `Material` impl declaring this variant is stating the domain its
     /// closed form is valid on; it is the solver's job to keep the state
     /// inside it.

@@ -1138,8 +1138,8 @@ fn single_tet10_all_corners_pinned() -> (CpuTet10NHSolver<Tet10Mesh>, Vec<f64>) 
 /// with what came back instead.
 ///
 /// The failure arm formats the whole `SolverFailure` (it derives `Debug`) so a regression
-/// reports `x_partial` and `last_iter` too. It is the `Ok` type, `NewtonStep<Tape>`, that
-/// is not `Debug` — which is why the `Result` cannot simply be `unwrap`ped.
+/// reports `x_partial` and `last_iter` too. The `Ok` type `NewtonStep<Tape>` is not
+/// `Debug`, which is why the match cannot collapse to `expect_err`.
 fn validity_message(solver: &CpuTet10NHSolver<Tet10Mesh>, x: &[f64]) -> (usize, String) {
     let x_t = Tensor::from_slice(x, &[x.len()]);
     let v_t = Tensor::zeros(&[x.len()]);
@@ -1292,6 +1292,54 @@ fn non_finite_state_is_rejected_by_the_inversion_gate() {
         Err(other) => panic!("Tet4: expected ValidityViolation on a NaN state, got {other:?}"),
         Ok(_) => panic!("Tet4: a non-finite det F must not solve"),
     }
+}
+
+/// The one class of state that goes from **`Ok` to `Err`**, rather than being
+/// re-attributed: an inverted element none of whose DOFs are free.
+///
+/// Everything else this gate newly rejects was already failing — noisily, with the wrong
+/// diagnosis. This case genuinely *converged* before. `free_residual_norm` sums only
+/// `free_dof_indices`, and a fully-pinned element scatters its `NaN` internal force
+/// exclusively to pinned entries, so the residual never sees it: `r_norm` stays finite,
+/// `r_norm < tol` succeeds at iteration 0, and the solve returns `Ok` with a folded
+/// element inside it. The element is also absent from the tangent (`assemble_free_hessian_triplets`
+/// drops entries with no free index), so nothing else notices either.
+///
+/// Pinning all ten nodes is what makes it fully pinned — `construct` deliberately leaves
+/// midsides free for `N > 4`, so pinning only the four corners would leave six free DOFs
+/// and put the `NaN` back into the residual.
+#[test]
+fn fully_pinned_inverted_element_no_longer_converges() {
+    let tet4 = SingleTetMesh::new(&MaterialField::uniform(1.0e5, 4.0e5));
+    let tet10 = Tet10Mesh::from_tet4(&tet4);
+    let solver: CpuTet10NHSolver<Tet10Mesh> = CpuNewtonSolver::new(
+        Tet10,
+        tet10,
+        NullContact,
+        SolverConfig::skeleton(),
+        BoundaryConditions {
+            pinned_vertices: (0..10).collect(),
+            roller_vertices: Vec::new(),
+            loaded_vertices: Vec::new(),
+        },
+    );
+
+    let rest = tet10_rest_dofs(&solver);
+    let mut x = rest;
+    // Same reflection the sweep test uses: midside 4 through corner 0, inverting the
+    // Gauss point nearest it.
+    x[12] = -0.05;
+    assert!(
+        solver.min_gauss_det_ratio(&x) < 0.0,
+        "fixture premise: the state must be inverted at a Gauss point"
+    );
+
+    let (tet_id, message) = validity_message(&solver, &x);
+    assert_eq!(tet_id, 0, "the single element is the violator");
+    assert!(
+        message.contains("inversion = det F"),
+        "must fail on the inversion slot, got: {message}"
+    );
 }
 
 /// The Gauss sweep must leave **Tet4** verdicts exactly where they were.

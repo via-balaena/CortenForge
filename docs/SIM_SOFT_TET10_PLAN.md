@@ -9,7 +9,9 @@
 > un-projected element keeps a **bit-identical** affine fast path (per-element
 > `element_is_straight` detection, frozen by `tet10_straight_element_byte_golden`).
 > This rung is **FORWARD-CHANGING** (midside positions now set the stiffness); the
-> `(a)` `ElementGeometry` proxy stays affine → F-bar / validity / mass untouched.
+> `(a)` `ElementGeometry` proxy stays affine → F-bar / the validity gate's stretch
+> slot / mass untouched. (⚠ LATER UPDATE: the gate's *inversion* slot now sweeps the
+> per-GP cache, so on a curved element it does see the curved Jacobian.)
 > **Findings:** forward force == FD of the curved elastic energy; under the `Facet`
 > load rule, curving the Lamé boundary onto the true sphere moves the reading
 > TOWARD analytic (0.0525→0.0432, ~18 %); 4-pt (G=4) kept — the `K^e` 4pt-vs-dense
