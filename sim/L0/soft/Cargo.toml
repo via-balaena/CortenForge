@@ -65,13 +65,29 @@ mesh-offset = { workspace = true }
 nalgebra = { workspace = true }
 # Sparse SPD factor-on-tape (Llt<I, f64>) + sparse CSR assembly.
 # Greenfield — this is the first workspace crate to depend on faer.
-# Round-6 determinism: disable `rayon` to keep solves single-threaded
-# (rayon work-stealing reorders floating-point reductions bit-non-
-# deterministically, violating γ Ch 00 determinism-in-θ on I-5). For
-# skeleton's 9-DOF system, rayon would provide no speedup anyway.
-# `std` + `sparse-linalg` is the minimum that exposes Llt<I, f64> +
-# solve_in_place_with_conj. All features remain pure Rust.
-faer = { version = "0.24", default-features = false, features = ["std", "sparse-linalg"] }
+#
+# `rayon` is ON. It was previously off, on a Round-6 rationale that both
+# halves of measurement have since contradicted:
+#
+#   1. "violates determinism-in-θ" — it does not. The locked A.4 §4
+#      decision is "algorithm-output, not bit-exact", and names this case
+#      explicitly: "Parallel paths (rayon) accept float non-associativity."
+#      Sequential bit-reproducibility is called out there as a side-effect,
+#      "not a project guarantee". Measured on top of that: the factorization
+#      IS bit-reproducible run-to-run under Rayon(12), and the full suite
+#      passes unchanged (591 tests, zero golden churn) — parallel and
+#      sequential differ from each other, but each is internally stable.
+#   2. "for skeleton's 9-DOF system, rayon would provide no speedup anyway"
+#      — true when written, stale by four orders of magnitude. The crate now
+#      solves 70k free DOF, and sparse Cholesky is the majority of a solve.
+#
+# Measured on the `bonded_layer_indentation` gate, uncontended: 638.7 s
+# sequential-AMD → 360.3 s with rayon alone → 288.4 s with rayon plus the
+# nested-dissection ordering. Rayon is the larger of the two levers.
+#
+# `std` + `sparse-linalg` expose Llt<I, f64> + solve_in_place_with_conj.
+# All features remain pure Rust.
+faer = { version = "0.24", default-features = false, features = ["std", "sparse-linalg", "rayon"] }
 
 # GPU probe deps — feature-gated via `gpu-probe`. Skeleton default build
 # resolves with zero wgpu / bytemuck / pollster in the graph (scope §1 I-6a).

@@ -2160,6 +2160,33 @@ fn factorization_stays_on_the_supernodal_path() {
     );
 }
 
+/// The factorization must run in PARALLEL.
+///
+/// Sibling tripwire to `factorization_stays_on_the_supernodal_path`, guarding
+/// the third way this factorization silently gets much slower while the suite
+/// stays green. `sim-soft` enables faer's `rayon` feature; without it,
+/// `get_global_parallelism` is structurally incapable of returning anything but
+/// `Par::Seq` (the `Par::rayon` arm is `#[cfg(feature = "rayon")]`), and every
+/// solve quietly drops to one core. Measured cost of that regression on the
+/// `bonded_layer_indentation` gate: 288.4 s → 369.2 s.
+///
+/// Deliberately asserts the REGIME, not the numbers. It does not pin
+/// bit-reproducibility even though the factorization was measured to be
+/// bit-reproducible under `Rayon(12)`: the locked A.4 §4 decision is
+/// "algorithm-output, not bit-exact" and explicitly accepts float
+/// non-associativity on parallel paths. Pinning the observed stability here
+/// would quietly promote it to a contract the project has declined to make.
+#[test]
+fn factorization_runs_in_parallel() {
+    let parallelism = faer::get_global_parallelism();
+    assert!(
+        !matches!(parallelism, faer::Par::Seq),
+        "faer global parallelism is {parallelism:?} — the sparse Cholesky is running on ONE \
+         core. Check that sim-soft's faer dependency still enables the `rayon` feature; \
+         without it every solve is ~1.28x slower with no other symptom."
+    );
+}
+
 /// Fill growth, AMD against nested dissection — the diagnostic behind the
 /// ordering choice, and the instrument for revisiting it.
 ///

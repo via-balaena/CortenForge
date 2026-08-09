@@ -80,26 +80,40 @@ impl FillReducingPermutation {
 
 /// Free-DOF count below which faer's AMD is kept.
 ///
-/// Nested dissection is an asymptotic win, not a universal one: its separators
-/// have to pay for themselves, and on a small system they do not. Measured by
-/// `factorization_fill_growth` (both orderings, one process, one pattern):
+/// Nested dissection is an asymptotic win, not a universal one, and the price
+/// is paid on a different schedule from the benefit: the ordering costs a
+/// one-off **symbolic** charge per solver construction, while it repays a
+/// little on every **numeric** factorization. So the threshold is a
+/// break-even, not a speed comparison.
 ///
-/// | `n_free` | AMD fill | ND fill | AMD ms | ND ms | speedup |
-/// |---|---|---|---|---|---|
-/// | 348 | 50.8 | 55.9 | 0.6 | 0.8 | **0.80×** |
-/// | 2,112 | 226.9 | 201.7 | 3.8 | 3.1 | 1.21× |
-/// | 6,444 | 434.6 | 333.9 | 37.0 | 23.0 | 1.61× |
-/// | 14,496 | 714.0 | 458.1 | 199.1 | 94.4 | 2.11× |
-/// | 27,420 | 974.0 | 648.2 | 767.7 | 362.1 | 2.12× |
+/// Measured by `factorization_fill_growth` with rayon enabled — the shipped
+/// configuration, which matters because parallelism shrinks ND's numeric
+/// advantage while leaving its symbolic cost untouched:
 ///
-/// At 348 free DOF nested dissection admits MORE fill than minimum degree and
-/// runs slower. So the switch sits just under the smallest size where it is
-/// measured to win. **The true crossover is somewhere in `(348, 2112]` and is
-/// not resolved** — this constant deliberately errs toward the measurement
-/// rather than interpolating between two points. Anything inside that band
-/// keeps AMD and gives up at most a fraction of a millisecond per
-/// factorization.
-const NESTED_DISSECTION_MIN_FREE_DOF: usize = 2000;
+/// | `n_free` | extra symbolic | saved per factorization | break-even |
+/// |---|---|---|---|
+/// | 348 | +1.1 ms | ND is SLOWER | never |
+/// | 2,112 | +13.7 ms | 0.3 ms | **46×** |
+/// | 6,444 | +51.2 ms | 4.8 ms | 10.7× |
+/// | 14,496 | +133.7 ms | 26.3 ms | 5.1× |
+/// | 27,420 | +272.6 ms | 82.5 ms | 3.3× |
+///
+/// Against that, how many factorizations a solver actually performs per
+/// construction, counted across `tet10_bending_locking`, `bonded_bilayer_beam`
+/// and `uniaxial_roller_coupon`: **13–25** for ordinary solves (145 for a
+/// displacement ramp, which is the easy case).
+///
+/// 6,444 is therefore the smallest measured size where break-even (10.7) sits
+/// safely inside ordinary usage — a solver of comparable size was measured at
+/// 23.5 factorizations. At 2,112 the requirement climbs to 46, which ordinary
+/// usage does NOT reach and only a long ramp repays; a short solve there would
+/// be made *slower* by ordering it.
+///
+/// ⚠ This constant was previously 2,000, derived from numeric time alone
+/// before the symbolic cost was measured and while the solver was still
+/// single-threaded. Both of those inputs changed. Re-derive it again if the
+/// parallelism configuration changes, rather than treating it as a tuned knob.
+const NESTED_DISSECTION_MIN_FREE_DOF: usize = 6000;
 
 /// Compute a nested-dissection permutation of an `n × n` symmetric pattern.
 ///
