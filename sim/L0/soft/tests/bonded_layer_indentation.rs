@@ -134,6 +134,30 @@
 //!   geometric-tail extrapolated limit stays `> 1.03` — mesh-converged to a
 //!   floor above 1, not a coincidence of one resolution and not heading to 1.
 
+//! ## Cost (measured 2026-08-09, 12-core / 24 GB, `--release`, machine idle)
+//!
+//! | shape | wall | vs serial |
+//! |---|---|---|
+//! | serial (one `for` loop over the five cases) | 1346.2 s | — |
+//! | concurrent (`std::thread::scope`, this file) | **669.7 s** | **2.01x** |
+//!
+//! The gate needs five INDEPENDENT solves — the three-point χ sweep at
+//! `a/cell = 3`, plus `a/cell` 2 and 4 for the convergence extrapolation — so
+//! concurrency costs the slowest single case rather than their sum. It cannot
+//! go below that case: the last ~3 min of the run is one solve on one core.
+//! Further gains need a faster solve, not more threads.
+//!
+//! ⚠ An op-count model (DOF^1.3 weighting) predicted 570-610 s and was ~10 %
+//! optimistic. Concurrent sparse solves contend for memory bandwidth, so they
+//! do NOT each run at solo speed. Measure parallel wins here; do not derive
+//! them. (A co-tenant model-checker on the first attempt cost only 23.8 s —
+//! 3.4 % — so contention with other work was the smaller effect by far.)
+//!
+//! Numerics are unaffected: this run reproduced the committed anchors above to
+//! four significant figures (`RATIO` 1.0509 / 1.1048 / 1.1303, `F/Hertz`
+//! 1.3085 / 1.6700 / 2.1121), which is what `faer`'s deliberately-disabled
+//! rayon buys — see `sim/L0/soft/Cargo.toml`.
+
 #![allow(
     // Helpers `.expect(...)` on the meshing/among-tuple returns — mirrors
     // `hertz_sphere_plane.rs` / `concentric_lame_shells.rs` precedent.
