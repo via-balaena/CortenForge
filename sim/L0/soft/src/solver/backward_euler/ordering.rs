@@ -12,7 +12,9 @@
 //! "assembly 1.0 %, everything else under 0.5 %" — attributed to a profiling
 //! run with no artefact in the repo, over a `run_indentation` that resolves to
 //! two different functions. The buckets did not sum, and nothing could
-//! regenerate them, so they are gone rather than dressed up.) faer ships approximate-minimum-degree (AMD) and hard-wires it:
+//! regenerate them, so they are gone rather than dressed up.)
+//!
+//! faer ships approximate-minimum-degree (AMD) and hard-wires it:
 //! [`SymbolicLlt::try_new`](faer::sparse::linalg::solvers::SymbolicLlt::try_new)
 //! passes `Default::default()` for the ordering and keeps its inner
 //! [`SymbolicCholesky`] private, so there is no way to hand it a different
@@ -303,17 +305,6 @@ pub(super) fn symbolic_cholesky(
     .map(Arc::new)
 }
 
-/// The parallelism the numeric factorization and its solves run under.
-///
-/// Exists so the tripwire can observe what the factorization ACTUALLY uses
-/// rather than a global that merely correlates with it. `faer` is a dependency
-/// of this module, not of the test module, so a test reading
-/// `faer::get_global_parallelism()` directly would still pass if these call
-/// sites were changed to pass `Par::Seq` — the regression it exists to catch.
-pub(super) fn factorization_parallelism() -> faer::Par {
-    faer::get_global_parallelism()
-}
-
 /// A numeric `LLᵀ` factor over a [`SharedSymbolicCholesky`].
 ///
 /// This is faer's `Llt<usize, f64>` re-expressed over the low-level API so it
@@ -339,7 +330,12 @@ impl OrderedLlt {
         mat: SparseColMatRef<'_, usize, f64>,
         side: Side,
     ) -> Result<Self, LltError> {
-        let parallelism = factorization_parallelism();
+        // Read the global here rather than storing it on the factor, because
+        // that is what faer's own wrapper does (`sparse/solvers.rs`, both the
+        // factor and the solve). Nothing in this workspace calls
+        // `set_global_parallelism`, so the two readings cannot disagree today;
+        // matching faer keeps it that way if one ever does.
+        let parallelism = faer::get_global_parallelism();
         // Every parameter faer's own `Llt::try_new_with_symbolic` leaves at its
         // default is left at its default here too — an unregularized factor,
         // stock `LltParams` — so the only difference between the two paths is
@@ -371,8 +367,22 @@ impl OrderedLlt {
     }
 
     /// Solve `A x = rhs` in place through the stored factor.
+    ///
+    /// ⚠ Unlike [`Self::try_new_with_symbolic`], this **aborts** rather than
+    /// reporting an allocation failure, and that asymmetry is deliberate: it is
+    /// inherited from faer, whose own `Llt` splits the same way for a
+    /// structural reason. Its solve is a `SolveCore` **trait** method returning
+    /// `()`, so `MemBuffer::new` is forced — there is no channel to report OOM
+    /// through — while its constructor is an inherent fallible method that uses
+    /// `try_new`. Mirroring it here keeps the two paths interchangeable.
+    ///
+    /// Making this fallible would not be a local change: the enclosing
+    /// `FactorInner`'s other arm is faer's own `Lu`, whose solve can never
+    /// populate such an error, so a `Result` would thread through
+    /// `solve_base_in_place`, `solve_free_in_place` and every adjoint and tape
+    /// consumer to carry a variant only half the enum can produce.
     pub(super) fn solve_in_place_with_conj(&self, conj: Conj, rhs: MatMut<'_, f64>) {
-        let parallelism = factorization_parallelism();
+        let parallelism = faer::get_global_parallelism();
         let n_rhs_cols = rhs.ncols();
         LltRef::<'_, usize, f64>::new(&self.symbolic, &self.values).solve_in_place_with_conj(
             conj,
@@ -405,7 +415,8 @@ mod tests {
 
     use super::{
         FillReducingPermutation, OrderedLlt, compute_nested_dissection_permutation,
-        invert_new_to_old, nested_dissection_permutation, symbolic_cholesky,
+        full_symmetric_csc_i32, invert_new_to_old, nested_dissection_permutation,
+        symbolic_cholesky,
     };
 
     /// A 3D 7-point Laplacian on a `k x k x k` grid: SPD, and the canonical
@@ -649,12 +660,42 @@ mod tests {
         );
     }
 
-    /// An empty pattern must not panic — `n = 0` is reachable for a fully
-    /// pinned mesh.
+    /// An empty pattern must not panic.
+    ///
+    /// ⚠ This guards the DIAGNOSTIC entry point, not production. An earlier
+    /// version justified itself with "`n = 0` is reachable for a fully pinned
+    /// mesh" — a fully pinned mesh does reach `n_free = 0`, but it never
+    /// reaches the code below: production goes through
+    /// [`nested_dissection_permutation`], which returns `None` at
+    /// `n < NESTED_DISSECTION_MIN_FREE_DOF` and so short-circuits long before
+    /// `n = 0`. What is actually covered is
+    /// [`compute_nested_dissection_permutation`] — which `factorization_fill_growth`
+    /// calls directly, bypassing the size policy.
+    ///
+    /// What it covers is not a loop iteration anywhere: at `n = 0` every loop in
+    /// `full_symmetric_csc_i32` has an empty iterator — `col_start` is `[0]`, so
+    /// even `windows(2)` yields nothing. What is exercised is that the builder
+    /// returns `Some(([0], []))` rather than failing its `i32` conversions, that
+    /// `CscPattern::new` and `metis_order` accept a zero-vertex graph, and that
+    /// [`invert_new_to_old`] returns an empty permutation rather than `None` for
+    /// a zero-length input.
     #[test]
     fn empty_pattern_orders_without_panicking() {
         let lower = BTreeSet::new();
+
+        // The CSC shape the doc above claims, asserted rather than reasoned
+        // about: one column pointer and no rows. `CscPattern` requires
+        // `col_ptr.len() == n + 1`, so the lone `0` is load-bearing, not slack.
+        let (col_ptr, row_idx) = full_symmetric_csc_i32(&lower, 0).expect("empty csc");
+        assert_eq!(
+            col_ptr,
+            vec![0],
+            "empty pattern must still emit `n + 1` pointers"
+        );
+        assert!(row_idx.is_empty(), "empty pattern emitted rows");
+
         let perm = compute_nested_dissection_permutation(&lower, 0).expect("empty ordering");
         assert!(perm.forward.is_empty());
+        assert!(perm.inverse.is_empty());
     }
 }

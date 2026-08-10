@@ -2768,14 +2768,26 @@ fn factorization_stays_on_the_supernodal_path() {
 /// because it pulls `spindle` -> `atomic-wait`, which does not compile for
 /// that target. wasm running the solver sequentially is the intended
 /// configuration there, not a regression.
+///
+/// ⚠ **What this does NOT catch**, stated because an earlier version claimed
+/// otherwise. It reads the same process-wide global the factorization reads, so
+/// it detects the FEATURE being dropped — the regression that actually happened
+/// here, and that is one `Cargo.toml` edit away — but NOT a call site in
+/// `ordering` being hand-edited to pass `Par::Seq`. Forcing `Par::Seq` into the
+/// numeric factorization leaves this test green — verified by mutation, both
+/// before and after this note was written. The complementary direction was
+/// verified the same way: dropping faer's `rayon` feature does make it fail.
+///
+/// That gap is accepted rather than closed. Closing it means storing the `Par`
+/// on `OrderedLlt` instead of reading the global per call, which would diverge
+/// from faer's own `Llt` — the wrapper `OrderedLlt` exists to mirror exactly,
+/// differing only in the ordering — to catch an edit that has no refactor
+/// pressure behind it and that reads as a literal `Par::Seq` in review.
 #[test]
 #[cfg(not(target_arch = "wasm32"))]
 fn factorization_runs_in_parallel() {
-    // Read the seam the factorization itself uses, not the global. Pointing
-    // this at `faer::get_global_parallelism()` directly would leave it green
-    // when the call sites in `ordering` are changed to hand faer `Par::Seq`,
-    // which is exactly the regression it names.
-    let parallelism = super::ordering::factorization_parallelism();
+    // The same global `OrderedLlt`'s factor and solve both read.
+    let parallelism = faer::get_global_parallelism();
     assert!(
         !matches!(parallelism, faer::Par::Seq),
         "faer global parallelism is {parallelism:?} — the sparse Cholesky is running on ONE \
