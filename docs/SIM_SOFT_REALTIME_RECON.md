@@ -1,6 +1,6 @@
 # sim-soft Real-Time Path — Phase-1 Measurement + Recon (Phase E predecessor)
 
-**Status**: RECON 2026-08-10, v1.5. Phase 1 (measure) COMPLETE — all four requested
+**Status**: RECON 2026-08-10 (rev 2026-08-11), v1.6. Phase 1 (measure) COMPLETE — all four requested
 measurements taken; §2 reports them. Phase 2 (this recon) proposes the MOR +
 hyper-reduction path with a staged ladder whose first rung is a kill-or-confirm.
 **No production code was written and no dependency was added.** The measurement
@@ -39,11 +39,12 @@ reduced-order code is written.
 >    using the IPC fixture's 6-iteration count. **Quote the measured anchor instead
 >    where one is needed: 540 free DOF at 12.3 Newton iterations runs at 0.47× of a
 >    60 Hz frame** — a directly measured case that fits. → §10 risk 2
-> 3. **The f64 oracle FAILS to converge** within 60 Newton iterations at 36 300 free
->    DOF on the cantilever, and this is **unexplained**. It is on the *validation*
->    path, not the fast path: an oracle that cannot converge cannot grade anything, so
->    this must be understood before that size is used to grade a reduced model. → §3b.4,
->    §10 risk 3
+> 3. **Newton iteration count grows with refinement** — peak 21 → 65 across 567 →
+>    36 663 free DOF at `dt = 1/60`, all converged. Frame cost is
+>    `iterations × per-iteration cost`, so quoting per-iteration scaling alone
+>    understates it. (An earlier draft recorded this as an unexplained *oracle
+>    convergence failure*; that was a too-low iteration cap in the measuring harness,
+>    diagnosed in §3d.) → §3b.4, §3d
 >
 > Two further limits that bite anyone reusing these numbers: the ECSW speedup in §4b
 > rests on a **literature claim this recon did not measure** (R3's kill condition
@@ -397,11 +398,26 @@ shrinking the system to a dense `r × r` solve costs nothing that was load-beari
    trajectories inside the stated validity domain**", which is exactly the accepted
    cost the brief already names. The measurement supports making that domain statement
    load-bearing rather than decorative.
-4. **The cantilever hit the 60-iteration Newton cap at 36 300 free DOF and the solve
-   aborted.** Newton iterations climbed monotonically with refinement (12.3 → 24.2 →
-   30.2 → 37.0 → cap). This is a genuine robustness finding independent of real time,
-   and it is on the *oracle* path. It should be understood before the oracle is used to
-   grade a reduced model at those sizes — an oracle that cannot converge cannot grade.
+4. **Newton iteration count grows with mesh refinement at fixed `dt`, and that
+   compounds the frame-budget scaling.** Peak iterations per step across the cantilever
+   sweep, all converged: **21 → 37 → 41 → 56 → 65** for 567 → 36 663 free DOF. Cost per
+   step is `iterations × per-iteration cost`, so the effective DOF exponent is worse
+   than the `n^1.43` of §2a's per-iteration row — a reduced model has to beat both
+   factors, not just the linear algebra.
+
+   **Mechanism** (measured, not assumed): Tet4 volumetric locking *decreases* with
+   refinement, so the finer beam is genuinely softer and deflects further per step —
+   `max |displacement|` after 6 steps rises 3.6e-2 → 5.7e-2 m and plateaus as the mesh
+   converges. The finer mesh is not solving the same problem more slowly; it is solving
+   a harder (less artificially stiff) problem. Iteration growth appears to plateau with
+   it (52 → 56 → 62 → 65).
+
+   ⚠ **This supersedes a claim earlier drafts of this document made, which was wrong.**
+   v1.0–v1.5 recorded "the f64 oracle FAILS to converge at 36 300 free DOF, and this is
+   unexplained", flagged it as a defect on the validation path, and ranked it above R1.
+   It was not a defect. The harness that produced it set `max_newton_iter = 60`, an
+   arbitrary choice; the case needs **65**. With a generous cap every size converges to
+   `tol = 1e-6` at every step: [11, 32, 48, 62, 65, 64, 55, 40, 37, 22]. See §3d.
 
 ### 3c. What does *not* need to change
 
@@ -412,6 +428,44 @@ that can grade the others. This recon proposes no change to it beyond R0's assem
 lever (which is a pure speedup, byte-identity-checkable).
 
 ---
+
+### 3d. The "oracle does not converge" finding, diagnosed and withdrawn
+
+Measured 2026-08-11 on `main` at `ecf4cfef` (post-R0). Five discriminators, run against
+the same cantilever fixture:
+
+| # | experiment | result |
+|---|---|---|
+| **A** | reproduce, `dt = 1/60`, cap 60 | `NewtonIterCap` at step 3, `r = 8.69e-3`, iterations `[11, 32, 48]` |
+| **B** | same, cap **300** | **converges every step**: `[11, 32, 48, 62, 65, 64, 55, 40, 37, 22]`, tip 8.83e-2 m |
+| **C** | `dt` sweep at 36 663 DOF | 1/60 → needs 65 · 1/120 → 11 · 1/240 → 4 · 1/500 → 2 · 1/1000 → 2 |
+| **D** | mesh sweep, cap 300 | every size converges; peak iterations 21 / 37 / 41 / 56 / 65 |
+| **E** | LM regularization on | **no change whatsoever** — identical failure, identical residual |
+
+**What each rules out.** The failure variant is `NewtonIterCap`, not `ArmijoStall`
+(the line search never ran out of descent), not `DoublyFailedFactor` (the tangent
+factored as `Llt` every time — never non-PD, never needing the LU fallback), and not
+`ValidityViolation` (no element inverted, no stretch bound exceeded). E confirms the
+tangent stayed SPD throughout: LM only engages on an `Llt` failure, and it changed
+nothing because there was nothing to rescue. C shows the iteration count is governed by
+step size in the ordinary way. **Nothing here is a solver pathology.** It is a hard load
+step — a soft beam released horizontal, asked to travel most of the way to a distant
+equilibrium in one `1/60 s` step — solved correctly, in 65 iterations.
+
+**Why the error was made and how it survived.** The measuring harness set
+`max_newton_iter = 60` with no reasoning behind the number; the case needs 65. It then
+failed *loudly and correctly*, and the loud failure was read as a finding about the
+solver rather than about the harness. The lesson worth keeping: **a cap you chose
+yourself is not evidence.** When a run hits a limit you set, the first hypothesis is the
+limit, not the system under test — and the cheapest possible discriminator (raise it)
+was not run for a day.
+
+**One genuine sharp edge surfaced.** `SolverConfig::skeleton()` ships
+`max_newton_iter: 10`. Every dynamic fixture in the crate overrides it (50, 80, 150),
+because 10 is far below what any large-deflection step needs. That default is a
+reasonable floor for the walking-skeleton scene it is named for, but it is a trap for a
+new consumer, who will meet it as an opaque `NewtonIterCap` panic. Not fixed here —
+flagged, because changing a shipped default is its own change with its own blast radius.
 
 ## 4. The MOR + hyper-reduction path
 
@@ -751,11 +805,12 @@ small, separate PR and is not proposed here.
    exponent, using the IPC fixture's 6-iteration count. The bracketing measurements
    (540 DOF at 1.37× budget; 3 000 DOF at 28×) *are* direct. Treat 800 as an order-of-
    magnitude statement.
-3. **The `cantilever` at 36 300 free DOF does not converge** within 60 Newton
-   iterations (§3b.4). This is on the oracle path and is not explained. It may be a
-   fixture severity artifact (a beam collapsing under self-weight at ν = 0.4 with
-   linear Tet4) or something worse. It should be understood before that size is used
-   to grade anything.
+3. ~~**The `cantilever` at 36 300 free DOF does not converge.**~~ **RESOLVED
+   2026-08-11 — this risk was mine, not the solver's.** The failing harness capped
+   Newton at 60 iterations; the case needs 65. Every size converges with a generous
+   cap. Full diagnosis in §3d; the residual real finding (iteration count grows with
+   refinement) moved to §3b.4. Left visible rather than deleted because it was ranked
+   above R1 on the strength of the error.
 4. **f32 gradient drift (9.3e-4) exceeds the existing gradcheck tolerance (5 digits).**
    Any f32 path needs its own tolerance policy, decided deliberately rather than by
    loosening an existing assertion.
@@ -791,6 +846,16 @@ small, separate PR and is not proposed here.
 
 ## 12. Version history
 
+- **v1.6 (2026-08-11)** — **open risk 3 withdrawn: the oracle was never broken.** Five
+  discriminators (§3d) show `NewtonIterCap` and nothing else — no Armijo stall, no
+  non-PD tangent, no element inversion, and LM changes nothing because there is nothing
+  to rescue. The measuring harness capped Newton at 60; the case needs 65. With a
+  generous cap every size converges. The residual real finding — iteration count grows
+  with refinement (21 → 65 across 567 → 36 663 free DOF), which compounds the
+  frame-budget scaling — moved into §3b.4 with its mechanism (Tet4 locking decreases
+  under refinement, so the finer beam is genuinely softer and deflects further). The
+  withdrawn risk is struck through rather than deleted, because it had been ranked
+  above R1. No measurement changed; one conclusion did.
 - **v1.5 (2026-08-10)** — **collapsed to a single baseline.** v1.3/v1.4 carried pre-R0
   and post-R0 numbers side by side with banners; that structure was a footgun and I
   tripped over it within one commit (v1.4 exists only because v1.3's header quoted the
