@@ -1,8 +1,6 @@
 //! Force + Hessian assembly for
 //! [`CpuNewtonSolver`](super::CpuNewtonSolver).
 
-use std::collections::BTreeMap;
-
 use faer::sparse::Triplet;
 use nalgebra::{Matrix3, SMatrix};
 use sim_ml_chassis::Tensor;
@@ -17,6 +15,127 @@ use super::CpuNewtonSolver;
 use super::helpers::{
     deformation_gradient, element_node_ids, extract_element_dof_values, slice_to_vec3s,
 };
+
+/// Scatter target for the free-DOF tangent: a flat value buffer over the
+/// solver's construction-time sparsity pattern.
+///
+/// Replaces the `BTreeMap<(usize, usize), f64>` this assembly used to rebuild on
+/// **every Newton iteration**. The pattern is a function of element incidence and
+/// the free-DOF map alone (see `CpuNewtonSolver::pattern_rows` and the invariant
+/// `replace_contact` already depends on), so it is known at construction and
+/// there is nothing per-iteration to discover — only values to accumulate.
+///
+/// **Byte-identity with the `BTreeMap` path.** Two properties, both load-bearing:
+/// the element/contact/friction/mass loops are unchanged, so each accumulator
+/// receives the identical *sequence* of `+=` (float addition is not associative,
+/// so the sequence is what matters, not the set); and the pattern is sorted by
+/// `(col, row)` — the order `BTreeMap` iterated in — so the emitted triplet vector
+/// matches entry for entry.
+///
+/// Verified, not merely argued: an FNV-1a fingerprint of the converged `x_final`
+/// was captured on both revisions across four flavours chosen to hit every scatter
+/// site — Tet4 + `NullContact` + gravity (elastic block + mass diagonal), Tet4 +
+/// `IpcRigidContact` (contact Hessian, 4 Newton iterations so the barrier is
+/// genuinely active), Tet4 + F-bar (the nodal-averaged 2-ring branch), and Tet10
+/// (the widened 10-node incidence). All four matched bit for bit
+/// (`36ae4480587fcd42` / `4f3d5aec6f3e9cb9` / `f98d2d73010b5084` /
+/// `82418064d78f85d8`). There is no permanent test for this: the reference is the
+/// deleted implementation, so the check is a one-shot cross-revision comparison,
+/// reproducible by reverting this file and re-running the probe described in the
+/// commit message.
+///
+/// One behavioural improvement, deliberate: this emits a triplet for **every**
+/// pattern entry, including any the assembly happens to leave at zero. That is
+/// strictly what the symbolic factor expects, and it removes the "a symbolic entry
+/// the numeric never fills silently corrupts faer's numeric read" hazard documented
+/// at `CpuNewtonSolver::new`. Adding an exact `0.0` changes no sum, so it costs no
+/// accuracy. (Measured on the current fixtures the two sets are equal anyway — the
+/// assembly fills the whole pattern — so today this is insurance, not a fix.)
+pub(super) struct FreeTangentAccumulator<'a> {
+    /// Row indices in CSC order, borrowed from the solver: the rows of free
+    /// column `c` are `rows[col_ptr[c]..col_ptr[c + 1]]`, ascending. The column
+    /// index is NOT stored — `col_ptr` already encodes it, and carrying the pair
+    /// would double both the resident size and the bytes each binary-search probe
+    /// pulls into cache to compare eight of.
+    rows: &'a [usize],
+    /// Column offsets into `rows`; length `n_free + 1`.
+    col_ptr: &'a [usize],
+    /// Accumulated values, index-aligned with `rows`.
+    values: Vec<f64>,
+}
+
+impl<'a> FreeTangentAccumulator<'a> {
+    /// Zeroed accumulator over a CSC pattern: `rows` in column-major order with
+    /// ascending rows inside each column, and the matching `col_ptr` offsets.
+    pub(super) fn new(rows: &'a [usize], col_ptr: &'a [usize]) -> Self {
+        Self {
+            rows,
+            col_ptr,
+            values: vec![0.0; rows.len()],
+        }
+    }
+
+    /// `(col, row)` pairs in CSC order — the column index recovered from
+    /// `col_ptr`. Shared by [`Self::into_triplets`] and the test-only
+    /// [`Self::iter`] so the two cannot disagree about ordering.
+    fn coords(
+        col_ptr: &'a [usize],
+        rows: &'a [usize],
+    ) -> impl Iterator<Item = (usize, usize)> + 'a {
+        col_ptr
+            .windows(2)
+            .enumerate()
+            .flat_map(move |(c, w)| rows[w[0]..w[1]].iter().map(move |&r| (c, r)))
+    }
+
+    /// `A[row, col] += value`, for a lower-triangle `(col, row)` in the pattern.
+    ///
+    /// Binary-searches the rows of one column — tens of entries — rather than the
+    /// whole pattern, which is why `col_ptr` is carried alongside.
+    ///
+    /// # Panics
+    /// Indexes `col_ptr` directly, so a `col >= n_free` panics in every profile.
+    /// That cannot happen from the assembly, which only ever passes a `col_free`
+    /// obtained from `full_to_free_idx` — but the bound is load-bearing enough to
+    /// prefer a loud out-of-bounds over a silent wrap, so it is left unchecked
+    /// rather than defensively clamped. (The pre-index `BTreeMap` had no such
+    /// path: it accepted any key.)
+    ///
+    /// In debug, additionally asserts that `(col, row)` is in the pattern. A miss
+    /// means the assembly scattered outside the construction-time sparsity — the
+    /// exact condition `replace_contact` warns a self-collision contact model
+    /// would create — and it must fail loudly rather than silently drop a
+    /// stiffness contribution.
+    pub(super) fn add(&mut self, col: usize, row: usize, value: f64) {
+        let lo = self.col_ptr[col];
+        let hi = self.col_ptr[col + 1];
+        let rows = &self.rows[lo..hi];
+        let k = rows.partition_point(|&r| r < row);
+        debug_assert!(
+            k < rows.len() && rows[k] == row,
+            "tangent scatter at (col {col}, row {row}) is outside the construction-time \
+             sparsity pattern — a contact model coupling vertices from different elements \
+             (self collision) would do this; see CpuNewtonSolver::replace_contact"
+        );
+        self.values[lo + k] += value;
+    }
+
+    /// Consume into the `(row, col, value)` triplet list faer wants, in CSC
+    /// `(col, row)` order.
+    pub(super) fn into_triplets(self) -> Vec<Triplet<usize, usize, f64>> {
+        Self::coords(self.col_ptr, self.rows)
+            .zip(self.values)
+            .map(|((c, r), v)| Triplet::new(r, c, v))
+            .collect()
+    }
+
+    /// `((col, row), value)` pairs in CSC order — the read side the F-bar
+    /// tangent's unit test uses in place of iterating the old `BTreeMap`.
+    #[cfg(test)]
+    pub(super) fn iter(&self) -> impl Iterator<Item = ((usize, usize), f64)> + '_ {
+        Self::coords(self.col_ptr, self.rows).zip(self.values.iter().copied())
+    }
+}
 
 impl<E, Msh, C, M, const N: usize, const G: usize> CpuNewtonSolver<E, Msh, C, M, N, G>
 where
@@ -380,9 +499,10 @@ where
         // FP-equal form preserves bit-equality with the pre-Phase-2
         // 1-tet path, simplifying any future bisect.
         let dt2 = dt * dt;
-        // (col, row) → accumulated value. BTreeMap for sorted iteration
-        // (Decision M D-3); no HashMap on numeric paths.
-        let mut acc: BTreeMap<(usize, usize), f64> = BTreeMap::new();
+        // Values over the construction-time pattern. Was a per-iteration
+        // `BTreeMap` rebuild; the pattern cannot change between iterations, so
+        // there is nothing to rediscover. See `FreeTangentAccumulator`.
+        let mut acc = FreeTangentAccumulator::new(&self.pattern_rows, &self.pattern_col_ptr);
 
         let materials = self.mesh.materials();
         if let Some(fbar) = &self.fbar_cache {
@@ -429,8 +549,7 @@ where
                                         self.full_to_free_idx[col_full],
                                     ) && row_free >= col_free
                                     {
-                                        *acc.entry((col_free, row_free)).or_insert(0.0) +=
-                                            block[(i, j)];
+                                        acc.add(col_free, row_free, block[(i, j)]);
                                     }
                                 }
                             }
@@ -460,7 +579,7 @@ where
                             self.full_to_free_idx[col_full],
                         ) && row_free >= col_free
                         {
-                            *acc.entry((col_free, row_free)).or_insert(0.0) += block[(i, j)];
+                            acc.add(col_free, row_free, block[(i, j)]);
                         }
                     }
                 }
@@ -483,7 +602,7 @@ where
                             self.full_to_free_idx[col_full],
                         ) && rf >= cf
                         {
-                            *acc.entry((cf, rf)).or_insert(0.0) += block[(i, j)];
+                            acc.add(cf, rf, block[(i, j)]);
                         }
                     }
                 }
@@ -493,12 +612,10 @@ where
         // Mass diagonal: M_free / Δt² · I on (k, k).
         for k in 0..self.n_free {
             let mass_dof = self.mass_per_dof[self.free_dof_indices[k]];
-            *acc.entry((k, k)).or_insert(0.0) += mass_dof / dt2;
+            acc.add(k, k, mass_dof / dt2);
         }
 
-        acc.into_iter()
-            .map(|((c, r), v)| Triplet::new(r, c, v))
-            .collect()
+        acc.into_triplets()
     }
 
     /// `K(x)·v` (full-DOF) — the internal-force tangent `K = ∂f_int/∂x` at

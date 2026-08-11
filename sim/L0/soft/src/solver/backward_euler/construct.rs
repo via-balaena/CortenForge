@@ -671,6 +671,20 @@ where
         // safety-lint window).
         let (symbolic, symbolic_lu) = build_symbolic_factors(&triplet_set, n_free);
 
+        // Keep the finalized pattern for the per-iteration tangent assembly.
+        // `triplet_set` is already sorted by (col, row), i.e. column-major with
+        // rows ascending inside each column, so the Vec IS the CSC layout and
+        // the offsets fall straight out of one pass.
+        let mut pattern_rows: Vec<usize> = Vec::with_capacity(triplet_set.len());
+        let mut pattern_col_ptr = vec![0_usize; n_free + 1];
+        for (c, r) in triplet_set {
+            pattern_rows.push(r);
+            pattern_col_ptr[c + 1] += 1;
+        }
+        for c in 0..n_free {
+            pattern_col_ptr[c + 1] += pattern_col_ptr[c];
+        }
+
         Self {
             element,
             mesh,
@@ -682,6 +696,8 @@ where
             mass_per_dof,
             free_dof_indices,
             full_to_free_idx,
+            pattern_rows,
+            pattern_col_ptr,
             symbolic,
             symbolic_lu,
             factorizations: std::sync::atomic::AtomicUsize::new(0),
