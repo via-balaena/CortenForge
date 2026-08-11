@@ -65,6 +65,7 @@ mod fbar;
 mod helpers;
 mod newton;
 mod ordering;
+pub mod reduced;
 mod sensitivities;
 mod trait_impl;
 
@@ -295,6 +296,37 @@ pub struct CpuNewtonSolver<
     /// concrete field. The marker tells rustc the type parameter is
     /// intentionally type-only.
     _material: std::marker::PhantomData<M>,
+}
+
+impl<E, Msh, C, M, const N: usize, const G: usize> CpuNewtonSolver<E, Msh, C, M, N, G>
+where
+    E: Element<N, G>,
+    Msh: Mesh<M>,
+    M: Material,
+    C: ContactModel + ActivePairsFor<M>,
+{
+    /// The solver's free-DOF map: full-DOF index for each free unknown, ascending.
+    ///
+    /// Exposed for [`reduced`]: a POD basis must span exactly the DOFs the solve treats
+    /// as unknown, so the snapshot gatherer needs this map rather than reconstructing
+    /// it from the boundary conditions (which would silently diverge if the auto-pin of
+    /// orphan vertices, or the roller mask, ever changed shape).
+    #[must_use]
+    pub fn free_dof_indices(&self) -> &[usize] {
+        &self.free_dof_indices
+    }
+
+    /// Lumped mass at each **free** DOF, in [`Self::free_dof_indices`] order.
+    ///
+    /// Exposed for [`reduced::Inner::Mass`], which needs the diagonal mass to form the
+    /// energy inner product.
+    #[must_use]
+    pub fn mass_per_free_dof(&self) -> Vec<f64> {
+        self.free_dof_indices
+            .iter()
+            .map(|&i| self.mass_per_dof[i])
+            .collect()
+    }
 }
 
 #[cfg(test)]
