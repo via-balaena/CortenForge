@@ -237,8 +237,17 @@ error would re-test R1.0 with more machinery.
 
 §4 predicted the reduced path would be "comparable or slower" at ~3 000 free DOF and
 only win above ~10–20 k. Measured at **5 202** free DOF, the reduced trajectory is
-**faster than the oracle**: 307 ms vs 419 ms at `r = 40`, 168 ms vs 416 ms at `r = 10`.
-The crossover is below 5 202, not above 10 000.
+**faster than the oracle** at every `r` tried:
+
+| `r` | reduced | oracle | speedup |
+|---:|---:|---:|---:|
+| 10 | 162 ms | 412 ms | **2.55×** |
+| 20 | 200 ms | 421 ms | **2.11×** |
+| 40 | 288 ms | 437 ms | **1.52×** |
+
+The crossover is below 5 202, not above 10 000. (These are post-fix; a first cut
+rebuilt `Φ` from unit vectors inside `project_tangent` on every Newton iteration —
+`O(n·r²)` of pure waste — and measured 307 ms at `r = 40`.)
 
 ⚠ That is the third time an estimate in this arc has missed (the first two are in the
 recon's v1.7 and v1.6 entries). The pattern is consistent — **flop-count arithmetic over

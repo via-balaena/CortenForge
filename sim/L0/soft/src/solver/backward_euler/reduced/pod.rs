@@ -322,6 +322,18 @@ impl PodBasis {
             .collect()
     }
 
+    /// The modes themselves: `r` columns of length `n_free`, `Φ` in column-major form.
+    ///
+    /// Exposed because reconstructing them from unit vectors — `reconstruct(e_k)` for
+    /// each `k` — costs `O(n·r²)`, since `reconstruct` walks every mode regardless of how
+    /// many coefficients are non-zero. Anything forming `ΦᵀAΦ` needs `Φ` itself, and
+    /// rebuilding it per Newton iteration doubled the cost of the reduced tangent before
+    /// this existed.
+    #[must_use]
+    pub fn modes(&self) -> &[Vec<f64>] {
+        &self.modes
+    }
+
     /// `Φᵀ f` — the **Galerkin projection of a force / residual**, with NO mass weight.
     ///
     /// ⚠ **This is not [`Self::project`], and the difference is not cosmetic.**

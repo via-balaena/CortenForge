@@ -61,6 +61,21 @@ pub struct ReducedStep {
 /// solved by Newton with a dense `r × r` factorization and Armijo backtracking on
 /// `‖r_r‖`.
 ///
+/// ## ⚠ Scope: the constrained DOFs must not move
+///
+/// Constrained (pinned / roller) DOFs are taken from the **rest** configuration on every
+/// step, because that is what the reduced state can reconstruct — `q` spans the free
+/// DOFs only. A scene that *drives* a constrained DOF (a prescribed-displacement
+/// indenter, say) would therefore have its prescribed motion **silently ignored** here,
+/// and would produce a plausible-looking wrong trajectory rather than an error.
+///
+/// R1.1's fixture loads through `theta` precisely so the constrained set is fixed (see
+/// `tests/reduced_pod_basis.rs`, which explains why a moving Dirichlet patch also breaks
+/// basis sharing across an ensemble). Supporting driven constraints needs an
+/// inhomogeneous-Dirichlet treatment — a particular solution carrying the prescribed
+/// motion, with the basis spanning only the homogeneous part — which is not in R1.1 and
+/// is flagged here so it is not discovered by a wrong answer.
+///
 /// ## Why the state is `(q, q̇)` and never `x`
 ///
 /// The reduced trajectory is carried in reduced coordinates. Handing this solver a
@@ -158,15 +173,11 @@ where
         let r = self.basis.n_modes();
         let n = self.basis.n_free();
 
-        // Y = A Φ, dense n × r, column-major by mode.
+        // Y = A Φ, dense n × r, column-major by mode. `Φ` is borrowed, not rebuilt:
+        // reconstructing it from unit vectors costs `O(n·r²)` per call and this runs
+        // once per Newton iteration.
         let mut y = vec![vec![0.0_f64; r]; n];
-        let modes: Vec<Vec<f64>> = (0..r)
-            .map(|k| {
-                let mut e = vec![0.0; r];
-                e[k] = 1.0;
-                self.basis.reconstruct(&e)
-            })
-            .collect();
+        let modes = self.basis.modes();
         for t in &triplets {
             let (row, col, v) = (t.row, t.col, t.val);
             for k in 0..r {
