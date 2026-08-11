@@ -113,8 +113,46 @@ fn truncation_loses_energy_monotonically() {
             worst <= prev + 1e-12,
             "error rose when adding a mode: r={r} gave {worst:.3e} vs {prev:.3e}"
         );
+        // Strictly positive below full rank. Without this the whole test — and
+        // `full_rank_basis_reproduces_its_training_data_exactly` with it — is satisfied
+        // by a `projection_error` stub that always returns 0.0.
+        if r < 3 {
+            assert!(
+                worst > 1e-6,
+                "r={r} on a rank-3 ensemble should leave real error, got {worst:.3e}"
+            );
+        }
         prev = worst;
     }
+}
+
+#[test]
+fn mass_and_euclidean_products_give_genuinely_different_bases() {
+    // Every other test in this file passes if `Inner::Mass` silently degenerates to
+    // `Inner::Euclidean` — orthonormality, reconstruction and truncation all hold for a
+    // Euclidean basis consistently used. Mass weighting is exactly where R1.0's bug
+    // lived, so something has to assert the two products are not the same computation.
+    //
+    // `masses()` is deliberately non-uniform; a uniform mass WOULD make them agree up to
+    // scaling, which is why the fixture varies it.
+    let set = rank3_set();
+    let m = masses();
+    let eu = PodBasis::fit(&set, Inner::Euclidean, &m, 1.0, 1).expect("fit");
+    let ma = PodBasis::fit(&set, Inner::Mass, &m, 1.0, 1).expect("fit");
+
+    // Compare the leading mode as a direction (sign is arbitrary in an eigendecomposition).
+    let mut e1 = vec![0.0; 1];
+    e1[0] = 1.0;
+    let (a, b) = (eu.reconstruct(&e1), ma.reconstruct(&e1));
+    let dot: f64 = a.iter().zip(&b).map(|(x, y)| x * y).sum();
+    let na = a.iter().map(|x| x * x).sum::<f64>().sqrt();
+    let nb = b.iter().map(|x| x * x).sum::<f64>().sqrt();
+    let cos = (dot / (na * nb)).abs();
+    assert!(
+        cos < 0.999,
+        "leading Euclidean and mass modes are collinear (|cos| = {cos:.6}) — the mass \
+         weighting is not reaching the decomposition"
+    );
 }
 
 #[test]
