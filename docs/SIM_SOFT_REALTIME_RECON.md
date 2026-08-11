@@ -1,6 +1,6 @@
 # sim-soft Real-Time Path — Phase-1 Measurement + Recon (Phase E predecessor)
 
-**Status**: RECON 2026-08-10 (rev 2026-08-11), v1.6. Phase 1 (measure) COMPLETE — all four requested
+**Status**: RECON 2026-08-10 (rev 2026-08-11), v1.7. Phase 1 (measure) COMPLETE — all four requested
 measurements taken; §2 reports them. Phase 2 (this recon) proposes the MOR +
 hyper-reduction path with a staged ladder whose first rung is a kill-or-confirm.
 **No production code was written and no dependency was added.** The measurement
@@ -494,12 +494,16 @@ The reduced internal force `Φᵀf_int(Φq)` and tangent `ΦᵀK(Φq)Φ` still r
 over **all** elements unless the quadrature is reduced. Two levers, and §2d sets their
 relative size:
 
-- **The basis alone attacks the larger half.** Collapsing an `n`-DOF sparse
-  factorization to a dense `r × r` solve goes straight at the 57–72 % of the frame
-  that factorization now costs across the target range. R1 (basis only, full element
-  sweep) should therefore show a real speedup. **That does not change R1's gate** — it
-  is accuracy, not wall time, because a fast-but-wrong subspace is worthless — but a
-  speedup at R1 is expected rather than surprising.
+- **The basis alone attacks the larger half — but only above ~20 k free DOF.**
+  Collapsing an `n`-DOF sparse factorization to a dense `r × r` solve targets the
+  57–72 % of the frame that factorization costs. ⚠ The reduced tangent must still be
+  *formed*: `ΦᵀAΦ` costs `2·nnz·r + 2·n·r²`, which is **linear in `n`** where the
+  factorization it replaces is superlinear — so it wins asymptotically and is a wash at
+  small `n`. At `r = 50` against §2a's measured `numF`, the arithmetic puts the
+  crossover near 10–20 k free DOF: comparable-or-worse at 3 000, ~1.1× at 19 440, ~2.5×
+  at 70 644. **That does not change R1's gate** — it is accuracy, not wall time — but it
+  does mean a speedup at R1 should be expected only at the larger sizes. Worked in
+  `docs/SIM_SOFT_R1_REDUCED_BASIS_PLAN.md` §4 (arithmetic, not measurement).
 - **Hyper-reduction is needed for the rest, and cannot be skipped.** Assembly is
   9–32 % of the frame, and a basis without hyper-reduction leaves all of it. That is a
   hard floor on what R1 alone can reach, and it is why R3 exists.
@@ -846,6 +850,12 @@ small, separate PR and is not proposed here.
 
 ## 12. Version history
 
+- **v1.7 (2026-08-11)** — §4b given the size qualifier it was missing. v1.6 said a basis
+  alone attacks the larger half; true asymptotically, but forming `ΦᵀAΦ` is linear in `n`
+  where the factorization is superlinear, so it is a wash at ~3 000 free DOF and only
+  wins above ~10–20 k. Surfaced while scoping R1 — see
+  `docs/SIM_SOFT_R1_REDUCED_BASIS_PLAN.md`, which also adds the fixture argument and
+  mandatory held-out trajectories that §7's R1 row did not carry.
 - **v1.6 (2026-08-11)** — **open risk 3 withdrawn: the oracle was never broken.** Five
   discriminators (§3d) show `NewtonIterCap` and nothing else — no Armijo stall, no
   non-PD tangent, no element inversion, and LM changes nothing because there is nothing
