@@ -1,6 +1,6 @@
 # sim-soft Real-Time Path — Phase-1 Measurement + Recon (Phase E predecessor)
 
-**Status**: RECON 2026-08-10, v1.3. Phase 1 (measure) COMPLETE — all four requested
+**Status**: RECON 2026-08-10, v1.4. Phase 1 (measure) COMPLETE — all four requested
 measurements taken; §2 reports them. Phase 2 (this recon) proposes the MOR +
 hyper-reduction path with a staged ladder whose first rung is a kill-or-confirm.
 **No production code was written and no dependency was added.** The measurement
@@ -14,9 +14,15 @@ The ladder is authorised in principle; R3's three conditions are now mission-lev
 ceiling" premise, so §2b is load-bearing outside this recon — re-take it on an idle
 box (risk 1) before anyone leans on it further.
 
+> ⚠ **§2a–§2e measure the PRE-R0 code. R0 has since landed** (`e77023c7` /
+> `43b198a2`), and §2f is the current baseline — including the one conclusion R0
+> falsified (§2d.1's crossover) and the §4b argument that rested on it. Every
+> frame-budget figure below the header is pre-R0 unless it says otherwise.
+
 **One-line verdict**: the goal is **not refuted**, but the measurements move where the
-work is. The frame-budget gap is ~**25–90× in DOF** (≈ 800 free DOF fits a 60 Hz
-converged-Newton frame today; a high-quality environment wants 20k–70k), f32 is
+work is. The frame-budget gap is ~**25–90× in DOF** pre-R0, **13–47× post-R0** (§2f:
+≈ 1 500 free DOF fits a 60 Hz converged-Newton frame, up from ≈ 800; a high-quality
+environment wants 20k–70k), f32 is
 **safe for the factor and solve and unsafe for the residual** — a distinction the
 brief did not anticipate and which changes the wgpu plan — and **contact costs
 0.02 % of a contact-active frame**, so contact is a *structural* problem for MOR, not
@@ -28,17 +34,21 @@ reduced-order code is written.
 > They are stated in full at §1a and §10, and repeated here because the verdict above
 > is what gets quoted and these are what make it quotable-with-honesty.
 >
-> 1. **Every timing was taken on a CONTENDED box** — 1–10 of 12 cores held by an
->    unrelated workload for the whole session; no idle window existed. Absolute times
+> 1. **Every timing in §2a–§2e was taken on a CONTENDED box** — 1–10 of 12 cores held
+>    by an unrelated workload; no idle window existed while they were taken. (§2f's
+>    post-R0 baseline was later re-measured at ~1.7 of 12 cores, repeating within under
+>    3 % — that one is trustworthy.) Absolute times
 >    are **upper bounds**, not benchmark-grade. The *shapes* (scaling exponents, phase
 >    shares, the assembly/factorization crossover) are stable across repeats; the
 >    absolutes are not. An earlier non-monotonic sweep was **discarded, not quoted**.
 >    Nothing here is labelled uncontended, because nothing here was. → §1a
-> 2. **"≈ 800 free DOF at 60 Hz" is an INTERPOLATION, not a measured point.** It is
->    derived from the 540 → 3 000 DOF pair at the measured `n^1.38` low-end exponent,
->    using the IPC fixture's 6-iteration count. The bracketing measurements — 540 DOF
->    at 1.37× budget, 3 000 DOF at 28× — *are* direct. Treat 800 as an
->    order-of-magnitude statement and do not quote it as measured. → §10 risk 2
+> 2. **The reachable-DOF figure is an INTERPOLATION, not a measured point** — both the
+>    pre-R0 ≈ 800 and the post-R0 ≈ 1 500 (§2f). Each is derived from the 540 → 3 000
+>    DOF pair at the measured low-end exponent, using the IPC fixture's 6-iteration
+>    count. The bracketing measurements are direct, and post-R0 one of them is now a
+>    measured FIT: 540 free DOF at 12.3 Newton iterations runs at 0.47× of a 60 Hz
+>    frame. Treat the interpolations as order-of-magnitude; quote the 540-DOF fit
+>    instead where a measured anchor is needed. → §10 risk 2
 > 3. **The f64 oracle FAILS to converge** within 60 Newton iterations at 36 300 free
 >    DOF on the cantilever, and this is **unexplained**. It is on the *validation*
 >    path, not the fast path: an oracle that cannot converge cannot grade anything, so
@@ -860,6 +870,10 @@ small, separate PR and is not proposed here.
 
 ## 12. Version history
 
+- **v1.4 (2026-08-10)** — header verdict and caveats 1–2 updated to point at §2f. v1.3
+  added the post-R0 baseline but left the most-quoted block still stating the pre-R0
+  numbers with no pointer — recreating, in the same document, the caveat-far-from-claim
+  defect v1.2 existed to fix.
 - **v1.3 (2026-08-10)** — **R0 landed and falsified one of this document's own
   conclusions.** §2f adds the post-R0 baseline, measured on the quietest box of the
   session: the assembly/factorization crossover fell from ~15–20 k free DOF to ~1–2 k,
