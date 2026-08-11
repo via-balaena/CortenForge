@@ -1,6 +1,7 @@
 # R1 — Linear Reduced Basis: scope and plan
 
-**Status**: PLAN 2026-08-11, v1. Not started. Parent: `docs/SIM_SOFT_REALTIME_RECON.md`
+**Status**: 2026-08-11, v2. **R1.0 COMPLETE — CONFIRM.** R1.1 unblocked. §11 records
+the result, including a prediction of mine it falsified. Parent: `docs/SIM_SOFT_REALTIME_RECON.md`
 §7 rung R1. Predecessor R0 landed (`ecf4cfef`); nothing else is queued ahead of this.
 
 **What R1 is**: the cheap kill-or-confirm. It answers one question — *is this material's
@@ -217,8 +218,72 @@ So they cannot be renegotiated once numbers exist:
 3. **Sizes**: 3 000 free DOF for accuracy iteration plus ≥ 19 440 for one speedup
    datapoint, or accuracy only at 3 000?
 
+## 11. R1.0 result — CONFIRM, and one prediction falsified
+
+Gate: `sim/L0/soft/tests/reduced_pod_basis.rs`. Implementation:
+`sim/L0/soft/src/solver/backward_euler/reduced/`.
+
+**Indentation fixture (the mission-relevant one): PASSES.** 5 202 free DOF, 48 training
+trajectories, `r = 40` (a **130×** reduction, inside §2's ceiling of 104):
+**held-out interpolation error 0.79 %**, against the 1 % gate. Extrapolation outside the
+training box measures 12–39 % and is reported, not asserted — that is the validity
+domain being real, exactly as §4c of the recon anticipated.
+
+**Cantilever fixture: PASSES far more easily** — 0.14 % at `r = 20`, **0.018 % at
+`r = 40`**, at a deflection of **97 % of span**.
+
+### §3's central argument was wrong
+
+§3 predicted the cantilever would be the hard case, because linear subspaces represent
+rotation badly. It is the *easy* case, by two orders of magnitude, at near-total
+deflection. The real discriminator is not rotation but **whether the load's spatial
+support moves**: a localized bump at a new position is nearly orthogonal to one
+elsewhere — the moving-feature problem POD shares with travelling waves — whereas large
+but globally smooth rotation from a low-dimensional load family is easy.
+
+⚠ **The comparison is confounded** and the conclusion is correspondingly limited: the
+indentation ensemble varies 4 parameters and the cantilever 2, so what is demonstrated
+is that *parameter dimensionality and moving support dominate rotation*, not that
+rotation is free. Isolating rotation needs a matched-dimensionality ensemble, which was
+not run.
+
+**Consequence for R3**: modal derivatives (recon §4a) address geometric nonlinearity,
+which is measurably **not** the bottleneck here. The bottleneck is parameter-space
+coverage of a moving load, which points instead at local/piecewise bases, basis
+interpolation over parameter space, or simply larger ensembles. R3's basis work should
+be re-planned on that basis.
+
+### Two traps caught, both now defended in the gate
+
+1. **A one-parameter ensemble gives a false confirm.** Varying only load magnitude
+   yields `r = 2` at 100.0000 % retained energy — a perfect-looking, meaningless basis,
+   because a load ramp produces nearly proportional fields. **Effective rank tracks
+   trajectory count, not snapshot count** (10 steps/trajectory measured 0.81 %, 5 steps
+   0.79 %). Had R1.0 been run on a single trajectory, as the recon's original sketch
+   allowed, it would have "confirmed" on a 2-dimensional artefact.
+2. **Training energy does not predict generalisation.** The 99.99 %-energy criterion
+   picks `r = 6`, where held-out error is 2.7 %. Reaching 1 % needs `r = 40` **and** a
+   dense ensemble — 4 trajectories plateau at 33 %, 16 at 2.1 %, 48 at 0.79 %, and
+   raising `r` alone never gets there. `r` is pinned in the gate rather than chosen by
+   an energy threshold.
+
+**A near-miss worth recording**: the first ensemble design used a *prescribed
+displacement* indenter patch per §3. Moving the patch changes which DOFs are
+Dirichlet-constrained, hence `free_dof_indices`, hence the snapshot width — trajectories
+could not have shared a basis at all. Fixing the patch would have left depth as the only
+parameter, i.e. trap 1. Loading through `theta` instead keeps every loaded vertex free
+and the free-DOF map identical across the ensemble.
+
+**A bug the pilot caught**: the mass-inner-product modes were re-weighted by `M^{1/2}`
+after fitting, leaving them orthonormal in neither product; every mass projection
+collapsed to zero and the error metric read an exact `1.000`. `ΦᵀMΦ = I` is now asserted
+in the gate (measured `5.2e-12`), which is the invariant that would have caught it on
+the first run.
+
 ## 10. Version history
 
+- **v2 (2026-08-11)** — R1.0 built, piloted and gated; §11 records CONFIRM on both
+  fixtures and the falsification of §3's rotation argument.
 - **v1 (2026-08-11)** — first issue. Adds three things the recon's R1 sketch did not
   carry: the fixture argument (§3), the `ΦᵀAΦ` cost arithmetic and the §4b amendment it
   forces (§4), and mandatory held-out trajectories (§6).
