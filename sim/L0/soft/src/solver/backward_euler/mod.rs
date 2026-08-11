@@ -217,8 +217,11 @@ pub struct CpuNewtonSolver<
     ///
     /// Sorted by `(col, row)`, which is column-major lower-triangle — the same
     /// order `BTreeMap` iterated in, so the emitted triplet vector is
-    /// byte-identical to the pre-index path (see the module's byte-identity
-    /// note and `tests::pattern_index_assembly_is_byte_identical`).
+    /// byte-identical to the pre-index path. That identity was verified by
+    /// fingerprinting `x_final` across the revision boundary rather than by a
+    /// permanent test (the reference is the deleted implementation, so no test
+    /// can hold it); see [`assembly::FreeTangentAccumulator`] for the four
+    /// flavours checked and their fingerprints.
     ///
     /// Valid because the pattern is a function of ELEMENT INCIDENCE and the
     /// free-DOF map alone — the same invariant

@@ -1086,6 +1086,14 @@ mod tests {
 
         // Full-DOF lower triangle (every DOF free).
         let identity: Vec<Option<usize>> = (0..n_dof).map(Some).collect();
+        // A DENSE lower triangle, deliberately — not the real element-incidence
+        // pattern. `FreeTangentAccumulator` requires only that every scattered
+        // `(col, row)` be present, so a superset is valid, and the extra entries
+        // stay at 0.0 and contribute nothing to the `K·δ` reconstruction below.
+        // Using the real pattern here would mean duplicating `new()`'s incidence
+        // walk in a test whose subject is the F-bar tangent, not the sparsity.
+        // `O(n_dof²)` is fine at this fixture's size; it would not be at solver
+        // scale, which is why production builds the incidence pattern instead.
         let pattern: Vec<(usize, usize)> = (0..n_dof)
             .flat_map(|c| (c..n_dof).map(move |r| (c, r)))
             .collect();

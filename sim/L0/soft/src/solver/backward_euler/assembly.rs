@@ -76,11 +76,19 @@ impl<'a> FreeTangentAccumulator<'a> {
     /// Binary-searches the rows of one column — tens of entries — rather than the
     /// whole pattern, which is why `col_ptr` is carried alongside.
     ///
-    /// # Panics (debug only)
-    /// Debug-asserts that `(col, row)` is in the pattern. A miss means the assembly
-    /// scattered outside the construction-time sparsity — the exact condition
-    /// `replace_contact` warns a self-collision contact model would create — and it
-    /// must fail loudly rather than silently drop a stiffness contribution.
+    /// # Panics
+    /// Indexes `col_ptr` directly, so a `col >= n_free` panics in every profile.
+    /// That cannot happen from the assembly, which only ever passes a `col_free`
+    /// obtained from `full_to_free_idx` — but the bound is load-bearing enough to
+    /// prefer a loud out-of-bounds over a silent wrap, so it is left unchecked
+    /// rather than defensively clamped. (The pre-index `BTreeMap` had no such
+    /// path: it accepted any key.)
+    ///
+    /// In debug, additionally asserts that `(col, row)` is in the pattern. A miss
+    /// means the assembly scattered outside the construction-time sparsity — the
+    /// exact condition `replace_contact` warns a self-collision contact model
+    /// would create — and it must fail loudly rather than silently drop a
+    /// stiffness contribution.
     pub(super) fn add(&mut self, col: usize, row: usize, value: f64) {
         let lo = self.col_ptr[col];
         let hi = self.col_ptr[col + 1];
