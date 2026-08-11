@@ -24,8 +24,10 @@
 //! private `pod` module documents the precision this route costs, and why it is
 //! acceptable here.
 
+mod newton;
 mod pod;
 mod snapshot;
 
+pub use newton::{ReducedNewtonSolver, ReducedStep};
 pub use pod::{Inner, PodBasis, PodError};
 pub use snapshot::SnapshotSet;

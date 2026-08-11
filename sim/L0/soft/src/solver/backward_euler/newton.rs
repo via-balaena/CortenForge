@@ -132,8 +132,14 @@ where
     // similar_names: `tet_id`/`tet` mirrors the assembly methods.
     // cast_possible_truncation: same Mesh-trait API tax as the
     // assembly methods.
+    //
+    // `pub(super)` rather than private so the reduced-order path
+    // (`super::reduced::ReducedNewtonSolver`) is gated on the SAME physical bounds as
+    // the oracle. A reduced solve produces a real configuration and can invert an
+    // element just as a full one can; letting it skip this check would make the fast
+    // path the only one allowed to be physically invalid.
     #[allow(clippy::similar_names, clippy::cast_possible_truncation)]
-    fn check_validity_at_step_start(&self, x_curr: &[f64]) -> Result<(), SolverFailure> {
+    pub(super) fn check_validity_at_step_start(&self, x_curr: &[f64]) -> Result<(), SolverFailure> {
         debug_assert!(x_curr.len() == self.n_dof);
         let materials = self.mesh.materials();
         // `zip` truncates to the shorter iterator, and a gate that silently skips

@@ -81,6 +81,35 @@ fn modes_are_orthonormal_in_their_own_inner_product() {
 }
 
 #[test]
+fn modes_accessor_agrees_bit_for_bit_with_reconstruct() {
+    // `PodBasis::modes()` exists so the reduced tangent can borrow Φ instead of
+    // rebuilding it from unit vectors (`O(n·r²)` per Newton iteration). That leaves TWO
+    // routes to the same matrix, and the reduced solve's correctness rests on their
+    // agreeing. Nothing else pins them: every other test in this file — and every
+    // consumer other than `project_tangent` — reaches the modes through `reconstruct`
+    // or `project`, so a change to the internal ordering or representation would leave
+    // the reduced solver quietly using a permuted basis with the suite still green.
+    //
+    // Exact equality is the right assertion, not a tolerance: `reconstruct(e_k)`
+    // accumulates `0.0·φ_j` for every `j != k` and `1.0·φ_k` once, and both are exact
+    // in IEEE arithmetic.
+    for inner in [Inner::Euclidean, Inner::Mass] {
+        let b = PodBasis::fit(&rank3_set(), inner, &masses(), 1.0, 3).expect("fit");
+        assert_eq!(b.modes().len(), b.n_modes());
+        for (k, mode) in b.modes().iter().enumerate() {
+            let mut e = vec![0.0; b.n_modes()];
+            e[k] = 1.0;
+            assert_eq!(
+                *mode,
+                b.reconstruct(&e),
+                "{inner:?}: modes()[{k}] disagrees with reconstruct(e_{k})"
+            );
+            assert_eq!(mode.len(), b.n_free());
+        }
+    }
+}
+
+#[test]
 fn full_rank_basis_reproduces_its_training_data_exactly() {
     let set = rank3_set();
     for inner in [Inner::Euclidean, Inner::Mass] {

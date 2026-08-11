@@ -1,6 +1,6 @@
 # R1 — Linear Reduced Basis: scope and plan
 
-**Status**: 2026-08-11, v2. **R1.0 COMPLETE — CONFIRM.** R1.1 unblocked. §11 records
+**Status**: 2026-08-11, v3. **R1.0 and R1.1 COMPLETE — both CONFIRM.** R1.2 unblocked. §11 records
 the result, including a prediction of mine it falsified. Parent: `docs/SIM_SOFT_REALTIME_RECON.md`
 §7 rung R1. Predecessor R0 landed (`ecf4cfef`); nothing else is queued ahead of this.
 
@@ -218,6 +218,68 @@ So they cannot be renegotiated once numbers exist:
 3. **Sizes**: 3 000 free DOF for accuracy iteration plus ≥ 19 440 for one speedup
    datapoint, or accuracy only at 3 000?
 
+## 12. R1.1 result — CONFIRM. The Galerkin solve tracks the basis floor.
+
+Gate: `sim/L0/soft/tests/reduced_newton_trajectory.rs`. Implementation:
+`reduced/newton.rs`.
+
+**Galerkin overhead is 1.45×–1.91× of the basis's own projection floor**, across 15
+(trajectory, step) pairs at `r = 40`; 13 of 15 fall in 1.45–1.63. Worst absolute
+trajectory error 1.14 %, against a floor of 0.79 %. **Reduced Newton needs exactly the
+same iteration count as the oracle** (15 per trajectory) and converges every step.
+
+So the error is dominated by basis truncation, which R1.0 already priced — the *solve*
+adds well under a factor of two on top. That is what R1.1 existed to separate, and it is
+why the gate asserts the **ratio** rather than the absolute error: asserting absolute
+error would re-test R1.0 with more machinery.
+
+### §4's cost arithmetic was wrong, in the optimistic direction this time
+
+§4 predicted the reduced path would be "comparable or slower" at ~3 000 free DOF and
+only win above ~10–20 k. Measured at **5 202** free DOF, the reduced trajectory is
+**faster than the oracle** at every `r` tried:
+
+| `r` | reduced | oracle | speedup |
+|---:|---:|---:|---:|
+| 10 | 162 ms | 412 ms | **2.55×** |
+| 20 | 200 ms | 421 ms | **2.11×** |
+| 40 | 288 ms | 437 ms | **1.52×** |
+
+The crossover is below 5 202, not above 10 000. (These are post-fix; a first cut
+rebuilt `Φ` from unit vectors inside `project_tangent` on every Newton iteration —
+`O(n·r²)` of pure waste — and measured 307 ms at `r = 40`.)
+
+⚠ That is the third time an estimate in this arc has missed (the first two are in the
+recon's v1.7 and v1.6 entries). The pattern is consistent — **flop-count arithmetic over
+sparse/dense mixes has not once predicted a measured ratio in this codebase.** Treat §4's
+remaining projections as motivation for what to measure, never as a result.
+
+### The bug this rung produced, and the API distinction behind it
+
+The reduced solve failed to converge on step 1 of every trajectory. Cause: the residual
+was projected with `PodBasis::project`, which computes `q = ΦᵀMu` — correct for the
+*coordinates of a displacement* in a mass-orthonormal basis, wrong for a residual. The
+Galerkin condition on a force is plain `Φᵀr = 0`. With the mass weight in, the effective
+Jacobian became `ΦᵀMAΦ` while the code factored `ΦᵀAΦ`, so the search direction stopped
+matching the residual it descended and the line search stalled immediately.
+
+Displacements are vectors; residuals are covectors; they do not project the same way.
+`PodBasis::project_covector` now exists for the second, with both docstrings pointing at
+the distinction. **This is the second mass-weighting bug in this arc** — the first was
+R1.0's re-weighted modes — which is a signal about where this code is easy to get wrong.
+
+### Also worth knowing
+
+`‖Φᵀr‖ / ‖r‖` at convergence measures **1e-7 to 1e-10**: the basis sees almost none of
+the full residual, and the reduced state leaves a large full-order residual while its
+displacement error stays near 1 %. Expected for Galerkin, and the reason displacement —
+not residual — is the accuracy metric. Reported, not asserted; no useful bound is known.
+
+⚠ The pilot's overhead figure (1.45–1.55×) was computed as worst-total over
+worst-floor. The gate takes the worst *per-step* ratio, which is the stricter and correct
+measure, and reads 1.91×. The gate bound is 2.5× — ~30 % headroom over the observed
+maximum, because a gate that passes by 5 % flakes.
+
 ## 11. R1.0 result — CONFIRM, and one prediction falsified
 
 Gate: `sim/L0/soft/tests/reduced_pod_basis.rs`. Implementation:
@@ -282,6 +344,10 @@ the first run.
 
 ## 10. Version history
 
+- **v3 (2026-08-11)** — R1.1 built and gated; §12 records CONFIRM (Galerkin overhead
+  1.45–1.91× of the basis floor, identical iteration counts, faster than the oracle at
+  5 202 free DOF) plus the `project`-vs-`project_covector` bug and the second miss by
+  §4's cost arithmetic.
 - **v2 (2026-08-11)** — R1.0 built, piloted and gated; §11 records CONFIRM on both
   fixtures and the falsification of §3's rotation argument.
 - **v1 (2026-08-11)** — first issue. Adds three things the recon's R1 sketch did not
