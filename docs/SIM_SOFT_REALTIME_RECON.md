@@ -1,6 +1,6 @@
 # sim-soft Real-Time Path — Phase-1 Measurement + Recon (Phase E predecessor)
 
-**Status**: RECON 2026-08-10, v1.2. Phase 1 (measure) COMPLETE — all four requested
+**Status**: RECON 2026-08-10, v1.3. Phase 1 (measure) COMPLETE — all four requested
 measurements taken; §2 reports them. Phase 2 (this recon) proposes the MOR +
 hyper-reduction path with a staged ladder whose first rung is a kill-or-confirm.
 **No production code was written and no dependency was added.** The measurement
@@ -312,6 +312,12 @@ once; `replace_contact` deliberately reuses it).
 
 Three findings:
 
+> ⚠ **Finding 1 below was TRUE OF THE CODE AS MEASURED AND IS NO LONGER TRUE OF THE
+> SHIPPED CODE.** Rung R0 landed and moved the crossover it describes from ~15 k free
+> DOF down to ~1–2 k, so factorization now dominates almost the whole range. §2f
+> records the post-R0 baseline and what it changes. Finding 1 is kept unedited because
+> it is the measurement that motivated R0 and because §4b's argument was built on it.
+
 1. **Tangent assembly is the dominant cost below ~15 k free DOF; the factorization
    takes over above it.** The crossover is at 15 k–20 k free DOF on this box. This is
    *not* in tension with `Cargo.toml`'s "factorization is ~78 % of a solve
@@ -362,6 +368,59 @@ hyper-reduction scheme that "makes contact cheap" is solving a problem that does
 exist.
 
 ---
+
+### 2f. POST-R0 BASELINE (2026-08-10, quietest box of the session)
+
+R0 landed (`e77023c7` / `43b198a2`). Everything in §2a–§2e above measures the **pre-R0**
+code. This section is the **post-R0 baseline**, and it is the one R3's kill condition
+("< ~10× speedup over R0's baseline") refers to — so it, not §2a, is what a reduced
+model gets graded against.
+
+Conditions: ~1.7 of 12 cores held by background (a macOS storage scan and
+WindowServer), no other workload. Not idle, but the best of the session — beam cases at
+`dt = 1e-3` repeated within **under 3 %**, and every column is monotone in DOF.
+
+**Per-Newton-iteration cost** (`dt = 1e-3`, exactly 2 iterations/step, cantilever):
+
+| free DOF | 540 | 3 000 | 8 820 | 19 440 | 36 300 |
+|---|---:|---:|---:|---:|---:|
+| ms / Newton iteration | **0.57** | **7.63** | **40.5** | **114.1** | **266.4** |
+| asm tangent (ms) | 0.33 | 2.68 | 9.61 | 22.13 | 43.19 |
+| numeric factor (ms) | 0.21 | 4.58 | 29.27 | 85.72 | 208.08 |
+
+**Frame budget at `dt = 1/60`, one step per frame:**
+
+| fixture | free DOF | iters/step | ms/frame | × 16.7 ms |
+|---|---:|---:|---:|---:|
+| cantilever 20×2 | 540 | 12.3 | 7.93 | **0.47× — FITS** |
+| cantilever 40×4 | 3 000 | 24.2 | 202.6 | 12.1× |
+| cantilever 60×6 | 8 820 | 30.2 | 1 278 | 76.5× |
+| cantilever 80×8 | 19 440 | 37.0 | 4 452 | 267× |
+| block 28 | 70 644 | 0.5 | 578 | 34.6× |
+
+**Three things this changes.**
+
+1. **The crossover moved, and §2d.1 is now obsolete for the shipped code.** Measured
+   phase shares post-R0: at 540 free DOF assembly still leads (asmK 50.9 % vs numF
+   31.6 %), but by 3 000 free DOF factorization has taken over (31.6 % vs 57.5 %) and
+   by 19 440 it is 72.3 %. **The assembly/factorization crossover fell from ~15–20 k
+   free DOF to ~1–2 k.** R0 did not just make the solver faster; it moved the
+   bottleneck, and it invalidated the finding that motivated it. That is the correct
+   outcome for an optimisation, but it has to be written down, because §4b's reasoning
+   was built on the pre-R0 shape (see the note there).
+2. **The reachable size roughly doubled.** 540 free DOF at 12.3 Newton iterations now
+   fits a 60 Hz frame with 2× headroom — a *directly measured* case that fits, where
+   §2a had the same case at 1.37× over budget. Interpolating as §2a did (6 Newton
+   iterations, measured `n^1.51` low-end exponent) puts the reachable size at
+   **~1 500 free DOF at 60 Hz**, up from ~800. ⚠ Still an interpolation; the 540-DOF
+   fit is the measured anchor.
+3. **The gap narrowed but did not close.** ~1 500 reachable against a 20 k–70 k target
+   is **13–47× in DOF**, down from 25–90×. Still one to one-and-a-half orders of
+   magnitude, so nothing about the MOR case changes qualitatively.
+
+**Assembled pattern density**, measured across both fixtures (this is exact, not timed):
+15.2 entries per free DOF at 540, rising to **21.8 at 70 644** (1 537 611 entries). This
+is the figure the `43b198a2` memory correction rests on.
 
 ## 3. What the measurements say about feasibility
 
@@ -436,11 +495,29 @@ vectors as `Φ` (`n × r`). Reduced coordinates `q ∈ ℝ^r`, `u ≈ Φq`.
 ### 4b. Hyper-reduction
 
 The reduced internal force `Φᵀf_int(Φq)` and tangent `ΦᵀK(Φq)Φ` still require a sweep
-over **all** elements unless the quadrature is reduced — that is the whole point, and
-§2d makes it sharp: **assembly is the dominant cost in the target regime, so
-hyper-reduction is not an optimisation of the reduced scheme, it is the reduced
-scheme.** A reduced basis without hyper-reduction would leave 60–80 % of the frame
-untouched.
+over **all** elements unless the quadrature is reduced.
+
+⚠ **This argument was originally stated much more strongly, on a premise R0 has since
+falsified.** The v1 text read: "assembly is the dominant cost in the target regime, so
+hyper-reduction is not an optimisation of the reduced scheme, it is the reduced scheme
+— a reduced basis without hyper-reduction would leave 60–80 % of the frame untouched."
+That rested on §2d.1's pre-R0 crossover at ~15 k free DOF. Post-R0 (§2f) the crossover
+is ~1–2 k, factorization is 57–72 % of the frame across the target range, and assembly
+is 9–32 %. The honest restatement:
+
+- **A reduced basis alone now attacks the larger half.** Collapsing an `n`-DOF sparse
+  factorization to a dense `r × r` solve goes straight at the 57–72 %. R1 (basis only,
+  full element sweep) may therefore show a real speedup, where the pre-R0 reading
+  predicted roughly none. **This does not change R1's gate** — it is still accuracy,
+  not wall time, because a fast-but-wrong subspace is worthless — but a speedup at R1
+  should now be treated as expected rather than as evidence of a mistake.
+- **Hyper-reduction remains necessary, and is no longer sufficient on its own.** The
+  9–32 % assembly share is a hard floor on what a basis alone can reach, so ECSW is
+  still required to get the last order of magnitude. It is now the *second* lever
+  rather than the whole scheme.
+
+The R3 kill condition (< ~10× over R0's baseline) is unchanged and is now measured
+against §2f, not §2a.
 
 **Recommendation: ECSW (Energy-Conserving Sampling and Weighting).** Reasons, in the
 order they matter here:
@@ -783,6 +860,16 @@ small, separate PR and is not proposed here.
 
 ## 12. Version history
 
+- **v1.3 (2026-08-10)** — **R0 landed and falsified one of this document's own
+  conclusions.** §2f adds the post-R0 baseline, measured on the quietest box of the
+  session: the assembly/factorization crossover fell from ~15–20 k free DOF to ~1–2 k,
+  so §2d.1 is now obsolete for the shipped code (kept unedited, with a banner, because
+  it is what motivated R0). §4b's "hyper-reduction IS the reduced scheme" argument
+  rested on that crossover and is restated — a basis alone now attacks the larger half,
+  and ECSW becomes the second lever rather than the whole scheme. Reachable size roughly
+  doubled (540 free DOF at 12.3 Newton iterations now fits a 60 Hz frame at 0.47× budget,
+  measured, where §2a had it at 1.37× over); the gap narrows from 25–90× to 13–47× in
+  DOF. R3's kill condition now refers to §2f.
 - **v1.2 (2026-08-10)** — caveat block promoted into the header, beside the verdict
   that quotes the numbers. The three limits were already at §1a and §10, but the
   most-read block in the document carried none of them, which is the wrong way round:
