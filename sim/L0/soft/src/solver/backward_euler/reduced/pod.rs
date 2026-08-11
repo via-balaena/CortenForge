@@ -41,6 +41,14 @@ pub enum PodError {
     Empty,
     /// A mass weight was non-positive or non-finite at the given free-DOF index.
     BadMass(usize),
+    /// The mass slice was not exactly `n_free` long — most likely the solver's
+    /// full-DOF `mass_per_dof` supplied where `mass_per_free_dof` was wanted.
+    MassLen {
+        /// Length supplied.
+        got: usize,
+        /// Length required (`n_free`).
+        want: usize,
+    },
     /// Every singular value was below the truncation floor — the snapshots carry no
     /// resolvable content (typically an all-zero ensemble).
     NoContent,
@@ -51,6 +59,11 @@ impl std::fmt::Display for PodError {
         match self {
             Self::Empty => write!(f, "no snapshots supplied"),
             Self::BadMass(i) => write!(f, "non-positive or non-finite mass at free DOF {i}"),
+            Self::MassLen { got, want } => write!(
+                f,
+                "mass slice has {got} entries but the basis spans {want} free DOFs \
+                 (did a full-DOF mass_per_dof reach mass_per_free_dof?)"
+            ),
             Self::NoContent => write!(f, "snapshot ensemble carries no resolvable content"),
         }
     }
@@ -76,8 +89,8 @@ const SIGMA_FLOOR_REL: f64 = 1e-8;
 /// reason the mass product is affordable here.
 ///
 /// # Errors
-/// [`PodError::BadMass`] if any weight is non-positive or non-finite, or if fewer than
-/// `n_free` weights were supplied.
+/// [`PodError::MassLen`] if the slice is not exactly `n_free` long,
+/// [`PodError::BadMass`] if any weight is non-positive or non-finite.
 fn weights_for(
     inner: Inner,
     mass_per_free_dof: &[f64],
@@ -86,18 +99,25 @@ fn weights_for(
     match inner {
         Inner::Euclidean => Ok(Vec::new()),
         Inner::Mass => {
+            // Exact length, in BOTH directions. Truncating an over-long slice would
+            // silently accept the solver's full-DOF `mass_per_dof` in place of
+            // `mass_per_free_dof` — a one-word slip between two similarly named
+            // accessors — and build a wrong basis without complaint. Silent wrongness
+            // is the failure mode this crate refuses everywhere else.
+            if mass_per_free_dof.len() != n_free {
+                return Err(PodError::MassLen {
+                    got: mass_per_free_dof.len(),
+                    want: n_free,
+                });
+            }
             let mut s = Vec::with_capacity(n_free);
-            for (i, &mi) in mass_per_free_dof.iter().take(n_free).enumerate() {
+            for (i, &mi) in mass_per_free_dof.iter().enumerate() {
                 if !(mi.is_finite() && mi > 0.0) {
                     return Err(PodError::BadMass(i));
                 }
                 s.push(mi.sqrt());
             }
-            if s.len() == n_free {
-                Ok(s)
-            } else {
-                Err(PodError::BadMass(s.len()))
-            }
+            Ok(s)
         }
     }
 }
@@ -105,6 +125,15 @@ fn weights_for(
 impl PodBasis {
     /// Fit a basis, retaining the smallest `r` that captures `energy_fraction` of the
     /// snapshot energy, capped at `max_modes`.
+    ///
+    /// ⚠ **Do not select `r` by `energy_fraction` alone — it is measured to mislead.**
+    /// Retained energy is computed on the *training* snapshots and does not predict
+    /// held-out error: on the R1.0 indentation fixture the 99.99 %-energy criterion
+    /// picks `r = 6`, where held-out projection error is 2.7 %, while reaching 1 %
+    /// needs `r = 40`. Pass `energy_fraction = 1.0` and control the size with
+    /// `max_modes`, choosing it against **held-out** error (as
+    /// `tests/reduced_pod_basis.rs` does). `energy_fraction` remains available for
+    /// exploring a spectrum, which is what it is good for.
     ///
     /// `mass_per_free_dof` is consulted only for [`Inner::Mass`] and must be the lumped
     /// mass at each **free** DOF, in `free_dof_indices` order.
