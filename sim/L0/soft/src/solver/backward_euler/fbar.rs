@@ -616,7 +616,7 @@ impl FbarCache {
         x_curr: &[f64],
         geometries: &[ElementGeometry],
         full_to_free: &[Option<usize>],
-        acc: &mut std::collections::BTreeMap<(usize, usize), f64>,
+        acc: &mut super::assembly::FreeTangentAccumulator<'_>,
     ) where
         M: Material,
         Msh: Mesh<M>,
@@ -636,7 +636,7 @@ impl FbarCache {
                         if let Some(row_free) = full_to_free[row_full]
                             && row_free >= col_free
                         {
-                            *acc.entry((col_free, row_free)).or_insert(0.0) += force[i];
+                            acc.add(col_free, row_free, force[i]);
                         }
                     }
                 });
@@ -1086,7 +1086,17 @@ mod tests {
 
         // Full-DOF lower triangle (every DOF free).
         let identity: Vec<Option<usize>> = (0..n_dof).map(Some).collect();
-        let mut acc = std::collections::BTreeMap::new();
+        let pattern: Vec<(usize, usize)> = (0..n_dof)
+            .flat_map(|c| (c..n_dof).map(move |r| (c, r)))
+            .collect();
+        let mut col_ptr = vec![0_usize; n_dof + 1];
+        for &(c, _) in &pattern {
+            col_ptr[c + 1] += 1;
+        }
+        for c in 0..n_dof {
+            col_ptr[c + 1] += col_ptr[c];
+        }
+        let mut acc = super::super::assembly::FreeTangentAccumulator::new(&pattern, &col_ptr);
         cache.accumulate_free_tangent(&mesh, &materials, &x, &geoms, &identity, &mut acc);
 
         let mut seed = 0x9E37_79B9_u64;
@@ -1098,7 +1108,7 @@ mod tests {
             let delta: Vec<f64> = (0..n_dof).map(|_| next()).collect();
             // Reconstruct K·δ from the lower-triangle, using symmetry.
             let mut kd = vec![0.0; n_dof];
-            for (&(col, row), &val) in &acc {
+            for ((col, row), val) in acc.iter() {
                 kd[row] += val * delta[col];
                 if row != col {
                     kd[col] += val * delta[row];

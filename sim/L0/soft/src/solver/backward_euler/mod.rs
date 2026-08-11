@@ -209,6 +209,28 @@ pub struct CpuNewtonSolver<
     /// Per-iter numeric refactor consumes a `clone()` of this (cheap —
     /// it is an `Arc` refcount bump).
     symbolic: ordering::SharedSymbolicCholesky,
+    /// The assembled free-DOF tangent's sparsity pattern as a sorted
+    /// `(col, row)` list — the SAME `BTreeSet` `new()` feeds to
+    /// [`build_symbolic_factors`](construct), kept rather than dropped so
+    /// `assemble_free_hessian_triplets` can accumulate into a flat value
+    /// buffer instead of rebuilding a `BTreeMap` on every Newton iteration.
+    ///
+    /// Sorted by `(col, row)`, which is column-major lower-triangle — the same
+    /// order `BTreeMap` iterated in, so the emitted triplet vector is
+    /// byte-identical to the pre-index path (see the module's byte-identity
+    /// note and `tests::pattern_index_assembly_is_byte_identical`).
+    ///
+    /// Valid because the pattern is a function of ELEMENT INCIDENCE and the
+    /// free-DOF map alone — the same invariant
+    /// [`Self::replace_contact`] already relies on, and the reason a
+    /// self-collision contact model (which would widen it) is not shippable
+    /// without revisiting both.
+    pattern: Vec<(usize, usize)>,
+    /// Column offsets into [`Self::pattern`]: entries for free column `c` are
+    /// `pattern[pattern_col_ptr[c]..pattern_col_ptr[c + 1]]`, rows ascending.
+    /// Length `n_free + 1`. Turns a scatter lookup into a binary search over
+    /// one column's rows (tens of entries) rather than the whole pattern.
+    pattern_col_ptr: Vec<usize>,
     /// Symbolic factor of the same free-DOF Hessian pattern, in Lu
     /// shape (full matrix, no `Side`). Held alongside `symbolic` so
     /// the A2 LU fallback (Lu factorize when Llt hits a non-PD pivot)
