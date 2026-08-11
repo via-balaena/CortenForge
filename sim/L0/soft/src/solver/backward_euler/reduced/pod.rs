@@ -297,7 +297,11 @@ impl PodBasis {
         kept / total
     }
 
-    /// `q = Φᵀ M u` (or `Φᵀ u` in the Euclidean inner product).
+    /// `q = Φᵀ M u` (or `Φᵀ u` in the Euclidean inner product) — the coordinates of a
+    /// **displacement**.
+    ///
+    /// For a residual or force use [`Self::project_covector`]; see its docs for why the
+    /// two are different operations.
     ///
     /// # Panics
     /// Panics if `u.len() != n_free`.
@@ -315,6 +319,31 @@ impl PodBasis {
                     .map(|((a, b), s)| a * b * s * s)
                     .sum(),
             })
+            .collect()
+    }
+
+    /// `Φᵀ f` — the **Galerkin projection of a force / residual**, with NO mass weight.
+    ///
+    /// ⚠ **This is not [`Self::project`], and the difference is not cosmetic.**
+    /// A displacement is a vector: its coordinates in a mass-orthonormal basis are
+    /// `q = ΦᵀMu`, which is what `project` computes. A residual is a covector (a force):
+    /// the Galerkin condition tests it against the modes themselves, `Φᵀr = 0`, with no
+    /// metric applied.
+    ///
+    /// Using `project` on a residual silently solves a different problem. The reduced
+    /// Newton system pairs `Φᵀr` with the Jacobian `ΦᵀAΦ`; testing with `ΦᵀM` instead
+    /// gives Jacobian `ΦᵀMAΦ`, so the search direction stops being consistent with the
+    /// residual it is meant to reduce, and the line search stalls on the first step.
+    /// That is precisely how this was found — see the R1.1 pilot.
+    ///
+    /// # Panics
+    /// Panics if `f.len() != n_free`.
+    #[must_use]
+    pub fn project_covector(&self, f: &[f64]) -> Vec<f64> {
+        assert!(f.len() == self.n_free, "f must have n_free entries");
+        self.modes
+            .iter()
+            .map(|phi| phi.iter().zip(f).map(|(a, b)| a * b).sum())
             .collect()
     }
 
