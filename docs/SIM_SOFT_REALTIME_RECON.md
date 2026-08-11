@@ -1,6 +1,6 @@
 # sim-soft Real-Time Path — Phase-1 Measurement + Recon (Phase E predecessor)
 
-**Status**: RECON 2026-08-10, v1. Phase 1 (measure) COMPLETE — all four requested
+**Status**: RECON 2026-08-10, v1.2. Phase 1 (measure) COMPLETE — all four requested
 measurements taken; §2 reports them. Phase 2 (this recon) proposes the MOR +
 hyper-reduction path with a staged ladder whose first rung is a kill-or-confirm.
 **No production code was written and no dependency was added.** The measurement
@@ -22,6 +22,34 @@ brief did not anticipate and which changes the wgpu plan — and **contact costs
 0.02 % of a contact-active frame**, so contact is a *structural* problem for MOR, not
 a compute one. Two cheap full-order levers surfaced that must be measured before any
 reduced-order code is written.
+
+> ### ⚠ Carry these three caveats with every number in this document
+>
+> They are stated in full at §1a and §10, and repeated here because the verdict above
+> is what gets quoted and these are what make it quotable-with-honesty.
+>
+> 1. **Every timing was taken on a CONTENDED box** — 1–10 of 12 cores held by an
+>    unrelated workload for the whole session; no idle window existed. Absolute times
+>    are **upper bounds**, not benchmark-grade. The *shapes* (scaling exponents, phase
+>    shares, the assembly/factorization crossover) are stable across repeats; the
+>    absolutes are not. An earlier non-monotonic sweep was **discarded, not quoted**.
+>    Nothing here is labelled uncontended, because nothing here was. → §1a
+> 2. **"≈ 800 free DOF at 60 Hz" is an INTERPOLATION, not a measured point.** It is
+>    derived from the 540 → 3 000 DOF pair at the measured `n^1.38` low-end exponent,
+>    using the IPC fixture's 6-iteration count. The bracketing measurements — 540 DOF
+>    at 1.37× budget, 3 000 DOF at 28× — *are* direct. Treat 800 as an
+>    order-of-magnitude statement and do not quote it as measured. → §10 risk 2
+> 3. **The f64 oracle FAILS to converge** within 60 Newton iterations at 36 300 free
+>    DOF on the cantilever, and this is **unexplained**. It is on the *validation*
+>    path, not the fast path: an oracle that cannot converge cannot grade anything, so
+>    this must be understood before that size is used to grade a reduced model. → §3b.4,
+>    §10 risk 3
+>
+> Two further limits that bite anyone reusing these numbers: the ECSW speedup in §4b
+> rests on a **literature claim this recon did not measure** (R3's kill condition
+> exists to hold it to account), and §5's hybrid-domain-decomposition arithmetic
+> **closes on paper only** — nothing about the coupling condition or the moving contact
+> patch has been designed or measured.
 
 **Reading order**: §1 (what was measured, and the fixtures) → §2 (the four numbers)
 → §3 (what the numbers say about feasibility, including where they bite the plan) →
@@ -755,6 +783,11 @@ small, separate PR and is not proposed here.
 
 ## 12. Version history
 
+- **v1.2 (2026-08-10)** — caveat block promoted into the header, beside the verdict
+  that quotes the numbers. The three limits were already at §1a and §10, but the
+  most-read block in the document carried none of them, which is the wrong way round:
+  a caveat 700 lines below the claim it qualifies is a caveat that will be skipped.
+  No measurement or conclusion changed.
 - **v1.1 (2026-08-10)** — §8 resolved. `MISSION.md` amended with the "On interactive
   speed" clause; §8a added to pin the collision to R3 specifically (R0/R1 do not
   collide on fidelity; R4/R5 collide on attention). No measurement changed.
