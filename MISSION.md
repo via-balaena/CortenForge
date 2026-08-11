@@ -57,6 +57,14 @@ We measure success not only by the capstone, but by how readily someone reaches 
 4. **Co-design optimization + differentiable compliance.** Built only on a substrate we already trust.
 5. **The capstone demo — the powered, RL-controlled exoskeleton.** Chosen for ceiling, not for ease; it proves the whole SDK composes end to end and shows what the loop can reach. The passive socket is the waypoint that exercises the loop before control enters.
 
+**On speed as a ceiling.** Demo velocity remains the wrong objective, and step 2 is never deferred for a faster demonstration. But throughput can itself be a ceiling: the capstone is RL-controlled, and training it is bounded by how many differentiable environments we can step at once — a limit we have measured, not assumed (`docs/SIM_SOFT_REALTIME_RECON.md`). Where a speed target is **ceiling-determining for the capstone — shown by measuring the ceiling, not by arguing it** — and only there, it enters this sequence on the same terms as any other layer, under three conditions:
+
+- **A stated validity domain.** A faster solver that trades accuracy must say where it is valid, measure the error against the full-order path, and gate on it at runtime — not merely declare it in a docstring. A reduced model fails *silently and plausibly*; the gate is the whole defence.
+- **The full-order reference solver stays the instrument of record**, unchanged. Fast paths are graded by it. It is never replaced, and never optimised in a way that costs accuracy.
+- **Consumers inherit the domain.** A fast solver is an *addition* to the substrate, never a substitute. Step 4's "built only on a substrate we already trust" is satisfied by the reference solver, not by the fast path — so anything consuming approximate results carries the restriction forward explicitly.
+
+Speed pursued for a demonstration still fails this test. Speed that lifts a ceiling the capstone actually runs into passes it, and is sequenced by the same quality gates as everything above.
+
 ---
 
 ## What we already have (recycle)
