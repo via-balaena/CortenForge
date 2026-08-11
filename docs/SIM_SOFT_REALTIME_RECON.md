@@ -1,6 +1,6 @@
 # sim-soft Real-Time Path — Phase-1 Measurement + Recon (Phase E predecessor)
 
-**Status**: RECON 2026-08-10, v1.4. Phase 1 (measure) COMPLETE — all four requested
+**Status**: RECON 2026-08-10, v1.5. Phase 1 (measure) COMPLETE — all four requested
 measurements taken; §2 reports them. Phase 2 (this recon) proposes the MOR +
 hyper-reduction path with a staged ladder whose first rung is a kill-or-confirm.
 **No production code was written and no dependency was added.** The measurement
@@ -14,15 +14,9 @@ The ladder is authorised in principle; R3's three conditions are now mission-lev
 ceiling" premise, so §2b is load-bearing outside this recon — re-take it on an idle
 box (risk 1) before anyone leans on it further.
 
-> ⚠ **§2a–§2e measure the PRE-R0 code. R0 has since landed** (`e77023c7` /
-> `43b198a2`), and §2f is the current baseline — including the one conclusion R0
-> falsified (§2d.1's crossover) and the §4b argument that rested on it. Every
-> frame-budget figure below the header is pre-R0 unless it says otherwise.
-
 **One-line verdict**: the goal is **not refuted**, but the measurements move where the
-work is. The frame-budget gap is ~**25–90× in DOF** pre-R0, **13–47× post-R0** (§2f:
-≈ 1 500 free DOF fits a 60 Hz converged-Newton frame, up from ≈ 800; a high-quality
-environment wants 20k–70k), f32 is
+work is. The frame-budget gap is ~**13–47× in DOF** (≈ 1 500 free DOF fits a 60 Hz
+converged-Newton frame; a high-quality environment wants 20k–70k), f32 is
 **safe for the factor and solve and unsafe for the residual** — a distinction the
 brief did not anticipate and which changes the wgpu plan — and **contact costs
 0.02 % of a contact-active frame**, so contact is a *structural* problem for MOR, not
@@ -34,21 +28,17 @@ reduced-order code is written.
 > They are stated in full at §1a and §10, and repeated here because the verdict above
 > is what gets quoted and these are what make it quotable-with-honesty.
 >
-> 1. **Every timing in §2a–§2e was taken on a CONTENDED box** — 1–10 of 12 cores held
->    by an unrelated workload; no idle window existed while they were taken. (§2f's
->    post-R0 baseline was later re-measured at ~1.7 of 12 cores, repeating within under
->    3 % — that one is trustworthy.) Absolute times
->    are **upper bounds**, not benchmark-grade. The *shapes* (scaling exponents, phase
->    shares, the assembly/factorization crossover) are stable across repeats; the
->    absolutes are not. An earlier non-monotonic sweep was **discarded, not quoted**.
->    Nothing here is labelled uncontended, because nothing here was. → §1a
-> 2. **The reachable-DOF figure is an INTERPOLATION, not a measured point** — both the
->    pre-R0 ≈ 800 and the post-R0 ≈ 1 500 (§2f). Each is derived from the 540 → 3 000
->    DOF pair at the measured low-end exponent, using the IPC fixture's 6-iteration
->    count. The bracketing measurements are direct, and post-R0 one of them is now a
->    measured FIT: 540 free DOF at 12.3 Newton iterations runs at 0.47× of a 60 Hz
->    frame. Treat the interpolations as order-of-magnitude; quote the 540-DOF fit
->    instead where a measured anchor is needed. → §10 risk 2
+> 1. **No timing here was taken on an idle box.** The quoted §2 sweep ran with ~1.7 of
+>    12 cores held by background (a macOS storage scan and WindowServer) and repeats
+>    within **under 3 %**, monotone in every column — trustworthy, but still an upper
+>    bound. Earlier sweeps taken under heavier load produced non-monotonic numbers and
+>    were **discarded, not quoted**. The two IPC-contact rows are the only figures not
+>    re-measured after R0. → §1a
+> 2. **"≈ 1 500 free DOF at 60 Hz" is an INTERPOLATION, not a measured point.** It is
+>    derived from the 540 → 3 000 DOF pair at the measured `n^1.51` low-end exponent,
+>    using the IPC fixture's 6-iteration count. **Quote the measured anchor instead
+>    where one is needed: 540 free DOF at 12.3 Newton iterations runs at 0.47× of a
+>    60 Hz frame** — a directly measured case that fits. → §10 risk 2
 > 3. **The f64 oracle FAILS to converge** within 60 Newton iterations at 36 300 free
 >    DOF on the cantilever, and this is **unexplained**. It is on the *validation*
 >    path, not the fast path: an oracle that cannot converge cannot grade anything, so
@@ -131,28 +121,27 @@ process per case, **min of 3 repeats**, 10 steps each. `asmF` / `asmK` / `numF` 
 `tri` are **per-call** milliseconds for internal-force assembly, tangent assembly,
 numeric Cholesky and triangular solve.
 
-| case | free DOF | nnz(L) | L (MiB) | symbolic (ms) | ms/step | asmF | asmK | numF | tri | max RSS (MiB) |
+| case | free DOF | pattern nnz | nnz(L) | L (MiB) | symbolic (ms) | ms/step | asmF | asmK | numF | tri |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| cantilever 20×2 | 540 | 15 660 | 0.1 | 1.0 | 3.71 | 0.01 | 1.47 | 0.21 | 0.013 | 6.3 |
-| cantilever 40×4 | 3 000 | 325 836 | 2.5 | 8.4 | 39.01 | 0.12 | 13.38 | 4.52 | 0.138 | 23.7 |
-| cantilever 60×6 | 8 820 | 1 952 541 | 14.9 | 86.9 | 162.94 | 0.39 | 46.68 | 29.00 | 0.881 | 92.3 |
-| cantilever 80×8 | 19 440 | 6 099 875 | 46.5 | 217.1 | 429.48 | 0.93 | 113.45 | 83.61 | 4.312 | 154.9 |
-| cantilever 100×10 | 36 300 | 14 712 634 | 112.2 | 445.3 | 923.20 | 1.83 | 225.59 | 202.27 | 10.628 | 294.6 |
-| block n=8 | 1 944 | 370 071 | 2.8 | 5.7 | 17.38 | 0.09 | 9.61 | 5.11 | 0.134 | 22.6 |
-| block n=12 | 6 084 | 2 206 098 | 16.8 | 22.0 | 72.42 | 0.31 | 34.94 | 27.92 | 1.185 | 69.7 |
-| block n=16 | 13 872 | 6 170 772 | 47.1 | 204.3 | 193.80 | 0.81 | 88.15 | 97.01 | 6.115 | 135.7 |
-| block n=20 | 26 460 | 15 930 702 | 121.5 | 315.7 | 424.74 | 1.46 | 182.98 | 222.34 | 10.310 | 299.9 |
-| block n=24 | 45 000 | 33 557 350 | 256.0 | 607.3 | 810.16 | 2.50 | 302.02 | 429.64 | 17.533 | 564.7 |
-| block n=28 | 70 644 | 62 876 521 | 479.7 | 1029.5 | 1433.32 | 3.91 | 492.72 | 808.87 | 31.798 | 919.1 |
+| cantilever 20×2 | 540 | 8 235 | 15 660 | 0.1 | 1.1 | 1.53 | 0.02 | 0.33 | 0.21 | 0.013 |
+| cantilever 40×4 | 3 000 | 54 591 | 325 836 | 2.5 | 8.2 | 18.26 | 0.12 | 2.68 | 4.58 | 0.134 |
+| cantilever 60×6 | 8 820 | 172 179 | 1 952 541 | 14.9 | 86.2 | 91.07 | 0.39 | 9.61 | 29.27 | 0.857 |
+| cantilever 80×8 | 19 440 | 394 119 | 6 099 875 | 46.5 | 215.0 | 251.63 | 0.92 | 22.13 | 85.72 | 4.411 |
+| cantilever 100×10 | 36 300 | 753 531 | 14 712 634 | 112.2 | 449.7 | 578.36 | 1.80 | 43.19 | 208.08 | 11.537 |
+| block n=8 | 1 944 | 37 071 | 370 071 | 2.8 | 5.7 | 14.27 | 0.09 | 2.01 | 5.10 | 0.127 |
+| block n=16 | 13 872 | 289 959 | 6 170 772 | 47.1 | 156.5 | 158.90 | 0.74 | 17.04 | 84.02 | 4.872 |
+| block n=20 | 26 460 | 563 571 | 15 930 702 | 121.5 | 310.9 | 356.46 | 1.43 | 33.69 | 198.83 | 10.068 |
+| block n=24 | 45 000 | 970 623 | 33 557 350 | 256.0 | 607.9 | 1 598.35 | 2.91 | 64.47 | 1 038.29 | 67.743 |
+| block n=28 | 70 644 | 1 537 611 | 62 876 521 | 479.7 | 1 061.8 | 1 522.55 | 3.90 | 93.17 | 958.84 | 32.355 |
 
 **Cost of one Newton iteration** (`asmK + numF + tri + 2·asmF`, the work a single
 iteration actually does):
 
 | free DOF | 540 | 3 000 | 8 820 | 19 440 | 36 300 |
 |---|---:|---:|---:|---:|---:|
-| ms / Newton iteration | **1.71** | **18.3** | **77.3** | **203** | **442** |
+| ms / Newton iteration | **0.57** | **7.63** | **40.5** | **114.1** | **266.4** |
 
-Scaling from 3 000 → 36 300 free DOF (12.1×) costs 24.2× — i.e. **≈ n^1.28**.
+Scaling from 3 000 → 36 300 free DOF (12.1×) costs 34.9× — i.e. **≈ n^1.43**.
 
 **Newton iterations actually needed** (measured on the same fixtures at `dt = 1/60`,
 one step per frame):
@@ -171,23 +160,26 @@ one step per frame):
 **The frame budget, stated plainly.** Take the IPC indentation's 6 Newton iterations
 as the honest representative count (the cantilever's 12–37 is a beam collapsing under
 self-weight; 6 is a normal contact-active soft-tissue step). At 60 Hz that allows
-16.7 / 6 = **2.78 ms per Newton iteration**. Interpolating the measured
-`n^1.38` low-end scaling gives:
+16.7 / 6 = **2.78 ms per Newton iteration**. Interpolating the measured `n^1.51` low-end scaling gives:
 
-> **≈ 800 free DOF (≈ 260 vertices) fits a converged-Newton 60 Hz frame.**
-> At 30 Hz: ≈ 1 700 free DOF. One *single* Newton iteration, with no convergence,
-> fits ≈ 2 800 free DOF at 60 Hz.
+> **≈ 1 500 free DOF fits a converged-Newton 60 Hz frame.** The measured anchor is
+> firmer than the interpolation: **540 free DOF at 12.3 Newton iterations runs at
+> 0.47× of a 60 Hz frame** — a directly measured case that fits, with 2× headroom.
 
 Directly measured points either side of the budget, at `dt = 1/60`, one step/frame:
 
 | case | free DOF | ms/frame | × 16.7 ms | × 33 ms |
 |---|---:|---:|---:|---:|
-| cantilever 20×2 | 540 | 22.9 | **1.37×** | 0.69× |
-| cantilever 40×4 | 3 000 | 470.7 | 28.2× | 14.3× |
+| cantilever 20×2 | 540 | 7.93 | **0.47× — FITS** | 0.24× |
+| cantilever 40×4 | 3 000 | 202.6 | 12.1× | 6.1× |
+| cantilever 60×6 | 8 820 | 1 278 | 76.5× | 38.7× |
+| cantilever 80×8 | 19 440 | 4 452 | 267× | 135× |
+| block n=28 | 70 644 | 578 | 34.6× | 17.5× |
 | IPC indentation a/cell 1.5 | 5 202 | 486.9 | 29.2× | 14.8× |
-| cantilever 60×6 | 8 820 | 2 426 | 145× | 73.5× |
 | IPC indentation a/cell 2 | 18 750 | 771.0 | 46.2× | 23.4× |
-| cantilever 80×8 | 19 440 | 11 272 | 675× | 342× |
+
+⚠ The two IPC rows are the only pre-R0 timings still quoted anywhere in this
+document; the contact arm was not re-run after R0. Read them as upper bounds.
 
 A "high-quality environment" in this codebase's own terms is the 20 k–70 k free-DOF
 range (`Cargo.toml` cites 70 k free DOF; the conformed-disc and FSU meshes sit in
@@ -304,16 +296,16 @@ reported as unmeasured rather than estimated. §7 R2 scopes it.
 
 Same deterministic sweep, phase shares of total step time:
 
-| free DOF | asm force | **asm tangent** | **numeric factor** | tri solve | contact |
+| free DOF | asm force | asm tangent | **numeric factor** | tri solve | contact |
 |---|---:|---:|---:|---:|---:|
-| 540 (cantilever) | 3.7 % | **81.9 %** | 11.6 % | 0.7 % | — |
-| 3 000 | 3.4 % | **69.9 %** | 25.1 % | 0.7 % | — |
-| 8 820 | 2.9 % | **58.8 %** | 36.6 % | 1.2 % | — |
-| 19 440 | 2.0 % | 38.3 % | **56.9 %** | 2.5 % | — |
-| 26 460 (block) | 0.3 % | 10.3 % | **81.9 %** | 2.9 % | — |
-| 70 644 (block) | 1.0 % | 30.6 % | **54.1 %** | 2.1 % | — |
-| 5 202 (IPC contact) | 0.5 % | 17.7 % | **80.6 %** | 0.3 % | **0.02 %** |
-| 18 750 (IPC contact) | 0.7 % | 30.1 % | **65.6 %** | 2.3 % | **0.02 %** |
+| 540 (cantilever) | 10.2 % | **50.9 %** | 31.6 % | 1.9 % | — |
+| 3 000 | 7.6 % | 31.6 % | **57.5 %** | 1.6 % | — |
+| 8 820 | 5.4 % | 22.6 % | **68.9 %** | 2.1 % | — |
+| 19 440 | 4.7 % | 18.6 % | **72.3 %** | 3.7 % | — |
+| 26 460 (block) | 1.8 % | 10.6 % | **62.1 %** | 3.1 % | — |
+| 70 644 (block) | 1.3 % | 8.1 % | **70.8 %** | 2.8 % | — |
+| 5 202 (IPC contact, pre-R0) | 0.5 % | 17.7 % | **80.6 %** | 0.3 % | **0.02 %** |
+| 18 750 (IPC contact, pre-R0) | 0.7 % | 30.1 % | **65.6 %** | 2.3 % | **0.02 %** |
 
 Symbolic factorization is one-shot per solver construction (1.0 ms at 540 DOF →
 1 029 ms at 70 644 DOF) and is **not** on the frame budget — it is amortised over
@@ -322,32 +314,25 @@ once; `replace_contact` deliberately reuses it).
 
 Three findings:
 
-> ⚠ **Finding 1 below was TRUE OF THE CODE AS MEASURED AND IS NO LONGER TRUE OF THE
-> SHIPPED CODE.** Rung R0 landed and moved the crossover it describes from ~15 k free
-> DOF down to ~1–2 k, so factorization now dominates almost the whole range. §2f
-> records the post-R0 baseline and what it changes. Finding 1 is kept unedited because
-> it is the measurement that motivated R0 and because §4b's argument was built on it.
+1. **The numeric factorization dominates from ~1–2 k free DOF upward.** Assembly leads
+   only at the very bottom of the range (50.9 % against 31.6 % at 540 free DOF); by
+   3 000 the factorization has taken over (57.5 %) and by 19 440 it is 72.3 %. This is
+   consistent with `Cargo.toml`'s "factorization is ~78 % of a solve (profiled)",
+   measured on the Tet10 bonded-layer case at 27 k–70 k DOF.
 
-1. **Tangent assembly is the dominant cost below ~15 k free DOF; the factorization
-   takes over above it.** The crossover is at 15 k–20 k free DOF on this box. This is
-   *not* in tension with `Cargo.toml`'s "factorization is ~78 % of a solve
-   (profiled)" — that figure was measured on the Tet10 bonded-layer case at 27 k–70 k
-   DOF, which is on the far side of the crossover, and the 80.6 % measured here at
-   26 460 free DOF reproduces it. Both statements are true in their own regime; what
-   is new is that **the regime a real-time target lives in (hundreds to a few thousand
-   DOF) is the assembly-dominated one**, and every optimisation instinct inherited
-   from the licensed-gate suite points at the wrong half.
+   ⚠ **This crossover moved, and R0 is why.** Before R0 it sat at ~15 k–20 k free DOF,
+   with assembly at 81.9 % of a 540-DOF frame — which is what made R0 worth doing, and
+   which §4b's original argument was built on. R0 removed that cost and left the
+   factorization exposed. Recorded because an optimisation that relocates the
+   bottleneck invalidates the reasoning that justified it, and the pre-R0 numbers are
+   in git (`b0f4aa21`) if anyone needs them.
 
-2. **A large part of that assembly cost is a data-structure choice, not physics.**
-   `assemble_free_hessian_triplets` (`sim/L0/soft/src/solver/backward_euler/assembly.rs:393`)
-   builds a fresh `BTreeMap<(usize, usize), f64>` on **every Newton iteration** and
-   fills it with `acc.entry(...).or_insert(0.0)`. The sparsity pattern is fixed at
-   construction — the symbolic factor depends on it and `replace_contact` documents
-   that contact cannot widen it — so the map is rebuilt to produce a structure that is
-   already known. Measured consequence: assembly scales as **n^1.13** where the
-   underlying element loop is O(n_tets), i.e. linear. This is a concrete, bounded,
-   full-order lever (§7 R0) that must be measured before any reduced-order code is
-   justified, because it changes the baseline the reduction is measured against.
+2. **The assembly cost that used to dominate was a data-structure choice, not physics
+   — and it is now fixed.** `assemble_free_hessian_triplets` rebuilt a
+   `BTreeMap<(usize, usize), f64>` on **every Newton iteration** to produce a sparsity
+   pattern already fixed at construction. R0 replaced it with a flat buffer indexed by
+   that pattern: **1.51–1.89× on the whole step, byte-identical output**
+   (`e77023c7`, `43b198a2`). The numbers above are post-R0.
 
 3. **Triangular solves are never the bottleneck** (0.3–2.9 % everywhere). Worth
    stating because it is the phase a naive "put the solve on the GPU" plan targets
@@ -378,59 +363,6 @@ hyper-reduction scheme that "makes contact cheap" is solving a problem that does
 exist.
 
 ---
-
-### 2f. POST-R0 BASELINE (2026-08-10, quietest box of the session)
-
-R0 landed (`e77023c7` / `43b198a2`). Everything in §2a–§2e above measures the **pre-R0**
-code. This section is the **post-R0 baseline**, and it is the one R3's kill condition
-("< ~10× speedup over R0's baseline") refers to — so it, not §2a, is what a reduced
-model gets graded against.
-
-Conditions: ~1.7 of 12 cores held by background (a macOS storage scan and
-WindowServer), no other workload. Not idle, but the best of the session — beam cases at
-`dt = 1e-3` repeated within **under 3 %**, and every column is monotone in DOF.
-
-**Per-Newton-iteration cost** (`dt = 1e-3`, exactly 2 iterations/step, cantilever):
-
-| free DOF | 540 | 3 000 | 8 820 | 19 440 | 36 300 |
-|---|---:|---:|---:|---:|---:|
-| ms / Newton iteration | **0.57** | **7.63** | **40.5** | **114.1** | **266.4** |
-| asm tangent (ms) | 0.33 | 2.68 | 9.61 | 22.13 | 43.19 |
-| numeric factor (ms) | 0.21 | 4.58 | 29.27 | 85.72 | 208.08 |
-
-**Frame budget at `dt = 1/60`, one step per frame:**
-
-| fixture | free DOF | iters/step | ms/frame | × 16.7 ms |
-|---|---:|---:|---:|---:|
-| cantilever 20×2 | 540 | 12.3 | 7.93 | **0.47× — FITS** |
-| cantilever 40×4 | 3 000 | 24.2 | 202.6 | 12.1× |
-| cantilever 60×6 | 8 820 | 30.2 | 1 278 | 76.5× |
-| cantilever 80×8 | 19 440 | 37.0 | 4 452 | 267× |
-| block 28 | 70 644 | 0.5 | 578 | 34.6× |
-
-**Three things this changes.**
-
-1. **The crossover moved, and §2d.1 is now obsolete for the shipped code.** Measured
-   phase shares post-R0: at 540 free DOF assembly still leads (asmK 50.9 % vs numF
-   31.6 %), but by 3 000 free DOF factorization has taken over (31.6 % vs 57.5 %) and
-   by 19 440 it is 72.3 %. **The assembly/factorization crossover fell from ~15–20 k
-   free DOF to ~1–2 k.** R0 did not just make the solver faster; it moved the
-   bottleneck, and it invalidated the finding that motivated it. That is the correct
-   outcome for an optimisation, but it has to be written down, because §4b's reasoning
-   was built on the pre-R0 shape (see the note there).
-2. **The reachable size roughly doubled.** 540 free DOF at 12.3 Newton iterations now
-   fits a 60 Hz frame with 2× headroom — a *directly measured* case that fits, where
-   §2a had the same case at 1.37× over budget. Interpolating as §2a did (6 Newton
-   iterations, measured `n^1.51` low-end exponent) puts the reachable size at
-   **~1 500 free DOF at 60 Hz**, up from ~800. ⚠ Still an interpolation; the 540-DOF
-   fit is the measured anchor.
-3. **The gap narrowed but did not close.** ~1 500 reachable against a 20 k–70 k target
-   is **13–47× in DOF**, down from 25–90×. Still one to one-and-a-half orders of
-   magnitude, so nothing about the MOR case changes qualitatively.
-
-**Assembled pattern density**, measured across both fixtures (this is exact, not timed):
-15.2 entries per free DOF at 540, rising to **21.8 at 70 644** (1 537 611 entries). This
-is the figure the `43b198a2` memory correction rests on.
 
 ## 3. What the measurements say about feasibility
 
@@ -505,29 +437,18 @@ vectors as `Φ` (`n × r`). Reduced coordinates `q ∈ ℝ^r`, `u ≈ Φq`.
 ### 4b. Hyper-reduction
 
 The reduced internal force `Φᵀf_int(Φq)` and tangent `ΦᵀK(Φq)Φ` still require a sweep
-over **all** elements unless the quadrature is reduced.
+over **all** elements unless the quadrature is reduced. Two levers, and §2d sets their
+relative size:
 
-⚠ **This argument was originally stated much more strongly, on a premise R0 has since
-falsified.** The v1 text read: "assembly is the dominant cost in the target regime, so
-hyper-reduction is not an optimisation of the reduced scheme, it is the reduced scheme
-— a reduced basis without hyper-reduction would leave 60–80 % of the frame untouched."
-That rested on §2d.1's pre-R0 crossover at ~15 k free DOF. Post-R0 (§2f) the crossover
-is ~1–2 k, factorization is 57–72 % of the frame across the target range, and assembly
-is 9–32 %. The honest restatement:
-
-- **A reduced basis alone now attacks the larger half.** Collapsing an `n`-DOF sparse
-  factorization to a dense `r × r` solve goes straight at the 57–72 %. R1 (basis only,
-  full element sweep) may therefore show a real speedup, where the pre-R0 reading
-  predicted roughly none. **This does not change R1's gate** — it is still accuracy,
-  not wall time, because a fast-but-wrong subspace is worthless — but a speedup at R1
-  should now be treated as expected rather than as evidence of a mistake.
-- **Hyper-reduction remains necessary, and is no longer sufficient on its own.** The
-  9–32 % assembly share is a hard floor on what a basis alone can reach, so ECSW is
-  still required to get the last order of magnitude. It is now the *second* lever
-  rather than the whole scheme.
-
-The R3 kill condition (< ~10× over R0's baseline) is unchanged and is now measured
-against §2f, not §2a.
+- **The basis alone attacks the larger half.** Collapsing an `n`-DOF sparse
+  factorization to a dense `r × r` solve goes straight at the 57–72 % of the frame
+  that factorization now costs across the target range. R1 (basis only, full element
+  sweep) should therefore show a real speedup. **That does not change R1's gate** — it
+  is accuracy, not wall time, because a fast-but-wrong subspace is worthless — but a
+  speedup at R1 is expected rather than surprising.
+- **Hyper-reduction is needed for the rest, and cannot be skipped.** Assembly is
+  9–32 % of the frame, and a basis without hyper-reduction leaves all of it. That is a
+  hard floor on what R1 alone can reach, and it is why R3 exists.
 
 **Recommendation: ECSW (Energy-Conserving Sampling and Weighting).** Reasons, in the
 order they matter here:
@@ -683,10 +604,10 @@ same door, under its own feature, and must not enter the default build.
 
 | rung | scope | gate | why here |
 |---|---|---|---|
-| **R0** | **Full-order assembly lever.** Replace the per-iteration `BTreeMap` rebuild in `assemble_free_hessian_triplets` with a pattern-indexed value buffer built once at construction. No algorithm change. | Byte-identity of the assembled triplets against the current path (the `feedback_float_refactor_byte_identity` recipe), plus a measured ms/iteration delta on the §2a fixtures. | §2d.2. Establishes the **honest baseline** the reduction is measured against. Cheap, self-contained, and a win regardless of whether anything downstream ships. |
+| **R0** ✅ **DONE** (`e77023c7`, `43b198a2`) | **Full-order assembly lever.** Replace the per-iteration `BTreeMap` rebuild in `assemble_free_hessian_triplets` with a pattern-indexed value buffer built once at construction. No algorithm change. | Byte-identity of the assembled triplets against the current path (the `feedback_float_refactor_byte_identity` recipe), plus a measured ms/iteration delta on the §2a fixtures. | §2d.2. Establishes the **honest baseline** the reduction is measured against. Cheap, self-contained, and a win regardless of whether anything downstream ships. |
 | **R1** | **Linear subspace, no contact, no coupling.** POD basis from full-order snapshots on the `cantilever` fixture at 3 000 free DOF; reduced Newton with a dense `r × r` direct solve; `Φ` and quadrature both handled naively (full element sweep — **no hyper-reduction yet**). Differentiable path wired at the same time (§6, `Φ` constant). | Projection error vs the oracle < 1 % in tip displacement over the training trajectory; reduced gradient matches the oracle's to the crate's existing gradcheck tolerance. **Wall time is explicitly NOT gated at R1** — without hyper-reduction it will not be faster, and pretending otherwise would corrupt the signal. | **The cheap kill-or-confirm.** It answers the one question that decides everything downstream: *does a low-dimensional subspace represent this material's deformation at all?* Fixture already exists; no new physics. |
 | **R2** | **Precision decision.** Measure a full-f32 forward path on the reduced system (`r × r` is small enough to port by hand without touching the 1 396-`f64` production surface), and decide residual-in-f64-on-CPU vs compensated-summation-in-f32. | Reduced-model f32 forward drift and gradient drift vs the f64 reduced model, on R1's fixture; explicit go/no-go on whether the residual can live in f32. | §2c. Must precede any GPU work; deciding it after a shader exists means writing the shader twice. |
-| **R3** | **Hyper-reduction (ECSW) + the validity domain.** NNLS training over R1's snapshots; `ReducedValidityDomain` with the online `‖q‖` + residual-proxy gate; the three error measures of §4c. | Measured speedup vs **R0's** baseline (not today's), with the three §4c errors reported alongside. Domain gate demonstrated to fire on an out-of-domain trajectory. | This is where the frame-budget win actually arrives. Also where the "smooth and wrong" failure mode is defended against. |
+| **R3** | **Hyper-reduction (ECSW) + the validity domain.** NNLS training over R1's snapshots; `ReducedValidityDomain` with the online `‖q‖` + residual-proxy gate; the three error measures of §4c. | Measured speedup vs §2a's baseline (post-R0), with the three §4c errors reported alongside. Domain gate demonstrated to fire on an out-of-domain trajectory. | This is where the frame-budget win actually arrives. Also where the "smooth and wrong" failure mode is defended against. |
 | **R4** | **Hybrid domain decomposition, FIXED contact patch.** Full DOF under a stationary indenter, reduced bulk, on the `dynamic_indentation` geometry. | End-to-end reaction force vs the oracle, in the same band `bonded_layer_indentation` already asserts. | §5. Fixed patch first, because it isolates the coupling condition from the re-partitioning problem. |
 | **R5** | **Moving patch.** Re-partitioning under a once-built symbolic factorization, or a conservative union pattern. | Sliding-contact trajectory vs the oracle. | §5's open-research item. **Explicitly gated on R4 succeeding**; if R4 fails, this is not attempted. |
 | **R6** | **Rigid↔soft coupling.** | — | **Last, deliberately.** Per the brief, and it is the right call: the keystone coupling is itself the platform's hardest open problem (`MISSION.md` §2), and stacking it on an unsolved real-time reduced path would make any failure uninterpretable. |
@@ -695,7 +616,7 @@ same door, under its own feature, and must not enter the default build.
 fact): if R1 shows the projection error is not small at any `r` worth having, the MOR
 path is wrong for this material class and the recon is falsified — the correct
 response is to revert to R0's win and re-recon, not to widen the basis until the
-number looks acceptable. If R3's measured speedup over R0's baseline is under ~10×,
+number looks acceptable. If R3's measured speedup over §2a's (post-R0) baseline is under ~10×,
 reduction is not paying for its complexity and the honest move is to bank it.
 
 ---
@@ -870,6 +791,14 @@ small, separate PR and is not proposed here.
 
 ## 12. Version history
 
+- **v1.5 (2026-08-10)** — **collapsed to a single baseline.** v1.3/v1.4 carried pre-R0
+  and post-R0 numbers side by side with banners; that structure was a footgun and I
+  tripped over it within one commit (v1.4 exists only because v1.3's header quoted the
+  superseded set). Every §2 table now states the post-R0 measurement, §2f is folded
+  into §2a/§2d, §2d.1 states the current crossover with one paragraph on why it moved,
+  and §4b argues from the current shape instead of narrating its own revision. The
+  pre-R0 measurements live in git (`b0f4aa21`) and in PR #741/#742, which is where an
+  audit trail belongs — not in a live planning document. No measurement changed.
 - **v1.4 (2026-08-10)** — header verdict and caveats 1–2 updated to point at §2f. v1.3
   added the post-R0 baseline but left the most-quoted block still stating the pre-R0
   numbers with no pointer — recreating, in the same document, the caveat-far-from-claim
