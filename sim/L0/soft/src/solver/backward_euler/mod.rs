@@ -209,13 +209,24 @@ pub struct CpuNewtonSolver<
     /// Per-iter numeric refactor consumes a `clone()` of this (cheap —
     /// it is an `Arc` refcount bump).
     symbolic: ordering::SharedSymbolicCholesky,
-    /// The assembled free-DOF tangent's sparsity pattern as a sorted
-    /// `(col, row)` list — the SAME `BTreeSet` `new()` feeds to
+    /// The assembled free-DOF tangent's sparsity pattern in CSC form: row
+    /// indices, column-major, ascending inside each column. Derived from the
+    /// SAME `BTreeSet` `new()` feeds to
     /// [`build_symbolic_factors`](construct), kept rather than dropped so
     /// `assemble_free_hessian_triplets` can accumulate into a flat value
     /// buffer instead of rebuilding a `BTreeMap` on every Newton iteration.
     ///
-    /// Sorted by `(col, row)`, which is column-major lower-triangle — the same
+    /// The column index is deliberately NOT stored: [`Self::pattern_col_ptr`]
+    /// already encodes it, so a `(col, row)` pair would double both the resident
+    /// size and the bytes each binary-search probe pulls into cache to compare
+    /// eight of. Measured pattern density is ~21.6 entries per free DOF
+    /// (37 071 at 1 944 free DOF → 563 571 at 26 460), so the pair form costs
+    /// ~24 MB at 70k free DOF against ~12 MB here — a real saving, but a small
+    /// one beside the roughly one gigabyte a session of that size holds
+    /// resident. The primary reason is that the column was redundant state, not
+    /// the bytes it cost.
+    ///
+    /// CSC order is column-major lower-triangle — the same
     /// order `BTreeMap` iterated in, so the emitted triplet vector is
     /// byte-identical to the pre-index path. That identity was verified by
     /// fingerprinting `x_final` across the revision boundary rather than by a
@@ -228,9 +239,9 @@ pub struct CpuNewtonSolver<
     /// [`Self::replace_contact`] already relies on, and the reason a
     /// self-collision contact model (which would widen it) is not shippable
     /// without revisiting both.
-    pattern: Vec<(usize, usize)>,
-    /// Column offsets into [`Self::pattern`]: entries for free column `c` are
-    /// `pattern[pattern_col_ptr[c]..pattern_col_ptr[c + 1]]`, rows ascending.
+    pattern_rows: Vec<usize>,
+    /// Column offsets into [`Self::pattern_rows`]: the rows of free column `c`
+    /// are `pattern_rows[pattern_col_ptr[c]..pattern_col_ptr[c + 1]]`, ascending.
     /// Length `n_free + 1`. Turns a scatter lookup into a binary search over
     /// one column's rows (tens of entries) rather than the whole pattern.
     pattern_col_ptr: Vec<usize>,

@@ -21,7 +21,7 @@ use super::helpers::{
 ///
 /// Replaces the `BTreeMap<(usize, usize), f64>` this assembly used to rebuild on
 /// **every Newton iteration**. The pattern is a function of element incidence and
-/// the free-DOF map alone (see `CpuNewtonSolver::pattern` and the invariant
+/// the free-DOF map alone (see `CpuNewtonSolver::pattern_rows` and the invariant
 /// `replace_contact` already depends on), so it is known at construction and
 /// there is nothing per-iteration to discover — only values to accumulate.
 ///
@@ -52,23 +52,40 @@ use super::helpers::{
 /// accuracy. (Measured on the current fixtures the two sets are equal anyway — the
 /// assembly fills the whole pattern — so today this is insurance, not a fix.)
 pub(super) struct FreeTangentAccumulator<'a> {
-    /// Sorted `(col, row)` pattern, borrowed from the solver.
-    pattern: &'a [(usize, usize)],
-    /// Column offsets into `pattern`; length `n_free + 1`.
+    /// Row indices in CSC order, borrowed from the solver: the rows of free
+    /// column `c` are `rows[col_ptr[c]..col_ptr[c + 1]]`, ascending. The column
+    /// index is NOT stored — `col_ptr` already encodes it, and carrying the pair
+    /// would double both the resident size and the bytes each binary-search probe
+    /// pulls into cache to compare eight of.
+    rows: &'a [usize],
+    /// Column offsets into `rows`; length `n_free + 1`.
     col_ptr: &'a [usize],
-    /// Accumulated values, index-aligned with `pattern`.
+    /// Accumulated values, index-aligned with `rows`.
     values: Vec<f64>,
 }
 
 impl<'a> FreeTangentAccumulator<'a> {
-    /// Zeroed accumulator over `pattern` (sorted by `(col, row)`) with the
-    /// matching column offsets.
-    pub(super) fn new(pattern: &'a [(usize, usize)], col_ptr: &'a [usize]) -> Self {
+    /// Zeroed accumulator over a CSC pattern: `rows` in column-major order with
+    /// ascending rows inside each column, and the matching `col_ptr` offsets.
+    pub(super) fn new(rows: &'a [usize], col_ptr: &'a [usize]) -> Self {
         Self {
-            pattern,
+            rows,
             col_ptr,
-            values: vec![0.0; pattern.len()],
+            values: vec![0.0; rows.len()],
         }
+    }
+
+    /// `(col, row)` pairs in CSC order — the column index recovered from
+    /// `col_ptr`. Shared by [`Self::into_triplets`] and the test-only
+    /// [`Self::iter`] so the two cannot disagree about ordering.
+    fn coords(
+        col_ptr: &'a [usize],
+        rows: &'a [usize],
+    ) -> impl Iterator<Item = (usize, usize)> + 'a {
+        col_ptr
+            .windows(2)
+            .enumerate()
+            .flat_map(move |(c, w)| rows[w[0]..w[1]].iter().map(move |&r| (c, r)))
     }
 
     /// `A[row, col] += value`, for a lower-triangle `(col, row)` in the pattern.
@@ -92,10 +109,10 @@ impl<'a> FreeTangentAccumulator<'a> {
     pub(super) fn add(&mut self, col: usize, row: usize, value: f64) {
         let lo = self.col_ptr[col];
         let hi = self.col_ptr[col + 1];
-        let rows = &self.pattern[lo..hi];
-        let k = rows.partition_point(|&(_, r)| r < row);
+        let rows = &self.rows[lo..hi];
+        let k = rows.partition_point(|&r| r < row);
         debug_assert!(
-            k < rows.len() && rows[k].1 == row,
+            k < rows.len() && rows[k] == row,
             "tangent scatter at (col {col}, row {row}) is outside the construction-time \
              sparsity pattern — a contact model coupling vertices from different elements \
              (self collision) would do this; see CpuNewtonSolver::replace_contact"
@@ -103,24 +120,20 @@ impl<'a> FreeTangentAccumulator<'a> {
         self.values[lo + k] += value;
     }
 
-    /// Consume into the `(row, col, value)` triplet list faer wants, in the
-    /// pattern's `(col, row)` order.
+    /// Consume into the `(row, col, value)` triplet list faer wants, in CSC
+    /// `(col, row)` order.
     pub(super) fn into_triplets(self) -> Vec<Triplet<usize, usize, f64>> {
-        self.pattern
-            .iter()
+        Self::coords(self.col_ptr, self.rows)
             .zip(self.values)
-            .map(|(&(c, r), v)| Triplet::new(r, c, v))
+            .map(|((c, r), v)| Triplet::new(r, c, v))
             .collect()
     }
 
-    /// `((col, row), value)` pairs in pattern order — the read side the F-bar
+    /// `((col, row), value)` pairs in CSC order — the read side the F-bar
     /// tangent's unit test uses in place of iterating the old `BTreeMap`.
     #[cfg(test)]
     pub(super) fn iter(&self) -> impl Iterator<Item = ((usize, usize), f64)> + '_ {
-        self.pattern
-            .iter()
-            .copied()
-            .zip(self.values.iter().copied())
+        Self::coords(self.col_ptr, self.rows).zip(self.values.iter().copied())
     }
 }
 
@@ -489,7 +502,7 @@ where
         // Values over the construction-time pattern. Was a per-iteration
         // `BTreeMap` rebuild; the pattern cannot change between iterations, so
         // there is nothing to rediscover. See `FreeTangentAccumulator`.
-        let mut acc = FreeTangentAccumulator::new(&self.pattern, &self.pattern_col_ptr);
+        let mut acc = FreeTangentAccumulator::new(&self.pattern_rows, &self.pattern_col_ptr);
 
         let materials = self.mesh.materials();
         if let Some(fbar) = &self.fbar_cache {

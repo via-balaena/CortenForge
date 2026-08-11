@@ -675,9 +675,10 @@ where
         // `triplet_set` is already sorted by (col, row), i.e. column-major with
         // rows ascending inside each column, so the Vec IS the CSC layout and
         // the offsets fall straight out of one pass.
-        let pattern: Vec<(usize, usize)> = triplet_set.into_iter().collect();
+        let mut pattern_rows: Vec<usize> = Vec::with_capacity(triplet_set.len());
         let mut pattern_col_ptr = vec![0_usize; n_free + 1];
-        for &(c, _) in &pattern {
+        for (c, r) in triplet_set {
+            pattern_rows.push(r);
             pattern_col_ptr[c + 1] += 1;
         }
         for c in 0..n_free {
@@ -695,7 +696,7 @@ where
             mass_per_dof,
             free_dof_indices,
             full_to_free_idx,
-            pattern,
+            pattern_rows,
             pattern_col_ptr,
             symbolic,
             symbolic_lu,

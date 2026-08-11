@@ -1094,17 +1094,12 @@ mod tests {
         // walk in a test whose subject is the F-bar tangent, not the sparsity.
         // `O(n_dof²)` is fine at this fixture's size; it would not be at solver
         // scale, which is why production builds the incidence pattern instead.
-        let pattern: Vec<(usize, usize)> = (0..n_dof)
-            .flat_map(|c| (c..n_dof).map(move |r| (c, r)))
-            .collect();
+        let rows: Vec<usize> = (0..n_dof).flat_map(|c| c..n_dof).collect();
         let mut col_ptr = vec![0_usize; n_dof + 1];
-        for &(c, _) in &pattern {
-            col_ptr[c + 1] += 1;
-        }
         for c in 0..n_dof {
-            col_ptr[c + 1] += col_ptr[c];
+            col_ptr[c + 1] = col_ptr[c] + (n_dof - c);
         }
-        let mut acc = super::super::assembly::FreeTangentAccumulator::new(&pattern, &col_ptr);
+        let mut acc = super::super::assembly::FreeTangentAccumulator::new(&rows, &col_ptr);
         cache.accumulate_free_tangent(&mesh, &materials, &x, &geoms, &identity, &mut acc);
 
         let mut seed = 0x9E37_79B9_u64;
