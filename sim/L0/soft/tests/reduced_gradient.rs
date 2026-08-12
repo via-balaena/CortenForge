@@ -933,6 +933,11 @@ fn adjoint_gap_across_basis_sizes() {
              ({:.2}x)",
             oracle_ms / reduced_ms
         );
+        // Every derived quantity is formed ONCE, inside this loop, and both the report
+        // and the assertions read the same values. Recomputing for the assertions would
+        // re-solve an adjoint per rank and leave two copies free to drift apart.
+        let mut adj_proj = Vec::new();
+        let mut grad_rel = Vec::new();
         for (i, w) in [&w_sum, &w_face_z, &w_local].iter().enumerate() {
             let (lambda_free, g_or) = &refs[i];
             let adj = reduced
@@ -942,33 +947,26 @@ fn adjoint_gap_across_basis_sizes() {
             let dot: f64 = g_red.iter().zip(g_or).map(|(a, b)| a * b).sum();
             let nr = g_red.iter().map(|v| v * v).sum::<f64>().sqrt();
             let no = g_or.iter().map(|v| v * v).sum::<f64>().sqrt();
+            let lambda_proj = basis.projection_error(lambda_free);
+            let rel = rel_l2(&g_red, g_or);
             // Accumulated rather than printed per line: the four lines of one rank must
             // stay together, and other tests in this binary print concurrently.
             write!(
                 line,
-                "\n           [{:>6}] adjoint projection {:.3e}, gradient rel err {:.3e}, \
-                 cos {:.4}, ‖ratio‖ {:.4}",
+                "\n           [{:>6}] adjoint projection {lambda_proj:.3e}, gradient rel \
+                 err {rel:.3e}, cos {:.4}, ‖ratio‖ {:.4}",
                 COTANGENTS[i],
-                basis.projection_error(lambda_free),
-                rel_l2(&g_red, g_or),
                 dot / (nr * no),
                 nr / no,
             )
             .expect("writing to a String cannot fail");
+            adj_proj.push(lambda_proj);
+            grad_rel.push(rel);
         }
         println!("{line}");
         disp_err.push(disp);
-        sum_x_adj.push(basis.projection_error(&refs[0].0));
-        face_z_grad.push(rel_l2(
-            &reduced
-                .load_gradient(
-                    &reduced
-                        .adjoint(&x_star_or, Some(&x_prev_or), DT, &w_face_z)
-                        .expect("reduced adjoint factors"),
-                )
-                .clone(),
-            &refs[1].1,
-        ));
+        sum_x_adj.push(adj_proj[0]);
+        face_z_grad.push(grad_rel[1]);
         ms.push(reduced_ms);
     }
 
