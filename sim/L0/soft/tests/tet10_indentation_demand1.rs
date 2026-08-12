@@ -39,9 +39,9 @@
 //! (93 639 vs 13 125) ran **59.6 min** single-threaded — 100 % of one core, the
 //! assembly being serial by design for bit-determinism. The Tet10 arm is
 //! therefore a **deliberately-run one-shot measurement**, `#[ignore]`d
-//! unconditionally: never a routine or CI test. What CI *does* run is the cheap
-//! [`node_density_control_confound_is_small`] relationship guard over the pinned
-//! constants. See the session memory `project-tet10-fbar-element-upgrade` for
+//! unconditionally: never a routine or CI test. What CI runs is this file's two
+//! cheap arms — the [`node_density_control_confound_is_small`] relationship guard
+//! and the ~41 s Tet4 probe — with the Tet10 arm still `#[ignore]`d. See the session memory `project-tet10-fbar-element-upgrade` for
 //! the full carry-forward.
 //!
 //! ## What this rung answers
@@ -469,8 +469,10 @@ fn node_density_control_confound_is_small() {
 // ── Measurement probes — deliberate-run, pin the committed scalars ───────────
 
 /// Tet4 arm, ~61 s in release. Validates the harness against `#676`'s committed
-/// `RATIO = 1.130` and pins the Tet4 standoff. `#[ignore]`d in debug only; not
-/// in any release `--test` list, so it never runs in CI either.
+/// `RATIO = 1.130` and pins the Tet4 standoff. `#[ignore]`d in debug only, and
+/// **now listed in `tests-release` shard 3's sim-soft release step** — the R1.3
+/// PR's review found this file in no release `--test` list, which is what the
+/// previous wording here recorded. Measured 41.6 s for the whole binary.
 #[cfg_attr(debug_assertions, ignore = "release-only heavy IPC ramp")]
 #[test]
 fn probe_tet4_arm_reproduces_676() {

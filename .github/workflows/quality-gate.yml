@@ -580,6 +580,15 @@ jobs:
       # `tests-debug` reports them verbatim as `ignored, release-only`, and
       # nothing else selected them in release. R1.0-R1.3 were all decorative in
       # CI until this line listed them. ~70 s for the three.
+      #
+      # `fbar_locking` (4.6 s) and `tet10_indentation_demand1` (41.6 s) were in the
+      # same state and are measured, not estimated. The latter's ~60 min Tet10 arm
+      # carries an UNCONDITIONAL `#[ignore]`, so selecting the binary runs its two
+      # cheap arms and leaves that one out — verified, not assumed.
+      #
+      # ⚠ `tet10_lame_decision` is deliberately NOT here: its `#[ignore]` is
+      # unconditional and reasoned (7.16 GB peak RSS, above a runner's memory).
+      # Absent from CI by design, not by oversight.
       - name: Run sim-soft release-only contact + reduced-basis tests
         if: matrix.id == 3 && env.SOFT_PKGS != ''
         run: |
@@ -589,7 +598,9 @@ jobs:
             --test non_interpenetration \
             --test reduced_pod_basis \
             --test reduced_newton_trajectory \
-            --test reduced_gradient
+            --test reduced_gradient \
+            --test fbar_locking \
+            --test tet10_indentation_demand1
         shell: bash
 
       # cf-cast's mold/cast kernel (358 library tests) runs --lib-only in
