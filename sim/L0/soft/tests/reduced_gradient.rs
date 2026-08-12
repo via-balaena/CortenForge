@@ -1026,8 +1026,12 @@ fn adjoint_gap_across_basis_sizes() {
 
 // ── R1.3 part 2: can enrichment buy the accuracy without the rank? ────────────
 
-/// Cotangents whose adjoints join the training set. Held-out by construction: none is
-/// any of the three the gate scores.
+/// Enrichment draws per state. The sequence alternates smooth patches (even seeds) and
+/// point probes (odd), so `enriched-all` takes 8 of each per state while `smooth-sub`
+/// takes only the 8 smooth and `smooth-full` takes 16 smooth.
+///
+/// Every draw is **held out by construction**: none is any of the three cotangents the
+/// gate scores. Enriching with those would be training on the test set.
 const N_ENRICH_COTANGENTS: usize = 16;
 /// Training trajectories whose converged states the enrichment adjoints are taken at.
 const N_ENRICH_STATES: usize = 3;

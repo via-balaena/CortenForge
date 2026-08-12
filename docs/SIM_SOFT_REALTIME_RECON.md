@@ -677,10 +677,13 @@ Three consequences for this section:
    adjoint snapshots attacks the measured cause directly, and it works: at `r = 40` an
    enriched basis reaches 0.0767 gradient error at 0.9972 cosine (0.0848 / 0.9965 on half
    the enrichment budget), beating plain POD's `r = 104` (0.101 / 0.9952) while running
-   ~1.45x the oracle instead of 0.54x — more accurate and 2.7x faster. **Conditional**: the declared objective family must itself
-   be low-dimensional. Smooth face weightings are; point probes are not (a Green's
-   function at one node is nearly independent of the next), and enriching with an
-   incompressible family spends modes for nothing while displacing forward content.
+   ~1.45x the oracle instead of 0.54x — more accurate and 2.7x faster.
+
+   **Conditional**: the declared objective family must itself be low-dimensional. Smooth
+   face weightings are; point probes are not (a Green's function at one node is nearly
+   independent of the next), and enriching with an incompressible family spends modes for
+   nothing while displacing forward content — measured as a clean subtraction at 3.7x of
+   the forward accuracy.
    Plan §14 carries the numbers, the controls, and the offline spectrum check that tells
    you which case you are in *before* building a basis. R3 was already redirected once —
    away from modal derivatives, by R1.0's finding that rotation is not the bottleneck —
