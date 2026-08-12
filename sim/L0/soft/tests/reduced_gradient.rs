@@ -904,6 +904,11 @@ fn adjoint_gap_across_basis_sizes() {
     let _ = run_full(&r, t, STEPS);
     let oracle_ms = oracle_start.elapsed().as_secs_f64() * 1e3;
 
+    let mut disp_err = Vec::new();
+    let mut sum_x_adj = Vec::new();
+    let mut face_z_grad = Vec::new();
+    let mut ms = Vec::new();
+
     for &rank in &R_SWEEP {
         let basis = fit_at(&r, &set, rank);
         let reduced = ReducedNewtonSolver::new(&r.solver, &basis, &r.x_rest);
@@ -952,7 +957,64 @@ fn adjoint_gap_across_basis_sizes() {
             .expect("writing to a String cannot fail");
         }
         println!("{line}");
+        disp_err.push(disp);
+        sum_x_adj.push(basis.projection_error(&refs[0].0));
+        face_z_grad.push(rel_l2(
+            &reduced
+                .load_gradient(
+                    &reduced
+                        .adjoint(&x_star_or, Some(&x_prev_or), DT, &w_face_z)
+                        .expect("reduced adjoint factors"),
+                )
+                .clone(),
+            &refs[1].1,
+        ));
+        ms.push(reduced_ms);
     }
+
+    // A nested basis cannot get worse at the forward problem as modes are added.
+    for w in disp_err.windows(2) {
+        assert!(
+            w[1] < w[0],
+            "displacement projection rose with rank ({:.3e} -> {:.3e}) — the POD modes \
+             are supposed to be nested",
+            w[0],
+            w[1]
+        );
+    }
+
+    // ★ The finding: extra modes help displacements far faster than adjoints, so the
+    // DISPARITY between them widens with rank. Measured 19.8x at r=10 growing to 529x at
+    // r=104 — a 26.7x widening — which is the signature of the adjoint's missing content
+    // sitting in near-null directions rather than in the spectrum's tail. Bounded at 5x
+    // because the claim is the direction and the order of magnitude, not the value.
+    let widen =
+        (sum_x_adj[R_SWEEP.len() - 1] / disp_err[R_SWEEP.len() - 1]) / (sum_x_adj[0] / disp_err[0]);
+    assert!(
+        widen > 5.0,
+        "the adjoint/displacement error disparity widened only {widen:.1}x across the \
+         rank sweep — R1.3's central finding has changed; rewrite the plan's §14"
+    );
+
+    // The frontier point part 2 must beat: plain POD needs the TOP of the legal rank
+    // range to reach ~0.10 on the best-case objective.
+    assert!(
+        face_z_grad[R_SWEEP.len() - 1] < 0.11,
+        "plain POD at the rank ceiling no longer reaches ~0.10 face-z gradient error \
+         ({:.3e}) — part 2's comparison point has moved",
+        face_z_grad[R_SWEEP.len() - 1]
+    );
+
+    // ★ The cost the rank knob carries. Same run, same machine, so this ratio survives a
+    // noisy box far better than an absolute time would; measured 2.7x, bounded at 1.5x.
+    // Asserted as a SHAPE rather than as a speedup-vs-oracle threshold, because the
+    // latter would flake on a contended CI runner — the oracle comparison is reported.
+    let growth = ms[R_SWEEP.len() - 1] / ms[2];
+    assert!(
+        growth > 1.5,
+        "the reduced trajectory grew only {growth:.2}x from r=40 to the rank ceiling — \
+         if `ΦᵀAΦ` stopped dominating, §14's break-even argument needs re-measuring"
+    );
 }
 
 // ── R1.3 part 2: can enrichment buy the accuracy without the rank? ────────────
@@ -1126,6 +1188,9 @@ fn adjoint_enrichment_beats_the_plain_rank_frontier() {
     let _ = run_full(&r, t, STEPS);
     let oracle_ms = oracle_start.elapsed().as_secs_f64() * 1e3;
 
+    let mut grad = Vec::new();
+    let mut fwd = Vec::new();
+    let mut cosines = Vec::new();
     for (label, set) in [
         ("plain-unit", &disp_unit),
         ("enriched-all", &enriched),
@@ -1153,6 +1218,7 @@ fn adjoint_enrichment_beats_the_plain_rank_frontier() {
             basis.projection_error(&u_or),
             oracle_ms / reduced_ms,
         );
+        let mut per_cotangent = Vec::new();
         for (i, w) in [&w_sum, &w_face_z, &w_local].iter().enumerate() {
             let adj = reduced
                 .adjoint(&x_star_or, Some(&x_prev_or), DT, w)
@@ -1170,7 +1236,69 @@ fn adjoint_enrichment_beats_the_plain_rank_frontier() {
                 nr / no,
             )
             .expect("writing to a String cannot fail");
+            per_cotangent.push((rel_l2(&g_red, &refs[i]), dot / (nr * no)));
         }
         println!("{line}");
+        grad.push(per_cotangent.iter().map(|c| c.0).collect::<Vec<_>>());
+        cosines.push(per_cotangent.iter().map(|c| c.1).collect::<Vec<_>>());
+        fwd.push(basis.projection_error(&u_or));
     }
+
+    // Index order matches the loop above: 0 = plain-unit, 1 = enriched-all, 2 = smooth-only.
+    let (plain, all, sm) = (0, 1, 2);
+
+    // ★ The result: smooth-family enrichment at r=40 beats what plain POD needed r=104
+    // for — 7.67e-2 / 0.9972 measured against the 1.01e-1 / 0.9952 frontier — while the
+    // trajectory stays ~1.45x the oracle instead of dropping to 0.54x.
+    assert!(
+        grad[sm][1] < 0.101 && cosines[sm][1] > 0.995,
+        "smooth-only enrichment no longer beats the plain r=104 frontier on face-z \
+         ({:.3e} err, {:.4} cos vs the 1.01e-1 / 0.9952 it must clear)",
+        grad[sm][1],
+        cosines[sm][1]
+    );
+
+    // A gradient bought by wrecking the forward model is not a win. Measured 7.57e-3.
+    assert!(
+        fwd[sm] < 1.0e-2,
+        "smooth-only enrichment cost too much forward accuracy ({:.3e} > 1 %) — modes \
+         spent on adjoints are modes not spent on displacements",
+        fwd[sm]
+    );
+
+    // ⚠ The NEGATIVE CONTROL, and the reason this experiment means anything: `Σx*` sits
+    // outside the declared objective family, so enrichment must leave it essentially
+    // untouched. Measured 8.31e-1 plain vs 8.35e-1 enriched — 0.5 % apart. If enrichment
+    // started helping here, it would be reaching objectives it was never given, and every
+    // other number in this test would be suspect.
+    let leak = (grad[sm][0] - grad[plain][0]).abs() / grad[plain][0];
+    assert!(
+        leak < 0.10,
+        "the out-of-family control moved {:.1} % under enrichment — the experiment is \
+         leaking and its in-family result cannot be trusted",
+        leak * 100.0
+    );
+
+    // ★ The condition on the whole finding: enrichment only pays when the declared
+    // objective family is itself low-dimensional. Point-probe adjoints are not — a
+    // Green's function at one node is nearly independent of the next — so `node-z` stays
+    // bad no matter what is added. Pinned because it is the CONDITION, not a shortfall:
+    // if this ever clears, the family compresses after all and §14 is wrong.
+    assert!(
+        grad[sm][2] > 0.55,
+        "node-z reached {:.3e} — the point-probe objective family compresses after all, \
+         which contradicts §14's condition; rewrite it rather than lowering this",
+        grad[sm][2]
+    );
+
+    // The first variant's lesson, kept so it cannot be quietly re-adopted: enriching with
+    // the incompressible family too spends modes for nothing and displaces forward
+    // content (2.36e-2 against smooth-only's 7.57e-3).
+    assert!(
+        fwd[all] > 2.0 * fwd[sm],
+        "enriching with the point family no longer costs forward accuracy ({:.3e} vs \
+         {:.3e}) — §14's diagnosis for the node-z regression needs revisiting",
+        fwd[all],
+        fwd[sm]
+    );
 }

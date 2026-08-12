@@ -673,11 +673,24 @@ Three consequences for this section:
    loads and a 0.692-cosine one on an objective loading directions it never saw. A model
    qualified for its parameter box is not thereby qualified for an arbitrary objective on
    it.
-3. **The lead is goal-oriented bases, and it belongs with R3.** Enriching `Φ` with
-   adjoint snapshots (dual-weighted-residual / goal-oriented POD) attacks the measured
-   cause directly. R3 was already redirected once — away from modal derivatives, by
-   R1.0's finding that rotation is not the bottleneck — and this is the second input to
-   the same decision.
+3. **The lead is goal-oriented bases, and R1.3 has now MEASURED it.** Enriching `Φ` with
+   adjoint snapshots attacks the measured cause directly, and it works: at `r = 40` an
+   enriched basis reaches 0.0767 gradient error at 0.9972 cosine, beating plain POD's
+   `r = 104` (0.101 / 0.9952) while running 1.45x the oracle instead of 0.54x — more
+   accurate and 2.7x faster. **Conditional**: the declared objective family must itself
+   be low-dimensional. Smooth face weightings are; point probes are not (a Green's
+   function at one node is nearly independent of the next), and enriching with an
+   incompressible family spends modes for nothing while displacing forward content.
+   Plan §14 carries the numbers, the controls, and the offline spectrum check that tells
+   you which case you are in *before* building a basis. R3 was already redirected once —
+   away from modal derivatives, by R1.0's finding that rotation is not the bottleneck —
+   and this makes the basis recipe goal-oriented from the start rather than plain POD.
+
+   ⚠ Raising `r` is **not** the alternative. R1.3's sweep measured break-even between
+   `r = 40` and `r = 80`: at the plan's rank ceiling the reduced model runs at half the
+   oracle's speed, so the ranks that fix the gradient are the ranks where reduction has
+   already stopped paying. That is an R1 statement — hyper-reduction moves the
+   break-even, which is precisely R3's job.
 
 ---
 
@@ -880,6 +893,10 @@ small, separate PR and is not proposed here.
 
 ## 12. Version history
 
+- **v1.9 (2026-08-12)** — R1.3 landed; §6's goal-oriented-basis lead upgraded from a
+  hypothesis to a measurement (enriched `r = 40` beats plain `r = 104`, 2.7x faster,
+  conditional on the objective family being low-dimensional) and the "just raise `r`"
+  alternative closed off with a measured break-even between `r = 40` and `r = 80`.
 - **v1.8 (2026-08-11)** — **R1 complete, and it falsified another of this document's own
   predictions.** §6 named hyper-reduction as the bound on gradient accuracy; R1.2
   measured a 0.24–0.82 relative gradient error with no hyper-reduction present, traced to
