@@ -1,8 +1,15 @@
-//! Reduced-basis machinery — rung **R1.0** of `docs/SIM_SOFT_R1_REDUCED_BASIS_PLAN.md`.
+//! Reduced-basis machinery — rung **R1** of `docs/SIM_SOFT_R1_REDUCED_BASIS_PLAN.md`,
+//! built in three deliberately separable pieces:
 //!
-//! Snapshots and a POD basis. **No reduced solver** — that is R1.1, and the split is
-//! deliberate: R1.0 answers *is this material's deformation low-dimensional?* and can
-//! kill the whole reduced-order ladder before any solver code exists.
+//! | | question it answers | types |
+//! |---|---|---|
+//! | **R1.0** | is this material's deformation low-dimensional? | [`SnapshotSet`], [`PodBasis`] |
+//! | **R1.1** | does a Galerkin solve in that subspace track the basis's own ceiling? | [`ReducedNewtonSolver`], [`ReducedStep`] |
+//! | **R1.2** | what is the gradient of that solve, with `Φ` held constant? | [`ReducedAdjoint`] |
+//!
+//! The split is what makes each answer worth having: R1.0 could kill the whole
+//! reduced-order ladder before any solver existed, and R1.1's error is meaningless
+//! without R1.0's separately-measured floor to divide it by.
 //!
 //! ## What the basis is, and what it is measured against
 //!
@@ -26,8 +33,10 @@
 
 mod newton;
 mod pod;
+mod sensitivity;
 mod snapshot;
 
 pub use newton::{ReducedNewtonSolver, ReducedStep};
 pub use pod::{Inner, PodBasis, PodError};
+pub use sensitivity::ReducedAdjoint;
 pub use snapshot::SnapshotSet;

@@ -819,12 +819,18 @@ where
     /// (`assemble_global_int_force`) re-run with the per-element stress
     /// derivative `∂P/∂p_k` (entry `param_idx` of
     /// [`Material::first_piola_param_grad`]) in place of `P`. Shared by
-    /// [`Self::equilibrium_material_sensitivity`] (forward) and
-    /// [`Self::material_step_vjp`] (reverse).
+    /// [`Self::equilibrium_material_sensitivity`] (forward),
+    /// [`Self::material_step_vjp`] (reverse), and the reduced-basis material
+    /// gradient (`reduced::sensitivity`), which contracts the same `(∂r/∂p)_free`
+    /// against a Galerkin-projected adjoint.
     //
     // Lint allows mirror `assemble_global_int_force` (see that method).
     #[allow(clippy::cast_possible_truncation, clippy::needless_range_loop)]
-    fn assemble_material_residual_grad(&self, x_final: &[f64], param_idx: usize) -> Vec<f64> {
+    pub(super) fn assemble_material_residual_grad(
+        &self,
+        x_final: &[f64],
+        param_idx: usize,
+    ) -> Vec<f64> {
         let materials = self.mesh.materials();
         let mut dr_dp = vec![0.0_f64; self.n_dof];
         // Per-Gauss-point material-adjoint RHS (rung 7) — the

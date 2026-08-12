@@ -1,8 +1,9 @@
 # R1 — Linear Reduced Basis: scope and plan
 
-**Status**: 2026-08-11, v3. **R1.0 and R1.1 COMPLETE — both CONFIRM.** R1.2 unblocked. §11 records
-the result, including a prediction of mine it falsified. Parent: `docs/SIM_SOFT_REALTIME_RECON.md`
-§7 rung R1. Predecessor R0 landed (`ecf4cfef`); nothing else is queued ahead of this.
+**Status**: 2026-08-11, v4. **R1.0, R1.1 and R1.2 COMPLETE. R1 is done.** R1.0/R1.1
+CONFIRM; **R1.2 is a SPLIT verdict** — the gradient algebra is exact (§13, G1) and the
+gradient's *accuracy* does not follow from the state's (§13, G2). Parent:
+`docs/SIM_SOFT_REALTIME_RECON.md` §7 rung R1. Predecessor R0 landed (`ecf4cfef`).
 
 **What R1 is**: the cheap kill-or-confirm. It answers one question — *is this material's
 deformation low-dimensional?* — and nothing else. No contact, no coupling, no
@@ -144,8 +145,20 @@ Reduced IFT: `A_r λ = Φᵀ g_free`, contracted against `Φᵀ ∂r/∂θ`. `Φ
 (recon §6 decision — the basis's parameter dependence belongs to the validity domain,
 not to the chain rule).
 
-- **Gate**: reduced gradient vs the oracle's, to the crate's existing gradcheck
-  tolerance; plus a finite-difference check on the reduced model in its own right.
+- **Gate** (⚠ **amended before building — the original was one gate doing two jobs**):
+
+  | | gate | tolerance |
+  |---|---|---|
+  | **G1** (kill) | reduced adjoint vs finite difference **on the reduced model** | crate gradcheck, 1e-5 rel |
+  | **G2** (measured, loosely bounded) | reduced gradient vs the **oracle's** | pilot-set; expected at basis-error scale, *not* gradcheck |
+
+  The original single gate — "reduced gradient vs the oracle's, to gradcheck tolerance" —
+  cannot mean what it says. It conflates a statement about the constant-`Φ` IFT algebra
+  (G1) with a statement about the basis (G2). R1.0/R1.1 already measured that the two
+  models' *states* differ by 0.8–1.1 %; demanding 5-digit agreement between the
+  derivatives of two functions whose outputs differ in the third digit would fail for
+  basis truncation, a cost already priced, and not for anything about differentiability.
+  G1 is the one that can fail for the reason §7 names, so G1 is the kill.
 
 ## 6. Gates, in detail
 
@@ -185,9 +198,18 @@ So they cannot be renegotiated once numbers exist:
   fails, that is the expected signature of linear-subspace rotation weakness, and it
   routes R3 toward modal derivatives rather than killing MOR.
 - **R1.1 kill**: reduced Newton fails to converge on trajectories where the oracle does.
-- **R1.2 kill**: gradient error exceeds gradcheck tolerance with `Φ` constant → the
-  constant-basis decision (recon §6) is wrong and the whole differentiability design
-  needs revisiting *before* R3, not after.
+- **R1.2 kill** (amended in lockstep with §5): the **G1** gradient error exceeds
+  gradcheck tolerance — the reduced adjoint is not the derivative of the reduced model,
+  so the IFT algebra is wrong and the differentiability design needs revisiting *before*
+  R3. **G2 is not a kill**: it prices the surrogate, and a large G2 routes the basis work
+  rather than stopping it.
+- ⚠ **Neither gate tests whether holding `Φ` constant is the right modelling choice**,
+  and R1.2 must not be read as having validated it. G1 finite-differences a constant-`Φ`
+  model with `Φ` held constant on both sides, so it is exact by construction and blind to
+  the question. G2 is the end-to-end price, against the model with no basis at all. For
+  the load parameter the term is genuinely zero — the basis depends on the *training
+  box*, not on the θ being differentiated — so this reservation binds on the material
+  channel, where the training trajectories were run at one `μ`.
 
 ## 8. Risks
 
@@ -217,6 +239,115 @@ So they cannot be renegotiated once numbers exist:
    is wrong.
 3. **Sizes**: 3 000 free DOF for accuracy iteration plus ≥ 19 440 for one speedup
    datapoint, or accuracy only at 3 000?
+
+## 13. R1.2 result — SPLIT. The algebra is exact; the gradient is not the state.
+
+Gates: `sim/L0/soft/tests/reduced_gradient.rs`. Implementation:
+`reduced/sensitivity.rs`.
+
+### G1 — CONFIRM, by a margin of 350x
+
+The reduced adjoint **is** the exact gradient of the reduced model. Worst disagreement
+with a finite difference on `ReducedNewtonSolver::step`, across three cotangents and
+three parameter channels (a directional derivative over all 867 θ components, individual
+θ components, and the material `μ`): **2.85e-8**, against a 1e-5 gate.
+
+That covers both parameter classes, which is why both were built rather than only the
+load the plan named. The load's `∂r/∂θ = −e_k` is trivial and exercises only the adjoint
+solve; the material's `∂r/∂p` is a genuinely assembled field, and it reuses
+`assemble_material_residual_grad` — the same assembly the full-order forward sensitivity
+and VJP use — so the reduced path has no second copy of the stress derivative to drift
+from.
+
+The structure that makes this cheap is worth stating: with `μ = Φλ_r` the reduced
+gradient is the **full-order formula with `λ` replaced by `μ`**, for every parameter.
+Nothing else changes.
+
+### G2 — the finding. Gradient accuracy does NOT follow from state accuracy.
+
+Three held-out trajectories, `r = 40`, worst case per cotangent:
+
+| cotangent | rel. L2 err | adjoint projection err | cos(g_red, g_oracle) | ‖g_red‖/‖g_or‖ |
+|---|---:|---:|---:|---:|
+| `face-z` (in-family) | 0.246 | 0.138 | **0.972** | 0.90–0.91 |
+| `node-z` (localized) | 0.642 | 0.486 | 0.766 | 0.76–0.77 |
+| `Σx*` (out-of-family) | 0.816 | 0.583 | 0.692 | 0.31–0.32 |
+
+against a **displacement error of 0.4–1.1 %** at the same steps. **The gradient is
+21.5–186× less accurate than the state that produced it**, forming that ratio within each
+trajectory rather than across them. The gate asserts the low end of it (`MIN_AMPLIFICATION`).
+
+Three things pin the diagnosis:
+
+1. **It is not the reduced trajectory.** Taking the reduced adjoint at the *oracle's*
+   state changes the numbers in the fourth digit (0.8164 → 0.8163). The state error
+   contributes essentially nothing.
+2. **It is the adjoint's representability.** The adjoint field's own projection error
+   tracks the gradient error across all three cotangents at a near-constant **1.27–1.79**
+   over all nine (trajectory, cotangent) pairs — the same "Galerkin overhead over a
+   projection floor" structure R1.1 found, one level up. A POD basis fitted to
+   *displacement* snapshots was never asked to span an *adjoint*, and it does not.
+3. **The shortfall is systematic.** `‖g_red‖ < ‖g_or‖` in **all 9 measured cases**, by
+   0.31x to 0.91x. What motivates expecting this: Galerkin on an SPD `A` makes `μ` the
+   best approximation to `λ` in the **energy** norm over `span(Φ)`, and a projection is
+   never longer than what it projects — so `‖μ‖_A ≤ ‖λ‖_A`. ⚠ That is *not* a proof of
+   what is measured here, which is a **Euclidean** norm of the gradient restricted to the
+   loaded DOFs; the argument motivates the expectation, the 9/9 observation is the
+   evidence. Either way the practical consequence is the one that matters: the reduced
+   gradient **understates** sensitivity rather than overstating it. The gate asserts
+   `ratio ≤ 1` because the other direction is the dangerous failure — a co-design loop
+   reading an overstated sensitivity has no warning.
+
+### What this means for a consumer, and why L2 was the wrong number to decide on
+
+A surrogate gradient fails in two separable ways: too short costs a line search;
+mis-aimed costs the descent property. Splitting them changes the verdict. On the
+in-family objective the direction is **0.972 cosine** — perfectly usable for descent —
+while its 25 % L2 error is almost entirely the magnitude shortfall. On the out-of-family
+one, cosine 0.69 and magnitude 0.31 is a gradient that still descends but badly mis-scales.
+
+So the validity domain R1 owes its consumers has an axis the recon and this plan both
+missed: it constrains **what you differentiate**, not only where you evaluate. A reduced
+model qualified for its parameter box is *not* thereby qualified for an arbitrary
+objective on it.
+
+### The prediction inside G2 that was wrong
+
+The original two cotangents (`Σx*` and `node-z`) were chosen expecting **localization**
+to be the hard axis
+— a point-load adjoint being Green's-function-like where a displacement POD is smooth. It
+is not the ranking that came out. `Σx*` is the worst, and its distinguishing feature is
+*direction*: it applies unit forces along `x` and `y`, which the training ensemble (`z`
+tractions only) never explored. `node-z` — in-family direction, out-of-family sharpness —
+sits between. **What the basis has never been loaded along costs more than what it has
+never resolved.** The `face-z` control is what makes that readable; without it the result
+would have been dismissible as an exotic objective.
+
+### Two knobs, one of which was measured not to matter
+
+The first G1 pilot failed at 1.05e-5 on one θ component. Two candidate causes: the
+solver's stopping criterion leaving residual slack, and an under-resolved FD step. An
+`h`-sweep settled it — the error falls **monotonically as `1/h`** (1.05e-5 → 6.59e-7 →
+2.30e-8 → 8.26e-10 over `h/‖θ‖` of 1e-6 → 1e-3), which is the signature of noise, not
+truncation, and shows the difference converging *to* the analytic value.
+
+A negative control then re-ran G1 at the **loose** 1e-6 tolerance with the widened step:
+worst disagreement **9.68e-7**, still inside the gate. **The tolerance did none of the
+work; the step size did all of it.** The tolerance stays tightened for margin (350× vs
+10×), but the reasoning that first justified it was wrong and is recorded as such in the
+test's own constant docs — a future reader tightening a tolerance to fix an FD should
+know this knob was tried and measured not to be the one.
+
+### What R1.2 does not answer
+
+Whether a basis *refitted per parameter value* would close the gap — i.e. what the
+dropped `dΦ/dp` term is actually worth. For the load channel that term is exactly zero
+(the basis depends on the training box, not the evaluation θ), so the question binds only
+on the material channel. It is not worth answering yet: G2 shows the error is dominated
+by the adjoint's representability at a *fixed* parameter, which refitting would not
+touch. The lead this result actually generates is **enriching `Φ` with adjoint snapshots**
+(goal-oriented / dual-weighted-residual bases) — and that belongs with R3's basis work,
+not behind it.
 
 ## 12. R1.1 result — CONFIRM. The Galerkin solve tracks the basis floor.
 
@@ -344,6 +475,9 @@ the first run.
 
 ## 10. Version history
 
+- **v4 (2026-08-11)** — R1.2 built, piloted and gated; §13 records the split verdict, the
+  §5/§7 gate amendment that preceded it, and the finding that gradient accuracy does not
+  follow from state accuracy.
 - **v3 (2026-08-11)** — R1.1 built and gated; §12 records CONFIRM (Galerkin overhead
   1.45–1.91× of the basis floor, identical iteration counts, faster than the oracle at
   5 202 free DOF) plus the `project`-vs-`project_covector` bug and the second miss by
