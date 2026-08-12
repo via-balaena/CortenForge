@@ -63,6 +63,7 @@
 )]
 
 use std::fmt::Write as _;
+use std::time::Instant;
 
 use sim_ml_chassis::{Tape, Tensor, Var};
 use sim_soft::solver::backward_euler::reduced::{
@@ -154,6 +155,18 @@ struct Traj {
 /// material finite difference can rebuild the solver at `μ ± δ` while reusing the SAME
 /// basis — which is exactly the constant-`Φ` model whose gradient is under test.
 fn rig(mu: f64) -> Rig {
+    rig_with_tol(mu, TOL)
+}
+
+/// Rig at an explicit Newton tolerance.
+///
+/// `TOL` is tightened to 1e-10 for G1's finite differences, and that is **not** a fair
+/// setting to time at. R1.1 measured `‖Φᵀr‖/‖r‖` between 1e-7 and 1e-10, so a fixed
+/// absolute tolerance is a far harsher demand on the *projected* residual the reduced
+/// solve drives than on the full residual the oracle drives — timing both at 1e-10
+/// silently penalises the reduced path. The R1.3 sweep therefore times at the production
+/// 1e-6, which is what R1.1 gated and what a consumer would run.
+fn rig_with_tol(mu: f64, tol: f64) -> Rig {
     let field = MaterialField::uniform(mu, LAMBDA);
     let mesh = HandBuiltTetMesh::cantilever_bilayer_beam(16, 16, 6, LX, LY, H, &field);
     let n_dof = 3 * mesh.n_vertices();
@@ -175,7 +188,7 @@ fn rig(mu: f64) -> Rig {
     cfg.dt = DT;
     cfg.density = DENSITY;
     cfg.max_newton_iter = 200;
-    cfg.tol = TOL;
+    cfg.tol = tol;
     Rig {
         solver: CpuTet4NHSolver::new(Tet4, mesh, NullContact, cfg, bc),
         x_rest,
@@ -855,7 +868,9 @@ const R_SWEEP: [usize; 5] = [10, 20, 40, 80, 104];
 )]
 #[test]
 fn adjoint_gap_across_basis_sizes() {
-    let r = rig(MU);
+    // Production tolerance: this rung measures the BASIS, not a finite difference, and
+    // `TOL`'s 1e-10 would bias the timing against the reduced path (see `rig_with_tol`).
+    let r = rig_with_tol(MU, 1.0e-6);
     let set = snapshots(&r);
     let fd_idx = r.solver.free_dof_indices().to_vec();
     let (w_sum, w_face_z, w_local, _) = cotangents(&r);
@@ -880,15 +895,38 @@ fn adjoint_gap_across_basis_sizes() {
         })
         .collect();
 
+    // Wall time matters here even though R1's gates are accuracy-only: raising `r` is
+    // only a usable answer if the reduced model is still FASTER than the oracle at that
+    // rank. `ΦᵀAΦ` grows as `O(n·r²)`, so there is a rank beyond which the knob defeats
+    // its own purpose. Measured, not extrapolated — cost estimates have missed every
+    // time they were tried in this arc.
+    let oracle_start = Instant::now();
+    let _ = run_full(&r, t, STEPS);
+    let oracle_ms = oracle_start.elapsed().as_secs_f64() * 1e3;
+
     for &rank in &R_SWEEP {
         let basis = fit_at(&r, &set, rank);
         let reduced = ReducedNewtonSolver::new(&r.solver, &basis, &r.x_rest);
         let disp = basis.projection_error(&u_or);
         let energy = basis.retained_energy_fraction();
 
+        let traj_start = Instant::now();
+        let (mut q, mut qdot) = (vec![0.0; rank], vec![0.0; rank]);
+        for step_idx in 1..=STEPS {
+            let th = theta_at(&r, t, step_idx);
+            let st = reduced
+                .step(&q, &qdot, &Tensor::from_slice(&th, &[th.len()]), DT)
+                .expect("reduced step converges");
+            q = st.q;
+            qdot = st.qdot;
+        }
+        let reduced_ms = traj_start.elapsed().as_secs_f64() * 1e3;
+
         let mut line = format!(
             "R1.3 r={rank:>3}: displacement projection {disp:.3e} (retained energy \
-             {energy:.6})"
+             {energy:.6}), trajectory {reduced_ms:.0} ms vs oracle {oracle_ms:.0} ms \
+             ({:.2}x)",
+            oracle_ms / reduced_ms
         );
         for (i, w) in [&w_sum, &w_face_z, &w_local].iter().enumerate() {
             let (lambda_free, g_or) = &refs[i];
