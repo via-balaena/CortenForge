@@ -584,6 +584,15 @@ const MIN_COSINE: [f64; 3] = [0.60, 0.96, 0.69];
 /// lower this number.
 const MIN_AMPLIFICATION: f64 = 15.0;
 
+/// What the incompressible family costs the forward model, measured as a clean
+/// subtraction: `enriched-all`'s displacement projection error divided by
+/// `smooth-sub`'s, where the two differ only by the presence of the point probes.
+///
+/// Measured **3.71x** (2.36e-2 with them, 6.34e-3 without). Bounded at 2.5x, ~30 % below.
+/// This is the evidence that point-probe adjoints are actively harmful rather than merely
+/// useless — they consume rank-40 modes that displacement content needed.
+const MIN_POINT_PROBE_FORWARD_COST: f64 = 2.5;
+
 #[cfg_attr(
     debug_assertions,
     ignore = "release-only — 48 training trajectories plus paired oracle/reduced runs; \
@@ -1156,19 +1165,49 @@ fn adjoint_enrichment_beats_the_plain_rank_frontier() {
     // **Prediction**: dropping them recovers most of the forward accuracy and improves
     // `face-z` further, while `node-z` stays bad — because its objective class is
     // genuinely not low-dimensional, which no enrichment strategy fixes.
-    let mut smooth = SnapshotSet::new(fd_idx.len());
+    // TWO smooth variants, because "drop the point half" and "spend the whole enrichment
+    // budget on the smooth family" are different experiments and only one of them is a
+    // clean subtraction:
+    //
+    // - `smooth-sub` is literally `enriched-all` minus its point probes — identical
+    //   smooth content, 24 snapshots instead of 48. Comparing it against `enriched-all`
+    //   isolates what the point probes DO, with nothing else varying.
+    // - `smooth-full` re-spends the freed budget on more smooth members (48). That is the
+    //   recipe a consumer would actually follow, and it is what the criterion is scored
+    //   on.
+    //
+    // Without the first, "removing point probes helped" is confounded with "adding more
+    // smooth probes helped" — they were changed together in the first version of this
+    // experiment, and the write-up claimed the subtraction.
+    let mut smooth_sub = SnapshotSet::new(fd_idx.len());
+    let mut smooth_full = SnapshotSet::new(fd_idx.len());
     for col in raw.columns() {
-        push_unit(&mut smooth, col, &mass);
+        push_unit(&mut smooth_sub, col, &mass);
+        push_unit(&mut smooth_full, col, &mass);
     }
     for k in 0..N_ENRICH_STATES as u64 {
         let hist = run_full(&r, sample(k), STEPS);
         let (x_f, x_p) = (&hist[STEPS - 1], &hist[STEPS - 2]);
+        let adjoint_of = |w: &[f64]| -> Vec<f64> {
+            let lambda = oracle_adjoint(&r, x_f, x_p, w);
+            fd_idx.iter().map(|&j| lambda[j]).collect()
+        };
         for c in 0..N_ENRICH_COTANGENTS as u64 {
-            for (only_smooth, set) in [(false, &mut enriched), (true, &mut smooth)] {
-                let w = enrichment_cotangent(&r, probe, k * 97 + c, only_smooth);
-                let lambda = oracle_adjoint(&r, x_f, x_p, &w);
-                let lambda_free: Vec<f64> = fd_idx.iter().map(|&j| lambda[j]).collect();
-                push_unit(set, &lambda_free, &mass);
+            let seed = k * 97 + c;
+            // The alternating draw: even seeds are smooth patches, odd are point probes.
+            let w_alt = enrichment_cotangent(&r, probe, seed, false);
+            let lam_alt = adjoint_of(&w_alt);
+            push_unit(&mut enriched, &lam_alt, &mass);
+            if seed.is_multiple_of(2) {
+                // The same smooth member, shared verbatim by both smooth variants.
+                push_unit(&mut smooth_sub, &lam_alt, &mass);
+                push_unit(&mut smooth_full, &lam_alt, &mass);
+            } else {
+                // Where `enriched-all` spent a point probe, `smooth-full` spends another
+                // smooth member instead; `smooth-sub` spends nothing.
+                let w_s = enrichment_cotangent(&r, probe, seed, true);
+                let lam_s = adjoint_of(&w_s);
+                push_unit(&mut smooth_full, &lam_s, &mass);
             }
         }
     }
@@ -1192,7 +1231,8 @@ fn adjoint_enrichment_beats_the_plain_rank_frontier() {
     for (label, set) in [
         ("plain-unit", &disp_unit),
         ("enriched-all", &enriched),
-        ("smooth-only", &smooth),
+        ("smooth-sub", &smooth_sub),
+        ("smooth-full", &smooth_full),
     ] {
         let basis = fit_at(&r, set, R_MODES);
         let reduced = ReducedNewtonSolver::new(&r.solver, &basis, &r.x_rest);
@@ -1242,61 +1282,77 @@ fn adjoint_enrichment_beats_the_plain_rank_frontier() {
         fwd.push(basis.projection_error(&u_or));
     }
 
-    // Index order matches the loop above: 0 = plain-unit, 1 = enriched-all, 2 = smooth-only.
-    let (plain, all, sm) = (0, 1, 2);
+    // Index order matches the loop above.
+    let (plain, all, sub, sm) = (0, 1, 2, 3);
 
     // ★ The result: smooth-family enrichment at r=40 beats what plain POD needed r=104
     // for — 7.67e-2 / 0.9972 measured against the 1.01e-1 / 0.9952 frontier — while the
     // trajectory stays ~1.45x the oracle instead of dropping to 0.54x.
-    assert!(
-        grad[sm][1] < 0.101 && cosines[sm][1] > 0.995,
-        "smooth-only enrichment no longer beats the plain r=104 frontier on face-z \
-         ({:.3e} err, {:.4} cos vs the 1.01e-1 / 0.9952 it must clear)",
-        grad[sm][1],
-        cosines[sm][1]
-    );
+    // Both smooth variants must clear it — scoring only the better one would be picking
+    // the winner after the fact. `smooth-sub` gets there on HALF the enrichment budget
+    // (0.0848 / 0.9965 from 24 snapshots), which is the more economical recipe;
+    // `smooth-full` edges it on gradient (0.0767 / 0.9972) and pays ~20 % of forward
+    // accuracy for it.
+    for &v in &[sub, sm] {
+        assert!(
+            grad[v][1] < 0.101 && cosines[v][1] > 0.995,
+            "smooth enrichment (variant {v}) no longer beats the plain r=104 frontier on \
+             face-z ({:.3e} err, {:.4} cos vs the 1.01e-1 / 0.9952 it must clear)",
+            grad[v][1],
+            cosines[v][1]
+        );
+    }
 
     // A gradient bought by wrecking the forward model is not a win. Measured 7.57e-3.
-    assert!(
-        fwd[sm] < 1.0e-2,
-        "smooth-only enrichment cost too much forward accuracy ({:.3e} > 1 %) — modes \
-         spent on adjoints are modes not spent on displacements",
-        fwd[sm]
-    );
+    for &v in &[sub, sm] {
+        assert!(
+            fwd[v] < 1.0e-2,
+            "smooth enrichment (variant {v}) cost too much forward accuracy ({:.3e} > \
+             1 %) — modes spent on adjoints are modes not spent on displacements",
+            fwd[v]
+        );
+    }
 
     // ⚠ The NEGATIVE CONTROL, and the reason this experiment means anything: `Σx*` sits
     // outside the declared objective family, so enrichment must leave it essentially
     // untouched. Measured 8.31e-1 plain vs 8.35e-1 enriched — 0.5 % apart. If enrichment
     // started helping here, it would be reaching objectives it was never given, and every
     // other number in this test would be suspect.
-    let leak = (grad[sm][0] - grad[plain][0]).abs() / grad[plain][0];
-    assert!(
-        leak < 0.10,
-        "the out-of-family control moved {:.1} % under enrichment — the experiment is \
-         leaking and its in-family result cannot be trusted",
-        leak * 100.0
-    );
+    for &v in &[sub, sm] {
+        let leak = (grad[v][0] - grad[plain][0]).abs() / grad[plain][0];
+        assert!(
+            leak < 0.10,
+            "the out-of-family control moved {:.1} % under enrichment (variant {v}) — the \
+             experiment is leaking and its in-family result cannot be trusted",
+            leak * 100.0
+        );
+    }
 
     // ★ The condition on the whole finding: enrichment only pays when the declared
     // objective family is itself low-dimensional. Point-probe adjoints are not — a
     // Green's function at one node is nearly independent of the next — so `node-z` stays
     // bad no matter what is added. Pinned because it is the CONDITION, not a shortfall:
     // if this ever clears, the family compresses after all and §14 is wrong.
-    assert!(
-        grad[sm][2] > 0.55,
-        "node-z reached {:.3e} — the point-probe objective family compresses after all, \
-         which contradicts §14's condition; rewrite it rather than lowering this",
-        grad[sm][2]
-    );
+    for &v in &[sub, sm] {
+        assert!(
+            grad[v][2] > 0.55,
+            "node-z reached {:.3e} (variant {v}) — the point-probe objective family \
+             compresses after all, contradicting §14's condition; rewrite it rather than \
+             lowering this",
+            grad[v][2]
+        );
+    }
 
-    // The first variant's lesson, kept so it cannot be quietly re-adopted: enriching with
-    // the incompressible family too spends modes for nothing and displaces forward
-    // content (2.36e-2 against smooth-only's 7.57e-3).
+    // ★ The mechanism, on the CLEAN comparison: `smooth-sub` is `enriched-all` with the
+    // point probes removed and nothing else changed, so this isolates what they cost.
+    // Scoring it against `smooth-full` instead would confound removing the point probes
+    // with adding more smooth ones — the two moved together in this experiment's first
+    // version, and the write-up claimed the subtraction.
     assert!(
-        fwd[all] > 2.0 * fwd[sm],
-        "enriching with the point family no longer costs forward accuracy ({:.3e} vs \
-         {:.3e}) — §14's diagnosis for the node-z regression needs revisiting",
+        fwd[all] > MIN_POINT_PROBE_FORWARD_COST * fwd[sub],
+        "removing the point probes no longer recovers forward accuracy ({:.3e} with them \
+         vs {:.3e} without) — §14's diagnosis for the node-z regression needs revisiting",
         fwd[all],
-        fwd[sm]
+        fwd[sub]
     );
 }

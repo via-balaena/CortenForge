@@ -294,16 +294,31 @@ oracle.
 
 All at `r = 40`:
 
-| basis | displacement proj. | `face-z` err / cos | `node-z` | `Σx*` | vs oracle |
-|---|---:|---:|---:|---:|---:|
-| plain (unit-normalised) | 5.42e-3 | 0.268 / 0.966 | 0.639 | 0.831 | 1.44x |
-| enriched, both families | 2.36e-2 | 0.158 / 0.989 | **0.715** | 0.900 | 1.44x |
-| **enriched, smooth only** | 7.57e-3 | **0.0767 / 0.9972** | 0.649 | 0.835 | 1.45x |
-| *plain at r=104 (part 1)* | *8.08e-4* | *0.101 / 0.9952* | *0.572* | *0.704* | *0.54x* |
+| basis | enrich. snaps | displacement proj. | `face-z` err / cos | `node-z` | `Σx*` | vs oracle |
+|---|---:|---:|---:|---:|---:|---:|
+| plain (unit-normalised) | 0 | 5.42e-3 | 0.268 / 0.966 | 0.639 | 0.831 | 1.45x |
+| enriched, both families | 48 | 2.36e-2 | 0.158 / 0.989 | **0.715** | 0.900 | 1.45x |
+| **smooth-sub** (same smooth, points removed) | 24 | **6.34e-3** | **0.0848 / 0.9965** | 0.644 | 0.830 | 1.46x |
+| **smooth-full** (budget re-spent on smooth) | 48 | 7.57e-3 | **0.0767 / 0.9972** | 0.649 | 0.835 | 1.47x |
+| *plain at r=104 (part 1)* | — | *8.08e-4* | *0.101 / 0.9952* | *0.572* | *0.704* | *0.54x* |
 
 **Smooth-family enrichment at r=40 beats plain POD at r=104 — more accurate and 2.7x
 faster.** The accuracy plain POD could only buy by surrendering the speedup, enrichment
-buys at r=40's cost.
+buys at r=40's cost. Both smooth variants clear the bar, so the result does not depend on
+picking the better one after the fact.
+
+**`smooth-sub` is the clean subtraction and it is where the effect lives.** It is
+`enriched-all` with the point probes deleted and *nothing else changed* — same smooth
+members, same states. That alone recovers forward accuracy **3.7x** (2.36e-2 → 6.34e-3)
+and improves `face-z` **1.9x** (0.158 → 0.0848). Re-spending the freed budget on more
+smooth members (`smooth-full`) then buys only a further ~10 % of gradient error and
+*costs* ~20 % of forward accuracy — so **24 enrichment snapshots already suffice here,
+and more is not obviously better.**
+
+⚠ The first version of this experiment changed both things at once — it removed the point
+probes *and* doubled the smooth ones — while the write-up claimed the subtraction.
+`smooth-sub` exists because that confound was caught in review; the claim survived it, but
+it was not supported until the clean comparison ran.
 
 **The criterion was not fully met, and that is recorded rather than renegotiated.** It
 also required `node-z` ≤ 0.572; `node-z` reads 0.649.
@@ -311,12 +326,12 @@ also required `node-z` ≤ 0.572; `node-z` reads 0.649.
 ### Why `node-z` fails, and why that is the finding rather than a shortfall
 
 The first enrichment run included point-probe adjoints expecting them to help `node-z`.
-They made it **worse** (0.639 → 0.715) and cost 4.3x of the forward accuracy. That
-regression is the evidence: **a Green's function at node `i` is nearly independent of the
+They made it **worse** (0.639 → 0.715) and cost 3.7x of the forward accuracy against the
+otherwise-identical `smooth-sub`. That regression is the evidence: **a Green's function at node `i` is nearly independent of the
 one at node `j`, so the point-probe family's effective dimension is roughly the node
 count.** There is no low-dimensional structure for enrichment to add, and the modes spent
 trying displace forward content. Dropping that half recovered the forward model
-(2.36e-2 → 7.57e-3) and improved `face-z` further — all three predictions for that run
+(2.36e-2 → 6.34e-3) and improved `face-z` further — all three predictions for that run
 held.
 
 **So the finding is conditional: goal-oriented enrichment delivers large-basis gradient
