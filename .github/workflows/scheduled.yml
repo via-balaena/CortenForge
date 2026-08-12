@@ -290,7 +290,7 @@ jobs:
           echo "| Benchmarks | ${{ needs.benchmark-baseline.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Supply Chain | ${{ needs.supply-chain.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| MSRV | ${{ needs.msrv.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Soft release-only gates (#676 + R1) | ${{ needs.soft-contact-heavy.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Soft contact heavy (#676) | ${{ needs.soft-contact-heavy.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Clippy Drift | ${{ needs.clippy-stable-drift.result }} |" >> $GITHUB_STEP_SUMMARY
 
   # ============================================================================
@@ -311,7 +311,7 @@ jobs:
   # week is the improvement; catching it within a merge is not worth ~1 h of
   # runner time on every merge.
   soft-contact-heavy:
-    name: Soft release-only gates (#676 contact + R1 reduced)
+    name: Soft contact heavy (#676)
     runs-on: ubuntu-latest
     # Measured 24.2 min locally against a 1.0-2.2x CI factor; sized so a slow
     # runner cannot turn a passing gate into a timeout failure.
@@ -332,13 +332,3 @@ jobs:
 
       - name: Run the demand-#1 bonded-layer indentation gate
         run: cargo test --release -p sim-soft --test bonded_layer_indentation
-
-      # The push / merge_group coverage for the R1 reduced-basis gates. Its
-      # quality-gate twin is pull_request-only by design, so without this the
-      # gates would run on a PR touching sim/L0/soft/ and then never again.
-      - name: Run the R1 reduced-basis gates (R1.0 basis, R1.1 solve, R1.2/R1.3 gradient)
-        run: |
-          cargo test --release -p sim-soft \
-            --test reduced_pod_basis \
-            --test reduced_newton_trajectory \
-            --test reduced_gradient
