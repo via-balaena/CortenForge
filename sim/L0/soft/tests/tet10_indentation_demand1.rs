@@ -35,7 +35,7 @@
 //! and the residual is not yet attributed.
 //!
 //! **Cost reality, measured:** `#676`'s Tet4 3-χ sweep is **24.2 min**; the
-//! single-χ Tet4 arm here is **61 s**; the Tet10 arm at **~7× the DOF**
+//! single-χ Tet4 arm here is **41.9 s** (61 s pre-R0); the Tet10 arm at **~7× the DOF**
 //! (93 639 vs 13 125) ran **59.6 min** single-threaded — 100 % of one core, the
 //! assembly being serial by design for bit-determinism. The Tet10 arm is
 //! therefore a **deliberately-run one-shot measurement**, `#[ignore]`d
@@ -468,7 +468,10 @@ fn node_density_control_confound_is_small() {
 
 // ── Measurement probes — deliberate-run, pin the committed scalars ───────────
 
-/// Tet4 arm, ~61 s in release. Validates the harness against `#676`'s committed
+/// Tet4 arm, **41.9 s** in release, re-measured when this file joined the CI
+/// release list. The 61 s this line previously recorded predates R0 (`ecf4cfef`),
+/// whose 1.51-1.89x on the tangent scatter plausibly accounts for the 1.46x gap —
+/// stated as the likely cause, not a verified attribution. Validates the harness against `#676`'s committed
 /// `RATIO = 1.130` and pins the Tet4 standoff. `#[ignore]`d in debug only, and
 /// **now listed in `tests-release` shard 3's sim-soft release step** — the R1.3
 /// PR's review found this file in no release `--test` list, which is what the
