@@ -937,7 +937,7 @@ jobs:
   # `skipped`, as failure. The path decision gates the STEP, not the job, which
   # is the same shape `tests-debug` uses for its affected set.
   soft-contact-heavy:
-    name: sim-soft heavy contact (#676)
+    name: sim-soft release-only gates (#676 contact + R1 reduced)
     runs-on: ubuntu-latest
     # Generous: measured 24.2 min locally against a 1.0-2.2x CI factor. Sized so
     # a slow runner cannot turn a passing gate into a timeout failure, which
@@ -967,7 +967,7 @@ jobs:
           git fetch --no-tags --depth=1 origin "$BASE_REF"
           if git diff --name-only "origin/$BASE_REF...HEAD" | grep -q '^sim/L0/soft/'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
-            echo "sim/L0/soft/ touched — running the demand-#1 indentation gate"
+            echo "sim/L0/soft/ touched — running the release-only sim-soft gates"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "sim/L0/soft/ untouched — skipping (deliberately NOT the affected set)"
@@ -995,6 +995,26 @@ jobs:
       - name: Run the demand-#1 bonded-layer indentation gate
         if: steps.scope.outputs.run == 'true'
         run: cargo test --release -p sim-soft --test bonded_layer_indentation
+        shell: bash
+
+      # ⚠ These had NEVER run in any CI job before this step existed, and the
+      # suite was green the whole time — because they were being SKIPPED, not
+      # because they passed. `sim-soft` appears only in the debug test shard,
+      # where every one of these reports `ignored, release-only`, and it is in
+      # none of the three release-heavy shards (whose crate lists are
+      # intersected with the affected set, so they can never pick it up either).
+      # This job was the only place sim-soft ran in release, and it ran exactly
+      # one test. Adding them here retroactively covers R1.0-R1.3.
+      #
+      # ~70 s locally for all three; they share the release build with the step
+      # above, so the marginal cost is the run time, not another compile.
+      - name: Run the R1 reduced-basis gates (R1.0 basis, R1.1 solve, R1.2/R1.3 gradient)
+        if: steps.scope.outputs.run == 'true'
+        run: |
+          cargo test --release -p sim-soft \
+            --test reduced_pod_basis \
+            --test reduced_newton_trajectory \
+            --test reduced_gradient
         shell: bash
 
   # ============================================================================
