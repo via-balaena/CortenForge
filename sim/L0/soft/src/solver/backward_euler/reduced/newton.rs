@@ -89,8 +89,12 @@ where
     M: Material,
     C: ContactModel + ActivePairsFor<M>,
 {
-    full: &'a CpuNewtonSolver<E, Msh, C, M, N, G>,
-    basis: &'a PodBasis,
+    // `pub(super)` on exactly the two the sibling `sensitivity` module reads — the
+    // adjoint needs the assembly source and the basis, and accessors for them would be
+    // two methods that only re-state `struct` fields. `x_rest` stays private: the
+    // adjoint is taken at a caller-supplied configuration, never at rest.
+    pub(super) full: &'a CpuNewtonSolver<E, Msh, C, M, N, G>,
+    pub(super) basis: &'a PodBasis,
     x_rest: Vec<f64>,
 }
 
@@ -150,7 +154,7 @@ where
     }
 
     /// Gather the free-DOF entries of a full-DOF vector.
-    fn gather_free(&self, full: &[f64]) -> Vec<f64> {
+    pub(super) fn gather_free(&self, full: &[f64]) -> Vec<f64> {
         self.full
             .free_dof_indices()
             .iter()
@@ -168,7 +172,12 @@ where
     // `y`/`r`/`n`/`v`/`t` mirror the matrix algebra (`Y = AΦ`, rank `r`, size `n`) and
     // longer names would obscure the correspondence with the formula above.
     #[allow(clippy::many_single_char_names)]
-    fn project_tangent(&self, x: &[f64], x_prev: Option<&[f64]>, dt: f64) -> DMatrix<f64> {
+    pub(super) fn project_tangent(
+        &self,
+        x: &[f64],
+        x_prev: Option<&[f64]>,
+        dt: f64,
+    ) -> DMatrix<f64> {
         let triplets = self.full.assemble_free_hessian_triplets(x, x_prev, dt);
         let r = self.basis.n_modes();
         let n = self.basis.n_free();

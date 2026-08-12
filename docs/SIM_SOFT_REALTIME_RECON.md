@@ -649,6 +649,36 @@ That has to be measured against the oracle in the same way the forward error is 
 and — connecting to §2c — it means gradient validation must stay on the f64 oracle
 path, which is another reason not to touch it.
 
+### ⚠ Amended by R1.2 (2026-08-11): the binding error term is not hyper-reduction
+
+The paragraph above named the wrong bound, and R1.2 measured it before any
+hyper-reduction existed. With `Φ` constant and every element still swept, the reduced
+gradient's relative L2 error against the oracle's is **0.24–0.82 depending on the
+objective**, at a step where the reduced *displacement* is accurate to 0.4–1.1 %. The
+cause is neither hyper-reduction nor f64: it is that `Φ`, fitted to displacement
+snapshots, does not span the **adjoint** field. Taking the reduced adjoint at the
+oracle's own state changes the numbers in the fourth digit, so the reduced trajectory is
+not implicated either. Full result and the three measurements that pin the diagnosis:
+`docs/SIM_SOFT_R1_REDUCED_BASIS_PLAN.md` §13.
+
+Three consequences for this section:
+
+1. **Decision 1 (`Φ` constant) stands, and is not what was falsified.** For a load
+   parameter the dropped `dΦ/dθ` term is exactly zero — `Φ` depends on the training box,
+   not on the θ being differentiated. R1.2's G1 gate confirms the constant-`Φ` IFT
+   algebra to 2.85e-8, well inside the crate's 1e-5 gradcheck.
+2. **The validity domain gains an axis this section did not anticipate.** It must
+   constrain *what is differentiated*, not only where the model is evaluated: the same
+   reduced model gives a 0.972-cosine gradient on an objective resembling its training
+   loads and a 0.692-cosine one on an objective loading directions it never saw. A model
+   qualified for its parameter box is not thereby qualified for an arbitrary objective on
+   it.
+3. **The lead is goal-oriented bases, and it belongs with R3.** Enriching `Φ` with
+   adjoint snapshots (dual-weighted-residual / goal-oriented POD) attacks the measured
+   cause directly. R3 was already redirected once — away from modal derivatives, by
+   R1.0's finding that rotation is not the bottleneck — and this is the second input to
+   the same decision.
+
 ---
 
 ## 7. The staged ladder
@@ -663,7 +693,7 @@ same door, under its own feature, and must not enter the default build.
 | rung | scope | gate | why here |
 |---|---|---|---|
 | **R0** ✅ **DONE** (`e77023c7`, `43b198a2`) | **Full-order assembly lever.** Replace the per-iteration `BTreeMap` rebuild in `assemble_free_hessian_triplets` with a pattern-indexed value buffer built once at construction. No algorithm change. | Byte-identity of the assembled triplets against the current path (the `feedback_float_refactor_byte_identity` recipe), plus a measured ms/iteration delta on the §2a fixtures. | §2d.2. Establishes the **honest baseline** the reduction is measured against. Cheap, self-contained, and a win regardless of whether anything downstream ships. |
-| **R1** | **Linear subspace, no contact, no coupling.** POD basis from full-order snapshots on the `cantilever` fixture at 3 000 free DOF; reduced Newton with a dense `r × r` direct solve; `Φ` and quadrature both handled naively (full element sweep — **no hyper-reduction yet**). Differentiable path wired at the same time (§6, `Φ` constant). | Projection error vs the oracle < 1 % in tip displacement over the training trajectory; reduced gradient matches the oracle's to the crate's existing gradcheck tolerance. **Wall time is explicitly NOT gated at R1** — without hyper-reduction it will not be faster, and pretending otherwise would corrupt the signal. | **The cheap kill-or-confirm.** It answers the one question that decides everything downstream: *does a low-dimensional subspace represent this material's deformation at all?* Fixture already exists; no new physics. |
+| **R1** ✅ **DONE** (`#744`, `#745`, R1.2) | **Linear subspace, no contact, no coupling.** POD basis from full-order snapshots on the `cantilever` fixture at 3 000 free DOF; reduced Newton with a dense `r × r` direct solve; `Φ` and quadrature both handled naively (full element sweep — **no hyper-reduction yet**). Differentiable path wired at the same time (§6, `Φ` constant). | Projection error vs the oracle < 1 % in tip displacement over the training trajectory; reduced gradient matches the oracle's to the crate's existing gradcheck tolerance. ⚠ **That second clause was wrong and was amended before R1.2 was built** — it asks two different functions to agree to 5 digits when their states already differ in the third. Split into a gradcheck-tolerance kill gate on the reduced model's *own* derivative and a measured comparison against the oracle; see the plan's §5/§7 and §13. **Wall time is explicitly NOT gated at R1** — without hyper-reduction it will not be faster, and pretending otherwise would corrupt the signal. | **The cheap kill-or-confirm.** It answers the one question that decides everything downstream: *does a low-dimensional subspace represent this material's deformation at all?* Fixture already exists; no new physics. |
 | **R2** | **Precision decision.** Measure a full-f32 forward path on the reduced system (`r × r` is small enough to port by hand without touching the 1 396-`f64` production surface), and decide residual-in-f64-on-CPU vs compensated-summation-in-f32. | Reduced-model f32 forward drift and gradient drift vs the f64 reduced model, on R1's fixture; explicit go/no-go on whether the residual can live in f32. | §2c. Must precede any GPU work; deciding it after a shader exists means writing the shader twice. |
 | **R3** | **Hyper-reduction (ECSW) + the validity domain.** NNLS training over R1's snapshots; `ReducedValidityDomain` with the online `‖q‖` + residual-proxy gate; the three error measures of §4c. | Measured speedup vs §2a's baseline (post-R0), with the three §4c errors reported alongside. Domain gate demonstrated to fire on an out-of-domain trajectory. | This is where the frame-budget win actually arrives. Also where the "smooth and wrong" failure mode is defended against. |
 | **R4** | **Hybrid domain decomposition, FIXED contact patch.** Full DOF under a stationary indenter, reduced bulk, on the `dynamic_indentation` geometry. | End-to-end reaction force vs the oracle, in the same band `bonded_layer_indentation` already asserts. | §5. Fixed patch first, because it isolates the coupling condition from the re-partitioning problem. |
@@ -850,6 +880,13 @@ small, separate PR and is not proposed here.
 
 ## 12. Version history
 
+- **v1.8 (2026-08-11)** — **R1 complete, and it falsified another of this document's own
+  predictions.** §6 named hyper-reduction as the bound on gradient accuracy; R1.2
+  measured a 0.24–0.82 relative gradient error with no hyper-reduction present, traced to
+  the basis not spanning the adjoint field. §6 amended with the correction, the validity
+  domain's new "what you differentiate" axis, and the goal-oriented-basis lead it hands
+  R3. §7's R1 row marked DONE and its gradient gate corrected. The `Φ`-constant decision
+  itself is unaffected — it was confirmed to 2.85e-8.
 - **v1.7 (2026-08-11)** — §4b given the size qualifier it was missing. v1.6 said a basis
   alone attacks the larger half; true asymptotically, but forming `ΦᵀAΦ` is linear in `n`
   where the factorization is superlinear, so it is a wash at ~3 000 free DOF and only
