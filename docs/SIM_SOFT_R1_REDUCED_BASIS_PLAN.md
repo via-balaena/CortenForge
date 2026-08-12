@@ -1,6 +1,9 @@
 # R1 — Linear Reduced Basis: scope and plan
 
-**Status**: 2026-08-11, v4. **R1.0, R1.1 and R1.2 COMPLETE. R1 is done.** R1.0/R1.1
+**Status**: 2026-08-12, v5. **R1.0–R1.3 COMPLETE. R1 is done.** §14 records R1.3: the
+adjoint gap does not close by raising `r` at any rank worth running, but **does** close
+under goal-oriented enrichment — conditional on the declared objective family being
+low-dimensional. R1.0/R1.1
 CONFIRM; **R1.2 is a SPLIT verdict** — the gradient algebra is exact (§13, G1) and the
 gradient's *accuracy* does not follow from the state's (§13, G2). Parent:
 `docs/SIM_SOFT_REALTIME_RECON.md` §7 rung R1. Predecessor R0 landed (`ecf4cfef`).
@@ -240,6 +243,130 @@ So they cannot be renegotiated once numbers exist:
 3. **Sizes**: 3 000 free DOF for accuracy iteration plus ≥ 19 440 for one speedup
    datapoint, or accuracy only at 3 000?
 
+## 14. R1.3 result — the adjoint gap, and the condition under which it closes
+
+Gates: `adjoint_gap_across_basis_sizes` and `adjoint_enrichment_beats_the_plain_rank_frontier`
+in `sim/L0/soft/tests/reduced_gradient.rs`.
+
+R1.2 left one question that decides whether the reduced model can serve the mission's
+differentiable co-design loop at all: is the basis **too small** for adjoints, or **wrong**
+for them? Enrichment only makes sense under the second, so the rank sweep ran first —
+otherwise a successful enrichment would be indistinguishable from having added modes.
+
+### Part 1 — rank is a real knob whose useful range is empty
+
+| `r` | displacement proj. | `face-z` grad err | `Σx*` grad err | vs oracle |
+|---:|---:|---:|---:|---:|
+| 10 | 4.40e-2 | 0.525 | 0.914 | 2.4–2.6x |
+| 40 | 5.31e-3 | 0.240 | 0.816 | **1.34–1.44x** |
+| 80 | 1.58e-3 | 0.133 | 0.740 | **0.71–0.76x** |
+| 104 | 8.08e-4 | 0.101 | 0.704 | **0.50–0.54x** |
+
+Two results, and the second is the one that matters.
+
+1. **The disparity WIDENS with rank.** Adjoint error divided by displacement error runs
+   19.8 → 110 → **529** for `Σx*` (9.4 → 25 → 63 for `face-z`) — a 26.7x widening across
+   the sweep. Extra modes help displacements far faster than adjoints, which is the
+   signature of the adjoint's missing content sitting in **near-null directions rather
+   than in the spectrum's tail**. Modes ordered by displacement energy cannot recover a
+   direction the snapshots never excited.
+2. **The ranks that fix the gradient are past the break-even.** Break-even is between
+   r=40 and r=80; at the plan's §2 ceiling of 104 the reduced model runs at **half the
+   oracle's speed**. So "raise `r`" buys gradient accuracy only by giving up the entire
+   reason for reducing. ⚠ Scoped to **R1**: hyper-reduction (R3) attacks the element
+   sweep and would move this break-even, so this is not a general statement about MOR.
+
+⚠ A timing confound was found and removed mid-measurement. The rig's `tol` is tightened
+to 1e-10 for R1.2's finite differences, and R1.1 measured `‖Φᵀr‖/‖r‖` between 1e-7 and
+1e-10 — so a fixed absolute tolerance demands far more of the *projected* residual the
+reduced solve drives than of the full residual the oracle drives, silently penalising the
+reduced path. At 1e-10 r=40 read 1.12x; at the production 1e-6 it reads 1.43x,
+reconciling with R1.1's 1.52x. Accuracy figures are unaffected. **Absolute times vary
+±10 % between runs on a loaded box; the shapes and same-run ratios are the trustworthy
+part.**
+
+### Part 2 — enrichment beats the frontier, on one condition
+
+Given part 1, the question sharpened from "does enrichment help" to **can it reach a much
+larger basis's accuracy at a small basis's cost**. Criterion fixed before running: at
+rank 40, match plain POD's r=104 numbers, keep forward error under 1 %, stay ≥1.4x the
+oracle.
+
+All at `r = 40`:
+
+| basis | enrich. snaps | displacement proj. | `face-z` err / cos | `node-z` | `Σx*` | vs oracle |
+|---|---:|---:|---:|---:|---:|---:|
+| plain (unit-normalised) | 0 | 5.42e-3 | 0.268 / 0.966 | 0.639 | 0.831 | 1.45x |
+| enriched, both families | 48 | 2.36e-2 | 0.158 / 0.989 | **0.715** | 0.900 | 1.45x |
+| **smooth-sub** (same smooth, points removed) | 24 | **6.34e-3** | **0.0848 / 0.9965** | 0.644 | 0.830 | 1.46x |
+| **smooth-full** (budget re-spent on smooth) | 48 | 7.57e-3 | **0.0767 / 0.9972** | 0.649 | 0.835 | 1.47x |
+| *plain at r=104 (part 1)* | — | *8.08e-4* | *0.101 / 0.9952* | *0.572* | *0.704* | *0.54x* |
+
+**Smooth-family enrichment at r=40 beats plain POD at r=104 — more accurate and 2.7x
+faster.** The accuracy plain POD could only buy by surrendering the speedup, enrichment
+buys at r=40's cost. Both smooth variants clear the bar, so the result does not depend on
+picking the better one after the fact.
+
+**`smooth-sub` is the clean subtraction and it is where the effect lives.** It is
+`enriched-all` with the point probes deleted and *nothing else changed* — same smooth
+members, same states. That alone recovers forward accuracy **3.7x** (2.36e-2 → 6.34e-3)
+and improves `face-z` **1.9x** (0.158 → 0.0848). Re-spending the freed budget on more
+smooth members (`smooth-full`) then buys only a further ~10 % of gradient error and
+*costs* ~20 % of forward accuracy — so **24 enrichment snapshots already suffice here,
+and more is not obviously better.**
+
+⚠ The first version of this experiment changed both things at once — it removed the point
+probes *and* doubled the smooth ones — while the write-up claimed the subtraction.
+`smooth-sub` exists because that confound was caught in review; the claim survived it, but
+it was not supported until the clean comparison ran.
+
+**The criterion was not fully met, and that is recorded rather than renegotiated.** It
+also required `node-z` ≤ 0.572; `node-z` reads 0.649.
+
+### Why `node-z` fails, and why that is the finding rather than a shortfall
+
+The first enrichment run included point-probe adjoints expecting them to help `node-z`.
+They made it **worse** (0.639 → 0.715) and cost 3.7x of the forward accuracy against the
+otherwise-identical `smooth-sub`. That regression is the evidence: **a Green's function at node `i` is nearly independent of the
+one at node `j`, so the point-probe family's effective dimension is roughly the node
+count.** There is no low-dimensional structure for enrichment to add, and the modes spent
+trying displace forward content. Dropping that half recovered the forward model
+(2.36e-2 → 6.34e-3) and improved `face-z` further — all three predictions for that run
+held.
+
+**So the finding is conditional: goal-oriented enrichment delivers large-basis gradient
+accuracy at small-basis cost WHEN the declared objective family is itself
+low-dimensional.** Smooth face weightings are; point probes are not.
+
+That condition is **checkable offline, before committing to a basis**: POD the family's
+adjoint snapshots and read the spectrum. A family whose singular values do not decay
+cannot be enriched for at any rank, and that is knowable without building the reduced
+model.
+
+### What makes these numbers trustworthy
+
+- **Enrichment never sees the scored cotangents.** They are drawn from a declared family
+  at *training* states; enriching with the test cotangents would be training on the test
+  set.
+- **`Σx*` is a built-in negative control.** It sits outside the declared family and moved
+  0.5 % under enrichment (0.831 → 0.835). Had it improved, the experiment would have been
+  reaching objectives it was never given and every other number here would be suspect.
+- **The unit-normalised plain basis is a second control.** Displacement snapshots are
+  ~1e-3 while adjoint snapshots ranged over two orders of magnitude, so every snapshot is
+  scaled to unit `M`-norm before joining the set; without the control, unit-scaling could
+  have been mistaken for enrichment.
+- **The headline gate was negative-controlled**: pointed at the plain basis it fails
+  (0.268 against a 0.101 bound), so it discriminates rather than passing by construction.
+
+### Consequences for R3
+
+1. **MOR is viable for the differentiable co-design loop** — with a validity domain that
+   names the objective family, not only the parameter box.
+2. **The basis recipe is now goal-oriented, not plain POD.** R3 should train `Φ` on
+   displacements *and* the declared family's adjoints from the start.
+3. **The objective family's own spectrum is a new pre-flight check**, and belongs beside
+   R3's `ReducedValidityDomain` rather than in a docstring.
+
 ## 13. R1.2 result — SPLIT. The algebra is exact; the gradient is not the state.
 
 Gates: `sim/L0/soft/tests/reduced_gradient.rs`. Implementation:
@@ -475,6 +602,10 @@ the first run.
 
 ## 10. Version history
 
+- **v5 (2026-08-12)** — R1.3 built, piloted and gated; §14 records the rank sweep (the
+  knob's useful range is empty at R1, and the adjoint/displacement disparity widens 26.7x
+  with rank) and the enrichment result (r=40 enriched beats plain r=104, 2.7x faster),
+  with the condition that makes it conditional and the offline check for it.
 - **v4 (2026-08-11)** — R1.2 built, piloted and gated; §13 records the split verdict, the
   §5/§7 gate amendment that preceded it, and the finding that gradient accuracy does not
   follow from state accuracy.

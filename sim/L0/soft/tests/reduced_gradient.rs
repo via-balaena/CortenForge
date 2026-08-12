@@ -62,6 +62,9 @@
     clippy::too_many_lines
 )]
 
+use std::fmt::Write as _;
+use std::time::Instant;
+
 use sim_ml_chassis::{Tape, Tensor, Var};
 use sim_soft::solver::backward_euler::reduced::{
     Inner, PodBasis, ReducedNewtonSolver, SnapshotSet,
@@ -152,6 +155,18 @@ struct Traj {
 /// material finite difference can rebuild the solver at `μ ± δ` while reusing the SAME
 /// basis — which is exactly the constant-`Φ` model whose gradient is under test.
 fn rig(mu: f64) -> Rig {
+    rig_with_tol(mu, TOL)
+}
+
+/// Rig at an explicit Newton tolerance.
+///
+/// `TOL` is tightened to 1e-10 for G1's finite differences, and that is **not** a fair
+/// setting to time at. R1.1 measured `‖Φᵀr‖/‖r‖` between 1e-7 and 1e-10, so a fixed
+/// absolute tolerance is a far harsher demand on the *projected* residual the reduced
+/// solve drives than on the full residual the oracle drives — timing both at 1e-10
+/// silently penalises the reduced path. The R1.3 sweep therefore times at the production
+/// 1e-6, which is what R1.1 gated and what a consumer would run.
+fn rig_with_tol(mu: f64, tol: f64) -> Rig {
     let field = MaterialField::uniform(mu, LAMBDA);
     let mesh = HandBuiltTetMesh::cantilever_bilayer_beam(16, 16, 6, LX, LY, H, &field);
     let n_dof = 3 * mesh.n_vertices();
@@ -173,7 +188,7 @@ fn rig(mu: f64) -> Rig {
     cfg.dt = DT;
     cfg.density = DENSITY;
     cfg.max_newton_iter = 200;
-    cfg.tol = TOL;
+    cfg.tol = tol;
     Rig {
         solver: CpuTet4NHSolver::new(Tet4, mesh, NullContact, cfg, bc),
         x_rest,
@@ -237,7 +252,7 @@ fn run_full(r: &Rig, t: Traj, steps: usize) -> Vec<Vec<f64>> {
 }
 
 /// Train the R1.1 basis.
-fn train(r: &Rig) -> PodBasis {
+fn snapshots(r: &Rig) -> SnapshotSet {
     let fd = r.solver.free_dof_indices().to_vec();
     let mut set = SnapshotSet::new(fd.len());
     for k in 0..N_TRAIN as u64 {
@@ -245,14 +260,18 @@ fn train(r: &Rig) -> PodBasis {
             set.push(&SnapshotSet::free_displacement(x, &r.x_rest, &fd));
         }
     }
-    PodBasis::fit(
-        &set,
-        Inner::Mass,
-        &r.solver.mass_per_free_dof(),
-        1.0,
-        R_MODES,
-    )
-    .expect("basis fits")
+    set
+}
+
+/// Fit the basis at a given rank. Split from [`snapshots`] so the R1.3 sweep can refit
+/// many ranks over ONE ensemble — refitting is cheap, re-simulating 48 trajectories is
+/// not, and sharing the snapshots keeps every rank comparable on identical training data.
+fn fit_at(r: &Rig, set: &SnapshotSet, rank: usize) -> PodBasis {
+    PodBasis::fit(set, Inner::Mass, &r.solver.mass_per_free_dof(), 1.0, rank).expect("basis fits")
+}
+
+fn train(r: &Rig) -> PodBasis {
+    fit_at(r, &snapshots(r), R_MODES)
 }
 
 /// Carry the reduced trajectory to the start of the final step, in reduced coordinates
@@ -565,6 +584,15 @@ const MIN_COSINE: [f64; 3] = [0.60, 0.96, 0.69];
 /// lower this number.
 const MIN_AMPLIFICATION: f64 = 15.0;
 
+/// What the incompressible family costs the forward model, measured as a clean
+/// subtraction: `enriched-all`'s displacement projection error divided by
+/// `smooth-sub`'s, where the two differ only by the presence of the point probes.
+///
+/// Measured **3.71x** (2.36e-2 with them, 6.34e-3 without). Bounded at 2.5x, ~30 % below.
+/// This is the evidence that point-probe adjoints are actively harmful rather than merely
+/// useless — they consume rank-40 modes that displacement content needed.
+const MIN_POINT_PROBE_FORWARD_COST: f64 = 2.5;
+
 #[cfg_attr(
     debug_assertions,
     ignore = "release-only — 48 training trajectories plus paired oracle/reduced runs; \
@@ -809,4 +837,526 @@ impl Stat {
         self.min_amp = self.min_amp.min(amp);
         self.max_amp = self.max_amp.max(amp);
     }
+}
+
+// ── R1.3 control: does a LARGER basis close the adjoint gap? ──────────────────
+
+/// Ranks swept. `40` is R1.2's, `104` is the plan's §2 ceiling for this fixture
+/// (`min(n_free / 50, 200)` at 5 202 free DOF) — so the sweep runs the knob to the end of
+/// its legal travel rather than to a round number.
+const R_SWEEP: [usize; 5] = [10, 20, 40, 80, 104];
+
+/// **R1.3, part 1 — the control that must run before any basis enrichment.**
+///
+/// R1.2 found the reduced gradient 21.5–186x less accurate than the state, and traced it
+/// to the basis not spanning the adjoint field. Two explanations fit that evidence and
+/// they call for very different work:
+///
+/// 1. **the subspace is too SMALL for adjoints** — the missing content is in the tail,
+///    and `r` is a knob that fixes it;
+/// 2. **the subspace is WRONG for adjoints** — the missing content lies along directions
+///    the training ensemble never excited, which carry ~zero singular value and are
+///    therefore absent at *any* rank.
+///
+/// Enrichment with adjoint snapshots only makes sense under (2). Skipping this control
+/// would leave a successful enrichment indistinguishable from "we added modes", so it
+/// runs first.
+///
+/// **Prediction recorded before the first run**: (2). Modes are ordered by *displacement*
+/// energy, so no rank recovers a direction the snapshots never contained. Expect `Σx*`
+/// (out-of-family) to barely improve and `face-z` (in-family) to improve most.
+///
+/// **No reduced trajectory is run.** R1.2 measured the adjoint at the reduced model's own
+/// state and at the oracle's and got the same answer to four digits, so the solver
+/// dynamics are not part of this question — every rank is compared at the oracle's state,
+/// which isolates the subspace and removes a confound.
+#[cfg_attr(
+    debug_assertions,
+    ignore = "release-only — 48 training trajectories plus a rank sweep; \
+              rerun with `cargo test --release` to include"
+)]
+#[test]
+fn adjoint_gap_across_basis_sizes() {
+    // Production tolerance: this rung measures the BASIS, not a finite difference, and
+    // `TOL`'s 1e-10 would bias the timing against the reduced path (see `rig_with_tol`).
+    let r = rig_with_tol(MU, 1.0e-6);
+    let set = snapshots(&r);
+    let fd_idx = r.solver.free_dof_indices().to_vec();
+    let (w_sum, w_face_z, w_local, _) = cotangents(&r);
+    let t = sample(900);
+
+    // One held-out trajectory: R1.2 measured a spread of 0.240–0.246 across three for
+    // `face-z`, so the rank axis — not the trajectory axis — is what carries information
+    // here.
+    let history = run_full(&r, t, STEPS);
+    let x_star_or = history[STEPS - 1].clone();
+    let x_prev_or = history[STEPS - 2].clone();
+
+    let u_or = SnapshotSet::free_displacement(&x_star_or, &r.x_rest, &fd_idx);
+    // Oracle adjoints and gradients are rank-independent — computed once, outside the
+    // sweep, so every rank is scored against identical references.
+    let refs: Vec<(Vec<f64>, Vec<f64>)> = [&w_sum, &w_face_z, &w_local]
+        .iter()
+        .map(|w| {
+            let lambda = oracle_adjoint(&r, &x_star_or, &x_prev_or, w);
+            let lambda_free: Vec<f64> = fd_idx.iter().map(|&j| lambda[j]).collect();
+            (lambda_free, load_grad_from_adjoint(&r, &lambda))
+        })
+        .collect();
+
+    // Wall time matters here even though R1's gates are accuracy-only: raising `r` is
+    // only a usable answer if the reduced model is still FASTER than the oracle at that
+    // rank. `ΦᵀAΦ` grows as `O(n·r²)`, so there is a rank beyond which the knob defeats
+    // its own purpose. Measured, not extrapolated — cost estimates have missed every
+    // time they were tried in this arc.
+    let oracle_start = Instant::now();
+    let _ = run_full(&r, t, STEPS);
+    let oracle_ms = oracle_start.elapsed().as_secs_f64() * 1e3;
+
+    let mut disp_err = Vec::new();
+    let mut sum_x_adj = Vec::new();
+    let mut face_z_grad = Vec::new();
+    let mut ms = Vec::new();
+
+    for &rank in &R_SWEEP {
+        let basis = fit_at(&r, &set, rank);
+        let reduced = ReducedNewtonSolver::new(&r.solver, &basis, &r.x_rest);
+        let disp = basis.projection_error(&u_or);
+        let energy = basis.retained_energy_fraction();
+
+        let traj_start = Instant::now();
+        let (mut q, mut qdot) = (vec![0.0; rank], vec![0.0; rank]);
+        for step_idx in 1..=STEPS {
+            let th = theta_at(&r, t, step_idx);
+            let st = reduced
+                .step(&q, &qdot, &Tensor::from_slice(&th, &[th.len()]), DT)
+                .expect("reduced step converges");
+            q = st.q;
+            qdot = st.qdot;
+        }
+        let reduced_ms = traj_start.elapsed().as_secs_f64() * 1e3;
+
+        let mut line = format!(
+            "R1.3 r={rank:>3}: displacement projection {disp:.3e} (retained energy \
+             {energy:.6}), trajectory {reduced_ms:.0} ms vs oracle {oracle_ms:.0} ms \
+             ({:.2}x)",
+            oracle_ms / reduced_ms
+        );
+        // Every derived quantity is formed ONCE, inside this loop, and both the report
+        // and the assertions read the same values. Recomputing for the assertions would
+        // re-solve an adjoint per rank and leave two copies free to drift apart.
+        let mut adj_proj = Vec::new();
+        let mut grad_rel = Vec::new();
+        for (i, w) in [&w_sum, &w_face_z, &w_local].iter().enumerate() {
+            let (lambda_free, g_or) = &refs[i];
+            let adj = reduced
+                .adjoint(&x_star_or, Some(&x_prev_or), DT, w)
+                .expect("reduced adjoint factors");
+            let g_red = reduced.load_gradient(&adj);
+            let dot: f64 = g_red.iter().zip(g_or).map(|(a, b)| a * b).sum();
+            let nr = g_red.iter().map(|v| v * v).sum::<f64>().sqrt();
+            let no = g_or.iter().map(|v| v * v).sum::<f64>().sqrt();
+            let lambda_proj = basis.projection_error(lambda_free);
+            let rel = rel_l2(&g_red, g_or);
+            // Accumulated rather than printed per line: the four lines of one rank must
+            // stay together, and other tests in this binary print concurrently.
+            write!(
+                line,
+                "\n           [{:>6}] adjoint projection {lambda_proj:.3e}, gradient rel \
+                 err {rel:.3e}, cos {:.4}, ‖ratio‖ {:.4}",
+                COTANGENTS[i],
+                dot / (nr * no),
+                nr / no,
+            )
+            .expect("writing to a String cannot fail");
+            adj_proj.push(lambda_proj);
+            grad_rel.push(rel);
+        }
+        println!("{line}");
+        disp_err.push(disp);
+        sum_x_adj.push(adj_proj[0]);
+        face_z_grad.push(grad_rel[1]);
+        ms.push(reduced_ms);
+    }
+
+    // A nested basis cannot get worse at the forward problem as modes are added.
+    for w in disp_err.windows(2) {
+        assert!(
+            w[1] < w[0],
+            "displacement projection rose with rank ({:.3e} -> {:.3e}) — the POD modes \
+             are supposed to be nested",
+            w[0],
+            w[1]
+        );
+    }
+
+    // ★ The finding: extra modes help displacements far faster than adjoints, so the
+    // DISPARITY between them widens with rank. Measured 19.8x at r=10 growing to 529x at
+    // r=104 — a 26.7x widening — which is the signature of the adjoint's missing content
+    // sitting in near-null directions rather than in the spectrum's tail. Bounded at 5x
+    // because the claim is the direction and the order of magnitude, not the value.
+    let widen =
+        (sum_x_adj[R_SWEEP.len() - 1] / disp_err[R_SWEEP.len() - 1]) / (sum_x_adj[0] / disp_err[0]);
+    assert!(
+        widen > 5.0,
+        "the adjoint/displacement error disparity widened only {widen:.1}x across the \
+         rank sweep — R1.3's central finding has changed; rewrite the plan's §14"
+    );
+
+    // The frontier point part 2 must beat: plain POD needs the TOP of the legal rank
+    // range to reach ~0.10 on the best-case objective.
+    assert!(
+        face_z_grad[R_SWEEP.len() - 1] < 0.11,
+        "plain POD at the rank ceiling no longer reaches ~0.10 face-z gradient error \
+         ({:.3e}) — part 2's comparison point has moved",
+        face_z_grad[R_SWEEP.len() - 1]
+    );
+
+    // ★ The cost the rank knob carries. Same run, same machine, so this ratio survives a
+    // noisy box far better than an absolute time would; measured 2.7x, bounded at 1.5x.
+    // Asserted as a SHAPE rather than as a speedup-vs-oracle threshold, because the
+    // latter would flake on a contended CI runner — the oracle comparison is reported.
+    let growth = ms[R_SWEEP.len() - 1] / ms[2];
+    assert!(
+        growth > 1.5,
+        "the reduced trajectory grew only {growth:.2}x from r=40 to the rank ceiling — \
+         if `ΦᵀAΦ` stopped dominating, §14's break-even argument needs re-measuring"
+    );
+}
+
+// ── R1.3 part 2: can enrichment buy the accuracy without the rank? ────────────
+
+/// Enrichment draws per state. The sequence alternates smooth patches (even seeds) and
+/// point probes (odd), so `enriched-all` takes 8 of each per state while `smooth-sub`
+/// takes only the 8 smooth and `smooth-full` takes 16 smooth.
+///
+/// Every draw is **held out by construction**: none is any of the three cotangents the
+/// gate scores. Enriching with those would be training on the test set.
+const N_ENRICH_COTANGENTS: usize = 16;
+/// Training trajectories whose converged states the enrichment adjoints are taken at.
+const N_ENRICH_STATES: usize = 3;
+
+/// `‖v‖_M` — the basis's own inner product, so normalisation matches how `fit` measures.
+fn mass_norm(v: &[f64], mass: &[f64]) -> f64 {
+    v.iter()
+        .zip(mass)
+        .map(|(a, m)| m * a * a)
+        .sum::<f64>()
+        .sqrt()
+}
+
+/// Push `v` scaled to unit `M`-norm.
+///
+/// **Load-bearing for any mixed set.** A displacement snapshot is ~1e-3 (metres); an
+/// adjoint snapshot is `A⁻¹g`, whose scale follows the cotangent and ranged over two
+/// orders of magnitude across the families used here. Concatenating raw would let the
+/// larger group dictate the leading modes and the POD would be measuring units, not
+/// physics.
+fn push_unit(set: &mut SnapshotSet, v: &[f64], mass: &[f64]) {
+    let n = mass_norm(v, mass);
+    assert!(n > 0.0, "a zero snapshot carries no direction to retain");
+    let scaled: Vec<f64> = v.iter().map(|a| a / n).collect();
+    set.push(&scaled);
+}
+
+/// The **declared objective family** the enrichment is drawn from: smooth `z` weightings
+/// over the loaded face, and single-node `z` probes.
+///
+/// This is the honest shape of a goal-oriented basis — it buys accuracy for a *declared*
+/// class of objectives, not for all of them, and that class is what a consumer would have
+/// to state up front. `Σx*` is deliberately **outside** it (unit forces along `x`/`y`),
+/// and stays in the scoring as a built-in negative control: enrichment must not appear to
+/// help there, or the experiment is measuring something other than what it claims.
+fn enrichment_cotangent(r: &Rig, probe: usize, k: u64, smooth_only: bool) -> Vec<f64> {
+    let mut s = k
+        .wrapping_mul(0x2545_F491_4F6C_DD1D)
+        .wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut next = || {
+        s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        ((s >> 33) as f64) / ((1u64 << 31) as f64)
+    };
+    let mut w = vec![0.0; r.n_dof];
+    if smooth_only || k.is_multiple_of(2) {
+        // Smooth patch: a Gaussian z-weighting at a random centre and width. `face-z`
+        // (uniform over the whole face) is the infinite-width member of this family and
+        // is never generated here.
+        let (cx, cy) = (0.004 + 0.012 * next(), 0.004 + 0.012 * next());
+        let width = 0.002 + 0.004 * next();
+        for &vid in &r.loaded {
+            let v = 3 * vid as usize;
+            let d2 = (r.x_rest[v] - cx).powi(2) + (r.x_rest[v + 1] - cy).powi(2);
+            w[v + 2] = (-d2 / (2.0 * width * width)).exp();
+        }
+    } else {
+        // Point probe at a loaded vertex — never the one `node-z` scores.
+        // The draw is in [0, 1), scaled by a count well under 2^53 and floored — the
+        // truncation the cast lint warns about is exactly the intended index selection,
+        // and the value cannot be negative.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let mut idx = (next() * (r.loaded.len() as f64 - 1.0)) as usize;
+        if 3 * r.loaded[idx] as usize + 2 == probe {
+            idx = (idx + 1) % r.loaded.len();
+        }
+        w[3 * r.loaded[idx] as usize + 2] = 1.0;
+    }
+    w
+}
+
+/// **R1.3, part 2 — does adjoint enrichment beat the plain-rank frontier at equal cost?**
+///
+/// Part 1 settled that rank *can* buy gradient accuracy and that the ranks where it does
+/// are past the point where reduction stops paying (r=40 runs 1.43x the oracle, r=80
+/// runs 0.76x). So the question is not "does enrichment help" but whether it can reach
+/// the accuracy of a **much larger** basis at the cost of a small one.
+///
+/// **Success criterion, fixed before the first run**: at rank 40 — where the reduced
+/// model is still ~1.4x the oracle — enrichment must reach the gradient accuracy plain
+/// POD needed rank 104 for, on the declared family:
+///
+/// - `face-z` gradient relative error **≤ 0.101** and cosine **≥ 0.995** (r=104 plain);
+/// - `node-z` likewise better than plain r=104's 0.572 / 0.821;
+/// - forward displacement projection error must not exceed **1 %** (plain r=40 gives
+///   5.31e-3, and modes spent on adjoints are modes not spent on displacements — a
+///   gradient bought by wrecking the forward model is not a win);
+/// - trajectory still **≥ 1.4x** the oracle.
+///
+/// Failing that, R1's honest conclusion is that the reduced model is forward-only and the
+/// co-design loop stays full-order.
+///
+/// **Predictions, recorded before running**:
+/// 1. Enrichment clears the bar on `face-z` and `node-z`. The missing directions are
+///    exactly what is being added, and they are cheap — a handful of modes should carry
+///    what 64 extra displacement modes could not.
+/// 2. `Σx*` does **not** improve, because it is outside the declared family. If it does
+///    improve markedly, the experiment is leaking and the result must not be trusted.
+/// 3. Forward accuracy degrades but stays inside 1 %, since 40 modes are now shared.
+///
+/// The normalised plain basis is scored alongside as a control: without it, any change
+/// could be attributed to enrichment when unit-scaling the snapshots caused it.
+#[cfg_attr(
+    debug_assertions,
+    ignore = "release-only — 48 training trajectories, enrichment adjoints, and three \
+              paired bases; rerun with `cargo test --release` to include"
+)]
+#[test]
+fn adjoint_enrichment_beats_the_plain_rank_frontier() {
+    let r = rig_with_tol(MU, 1.0e-6);
+    let fd_idx = r.solver.free_dof_indices().to_vec();
+    let mass = r.solver.mass_per_free_dof();
+    let (w_sum, w_face_z, w_local, probe) = cotangents(&r);
+    let t = sample(900);
+
+    // Displacement snapshots, as every earlier rung collected them.
+    let raw = snapshots(&r);
+    let mut disp_unit = SnapshotSet::new(fd_idx.len());
+    for col in raw.columns() {
+        push_unit(&mut disp_unit, col, &mass);
+    }
+
+    // Enrichment: adjoints of the declared family, at TRAINING states only.
+    let mut enriched = SnapshotSet::new(fd_idx.len());
+    for col in raw.columns() {
+        push_unit(&mut enriched, col, &mass);
+    }
+    // Third variant, added after the first run and predicted before ITS run: enrich with
+    // the SMOOTH half only. The first run's `node-z` regression is the evidence — point
+    // probes were added expecting to help it and made it worse, which is what a family
+    // that does not compress looks like. A Green's function at node `i` is nearly
+    // independent of the one at node `j`, so the point family's effective dimension is
+    // roughly the node count and no rank-40 basis spans it; those modes are spent for
+    // nothing AND displace forward content.
+    //
+    // **Prediction**: dropping them recovers most of the forward accuracy and improves
+    // `face-z` further, while `node-z` stays bad — because its objective class is
+    // genuinely not low-dimensional, which no enrichment strategy fixes.
+    // TWO smooth variants, because "drop the point half" and "spend the whole enrichment
+    // budget on the smooth family" are different experiments and only one of them is a
+    // clean subtraction:
+    //
+    // - `smooth-sub` is literally `enriched-all` minus its point probes — identical
+    //   smooth content, 24 snapshots instead of 48. Comparing it against `enriched-all`
+    //   isolates what the point probes DO, with nothing else varying.
+    // - `smooth-full` re-spends the freed budget on more smooth members (48). That is the
+    //   recipe a consumer would actually follow, and it is what the criterion is scored
+    //   on.
+    //
+    // Without the first, "removing point probes helped" is confounded with "adding more
+    // smooth probes helped" — they were changed together in the first version of this
+    // experiment, and the write-up claimed the subtraction.
+    let mut smooth_sub = SnapshotSet::new(fd_idx.len());
+    let mut smooth_full = SnapshotSet::new(fd_idx.len());
+    for col in raw.columns() {
+        push_unit(&mut smooth_sub, col, &mass);
+        push_unit(&mut smooth_full, col, &mass);
+    }
+    for k in 0..N_ENRICH_STATES as u64 {
+        let hist = run_full(&r, sample(k), STEPS);
+        let (x_f, x_p) = (&hist[STEPS - 1], &hist[STEPS - 2]);
+        let adjoint_of = |w: &[f64]| -> Vec<f64> {
+            let lambda = oracle_adjoint(&r, x_f, x_p, w);
+            fd_idx.iter().map(|&j| lambda[j]).collect()
+        };
+        for c in 0..N_ENRICH_COTANGENTS as u64 {
+            let seed = k * 97 + c;
+            // The alternating draw: even seeds are smooth patches, odd are point probes.
+            let w_alt = enrichment_cotangent(&r, probe, seed, false);
+            let lam_alt = adjoint_of(&w_alt);
+            push_unit(&mut enriched, &lam_alt, &mass);
+            if seed.is_multiple_of(2) {
+                // The same smooth member, shared verbatim by both smooth variants.
+                push_unit(&mut smooth_sub, &lam_alt, &mass);
+                push_unit(&mut smooth_full, &lam_alt, &mass);
+            } else {
+                // Where `enriched-all` spent a point probe, `smooth-full` spends another
+                // smooth member instead; `smooth-sub` spends nothing.
+                let w_s = enrichment_cotangent(&r, probe, seed, true);
+                let lam_s = adjoint_of(&w_s);
+                push_unit(&mut smooth_full, &lam_s, &mass);
+            }
+        }
+    }
+
+    // References at the held-out trajectory's final step.
+    let hist = run_full(&r, t, STEPS);
+    let (x_star_or, x_prev_or) = (hist[STEPS - 1].clone(), hist[STEPS - 2].clone());
+    let u_or = SnapshotSet::free_displacement(&x_star_or, &r.x_rest, &fd_idx);
+    let refs: Vec<Vec<f64>> = [&w_sum, &w_face_z, &w_local]
+        .iter()
+        .map(|w| load_grad_from_adjoint(&r, &oracle_adjoint(&r, &x_star_or, &x_prev_or, w)))
+        .collect();
+
+    let oracle_start = Instant::now();
+    let _ = run_full(&r, t, STEPS);
+    let oracle_ms = oracle_start.elapsed().as_secs_f64() * 1e3;
+
+    let mut grad = Vec::new();
+    let mut fwd = Vec::new();
+    let mut cosines = Vec::new();
+    for (label, set) in [
+        ("plain-unit", &disp_unit),
+        ("enriched-all", &enriched),
+        ("smooth-sub", &smooth_sub),
+        ("smooth-full", &smooth_full),
+    ] {
+        let basis = fit_at(&r, set, R_MODES);
+        let reduced = ReducedNewtonSolver::new(&r.solver, &basis, &r.x_rest);
+
+        let traj_start = Instant::now();
+        let (mut q, mut qdot) = (vec![0.0; R_MODES], vec![0.0; R_MODES]);
+        for step_idx in 1..=STEPS {
+            let th = theta_at(&r, t, step_idx);
+            let st = reduced
+                .step(&q, &qdot, &Tensor::from_slice(&th, &[th.len()]), DT)
+                .expect("reduced step converges");
+            q = st.q;
+            qdot = st.qdot;
+        }
+        let reduced_ms = traj_start.elapsed().as_secs_f64() * 1e3;
+
+        let mut line = format!(
+            "R1.3p2 [{label:>10}] r={R_MODES}, {} snapshots: displacement projection \
+             {:.3e}, trajectory {reduced_ms:.0} ms ({:.2}x oracle)",
+            set.len(),
+            basis.projection_error(&u_or),
+            oracle_ms / reduced_ms,
+        );
+        let mut per_cotangent = Vec::new();
+        for (i, w) in [&w_sum, &w_face_z, &w_local].iter().enumerate() {
+            let adj = reduced
+                .adjoint(&x_star_or, Some(&x_prev_or), DT, w)
+                .expect("reduced adjoint factors");
+            let g_red = reduced.load_gradient(&adj);
+            let dot: f64 = g_red.iter().zip(&refs[i]).map(|(a, b)| a * b).sum();
+            let nr = g_red.iter().map(|v| v * v).sum::<f64>().sqrt();
+            let no = refs[i].iter().map(|v| v * v).sum::<f64>().sqrt();
+            write!(
+                line,
+                "\n              [{:>6}] gradient rel err {:.3e}, cos {:.4}, ‖ratio‖ {:.4}",
+                COTANGENTS[i],
+                rel_l2(&g_red, &refs[i]),
+                dot / (nr * no),
+                nr / no,
+            )
+            .expect("writing to a String cannot fail");
+            per_cotangent.push((rel_l2(&g_red, &refs[i]), dot / (nr * no)));
+        }
+        println!("{line}");
+        grad.push(per_cotangent.iter().map(|c| c.0).collect::<Vec<_>>());
+        cosines.push(per_cotangent.iter().map(|c| c.1).collect::<Vec<_>>());
+        fwd.push(basis.projection_error(&u_or));
+    }
+
+    // Index order matches the loop above.
+    let (plain, all, sub, sm) = (0, 1, 2, 3);
+
+    // ★ The result: smooth-family enrichment at r=40 beats what plain POD needed r=104
+    // for — 7.67e-2 / 0.9972 measured against the 1.01e-1 / 0.9952 frontier — while the
+    // trajectory stays ~1.45x the oracle instead of dropping to 0.54x.
+    // Both smooth variants must clear it — scoring only the better one would be picking
+    // the winner after the fact. `smooth-sub` gets there on HALF the enrichment budget
+    // (0.0848 / 0.9965 from 24 snapshots), which is the more economical recipe;
+    // `smooth-full` edges it on gradient (0.0767 / 0.9972) and pays ~20 % of forward
+    // accuracy for it.
+    for &v in &[sub, sm] {
+        assert!(
+            grad[v][1] < 0.101 && cosines[v][1] > 0.995,
+            "smooth enrichment (variant {v}) no longer beats the plain r=104 frontier on \
+             face-z ({:.3e} err, {:.4} cos vs the 1.01e-1 / 0.9952 it must clear)",
+            grad[v][1],
+            cosines[v][1]
+        );
+    }
+
+    // A gradient bought by wrecking the forward model is not a win. Measured 7.57e-3.
+    for &v in &[sub, sm] {
+        assert!(
+            fwd[v] < 1.0e-2,
+            "smooth enrichment (variant {v}) cost too much forward accuracy ({:.3e} > \
+             1 %) — modes spent on adjoints are modes not spent on displacements",
+            fwd[v]
+        );
+    }
+
+    // ⚠ The NEGATIVE CONTROL, and the reason this experiment means anything: `Σx*` sits
+    // outside the declared objective family, so enrichment must leave it essentially
+    // untouched. Measured 8.31e-1 plain vs 8.35e-1 enriched — 0.5 % apart. If enrichment
+    // started helping here, it would be reaching objectives it was never given, and every
+    // other number in this test would be suspect.
+    for &v in &[sub, sm] {
+        let leak = (grad[v][0] - grad[plain][0]).abs() / grad[plain][0];
+        assert!(
+            leak < 0.10,
+            "the out-of-family control moved {:.1} % under enrichment (variant {v}) — the \
+             experiment is leaking and its in-family result cannot be trusted",
+            leak * 100.0
+        );
+    }
+
+    // ★ The condition on the whole finding: enrichment only pays when the declared
+    // objective family is itself low-dimensional. Point-probe adjoints are not — a
+    // Green's function at one node is nearly independent of the next — so `node-z` stays
+    // bad no matter what is added. Pinned because it is the CONDITION, not a shortfall:
+    // if this ever clears, the family compresses after all and §14 is wrong.
+    for &v in &[sub, sm] {
+        assert!(
+            grad[v][2] > 0.55,
+            "node-z reached {:.3e} (variant {v}) — the point-probe objective family \
+             compresses after all, contradicting §14's condition; rewrite it rather than \
+             lowering this",
+            grad[v][2]
+        );
+    }
+
+    // ★ The mechanism, on the CLEAN comparison: `smooth-sub` is `enriched-all` with the
+    // point probes removed and nothing else changed, so this isolates what they cost.
+    // Scoring it against `smooth-full` instead would confound removing the point probes
+    // with adding more smooth ones — the two moved together in this experiment's first
+    // version, and the write-up claimed the subtraction.
+    assert!(
+        fwd[all] > MIN_POINT_PROBE_FORWARD_COST * fwd[sub],
+        "removing the point probes no longer recovers forward accuracy ({:.3e} with them \
+         vs {:.3e} without) — §14's diagnosis for the node-z regression needs revisiting",
+        fwd[all],
+        fwd[sub]
+    );
 }

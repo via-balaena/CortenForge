@@ -573,13 +573,34 @@ jobs:
       # `--test` selections add the cfg-attr-debug-skip release-only paths only
       # (avoids 2× compile cost on debug-already-covered tests). Runs when
       # sim-soft is affected (SOFT_PKGS non-empty → also true on the full path).
-      - name: Run sim-soft release-only contact tests
+      # ⚠ The reduced-basis gates were added here in the R1.3 PR after review
+      # found they had NEVER run in any CI job — the suite was green because
+      # they were being SKIPPED, not because they passed. They are
+      # `#[cfg_attr(debug_assertions, ignore)]` like the contact tests above, so
+      # `tests-debug` reports them verbatim as `ignored, release-only`, and
+      # nothing else selected them in release. R1.0-R1.3 were all decorative in
+      # CI until this line listed them. ~70 s for the three.
+      #
+      # `fbar_locking` (4.6 s) and `tet10_indentation_demand1` (41.6 s) were in the
+      # same state and are measured, not estimated. The latter's ~60 min Tet10 arm
+      # carries an UNCONDITIONAL `#[ignore]`, so selecting the binary runs its two
+      # cheap arms and leaves that one out — verified, not assumed.
+      #
+      # ⚠ `tet10_lame_decision` is deliberately NOT here: its `#[ignore]` is
+      # unconditional and reasoned (7.16 GB peak RSS, above a runner's memory).
+      # Absent from CI by design, not by oversight.
+      - name: Run sim-soft release-only contact + reduced-basis tests
         if: matrix.id == 3 && env.SOFT_PKGS != ''
         run: |
           cargo test --release -p sim-soft \
             --test hertz_sphere_plane \
             --test contact_drop_rest \
-            --test non_interpenetration
+            --test non_interpenetration \
+            --test reduced_pod_basis \
+            --test reduced_newton_trajectory \
+            --test reduced_gradient \
+            --test fbar_locking \
+            --test tet10_indentation_demand1
         shell: bash
 
       # cf-cast's mold/cast kernel (358 library tests) runs --lib-only in
