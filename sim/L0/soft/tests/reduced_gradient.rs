@@ -62,6 +62,8 @@
     clippy::too_many_lines
 )]
 
+use std::fmt::Write as _;
+
 use sim_ml_chassis::{Tape, Tensor, Var};
 use sim_soft::solver::backward_euler::reduced::{
     Inner, PodBasis, ReducedNewtonSolver, SnapshotSet,
@@ -237,7 +239,7 @@ fn run_full(r: &Rig, t: Traj, steps: usize) -> Vec<Vec<f64>> {
 }
 
 /// Train the R1.1 basis.
-fn train(r: &Rig) -> PodBasis {
+fn snapshots(r: &Rig) -> SnapshotSet {
     let fd = r.solver.free_dof_indices().to_vec();
     let mut set = SnapshotSet::new(fd.len());
     for k in 0..N_TRAIN as u64 {
@@ -245,14 +247,18 @@ fn train(r: &Rig) -> PodBasis {
             set.push(&SnapshotSet::free_displacement(x, &r.x_rest, &fd));
         }
     }
-    PodBasis::fit(
-        &set,
-        Inner::Mass,
-        &r.solver.mass_per_free_dof(),
-        1.0,
-        R_MODES,
-    )
-    .expect("basis fits")
+    set
+}
+
+/// Fit the basis at a given rank. Split from [`snapshots`] so the R1.3 sweep can refit
+/// many ranks over ONE ensemble — refitting is cheap, re-simulating 48 trajectories is
+/// not, and sharing the snapshots keeps every rank comparable on identical training data.
+fn fit_at(r: &Rig, set: &SnapshotSet, rank: usize) -> PodBasis {
+    PodBasis::fit(set, Inner::Mass, &r.solver.mass_per_free_dof(), 1.0, rank).expect("basis fits")
+}
+
+fn train(r: &Rig) -> PodBasis {
+    fit_at(r, &snapshots(r), R_MODES)
 }
 
 /// Carry the reduced trajectory to the start of the final step, in reduced coordinates
@@ -808,5 +814,105 @@ impl Stat {
         self.max_ratio = self.max_ratio.max(ratio);
         self.min_amp = self.min_amp.min(amp);
         self.max_amp = self.max_amp.max(amp);
+    }
+}
+
+// ── R1.3 control: does a LARGER basis close the adjoint gap? ──────────────────
+
+/// Ranks swept. `40` is R1.2's, `104` is the plan's §2 ceiling for this fixture
+/// (`min(n_free / 50, 200)` at 5 202 free DOF) — so the sweep runs the knob to the end of
+/// its legal travel rather than to a round number.
+const R_SWEEP: [usize; 5] = [10, 20, 40, 80, 104];
+
+/// **R1.3, part 1 — the control that must run before any basis enrichment.**
+///
+/// R1.2 found the reduced gradient 21.5–186x less accurate than the state, and traced it
+/// to the basis not spanning the adjoint field. Two explanations fit that evidence and
+/// they call for very different work:
+///
+/// 1. **the subspace is too SMALL for adjoints** — the missing content is in the tail,
+///    and `r` is a knob that fixes it;
+/// 2. **the subspace is WRONG for adjoints** — the missing content lies along directions
+///    the training ensemble never excited, which carry ~zero singular value and are
+///    therefore absent at *any* rank.
+///
+/// Enrichment with adjoint snapshots only makes sense under (2). Skipping this control
+/// would leave a successful enrichment indistinguishable from "we added modes", so it
+/// runs first.
+///
+/// **Prediction recorded before the first run**: (2). Modes are ordered by *displacement*
+/// energy, so no rank recovers a direction the snapshots never contained. Expect `Σx*`
+/// (out-of-family) to barely improve and `face-z` (in-family) to improve most.
+///
+/// **No reduced trajectory is run.** R1.2 measured the adjoint at the reduced model's own
+/// state and at the oracle's and got the same answer to four digits, so the solver
+/// dynamics are not part of this question — every rank is compared at the oracle's state,
+/// which isolates the subspace and removes a confound.
+#[cfg_attr(
+    debug_assertions,
+    ignore = "release-only — 48 training trajectories plus a rank sweep; \
+              rerun with `cargo test --release` to include"
+)]
+#[test]
+fn adjoint_gap_across_basis_sizes() {
+    let r = rig(MU);
+    let set = snapshots(&r);
+    let fd_idx = r.solver.free_dof_indices().to_vec();
+    let (w_sum, w_face_z, w_local, _) = cotangents(&r);
+    let t = sample(900);
+
+    // One held-out trajectory: R1.2 measured a spread of 0.240–0.246 across three for
+    // `face-z`, so the rank axis — not the trajectory axis — is what carries information
+    // here.
+    let history = run_full(&r, t, STEPS);
+    let x_star_or = history[STEPS - 1].clone();
+    let x_prev_or = history[STEPS - 2].clone();
+
+    let u_or = SnapshotSet::free_displacement(&x_star_or, &r.x_rest, &fd_idx);
+    // Oracle adjoints and gradients are rank-independent — computed once, outside the
+    // sweep, so every rank is scored against identical references.
+    let refs: Vec<(Vec<f64>, Vec<f64>)> = [&w_sum, &w_face_z, &w_local]
+        .iter()
+        .map(|w| {
+            let lambda = oracle_adjoint(&r, &x_star_or, &x_prev_or, w);
+            let lambda_free: Vec<f64> = fd_idx.iter().map(|&j| lambda[j]).collect();
+            (lambda_free, load_grad_from_adjoint(&r, &lambda))
+        })
+        .collect();
+
+    for &rank in &R_SWEEP {
+        let basis = fit_at(&r, &set, rank);
+        let reduced = ReducedNewtonSolver::new(&r.solver, &basis, &r.x_rest);
+        let disp = basis.projection_error(&u_or);
+        let energy = basis.retained_energy_fraction();
+
+        let mut line = format!(
+            "R1.3 r={rank:>3}: displacement projection {disp:.3e} (retained energy \
+             {energy:.6})"
+        );
+        for (i, w) in [&w_sum, &w_face_z, &w_local].iter().enumerate() {
+            let (lambda_free, g_or) = &refs[i];
+            let adj = reduced
+                .adjoint(&x_star_or, Some(&x_prev_or), DT, w)
+                .expect("reduced adjoint factors");
+            let g_red = reduced.load_gradient(&adj);
+            let dot: f64 = g_red.iter().zip(g_or).map(|(a, b)| a * b).sum();
+            let nr = g_red.iter().map(|v| v * v).sum::<f64>().sqrt();
+            let no = g_or.iter().map(|v| v * v).sum::<f64>().sqrt();
+            // Accumulated rather than printed per line: the four lines of one rank must
+            // stay together, and other tests in this binary print concurrently.
+            write!(
+                line,
+                "\n           [{:>6}] adjoint projection {:.3e}, gradient rel err {:.3e}, \
+                 cos {:.4}, ‖ratio‖ {:.4}",
+                COTANGENTS[i],
+                basis.projection_error(lambda_free),
+                rel_l2(&g_red, g_or),
+                dot / (nr * no),
+                nr / no,
+            )
+            .expect("writing to a String cannot fail");
+        }
+        println!("{line}");
     }
 }
