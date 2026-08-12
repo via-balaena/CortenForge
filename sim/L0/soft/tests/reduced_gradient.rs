@@ -994,7 +994,7 @@ fn push_unit(set: &mut SnapshotSet, v: &[f64], mass: &[f64]) {
 /// to state up front. `Σx*` is deliberately **outside** it (unit forces along `x`/`y`),
 /// and stays in the scoring as a built-in negative control: enrichment must not appear to
 /// help there, or the experiment is measuring something other than what it claims.
-fn enrichment_cotangent(r: &Rig, probe: usize, k: u64) -> Vec<f64> {
+fn enrichment_cotangent(r: &Rig, probe: usize, k: u64, smooth_only: bool) -> Vec<f64> {
     let mut s = k
         .wrapping_mul(0x2545_F491_4F6C_DD1D)
         .wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -1003,7 +1003,7 @@ fn enrichment_cotangent(r: &Rig, probe: usize, k: u64) -> Vec<f64> {
         ((s >> 33) as f64) / ((1u64 << 31) as f64)
     };
     let mut w = vec![0.0; r.n_dof];
-    if k.is_multiple_of(2) {
+    if smooth_only || k.is_multiple_of(2) {
         // Smooth patch: a Gaussian z-weighting at a random centre and width. `face-z`
         // (uniform over the whole face) is the infinite-width member of this family and
         // is never generated here.
@@ -1085,14 +1085,31 @@ fn adjoint_enrichment_beats_the_plain_rank_frontier() {
     for col in raw.columns() {
         push_unit(&mut enriched, col, &mass);
     }
+    // Third variant, added after the first run and predicted before ITS run: enrich with
+    // the SMOOTH half only. The first run's `node-z` regression is the evidence — point
+    // probes were added expecting to help it and made it worse, which is what a family
+    // that does not compress looks like. A Green's function at node `i` is nearly
+    // independent of the one at node `j`, so the point family's effective dimension is
+    // roughly the node count and no rank-40 basis spans it; those modes are spent for
+    // nothing AND displace forward content.
+    //
+    // **Prediction**: dropping them recovers most of the forward accuracy and improves
+    // `face-z` further, while `node-z` stays bad — because its objective class is
+    // genuinely not low-dimensional, which no enrichment strategy fixes.
+    let mut smooth = SnapshotSet::new(fd_idx.len());
+    for col in raw.columns() {
+        push_unit(&mut smooth, col, &mass);
+    }
     for k in 0..N_ENRICH_STATES as u64 {
         let hist = run_full(&r, sample(k), STEPS);
         let (x_f, x_p) = (&hist[STEPS - 1], &hist[STEPS - 2]);
         for c in 0..N_ENRICH_COTANGENTS as u64 {
-            let w = enrichment_cotangent(&r, probe, k * 97 + c);
-            let lambda = oracle_adjoint(&r, x_f, x_p, &w);
-            let lambda_free: Vec<f64> = fd_idx.iter().map(|&j| lambda[j]).collect();
-            push_unit(&mut enriched, &lambda_free, &mass);
+            for (only_smooth, set) in [(false, &mut enriched), (true, &mut smooth)] {
+                let w = enrichment_cotangent(&r, probe, k * 97 + c, only_smooth);
+                let lambda = oracle_adjoint(&r, x_f, x_p, &w);
+                let lambda_free: Vec<f64> = fd_idx.iter().map(|&j| lambda[j]).collect();
+                push_unit(set, &lambda_free, &mass);
+            }
         }
     }
 
@@ -1109,7 +1126,11 @@ fn adjoint_enrichment_beats_the_plain_rank_frontier() {
     let _ = run_full(&r, t, STEPS);
     let oracle_ms = oracle_start.elapsed().as_secs_f64() * 1e3;
 
-    for (label, set) in [("plain-unit", &disp_unit), ("ENRICHED", &enriched)] {
+    for (label, set) in [
+        ("plain-unit", &disp_unit),
+        ("enriched-all", &enriched),
+        ("smooth-only", &smooth),
+    ] {
         let basis = fit_at(&r, set, R_MODES);
         let reduced = ReducedNewtonSolver::new(&r.solver, &basis, &r.x_rest);
 
