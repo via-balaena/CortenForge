@@ -12,9 +12,13 @@ use crate::Vec3;
 
 pub mod tet10;
 pub mod tet4;
+pub mod validity;
 
 pub use tet4::Tet4;
 pub use tet10::{TET10_EDGE_NODES, Tet10};
+pub use validity::{
+    DET_J_COEFFS, RestValidity, ValidityBar, certify_rest, rest_det_j_coefficients,
+};
 
 /// Per-element geometric surface: shape functions, their gradients,
 /// and Gauss-point weights. `N` = nodes per element, `G` = Gauss points.
