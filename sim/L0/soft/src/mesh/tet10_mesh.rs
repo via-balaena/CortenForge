@@ -37,7 +37,7 @@ use super::{
     enrich::enrich_tet4_to_tet10,
 };
 use crate::Vec3;
-use crate::element::{Element, Tet10};
+use crate::element::{Element, Tet10, ValidityBar, certify_rest};
 use crate::material::NeoHookean;
 use crate::sdf_bridge::{Sdf, project_point_onto_sdf};
 use nalgebra::{Point3, SMatrix};
@@ -202,11 +202,13 @@ impl Tet10Mesh {
     ///   or anatomy gate this layer knows nothing about (which of two candidate surfaces, an
     ///   alignment test, a subset of the boundary left deliberately straight) rather than
     ///   projecting every boundary midside onto one [`Sdf`];
-    /// - **the validity bar is a quality floor** `detJ ≥ quality_floor · detJ_rest`, not
-    ///   merely `detJ > 0`. A bare `detJ > 0` bisects each backed-off node onto the
-    ///   `detJ → 0⁺` degeneracy boundary — manufacturing slivers exactly where the move was
-    ///   largest; holding `detJ` above a fraction of its healthy rest value keeps the
-    ///   backed-off elements well-shaped.
+    /// - **the validity bar is checked at eight sample points**, where the sibling now
+    ///   *certifies* it over the whole element ([`certify_rest`]). Both hold the same
+    ///   quality floor `detJ ≥ quality_floor · detJ_rest`, and both hold a floor rather than
+    ///   a bare `detJ > 0` for the same reason — a bare `detJ > 0` bisects each backed-off
+    ///   node onto the `detJ → 0⁺` degeneracy boundary, manufacturing slivers exactly where
+    ///   the move was largest. ⚠ This difference is a **deficit here, not a feature**; see the
+    ///   note below.
     ///
     /// For each move the full target is tried first; if it would drop an incident element
     /// below the floor at any sample point, the node is bisected back along the segment
@@ -273,11 +275,15 @@ impl Tet10Mesh {
     /// corner-folded one. One floor governs all eight sample points, so there is no second
     /// knob to keep consistent.
     ///
-    /// ⚠ [`Self::with_sdf_projected_boundary`] has the **same blind spot** — its back-off is a
-    /// bare positivity test over the same four Gauss points — and is deliberately left
-    /// unchanged here. It serves different consumers whose geometry has not been censused, and
-    /// changing it would ship an unmeasured change to them on the strength of a disc
-    /// measurement.
+    /// ⚠ **This method still samples; its sibling no longer does.**
+    /// [`Self::with_sdf_projected_boundary`] had the same blind spot and has since been
+    /// converted to [`certify_rest`], which bounds `det J` over the *whole* element instead of
+    /// at any finite set of points — `det J` is a cubic, so eight points bound it no better
+    /// than four in principle, only in practice and only on geometry that has been censused.
+    /// The eight points here are sound on the conformed disc **because that disc was measured**,
+    /// not because eight is enough. Converting this method is the next step and is deliberately
+    /// separate: it re-anchors the licensed disc gates, which the sibling's conversion does not
+    /// touch.
     ///
     /// Vertices not named in `moves` are untouched, and the topology (connectivity, boundary
     /// faces, materials, interface flags) is unchanged. [`QualityMetrics`] are deliberately
@@ -474,18 +480,25 @@ impl Tet10Mesh {
     /// surface keeps the byte-identical affine fast path (the solver's
     /// `element_is_straight` bit-exact test). Otherwise the node is placed as
     /// far along the segment `straight → projected` as keeps every incident
-    /// element's rest Jacobian positive at all Gauss points
-    /// ([`Element::rest_jacobian_dets`]).
+    /// element **certified** above `quality_floor` — see below.
     /// Nodes are swept in ascending `VertexId` order, so the
     /// result is deterministic. A projection that fails to converge onto the
     /// surface (a gradient singularity, or a point too far away) also leaves
     /// the node straight.
     ///
-    /// # ⚠⚠ The back-off does NOT guarantee a non-inverted mesh — measured
+    /// # The back-off is certified, not sampled
     ///
-    /// This paragraph used to claim "this bisection back-off guarantees a valid (non-inverted)
-    /// mesh", and further down that it "never *introduces* an inversion". **Both are false, on
-    /// this crate's own canonical fixture.** Censusing `straight_sphere_tet10()` before and
+    /// Validity here is [`certify_rest`] against
+    /// [`ValidityBar::RelativeFloor`]: a placement is admissible only when
+    /// `det J ≥ quality_floor · det J_original` is *proven* over the whole
+    /// element, and inadmissible otherwise — including when the proof merely
+    /// fails, which is the fail-closed reading. `det J` is a cubic in the
+    /// parametric coordinates, so no finite set of sample points could have
+    /// established this.
+    ///
+    /// ⚠⚠ **This method used to sample four Gauss points and claim the result
+    /// was a valid mesh. It was not, and the gap was measured on this crate's
+    /// own canonical fixture** — censusing `straight_sphere_tet10()` before and
     /// after projection onto `body_sdf()`:
     ///
     /// ```text
@@ -493,32 +506,38 @@ impl Tet10Mesh {
     /// projected : 624 tets | corner-folded 8 | worst corner ratio -0.051117
     /// ```
     ///
-    /// All eight folded elements keep **every Gauss point positive** (best of the folded reads
-    /// +0.309), which is why `projected_sphere_has_no_inverted_elements` passes: it samples the
-    /// same four interior Stroud points this back-off does. The four-point rule cannot see a
-    /// fold confined to a corner region — the identical blind spot
-    /// [`Self::with_projected_midsides`] was fixed for, by also sampling the four reference
-    /// corners.
+    /// All eight folded elements kept **every Gauss point positive** (best of
+    /// the folded read +0.309), which is why the old gate passed: it sampled
+    /// the same four interior Stroud points the back-off did. The four-point
+    /// rule cannot see a fold confined to a corner region.
     ///
-    /// ▶ **Deliberately still unfixed here, and tracked as its own change.** The sibling's fix
-    /// is measured on the anatomy its consumers actually use; this method serves different
-    /// consumers whose geometry has not been swept, and its back-off is *weaker* in a second
-    /// way — a bare `> 0` rather than a relative quality floor, so it bisects onto the
-    /// `detJ → 0⁺` boundary as well. Correcting the claim is separable from changing the
-    /// behaviour, and only the claim is corrected here.
+    /// # ⚠ Why the floor, and not simply `det J > 0`
+    ///
+    /// Exactness alone would have made this *worse*. The bisection walks each
+    /// node to the furthest feasible blend, so whatever bar it is given, it
+    /// lands on it — and a bare positivity bar is the `det J → 0⁺` boundary.
+    /// A sound positivity test would therefore have replaced eight folded
+    /// elements with a set of exactly-degenerate ones, which is the defect
+    /// [`Self::with_projected_midsides`] was fixed for in the same measurement
+    /// (twelve of its eighteen folded elements sat at a ratio of precisely its
+    /// `quality_floor`). Holding a *fraction of the original quality* gives the
+    /// search a bar worth landing on. The two projectors now take the same
+    /// argument and mean the same thing by it.
     ///
     /// # Precondition
     ///
     /// Assumes the input elements are positively oriented (as every in-tree
-    /// mesher produces). A *pre-inverted* input element has no feasible blend, and the back-off
-    /// leaves it straight (still inverted) rather than detecting it.
+    /// mesher produces). A *pre-inverted* input element is now detected rather
+    /// than silently used as its own quality reference — [`certify_rest`]
+    /// refuses an invalid `original`, so no blend is feasible and the node
+    /// stays straight.
     ///
-    /// ⚠ **"It never *introduces* an inversion" used to close this paragraph, and it is
-    /// false** — see the census above: a positively-oriented 624-tet input comes back with
-    /// eight corner-folded elements. The back-off introduces inversions it cannot see, because
-    /// what it samples and what it must bound are different sets of points.
+    /// # Panics
+    ///
+    /// Panics if `quality_floor` is not in `[0, 1)` — a floor `≥ 1` would
+    /// reject the unmoved mesh and a negative floor is meaningless.
     #[must_use]
-    pub fn with_sdf_projected_boundary(mut self, sdf: &dyn Sdf) -> Self {
+    pub fn with_sdf_projected_boundary(mut self, sdf: &dyn Sdf, quality_floor: f64) -> Self {
         /// Newton convergence tolerance for the surface projection (metres).
         const PROJECT_TOL: f64 = 1e-12;
         /// Newton iteration cap; a node that fails to converge stays straight.
@@ -528,6 +547,11 @@ impl Tet10Mesh {
         const SNAP: f64 = 1e-10;
         /// Bisection steps for the back-off (~`2⁻⁴⁰` blend resolution).
         const BISECT_ITERS: usize = 40;
+
+        assert!(
+            (0.0..1.0).contains(&quality_floor),
+            "quality_floor must be in [0, 1); got {quality_floor}"
+        );
 
         // Boundary midside VertexIds (trailing three slots of each 6-node
         // face), deduplicated and sorted for a deterministic sweep.
@@ -551,26 +575,45 @@ impl Tet10Mesh {
             }
         }
 
-        let element = Tet10;
         let tets = &self.tets;
-
-        // Positive-Jacobian check over a node's incident elements against the
-        // (in-progress) `positions`. Finiteness is asserted first: a NaN
-        // determinant must read as invalid, never slip through a bare `> 0.0`.
-        let incident_valid = |positions: &[Vec3], m_tets: &[usize]| -> bool {
-            m_tets.iter().all(|&ti| {
-                let x_ref =
-                    SMatrix::<f64, 10, 3>::from_fn(|a, k| positions[tets[ti][a] as usize][k]);
-                element
-                    .rest_jacobian_dets(&x_ref)
-                    .iter()
-                    .all(|d| d.is_finite() && *d > 0.0)
-            })
+        let nodes_of = |positions: &[Vec3], ti: usize| -> SMatrix<f64, 10, 3> {
+            SMatrix::<f64, 10, 3>::from_fn(|a, k| positions[tets[ti][a] as usize][k])
         };
 
         // `tets`/`incident` borrow disjoint state, so take `positions` out to
         // mutate it in place through the sweep.
         let mut positions = std::mem::take(&mut self.positions);
+
+        // The geometry each back-off is measured against, captured from the
+        // ORIGINAL mesh before any node moves — not from the in-progress one,
+        // which would let a sequence of individually-admissible moves ratchet
+        // an element down without any single step failing.
+        let mut original: HashMap<usize, SMatrix<f64, 10, 3>> = HashMap::new();
+        for tis in incident.values() {
+            for &ti in tis {
+                original
+                    .entry(ti)
+                    .or_insert_with(|| nodes_of(&positions, ti));
+            }
+        }
+
+        // A placement is admissible only where it is PROVEN to hold every
+        // incident element above the floor over the element's whole volume.
+        // `is_certified()` reads `false` for a failed proof as well as for a
+        // refutation, which is the fail-closed reading — absence of a proof is
+        // not a proof.
+        let incident_valid = |positions: &[Vec3], m_tets: &[usize]| -> bool {
+            m_tets.iter().all(|&ti| {
+                certify_rest(
+                    &nodes_of(positions, ti),
+                    ValidityBar::RelativeFloor {
+                        original: &original[&ti],
+                        floor: quality_floor,
+                    },
+                )
+                .is_certified()
+            })
+        };
         for m in boundary {
             let Some(m_tets) = incident.get(&m) else {
                 // Unreachable for a well-formed Tet10Mesh: a boundary midside
@@ -593,8 +636,16 @@ impl Tet10Mesh {
                 continue;
             }
             // Back off: largest blend `t ∈ [0, 1]` with `straight + t·delta`
-            // valid. `t = 0` (straight) is always feasible, so `lo` stays a
-            // valid lower bound throughout.
+            // admissible.
+            //
+            // `t = 0` is feasible by induction, which is what makes `lo` a
+            // valid lower bound throughout: the all-straight mesh certifies
+            // trivially (`detJ_c = detJ_o`, so the bar reads
+            // `(1 − floor)·detJ_o > 0`), and every placement this loop accepts
+            // leaves each incident element certified. A later node of the same
+            // element therefore starts from a state that already clears the
+            // floor — the sweep never has to reason about a partially-moved
+            // element being worse than its own reference.
             let mut lo = 0.0_f64;
             let mut hi = 1.0_f64;
             for _ in 0..BISECT_ITERS {
@@ -606,7 +657,19 @@ impl Tet10Mesh {
                     hi = t;
                 }
             }
-            positions[mi] = straight + delta * lo;
+            // ⚠ `lo == 0.0` writes the STRAIGHT position, not `straight + delta·0`. The two
+            // are not the same float: a non-finite projection makes `delta` non-finite, and
+            // `NaN · 0.0` is `NaN`, so the arithmetic form writes a NaN coordinate into the
+            // mesh on the very path that exists to reject that projection. The surface and
+            // snap guards above do not stop it either — both compare with `>` / `<`, and
+            // every comparison against NaN is false, so a NaN projection falls straight
+            // through to here. Same defect and same fix as the sibling
+            // [`Self::with_projected_midsides`].
+            positions[mi] = if lo == 0.0 {
+                straight
+            } else {
+                straight + delta * lo
+            };
         }
         self.positions = positions;
         self
@@ -839,6 +902,14 @@ mod tests {
 
     // --- with_sdf_projected_boundary: the SDF-projection mesher rung ---
 
+    /// Quality floor these unit fixtures project at.
+    ///
+    /// Matched to `LAYERED_SPHERE_CONFORM_QUALITY_FLOOR`, the value swept on
+    /// the canonical layered sphere in `tests/tet10_exact_validity.rs`, so the
+    /// small hand-built meshes here exercise the bar the real geometry ships
+    /// at rather than a second number nobody measured.
+    const TEST_QUALITY_FLOOR: f64 = 0.2;
+
     /// A single reference tet enriched to Tet10: all four faces are boundary,
     /// so all six midsides are boundary candidates — a fully-controlled fixture
     /// for the projection and its inversion back-off.
@@ -867,7 +938,7 @@ mod tests {
         // the projection genuinely moves them.
         let curved = straight
             .clone()
-            .with_sdf_projected_boundary(&SphereSdf { radius: 0.12 });
+            .with_sdf_projected_boundary(&SphereSdf { radius: 0.12 }, TEST_QUALITY_FLOOR);
 
         assert_eq!(
             &curved.positions()[..n_corners],
@@ -902,7 +973,8 @@ mod tests {
         let before = straight.positions().to_vec();
         // The reference tet's edge-`(0,i)` midsides sit at radius 0.05 from the
         // origin, so a sphere of that radius already contains them.
-        let curved = straight.with_sdf_projected_boundary(&SphereSdf { radius: 0.05 });
+        let curved =
+            straight.with_sdf_projected_boundary(&SphereSdf { radius: 0.05 }, TEST_QUALITY_FLOOR);
         let mut snapped = 0usize;
         for (v, p) in before.iter().enumerate() {
             if (p.norm() - 0.05).abs() < 1e-12 {
@@ -934,9 +1006,12 @@ mod tests {
         let straight = single_tet10();
         let before = straight.positions().to_vec();
         // 5e-11 is between PROJECT_TOL (1e-12) and SNAP (1e-10).
-        let curved = straight.with_sdf_projected_boundary(&SphereSdf {
-            radius: 0.05 + 5e-11,
-        });
+        let curved = straight.with_sdf_projected_boundary(
+            &SphereSdf {
+                radius: 0.05 + 5e-11,
+            },
+            TEST_QUALITY_FLOOR,
+        );
         let mut checked = 0usize;
         for (v, p) in before.iter().enumerate() {
             if (p.norm() - 0.05).abs() < 1e-12 {
@@ -965,10 +1040,12 @@ mod tests {
         // A sphere ten times the tet size: a full radial projection flings each
         // boundary midside far outside the tet, grossly inverting it.
         let sdf = SphereSdf { radius: 0.5 };
-        let curved = straight.with_sdf_projected_boundary(&sdf);
+        let curved = straight.with_sdf_projected_boundary(&sdf, TEST_QUALITY_FLOOR);
 
-        // 1. Every element stays non-inverted at every Gauss point.
-        let element = Tet10;
+        // 1. Every element is CERTIFIED valid over its whole volume — not
+        //    merely positive at the four points the back-off used to sample,
+        //    which is the check that let eight folded elements through on the
+        //    canonical sphere.
         for t in 0..curved.n_tets() as TetId {
             let corners = curved.tet_vertices(t);
             let mids = curved.tet_midside_nodes(t).expect("midsides");
@@ -980,12 +1057,11 @@ mod tests {
                 nodes[4 + i] = curved.positions()[m as usize];
             }
             let x_ref = SMatrix::<f64, 10, 3>::from_fn(|a, k| nodes[a][k]);
-            for (q, d) in element.rest_jacobian_dets(&x_ref).iter().enumerate() {
-                assert!(
-                    d.is_finite() && *d > 0.0,
-                    "tet {t} Gauss point {q} inverted after back-off: detJ = {d}",
-                );
-            }
+            assert!(
+                certify_rest(&x_ref, ValidityBar::Positive).is_certified(),
+                "tet {t} is not certified valid after back-off: {:?}",
+                certify_rest(&x_ref, ValidityBar::Positive),
+            );
         }
 
         // 2. Back-off engaged: at least one boundary midside ended short of its
