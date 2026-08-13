@@ -1,7 +1,7 @@
 //! [`Tet10Mesh`] — the enriched quadratic (Tet10) tet mesh (ladder rung 3a).
 //!
 //! Wraps a linear (Tet4) mesh's four-corner connectivity with the six
-//! edge-midpoint nodes a [`Tet10`] element needs,
+//! edge-midpoint nodes a [`Tet10`](crate::element::Tet10) element needs,
 //! produced by [`enrich_tet4_to_tet10`]. Built with
 //! [`Tet10Mesh::from_tet4`] from any linear [`Mesh`].
 //!
@@ -148,7 +148,7 @@ impl Tet10Mesh {
     /// Move the midside nodes off the straight edge midpoints, remapping each
     /// midside rest position through `project` — the seam that lets a mesh
     /// carry a *curved* (isoparametric) soft surface so the
-    /// [`Tet10`] element honors it exactly ("exact
+    /// [`Tet10`](crate::element::Tet10) element honors it exactly ("exact
     /// geometry IS the exact physics").
     ///
     /// Only midside positions (indices `>= n_corners`) are remapped; corner
@@ -426,7 +426,7 @@ impl Tet10Mesh {
     }
 
     /// Move the boundary midside nodes onto the true rigid surface `sdf` so the
-    /// [`Tet10`] element integrates over the real curved
+    /// [`Tet10`](crate::element::Tet10) element integrates over the real curved
     /// geometry rather than the inscribed facet chords — the SDF-projection
     /// mesher rung of "exact geometry IS the exact physics". The intelligent
     /// counterpart of [`with_curved_midsides`](Self::with_curved_midsides),
