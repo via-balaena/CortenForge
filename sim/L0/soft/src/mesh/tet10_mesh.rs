@@ -1,7 +1,7 @@
 //! [`Tet10Mesh`] — the enriched quadratic (Tet10) tet mesh (ladder rung 3a).
 //!
 //! Wraps a linear (Tet4) mesh's four-corner connectivity with the six
-//! edge-midpoint nodes a [`Tet10`] element needs,
+//! edge-midpoint nodes a [`Tet10`](crate::element::Tet10) element needs,
 //! produced by [`enrich_tet4_to_tet10`]. Built with
 //! [`Tet10Mesh::from_tet4`] from any linear [`Mesh`].
 //!
@@ -37,26 +37,11 @@ use super::{
     enrich::enrich_tet4_to_tet10,
 };
 use crate::Vec3;
-use crate::element::{Element, Tet10, ValidityBar, certify_rest};
+use crate::element::{ValidityBar, certify_rest};
 use crate::material::NeoHookean;
 use crate::sdf_bridge::{Sdf, project_point_onto_sdf};
 use nalgebra::{Point3, SMatrix};
 use std::collections::{HashMap, HashSet};
-
-/// The four **reference corners** of the parametric simplex — `ξ` at the tet's vertices.
-///
-/// These are the sample points a Gauss rule cannot reach. Every Stroud point of the
-/// four-point rule [`Tet10`] uses is strictly interior (barycentric weight 0.5854 on the
-/// nearest vertex, so a gap of 0.4146 to it), which leaves a fold confined to a corner
-/// region invisible to all four of them — see
-/// [`Tet10Mesh::with_projected_midsides`], whose back-off is measured against these as
-/// well as against the Gauss points for exactly that reason.
-const REFERENCE_CORNERS: [Vec3; 4] = [
-    Vec3::new(0.0, 0.0, 0.0),
-    Vec3::new(1.0, 0.0, 0.0),
-    Vec3::new(0.0, 1.0, 0.0),
-    Vec3::new(0.0, 0.0, 1.0),
-];
 
 /// Enriched quadratic (Tet10) tet mesh — four corners plus six
 /// edge-midpoint nodes per tet.
@@ -163,7 +148,7 @@ impl Tet10Mesh {
     /// Move the midside nodes off the straight edge midpoints, remapping each
     /// midside rest position through `project` — the seam that lets a mesh
     /// carry a *curved* (isoparametric) soft surface so the
-    /// [`Tet10`] element honors it exactly ("exact
+    /// [`Tet10`](crate::element::Tet10) element honors it exactly ("exact
     /// geometry IS the exact physics").
     ///
     /// Only midside positions (indices `>= n_corners`) are remapped; corner
@@ -245,53 +230,52 @@ impl Tet10Mesh {
     /// coordinate into the mesh. It now writes the straight position itself on `lo == 0`.
     /// Pinned by `a_non_finite_target_is_rejected_without_poisoning_the_node`.
     ///
-    /// **All four Gauss points are checked, not one.** A quadratic element's Jacobian is
-    /// *not* constant once a midside leaves its edge midpoint
-    /// ([`Element::rest_jacobian_dets`], and `tet10::rest_jacobian_dets_vary_per_gauss_point_when_curved`),
-    /// so a single-point check would miss curvature the four together can see.
+    /// # Validity is certified, not sampled
     ///
-    /// # ⚠⚠ The Gauss points are not enough, and the floor made that worse
+    /// A placement is admissible only where [`certify_rest`] **proves**
+    /// `det J ≥ quality_floor · det J_original` over the element's whole volume, against
+    /// [`ValidityBar::RelativeFloor`]. A failed proof is inadmissible just as a refutation is:
+    /// absence of a proof is not a proof.
     ///
-    /// An earlier revision of the paragraph above claimed the four-point sweep was what
-    /// stopped "a corner of the element folding over". **That was false, and it was measured
-    /// false on the shipped anatomy**, not reasoned about: censusing the conformed L4–L5 disc
-    /// at rest found **18 of 6256 elements folded at a reference corner** (worst normalised
-    /// determinant −0.856) with *every one of the 18 invisible to this rule* — all four Gauss
-    /// points comfortably positive. Every Stroud point of the four-point rule is strictly
-    /// interior (barycentric weight 0.5854 on the nearest vertex), so no combination of them
-    /// bounds the corner region.
+    /// # ⚠⚠ Why sampling was abandoned rather than widened
     ///
-    /// **The floor did not merely miss those folds — it produced them.** The bisection walks
-    /// each node to the furthest feasible blend, so a node whose target is infeasible lands
-    /// *exactly on* the acceptance boundary. Twelve of the eighteen sat at a Gauss ratio of
-    /// precisely `quality_floor`. Measuring feasibility at points that cannot see the corner
-    /// therefore drove those elements to the worst corner state the metric would still call
-    /// admissible. Adding the corners closes both halves at once: they are sampled, and the
-    /// boundary the back-off lands on is one they help define.
+    /// This guard sampled four Gauss points, then eight (adding the four reference corners),
+    /// and each step was forced by a measurement rather than by reasoning:
     ///
-    /// The corners carry the **same** relative floor rather than a bare `> 0`, for the reason
-    /// given above for the Gauss points: a positivity-only corner test bisects onto the
-    /// `detJ → 0⁺` boundary and manufactures a corner-degenerate element instead of a
-    /// corner-folded one. One floor governs all eight sample points, so there is no second
-    /// knob to keep consistent.
+    /// - The four-point rule was claimed to stop "a corner of the element folding over".
+    ///   **False, measured on the shipped anatomy**: the conformed L4–L5 disc carried
+    ///   **18 of 6256 elements folded at a reference corner** (worst normalised −0.856), every
+    ///   one invisible to it. Every Stroud point is strictly interior (barycentric weight
+    ///   0.5854 on the nearest vertex), so no combination of them bounds the corner region.
+    /// - The eight-point rule then read clean on that disc — and **still missed 5 folded
+    ///   elements on the lofted disc, the worst at −1.09 normalised**, while reporting 0 folded
+    ///   corners and a worst corner ratio of exactly `+0.400000`. A clean bill of health on a
+    ///   mesh containing an element inverted past its own straight volume.
     ///
-    /// ⚠ **This method still samples; its sibling no longer does.**
-    /// [`Self::with_sdf_projected_boundary`] had the same blind spot and has since been
-    /// converted to [`certify_rest`], which bounds `det J` over the *whole* element instead of
-    /// at any finite set of points — `det J` is a cubic, so eight points bound it no better
-    /// than four in principle, only in practice and only on geometry that has been censused.
-    /// The eight points here are sound on the conformed disc **because that disc was measured**,
-    /// not because eight is enough. Converting this method is the next step and is deliberately
-    /// separate: it re-anchors the licensed disc gates, which the sibling's conversion does not
-    /// touch.
+    /// That is not a bad choice of points. `det J` is a **cubic** in the parametric
+    /// coordinates, so it is free to dip between any finite set of samples, and no larger set
+    /// closes the gap in principle — only on geometry that has been censused, which is an
+    /// argument that has to be re-made for every new mesh. The certificate does not.
+    ///
+    /// # ⚠ The floor is not redundant now that the bar is exact
+    ///
+    /// **The sampling rule did not merely miss those folds — it produced them.** The bisection
+    /// walks each node to the furthest feasible blend, so a node whose target is infeasible
+    /// lands *exactly on* the acceptance boundary; twelve of the original eighteen sat at a
+    /// Gauss ratio of precisely `quality_floor`. Exactness does not change that: the search
+    /// still lands on whatever bar it is given, and a bare `det J > 0` bar is the
+    /// `det J → 0⁺` degeneracy boundary. Holding a fraction of the element's *original*
+    /// quality is what gives the search a bar worth landing on.
     ///
     /// Vertices not named in `moves` are untouched, and the topology (connectivity, boundary
     /// faces, materials, interface flags) is unchanged. [`QualityMetrics`] are deliberately
     /// **not** recomputed: they are four-corner quantities (`quality::compute_metrics` reads
     /// `tet_vertices` only) and corners never move here, so recomputing them would be a
     /// no-op. That is also why [`Mesh::quality`] cannot serve as this method's validity
-    /// oracle — it is structurally blind to midside-induced degeneracy, and
-    /// [`Element::rest_jacobian_dets`] is the oracle that is not.
+    /// oracle — it is structurally blind to midside-induced degeneracy. ⚠ Nor does
+    /// `Element::rest_jacobian_dets`, which an earlier revision named as "the oracle that is
+    /// not": it samples the four Gauss points, which is the rule this method had to abandon.
+    /// [`certify_rest`] is the oracle.
     ///
     /// # Panics
     ///
@@ -345,62 +329,50 @@ impl Tet10Mesh {
             }
         }
 
-        let element = Tet10;
         let tets = &self.tets;
-        // Shape gradients at the reference corners are element constants, so they are hoisted
-        // out of a predicate the bisection evaluates up to `BISECT_ITERS` times per moved node
-        // per incident element.
-        let corner_grads: [SMatrix<f64, 10, 3>; 4] =
-            REFERENCE_CORNERS.map(|xi| element.shape_gradients(xi));
-        // `det J_rest` at the EIGHT sample points this projector holds above the floor: the
-        // four Gauss points first, then the four reference corners. One `x_ref` serves both.
-        let dets_of = |positions: &[Vec3], ti: usize| -> [f64; 8] {
-            let x_ref = SMatrix::<f64, 10, 3>::from_fn(|a, k| positions[tets[ti][a] as usize][k]);
-            let gauss = element.rest_jacobian_dets(&x_ref);
-            let x_t = x_ref.transpose();
-            std::array::from_fn(|i| {
-                if i < 4 {
-                    gauss[i]
-                } else {
-                    (x_t * corner_grads[i - 4]).determinant()
-                }
-            })
+        let nodes_of = |positions: &[Vec3], ti: usize| -> SMatrix<f64, 10, 3> {
+            SMatrix::<f64, 10, 3>::from_fn(|a, k| positions[tets[ti][a] as usize][k])
         };
 
         // `tets` is borrowed above, so take `positions` out to mutate it in place through the
         // sweep (disjoint state), and put it back after.
         let mut positions = std::mem::take(&mut self.positions);
 
-        // Reference determinants per incident element, captured from the ORIGINAL mesh before
-        // any node moves — the healthy geometry each back-off is measured against.
-        let mut orig_dets: HashMap<usize, [f64; 8]> = HashMap::new();
+        // Reference geometry per incident element, captured from the ORIGINAL mesh before any
+        // node moves — the healthy state each back-off is measured against. Capturing it once
+        // is what stops a sequence of individually-admissible moves ratcheting an element down
+        // without any single step failing.
+        let mut original: HashMap<usize, SMatrix<f64, 10, 3>> = HashMap::new();
         for tis in incident.values() {
             for &ti in tis {
-                orig_dets
+                original
                     .entry(ti)
-                    .or_insert_with(|| dets_of(&positions, ti));
+                    .or_insert_with(|| nodes_of(&positions, ti));
             }
         }
 
-        // A placement keeps element `ti` valid iff every sample point's determinant is finite
-        // and at least `quality_floor` of its original. Finiteness is asserted first: a NaN
-        // determinant must read as invalid, never slip through a bare `≥`.
+        // A placement is admissible only where it is PROVEN to hold every incident element
+        // above the floor over that element's whole volume — `det J ≥ quality_floor · det
+        // J_original` everywhere, not at samples. `is_certified()` reads `false` for a failed
+        // proof as well as for a refutation, which is the fail-closed reading.
         //
-        // ⚠ `*o > 0.0` is load-bearing, not defensive noise. A *relative* floor is only a
-        // quality floor while the reference it is relative to is healthy: for `o < 0` the bar
-        // `quality_floor · o` is LESS negative than `o` itself, so the comparison silently
-        // inverts into "stay above a more-inverted number" and admits placements that leave the
-        // element folded — measured, it accepted a full target that degraded a *healthy*
-        // sample point by 94.5 % on a pre-folded element. Requiring `o > 0` makes an element
-        // that arrives inverted simply immovable, which is the fail-closed reading and the
-        // behaviour this method's docs already claimed.
+        // ⚠ The `o > 0` conjunct this predicate used to carry is now inside [`certify_rest`],
+        // which refuses an invalid reference outright: a *relative* floor is only a quality
+        // floor while the geometry it is relative to is healthy, since for `o < 0` the bar
+        // `quality_floor · o` is LESS negative than `o` itself and the comparison silently
+        // inverts into "stay above a more-inverted number". Measured before that guard existed,
+        // it accepted a full target that degraded a *healthy* sample point by 94.5 % on a
+        // pre-folded element.
         let incident_ok = |positions: &[Vec3], tis: &[usize]| -> bool {
             tis.iter().all(|&ti| {
-                let orig = orig_dets[&ti];
-                dets_of(positions, ti)
-                    .iter()
-                    .zip(&orig)
-                    .all(|(d, o)| d.is_finite() && *o > 0.0 && *d >= quality_floor * o)
+                certify_rest(
+                    &nodes_of(positions, ti),
+                    ValidityBar::RelativeFloor {
+                        original: &original[&ti],
+                        floor: quality_floor,
+                    },
+                )
+                .is_certified()
             })
         };
 
@@ -454,7 +426,7 @@ impl Tet10Mesh {
     }
 
     /// Move the boundary midside nodes onto the true rigid surface `sdf` so the
-    /// [`Tet10`] element integrates over the real curved
+    /// [`Tet10`](crate::element::Tet10) element integrates over the real curved
     /// geometry rather than the inscribed facet chords — the SDF-projection
     /// mesher rung of "exact geometry IS the exact physics". The intelligent
     /// counterpart of [`with_curved_midsides`](Self::with_curved_midsides),
@@ -761,7 +733,21 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::*;
-    use crate::element::{TET10_EDGE_NODES, Tet10};
+    use crate::element::{Element, TET10_EDGE_NODES, Tet10};
+
+    /// The four **reference corners** of the parametric simplex — `ξ` at the tet's vertices.
+    ///
+    /// ⚠ Test-only. Production no longer samples anything: both projectors certify over the
+    /// whole element via `certify_rest`. These survive because the sampling helpers below are
+    /// still useful as an INDEPENDENT readout — a spot value the certifier does not compute —
+    /// and because several gates state their expectations in terms of the eight points the
+    /// guard historically used.
+    const REFERENCE_CORNERS: [Vec3; 4] = [
+        Vec3::new(0.0, 0.0, 0.0),
+        Vec3::new(1.0, 0.0, 0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+    ];
     use crate::material::MaterialField;
     use crate::mesh::{HandBuiltTetMesh, SingleTetMesh};
     use crate::sdf_bridge::{SphereSdf, project_point_onto_sdf};
@@ -1405,6 +1391,15 @@ mod tests {
     /// The back-off therefore stops where `1 - 4f = quality_floor`, i.e. at
     /// `f = (1 - floor) / 4`, and the delivered blend is that over the requested `0.30`.
     /// Nothing here is a magic constant: change the floor and the assert follows it.
+    ///
+    /// ★ **Why a constant derived from corner SAMPLES survived the switch to certification.**
+    /// This fixture displaces a *single* midside, and for one displaced midside `J` picks up a
+    /// rank-1 update whose determinant is **linear** in `ξ` — not the general cubic. A linear
+    /// function on a simplex attains its minimum at a vertex, so the four corner values bound
+    /// it exactly and [`certify_rest`] agrees with them to the last bit. The expectation is
+    /// unchanged because on this fixture the two oracles are provably the same one, which is a
+    /// theorem rather than a coincidence. Measured on the multi-move sibling fixture too: the
+    /// binding corner sits `6.1e-11` above the floor, i.e. on it to bisection resolution.
     #[test]
     fn a_fold_at_a_reference_corner_stops_a_projection_every_gauss_point_accepts() {
         let floor = 0.05_f64;
