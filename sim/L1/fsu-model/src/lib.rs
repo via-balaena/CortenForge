@@ -2449,8 +2449,9 @@ mod tests {
         assert_restoring_sweep(&conf10.capture_flexion(&angles), 2e-2);
     }
 
-    /// The worst `detJ / detJ_rest` over **every element and every Gauss point** of a curved
-    /// mesh, measured against its straight twin.
+    /// The worst `detJ / detJ_rest` over **every element and all eight sample points** of a
+    /// curved mesh — the four Gauss points and the four reference corners — measured against
+    /// its straight twin.
     ///
     /// This is rung 3's element-validity oracle (plan §4.4), and it is deliberately *not*
     /// [`Mesh::quality`]: `Tet10Mesh` never recomputes `QualityMetrics` after a midside moves,
@@ -2458,6 +2459,16 @@ mod tests {
     /// blind to midside-induced degeneracy. [`Element::rest_jacobian_dets`] is not — and it
     /// varies per Gauss point precisely when an element is curved
     /// (`sim_soft::element::tet10`'s `rest_jacobian_dets_vary_per_gauss_point_when_curved`).
+    ///
+    /// ⚠⚠ **The reference corners are here because the Gauss points alone were measured
+    /// insufficient, on this very mesh.** While this oracle swept the four Stroud points only,
+    /// it reported a healthy `0.4000` on a conformed disc that
+    /// `conformed_disc_reference_corner_rest_census_fom` found contained **18 elements folded
+    /// at a reference corner** — because every Stroud point is strictly interior and none of
+    /// them bounds the corner region. An oracle blind to the defect its own gate exists to
+    /// exclude is worse than no oracle: it reads green and licenses the conclusion. It now
+    /// sweeps what the projector's acceptance test sweeps, so the two cannot disagree about
+    /// what "valid" means.
     ///
     /// ⚠ **What makes this stricter than the projector's own guarantee** — the point of the
     /// gate, since "the back-off never inverts an element" is a construction guarantee and
@@ -2472,9 +2483,11 @@ mod tests {
     /// **−9.7870** on the real disc — genuinely inverted elements — while the §4.3 residual gate
     /// still *improves* (authorised RMS 0.796 → 0.711) and passes. The mutation record is in
     /// [`curved_tet10_midsides_seat_on_the_endplate_fom`].
-    fn worst_gauss_det_ratio(curved: &Tet10Mesh, straight: &Tet10Mesh) -> f64 {
+    fn worst_rest_det_ratio(curved: &Tet10Mesh, straight: &Tet10Mesh) -> f64 {
         let element = Tet10;
-        let dets = |mesh: &Tet10Mesh, t: TetId| -> [f64; 4] {
+        let corner_grads: [SMatrix<f64, 10, 3>; 4] =
+            REFERENCE_CORNERS.map(|xi| element.shape_gradients(xi));
+        let dets = |mesh: &Tet10Mesh, t: TetId| -> [f64; 8] {
             let corners = mesh.tet_vertices(t);
             let mids = mesh
                 .tet_midside_nodes(t)
@@ -2486,7 +2499,16 @@ mod tests {
             for (i, &m) in mids.iter().enumerate() {
                 nodes[4 + i] = mesh.positions()[m as usize];
             }
-            element.rest_jacobian_dets(&SMatrix::<f64, 10, 3>::from_fn(|a, k| nodes[a][k]))
+            let x_ref = SMatrix::<f64, 10, 3>::from_fn(|a, k| nodes[a][k]);
+            let gauss = element.rest_jacobian_dets(&x_ref);
+            let x_t = x_ref.transpose();
+            std::array::from_fn(|i| {
+                if i < 4 {
+                    gauss[i]
+                } else {
+                    (x_t * corner_grads[i - 4]).determinant()
+                }
+            })
         };
         assert_eq!(
             curved.n_tets(),
@@ -2498,7 +2520,7 @@ mod tests {
         (0..n_tets)
             .flat_map(|t| {
                 let (c, s) = (dets(curved, t), dets(straight, t));
-                (0..4).map(move |q| c[q] / s[q]).collect::<Vec<_>>()
+                (0..8).map(move |q| c[q] / s[q]).collect::<Vec<_>>()
             })
             .fold(f64::INFINITY, f64::min)
     }
@@ -2634,7 +2656,7 @@ mod tests {
         let (max_s, rms_s) = res(&straight);
         let (max_c, rms_c) = res(&curved);
         // (3) VALIDITY + COVERAGE (plan §4.4).
-        let worst = worst_gauss_det_ratio(&curved, &straight);
+        let worst = worst_rest_det_ratio(&curved, &straight);
         let (delivered, max_move, mean_move) =
             projection_coverage(&straight, &curved, &moves, params.scale);
         println!(
@@ -2665,8 +2687,8 @@ mod tests {
         );
         assert!(
             worst >= DISC_MIDSIDE_CONFORM_QUALITY_FLOOR,
-            "an element fell below the quality floor at some Gauss point \
-             (worst detJ/detJ_rest {worst:.4})",
+            "an element fell below the quality floor at some sample point — a Gauss point \
+             or a reference corner (worst detJ/detJ_rest {worst:.4})",
         );
         assert!(
             delivered > 0.9,
@@ -3465,26 +3487,148 @@ mod tests {
         }
     }
 
-    /// **The reference-corner REST census** of the shipped raw and conformed Tet10 discs
-    /// (`project_conformed_disc_corner_folded_elements`, queued work item 1).
+    /// Whether the folded elements a census found reach the physics, whether the shipped
+    /// guard can see them — and the regression gate that keeps the answer at "none of them".
     ///
-    /// # What this measures, and why it is a census rather than a gate
+    /// Two questions decide what a fold costs, and both are per-element.
+    ///
+    /// (a) **Free DOFs.** These elements sit in the endplate region, and the `full_face_band`
+    ///     tie pins every node it covers. An element whose ten nodes are ALL in the band is
+    ///     folded but Dirichlet-clamped: it cannot move, so it contributes nothing to the
+    ///     free-DOF system `k_disc` is read from. One with a free node is integrated live, and
+    ///     the committed anchors are then measured over an inside-out element. Of the 18 found
+    ///     before the fix, 12 were fully pinned and **6 carried free DOFs**.
+    ///
+    /// (b) **Guard blindness on REAL geometry.** The projector used to accept a placement on
+    ///     `Element::rest_jacobian_dets` alone — the four Stroud points, all interior. The
+    ///     60 % → 6 % miss-rate table behind that blindness claim was measured on straight-edged
+    ///     synthetic tets; on the shipped anatomy **all 18 of 18** were missed, so the real-
+    ///     geometry miss rate for this class was 100 %.
+    fn report_and_gate_folded(tet10: &Tet10Mesh, p: &PreparedDisc, c: &RestCensus) {
+        // ## Do the folded elements reach the physics, and can the shipped guard see them?
+        //
+        // Two questions decide what this finding costs, and both are per-element.
+        //
+        // (a) **Free DOFs.** These elements sit in the endplate region, and the
+        //     `full_face_band` tie pins every node it covers. An element whose ten nodes
+        //     are ALL in the band is folded but Dirichlet-clamped: it cannot move, so it
+        //     contributes nothing to the free-DOF system `k_disc` is read from. One with a
+        //     free node is integrated live, and the committed anchors are then measured
+        //     over an inside-out element.
+        //
+        // (b) **Guard blindness on REAL geometry.** `Tet10Mesh::with_projected_midsides`
+        //     accepts a projection by `Element::rest_jacobian_dets` — the four Stroud
+        //     points, all interior. The 60 % → 6 % miss-rate table behind that claim was
+        //     measured on straight-edged synthetic tets, so this is the first reading of it
+        //     on the shipped anatomy: if every Gauss point of a folded element is positive,
+        //     the guard is confirmed blind to exactly what it is supposed to prevent.
+        let element = Tet10;
+        let positions = tet10.positions();
+        let band: BTreeSet<VertexId> = full_face_band(tet10, &p.inferior)
+            .into_iter()
+            .chain(full_face_band(tet10, &p.superior))
+            .collect();
+        let folded_tets: BTreeSet<usize> = c.folded.iter().map(|&(t, _, _)| t).collect();
+        let (mut fully_pinned, mut with_free_dofs, mut gauss_blind) = (0, 0, 0);
+        for &t in &folded_tets {
+            #[allow(clippy::cast_possible_truncation)]
+            let tid = t as TetId;
+            let Some(nodes) = tet10_nodes(tet10, tid) else {
+                continue;
+            };
+            let pinned = nodes.iter().filter(|n| band.contains(n)).count();
+            let x_ref = SMatrix::<f64, 10, 3>::from_fn(|a, k| positions[nodes[a] as usize][k]);
+            let scale = affine_det(&x_ref);
+            let gauss = element.rest_jacobian_dets(&x_ref);
+            let min_gauss = gauss.iter().fold(f64::INFINITY, |m, &g| m.min(g / scale));
+            if pinned == 10 {
+                fully_pinned += 1;
+            } else {
+                with_free_dofs += 1;
+            }
+            if min_gauss > 0.0 {
+                gauss_blind += 1;
+            }
+            println!(
+                "    tet {t:6}: pinned {pinned:2}/10, min Gauss det ratio {min_gauss:+.6}, \
+                 min corner det ratio {:+.6}",
+                c.folded
+                    .iter()
+                    .filter(|&&(ft, _, _)| ft == t)
+                    .fold(f64::INFINITY, |m, &(_, _, r)| m.min(r)),
+            );
+        }
+        println!(
+            "  of {} folded elements: {fully_pinned} fully pinned by the bond, \
+             {with_free_dofs} carry FREE DOFs; {gauss_blind} are invisible to the \
+             shipped Gauss-point guard",
+            folded_tets.len(),
+        );
+
+        // ★ THE REGRESSION GATE. The shipped conformed disc must contain no element folded
+        // in its own rest configuration. This was 18 before the projector's back-off was
+        // held at the reference corners; it is the reason that change exists, and it is the
+        // instrument that fails if the blind metric ever comes back.
+        assert!(
+            c.folded.is_empty(),
+            "{} conformed-disc elements are folded at a reference corner AT REST (worst \
+             normalised determinant {:.6}); {with_free_dofs} of them carry free DOFs and \
+             {gauss_blind} are invisible to the Gauss-point rule. The midside projection's \
+             acceptance test has stopped sampling the corners.",
+            folded_tets.len(),
+            c.worst,
+        );
+        // ...and the corner constraint is what binds, which is what makes the assert above
+        // non-vacuous: a floor nothing reaches would pass it for the wrong reason.
+        assert!(
+            (c.worst - DISC_MIDSIDE_CONFORM_QUALITY_FLOOR).abs() < 1.0e-9,
+            "the worst normalised corner determinant is {:.6}, not the quality floor {:.6} \
+             — if the corners are slack this census no longer witnesses the constraint that \
+             keeps them unfolded",
+            c.worst,
+            DISC_MIDSIDE_CONFORM_QUALITY_FLOOR,
+        );
+    }
+
+    /// **The reference-corner REST census** of the shipped raw and conformed Tet10 discs —
+    /// the instrument that found the fold, and now the regression gate that keeps it gone.
+    ///
+    /// # What it found, and what fixed it
     ///
     /// A reference-corner validity **stage** was written on
     /// `fix/tet10-inversion-gate-at-gauss-points` and split back out at `cad72838`, because
     /// adding it turned three previously-green licensed gates red — all with the same
     /// signature, `det F` negative at reference corner 2 while every Gauss point and the
     /// affine corner block read positive. That stage fails closed on the **first** violator,
-    /// which is the right shape for a gate and the wrong shape for the question now open:
+    /// which is the right shape for a gate and the wrong shape for the question it left open:
     /// *are these elements acceptable, and if not, how much of the mesh is affected?* That
     /// needs a distribution, so this counts every element instead of stopping at one.
     ///
-    /// It is also deliberately a **rest-state** measurement. The three red gates observed
-    /// folds at deformed states reached through a flexion sweep, which confounds two
-    /// questions — is the mesh bad, or does the load path drive good elements bad? The
-    /// reference map's own orientation is a property of the mesh alone: an element with
-    /// `det J_rest ≤ 0` at a corner is folded before anything is applied to it. Whatever this
-    /// finds is attributable to the mesher and to nothing else.
+    /// It measured **18 of 6256 conformed-disc elements folded at a reference corner**, worst
+    /// normalised determinant −0.856, of which **6 carried free DOFs** (the other 12 were
+    /// fully pinned by the `full_face_band` tie) and **all 18 were invisible** to the
+    /// Gauss-point rule that accepted them. `Tet10Mesh::with_projected_midsides` now holds its
+    /// back-off at the reference corners as well, and this reads **0 folded, worst ratio
+    /// exactly at the floor** — the constraint binding where it was designed to.
+    ///
+    /// ⚠ **`k_disc` did not move.** The conformed absolutes reproduce
+    /// [`committed_anchors`] to four decimals across the fix, so the anchors measured over
+    /// those six live folded elements were not measurably wrong. That is a *measured*
+    /// resolution of the provenance question, not a reason the fold was acceptable.
+    ///
+    /// It is deliberately a **rest-state** measurement. The three red gates observed folds at
+    /// deformed states reached through a flexion sweep, which confounds two questions — is the
+    /// mesh bad, or does the load path drive good elements bad? The reference map's own
+    /// orientation is a property of the mesh alone: an element with `det J_rest ≤ 0` at a
+    /// corner is folded before anything is applied to it. What this finds is attributable to
+    /// the mesher and to nothing else.
+    ///
+    /// ⚠ **Scope, and what it does NOT cover.** A straight Tet10 is affine whatever its
+    /// corners do, so this sees only **midside-driven** folds; corner-conform damage stays
+    /// affine and positive and is invisible here. Nor does it cover folds that a *deformation*
+    /// induces in a mesh that is sound at rest — a straight-edged element's `F` is not constant
+    /// once it deforms, so that class is real and is the solver-stage question (`cad72838`),
+    /// not this one.
     ///
     /// # The negative control is free, and it is the raw arm
     ///
@@ -3552,65 +3696,7 @@ mod tests {
                 continue;
             }
 
-            // ## Do the folded elements reach the physics, and can the shipped guard see them?
-            //
-            // Two questions decide what this finding costs, and both are per-element.
-            //
-            // (a) **Free DOFs.** These elements sit in the endplate region, and the
-            //     `full_face_band` tie pins every node it covers. An element whose ten nodes
-            //     are ALL in the band is folded but Dirichlet-clamped: it cannot move, so it
-            //     contributes nothing to the free-DOF system `k_disc` is read from. One with a
-            //     free node is integrated live, and the committed anchors are then measured
-            //     over an inside-out element.
-            //
-            // (b) **Guard blindness on REAL geometry.** `Tet10Mesh::with_projected_midsides`
-            //     accepts a projection by `Element::rest_jacobian_dets` — the four Stroud
-            //     points, all interior. The 60 % → 6 % miss-rate table behind that claim was
-            //     measured on straight-edged synthetic tets, so this is the first reading of it
-            //     on the shipped anatomy: if every Gauss point of a folded element is positive,
-            //     the guard is confirmed blind to exactly what it is supposed to prevent.
-            let element = Tet10;
-            let positions = tet10.positions();
-            let band: BTreeSet<VertexId> = full_face_band(&tet10, &p.inferior)
-                .into_iter()
-                .chain(full_face_band(&tet10, &p.superior))
-                .collect();
-            let folded_tets: BTreeSet<usize> = c.folded.iter().map(|&(t, _, _)| t).collect();
-            let (mut fully_pinned, mut with_free_dofs, mut gauss_blind) = (0, 0, 0);
-            for &t in &folded_tets {
-                #[allow(clippy::cast_possible_truncation)]
-                let tid = t as TetId;
-                let Some(nodes) = tet10_nodes(&tet10, tid) else {
-                    continue;
-                };
-                let pinned = nodes.iter().filter(|n| band.contains(n)).count();
-                let x_ref = SMatrix::<f64, 10, 3>::from_fn(|a, k| positions[nodes[a] as usize][k]);
-                let scale = affine_det(&x_ref);
-                let gauss = element.rest_jacobian_dets(&x_ref);
-                let min_gauss = gauss.iter().fold(f64::INFINITY, |m, &g| m.min(g / scale));
-                if pinned == 10 {
-                    fully_pinned += 1;
-                } else {
-                    with_free_dofs += 1;
-                }
-                if min_gauss > 0.0 {
-                    gauss_blind += 1;
-                }
-                println!(
-                    "    tet {t:6}: pinned {pinned:2}/10, min Gauss det ratio {min_gauss:+.6}, \
-                     min corner det ratio {:+.6}",
-                    c.folded
-                        .iter()
-                        .filter(|&&(ft, _, _)| ft == t)
-                        .fold(f64::INFINITY, |m, &(_, _, r)| m.min(r)),
-                );
-            }
-            println!(
-                "  of {} folded elements: {fully_pinned} fully pinned by the bond, \
-                 {with_free_dofs} carry FREE DOFs; {gauss_blind} are invisible to the \
-                 shipped Gauss-point guard",
-                folded_tets.len(),
-            );
+            report_and_gate_folded(&tet10, &p, &c);
         }
     }
 
@@ -6593,12 +6679,12 @@ mod tests {
     /// always feasible, so non-inversion is a *construction guarantee*. Its two replacements are
     /// both falsifiable — **coverage** (`projection_coverage`: what fraction reached its FULL
     /// projection, since both projection helpers back off silently) and **element validity over
-    /// every element** (`worst_gauss_det_ratio`, whose doc comment states precisely what it
+    /// every element** (`worst_rest_det_ratio`, whose doc comment states precisely what it
     /// catches that the projector's own guarantee does not).
     #[test]
     #[ignore = "needs $CF_L4_STL/$CF_L5_STL/$CF_DISC_STL (BodyParts3D, CC BY-SA, not committed)"]
     // Five helpers are already extracted above (`curved_disc_arms`, `midside_split`,
-    // `midside_residuals`, `projection_coverage`, `worst_gauss_det_ratio`); what is left is one
+    // `midside_residuals`, `projection_coverage`, `worst_rest_det_ratio`); what is left is one
     // gate's linear narrative — three populations, two arms, four committed statistics — and
     // splitting it further would scatter numbers away from the prose that justifies them.
     #[allow(clippy::too_many_lines)]
@@ -6686,7 +6772,7 @@ mod tests {
         // (3) COVERAGE + ELEMENT VALIDITY (§4.4).
         let (delivered, max_move, mean_move) =
             projection_coverage(&straight, &curved, &moves, params.scale);
-        let worst_det = worst_gauss_det_ratio(&curved, &straight);
+        let worst_det = worst_rest_det_ratio(&curved, &straight);
         println!(
             "projection: {:.1} % delivered in full, max move {max_move:.3} mm, mean {mean_move:.3} mm; \
              worst detJ/detJ_rest over every element and Gauss point {worst_det:.4}",
@@ -6763,11 +6849,42 @@ mod tests {
         // (6) COMMITTED VALUES, two-sided at ±5 % (the #701 / rung-1 / rung-2 shape).
         //
         // COMMITTED (as above), residual in mm — ALL == AUTHORISED, per assert (4b):
-        //   AUTHORISED       straight max 1.375  rms 0.197  ->  curved max 0.923  rms 0.111
+        //   AUTHORISED       straight max 1.375  rms 0.197  ->  curved max 1.045  rms 0.119
         //   ALL candidates   identical to AUTHORISED (the populations are the same set)
         //   GUARD-DECLINED   EMPTY — see the retired pin below
-        //   COVERAGE         91.0 % delivered in full; max move 0.818, mean 0.086 mm
-        //   VALIDITY         worst detJ/detJ_rest 0.4000 over every element and Gauss point
+        //   COVERAGE         83.1 % delivered in full; max move 0.740, mean 0.076 mm
+        //   VALIDITY         worst detJ/detJ_rest 0.4000 over every element and all EIGHT
+        //                    sample points (four Gauss points + four reference corners)
+        //
+        // ⚠⚠ **RE-ANCHORED for the reference-corner back-off.** `with_projected_midsides` now
+        // measures feasibility at the four reference corners as well as the four Gauss points,
+        // because the conformed disc it accepted under the Gauss-only rule contained 18
+        // elements folded at a corner —
+        // `conformed_disc_reference_corner_rest_census_fom` carries that measurement and is now
+        // the regression gate for it. Four numbers here move, all in the direction a *stricter*
+        // acceptance test must move them, which is the check that this re-anchor is the change
+        // and not a drift:
+        //
+        //   curved max   0.923 -> 1.045 mm      curved rms  0.111 -> 0.119 mm
+        //   coverage     91.0  -> 83.1  %       max move    0.818 -> 0.740 mm
+        //
+        // ★ **The straight column did not move** (max 1.375, rms 0.197), which localises the
+        // change to the projection rather than to the mesh, the band rule or the selection —
+        // the same structure rung β's re-anchor used, and the reason those two are still pinned
+        // here.
+        //
+        // ★★ **The payoff survives the stricter rule, and that was the kill/confirm.** A
+        // corner constraint tight enough to unfold the mesh but tight enough to also stop the
+        // midsides moving would have traded a real fold for a useless projection; the seated
+        // RMS lands at 0.119 mm against the straight 0.197 mm, still a 40 % improvement and
+        // still below rung 2's corners at 0.170 mm. So the bonded face is *still* seated more
+        // closely than the corners it spans, which is the claim rung 3 exists to make.
+        //
+        // ⚠ `k_disc` is NOT re-anchored, and that is measured rather than assumed:
+        // `conform_delta_by_element_fom` reproduces all eight committed absolutes to four
+        // decimals across this change. The 18 folded elements did not measurably move the
+        // physics — 12 were fully pinned by the bond and the 6 that carried free DOFs sit at
+        // the endplate periphery.
         //
         // ⚠⚠ **RE-ANCHORED at rung β** from `AUTHORISED 3.973 / 0.881 -> 3.971 / 0.767`,
         // `ALL 12.464 / 3.375 -> 12.464 / 3.357`, coverage 67.4 %. Previously re-anchored at
@@ -6781,16 +6898,16 @@ mod tests {
         // instead of a statistic over nothing.
         //
         // **The payoff, and it is much stronger than the figures it replaces.** The seated
-        // population's RMS distance to the bone falls **0.197 -> 0.111 mm** and the worst midside
-        // ends up **0.923 mm** out, where this table used to record 0.881 -> 0.767 with a 3.971 mm
+        // population's RMS distance to the bone falls **0.197 -> 0.119 mm** and the worst midside
+        // ends up **1.045 mm** out, where this table used to record 0.881 -> 0.767 with a 3.971 mm
         // extreme. Rung 2's corners now sit at 0.170 mm RMS, so the midsides land *closer to the
-        // bone than the corners they span* (0.111 vs 0.170) — the bonded face is uniformly seated,
+        // bone than the corners they span* (0.119 vs 0.170) — the bonded face is uniformly seated,
         // which is what this rung exists to deliver.
         //
         // ★ **The max finally moves.** It used to barely budge (3.973 -> 3.971) because the worst
-        // authorised midside was one the quality floor refused; now it drops 33 % (1.375 -> 0.923)
-        // and coverage rose 67.4 % -> **91.0 %**. Both have the same cause: with the phantom
-        // material gone, a midside is asked to move 0.818 mm rather than 1.533 mm across a 3 mm
+        // authorised midside was one the quality floor refused; now it drops 24 % (1.375 -> 1.045)
+        // and coverage rose 67.4 % -> **83.1 %**. Both have the same cause: with the phantom
+        // material gone, a midside is asked to move 0.740 mm rather than 1.533 mm across a 3 mm
         // cell, so the floor refuses far less often. **The projection did not improve — its input
         // did.**
         //
@@ -6802,10 +6919,10 @@ mod tests {
         assert_within_5_percent(&[
             (au_max_s, 1.375, "authorised straight max (mm)"),
             (au_rms_s, 0.197, "authorised straight rms (mm)"),
-            (au_max_c, 0.923, "authorised curved max (mm)"),
-            (au_rms_c, 0.111, "authorised curved rms (mm)"),
+            (au_max_c, 1.045, "authorised curved max (mm)"),
+            (au_rms_c, 0.119, "authorised curved rms (mm)"),
             (all_rms_s, 0.197, "all straight rms (mm)"),
-            (all_rms_c, 0.111, "all curved rms (mm)"),
+            (all_rms_c, 0.119, "all curved rms (mm)"),
             (all_max_s, 1.375, "all straight max (mm)"),
         ]);
 
@@ -6830,8 +6947,9 @@ mod tests {
         // the back-off never engages at that curvature, so the real disc is where this bites.)
         assert!(
             worst_det >= DISC_MIDSIDE_CONFORM_QUALITY_FLOOR,
-            "an element fell below the quality floor at some Gauss point \
-             (worst detJ/detJ_rest {worst_det:.4}) — fix the projection, not this gate",
+            "an element fell below the quality floor at some sample point — a Gauss point or a \
+             reference corner (worst detJ/detJ_rest {worst_det:.4}) — fix the projection, not \
+             this gate",
         );
         assert!(
             worst_det < 1.0,
@@ -6841,21 +6959,25 @@ mod tests {
 
         // (8) §4.4 COVERAGE — the falsifiable half of the validity gate, two-sided.
         //
-        // **9.0 % of the authorised midsides do NOT reach their full projection**, and that is
+        // **16.9 % of the authorised midsides do NOT reach their full projection**, and that is
         // the number this statistic exists to make impossible to hide: both projection helpers
         // back off silently, so a "did anything move / how far did the furthest node move" gate
         // would have reported this run as a clean success. The non-delivery is real geometry,
-        // not a bug — a midside asked to move 0.818 mm across a 3 mm cell is asked to fold its
+        // not a bug — a midside asked to move 0.740 mm across a 3 mm cell is asked to fold its
         // element, and the quality floor refuses. Compare the corner conform, where 182 of 188
         // authorised nodes were delivered (96.8 %): corner moves are sparser and a Tet4 element's
         // Jacobian is affine, so the floor almost never binds there.
         //
-        // ⚠⚠ **RE-ANCHORED at rung β from 67.4 % / max move 1.533 / mean 0.141.** Coverage rose to
-        // **91.0 %** and the largest requested move fell by nearly half. Both have one cause and it
-        // is not this rung's code: α.1 (#714) stopped the mesher emitting material that is not
-        // disc, so the straight midsides start 7× closer to the bone (RMS 3.375 -> 0.197 mm) and a
-        // much smaller move is requested. **The projector did not improve — its input did**, and
-        // saying so is the difference between recording a result and claiming credit for one.
+        // ⚠⚠ **RE-ANCHORED at rung β from 67.4 % / max move 1.533 / mean 0.141**, then again for
+        // the reference-corner back-off, from **91.0 % / 0.818 / 0.086** to today's
+        // **83.1 % / 0.740 / 0.076**. The two moves have opposite causes and it is worth keeping
+        // them apart. The rise to 91.0 % was α.1 (#714) stopping the mesher emitting material
+        // that is not disc, so the straight midsides start 7× closer to the bone
+        // (RMS 3.375 -> 0.197 mm) and a much smaller move is requested — **the projector did not
+        // improve, its input did**. The fall to 83.1 % is this rung's own doing: the acceptance
+        // test now also samples the reference corners, so the floor refuses more often, on
+        // exactly the moves that were folding a corner while every Gauss point looked healthy.
+        // A coverage number falling because the guard got honest is not a regression.
         //
         // ★ Note the direction: coverage RISING is the benign direction for this statistic (see the
         // mutant below, where a silent cap also raises it). What makes the rise trustworthy here is
@@ -6890,9 +7012,9 @@ mod tests {
         // strict-decrease assert; only the two-sided pin sees it). Gate all three, and read the
         // fraction as covering the back-off-engages-more direction only.
         assert_within_5_percent(&[
-            (delivered, 0.910, "delivered fraction"),
-            (max_move, 0.818, "max midside move (mm)"),
-            (mean_move, 0.086, "mean midside move (mm)"),
+            (delivered, 0.831, "delivered fraction"),
+            (max_move, 0.740, "max midside move (mm)"),
+            (mean_move, 0.076, "mean midside move (mm)"),
         ]);
     }
 
