@@ -3866,6 +3866,98 @@ mod tests {
         }
     }
 
+    /// ▶ **BASELINE for the certified-conform conversion** — measurement, not a gate yet.
+    ///
+    /// Answers the two questions the conversion needs answered *before* it happens:
+    ///
+    /// 1. **Does exactness find anything on the real disc?** The shipped eight-point rule is
+    ///    sound on this geometry *because this geometry was measured*, not because eight
+    ///    points bound a cubic. `certify_rest` bounds `det J` over the whole element, so a
+    ///    `Violated` here is a fold eight samples cannot see — and an `Undetermined` is an
+    ///    element sitting too close to the bar to separate.
+    /// 2. **What does the conform cost?** The certificate is ~1.64x the eight-point test and
+    ///    `certify_rest` re-certifies its reference on every call, so a converted conform
+    ///    should cost ~3.3x. This records the before number so the after number means
+    ///    something.
+    ///
+    /// Both the scanned disc and the **lofted** one, because the lofted disc is a second
+    /// geometry that has historically disagreed with the scanned one (it still carries 5
+    /// folded elements where the scanned disc carries none).
+    #[test]
+    #[ignore = "needs $CF_L4_STL/$CF_L5_STL/$CF_DISC_STL (BodyParts3D, CC BY-SA, not committed)"]
+    fn disc_conform_exact_validity_baseline_fom() {
+        use sim_soft::element::{RestValidity, ValidityBar, certify_rest};
+
+        let l4 = cf_fsu_geometry::load_from_env("CF_L4_STL").expect("load L4");
+        let l5 = cf_fsu_geometry::load_from_env("CF_L5_STL").expect("load L5");
+        let scanned = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc");
+        let (o4, o5) = (oracle(&l4).unwrap(), oracle(&l5).unwrap());
+        let frame = cf_fsu_geometry::segment_frame(&l4, &l5, &o4, &o5).unwrap();
+        let params = DiscParams::default();
+        let ep = EndplateConform {
+            o4: &o4,
+            o5: &o5,
+            superior_axis: frame.superior_axis,
+        };
+
+        for (label, mesh) in [("scanned", scanned), ("lofted", lofted_disc(&l4, &l5))] {
+            let p = prepare_disc(mesh, &params, Some(ep))
+                .unwrap_or_else(|e| panic!("prepare {label} disc: {e:?}"));
+
+            // The conform itself, timed — this is the number the conversion moves.
+            let clock = std::time::Instant::now();
+            let tet10 = prepared_tet10_mesh(&p, &params, Some(ep), ConformFloors::SHIPPED);
+            let conform_secs = clock.elapsed().as_secs_f64();
+
+            // What eight samples say, and what a proof says.
+            let eight = census_rest_corners(&tet10);
+            let (mut certified, mut violated, mut undetermined) = (0usize, 0usize, 0usize);
+            let mut worst_witness = f64::INFINITY;
+            let certify_clock = std::time::Instant::now();
+            for t in 0..tet10.n_tets() {
+                #[allow(clippy::cast_possible_truncation)]
+                let tid = t as TetId;
+                let Some(nodes) = tet10_nodes(&tet10, tid) else {
+                    continue;
+                };
+                let pos = tet10.positions();
+                let x_ref =
+                    nalgebra::SMatrix::<f64, 10, 3>::from_fn(|a, k| pos[nodes[a] as usize][k]);
+                match certify_rest(&x_ref, ValidityBar::Positive) {
+                    RestValidity::Certified { .. } => certified += 1,
+                    RestValidity::Violated { value, .. } => {
+                        violated += 1;
+                        // Normalised the way the census normalises, so the number is
+                        // comparable to its `worst` column rather than a bare SI volume.
+                        let affine = affine_det(&x_ref).abs().max(f64::MIN_POSITIVE);
+                        worst_witness = worst_witness.min(value / affine);
+                    }
+                    RestValidity::Undetermined => undetermined += 1,
+                }
+            }
+            let certify_secs = certify_clock.elapsed().as_secs_f64();
+
+            println!(
+                "\n=== {label} disc, SHIPPED floors — {} tets ===\n  \
+                 conform (8-point back-off) : {:.3} s\n  \
+                 whole-mesh certification   : {:.3} s\n  \
+                 8-point census: {} folded corners, worst normalised {:+.6}\n  \
+                 exact:  certified {certified}, VIOLATED {violated}, undetermined {undetermined}\n  \
+                 worst witness det J (normalised): {}",
+                tet10.n_tets(),
+                conform_secs,
+                certify_secs,
+                eight.folded.len(),
+                eight.worst,
+                if worst_witness.is_finite() {
+                    format!("{worst_witness:+.6e}")
+                } else {
+                    "none".to_string()
+                },
+            );
+        }
+    }
+
     /// **Rung 5.0 REPLICATION** (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §3): the
     /// mesh-realization spread `σ(h)` at the two **refined** ladder levels.
     ///
