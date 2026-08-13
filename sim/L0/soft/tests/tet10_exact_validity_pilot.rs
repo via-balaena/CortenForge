@@ -196,22 +196,40 @@ enum Verdict {
     Undecided,
 }
 
+/// What a certification run touched: how much work it took, and — when the
+/// answer is `Invalid` — the parametric point that proves it.
+#[derive(Debug, Clone, Copy, Default)]
+struct Trace {
+    /// Sub-simplices bounded. This is the cost that matters.
+    subsimplices: usize,
+    /// A parametric point with `det J ≤ 0` (or non-finite), and its value.
+    witness: Option<(Vec3, f64)>,
+    /// Smallest coefficient seen at depth 0, relative to the largest — how
+    /// close the accepted certificates came to floating-point noise.
+    depth0_margin: f64,
+}
+
 /// Exact validity by recursive Bernstein bounding.
 ///
 /// Returns `Valid` only on proof (all coefficients positive over a cover of
 /// the element) and `Invalid` only on a witness (an evaluated point at or
-/// below zero). `subsimplices` counts the bounding steps taken, which is the
-/// cost that matters.
+/// below zero) — never on the bound alone, which is one-sided.
 fn certify(
     xt: &SMatrix<f64, 3, 10>,
     verts: [Vec3; 4],
     depth: u32,
     cap: u32,
-    subsimplices: &mut usize,
+    trace: &mut Trace,
 ) -> Verdict {
-    *subsimplices += 1;
+    trace.subsimplices += 1;
     let j = jacobians_at(xt, &verts);
     let b = det_bernstein_coeffs(&j);
+
+    if depth == 0 {
+        let lo = b.iter().copied().fold(f64::INFINITY, f64::min);
+        let hi = b.iter().fold(0.0f64, |m, c| m.max(c.abs()));
+        trace.depth0_margin = lo / hi.max(f64::MIN_POSITIVE);
+    }
 
     if b.iter().all(|&c| c > 0.0) {
         return Verdict::Valid;
@@ -219,10 +237,11 @@ fn certify(
     // The four corner coefficients are true values of `det J`, so a
     // non-positive one is a witness, not a bound artifact. A non-finite one is
     // no proof of validity either, and must not slip through a bare `<=`.
-    if j.iter().any(|m| {
+    if let Some((i, d)) = j.iter().enumerate().find_map(|(i, m)| {
         let d = m.determinant();
-        !(d.is_finite() && d > 0.0)
+        (!(d.is_finite() && d > 0.0)).then_some((i, d))
     }) {
+        trace.witness.get_or_insert((verts[i], d));
         return Verdict::Invalid;
     }
     if depth == cap {
@@ -247,7 +266,7 @@ fn certify(
 
     let mut undecided = false;
     for child in children {
-        match certify(xt, child, depth + 1, cap, subsimplices) {
+        match certify(xt, child, depth + 1, cap, trace) {
             Verdict::Invalid => return Verdict::Invalid,
             Verdict::Undecided => undecided = true,
             Verdict::Valid => {}
@@ -265,13 +284,16 @@ fn certify(
 /// touching zero.
 const CAP: u32 = 6;
 
-/// Timing repetitions per method in the cost pilot.
+/// Timing repetitions per method per round in the cost pilot.
 const REPS: usize = 200;
 
-fn certify_element(xt: &SMatrix<f64, 3, 10>) -> (Verdict, usize) {
-    let mut work = 0usize;
-    let v = certify(xt, CORNERS, 0, CAP, &mut work);
-    (v, work)
+/// Timed rounds in the cost pilot, on top of one untimed warm-up round.
+const ROUNDS: usize = 3;
+
+fn certify_element(xt: &SMatrix<f64, 3, 10>) -> (Verdict, Trace) {
+    let mut trace = Trace::default();
+    let verdict = certify(xt, CORNERS, 0, CAP, &mut trace);
+    (verdict, trace)
 }
 
 // ---------------------------------------------------------------------------
@@ -456,6 +478,7 @@ fn an_affine_element_has_twenty_equal_coefficients() {
 fn the_bound_encloses_a_dense_lattice() {
     let mut rng = Rng(0x5EED_0004);
     let mut worst_slack = f64::INFINITY;
+    let mut slack_sum = 0.0f64;
     for _ in 0..150 {
         let x_ref = random_curved_element(&mut rng, 0.3);
         let xt = x_ref.transpose();
@@ -469,8 +492,91 @@ fn the_bound_encloses_a_dense_lattice() {
             "bracket [{lo:e}, {hi:e}] fails to enclose lattice [{l_lo:e}, {l_hi:e}]"
         );
         worst_slack = worst_slack.min((l_lo - lo) / scale);
+        slack_sum += (l_lo - lo) / scale;
     }
-    println!("[bound] tightest lower-bound slack seen: {worst_slack:.4} of scale");
+    // The tightest case is a hair below zero, not a violation: the minimum of
+    // `det J` often sits AT a corner, where the coefficient is the function
+    // value exactly, so the bound is attained and only rounding separates them.
+    println!(
+        "[bound] lower-bound slack, fraction of scale: tightest {worst_slack:+.3e}, \
+         mean {:+.4}",
+        slack_sum / 150.0
+    );
+    assert!(
+        worst_slack > -1e-12,
+        "the bracket must not be violated beyond rounding; tightest slack = {worst_slack:e}"
+    );
+}
+
+/// The shipped mesher does not test `det J > 0`. It tests `det J ≥ floor · o`
+/// against the pre-projection determinant `o` — a *relative* quality floor.
+///
+/// That predicate needs no new machinery. `q(ξ) = det J_c(ξ) − floor · det
+/// J_o(ξ)` is itself a cubic over the same simplex, and the Bernstein
+/// transform is linear, so `q`'s coefficients are the difference of the two
+/// coefficient sets. Subtracting them bounds `q` exactly as before.
+///
+/// Checked here against a dense lattice because this is the form production
+/// will use, and a bound that held only for bare positivity would be useless.
+#[test]
+fn the_relative_floor_predicate_is_the_same_certificate() {
+    let mut rng = Rng(0x5EED_0005);
+    let floor = 0.4_f64;
+    let mut violations = 0usize;
+    let mut tightest = f64::INFINITY;
+
+    for _ in 0..200 {
+        let curved = random_curved_element(&mut rng, 0.2);
+        // The original the mesher measures against: the same corners with every
+        // midside back at its straight edge midpoint.
+        let mut orig = curved;
+        let corners: [Vec3; 4] =
+            std::array::from_fn(|a| Vec3::new(curved[(a, 0)], curved[(a, 1)], curved[(a, 2)]));
+        for (i, &(a, b)) in sim_soft::element::TET10_EDGE_NODES.iter().enumerate() {
+            let mid = (corners[a] + corners[b]) * 0.5;
+            for k in 0..3 {
+                orig[(4 + i, k)] = mid[k];
+            }
+        }
+
+        let (xt_c, xt_o) = (curved.transpose(), orig.transpose());
+        let b_c = det_bernstein_coeffs(&jacobians_at(&xt_c, &CORNERS));
+        let b_o = det_bernstein_coeffs(&jacobians_at(&xt_o, &CORNERS));
+        let bound = (0..N_COEFFS)
+            .map(|i| floor.mul_add(-b_o[i], b_c[i]))
+            .fold(f64::INFINITY, f64::min);
+
+        // Dense-lattice evaluation of the same difference.
+        let n = 12;
+        let inv = 1.0 / f64::from(n);
+        let mut worst = f64::INFINITY;
+        for i in 0..=n {
+            for k in 0..=(n - i) {
+                for l in 0..=(n - i - k) {
+                    let xi = Vec3::new(f64::from(i) * inv, f64::from(k) * inv, f64::from(l) * inv);
+                    let grad = Tet10.shape_gradients(xi);
+                    let q =
+                        floor.mul_add(-(xt_o * grad).determinant(), (xt_c * grad).determinant());
+                    worst = worst.min(q);
+                }
+            }
+        }
+
+        let scale = b_c.iter().fold(0.0f64, |m, c| m.max(c.abs())).max(1e-300);
+        if bound > worst + 1e-12 * scale {
+            violations += 1;
+        }
+        tightest = tightest.min((worst - bound) / scale);
+    }
+
+    println!(
+        "[relative floor {floor}] coefficient-difference bound vs dense lattice: \
+         {violations} violations in 200, tightest slack {tightest:+.3e} of scale"
+    );
+    assert_eq!(
+        violations, 0,
+        "the differenced coefficients must still bound the differenced polynomial"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -485,44 +591,67 @@ fn pilot_cost_per_element() {
         .collect();
     let grads = reference_corner_grads();
 
-    let t = Instant::now();
+    // Each method is charged for the quantity it actually decides on — the
+    // minimum over its samples/coefficients — so the optimizer cannot drop the
+    // work behind an unread array slot. Reading only `[0]` understated the
+    // 8-point guard to within noise of the 4-point one.
+    let least = |v: &[f64]| v.iter().copied().fold(f64::INFINITY, f64::min);
     let mut sink = 0.0f64;
-    for _ in 0..REPS {
-        for x in &pop {
-            sink += Tet10.rest_jacobian_dets(std::hint::black_box(x))[0];
-        }
-    }
-    let gauss4 = t.elapsed().as_secs_f64() / (REPS * pop.len()) as f64;
-
-    let t = Instant::now();
-    for _ in 0..REPS {
-        for x in &pop {
-            sink += shipped_eight(std::hint::black_box(x), &grads)[0];
-        }
-    }
-    let sample8 = t.elapsed().as_secs_f64() / (REPS * pop.len()) as f64;
-
-    let t = Instant::now();
-    for _ in 0..REPS {
-        for x in &pop {
-            let xt = std::hint::black_box(x).transpose();
-            sink += det_bernstein_coeffs(&jacobians_at(&xt, &CORNERS))[0];
-        }
-    }
-    let bern20 = t.elapsed().as_secs_f64() / (REPS * pop.len()) as f64;
-
-    let t = Instant::now();
     let mut total_work = 0usize;
-    for _ in 0..REPS {
-        for x in &pop {
-            let xt = std::hint::black_box(x).transpose();
-            let (v, w) = certify_element(&xt);
-            total_work += w;
-            sink += f64::from(v == Verdict::Valid);
+
+    // ⚠ Measured in interleaved rounds, best-of, after a warm-up round.
+    // Timing the four methods once each in sequence made the FIRST one pay the
+    // population's cache misses and reported the 8-point guard as *faster*
+    // than the 4-point subset it strictly contains.
+    let mut best = [f64::INFINITY; 4];
+    for round in 0..=ROUNDS {
+        let mut elapsed = [0.0f64; 4];
+
+        let t = Instant::now();
+        for _ in 0..REPS {
+            for x in &pop {
+                sink += least(&Tet10.rest_jacobian_dets(std::hint::black_box(x)));
+            }
+        }
+        elapsed[0] = t.elapsed().as_secs_f64();
+
+        let t = Instant::now();
+        for _ in 0..REPS {
+            for x in &pop {
+                sink += least(&shipped_eight(std::hint::black_box(x), &grads));
+            }
+        }
+        elapsed[1] = t.elapsed().as_secs_f64();
+
+        let t = Instant::now();
+        for _ in 0..REPS {
+            for x in &pop {
+                let xt = std::hint::black_box(x).transpose();
+                sink += least(&det_bernstein_coeffs(&jacobians_at(&xt, &CORNERS)));
+            }
+        }
+        elapsed[2] = t.elapsed().as_secs_f64();
+
+        let t = Instant::now();
+        for _ in 0..REPS {
+            for x in &pop {
+                let xt = std::hint::black_box(x).transpose();
+                let (verdict, trace) = certify_element(&xt);
+                total_work += trace.subsimplices;
+                sink += f64::from(verdict == Verdict::Valid);
+            }
+        }
+        elapsed[3] = t.elapsed().as_secs_f64();
+
+        // Round 0 is the warm-up and is not allowed to set a best.
+        if round > 0 {
+            for (b, e) in best.iter_mut().zip(elapsed) {
+                *b = b.min(e / (REPS * pop.len()) as f64);
+            }
         }
     }
-    let full = t.elapsed().as_secs_f64() / (REPS * pop.len()) as f64;
-    let mean_work = total_work as f64 / (REPS * pop.len()) as f64;
+    let [gauss4, sample8, bern20, full] = best;
+    let mean_work = total_work as f64 / ((ROUNDS + 1) * REPS * pop.len()) as f64;
 
     println!(
         "\n=== COST per element (ns), curve = 0.15, n = {} ===",
@@ -612,6 +741,135 @@ fn pilot_verdicts_on_a_graded_population() {
 }
 
 // ---------------------------------------------------------------------------
+// 3b. The existence proof, and the control on the certifier itself
+// ---------------------------------------------------------------------------
+
+/// A rate is not a demonstration. Produce one concrete element that **every
+/// one of the eight shipped sample points accepts** and that nevertheless
+/// folds somewhere inside, with the offending parametric point printed.
+///
+/// This is the whole argument for the primitive in a single object: adding
+/// sample points cannot fix a method that samples, because the fold is free to
+/// sit between the samples.
+#[test]
+fn sampling_is_unsound_here_is_an_element_all_eight_points_accept() {
+    let grads = reference_corner_grads();
+    let mut rng = Rng(0xC0FF_EE03);
+
+    let found = (0..3000).find_map(|_| {
+        let x_ref = random_curved_element(&mut rng, 0.15);
+        let xt = x_ref.transpose();
+        let eight = shipped_eight(&x_ref, &grads);
+        if !eight.iter().all(|&d| d > 0.0) {
+            return None;
+        }
+        let (verdict, trace) = certify_element(&xt);
+        (verdict == Verdict::Invalid).then_some((x_ref, eight, trace))
+    });
+
+    let (x_ref, eight, trace) = found.expect(
+        "the deterministic curve = 0.15 population contains an element the eight-point \
+         guard accepts and that is provably folded",
+    );
+    let (point, value) = trace
+        .witness
+        .expect("an Invalid verdict always carries the point that proves it");
+
+    let straight = eight[0].abs().max(1e-300);
+    println!("\n=== WITNESS: sampling accepts a folded element ===");
+    println!("  eight shipped sample points, det J / |Gauss 0|:");
+    for (i, d) in eight.iter().enumerate() {
+        let which = if i < 4 { "gauss" } else { "corner" };
+        println!("    {which} {}: {:+.6}", i % 4, d / straight);
+    }
+    println!(
+        "  interior witness at xi = ({:.6}, {:.6}, {:.6})",
+        point.x, point.y, point.z
+    );
+    println!(
+        "  det J there: {:+.6} (normalised)  [{value:+.6e} raw]",
+        value / straight
+    );
+    println!("  node coordinates (row per node, x y z):");
+    for a in 0..10 {
+        println!(
+            "    {a}: {:+.9} {:+.9} {:+.9}",
+            x_ref[(a, 0)],
+            x_ref[(a, 1)],
+            x_ref[(a, 2)]
+        );
+    }
+
+    assert!(
+        eight.iter().all(|&d| d > 0.0),
+        "the witness must be accepted by all eight shipped sample points"
+    );
+    assert!(
+        value <= 0.0,
+        "the witness point must actually be folded; det J = {value:e}"
+    );
+}
+
+/// ⚠ Negative control. A gate that answers `Valid` for everything would pass
+/// every test above that only ever feeds it healthy meshes. Feed it geometry
+/// that is *known* invalid and require the opposite answer, and feed it
+/// geometry that is known valid and require it is not merely refusing to
+/// certify anything.
+#[test]
+fn the_certifier_says_invalid_when_the_element_is_invalid() {
+    let mut rng = Rng(0xC0FF_EE04);
+
+    // (a) A straight element with two corners swapped is inverted everywhere.
+    let mut inverted = random_curved_element(&mut rng, 0.0);
+    for k in 0..3 {
+        let (a, b) = (inverted[(1, k)], inverted[(2, k)]);
+        inverted[(1, k)] = b;
+        inverted[(2, k)] = a;
+    }
+    // Swapping corners leaves midsides on the same (now re-labelled) edges only
+    // for the edge midpoints that are symmetric in 1↔2; rebuild them so the
+    // element is a clean straight inverted tet rather than an arbitrary one.
+    {
+        let corners: [Vec3; 4] = std::array::from_fn(|a| {
+            Vec3::new(inverted[(a, 0)], inverted[(a, 1)], inverted[(a, 2)])
+        });
+        for (i, &(a, b)) in sim_soft::element::TET10_EDGE_NODES.iter().enumerate() {
+            let mid = (corners[a] + corners[b]) * 0.5;
+            for k in 0..3 {
+                inverted[(4 + i, k)] = mid[k];
+            }
+        }
+    }
+    let (verdict, trace) = certify_element(&inverted.transpose());
+    assert_eq!(
+        verdict,
+        Verdict::Invalid,
+        "a corner-swapped straight tet is inverted everywhere"
+    );
+    assert!(
+        trace.witness.is_some_and(|(_, d)| d <= 0.0),
+        "the Invalid verdict must carry a point where det J <= 0"
+    );
+
+    // (b) A non-finite coordinate is never certified valid.
+    let mut poisoned = random_curved_element(&mut rng, 0.05);
+    poisoned[(7, 1)] = f64::NAN;
+    assert_ne!(
+        certify_element(&poisoned.transpose()).0,
+        Verdict::Valid,
+        "a NaN node coordinate must not yield a validity certificate"
+    );
+
+    // (c) ...and it is not simply refusing to certify: healthy elements pass.
+    let healthy = random_curved_element(&mut rng, 0.02);
+    assert_eq!(
+        certify_element(&healthy.transpose()).0,
+        Verdict::Valid,
+        "a gently curved element must be certified, or the control above is vacuous"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 4. Real shipped geometry
 // ---------------------------------------------------------------------------
 
@@ -667,27 +925,37 @@ fn pilot_on_the_canonical_projected_sphere() {
         ),
     ] {
         let (mut valid, mut invalid, mut undecided) = (0usize, 0usize, 0usize);
-        let (mut eight_ok, mut missed, mut depth0) = (0usize, 0usize, 0usize);
+        let (mut eight_ok, mut eight_missed, mut depth0) = (0usize, 0usize, 0usize);
+        let (mut gauss_ok, mut gauss_missed) = (0usize, 0usize);
         let mut work = 0usize;
+        let mut tightest_margin = f64::INFINITY;
         let n_tets = mesh.n_tets();
 
         let clock = Instant::now();
         for ti in 0..n_tets as u32 {
             let x_ref = element_nodes(&mesh, ti);
             let xt = x_ref.transpose();
-            let (verdict, steps) = certify_element(&xt);
-            work += steps;
-            let says_ok = shipped_eight(&x_ref, &grads).iter().all(|&d| d > 0.0);
-            eight_ok += usize::from(says_ok);
-            let coeffs = det_bernstein_coeffs(&jacobians_at(&xt, &CORNERS));
+            let (verdict, trace) = certify_element(&xt);
+            work += trace.subsimplices;
+            let eight = shipped_eight(&x_ref, &grads);
+            let eight_says_ok = eight.iter().all(|&d| d > 0.0);
+            // What `with_sdf_projected_boundary` itself checks: bare positivity
+            // over the four Stroud points, the first four of the eight.
+            let gauss_says_ok = eight[..4].iter().all(|&d| d > 0.0);
+            eight_ok += usize::from(eight_says_ok);
+            gauss_ok += usize::from(gauss_says_ok);
             match verdict {
                 Verdict::Valid => {
                     valid += 1;
-                    depth0 += usize::from(coeffs.iter().all(|&c| c > 0.0));
+                    if trace.depth0_margin > 0.0 {
+                        depth0 += 1;
+                        tightest_margin = tightest_margin.min(trace.depth0_margin);
+                    }
                 }
                 Verdict::Invalid => {
                     invalid += 1;
-                    missed += usize::from(says_ok);
+                    eight_missed += usize::from(eight_says_ok);
+                    gauss_missed += usize::from(gauss_says_ok);
                 }
                 Verdict::Undecided => undecided += 1,
             }
@@ -695,10 +963,20 @@ fn pilot_on_the_canonical_projected_sphere() {
         let secs = clock.elapsed().as_secs_f64();
 
         println!("\n=== CANONICAL SPHERE — {label} ({n_tets} elements) ===");
-        println!("  certified valid : {valid}   (depth-0 alone: {depth0})");
+        println!(
+            "  certified valid : {valid}   (depth-0 alone: {depth0}, \
+             tightest coefficient margin {tightest_margin:.3e} of scale)"
+        );
         println!("  proven invalid  : {invalid}");
         println!("  undecided @{CAP}   : {undecided}");
-        println!("  8-pt guard says valid: {eight_ok}   of which PROVEN INVALID: {missed}");
+        println!(
+            "  4-pt Gauss (what the projector checks) says valid: {gauss_ok}   \
+             of which PROVEN INVALID: {gauss_missed}"
+        );
+        println!(
+            "  8-pt guard (post-#748 midside rule)   says valid: {eight_ok}   \
+             of which PROVEN INVALID: {eight_missed}"
+        );
         println!(
             "  whole-mesh certification: {:.1} ms, {:.2} sub-simplices/element",
             secs * 1e3,
