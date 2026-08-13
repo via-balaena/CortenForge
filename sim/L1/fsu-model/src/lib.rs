@@ -6775,7 +6775,8 @@ mod tests {
         let worst_det = worst_rest_det_ratio(&curved, &straight);
         println!(
             "projection: {:.1} % delivered in full, max move {max_move:.3} mm, mean {mean_move:.3} mm; \
-             worst detJ/detJ_rest over every element and Gauss point {worst_det:.4}",
+             worst detJ/detJ_rest over every element, Gauss point and reference corner \
+             {worst_det:.4}",
             100.0 * delivered,
         );
 
