@@ -251,8 +251,39 @@ const DISC_CONFORM_QUALITY_FLOOR: f64 = 0.25;
 /// that the shipped 0.40 still binds and still drives — `worst detJ/detJ_rest` comes back at
 /// exactly 0.4000 on the real disc, so the floor is still the active constraint.
 ///
-/// ▶ **Still not re-swept, and the case for sweeping it is now much stronger — the constraint
-/// that blocked it is gone.**
+/// ▶ **RE-SWEPT (2026-08-13), and 0.40 is RETAINED on measured grounds** — the first time this
+/// constant's value has had one. `midside_conform_quality_floor_selection_fom` and
+/// `what_the_midside_floor_binds_on_fom` regenerate everything below.
+///
+/// The sweep found **no cliff anywhere**: from 0.02 to 0.40 nothing folds, both elements drive
+/// the lofted disc at 0.9° and the scanned disc through the full ±6° production ROM, and
+/// `k_disc` is identical to three decimals across the whole 20× range. Fidelity improves
+/// monotonically as the floor drops (midside RMS 0.122 → 0.099 mm at 0.10). On those columns
+/// alone a lower floor looks free.
+///
+/// **It is not free, and the census is what shows it.** The floor's cost is charged against the
+/// elements that are already worst:
+///
+/// ```text
+/// floor  held back  of 445   elements q<0.2   q 0.2-0.4   q 0.4-0.8   q>=0.8
+///  0.10         54                       25          23          91     6117
+///  0.20         55                        6          38          94     6118
+///  0.30         64                        0          41          97     6118
+///  0.40         75                        0           6         129     6121
+/// ```
+///
+/// At **0.40 no element is below `q = 0.2`; at 0.10, twenty-five are.** The gain is 21 of 445
+/// midsides reaching their targets, worth 0.023 mm RMS, in exchange for pushing 25 elements
+/// into a badly-conditioned tail that is currently empty — and no measured physics moves either
+/// way. `what_the_midside_floor_binds_on_fom` commits that as a two-sided assert, so lowering
+/// this constant fails a gate rather than passing silently.
+///
+/// ⚠ Two facts worth having before anyone reaches for this knob again:
+/// - **97.8 % of the mesh (6117 of 6256) sits at `q ≥ 0.8` at every floor.** The whole decision
+///   concerns ~139 elements.
+/// - **The floor is NOT what limits coverage.** Even at floor 0.02, 49 of 445 midsides are
+///   still held back — geometrically infeasible regardless. Of the 75 held back at 0.40, only
+///   26 are the floor's doing, so lowering it cannot buy much coverage.
 ///
 /// ⚠⚠ **The `~0.10` HARD LOWER BOUND this doc used to carry has DISSOLVED.** It read: "do not
 /// take this floor below ~0.10 without re-running that gate", and it was earned — under the
@@ -273,10 +304,9 @@ const DISC_CONFORM_QUALITY_FLOOR: f64 = 0.25;
 ///
 /// **The true minimum now equals the floor exactly**, at both. ⇒ This floor's remaining job is
 /// to keep the bisection off the `det J → 0⁺` degeneracy boundary — a **conditioning** question,
-/// not a validity one — and no floor produces a folded element any more. A lower floor may now
-/// buy back the fidelity the stricter acceptance costs (the shipped midside RMS rose
-/// 0.111 → 0.119 mm). That sweep is a measurement rung, not a re-anchor, and is deliberately
-/// not attempted here — but it is no longer bounded below by ~0.10.
+/// not a validity one — and no floor produces a folded element any more. That is why the
+/// re-sweep above was possible at all, and why it had to be decided on conditioning rather than
+/// on folds.
 ///
 /// The **choice** of 0.40 is re-verified rather than assumed: it drives on both the
 /// scanned and the lofted disc at the new corner floor. Re-deriving the midside cliff there is
@@ -1793,6 +1823,23 @@ mod tests {
     /// The gate's list and the doc tables' rows are the **same list**, so a row cannot appear
     /// in a constant's justification without this test regenerating it.
     const SWEPT_CORNER_FLOORS: [f64; 7] = [0.05, 0.08, 0.10, 0.15, 0.20, 0.25, 0.40];
+    /// The midside-floor rows, swept on the same two axes the corner sweep uses.
+    ///
+    /// Reaches well below the `~0.10` bound the old sampling-era analysis imposed, because that
+    /// bound existed only to cover the gap between eight samples and the true minimum — and
+    /// `with_projected_midsides` now certifies, so the gap is zero. Whether the floor can
+    /// actually go there is a *drivability and fidelity* question, which is what this measures.
+    const SWEPT_MIDSIDE_FLOORS: [f64; 7] = [0.02, 0.05, 0.10, 0.15, 0.20, 0.30, 0.40];
+    /// Floors re-probed at [`LARGE_PROBE_DEG`]. A short list because each row drives the full
+    /// ROM: the shipped value, the candidate the fidelity curve knees at, and one between.
+    const LARGE_PROBE_MIDSIDE_FLOORS: [f64; 3] = [0.10, 0.20, 0.40];
+    /// The production ROM end (`CoupledFsu`'s flexion limit). 0.9° is where a floor looks safe;
+    /// this is where a badly-conditioned curved element actually fails.
+    const LARGE_PROBE_DEG: f64 = 6.0;
+    /// Below this normalised `det J` an element is badly conditioned — not folded (certification
+    /// rules that out at every floor), but distorted enough that it is the part of the mesh a
+    /// quality floor exists to protect. The band edge the floor decision was made on.
+    const BADLY_CONDITIONED: f64 = 0.2;
     /// The probe angle the drivability column is measured at — `K_DISC_PROBE` rounded up, since
     /// surviving the production `k_disc` probe is the property that matters.
     const DRIVABILITY_PROBE_DEG: f64 = 0.9;
@@ -3998,6 +4045,339 @@ mod tests {
                  {certified}"
             );
         }
+    }
+
+    /// `(straight, curved, moves)` for the scanned disc conformed at `floors` — the build the
+    /// floor census repeats for every arm.
+    fn conformed_with_moves(
+        scanned: &IndexedMesh,
+        params: &DiscParams,
+        ep: EndplateConform,
+        floors: ConformFloors,
+    ) -> (Tet10Mesh, Tet10Mesh, Vec<(VertexId, Vec3)>) {
+        let cp = prepare_disc_at(scanned.clone(), params, Some(ep), floors).unwrap();
+        let straight = Tet10Mesh::from_tet4(&cp.tet);
+        let moves = endplate_midside_conform_moves(
+            &straight,
+            &cp.inferior,
+            &cp.superior,
+            ep,
+            cp.center_native,
+            params.scale,
+        );
+        let curved = straight
+            .clone()
+            .with_projected_midsides(&moves, floors.midside);
+        (straight, curved, moves)
+    }
+
+    /// Midsides the back-off stopped short of the target it was handed.
+    fn held_back(straight: &Tet10Mesh, curved: &Tet10Mesh, moves: &[(VertexId, Vec3)]) -> usize {
+        let (pos, spos) = (curved.positions(), straight.positions());
+        moves
+            .iter()
+            .filter(|&&(v, target)| {
+                let delivered = (pos[v as usize] - spos[v as usize]).norm();
+                let requested = (target - spos[v as usize]).norm();
+                requested > 1e-12 && delivered < requested * (1.0 - 1e-9)
+            })
+            .count()
+    }
+
+    /// Per-element worst normalised `det J`, exactly bounded by the Bernstein coefficients.
+    fn element_qualities(curved: &Tet10Mesh) -> Vec<f64> {
+        let pos = curved.positions();
+        (0..curved.n_tets())
+            .filter_map(|t| {
+                #[allow(clippy::cast_possible_truncation)]
+                let tid = t as TetId;
+                tet10_nodes(curved, tid).map(|nodes| {
+                    let x_ref = SMatrix::<f64, 10, 3>::from_fn(|a, k| pos[nodes[a] as usize][k]);
+                    let coeffs = sim_soft::element::rest_det_j_coefficients(&x_ref);
+                    coeffs.iter().copied().fold(f64::INFINITY, f64::min) / affine_det(&x_ref)
+                })
+            })
+            .collect()
+    }
+
+    /// ▶ **What the midside floor actually TOUCHES.** Cheap, no solve — the census the floor
+    /// decision turned out to need.
+    ///
+    /// The selection sweep reports the *worst* element and the aggregate RMS, and both move
+    /// smoothly with the floor. Neither says **how much of the mesh the floor is binding on**,
+    /// and that is the question underneath "a lower floor costs conditioning margin": if the
+    /// floor binds on a handful of elements, that argument is about a handful of elements, and
+    /// so is the fidelity it buys.
+    ///
+    /// Reports, per floor: how many midsides were held short of their target (the back-off
+    /// engaging), and the distribution of per-element worst normalised `det J` in bands above
+    /// the floor.
+    #[test]
+    #[ignore = "needs $CF_L4_STL/$CF_L5_STL/$CF_DISC_STL (BodyParts3D, CC BY-SA, not committed)"]
+    fn what_the_midside_floor_binds_on_fom() {
+        use cf_fsu_geometry::{load_from_env, segment_frame};
+
+        let l4 = load_from_env("CF_L4_STL").unwrap();
+        let l5 = load_from_env("CF_L5_STL").unwrap();
+        let scanned = load_from_env("CF_DISC_STL").unwrap();
+        let o4 = oracle(&l4).unwrap();
+        let o5 = oracle(&l5).unwrap();
+        let frame = segment_frame(&l4, &l5, &o4, &o5).unwrap();
+        let ep = EndplateConform {
+            o4: &o4,
+            o5: &o5,
+            superior_axis: frame.superior_axis,
+        };
+        let params = DiscParams::default();
+        let at = |midside: f64| {
+            let floors = ConformFloors {
+                corner: DISC_CONFORM_QUALITY_FLOOR,
+                midside,
+            };
+            conformed_with_moves(&scanned, &params, ep, floors)
+        };
+
+        println!(
+            "\n{:>6} {:>10} {:>9} {:>10} {:>10} {:>10} {:>10} {:>10}",
+            "floor", "held back", "of moves", "at floor", "q<0.2", "0.2-0.4", "0.4-0.8", "q>=0.8"
+        );
+        for &midside in &SWEPT_MIDSIDE_FLOORS {
+            let (straight, curved, moves) = at(midside);
+            let q = element_qualities(&curved);
+            let at_floor = q.iter().filter(|&&v| v < midside * 1.001).count();
+            // ⚠ ABSOLUTE bands, not multiples of the floor: floor-relative bucket edges move
+            // with the row, so the columns could not be compared down the table. A first cut
+            // did exactly that and was unreadable.
+            let band = |lo: f64, hi: f64| q.iter().filter(|&&v| v >= lo && v < hi).count();
+            println!(
+                "{midside:>6.2} {:>10} {:>9} {at_floor:>10} {:>10} {:>10} {:>10} {:>10}",
+                held_back(&straight, &curved, &moves),
+                moves.len(),
+                band(f64::NEG_INFINITY, BADLY_CONDITIONED),
+                band(BADLY_CONDITIONED, 0.4),
+                band(0.4, 0.8),
+                band(0.8, f64::INFINITY),
+            );
+        }
+        println!(
+            "  'held back' = midsides stopped short of their target (what the floor COSTS).\n  \
+             'at floor'   = elements within 0.1 % of it (what the floor is BINDING on).\n  \
+             q bands      = per-element worst normalised det J, ABSOLUTE so rows compare."
+        );
+
+        // ── ★★ THE EVIDENCE FOR KEEPING 0.40, committed so it is re-runnable.
+        //
+        // The choice is no longer "the floor prevents folds" — certification does that at every
+        // floor. It is this: at the shipped floor NO element sits in the badly-conditioned tail
+        // below `BADLY_CONDITIONED`, and at a materially lower floor some do. That cost is
+        // charged against the elements that are already worst.
+        let below = |midside: f64| {
+            element_qualities(&at(midside).1)
+                .iter()
+                .filter(|&&v| v < BADLY_CONDITIONED)
+                .count()
+        };
+        let shipped_below = below(DISC_MIDSIDE_CONFORM_QUALITY_FLOOR);
+        assert_eq!(
+            shipped_below, 0,
+            "the SHIPPED midside floor must leave NO element below q = {BADLY_CONDITIONED}; \
+             {shipped_below} are. This is the property the floor is retained FOR, now that \
+             certification handles validity"
+        );
+
+        // ⚠ The mutant. Without it this constant could be lowered to 0.10 and every other gate
+        // in the crate would stay green — the sweep drives, nothing folds, and `k_disc` does not
+        // move to three decimals. This assert IS the reason 0.40 was kept, committed rather
+        // than argued.
+        let low_below = below(0.10);
+        assert!(
+            low_below > 0,
+            "floor 0.10 must put SOME element below q = {BADLY_CONDITIONED} ({low_below} do). \
+             If it no longer does, the cost that justified keeping 0.40 has gone away and this \
+             constant should be re-derived — not kept out of habit"
+        );
+
+        // The floor is NOT what limits coverage, which stops the next person trying to buy
+        // coverage by lowering it: most held-back midsides are geometrically infeasible.
+        let lowest = SWEPT_MIDSIDE_FLOORS[0];
+        let (s_lo, c_lo, m_lo) = at(lowest);
+        let irreducible = held_back(&s_lo, &c_lo, &m_lo);
+        assert!(
+            irreducible > 30,
+            "even at floor {lowest} some {irreducible} midsides are still held back — if that \
+             ever drops to near zero, coverage IS floor-limited after all and the trade this \
+             constant was chosen on has changed"
+        );
+    }
+
+    /// Drive the SCANNED conformed disc to [`LARGE_PROBE_DEG`] at each candidate floor.
+    ///
+    /// Everything in the selection sweep is measured at `DRIVABILITY_PROBE_DEG` = 0.9°, and 0.9°
+    /// is NOT where a badly-conditioned curved element shows itself.
+    /// `conformed_disc_large_angle_envelope` records the precedent in as many words: a curved
+    /// mesh at the *corner* quality floor "cannot take a 0.15° single jump at all", and it is at
+    /// the shipped MIDSIDE floor that "the full ±6.0° chain completes again". A floor that
+    /// drives at 0.9° and stalls at 6° would look perfectly safe in that table and be
+    /// unshippable.
+    ///
+    /// ⚠⚠ **On the SCANNED disc, which is the geometry that claim is about.** A first cut of
+    /// this probe ran the LOFTED arm and reported `STALLS` at every floor *including the shipped
+    /// one* — a non-discriminating result that says nothing about the constant. The lofted disc
+    /// does not reach 6° at any midside floor: it fails on a **material** bound
+    /// (`max_stretch_deviation` at tet 38564, Decision Q fail-closed), not on a fold. That is a
+    /// real and separate finding, and it is not evidence about this floor.
+    fn probe_large_angle_envelope(scanned: &IndexedMesh, params: &DiscParams, ep: EndplateConform) {
+        println!(
+            "\n{:>6} {:>13} {:>13}   (SCANNED disc, probe {LARGE_PROBE_DEG}° — production ROM end)",
+            "floor", "Tet4 k_disc", "Tet10 k_disc"
+        );
+        let large = LARGE_PROBE_DEG.to_radians();
+        let cell = |k: Option<f64>| k.map_or_else(|| "STALLS".to_string(), |v| format!("{v:+.3}"));
+        let mut rows: Vec<(f64, Option<f64>, Option<f64>)> = Vec::new();
+        for &midside in &LARGE_PROBE_MIDSIDE_FLOORS {
+            let floors = ConformFloors {
+                corner: DISC_CONFORM_QUALITY_FLOOR,
+                midside,
+            };
+            // `lofted_drivability` is geometry-agnostic despite its name — it takes the mesh.
+            let (t4, t10) = lofted_drivability(scanned, params, ep, floors, large);
+            println!("{midside:>6.2} {:>13} {:>13}", cell(t4), cell(t10));
+            rows.push((midside, t4, t10));
+        }
+        let shipped = rows
+            .iter()
+            .find(|r| (r.0 - DISC_MIDSIDE_CONFORM_QUALITY_FLOOR).abs() < 1e-12)
+            .expect("the shipped floor must be a large-probe row");
+        assert!(
+            shipped.1.is_some() && shipped.2.is_some(),
+            "the SHIPPED midside floor must drive the scanned conformed disc to \
+             {LARGE_PROBE_DEG}° on both elements — if it no longer does, the large-angle \
+             envelope has regressed and no floor change should be considered until that is \
+             understood"
+        );
+    }
+
+    /// ▶ **PILOT: re-sweep the MIDSIDE floor, now that its lower bound has dissolved.**
+    ///
+    /// [`DISC_MIDSIDE_CONFORM_QUALITY_FLOOR`] carried "do not take this floor below ~0.10". That
+    /// bound covered the gap between the eight-point acceptance test and the true minimum of a
+    /// cubic `det J`. `with_projected_midsides` now certifies, the gap is zero
+    /// (`certification_closed_the_gap_the_floor_used_to_cover_fom`), and the only remaining
+    /// question is empirical: **how low can the floor go before the disc stops driving or the
+    /// mesh stops being worth anything?**
+    ///
+    /// The mirror of `conform_quality_floor_selection_fom`, one axis over: that sweep varies the
+    /// corner floor holding the midside floor at its shipped value, this one does the reverse.
+    /// Same two geometries for the same reason — drivability on the **lofted** disc, which is the
+    /// arm that has historically refused, and fidelity on the **scanned** one, which is what a
+    /// stricter floor costs.
+    ///
+    /// Prints `folded` and the true lattice minimum per row as well, because the claim "no floor
+    /// produces folds any more" is the premise of the whole exercise and should be visible in the
+    /// table rather than inherited from another gate.
+    #[test]
+    #[ignore = "needs $CF_L4_STL/$CF_L5_STL/$CF_DISC_STL (BodyParts3D, CC BY-SA, not committed)"]
+    fn midside_conform_quality_floor_selection_fom() {
+        use cf_fsu_geometry::{load_from_env, segment_frame};
+
+        let l4 = load_from_env("CF_L4_STL").unwrap();
+        let l5 = load_from_env("CF_L5_STL").unwrap();
+        let scanned = load_from_env("CF_DISC_STL").unwrap();
+        let o4 = oracle(&l4).unwrap();
+        let o5 = oracle(&l5).unwrap();
+        let frame = segment_frame(&l4, &l5, &o4, &o5).unwrap();
+        let ep = EndplateConform {
+            o4: &o4,
+            o5: &o5,
+            superior_axis: frame.superior_axis,
+        };
+        let lofted = lofted_disc(&l4, &l5);
+        let params = DiscParams::default();
+        let probe = DRIVABILITY_PROBE_DEG.to_radians();
+
+        println!(
+            "\n{:>6} {:>13} {:>13} {:>15} {:>15} {:>13} {:>8}",
+            "floor",
+            "Tet4 k_disc",
+            "Tet10 k_disc",
+            "corner RMS mm",
+            "midside RMS mm",
+            "true min detJ",
+            "folded"
+        );
+        let mut rows: Vec<FloorRow> = Vec::new();
+        for &midside in &SWEPT_MIDSIDE_FLOORS {
+            let floors = ConformFloors {
+                corner: DISC_CONFORM_QUALITY_FLOOR,
+                midside,
+            };
+            let (t4, t10) = lofted_drivability(&lofted, &params, ep, floors, probe);
+            let (corner_rms, midside_rms) =
+                scanned_fidelity(&scanned, &params, ep, floors, &o4, &o5);
+
+            // The premise of the exercise, measured per row rather than inherited.
+            let prepared = prepare_disc_at(scanned.clone(), &params, Some(ep), floors).unwrap();
+            let tet10 = prepared_tet10_mesh(&prepared, &params, Some(ep), floors);
+            let (true_min, folded, _) = worst_det_over_a_dense_lattice(&tet10);
+
+            let cell =
+                |k: Option<f64>| k.map_or_else(|| "STALLS".to_string(), |v| format!("{v:+.3}"));
+            println!(
+                "{midside:>6.2} {:>13} {:>13} {corner_rms:>15.3} {midside_rms:>15.3} \
+                 {true_min:>13.6} {folded:>8}",
+                cell(t4),
+                cell(t10),
+            );
+            rows.push((midside, t4, t10, corner_rms, midside_rms));
+        }
+
+        // ── (1) No floor produces a folded element. This is what certification bought, and it
+        //    is the reason the old `~0.10` bound is gone. If it ever fails, the bound is back
+        //    and this whole sweep is invalid.
+        //    (Asserted inside the loop above via the printed `folded`; re-checked here so a
+        //    failure names the floor.)
+        for &midside in &SWEPT_MIDSIDE_FLOORS {
+            let floors = ConformFloors {
+                corner: DISC_CONFORM_QUALITY_FLOOR,
+                midside,
+            };
+            let prepared = prepare_disc_at(scanned.clone(), &params, Some(ep), floors).unwrap();
+            let tet10 = prepared_tet10_mesh(&prepared, &params, Some(ep), floors);
+            let (_, folded, _) = worst_det_over_a_dense_lattice(&tet10);
+            assert_eq!(
+                folded, 0,
+                "floor {midside} left {folded} elements folded somewhere — certification is \
+                 supposed to make that impossible at ANY floor, so this is a certifier \
+                 regression and not a floor that needs raising"
+            );
+        }
+
+        // ── (2) Fidelity is monotone: a stricter floor cannot seat BETTER. ──
+        for w in rows.windows(2) {
+            assert!(
+                w[1].4 >= w[0].4 - 1e-9,
+                "a stricter midside floor cannot reduce the midside residual: {:.3} -> {:.3} \
+                 across floors {:.2} -> {:.2}",
+                w[0].4,
+                w[1].4,
+                w[0].0,
+                w[1].0
+            );
+        }
+
+        // ── (3) The shipped floor still drives both elements. ──
+        let shipped = rows
+            .iter()
+            .find(|r| (r.0 - DISC_MIDSIDE_CONFORM_QUALITY_FLOOR).abs() < 1e-12)
+            .expect("the shipped midside floor must be a swept row");
+        assert!(
+            shipped.1.is_some() && shipped.2.is_some(),
+            "the SHIPPED midside floor {DISC_MIDSIDE_CONFORM_QUALITY_FLOOR} must drive a \
+             conformed lofted disc on both elements"
+        );
+
+        // ── (4) ★★ THE LARGE-ANGLE PROBE, which is the one that decides this. ──
+        probe_large_angle_envelope(&scanned, &params, ep);
     }
 
     /// **Rung 5.0 REPLICATION** (`docs/FSU_TET10_COUPLING_MIGRATION_PLAN.md` §3): the
