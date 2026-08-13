@@ -235,3 +235,139 @@ fn realtime_budget_curve_for_a_flexing_tet10_shaft() {
          Newton iteration cap, i.e. that tolerance is unreachable for that mesh."
     );
 }
+
+// ---------------------------------------------------------------------------
+// Which variable kills it?
+// ---------------------------------------------------------------------------
+
+/// ▶ **Separate ASPECT RATIO from STIFFNESS.**
+///
+/// `realtime_budget_curve_for_a_flexing_tet10_shaft` cannot drive a
+/// stick-proportioned shaft at any tolerance — Newton hits the iteration cap at
+/// ~0.1 % of the expected deflection, and the partial states are bit-identical
+/// across `1e-8`/`1e-5`/`1e-3`, so tolerance is not the binding constraint.
+///
+/// The known-good control already ships: `tet10_bending_locking` converges on a
+/// **5:1** aspect beam at **μ = 1e5**. The failing shaft is **50:1** at
+/// **μ = 2e9**. ⚠ **Two variables**, and guessing which one matters is the exact
+/// error the rung-5 investigation turned on — so they are walked independently.
+///
+/// # Holding the physics comparable
+///
+/// Load is not held fixed; the *relative deflection* is. For a cantilever,
+/// `δ = F L³ / (3 E I)` with `I = h⁴/12` and `E = 2μ(1+ν)`, so targeting
+/// `δ/L = r` needs
+///
+/// ```text
+///     F = μ (1 + ν) h⁴ r / (2 L²)
+/// ```
+///
+/// Without that, a row could fail merely because it was pushed harder, and the
+/// table would be comparing rows that differ in two ways again.
+fn separation_row(aspect: f64, mu: f64) -> (f64, usize, f64, bool) {
+    const L: f64 = 1.5;
+    const TARGET_RATIO: f64 = 0.10;
+    let h = L / aspect;
+    let nu = 0.35;
+    let load = mu * (1.0 + nu) * h.powi(4) * TARGET_RATIO / (2.0 * L * L);
+
+    let lambda = 2.0 * mu * nu / (1.0 - 2.0 * nu);
+    let field = MaterialField::uniform(mu, lambda);
+    let tet4 = HandBuiltTetMesh::cantilever_bilayer_beam(8, 2, 2, L, h, h, &field);
+    let mesh = Tet10Mesh::from_tet4(&tet4);
+    let n_dof = 3 * mesh.n_vertices();
+
+    let pinned: Vec<VertexId> = pick_vertices_by_predicate(&mesh, |p| p.x.abs() < 1e-9);
+    let loaded: Vec<VertexId> = pick_vertices_by_predicate(&mesh, |p| (p.x - L).abs() < 1e-9);
+    let positions = mesh.positions();
+    let mut x_flat = vec![0.0; n_dof];
+    for (v, p) in positions.iter().enumerate() {
+        x_flat[3 * v] = p.x;
+        x_flat[3 * v + 1] = p.y;
+        x_flat[3 * v + 2] = p.z;
+    }
+    let rest_z: Vec<f64> = loaded.iter().map(|&v| positions[v as usize].z).collect();
+
+    let bc = BoundaryConditions {
+        pinned_vertices: pinned,
+        roller_vertices: Vec::new(),
+        loaded_vertices: loaded.iter().map(|&v| (v, LoadAxis::AxisZ)).collect(),
+    };
+    let mut cfg = SolverConfig::skeleton();
+    cfg.dt = STATIC_DT;
+    cfg.max_newton_iter = 500;
+    cfg.tol = 1e-6 * load / (loaded.len() as f64).sqrt();
+    let solver: CpuTet10NHSolver<Tet10Mesh> =
+        CpuNewtonSolver::new(Tet10, mesh, NullContact, cfg, bc);
+
+    let x_prev = Tensor::from_slice(&x_flat, &[n_dof]);
+    let v_prev = Tensor::zeros(&[n_dof]);
+    let theta = Tensor::from_slice(&[load / loaded.len() as f64], &[1]);
+
+    let clock = Instant::now();
+    match solver.try_replay_step(&x_prev, &v_prev, &theta, cfg.dt) {
+        Ok(step) => {
+            let ms = clock.elapsed().as_secs_f64() * 1e3;
+            let tip = loaded
+                .iter()
+                .zip(&rest_z)
+                .map(|(&v, &z0)| (step.x_final[3 * v as usize + 2] - z0).abs())
+                .fold(0.0f64, f64::max);
+            (ms, step.iter_count, tip / L, true)
+        }
+        Err(_) => (f64::NAN, 0, f64::NAN, false),
+    }
+}
+
+#[test]
+#[cfg_attr(debug_assertions, ignore = "release-only timing measurement")]
+fn which_variable_stops_the_shaft_converging() {
+    println!("\n=== Separation: aspect ratio vs stiffness, one at a time ===");
+    println!("  every row is loaded to the SAME target deflection (δ/L = 0.10),");
+    println!("  so no row fails merely because it was pushed harder.\n");
+
+    println!("  (A) ASPECT swept, stiffness held at the known-good μ = 1e5");
+    println!(
+        "{:>10} {:>10} {:>8} {:>10} {:>10}",
+        "aspect", "ms", "iters", "δ/L", "converged"
+    );
+    let mut aspect_ok = Vec::new();
+    for aspect in [5.0, 10.0, 20.0, 40.0] {
+        let (ms, iters, ratio, ok) = separation_row(aspect, 1.0e5);
+        println!("{aspect:>10.0} {ms:>10.2} {iters:>8} {ratio:>10.4} {ok:>10}");
+        aspect_ok.push((aspect, ok));
+    }
+
+    println!("\n  (B) STIFFNESS swept, aspect held at the known-good 5:1");
+    println!(
+        "{:>10} {:>10} {:>8} {:>10} {:>10}",
+        "mu", "ms", "iters", "δ/L", "converged"
+    );
+    let mut mu_ok = Vec::new();
+    for mu in [1.0e5, 1.0e7, 1.0e9, 2.0e9] {
+        let (ms, iters, ratio, ok) = separation_row(5.0, mu);
+        println!("{mu:>10.0e} {ms:>10.2} {iters:>8} {ratio:>10.4} {ok:>10}");
+        mu_ok.push((mu, ok));
+    }
+
+    println!("\n  (C) the corner — stick-proportioned AND stick-stiff");
+    let (ms, iters, ratio, ok) = separation_row(40.0, 2.0e9);
+    println!(
+        "{:>10} {ms:>10.2} {iters:>8} {ratio:>10.4} {ok:>10}",
+        "40 @ 2e9"
+    );
+
+    println!(
+        "\n  ⚠ δ/L should land near 0.10 wherever it converged. A converged row that\n  \
+         MISSES the target is worse news than a failed one: it means the solve returned\n  \
+         an answer that is not the beam's."
+    );
+
+    // The control must hold, or the whole table is about a broken harness rather
+    // than about aspect ratio and stiffness.
+    assert!(
+        aspect_ok[0].1 && mu_ok[0].1,
+        "the known-good config (5:1 at mu = 1e5) must converge — it is what \
+         `tet10_bending_locking` ships. If it does not, this harness is wrong, not the solver"
+    );
+}
