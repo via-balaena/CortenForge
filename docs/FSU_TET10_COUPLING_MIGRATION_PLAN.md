@@ -14,8 +14,8 @@
 > | bonded-face corner split | 583 / 233 auth / 350 declined | **189 / 188 / 1** | the 350 "annular rim" was **phantom material**, not anatomy |
 > | boundary midside split | 1562 / 580 / 982 | **445 / 445 / 0** | same, independently |
 > | authorised corner residual | 1.332 → 0.750 mm | **0.530 → 0.170** | conform cuts 3.1× where it cut 1.8× |
-> | authorised midside residual | 0.881 → 0.767 mm | **0.197 → 0.111** | midsides now land closer than the corners they span |
-> | midside coverage | 67.4 % | **91.0 %** | smaller moves requested, so the floor refuses less |
+> | authorised midside residual | 0.881 → 0.767 mm | **0.197 → 0.119** | midsides now land closer than the corners they span |
+> | midside coverage | 67.4 % | **83.1 %** | ⚠ NET of two opposing causes: α.1 shrank the requested moves (→ 91.0 %), then the reference-corner test made the floor refuse more (→ 83.1 %) |
 > | #701 max seat move | 4.156 mm | **1.734 mm** | ⚠ retires the evidence for the loose 6 mm cap |
 > | element ratio (Tet10/Tet4) | 0.666 / 0.663 | **0.827 / 0.829** | ⚠ **a physics change, not a stale anchor** — see below |
 > | absolute `k_disc` (Tet4 flex) | −0.2811 | **−0.1170** | one draw from a wide distribution, either way |
@@ -428,7 +428,16 @@ selection*. The anatomy discriminator stays in `cf-fsu-geometry` (nearest-of-two
 `SI_CONFORM_CAP_BONDED`, `SI_CONFORM_MIN_ALIGN`).
 
 **The inversion oracle is `Tet10::rest_jacobian_dets` over all 4 Gauss points of every incident
-element — NOT `mesh.quality()`.** `Tet10Mesh` never recomputes `QualityMetrics` after a midside
+element — NOT `mesh.quality()`.** ⚠⚠ **SUPERSEDED — the Gauss points alone were measured
+insufficient.** The oracle is now **eight** sample points, the four Gauss points *and the four
+reference corners*, in both the projector's acceptance test and the gates that verify it (see
+§4.4 and `the_midside_floor_is_what_makes_eight_samples_sufficient_fom`). Every Stroud point of
+the four-point rule is strictly interior, so a fold confined to a corner region is invisible to
+all four: the shipped conformed disc carried 18 such elements and the lofted disc 2 317, with
+their Gauss points reading healthy throughout. Read the rest of this paragraph — and the four
+other places below that still say "all four Gauss points" — as the *rationale for not using
+`mesh.quality()`*, which stands, rather than as a specification of the sample set, which does
+not. `Tet10Mesh` never recomputes `QualityMetrics` after a midside
 move and those metrics are 4-corner quantities anyway (`tet10_mesh.rs:114`, `mesh/mod.rs:52-67`),
 so a `quality()`-based check is structurally blind to midside-induced degeneracy.
 
@@ -1340,7 +1349,7 @@ transfer — the behaviour does, and behaviour is what this rung asks about.
 | 0 | coupling, fsu-model | — (inert) | existing tolerance tests unchanged | **§4.1 license-free `to_bits` golden, bits frozen pre-change** |
 | 1 | fsu-model | **§4.2** ratio bracket + band-count cross-check | restoring + conserving + converged, both arms | Tet4 path untouched |
 | 2 | fsu-model | **§4.3** exact-geometry residual ↓ | **§4.5** large-angle sweep; per-element conform delta | Tet4+raw arm byte-identical |
-| 3 ✅ | sim-soft + fsu-model | **§4.3** residual ↓ again (authorised RMS 0.881 → 0.767 mm at rung 4; **0.197 → 0.111 at rung β**) | **§4.4** coverage 67.4 % (**91.0 % at rung β**) + per-Gauss-point floor; k_disc shift 0.05 % committed | straight-Tet10 arm untouched (rung-1 FOM re-runs at 0.666 / 0.663) |
+| 3 ✅ | sim-soft + fsu-model | **§4.3** residual ↓ again (authorised RMS 0.881 → 0.767 mm at rung 4; **0.197 → 0.119** after the reference-corner back-off) | **§4.4** coverage 67.4 % (**83.1 %** after the reference-corner back-off) + an **eight-point** floor (four Gauss points + four reference corners); k_disc shift 0.05 % committed | straight-Tet10 arm untouched (rung-1 FOM re-runs at 0.666 / 0.663) |
 | 4 ✅ | fsu-model, coupling | single `RUNG7_K_DISC` re-anchor, measured (−0.2819 → −0.1882) | **§4.5** full ramp completes, `detJ > 0` on the DEFORMED config; **§4.6** flexion ROM assert; segment shift +0.0082° vs predicted ~0.008° | — |
 | 4b | fsu-model | **§4.3** residual, on the COUPLED disc | lofted disc completes ±6° conformed, both elements | — |
 | 5 ⛔ | fsu-model | **BLOCKED, RE-SCOPED 2026-08-07 — on a NEW premise; the old one is discharged.** α.1 made the retained domain *monotone* in `cell` (15.4 % p2p, was 49.5 % non-monotone) and the superior band no longer outgrows the domain — now **gated** by assert 2b. `k_disc` spread ~100 % → **21.13 %**. ⇒ the meshing-stability blocker is spent. **BLOCKED AGAIN, 2026-08-08, on a THIRD premise — and this one is not methodological.** The n = 1 blocker stands, but replication cannot be run: above `cell = 0.003` a **Tet4 solve with a live Tet10 arm alongside** returns `free residual norm NaN` at Newton iter 0. Bounded in §5.5 RESULTS — memory, accumulation, `duplicate()`, either element alone and construction-time damage are all ruled out by measurement. ⚠ The `faer` LU fallback is NOT ruled out (it is in the causal path), and the converse ordering — Tet10 solved while Tet4 is live — was never run. `σ` at the refined levels is therefore UNMEASURED and unmeasurable until it is fixed. ✅ The RSS constraint IS spent (4.99 GB vs an 8 GB pre-registered budget), so §5.5's rollback no longer applies. ▶ NEXT = fix the co-residency defect; it makes **any** paired-arm study above `cell = 0.003` unreliable, not just this rung. | When unblocked — **§4.8** the bracket `\|k*\| ≤ \|k10(fine)\| ≤ \|k10(coarse)\| ≤ \|k4\|`, ±5 % two-sided pins; headline = a lower bound on the shipped `RUNG7_K_DISC` error | liveness (strictly-monotone DOFs per arm) → rung-1 known-value reproduction → **clamp-plane constancy** → **pinned-population growth (assert 2b, LIVE)** → `min_jacobian_ratio` → domain metrics | zero production diff; rung-2 `llvm-cov` oracle on **`coupled.rs` + `coupling/src/bonded.rs`** (NOT `src/lib.rs` — this rung adds tests to it) |
@@ -1443,7 +1452,7 @@ is the physics consequence, not the geometric claim.
 > `quality_floor` exactly whenever any node backs off. Committing it two-sided would have been
 > the same defect this section replaced, one level down. What ships is the **inequality over
 > every element** (falsifiable against the projector's own incidence bookkeeping — see
-> `worst_gauss_det_ratio`) plus the **coverage triple**. ⚠ And the tidy version of *that* claim
+> `worst_rest_det_ratio`, renamed from `worst_gauss_det_ratio` when it gained the reference corners) plus the **coverage triple**. ⚠ And the tidy version of *that* claim
 > — "the delivered fraction is the member with the teeth" — was itself refuted by a cold-read
 > mutant: a silent 0.2 mm cap on every move takes the fraction the WRONG way (67.9 % → 68.6 %),
 > because a smaller request is easier to satisfy. The fraction covers the back-off-engages-more
