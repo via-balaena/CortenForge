@@ -57,10 +57,15 @@ const REPS: usize = 200;
 const ROUNDS: usize = 3;
 
 use nalgebra::SMatrix;
+use sim_ml_chassis::Tensor;
 use sim_soft::element::{Element, RestValidity, Tet10, ValidityBar, certify_rest};
+use sim_soft::mesh::HandBuiltTetMesh;
+use sim_soft::solver::CpuNewtonSolver;
 use sim_soft::{
-    DifferenceSdf, LAYERED_SPHERE_CONFORM_QUALITY_FLOOR, LAYERED_SPHERE_R_CAVITY,
-    LAYERED_SPHERE_R_OUTER, MaterialField, Mesh, SoftScene, SphereSdf, Tet10Mesh, Vec3,
+    BoundaryConditions, CpuTet10NHSolver, DifferenceSdf, LAYERED_SPHERE_CONFORM_QUALITY_FLOOR,
+    LAYERED_SPHERE_R_CAVITY, LAYERED_SPHERE_R_OUTER, LoadAxis, MaterialField, Mesh, NullContact,
+    SoftScene, Solver, SolverConfig, SphereSdf, Tet10Mesh, Vec3, VertexId,
+    pick_vertices_by_predicate,
 };
 
 /// Deterministic `SplitMix64`.
@@ -334,4 +339,139 @@ fn the_five_point_check_on_a_real_curved_mesh_under_deformation() {
          are the control: they say the instrument does not manufacture folds. The random\n  \
          population above is where a genuine gap would show."
     );
+}
+
+// ---------------------------------------------------------------------------
+// A REAL SOLVE
+// ---------------------------------------------------------------------------
+
+/// ★★ The measurement that decides whether the blind spot matters: a real
+/// quasi-static **bending** solve, censused at the states the solver's own gate
+/// examines.
+///
+/// `check_validity_at_step_start` runs on the incoming state at each step
+/// boundary, so censusing every step boundary examines exactly the states the
+/// gate does — no solver instrumentation required, and no risk of measuring
+/// something the gate never sees.
+///
+/// Bending is the case that matters. The corner block is affine and the Gauss
+/// points are interior, so **midside-driven** folding is what the check cannot
+/// see, and bending is precisely what moves midsides relative to their corners.
+/// It is also the reason Tet10 exists at all.
+///
+/// The tip load is walked up so the beam passes through increasing deflection
+/// rather than jumping to one state: fold onset is what the random population
+/// showed the check missing 100 % of, so the interesting region is the approach,
+/// not the extreme.
+#[test]
+fn a_real_bending_solve_censused_at_every_step_boundary() {
+    const MU: f64 = 1.0e5;
+    const NU: f64 = 0.45;
+    const LENGTH: f64 = 0.5;
+    const BREADTH: f64 = 0.1;
+    const HEIGHT: f64 = 0.1;
+    const STATIC_DT: f64 = 1.0;
+
+    let field = MaterialField::uniform(MU, 2.0 * MU * NU / (1.0 - 2.0 * NU));
+    let tet4 = HandBuiltTetMesh::cantilever_bilayer_beam(8, 2, 2, LENGTH, BREADTH, HEIGHT, &field);
+    let tet10 = Tet10Mesh::from_tet4(&tet4);
+
+    let rest: Vec<SMatrix<f64, 10, 3>> = (0..tet10.n_tets() as u32)
+        .map(|t| element_nodes(&tet10, t))
+        .collect();
+    let n_tets = rest.len();
+
+    let pinned: Vec<VertexId> = pick_vertices_by_predicate(&tet10, |p| p.x.abs() < 1e-9);
+    let loaded: Vec<VertexId> = pick_vertices_by_predicate(&tet10, |p| (p.x - LENGTH).abs() < 1e-9);
+    assert!(
+        !pinned.is_empty() && !loaded.is_empty(),
+        "clamped/tip bands non-empty"
+    );
+
+    let positions = tet10.positions();
+    let n_dof = 3 * positions.len();
+    let mut x_flat = vec![0.0; n_dof];
+    for (v, p) in positions.iter().enumerate() {
+        x_flat[3 * v] = p.x;
+        x_flat[3 * v + 1] = p.y;
+        x_flat[3 * v + 2] = p.z;
+    }
+
+    let bc = BoundaryConditions {
+        pinned_vertices: pinned,
+        roller_vertices: Vec::new(),
+        loaded_vertices: loaded.iter().map(|&v| (v, LoadAxis::AxisZ)).collect(),
+    };
+    let mut cfg = SolverConfig::skeleton();
+    cfg.dt = STATIC_DT;
+    cfg.max_newton_iter = 500;
+    cfg.tol = 1e-8;
+    let solver: CpuTet10NHSolver<Tet10Mesh> =
+        CpuNewtonSolver::new(Tet10, tet10.clone(), NullContact, cfg, bc);
+
+    println!(
+        "\n=== REAL BENDING SOLVE — {n_tets} Tet10 elements, censused at every step boundary ==="
+    );
+    println!(
+        "{:>10} {:>10} {:>10} {:>9} {:>13} {:>14}",
+        "tip load", "tip defl", "certified", "folded", "undetermined", "5-pt MISSES"
+    );
+
+    let v_prev = Tensor::zeros(&[n_dof]);
+    let mut x_prev = Tensor::from_slice(&x_flat, &[n_dof]);
+    let mut total_missed = 0usize;
+    let mut total_folded = 0usize;
+
+    // Walked far past any sane operating point, until the solver refuses: the
+    // question is whether folds appear BEFORE the gate fires, not whether a
+    // reasonable load is safe.
+    for level in 1..=40u32 {
+        let load = 2.0 * f64::from(level) * f64::from(level).max(1.0) / 4.0;
+        let theta = Tensor::from_slice(&[load / loaded.len() as f64], &[1]);
+        let Ok(step) = solver.try_replay_step(&x_prev, &v_prev, &theta, cfg.dt) else {
+            println!("{load:>10.1}   solver refused this step (validity or convergence) — stop");
+            break;
+        };
+
+        // The step-boundary state: exactly what `check_validity_at_step_start`
+        // would be handed on the NEXT step.
+        let x = &step.x_final;
+        let mut tip = 0.0f64;
+        for &v in &loaded {
+            tip = tip.max((x[3 * v as usize + 2] - x_flat[3 * v as usize + 2]).abs());
+        }
+
+        let (mut certified, mut folded, mut undetermined, mut missed) = (0, 0, 0, 0usize);
+        for (t, r) in rest.iter().enumerate() {
+            let nodes = tet10
+                .tet_midside_nodes(t as u32)
+                .expect("Tet10 midside channel");
+            let corners = tet10.tet_vertices(t as u32);
+            let ids: [VertexId; 10] = [
+                corners[0], corners[1], corners[2], corners[3], nodes[0], nodes[1], nodes[2],
+                nodes[3], nodes[4], nodes[5],
+            ];
+            let def = SMatrix::<f64, 10, 3>::from_fn(|a, k| x[3 * ids[a] as usize + k]);
+            let says_healthy = five_point_says_healthy(&def, r);
+            match certify_rest(&def, ValidityBar::Positive) {
+                RestValidity::Certified { .. } => certified += 1,
+                RestValidity::Violated { .. } => {
+                    folded += 1;
+                    missed += usize::from(says_healthy);
+                }
+                RestValidity::Undetermined => undetermined += 1,
+            }
+        }
+        total_missed += missed;
+        total_folded += folded;
+        println!(
+            "{load:>10.1} {tip:>10.4} {certified:>10} {folded:>9} {undetermined:>13} {missed:>14}"
+        );
+        x_prev = Tensor::from_slice(x, &[n_dof]);
+    }
+
+    println!(
+        "  Every 'MISS' is an element the solver's gate passes at a step boundary and then\n           integrates with |det F| for the whole of the next step."
+    );
+    println!("  totals: {total_folded} folded, {total_missed} of them invisible to the gate");
 }
