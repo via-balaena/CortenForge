@@ -3866,26 +3866,38 @@ mod tests {
         }
     }
 
-    /// ▶ **BASELINE for the certified-conform conversion** — measurement, not a gate yet.
+    /// ★★ Every element of **both** conformed discs is *proven* valid over its whole volume.
     ///
-    /// Answers the two questions the conversion needs answered *before* it happens:
+    /// # What this gate is worth, measured
     ///
-    /// 1. **Does exactness find anything on the real disc?** The shipped eight-point rule is
-    ///    sound on this geometry *because this geometry was measured*, not because eight
-    ///    points bound a cubic. `certify_rest` bounds `det J` over the whole element, so a
-    ///    `Violated` here is a fold eight samples cannot see — and an `Undetermined` is an
-    ///    element sitting too close to the bar to separate.
-    /// 2. **What does the conform cost?** The certificate is ~1.64x the eight-point test and
-    ///    `certify_rest` re-certifies its reference on every call, so a converted conform
-    ///    should cost ~3.3x. This records the before number so the after number means
-    ///    something.
+    /// Before `with_projected_midsides` certified its back-off, this same census on the
+    /// **lofted** disc read:
     ///
-    /// Both the scanned disc and the **lofted** one, because the lofted disc is a second
-    /// geometry that has historically disagreed with the scanned one (it still carries 5
-    /// folded elements where the scanned disc carries none).
+    /// ```text
+    ///   8-point census: 0 folded corners, worst normalised +0.400000
+    ///   exact:  certified 53655, VIOLATED 5, worst witness -1.091494
+    /// ```
+    ///
+    /// A clean bill of health from the shipped eight-point rule, on a mesh containing an
+    /// element folded past its own straight volume. `det J` is a **cubic**, so it dips between
+    /// samples and no finite set of them closes the gap — the eight points were sound on the
+    /// *scanned* disc (6256/6256, before and after) because that geometry had been censused,
+    /// which is an argument that has to be re-made for every new mesh.
+    ///
+    /// Both discs are run because they have historically disagreed, and the disagreement is
+    /// the point: a gate that only ever saw the scanned disc would have reported success
+    /// throughout.
+    ///
+    /// # Cost
+    ///
+    /// The conform is timed and printed rather than asserted — it is a watch number, not a
+    /// threshold. Certifying cost ~5x the sampled back-off (scanned 0.005 → 0.023 s, lofted
+    /// 0.199 → 1.063 s), more than the ~3.3x predicted from the per-element rate because the
+    /// bisection now engages on nodes that previously passed at full target. Both remain far
+    /// below anything worth optimising for a 53 660-element mesh.
     #[test]
     #[ignore = "needs $CF_L4_STL/$CF_L5_STL/$CF_DISC_STL (BodyParts3D, CC BY-SA, not committed)"]
-    fn disc_conform_exact_validity_baseline_fom() {
+    fn conformed_discs_are_certified_element_by_element_fom() {
         use sim_soft::element::{RestValidity, ValidityBar, certify_rest};
 
         let l4 = cf_fsu_geometry::load_from_env("CF_L4_STL").expect("load L4");
@@ -3939,7 +3951,7 @@ mod tests {
 
             println!(
                 "\n=== {label} disc, SHIPPED floors — {} tets ===\n  \
-                 conform (8-point back-off) : {:.3} s\n  \
+                 conform (certified back-off): {:.3} s\n  \
                  whole-mesh certification   : {:.3} s\n  \
                  8-point census: {} folded corners, worst normalised {:+.6}\n  \
                  exact:  certified {certified}, VIOLATED {violated}, undetermined {undetermined}\n  \
@@ -3954,6 +3966,22 @@ mod tests {
                 } else {
                     "none".to_string()
                 },
+            );
+
+            assert_eq!(
+                (violated, undetermined),
+                (0, 0),
+                "the {label} disc must be certified element by element; {violated} violated, \
+                 {undetermined} undetermined. ⚠ The eight-point census reports {} folded \
+                 corners and worst {:+.6} — if those disagree, the sampling rule is blind to \
+                 what the certificate found, which is exactly the failure this gate exists for.",
+                eight.folded.len(),
+                eight.worst,
+            );
+            assert!(
+                certified > 1000,
+                "non-vacuous: the {label} disc must have a substantial element count, got \
+                 {certified}"
             );
         }
     }
