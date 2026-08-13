@@ -265,6 +265,12 @@ fn realtime_budget_curve_for_a_flexing_tet10_shaft() {
 /// Without that, a row could fail merely because it was pushed harder, and the
 /// table would be comparing rows that differ in two ways again.
 fn separation_row(aspect: f64, mu: f64) -> (f64, usize, f64, bool) {
+    separation_row_at(aspect, mu, 2, false)
+}
+
+/// [`separation_row`] with the through-thickness refinement and F-bar exposed —
+/// the two candidate remedies for the slender-beam stiffness.
+fn separation_row_at(aspect: f64, mu: f64, nz: usize, fbar: bool) -> (f64, usize, f64, bool) {
     const L: f64 = 1.5;
     const TARGET_RATIO: f64 = 0.10;
     let h = L / aspect;
@@ -273,7 +279,7 @@ fn separation_row(aspect: f64, mu: f64) -> (f64, usize, f64, bool) {
 
     let lambda = 2.0 * mu * nu / (1.0 - 2.0 * nu);
     let field = MaterialField::uniform(mu, lambda);
-    let tet4 = HandBuiltTetMesh::cantilever_bilayer_beam(8, 2, 2, L, h, h, &field);
+    let tet4 = HandBuiltTetMesh::cantilever_bilayer_beam(8, 2, nz, L, h, h, &field);
     let mesh = Tet10Mesh::from_tet4(&tet4);
     let n_dof = 3 * mesh.n_vertices();
 
@@ -297,6 +303,7 @@ fn separation_row(aspect: f64, mu: f64) -> (f64, usize, f64, bool) {
     cfg.dt = STATIC_DT;
     cfg.max_newton_iter = 500;
     cfg.tol = 1e-6 * load / (loaded.len() as f64).sqrt();
+    cfg.fbar = fbar;
     let solver: CpuTet10NHSolver<Tet10Mesh> =
         CpuNewtonSolver::new(Tet10, mesh, NullContact, cfg, bc);
 
@@ -369,5 +376,62 @@ fn which_variable_stops_the_shaft_converging() {
         aspect_ok[0].1 && mu_ok[0].1,
         "the known-good config (5:1 at mu = 1e5) must converge — it is what \
          `tet10_bending_locking` ships. If it does not, this harness is wrong, not the solver"
+    );
+}
+
+/// ▶ **Two candidate remedies for the slender-beam stiffness, measured.**
+///
+/// The separation showed a stick-proportioned beam converging to an answer that
+/// is not the beam's: `δ/L = 0.0090` against a target of `0.10` at 40:1, while
+/// reporting success. Stiffness was free; aspect ratio was the whole effect.
+///
+/// ⚠ **F-bar is the obvious reach and may well be the wrong tool.**
+/// `fbar_locking` cures **volumetric** locking — near-incompressible `ν = 0.49`,
+/// where the element cannot change volume. This beam runs at `ν = 0.35`, and its
+/// pathology looks like **shear** locking driven by 10:1 *element* aspect ratios
+/// (0.1875 m long × 0.019 m thick). Different failure mode, different remedy. So
+/// it is measured rather than assumed, alongside the other candidate:
+/// **more elements through the thickness**, which attacks the element aspect
+/// ratio directly.
+///
+/// Whichever recovers `δ/L` toward 0.10 is the answer, and if the winner is
+/// through-thickness refinement then the cost lands straight back on the frame
+/// budget — which is the honest shape of the trade.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "release-only timing measurement")]
+fn does_fbar_or_thickness_refinement_recover_the_slender_beam() {
+    println!("\n=== Recovering a slender beam: F-bar vs through-thickness refinement ===");
+    println!("  target δ/L = 0.10 everywhere; 40:1 is stick-proportioned.\n");
+    println!(
+        "{:>8} {:>6} {:>7} {:>10} {:>8} {:>10} {:>10}",
+        "aspect", "nz", "fbar", "ms", "iters", "δ/L", "converged"
+    );
+
+    for aspect in [5.0, 20.0, 40.0] {
+        for (nz, fbar) in [(2, false), (2, true), (4, false), (6, false)] {
+            let (ms, iters, ratio, ok) = separation_row_at(aspect, 1.0e5, nz, fbar);
+            println!(
+                "{aspect:>8.0} {nz:>6} {:>7} {ms:>10.2} {iters:>8} {ratio:>10.4} {ok:>10}",
+                if fbar { "on" } else { "off" }
+            );
+        }
+        println!();
+    }
+
+    println!(
+        "  Read the 40:1 block. If F-bar moves δ/L and thickness does not, the pathology is\n  \
+         volumetric after all. If thickness moves it and F-bar does not, it is element aspect\n  \
+         ratio — and the fix costs DOF, which puts the frame budget back at the centre.\n  \
+         If NEITHER moves it, a solid Tet10 is the wrong element for a stick and the answer is\n  \
+         a beam/shell formulation."
+    );
+
+    // The control: the known-good 5:1 must still land near target, or this table
+    // is measuring a broken harness.
+    let (_, _, base_ratio, base_ok) = separation_row_at(5.0, 1.0e5, 2, false);
+    assert!(
+        base_ok && base_ratio > 0.05,
+        "the known-good 5:1 beam must converge near target (got δ/L = {base_ratio:.4}) — \
+         otherwise this table is about the harness, not the element"
     );
 }
