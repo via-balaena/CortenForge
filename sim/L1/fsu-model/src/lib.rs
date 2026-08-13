@@ -259,6 +259,16 @@ const DISC_CONFORM_QUALITY_FLOOR: f64 = 0.25;
 /// the fidelity the stricter test costs (the shipped midside RMS rose 0.111 → 0.119 mm). That is
 /// a measurement rung, not a re-anchor, and it is deliberately not attempted here.
 ///
+/// ⚠⚠ **A HARD LOWER BOUND on that sweep, measured rather than guessed:
+/// `the_midside_floor_is_what_makes_eight_samples_sufficient_fom` shows the eight-point
+/// acceptance criterion is NOT sufficient by itself — `det J_rest` is a cubic in `ξ` and eight
+/// samples cannot bound it. At floor 0.05 one element of the shipped disc is folded somewhere
+/// the projector never looks, with all eight of its samples reading ≥ 0.05; at 0.02, three are.
+/// The gap between the sampled minimum and the true minimum is roughly absolute (~0.02–0.06 of
+/// affine), so the floor is what covers it. **⇒ do not take this floor below ~0.10 without
+/// re-running that gate.** At the shipped 0.40 the true minimum is 0.381 — the gap is ~5 % of
+/// the floor, which is the margin that makes eight samples a sound proxy at all.
+///
 /// The **choice** of 0.40 is re-verified rather than assumed: it drives on both the
 /// scanned and the lofted disc at the new corner floor. Re-deriving the midside cliff there is
 /// not done, and would only be able to move it in the permissive direction — a better-conditioned
@@ -3655,6 +3665,14 @@ mod tests {
     /// Gauss-point rule that accepted them. `Tet10Mesh::with_projected_midsides` now holds its
     /// back-off at the reference corners as well, and this reads **0 folded, worst ratio
     /// exactly at the floor** — the constraint binding where it was designed to.
+    ///
+    /// ⚠ **Read that as "0 folded AT THE SAMPLED POINTS", which is the only thing this census
+    /// can see.** `det J_rest` is a cubic in `ξ`; four corners plus four Gauss points do not
+    /// bound it. The stronger claim — that no element is folded *anywhere* inside the reference
+    /// tet — is a separate measurement, made by
+    /// [`the_midside_floor_is_what_makes_eight_samples_sufficient_fom`] over a 455-point
+    /// lattice, and it holds **because of the floor rather than because eight samples suffice**
+    /// (at floor 0.05 they demonstrably do not).
     ///
     /// ⚠ **`k_disc` did not move.** The conformed absolutes reproduce
     /// [`committed_anchors`] to four decimals across the fix, so the anchors measured over
@@ -7077,5 +7095,179 @@ mod tests {
             panic!("expected overlapping endplate bands to be rejected");
         };
         assert!(format!("{err}").contains("overlap"), "got: {err}");
+    }
+
+    /// Barycentric lattice resolution for [`worst_det_over_a_dense_lattice`] — `455` sample
+    /// points per element at `N = 12`.
+    const LATTICE_N: usize = 12;
+
+    /// The worst normalised `det J_rest` over a **dense barycentric lattice** inside every
+    /// element — the expensive ground truth the cheap eight-point criterion is checked against.
+    ///
+    /// Returns `(worst ratio anywhere, elements negative somewhere, of those, how many the
+    /// eight sampled points would have called healthy)`.
+    fn worst_det_over_a_dense_lattice(tet10: &Tet10Mesh) -> (f64, usize, usize) {
+        let element = Tet10;
+        let mut lattice: Vec<Vec3> = Vec::new();
+        for i in 0..=LATTICE_N {
+            for j in 0..=(LATTICE_N - i) {
+                for k in 0..=(LATTICE_N - i - j) {
+                    #[allow(clippy::cast_precision_loss)] // 0..=12, exact in f64.
+                    lattice.push(Vec3::new(
+                        i as f64 / LATTICE_N as f64,
+                        j as f64 / LATTICE_N as f64,
+                        k as f64 / LATTICE_N as f64,
+                    ));
+                }
+            }
+        }
+        // Shape gradients depend only on xi, so they are hoisted out of the element loop.
+        let dense: Vec<SMatrix<f64, 10, 3>> = lattice
+            .iter()
+            .map(|&xi| element.shape_gradients(xi))
+            .collect();
+        let corners: Vec<SMatrix<f64, 10, 3>> = REFERENCE_CORNERS
+            .iter()
+            .map(|&xi| element.shape_gradients(xi))
+            .collect();
+
+        let positions = tet10.positions();
+        let (mut worst, mut negative, mut missed) = (f64::INFINITY, 0usize, 0usize);
+        for t in 0..tet10.n_tets() {
+            #[allow(clippy::cast_possible_truncation)] // Mesh-trait API tax, as elsewhere.
+            let tid = t as TetId;
+            let Some(nodes) = tet10_nodes(tet10, tid) else {
+                continue;
+            };
+            let x_ref = SMatrix::<f64, 10, 3>::from_fn(|a, k| positions[nodes[a] as usize][k]);
+            let scale = affine_det(&x_ref);
+            let x_t = x_ref.transpose();
+            let mut elem_min = f64::INFINITY;
+            for g in &dense {
+                elem_min = elem_min.min((x_t * g).determinant() / scale);
+            }
+            worst = worst.min(elem_min);
+            if elem_min > 0.0 {
+                continue;
+            }
+            negative += 1;
+            // Would the eight points the projector checks have caught it?
+            let mut eight = element
+                .rest_jacobian_dets(&x_ref)
+                .iter()
+                .fold(f64::INFINITY, |m, &d| m.min(d / scale));
+            for g in &corners {
+                eight = eight.min((x_t * g).determinant() / scale);
+            }
+            if eight > 0.0 {
+                missed += 1;
+            }
+        }
+        (worst, negative, missed)
+    }
+
+    /// **The eight-point criterion is not sufficient by itself — the FLOOR is what makes it
+    /// sufficient**, and this measures where that stops being true.
+    ///
+    /// # Why this gate exists
+    ///
+    /// `with_projected_midsides` accepts a midside placement on eight samples: four Gauss
+    /// points and four reference corners. But `det J_rest` is a **cubic in `ξ`** on a curved
+    /// Tet10, and eight samples cannot bound a cubic. Adding the corners took the shipped disc
+    /// from 18 rest-folded elements to 0 *at those points* — which is not the same claim as
+    /// "no element is folded", and the difference is exactly the sort of gap this repo has
+    /// been bitten by before. So the cheap runtime criterion is checked here against an
+    /// expensive ground truth: a 455-point barycentric lattice inside every element.
+    ///
+    /// # What it measures, swept over the floor
+    ///
+    /// | floor | 8-point min | true lattice min | folded somewhere | **missed by the 8** |
+    /// |---|---|---|---|---|
+    /// | 0.02 | +0.020 | **−0.037** | 3 | **3** |
+    /// | 0.05 | +0.050 | **−0.003** | 1 | **1** |
+    /// | 0.10 | +0.100 | +0.055 | 0 | 0 |
+    /// | 0.20 | +0.200 | +0.166 | 0 | 0 |
+    /// | **0.40** (shipped) | +0.400 | **+0.381** | 0 | 0 |
+    ///
+    /// **Three things follow, and none of them was argued.**
+    ///
+    /// 1. **The criterion alone is genuinely insufficient.** At floor 0.05 an element is folded
+    ///    somewhere the projector never looks while all eight of its samples read ≥ 0.05. The
+    ///    back-off walks to the furthest feasible blend, so a low floor parks elements against
+    ///    a boundary the samples describe only approximately — the same
+    ///    walk-to-the-boundary mechanism that made the Gauss-only rule *manufacture* folds,
+    ///    one level subtler.
+    /// 2. **The sampling gap is small and roughly absolute** (~0.02–0.06 of affine), so a floor
+    ///    comfortably above it makes the samples a sound proxy. ⇒ **do not take the midside
+    ///    floor below ~0.10 without re-running this gate.** That is a measured bound where
+    ///    [`DISC_MIDSIDE_CONFORM_QUALITY_FLOOR`]'s deferral previously had only a direction.
+    /// 3. **The shipped 0.40 has ample margin** — true minimum 0.381, so the gap is ~5 % of the
+    ///    floor.
+    ///
+    /// ⚠ **The lattice is the verification, NOT the criterion.** 455 points per element per
+    /// bisection step is far too expensive to run inside the projector; eight is the right
+    /// runtime check *given a floor that covers the gap*. This gate is what earns that "given".
+    ///
+    /// ⚠ Even 455 points is a sampling, not a proof — it bounds the miss far more tightly than
+    /// eight, and that is all it claims.
+    #[test]
+    #[ignore = "needs $CF_L4_STL/$CF_L5_STL/$CF_DISC_STL (BodyParts3D, CC BY-SA, not committed)"]
+    fn the_midside_floor_is_what_makes_eight_samples_sufficient_fom() {
+        let l4 = cf_fsu_geometry::load_from_env("CF_L4_STL").expect("load L4");
+        let l5 = cf_fsu_geometry::load_from_env("CF_L5_STL").expect("load L5");
+        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc");
+        let (o4, o5) = (oracle(&l4).unwrap(), oracle(&l5).unwrap());
+        let frame = cf_fsu_geometry::segment_frame(&l4, &l5, &o4, &o5).unwrap();
+        let params = DiscParams::default();
+        let ep = EndplateConform {
+            o4: &o4,
+            o5: &o5,
+            superior_axis: frame.superior_axis,
+        };
+        let prepared = prepare_disc(disc_mesh, &params, Some(ep)).expect("prepare conformed disc");
+
+        let mut rows: Vec<(f64, f64, usize, usize)> = Vec::new();
+        for floor in [0.05_f64, DISC_MIDSIDE_CONFORM_QUALITY_FLOOR] {
+            let floors = ConformFloors {
+                corner: DISC_CONFORM_QUALITY_FLOOR,
+                midside: floor,
+            };
+            let tet10 = prepared_tet10_mesh(&prepared, &params, Some(ep), floors);
+            let (worst, negative, missed) = worst_det_over_a_dense_lattice(&tet10);
+            println!(
+                "floor {floor:.2} | true lattice min {worst:+.6} | folded somewhere {negative} \
+                 | missed by the 8 sampled points {missed}"
+            );
+            rows.push((floor, worst, negative, missed));
+        }
+
+        // (1) THE SHIPPED FLOOR: no element is folded ANYWHERE, not merely at the sampled
+        //     points. This is the claim the mesher fix actually earns.
+        let (_, shipped_worst, shipped_neg, _) = rows[1];
+        assert_eq!(
+            shipped_neg, 0,
+            "at the shipped midside floor {DISC_MIDSIDE_CONFORM_QUALITY_FLOOR}, {shipped_neg} \
+             elements are folded somewhere inside the reference tet — the eight-point criterion \
+             is no longer covered by the floor, so it is the FLOOR that needs raising, not this \
+             gate that needs relaxing"
+        );
+        assert!(
+            shipped_worst > 0.3,
+            "the shipped floor's true minimum is {shipped_worst:+.6}, far below the ~0.38 that \
+             makes the eight-point proxy comfortable — the margin this gate certifies is gone"
+        );
+
+        // (2) ★ THE NEGATIVE CONTROL, and it is the whole point: at a LOW floor the criterion
+        //     must actually fail, and fail INVISIBLY to the eight points. Without this the
+        //     assert above would pass just as well if the lattice were sampling nothing, or if
+        //     eight points really were sufficient and the floor irrelevant.
+        let (low_floor, low_worst, low_neg, low_missed) = rows[0];
+        assert!(
+            low_neg > 0 && low_missed > 0,
+            "at floor {low_floor} the eight-point criterion must be demonstrably insufficient \
+             ({low_neg} folded, {low_missed} of them invisible to the eight samples, true min \
+             {low_worst:+.6}) — if nothing is missed here then this gate is not measuring the \
+             gap it exists to bound, and the floor's justification is unearned"
+        );
     }
 }
