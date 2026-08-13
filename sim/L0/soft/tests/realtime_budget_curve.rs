@@ -385,14 +385,16 @@ fn which_variable_stops_the_shaft_converging() {
 /// is not the beam's: `δ/L = 0.0090` against a target of `0.10` at 40:1, while
 /// reporting success. Stiffness was free; aspect ratio was the whole effect.
 ///
-/// ⚠ **F-bar is the obvious reach and may well be the wrong tool.**
-/// `fbar_locking` cures **volumetric** locking — near-incompressible `ν = 0.49`,
-/// where the element cannot change volume. This beam runs at `ν = 0.35`, and its
-/// pathology looks like **shear** locking driven by 10:1 *element* aspect ratios
-/// (0.1875 m long × 0.019 m thick). Different failure mode, different remedy. So
-/// it is measured rather than assumed, alongside the other candidate:
-/// **more elements through the thickness**, which attacks the element aspect
-/// ratio directly.
+/// ⚠⚠ **F-bar is not available at all.** It was the obvious reach — but it
+/// panics for Tet10 by design: *"F-bar's single-Gauss-point volumetric
+/// constraint has no multi-Gauss-point Tet10 analog"* (`newton.rs`). It is a
+/// **Tet4-only** remedy, so the element a bending stick actually needs cannot
+/// use it. That also fits the diagnosis: `fbar_locking` cures **volumetric**
+/// locking at `ν = 0.49`, and this beam runs at `ν = 0.35` with 10:1 *element*
+/// aspect ratios — **shear** locking, a different pathology.
+///
+/// ⇒ **Through-thickness refinement is the only candidate remaining in the
+/// tree**, and it attacks element aspect ratio directly.
 ///
 /// Whichever recovers `δ/L` toward 0.10 is the answer, and if the winner is
 /// through-thickness refinement then the cost lands straight back on the frame
@@ -408,7 +410,12 @@ fn does_fbar_or_thickness_refinement_recover_the_slender_beam() {
     );
 
     for aspect in [5.0, 20.0, 40.0] {
-        for (nz, fbar) in [(2, false), (2, true), (4, false), (6, false)] {
+        // ⚠ F-bar is NOT in this matrix, and not because it was untried: it panics
+        // for Tet10 by design — "F-bar's single-Gauss-point volumetric constraint
+        // has no multi-Gauss-point Tet10 analog" (`newton.rs`). It is a Tet4-only
+        // remedy, so the element a bending stick needs cannot use it at all.
+        // Through-thickness refinement is the only candidate left in the tree.
+        for (nz, fbar) in [(2, false), (4, false), (6, false), (8, false)] {
             let (ms, iters, ratio, ok) = separation_row_at(aspect, 1.0e5, nz, fbar);
             println!(
                 "{aspect:>8.0} {nz:>6} {:>7} {ms:>10.2} {iters:>8} {ratio:>10.4} {ok:>10}",
@@ -419,11 +426,10 @@ fn does_fbar_or_thickness_refinement_recover_the_slender_beam() {
     }
 
     println!(
-        "  Read the 40:1 block. If F-bar moves δ/L and thickness does not, the pathology is\n  \
-         volumetric after all. If thickness moves it and F-bar does not, it is element aspect\n  \
-         ratio — and the fix costs DOF, which puts the frame budget back at the centre.\n  \
-         If NEITHER moves it, a solid Tet10 is the wrong element for a stick and the answer is\n  \
-         a beam/shell formulation."
+        "  Read the 40:1 block. If δ/L climbs toward 0.10 with nz, the pathology is element\n  \
+         aspect ratio and the fix costs DOF — which puts the frame budget back at the centre.\n  \
+         If it does NOT climb, a solid Tet10 is the wrong element for a stick at this\n  \
+         slenderness, and the answer is a beam/shell formulation rather than more mesh."
     );
 
     // The control: the known-good 5:1 must still land near target, or this table
