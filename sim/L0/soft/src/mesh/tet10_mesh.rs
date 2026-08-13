@@ -230,7 +230,8 @@ impl Tet10Mesh {
     /// at rest found **18 of 6256 elements folded at a reference corner** (worst normalised
     /// determinant −0.856) with *every one of the 18 invisible to this rule* — all four Gauss
     /// points comfortably positive. Every Stroud point of the four-point rule is strictly
-    /// interior ([`REFERENCE_CORNERS`]), so no combination of them bounds the corner region.
+    /// interior (barycentric weight 0.5854 on the nearest vertex), so no combination of them
+    /// bounds the corner region.
     ///
     /// **The floor did not merely miss those folds — it produced them.** The bisection walks
     /// each node to the furthest feasible blend, so a node whose target is infeasible lands
