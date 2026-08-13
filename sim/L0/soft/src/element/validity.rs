@@ -155,6 +155,14 @@ pub enum RestValidity {
     /// **Refutation, with the point that proves it.** No bound was trusted to
     /// produce this: `value` is an evaluated determinant (or determinant
     /// difference, under [`ValidityBar::RelativeFloor`]) at `at`.
+    ///
+    /// ⚠ Under [`ValidityBar::RelativeFloor`] this variant also reports an
+    /// invalid **`original`**, in which case `at` and `value` describe the
+    /// *reference* element rather than `x_ref`. That is deliberate: against a
+    /// folded reference there is no meaningful floor to test `x_ref` for, so
+    /// the answer is about the thing that is actually wrong. Callers reading
+    /// the witness to blame a specific element must check their reference
+    /// first, not assume `x_ref` is the folded one.
     Violated {
         /// Parametric point where the bar fails.
         at: Vec3,
