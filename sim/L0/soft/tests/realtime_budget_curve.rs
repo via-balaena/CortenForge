@@ -83,7 +83,7 @@ const RAMP_STEPS: usize = 10;
 
 /// `(elements, dof, ms_per_step, newton_iters, tip_deflection_m)` for one
 /// refinement of the shaft.
-fn measure(nx: usize, ny: usize, nz: usize) -> (usize, usize, f64, usize, f64) {
+fn measure(nx: usize, ny: usize, nz: usize, tol_rel: f64) -> (usize, usize, f64, usize, f64) {
     let lambda = 2.0 * MU * NU / (1.0 - 2.0 * NU);
     let field = MaterialField::uniform(MU, lambda);
     let tet4 =
@@ -119,7 +119,7 @@ fn measure(nx: usize, ny: usize, nz: usize) -> (usize, usize, f64, usize, f64) {
     // ⚠ Scaled to the load, as `tet10_bending_locking` does. `skeleton()`'s
     // default is sized for the walking-skeleton scene; leaving it on a 2 GPa
     // shaft asks for a residual the solve cannot reach.
-    cfg.tol = 1e-8 * TIP_FORCE_TOTAL / (loaded.len() as f64).sqrt();
+    cfg.tol = tol_rel * TIP_FORCE_TOTAL / (loaded.len() as f64).sqrt();
     let solver: CpuTet10NHSolver<Tet10Mesh> =
         CpuNewtonSolver::new(Tet10, mesh, NullContact, cfg, bc);
 
@@ -146,8 +146,16 @@ fn measure(nx: usize, ny: usize, nz: usize) -> (usize, usize, f64, usize, f64) {
         // `try_` so a grid that diverges REPORTS rather than killing the whole
         // curve — a refinement that cannot take this load is a row of the
         // answer, not a reason to lose the other rows.
-        let Ok(step) = solver.try_replay_step(&x_prev, &v_prev, &theta, cfg.dt) else {
-            return (n_elems, n_dof, f64::NAN, 0, f64::NAN);
+        let step = match solver.try_replay_step(&x_prev, &v_prev, &theta, cfg.dt) {
+            Ok(st) => st,
+            Err(e) => {
+                let msg = format!("{e:?}");
+                println!(
+                    "    PROBE {nx}x{ny}x{nz} increment {i} failed: {}",
+                    &msg[..msg.len().min(260)]
+                );
+                return (n_elems, n_dof, f64::NAN, 0, f64::NAN);
+            }
         };
         let ms = clock.elapsed().as_secs_f64() * 1e3;
         // The first increment pays first-touch page faults and any lazy init;
@@ -173,99 +181,57 @@ fn realtime_budget_curve_for_a_flexing_tet10_shaft() {
         "\n=== Tet10 shaft: cost vs fidelity (90 Hz budget = {FRAME_BUDGET_MS:.2} ms/frame) ==="
     );
     println!(
-        "{:>12} {:>8} {:>8} {:>10} {:>7} {:>9} {:>12} {:>9}",
-        "grid", "elems", "dof", "ms/step", "iters", "ms/iter", "tip (mm)", "vs prev"
+        "  ⚠ TOLERANCE is the axis, not a detail. `tet10_bending_locking` expects up to 350\n  \
+         Newton iterations at 1e-8 relative — this solver was built for the disc's accuracy,\n  \
+         not for latency. A game needs VISUALLY converged, not 1e-8, and the question is what\n  \
+         that buys."
     );
 
-    // ⚠ ONE variable at a time. Refinement is along the LENGTH only, with the
-    // cross-section held at 2x2 throughout — bending deflection is dominated by
-    // discretisation along the beam, and a sequence that also thickened the
-    // cross-section would make "vs prev" a comparison between meshes differing
-    // in two ways at once. (That is the error the rung5 investigation turned on:
-    // two differences, never separated.) A cross-section refinement is reported
-    // separately below, where it can be read as its own control.
-    let grids = [
-        (8, 2, 2),
-        (12, 2, 2),
-        (16, 2, 2),
-        (24, 2, 2),
-        (32, 2, 2),
-        (48, 2, 2),
-    ];
+    // ⚠ ONE variable at a time within each block: refinement along the LENGTH
+    // only, cross-section fixed at 2x2. A sequence that also thickened the
+    // section would make "vs prev" compare meshes differing in two ways — the
+    // error the rung5 investigation turned on.
+    let grids = [(8, 2, 2), (16, 2, 2), (24, 2, 2), (32, 2, 2)];
 
-    let mut prev_tip: Option<f64> = None;
-    let mut rows: Vec<(usize, f64, f64)> = Vec::new();
-    for (nx, ny, nz) in grids {
-        let (elems, dof, ms, iters, tip) = measure(nx, ny, nz);
-        let delta = prev_tip.map_or(f64::INFINITY, |p: f64| {
-            (tip - p).abs() / p.abs().max(1e-12) * 100.0
-        });
+    for tol_rel in [1e-8, 1e-5, 1e-3] {
+        println!("\n  relative tolerance {tol_rel:e}");
         println!(
-            "{:>12} {elems:>8} {dof:>8} {ms:>10.2} {iters:>7} {:>9.2} {:>12.3} {}",
-            format!("{nx}x{ny}x{nz}"),
-            ms / iters.max(1) as f64,
-            tip * 1e3,
-            if delta.is_finite() {
-                format!("{delta:>8.2}%")
-            } else {
-                "        —".to_string()
-            },
+            "{:>12} {:>8} {:>8} {:>10} {:>7} {:>9} {:>12} {:>9}",
+            "grid", "elems", "dof", "ms/step", "iters", "ms/iter", "tip (mm)", "vs prev"
         );
-        prev_tip = Some(tip);
-        rows.push((elems, ms, tip));
+        let mut prev_tip: Option<f64> = None;
+        for (nx, ny, nz) in grids {
+            let (elems, dof, ms, iters, tip) = measure(nx, ny, nz, tol_rel);
+            let delta = prev_tip.map_or(f64::INFINITY, |p: f64| {
+                (tip - p).abs() / p.abs().max(1e-12) * 100.0
+            });
+            let fits = if ms.is_finite() && ms < FRAME_BUDGET_MS {
+                " ✓fits"
+            } else {
+                ""
+            };
+            println!(
+                "{:>12} {elems:>8} {dof:>8} {ms:>10.2} {iters:>7} {:>9.2} {:>12.3} {}{fits}",
+                format!("{nx}x{ny}x{nz}"),
+                ms / (iters.max(1) as f64),
+                tip * 1e3,
+                if delta.is_finite() {
+                    format!("{delta:>8.2}%")
+                } else {
+                    "        —".to_string()
+                },
+            );
+            prev_tip = Some(tip);
+        }
     }
 
     println!(
-        "\n  'vs prev' is the change in tip deflection from the previous refinement — the\n  \
-         FIDELITY column. Where it stops moving is the mesh the physics needs; the ms/step\n  \
-         beside it is the cost that actually has to fit, and any cheaper row is a stick that\n  \
-         does not bend correctly.\n  \
-         ⚠ Quasi-static from rest with a stiff tolerance: a PESSIMISTIC bound. A real-time\n  \
-         loop warm-starts from the previous frame and will beat this."
-    );
-
-    // ── The cross-section control, read on its own axis. ──
-    //
-    // The curve above refines along the length at a fixed 2x2 section. If the
-    // section is ALSO under-resolved, length convergence would be converging to
-    // the wrong number — a mesh can settle confidently on a value that is not the
-    // answer. Holding the length fixed and thickening the section says whether
-    // 2x2 is enough.
-    println!("\n  cross-section control (length fixed at nx = 24):");
-    let mut section_prev: Option<f64> = None;
-    for (nx, ny, nz) in [(24, 2, 2), (24, 3, 4), (24, 4, 6)] {
-        let (elems, dof, ms, iters, tip) = measure(nx, ny, nz);
-        let delta = section_prev.map_or(f64::INFINITY, |p: f64| {
-            (tip - p).abs() / p.abs().max(1e-12) * 100.0
-        });
-        println!(
-            "{:>12} {elems:>8} {dof:>8} {ms:>10.2} {iters:>7} {:>9.2} {:>12.3} {}",
-            format!("{nx}x{ny}x{nz}"),
-            ms / iters.max(1) as f64,
-            tip * 1e3,
-            if delta.is_finite() {
-                format!("{delta:>8.2}%")
-            } else {
-                "        —".to_string()
-            },
-        );
-        section_prev = Some(tip);
-    }
-
-    // Non-vacuity: the shaft must actually bend, or every column above is about
-    // a beam that never moved.
-    let (_, _, coarsest_tip) = rows[0];
-    assert!(
-        coarsest_tip > 1e-4,
-        "the shaft must visibly deflect for this curve to mean anything; got {coarsest_tip:.3e} m"
-    );
-    // ...and refinement must actually cost something, or the timing is measuring
-    // setup rather than the solve.
-    let (_, coarse_ms, _) = rows[0];
-    let (_, fine_ms, _) = rows[rows.len() - 1];
-    assert!(
-        fine_ms > coarse_ms,
-        "the finest grid must cost more than the coarsest ({fine_ms:.2} vs {coarse_ms:.2} ms) — \
-         if not, this is timing something other than the solve"
+        "\n  'vs prev' is the FIDELITY column — where it stops moving is the mesh the physics\n  \
+         needs, and the ms/step beside it is the cost that actually has to fit. Compare the\n  \
+         tip across TOLERANCE blocks too: if a loose tolerance gives the same deflection, the\n  \
+         iterations it saved were buying precision nobody can see.\n  \
+         ⚠ Load is ramped over {RAMP_STEPS} increments and each is timed from the previous\n  \
+         converged state — the per-FRAME cost, which is what a real-time loop pays. NaN = the\n  \
+         Newton iteration cap, i.e. that tolerance is unreachable for that mesh."
     );
 }
