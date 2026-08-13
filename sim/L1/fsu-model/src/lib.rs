@@ -3398,12 +3398,24 @@ mod tests {
     /// rest-state census that measured `det F` would read 1.0 everywhere and see nothing. The
     /// reference map's own orientation is the rest-state question.
     fn rest_corner_det_ratios(x_ref: &SMatrix<f64, 10, 3>, element: Tet10) -> [f64; 4] {
-        let affine = SMatrix::<f64, 3, 3>::from_fn(|r, c| x_ref[(c + 1, r)] - x_ref[(0, r)]);
-        let scale = affine.determinant();
+        let scale = affine_det(x_ref);
         REFERENCE_CORNERS.map(|xi| {
             let j_rest = x_ref.transpose() * element.shape_gradients(xi);
             j_rest.determinant() / scale
         })
+    }
+
+    /// `det [X₁−X₀, X₂−X₀, X₃−X₀]` — the element's affine (corner-block) determinant, `6·V`.
+    /// The normaliser every ratio in this census is expressed against.
+    fn affine_det(x_ref: &SMatrix<f64, 10, 3>) -> f64 {
+        SMatrix::<f64, 3, 3>::from_fn(|r, c| x_ref[(c + 1, r)] - x_ref[(0, r)]).determinant()
+    }
+
+    /// The ten ordered Tet10 node ids of one element, or `None` on a linear mesh.
+    fn tet10_nodes(tet10: &Tet10Mesh, tid: TetId) -> Option<[VertexId; 10]> {
+        let c = tet10.tet_vertices(tid);
+        let m = tet10.tet_midside_nodes(tid)?;
+        Some([c[0], c[1], c[2], c[3], m[0], m[1], m[2], m[3], m[4], m[5]])
     }
 
     /// One arm's reference-corner rest census.
@@ -3428,14 +3440,9 @@ mod tests {
         for t in 0..n_tets {
             #[allow(clippy::cast_possible_truncation)]
             let tid = t as TetId;
-            let corners = tet10.tet_vertices(tid);
-            let Some(mid) = tet10.tet_midside_nodes(tid) else {
+            let Some(nodes) = tet10_nodes(tet10, tid) else {
                 continue;
             };
-            let nodes: [VertexId; 10] = [
-                corners[0], corners[1], corners[2], corners[3], mid[0], mid[1], mid[2], mid[3],
-                mid[4], mid[5],
-            ];
             let x_ref = SMatrix::<f64, 10, 3>::from_fn(|a, k| positions[nodes[a] as usize][k]);
             let ratios = rest_corner_det_ratios(&x_ref, element);
             let mut tet_min = f64::INFINITY;
@@ -3542,7 +3549,68 @@ mod tests {
                      something other than what it claims.",
                     c.worst
                 );
+                continue;
             }
+
+            // ## Do the folded elements reach the physics, and can the shipped guard see them?
+            //
+            // Two questions decide what this finding costs, and both are per-element.
+            //
+            // (a) **Free DOFs.** These elements sit in the endplate region, and the
+            //     `full_face_band` tie pins every node it covers. An element whose ten nodes
+            //     are ALL in the band is folded but Dirichlet-clamped: it cannot move, so it
+            //     contributes nothing to the free-DOF system `k_disc` is read from. One with a
+            //     free node is integrated live, and the committed anchors are then measured
+            //     over an inside-out element.
+            //
+            // (b) **Guard blindness on REAL geometry.** `Tet10Mesh::with_projected_midsides`
+            //     accepts a projection by `Element::rest_jacobian_dets` — the four Stroud
+            //     points, all interior. The 60 % → 6 % miss-rate table behind that claim was
+            //     measured on straight-edged synthetic tets, so this is the first reading of it
+            //     on the shipped anatomy: if every Gauss point of a folded element is positive,
+            //     the guard is confirmed blind to exactly what it is supposed to prevent.
+            let element = Tet10;
+            let positions = tet10.positions();
+            let band: BTreeSet<VertexId> = full_face_band(&tet10, &p.inferior)
+                .into_iter()
+                .chain(full_face_band(&tet10, &p.superior))
+                .collect();
+            let folded_tets: BTreeSet<usize> = c.folded.iter().map(|&(t, _, _)| t).collect();
+            let (mut fully_pinned, mut with_free_dofs, mut gauss_blind) = (0, 0, 0);
+            for &t in &folded_tets {
+                #[allow(clippy::cast_possible_truncation)]
+                let tid = t as TetId;
+                let Some(nodes) = tet10_nodes(&tet10, tid) else {
+                    continue;
+                };
+                let pinned = nodes.iter().filter(|n| band.contains(n)).count();
+                let x_ref = SMatrix::<f64, 10, 3>::from_fn(|a, k| positions[nodes[a] as usize][k]);
+                let scale = affine_det(&x_ref);
+                let gauss = element.rest_jacobian_dets(&x_ref);
+                let min_gauss = gauss.iter().fold(f64::INFINITY, |m, &g| m.min(g / scale));
+                if pinned == 10 {
+                    fully_pinned += 1;
+                } else {
+                    with_free_dofs += 1;
+                }
+                if min_gauss > 0.0 {
+                    gauss_blind += 1;
+                }
+                println!(
+                    "    tet {t:6}: pinned {pinned:2}/10, min Gauss det ratio {min_gauss:+.6}, \
+                     min corner det ratio {:+.6}",
+                    c.folded
+                        .iter()
+                        .filter(|&&(ft, _, _)| ft == t)
+                        .fold(f64::INFINITY, |m, &(_, _, r)| m.min(r)),
+                );
+            }
+            println!(
+                "  of {} folded elements: {fully_pinned} fully pinned by the bond, \
+                 {with_free_dofs} carry FREE DOFs; {gauss_blind} are invisible to the \
+                 shipped Gauss-point guard",
+                folded_tets.len(),
+            );
         }
     }
 
