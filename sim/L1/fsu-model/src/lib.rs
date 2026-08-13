@@ -5056,6 +5056,109 @@ mod tests {
         );
     }
 
+    /// ▶ **Rung 5.0 — the fix: sub-step the swing.**
+    ///
+    /// The chain, each step measured rather than argued:
+    ///
+    /// | ruled out | by |
+    /// |---|---|
+    /// | thread scheduling | `RAYON_NUM_THREADS=1` reproduces identically |
+    /// | the Tet4 *solve* | never run → still fails |
+    /// | two live arms | Tet4 dropped → still fails |
+    /// | the Tet4 arm at all | none constructed → still fails |
+    /// | MuJoCo globals | `sim-core` is pure Rust; `Model::clone()` deep-copies |
+    /// | the mesh | 20443/20443 certified at rest, worst margin 0.969 |
+    /// | extension itself | converges FROM REST, k = −0.1068, resid 4.74e-13 |
+    ///
+    /// What remains is the **swing**. [`CoupledFsu::set_flexion`] imposes an *absolute* pose,
+    /// but the soft solve resumes from the previously converged state — so `+0.5°` followed by
+    /// `−0.5°` asks the soft field to traverse **1° in one backward-Euler step**.
+    ///
+    /// ⚠ Both probes are individually legal: `set_flexion`'s own docs say "keep `|theta|`
+    /// sub-degree", and `0.5°` is. **The operative quantity is the swing between consecutive
+    /// probes, and nothing documents or enforces a bound on that** — which is exactly why the
+    /// reproducer looked mysterious for so long.
+    ///
+    /// This drives the same `+0.5° → −0.5°` transit through intermediate poses. If it
+    /// converges, the defect is the harness asking for too much in one step, not the element,
+    /// not the mesh, and not co-residency — and the fix is a swing bound rather than anything
+    /// in `sim-soft`.
+    ///
+    /// `SUBSTEPS = 4` makes each swing `0.25°`.
+    #[test]
+    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
+    fn rung5_substepping_the_swing_fom() {
+        const SUBSTEPS: usize = 4;
+
+        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
+        let params = DiscParams {
+            cell: 0.002,
+            ..DiscParams::default()
+        };
+        let (flex, ext) = (0.5_f64.to_radians(), -0.5_f64.to_radians());
+
+        let p = prepare_disc(disc_mesh, &params, None).expect("prepare raw disc at cell 0.002");
+        let mut tet10 = bond_prepared_tet10(p, &params, None, ConformFloors::SHIPPED);
+
+        let t = std::time::Instant::now();
+        let quad_flex = tet10.flexion_moment(flex);
+        println!(
+            "  flexion   {:+.2}° returned: k = {:.4}, resid {:.2e}",
+            flex.to_degrees(),
+            quad_flex.0 / flex,
+            quad_flex.1
+        );
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+
+        // The transit, stopping one short of `ext` — the final probe below IS the last
+        // sub-step, so no pose is solved twice and `quad_ext` is a genuine measurement rather
+        // than a re-solve of an already-converged state.
+        //
+        // `set_flexion` panics on divergence, so reaching each print is itself the evidence
+        // that sub-step converged.
+        #[allow(clippy::cast_precision_loss)] // SUBSTEPS is 4.
+        for i in 1..SUBSTEPS {
+            let theta = flex + (ext - flex) * (i as f64 / SUBSTEPS as f64);
+            tet10.set_flexion(theta);
+            println!(
+                "    sub-step {i}/{SUBSTEPS} at {:+.3}° converged",
+                theta.to_degrees()
+            );
+            std::io::Write::flush(&mut std::io::stdout()).ok();
+        }
+
+        // The final sub-step, which is also the probe that reads the moment.
+        let quad_ext = tet10.flexion_moment(ext);
+        println!(
+            "rung5 sub-stepped swing | cell {} | {:.1} s | flexion {:.4} / extension {:.4} \
+             (resid {:.2e})",
+            params.cell,
+            t.elapsed().as_secs_f64(),
+            quad_flex.0 / flex,
+            quad_ext.0 / ext,
+            quad_ext.1,
+        );
+
+        for (probe, name) in [(quad_flex, "Tet10 flexion"), (quad_ext, "Tet10 extension")] {
+            assert!(
+                probe.1 < 1e-8,
+                "{name} must conserve (‖ΣF‖+‖ΣM‖ = {:.2e})",
+                probe.1
+            );
+        }
+
+        // ★ Non-vacuity: extension must reproduce the from-rest measurement. Reaching the pose
+        // by a different path must not change the answer, or sub-stepping has bought
+        // convergence by changing the physics.
+        let from_rest = -0.1068;
+        assert!(
+            ((quad_ext.0 / ext) - from_rest).abs() < 0.02 * from_rest.abs(),
+            "sub-stepped extension {:.4} must reproduce the from-rest {from_rest:.4} — a \
+             different answer means the path changed the physics, not just the convergence",
+            quad_ext.0 / ext,
+        );
+    }
+
     /// **Rung 5.0 — does DROPPING the Tet10 arm save the Tet4 solve?**
     ///
     /// `rung5_coresidency_minimal_reproducer_fom` is byte-for-byte this test plus one thing: it
