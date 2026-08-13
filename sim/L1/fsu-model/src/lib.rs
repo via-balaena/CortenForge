@@ -3437,6 +3437,13 @@ mod tests {
     /// The Stroud quadrature points the mesher's own guard evaluates are all interior
     /// (barycentric weight 0.5854 on the nearest vertex), so a fold confined to a corner
     /// region is invisible to them. These are the points that can see it.
+    ///
+    /// ⚠ `sim_soft`'s `with_projected_midsides` holds its back-off at these same four points
+    /// and defines them privately. **Restated here rather than exported**, deliberately, for
+    /// the reason this crate's other oracles give: a gate that imports the constant its
+    /// subject is built from stops being an independent check. These are the vertices of the
+    /// unit simplex — a definition, not a tunable — so the two cannot drift apart in any way a
+    /// reader cannot see at a glance.
     const REFERENCE_CORNERS: [Vec3; 4] = [
         Vec3::new(0.0, 0.0, 0.0),
         Vec3::new(1.0, 0.0, 0.0),
