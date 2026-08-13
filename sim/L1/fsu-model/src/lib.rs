@@ -1271,14 +1271,22 @@ impl<Msh: Mesh, E: Element<N, G> + Default, const N: usize, const G: usize>
     /// [`Self::flexion_moment`]), then the deformed surface is read back in native mm — so
     /// a capture costs exactly `N + 1` solves (rest + one per angle).
     ///
+    /// ⚠ Angles are reached with sub-stepping ([`Self::flexion_moment`]), so a sweep may pass
+    /// through arbitrary **swings** between consecutive entries without the caller arranging
+    /// it — `[+0.5°, −0.5°]` is a 1° transit and is handled.
+    ///
     /// # Panics
     /// Panics if any angle drives the soft solve past its SPD region — see
-    /// [`Self::set_flexion`]. Keep every `|angle|` inside the validated sub-degree range.
+    /// [`Self::set_flexion`] and [`MAX_FLEXION_SWING_RAD`].
     #[must_use]
     pub fn capture_flexion(&mut self, angles: &[f64]) -> FlexionTrajectory {
         // Rest = the θ = 0 equilibrium, solved up front so it does not depend on whatever
         // pose a prior caller left the disc in.
-        self.set_flexion(0.0);
+        //
+        // ⚠ SUB-STEPPED precisely because of that: "whatever pose a prior caller left" is an
+        // arbitrary swing back to zero, so the bounded entry point is the wrong one here. A
+        // library's own reset must not be able to trip a caller-facing bound.
+        self.set_flexion_substepped(0.0);
         let rest_nodes_native = self.deformed_nodes_native();
         let boundary_faces = self.boundary_faces().to_vec();
 
