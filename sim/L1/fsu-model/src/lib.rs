@@ -5004,6 +5004,58 @@ mod tests {
         }
     }
 
+    /// ▶ **Rung 5.0 — is it EXTENSION, or is it the 1° SWING?**
+    ///
+    /// `rung5_tet10_alone_both_angles_fom` established that the Tet4 arm is irrelevant: the
+    /// Tet10 disc at `cell = 0.002` converges in flexion (`+0.5°`, k = −0.1079, resid 1.23e-11)
+    /// and then inverts tet 20441 on the extension probe, with nothing else constructed. So
+    /// "co-residency" is not the variable.
+    ///
+    /// ⚠ But `flexion_moment` drives from the CURRENT state, so the second probe swings the
+    /// disc from `+0.5°` to `−0.5°` — a **1° swing in one step**, not a `0.5°` extension from
+    /// rest. Two candidates remain, and they have different fixes:
+    ///
+    /// - **Extension alone fails** ⇒ the defect is direction-dependent, and the disc has an
+    ///   asymmetry that puts tet 20441 into inversion under extension at this resolution.
+    /// - **Extension alone passes** ⇒ the defect is the SWING magnitude, and every probe pair
+    ///   in this family is asking the solver for 1° in one step. That is a harness property,
+    ///   not a mesh one, and it would mean the fix is sub-stepping rather than anything about
+    ///   the element.
+    ///
+    /// Extension is driven FIRST here, from rest, and nothing else is built.
+    #[test]
+    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
+    fn rung5_extension_from_rest_alone_fom() {
+        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
+        let params = DiscParams {
+            cell: 0.002,
+            ..DiscParams::default()
+        };
+        let ext = -0.5_f64.to_radians();
+
+        let p = prepare_disc(disc_mesh, &params, None).expect("prepare raw disc at cell 0.002");
+        let mut tet10 = bond_prepared_tet10(p, &params, None, ConformFloors::SHIPPED);
+
+        let t = std::time::Instant::now();
+        let quad_ext = tet10.flexion_moment(ext);
+        println!(
+            "rung5 extension-FROM-REST alone | cell {} | {:.1} s | extension {:+.2}° \
+             returned: k = {:.4}, resid {:.2e}",
+            params.cell,
+            t.elapsed().as_secs_f64(),
+            ext.to_degrees(),
+            quad_ext.0 / ext,
+            quad_ext.1,
+        );
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+
+        assert!(
+            quad_ext.1 < 1e-8,
+            "Tet10 extension must conserve (‖ΣF‖+‖ΣM‖ = {:.2e})",
+            quad_ext.1
+        );
+    }
+
     /// **Rung 5.0 — does DROPPING the Tet10 arm save the Tet4 solve?**
     ///
     /// `rung5_coresidency_minimal_reproducer_fom` is byte-for-byte this test plus one thing: it
