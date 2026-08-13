@@ -7179,34 +7179,54 @@ mod tests {
     /// been bitten by before. So the cheap runtime criterion is checked here against an
     /// expensive ground truth: a 455-point barycentric lattice inside every element.
     ///
-    /// # What it measures, swept over the floor
+    /// # ★★ TWO geometries, because one of them refutes what the other would have "shown"
     ///
-    /// | floor | 8-point min | true lattice min | folded somewhere | **missed by the 8** |
-    /// |---|---|---|---|---|
-    /// | 0.02 | +0.020 | **−0.037** | 3 | **3** |
-    /// | 0.05 | +0.050 | **−0.003** | 1 | **1** |
-    /// | 0.10 | +0.100 | +0.055 | 0 | 0 |
-    /// | 0.20 | +0.200 | +0.166 | 0 | 0 |
-    /// | **0.40** (shipped) | +0.400 | **+0.381** | 0 | 0 |
+    /// Measured at the shipped floor on both conformed discs, and — for the scanned arm — swept
+    /// over the floor. `folded` counts elements negative *somewhere* on the lattice; `missed`
+    /// counts how many of those the eight sampled points call healthy.
     ///
-    /// **Three things follow, and none of them was argued.**
+    /// | geometry | floor | 8-pt min | true lattice min | folded | **missed by the 8** |
+    /// |---|---|---|---|---|---|
+    /// | scanned | 0.02 | +0.020 | **−0.037** | 3 | **3** |
+    /// | scanned | 0.05 | +0.050 | **−0.003** | 1 | **1** |
+    /// | scanned | 0.10 | +0.100 | +0.055 | 0 | 0 |
+    /// | scanned | **0.40** | +0.400 | **+0.381** | **0** | 0 |
+    /// | **lofted** | **0.40** | **+0.400** | **−1.091** | **5** | **5** |
     ///
-    /// 1. **The criterion alone is genuinely insufficient.** At floor 0.05 an element is folded
-    ///    somewhere the projector never looks while all eight of its samples read ≥ 0.05. The
-    ///    back-off walks to the furthest feasible blend, so a low floor parks elements against
-    ///    a boundary the samples describe only approximately — the same
-    ///    walk-to-the-boundary mechanism that made the Gauss-only rule *manufacture* folds,
-    ///    one level subtler.
-    /// 2. **The sampling gap is small and roughly absolute** (~0.02–0.06 of affine), so a floor
-    ///    comfortably above it makes the samples a sound proxy. ⇒ **do not take the midside
-    ///    floor below ~0.10 without re-running this gate.** That is a measured bound where
-    ///    [`DISC_MIDSIDE_CONFORM_QUALITY_FLOOR`]'s deferral previously had only a direction.
-    /// 3. **The shipped 0.40 has ample margin** — true minimum 0.381, so the gap is ~5 % of the
-    ///    floor.
+    /// **The scanned disc alone would have licensed a false general claim.** On it the floor
+    /// does cover the sampling gap and the mesh is fold-free everywhere measured. On the
+    /// **lofted** disc, at the same floor, the eight samples read a perfect `+0.400` while five
+    /// elements are folded inside — one to `−1.091`. The gap is *not* the ~0.02–0.06 the scanned
+    /// rows suggest; it is unbounded in general, because eight samples cannot bound a cubic.
+    ///
+    /// **Four things follow, none of them argued.**
+    ///
+    /// 1. **The criterion alone is genuinely insufficient.** At scanned floor 0.05 an element is
+    ///    folded where the projector never looks while all eight samples read ≥ 0.05. The
+    ///    back-off walks to the furthest feasible blend, so it parks elements against a boundary
+    ///    the samples describe only approximately — the same walk-to-the-boundary mechanism that
+    ///    made the Gauss-only rule *manufacture* folds, one level subtler.
+    /// 2. **On the scanned disc the floor covers the gap; on the lofted disc it does not.** So
+    ///    "eight points plus a 0.40 floor gives a fold-free rest mesh" is a claim about the
+    ///    scanned geometry, and must not be restated without one.
+    /// 3. ⚠ **The five lofted residuals are OPEN.** They are a 99.8 % improvement, not a
+    ///    solution — the same measurement on the pre-fix projector finds **2 191** folded
+    ///    lofted elements (worst `−16.2`) against these five, and **2 317** visible at the
+    ///    corners. Closing them needs a criterion that bounds the cubic rather than samples it
+    ///    (interval arithmetic or Bernstein/Bézier coefficient bounds on `det J_rest`), which is
+    ///    a rung of its own.
+    /// 4. **Do not take the midside floor below ~0.10** without re-running this gate — a
+    ///    measured bound where [`DISC_MIDSIDE_CONFORM_QUALITY_FLOOR`]'s deferral previously had
+    ///    only a direction.
+    ///
+    /// ⚠⚠ **Pre-fix, the lofted disc carried 2 317 corner-folded elements and its licensed
+    /// gates were GREEN** (`lofted_conformed_disc_angle_envelope_fom`,
+    /// `b6_4_coupled_fsu_from_a_lofted_disc`). A solve completing is not evidence its mesh is
+    /// sound.
     ///
     /// ⚠ **The lattice is the verification, NOT the criterion.** 455 points per element per
     /// bisection step is far too expensive to run inside the projector; eight is the right
-    /// runtime check *given a floor that covers the gap*. This gate is what earns that "given".
+    /// runtime check *where a floor covers the gap*. This gate is what says where that holds.
     ///
     /// ⚠ Even 455 points is a sampling, not a proof — it bounds the miss far more tightly than
     /// eight, and that is all it claims.
@@ -7268,6 +7288,39 @@ mod tests {
              ({low_neg} folded, {low_missed} of them invisible to the eight samples, true min \
              {low_worst:+.6}) — if nothing is missed here then this gate is not measuring the \
              gap it exists to bound, and the floor's justification is unearned"
+        );
+
+        // (3) ★★ THE SECOND GEOMETRY, which is what stops (1) becoming a general claim it has
+        //     not earned. The LOFTED disc runs the same projector at the same floor, reads a
+        //     perfect +0.400 across all eight samples, and is folded inside anyway. Bounding
+        //     the residual here is what makes it impossible to lose: it is a 99.8 % improvement
+        //     (2 191 folded on the pre-fix projector, worst −16.2) and NOT a solution.
+        let lofted = lofted_disc(&l4, &l5);
+        let lofted_prepared =
+            prepare_disc(lofted, &params, Some(ep)).expect("prepare conformed lofted disc");
+        let lofted_mesh =
+            prepared_tet10_mesh(&lofted_prepared, &params, Some(ep), ConformFloors::SHIPPED);
+        let (lofted_min, lofted_folded, lofted_unseen) =
+            worst_det_over_a_dense_lattice(&lofted_mesh);
+        println!(
+            "LOFTED at the shipped floor | {} tets | true lattice min {lofted_min:+.6} \
+             | folded somewhere {lofted_folded} | missed by the 8 sampled points {lofted_unseen}",
+            lofted_mesh.n_tets(),
+        );
+        assert!(
+            lofted_folded <= 8,
+            "the lofted conformed disc has {lofted_folded} elements folded somewhere at rest (worst \
+             {lofted_min:+.6}), above the committed residual of 5 — the projector has regressed \
+             on the geometry that exercises it hardest"
+        );
+        // ...and the residual must still be INVISIBLE to the eight points, because that is the
+        // fact this gate exists to keep on the record. If the samples ever start catching them,
+        // the criterion changed and the open item below has moved.
+        assert_eq!(
+            lofted_folded, lofted_unseen,
+            "every remaining lofted fold should be one the eight samples cannot see \
+             ({lofted_unseen} of {lofted_folded}); if the samples now catch some, the criterion has \
+             changed and this gate's framing needs re-deriving rather than re-anchoring"
         );
     }
 }
