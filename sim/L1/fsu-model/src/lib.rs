@@ -4691,6 +4691,118 @@ mod tests {
         }
     }
 
+    /// ▶ **Does a PASSING fine-mesh disc solve hide folded elements?**
+    ///
+    /// The solver's `check_validity_at_step_start` samples five values — `det F` at the four
+    /// Gauss points plus the corner-block affine `det F`. Measured against a proof on random
+    /// deformed configurations, that check misses **100 % of folds at their onset**
+    /// (`sim-soft`'s `deformed_validity_pilot`), because the Stroud points are strictly
+    /// interior and the corner block ignores midsides entirely. A real cantilever bending solve
+    /// never entered that blind spot — zero folds out to 136 % tip deflection — so the open
+    /// question is whether a harsher, finer, real scene does.
+    ///
+    /// This is that scene: the **discriminator's** configuration, `cell = 0.002`, Tet10 alone.
+    ///
+    /// ⚠⚠ **Deliberately NOT the co-residency reproducer.** That one panics with
+    /// `det F = -0.083` at ±0.5°, and half a degree cannot physically invert an element — its
+    /// sibling `rung5_coresidency_discriminator_dropped_tet10_fom` shows the Tet4 arm converges
+    /// once the Tet10 arm is dropped, so the inversion there is **corrupted state that the gate
+    /// CAUGHT**, not a fold it missed. Censusing it would conflate an aliasing bug with a
+    /// validity-detection gap and let either conclusion be read out of the result. The arm that
+    /// *passes* is the one that can answer the question.
+    #[test]
+    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
+    fn a_passing_fine_mesh_disc_solve_censused_against_a_proof_fom() {
+        use sim_soft::element::{RestValidity, ValidityBar, certify_rest};
+
+        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
+        let params = DiscParams {
+            cell: 0.002,
+            ..DiscParams::default()
+        };
+        let flex = 0.5_f64.to_radians();
+
+        let p = prepare_disc(disc_mesh, &params, None).expect("prepare raw disc at cell 0.002");
+        // The rest mesh, kept for topology and for the five-point comparison.
+        let rest_mesh = prepared_tet10_mesh(
+            &p.duplicate().expect("duplicate"),
+            &params,
+            None,
+            ConformFloors::SHIPPED,
+        );
+        let mut tet10 = bond_prepared_tet10(p, &params, None, ConformFloors::SHIPPED);
+
+        let clock = std::time::Instant::now();
+        let probe = tet10.flexion_moment(flex);
+        let x = tet10.sandwich.soft_positions();
+
+        let (mut certified, mut folded, mut undetermined, mut missed) = (0, 0, 0, 0usize);
+        let mut worst = f64::INFINITY;
+        for t in 0..rest_mesh.n_tets() {
+            #[allow(clippy::cast_possible_truncation)]
+            let tid = t as TetId;
+            let Some(nodes) = tet10_nodes(&rest_mesh, tid) else {
+                continue;
+            };
+            let rest =
+                SMatrix::<f64, 10, 3>::from_fn(|a, k| rest_mesh.positions()[nodes[a] as usize][k]);
+            let def = SMatrix::<f64, 10, 3>::from_fn(|a, k| x[3 * nodes[a] as usize + k]);
+
+            // The solver's own check, replicated: four Gauss `det F` signs plus the
+            // corner-block affine sign. `det F = det J_def / det J_rest` and `det J_rest > 0`
+            // is certified, so the sign of `det F` is the sign of `det J_def`.
+            let gauss_ok = Tet10
+                .rest_jacobian_dets(&def)
+                .iter()
+                .all(|d| d.is_finite() && *d > 0.0);
+            let corner = affine_det(&def) / affine_det(&rest);
+            let says_healthy = gauss_ok && corner.is_finite() && corner > 0.0;
+
+            match certify_rest(&def, ValidityBar::Positive) {
+                RestValidity::Certified { margin } => {
+                    certified += 1;
+                    worst = worst.min(margin);
+                }
+                RestValidity::Violated { .. } => {
+                    folded += 1;
+                    missed += usize::from(says_healthy);
+                }
+                RestValidity::Undetermined => undetermined += 1,
+            }
+        }
+
+        println!(
+            "\nfine-mesh disc @ cell {} flexed {:.2}° in {:.1} s | k = {:.4}, resid {:.2e}\n  \
+             {} elements: certified {certified}, FOLDED {folded}, undetermined {undetermined}\n  \
+             of the folded, invisible to the solver's five-point gate: {missed}\n  \
+             tightest certified margin: {worst:.4e}",
+            params.cell,
+            flex.to_degrees(),
+            clock.elapsed().as_secs_f64(),
+            probe.0 / flex,
+            probe.1,
+            rest_mesh.n_tets(),
+        );
+
+        // Conservation, as the sibling gates assert — a solve that does not conserve is not a
+        // solve whose deformed state means anything.
+        assert!(
+            probe.1 < 1e-8,
+            "flexion must conserve (got {:.2e})",
+            probe.1
+        );
+
+        // ★ The finding, whichever way it lands. `missed > 0` means a PASSING solve at
+        // production-adjacent resolution is integrating folded elements the gate cannot see —
+        // which would make this the reason to certify the hot path. `missed == 0` closes it.
+        assert_eq!(
+            missed, 0,
+            "{missed} of {folded} folded elements are invisible to the solver's five-point \
+             validity gate in a solve that PASSED. The deformed-configuration check needs \
+             certifying, and this is the evidence for it"
+        );
+    }
+
     /// **Rung 5.0 — does DROPPING the Tet10 arm save the Tet4 solve?**
     ///
     /// `rung5_coresidency_minimal_reproducer_fom` is byte-for-byte this test plus one thing: it
