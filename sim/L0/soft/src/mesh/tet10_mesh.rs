@@ -1391,6 +1391,15 @@ mod tests {
     /// The back-off therefore stops where `1 - 4f = quality_floor`, i.e. at
     /// `f = (1 - floor) / 4`, and the delivered blend is that over the requested `0.30`.
     /// Nothing here is a magic constant: change the floor and the assert follows it.
+    ///
+    /// ★ **Why a constant derived from corner SAMPLES survived the switch to certification.**
+    /// This fixture displaces a *single* midside, and for one displaced midside `J` picks up a
+    /// rank-1 update whose determinant is **linear** in `ξ` — not the general cubic. A linear
+    /// function on a simplex attains its minimum at a vertex, so the four corner values bound
+    /// it exactly and [`certify_rest`] agrees with them to the last bit. The expectation is
+    /// unchanged because on this fixture the two oracles are provably the same one, which is a
+    /// theorem rather than a coincidence. Measured on the multi-move sibling fixture too: the
+    /// binding corner sits `6.1e-11` above the floor, i.e. on it to bisection resolution.
     #[test]
     fn a_fold_at_a_reference_corner_stops_a_projection_every_gauss_point_accepts() {
         let floor = 0.05_f64;

@@ -7443,10 +7443,10 @@ mod tests {
     /// residual gap was the whole justification for not lowering it:
     ///
     /// ```text
-    /// BEFORE (sampled back-off)
-    ///   floor 0.05 | true lattice min  NEGATIVE | folded 1 | missed by the 8 samples 1
-    ///   floor 0.40 | true lattice min  +0.381   | folded 0 | missed 0
-    ///   LOFTED @ 0.40 | 8-pt reads a perfect +0.400 | folded 5 | missed 5
+    /// BEFORE (sampled back-off) — re-measured on main @ 8092b005, not quoted from memory
+    ///   floor 0.05    | true lattice min -0.002669 | folded 1 | missed by the 8 samples 1
+    ///   floor 0.40    | true lattice min +0.380747 | folded 0 | missed 0
+    ///   LOFTED @ 0.40 | true lattice min -1.091494 | folded 5 | missed 5
     /// ```
     ///
     /// `with_projected_midsides` now **certifies** — `certify_rest` bounds `det J` over the
