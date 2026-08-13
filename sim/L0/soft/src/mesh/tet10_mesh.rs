@@ -636,8 +636,16 @@ impl Tet10Mesh {
                 continue;
             }
             // Back off: largest blend `t ∈ [0, 1]` with `straight + t·delta`
-            // admissible. `t = 0` (straight) is feasible whenever the element
-            // arrived healthy, so `lo` stays a valid lower bound throughout.
+            // admissible.
+            //
+            // `t = 0` is feasible by induction, which is what makes `lo` a
+            // valid lower bound throughout: the all-straight mesh certifies
+            // trivially (`detJ_c = detJ_o`, so the bar reads
+            // `(1 − floor)·detJ_o > 0`), and every placement this loop accepts
+            // leaves each incident element certified. A later node of the same
+            // element therefore starts from a state that already clears the
+            // floor — the sweep never has to reason about a partially-moved
+            // element being worse than its own reference.
             let mut lo = 0.0_f64;
             let mut hi = 1.0_f64;
             for _ in 0..BISECT_ITERS {
