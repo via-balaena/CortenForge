@@ -70,9 +70,10 @@ pub use mesh::{
 pub use observable::{BasicObservable, Observable, PressureField, StressField, TemperatureField};
 pub use readout::{
     BoundaryConditions, EditResult, ForwardMap, GradientEstimate, LAYERED_SPHERE_BBOX_HALF_EXTENT,
-    LAYERED_SPHERE_R_CAVITY, LAYERED_SPHERE_R_INNER_OUTER, LAYERED_SPHERE_R_OUTER,
-    LAYERED_SPHERE_R_OUTER_INNER, LoadAxis, ResidualCorrections, RewardBreakdown, RewardWeights,
-    SceneInitial, SkeletonForwardMap, SoftScene, pick_vertices_by_predicate,
+    LAYERED_SPHERE_CONFORM_QUALITY_FLOOR, LAYERED_SPHERE_R_CAVITY, LAYERED_SPHERE_R_INNER_OUTER,
+    LAYERED_SPHERE_R_OUTER, LAYERED_SPHERE_R_OUTER_INNER, LoadAxis, ResidualCorrections,
+    RewardBreakdown, RewardWeights, SceneInitial, SkeletonForwardMap, SoftScene,
+    pick_vertices_by_predicate,
 };
 pub use sdf_bridge::{
     Aabb3, DifferenceSdf, MeshingError, MeshingHints, Sdf, SdfMeshedTetMesh, SphereSdf,

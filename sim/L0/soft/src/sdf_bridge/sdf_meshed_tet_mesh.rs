@@ -339,7 +339,14 @@ impl<M: BuildableFromField + Clone> SdfMeshedTetMesh<M> {
     ///   not merely `detJ > 0`. A bare `detJ > 0` bisects each backed-off node onto
     ///   the `detJ → 0⁺` degeneracy boundary — manufacturing slivers exactly where
     ///   the move was largest; holding `detJ` above a fraction of its healthy rest
-    ///   value keeps the backed-off elements well-shaped.
+    ///   value keeps the backed-off elements well-shaped. (The Tet10 sibling now
+    ///   holds the same floor, so this is no longer a difference between them — it
+    ///   was, when that method still tested bare positivity.)
+    ///
+    /// ⚠ **This mesh is `Tet4`, so its `detJ` is a constant per element** and a
+    /// single evaluation bounds it exactly — the sampling problem that forced
+    /// `Tet10Mesh::with_sdf_projected_boundary` onto an exact certificate does not
+    /// arise here. Nothing to convert.
     ///
     /// For each move the full target is tried first; if it would drop an incident
     /// element below the floor, the node is bisected back along the segment

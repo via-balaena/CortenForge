@@ -39,6 +39,39 @@ pub const LAYERED_SPHERE_R_OUTER_INNER: f64 = 0.08;
 /// pin the rigid-body modes for the IV-5 internal-pressure scene.
 pub const LAYERED_SPHERE_R_OUTER: f64 = 0.10;
 
+/// Quality floor the canonical sphere's boundary is conformed at by
+/// [`Tet10Mesh::with_sdf_projected_boundary`](crate::Tet10Mesh::with_sdf_projected_boundary).
+///
+/// The projector certifies `det J ≥ floor · det J_straight` over each whole
+/// element, so **every** value below is sound — 624/624 elements certified,
+/// none violated, none undetermined. The floor is therefore not a soundness
+/// knob here but a **fidelity-versus-element-quality** one: it decides how far
+/// the back-off holds boundary midsides short of the true surface. Swept by
+/// `conform_quality_floor_sweep` in `tests/tet10_exact_validity.rs`, whose rows
+/// ARE this table (360 boundary midsides, outer radius 0.10 m):
+///
+/// ```text
+/// floor   worst det J bound   midsides held short   max deviation   mean
+///  0.00            0.000000                 4/360        3.02e-4    3.02e-4
+///  0.10            0.100000                12/360        8.94e-4    7.92e-4
+///  0.20            0.200000                14/360        1.60e-3    1.40e-3
+///  0.40            0.400000                24/360        3.33e-3    2.51e-3
+///  0.70            0.566540                36/360        7.47e-3    3.74e-3
+/// ```
+///
+/// ⚠ **`worst det J bound == floor` exactly** at every row up to 0.5, which is
+/// the back-off landing on whatever bar it is given — it bisects to the
+/// furthest feasible blend, so the bar *is* the outcome. That is why the
+/// `0.00` row reads `0.000000`: exact certification with a bare positivity bar
+/// walks the mesh to precise degeneracy. Soundness does not remove the need
+/// for a floor, it just makes the floor mean what it says.
+///
+/// **0.2 chosen** as the point that halves the geometric deviation of the
+/// sibling `DISC_MIDSIDE_CONFORM_QUALITY_FLOOR` (0.4) while keeping 2× margin
+/// over the `~0.10` lower bound measured on the disc — "exact geometry IS the
+/// exact physics" argues down, and an unmeasured margin argues up.
+pub const LAYERED_SPHERE_CONFORM_QUALITY_FLOOR: f64 = 0.2;
+
 /// Bounding-box half-extent for the layered silicone sphere mesher hint.
 ///
 /// Wraps `LAYERED_SPHERE_R_OUTER` with a 0.02 m margin (matches the canonical
