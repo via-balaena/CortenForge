@@ -211,11 +211,20 @@ impl Tet10Mesh {
     /// For each move the full target is tried first; if it would drop an incident element
     /// below the floor at any sample point, the node is bisected back along the segment
     /// `straight → target` to the furthest point that keeps every incident element above the
-    /// floor. The original position (`t = 0`) is always feasible for `quality_floor < 1`, so
-    /// in the worst case a node simply stays put. Nodes are swept in ascending `VertexId`
-    /// order, so the result is deterministic. The reference `detJ_rest` per element is
-    /// captured once, from `self`, before any node moves — so curving several midsides of the
-    /// same element still measures each against that element's original, healthy geometry.
+    /// floor. The original position (`t = 0`) is feasible for `quality_floor < 1` whenever the
+    /// input element's own sample determinants are positive, so in the worst case a node simply
+    /// stays put. Nodes are swept in ascending `VertexId` order, so the result is deterministic.
+    /// The reference `detJ_rest` per element is captured once, from `self`, before any node
+    /// moves — so curving several midsides of the same element still measures each against that
+    /// element's original, healthy geometry.
+    ///
+    /// ⚠ That positivity proviso is exact rather than pedantic, and it is new with the corner
+    /// samples: `d ≥ floor·o` at `t = 0` reduces to `o·(1 − floor) ≥ 0`, i.e. to `o ≥ 0`. It
+    /// holds unconditionally on the intended input — a [`Self::from_tet4`] mesh is straight, so
+    /// all eight determinants equal the affine `6·V` of a positive-volume tet — but an element
+    /// arriving *already* folded at a corner has no feasible blend at all. The failure is safe
+    /// rather than silent-wrong: `lo` stays 0 and the node does not move, so this method cannot
+    /// make such an element worse.
     ///
     /// **All four Gauss points are checked, not one.** A quadratic element's Jacobian is
     /// *not* constant once a midside leaves its edge midpoint
