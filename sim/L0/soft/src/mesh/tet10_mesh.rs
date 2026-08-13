@@ -223,18 +223,25 @@ impl Tet10Mesh {
     /// intended input — a [`Self::from_tet4`] mesh is straight, so all eight determinants equal
     /// the affine `6·V` of a positive-volume tet.
     ///
-    /// ⚠⚠ **On an element that arrives ALREADY inverted (`o < 0`) the relative floor stops
-    /// being a quality floor at all, and it does not fail closed.** `floor·o` is then *less*
-    /// negative than `o`, so the bar sits above the element's own starting value: bisection
-    /// finds `t = 0` infeasible and leaves the node alone, but the **fast path** — which tries
-    /// the full target first — will accept any placement whose determinant is merely
-    /// less-inverted than `floor·o`, leaving the element inverted at its full requested move.
-    /// That is not reachable from any in-tree caller (every one enriches a positive-volume Tet4
-    /// mesh, and this method's own guarantee keeps the sampled determinants positive
-    /// afterwards, so chaining cannot manufacture it either) and it does not make an already-
-    /// broken element worse. It is recorded because the predicate reads as a quality floor and
-    /// silently is not one for `o ≤ 0`, which is exactly the kind of unstated precondition that
-    /// bites a later caller. A fail-closed `o > 0` guard is the fix if one ever needs it.
+    /// ⚠⚠ **An element that arrives already inverted (`o ≤ 0`) is IMMOVABLE**, and the guard
+    /// that makes it so is explicit rather than emergent. A relative floor is only a quality
+    /// floor while its reference is healthy: for `o < 0` the bar `floor·o` is *less* negative
+    /// than `o` itself, so the comparison inverts into "stay above a more-inverted number".
+    /// Bisection would still find `t = 0` infeasible and leave the node alone, but the **fast
+    /// path** — which tries the full target first — would accept any placement merely
+    /// less-inverted than `floor·o`. Measured before the guard existed: a full target accepted
+    /// on a pre-folded element, leaving it inverted, and a separate search found an accepted
+    /// move that degraded a sample point which had arrived *healthy* by 94.5 %. The `o > 0`
+    /// conjunct in `incident_ok` makes the documented behaviour actual; it is inert on every
+    /// in-tree path, since each enriches a positive-volume Tet4 mesh. Pinned by
+    /// `an_already_inverted_element_is_not_moved_at_all`.
+    ///
+    /// ⚠⚠ **A non-finite target is rejected without corrupting the node it rejects.** Every
+    /// guard already handled `NaN`/`±∞` correctly — the fast path and all `BISECT_ITERS` probes
+    /// reject them — but the final write then computed `straight + delta·lo` with `lo == 0` and
+    /// a non-finite `delta`, and `NaN · 0.0` is `NaN`. The rejection path wrote a `NaN`
+    /// coordinate into the mesh. It now writes the straight position itself on `lo == 0`.
+    /// Pinned by `a_non_finite_target_is_rejected_without_poisoning_the_node`.
     ///
     /// **All four Gauss points are checked, not one.** A quadratic element's Jacobian is
     /// *not* constant once a midside leaves its edge midpoint
@@ -372,13 +379,22 @@ impl Tet10Mesh {
         // A placement keeps element `ti` valid iff every sample point's determinant is finite
         // and at least `quality_floor` of its original. Finiteness is asserted first: a NaN
         // determinant must read as invalid, never slip through a bare `≥`.
+        //
+        // ⚠ `*o > 0.0` is load-bearing, not defensive noise. A *relative* floor is only a
+        // quality floor while the reference it is relative to is healthy: for `o < 0` the bar
+        // `quality_floor · o` is LESS negative than `o` itself, so the comparison silently
+        // inverts into "stay above a more-inverted number" and admits placements that leave the
+        // element folded — measured, it accepted a full target that degraded a *healthy*
+        // sample point by 94.5 % on a pre-folded element. Requiring `o > 0` makes an element
+        // that arrives inverted simply immovable, which is the fail-closed reading and the
+        // behaviour this method's docs already claimed.
         let incident_ok = |positions: &[Vec3], tis: &[usize]| -> bool {
             tis.iter().all(|&ti| {
                 let orig = orig_dets[&ti];
                 dets_of(positions, ti)
                     .iter()
                     .zip(&orig)
-                    .all(|(d, o)| d.is_finite() && *d >= quality_floor * o)
+                    .all(|(d, o)| d.is_finite() && *o > 0.0 && *d >= quality_floor * o)
             })
         };
 
@@ -400,7 +416,8 @@ impl Tet10Mesh {
                 continue;
             }
             // Back off: largest blend `t ∈ [0, 1]` with `straight + t·delta` valid. `t = 0`
-            // (straight) is always feasible, so `lo` stays a valid lower bound throughout.
+            // (straight) is feasible whenever the element arrived healthy, so `lo` stays a
+            // valid lower bound throughout.
             let mut lo = 0.0_f64;
             let mut hi = 1.0_f64;
             for _ in 0..BISECT_ITERS {
@@ -412,7 +429,19 @@ impl Tet10Mesh {
                     hi = t;
                 }
             }
-            positions[vi] = straight + delta * lo;
+            // ⚠ `lo == 0.0` is written as the STRAIGHT position, not as `straight + delta·0`.
+            // The two are not the same float: a non-finite `target` makes `delta` non-finite,
+            // and `NaN · 0.0` is `NaN`, so the arithmetic form writes a NaN coordinate into the
+            // mesh on the very path that exists to reject that target. Every guard above
+            // behaves correctly — the fast path and all `BISECT_ITERS` probes reject it, which
+            // is exactly why `lo` is still 0 — and then the rejection itself corrupted the
+            // node. Measured before this line existed: one non-finite vertex and two elements
+            // with non-finite `detJ` from a single `f64::NAN` target.
+            positions[vi] = if lo == 0.0 {
+                straight
+            } else {
+                straight + delta * lo
+            };
         }
         self.positions = positions;
         self
@@ -447,20 +476,47 @@ impl Tet10Mesh {
     /// far along the segment `straight → projected` as keeps every incident
     /// element's rest Jacobian positive at all Gauss points
     /// ([`Element::rest_jacobian_dets`]).
-    /// This bisection back-off guarantees a valid (non-inverted) mesh: the
-    /// straight position is always feasible, so in the worst case a node simply
-    /// stays straight. Nodes are swept in ascending `VertexId` order, so the
+    /// Nodes are swept in ascending `VertexId` order, so the
     /// result is deterministic. A projection that fails to converge onto the
     /// surface (a gradient singularity, or a point too far away) also leaves
     /// the node straight.
     ///
+    /// # ⚠⚠ The back-off does NOT guarantee a non-inverted mesh — measured
+    ///
+    /// This paragraph used to claim "this bisection back-off guarantees a valid (non-inverted)
+    /// mesh", and further down that it "never *introduces* an inversion". **Both are false, on
+    /// this crate's own canonical fixture.** Censusing `straight_sphere_tet10()` before and
+    /// after projection onto `body_sdf()`:
+    ///
+    /// ```text
+    /// input     : 624 tets | corner-folded 0 | worst corner ratio  1.000000
+    /// projected : 624 tets | corner-folded 8 | worst corner ratio -0.051117
+    /// ```
+    ///
+    /// All eight folded elements keep **every Gauss point positive** (best of the folded reads
+    /// +0.309), which is why `projected_sphere_has_no_inverted_elements` passes: it samples the
+    /// same four interior Stroud points this back-off does. The four-point rule cannot see a
+    /// fold confined to a corner region — the identical blind spot
+    /// [`Self::with_projected_midsides`] was fixed for, by also sampling the four reference
+    /// corners.
+    ///
+    /// ▶ **Deliberately still unfixed here, and tracked as its own change.** The sibling's fix
+    /// is measured on the anatomy its consumers actually use; this method serves different
+    /// consumers whose geometry has not been swept, and its back-off is *weaker* in a second
+    /// way — a bare `> 0` rather than a relative quality floor, so it bisects onto the
+    /// `detJ → 0⁺` boundary as well. Correcting the claim is separable from changing the
+    /// behaviour, and only the claim is corrected here.
+    ///
     /// # Precondition
     ///
     /// Assumes the input elements are positively oriented (as every in-tree
-    /// mesher produces). The "always valid" guarantee rests on the straight
-    /// position being feasible; a *pre-inverted* input element has no feasible
-    /// blend, and the back-off leaves it straight (still inverted) rather than
-    /// detecting it. It never *introduces* an inversion.
+    /// mesher produces). A *pre-inverted* input element has no feasible blend, and the back-off
+    /// leaves it straight (still inverted) rather than detecting it.
+    ///
+    /// ⚠ **"It never *introduces* an inversion" used to close this paragraph, and it is
+    /// false** — see the census above: a positively-oriented 624-tet input comes back with
+    /// eight corner-folded elements. The back-off introduces inversions it cannot see, because
+    /// what it samples and what it must bound are different sets of points.
     #[must_use]
     pub fn with_sdf_projected_boundary(mut self, sdf: &dyn Sdf) -> Self {
         /// Newton convergence tolerance for the surface projection (metres).
@@ -1311,5 +1367,76 @@ mod tests {
             "the Gauss points never saw this fold and must still read healthy, got \
              {worst_gauss:.4}",
         );
+    }
+
+    /// A non-finite target is rejected **and leaves the mesh finite** — the rejection path used
+    /// to corrupt the node it was rejecting, because `NaN · 0.0` is `NaN`.
+    #[test]
+    fn a_non_finite_target_is_rejected_without_poisoning_the_node() {
+        let straight = single_tet10();
+        let m = straight.n_corners() as VertexId;
+        let before = straight.positions()[m as usize];
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let curved = straight
+                .clone()
+                .with_projected_midsides(&[(m, Vec3::new(bad, 0.0, 0.0))], 0.05);
+            let after = curved.positions()[m as usize];
+            assert!(
+                after.iter().all(|c| c.is_finite()),
+                "target {bad} left a non-finite node position {after:?}",
+            );
+            assert_eq!(
+                after, before,
+                "an unreachable target must leave the node exactly straight (target {bad})",
+            );
+            // ...and the whole mesh stays evaluable.
+            let worst = worst_det_ratio(&curved, &straight);
+            assert!(
+                worst.is_finite() && worst > 0.0,
+                "target {bad} left the mesh with a non-finite or folded determinant ({worst})",
+            );
+        }
+    }
+
+    /// An element that arrives **already inverted** is immovable rather than negotiable: the
+    /// relative floor is only a quality floor while its reference is positive.
+    ///
+    /// Without the `o > 0` conjunct the bar `quality_floor · o` is *less* negative than `o`, so
+    /// the fast path accepts targets that leave the element folded — and can degrade a sample
+    /// point that arrived healthy.
+    #[test]
+    fn an_already_inverted_element_is_not_moved_at_all() {
+        let floor = 0.05_f64;
+        let straight = single_tet10();
+        let m = straight.n_corners() as VertexId;
+        let base = straight.positions()[m as usize];
+        let edge = 0.1_f64;
+
+        // Pre-fold it: f = 0.30 gives corner ratio 1 - 4f = -0.20 by the law this file derives.
+        let folded = straight.clone().with_curved_midsides(|p| {
+            if (p - base).norm() < 1e-15 {
+                p + Vec3::new(edge * 0.30, 0.0, 0.0)
+            } else {
+                p
+            }
+        });
+        let arrived = folded.positions()[m as usize];
+        assert!(
+            worst_det_ratio_over(&folded, &straight, 4..8) < 0.0,
+            "fixture premise: the element must arrive inverted at a reference corner",
+        );
+
+        // Any further request must be refused outright, including one that would look
+        // "less inverted" to a floor whose reference is negative.
+        for f in [0.2510_f64, 0.10, 0.40] {
+            let out = folded
+                .clone()
+                .with_projected_midsides(&[(m, base + Vec3::new(edge * f, 0.0, 0.0))], floor);
+            assert_eq!(
+                out.positions()[m as usize],
+                arrived,
+                "an inverted element must be immovable, but a request at f = {f} moved it",
+            );
+        }
     }
 }
