@@ -428,7 +428,16 @@ selection*. The anatomy discriminator stays in `cf-fsu-geometry` (nearest-of-two
 `SI_CONFORM_CAP_BONDED`, `SI_CONFORM_MIN_ALIGN`).
 
 **The inversion oracle is `Tet10::rest_jacobian_dets` over all 4 Gauss points of every incident
-element — NOT `mesh.quality()`.** `Tet10Mesh` never recomputes `QualityMetrics` after a midside
+element — NOT `mesh.quality()`.** ⚠⚠ **SUPERSEDED — the Gauss points alone were measured
+insufficient.** The oracle is now **eight** sample points, the four Gauss points *and the four
+reference corners*, in both the projector's acceptance test and the gates that verify it (see
+§4.4 and `the_midside_floor_is_what_makes_eight_samples_sufficient_fom`). Every Stroud point of
+the four-point rule is strictly interior, so a fold confined to a corner region is invisible to
+all four: the shipped conformed disc carried 18 such elements and the lofted disc 2 317, with
+their Gauss points reading healthy throughout. Read the rest of this paragraph — and the four
+other places below that still say "all four Gauss points" — as the *rationale for not using
+`mesh.quality()`*, which stands, rather than as a specification of the sample set, which does
+not. `Tet10Mesh` never recomputes `QualityMetrics` after a midside
 move and those metrics are 4-corner quantities anyway (`tet10_mesh.rs:114`, `mesh/mod.rs:52-67`),
 so a `quality()`-based check is structurally blind to midside-induced degeneracy.
 
@@ -1443,7 +1452,7 @@ is the physics consequence, not the geometric claim.
 > `quality_floor` exactly whenever any node backs off. Committing it two-sided would have been
 > the same defect this section replaced, one level down. What ships is the **inequality over
 > every element** (falsifiable against the projector's own incidence bookkeeping — see
-> `worst_gauss_det_ratio`) plus the **coverage triple**. ⚠ And the tidy version of *that* claim
+> `worst_rest_det_ratio`, renamed from `worst_gauss_det_ratio` when it gained the reference corners) plus the **coverage triple**. ⚠ And the tidy version of *that* claim
 > — "the delivered fraction is the member with the teeth" — was itself refuted by a cold-read
 > mutant: a silent 0.2 mm cap on every move takes the fraction the WRONG way (67.9 % → 68.6 %),
 > because a smaller request is easier to satisfy. The fraction covers the back-off-engages-more

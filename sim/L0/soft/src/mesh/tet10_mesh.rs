@@ -1193,16 +1193,24 @@ mod tests {
             worst < 2.0 * floor,
             "the back-off did not bind (worst ratio {worst:.4}) — this fixture must exercise it",
         );
-        // ★ WHICH constraint binds. The corner is on the floor; the Gauss points are not,
-        // and this pair is what makes the corner stage non-decorative here — delete the
-        // corner slots from the acceptance test and the first assert below fails.
+        // ★ WHICH constraint binds. The corner is ON the floor; the Gauss points are not.
+        //
+        // ⚠ The corner assert is TWO-SIDED, and that is the whole of its value as a control.
+        // It began as `worst_corner < 2.0 * floor` alone — an upper bound, which is
+        // structurally incapable of witnessing a constraint being *removed*: delete the corner
+        // slots from the acceptance test and `worst_corner` plunges to about −50, which
+        // satisfies `< 2·floor` comfortably and passes. The comment here used to credit that
+        // assert with catching the mutation; the assert that actually fired was `worst >= floor`
+        // above it. Both sides are pinned now, so this one catches it on the lower bound and
+        // says so for the right reason.
         let worst_corner = worst_det_ratio_over(&curved, &straight, 4..8);
         let worst_gauss = worst_det_ratio_over(&curved, &straight, 0..4);
         assert!(
-            worst_corner < 2.0 * floor,
-            "the reference corners must be what stops this bisection (corner {worst_corner:.4}, \
-             Gauss {worst_gauss:.4}) — if the corners are slack the fixture no longer isolates \
-             the stage it exists to exercise",
+            (floor..2.0 * floor).contains(&worst_corner),
+            "the reference corners must be what stops this bisection, ON the floor and not \
+             through it (corner {worst_corner:.4}, Gauss {worst_gauss:.4}, floor {floor}) — \
+             below it the corner stage is absent, above it the corners are slack and this \
+             fixture no longer isolates the stage it exists to exercise",
         );
         assert!(
             worst_gauss > 4.0 * floor,

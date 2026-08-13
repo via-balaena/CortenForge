@@ -2732,13 +2732,27 @@ mod tests {
             100.0 * delivered,
         );
         // MEASURED on this fixture (deterministic mesher, fixed spheres): 604 midsides, straight
-        // residual max 0.0896 / rms 0.0291 mm, closing to max 0.0001 / rms 0.0000; 100 % of the
-        // moves delivered in full (max move 0.0896, mean 0.0217 mm); worst detJ/detJ_rest 0.9303,
-        // i.e. the quality floor never has to engage at this curvature. The chord gap is small in
-        // absolute terms because a 3 mm cell against a 30 mm sphere is finely resolved — the
-        // sagitta of a half-cell chord is ~(1.5 mm)²/(2·30 mm) ≈ 0.04 mm, which is what these
-        // numbers are. The population pin below is what makes a silent change in the mesh, the
-        // band rule or the selection fail here rather than dilute the statistics.
+        // residual max 1.3166 / rms 0.2424 mm, closing to max 0.0001 / rms 0.0000; 100 % of the
+        // moves delivered in full (max move 1.3166, mean 0.0698 mm); worst detJ/detJ_rest 0.4613.
+        // The population pin below is what makes a silent change in the mesh, the band rule or
+        // the selection fail here rather than dilute the statistics.
+        //
+        // ⚠⚠ **RE-ANCHORED, and the staleness was in two layers with different owners.** The
+        // block read `straight max 0.0896 / rms 0.0291, mean move 0.0217, worst detJ 0.9303`.
+        // Measured on `origin/main`, i.e. with none of this rung's changes present: `1.3166 /
+        // 0.2424`, mean `0.0698`, worst `0.8136`. So the straight column and the mean move were
+        // **already stale before this branch** — they cannot be moved by a midside projector at
+        // all, since the straight arm has no projection — and the worst-detJ figure was stale
+        // too (0.9303 committed against 0.8136 actual). This rung then moved worst-detJ
+        // 0.8136 → 0.4613, which is the stricter eight-point acceptance test doing its job.
+        //
+        // ⚠ **The old sentence "i.e. the quality floor never has to engage at this curvature"
+        // is retired, not re-quoted: it is now false.** Against
+        // `DISC_MIDSIDE_CONFORM_QUALITY_FLOOR` = 0.40 the assert below has **15 % headroom**,
+        // down from 103 % at the committed 0.9303 and 2.0× at main's actual 0.8136. This is the
+        // only licence-free CI gate on this contract, so it is also the one that will red-line
+        // first: anyone tightening the projector, refining this fixture, or re-deriving the
+        // floor downward should expect to meet it here before meeting it on the anatomy.
         assert_eq!(moves.len(), 604, "the projected midside population changed");
         assert!(
             max_s > 0.05 && rms_s > 0.02,
@@ -7041,12 +7055,27 @@ mod tests {
         // bone than the corners they span* (0.119 vs 0.170) — the bonded face is uniformly seated,
         // which is what this rung exists to deliver.
         //
-        // ★ **The max finally moves.** It used to barely budge (3.973 -> 3.971) because the worst
-        // authorised midside was one the quality floor refused; now it drops 24 % (1.375 -> 1.045)
-        // and coverage rose 67.4 % -> **83.1 %**. Both have the same cause: with the phantom
-        // material gone, a midside is asked to move 0.740 mm rather than 1.533 mm across a 3 mm
-        // cell, so the floor refuses far less often. **The projection did not improve — its input
-        // did.**
+        // ★ **The max finally moves**, and ⚠ TWO different causes are stacked in these numbers.
+        // An earlier edit swapped the figures here without touching the sentence around them,
+        // which left this rung's values explaining rung β's mechanism — the exact inversion of
+        // the audit trail these blocks exist to carry. Kept apart deliberately now:
+        //
+        // - **α.1 (#714), rung β**: the max used to barely budge (3.973 -> 3.971) because the
+        //   worst authorised midside was one the quality floor refused. With the phantom
+        //   material gone a midside is asked to move far less across a 3 mm cell, so the floor
+        //   refused less often, coverage rose 67.4 % -> 91.0 %, and the max dropped to 1.375 ->
+        //   0.923. **The projection did not improve — its input did.**
+        // - **This rung**: the acceptance test also samples the reference corners, so the floor
+        //   refuses MORE often. Coverage fell 91.0 % -> 83.1 % and the max rose 0.923 -> 1.045.
+        //
+        // Net against pre-α.1 the max is still down 24 % (1.375 -> 1.045) and coverage still up
+        // (67.4 % -> 83.1 %), but neither is a single-cause story and quoting them as one
+        // credits this rung with a gain it partly reversed.
+        //
+        // ⚠ `max_move` is computed from `curved - straight` (`projection_coverage`), i.e. the
+        // move actually DELIVERED. So "a midside is asked to move X" misreads it whichever
+        // rung is doing the talking: after a back-off, X is the *result* of the refusal, not
+        // the request.
         //
         // ⚠ The ALL-candidate straight figures no longer reproduce rung 2's committed baseline
         // (1562 midsides, max 12.464 / RMS 3.375 from `straight_tet10_midsides_chord_across_the_
@@ -7080,8 +7109,14 @@ mod tests {
         // the worst ratio to **−9.7870**, i.e. genuinely inverted elements, while the §4.3
         // residual gate above still *improves* (authorised RMS 0.796 → 0.711) and **passes**.
         // A geometry gate cannot see an inverted element; this one can. (On the synthetic arm
-        // the same mutant leaves the worst ratio at 0.9307 and shows up only as lost coverage —
-        // the back-off never engages at that curvature, so the real disc is where this bites.)
+        // the same mutant showed up only as lost coverage, the back-off never engaging at that
+        // curvature, so the real disc is where this bites. ⚠ The worst ratio quoted here for
+        // that arm was **0.9307**, a figure stale by two layers — the synthetic fixture
+        // actually reads 0.8136 on `origin/main` and **0.4613** after this rung's eight-point
+        // test; see the re-anchor note in `curved_midsides_seat_on_a_curved_synthetic_endplate`.
+        // The mutant's *conclusion* survives — it is caught by coverage there, not by the
+        // determinant — but "the back-off never engages at that curvature" no longer follows
+        // from a 0.93 reading, and at 15 % headroom over the floor it is close to false.)
         assert!(
             worst_det >= DISC_MIDSIDE_CONFORM_QUALITY_FLOOR,
             "an element fell below the quality floor at some sample point — a Gauss point or a \
@@ -7130,7 +7165,7 @@ mod tests {
         // simpler rule ships: project every authorised bonded-face boundary midside.
         // ⚠ Both halves of that comparison were measured at the *corner* floor 0.05 and pre-α.1,
         // before this rung split the constant (72.4 % ungated vs 79.5 % parent-gated), so read it
-        // as the like-for-like pair it is and not against the 91.0 % committed above. ⚠⚠ Its
+        // as the like-for-like pair it is and not against the 83.1 % committed above. ⚠⚠ Its
         // premise is also gone: the hypothesis under test was that low delivery concentrates in
         // midsides whose parents were guard-declined, and there are now **no declined parents** —
         // so the parent-gated variant would today select the identical population. The comparison
