@@ -251,29 +251,43 @@ const DISC_CONFORM_QUALITY_FLOOR: f64 = 0.25;
 /// that the shipped 0.40 still binds and still drives — `worst detJ/detJ_rest` comes back at
 /// exactly 0.4000 on the real disc, so the floor is still the active constraint.
 ///
-/// ▶ **Still not re-swept after the reference-corner back-off, and the case for sweeping it is
-/// now stronger.** This floor was chosen against a *Gauss-only* acceptance test; the eight-point
-/// test is strictly stricter at the same nominal value, so 0.40 is now conservative in the safe
-/// direction — it conditions the geometry at least as well as the table's rows claim, which is
-/// why it is sound to ship unchanged. But that also means a **lower** floor might now buy back
-/// the fidelity the stricter test costs (the shipped midside RMS rose 0.111 → 0.119 mm). That is
-/// a measurement rung, not a re-anchor, and it is deliberately not attempted here.
+/// ▶ **Still not re-swept, and the case for sweeping it is now much stronger — the constraint
+/// that blocked it is gone.**
 ///
-/// ⚠⚠ **A HARD LOWER BOUND on that sweep, measured rather than guessed:
-/// `the_midside_floor_is_what_makes_eight_samples_sufficient_fom` shows the eight-point
-/// acceptance criterion is NOT sufficient by itself — `det J_rest` is a cubic in `ξ` and eight
-/// samples cannot bound it. At floor 0.05 one element of the shipped disc is folded somewhere
-/// the projector never looks, with all eight of its samples reading ≥ 0.05; at 0.02, three are.
-/// The gap between the sampled minimum and the true minimum is roughly absolute (~0.02–0.06 of
-/// affine), so the floor is what covers it. **⇒ do not take this floor below ~0.10 without
-/// re-running that gate.** At the shipped 0.40 the true minimum is 0.381 — the gap is ~5 % of
-/// the floor, which is the margin that makes eight samples a sound proxy at all.
+/// ⚠⚠ **The `~0.10` HARD LOWER BOUND this doc used to carry has DISSOLVED.** It read: "do not
+/// take this floor below ~0.10 without re-running that gate", and it was earned — under the
+/// *sampled* back-off, `det J_rest` is a cubic in `ξ` that eight samples cannot bound, so the
+/// floor had to be high enough to cover the difference. At floor 0.05 one element of the
+/// shipped disc was folded somewhere the projector never looked, with all eight of its samples
+/// reading ≥ 0.05; at 0.02, three were. At the shipped 0.40 the true minimum came back
+/// **0.381** — about 5 % below the floor, and that residual was the margin the bound protected.
+///
+/// [`Tet10Mesh::with_projected_midsides`](sim_soft::Tet10Mesh::with_projected_midsides) now
+/// **certifies** rather than samples, so there is no gap left to cover.
+/// `certification_closed_the_gap_the_floor_used_to_cover_fom` measures the whole table again:
+///
+/// ```text
+///   floor 0.05 | true lattice min +0.050000 | folded 0
+///   floor 0.40 | true lattice min +0.400000 | folded 0
+/// ```
+///
+/// **The true minimum now equals the floor exactly**, at both. ⇒ This floor's remaining job is
+/// to keep the bisection off the `det J → 0⁺` degeneracy boundary — a **conditioning** question,
+/// not a validity one — and no floor produces a folded element any more. A lower floor may now
+/// buy back the fidelity the stricter acceptance costs (the shipped midside RMS rose
+/// 0.111 → 0.119 mm). That sweep is a measurement rung, not a re-anchor, and is deliberately
+/// not attempted here — but it is no longer bounded below by ~0.10.
 ///
 /// The **choice** of 0.40 is re-verified rather than assumed: it drives on both the
 /// scanned and the lofted disc at the new corner floor. Re-deriving the midside cliff there is
 /// not done, and would only be able to move it in the permissive direction — a better-conditioned
 /// corner mesh cannot make a midside floor *more* necessary — so 0.40 keeps at least the margin
 /// it was chosen with.
+///
+/// ⚠ The rows above were measured under the **sampled** back-off. They remain valid as the
+/// floor-to-floor *comparison* they were built to be, but every absolute in them predates
+/// certification — the shipped `max midside move` alone moved 0.740 → 0.695 mm when the bar
+/// became a proof.
 const DISC_MIDSIDE_CONFORM_QUALITY_FLOOR: f64 = 0.4;
 
 /// The two quality floors a conform's back-off runs at.
@@ -7319,9 +7333,16 @@ mod tests {
         // arm and so passes the
         // strict-decrease assert; only the two-sided pin sees it). Gate all three, and read the
         // fraction as covering the back-off-engages-more direction only.
+        // ⚠ RE-ANCHORED for the certified back-off (`max_move` 0.740 → 0.695, −6.1 %).
+        // `with_projected_midsides` now requires a PROOF that the whole element clears the
+        // floor rather than eight sample points clearing it, and the proof is strictly
+        // stricter — so the bisection stops slightly earlier on the single worst node. Only
+        // that node moved: `delivered` (0.831) and `mean_move` (0.076) are unchanged to
+        // three decimals, which is the shape a stricter bar should have on this disc. It is
+        // the tail that tightens, not the distribution.
         assert_within_5_percent(&[
             (delivered, 0.831, "delivered fraction"),
-            (max_move, 0.740, "max midside move (mm)"),
+            (max_move, 0.695, "max midside move (mm)"),
             (mean_move, 0.076, "mean midside move (mm)"),
         ]);
     }
@@ -7410,73 +7431,62 @@ mod tests {
         (worst, negative, missed)
     }
 
-    /// **The eight-point criterion is not sufficient by itself — the FLOOR is what makes it
-    /// sufficient**, and this measures where that stops being true.
+    /// ★★ **Certification closed the gap the floor used to have to cover.**
     ///
-    /// # Why this gate exists
+    /// # What this gate used to claim, and why that claim is gone
     ///
-    /// `with_projected_midsides` accepts a midside placement on eight samples: four Gauss
-    /// points and four reference corners. But `det J_rest` is a **cubic in `ξ`** on a curved
-    /// Tet10, and eight samples cannot bound a cubic. Adding the corners took the shipped disc
-    /// from 18 rest-folded elements to 0 *at those points* — which is not the same claim as
-    /// "no element is folded", and the difference is exactly the sort of gap this repo has
-    /// been bitten by before. So the cheap runtime criterion is checked here against an
-    /// expensive ground truth: a 455-point barycentric lattice inside every element.
+    /// It was named `the_midside_floor_is_what_makes_eight_samples_sufficient_fom`, and it
+    /// measured a real thing: `with_projected_midsides` accepted a placement on **eight
+    /// samples**, `det J_rest` is a **cubic in `ξ`**, and eight samples cannot bound a cubic —
+    /// so the floor had to be high enough to cover the difference. At the shipped floor of
+    /// 0.40 the true lattice minimum came back **0.381**, about 5 % *below* the floor, and that
+    /// residual gap was the whole justification for not lowering it:
     ///
-    /// # ★★ TWO geometries, because one of them refutes what the other would have "shown"
+    /// ```text
+    /// BEFORE (sampled back-off)
+    ///   floor 0.05 | true lattice min  NEGATIVE | folded 1 | missed by the 8 samples 1
+    ///   floor 0.40 | true lattice min  +0.381   | folded 0 | missed 0
+    ///   LOFTED @ 0.40 | 8-pt reads a perfect +0.400 | folded 5 | missed 5
+    /// ```
     ///
-    /// Measured at the shipped floor on both conformed discs, and — for the scanned arm — swept
-    /// over the floor. `folded` counts elements negative *somewhere* on the lattice; `missed`
-    /// counts how many of those the eight sampled points call healthy.
+    /// `with_projected_midsides` now **certifies** — `certify_rest` bounds `det J` over the
+    /// whole element — so there is no sampling gap left to cover, at any floor:
     ///
-    /// | geometry | floor | 8-pt min | true lattice min | folded | **missed by the 8** |
-    /// |---|---|---|---|---|---|
-    /// | scanned | 0.02 | +0.020 | **−0.037** | 3 | **3** |
-    /// | scanned | 0.05 | +0.050 | **−0.003** | 1 | **1** |
-    /// | scanned | 0.10 | +0.100 | +0.055 | 0 | 0 |
-    /// | scanned | **0.40** | +0.400 | **+0.381** | **0** | 0 |
-    /// | **lofted** | **0.40** | **+0.400** | **−1.091** | **5** | **5** |
+    /// ```text
+    /// AFTER (certified back-off)
+    ///   floor 0.05 | true lattice min +0.050000 | folded 0 | missed 0
+    ///   floor 0.40 | true lattice min +0.400000 | folded 0 | missed 0
+    ///   LOFTED @ 0.40 |                          | folded 0 | missed 0
+    /// ```
     ///
-    /// **The scanned disc alone would have licensed a false general claim.** On it the floor
-    /// does cover the sampling gap and the mesh is fold-free everywhere measured. On the
-    /// **lofted** disc, at the same floor, the eight samples read a perfect `+0.400` while five
-    /// elements are folded inside — one to `−1.091`. The gap is *not* the ~0.02–0.06 the scanned
-    /// rows suggest; it is unbounded in general, because eight samples cannot bound a cubic.
+    /// ⇒ **The true minimum now equals the floor exactly.** The old gate's negative control —
+    /// "at floor 0.05 the criterion must be demonstrably insufficient" — is now false by
+    /// construction, which is why this is re-derived rather than re-anchored. Its own docs
+    /// called that shot.
     ///
-    /// **Four things follow, none of them argued.**
+    /// # ▶ The `~0.10` lower bound on this floor has dissolved
     ///
-    /// 1. **The criterion alone is genuinely insufficient.** At scanned floor 0.05 an element is
-    ///    folded where the projector never looks while all eight samples read ≥ 0.05. The
-    ///    back-off walks to the furthest feasible blend, so it parks elements against a boundary
-    ///    the samples describe only approximately — the same walk-to-the-boundary mechanism that
-    ///    made the Gauss-only rule *manufacture* folds, one level subtler.
-    /// 2. **On the scanned disc the floor covers the gap; on the lofted disc it does not.** So
-    ///    "eight points plus a 0.40 floor gives a fold-free rest mesh" is a claim about the
-    ///    scanned geometry, and must not be restated without one.
-    /// 3. ⚠ **The five lofted residuals are OPEN.** They are a 99.8 % improvement, not a
-    ///    solution — the same measurement on the pre-fix projector finds **2 191** folded
-    ///    lofted elements (worst `−16.2`) against these five, and **2 317** visible at the
-    ///    corners. Closing them needs a criterion that bounds the cubic rather than samples it
-    ///    (interval arithmetic or Bernstein/Bézier coefficient bounds on `det J_rest`), which is
-    ///    a rung of its own.
-    /// 4. **Do not take the midside floor below ~0.10** without re-running this gate — a
-    ///    measured bound where [`DISC_MIDSIDE_CONFORM_QUALITY_FLOOR`]'s deferral previously had
-    ///    only a direction.
+    /// [`DISC_MIDSIDE_CONFORM_QUALITY_FLOOR`] carries "do not take this floor below ~0.10
+    /// without re-running that gate". That bound existed **only** because the floor had to
+    /// cover the sampling gap. It no longer does: the floor's remaining job is to stop the
+    /// bisection landing on the `det J → 0⁺` degeneracy boundary, which is a conditioning
+    /// question, not a validity one. Re-sweeping the floor is now a measurement rung that was
+    /// previously blocked by a constraint that no longer exists — and it could buy back the
+    /// fidelity the floor costs. Deliberately not attempted here.
     ///
-    /// ⚠⚠ **Pre-fix, the lofted disc carried 2 317 corner-folded elements and its licensed
-    /// gates were GREEN** (`lofted_conformed_disc_angle_envelope_fom`,
-    /// `b6_4_coupled_fsu_from_a_lofted_disc`). A solve completing is not evidence its mesh is
-    /// sound.
+    /// # What is asserted now
     ///
-    /// ⚠ **The lattice is the verification, NOT the criterion.** 455 points per element per
-    /// bisection step is far too expensive to run inside the projector; eight is the right
-    /// runtime check *where a floor covers the gap*. This gate is what says where that holds.
-    ///
-    /// ⚠ Even 455 points is a sampling, not a proof — it bounds the miss far more tightly than
-    /// eight, and that is all it claims.
+    /// 1. No element of either disc is folded anywhere, at either floor — the claim
+    ///    certification earns, and the floor no longer has to.
+    /// 2. The true minimum **equals the floor**, which is the gap-is-closed statement.
+    /// 3. The floor still *conditions*: the achieved minimum tracks it, so it remains the
+    ///    active constraint even though it no longer establishes validity.
+    /// 4. ⚠ A negative control on the **instrument**, because (1) and (2) are otherwise
+    ///    indistinguishable from a lattice that finds nothing: a deliberately folded element
+    ///    must read negative on the same lattice.
     #[test]
     #[ignore = "needs $CF_L4_STL/$CF_L5_STL/$CF_DISC_STL (BodyParts3D, CC BY-SA, not committed)"]
-    fn the_midside_floor_is_what_makes_eight_samples_sufficient_fom() {
+    fn certification_closed_the_gap_the_floor_used_to_cover_fom() {
         let l4 = cf_fsu_geometry::load_from_env("CF_L4_STL").expect("load L4");
         let l5 = cf_fsu_geometry::load_from_env("CF_L5_STL").expect("load L5");
         let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc");
@@ -7505,40 +7515,60 @@ mod tests {
             rows.push((floor, worst, negative, missed));
         }
 
-        // (1) THE SHIPPED FLOOR: no element is folded ANYWHERE, not merely at the sampled
-        //     points. This is the claim the mesher fix actually earns.
-        let (_, shipped_worst, shipped_neg, _) = rows[1];
-        assert_eq!(
-            shipped_neg, 0,
-            "at the shipped midside floor {DISC_MIDSIDE_CONFORM_QUALITY_FLOOR}, {shipped_neg} \
-             elements are folded somewhere inside the reference tet — the eight-point criterion \
-             is no longer covered by the floor, so it is the FLOOR that needs raising, not this \
-             gate that needs relaxing"
-        );
+        for &(floor, worst, negative, _) in &rows {
+            // (1) The claim certification earns, at EVERY floor.
+            assert_eq!(
+                negative, 0,
+                "at floor {floor} the certified back-off still left {negative} elements folded \
+                 somewhere inside the reference tet — certification is the thing that is \
+                 supposed to make this impossible, so this is a certifier bug, not a floor that \
+                 needs raising"
+            );
+            // (2) The gap is closed: achieved minimum IS the floor. Asserted as a band rather
+            //     than equality because the bisection converges onto the bar to ~2^-40 and the
+            //     lattice is a sampling of the interior, not the exact argmin.
+            assert!(
+                (worst - floor).abs() < 0.02 * floor.max(0.05),
+                "the true minimum {worst:+.6} should now sit AT the floor {floor} — a minimum \
+                 measurably below it is the sampling gap reopening, which is the condition this \
+                 gate exists to detect"
+            );
+        }
+
+        // (3) The floor still conditions the mesh: a 8x floor buys a 8x achieved minimum.
+        let (low, low_worst, ..) = rows[0];
+        let (high, high_worst, ..) = rows[1];
         assert!(
-            shipped_worst > 0.3,
-            "the shipped floor's true minimum is {shipped_worst:+.6}, far below the ~0.38 that \
-             makes the eight-point proxy comfortable — the margin this gate certifies is gone"
+            high_worst > low_worst * 2.0,
+            "the floor must still be the active constraint: floor {low} achieved \
+             {low_worst:+.6} and floor {high} achieved {high_worst:+.6}. If they coincide the \
+             floor stopped binding and its value is no longer doing anything"
         );
 
-        // (2) ★ THE NEGATIVE CONTROL, and it is the whole point: at a LOW floor the criterion
-        //     must actually fail, and fail INVISIBLY to the eight points. Without this the
-        //     assert above would pass just as well if the lattice were sampling nothing, or if
-        //     eight points really were sufficient and the floor irrelevant.
-        let (low_floor, low_worst, low_neg, low_missed) = rows[0];
+        // (4) ⚠ NEGATIVE CONTROL ON THE INSTRUMENT. Everything above is "the lattice found no
+        //     folds", which a lattice that cannot find folds would also report. Fold one
+        //     element deliberately — `with_curved_midsides` is the raw carrier and applies no
+        //     validity check — and require the same lattice to see it.
+        let clean = prepared_tet10_mesh(&prepared, &params, Some(ep), ConformFloors::SHIPPED);
+        let n_corners = clean.n_corners();
+        let victim = clean.positions()[n_corners];
+        let neighbour = clean.positions()[n_corners + 1];
+        let shove = (victim - neighbour) * 12.0;
+        let sabotaged = clean.with_curved_midsides(|p| if p == victim { p + shove } else { p });
+        let (sab_worst, sab_negative, _) = worst_det_over_a_dense_lattice(&sabotaged);
+        println!(
+            "instrument control | one midside shoved | true lattice min {sab_worst:+.6} \
+             | folded somewhere {sab_negative}"
+        );
         assert!(
-            low_neg > 0 && low_missed > 0,
-            "at floor {low_floor} the eight-point criterion must be demonstrably insufficient \
-             ({low_neg} folded, {low_missed} of them invisible to the eight samples, true min \
-             {low_worst:+.6}) — if nothing is missed here then this gate is not measuring the \
-             gap it exists to bound, and the floor's justification is unearned"
+            sab_negative > 0 && sab_worst < 0.0,
+            "the lattice must detect a deliberately folded element ({sab_negative} folded, \
+             worst {sab_worst:+.6}) — if it cannot, every 'folded 0' above is vacuous and this \
+             gate is measuring nothing"
         );
 
-        // (3) ★★ THE SECOND GEOMETRY, which is what stops (1) becoming a general claim it has
-        //     not earned. The LOFTED disc runs the same projector at the same floor, reads a
-        //     perfect +0.400 across all eight samples, and is folded inside anyway. Bounding
-        //     the residual here is what makes it impossible to lose: it is a 99.8 % improvement
-        //     (2 191 folded on the pre-fix projector, worst −16.2) and NOT a solution.
+        // (5) The LOFTED disc: the second geometry, and the one that carried 5 folds the
+        //     eight-point rule reported as a perfect +0.400 across all its samples.
         let lofted = lofted_disc(&l4, &l5);
         let lofted_prepared =
             prepare_disc(lofted, &params, Some(ep)).expect("prepare conformed lofted disc");
@@ -7551,20 +7581,12 @@ mod tests {
              | folded somewhere {lofted_folded} | missed by the 8 sampled points {lofted_unseen}",
             lofted_mesh.n_tets(),
         );
-        assert!(
-            lofted_folded <= 8,
-            "the lofted conformed disc has {lofted_folded} elements folded somewhere at rest (worst \
-             {lofted_min:+.6}), above the committed residual of 5 — the projector has regressed \
-             on the geometry that exercises it hardest"
-        );
-        // ...and the residual must still be INVISIBLE to the eight points, because that is the
-        // fact this gate exists to keep on the record. If the samples ever start catching them,
-        // the criterion changed and the open item below has moved.
         assert_eq!(
-            lofted_folded, lofted_unseen,
-            "every remaining lofted fold should be one the eight samples cannot see \
-             ({lofted_unseen} of {lofted_folded}); if the samples now catch some, the criterion has \
-             changed and this gate's framing needs re-deriving rather than re-anchoring"
+            lofted_folded, 0,
+            "the lofted conformed disc carried 5 folded elements under the sampled back-off, \
+             every one of them invisible to the eight samples (worst -1.09 normalised). \
+             Certification is what removed them; {lofted_folded} folded means it regressed on \
+             the geometry that exercises it hardest"
         );
     }
 }
