@@ -927,6 +927,37 @@ fn build_bonded_disc_tet10_at(
     ))
 }
 
+/// The **quadratic disc mesh itself**: enrich the prepared linear mesh, then project the
+/// bonded-face boundary midsides onto the real endplate if `endplates` is given.
+///
+/// Split out of [`bond_prepared_tet10`] so that a consumer wanting to *inspect* the shipped
+/// Tet10 geometry — rather than bond it — measures the same mesh object the production
+/// builder bonds, instead of a replica of these few lines. Its first consumer is the
+/// reference-corner rest census
+/// (`conformed_disc_reference_corner_rest_census_fom`), which asks whether this mesh
+/// contains elements that are folded in their own *reference* configuration; a replica
+/// there could drift from the builder and quietly measure a mesh nobody ships.
+fn prepared_tet10_mesh(
+    p: &PreparedDisc,
+    params: &DiscParams,
+    endplates: Option<EndplateConform>,
+    floors: ConformFloors,
+) -> Tet10Mesh {
+    let tet10 = Tet10Mesh::from_tet4(&p.tet);
+    let Some(ep) = endplates else {
+        return tet10;
+    };
+    let moves = endplate_midside_conform_moves(
+        &tet10,
+        &p.inferior,
+        &p.superior,
+        ep,
+        p.center_native,
+        params.scale,
+    );
+    tet10.with_projected_midsides(&moves, floors.midside)
+}
+
 /// Bond an already-[`prepare_disc`]d mesh with the **quadratic** element: enrich, project the
 /// bonded-face boundary midsides if `endplates` is given, widen the band to a full-face tie.
 ///
@@ -937,18 +968,7 @@ fn bond_prepared_tet10(
     endplates: Option<EndplateConform>,
     floors: ConformFloors,
 ) -> BondedDisc<Tet10Mesh, Tet10, 10, 4> {
-    let mut tet10 = Tet10Mesh::from_tet4(&p.tet);
-    if let Some(ep) = endplates {
-        let moves = endplate_midside_conform_moves(
-            &tet10,
-            &p.inferior,
-            &p.superior,
-            ep,
-            p.center_native,
-            params.scale,
-        );
-        tet10 = tet10.with_projected_midsides(&moves, floors.midside);
-    }
+    let tet10 = prepared_tet10_mesh(&p, params, endplates, floors);
     // Topological, so the band is the same set before and after the projection — but it is
     // computed here, on the mesh that is about to be bonded, so the two can never disagree.
     let inferior = full_face_band(&tet10, &p.inferior);
@@ -3349,6 +3369,180 @@ mod tests {
         ] {
             let (lo, hi, mean, pp) = spread(&xs);
             println!("{label}: min {lo:.4}  max {hi:.4}  mean {mean:.4}  peak-to-peak {pp:.2} %");
+        }
+    }
+
+    /// The four **reference corners** of the parametric simplex — `ξ` at the tet's vertices.
+    ///
+    /// The Stroud quadrature points the mesher's own guard evaluates are all interior
+    /// (barycentric weight 0.5854 on the nearest vertex), so a fold confined to a corner
+    /// region is invisible to them. These are the points that can see it.
+    const REFERENCE_CORNERS: [Vec3; 4] = [
+        Vec3::new(0.0, 0.0, 0.0),
+        Vec3::new(1.0, 0.0, 0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+    ];
+
+    /// `det J_rest` at each of the four reference corners, **normalised by the element's own
+    /// affine determinant** (`det [X₁−X₀, X₂−X₀, X₃−X₀]` = `6·V`).
+    ///
+    /// The normalisation is what makes the number readable and comparable across a mesh whose
+    /// elements differ in size by orders of magnitude: it is exactly **1.0 at every corner of a
+    /// straight element**, so a reading is "how much this element's reference map has been bent
+    /// at this corner, as a fraction of its affine volume". `≤ 0` is a **fold in the reference
+    /// configuration** — the element is inside-out before any load is applied, which no
+    /// deformation can excuse.
+    ///
+    /// ⚠ Deliberately NOT `det F`. At rest `F = I` wherever `J_rest` is invertible, so a
+    /// rest-state census that measured `det F` would read 1.0 everywhere and see nothing. The
+    /// reference map's own orientation is the rest-state question.
+    fn rest_corner_det_ratios(x_ref: &SMatrix<f64, 10, 3>, element: Tet10) -> [f64; 4] {
+        let affine = SMatrix::<f64, 3, 3>::from_fn(|r, c| x_ref[(c + 1, r)] - x_ref[(0, r)]);
+        let scale = affine.determinant();
+        REFERENCE_CORNERS.map(|xi| {
+            let j_rest = x_ref.transpose() * element.shape_gradients(xi);
+            j_rest.determinant() / scale
+        })
+    }
+
+    /// One arm's reference-corner rest census.
+    struct RestCensus {
+        n_tets: usize,
+        /// Elements with `det J_rest ≤ 0` at one or more reference corner — folded at rest.
+        folded: Vec<(usize, usize, f64)>,
+        /// The per-element minimum normalised corner determinant, over the whole mesh.
+        worst: f64,
+        /// Elements whose minimum ratio is positive but below this fraction of affine.
+        near_degenerate: usize,
+    }
+
+    fn census_rest_corners(tet10: &Tet10Mesh) -> RestCensus {
+        let element = Tet10;
+        let positions = tet10.positions();
+        let mut folded = Vec::new();
+        let mut worst = f64::INFINITY;
+        let mut near_degenerate = 0;
+        #[allow(clippy::cast_possible_truncation)] // Mesh-trait API tax, as elsewhere here.
+        let n_tets = tet10.n_tets();
+        for t in 0..n_tets {
+            #[allow(clippy::cast_possible_truncation)]
+            let tid = t as TetId;
+            let corners = tet10.tet_vertices(tid);
+            let Some(mid) = tet10.tet_midside_nodes(tid) else {
+                continue;
+            };
+            let nodes: [VertexId; 10] = [
+                corners[0], corners[1], corners[2], corners[3], mid[0], mid[1], mid[2], mid[3],
+                mid[4], mid[5],
+            ];
+            let x_ref = SMatrix::<f64, 10, 3>::from_fn(|a, k| positions[nodes[a] as usize][k]);
+            let ratios = rest_corner_det_ratios(&x_ref, element);
+            let mut tet_min = f64::INFINITY;
+            for (c, &r) in ratios.iter().enumerate() {
+                if !r.is_finite() || r <= 0.0 {
+                    folded.push((t, c, r));
+                }
+                tet_min = tet_min.min(r);
+            }
+            if tet_min > 0.0 && tet_min < 1.0e-6 {
+                near_degenerate += 1;
+            }
+            worst = worst.min(tet_min);
+        }
+        RestCensus {
+            n_tets,
+            folded,
+            worst,
+            near_degenerate,
+        }
+    }
+
+    /// **The reference-corner REST census** of the shipped raw and conformed Tet10 discs
+    /// (`project_conformed_disc_corner_folded_elements`, queued work item 1).
+    ///
+    /// # What this measures, and why it is a census rather than a gate
+    ///
+    /// A reference-corner validity **stage** was written on
+    /// `fix/tet10-inversion-gate-at-gauss-points` and split back out at `cad72838`, because
+    /// adding it turned three previously-green licensed gates red — all with the same
+    /// signature, `det F` negative at reference corner 2 while every Gauss point and the
+    /// affine corner block read positive. That stage fails closed on the **first** violator,
+    /// which is the right shape for a gate and the wrong shape for the question now open:
+    /// *are these elements acceptable, and if not, how much of the mesh is affected?* That
+    /// needs a distribution, so this counts every element instead of stopping at one.
+    ///
+    /// It is also deliberately a **rest-state** measurement. The three red gates observed
+    /// folds at deformed states reached through a flexion sweep, which confounds two
+    /// questions — is the mesh bad, or does the load path drive good elements bad? The
+    /// reference map's own orientation is a property of the mesh alone: an element with
+    /// `det J_rest ≤ 0` at a corner is folded before anything is applied to it. Whatever this
+    /// finds is attributable to the mesher and to nothing else.
+    ///
+    /// # The negative control is free, and it is the raw arm
+    ///
+    /// With `endplates = None` every midside stays at its edge midpoint, so the raw disc is
+    /// exactly affine and its normalised corner determinant must be **1.0 at all four corners
+    /// of all ~20 000 elements**. That is a known value this census must reproduce, and it
+    /// discriminates the instrument from the subject: if the raw arm reads anything else,
+    /// this census is broken and its conformed-arm numbers mean nothing — which is precisely
+    /// the failure mode that a "measure only the suspect thing" census could not detect.
+    #[test]
+    #[ignore = "needs $CF_L4_STL/$CF_L5_STL/$CF_DISC_STL (BodyParts3D, CC BY-SA, not committed)"]
+    fn conformed_disc_reference_corner_rest_census_fom() {
+        let l4 = cf_fsu_geometry::load_from_env("CF_L4_STL").expect("load L4");
+        let l5 = cf_fsu_geometry::load_from_env("CF_L5_STL").expect("load L5");
+        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc");
+        let (o4, o5) = (oracle(&l4).unwrap(), oracle(&l5).unwrap());
+        let frame = cf_fsu_geometry::segment_frame(&l4, &l5, &o4, &o5).unwrap();
+        let params = DiscParams::default();
+        let ep = EndplateConform {
+            o4: &o4,
+            o5: &o5,
+            superior_axis: frame.superior_axis,
+        };
+
+        for (label, endplates) in [("raw", None), ("conformed", Some(ep))] {
+            let p = prepare_disc(disc_mesh.clone(), &params, endplates)
+                .unwrap_or_else(|e| panic!("prepare {label} disc: {e:?}"));
+            // The SHIPPED mesh object, via the same helper `bond_prepared_tet10` calls.
+            let tet10 = prepared_tet10_mesh(&p, &params, endplates, ConformFloors::SHIPPED);
+            let c = census_rest_corners(&tet10);
+
+            println!(
+                "\n{label} Tet10 disc — {} tets\n  \
+                 folded corners (det J_rest <= 0): {}\n  \
+                 distinct folded elements:         {}\n  \
+                 near-degenerate elements:         {}\n  \
+                 worst normalised corner det:      {:.6}",
+                c.n_tets,
+                c.folded.len(),
+                c.folded
+                    .iter()
+                    .map(|&(t, _, _)| t)
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len(),
+                c.near_degenerate,
+                c.worst,
+            );
+            let mut worst_first = c.folded.clone();
+            worst_first.sort_by(|a, b| a.2.total_cmp(&b.2));
+            for &(t, corner, ratio) in worst_first.iter().take(10) {
+                println!("    tet {t:6} reference corner {corner} : {ratio:+.6}");
+            }
+
+            // ★ VALIDATE-AGAINST-A-KNOWN-VALUE: the raw arm is affine by construction, so
+            // every corner of every element must read exactly 1.0. This is the instrument
+            // check — it fails if the census is wrong, not if the mesh is bad.
+            if label == "raw" {
+                assert!(
+                    (c.worst - 1.0).abs() < 1.0e-9,
+                    "the raw disc is straight by construction, so every normalised corner \
+                     determinant must be 1.0 — worst is {:.12}. This census is measuring \
+                     something other than what it claims.",
+                    c.worst
+                );
+            }
         }
     }
 
