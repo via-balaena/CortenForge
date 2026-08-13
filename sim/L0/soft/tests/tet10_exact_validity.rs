@@ -189,6 +189,84 @@ fn the_conformed_sphere_is_certified_element_by_element() {
     );
 }
 
+/// ★★ The property the projector actually promises, which is **stronger than
+/// "nothing is folded"**: every element clears the quality floor against its
+/// own pre-conform geometry, over its whole volume.
+///
+/// The sibling gate above checks bare positivity, which would still pass if
+/// the sweep's invariant were broken — a node's placement only re-checks the
+/// elements incident to *that* node, so "every accepted move leaves every
+/// incident element above the floor" is an induction over the sweep, not
+/// something any single predicate call establishes. This gate checks the
+/// conclusion of that induction directly, on the finished mesh, against the
+/// straight mesh it started from.
+///
+/// ⚠ **Tested at `floor · (1 − 1e-6)`, and the relaxation is the point, not a
+/// fudge.** The back-off bisects to the furthest blend the floor admits, so it
+/// converges *onto* the bar: `det J_c − floor · det J_o` is driven to zero by
+/// construction, and the tightest element certifies with a relative margin of
+/// ~1.08e-12 against the primitive's own 1e-12 noise threshold. Asserting the
+/// exact floor would therefore be a knife-edge that a different CPU or
+/// optimisation level could tip, and it would read as a mesher regression when
+/// it was only rounding. The relaxation is far below the bisection's own
+/// resolution (`2⁻⁴⁰ ≈ 9e-13` in the blend parameter), so nothing real can
+/// hide inside it.
+#[test]
+fn every_element_of_the_conformed_sphere_clears_the_floor_not_merely_zero() {
+    /// Slack for the bisection converging onto the bar — see the note above.
+    const BAR: f64 = LAYERED_SPHERE_CONFORM_QUALITY_FLOOR * (1.0 - 1e-6);
+
+    let straight = straight_sphere_tet10();
+    let curved = straight
+        .clone()
+        .with_sdf_projected_boundary(&body_sdf(), LAYERED_SPHERE_CONFORM_QUALITY_FLOOR);
+    assert_eq!(
+        straight.n_tets(),
+        curved.n_tets(),
+        "conforming must not change topology"
+    );
+
+    // Collected rather than panicked on the first: if the sweep's induction is
+    // broken, how MANY elements it left short is the diagnostic, not which one
+    // happened to come first.
+    let mut short = Vec::new();
+    let mut worst_margin = f64::INFINITY;
+    for t in 0..curved.n_tets() as u32 {
+        let before = element_nodes(&straight, t);
+        let after = element_nodes(&curved, t);
+        match certify_rest(
+            &after,
+            ValidityBar::RelativeFloor {
+                original: &before,
+                floor: BAR,
+            },
+        ) {
+            RestValidity::Certified { margin } => worst_margin = worst_margin.min(margin),
+            other => short.push((t, other)),
+        }
+    }
+    assert!(
+        short.is_empty(),
+        "{} of {} elements do not clear the floor they were conformed at — the sweep's \
+         induction is broken, not merely its positivity. First few: {:?}",
+        short.len(),
+        curved.n_tets(),
+        &short[..short.len().min(5)],
+    );
+    println!(
+        "every element clears {BAR} (floor {LAYERED_SPHERE_CONFORM_QUALITY_FLOOR} less \
+         bisection slack); tightest relative margin {worst_margin:.3e}"
+    );
+    // Non-vacuous in the other direction: the back-off really did converge
+    // onto the bar, so this gate is measuring a tight fit rather than a mesh
+    // that never approached the floor at all.
+    assert!(
+        worst_margin < 1e-5,
+        "the back-off should land ON the bar; tightest margin {worst_margin:e} suggests it \
+         never engaged, which would make this gate vacuous"
+    );
+}
+
 /// The pilot that chooses [`LAYERED_SPHERE_CONFORM_QUALITY_FLOOR`].
 ///
 /// Prints, per candidate floor: how many elements certify, the worst

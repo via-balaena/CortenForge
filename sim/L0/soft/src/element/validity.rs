@@ -301,25 +301,9 @@ fn certify_from(
         return RestValidity::Undetermined;
     }
 
-    let mid = |a: usize, b: usize| (verts[a] + verts[b]) * 0.5;
-    let (m01, m02, m03) = (mid(0, 1), mid(0, 2), mid(0, 3));
-    let (m12, m13, m23) = (mid(1, 2), mid(1, 3), mid(2, 3));
-    // Four corner children, plus the central octahedron split on the m01–m23
-    // diagonal (whose equator cycle is m02, m03, m13, m12).
-    let children: [[Vec3; 4]; 8] = [
-        [verts[0], m01, m02, m03],
-        [verts[1], m01, m12, m13],
-        [verts[2], m02, m12, m23],
-        [verts[3], m03, m13, m23],
-        [m01, m23, m02, m03],
-        [m01, m23, m03, m13],
-        [m01, m23, m13, m12],
-        [m01, m23, m12, m02],
-    ];
-
     let mut undetermined = false;
     let mut worst_margin = f64::INFINITY;
-    for child in children {
+    for child in subdivide(&verts) {
         match certify_from(xt, reference, child, depth + 1) {
             violated @ RestValidity::Violated { .. } => return violated,
             RestValidity::Undetermined => undetermined = true,
@@ -333,6 +317,32 @@ fn certify_from(
             margin: worst_margin,
         }
     }
+}
+
+/// Split a simplex into eight children that **tile** it: four corner
+/// tetrahedra plus the central octahedron cut into four along the `m01–m23`
+/// diagonal (whose equator cycle is `m02, m03, m13, m12`).
+///
+/// ⚠ Tiling is what makes a subdivided [`RestValidity::Certified`] sound. The
+/// children's bounds only cover the parent if the children cover the parent,
+/// so a gap here would not fail loudly — it would silently certify an element
+/// with a fold hiding in the uncovered region. Pinned by
+/// `the_eight_children_tile_the_parent`, which checks containment and exact
+/// volume conservation rather than trusting the vertex list by inspection.
+fn subdivide(verts: &[Vec3; 4]) -> [[Vec3; 4]; 8] {
+    let mid = |a: usize, b: usize| (verts[a] + verts[b]) * 0.5;
+    let (m01, m02, m03) = (mid(0, 1), mid(0, 2), mid(0, 3));
+    let (m12, m13, m23) = (mid(1, 2), mid(1, 3), mid(2, 3));
+    [
+        [verts[0], m01, m02, m03],
+        [verts[1], m01, m12, m13],
+        [verts[2], m02, m12, m23],
+        [verts[3], m03, m13, m23],
+        [m01, m23, m02, m03],
+        [m01, m23, m03, m13],
+        [m01, m23, m13, m12],
+        [m01, m23, m12, m02],
+    ]
 }
 
 /// Bernstein coefficients of the bounded quantity over one sub-simplex:
@@ -797,6 +807,128 @@ mod tests {
             )
             .is_certified(),
             "a folded reference must not be used as a quality baseline"
+        );
+    }
+
+    /// Signed volume of a tetrahedron given its four vertices.
+    fn tet_volume(v: &[Vec3; 4]) -> f64 {
+        let m = nalgebra::Matrix3::from_columns(&[v[1] - v[0], v[2] - v[0], v[3] - v[0]]);
+        m.determinant() / 6.0
+    }
+
+    /// ⚠ Soundness of every *subdivided* certificate rests on this and nothing
+    /// else: the children must cover the parent. A gap would not fail loudly —
+    /// it would certify an element with a fold sitting in the uncovered region.
+    ///
+    /// Checked two ways rather than by reading the vertex list: every child
+    /// lies inside the parent, and the child volumes sum to the parent's
+    /// exactly. Containment plus exact volume conservation leaves no room for
+    /// a gap.
+    #[test]
+    fn the_eight_children_tile_the_parent() {
+        // Barycentric coordinates of `p` with respect to tetrahedron `v`.
+        let bary = |v: &[Vec3; 4], p: Vec3| -> [f64; 4] {
+            let m = nalgebra::Matrix3::from_columns(&[v[1] - v[0], v[2] - v[0], v[3] - v[0]]);
+            let l = m
+                .try_inverse()
+                .expect("a non-degenerate parent simplex is invertible")
+                * (p - v[0]);
+            [1.0 - l[0] - l[1] - l[2], l[0], l[1], l[2]]
+        };
+
+        // The reference simplex, and one irregular sub-simplex — the formula
+        // claims to work for ANY sub-tetrahedron, not just the reference one.
+        let irregular = [
+            Vec3::new(0.1, 0.05, 0.2),
+            Vec3::new(0.7, 0.1, 0.05),
+            Vec3::new(0.2, 0.6, 0.1),
+            Vec3::new(0.15, 0.2, 0.55),
+        ];
+        for parent in [REFERENCE_SIMPLEX, irregular] {
+            let parent_volume = tet_volume(&parent).abs();
+            let children = subdivide(&parent);
+
+            let mut summed = 0.0;
+            for child in &children {
+                summed += tet_volume(child).abs();
+                // Every child vertex is inside the parent.
+                for &vertex in child {
+                    for (i, l) in bary(&parent, vertex).iter().enumerate() {
+                        assert!(
+                            *l >= -1e-12,
+                            "child vertex {vertex:?} escapes the parent (barycentric {i} = {l:e})"
+                        );
+                    }
+                }
+            }
+            assert!(
+                (summed - parent_volume).abs() <= 1e-12 * parent_volume,
+                "children must tile the parent: volumes sum to {summed:e}, parent is \
+                 {parent_volume:e} — the difference is a gap a fold could hide in"
+            );
+
+            // A child is a genuine subdivision, not a degenerate sliver.
+            for child in &children {
+                assert!(
+                    tet_volume(child).abs() > 0.01 * parent_volume,
+                    "a child collapsed to a sliver; the split is wrong"
+                );
+            }
+        }
+    }
+
+    /// ★★ End-to-end soundness, cross-checked by an instrument that shares no
+    /// code with the certifier: if `certify_rest` says `Certified`, a dense
+    /// lattice must not find `det J ≤ 0` anywhere.
+    ///
+    /// This is the check that would catch a wrong coefficient formula, a
+    /// mis-signed determinant, or a subdivision that fails to cover — the
+    /// failure modes where every other test in this module still passes
+    /// because they all share the same machinery.
+    #[test]
+    fn a_certificate_is_never_contradicted_by_a_dense_lattice() {
+        let mut rng = Rng(0x5EED_000B);
+        let points = lattice(16);
+        let (mut certified, mut refuted, mut undetermined) = (0usize, 0usize, 0usize);
+
+        for level in 0..6 {
+            let curve = 0.05 * f64::from(level + 1);
+            for _ in 0..300 {
+                let x = curved_element(&mut rng, curve);
+                let verdict = certify_rest(&x, ValidityBar::Positive);
+                let lattice_min = points
+                    .iter()
+                    .map(|&xi| det_at(&x, xi))
+                    .fold(f64::INFINITY, f64::min);
+
+                match verdict {
+                    RestValidity::Certified { .. } => {
+                        certified += 1;
+                        assert!(
+                            lattice_min > 0.0,
+                            "CERTIFIED but a lattice point reads det J = {lattice_min:e}"
+                        );
+                    }
+                    RestValidity::Violated { at, value } => {
+                        refuted += 1;
+                        // The witness must reproduce under direct evaluation.
+                        let direct = det_at(&x, at);
+                        assert!(
+                            (direct - value).abs() <= 1e-9 * value.abs().max(1e-12),
+                            "witness {value:e} does not reproduce ({direct:e})"
+                        );
+                        assert!(value <= 0.0, "a refutation must be non-positive");
+                    }
+                    RestValidity::Undetermined => undetermined += 1,
+                }
+            }
+        }
+        // Non-vacuous in both directions: the population must contain elements
+        // of each kind, or the assertions above never fired on anything.
+        assert!(
+            certified > 100 && refuted > 100,
+            "population must exercise both verdicts: {certified} certified, \
+             {refuted} refuted, {undetermined} undetermined"
         );
     }
 
