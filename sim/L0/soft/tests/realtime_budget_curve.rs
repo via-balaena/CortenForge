@@ -78,6 +78,8 @@ const MU: f64 = 2.0e9;
 const NU: f64 = 0.35;
 const TIP_FORCE_TOTAL: f64 = 150.0;
 const STATIC_DT: f64 = 1.0;
+/// Increments the tip load is ramped over. Each is one timed "frame".
+const RAMP_STEPS: usize = 10;
 
 /// `(elements, dof, ms_per_step, newton_iters, tip_deflection_m)` for one
 /// refinement of the shaft.
@@ -114,19 +116,32 @@ fn measure(nx: usize, ny: usize, nz: usize) -> (usize, usize, f64, usize, f64) {
     let mut cfg = SolverConfig::skeleton();
     cfg.dt = STATIC_DT;
     cfg.max_newton_iter = 500;
+    // ⚠ Scaled to the load, as `tet10_bending_locking` does. `skeleton()`'s
+    // default is sized for the walking-skeleton scene; leaving it on a 2 GPa
+    // shaft asks for a residual the solve cannot reach.
+    cfg.tol = 1e-8 * TIP_FORCE_TOTAL / (loaded.len() as f64).sqrt();
     let solver: CpuTet10NHSolver<Tet10Mesh> =
         CpuNewtonSolver::new(Tet10, mesh, NullContact, cfg, bc);
 
-    let x_prev = Tensor::from_slice(&x_flat, &[n_dof]);
     let v_prev = Tensor::zeros(&[n_dof]);
-    let theta = Tensor::from_slice(&[TIP_FORCE_TOTAL / loaded.len() as f64], &[1]);
 
-    // One untimed warm-up (first-touch page faults and any lazy init land here),
-    // then the timed step. Best-of-3 so a scheduler hiccup cannot inflate it.
+    // ⚠⚠ The load is RAMPED, not applied in one shot.
+    //
+    // A first cut asked for the full tip load from rest in a single quasi-static
+    // solve — a ~46 cm deflection in one step — and every refinement diverged.
+    // That is the same mistake as the rung-5 defect: demanding the entire
+    // transit at once. It is also the wrong thing to measure: a real-time loop
+    // never does that. It advances a small increment per frame from the previous
+    // converged state, which is exactly what this now times.
+    //
+    // ⇒ `ms/step` below is the cost of ONE INCREMENT — the per-frame cost.
+    let mut x_prev = Tensor::from_slice(&x_flat, &[n_dof]);
     let mut best = f64::INFINITY;
     let mut iters = 0usize;
     let mut tip = 0.0f64;
-    for round in 0..4 {
+    for i in 1..=RAMP_STEPS {
+        let load = TIP_FORCE_TOTAL * (i as f64 / RAMP_STEPS as f64);
+        let theta = Tensor::from_slice(&[load / loaded.len() as f64], &[1]);
         let clock = Instant::now();
         // `try_` so a grid that diverges REPORTS rather than killing the whole
         // curve — a refinement that cannot take this load is a row of the
@@ -135,7 +150,9 @@ fn measure(nx: usize, ny: usize, nz: usize) -> (usize, usize, f64, usize, f64) {
             return (n_elems, n_dof, f64::NAN, 0, f64::NAN);
         };
         let ms = clock.elapsed().as_secs_f64() * 1e3;
-        if round > 0 {
+        // The first increment pays first-touch page faults and any lazy init;
+        // steady-state per-frame cost is what a budget is about.
+        if i > 1 {
             best = best.min(ms);
         }
         iters = step.iter_count;
@@ -144,6 +161,7 @@ fn measure(nx: usize, ny: usize, nz: usize) -> (usize, usize, f64, usize, f64) {
             .zip(&rest_z)
             .map(|(&v, &z0)| (step.x_final[3 * v as usize + 2] - z0).abs())
             .fold(0.0f64, f64::max);
+        x_prev = Tensor::from_slice(&step.x_final, &[n_dof]);
     }
     (n_elems, n_dof, best, iters, tip)
 }
