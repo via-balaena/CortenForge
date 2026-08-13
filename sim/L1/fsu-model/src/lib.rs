@@ -4931,6 +4931,79 @@ mod tests {
         }
     }
 
+    /// ▶ **Rung 5.0 — is the Tet4 arm involved AT ALL?**
+    ///
+    /// ⚠⚠ The control that the co-residency framing never had. Every experiment in this family
+    /// — the reproducer, the discriminator, and the two isolations above — builds a Tet4 arm
+    /// and drives the Tet10 arm through **flexion AND extension**. The one run that passes,
+    /// `a_passing_fine_mesh_disc_solve_censused_against_a_proof_fom`, builds no Tet4 arm *and*
+    /// drives **flexion only**. Two differences, never separated.
+    ///
+    /// This removes the Tet4 arm entirely and keeps both angles. The outcome decides which
+    /// difference was doing the work:
+    ///
+    /// - **Fails** ⇒ the Tet4 arm is irrelevant and "co-residency" is a **red herring**; the
+    ///   defect is the Tet10 arm at `cell = 0.002` under one of these two probes, and the whole
+    ///   family should be renamed and re-scoped.
+    /// - **Passes** ⇒ the Tet4 arm really is implicated, and the isolations above stand.
+    ///
+    /// Committed before the run, so neither outcome can be talked into being the expected one.
+    #[test]
+    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
+    fn rung5_tet10_alone_both_angles_fom() {
+        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
+        let params = DiscParams {
+            cell: 0.002,
+            ..DiscParams::default()
+        };
+        let (flex, ext) = (0.5_f64.to_radians(), -0.5_f64.to_radians());
+
+        let p = prepare_disc(disc_mesh, &params, None).expect("prepare raw disc at cell 0.002");
+        // No Tet4 arm. No `duplicate()`. Nothing else is ever constructed.
+        let mut tet10 = bond_prepared_tet10(p, &params, None, ConformFloors::SHIPPED);
+
+        let t = std::time::Instant::now();
+        // ⚠ Printed and FLUSHED between the two probes, because which one panics is the
+        // measurement: a panic inside `flexion_moment` says nothing about which angle reached
+        // it. If the flexion line appears and the extension line does not, extension is the
+        // one that fails. The labels state what was measured, not that it was acceptable —
+        // conservation is asserted at the end, and a line reading "OK" before that assert
+        // would be a log that lies to whoever reads it later.
+        let quad_flex = tet10.flexion_moment(flex);
+        println!(
+            "  flexion   {:+.2}° returned: k = {:.4}, resid {:.2e}",
+            flex.to_degrees(),
+            quad_flex.0 / flex,
+            quad_flex.1
+        );
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+
+        let quad_ext = tet10.flexion_moment(ext);
+        println!(
+            "  extension {:+.2}° returned: k = {:.4}, resid {:.2e}",
+            ext.to_degrees(),
+            quad_ext.0 / ext,
+            quad_ext.1
+        );
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+
+        println!(
+            "rung5 Tet10-alone both angles | cell {} | {:.1} s | {:.4}/{:.4}",
+            params.cell,
+            t.elapsed().as_secs_f64(),
+            quad_flex.0 / flex,
+            quad_ext.0 / ext,
+        );
+
+        for (probe, name) in [(quad_flex, "Tet10 flexion"), (quad_ext, "Tet10 extension")] {
+            assert!(
+                probe.1 < 1e-8,
+                "{name} must conserve (‖ΣF‖+‖ΣM‖ = {:.2e})",
+                probe.1
+            );
+        }
+    }
+
     /// **Rung 5.0 — does DROPPING the Tet10 arm save the Tet4 solve?**
     ///
     /// `rung5_coresidency_minimal_reproducer_fom` is byte-for-byte this test plus one thing: it
