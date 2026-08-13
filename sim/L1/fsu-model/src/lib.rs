@@ -1407,19 +1407,20 @@ impl<Msh: Mesh, E: Element<N, G> + Default, const N: usize, const G: usize>
     /// # Panics
     /// Panics if the soft solve diverges — see [`Self::set_flexion`]; keep `|theta|`
     /// sub-degree.
-    pub fn flexion_moment(&mut self, theta: f64) -> (f64, f64) {
-        self.set_flexion(theta);
-        self.measure_flexion_moment()
-    }
-
-    /// [`Self::flexion_moment`] reaching `theta` through intermediate poses when the swing
-    /// requires it — the entry point for a caller probing **several angles in sequence**.
+    /// ⚠ **Sub-steps when the swing requires it.** Probing `+θ` then `−θ` is a `2θ` swing, so
+    /// a pair of individually-legal sub-degree probes routinely exceeds
+    /// [`MAX_FLEXION_SWING_RAD`] — that is the normal shape of a moment–rotation sweep, not a
+    /// caller mistake, so this reaches the pose in legal pieces rather than refusing.
     ///
-    /// ⚠ Probing `+θ` then `−θ` is a `2θ` swing, so a pair of individually-legal sub-degree
-    /// probes routinely exceeds [`MAX_FLEXION_SWING_RAD`]. That is not a caller mistake to be
-    /// punished, it is the normal shape of a moment–rotation sweep; this reaches the same pose
-    /// and, measured, the same answer.
-    pub fn flexion_moment_substepped(&mut self, theta: f64) -> (f64, f64) {
+    /// ★ **Sub-stepping is measured to be answer-preserving**, which is what makes this safe to
+    /// do silently: transiting `+0.5° → −0.5°` in four pieces gives `k = −0.1068`, identical to
+    /// reaching `−0.5°` from rest (`rung5_substepping_the_swing_fom`). It buys convergence, not
+    /// a different number. The cost is one extra solve per `MAX_FLEXION_SWING_RAD` of transit.
+    ///
+    /// The **raw** pose control [`Self::set_flexion`] still panics on an over-large swing: a
+    /// caller driving poses directly is asking for exactly what it says, and gets told when
+    /// that is more than one step can carry.
+    pub fn flexion_moment(&mut self, theta: f64) -> (f64, f64) {
         self.set_flexion_substepped(theta);
         self.measure_flexion_moment()
     }
@@ -2339,9 +2340,9 @@ mod tests {
         // ⚠ `+θ` then `−θ` is a **0.6° swing**, not two 0.3° probes. This test's own comment
         // used to read "sub-degree: stay in the SPD region" — reasoning about `|θ|` and getting
         // the swing wrong, which is the exact misconception `MAX_FLEXION_SWING_RAD` exists to
-        // catch. The sub-stepped entry point reaches the same poses in legal pieces.
-        let (m_pos, resid_pos) = disc.flexion_moment_substepped(theta);
-        let (m_neg, resid_neg) = disc.flexion_moment_substepped(-theta);
+        // catch. `flexion_moment` now sub-steps the transit for exactly this reason.
+        let (m_pos, resid_pos) = disc.flexion_moment(theta);
+        let (m_neg, resid_neg) = disc.flexion_moment(-theta);
 
         // Conservation: the bond's reaction is a self-equilibrated wrench.
         assert!(
@@ -4902,151 +4903,35 @@ mod tests {
         );
     }
 
-    /// ▶ **Rung 5.0 — is it CO-EXISTENCE, or is it the Tet4 SOLVE running first?**
+    /// ★★ **REGRESSION GATE for the flexion-swing defect** — the exact sequence that used to
+    /// invert tet 20441.
     ///
-    /// ⚠⚠ **The discriminator does not isolate what its docs claim.** It drops the Tet10 arm
-    /// before solving and concludes "co-existence during the solve is what matters". But the
-    /// failing solve is the **Tet10** one — tet 20441, and the Tet10 disc has 20443 elements —
-    /// so dropping that arm means the failing solve is never run. It passes by skipping the
-    /// experiment.
+    /// # What this was, and what it found
     ///
-    /// Two further facts narrow it, both measured 2026-08-13:
+    /// It began as the control the "co-residency" framing never had. Every experiment in that
+    /// family built a Tet4 arm **and** drove the Tet10 arm through flexion **and** extension;
+    /// the one run that passed built no Tet4 arm **and** drove flexion only. **Two differences,
+    /// never separated.** Removing the Tet4 arm and keeping both angles showed the Tet4 arm was
+    /// irrelevant: flexion converged (`k = −0.1079`) and the extension probe still inverted tet
+    /// 20441, with nothing else constructed.
     ///
-    /// - **`RAYON_NUM_THREADS=1` reproduces it identically** — same tet, same `det F = -0.083`.
-    ///   So it is not thread scheduling and not a race; it is deterministic.
-    /// - **Tet10 ALONE at this exact cell and angle converges** — `sim-soft`'s
-    ///   `a_passing_fine_mesh_disc_solve_censused_against_a_proof_fom` solves the same disc at
-    ///   `cell = 0.002`, flexed 0.5°, and certifies all 20443 elements with a worst margin of
-    ///   0.969. The mesh is nowhere near folding on its own.
+    /// ⇒ "Co-residency" was a **red herring**. What mattered was that
+    /// [`CoupledFsu::set_flexion`] imposes an *absolute* pose while the soft solve resumes from
+    /// the previously converged state, so `+0.5°` then `−0.5°` asked the soft field to traverse
+    /// **1° in one backward-Euler step** — see [`MAX_FLEXION_SWING_RAD`].
     ///
-    /// So co-residency does matter, and this asks the question the discriminator meant to:
-    /// build BOTH arms, then solve **only Tet10**. If it still fails, mere co-existence is
-    /// enough and the Tet4 solve is irrelevant. If it passes, something the Tet4 solve *does*
-    /// is what damages the Tet10 arm — a completely different hunt.
+    /// Also ruled out along the way, each by measurement: thread scheduling
+    /// (`RAYON_NUM_THREADS=1` reproduced it identically), the Tet4 *solve* (never run), two live
+    /// arms (Tet4 dropped), MuJoCo globals (`sim-core` is pure Rust and `Model::clone` deep-
+    /// copies), the mesh (20443/20443 certified at rest, worst margin 0.969), and extension
+    /// itself (converges from rest, `k = −0.1068`).
     ///
-    /// ⚠ `sim-soft` holds **no shared mutable state** — no `static`, `thread_local`, `OnceLock`,
-    /// `Mutex`/`RwLock`/`RefCell`, or `unsafe` anywhere in its `src`. Whatever is shared is
-    /// therefore outside it: `faer`'s global rayon pool (now ruled out), the allocator, or the
-    /// MuJoCo rigid side, whose C library does carry process-global state.
-    #[test]
-    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
-    fn rung5_coresidency_is_it_coexistence_or_the_tet4_solve_fom() {
-        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
-        let params = DiscParams {
-            cell: 0.002,
-            ..DiscParams::default()
-        };
-        let (flex, ext) = (0.5_f64.to_radians(), -0.5_f64.to_radians());
-
-        let p = prepare_disc(disc_mesh, &params, None).expect("prepare raw disc at cell 0.002");
-
-        // Byte-for-byte the reproducer's construction: BOTH arms built, Tet10 second.
-        let _tet4 = bond_prepared_tet4(p.duplicate().expect("duplicate"), &params);
-        let mut tet10 = bond_prepared_tet10(p, &params, None, ConformFloors::SHIPPED);
-
-        // ...and then the ONE difference: the Tet4 arm is never solved. It stays alive
-        // (not dropped), so co-existence is preserved exactly.
-        let t = std::time::Instant::now();
-        let quad_flex = tet10.flexion_moment(flex);
-        let quad_ext = tet10.flexion_moment(ext);
-
-        println!(
-            "rung5 co-existence-only | cell {} | {:.1} s | Tet10 {:.4}/{:.4} | resid {:.2e}/{:.2e}",
-            params.cell,
-            t.elapsed().as_secs_f64(),
-            quad_flex.0 / flex,
-            quad_ext.0 / ext,
-            quad_flex.1,
-            quad_ext.1,
-        );
-
-        for (probe, name) in [(quad_flex, "Tet10 flexion"), (quad_ext, "Tet10 extension")] {
-            assert!(
-                probe.1 < 1e-8,
-                "{name} must conserve (‖ΣF‖+‖ΣM‖ = {:.2e})",
-                probe.1
-            );
-        }
-    }
-
-    /// ▶ **Rung 5.0 — does the damage OUTLIVE the Tet4 arm?**
+    /// # Why it stays
     ///
-    /// `rung5_coresidency_is_it_coexistence_or_the_tet4_solve_fom` showed the Tet4 arm never
-    /// has to be **solved**: merely constructing one before the Tet10 arm is enough, and the
-    /// Tet10 solve then fails identically (tet 20441, `det F = -0.083`, deterministic under
-    /// `RAYON_NUM_THREADS=1`).
-    ///
-    /// This is the split that says where to look, and it is the dichotomy the original
-    /// discriminator's docs framed — applied to the arm that actually fails:
-    ///
-    /// - **Still fails** ⇒ the damage is done at CONSTRUCTION and **outlives the object**.
-    ///   That is process-global state — the allocator, or MuJoCo's C globals, which the rigid
-    ///   side of every `BondedSandwich` touches. Not aliasing between two live instances.
-    /// - **Passes** ⇒ two live instances is what matters, and the hunt is for something the
-    ///   two sandwiches share while both are alive.
-    ///
-    /// ⚠ The baseline that makes this meaningful:
-    /// `a_passing_fine_mesh_disc_solve_censused_against_a_proof_fom` builds a Tet10 arm from a
-    /// duplicated `PreparedDisc` on this exact disc, cell and angle and **converges** — all
-    /// 20443 elements certified, worst margin 0.969. So `duplicate()` alone is harmless; it is
-    /// `bond_prepared_tet4` that introduces whatever this is.
-    #[test]
-    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
-    fn rung5_does_the_damage_outlive_the_tet4_arm_fom() {
-        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
-        let params = DiscParams {
-            cell: 0.002,
-            ..DiscParams::default()
-        };
-        let (flex, ext) = (0.5_f64.to_radians(), -0.5_f64.to_radians());
-
-        let p = prepare_disc(disc_mesh, &params, None).expect("prepare raw disc at cell 0.002");
-
-        // Build the Tet4 arm exactly as the reproducer does — then DROP it before the Tet10
-        // arm is built. Nothing of it is alive from here on.
-        {
-            let _tet4 = bond_prepared_tet4(p.duplicate().expect("duplicate"), &params);
-        }
-
-        let mut tet10 = bond_prepared_tet10(p, &params, None, ConformFloors::SHIPPED);
-        let t = std::time::Instant::now();
-        let quad_flex = tet10.flexion_moment(flex);
-        let quad_ext = tet10.flexion_moment(ext);
-
-        println!(
-            "rung5 tet4-dropped-before-tet10 | cell {} | {:.1} s | Tet10 {:.4}/{:.4}",
-            params.cell,
-            t.elapsed().as_secs_f64(),
-            quad_flex.0 / flex,
-            quad_ext.0 / ext,
-        );
-
-        for (probe, name) in [(quad_flex, "Tet10 flexion"), (quad_ext, "Tet10 extension")] {
-            assert!(
-                probe.1 < 1e-8,
-                "{name} must conserve (‖ΣF‖+‖ΣM‖ = {:.2e})",
-                probe.1
-            );
-        }
-    }
-
-    /// ▶ **Rung 5.0 — is the Tet4 arm involved AT ALL?**
-    ///
-    /// ⚠⚠ The control that the co-residency framing never had. Every experiment in this family
-    /// — the reproducer, the discriminator, and the two isolations above — builds a Tet4 arm
-    /// and drives the Tet10 arm through **flexion AND extension**. The one run that passes,
-    /// `a_passing_fine_mesh_disc_solve_censused_against_a_proof_fom`, builds no Tet4 arm *and*
-    /// drives **flexion only**. Two differences, never separated.
-    ///
-    /// This removes the Tet4 arm entirely and keeps both angles. The outcome decides which
-    /// difference was doing the work:
-    ///
-    /// - **Fails** ⇒ the Tet4 arm is irrelevant and "co-residency" is a **red herring**; the
-    ///   defect is the Tet10 arm at `cell = 0.002` under one of these two probes, and the whole
-    ///   family should be renamed and re-scoped.
-    /// - **Passes** ⇒ the Tet4 arm really is implicated, and the isolations above stand.
-    ///
-    /// Committed before the run, so neither outcome can be talked into being the expected one.
+    /// `flexion_moment` now sub-steps, so this passes. It is kept because it is the precise
+    /// sequence that failed: if the sub-stepping is ever removed or the bound loosened, this
+    /// reds immediately rather than the defect resurfacing as an inverted element deep in the
+    /// solver — which is how it presented for months.
     #[test]
     #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
     fn rung5_tet10_alone_both_angles_fom() {
@@ -5101,58 +4986,6 @@ mod tests {
                 probe.1
             );
         }
-    }
-
-    /// ▶ **Rung 5.0 — is it EXTENSION, or is it the 1° SWING?**
-    ///
-    /// `rung5_tet10_alone_both_angles_fom` established that the Tet4 arm is irrelevant: the
-    /// Tet10 disc at `cell = 0.002` converges in flexion (`+0.5°`, k = −0.1079, resid 1.23e-11)
-    /// and then inverts tet 20441 on the extension probe, with nothing else constructed. So
-    /// "co-residency" is not the variable.
-    ///
-    /// ⚠ But `flexion_moment` drives from the CURRENT state, so the second probe swings the
-    /// disc from `+0.5°` to `−0.5°` — a **1° swing in one step**, not a `0.5°` extension from
-    /// rest. Two candidates remain, and they have different fixes:
-    ///
-    /// - **Extension alone fails** ⇒ the defect is direction-dependent, and the disc has an
-    ///   asymmetry that puts tet 20441 into inversion under extension at this resolution.
-    /// - **Extension alone passes** ⇒ the defect is the SWING magnitude, and every probe pair
-    ///   in this family is asking the solver for 1° in one step. That is a harness property,
-    ///   not a mesh one, and it would mean the fix is sub-stepping rather than anything about
-    ///   the element.
-    ///
-    /// Extension is driven FIRST here, from rest, and nothing else is built.
-    #[test]
-    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
-    fn rung5_extension_from_rest_alone_fom() {
-        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
-        let params = DiscParams {
-            cell: 0.002,
-            ..DiscParams::default()
-        };
-        let ext = -0.5_f64.to_radians();
-
-        let p = prepare_disc(disc_mesh, &params, None).expect("prepare raw disc at cell 0.002");
-        let mut tet10 = bond_prepared_tet10(p, &params, None, ConformFloors::SHIPPED);
-
-        let t = std::time::Instant::now();
-        let quad_ext = tet10.flexion_moment(ext);
-        println!(
-            "rung5 extension-FROM-REST alone | cell {} | {:.1} s | extension {:+.2}° \
-             returned: k = {:.4}, resid {:.2e}",
-            params.cell,
-            t.elapsed().as_secs_f64(),
-            ext.to_degrees(),
-            quad_ext.0 / ext,
-            quad_ext.1,
-        );
-        std::io::Write::flush(&mut std::io::stdout()).ok();
-
-        assert!(
-            quad_ext.1 < 1e-8,
-            "Tet10 extension must conserve (‖ΣF‖+‖ΣM‖ = {:.2e})",
-            quad_ext.1
-        );
     }
 
     /// ▶ **Rung 5.0 — the fix: sub-step the swing.**
