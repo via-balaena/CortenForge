@@ -308,6 +308,7 @@ fn the_five_point_check_on_a_real_curved_mesh_under_deformation() {
     );
 
     let rest: Vec<SMatrix<f64, 10, 3>> = (0..n as u32).map(|t| element_nodes(&mesh, t)).collect();
+    let (mut total_folded, mut total_undetermined) = (0usize, 0usize);
 
     for level in 1..=6u32 {
         // Squash along z, expand in xy — volume-preserving-ish, and it drives
@@ -332,6 +333,8 @@ fn the_five_point_check_on_a_real_curved_mesh_under_deformation() {
                 RestValidity::Undetermined => undetermined += 1,
             }
         }
+        total_folded += folded;
+        total_undetermined += undetermined;
         println!("{s:>8.2} {certified:>10} {folded:>10} {undetermined:>12} {missed:>14}");
     }
     println!(
@@ -339,11 +342,45 @@ fn the_five_point_check_on_a_real_curved_mesh_under_deformation() {
          are the control: they say the instrument does not manufacture folds. The random\n  \
          population above is where a genuine gap would show."
     );
+
+    // ⚠ THE CONTROL, asserted. A positive-determinant affine map cannot change
+    // any element's orientation, so a fold reported here would mean the CENSUS
+    // manufactures them — and every zero in the sibling tests would be
+    // worthless. This is the assert that makes those zeros mean something.
+    assert_eq!(
+        (total_folded, total_undetermined),
+        (0, 0),
+        "an affine squash cannot fold a valid element; {total_folded} folded and \
+         {total_undetermined} undetermined means the census itself is wrong, not the mesh"
+    );
 }
 
 // ---------------------------------------------------------------------------
 // A REAL SOLVE
 // ---------------------------------------------------------------------------
+
+const MU_BEAM: f64 = 1.0e5;
+const NU_BEAM: f64 = 0.45;
+const LENGTH: f64 = 0.5;
+const BREADTH: f64 = 0.1;
+const HEIGHT: f64 = 0.1;
+const STATIC_DT: f64 = 1.0;
+
+/// The cantilever bilayer beam, its clamped band and its tip band — the same
+/// scene `tet10_bending_locking` drives, which is the canonical Tet10 bending
+/// fixture in this crate.
+fn cantilever_scene() -> (Tet10Mesh, Vec<VertexId>, Vec<VertexId>) {
+    let field = MaterialField::uniform(MU_BEAM, 2.0 * MU_BEAM * NU_BEAM / (1.0 - 2.0 * NU_BEAM));
+    let tet4 = HandBuiltTetMesh::cantilever_bilayer_beam(8, 2, 2, LENGTH, BREADTH, HEIGHT, &field);
+    let tet10 = Tet10Mesh::from_tet4(&tet4);
+    let pinned: Vec<VertexId> = pick_vertices_by_predicate(&tet10, |p| p.x.abs() < 1e-9);
+    let loaded: Vec<VertexId> = pick_vertices_by_predicate(&tet10, |p| (p.x - LENGTH).abs() < 1e-9);
+    assert!(
+        !pinned.is_empty() && !loaded.is_empty(),
+        "the clamped and tip bands must be non-empty"
+    );
+    (tet10, pinned, loaded)
+}
 
 /// ★★ The measurement that decides whether the blind spot matters: a real
 /// quasi-static **bending** solve, censused at the states the solver's own gate
@@ -365,28 +402,12 @@ fn the_five_point_check_on_a_real_curved_mesh_under_deformation() {
 /// not the extreme.
 #[test]
 fn a_real_bending_solve_censused_at_every_step_boundary() {
-    const MU: f64 = 1.0e5;
-    const NU: f64 = 0.45;
-    const LENGTH: f64 = 0.5;
-    const BREADTH: f64 = 0.1;
-    const HEIGHT: f64 = 0.1;
-    const STATIC_DT: f64 = 1.0;
-
-    let field = MaterialField::uniform(MU, 2.0 * MU * NU / (1.0 - 2.0 * NU));
-    let tet4 = HandBuiltTetMesh::cantilever_bilayer_beam(8, 2, 2, LENGTH, BREADTH, HEIGHT, &field);
-    let tet10 = Tet10Mesh::from_tet4(&tet4);
+    let (tet10, pinned, loaded) = cantilever_scene();
 
     let rest: Vec<SMatrix<f64, 10, 3>> = (0..tet10.n_tets() as u32)
         .map(|t| element_nodes(&tet10, t))
         .collect();
     let n_tets = rest.len();
-
-    let pinned: Vec<VertexId> = pick_vertices_by_predicate(&tet10, |p| p.x.abs() < 1e-9);
-    let loaded: Vec<VertexId> = pick_vertices_by_predicate(&tet10, |p| (p.x - LENGTH).abs() < 1e-9);
-    assert!(
-        !pinned.is_empty() && !loaded.is_empty(),
-        "clamped/tip bands non-empty"
-    );
 
     let positions = tet10.positions();
     let n_dof = 3 * positions.len();
@@ -421,6 +442,7 @@ fn a_real_bending_solve_censused_at_every_step_boundary() {
     let mut x_prev = Tensor::from_slice(&x_flat, &[n_dof]);
     let mut total_missed = 0usize;
     let mut total_folded = 0usize;
+    let mut max_tip = 0.0f64;
 
     // Walked far past any sane operating point, until the solver refuses: the
     // question is whether folds appear BEFORE the gate fires, not whether a
@@ -467,6 +489,7 @@ fn a_real_bending_solve_censused_at_every_step_boundary() {
         println!(
             "{load:>10.1} {tip:>10.4} {certified:>10} {folded:>9} {undetermined:>13} {missed:>14}"
         );
+        max_tip = max_tip.max(tip);
         x_prev = Tensor::from_slice(x, &[n_dof]);
     }
 
@@ -474,4 +497,23 @@ fn a_real_bending_solve_censused_at_every_step_boundary() {
         "  Every 'MISS' is an element the solver's gate passes at a step boundary and then\n           integrates with |det F| for the whole of the next step."
     );
     println!("  totals: {total_folded} folded, {total_missed} of them invisible to the gate");
+
+    // ★ THE FINDING, as a detector rather than a print. The blind spot is real —
+    // the random population above proves it. The claim THIS test carries is that
+    // real bending never enters it. If that reverses, the case for certifying
+    // the hot path is back, and this is how it announces itself.
+    assert_eq!(
+        total_folded, 0,
+        "a real bending solve produced {total_folded} folded elements at step boundaries, \
+         {total_missed} of them invisible to the solver's five-point gate — the deformed \
+         check now has a real scene that defeats it, which is the evidence needed to certify \
+         the hot path"
+    );
+    // ⚠ Non-vacuity: without this, the assert above passes for a beam that never
+    // bent — a load ramp failing on step 1 would read as a clean result.
+    assert!(
+        max_tip > 0.5 * LENGTH,
+        "the beam must actually bend for that zero to mean anything; max tip deflection was \
+         {max_tip:.4} m on a {LENGTH} m beam"
+    );
 }
