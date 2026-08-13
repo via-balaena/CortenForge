@@ -1409,6 +1409,24 @@ impl<Msh: Mesh, E: Element<N, G> + Default, const N: usize, const G: usize>
     /// sub-degree.
     pub fn flexion_moment(&mut self, theta: f64) -> (f64, f64) {
         self.set_flexion(theta);
+        self.measure_flexion_moment()
+    }
+
+    /// [`Self::flexion_moment`] reaching `theta` through intermediate poses when the swing
+    /// requires it — the entry point for a caller probing **several angles in sequence**.
+    ///
+    /// ⚠ Probing `+θ` then `−θ` is a `2θ` swing, so a pair of individually-legal sub-degree
+    /// probes routinely exceeds [`MAX_FLEXION_SWING_RAD`]. That is not a caller mistake to be
+    /// punished, it is the normal shape of a moment–rotation sweep; this reaches the same pose
+    /// and, measured, the same answer.
+    pub fn flexion_moment_substepped(&mut self, theta: f64) -> (f64, f64) {
+        self.set_flexion_substepped(theta);
+        self.measure_flexion_moment()
+    }
+
+    /// The measurement half of [`Self::flexion_moment`], shared with the sub-stepped entry
+    /// point so the two cannot report differently for the same pose.
+    fn measure_flexion_moment(&self) -> (f64, f64) {
         let react = self.sandwich.last_reaction();
         let targets = self.sandwich.last_targets();
         let at = |i: usize, s: &[f64]| Vec3::new(s[3 * i], s[3 * i + 1], s[3 * i + 2]);
@@ -2316,10 +2334,14 @@ mod tests {
     #[test]
     fn flexion_is_restoring_conserving_and_antisymmetric() {
         let mut disc = build_bonded_disc(synthetic_disc(), &DiscParams::default(), None).unwrap();
-        let theta = 0.3_f64.to_radians(); // sub-degree: stay in the SPD region
+        let theta = 0.3_f64.to_radians();
 
-        let (m_pos, resid_pos) = disc.flexion_moment(theta);
-        let (m_neg, resid_neg) = disc.flexion_moment(-theta);
+        // ⚠ `+θ` then `−θ` is a **0.6° swing**, not two 0.3° probes. This test's own comment
+        // used to read "sub-degree: stay in the SPD region" — reasoning about `|θ|` and getting
+        // the swing wrong, which is the exact misconception `MAX_FLEXION_SWING_RAD` exists to
+        // catch. The sub-stepped entry point reaches the same poses in legal pieces.
+        let (m_pos, resid_pos) = disc.flexion_moment_substepped(theta);
+        let (m_neg, resid_neg) = disc.flexion_moment_substepped(-theta);
 
         // Conservation: the bond's reaction is a self-equilibrated wrench.
         assert!(
