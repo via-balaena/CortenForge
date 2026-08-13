@@ -15,7 +15,7 @@
 > | boundary midside split | 1562 / 580 / 982 | **445 / 445 / 0** | same, independently |
 > | authorised corner residual | 1.332 → 0.750 mm | **0.530 → 0.170** | conform cuts 3.1× where it cut 1.8× |
 > | authorised midside residual | 0.881 → 0.767 mm | **0.197 → 0.119** | midsides now land closer than the corners they span |
-> | midside coverage | 67.4 % | **83.1 %** | smaller moves requested, so the floor refuses less |
+> | midside coverage | 67.4 % | **83.1 %** | ⚠ NET of two opposing causes: α.1 shrank the requested moves (→ 91.0 %), then the reference-corner test made the floor refuse more (→ 83.1 %) |
 > | #701 max seat move | 4.156 mm | **1.734 mm** | ⚠ retires the evidence for the loose 6 mm cap |
 > | element ratio (Tet10/Tet4) | 0.666 / 0.663 | **0.827 / 0.829** | ⚠ **a physics change, not a stale anchor** — see below |
 > | absolute `k_disc` (Tet4 flex) | −0.2811 | **−0.1170** | one draw from a wide distribution, either way |
