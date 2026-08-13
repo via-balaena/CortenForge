@@ -320,6 +320,31 @@ const DISC_CONFORM_QUALITY_FLOOR: f64 = 0.25;
 /// became a proof.
 const DISC_MIDSIDE_CONFORM_QUALITY_FLOOR: f64 = 0.4;
 
+/// Largest change in commanded flexion angle a single [`CoupledFsu::set_flexion`] may make.
+///
+/// ⚠⚠ **The bound is on the SWING, not on `|theta|`** — and that distinction is the whole
+/// reason the rung-5 defect went undiagnosed. `set_flexion` imposes an *absolute* pose while
+/// the soft solve resumes from the previously converged state, so two individually-legal
+/// sub-degree probes can ask the soft field to traverse twice that in one backward-Euler step.
+/// `+0.5°` then `−0.5°` is a **1° swing**, and at `cell = 0.002` it inverts an element
+/// (`det F = -0.083` at tet 20441) while every input remains inside the documented
+/// "keep `|theta|` sub-degree".
+///
+/// ★ **Measured, not guessed** (`rung5_*_fom`, 2026-08-13, scanned disc at `cell = 0.002`):
+///
+/// | swing | outcome |
+/// |---|---|
+/// | 0.5° (from rest) | converges, k = −0.1068, resid 4.74e-13 |
+/// | 4 × 0.25° | converges, k = −0.1068 — **identical**, so sub-stepping does not change physics |
+/// | 1.0° (one step) | inverts tet 20441 |
+///
+/// ⚠ The safe swing is **resolution-dependent**: the same 1° swing converges at `cell = 0.003`
+/// and fails at `0.002`. This bound is deliberately the conservative end — the largest swing
+/// verified to converge at the finest resolution tested. A caller that needs a larger transit
+/// sub-steps with [`CoupledFsu::set_flexion_substepped`], which reaches the same pose and the
+/// same answer.
+const MAX_FLEXION_SWING_RAD: f64 = 0.5 * std::f64::consts::PI / 180.0;
+
 /// The two quality floors a conform's back-off runs at.
 ///
 /// Production always uses [`ConformFloors::SHIPPED`], whose fields *are*
@@ -434,6 +459,9 @@ where
     /// [`Self::deformed_nodes_native`] can invert the solve frame back to native mm
     /// (`center_native + p_si / scale`). Rendering is its first consumer.
     scale: f64,
+    /// Last commanded flexion angle (rad), so [`Self::set_flexion`] can bound the **swing**
+    /// rather than the absolute angle. Starts at the rest pose, `0.0`.
+    last_flexion: f64,
 }
 
 /// The two-box disc scene: free-joint inferior / superior vertebra boxes whose COMs
@@ -943,6 +971,7 @@ fn bond_prepared_tet4(p: PreparedDisc, params: &DiscParams) -> BondedDisc {
         rest_upper: p.rest_upper,
         center_native: p.center_native,
         scale: params.scale,
+        last_flexion: 0.0,
     }
 }
 
@@ -1069,6 +1098,7 @@ fn bond_prepared_tet10(
         rest_upper: p.rest_upper,
         center_native: p.center_native,
         scale: params.scale,
+        last_flexion: 0.0,
     }
 }
 
@@ -1308,18 +1338,65 @@ impl<Msh: Mesh, E: Element<N, G> + Default, const N: usize, const G: usize>
     /// and re-solve the quasi-static bond: the superior endplate box rotates about the
     /// SI-frame origin (the bonded face follows rigidly), the inferior stays at rest.
     ///
-    /// Keep `|theta|` sub-degree — the bond converges only while the boundary tets stay
-    /// in their SPD region.
+    /// ⚠ **The limit is on the SWING from the last commanded angle, not on `|theta|`.** This
+    /// method imposes an *absolute* pose, but the soft solve resumes from the previously
+    /// converged state, so consecutive calls ask the soft field to traverse their *difference*
+    /// in one backward-Euler step. Two individually-legal sub-degree probes can therefore
+    /// demand twice that — `+0.5°` then `−0.5°` is a **1° swing**.
+    ///
+    /// An earlier revision of this doc said only "keep `|theta|` sub-degree", which every
+    /// caller obeyed while still driving 1° swings; the resulting divergence surfaced as an
+    /// inverted element deep in the solver and was investigated for a long time as a mesh and
+    /// then an aliasing defect. See [`MAX_FLEXION_SWING_RAD`] for the measurements.
+    ///
+    /// Callers needing a larger transit use [`Self::set_flexion_substepped`], which reaches the
+    /// same pose and — measured — the same answer.
     ///
     /// # Panics
-    /// Panics if the quasi-static soft solve fails to converge — a `|theta|` large
-    /// enough to drive the boundary tets out of their SPD region (beyond ~1°) will
-    /// exceed the Newton iteration cap and abort.
+    /// Panics if the swing from the last commanded angle exceeds [`MAX_FLEXION_SWING_RAD`],
+    /// and if the quasi-static soft solve fails to converge anyway.
     pub fn set_flexion(&mut self, theta: f64) {
+        let swing = (theta - self.last_flexion).abs();
+        assert!(
+            swing <= MAX_FLEXION_SWING_RAD * (1.0 + 1e-9),
+            "flexion SWING of {:.4}° exceeds the {:.4}° bound (from {:.4}° to {:.4}°). \
+             The bound is on the swing, not on |theta| — both endpoints here may be \
+             individually legal. Use `set_flexion_substepped` to reach this pose in pieces; \
+             it lands on the same answer. Driving the whole swing in one step inverts \
+             elements at refined cell sizes.",
+            swing.to_degrees(),
+            MAX_FLEXION_SWING_RAD.to_degrees(),
+            self.last_flexion.to_degrees(),
+            theta.to_degrees(),
+        );
+        self.set_flexion_unchecked(theta);
+    }
+
+    /// [`Self::set_flexion`] without the swing bound — the single place the pose is actually
+    /// imposed, so the bounded and sub-stepped entry points cannot drift apart.
+    fn set_flexion_unchecked(&mut self, theta: f64) {
         let rot = UnitQuaternion::from_axis_angle(&Unit::new_normalize(self.ml_axis), theta);
         self.sandwich
             .set_body_pose(UPPER, rot * self.rest_upper, rot);
         self.sandwich.probe();
+        self.last_flexion = theta;
+    }
+
+    /// Reach `theta` through as many intermediate poses as [`MAX_FLEXION_SWING_RAD`] requires.
+    ///
+    /// Measured to land on the same answer as a direct probe: transiting `+0.5° → −0.5°` in
+    /// four sub-steps gives `k = −0.1068`, identical to reaching `−0.5°` from rest, so
+    /// sub-stepping buys convergence without changing the physics.
+    pub fn set_flexion_substepped(&mut self, theta: f64) {
+        let swing = theta - self.last_flexion;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        // `ceil` of a non-negative ratio, and the swing is a sub-radian angle.
+        let n = ((swing.abs() / MAX_FLEXION_SWING_RAD).ceil() as usize).max(1);
+        let start = self.last_flexion;
+        #[allow(clippy::cast_precision_loss)] // `n` is a handful of steps.
+        for i in 1..=n {
+            self.set_flexion_unchecked(start + swing * (i as f64 / n as f64));
+        }
     }
 
     /// Impose flexion `theta` (rad) and measure the disc's restoring response: the
