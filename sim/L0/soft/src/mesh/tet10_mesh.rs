@@ -218,13 +218,23 @@ impl Tet10Mesh {
     /// moves — so curving several midsides of the same element still measures each against that
     /// element's original, healthy geometry.
     ///
-    /// ⚠ That positivity proviso is exact rather than pedantic, and it is new with the corner
-    /// samples: `d ≥ floor·o` at `t = 0` reduces to `o·(1 − floor) ≥ 0`, i.e. to `o ≥ 0`. It
-    /// holds unconditionally on the intended input — a [`Self::from_tet4`] mesh is straight, so
-    /// all eight determinants equal the affine `6·V` of a positive-volume tet — but an element
-    /// arriving *already* folded at a corner has no feasible blend at all. The failure is safe
-    /// rather than silent-wrong: `lo` stays 0 and the node does not move, so this method cannot
-    /// make such an element worse.
+    /// ⚠ That positivity proviso is exact rather than pedantic: `d ≥ floor·o` at `t = 0`
+    /// reduces to `o·(1 − floor) ≥ 0`, i.e. to `o ≥ 0`. It holds unconditionally on the
+    /// intended input — a [`Self::from_tet4`] mesh is straight, so all eight determinants equal
+    /// the affine `6·V` of a positive-volume tet.
+    ///
+    /// ⚠⚠ **On an element that arrives ALREADY inverted (`o < 0`) the relative floor stops
+    /// being a quality floor at all, and it does not fail closed.** `floor·o` is then *less*
+    /// negative than `o`, so the bar sits above the element's own starting value: bisection
+    /// finds `t = 0` infeasible and leaves the node alone, but the **fast path** — which tries
+    /// the full target first — will accept any placement whose determinant is merely
+    /// less-inverted than `floor·o`, leaving the element inverted at its full requested move.
+    /// That is not reachable from any in-tree caller (every one enriches a positive-volume Tet4
+    /// mesh, and this method's own guarantee keeps the sampled determinants positive
+    /// afterwards, so chaining cannot manufacture it either) and it does not make an already-
+    /// broken element worse. It is recorded because the predicate reads as a quality floor and
+    /// silently is not one for `o ≤ 0`, which is exactly the kind of unstated precondition that
+    /// bites a later caller. A fail-closed `o > 0` guard is the fix if one ever needs it.
     ///
     /// **All four Gauss points are checked, not one.** A quadratic element's Jacobian is
     /// *not* constant once a midside leaves its edge midpoint
