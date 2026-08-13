@@ -4803,6 +4803,134 @@ mod tests {
         );
     }
 
+    /// ▶ **Rung 5.0 — is it CO-EXISTENCE, or is it the Tet4 SOLVE running first?**
+    ///
+    /// ⚠⚠ **The discriminator does not isolate what its docs claim.** It drops the Tet10 arm
+    /// before solving and concludes "co-existence during the solve is what matters". But the
+    /// failing solve is the **Tet10** one — tet 20441, and the Tet10 disc has 20443 elements —
+    /// so dropping that arm means the failing solve is never run. It passes by skipping the
+    /// experiment.
+    ///
+    /// Two further facts narrow it, both measured 2026-08-13:
+    ///
+    /// - **`RAYON_NUM_THREADS=1` reproduces it identically** — same tet, same `det F = -0.083`.
+    ///   So it is not thread scheduling and not a race; it is deterministic.
+    /// - **Tet10 ALONE at this exact cell and angle converges** — `sim-soft`'s
+    ///   `a_passing_fine_mesh_disc_solve_censused_against_a_proof_fom` solves the same disc at
+    ///   `cell = 0.002`, flexed 0.5°, and certifies all 20443 elements with a worst margin of
+    ///   0.969. The mesh is nowhere near folding on its own.
+    ///
+    /// So co-residency does matter, and this asks the question the discriminator meant to:
+    /// build BOTH arms, then solve **only Tet10**. If it still fails, mere co-existence is
+    /// enough and the Tet4 solve is irrelevant. If it passes, something the Tet4 solve *does*
+    /// is what damages the Tet10 arm — a completely different hunt.
+    ///
+    /// ⚠ `sim-soft` holds **no shared mutable state** — no `static`, `thread_local`, `OnceLock`,
+    /// `Mutex`/`RwLock`/`RefCell`, or `unsafe` anywhere in its `src`. Whatever is shared is
+    /// therefore outside it: `faer`'s global rayon pool (now ruled out), the allocator, or the
+    /// MuJoCo rigid side, whose C library does carry process-global state.
+    #[test]
+    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
+    fn rung5_coresidency_is_it_coexistence_or_the_tet4_solve_fom() {
+        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
+        let params = DiscParams {
+            cell: 0.002,
+            ..DiscParams::default()
+        };
+        let (flex, ext) = (0.5_f64.to_radians(), -0.5_f64.to_radians());
+
+        let p = prepare_disc(disc_mesh, &params, None).expect("prepare raw disc at cell 0.002");
+
+        // Byte-for-byte the reproducer's construction: BOTH arms built, Tet10 second.
+        let _tet4 = bond_prepared_tet4(p.duplicate().expect("duplicate"), &params);
+        let mut tet10 = bond_prepared_tet10(p, &params, None, ConformFloors::SHIPPED);
+
+        // ...and then the ONE difference: the Tet4 arm is never solved. It stays alive
+        // (not dropped), so co-existence is preserved exactly.
+        let t = std::time::Instant::now();
+        let quad_flex = tet10.flexion_moment(flex);
+        let quad_ext = tet10.flexion_moment(ext);
+
+        println!(
+            "rung5 co-existence-only | cell {} | {:.1} s | Tet10 {:.4}/{:.4} | resid {:.2e}/{:.2e}",
+            params.cell,
+            t.elapsed().as_secs_f64(),
+            quad_flex.0 / flex,
+            quad_ext.0 / ext,
+            quad_flex.1,
+            quad_ext.1,
+        );
+
+        for (probe, name) in [(quad_flex, "Tet10 flexion"), (quad_ext, "Tet10 extension")] {
+            assert!(
+                probe.1 < 1e-8,
+                "{name} must conserve (‖ΣF‖+‖ΣM‖ = {:.2e})",
+                probe.1
+            );
+        }
+    }
+
+    /// ▶ **Rung 5.0 — does the damage OUTLIVE the Tet4 arm?**
+    ///
+    /// `rung5_coresidency_is_it_coexistence_or_the_tet4_solve_fom` showed the Tet4 arm never
+    /// has to be **solved**: merely constructing one before the Tet10 arm is enough, and the
+    /// Tet10 solve then fails identically (tet 20441, `det F = -0.083`, deterministic under
+    /// `RAYON_NUM_THREADS=1`).
+    ///
+    /// This is the split that says where to look, and it is the dichotomy the original
+    /// discriminator's docs framed — applied to the arm that actually fails:
+    ///
+    /// - **Still fails** ⇒ the damage is done at CONSTRUCTION and **outlives the object**.
+    ///   That is process-global state — the allocator, or MuJoCo's C globals, which the rigid
+    ///   side of every `BondedSandwich` touches. Not aliasing between two live instances.
+    /// - **Passes** ⇒ two live instances is what matters, and the hunt is for something the
+    ///   two sandwiches share while both are alive.
+    ///
+    /// ⚠ The baseline that makes this meaningful:
+    /// `a_passing_fine_mesh_disc_solve_censused_against_a_proof_fom` builds a Tet10 arm from a
+    /// duplicated `PreparedDisc` on this exact disc, cell and angle and **converges** — all
+    /// 20443 elements certified, worst margin 0.969. So `duplicate()` alone is harmless; it is
+    /// `bond_prepared_tet4` that introduces whatever this is.
+    #[test]
+    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
+    fn rung5_does_the_damage_outlive_the_tet4_arm_fom() {
+        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
+        let params = DiscParams {
+            cell: 0.002,
+            ..DiscParams::default()
+        };
+        let (flex, ext) = (0.5_f64.to_radians(), -0.5_f64.to_radians());
+
+        let p = prepare_disc(disc_mesh, &params, None).expect("prepare raw disc at cell 0.002");
+
+        // Build the Tet4 arm exactly as the reproducer does — then DROP it before the Tet10
+        // arm is built. Nothing of it is alive from here on.
+        {
+            let _tet4 = bond_prepared_tet4(p.duplicate().expect("duplicate"), &params);
+        }
+
+        let mut tet10 = bond_prepared_tet10(p, &params, None, ConformFloors::SHIPPED);
+        let t = std::time::Instant::now();
+        let quad_flex = tet10.flexion_moment(flex);
+        let quad_ext = tet10.flexion_moment(ext);
+
+        println!(
+            "rung5 tet4-dropped-before-tet10 | cell {} | {:.1} s | Tet10 {:.4}/{:.4}",
+            params.cell,
+            t.elapsed().as_secs_f64(),
+            quad_flex.0 / flex,
+            quad_ext.0 / ext,
+        );
+
+        for (probe, name) in [(quad_flex, "Tet10 flexion"), (quad_ext, "Tet10 extension")] {
+            assert!(
+                probe.1 < 1e-8,
+                "{name} must conserve (‖ΣF‖+‖ΣM‖ = {:.2e})",
+                probe.1
+            );
+        }
+    }
+
     /// **Rung 5.0 — does DROPPING the Tet10 arm save the Tet4 solve?**
     ///
     /// `rung5_coresidency_minimal_reproducer_fom` is byte-for-byte this test plus one thing: it
