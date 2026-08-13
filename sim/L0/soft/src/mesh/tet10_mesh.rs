@@ -1062,11 +1062,21 @@ mod tests {
         straight: &Tet10Mesh,
         slots: std::ops::Range<usize>,
     ) -> f64 {
+        // `f64::min` returns the OTHER operand on `NaN`, so the idiomatic fold would step over
+        // a non-finite ratio — exactly what a degenerate straight element (`s[i] == 0`)
+        // produces. The predicate this oracle verifies rejects non-finite determinants
+        // explicitly; propagate here so the oracle is no weaker than its subject.
         all_dets(curved)
             .iter()
             .zip(all_dets(straight))
             .flat_map(|(c, s)| slots.clone().map(|i| c[i] / s[i]).collect::<Vec<_>>())
-            .fold(f64::INFINITY, f64::min)
+            .fold(f64::INFINITY, |m, x| {
+                if m.is_nan() || x.is_nan() {
+                    f64::NAN
+                } else {
+                    m.min(x)
+                }
+            })
     }
 
     /// The worst `detJ / detJ_rest` over every element and **all eight** sample points —

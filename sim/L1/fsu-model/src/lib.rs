@@ -2496,6 +2496,25 @@ mod tests {
         assert_restoring_sweep(&conf10.capture_flexion(&angles), 2e-2);
     }
 
+    /// `min` that **propagates** `NaN` instead of stepping over it.
+    ///
+    /// ⚠ `f64::min` returns the *other* operand when one side is `NaN`, so the idiomatic
+    /// `fold(f64::INFINITY, f64::min)` silently drops non-finite readings — a degenerate
+    /// element whose straight determinant is `0` yields `0/0 = NaN` or `x/0 = +inf`, and either
+    /// vanishes, leaving the oracle reporting a healthy number over a mesh it should have
+    /// condemned. The production predicate these oracles verify guards this explicitly
+    /// (`d.is_finite() && ...` — "a `NaN` determinant must read as invalid, never slip through
+    /// a bare `>=`"); an oracle with weaker arithmetic than its subject cannot witness it.
+    fn strict_min(values: impl IntoIterator<Item = f64>) -> f64 {
+        values.into_iter().fold(f64::INFINITY, |m, x| {
+            if m.is_nan() || x.is_nan() {
+                f64::NAN
+            } else {
+                m.min(x)
+            }
+        })
+    }
+
     /// The worst `detJ / detJ_rest` over **every element and all eight sample points** of a
     /// curved mesh — the four Gauss points and the four reference corners — measured against
     /// its straight twin.
@@ -2564,12 +2583,10 @@ mod tests {
         );
         #[allow(clippy::cast_possible_truncation)]
         let n_tets = curved.n_tets() as TetId;
-        (0..n_tets)
-            .flat_map(|t| {
-                let (c, s) = (dets(curved, t), dets(straight, t));
-                (0..8).map(move |q| c[q] / s[q]).collect::<Vec<_>>()
-            })
-            .fold(f64::INFINITY, f64::min)
+        strict_min((0..n_tets).flat_map(|t| {
+            let (c, s) = (dets(curved, t), dets(straight, t));
+            (0..8).map(move |q| c[q] / s[q]).collect::<Vec<_>>()
+        }))
     }
 
     /// `(delivered fraction, max move, mean move)` over a midside projection — the plan's
@@ -3474,8 +3491,31 @@ mod tests {
     /// ⚠ Deliberately NOT `det F`. At rest `F = I` wherever `J_rest` is invertible, so a
     /// rest-state census that measured `det F` would read 1.0 everywhere and see nothing. The
     /// reference map's own orientation is the rest-state question.
+    ///
+    /// # ⚠⚠ Why the positive-`scale` assert is the measurement, not a nicety
+    ///
+    /// The normaliser is a **signed** determinant, so dividing by it measures orientation
+    /// *relative to whatever orientation the element already had*. On a negatively-oriented
+    /// element every ratio flips sign: a folded corner reads positive and a healthy one reads
+    /// negative, and a wholly inverted **straight** element — whose four corner determinants
+    /// all equal its affine determinant — reads exactly `+1.0` at every corner and is censused
+    /// as pristine. The raw-arm "validate against a known value" control cannot catch that
+    /// either: it too reads `1.0`.
+    ///
+    /// That is not hypothetical here. This workspace has an open arc on unsound winding
+    /// (`is_inside_out` is unsound in both directions), so "a mesher regression emits inverted
+    /// tets" is precisely the reachable trigger, and it is the one input on which this census
+    /// would report perfect health. Asserting `scale > 0` converts that silent pass into a
+    /// loud failure and is what lets the doc above say `≤ 0` means *inside-out* rather than
+    /// merely *more inside-out than it started*.
     fn rest_corner_det_ratios(x_ref: &SMatrix<f64, 10, 3>, element: Tet10) -> [f64; 4] {
         let scale = affine_det(x_ref);
+        assert!(
+            scale > 0.0,
+            "element has a non-positive affine determinant ({scale:.6e}) — it is inverted or \
+             degenerate before any midside moved, and every ratio below would be measured \
+             against that inversion rather than against a healthy reference",
+        );
         REFERENCE_CORNERS.map(|xi| {
             let j_rest = x_ref.transpose() * element.shape_gradients(xi);
             j_rest.determinant() / scale
@@ -3554,11 +3594,23 @@ mod tests {
     ///     the committed anchors are then measured over an inside-out element. Of the 18 found
     ///     before the fix, 12 were fully pinned and **6 carried free DOFs**.
     ///
-    /// (b) **Guard blindness on REAL geometry.** The projector used to accept a placement on
-    ///     `Element::rest_jacobian_dets` alone — the four Stroud points, all interior. The
-    ///     60 % → 6 % miss-rate table behind that blindness claim was measured on straight-edged
-    ///     synthetic tets; on the shipped anatomy **all 18 of 18** were missed, so the real-
-    ///     geometry miss rate for this class was 100 %.
+    /// (b) **Guard blindness — reported, but ⚠ NOT a measurement.** `gauss_blind` counts folded
+    ///     elements whose Gauss points all read positive, and on the shipped mesh it always
+    ///     equals the fold count. That is **structurally forced, not observed**: every element
+    ///     incident to a moved node satisfies `d ≥ floor·o` at all four Gauss points *by
+    ///     construction of the projector*, and every element not incident to a moved node is
+    ///     still straight and cannot be folded at all. So `gauss_blind == folded` identically,
+    ///     under the old Gauss-only rule as much as the new one — **no observation could have
+    ///     come out otherwise.**
+    ///
+    ///     An earlier revision of this doc read the resulting `18 of 18` as upgrading a
+    ///     synthetic 60 % → 6 % miss-rate table to "100 % on real geometry". It does not: a
+    ///     counter that cannot take another value is not evidence. The claim that the Gauss
+    ///     rule is blind to this class is carried by the *fixture* that isolates it
+    ///     (`a_fold_at_a_reference_corner_stops_a_projection_every_gauss_point_accepts`, where
+    ///     the premise is asserted and the alternative is reachable), not by this number. It is
+    ///     printed because a value **other** than the fold count would mean the projector's own
+    ///     guarantee had broken — which is the only thing it can actually tell you.
     fn report_and_gate_folded(tet10: &Tet10Mesh, p: &PreparedDisc, c: &RestCensus) {
         // ## Do the folded elements reach the physics, and can the shipped guard see them?
         //
@@ -3633,13 +3685,32 @@ mod tests {
             folded_tets.len(),
             c.worst,
         );
-        // ...and the corner constraint is what binds, which is what makes the assert above
-        // non-vacuous: a floor nothing reaches would pass it for the wrong reason.
+        // ...and the constraint is genuinely in force, which is what keeps the assert above
+        // from passing for the wrong reason: a floor nothing reaches would satisfy it too.
+        //
+        // ⚠ This is a RANGE, not the exact-equality anchor it started as. The projector
+        // guarantees `min over all EIGHT points ≥ floor`; nothing guarantees the global
+        // minimiser is a *corner*. Pinning `|worst − floor| < 1e-9` demanded that some element
+        // sit exactly on its corner constraint, so a re-pulled STL, a different `cell`, a
+        // change to the move selection, or simply every move being delivered in full would red
+        // this gate on a mesh that is fully compliant and fold-free. The plan doc makes the
+        // same point about the sibling statistic: a value pinned to the floor by construction
+        // is a tautology dressed as a measurement. What is actually load-bearing is that the
+        // floor is respected and that something is near enough to it for the census to be
+        // witnessing a live constraint rather than slack.
         assert!(
-            (c.worst - DISC_MIDSIDE_CONFORM_QUALITY_FLOOR).abs() < 1.0e-9,
-            "the worst normalised corner determinant is {:.6}, not the quality floor {:.6} \
-             — if the corners are slack this census no longer witnesses the constraint that \
-             keeps them unfolded",
+            c.worst >= DISC_MIDSIDE_CONFORM_QUALITY_FLOOR - 1.0e-9,
+            "the worst normalised corner determinant is {:.6}, BELOW the quality floor {:.6} — \
+             the projector's own guarantee has been violated, so fix the projector rather than \
+             this gate",
+            c.worst,
+            DISC_MIDSIDE_CONFORM_QUALITY_FLOOR,
+        );
+        assert!(
+            c.worst < 2.0 * DISC_MIDSIDE_CONFORM_QUALITY_FLOOR,
+            "the worst normalised corner determinant is {:.6}, far above the quality floor \
+             {:.6} — nothing is near the constraint, so this census is no longer witnessing \
+             what keeps these corners unfolded and would pass on a mesh the floor never touched",
             c.worst,
             DISC_MIDSIDE_CONFORM_QUALITY_FLOOR,
         );
@@ -3661,10 +3732,12 @@ mod tests {
     ///
     /// It measured **18 of 6256 conformed-disc elements folded at a reference corner**, worst
     /// normalised determinant −0.856, of which **6 carried free DOFs** (the other 12 were
-    /// fully pinned by the `full_face_band` tie) and **all 18 were invisible** to the
-    /// Gauss-point rule that accepted them. `Tet10Mesh::with_projected_midsides` now holds its
-    /// back-off at the reference corners as well, and this reads **0 folded, worst ratio
-    /// exactly at the floor** — the constraint binding where it was designed to.
+    /// fully pinned by the `full_face_band` tie). All 18 were invisible to the Gauss-point rule
+    /// that accepted them — ⚠ though see [`report_and_gate_folded`] for why that particular
+    /// count is structurally forced and carries no evidential weight.
+    /// `Tet10Mesh::with_projected_midsides` now holds its back-off at the reference corners as
+    /// well, and this reads **0 folded, with the constraint still live** — the floor respected
+    /// and something near enough to it that the census is witnessing a real bound.
     ///
     /// ⚠ **Read that as "0 folded AT THE SAMPLED POINTS", which is the only thing this census
     /// can see.** `det J_rest` is a cubic in `ξ`; four corners plus four Gauss points do not
