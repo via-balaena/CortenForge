@@ -39,6 +39,25 @@
 //! 2. The same on a real curved mesh (the canonical layered sphere) driven
 //!    through synthetic deformation.
 //! 3. What certification costs against the five-point check, per element.
+//!
+//! # ⚠⚠ SCOPE: both real solves here are `NullContact`
+//!
+//! Contact is the regime where element inversion is most likely — a rigid
+//! indenter drives sharp *local* compression, unlike the smooth global fields
+//! bending and flexion produce — and **it is not covered here**.
+//!
+//! It was attempted and abandoned rather than fudged. A Tet10 IPC indentation
+//! built on `tet10_indentation_demand1`'s own parameters stalls Armijo at ~6 %
+//! of the target depth, and that gate's Tet10 arm is itself `#[ignore]`d as a
+//! "deliberately-run one-shot measurement" (~60 min, never in CI) — so driving
+//! one deep is a project, not a spot check. The tempting shortcut, widening the
+//! IPC barrier band until it converges, **softens the contact and so makes
+//! folds less likely** — it would weaken the very thing the census looks for
+//! and produce a reassuring zero that means nothing.
+//!
+//! ⇒ Read the conclusion as **"no contact-free solve enters the blind spot"**.
+//! Whether a contact solve does is open, and is the measurement that would
+//! reopen the case for certifying the deformed check.
 
 #![allow(
     // Element/vertex counts index the `Mesh` trait's `u32` id space.
