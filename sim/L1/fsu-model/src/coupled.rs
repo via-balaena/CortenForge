@@ -672,8 +672,12 @@ pub struct CoupledFrame {
     pub facet_points: Vec<Point3<f64>>,
     /// Element validity **at this frame's deformed configuration**: the worst
     /// `detJ / detJ_rest` over every element and Gauss point of the disc
-    /// ([`BondedDisc::min_jacobian_ratio`]). Strictly positive means no element folded to
-    /// reach this pose; `≤ 0` means one did.
+    /// ([`BondedDisc::min_jacobian_ratio`]). `≤ 0` means an element folded to reach this pose.
+    ///
+    /// ⚠ The converse does **not** hold, and this line used to assert it: strictly positive
+    /// means no fold *at the four Gauss points*, which are all strictly interior. A
+    /// corner-region fold is invisible to them — measured, on this crate's own rest meshes.
+    /// See [`BondedDisc::min_jacobian_ratio`] for the deferral.
     ///
     /// Recorded per frame because it is the invariant the rest-configuration quality floors
     /// cannot see: they bound the mesh the projectors *produce*, not what a drive to ±ROM

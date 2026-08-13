@@ -1233,12 +1233,28 @@ impl<Msh: Mesh, E: Element<N, G> + Default, const N: usize, const G: usize>
     /// Element validity at the disc's **current deformed** configuration: the worst
     /// `detJ / detJ_rest` over every element and every Gauss point.
     ///
-    /// `> 0` means no element has folded at the pose the last
-    /// [`Self::set_flexion`] solved; `≤ 0` means one has. This is a **different invariant**
-    /// from the quality floors `DISC_CONFORM_QUALITY_FLOOR` /
-    /// `DISC_MIDSIDE_CONFORM_QUALITY_FLOOR` enforce, which bound the *rest* mesh the
-    /// projectors produce and say nothing about what a drive does to it. Nothing in this
-    /// arc checked the deformed configuration before rung 4.
+    /// `> 0` means no element has folded **at the four Gauss points** at the pose the last
+    /// [`Self::set_flexion`] solved. This is a **different invariant** from the quality floors
+    /// `DISC_CONFORM_QUALITY_FLOOR` / `DISC_MIDSIDE_CONFORM_QUALITY_FLOOR` enforce, which bound
+    /// the *rest* mesh the projectors produce and say nothing about what a drive does to it.
+    /// Nothing in this arc checked the deformed configuration before rung 4.
+    ///
+    /// ⚠⚠ **It reads the FOUR GAUSS POINTS ONLY, so `> 0` does not mean "no element folded" —
+    /// and this doc used to say that it did.** The rest-state work in this crate is the direct
+    /// counterexample: 18 conformed-disc elements were folded at a reference corner with every
+    /// Stroud point healthy, and the three gates `cad72838` reddened all had `det F` negative
+    /// at reference corner 2 while every Gauss point *and* the affine corner block read
+    /// positive. The same blind spot applies here, one configuration later. Worse, a
+    /// corner-folded element does not announce itself downstream either: assembly integrates
+    /// `w_ref · |detJ|` at those same four points, so it contributes with positive weight and
+    /// never trips the `try_inverse` path.
+    ///
+    /// ▶ **Deliberately unchanged, and tracked** — the sibling deferral is on
+    /// `Tet10Mesh::with_sdf_projected_boundary`. Extending this to the reference corners is a
+    /// *deformed-configuration* change: it needs its own before/after on the ramp and envelope
+    /// gates that assert on it (`coupled.rs`'s ramp assert and `tests/coupled_tet10_ramp.rs`),
+    /// because those would be the first to red and their anchors are published as measured
+    /// fact. Fixing the rest mesh, as this rung does, buys nothing for this metric.
     #[must_use]
     pub fn min_jacobian_ratio(&self) -> f64 {
         self.sandwich.min_gauss_det_ratio()
