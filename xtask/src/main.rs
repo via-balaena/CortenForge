@@ -29,6 +29,7 @@ mod affected;
 mod check;
 mod complete;
 mod coverage;
+mod coverage_run;
 mod grade;
 mod licensed_gates;
 mod pr_scope;
@@ -82,9 +83,10 @@ enum Commands {
         #[arg(long)]
         json: bool,
 
-        /// Skip the Coverage criterion (reports N/A). Coverage runs
-        /// cargo llvm-cov in release (5-10 min per crate) — too slow
-        /// for per-PR CI. Dedicated coverage jobs run without the flag.
+        /// Skip the Coverage criterion (reports N/A). Coverage runs the
+        /// crate's --lib tests instrumented, which stays minutes-long for
+        /// crates whose own code is the hot path — too slow for per-PR CI.
+        /// Dedicated coverage jobs run without the flag.
         #[arg(long)]
         skip_coverage: bool,
     },
@@ -100,7 +102,7 @@ enum Commands {
         verbose: bool,
 
         /// Skip the Coverage criterion across every crate. Required
-        /// for CI use — cargo llvm-cov is too slow at workspace scale.
+        /// for CI use — instrumented runs are too slow at workspace scale.
         #[arg(long)]
         skip_coverage: bool,
 
@@ -233,6 +235,14 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    // Coverage builds re-enter this binary as cargo's `RUSTC_WRAPPER`, so the
+    // argv is `<xtask> <rustc> <rustc args…>` and belongs to the compiler, not
+    // to clap. The switch is an environment variable set only on that one cargo
+    // child process; an ordinary invocation never takes this branch.
+    if let Ok(target_crate) = std::env::var(coverage_run::WRAPPER_CRATE_ENV) {
+        std::process::exit(coverage_run::run_as_rustc_wrapper(&target_crate)?);
+    }
+
     let cli = Cli::parse();
 
     match cli.command {

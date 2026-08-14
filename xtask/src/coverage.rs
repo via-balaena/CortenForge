@@ -1,8 +1,9 @@
 //! Production-only line coverage: the denominator the Coverage criterion is about.
 //!
-//! `cargo llvm-cov --lib` instruments the *test* binary, so a crate's own
-//! `#[cfg(test)]` code lands in the report alongside the production code it
-//! exercises. Counting it makes the criterion measure two unrelated things:
+//! Measuring `--lib` instruments the *test* binary (see [`crate::coverage_run`]
+//! for how), so a crate's own `#[cfg(test)]` code lands in the report alongside
+//! the production code it exercises. Counting it makes the criterion measure
+//! two unrelated things:
 //!
 //! - test bodies that **run** are very nearly 100 % covered, so they inflate
 //!   the numerator — measured across seven crates, this was worth up to

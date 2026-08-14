@@ -23,7 +23,7 @@ Every crate is graded on eight criteria. All must be A-grade before the crate is
 
 | # | Criterion | A Standard | Measurement |
 |---|-----------|------------|-------------|
-| 1 | Test Coverage | ≥75% (A); ≥90% (A+) | `cargo llvm-cov` (cross-platform) |
+| 1 | Test Coverage | ≥75% (A); ≥90% (A+) | LLVM source-based coverage, scoped to the crate (cross-platform) |
 | 2 | Documentation | Zero warnings | `RUSTDOCFLAGS="-D warnings" cargo doc` |
 | 3 | Clippy | Zero warnings | `cargo clippy -- -D warnings` |
 | 4 | Safety | Zero safety violations | grep (6 patterns) + review |
@@ -42,12 +42,26 @@ Criteria 1–7 are automated by `cargo xtask grade <crate>`. Criterion 8 (API De
 
 **Measurement:**
 ```bash
-cargo llvm-cov -p <crate> --json
-cargo llvm-cov -p <crate> --fail-under-lines 75
+cargo xtask grade <crate>          # criterion 1 reports the number
 ```
 
-Note: Requires `cargo-llvm-cov` installed. Works on Linux,
+Requires the `llvm-tools` rustup component (`rustup component add
+llvm-tools-preview`); no `cargo-llvm-cov` install is needed. Works on Linux,
 macOS (including Apple Silicon), and Windows.
+
+**Instrumentation is scoped to the crate being measured.** `RUSTFLAGS` applies
+to every unit cargo builds, so instrumenting through `cargo llvm-cov`
+instrumented the whole dependency tree — and the report was then filtered back
+down to the crate's own files, discarding all of it. Because those lines were
+never counted, scoping the build cannot move the number; measured both ways,
+`sim-types` returns the same 192/271 lines and `cf-fsu-model` the same 84.2%.
+What it moves is the clock: `cf-fsu-model`'s grade went 3105 s → 17 s.
+
+⚠ The tax that remains is the crate's *own* code, and it is large — roughly
+400× on tight numeric loops. A crate that is a thin layer over heavy
+dependencies (`cf-fsu-model`) gets nearly all of it back; a crate whose own code
+is the hot path (`mesh-repair`, 366 s) does not. That residue is intrinsic to
+source-based coverage, not something the grader is doing wrong.
 
 **Requirements:**
 
@@ -69,7 +83,7 @@ macOS (including Apple Silicon), and Windows.
 
 **What Is Measured** (the lines in the ratio): **production lines only.**
 
-`cargo llvm-cov --lib` instruments the *test* binary, so a crate's own
+Measuring `--lib` instruments the *test* binary, so a crate's own
 `#[cfg(test)]` code appears in the report next to the code it exercises.
 `cargo xtask grade` subtracts it from both sides of the ratio, because counting
 it measures two unrelated things at once:
@@ -82,8 +96,8 @@ it measures two unrelated things at once:
 
 ⚠ Consequence: the grade's percentage is deliberately **not** the number a bare
 `cargo llvm-cov -p <crate> --fail-under-lines 75` prints — that one still counts
-test code. When the two disagree, the grade is the one that answers "how much of
-what I ship is tested".
+test code, and its denominator spans the whole instrumented tree. When the two
+disagree, the grade is the one that answers "how much of what I ship is tested".
 
 **Exceptions:** None for Layer 0 crates.
 
@@ -640,7 +654,7 @@ Every push to `main`/`develop` and every PR triggers parallel CI jobs (`.github/
 **What CI does NOT run** (intentional, per plan §6):
 - `--all-features` test sweep — Layer Integrity in the grader enforces all-features cleanliness; re-running tests under all-features would just re-pay the bevy_ecs / image / zip / criterion compile cost on every consumer's test build for no additional signal.
 - Standalone WASM job — the WASM Compatibility criterion (#7) is the single source of truth.
-- Coverage gate — `cargo llvm-cov` is ~5–10 min per crate in release mode; running it on 232 crates exceeds the wall-time budget. Coverage is enforced locally via `cargo xtask grade <crate>` and in dedicated nightly jobs.
+- Coverage gate — still minutes per crate for crates whose own code is the hot path (`mesh-repair`, ~6 min), so running it on 232 crates exceeds the wall-time budget even after instrumentation was scoped to the measured crate. Coverage is enforced locally via `cargo xtask grade <crate>`. ⚠ The nightly `coverage` job in `scheduled.yml` does **not** enforce this criterion: it runs `cargo tarpaulin --workspace --all-features --fail-under 75`, which counts test code and pools the whole workspace into one ratio. That job never got the migration this section describes, so no CI job measures the number defined here. Resolving the split is its own change.
 
 ### CI Wall-Time Budget
 
