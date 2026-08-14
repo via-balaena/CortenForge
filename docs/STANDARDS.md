@@ -654,7 +654,7 @@ Every push to `main`/`develop` and every PR triggers parallel CI jobs (`.github/
 **What CI does NOT run** (intentional, per plan §6):
 - `--all-features` test sweep — Layer Integrity in the grader enforces all-features cleanliness; re-running tests under all-features would just re-pay the bevy_ecs / image / zip / criterion compile cost on every consumer's test build for no additional signal.
 - Standalone WASM job — the WASM Compatibility criterion (#7) is the single source of truth.
-- Coverage gate — still minutes per crate for crates whose own code is the hot path (`mesh-repair`, ~6 min), so running it on 232 crates exceeds the wall-time budget even after instrumentation was scoped to the measured crate. Coverage is enforced locally via `cargo xtask grade <crate>` and in dedicated nightly jobs.
+- Coverage gate — still minutes per crate for crates whose own code is the hot path (`mesh-repair`, ~6 min), so running it on 232 crates exceeds the wall-time budget even after instrumentation was scoped to the measured crate. Coverage is enforced locally via `cargo xtask grade <crate>`. ⚠ The nightly `coverage` job in `scheduled.yml` does **not** enforce this criterion: it runs `cargo tarpaulin --workspace --all-features --fail-under 75`, which counts test code and pools the whole workspace into one ratio. That job never got the migration this section describes, so no CI job measures the number defined here. Resolving the split is its own change.
 
 ### CI Wall-Time Budget
 

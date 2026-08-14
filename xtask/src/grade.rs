@@ -919,22 +919,6 @@ fn grade_coverage(
         );
     }
 
-    // A broken measurement is reported as one. Falling back to the whole-tree
-    // instrumentation it replaced would hide the breakage behind a 50-minute
-    // run that still produced a number.
-    let run = match run {
-        Ok(run) => run,
-        Err(e) => {
-            return Ok(CriterionResult {
-                name: "1. Coverage",
-                result: "(measurement failed)".to_string(),
-                grade: Grade::F,
-                threshold: "≥75%/≥90% A+",
-                measured_detail: format!("coverage run failed: {e:#}"),
-            })
-        }
-    };
-
     // Pass 2: run ALL tests without instrumentation for correctness.
     if !verbosity.quiet {
         eprintln!("    pass 2/2: cargo test --release (~1-5 min depending on integration tests)");
@@ -963,6 +947,31 @@ fn grade_coverage(
             pass_start.elapsed().as_secs_f64()
         );
     }
+    // A broken measurement is reported as one. Falling back to the whole-tree
+    // instrumentation it replaced would hide the breakage behind a 50-minute
+    // run that still produced a number.
+    //
+    // Reported only after pass 2 has run. A failure in the coverage *tooling*
+    // must not cost the answer to "do this crate's tests pass" — that is the
+    // other thing this criterion gates on, and it is still knowable.
+    let run = match run {
+        Ok(run) => run,
+        Err(e) => {
+            let tests = if heavy_passed {
+                "tests passed"
+            } else {
+                "TESTS ALSO FAILED"
+            };
+            return Ok(CriterionResult {
+                name: "1. Coverage",
+                result: "(measurement failed)".to_string(),
+                grade: Grade::F,
+                threshold: "≥75%/≥90% A+",
+                measured_detail: format!("coverage run failed, {tests}: {e:#}"),
+            });
+        }
+    };
+
     // Pass 1 runs the same unit tests instrumented. Either pass failing blocks
     // the grade: a disagreement between them would itself be the finding.
     let heavy_passed = heavy_passed && run.tests_passed;

@@ -245,6 +245,12 @@ fn own_files_in_export(json: &serde_json::Value, crate_path: &str) -> usize {
 /// happens — stays warm; moving to another pays one full build. The alternative,
 /// a directory per crate, keeps every tree warm and grows `target/` without
 /// bound.
+///
+/// ⚠ The reset is what keeps the fix from decaying: without it, each graded
+/// crate leaves an instrumented artifact behind for every later crate that
+/// depends on it, and the tax creeps back one dependency at a time. The price is
+/// paid by `grade-all` *with* coverage, which pays one build per crate — an
+/// unusual way to run it, and the reason CI passes `--skip-coverage`.
 fn prepare_target_dir(workspace_root: &Path, compiler_crate_name: &str) -> Result<PathBuf> {
     let target_dir = workspace_root.join(COVERAGE_TARGET_DIR);
     let stamp = target_dir.join(".measured-crate");
