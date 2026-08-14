@@ -40,7 +40,9 @@ where
     Msh: Mesh,
     E: Element<N, G> + Default,
 {
-    disc.set_flexion(0.0);
+    // Sub-stepped: this walks the disc back to rest from wherever the previous arm left it,
+    // which is an arbitrary swing (see `MAX_FLEXION_SWING_RAD`).
+    disc.set_flexion_substepped(0.0);
     let mut cur = 0.0_f64;
     let mut peak_moment = 0.0_f64;
     for target in [-peak, peak] {

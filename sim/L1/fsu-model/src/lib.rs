@@ -320,6 +320,31 @@ const DISC_CONFORM_QUALITY_FLOOR: f64 = 0.25;
 /// became a proof.
 const DISC_MIDSIDE_CONFORM_QUALITY_FLOOR: f64 = 0.4;
 
+/// Largest change in commanded flexion angle a single [`BondedDisc::set_flexion`] may make.
+///
+/// ⚠⚠ **The bound is on the SWING, not on `|theta|`** — and that distinction is the whole
+/// reason the rung-5 defect went undiagnosed. `set_flexion` imposes an *absolute* pose while
+/// the soft solve resumes from the previously converged state, so two individually-legal
+/// sub-degree probes can ask the soft field to traverse twice that in one backward-Euler step.
+/// `+0.5°` then `−0.5°` is a **1° swing**, and at `cell = 0.002` it inverts an element
+/// (`det F = -0.083` at tet 20441) while every input remains inside the documented
+/// "keep `|theta|` sub-degree".
+///
+/// ★ **Measured, not guessed** (`rung5_*_fom`, 2026-08-13, scanned disc at `cell = 0.002`):
+///
+/// | swing | outcome |
+/// |---|---|
+/// | 0.5° (from rest) | converges, k = −0.1068, resid 4.74e-13 |
+/// | 4 × 0.25° | converges, k = −0.1068 — **identical**, so sub-stepping does not change physics |
+/// | 1.0° (one step) | inverts tet 20441 |
+///
+/// ⚠ The safe swing is **resolution-dependent**: the same 1° swing converges at `cell = 0.003`
+/// and fails at `0.002`. This bound is deliberately the conservative end — the largest swing
+/// verified to converge at the finest resolution tested. A caller that needs a larger transit
+/// sub-steps with [`BondedDisc::set_flexion_substepped`], which reaches the same pose and the
+/// same answer.
+pub const MAX_FLEXION_SWING_RAD: f64 = 0.5 * std::f64::consts::PI / 180.0;
+
 /// The two quality floors a conform's back-off runs at.
 ///
 /// Production always uses [`ConformFloors::SHIPPED`], whose fields *are*
@@ -434,6 +459,9 @@ where
     /// [`Self::deformed_nodes_native`] can invert the solve frame back to native mm
     /// (`center_native + p_si / scale`). Rendering is its first consumer.
     scale: f64,
+    /// Last commanded flexion angle (rad), so [`Self::set_flexion`] can bound the **swing**
+    /// rather than the absolute angle. Starts at the rest pose, `0.0`.
+    last_flexion: f64,
 }
 
 /// The two-box disc scene: free-joint inferior / superior vertebra boxes whose COMs
@@ -943,6 +971,7 @@ fn bond_prepared_tet4(p: PreparedDisc, params: &DiscParams) -> BondedDisc {
         rest_upper: p.rest_upper,
         center_native: p.center_native,
         scale: params.scale,
+        last_flexion: 0.0,
     }
 }
 
@@ -1069,6 +1098,7 @@ fn bond_prepared_tet10(
         rest_upper: p.rest_upper,
         center_native: p.center_native,
         scale: params.scale,
+        last_flexion: 0.0,
     }
 }
 
@@ -1241,14 +1271,22 @@ impl<Msh: Mesh, E: Element<N, G> + Default, const N: usize, const G: usize>
     /// [`Self::flexion_moment`]), then the deformed surface is read back in native mm — so
     /// a capture costs exactly `N + 1` solves (rest + one per angle).
     ///
+    /// ⚠ Angles are reached with sub-stepping ([`Self::flexion_moment`]), so a sweep may pass
+    /// through arbitrary **swings** between consecutive entries without the caller arranging
+    /// it — `[+0.5°, −0.5°]` is a 1° transit and is handled.
+    ///
     /// # Panics
     /// Panics if any angle drives the soft solve past its SPD region — see
-    /// [`Self::set_flexion`]. Keep every `|angle|` inside the validated sub-degree range.
+    /// [`Self::set_flexion`] and [`MAX_FLEXION_SWING_RAD`].
     #[must_use]
     pub fn capture_flexion(&mut self, angles: &[f64]) -> FlexionTrajectory {
         // Rest = the θ = 0 equilibrium, solved up front so it does not depend on whatever
         // pose a prior caller left the disc in.
-        self.set_flexion(0.0);
+        //
+        // ⚠ SUB-STEPPED precisely because of that: "whatever pose a prior caller left" is an
+        // arbitrary swing back to zero, so the bounded entry point is the wrong one here. A
+        // library's own reset must not be able to trip a caller-facing bound.
+        self.set_flexion_substepped(0.0);
         let rest_nodes_native = self.deformed_nodes_native();
         let boundary_faces = self.boundary_faces().to_vec();
 
@@ -1308,18 +1346,65 @@ impl<Msh: Mesh, E: Element<N, G> + Default, const N: usize, const G: usize>
     /// and re-solve the quasi-static bond: the superior endplate box rotates about the
     /// SI-frame origin (the bonded face follows rigidly), the inferior stays at rest.
     ///
-    /// Keep `|theta|` sub-degree — the bond converges only while the boundary tets stay
-    /// in their SPD region.
+    /// ⚠ **The limit is on the SWING from the last commanded angle, not on `|theta|`.** This
+    /// method imposes an *absolute* pose, but the soft solve resumes from the previously
+    /// converged state, so consecutive calls ask the soft field to traverse their *difference*
+    /// in one backward-Euler step. Two individually-legal sub-degree probes can therefore
+    /// demand twice that — `+0.5°` then `−0.5°` is a **1° swing**.
+    ///
+    /// An earlier revision of this doc said only "keep `|theta|` sub-degree", which every
+    /// caller obeyed while still driving 1° swings; the resulting divergence surfaced as an
+    /// inverted element deep in the solver and was investigated for a long time as a mesh and
+    /// then an aliasing defect. See [`MAX_FLEXION_SWING_RAD`] for the measurements.
+    ///
+    /// Callers needing a larger transit use [`Self::set_flexion_substepped`], which reaches the
+    /// same pose and — measured — the same answer.
     ///
     /// # Panics
-    /// Panics if the quasi-static soft solve fails to converge — a `|theta|` large
-    /// enough to drive the boundary tets out of their SPD region (beyond ~1°) will
-    /// exceed the Newton iteration cap and abort.
+    /// Panics if the swing from the last commanded angle exceeds [`MAX_FLEXION_SWING_RAD`],
+    /// and if the quasi-static soft solve fails to converge anyway.
     pub fn set_flexion(&mut self, theta: f64) {
+        let swing = (theta - self.last_flexion).abs();
+        assert!(
+            swing <= MAX_FLEXION_SWING_RAD * (1.0 + 1e-9),
+            "flexion SWING of {:.4}° exceeds the {:.4}° bound (from {:.4}° to {:.4}°). \
+             The bound is on the swing, not on |theta| — both endpoints here may be \
+             individually legal. Use `set_flexion_substepped` to reach this pose in pieces; \
+             it lands on the same answer. Driving the whole swing in one step inverts \
+             elements at refined cell sizes.",
+            swing.to_degrees(),
+            MAX_FLEXION_SWING_RAD.to_degrees(),
+            self.last_flexion.to_degrees(),
+            theta.to_degrees(),
+        );
+        self.set_flexion_unchecked(theta);
+    }
+
+    /// [`Self::set_flexion`] without the swing bound — the single place the pose is actually
+    /// imposed, so the bounded and sub-stepped entry points cannot drift apart.
+    fn set_flexion_unchecked(&mut self, theta: f64) {
         let rot = UnitQuaternion::from_axis_angle(&Unit::new_normalize(self.ml_axis), theta);
         self.sandwich
             .set_body_pose(UPPER, rot * self.rest_upper, rot);
         self.sandwich.probe();
+        self.last_flexion = theta;
+    }
+
+    /// Reach `theta` through as many intermediate poses as [`MAX_FLEXION_SWING_RAD`] requires.
+    ///
+    /// Measured to land on the same answer as a direct probe: transiting `+0.5° → −0.5°` in
+    /// four sub-steps gives `k = −0.1068`, identical to reaching `−0.5°` from rest, so
+    /// sub-stepping buys convergence without changing the physics.
+    pub fn set_flexion_substepped(&mut self, theta: f64) {
+        let swing = theta - self.last_flexion;
+        // `ceil` of a non-negative ratio, and the swing is a sub-radian angle.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let n = ((swing.abs() / MAX_FLEXION_SWING_RAD).ceil() as usize).max(1);
+        let start = self.last_flexion;
+        #[allow(clippy::cast_precision_loss)] // `n` is a handful of steps.
+        for i in 1..=n {
+            self.set_flexion_unchecked(start + swing * (i as f64 / n as f64));
+        }
     }
 
     /// Impose flexion `theta` (rad) and measure the disc's restoring response: the
@@ -1330,8 +1415,27 @@ impl<Msh: Mesh, E: Element<N, G> + Default, const N: usize, const G: usize>
     /// # Panics
     /// Panics if the soft solve diverges — see [`Self::set_flexion`]; keep `|theta|`
     /// sub-degree.
+    /// ⚠ **Sub-steps when the swing requires it.** Probing `+θ` then `−θ` is a `2θ` swing, so
+    /// a pair of individually-legal sub-degree probes routinely exceeds
+    /// [`MAX_FLEXION_SWING_RAD`] — that is the normal shape of a moment–rotation sweep, not a
+    /// caller mistake, so this reaches the pose in legal pieces rather than refusing.
+    ///
+    /// ★ **Sub-stepping is measured to be answer-preserving**, which is what makes this safe to
+    /// do silently: transiting `+0.5° → −0.5°` in four pieces gives `k = −0.1068`, identical to
+    /// reaching `−0.5°` from rest (`rung5_substepping_the_swing_fom`). It buys convergence, not
+    /// a different number. The cost is one extra solve per `MAX_FLEXION_SWING_RAD` of transit.
+    ///
+    /// The **raw** pose control [`Self::set_flexion`] still panics on an over-large swing: a
+    /// caller driving poses directly is asking for exactly what it says, and gets told when
+    /// that is more than one step can carry.
     pub fn flexion_moment(&mut self, theta: f64) -> (f64, f64) {
-        self.set_flexion(theta);
+        self.set_flexion_substepped(theta);
+        self.measure_flexion_moment()
+    }
+
+    /// The measurement half of [`Self::flexion_moment`], shared with the sub-stepped entry
+    /// point so the two cannot report differently for the same pose.
+    fn measure_flexion_moment(&self) -> (f64, f64) {
         let react = self.sandwich.last_reaction();
         let targets = self.sandwich.last_targets();
         let at = |i: usize, s: &[f64]| Vec3::new(s[3 * i], s[3 * i + 1], s[3 * i + 2]);
@@ -2239,8 +2343,12 @@ mod tests {
     #[test]
     fn flexion_is_restoring_conserving_and_antisymmetric() {
         let mut disc = build_bonded_disc(synthetic_disc(), &DiscParams::default(), None).unwrap();
-        let theta = 0.3_f64.to_radians(); // sub-degree: stay in the SPD region
+        let theta = 0.3_f64.to_radians();
 
+        // ⚠ `+θ` then `−θ` is a **0.6° swing**, not two 0.3° probes. This test's own comment
+        // used to read "sub-degree: stay in the SPD region" — reasoning about `|θ|` and getting
+        // the swing wrong, which is the exact misconception `MAX_FLEXION_SWING_RAD` exists to
+        // catch. `flexion_moment` now sub-steps the transit for exactly this reason.
         let (m_pos, resid_pos) = disc.flexion_moment(theta);
         let (m_neg, resid_neg) = disc.flexion_moment(-theta);
 
@@ -4800,6 +4908,194 @@ mod tests {
             "{missed} of {folded} folded elements are invisible to the solver's five-point \
              validity gate in a solve that PASSED. The deformed-configuration check needs \
              certifying, and this is the evidence for it"
+        );
+    }
+
+    /// ★★ **REGRESSION GATE for the flexion-swing defect** — the exact sequence that used to
+    /// invert tet 20441.
+    ///
+    /// # What this was, and what it found
+    ///
+    /// It began as the control the "co-residency" framing never had. Every experiment in that
+    /// family built a Tet4 arm **and** drove the Tet10 arm through flexion **and** extension;
+    /// the one run that passed built no Tet4 arm **and** drove flexion only. **Two differences,
+    /// never separated.** Removing the Tet4 arm and keeping both angles showed the Tet4 arm was
+    /// irrelevant: flexion converged (`k = −0.1079`) and the extension probe still inverted tet
+    /// 20441, with nothing else constructed.
+    ///
+    /// ⇒ "Co-residency" was a **red herring**. What mattered was that
+    /// [`CoupledFsu::set_flexion`] imposes an *absolute* pose while the soft solve resumes from
+    /// the previously converged state, so `+0.5°` then `−0.5°` asked the soft field to traverse
+    /// **1° in one backward-Euler step** — see [`MAX_FLEXION_SWING_RAD`].
+    ///
+    /// Also ruled out along the way, each by measurement: thread scheduling
+    /// (`RAYON_NUM_THREADS=1` reproduced it identically), the Tet4 *solve* (never run), two live
+    /// arms (Tet4 dropped), MuJoCo globals (`sim-core` is pure Rust and `Model::clone` deep-
+    /// copies), the mesh (20443/20443 certified at rest, worst margin 0.969), and extension
+    /// itself (converges from rest, `k = −0.1068`).
+    ///
+    /// # Why it stays
+    ///
+    /// `flexion_moment` now sub-steps, so this passes. It is kept because it is the precise
+    /// sequence that failed: if the sub-stepping is ever removed or the bound loosened, this
+    /// reds immediately rather than the defect resurfacing as an inverted element deep in the
+    /// solver — which is how it presented for months.
+    #[test]
+    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
+    fn rung5_tet10_alone_both_angles_fom() {
+        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
+        let params = DiscParams {
+            cell: 0.002,
+            ..DiscParams::default()
+        };
+        let (flex, ext) = (0.5_f64.to_radians(), -0.5_f64.to_radians());
+
+        let p = prepare_disc(disc_mesh, &params, None).expect("prepare raw disc at cell 0.002");
+        // No Tet4 arm. No `duplicate()`. Nothing else is ever constructed.
+        let mut tet10 = bond_prepared_tet10(p, &params, None, ConformFloors::SHIPPED);
+
+        let t = std::time::Instant::now();
+        // ⚠ Printed and FLUSHED between the two probes, because which one panics is the
+        // measurement: a panic inside `flexion_moment` says nothing about which angle reached
+        // it. If the flexion line appears and the extension line does not, extension is the
+        // one that fails. The labels state what was measured, not that it was acceptable —
+        // conservation is asserted at the end, and a line reading "OK" before that assert
+        // would be a log that lies to whoever reads it later.
+        let quad_flex = tet10.flexion_moment(flex);
+        println!(
+            "  flexion   {:+.2}° returned: k = {:.4}, resid {:.2e}",
+            flex.to_degrees(),
+            quad_flex.0 / flex,
+            quad_flex.1
+        );
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+
+        let quad_ext = tet10.flexion_moment(ext);
+        println!(
+            "  extension {:+.2}° returned: k = {:.4}, resid {:.2e}",
+            ext.to_degrees(),
+            quad_ext.0 / ext,
+            quad_ext.1
+        );
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+
+        println!(
+            "rung5 Tet10-alone both angles | cell {} | {:.1} s | {:.4}/{:.4}",
+            params.cell,
+            t.elapsed().as_secs_f64(),
+            quad_flex.0 / flex,
+            quad_ext.0 / ext,
+        );
+
+        for (probe, name) in [(quad_flex, "Tet10 flexion"), (quad_ext, "Tet10 extension")] {
+            assert!(
+                probe.1 < 1e-8,
+                "{name} must conserve (‖ΣF‖+‖ΣM‖ = {:.2e})",
+                probe.1
+            );
+        }
+    }
+
+    /// ▶ **Rung 5.0 — the fix: sub-step the swing.**
+    ///
+    /// The chain, each step measured rather than argued:
+    ///
+    /// | ruled out | by |
+    /// |---|---|
+    /// | thread scheduling | `RAYON_NUM_THREADS=1` reproduces identically |
+    /// | the Tet4 *solve* | never run → still fails |
+    /// | two live arms | Tet4 dropped → still fails |
+    /// | the Tet4 arm at all | none constructed → still fails |
+    /// | MuJoCo globals | `sim-core` is pure Rust; `Model::clone()` deep-copies |
+    /// | the mesh | 20443/20443 certified at rest, worst margin 0.969 |
+    /// | extension itself | converges FROM REST, k = −0.1068, resid 4.74e-13 |
+    ///
+    /// What remains is the **swing**. [`CoupledFsu::set_flexion`] imposes an *absolute* pose,
+    /// but the soft solve resumes from the previously converged state — so `+0.5°` followed by
+    /// `−0.5°` asks the soft field to traverse **1° in one backward-Euler step**.
+    ///
+    /// ⚠ Both probes are individually legal: `set_flexion`'s own docs say "keep `|theta|`
+    /// sub-degree", and `0.5°` is. **The operative quantity is the swing between consecutive
+    /// probes, and nothing documents or enforces a bound on that** — which is exactly why the
+    /// reproducer looked mysterious for so long.
+    ///
+    /// This drives the same `+0.5° → −0.5°` transit through intermediate poses. If it
+    /// converges, the defect is the harness asking for too much in one step, not the element,
+    /// not the mesh, and not co-residency — and the fix is a swing bound rather than anything
+    /// in `sim-soft`.
+    ///
+    /// `SUBSTEPS = 4` makes each swing `0.25°`.
+    #[test]
+    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed)"]
+    fn rung5_substepping_the_swing_fom() {
+        const SUBSTEPS: usize = 4;
+
+        let disc_mesh = cf_fsu_geometry::load_from_env("CF_DISC_STL").expect("load disc mesh");
+        let params = DiscParams {
+            cell: 0.002,
+            ..DiscParams::default()
+        };
+        let (flex, ext) = (0.5_f64.to_radians(), -0.5_f64.to_radians());
+
+        let p = prepare_disc(disc_mesh, &params, None).expect("prepare raw disc at cell 0.002");
+        let mut tet10 = bond_prepared_tet10(p, &params, None, ConformFloors::SHIPPED);
+
+        let t = std::time::Instant::now();
+        let quad_flex = tet10.flexion_moment(flex);
+        println!(
+            "  flexion   {:+.2}° returned: k = {:.4}, resid {:.2e}",
+            flex.to_degrees(),
+            quad_flex.0 / flex,
+            quad_flex.1
+        );
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+
+        // The transit, stopping one short of `ext` — the final probe below IS the last
+        // sub-step, so no pose is solved twice and `quad_ext` is a genuine measurement rather
+        // than a re-solve of an already-converged state.
+        //
+        // `set_flexion` panics on divergence, so reaching each print is itself the evidence
+        // that sub-step converged.
+        #[allow(clippy::cast_precision_loss)] // SUBSTEPS is 4.
+        for i in 1..SUBSTEPS {
+            let theta = flex + (ext - flex) * (i as f64 / SUBSTEPS as f64);
+            tet10.set_flexion(theta);
+            println!(
+                "    sub-step {i}/{SUBSTEPS} at {:+.3}° converged",
+                theta.to_degrees()
+            );
+            std::io::Write::flush(&mut std::io::stdout()).ok();
+        }
+
+        // The final sub-step, which is also the probe that reads the moment.
+        let quad_ext = tet10.flexion_moment(ext);
+        println!(
+            "rung5 sub-stepped swing | cell {} | {:.1} s | flexion {:.4} / extension {:.4} \
+             (resid {:.2e})",
+            params.cell,
+            t.elapsed().as_secs_f64(),
+            quad_flex.0 / flex,
+            quad_ext.0 / ext,
+            quad_ext.1,
+        );
+
+        for (probe, name) in [(quad_flex, "Tet10 flexion"), (quad_ext, "Tet10 extension")] {
+            assert!(
+                probe.1 < 1e-8,
+                "{name} must conserve (‖ΣF‖+‖ΣM‖ = {:.2e})",
+                probe.1
+            );
+        }
+
+        // ★ Non-vacuity: extension must reproduce the from-rest measurement. Reaching the pose
+        // by a different path must not change the answer, or sub-stepping has bought
+        // convergence by changing the physics.
+        let from_rest = -0.1068;
+        assert!(
+            ((quad_ext.0 / ext) - from_rest).abs() < 0.02 * from_rest.abs(),
+            "sub-stepped extension {:.4} must reproduce the from-rest {from_rest:.4} — a \
+             different answer means the path changed the physics, not just the convergence",
+            quad_ext.0 / ext,
         );
     }
 
