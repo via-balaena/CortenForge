@@ -22,14 +22,30 @@
 //! optimise away to nothing; a counter in every basic block is not something an
 //! FEM inner loop can absorb.
 //!
-//! ## Why scoping cannot change the number
+//! ## Why scoping cannot change the number, and the A/B that checked
 //!
 //! The criterion has only ever counted the measured crate's own files. Lines
 //! belonging to a dependency were instrumented, exported, and then discarded by
 //! the path filter. Removing instrumentation from those crates removes data
 //! that was already being dropped — the numerator and denominator are built
-//! from the same files either way. [`partition_export`] asserts exactly that on
-//! every run rather than trusting it.
+//! from the same files either way.
+//!
+//! Argued that way it is still an argument, so it was measured. Same crate,
+//! same commit, old pipeline then new:
+//!
+//! | crate | pipeline | coverage | grade wall |
+//! |---|---|---|---|
+//! | `sim-types` | whole-tree | 192/271 → 70.8 % | 30 s |
+//! | `sim-types` | scoped | **192/271 → 70.8 %** | **11 s** |
+//! | `cf-fsu-model` | whole-tree | 84.2 % | 3105 s |
+//! | `cf-fsu-model` | scoped, cold tree | **585/695 → 84.2 %** | **83 s** |
+//! | `cf-fsu-model` | scoped, warm tree | 84.2 % | **17 s** |
+//!
+//! `sim-types` agrees line for line. `cf-fsu-model` agrees to the three figures
+//! the old run recorded — its exact counts were never printed, and re-running
+//! the old pipeline to recover them costs 51 minutes for a digit.
+//!
+//! [`own_files_in_export`] re-checks the load-bearing half on every run.
 //!
 //! ## Why a `RUSTC_WRAPPER`
 //!
@@ -184,33 +200,64 @@ fn test_executable(message_json: &str) -> Option<PathBuf> {
     found
 }
 
-/// How the export's files divide into the measured crate's own and everything
-/// else: `(own count, foreign paths)`.
+/// How many of the export's files belong to the measured crate.
 ///
-/// Both halves are checked, and they catch opposite failures.
+/// Zero is an error, not a zero percent. If the wrapper ever stopped matching —
+/// a future cargo spelling `--crate-name` differently, say — nothing would be
+/// instrumented, the export would be empty, `production_coverage` would find no
+/// production lines, and the criterion would quietly return N/A. A coverage gate
+/// that silently stops applying is the failure this project keeps finding, so
+/// the empty case is reported as the breakage it is.
 ///
-/// **Foreign files** falsify the scoping claim outright — the wrapper matched
-/// something it should not have, and the run went back to paying the full tax.
+/// ⚠ The symmetric check — "no *foreign* file may appear" — was written first
+/// and removed, because it cannot fail for the reason it claimed.
+/// [`should_instrument`] compares against exactly one crate name, so the wrapper
+/// is incapable of instrumenting a second crate; the check could only ever fire
+/// on something else. It did, immediately: `mesh-repair`'s export names
+/// `tracing`'s `macros.rs`, because a macro's expansion carries the regions of
+/// the file it was *written* in, not the file it was expanded into. Those lines
+/// were in the old pipeline's export too, and `production_coverage` has always
+/// dropped them by path. Instrumentation escaping to a real second crate is
+/// prevented by construction above and by [`COVERAGE_TARGET_DIR`]'s reset below,
+/// not by inspecting the export.
+fn own_files_in_export(json: &serde_json::Value, crate_path: &str) -> usize {
+    json["data"][0]["files"].as_array().map_or(0, |files| {
+        files
+            .iter()
+            .filter_map(|f| f["filename"].as_str())
+            .filter(|name| name.contains(crate_path))
+            .count()
+    })
+}
+
+/// Point the coverage build at a tree that holds only this crate's artifacts.
 ///
-/// **Zero own files** is the quieter one. If the wrapper matched *nothing*, the
-/// export is empty, which has no foreign files either and would sail through a
-/// one-sided check; `production_coverage` would then report no production lines
-/// and the criterion would return N/A. A coverage gate that silently becomes
-/// inapplicable is the exact failure this project keeps finding, so the empty
-/// case is an error rather than a zero.
-fn partition_export(json: &serde_json::Value, crate_path: &str) -> (usize, Vec<String>) {
-    let Some(files) = json["data"][0]["files"].as_array() else {
-        return (0, Vec::new());
-    };
-    let (mut own, mut foreign) = (0, Vec::new());
-    for name in files.iter().filter_map(|f| f["filename"].as_str()) {
-        if name.contains(crate_path) {
-            own += 1;
-        } else {
-            foreign.push(name.to_string());
-        }
+/// The wrapper decides what to instrument from an environment variable, and
+/// cargo's fingerprint covers the wrapper's *path*, not that variable's value.
+/// Cargo therefore cannot tell two coverage builds apart, and will reuse an
+/// instrumented artifact built while its crate was the target. Grading
+/// `sim-types` and then anything downstream of it would silently link the
+/// instrumented `sim-types` — reintroducing the tax this module removes, on a
+/// crate the run never intended to instrument.
+///
+/// Cargo cannot be taught the difference on stable, so the tree is reset when
+/// the measured crate changes. Iterating on one crate — the loop that actually
+/// happens — stays warm; moving to another pays one full build. The alternative,
+/// a directory per crate, keeps every tree warm and grows `target/` without
+/// bound.
+fn prepare_target_dir(workspace_root: &Path, compiler_crate_name: &str) -> Result<PathBuf> {
+    let target_dir = workspace_root.join(COVERAGE_TARGET_DIR);
+    let stamp = target_dir.join(".measured-crate");
+
+    let previous = std::fs::read_to_string(&stamp).unwrap_or_default();
+    if previous.trim() != compiler_crate_name && target_dir.exists() {
+        std::fs::remove_dir_all(&target_dir)
+            .context("failed to reset the coverage build directory")?;
     }
-    (own, foreign)
+    std::fs::create_dir_all(&target_dir)
+        .context("failed to create the coverage build directory")?;
+    std::fs::write(&stamp, compiler_crate_name).context("failed to stamp the coverage build")?;
+    Ok(target_dir)
 }
 
 /// Build and run `crate_name`'s `--lib` tests with only that crate instrumented,
@@ -229,7 +276,10 @@ pub(crate) fn measure_lib_coverage(
     let cov_tool = llvm_tool(sh, "llvm-cov")?;
     let xtask_exe = std::env::current_exe().context("cannot locate the running xtask binary")?;
 
-    let target_dir = workspace_root.join(COVERAGE_TARGET_DIR);
+    // The compiler spells `-` as `_` in crate names.
+    let compiler_crate_name = crate_name.replace('-', "_");
+
+    let target_dir = prepare_target_dir(workspace_root, &compiler_crate_name)?;
     let profraw_dir = target_dir.join("profraw");
     // Stale profraw from an earlier run would be merged into this one's
     // profile, crediting lines this run never executed.
@@ -237,9 +287,6 @@ pub(crate) fn measure_lib_coverage(
         std::fs::remove_dir_all(&profraw_dir).context("failed to clear profraw directory")?;
     }
     std::fs::create_dir_all(&profraw_dir).context("failed to create profraw directory")?;
-
-    // The compiler spells `-` as `_` in crate names.
-    let compiler_crate_name = crate_name.replace('-', "_");
 
     // `json-render-diagnostics` keeps the machine-readable artifact stream on
     // stdout while compiler errors still reach stderr in human form — a plain
@@ -303,15 +350,7 @@ pub(crate) fn measure_lib_coverage(
     let json: serde_json::Value =
         serde_json::from_str(&export).context("llvm-cov export was not valid JSON")?;
 
-    let (own, foreign) = partition_export(&json, crate_path);
-    if !foreign.is_empty() {
-        bail!(
-            "instrumentation escaped {crate_name}: {} foreign file(s) in the export, first is {}",
-            foreign.len(),
-            foreign[0]
-        );
-    }
-    if own == 0 {
+    if own_files_in_export(&json, crate_path) == 0 {
         bail!(
             "the export names no file under {crate_path} — \
              instrumentation did not reach {compiler_crate_name}"
@@ -388,46 +427,66 @@ mod tests {
         assert_eq!(test_executable("{}"), None);
     }
 
-    /// The scoping check is the run's own negative control: it must actually
-    /// fire when a dependency's file appears, not merely return empty.
+    /// A macro carries the regions of the file it was *written* in, not the one
+    /// it expanded into, so a dependency's path in the export is ordinary and
+    /// must not read as a scoping failure. `mesh-repair` really does export
+    /// `tracing`'s `macros.rs`; the first version of this module errored on it.
     #[test]
-    fn a_dependency_file_in_the_export_is_reported_as_escape() {
+    fn a_macro_source_from_a_dependency_is_neither_counted_nor_fatal() {
         let json = serde_json::json!({
             "data": [{"files": [
-                {"filename": "/w/sim/L1/fsu-model/src/lib.rs"},
-                {"filename": "/w/sim/L0/soft/src/solver.rs"},
+                {"filename": "/w/mesh/mesh-repair/src/lib.rs"},
+                {"filename": "/home/u/.cargo/registry/src/x/tracing-0.1.44/src/macros.rs"},
             ]}]
         });
-        assert_eq!(
-            partition_export(&json, "sim/L1/fsu-model/"),
-            (1, vec!["/w/sim/L0/soft/src/solver.rs".to_string()])
-        );
-
-        let clean = serde_json::json!({
-            "data": [{"files": [{"filename": "/w/sim/L1/fsu-model/src/lib.rs"}]}]
-        });
-        assert_eq!(
-            partition_export(&clean, "sim/L1/fsu-model/"),
-            (1, Vec::new())
-        );
+        assert_eq!(own_files_in_export(&json, "mesh/mesh-repair/"), 1);
     }
 
-    /// An export with no files at all has no foreign files either. Checking
-    /// only for escapes would pass it, and the criterion would then report
-    /// "no production lines" — a coverage gate that had quietly stopped
-    /// measuring anything.
+    /// If the wrapper ever stops matching, nothing is instrumented, the export
+    /// is empty, `production_coverage` finds no production lines, and the
+    /// criterion grades N/A. The measurement has to fail loudly rather than
+    /// evaporate into "not applicable".
     #[test]
-    fn an_empty_export_is_not_mistaken_for_a_clean_one() {
+    fn an_export_naming_none_of_the_crates_files_is_a_breakage() {
         let empty = serde_json::json!({ "data": [{"files": []}] });
-        assert_eq!(
-            partition_export(&empty, "sim/L1/fsu-model/"),
-            (0, Vec::new())
-        );
+        assert_eq!(own_files_in_export(&empty, "sim/L1/fsu-model/"), 0);
 
         let malformed = serde_json::json!({});
-        assert_eq!(
-            partition_export(&malformed, "sim/L1/fsu-model/"),
-            (0, Vec::new())
+        assert_eq!(own_files_in_export(&malformed, "sim/L1/fsu-model/"), 0);
+
+        let only_foreign = serde_json::json!({
+            "data": [{"files": [{"filename": "/reg/tracing/src/macros.rs"}]}]
+        });
+        assert_eq!(own_files_in_export(&only_foreign, "sim/L1/fsu-model/"), 0);
+    }
+
+    /// Cargo fingerprints the wrapper's path, not the environment variable that
+    /// tells it what to instrument, so it cannot tell two coverage builds apart.
+    /// The stamp is the whole defence against one crate's instrumented artifacts
+    /// being linked into the next crate's measurement.
+    #[test]
+    fn the_build_tree_is_reset_when_the_measured_crate_changes() {
+        let tmp = std::env::temp_dir().join(format!("cf-cov-stamp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).expect("temp dir");
+
+        let dir = prepare_target_dir(&tmp, "sim_types").expect("first prepare");
+        let artifact = dir.join("release").join("libsim_types.rlib");
+        std::fs::create_dir_all(artifact.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&artifact, b"instrumented").expect("write");
+
+        prepare_target_dir(&tmp, "sim_types").expect("second prepare");
+        assert!(
+            artifact.is_file(),
+            "re-measuring one crate must keep its warm tree"
         );
+
+        prepare_target_dir(&tmp, "mesh_repair").expect("third prepare");
+        assert!(
+            !artifact.exists(),
+            "an artifact instrumented for sim_types outlived the switch to mesh_repair"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
