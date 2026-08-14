@@ -29,6 +29,7 @@ mod affected;
 mod check;
 mod complete;
 mod coverage;
+mod coverage_run;
 mod grade;
 mod licensed_gates;
 mod pr_scope;
@@ -233,6 +234,14 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    // Coverage builds re-enter this binary as cargo's `RUSTC_WRAPPER`, so the
+    // argv is `<xtask> <rustc> <rustc args…>` and belongs to the compiler, not
+    // to clap. The switch is an environment variable set only on that one cargo
+    // child process; an ordinary invocation never takes this branch.
+    if let Ok(target_crate) = std::env::var(coverage_run::WRAPPER_CRATE_ENV) {
+        std::process::exit(coverage_run::run_as_rustc_wrapper(&target_crate)?);
+    }
+
     let cli = Cli::parse();
 
     match cli.command {

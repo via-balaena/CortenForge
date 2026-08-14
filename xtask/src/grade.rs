@@ -821,20 +821,18 @@ fn coverage_skip_reason(profile: CrateProfile) -> Option<(&'static str, String)>
     }
 }
 
-/// Grade test coverage using cargo-llvm-cov (F2 decision: replaces tarpaulin).
+/// Grade test coverage from an LLVM source-based coverage run.
 ///
 /// Two-tier thresholds (F1 decision): >=90% = A+, >=75% = A.
-/// Graceful degradation (ss1.4): if cargo-llvm-cov is not installed, reports Manual.
+/// Graceful degradation (ss1.4): without the `llvm-tools` component, Manual.
 ///
-/// **Per-crate report filtering:** `cargo llvm-cov -p <crate>` scopes the
-/// *tests* to the named package but includes all workspace-member source
-/// files in the *report* (because workspace deps are compiled with
-/// instrumentation). Without filtering, the denominator includes sim-core,
-/// cf-geometry, mesh-*, etc. and structurally tanks any crate that depends
-/// on large workspace siblings. We filter the JSON `data[0].files` array
-/// to only sum lines from files whose path contains the crate's source
-/// directory (e.g. `sim/L0/thermostat/`), giving the correct per-crate
-/// coverage.
+/// **Per-crate scoping.** Both the instrumentation and the report are scoped to
+/// the crate's own source directory. The report has to be: a run that
+/// instrumented the whole workspace would put sim-core, cf-geometry, mesh-*
+/// into the denominator and structurally tank any crate with large siblings.
+/// The *instrumentation* is scoped for cost — see [`crate::coverage_run`], which
+/// carries the measurement — and because the report never counted those files,
+/// scoping the build cannot move the number.
 fn grade_coverage(
     sh: &Shell,
     crate_name: &str,
@@ -872,29 +870,23 @@ fn grade_coverage(
         });
     }
 
-    // Check if cargo-llvm-cov is installed
-    let version_check = cmd!(sh, "cargo llvm-cov --version")
-        .ignore_status()
-        .ignore_stderr()
-        .read()
-        .unwrap_or_default();
-
-    if !version_check.contains("cargo-llvm-cov") {
+    if !crate::coverage_run::tools_available(sh) {
         return Ok(CriterionResult {
             name: "1. Coverage",
-            result: "(llvm-cov n/a)".to_string(),
+            result: "(llvm-tools n/a)".to_string(),
             grade: Grade::Manual,
             threshold: "≥75%/≥90% A+",
-            measured_detail: "(llvm-cov n/a)".to_string(),
+            measured_detail: "(llvm-tools n/a — `rustup component add llvm-tools-preview`)"
+                .to_string(),
         });
     }
 
     // Two-pass coverage strategy:
     //
-    // Pass 1: Run coverage on unit tests only (fast — ~1 sec after compile).
-    //   Integration tests (tests/*.rs) run millions of physics steps;
-    //   llvm-cov instrumentation adds ~10× overhead even in release.
-    //   Unit tests in src/ exercise the same source code paths.
+    // Pass 1: measure coverage from unit tests only (--lib), with
+    //   instrumentation scoped to this crate — see `coverage_run`. Integration
+    //   tests are excluded because unit tests in src/ reach the same source
+    //   lines; scoping is what makes the pass affordable at all.
     //
     // Pass 2: Run ALL tests (unit + integration) WITHOUT instrumentation.
     //   Verifies correctness without paying the coverage overhead.
@@ -902,14 +894,8 @@ fn grade_coverage(
     //
     // --release avoids debug-mode runtime explosion (100×+ slower).
     // stderr flows to terminal so the user sees compile/test progress.
-
-    // Pass 1: coverage from unit tests only (--lib). Integration tests
-    // run millions of physics steps; llvm-cov instrumentation adds ~10×
-    // overhead making them impractical for coverage measurement.
     if !verbosity.quiet {
-        eprintln!(
-            "    pass 1/2: cargo llvm-cov --lib --release (~5-10 min for instrumented test runs)"
-        );
+        eprintln!("    pass 1/2: instrumented --lib run ({crate_name} only)");
     }
     let pass_start = Instant::now();
     let heartbeat = if verbosity.verbose {
@@ -917,10 +903,14 @@ fn grade_coverage(
     } else {
         None
     };
-    let output = cmd!(sh, "cargo llvm-cov --json --release -p {crate_name} --lib")
-        .ignore_status()
-        .read()
-        .unwrap_or_default();
+    let workspace_root = sh.current_dir();
+    let run = crate::coverage_run::measure_lib_coverage(
+        sh,
+        crate_name,
+        crate_path,
+        &workspace_root,
+        verbosity.quiet || verbosity.json,
+    );
     drop(heartbeat);
     if !verbosity.quiet {
         eprintln!(
@@ -928,6 +918,22 @@ fn grade_coverage(
             pass_start.elapsed().as_secs_f64()
         );
     }
+
+    // A broken measurement is reported as one. Falling back to the whole-tree
+    // instrumentation it replaced would hide the breakage behind a 50-minute
+    // run that still produced a number.
+    let run = match run {
+        Ok(run) => run,
+        Err(e) => {
+            return Ok(CriterionResult {
+                name: "1. Coverage",
+                result: "(measurement failed)".to_string(),
+                grade: Grade::F,
+                threshold: "≥75%/≥90% A+",
+                measured_detail: format!("coverage run failed: {e:#}"),
+            })
+        }
+    };
 
     // Pass 2: run ALL tests without instrumentation for correctness.
     if !verbosity.quiet {
@@ -957,30 +963,24 @@ fn grade_coverage(
             pass_start.elapsed().as_secs_f64()
         );
     }
+    // Pass 1 runs the same unit tests instrumented. Either pass failing blocks
+    // the grade: a disagreement between them would itself be the finding.
+    let heavy_passed = heavy_passed && run.tests_passed;
     if !heavy_passed {
         eprintln!("    ⚠ Tests failed — see output above");
     }
 
-    // Parse JSON and filter to files belonging to the target crate.
-    // The llvm-cov report includes all instrumented workspace members;
-    // we read only files whose path contains the crate's directory
-    // (e.g. "sim/L0/thermostat/") to get the correct per-crate number.
+    // The report is filtered to files belonging to the target crate — the same
+    // scope the instrumentation now has, so this filter no longer discards
+    // anything (`coverage_run` asserts as much on every run). It stays because
+    // it is what defines the crate's denominator.
     //
     // Within those files the criterion counts PRODUCTION lines only. Running
     // `--lib` instruments the test binary, so a crate's `#[cfg(test)]` code
     // would otherwise be measured as if it were the code under test: bodies
     // that run pad the numerator, and `#[ignore]`d gates pad the denominator
     // while contributing nothing. See coverage.rs.
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&output) else {
-        return Ok(CriterionResult {
-            name: "1. Coverage",
-            result: "(parse error)".to_string(),
-            grade: Grade::F,
-            threshold: "≥75%/≥90% A+",
-            measured_detail: "(failed to parse llvm-cov JSON)".to_string(),
-        });
-    };
-    let measured = crate::coverage::production_coverage(&json, crate_path);
+    let measured = crate::coverage::production_coverage(&run.json, crate_path);
 
     // No production lines is a different fact from bad coverage, and from a
     // broken report. Grading it F would send a reader hunting for uncovered
