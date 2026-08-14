@@ -136,6 +136,53 @@ const RADIUS: f64 = 1.0e-2;
 const DELTA: f64 = 5.0e-4;
 const KAPPA: f64 = 1.0e4;
 const BAND_FRAC: f64 = 0.05;
+
+/// ⚠ **`dt` alone does not make a step static.** Backward Euler contributes
+/// `M(x − x₀)/dt²`, so at `dt = 1` the added stiffness is `M` itself, on every
+/// node. Whether that matters is the ratio `M/(dt²·k)`: negligible for a stiff
+/// bulk body, and *fatal* for a compliant one.
+///
+/// This matters here more than in most rigs, because [`hertz_halfspace`] is a
+/// **static closed form** — the same shape of comparison that
+/// `slender_bending_matches_analytic` records going wrong. There, `dt = 1` on a
+/// compliant 20:1 cantilever made the engine read 0.25 of the analytic
+/// deflection, and the figure was published as a property of tetrahedra until the
+/// term was removed. This rig is stiff where that one was compliant, but until
+/// 2026-08-14 that was an argument rather than a measurement.
+///
+/// ## Measured 2026-08-14 — the term changes nothing here, and that is checkable
+///
+/// Re-running with `cfg.density` overridden in [`run_indentation`], everything
+/// else held:
+///
+/// ```text
+///   ρ = 1030   RATIO 1.1303   F_FEM 1.04954 N   sd/δ max 0.04779 mean 0.04213   8 iters
+///   ρ = 0      RATIO 1.1303   F_FEM 1.04954 N   sd/δ max 0.04779 mean 0.04213   8 iters
+///   ρ = 1e12   RATIO 1.4555   F_FEM 1.35151 N   sd/δ max 0.04469 mean 0.04084   7 iters
+/// ```
+///
+/// The first two rows are not "close" — identical in every reported digit, on the
+/// Tet4 arm and on [`node_density_control_confound_is_small`].
+///
+/// ★★ **The `ρ = 1e12` row is the negative control, and unlike the one in
+/// `contact_stability` it BITES.** The mass term moves `RATIO` by 29 % and
+/// [`probe_tet4_arm_reproduces_676`] fails its committed-constant assert. That is
+/// what makes the `ρ = 0` identity evidence rather than an inert rig: this fixture
+/// *can* see an inertia artifact, and sees none at its own density.
+///
+/// ⇒ **No new gate is added, because the existing pin already is one.**
+/// [`probe_tet4_arm_reproduces_676`] holds `RATIO` to ±2 %, and the control above
+/// is that pin catching exactly this perturbation. A second assertion would
+/// re-check what it already covers, for another ~41 s of CI.
+///
+/// ⚠⚠ **The Tet10 arm was NOT re-measured.** [`probe_tet10_arm`] is the ~60 min
+/// unconditionally-`#[ignore]`d probe that pins [`TET10_RATIO`], so its constant
+/// is still a figure taken under `ρ = 1030`. The Tet4 arm being bit-identical
+/// across the change is strong evidence the quadratic arm is too — same geometry,
+/// same solver path, differing only in element order — but it is evidence, not a
+/// measurement, and that is why nothing here was switched to `ρ = 0`: doing so
+/// would trade a measured non-problem for an unearned claim about a constant
+/// whose producer costs an hour.
 const STATIC_DT: f64 = 1.0;
 const LATERAL_FACTOR: f64 = 8.0;
 const A_OVER_CELL: f64 = 3.0;

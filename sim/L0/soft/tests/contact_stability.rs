@@ -93,6 +93,43 @@ const DISPLACEMENT: f64 = 5.0e-5;
 const MU: f64 = 1.0e5;
 const LAMBDA: f64 = 4.0e5;
 const D_HAT_OVERRIDE: f64 = 1.0e-5;
+
+/// ⚠ **`dt` alone does not make a step static.** Backward Euler contributes
+/// `M(x − x₀)/dt²`, so at `dt = 1` the added stiffness is `M` itself, on every
+/// node. Whether that matters is the ratio `M/(dt²·k)`: negligible for a stiff
+/// bulk body, and *fatal* for a compliant one.
+///
+/// `slender_bending_matches_analytic` is the record of the fatal case — the same
+/// `dt = 1` on a 20:1 cantilever (8.69 kg against 0.633 N/m) made the engine read
+/// 0.25 of the analytic deflection, and that figure was published as a property
+/// of tetrahedra until the term was removed. The mechanism is shared with this
+/// rig; only `k` differs. So "this block is stiff, it cannot matter here" is the
+/// same shape of argument, and it was never checked.
+///
+/// ## Checked 2026-08-14 — and this scan is *structurally* insensitive
+///
+/// Re-running the whole scan with `cfg.density` overridden (one line in
+/// [`try_run_at_kappa`]) leaves the result alone:
+///
+/// ```text
+///   ρ = 1030 (default)  ceiling 1e7   3 iters at every converged κ
+///   ρ = 0               ceiling 1e7   3 iters, residuals within 14.5 %
+///   ρ = 1e12            ceiling 1e7   3 iters, residuals within 2.30x
+/// ```
+///
+/// ★★ The `ρ = 1e12` row is the negative control, and it is why **no gate
+/// asserts this invariance**: a million-kilogram centimetre cube does not move
+/// the ceiling, the iteration counts, or the pass/fail pattern. The quantity this
+/// fixture asserts is decade-quantised, so an inertia-invariance assertion here
+/// could not fail for the reason it claimed — the defect this repo removes rather
+/// than weakens. The measurement is recorded instead.
+///
+/// ⚠ That insensitivity belongs to *this* scan, not to `dt = 1`, and not to the
+/// engine. The sibling rig `tet10_indentation_demand1` runs the same `ρ = 1e12`
+/// control and it **bites** — `RATIO` moves 29 % and its committed pin fails — so
+/// there the existing assert is already a real guard against a mass artifact.
+/// Copying this constant into a rig with a compliant structure needs the
+/// comparison re-run, not inherited from here.
 const STATIC_DT: f64 = 1.0;
 const MAX_NEWTON_ITER: usize = 50;
 const N_PER_EDGE: usize = 4;
