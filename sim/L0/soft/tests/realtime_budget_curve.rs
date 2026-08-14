@@ -441,3 +441,148 @@ fn does_fbar_or_thickness_refinement_recover_the_slender_beam() {
          otherwise this table is about the harness, not the element"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The validation case
+// ---------------------------------------------------------------------------
+
+/// ★★ **Is the element right at slender proportions?** — against an analytic
+/// answer, in the regime where that answer is not in doubt.
+///
+/// The remedy sweep left an unattributed gap: a stick-proportioned beam is
+/// mesh-converged (`nz` 2→8 moves `δ/L` by 0.2 %) yet deflects ~11× less than
+/// small-deflection beam theory. Two candidate explanations, and **nothing in
+/// this repo could separate them** — `tet10_bending_locking` validates a *ratio*
+/// (Tet10 vs Tet4, ν-sensitivity) at 5:1, never an **absolute** deflection at
+/// slenderness. For a hockey stick, absolute flex *is* the product.
+///
+/// # Why the LINEAR regime, and not the elastica
+///
+/// The obvious reach is a published large-deflection (elastica) solution. This
+/// deliberately does not: those values would come from memory, and a validation
+/// case whose ground truth is half-remembered validates nothing. Instead it
+/// drives a deflection small enough that **Euler–Bernoulli is exact to within
+/// the measurement**, where the closed form is unambiguous:
+///
+/// ```text
+///     δ = P L³ / (3 E I),   I = h⁴/12,   E = 2μ(1 + ν)
+/// ```
+///
+/// ⚠ The two corrections that could invalidate that, both bounded rather than
+/// assumed away:
+///
+/// - **Shear** (Timoshenko) adds `(1+ν)h² / (2k L²)` relative — **0.05 %** at
+///   40:1 and ~3 % at 5:1. Negligible exactly where the question lives.
+/// - **Large deflection** stiffens the response, but only above `δ/L ≈ 0.1`;
+///   at the `δ/L ≈ 1e-3` driven here it is far below the tolerance.
+///
+/// ⇒ At 40:1 the analytic answer is trustworthy to well under a percent. **A
+/// ratio of 1.0 means the element is right and the earlier 11 % reading was a
+/// large-deflection/target artefact; a ratio far from 1.0 means the element is
+/// wrong at slenderness and a solid Tet10 is not the way to simulate a stick.**
+fn linear_regime_ratio(aspect: f64, nz: usize) -> (f64, f64, bool) {
+    const L: f64 = 1.5;
+    /// Small enough that Euler–Bernoulli is exact to well under a percent.
+    const TARGET_RATIO: f64 = 1.0e-3;
+    let h = L / aspect;
+    let (mu, nu) = (1.0e5, 0.35);
+    // Invert δ = P L³ / (3 E I) for the load that lands on TARGET_RATIO.
+    let e = 2.0 * mu * (1.0 + nu);
+    let i_area = h.powi(4) / 12.0;
+    let load = TARGET_RATIO * L * 3.0 * e * i_area / L.powi(3);
+    let delta_analytic = TARGET_RATIO * L;
+
+    let lambda = 2.0 * mu * nu / (1.0 - 2.0 * nu);
+    let field = MaterialField::uniform(mu, lambda);
+    let tet4 = HandBuiltTetMesh::cantilever_bilayer_beam(8, 2, nz, L, h, h, &field);
+    let mesh = Tet10Mesh::from_tet4(&tet4);
+    let n_dof = 3 * mesh.n_vertices();
+
+    let pinned: Vec<VertexId> = pick_vertices_by_predicate(&mesh, |p| p.x.abs() < 1e-9);
+    let loaded: Vec<VertexId> = pick_vertices_by_predicate(&mesh, |p| (p.x - L).abs() < 1e-9);
+    let positions = mesh.positions();
+    let mut x_flat = vec![0.0; n_dof];
+    for (v, p) in positions.iter().enumerate() {
+        x_flat[3 * v] = p.x;
+        x_flat[3 * v + 1] = p.y;
+        x_flat[3 * v + 2] = p.z;
+    }
+    let rest_z: Vec<f64> = loaded.iter().map(|&v| positions[v as usize].z).collect();
+
+    let bc = BoundaryConditions {
+        pinned_vertices: pinned,
+        roller_vertices: Vec::new(),
+        loaded_vertices: loaded.iter().map(|&v| (v, LoadAxis::AxisZ)).collect(),
+    };
+    let mut cfg = SolverConfig::skeleton();
+    cfg.dt = STATIC_DT;
+    cfg.max_newton_iter = 500;
+    cfg.tol = 1e-9 * load / (loaded.len() as f64).sqrt();
+    let solver: CpuTet10NHSolver<Tet10Mesh> =
+        CpuNewtonSolver::new(Tet10, mesh, NullContact, cfg, bc);
+
+    let theta = Tensor::from_slice(&[load / loaded.len() as f64], &[1]);
+    solver
+        .try_replay_step(
+            &Tensor::from_slice(&x_flat, &[n_dof]),
+            &Tensor::zeros(&[n_dof]),
+            &theta,
+            cfg.dt,
+        )
+        .map_or((f64::NAN, f64::NAN, false), |step| {
+            let tip = loaded
+                .iter()
+                .zip(&rest_z)
+                .map(|(&v, &z0)| (step.x_final[3 * v as usize + 2] - z0).abs())
+                .fold(0.0f64, f64::max);
+            (tip / delta_analytic, tip, true)
+        })
+}
+
+#[test]
+#[cfg_attr(debug_assertions, ignore = "release-only measurement")]
+fn tet10_matches_analytic_cantilever_deflection_at_slender_proportions() {
+    println!("\n=== VALIDATION: Tet10 vs analytic small-deflection cantilever ===");
+    println!("  δ_analytic = P L³ / (3 E I), driven at δ/L ≈ 1e-3 so Euler–Bernoulli is exact.");
+    println!("  Shear correction: 0.05 % at 40:1, ~3 % at 5:1 — bounded, not assumed away.\n");
+    println!(
+        "{:>8} {:>6} {:>14} {:>14} {:>10}",
+        "aspect", "nz", "δ_fem (mm)", "δ_exact (mm)", "fem/exact"
+    );
+
+    let mut worst_slender = 1.0f64;
+    for aspect in [5.0, 10.0, 20.0, 40.0] {
+        for nz in [2, 4] {
+            let (ratio, tip, ok) = linear_regime_ratio(aspect, nz);
+            let exact = 1.0e-3 * 1.5;
+            println!(
+                "{aspect:>8.0} {nz:>6} {:>14.5} {:>14.5} {:>10}",
+                tip * 1e3,
+                exact * 1e3,
+                if ok {
+                    format!("{ratio:.4}")
+                } else {
+                    "DIVERGED".to_string()
+                },
+            );
+            if ok && aspect >= 20.0 {
+                worst_slender = worst_slender.min(ratio.min(1.0 / ratio));
+            }
+        }
+        println!();
+    }
+
+    println!(
+        "  A ratio near 1.0 at 20:1 and 40:1 means the element is RIGHT at slenderness, and\n  \
+         the earlier 11× reading was an artefact of driving δ/L = 0.10 with a small-deflection\n  \
+         target. A ratio far from 1.0 means a solid Tet10 does not bend correctly at stick\n  \
+         proportions, and no amount of mesh or frame budget fixes that."
+    );
+
+    assert!(
+        worst_slender > 0.85,
+        "Tet10 must reproduce the analytic small-deflection cantilever at slender proportions; \
+         worst agreement at aspect >= 20 was {worst_slender:.4} (1.0 = exact). Absolute flex is \
+         the product for a bending part, and nothing else in this repo validates it"
+    );
+}
