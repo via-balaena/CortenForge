@@ -56,12 +56,12 @@
 use std::time::Instant;
 
 use sim_ml_chassis::Tensor;
-use sim_soft::element::Tet10;
+use sim_soft::element::{Tet4, Tet10};
 use sim_soft::mesh::HandBuiltTetMesh;
 use sim_soft::solver::CpuNewtonSolver;
 use sim_soft::{
-    BoundaryConditions, CpuTet10NHSolver, LoadAxis, MaterialField, Mesh, NullContact, Solver,
-    SolverConfig, Tet10Mesh, VertexId, pick_vertices_by_predicate,
+    BoundaryConditions, CpuTet4NHSolver, CpuTet10NHSolver, LoadAxis, MaterialField, Mesh,
+    NullContact, Solver, SolverConfig, Tet10Mesh, VertexId, pick_vertices_by_predicate,
 };
 
 /// Frame budget at 90 Hz, in milliseconds — for *everything*, not just physics.
@@ -662,5 +662,124 @@ fn does_refining_along_the_beam_recover_the_deflection() {
          sound and the earlier conclusion was an artefact of holding nx fixed. That would\n  \
          move the stick question back to the frame budget — a cost problem, not a\n  \
          correctness one."
+    );
+}
+
+/// ★★ **Is the error dominated by ELEMENT ORDER?** — the discriminator that
+/// decides which fix the engine needs.
+///
+/// Established: a slender solid-tet cantilever is mesh-converged in **both**
+/// directions (length refinement moves the answer 0.8 %, thickness 0.2 %) and
+/// lands at `0.25` of the analytic deflection at 20:1. That is tetrahedral
+/// locking in bending, and it caps every slender bending part the engine could
+/// ever simulate — a stick, a leaf spring, an exo strut, a rib.
+///
+/// ⚠ Two fixes follow from two very different diagnoses, and only a measurement
+/// separates them:
+///
+/// - **Tet4 much worse than Tet10** ⇒ the error is dominated by **element
+///   order**, and p-refinement is a live path: a cubic tet would continue the
+///   trend, and the existing element family extends rather than being replaced.
+/// - **Tet4 ≈ Tet10** ⇒ order does not rescue it, and the answer is a different
+///   element **family** — hexahedra, which is what commercial FEM reaches for in
+///   bending-dominated parts, and a correspondingly larger addition.
+///
+/// Both arms share one mesh, one load, one tolerance and one analytic target, so
+/// the only difference between them is the element.
+fn tet4_ratio(aspect: f64, nx: usize) -> (f64, bool) {
+    const L: f64 = 1.5;
+    const TARGET_RATIO: f64 = 1.0e-3;
+    let h = L / aspect;
+    let (mu, nu) = (1.0e5, 0.35);
+    let e = 2.0 * mu * (1.0 + nu);
+    let load = TARGET_RATIO * L * 3.0 * e * (h.powi(4) / 12.0) / L.powi(3);
+
+    let lambda = 2.0 * mu * nu / (1.0 - 2.0 * nu);
+    let field = MaterialField::uniform(mu, lambda);
+    let mesh = HandBuiltTetMesh::cantilever_bilayer_beam(nx, 2, 2, L, h, h, &field);
+    let n_dof = 3 * mesh.n_vertices();
+
+    let pinned: Vec<VertexId> = pick_vertices_by_predicate(&mesh, |p| p.x.abs() < 1e-9);
+    let loaded: Vec<VertexId> = pick_vertices_by_predicate(&mesh, |p| (p.x - L).abs() < 1e-9);
+    let positions = mesh.positions();
+    let mut x_flat = vec![0.0; n_dof];
+    for (v, p) in positions.iter().enumerate() {
+        x_flat[3 * v] = p.x;
+        x_flat[3 * v + 1] = p.y;
+        x_flat[3 * v + 2] = p.z;
+    }
+    let rest_z: Vec<f64> = loaded.iter().map(|&v| positions[v as usize].z).collect();
+
+    let bc = BoundaryConditions {
+        pinned_vertices: pinned,
+        roller_vertices: Vec::new(),
+        loaded_vertices: loaded.iter().map(|&v| (v, LoadAxis::AxisZ)).collect(),
+    };
+    let mut cfg = SolverConfig::skeleton();
+    cfg.dt = STATIC_DT;
+    cfg.max_newton_iter = 500;
+    cfg.tol = 1e-6 * load / (loaded.len() as f64).sqrt();
+    let solver: CpuTet4NHSolver<HandBuiltTetMesh> =
+        CpuNewtonSolver::new(Tet4, mesh, NullContact, cfg, bc);
+
+    let theta = Tensor::from_slice(&[load / loaded.len() as f64], &[1]);
+    solver
+        .try_replay_step(
+            &Tensor::from_slice(&x_flat, &[n_dof]),
+            &Tensor::zeros(&[n_dof]),
+            &theta,
+            cfg.dt,
+        )
+        .map_or((f64::NAN, false), |step| {
+            let tip = loaded
+                .iter()
+                .zip(&rest_z)
+                .map(|(&v, &z0)| (step.x_final[3 * v as usize + 2] - z0).abs())
+                .fold(0.0f64, f64::max);
+            (tip / (TARGET_RATIO * L), true)
+        })
+}
+
+#[test]
+#[cfg_attr(debug_assertions, ignore = "release-only measurement")]
+fn is_the_slender_bending_error_dominated_by_element_order() {
+    println!("\n=== Discriminator: does ELEMENT ORDER rescue slender bending? ===");
+    println!("  same mesh, load, tolerance and analytic target — only the element differs.\n");
+    println!(
+        "{:>8} {:>5} {:>12} {:>12} {:>12}",
+        "aspect", "nx", "Tet4", "Tet10", "Tet10/Tet4"
+    );
+
+    for aspect in [5.0, 10.0, 20.0] {
+        for nx in [16, 32] {
+            let (r4, ok4) = tet4_ratio(aspect, nx);
+            let (r10, _, ok10) = linear_regime_ratio_at(aspect, nx, 2);
+            let gain = if ok4 && ok10 && r4 > 0.0 {
+                format!("{:.2}x", r10 / r4)
+            } else {
+                "—".to_string()
+            };
+            println!(
+                "{aspect:>8.0} {nx:>5} {:>12} {:>12} {gain:>12}",
+                if ok4 {
+                    format!("{r4:.4}")
+                } else {
+                    "DIVERGED".into()
+                },
+                if ok10 {
+                    format!("{r10:.4}")
+                } else {
+                    "DIVERGED".into()
+                },
+            );
+        }
+    }
+
+    println!(
+        "\n  A LARGE and GROWING Tet10/Tet4 gain with slenderness means order is doing the\n  \
+         work, and a cubic tet would continue the trend — p-refinement is the path, and the\n  \
+         existing element family extends.\n  \
+         A gain that is small, or that stops growing, means order does not rescue it and the\n  \
+         answer is hexahedra — a different element FAMILY, and a much larger addition."
     );
 }
