@@ -320,7 +320,7 @@ const DISC_CONFORM_QUALITY_FLOOR: f64 = 0.25;
 /// became a proof.
 const DISC_MIDSIDE_CONFORM_QUALITY_FLOOR: f64 = 0.4;
 
-/// Largest change in commanded flexion angle a single [`CoupledFsu::set_flexion`] may make.
+/// Largest change in commanded flexion angle a single [`BondedDisc::set_flexion`] may make.
 ///
 /// ⚠⚠ **The bound is on the SWING, not on `|theta|`** — and that distinction is the whole
 /// reason the rung-5 defect went undiagnosed. `set_flexion` imposes an *absolute* pose while
@@ -341,9 +341,9 @@ const DISC_MIDSIDE_CONFORM_QUALITY_FLOOR: f64 = 0.4;
 /// ⚠ The safe swing is **resolution-dependent**: the same 1° swing converges at `cell = 0.003`
 /// and fails at `0.002`. This bound is deliberately the conservative end — the largest swing
 /// verified to converge at the finest resolution tested. A caller that needs a larger transit
-/// sub-steps with [`CoupledFsu::set_flexion_substepped`], which reaches the same pose and the
+/// sub-steps with [`BondedDisc::set_flexion_substepped`], which reaches the same pose and the
 /// same answer.
-const MAX_FLEXION_SWING_RAD: f64 = 0.5 * std::f64::consts::PI / 180.0;
+pub const MAX_FLEXION_SWING_RAD: f64 = 0.5 * std::f64::consts::PI / 180.0;
 
 /// The two quality floors a conform's back-off runs at.
 ///
@@ -1397,8 +1397,8 @@ impl<Msh: Mesh, E: Element<N, G> + Default, const N: usize, const G: usize>
     /// sub-stepping buys convergence without changing the physics.
     pub fn set_flexion_substepped(&mut self, theta: f64) {
         let swing = theta - self.last_flexion;
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         // `ceil` of a non-negative ratio, and the swing is a sub-radian angle.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let n = ((swing.abs() / MAX_FLEXION_SWING_RAD).ceil() as usize).max(1);
         let start = self.last_flexion;
         #[allow(clippy::cast_precision_loss)] // `n` is a handful of steps.
