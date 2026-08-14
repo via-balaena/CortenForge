@@ -42,14 +42,26 @@
 //! `P/δ = 9.49e-4 / 1.5e-3 = 0.633 N/m`. The parasitic term is several times
 //! the structure's own stiffness, which lands the ratio near a quarter.
 //!
-//! ⚠ **This is why the bug hid.** The error scales as `M/(dt²·k)`, and `k` for a
-//! 20:1 cantilever is ~1000× smaller than for the stiff cubes the other
-//! `STATIC_DT = 1.0` rigs use (`tet10_indentation_demand1`,
-//! `contact_stability`). The same constant is harmless there and fatal here.
-//! The repo's own convention already says so — `DiscParams::static_dt` is
-//! `1.0e3`, documented "large, so the inertial term `M/dt²` is negligible", and
-//! `tet10_face_contact` uses `1.0e3`. This file used `1.0`, which is `1e6×` more
-//! inertia than the convention it sat beside.
+//! ⚠ **This is why the bug hid.** The error scales as `M/(dt²·k)`, so it bites
+//! only a very compliant structure — and a 20:1 cantilever driven in bending is
+//! about as compliant as this engine is ever asked to be.
+//!
+//! The repo's own convention already says how to avoid it: `DiscParams::static_dt`
+//! is `1.0e3`, documented "large, so the inertial term `M/dt²` is negligible",
+//! and it is threaded straight to `cfg.dt` (`sim/L1/coupling/src/bonded.rs`), so
+//! **`cf-fsu-model`'s `k_disc` ladder is not affected** — checked, not assumed.
+//! `tet10_face_contact` also uses `1.0e3`. This file used `1.0`, which is `1e6×`
+//! more inertia than the convention it sat beside.
+//!
+//! ⚠⚠ **Two other rigs still use `STATIC_DT = 1.0`, and this arc did NOT clear
+//! them.** `contact_stability` (a ~384-tet cube) and `tet10_indentation_demand1`
+//! (a bonded layer under a spherical indenter) both load stiff configurations
+//! where `k` is orders of magnitude larger, so the term is *expected* to be
+//! negligible — but "expected" is exactly the word that produced the ceiling this
+//! file used to assert. ▶ Neither has had the `density = 0` A/B that this file
+//! just had, and `tet10_indentation_demand1` builds its slab with
+//! `cantilever_bilayer_beam` — the very same builder — so "different shape,
+//! therefore fine" is an argument, not a measurement.
 //!
 //! Here the rig asks for **`density = 0`** instead: the measurement is a static
 //! benchmark against a static closed form, so inertia is not part of it, and
@@ -402,8 +414,10 @@ fn element_order_rescues_slender_bending_and_the_gain_grows() {
         slender_gain = gain;
     }
 
-    // Directional, and carries no tuned constant: the whole discriminator is
-    // whether the gain grows or is flat.
+    // Directional: the discriminator is whether the gain GROWS or is flat, not
+    // where it lands. The 1.10 is a noise deadband rather than a fitted
+    // threshold — 1.89x → 3.54x clears it by a wide margin, and the old rig's
+    // 1.75x → 1.70x fails it in the other direction.
     assert!(
         slender_gain > stubby_gain * 1.10,
         "the Tet10/Tet4 gain must GROW with slenderness for order to be the fix; \
