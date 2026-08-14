@@ -517,7 +517,12 @@ fn linear_regime_ratio(aspect: f64, nz: usize) -> (f64, f64, bool) {
     let mut cfg = SolverConfig::skeleton();
     cfg.dt = STATIC_DT;
     cfg.max_newton_iter = 500;
-    cfg.tol = 1e-9 * load / (loaded.len() as f64).sqrt();
+    // ⚠ RELATIVE to the load, and the load here is tiny (~6e-5 N): a 1e-9
+    // relative tolerance asks for a ~1e-14 residual, which is machine epsilon
+    // and unreachable. A tolerance is only meaningful once its ABSOLUTE scale
+    // is checked against the problem — 1e-6 is what the separation sweep
+    // converged at.
+    cfg.tol = 1e-6 * load / (loaded.len() as f64).sqrt();
     let solver: CpuTet10NHSolver<Tet10Mesh> =
         CpuNewtonSolver::new(Tet10, mesh, NullContact, cfg, bc);
 
@@ -550,6 +555,12 @@ fn tet10_matches_analytic_cantilever_deflection_at_slender_proportions() {
         "aspect", "nz", "δ_fem (mm)", "δ_exact (mm)", "fem/exact"
     );
 
+    // ⚠ Counted, because `worst_slender` alone starts at 1.0 and only moves on
+    // success — so an all-diverged table would sail through the assert below
+    // reporting perfect agreement. That is the "gate that cannot fail for the
+    // reason it claims" shape, and it passed exactly once before this counter
+    // existed.
+    let mut slender_converged = 0usize;
     let mut worst_slender = 1.0f64;
     for aspect in [5.0, 10.0, 20.0, 40.0] {
         for nz in [2, 4] {
@@ -566,6 +577,7 @@ fn tet10_matches_analytic_cantilever_deflection_at_slender_proportions() {
                 },
             );
             if ok && aspect >= 20.0 {
+                slender_converged += 1;
                 worst_slender = worst_slender.min(ratio.min(1.0 / ratio));
             }
         }
@@ -579,6 +591,11 @@ fn tet10_matches_analytic_cantilever_deflection_at_slender_proportions() {
          proportions, and no amount of mesh or frame budget fixes that."
     );
 
+    assert!(
+        slender_converged > 0,
+        "no slender row converged, so the agreement figure below is vacuous — this gate must \
+         not report success on an empty measurement"
+    );
     assert!(
         worst_slender > 0.85,
         "Tet10 must reproduce the analytic small-deflection cantilever at slender proportions; \
