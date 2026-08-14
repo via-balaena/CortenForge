@@ -4518,13 +4518,30 @@ mod tests {
     /// ±0.5° jump — see the note on `CENTRES` — so `σ` is measured at two levels (0.003 from
     /// step 1, 0.002 here), not three.
     ///
-    /// ⚠ Cost: ~6 min. `rung5_step2` costs ONE solve per level; this does FOUR per realization
-    /// (Tet4 flex/ext + Tet10 flex/ext), which is why the probe's figure understates it 2×.
-    /// Peak RSS with both arms live reached 9.39 GB on the two-level run — above the 8 GB budget
-    /// committed for the single-arm probe, which that budget never covered. Run under
-    /// `/usr/bin/time -l`.
+    /// `rung5_step2` costs ONE solve per level; this does FOUR per realization (Tet4 flex/ext +
+    /// Tet10 flex/ext), which is why the probe's figure understates it 2×.
+    ///
+    /// ⚠⚠ **Cost re-measured 2026-08-14; all three figures this paragraph carried were stale,
+    /// by different amounts.** It read "~6 min" and "9.39 GB peak RSS with both arms live", and
+    /// the `#[ignore]` reason said "~27 min" — all three describe the **two-level**
+    /// configuration. This gate runs `cell = 0.002` **only** (see the `CENTRES` note above), and
+    /// on that surface it is **144 s solo / 160 s under a concurrent suite, at 5.68 GB** peak
+    /// resident. So the wall figure was out ~2.5×, the `#[ignore]` reason ~11×, and the RSS
+    /// ~1.7× — worth stating separately rather than as one round dismissal, because only the
+    /// `#[ignore]` reason was wrong enough to misplan a session around.
+    ///
+    /// ⇒ It now sits **under** the 8 GB budget pre-registered in
+    /// `rung5_step2_tet10_fine_cost_ceiling_fom`, which it used to exceed. That tension is
+    /// resolved by the gate narrowing to one level, not by anyone re-budgeting.
+    ///
+    /// The 9.39 GB figure was cited by `xtask`'s `PEAK_PER_GATE_GB` as the worst gate on the
+    /// whole licensed surface; it is not, and that constant now names the real one
+    /// (`rung5_tet10_alone_both_angles_fom`, 6.35 GB).
+    ///
+    /// Peak RSS is not observable from inside the process without `unsafe` libc, so read it off
+    /// an external sampler: `/usr/bin/time -l`.
     #[test]
-    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed); ~27 min"]
+    #[ignore = "needs $CF_DISC_STL (BodyParts3D FMA16036, CC BY-SA, not committed); ~2.5 min"]
     fn rung5_replication_realization_spread_at_refined_levels_fom() {
         // The same ±3.3 % relative window step 1 swept at 0.003 (0.00290 … 0.00310), so the
         // levels' spreads are comparable rather than merely both being called "the spread".
