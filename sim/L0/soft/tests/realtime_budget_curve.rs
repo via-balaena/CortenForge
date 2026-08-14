@@ -481,6 +481,16 @@ fn does_fbar_or_thickness_refinement_recover_the_slender_beam() {
 /// large-deflection/target artefact; a ratio far from 1.0 means the element is
 /// wrong at slenderness and a solid Tet10 is not the way to simulate a stick.**
 fn linear_regime_ratio(aspect: f64, nz: usize) -> (f64, f64, bool) {
+    linear_regime_ratio_at(aspect, 8, nz)
+}
+
+/// [`linear_regime_ratio`] with the LENGTH refinement exposed.
+///
+/// ⚠ The earlier remedy sweep held `nx = 8` and varied only `nz`, which left 10:1
+/// *element* aspect ratios in every row — so "mesh does not fix it" was really
+/// "thickness refinement does not fix it", a much weaker claim. Refining along
+/// the beam is what actually reshapes the elements for bending.
+fn linear_regime_ratio_at(aspect: f64, nx: usize, nz: usize) -> (f64, f64, bool) {
     const L: f64 = 1.5;
     /// Small enough that Euler–Bernoulli is exact to well under a percent.
     const TARGET_RATIO: f64 = 1.0e-3;
@@ -494,7 +504,7 @@ fn linear_regime_ratio(aspect: f64, nz: usize) -> (f64, f64, bool) {
 
     let lambda = 2.0 * mu * nu / (1.0 - 2.0 * nu);
     let field = MaterialField::uniform(mu, lambda);
-    let tet4 = HandBuiltTetMesh::cantilever_bilayer_beam(8, 2, nz, L, h, h, &field);
+    let tet4 = HandBuiltTetMesh::cantilever_bilayer_beam(nx, 2, nz, L, h, h, &field);
     let mesh = Tet10Mesh::from_tet4(&tet4);
     let n_dof = 3 * mesh.n_vertices();
 
@@ -601,5 +611,56 @@ fn tet10_matches_analytic_cantilever_deflection_at_slender_proportions() {
         "Tet10 must reproduce the analytic small-deflection cantilever at slender proportions; \
          worst agreement at aspect >= 20 was {worst_slender:.4} (1.0 = exact). Absolute flex is \
          the product for a bending part, and nothing else in this repo validates it"
+    );
+}
+
+/// ★★ **Does refining ALONG THE BEAM recover it?** — the knob the remedy sweep
+/// held fixed.
+///
+/// ⚠⚠ This exists because a conclusion was nearly shipped without it. The
+/// remedy sweep varied `nz` (thickness), saw no movement, and concluded solid
+/// Tet10 shear-locks at slenderness and a stick needs a different formulation.
+/// But `nx` was hardcoded at 8 throughout, leaving **10:1 element aspect
+/// ratios** in every row — the exact shape that locks. "Mesh does not fix it"
+/// was really "thickness refinement does not fix it".
+///
+/// For bending, discretisation along the beam is what represents the curvature,
+/// and it is what brings element aspect ratio back toward 1:1. If `fem/exact`
+/// climbs toward 1.0 with `nx`, the element is fine and only needed well-shaped
+/// elements — and the cost lands back on the frame budget, which is a far better
+/// problem than a wrong element.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "release-only measurement")]
+fn does_refining_along_the_beam_recover_the_deflection() {
+    println!("\n=== Length refinement: the knob the remedy sweep held fixed ===");
+    println!("  δ/L ≈ 1e-3 (linear regime). element aspect = (L/nx) / (h/nz).\n");
+    println!(
+        "{:>8} {:>5} {:>5} {:>14} {:>12} {:>10}",
+        "aspect", "nx", "nz", "elem aspect", "δ_fem (mm)", "fem/exact"
+    );
+
+    for aspect in [5.0, 10.0, 20.0] {
+        for (nx, nz) in [(8, 2), (16, 2), (32, 2), (64, 2), (64, 4)] {
+            let (ratio, tip, ok) = linear_regime_ratio_at(aspect, nx, nz);
+            let h = 1.5 / aspect;
+            let elem_aspect = (1.5 / nx as f64) / (h / nz as f64);
+            println!(
+                "{aspect:>8.0} {nx:>5} {nz:>5} {elem_aspect:>14.2} {:>12.5} {:>10}",
+                tip * 1e3,
+                if ok {
+                    format!("{ratio:.4}")
+                } else {
+                    "DIVERGED".to_string()
+                },
+            );
+        }
+        println!();
+    }
+
+    println!(
+        "  If the ratio tracks ELEMENT ASPECT rather than beam slenderness, the element is\n  \
+         sound and the earlier conclusion was an artefact of holding nx fixed. That would\n  \
+         move the stick question back to the frame budget — a cost problem, not a\n  \
+         correctness one."
     );
 }
