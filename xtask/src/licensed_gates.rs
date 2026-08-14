@@ -715,18 +715,19 @@ fn gate_ran_a_test(body: &str) -> bool {
 
 /// Default gate concurrency: bounded by MEMORY, not cores.
 ///
-/// The worst gate on this surface peaks at **9.39 GB** resident
-/// (`rung5_replication_realization_spread_at_refined_levels_fom`, recorded in
-/// `sim/L1/fsu-model/src/lib.rs`), which is what [`PEAK_PER_GATE_GB`] is sized
-/// from. On a 24 GB machine the ceiling is 2 concurrent gates —
-/// `(24 - 4) / 10` — far under the core count. Picking `cores` here would swap
-/// and run SLOWER than serial. `--jobs` overrides; `--jobs 1` restores the old
-/// serial behaviour for debugging.
+/// The worst gate on this surface peaks at **6.35 GB** resident
+/// (`rung5_tet10_alone_both_angles_fom`, re-measured 2026-08-14 — see
+/// [`PEAK_PER_GATE_GB`], which is sized above it with headroom). On a 24 GB
+/// machine the ceiling is 2 concurrent gates — `(24 - 4) / 10` — far under the
+/// core count. Picking `cores` here would swap and run SLOWER than serial.
+/// `--jobs` overrides; `--jobs 1` restores the old serial behaviour for
+/// debugging.
 ///
 /// ⚠ Do not re-describe these gates as "around 5 GB". That figure was the
 /// typical arm, and sizing the bound from it is exactly the mistake
-/// `PEAK_PER_GATE_GB` was raised to correct — three concurrent gates at the
-/// real peak is 28 GB on a 24 GB machine.
+/// `PEAK_PER_GATE_GB` was raised to correct: at 5 this returns `J = 4`, and
+/// four concurrent gates at the measured 6.35 GB peak is **29.4 GB on a 24 GB
+/// machine**.
 fn default_jobs() -> usize {
     const GB: u64 = 1024 * 1024 * 1024;
     let cores = std::thread::available_parallelism().map_or(4, std::num::NonZeroUsize::get);
@@ -736,17 +737,49 @@ fn default_jobs() -> usize {
 
 /// Peak resident set of the WORST gate on this surface, in GB, plus headroom.
 ///
-/// ⚠ Size this from the largest RECORDED figure, not a typical one. The first
-/// version used 6, from rung 5's 4.99 GB at `cell = 0.0015` — but
-/// `rung5_replication_realization_spread_at_refined_levels_fom` records **9.39
-/// GB** peak RSS with both arms live (`sim/L1/fsu-model/src/lib.rs`), and three
-/// of those concurrently is 28 GB on a 24 GB machine. The fan-out would have
-/// swapped and finished slower than serial — the exact failure this bound
-/// exists to prevent.
+/// ⚠ Size this from the largest MEASURED figure, not a typical one. The first
+/// version used 6, from rung 5's 4.99 GB at `cell = 0.0015`, and three
+/// concurrent gates above that would have swapped and finished slower than
+/// serial — the exact failure this bound exists to prevent.
 ///
-/// This is deliberately the worst case, so a run of only cheap gates is
-/// under-parallelised. That is the safe direction; raise it per-run with
-/// `--jobs` when you know the selected gates are small.
+/// ## Re-measured 2026-08-14, because the figure this was sized from had rotted
+///
+/// This constant used to cite **9.39 GB** from
+/// `rung5_replication_realization_spread_at_refined_levels_fom`. ⚠ **That
+/// provenance no longer reproduces.** The 9.39 GB was recorded with both arms
+/// live on the **two-level** run; that gate now runs `cell = 0.002` only (the
+/// fine level does not converge under a single ±0.5° jump — see its `CENTRES`
+/// note), and it re-measures at **5.68 GB**. The worst gate on today's surface
+/// is `rung5_tet10_alone_both_angles_fom` at **6.35 GB**.
+///
+/// Both figures are solo `/usr/bin/time -l` maximum resident set size. Peak RSS
+/// is not observable from inside the process without `unsafe` libc, so it has to
+/// be read from outside.
+///
+/// ⚠ **How "worst" was established, and where that survey is blind.** All 53
+/// gates were sampled at 1 Hz by an external `ps` poller across one full
+/// instrumented run, and the top two were then re-measured solo. The sampler
+/// under-reads ~2.5 % (it read 6.19 against the 6.35 solo) while the gap from
+/// the top gate to the runner-up is ~10 %, so that error cannot invert the
+/// ranking. ⚠ But 1 Hz cannot see a spike inside a gate that runs for only a
+/// second or two: a **cheap-but-spiky** gate would be missed entirely. Every
+/// heavy gate is long, so the bound is safe today — a new short gate that
+/// allocates hard is the case this survey would not catch.
+///
+/// ⛔ **REFUTED, do not retry: lowering this to buy a third job.** 6.35 GB
+/// measured against a 24 GB machine looks like room for `J = 3`, and it is not.
+/// `J = 3` needs this constant at `≤ 6.66`, which is 4.9 % headroom over the
+/// measured peak and puts `3 × 6.35 + 4` = **23.0 GB of 24 GB** resident. The
+/// gap between 10 and 6.35 is deliberate headroom, not slack to spend.
+///
+/// So the value stays **10** — it is the safe direction, and it is not the
+/// binding cost anyway: the suite is 80.2 min of summed solve over 53 gates
+/// against 40.5 min wall (measured 2026-08-14, 53/53 green), i.e. the 1.98×
+/// this bound already delivers, and **half that wall is a single 20.4 min
+/// gate** no concurrency setting can divide.
+///
+/// A run of only cheap gates is under-parallelised by this; that is the safe
+/// direction, and `--jobs` raises it per-run when the selected gates are small.
 const PEAK_PER_GATE_GB: u64 = 10;
 
 /// Gate concurrency from total RAM and core count. Split out from
@@ -1080,8 +1113,8 @@ mod tests {
         assert_eq!(
             super::jobs_for(24, 12),
             2,
-            "24 GB / 12 cores must give 2 — (24-4)/10, sized from the 9.39 GB \
-             rung5_replication gate — not the core count"
+            "24 GB / 12 cores must give 2 — (24-4)/10, sized above the 6.35 GB \
+             rung5_tet10_alone_both_angles gate — not the core count"
         );
         // Cores bind only when memory is plentiful.
         assert_eq!(super::jobs_for(256, 4), 4, "cores cap a big-RAM machine");
