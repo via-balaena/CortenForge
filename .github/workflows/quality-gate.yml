@@ -600,7 +600,8 @@ jobs:
             --test reduced_newton_trajectory \
             --test reduced_gradient \
             --test fbar_locking \
-            --test tet10_indentation_demand1
+            --test tet10_indentation_demand1 \
+            --test slender_bending_ceiling
         shell: bash
 
       # cf-cast's mold/cast kernel (358 library tests) runs --lib-only in
