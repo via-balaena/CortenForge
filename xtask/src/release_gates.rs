@@ -506,6 +506,58 @@ jobs:\n\
         assert_eq!(found, vec!["nested".to_string()]);
     }
 
+    /// Unique scratch crate for one case — no external deps, mirroring
+    /// `validators`' idiom. Returns a root holding a manifest and `tests/`.
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("xtask_release_gates_{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("tests")).expect("create scratch tests dir");
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"scratch-probe\"\n",
+        )
+        .expect("write scratch manifest");
+        dir
+    }
+
+    /// ★ The refusal-to-guess guard. A `tests/*.rs` the scanner cannot parse
+    /// holds an UNKNOWN number of release-only gates, not zero — swallowing it
+    /// would silently un-protect that file while the total stayed plausible.
+    /// Verified by hand when it was written; committed here because a
+    /// hand-verified guard is an unverified one.
+    #[test]
+    fn an_unparseable_test_file_bails_rather_than_reading_as_no_gates() {
+        let dir = scratch("unparseable");
+        std::fs::write(dir.join("tests/broken.rs"), "this is not valid rust {{{\n")
+            .expect("write broken test");
+
+        let err = check_at(&dir).expect_err("must refuse to report success");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("could not read or parse"),
+            "the unreadable guard did not fire: {msg}"
+        );
+        assert!(msg.contains("broken.rs"), "must name the file: {msg}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★ The sibling guard: a scan finding nothing is a broken scan, not a clean
+    /// workspace — the failure `licensed_gates` records from its own "0 gates
+    /// across 0 crates" incident.
+    #[test]
+    fn an_empty_survey_bails_rather_than_reporting_all_clear() {
+        let dir = scratch("empty");
+        std::fs::write(dir.join("tests/plain.rs"), "#[test]\nfn ordinary() {}\n")
+            .expect("write plain test");
+
+        let err = check_at(&dir).expect_err("an empty survey must not read as success");
+        assert!(
+            err.to_string().contains("found NO release-only tests"),
+            "wrong failure: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The invariant itself, as a unit test as well as a command — the command
     /// is what fires on a PR that does not touch xtask, and this is what keeps
     /// the two from drifting.
