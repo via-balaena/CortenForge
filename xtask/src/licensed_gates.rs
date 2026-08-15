@@ -199,7 +199,7 @@ fn package_name(manifest: &Path) -> Option<String> {
 }
 
 /// The nearest ancestor directory holding a `Cargo.toml`, and its package name.
-fn owning_package(file: &Path) -> Option<(PathBuf, String)> {
+pub(crate) fn owning_package(file: &Path) -> Option<(PathBuf, String)> {
     let mut dir = file.parent()?;
     loop {
         let manifest = dir.join("Cargo.toml");
@@ -214,7 +214,7 @@ fn owning_package(file: &Path) -> Option<(PathBuf, String)> {
 
 /// Which test binary a source file's tests compile into, or `None` for files
 /// whose tests are not run by `cargo test` (examples, benches, build scripts).
-fn target_of(crate_root: &Path, file: &Path) -> Option<Target> {
+pub(crate) fn target_of(crate_root: &Path, file: &Path) -> Option<Target> {
     let rel = file.strip_prefix(crate_root).ok()?;
     let mut parts = rel.components().map(|c| c.as_os_str().to_string_lossy());
     match parts.next()?.as_ref() {
@@ -230,7 +230,7 @@ fn target_of(crate_root: &Path, file: &Path) -> Option<Target> {
 }
 
 /// Every Rust source file in the workspace, skipping build output.
-fn source_files(root: &Path) -> Vec<PathBuf> {
+pub(crate) fn source_files(root: &Path) -> Vec<PathBuf> {
     WalkDir::new(root)
         .into_iter()
         .filter_entry(|e| {

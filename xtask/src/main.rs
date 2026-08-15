@@ -33,6 +33,7 @@ mod coverage_run;
 mod grade;
 mod licensed_gates;
 mod pr_scope;
+mod release_gates;
 mod setup;
 mod validators;
 
@@ -227,6 +228,17 @@ enum Commands {
         jobs: Option<usize>,
     },
 
+    /// Assert every release-only gate still reaches some CI job.
+    //
+    // ⚠ The long help lives in `release_gates::LONG_ABOUT`, NOT in a doc comment
+    // here. A doc comment would be a second copy of the module's own
+    // explanation, and that copy is what drifted: the module was corrected to
+    // describe both coverage paths while this text kept the superseded one-path
+    // wording, so `--help` served the misconception the module exists to
+    // prevent. Point at the source; do not restate it.
+    #[command(long_about = release_gates::LONG_ABOUT)]
+    ReleaseGates,
+
     /// Set up development environment (git hooks, verify tools)
     Setup,
 
@@ -293,6 +305,7 @@ fn main() -> Result<()> {
             check,
             jobs,
         } => licensed_gates::run(only, run, check, jobs),
+        Commands::ReleaseGates => release_gates::check(),
         Commands::Setup => setup::run(),
         Commands::Uninstall => setup::uninstall(),
     }
