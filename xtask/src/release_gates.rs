@@ -1,26 +1,26 @@
 //! Self-test: every release-only gate still reaches some CI job.
 //!
-//! A test written `#[cfg_attr(debug_assertions, ignore = "…")]` is skipped by
-//! every debug job by design — that is the point, the measurement is only
-//! meaningful in release. So it executes only where a **release** job picks it
-//! up, and there are exactly two ways that happens:
+//! ⚠ **What this asserts, stated for a reader, is [`LONG_ABOUT`]** — the text
+//! `cargo xtask release-gates --help` prints. It is deliberately *not* restated
+//! here. An earlier attempt to de-duplicate this only moved the copy: the help
+//! text left `main.rs` and the same explanation stayed in both this header and
+//! the constant, one file apart instead of two. What follows is therefore only
+//! the **why**, which a source reader needs and a CLI user does not.
 //!
-//! 1. a job names its binary — `cargo test --release -p <crate> --test <name>`;
-//! 2. a job runs its whole **package**, sweeping up every binary in it.
+//! # Why coverage has two paths, not one
 //!
-//! Miss both and the gate executes **nowhere**, while CI stays green and the
-//! test file looks entirely healthy.
+//! Modelling only the `--test` path is the obvious mistake, and this module
+//! shipped it in draft: it reported `mesh-printability`'s `stress_inputs` as
+//! unrun when `tests-release` runs that package wholesale. A check that cries
+//! wolf gets disabled, so the whole-package path is modelled too — see
+//! [`wholesale_release_packages`] for why it must be read from one anchored job
+//! rather than from every `crates:` line in the file.
 //!
-//! ⚠ Modelling only (1) is the obvious mistake, and this module shipped it in
-//! draft: it reported `mesh-printability`'s `stress_inputs` as unrun when
-//! `tests-release` runs that package wholesale. A check that cries wolf gets
-//! disabled, so both paths are modelled — see [`wholesale_release_packages`] for
-//! why the second must be read from one anchored job and not from every
-//! `crates:` line in the file.
+//! # That the hazard is real
 //!
-//! That the hazard is real is not hypothetical. `#747` found four PRs' worth of
-//! reduced-basis gates (`R1.0`–`R1.3`) that had never once executed: green meant
-//! *skipped*. Nothing in the tree could have told anyone.
+//! `#747` found four PRs' worth of reduced-basis gates (`R1.0`–`R1.3`) that had
+//! never once executed: green meant *skipped*. Nothing in the tree could have
+//! told anyone.
 //!
 //! # Which direction is actually unguarded
 //!
@@ -55,13 +55,20 @@ use crate::licensed_gates::{owning_package, source_files, target_of, Target};
 
 /// Long help for `cargo xtask release-gates`.
 ///
-/// ★ **Single source, and that is the point.** `main.rs` points clap at this
-/// constant instead of restating the explanation in a doc comment beside the
-/// subcommand. The restated copy is precisely what drifted: this module's header
-/// was corrected to describe **both** coverage paths while the clap text kept the
-/// superseded one-path wording, so `--help` went on serving the misconception
-/// this module exists to prevent. Two copies of one explanation is the defect;
-/// deleting the second copy is the fix.
+/// ★ **The single statement of what this command asserts.** `main.rs` points
+/// clap here rather than restating it, and the module header points here rather
+/// than restating it — so there is one copy, not three.
+///
+/// That took two attempts, which is the useful part. The first drift was a clap
+/// doc comment in `main.rs` that kept the superseded one-path wording after the
+/// header was corrected, so `--help` served the misconception this module exists
+/// to prevent. Deleting it *looked* like the fix, but the same explanation still
+/// sat in both the header and here — the copy had moved from another file into
+/// this one, where it was merely easier to notice. The header now carries only
+/// rationale.
+///
+/// ⇒ **De-duplication means one of the copies stops existing**, not that they
+/// end up adjacent.
 pub(crate) const LONG_ABOUT: &str = "\
 Assert every release-only gate still reaches some CI job.
 
