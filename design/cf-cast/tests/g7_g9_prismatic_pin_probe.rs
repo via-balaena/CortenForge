@@ -7,25 +7,47 @@
 //! empirical manifold3d behaviour, not against intuition. Survives or
 //! gets pruned at the S2 implementation session.
 //!
-//! # Empirical outcome (this probe, on `dev`)
+//! # ⚠ THE ORIGINAL EMPIRICAL OUTCOME WAS NEVER REPRODUCIBLE (re-measured 2026-08-15)
 //!
-//! - **§G-7 BRANCH B + BRANCH C BOTH fire at production cell size**
-//!   (3 mm). Mesh-CSG union of a truncated-pyramid PrismaticPin onto
-//!   an SDF→MC half-sphere shell host adds 2 components AND introduces
-//!   a `SelfIntersecting` F4 Critical issue. Mesh-CSG subtract adds 1
-//!   component (the carved socket becomes a detached cavity-bottom
-//!   shell). The exact symptoms reproduce at the **over-resolved**
-//!   1 mm control cell size — so the failure is **not** MC-quantization
-//!   alone, it's the mesh-CSG-union of a sharp-cornered convex
-//!   polyhedron against the MC-tessellated curved-shell host
-//!   (recon-4's "bulk-welded MC × fine mesh-CSG" paradigm-boundary
-//!   pattern, see [[project-cf-cast-sdf-meshcsg-paradigm-boundary]]).
-//! - **§G-9 chamfer sweep inherits §G-7's BRANCH determination.** All
-//!   chamfer values in {0.0, 0.4, 0.6, 0.8, 1.0 mm} fail identically
-//!   under the §G-7 default mesh-CSG path. The §G-9 CSG-vs-slicer
-//!   question CANNOT be characterised independently until §G-12's
-//!   bail-out lands; once it does, §G-9 should be re-probed against
-//!   the bail-out pin geometry.
+//! This block used to record a "§G-7 BRANCH B + BRANCH C" failure: mesh-CSG union
+//! adding 2 disconnected components plus a `SelfIntersecting` F4 Critical, at both
+//! cell sizes. **Those numbers never described this tree.** The tests locking them
+//! failed in the very commit that introduced them, and stayed red for ~472 commits
+//! without anyone seeing it (CI cannot run them — see the note at the bottom).
+//!
+//! Cause: the same commit shipped the **§Q-5 marching-cubes winding fix**
+//! (`mesh-offset/src/marching_cubes.rs`, swap `e1`/`e2` for CCW outward winding).
+//! The characterisation was measured BEFORE that fix and locked AFTER it. Proof:
+//! reverting the swap makes the eight ORIGINAL tests pass again. (Against the
+//! rewritten tests below it does the opposite — it fails four of nine, which is
+//! how they are negative-controlled.)
+//!
+//! ⇒ **The §G-7 defect was inside-out MC winding corrupting manifold3d's boolean**,
+//! not a "mesh-CSG on MC-tessellated curved host" robustness boundary. Feed
+//! manifold3d a correctly-wound host and:
+//!
+//! - **Union is clean** at 3 mm and 1 mm and across the whole §G-9 chamfer sweep:
+//!   one component, no new critical types.
+//! - **Subtract leaves one extra component, and that is CORRECT**: the socket sits
+//!   wholly inside the shell wall, so the difference hollows an internal void whose
+//!   boundary is a second, inward-wound shell. Measured: 20 faces, `signed_volume`
+//!   −53.63, bbox inside the host's, *identical at both cell sizes* — the socket's
+//!   own tessellation, not a meshing artifact. `ThinWall` appears with it and is
+//!   likewise honest: a cavity inside a wall leaves thin material. Pre-§Q-5 the
+//!   printability checker was analysing an inside-out mesh and saw neither.
+//!
+//! ⚠ Tests below therefore assert **properties** (the union adds no component; the
+//! boolean introduces no robustness critical) rather than pinned counts. Pinning an
+//! observed number is precisely what went stale here.
+//!
+//! ▶ **§G-12 #2's premise is gone for both operations** and the bail-out should be
+//! re-decided on its own merits. Not done here: that is an architectural change
+//! touching `prismatic_pin.rs`, `plug.rs` and `piece.rs`.
+//!
+//! ⚠ CI cannot see this file: the grade job passes `--skip-coverage` (the heavy-test
+//! check lives inside the Coverage criterion) and `tests-debug` runs only AFFECTED
+//! crates, which cf-cast rarely is.
+//!
 //! - **§G-12 #2 bail-out PASSES** the BRANCH-A criteria. With the pin
 //!   composed pre-MC into the host SDF (`bounding ∖ body ∩ halfspace ∪
 //!   pin`) → MC → mesh, the result is 1 connected component, no new
@@ -331,6 +353,19 @@ fn pin_center_for_default_layout_mm() -> (f64, f64, f64) {
 
 /// Collect the set of F4 critical-issue TYPES present in a mesh,
 /// sorted + deduplicated.
+/// Criticals that indicate the BOOLEAN ITSELF went wrong, as opposed to honest
+/// feedback about the shape that legitimately came out of it.
+///
+/// §G-7's question is "is mesh-CSG usable on an MC-tessellated curved host?", and
+/// only these answer it. `ThinWall` / `ExcessiveOverhang` / `LongBridge` describe
+/// the resulting geometry and can be perfectly correct reports about a shape the
+/// CSG built exactly as asked.
+const CSG_ROBUSTNESS_CRITICALS: [PrintIssueType; 3] = [
+    PrintIssueType::SelfIntersecting,
+    PrintIssueType::NonManifold,
+    PrintIssueType::NotWatertight,
+];
+
 fn critical_issue_types(mesh: &IndexedMesh, config: &PrinterConfig) -> Vec<PrintIssueType> {
     let validation =
         validate_for_printing(mesh, config).expect("non-empty mesh validates without error");
@@ -463,56 +498,58 @@ fn g7_baseline_half_sphere_shell_host_is_one_component_at_both_cell_sizes() {
 
 // ── §G-7 characterisation: mesh-CSG PrismaticPin (default path) ──────
 //
-// These tests LOCK the empirically observed BRANCH B + BRANCH C
-// outcome at the time of this probe-spike commit. They are NOT
-// "PASS the recon's default path" tests — they are "the default path
-// FAILS in the following specific ways" regression guards. The recon
-// doc §G-7 records this as the falsification + §G-12 #2 bail-out
-// pick. If a future manifold3d / mesh-CSG fix flips these tests to
-// pass, the §G-12 #2 bail-out can be re-evaluated.
+// These tests once LOCKED a BRANCH B + BRANCH C failure as a regression
+// guard — "the default path FAILS in the following specific ways". That
+// framing is retracted: the numbers were measured against pre-§Q-5
+// marching cubes and never held in this tree (module header). They now
+// assert the opposite and, deliberately, as PROPERTIES rather than
+// counts — the pinned count is what went stale.
+//
+// ⚠ The recon doc §G-7 still records the falsification + §G-12 #2
+// bail-out pick. That pick's premise is gone; re-deciding it is an
+// architectural change and is NOT done here.
 
 /// §G-7 Union @ production cell size (3 mm): mesh-CSG union of a
 /// truncated-pyramid PrismaticPin onto the SDF→MC half-sphere shell
-/// host produces THREE components (baseline 1, +2 disconnected
-/// pin/junction shells) AND introduces a `SelfIntersecting` Critical
-/// F4 issue at the boolean junction.
+/// host is CLEAN — it adds no component and no critical type.
 ///
-/// → BRANCH B + BRANCH C, §G-12 #2 bail-out fires.
+/// → BRANCH A. The retracted BRANCH B + C reading (+2 shells and a
+/// `SelfIntersecting` at the junction) described a host built by
+/// pre-§Q-5 marching cubes; see the module header.
 #[test]
-fn g7_characterisation_union_at_production_cell_size_branches_b_and_c() {
+fn g7_union_at_production_cell_size_adds_no_component_or_critical() {
     let run = run_union_probe(PROD_CELL_SIZE_M);
     eprintln!("g7 union @ 3mm cell: {run:#?}");
 
-    // BRANCH B characterisation: post-union components = baseline + 2.
     assert_eq!(
         run.baseline_components, 1,
         "§G-7 baseline regression — half-shell host should be 1-component",
     );
     assert_eq!(
-        run.post_components, 3,
-        "§G-7 union @ 3 mm — post-union components changed from the locked +2 BRANCH B \
-         characterisation. If this is now 1, BRANCH A; rerun the recon §G-7 decision.",
+        run.post_components, run.baseline_components,
+        "§G-7 union @ 3 mm — the union must add NO components. A property, not a pinned \
+         count: the locked +2 was an artifact of pre-§Q-5 inside-out MC winding.",
     );
 
-    // BRANCH C characterisation: post-union introduces SelfIntersecting.
     let new_types = run.new_critical_types();
-    assert_eq!(
-        new_types,
-        vec![PrintIssueType::SelfIntersecting],
-        "§G-7 union @ 3 mm — new critical types changed from the locked BRANCH C \
-         characterisation [SelfIntersecting]. Recon §G-7 decision needs re-evaluation.",
+    assert!(
+        new_types.is_empty(),
+        "§G-7 union @ 3 mm — union introduced {new_types:?}; expected none. \
+         The locked [SelfIntersecting] was the pre-§Q-5 winding artifact.",
     );
 }
 
-/// §G-7 Subtract @ production cell size (3 mm): mesh-CSG difference
-/// of a PrismaticPin socket from the half-shell host produces TWO
-/// components (baseline 1, +1 detached interior shell at the socket
-/// floor) but introduces NO new critical types.
+/// §G-7 Subtract @ production cell size (3 mm): mesh-CSG difference of
+/// a PrismaticPin socket from the half-shell host leaves TWO components
+/// — the host, plus the boundary of the internal void it hollowed.
 ///
-/// → BRANCH B only (subtract path); §G-12 #2 bail-out fires for both
-/// union + subtract.
+/// → BRANCH A. The extra component is correct rather than detached
+/// debris; `g7_subtract_extra_component_is_an_inward_wound_internal_cavity`
+/// is what establishes that, and this test asserts only that the boolean
+/// introduced no robustness critical. ⚠ `ThinWall` DOES appear and is
+/// allowed: see the note in the body.
 #[test]
-fn g7_characterisation_subtract_at_production_cell_size_branch_b_only() {
+fn g7_subtract_at_production_cell_size_hollows_one_internal_cavity() {
     let run = run_subtract_probe(PROD_CELL_SIZE_M);
     eprintln!("g7 subtract @ 3mm cell: {run:#?}");
 
@@ -522,61 +559,177 @@ fn g7_characterisation_subtract_at_production_cell_size_branch_b_only() {
     );
     assert_eq!(
         run.post_components, 2,
-        "§G-7 subtract @ 3 mm — post-subtract components changed from the locked +1 BRANCH B \
-         characterisation. If this is now 1, BRANCH A; rerun the recon §G-7 decision.",
+        "§G-7 subtract @ 3 mm — expected the host plus exactly one internal-cavity \
+         boundary; a different count means the difference did something other than \
+         hollow the socket out of the wall.",
     );
 
-    let new_types = run.new_critical_types();
+    // ⚠ `ThinWall` DOES appear here and is not a CSG failure: the socket sits wholly
+    // inside the shell wall, so the difference hollows an internal void and leaves thin
+    // material between void and surface. Pre-§Q-5 the printability checker was analysing
+    // an inside-out mesh, which is why the locked characterisation saw nothing.
+    let offenders: Vec<_> = run
+        .new_critical_types()
+        .into_iter()
+        .filter(|t| CSG_ROBUSTNESS_CRITICALS.contains(t))
+        .collect();
     assert!(
-        new_types.is_empty(),
-        "§G-7 subtract @ 3 mm — new critical types {new_types:?} appeared; previously empty. \
-         The subtract path was BRANCH B only (no F4 critical at the junction). Recon \
-         §G-7 decision needs re-evaluation.",
+        offenders.is_empty(),
+        "§G-7 subtract @ 3 mm — the boolean itself misbehaved: {offenders:?}",
     );
 }
 
-/// §G-7 Union @ fine cell size (1 mm): SAME BRANCH B + BRANCH C
-/// symptoms reproduce at the over-resolved control cell size.
-/// → Failure is NOT pure MC quantization — it's manifold3d's mesh-CSG-
-/// on-MC-curved-shell robustness boundary. Strengthens the §G-12 #2
-/// case (paradigm-boundary correction) over §G-12 #1 (which would
-/// only need to fix MC quantization).
+/// §G-7 Union @ fine cell size (1 mm): the over-resolved control is
+/// clean too.
+///
+/// → Clean at BOTH cell sizes is what rules out MC quantisation as an
+/// explanation for anything. The old reading used the same two-cell
+/// design to argue the opposite, from numbers that never reproduced.
 #[test]
-fn g7_characterisation_union_at_fine_cell_size_also_branches_b_and_c() {
+fn g7_union_at_fine_cell_size_is_clean_too_ruling_out_mc_quantisation() {
     let run = run_union_probe(FINE_CELL_SIZE_M);
     eprintln!("g7 union @ 1mm cell: {run:#?}");
 
     assert_eq!(run.baseline_components, 1);
     assert_eq!(
-        run.post_components, 3,
-        "§G-7 union @ 1 mm — fine-cell control changed from the locked +2 BRANCH B \
-         characterisation. If this fixed itself at 1 mm but stayed broken at 3 mm, the \
-         failure would be pure MC-quantization (§G-12 #1 would suffice). The locked \
-         characterisation says BOTH cell sizes fail identically → §G-12 #2 is correct.",
+        run.post_components, run.baseline_components,
+        "§G-7 union @ 1 mm — the over-resolved control must be clean too. Clean at BOTH \
+         cell sizes is what rules out MC quantisation as the explanation.",
     );
     let new_types = run.new_critical_types();
-    assert_eq!(
-        new_types,
-        vec![PrintIssueType::SelfIntersecting],
-        "§G-7 union @ 1 mm — new critical types {new_types:?} vs locked [SelfIntersecting].",
+    assert!(
+        new_types.is_empty(),
+        "§G-7 union @ 1 mm — union introduced {new_types:?}; expected none.",
     );
 }
 
-/// §G-7 Subtract @ fine cell size (1 mm): same BRANCH B only outcome
-/// as the 3 mm subtract path.
+/// §G-7 Subtract @ fine cell size (1 mm): same outcome as the 3 mm
+/// subtract path — host plus one internal-cavity boundary, and no
+/// robustness critical from the boolean.
 #[test]
-fn g7_characterisation_subtract_at_fine_cell_size_branch_b_only() {
+fn g7_subtract_at_fine_cell_size_hollows_one_internal_cavity() {
     let run = run_subtract_probe(FINE_CELL_SIZE_M);
     eprintln!("g7 subtract @ 1mm cell: {run:#?}");
 
     assert_eq!(run.baseline_components, 1);
     assert_eq!(
         run.post_components, 2,
-        "§G-7 subtract @ 1 mm — fine-cell control changed from the locked +1 BRANCH B \
-         characterisation.",
+        "§G-7 subtract @ 1 mm — fine-cell control must hollow the same single cavity.",
     );
-    let new_types = run.new_critical_types();
-    assert!(new_types.is_empty(), "subtract path stays BRANCH B only");
+    let offenders: Vec<_> = run
+        .new_critical_types()
+        .into_iter()
+        .filter(|t| CSG_ROBUSTNESS_CRITICALS.contains(t))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "§G-7 subtract @ 1 mm — the boolean itself misbehaved: {offenders:?}",
+    );
+}
+
+/// ★ The property that makes the subtract's extra component CORRECT rather than
+/// spurious, and the reason those two tests can assert `+1` without re-locking a
+/// stale number.
+///
+/// The socket sits wholly inside the shell wall, so the difference hollows an
+/// internal void. A void's boundary is a closed, **inward-wound** shell contained
+/// in the host's bounds — whereas a CSG robustness failure would leave debris that
+/// is outward-wound, outside the host, resolution-dependent, or all three.
+///
+/// Measured at both cell sizes: 20 faces, `signed_volume` −53.63, bbox inside the
+/// host's, host component face count untouched. Identical at 3 mm and 1 mm, which
+/// is what shows it is the socket's own tessellation rather than a meshing artifact.
+#[test]
+fn g7_subtract_extra_component_is_an_inward_wound_internal_cavity() {
+    use std::collections::HashMap;
+
+    let mut seen: Vec<(usize, f64)> = Vec::new();
+    for cell in [PROD_CELL_SIZE_M, FINE_CELL_SIZE_M] {
+        let host = build_curved_shell_host_manifold(cell);
+        let host_mesh = manifold_to_indexed_mesh(&host);
+        let host_faces = find_connected_components(&host_mesh).largest_component_size;
+
+        let clearance_half_mm = (SOCKET_DIAMETRAL_CLEARANCE_M * METERS_TO_MM) / 2.0;
+        let socket = build_prismatic_pin_manifold(
+            PIN_BASE_HALF_MM + clearance_half_mm,
+            PIN_TIP_HALF_MM + clearance_half_mm,
+            PIN_HALF_LENGTH_MM,
+            PIN_DEFAULT_CHAMFER_MM,
+        );
+        let (px, py, pz) = pin_center_for_default_layout_mm();
+        let result_mesh = manifold_to_indexed_mesh(&host.difference(&socket.translate(px, py, pz)));
+        let analysis = find_connected_components(&result_mesh);
+
+        assert_eq!(
+            analysis.component_count, 2,
+            "cell {cell}: expected the host plus one cavity shell",
+        );
+        assert_eq!(
+            analysis.largest_component_size, host_faces,
+            "cell {cell}: the host component must come through the difference untouched — \
+             a changed face count would mean the boolean re-tessellated the shell",
+        );
+
+        // Rebuild the small component on its own and interrogate it.
+        let small = analysis
+            .components
+            .iter()
+            .min_by_key(|c| c.len())
+            .expect("two components");
+        let mut sub = IndexedMesh::new();
+        let mut remap: HashMap<u32, u32> = HashMap::new();
+        for &face_id in small {
+            let tri = result_mesh.faces[face_id as usize];
+            let mut new_tri = [0_u32; 3];
+            for (slot, &v) in tri.iter().enumerate() {
+                let next = u32::try_from(sub.vertices.len()).expect("small component fits u32");
+                let mapped = *remap.entry(v).or_insert_with(|| {
+                    sub.vertices.push(result_mesh.vertices[v as usize]);
+                    next
+                });
+                new_tri[slot] = mapped;
+            }
+            sub.faces.push(new_tri);
+        }
+
+        let volume = sub.signed_volume();
+        assert!(
+            volume < 0.0,
+            "cell {cell}: the extra shell must be INWARD-wound (a cavity boundary); \
+             signed_volume {volume} — a positive value would mean detached solid debris",
+        );
+
+        let inside = |pick: fn(&nalgebra::Point3<f64>) -> f64| {
+            let (lo, hi) = sub.vertices.iter().fold((f64::MAX, f64::MIN), |(l, h), v| {
+                (l.min(pick(v)), h.max(pick(v)))
+            });
+            let (hlo, hhi) = host_mesh
+                .vertices
+                .iter()
+                .fold((f64::MAX, f64::MIN), |(l, h), v| {
+                    (l.min(pick(v)), h.max(pick(v)))
+                });
+            lo >= hlo && hi <= hhi
+        };
+        assert!(
+            inside(|v| v.x) && inside(|v| v.y) && inside(|v| v.z),
+            "cell {cell}: the cavity shell must lie inside the host's bounds",
+        );
+
+        seen.push((small.len(), volume));
+    }
+
+    // Resolution-independence is the discriminator: the socket's own tessellation
+    // does not change with the host's cell size, a meshing artifact would.
+    assert_eq!(
+        seen[0].0, seen[1].0,
+        "cavity face count moved with cell size ({seen:?}) — that would make it a \
+         meshing artifact rather than the socket geometry",
+    );
+    assert!(
+        (seen[0].1 - seen[1].1).abs() < 1e-9,
+        "cavity volume moved with cell size ({seen:?})",
+    );
 }
 
 // ── §G-12 #2 bail-out characterisation: SDF-side pin ────────────────
@@ -686,20 +839,17 @@ fn g12_2_bailout_sdf_pin_yields_one_component_no_new_critical_at_production_cell
 /// the §G-7 BRANCH B + BRANCH C outcome is **chamfer-dependent** or
 /// **chamfer-independent**.
 ///
-/// Empirical result: all chamfer values in {0.0, 0.4, 0.6, 0.8, 1.0
-/// mm} fail IDENTICALLY (post-union components = 3, new critical
-/// types = [SelfIntersecting]). The failure is chamfer-INDEPENDENT —
-/// it's the underlying mesh-CSG-on-MC-curved-shell paradigm boundary,
-/// not the chamfer band geometry.
+/// Empirical result: all chamfer values in {0.0, 0.4, 0.6, 0.8, 1.0 mm}
+/// behave IDENTICALLY, and cleanly — one component, no new critical
+/// types. Chamfer-independence is retained from the original reading;
+/// what changed is the shape it is independent OF, which is now "clean"
+/// rather than "BRANCH B + C".
 ///
-/// → §G-9 BRANCH determination INHERITS §G-7's BRANCH B + BRANCH C.
-/// Once §G-12 #2 is implemented (SDF-side PrismaticPin emission with
-/// chamfer band emitted as SDF, e.g. `cuboid + smooth taper +
-/// chamfer-band cuboid subtract`), §G-9 should be re-probed against
-/// that path. The §G-9 CSG-vs-slicer decision (CSG-level chamfer
-/// option (i)) remains intact as long as the chamfer is SDF-side.
+/// → §G-9 INHERITS §G-7's BRANCH A. The old text deferred the §G-9
+/// CSG-vs-slicer question until §G-12 #2 landed; with mesh-CSG clean on
+/// a correctly-wound host, that question can be answered directly.
 #[test]
-fn g9_characterisation_chamfer_sweep_fails_identically_chamfer_independent() {
+fn g9_chamfer_sweep_is_clean_and_chamfer_independent() {
     const CHAMFER_SWEEP_MM: &[f64] = &[0.0, 0.4, 0.6, 0.8, 1.0];
 
     let host = build_curved_shell_host_manifold(PROD_CELL_SIZE_M);
@@ -770,15 +920,17 @@ fn g9_characterisation_chamfer_sweep_fails_identically_chamfer_independent() {
             first.0, first.2,
         );
     }
-    // Lock the specific failure shape — same as g7 union characterisation.
+    // The shape itself, post-§Q-5: clean at every chamfer. Asserted as a property
+    // (the union adds no component) rather than a pinned count, because the pinned
+    // count is exactly what went stale here.
     assert_eq!(
-        first.1, 3,
-        "§G-9 sweep post-union components diverged from locked +2 BRANCH B characterisation",
+        first.1, 1,
+        "§G-9 sweep — the union must leave a single component at every chamfer",
     );
-    assert_eq!(
+    assert!(
+        first.2.is_empty(),
+        "§G-9 sweep — union introduced {:?}; expected none",
         first.2,
-        vec![PrintIssueType::SelfIntersecting],
-        "§G-9 sweep new critical types diverged from locked [SelfIntersecting]",
     );
 }
 

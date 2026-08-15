@@ -18,12 +18,19 @@
 //! features → features sub-MC-cell get eaten by quantization).
 //!
 //! What the §G-7 probe MISSED: a cylinder control on the same
-//! synthetic shell host. This test runs that control. Result
-//! (2026-05-24): cylinder mesh-CSG produces the SAME BRANCH B+C
-//! symptoms on the synthetic shell. The §G-7 "evidence against
-//! truncated-pyramid" was actually evidence against any naive
-//! `Manifold::union` of a primitive onto an MC-derived curved-shell
-//! host — NOT shape-specific.
+//! synthetic shell host. This test runs that control.
+//!
+//! ⚠ RE-MEASURED 2026-08-15. The 2026-05-24 result — "cylinder
+//! reproduces the SAME BRANCH B+C symptoms" — was measured against
+//! PRE-§Q-5 marching cubes and never held in this tree; this test
+//! failed in the commit that added it. Reverting `mesh-offset`'s
+//! e1/e2 winding swap makes the old assertion pass again.
+//!
+//! The control's CONCLUSION survives and is even strengthened: the
+//! symptoms were never shape-specific. They were not a naive-union
+//! paradigm boundary either — they were inside-out MC winding
+//! corrupting manifold3d's boolean. On a correctly-wound host the
+//! cylinder unions cleanly, exactly as the pyramid does.
 //!
 //! # What "naive" means here
 //!
@@ -133,11 +140,11 @@ fn critical_issue_types(mesh: &IndexedMesh) -> Vec<PrintIssueType> {
     types
 }
 
-/// THE LOAD-BEARING CONTROL: cylinder mesh-CSG `Manifold::union`
-/// onto the synthetic §G-7 shell host (naive pose: +Z axis, at the
-/// same wall midpoint the §G-7 hull_pts pyramid uses) produces the
-/// SAME BRANCH B (post-components > baseline) + BRANCH C
-/// (SelfIntersecting added) symptoms as the §G-7 hull_pts probe.
+/// THE LOAD-BEARING CONTROL: cylinder mesh-CSG `Manifold::union` onto
+/// the synthetic §G-7 shell host (naive pose: +Z axis, at the same wall
+/// midpoint the §G-7 hull_pts pyramid uses) behaves exactly as the
+/// hull_pts pyramid does — cleanly, adding no component and no
+/// `SelfIntersecting`.
 ///
 /// This refutes the implicit "evidence against truncated-pyramid"
 /// reading of the §G-7 probe. Naive `Manifold::union` of ANY
@@ -148,7 +155,7 @@ fn critical_issue_types(mesh: &IndexedMesh) -> Vec<PrintIssueType> {
 /// annulus-midpoint center, symmetric-across-seam placement) per
 /// the recon-4 (P) CONTAINED / PROTRUDING / WELDED-TO-BULK framework.
 #[test]
-fn g7c_cylinder_naive_union_on_synth_shell_fires_branch_b_and_c_same_as_hull_pts() {
+fn g7c_cylinder_naive_union_on_synth_shell_is_clean_same_as_hull_pts() {
     let host = build_synthetic_shell_host_manifold(PROD_CELL_SIZE_M);
     let baseline_mesh = manifold_to_indexed_mesh(&host);
     let baseline_components = find_connected_components(&baseline_mesh).component_count;
@@ -184,21 +191,24 @@ fn g7c_cylinder_naive_union_on_synth_shell_fires_branch_b_and_c_same_as_hull_pts
         baseline_components, baseline_critical, post_components, post_critical, new_critical,
     );
 
-    // Lock the observed BRANCH B+C behaviour. If this ever flips to
-    // PASS (cylinder cleanly unions on the synthetic shell), then a
-    // manifold3d upstream fix has shifted the naive-union semantics
-    // and the §G-7 framework conclusion needs re-evaluation. The
-    // current expectation is BRANCH B+C — same symptoms as the
-    // §G-7 hull_pts probe.
-    assert!(
-        post_components > baseline_components,
-        "cylinder mesh-CSG expected to fire BRANCH B (component++) on synth shell — \
-         if it doesn't, the §G-7 framework's hull_pts-pyramid-specific reading needs \
-         re-evaluation. baseline={baseline_components}, post={post_components}",
+    // ⚠ This used to lock "BRANCH B+C fires" — component++ plus a SelfIntersecting
+    // critical. Like the §G-7 hull_pts probe next door, those numbers were measured
+    // against PRE-§Q-5 marching cubes and were never reproducible in this tree: the
+    // commit that added them also fixed the MC winding (`mesh-offset`'s e1/e2 swap),
+    // and reverting that swap makes the old assertions pass again.
+    //
+    // ⇒ what BRANCH B+C actually described was inside-out winding corrupting
+    // manifold3d's boolean, not a naive-union paradigm boundary. A correctly-wound
+    // host unions cleanly, cylinder as well as pyramid — which is the property
+    // asserted here, rather than a pinned count.
+    assert_eq!(
+        post_components, baseline_components,
+        "cylinder mesh-CSG must add NO component on the synth shell; \
+         baseline={baseline_components}, post={post_components}",
     );
     assert!(
-        new_critical.contains(&PrintIssueType::SelfIntersecting),
-        "cylinder mesh-CSG expected to fire BRANCH C (SelfIntersecting added) on synth shell. \
-         new_critical={new_critical:?}",
+        !new_critical.contains(&PrintIssueType::SelfIntersecting),
+        "cylinder mesh-CSG must not introduce SelfIntersecting on a correctly-wound \
+         host. new_critical={new_critical:?}",
     );
 }
