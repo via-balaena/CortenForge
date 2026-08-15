@@ -356,6 +356,7 @@ jobs:
         include:
           - id: 1
             crates: cf-bevy-common sim-bevy-soft cf-viewer sim-ml-chassis-bevy cf-spine-studio
+              sim-bevy cf-mesh-paint
               cf-sim-research cf-scan-prep cf-device-design cf-device-geometry
               mesh-types mesh-io mesh-repair mesh-loft mesh-select mesh-sdf mesh-offset mesh-shell mesh-measure
               cf-msk-lib cf-mjcf-emit cf-osim
@@ -363,8 +364,11 @@ jobs:
             crates: cf-studio-core cf-studio-engine cf-studio-gui cf-studio
               cf-geometry cf-spatial cf-scan-prep-core mesh-printability mesh-lattice mesh
               cortenforge cf-msk-fit cf-anthro cf-cap-planes cf-device-types xtask
+              example-ml-6dof-cem-linear example-ml-vec-env-ppo example-ml-vec-env-auto-reset
+              example-ml-vec-env-reinforce example-ml-vec-env-sac example-ml-vec-env-td3
           - id: 3
             crates: sim-soft sim-core sim-mjcf sim-urdf sim-gpu sim-types
+              sim-truss sim-gpu-benches
               sim-therm-env cf-design cf-design-tests cf-fsu-geometry cf-routing cf-routing-tests cf-cast-cli sim
               pbit-analyze pbit-fw-core
     steps:
@@ -1082,6 +1086,14 @@ jobs:
 
       - name: Every release-only gate still reaches a CI job
         run: cargo run -q -p xtask -- release-gates
+
+      # The one before it: a crate whose tests CI never STARTED running. Found
+      # 147 tests across 10 crates that no job named — including sim-truss and
+      # cf-mesh-paint, both on live paths. ⚠ What counts as "reached" is defined
+      # once, in `cargo xtask test-reachability --help`; deliberately not
+      # restated here, because the duplicate copy is what drifted last time.
+      - name: Every crate WITH tests still reaches a CI job
+        run: cargo run -q -p xtask -- test-reachability
 
   quality-gate:
     name: Quality Gate
