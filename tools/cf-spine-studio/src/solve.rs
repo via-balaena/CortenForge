@@ -16,7 +16,7 @@ use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
 use cf_mesh_paint::prelude::PaintBody;
 use mesh_loft::{WallCorrespondence, assemble_bushing, extract_patch, finalize_patch, flip_patch};
-use mesh_repair::{RepairParams, repair_mesh};
+use mesh_repair::{RepairParams, repair_mesh, winding_census};
 use mesh_types::IndexedMesh;
 
 use crate::overlays::Overlays;
@@ -194,11 +194,15 @@ pub(crate) fn discard_pending_work(
 ///
 /// # Errors
 ///
-/// Three ways, all surfaced in the Design panel rather than panicking:
+/// Five ways, all surfaced in the Design panel rather than panicking:
 /// - either patch is unpainted;
 /// - the patches loft to an empty surface;
-/// - the explode-then-weld below merged **nothing**, which means the lofted
-///   surface has no shared topology and would tet-mesh shattered.
+/// - the explode-then-weld merged **nothing**, which means the lofted surface
+///   has no shared topology and would tet-mesh shattered;
+/// - the welded surface has no interior edge to judge, so a clean winding census
+///   over it would be vacuous rather than reassuring;
+/// - the welded surface is not consistently wound, which inflates the disc with
+///   phantom material the downstream checks pass.
 fn loft_painted_disc(bodies: &Query<&PaintBody>) -> Result<IndexedMesh, String> {
     let mut l4 = None;
     let mut l5 = None;
@@ -219,6 +223,19 @@ fn loft_painted_disc(bodies: &Query<&PaintBody>) -> Result<IndexedMesh, String> 
     };
     let top = flip_patch(&l4);
     let raw = assemble_bushing(&top, &l5, 1, WallCorrespondence::ArcLength).mesh;
+    weld_and_check(raw)
+}
+
+/// Everything [`loft_painted_disc`] does to a raw loft once it has one: reject an
+/// empty surface, rebuild shared topology, and refuse a surface the FSU solve
+/// cannot trust. Split out so the guards **and their order** are testable — the
+/// remainder of `loft_painted_disc` is the Bevy query it cannot be tested without.
+///
+/// # Errors
+///
+/// Three ways: an empty loft; a loft that welded nothing; a welded surface that is
+/// unjudgeable or inconsistently wound.
+fn weld_and_check(raw: IndexedMesh) -> Result<IndexedMesh, String> {
     // Checked before the weld guard below so that guard's message can be taken
     // at face value: an empty loft also welds nothing, and reporting it as
     // "shattered" would blame the weld for a patch problem.
@@ -272,7 +289,71 @@ fn loft_painted_disc(bodies: &Query<&PaintBody>) -> Result<IndexedMesh, String> 
             summary.initial_vertices, summary.initial_faces
         ));
     }
+
+    // ★ Winding is judged on the WELDED surface, not on the raw loft. This is
+    // the mesh that actually reaches the solve, and the raw loft's own census
+    // is dominated by the unshared seam topology the explode-and-weld above
+    // exists to rebuild — reading it there would blame winding for a topology
+    // problem. `repair_mesh` leaves orientation alone (`RepairParams` has no
+    // winding knob and the repair never calls `fix_winding_order`), so whatever
+    // the loft produced survives the round-trip intact.
+    //
+    // ★ Measured, license-free, in `cf-fsu-model`'s
+    // `an_inconsistent_winding_puts_over_a_third_of_the_tet_mesh_outside_the_surface`:
+    // reversing 2 of a disc-like slab's 12 triangles puts **38–57 % of the tet
+    // mesh outside the surface's own AABB**, holding across a 4× cell sweep, so
+    // it is a winding effect rather than a discretisation one. Same magnitude
+    // as the ~40 % that earned the weld guard above its hard error.
+    //
+    // ⚠ It is WORST at the cell this Studio actually builds at:
+    // `CoupledParams::default()` carries `DiscParams::default()`, whose 0.003 m
+    // is the coarsest point swept and the one that measured 56.91 %. The
+    // largest-component filter is no answer either — it removes some of the
+    // phantom there (2 components) but at the finest cell the phantom is a
+    // SINGLE component, so the filter keeps all of it. Neither end is safe.
+    //
+    // ⚠ The meshed VOLUME does not reveal this: the dirty arm read 91 % of true
+    // where the clean arm read 96 %. Only the per-edge census separates them,
+    // which is why this is not folded into a volume sanity check downstream.
+    reject_inconsistent_winding(&disc)?;
     Ok(disc)
+}
+
+/// The winding half of [`weld_and_check`]'s post-weld guards: refuse a surface
+/// whose orientation the FSU solve cannot trust, and refuse one whose census has
+/// nothing to say about it.
+///
+/// # Errors
+///
+/// Two ways: the welded surface has no interior edge to judge, so a zero census
+/// over it would be vacuous rather than a clean bill; or it is judgeably
+/// inconsistent.
+fn reject_inconsistent_winding(disc: &IndexedMesh) -> Result<(), String> {
+    let census = winding_census(disc);
+    if !census.has_judgeable_edges() {
+        return Err(format!(
+            "lofted disc has no interior edges to judge ({} faces, {} boundary \
+             edges) — it welded, but not into a surface. A winding census over \
+             zero interior edges reports no defect however broken the surface \
+             is, so this cannot be read as a clean bill.",
+            disc.faces.len(),
+            census.boundary_edges,
+        ));
+    }
+    if census.has_inconsistent_winding() {
+        return Err(format!(
+            "lofted disc is not consistently wound: {} of {} interior edges are \
+             traversed the same way by both their faces ({} faces affected). A \
+             whole-mesh flip cannot fix this — it only relabels which faces are \
+             wrong. Check that both vertebra meshes are consistently wound \
+             before painting. Left alone this inflates the disc with phantom \
+             material — 38–57 % of the tet mesh across the resolutions \
+             measured, 57 % at the cell size this build uses — which the \
+             meshed volume does not reveal.",
+            census.inconsistent_edges, census.interior_edges, census.faces_on_inconsistent_edges,
+        ));
+    }
+    Ok(())
 }
 
 /// Explode a mesh into per-triangle soup (each face gets its own 3 vertices,
@@ -399,6 +480,151 @@ mod tests {
         assert_eq!(
             summary.vertices_welded, 0,
             "nothing should merge when no two corners coincide: {summary:?}"
+        );
+    }
+
+    /// A closed, outward-wound unit box: 8 verts, 12 triangles, the z− cap
+    /// first so a test can reverse exactly that cap.
+    fn closed_box() -> IndexedMesh {
+        IndexedMesh::from_parts(
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(1.0, 1.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+                Point3::new(0.0, 0.0, 1.0),
+                Point3::new(1.0, 0.0, 1.0),
+                Point3::new(1.0, 1.0, 1.0),
+                Point3::new(0.0, 1.0, 1.0),
+            ],
+            vec![
+                [0, 3, 2],
+                [0, 2, 1], // z−
+                [4, 5, 6],
+                [4, 6, 7], // z+
+                [0, 1, 5],
+                [0, 5, 4], // y−
+                [2, 3, 7],
+                [2, 7, 6], // y+
+                [0, 4, 7],
+                [0, 7, 3], // x−
+                [1, 2, 6],
+                [1, 6, 5], // x+
+            ],
+        )
+    }
+
+    /// The guard ORDER, which `weld_and_check`'s empty check exists to protect:
+    /// an empty loft welds nothing too, so if the weld guard ran first it would
+    /// blame the weld for what is really a painting problem. The comment in
+    /// `weld_and_check` has claimed this since #760; nothing tested it until now.
+    #[test]
+    fn an_empty_loft_is_reported_as_empty_rather_than_as_a_failed_weld() {
+        let outcome = weld_and_check(IndexedMesh::from_parts(Vec::new(), Vec::new()));
+        assert!(
+            outcome
+                .as_ref()
+                .is_err_and(|e| e.contains("empty disc surface")),
+            "an empty loft must name the painting, not the weld; got {outcome:?}"
+        );
+        assert!(
+            outcome
+                .as_ref()
+                .is_err_and(|e| !e.contains("failed to weld")),
+            "the weld guard pre-empted the empty check — its message now \
+             misattributes a painting problem; got {outcome:?}"
+        );
+    }
+
+    /// ★ The winding guard's premise, tested rather than assumed: `repair_mesh`
+    /// leaves orientation alone, so an inconsistent winding survives the
+    /// explode-and-weld **unchanged** and is still there to be judged on the
+    /// welded surface. This is why the census is taken after the weld rather
+    /// than on the raw loft.
+    #[test]
+    fn an_inconsistent_winding_survives_the_explode_and_weld_unchanged() {
+        let mut dirty = closed_box();
+        dirty.faces[0].swap(1, 2);
+        dirty.faces[1].swap(1, 2);
+
+        assert_eq!(winding_census(&closed_box()).inconsistent_edges, 0);
+        let injected = winding_census(&dirty).inconsistent_edges;
+        assert!(injected > 0, "fixture did not become inconsistent");
+
+        let mut soup = explode_to_soup(&dirty);
+        let summary = repair_mesh(&mut soup, &RepairParams::for_scans());
+        assert!(
+            summary.vertices_welded > 0,
+            "the weld guard would have fired first, so this premise never applies: {summary:?}"
+        );
+        assert_eq!(
+            winding_census(&soup).inconsistent_edges,
+            injected,
+            "the weld altered the winding — the guard would be reading the wrong stage"
+        );
+    }
+
+    /// ★ The negative control: the guard must be able to FIRE for the reason it
+    /// claims, and must stay quiet on a well-wound surface through the same
+    /// path. Without this, a guard that could never fire would look identical
+    /// to one that never needs to.
+    #[test]
+    fn the_winding_guard_fires_on_a_reversed_cap_and_passes_a_clean_surface() {
+        // Driven through `weld_and_check`, so this covers the guard's WIRING —
+        // deleting the call site fails this test, which testing the predicate
+        // alone would not.
+        assert!(
+            weld_and_check(closed_box()).is_ok(),
+            "the guard chain false-fired on a consistently-wound box"
+        );
+
+        let mut dirty = closed_box();
+        dirty.faces[0].swap(1, 2);
+        dirty.faces[1].swap(1, 2);
+        let outcome = weld_and_check(dirty);
+        assert!(
+            outcome
+                .as_ref()
+                .is_err_and(|e| e.contains("not consistently wound")),
+            "the guard must reject a reversed cap, naming winding as the reason; got {outcome:?}"
+        );
+    }
+
+    /// The other half of the guard: a surface with nothing judgeable must be
+    /// rejected rather than read as clean, because `inconsistent_edges == 0`
+    /// over zero interior edges is not a clean bill.
+    #[test]
+    fn a_surface_with_no_interior_edges_is_rejected_rather_than_read_as_clean() {
+        // Two triangles meeting at exactly one shared position: the weld finds
+        // something to merge, yet no edge ever has two incident faces.
+        let lone = IndexedMesh::from_parts(
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(-1.0, 0.0, 0.0),
+                Point3::new(0.0, -1.0, 0.0),
+            ],
+            vec![[0, 1, 2], [3, 4, 5]],
+        );
+        let census = winding_census(&lone);
+        assert_eq!(census.interior_edges, 0);
+        assert_eq!(
+            census.inconsistent_edges, 0,
+            "the trap this guard exists for: a zero that means 'nothing judged'"
+        );
+
+        // ⚠ Reached through the full chain, which also proves the branch is not
+        // dead: these two triangles share a POSITION, so the weld guard above is
+        // satisfied (something merged) while no edge ever gains a second face.
+        let outcome = weld_and_check(lone);
+        assert!(
+            outcome
+                .as_ref()
+                .is_err_and(|e| e.contains("no interior edges to judge")),
+            "a fan sharing only a vertex must be rejected as unjudgeable, not read \
+             as clean; got {outcome:?}"
         );
     }
 }
