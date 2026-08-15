@@ -1020,7 +1020,20 @@ jobs:
         shell: bash
 
   # ============================================================================
-  # LICENSED GATES - the inventory of what CI can never run
+  # SOURCE-SCAN SELF-CHECKS - gates that can go missing without anything failing
+  # ============================================================================
+  # Two checks live here because they share one rationale (below) and one cost
+  # profile: both derive an inventory from the source tree, neither builds.
+  #
+  # 1. LICENSED GATES - the inventory of what CI can never run.
+  # 2. RELEASE-ONLY GATES - the inventory of what CI can silently stop running.
+  #    A `#[cfg_attr(debug_assertions, ignore)]` test is skipped by every debug
+  #    job by design, so it executes in exactly one place: a release job that
+  #    either names its binary (`--test <name>`) or runs its whole package.
+  #    Miss both and it runs NOWHERE while CI stays green — `#747` found four
+  #    PRs' worth of reduced-basis gates in exactly that state.
+  #    (The reverse direction needs no check: `--test` on a name that does not
+  #    exist is already a hard cargo error.)
   # ============================================================================
   # A set of this workspace's most load-bearing gates read the BodyParts3D
   # anatomy meshes (CC BY-SA 2.1 JP, uncommittable), so every one is `#[ignore]`d
@@ -1054,6 +1067,9 @@ jobs:
 
       - name: Every licence-gated test is still visible to the enumerator
         run: cargo run -q -p xtask -- licensed-gates --check
+
+      - name: Every release-only gate still reaches a CI job
+        run: cargo run -q -p xtask -- release-gates
 
   quality-gate:
     name: Quality Gate
