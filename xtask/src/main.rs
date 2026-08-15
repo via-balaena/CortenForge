@@ -229,13 +229,14 @@ enum Commands {
     },
 
     /// Assert every release-only gate still reaches some CI job.
-    ///
-    /// A test written `#[cfg_attr(debug_assertions, ignore = "…")]` is skipped by
-    /// every debug job by design, so it executes only where a release job picks
-    /// it up — either by naming its binary (`--test <name>`) or by running its
-    /// whole package. Miss both and it runs NOWHERE while CI stays green;
-    /// `#747` found four PRs' worth of gates in that state. Derived from the
-    /// source tree, so a gate added today is checked today. Needs no build.
+    //
+    // ⚠ The long help lives in `release_gates::LONG_ABOUT`, NOT in a doc comment
+    // here. A doc comment would be a second copy of the module's own
+    // explanation, and that copy is what drifted: the module was corrected to
+    // describe both coverage paths while this text kept the superseded one-path
+    // wording, so `--help` served the misconception the module exists to
+    // prevent. Point at the source; do not restate it.
+    #[command(long_about = release_gates::LONG_ABOUT)]
     ReleaseGates,
 
     /// Set up development environment (git hooks, verify tools)

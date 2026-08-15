@@ -53,6 +53,27 @@ use owo_colors::OwoColorize;
 
 use crate::licensed_gates::{owning_package, source_files, target_of, Target};
 
+/// Long help for `cargo xtask release-gates`.
+///
+/// ★ **Single source, and that is the point.** `main.rs` points clap at this
+/// constant instead of restating the explanation in a doc comment beside the
+/// subcommand. The restated copy is precisely what drifted: this module's header
+/// was corrected to describe **both** coverage paths while the clap text kept the
+/// superseded one-path wording, so `--help` went on serving the misconception
+/// this module exists to prevent. Two copies of one explanation is the defect;
+/// deleting the second copy is the fix.
+pub(crate) const LONG_ABOUT: &str = "\
+Assert every release-only gate still reaches some CI job.
+
+A test written `#[cfg_attr(debug_assertions, ignore = \"…\")]` is skipped by every \
+debug job by design, so it executes only where a release job picks it up — either \
+by naming its binary (`--test <name>`) or by running its whole package. Miss both \
+and it runs NOWHERE while CI stays green; #747 found four PRs' worth of gates in \
+that state.
+
+Derived from the source tree, so a gate added today is checked today. Needs no \
+build and no licensed assets.";
+
 /// The merge gate. A release-only test named only by `scheduled.yml` still
 /// lets a PR merge without ever running it, so nightly coverage does not count.
 const WORKFLOW: &str = ".github/workflows/quality-gate.yml";
