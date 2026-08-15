@@ -6857,22 +6857,21 @@ mod tests {
         (out_n, 100.0 * all_v / v_surface, reach * 1e3)
     }
 
-    /// ★ PILOT — a measurement, not a gate.
+    /// ★ The evidence `cf-spine-studio`'s winding guard rests on.
     ///
-    /// #761 stopped `mesh_loft::assemble_bushing` from flipping a mesh whose winding it
-    /// could not certify, and it now reports the per-edge census on `Bushing::winding`.
-    /// The open question is what a **consumer** should do with an uncertified loft:
-    /// `cf-spine-studio`'s `loft_painted_disc` currently takes `.mesh` and drops the
-    /// report. #760 made an unwelded loft a hard error because the weld is load-bearing —
-    /// an unwelded loft goes ~40 % phantom. Whether an *uncertified* one earns the same
-    /// treatment has never been measured. This measures it.
+    /// #761 gated `mesh_loft::assemble_bushing`'s orientation pass and began reporting the
+    /// per-edge census on `Bushing::winding`, which left the consumer-side question open:
+    /// should an uncertified loft be rejected, or merely flagged? #760 made an *unwelded*
+    /// loft a hard error because the weld is load-bearing — an unwelded loft goes ~40 %
+    /// phantom. This test is the measurement that settled the same question for an
+    /// uncertified one, and it is now the regression gate on that answer.
     ///
-    /// ⚠ It also tests in isolation a hypothesis that was **displaced rather than
+    /// ⚠ It also varies, for the first time, a hypothesis that was **displaced rather than
     /// refuted**. [`frame_fix_step0b_lofted_disc_phantom_diagnosis_fom`] named two
     /// candidate causes for the phantom disc — an open surface, and inverted/inconsistent
     /// winding, the latter predicting "a large contiguous wrong-sign region". `step0c`
-    /// traced the real cause to topology (unwelded seam vertices). Winding itself was
-    /// never varied on its own, so its effect is assumed, not known.
+    /// traced *that* phantom to topology (unwelded seam vertices), so winding was set
+    /// aside without ever having been tested on its own.
     ///
     /// # Design — exactly one knob
     ///
@@ -6889,27 +6888,53 @@ mod tests {
     ///
     /// Held fixed: vertices, triangle vertex-sets, and `DiscParams::default()`'s scale,
     /// pad and μ. **Cell size is swept**, not held: an effect visible at exactly one
-    /// resolution would be a discretisation artifact rather than a winding one.
+    /// resolution would be a discretisation artifact rather than a winding one. The base
+    /// cell is production's — `cf-spine-studio` builds through `CoupledParams::default()`,
+    /// which carries `DiscParams::default()` — so the sweep is that resolution plus two
+    /// refinements of it, and the coarsest row is the one the Studio actually runs.
     ///
     /// ⚠ The yardstick comes from arm **A**. `surface_volume` sums signed tetrahedra and
     /// takes `.abs()`, so on the dirty arm it is corrupted by the very defect under study
     /// — it is an independent reference only while the winding is sound. The geometry is
     /// identical across arms, so A's volume is the true volume for both.
     ///
-    /// # Pre-registered readings
+    /// # Measured — H1 (catastrophic), decisively
     ///
-    /// - **H1 catastrophic** — a coherent sign flip: B's meshed volume or beyond-AABB
-    ///   count departs from A by tens of percent, or B gains components, or B fails to
-    ///   mesh. ⇒ the Studio guard should be a hard ERROR, as #760's weld is.
-    /// - **H2 benign** — the pseudo-normal sign is dominated by the nearest face, so a
-    ///   reversed cap corrupts only points near it and B lands within a few percent of A
-    ///   at every resolution. ⇒ WARN.
+    /// | cell (m) | arm | tets beyond surface AABB | components | volume vs true |
+    /// |---|---|---|---|---|
+    /// | 0.00300 | A clean | **0** (0.00 %) | 1 | 96.20 % |
+    /// | 0.00300 | B dirty | 848 (**56.91 %**) | 2 | 91.33 % |
+    /// | 0.00150 | A clean | **0** (0.00 %) | 1 | 98.49 % |
+    /// | 0.00150 | B dirty | 7020 (**42.77 %**) | 2 | 115.37 % |
+    /// | 0.00075 | A clean | **0** (0.00 %) | 1 | 99.75 % |
+    /// | 0.00075 | B dirty | 42936 (**38.58 %**) | 1 | 104.22 % |
     ///
-    /// Asserts only its own premises. The threshold it informs is set in a follow-up, once
-    /// the number is known.
+    /// Reversing two triangles out of twelve puts **38–57 % of the tet mesh outside the
+    /// surface's own AABB**, at every resolution across a 4× sweep — so it is a winding
+    /// effect, not a discretisation one. At the finest cell the phantom is a single
+    /// component, i.e. **contiguous with the body**, so `largest_component()` keeps all of
+    /// it. That is the same magnitude as the ~40 % phantom that earned #760's weld guard
+    /// its hard error, and it is why `cf-spine-studio` now rejects an inconsistent loft.
+    ///
+    /// ★ It also confirms, as a mechanism, the hypothesis `step0c` displaced: inconsistent
+    /// winding really does produce "a large contiguous wrong-sign region". `step0c` was
+    /// right about the cause of *that* phantom; winding was never innocent, only not
+    /// guilty that time.
+    ///
+    /// ⚠ **Volume does not reveal it.** At the coarsest cell the dirty arm reads 91.33 %
+    /// of true volume — *closer to 100 % than the clean arm's 96.20 %* — while 54 % of its
+    /// volume sits outside the AABB. A consumer sanity-checking "is the volume about
+    /// right?" passes a catastrophically wrong mesh. The beyond-AABB count is the
+    /// discriminating metric; volume is not, and this test asserts accordingly.
+    ///
+    /// Gate: the control must be exactly 0 phantom and land near the known true volume
+    /// (the harness's own validation); the treatment must exceed 20 % at every resolution,
+    /// ~1.9× margin below the tightest measured 38.58 %.
     #[test]
-    #[ignore = "measurement, not a gate — prints the number that sets the Studio guard"]
-    fn winding_pilot_uncertified_surface_phantom_material_fom() {
+    // Tet counts are small non-negative integers at these cell sizes (peak ~111 k), far
+    // inside f64's exact-integer range, so the ratio below loses nothing.
+    #[allow(clippy::cast_precision_loss)]
+    fn an_inconsistent_winding_puts_over_a_third_of_the_tet_mesh_outside_the_surface() {
         use mesh_repair::winding_census;
 
         let clean = synthetic_disc();
@@ -6960,21 +6985,48 @@ mod tests {
         for cell in [base.cell, base.cell / 2.0, base.cell / 4.0] {
             let params = DiscParams { cell, ..base };
             println!("── cell {cell:.5} m ──");
-            for (label, surface) in [("A clean", &clean), ("B dirty", &dirty)] {
-                match mesh_disc_raw(surface.clone(), &params) {
-                    Ok(meshed) => {
-                        let kept = meshed.raw.largest_component();
-                        let (out_n, vol_pct, reach) =
-                            report_phantom_material(label, &meshed.raw, &meshed.bbox, v_surface);
-                        println!(
-                            "{label} | tets raw {} kept {} | components {} | beyond-AABB {out_n} \
-                             | volume {vol_pct:.2} % of surface | overhang {reach:.4} mm",
-                            meshed.raw.n_tets(),
-                            kept.n_tets(),
-                            face_components(&meshed.raw).len(),
-                        );
-                    }
-                    Err(e) => println!("{label} | MESH FAILED: {e:?}"),
+            for (label, surface, dirty_arm) in
+                [("A clean", &clean, false), ("B dirty", &dirty, true)]
+            {
+                let meshed = mesh_disc_raw(surface.clone(), &params)
+                    .unwrap_or_else(|e| panic!("{label} failed to mesh at cell {cell}: {e:?}"));
+                let kept = meshed.raw.largest_component();
+                let (out_n, vol_pct, reach) =
+                    report_phantom_material(label, &meshed.raw, &meshed.bbox, v_surface);
+                let n_tets = meshed.raw.n_tets();
+                let beyond = out_n as f64 / n_tets as f64;
+                println!(
+                    "{label} | tets raw {n_tets} kept {} | components {} | beyond-AABB {out_n} \
+                     ({:.2} %) | volume {vol_pct:.2} % of surface | overhang {reach:.4} mm",
+                    kept.n_tets(),
+                    face_components(&meshed.raw).len(),
+                    100.0 * beyond,
+                );
+
+                if dirty_arm {
+                    assert!(
+                        beyond > 0.20,
+                        "cell {cell}: an inconsistent winding must put well over a fifth of \
+                         the tets outside the surface AABB (measured 38.58–56.91 %); got \
+                         {:.2} % ({out_n} of {n_tets}). If this fell, the SDF sign no longer \
+                         collapses on a locally-flipped surface and cf-spine-studio's \
+                         winding guard has lost the evidence it rests on.",
+                        100.0 * beyond,
+                    );
+                } else {
+                    assert_eq!(
+                        out_n, 0,
+                        "cell {cell}: the consistently-wound control must produce NO phantom \
+                         material; got {out_n} of {n_tets} tets beyond the surface AABB. The \
+                         two arms share vertices and triangles, so any phantom here is the \
+                         harness's, not the winding's."
+                    );
+                    assert!(
+                        vol_pct > 90.0,
+                        "cell {cell}: the control must land near the known true volume — it \
+                         is this harness's only check against an independent value; got \
+                         {vol_pct:.2} % (measured 96.20 / 98.49 / 99.75)."
+                    );
                 }
             }
             println!();
