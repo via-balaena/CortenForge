@@ -38,7 +38,7 @@
 use std::collections::{HashMap, HashSet};
 
 use cf_geometry::IndexedMesh;
-use mesh_repair::MeshAdjacency;
+use mesh_repair::{MeshAdjacency, WindingCensus, winding_census};
 use nalgebra::{Point3, Vector3};
 
 /// A contact patch extracted from a source mesh.
@@ -76,7 +76,13 @@ pub struct Patch {
 /// exact contact caps and its free perimeter wall.
 #[derive(Debug, Clone)]
 pub struct Bushing {
-    /// The closed, outward-oriented bushing mesh.
+    /// The assembled bushing mesh.
+    ///
+    /// Closed, and left with `signed_volume >= 0` — outward for any surface
+    /// that encloses volume at all — **when [`Self::is_closed_and_consistent`]
+    /// holds**. That is the regime in which [`assemble_bushing`]'s orientation
+    /// pass runs and means anything. Outside it the mesh is returned exactly as
+    /// assembled, its orientation uncertified, and [`Self::winding`] says why.
     pub mesh: IndexedMesh,
 
     /// The first `contact_count` vertices are the two contact caps (the exact
@@ -85,6 +91,43 @@ pub struct Bushing {
     /// by the ring subdivision. With a single-segment wall there are no free
     /// vertices and `contact_count == mesh.vertex_count()`.
     pub contact_count: u32,
+
+    /// Per-edge winding census of [`Self::mesh`], measured during assembly.
+    ///
+    /// **Reported, not acted on.** A violated winding-convention precondition
+    /// (see [`assemble_bushing`]) surfaces here as non-zero `inconsistent_edges`,
+    /// and no whole-mesh flip can repair it: flipping every face reverses every
+    /// half-edge, so each edge's agreement with its neighbour is preserved and
+    /// the flip only relabels *which* faces are wrong.
+    ///
+    /// That same invariance is why measuring before the orientation pass is
+    /// sound — the counts describe the mesh equally well after it
+    /// (`census_is_invariant_under_a_whole_mesh_flip` pins this).
+    pub winding: WindingCensus,
+}
+
+impl Bushing {
+    /// Whether [`Self::mesh`] is a closed, locally consistent surface — the
+    /// regime in which the orientation pass can certify its winding.
+    ///
+    /// This is exactly the precondition [`assemble_bushing`]'s orientation pass
+    /// requires. `signed_volume`'s sign only means "inside-out" on a closed,
+    /// consistently-wound surface, because the origin-apex tetrahedron sum
+    /// behind it is translation-invariant only while every face agrees with its
+    /// neighbours.
+    ///
+    /// ⚠ `false` does **not** mean the mesh is inside-out. It means the question
+    /// was not answerable, so the pass was skipped and the mesh left as
+    /// assembled. Read [`Self::winding`] for which of the reasons applies: an
+    /// open boundary, a local inconsistency, a non-manifold edge, or nothing
+    /// judgeable at all (soup).
+    #[must_use]
+    pub const fn is_closed_and_consistent(&self) -> bool {
+        self.winding.has_judgeable_edges()
+            && !self.winding.has_inconsistent_winding()
+            && self.winding.boundary_edges == 0
+            && self.winding.non_manifold_edges == 0
+    }
 }
 
 /// How [`assemble_bushing`] pairs the two rims when building the wall.
@@ -466,9 +509,19 @@ fn outer_rim(patch: &Patch) -> Option<&Vec<u32>> {
 ///
 /// The two patches are concatenated into a shared vertex array (top first, then
 /// bottom), the bottom patch's faces are **flipped** so its normals point out
-/// the opposite side, and the perimeter wall seals the two outer rims. A final
-/// orientation pass flips the whole mesh if it came out inside-out, so the
-/// result always has outward-facing normals (`signed_volume > 0`).
+/// the opposite side, and the perimeter wall seals the two outer rims.
+///
+/// A final orientation pass then flips the whole mesh if it came out inside-out
+/// — but **only where that question is answerable**, i.e. where the assembled
+/// surface is closed and locally consistent ([`Bushing::is_closed_and_consistent`]).
+/// The gate is not defensive padding. `signed_volume` sums origin-apex
+/// tetrahedra, and that sum is translation-invariant only while every face
+/// agrees with its neighbours; across a local flip the sign depends on where the
+/// world origin happens to sit. Ungated, the pass would therefore make the
+/// output winding a function of the *caller's frame* — and this loft runs on
+/// anatomical meshes kept in native frames ~1e3 mm out, the far end of that
+/// effect. Outside the gate the mesh is returned as assembled and
+/// [`Bushing::winding`] carries the reason.
 ///
 /// `wall_segments` is the number of stacked wall rings between the two rims.
 /// With `1` the wall is a single triangle band directly between the rims (no
@@ -485,6 +538,11 @@ fn outer_rim(patch: &Patch) -> Option<&Vec<u32>> {
 /// consistent surface orientation. The bottom flip then makes the two caps face
 /// away from each other and the wall seals them. A patch with an interior hole
 /// (more than one rim) needs one wall per rim and is out of scope here.
+///
+/// This precondition is **measured, not assumed**: give the two patches in
+/// opposite conventions and the two flips cancel, leaving the wall locally
+/// inconsistent — which lands in [`Bushing::winding`] as non-zero
+/// `inconsistent_edges` rather than being silently flipped past.
 ///
 /// If either patch has no rim the caps are still concatenated but the mesh is
 /// left open (no wall) — the watertight check is the caller's readout.
@@ -532,17 +590,23 @@ pub fn assemble_bushing(
         }
     }
 
-    let mut mesh = IndexedMesh::from_parts(vertices, faces);
-    // Guarantee outward orientation: flip every face if the solid is inside-out.
-    if mesh.is_inside_out() {
-        for face in &mut mesh.faces {
+    let mesh = IndexedMesh::from_parts(vertices, faces);
+    let winding = winding_census(&mesh);
+    let mut bushing = Bushing {
+        mesh,
+        contact_count,
+        winding,
+    };
+
+    // Guarantee outward orientation, but only where `signed_volume`'s sign
+    // carries that meaning — see this function's docs for why the gate is
+    // load-bearing rather than defensive.
+    if bushing.is_closed_and_consistent() && bushing.mesh.is_inside_out() {
+        for face in &mut bushing.mesh.faces {
             face.swap(1, 2);
         }
     }
-    Bushing {
-        mesh,
-        contact_count,
-    }
+    bushing
 }
 
 /// Seal one boundary loop with a centroid fan: add one centroid vertex and fan
@@ -1095,16 +1159,36 @@ mod tests {
     /// A unit-square patch at height `z`, wound CCW from +z (normal +z) — the
     /// same convention for top and bottom, as [`assemble_bushing`] expects.
     fn square_patch(z: f64) -> Patch {
+        square_patch_at(z, Vector3::zeros())
+    }
+
+    /// [`square_patch`] translated bodily by `offset`: same shape, same winding,
+    /// different world frame. Anatomical meshes arrive in native frames ~1e3 mm
+    /// from the origin, which is the regime this models.
+    fn square_patch_at(z: f64, offset: Vector3<f64>) -> Patch {
         let mesh = IndexedMesh::from_parts(
             vec![
-                Point3::new(0.0, 0.0, z),
-                Point3::new(1.0, 0.0, z),
-                Point3::new(1.0, 1.0, z),
-                Point3::new(0.0, 1.0, z),
+                Point3::new(0.0, 0.0, z) + offset,
+                Point3::new(1.0, 0.0, z) + offset,
+                Point3::new(1.0, 1.0, z) + offset,
+                Point3::new(0.0, 1.0, z) + offset,
             ],
             vec![[0, 1, 2], [0, 2, 3]],
         );
         extract_patch(&mesh, &[0, 1])
+    }
+
+    /// A puck assembled from two caps given in **opposite** winding conventions,
+    /// violating [`assemble_bushing`]'s precondition: the pre-flip cancels the
+    /// assembler's internal bottom-flip, so both caps end up facing the same
+    /// absolute direction and the wall cannot agree with both.
+    fn opposite_convention_puck(offset: Vector3<f64>) -> Bushing {
+        assemble_bushing(
+            &square_patch_at(1.0, offset),
+            &flip_patch(&square_patch_at(0.0, offset)),
+            1,
+            WallCorrespondence::ArcLength,
+        )
     }
 
     /// Assert the mesh is a consistently-oriented closed 2-manifold: every
@@ -1161,6 +1245,139 @@ mod tests {
         assert!(vol > 0.0, "orientation pass did not recover: volume {vol}");
         assert!((vol - 1.0).abs() < 1e-9, "volume {vol} != unit box");
         assert_consistently_oriented_closed(&puck);
+    }
+
+    #[test]
+    fn a_same_convention_pair_certifies_and_orients_outward() {
+        let puck = assemble_bushing(
+            &square_patch(1.0),
+            &square_patch(0.0),
+            1,
+            WallCorrespondence::ArcLength,
+        );
+
+        assert_eq!(puck.winding.inconsistent_edges, 0);
+        assert_eq!(puck.winding.boundary_edges, 0);
+        assert_eq!(puck.winding.non_manifold_edges, 0);
+        assert!(puck.winding.has_judgeable_edges());
+        assert!(
+            puck.is_closed_and_consistent(),
+            "a valid same-convention pair must certify: {:?}",
+            puck.winding
+        );
+        assert!(puck.mesh.signed_volume() > 0.0);
+    }
+
+    /// Premise for the two tests below: giving the caps in **opposite** winding
+    /// conventions really does violate the precondition, and the census sees it.
+    ///
+    /// Every count below is *derived*, not just observed — pinning an
+    /// unexplained number would quietly make it the contract:
+    ///
+    /// - **18 interior edges.** The puck is a unit box of 8 vertices and 12
+    ///   triangles, and it is closed, so Euler gives `E = V + F - 2 = 18` with
+    ///   every edge interior.
+    /// - **4 inconsistent.** Only the bottom cap ends up inverted. Its two
+    ///   triangles share one diagonal and are *both* inverted, so that edge
+    ///   still agrees with itself; its 4 perimeter edges each meet a wall
+    ///   triangle that was not inverted, and those are the 4 that disagree.
+    /// - **6 faces on them.** Both bottom triangles (each owns 2 of the 4
+    ///   perimeter edges) plus the 4 wall triangles across from them.
+    #[test]
+    fn opposite_conventions_cancel_and_leave_the_wall_inconsistent() {
+        let puck = opposite_convention_puck(Vector3::zeros());
+
+        assert_eq!(puck.mesh.vertex_count(), 8);
+        assert_eq!(puck.mesh.face_count(), 12);
+        assert_eq!(puck.winding.interior_edges, 18);
+        assert_eq!(puck.winding.inconsistent_edges, 4);
+        assert_eq!(puck.winding.faces_on_inconsistent_edges, 6);
+        // Closed and manifold — the defect is purely orientational, which is
+        // exactly the case a watertight/manifold check waves through.
+        assert_eq!(puck.winding.boundary_edges, 0);
+        assert_eq!(puck.winding.non_manifold_edges, 0);
+        assert!(!puck.is_closed_and_consistent());
+    }
+
+    /// ★ Why the gate is load-bearing rather than defensive padding.
+    ///
+    /// On a locally-inconsistent surface `is_inside_out()` answers a question
+    /// about the **world frame**, not about the mesh. Two measured facts, both
+    /// on the same 4-inconsistent-edge puck:
+    ///
+    /// - At the origin it reports `signed_volume == 1.0` — not merely the wrong
+    ///   sign but the *exactly correct unit-box volume* — and "not inside-out".
+    ///   The global instrument is blind here.
+    /// - Translated **2 mm** in −z it reports inside-out instead.
+    ///
+    /// So the pre-gate orientation pass flipped one and not the other: same
+    /// shape, same defect, opposite output winding, decided by where the caller
+    /// happened to put the origin. This loft runs on anatomical meshes kept
+    /// ~1e3 mm out, so that is the operating regime, not a corner case.
+    ///
+    /// ⚠ These are the *raw assembled* signs only because the gate suppressed
+    /// the pass on this dirty census. Remove the gate and this test fails — the
+    /// pass would normalise the very sign being observed. That is intended: it
+    /// makes this a tripwire on the gate as well as a record of the effect.
+    #[test]
+    fn the_global_inside_out_test_changes_its_answer_under_a_2mm_translation() {
+        let near = opposite_convention_puck(Vector3::zeros());
+        let shifted = opposite_convention_puck(Vector3::new(0.0, 0.0, -2.0));
+
+        // The defect itself is translation-invariant: same census both frames.
+        assert_eq!(near.winding, shifted.winding);
+
+        // The global test is not.
+        let near_vol = near.mesh.signed_volume();
+        assert!(
+            (near_vol - 1.0).abs() < 1e-9,
+            "at the origin the global test should be blind, reporting the exact \
+             unit-box volume for a mesh with {} inconsistent edges; got {near_vol}",
+            near.winding.inconsistent_edges
+        );
+        assert!(!near.mesh.is_inside_out());
+        assert!(
+            shifted.mesh.is_inside_out(),
+            "2 mm down, the same puck must read inside-out; signed_volume {}",
+            shifted.mesh.signed_volume()
+        );
+    }
+
+    /// The consequence of the gate: an uncertified bushing's winding is a
+    /// function of its inputs alone, never of the caller's frame.
+    #[test]
+    fn an_uncertified_bushing_keeps_its_winding_wherever_the_origin_sits() {
+        let near = opposite_convention_puck(Vector3::zeros());
+        let shifted = opposite_convention_puck(Vector3::new(0.0, 0.0, -2.0));
+
+        assert!(!near.is_closed_and_consistent());
+        assert!(!shifted.is_closed_and_consistent());
+        // Identical index triples: the suppressed pass cannot have flipped one
+        // frame and not the other. Pre-gate this assertion fails.
+        assert_eq!(near.mesh.faces, shifted.mesh.faces);
+    }
+
+    /// Pins the invariance [`Bushing::winding`] relies on to describe the mesh
+    /// both before and after the orientation pass: flipping every face reverses
+    /// every half-edge, so each edge's agreement with its neighbour survives.
+    #[test]
+    fn census_is_invariant_under_a_whole_mesh_flip() {
+        let consistent = assemble_bushing(
+            &square_patch(1.0),
+            &square_patch(0.0),
+            1,
+            WallCorrespondence::ArcLength,
+        )
+        .mesh;
+        let inconsistent = opposite_convention_puck(Vector3::zeros()).mesh;
+
+        for (label, mut mesh) in [("consistent", consistent), ("inconsistent", inconsistent)] {
+            let before = winding_census(&mesh);
+            for face in &mut mesh.faces {
+                face.swap(1, 2);
+            }
+            assert_eq!(before, winding_census(&mesh), "{label} census moved");
+        }
     }
 
     #[test]
