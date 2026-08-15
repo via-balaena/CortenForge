@@ -728,38 +728,136 @@ fn solid_pipe_composes_with_translate() {
 
 // ── Mesh validation helpers ────────────────────────────────────
 
-fn check_topology(mesh: &AttributedMesh) -> (bool, bool) {
-    use std::collections::HashMap;
+/// Edge census: `(open_edges, same_direction_edges, non_manifold_edges)`.
+///
+/// Each triangle contributes three directed half-edges, and each undirected edge
+/// is judged once. On a closed, consistently-oriented 2-manifold every edge
+/// carries exactly one traversal in each direction, so all three counters are
+/// zero.
+///
+/// ⚠ The three are separated because the failure modes alias onto each other and
+/// a merged counter names the wrong defect. A **winding flip also removes a
+/// reverse half-edge** — if two faces both walk `a→b` then `b→a` is absent — so a
+/// bare "is it watertight" test reports a locally-flipped surface as a *hole*.
+/// Equally, a 3-face edge must put two of its traversals in the same direction,
+/// so folding that case into the winding counter would report a non-manifold
+/// edge as a winding flip.
+fn check_topology(mesh: &AttributedMesh) -> (usize, usize, usize) {
+    use std::collections::{HashMap, HashSet};
     let mut directed: HashMap<(u32, u32), usize> = HashMap::new();
     for face in &mesh.geometry.faces {
         for i in 0..3 {
             *directed.entry((face[i], face[(i + 1) % 3])).or_insert(0) += 1;
         }
     }
-    let mut boundary = 0_usize;
-    let mut non_manifold = 0_usize;
-    for (&(a, b), &count) in &directed {
-        if count > 1 {
-            non_manifold += 1;
-        }
-        if directed.get(&(b, a)).copied().unwrap_or(0) == 0 {
-            boundary += 1;
+    // Normalise first so each undirected edge is judged exactly once; scanning
+    // `directed` and filtering on `a < b` would skip any pair stored only as
+    // `(b, a)`.
+    let undirected: HashSet<(u32, u32)> = directed
+        .keys()
+        .map(|&(a, b)| if a < b { (a, b) } else { (b, a) })
+        .collect();
+
+    let (mut open, mut same_direction, mut non_manifold) = (0_usize, 0_usize, 0_usize);
+    for (a, b) in undirected {
+        let forward = directed.get(&(a, b)).copied().unwrap_or(0);
+        let reverse = directed.get(&(b, a)).copied().unwrap_or(0);
+        match forward + reverse {
+            1 => open += 1,
+            2 if forward == 1 && reverse == 1 => {}
+            2 => same_direction += 1,
+            _ => non_manifold += 1,
         }
     }
-    (boundary == 0, non_manifold == 0)
+    (open, same_direction, non_manifold)
+}
+
+/// ★ Coverage for [`check_topology`]'s failure paths, which nothing else
+/// reaches: every mesh flowing through [`assert_mesh_valid`] is valid MC
+/// output, so all three counters would sit at zero forever and a counter stuck
+/// at zero would be indistinguishable from a clean mesh.
+///
+/// Each arm also pins that the defects do **not** alias — the reason the census
+/// returns three numbers instead of one boolean.
+#[test]
+fn check_topology_separates_open_flipped_and_non_manifold() {
+    // A closed, consistently-wound tetrahedron.
+    let tet = |faces: Vec<[u32; 3]>| {
+        AttributedMesh::new(cf_geometry::IndexedMesh::from_parts(
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+                Point3::new(0.0, 0.0, 1.0),
+            ],
+            faces,
+        ))
+    };
+    let closed = vec![[0, 2, 1], [0, 1, 3], [1, 2, 3], [0, 3, 2]];
+
+    assert_eq!(
+        check_topology(&tet(closed.clone())),
+        (0, 0, 0),
+        "a closed, consistently-wound tetrahedron must be clean on all three",
+    );
+
+    // Drop a face: three edges lose their partner.
+    let mut open_mesh = closed.clone();
+    open_mesh.pop();
+    let (open, same, nm) = check_topology(&tet(open_mesh));
+    assert_eq!(
+        (open, same, nm),
+        (3, 0, 0),
+        "an open tet must read as OPEN only"
+    );
+
+    // Reverse one face: its three edges are now walked twice in one direction,
+    // and — critically — they must NOT be reported as open.
+    let mut flipped = closed.clone();
+    flipped[0].swap(1, 2);
+    let (open, same, nm) = check_topology(&tet(flipped));
+    assert_eq!(
+        (open, same, nm),
+        (0, 3, 0),
+        "a flipped face must read as WINDING, not as a hole — the aliasing this \
+         census exists to separate",
+    );
+
+    // Add a fourth face on the 0–1 edge: that edge now carries three.
+    let mut extra = closed;
+    extra.push([0, 1, 2]);
+    let (_, _, nm) = check_topology(&tet(extra));
+    assert!(nm > 0, "a 3-face edge must read as NON-MANIFOLD");
 }
 
 fn assert_mesh_valid(mesh: &AttributedMesh, label: &str) {
     assert!(!mesh.is_empty(), "{label}: mesh should not be empty");
-    let (watertight, manifold) = check_topology(mesh);
-    assert!(watertight, "{label}: mesh should be watertight");
-    assert!(manifold, "{label}: mesh should be manifold");
-    // Marching cubes can produce inverted winding on some platforms due to
-    // floating-point edge cases. Check that the mesh has non-trivial volume;
-    // consistent outward winding is already implied by watertight + manifold.
+    let (open, same_direction, non_manifold) = check_topology(mesh);
+    assert_eq!(
+        open, 0,
+        "{label}: mesh should be closed ({open} open edges)"
+    );
+    assert_eq!(
+        non_manifold, 0,
+        "{label}: mesh should be manifold ({non_manifold} edges carry three or more faces)",
+    );
+    assert_eq!(
+        same_direction, 0,
+        "{label}: mesh should be consistently wound ({same_direction} edges are \
+         traversed the same way by both their faces)",
+    );
+    // Those three together DO establish consistent orientation — every edge
+    // carries exactly one traversal each way. What they cannot establish is
+    // which way that consistent orientation points: a uniformly inside-out mesh
+    // satisfies all three. `signed_volume` decides that, and it is only
+    // meaningful now, once local consistency is known (its origin-apex sum is
+    // translation-invariant only while every face agrees with its neighbours).
+    //
+    // ⚠ The previous `.abs() > EPSILON` here could not see a uniform flip at
+    // all, under a comment asserting outward winding was already implied.
     assert!(
-        mesh.geometry.signed_volume().abs() > f64::EPSILON,
-        "{label}: mesh should have non-zero volume, got {}",
+        mesh.geometry.signed_volume() > 0.0,
+        "{label}: mesh should be outward-wound with non-zero volume, got {}",
         mesh.geometry.signed_volume()
     );
 }

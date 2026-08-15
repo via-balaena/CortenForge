@@ -305,8 +305,10 @@ fn generate_shell_sdf(
     // §Q-5), mesh-offset's MC output is already outward-winding;
     // the prior compensation is removed (a double-flip would
     // re-invert the shell). Test coverage:
-    // `test_sdf_shell_outer_winding_outward_after_flip` below asserts
-    // `!report.is_inside_out` with no compensation at this site.
+    // `test_sdf_shell_outer_winding_outward_after_flip` below asserts a clean
+    // per-edge winding census AND `!report.is_inside_out`, with no compensation
+    // at this site — the census first, because the global flag only carries its
+    // meaning once the surface is locally consistent.
     //
     // ⚠ "flip" means two different things across that boundary. The one in
     // the test's name is mesh-offset's per-face e1/e2 swap inside marching
@@ -745,9 +747,44 @@ mod tests {
             generate_shell(&inner, &params).expect("SDF generation should succeed");
 
         let report = mesh_repair::validate_mesh(&shell);
+
+        // ★ The census comes first, and not for tidiness: `is_inside_out` is a
+        // GLOBAL signed-volume test, and its sign only means "inside-out" on a
+        // locally consistent surface. Across a local flip the origin-apex sum
+        // stops being translation-invariant, so the flag reports where the world
+        // origin sits rather than how the shell is wound. Asserting it alone —
+        // as this test used to — is an unsound instrument standing in for the
+        // property named in the test's own title.
+        let census = report
+            .winding
+            .expect("validate_mesh runs the winding census by default");
+        assert!(
+            census.has_judgeable_edges(),
+            "shell has no interior edge to judge, so a zero winding count would be \
+             vacuous rather than reassuring: {census}",
+        );
+        assert!(
+            !census.has_inconsistent_winding(),
+            "shell must be consistently wound before its global orientation means \
+             anything; got {census}",
+        );
         assert!(
             !report.is_inside_out,
             "shell should not be inside-out after per-face flip; signed_volume reported as inside-out"
+        );
+
+        // ★ Negative control, on this very shell: reverse one face and the census
+        // assertion above fires. Without this, a census that silently reported
+        // nothing would look exactly like a well-wound shell.
+        let mut nicked = shell; // moved: the pristine shell is done with
+        nicked.faces[0].swap(1, 2);
+        let nicked_census = mesh_repair::validate_mesh(&nicked)
+            .winding
+            .expect("census runs by default");
+        assert!(
+            nicked_census.has_inconsistent_winding(),
+            "reversing one face must register as inconsistent, or the check above \
+             is decorative; got {nicked_census}",
         );
     }
 

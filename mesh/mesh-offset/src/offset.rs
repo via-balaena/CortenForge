@@ -520,33 +520,87 @@ mod tests {
         assert!(!offset.faces.is_empty());
     }
 
-    /// Count `(boundary_edges, non_manifold_edges, unique_edges)` for a
-    /// triangle mesh from its face connectivity alone (a boundary edge is
-    /// incident to one face, a non-manifold edge to three or more). The
-    /// caller checks the genus-0 Euler identity `V + F == E + 2` (`χ = 2`)
-    /// in `usize`, which stays cast-free and never underflows for a closed
-    /// mesh (`E ≥ V` and `E ≥ F`).
+    /// Count `(boundary_edges, non_manifold_edges, unique_edges,
+    /// inconsistent_edges)` for a triangle mesh from its face connectivity
+    /// alone: a boundary edge is incident to one face, a non-manifold edge to
+    /// three or more, and an **inconsistent** edge is one whose two faces
+    /// traverse it in the *same* direction (a local winding flip). The caller
+    /// checks the genus-0 Euler identity `V + F == E + 2` (`χ = 2`) in
+    /// `usize`, which stays cast-free and never underflows for a closed mesh
+    /// (`E ≥ V` and `E ≥ F`).
     ///
     /// This is a small hand-rolled scan rather than a call to
-    /// `mesh_repair::validate_mesh` (which computes the same counts) on
-    /// purpose: keeping this L0 crate's own topology oracle independent of
-    /// a sibling L0 crate means a bug in `mesh-repair`'s edge logic can't
-    /// mask a real `mesh-offset` regression here, and it avoids a
+    /// `mesh_repair::validate_mesh` / `winding_census` (which compute the same
+    /// counts) on purpose: keeping this L0 crate's own topology oracle
+    /// independent of a sibling L0 crate means a bug in `mesh-repair`'s edge
+    /// logic can't mask a real `mesh-offset` regression here, and it avoids a
     /// dev-dependency on `mesh-repair`. The example layer
     /// (`examples/mesh/offset/stress-test`), which already depends on
     /// `mesh-repair` for its diagnostics, uses `validate_mesh` directly.
-    fn edge_topology(mesh: &IndexedMesh) -> (usize, usize, usize) {
+    ///
+    /// ⚠ That independence is why the winding count is added **here** rather
+    /// than by importing the census: an oracle that shares an implementation
+    /// with the thing it corroborates is not an independent check.
+    fn edge_topology(mesh: &IndexedMesh) -> (usize, usize, usize, usize) {
         use std::collections::HashMap;
         let mut edges: HashMap<(u32, u32), u32> = HashMap::new();
+        let mut directed: HashMap<(u32, u32), u32> = HashMap::new();
         for tri in &mesh.faces {
             for (a, b) in [(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])] {
                 let key = if a < b { (a, b) } else { (b, a) };
                 *edges.entry(key).or_insert(0) += 1;
+                *directed.entry((a, b)).or_insert(0) += 1;
             }
         }
         let boundary = edges.values().filter(|&&c| c == 1).count();
         let non_manifold = edges.values().filter(|&&c| c > 2).count();
-        (boundary, non_manifold, edges.len())
+        // An interior edge whose two faces both walk it the same way: on a
+        // consistently oriented surface every directed half-edge occurs exactly
+        // once. Iterate `edges`, whose keys are already normalised, so each
+        // undirected edge is judged once — scanning `directed` and filtering on
+        // `a < b` would silently skip any pair stored only as `(b, a)`.
+        let mut inconsistent = 0_usize;
+        for (&(a, b), &count) in &edges {
+            if count == 2
+                && (directed.get(&(a, b)) == Some(&2) || directed.get(&(b, a)) == Some(&2))
+            {
+                inconsistent += 1;
+            }
+        }
+        (boundary, non_manifold, edges.len(), inconsistent)
+    }
+
+    /// ★ Negative control for [`edge_topology`]'s winding count: a counter that
+    /// silently returned 0 would make the assert above decorative, and the three
+    /// topology counts beside it would not notice.
+    ///
+    /// It also demonstrates why that assert is not redundant: reversing two
+    /// adjacent faces of a closed cube leaves `boundary`, `non_manifold` and the
+    /// Euler characteristic **all unchanged**, so every other check in the test
+    /// still passes on a mesh whose winding is locally broken.
+    #[test]
+    fn edge_topology_sees_a_local_flip_that_leaves_boundary_manifold_and_euler_intact() {
+        let clean = unit_cube();
+        let (b0, n0, e0, i0) = edge_topology(&clean);
+        assert_eq!((b0, n0, i0), (0, 0, 0), "the cube fixture is not clean");
+
+        let mut flipped = clean.clone();
+        flipped.faces[0].swap(1, 2);
+        flipped.faces[1].swap(1, 2);
+        let (b1, n1, e1, i1) = edge_topology(&flipped);
+
+        assert!(i1 > 0, "a reversed face pair must register as inconsistent");
+        assert_eq!(
+            (b1, n1, e1),
+            (b0, n0, e0),
+            "boundary / non-manifold / edge count must be blind to a pure winding \
+             flip — that blindness is the reason the winding count exists",
+        );
+        assert_eq!(
+            clean.vertices.len() + clean.faces.len(),
+            e0 + 2,
+            "the clean fixture must satisfy the genus-0 identity the test relies on",
+        );
     }
 
     /// The topological contract behind the `offset` example's re-narration
@@ -566,7 +620,7 @@ mod tests {
         for distance in [0.1_f64, -0.1] {
             let offset = offset_mesh(&mesh, distance, &config)
                 .unwrap_or_else(|e| panic!("offset by {distance} should succeed: {e:?}"));
-            let (boundary, non_manifold, edges) = edge_topology(&offset);
+            let (boundary, non_manifold, edges, inconsistent) = edge_topology(&offset);
             let (v, f) = (offset.vertices.len(), offset.faces.len());
             assert_eq!(
                 boundary, 0,
@@ -581,6 +635,20 @@ mod tests {
                 edges + 2,
                 "offset by {distance} must be a genus-0 manifold (V + F = E + 2, i.e. χ = 2); \
                  got V={v}, E={edges}, F={f}",
+            );
+            // ★ This must precede the signed-volume assert, and none of the
+            // three above imply it. A closed, 2-manifold, genus-0 surface can
+            // still be locally flipped — reverse two adjacent faces of a cube
+            // and boundary, non-manifold and χ are all unchanged. `signed_volume`
+            // only means "outward" once the winding is locally consistent: its
+            // origin-apex sum is translation-invariant only while every face
+            // agrees with its neighbours, so on a flipped surface the sign
+            // reports where the world origin sits, not how the mesh is wound.
+            assert_eq!(
+                inconsistent, 0,
+                "offset by {distance} must be consistently wound ({inconsistent} interior \
+                 edges are traversed the same way by both their faces); until this holds, \
+                 the signed-volume check below is not a winding test",
             );
             assert!(
                 offset.signed_volume() > 0.0,
