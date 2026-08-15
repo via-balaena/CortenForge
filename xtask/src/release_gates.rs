@@ -1,11 +1,9 @@
 //! Self-test: every release-only gate still reaches some CI job.
 //!
-//! ⚠ **What this asserts, stated for a reader, is [`LONG_ABOUT`]** — the text
-//! `cargo xtask release-gates --help` prints. It is deliberately *not* restated
-//! here. An earlier attempt to de-duplicate this only moved the copy: the help
-//! text left `main.rs` and the same explanation stayed in both this header and
-//! the constant, one file apart instead of two. What follows is therefore only
-//! the **why**, which a source reader needs and a CLI user does not.
+//! ⚠ **What this asserts is [`LONG_ABOUT`]** — the text `cargo xtask
+//! release-gates --help` prints, and the one place that definition lives (see
+//! its doc for why it is a constant). This header carries only the **why**,
+//! which a source reader needs and a CLI user does not.
 //!
 //! # Why coverage has two paths, not one
 //!
