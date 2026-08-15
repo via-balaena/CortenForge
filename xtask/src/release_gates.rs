@@ -243,10 +243,11 @@ pub(crate) fn wholesale_release_packages(yaml: &str) -> BTreeSet<String> {
 /// a `--test` entry is package-scoped (`-p <pkg> --test <name>`). Two packages
 /// each owning a `tests/smoke.rs` would collide, and coverage of one could read
 /// as coverage of the other. No two packages share a test-binary name today
-/// (checked: the only repeated stem is `mod`, from `tests/common/mod.rs`
-/// helpers, which are not binaries and are excluded by `target_of`), so this is
-/// latent rather than live — but it is the shape of hole to widen the key for if
-/// it ever becomes live.
+/// (checked: the only repeated stem is `mod`, from `tests/<subdir>/mod.rs`
+/// helper modules — `common/`, `integration/`, `mujoco_conformance/` — which are
+/// not binaries and are excluded by `target_of`), so this is latent rather than
+/// live — but it is the shape of hole to widen the key for if it ever becomes
+/// live.
 #[derive(Default)]
 struct Survey {
     /// Release-only test binaries: binary name → owning package.
