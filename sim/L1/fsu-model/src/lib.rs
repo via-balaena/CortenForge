@@ -6857,6 +6857,130 @@ mod tests {
         (out_n, 100.0 * all_v / v_surface, reach * 1e3)
     }
 
+    /// ★ PILOT — a measurement, not a gate.
+    ///
+    /// #761 stopped `mesh_loft::assemble_bushing` from flipping a mesh whose winding it
+    /// could not certify, and it now reports the per-edge census on `Bushing::winding`.
+    /// The open question is what a **consumer** should do with an uncertified loft:
+    /// `cf-spine-studio`'s `loft_painted_disc` currently takes `.mesh` and drops the
+    /// report. #760 made an unwelded loft a hard error because the weld is load-bearing —
+    /// an unwelded loft goes ~40 % phantom. Whether an *uncertified* one earns the same
+    /// treatment has never been measured. This measures it.
+    ///
+    /// ⚠ It also tests in isolation a hypothesis that was **displaced rather than
+    /// refuted**. [`frame_fix_step0b_lofted_disc_phantom_diagnosis_fom`] named two
+    /// candidate causes for the phantom disc — an open surface, and inverted/inconsistent
+    /// winding, the latter predicting "a large contiguous wrong-sign region". `step0c`
+    /// traced the real cause to topology (unwelded seam vertices). Winding itself was
+    /// never varied on its own, so its effect is assumed, not known.
+    ///
+    /// # Design — exactly one knob
+    ///
+    /// Both arms are the SAME slab: identical vertex array, identical triangle
+    /// vertex-sets. Only the **orientation** of the two z− cap triangles differs.
+    /// Re-lofting through `flip_patch` to obtain the dirty arm would also have changed the
+    /// wall triangulation, and the comparison would then have supported less than it
+    /// claimed.
+    ///
+    /// | arm | winding | premise asserted below |
+    /// |---|---|---|
+    /// | A control | consistent, outward | `inconsistent_edges == 0` |
+    /// | B treatment | z− cap reversed | `inconsistent_edges > 0` |
+    ///
+    /// Held fixed: vertices, triangle vertex-sets, and `DiscParams::default()`'s scale,
+    /// pad and μ. **Cell size is swept**, not held: an effect visible at exactly one
+    /// resolution would be a discretisation artifact rather than a winding one.
+    ///
+    /// ⚠ The yardstick comes from arm **A**. `surface_volume` sums signed tetrahedra and
+    /// takes `.abs()`, so on the dirty arm it is corrupted by the very defect under study
+    /// — it is an independent reference only while the winding is sound. The geometry is
+    /// identical across arms, so A's volume is the true volume for both.
+    ///
+    /// # Pre-registered readings
+    ///
+    /// - **H1 catastrophic** — a coherent sign flip: B's meshed volume or beyond-AABB
+    ///   count departs from A by tens of percent, or B gains components, or B fails to
+    ///   mesh. ⇒ the Studio guard should be a hard ERROR, as #760's weld is.
+    /// - **H2 benign** — the pseudo-normal sign is dominated by the nearest face, so a
+    ///   reversed cap corrupts only points near it and B lands within a few percent of A
+    ///   at every resolution. ⇒ WARN.
+    ///
+    /// Asserts only its own premises. The threshold it informs is set in a follow-up, once
+    /// the number is known.
+    #[test]
+    #[ignore = "measurement, not a gate — prints the number that sets the Studio guard"]
+    fn winding_pilot_uncertified_surface_phantom_material_fom() {
+        use mesh_repair::winding_census;
+
+        let clean = synthetic_disc();
+        let mut dirty = clean.clone();
+        // `box_mesh` emits the z− cap as its first two triangles. Reverse exactly those.
+        dirty.faces[0].swap(1, 2);
+        dirty.faces[1].swap(1, 2);
+
+        // Premise: same geometry, different winding — and the census sees the difference.
+        assert_eq!(clean.vertices, dirty.vertices, "arms must share vertices");
+        let tri_set = |m: &IndexedMesh| {
+            let mut t: Vec<[u32; 3]> = m
+                .faces
+                .iter()
+                .map(|f| {
+                    let mut s = *f;
+                    s.sort_unstable();
+                    s
+                })
+                .collect();
+            t.sort_unstable();
+            t
+        };
+        assert_eq!(
+            tri_set(&clean),
+            tri_set(&dirty),
+            "arms must differ in orientation only"
+        );
+        let (c_clean, c_dirty) = (winding_census(&clean), winding_census(&dirty));
+        assert_eq!(c_clean.inconsistent_edges, 0, "control arm must be clean");
+        assert!(
+            c_dirty.inconsistent_edges > 0,
+            "treatment arm must actually be dirty: {c_dirty}"
+        );
+        assert_eq!(c_clean.boundary_edges, 0);
+        assert_eq!(
+            c_dirty.boundary_edges, 0,
+            "the injected defect must be orientational only"
+        );
+
+        let base = DiscParams::default();
+        // ⚠ One yardstick, taken from the CONTROL arm — see the note above.
+        let v_surface = surface_volume(&clean) * base.scale.powi(3);
+        println!("control census   : {c_clean}");
+        println!("treatment census : {c_dirty}");
+        println!("reference volume : {v_surface:.4e} m³ (from the control arm)\n");
+
+        for cell in [base.cell, base.cell / 2.0, base.cell / 4.0] {
+            let params = DiscParams { cell, ..base };
+            println!("── cell {cell:.5} m ──");
+            for (label, surface) in [("A clean", &clean), ("B dirty", &dirty)] {
+                match mesh_disc_raw(surface.clone(), &params) {
+                    Ok(meshed) => {
+                        let kept = meshed.raw.largest_component();
+                        let (out_n, vol_pct, reach) =
+                            report_phantom_material(label, &meshed.raw, &meshed.bbox, v_surface);
+                        println!(
+                            "{label} | tets raw {} kept {} | components {} | beyond-AABB {out_n} \
+                             | volume {vol_pct:.2} % of surface | overhang {reach:.4} mm",
+                            meshed.raw.n_tets(),
+                            kept.n_tets(),
+                            face_components(&meshed.raw).len(),
+                        );
+                    }
+                    Err(e) => println!("{label} | MESH FAILED: {e:?}"),
+                }
+            }
+            println!();
+        }
+    }
+
     /// One `cell` of [`mesh_stability_step0_discarded_component_census_fom`]: mesh, decompose,
     /// validate against production, report.
     #[allow(clippy::cast_precision_loss)]
