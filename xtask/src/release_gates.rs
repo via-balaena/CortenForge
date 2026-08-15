@@ -24,7 +24,8 @@
 //!
 //! # Which direction is actually unguarded
 //!
-//! Only one of the two. `cargo test --test <name>` on a name that does not exist
+//! Only one of the two *directions* — not to be read against the two coverage
+//! paths above. `cargo test --test <name>` on a name that does not exist
 //! is a **hard error** (`no test target named …`), so a renamed or deleted test
 //! whose `--test` entry was left behind fails CI loudly and needs no help from
 //! this module. ⚠ Do not "strengthen" this check by also asserting every listed
