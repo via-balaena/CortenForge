@@ -53,19 +53,45 @@
 //! `tet10_face_contact` also uses `1.0e3`. This file used `1.0`, which is `1e6×`
 //! more inertia than the convention it sat beside.
 //!
-//! ⚠⚠ **Two other rigs still use `STATIC_DT = 1.0`, and this arc did NOT clear
-//! them.** `contact_stability` (a ~384-tet cube) and `tet10_indentation_demand1`
-//! (a bonded layer under a spherical indenter) both load stiff configurations
-//! where `k` is orders of magnitude larger, so the term is *expected* to be
-//! negligible — but "expected" is exactly the word that produced the ceiling this
-//! file used to assert. ▶ Neither has had the `density = 0` A/B that this file
-//! just had, and `tet10_indentation_demand1` builds its slab with
-//! `cantilever_bilayer_beam` — the very same builder — so "different shape,
-//! therefore fine" is an argument, not a measurement.
-//!
 //! Here the rig asks for **`density = 0`** instead: the measurement is a static
 //! benchmark against a static closed form, so inertia is not part of it, and
 //! saying that outright is stronger than choosing a `dt` large enough to hide it.
+//!
+//! ## ✅ The blast radius was audited; this rig was the only casualty
+//!
+//! ⚠ This section once said "**two** other rigs still use `STATIC_DT = 1.0`" — a
+//! number from a truncated `grep`. **Sixteen files define it**: fifteen
+//! `sim-soft` tests (this one included) and one research tool. Thirteen were
+//! A/B'd at `density = 0` and **all pass** — named, so the claim is auditable:
+//! `tet10_bending_locking`, `bonded_bilayer_beam`, `fbar_locking` (beams);
+//! `hertz_sphere_plane`, `bonded_layer_indentation`, `tet10_indentation_demand1`
+//! (Hertz); `concentric_lame_shells` (Lamé); `contact_stability`,
+//! `penalty_compressive_block`, `non_interpenetration`, `deformed_validity`,
+//! `contact_grad_hook`, `material_grad_hook`. So the contamination was isolated
+//! to the one rig comparing a *very compliant* structure against a *static*
+//! closed form; elsewhere `M/(dt²·k)` either vanishes or cancels in a ratio.
+//! (`contact_drop_rest` is *not* in that set — it runs at `dt = 1e-3`, and fails
+//! under the probe exactly as a gravity-driven transient with no mass should,
+//! which is what proved the probe reached these rigs at all.)
+//!
+//! ⚠ "Pass" bounds the shift rather than showing it is nil — the bands are ±5 %.
+//! Measured where that mattered: `fbar_locking` moves ~1 %, and
+//! `tet10_bending_locking`'s deflections **+0.3 % to +2.4 %**, so its Tet4
+//! "~46 % of analytic" reads 46.9 % (holds) and its Tet10 "95 %" reads 97.4 %
+//! (mildly conservative). ★ Every shift makes the engine look *more* accurate, as
+//! this mechanism must **for rigs solving from rest** (`v_prev = 0`), where
+//! `M(x − x₀)/dt²` is a positive-definite pull toward `x₀`. ⚠ Not general: with
+//! `v₀ ≠ 0` it pulls toward `x₀ + dt·v₀` and can act either way.
+//!
+//! ⛔ **Two are not audited.** `tet10_lame_decision` (the exiled 7.16 GB / ~60 min
+//! probe), and `cf-sim-research`'s `insertion_sim.rs` — a research tool whose own
+//! comment reads "`dt = 1.0` collapses inertia for a quasi-static solve", the very
+//! belief corrected here. Whether it matters there is unmeasured.
+//!
+//! ★ Method worth reusing: the A/B zeroed the **one** place density becomes mass
+//! (`construct.rs`), not sixteen test files — and the probe was checked to *bite*
+//! first, gate 4 flipping 0.2493 → 0.9696 under it. A probe that silently did
+//! nothing would have reported all sixteen clear.
 //!
 //! # How the correction was established
 //!
