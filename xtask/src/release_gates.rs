@@ -1,15 +1,26 @@
-//! Self-test: every release-only gate is named by a CI `--test` list.
+//! Self-test: every release-only gate still reaches some CI job.
 //!
 //! A test written `#[cfg_attr(debug_assertions, ignore = "…")]` is skipped by
 //! every debug job by design — that is the point, the measurement is only
-//! meaningful in release. The consequence is that it runs in **exactly one**
-//! place: a release job that names its binary explicitly, `cargo test --release
-//! -p <crate> --test <name>`. Miss that line and the gate executes **nowhere**,
-//! while CI stays green and the test file looks entirely healthy.
+//! meaningful in release. So it executes only where a **release** job picks it
+//! up, and there are exactly two ways that happens:
 //!
-//! That is not hypothetical. `#747` found four PRs' worth of reduced-basis gates
-//! (`R1.0`–`R1.3`) that had never once executed: green meant *skipped*. Nothing
-//! in the tree could have told anyone.
+//! 1. a job names its binary — `cargo test --release -p <crate> --test <name>`;
+//! 2. a job runs its whole **package**, sweeping up every binary in it.
+//!
+//! Miss both and the gate executes **nowhere**, while CI stays green and the
+//! test file looks entirely healthy.
+//!
+//! ⚠ Modelling only (1) is the obvious mistake, and this module shipped it in
+//! draft: it reported `mesh-printability`'s `stress_inputs` as unrun when
+//! `tests-release` runs that package wholesale. A check that cries wolf gets
+//! disabled, so both paths are modelled — see [`wholesale_release_packages`] for
+//! why the second must be read from one anchored job and not from every
+//! `crates:` line in the file.
+//!
+//! That the hazard is real is not hypothetical. `#747` found four PRs' worth of
+//! reduced-basis gates (`R1.0`–`R1.3`) that had never once executed: green meant
+//! *skipped*. Nothing in the tree could have told anyone.
 //!
 //! # Which direction is actually unguarded
 //!
@@ -20,8 +31,9 @@
 //! name exists — cargo already does, at the only moment it matters.
 //!
 //! The silent direction is the other one: a release-only test that is **added**
-//! and never listed. It compiles, the debug shards skip it, no release job names
-//! it, and it is dead weight that reads as coverage. This module fails on that.
+//! and reached by neither path. It compiles, the debug shards skip it, no
+//! release job picks it up, and it is dead weight that reads as coverage. This
+//! module fails on that.
 //!
 //! # Why a command and not only a unit test
 //!
@@ -223,8 +235,9 @@ fn survey(root: &Path) -> Survey {
     survey
 }
 
-/// Assert every release-only test binary is named by [`WORKFLOW`], and that the
-/// allowlist has not rotted. Needs no build and no licensed assets.
+/// Assert every release-only test binary is reached by [`WORKFLOW`] — named by
+/// `--test` or swept up by a whole-package release run — and that the allowlist
+/// has not rotted. Needs no build and no licensed assets.
 pub fn check() -> Result<()> {
     check_at(Path::new("."))
 }
@@ -316,9 +329,10 @@ pub(crate) fn check_at(root: &Path) -> Result<()> {
             ));
         }
         bail!(
-            "release-only gates must be named by the merge gate, or allowlisted with a \
-             reason:{msg}\n\nA release-only test skipped by every debug job and named by \
-             no release job executes nowhere, while CI stays green (#747)."
+            "release-only gates must be reached by the merge gate — named by `--test` or \
+             in a package the `{RELEASE_JOB}` matrix runs wholesale — or allowlisted with \
+             a reason:{msg}\n\nA release-only test skipped by every debug job and picked up \
+             by no release job executes nowhere, while CI stays green (#747)."
         );
     }
 
