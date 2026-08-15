@@ -85,6 +85,16 @@ const NOT_IN_ANY_CI_LIST: &[(&str, &str)] = &[];
 
 /// Whether an attribute is `#[cfg_attr(debug_assertions, ignore …)]` — the
 /// marker that makes a test release-only.
+///
+/// ⚠ Matches on the token text containing both `debug_assertions` and `ignore`,
+/// which also matches the **inverted** form `#[cfg_attr(not(debug_assertions),
+/// ignore)]` — a *debug*-only test, the opposite thing. No such attribute exists
+/// in this workspace, and the misclassification would be a **false alarm** (a
+/// loud "reaches no job" failure on a test that is release-ignored by design),
+/// not a silent miss. Deliberately not guarded: the obvious guard — reject any
+/// `not` — would also reject `all(debug_assertions, not(feature = "x"))`, which
+/// IS release-only, trading a loud wrong answer for a quiet one. Narrow the
+/// match properly if the inverted form ever appears.
 fn is_release_only(attr: &syn::Attribute) -> bool {
     if !attr.path().is_ident("cfg_attr") {
         return false;

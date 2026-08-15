@@ -228,13 +228,14 @@ enum Commands {
         jobs: Option<usize>,
     },
 
-    /// Assert every release-only gate is named by the merge gate's `--test` list.
+    /// Assert every release-only gate still reaches some CI job.
     ///
     /// A test written `#[cfg_attr(debug_assertions, ignore = "…")]` is skipped by
-    /// every debug job by design, so it runs in exactly one place: a release job
-    /// naming its binary. Miss that line and it executes NOWHERE while CI stays
-    /// green — `#747` found four PRs' worth of gates in that state. Derived from
-    /// the source tree, so a gate added today is checked today. Needs no build.
+    /// every debug job by design, so it executes only where a release job picks
+    /// it up — either by naming its binary (`--test <name>`) or by running its
+    /// whole package. Miss both and it runs NOWHERE while CI stays green;
+    /// `#747` found four PRs' worth of gates in that state. Derived from the
+    /// source tree, so a gate added today is checked today. Needs no build.
     ReleaseGates,
 
     /// Set up development environment (git hooks, verify tools)
