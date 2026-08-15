@@ -35,6 +35,7 @@ mod licensed_gates;
 mod pr_scope;
 mod release_gates;
 mod setup;
+mod test_reachability;
 mod validators;
 
 /// CI-config self-test: asserts every gating job is wired into `quality-gate`
@@ -239,6 +240,13 @@ enum Commands {
     #[command(long_about = release_gates::LONG_ABOUT)]
     ReleaseGates,
 
+    /// Every crate WITH tests is named by a CI test job.
+    //
+    // Sibling of `release-gates`: that one catches a gate CI stopped running,
+    // this one a crate CI never started running. Definition lives in the source.
+    #[command(long_about = test_reachability::LONG_ABOUT)]
+    TestReachability,
+
     /// Set up development environment (git hooks, verify tools)
     Setup,
 
@@ -306,6 +314,7 @@ fn main() -> Result<()> {
             jobs,
         } => licensed_gates::run(only, run, check, jobs),
         Commands::ReleaseGates => release_gates::check(),
+        Commands::TestReachability => test_reachability::check(),
         Commands::Setup => setup::run(),
         Commands::Uninstall => setup::uninstall(),
     }
