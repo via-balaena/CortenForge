@@ -516,11 +516,17 @@ jobs:
           # bins below), so resolve it independently.
           SOFT_PKGS=$(bash .github/scripts/affected-packages.sh "sim-soft")
           echo "SOFT_PKGS=$SOFT_PKGS" >> "$GITHUB_ENV"
-          # cf-cast (Monte-Carlo mold kernel) runs --lib-only below: its 358
-          # library tests are the gate, but two tests/ characterisation probe
-          # files are exploratory spikes (not regression gates) that currently
-          # fail on a geometry behaviour drift — see the cf-cast FDM arc. Kept
-          # out of any shard's crate list so nextest doesn't pick up the probes.
+          # cf-cast (Monte-Carlo mold kernel) is resolved here rather than in a
+          # shard crate list so it runs exactly once, in the step near the end of
+          # this job. That step runs the WHOLE crate, deliberately.
+          #
+          # ⚠ It used to run --lib-only, excluding two tests/ characterisation
+          # probe files described as "exploratory spikes that currently fail on a
+          # geometry behaviour drift". They had in fact been red since the commit
+          # that ADDED them — a characterisation measured against pre-§Q-5
+          # marching-cubes winding — and the exclusion is what let 6 red tests sit
+          # unseen for ~472 commits. #764 re-characterised them against a
+          # correctly-wound host; they now assert properties and pass.
           CAST_PKGS=$(bash .github/scripts/affected-packages.sh "cf-cast")
           echo "CAST_PKGS=$CAST_PKGS" >> "$GITHUB_ENV"
           # Doctests require a lib target. When a shard's affected set is only
@@ -604,14 +610,22 @@ jobs:
             --test slender_bending_matches_analytic
         shell: bash
 
-      # cf-cast's mold/cast kernel (358 library tests) runs --lib-only in
-      # release (its Monte-Carlo probes are ~30× slower in debug). --lib
-      # deliberately excludes the tests/ characterisation probe files, which
-      # are exploratory spikes rather than regression gates. Pinned to shard 1
-      # so it runs once. Without this the whole kernel executes in NO CI job.
-      - name: Run cf-cast library tests (--lib, --release)
+      # cf-cast's mold/cast kernel runs in release (its Monte-Carlo probes are
+      # ~30× slower in debug), pinned to shard 1 so it runs once. Without this
+      # step the whole kernel executes in NO CI job.
+      #
+      # ⚠ Deliberately NOT --lib. That flag excluded the tests/ characterisation
+      # probes, which is precisely how 6 red tests stayed invisible for ~472
+      # commits (#764). Re-adding it re-opens that hole.
+      #
+      # Cost, measured on a WARM tree: test execution goes 2.2 s -> 6.0 s. The
+      # eight integration binaries also have to COMPILE, which was not measured
+      # and which CI pays cold — so treat the run-time delta as a floor, not the
+      # total. 11 tests newly execute (9 + 1 probe, 1 export smoke); the other
+      # five binaries are entirely #[ignore]d and cost only their build.
+      - name: Run cf-cast tests (--release, all targets)
         if: matrix.id == 1 && env.CAST_PKGS != ''
-        run: cargo nextest run --release --lib -p cf-cast
+        run: cargo nextest run --release -p cf-cast
         shell: bash
 
   # ============================================================================
