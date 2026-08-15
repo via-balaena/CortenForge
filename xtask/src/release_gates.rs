@@ -202,6 +202,14 @@ pub(crate) fn wholesale_release_packages(yaml: &str) -> BTreeSet<String> {
 /// gates here", silently un-protecting the file. The aggregate empty-survey
 /// guard below does not catch that: it is a *partial* blindness, and the total
 /// stays plausible. Same lesson `licensed_gates::Survey` records.
+/// ⚠ **What this does NOT cover.** `found` is keyed by binary name alone, while
+/// a `--test` entry is package-scoped (`-p <pkg> --test <name>`). Two packages
+/// each owning a `tests/smoke.rs` would collide, and coverage of one could read
+/// as coverage of the other. No two packages share a test-binary name today
+/// (checked: the only repeated stem is `mod`, from `tests/common/mod.rs`
+/// helpers, which are not binaries and are excluded by `target_of`), so this is
+/// latent rather than live — but it is the shape of hole to widen the key for if
+/// it ever becomes live.
 #[derive(Default)]
 struct Survey {
     /// Release-only test binaries: binary name → owning package.
