@@ -187,10 +187,18 @@ pub(crate) fn discard_pending_work(
     capture.pending = None;
 }
 
-/// Loft the two painted patches (L4 + L5) into the intervertebral disc, or an
-/// error message if either is unpainted. `finalize_patch` keeps the largest
-/// component and seals interior holes; L4's rim is flipped to face L5's, and
-/// arc-length correspondence distributes the wall evenly around the convex rims.
+/// Loft the two painted patches (L4 + L5) into the intervertebral disc.
+/// `finalize_patch` keeps the largest component and seals interior holes; L4's
+/// rim is flipped to face L5's, and arc-length correspondence distributes the
+/// wall evenly around the convex rims.
+///
+/// # Errors
+///
+/// Three ways, all surfaced in the Design panel rather than panicking:
+/// - either patch is unpainted;
+/// - the patches loft to an empty surface;
+/// - the explode-then-weld below merged **nothing**, which means the lofted
+///   surface has no shared topology and would tet-mesh shattered.
 fn loft_painted_disc(bodies: &Query<&PaintBody>) -> Result<IndexedMesh, String> {
     let mut l4 = None;
     let mut l5 = None;
@@ -211,6 +219,16 @@ fn loft_painted_disc(bodies: &Query<&PaintBody>) -> Result<IndexedMesh, String> 
     };
     let top = flip_patch(&l4);
     let raw = assemble_bushing(&top, &l5, 1, WallCorrespondence::ArcLength).mesh;
+    // Checked before the weld guard below so that guard's message can be taken
+    // at face value: an empty loft also welds nothing, and reporting it as
+    // "shattered" would blame the weld for a patch problem.
+    if raw.faces.is_empty() {
+        return Err(
+            "the painted patches lofted to an empty disc surface — paint larger, \
+             flatter regions on both bodies"
+                .to_string(),
+        );
+    }
     // Rebuild clean shared topology before tet-meshing. The old paint-faces flow
     // did this implicitly by round-tripping through an STL: STL is triangle soup
     // (each face gets its own 3 verts), so the reload's `repair_mesh` re-welds
@@ -218,7 +236,42 @@ fn loft_painted_disc(bodies: &Query<&PaintBody>) -> Result<IndexedMesh, String> 
     // does NOT rebuild it, and the raw loft tet-meshes into a shattered surface —
     // so we explode to soup here, then weld, matching the STL round-trip exactly.
     let mut disc = explode_to_soup(&raw);
-    let _ = repair_mesh(&mut disc, &RepairParams::for_scans());
+    let summary = repair_mesh(&mut disc, &RepairParams::for_scans());
+
+    // ★ The weld is load-bearing here, not hygiene, so its summary is checked
+    // rather than discarded. `explode_to_soup` guarantees `vertices == 3 ·
+    // faces`; if nothing merges, the surface has no shared topology at all and
+    // tet-meshes into exactly the "shattered surface" the paragraph above says
+    // this explode-then-weld exists to prevent — and it would reach the FSU
+    // solve looking like an ordinary disc.
+    //
+    // ⚠ `vertices_welded == 0` is the unambiguous did-nothing case and cannot
+    // false-fire: soup has three coincident copies of every shared vertex, so a
+    // real surface always has something to merge. Deliberately not a ratio —
+    // any threshold here would be invented rather than measured. The empty
+    // loft, which also welds nothing, is rejected above so this message means
+    // only what it says.
+    //
+    // ★ NOT redundant with `scene::build_fsu`'s fragmentation guards, which run
+    // on the post-build tet boundary and look for an empty or blown-up surface.
+    // An unwelded loft does not necessarily fragment: `cf-fsu-model` measured
+    // the fixture's un-welded loft at ~40 % PHANTOM material
+    // (`frame_fix_step0b_lofted_disc_phantom_diagnosis_fom`) and traced it to
+    // topology rather than to the frame or a hole
+    // (`frame_fix_step0c_lofted_fixture_vs_production_pipeline_fom`) — a seam
+    // position that should carry one pseudo-normal instead carries several,
+    // each accumulated from only some of its incident triangles. That inflates
+    // the disc rather than shattering it, so it can pass both downstream checks
+    // while being physically wrong — and the weld here is the only thing
+    // standing between the Studio and that exact defect.
+    if summary.vertices_welded == 0 {
+        return Err(format!(
+            "lofted disc failed to weld: {} vertices / {} faces went in as \
+             triangle soup and none merged, so the surface has no shared \
+             topology and would tet-mesh shattered",
+            summary.initial_vertices, summary.initial_faces
+        ));
+    }
     Ok(disc)
 }
 
@@ -282,5 +335,70 @@ pub(crate) fn poll_solve(
             error.0 = Some(msg);
             next.set(StudioState::Design);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mesh_types::Point3;
+
+    /// A closed surface exploded to soup always has something to merge, so the
+    /// weld guard in [`loft_painted_disc`] cannot false-fire on a real disc.
+    /// This is the guard's *premise*, tested rather than assumed.
+    #[test]
+    fn exploding_a_closed_surface_to_soup_always_leaves_something_to_weld() {
+        let tet = IndexedMesh::from_parts(
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+                Point3::new(0.0, 0.0, 1.0),
+            ],
+            vec![[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]],
+        );
+
+        let mut soup = explode_to_soup(&tet);
+        assert_eq!(
+            soup.vertices.len(),
+            3 * tet.faces.len(),
+            "soup must carry one private vertex per face corner"
+        );
+
+        let summary = repair_mesh(&mut soup, &RepairParams::for_scans());
+        assert!(
+            summary.vertices_welded > 0,
+            "a closed surface welded nothing — the guard's premise is false: {summary:?}"
+        );
+        assert!(
+            summary.final_vertices < summary.initial_vertices,
+            "welding did not reduce the vertex count: {summary:?}"
+        );
+    }
+
+    /// ★ The negative control: the guard must be able to FIRE for the reason it
+    /// claims. Two triangles that share no position are already "shattered" —
+    /// welding merges nothing, which is exactly the state that would reach the
+    /// FSU solve looking like an ordinary disc.
+    #[test]
+    fn a_surface_with_no_shared_positions_welds_nothing_and_would_trip_the_guard() {
+        let disjoint = IndexedMesh::from_parts(
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+                Point3::new(50.0, 0.0, 0.0),
+                Point3::new(51.0, 0.0, 0.0),
+                Point3::new(50.0, 1.0, 0.0),
+            ],
+            vec![[0, 1, 2], [3, 4, 5]],
+        );
+
+        let mut soup = explode_to_soup(&disjoint);
+        let summary = repair_mesh(&mut soup, &RepairParams::for_scans());
+        assert_eq!(
+            summary.vertices_welded, 0,
+            "nothing should merge when no two corners coincide: {summary:?}"
+        );
     }
 }
