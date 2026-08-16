@@ -678,14 +678,21 @@ mod tests {
     ///
     /// Ordered deliberately, weakest precondition first:
     ///
-    /// 1. the census had something to judge, and **all** of it: every edge
+    /// 1. **one** connected component. Not decoration: on a multi-shell mesh
+    ///    the census and signed volume go clean *together* — two disjoint
+    ///    shells wound oppositely share no edge, so the census never compares
+    ///    them, and `is_inside_out` stays quiet whenever the larger shell
+    ///    dominates the volume (`mesh_repair::winding_census`'s own "What
+    ///    this does NOT answer" calls this the sharpest case). Neither of the
+    ///    checks below can stand without this one;
+    /// 2. the census had something to judge, and **all** of it: every edge
     ///    is interior (`boundary_edges == 0`), so this is not the "one
     ///    interior edge among thousands" case that
     ///    `WindingCensus::has_judgeable_edges` warns is not a coverage claim;
-    /// 2. no interior edge is walked the same way by both its faces —
+    /// 3. no interior edge is walked the same way by both its faces —
     ///    per-edge, seed-free, coordinate-free, and the sound local test;
-    /// 3. **only then** `!is_inside_out`. Signed volume is a sound global
-    ///    reading once (1) and (2) hold; asserted alone it is precisely the
+    /// 4. **only then** `!is_inside_out`. Signed volume is a sound global
+    ///    reading once (1)–(3) hold; asserted alone it is precisely the
     ///    unsound instrument #760–#767 spent the arc removing, blind to a
     ///    local flip near the origin and firing on one far from it.
     ///
@@ -702,6 +709,7 @@ mod tests {
         use crate::error::CastTarget;
         use crate::mesh_csg::apply_mating_transforms;
         use crate::mesher::solid_to_mm_mesh;
+        use mesh_repair::components::find_connected_components;
         use mesh_repair::{validate_mesh, winding_census};
 
         let ribbon = iter1_like_ribbon();
@@ -710,6 +718,21 @@ mod tests {
         let mesh = solid_to_mm_mesh(&solid, 0.001, CastTarget::Funnel).expect("funnel MC");
         let mesh = apply_mating_transforms(mesh, &transforms, CastTarget::Funnel)
             .expect("funnel mesh-CSG");
+
+        // (1) One shell. Without this the two checks below can BOTH read clean
+        // on a mesh with an inverted second shell — they never compare shells.
+        //
+        // ⚠ NOT redundant with `funnel_mesh_is_single_connected_component`,
+        // which asserts the same number for a different reason (MC weld at the
+        // bowl-nipple junction). This one is a PRECONDITION: without it the
+        // conclusions below are unsound, and a test must not depend on some
+        // other test having run. Deleting either weakens the one that remains.
+        let components = find_connected_components(&mesh).component_count;
+        assert_eq!(
+            components, 1,
+            "funnel mesh must be one connected component for the winding \
+             checks below to mean anything; got {components}",
+        );
 
         let report = validate_mesh(&mesh);
         let census = report
