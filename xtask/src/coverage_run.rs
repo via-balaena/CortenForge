@@ -45,6 +45,13 @@
 //! the old run recorded — its exact counts were never printed, and re-running
 //! the old pipeline to recover them costs 51 minutes for a digit.
 //!
+//! ⚠ Re-running these today will not reproduce every row. The table predates
+//! the `--lib` → `--lib --tests` change: `sim-types` has no `tests/` directory
+//! so its 192/271 still holds exactly, but `cf-fsu-model` has 4 integration
+//! tests, so its 84.2 % may now read higher. The A/B's *claim* — that scoping
+//! instrumentation cannot move the number — is unaffected; only the absolute
+//! figures are of their moment.
+//!
 //! [`own_files_in_export`] re-checks the load-bearing half on every run.
 //!
 //! ## Why a `RUSTC_WRAPPER`

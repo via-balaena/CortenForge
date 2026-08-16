@@ -19,7 +19,8 @@ pub(crate) struct Verbosity {
     pub verbose: bool,
     pub json: bool,
     /// Skip the Coverage criterion. Coverage runs `cargo llvm-cov --release`
-    /// (5-10 min per crate) which is too expensive for per-PR CI. Reported
+    /// (minutes to tens of minutes per crate) which is too expensive for
+    /// per-PR CI. Reported
     /// as [`Grade::NotApplicable`] when set.
     pub skip_coverage: bool,
 }
@@ -858,7 +859,8 @@ fn grade_coverage(
     }
 
     // `--skip-coverage` opt-out: CI runs want the other criteria without
-    // paying the ~5-10 min per-crate llvm-cov release build. Dedicated
+    // paying the per-crate llvm-cov release build, which runs minutes to tens
+    // of minutes (measured: sim-thermostat ~16 min). Dedicated
     // coverage jobs (nightly / manual) run without the flag.
     if verbosity.skip_coverage {
         return Ok(CriterionResult {
