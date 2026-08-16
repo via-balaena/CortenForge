@@ -304,7 +304,7 @@ fn prepare_target_dir(workspace_root: &Path, compiler_crate_name: &str) -> Resul
 /// ★ `--lib --tests`, not `--lib`. Measuring the lib target alone credits only
 /// what a crate's own `#[cfg(test)]` modules execute, so a crate that keeps its
 /// tests in `tests/` reads as barely covered while being thoroughly tested.
-/// Measured on `cf-geometry`, whose 184 tests live in `tests/`: `mesh.rs` read
+/// Measured on `cf-geometry`, whose 186 tests live in `tests/`: `mesh.rs` read
 /// **7.27 %** under `--lib` and **100 %** with the integration binaries
 /// included. The criterion is meant to assert "this production code is
 /// exercised", and where the exercising test happens to live is not part of
@@ -349,8 +349,12 @@ fn prepare_target_dir(workspace_root: &Path, compiler_crate_name: &str) -> Resul
 /// | `mesh-printability` | 41 s | **+37 s** (a stress suite) |
 ///
 /// So the added cost is bounded by what a crate keeps in `tests/`, and the
-/// instrumentation tax itself is unchanged — `mesh-repair`'s 117 lib tests run
-/// in 0.32 s clean and 392 s instrumented, the ~100-400x this module documents.
+/// instrumentation tax itself is unchanged by this — but it is worth recording
+/// that the tax is far wider than the ~400x the module header measured on the
+/// whole-tree pipeline. Scoped, per lib suite: `mesh-printability` 0.25 s clean
+/// vs 41 s instrumented (**164x**), `mesh-repair` 0.32 s vs 392 s (**1226x**).
+/// It tracks how much of the workload is instrumented inner-loop code, so quote
+/// it as a range that wide rather than a single figure.
 ///
 /// `quiet` silences the child processes rather than the measurement: the test
 /// harness writes to stdout, and `grade --json` puts its report there too.
@@ -424,8 +428,9 @@ pub(crate) fn measure_lib_coverage(
         // ⚠ Only the lib binary gates. Integration suites still RUN — their
         // coverage is the whole point — but an instrumented failure there is
         // not evidence about the code. `-C instrument-coverage` costs this
-        // workspace 100-400x, so any test asserting a wall-clock budget or a
-        // memory ceiling fails BECAUSE it is being measured.
+        // workspace 164-1226x on the suites measured here, so any test
+        // asserting a wall-clock budget or a memory ceiling fails BECAUSE it is
+        // being measured.
         //
         // Nothing is lost by not gating here: `grade`'s pass 2 already runs
         // `cargo test --release -p <crate>` UNINSTRUMENTED, which covers lib,
