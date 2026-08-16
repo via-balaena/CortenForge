@@ -890,7 +890,8 @@ fn grade_coverage(
     //   `coverage_run`. Integration tests used to be excluded on the premise
     //   that src/ unit tests reach the same lines; that is false for any crate
     //   keeping its tests in tests/, which read as barely covered. Scoping the
-    //   instrumentation to one crate is what makes the pass affordable.
+    //   instrumentation to this crate (and its test targets) is what makes the
+    //   pass affordable.
     //
     // Pass 2: Run ALL tests (unit + integration) WITHOUT instrumentation.
     //   Verifies correctness without paying the coverage overhead.

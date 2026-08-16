@@ -49,7 +49,8 @@ Requires the `llvm-tools` rustup component (`rustup component add
 llvm-tools-preview`); no `cargo-llvm-cov` install is needed. Works on Linux,
 macOS (including Apple Silicon), and Windows.
 
-**Instrumentation is scoped to the crate being measured.** `RUSTFLAGS` applies
+**Instrumentation is scoped to the crate being measured** (and its own test
+targets, so their binaries emit usable profiles). `RUSTFLAGS` applies
 to every unit cargo builds, so instrumenting through `cargo llvm-cov`
 instrumented the whole dependency tree — and the report was then filtered back
 down to the crate's own files, discarding all of it. Because those lines were

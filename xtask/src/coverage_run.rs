@@ -60,8 +60,8 @@
 //! (checked on 1.96, which rejects it outright). `RUSTC_WRAPPER` is the one
 //! stable interception point — cargo runs it in place of `rustc` for every
 //! unit and passes the real `rustc` as the first argument, so the wrapper can
-//! add `-C instrument-coverage` to exactly one compilation and leave the rest
-//! of the dependency tree fully optimised.
+//! add `-C instrument-coverage` to just the measured crate and its own test
+//! targets, leaving the whole dependency tree fully optimised.
 //!
 //! The wrapper is this same `xtask` binary re-entered through
 //! [`WRAPPER_CRATE_ENV`]; a separate shell script would have to be written to
@@ -155,7 +155,8 @@ fn is_test_target(args: &[String]) -> bool {
     args.iter().any(|a| a == "--test")
 }
 
-/// Stand in for `rustc`, adding instrumentation to one crate.
+/// Stand in for `rustc`, adding instrumentation to the measured crate and its
+/// test targets.
 ///
 /// Cargo invokes a wrapper as `<wrapper> <rustc> <args…>`, including for the
 /// version probes it runs before any compilation; those carry no
@@ -265,10 +266,12 @@ fn test_executables(message_json: &str) -> Vec<TestBinary> {
 /// the empty case is reported as the breakage it is.
 ///
 /// ⚠ The symmetric check — "no *foreign* file may appear" — was written first
-/// and removed, because it cannot fail for the reason it claimed.
-/// [`should_instrument`] compares against exactly one crate name, so the wrapper
-/// is incapable of instrumenting a second crate; the check could only ever fire
-/// on something else. It did, immediately: `mesh-repair`'s export names
+/// and removed, and it would be even more wrong today. Its premise was that
+/// [`should_instrument`] compares against exactly one crate name, so nothing
+/// else could be instrumented; [`is_test_target`] now instruments the crate's
+/// test targets too, and their `tests/*.rs` source appears in the export by
+/// design. Even before that the check could only fire on something else, and
+/// it did, immediately: `mesh-repair`'s export names
 /// `tracing`'s `macros.rs`, because a macro's expansion carries the regions of
 /// the file it was *written* in, not the file it was expanded into. Those lines
 /// were in the old pipeline's export too, and `production_coverage` has always
@@ -361,19 +364,25 @@ fn prepare_target_dir(workspace_root: &Path, compiler_crate_name: &str) -> Resul
 /// crate's own production lines either way, and adding binaries can only cover
 /// more of them. No crate can newly fall below threshold because of it.
 ///
-/// ## Why integration binaries cannot inflate the denominator
+/// ## Why integration binaries do not inflate the denominator
 ///
-/// The obvious worry is that `tests/*.rs` sits *under* the crate directory and
-/// is not `cfg(test)`-gated, so counting it would pad both sides with
-/// ~100 %-covered test source. It cannot happen: the [`WRAPPER_CRATE_ENV`]
-/// wrapper instruments only the compilation whose `--crate-name` matches, and
-/// an integration crate compiles under its own name (`mesh_tests`, …). Never
-/// instrumented means no coverage mapping, which means it cannot appear in the
-/// export — while its *execution* still fires the counters inside the
-/// instrumented lib it links.
+/// `tests/*.rs` sits *under* the crate directory and is not `cfg(test)`-gated,
+/// so counting it would pad both sides with ~100 %-covered test source. It is
+/// excluded, but by the accounting rather than by absence — and that is worth
+/// stating precisely, because the earlier design got there the other way.
 ///
-/// Audited on `cf-geometry` rather than argued: the export names **17 files, 0
-/// of them under `tests/`** — every one a `src/*.rs` of the crate itself.
+/// Test targets ARE instrumented ([`is_test_target`]), because otherwise their
+/// binaries emit no usable profile and the coverage they produce is lost. So
+/// their source DOES reach the export: audited on `cf-geometry`, the export
+/// names **24 files, 7 of them under `tests/`**. [`is_own_production_file`]
+/// drops those 7, leaving the 17 `src/*.rs` files that are the crate itself.
+///
+/// ⚠ An earlier revision of this doc claimed the opposite mechanism — that
+/// integration source "cannot appear in the export" because only the measured
+/// crate is instrumented. That was true then and is false now; it stopped
+/// being true the moment test targets had to be instrumented to emit profiles
+/// at all. If the filter is ever removed on the strength of that old argument,
+/// the denominator silently gains ~100 %-covered test bodies.
 ///
 /// ## Known limit: doctests are still not counted
 ///
