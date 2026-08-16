@@ -1,4 +1,7 @@
-//! SDF-side truncated-pyramid mating-feature primitive.
+//! Truncated-pyramid mating-feature primitive.
+//!
+//! ⚠ Titled "SDF-side" until 2026-08-16; production composes it
+//! post-MC as mesh-CSG. See the paradigm-boundary section below.
 //!
 //! Replaces the cylinder-based registration pin + plug T-bar/T-slot
 //! mechanisms with a single shared primitive (recon-1 §G-5 of
@@ -12,35 +15,46 @@
 //! "dovetails that are arrow/trapezoid shaped" with sharp angles
 //! and straight lines).
 //!
-//! # Paradigm-boundary placement: SDF, not mesh-CSG
+//! # Paradigm-boundary placement: mesh-CSG, post-MC
 //!
-//! The S1 probe-spike (`design/cf-cast/tests/g7_g9_prismatic_pin_probe.rs`,
-//! commit `a218ddfb`) characterised mesh-CSG `Manifold::union` of a
-//! `Manifold::hull_pts` truncated-pyramid pin against an SDF→MC
-//! curved-shell host. Outcome at both production (3 mm) and
-//! over-resolved (1 mm) cell sizes: the union introduces 2
-//! disconnected components AND a `SelfIntersecting` F4 Critical
-//! issue at the boolean junction (§G-7 BRANCH B + BRANCH C BOTH
-//! fire). The §G-9 chamfer sweep `{0.0, 0.4, 0.6, 0.8, 1.0 mm}`
-//! fails identically — the failure is **chamfer-independent**
-//! and lives at the recon-4 (P) "bulk-welded SDF/MC × fine mesh-CSG"
-//! paradigm boundary (see [[project-cf-cast-sdf-meshcsg-paradigm-boundary]]).
+//! ⚠ **This section used to read "SDF, not mesh-CSG" and cite the
+//! §G-7 probe as the reason. Both halves of that are now retracted.**
+//! Production composes this primitive **post-MC as mesh-CSG**, via
+//! [`crate::mesh_csg::MatingTransform`]'s `UnionTruncatedPyramid` /
+//! `SubtractTruncatedPyramid` variants, meshed by
+//! [`crate::mesh_csg::build_truncated_pyramid_via_hull_pts`].
 //!
-//! The §G-12 #2 bail-out (pin composed pre-MC into the host SDF via
-//! [`cf_design::Solid::union`]) PASSES the BRANCH-A criteria — 1
-//! connected component, no new F4 Critical types at the junction.
-//! That outcome is the architectural correction that picks the
-//! revised §G-13 implementation arc: the `PrismaticPin` primitive
-//! lives entirely SDF-side. There are no
-//! `MatingTransform::UnionPrismaticPin` /
-//! `MatingTransform::SubtractPrismaticPin` variants; the S3
-//! cup-pin and S4 plug-floor-lock sessions compose
-//! the SDF into the per-piece [`cf_design::Solid`] at the assembly
-//! layer (the same column as the recon-4 (P) §F-3 SDF-pin pattern
-//! that turned out load-bearing for `CylinderParent` on production
-//! cup pieces). The chamfer band is part of the SDF composition per
-//! the revised §G-9 decision; no slicer-level chamfer fallback is
-//! needed.
+//! Two independent things killed the old rationale:
+//!
+//! 1. **The SDF-side path failed in the workshop (2026-05-24).** Its
+//!    output was cf-view-checked and the features were simply GONE —
+//!    pre-MC composition shares the bulk 3 mm MC cell size, and a
+//!    1.5 mm half-extent pin is one cell wide. Reverted the same
+//!    night. Post-MC primitives carry their own hull resolution,
+//!    independent of the bulk cell size, which is the whole point.
+//!    See [`crate::mesh_csg::MatingTransform`] for that rationale.
+//! 2. **The §G-7 evidence was never reproducible (#764, 2026-08-15).**
+//!    The probe's "BRANCH B + C" numbers were measured against a tree
+//!    with inside-out marching-cubes winding and locked *after* the
+//!    §Q-5 fix that corrected it, so they never described the tree
+//!    they shipped with. The defect was bad winding corrupting
+//!    manifold3d's boolean — not a "mesh-CSG on an MC-tessellated
+//!    curved host" robustness boundary. Fed a correctly-wound host,
+//!    union is clean at 3 mm and 1 mm and across the whole §G-9
+//!    chamfer sweep. The re-characterised probe carries the full
+//!    measurement: `design/cf-cast/tests/g7_g9_prismatic_pin_probe.rs`.
+//!
+//! ⇒ the paradigm boundary this module was placed against was not
+//! where it appeared to be. Read that probe, not §G-7, before moving
+//! this primitive across it again.
+//!
+//! What this module still supplies to production is the **spec, pose
+//! and params** types: `PrismaticPinParams` is the payload both
+//! `MatingTransform` pyramid variants carry. [`build_prismatic_pin_sdf`]
+//! survives for the probe and for unit tests that want an analytic
+//! field to sample; **no production path calls it.** The chamfer band
+//! is emitted by both paths alike, so the revised §G-9 decision (no
+//! slicer-level chamfer fallback) is unaffected.
 //!
 //! # Geometry construction
 //!
@@ -353,9 +367,14 @@ pub struct PrismaticPinParams {
 /// The result is the truncated-pyramid solid (with optional chamfer
 /// band) in world coords. Callers compose it into a per-piece
 /// [`cf_design::Solid`] via [`Solid::union`] for pin emission or
-/// [`Solid::subtract`] for socket emission — the §G-12 #2
-/// architecture explicitly avoids [`crate::mesh_csg::MatingTransform`]
-/// for this primitive.
+/// [`Solid::subtract`] for socket emission.
+///
+/// ⚠ **No production caller does this.** The text here used to say
+/// the §G-12 #2 architecture "explicitly avoids
+/// [`crate::mesh_csg::MatingTransform`] for this primitive"; that
+/// decision was reverted, and production goes through exactly those
+/// transforms. This emitter serves the §G-7/§G-9 probe and unit
+/// tests that want an analytic field to sample.
 ///
 /// # Panics
 ///

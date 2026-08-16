@@ -20,18 +20,24 @@
 //! defensive primitive but no longer emitted from production
 //! composers. S7's funnel-nipple was similarly reverted by the
 //! funnel fix (`2bf0bd17`); cup-side pour-gate stays mesh-CSG.
-//! S3 of the FDM-friendly geometry arc migrated the cup-pin
-//! registration pair from mesh-CSG cylinder ops to SDF-side
-//! [`crate::PrismaticPin`][`crate::prismatic_pin`] composition;
-//! S4 of the same arc migrated the plug-floor lock (and retired
-//! the entire S6 plug-shaft + T-bar + T-slot mechanism) to a
-//! single SDF-side socket — the lone mesh-CSG mating-feature
-//! surface post-S4 is the cup-side pour-gate carve (S7), still a
-//! `SubtractCylinder` against the bulk-welded half-shell. See
-//! decision §1 + §11 of `docs/CF_CAST_MATING_FEATURES_RECON.md`
-//! for the original migration surface and
-//! `docs/CF_CAST_FDM_FRIENDLY_GEOMETRY_RECON.md` §G-5 for the
-//! S3/S4 SDF-side migration.
+//! ⚠ **This block used to say the S3/S4 migration moved the cup-pin
+//! and plug-lock SDF-side, leaving the pour-gate carve as "the lone
+//! mesh-CSG mating-feature surface". Both halves are stale.** The
+//! SDF-side move was reverted the night it shipped (see
+//! [`MatingTransform::UnionTruncatedPyramid`]), and mesh-CSG mating
+//! features have since multiplied rather than shrunk: the plug-floor
+//! lock and its socket ride the truncated-pyramid variants, while
+//! dowel holes ([`crate::dowel_hole`]), the bolt pattern
+//! ([`crate::bolt_pattern`]) and the pour legs ([`crate::pour`]) each
+//! emit their own `SubtractCylinder` ops. The cup-pin registration
+//! pair is gone entirely — §M-S4 retired it with the
+//! `cf_cast::registration` module.
+//!
+//! See decision §1 + §11 of `docs/CF_CAST_MATING_FEATURES_RECON.md`
+//! for the original migration surface. ⚠ Treat
+//! `docs/CF_CAST_FDM_FRIENDLY_GEOMETRY_RECON.md` as a historical
+//! record only — its §G-7 evidence was retracted by #764 and its
+//! §G-12 #2 decision reverted; the banner at its head has the detail.
 //!
 //! # Unit boundary
 //!
@@ -67,11 +73,14 @@ use crate::prismatic_pin::PrismaticPinParams;
 /// registration cup-pin pair AND the plug-shaft + T-bar + T-slot
 /// triple (pin + socket / bar + slot consumed the same
 /// `CylinderParent`; only the per-side
-/// [`CylinderParams::radius_m`] differed, per recon §2). Post-S4
-/// both surfaces migrated to SDF-side
-/// [`crate::PrismaticPin`][`crate::prismatic_pin`] primitives; the
-/// shared-primitive invariant survives only for the cup pour-gate
-/// carve (single producer + consumer, no cross-piece sharing).
+/// [`CylinderParams::radius_m`] differed, per recon §2). Both of
+/// those surfaces are gone — the plug mechanism was replaced by the
+/// truncated-pyramid lock, and §M-S4 retired the cup-pin path whole.
+/// ⚠ Earlier text here said they "migrated to SDF-side" primitives;
+/// that migration was reverted, and today's pyramid lock is mesh-CSG
+/// like everything else. What survives of the shared-primitive
+/// invariant is only the cup pour-gate carve (single producer +
+/// consumer, no cross-piece sharing).
 ///
 /// All coordinates are meters in cf-design's compose-time frame.
 /// The builders convert m → mm at primitive-build time.
@@ -96,11 +105,15 @@ pub struct CylinderParent {
 pub struct CylinderParams {
     /// Shared geometry triple. Pre-S4 of the FDM-friendly geometry
     /// arc the cup-pin pair AND the plug T-bar/shaft pair both
-    /// shared this triple across plug + cup pieces (recon §2);
-    /// post-S4 both surfaces migrated SDF-side and the only
-    /// remaining consumer is the S7 pour-gate carve (no
-    /// cross-piece sharing, but the type stays for the unit-
-    /// boundary + segments-determinism contract).
+    /// shared this triple across plug + cup pieces (recon §2); both
+    /// have since been retired (the plug mechanism to the pyramid
+    /// lock, the cup-pin whole in §M-S4), leaving the pour-gate carve
+    /// as the only consumer of *this* triple — no cross-piece
+    /// sharing, but the type stays for the unit-boundary +
+    /// segments-determinism contract. ⚠ Not because they "migrated
+    /// SDF-side": that move was reverted, and other mesh-CSG cylinder
+    /// consumers (dowel holes, bolts, pour legs) build their params
+    /// directly rather than through a shared parent.
     pub parent: CylinderParent,
     /// Per-side radius (meters). Pin and socket of a registration
     /// pair consume *different* values here: pin uses the pin radius,
@@ -174,9 +187,12 @@ pub enum MatingTransform {
     /// Mesh-union of an exact axis-aligned cylinder primitive.
     /// Pre-S3/S4 of the FDM-friendly geometry arc this was emitted
     /// by the cup-pin (S5) + plug-side T-bar + plug-shaft (S6)
-    /// composers. Post-S4 NO production composer emits this
-    /// variant — the cup-pin migrated to SDF (§G-12 #2) and the
-    /// plug retention migrated to a single SDF pyramid (§G-1).
+    /// composers. **NO production composer emits this variant** —
+    /// still true, but not for the reason once given here (§G-12 #2
+    /// "migrated to SDF"): that migration was reverted, and the two
+    /// mechanisms simply no longer exist. Plug retention is the
+    /// truncated-pyramid lock ([`Self::UnionTruncatedPyramid`]); the
+    /// cup-pin was retired with the `registration` module in §M-S4.
     /// Variant retained as a defensive primitive (its `apply_one`
     /// arm + cylinder-build tests still run); deletion deferred to
     /// the S8 cold-read pass per §G-5.

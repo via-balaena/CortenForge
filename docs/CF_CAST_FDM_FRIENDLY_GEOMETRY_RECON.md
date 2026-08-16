@@ -1,10 +1,52 @@
 # cf-cast FDM-friendly geometry — recon
 
+> ## ⚠ HISTORICAL RECORD — do not implement from this document
+>
+> This is the decision record of a completed arc, kept for its
+> reasoning. Two of its load-bearing conclusions were later
+> **reversed**, and the text below still argues for them throughout.
+> Read this banner before quoting any §G-7 or §G-12 #2 claim.
+>
+> **1. The §G-12 #2 "pin lives entirely SDF-side" decision was
+> reverted on 2026-05-24, the same night it shipped.** Workshop
+> cf-view inspection of the resulting STLs found the cup-pin and
+> plug-lock features simply GONE: pre-MC composition shares the bulk
+> 3 mm MC cell size, and a 1.5 mm half-extent pin is one cell wide.
+> Production emits these primitives **post-MC as mesh-CSG**, via
+> `MatingTransform::UnionTruncatedPyramid` / `SubtractTruncatedPyramid`.
+> The §G-13 S3/S4 sections below describe an architecture that no
+> longer exists.
+>
+> **2. The §G-7 empirical outcome was never reproducible (#764,
+> 2026-08-15).** Its "BRANCH B + C" failure numbers were measured
+> against a tree with inside-out marching-cubes winding and locked in
+> *after* the §Q-5 fix that corrected it — so they never described the
+> tree they shipped with, and the tests holding them sat red for ~472
+> commits. The real defect was bad winding corrupting manifold3d's
+> boolean, **not** a "mesh-CSG on an MC-tessellated curved host"
+> robustness boundary. Given a correctly-wound host, union is clean at
+> 3 mm and 1 mm and across the whole §G-9 chamfer sweep. The
+> re-characterised probe at
+> `design/cf-cast/tests/g7_g9_prismatic_pin_probe.rs` is the live
+> source of truth; §G-7 below is superseded by it.
+>
+> ⇒ the two reversals are independent, and they point the same way:
+> **nothing here is evidence against post-MC mesh-CSG.** Decision (1)
+> was made on evidence that (2) later retracted, and the workshop had
+> already falsified it on other grounds.
+>
+> Also since superseded: §M-S4 (2026-05-27) retired the cup-pin
+> registration path and deleted the `cf_cast::registration` module
+> outright, replacing it with the symmetric dowel-hole pattern. See
+> `docs/CF_CAST_UNIFIED_MATING_PLANE_RECON.md`.
+
 **Status:** decisions §G-1 – §G-6 locked from design chat 2026-05-24;
 probes §G-7 / §G-8 / §G-9 specified but DEFERRED to a probe-spike
 session; implementation protocol §G-13 sketched at scaffold level.
 Recon is a multi-turn session — this commit is the scaffold; probes +
 final implementation-session estimate fill in later.
+*(Status line is as-written in 2026-05; see the banner above for what
+actually happened.)*
 
 **Predecessors:**
 [`docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md`](./CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md)
@@ -626,6 +668,27 @@ assert_eq!(f4_critical_issues(&result).len(), 0);
   bulk), chamfer band stays mesh-CSG.
 
 ### §G-7 Empirical outcome (probe-spike 2026-05-24)
+
+> ⚠ **RETRACTED 2026-08-15 (#764). Every number in this section is
+> wrong.** They were measured before the §Q-5 marching-cubes winding
+> fix and locked in after it, so they describe a tree that never
+> existed at this commit; the tests pinning them failed in the commit
+> that added them and stayed red ~472 commits. Re-measured against a
+> correctly-wound host, **the union is clean** at both cell sizes and
+> across the whole §G-9 chamfer sweep — one component, no new critical
+> types — and the subtract's one extra component is *correct*: the
+> socket sits inside the wall, so the difference hollows an internal
+> void bounded by a second, inward-wound shell (20 faces,
+> `signed_volume` −53.63, identical at both cell sizes).
+>
+> ⇒ **BRANCH B + C never fired for the reason claimed**, so this
+> section is not evidence against mesh-CSG, and the §G-12 #2 bail-out
+> it justified rests on nothing. Live source of truth:
+> `design/cf-cast/tests/g7_g9_prismatic_pin_probe.rs`, whose tests now
+> assert *properties* rather than pinned counts precisely so a future
+> winding regression cannot be locked in as a characterisation again.
+>
+> The text below is preserved unedited as the historical record.
 
 Probe shipped on `dev` at
 `design/cf-cast/tests/g7_g9_prismatic_pin_probe.rs` (8 tests, all
