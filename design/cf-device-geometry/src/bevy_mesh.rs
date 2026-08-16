@@ -36,10 +36,16 @@ pub fn build_bevy_mesh_from_indexed(mesh: &IndexedMesh, up: UpAxis, render_scale
 ///
 /// # Panics
 ///
-/// `vertex_colors` must match `mesh.vertices.len()` when `Some`;
-/// mismatched lengths panic via the `Mesh::ATTRIBUTE_COLOR` insert
-/// invariant — a construction-side bug, not a runtime data
-/// dependence.
+/// `vertex_colors` must match `mesh.vertices.len()` when `Some`. The
+/// `assert_eq!` below is what enforces that, and it is **load-bearing
+/// rather than defensive**: measured 2026-08-16 by making the assertion
+/// vacuous, `Mesh::insert_attribute` accepts a colour buffer shorter
+/// than the position buffer WITHOUT panicking, and the adapter returns a
+/// mesh whose attributes disagree. (This doc previously attributed the
+/// panic to a `Mesh::ATTRIBUTE_COLOR` insert invariant; there is no such
+/// check at insert time.) A mismatch is a construction-side bug, not a
+/// runtime data dependence, so failing here beats tinting the wrong
+/// vertices downstream.
 pub fn build_bevy_mesh_from_indexed_with_colors(
     mesh: &IndexedMesh,
     up: UpAxis,

@@ -350,6 +350,9 @@ mod tests {
     fn labelled_frames(n: usize) -> Vec<Vec<f64>> {
         (0..n)
             .map(|k| {
+                // Frame indices here are single digits; the cast is exact well
+                // past any count a test would build. Same reasoning as
+                // `duration_secs`' allow above.
                 #[allow(clippy::cast_precision_loss)]
                 let x = k as f64;
                 vec![x, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
