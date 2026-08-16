@@ -94,6 +94,15 @@ pub struct GradeReport {
     pub automated_grade: Grade,
     #[allow(dead_code)]
     pub needs_review: bool,
+    /// Criterion 1's measurement split by file, worst first — empty whenever
+    /// coverage did not run (`--skip-coverage`, a skipped profile, a failed
+    /// measurement) or produced no production lines.
+    ///
+    /// Structured rather than folded into `CriterionResult.measured_detail`
+    /// because two consumers want it in two shapes: `--json` for machine
+    /// triage, the table for a reader. `pub(crate)` to match
+    /// [`crate::coverage::FileCoverage`]'s own visibility.
+    pub(crate) coverage_files: Vec<crate::coverage::FileCoverage>,
 }
 
 impl GradeReport {
@@ -335,13 +344,27 @@ pub fn evaluate(sh: &Shell, crate_name: &str, verbosity: Verbosity) -> Result<Gr
         criteria: Vec::new(),
         automated_grade: Grade::A,
         needs_review: true,
+        coverage_files: Vec::new(),
     };
 
+    // Filled by `grade_coverage` through a `&mut` capture. The criterion's
+    // grade is a `CriterionResult` like every other, but its per-file split has
+    // no place in that shape, and re-deriving it would mean a second
+    // instrumented run — minutes, for data the first run already produced.
+    let mut coverage_files = Vec::new();
     report
         .criteria
         .push(run_criterion(1, "Coverage", verbosity.quiet, || {
-            grade_coverage(sh, crate_name, &crate_path, profile, verbosity)
+            grade_coverage(
+                sh,
+                crate_name,
+                &crate_path,
+                profile,
+                verbosity,
+                &mut coverage_files,
+            )
         })?);
+    report.coverage_files = coverage_files;
     report
         .criteria
         .push(run_criterion(2, "Documentation", verbosity.quiet, || {
@@ -474,6 +497,88 @@ fn display(report: &GradeReport) {
             .to_string()
             .bright_white()
     );
+
+    print_coverage_triage(report);
+}
+
+/// Rows of the per-file coverage table printed under the grade.
+///
+/// Bounded because triage starts at the top and a large crate has hundreds of
+/// files. The tail is summarised rather than dropped silently, and `--json`
+/// carries every row unbounded — a cap nobody is told about reads as "that was
+/// all of it".
+const TRIAGE_ROWS: usize = 20;
+
+/// Print criterion 1's per-file breakdown, worst first.
+///
+/// Prints nothing unless coverage actually ran and something is uncovered. A
+/// fully-covered file is not somewhere to go and write a test, and listing it
+/// would push real targets off the bottom of the cap.
+fn print_coverage_triage(report: &GradeReport) {
+    let worst: Vec<&crate::coverage::FileCoverage> = report
+        .coverage_files
+        .iter()
+        .filter(|f| f.uncovered() > 0)
+        .collect();
+    if worst.is_empty() {
+        return;
+    }
+    let uncovered_total: u64 = worst.iter().map(|f| f.uncovered()).sum();
+
+    println!();
+    println!(
+        "{}",
+        format!(
+            "  Coverage triage — {} of {} measured file(s) hold {} uncovered production line(s):",
+            worst.len(),
+            report.coverage_files.len(),
+            uncovered_total
+        )
+        .bright_white()
+        .bold()
+    );
+    println!("{}", "      uncovered  covered  file".dimmed());
+    for f in worst.iter().take(TRIAGE_ROWS) {
+        // An unparsed file's counts include its test lines, so the row is an
+        // over-estimate and may outrank honest ones. Say so on the row itself:
+        // the crate-level warning says how many files, not which, and the rank
+        // is what a reader acts on.
+        let caveat = if f.test_lines_counted {
+            "  ⚠ unparsed, so test lines are counted here"
+                .yellow()
+                .to_string()
+        } else {
+            String::new()
+        };
+        println!(
+            "      {:>9}  {:>7}  {}{}",
+            f.uncovered(),
+            format!("{:.1}%", f.percent()),
+            f.file,
+            caveat
+        );
+    }
+    if let Some((rest, rest_lines)) = triage_tail(&worst, TRIAGE_ROWS) {
+        println!(
+            "{}",
+            format!(
+                "      … {rest} more file(s) hold {rest_lines} uncovered line(s); \
+                 --json lists every file"
+            )
+            .dimmed()
+        );
+    }
+}
+
+/// What the printed table left out: `(files, uncovered lines)` beyond `cap`.
+///
+/// `None` when nothing was cut. Split out from the printing so the claim the
+/// tail line makes is checkable — the count and the line sum have to skip
+/// exactly the rows the table printed, and a table that under-reports its own
+/// truncation is the silent cap the cap was allowed on condition of avoiding.
+fn triage_tail(worst: &[&crate::coverage::FileCoverage], cap: usize) -> Option<(usize, u64)> {
+    let rest = worst.len().checked_sub(cap).filter(|n| *n > 0)?;
+    Some((rest, worst.iter().skip(cap).map(|f| f.uncovered()).sum()))
 }
 
 /// Emit the grade report as JSON to stdout.
@@ -492,12 +597,37 @@ fn json_output(report: &GradeReport) {
         })
         .collect();
 
-    let json = serde_json::json!({
+    // Every measured file, not a top-N slice: this is the machine-readable
+    // side, where a consumer does its own ranking and a silent cap would be a
+    // lie about what was measured. The human table truncates instead, and says
+    // so. Absent rather than empty when coverage did not run, so a consumer can
+    // tell "measured, all covered" from "never measured".
+    let coverage_files: Vec<serde_json::Value> = report
+        .coverage_files
+        .iter()
+        .map(|f| {
+            serde_json::json!({
+                "file": f.file,
+                "covered": f.covered,
+                "total": f.total,
+                "uncovered": f.uncovered(),
+                "percent": (f.percent() * 10.0).round() / 10.0,
+                // True means the counts on this row include `#[cfg(test)]`
+                // lines, so they overstate both the work and the gap.
+                "test_lines_counted": f.test_lines_counted,
+            })
+        })
+        .collect();
+
+    let mut json = serde_json::json!({
         "crate_name": report.crate_name,
         "profile": report.profile.label(),
         "automated_grade": report.automated_grade.as_str(),
         "criteria": criteria,
     });
+    if !coverage_files.is_empty() {
+        json["coverage_files"] = serde_json::Value::Array(coverage_files);
+    }
 
     println!(
         "{}",
@@ -923,12 +1053,19 @@ fn coverage_skip_reason(profile: CrateProfile) -> Option<(&'static str, String)>
 /// The *instrumentation* is scoped for cost — see [`crate::coverage_run`], which
 /// carries the measurement — and because the report never counted those files,
 /// scoping the build cannot move the number.
+///
+/// `files_out` receives the per-file split of whatever this measured, worst
+/// first, and is left untouched on every path that returns without a
+/// measurement — a skipped profile, `--skip-coverage`, missing tooling, a
+/// failed run, or a crate with no production lines. So a non-empty `files_out`
+/// means "these files were measured", never "this is all we managed to see".
 fn grade_coverage(
     sh: &Shell,
     crate_name: &str,
     crate_path: &str,
     profile: CrateProfile,
     verbosity: Verbosity,
+    files_out: &mut Vec<crate::coverage::FileCoverage>,
 ) -> Result<CriterionResult> {
     // Per STANDARDS.md §1 "Exceptions: None for Layer 0 crates" — the
     // coverage gate is specifically scoped to Layer 0 library crates.
@@ -1155,6 +1292,10 @@ fn grade_coverage(
             ),
         });
     };
+
+    // Past the guard, so this is only ever a real measurement. Moved rather
+    // than cloned; the fields read below are the scalars and `unparsed`.
+    *files_out = measured.files;
 
     // Two-tier thresholds (F1): A+ >= 90%, A >= 75%, B >= 60%, C >= 40%, F < 40%
     // Heavy test failure overrides to F regardless of coverage %.
@@ -5519,6 +5660,58 @@ tier_up_features = { sneaky = "App" }
         assert_eq!(
             count_clippy_diagnostics(&stream, "sim/L0/core").expect("count"),
             1
+        );
+    }
+
+    fn triage_row(file: &str, covered: u64, total: u64) -> crate::coverage::FileCoverage {
+        crate::coverage::FileCoverage {
+            file: file.to_string(),
+            covered,
+            total,
+            test_lines_counted: false,
+        }
+    }
+
+    /// A table that prints every row it has must claim no tail.
+    #[test]
+    fn an_untruncated_triage_table_reports_no_remainder() {
+        let rows = [triage_row("a.rs", 0, 5), triage_row("b.rs", 0, 3)];
+        let worst: Vec<&_> = rows.iter().collect();
+
+        assert_eq!(triage_tail(&worst, 20), None, "nothing was cut");
+        assert_eq!(
+            triage_tail(&worst, 2),
+            None,
+            "a cap exactly equal to the row count cuts nothing either"
+        );
+    }
+
+    /// ★ The tail must count exactly the rows the table did NOT print.
+    ///
+    /// This is the condition the cap was allowed on: bounding the table is fine,
+    /// under-reporting the bound is the silent truncation that makes a partial
+    /// list read as the whole one. An off-by-one between the `take` that prints
+    /// and the `skip` that summarises would do exactly that, and shows up here
+    /// as a wrong line total rather than as anything a reader would notice.
+    #[test]
+    fn the_triage_tail_accounts_for_every_row_the_cap_cut() {
+        let rows = [
+            triage_row("a.rs", 0, 10), // 10 uncovered — printed
+            triage_row("b.rs", 0, 7),  //  7 uncovered — printed
+            triage_row("c.rs", 0, 4),  //  4 uncovered — cut
+            triage_row("d.rs", 1, 3),  //  2 uncovered — cut
+        ];
+        let worst: Vec<&_> = rows.iter().collect();
+
+        assert_eq!(
+            triage_tail(&worst, 2),
+            Some((2, 6)),
+            "two rows were cut, holding 4 + 2 = 6 uncovered lines"
+        );
+        assert_eq!(
+            triage_tail(&worst, 0),
+            Some((4, 23)),
+            "with nothing printed the tail is the whole list, 10+7+4+2"
         );
     }
 }
