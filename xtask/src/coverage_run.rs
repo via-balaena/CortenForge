@@ -154,7 +154,7 @@ fn should_instrument(args: &[String], target_crate: &str) -> bool {
 ///
 /// Only this package's own targets are built with `--test`; dependencies are
 /// not, so this stays scoped and cheap. Their own source is excluded from the
-/// accounting by [`is_own_production_file`].
+/// accounting by [`crate::coverage::is_own_production_file`].
 fn is_test_target(args: &[String]) -> bool {
     args.iter().any(|a| a == "--test")
 }
@@ -262,7 +262,8 @@ fn test_executables(message_json: &str) -> Vec<TestBinary> {
 }
 
 /// How many of the export's files are the measured crate's own PRODUCTION
-/// sources — see [`is_own_production_file`], which excludes its `tests/`.
+/// sources — see [`crate::coverage::is_own_production_file`], which excludes
+/// its `tests/`.
 ///
 /// Zero is an error, not a zero percent. If the wrapper ever stopped matching —
 /// a future cargo spelling `--crate-name` differently, say — nothing would be
@@ -289,20 +290,9 @@ fn own_files_in_export(json: &serde_json::Value, crate_path: &str) -> usize {
         files
             .iter()
             .filter_map(|f| f["filename"].as_str())
-            .filter(|name| is_own_production_file(name, crate_path))
+            .filter(|name| crate::coverage::is_own_production_file(name, crate_path))
             .count()
     })
-}
-
-/// Whether an export filename is one of the crate's own PRODUCTION sources.
-///
-/// Under `crate_path`, but NOT under its `tests/` directory. Integration test
-/// source is compiled as its own crate and is instrumented only so the binary
-/// emits a profile — it is not the code under measurement, and counting it
-/// would pad both sides of the ratio with ~100 %-covered test bodies, which is
-/// the same distortion [`crate::coverage`] strips `#[cfg(test)]` to avoid.
-pub(crate) fn is_own_production_file(name: &str, crate_path: &str) -> bool {
-    name.contains(crate_path) && !name.contains(&format!("{crate_path}/tests/"))
 }
 
 /// Point the coverage build at a tree that holds only this crate's artifacts.
@@ -380,7 +370,8 @@ fn prepare_target_dir(workspace_root: &Path, compiler_crate_name: &str) -> Resul
 /// Test targets ARE instrumented ([`is_test_target`]), because otherwise their
 /// binaries emit no usable profile and the coverage they produce is lost. So
 /// their source DOES reach the export: audited on `cf-geometry`, the export
-/// names **24 files, 7 of them under `tests/`**. [`is_own_production_file`]
+/// names **24 files, 7 of them under `tests/`**.
+/// [`crate::coverage::is_own_production_file`]
 /// drops those 7, leaving the 17 `src/*.rs` files that are the crate itself.
 ///
 /// ⚠ An earlier revision of this doc claimed the opposite mechanism — that
@@ -624,29 +615,6 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].path, PathBuf::from("/t/deps/cf_fsu_model-abc"));
         assert!(test_executables("{}").is_empty());
-    }
-
-    /// ★ `tests/` source must be excluded from the crate's own production files.
-    ///
-    /// Test targets are instrumented so their binaries emit a profile at all
-    /// (see [`is_test_target`]), which puts their source in the export. Counting
-    /// it would pad both sides of the ratio with ~100 %-covered test bodies —
-    /// measured on `cf-geometry`, 89.7 % with them versus 85.7 % without.
-    #[test]
-    fn integration_test_source_is_not_a_production_file() {
-        let cp = "design/cf-geometry";
-        assert!(is_own_production_file(
-            "/w/cortenforge/design/cf-geometry/src/mesh.rs",
-            cp
-        ));
-        assert!(!is_own_production_file(
-            "/w/cortenforge/design/cf-geometry/tests/mesh_tests.rs",
-            cp
-        ));
-        assert!(
-            !is_own_production_file("/w/cortenforge/mesh/mesh-repair/src/lib.rs", cp),
-            "another crate's source is not this crate's"
-        );
     }
 
     /// A `--test` invocation is what marks a target for instrumentation beyond
