@@ -977,6 +977,13 @@ fn grade_coverage(
             // be relabelled by a parse error. The verdict matches the one the
             // export path already returns for a crate whose files map no lines.
             //
+            // Deliberately keyed on the crate, not on which error pass 1 raised.
+            // Matching the no-profraw case by its message would break the moment
+            // anyone reworded it, and the breadth costs nothing: for a crate with
+            // no production code there is no pass-1 error that could have carried
+            // information about its coverage. A build failure cannot reach here
+            // at all — pass 2 builds the same crate, so `heavy_passed` is false.
+            //
             // Rooted on `workspace_root` rather than left relative: `xshell`'s
             // `change_dir` moves the SHELL's directory, and this crate refuses
             // to `set_current_dir` because that is process-global. A bare

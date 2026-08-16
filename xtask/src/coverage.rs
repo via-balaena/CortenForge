@@ -81,10 +81,11 @@ pub(crate) fn is_own_production_file(name: &str, crate_path: &str) -> bool {
 /// opposite reason: there are no functions, so nothing carries a coverage map.
 /// Graded the same way, the empty crate reads as an `F` for bad coverage.
 ///
-/// This workspace has four such crates — `sim-core-benches`,
-/// `mesh-repair-benches`, `mesh-shell-benches`, `sim-ml-chassis-benches` — whose
-/// `src/lib.rs` is a five-line doc comment. All their content is `benches/*.rs`
-/// under `harness = false`, which coverage does not measure and is not meant to.
+/// The shape that has it today is the bench companion crate —
+/// `sim-core-benches`, `mesh-repair-benches`, `mesh-shell-benches`,
+/// `sim-ml-chassis-benches` — whose `src/lib.rs` is a doc comment and nothing
+/// else. All their content is `benches/*.rs` under `harness = false`, which
+/// coverage does not measure and is not meant to.
 ///
 /// ★ **Measured, not inferred, and it is not about scoping.** Built with
 /// *blanket* `RUSTFLAGS=-C instrument-coverage` — not this crate's scoped
@@ -95,10 +96,11 @@ pub(crate) fn is_own_production_file(name: &str, crate_path: &str) -> bool {
 /// one, and no change to [`crate::coverage_run`]'s scoping would.
 ///
 /// ⚠ **Deliberately conservative: it answers `false` whenever it cannot prove
-/// the negative.** An unreadable or unparseable file, or a missing `src/`,
-/// yields `false` and the caller keeps reporting the failure. Only a clean walk
-/// that finds nothing can excuse a crate, so no real instrumentation defect can
-/// be relabelled as an empty crate by a parse error.
+/// the negative.** A missing or empty `src/`, a file it cannot read or parse,
+/// and any error raised while walking the tree all yield `false`, and the caller
+/// keeps reporting the failure. Only a clean walk that finds nothing can excuse
+/// a crate, so no real instrumentation defect can be relabelled as an empty
+/// crate by a parse error or an unreadable directory.
 ///
 /// ⚠ One known conservative miss, harmless by construction: a crate whose only
 /// content is a non-inline `#[cfg(test)] mod tests;` reads as production code,
@@ -115,10 +117,16 @@ pub(crate) fn declares_no_production_code(crate_path: &Path) -> bool {
     }
 
     let mut saw_a_source_file = false;
-    for entry in walkdir::WalkDir::new(&src)
-        .into_iter()
-        .filter_map(Result::ok)
-    {
+    // `follow_links` so a symlinked module is read rather than skipped as a
+    // non-file, and every walk error is fatal rather than filtered away. Both
+    // are the same point: a subtree this cannot read is a subtree that might
+    // hold the crate's whole implementation, and dropping the error would let
+    // "I could not look" return as "there was nothing there". A link cycle
+    // surfaces here as an error too, which is the answer we want.
+    for entry in walkdir::WalkDir::new(&src).follow_links(true) {
+        let Ok(entry) = entry else {
+            return false;
+        };
         let path = entry.path();
         if !entry.file_type().is_file() || path.extension() != Some("rs".as_ref()) {
             continue;
@@ -927,6 +935,27 @@ mod tests {
             declares_no_production_code(&root),
             "with only the parseable doc-only file left the verdict must flip — \
              otherwise the assertion above would hold even if the walk saw nothing"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ★ A symlinked module must be read, not skipped.
+    ///
+    /// `WalkDir` does not follow links by default, and an unfollowed link is not
+    /// a file — so the entry would be filtered out by the same test that skips
+    /// directories, and a crate whose implementation sits behind one would be
+    /// declared empty. This fails without `follow_links(true)`.
+    #[cfg(unix)]
+    #[test]
+    fn code_behind_a_symlink_is_not_skipped() {
+        let root = crate_dir("symlink", &[("lib.rs", "//! Empty on purpose.\n")]);
+        let target = root.join("real_impl.rs");
+        std::fs::write(&target, "pub fn behind_a_link() -> i32 { 3 }\n").expect("write");
+        std::os::unix::fs::symlink(&target, root.join("src").join("linked.rs")).expect("symlink");
+
+        assert!(
+            !declares_no_production_code(&root),
+            "a symlinked source file holds production code just as a regular one does"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
