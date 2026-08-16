@@ -1,8 +1,5 @@
 //! Truncated-pyramid mating-feature primitive.
 //!
-//! ⚠ Titled "SDF-side" until 2026-08-16; production composes it
-//! post-MC as mesh-CSG. See the paradigm-boundary section below.
-//!
 //! Replaces the cylinder-based registration pin + plug T-bar/T-slot
 //! mechanisms with a single shared primitive (recon-1 §G-5 of
 //! `docs/CF_CAST_FDM_FRIENDLY_GEOMETRY_RECON.md`). The truncated-
