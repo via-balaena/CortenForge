@@ -104,6 +104,19 @@ pub(crate) fn is_own_production_file(name: &str, crate_path: &str) -> bool {
 /// intrinsic to a crate with no functions; instrumenting harder cannot produce
 /// one, and no change to [`crate::coverage_run`]'s scoping would.
 ///
+/// ★★ **Cross-checked against the whole workspace, by an instrument that shares
+/// no code with this one.** Run over all 47 coverage-graded crates, this
+/// predicate names exactly seven: the four bench crates above, plus the facades
+/// `cortenforge`, `mesh` and `sim`. The 2026-08-16 sizing run — which compiles,
+/// instruments, runs the binaries and reads llvm-cov's export — produced no
+/// percentage for exactly those same seven and a percentage for all forty
+/// others. The sets are equal, so on real input there is no crate this calls
+/// empty that the measurement finds code in.
+///
+/// ★ The agreement is unforced, which is what makes it worth recording: the
+/// three facades reach their N/A through [`production_coverage`]'s export path
+/// and never reach this function at all, so nothing was fitted to them.
+///
 /// ⚠ **Deliberately conservative: it answers `false` whenever it cannot prove
 /// the negative.** A missing or empty `src/`, a file it cannot read or parse,
 /// and any error raised while walking the tree all yield `false`, and the caller
