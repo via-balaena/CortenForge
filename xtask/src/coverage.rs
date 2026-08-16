@@ -78,20 +78,34 @@ pub(crate) fn is_own_production_file(name: &str, crate_path: &str) -> bool {
 /// never reached the crate — the defect #770 was written to catch, where the
 /// binaries linked an instrumented library but were not instrumented themselves.
 /// A crate with no production code produces the identical symptom for the
-/// opposite reason: there are no functions, so nothing carries a coverage map,
-/// so the profiling runtime is never linked and no profile is written. Graded
-/// the same way, the empty crate reads as an `F` for bad coverage.
+/// opposite reason: there are no functions, so nothing carries a coverage map.
+/// Graded the same way, the empty crate reads as an `F` for bad coverage.
 ///
 /// This workspace has four such crates — `sim-core-benches`,
 /// `mesh-repair-benches`, `mesh-shell-benches`, `sim-ml-chassis-benches` — whose
 /// `src/lib.rs` is a five-line doc comment. All their content is `benches/*.rs`
 /// under `harness = false`, which coverage does not measure and is not meant to.
 ///
+/// ★ **Measured, not inferred, and it is not about scoping.** Built with
+/// *blanket* `RUSTFLAGS=-C instrument-coverage` — not this crate's scoped
+/// wrapper — `sim-core-benches`' unit-test binary carries **zero**
+/// `__llvm_covmap` / `__llvm_prf_*` sections, and running it with
+/// `LLVM_PROFILE_FILE` set writes **no** `.profraw`. So the missing profile is
+/// intrinsic to a crate with no functions; instrumenting harder cannot produce
+/// one, and no change to [`crate::coverage_run`]'s scoping would.
+///
 /// ⚠ **Deliberately conservative: it answers `false` whenever it cannot prove
 /// the negative.** An unreadable or unparseable file, or a missing `src/`,
 /// yields `false` and the caller keeps reporting the failure. Only a clean walk
 /// that finds nothing can excuse a crate, so no real instrumentation defect can
 /// be relabelled as an empty crate by a parse error.
+///
+/// ⚠ One known conservative miss, harmless by construction: a crate whose only
+/// content is a non-inline `#[cfg(test)] mod tests;` reads as production code,
+/// because the gate is on the declaration in the parent while the walk judges
+/// `tests.rs` on its own items. [`test_only_files`] resolves exactly that
+/// pattern for the line accounting; wiring it in here would buy nothing, since
+/// the answer only ever errs toward keeping the failure report.
 pub(crate) fn declares_no_production_code(crate_path: &Path) -> bool {
     let src = crate_path.join("src");
     if !src.is_dir() {

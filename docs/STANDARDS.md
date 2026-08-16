@@ -83,20 +83,23 @@ it is being measured, so integration suites contribute coverage without gating.
 They are still gated — `grade`'s second pass runs the whole suite
 uninstrumented, doctests included.
 
-**When Coverage reports N/A rather than a percentage.** Four cases, and none of
-them is a pass being handed out: `Example` and `Xtask`/`tools` crates have no lib
-target to instrument; a crate opting into `grading_profile = "integration-only"`
+**When Coverage reports N/A rather than a percentage.** Four cases. Each says
+there is nothing to measure; none of them waives the threshold on code that
+exists. `Example` and `Xtask`/`tools` crates have no lib target to instrument
+("(bin-only)"); a crate opting into `grading_profile = "integration-only"`
 declares it has no testable lib API; a crate whose files map no lines reports
 "(no production lines)"; and a crate whose `src/` declares **no items at all
 outside `#[cfg(test)]`** reports the same. The last is the `*-benches` shape — a
 lib that is only a doc comment, with every benchmark in `benches/*.rs` under
 `harness = false`. With no functions there is no coverage map, so no `.profraw`
 is written, which is the *identical symptom* to instrumentation failing to reach
-a crate that does have code. The two are told apart by looking at the source: the
-empty-crate verdict requires a clean syn walk that finds nothing, so an
-unreadable or unparseable file keeps the failure report. **Benchmarks are never
-counted as coverage** — `cargo test --lib --tests` does not build them, by
-design.
+a crate that does have code. Measured on `sim-core-benches`: under blanket
+`-C instrument-coverage` its test binary carries zero `__llvm_covmap` sections
+and emits no profile, so this is intrinsic rather than a scoping artifact. The
+two causes are separated by reading the source — the empty-crate verdict needs a
+clean parse that finds nothing, so an unreadable file keeps the failure report.
+**Benchmarks are never counted as coverage**; `cargo test --lib --tests` does not
+build them, by design.
 
 **Requirements:**
 
