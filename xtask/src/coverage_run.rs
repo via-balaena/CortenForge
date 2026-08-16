@@ -99,7 +99,11 @@ const COVERAGE_TARGET_DIR: &str = "target/cf-coverage";
 
 /// What one instrumented run produced, across the crate's unit AND
 /// integration test binaries.
-pub(crate) struct LibCoverageRun {
+///
+/// ⚠ Named `CoverageRun`, not `LibCoverageRun` as it once was: the run stopped
+/// being `--lib`-only, and a type whose name says otherwise is how the old
+/// scope kept being assumed.
+pub(crate) struct CoverageRun {
     /// The llvm-cov JSON export, in the same shape `cargo llvm-cov --json`
     /// produced — [`crate::coverage::production_coverage`] reads it unchanged.
     pub json: serde_json::Value,
@@ -113,7 +117,7 @@ pub(crate) struct LibCoverageRun {
     /// That is not a hole: `grade`'s pass 2 runs the whole suite
     /// uninstrumented and gates on it, so an integration failure that is real
     /// still blocks the grade. This flag is only the instrumented `--lib`
-    /// half. See the run loop in [`measure_lib_coverage`] for the measurement.
+    /// half. See the run loop in [`measure_coverage`] for the measurement.
     pub tests_passed: bool,
 }
 
@@ -231,10 +235,11 @@ struct TestBinary {
     is_lib: bool,
 }
 
-/// The test executable cargo reported building, from `--message-format=json`.
+/// Every test executable cargo reported building, from `--message-format=json`.
 ///
-/// Cargo emits one `compiler-artifact` line per unit; only the test binary
-/// carries both `profile.test` and an `executable`.
+/// Cargo emits one `compiler-artifact` line per unit; only test binaries carry
+/// both `profile.test` and an `executable`. A crate with a `tests/` directory
+/// yields several — the lib one plus one per integration file.
 fn test_executables(message_json: &str) -> Vec<TestBinary> {
     let mut found = Vec::new();
     for line in message_json.lines() {
@@ -256,7 +261,8 @@ fn test_executables(message_json: &str) -> Vec<TestBinary> {
     found
 }
 
-/// How many of the export's files belong to the measured crate.
+/// How many of the export's files are the measured crate's own PRODUCTION
+/// sources — see [`is_own_production_file`], which excludes its `tests/`.
 ///
 /// Zero is an error, not a zero percent. If the wrapper ever stopped matching —
 /// a future cargo spelling `--crate-name` differently, say — nothing would be
@@ -335,8 +341,8 @@ fn prepare_target_dir(workspace_root: &Path, compiler_crate_name: &str) -> Resul
     Ok(target_dir)
 }
 
-/// Build and run `crate_name`'s unit AND integration tests with only that crate
-/// instrumented, and export the coverage report.
+/// Build and run `crate_name`'s unit AND integration tests, instrumented and
+/// scoped to that crate plus its own test targets, and export the report.
 ///
 /// ★ `--lib --tests`, not `--lib`. Measuring the lib target alone credits only
 /// what a crate's own `#[cfg(test)]` modules execute, so a crate that keeps its
@@ -414,13 +420,13 @@ fn prepare_target_dir(workspace_root: &Path, compiler_crate_name: &str) -> Resul
 ///
 /// `quiet` silences the child processes rather than the measurement: the test
 /// harness writes to stdout, and `grade --json` puts its report there too.
-pub(crate) fn measure_lib_coverage(
+pub(crate) fn measure_coverage(
     sh: &Shell,
     crate_name: &str,
     crate_path: &str,
     workspace_root: &Path,
     quiet: bool,
-) -> Result<LibCoverageRun> {
+) -> Result<CoverageRun> {
     let profdata_tool = llvm_tool(sh, "llvm-profdata")?;
     let cov_tool = llvm_tool(sh, "llvm-cov")?;
     let xtask_exe = std::env::current_exe().context("cannot locate the running xtask binary")?;
@@ -509,7 +515,7 @@ pub(crate) fn measure_lib_coverage(
         .collect();
     if raw.is_empty() {
         bail!(
-            "the instrumented test binary wrote no .profraw files — \
+            "the instrumented test binaries wrote no .profraw files — \
              instrumentation did not reach {compiler_crate_name}"
         );
     }
@@ -519,9 +525,10 @@ pub(crate) fn measure_lib_coverage(
         .run()
         .context("llvm-profdata merge failed")?;
 
-    // llvm-cov takes the first binary positionally and every other one behind
-    // its own `-object`. Passing only the first would report coverage for the
-    // unit-test binary alone — the exact blindness this measures around.
+    // llvm-cov takes one binary positionally and every other behind its own
+    // `-object`; all are equal to it, and which lands first is just cargo's
+    // artifact order. Passing only one would report that binary's view alone —
+    // the exact blindness this measures around.
     let (first_exe, other_exes) = exes.split_first().expect("emptiness checked above");
     let first_exe = &first_exe.path;
     let object_args: Vec<String> = other_exes
@@ -545,7 +552,7 @@ pub(crate) fn measure_lib_coverage(
         );
     }
 
-    Ok(LibCoverageRun { json, tests_passed })
+    Ok(CoverageRun { json, tests_passed })
 }
 
 #[cfg(test)]
@@ -553,10 +560,15 @@ mod tests {
     use super::*;
 
     /// The wrapper sees every `rustc` in the build. Instrumenting the wrong one
-    /// costs the 400× tax this module exists to remove; instrumenting none
-    /// yields an empty report that reads as 0 % coverage.
+    /// costs the instrumentation tax this module exists to remove (164-1226x on
+    /// the suites measured); instrumenting none yields an empty report that
+    /// reads as 0 % coverage.
+    ///
+    /// ⚠ Scoped to [`should_instrument`] alone. The wrapper also instruments
+    /// test targets ([`is_test_target`]), so "only the named crate" is not a
+    /// module-level claim.
     #[test]
-    fn only_the_named_crate_is_instrumented() {
+    fn should_instrument_matches_only_the_named_crate() {
         let args: Vec<String> = [
             "--crate-name",
             "cf_fsu_model",

@@ -909,7 +909,7 @@ fn grade_coverage(
         None
     };
     let workspace_root = sh.current_dir();
-    let run = crate::coverage_run::measure_lib_coverage(
+    let run = crate::coverage_run::measure_coverage(
         sh,
         crate_name,
         crate_path,
