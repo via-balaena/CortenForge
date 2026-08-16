@@ -844,8 +844,8 @@ fn grade_coverage(
     // Per STANDARDS.md §1 "Exceptions: None for Layer 0 crates" — the
     // coverage gate is specifically scoped to Layer 0 library crates.
     // Example (bin-only) and Xtask (build tooling) crates have no lib
-    // target, so `cargo llvm-cov --lib` errors out with "no library
-    // targets found". F.3 IntegrationOnly crates (per Cargo.toml
+    // target, so the instrumented `--lib --tests` build has nothing to
+    // measure. F.3 IntegrationOnly crates (per Cargo.toml
     // metadata opt-in) are exercised by integration tests and have no
     // testable lib surface. Treat all three as N/A rather than a false F.
     if let Some((result, detail)) = coverage_skip_reason(profile) {
@@ -988,10 +988,12 @@ fn grade_coverage(
         eprintln!("    ⚠ Tests failed — see output above");
     }
 
-    // The report is filtered to files belonging to the target crate — the same
-    // scope the instrumentation now has, so this filter no longer discards
-    // anything (`coverage_run` asserts as much on every run). It stays because
-    // it is what defines the crate's denominator.
+    // The report is filtered to the crate's own PRODUCTION files. That filter
+    // is load-bearing again: instrumentation now covers the crate AND its test
+    // targets, so the two scopes deliberately differ and the filter drops what
+    // the extra scope pulled in — measured on cf-geometry, 7 of the export's 24
+    // files. (It was a no-op for exactly as long as only the lib was
+    // instrumented; that comment is worth not restoring.)
     //
     // Within those files the criterion counts PRODUCTION lines only. The run
     // instruments test binaries, so a crate's `#[cfg(test)]` code
@@ -1010,7 +1012,7 @@ fn grade_coverage(
             grade: Grade::NotApplicable,
             threshold: "≥75%/≥90% A+",
             measured_detail: format!(
-                "no instrumented production lines ({} #[cfg(test)] lines excluded)",
+                "no instrumented production lines ({} test lines excluded)",
                 measured.excluded
             ),
         });
@@ -1035,7 +1037,7 @@ fn grade_coverage(
     // Say what was left out. A metric that silently drops lines reads as
     // "everything was measured" when it was not.
     let mut detail = format!(
-        "{:.1}% production line coverage ({}/{} lines; {} #[cfg(test)] lines excluded)",
+        "{:.1}% production line coverage ({}/{} lines; {} test lines excluded)",
         coverage, measured.covered, measured.total, measured.excluded
     );
     if !measured.unparsed.is_empty() {

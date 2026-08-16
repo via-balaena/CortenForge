@@ -34,7 +34,11 @@ pub(crate) struct ProductionCoverage {
     pub covered: u64,
     /// Production lines instrumented.
     pub total: u64,
-    /// `#[cfg(test)]` lines removed from both sides — reported, never silent.
+    /// Test lines removed from both sides — reported, never silent.
+    ///
+    /// Three sources: `#[cfg(test)]` spans, files pulled in by a
+    /// `#[cfg(test)] mod name;`, and this crate's `tests/` integration source,
+    /// which reaches the export because those targets are instrumented.
     pub excluded: u64,
     /// Files whose source could not be read or parsed, so their test code was *not*
     /// excluded. Their lines are still counted, which understates coverage —
@@ -414,6 +418,17 @@ pub(crate) fn production_coverage(
     for file in files {
         let name = file["filename"].as_str().unwrap_or("");
         if !crate::coverage_run::is_own_production_file(name, crate_path) {
+            // Integration-test source is this crate's, just not its production
+            // code. Report those lines as excluded rather than dropping them
+            // silently — same treatment as a `#[cfg(test)] mod` file below,
+            // and the same reason: a metric that omits what it left out reads
+            // as "everything was measured". Foreign files (a dependency's
+            // macro source) are not this crate's at all and stay unmentioned.
+            if name.contains(crate_path) {
+                if let Some(segments) = file["segments"].as_array() {
+                    acc.excluded += mapped_lines(segments).len() as u64;
+                }
+            }
             continue;
         }
         let Some(segments) = file["segments"].as_array() else {
@@ -643,5 +658,10 @@ mod tests {
              tests/ source must not double it"
         );
         assert_eq!(cov.covered, 3);
+        assert_eq!(
+            cov.excluded, 3,
+            "the tests/ file's lines must be REPORTED as excluded, not dropped \
+             silently — the criterion's own rule about saying what was left out"
+        );
     }
 }
