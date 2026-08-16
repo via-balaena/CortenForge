@@ -133,6 +133,16 @@
 //!   pre-MC; `platform.stl` retires to a flat support slab (no
 //!   pocket — no cup-wall penetration → no T-bar protrusion).
 //!   [`PlugPinSpec`] wraps a single [`PrismaticPinSpec`].
+//! - **Post-salvage (2026-05-24)** ← **current**: the pre-MC SDF
+//!   composition in the entry above is REVERTED. Workshop cf-view
+//!   found the lock pyramid missing from the STLs — pre-MC
+//!   composition shares the bulk 3 mm MC cell size, which eats a
+//!   feature that size. The lock is emitted post-MC as mesh-CSG
+//!   ([`build_plug_lock_transform`] → `UnionTruncatedPyramid`) and
+//!   its socket likewise ([`build_plug_lock_socket_transform`] →
+//!   `SubtractTruncatedPyramid`). The geometry and `PlugPinSpec`
+//!   shape are unchanged; only the composition stage moved. ⚠ Read
+//!   the Post-S4 entry as history, not as state.
 //!
 //! # Default off
 //!
