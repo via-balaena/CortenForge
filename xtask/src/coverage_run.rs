@@ -98,11 +98,15 @@ pub(crate) struct LibCoverageRun {
     pub json: serde_json::Value,
     /// Whether the `--lib` unit-test binary passed.
     ///
-    /// ⚠ Integration binaries run and contribute coverage but do NOT gate this.
-    /// Under `-C instrument-coverage` a wall-clock or memory-ceiling assertion
-    /// fails because it is being measured, not because the code regressed; see
-    /// the run loop in [`measure_lib_coverage`] for the measurement that
-    /// settled it.
+    /// ⚠ Integration binaries run and contribute coverage but do NOT gate this
+    /// — under `-C instrument-coverage` a wall-clock or memory-ceiling
+    /// assertion fails because it is being measured, not because the code
+    /// regressed.
+    ///
+    /// That is not a hole: `grade`'s pass 2 runs the whole suite
+    /// uninstrumented and gates on it, so an integration failure that is real
+    /// still blocks the grade. This flag is only the instrumented `--lib`
+    /// half. See the run loop in [`measure_lib_coverage`] for the measurement.
     pub tests_passed: bool,
 }
 
@@ -421,12 +425,17 @@ pub(crate) fn measure_lib_coverage(
         // coverage is the whole point — but an instrumented failure there is
         // not evidence about the code. `-C instrument-coverage` costs this
         // workspace 100-400x, so any test asserting a wall-clock budget or a
-        // memory ceiling fails BECAUSE it is being measured. Measured on
-        // `mesh-printability`: `stress_c_5k_tri_perf_budget` and
-        // `stress_h_voxel_grid_oom_safety` fail instrumented and pass clean
-        // (45/45 in 0.23 s), which would have graded a healthy crate F.
-        // Whether integration tests pass is CI's `tests` / `tests-release`
-        // jobs' question, and they run them uninstrumented.
+        // memory ceiling fails BECAUSE it is being measured.
+        //
+        // Nothing is lost by not gating here: `grade`'s pass 2 already runs
+        // `cargo test --release -p <crate>` UNINSTRUMENTED, which covers lib,
+        // integration and doctests, and `heavy_passed` gates on it. Gating
+        // pass 1 as well would be a second, WORSE detector of the same thing.
+        // Measured on `mesh-printability` in one grade run:
+        // `stress_c_5k_tri_perf_budget` and `stress_h_voxel_grid_oom_safety`
+        // fail in pass 1 instrumented (43 passed / 2 failed, 36.95 s) and the
+        // same suite passes in pass 2 (45/45, 0.21 s). Gating here would have
+        // graded that crate F against evidence the same run already had.
         if bin.is_lib {
             tests_passed &= ok;
         }

@@ -895,7 +895,7 @@ fn grade_coverage(
     // --release avoids debug-mode runtime explosion (100×+ slower).
     // stderr flows to terminal so the user sees compile/test progress.
     if !verbosity.quiet {
-        eprintln!("    pass 1/2: instrumented --lib run ({crate_name} only)");
+        eprintln!("    pass 1/2: instrumented --lib --tests run ({crate_name} only)");
     }
     let pass_start = Instant::now();
     let heartbeat = if verbosity.verbose {
@@ -972,8 +972,12 @@ fn grade_coverage(
         }
     };
 
-    // Pass 1 runs the same unit tests instrumented. Either pass failing blocks
-    // the grade: a disagreement between them would itself be the finding.
+    // Pass 1 measures; pass 2 above is what actually gates the tests, and it
+    // runs EVERY test — lib, integration and doctests — uninstrumented. Pass 1
+    // contributes only its `--lib` result, because an instrumented integration
+    // suite can fail for reasons that are not about the code (see
+    // `coverage_run`). A `--lib` disagreement between the two passes would
+    // itself be the finding, so both still have to agree there.
     let heavy_passed = heavy_passed && run.tests_passed;
     if !heavy_passed {
         eprintln!("    ⚠ Tests failed — see output above");
