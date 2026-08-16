@@ -185,10 +185,11 @@ fn translated(mesh: &IndexedMesh, offset: Vector3<f64>) -> IndexedMesh {
 /// test answers a question about the **caller's frame**, not about the mesh.
 ///
 /// The flip is one triangle of twelve — face `[4, 5, 6]`, one of the two that
-/// make up the top. Its *first* index has to be something other than vertex 0, which `unit_cube`
-/// puts at the origin: `signed_volume` sums `v0 · (v1 × v2)` over origin-apex
-/// tetrahedra, so a face whose `v0` sits on the origin contributes exactly
-/// zero, and flipping that one would be invisible by construction.
+/// make up the top. Its *first* index has to be something other than vertex 0,
+/// which `unit_cube` puts at the origin: `signed_volume` sums `v0 · (v1 × v2)`
+/// over origin-apex tetrahedra, so a face whose `v0` sits on the origin
+/// contributes exactly zero, and flipping that one would be invisible by
+/// construction.
 ///
 /// One mesh, three frames. Measured:
 ///
