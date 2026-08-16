@@ -173,10 +173,12 @@ impl IndexedMesh {
     /// `one_flipped_face_makes_the_global_volume_test_frame_dependent`
     /// (`tests/mesh_tests.rs`): flip one face of twelve on a unit cube and this
     /// returns `+0.667` at the origin — positive, reads clean, wholly blind —
-    /// then `-332.67` translated 1e3 **along that face's normal**, the scale
-    /// anatomical meshes are kept at in their native frames. Transported 1e6
-    /// the other way it still reads `+0.667`, which is why the direction is
-    /// stated and not just the distance. Corroborated downstream by `mesh-loft`'s
+    /// then `-332.67` translated 1e3 **along that face's normal**. Transported
+    /// 1e6 the other way it still reads `+0.667`, which is why the direction is
+    /// stated and not just the distance. (1e3 is chosen because `cf-fsu-geometry`
+    /// documents its native anatomical frames as sitting ~1e3 mm out — that
+    /// figure is its claim, relayed here, not one measured by this crate.)
+    /// Corroborated downstream by `mesh-loft`'s
     /// `the_global_inside_out_test_changes_its_answer_under_a_2mm_translation`,
     /// where a puck with 4 inconsistent edges returns *exactly* the correct
     /// unit-box volume of `1.0` at the origin and flips verdict after 2 mm.
@@ -222,8 +224,8 @@ impl IndexedMesh {
     /// ⚠ This is `abs()` of [`Self::signed_volume`], so it inherits that
     /// method's precondition *and* discards the sign that would at least have
     /// hinted at trouble. On the flipped unit cube measured there it returns
-    /// `0.667` at the origin and `332.67` translated 1e3 — neither of which is
-    /// the volume of anything.
+    /// `0.667` at the origin and `332.67` once that mesh is carried 1e3 along
+    /// the flipped face's normal — neither of which is the volume of anything.
     #[inline]
     #[must_use]
     pub fn volume(&self) -> f64 {
@@ -234,8 +236,11 @@ impl IndexedMesh {
     ///
     /// ⚠ **That is the same thing as "inside-out" only on a consistently wound
     /// closed mesh**, and this cannot tell you whether you have one — see
-    /// [`Self::signed_volume`] for the measured failure in both directions
-    /// (blind to a local flip near the origin, firing on one far from it).
+    /// [`Self::signed_volume`], measured failing both ways: it reads clean on a
+    /// mesh that carries a local flip, and it reports inside-out on the
+    /// strength of where the caller put the origin rather than any property of
+    /// the surface. ⚠ Do not read that as "trustworthy near the origin" — the
+    /// error tracks *direction* relative to the defect, not distance.
     /// Establish consistent winding first and read this as a verdict only then;
     /// `mesh-loft` gates it on `Bushing::is_closed_and_consistent()`, which is
     /// backed by `mesh_repair::winding_census`.

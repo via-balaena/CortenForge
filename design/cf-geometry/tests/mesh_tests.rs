@@ -184,8 +184,8 @@ fn translated(mesh: &IndexedMesh, offset: Vector3<f64>) -> IndexedMesh {
 /// rather than in a downstream one: with a single face flipped, the global
 /// test answers a question about the **caller's frame**, not about the mesh.
 ///
-/// The flip is one triangle of twelve — face `[4, 5, 6]`, the top face. Its
-/// *first* index has to be something other than vertex 0, which `unit_cube`
+/// The flip is one triangle of twelve — face `[4, 5, 6]`, one of the two that
+/// make up the top. Its *first* index has to be something other than vertex 0, which `unit_cube`
 /// puts at the origin: `signed_volume` sums `v0 · (v1 × v2)` over origin-apex
 /// tetrahedra, so a face whose `v0` sits on the origin contributes exactly
 /// zero, and flipping that one would be invisible by construction.
@@ -267,30 +267,38 @@ fn one_flipped_face_makes_the_global_volume_test_frame_dependent() {
          fails by direction, not by distance"
     );
 
-    // Negative control: without the flip, the verdict is frame-independent.
+    // Negative control: without the flip, the verdict is frame-independent —
+    // in EVERY frame this test visits, so each cell of the doc table above is
+    // an assertion and not an assumption.
     let clean = unit_cube();
-    let clean_far = translated(&clean, Vector3::new(0.0, 0.0, FAR));
-    assert!(
-        (clean.signed_volume() - clean_far.signed_volume()).abs() < 1e-9,
-        "a consistently wound closed mesh must be translation-invariant; \
-         {} vs {}",
-        clean.signed_volume(),
-        clean_far.signed_volume()
-    );
-    assert!(
-        !clean.is_inside_out() && !clean_far.is_inside_out(),
-        "the clean cube must read outward in both frames"
-    );
+    for offset in [
+        Vector3::zeros(),
+        Vector3::new(0.0, 0.0, FAR),
+        Vector3::new(1.0e6, 0.0, 0.0),
+    ] {
+        let moved = translated(&clean, offset);
+        let vol = moved.signed_volume();
+        assert!(
+            (vol - 1.0).abs() < 1e-9,
+            "a consistently wound closed mesh must be translation-invariant; \
+             offset {offset:?} gave {vol}"
+        );
+        assert!(
+            !moved.is_inside_out(),
+            "the clean cube must read outward at offset {offset:?}"
+        );
+    }
 }
 
 /// ★ The converse trap: **translation-invariance is not evidence of consistent
 /// winding either.**
 ///
 /// Consistency makes `Σ A_f n_f` vanish, but it is not the only thing that
-/// does. Flip the top face *and* the bottom face and their contributions to
-/// that sum cancel each other, so this mesh is inconsistently wound and yet
-/// perfectly frame-invariant — `+0.667` at the origin and `+0.667` translated
-/// 1e3, reading clean in both.
+/// does. Flip *one* top triangle and *one* bottom triangle: their area vectors
+/// are equal and opposite (`+z/2` and `-z/2`), so the two flips cancel in that
+/// sum exactly. The mesh is inconsistently wound and yet perfectly
+/// frame-invariant — `+0.667` at the origin and `+0.667` translated 1e3,
+/// reading clean in both.
 ///
 /// So neither reading rescues the instrument: a verdict that moves under
 /// translation proves a defect, but a verdict that holds still proves nothing.
@@ -298,8 +306,8 @@ fn one_flipped_face_makes_the_global_volume_test_frame_dependent() {
 #[test]
 fn translation_invariance_is_not_evidence_of_consistent_winding() {
     let mut two_flips = unit_cube();
-    two_flips.faces[2].swap(1, 2); // top    [4, 5, 6], outward +z
-    two_flips.faces[0].swap(1, 2); // bottom [0, 2, 1], outward -z
+    two_flips.faces[2].swap(1, 2); // a top triangle    [4, 5, 6], outward +z
+    two_flips.faces[0].swap(1, 2); // a bottom triangle [0, 2, 1], outward -z
 
     let two_flips_far = translated(&two_flips, Vector3::new(0.0, 0.0, 1.0e3));
     let near = two_flips.signed_volume();
