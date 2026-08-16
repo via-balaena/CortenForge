@@ -1185,45 +1185,36 @@ fn grade_documentation(sh: &Shell, crate_name: &str, crate_path: &str) -> Result
 /// Uses `--message-format=json` instead of `-- -D warnings` so we can
 /// count diagnostics directly from structured output (B1 fix: old gate
 /// read stdout but clippy wrote diagnostics to stderr).
+///
+/// The count is only meaningful if clippy actually analysed the crate, which
+/// [`count_clippy_diagnostics`] establishes from cargo's `build-finished`
+/// record before it will report one — see there for why zero warnings is not,
+/// by itself, evidence of anything.
 fn grade_clippy(
     sh: &Shell,
     crate_name: &str,
     crate_path: &str,
     profile: CrateProfile,
 ) -> Result<CriterionResult> {
+    // `ignore_status` because clippy exits non-zero merely for finding
+    // warnings — the exit code cannot distinguish "found problems" from
+    // "never ran".
+    //
+    // Propagating `read()`'s own error (spawn failure, non-UTF-8 output) is
+    // belt-and-braces rather than load-bearing: flattening it to an empty
+    // string would still be refused downstream, since a stream with no
+    // `build-finished` record is not gradeable. What the `?` buys is the
+    // cause — "cargo: no such file" beats "clippy never completed".
     let output = cmd!(
         sh,
         "cargo clippy -p {crate_name} --all-targets --all-features --message-format=json"
     )
     .ignore_status()
     .read()
-    .unwrap_or_default();
+    .with_context(|| format!("run cargo clippy for {crate_name}"))?;
 
-    // Parse JSON lines: filter compiler-message with warning/error level and non-empty spans
-    let mut clippy_count = 0;
-    for line in output.lines() {
-        let Ok(json) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        if json["reason"].as_str() != Some("compiler-message") {
-            continue;
-        }
-        let level = json["message"]["level"].as_str().unwrap_or("");
-        if level != "warning" && level != "error" {
-            continue;
-        }
-        // Exclude summary lines (empty spans = "N warnings emitted").
-        // F.1: also filter out transitive-dep diagnostics whose spans all
-        // point outside the target crate. Disjunctive — a diagnostic with
-        // even one span inside the crate is counted (include-not-exclude).
-        let Some(spans) = json["message"]["spans"].as_array() else {
-            continue;
-        };
-        if spans.is_empty() || !any_span_in_crate(spans, crate_path) {
-            continue;
-        }
-        clippy_count += 1;
-    }
+    let clippy_count = count_clippy_diagnostics(&output, crate_path)
+        .with_context(|| format!("grade clippy diagnostics for {crate_name}"))?;
 
     // Unjustified #[allow(clippy:: check (F-ext-3).
     //
@@ -1261,6 +1252,82 @@ fn grade_clippy(
         threshold: "0 warnings",
         measured_detail,
     })
+}
+
+/// Clippy diagnostics attributable to `crate_path`, or an error if the stream
+/// does not prove clippy actually analysed the crate.
+///
+/// Counting alone cannot tell "clippy found nothing" apart from "clippy never
+/// looked", and both come out as zero — an A. The exit code cannot settle it
+/// either, since clippy exits non-zero merely for finding warnings. Cargo's
+/// `build-finished` record can, so this refuses to report a count without one:
+///
+/// - **No `build-finished`** — the invocation never completed. An unresolvable
+///   `-p`, for instance, writes its error to stderr and leaves stdout *empty*,
+///   which is byte-for-byte what a flawless crate produces.
+/// - **`success: false` with nothing inside the crate** — the build broke, and
+///   nothing in the stream pins the break on this crate. It may be a
+///   dependency (whose diagnostics [`any_span_in_crate`] correctly rules
+///   foreign) or a failure that carries no span at all, since cargo reports
+///   "could not compile" on stderr rather than as a `compiler-message`. Either
+///   way this crate was not analysed, so zero means nothing. Deliberately not
+///   graded F: an unattributable failure is not evidence against *this* crate.
+/// - **`success: false` with diagnostics inside the crate** — the crate's own
+///   errors, which is exactly what an F is for. Counted, not an error.
+///
+/// Both refusals are the fail-closed direction: an errored grade is visible,
+/// an unearned A is not.
+fn count_clippy_diagnostics(output: &str, crate_path: &str) -> Result<usize> {
+    let mut count = 0usize;
+    let mut build_succeeded = None;
+
+    for line in output.lines() {
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        match json["reason"].as_str() {
+            // A missing or non-boolean `success` leaves this `None`, which the
+            // match below treats as "no record" rather than as a pass.
+            Some("build-finished") => build_succeeded = json["success"].as_bool(),
+            Some("compiler-message") => {
+                let level = json["message"]["level"].as_str().unwrap_or("");
+                if level != "warning" && level != "error" {
+                    continue;
+                }
+                // Exclude summary lines (empty spans = "N warnings emitted").
+                // Belt-and-braces: `any_span_in_crate` is already false for an
+                // empty slice, so this clause states the intent rather than
+                // deciding anything — no input can distinguish its removal.
+                //
+                // F.1: also filter out transitive-dep diagnostics whose spans all
+                // point outside the target crate. Disjunctive — a diagnostic with
+                // even one span inside the crate is counted (include-not-exclude).
+                let Some(spans) = json["message"]["spans"].as_array() else {
+                    continue;
+                };
+                if spans.is_empty() || !any_span_in_crate(spans, crate_path) {
+                    continue;
+                }
+                count += 1;
+            }
+            _ => continue,
+        }
+    }
+
+    match build_succeeded {
+        None => bail!(
+            "cargo clippy emitted no `build-finished` record, so it never completed. The \
+             {count} diagnostic(s) seen are a floor rather than a verdict, and zero would \
+             mean \"clippy never ran\" rather than \"the crate is clean\""
+        ),
+        Some(false) if count == 0 => bail!(
+            "cargo clippy reported `build-finished` success=false with no diagnostic inside \
+             {crate_path}, so the build failed but nothing attributes the failure to this \
+             crate — a dependency, or a failure carrying no span such as a link error. The \
+             crate was not analysed, so a count of 0 is not evidence that it is clean"
+        ),
+        _ => Ok(count),
+    }
 }
 
 /// Returns true if any span in the diagnostic refers to a file whose path
@@ -5116,5 +5183,149 @@ tier_up_features = { sneaky = "App" }
             CrateProfile::Layer0,
         )
         .expect_err("an unstat-able src/ must not vanish into the Manual arm");
+    }
+
+    /// One `--message-format=json` line, shaped like the real thing: a
+    /// diagnostic at `level` whose single span points at `file`.
+    fn diagnostic_line(level: &str, file: &str) -> String {
+        serde_json::json!({
+            "reason": "compiler-message",
+            "message": {
+                "level": level,
+                "spans": [{"file_name": file}],
+            },
+        })
+        .to_string()
+    }
+
+    fn build_finished(success: bool) -> String {
+        serde_json::json!({"reason": "build-finished", "success": success}).to_string()
+    }
+
+    #[test]
+    fn clippy_counts_only_diagnostics_inside_the_graded_crate() {
+        let stream = [
+            diagnostic_line("warning", "sim/L0/core/src/lib.rs"),
+            diagnostic_line("error", "sim/L0/core/src/body.rs"),
+            // A transitive dependency's diagnostic — real, but not this
+            // crate's to answer for.
+            diagnostic_line("warning", "sim/L0/types/src/lib.rs"),
+            // Not a diagnostic level we grade on.
+            diagnostic_line("note", "sim/L0/core/src/lib.rs"),
+            build_finished(true),
+        ]
+        .join("\n");
+        assert_eq!(
+            count_clippy_diagnostics(&stream, "sim/L0/core").expect("count"),
+            2
+        );
+    }
+
+    /// A spanless diagnostic is not counted — pinned as *behaviour*, since no
+    /// test can pin it to a line.
+    ///
+    /// Deleting the `spans.is_empty()` clause does not fail this test, and
+    /// cannot: [`any_span_in_crate`] is `spans.iter().any(..)`, which is
+    /// already `false` for an empty slice, so the clause is unable to change
+    /// any outcome. It is kept for the reader, not for the result. Nor does
+    /// any captured stream from current cargo carry a `warning`/`error` with
+    /// empty spans — the sole empty-spans message observed is a
+    /// `failure-note`, which the level filter drops first.
+    #[test]
+    fn a_diagnostic_with_no_spans_is_not_counted() {
+        let stream = [
+            serde_json::json!({
+                "reason": "compiler-message",
+                "message": {"level": "warning", "spans": []},
+            })
+            .to_string(),
+            build_finished(true),
+        ]
+        .join("\n");
+        assert_eq!(
+            count_clippy_diagnostics(&stream, "sim/L0/core").expect("count"),
+            0
+        );
+    }
+
+    /// The failure this whole function exists for. An unresolvable `-p` exits
+    /// 101 having written **nothing** to stdout — byte-for-byte identical to a
+    /// flawless crate. Measured against real cargo, not assumed.
+    #[test]
+    fn an_empty_stream_is_an_error_not_a_clean_crate() {
+        let err = count_clippy_diagnostics("", "sim/L0/core").expect_err("empty must not be clean");
+        assert!(
+            format!("{err:#}").contains("build-finished"),
+            "the error should name what was missing: {err:#}"
+        );
+    }
+
+    #[test]
+    fn a_stream_that_stops_before_build_finished_is_an_error() {
+        // Diagnostics present but no completion record: clippy was cut off
+        // (killed, panicked, disk full) partway through. The count so far is
+        // a floor, not a verdict.
+        let stream = diagnostic_line("warning", "sim/L0/core/src/lib.rs");
+        count_clippy_diagnostics(&stream, "sim/L0/core")
+            .expect_err("a truncated stream must not be graded");
+    }
+
+    /// `sim-core` with `sim-types` broken: one real diagnostic, pointing into
+    /// the dependency, which [`any_span_in_crate`] correctly rules foreign.
+    /// Zero in-crate diagnostics then means "never analysed", not "clean".
+    #[test]
+    fn a_build_that_failed_outside_the_crate_is_an_error_not_a_clean_crate() {
+        let stream = [
+            diagnostic_line("error", "sim/L0/types/src/lib.rs"),
+            build_finished(false),
+        ]
+        .join("\n");
+        let err = count_clippy_diagnostics(&stream, "sim/L0/core")
+            .expect_err("a foreign build failure must not read as clean");
+        assert!(
+            format!("{err:#}").contains("sim/L0/core"),
+            "the error should name the crate it could not vouch for: {err:#}"
+        );
+    }
+
+    #[test]
+    fn a_build_that_failed_inside_the_crate_is_counted_not_refused() {
+        // The crate's own compile errors are exactly what an F is for —
+        // refusing to grade here would turn every genuinely broken crate into
+        // a tooling error instead of a failing grade.
+        let stream = [
+            diagnostic_line("error", "sim/L0/core/src/lib.rs"),
+            build_finished(false),
+        ]
+        .join("\n");
+        assert_eq!(
+            count_clippy_diagnostics(&stream, "sim/L0/core").expect("count"),
+            1
+        );
+    }
+
+    #[test]
+    fn a_build_finished_record_without_a_boolean_success_is_no_record_at_all() {
+        // Defensive against a cargo format change: a `success` field that is
+        // missing or non-boolean must fail closed, not default to "passed".
+        let stream = serde_json::json!({"reason": "build-finished"}).to_string();
+        count_clippy_diagnostics(&stream, "sim/L0/core")
+            .expect_err("a malformed completion record must not count as one");
+    }
+
+    #[test]
+    fn non_json_noise_in_the_stream_is_skipped_not_fatal() {
+        // Cargo interleaves the occasional non-JSON line; those must not
+        // abort a grade, only unparseable *completion* state should.
+        let stream = [
+            "warning: some plain-text line".to_string(),
+            diagnostic_line("warning", "sim/L0/core/src/lib.rs"),
+            build_finished(true),
+        ]
+        .join("\n");
+        assert_eq!(
+            count_clippy_diagnostics(&stream, "sim/L0/core").expect("count"),
+            1
+        );
     }
 }
