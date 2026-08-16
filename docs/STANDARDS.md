@@ -83,6 +83,21 @@ it is being measured, so integration suites contribute coverage without gating.
 They are still gated — `grade`'s second pass runs the whole suite
 uninstrumented, doctests included.
 
+**When Coverage reports N/A rather than a percentage.** Four cases, and none of
+them is a pass being handed out: `Example` and `Xtask`/`tools` crates have no lib
+target to instrument; a crate opting into `grading_profile = "integration-only"`
+declares it has no testable lib API; a crate whose files map no lines reports
+"(no production lines)"; and a crate whose `src/` declares **no items at all
+outside `#[cfg(test)]`** reports the same. The last is the `*-benches` shape — a
+lib that is only a doc comment, with every benchmark in `benches/*.rs` under
+`harness = false`. With no functions there is no coverage map, so no `.profraw`
+is written, which is the *identical symptom* to instrumentation failing to reach
+a crate that does have code. The two are told apart by looking at the source: the
+empty-crate verdict requires a clean syn walk that finds nothing, so an
+unreadable or unparseable file keeps the failure report. **Benchmarks are never
+counted as coverage** — `cargo test --lib --tests` does not build them, by
+design.
+
 **Requirements:**
 
 - [ ] Production line coverage ≥75% (A grade — ships)
