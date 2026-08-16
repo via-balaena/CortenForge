@@ -117,15 +117,16 @@
 //! cast; sub-ulp `a + b - a` drift from non-f64-exact decimal-mm
 //! inputs is allowed). Tested in
 //! `prismatic_pin_pair_extents_match_spec_clearance_within_machine_epsilon`.
-//! For SDF-side primitives this is the analog of the S5
+//! This is the analog of the S5
 //! [`mesh_csg::build_cylinder_along_axis`][`crate::mesh_csg::build_cylinder_along_axis`]
-//! `pin_and_socket_fit_invariant` bit-equality contract — the
-//! cylinder primitive's contract was at the mesh-vertex level
-//! (same parent → bit-equal vertex tables modulo radial scale)
-//! because mesh-CSG primitives are constructed once and consumed
-//! by `Manifold` ops; here the SDF kernel composes the primitive
-//! lazily and the determinism contract sits at the SDF input
-//! layer.
+//! `pin_and_socket_fit_invariant` bit-equality contract, one level
+//! up. The cylinder's contract sat at the mesh-vertex level (same
+//! parent → bit-equal vertex tables modulo radial scale); this one
+//! sits at the **spec** layer and is therefore emitter-independent
+//! — it holds identically whether the params go to
+//! [`build_prismatic_pin_sdf`] or to production's
+//! [`crate::mesh_csg::build_truncated_pyramid_via_hull_pts`], which
+//! derive their extents from the same numbers.
 
 use cf_design::Solid;
 use nalgebra::{Matrix3, Point3, Rotation3, UnitQuaternion, UnitVector3, Vector2, Vector3};
@@ -581,13 +582,12 @@ mod tests {
 
     /// §G-10 #1 fit invariant: at the spec layer, socket extents
     /// differ from pin extents by exactly `clearance / 2` per
-    /// axis, within machine epsilon. This is the SDF-side analog
-    /// of S5's `pin_and_socket_fit_invariant` — for mesh-CSG
+    /// axis, within machine epsilon. This is the analog of S5's
+    /// `pin_and_socket_fit_invariant` one level up — for mesh-CSG
     /// cylinders the invariant lived at the vertex-table level
-    /// (same parent → bit-equal verts modulo radial scale); for
-    /// SDF-side primitives the determinism contract is at the SDF
-    /// input layer because the SDF kernel composes the primitive
-    /// lazily.
+    /// (same parent → bit-equal verts modulo radial scale), while
+    /// this one sits at the spec layer and so holds for whichever
+    /// emitter consumes the params.
     ///
     /// The tolerance is at the f64-rounding floor (`1e-15` is two
     /// ulps near 1 mm-scale values). Bit-exact `assert_eq!` would
