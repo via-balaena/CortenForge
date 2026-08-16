@@ -1153,7 +1153,7 @@ fn write_cap_plane_chamfer_v2(md: &mut String) {
     let _ = writeln!(
         md,
         "**Distinct from `## First-Layer Chamfer Recipe`** above: \
-         that section concerns the SDF-side first-layer chamfer \
+         that section concerns the first-layer chamfer \
          BAND on pin/lock features (a deliberate `PrismaticPin` \
          geometry primitive for FDM topology continuity at the \
          deepest-in-material corner). The cap-plane edge chamfer \

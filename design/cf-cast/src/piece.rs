@@ -26,23 +26,31 @@
 //! at the seam), then (pre-§M-S4) unioned/subtracted the legacy
 //! registration [`crate::PrismaticPin`][`crate::prismatic_pin`]
 //! solids per side. Post-§M-S4 the legacy registration path is
-//! retired; only the plug-floor-lock socket subtract remains as a
-//! per-side SDF op. The plug-floor-lock socket is side-agnostic (single
-//! solid; the per-side halfspace intersect bisects it laterally
-//! across the seam by construction — S6 three-piece shared-
-//! primitive invariant analog in SDF). Marching-cubes meshes the
-//! composed half-shell; the remaining S7 pour-gate cylinders compose
-//! post-MC via [`crate::mesh_csg::apply_mating_transforms`]. See
+//! retired, and the plug-floor-lock socket is **no longer a per-side
+//! SDF op either** — it rides the post-MC transforms with everything
+//! else (see `compose_piece_solid`, which pushes
+//! `build_plug_lock_socket_transform` into the returned Vec rather
+//! than subtracting a Solid). It stays side-agnostic: one primitive,
+//! each piece carving whichever half of cup-wall material it owns.
+//! Marching-cubes meshes the composed half-shell; the mating ops
+//! (plug-lock socket, dowel holes, bolt pattern, and the pour gate
+//! — except under the apex-axial layout, where the integral split
+//! funnel carves the bore in SDF and the post-MC pour leg is
+//! dropped so it is not carved twice) then apply post-MC via
+//! [`crate::mesh_csg::apply_mating_transforms`]. See
 //! `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-2 for the
-//! recon-4 (P) seam architectural-correction rationale and
-//! `docs/CF_CAST_FDM_FRIENDLY_GEOMETRY_RECON.md` §G-12 #2 for the
-//! S3/S4 SDF-side architectural-correction rationale (the cup-pin
-//! registration + plug-floor-lock primitives were mesh-CSG
-//! `MatingTransform::UnionCylinder` / `SubtractCylinder` pre-S3 /
-//! pre-S4; post-S4 they live entirely SDF-side per the §G-7
-//! probe-spike outcome — `Manifold::hull_pts` truncated-pyramid
-//! mesh-CSG union onto an SDF→MC curved-shell host fails at the
-//! paradigm boundary, the §G-12 #2 SDF-union path clears).
+//! recon-4 (P) seam architectural-correction rationale.
+//!
+//! ⚠ **This paragraph used to say the mating primitives "live
+//! entirely SDF-side per the §G-7 probe-spike outcome". They do
+//! not, and §G-7 no longer says what it was quoted as saying.**
+//! The plug-floor lock composes **post-MC as mesh-CSG**
+//! (`MatingTransform::UnionTruncatedPyramid` / `SubtractTruncatedPyramid`),
+//! and the cup-pin registration path was retired outright in §M-S4
+//! — see the `crate::mesh_csg` and [`crate::prismatic_pin`] module
+//! docs for the two independent reasons (workshop cf-view found
+//! sub-MC-cell features erased; the §G-7 evidence was measured on a
+//! tree with inside-out MC winding and retracted by #764).
 //!
 //! # v1 vs v2 mold cup
 //!
@@ -95,18 +103,15 @@
 //! [`crate::mesh_csg::MatingTransform::SeamTrim`] remains in the
 //! enum as a defensive primitive but is no longer emitted here.
 //!
-//! S3 of the FDM-friendly geometry arc (2026-05-24) migrated the
-//! cup-pin registration mating features from mesh-CSG cylinders
-//! (`MatingTransform::UnionCylinder` / `SubtractCylinder` consuming
-//! a shared `crate::mesh_csg::CylinderParent`) to SDF-side
-//! [`crate::prismatic_pin`] solids composed
-//! pre-MC into the half-shell. S4 (2026-05-24) migrated the
-//! plug-floor lock from the S6 mesh-CSG plug-shaft + T-bar + T-slot
-//! mechanism to a single SDF-side `prismatic_pin` socket
-//! subtracted from the half-shell (recon-1 §G-1 architectural
-//! redesign — see [`crate::plug`] module docstring for the
-//! cup-wall-penetration leak-path failure mode the pyramid lock
-//! eliminates). The mesh-CSG `MatingTransform` variants stay for
+//! S3/S4 of the FDM-friendly geometry arc (2026-05-24) replaced the
+//! cup-pin cylinders and the S6 plug-shaft + T-bar + T-slot mechanism
+//! with the shared [`crate::prismatic_pin`] truncated pyramid
+//! (recon-1 §G-1 — see [`crate::plug`] for the cup-wall-penetration
+//! leak-path failure mode the pyramid lock eliminates). ⚠ Those
+//! sessions also moved emission SDF-side, pre-MC; **that move was
+//! reverted the same night** and the pyramid composes post-MC as
+//! mesh-CSG. §M-S4 later retired the cup-pin path entirely. The
+//! mesh-CSG `MatingTransform` variants stay for
 //! the cup pour-gate carve (S7 of the prior mating-features arc).
 
 use cf_design::{Aabb, Sdf, Solid};
@@ -234,31 +239,28 @@ impl Sdf for CupWallShellSdf {
 ///      construction (cylinder portion outside the half-shell is a
 ///      no-op).
 ///
-/// Post-S3 / post-S4 of the FDM-friendly geometry arc, all mating
-/// features other than the pour-gate live SDF-side (per
-/// `docs/CF_CAST_FDM_FRIENDLY_GEOMETRY_RECON.md` §G-12 #2) —
-/// composed into the per-piece [`Solid`] above the half-shell
-/// intersect, NOT in the `Vec<MatingTransform>`. The Negative side
-/// unions [`crate::prismatic_pin`] cup-pin
-/// solids (workshop-visible ridge protrudes past the half-shell
-/// seam face); the Positive side subtracts cup-pin socket solids
-/// (matching cavity carved from cup-wall material). BOTH sides
-/// subtract the plug-floor-lock socket solid (side-agnostic single
-/// solid; per-side halfspace intersect bisects it laterally across
-/// the seam by construction — S6 three-piece shared-primitive
-/// invariant analog in SDF). See
-/// `crate::registration::build_registration_sdf_ops` for the
-/// cup-pin pose derivation and
-/// `crate::plug::build_plug_lock_socket_sdf` for the plug-floor
-/// lock socket emission.
+/// ⚠ **This paragraph used to say that post-S3/S4 "all mating
+/// features other than the pour-gate live SDF-side … NOT in the
+/// `Vec<MatingTransform>`", citing §G-12 #2. It is backwards now.**
+/// The mating features — pour gate, plug-lock socket, dowel holes,
+/// bolt pattern — apply **post-MC**, through the
+/// `Vec<MatingTransform>` this function returns. The plug-lock
+/// socket is a side-agnostic single primitive and each piece carves
+/// whichever half of cup-wall material it owns; see
+/// [`crate::plug::build_plug_lock_socket_transform`]. The cup-pin
+/// union/subtract path the old text described was retired whole in
+/// §M-S4 along with the `crate::registration` module, replaced by
+/// the symmetric dowel-hole pattern.
 ///
-/// The cup-piece Solid's SDF is **negative inside the cup-wall
-/// material** on the half-shell side; the side-specific cut is
-/// already baked into the Solid via the ribbon's half-space
-/// intersect. `apply_mating_transforms` then runs the remaining S6 +
-/// S7 cylinder ops post-MC against the half-shell mesh; cylinder
-/// portions outside the half-shell volume contribute nothing (a
-/// no-op for `SubtractCylinder`).
+/// What genuinely remains SDF-side is the seam cut. The cup-piece
+/// Solid's SDF is **negative inside the cup-wall material** on the
+/// half-shell side, and the side-specific cut is already baked in
+/// via the ribbon's half-space intersect, so per-side bisection
+/// happens by construction rather than by a per-side op.
+/// `apply_mating_transforms` then runs the mating ops post-MC
+/// against the half-shell mesh; primitive portions lying outside
+/// the half-shell volume contribute nothing (a no-op for the
+/// subtract variants).
 ///
 /// Recon-4 (P) reverted the seam cut from a post-MC
 /// [`crate::mesh_csg::MatingTransform::SeamTrim`] back to this SDF

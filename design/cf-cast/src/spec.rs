@@ -4392,8 +4392,10 @@ mod tests {
         );
         // The new section must explicitly disambiguate from the
         // existing First-Layer Chamfer Recipe (different concept —
-        // deliberate PrismaticPin SDF primitive vs MC-quantization
-        // byproduct).
+        // deliberate PrismaticPin geometry primitive vs
+        // MC-quantization byproduct; the band is part of the
+        // primitive on both emitters, so the old "SDF-side" label
+        // was wrong).
         assert!(
             md.contains("Distinct from `## First-Layer Chamfer Recipe`"),
             "disambiguation from First-Layer Chamfer Recipe missing in: {md}"

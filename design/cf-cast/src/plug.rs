@@ -26,31 +26,26 @@
 //! pyramid is fully seated.
 //!
 //! S4 of the FDM-friendly geometry implementation arc (2026-05-24)
-//! migrates this module from the post-MC mesh-CSG cylinder ops
-//! (`MatingTransform::UnionCylinder` / `SubtractCylinder` consuming
-//! [`crate::mesh_csg::CylinderParent`] for the shaft + T-bar) to
-//! SDF-side [`crate::PrismaticPin`][`crate::prismatic_pin`] composition
-//! pre-MC per the §G-12 #2 architectural correction (mirrors the S3
-//! cup-pin migration; same paradigm-boundary placement). The
-//! mesh-CSG `MatingTransform` variants stay for the cup pour-gate
-//! carve (S7 of the prior mating-features arc); plug-side emission
-//! no longer produces any mesh-CSG ops.
+//! deleted the shaft + T-bar cylinder mechanism in favour of the
+//! truncated-pyramid press-fit lock. It first moved emission SDF-side
+//! (pre-MC) per §G-12 #2; **that move was reverted the same night**
+//! and the lock is emitted **post-MC as mesh-CSG** — see below. The
+//! mesh-CSG `MatingTransform` variants also stay for the cup
+//! pour-gate carve (S7 of the prior mating-features arc).
 //!
 //! # Paradigm-boundary placement
 //!
-//! The S1 probe-spike (`design/cf-cast/tests/g7_g9_prismatic_pin_probe.rs`,
-//! commit `a218ddfb`) characterised mesh-CSG `Manifold::union` of a
-//! `Manifold::hull_pts` truncated-pyramid primitive against an
-//! SDF→MC curved-shell host. Outcome: 2 disconnected components +
-//! `SelfIntersecting` F4 Critical at the boolean junction (§G-7
-//! BRANCH B + C BOTH fire). The §G-12 #2 SDF-side bail-out (pin
-//! composed pre-MC into the host SDF via [`Solid::union`]) PASSES
-//! BRANCH-A (1 component, no new F4 Critical types) on the same
-//! fixture. The S3 cup-pin migration cleared the §G-11 #1 §R1
-//! inspector at 1 component per cup-piece STL at production scale;
-//! S4 inherits that paradigm-boundary placement (bulk-welded
-//! geometry → SDF/MC; see
-//! [[project-cf-cast-sdf-meshcsg-paradigm-boundary]]).
+//! ⚠ **This section used to cite the §G-7 probe to justify SDF-side
+//! placement. The placement was reverted and the evidence retracted;
+//! both are recorded once, in
+//! [`crate::prismatic_pin`]'s module docs — read there, not here.**
+//!
+//! Short form: pre-MC composition shares the bulk 3 mm MC cell size,
+//! so the workshop cf-view check found the lock pyramid GONE; and the
+//! §G-7 "BRANCH B + C" numbers turned out to describe a tree with
+//! inside-out MC winding (#764), not a mesh-CSG robustness boundary.
+//! The lock now applies via `MatingTransform::UnionTruncatedPyramid`
+//! and its socket via `SubtractTruncatedPyramid`.
 //!
 //! # 3-piece shared-primitive invariant (analog of S6)
 //!
@@ -61,14 +56,16 @@
 //! one half of the socket; the plug-side pyramid is one solid
 //! spanning both halves. The same [`PrismaticPinSpec`] +
 //! [`PrismaticPinPose`] triple flows through three call sites:
-//! plug self-emission (`build_plug_lock_sdf`) unions the full
+//! plug self-emission ([`build_plug_lock_transform`]) unions the full
 //! pyramid into the plug body; cup self-emission
-//! (`build_plug_lock_socket_sdf`) returns one socket Solid that
-//! BOTH cup halves' [`crate::piece::compose_piece_solid`]
-//! invocations subtract from their half-shell pre-MC (side-agnostic
-//! single solid — the per-side halfspace intersect bisects it by
-//! construction, mirroring the recon-4 (P) seam architecture). This
-//! is the SDF analog of the pre-S4 mesh-CSG 3-piece bit-equal
+//! ([`build_plug_lock_socket_transform`]) returns one socket op that
+//! BOTH cup halves apply post-MC (side-agnostic single primitive —
+//! the per-side halfspace intersect bisects it by construction,
+//! mirroring the recon-4 (P) seam architecture). ⚠ The same-named
+//! `build_plug_lock_sdf` / `build_plug_lock_socket_sdf` are
+//! **`#[cfg(test)]` shims** that re-derive a `Solid` from the
+//! transform params for probing; they are not the production path.
+//! This is the analog of the pre-S4 mesh-CSG 3-piece bit-equal
 //! determinism contract; here it lives at the SDF input layer
 //! rather than the mesh-vertex layer (same shape, different stage).
 //!
@@ -136,6 +133,16 @@
 //!   pre-MC; `platform.stl` retires to a flat support slab (no
 //!   pocket — no cup-wall penetration → no T-bar protrusion).
 //!   [`PlugPinSpec`] wraps a single [`PrismaticPinSpec`].
+//! - **Post-salvage (2026-05-24)** ← **current**: the pre-MC SDF
+//!   composition in the entry above is REVERTED. Workshop cf-view
+//!   found the lock pyramid missing from the STLs — pre-MC
+//!   composition shares the bulk 3 mm MC cell size, which eats a
+//!   feature that size. The lock is emitted post-MC as mesh-CSG
+//!   ([`build_plug_lock_transform`] → `UnionTruncatedPyramid`) and
+//!   its socket likewise ([`build_plug_lock_socket_transform`] →
+//!   `SubtractTruncatedPyramid`). The geometry and `PlugPinSpec`
+//!   shape are unchanged; only the composition stage moved. ⚠ Read
+//!   the Post-S4 entry as history, not as state.
 //!
 //! # Default off
 //!
@@ -183,7 +190,7 @@ use crate::ribbon::Ribbon;
 ///   inward overlap-bias (same paradigm-boundary pattern).
 pub const PLUG_CAP_TRIM_BIAS_M: f64 = 1.0e-6;
 
-/// Plug-floor-lock geometry spec — wraps the SDF-side
+/// Plug-floor-lock geometry spec — wraps the
 /// [`PrismaticPinSpec`] primitive with no extra fields.
 ///
 /// Post-S4 of the FDM-friendly geometry arc, the lock is a single
@@ -201,7 +208,8 @@ pub const PLUG_CAP_TRIM_BIAS_M: f64 = 1.0e-6;
 /// out of scope for iter-3 default path.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlugPinSpec {
-    /// Per-lock SDF-side primitive spec. Default
+    /// Per-lock primitive spec (consumed by the post-MC mesh-CSG
+    /// pyramid transforms). Default
     /// [`PrismaticPinSpec::plug_lock_default`] per recon-1 §G-6 /
     /// §G-8: 4 mm half-extent square base, 2.8 mm half-extent
     /// square tip (taper ratio 0.7), 4 mm half-length, 0.8 mm
@@ -1131,9 +1139,11 @@ mod tests {
     /// half-open interior predicate (`sdf <= +1e-12`) for sub-ulp
     /// positive noise on the chamfer-band cap planes.
     ///
-    /// MIRROR: an identical copy lives in `crate::registration::tests`;
-    /// any change to one MUST mirror the other (or the helper should
-    /// be promoted to a shared test-util module).
+    /// ⚠ Carried a MIRROR-on-change hook to an identical copy in
+    /// `crate::registration::tests`. That module was retired whole in
+    /// §M-S4, so this is now the only copy and there is nothing to
+    /// mirror; the hook is removed rather than left pointing at a
+    /// module a future editor cannot find.
     fn find_lateral_zero_crossing(
         sdf: &Solid,
         base_world: Point3<f64>,
@@ -1259,8 +1269,8 @@ mod tests {
     /// [`PrismaticPinSpec::socket_params`] inflates `half_length_m`
     /// by `axial_clearance_m / 2`, so the socket's bed face sits
     /// `axial_clearance_m / 2` axially deeper than the lock's
-    /// (mirror of the cup-pin pattern; same rationale in
-    /// `crate::registration::tests::cup_pin_socket_chamfer_matches_pin`).
+    /// (mirror of the cup-pin pattern, whose twin rationale lived in
+    /// `crate::registration::tests` until §M-S4 retired that module).
     /// Probing at a shared world-axial coord would land midway
     /// through the socket's chamfer-band interpolation, conflating
     /// chamfer-band emission with the axial-clearance offset.
