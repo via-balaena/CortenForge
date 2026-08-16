@@ -111,9 +111,12 @@ pub struct CylinderParams {
     /// as the only consumer of *this* triple — no cross-piece
     /// sharing, but the type stays for the unit-boundary +
     /// segments-determinism contract. ⚠ Not because they "migrated
-    /// SDF-side": that move was reverted, and other mesh-CSG cylinder
-    /// consumers (dowel holes, bolts, pour legs) build their params
-    /// directly rather than through a shared parent.
+    /// SDF-side": that move was reverted. The other mesh-CSG cylinder
+    /// consumers (dowel holes, bolts, pour legs) do build a
+    /// [`CylinderParent`] — one of their own, per hole. What they do
+    /// not need is a *shared* one: §M-10 made registration symmetric,
+    /// so there is no asymmetric pin/socket pair whose two halves have
+    /// to stay bit-equal.
     pub parent: CylinderParent,
     /// Per-side radius (meters). Pin and socket of a registration
     /// pair consume *different* values here: pin uses the pin radius,
@@ -203,12 +206,22 @@ pub enum MatingTransform {
     /// Mesh-subtract of an exact axis-aligned cylinder primitive.
     /// Pre-S3/S4 this was emitted by the cup-pin socket (S5) +
     /// cup-side T-slot + plug-pin socket carves (S6) + cup-side
-    /// pour-gate legs (S7). Post-S4 the lone production emitter is
-    /// the S7 cup pour-gate carve (pour + vent) — the cup-pin
-    /// socket migrated to SDF (S3) and the plug-shaft + T-slot
-    /// retired entirely (S4 plug-floor lock is SDF; no cup-wall
-    /// through-hole). The funnel-side nipple lumen was reverted
-    /// to SDF by the funnel fix.
+    /// pour-gate legs (S7).
+    ///
+    /// ⚠ **This block used to claim "post-S4 the lone production
+    /// emitter is the S7 cup pour-gate carve", because the cup-pin
+    /// socket "migrated to SDF" and the "S4 plug-floor lock is SDF".
+    /// All three are wrong now.** The SDF migration was reverted;
+    /// the plug-floor lock and its socket are mesh-CSG truncated
+    /// pyramids ([`Self::UnionTruncatedPyramid`]); and this variant
+    /// has *gained* emitters rather than lost them — dowel holes
+    /// ([`crate::dowel_hole`]), the bolt pattern
+    /// ([`crate::bolt_pattern`]) and the pour legs ([`crate::pour`])
+    /// each build their own. The cup-pin socket is gone entirely,
+    /// retired with the `registration` module in §M-S4. (The
+    /// plug-shaft + T-slot really did retire, and the funnel-side
+    /// nipple lumen really was reverted to SDF by the funnel fix —
+    /// those two parts still hold.)
     SubtractCylinder {
         /// Cylinder geometry payload.
         params: CylinderParams,

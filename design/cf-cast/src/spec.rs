@@ -4392,8 +4392,9 @@ mod tests {
         );
         // The new section must explicitly disambiguate from the
         // existing First-Layer Chamfer Recipe (different concept —
-        // deliberate PrismaticPin SDF primitive vs MC-quantization
-        // byproduct).
+        // deliberate PrismaticPin geometry primitive vs
+        // MC-quantization byproduct; the band is emitted by the
+        // mesh-CSG hull path, not "SDF-side").
         assert!(
             md.contains("Distinct from `## First-Layer Chamfer Recipe`"),
             "disambiguation from First-Layer Chamfer Recipe missing in: {md}"

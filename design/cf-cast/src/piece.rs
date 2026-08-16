@@ -26,13 +26,18 @@
 //! at the seam), then (pre-§M-S4) unioned/subtracted the legacy
 //! registration [`crate::PrismaticPin`][`crate::prismatic_pin`]
 //! solids per side. Post-§M-S4 the legacy registration path is
-//! retired; only the plug-floor-lock socket subtract remains as a
-//! per-side SDF op. The plug-floor-lock socket is side-agnostic (single
-//! solid; the per-side halfspace intersect bisects it laterally
-//! across the seam by construction — S6 three-piece shared-
-//! primitive invariant analog in SDF). Marching-cubes meshes the
-//! composed half-shell; the remaining S7 pour-gate cylinders compose
-//! post-MC via [`crate::mesh_csg::apply_mating_transforms`]. See
+//! retired, and the plug-floor-lock socket is **no longer a per-side
+//! SDF op either** — it rides the post-MC transforms with everything
+//! else (see `compose_piece_solid`, which pushes
+//! `build_plug_lock_socket_transform` into the returned Vec rather
+//! than subtracting a Solid). It stays side-agnostic: one primitive,
+//! each piece carving whichever half of cup-wall material it owns.
+//! Marching-cubes meshes the composed half-shell; the mating ops
+//! (plug-lock socket, dowel holes, bolt pattern, and the pour gate
+//! — except under the apex-axial layout, where the integral split
+//! funnel carves the bore in SDF and the post-MC pour leg is
+//! dropped so it is not carved twice) then apply post-MC via
+//! [`crate::mesh_csg::apply_mating_transforms`]. See
 //! `docs/CF_CAST_SEAM_FACE_FILM_RECON_PLAN.md` §F-2 for the
 //! recon-4 (P) seam architectural-correction rationale.
 //!
