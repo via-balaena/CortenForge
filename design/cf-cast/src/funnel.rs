@@ -628,6 +628,12 @@ mod tests {
     /// A regression here would mean the bowl OR was tightened back
     /// below the safety margin OR MC cell size was bumped up past
     /// the reveal-annulus width.
+    ///
+    /// ⚠ Scope: watertightness only. `validate_mesh` computes a full
+    /// winding census on the way to `boundary_edge_count`, and this
+    /// test reads that one field — a mesh can be watertight and still
+    /// be inside-out or locally inconsistent. Those are asserted by
+    /// `funnel_mesh_is_consistently_wound_and_outward` below.
     #[test]
     fn funnel_mesh_has_no_open_boundary_edges() {
         use crate::error::CastTarget;
@@ -653,6 +659,100 @@ mod tests {
              (nipple_outer_r / cos(V_HALF_ANGLE_RAD)) by at least a few \
              MC cell widths.",
             boundary_edges = report.boundary_edge_count,
+        );
+    }
+
+    /// ★ Winding soundness of the funnel's post-CSG mesh — the exact defect
+    /// class that hid in this crate for ~472 commits.
+    ///
+    /// #764 established that inside-out marching-cubes winding was what
+    /// corrupted manifold3d's boolean on the §G-7 probe fixture, producing
+    /// phantom components and a `SelfIntersecting` critical that were then
+    /// mis-attributed to a "mesh-CSG on an MC-tessellated host" robustness
+    /// boundary. The funnel is a production path that feeds MC output
+    /// straight into mesh-CSG, so it is where that class would land.
+    ///
+    /// `validate_mesh` already computes the census on its way to
+    /// `boundary_edge_count` — the sibling test above reads that one field
+    /// and discards the rest. This asserts what the census already knows.
+    ///
+    /// Ordered deliberately, weakest precondition first:
+    ///
+    /// 1. the census had something to judge, and **all** of it: every edge
+    ///    is interior (`boundary_edges == 0`), so this is not the "one
+    ///    interior edge among thousands" case that
+    ///    `WindingCensus::has_judgeable_edges` warns is not a coverage claim;
+    /// 2. no interior edge is walked the same way by both its faces —
+    ///    per-edge, seed-free, coordinate-free, and the sound local test;
+    /// 3. **only then** `!is_inside_out`. Signed volume is a sound global
+    ///    reading once (1) and (2) hold; asserted alone it is precisely the
+    ///    unsound instrument #760–#767 spent the arc removing, blind to a
+    ///    local flip near the origin and firing on one far from it.
+    ///
+    /// ★ (2) and (3) are **orthogonal, and neither subsumes the other** —
+    /// measured on this very mesh rather than argued. Reverse *every* face
+    /// uniformly and the census comes back **byte-identical** (33258 interior
+    /// edges, 0 inconsistent — a uniform flip leaves every edge in agreement,
+    /// so no per-edge test can see it) while `is_inside_out` flips to `true`
+    /// and assertion (3) fires alone. Reverse *two* faces and the reverse
+    /// happens: the census fires, which is what the control at the bottom
+    /// pins. Drop either assertion and one of those two defects ships.
+    #[test]
+    fn funnel_mesh_is_consistently_wound_and_outward() {
+        use crate::error::CastTarget;
+        use crate::mesh_csg::apply_mating_transforms;
+        use crate::mesher::solid_to_mm_mesh;
+        use mesh_repair::{validate_mesh, winding_census};
+
+        let ribbon = iter1_like_ribbon();
+        let (solid, transforms) =
+            build_funnel_solid(&ribbon).expect("iter1 fixture has pour gate enabled");
+        let mesh = solid_to_mm_mesh(&solid, 0.001, CastTarget::Funnel).expect("funnel MC");
+        let mesh = apply_mating_transforms(mesh, &transforms, CastTarget::Funnel)
+            .expect("funnel mesh-CSG");
+
+        let report = validate_mesh(&mesh);
+        let census = report
+            .winding
+            .as_ref()
+            .expect("validate_mesh enables the census by default; None means that changed");
+
+        assert!(
+            census.has_judgeable_edges(),
+            "no interior edge was judged, so a zero inconsistent count would be \
+             a vacuous clean bill; census {census:?}",
+        );
+        assert_eq!(
+            census.boundary_edges, 0,
+            "every edge must be interior for this to be a total-coverage \
+             reading; census {census:?}",
+        );
+        assert_eq!(
+            census.inconsistent_edges, 0,
+            "{} interior edges are walked the same way by both their faces \
+             ({} faces involved) — MC or the mesh-CSG boolean produced a \
+             locally inconsistent surface; census {census:?}",
+            census.inconsistent_edges, census.faces_on_inconsistent_edges,
+        );
+        assert!(
+            !report.is_inside_out,
+            "the mesh is closed and locally consistent, so signed volume IS a \
+             sound global reading here — and it reports the surface inverted. \
+             Handing an inside-out host to a mesh-CSG boolean is what #764 \
+             traced the §G-7 phantom components to.",
+        );
+
+        // Control: the assertions above are not vacuous. Reverse two triangles
+        // of this same mesh and the census must fire — without this, a census
+        // that silently stopped counting would read as a clean bill.
+        let mut dirty = mesh;
+        dirty.faces[0].swap(1, 2);
+        dirty.faces[1].swap(1, 2);
+        let dirty_census = winding_census(&dirty);
+        assert!(
+            dirty_census.inconsistent_edges > 0,
+            "control failed: reversing two faces must make the census fire, \
+             else the clean reading above proves nothing; got {dirty_census:?}",
         );
     }
 
