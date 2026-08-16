@@ -274,4 +274,92 @@ mod tests {
         let mid = p1.lerp(&p2, 0.5);
         assert_relative_eq!(mid.position.x, 5.0, epsilon = 1e-10);
     }
+
+    /// A pose with both a translation and a rotation, so a test that passes
+    /// under it cannot be passing because one half happened to be identity.
+    fn posed() -> Pose {
+        Pose::from_position_rotation(
+            Point3::new(1.0, 2.0, 3.0),
+            UnitQuaternion::from_axis_angle(&Vector3::z_axis(), std::f64::consts::FRAC_PI_2),
+        )
+    }
+
+    /// `from_isometry` and `to_isometry` are mutual inverses.
+    #[test]
+    fn isometry_conversion_round_trips() {
+        let pose = posed();
+        let back = Pose::from_isometry(pose.to_isometry());
+
+        assert_relative_eq!(back.position.coords, pose.position.coords, epsilon = 1e-12);
+        assert_relative_eq!(back.rotation, pose.rotation, epsilon = 1e-12);
+    }
+
+    /// ★ The point transform must undo itself, translation included.
+    #[test]
+    fn inverse_transform_point_undoes_transform_point() {
+        let pose = posed();
+        let local = Point3::new(0.5, -1.5, 2.0);
+
+        let round_tripped = pose.inverse_transform_point(&pose.transform_point(&local));
+
+        assert_relative_eq!(round_tripped.coords, local.coords, epsilon = 1e-12);
+    }
+
+    /// ★★ Vectors are rotated but NOT translated — the distinction between the
+    /// point and vector transforms, and the classic way to get them confused.
+    ///
+    /// Under `posed()` (translation (1,2,3), +90° about Z), local +X maps to
+    /// world +Y as a *direction*. Applying the point transform to the same
+    /// input would additionally shift by the translation, so this pins the
+    /// vector path specifically rather than round-tripping (which would pass
+    /// even if both paths translated).
+    #[test]
+    fn transform_vector_rotates_without_translating() {
+        let pose = posed();
+        let world = pose.transform_vector(&Vector3::x());
+
+        assert_relative_eq!(world, Vector3::y(), epsilon = 1e-12);
+        assert_relative_eq!(
+            pose.inverse_transform_vector(&world),
+            Vector3::x(),
+            epsilon = 1e-12
+        );
+    }
+
+    /// `forward`/`right`/`up` name local +Y/+X/+Z expressed in world axes.
+    /// Under a +90° yaw about Z: +X→+Y, +Y→−X, and +Z is unmoved.
+    #[test]
+    fn basis_accessors_are_the_local_axes_in_world_coordinates() {
+        let pose = posed();
+
+        assert_relative_eq!(pose.right(), Vector3::y(), epsilon = 1e-12);
+        assert_relative_eq!(pose.forward(), -Vector3::x(), epsilon = 1e-12);
+        assert_relative_eq!(pose.up(), Vector3::z(), epsilon = 1e-12);
+    }
+
+    /// ★ `is_finite` guards position AND rotation — two `&&` operands, so each
+    /// needs its own case or one of them can be deleted with every test still
+    /// green.
+    #[test]
+    fn is_finite_rejects_a_non_finite_position_or_rotation() {
+        assert!(posed().is_finite());
+
+        let bad_position = Pose::from_position_rotation(
+            Point3::new(f64::NAN, 0.0, 0.0),
+            UnitQuaternion::identity(),
+        );
+        assert!(!bad_position.is_finite(), "NaN position must be rejected");
+
+        let bad_rotation = Pose::from_position_rotation(
+            Point3::origin(),
+            UnitQuaternion::new_unchecked(nalgebra::Quaternion::new(f64::NAN, 0.0, 0.0, 0.0)),
+        );
+        assert!(!bad_rotation.is_finite(), "NaN rotation must be rejected");
+
+        let infinite = Pose::from_position_rotation(
+            Point3::new(0.0, f64::INFINITY, 0.0),
+            UnitQuaternion::identity(),
+        );
+        assert!(!infinite.is_finite(), "Inf is not finite either");
+    }
 }

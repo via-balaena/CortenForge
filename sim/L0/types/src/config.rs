@@ -428,4 +428,106 @@ mod tests {
         let config = SimulationConfig::with_timestep(0.01);
         assert_relative_eq!(config.frequency(), 100.0, epsilon = 1e-10);
     }
+
+    /// ★ The fourth of `SolverConfig::validate`'s branches — the other three
+    /// are covered by `test_solver_validation`, this one was not, so the
+    /// guard could have been deleted with the suite still green.
+    #[test]
+    fn solver_validation_rejects_a_negative_contact_tolerance() {
+        let solver = SolverConfig {
+            contact_tolerance: -1e-6,
+            ..SolverConfig::default()
+        };
+
+        assert!(
+            solver.validate().is_err(),
+            "a negative contact tolerance is not a usable collision margin"
+        );
+    }
+
+    /// A timestep above one second is rejected as a likely unit error, which
+    /// is a different branch from the non-finite/non-positive guard above it.
+    #[test]
+    fn config_validation_rejects_an_implausibly_large_timestep() {
+        let config = SimulationConfig::with_timestep(2.0);
+        assert!(config.validate().is_err(), "2 s per step is a unit mistake");
+
+        // Right at the boundary the config is still accepted — pins that the
+        // guard is `> 1.0` and not `>= 1.0`.
+        assert!(SimulationConfig::with_timestep(1.0).validate().is_ok());
+    }
+
+    /// ★★ `SimulationConfig::validate` DELEGATES to the solver's validation.
+    ///
+    /// Without this, dropping the `self.solver.validate()?` line leaves every
+    /// other validation test passing while an invalid solver sails through the
+    /// only check a consumer actually calls.
+    #[test]
+    fn config_validation_rejects_an_invalid_solver() {
+        let solver = SolverConfig {
+            velocity_iterations: 0,
+            ..SolverConfig::default()
+        };
+        let config = SimulationConfig::default().solver(solver);
+
+        assert!(
+            config.validate().is_err(),
+            "an invalid solver must fail the parent config's validation"
+        );
+    }
+
+    /// ★ `materials()` SANITISES rather than trusting its caller: restitution
+    /// is clamped into `[0, 1]` and friction to non-negative. So the builder
+    /// path cannot produce a config that `validate` would reject — worth
+    /// pinning, because the two functions would otherwise disagree about what
+    /// counts as a legal value.
+    #[test]
+    fn materials_clamps_into_the_range_validation_demands() {
+        let solver = SolverConfig::default().materials(5.0, -3.0);
+
+        assert_relative_eq!(solver.default_restitution, 1.0, epsilon = 1e-12);
+        assert_relative_eq!(solver.default_friction, 0.0, epsilon = 1e-12);
+        assert!(
+            solver.validate().is_ok(),
+            "values that arrived through materials() must always validate"
+        );
+
+        let low = SolverConfig::default().materials(-1.0, 0.5);
+        assert_relative_eq!(low.default_restitution, 0.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn solver_builders_set_what_they_name() {
+        let solver = SolverConfig::default().iterations(12, 7).no_sleeping();
+
+        assert_eq!(solver.velocity_iterations, 12);
+        assert_eq!(solver.position_iterations, 7);
+        assert!(!solver.allow_sleeping);
+    }
+
+    #[test]
+    fn config_builders_set_what_they_name() {
+        let config = SimulationConfig::default()
+            .gravity(Gravity::mars())
+            .without_contacts();
+
+        assert!(!config.enable_contacts);
+        assert_relative_eq!(config.gravity.acceleration.z, -3.71, epsilon = 1e-10);
+    }
+
+    /// The remaining gravity presets, and that `force_on_mass` scales an
+    /// arbitrary vector rather than only the -Z earth case already covered.
+    #[test]
+    fn gravity_presets_and_force_on_an_arbitrary_vector() {
+        assert_relative_eq!(Gravity::moon().acceleration.z, -1.62, epsilon = 1e-10);
+        assert_relative_eq!(Gravity::mars().acceleration.z, -3.71, epsilon = 1e-10);
+        assert_relative_eq!(Gravity::zero().acceleration.norm(), 0.0, epsilon = 1e-12);
+
+        let sideways = Gravity::custom(Vector3::new(1.0, -2.0, 3.0));
+        assert_relative_eq!(
+            sideways.force_on_mass(4.0),
+            Vector3::new(4.0, -8.0, 12.0),
+            epsilon = 1e-12
+        );
+    }
 }
