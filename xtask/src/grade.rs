@@ -1,6 +1,6 @@
 //! Crate grading against the A-grade standard.
 //!
-//! This module implements the seven-criterion grading system defined in docs/STANDARDS.md.
+//! This module implements the eight-criterion grading system defined in docs/STANDARDS.md.
 
 use crate::pr_scope::{filter_only, select_shard};
 use anyhow::{bail, Context, Result};
@@ -120,7 +120,7 @@ impl GradeReport {
 
 /// Crate profile — what rubric applies to this crate.
 ///
-/// CortenForge grades against seven criteria, but `docs/STANDARDS.md`
+/// CortenForge grades against eight criteria, but `docs/STANDARDS.md`
 /// explicitly scopes two of them to specific crate types:
 ///
 /// - **Criterion 6 (Bevy-free)** — STANDARDS.md §6 titles it "Bevy-free
@@ -1232,18 +1232,11 @@ fn grade_clippy(
     // demo and tooling code is not prod-surface and shouldn't be held
     // to the same justification-comment rubric as library code.
     let relax_unjustified_allows = matches!(profile, CrateProfile::Example | CrateProfile::Xtask);
-    let mut allow_count = 0;
-    if !relax_unjustified_allows {
-        let src_path = format!("{}/src", crate_path);
-        if let Ok(entries) = glob_rs_files(&src_path) {
-            for file_path in entries {
-                if let Ok(content) = std::fs::read_to_string(&file_path) {
-                    let lines: Vec<&str> = content.lines().collect();
-                    allow_count += count_unjustified_clippy_allows(&lines);
-                }
-            }
-        }
-    }
+    let allow_count = if relax_unjustified_allows {
+        0
+    } else {
+        count_unjustified_allows_in_tree(&format!("{}/src", crate_path))?
+    };
 
     let total = clippy_count + allow_count;
 
@@ -1287,16 +1280,53 @@ fn any_span_in_crate(spans: &[serde_json::Value], crate_path: &str) -> bool {
     })
 }
 
+/// Total unjustified `#[allow(clippy::…)]`s across a crate's `src/` tree.
+///
+/// Extracted from [`grade_clippy`] for the same reason [`scan_file_safety`]
+/// was extracted from [`grade_safety`]: the file-walking half of criterion 3
+/// is then testable without standing up a cargo invocation.
+///
+/// Errors rather than under-counting. This scan can only ever *lower* the
+/// count by missing a file, and a lower count is a better grade — so a
+/// swallowed error here hands the crate an A on a file nobody read.
+fn count_unjustified_allows_in_tree(src_path: &str) -> Result<usize> {
+    let mut allow_count = 0;
+    for file_path in glob_rs_files(src_path)? {
+        let content = std::fs::read_to_string(&file_path)
+            .with_context(|| format!("read {file_path} for the unjustified-allow scan"))?;
+        let lines: Vec<&str> = content.lines().collect();
+        allow_count += count_unjustified_clippy_allows(&lines);
+    }
+    Ok(allow_count)
+}
+
 /// Collect all `.rs` files under a directory.
+///
+/// Fails closed. Both consumers — the unjustified-`#[allow]` scan in
+/// [`grade_clippy`] (criterion 3) and [`grade_safety`] (criterion 4) — grade a
+/// crate by *counting violations across these files*, so a file this walk drops
+/// is a file whose violations are never counted, and the crate earns an A for a
+/// reason nobody measured. A walk that cannot see the whole tree therefore
+/// errors out rather than returning a quietly shorter list: an errored grade is
+/// visible, an under-counted one is not.
+///
+/// `follow_links(true)` for the same reason: a module reached through a
+/// symlinked directory is source the compiler reads, so the graders must read it
+/// too. (A symlinked `.rs` *file* was already collected — the extension test
+/// below never asks whether the entry is a regular file.)
 fn glob_rs_files(dir: &str) -> Result<Vec<String>> {
     let mut files = Vec::new();
-    if !Path::new(dir).exists() {
+    // `try_exists`, not `exists`: the latter answers "no" both for an absent
+    // directory and for one whose metadata cannot be read, and only the first
+    // of those means "nothing to scan".
+    if !Path::new(dir)
+        .try_exists()
+        .with_context(|| format!("stat {dir} while collecting .rs files"))?
+    {
         return Ok(files);
     }
-    for entry in walkdir::WalkDir::new(dir)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
+    for entry in walkdir::WalkDir::new(dir).follow_links(true) {
+        let entry = entry.with_context(|| format!("walk {dir} while collecting .rs files"))?;
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("rs") {
             files.push(path.to_string_lossy().to_string());
@@ -1501,7 +1531,15 @@ fn scan_file_safety(
 fn grade_safety(_sh: &Shell, crate_path: &str, profile: CrateProfile) -> Result<CriterionResult> {
     let src_path = format!("{}/src", crate_path);
 
-    if !Path::new(&src_path).exists() {
+    // `try_exists`, not `exists`: this guard runs *before* `glob_rs_files`, so
+    // it — not the walker — is what a crate with an unreadable `src/` meets
+    // first. `exists()` would answer "absent" and take the `Manual` arm below,
+    // and `overall_automated` skips `Manual` outright, so an unstat-able tree
+    // would drop out of the grade entirely rather than failing it.
+    if !Path::new(&src_path)
+        .try_exists()
+        .with_context(|| format!("stat {src_path} for the safety scan"))?
+    {
         return Ok(CriterionResult {
             name: "4. Safety",
             result: "(no src/)".to_string(),
@@ -1529,10 +1567,10 @@ fn grade_safety(_sh: &Shell, crate_path: &str, profile: CrateProfile) -> Result<
 
     for file_path in &files {
         let is_build_rs = file_path.ends_with("build.rs");
-        let content = match std::fs::read_to_string(file_path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
+        // Not `continue`: an unread file contributes no violations, so
+        // skipping it silently is a free pass on whatever it contains.
+        let content = std::fs::read_to_string(file_path)
+            .with_context(|| format!("read {file_path} for the safety scan"))?;
         let scan = scan_file_safety(&content, is_build_rs, relax_unwrap_expect);
         // XTASK_GRADE_DEBUG env var: emit per-file violation breakdown to
         // stderr when set. Used to pinpoint which files in a crate are
@@ -4891,5 +4929,192 @@ tier_up_features = { sneaky = "App" }
                       error: real diagnostic\n";
         let summary = extract_wasm_error_summary(stderr);
         assert_eq!(summary, "error: real diagnostic");
+    }
+
+    /// A throwaway source tree for the file-walking tests below. Same
+    /// pid+thread naming convention as `coverage.rs`'s fixture helper, so
+    /// concurrent test threads never collide on a root.
+    fn walk_fixture(tag: &str, files: &[&str]) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "cf-glob-rs-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        // Safe even when a previous run left a symlink loop here:
+        // `remove_dir_all` unlinks symlinks rather than descending them.
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir root");
+        for name in files {
+            let path = root.join(name);
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+            std::fs::write(&path, "fn f() {}\n").expect("write");
+        }
+        root
+    }
+
+    #[test]
+    fn glob_rs_files_collects_nested_sources_and_ignores_other_extensions() {
+        let root = walk_fixture(
+            "nested",
+            &["lib.rs", "inner/deep/mod.rs", "notes.md", "data.json"],
+        );
+        let found = glob_rs_files(&root.to_string_lossy()).expect("walk");
+        assert_eq!(found.len(), 2, "collected {found:?}");
+        assert!(found.iter().any(|p| p.ends_with("lib.rs")), "{found:?}");
+        assert!(
+            found.iter().any(|p| p.ends_with("inner/deep/mod.rs")),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn a_directory_that_is_simply_absent_is_not_an_error() {
+        // The one case where an empty list is the honest answer, and the
+        // reason `try_exists`'s `Ok(false)` arm has to stay distinct from
+        // its `Err` arm.
+        let root = walk_fixture("absent", &[]);
+        std::fs::remove_dir_all(&root).expect("rm");
+        let found = glob_rs_files(&root.to_string_lossy()).expect("walk");
+        assert!(found.is_empty(), "collected {found:?}");
+    }
+
+    #[test]
+    fn a_path_whose_metadata_cannot_be_read_is_an_error_not_an_empty_list() {
+        // `<regular file>/src` yields ENOTDIR, which `Path::exists()`
+        // flattens to plain `false` — indistinguishable from "this crate
+        // has no src/", i.e. from "zero violations". `try_exists` keeps
+        // the two apart.
+        let root = walk_fixture("not-a-dir", &["afile"]);
+        let src = root.join("afile").join("src");
+        assert!(
+            !src.exists(),
+            "precondition: the old check answers 'absent'"
+        );
+        glob_rs_files(&src.to_string_lossy()).expect_err("an unstat-able path must error");
+    }
+
+    /// Criteria 3 and 4 both grade by counting violations per file, so a
+    /// module the walk never reaches is a module that scores zero. Before
+    /// `follow_links(true)`, everything under `linked/` was invisible to
+    /// both.
+    #[cfg(unix)]
+    #[test]
+    fn a_module_behind_a_symlinked_directory_is_collected() {
+        let root = walk_fixture("symlink-dir", &["walked/lib.rs", "elsewhere/hidden.rs"]);
+        std::os::unix::fs::symlink(root.join("elsewhere"), root.join("walked").join("linked"))
+            .expect("symlink");
+        let found = glob_rs_files(&root.join("walked").to_string_lossy()).expect("walk");
+        assert!(
+            found.iter().any(|p| p.ends_with("linked/hidden.rs")),
+            "the symlinked module was not collected: {found:?}"
+        );
+    }
+
+    /// A tree the walker cannot fully traverse must error rather than return
+    /// the part it managed to reach — a short list reads to both consumers as
+    /// "nothing to flag here".
+    ///
+    /// A self-referential symlink is the permission-free way to manufacture a
+    /// walk error; a `chmod 000` fixture would silently stop reproducing when
+    /// the suite runs as root. It does mean this case leans on
+    /// `follow_links(true)` to detect the loop at all, so it fails if *either*
+    /// half of the fix is backed out.
+    #[cfg(unix)]
+    #[test]
+    fn a_tree_the_walker_cannot_traverse_is_an_error() {
+        let root = walk_fixture("loop", &["lib.rs"]);
+        std::os::unix::fs::symlink(&root, root.join("selflink")).expect("symlink");
+        let walked = glob_rs_files(&root.to_string_lossy());
+        // Clear the loop before asserting. `walk_fixture` cleans at *start*,
+        // which never fires across runs (the root is keyed by pid), so this
+        // fixture would otherwise leave a self-referential symlink in the
+        // shared temp dir for every test run. A panicking assert skips the
+        // cleanup, which is the right trade: a failing test is being watched.
+        let _ = std::fs::remove_dir_all(&root);
+        walked.expect_err("a walk error must not be swallowed");
+    }
+
+    /// A `.rs` file that is not valid UTF-8 — `read_to_string`'s failure mode
+    /// that needs neither a permission trick nor a broken symlink (which the
+    /// walk would catch one step earlier). Rust source must be UTF-8, so this
+    /// tree is genuinely unscannable, and both criteria have to say so rather
+    /// than score it clean.
+    fn unreadable_source_fixture(tag: &str) -> std::path::PathBuf {
+        let root = walk_fixture(tag, &[]);
+        std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+        std::fs::write(
+            root.join("src").join("lib.rs"),
+            [0x66, 0x6e, 0x20, 0xff, 0xfe],
+        )
+        .expect("write");
+        root
+    }
+
+    #[test]
+    fn criterion_3_errors_rather_than_scoring_an_unreadable_file_clean() {
+        // Positive control first: on a readable tree the scan really does
+        // return a count, so the error below is the file's doing and not the
+        // fixture's.
+        let clean = walk_fixture("allows-clean", &[]);
+        std::fs::create_dir_all(clean.join("src")).expect("mkdir src");
+        std::fs::write(
+            clean.join("src").join("lib.rs"),
+            "#[allow(clippy::unwrap_used)]\nfn f() {}\n",
+        )
+        .expect("write");
+        assert_eq!(
+            count_unjustified_allows_in_tree(&clean.join("src").to_string_lossy()).expect("scan"),
+            1
+        );
+
+        let root = unreadable_source_fixture("allows-unreadable");
+        count_unjustified_allows_in_tree(&root.join("src").to_string_lossy())
+            .expect_err("an unreadable file must not read as zero unjustified allows");
+    }
+
+    #[test]
+    fn criterion_4_errors_rather_than_scoring_an_unreadable_file_clean() {
+        let sh = Shell::new().expect("shell");
+
+        // Positive control: the same call shape on a readable tree grades.
+        let clean = walk_fixture("safety-clean", &[]);
+        std::fs::create_dir_all(clean.join("src")).expect("mkdir src");
+        std::fs::write(clean.join("src").join("lib.rs"), "fn f() -> u8 { 1 }\n").expect("write");
+        let graded = grade_safety(&sh, &clean.to_string_lossy(), CrateProfile::Layer0)
+            .expect("a readable tree grades");
+        assert_eq!(graded.grade, Grade::A, "{graded:?}");
+
+        let root = unreadable_source_fixture("safety-unreadable");
+        grade_safety(&sh, &root.to_string_lossy(), CrateProfile::Layer0)
+            .expect_err("an unreadable file must not read as zero safety violations");
+    }
+
+    /// Criterion 4 reaches its own `src/` guard *before* [`glob_rs_files`], so
+    /// the walker's `try_exists` never sees an unstat-able tree — this case
+    /// covers the guard rather than the walker.
+    ///
+    /// The stakes are higher here than a wrong count: the `Manual` arm is
+    /// skipped by `GradeReport::overall_automated`, so flattening "cannot
+    /// stat" to "absent" would drop criterion 4 out of the automated grade
+    /// altogether and let the crate pass on the strength of the others.
+    #[test]
+    fn criterion_4_errors_rather_than_dropping_an_unstat_able_src_from_the_grade() {
+        let sh = Shell::new().expect("shell");
+
+        // Positive control: a genuinely absent `src/` still takes the `Manual`
+        // arm. That distinction is the whole reason the guard cannot simply
+        // become an error.
+        let absent = walk_fixture("safety-no-src", &[]);
+        let graded = grade_safety(&sh, &absent.to_string_lossy(), CrateProfile::Layer0)
+            .expect("an absent src/ is not an error");
+        assert_eq!(graded.grade, Grade::Manual, "{graded:?}");
+
+        let root = walk_fixture("safety-not-a-dir", &["afile"]);
+        grade_safety(
+            &sh,
+            &root.join("afile").to_string_lossy(),
+            CrateProfile::Layer0,
+        )
+        .expect_err("an unstat-able src/ must not vanish into the Manual arm");
     }
 }
