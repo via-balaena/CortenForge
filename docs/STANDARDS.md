@@ -656,7 +656,9 @@ $ cargo xtask grade mesh-types
 ╚══════════════════════════════════════════════════════════════╝
 ```
 
-`cargo xtask grade-all` runs the full sweep over all 232 workspace crates and reports a workspace-level pass/fail. It's the same gate CI runs (with `--skip-coverage` for runtime; coverage is a local-only gate per the note below).
+`cargo xtask grade-all` runs the full sweep over all 301 workspace crates and reports a workspace-level pass/fail. It's the same gate CI runs (with `--skip-coverage` for runtime; coverage is a local-only gate per the note below).
+
+The criteria that grade by *scanning source files* — 3 (unjustified `#[allow]`) and 4 (Safety) — fail closed. Both score a crate by counting violations across its `src/` tree, so any file the scan fails to reach or read is a file whose violations are never counted, and the crate would be graded A for a reason nobody measured. An unwalkable directory or an unreadable source file therefore aborts the grade with an error rather than producing a quietly clean result, on the same principle as the unreadable-file rule under Criterion 1 above. (Criterion 3 skips its `#[allow]` scan altogether for the `Example` and `Xtask` profiles, per the relaxation in §3; the guarantee covers that scan wherever it runs, not the profiles that opt out of it.)
 
 ---
 
