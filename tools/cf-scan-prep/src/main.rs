@@ -4773,14 +4773,14 @@ mod tests {
     /// `TriMeshDistance` is unsigned; cf-cap-planes uses `.dot().abs()`)
     /// — but they are not all of them, so the conclusion did not
     /// follow. `mesh_sdf::PseudoNormalSign` takes its sign from face
-    /// winding, and four in-tree paths compose it:
-    /// `cf_fsu_geometry::oracle`,
+    /// winding, and production paths compose it throughout the tree —
+    /// `mesh_offset::offset_mesh`, `cf_fsu_geometry::oracle`,
     /// `cf_device_geometry::sdf_layers::build_cached_scan_sdf`,
     /// `cf_cast_cli::derive::derive_spec_and_ribbon` and
-    /// `cf_sim_research::insertion_sim::run_sdf_bridge_spike`.
-    /// Inward caps reaching any of them invert the field's sign rather
-    /// than its shading, so the blast radius was never bounded to
-    /// rendering. The assertion below is what keeps that moot.
+    /// `cf_sim_research::insertion_sim::run_sdf_bridge_spike` among
+    /// them. Inward caps reaching any of them invert the field's sign
+    /// rather than its shading, so the blast radius was never bounded
+    /// to rendering. The assertion below is what keeps that moot.
     ///
     /// Fixture: 5-vertex square pyramid with the base OPEN (4 side
     /// triangles, no base triangulation). Apex at (0, 0, +1); base

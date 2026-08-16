@@ -160,11 +160,15 @@ impl IndexedMesh {
     /// negative or near-zero result is *not* evidence of inconsistent winding,
     /// and a positive one is not evidence against it.
     ///
-    /// Measured on this function by `mesh-loft`'s
-    /// `the_global_inside_out_test_changes_its_answer_under_a_2mm_translation`:
-    /// a puck with 4 inconsistent edges returns *exactly* the correct unit-box
-    /// volume of `1.0` at the origin, then reads inside-out once translated
-    /// 2 mm. Anatomical meshes are kept in native frames ~1e3 mm out.
+    /// Measured in this crate by
+    /// `one_flipped_face_makes_the_global_volume_test_frame_dependent`
+    /// (`tests/mesh_tests.rs`): flip one face of twelve on a unit cube and this
+    /// returns `+0.667` at the origin — positive, reads clean, wholly blind —
+    /// then `-332.67` translated 1e3, the scale anatomical meshes are kept at
+    /// in their native frames. Corroborated downstream by `mesh-loft`'s
+    /// `the_global_inside_out_test_changes_its_answer_under_a_2mm_translation`,
+    /// where a puck with 4 inconsistent edges returns *exactly* the correct
+    /// unit-box volume of `1.0` at the origin and flips verdict after 2 mm.
     ///
     /// ★ The local instrument is `mesh_repair::winding_census` — per-edge,
     /// seed-free and coordinate-free.
@@ -203,6 +207,12 @@ impl IndexedMesh {
     }
 
     /// Computes the absolute volume of the mesh.
+    ///
+    /// ⚠ This is `abs()` of [`Self::signed_volume`], so it inherits that
+    /// method's precondition *and* discards the sign that would at least have
+    /// hinted at trouble. On the flipped unit cube measured there it returns
+    /// `0.667` at the origin and `332.67` translated 1e3 — neither of which is
+    /// the volume of anything.
     #[inline]
     #[must_use]
     pub fn volume(&self) -> f64 {

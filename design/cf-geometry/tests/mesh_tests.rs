@@ -207,6 +207,12 @@ fn one_flipped_face_makes_the_global_volume_test_frame_dependent() {
     const FAR: f64 = 1.0e3;
 
     let mut flipped = unit_cube();
+    assert_eq!(
+        flipped.faces[2],
+        [4, 5, 6],
+        "fixture drift: this test needs a face whose FIRST index is not vertex 0 \
+         (the origin), or the flip is invisible to signed_volume by construction"
+    );
     flipped.faces[2].swap(1, 2); // [4, 5, 6] -> [4, 6, 5]
     let flipped_far = translated(&flipped, Vector3::new(0.0, 0.0, FAR));
 
