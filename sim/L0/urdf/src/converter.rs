@@ -684,4 +684,251 @@ mod tests {
         assert!(mjcf.contains(r#"type="sphere" size="0.5""#));
         assert!(mjcf.contains(r#"pos="0 0 1""#));
     }
+
+    /// Wrap `body` in a two-link robot joined by `joint_xml`.
+    fn robot_with_joint(joint_xml: &str) -> String {
+        format!(
+            r#"<?xml version="1.0"?>
+            <robot name="jt">
+                <link name="base"/>
+                <link name="child"/>
+                {joint_xml}
+            </robot>"#
+        )
+    }
+
+    /// Pull the `axis="x y z"` off the joint named `name` in emitted MJCF.
+    fn axis_of(mjcf: &str, name: &str) -> nalgebra::Vector3<f64> {
+        let needle = format!(r#"name="{name}""#);
+        let at = mjcf.find(&needle).expect("joint is present");
+        let tail = &mjcf[at..];
+        let a = tail.find(r#"axis=""#).expect("joint has an axis") + 6;
+        let b = tail[a..].find('"').expect("axis is terminated") + a;
+        let nums: Vec<f64> = tail[a..b]
+            .split_whitespace()
+            .map(|t| t.parse().expect("axis component parses"))
+            .collect();
+        nalgebra::Vector3::new(nums[0], nums[1], nums[2])
+    }
+
+    /// ★★ A planar joint has no MJCF equivalent, so it is decomposed into two
+    /// in-plane slides plus a hinge about the plane normal — 3 DOF, matching
+    /// URDF's semantics.
+    ///
+    /// The load-bearing part is that the two slide axes form an ORTHONORMAL
+    /// basis of the plane: a decomposition that emitted non-orthogonal or
+    /// non-unit axes would still produce three joints and still look right in
+    /// a `contains` assertion, while silently skewing every planar mechanism.
+    #[test]
+    fn planar_joint_decomposes_into_an_orthonormal_three_dof_basis() {
+        let mjcf = urdf_to_mjcf(&robot_with_joint(
+            r#"<joint name="pj" type="planar">
+                 <parent link="base"/><child link="child"/>
+                 <axis xyz="0 0 1"/>
+               </joint>"#,
+        ))
+        .expect("conversion should succeed");
+
+        let sx = axis_of(&mjcf, "pj_slide_x");
+        let sy = axis_of(&mjcf, "pj_slide_y");
+        let hinge = axis_of(&mjcf, "pj_hinge");
+
+        assert!(mjcf.contains(r#"name="pj_slide_x" type="slide""#));
+        assert!(mjcf.contains(r#"name="pj_slide_y" type="slide""#));
+        assert!(mjcf.contains(r#"name="pj_hinge" type="hinge""#));
+
+        for (label, v) in [("slide_x", sx), ("slide_y", sy), ("hinge", hinge)] {
+            assert!(
+                (v.norm() - 1.0).abs() < 1e-12,
+                "{label} axis must be unit, got norm {}",
+                v.norm()
+            );
+        }
+        assert!(sx.dot(&sy).abs() < 1e-12, "slide axes must be orthogonal");
+        assert!(
+            sx.dot(&hinge).abs() < 1e-12 && sy.dot(&hinge).abs() < 1e-12,
+            "both slides must lie in the plane the hinge is normal to"
+        );
+    }
+
+    /// ★ The in-plane basis picks its seed vector from the normal's own X
+    /// component (`normal.x.abs() < 0.9`), because crossing with a parallel
+    /// vector would collapse to zero. A normal along X takes the other branch,
+    /// and it must produce an equally valid basis rather than `NaN`s.
+    #[test]
+    fn planar_decomposition_survives_a_normal_along_x() {
+        let mjcf = urdf_to_mjcf(&robot_with_joint(
+            r#"<joint name="pj" type="planar">
+                 <parent link="base"/><child link="child"/>
+                 <axis xyz="1 0 0"/>
+               </joint>"#,
+        ))
+        .expect("conversion should succeed");
+
+        let sx = axis_of(&mjcf, "pj_slide_x");
+        let sy = axis_of(&mjcf, "pj_slide_y");
+
+        assert!(
+            sx.iter().all(|c| c.is_finite()) && sy.iter().all(|c| c.is_finite()),
+            "crossing the normal with a parallel seed would produce NaNs"
+        );
+        assert!((sx.norm() - 1.0).abs() < 1e-12);
+        assert!(sx.dot(&sy).abs() < 1e-12);
+    }
+
+    /// Each remaining URDF joint type maps to its MJCF counterpart. `floating`
+    /// additionally takes the `axis_needed = false` path — a `free` joint with
+    /// an axis attribute would be malformed MJCF.
+    #[test]
+    fn joint_types_map_to_their_mjcf_counterparts() {
+        let prismatic = urdf_to_mjcf(&robot_with_joint(
+            r#"<joint name="p" type="prismatic">
+                 <parent link="base"/><child link="child"/><axis xyz="1 0 0"/>
+               </joint>"#,
+        ))
+        .expect("prismatic converts");
+        assert!(prismatic.contains(r#"name="p" type="slide""#));
+
+        let continuous = urdf_to_mjcf(&robot_with_joint(
+            r#"<joint name="c" type="continuous">
+                 <parent link="base"/><child link="child"/><axis xyz="0 0 1"/>
+               </joint>"#,
+        ))
+        .expect("continuous converts");
+        assert!(continuous.contains(r#"name="c" type="hinge""#));
+
+        let floating = urdf_to_mjcf(&robot_with_joint(
+            r#"<joint name="f" type="floating">
+                 <parent link="base"/><child link="child"/>
+               </joint>"#,
+        ))
+        .expect("floating converts");
+        assert!(floating.contains(r#"name="f" type="free""#));
+        let at = floating.find(r#"name="f""#).expect("joint present");
+        let decl_end = floating[at..].find("/>").expect("joint closes") + at;
+        assert!(
+            !floating[at..decl_end].contains("axis="),
+            "a free joint must not carry an axis attribute"
+        );
+    }
+
+    /// ★ A `continuous` joint is unbounded, so a `<limit>` on it must NOT
+    /// become an MJCF range — only revolute and prismatic are limited. Emitting
+    /// a range here would silently clamp a joint URDF says spins freely.
+    #[test]
+    fn a_limit_on_a_continuous_joint_is_not_emitted_as_a_range() {
+        let mjcf = urdf_to_mjcf(&robot_with_joint(
+            r#"<joint name="c" type="continuous">
+                 <parent link="base"/><child link="child"/><axis xyz="0 0 1"/>
+                 <limit lower="-1" upper="1" effort="10" velocity="1"/>
+               </joint>"#,
+        ))
+        .expect("conversion should succeed");
+
+        assert!(mjcf.contains(r#"name="c" type="hinge""#));
+        assert!(
+            !mjcf.contains("limited="),
+            "continuous joints are unbounded; a range would clamp free rotation"
+        );
+    }
+
+    /// Damping and friction are emitted only when positive — the zero default
+    /// must not litter every joint with `damping="0"`.
+    #[test]
+    fn joint_dynamics_are_emitted_only_when_positive() {
+        let with = urdf_to_mjcf(&robot_with_joint(
+            r#"<joint name="d" type="revolute">
+                 <parent link="base"/><child link="child"/><axis xyz="0 0 1"/>
+                 <dynamics damping="0.7" friction="0.25"/>
+               </joint>"#,
+        ))
+        .expect("conversion should succeed");
+        assert!(with.contains(r#"damping="0.7""#));
+        assert!(with.contains(r#"frictionloss="0.25""#));
+
+        let without = urdf_to_mjcf(&robot_with_joint(
+            r#"<joint name="d" type="revolute">
+                 <parent link="base"/><child link="child"/><axis xyz="0 0 1"/>
+                 <dynamics damping="0" friction="0"/>
+               </joint>"#,
+        ))
+        .expect("conversion should succeed");
+        assert!(!without.contains("damping="));
+        assert!(!without.contains("frictionloss="));
+    }
+
+    /// A URDF cylinder is (radius, full length); MJCF wants (radius,
+    /// HALF length). Getting this wrong doubles every cylinder.
+    #[test]
+    fn cylinder_length_is_halved_for_mjcf() {
+        let urdf = r#"<?xml version="1.0"?>
+            <robot name="cyl">
+                <link name="base">
+                    <collision><geometry>
+                        <cylinder radius="0.25" length="2.0"/>
+                    </geometry></collision>
+                </link>
+            </robot>"#;
+
+        let mjcf = urdf_to_mjcf(urdf).expect("conversion should succeed");
+        assert!(
+            mjcf.contains(r#"type="cylinder" size="0.25 1""#),
+            "MJCF cylinder size is (radius, half-length); got: {mjcf}"
+        );
+    }
+
+    /// Visual geometry is excluded from collision so it cannot perturb the
+    /// physics it is only meant to depict.
+    #[test]
+    fn visual_geometry_is_excluded_from_collision() {
+        let urdf = r#"<?xml version="1.0"?>
+            <robot name="vis">
+                <link name="base">
+                    <visual><geometry><sphere radius="0.5"/></geometry></visual>
+                </link>
+            </robot>"#;
+
+        let mjcf = urdf_to_mjcf(urdf).expect("conversion should succeed");
+        assert!(mjcf.contains(r#"contype="0" conaffinity="0""#));
+    }
+
+    /// `package://` and `file://` URIs are resolver-specific; MJCF wants a
+    /// path relative to the mesh directory.
+    #[test]
+    fn mesh_uri_schemes_are_stripped_to_a_relative_path() {
+        assert_eq!(
+            strip_package_prefix("package://my_robot/meshes/link.stl"),
+            "meshes/link.stl",
+            "the package NAME is dropped along with the scheme"
+        );
+        assert_eq!(
+            strip_package_prefix("file:///abs/link.stl"),
+            "/abs/link.stl"
+        );
+        assert_eq!(strip_package_prefix("meshes/link.stl"), "meshes/link.stl");
+        // A package URI with no path after the name has nothing to strip.
+        assert_eq!(strip_package_prefix("package://only_pkg"), "only_pkg");
+    }
+
+    /// Every link being some joint's child means the kinematic tree has no
+    /// root — a cycle. That is rejected rather than silently picking a link.
+    #[test]
+    fn a_robot_with_no_root_link_is_rejected() {
+        let urdf = r#"<?xml version="1.0"?>
+            <robot name="cycle">
+                <link name="a"/>
+                <link name="b"/>
+                <joint name="j1" type="fixed">
+                    <parent link="a"/><child link="b"/>
+                </joint>
+                <joint name="j2" type="fixed">
+                    <parent link="b"/><child link="a"/>
+                </joint>
+            </robot>"#;
+
+        assert!(
+            urdf_to_mjcf(urdf).is_err(),
+            "a cyclic tree has no root link and must not convert"
+        );
+    }
 }
