@@ -685,10 +685,15 @@ mod tests {
     ///    dominates the volume (`mesh_repair::winding_census`'s own "What
     ///    this does NOT answer" calls this the sharpest case). Neither of the
     ///    checks below can stand without this one;
-    /// 2. the census had something to judge, and **all** of it: every edge
-    ///    is interior (`boundary_edges == 0`), so this is not the "one
-    ///    interior edge among thousands" case that
-    ///    `WindingCensus::has_judgeable_edges` warns is not a coverage claim;
+    /// 2. the census had something to judge, and **all** of it. `boundary_edges
+    ///    == 0` alone is not that claim: the census buckets each edge by
+    ///    `forward + backward`, so an edge with three or more traversals lands
+    ///    in `non_manifold_edges` and is dropped from `interior_edges`
+    ///    *before* consistency is ever checked, and a face repeating a vertex
+    ///    index is "skipped whole, excluded from every edge counter". Both are
+    ///    invisible to (3) and (4). All three counters must be zero, or the
+    ///    surface is not a closed orientable manifold and the clean readings
+    ///    below are clean about whatever was left after the skipping;
     /// 3. no interior edge is walked the same way by both its faces —
     ///    per-edge, seed-free, coordinate-free, and the sound local test;
     /// 4. **only then** `!is_inside_out`. Signed volume is a sound global
@@ -746,9 +751,17 @@ mod tests {
              a vacuous clean bill; census {census:?}",
         );
         assert_eq!(
-            census.boundary_edges, 0,
-            "every edge must be interior for this to be a total-coverage \
-             reading; census {census:?}",
+            (
+                census.boundary_edges,
+                census.non_manifold_edges,
+                census.degenerate_faces
+            ),
+            (0, 0, 0),
+            "every edge must be a judged interior edge and every face must be \
+             judgeable for this to be a total-coverage reading — a non-manifold \
+             edge is dropped before the consistency check and a degenerate face \
+             is skipped whole, so both hide from the assertions below; \
+             census {census:?}",
         );
         assert_eq!(
             census.inconsistent_edges, 0,
