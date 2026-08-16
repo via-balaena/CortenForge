@@ -96,8 +96,13 @@ pub(crate) struct LibCoverageRun {
     /// The llvm-cov JSON export, in the same shape `cargo llvm-cov --json`
     /// produced — [`crate::coverage::production_coverage`] reads it unchanged.
     pub json: serde_json::Value,
-    /// Whether every instrumented test binary passed. False if ANY did — a
-    /// green unit suite beside a red integration suite is not a pass.
+    /// Whether the `--lib` unit-test binary passed.
+    ///
+    /// ⚠ Integration binaries run and contribute coverage but do NOT gate this.
+    /// Under `-C instrument-coverage` a wall-clock or memory-ceiling assertion
+    /// fails because it is being measured, not because the code regressed; see
+    /// the run loop in [`measure_lib_coverage`] for the measurement that
+    /// settled it.
     pub tests_passed: bool,
 }
 
@@ -189,6 +194,12 @@ struct TestBinary {
     path: PathBuf,
     /// Whether this is the `--lib` unit-test binary, as opposed to an
     /// integration binary from `tests/`. Only the lib one gates pass/fail.
+    ///
+    /// Taken from `target.kind`, which is exactly `["lib"]` for all 63 lib
+    /// targets in this workspace — none declares a `crate-type`. A crate that
+    /// later did (`cdylib`, `proc-macro`, …) would report a different kind and
+    /// trip the "no --lib test binary" bail rather than silently handing the
+    /// gate to an integration suite.
     is_lib: bool,
 }
 
@@ -298,6 +309,21 @@ fn prepare_target_dir(workspace_root: &Path, compiler_crate_name: &str) -> Resul
 /// ⚠ This can only ever RAISE a crate's percentage: the denominator is the
 /// crate's own production lines either way, and adding binaries can only cover
 /// more of them. No crate can newly fall below threshold because of it.
+///
+/// ## What the extra binaries cost
+///
+/// Little, because instrumented time is dominated by the `--lib` binary that
+/// already ran. Measured per binary:
+///
+/// | crate | lib (was already paid) | integration (added) |
+/// |---|---|---|
+/// | `cf-geometry` | 0.79 s | ~0.00 s across 7 binaries |
+/// | `mesh-repair` | **392 s** | 0.06 s |
+/// | `mesh-printability` | 41 s | **+37 s** (a stress suite) |
+///
+/// So the added cost is bounded by what a crate keeps in `tests/`, and the
+/// instrumentation tax itself is unchanged — `mesh-repair`'s 117 lib tests run
+/// in 0.32 s clean and 392 s instrumented, the ~100-400x this module documents.
 ///
 /// `quiet` silences the child processes rather than the measurement: the test
 /// harness writes to stdout, and `grade --json` puts its report there too.
