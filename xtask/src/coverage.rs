@@ -36,6 +36,53 @@ use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::{Attribute, Fields, ImplItem, Item, Meta, Token, TraitItem};
 
+/// Production line coverage for one file of a crate.
+///
+/// The crate-level percentage says a crate needs tests; this says *where* to
+/// write them. Both come out of the same instrumented run — the per-file split
+/// is already in the export and was simply being summed away, so surfacing it
+/// costs no extra measurement. That matters: a coverage run is minutes per
+/// crate, so a breakdown gated behind a second run would rarely be taken.
+#[derive(Debug)]
+pub(crate) struct FileCoverage {
+    /// Path relative to the crate root (`src/solver/pgs.rs`), not the absolute
+    /// path llvm-cov emits. The crate is already named by the report around it.
+    pub file: String,
+    /// Production lines in this file executed at least once.
+    pub covered: u64,
+    /// Production lines in this file instrumented. Always > 0 — a file that
+    /// contributes no production lines is not a triage target and is omitted.
+    pub total: u64,
+    /// This file could not be read or parsed, so its `#[cfg(test)]` lines were
+    /// never subtracted and are counted here as production.
+    ///
+    /// The counts above are therefore an over-estimate of both the work and the
+    /// gap, by an unknown amount — `#[ignore]`d gates read as uncovered
+    /// production code. The crate-level report already says *how many* files
+    /// this happened to; the flag says *which*, because the ranking is what a
+    /// reader acts on and an inflated row can outrank every honest one.
+    pub test_lines_counted: bool,
+}
+
+impl FileCoverage {
+    /// Production lines never executed — the triage ranking key.
+    pub fn uncovered(&self) -> u64 {
+        self.total.saturating_sub(self.covered)
+    }
+
+    /// Percentage covered.
+    ///
+    /// Returns a bare `f64` rather than an `Option` like
+    /// [`ProductionCoverage::percent`], because [`production_coverage`] never
+    /// emits a row with a zero denominator — a file contributing no production
+    /// lines is dropped instead. That is an invariant of the producer, not of
+    /// this struct, whose fields are constructible directly; a hand-built row
+    /// with `total: 0` yields `NaN` here rather than a panic.
+    pub fn percent(&self) -> f64 {
+        100.0 * self.covered as f64 / self.total as f64
+    }
+}
+
 /// Production line coverage for one crate, plus what it could not account for.
 #[derive(Debug, Default)]
 pub(crate) struct ProductionCoverage {
@@ -54,12 +101,37 @@ pub(crate) struct ProductionCoverage {
     /// the safe direction, but the grade must say so rather than imply a
     /// clean sweep.
     pub unparsed: Vec<String>,
+    /// The same measurement split by file, **most uncovered lines first**, so a
+    /// reader takes the biggest win first. Ties break on path so two runs over
+    /// one tree print in the same order.
+    ///
+    /// Sums to [`Self::covered`] / [`Self::total`] by construction: both are
+    /// accumulated in the same pass over the same lines.
+    pub files: Vec<FileCoverage>,
 }
 
 impl ProductionCoverage {
     /// Percentage, or `None` when the crate has no production lines at all.
     pub fn percent(&self) -> Option<f64> {
         (self.total > 0).then(|| 100.0 * self.covered as f64 / self.total as f64)
+    }
+}
+
+/// Strip the crate root from an absolute export path: `src/solver/pgs.rs`.
+///
+/// `rfind`, not `find`: only the LAST occurrence is the crate root. A checkout
+/// living under a directory that repeats the crate path — `/home/sim/L0/core/…/
+/// sim/L0/core/src/foo.rs` — would otherwise keep most of the absolute path.
+///
+/// Falls back to the full name when the marker is absent. Callers filter with
+/// [`is_own_production_file`] first, so that cannot happen today; returning the
+/// path unshortened is the harmless answer if it ever does.
+fn relative_to_crate(name: &str, crate_path: &str) -> String {
+    match name.rfind(crate_path) {
+        Some(at) => name[at + crate_path.len()..]
+            .trim_start_matches('/')
+            .to_string(),
+        None => name.to_string(),
     }
 }
 
@@ -583,10 +655,17 @@ pub(crate) fn production_coverage(
             continue;
         }
 
-        let spans = match std::fs::read_to_string(name)
+        let parsed = std::fs::read_to_string(name)
             .ok()
-            .and_then(|src| cfg_test_spans(&src))
-        {
+            .and_then(|src| cfg_test_spans(&src));
+        // Recorded per file, not just per crate. With no spans to subtract, an
+        // unparsed file keeps its `#[cfg(test)]` lines in the count — and
+        // `#[ignore]`d gates are uncovered — so its row overstates how much
+        // PRODUCTION code is missing tests, by an amount nothing here can bound.
+        // Ranked among the honest rows unmarked, it sends a reader to the wrong
+        // file, which is the one thing a triage table must not do.
+        let test_lines_counted = parsed.is_none();
+        let spans = match parsed {
             Some(spans) => spans,
             None => {
                 acc.unparsed.push(name.to_string());
@@ -594,15 +673,34 @@ pub(crate) fn production_coverage(
             }
         };
 
+        let mut this_file = FileCoverage {
+            file: relative_to_crate(name, crate_path),
+            covered: 0,
+            total: 0,
+            test_lines_counted,
+        };
         for (line, count) in mapped_lines(segments) {
             if spans.iter().any(|(a, b)| line >= *a && line <= *b) {
                 acc.excluded += 1;
             } else {
-                acc.total += 1;
-                acc.covered += u64::from(count > 0);
+                this_file.total += 1;
+                this_file.covered += u64::from(count > 0);
             }
         }
+        // A file whose every mapped line was `#[cfg(test)]` contributes nothing
+        // to the ratio and nothing to write tests against, so it is not a triage
+        // row. Its lines are still reported, in `excluded` above.
+        if this_file.total > 0 {
+            acc.covered += this_file.covered;
+            acc.total += this_file.total;
+            acc.files.push(this_file);
+        }
     }
+
+    // Biggest win first, path as the tiebreak so the order is a function of the
+    // measurement rather than of llvm-cov's file ordering.
+    acc.files
+        .sort_by(|a, b| b.uncovered().cmp(&a.uncovered()).then(a.file.cmp(&b.file)));
     acc
 }
 
@@ -1002,6 +1100,232 @@ mod tests {
             "a symlinked source file holds production code just as a regular one does"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Two production files, one fully covered and one not at all.
+    ///
+    /// Shared by the per-file tests so they disagree about one thing at a time.
+    /// The paths need not exist: an unreadable file yields no `cfg(test)` spans,
+    /// which is the same as a file that has none.
+    fn two_file_export() -> serde_json::Value {
+        serde_json::json!({
+            "data": [{"files": [
+                // lines 1-3, executed 5x
+                {"filename": "/w/demo/src/covered.rs", "segments": [
+                    [1, 1, 5, true, true, false], [3, 1, 0, false, false, false]]},
+                // lines 1-4, never executed
+                {"filename": "/w/demo/src/cold.rs", "segments": [
+                    [1, 1, 0, true, true, false], [4, 1, 0, false, false, false]]},
+            ]}]
+        })
+    }
+
+    /// ★ The per-file rows must reconstruct the crate total exactly.
+    ///
+    /// Both come from one pass over one set of lines, and that is the whole
+    /// license for showing them together: a breakdown that disagreed with the
+    /// percentage printed above it would be worse than no breakdown, because a
+    /// reader would trust it to decide where to spend an afternoon.
+    #[test]
+    fn per_file_rows_sum_to_the_crate_total() {
+        let cov = production_coverage(&two_file_export(), "demo");
+
+        assert_eq!(cov.total, 7, "3 covered lines + 4 cold ones");
+        assert_eq!(cov.covered, 3);
+        assert_eq!(
+            cov.files.iter().map(|f| f.total).sum::<u64>(),
+            cov.total,
+            "per-file denominators must sum to the crate denominator"
+        );
+        assert_eq!(
+            cov.files.iter().map(|f| f.covered).sum::<u64>(),
+            cov.covered,
+            "per-file numerators must sum to the crate numerator"
+        );
+    }
+
+    /// Worst first — the ranking IS the feature, since triage starts at the top
+    /// and the printed table is capped.
+    #[test]
+    fn files_are_ranked_by_uncovered_lines() {
+        let cov = production_coverage(&two_file_export(), "demo");
+
+        let order: Vec<&str> = cov.files.iter().map(|f| f.file.as_str()).collect();
+        assert_eq!(
+            order,
+            vec!["src/cold.rs", "src/covered.rs"],
+            "the file with 4 uncovered lines must outrank the one with 0"
+        );
+        assert_eq!(cov.files[0].uncovered(), 4);
+        assert_eq!(cov.files[1].uncovered(), 0);
+        assert!((cov.files[1].percent() - 100.0).abs() < 1e-9);
+    }
+
+    /// Ties break on path, so two runs over one tree print the same order and a
+    /// reordered export cannot masquerade as a changed measurement.
+    #[test]
+    fn equal_uncovered_counts_break_ties_on_path() {
+        // Identical segments, so the only thing separating them is the name.
+        let segments =
+            serde_json::json!([[1, 1, 0, true, true, false], [2, 1, 0, false, false, false]]);
+        let json = serde_json::json!({
+            "data": [{"files": [
+                {"filename": "/w/demo/src/zebra.rs", "segments": segments},
+                {"filename": "/w/demo/src/alpha.rs", "segments": segments},
+            ]}]
+        });
+        let cov = production_coverage(&json, "demo");
+
+        let order: Vec<&str> = cov.files.iter().map(|f| f.file.as_str()).collect();
+        assert_eq!(
+            order,
+            vec!["src/alpha.rs", "src/zebra.rs"],
+            "equal uncovered counts must sort by path, not by export order"
+        );
+    }
+
+    /// ★ Integration-test source is excluded from the ratio, so it must not
+    /// appear as a triage row either — sending a reader to write tests for a
+    /// test file.
+    #[test]
+    fn integration_test_source_is_not_a_triage_row() {
+        let segments =
+            serde_json::json!([[1, 1, 0, true, true, false], [3, 1, 0, false, false, false]]);
+        let json = serde_json::json!({
+            "data": [{"files": [
+                {"filename": "/w/demo/src/lib.rs", "segments": segments},
+                {"filename": "/w/demo/tests/it.rs", "segments": segments},
+            ]}]
+        });
+        let cov = production_coverage(&json, "demo");
+
+        let order: Vec<&str> = cov.files.iter().map(|f| f.file.as_str()).collect();
+        assert_eq!(
+            order,
+            vec!["src/lib.rs"],
+            "tests/ source is not a fix target"
+        );
+        assert_eq!(
+            cov.excluded, 3,
+            "and its lines are still reported, not dropped"
+        );
+    }
+
+    /// A file whose every mapped line is `#[cfg(test)]` contributes nothing to
+    /// the ratio, so it is nothing to go and fix — it must not occupy a row that
+    /// a real target could have used.
+    ///
+    /// ★ The companion production file is what lets this fail for the reason it
+    /// names: without it, an empty row list would also result from
+    /// `production_coverage` finding no files at all.
+    #[test]
+    fn a_file_with_only_test_lines_is_not_a_triage_row() {
+        let root = crate_dir(
+            "triage-cfg-test",
+            &[
+                (
+                    "all_test.rs",
+                    "#[cfg(test)]\nmod t {\n    #[test]\n    fn a() {}\n}\n",
+                ),
+                ("real.rs", "pub fn f() -> i32 {\n    1\n}\n"),
+            ],
+        );
+        let crate_path = root.to_str().expect("utf-8 temp path").to_string();
+        let segments =
+            serde_json::json!([[1, 1, 0, true, true, false], [5, 1, 0, false, false, false]]);
+        let json = serde_json::json!({
+            "data": [{"files": [
+                {"filename": format!("{crate_path}/src/all_test.rs"), "segments": segments},
+                {"filename": format!("{crate_path}/src/real.rs"), "segments": segments},
+            ]}]
+        });
+
+        let cov = production_coverage(&json, &crate_path);
+        let order: Vec<&str> = cov.files.iter().map(|f| f.file.as_str()).collect();
+        assert_eq!(
+            order,
+            vec!["src/real.rs"],
+            "an all-#[cfg(test)] file is not a place to write production tests"
+        );
+        assert_eq!(cov.excluded, 5, "its 5 lines are reported as excluded");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ★ A file whose test lines could not be subtracted must say so on its own
+    /// row, not only in the crate-level count.
+    ///
+    /// With no spans to subtract, an unparsed file keeps its `#[cfg(test)]`
+    /// lines — and `#[ignore]`d gates read as uncovered — so its row overstates
+    /// the gap and can outrank every honest one. The crate report says how many
+    /// files this hit; only the row can say which, and the row is what a reader
+    /// acts on.
+    ///
+    /// ★ The parseable companion is the negative control: it proves the flag
+    /// tracks parseability rather than being pinned true, which is exactly what
+    /// every fixture using a non-existent path would otherwise show.
+    #[test]
+    fn a_file_whose_test_lines_could_not_be_subtracted_is_marked() {
+        let root = crate_dir(
+            "triage-unparsed",
+            &[
+                ("broken.rs", "pub fn (((\n"),
+                ("fine.rs", "pub fn f() -> i32 {\n    1\n}\n"),
+            ],
+        );
+        let crate_path = root.to_str().expect("utf-8 temp path").to_string();
+        let segments =
+            serde_json::json!([[1, 1, 0, true, true, false], [3, 1, 0, false, false, false]]);
+        let json = serde_json::json!({
+            "data": [{"files": [
+                {"filename": format!("{crate_path}/src/broken.rs"), "segments": segments},
+                {"filename": format!("{crate_path}/src/fine.rs"), "segments": segments},
+            ]}]
+        });
+
+        let cov = production_coverage(&json, &crate_path);
+        let flags: Vec<(&str, bool)> = cov
+            .files
+            .iter()
+            .map(|f| (f.file.as_str(), f.test_lines_counted))
+            .collect();
+        assert_eq!(
+            flags,
+            vec![("src/broken.rs", true), ("src/fine.rs", false)],
+            "only the unparseable file's row may claim its test lines were counted"
+        );
+        assert_eq!(
+            cov.unparsed.len(),
+            1,
+            "and the crate-level report still names it"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ★ `rfind`, not `find`. A checkout living under a directory that repeats
+    /// the crate path would otherwise keep most of the absolute path in every
+    /// row, which is exactly the noise relativising exists to remove.
+    #[test]
+    fn the_crate_root_is_stripped_from_its_last_occurrence() {
+        assert_eq!(
+            relative_to_crate("/w/cortenforge/sim/L0/core/src/foo.rs", "sim/L0/core"),
+            "src/foo.rs"
+        );
+        assert_eq!(
+            relative_to_crate("/home/sim/L0/core/co/sim/L0/core/src/foo.rs", "sim/L0/core"),
+            "src/foo.rs",
+            "a repeated crate path must resolve to the innermost root"
+        );
+    }
+
+    /// The fallback is unreachable behind `is_own_production_file`, but must not
+    /// panic or truncate if it is ever reached — an unshortened path is readable,
+    /// a sliced one is wrong.
+    #[test]
+    fn a_path_outside_the_crate_is_returned_whole() {
+        assert_eq!(
+            relative_to_crate("/w/other/src/foo.rs", "demo"),
+            "/w/other/src/foo.rs"
+        );
     }
 
     /// A crate with no `src/` at all gets "(no src/)" from a different

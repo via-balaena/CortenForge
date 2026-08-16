@@ -101,6 +101,52 @@ clean parse that finds nothing, so an unreadable file keeps the failure report.
 **Benchmarks are never counted as coverage**; `cargo test --lib --tests` does not
 build them, by design.
 
+**Where the uncovered lines are.** A percentage says a crate needs tests; it
+does not say where to write them. `grade` therefore prints a per-file breakdown
+under the table whenever coverage ran and something is uncovered — worst first,
+so the biggest win is the top row:
+
+```text
+  Coverage triage — 2 of 3 measured file(s) hold 79 uncovered production line(s):
+      uncovered  covered  file
+             48    72.7%  src/config.rs
+             31    64.4%  src/body.rs
+```
+
+That is `sim-types`' real output at 70.8 % (192/271). The third measured file,
+`src/error.rs`, is at 100 % and so is not a row — it appears under `--json`,
+which lists every measured file.
+
+This is the *same* measurement the percentage comes from, split by file rather
+than summed — the per-file numerators and denominators add up to the crate's, by
+construction. It costs no extra run, which is the point: a coverage run is
+minutes per crate, so a breakdown behind a second invocation (or behind a flag
+that is easy to forget) would mostly not be taken.
+
+Two scoping rules follow from "a row is somewhere to go and write a test".
+Fully-covered files are omitted, and so are files with no production lines at
+all — a file that is entirely `#[cfg(test)]`, or `tests/` integration source,
+which is excluded from the ratio and would otherwise send a reader off to write
+tests for a test. Those lines are still reported in the excluded count.
+
+A row for a file the grader could not read or parse is marked `⚠ unparsed, so
+test lines are counted here` (`test_lines_counted` under `--json`). With no
+spans to subtract, such a file keeps its `#[cfg(test)]` lines, and `#[ignore]`d
+gates among them read as uncovered production code — so the row overstates the
+gap by an amount nothing here can bound, and can outrank every honest row. The
+crate-level detail already reports *how many* files this hit; the marker says
+which, because the ranking is what a reader acts on.
+
+The printed table stops at 20 rows and states what it cut — on `sim-mjcf`,
+`… 19 more file(s) hold 364 uncovered line(s); --json lists every file` —
+because a bound nobody is told about reads as the whole list. That crate is
+also the evidence the bound is cheap: its printed 20 rows hold 91 % of its
+4007 uncovered lines. `cargo xtask grade <crate> --json` carries every
+measured file unbounded, under a `coverage_files` key that is **absent rather
+than empty** when coverage did not run — verified on both routes that reach
+that state, `--skip-coverage` and a profile whose coverage is N/A — so a
+consumer can tell "measured, all covered" from "never measured".
+
 **Requirements:**
 
 - [ ] Production line coverage ≥75% (A grade — ships)
