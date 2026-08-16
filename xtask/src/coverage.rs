@@ -401,14 +401,14 @@ pub(crate) fn production_coverage(
     let own: Vec<String> = files
         .iter()
         .filter_map(|f| f["filename"].as_str())
-        .filter(|name| name.contains(crate_path))
+        .filter(|name| crate::coverage_run::is_own_production_file(name, crate_path))
         .map(str::to_string)
         .collect();
     let test_files = test_only_files(&own);
 
     for file in files {
         let name = file["filename"].as_str().unwrap_or("");
-        if !name.contains(crate_path) {
+        if !crate::coverage_run::is_own_production_file(name, crate_path) {
             continue;
         }
         let Some(segments) = file["segments"].as_array() else {

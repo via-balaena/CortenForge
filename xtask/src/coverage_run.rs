@@ -139,6 +139,22 @@ fn should_instrument(args: &[String], target_crate: &str) -> bool {
     false
 }
 
+/// True when this `rustc` invocation builds a test target (`--test`).
+///
+/// ★ Load-bearing, and not obvious. Instrumenting only the measured crate
+/// leaves the integration binaries that LINK it without the profiling runtime,
+/// and they then write incomplete profiles or none at all — measured on
+/// `cf-geometry`, 7 profraw files for 8 binaries, and `aabb.rs` stuck at its
+/// `--lib` figure of 49.5 % when the truth is 91.9 %. Instrumenting the test
+/// targets as well makes every binary emit a profile.
+///
+/// Only this package's own targets are built with `--test`; dependencies are
+/// not, so this stays scoped and cheap. Their own source is excluded from the
+/// accounting by [`is_own_production_file`].
+fn is_test_target(args: &[String]) -> bool {
+    args.iter().any(|a| a == "--test")
+}
+
 /// Stand in for `rustc`, adding instrumentation to one crate.
 ///
 /// Cargo invokes a wrapper as `<wrapper> <rustc> <args…>`, including for the
@@ -160,7 +176,7 @@ pub(crate) fn run_as_rustc_wrapper(target_crate: &str) -> Result<i32> {
 
     let mut cmd = Command::new(rustc);
     cmd.args(&rest);
-    if should_instrument(&lossy, target_crate) {
+    if should_instrument(&lossy, target_crate) || is_test_target(&lossy) {
         cmd.arg("-Cinstrument-coverage");
     }
     Ok(cmd
@@ -264,9 +280,20 @@ fn own_files_in_export(json: &serde_json::Value, crate_path: &str) -> usize {
         files
             .iter()
             .filter_map(|f| f["filename"].as_str())
-            .filter(|name| name.contains(crate_path))
+            .filter(|name| is_own_production_file(name, crate_path))
             .count()
     })
+}
+
+/// Whether an export filename is one of the crate's own PRODUCTION sources.
+///
+/// Under `crate_path`, but NOT under its `tests/` directory. Integration test
+/// source is compiled as its own crate and is instrumented only so the binary
+/// emits a profile — it is not the code under measurement, and counting it
+/// would pad both sides of the ratio with ~100 %-covered test bodies, which is
+/// the same distortion [`crate::coverage`] strips `#[cfg(test)]` to avoid.
+pub(crate) fn is_own_production_file(name: &str, crate_path: &str) -> bool {
+    name.contains(crate_path) && !name.contains(&format!("{crate_path}/tests/"))
 }
 
 /// Point the coverage build at a tree that holds only this crate's artifacts.
@@ -563,6 +590,40 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].path, PathBuf::from("/t/deps/cf_fsu_model-abc"));
         assert!(test_executables("{}").is_empty());
+    }
+
+    /// ★ `tests/` source must be excluded from the crate's own production files.
+    ///
+    /// Test targets are instrumented so their binaries emit a profile at all
+    /// (see [`is_test_target`]), which puts their source in the export. Counting
+    /// it would pad both sides of the ratio with ~100 %-covered test bodies —
+    /// measured on `cf-geometry`, 89.7 % with them versus 85.7 % without.
+    #[test]
+    fn integration_test_source_is_not_a_production_file() {
+        let cp = "design/cf-geometry";
+        assert!(is_own_production_file(
+            "/w/cortenforge/design/cf-geometry/src/mesh.rs",
+            cp
+        ));
+        assert!(!is_own_production_file(
+            "/w/cortenforge/design/cf-geometry/tests/mesh_tests.rs",
+            cp
+        ));
+        assert!(
+            !is_own_production_file("/w/cortenforge/mesh/mesh-repair/src/lib.rs", cp),
+            "another crate's source is not this crate's"
+        );
+    }
+
+    /// A `--test` invocation is what marks a target for instrumentation beyond
+    /// the measured crate itself; a plain dependency build is not.
+    #[test]
+    fn only_test_targets_are_instrumented_beyond_the_measured_crate() {
+        assert!(is_test_target(&["--test".to_string()]));
+        assert!(!is_test_target(&[
+            "--crate-name".to_string(),
+            "nalgebra".to_string()
+        ]));
     }
 
     /// ★ Every test binary must be collected, and the lib one distinguished.
