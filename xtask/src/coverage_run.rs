@@ -310,6 +310,29 @@ fn prepare_target_dir(workspace_root: &Path, compiler_crate_name: &str) -> Resul
 /// crate's own production lines either way, and adding binaries can only cover
 /// more of them. No crate can newly fall below threshold because of it.
 ///
+/// ## Why integration binaries cannot inflate the denominator
+///
+/// The obvious worry is that `tests/*.rs` sits *under* the crate directory and
+/// is not `cfg(test)`-gated, so counting it would pad both sides with
+/// ~100 %-covered test source. It cannot happen: the [`WRAPPER_CRATE_ENV`]
+/// wrapper instruments only the compilation whose `--crate-name` matches, and
+/// an integration crate compiles under its own name (`mesh_tests`, …). Never
+/// instrumented means no coverage mapping, which means it cannot appear in the
+/// export — while its *execution* still fires the counters inside the
+/// instrumented lib it links.
+///
+/// Audited on `cf-geometry` rather than argued: the export names **17 files, 0
+/// of them under `tests/`** — every one a `src/*.rs` of the crate itself.
+///
+/// ## Known limit: doctests are still not counted
+///
+/// `--lib --tests` does not build doctests, and this pipeline structurally
+/// cannot reach them: doctests are compiled by **rustdoc**, not `rustc`, so a
+/// `RUSTC_WRAPPER` never sees them. They are not a rounding error — measured,
+/// `mesh-repair` has 27, `cf-design` 19, `sim-core` 12 — and they do exercise
+/// production code, so a crate leaning on doc examples still reads low here.
+/// Same direction as everything above: counting them could only raise numbers.
+///
 /// ## What the extra binaries cost
 ///
 /// Little, because instrumented time is dominated by the `--lib` binary that
