@@ -86,7 +86,8 @@ enum Commands {
         json: bool,
 
         /// Skip the Coverage criterion (reports N/A). Coverage runs the
-        /// crate's --lib tests instrumented, which stays minutes-long for
+        /// crate's unit and integration tests instrumented, which stays
+        /// minutes-long for
         /// crates whose own code is the hot path — too slow for per-PR CI.
         /// Dedicated coverage jobs run without the flag.
         #[arg(long)]

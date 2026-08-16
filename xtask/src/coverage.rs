@@ -1,6 +1,6 @@
 //! Production-only line coverage: the denominator the Coverage criterion is about.
 //!
-//! Measuring `--lib` instruments the *test* binary (see [`crate::coverage_run`]
+//! The instrumented run measures *test* binaries (see [`crate::coverage_run`]
 //! for how), so a crate's own `#[cfg(test)]` code lands in the report alongside
 //! the production code it exercises. Counting it makes the criterion measure
 //! two unrelated things:

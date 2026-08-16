@@ -883,10 +883,12 @@ fn grade_coverage(
 
     // Two-pass coverage strategy:
     //
-    // Pass 1: measure coverage from unit tests only (--lib), with
-    //   instrumentation scoped to this crate — see `coverage_run`. Integration
-    //   tests are excluded because unit tests in src/ reach the same source
-    //   lines; scoping is what makes the pass affordable at all.
+    // Pass 1: measure coverage from the crate's unit AND integration tests
+    //   (`--lib --tests`), with instrumentation scoped to this crate — see
+    //   `coverage_run`. Integration tests used to be excluded on the premise
+    //   that src/ unit tests reach the same lines; that is false for any crate
+    //   keeping its tests in tests/, which read as barely covered. Scoping the
+    //   instrumentation to one crate is what makes the pass affordable.
     //
     // Pass 2: Run ALL tests (unit + integration) WITHOUT instrumentation.
     //   Verifies correctness without paying the coverage overhead.
@@ -988,8 +990,8 @@ fn grade_coverage(
     // anything (`coverage_run` asserts as much on every run). It stays because
     // it is what defines the crate's denominator.
     //
-    // Within those files the criterion counts PRODUCTION lines only. Running
-    // `--lib` instruments the test binary, so a crate's `#[cfg(test)]` code
+    // Within those files the criterion counts PRODUCTION lines only. The run
+    // instruments test binaries, so a crate's `#[cfg(test)]` code
     // would otherwise be measured as if it were the code under test: bodies
     // that run pad the numerator, and `#[ignore]`d gates pad the denominator
     // while contributing nothing. See coverage.rs.

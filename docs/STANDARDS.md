@@ -102,7 +102,7 @@ uninstrumented, doctests included.
 
 **What Is Measured** (the lines in the ratio): **production lines only.**
 
-Measuring `--lib` instruments the *test* binary, so a crate's own
+The instrumented run measures *test* binaries, so a crate's own
 `#[cfg(test)]` code appears in the report next to the code it exercises.
 `cargo xtask grade` subtracts it from both sides of the ratio, because counting
 it measures two unrelated things at once:
