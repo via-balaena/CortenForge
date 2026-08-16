@@ -939,6 +939,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// ★ `#[cfg(test)]` gates free functions too, not only modules.
+    ///
+    /// The sibling test puts its test code inside a `#[cfg(test)] mod`, where
+    /// the module arm answers first and the function arm is never consulted —
+    /// so without this case, deleting the function arm entirely changes no test
+    /// outcome. Found by mutating it away and watching the suite stay green.
+    #[test]
+    fn a_cfg_test_free_function_is_not_production_code() {
+        let root = crate_dir(
+            "cfg-test-fn",
+            &[(
+                "lib.rs",
+                "use std::fmt;\n\n#[cfg(test)]\nfn fixture() -> i32 { 7 }\n",
+            )],
+        );
+        assert!(
+            declares_no_production_code(&root),
+            "a test-gated free function is test code wherever it sits"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// ★ A symlinked module must be read, not skipped.
     ///
     /// `WalkDir` does not follow links by default, and an unfollowed link is not
