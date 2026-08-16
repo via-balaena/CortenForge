@@ -15,7 +15,8 @@
 # it directly — no parallel bash/awk reimplementations.
 #
 # Coverage is excluded from the CI gate via --skip-coverage because
-# llvm-cov in release mode is ~5-10 min per crate; it runs locally
+# llvm-cov in release mode costs minutes to tens of minutes per crate
+# (measured: sim-thermostat ~16 min, mesh-repair ~7 min); it runs locally
 # via `cargo xtask grade <crate>` and in the weekly job in scheduled.yml.
 #
 # Test execution structure (L0 plan §8 step 13 / §6):
@@ -184,8 +185,9 @@ jobs:
   # Post-L0-refactor, this also enforces Layer Integrity (tier-aware dep-graph
   # checks, hard-gate) and WASM Compatibility (L0-tier wasm32 build, hard-gate).
   #
-  # --skip-coverage: coverage runs cargo llvm-cov in release (5-10 min per
-  # crate); too slow for per-PR CI. It runs locally and in dedicated jobs.
+  # --skip-coverage: coverage runs cargo llvm-cov in release, minutes to tens
+  # of minutes per crate (measured: sim-thermostat ~16 min); too slow for
+  # per-PR CI. It runs locally and in dedicated jobs.
   #
   # Sharded across 3 parallel runners via `grade-all --shard i/3` (round-robin
   # over the sorted crate list, so heavy crates like cf-cast/sim-soft scatter

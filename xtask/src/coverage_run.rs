@@ -45,6 +45,13 @@
 //! the old run recorded — its exact counts were never printed, and re-running
 //! the old pipeline to recover them costs 51 minutes for a digit.
 //!
+//! ⚠ Re-running these today will not reproduce every row. The table predates
+//! the `--lib` → `--lib --tests` change: `sim-types` has no `tests/` directory
+//! so its 192/271 still holds exactly, but `cf-fsu-model` has 4 integration
+//! tests, so its 84.2 % may now read higher. The A/B's *claim* — that scoping
+//! instrumentation cannot move the number — is unaffected; only the absolute
+//! figures are of their moment.
+//!
 //! [`own_files_in_export`] re-checks the load-bearing half on every run.
 //!
 //! ## Why a `RUSTC_WRAPPER`
@@ -53,8 +60,8 @@
 //! (checked on 1.96, which rejects it outright). `RUSTC_WRAPPER` is the one
 //! stable interception point — cargo runs it in place of `rustc` for every
 //! unit and passes the real `rustc` as the first argument, so the wrapper can
-//! add `-C instrument-coverage` to exactly one compilation and leave the rest
-//! of the dependency tree fully optimised.
+//! add `-C instrument-coverage` to just the measured crate and its own test
+//! targets, leaving the whole dependency tree fully optimised.
 //!
 //! The wrapper is this same `xtask` binary re-entered through
 //! [`WRAPPER_CRATE_ENV`]; a separate shell script would have to be written to
@@ -90,12 +97,27 @@ pub(crate) const WRAPPER_CRATE_ENV: &str = "CF_COVERAGE_WRAPPER_CRATE";
 /// one.
 const COVERAGE_TARGET_DIR: &str = "target/cf-coverage";
 
-/// What one instrumented `--lib` run produced.
-pub(crate) struct LibCoverageRun {
+/// What one instrumented run produced, across the crate's unit AND
+/// integration test binaries.
+///
+/// ⚠ Named `CoverageRun`, not `LibCoverageRun` as it once was: the run stopped
+/// being `--lib`-only, and a type whose name says otherwise is how the old
+/// scope kept being assumed.
+pub(crate) struct CoverageRun {
     /// The llvm-cov JSON export, in the same shape `cargo llvm-cov --json`
     /// produced — [`crate::coverage::production_coverage`] reads it unchanged.
     pub json: serde_json::Value,
-    /// Whether the instrumented `--lib` tests themselves passed.
+    /// Whether the `--lib` unit-test binary passed.
+    ///
+    /// ⚠ Integration binaries run and contribute coverage but do NOT gate this
+    /// — under `-C instrument-coverage` a wall-clock or memory-ceiling
+    /// assertion fails because it is being measured, not because the code
+    /// regressed.
+    ///
+    /// That is not a hole: `grade`'s pass 2 runs the whole suite
+    /// uninstrumented and gates on it, so an integration failure that is real
+    /// still blocks the grade. This flag is only the instrumented `--lib`
+    /// half. See the run loop in [`measure_coverage`] for the measurement.
     pub tests_passed: bool,
 }
 
@@ -121,7 +143,24 @@ fn should_instrument(args: &[String], target_crate: &str) -> bool {
     false
 }
 
-/// Stand in for `rustc`, adding instrumentation to one crate.
+/// True when this `rustc` invocation builds a test target (`--test`).
+///
+/// ★ Load-bearing, and not obvious. Instrumenting only the measured crate
+/// leaves the integration binaries that LINK it without the profiling runtime,
+/// and they then write incomplete profiles or none at all — measured on
+/// `cf-geometry`, 7 profraw files for 8 binaries, and `aabb.rs` stuck at its
+/// `--lib` figure of 49.5 % when the truth is 91.9 %. Instrumenting the test
+/// targets as well makes every binary emit a profile.
+///
+/// Only this package's own targets are built with `--test`; dependencies are
+/// not, so this stays scoped and cheap. Their own source is excluded from the
+/// accounting by [`crate::coverage::is_own_production_file`].
+fn is_test_target(args: &[String]) -> bool {
+    args.iter().any(|a| a == "--test")
+}
+
+/// Stand in for `rustc`, adding instrumentation to the measured crate and its
+/// test targets.
 ///
 /// Cargo invokes a wrapper as `<wrapper> <rustc> <args…>`, including for the
 /// version probes it runs before any compilation; those carry no
@@ -142,7 +181,7 @@ pub(crate) fn run_as_rustc_wrapper(target_crate: &str) -> Result<i32> {
 
     let mut cmd = Command::new(rustc);
     cmd.args(&rest);
-    if should_instrument(&lossy, target_crate) {
+    if should_instrument(&lossy, target_crate) || is_test_target(&lossy) {
         cmd.arg("-Cinstrument-coverage");
     }
     Ok(cmd
@@ -181,26 +220,50 @@ pub(crate) fn tools_available(sh: &Shell) -> bool {
     llvm_tool(sh, "llvm-profdata").is_ok() && llvm_tool(sh, "llvm-cov").is_ok()
 }
 
-/// The test executable cargo reported building, from `--message-format=json`.
+/// One instrumented test binary cargo built for the crate.
+struct TestBinary {
+    /// Path to the executable.
+    path: PathBuf,
+    /// Whether this is the `--lib` unit-test binary, as opposed to an
+    /// integration binary from `tests/`. Only the lib one gates pass/fail.
+    ///
+    /// Taken from `target.kind`, which is exactly `["lib"]` for all 63 lib
+    /// targets in this workspace — none declares a `crate-type`. A crate that
+    /// later did (`cdylib`, `proc-macro`, …) would report a different kind and
+    /// trip the "no --lib test binary" bail rather than silently handing the
+    /// gate to an integration suite.
+    is_lib: bool,
+}
+
+/// Every test executable cargo reported building, from `--message-format=json`.
 ///
-/// Cargo emits one `compiler-artifact` line per unit; only the test binary
-/// carries both `profile.test` and an `executable`.
-fn test_executable(message_json: &str) -> Option<PathBuf> {
-    let mut found = None;
+/// Cargo emits one `compiler-artifact` line per unit; only test binaries carry
+/// both `profile.test` and an `executable`. A crate with a `tests/` directory
+/// yields several — the lib one plus one per integration file.
+fn test_executables(message_json: &str) -> Vec<TestBinary> {
+    let mut found = Vec::new();
     for line in message_json.lines() {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
         if v["profile"]["test"].as_bool() == Some(true) {
             if let Some(exe) = v["executable"].as_str() {
-                found = Some(PathBuf::from(exe));
+                let is_lib = v["target"]["kind"]
+                    .as_array()
+                    .is_some_and(|k| k.iter().any(|x| x.as_str() == Some("lib")));
+                found.push(TestBinary {
+                    path: PathBuf::from(exe),
+                    is_lib,
+                });
             }
         }
     }
     found
 }
 
-/// How many of the export's files belong to the measured crate.
+/// How many of the export's files are the measured crate's own PRODUCTION
+/// sources — see [`crate::coverage::is_own_production_file`], which excludes
+/// its `tests/`.
 ///
 /// Zero is an error, not a zero percent. If the wrapper ever stopped matching —
 /// a future cargo spelling `--crate-name` differently, say — nothing would be
@@ -210,10 +273,12 @@ fn test_executable(message_json: &str) -> Option<PathBuf> {
 /// the empty case is reported as the breakage it is.
 ///
 /// ⚠ The symmetric check — "no *foreign* file may appear" — was written first
-/// and removed, because it cannot fail for the reason it claimed.
-/// [`should_instrument`] compares against exactly one crate name, so the wrapper
-/// is incapable of instrumenting a second crate; the check could only ever fire
-/// on something else. It did, immediately: `mesh-repair`'s export names
+/// and removed, and it would be even more wrong today. Its premise was that
+/// [`should_instrument`] compares against exactly one crate name, so nothing
+/// else could be instrumented; [`is_test_target`] now instruments the crate's
+/// test targets too, and their `tests/*.rs` source appears in the export by
+/// design. Even before that the check could only fire on something else, and
+/// it did, immediately: `mesh-repair`'s export names
 /// `tracing`'s `macros.rs`, because a macro's expansion carries the regions of
 /// the file it was *written* in, not the file it was expanded into. Those lines
 /// were in the old pipeline's export too, and `production_coverage` has always
@@ -225,7 +290,7 @@ fn own_files_in_export(json: &serde_json::Value, crate_path: &str) -> usize {
         files
             .iter()
             .filter_map(|f| f["filename"].as_str())
-            .filter(|name| name.contains(crate_path))
+            .filter(|name| crate::coverage::is_own_production_file(name, crate_path))
             .count()
     })
 }
@@ -266,18 +331,93 @@ fn prepare_target_dir(workspace_root: &Path, compiler_crate_name: &str) -> Resul
     Ok(target_dir)
 }
 
-/// Build and run `crate_name`'s `--lib` tests with only that crate instrumented,
-/// and export the coverage report.
+/// Build and run `crate_name`'s unit AND integration tests, instrumented and
+/// scoped to that crate plus its own test targets, and export the report.
+///
+/// ★ `--lib --tests`, not `--lib`. Measuring the lib target alone credits only
+/// what a crate's own `#[cfg(test)]` modules execute, so a crate that keeps its
+/// tests in `tests/` reads as barely covered while being thoroughly tested.
+/// Measured on `cf-geometry`, whose 186 tests live in `tests/`: `mesh.rs` read
+/// **7.27 %** under `--lib` and **100 %** with the integration binaries
+/// included. The criterion is meant to assert "this production code is
+/// exercised", and where the exercising test happens to live is not part of
+/// that claim.
+///
+/// ## The gating matrix, exercised rather than reasoned
+///
+/// | scenario | grade |
+/// |---|---|
+/// | lib test fails | **F** |
+/// | integration test fails always | **F** — pass 2 catches it |
+/// | integration test fails ONLY instrumented | **A** — perf/OOM asserts, see the run loop |
+/// | all pass | **A** |
+///
+/// All four were run: a temporary failing test in `mesh-types`' lib and in
+/// `mesh-io`'s `tests/` both produced F and reverted to A; `mesh-printability`
+/// grades A+ while two of its stress tests fail under instrumentation.
+///
+/// ⚠ This can only ever RAISE a crate's percentage: the denominator is the
+/// crate's own production lines either way, and adding binaries can only cover
+/// more of them. No crate can newly fall below threshold because of it.
+///
+/// ## Why integration binaries do not inflate the denominator
+///
+/// `tests/*.rs` sits *under* the crate directory and is not `cfg(test)`-gated,
+/// so counting it would pad both sides with ~100 %-covered test source. It is
+/// excluded, but by the accounting rather than by absence — and that is worth
+/// stating precisely, because the earlier design got there the other way.
+///
+/// Test targets ARE instrumented ([`is_test_target`]), because otherwise their
+/// binaries emit no usable profile and the coverage they produce is lost. So
+/// their source DOES reach the export: audited on `cf-geometry`, the export
+/// names **24 files, 7 of them under `tests/`**.
+/// [`crate::coverage::is_own_production_file`]
+/// drops those 7, leaving the 17 `src/*.rs` files that are the crate itself.
+///
+/// ⚠ An earlier revision of this doc claimed the opposite mechanism — that
+/// integration source "cannot appear in the export" because only the measured
+/// crate is instrumented. That was true then and is false now; it stopped
+/// being true the moment test targets had to be instrumented to emit profiles
+/// at all. If the filter is ever removed on the strength of that old argument,
+/// the denominator silently gains ~100 %-covered test bodies.
+///
+/// ## Known limit: doctests are still not counted
+///
+/// `--lib --tests` does not build doctests, and this pipeline structurally
+/// cannot reach them: doctests are compiled by **rustdoc**, not `rustc`, so a
+/// `RUSTC_WRAPPER` never sees them. They are not a rounding error — measured,
+/// `mesh-repair` has 27, `cf-design` 19, `sim-core` 12 — and they do exercise
+/// production code, so a crate leaning on doc examples still reads low here.
+/// Same direction as everything above: counting them could only raise numbers.
+///
+/// ## What the extra binaries cost
+///
+/// Little, because instrumented time is dominated by the `--lib` binary that
+/// already ran. Measured per binary:
+///
+/// | crate | lib (was already paid) | integration (added) |
+/// |---|---|---|
+/// | `cf-geometry` | 0.79 s | ~0.00 s across 7 binaries |
+/// | `mesh-repair` | **392 s** | 0.06 s |
+/// | `mesh-printability` | 41 s | **+37 s** (a stress suite) |
+///
+/// So the added cost is bounded by what a crate keeps in `tests/`, and the
+/// instrumentation tax itself is unchanged by this — but it is worth recording
+/// that the tax is far wider than the ~400x the module header measured on the
+/// whole-tree pipeline. Scoped, per lib suite: `mesh-printability` 0.25 s clean
+/// vs 41 s instrumented (**164x**), `mesh-repair` 0.32 s vs 392 s (**1226x**).
+/// It tracks how much of the workload is instrumented inner-loop code, so quote
+/// it as a range that wide rather than a single figure.
 ///
 /// `quiet` silences the child processes rather than the measurement: the test
 /// harness writes to stdout, and `grade --json` puts its report there too.
-pub(crate) fn measure_lib_coverage(
+pub(crate) fn measure_coverage(
     sh: &Shell,
     crate_name: &str,
     crate_path: &str,
     workspace_root: &Path,
     quiet: bool,
-) -> Result<LibCoverageRun> {
+) -> Result<CoverageRun> {
     let profdata_tool = llvm_tool(sh, "llvm-profdata")?;
     let cov_tool = llvm_tool(sh, "llvm-cov")?;
     let xtask_exe = std::env::current_exe().context("cannot locate the running xtask binary")?;
@@ -299,7 +439,7 @@ pub(crate) fn measure_lib_coverage(
     // `json` build shows the user nothing while it compiles.
     let mut build = cmd!(
         sh,
-        "cargo test --release -p {crate_name} --lib --no-run --message-format=json-render-diagnostics"
+        "cargo test --release -p {crate_name} --lib --tests --no-run --message-format=json-render-diagnostics"
     )
     .env("RUSTC_WRAPPER", &xtask_exe)
     .env(WRAPPER_CRATE_ENV, &compiler_crate_name)
@@ -309,25 +449,55 @@ pub(crate) fn measure_lib_coverage(
     }
     let build_json = build.read().context("instrumented build failed")?;
 
-    let exe = test_executable(&build_json)
-        .context("cargo reported no test executable for the --lib target")?;
+    let exes = test_executables(&build_json);
+    if exes.is_empty() {
+        bail!("cargo reported no test executable for the --lib/--tests targets");
+    }
+    if !exes.iter().any(|b| b.is_lib) {
+        bail!("cargo reported no --lib test binary; the pass/fail gate would be vacuous");
+    }
 
-    // `%p`/`%m` keep one process's profile separate from another's; the test
-    // harness is threaded but single-process, so this is one file in practice.
-    let mut test_run = Command::new(&exe);
-    test_run.env("LLVM_PROFILE_FILE", profraw_dir.join("cf-%p-%m.profraw"));
-    let tests_passed = if quiet {
-        test_run
-            .output()
-            .context("failed to run the instrumented test binary")?
-            .status
-            .success()
-    } else {
-        test_run
-            .status()
-            .context("failed to run the instrumented test binary")?
-            .success()
-    };
+    // `%p`/`%m` keep one process's profile separate from another's. Each test
+    // binary is threaded but single-process, so this is one file per binary.
+    // They all land in the same directory and merge together below — an
+    // integration test that exercises production code the unit tests miss
+    // credits those lines exactly as a unit test would.
+    let mut tests_passed = true;
+    for bin in &exes {
+        let mut test_run = Command::new(&bin.path);
+        test_run.env("LLVM_PROFILE_FILE", profraw_dir.join("cf-%p-%m.profraw"));
+        let ok = if quiet {
+            test_run
+                .output()
+                .context("failed to run the instrumented test binary")?
+                .status
+                .success()
+        } else {
+            test_run
+                .status()
+                .context("failed to run the instrumented test binary")?
+                .success()
+        };
+        // ⚠ Only the lib binary gates. Integration suites still RUN — their
+        // coverage is the whole point — but an instrumented failure there is
+        // not evidence about the code. `-C instrument-coverage` costs this
+        // workspace 164-1226x on the suites measured here, so any test
+        // asserting a wall-clock budget or a memory ceiling fails BECAUSE it is
+        // being measured.
+        //
+        // Nothing is lost by not gating here: `grade`'s pass 2 already runs
+        // `cargo test --release -p <crate>` UNINSTRUMENTED, which covers lib,
+        // integration and doctests, and `heavy_passed` gates on it. Gating
+        // pass 1 as well would be a second, WORSE detector of the same thing.
+        // Measured on `mesh-printability` in one grade run:
+        // `stress_c_5k_tri_perf_budget` and `stress_h_voxel_grid_oom_safety`
+        // fail in pass 1 instrumented (43 passed / 2 failed, 36.95 s) and the
+        // same suite passes in pass 2 (45/45, 0.21 s). Gating here would have
+        // graded that crate F against evidence the same run already had.
+        if bin.is_lib {
+            tests_passed &= ok;
+        }
+    }
 
     let raw: Vec<PathBuf> = std::fs::read_dir(&profraw_dir)
         .context("failed to read profraw directory")?
@@ -336,7 +506,7 @@ pub(crate) fn measure_lib_coverage(
         .collect();
     if raw.is_empty() {
         bail!(
-            "the instrumented test binary wrote no .profraw files — \
+            "the instrumented test binaries wrote no .profraw files — \
              instrumentation did not reach {compiler_crate_name}"
         );
     }
@@ -346,9 +516,19 @@ pub(crate) fn measure_lib_coverage(
         .run()
         .context("llvm-profdata merge failed")?;
 
+    // llvm-cov takes one binary positionally and every other behind its own
+    // `-object`; all are equal to it, and which lands first is just cargo's
+    // artifact order. Passing only one would report that binary's view alone —
+    // the exact blindness this measures around.
+    let (first_exe, other_exes) = exes.split_first().expect("emptiness checked above");
+    let first_exe = &first_exe.path;
+    let object_args: Vec<String> = other_exes
+        .iter()
+        .flat_map(|b| ["-object".to_string(), b.path.display().to_string()])
+        .collect();
     let export = cmd!(
         sh,
-        "{cov_tool} export --format=text --instr-profile={merged} {exe}"
+        "{cov_tool} export --format=text --instr-profile={merged} {first_exe} {object_args...}"
     )
     .read()
     .context("llvm-cov export failed")?;
@@ -363,7 +543,7 @@ pub(crate) fn measure_lib_coverage(
         );
     }
 
-    Ok(LibCoverageRun { json, tests_passed })
+    Ok(CoverageRun { json, tests_passed })
 }
 
 #[cfg(test)]
@@ -371,10 +551,15 @@ mod tests {
     use super::*;
 
     /// The wrapper sees every `rustc` in the build. Instrumenting the wrong one
-    /// costs the 400× tax this module exists to remove; instrumenting none
-    /// yields an empty report that reads as 0 % coverage.
+    /// costs the instrumentation tax this module exists to remove (164-1226x on
+    /// the suites measured); instrumenting none yields an empty report that
+    /// reads as 0 % coverage.
+    ///
+    /// ⚠ Scoped to [`should_instrument`] alone. The wrapper also instruments
+    /// test targets ([`is_test_target`]), so "only the named crate" is not a
+    /// module-level claim.
     #[test]
-    fn only_the_named_crate_is_instrumented() {
+    fn should_instrument_matches_only_the_named_crate() {
         let args: Vec<String> = [
             "--crate-name",
             "cf_fsu_model",
@@ -413,7 +598,7 @@ mod tests {
         );
     }
 
-    /// Cargo emits an artifact line per unit; only the test binary has both
+    /// Cargo emits an artifact line per unit; only test binaries have both
     /// `profile.test` and an `executable`.
     #[test]
     fn the_test_binary_is_picked_out_of_the_artifact_stream() {
@@ -426,11 +611,49 @@ mod tests {
             r#"{"reason":"compiler-artifact","profile":{"test":true},"executable":"/t/deps/cf_fsu_model-abc"}"#,
             "\n",
         );
-        assert_eq!(
-            test_executable(stream),
-            Some(PathBuf::from("/t/deps/cf_fsu_model-abc"))
+        let found = test_executables(stream);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].path, PathBuf::from("/t/deps/cf_fsu_model-abc"));
+        assert!(test_executables("{}").is_empty());
+    }
+
+    /// A `--test` invocation is what marks a target for instrumentation beyond
+    /// the measured crate itself; a plain dependency build is not.
+    #[test]
+    fn only_test_targets_are_instrumented_beyond_the_measured_crate() {
+        assert!(is_test_target(&["--test".to_string()]));
+        assert!(!is_test_target(&[
+            "--crate-name".to_string(),
+            "nalgebra".to_string()
+        ]));
+    }
+
+    /// ★ Every test binary must be collected, and the lib one distinguished.
+    ///
+    /// Two failure modes this pins, both silent. Returning one binary would
+    /// measure only the unit suite — the blindness `--lib --tests` exists to
+    /// remove. Mislabelling `is_lib` would hand the pass/fail gate to an
+    /// integration suite, and instrumented perf-budget tests fail for reasons
+    /// that are not about the code (see the run loop).
+    #[test]
+    fn integration_binaries_are_collected_and_the_lib_one_is_marked() {
+        let stream = concat!(
+            r#"{"reason":"compiler-artifact","profile":{"test":true},"target":{"kind":["lib"],"name":"cf_geometry"},"executable":"/t/deps/cf_geometry-1"}"#,
+            "\n",
+            r#"{"reason":"compiler-artifact","profile":{"test":true},"target":{"kind":["test"],"name":"mesh_tests"},"executable":"/t/deps/mesh_tests-2"}"#,
+            "\n",
+            r#"{"reason":"compiler-artifact","profile":{"test":true},"target":{"kind":["test"],"name":"aabb_tests"},"executable":"/t/deps/aabb_tests-3"}"#,
+            "\n",
         );
-        assert_eq!(test_executable("{}"), None);
+        let found = test_executables(stream);
+        assert_eq!(found.len(), 3, "every test binary must be measured");
+        assert_eq!(
+            found.iter().filter(|b| b.is_lib).count(),
+            1,
+            "exactly one lib binary gates pass/fail"
+        );
+        assert!(found[0].is_lib, "the lib target is the one marked");
+        assert!(!found[1].is_lib && !found[2].is_lib);
     }
 
     /// A macro carries the regions of the file it was *written* in, not the one

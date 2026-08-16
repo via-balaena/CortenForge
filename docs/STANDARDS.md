@@ -49,7 +49,8 @@ Requires the `llvm-tools` rustup component (`rustup component add
 llvm-tools-preview`); no `cargo-llvm-cov` install is needed. Works on Linux,
 macOS (including Apple Silicon), and Windows.
 
-**Instrumentation is scoped to the crate being measured.** `RUSTFLAGS` applies
+**Instrumentation is scoped to the crate being measured** (and its own test
+targets, so their binaries emit usable profiles). `RUSTFLAGS` applies
 to every unit cargo builds, so instrumenting through `cargo llvm-cov`
 instrumented the whole dependency tree — and the report was then filtered back
 down to the crate's own files, discarding all of it. Because those lines were
@@ -57,11 +58,30 @@ never counted, scoping the build cannot move the number; measured both ways,
 `sim-types` returns the same 192/271 lines and `cf-fsu-model` the same 84.2%.
 What it moves is the clock: `cf-fsu-model`'s grade went 3105 s → 17 s.
 
-⚠ The tax that remains is the crate's *own* code, and it is large — roughly
-400× on tight numeric loops. A crate that is a thin layer over heavy
-dependencies (`cf-fsu-model`) gets nearly all of it back; a crate whose own code
-is the hot path (`mesh-repair`, 366 s) does not. That residue is intrinsic to
-source-based coverage, not something the grader is doing wrong.
+⚠ The tax that remains is the crate's *own* code, and it is large. Measured
+per lib suite, clean vs instrumented: `mesh-printability` 0.25 s → 41 s
+(**164×**), `mesh-repair` 0.32 s → 392 s (**1226×**). It scales with how much of
+the suite is instrumented inner-loop code, so treat it as that range rather than
+one figure. A crate that is a thin layer over heavy dependencies
+(`cf-fsu-model`) gets nearly all of it back; a crate whose own code is the hot
+path (`mesh-repair`) does not. That residue is intrinsic to source-based
+coverage, not something the grader is doing wrong.
+
+**Unit AND integration tests count.** The measurement builds `--lib --tests`,
+so a crate that keeps its tests in `tests/` is credited for them. It used to
+build `--lib` alone, which reported where a crate's tests *live* rather than
+whether its production code is exercised — `cf-geometry`, whose 186 tests are
+in `tests/`, read 74.1 % (B) while its `mesh.rs` was at 7.27 % measured that way
+and 100 % measured properly.
+
+⚠ Two limits worth knowing. **Doctests are not counted** — they are built by
+rustdoc, not rustc, so the per-crate instrumentation wrapper never sees them; a
+crate leaning on doc examples reads low here (`mesh-repair` has 27 doctests,
+`cf-design` 19). And **only the `--lib` binary gates pass/fail** inside this
+criterion: an instrumented wall-clock or memory-ceiling assertion fails because
+it is being measured, so integration suites contribute coverage without gating.
+They are still gated — `grade`'s second pass runs the whole suite
+uninstrumented, doctests included.
 
 **Requirements:**
 
@@ -83,7 +103,7 @@ source-based coverage, not something the grader is doing wrong.
 
 **What Is Measured** (the lines in the ratio): **production lines only.**
 
-Measuring `--lib` instruments the *test* binary, so a crate's own
+The instrumented run measures *test* binaries, so a crate's own
 `#[cfg(test)]` code appears in the report next to the code it exercises.
 `cargo xtask grade` subtracts it from both sides of the ratio, because counting
 it measures two unrelated things at once:

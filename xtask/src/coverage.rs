@@ -1,6 +1,6 @@
 //! Production-only line coverage: the denominator the Coverage criterion is about.
 //!
-//! Measuring `--lib` instruments the *test* binary (see [`crate::coverage_run`]
+//! The instrumented run measures *test* binaries (see [`crate::coverage_run`]
 //! for how), so a crate's own `#[cfg(test)]` code lands in the report alongside
 //! the production code it exercises. Counting it makes the criterion measure
 //! two unrelated things:
@@ -34,7 +34,11 @@ pub(crate) struct ProductionCoverage {
     pub covered: u64,
     /// Production lines instrumented.
     pub total: u64,
-    /// `#[cfg(test)]` lines removed from both sides — reported, never silent.
+    /// Test lines removed from both sides — reported, never silent.
+    ///
+    /// Three sources: `#[cfg(test)]` spans, files pulled in by a
+    /// `#[cfg(test)] mod name;`, and this crate's `tests/` integration source,
+    /// which reaches the export because those targets are instrumented.
     pub excluded: u64,
     /// Files whose source could not be read or parsed, so their test code was *not*
     /// excluded. Their lines are still counted, which understates coverage —
@@ -48,6 +52,21 @@ impl ProductionCoverage {
     pub fn percent(&self) -> Option<f64> {
         (self.total > 0).then(|| 100.0 * self.covered as f64 / self.total as f64)
     }
+}
+
+/// Whether an export filename is one of the crate's own PRODUCTION sources.
+///
+/// Under `crate_path`, but NOT under its `tests/` directory. Integration test
+/// source is compiled as its own crate and is instrumented only so its binary
+/// emits a profile ([`crate::coverage_run`]) — it is not the code under
+/// measurement, and counting it would pad both sides of the ratio with
+/// ~100 %-covered test bodies, the same distortion this module strips
+/// `#[cfg(test)]` to avoid.
+///
+/// Lives here rather than beside the instrumentation because "what counts as
+/// production" is this module's question; `coverage_run` only needs the answer.
+pub(crate) fn is_own_production_file(name: &str, crate_path: &str) -> bool {
+    name.contains(crate_path) && !name.contains(&format!("{crate_path}/tests/"))
 }
 
 /// True when this `cfg` predicate can hold *only* in a test build.
@@ -387,8 +406,13 @@ pub(crate) fn mapped_lines(segments: &[serde_json::Value]) -> BTreeMap<usize, u6
 
 /// Production line coverage for `crate_path`, from one llvm-cov JSON export.
 ///
-/// Files are matched exactly as the whole-file aggregation did — by path
-/// substring — so the report stays scoped to the crate's own sources.
+/// Files are matched by [`is_own_production_file`]: under
+/// `crate_path` by path substring, as the whole-file aggregation did, and NOT
+/// under its `tests/`. That second half is newer than the first — integration
+/// targets are instrumented so their binaries emit profiles, which puts their
+/// source in the export, and counting it would pad both sides with
+/// ~100 %-covered test bodies. Same distortion this module strips
+/// `#[cfg(test)]` to avoid, arriving by a different route.
 pub(crate) fn production_coverage(
     json: &serde_json::Value,
     crate_path: &str,
@@ -401,14 +425,25 @@ pub(crate) fn production_coverage(
     let own: Vec<String> = files
         .iter()
         .filter_map(|f| f["filename"].as_str())
-        .filter(|name| name.contains(crate_path))
+        .filter(|name| is_own_production_file(name, crate_path))
         .map(str::to_string)
         .collect();
     let test_files = test_only_files(&own);
 
     for file in files {
         let name = file["filename"].as_str().unwrap_or("");
-        if !name.contains(crate_path) {
+        if !is_own_production_file(name, crate_path) {
+            // Integration-test source is this crate's, just not its production
+            // code. Report those lines as excluded rather than dropping them
+            // silently — same treatment as a `#[cfg(test)] mod` file below,
+            // and the same reason: a metric that omits what it left out reads
+            // as "everything was measured". Foreign files (a dependency's
+            // macro source) are not this crate's at all and stay unmentioned.
+            if name.contains(crate_path) {
+                if let Some(segments) = file["segments"].as_array() {
+                    acc.excluded += mapped_lines(segments).len() as u64;
+                }
+            }
             continue;
         }
         let Some(segments) = file["segments"].as_array() else {
@@ -610,8 +645,61 @@ mod tests {
         );
     }
 
+    /// ★ `tests/` source must be excluded from the crate's own production files.
+    ///
+    /// Test targets are instrumented so their binaries emit a profile at all
+    /// (see [`is_test_target`]), which puts their source in the export. Counting
+    /// it would pad both sides of the ratio with ~100 %-covered test bodies —
+    /// measured on `cf-geometry`, 89.7 % with them versus 85.7 % without.
+    #[test]
+    fn integration_test_source_is_not_a_production_file() {
+        let cp = "design/cf-geometry";
+        assert!(is_own_production_file(
+            "/w/cortenforge/design/cf-geometry/src/mesh.rs",
+            cp
+        ));
+        assert!(!is_own_production_file(
+            "/w/cortenforge/design/cf-geometry/tests/mesh_tests.rs",
+            cp
+        ));
+        assert!(
+            !is_own_production_file("/w/cortenforge/mesh/mesh-repair/src/lib.rs", cp),
+            "another crate's source is not this crate's"
+        );
+    }
+
     #[test]
     fn empty_segment_list_yields_no_lines() {
         assert!(mapped_lines(&[]).is_empty());
+    }
+
+    /// ★ Integration-test source reaches the export and must not be counted.
+    ///
+    /// The predicate is unit-tested next door in `coverage_run`; this pins the
+    /// integration — that `production_coverage` actually skips those files
+    /// rather than merely being able to classify them. Both files here have
+    /// identical segments, so any leak shows up as a doubled denominator.
+    #[test]
+    fn integration_test_source_is_not_counted_as_production() {
+        let segments =
+            serde_json::json!([[1, 1, 5, true, true, false], [3, 1, 0, false, false, false]]);
+        let json = serde_json::json!({
+            "data": [{"files": [
+                {"filename": "/w/design/cf-geometry/src/mesh.rs", "segments": segments},
+                {"filename": "/w/design/cf-geometry/tests/mesh_tests.rs", "segments": segments},
+            ]}]
+        });
+        let cov = production_coverage(&json, "design/cf-geometry");
+        assert_eq!(
+            cov.total, 3,
+            "only src/mesh.rs's 3 mapped lines belong in the denominator; \
+             tests/ source must not double it"
+        );
+        assert_eq!(cov.covered, 3);
+        assert_eq!(
+            cov.excluded, 3,
+            "the tests/ file's lines must be REPORTED as excluded, not dropped \
+             silently — the criterion's own rule about saying what was left out"
+        );
     }
 }

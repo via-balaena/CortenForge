@@ -19,7 +19,8 @@ pub(crate) struct Verbosity {
     pub verbose: bool,
     pub json: bool,
     /// Skip the Coverage criterion. Coverage runs `cargo llvm-cov --release`
-    /// (5-10 min per crate) which is too expensive for per-PR CI. Reported
+    /// (minutes to tens of minutes per crate) which is too expensive for
+    /// per-PR CI. Reported
     /// as [`Grade::NotApplicable`] when set.
     pub skip_coverage: bool,
 }
@@ -843,8 +844,8 @@ fn grade_coverage(
     // Per STANDARDS.md §1 "Exceptions: None for Layer 0 crates" — the
     // coverage gate is specifically scoped to Layer 0 library crates.
     // Example (bin-only) and Xtask (build tooling) crates have no lib
-    // target, so `cargo llvm-cov --lib` errors out with "no library
-    // targets found". F.3 IntegrationOnly crates (per Cargo.toml
+    // target, so the instrumented `--lib --tests` build has nothing to
+    // measure. F.3 IntegrationOnly crates (per Cargo.toml
     // metadata opt-in) are exercised by integration tests and have no
     // testable lib surface. Treat all three as N/A rather than a false F.
     if let Some((result, detail)) = coverage_skip_reason(profile) {
@@ -858,7 +859,8 @@ fn grade_coverage(
     }
 
     // `--skip-coverage` opt-out: CI runs want the other criteria without
-    // paying the ~5-10 min per-crate llvm-cov release build. Dedicated
+    // paying the per-crate llvm-cov release build, which runs minutes to tens
+    // of minutes (measured: sim-thermostat ~16 min). Dedicated
     // coverage jobs (nightly / manual) run without the flag.
     if verbosity.skip_coverage {
         return Ok(CriterionResult {
@@ -883,10 +885,13 @@ fn grade_coverage(
 
     // Two-pass coverage strategy:
     //
-    // Pass 1: measure coverage from unit tests only (--lib), with
-    //   instrumentation scoped to this crate — see `coverage_run`. Integration
-    //   tests are excluded because unit tests in src/ reach the same source
-    //   lines; scoping is what makes the pass affordable at all.
+    // Pass 1: measure coverage from the crate's unit AND integration tests
+    //   (`--lib --tests`), with instrumentation scoped to this crate — see
+    //   `coverage_run`. Integration tests used to be excluded on the premise
+    //   that src/ unit tests reach the same lines; that is false for any crate
+    //   keeping its tests in tests/, which read as barely covered. Scoping the
+    //   instrumentation to this crate (and its test targets) is what makes the
+    //   pass affordable.
     //
     // Pass 2: Run ALL tests (unit + integration) WITHOUT instrumentation.
     //   Verifies correctness without paying the coverage overhead.
@@ -895,7 +900,7 @@ fn grade_coverage(
     // --release avoids debug-mode runtime explosion (100×+ slower).
     // stderr flows to terminal so the user sees compile/test progress.
     if !verbosity.quiet {
-        eprintln!("    pass 1/2: instrumented --lib run ({crate_name} only)");
+        eprintln!("    pass 1/2: instrumented --lib --tests run ({crate_name} only)");
     }
     let pass_start = Instant::now();
     let heartbeat = if verbosity.verbose {
@@ -904,7 +909,7 @@ fn grade_coverage(
         None
     };
     let workspace_root = sh.current_dir();
-    let run = crate::coverage_run::measure_lib_coverage(
+    let run = crate::coverage_run::measure_coverage(
         sh,
         crate_name,
         crate_path,
@@ -972,20 +977,26 @@ fn grade_coverage(
         }
     };
 
-    // Pass 1 runs the same unit tests instrumented. Either pass failing blocks
-    // the grade: a disagreement between them would itself be the finding.
+    // Pass 1 measures; pass 2 above is what actually gates the tests, and it
+    // runs EVERY test — lib, integration and doctests — uninstrumented. Pass 1
+    // contributes only its `--lib` result, because an instrumented integration
+    // suite can fail for reasons that are not about the code (see
+    // `coverage_run`). A `--lib` disagreement between the two passes would
+    // itself be the finding, so both still have to agree there.
     let heavy_passed = heavy_passed && run.tests_passed;
     if !heavy_passed {
         eprintln!("    ⚠ Tests failed — see output above");
     }
 
-    // The report is filtered to files belonging to the target crate — the same
-    // scope the instrumentation now has, so this filter no longer discards
-    // anything (`coverage_run` asserts as much on every run). It stays because
-    // it is what defines the crate's denominator.
+    // The report is filtered to the crate's own PRODUCTION files. That filter
+    // is load-bearing again: instrumentation now covers the crate AND its test
+    // targets, so the two scopes deliberately differ and the filter drops what
+    // the extra scope pulled in — measured on cf-geometry, 7 of the export's 24
+    // files. (It was a no-op for exactly as long as only the lib was
+    // instrumented; that comment is worth not restoring.)
     //
-    // Within those files the criterion counts PRODUCTION lines only. Running
-    // `--lib` instruments the test binary, so a crate's `#[cfg(test)]` code
+    // Within those files the criterion counts PRODUCTION lines only. The run
+    // instruments test binaries, so a crate's `#[cfg(test)]` code
     // would otherwise be measured as if it were the code under test: bodies
     // that run pad the numerator, and `#[ignore]`d gates pad the denominator
     // while contributing nothing. See coverage.rs.
@@ -1001,7 +1012,7 @@ fn grade_coverage(
             grade: Grade::NotApplicable,
             threshold: "≥75%/≥90% A+",
             measured_detail: format!(
-                "no instrumented production lines ({} #[cfg(test)] lines excluded)",
+                "no instrumented production lines ({} test lines excluded)",
                 measured.excluded
             ),
         });
@@ -1026,7 +1037,7 @@ fn grade_coverage(
     // Say what was left out. A metric that silently drops lines reads as
     // "everything was measured" when it was not.
     let mut detail = format!(
-        "{:.1}% production line coverage ({}/{} lines; {} #[cfg(test)] lines excluded)",
+        "{:.1}% production line coverage ({}/{} lines; {} test lines excluded)",
         coverage, measured.covered, measured.total, measured.excluded
     );
     if !measured.unparsed.is_empty() {
