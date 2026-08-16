@@ -69,6 +69,88 @@ pub(crate) fn is_own_production_file(name: &str, crate_path: &str) -> bool {
     name.contains(crate_path) && !name.contains(&format!("{crate_path}/tests/"))
 }
 
+/// Whether `crate_path`'s own sources are **positively established** to declare
+/// no production code at all.
+///
+/// ★ The question this answers is "was there anything here to instrument?", and
+/// it exists to tell two very different failures apart. When no test binary
+/// writes a `.profraw`, [`crate::coverage_run`] reports that instrumentation
+/// never reached the crate — the defect #770 was written to catch, where the
+/// binaries linked an instrumented library but were not instrumented themselves.
+/// A crate with no production code produces the identical symptom for the
+/// opposite reason: there are no functions, so nothing carries a coverage map,
+/// so the profiling runtime is never linked and no profile is written. Graded
+/// the same way, the empty crate reads as an `F` for bad coverage.
+///
+/// This workspace has four such crates — `sim-core-benches`,
+/// `mesh-repair-benches`, `mesh-shell-benches`, `sim-ml-chassis-benches` — whose
+/// `src/lib.rs` is a five-line doc comment. All their content is `benches/*.rs`
+/// under `harness = false`, which coverage does not measure and is not meant to.
+///
+/// ⚠ **Deliberately conservative: it answers `false` whenever it cannot prove
+/// the negative.** An unreadable or unparseable file, or a missing `src/`,
+/// yields `false` and the caller keeps reporting the failure. Only a clean walk
+/// that finds nothing can excuse a crate, so no real instrumentation defect can
+/// be relabelled as an empty crate by a parse error.
+pub(crate) fn declares_no_production_code(crate_path: &Path) -> bool {
+    let src = crate_path.join("src");
+    if !src.is_dir() {
+        // "(no src/)" is a different verdict, reached elsewhere. Claiming
+        // anything from here would overlap two criteria on one crate.
+        return false;
+    }
+
+    let mut saw_a_source_file = false;
+    for entry in walkdir::WalkDir::new(&src)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
+        let path = entry.path();
+        if !entry.file_type().is_file() || path.extension() != Some("rs".as_ref()) {
+            continue;
+        }
+        saw_a_source_file = true;
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return false;
+        };
+        let Ok(file) = syn::parse_file(&text) else {
+            return false;
+        };
+        if declares_code(&file.items) {
+            return false;
+        }
+    }
+
+    // An empty `src/` is not a crate that compiles; treat it as unproven.
+    saw_a_source_file
+}
+
+/// True when any of `items` would compile to something a coverage map can name.
+///
+/// `use` and `extern crate` emit no code. A non-inline `mod name;` emits none
+/// *here* — its file is walked in its own right, so recursing would double-count
+/// and, worse, a missing file would read as emptiness.
+///
+/// ⚠ Only `mod` and `fn` are checked for `#[cfg(test)]`; every other item kind
+/// counts as production whatever gates it. That is the conservative direction —
+/// it can only keep a crate out of the empty-crate verdict — and it covers the
+/// idiom that actually occurs, a file whose sole item is `#[cfg(test)] mod
+/// tests`. Enumerating the attributes of all nineteen `syn::Item` variants to
+/// close the rest would be a lot of surface for a case this workspace does not
+/// contain.
+fn declares_code(items: &[Item]) -> bool {
+    items.iter().any(|item| match item {
+        Item::Use(_) | Item::ExternCrate(_) => false,
+        Item::Fn(f) => !is_cfg_test(&f.attrs),
+        Item::Mod(m) if is_cfg_test(&m.attrs) => false,
+        Item::Mod(m) => match &m.content {
+            Some((_, inner)) => declares_code(inner),
+            None => false,
+        },
+        _ => true,
+    })
+}
+
 /// True when this `cfg` predicate can hold *only* in a test build.
 ///
 /// `all(...)` needs every conjunct, so one `test` conjunct settles it.
@@ -701,5 +783,147 @@ mod tests {
             "the tests/ file's lines must be REPORTED as excluded, not dropped \
              silently — the criterion's own rule about saying what was left out"
         );
+    }
+
+    /// Build a throwaway crate directory whose `src/` holds `files`.
+    ///
+    /// Returns the crate root, so the caller passes exactly what `grade` does.
+    fn crate_dir(tag: &str, files: &[(&str, &str)]) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "cf-prod-code-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        for (name, text) in files {
+            let path = root.join("src").join(name);
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+            std::fs::write(&path, text).expect("write");
+        }
+        root
+    }
+
+    /// The four `*-benches` crates, exactly as they are on disk: a lib that is
+    /// nothing but a module doc comment, with every benchmark in `benches/`.
+    #[test]
+    fn a_lib_that_is_only_a_doc_comment_declares_no_production_code() {
+        let root = crate_dir(
+            "doc-only",
+            &[(
+                "lib.rs",
+                "//! Benchmark companion crate for `sim-core`.\n//!\n\
+                 //! Bench harnesses live under `benches/`; this crate has no library API.\n",
+            )],
+        );
+        assert!(
+            declares_no_production_code(&root),
+            "a lib with no items is the empty-crate case the Coverage F was misreading"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The guard this must not weaken: a crate with real code that produced no
+    /// profile is the #770 instrumentation defect, and has to keep failing.
+    #[test]
+    fn one_production_function_is_enough_to_disqualify_the_empty_verdict() {
+        let root = crate_dir("has-fn", &[("lib.rs", "pub fn f() -> i32 { 1 }\n")]);
+        assert!(
+            !declares_no_production_code(&root),
+            "a crate with an instrumentable function must keep reporting the failure"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A pure re-export facade emits no code of its own, and `mod name;` points
+    /// at a file that is walked in its own right.
+    #[test]
+    fn re_exports_and_module_declarations_are_not_production_code() {
+        let root = crate_dir(
+            "facade",
+            &[("lib.rs", "pub use other::Thing;\nmod inner;\n")],
+        );
+        assert!(
+            declares_no_production_code(&root),
+            "`use` and a non-inline `mod` emit nothing themselves"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ★ The walk is recursive, so a second file is not a blind spot — the
+    /// declaration in `lib.rs` emits nothing but the file it names does.
+    #[test]
+    fn code_in_a_child_module_file_is_found() {
+        let root = crate_dir(
+            "child",
+            &[
+                ("lib.rs", "mod inner;\n"),
+                ("inner.rs", "pub fn buried() -> i32 { 2 }\n"),
+            ],
+        );
+        assert!(
+            !declares_no_production_code(&root),
+            "walking only lib.rs would call this crate empty"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Test-gated items are not production code, so a crate that is nothing but
+    /// its own tests is still empty for this purpose.
+    #[test]
+    fn a_cfg_test_module_is_not_production_code() {
+        let root = crate_dir(
+            "cfg-test",
+            &[(
+                "lib.rs",
+                "#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() {}\n}\n",
+            )],
+        );
+        assert!(
+            declares_no_production_code(&root),
+            "#[cfg(test)] code carries no coverage map in a production build"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ⚠ The load-bearing half of the conservatism: a file this cannot parse
+    /// must NOT be read as emptiness, or a syntax error would silently convert a
+    /// real instrumentation defect into a pass.
+    ///
+    /// ★ The companion `lib.rs` is what makes this test able to fail for the
+    /// reason it names. A bare unparseable file would also return `false` if the
+    /// walk had simply found nothing, and the two causes are indistinguishable
+    /// from the return value alone. The doc-only `lib.rs` is a file the walk
+    /// must see and accept, so `false` here can only have come from `broken.rs`.
+    #[test]
+    fn an_unparseable_file_is_never_called_empty() {
+        let root = crate_dir(
+            "unparseable",
+            &[
+                ("lib.rs", "//! Empty on purpose.\n"),
+                ("broken.rs", "pub fn (((\n"),
+            ],
+        );
+        assert!(
+            !declares_no_production_code(&root),
+            "a file that cannot be parsed proves nothing about what it declares"
+        );
+
+        std::fs::remove_file(root.join("src").join("broken.rs")).expect("rm");
+        assert!(
+            declares_no_production_code(&root),
+            "with only the parseable doc-only file left the verdict must flip — \
+             otherwise the assertion above would hold even if the walk saw nothing"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A crate with no `src/` at all gets "(no src/)" from a different
+    /// criterion; this one must not also claim it.
+    #[test]
+    fn a_missing_src_directory_is_not_this_verdict() {
+        let root = crate_dir("no-src", &[]);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        assert!(!declares_no_production_code(&root));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
