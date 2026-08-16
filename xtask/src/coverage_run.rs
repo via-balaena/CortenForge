@@ -344,6 +344,19 @@ fn prepare_target_dir(workspace_root: &Path, compiler_crate_name: &str) -> Resul
 /// exercised", and where the exercising test happens to live is not part of
 /// that claim.
 ///
+/// ## The gating matrix, exercised rather than reasoned
+///
+/// | scenario | grade |
+/// |---|---|
+/// | lib test fails | **F** |
+/// | integration test fails always | **F** — pass 2 catches it |
+/// | integration test fails ONLY instrumented | **A** — perf/OOM asserts, see the run loop |
+/// | all pass | **A** |
+///
+/// All four were run: a temporary failing test in `mesh-types`' lib and in
+/// `mesh-io`'s `tests/` both produced F and reverted to A; `mesh-printability`
+/// grades A+ while two of its stress tests fail under instrumentation.
+///
 /// ⚠ This can only ever RAISE a crate's percentage: the denominator is the
 /// crate's own production lines either way, and adding binaries can only cover
 /// more of them. No crate can newly fall below threshold because of it.
