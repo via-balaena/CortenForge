@@ -701,14 +701,25 @@ mod tests {
     ///    unsound instrument #760–#767 spent the arc removing, blind to a
     ///    local flip near the origin and firing on one far from it.
     ///
-    /// ★ (2) and (3) are **orthogonal, and neither subsumes the other** —
+    /// ⚠ `duplicate_face_count` is deliberately NOT asserted, and that is a
+    /// measured decision rather than an oversight. A face and its reverse
+    /// (`[a,b,c]` + `[a,c,b]`) is the one duplicate form a per-edge census
+    /// cannot see — each shared edge still gets one traversal each way — and
+    /// the volumes cancel, so `is_inside_out` misses it too. But on a CLOSED
+    /// mesh it cannot hide: appending one to this funnel measures
+    /// `duplicate_face_count 1` **and `non_manifold_edges 3`**, because the
+    /// original neighbour across each shared edge makes a third traversal.
+    /// (2) already fails on it. Asserting the counter as well would add a
+    /// second detector for a state the first cannot miss.
+    ///
+    /// ★ (3) and (4) are **orthogonal, and neither subsumes the other** —
     /// measured on this very mesh rather than argued. Reverse *every* face
     /// uniformly and the census comes back **byte-identical** (33258 interior
     /// edges, 0 inconsistent — a uniform flip leaves every edge in agreement,
     /// so no per-edge test can see it) while `is_inside_out` flips to `true`
-    /// and assertion (3) fires alone. Reverse *two* faces and the reverse
-    /// happens: the census fires, which is what the control at the bottom
-    /// pins. Drop either assertion and one of those two defects ships.
+    /// and (4) fires alone. Reverse *two* faces and the reverse happens: the
+    /// census fires under (3), which is what the control at the bottom pins.
+    /// Drop either assertion and one of those two defects ships.
     #[test]
     fn funnel_mesh_is_consistently_wound_and_outward() {
         use crate::error::CastTarget;
