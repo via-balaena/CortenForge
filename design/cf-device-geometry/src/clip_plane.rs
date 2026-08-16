@@ -729,4 +729,125 @@ mod tests {
             plane.origin_m
         );
     }
+
+    /// The default state must be OFF. Clipping is a diagnostic view; a scene
+    /// that opened with half its geometry cut away would read as broken
+    /// geometry rather than as an enabled tool.
+    #[test]
+    fn the_default_clip_plane_is_disabled_at_the_midpoint() {
+        let s = ClipPlaneState::default();
+
+        assert!(!s.enabled, "clipping must be opt-in");
+        assert!(!s.flip);
+        assert!((s.t - DEFAULT_T).abs() < TOL);
+        assert!((s.roll_rad - DEFAULT_ROLL_RAD).abs() < TOL);
+        assert!(
+            (0.0..=1.0).contains(&s.t),
+            "the default position must be a legal arc fraction"
+        );
+    }
+
+    /// An app holding everything `update_clip_plane_uniform` reads, with the
+    /// system wired into `Update` and one material to push into.
+    ///
+    /// A full `App` rather than a bare `Schedule`: Bevy moves queued asset
+    /// events into `Messages<AssetEvent<T>>` from its own `AssetEvents`
+    /// schedule, so a hand-run schedule never delivers `AssetEvent::Added` and
+    /// the watcher below would look broken when it is not.
+    fn uniform_app(state: ClipPlaneState) -> (App, Handle<ClipPlaneMaterial>) {
+        use bevy::asset::{AssetApp, AssetPlugin};
+
+        let mut app = App::new();
+        app.add_plugins(AssetPlugin::default());
+        app.init_asset::<ClipPlaneMaterial>();
+        app.insert_resource(state);
+        app.insert_resource(centerline_straight_z());
+        app.insert_resource(UpAxis::PlusZ);
+        app.insert_resource(RenderScale(1.0));
+        app.add_systems(Update, update_clip_plane_uniform);
+
+        let handle = add_material(&mut app);
+        (app, handle)
+    }
+
+    fn add_material(app: &mut App) -> Handle<ClipPlaneMaterial> {
+        app.world_mut()
+            .resource_mut::<Assets<ClipPlaneMaterial>>()
+            .add(ClipPlaneMaterial {
+                base: StandardMaterial::default(),
+                extension: ClipPlaneExt::default(),
+            })
+    }
+
+    /// `(enabled, plane)` off the material's extension — returned by value so
+    /// the caller is not holding an `Assets` borrow while asserting.
+    fn ext_of(app: &App, handle: &Handle<ClipPlaneMaterial>) -> (u32, Vec4) {
+        let ext = &app
+            .world()
+            .resource::<Assets<ClipPlaneMaterial>>()
+            .get(handle)
+            .expect("material exists")
+            .extension;
+        (ext.enabled, ext.plane)
+    }
+
+    /// The resolved plane is pushed into every material's extension — the one
+    /// thing the whole per-frame system exists to do.
+    #[test]
+    fn the_resolved_plane_is_pushed_into_the_material() {
+        let (mut app, handle) = uniform_app(enabled_state());
+
+        assert_eq!(ext_of(&app, &handle).0, 0, "starts unclipped");
+        app.update();
+
+        let (enabled, plane) = ext_of(&app, &handle);
+        assert_eq!(enabled, 1, "an enabled state must switch the shader on");
+        assert!(
+            plane.length() > 0.0,
+            "an enabled clip must carry a non-zero plane, got {plane:?}"
+        );
+    }
+
+    /// A disabled state collapses to the shader's pass-through path rather
+    /// than leaving a stale plane behind.
+    #[test]
+    fn a_disabled_state_pushes_the_pass_through_uniform() {
+        let (mut app, handle) = uniform_app(ClipPlaneState::default());
+        app.update();
+
+        let (enabled, plane) = ext_of(&app, &handle);
+        assert_eq!(enabled, 0);
+        assert_eq!(plane, Vec4::ZERO);
+    }
+
+    /// ★★ A material created AFTER the key was already current still gets the
+    /// uniform.
+    ///
+    /// This is the `AssetEvent::Added` watcher, and the bug it fixes is
+    /// specific: layer rebuilds spawn fresh materials with default zero
+    /// uniforms, so without it "a layer added while clipping is on would
+    /// render unclipped until the next state-change tick". The snapshot
+    /// early-out is what makes that reachable — the key has not changed, so
+    /// nothing else would trigger a push.
+    #[test]
+    fn a_material_added_after_the_key_settled_is_still_pushed() {
+        let (mut app, first) = uniform_app(enabled_state());
+
+        // Tick until `last_key` is populated and equal to the target.
+        app.update();
+        assert_eq!(ext_of(&app, &first).0, 1);
+
+        // A new material arrives with default (zero) uniforms; state unchanged.
+        let late = add_material(&mut app);
+        assert_eq!(ext_of(&app, &late).0, 0, "starts unclipped");
+
+        app.update();
+
+        assert_eq!(
+            ext_of(&app, &late).0,
+            1,
+            "a material added while clipping is on must be pushed on the next \
+             tick, even though the uniform key did not change"
+        );
+    }
 }

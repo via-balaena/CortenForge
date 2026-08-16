@@ -81,3 +81,148 @@ pub fn build_bevy_mesh_from_indexed_with_colors(
     }
     bevy_mesh
 }
+
+#[cfg(test)]
+mod tests {
+    // `panic!` is denied at the crate level for production safety; allow it
+    // inside tests so an assertion can reject a wrong attribute VARIANT rather
+    // than falling back to a default the next assertion would silently compare
+    // against. Same posture as the `unwrap`/`expect` allows in `sdf_layers`
+    // and `clip_plane`.
+    #![allow(clippy::panic)]
+
+    use super::*;
+    use bevy::mesh::VertexAttributeValues;
+    use nalgebra::Point3;
+
+    /// One triangle whose three vertices are distinguishable on every axis,
+    /// so an axis swap or a dropped scale changes the numbers rather than
+    /// landing back on the input.
+    ///
+    /// ⚠ Deliberately NOT collinear. An arithmetic-progression fixture
+    /// ((1,2,3), (4,5,6), (7,8,9)) is a degenerate triangle with zero area and
+    /// no defined normal — it reads like a triangle and silently breaks
+    /// `compute_smooth_normals`.
+    fn one_triangle() -> IndexedMesh {
+        IndexedMesh {
+            vertices: vec![
+                Point3::new(1.0, 2.0, 3.0),
+                Point3::new(4.0, 5.0, 6.0),
+                Point3::new(7.0, 2.0, 9.0),
+            ],
+            faces: vec![[0, 1, 2]],
+        }
+    }
+
+    fn positions(mesh: &Mesh) -> Vec<[f32; 3]> {
+        match mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
+            Some(VertexAttributeValues::Float32x3(v)) => v.clone(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// ★★ Vertices pass through the axis swap AND the render-scale lift, and
+    /// the scale applies to the SWAPPED coordinates.
+    ///
+    /// `PlusZ` maps `(x, y, z) -> (x, z, y)`; at scale 2 the first vertex
+    /// `(1, 2, 3)` must land at `(2, 6, 4)`. Asserting a swapped-and-scaled
+    /// value rather than a round-trip is what separates "both transforms
+    /// happened" from "neither did" — an identity axis or a unit scale would
+    /// pass a laxer check.
+    #[test]
+    fn vertices_are_axis_swapped_then_scaled() {
+        let mesh = build_bevy_mesh_from_indexed(&one_triangle(), UpAxis::PlusZ, 2.0);
+
+        assert_eq!(
+            positions(&mesh),
+            vec![[2.0, 6.0, 4.0], [8.0, 12.0, 10.0], [14.0, 18.0, 4.0]],
+            "PlusZ swaps y/z, then render_scale multiplies the swapped coords"
+        );
+    }
+
+    /// `PlusY` is the identity swap, so only the scale acts — the control that
+    /// proves the previous test's numbers come from the swap and not from the
+    /// scale alone.
+    #[test]
+    fn plus_y_applies_the_scale_without_swapping() {
+        let mesh = build_bevy_mesh_from_indexed(&one_triangle(), UpAxis::PlusY, 3.0);
+
+        assert_eq!(positions(&mesh)[0], [3.0, 6.0, 9.0]);
+    }
+
+    /// Faces flatten into the index buffer in order; a mesh that lost its
+    /// indices still renders (as nothing) rather than erroring.
+    #[test]
+    fn faces_flatten_into_the_index_buffer() {
+        let mut m = one_triangle();
+        m.faces.push([2, 1, 0]);
+        let mesh = build_bevy_mesh_from_indexed(&m, UpAxis::PlusY, 1.0);
+
+        match mesh.indices() {
+            Some(bevy::mesh::Indices::U32(idx)) => assert_eq!(idx, &vec![0, 1, 2, 2, 1, 0]),
+            _ => panic!("expected a U32 index buffer"),
+        }
+    }
+
+    /// Normals are computed, not left to Bevy's default — an unlit surface is
+    /// the symptom if this is dropped.
+    #[test]
+    fn smooth_normals_are_computed() {
+        let mesh = build_bevy_mesh_from_indexed(&one_triangle(), UpAxis::PlusY, 1.0);
+
+        let normals = match mesh.attribute(Mesh::ATTRIBUTE_NORMAL) {
+            Some(VertexAttributeValues::Float32x3(v)) => v.clone(),
+            _ => Vec::new(),
+        };
+        assert_eq!(normals.len(), 3, "one normal per vertex");
+        for n in normals {
+            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            assert!((len - 1.0).abs() < 1e-5, "normals must be unit, got {len}");
+        }
+    }
+
+    /// The plain adapter must not attach a COLOR attribute — a mesh carrying
+    /// one binds a different shader path than the palette-tinted consumers
+    /// expect.
+    #[test]
+    fn the_plain_adapter_attaches_no_color_attribute() {
+        let mesh = build_bevy_mesh_from_indexed(&one_triangle(), UpAxis::PlusY, 1.0);
+
+        assert!(mesh.attribute(Mesh::ATTRIBUTE_COLOR).is_none());
+    }
+
+    #[test]
+    fn supplied_vertex_colors_are_attached_verbatim() {
+        let colors = [
+            [1.0, 0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0, 1.0],
+        ];
+        let mesh = build_bevy_mesh_from_indexed_with_colors(
+            &one_triangle(),
+            UpAxis::PlusY,
+            1.0,
+            Some(&colors),
+        );
+
+        match mesh.attribute(Mesh::ATTRIBUTE_COLOR) {
+            Some(VertexAttributeValues::Float32x4(v)) => assert_eq!(v, &colors.to_vec()),
+            _ => panic!("expected an RGBA color attribute"),
+        }
+    }
+
+    /// ★ The documented `# Panics` contract. A colour buffer shorter than the
+    /// vertex list would otherwise be attached and misread downstream, tinting
+    /// the wrong vertices — so it must fail loudly at construction.
+    #[test]
+    #[should_panic(expected = "must match mesh.vertices.len()")]
+    fn a_short_color_buffer_panics_rather_than_tinting_the_wrong_vertices() {
+        let short = [[1.0, 0.0, 0.0, 1.0]];
+        let _ = build_bevy_mesh_from_indexed_with_colors(
+            &one_triangle(),
+            UpAxis::PlusY,
+            1.0,
+            Some(&short),
+        );
+    }
+}
