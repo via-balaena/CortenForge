@@ -44,3 +44,38 @@ impl Plugin for SoftBodyVisualPlugin {
             .add_systems(Update, (reset_replay_on_keypress, step_replay).chain());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// With no consumer-supplied axis, the plugin supplies the default.
+    #[test]
+    fn build_inits_the_up_axis_when_the_consumer_supplied_none() {
+        let mut app = App::new();
+        app.add_plugins(SoftBodyVisualPlugin);
+
+        assert!(
+            app.world().get_resource::<UpAxis>().is_some(),
+            "the plugin must leave an UpAxis in place for step_replay to read"
+        );
+    }
+
+    /// ★ The documented half that `init_resource` makes easy to get wrong:
+    /// a consumer who inserts their own axis BEFORE adding the plugin keeps
+    /// it. Swapping `init_resource` for `insert_resource` would silently
+    /// stomp the caller's convention and flip every rendered mesh's axes —
+    /// a visual bug with no error attached to it.
+    #[test]
+    fn build_does_not_overwrite_a_consumer_supplied_up_axis() {
+        let mut app = App::new();
+        app.insert_resource(UpAxis::PlusY);
+        app.add_plugins(SoftBodyVisualPlugin);
+
+        assert_eq!(
+            *app.world().resource::<UpAxis>(),
+            UpAxis::PlusY,
+            "a consumer-supplied axis must survive plugin add-time"
+        );
+    }
+}
