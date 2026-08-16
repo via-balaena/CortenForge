@@ -387,8 +387,13 @@ pub(crate) fn mapped_lines(segments: &[serde_json::Value]) -> BTreeMap<usize, u6
 
 /// Production line coverage for `crate_path`, from one llvm-cov JSON export.
 ///
-/// Files are matched exactly as the whole-file aggregation did — by path
-/// substring — so the report stays scoped to the crate's own sources.
+/// Files are matched by [`crate::coverage_run::is_own_production_file`]: under
+/// `crate_path` by path substring, as the whole-file aggregation did, and NOT
+/// under its `tests/`. That second half is newer than the first — integration
+/// targets are instrumented so their binaries emit profiles, which puts their
+/// source in the export, and counting it would pad both sides with
+/// ~100 %-covered test bodies. Same distortion this module strips
+/// `#[cfg(test)]` to avoid, arriving by a different route.
 pub(crate) fn production_coverage(
     json: &serde_json::Value,
     crate_path: &str,
@@ -613,5 +618,30 @@ mod tests {
     #[test]
     fn empty_segment_list_yields_no_lines() {
         assert!(mapped_lines(&[]).is_empty());
+    }
+
+    /// ★ Integration-test source reaches the export and must not be counted.
+    ///
+    /// The predicate is unit-tested next door in `coverage_run`; this pins the
+    /// integration — that `production_coverage` actually skips those files
+    /// rather than merely being able to classify them. Both files here have
+    /// identical segments, so any leak shows up as a doubled denominator.
+    #[test]
+    fn integration_test_source_is_not_counted_as_production() {
+        let segments =
+            serde_json::json!([[1, 1, 5, true, true, false], [3, 1, 0, false, false, false]]);
+        let json = serde_json::json!({
+            "data": [{"files": [
+                {"filename": "/w/design/cf-geometry/src/mesh.rs", "segments": segments},
+                {"filename": "/w/design/cf-geometry/tests/mesh_tests.rs", "segments": segments},
+            ]}]
+        });
+        let cov = production_coverage(&json, "design/cf-geometry");
+        assert_eq!(
+            cov.total, 3,
+            "only src/mesh.rs's 3 mapped lines belong in the denominator; \
+             tests/ source must not double it"
+        );
+        assert_eq!(cov.covered, 3);
     }
 }
