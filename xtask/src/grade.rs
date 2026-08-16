@@ -554,8 +554,15 @@ pub fn run(crate_name: &str, verbosity: Verbosity) -> Result<()> {
 /// Enumerates workspace crates via `cargo metadata --no-deps` — no
 /// hard-coded lists, automatically adapts when crates are added or
 /// removed. Each crate is graded via [`evaluate`]; failures are
-/// aggregated and reported in a compact summary. Exits non-zero if
-/// any crate's automated grade is below A.
+/// aggregated and reported in a compact summary.
+///
+/// A crate the grader cannot measure at all does not abort the sweep — it is
+/// recorded and the run continues, so one broken crate never costs the
+/// operator the verdict on every crate after it. Such crates are reported
+/// separately from graded failures (see [`SweepTally`]), because "could not
+/// measure" is a different problem from "measured, and it is bad". Exits
+/// non-zero if any crate's automated grade is below A **or** any crate could
+/// not be graded.
 ///
 /// `shard` (from `--shard i/N`) restricts grading to a disjoint 1/N slice
 /// so CI can fan grade-all out across N parallel jobs; see [`select_shard`].
@@ -627,7 +634,10 @@ pub fn run_all(
     }
 
     let mut failures: Vec<(String, GradeReport)> = Vec::new();
-    let mut passes = 0usize;
+    // Crates that could not be graded at all, kept apart from `failures`
+    // because "could not measure" is a different claim from "measured, and
+    // it is bad" — and a different thing to go and fix.
+    let mut errors: Vec<(String, String)> = Vec::new();
 
     for (idx, crate_name) in crate_names.iter().enumerate() {
         // Force --quiet per-crate regardless of outer verbosity — grade-all
@@ -639,11 +649,29 @@ pub fn run_all(
             json: false,
             skip_coverage: verbosity.skip_coverage,
         };
-        let report = evaluate(&sh, crate_name, per_crate_verbosity)?;
+        // Record and carry on rather than `?`, mirroring `run-validators`:
+        // one ungradeable crate must not cost the operator the verdict on
+        // every crate after it in the shard. The sweep still fails — see the
+        // tally below — it just fails knowing the whole picture.
+        let report = match evaluate(&sh, crate_name, per_crate_verbosity) {
+            Ok(report) => report,
+            Err(e) => {
+                if !verbosity.quiet {
+                    eprintln!(
+                        "  [{:>3}/{}] {} — {}",
+                        idx + 1,
+                        crate_names.len(),
+                        "ERR".red().bold(),
+                        crate_name
+                    );
+                }
+                errors.push((crate_name.clone(), format!("{e:#}")));
+                continue;
+            }
+        };
 
         let passed = matches!(report.automated_grade, Grade::A | Grade::APlus);
         if passed {
-            passes += 1;
             if !verbosity.quiet {
                 eprintln!(
                     "  [{:>3}/{}] {} — {}",
@@ -667,46 +695,107 @@ pub fn run_all(
         }
     }
 
+    let tally = SweepTally {
+        total: crate_names.len(),
+        failures: failures.len(),
+        errors: errors.len(),
+    };
+
     println!();
-    if failures.is_empty() {
+    let headline = tally.headline();
+    println!(
+        "{}",
+        if tally.is_green() {
+            format!("✓ {headline}").green().bold().to_string()
+        } else {
+            format!("✗ {headline}").red().bold().to_string()
+        }
+    );
+    println!();
+
+    for (name, report) in &failures {
         println!(
-            "{}",
-            format!(
-                "✓ grade-all: {}/{} workspace crates pass.",
-                passes,
-                crate_names.len()
-            )
-            .green()
-            .bold()
+            "  {} — {}",
+            name.bold(),
+            report.automated_grade.as_str().red()
         );
-        println!();
-        Ok(())
-    } else {
-        println!(
-            "{}",
-            format!(
-                "✗ grade-all: {}/{} workspace crates fail xtask grade.",
-                failures.len(),
-                crate_names.len()
-            )
-            .red()
-            .bold()
-        );
-        println!();
-        for (name, report) in &failures {
-            println!(
-                "  {} — {}",
-                name.bold(),
-                report.automated_grade.as_str().red()
-            );
-            for c in &report.criteria {
-                if matches!(c.grade, Grade::F | Grade::C) {
-                    println!("      {}: {} ({})", c.name, c.grade.as_str(), c.result);
-                }
+        for c in &report.criteria {
+            if matches!(c.grade, Grade::F | Grade::C) {
+                println!("      {}: {} ({})", c.name, c.grade.as_str(), c.result);
             }
         }
+    }
+
+    // Errors last: they are the ones an operator usually has to act on first,
+    // and the tail of the output is what a CI log viewer opens on.
+    for (name, err) in &errors {
+        println!("  {} — {}", name.bold(), "could not be graded".red());
+        println!("      {}", err);
+    }
+
+    if failures.is_empty() && errors.is_empty() {
+        Ok(())
+    } else {
         println!();
-        bail!("{} workspace crate(s) failed xtask grade", failures.len())
+        bail!("{}", tally.headline())
+    }
+}
+
+/// What a `grade-all` sweep ended with.
+///
+/// `errors` is its own bucket rather than being folded into `failures`: a
+/// crate the grader could not measure has not been shown to be bad, but it has
+/// not been shown to be good either. Conflating the two would either invent an
+/// F nobody measured or — far worse — let an unmeasured crate pass.
+///
+/// `passes` is derived rather than counted, so the printed numbers cannot
+/// drift from the buckets they summarise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SweepTally {
+    total: usize,
+    failures: usize,
+    errors: usize,
+}
+
+impl SweepTally {
+    fn passes(&self) -> usize {
+        self.total.saturating_sub(self.failures + self.errors)
+    }
+
+    /// A sweep may report success only when every crate was graded *and* every
+    /// grade passed.
+    fn is_green(&self) -> bool {
+        self.failures == 0 && self.errors == 0
+    }
+
+    /// One line naming every non-empty bucket, so no count the verdict depends
+    /// on is left for the reader to infer.
+    ///
+    /// Carries neither glyph nor colour: those are presentation the summary
+    /// block adds, and this same string is also the `bail!` text, where
+    /// anyhow's own `Error:` prefix is the failure marker. Baking a `✗` in
+    /// would print "Error: ✗ …" — two markers for one failure.
+    fn headline(&self) -> String {
+        match (self.failures, self.errors) {
+            (0, 0) => format!(
+                "grade-all: {}/{} workspace crates pass.",
+                self.passes(),
+                self.total
+            ),
+            (f, 0) => format!(
+                "grade-all: {}/{} workspace crates fail xtask grade.",
+                f, self.total
+            ),
+            (0, e) => format!(
+                "grade-all: {}/{} workspace crates could not be graded.",
+                e, self.total
+            ),
+            (f, e) => format!(
+                "grade-all: {} of {} workspace crates fail xtask grade, \
+                 and {} could not be graded.",
+                f, self.total, e
+            ),
+        }
     }
 }
 
@@ -5183,6 +5272,110 @@ tier_up_features = { sneaky = "App" }
             CrateProfile::Layer0,
         )
         .expect_err("an unstat-able src/ must not vanish into the Manual arm");
+    }
+
+    /// The regression this bucket exists to prevent: before errors were
+    /// tracked, an ungradeable crate aborted the sweep, and the temptation
+    /// when un-aborting is to let it fall through as "not a failure".
+    #[test]
+    fn a_crate_that_could_not_be_graded_never_makes_a_sweep_green() {
+        let tally = SweepTally {
+            total: 10,
+            failures: 0,
+            errors: 1,
+        };
+        assert!(!tally.is_green(), "{tally:?}");
+        assert!(
+            tally.headline().contains("could not be graded"),
+            "{}",
+            tally.headline()
+        );
+    }
+
+    #[test]
+    fn a_sweep_is_green_only_when_every_crate_was_graded_and_passed() {
+        let green = SweepTally {
+            total: 10,
+            failures: 0,
+            errors: 0,
+        };
+        assert!(green.is_green());
+        assert_eq!(green.passes(), 10);
+        assert!(green.headline().contains("10/10"), "{}", green.headline());
+
+        assert!(!SweepTally {
+            total: 10,
+            failures: 1,
+            errors: 0
+        }
+        .is_green());
+    }
+
+    #[test]
+    fn the_headline_names_both_buckets_when_both_are_non_empty() {
+        // The failure mode being pinned is a headline that reports one count
+        // and silently drops the other, leaving the reader to think the
+        // sweep's only problem is the kind they can see.
+        let tally = SweepTally {
+            total: 10,
+            failures: 2,
+            errors: 3,
+        };
+        let headline = tally.headline();
+        assert!(headline.contains('2'), "{headline}");
+        assert!(headline.contains('3'), "{headline}");
+        assert!(headline.contains("could not be graded"), "{headline}");
+        assert_eq!(tally.passes(), 5);
+    }
+
+    #[test]
+    fn the_headline_carries_no_status_glyph() {
+        // It is printed with a ✓/✗ prefix *and* reused as the `bail!` text,
+        // where anyhow supplies its own `Error:` marker. A glyph baked into
+        // the string reads as "Error: ✗ …" — two markers for one failure.
+        for tally in [
+            SweepTally {
+                total: 3,
+                failures: 0,
+                errors: 0,
+            },
+            SweepTally {
+                total: 3,
+                failures: 1,
+                errors: 0,
+            },
+            SweepTally {
+                total: 3,
+                failures: 0,
+                errors: 1,
+            },
+            SweepTally {
+                total: 3,
+                failures: 1,
+                errors: 1,
+            },
+        ] {
+            let headline = tally.headline();
+            assert!(
+                !headline.contains('✗') && !headline.contains('✓'),
+                "{headline}"
+            );
+            assert!(headline.starts_with("grade-all: "), "{headline}");
+        }
+    }
+
+    #[test]
+    fn passes_is_derived_so_it_cannot_drift_from_the_buckets() {
+        // `saturating_sub` guards a nonsensical construction rather than
+        // panicking or wrapping to a huge pass count — the one direction that
+        // would read as good news.
+        let nonsense = SweepTally {
+            total: 1,
+            failures: 5,
+            errors: 5,
+        };
+        assert_eq!(nonsense.passes(), 0);
+        assert!(!nonsense.is_green());
     }
 
     /// One `--message-format=json` line, shaped like the real thing: a
