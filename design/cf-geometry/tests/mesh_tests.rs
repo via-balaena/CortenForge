@@ -172,6 +172,163 @@ fn flipped_cube_inside_out() {
     assert!(cube.is_inside_out());
 }
 
+fn translated(mesh: &IndexedMesh, offset: Vector3<f64>) -> IndexedMesh {
+    let mut out = mesh.clone();
+    for v in &mut out.vertices {
+        *v += offset;
+    }
+    out
+}
+
+/// ★ Pins the claim [`IndexedMesh::signed_volume`]'s doc makes, in this crate
+/// rather than in a downstream one: with a single face flipped, the global
+/// test answers a question about the **caller's frame**, not about the mesh.
+///
+/// The flip is one triangle of twelve — face `[4, 5, 6]`, one of the two that
+/// make up the top. Its *first* index has to be something other than vertex 0,
+/// which `unit_cube` puts at the origin: `signed_volume` sums `v0 · (v1 × v2)`
+/// over origin-apex tetrahedra, so a face whose `v0` sits on the origin
+/// contributes exactly zero, and flipping that one would be invisible by
+/// construction.
+///
+/// One mesh, three frames. Measured:
+///
+/// | | at the origin | +z 1e3 | +x 1e6 |
+/// |---|---|---|---|
+/// | flipped cube | `+0.667`, clean — **blind** | `-332.67` — **fires** | `+0.667`, clean |
+/// | clean cube (control) | `1` | `1` | `1` |
+///
+/// ⚠ **This is not a distance law.** The total moves as `t · Σ A_f n_f`, so a
+/// translation only changes the verdict to the extent it runs *along* that
+/// vector. The flipped face here has a `+z` normal, so `+z` crosses the sign
+/// boundary and `+x` never does — at 1e6 the `+x` frame still reads clean.
+/// Distance is not what makes the instrument lie; direction relative to the
+/// defect is. Testing only `+z` would have read as "far away ⇒ detected",
+/// which is false.
+///
+/// The clean control is what makes the `+z` assertion load-bearing: without
+/// the flip the volume is `1` in every frame, so `far_vol < 0.0` could not
+/// pass by accident of the transport.
+#[test]
+fn one_flipped_face_makes_the_global_volume_test_frame_dependent() {
+    const FAR: f64 = 1.0e3;
+
+    let mut flipped = unit_cube();
+    assert_eq!(
+        flipped.faces[2],
+        [4, 5, 6],
+        "fixture drift: this test needs a face whose FIRST index is not vertex 0 \
+         (the origin), or the flip is invisible to signed_volume by construction"
+    );
+    flipped.faces[2].swap(1, 2); // [4, 5, 6] -> [4, 6, 5]
+    let flipped_far = translated(&flipped, Vector3::new(0.0, 0.0, FAR));
+
+    let near_vol = flipped.signed_volume();
+    let far_vol = flipped_far.signed_volume();
+
+    // The surface itself is translation-invariant — same mesh, same defect.
+    assert!(
+        (flipped.surface_area() - flipped_far.surface_area()).abs() < 1e-9,
+        "the translation must not change the surface"
+    );
+
+    // At the origin: blind. Positive volume, clean verdict, defect present.
+    assert!(
+        near_vol > 0.0,
+        "at the origin the flip must leave the volume positive (blind); got {near_vol}"
+    );
+    assert!(
+        !flipped.is_inside_out(),
+        "at the origin the global test must report clean despite the flip"
+    );
+
+    // 1e3 out: the same mesh now reads inside-out.
+    assert!(
+        far_vol < 0.0,
+        "translated {FAR}, the same flipped cube must read inside-out; got {far_vol}"
+    );
+    assert!(
+        flipped_far.is_inside_out(),
+        "translated {FAR}, the global test must fire on the same defect"
+    );
+
+    // Direction control: the same defect, transported 1e6 ORTHOGONALLY to the
+    // flipped face's normal, never crosses the sign boundary. The total moves
+    // as `t · Σ A_f n_f`; `+x` is orthogonal to that vector here, so magnitude
+    // buys nothing. Distance is not the variable — direction is.
+    let sideways = translated(&flipped, Vector3::new(1.0e6, 0.0, 0.0));
+    assert!(
+        (sideways.signed_volume() - near_vol).abs() < 1e-6,
+        "translating orthogonally must not move the total; {near_vol} vs {}",
+        sideways.signed_volume()
+    );
+    assert!(
+        !sideways.is_inside_out(),
+        "1e6 along +x, the flipped cube must STILL read clean — the instrument \
+         fails by direction, not by distance"
+    );
+
+    // Negative control: without the flip, the verdict is frame-independent —
+    // in EVERY frame this test visits, so each cell of the doc table above is
+    // an assertion and not an assumption.
+    let clean = unit_cube();
+    for offset in [
+        Vector3::zeros(),
+        Vector3::new(0.0, 0.0, FAR),
+        Vector3::new(1.0e6, 0.0, 0.0),
+    ] {
+        let moved = translated(&clean, offset);
+        let vol = moved.signed_volume();
+        assert!(
+            (vol - 1.0).abs() < 1e-9,
+            "a consistently wound closed mesh must be translation-invariant; \
+             offset {offset:?} gave {vol}"
+        );
+        assert!(
+            !moved.is_inside_out(),
+            "the clean cube must read outward at offset {offset:?}"
+        );
+    }
+}
+
+/// ★ The converse trap: **translation-invariance is not evidence of consistent
+/// winding either.**
+///
+/// Consistency makes `Σ A_f n_f` vanish, but it is not the only thing that
+/// does. Flip *one* top triangle and *one* bottom triangle: their area vectors
+/// are equal and opposite (`+z/2` and `-z/2`), so the two flips cancel in that
+/// sum exactly. The mesh is inconsistently wound and yet perfectly
+/// frame-invariant — `+0.667` at the origin and `+0.667` translated 1e3,
+/// reading clean in both.
+///
+/// So neither reading rescues the instrument: a verdict that moves under
+/// translation proves a defect, but a verdict that holds still proves nothing.
+/// The magnitude is wrong here too — the true volume is `1`.
+#[test]
+fn translation_invariance_is_not_evidence_of_consistent_winding() {
+    let mut two_flips = unit_cube();
+    two_flips.faces[2].swap(1, 2); // a top triangle    [4, 5, 6], outward +z
+    two_flips.faces[0].swap(1, 2); // a bottom triangle [0, 2, 1], outward -z
+
+    let two_flips_far = translated(&two_flips, Vector3::new(0.0, 0.0, 1.0e3));
+    let near = two_flips.signed_volume();
+    let far = two_flips_far.signed_volume();
+
+    assert!(
+        (near - far).abs() < 1e-6,
+        "two opposed flips must cancel in `Σ A_f n_f`, leaving the total \
+         frame-invariant; {near} vs {far}"
+    );
+    assert!(
+        !two_flips.is_inside_out() && !two_flips_far.is_inside_out(),
+        "and the global test reads clean in both frames"
+    );
+    assert!(
+        (near - 1.0).abs() > 0.1,
+        "yet the mesh is NOT sound: the volume should be 1.0, got {near}"
+    );
+}
+
 #[test]
 fn unit_cube_surface_area() {
     let cube = unit_cube();
