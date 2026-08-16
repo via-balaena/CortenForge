@@ -4774,13 +4774,13 @@ mod tests {
     /// — but they are not all of them, so the conclusion did not
     /// follow. `mesh_sdf::PseudoNormalSign` takes its sign from face
     /// winding, and production paths compose it throughout the tree —
-    /// `mesh_offset::offset_mesh`, `cf_fsu_geometry::oracle`,
-    /// `cf_device_geometry::sdf_layers::build_cached_scan_sdf`,
-    /// `cf_cast_cli::derive::derive_spec_and_ribbon` and
-    /// `cf_sim_research::insertion_sim::run_sdf_bridge_spike` among
-    /// them. Inward caps reaching any of them invert the field's sign
-    /// rather than its shading, so the blast radius was never bounded
-    /// to rendering. The assertion below is what keeps that moot.
+    /// mesh-offset's `offset_mesh`, cf-fsu-geometry's `oracle`,
+    /// cf-device-geometry's `build_cached_scan_sdf`, cf-cast-cli's
+    /// `derive_spec_and_ribbon` and cf-sim-research's
+    /// `run_sdf_bridge_spike` among them. Inward caps reaching any of
+    /// them invert the field's sign rather than its shading, so the
+    /// blast radius was never bounded to rendering. The assertion below
+    /// is what keeps that moot.
     ///
     /// Fixture: 5-vertex square pyramid with the base OPEN (4 side
     /// triangles, no base triangulation). Apex at (0, 0, +1); base

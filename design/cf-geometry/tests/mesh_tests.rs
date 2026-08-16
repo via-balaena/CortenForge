@@ -190,18 +190,24 @@ fn translated(mesh: &IndexedMesh, offset: Vector3<f64>) -> IndexedMesh {
 /// tetrahedra, so a face whose `v0` sits on the origin contributes exactly
 /// zero, and flipping that one would be invisible by construction.
 ///
-/// Two frames, one mesh. Measured:
+/// One mesh, three frames. Measured:
 ///
-/// | | at the origin | translated 1e3 |
-/// |---|---|---|
-/// | flipped cube | `+0.667`, reads clean — **blind** | `-332.67` — **fires** |
-/// | clean cube (control) | `1` | `1` |
+/// | | at the origin | +z 1e3 | +x 1e6 |
+/// |---|---|---|---|
+/// | flipped cube | `+0.667`, clean — **blind** | `-332.67` — **fires** | `+0.667`, clean |
+/// | clean cube (control) | `1` | `1` | `1` |
 ///
-/// Near the origin the global test is blind; translated 1e3 — the scale
-/// anatomical meshes are kept at in their native frames — the very same
-/// defect fires. Nothing about the surface changed. The control is what makes
-/// the far assertion load-bearing: without the flip the volume is `1` in both
-/// frames, so `far_vol < 0.0` could not pass by accident of the transport.
+/// ⚠ **This is not a distance law.** The total moves as `t · Σ A_f n_f`, so a
+/// translation only changes the verdict to the extent it runs *along* that
+/// vector. The flipped face here has a `+z` normal, so `+z` crosses the sign
+/// boundary and `+x` never does — at 1e6 the `+x` frame still reads clean.
+/// Distance is not what makes the instrument lie; direction relative to the
+/// defect is. Testing only `+z` would have read as "far away ⇒ detected",
+/// which is false.
+///
+/// The clean control is what makes the `+z` assertion load-bearing: without
+/// the flip the volume is `1` in every frame, so `far_vol < 0.0` could not
+/// pass by accident of the transport.
 #[test]
 fn one_flipped_face_makes_the_global_volume_test_frame_dependent() {
     const FAR: f64 = 1.0e3;
@@ -245,6 +251,22 @@ fn one_flipped_face_makes_the_global_volume_test_frame_dependent() {
         "translated {FAR}, the global test must fire on the same defect"
     );
 
+    // Direction control: the same defect, transported 1e6 ORTHOGONALLY to the
+    // flipped face's normal, never crosses the sign boundary. The total moves
+    // as `t · Σ A_f n_f`; `+x` is orthogonal to that vector here, so magnitude
+    // buys nothing. Distance is not the variable — direction is.
+    let sideways = translated(&flipped, Vector3::new(1.0e6, 0.0, 0.0));
+    assert!(
+        (sideways.signed_volume() - near_vol).abs() < 1e-6,
+        "translating orthogonally must not move the total; {near_vol} vs {}",
+        sideways.signed_volume()
+    );
+    assert!(
+        !sideways.is_inside_out(),
+        "1e6 along +x, the flipped cube must STILL read clean — the instrument \
+         fails by direction, not by distance"
+    );
+
     // Negative control: without the flip, the verdict is frame-independent.
     let clean = unit_cube();
     let clean_far = translated(&clean, Vector3::new(0.0, 0.0, FAR));
@@ -258,6 +280,43 @@ fn one_flipped_face_makes_the_global_volume_test_frame_dependent() {
     assert!(
         !clean.is_inside_out() && !clean_far.is_inside_out(),
         "the clean cube must read outward in both frames"
+    );
+}
+
+/// ★ The converse trap: **translation-invariance is not evidence of consistent
+/// winding either.**
+///
+/// Consistency makes `Σ A_f n_f` vanish, but it is not the only thing that
+/// does. Flip the top face *and* the bottom face and their contributions to
+/// that sum cancel each other, so this mesh is inconsistently wound and yet
+/// perfectly frame-invariant — `+0.667` at the origin and `+0.667` translated
+/// 1e3, reading clean in both.
+///
+/// So neither reading rescues the instrument: a verdict that moves under
+/// translation proves a defect, but a verdict that holds still proves nothing.
+/// The magnitude is wrong here too — the true volume is `1`.
+#[test]
+fn translation_invariance_is_not_evidence_of_consistent_winding() {
+    let mut two_flips = unit_cube();
+    two_flips.faces[2].swap(1, 2); // top    [4, 5, 6], outward +z
+    two_flips.faces[0].swap(1, 2); // bottom [0, 2, 1], outward -z
+
+    let two_flips_far = translated(&two_flips, Vector3::new(0.0, 0.0, 1.0e3));
+    let near = two_flips.signed_volume();
+    let far = two_flips_far.signed_volume();
+
+    assert!(
+        (near - far).abs() < 1e-6,
+        "two opposed flips must cancel in `Σ A_f n_f`, leaving the total \
+         frame-invariant; {near} vs {far}"
+    );
+    assert!(
+        !two_flips.is_inside_out() && !two_flips_far.is_inside_out(),
+        "and the global test reads clean in both frames"
+    );
+    assert!(
+        (near - 1.0).abs() > 0.1,
+        "yet the mesh is NOT sound: the volume should be 1.0, got {near}"
     );
 }
 

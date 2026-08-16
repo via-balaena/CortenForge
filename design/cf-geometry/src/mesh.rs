@@ -154,18 +154,29 @@ impl IndexedMesh {
     ///
     /// ⚠ **Consistency is a precondition, not something this can check.** The
     /// sum is over origin-apex tetrahedra, so each face's term scales with its
-    /// distance from the world origin; those terms cancel to a
-    /// translation-invariant total only while every face agrees. Flip one and
-    /// the result becomes a fact about where the caller put the origin. So a
-    /// negative or near-zero result is *not* evidence of inconsistent winding,
-    /// and a positive one is not evidence against it.
+    /// distance from the world origin. Under a translation `t` the total moves
+    /// by `t · Σ A_f n_f`; on a closed, consistently wound mesh that vector is
+    /// zero and the volume is a property of the mesh alone. Break the winding
+    /// and it generally is not, so the answer becomes a fact about where the
+    /// caller put the origin. A negative or near-zero result is therefore *not*
+    /// evidence of inconsistent winding, and a positive one is not evidence
+    /// against it.
+    ///
+    /// ⚠ Neither is stability under translation, in either direction. `Σ A_f
+    /// n_f` is a *vector*: transporting along a direction orthogonal to it
+    /// changes nothing at any magnitude, and two opposed flips cancel in the
+    /// sum outright, leaving a defective mesh perfectly frame-invariant. Both
+    /// are measured in `tests/mesh_tests.rs` — see
+    /// `translation_invariance_is_not_evidence_of_consistent_winding`.
     ///
     /// Measured in this crate by
     /// `one_flipped_face_makes_the_global_volume_test_frame_dependent`
     /// (`tests/mesh_tests.rs`): flip one face of twelve on a unit cube and this
     /// returns `+0.667` at the origin — positive, reads clean, wholly blind —
-    /// then `-332.67` translated 1e3, the scale anatomical meshes are kept at
-    /// in their native frames. Corroborated downstream by `mesh-loft`'s
+    /// then `-332.67` translated 1e3 **along that face's normal**, the scale
+    /// anatomical meshes are kept at in their native frames. Transported 1e6
+    /// the other way it still reads `+0.667`, which is why the direction is
+    /// stated and not just the distance. Corroborated downstream by `mesh-loft`'s
     /// `the_global_inside_out_test_changes_its_answer_under_a_2mm_translation`,
     /// where a puck with 4 inconsistent edges returns *exactly* the correct
     /// unit-box volume of `1.0` at the origin and flips verdict after 2 mm.
