@@ -148,9 +148,28 @@ impl IndexedMesh {
 
     /// Computes the signed volume of the mesh using the divergence theorem.
     ///
-    /// For a closed mesh with outward-facing normals (CCW winding from
-    /// outside), this returns a positive value. Negative means inside-out.
-    /// Near-zero means the mesh is not closed or has inconsistent winding.
+    /// For a closed mesh whose winding is **consistent**, this is a property of
+    /// the mesh alone: positive for outward-facing normals (CCW seen from
+    /// outside), negative for an inside-out one.
+    ///
+    /// ⚠ **Consistency is a precondition, not something this can check.** The
+    /// sum is over origin-apex tetrahedra, so each face's term scales with its
+    /// distance from the world origin; those terms cancel to a
+    /// translation-invariant total only while every face agrees. Flip one and
+    /// the result becomes a fact about where the caller put the origin. So a
+    /// negative or near-zero result is *not* evidence of inconsistent winding,
+    /// and a positive one is not evidence against it.
+    ///
+    /// Measured on this function by `mesh-loft`'s
+    /// `the_global_inside_out_test_changes_its_answer_under_a_2mm_translation`:
+    /// a puck with 4 inconsistent edges returns *exactly* the correct unit-box
+    /// volume of `1.0` at the origin, then reads inside-out once translated
+    /// 2 mm. Anatomical meshes are kept in native frames ~1e3 mm out.
+    ///
+    /// ★ The sound instrument is `mesh_repair::winding_census` — per-edge,
+    /// seed-free and coordinate-free. `cf-geometry` cannot call it, and not by
+    /// oversight: `mesh-repair` depends on this crate, so the dependency would
+    /// be a cycle. Judge winding one layer up, where the census is reachable.
     #[must_use]
     pub fn signed_volume(&self) -> f64 {
         let mut volume = 0.0;
@@ -179,7 +198,15 @@ impl IndexedMesh {
         self.signed_volume().abs()
     }
 
-    /// Returns `true` if the mesh appears inside-out (negative signed volume).
+    /// Returns `true` if the signed volume is negative.
+    ///
+    /// ⚠ **That is the same thing as "inside-out" only on a consistently wound
+    /// closed mesh**, and this cannot tell you whether you have one — see
+    /// [`Self::signed_volume`] for the measured failure in both directions
+    /// (blind to a local flip near the origin, firing on one far from it).
+    /// Establish consistent winding first and read this as a verdict only then;
+    /// `mesh-loft` gates it on `Bushing::is_closed_and_consistent()`, which is
+    /// backed by `mesh_repair::winding_census`.
     #[inline]
     #[must_use]
     pub fn is_inside_out(&self) -> bool {
