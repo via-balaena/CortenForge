@@ -962,6 +962,55 @@ fn grade_coverage(
     let run = match run {
         Ok(run) => run,
         Err(e) => {
+            // A crate with no production code cannot produce a profile: nothing
+            // carries a coverage map, so the profiling runtime is never linked
+            // and no `.profraw` is written. That is the same symptom as
+            // instrumentation failing to reach a crate that DOES have code —
+            // the defect the no-profraw guard exists to catch — and grading both
+            // `F` reads the empty crate as badly covered. The four `*-benches`
+            // crates are the case: a five-line doc comment for a lib, all
+            // content in `benches/*.rs`, which coverage does not measure.
+            //
+            // Only a positive finding excuses the crate, and only when its tests
+            // passed: `declares_no_production_code` answers `false` on any file
+            // it cannot read or parse, so a real instrumentation defect cannot
+            // be relabelled by a parse error. The verdict matches the one the
+            // export path already returns for a crate whose files map no lines.
+            //
+            // ⚠ Do not hoist this up beside `coverage_skip_reason`. Those three
+            // profiles return before pass 2 and so never run the crate's tests;
+            // this case deliberately sits after it, because "no production code
+            // to measure" says nothing about whether the crate's `tests/` suite
+            // passes, and that suite still has to gate.
+            //
+            // Deliberately keyed on the crate, not on which error pass 1 raised.
+            // Matching the no-profraw case by its message would break the moment
+            // anyone reworded it, and the breadth costs nothing: for a crate with
+            // no production code there is no pass-1 error that could have carried
+            // information about its coverage. A build failure cannot reach here
+            // at all — pass 2 builds the same crate, so `heavy_passed` is false.
+            //
+            // Rooted on `workspace_root` rather than left relative: `xshell`'s
+            // `change_dir` moves the SHELL's directory, and this crate refuses
+            // to `set_current_dir` because that is process-global. A bare
+            // relative path would therefore be resolved by `std::fs` against
+            // wherever the user happened to invoke `cargo xtask` from.
+            if heavy_passed
+                && crate::coverage::declares_no_production_code(
+                    &std::path::Path::new(&workspace_root).join(crate_path),
+                )
+            {
+                return Ok(CriterionResult {
+                    name: "1. Coverage",
+                    result: "(no production lines)".to_string(),
+                    grade: Grade::NotApplicable,
+                    threshold: "≥75%/≥90% A+",
+                    measured_detail:
+                        "no production code to instrument: src/ declares no items outside \
+                         #[cfg(test)], so no test binary carries a coverage map"
+                            .to_string(),
+                });
+            }
             let tests = if heavy_passed {
                 "tests passed"
             } else {
