@@ -977,6 +977,12 @@ fn grade_coverage(
             // be relabelled by a parse error. The verdict matches the one the
             // export path already returns for a crate whose files map no lines.
             //
+            // ⚠ Do not hoist this up beside `coverage_skip_reason`. Those three
+            // profiles return before pass 2 and so never run the crate's tests;
+            // this case deliberately sits after it, because "no production code
+            // to measure" says nothing about whether the crate's `tests/` suite
+            // passes, and that suite still has to gate.
+            //
             // Deliberately keyed on the crate, not on which error pass 1 raised.
             // Matching the no-profraw case by its message would break the moment
             // anyone reworded it, and the breadth costs nothing: for a crate with

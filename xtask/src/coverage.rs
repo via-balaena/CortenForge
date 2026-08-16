@@ -16,9 +16,18 @@
 //! Both distortions have one cause and one fix: measure only production lines,
 //! which is what "≥75 % coverage" was always meant to assert.
 //!
-//! Two pieces do the work. [`cfg_test_spans`] finds the line ranges that exist
-//! only under `cfg(test)`; [`mapped_lines`] reproduces llvm-cov's own
-//! line-coverage rule so those ranges can be subtracted line by line.
+//! Three pieces do that. [`is_own_production_file`] decides which files in the
+//! export are this crate's production sources at all; [`cfg_test_spans`] finds
+//! the line ranges within them that exist only under `cfg(test)`; and
+//! [`mapped_lines`] reproduces llvm-cov's own line-coverage rule so those ranges
+//! can be subtracted line by line.
+//!
+//! [`declares_no_production_code`] sits slightly outside that story. It answers
+//! a question the criterion also needs — not "which lines count" but "was there
+//! anything here to measure at all" — and it reads the crate's source rather
+//! than an export, because the crates it exists for never produce one. Its own
+//! rationale explains why that case is otherwise indistinguishable from a
+//! measurement that broke.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
