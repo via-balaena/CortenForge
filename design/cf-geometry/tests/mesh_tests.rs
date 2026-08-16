@@ -172,6 +172,89 @@ fn flipped_cube_inside_out() {
     assert!(cube.is_inside_out());
 }
 
+fn translated(mesh: &IndexedMesh, offset: Vector3<f64>) -> IndexedMesh {
+    let mut out = mesh.clone();
+    for v in &mut out.vertices {
+        *v += offset;
+    }
+    out
+}
+
+/// ★ Pins the claim [`IndexedMesh::signed_volume`]'s doc makes, in this crate
+/// rather than in a downstream one: with a single face flipped, the global
+/// test answers a question about the **caller's frame**, not about the mesh.
+///
+/// The flip is one triangle of twelve — face `[4, 5, 6]`, the top face. Its
+/// *first* index has to be something other than vertex 0, which `unit_cube`
+/// puts at the origin: `signed_volume` sums `v0 · (v1 × v2)` over origin-apex
+/// tetrahedra, so a face whose `v0` sits on the origin contributes exactly
+/// zero, and flipping that one would be invisible by construction.
+///
+/// Two frames, one mesh. Measured:
+///
+/// | | at the origin | translated 1e3 |
+/// |---|---|---|
+/// | flipped cube | `+0.667`, reads clean — **blind** | `-332.67` — **fires** |
+/// | clean cube (control) | `1` | `1` |
+///
+/// Near the origin the global test is blind; translated 1e3 — the scale
+/// anatomical meshes are kept at in their native frames — the very same
+/// defect fires. Nothing about the surface changed. The control is what makes
+/// the far assertion load-bearing: without the flip the volume is `1` in both
+/// frames, so `far_vol < 0.0` could not pass by accident of the transport.
+#[test]
+fn one_flipped_face_makes_the_global_volume_test_frame_dependent() {
+    const FAR: f64 = 1.0e3;
+
+    let mut flipped = unit_cube();
+    flipped.faces[2].swap(1, 2); // [4, 5, 6] -> [4, 6, 5]
+    let flipped_far = translated(&flipped, Vector3::new(0.0, 0.0, FAR));
+
+    let near_vol = flipped.signed_volume();
+    let far_vol = flipped_far.signed_volume();
+
+    // The surface itself is translation-invariant — same mesh, same defect.
+    assert!(
+        (flipped.surface_area() - flipped_far.surface_area()).abs() < 1e-9,
+        "the translation must not change the surface"
+    );
+
+    // At the origin: blind. Positive volume, clean verdict, defect present.
+    assert!(
+        near_vol > 0.0,
+        "at the origin the flip must leave the volume positive (blind); got {near_vol}"
+    );
+    assert!(
+        !flipped.is_inside_out(),
+        "at the origin the global test must report clean despite the flip"
+    );
+
+    // 1e3 out: the same mesh now reads inside-out.
+    assert!(
+        far_vol < 0.0,
+        "translated {FAR}, the same flipped cube must read inside-out; got {far_vol}"
+    );
+    assert!(
+        flipped_far.is_inside_out(),
+        "translated {FAR}, the global test must fire on the same defect"
+    );
+
+    // Negative control: without the flip, the verdict is frame-independent.
+    let clean = unit_cube();
+    let clean_far = translated(&clean, Vector3::new(0.0, 0.0, FAR));
+    assert!(
+        (clean.signed_volume() - clean_far.signed_volume()).abs() < 1e-9,
+        "a consistently wound closed mesh must be translation-invariant; \
+         {} vs {}",
+        clean.signed_volume(),
+        clean_far.signed_volume()
+    );
+    assert!(
+        !clean.is_inside_out() && !clean_far.is_inside_out(),
+        "the clean cube must read outward in both frames"
+    );
+}
+
 #[test]
 fn unit_cube_surface_area() {
     let cube = unit_cube();

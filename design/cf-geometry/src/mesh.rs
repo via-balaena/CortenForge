@@ -166,10 +166,21 @@ impl IndexedMesh {
     /// volume of `1.0` at the origin, then reads inside-out once translated
     /// 2 mm. Anatomical meshes are kept in native frames ~1e3 mm out.
     ///
-    /// ★ The sound instrument is `mesh_repair::winding_census` — per-edge,
-    /// seed-free and coordinate-free. `cf-geometry` cannot call it, and not by
-    /// oversight: `mesh-repair` depends on this crate, so the dependency would
-    /// be a cycle. Judge winding one layer up, where the census is reachable.
+    /// ★ The local instrument is `mesh_repair::winding_census` — per-edge,
+    /// seed-free and coordinate-free.
+    ///
+    /// ⚠ **A clean census is necessary, not sufficient.** It only ever compares
+    /// faces that share an edge, so it never compares two *disjoint* shells: a
+    /// mesh whose second shell is wound backwards reports zero inconsistent
+    /// edges while this function quietly nets one shell against the other.
+    /// Orientation across components needs a per-component verdict —
+    /// `cf_fsu_geometry::SurfaceReport`'s `inward_facing_components` is the
+    /// worked example. (And a per-shell verdict is not itself a defect test: a
+    /// genuine enclosed cavity is *correctly* wound inward.)
+    ///
+    /// `cf-geometry` can call none of them, and not by oversight: `mesh-repair`
+    /// depends on this crate, so the dependency would be a cycle. Judge winding
+    /// one layer up, where these are reachable.
     #[must_use]
     pub fn signed_volume(&self) -> f64 {
         let mut volume = 0.0;
