@@ -1649,8 +1649,10 @@ fn coverage_display(percent: f64) -> String {
 /// The 2026-08-16 census, run per-crate against the commit that introduced
 /// `has_lib_target` — 14 crates newly measured, of which **8 already pass**:
 /// cf-mjcf-emit 97.8, cf-msk-lib 95.7, cf-msk-fit 94.7, cf-osim 94.6,
-/// cf-studio-core 90.3, cf-codesign 87.2, cf-cast-cli 79.9, cf-studio 75.2.
-/// (Percentages as the tool prints them — truncated, see `coverage_display`.)
+/// cf-studio-core 90.3, cf-codesign 86.9-87.2, cf-cast-cli 79.9, cf-studio 75.2.
+/// (Truncated, as the tool prints them — see `coverage_display`. cf-codesign is
+/// given as a range because it does not reproduce; see the note on
+/// cf-studio-engine below.)
 /// The hole was mostly a MEASUREMENT hole, not a quality one. The six below
 /// are what it was hiding:
 const COVERAGE_REPORT_ONLY: &[&str] = &[
@@ -1671,14 +1673,17 @@ const COVERAGE_REPORT_ONLY: &[&str] = &[
     // 74.8-74.9 %, ONE line short. Left on the list rather than quietly fixed:
     // the census measures, it does not edit the crates it measures.
     //
-    // ⚠ And it is the crate that showed the coverage run is NOT reproducible
-    // to the line. Ten runs on one unchanged tree: 605/807 eight times,
-    // 604/807 twice, the difference a single line in `src/edit.rs` (318 vs
-    // 319 of 421). Cause unidentified — the JSON export is per file, not per
-    // line — but the verdict was stable, both readings falling under the bar.
-    // Whoever takes this crate over 75 % should add margin rather than the one
-    // line the arithmetic asks for, because the arithmetic has +/-1 of noise
-    // in it.
+    // ⚠ And it is one of the two crates that showed the coverage run is NOT
+    // reproducible to the line. Ten runs on one unchanged tree: 605/807 eight
+    // times, 604/807 twice, the difference a single line in `src/edit.rs`
+    // (318 vs 319 of 421). Re-measuring all fifteen census crates found one
+    // more, and larger — cf-codesign moved six lines, 1416/1622 to 1410/1622.
+    // Causes unidentified; the JSON export is per file, not per line.
+    //
+    // Verdicts were stable in both cases, which is why this is a caveat and
+    // not a defect. But whoever takes this crate over 75 % should add margin
+    // rather than the one line the arithmetic asks for, because the arithmetic
+    // carries a few lines of noise.
     "cf-studio-engine",
 ];
 

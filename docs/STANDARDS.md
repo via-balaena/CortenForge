@@ -54,9 +54,12 @@ targets, so their binaries emit usable profiles). `RUSTFLAGS` applies
 to every unit cargo builds, so instrumenting through `cargo llvm-cov`
 instrumented the whole dependency tree — and the report was then filtered back
 down to the crate's own files, discarding all of it. Because those lines were
-never counted, scoping the build cannot move the number; measured both ways,
-`sim-types` returns the same 192/271 lines and `cf-fsu-model` the same 84.2%.
-What it moves is the clock: `cf-fsu-model`'s grade went 3105 s → 17 s.
+never counted, scoping the build cannot move the number; measured both ways
+**at the time (`sim-types` 192/271, `cf-fsu-model` 84.2 %)**, each returned the
+same figure under both scopes. The agreement is the finding and it still
+stands; the figures are a snapshot and no longer current — #776 has since taken
+`sim-types` to 97.7 %. What scoping moves is the clock: `cf-fsu-model`'s grade
+went 3105 s → 17 s.
 
 ⚠ The tax that remains is the crate's *own* code, and it is large. Measured
 per lib suite, clean vs instrumented: `mesh-printability` 0.25 s → 41 s
@@ -83,9 +86,14 @@ it is being measured, so integration suites contribute coverage without gating.
 They are still gated — `grade`'s second pass runs the whole suite
 uninstrumented, doctests included.
 
-**When Coverage reports N/A rather than a percentage.** Four cases. Each says
-there is nothing to measure; none of them waives the threshold on code that
-exists. A crate with **no lib target** has nothing to instrument ("(bin-only)");
+**When Coverage reports N/A rather than a percentage.** Four cases say there
+was nothing to measure, and none of them waives the threshold on code that
+exists. ⚠ A fifth — **report-only**, below — is the deliberate exception: it
+reports N/A on code that very much exists, having measured it, and prints the
+percentage next to the verdict so the waiver is never mistaken for an absence.
+It is listed apart from these four precisely because it is not one of them.
+
+A crate with **no lib target** has nothing to instrument ("(bin-only)");
 a crate opting into `grading_profile = "integration-only"`
 declares it has no testable lib API; a crate whose files map no lines reports
 "(no production lines)"; and a crate whose `src/` declares **no items at all
@@ -157,7 +165,7 @@ that just appeared, which is why `cf-viewer` is not on it.
 The 2026-08-16 census, per crate, is the evidence the list rests on. **Eight of
 the fourteen newly-measured crates already passed** — cf-mjcf-emit 97.8 %,
 cf-msk-lib 95.7 %, cf-msk-fit 94.7 %, cf-osim 94.6 %, cf-studio-core 90.3 %,
-cf-codesign 87.2 %, cf-cast-cli 79.9 %, cf-studio 75.2 % — so what the skip hid
+cf-codesign 86.9–87.2 %, cf-cast-cli 79.9 %, cf-studio 75.2 % — so what the skip hid
 was mostly a measurement gap rather than a quality one. The six deferred are
 cf-scan-prep-core (0.0 % of 1560 lines, no test in the crate),
 cf-studio-gui (14.3 %, but 93.9 % over its library — 1657 lines are a Bevy GUI
@@ -173,14 +181,25 @@ Eight of the fifteen crates in the first census pass failed this way and had to
 be re-measured serially. CI is unaffected — `grade-all --shard i/N` fans out
 across separate jobs — but a local sweep must be serial.
 
-⚠ **The measurement is not reproducible to the line.** Ten `xtask grade`
-runs of `cf-studio-engine` on one unchanged tree returned 605/807 eight times
-and 604/807 twice — one line in `src/edit.rs`, cause unidentified, the JSON
-export being per file rather than per line. The verdict was stable (both
-readings sit under the bar), but the *number* moved, and with it the printed
-percentage: 74.9 % against 74.8 %. Treat a "N lines short" figure as carrying
-about a line of noise, and give a crate margin over the threshold rather than
-equality with it.
+⚠ **The measurement is not reproducible to the line.** Re-measuring all
+fifteen census crates on an unchanged tree, **two did not reproduce**:
+
+- `cf-studio-engine` — 605/807 eight times and 604/807 twice over ten runs, the
+  whole difference one line in `src/edit.rs`.
+- `cf-codesign` — 1416/1622 then 1410/1622, six lines, 87.2 % against 86.9 %.
+
+Causes unidentified: the JSON export is per file, not per line, so pinning the
+statements needs raw llvm-cov data. Both crates are plausible candidates for it
+— an orchestrator and an optimizer, the shapes whose tests carry convergence,
+timing or thread-ordering branches.
+
+**Verdicts were stable in both cases** (each crate landed the same side of the
+bar every run), which is the property that matters most, and is the reason this
+is a caveat rather than a defect. But the *numbers* moved, and with them the
+printed percentages. So: treat a per-crate figure as carrying up to a few lines
+of noise, quote a range rather than a decimal when it matters, and give a crate
+margin over the threshold rather than equality with it. A crate sitting exactly
+on 75.0 % is not reliably an A.
 
 **Percentages are truncated, not rounded**, so the printed figure is never
 above the graded one. `cf-studio-engine` at 605/807 = 74.969 % would otherwise
