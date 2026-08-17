@@ -67,7 +67,7 @@ act -j clippy
 
 The `.actrc` file is pre-configured for this project.
 
-### Local Coverage — and why it is not optional
+### Local Coverage — the only place it is checked
 
 ```bash
 # The instrument the A-grade standard is defined by. Cross-platform;
@@ -75,18 +75,16 @@ The `.actrc` file is pre-configured for this project.
 cargo xtask grade <crate>          # criterion 1 reports the number
 ```
 
-⚠ **PR CI does not measure coverage, so nothing catches a regression except
-this command.** `quality-gate.yml` passes `--skip-coverage` on every shard; the
+⚠ **PR CI does not measure coverage, so nothing but this command catches a
+regression.** `quality-gate.yml` passes `--skip-coverage` on every shard; the
 only CI-side coverage is a weekly `scheduled.yml` job, which uses a different
-instrument (tarpaulin) at workspace granularity and has failed every run since
-2026-06-28. Verified 2026-08-16.
+instrument at workspace granularity and has failed every run since 2026-06-28.
+Run `xtask grade` on any crate you touch, before you push.
 
-Two corrections to what this section used to say, both measured rather than
-assumed: coverage is **not** enforced by CI, and it is **not** Linux-only —
-`xtask grade` runs on macOS and Windows, and the whole 2026-08-16 per-crate
-census was taken on Apple Silicon. Do not reach for `cargo tarpaulin` to
-predict your grade; it is a different instrument over a different scope and
-will not agree with the number that governs.
+Do not reach for `cargo tarpaulin` to predict your grade — different
+instrument, different scope, and it will not agree with the number that
+governs. And it is not Linux-only: `xtask grade` runs on macOS and Windows,
+and the 2026-08-16 per-crate census was taken on Apple Silicon.
 
 ---
 
