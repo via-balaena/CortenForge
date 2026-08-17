@@ -134,11 +134,19 @@ never "not measured", which is the distinction §7 exists to protect.
 at all: `quality-gate.yml` passes `--skip-coverage` on every shard, so no PR
 job measures coverage, and the only CI-side coverage is the weekly tarpaulin
 run — a different instrument over a different scope, and failing every week
-since 2026-06-28. The list is forward-looking. Whoever replaces that weekly job
-with `grade-all` sans `--skip-coverage` gets a job that comes up green with a
-printed backlog instead of red on its first run, and a gate that is red from
-minute one gets switched off rather than paid down. Until then it shapes local
+since 2026-06-28. The list is forward-looking, for whoever replaces that weekly
+job with `grade-all` sans `--skip-coverage`. Until then it shapes local
 `xtask grade` output, which is where the backlog wants to be visible anyway.
+
+⚠ And it will **not** make that job green. `cf-viewer` is measured, fails at
+33.8 %, and is deliberately not deferred; the other crates already known to sit
+under the bar — sim-core, sim-mjcf, sim-bevy, cf-device-geometry — are not
+deferred either. A full coverage run goes red on its first execution, and
+should. What the list changes is *which* red: the failures are crates whose
+debt was already known and owned, not fourteen that a grader change lit up
+overnight. That is the line it draws — **newly revealed** versus **already
+tracked** — and it is a smaller claim than "the job comes up green", which is
+what this paragraph said before someone checked it against `cf-viewer`.
 
 The list is a finite to-do in `grade.rs`, not a rule: a crate added to `tools/`
 tomorrow is enforced from its first grade, and enforcing one of these is a

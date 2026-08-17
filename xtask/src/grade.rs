@@ -318,9 +318,25 @@ pub(crate) fn classify_crate(crate_path: &str, cargo_toml_text: &str) -> CratePr
 /// The fix is the same shape — take the fact as an argument instead of
 /// inferring it from where the crate happens to live.
 ///
-/// `autolib = false` (Rust 2024) suppresses the `src/lib.rs` discovery, so it
-/// is honoured here; a crate that sets it and declares `[lib]` anyway still has
-/// the target, which is why the explicit table is checked first.
+/// ★★ **Cross-checked against an instrument sharing no code with it.** Over
+/// all 301 workspace members, this function's answer matches the target list
+/// `cargo metadata` reports — zero disagreements — and the
+/// `Example`/`Xtask`-with-a-library set it produces is exactly the 14 crates
+/// the 2026-08-16 census measured. So the newly-measured set is *complete*,
+/// not merely plausible, and the report-only list below is sized against all
+/// of it.
+///
+/// `autolib = false` (Rust 2024; this workspace is edition 2024) suppresses
+/// the `src/lib.rs` discovery, so it is honoured here; a crate that sets it and
+/// declares `[lib]` anyway still has the target, which is why the explicit
+/// table is checked first.
+///
+/// ⚠ **That one branch is the part the cross-check could not reach**: no crate
+/// in the workspace sets `autolib`, so the 301/301 agreement above says nothing
+/// about it. It has a unit test and follows Cargo's documented behaviour, but
+/// it has never been confronted with a real manifest. If it is wrong, the
+/// error is a silent skip — the bad direction — so a crate that sets `autolib`
+/// deserves a look at its grade rather than trust in this line.
 ///
 /// ⚠ Errs toward "has a lib" whenever the manifest will not parse: the caller
 /// then MEASURES rather than skipping, and a measurement that should not have
@@ -1588,13 +1604,19 @@ fn coverage_display(percent: f64) -> String {
 /// `quality-gate.yml` runs `grade-all --skip-coverage` on every shard, so no
 /// PR job measures coverage at all; the only CI-side coverage is a weekly
 /// tarpaulin run, a different instrument on a different scope, red for months.
-/// This list is therefore forward-looking, and that is the honest argument
-/// for it: whoever replaces that weekly job with `grade-all` sans
-/// `--skip-coverage` gets a job that comes up green with a printed backlog
-/// rather than red on its first run. A gate that is red from minute one gets
-/// switched off; one that is green with a to-do beside it survives long enough
-/// to be paid down. Until then, the deferral only shapes local `xtask grade`
-/// output — which is exactly where the backlog wants to be visible.
+/// This list is therefore forward-looking, for whoever replaces that weekly
+/// job with `grade-all` sans `--skip-coverage`. Until then the deferral only
+/// shapes local `xtask grade` output — which is exactly where the backlog
+/// wants to be visible.
+///
+/// ⚠ **It will not make that job green, and this doc claimed it would.**
+/// `cf-viewer` is measured, fails at 33.8 %, and is deliberately not on this
+/// list; sim-core, sim-mjcf, sim-bevy and cf-device-geometry are not on it
+/// either. A full coverage run goes red on its first execution and should.
+/// What the list changes is *which* red — failures owned by crates whose debt
+/// was already tracked, rather than fourteen a grader change lit up overnight.
+/// **Newly revealed** versus **already owned** is the whole line it draws, and
+/// it is a smaller claim than the one that was written here first.
 ///
 /// ★ **Finite and explicit by construction.** A crate added to `tools/`
 /// tomorrow is enforced from its first grade, because it is not on this list
