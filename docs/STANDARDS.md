@@ -125,20 +125,20 @@ a property nobody had checked.
 threshold is deferred for the six that fail while it is enforced for everyone
 else. A deferred crate prints its real percentage with `(report-only)` beside
 it and a detail line naming the grade it *would* have taken; only the
-**threshold** is waived.
-
-⚠ Not to protect today's CI, which cannot go red from this: `quality-gate.yml`
-passes `--skip-coverage` on every shard, so no PR job measures coverage, and
-the only CI-side coverage is a weekly tarpaulin run — a different instrument
-over a different scope. The deferral is forward-looking. Whoever replaces that
-weekly job with `grade-all` sans `--skip-coverage` gets a job that comes up
-green with a printed backlog instead of red on its first run, and a gate that
-is red from minute one gets switched off rather than paid down. Until then it
-shapes local `xtask grade` output, which is where the backlog wants to be
-visible anyway. Failing tests, Clippy, Safety, Documentation and
+**threshold** is waived. Failing tests, Clippy, Safety, Documentation and
 Dependencies gate these crates exactly as they gate every other, and a red test
 run is never waivable. So green here means "measured, enforcement deferred" —
 never "not measured", which is the distinction §7 exists to protect.
+
+⚠ The deferral does **not** protect today's CI, which cannot go red from this
+at all: `quality-gate.yml` passes `--skip-coverage` on every shard, so no PR
+job measures coverage, and the only CI-side coverage is the weekly tarpaulin
+run — a different instrument over a different scope, and failing every week
+since 2026-06-28. The list is forward-looking. Whoever replaces that weekly job
+with `grade-all` sans `--skip-coverage` gets a job that comes up green with a
+printed backlog instead of red on its first run, and a gate that is red from
+minute one gets switched off rather than paid down. Until then it shapes local
+`xtask grade` output, which is where the backlog wants to be visible anyway.
 
 The list is a finite to-do in `grade.rs`, not a rule: a crate added to `tools/`
 tomorrow is enforced from its first grade, and enforcing one of these is a
