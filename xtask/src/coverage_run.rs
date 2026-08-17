@@ -45,12 +45,19 @@
 //! the old run recorded — its exact counts were never printed, and re-running
 //! the old pipeline to recover them costs 51 minutes for a digit.
 //!
-//! ⚠ Re-running these today will not reproduce every row. The table predates
-//! the `--lib` → `--lib --tests` change: `sim-types` has no `tests/` directory
-//! so its 192/271 still holds exactly, but `cf-fsu-model` has 4 integration
-//! tests, so its 84.2 % may now read higher. The A/B's *claim* — that scoping
-//! instrumentation cannot move the number — is unaffected; only the absolute
-//! figures are of their moment.
+//! ⚠ Re-running these today reproduces none of the coverage rows, and the
+//! reason is worth keeping. The table predates the `--lib` → `--lib --tests`
+//! change, so `cf-fsu-model`'s 84.2 % was expected to drift once its 4
+//! integration tests began counting. `sim-types` was called out as the row
+//! that would survive — no `tests/` directory, so nothing new to count — and
+//! it drifted anyway: #776 added `#[cfg(test)]` units in `src/`, taking it to
+//! **97.7 %** (measured 2026-08-17). The exception was reasoned about the one
+//! axis that moves a figure and overtaken by another: somebody wrote tests.
+//!
+//! The A/B's *claim* — that scoping instrumentation cannot move the number —
+//! is unaffected, because it rests on the two pipelines agreeing with each
+//! other on one tree, not on either figure surviving the tree changing. Read
+//! every absolute number here as of its moment.
 //!
 //! [`own_files_in_export`] re-checks the load-bearing half on every run.
 //!

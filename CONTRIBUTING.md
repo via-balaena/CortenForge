@@ -193,14 +193,24 @@ shared resource in a comment.**
 Every push and PR runs:
 
 ```yaml
-- cargo fmt --check          # Formatting is law
-- cargo clippy -D warnings   # All warnings are errors
-- cargo test --all-features  # Tests must pass
-- cargo doc -D warnings      # Docs must build clean
-# NOTE: coverage is NOT in PR CI — `grade-all` runs with --skip-coverage.
-# `cargo xtask grade <crate>` locally is the only thing that checks it.
-- no bevy in Layer 0         # Architecture enforced
+cargo fmt --all -- --check                        # formatting is law
+cargo xtask grade-all --skip-coverage --shard i/3 # criteria 2-7, three shards
+cargo test <affected crates>                      # debug, PR-scoped
+cargo nextest run --release <heavy crates>        # stochastic-physics validators
 ```
+
+`grade-all` is what enforces Clippy, Documentation, Safety, Dependencies, Layer
+Integrity and WASM — CI does not invoke `cargo clippy -D warnings` or
+`cargo doc -D warnings` directly, it grades them. Two things that block a merge
+are therefore easy to mispredict from the command line alone, so check the
+grader's own output with `cargo xtask grade <crate>`.
+
+⚠ **Not run in CI, despite what you might expect:**
+- **Coverage** (criterion 1) — `--skip-coverage` on every shard. Local only.
+- **`--all-features` test sweep** — deliberately excluded; Layer Integrity in
+  the grader covers all-features cleanliness without re-paying the compile.
+- **`no bevy in Layer 0`** as a standalone check — it is criterion 6 (Layer
+  Integrity) inside the grader, not a separate job.
 
 ### What CI Cannot Check
 
