@@ -733,14 +733,30 @@ mod tests {
     /// The default state must be OFF. Clipping is a diagnostic view; a scene
     /// that opened with half its geometry cut away would read as broken
     /// geometry rather than as an enabled tool.
+    ///
+    /// ★ `DEFAULT_T` is asserted to BE the midpoint, not merely to be what
+    /// `default()` copies. Comparing the two alone is satisfied by any value
+    /// they happen to share, so it would not notice the constant drifting away
+    /// from the documented intent — "workshop case is peek inside the middle
+    /// first".
     #[test]
     fn the_default_clip_plane_is_disabled_at_the_midpoint() {
         let s = ClipPlaneState::default();
 
         assert!(!s.enabled, "clipping must be opt-in");
         assert!(!s.flip);
-        assert!((s.t - DEFAULT_T).abs() < TOL);
-        assert!((s.roll_rad - DEFAULT_ROLL_RAD).abs() < TOL);
+        assert!(
+            (s.t - DEFAULT_T).abs() < TOL,
+            "default() must use DEFAULT_T"
+        );
+        assert!(
+            (s.roll_rad - DEFAULT_ROLL_RAD).abs() < TOL,
+            "default() must use DEFAULT_ROLL_RAD"
+        );
+        assert!(
+            (DEFAULT_T - 0.5).abs() < TOL,
+            "DEFAULT_T is documented as the MIDPOINT of the centerline; got {DEFAULT_T}"
+        );
         assert!(
             (0.0..=1.0).contains(&s.t),
             "the default position must be a legal arc fraction"
