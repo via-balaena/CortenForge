@@ -1400,8 +1400,11 @@ fn grade_coverage(
     // Say what was left out. A metric that silently drops lines reads as
     // "everything was measured" when it was not.
     let mut detail = format!(
-        "{:.1}% production line coverage ({}/{} lines; {} test lines excluded)",
-        coverage, measured.covered, measured.total, measured.excluded
+        "{} production line coverage ({}/{} lines; {} test lines excluded)",
+        coverage_display(coverage),
+        measured.covered,
+        measured.total,
+        measured.excluded
     );
     // Reported whenever a binary target contributed lines, because the graded
     // figure above spans both and a reader cannot otherwise tell a weak library
@@ -1434,7 +1437,7 @@ fn grade_coverage(
     if heavy_passed && is_coverage_report_only(crate_name) {
         return Ok(CriterionResult {
             name: "1. Coverage",
-            result: format!("{:.1}% (report-only)", coverage),
+            result: format!("{} (report-only)", coverage_display(coverage)),
             grade: Grade::NotApplicable,
             threshold: "≥75%/≥90% A+",
             measured_detail: format!(
@@ -1447,11 +1450,25 @@ fn grade_coverage(
 
     Ok(CriterionResult {
         name: "1. Coverage",
-        result: format!("{:.1}%", coverage),
+        result: coverage_display(coverage),
         grade,
         threshold: "≥75%/≥90% A+",
         measured_detail: detail,
     })
+}
+
+/// Format a coverage percentage for display, **truncated rather than rounded**.
+///
+/// `{:.1}` rounds, so a crate at 74.969 % prints "75.0%" in the same row as a
+/// grade of `B` — a figure that contradicts the verdict beside it, and the
+/// exact shape of defect this criterion keeps being fixed for. Found on
+/// `cf-studio-engine` (605/807) in the 2026-08-16 census.
+///
+/// Truncating guarantees the printed number is never above the one that was
+/// graded, so a displayed `75.0%` always means the threshold was really met.
+/// The unrounded counts are printed beside it either way, so nothing is lost.
+fn coverage_display(percent: f64) -> String {
+    format!("{:.1}%", (percent * 10.0).floor() / 10.0)
 }
 
 /// Crates whose coverage is measured and printed but does not yet gate.
@@ -1473,7 +1490,39 @@ fn grade_coverage(
 /// green here means "measured, enforcement deferred", never "not measured".
 /// That distinction is the whole point of #772–#774 and this list is written
 /// to stay on the right side of it.
-const COVERAGE_REPORT_ONLY: &[&str] = &[];
+///
+/// ⚠ **`cf-viewer` is deliberately absent.** It was already measured and
+/// already failing before this change, so deferring it would not be leniency
+/// toward a newly-lit crate — it would switch OFF a gate that fires today.
+/// Report-only is for what the measurement fix newly revealed, never for what
+/// it found already lit.
+///
+/// The 2026-08-16 census, run per-crate against the commit that introduced
+/// `has_lib_target` — 14 crates newly measured, of which **8 already pass**:
+/// cf-mjcf-emit 97.8, cf-msk-lib 95.7, cf-msk-fit 94.7, cf-osim 94.6,
+/// cf-studio-core 90.3, cf-codesign 87.2, cf-cast-cli 79.9, cf-studio 75.2.
+/// (Percentages as the tool prints them — truncated, see `coverage_display`.)
+/// The hole was mostly a MEASUREMENT hole, not a quality one. The six below
+/// are what it was hiding:
+const COVERAGE_REPORT_ONLY: &[&str] = &[
+    // 0.0 % of 1560 lines — no test anywhere in the crate. The largest single
+    // untested body of code the census found, and the one that most deserves
+    // to stop being report-only.
+    "cf-scan-prep-core",
+    // 14.3 % of 1955 lines, but 93.9 % over its LIBRARY: 1657 of those lines
+    // are a Bevy GUI binary. Second independent instance of the shape
+    // `cf-viewer` shows, and the stronger one.
+    "cf-studio-gui",
+    // 0.0 % of 131 lines — shared helper library for the ML examples.
+    "example-ml-shared",
+    // 69.6 %, 25 lines short.
+    "pbit-analyze",
+    // 71.1 %, 13 lines short.
+    "cf-anthro",
+    // 74.969 %, ONE line short. Left on the list rather than quietly fixed:
+    // the census measures, it does not edit the crates it measures.
+    "cf-studio-engine",
+];
 
 /// Whether `crate_name` is on [`COVERAGE_REPORT_ONLY`].
 fn is_coverage_report_only(crate_name: &str) -> bool {
@@ -4370,6 +4419,44 @@ serde = \"1\"
             assert!(is_coverage_report_only(name));
         }
         assert!(!is_coverage_report_only("sim-types"));
+    }
+
+    /// ⚠ Deferring a crate that ALREADY gated would be a regression dressed as
+    /// leniency — the waiver exists for crates the measurement fix newly lit,
+    /// and `cf-viewer` was failing this criterion before the fix landed.
+    #[test]
+    fn a_crate_that_already_gated_is_not_deferred() {
+        assert!(
+            !is_coverage_report_only("cf-viewer"),
+            "cf-viewer was measured and failing before has_lib_target existed"
+        );
+    }
+
+    /// ★★ The displayed percentage must never contradict the grade printed
+    /// beside it.
+    ///
+    /// `cf-studio-engine` measured 605/807 = 74.969 % in the 2026-08-16 census
+    /// and rounded to "75.0%" — sitting in the same row as a `B`, one line
+    /// under the A threshold, reading as a grader bug to anyone who looked.
+    #[test]
+    fn a_percentage_just_under_the_bar_never_displays_as_the_bar() {
+        let just_under = 100.0 * 605.0 / 807.0;
+        assert!(just_under < 75.0, "the real cf-studio-engine measurement");
+        assert_eq!(
+            coverage_display(just_under),
+            "74.9%",
+            "rounding would print 75.0% next to a B"
+        );
+    }
+
+    /// The complement: truncation must not steal a tenth from a crate that
+    /// genuinely cleared the bar, or the contradiction just changes sign.
+    #[test]
+    fn a_percentage_at_or_above_the_bar_still_displays_at_the_bar() {
+        assert_eq!(coverage_display(75.0), "75.0%");
+        assert_eq!(coverage_display(75.09), "75.0%");
+        assert_eq!(coverage_display(100.0), "100.0%");
+        assert_eq!(coverage_display(0.0), "0.0%");
     }
 
     // === scan_file_safety — #[allow(clippy::{unwrap,expect}_used)] honoring ===

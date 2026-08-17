@@ -114,6 +114,44 @@ only when Cargo would build no lib target for it — no `[lib]` table, no
 zone closed in §7: a gate whose green meant "not measured" while its text named
 a property nobody had checked.
 
+**Report-only crates.** Turning that skip off lit 14 crates at once, so the
+threshold is deferred for the six that fail while it is enforced for everyone
+else. A deferred crate prints its real percentage with `(report-only)` beside
+it and a detail line naming the grade it *would* have taken; only the
+**threshold** is waived. Failing tests, Clippy, Safety, Documentation and
+Dependencies gate these crates exactly as they gate every other, and a red test
+run is never waivable. So green here means "measured, enforcement deferred" —
+never "not measured", which is the distinction §7 exists to protect.
+
+The list is a finite to-do in `grade.rs`, not a rule: a crate added to `tools/`
+tomorrow is enforced from its first grade, and enforcing one of these is a
+deletion. A crate that was **already** being measured and failing is never
+added — that would switch off a gate that fires today rather than defer one
+that just appeared, which is why `cf-viewer` is not on it.
+
+The 2026-08-16 census, per crate, is the evidence the list rests on. **Eight of
+the fourteen newly-measured crates already passed** — cf-mjcf-emit 97.8 %,
+cf-msk-lib 95.7 %, cf-msk-fit 94.7 %, cf-osim 94.6 %, cf-studio-core 90.3 %,
+cf-codesign 87.2 %, cf-cast-cli 79.9 %, cf-studio 75.2 % — so what the skip hid
+was mostly a measurement gap rather than a quality one. The six deferred are
+cf-scan-prep-core (0.0 % of 1560 lines, no test in the crate),
+cf-studio-gui (14.3 %, but 93.9 % over its library — 1657 lines are a Bevy GUI
+binary), example-ml-shared (0.0 % of 131), pbit-analyze (69.6 %, 25 lines
+short), cf-anthro (71.1 %, 13 short) and cf-studio-engine (74.969 %, **one**
+line short).
+
+⚠ **`xtask grade` cannot be run concurrently with itself.** The instrumented
+build uses one shared coverage target directory and resets it whenever the
+crate under measurement changes, so two grades running at once delete each
+other's build and surface as "measurement failed" / "Directory not empty".
+Eight of the fifteen crates in the first census pass failed this way and had to
+be re-measured serially. CI is unaffected — `grade-all --shard i/N` fans out
+across separate jobs — but a local sweep must be serial.
+
+**Percentages are truncated, not rounded**, so the printed figure is never
+above the graded one. `cf-studio-engine` at 605/807 = 74.969 % would otherwise
+print "75.0%" in the same row as its `B`.
+
 **Library lines and binary lines are reported apart.** The graded percentage
 spans both, unchanged. But a crate with a large `main.rs` is held to a bar its
 binary structurally cannot clear — `.run()`, `Cli::parse()` and an event loop
@@ -121,10 +159,13 @@ are not unit-testable — so when a binary target contributes lines, the detail
 line also reports the figure over library lines alone, and the triage table
 marks the binary root `(binary target)`. Measured on `cf-viewer`: 33.8 % overall
 against 57.7 % over its library, with 460 of 1082 production lines in
-`src/main.rs` at 1.5 %. Reported only; **excluding binary lines from the grade
-is deliberately not done here**, because it would make `main.rs` a place where
-logic stops being measured — the dead zone this section just finished closing.
-The number exists so that decision can be taken on evidence.
+`src/main.rs` at 1.5 %. The census found a second, stronger instance:
+`cf-studio-gui` reads 14.3 % overall and **93.9 % over its library**, because
+1657 of its 1955 lines are a Bevy GUI binary. Reported only; **excluding binary
+lines from the grade is deliberately not done here**, because it would make
+`main.rs` a place where logic stops being measured — the dead zone this section
+just finished closing. The number exists so that decision can be taken on
+evidence.
 
 **Where the uncovered lines are.** A percentage says a crate needs tests; it
 does not say where to write them. `grade` therefore prints a per-file breakdown
@@ -139,7 +180,7 @@ so the biggest win is the top row:
 ```
 
 That is `sim-types`' real output at 70.8 % (192/271), **as measured
-2026-08-15**; #776 has since taken the crate to 97.8 % by testing those two
+2026-08-15**; #776 has since taken the crate to 97.7 % by testing those two
 files, so the shape is the illustration and the numbers are a snapshot. The
 third measured file, `src/error.rs`, is at 100 % and so is not a row — it
 appears under `--json`, which lists every measured file.
