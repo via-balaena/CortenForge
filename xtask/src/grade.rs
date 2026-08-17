@@ -1412,9 +1412,14 @@ fn grade_coverage(
     // `ProductionCoverage::lib_percent` for why that decision waits on this
     // number existing.
     if let Some(lib_only) = lib_only.filter(|_| bin_total > 0) {
+        // Through the same truncating formatter as the graded figure. Rounding
+        // just this one would put 94.0 % beside a 93.9 % everywhere else it is
+        // quoted — the drift is small, and small drift between a tool and its
+        // own documentation is exactly what stops a reader trusting either.
         detail.push_str(&format!(
-            "; {lib_only:.1}% over library lines alone \
-             ({bin_total} line(s) in binary targets, {bin_covered} covered)"
+            "; {} over library lines alone \
+             ({bin_total} line(s) in binary targets, {bin_covered} covered)",
+            coverage_display(lib_only)
         ));
     }
     if !measured.unparsed.is_empty() {
@@ -4412,9 +4417,13 @@ serde = \"1\"
         assert!(has_lib_target(&root, "this is not [ valid toml"));
     }
 
-    /// The report-only list is a to-do, so its shape is asserted rather than
-    /// its contents: every name must be a real workspace crate, or a rename
-    /// would silently un-defer a crate nobody looked at again.
+    /// Asserts the list's SHAPE, not that its names resolve to real crates.
+    ///
+    /// Deliberately: a stale name simply stops deferring a crate, which turns
+    /// the build red rather than hiding anything, so the failure mode is
+    /// fail-safe and does not need a gate. A duplicate is the case worth
+    /// catching, because two spellings of one intent is how a list like this
+    /// starts drifting from the thing it is a to-do for.
     #[test]
     fn every_report_only_name_is_spelled_once() {
         let mut seen = std::collections::BTreeSet::new();
