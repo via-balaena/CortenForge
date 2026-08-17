@@ -604,34 +604,12 @@ fn print_coverage_triage(report: &GradeReport) {
     );
     println!("{}", "      uncovered  covered  file".dimmed());
     for f in worst.iter().take(TRIAGE_ROWS) {
-        // An unparsed file's counts include its test lines, so the row is an
-        // over-estimate and may outrank honest ones. Say so on the row itself:
-        // the crate-level warning says how many files, not which, and the rank
-        // is what a reader acts on.
-        let caveat = if f.test_lines_counted {
-            "  ⚠ unparsed, so test lines are counted here"
-                .yellow()
-                .to_string()
-        } else {
-            String::new()
-        };
-        // A binary root is ranked and counted like any other file — the marker
-        // says only that its lines belong to a target whose entry point cannot
-        // be unit-tested, so a reader does not go hunting for a way to cover
-        // `.run()`. It is the one row where a high uncovered count may be the
-        // shape of the target rather than a gap in the tests.
-        let target = if f.is_bin {
-            "  (binary target)".dimmed().to_string()
-        } else {
-            String::new()
-        };
+        let (target, caveat) = triage_row_markers(f);
         println!(
-            "      {:>9}  {:>7}  {}{}{}",
-            f.uncovered(),
-            format!("{:.1}%", f.percent()),
-            f.file,
-            target,
-            caveat
+            "{}{}{}",
+            triage_row_prefix(f),
+            target.dimmed(),
+            caveat.yellow()
         );
     }
     if let Some((rest, rest_lines)) = triage_tail(&worst, TRIAGE_ROWS) {
@@ -652,6 +630,48 @@ fn print_coverage_triage(report: &GradeReport) {
 /// tail line makes is checkable — the count and the line sum have to skip
 /// exactly the rows the table printed, and a table that under-reports its own
 /// truncation is the silent cap the cap was allowed on condition of avoiding.
+/// A triage row up to its markers: count, percentage, path.
+///
+/// Carries the percentage FORMATTING, not just the number, which is the point
+/// of extracting it. Testing `coverage_display(f.percent())` by hand proves
+/// the formatter truncates; it does not prove this row calls it, and a
+/// mutation that put `{:.1}` back at the call site survived a sweep that a
+/// hand-composed assertion was supposed to have covered.
+fn triage_row_prefix(f: &crate::coverage::FileCoverage) -> String {
+    format!(
+        "      {:>9}  {:>7}  {}",
+        f.uncovered(),
+        coverage_display(f.percent()),
+        f.file
+    )
+}
+
+/// The two markers a triage row can carry, plain — the caller styles them.
+///
+/// `(binary target, unparsed caveat)`. Extracted for the same reason
+/// [`triage_tail`] beside it was: a row assembled inline inside `println!` is a
+/// row no test reads, and a 2026-08-16 mutation sweep confirmed it — dropping
+/// the binary marker entirely left the suite green.
+///
+/// - A binary root is ranked and counted like any other file. The marker says
+///   only that its lines belong to a target whose entry point cannot be
+///   unit-tested, so a reader does not go hunting for a way to cover `.run()`.
+///   It is the one row where a high uncovered count may be the shape of the
+///   target rather than a gap in the tests.
+/// - An unparsed file's counts include its test lines, so the row is an
+///   over-estimate and may outrank honest ones. The crate-level warning says
+///   how many files, not which, and the rank is what a reader acts on.
+fn triage_row_markers(f: &crate::coverage::FileCoverage) -> (&'static str, &'static str) {
+    (
+        if f.is_bin { "  (binary target)" } else { "" },
+        if f.test_lines_counted {
+            "  ⚠ unparsed, so test lines are counted here"
+        } else {
+            ""
+        },
+    )
+}
+
 fn triage_tail(worst: &[&crate::coverage::FileCoverage], cap: usize) -> Option<(usize, u64)> {
     let rest = worst.len().checked_sub(cap).filter(|n| *n > 0)?;
     Some((rest, worst.iter().skip(cap).map(|f| f.uncovered()).sum()))
@@ -1369,11 +1389,47 @@ fn grade_coverage(
     // while contributing nothing. See coverage.rs.
     let measured = crate::coverage::production_coverage(&run.json, crate_path);
 
+    // The whole verdict — thresholds, the report-only deferral, and every
+    // sentence of the detail line — is decided by `coverage_result`, which
+    // touches no Shell and no filesystem. Extracted for exactly the reason
+    // `count_unjustified_allows_in_tree` and `scan_file_safety` were: a
+    // decision reachable only through a real llvm-cov run is a decision no
+    // test drives, and a 2026-08-16 mutation sweep proved it — the report-only
+    // block, the library-only detail and the binary-target marker could each
+    // be deleted whole with every test still green.
+    let result = coverage_result(crate_name, &measured, heavy_passed);
+
+    // Unconditional, and still honours "a non-empty `files_out` means these
+    // files were measured": the one verdict above that measured nothing is
+    // `(no production lines)`, which is returned exactly when `total == 0` —
+    // and `total` only ever grows in the same branch that pushes a row, so a
+    // zero total already implies an empty `files`. Assigning it moves an empty
+    // vec. Guarding on the grade instead would be a second, weaker statement
+    // of the same invariant, free to drift from it.
+    *files_out = measured.files;
+    Ok(result)
+}
+
+/// Criterion 1's verdict, from a finished measurement. Pure: no `Shell`, no
+/// filesystem, no cargo.
+///
+/// ★ Split out so the branches a reader most needs to trust — the deferral,
+/// the "a red suite is never waivable" rule, the library-only line — are
+/// reachable from a unit test. They were not: a mutation sweep on
+/// 2026-08-16 deleted the report-only block, the library-only detail and the
+/// binary-target marker one at a time, and the suite stayed green through all
+/// three. Same principle that pulled the file-walking half out of criteria 3
+/// and 4.
+fn coverage_result(
+    crate_name: &str,
+    measured: &crate::coverage::ProductionCoverage,
+    heavy_passed: bool,
+) -> CriterionResult {
     // No production lines is a different fact from bad coverage, and from a
     // broken report. Grading it F would send a reader hunting for uncovered
     // code, or for a parse bug, when neither exists.
     let Some(coverage) = measured.percent() else {
-        return Ok(CriterionResult {
+        return CriterionResult {
             name: "1. Coverage",
             result: "(no production lines)".to_string(),
             grade: Grade::NotApplicable,
@@ -1382,16 +1438,8 @@ fn grade_coverage(
                 "no instrumented production lines ({} test lines excluded)",
                 measured.excluded
             ),
-        });
+        };
     };
-
-    // Read before the move below, which takes `files` out of `measured`.
-    let lib_only = measured.lib_percent();
-    let (bin_total, bin_covered) = (measured.bin_total, measured.bin_covered);
-
-    // Past the guard, so this is only ever a real measurement. Moved rather
-    // than cloned; the fields read below are the scalars and `unparsed`.
-    *files_out = measured.files;
 
     // Two-tier thresholds (F1): A+ >= 90%, A >= 75%, B >= 60%, C >= 40%, F < 40%
     // Heavy test failure overrides to F regardless of coverage %.
@@ -1422,16 +1470,16 @@ fn grade_coverage(
     // figure above spans both and a reader cannot otherwise tell a weak library
     // from a large `main.rs`. Not yet subtracted — see
     // `ProductionCoverage::lib_percent` for why that decision waits on this
-    // number existing.
-    if let Some(lib_only) = lib_only.filter(|_| bin_total > 0) {
-        // Through the same truncating formatter as the graded figure. Rounding
-        // just this one would put 94.0 % beside a 93.9 % everywhere else it is
-        // quoted — the drift is small, and small drift between a tool and its
-        // own documentation is exactly what stops a reader trusting either.
+    // number existing. Through the same truncating formatter as the graded
+    // figure: rounding just this one would put 94.0 % beside the 93.9 %
+    // everywhere else it is quoted, and small drift between a tool and its own
+    // documentation is what stops a reader trusting either.
+    if let Some(lib_only) = measured.lib_percent().filter(|_| measured.bin_total > 0) {
         detail.push_str(&format!(
-            "; {} over library lines alone \
-             ({bin_total} line(s) in binary targets, {bin_covered} covered)",
-            coverage_display(lib_only)
+            "; {} over library lines alone ({} line(s) in binary targets, {} covered)",
+            coverage_display(lib_only),
+            measured.bin_total,
+            measured.bin_covered
         ));
     }
     if !measured.unparsed.is_empty() {
@@ -1452,7 +1500,7 @@ fn grade_coverage(
     // report-only or not: the waiver is on the coverage THRESHOLD, and letting
     // it swallow a red suite would rebuild the fail-open hole this arc closed.
     if heavy_passed && is_coverage_report_only(crate_name) {
-        return Ok(CriterionResult {
+        return CriterionResult {
             name: "1. Coverage",
             result: format!("{} (report-only)", coverage_display(coverage)),
             grade: Grade::NotApplicable,
@@ -1462,16 +1510,16 @@ fn grade_coverage(
                  2026-08-16 and is not yet enforced; grade would be {}",
                 grade.as_str()
             ),
-        });
+        };
     }
 
-    Ok(CriterionResult {
+    CriterionResult {
         name: "1. Coverage",
         result: coverage_display(coverage),
         grade,
         threshold: "≥75%/≥90% A+",
         measured_detail: detail,
-    })
+    }
 }
 
 /// Format a coverage percentage for display, **truncated rather than rounded**.
@@ -4466,6 +4514,120 @@ serde = \"1\"
         );
     }
 
+    // === coverage_result — the verdict, driven without a cargo run ===
+
+    use crate::coverage::ProductionCoverage;
+
+    /// A finished measurement. `bin`/`lib` split off the same totals, exactly
+    /// as `production_coverage` accumulates them.
+    fn measurement(
+        covered: u64,
+        total: u64,
+        bin_covered: u64,
+        bin_total: u64,
+    ) -> ProductionCoverage {
+        ProductionCoverage {
+            covered,
+            total,
+            excluded: 0,
+            unparsed: Vec::new(),
+            files: Vec::new(),
+            bin_covered,
+            bin_total,
+        }
+    }
+
+    #[test]
+    fn coverage_result_grades_each_threshold_band() {
+        for (covered, expect) in [
+            (95, Grade::APlus),
+            (80, Grade::A),
+            (65, Grade::B),
+            (45, Grade::C),
+            (20, Grade::F),
+        ] {
+            let r = coverage_result("some-crate", &measurement(covered, 100, 0, 0), true);
+            assert_eq!(r.grade, expect, "{covered}/100");
+        }
+    }
+
+    /// ★★ A deferred crate is MEASURED, not skipped: the real percentage is on
+    /// the row, the grade it would have taken is in the detail, and the reader
+    /// is told the enforcement is deferred rather than absent.
+    #[test]
+    fn a_report_only_crate_still_reports_its_real_number() {
+        let name = COVERAGE_REPORT_ONLY[0];
+        let r = coverage_result(name, &measurement(30, 100, 0, 0), true);
+
+        assert_eq!(r.grade, Grade::NotApplicable, "the threshold is waived");
+        assert_eq!(r.result, "30.0% (report-only)");
+        assert!(
+            r.measured_detail.contains("grade would be F"),
+            "the withheld grade must be stated: {}",
+            r.measured_detail
+        );
+        assert!(r.measured_detail.contains("30.0% production line coverage"));
+    }
+
+    /// ★★★ The safety property the deferral is documented to have, and the one
+    /// a mutation sweep found nothing enforcing: report-only waives the
+    /// coverage THRESHOLD, never a red test suite.
+    #[test]
+    fn a_report_only_crate_with_failing_tests_still_grades_f() {
+        let name = COVERAGE_REPORT_ONLY[0];
+        let r = coverage_result(name, &measurement(99, 100, 0, 0), false);
+
+        assert_eq!(
+            r.grade,
+            Grade::F,
+            "99% coverage must not launder a failed suite through the waiver"
+        );
+        assert!(!r.result.contains("report-only"));
+        assert!(r.measured_detail.contains("heavy tests FAILED"));
+    }
+
+    /// The same crate not on the list grades normally, so the test above is
+    /// about `heavy_passed` and not about the list being ineffective.
+    #[test]
+    fn an_undeferred_crate_grades_on_the_threshold() {
+        let r = coverage_result("not-deferred", &measurement(30, 100, 0, 0), true);
+        assert_eq!(r.grade, Grade::F);
+        assert_eq!(r.result, "30.0%");
+        assert!(!r.measured_detail.contains("REPORT-ONLY"));
+    }
+
+    /// The library-only figure appears only when a binary target contributed
+    /// lines, and reports the split the reader needs to act on it.
+    #[test]
+    fn the_detail_reports_the_library_only_figure_when_a_binary_contributed() {
+        // 40/100 overall; the binary holds 50 lines, none covered, so the
+        // library is 40/50 = 80 %.
+        let r = coverage_result("some-crate", &measurement(40, 100, 0, 50), true);
+
+        assert!(
+            r.measured_detail.contains("80.0% over library lines alone"),
+            "{}",
+            r.measured_detail
+        );
+        assert!(r.measured_detail.contains("50 line(s) in binary targets"));
+        assert_eq!(r.grade, Grade::C, "the GRADED figure is still 40 %");
+    }
+
+    /// ⚠ And is absent for a crate with no binary, rather than reporting the
+    /// same number twice under two names.
+    #[test]
+    fn the_detail_omits_the_library_figure_when_there_is_no_binary() {
+        let r = coverage_result("some-crate", &measurement(40, 100, 0, 0), true);
+        assert!(!r.measured_detail.contains("library lines alone"));
+    }
+
+    #[test]
+    fn a_measurement_with_no_production_lines_is_not_a_bad_grade() {
+        let r = coverage_result("some-crate", &measurement(0, 0, 0, 0), true);
+        assert_eq!(r.grade, Grade::NotApplicable);
+        assert_eq!(r.result, "(no production lines)");
+    }
+
     /// ★★ The displayed percentage must never contradict the grade printed
     /// beside it.
     ///
@@ -6038,6 +6200,58 @@ tier_up_features = { sneaky = "App" }
             test_lines_counted: false,
             is_bin: false,
         }
+    }
+
+    /// ★ A binary root must be visibly labelled, or its uncovered count reads
+    /// as a gap someone could close by writing tests for `.run()`.
+    #[test]
+    fn a_binary_row_is_labelled_and_an_ordinary_one_is_not() {
+        let mut bin = triage_row("src/main.rs", 0, 400);
+        bin.is_bin = true;
+        assert_eq!(triage_row_markers(&bin).0, "  (binary target)");
+        assert_eq!(triage_row_markers(&triage_row("src/lib.rs", 5, 10)).0, "");
+    }
+
+    /// The two markers are independent: an unparsed binary carries both, and
+    /// neither may swallow the other.
+    #[test]
+    fn the_unparsed_caveat_and_the_binary_marker_do_not_displace_each_other() {
+        let mut both = triage_row("src/main.rs", 0, 400);
+        both.is_bin = true;
+        both.test_lines_counted = true;
+        let (target, caveat) = triage_row_markers(&both);
+        assert_eq!(target, "  (binary target)");
+        assert!(caveat.contains("unparsed"));
+
+        let plain = triage_row("src/lib.rs", 5, 10);
+        assert_eq!(triage_row_markers(&plain), ("", ""));
+    }
+
+    /// A per-file percentage truncates like every other figure the grader
+    /// prints. A row reading 75.0 % inside a crate the table says is failing
+    /// is the same contradiction `coverage_display` exists to prevent.
+    #[test]
+    fn a_triage_rows_percentage_truncates_like_the_crate_figure() {
+        // 605/807 = 74.969 %, the cf-studio-engine measurement.
+        //
+        // ⚠ Asserts on the ROW, not on `coverage_display(f.percent())`. The
+        // hand-composed form passes whatever the row itself does, which is how
+        // a `{:.1}` at the call site survived the first sweep.
+        let row = triage_row_prefix(&triage_row("f.rs", 605, 807));
+        assert!(row.contains("74.9%"), "{row}");
+        assert!(
+            !row.contains("75.0%"),
+            "rounding would contradict the grade"
+        );
+    }
+
+    /// The rest of the row: the ranking key a reader sorts on, and the path
+    /// they have to open.
+    #[test]
+    fn a_triage_row_carries_its_uncovered_count_and_path() {
+        let row = triage_row_prefix(&triage_row("src/solver/pgs.rs", 10, 60));
+        assert!(row.contains("50"), "uncovered count: {row}");
+        assert!(row.contains("src/solver/pgs.rs"), "{row}");
     }
 
     /// A table that prints every row it has must claim no tail.
