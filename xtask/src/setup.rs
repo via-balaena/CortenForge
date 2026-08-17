@@ -205,12 +205,15 @@ pub fn run() -> Result<()> {
         "{}",
         "Coverage — check it locally, nothing else does:".bright_blue()
     );
-    println!("  rustup component add llvm-tools-preview   # one-time");
-    println!("  cargo xtask grade <crate>                 # criterion 1 reports the number");
-    println!();
-    println!("  Cross-platform — macOS and Windows included.");
-    println!("  ⚠ PR CI does NOT measure coverage: `grade-all` runs --skip-coverage");
-    println!("    on every shard. Run this on any crate you touch, before you push.");
+    // ⚠ No `rustup component add` line here. The tool check above already
+    // reports llvm-tools CONDITIONALLY — a ✓ when present, the install command
+    // when not. Repeating it unconditionally told a reader to run something
+    // the same output had just confirmed they did not need.
+    println!("  • cargo xtask grade <crate>   — criterion 1 reports the number");
+    println!("  • Cross-platform; macOS and Windows included");
+    println!("  • PR CI does NOT measure coverage — `grade-all` runs");
+    println!("    --skip-coverage on every shard, so run this on any crate");
+    println!("    you touch, before you push");
     println!();
 
     Ok(())

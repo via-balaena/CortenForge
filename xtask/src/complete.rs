@@ -76,8 +76,19 @@ pub fn run(crate_name: &str, force: bool) -> Result<()> {
                 .red()
                 .bold()
         );
+        // The measurement itself, not just the verdict. `complete` exits before
+        // any criteria table is printed, so without this the caller is told the
+        // bar was not met and never shown by how much — a refusal they cannot
+        // act on. The detail line already carries the percentage, the counts
+        // and the grade the crate would have taken.
+        if let Some(c) = report.criteria.iter().find(|c| c.name.starts_with("1.")) {
+            println!("  {}", c.measured_detail);
+        }
         println!("  A completion record asserts the bar was cleared; this crate's was waived.");
-        println!("  Take it over 75 % and remove it from COVERAGE_REPORT_ONLY, then complete it.");
+        println!(
+            "  Take it over 75 % and delete it from COVERAGE_REPORT_ONLY in \
+             xtask/src/grade.rs, then complete it."
+        );
         std::process::exit(1);
     }
 
