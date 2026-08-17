@@ -1688,7 +1688,11 @@ const COVERAGE_REPORT_ONLY: &[&str] = &[
 ];
 
 /// Whether `crate_name` is on [`COVERAGE_REPORT_ONLY`].
-fn is_coverage_report_only(crate_name: &str) -> bool {
+///
+/// `pub(crate)` so [`crate::complete`] can refuse to stamp a completion record
+/// for a crate whose coverage threshold is only deferred — see there for why
+/// that refusal is load-bearing.
+pub(crate) fn is_coverage_report_only(crate_name: &str) -> bool {
     COVERAGE_REPORT_ONLY.contains(&crate_name)
 }
 
@@ -4667,6 +4671,24 @@ serde = \"1\"
         );
         assert!(!r.result.contains("report-only"));
         assert!(r.measured_detail.contains("heavy tests FAILED"));
+    }
+
+    /// ★★ Every deferred crate must be refusable by `xtask complete`.
+    ///
+    /// The predicate is what that refusal keys on, so it has to stay reachable
+    /// from outside this module. A `pub(crate)` that quietly became private
+    /// again would not break the build — `complete.rs` would fail to compile —
+    /// but a rename that left `complete.rs` checking something else would, and
+    /// this pins the contract that the two agree on the same list.
+    #[test]
+    fn every_deferred_crate_reports_as_deferred_to_other_modules() {
+        for name in COVERAGE_REPORT_ONLY {
+            assert!(
+                is_coverage_report_only(name),
+                "{name} is on the list and must be refused a completion record"
+            );
+        }
+        assert!(!is_coverage_report_only("sim-types"));
     }
 
     /// ★ The SEAM: the deferral flag must be looked up, not hardcoded.

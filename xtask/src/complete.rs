@@ -56,6 +56,31 @@ pub fn run(crate_name: &str, force: bool) -> Result<()> {
         std::process::exit(1);
     }
 
+    // ⚠ A deferred coverage threshold is NOT a passing one, and the automated
+    // roll-up cannot tell the difference: report-only returns `NotApplicable`,
+    // which `overall_automated` skips, so a crate at 0.0 % coverage reaches
+    // this line with an `A`.
+    //
+    // Refused rather than reported, because a COMPLETION.md is permanent and
+    // this one would be actively false: `write_completion` prefixes EVERY
+    // criterion row with a green tick, so the record would read
+    // "✅ — | 0.0 % … REPORT-ONLY … grade would be F". A waiver laundered into
+    // a completion record is exactly the fail-open shape the report-only
+    // contract promises never to become — measured, deferred, and never
+    // mistaken for a pass.
+    if grade::is_coverage_report_only(crate_name) {
+        println!();
+        println!(
+            "{}",
+            format!("✗ {crate_name}'s coverage threshold is DEFERRED (report-only), not met.")
+                .red()
+                .bold()
+        );
+        println!("  A completion record asserts the bar was cleared; this crate's was waived.");
+        println!("  Take it over 75 % and remove it from COVERAGE_REPORT_ONLY, then complete it.");
+        std::process::exit(1);
+    }
+
     println!(
         "  {} Automated criteria: {}",
         "✓".green(),
