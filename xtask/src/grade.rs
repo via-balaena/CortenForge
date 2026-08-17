@@ -1668,8 +1668,17 @@ const COVERAGE_REPORT_ONLY: &[&str] = &[
     "pbit-analyze",
     // 71.1 %, 13 lines short.
     "cf-anthro",
-    // 74.969 %, ONE line short. Left on the list rather than quietly fixed:
+    // 74.8-74.9 %, ONE line short. Left on the list rather than quietly fixed:
     // the census measures, it does not edit the crates it measures.
+    //
+    // ⚠ And it is the crate that showed the coverage run is NOT reproducible
+    // to the line. Ten runs on one unchanged tree: 605/807 eight times,
+    // 604/807 twice, the difference a single line in `src/edit.rs` (318 vs
+    // 319 of 421). Cause unidentified — the JSON export is per file, not per
+    // line — but the verdict was stable, both readings falling under the bar.
+    // Whoever takes this crate over 75 % should add margin rather than the one
+    // line the arithmetic asks for, because the arithmetic has +/-1 of noise
+    // in it.
     "cf-studio-engine",
 ];
 

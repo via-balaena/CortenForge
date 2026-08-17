@@ -173,6 +173,15 @@ Eight of the fifteen crates in the first census pass failed this way and had to
 be re-measured serially. CI is unaffected — `grade-all --shard i/N` fans out
 across separate jobs — but a local sweep must be serial.
 
+⚠ **The measurement is not reproducible to the line.** Ten `xtask grade`
+runs of `cf-studio-engine` on one unchanged tree returned 605/807 eight times
+and 604/807 twice — one line in `src/edit.rs`, cause unidentified, the JSON
+export being per file rather than per line. The verdict was stable (both
+readings sit under the bar), but the *number* moved, and with it the printed
+percentage: 74.9 % against 74.8 %. Treat a "N lines short" figure as carrying
+about a line of noise, and give a crate margin over the threshold rather than
+equality with it.
+
 **Percentages are truncated, not rounded**, so the printed figure is never
 above the graded one. `cf-studio-engine` at 605/807 = 74.969 % would otherwise
 print "75.0%" in the same row as its `B`.
