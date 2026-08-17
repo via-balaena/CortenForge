@@ -210,8 +210,23 @@ pub(crate) fn is_own_production_file(name: &str, crate_path: &str) -> bool {
 ///   indistinguishable from a library module by path, and resolving it would
 ///   mean parsing every binary's module tree.
 ///
-/// A third, on Windows: the separator is assumed to be `/`, so a backslashed
-/// export path matches nothing here. Inherited rather than introduced —
+/// ⚠ It also inherits [`is_own_production_file`]'s bare-substring crate match,
+/// and this workspace has live collisions: `tools/cf-studio` is a substring of
+/// `tools/cf-studio-gui`, `-core` and `-engine`. Measured 2026-08-17, it does
+/// not fire — grading `cf-studio` returns exactly two rows, its own `src/lib.rs`
+/// and `src/main.rs`, summing to its reported 174 — because instrumentation is
+/// scoped to the measured crate, so a sibling's source never reaches the
+/// export for the filter to mis-admit. The filter is a second line of defence
+/// that real input does not currently exercise.
+///
+/// ★ And were it to fire, it fails safe HERE specifically:
+/// [`relative_to_crate`] would strip the shared prefix and leave
+/// `-gui/src/main.rs`, which matches none of the arms below, so a sibling's
+/// binary would be counted as library code — understating the library figure
+/// rather than inflating it.
+///
+/// A third miss, on Windows: the separator is assumed to be `/`, so a
+/// backslashed export path matches nothing here. Inherited rather than introduced —
 /// [`relative_to_crate`] searches for a `/`-shaped `crate_path` and would fail
 /// to strip such a name in the first place, so the whole per-file split shares
 /// the assumption.
@@ -223,7 +238,7 @@ pub(crate) fn is_own_production_file(name: &str, crate_path: &str) -> bool {
 /// so nothing is currently missed either. The hedges below are about staying
 /// safe if that changes, not about a gap that exists.
 ///
-/// All three misses classify binary code as library code, which counts it
+/// All of these misses classify binary code as library code, which counts it
 /// against the library bar. That direction can only ever make a crate look
 /// worse, so no gap here can produce a false pass — the property worth having,
 /// given the exclusion this feeds is precisely the kind that creates a dead
