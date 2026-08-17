@@ -44,7 +44,7 @@ Humans review; machines enforce.
 | Formatting | rustfmt | CI blocks on diff |
 | Linting | clippy pedantic+nursery | CI blocks on warning |
 | Testing | cargo test | CI blocks on failure |
-| Coverage | tarpaulin | CI blocks if <75% (target: 90%) |
+| Coverage | `cargo xtask grade` (llvm-cov) | ⚠ **Local only — CI does NOT block.** `grade-all` runs `--skip-coverage` on every PR shard. The weekly tarpaulin job is a different instrument at workspace scope and has failed every run since 2026-06-28. Verified 2026-08-16. |
 | Documentation | rustdoc | CI blocks on warning |
 | Safety | clippy unwrap_used/expect_used | CI blocks on lib code violation |
 | Dependencies | cargo-deny | CI blocks on advisory/license |
@@ -414,7 +414,7 @@ if a && b {  // Need tests where:
 │   ├── format (rustfmt)                   │
 │   ├── lint (clippy)                      │
 │   ├── test (3 platforms)                 │
-│   ├── coverage (tarpaulin, ≥75%)         │
+│   ├── (NO coverage — --skip-coverage)    │
 │   ├── docs (rustdoc)                     │
 │   ├── safety (clippy unwrap_used deny)   │
 │   ├── security (cargo-audit)             │

@@ -67,22 +67,24 @@ act -j clippy
 
 The `.actrc` file is pre-configured for this project.
 
-### Optional: Local Coverage (Linux only)
+### Local Coverage — the only place it is checked
 
 ```bash
-# Install tarpaulin for local coverage checking
-cargo install cargo-tarpaulin
-
-# Check coverage for a crate
-cargo tarpaulin -p mesh-types --out Html
-open tarpaulin-report.html
-
-# To match CI threshold enforcement:
-cargo tarpaulin -p mesh-types --fail-under 75
+# The instrument the A-grade standard is defined by. Cross-platform;
+# needs `rustup component add llvm-tools-preview`, no extra install.
+cargo xtask grade <crate>          # criterion 1 reports the number
 ```
 
-This is optional - CI enforces ≥75% coverage (target: 90% as test coverage matures).
-Note: tarpaulin only works reliably on Linux. Mac/Windows users should rely on CI for coverage.
+⚠ **PR CI does not measure coverage, so nothing but this command catches a
+regression.** `quality-gate.yml` passes `--skip-coverage` on every shard; the
+only CI-side coverage is a weekly `scheduled.yml` job, which uses a different
+instrument at workspace granularity and has failed every run since 2026-06-28.
+Run `xtask grade` on any crate you touch, before you push.
+
+Do not reach for `cargo tarpaulin` to predict your grade — different
+instrument, different scope, and it will not agree with the number that
+governs. And it is not Linux-only: `xtask grade` runs on macOS and Windows,
+and the 2026-08-16 per-crate census was taken on Apple Silicon.
 
 ---
 
@@ -114,6 +116,12 @@ This runs automated checks and shows your current grade. If any criterion is bel
 
 If your grade is below A on any criterion, fix it. This is not optional. The refactor loop continues until all criteria are A.
 
+⚠ For coverage, aim past the bar rather than at it. The measurement is not
+reproducible to the line — on 2026-08-16 two of fifteen crates re-measured
+differently on an unchanged tree, by one line and by six (figures under
+Criterion 1 in [STANDARDS.md](docs/STANDARDS.md)). Verdicts held both times,
+but a crate landing exactly on 75.0 % is not reliably an A.
+
 ### Step 4: Complete
 
 ```bash
@@ -122,13 +130,39 @@ cargo xtask complete <crate-name>
 
 This records completion in the crate's `COMPLETION.md` and updates the project-wide `docs/archive/COMPLETION_LOG.md`. Requires human review for API criterion.
 
+⚠ **`complete` refuses a crate whose coverage is deferred** (see report-only
+below), even though the grade summary shows `A`. A completion record asserts
+the bar was cleared; a deferred crate's was waived. Take it over 75 % and
+remove it from `COVERAGE_REPORT_ONLY` in `xtask/src/grade.rs` first.
+
+### `(report-only)` in a grade
+
+A handful of crates print their coverage with `(report-only)` beside it and a
+grade of `—`:
+
+```text
+║ 1. Coverage      │ 69.6% (report... │   —   │ ≥75%/≥9...     ║
+```
+
+That means **measured, but the threshold is not yet enforced for this crate** —
+never "not measured". The real percentage is on the row, the grade it would
+have taken is in the detail line, and the per-file triage table prints as
+normal, so the work is visible. Every other criterion gates it exactly as it
+gates any crate, and a failing test run is never waived.
+
+The list is a finite to-do in `xtask/src/grade.rs`; it exists because one fix
+brought 14 previously-unmeasured libraries into scope at once. Enforcing one is
+a deletion from that list. A crate you add today is enforced from its first
+grade — nothing puts it on the list automatically. Full rationale in
+[STANDARDS.md](docs/STANDARDS.md) under Criterion 1.
+
 ---
 
 ## The A-Grade Standard
 
 | Criterion | A Standard | Automated? |
 |-----------|------------|------------|
-| **Test Coverage** | ≥75% **production** line coverage (target: 90%) — `#[cfg(test)]` code is excluded from the ratio; see STANDARDS.md | Yes |
+| **Test Coverage** | ≥75% **production** line coverage (target: 90%) — `#[cfg(test)]` code is excluded from the ratio; see STANDARDS.md | Yes, but **local only** — PR CI skips it |
 | **Documentation** | Zero doc warnings, all public items documented | Yes |
 | **Clippy** | Zero warnings | Yes |
 | **Safety** | Zero `unwrap()`/`expect()` in library code | Yes |
@@ -191,13 +225,24 @@ shared resource in a comment.**
 Every push and PR runs:
 
 ```yaml
-- cargo fmt --check          # Formatting is law
-- cargo clippy -D warnings   # All warnings are errors
-- cargo test --all-features  # Tests must pass
-- cargo doc -D warnings      # Docs must build clean
-- coverage ≥ 75%             # Test coverage enforced (target: 90%)
-- no bevy in Layer 0         # Architecture enforced
+cargo fmt --all -- --check                        # formatting is law
+cargo xtask grade-all --skip-coverage --shard i/3 # criteria 2-7, three shards
+cargo test <affected crates>                      # debug, PR-scoped
+cargo nextest run --release <heavy crates>        # stochastic-physics validators
 ```
+
+`grade-all` is what enforces Clippy, Documentation, Safety, Dependencies, Layer
+Integrity and WASM — CI does not invoke `cargo clippy -D warnings` or
+`cargo doc -D warnings` directly, it grades them. Two things that block a merge
+are therefore easy to mispredict from the command line alone, so check the
+grader's own output with `cargo xtask grade <crate>`.
+
+⚠ **Not run in CI, despite what you might expect:**
+- **Coverage** (criterion 1) — `--skip-coverage` on every shard. Local only.
+- **`--all-features` test sweep** — deliberately excluded; Layer Integrity in
+  the grader covers all-features cleanliness without re-paying the compile.
+- **`no bevy in Layer 0`** as a standalone check — it is criterion 6 (Layer
+  Integrity) inside the grader, not a separate job.
 
 ### What CI Cannot Check
 

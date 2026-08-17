@@ -54,9 +54,12 @@ targets, so their binaries emit usable profiles). `RUSTFLAGS` applies
 to every unit cargo builds, so instrumenting through `cargo llvm-cov`
 instrumented the whole dependency tree — and the report was then filtered back
 down to the crate's own files, discarding all of it. Because those lines were
-never counted, scoping the build cannot move the number; measured both ways,
-`sim-types` returns the same 192/271 lines and `cf-fsu-model` the same 84.2%.
-What it moves is the clock: `cf-fsu-model`'s grade went 3105 s → 17 s.
+never counted, scoping the build cannot move the number; measured both ways
+**at the time (`sim-types` 192/271, `cf-fsu-model` 84.2 %)**, each returned the
+same figure under both scopes. The agreement is the finding and it still
+stands; the figures are a snapshot and no longer current — #776 has since taken
+`sim-types` to 97.7 %. What scoping moves is the clock: `cf-fsu-model`'s grade
+went 3105 s → 17 s.
 
 ⚠ The tax that remains is the crate's *own* code, and it is large. Measured
 per lib suite, clean vs instrumented: `mesh-printability` 0.25 s → 41 s
@@ -83,10 +86,15 @@ it is being measured, so integration suites contribute coverage without gating.
 They are still gated — `grade`'s second pass runs the whole suite
 uninstrumented, doctests included.
 
-**When Coverage reports N/A rather than a percentage.** Four cases. Each says
-there is nothing to measure; none of them waives the threshold on code that
-exists. `Example` and `Xtask`/`tools` crates have no lib target to instrument
-("(bin-only)"); a crate opting into `grading_profile = "integration-only"`
+**When Coverage reports N/A rather than a percentage.** Four cases say there
+was nothing to measure, and none of them waives the threshold on code that
+exists. ⚠ A fifth — **report-only**, below — is the deliberate exception: it
+reports N/A on code that very much exists, having measured it, and prints the
+percentage next to the verdict so the waiver is never mistaken for an absence.
+It is listed apart from these four precisely because it is not one of them.
+
+A crate with **no lib target** has nothing to instrument ("(bin-only)");
+a crate opting into `grading_profile = "integration-only"`
 declares it has no testable lib API; a crate whose files map no lines reports
 "(no production lines)"; and a crate whose `src/` declares **no items at all
 outside `#[cfg(test)]`** reports the same. The last is the `*-benches` shape — a
@@ -101,6 +109,150 @@ clean parse that finds nothing, so an unreadable file keeps the failure report.
 **Benchmarks are never counted as coverage**; `cargo test --lib --tests` does not
 build them, by design.
 
+⚠ **"(bin-only)" is now a measured fact, not a guess from the crate's
+directory.** It used to be asserted for every `Example`/`Xtask`/`tools` crate
+without checking, and it was **false for 13 of the 17 crates under `tools/`** —
+**9718 production lines** that no coverage run ever touched, one of them
+`cf-codesign` (the co-design optimizer). All of them reported `—` and passed,
+because N/A is skipped by the automated roll-up. Measuring them showed **5505
+of those lines, 56.6 %, were covered all along** — the tests existed and
+nothing was reading them, so the skip hid a measurement gap far more than a
+quality one. ⚠ 9718 is the coverage instrument's own count, and sizing a
+coverage gap any other way overstates it — a source-line count of the same
+crates gives 13 265, 36 % high, because it counts `use` lines, attributes and
+braces that llvm-cov never maps.
+
+The profile still decides the Clippy and Safety relaxations by path;
+it no longer decides whether a library gets measured. A crate is skipped here
+only when Cargo would build no lib target for it — no `[lib]` table, no
+`src/lib.rs`, or `autolib = false`. Same failure shape as the fail-open dead
+zone closed by #772–#774: a gate whose green meant "not measured" while its
+text named a property nobody had checked. The fail-closed guarantee under
+**The Grade Command** below states the general rule for the scanning criteria.
+
+**Report-only crates.** Turning that skip off lit 14 crates at once, so the
+threshold is deferred for the six that fail while it is enforced for everyone
+else. A deferred crate prints its real percentage with `(report-only)` beside
+it and a detail line naming the grade it *would* have taken; only the
+**threshold** is waived. Failing tests, Clippy, Safety, Documentation and
+Dependencies gate these crates exactly as they gate every other, and a red test
+run is never waivable. So green here means "measured, enforcement deferred" —
+never "not measured", which is the distinction the fail-closed guarantee under
+**The Grade Command** exists to protect.
+
+⚠ The deferral does **not** protect today's CI, which cannot go red from this
+at all: **Enforcement → "What CI does NOT run"** below is the source of truth
+for why, and the weekly job it describes has failed every run since
+2026-06-28. The list is forward-looking, for whoever replaces that job with
+`grade-all` sans `--skip-coverage`. Until then it shapes local `xtask grade` output, which is
+where the backlog wants to be visible anyway.
+
+⚠ And it will **not** make that job green. `cf-viewer` is measured, fails at
+33.8 %, and is deliberately not deferred; the other crates already known to sit
+under the bar — sim-core, sim-mjcf, sim-bevy, cf-device-geometry — are not
+deferred either. A full coverage run goes red on its first execution, and
+should. What the list changes is *which* red: the failures are crates whose
+debt was already known and owned, not fourteen that a grader change lit up
+overnight. That is the line it draws — **newly revealed** versus **already
+tracked**. It is not a claim that such a job comes up green; `cf-viewer` alone
+refutes that.
+
+The list is a finite to-do in `grade.rs`, not a rule: a crate added to `tools/`
+tomorrow is enforced from its first grade, and enforcing one of these is a
+deletion. A crate that was **already** being measured and failing is never
+added — that would switch off a gate that fires today rather than defer one
+that just appeared, which is why `cf-viewer` is not on it.
+
+The 2026-08-16 census, per crate, is the evidence the list rests on. **Eight of
+the fourteen newly-measured crates already passed** — cf-mjcf-emit 97.8 %,
+cf-msk-lib 95.7 %, cf-msk-fit 94.7 %, cf-osim 94.6 %, cf-studio-core 90.3 %,
+cf-codesign 86.9–87.2 %, cf-cast-cli 79.9 %, cf-studio 75.2 % — so what the skip hid
+was mostly a measurement gap rather than a quality one. The six deferred are
+cf-scan-prep-core (0.0 % of 1560 lines), cf-studio-gui (14.3 %, but 93.9 %
+over its library — 1657 of its lines are a Bevy GUI binary), example-ml-shared
+(0.0 % of 131), pbit-analyze (69.6 %), cf-anthro (71.1 %) and cf-studio-engine
+(74.969 %). What each would cost to clear is grouped below.
+
+**What it would take to empty the list**, from the same census — a to-do
+without its sizes gets read as one job:
+
+- **Three are within 30 lines, 39 in total**: cf-studio-engine needs 1,
+  cf-anthro 13, pbit-analyze 25. One sitting takes the list from six to three.
+  ⚠ Aim past each bar, not at it — see the drift note below.
+- **Two need no new tests at all if binary lines stop counting** (the reported-
+  but-not-graded split above): pbit-analyze is 91.4 % over its library and
+  cf-studio-gui 93.9 %, so both clear the bar the moment their binaries leave
+  the denominator. That sizes the open lib/bin decision — it is worth two
+  crates immediately.
+- **Two are real work either way**: cf-scan-prep-core (1170 lines, no test in
+  the crate) and example-ml-shared (99). No other lever reaches them.
+
+⚠ **The measurement is not reproducible to the line** (measured 2026-08-16).
+Re-measuring all fifteen census crates on an unchanged tree, **two did not
+reproduce**:
+
+- `cf-studio-engine` — 605/807 eight times and 604/807 twice over ten runs, the
+  whole difference one line in `src/edit.rs`.
+- `cf-codesign` — 1416/1622 then 1410/1622, six lines, 87.2 % against 86.9 %.
+
+Causes unidentified: the JSON export is per file, not per line, so pinning the
+statements needs raw llvm-cov data. Both crates are plausible candidates for it
+— an orchestrator and an optimizer, the shapes whose tests carry convergence,
+timing or thread-ordering branches.
+
+**Verdicts were stable in both cases** (each crate landed the same side of the
+bar every run), which is the property that matters most, and is the reason this
+is a caveat rather than a defect. But the *numbers* moved, and with them the
+printed percentages. So: treat a per-crate figure as carrying up to a few lines
+of noise, quote a range rather than a decimal when it matters, and give a crate
+margin over the threshold rather than equality with it. A crate sitting exactly
+on 75.0 % is not reliably an A.
+
+⚠ **Two crates are there now** (margins computed 2026-08-17), of the twelve
+that have one:
+
+| crate | covered/total | bar | margin |
+|---|---|---|---|
+| `cf-studio` | 131/174 | 131 | **0** |
+| `mesh-types` | 113/146 | 110 | **3** |
+| `cf-bevy-common` | 145/186 | 140 | 5 |
+| `cf-device-types` | 197/253 | 190 | 7 |
+| `mesh-shell` | 487/631 | 474 | 13 |
+| the other seven | | | 26–193 |
+
+`cf-studio` reproduces at 131 across three runs and `mesh-types` sits three
+lines up, so both are stable today — but the drift measured above reached six
+lines on `cf-codesign`, which covers them both. Neither is deferred, because
+both pass; they are recorded because whoever turns a coverage-gating job on
+should expect these to flake first.
+
+⚠ **Scope, stated exactly, because this is a list that reads as complete.**
+Twelve *passing* crates have had their margin computed: the eight newly
+measured that clear the bar, plus the four above. Nineteen crates in all were
+measured — the other seven fail, so they have no margin. The coverage-graded
+population is **61**, so around two-thirds of it has never been checked for
+margin, and an unknown number of those pass. The pair above is "the tight ones
+among the twelve we looked at", not the tight ones that exist.
+
+**Percentages are truncated, not rounded**, so the printed figure is never
+above the graded one. `cf-studio-engine` at 605/807 = 74.969 % would otherwise
+print "75.0%" in the same row as its `B`.
+
+**Library lines and binary lines are reported apart.** The graded percentage
+spans both, unchanged. But a crate with a large `main.rs` is held to a bar its
+binary structurally cannot clear — `.run()`, `Cli::parse()` and an event loop
+are not unit-testable — so when a binary target contributes lines, the detail
+line also reports the figure over library lines alone, and the triage table
+marks the binary root `(binary target)`. Measured on `cf-viewer`: 33.8 % overall
+against 57.7 % over its library, with 460 of 1082 production lines in
+`src/main.rs` at 1.5 %. The census found a second, stronger instance:
+`cf-studio-gui` reads 14.3 % overall and **93.9 % over its library**, because
+1657 of its 1955 lines are a Bevy GUI binary. Reported only; **excluding binary
+lines from the grade is deliberately not done here**, because it would make
+`main.rs` a place where logic stops being measured — the dead zone this section
+just finished closing. The number exists so that decision can be taken on
+evidence.
+
 **Where the uncovered lines are.** A percentage says a crate needs tests; it
 does not say where to write them. `grade` therefore prints a per-file breakdown
 under the table whenever coverage ran and something is uncovered — worst first,
@@ -113,9 +265,11 @@ so the biggest win is the top row:
              31    64.4%  src/body.rs
 ```
 
-That is `sim-types`' real output at 70.8 % (192/271). The third measured file,
-`src/error.rs`, is at 100 % and so is not a row — it appears under `--json`,
-which lists every measured file.
+That is `sim-types`' real output at 70.8 % (192/271), **as measured
+2026-08-15**; #776 has since taken the crate to 97.7 % by testing those two
+files, so the shape is the illustration and the numbers are a snapshot. The
+third measured file, `src/error.rs`, is at 100 % and so is not a row — it
+appears under `--json`, which lists every measured file.
 
 This is the *same* measurement the percentage comes from, split by file rather
 than summed — the per-file numerators and denominators add up to the crate's, by
@@ -704,6 +858,14 @@ $ cargo xtask grade mesh-types
 
 `cargo xtask grade-all` runs the full sweep over all 301 workspace crates and reports a workspace-level pass/fail. It's the same gate CI runs (with `--skip-coverage` for runtime; coverage is a local-only gate per the note below).
 
+⚠ **`xtask grade` cannot be run concurrently with itself.** The instrumented
+build uses one shared coverage target directory and resets it whenever the
+crate under measurement changes, so two grades running at once delete each
+other's build and surface as "measurement failed" / "Directory not empty".
+Eight of the fifteen crates in the first census pass failed this way and had to
+be re-measured serially. CI is unaffected — `grade-all --shard i/N` fans out
+across separate jobs — but a local sweep must be serial.
+
 The sweep grades every crate even when some cannot be graded: a crate whose grade errors out is recorded and the run continues, so one broken crate never hides the verdict on the rest of its shard. Those crates are reported in their own section rather than counted as failures, since "could not measure" is a different problem from "measured, and it is bad" — but either one fails the sweep. A crate that was never measured is never absorbed into a green result.
 
 The criteria that grade by *scanning source files* — 3 (unjustified `#[allow]`) and 4 (Safety) — fail closed. Both score a crate by counting violations across its `src/` tree, so any file the scan fails to reach or read is a file whose violations are never counted, and the crate would be graded A for a reason nobody measured. An unwalkable directory or an unreadable source file therefore aborts the grade with an error rather than producing a quietly clean result, on the same principle as the unreadable-file rule under Criterion 1 above. (Criterion 3 skips its `#[allow]` scan altogether for the `Example` and `Xtask` profiles, per the relaxation in §3; the guarantee covers that scan wherever it runs, not the profiles that opt out of it.)
@@ -744,7 +906,7 @@ Every push to `main`/`develop` and every PR triggers parallel CI jobs (`.github/
 **What CI does NOT run** (intentional, per plan §6):
 - `--all-features` test sweep — Layer Integrity in the grader enforces all-features cleanliness; re-running tests under all-features would just re-pay the bevy_ecs / image / zip / criterion compile cost on every consumer's test build for no additional signal.
 - Standalone WASM job — the WASM Compatibility criterion (#7) is the single source of truth.
-- Coverage gate — still minutes per crate for crates whose own code is the hot path (`mesh-repair`, ~6 min), so running it on 232 crates exceeds the wall-time budget even after instrumentation was scoped to the measured crate. Coverage is enforced locally via `cargo xtask grade <crate>`. ⚠ The nightly `coverage` job in `scheduled.yml` does **not** enforce this criterion: it runs `cargo tarpaulin --workspace --all-features --fail-under 75`, which counts test code and pools the whole workspace into one ratio. That job never got the migration this section describes, so no CI job measures the number defined here. Resolving the split is its own change.
+- Coverage gate — still minutes per crate for crates whose own code is the hot path (`mesh-repair`, ~6 min), so running it across the workspace exceeds the wall-time budget even after instrumentation was scoped to the measured crate. ⚠ Sized 2026-08-16: a full sweep measures **61** crates — 47 before `has_lib_target` brought 14 `tools/` and `examples/` libraries into scope — and 47 of them took **70.4 min** serially against a 20–25 min budget, so the conclusion holds by a wide margin. Coverage is enforced locally via `cargo xtask grade <crate>`. ⚠ The nightly `coverage` job in `scheduled.yml` does **not** enforce this criterion: it runs `cargo tarpaulin --workspace --all-features --fail-under 75`, which counts test code and pools the whole workspace into one ratio. That job never got the migration this section describes, so no CI job measures the number defined here. Resolving the split is its own change.
 
 ### CI Wall-Time Budget
 

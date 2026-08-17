@@ -13,7 +13,7 @@
 //!
 //! This will:
 //! 1. Install pre-commit and commit-msg git hooks
-//! 2. Verify cargo-audit, cargo-deny, cargo-tarpaulin are available
+//! 2. Verify cargo-audit, cargo-deny, and the llvm-tools coverage component
 //! 3. Set up any additional development tooling
 
 use anyhow::{Context, Result};
@@ -193,13 +193,27 @@ pub fn run() -> Result<()> {
     println!("  • fix(scope): description");
     println!("  • docs: description");
     println!();
-    println!("{}", "Optional (Linux only):".bright_blue());
-    println!("  cargo install cargo-tarpaulin");
-    println!("  cargo tarpaulin -p <crate> --out Html");
-    println!("  cargo tarpaulin -p <crate> --fail-under 75  # Match CI threshold");
-    println!();
-    println!("  This lets you check coverage locally before pushing.");
-    println!("  CI enforces ≥75% coverage (target: 90%). Mac/Windows users rely on CI.");
+    // ⚠ This block used to recommend `cargo tarpaulin` "to match CI threshold"
+    // and told Mac/Windows users to rely on CI for coverage. Both were false:
+    // no PR job measures coverage (`grade-all` runs `--skip-coverage` on every
+    // shard), tarpaulin is a different instrument at workspace scope, and
+    // `xtask grade` is cross-platform. Onboarding is the worst place to be
+    // wrong about which command checks what — it is the first thing a new
+    // contributor runs, and it was pointing them at a tool whose own weekly
+    // job has failed every run since 2026-06-28.
+    println!(
+        "{}",
+        "Coverage — check it locally, nothing else does:".bright_blue()
+    );
+    // ⚠ No `rustup component add` line here. The tool check above already
+    // reports llvm-tools CONDITIONALLY — a ✓ when present, the install command
+    // when not. Repeating it unconditionally told a reader to run something
+    // the same output had just confirmed they did not need.
+    println!("  • cargo xtask grade <crate>   — criterion 1 reports the number");
+    println!("  • Cross-platform; macOS and Windows included");
+    println!("  • PR CI does NOT measure coverage — `grade-all` runs");
+    println!("    --skip-coverage on every shard, so run this on any crate");
+    println!("    you touch, before you push");
     println!();
 
     Ok(())
@@ -263,11 +277,16 @@ fn verify_tools() -> Result<()> {
             "Dependency policy (cargo install cargo-deny)",
             false,
         ),
-        (
-            "cargo-tarpaulin",
-            "Coverage tool (cargo install cargo-tarpaulin)",
-            false,
-        ),
+        // ⚠ cargo-tarpaulin was checked here and is deliberately gone. The
+        // coverage criterion is defined by `cargo xtask grade`, which uses
+        // llvm-cov from the `llvm-tools` rustup COMPONENT — a different
+        // instrument at a different scope, whose number does not agree with
+        // the one that governs. Checking for tarpaulin taught every new
+        // contributor to reach for the wrong tool.
+        //
+        // The component is checked after this list, not in it: it is not an
+        // executable on PATH and not a `cargo <name>` subcommand, so neither
+        // probe this loop uses would find it.
     ];
 
     let mut all_required_present = true;
@@ -293,6 +312,26 @@ fn verify_tools() -> Result<()> {
         } else {
             println!("  ⚠ {} - {}", tool.bright_yellow(), description);
         }
+    }
+
+    // Last, and optional, like the two above it. Probed the way the grader
+    // itself probes it — `llvm-profdata` and `llvm-cov` in the active
+    // toolchain's sysroot, not `which` and not `cargo llvm-tools`, neither of
+    // which finds a rustup COMPONENT. Reusing the grader's own detector is the
+    // point: a looser check here would tell a contributor they are ready while
+    // criterion 1 still reports "(llvm-tools n/a)".
+    let coverage_desc = "Coverage component (rustup component add llvm-tools-preview)";
+    match xshell::Shell::new() {
+        Ok(sh) if crate::coverage_run::tools_available(&sh) => {
+            println!("  ✓ {} - {}", "llvm-tools".bright_green(), coverage_desc);
+        }
+        Ok(_) => println!("  ⚠ {} - {}", "llvm-tools".bright_yellow(), coverage_desc),
+        // A shell that will not start is not evidence the component is absent,
+        // and saying so would be a verdict this never measured.
+        Err(e) => println!(
+            "  ⚠ {} - could not probe ({e})",
+            "llvm-tools".bright_yellow()
+        ),
     }
 
     if !all_required_present {

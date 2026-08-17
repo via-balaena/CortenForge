@@ -183,10 +183,11 @@ FUTURE:
 
 **A-grade or it doesn't ship.**
 
-This is not marketing. This is policy enforced by CI:
+This is not marketing. This is policy, and every line of it is measured —
+by `cargo xtask grade`, and by CI for all of it but coverage:
 
 1. **Zero `unwrap()`/`expect()` in library code** - Errors are values
-2. **≥75% test coverage (target: 90%)** - Measured and enforced
+2. **≥75% test coverage (target: 90%)** - Measured by `cargo xtask grade`; ⚠ checked locally only — CI runs `--skip-coverage` (verified 2026-08-16)
 3. **Zero Clippy warnings** - pedantic + nursery enabled
 4. **Doc examples for all public APIs** - Tested in CI
 5. **Conventional commits** - Machine-readable history
