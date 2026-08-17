@@ -103,7 +103,7 @@ build them, by design.
 
 ⚠ **"(bin-only)" is now a measured fact, not a guess from the crate's
 directory.** It used to be asserted for every `Example`/`Xtask`/`tools` crate
-without checking, and it was **false for 13 of the 18 crates under `tools/`** —
+without checking, and it was **false for 13 of the 17 crates under `tools/`** —
 **9718 production lines** that no coverage run ever touched, one of them
 `cf-codesign` (the co-design optimizer). All of them reported `—` and passed,
 because N/A is skipped by the automated roll-up. Measuring them showed **5505

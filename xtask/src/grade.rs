@@ -295,7 +295,7 @@ pub(crate) fn classify_crate(crate_path: &str, cargo_toml_text: &str) -> CratePr
 /// ★ **This is the fact [`coverage_skip_reason`] used to assume.** The
 /// `Example`/`Xtask` profiles skipped coverage with the stated reason "bin-only
 /// crates have no lib target", and nothing checked it. Measured 2026-08-16, it
-/// was false for **13 of the 18** crates under `tools/`: **9718 production
+/// was false for **13 of the 17** crates under `tools/`: **9718 production
 /// lines** went unmeasured behind a justification that did not hold, one of
 /// those crates being `cf-codesign` — the co-design optimizer, Mission
 /// deliverable #2. Every one reported `—` and passed, because
@@ -4347,7 +4347,7 @@ serde = \"1\"
     /// ★★ The regression test for the defect this function was changed to fix.
     ///
     /// `Example`/`Xtask` skipped Coverage unconditionally, saying "no lib
-    /// target" — a claim nothing checked, and false for 13 of the 18 crates
+    /// target" — a claim nothing checked, and false for 13 of the 17 crates
     /// under `tools/`. Both halves are asserted here, because a skip that is
     /// merely *narrower* would still be wrong in the other direction: a
     /// genuinely bin-only tool must keep its N/A rather than start failing.
