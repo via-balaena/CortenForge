@@ -1241,9 +1241,17 @@ fn coverage_skip_reason(
 /// cf-anthro` prints `71.1% (report-only)`, its REPORT-ONLY detail line and
 /// three triage rows; `xtask grade cf-viewer` prints `33.8%`, the `57.7% over
 /// library lines alone` detail, and a `src/main.rs  (binary target)` row.
-/// Re-run those two after touching this function or the printing beside it —
-/// [`print_coverage_detail`]'s guard has no unit test either, for the same
-/// reason, and those two commands are what exercise it.
+/// Re-run those two after touching this function or the printing beside it.
+///
+/// ⚠ [`print_coverage_detail`]'s guard has no unit test either, for the same
+/// reason, so its NEGATIVE controls belong here beside the positive ones —
+/// three paths on which it must stay silent, all confirmed 2026-08-17:
+/// `grade sim-types --skip-coverage` (46 lines of output, table reads
+/// `(skipped)`, no detail line), `grade cf-device-design --skip-coverage`
+/// (bin-only), and `grade sim-core-benches` (`(no production lines)`, which
+/// also confirms on real input the invariant asserted above — a zero total
+/// implies an empty `files`). A guard verified only where it fires is
+/// indistinguishable from one that always fires.
 fn grade_coverage(
     sh: &Shell,
     crate_name: &str,
