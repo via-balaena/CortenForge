@@ -579,6 +579,7 @@ fn display(report: &GradeReport) {
             .bright_white()
     );
 
+    print_coverage_detail(report);
     print_coverage_triage(report);
 }
 
@@ -589,6 +590,34 @@ fn display(report: &GradeReport) {
 /// carries every row unbounded — a cap nobody is told about reads as "that was
 /// all of it".
 const TRIAGE_ROWS: usize = 20;
+
+/// Print criterion 1's detail line under the table, when coverage measured
+/// something.
+///
+/// ★ The table column is ~16 characters wide, so it shows `33.8%` or
+/// `71.1% (report...` and nothing else. Everything the criterion computed
+/// beyond the bare percentage lives in `measured_detail` — the covered/total
+/// counts, how many test lines were excluded, the **library-only figure when a
+/// binary target contributed**, and the full REPORT-ONLY sentence naming the
+/// grade that was withheld.
+///
+/// ⚠ Until this existed, all of that reached `--json` and nothing else. The
+/// library-only split was added so a reader could tell a weak library from a
+/// large `main.rs`; a reader running `xtask grade` could not, because the one
+/// figure that distinguishes them was in a field the human path never printed.
+/// A number computed for a person has to be shown to them.
+fn print_coverage_detail(report: &GradeReport) {
+    // Same guard the triage table uses: a non-empty `coverage_files` means
+    // coverage ran and measured. On every other path the detail line just
+    // restates the result cell ("(skipped)", "(bin-only)") and is noise.
+    if report.coverage_files.is_empty() {
+        return;
+    }
+    if let Some(c) = report.criteria.iter().find(|c| c.name.starts_with("1.")) {
+        println!();
+        println!("  {}", c.measured_detail.dimmed());
+    }
+}
 
 /// Print criterion 1's per-file breakdown, worst first.
 ///
@@ -1209,9 +1238,12 @@ fn coverage_skip_reason(
 /// replacing the [`coverage_result_for`] call with a direct
 /// `coverage_result(…, false)` survives the suite. What covers it instead is
 /// an end-to-end check, run and recorded rather than assumed: `xtask grade
-/// cf-anthro` prints `71.1% (report-only)` with three triage rows, and `xtask
-/// grade cf-viewer` prints `33.8%` with `57.7% over library lines alone`.
-/// Re-run those two after touching this function.
+/// cf-anthro` prints `71.1% (report-only)`, its REPORT-ONLY detail line and
+/// three triage rows; `xtask grade cf-viewer` prints `33.8%`, the `57.7% over
+/// library lines alone` detail, and a `src/main.rs  (binary target)` row.
+/// Re-run those two after touching this function or the printing beside it —
+/// [`print_coverage_detail`]'s guard has no unit test either, for the same
+/// reason, and those two commands are what exercise it.
 fn grade_coverage(
     sh: &Shell,
     crate_name: &str,
