@@ -194,11 +194,18 @@ mod plugin_tests {
         }
     }
 
-    /// Every resource the interaction systems read must exist after `build`.
-    /// A missing one panics at first run inside a consumer's app, not here —
-    /// which is exactly why the hand-wired system tests cannot catch it.
+    /// Every resource the plugin OWNS must exist after `build`. A missing one
+    /// panics at first run inside a consumer's app, not here — which is
+    /// exactly why the hand-wired system tests cannot catch it.
+    ///
+    /// ⚠ Deliberately not "every resource the systems read". The systems also
+    /// take `Assets<…>` and `ButtonInput<…>`, which come from Bevy's
+    /// `AssetPlugin` / `InputPlugin` (both in `DefaultPlugins`) and which this
+    /// plugin must NOT insert — see the type's docs on pairing it with a camera
+    /// and a HUD. Asserting them here would pin a responsibility that is not
+    /// this plugin's.
     #[test]
-    fn build_inserts_every_resource_the_systems_read() {
+    fn build_inserts_every_resource_the_plugin_owns() {
         let mut app = App::new();
         app.add_plugins(MeshPaintPlugin::default());
         let w = app.world();

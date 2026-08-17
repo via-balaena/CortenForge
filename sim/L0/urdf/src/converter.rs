@@ -776,11 +776,15 @@ mod tests {
         assert!(sx.dot(&sy).abs() < 1e-12);
     }
 
-    /// Each remaining URDF joint type maps to its MJCF counterpart. `floating`
-    /// additionally takes the `axis_needed = false` path — a `free` joint with
-    /// an axis attribute would be malformed MJCF.
+    /// The three joint types no other test reaches map to their MJCF
+    /// counterparts. (Revolute is covered by `test_simple_urdf_to_mjcf`, fixed
+    /// by `test_fixed_joints_omitted`, planar by the decomposition tests above
+    /// — between them all six URDF types are exercised.)
+    ///
+    /// `floating` additionally takes the `axis_needed = false` path: a `free`
+    /// joint carrying an axis attribute would be malformed MJCF.
     #[test]
-    fn joint_types_map_to_their_mjcf_counterparts() {
+    fn the_remaining_joint_types_map_to_their_mjcf_counterparts() {
         let prismatic = urdf_to_mjcf(&robot_with_joint(
             r#"<joint name="p" type="prismatic">
                  <parent link="base"/><child link="child"/><axis xyz="1 0 0"/>
