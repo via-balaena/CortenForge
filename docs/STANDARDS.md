@@ -117,10 +117,10 @@ without checking, and it was **false for 13 of the 17 crates under `tools/`** �
 because N/A is skipped by the automated roll-up. Measuring them showed **5505
 of those lines, 56.6 %, were covered all along** — the tests existed and
 nothing was reading them, so the skip hid a measurement gap far more than a
-quality one. (9718 is the coverage instrument's own count. A first pass
-reported 13 265 from a source-line heuristic, overstating by 36 % because it
-counted `use` lines, attributes and braces that llvm-cov never maps; the size
-of an unmeasured gap belongs in the units of the missing measurement.)
+quality one. ⚠ 9718 is the coverage instrument's own count, and sizing a
+coverage gap any other way overstates it — a source-line count of the same
+crates gives 13 265, 36 % high, because it counts `use` lines, attributes and
+braces that llvm-cov never maps.
 
 The profile still decides the Clippy and Safety relaxations by path;
 it no longer decides whether a library gets measured. A crate is skipped here
@@ -141,11 +141,10 @@ never "not measured", which is the distinction the fail-closed guarantee under
 **The Grade Command** exists to protect.
 
 ⚠ The deferral does **not** protect today's CI, which cannot go red from this
-at all — **Enforcement → "What CI does NOT run"** below is the source of truth
-for why, and has been right about it longer than this section has. (Added
-2026-08-16: that weekly job has failed every run since 2026-06-28.) The list is
-forward-looking, for whoever replaces the weekly job with `grade-all` sans
-`--skip-coverage`. Until then it shapes local `xtask grade` output, which is
+at all: **Enforcement → "What CI does NOT run"** below is the source of truth
+for why, and the weekly job it describes has failed every run since
+2026-06-28. The list is forward-looking, for whoever replaces that job with
+`grade-all` sans `--skip-coverage`. Until then it shapes local `xtask grade` output, which is
 where the backlog wants to be visible anyway.
 
 ⚠ And it will **not** make that job green. `cf-viewer` is measured, fails at
@@ -155,8 +154,8 @@ deferred either. A full coverage run goes red on its first execution, and
 should. What the list changes is *which* red: the failures are crates whose
 debt was already known and owned, not fourteen that a grader change lit up
 overnight. That is the line it draws — **newly revealed** versus **already
-tracked** — and it is a smaller claim than "the job comes up green", which is
-what this paragraph said before someone checked it against `cf-viewer`.
+tracked**. It is not a claim that such a job comes up green; `cf-viewer` alone
+refutes that.
 
 The list is a finite to-do in `grade.rs`, not a rule: a crate added to `tools/`
 tomorrow is enforced from its first grade, and enforcing one of these is a
@@ -867,7 +866,7 @@ Every push to `main`/`develop` and every PR triggers parallel CI jobs (`.github/
 **What CI does NOT run** (intentional, per plan §6):
 - `--all-features` test sweep — Layer Integrity in the grader enforces all-features cleanliness; re-running tests under all-features would just re-pay the bevy_ecs / image / zip / criterion compile cost on every consumer's test build for no additional signal.
 - Standalone WASM job — the WASM Compatibility criterion (#7) is the single source of truth.
-- Coverage gate — still minutes per crate for crates whose own code is the hot path (`mesh-repair`, ~6 min), so running it across the workspace exceeds the wall-time budget even after instrumentation was scoped to the measured crate. ⚠ Sized 2026-08-16: a full coverage sweep measures **61** crates and took **70.4 min** serially at 47 crates, against a 20–25 min budget — so the conclusion holds by a wide margin. (This bullet previously said "232 crates", which is not the coverage-graded population: it was 47 before the `has_lib_target` fix and is 61 after, that fix having brought 14 `tools/` and `examples/` libraries into measurement. The cost argument never depended on the wrong figure, but the figure was wrong.) Coverage is enforced locally via `cargo xtask grade <crate>`. ⚠ The nightly `coverage` job in `scheduled.yml` does **not** enforce this criterion: it runs `cargo tarpaulin --workspace --all-features --fail-under 75`, which counts test code and pools the whole workspace into one ratio. That job never got the migration this section describes, so no CI job measures the number defined here. Resolving the split is its own change.
+- Coverage gate — still minutes per crate for crates whose own code is the hot path (`mesh-repair`, ~6 min), so running it across the workspace exceeds the wall-time budget even after instrumentation was scoped to the measured crate. ⚠ Sized 2026-08-16: a full sweep measures **61** crates — 47 before `has_lib_target` brought 14 `tools/` and `examples/` libraries into scope — and 47 of them took **70.4 min** serially against a 20–25 min budget, so the conclusion holds by a wide margin. Coverage is enforced locally via `cargo xtask grade <crate>`. ⚠ The nightly `coverage` job in `scheduled.yml` does **not** enforce this criterion: it runs `cargo tarpaulin --workspace --all-features --fail-under 75`, which counts test code and pools the whole workspace into one ratio. That job never got the migration this section describes, so no CI job measures the number defined here. Resolving the split is its own change.
 
 ### CI Wall-Time Budget
 
