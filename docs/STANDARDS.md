@@ -219,9 +219,13 @@ lines on `cf-codesign`, which covers them both. Neither is deferred, because
 both pass; they are recorded because whoever turns a coverage-gating job on
 should expect these to flake first.
 
-⚠ **Twelve of the 61 crates in the measured population have had their margin
-computed.** The rest have not. Read the pair above as "the tight ones we have
-looked at", not as the complete set.
+⚠ **Scope, stated exactly, because this is a list that reads as complete.**
+Twelve *passing* crates have had their margin computed: the eight newly
+measured that clear the bar, plus the four above. Nineteen crates in all were
+measured — the other seven fail, so they have no margin. The coverage-graded
+population is **61**, so around two-thirds of it has never been checked for
+margin, and an unknown number of those pass. The pair above is "the tight ones
+among the twelve we looked at", not the tight ones that exist.
 
 **Percentages are truncated, not rounded**, so the printed figure is never
 above the graded one. `cf-studio-engine` at 605/807 = 74.969 % would otherwise

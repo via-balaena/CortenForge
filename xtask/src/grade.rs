@@ -1655,7 +1655,7 @@ fn coverage_display(percent: f64) -> String {
 ///   cf-studio-engine below.
 /// - **Two need no tests at all if binary lines stop counting** — the open
 ///   decision described on [`crate::coverage::ProductionCoverage::lib_percent`].
-///   pbit-analyze is 91.5 % over its library and cf-studio-gui 94.0 %, so both
+///   pbit-analyze is 91.4 % over its library and cf-studio-gui 93.9 %, so both
 ///   clear the bar the moment their binaries leave the denominator.
 /// - **Two are real work either way**: cf-scan-prep-core (1170 lines, no test
 ///   in the crate) and example-ml-shared (99, likewise). They are the only two
