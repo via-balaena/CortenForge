@@ -281,27 +281,10 @@ fn verify_tools() -> Result<()> {
         // the one that governs. Checking for tarpaulin taught every new
         // contributor to reach for the wrong tool.
         //
-        // The component is verified below instead of in this list: it is not
-        // an executable on PATH and not a `cargo <name>` subcommand, so
-        // neither probe this loop uses would find it.
+        // The component is checked after this list, not in it: it is not an
+        // executable on PATH and not a `cargo <name>` subcommand, so neither
+        // probe this loop uses would find it.
     ];
-
-    // The coverage component, probed the way the grader itself probes it —
-    // `llvm-profdata` and `llvm-cov` inside the active toolchain's sysroot,
-    // not `which` and not `cargo llvm-tools`. Reusing the grader's own
-    // detector is the point: a second, looser check here would tell a
-    // contributor they are ready while criterion 1 still reports
-    // "(llvm-tools n/a)".
-    match xshell::Shell::new() {
-        Ok(sh) if crate::coverage_run::tools_available(&sh) => {
-            println!("  {} llvm-tools — coverage available", "✓".green())
-        }
-        _ => println!(
-            "  {} llvm-tools missing — `rustup component add llvm-tools-preview` \
-             (without it, `xtask grade` reports coverage as n/a)",
-            "○".yellow()
-        ),
-    }
 
     let mut all_required_present = true;
 
@@ -326,6 +309,26 @@ fn verify_tools() -> Result<()> {
         } else {
             println!("  ⚠ {} - {}", tool.bright_yellow(), description);
         }
+    }
+
+    // Last, and optional, like the two above it. Probed the way the grader
+    // itself probes it — `llvm-profdata` and `llvm-cov` in the active
+    // toolchain's sysroot, not `which` and not `cargo llvm-tools`, neither of
+    // which finds a rustup COMPONENT. Reusing the grader's own detector is the
+    // point: a looser check here would tell a contributor they are ready while
+    // criterion 1 still reports "(llvm-tools n/a)".
+    let coverage_desc = "Coverage component (rustup component add llvm-tools-preview)";
+    match xshell::Shell::new() {
+        Ok(sh) if crate::coverage_run::tools_available(&sh) => {
+            println!("  ✓ {} - {}", "llvm-tools".bright_green(), coverage_desc);
+        }
+        Ok(_) => println!("  ⚠ {} - {}", "llvm-tools".bright_yellow(), coverage_desc),
+        // A shell that will not start is not evidence the component is absent,
+        // and saying so would be a verdict this never measured.
+        Err(e) => println!(
+            "  ⚠ {} - could not probe ({e})",
+            "llvm-tools".bright_yellow()
+        ),
     }
 
     if !all_required_present {
