@@ -1447,11 +1447,20 @@ mod tests {
         assert!(!is_bin_target_file("src/bin/tool/helper.rs"));
     }
 
-    /// A crate-relative path is what this takes, so a checkout living under a
-    /// directory named `src` cannot make a library file look like a binary.
+    /// The match is anchored at the start of the crate-relative path, so a
+    /// `src/main.rs` sitting under some other prefix is not this crate's
+    /// binary root.
+    ///
+    /// ⚠ The obvious version of this test — feeding it an absolute path —
+    /// asserts nothing: the function takes the output of
+    /// [`relative_to_crate`], and an absolute path fails every arm for
+    /// reasons that have nothing to do with anchoring. These inputs are the
+    /// shape it really receives.
     #[test]
-    fn a_checkout_path_containing_src_main_rs_does_not_match() {
-        assert!(!is_bin_target_file("/home/src/main.rs/crate/src/lib.rs"));
+    fn the_binary_root_match_is_anchored_at_the_crate_root() {
+        assert!(!is_bin_target_file("vendor/src/main.rs"));
+        assert!(!is_bin_target_file("crates/inner/src/main.rs"));
+        assert!(!is_bin_target_file("nested/src/bin/tool.rs"));
     }
 
     fn bin_and_lib_export() -> serde_json::Value {

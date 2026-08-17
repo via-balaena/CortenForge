@@ -368,21 +368,22 @@ pub fn evaluate(sh: &Shell, crate_name: &str, verbosity: Verbosity) -> Result<Gr
     sh.change_dir(&workspace_root);
 
     let crate_path = find_crate_path(sh, crate_name)?;
-    // F.3: read the crate's Cargo.toml so classify_crate can honor the
-    // [package.metadata.cortenforge] opt-in. Missing or unreadable falls
-    // through to path-based classification — find_crate_path already
-    // proved the crate exists in workspace metadata.
-    let cargo_toml_text =
-        std::fs::read_to_string(format!("{}/Cargo.toml", crate_path)).unwrap_or_default();
+    // ★ Rooted on the workspace root, NOT left relative. `xshell::change_dir`
+    // moves the shell's directory; it does not touch the process's, and
+    // `std::fs` reads the process's. So the bare relative form this used to
+    // take resolved against wherever the user happened to invoke
+    // `cargo xtask` from, and silently returned "" anywhere but the root.
+    //
+    // ⚠ That was not cosmetic: the F.3 `grading_profile` opt-in lives in this
+    // text, so `sim-therm-env` graded as "Integration-only" from the workspace
+    // root and "Layer 0 library" from `sim/L0/core` — the same crate, the same
+    // commit, two verdicts. Fail-closed (the stricter profile is the one you
+    // got by accident), but a grade that depends on your shell's cwd is not a
+    // grade. Same rooting the empty-crate check below already does.
+    let crate_dir = Path::new(&workspace_root).join(&crate_path);
+    let cargo_toml_text = std::fs::read_to_string(crate_dir.join("Cargo.toml")).unwrap_or_default();
     let profile = classify_crate(&crate_path, &cargo_toml_text);
-    // Rooted on the workspace root for the same reason the empty-crate check
-    // below is: `xshell::change_dir` moves the shell's directory, not the
-    // process's, so a bare relative path would resolve against wherever the
-    // user invoked `cargo xtask` from.
-    let has_lib = has_lib_target(
-        &Path::new(&workspace_root).join(&crate_path),
-        &cargo_toml_text,
-    );
+    let has_lib = has_lib_target(&crate_dir, &cargo_toml_text);
 
     if !verbosity.quiet {
         eprintln!();
