@@ -67,22 +67,26 @@ act -j clippy
 
 The `.actrc` file is pre-configured for this project.
 
-### Optional: Local Coverage (Linux only)
+### Local Coverage — and why it is not optional
 
 ```bash
-# Install tarpaulin for local coverage checking
-cargo install cargo-tarpaulin
-
-# Check coverage for a crate
-cargo tarpaulin -p mesh-types --out Html
-open tarpaulin-report.html
-
-# To match CI threshold enforcement:
-cargo tarpaulin -p mesh-types --fail-under 75
+# The instrument the A-grade standard is defined by. Cross-platform;
+# needs `rustup component add llvm-tools-preview`, no extra install.
+cargo xtask grade <crate>          # criterion 1 reports the number
 ```
 
-This is optional - CI enforces ≥75% coverage (target: 90% as test coverage matures).
-Note: tarpaulin only works reliably on Linux. Mac/Windows users should rely on CI for coverage.
+⚠ **PR CI does not measure coverage, so nothing catches a regression except
+this command.** `quality-gate.yml` passes `--skip-coverage` on every shard; the
+only CI-side coverage is a weekly `scheduled.yml` job, which uses a different
+instrument (tarpaulin) at workspace granularity and has failed every run since
+2026-06-28. Verified 2026-08-16.
+
+Two corrections to what this section used to say, both measured rather than
+assumed: coverage is **not** enforced by CI, and it is **not** Linux-only —
+`xtask grade` runs on macOS and Windows, and the whole 2026-08-16 per-crate
+census was taken on Apple Silicon. Do not reach for `cargo tarpaulin` to
+predict your grade; it is a different instrument over a different scope and
+will not agree with the number that governs.
 
 ---
 
@@ -128,7 +132,7 @@ This records completion in the crate's `COMPLETION.md` and updates the project-w
 
 | Criterion | A Standard | Automated? |
 |-----------|------------|------------|
-| **Test Coverage** | ≥75% **production** line coverage (target: 90%) — `#[cfg(test)]` code is excluded from the ratio; see STANDARDS.md | Yes |
+| **Test Coverage** | ≥75% **production** line coverage (target: 90%) — `#[cfg(test)]` code is excluded from the ratio; see STANDARDS.md | Yes, but **local only** — PR CI skips it |
 | **Documentation** | Zero doc warnings, all public items documented | Yes |
 | **Clippy** | Zero warnings | Yes |
 | **Safety** | Zero `unwrap()`/`expect()` in library code | Yes |
@@ -195,7 +199,8 @@ Every push and PR runs:
 - cargo clippy -D warnings   # All warnings are errors
 - cargo test --all-features  # Tests must pass
 - cargo doc -D warnings      # Docs must build clean
-- coverage ≥ 75%             # Test coverage enforced (target: 90%)
+# NOTE: coverage is NOT in PR CI — `grade-all` runs with --skip-coverage.
+# `cargo xtask grade <crate>` locally is the only thing that checks it.
 - no bevy in Layer 0         # Architecture enforced
 ```
 
