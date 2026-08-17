@@ -1646,6 +1646,21 @@ fn coverage_display(percent: f64) -> String {
 /// Report-only is for what the measurement fix newly revealed, never for what
 /// it found already lit.
 ///
+/// ★ **What it would take to shrink this list**, from the same census — the
+/// numbers are here because a to-do without its sizes gets read as one job:
+///
+/// - **Three are within 30 lines, 39 in total**: cf-studio-engine needs 1,
+///   cf-anthro 13, pbit-analyze 25. One sitting takes the list from six to
+///   three. ⚠ Aim past the bar on each — see the drift note on
+///   cf-studio-engine below.
+/// - **Two need no tests at all if binary lines stop counting** — the open
+///   decision described on [`crate::coverage::ProductionCoverage::lib_percent`].
+///   pbit-analyze is 91.5 % over its library and cf-studio-gui 94.0 %, so both
+///   clear the bar the moment their binaries leave the denominator.
+/// - **Two are real work either way**: cf-scan-prep-core (1170 lines, no test
+///   in the crate) and example-ml-shared (99, likewise). They are the only two
+///   the other levers do not reach.
+///
 /// The 2026-08-16 census, run per-crate against the commit that introduced
 /// `has_lib_target` — 14 crates newly measured, of which **8 already pass**:
 /// cf-mjcf-emit 97.8, cf-msk-lib 95.7, cf-msk-fit 94.7, cf-osim 94.6,

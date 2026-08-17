@@ -202,13 +202,26 @@ of noise, quote a range rather than a decimal when it matters, and give a crate
 margin over the threshold rather than equality with it. A crate sitting exactly
 on 75.0 % is not reliably an A.
 
-⚠ **One crate is there now.** `cf-studio` passes at 131/174, and the bar is
-`ceil(0.75 × 174) = 131` — **margin zero**. It has reproduced at 131 three
-times, so it is stable today, but a single line of the drift measured above
-takes it to 74.7 % and an F. Every other newly-measured crate that passes has
-26–193 lines of slack. It is not deferred, because it passes; it is recorded
-because whoever turns the coverage job on should expect this one to be the
-first to flake.
+⚠ **Two crates are there now**, of the twelve whose margin has been computed:
+
+| crate | covered/total | bar | margin |
+|---|---|---|---|
+| `cf-studio` | 131/174 | 131 | **0** |
+| `mesh-types` | 113/146 | 110 | **3** |
+| `cf-bevy-common` | 145/186 | 140 | 5 |
+| `cf-device-types` | 197/253 | 190 | 7 |
+| `mesh-shell` | 487/631 | 474 | 13 |
+| the other seven | | | 26–193 |
+
+`cf-studio` reproduces at 131 across three runs and `mesh-types` sits three
+lines up, so both are stable today — but the drift measured above reached six
+lines on `cf-codesign`, which covers them both. Neither is deferred, because
+both pass; they are recorded because whoever turns a coverage-gating job on
+should expect these to flake first.
+
+⚠ **Twelve of the 61 crates in the measured population have had their margin
+computed.** The rest have not. Read the pair above as "the tight ones we have
+looked at", not as the complete set.
 
 **Percentages are truncated, not rounded**, so the printed figure is never
 above the graded one. `cf-studio-engine` at 605/807 = 74.969 % would otherwise
