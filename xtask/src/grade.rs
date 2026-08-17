@@ -1167,10 +1167,19 @@ fn coverage_skip_reason(
 /// scoping the build cannot move the number.
 ///
 /// `files_out` receives the per-file split of whatever this measured, worst
-/// first, and is left untouched on every path that returns without a
-/// measurement — a skipped profile, `--skip-coverage`, missing tooling, a
-/// failed run, or a crate with no production lines. So a non-empty `files_out`
-/// means "these files were measured", never "this is all we managed to see".
+/// first. **A non-empty `files_out` means "these files were measured", never
+/// "this is all we managed to see"** — that is the guarantee callers rely on,
+/// and it holds two ways. Every path that returns before a measurement exists
+/// — a skipped profile, `--skip-coverage`, missing tooling, a failed run —
+/// returns without touching it. The one measured path that still reports no
+/// percentage, `(no production lines)`, is reached exactly when `total == 0`,
+/// and `total` only grows in the branch that pushes a row, so its `files` is
+/// already empty and assigning it moves nothing.
+///
+/// ⚠ Stated as the guarantee rather than as "left untouched unless…": the
+/// assignment moved when the verdict was split into [`coverage_result`], and a
+/// contract phrased in terms of which line runs goes stale the next time that
+/// happens. This one is a property of the data.
 fn grade_coverage(
     sh: &Shell,
     crate_name: &str,
