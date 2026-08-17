@@ -168,19 +168,10 @@ the fourteen newly-measured crates already passed** — cf-mjcf-emit 97.8 %,
 cf-msk-lib 95.7 %, cf-msk-fit 94.7 %, cf-osim 94.6 %, cf-studio-core 90.3 %,
 cf-codesign 86.9–87.2 %, cf-cast-cli 79.9 %, cf-studio 75.2 % — so what the skip hid
 was mostly a measurement gap rather than a quality one. The six deferred are
-cf-scan-prep-core (0.0 % of 1560 lines, no test in the crate),
-cf-studio-gui (14.3 %, but 93.9 % over its library — 1657 lines are a Bevy GUI
-binary), example-ml-shared (0.0 % of 131), pbit-analyze (69.6 %, 25 lines
-short), cf-anthro (71.1 %, 13 short) and cf-studio-engine (74.969 %, **one**
-line short).
-
-⚠ **`xtask grade` cannot be run concurrently with itself.** The instrumented
-build uses one shared coverage target directory and resets it whenever the
-crate under measurement changes, so two grades running at once delete each
-other's build and surface as "measurement failed" / "Directory not empty".
-Eight of the fifteen crates in the first census pass failed this way and had to
-be re-measured serially. CI is unaffected — `grade-all --shard i/N` fans out
-across separate jobs — but a local sweep must be serial.
+cf-scan-prep-core (0.0 % of 1560 lines), cf-studio-gui (14.3 %, but 93.9 %
+over its library — 1657 of its lines are a Bevy GUI binary), example-ml-shared
+(0.0 % of 131), pbit-analyze (69.6 %), cf-anthro (71.1 %) and cf-studio-engine
+(74.969 %). What each would cost to clear is grouped below.
 
 **What it would take to empty the list**, from the same census — a to-do
 without its sizes gets read as one job:
@@ -195,6 +186,14 @@ without its sizes gets read as one job:
   crates immediately.
 - **Two are real work either way**: cf-scan-prep-core (1170 lines, no test in
   the crate) and example-ml-shared (99). No other lever reaches them.
+
+⚠ **`xtask grade` cannot be run concurrently with itself.** The instrumented
+build uses one shared coverage target directory and resets it whenever the
+crate under measurement changes, so two grades running at once delete each
+other's build and surface as "measurement failed" / "Directory not empty".
+Eight of the fifteen crates in the first census pass failed this way and had to
+be re-measured serially. CI is unaffected — `grade-all --shard i/N` fans out
+across separate jobs — but a local sweep must be serial.
 
 ⚠ **The measurement is not reproducible to the line** (measured 2026-08-16).
 Re-measuring all fifteen census crates on an unchanged tree, **two did not
