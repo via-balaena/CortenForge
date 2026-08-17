@@ -187,14 +187,6 @@ without its sizes gets read as one job:
 - **Two are real work either way**: cf-scan-prep-core (1170 lines, no test in
   the crate) and example-ml-shared (99). No other lever reaches them.
 
-⚠ **`xtask grade` cannot be run concurrently with itself.** The instrumented
-build uses one shared coverage target directory and resets it whenever the
-crate under measurement changes, so two grades running at once delete each
-other's build and surface as "measurement failed" / "Directory not empty".
-Eight of the fifteen crates in the first census pass failed this way and had to
-be re-measured serially. CI is unaffected — `grade-all --shard i/N` fans out
-across separate jobs — but a local sweep must be serial.
-
 ⚠ **The measurement is not reproducible to the line** (measured 2026-08-16).
 Re-measuring all fifteen census crates on an unchanged tree, **two did not
 reproduce**:
@@ -865,6 +857,14 @@ $ cargo xtask grade mesh-types
 ```
 
 `cargo xtask grade-all` runs the full sweep over all 301 workspace crates and reports a workspace-level pass/fail. It's the same gate CI runs (with `--skip-coverage` for runtime; coverage is a local-only gate per the note below).
+
+⚠ **`xtask grade` cannot be run concurrently with itself.** The instrumented
+build uses one shared coverage target directory and resets it whenever the
+crate under measurement changes, so two grades running at once delete each
+other's build and surface as "measurement failed" / "Directory not empty".
+Eight of the fifteen crates in the first census pass failed this way and had to
+be re-measured serially. CI is unaffected — `grade-all --shard i/N` fans out
+across separate jobs — but a local sweep must be serial.
 
 The sweep grades every crate even when some cannot be graded: a crate whose grade errors out is recorded and the run continues, so one broken crate never hides the verdict on the rest of its shard. Those crates are reported in their own section rather than counted as failures, since "could not measure" is a different problem from "measured, and it is bad" — but either one fails the sweep. A crate that was never measured is never absorbed into a green result.
 
