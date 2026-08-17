@@ -104,10 +104,17 @@ build them, by design.
 ⚠ **"(bin-only)" is now a measured fact, not a guess from the crate's
 directory.** It used to be asserted for every `Example`/`Xtask`/`tools` crate
 without checking, and it was **false for 13 of the 18 crates under `tools/`** —
-13 265 production lines that no coverage run ever touched, four of those crates
-holding no `#[test]` at all, one of them `cf-codesign` (the co-design optimizer).
-All of them reported `—` and passed, because N/A is skipped by the automated
-roll-up. The profile still decides the Clippy and Safety relaxations by path;
+**9718 production lines** that no coverage run ever touched, one of them
+`cf-codesign` (the co-design optimizer). All of them reported `—` and passed,
+because N/A is skipped by the automated roll-up. Measuring them showed **5505
+of those lines, 56.6 %, were covered all along** — the tests existed and
+nothing was reading them, so the skip hid a measurement gap far more than a
+quality one. (9718 is the coverage instrument's own count. A first pass
+reported 13 265 from a source-line heuristic, overstating by 36 % because it
+counted `use` lines, attributes and braces that llvm-cov never maps; the size
+of an unmeasured gap belongs in the units of the missing measurement.)
+
+The profile still decides the Clippy and Safety relaxations by path;
 it no longer decides whether a library gets measured. A crate is skipped here
 only when Cargo would build no lib target for it — no `[lib]` table, no
 `src/lib.rs`, or `autolib = false`. Same failure shape as the fail-open dead

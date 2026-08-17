@@ -295,12 +295,23 @@ pub(crate) fn classify_crate(crate_path: &str, cargo_toml_text: &str) -> CratePr
 /// ★ **This is the fact [`coverage_skip_reason`] used to assume.** The
 /// `Example`/`Xtask` profiles skipped coverage with the stated reason "bin-only
 /// crates have no lib target", and nothing checked it. Measured 2026-08-16, it
-/// was false for **13 of the 18** crates under `tools/`: 13 265 production
-/// lines went unmeasured behind a justification that did not hold, four of
-/// those crates having no `#[test]` at all, and one of them `cf-codesign` — the
-/// co-design optimizer, Mission deliverable #2. Every one reported `—` and
-/// passed, because [`Grade::NotApplicable`] is skipped by
-/// `overall_automated`.
+/// was false for **13 of the 18** crates under `tools/`: **9718 production
+/// lines** went unmeasured behind a justification that did not hold, one of
+/// those crates being `cf-codesign` — the co-design optimizer, Mission
+/// deliverable #2. Every one reported `—` and passed, because
+/// [`Grade::NotApplicable`] is skipped by `overall_automated`.
+///
+/// ★ 9718 is what THIS instrument counts, which is the only count that means
+/// anything here: a first pass used a source-line heuristic and said 13 265,
+/// overstating by 36 % because it counted `use` lines, attributes and closing
+/// braces that llvm-cov never maps. The size of an unmeasured gap has to be
+/// stated in the units of the measurement that was missing.
+///
+/// ★★ And measuring them showed **5505 of those lines were covered all
+/// along** — 56.6 %. The tests existed; nothing was reading them. What the
+/// skip hid was mostly a measurement gap rather than a quality one, which is
+/// why the fix is a grader change and not a test-writing campaign. The
+/// genuinely never-exercised remainder is 4213 lines.
 ///
 /// Same family as the fail-open dead zone #772–#774 closed: a gate whose green
 /// meant "not measured" while its text claimed a property nobody had checked.
@@ -1154,7 +1165,7 @@ fn grade_coverage(
     // own Cargo.toml opt-in) is exercised from `tests/`. Both are N/A rather
     // than a false F. Which crates those actually ARE is now decided by
     // `has_lib_target` rather than by the directory the crate sits in — see
-    // that function for the 13 265 lines the guess was hiding.
+    // that function for the 9718 lines the guess was hiding.
     if let Some((result, detail)) = coverage_skip_reason(profile, has_lib_target) {
         return Ok(CriterionResult {
             name: "1. Coverage",
@@ -4410,7 +4421,7 @@ serde = \"1\"
 
     /// ⚠ The direction matters: an unreadable manifest must MEASURE, not skip.
     /// A measurement that should not have run is a visible number; a skip that
-    /// should not have happened is silence, and silence is what hid 13 265
+    /// should not have happened is silence, and silence is what hid 9718
     /// lines.
     #[test]
     fn has_lib_target_errs_toward_measuring_when_the_manifest_will_not_parse() {
