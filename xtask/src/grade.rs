@@ -1689,10 +1689,11 @@ const COVERAGE_REPORT_ONLY: &[&str] = &[
     // the census measures, it does not edit the crates it measures.
     //
     // ⚠ And it is one of the two crates that showed the coverage run is NOT
-    // reproducible to the line. Ten runs on one unchanged tree: 605/807 eight
-    // times, 604/807 twice, the difference a single line in `src/edit.rs`
-    // (318 vs 319 of 421). Re-measuring all fifteen census crates found one
-    // more, and larger — cf-codesign moved six lines, 1416/1622 to 1410/1622.
+    // reproducible to the line. Ten runs on one unchanged tree, 2026-08-16:
+    // 605/807 eight times, 604/807 twice, the difference a single line in
+    // `src/edit.rs` (318 vs 319 of 421). Re-measuring all fifteen census
+    // crates found one more, and larger — cf-codesign moved six lines,
+    // 1416/1622 to 1410/1622.
     // Causes unidentified; the JSON export is per file, not per line.
     //
     // Verdicts were stable in both cases, which is why this is a caveat and

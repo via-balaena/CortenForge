@@ -182,8 +182,9 @@ Eight of the fifteen crates in the first census pass failed this way and had to
 be re-measured serially. CI is unaffected — `grade-all --shard i/N` fans out
 across separate jobs — but a local sweep must be serial.
 
-⚠ **The measurement is not reproducible to the line.** Re-measuring all
-fifteen census crates on an unchanged tree, **two did not reproduce**:
+⚠ **The measurement is not reproducible to the line** (measured 2026-08-16).
+Re-measuring all fifteen census crates on an unchanged tree, **two did not
+reproduce**:
 
 - `cf-studio-engine` — 605/807 eight times and 604/807 twice over ten runs, the
   whole difference one line in `src/edit.rs`.
@@ -202,7 +203,8 @@ of noise, quote a range rather than a decimal when it matters, and give a crate
 margin over the threshold rather than equality with it. A crate sitting exactly
 on 75.0 % is not reliably an A.
 
-⚠ **Two crates are there now**, of the twelve whose margin has been computed:
+⚠ **Two crates are there now** (margins computed 2026-08-17), of the twelve
+that have one:
 
 | crate | covered/total | bar | margin |
 |---|---|---|---|

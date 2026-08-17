@@ -117,8 +117,9 @@ This runs automated checks and shows your current grade. If any criterion is bel
 If your grade is below A on any criterion, fix it. This is not optional. The refactor loop continues until all criteria are A.
 
 ⚠ For coverage, aim past the bar rather than at it. The measurement is not
-reproducible to the line: re-measuring the same tree twice, `cf-studio-engine`
-returned 605/807 and 604/807, and `cf-codesign` moved six lines. Verdicts held
+reproducible to the line: re-measuring the same tree twice on 2026-08-16,
+`cf-studio-engine` returned 605/807 and 604/807, and `cf-codesign` moved six
+lines. Verdicts held
 in both cases, but a crate landing exactly on 75.0 % is not reliably an A.
 
 ### Step 4: Complete
