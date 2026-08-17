@@ -1630,6 +1630,13 @@ fn coverage_result(
 /// Truncating guarantees the printed number is never above the one that was
 /// graded, so a displayed `75.0%` always means the threshold was really met.
 /// The unrounded counts are printed beside it either way, so nothing is lost.
+///
+/// ★ **Display-only, and that is structural rather than a promise.** Every
+/// production call site feeds this straight into a `format!`, a `println!`, or
+/// `CriterionResult::result`; its output is never compared, parsed, or tested
+/// against a threshold. The grade is computed from the raw `f64` above. So no
+/// crate's letter can move because this function changed — checked by
+/// enumerating the call sites, not inferred from the tests.
 fn coverage_display(percent: f64) -> String {
     format!("{:.1}%", (percent * 10.0).floor() / 10.0)
 }
