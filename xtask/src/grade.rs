@@ -1180,6 +1180,22 @@ fn coverage_skip_reason(
 /// assignment moved when the verdict was split into [`coverage_result`], and a
 /// contract phrased in terms of which line runs goes stale the next time that
 /// happens. This one is a property of the data.
+///
+/// ★ **Where the automated boundary sits, and why here.** Everything from a
+/// finished measurement onward is unit-tested through [`coverage_result_for`]
+/// and [`coverage_result`]. This function's own body — cargo orchestration,
+/// two passes, the tooling and profile guards — is not, because driving it
+/// needs a real llvm-cov run of minutes.
+///
+/// That boundary is a choice, not an oversight, and it does not shrink to
+/// nothing by extracting further: each split tests the piece below it and
+/// leaves the call to that piece untested one level up. Measured — a mutation
+/// replacing the [`coverage_result_for`] call with a direct
+/// `coverage_result(…, false)` survives the suite. What covers it instead is
+/// an end-to-end check, run and recorded rather than assumed: `xtask grade
+/// cf-anthro` prints `71.1% (report-only)` with three triage rows, and `xtask
+/// grade cf-viewer` prints `33.8%` with `57.7% over library lines alone`.
+/// Re-run those two after touching this function.
 fn grade_coverage(
     sh: &Shell,
     crate_name: &str,
@@ -1406,7 +1422,7 @@ fn grade_coverage(
     // test drives, and a 2026-08-16 mutation sweep proved it — the report-only
     // block, the library-only detail and the binary-target marker could each
     // be deleted whole with every test still green.
-    let result = coverage_result(crate_name, &measured, heavy_passed);
+    let result = coverage_result_for(crate_name, &measured, heavy_passed);
 
     // Unconditional, and still honours "a non-empty `files_out` means these
     // files were measured": the one verdict above that measured nothing is
@@ -1417,6 +1433,23 @@ fn grade_coverage(
     // of the same invariant, free to drift from it.
     *files_out = measured.files;
     Ok(result)
+}
+
+/// [`coverage_result`] with the deferral looked up from
+/// [`COVERAGE_REPORT_ONLY`] — the seam between "is this crate deferred" and
+/// "what does a deferred crate report".
+///
+/// ⚠ Exists to be testable. Passing the flag into `coverage_result` made the
+/// verdict drivable from a unit test, but left the LOOKUP untested one level
+/// up: a mutation replacing the argument with a bare `false` survived, which
+/// would silently un-defer every crate on the list. Splitting the composition
+/// into its own named function is what gives a test something to call.
+fn coverage_result_for(
+    crate_name: &str,
+    measured: &crate::coverage::ProductionCoverage,
+    heavy_passed: bool,
+) -> CriterionResult {
+    coverage_result(measured, heavy_passed, is_coverage_report_only(crate_name))
 }
 
 /// Criterion 1's verdict, from a finished measurement. Pure: no `Shell`, no
@@ -1430,9 +1463,9 @@ fn grade_coverage(
 /// three. Same principle that pulled the file-walking half out of criteria 3
 /// and 4.
 fn coverage_result(
-    crate_name: &str,
     measured: &crate::coverage::ProductionCoverage,
     heavy_passed: bool,
+    report_only: bool,
 ) -> CriterionResult {
     // No production lines is a different fact from bad coverage, and from a
     // broken report. Grading it F would send a reader hunting for uncovered
@@ -1508,7 +1541,7 @@ fn coverage_result(
     // ⚠ A failing test run is NOT waivable. `heavy_passed` gates every crate,
     // report-only or not: the waiver is on the coverage THRESHOLD, and letting
     // it swallow a red suite would rebuild the fail-open hole this arc closed.
-    if heavy_passed && is_coverage_report_only(crate_name) {
+    if heavy_passed && report_only {
         return CriterionResult {
             name: "1. Coverage",
             result: format!("{} (report-only)", coverage_display(coverage)),
@@ -1566,6 +1599,13 @@ fn coverage_display(percent: f64) -> String {
 /// ★ **Finite and explicit by construction.** A crate added to `tools/`
 /// tomorrow is enforced from its first grade, because it is not on this list
 /// and there is no rule that would put it here. Enforcement is a deletion.
+///
+/// ★ **Emptying this list is the goal, and nothing breaks when it happens** —
+/// verified by emptying it and running the suite. Two tests used to index
+/// `COVERAGE_REPORT_ONLY[0]`, so they would have panicked on the day the last
+/// name was removed, and whoever removed it would have deleted them — losing
+/// the "a red suite is never waivable" test permanently. The verdict now takes
+/// the deferral as a flag, so its tests do not reach for this list at all.
 ///
 /// ⚠ This is a waiver on the coverage THRESHOLD only. Test failures, Clippy,
 /// Safety, Documentation and Dependencies gate these crates exactly as they
@@ -4555,7 +4595,7 @@ serde = \"1\"
             (45, Grade::C),
             (20, Grade::F),
         ] {
-            let r = coverage_result("some-crate", &measurement(covered, 100, 0, 0), true);
+            let r = coverage_result(&measurement(covered, 100, 0, 0), true, false);
             assert_eq!(r.grade, expect, "{covered}/100");
         }
     }
@@ -4565,8 +4605,7 @@ serde = \"1\"
     /// is told the enforcement is deferred rather than absent.
     #[test]
     fn a_report_only_crate_still_reports_its_real_number() {
-        let name = COVERAGE_REPORT_ONLY[0];
-        let r = coverage_result(name, &measurement(30, 100, 0, 0), true);
+        let r = coverage_result(&measurement(30, 100, 0, 0), true, true);
 
         assert_eq!(r.grade, Grade::NotApplicable, "the threshold is waived");
         assert_eq!(r.result, "30.0% (report-only)");
@@ -4583,8 +4622,7 @@ serde = \"1\"
     /// coverage THRESHOLD, never a red test suite.
     #[test]
     fn a_report_only_crate_with_failing_tests_still_grades_f() {
-        let name = COVERAGE_REPORT_ONLY[0];
-        let r = coverage_result(name, &measurement(99, 100, 0, 0), false);
+        let r = coverage_result(&measurement(99, 100, 0, 0), false, true);
 
         assert_eq!(
             r.grade,
@@ -4595,11 +4633,40 @@ serde = \"1\"
         assert!(r.measured_detail.contains("heavy tests FAILED"));
     }
 
+    /// ★ The SEAM: the deferral flag must be looked up, not hardcoded.
+    ///
+    /// `coverage_result`'s own tests drive the flag directly and say nothing
+    /// about where it comes from; a mutation passing a bare `false` at the
+    /// call site survived them.
+    ///
+    /// ⚠ Written to survive the list emptying, which is its stated end state.
+    /// With an empty list the loop is vacuous and only the `cf-viewer` arm
+    /// asserts — which is the arm that matters, because a hardcoded `true`
+    /// would waive the threshold for every crate in the workspace, while a
+    /// hardcoded `false` with an empty list changes nothing.
+    #[test]
+    fn the_deferral_is_looked_up_from_the_list_and_not_hardcoded() {
+        for name in COVERAGE_REPORT_ONLY {
+            let r = coverage_result_for(name, &measurement(30, 100, 0, 0), true);
+            assert_eq!(
+                r.grade,
+                Grade::NotApplicable,
+                "{name} is on the list and must be deferred"
+            );
+        }
+        let r = coverage_result_for("cf-viewer", &measurement(30, 100, 0, 0), true);
+        assert_eq!(
+            r.grade,
+            Grade::F,
+            "cf-viewer is not on the list and must still gate"
+        );
+    }
+
     /// The same crate not on the list grades normally, so the test above is
     /// about `heavy_passed` and not about the list being ineffective.
     #[test]
     fn an_undeferred_crate_grades_on_the_threshold() {
-        let r = coverage_result("not-deferred", &measurement(30, 100, 0, 0), true);
+        let r = coverage_result(&measurement(30, 100, 0, 0), true, false);
         assert_eq!(r.grade, Grade::F);
         assert_eq!(r.result, "30.0%");
         assert!(!r.measured_detail.contains("REPORT-ONLY"));
@@ -4611,7 +4678,7 @@ serde = \"1\"
     fn the_detail_reports_the_library_only_figure_when_a_binary_contributed() {
         // 40/100 overall; the binary holds 50 lines, none covered, so the
         // library is 40/50 = 80 %.
-        let r = coverage_result("some-crate", &measurement(40, 100, 0, 50), true);
+        let r = coverage_result(&measurement(40, 100, 0, 50), true, false);
 
         assert!(
             r.measured_detail.contains("80.0% over library lines alone"),
@@ -4626,13 +4693,13 @@ serde = \"1\"
     /// same number twice under two names.
     #[test]
     fn the_detail_omits_the_library_figure_when_there_is_no_binary() {
-        let r = coverage_result("some-crate", &measurement(40, 100, 0, 0), true);
+        let r = coverage_result(&measurement(40, 100, 0, 0), true, false);
         assert!(!r.measured_detail.contains("library lines alone"));
     }
 
     #[test]
     fn a_measurement_with_no_production_lines_is_not_a_bad_grade() {
-        let r = coverage_result("some-crate", &measurement(0, 0, 0, 0), true);
+        let r = coverage_result(&measurement(0, 0, 0, 0), true, false);
         assert_eq!(r.grade, Grade::NotApplicable);
         assert_eq!(r.result, "(no production lines)");
     }
