@@ -62,6 +62,14 @@ pub(crate) struct FileCoverage {
     /// this happened to; the flag says *which*, because the ranking is what a
     /// reader acts on and an inflated row can outrank every honest one.
     pub test_lines_counted: bool,
+    /// This file belongs to a BINARY target rather than the library — see
+    /// [`is_bin_target_file`].
+    ///
+    /// Recorded, not acted on: these lines stay in the graded total exactly as
+    /// before. It exists so the split can be *reported* while the decision to
+    /// exclude binary lines from a library bar is still open — a number nobody
+    /// can see is not evidence for that decision.
+    pub is_bin: bool,
 }
 
 impl FileCoverage {
@@ -108,12 +116,47 @@ pub(crate) struct ProductionCoverage {
     /// Sums to [`Self::covered`] / [`Self::total`] by construction: both are
     /// accumulated in the same pass over the same lines.
     pub files: Vec<FileCoverage>,
+    /// The subset of [`Self::covered`] contributed by BINARY targets.
+    pub bin_covered: u64,
+    /// The subset of [`Self::total`] contributed by BINARY targets.
+    ///
+    /// ⚠ A **subset**, not a separate pool: binary lines are counted in
+    /// `covered`/`total` as they always were, and recorded here as well. So
+    /// [`Self::percent`] is bit-identical to what it returned before this
+    /// field existed, and no crate's grade moves because the split was added.
+    pub bin_total: u64,
 }
 
 impl ProductionCoverage {
     /// Percentage, or `None` when the crate has no production lines at all.
+    ///
+    /// **The graded figure, and deliberately unchanged.** It spans library and
+    /// binary lines alike; [`Self::lib_percent`] is the alternative, reported
+    /// beside it but not yet gating.
     pub fn percent(&self) -> Option<f64> {
         (self.total > 0).then(|| 100.0 * self.covered as f64 / self.total as f64)
+    }
+
+    /// Percentage over LIBRARY lines only — binary-target lines removed from
+    /// both sides. `None` when the crate has no library lines.
+    ///
+    /// Reported, never graded (yet). The case for it: `.run()`, `Cli::parse()`
+    /// and a `main` that ends in an event loop cannot be unit-tested at all, so
+    /// a crate whose binary is a large share of its source is held to a bar its
+    /// library could clear and its binary structurally cannot. Measured on
+    /// `cf-viewer` 2026-08-16 — 460 of 1082 production lines are `src/main.rs`
+    /// at 1.5 % — the whole-crate figure is 33.8 % and the library-only figure
+    /// is 57.7 %.
+    ///
+    /// ⚠ The case against, which is why this only reports: excluding binary
+    /// lines makes `main.rs` a place where logic stops being measured. That is
+    /// the dead-zone shape #772–#774 closed, so the exclusion cannot land as a
+    /// silent default — it needs the split visible in the triage table first,
+    /// which is what this PR does.
+    pub fn lib_percent(&self) -> Option<f64> {
+        let total = self.total.saturating_sub(self.bin_total);
+        let covered = self.covered.saturating_sub(self.bin_covered);
+        (total > 0).then(|| 100.0 * covered as f64 / total as f64)
     }
 }
 
@@ -148,6 +191,33 @@ fn relative_to_crate(name: &str, crate_path: &str) -> String {
 /// production" is this module's question; `coverage_run` only needs the answer.
 pub(crate) fn is_own_production_file(name: &str, crate_path: &str) -> bool {
     name.contains(crate_path) && !name.contains(&format!("{crate_path}/tests/"))
+}
+
+/// Whether a crate-relative path is the root of a BINARY target, by Cargo's
+/// own auto-discovery convention: `src/main.rs`, `src/bin/<name>.rs`, and
+/// `src/bin/<name>/main.rs`.
+///
+/// Takes the path already made relative by [`relative_to_crate`], so a
+/// workspace checked out under a directory called `src` cannot match.
+///
+/// ⚠ **Deliberately under-inclusive, in the safe direction.** Two shapes it
+/// does not catch:
+///
+/// - A `[[bin]] path = …` pointing outside the convention. Both explicit
+///   `[[bin]]` declarations in this workspace (`cf-viewer` → `src/main.rs`,
+///   `cf-studio-gui` → `src/bin/spike_wgpu.rs`) sit on the convention anyway.
+/// - A module reached by `mod foo;` **from** a binary root. `src/foo.rs` is
+///   indistinguishable from a library module by path, and resolving it would
+///   mean parsing every binary's module tree.
+///
+/// Both misses classify binary code as library code, which counts it against
+/// the library bar. That direction can only ever make a crate look worse, so
+/// no gap here can produce a false pass — the property worth having, given the
+/// exclusion this feeds is precisely the kind that creates a dead zone.
+pub(crate) fn is_bin_target_file(relative: &str) -> bool {
+    relative == "src/main.rs"
+        || (relative.starts_with("src/bin/")
+            && (relative.ends_with("/main.rs") || relative.matches('/').count() == 2))
 }
 
 /// Whether `crate_path`'s own sources are **positively established** to declare
@@ -673,11 +743,14 @@ pub(crate) fn production_coverage(
             }
         };
 
+        let relative = relative_to_crate(name, crate_path);
+        let is_bin = is_bin_target_file(&relative);
         let mut this_file = FileCoverage {
-            file: relative_to_crate(name, crate_path),
+            file: relative,
             covered: 0,
             total: 0,
             test_lines_counted,
+            is_bin,
         };
         for (line, count) in mapped_lines(segments) {
             if spans.iter().any(|(a, b)| line >= *a && line <= *b) {
@@ -693,6 +766,12 @@ pub(crate) fn production_coverage(
         if this_file.total > 0 {
             acc.covered += this_file.covered;
             acc.total += this_file.total;
+            // Accumulated as a SUBSET of the totals above, not instead of them,
+            // so `percent()` is unmoved and only `lib_percent()` reads these.
+            if is_bin {
+                acc.bin_covered += this_file.covered;
+                acc.bin_total += this_file.total;
+            }
             acc.files.push(this_file);
         }
     }
@@ -1336,5 +1415,117 @@ mod tests {
         std::fs::create_dir_all(&root).expect("mkdir");
         assert!(!declares_no_production_code(&root));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // === binary-target classification ===
+
+    #[test]
+    fn cargos_three_binary_conventions_are_recognised() {
+        assert!(is_bin_target_file("src/main.rs"));
+        assert!(is_bin_target_file("src/bin/spike_wgpu.rs"));
+        assert!(is_bin_target_file("src/bin/tool/main.rs"));
+    }
+
+    /// ★ The complement, asserted separately: a marker that fires on library
+    /// code would pull real lines out of the reported library figure, which is
+    /// the direction that can manufacture a false pass.
+    #[test]
+    fn library_sources_are_not_binary_targets() {
+        assert!(!is_bin_target_file("src/lib.rs"));
+        assert!(!is_bin_target_file("src/sequence.rs"));
+        assert!(!is_bin_target_file("src/ui/panel.rs"));
+        // A module of a binary, reached by `mod helper;` from src/bin/tool/.
+        // Documented as an accepted miss — it counts binary code against the
+        // library, which can only understate.
+        assert!(!is_bin_target_file("src/bin/tool/helper.rs"));
+    }
+
+    /// A crate-relative path is what this takes, so a checkout living under a
+    /// directory named `src` cannot make a library file look like a binary.
+    #[test]
+    fn a_checkout_path_containing_src_main_rs_does_not_match() {
+        assert!(!is_bin_target_file("/home/src/main.rs/crate/src/lib.rs"));
+    }
+
+    fn bin_and_lib_export() -> serde_json::Value {
+        serde_json::json!({
+            "data": [{"files": [
+                // src/lib.rs: lines 1-3, all executed.
+                {"filename": "/w/demo/src/lib.rs", "segments": [
+                    [1, 1, 5, true, true, false], [3, 1, 0, false, false, false]]},
+                // src/main.rs: lines 1-6 inclusive, never executed.
+                {"filename": "/w/demo/src/main.rs", "segments": [
+                    [1, 1, 0, true, true, false], [6, 1, 0, false, false, false]]},
+            ]}]
+        })
+    }
+
+    /// ★★ The property that makes this change gate-neutral: binary lines are
+    /// recorded as a SUBSET of the totals, so `percent()` returns exactly what
+    /// it returned before the split existed. If this ever fails, adding the
+    /// breakdown silently re-graded the workspace.
+    #[test]
+    fn binary_lines_are_recorded_without_moving_the_graded_percentage() {
+        let cov = production_coverage(&bin_and_lib_export(), "demo");
+
+        assert_eq!(cov.total, 9, "3 library lines + 6 binary ones");
+        assert_eq!(cov.covered, 3);
+        assert_eq!(
+            cov.percent().expect("measured"),
+            100.0 * 3.0 / 9.0,
+            "the graded figure still spans library AND binary lines"
+        );
+        assert_eq!(cov.bin_total, 6);
+        assert_eq!(cov.bin_covered, 0);
+    }
+
+    #[test]
+    fn the_library_only_figure_removes_binary_lines_from_both_sides() {
+        let cov = production_coverage(&bin_and_lib_export(), "demo");
+
+        assert_eq!(
+            cov.lib_percent().expect("has library lines"),
+            100.0,
+            "3 of 3 library lines are covered; the cold main.rs must not dilute it"
+        );
+    }
+
+    /// A crate whose only production code IS a binary has no library figure to
+    /// report — `None`, not a division by zero dressed up as 0 %.
+    #[test]
+    fn a_binary_only_crate_has_no_library_percentage() {
+        let json = serde_json::json!({
+            "data": [{"files": [
+                {"filename": "/w/demo/src/main.rs", "segments": [
+                    [1, 1, 0, true, true, false], [4, 1, 0, false, false, false]]},
+            ]}]
+        });
+        let cov = production_coverage(&json, "demo");
+
+        assert_eq!(cov.total, 4);
+        assert_eq!(cov.bin_total, 4);
+        assert!(cov.lib_percent().is_none());
+        assert!(cov.percent().is_some(), "the graded figure still exists");
+    }
+
+    /// The flag has to survive onto the row, because the triage table is where
+    /// a reader learns that a large uncovered count is a binary entry point
+    /// rather than a gap they can close.
+    #[test]
+    fn the_triage_row_for_a_binary_root_is_marked() {
+        let cov = production_coverage(&bin_and_lib_export(), "demo");
+
+        let main = cov
+            .files
+            .iter()
+            .find(|f| f.file == "src/main.rs")
+            .expect("main.rs row");
+        assert!(main.is_bin);
+        let lib = cov
+            .files
+            .iter()
+            .find(|f| f.file == "src/lib.rs")
+            .expect("lib.rs row");
+        assert!(!lib.is_bin);
     }
 }

@@ -289,6 +289,50 @@ pub(crate) fn classify_crate(crate_path: &str, cargo_toml_text: &str) -> CratePr
     }
 }
 
+/// Whether the crate actually has a library target, by Cargo's own rule: an
+/// explicit `[lib]` table, or auto-discovery of `src/lib.rs`.
+///
+/// ★ **This is the fact [`coverage_skip_reason`] used to assume.** The
+/// `Example`/`Xtask` profiles skipped coverage with the stated reason "bin-only
+/// crates have no lib target", and nothing checked it. Measured 2026-08-16, it
+/// was false for **13 of the 18** crates under `tools/`: 13 265 production
+/// lines went unmeasured behind a justification that did not hold, four of
+/// those crates having no `#[test]` at all, and one of them `cf-codesign` — the
+/// co-design optimizer, Mission deliverable #2. Every one reported `—` and
+/// passed, because [`Grade::NotApplicable`] is skipped by
+/// `overall_automated`.
+///
+/// Same family as the fail-open dead zone #772–#774 closed: a gate whose green
+/// meant "not measured" while its text claimed a property nobody had checked.
+/// The fix is the same shape — take the fact as an argument instead of
+/// inferring it from where the crate happens to live.
+///
+/// `autolib = false` (Rust 2024) suppresses the `src/lib.rs` discovery, so it
+/// is honoured here; a crate that sets it and declares `[lib]` anyway still has
+/// the target, which is why the explicit table is checked first.
+///
+/// ⚠ Errs toward "has a lib" whenever the manifest will not parse: the caller
+/// then MEASURES rather than skipping, and a measurement that should not have
+/// run is a visible number, while a skip that should not have happened is
+/// silence. Only the second one can hide code.
+pub(crate) fn has_lib_target(crate_dir: &Path, cargo_toml_text: &str) -> bool {
+    let manifest = toml::from_str::<toml::Value>(cargo_toml_text).ok();
+    let Some(manifest) = manifest else {
+        return true;
+    };
+    if manifest.get("lib").is_some() {
+        return true;
+    }
+    let autolib = manifest
+        .get("package")
+        .and_then(|p| p.get("autolib"))
+        .and_then(toml::Value::as_bool);
+    if autolib == Some(false) {
+        return false;
+    }
+    crate_dir.join("src").join("lib.rs").is_file()
+}
+
 /// Run a single criterion with progress logging on stderr.
 fn run_criterion<F>(index: usize, name: &str, quiet: bool, f: F) -> Result<CriterionResult>
 where
@@ -331,6 +375,14 @@ pub fn evaluate(sh: &Shell, crate_name: &str, verbosity: Verbosity) -> Result<Gr
     let cargo_toml_text =
         std::fs::read_to_string(format!("{}/Cargo.toml", crate_path)).unwrap_or_default();
     let profile = classify_crate(&crate_path, &cargo_toml_text);
+    // Rooted on the workspace root for the same reason the empty-crate check
+    // below is: `xshell::change_dir` moves the shell's directory, not the
+    // process's, so a bare relative path would resolve against wherever the
+    // user invoked `cargo xtask` from.
+    let has_lib = has_lib_target(
+        &Path::new(&workspace_root).join(&crate_path),
+        &cargo_toml_text,
+    );
 
     if !verbosity.quiet {
         eprintln!();
@@ -360,6 +412,7 @@ pub fn evaluate(sh: &Shell, crate_name: &str, verbosity: Verbosity) -> Result<Gr
                 crate_name,
                 &crate_path,
                 profile,
+                has_lib,
                 verbosity,
                 &mut coverage_files,
             )
@@ -550,11 +603,22 @@ fn print_coverage_triage(report: &GradeReport) {
         } else {
             String::new()
         };
+        // A binary root is ranked and counted like any other file — the marker
+        // says only that its lines belong to a target whose entry point cannot
+        // be unit-tested, so a reader does not go hunting for a way to cover
+        // `.run()`. It is the one row where a high uncovered count may be the
+        // shape of the target rather than a gap in the tests.
+        let target = if f.is_bin {
+            "  (binary target)".dimmed().to_string()
+        } else {
+            String::new()
+        };
         println!(
-            "      {:>9}  {:>7}  {}{}",
+            "      {:>9}  {:>7}  {}{}{}",
             f.uncovered(),
             format!("{:.1}%", f.percent()),
             f.file,
+            target,
             caveat
         );
     }
@@ -615,6 +679,11 @@ fn json_output(report: &GradeReport) {
                 // True means the counts on this row include `#[cfg(test)]`
                 // lines, so they overstate both the work and the gap.
                 "test_lines_counted": f.test_lines_counted,
+                // True for a binary-target root. Present so a consumer can
+                // compute the library-only figure the human detail line
+                // reports, from the same rows, without re-deriving which
+                // paths Cargo treats as binaries.
+                "is_bin": f.is_bin,
             })
         })
         .collect();
@@ -1017,18 +1086,29 @@ pub(crate) fn find_crate_path(sh: &Shell, crate_name: &str) -> Result<String> {
     )
 }
 
-/// Return `Some((result_label, detail))` if Coverage should skip for the
-/// profile, or `None` if the crate must be measured.
+/// Why Coverage does not apply to this crate — `Some((result_label, detail))`
+/// to skip, `None` when the crate must be measured.
 ///
-/// Three profiles skip Coverage: Example and Xtask (no lib target per
-/// STANDARDS.md §1) and IntegrationOnly (F.3 metadata opt-in for crates
-/// exercised by integration tests). Layer0 and BevyLayer1 always run.
-fn coverage_skip_reason(profile: CrateProfile) -> Option<(&'static str, String)> {
+/// Two reasons. `IntegrationOnly` is an explicit `[package.metadata.cortenforge]`
+/// opt-in, self-documenting in the crate's own manifest. The other is having no
+/// library target to measure — and `has_lib_target` is that fact, passed in
+/// rather than inferred, so the message and the behaviour cannot drift apart.
+///
+/// ★ An `Example`/`Xtask` crate that DOES have a lib target is measured like
+/// any other. Those profiles say "binary application code" for the purposes of
+/// Clippy and Safety relaxation; they never established the absence of a
+/// library, which is what the coverage skip was resting on. See
+/// [`has_lib_target`] for what that cost.
+fn coverage_skip_reason(
+    profile: CrateProfile,
+    has_lib_target: bool,
+) -> Option<(&'static str, String)> {
     match profile {
+        CrateProfile::Example | CrateProfile::Xtask if has_lib_target => None,
         CrateProfile::Example | CrateProfile::Xtask => Some((
             "(bin-only)",
             format!(
-                "coverage skipped: {} crates have no lib target per STANDARDS.md §1",
+                "coverage skipped: this {} crate has no lib target per STANDARDS.md §1",
                 profile.label()
             ),
         )),
@@ -1064,17 +1144,17 @@ fn grade_coverage(
     crate_name: &str,
     crate_path: &str,
     profile: CrateProfile,
+    has_lib_target: bool,
     verbosity: Verbosity,
     files_out: &mut Vec<crate::coverage::FileCoverage>,
 ) -> Result<CriterionResult> {
-    // Per STANDARDS.md §1 "Exceptions: None for Layer 0 crates" — the
-    // coverage gate is specifically scoped to Layer 0 library crates.
-    // Example (bin-only) and Xtask (build tooling) crates have no lib
-    // target, so the instrumented `--lib --tests` build has nothing to
-    // measure. F.3 IntegrationOnly crates (per Cargo.toml
-    // metadata opt-in) are exercised by integration tests and have no
-    // testable lib surface. Treat all three as N/A rather than a false F.
-    if let Some((result, detail)) = coverage_skip_reason(profile) {
+    // A crate with no library target has nothing for the instrumented
+    // `--lib --tests` build to measure; an F.3 IntegrationOnly crate (per its
+    // own Cargo.toml opt-in) is exercised from `tests/`. Both are N/A rather
+    // than a false F. Which crates those actually ARE is now decided by
+    // `has_lib_target` rather than by the directory the crate sits in — see
+    // that function for the 13 265 lines the guess was hiding.
+    if let Some((result, detail)) = coverage_skip_reason(profile, has_lib_target) {
         return Ok(CriterionResult {
             name: "1. Coverage",
             result: result.to_string(),
@@ -1293,6 +1373,10 @@ fn grade_coverage(
         });
     };
 
+    // Read before the move below, which takes `files` out of `measured`.
+    let lib_only = measured.lib_percent();
+    let (bin_total, bin_covered) = (measured.bin_total, measured.bin_covered);
+
     // Past the guard, so this is only ever a real measurement. Moved rather
     // than cloned; the fields read below are the scalars and `unparsed`.
     *files_out = measured.files;
@@ -1319,6 +1403,17 @@ fn grade_coverage(
         "{:.1}% production line coverage ({}/{} lines; {} test lines excluded)",
         coverage, measured.covered, measured.total, measured.excluded
     );
+    // Reported whenever a binary target contributed lines, because the graded
+    // figure above spans both and a reader cannot otherwise tell a weak library
+    // from a large `main.rs`. Not yet subtracted — see
+    // `ProductionCoverage::lib_percent` for why that decision waits on this
+    // number existing.
+    if let Some(lib_only) = lib_only.filter(|_| bin_total > 0) {
+        detail.push_str(&format!(
+            "; {lib_only:.1}% over library lines alone \
+             ({bin_total} line(s) in binary targets, {bin_covered} covered)"
+        ));
+    }
     if !measured.unparsed.is_empty() {
         detail.push_str(&format!(
             " ⚠ {} file(s) unreadable, so their test code IS counted",
@@ -1329,6 +1424,27 @@ fn grade_coverage(
         detail.push_str(" (heavy tests FAILED)");
     }
 
+    // Report-only: measured, printed, attributed — but not yet gating. Applied
+    // last so the real grade above is computed from the real number and only
+    // then set aside; the percentage a reader sees is the same either way.
+    //
+    // ⚠ A failing test run is NOT waivable. `heavy_passed` gates every crate,
+    // report-only or not: the waiver is on the coverage THRESHOLD, and letting
+    // it swallow a red suite would rebuild the fail-open hole this arc closed.
+    if heavy_passed && is_coverage_report_only(crate_name) {
+        return Ok(CriterionResult {
+            name: "1. Coverage",
+            result: format!("{:.1}% (report-only)", coverage),
+            grade: Grade::NotApplicable,
+            threshold: "≥75%/≥90% A+",
+            measured_detail: format!(
+                "{detail} — REPORT-ONLY: this crate's coverage was never measured before \
+                 2026-08-16 and is not yet enforced; grade would be {}",
+                grade.as_str()
+            ),
+        });
+    }
+
     Ok(CriterionResult {
         name: "1. Coverage",
         result: format!("{:.1}%", coverage),
@@ -1336,6 +1452,32 @@ fn grade_coverage(
         threshold: "≥75%/≥90% A+",
         measured_detail: detail,
     })
+}
+
+/// Crates whose coverage is measured and printed but does not yet gate.
+///
+/// ★ **A to-do list, not a policy.** Every name here is a crate that
+/// [`has_lib_target`] newly brought into measurement — code that was never
+/// graded because the `tools/` skip claimed it had no library. Turning that
+/// skip off and the gate on in one step would fail CI for a backlog nobody has
+/// been given a chance to pay down, and would put the size of that backlog
+/// behind a red build instead of in front of a reader.
+///
+/// ★ **Finite and explicit by construction.** A crate added to `tools/`
+/// tomorrow is enforced from its first grade, because it is not on this list
+/// and there is no rule that would put it here. Enforcement is a deletion.
+///
+/// ⚠ This is a waiver on the coverage THRESHOLD only. Test failures, Clippy,
+/// Safety, Documentation and Dependencies gate these crates exactly as they
+/// gate every other — and the measured percentage is printed either way, so
+/// green here means "measured, enforcement deferred", never "not measured".
+/// That distinction is the whole point of #772–#774 and this list is written
+/// to stay on the right side of it.
+const COVERAGE_REPORT_ONLY: &[&str] = &[];
+
+/// Whether `crate_name` is on [`COVERAGE_REPORT_ONLY`].
+fn is_coverage_report_only(crate_name: &str) -> bool {
+    COVERAGE_REPORT_ONLY.contains(&crate_name)
 }
 
 /// Grade documentation by checking for warnings.
@@ -4119,11 +4261,115 @@ serde = \"1\"
         // IntegrationOnly; result label is "(integration-only)" to
         // distinguish it from Example/Xtask's "(bin-only)".
         let (result, detail) =
-            coverage_skip_reason(CrateProfile::IntegrationOnly).expect("must skip");
+            coverage_skip_reason(CrateProfile::IntegrationOnly, false).expect("must skip");
         assert_eq!(result, "(integration-only)");
         assert!(detail.contains("[package.metadata.cortenforge]"));
+        // The metadata opt-in is a statement about where the crate's tests
+        // live, not about its targets, so owning a lib does not revoke it.
+        assert!(
+            coverage_skip_reason(CrateProfile::IntegrationOnly, true).is_some(),
+            "the F.3 opt-in is explicit and outranks target layout"
+        );
         // Sanity: Layer0 must NOT skip.
-        assert!(coverage_skip_reason(CrateProfile::Layer0).is_none());
+        assert!(coverage_skip_reason(CrateProfile::Layer0, false).is_none());
+    }
+
+    /// ★★ The regression test for the defect this function was changed to fix.
+    ///
+    /// `Example`/`Xtask` skipped Coverage unconditionally, saying "no lib
+    /// target" — a claim nothing checked, and false for 13 of the 18 crates
+    /// under `tools/`. Both halves are asserted here, because a skip that is
+    /// merely *narrower* would still be wrong in the other direction: a
+    /// genuinely bin-only tool must keep its N/A rather than start failing.
+    #[test]
+    fn a_tool_crate_with_a_library_is_measured_and_one_without_is_not() {
+        for profile in [CrateProfile::Xtask, CrateProfile::Example] {
+            assert!(
+                coverage_skip_reason(profile, true).is_none(),
+                "{profile:?} with a lib target must be MEASURED — the 2026-08-16 \
+                 defect was skipping exactly this case"
+            );
+            let (result, detail) =
+                coverage_skip_reason(profile, false).expect("no lib target must still skip");
+            assert_eq!(result, "(bin-only)");
+            assert!(
+                detail.contains("no lib target"),
+                "the reason must still name the property that is now checked: {detail}"
+            );
+        }
+    }
+
+    /// A crate's own source tree for the [`has_lib_target`] cases below.
+    fn manifest_fixture(tag: &str, files: &[&str]) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "cf-has-lib-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir root");
+        for name in files {
+            let path = root.join(name);
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+            std::fs::write(&path, "fn f() {}\n").expect("write");
+        }
+        root
+    }
+
+    #[test]
+    fn has_lib_target_finds_an_auto_discovered_src_lib() {
+        let root = manifest_fixture("auto", &["src/lib.rs", "src/main.rs"]);
+        assert!(has_lib_target(&root, "[package]\nname = \"x\"\n"));
+    }
+
+    #[test]
+    fn has_lib_target_finds_an_explicitly_declared_lib_off_the_conventional_path() {
+        // 9 of the 13 newly-measured `tools/` crates declare `[lib]`; a
+        // declaration with a non-default `path` is the case a `src/lib.rs`
+        // existence check alone would miss.
+        let root = manifest_fixture("declared", &["src/other.rs"]);
+        assert!(has_lib_target(
+            &root,
+            "[package]\nname = \"x\"\n[lib]\npath = \"src/other.rs\"\n"
+        ));
+    }
+
+    #[test]
+    fn has_lib_target_is_false_for_a_genuinely_bin_only_crate() {
+        let root = manifest_fixture("binonly", &["src/main.rs"]);
+        assert!(!has_lib_target(&root, "[package]\nname = \"x\"\n"));
+    }
+
+    #[test]
+    fn has_lib_target_honours_autolib_false() {
+        let root = manifest_fixture("autolib", &["src/lib.rs"]);
+        assert!(
+            !has_lib_target(&root, "[package]\nname = \"x\"\nautolib = false\n"),
+            "Rust 2024 `autolib = false` suppresses src/lib.rs discovery"
+        );
+    }
+
+    /// ⚠ The direction matters: an unreadable manifest must MEASURE, not skip.
+    /// A measurement that should not have run is a visible number; a skip that
+    /// should not have happened is silence, and silence is what hid 13 265
+    /// lines.
+    #[test]
+    fn has_lib_target_errs_toward_measuring_when_the_manifest_will_not_parse() {
+        let root = manifest_fixture("broken", &["src/main.rs"]);
+        assert!(has_lib_target(&root, "this is not [ valid toml"));
+    }
+
+    /// The report-only list is a to-do, so its shape is asserted rather than
+    /// its contents: every name must be a real workspace crate, or a rename
+    /// would silently un-defer a crate nobody looked at again.
+    #[test]
+    fn every_report_only_name_is_spelled_once() {
+        let mut seen = std::collections::BTreeSet::new();
+        for name in COVERAGE_REPORT_ONLY {
+            assert!(seen.insert(*name), "{name} listed twice");
+            assert!(is_coverage_report_only(name));
+        }
+        assert!(!is_coverage_report_only("sim-types"));
     }
 
     // === scan_file_safety — #[allow(clippy::{unwrap,expect}_used)] honoring ===
@@ -5669,6 +5915,7 @@ tier_up_features = { sneaky = "App" }
             covered,
             total,
             test_lines_counted: false,
+            is_bin: false,
         }
     }
 

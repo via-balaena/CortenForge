@@ -85,8 +85,8 @@ uninstrumented, doctests included.
 
 **When Coverage reports N/A rather than a percentage.** Four cases. Each says
 there is nothing to measure; none of them waives the threshold on code that
-exists. `Example` and `Xtask`/`tools` crates have no lib target to instrument
-("(bin-only)"); a crate opting into `grading_profile = "integration-only"`
+exists. A crate with **no lib target** has nothing to instrument ("(bin-only)");
+a crate opting into `grading_profile = "integration-only"`
 declares it has no testable lib API; a crate whose files map no lines reports
 "(no production lines)"; and a crate whose `src/` declares **no items at all
 outside `#[cfg(test)]`** reports the same. The last is the `*-benches` shape — a
@@ -101,6 +101,31 @@ clean parse that finds nothing, so an unreadable file keeps the failure report.
 **Benchmarks are never counted as coverage**; `cargo test --lib --tests` does not
 build them, by design.
 
+⚠ **"(bin-only)" is now a measured fact, not a guess from the crate's
+directory.** It used to be asserted for every `Example`/`Xtask`/`tools` crate
+without checking, and it was **false for 13 of the 18 crates under `tools/`** —
+13 265 production lines that no coverage run ever touched, four of those crates
+holding no `#[test]` at all, one of them `cf-codesign` (the co-design optimizer).
+All of them reported `—` and passed, because N/A is skipped by the automated
+roll-up. The profile still decides the Clippy and Safety relaxations by path;
+it no longer decides whether a library gets measured. A crate is skipped here
+only when Cargo would build no lib target for it — no `[lib]` table, no
+`src/lib.rs`, or `autolib = false`. Same failure shape as the fail-open dead
+zone closed in §7: a gate whose green meant "not measured" while its text named
+a property nobody had checked.
+
+**Library lines and binary lines are reported apart.** The graded percentage
+spans both, unchanged. But a crate with a large `main.rs` is held to a bar its
+binary structurally cannot clear — `.run()`, `Cli::parse()` and an event loop
+are not unit-testable — so when a binary target contributes lines, the detail
+line also reports the figure over library lines alone, and the triage table
+marks the binary root `(binary target)`. Measured on `cf-viewer`: 33.8 % overall
+against 57.7 % over its library, with 460 of 1082 production lines in
+`src/main.rs` at 1.5 %. Reported only; **excluding binary lines from the grade
+is deliberately not done here**, because it would make `main.rs` a place where
+logic stops being measured — the dead zone this section just finished closing.
+The number exists so that decision can be taken on evidence.
+
 **Where the uncovered lines are.** A percentage says a crate needs tests; it
 does not say where to write them. `grade` therefore prints a per-file breakdown
 under the table whenever coverage ran and something is uncovered — worst first,
@@ -113,9 +138,11 @@ so the biggest win is the top row:
              31    64.4%  src/body.rs
 ```
 
-That is `sim-types`' real output at 70.8 % (192/271). The third measured file,
-`src/error.rs`, is at 100 % and so is not a row — it appears under `--json`,
-which lists every measured file.
+That is `sim-types`' real output at 70.8 % (192/271), **as measured
+2026-08-15**; #776 has since taken the crate to 97.8 % by testing those two
+files, so the shape is the illustration and the numbers are a snapshot. The
+third measured file, `src/error.rs`, is at 100 % and so is not a row — it
+appears under `--json`, which lists every measured file.
 
 This is the *same* measurement the percentage comes from, split by file rather
 than summed — the per-file numerators and denominators add up to the crate's, by
