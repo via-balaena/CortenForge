@@ -1322,6 +1322,72 @@ mod tests {
         );
     }
 
+    /// An analytic sphere SDF: `|p| - radius`. Independent of the mesh
+    /// pipeline, so a sampling bug cannot hide behind a geometry bug.
+    struct AnalyticSphere {
+        radius: f64,
+    }
+
+    impl Sdf for AnalyticSphere {
+        fn eval(&self, p: Point3<f64>) -> f64 {
+            p.coords.norm() - self.radius
+        }
+
+        /// The outward radial unit vector; the origin is the one place the
+        /// gradient is undefined, so it falls back to +X rather than NaN.
+        fn grad(&self, p: Point3<f64>) -> Vector3<f64> {
+            let n = p.coords.norm();
+            if n < 1e-12 {
+                Vector3::x()
+            } else {
+                p.coords / n
+            }
+        }
+    }
+
+    /// ★ `sample_sdf_into_cached_template` re-samples an arbitrary SDF onto an
+    /// existing cache's grid — the layer path's way of reusing one grid
+    /// geometry for many fields.
+    ///
+    /// Two things must hold, and only one of them is about values: the output
+    /// grid must inherit the template's dimensions/origin/cell size EXACTLY
+    /// (otherwise downstream extraction reads a differently-shaped field), and
+    /// every cell must carry the SDF evaluated AT THAT CELL'S POSITION. A
+    /// transposed index loop satisfies the first and fails the second, which is
+    /// why the values are checked against the analytic function rather than
+    /// against another grid.
+    #[test]
+    fn sampling_an_sdf_into_a_template_preserves_grid_geometry_and_values() {
+        let sphere_mesh = unit_icosphere(2);
+        let template = build_cached_scan_sdf(&sphere_mesh, &[], 0.1, 0.2).expect("template");
+        let analytic = AnalyticSphere { radius: 0.6 };
+
+        let grid = sample_sdf_into_cached_template(&analytic, &template);
+
+        assert_eq!(
+            grid.dimensions(),
+            template.closed_grid.dimensions(),
+            "the resampled grid must match the template's shape"
+        );
+        assert!((grid.cell_size() - template.closed_grid.cell_size()).abs() < 1e-12);
+        assert_eq!(grid.origin(), template.closed_grid.origin());
+
+        let (nx, ny, nz) = grid.dimensions();
+        for iz in 0..nz {
+            for iy in 0..ny {
+                for ix in 0..nx {
+                    let p = template.closed_grid.position(ix, iy, iz);
+                    let expected = analytic.eval(p);
+                    let got = grid.get(ix, iy, iz);
+                    assert!(
+                        (got - expected).abs() < 1e-12,
+                        "cell ({ix},{iy},{iz}) at {p:?}: got {got}, want {expected}",
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn build_cached_scan_sdf_is_deterministic() {
         // Same input mesh + same parameters → bit-identical grid

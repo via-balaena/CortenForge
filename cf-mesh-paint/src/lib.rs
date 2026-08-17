@@ -166,6 +166,120 @@ pub mod prelude {
 }
 
 #[cfg(test)]
+mod plugin_tests {
+    //! `MeshPaintPlugin::build` is the only path a consumer actually calls, and
+    //! the systems next door bypass it by wiring a `World` by hand. These cover
+    //! the wiring itself — that every resource the systems read is present, and
+    //! that the values come from the CONFIG rather than from constants baked
+    //! into `build`.
+
+    use bevy::prelude::*;
+
+    use crate::body::PaintTargets;
+    use crate::brush::{Brush, BrushMode, Hover, NormalFilter, PaintColors, PaintingBlocked};
+    use crate::stroke::{ActiveStroke, History};
+    use crate::{MeshPaintConfig, MeshPaintPlugin};
+
+    /// A config sharing no value with `MeshPaintConfig::default()`, so a test
+    /// asserting propagation cannot pass on a default that happens to match.
+    fn distinct_config() -> MeshPaintConfig {
+        MeshPaintConfig {
+            base_color: [0.1, 0.2, 0.3, 1.0],
+            highlight_color: [0.4, 0.5, 0.6, 1.0],
+            brush_init: 7.5,
+            brush_min: 1.25,
+            brush_max: 42.0,
+            filter_enabled: false,
+            filter_max_angle_deg: 12.5,
+        }
+    }
+
+    /// Every resource the plugin OWNS must exist after `build`. A missing one
+    /// panics at first run inside a consumer's app, not here — which is
+    /// exactly why the hand-wired system tests cannot catch it.
+    ///
+    /// ⚠ Deliberately not "every resource the systems read". The systems also
+    /// take `Assets<…>` and `ButtonInput<…>`, which come from Bevy's
+    /// `AssetPlugin` / `InputPlugin` (both in `DefaultPlugins`) and which this
+    /// plugin must NOT insert — see the type's docs on pairing it with a camera
+    /// and a HUD. Asserting them here would pin a responsibility that is not
+    /// this plugin's.
+    #[test]
+    fn build_inserts_every_resource_the_plugin_owns() {
+        let mut app = App::new();
+        app.add_plugins(MeshPaintPlugin::default());
+        let w = app.world();
+
+        assert!(w.get_resource::<PaintTargets>().is_some());
+        assert!(w.get_resource::<Hover>().is_some());
+        assert!(w.get_resource::<History>().is_some());
+        assert!(w.get_resource::<ActiveStroke>().is_some());
+        assert!(w.get_resource::<PaintingBlocked>().is_some());
+        assert!(w.get_resource::<PaintColors>().is_some());
+        assert!(w.get_resource::<Brush>().is_some());
+        assert!(w.get_resource::<BrushMode>().is_some());
+        assert!(w.get_resource::<NormalFilter>().is_some());
+    }
+
+    /// ★★ The config must reach the resources unpermuted.
+    ///
+    /// `build` copies seven fields into four resources, and the pairs are easy
+    /// to transpose — `min`/`max`, `base`/`highlight`. Every value here differs
+    /// from the default and from its neighbours, so a swap changes an assertion
+    /// rather than landing on a value that happens to be right.
+    #[test]
+    fn build_propagates_the_config_rather_than_baked_in_defaults() {
+        let mut app = App::new();
+        app.add_plugins(MeshPaintPlugin::new(distinct_config()));
+        let w = app.world();
+
+        let brush = w.resource::<Brush>();
+        assert!((brush.radius - 7.5).abs() < 1e-12, "brush_init -> radius");
+        assert!((brush.min - 1.25).abs() < 1e-12, "brush_min -> min");
+        assert!((brush.max - 42.0).abs() < 1e-12, "brush_max -> max");
+
+        let colors = w.resource::<PaintColors>();
+        assert_eq!(colors.base, [0.1, 0.2, 0.3, 1.0], "base_color -> base");
+        assert_eq!(
+            colors.highlight,
+            [0.4, 0.5, 0.6, 1.0],
+            "highlight_color -> highlight"
+        );
+
+        let filter = w.resource::<NormalFilter>();
+        assert!(!filter.enabled, "filter_enabled -> enabled");
+        assert!((filter.max_angle_deg - 12.5).abs() < 1e-12);
+    }
+
+    /// Painting is the mode a consumer lands in; erase is opt-in via the
+    /// toggle, so a fresh app must not start destructive.
+    #[test]
+    fn build_starts_in_paint_mode() {
+        let mut app = App::new();
+        app.add_plugins(MeshPaintPlugin::default());
+
+        assert_eq!(*app.world().resource::<BrushMode>(), BrushMode::Paint);
+    }
+
+    /// ★ The default brush must start inside its own bounds. `adjust_brush`
+    /// clamps to `[min, max]`, so a default outside them would silently jump on
+    /// the user's first scroll — a config bug with no error attached.
+    #[test]
+    fn the_default_brush_radius_lies_within_its_own_bounds() {
+        let c = MeshPaintConfig::default();
+
+        assert!(c.brush_min > 0.0, "a non-positive minimum is not a radius");
+        assert!(
+            c.brush_min <= c.brush_init && c.brush_init <= c.brush_max,
+            "default radius {} must lie in [{}, {}]",
+            c.brush_init,
+            c.brush_min,
+            c.brush_max
+        );
+    }
+}
+
+#[cfg(test)]
 mod system_tests {
     //! Headless drives of the interaction systems through a raw `World`: the
     //! brush actually paints/erases, undo reverts, the keyboard controls flip
