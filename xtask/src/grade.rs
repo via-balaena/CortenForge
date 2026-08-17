@@ -1486,10 +1486,14 @@ fn coverage_display(percent: f64) -> String {
 ///
 /// ⚠ This is a waiver on the coverage THRESHOLD only. Test failures, Clippy,
 /// Safety, Documentation and Dependencies gate these crates exactly as they
-/// gate every other — and the measured percentage is printed either way, so
-/// green here means "measured, enforcement deferred", never "not measured".
-/// That distinction is the whole point of #772–#774 and this list is written
-/// to stay on the right side of it.
+/// gate every other, and so does a coverage run that FAILS — a measurement
+/// that did not happen is not a threshold that was missed, and it returns `F`
+/// from further up this function without ever reaching the list.
+///
+/// The percentage is printed either way, and so is the per-file triage table,
+/// so green here means "measured, enforcement deferred, and here is the work"
+/// — never "not measured". That distinction is the whole point of #772–#774
+/// and this list is written to stay on the right side of it.
 ///
 /// ⚠ **`cf-viewer` is deliberately absent.** It was already measured and
 /// already failing before this change, so deferring it would not be leniency

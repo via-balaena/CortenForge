@@ -210,10 +210,17 @@ pub(crate) fn is_own_production_file(name: &str, crate_path: &str) -> bool {
 ///   indistinguishable from a library module by path, and resolving it would
 ///   mean parsing every binary's module tree.
 ///
-/// Both misses classify binary code as library code, which counts it against
-/// the library bar. That direction can only ever make a crate look worse, so
-/// no gap here can produce a false pass — the property worth having, given the
-/// exclusion this feeds is precisely the kind that creates a dead zone.
+/// A third, on Windows: the separator is assumed to be `/`, so a backslashed
+/// export path matches nothing here. Inherited rather than introduced —
+/// [`relative_to_crate`] searches for a `/`-shaped `crate_path` and would fail
+/// to strip such a name in the first place, so the whole per-file split shares
+/// the assumption.
+///
+/// All three misses classify binary code as library code, which counts it
+/// against the library bar. That direction can only ever make a crate look
+/// worse, so no gap here can produce a false pass — the property worth having,
+/// given the exclusion this feeds is precisely the kind that creates a dead
+/// zone.
 pub(crate) fn is_bin_target_file(relative: &str) -> bool {
     relative == "src/main.rs"
         || (relative.starts_with("src/bin/")
