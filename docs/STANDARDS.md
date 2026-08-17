@@ -202,6 +202,14 @@ of noise, quote a range rather than a decimal when it matters, and give a crate
 margin over the threshold rather than equality with it. A crate sitting exactly
 on 75.0 % is not reliably an A.
 
+⚠ **One crate is there now.** `cf-studio` passes at 131/174, and the bar is
+`ceil(0.75 × 174) = 131` — **margin zero**. It has reproduced at 131 three
+times, so it is stable today, but a single line of the drift measured above
+takes it to 74.7 % and an F. Every other newly-measured crate that passes has
+26–193 lines of slack. It is not deferred, because it passes; it is recorded
+because whoever turns the coverage job on should expect this one to be the
+first to flake.
+
 **Percentages are truncated, not rounded**, so the printed figure is never
 above the graded one. `cf-studio-engine` at 605/807 = 74.969 % would otherwise
 print "75.0%" in the same row as its `B`.
