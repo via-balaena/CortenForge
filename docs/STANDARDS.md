@@ -182,6 +182,20 @@ Eight of the fifteen crates in the first census pass failed this way and had to
 be re-measured serially. CI is unaffected — `grade-all --shard i/N` fans out
 across separate jobs — but a local sweep must be serial.
 
+**What it would take to empty the list**, from the same census — a to-do
+without its sizes gets read as one job:
+
+- **Three are within 30 lines, 39 in total**: cf-studio-engine needs 1,
+  cf-anthro 13, pbit-analyze 25. One sitting takes the list from six to three.
+  ⚠ Aim past each bar, not at it — see the drift note below.
+- **Two need no new tests at all if binary lines stop counting** (the reported-
+  but-not-graded split above): pbit-analyze is 91.4 % over its library and
+  cf-studio-gui 93.9 %, so both clear the bar the moment their binaries leave
+  the denominator. That sizes the open lib/bin decision — it is worth two
+  crates immediately.
+- **Two are real work either way**: cf-scan-prep-core (1170 lines, no test in
+  the crate) and example-ml-shared (99). No other lever reaches them.
+
 ⚠ **The measurement is not reproducible to the line** (measured 2026-08-16).
 Re-measuring all fifteen census crates on an unchanged tree, **two did not
 reproduce**:

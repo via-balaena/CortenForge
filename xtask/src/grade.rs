@@ -1596,80 +1596,31 @@ fn coverage_display(percent: f64) -> String {
 
 /// Crates whose coverage is measured and printed but does not yet gate.
 ///
-/// ★ **A to-do list, not a policy.** Every name here is a crate that
-/// [`has_lib_target`] newly brought into measurement — code that was never
-/// graded because the `tools/` skip claimed it had no library.
+/// ★ **A to-do list, not a policy.** Every name is a crate [`has_lib_target`]
+/// newly brought into measurement. Rationale, the 2026-08-16 census behind it,
+/// and what it would take to empty it live in `docs/STANDARDS.md` under
+/// Criterion 1 — kept there rather than restated here, because two accounts of
+/// one decision drift.
 ///
-/// ⚠ **Not to keep today's CI green — today's CI cannot go red from this.**
-/// `quality-gate.yml` runs `grade-all --skip-coverage` on every shard, so no
-/// PR job measures coverage at all; the only CI-side coverage is a weekly
-/// tarpaulin run, a different instrument on a different scope, red for months.
-/// This list is therefore forward-looking, for whoever replaces that weekly
-/// job with `grade-all` sans `--skip-coverage`. Until then the deferral only
-/// shapes local `xtask grade` output — which is exactly where the backlog
-/// wants to be visible.
+/// The invariants a maintainer has to preserve:
 ///
-/// ⚠ **It will not make that job green, and this doc claimed it would.**
-/// `cf-viewer` is measured, fails at 33.8 %, and is deliberately not on this
-/// list; sim-core, sim-mjcf, sim-bevy and cf-device-geometry are not on it
-/// either. A full coverage run goes red on its first execution and should.
-/// What the list changes is *which* red — failures owned by crates whose debt
-/// was already tracked, rather than fourteen a grader change lit up overnight.
-/// **Newly revealed** versus **already owned** is the whole line it draws, and
-/// it is a smaller claim than the one that was written here first.
+/// - **Only the coverage THRESHOLD is waived.** Tests, Clippy, Safety,
+///   Documentation and Dependencies gate these crates as they gate any other,
+///   and a coverage run that FAILS returns `F` from further up this function
+///   without reaching the list — a measurement that did not happen is not a
+///   threshold that was missed.
+/// - **The percentage and the per-file triage still print.** Green here means
+///   "measured, enforcement deferred, and here is the work", never "not
+///   measured" — the distinction #772–#774 exists to protect.
+/// - **Enforcement is a deletion.** Nothing adds to this list automatically, so
+///   a crate added to `tools/` tomorrow is enforced from its first grade.
+/// - **Emptying it is the goal and is safe** — verified by emptying it and
+///   running the suite. No test depends on it being non-empty; the verdict
+///   takes the deferral as a flag rather than reaching for these names.
+/// - ⚠ **Never add a crate that was ALREADY measured and failing.** That
+///   switches off a gate that fires today rather than deferring one that just
+///   appeared, which is why `cf-viewer` (33.8 %) is absent.
 ///
-/// ★ **Finite and explicit by construction.** A crate added to `tools/`
-/// tomorrow is enforced from its first grade, because it is not on this list
-/// and there is no rule that would put it here. Enforcement is a deletion.
-///
-/// ★ **Emptying this list is the goal, and nothing breaks when it happens** —
-/// verified by emptying it and running the suite. Two tests used to index
-/// `COVERAGE_REPORT_ONLY[0]`, so they would have panicked on the day the last
-/// name was removed, and whoever removed it would have deleted them — losing
-/// the "a red suite is never waivable" test permanently. The verdict now takes
-/// the deferral as a flag, so its tests do not reach for this list at all.
-///
-/// ⚠ This is a waiver on the coverage THRESHOLD only. Test failures, Clippy,
-/// Safety, Documentation and Dependencies gate these crates exactly as they
-/// gate every other, and so does a coverage run that FAILS — a measurement
-/// that did not happen is not a threshold that was missed, and it returns `F`
-/// from further up this function without ever reaching the list.
-///
-/// The percentage is printed either way, and so is the per-file triage table,
-/// so green here means "measured, enforcement deferred, and here is the work"
-/// — never "not measured". That distinction is the whole point of #772–#774
-/// and this list is written to stay on the right side of it.
-///
-/// ⚠ **`cf-viewer` is deliberately absent.** It was already measured and
-/// already failing before this change, so deferring it would not be leniency
-/// toward a newly-lit crate — it would switch OFF a gate that fires today.
-/// Report-only is for what the measurement fix newly revealed, never for what
-/// it found already lit.
-///
-/// ★ **What it would take to shrink this list**, from the same census — the
-/// numbers are here because a to-do without its sizes gets read as one job:
-///
-/// - **Three are within 30 lines, 39 in total**: cf-studio-engine needs 1,
-///   cf-anthro 13, pbit-analyze 25. One sitting takes the list from six to
-///   three. ⚠ Aim past the bar on each — see the drift note on
-///   cf-studio-engine below.
-/// - **Two need no tests at all if binary lines stop counting** — the open
-///   decision described on [`crate::coverage::ProductionCoverage::lib_percent`].
-///   pbit-analyze is 91.4 % over its library and cf-studio-gui 93.9 %, so both
-///   clear the bar the moment their binaries leave the denominator.
-/// - **Two are real work either way**: cf-scan-prep-core (1170 lines, no test
-///   in the crate) and example-ml-shared (99, likewise). They are the only two
-///   the other levers do not reach.
-///
-/// The 2026-08-16 census, run per-crate against the commit that introduced
-/// `has_lib_target` — 14 crates newly measured, of which **8 already pass**:
-/// cf-mjcf-emit 97.8, cf-msk-lib 95.7, cf-msk-fit 94.7, cf-osim 94.6,
-/// cf-studio-core 90.3, cf-codesign 86.9-87.2, cf-cast-cli 79.9, cf-studio 75.2.
-/// (Truncated, as the tool prints them — see `coverage_display`. cf-codesign is
-/// given as a range because it does not reproduce; see the note on
-/// cf-studio-engine below.)
-/// The hole was mostly a MEASUREMENT hole, not a quality one. The six below
-/// are what it was hiding:
 const COVERAGE_REPORT_ONLY: &[&str] = &[
     // 0.0 % of 1560 lines — no test anywhere in the crate. The largest single
     // untested body of code the census found, and the one that most deserves
