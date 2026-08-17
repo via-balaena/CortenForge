@@ -1492,10 +1492,19 @@ fn coverage_display(percent: f64) -> String {
 ///
 /// ★ **A to-do list, not a policy.** Every name here is a crate that
 /// [`has_lib_target`] newly brought into measurement — code that was never
-/// graded because the `tools/` skip claimed it had no library. Turning that
-/// skip off and the gate on in one step would fail CI for a backlog nobody has
-/// been given a chance to pay down, and would put the size of that backlog
-/// behind a red build instead of in front of a reader.
+/// graded because the `tools/` skip claimed it had no library.
+///
+/// ⚠ **Not to keep today's CI green — today's CI cannot go red from this.**
+/// `quality-gate.yml` runs `grade-all --skip-coverage` on every shard, so no
+/// PR job measures coverage at all; the only CI-side coverage is a weekly
+/// tarpaulin run, a different instrument on a different scope, red for months.
+/// This list is therefore forward-looking, and that is the honest argument
+/// for it: whoever replaces that weekly job with `grade-all` sans
+/// `--skip-coverage` gets a job that comes up green with a printed backlog
+/// rather than red on its first run. A gate that is red from minute one gets
+/// switched off; one that is green with a to-do beside it survives long enough
+/// to be paid down. Until then, the deferral only shapes local `xtask grade`
+/// output — which is exactly where the backlog wants to be visible.
 ///
 /// ★ **Finite and explicit by construction.** A crate added to `tools/`
 /// tomorrow is enforced from its first grade, because it is not on this list
