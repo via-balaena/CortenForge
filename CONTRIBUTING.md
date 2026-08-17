@@ -116,6 +116,11 @@ This runs automated checks and shows your current grade. If any criterion is bel
 
 If your grade is below A on any criterion, fix it. This is not optional. The refactor loop continues until all criteria are A.
 
+⚠ For coverage, aim past the bar rather than at it. The measurement is not
+reproducible to the line: re-measuring the same tree twice, `cf-studio-engine`
+returned 605/807 and 604/807, and `cf-codesign` moved six lines. Verdicts held
+in both cases, but a crate landing exactly on 75.0 % is not reliably an A.
+
 ### Step 4: Complete
 
 ```bash
@@ -123,6 +128,32 @@ cargo xtask complete <crate-name>
 ```
 
 This records completion in the crate's `COMPLETION.md` and updates the project-wide `docs/archive/COMPLETION_LOG.md`. Requires human review for API criterion.
+
+⚠ **`complete` refuses a crate whose coverage is deferred** (see report-only
+below), even though the grade summary shows `A`. A completion record asserts
+the bar was cleared; a deferred crate's was waived. Take it over 75 % and
+remove it from `COVERAGE_REPORT_ONLY` in `xtask/src/grade.rs` first.
+
+### `(report-only)` in a grade
+
+A handful of crates print their coverage with `(report-only)` beside it and a
+grade of `—`:
+
+```text
+║ 1. Coverage      │ 69.6% (report... │   —   │ ≥75%/≥9...     ║
+```
+
+That means **measured, but the threshold is not yet enforced for this crate** —
+never "not measured". The real percentage is on the row, the grade it would
+have taken is in the detail line, and the per-file triage table prints as
+normal, so the work is visible. Every other criterion gates it exactly as it
+gates any crate, and a failing test run is never waived.
+
+The list is a finite to-do in `xtask/src/grade.rs`; it exists because one fix
+brought 14 previously-unmeasured libraries into scope at once. Enforcing one is
+a deletion from that list. A crate you add today is enforced from its first
+grade — nothing puts it on the list automatically. Full rationale in
+[STANDARDS.md](docs/STANDARDS.md) under Criterion 1.
 
 ---
 
