@@ -607,16 +607,43 @@ const TRIAGE_ROWS: usize = 20;
 /// figure that distinguishes them was in a field the human path never printed.
 /// A number computed for a person has to be shown to them.
 fn print_coverage_detail(report: &GradeReport) {
-    // Same guard the triage table uses: a non-empty `coverage_files` means
-    // coverage ran and measured. On every other path the detail line just
-    // restates the result cell ("(skipped)", "(bin-only)") and is noise.
-    if report.coverage_files.is_empty() {
+    // ⚠ Suppressed only for `NotApplicable`, NOT for "measured nothing".
+    //
+    // This used to key on `coverage_files` being non-empty, on the premise —
+    // stated in the comment it replaces — that "on every other path the detail
+    // line just restates the result cell". That holds for `(skipped)` and
+    // `(bin-only)`. It is FALSE for the two paths where the detail carries the
+    // only actionable thing there is: `(measurement failed)`, whose detail
+    // holds the error AND the failing test names, and `(llvm-tools n/a)`,
+    // whose detail holds the rustup command that fixes it. Both have empty
+    // `coverage_files` by construction — there was no measurement — so the old
+    // guard hid exactly the cases with the most to say.
+    let Some(c) = report.criteria.iter().find(|c| c.name.starts_with("1.")) else {
+        return;
+    };
+    if !coverage_detail_says_more_than_the_cell(c) {
         return;
     }
-    if let Some(c) = report.criteria.iter().find(|c| c.name.starts_with("1.")) {
-        println!();
-        println!("  {}", c.measured_detail.dimmed());
-    }
+    println!();
+    println!("  {}", c.measured_detail.dimmed());
+}
+
+/// Whether criterion 1's detail line carries more than its result cell.
+///
+/// Extracted so the rule is testable: [`print_coverage_detail`] writes to
+/// stdout and has no unit test, so its guard was covered only by three manual
+/// commands recorded on [`grade_coverage`]. A rule this cheap to state should
+/// not need a human to re-run three greps after every edit.
+///
+/// `NotApplicable` is the whole of the silent set, and it is silent because
+/// those details genuinely restate their cells — "coverage skipped: …" beside
+/// `(skipped)`, "no production code to instrument" beside
+/// `(no production lines)`. Every other outcome says something the 16-character
+/// cell cannot hold: a percentage with its counts, the rustup command behind
+/// `(llvm-tools n/a)`, or the error and failing test names behind
+/// `(measurement failed)`.
+fn coverage_detail_says_more_than_the_cell(c: &CriterionResult) -> bool {
+    c.grade != Grade::NotApplicable
 }
 
 /// Print criterion 1's per-file breakdown, worst first.
@@ -1025,7 +1052,11 @@ pub fn run_all(
         //
         // Gated on coverage actually being the failing criterion — a crate
         // that failed Clippy does not need a file-by-file coverage table.
-        if coverage_failed && !report.coverage_files.is_empty() {
+        // No `coverage_files` check: `is_failing_criterion` already excludes
+        // `NotApplicable`, and a crate whose measurement FAILED has no files
+        // yet has the most to explain. `print_coverage_triage` prints nothing
+        // when there is nothing uncovered, so an empty table cannot appear.
+        if coverage_failed {
             print_coverage_detail(report);
             print_coverage_triage(report);
             println!();
@@ -1377,15 +1408,21 @@ fn coverage_skip_reason(
 /// library lines alone` detail, and a `src/main.rs  (binary target)` row.
 /// Re-run those two after touching this function or the printing beside it.
 ///
-/// ⚠ [`print_coverage_detail`]'s guard has no unit test either, for the same
-/// reason, so its NEGATIVE controls belong here beside the positive ones —
-/// three paths on which it must stay silent, all confirmed 2026-08-17:
-/// `grade sim-types --skip-coverage` (46 lines of output, table reads
-/// `(skipped)`, no detail line), `grade cf-device-design --skip-coverage`
-/// (bin-only), and `grade sim-core-benches` (`(no production lines)`, which
-/// also confirms on real input the invariant asserted above — a zero total
-/// implies an empty `files`). A guard verified only where it fires is
-/// indistinguishable from one that always fires.
+/// ✅ [`print_coverage_detail`]'s guard IS unit-tested now — see
+/// `the_detail_line_is_shown_when_it_adds_to_the_cell_and_not_otherwise`. Its
+/// rule moved out into [`coverage_detail_says_more_than_the_cell`] precisely so
+/// it could be, because it used to key on `coverage_files` and so hid the
+/// `(measurement failed)` and `(llvm-tools n/a)` details, which have no files
+/// by construction and carry the only actionable information there is.
+///
+/// The three manual commands that used to stand in for that test still work
+/// and are still worth running after touching the printing, re-verified
+/// 2026-08-18: `grade sim-types --skip-coverage` (`(skipped)`),
+/// `grade cf-device-design --skip-coverage` (bin-only), and
+/// `grade sim-core-benches` (`(no production lines)`, which also confirms on
+/// real input the invariant asserted above — a zero total implies an empty
+/// `files`). All three print no detail line. A guard verified only where it
+/// fires is indistinguishable from one that always fires.
 fn grade_coverage(
     sh: &Shell,
     crate_name: &str,
@@ -1487,17 +1524,40 @@ fn grade_coverage(
     } else {
         None
     };
-    let heavy_passed = if verbosity.json || verbosity.quiet {
-        cmd!(sh, "cargo test --release -p {crate_name}")
+    // ⚠ The captured branch keeps the FAILING TEST NAMES, not just the exit
+    // status. `run_all` forces `--quiet` per crate, so a sweep always takes
+    // this branch — and before this it discarded the output and reported a bare
+    // `(heavy tests FAILED)`. That is unactionable in exactly the context that
+    // produces it: the weekly sweep names a crate whose tests failed and cannot
+    // say which test, while the operator has no terminal output to look at
+    // either, because there wasn't one. Measured 2026-08-18: the first
+    // completed sweep reported `cf-design — F … 94.2% (heavy tests FAILED)`
+    // and nothing more.
+    //
+    // The streaming branch leaves `failed` empty on purpose: libtest already
+    // printed every name to the terminal the operator is watching, so
+    // re-listing them in the detail line would duplicate what they can see.
+    let heavy = if verbosity.json || verbosity.quiet {
+        match cmd!(sh, "cargo test --release -p {crate_name}")
             .ignore_status()
             .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        {
+            Ok(o) => HeavyRun::from_captured(o.status.success(), &o.stdout, &o.stderr),
+            // Spawn failure is not a passing test run.
+            Err(_) => HeavyRun {
+                passed: false,
+                failed: Vec::new(),
+            },
+        }
     } else {
-        cmd!(sh, "cargo test --release -p {crate_name}")
-            .run()
-            .is_ok()
+        HeavyRun {
+            passed: cmd!(sh, "cargo test --release -p {crate_name}")
+                .run()
+                .is_ok(),
+            failed: Vec::new(),
+        }
     };
+    let heavy_passed = heavy.passed;
     drop(heartbeat);
     if !verbosity.quiet {
         eprintln!(
@@ -1564,10 +1624,14 @@ fn grade_coverage(
                             .to_string(),
                 });
             }
+            // Named here as well as in `coverage_result`: this path reports a
+            // FAILED test run too, and an operator reading "TESTS ALSO FAILED"
+            // needs the name just as much — arguably more, since the coverage
+            // measurement also broke and there is no percentage to go on.
             let tests = if heavy_passed {
-                "tests passed"
+                "tests passed".to_string()
             } else {
-                "TESTS ALSO FAILED"
+                heavy.describe_failure_beside_failed_measurement()
             };
             return Ok(CriterionResult {
                 name: "1. Coverage",
@@ -1585,7 +1649,14 @@ fn grade_coverage(
     // suite can fail for reasons that are not about the code (see
     // `coverage_run`). A `--lib` disagreement between the two passes would
     // itself be the finding, so both still have to agree there.
-    let heavy_passed = heavy_passed && run.tests_passed;
+    // ⇒ a `FAILED` clause can therefore come from either pass, while `failed`
+    // holds only pass-2 names. When pass 1 alone failed, `describe_failure`
+    // degrades to the bare marker rather than naming a test that passed.
+    let heavy = HeavyRun {
+        passed: heavy.passed && run.tests_passed,
+        failed: heavy.failed,
+    };
+    let heavy_passed = heavy.passed;
     if !heavy_passed {
         eprintln!("    ⚠ Tests failed — see output above");
     }
@@ -1612,7 +1683,7 @@ fn grade_coverage(
     // test drives, and a 2026-08-16 mutation sweep proved it — the report-only
     // block, the library-only detail and the binary-target marker could each
     // be deleted whole with every test still green.
-    let result = coverage_result_for(crate_name, &measured, heavy_passed);
+    let result = coverage_result_for(crate_name, &measured, &heavy);
 
     // Unconditional, and still honours "a non-empty `files_out` means these
     // files were measured": the one verdict above that measured nothing is
@@ -1637,9 +1708,9 @@ fn grade_coverage(
 fn coverage_result_for(
     crate_name: &str,
     measured: &crate::coverage::ProductionCoverage,
-    heavy_passed: bool,
+    heavy: &HeavyRun,
 ) -> CriterionResult {
-    coverage_result(measured, heavy_passed, is_coverage_report_only(crate_name))
+    coverage_result(measured, heavy, is_coverage_report_only(crate_name))
 }
 
 /// Criterion 1's verdict, from a finished measurement. Pure: no `Shell`, no
@@ -1654,7 +1725,7 @@ fn coverage_result_for(
 /// and 4.
 fn coverage_result(
     measured: &crate::coverage::ProductionCoverage,
-    heavy_passed: bool,
+    heavy: &HeavyRun,
     report_only: bool,
 ) -> CriterionResult {
     // No production lines is a different fact from bad coverage, and from a
@@ -1675,6 +1746,7 @@ fn coverage_result(
 
     // Two-tier thresholds (F1): A+ >= 90%, A >= 75%, B >= 60%, C >= 40%, F < 40%
     // Heavy test failure overrides to F regardless of coverage %.
+    let heavy_passed = heavy.passed;
     let grade = if !heavy_passed {
         Grade::F
     } else if coverage >= 90.0 {
@@ -1721,7 +1793,7 @@ fn coverage_result(
         ));
     }
     if !heavy_passed {
-        detail.push_str(" (heavy tests FAILED)");
+        detail.push_str(&heavy.describe_failure());
     }
 
     // Report-only: measured, printed, attributed — but not yet gating. Applied
@@ -2113,6 +2185,150 @@ fn count_unjustified_allows_in_tree(src_path: &str) -> Result<usize> {
         allow_count += count_unjustified_clippy_allows(&lines);
     }
     Ok(allow_count)
+}
+
+/// What pass 2 — the uninstrumented `cargo test --release` run — reported.
+///
+/// Carries the failing test NAMES, not merely whether the run passed, because
+/// the criterion's consumer is often a sweep that captured the output and threw
+/// it away. See [`HeavyRun::describe_failure`] for what reaches the operator.
+struct HeavyRun {
+    /// Whether the run exited zero.
+    passed: bool,
+    /// Tests libtest reported as `FAILED`, when the output was captured.
+    /// Empty when the run streamed to a terminal — the names were shown there.
+    failed: Vec<String>,
+}
+
+/// How many failing test names the detail line will list before summarising.
+///
+/// Bounded for the same reason as [`TRIAGE_ROWS`]: a crate whose suite has
+/// broken wholesale can fail hundreds of tests, and a detail line is one line.
+/// The remainder is COUNTED rather than dropped — a cap nobody is told about
+/// reads as "that was all of them".
+const NAMED_FAILURES: usize = 3;
+
+impl HeavyRun {
+    /// Build from a captured `cargo test` invocation.
+    ///
+    /// ★ Exists as its own function so the WIRING is testable, not just the
+    /// parser and the formatter either side of it. A negative control caught
+    /// that gap: replacing `failed_test_names(&text)` with `Vec::new()` at the
+    /// call site left all tests passing, because each half was covered and the
+    /// join between them was not.
+    ///
+    /// libtest writes results to stdout, but a harness that dies early (a
+    /// panic in a `#[ctor]`, a linker failure) says so only on stderr.
+    /// Scanning both costs nothing and keeps this from going quiet on the
+    /// cases that most need a name.
+    fn from_captured(passed: bool, stdout: &[u8], stderr: &[u8]) -> Self {
+        let mut text = String::from_utf8_lossy(stdout).into_owned();
+        text.push_str(&String::from_utf8_lossy(stderr));
+        Self {
+            passed,
+            failed: failed_test_names(&text),
+        }
+    }
+
+    /// A run that passed. No names, because there is nothing to name.
+    #[cfg(test)]
+    fn ok() -> Self {
+        Self {
+            passed: true,
+            failed: Vec::new(),
+        }
+    }
+
+    /// A run that failed with no recoverable names — a streaming run, a
+    /// harness that died before libtest printed, or a spawn failure.
+    #[cfg(test)]
+    fn failed_unnamed() -> Self {
+        Self {
+            passed: false,
+            failed: Vec::new(),
+        }
+    }
+
+    /// The `(heavy tests FAILED…)` clause appended to the coverage detail.
+    ///
+    /// Degrades to the bare marker when no name could be recovered — a
+    /// streaming run (the names were on screen), a harness that died before
+    /// libtest printed anything, or a spawn failure. Saying "FAILED" with no
+    /// name is still true; inventing one would not be.
+    fn describe_failure(&self) -> String {
+        match self.named_failures() {
+            Some(names) => format!(" (heavy tests FAILED: {names})"),
+            None => " (heavy tests FAILED)".to_string(),
+        }
+    }
+
+    /// The clause used where the coverage MEASUREMENT also failed.
+    ///
+    /// Separate wording from [`Self::describe_failure`] on purpose: there the
+    /// clause trails a percentage, here it sits mid-sentence after "coverage
+    /// run failed", and the "ALSO" is load-bearing — both the measurement and
+    /// the tests broke. ⚠ Lives here rather than inline at the call site so
+    /// the wording is testable at all: that call site is inside
+    /// `grade_coverage`, which shells out to cargo, so a unit test cannot
+    /// reach it. Collapsing the two wordings back into one is a regression a
+    /// REVIEW catches and the suite cannot — verified by mutation.
+    fn describe_failure_beside_failed_measurement(&self) -> String {
+        match self.named_failures() {
+            Some(names) => format!("TESTS ALSO FAILED ({names})"),
+            None => "TESTS ALSO FAILED".to_string(),
+        }
+    }
+
+    /// The capped, comma-joined failing test names, or `None` when none is
+    /// recoverable.
+    ///
+    /// Returns the bare list so each caller can punctuate it for its own
+    /// sentence — the coverage detail appends `(heavy tests FAILED: …)` to a
+    /// percentage, while the failed-measurement path keeps its `TESTS ALSO
+    /// FAILED` wording, where the "ALSO" is load-bearing: both the measurement
+    /// and the tests failed, and collapsing that into the other phrasing lost
+    /// it.
+    fn named_failures(&self) -> Option<String> {
+        match self.failed.len() {
+            0 => None,
+            n if n <= NAMED_FAILURES => Some(self.failed.join(", ")),
+            n => Some(format!(
+                "{} and {} more",
+                self.failed[..NAMED_FAILURES].join(", "),
+                n - NAMED_FAILURES
+            )),
+        }
+    }
+}
+
+/// Test names from libtest's per-test result lines.
+///
+/// Matches `test <name> ... FAILED`, which libtest prints once per failing
+/// test. ⚠ Deliberately NOT the `failures:` summary block: that block is
+/// indented free text, and a panic message inside it can itself contain a line
+/// that looks like an entry.
+///
+/// ⚠ The per-test line is *narrower*, not immune. libtest reprints a failing
+/// test's captured stdout under `---- <name> stdout ----`, so a test that
+/// PRINTS the literal `test foo ... FAILED` yields a spurious `foo`. Not
+/// guarded against: the cost is one wrong name in a one-line hint, and every
+/// guard for it (tracking section boundaries across the several binaries
+/// `cargo test` runs) is more machinery than the hint is worth. Do not read
+/// this list as authoritative — it points at the log, it does not replace it.
+///
+/// `test result: FAILED.` survives the prefix strip but not the suffix one, so
+/// the summary line cannot be mistaken for a test called `result:`.
+fn failed_test_names(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            line.strip_prefix("test ")?
+                .strip_suffix(" ... FAILED")
+                .map(str::to_string)
+        })
+        .filter(|name| !name.is_empty())
+        .collect()
 }
 
 /// Absolute path to a crate's `src/` tree, for the two criteria that grade by
@@ -4898,7 +5114,7 @@ serde = \"1\"
             (45, Grade::C),
             (20, Grade::F),
         ] {
-            let r = coverage_result(&measurement(covered, 100, 0, 0), true, false);
+            let r = coverage_result(&measurement(covered, 100, 0, 0), &HeavyRun::ok(), false);
             assert_eq!(r.grade, expect, "{covered}/100");
         }
     }
@@ -4908,7 +5124,7 @@ serde = \"1\"
     /// is told the enforcement is deferred rather than absent.
     #[test]
     fn a_report_only_crate_still_reports_its_real_number() {
-        let r = coverage_result(&measurement(30, 100, 0, 0), true, true);
+        let r = coverage_result(&measurement(30, 100, 0, 0), &HeavyRun::ok(), true);
 
         assert_eq!(r.grade, Grade::NotApplicable, "the threshold is waived");
         assert_eq!(r.result, "30.0% (report-only)");
@@ -4925,7 +5141,11 @@ serde = \"1\"
     /// coverage THRESHOLD, never a red test suite.
     #[test]
     fn a_report_only_crate_with_failing_tests_still_grades_f() {
-        let r = coverage_result(&measurement(99, 100, 0, 0), false, true);
+        let r = coverage_result(
+            &measurement(99, 100, 0, 0),
+            &HeavyRun::failed_unnamed(),
+            true,
+        );
 
         assert_eq!(
             r.grade,
@@ -4968,14 +5188,14 @@ serde = \"1\"
     #[test]
     fn the_deferral_is_looked_up_from_the_list_and_not_hardcoded() {
         for name in COVERAGE_REPORT_ONLY {
-            let r = coverage_result_for(name, &measurement(30, 100, 0, 0), true);
+            let r = coverage_result_for(name, &measurement(30, 100, 0, 0), &HeavyRun::ok());
             assert_eq!(
                 r.grade,
                 Grade::NotApplicable,
                 "{name} is on the list and must be deferred"
             );
         }
-        let r = coverage_result_for("cf-viewer", &measurement(30, 100, 0, 0), true);
+        let r = coverage_result_for("cf-viewer", &measurement(30, 100, 0, 0), &HeavyRun::ok());
         assert_eq!(
             r.grade,
             Grade::F,
@@ -4987,7 +5207,7 @@ serde = \"1\"
     /// about `heavy_passed` and not about the list being ineffective.
     #[test]
     fn an_undeferred_crate_grades_on_the_threshold() {
-        let r = coverage_result(&measurement(30, 100, 0, 0), true, false);
+        let r = coverage_result(&measurement(30, 100, 0, 0), &HeavyRun::ok(), false);
         assert_eq!(r.grade, Grade::F);
         assert_eq!(r.result, "30.0%");
         assert!(!r.measured_detail.contains("REPORT-ONLY"));
@@ -4999,7 +5219,7 @@ serde = \"1\"
     fn the_detail_reports_the_library_only_figure_when_a_binary_contributed() {
         // 40/100 overall; the binary holds 50 lines, none covered, so the
         // library is 40/50 = 80 %.
-        let r = coverage_result(&measurement(40, 100, 0, 50), true, false);
+        let r = coverage_result(&measurement(40, 100, 0, 50), &HeavyRun::ok(), false);
 
         assert!(
             r.measured_detail.contains("80.0% over library lines alone"),
@@ -5014,13 +5234,13 @@ serde = \"1\"
     /// same number twice under two names.
     #[test]
     fn the_detail_omits_the_library_figure_when_there_is_no_binary() {
-        let r = coverage_result(&measurement(40, 100, 0, 0), true, false);
+        let r = coverage_result(&measurement(40, 100, 0, 0), &HeavyRun::ok(), false);
         assert!(!r.measured_detail.contains("library lines alone"));
     }
 
     #[test]
     fn a_measurement_with_no_production_lines_is_not_a_bad_grade() {
-        let r = coverage_result(&measurement(0, 0, 0, 0), true, false);
+        let r = coverage_result(&measurement(0, 0, 0, 0), &HeavyRun::ok(), false);
         assert_eq!(r.grade, Grade::NotApplicable);
         assert_eq!(r.result, "(no production lines)");
     }
@@ -6488,6 +6708,198 @@ tier_up_features = { sneaky = "App" }
             }],
             ..empty_report()
         }
+    }
+
+    /// ★★ The three manual negative controls for `print_coverage_detail`'s
+    /// guard, recorded on `grade_coverage` and previously re-run by hand, now
+    /// asserted — plus the two positive cases the old guard SUPPRESSED.
+    ///
+    /// The old rule keyed on `coverage_files` being non-empty, on the premise
+    /// that every other path's detail merely restates its cell. True for
+    /// `(skipped)` and `(bin-only)`; false for `(measurement failed)` and
+    /// `(llvm-tools n/a)`, which have empty `coverage_files` BY CONSTRUCTION —
+    /// there was no measurement — and whose details hold the only actionable
+    /// information the criterion produced. The guard hid exactly the cases with
+    /// the most to say.
+    #[test]
+    fn the_detail_line_is_shown_when_it_adds_to_the_cell_and_not_otherwise() {
+        let crit = |result: &str, grade| CriterionResult {
+            name: "1. Coverage",
+            result: result.to_string(),
+            grade,
+            threshold: "≥75%/≥90% A+",
+            measured_detail: "detail".to_string(),
+        };
+
+        // Silent: the detail restates the cell. These are the three commands
+        // `grade_coverage`'s doc lists, re-verified live 2026-08-18.
+        for (result, grade) in [
+            ("(skipped)", Grade::NotApplicable),
+            ("(bin-only)", Grade::NotApplicable),
+            ("(integration-only)", Grade::NotApplicable),
+            ("(no production lines)", Grade::NotApplicable),
+        ] {
+            assert!(
+                !coverage_detail_says_more_than_the_cell(&crit(result, grade)),
+                "{result} restates its cell and must stay silent"
+            );
+        }
+
+        // Shown: the detail is the only place the information exists.
+        for (result, grade) in [
+            ("(measurement failed)", Grade::F),
+            ("(llvm-tools n/a)", Grade::Manual),
+            ("33.8%", Grade::F),
+            ("94.2%", Grade::F),
+            ("97.7%", Grade::APlus),
+        ] {
+            assert!(
+                coverage_detail_says_more_than_the_cell(&crit(result, grade)),
+                "{result} carries information the 16-char cell cannot"
+            );
+        }
+    }
+
+    /// ★ The gap this closes, measured on the first completed weekly sweep
+    /// (2026-08-18): `cf-design — F … 94.2% (heavy tests FAILED)` and not one
+    /// word about WHICH test. `run_all` forces `--quiet` per crate, so the
+    /// sweep captured pass 2's output and kept only the exit status — leaving
+    /// the one context that reports a heavy-test failure unable to name it,
+    /// with no terminal output to fall back on either.
+    ///
+    /// Fixture is real libtest output, including the lines that must NOT parse
+    /// as test names.
+    #[test]
+    fn a_failing_heavy_run_names_the_tests_that_failed() {
+        let output = "\
+running 788 tests
+test derive::tests::derive_empty_layers_errors ... ok
+test solid::tests::mesh_to_tolerance_subtract ... FAILED
+test solid::tests::other_thing ... ok
+
+failures:
+
+---- solid::tests::mesh_to_tolerance_subtract stdout ----
+thread 'solid::tests::mesh_to_tolerance_subtract' panicked at src/solid/tests.rs:858:5:
+mesh should be outward-wound with non-zero volume, got -19.1684049260703
+
+failures:
+    solid::tests::mesh_to_tolerance_subtract
+
+test result: FAILED. 786 passed; 1 failed; 2 ignored; 0 measured; 0 filtered out
+";
+        assert_eq!(
+            failed_test_names(output),
+            vec!["solid::tests::mesh_to_tolerance_subtract".to_string()],
+            "exactly one FAILED line, and neither the `failures:` block nor \
+             `test result: FAILED.` may be mistaken for one"
+        );
+
+        // ★ Through `from_captured`, the real production path — asserting the
+        // parser in isolation left the WIRING untested, and a negative control
+        // proved it: stubbing the call site to `Vec::new()` passed every test.
+        let run = HeavyRun::from_captured(false, output.as_bytes(), b"");
+        assert!(!run.passed);
+        let clause = run.describe_failure();
+        assert!(clause.contains("mesh_to_tolerance_subtract"), "{clause}");
+        assert!(clause.contains("heavy tests FAILED"), "{clause}");
+    }
+
+    /// A harness that dies before libtest prints reports only on stderr, so
+    /// `from_captured` must scan both streams — otherwise the cases that most
+    /// need a name are exactly the ones that go quiet.
+    #[test]
+    fn from_captured_reads_stderr_as_well_as_stdout() {
+        let run = HeavyRun::from_captured(false, b"", b"test a::b ... FAILED\n");
+        assert_eq!(run.failed, vec!["a::b".to_string()]);
+    }
+
+    /// ⚠ `test result: FAILED.` is the summary line, not a test called
+    /// `result:`. It survives the `test ` prefix strip and must be rejected by
+    /// the suffix, so it gets its own assertion rather than riding on the
+    /// fixture above.
+    #[test]
+    fn the_libtest_summary_line_is_not_read_as_a_test_name() {
+        assert!(failed_test_names("test result: FAILED. 1 failed").is_empty());
+        assert!(failed_test_names("test result: ok. 5 passed").is_empty());
+        // A passing test is not a failing one.
+        assert!(failed_test_names("test a::b ... ok").is_empty());
+        // Indented output (nextest, or a wrapped harness) still parses.
+        assert_eq!(failed_test_names("    test a::b ... FAILED"), vec!["a::b"]);
+    }
+
+    /// The cap is bounded and the remainder COUNTED, never silently dropped —
+    /// same rule as `TRIAGE_ROWS`. A crate whose suite broke wholesale can fail
+    /// hundreds of tests, and this is one line.
+    #[test]
+    fn many_failures_are_capped_but_the_remainder_is_counted() {
+        let named = |n: usize| HeavyRun {
+            passed: false,
+            failed: (0..n).map(|i| format!("t{i}")).collect(),
+        };
+
+        let clause = named(10).describe_failure();
+        assert!(clause.contains("t0, t1, t2"), "{clause}");
+        assert!(
+            clause.contains(&format!("and {} more", 10 - NAMED_FAILURES)),
+            "the dropped names must be counted, not silently truncated: {clause}"
+        );
+        assert!(!clause.contains("t9"), "past the cap: {clause}");
+
+        // ★ The boundary, which `<=` vs `<` gets silently wrong: exactly at the
+        // cap every name is listed and nothing is "more". A strict `<` would
+        // emit "and 0 more" here — true, useless, and obviously a bug to a
+        // reader but invisible to a test that only ever tries 1 and 10.
+        let at_cap = named(NAMED_FAILURES).named_failures().expect("some");
+        assert_eq!(at_cap, "t0, t1, t2");
+        assert!(!at_cap.contains("more"), "nothing is left over at the cap");
+
+        // …and one past it counts exactly one.
+        let over = named(NAMED_FAILURES + 1).named_failures().expect("some");
+        assert_eq!(over, "t0, t1, t2 and 1 more");
+    }
+
+    /// Both wordings come from the same capped list, and each punctuates it
+    /// for its own sentence. The failed-measurement path keeps "TESTS ALSO
+    /// FAILED" because the "ALSO" is load-bearing there — the measurement
+    /// broke *and* the tests did — and an earlier draft of this change lost
+    /// that by reusing the coverage-detail phrasing verbatim, producing
+    /// "coverage run failed, (heavy tests FAILED: x): <err>".
+    #[test]
+    fn each_call_site_punctuates_the_name_list_for_its_own_sentence() {
+        let run = HeavyRun {
+            passed: false,
+            failed: vec!["solid::tests::x".to_string()],
+        };
+        assert_eq!(run.named_failures().as_deref(), Some("solid::tests::x"));
+        assert_eq!(
+            run.describe_failure(),
+            " (heavy tests FAILED: solid::tests::x)"
+        );
+        // The failed-measurement path composes the same list differently, and
+        // keeps "ALSO" — both the measurement and the tests broke.
+        assert_eq!(
+            run.describe_failure_beside_failed_measurement(),
+            "TESTS ALSO FAILED (solid::tests::x)"
+        );
+        assert!(HeavyRun::failed_unnamed().named_failures().is_none());
+        assert_eq!(
+            HeavyRun::failed_unnamed().describe_failure_beside_failed_measurement(),
+            "TESTS ALSO FAILED"
+        );
+    }
+
+    /// ⛔ With no name recoverable the clause must stay exactly as it was —
+    /// a streaming run (names already on the operator's terminal), a harness
+    /// that died before libtest printed, a spawn failure, or a pass-1 `--lib`
+    /// failure whose names this never sees. Saying "FAILED" with no name is
+    /// true; inventing one would not be.
+    #[test]
+    fn a_failure_with_no_recoverable_name_keeps_the_bare_marker() {
+        assert_eq!(
+            HeavyRun::failed_unnamed().describe_failure(),
+            " (heavy tests FAILED)"
+        );
     }
 
     /// ★ The fail-open both file-counting criteria shared: a RELATIVE `src/`
