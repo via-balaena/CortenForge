@@ -1460,11 +1460,14 @@ fn a_rest_folded_mesh_is_rejected_even_though_det_f_is_one_everywhere() {
 /// element is nonetheless materially inverted (`det F = det J_def / det J_rest < 0`
 /// wherever the rest determinant is), and only the rest half can say so.
 ///
-/// ⚠⚠ The old five-point check passes this state — asserted below via
-/// `min_gauss_det_ratio`, which reads `det F` at exactly the Gauss points that check
-/// swept. That is the whole point: the fold sits between them. Deleting the rest
-/// certificate does not merely lose an attribution here, it returns the gate to `Ok`
-/// on a mesh carrying an inverted element.
+/// ⚠⚠ The old five-point check passes this state, and both of its halves are pinned
+/// rather than argued. Its four Gauss values are `min_gauss_det_ratio`, asserted
+/// positive in the search below — the fold sits between them. Its fifth, the affine
+/// corner block, is the identity here because only a MIDSIDE moves: the corners of
+/// the deformed state are bit-identical to the rest corners, asserted below, so
+/// `F_corner = I` and `det = 1`. Deleting the rest certificate does not merely lose
+/// an attribution, it returns the gate to `Ok` on a mesh carrying an inverted
+/// element.
 ///
 /// The amplitude is SEARCHED rather than hardcoded because the window is narrow —
 /// too little and nothing is folded, too much and a Gauss point sees it and the
@@ -1529,6 +1532,23 @@ fn a_rest_fold_between_the_sample_points_is_caught_at_a_healthy_deformed_state()
          every Gauss point positive — the window moved, and this fixture no longer \
          isolates the rest certificate from the deformed one",
     );
+
+    // The fifth of the old check's five values. Only a midside was pulled, so the
+    // deformed corners equal the rest corners and the affine corner block is the
+    // identity — `det F = 1`, comfortably positive. Asserting the premise rather
+    // than the determinant keeps the guard on the thing a future edit would break.
+    let rest_positions = solver.mesh.positions();
+    for v in 0..4usize {
+        for k in 0..3usize {
+            assert_eq!(
+                straight_dofs[3 * v + k],
+                rest_positions[v][k],
+                "only a midside may move in this fixture: corner {v} differs from rest, \
+                 so the affine corner block is no longer the identity and the old \
+                 five-point check might have caught this after all"
+            );
+        }
+    }
 
     // The deformed state is not merely unsampled-healthy, it is PROVABLY healthy:
     // the straight configuration's map is affine, so its `det J` is one positive
