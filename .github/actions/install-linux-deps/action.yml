@@ -1,0 +1,29 @@
+name: Install Linux build deps
+description: >
+  apt-get with a BOUNDED update, so a slow Ubuntu mirror costs minutes instead of a
+  whole job budget. Replaces nine copies of an unbounded two-line apt block. The
+  reasoning, the measurements and the traps all live in `apt.sh`, which is a file
+  rather than an inline block so it can be shellchecked and tested — see `test.sh`.
+
+# ⚠ `timeout-minutes:` is NOT available on steps inside a composite action, which is
+# why the bound is `timeout(1)` in `apt.sh` rather than the workflow key. It IS
+# available on a step that *calls* this action, so a caller wanting a cap on the TOTAL
+# (rather than per-invocation) adds one there — `scheduled.yml`'s coverage job does.
+
+inputs:
+  packages:
+    description: >
+      Space-separated apt package list. Deliberately an input rather than a fixed
+      list: the three call-site lists in this repo genuinely differ, and unifying
+      them would change what some jobs install.
+      ⚠ `required: true` is not enforced by GitHub — `apt.sh` checks it itself.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: apt-get (bounded)
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: bash "$GITHUB_ACTION_PATH/apt.sh"

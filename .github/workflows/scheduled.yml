@@ -119,23 +119,25 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # ⚠ Step-level timeout, because the JOB-level one is 180 minutes and this
-      # step normally takes ~40 s. Observed 2026-08-18 on this PR's own CI:
-      # `apt-get update` printed five lines, stalled fetching
-      # `archive.ubuntu.com/ubuntu noble-security InRelease`, and emitted
-      # nothing for the next 44 min until the 45 min job timeout killed it —
-      # `grade-all` never started. Under a 180 min budget that same stall costs
-      # three hours PER SHARD and still measures nothing. A setup step must not
-      # be able to spend a sweep's entire budget without producing a sweep.
-      #
-      # 10 min is ~15x the normal duration: generous enough that a merely slow
-      # mirror still succeeds, tight enough that a hung one fails while the
-      # runner is still cheap.
+      # ⚠ The bound matters MOST here, and that is why this note stays. This job's
+      # budget is 180 minutes, so the stall that cost one 45-minute shard elsewhere
+      # would cost THREE HOURS PER SHARD here and still measure nothing. A setup step
+      # must not be able to spend a sweep's whole budget without producing a sweep.
+      # (Observed 2026-08-18: `apt-get update` printed five lines, stalled fetching
+      # `archive.ubuntu.com/ubuntu noble-security InRelease`, and emitted nothing for
+      # 44 minutes.) The bound itself now lives in the action, with the measurements
+      # that set it — an earlier revision of this comment described a step-level
+      # ⚠ The step cap is KEPT, on top of the action's per-attempt bound, and the two
+      # are not redundant: the action bounds each `apt-get` invocation (so the common
+      # failure fails fast, with a message naming the cause), while this caps the step
+      # TOTAL. `timeout-minutes:` is available here because this step only *calls* a
+      # composite action — it is unavailable on steps *inside* one, which is why the
+      # action cannot express this itself.
       - name: Install system dependencies
         timeout-minutes: 10
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
+        uses: ./.github/actions/install-linux-deps
+        with:
+          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
 
       # ⚠ `components:` here installs into whatever channel this action
       # resolves — NOT into the toolchain that actually runs. `rust-toolchain.toml`
@@ -352,9 +354,9 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
+        uses: ./.github/actions/install-linux-deps
+        with:
+          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
 
       - name: Install latest stable Rust
         uses: dtolnay/rust-toolchain@stable
@@ -429,9 +431,9 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
+        uses: ./.github/actions/install-linux-deps
+        with:
+          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
