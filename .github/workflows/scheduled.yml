@@ -119,7 +119,20 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # ⚠ Step-level timeout, because the JOB-level one is 180 minutes and this
+      # step normally takes ~40 s. Observed 2026-08-18 on this PR's own CI:
+      # `apt-get update` printed five lines, stalled fetching
+      # `archive.ubuntu.com/ubuntu noble-security InRelease`, and emitted
+      # nothing for the next 44 min until the 45 min job timeout killed it —
+      # `grade-all` never started. Under a 180 min budget that same stall costs
+      # three hours PER SHARD and still measures nothing. A setup step must not
+      # be able to spend a sweep's entire budget without producing a sweep.
+      #
+      # 10 min is ~15x the normal duration: generous enough that a merely slow
+      # mirror still succeeds, tight enough that a hung one fails while the
+      # runner is still cheap.
       - name: Install system dependencies
+        timeout-minutes: 10
         run: |
           sudo apt-get update
           sudo apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
