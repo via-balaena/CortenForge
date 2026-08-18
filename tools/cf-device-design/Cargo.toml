@@ -78,7 +78,7 @@ bevy = { workspace = true, default-features = false, features = [
 # (Scan Info / Cavity / Layers / Validations / Clip-plane / Save-Open).
 # 0.39.1 is the workspace-validated pin (cf-viewer + cf-scan-prep
 # precedent).
-bevy_egui = { version = "0.39.1", default-features = false, features = [
+bevy_egui = { version = "0.41.1", default-features = false, features = [
     "default_fonts",
     "render",
     "bevy_ui",
