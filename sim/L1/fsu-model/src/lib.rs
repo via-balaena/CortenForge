@@ -4217,11 +4217,16 @@ mod tests {
                     // reintroduced the idiom the same day that was fixed there, because
                     // the fold is the default way to write it.
                     //
-                    // NEG_INFINITY rather than NaN for the non-finite case: every
-                    // consumer below COUNTS elements below a threshold, and every
-                    // comparison against NaN is false, so NaN would drop an
-                    // unmeasurable element out of both the at-floor and the
-                    // badly-conditioned counts. That is the fail-OPEN direction.
+                    // NEG_INFINITY rather than NaN for the non-finite case, and the
+                    // direction is decided by one consumer in particular: the
+                    // `shipped_below == 0` assertion at the end of
+                    // `what_the_midside_floor_binds_on_fom` counts `v < BADLY_CONDITIONED`.
+                    // Every comparison against NaN is false, so a NaN element would not
+                    // be counted there and that gate would
+                    // PASS on a mesh it should red — fail-open, in the one place here
+                    // that fails rather than prints. NEG_INFINITY is counted by it, by
+                    // the at-floor count, and by the open-ended lowest histogram band
+                    // (`band(NEG_INFINITY, ..)`, whose `v >= lo` admits it).
                     if coeffs.iter().all(|c| c.is_finite()) {
                         coeffs.iter().copied().fold(f64::INFINITY, f64::min) / affine_det(&x_ref)
                     } else {
