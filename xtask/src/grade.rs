@@ -914,6 +914,10 @@ pub fn run_all(
     // because "could not measure" is a different claim from "measured, and
     // it is bad" — and a different thing to go and fix.
     let mut errors: Vec<(String, String)> = Vec::new();
+    // Crates whose coverage the tooling could not measure. See `SweepTally`
+    // for why this cannot be folded into either bucket above: these crates
+    // graded fine, and that is exactly the problem.
+    let mut coverage_unavailable: Vec<String> = Vec::new();
 
     for (idx, crate_name) in crate_names.iter().enumerate() {
         // Force --quiet per-crate regardless of outer verbosity — grade-all
@@ -946,6 +950,13 @@ pub fn run_all(
             }
         };
 
+        // Checked for every crate, whichever bucket it lands in: a `Manual`
+        // Coverage criterion leaves the crate's letter untouched, so the sweep
+        // has no other place to notice that it never measured anything.
+        if !verbosity.skip_coverage && coverage_was_unavailable(&report) {
+            coverage_unavailable.push(crate_name.clone());
+        }
+
         let passed = matches!(report.automated_grade, Grade::A | Grade::APlus);
         if passed {
             if !verbosity.quiet {
@@ -975,6 +986,7 @@ pub fn run_all(
         total: crate_names.len(),
         failures: failures.len(),
         errors: errors.len(),
+        coverage_unavailable: coverage_unavailable.len(),
     };
 
     println!();
@@ -995,10 +1007,28 @@ pub fn run_all(
             name.bold(),
             report.automated_grade.as_str().red()
         );
+        let mut coverage_failed = false;
         for c in &report.criteria {
-            if matches!(c.grade, Grade::F | Grade::C) {
+            if is_failing_criterion(c) {
                 println!("      {}: {} ({})", c.name, c.grade.as_str(), c.result);
+                coverage_failed |= c.name.starts_with("1.");
             }
+        }
+        // The result cell is ~16 characters, so on its own a coverage failure
+        // reads `72.5%` and stops there. Everything that says what to DO about
+        // it — the covered/total counts, the library-only split, and #775's
+        // per-file breakdown — was computed, carried on the report, and then
+        // discarded here, because `run_all` forces `quiet` per crate and so
+        // never reaches the single-crate printer that shows them. A sweep is
+        // the one place that detail is most needed: the operator is looking at
+        // several failing crates at once and has to choose where to start.
+        //
+        // Gated on coverage actually being the failing criterion — a crate
+        // that failed Clippy does not need a file-by-file coverage table.
+        if coverage_failed && !report.coverage_files.is_empty() {
+            print_coverage_detail(report);
+            print_coverage_triage(report);
+            println!();
         }
     }
 
@@ -1009,12 +1039,74 @@ pub fn run_all(
         println!("      {}", err);
     }
 
-    if failures.is_empty() && errors.is_empty() {
+    // Below the errors, because it is the one finding that changes how every
+    // line above it should be read.
+    if !coverage_unavailable.is_empty() {
+        println!();
+        println!(
+            "{}",
+            "  Coverage was requested but never ran — llvm-tools is not installed."
+                .red()
+                .bold()
+        );
+        println!(
+            "      {} crate(s) reported `(llvm-tools n/a)`: {}",
+            coverage_unavailable.len(),
+            coverage_unavailable.join(", ")
+        );
+        println!("      fix: rustup component add llvm-tools-preview");
+    }
+
+    if tally.is_green() {
         Ok(())
     } else {
         println!();
         bail!("{}", tally.headline())
     }
+}
+
+/// Whether this criterion is one of the reasons its crate failed the sweep.
+///
+/// ★ Derived from the pass rule rather than listing bad grades, because the
+/// hand-written list was wrong: it read `F | C`, but a crate passes only on
+/// `A`/`A+`, so a `B` fails the sweep while being filtered out of the report
+/// explaining it. Measured 2026-08-17 — `grade-all --only cf-device-geometry`
+/// printed the crate, printed `B`, and printed not one word about why. That
+/// crate is at 69.6 % coverage; the two-tier thresholds put 60–75 % at `B`, so
+/// EVERY crate whose only defect is middling coverage hit this silence, which
+/// is exactly the population the weekly coverage sweep exists to name.
+///
+/// `Manual` and `NotApplicable` are excluded for the same reason
+/// [`GradeReport::overall_automated`] skips them: a criterion that did not
+/// apply, or that needs a human, did not cause this failure.
+fn is_failing_criterion(c: &CriterionResult) -> bool {
+    !matches!(
+        c.grade,
+        Grade::Manual | Grade::NotApplicable | Grade::A | Grade::APlus
+    )
+}
+
+/// Whether this report's Coverage criterion came back unmeasurable.
+///
+/// [`Grade::Manual`] on criterion 1 has exactly ONE source in
+/// [`grade_coverage`] — `tools_available` answering false — and that is the
+/// point of matching on it rather than on the result string. The other
+/// non-measuring paths are deliberately different grades and must NOT be
+/// caught here:
+///
+/// - `NotApplicable` for a crate the criterion does not apply to (no lib
+///   target, integration-only, no production lines) and for `--skip-coverage`;
+///   those are recorded decisions, not a broken machine.
+/// - `F` for a measurement that ran and failed, which already fails the sweep
+///   through the normal path.
+///
+/// Matched on the `"1."` name prefix like [`print_coverage_detail`], so a
+/// renamed criterion cannot silently detach the guard from what it guards.
+fn coverage_was_unavailable(report: &GradeReport) -> bool {
+    report
+        .criteria
+        .iter()
+        .any(|c| c.name.starts_with("1.") && c.grade == Grade::Manual)
 }
 
 /// What a `grade-all` sweep ended with.
@@ -1024,6 +1116,15 @@ pub fn run_all(
 /// not been shown to be good either. Conflating the two would either invent an
 /// F nobody measured or — far worse — let an unmeasured crate pass.
 ///
+/// `coverage_unavailable` is a third bucket for the same reason, one level up:
+/// it counts crates whose Coverage criterion came back [`Grade::Manual`], which
+/// [`grade_coverage`] returns from exactly one place — llvm-tools missing. That
+/// grade is *skipped* by [`GradeReport::overall_automated`], so those crates
+/// still print `A` and still land in the pass bucket. Without this count a
+/// coverage sweep on a runner lacking `llvm-tools-preview` reports every crate
+/// green while measuring no coverage at all — the fail-open shape #772–#774
+/// closed elsewhere in this grader, arriving here by a different door.
+///
 /// `passes` is derived rather than counted, so the printed numbers cannot
 /// drift from the buckets they summarise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1031,17 +1132,29 @@ struct SweepTally {
     total: usize,
     failures: usize,
     errors: usize,
+    /// Crates whose coverage could not be measured because the tooling was
+    /// absent. Always 0 under `--skip-coverage`, where not measuring is the
+    /// instruction rather than a defect.
+    coverage_unavailable: usize,
 }
 
 impl SweepTally {
+    /// Crates that were graded and passed.
+    ///
+    /// ⚠ Deliberately does NOT subtract `coverage_unavailable`. Those crates
+    /// were graded and did pass the criteria that ran; the problem is that one
+    /// criterion did not run, which the headline says outright rather than
+    /// encoding as a smaller pass count. Subtracting would claim they failed.
     fn passes(&self) -> usize {
         self.total.saturating_sub(self.failures + self.errors)
     }
 
-    /// A sweep may report success only when every crate was graded *and* every
-    /// grade passed.
+    /// A sweep may report success only when every crate was graded, every
+    /// grade passed, and every criterion the sweep was *asked* for actually
+    /// ran. The third clause is what stops "nothing came back" reading as
+    /// "nothing was wrong".
     fn is_green(&self) -> bool {
-        self.failures == 0 && self.errors == 0
+        self.failures == 0 && self.errors == 0 && self.coverage_unavailable == 0
     }
 
     /// One line naming every non-empty bucket, so no count the verdict depends
@@ -1052,23 +1165,44 @@ impl SweepTally {
     /// anyhow's own `Error:` prefix is the failure marker. Baking a `✗` in
     /// would print "Error: ✗ …" — two markers for one failure.
     fn headline(&self) -> String {
+        // ⚠ COMPOSED, never early-returned. An earlier draft returned the
+        // coverage sentence on its own, which silently dropped the failure and
+        // error counts — the precise defect
+        // `the_headline_names_both_buckets_when_both_are_non_empty` was
+        // written to prevent, walking back in through a new bucket. It matters
+        // more here than anywhere: this string is the `bail!` text, so it is
+        // the last line of a CI log, and "coverage tooling unavailable" as the
+        // whole verdict would bury a crate that really is failing.
+        if self.coverage_unavailable == 0 {
+            return format!("grade-all: {}", self.count_clause());
+        }
+        // Coverage leads, because it is a claim about the SWEEP rather than
+        // about any crate in it: every letter this run printed was computed
+        // with the Coverage criterion skipped.
+        let mut headline = format!(
+            "grade-all: coverage tooling unavailable — {} of {} crates were not measured, \
+             so no grade in this sweep accounts for coverage \
+             (`rustup component add llvm-tools-preview`).",
+            self.coverage_unavailable, self.total
+        );
+        if self.failures > 0 || self.errors > 0 {
+            // "Separately" because these crates failed on criteria that DID
+            // run — their verdict stands on its own and is not softened by the
+            // criterion that did not.
+            headline.push_str(&format!(" Separately, {}", self.count_clause()));
+        }
+        headline
+    }
+
+    /// The pass/fail/error sentence, without the `grade-all: ` prefix, so
+    /// [`Self::headline`] can use it both alone and as a trailing clause.
+    fn count_clause(&self) -> String {
         match (self.failures, self.errors) {
-            (0, 0) => format!(
-                "grade-all: {}/{} workspace crates pass.",
-                self.passes(),
-                self.total
-            ),
-            (f, 0) => format!(
-                "grade-all: {}/{} workspace crates fail xtask grade.",
-                f, self.total
-            ),
-            (0, e) => format!(
-                "grade-all: {}/{} workspace crates could not be graded.",
-                e, self.total
-            ),
+            (0, 0) => format!("{}/{} workspace crates pass.", self.passes(), self.total),
+            (f, 0) => format!("{}/{} workspace crates fail xtask grade.", f, self.total),
+            (0, e) => format!("{}/{} workspace crates could not be graded.", e, self.total),
             (f, e) => format!(
-                "grade-all: {} of {} workspace crates fail xtask grade, \
-                 and {} could not be graded.",
+                "{} of {} workspace crates fail xtask grade, and {} could not be graded.",
                 f, self.total, e
             ),
         }
@@ -6101,6 +6235,7 @@ tier_up_features = { sneaky = "App" }
             total: 10,
             failures: 0,
             errors: 1,
+            coverage_unavailable: 0,
         };
         assert!(!tally.is_green(), "{tally:?}");
         assert!(
@@ -6116,6 +6251,7 @@ tier_up_features = { sneaky = "App" }
             total: 10,
             failures: 0,
             errors: 0,
+            coverage_unavailable: 0,
         };
         assert!(green.is_green());
         assert_eq!(green.passes(), 10);
@@ -6124,7 +6260,8 @@ tier_up_features = { sneaky = "App" }
         assert!(!SweepTally {
             total: 10,
             failures: 1,
-            errors: 0
+            errors: 0,
+            coverage_unavailable: 0,
         }
         .is_green());
     }
@@ -6138,6 +6275,7 @@ tier_up_features = { sneaky = "App" }
             total: 10,
             failures: 2,
             errors: 3,
+            coverage_unavailable: 0,
         };
         let headline = tally.headline();
         assert!(headline.contains('2'), "{headline}");
@@ -6156,21 +6294,40 @@ tier_up_features = { sneaky = "App" }
                 total: 3,
                 failures: 0,
                 errors: 0,
+                coverage_unavailable: 0,
             },
             SweepTally {
                 total: 3,
                 failures: 1,
                 errors: 0,
+                coverage_unavailable: 0,
             },
             SweepTally {
                 total: 3,
                 failures: 0,
                 errors: 1,
+                coverage_unavailable: 0,
             },
             SweepTally {
                 total: 3,
                 failures: 1,
                 errors: 1,
+                coverage_unavailable: 0,
+            },
+            // The third bucket, alone and combined — it takes a different
+            // branch through `headline`, so the invariant has to be checked
+            // there too rather than assumed to carry over.
+            SweepTally {
+                total: 3,
+                failures: 0,
+                errors: 0,
+                coverage_unavailable: 3,
+            },
+            SweepTally {
+                total: 3,
+                failures: 1,
+                errors: 1,
+                coverage_unavailable: 3,
             },
         ] {
             let headline = tally.headline();
@@ -6182,6 +6339,205 @@ tier_up_features = { sneaky = "App" }
         }
     }
 
+    /// A report with no criteria — the base every fixture below builds on.
+    fn empty_report() -> GradeReport {
+        GradeReport {
+            crate_name: "fixture".to_string(),
+            profile: CrateProfile::Layer0,
+            criteria: Vec::new(),
+            automated_grade: Grade::A,
+            needs_review: true,
+            coverage_files: Vec::new(),
+        }
+    }
+
+    /// Build a report carrying one Coverage criterion at `grade`.
+    ///
+    /// Only criterion 1 is populated: `coverage_was_unavailable` reads nothing
+    /// else, and a fixture that supplied the other seven would invite the test
+    /// to start depending on them.
+    ///
+    /// The result cell is deliberately a placeholder rather than the real
+    /// string each grade would carry ("(llvm-tools n/a)", "33.8%", …). The
+    /// guard matches on the GRADE, and a fixture that also carried a matching
+    /// string would pass just as happily if the guard were rewritten to sniff
+    /// text — which is the implementation this one exists to rule out.
+    fn report_with_coverage(grade: Grade) -> GradeReport {
+        GradeReport {
+            criteria: vec![CriterionResult {
+                name: "1. Coverage",
+                result: "<fixture>".to_string(),
+                grade,
+                threshold: "≥75%/≥90% A+",
+                measured_detail: String::new(),
+            }],
+            ..empty_report()
+        }
+    }
+
+    /// ★ The regression the pilot caught: a crate failing on `B` was named
+    /// and then not explained.
+    ///
+    /// `run_all`'s failure block filtered criteria to `F | C`, but a crate
+    /// passes only on `A`/`A+`. Coverage of 60–75 % grades `B`, so the sweep
+    /// printed `cf-device-geometry — B` and nothing else — no criterion, no
+    /// percentage, no per-file triage.
+    ///
+    /// ★★ Pins the INVARIANT rather than a list of bad grades, and so is
+    /// exhaustive over `Grade`: a criterion belongs in the report explaining a
+    /// failure exactly when it is the reason for one. Both halves fall out of
+    /// the single equality — `Manual` and `NotApplicable` are skipped by
+    /// `overall_automated`, so a report carrying only one of them does not
+    /// fail, and the filter must therefore leave it out. A hand-written list
+    /// is what produced the defect above; a new `Grade` variant added tomorrow
+    /// is covered here without anyone remembering to extend it.
+    #[test]
+    fn the_failure_filter_agrees_with_the_pass_rule_for_every_grade() {
+        for grade in [
+            Grade::APlus,
+            Grade::A,
+            Grade::B,
+            Grade::C,
+            Grade::F,
+            Grade::Manual,
+            Grade::NotApplicable,
+        ] {
+            let report = report_with_coverage(grade);
+            // Read off the production pass rule rather than restated, so the
+            // filter and the verdict cannot drift apart.
+            let crate_fails = !matches!(report.overall_automated(), Grade::A | Grade::APlus);
+
+            assert_eq!(
+                is_failing_criterion(&report.criteria[0]),
+                crate_fails,
+                "{grade:?}: the failure report must name a criterion exactly \
+                 when that criterion is why the crate failed"
+            );
+        }
+    }
+
+    /// ★ The fail-open this bucket exists to close.
+    ///
+    /// `overall_automated` SKIPS `Manual`, so a crate whose coverage could not
+    /// be measured still grades `A` and still lands in the pass bucket. Before
+    /// the third bucket, a coverage sweep on a runner without
+    /// `llvm-tools-preview` printed "61/61 workspace crates pass" having
+    /// measured no coverage at all.
+    #[test]
+    fn a_sweep_that_never_measured_coverage_is_not_green() {
+        // The premise, asserted rather than assumed: the crate itself passes.
+        let mut report = report_with_coverage(Grade::Manual);
+        report.automated_grade = report.overall_automated();
+        assert!(
+            matches!(report.automated_grade, Grade::A | Grade::APlus),
+            "premise broken — this crate no longer passes, so the sweep-level \
+             guard is not what is being tested: {:?}",
+            report.automated_grade
+        );
+        assert!(coverage_was_unavailable(&report));
+
+        let tally = SweepTally {
+            total: 61,
+            failures: 0,
+            errors: 0,
+            coverage_unavailable: 61,
+        };
+        assert!(!tally.is_green(), "{tally:?}");
+        let headline = tally.headline();
+        assert!(
+            headline.contains("coverage tooling unavailable"),
+            "{headline}"
+        );
+        assert!(headline.contains("61"), "{headline}");
+        assert!(headline.contains("llvm-tools-preview"), "{headline}");
+    }
+
+    /// The headline's early return outranks the per-crate counts, but must not
+    /// erase them from the run: `passes()` still describes the crates that
+    /// were graded, and the failure blocks are printed either way.
+    #[test]
+    fn the_unavailable_headline_does_not_claim_the_graded_crates_failed() {
+        let tally = SweepTally {
+            total: 10,
+            failures: 2,
+            errors: 0,
+            coverage_unavailable: 8,
+        };
+        assert_eq!(tally.passes(), 8);
+        assert!(!tally.is_green());
+        assert!(
+            tally.headline().starts_with("grade-all: "),
+            "{}",
+            tally.headline()
+        );
+    }
+
+    /// ★★ NEGATIVE CONTROLS — the three non-measuring paths this guard must
+    /// stay silent on. A guard verified only where it fires is
+    /// indistinguishable from one that always fires, and this one turning
+    /// `NotApplicable` into a failure would red every sweep containing a
+    /// bin-only crate.
+    #[test]
+    fn the_coverage_guard_ignores_every_recorded_non_measurement() {
+        for grade in [Grade::NotApplicable, Grade::F, Grade::A, Grade::APlus] {
+            assert!(
+                !coverage_was_unavailable(&report_with_coverage(grade)),
+                "{grade:?} is a recorded outcome, not absent tooling"
+            );
+        }
+        // A report with no coverage criterion at all — the shape `evaluate`
+        // returns if criterion 1 is ever made conditional.
+        assert!(!coverage_was_unavailable(&empty_report()));
+
+        let green = SweepTally {
+            total: 10,
+            failures: 0,
+            errors: 0,
+            coverage_unavailable: 0,
+        };
+        assert!(green.is_green());
+        assert!(green.headline().contains("10/10"), "{}", green.headline());
+    }
+
+    /// `--skip-coverage` is an instruction, not a broken machine.
+    ///
+    /// Calls the real [`grade_coverage`] rather than a hand-copied
+    /// `CriterionResult`, because the property under test is the LINK between
+    /// the two functions: if that branch ever returned `Manual` instead of
+    /// `NotApplicable`, every `--skip-coverage` sweep — which is every PR CI
+    /// grade — would fail with "coverage tooling unavailable". A fixture
+    /// asserting the value I wrote into it would not notice.
+    ///
+    /// Reaching that branch touches no filesystem: `coverage_skip_reason` is
+    /// consulted first and declines (Layer0 with a lib target), then the
+    /// `skip_coverage` arm returns before `sh` is used.
+    #[test]
+    fn skip_coverage_does_not_trip_the_unavailable_guard() {
+        let sh = Shell::new().expect("shell");
+        let mut files = Vec::new();
+        let skipped = grade_coverage(
+            &sh,
+            "fixture",
+            "sim/L0/types",
+            CrateProfile::Layer0,
+            true,
+            Verbosity {
+                quiet: true,
+                verbose: false,
+                json: false,
+                skip_coverage: true,
+            },
+            &mut files,
+        )
+        .expect("the skip arm cannot fail");
+
+        assert_eq!(skipped.grade, Grade::NotApplicable, "{skipped:?}");
+        assert!(!coverage_was_unavailable(&GradeReport {
+            criteria: vec![skipped],
+            ..empty_report()
+        }));
+    }
+
     #[test]
     fn passes_is_derived_so_it_cannot_drift_from_the_buckets() {
         // `saturating_sub` guards a nonsensical construction rather than
@@ -6191,6 +6547,7 @@ tier_up_features = { sneaky = "App" }
             total: 1,
             failures: 5,
             errors: 5,
+            coverage_unavailable: 0,
         };
         assert_eq!(nonsense.passes(), 0);
         assert!(!nonsense.is_green());
