@@ -5,7 +5,7 @@
 use crate::pr_scope::{filter_only, select_shard};
 use anyhow::{bail, Context, Result};
 use owo_colors::OwoColorize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -1891,8 +1891,17 @@ fn grade_documentation(sh: &Shell, crate_name: &str, crate_path: &str) -> Result
         }
     }
 
-    // Informational: check if missing_docs lint is enabled in lib.rs
-    let lib_path = format!("{}/src/lib.rs", crate_path);
+    // Informational: check if missing_docs lint is enabled in lib.rs.
+    //
+    // Absolute like the criteria around it. This one never moved a grade — it
+    // only drives the "(missing_docs not enabled)" note — but read relatively
+    // it printed that note for EVERY crate when run from a subdirectory,
+    // including crates that do enable the lint. A note that is false whenever
+    // the caller's shell is elsewhere is worse than no note.
+    let lib_path = crate_src_dir(&sh.current_dir(), crate_path)?
+        .join("lib.rs")
+        .to_string_lossy()
+        .into_owned();
     let has_missing_docs = if let Ok(content) = std::fs::read_to_string(&lib_path) {
         content.contains("#![warn(missing_docs)]") || content.contains("#![deny(missing_docs)]")
     } else {
@@ -1962,7 +1971,10 @@ fn grade_clippy(
     let allow_count = if relax_unjustified_allows {
         0
     } else {
-        count_unjustified_allows_in_tree(&format!("{}/src", crate_path))?
+        // Absolute, via `crate_src_dir`: this scan returned `A` on zero files
+        // read whenever the relative form resolved nowhere.
+        let src_dir = crate_src_dir(&sh.current_dir(), crate_path)?;
+        count_unjustified_allows_in_tree(&src_dir.to_string_lossy())?
     };
 
     let total = clippy_count + allow_count;
@@ -2101,6 +2113,83 @@ fn count_unjustified_allows_in_tree(src_path: &str) -> Result<usize> {
         allow_count += count_unjustified_clippy_allows(&lines);
     }
     Ok(allow_count)
+}
+
+/// Absolute path to a crate's `src/` tree, for the two criteria that grade by
+/// walking it — criterion 3's unjustified-`#[allow]` scan and criterion 4's
+/// safety scan.
+///
+/// ★ **Exists because both were passing a RELATIVE path**, and `std::fs`
+/// resolves those against the PROCESS's working directory while
+/// `xshell::change_dir` only moves the SHELL's. `evaluate` changes the shell to
+/// the workspace root, so both scans silently read the wrong place whenever
+/// `cargo xtask` was invoked from a subdirectory. Measured 2026-08-18 —
+/// `sim/L0/types/src` walks 4 files from the workspace root and **0** from
+/// `sim/L0/core`. Same family as the cwd-dependent manifest read fixed in #777.
+///
+/// Both failed OPEN, by different routes, which is why one helper fixes both:
+///
+/// - **Criterion 3** counted zero unjustified allows and returned `A` — a pass
+///   on a scan that read nothing.
+/// - **Criterion 4** took its `(no src/)` arm and returned `Grade::Manual`,
+///   which [`GradeReport::overall_automated`] *skips*, so Safety stopped
+///   gating at all. Its guard fails closed against a genuinely missing `src/`;
+///   it does nothing about a wrong path, because a wrong path looks exactly
+///   like a missing one.
+///
+/// ⛔ **Does NOT guard on `src/` being absent** — four crates legitimately have
+/// none (`design/cf-design-tests`, `design/cf-routing-tests`, `sim/L0/tests`,
+/// `sim/L0/rl-baselines`), and zero is the right answer for them. It guards on
+/// the CRATE DIRECTORY being absent, which cannot be legitimate: the path came
+/// from `cargo metadata`, so if it does not resolve, the resolution is wrong
+/// and every count taken under it is meaningless. That is the distinction the
+/// old code could not draw, and the reason a bare "does src/ exist" check is
+/// the wrong fix rather than a smaller one.
+fn crate_src_dir(workspace_root: &Path, crate_path: &str) -> Result<PathBuf> {
+    Ok(crate_dir(workspace_root, crate_path)?.join("src"))
+}
+
+/// Absolute path to a crate's own directory, verified to exist.
+///
+/// The shared root of [`crate_src_dir`] and criterion 5's `Cargo.toml` read —
+/// all three consumers were building this path relatively and handing it to
+/// `std::fs`. Criterion 5's symptom differs from the other two: it fails
+/// CLOSED, reporting `F: error: No such file or directory`, so it was noisy
+/// rather than dangerous. Same defect, and it shares the fix.
+///
+/// ⚠ #777 rooted `evaluate`'s manifest read for exactly this reason; criterion
+/// 5 reads a *second* manifest of its own, which that change did not reach.
+/// Grep for `format!("{}/` before assuming this family is now empty.
+///
+/// ★ **`crate_path` may be relative OR already absolute, and `join` handles
+/// both — do not "simplify" that away.** [`find_crate_path`] returns
+/// `strip_prefix(workspace_root).unwrap_or(crate_dir)`, so a crate whose
+/// directory does not sit under the workspace root (a path dependency
+/// elsewhere) yields an ABSOLUTE path in production. `Path::join` replaces the
+/// base when its argument is absolute, which is exactly right here: an absolute
+/// crate path needs no rooting and must not be re-rooted. The safety tests
+/// below rely on the same property, passing temp-fixture paths directly.
+fn crate_dir(workspace_root: &Path, crate_path: &str) -> Result<PathBuf> {
+    let dir = workspace_root.join(crate_path);
+    // `try_exists`, not `is_dir`, for the reason spelled out in `grade_safety`
+    // and `glob_rs_files`: `is_dir` answers false both for "not a directory"
+    // and for "metadata unreadable", and only the first is a definite answer.
+    // A path that exists but is not a directory therefore passes here and
+    // fails at the `src/` stat instead — later, but still closed, which is the
+    // trade this whole module keeps making. `criterion_4_errors_rather_than_
+    // dropping_an_unstat_able_src_from_the_grade` covers exactly that path.
+    if !dir
+        .try_exists()
+        .with_context(|| format!("stat {} while resolving a crate path", dir.display()))?
+    {
+        bail!(
+            "crate directory {} does not exist — refusing to grade against it. Every \
+             file-reading criterion would either read zero files and report a clean crate \
+             or fail for a reason that looks like the crate's fault.",
+            dir.display()
+        );
+    }
+    Ok(dir)
 }
 
 /// Collect all `.rs` files under a directory.
@@ -2331,8 +2420,16 @@ fn scan_file_safety(
 /// - Unsafe-without-SAFETY check
 /// - Blanket assert exclusion removed
 /// - Direct file reading (no grep shell-outs)
-fn grade_safety(_sh: &Shell, crate_path: &str, profile: CrateProfile) -> Result<CriterionResult> {
-    let src_path = format!("{}/src", crate_path);
+fn grade_safety(sh: &Shell, crate_path: &str, profile: CrateProfile) -> Result<CriterionResult> {
+    // Absolute, via `crate_src_dir`. The `(no src/)` guard below fails closed
+    // against a crate that really has no `src/`, but it cannot tell that from a
+    // path that resolves nowhere — and its `Manual` verdict is SKIPPED by
+    // `overall_automated`, so a wrong path silently switched this criterion off
+    // entirely. Resolving absolutely is what makes the guard's answer mean
+    // what it says.
+    let src_path = crate_src_dir(&sh.current_dir(), crate_path)?
+        .to_string_lossy()
+        .into_owned();
 
     // `try_exists`, not `exists`: this guard runs *before* `glob_rs_files`, so
     // it — not the walker — is what a crate with an unreadable `src/` meets
@@ -2877,8 +2974,14 @@ fn grade_dependencies(
     let heavy_note = if dep_count > 10 { " (heavy)" } else { "" };
 
     // Step 2: justification check via Cargo.toml text scan (hard gate)
+    // Absolute: read relatively, this reported `F: error: No such file or
+    // directory` for every crate whenever `cargo xtask` ran from a
+    // subdirectory — the crate's grade decided by the caller's shell.
     let crate_path = find_crate_path(sh, crate_name)?;
-    let cargo_toml_path = format!("{}/Cargo.toml", crate_path);
+    let cargo_toml_path = crate_dir(&sh.current_dir(), &crate_path)?
+        .join("Cargo.toml")
+        .to_string_lossy()
+        .into_owned();
     let cargo_content = match std::fs::read_to_string(&cargo_toml_path) {
         Ok(c) => c,
         Err(e) => {
@@ -6373,6 +6476,108 @@ tier_up_features = { sneaky = "App" }
             }],
             ..empty_report()
         }
+    }
+
+    /// ★ The fail-open both file-counting criteria shared: a RELATIVE `src/`
+    /// path, resolved by `std::fs` against the PROCESS cwd.
+    ///
+    /// `evaluate` moves the SHELL to the workspace root, which does not move
+    /// the process, so `cargo xtask grade` run from a subdirectory scanned a
+    /// path that resolved nowhere. Criterion 3 counted zero unjustified allows
+    /// and returned `A`; criterion 4 took its `(no src/)` arm and returned
+    /// `Manual`, which `overall_automated` skips. Different routes, same
+    /// outcome — a criterion that stopped gating without saying so.
+    ///
+    /// Pins the property that fixes both: the resolved path is ABSOLUTE, so it
+    /// means the same thing from any working directory.
+    #[test]
+    fn the_src_scan_path_is_absolute_so_it_cannot_depend_on_the_cwd() {
+        // A real tree, because the helper stats the crate directory — a
+        // literal path would only exercise string building, and the defect was
+        // never in the string.
+        let root = walk_fixture("abs_scan_path", &["sim/L0/types/src/lib.rs"]);
+        let resolved = crate_src_dir(&root, "sim/L0/types").expect("crate dir is present");
+
+        assert!(
+            resolved.is_absolute(),
+            "a relative scan path is the defect itself: {}",
+            resolved.display()
+        );
+        assert_eq!(resolved, root.join("sim/L0/types/src"));
+        // And it actually reaches the source: the old relative form walked 0
+        // files from any directory but the workspace root.
+        assert_eq!(
+            glob_rs_files(&resolved.to_string_lossy())
+                .expect("walk")
+                .len(),
+            1
+        );
+    }
+
+    /// ★ An already-absolute `crate_path` must survive rooting untouched.
+    ///
+    /// Not a hypothetical: [`find_crate_path`] ends in
+    /// `strip_prefix(workspace_root).unwrap_or(crate_dir)`, so a crate outside
+    /// the workspace root yields an absolute path in production. `Path::join`
+    /// replacing its base on an absolute argument is what makes one code path
+    /// serve both, and the safety tests below depend on it too — pinned here so
+    /// that a "simplification" to string concatenation fails loudly rather than
+    /// silently producing `/ws/root/tmp/whatever`.
+    #[test]
+    fn an_already_absolute_crate_path_is_not_re_rooted() {
+        let real = walk_fixture("abs_crate_path", &["src/lib.rs"]);
+        assert!(
+            real.is_absolute(),
+            "fixture must be absolute to mean anything"
+        );
+
+        let resolved = crate_src_dir(Path::new("/some/other/root"), &real.to_string_lossy())
+            .expect("an absolute crate path resolves");
+
+        assert_eq!(resolved, real.join("src"));
+        assert!(
+            !resolved.starts_with("/some/other/root"),
+            "an absolute crate path was re-rooted: {}",
+            resolved.display()
+        );
+    }
+
+    /// ⛔ The half that must NOT become an error: four crates in this workspace
+    /// legitimately have no `src/` at all, and zero is the correct count for
+    /// them. Guarding on "src/ is missing" — the obvious fix — would fail every
+    /// one of them.
+    ///
+    /// Uses a real temp tree rather than a literal path, because the property
+    /// is about what the filesystem answers, not about string building.
+    #[test]
+    fn a_crate_that_genuinely_has_no_src_is_not_an_error() {
+        let root = walk_fixture("no_src_crate", &["thecrate/Cargo.toml"]);
+        let resolved = crate_src_dir(&root, "thecrate")
+            .expect("a crate with no src/ is legitimate — four exist in this workspace");
+
+        assert_eq!(resolved, root.join("thecrate").join("src"));
+        // And the scan over it answers zero rather than erroring.
+        assert_eq!(
+            count_unjustified_allows_in_tree(&resolved.to_string_lossy()).expect("scan"),
+            0
+        );
+    }
+
+    /// ★★ The half that MUST fail closed, and the reason a plain "does src/
+    /// exist" check is the wrong fix rather than a smaller one.
+    ///
+    /// A missing `src/` can be legitimate; a missing CRATE DIRECTORY cannot —
+    /// the path came from `cargo metadata`. So if it does not resolve, the
+    /// resolution is wrong and every count taken under it is meaningless. That
+    /// is precisely the state the old code reported as a clean crate.
+    #[test]
+    fn an_unresolvable_crate_path_errors_rather_than_counting_zero() {
+        let root = walk_fixture("missing_crate", &["other/Cargo.toml"]);
+        let err = crate_src_dir(&root, "nonexistent-crate")
+            .expect_err("an unresolvable crate path must not read as a clean crate");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("does not exist"), "{msg}");
+        assert!(msg.contains("nonexistent-crate"), "{msg}");
     }
 
     /// ★ The regression the pilot caught: a crate failing on `B` was named
