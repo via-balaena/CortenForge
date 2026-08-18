@@ -56,4 +56,36 @@ pub trait Element<const N: usize, const G: usize>: Send + Sync {
             (x_ref.transpose() * grad_xi).determinant()
         })
     }
+
+    /// **Prove** — or refute — that the isoparametric map from the reference
+    /// simplex to the node matrix `x` preserves orientation over the WHOLE
+    /// element.
+    ///
+    /// The certifying counterpart of [`Self::rest_jacobian_dets`]. That method
+    /// evaluates `det J` at the `G` points quadrature happens to use; this one
+    /// answers for every point of the element. [`RestValidity::Certified`] is a
+    /// proof, [`RestValidity::Violated`] carries an **evaluated** witness point,
+    /// and [`RestValidity::Undetermined`] is neither and must be read as failure
+    /// — absence of a proof is not a proof.
+    ///
+    /// ★ `x` is **any** node matrix, not only the rest one, and the deformed
+    /// configuration is the reason this sits on the trait. Writing `J_def(ξ) =
+    /// x_defᵀ ∇N(ξ)`, the deformation gradient is `F = J_def · J_rest⁻¹`, so
+    ///
+    /// ```text
+    ///     det F = det J_def / det J_rest
+    /// ```
+    ///
+    /// and `J_def` is affine in `ξ` in exactly the way `J_rest` is. `det F > 0`
+    /// everywhere therefore holds **iff both determinants are positive
+    /// everywhere**, each of which this method decides. `F` itself is a ratio
+    /// and no polynomial bound applies to it directly; the bound is never
+    /// applied to `F`.
+    ///
+    /// ⚠ Both halves are load-bearing. At rest `det F ≡ 1`, so an element that
+    /// is folded in the REST configuration is invisible to any gate reading
+    /// `det F` alone — which is why the solver certifies the rest mesh once at
+    /// construction and the deformed state at each step boundary, rather than
+    /// treating the deformed certificate as sufficient on its own.
+    fn certify_orientation(&self, x: &SMatrix<f64, N, 3>) -> RestValidity;
 }

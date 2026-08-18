@@ -54,7 +54,7 @@
 
 use nalgebra::{SMatrix, SVector};
 
-use super::Element;
+use super::{Element, RestValidity, ValidityBar, certify_rest};
 use crate::Vec3;
 
 /// Canonical edge → midside-node table (see module docs).
@@ -135,6 +135,20 @@ impl Element<10, 4> for Tet10 {
             (Vec3::new(b, a, b), w), // a on η (corner 2)
             (Vec3::new(b, b, a), w), // a on ζ (corner 3)
         ]
+    }
+
+    /// The whole point of [`validity`](super::validity): `det J` is a **cubic**
+    /// for a curved Tet10, free to dip below zero between any two samples, so
+    /// the four Stroud points [`Self::rest_jacobian_dets`] returns cannot decide
+    /// this question and no larger finite set would either.
+    ///
+    /// Delegates to [`certify_rest`] against [`ValidityBar::Positive`] — the bar
+    /// for auditing geometry that is already fixed. A *search* steering toward a
+    /// bar wants [`ValidityBar::RelativeFloor`] instead, because bisecting
+    /// against bare positivity lands on `det J → 0⁺`; nothing here is
+    /// searching.
+    fn certify_orientation(&self, x: &SMatrix<f64, 10, 3>) -> RestValidity {
+        certify_rest(x, ValidityBar::Positive)
     }
 }
 

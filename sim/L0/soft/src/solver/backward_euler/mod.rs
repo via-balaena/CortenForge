@@ -52,7 +52,7 @@ use nalgebra::SMatrix;
 
 use crate::Vec3;
 use crate::contact::{ActivePairsFor, ContactModel};
-use crate::element::Element;
+use crate::element::{Element, RestValidity};
 use crate::material::Material;
 use crate::mesh::Mesh;
 use crate::readout::BoundaryConditions;
@@ -115,14 +115,15 @@ struct ElementGeometry {
 ///
 /// Consumed by the forward stiffness kernels
 /// (`assemble_global_int_force` / `assemble_free_hessian_triplets` /
-/// `internal_force_tangent_matvec`) and by the step-boundary inversion sweep in
-/// `CpuNewtonSolver::check_orientation`, which gates `det F > 0`
-/// at the points those kernels evaluate the material at — with one exception:
-/// `assemble_global_int_force`'s F-bar branch evaluates a patch-modified `F*`
-/// built from [`ElementGeometry`] instead. That branch is Tet4-only, where the
-/// two caches hold the same tensor, so the sweep still covers it. Held alongside
-/// [`ElementGeometry`] rather
-/// than replacing it so the Tet4-flavored single-point consumers above — F-bar
+/// `internal_force_tangent_matvec`), with one exception: that assembly's F-bar
+/// branch evaluates a patch-modified `F*` built from [`ElementGeometry`] instead.
+/// That branch is Tet4-only, where the two caches hold the same tensor.
+///
+/// ⚠ **No longer read by the step-boundary inversion gate.**
+/// `CpuNewtonSolver::check_orientation` certifies `det F > 0` over the whole element
+/// from node coordinates, which is a strictly stronger statement than anything the
+/// `G` cached points could support. Held alongside [`ElementGeometry`] rather than
+/// replacing it so the Tet4-flavored single-point consumers above — F-bar
 /// especially — stay byte-identical and untouched.
 #[derive(Clone, Debug)]
 struct GaussGeometry<const N: usize, const G: usize> {
@@ -173,16 +174,40 @@ pub struct CpuNewtonSolver<
     // per-iter `reference_geometry` recomputation.
     /// One entry per mesh tet — the single-point corner shape gradient and
     /// rest volume. Feeds the Tet4-flavored single-point consumers (F-bar, the
-    /// validity gate's `max_stretch_deviation` slot, lumped mass, and the
-    /// corner-block half of its `inversion` slot); the forward stiffness, the
-    /// material adjoint (since rung 7) and the Gauss-point half of the
-    /// `inversion` slot read [`Self::gauss_geometries`] as well.
+    /// validity gate's `max_stretch_deviation` slot, and lumped mass); the forward
+    /// stiffness and the material adjoint (since rung 7) read
+    /// [`Self::gauss_geometries`] as well. ⚠ The gate's `inversion` slot reads
+    /// NEITHER — it certifies from node coordinates.
     element_geometries: Vec<ElementGeometry>,
     /// One entry per mesh tet — the per-Gauss-point stiffness geometry
     /// (`(grad_x_n, weight)` × `G`) the multi-Gauss-point forward kernels
     /// integrate over (Tet10 ladder rung 4). For Tet4 `(G = 1)` its single pair
     /// matches `element_geometries` bit-for-bit.
     gauss_geometries: Vec<GaussGeometry<N, G>>,
+    /// The **lowest-numbered** element whose **rest** configuration
+    /// [`Element::certify_orientation`] did not certify, with its verdict —
+    /// normally `None`.
+    ///
+    /// Only the first is kept, and that loses nothing: the gate is
+    /// first-violator-wins in ascending tet order, so no later rest defect could
+    /// ever be the one reported. Holding the full list instead would make the
+    /// gate's per-element lookup a scan of it — `O(elements x defects)` on a badly
+    /// broken mesh — to produce the identical message.
+    ///
+    /// ★ Why the gate needs this, and why it is computed once. `det F = det J_def
+    /// / det J_rest`, so certifying `det J_def > 0` over an element proves
+    /// `det F > 0` there only where `det J_rest > 0` — and **at rest `det F ≡ 1`**,
+    /// so a rest-folded element is invisible to every gate that reads `det F`
+    /// alone, including the five-point check this replaced. The rest mesh cannot
+    /// change over a solver's lifetime, so the verdict is taken in `new()` and the
+    /// step boundaries pay nothing for it.
+    ///
+    /// ⚠ Held rather than raised at construction. Surfacing it through the gate
+    /// keeps a malformed rest mesh on the existing
+    /// [`SolverFailure::ValidityViolation`] channel — which `try_step` callers
+    /// already handle by skipping the design — instead of adding a fourth panic
+    /// to `new()`. It is still fail-closed: the first step boundary reports it.
+    first_rest_orientation_defect: Option<(usize, RestValidity)>,
     /// Lumped per-DOF mass (`length n_dof`). For a linear (Tet4) element the
     /// entry for DOF `i` (vertex `v = i / 3`) is `Σ_e (ρ V_e / 4)` over every
     /// element `e` that contains `v` (Phase 2 reproduces the walking

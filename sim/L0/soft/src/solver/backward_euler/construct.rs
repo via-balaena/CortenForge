@@ -8,7 +8,7 @@ use nalgebra::{Matrix3, SMatrix};
 
 use crate::Vec3;
 use crate::contact::{ActivePairsFor, ContactModel};
-use crate::element::{Element, TET10_EDGE_NODES};
+use crate::element::{Element, RestValidity, TET10_EDGE_NODES};
 use crate::material::Material;
 use crate::mesh::{Mesh, TetId, VertexId};
 use crate::readout::BoundaryConditions;
@@ -113,11 +113,27 @@ where
     let nodes = element_node_ids::<M, Msh, N>(mesh, tet_id);
     // The `N` rest node positions as an `N × 3` matrix (row `a` = X_a).
     let x_ref = SMatrix::<f64, N, 3>::from_fn(|a, k| x_rest[nodes[a] as usize][k]);
-    // Lockstep reference: the mesher's inversion guard rejects a node placement
-    // using `Element::rest_jacobian_dets` — the SAME per-Gauss-point `detJ` this
-    // assembly then takes `|·|` of. Pin the two formulas together so a future
-    // edit to either the guard or this assembly cannot silently diverge (which
-    // would let the mesher bless a placement this path then mis-weights).
+    // Lockstep reference: `Element::rest_jacobian_dets` computes the same
+    // per-Gauss-point `detJ` this function does, by a second implementation of the
+    // same Sigma-form. Pin them together so an edit to either cannot silently
+    // diverge from the other.
+    //
+    // ⚠ This is a formula-agreement pin, NOT a validity check, and an earlier
+    // revision of this comment said otherwise — that it kept this assembly in step
+    // with "the mesher's inversion guard", which used `rest_jacobian_dets` too.
+    // That coupling no longer exists: both Tet10 projectors decide validity with
+    // `element::validity::certify_rest`, which bounds `detJ` over the whole element
+    // rather than at these `G` points, and the one guard still reading
+    // `rest_jacobian_dets` is Tet4's `with_projected_nodes` — which never reaches
+    // this function, since `curved_gauss_geometry` runs only for `N > 4`.
+    //
+    // ⚠ Nor does this assert that `detJ > 0`, and it deliberately must not: the
+    // weight below takes `|detJ|`, so a folded rest element would be integrated with
+    // positive weight and never trip `try_inverse`. That gap is closed at the
+    // SOLVER, which certifies each element's rest orientation in `new()` and reports
+    // a failure through the step-boundary validity gate. Asserting positivity here
+    // instead would panic at construction on a mesh the solver is designed to reject
+    // gracefully.
     #[cfg(debug_assertions)]
     let lockstep_dets = element.rest_jacobian_dets(&x_ref);
     std::array::from_fn(|q| {
@@ -134,8 +150,8 @@ where
         debug_assert!(
             (j.determinant() - lockstep_dets[q]).abs() <= 1e-9 * lockstep_dets[q].abs().max(1.0),
             "curved-element Jacobian determinant drifted from \
-             Element::rest_jacobian_dets — the mesher inversion guard and this \
-             assembly must share the rest-Jacobian formula",
+             Element::rest_jacobian_dets — the two implementations of the \
+             rest-Jacobian formula must agree",
         );
         let j_inv = j
             .try_inverse()
@@ -445,6 +461,16 @@ where
         let x_rest = mesh.positions();
         let mut element_geometries = Vec::with_capacity(n_tets);
         let mut gauss_geometries = Vec::with_capacity(n_tets);
+        // (c) The REST orientation certificate. `det F = det J_def / det J_rest`,
+        // so the step-boundary gate's proof that `det J_def > 0` says nothing about
+        // `det F` on an element whose rest Jacobian changes sign — and at rest
+        // `det F ≡ 1`, so no gate reading `det F` can see that. This is the half of
+        // the pair that closes it, and it is taken here because the rest mesh
+        // cannot change afterwards.
+        //
+        // Only the first failure is kept: the gate reports the lowest-numbered
+        // violator, so a later one could never be the message.
+        let mut first_rest_orientation_defect: Option<(usize, RestValidity)> = None;
         let gauss_points = element.gauss_points();
         // Single-point (corner) parametric shape gradient for (a). Tet4 reads
         // the element's own constant barycentric gradient (ξ ignored, byte-
@@ -523,6 +549,20 @@ where
                     })
                 };
             gauss_geometries.push(GaussGeometry { gauss });
+
+            // (c) Certify this element's rest configuration over the WHOLE
+            // element. One determinant for Tet4 (constant `det J`) and ~0.36 us for
+            // Tet10, once per element for the solver's lifetime. The `is_none`
+            // short-circuits the rest of the mesh once a defect is found, since
+            // only the first is reported.
+            if first_rest_orientation_defect.is_none() {
+                let nodes = element_node_ids::<M, Msh, N>(&mesh, tet_id);
+                let x_ref = SMatrix::<f64, N, 3>::from_fn(|a, k| x_rest[nodes[a] as usize][k]);
+                let verdict = element.certify_orientation(&x_ref);
+                if !verdict.is_certified() {
+                    first_rest_orientation_defect = Some((tet_id as usize, verdict));
+                }
+            }
         }
 
         // F-bar nodal-patch cache (locking cure) — built only when enabled;
@@ -693,6 +733,7 @@ where
             boundary_conditions,
             element_geometries,
             gauss_geometries,
+            first_rest_orientation_defect,
             mass_per_dof,
             free_dof_indices,
             full_to_free_idx,

@@ -1,19 +1,38 @@
-//! PILOT — does the solver's deformed-configuration validity check miss folds?
+//! Does the solver's deformed-configuration validity check miss folds? — the
+//! pilot that decided it, kept as the evidence the gate now rests on.
 //!
 //! `CpuNewtonSolver::check_orientation` is the gate that stops a folded element
-//! reaching `first_piola`. It runs on **every Newton iteration of every
-//! simulation**, and it samples:
+//! reaching `first_piola`. It **used to sample five values**:
 //!
 //! - `det F` at the four Gauss points, where the constitutive model is
 //!   evaluated, and
 //! - the **corner-block affine** `det F`, from the four corners only.
 //!
-//! Five values. The rest-configuration meshers used four, then eight, and both
-//! were measured to miss real folds — 18 on the conformed disc, then 5 more on
-//! the lofted one, the worst inverted past its own straight volume. This asks
-//! whether the same gap exists in the deformed configuration, where the
-//! consequence is worse: the solver integrates over the folded element and
-//! takes `|det|`, silently, inside the Newton loop.
+//! The rest-configuration meshers used four, then eight, and both were measured to
+//! miss real folds — 18 on the conformed disc, then 5 more on the lofted one, the
+//! worst inverted past its own straight volume. This asked whether the same gap
+//! existed in the deformed configuration, where the consequence is worse: the
+//! solver integrates over the folded element and takes `|det|`, silently.
+//!
+//! ✅ **It does, and the gate was converted.** `check_orientation` now certifies
+//! `det J_def > 0` over the whole element and pairs it with a rest certificate taken
+//! once at construction. `five_point_says_healthy` below is therefore the rule the
+//! gate *used* to apply, kept as the comparator these measurements are stated
+//! against — not a description of what ships.
+//!
+//! ⚠ An earlier revision of this header said the gate "runs on every Newton
+//! iteration of every simulation". It does not: it runs at **two step boundaries**
+//! per step (`newton.rs` — the incoming state and the converged one), while assembly
+//! and factorization run per iteration. That mistake is what made the cost look
+//! prohibitive. Measured on whole steps
+//! (`what_one_step_costs_at_two_resolutions`), certifying it costs **~1 % of a
+//! step** — 3 interleaved before/after pairs at each of two resolutions, the
+//! certified side dearer in all 6.
+//!
+//! ⚠ Interleave the pairs. Run three of one condition and then three of the other
+//! and machine drift is fully confounded with the change: done that way, the same
+//! measurement read +4.3 % on the small mesh and **−2.0 % on the large one**, which
+//! is not a cost profile, it is a clock.
 //!
 //! # Why the existing primitive applies unchanged
 //!
@@ -56,8 +75,11 @@
 //! and produce a reassuring zero that means nothing.
 //!
 //! ⇒ Read the conclusion as **"no contact-free solve enters the blind spot"**.
-//! Whether a contact solve does is open, and is the measurement that would
-//! reopen the case for certifying the deformed check.
+//! Whether a contact solve does remains open — but it is no longer load-bearing:
+//! the deferral it was blocking rested on a cost that turned out to be ~0.2 % of a
+//! step, so the gate was certified without waiting for it. The contact census is
+//! still worth running, as a measurement of how often the old rule was wrong in the
+//! regime most likely to fold, rather than as the thing that decides the design.
 
 #![allow(
     // Element/vertex counts index the `Mesh` trait's `u32` id space.
@@ -412,9 +434,23 @@ fn cantilever_scene_at(
     (tet10, pinned, loaded)
 }
 
-/// ★★ The measurement that decides whether the blind spot matters: a real
-/// quasi-static **bending** solve, censused at the states the solver's own gate
-/// examines.
+/// ★★ The measurement that decided whether the blind spot matters — and, now that
+/// it has been acted on, the regression net that says certification did not cost a
+/// real solve: a quasi-static **bending** solve, censused at the states the
+/// solver's own gate examines.
+///
+/// ⚠⚠ **`total_folded == 0` can no longer fail for the reason it was written.**
+/// The gate now certifies these same states, so a folded step boundary makes
+/// `try_replay_step` return `Err` and the loop breaks before the census sees it.
+/// That assert is kept as a cross-check that the census and the gate agree about
+/// what the certificate says, not as a discovery — and it is not what makes this
+/// test worth running.
+///
+/// ★ **`max_tip` is the live assertion.** Certification is strictly stricter than
+/// the five-point rule, so the failure mode this test now guards is the opposite
+/// one: a gate so strict that real bending stops converging. The beam reaches
+/// 136 % of its own length in tip deflection; if certification ever refused a step
+/// before that, the ramp would break early and `max_tip` would fall short.
 ///
 /// `check_validity_at_step_start` runs on the incoming state at each step
 /// boundary, so censusing every step boundary examines exactly the states the
@@ -528,23 +564,24 @@ fn a_real_bending_solve_censused_at_every_step_boundary() {
     );
     println!("  totals: {total_folded} folded, {total_missed} of them invisible to the gate");
 
-    // ★ THE FINDING, as a detector rather than a print. The blind spot is real —
-    // the random population above proves it. The claim THIS test carries is that
-    // real bending never enters it. If that reverses, the case for certifying
-    // the hot path is back, and this is how it announces itself.
+    // Cross-check, not a discovery: the gate certifies these very states, so it
+    // would have refused the step before the census could see a fold. This asserts
+    // the census and the gate read the same certificate — a disagreement would mean
+    // one of them is not calling `certify_orientation` on the state it claims to.
     assert_eq!(
         total_folded, 0,
-        "a real bending solve produced {total_folded} folded elements at step boundaries, \
-         {total_missed} of them invisible to the solver's five-point gate — the deformed \
-         check now has a real scene that defeats it, which is the evidence needed to certify \
-         the hot path"
+        "the census found {total_folded} folded elements at states the solver's own gate \
+         certified ({total_missed} of them invisible to the five-point rule). The gate and \
+         this census disagree, which means one of them is not reading the state it claims to"
     );
-    // ⚠ Non-vacuity: without this, the assert above passes for a beam that never
-    // bent — a load ramp failing on step 1 would read as a clean result.
+    // ★ THE LIVE ASSERTION. Certification is strictly stricter than what it
+    // replaced, so the risk it introduces is refusing steps a real solve needs. If
+    // the ramp above ever breaks early, this is what says so.
     assert!(
         max_tip > 0.5 * LENGTH,
-        "the beam must actually bend for that zero to mean anything; max tip deflection was \
-         {max_tip:.4} m on a {LENGTH} m beam"
+        "the beam must reach a real deflection under the certified gate; max tip deflection \
+         was {max_tip:.4} m on a {LENGTH} m beam. A short ramp here means certification is \
+         refusing steps that the five-point rule allowed"
     );
 }
 

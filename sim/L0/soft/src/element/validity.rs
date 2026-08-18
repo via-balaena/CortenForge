@@ -70,11 +70,28 @@
 //!
 //! # Scope
 //!
-//! Tet10 only, and the **rest** configuration. The bound depends on `J` being
-//! affine in `ξ`, which is a property of quadratic shape functions;
-//! [`Tet4`](super::Tet4) has a constant `J` and needs nothing. The deformed
-//! configuration is a separate consumer, still sampling, and is not converted
-//! here.
+//! Tet10 only. The bound depends on `J` being affine in `ξ`, which is a property
+//! of quadratic shape functions; [`Tet4`](super::Tet4) has a constant `J` and
+//! needs nothing.
+//!
+//! ★ **Not the rest configuration only.** Nothing here reads the rest mesh — the
+//! functions take a node matrix and answer about it, and the names say "rest"
+//! because that was the first consumer. Writing `J_def(ξ) = x_defᵀ ∇N(ξ)`, the
+//! deformation gradient is `F = J_def · J_rest⁻¹`, so `det F = det J_def /
+//! det J_rest` and `J_def` is affine in exactly the way `J_rest` is. `det F > 0`
+//! everywhere therefore holds **iff both determinants are positive everywhere**,
+//! and each is a cubic this module decides. An earlier revision of this note said
+//! the deformed configuration was "a separate consumer, still sampling": it is now
+//! the solver's step-boundary gate, via
+//! [`Element::certify_orientation`], with no
+//! new mathematics. ⚠ The bound is never applied to `F` itself, which is a ratio
+//! and not polynomial.
+//!
+//! Still sampling, and knowingly: the `max_stretch_deviation` slot of that gate
+//! (singular values of `F` are neither polynomial nor a ratio of polynomials, so
+//! this bracket does not transfer) and
+//! [`CpuNewtonSolver::min_gauss_det_ratio`](crate::solver::CpuNewtonSolver::min_gauss_det_ratio),
+//! a four-point readout that reports a number rather than deciding anything.
 
 use nalgebra::{Matrix3, SMatrix};
 
