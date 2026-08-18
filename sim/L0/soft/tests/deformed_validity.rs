@@ -389,8 +389,19 @@ const STATIC_DT: f64 = 1.0;
 /// scene `tet10_bending_locking` drives, which is the canonical Tet10 bending
 /// fixture in this crate.
 fn cantilever_scene() -> (Tet10Mesh, Vec<VertexId>, Vec<VertexId>) {
+    cantilever_scene_at(8, 2, 2)
+}
+
+/// [`cantilever_scene`] at an arbitrary cell resolution, so the cost arm can ask
+/// how the gate's share moves with element count.
+fn cantilever_scene_at(
+    nx: usize,
+    ny: usize,
+    nz: usize,
+) -> (Tet10Mesh, Vec<VertexId>, Vec<VertexId>) {
     let field = MaterialField::uniform(MU_BEAM, 2.0 * MU_BEAM * NU_BEAM / (1.0 - 2.0 * NU_BEAM));
-    let tet4 = HandBuiltTetMesh::cantilever_bilayer_beam(8, 2, 2, LENGTH, BREADTH, HEIGHT, &field);
+    let tet4 =
+        HandBuiltTetMesh::cantilever_bilayer_beam(nx, ny, nz, LENGTH, BREADTH, HEIGHT, &field);
     let tet10 = Tet10Mesh::from_tet4(&tet4);
     let pinned: Vec<VertexId> = pick_vertices_by_predicate(&tet10, |p| p.x.abs() < 1e-9);
     let loaded: Vec<VertexId> = pick_vertices_by_predicate(&tet10, |p| (p.x - LENGTH).abs() < 1e-9);
@@ -534,5 +545,128 @@ fn a_real_bending_solve_censused_at_every_step_boundary() {
         max_tip > 0.5 * LENGTH,
         "the beam must actually bend for that zero to mean anything; max tip deflection was \
          {max_tip:.4} m on a {LENGTH} m beam"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// WHAT THE CONVERSION WOULD COST A CALLER
+// ---------------------------------------------------------------------------
+
+/// Untimed load levels walked before timing starts, then the level each timed
+/// step advances to. A caller ramps; it does not jump to full load from rest.
+const WARM_RAMP: [f64; 4] = [8.0, 32.0, 72.0, 128.0];
+const TIMED_LOAD: f64 = 162.0;
+
+/// Timed steps per round, and timed rounds after one untimed warm-up.
+const TIMED_STEPS: usize = 3;
+
+/// ★ The measurement that decides the conversion — whole steps, not the predicate.
+///
+/// [`deformed_certification_cost_against_the_five_point_check`] says the certificate
+/// costs ~2.2x the five-point check **per element**. That ratio is not what a caller
+/// pays, and reading it as though it were is how this deferral was originally argued
+/// ("2.31x on the hot path"). The gate is not the step: `check_validity_at_step_start`
+/// runs at **two step boundaries** — once on the incoming state, once on the converged
+/// one (`newton.rs`) — while assembly, factorization and every Armijo backtrack run
+/// per Newton iteration. So this arm times `try_replay_step` itself. Run it before and
+/// after a change to the gate and the difference is what a caller actually pays, with
+/// no arithmetic in between and no assumption about how often the gate is called.
+///
+/// ⚠ The small beam is kept deliberately. The gate is **linear** in element count while
+/// the factorization is superlinear, so the gate's share is largest on the *smallest*
+/// mesh — refining makes a gate change look cheaper, not dearer. Reporting only the
+/// refined row would flatter the conversion.
+///
+/// ⚠ Every timed step is an INCREMENT from a pre-solved neighbour, which is what a
+/// simulation does. An earlier draft timed a jump from rest to full load instead: that
+/// is hundreds of Newton iterations of a kind no caller runs, it charged the step
+/// **2180 ms** against this form's 42 ms — a 51x self-inflicted inflation that made the
+/// fixture unrunnable rather than conservative.
+///
+/// `#[ignore]`: a deliberately-run measurement, not a gate. Wall-clock thresholds in CI
+/// are noise detectors, and this arm's whole purpose is to be read by a human deciding
+/// whether a gate change is affordable. Run it with `--ignored --nocapture`, in
+/// **release** — the debug numbers measure the debug build, not the engine.
+#[test]
+#[ignore = "deliberately-run cost measurement (~40 s, release); not a CI gate"]
+fn what_one_step_costs_at_two_resolutions() {
+    println!("\n=== STEP COST (release) — the denominator a gate change is a share of ===");
+    println!(
+        "{:>10} {:>10} {:>12} {:>16}",
+        "elements", "DOFs", "ms / step", "us / element"
+    );
+    for (nx, ny, nz) in [(8usize, 2usize, 2usize), (12, 3, 4)] {
+        let (tet10, pinned, loaded) = cantilever_scene_at(nx, ny, nz);
+        let n_tets = tet10.n_tets();
+
+        let positions = tet10.positions();
+        let n_dof = 3 * positions.len();
+        let mut x_flat = vec![0.0; n_dof];
+        for (v, p) in positions.iter().enumerate() {
+            x_flat[3 * v] = p.x;
+            x_flat[3 * v + 1] = p.y;
+            x_flat[3 * v + 2] = p.z;
+        }
+
+        let n_loaded = loaded.len() as f64;
+        let bc = BoundaryConditions {
+            pinned_vertices: pinned,
+            roller_vertices: Vec::new(),
+            loaded_vertices: loaded.iter().map(|&v| (v, LoadAxis::AxisZ)).collect(),
+        };
+        let mut cfg = SolverConfig::skeleton();
+        cfg.dt = STATIC_DT;
+        cfg.max_newton_iter = 500;
+        cfg.tol = 1e-8;
+        let solver: CpuTet10NHSolver<Tet10Mesh> =
+            CpuNewtonSolver::new(Tet10, tet10.clone(), NullContact, cfg, bc);
+
+        // Walk to a working deflection, untimed — the timed step then advances
+        // from a converged neighbour, so it costs what a simulation's steps cost.
+        let v_prev = Tensor::zeros(&[n_dof]);
+        let mut x_prev = Tensor::from_slice(&x_flat, &[n_dof]);
+        for load in WARM_RAMP {
+            let theta = Tensor::from_slice(&[load / n_loaded], &[1]);
+            let step = solver
+                .try_replay_step(&x_prev, &v_prev, &theta, cfg.dt)
+                .expect("the warm ramp must converge for the timings below to mean anything");
+            x_prev = Tensor::from_slice(&step.x_final, &[n_dof]);
+        }
+
+        let theta = Tensor::from_slice(&[TIMED_LOAD / n_loaded], &[1]);
+        let warm = solver
+            .try_replay_step(&x_prev, &v_prev, &theta, cfg.dt)
+            .expect("the timed increment must converge");
+        let mut tip = 0.0f64;
+        for (v, p) in positions.iter().enumerate() {
+            tip = tip.max((warm.x_final[3 * v + 2] - p.z).abs());
+        }
+
+        let mut best = f64::INFINITY;
+        for _ in 0..ROUNDS {
+            let t = Instant::now();
+            for _ in 0..TIMED_STEPS {
+                let step = solver
+                    .try_replay_step(&x_prev, &v_prev, &theta, cfg.dt)
+                    .expect("the timed increment converged during warm-up");
+                std::hint::black_box(step.x_final[0]);
+            }
+            best = best.min(t.elapsed().as_secs_f64() / TIMED_STEPS as f64);
+        }
+        println!(
+            "{n_tets:>10} {n_dof:>10} {:>12.3} {:>16.2}",
+            best * 1e3,
+            best * 1e6 / n_tets as f64
+        );
+        // ⚠ Non-vacuity: a step that barely moves the beam is not the step whose
+        // cost is being reported. The ramp arm above reaches 0.6 m on this beam.
+        assert!(
+            tip > 0.3 * LENGTH,
+            "the timed step must land on a genuinely deflected state; tip was {tip:.4} m"
+        );
+    }
+    println!(
+        "  Read the per-element predicate costs above against THIS column, not against\n  \
+         each other: the gate runs twice per step at ~0.17 us/element."
     );
 }
