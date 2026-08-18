@@ -30,7 +30,8 @@
 //! `det F.ln()` instead of panicking. Orientation is enforced at the solve
 //! boundaries by
 //! [`CpuNewtonSolver::check_validity_at_step_start`](crate::CpuNewtonSolver),
-//! whose `check_orientation` helper does the sweeping.
+//! whose `check_orientation` helper CERTIFIES it over each element's whole volume
+//! rather than sampling it.
 //! See `neo_hookean`'s module doc for why that is the right home for it.
 //!
 //! ## Validity domain
@@ -97,8 +98,8 @@ impl Yeoh {
     /// `None`, so the solver gate at
     /// [`crate::solver::backward_euler`] `check_validity_at_step_start`
     /// performs only the tensile-direction check + falls back to the
-    /// `det F > 0` inversion handler (swept per Gauss point, plus the corner
-    /// block, by `check_orientation`) for compressive safety.
+    /// `det F > 0` inversion handler (certified over each element's whole volume
+    /// by `check_orientation`) for compressive safety.
     ///
     /// **Why this exists**: per
     /// `docs/archive/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5, the

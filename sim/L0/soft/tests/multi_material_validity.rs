@@ -60,14 +60,21 @@
 //! discriminating cases are all `max_stretch_deviation`.
 //!
 //! ⚠ It is NOT, as this note previously claimed, a "structurally-prevented"
-//! case needing a left-handed reference tet. Rest handedness is irrelevant:
-//! `det F` is a property of the *deformed* configuration, so a perfectly
-//! right-handed rest tet inverts as soon as `x_prev` puts a corner through
-//! the opposite face. The follow-on this note tracked is now delivered in
-//! `sim-soft`'s unit tests — `tet4_inversion_verdict_survives_the_gauss_sweep`
+//! case needing a left-handed reference tet. Reaching it does not depend on rest
+//! handedness: `det F` is a property of the *deformed* configuration, so a
+//! perfectly right-handed rest tet inverts as soon as `x_prev` puts a corner
+//! through the opposite face. The follow-on this note tracked is now delivered in
+//! `sim-soft`'s unit tests — `tet4_rejects_negative_and_zero_det_f_on_the_inversion_slot`
 //! (a right-handed `SingleTetMesh` with corner 3 moved to `z = -0.1`, plus the
 //! degenerate `z = 0` case) and `non_finite_state_is_rejected_by_the_inversion_gate`
 //! — so the inversion slot is covered on both element types.
+//!
+//! ⚠⚠ An earlier revision of the paragraph above said flatly that "rest handedness
+//! is irrelevant". That was true of the gate it described and is no longer true of
+//! this one: the inversion slot now certifies the REST configuration as well, so a
+//! left-handed rest tet is rejected on its own account, before any deformation is
+//! considered. What survives is the narrower claim actually needed here — that you
+//! do not need one to exercise a deformed inversion.
 //!
 //! [v]: ../../../../docs/studies/soft_body_architecture/src/20-materials/00-trait-hierarchy/02-validity.md
 

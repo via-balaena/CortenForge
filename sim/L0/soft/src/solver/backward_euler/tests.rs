@@ -1176,7 +1176,8 @@ fn corner_inverted_tet10_is_rejected_even_when_every_gauss_point_is_positive() {
     assert!(
         ratio > 0.0,
         "fixture no longer exercises the corner-only class: min Gauss det ratio is \
-         {ratio}, so a Gauss point is inverted and the sweep would catch it"
+         {ratio}, so a Gauss point is inverted and the old five-point rule would have \
+         rejected this state too"
     );
 
     let (tet_id, message) = validity_message(&solver, &x);
@@ -1349,7 +1350,7 @@ fn the_gate_runs_on_a_curved_tet10() {
     );
 }
 
-/// A corner-block inversion the Gauss sweep accepts.
+/// A corner-block inversion that every Gauss point accepts.
 ///
 /// Isolates the corner-block stage: corners mirrored through `z = 0` so the
 /// affine corner block reads -1.000, with midsides placed so every Gauss point
@@ -1372,7 +1373,7 @@ fn a_corner_block_inversion_is_caught_when_the_gauss_sweep_accepts() {
         0.121_098, 0.058_131, 0.084_446, -0.081_337, -0.070_843, 0.031_283, -0.080_082, 0.134_754,
     ];
 
-    // Premise: the Gauss sweep must abstain, or this duplicates the sweep tests.
+    // Premise: the Gauss points must abstain, or this duplicates the fixtures above.
     let ratio = solver.min_gauss_det_ratio(&x);
     assert!(
         ratio > 0.0,
@@ -1693,11 +1694,17 @@ fn validity_message(solver: &CpuTet10NHSolver<Tet10Mesh>, x: &[f64]) -> (usize, 
 /// from both corner-block slots' thresholds — while the quadratic map folds through
 /// itself at an interior Gauss point.
 ///
-/// **Every Gauss index is covered, and that is the point.** Reflecting the midside of an
-/// edge through one of its endpoints inverts the Stroud point nearest that corner, so the
-/// table walks `q = 0, 1, 2, 3` and asserts the reported index each time. Without this, a
-/// gate that inspected only `gauss[0]` — the exact degeneration the sweep exists to
-/// prevent — would still pass.
+/// **Every corner is covered, and that is the point.** Reflecting the midside of an edge
+/// through one of its endpoints folds the element at that corner, so the table walks all
+/// four and asserts the WITNESS POINT reported each time. A certifier that named a fixed
+/// point, or the wrong corner, passes any single row and fails the table.
+///
+/// ⚠ This used to walk the four Stroud points and assert the reported Gauss INDEX, against
+/// a mutant that inspected only `gauss[0]`. The gate no longer has indices to report — it
+/// returns one verdict per element — so the mutant is gone and the property that replaced
+/// it is a stronger one: the witness is a point the determinant was *evaluated*
+/// non-positive at, and the four reference corners are coefficients of the certificate
+/// exactly, so each row's fold has a predictable, distinct witness.
 ///
 /// `min_gauss_det_ratio` pins the premise. It is a genuinely different code path (it
 /// evaluates `Element::rest_jacobian_dets` on raw node coordinates and never reads
@@ -1876,7 +1883,8 @@ fn fully_pinned_inverted_element_no_longer_converges() {
 
     let rest = tet10_rest_dofs(&solver);
     let mut x = rest;
-    // Same reflection the sweep test uses: midside 4 through corner 0, inverting the
+    // Same reflection `tet10_midside_inversion_is_gated_at_every_corner` uses: midside 4
+    // through corner 0, inverting the
     // Gauss point nearest it.
     x[12] = -0.05;
     assert!(
@@ -1892,21 +1900,26 @@ fn fully_pinned_inverted_element_no_longer_converges() {
     );
 }
 
-/// The Gauss sweep must leave **Tet4** verdicts exactly where they were.
+/// The gate must leave **Tet4** verdicts exactly where they were.
 ///
-/// This is the back-compat half of the change, and until now nothing exercised it: every
-/// other validity test in the crate trips `max_stretch_deviation`, so no test fired the
-/// inversion branch on a linear element at all. For `N == 4` the swept `F` is bit-identical
-/// to the corner block (`Tet4::shape_gradients` discards its `xi`, `G == 1`, and both
-/// gradients are post-multiplied by the same `j_0_inv`), so these two states must be
-/// rejected exactly as they were before the sweep.
+/// This is the back-compat half, and until it was written nothing exercised it: every other
+/// validity test in the crate trips `max_stretch_deviation`, so no test fired the inversion
+/// branch on a linear element at all.
+///
+/// ⚠ The reason it holds has been REPLACED, not merely reworded. It used to be that the
+/// swept `F` was bit-identical to the corner block (`Tet4::shape_gradients` discards its
+/// `xi`, `G == 1`, both gradients post-multiplied by the same `j_0_inv`). The gate no
+/// longer builds `F` from a cached gradient at all. It now holds because
+/// `det F = det J_def / det J_rest`, both are single constants for an affine map, and the
+/// rest determinant is certified strictly positive — so the sign of the certified quantity
+/// is the sign of `det F`, exactly as before.
 ///
 /// Both signs of the boundary are covered deliberately. Corner 3 pushed *through* the
 /// opposite face gives `det F < 0`; corner 3 laid *onto* that face gives `det F == 0`,
 /// which pins the `<=` in the predicate — under a `< 0.0` mutant the degenerate state
 /// would instead reach `invert_transpose` and panic as a singular `F`.
 #[test]
-fn tet4_inversion_verdict_survives_the_gauss_sweep() {
+fn tet4_rejects_negative_and_zero_det_f_on_the_inversion_slot() {
     for (label, z3, expect_sign) in [
         ("mirrored through the opposite face", -0.1_f64, "negative"),
         ("collapsed onto the opposite face", 0.0_f64, "zero"),

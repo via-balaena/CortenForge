@@ -4847,13 +4847,18 @@ mod tests {
 
     /// ▶ **Does a PASSING fine-mesh disc solve hide folded elements?**
     ///
-    /// The solver's `check_validity_at_step_start` samples five values — `det F` at the four
-    /// Gauss points plus the corner-block affine `det F`. Measured against a proof on random
-    /// deformed configurations, that check misses **100 % of folds at their onset**
-    /// (`sim-soft`'s `deformed_validity_pilot`), because the Stroud points are strictly
-    /// interior and the corner block ignores midsides entirely. A real cantilever bending solve
-    /// never entered that blind spot — zero folds out to 136 % tip deflection — so the open
-    /// question is whether a harsher, finer, real scene does.
+    /// ✅ **Answered by conversion, not by this scene — read this as the census that
+    /// motivated it.** The solver's `check_validity_at_step_start` USED to sample five
+    /// values: `det F` at the four Gauss points plus the corner-block affine `det F`.
+    /// Measured against a proof on random deformed configurations, that check missed
+    /// **100 % of folds at their onset** (`sim-soft`'s `tests/deformed_validity.rs`),
+    /// because the Stroud points are strictly interior and the corner block ignores
+    /// midsides entirely. A real cantilever bending solve never entered that blind spot —
+    /// zero folds out to 136 % tip deflection — leaving open whether a harsher, finer,
+    /// real scene would. The gate now **certifies** `det F > 0` over each element's whole
+    /// volume, so a passing solve can no longer hide a folded element and this arm's
+    /// original question is closed by construction. What it still measures is whether a
+    /// fine real scene stays SOLVABLE under the stricter gate.
     ///
     /// This is that scene: the **discriminator's** configuration, `cell = 0.002`, Tet10 alone.
     ///
