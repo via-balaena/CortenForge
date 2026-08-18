@@ -32,8 +32,9 @@ set -euo pipefail
 # tight enough that the pathological case costs minutes rather than a job budget.
 #
 # Budget, with two attempts and one 20 s backoff, for each of `update` and `install`:
-#   one call hangs on both attempts   300 + 20 + 300  = 620 s  (~10 min, then exit)
+#   one call hangs on every attempt   300 + 20 + 300  = 620 s  (~10 min, then exit)
 #   worst case, update barely passing  620 + 620      = 1240 s (~21 min)
+# (both assume `attempts=2` in `run_apt`; raising it raises these proportionally)
 # against the 45 min job timeout an unbounded hang consumed. ⚠ Keep these numbers
 # honest if the attempt count changes: giving `install` its second attempt raised the
 # worst case from ~15 min to ~21, and the commit that did it forgot to say so.
@@ -78,8 +79,14 @@ fi
 run_apt() {
   local label="$1"
   shift
+  # ⚠ ONE source of truth for the attempt count. An earlier revision wrote the loop
+  # as `for attempt in 1 2` and guarded the backoff with `-lt 2` — two literals that
+  # had to agree, with nothing enforcing it. Raising the loop to three attempts would
+  # have silently stopped backing off between the second and third, and the suite
+  # still passed. Derive the guard from the bound instead.
+  local -r attempts=2
   local rc=0 last_rc=0 attempt
-  for attempt in 1 2; do
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
     rc=0
     sudo timeout "$ATTEMPT_TIMEOUT" apt-get "$@" || rc=$?
     if [ "$rc" -eq 0 ]; then
@@ -96,7 +103,7 @@ run_apt() {
     last_rc=$rc
     # ⚠ Only between attempts. Sleeping after the LAST one delays the failure by the
     # backoff for no reason — 20 s per call, on every failing path.
-    if [ "$attempt" -lt 2 ]; then
+    if [ "$attempt" -lt "$attempts" ]; then
       sleep "${APT_RETRY_SLEEP:-20}"
     fi
   done
