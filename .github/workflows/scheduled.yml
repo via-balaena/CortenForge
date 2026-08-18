@@ -137,16 +137,34 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
 
-      # llvm-tools-preview is what makes this job different from the PR grade
-      # shards, and it is load-bearing: without it `grade_coverage` returns
-      # `Grade::Manual`, which `overall_automated` SKIPS, so every crate would
-      # grade A having measured nothing. `grade-all` now fails closed on that
-      # (see `SweepTally::coverage_unavailable`) — this line is what keeps it
-      # from having to.
+      # ⚠ `components:` here installs into whatever channel this action
+      # resolves — NOT into the toolchain that actually runs. `rust-toolchain.toml`
+      # pins 1.96.0 and rustup honours it over the action's channel, so
+      # `llvm-tools-preview` requested here landed in `stable` and every
+      # `rustc` invocation kept using 1.96.0 without it.
+      #
+      # ★ An earlier version of this comment claimed the line below was
+      # "load-bearing" for coverage. It was inert. The first weekly run
+      # (2026-08-18) reported `(llvm-tools n/a)` for all 22 coverage-graded
+      # crates in shard 1 — caught only because `grade-all` fails closed on an
+      # unmeasured sweep (`SweepTally::coverage_unavailable`); without that
+      # guard it would have printed "101/101 workspace crates pass".
+      #
+      # ⇒ llvm-tools is declared in `rust-toolchain.toml` instead, where it
+      # reaches the toolchain that runs. Do not "fix" a future coverage
+      # regression by adding components here.
+      #
+      # ⚠ `clippy` and `targets:` below are inert for the same reason and are
+      # NOT removed here — every other Rust job in this repo passes the same
+      # pair, and stripping them from one job only would read as this job
+      # needing something different. `llvm-tools-preview` is deleted rather
+      # than left beside them because it was added specifically to make
+      # coverage work and did not: leaving it would keep asserting a fix that
+      # is not one. Removing the redundant pair everywhere is its own change.
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy, llvm-tools-preview
+          components: clippy
           targets: wasm32-unknown-unknown
 
       - name: Cache cargo
