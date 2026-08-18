@@ -44,68 +44,68 @@ if [[ ! "${PACKAGES:-}" =~ [^[:space:]] ]]; then
   exit 1
 fi
 
+# ⚠ ONE code path for every apt invocation. An earlier revision retried `update`
+# twice and gave `install` a single attempt — an asymmetry with no reason behind it,
+# which existed only because the two were written separately. It cost a CI run on
+# this change's own first PR, where `install` was the call that hung. A helper makes
+# the policy structural instead of duplicated.
+#
 # One retry, and deliberately not more. The evidence says retrying is worth little:
 # on #783 the mirror stayed slow for minutes and only a re-run ~35 min later
 # succeeded. It is cheap insurance against a brief blip; it is NOT what makes this
 # safe. The BOUND is.
-update_ok=false
-last_rc=0
-for attempt in 1 2; do
-  # ⚠ `sudo timeout apt-get`, NOT `timeout sudo apt-get`. The first runs the timer as
-  # root so it signals apt-get directly; the second signals `sudo`, which can leave
-  # apt running on past the bound. Do not "tidy" this.
-  #
-  # ⚠⚠ `rc=0; cmd || rc=$?` and NOT `if cmd; then ...; fi; rc=$?`. After an `if` whose
-  # condition FAILED and which has no `else`, `$?` is the status of the `if` statement
-  # itself — zero. A first draft did that and every timeout reported "exited 0 (not a
-  # timeout)": the message was confidently wrong in exactly the case it was added for.
-  rc=0
-  sudo timeout "$ATTEMPT_TIMEOUT" apt-get update || rc=$?
-  if [ "$rc" -eq 0 ]; then
-    update_ok=true
-    break
-  fi
-  # `timeout` exits 124 when it fires. Worth separating: a HANG is mirror degradation
-  # and a re-run usually clears it, while a non-124 failure is apt itself (a stale
-  # index 404ing, say) and re-running will not help.
-  #
-  # ⚠ NO COMMAS in an annotation title. The workflow-command format is
-  # `::error name=value,name=value::message`, so a comma inside a value terminates it.
-  # A local test cannot catch this: it can check the string is EMITTED, not that
-  # GitHub parses it.
-  if [ "$rc" -eq 124 ]; then
-    echo "::warning title=apt-get update hung::attempt $attempt exceeded ${ATTEMPT_TIMEOUT}s and was killed"
-  else
-    echo "::warning title=apt-get update failed::attempt $attempt exited $rc (not a timeout)"
-  fi
-  last_rc=$rc
-  sleep "${APT_RETRY_SLEEP:-20}"
-done
+#
+# ⚠ `sudo timeout apt-get`, NOT `timeout sudo apt-get`. The first runs the timer as
+# root so it signals apt-get directly; the second signals `sudo`, which can leave apt
+# running on past the bound. Do not "tidy" this.
+#
+# ⚠⚠ `rc=0; cmd || rc=$?` and NOT `if cmd; then ...; fi; rc=$?`. After an `if` whose
+# condition FAILED and which has no `else`, `$?` is the status of the `if` statement
+# itself — zero. A first draft did that and every timeout reported "exited 0 (not a
+# timeout)": the message was confidently wrong in exactly the case it was added for.
+#
+# ⚠ NO COMMAS in an annotation title. The workflow-command format is
+# `::error name=value,name=value::message`, so a comma inside a value terminates it.
+# A local test cannot catch this: it can check the string is EMITTED, not that GitHub
+# parses it — hence the structural check in `test.sh`.
+run_apt() {
+  local label="$1"
+  shift
+  local rc=0 last_rc=0 attempt
+  for attempt in 1 2; do
+    rc=0
+    sudo timeout "$ATTEMPT_TIMEOUT" apt-get "$@" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      return 0
+    fi
+    # `timeout` exits 124 when it fires. Worth separating: a HANG is mirror
+    # degradation and a re-run usually clears it, while a non-124 failure is apt
+    # itself (a stale index 404ing, say) and re-running will not help.
+    if [ "$rc" -eq 124 ]; then
+      echo "::warning title=apt-get $label hung::attempt $attempt exceeded ${ATTEMPT_TIMEOUT}s and was killed"
+    else
+      echo "::warning title=apt-get $label failed::attempt $attempt exited $rc (not a timeout)"
+    fi
+    last_rc=$rc
+    sleep "${APT_RETRY_SLEEP:-20}"
+  done
 
-if [ "$update_ok" != true ]; then
   # ⚠ The summary must match what actually happened. A first draft said "exceeded Ns
   # twice — mirror degradation" on EVERY path, including a clean non-timeout error,
   # which is the wrong diagnosis and points at the wrong fix.
   if [ "$last_rc" -eq 124 ]; then
-    echo "::error title=apt mirror degradation (not a code failure)::apt-get update exceeded ${ATTEMPT_TIMEOUT}s on both attempts. This is infrastructure: no test has run yet. Re-running usually clears it."
+    echo "::error title=apt mirror degradation (not a code failure)::apt-get $label exceeded ${ATTEMPT_TIMEOUT}s on both attempts. This is infrastructure: no test has run yet. Re-running usually clears it."
   else
-    echo "::error title=apt-get update failed (not a code failure)::apt-get update exited $last_rc on both attempts, without timing out. This is apt itself, not a slow mirror — re-running will probably NOT help. A stale package index is the usual cause."
+    echo "::error title=apt-get $label failed (not a code failure)::apt-get $label exited $last_rc on both attempts without timing out. This is apt itself, not a slow mirror — re-running will probably NOT help. A stale package index is the usual cause."
   fi
-  exit 1
-fi
+  return 1
+}
+
+run_apt update update
 
 # ⚠ Split into an ARRAY rather than relying on bare `$PACKAGES`. The list does need
 # splitting, but an unquoted expansion is also subject to GLOBBING — a package name
 # containing `*` or `?` would expand against the working directory. The array form
 # splits on whitespace only, and needs no `shellcheck disable` to say so.
 read -ra pkgs <<< "$PACKAGES"
-install_rc=0
-sudo timeout "$ATTEMPT_TIMEOUT" apt-get install -y "${pkgs[@]}" || install_rc=$?
-if [ "$install_rc" -ne 0 ]; then
-  if [ "$install_rc" -eq 124 ]; then
-    echo "::error title=apt install hung::apt-get install exceeded ${ATTEMPT_TIMEOUT}s for: $PACKAGES"
-  else
-    echo "::error title=apt install failed::apt-get install exited $install_rc (not a timeout) for: $PACKAGES. A stale package index can 404 here."
-  fi
-  exit 1
-fi
+run_apt install install -y "${pkgs[@]}"

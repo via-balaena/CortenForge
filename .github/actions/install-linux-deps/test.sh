@@ -35,7 +35,7 @@ run_case() {
   local label="$1" want_rc="$2" want_note="$3" stub="$4" pkgs="${5-pkg-a pkg-b}"
   printf '#!/bin/sh\n%s\n' "$stub" > "$WORK/bin/apt-get"
   chmod +x "$WORK/bin/apt-get"
-  rm -f "$WORK/state"
+  rm -f "$WORK/state" "$WORK/istate"
   local out rc=0
   out=$(cd "$WORK" && PATH="$WORK/bin:$PATH" PACKAGES="$pkgs" \
         APT_ATTEMPT_TIMEOUT=2 APT_RETRY_SLEEP=0 bash "$SCRIPT" 2>&1) || rc=$?
@@ -65,6 +65,8 @@ BLIP_UPDATE='case "$1" in update) if [ -f state ]; then exit 0; else : > state; 
 HANG_INSTALL='case "$1" in update) exit 0;; *) sleep 30;; esac'
 # shellcheck disable=SC2016
 ERR_INSTALL='case "$1" in update) exit 0;; *) exit 100;; esac'
+# shellcheck disable=SC2016
+BLIP_INSTALL='case "$1" in update) exit 0;; *) if [ -f istate ]; then exit 0; else : > istate; sleep 30; fi;; esac'
 
 run_case "happy path"                    0 ''                                    'exit 0'
 run_case "update hangs twice"            1 'title=apt mirror degradation'        "$HANG_UPDATE"
@@ -72,8 +74,13 @@ run_case "update hang is named a HANG"   1 'title=apt-get update hung'          
 run_case "update errors twice"           1 'exited 42 on both attempts'          "$ERR_UPDATE"
 run_case "update error is NOT a timeout" 1 'exited 42 (not a timeout)'           "$ERR_UPDATE"
 run_case "update blips then succeeds"    0 'title=apt-get update hung'           "$BLIP_UPDATE"
-run_case "install hangs"                 1 'title=apt install hung'              "$HANG_INSTALL"
-run_case "install errors"                1 'exited 100 (not a timeout)'          "$ERR_INSTALL"
+run_case "install hangs twice"           1 'title=apt mirror degradation'        "$HANG_INSTALL"
+run_case "install hang is named a HANG"  1 'title=apt-get install hung'          "$HANG_INSTALL"
+run_case "install errors twice"          1 'exited 100 (not a timeout)'          "$ERR_INSTALL"
+# ★ install RETRIES, symmetrically with update. An earlier revision gave update two
+# attempts and install one — an asymmetry with no reason behind it, which cost a CI
+# run on this change's own first PR where `install` was the call that hung.
+run_case "install blips then succeeds"   0 'title=apt-get install hung'          "$BLIP_INSTALL"
 run_case "packages empty"                1 'title=no packages given'             'exit 0' ''
 run_case "packages whitespace only"      1 'title=no packages given'             'exit 0' "$(printf ' \t\n ')"
 
