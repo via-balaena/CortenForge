@@ -75,8 +75,10 @@ where
     /// stretch slot. Certifying `det F` needs only that `det J_def` and
     /// `det J_rest` are cubics; the singular values of `F` are neither
     /// polynomial nor a ratio of polynomials, so the same bracket does not
-    /// transfer and bounding them wants its own derivation. Until that exists,
-    /// a stretch bound is enforced where it is evaluated and nowhere else.
+    /// transfer and bounding them wants its own derivation. Until that exists the
+    /// stretch slot reads the corner block and nothing else — which for Tet10 is an
+    /// affine PROXY, not the `F` the material is evaluated at, so it is weaker than
+    /// "enforced where it is evaluated" as well as weaker than a proof.
     /// *Adding* per-Gauss-point stretch bounds can only shrink the valid set;
     /// *replacing* the corner check with them is not monotone in either
     /// direction, since the corner `F` is a function of the four corner nodes

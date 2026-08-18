@@ -76,7 +76,7 @@
 //!
 //! ⇒ Read the conclusion as **"no contact-free solve enters the blind spot"**.
 //! Whether a contact solve does remains open — but it is no longer load-bearing:
-//! the deferral it was blocking rested on a cost that turned out to be ~0.2 % of a
+//! the deferral it was blocking rested on a cost that turned out to be ~1 % of a
 //! step, so the gate was certified without waiting for it. The contact census is
 //! still worth running, as a measurement of how often the old rule was wrong in the
 //! regime most likely to fold, rather than as the thing that decides the design.
