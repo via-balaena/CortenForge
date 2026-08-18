@@ -30,6 +30,13 @@ set -euo pipefail
 # 300 s per attempt. Measured healthy on this repo's jobs: 41 s to 177 s, so this is
 # ~1.7x the slowest good run — loose enough not to fail a slow-but-working mirror,
 # tight enough that the pathological case costs minutes rather than a job budget.
+#
+# Budget, with two attempts and one 20 s backoff, for each of `update` and `install`:
+#   one call hangs on both attempts   300 + 20 + 300  = 620 s  (~10 min, then exit)
+#   worst case, update barely passing  620 + 620      = 1240 s (~21 min)
+# against the 45 min job timeout an unbounded hang consumed. ⚠ Keep these numbers
+# honest if the attempt count changes: giving `install` its second attempt raised the
+# worst case from ~15 min to ~21, and the commit that did it forgot to say so.
 ATTEMPT_TIMEOUT="${APT_ATTEMPT_TIMEOUT:-300}"
 
 # ⚠ `required: true` in `action.yml` is DOCUMENTATION, not enforcement — GitHub does
@@ -87,7 +94,11 @@ run_apt() {
       echo "::warning title=apt-get $label failed::attempt $attempt exited $rc (not a timeout)"
     fi
     last_rc=$rc
-    sleep "${APT_RETRY_SLEEP:-20}"
+    # ⚠ Only between attempts. Sleeping after the LAST one delays the failure by the
+    # backoff for no reason — 20 s per call, on every failing path.
+    if [ "$attempt" -lt 2 ]; then
+      sleep "${APT_RETRY_SLEEP:-20}"
+    fi
   done
 
   # ⚠ The summary must match what actually happened. A first draft said "exceeded Ns
