@@ -19,7 +19,7 @@
 use anyhow::{Context, Result};
 use owo_colors::OwoColorize;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Pre-commit hook content (must match build.rs)
 ///
@@ -227,14 +227,38 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
+/// The repository's `.git/hooks`, addressed from the workspace root.
+///
+/// ★ Both callers used a bare `.git/hooks`, which `std::fs` resolves against
+/// the PROCESS working directory. Their symptoms differed, and the silent one
+/// is why this exists:
+///
+/// - `install_git_hooks` bailed with "Not in a git repository. Run this command
+///   from the repository root." — wrong about the cause, but honest and
+///   actionable.
+/// - `uninstall` printed "No hooks directory found." and returned **`Ok(())`**.
+///   Run from a subdirectory it told the operator there was nothing to remove
+///   and left the hooks installed — a no-op reported as success, the same shape
+///   as the grader's cwd bugs and `complete`'s lost log entry.
+///
+/// Rooted, "no hooks directory" becomes a statement about the repository rather
+/// than about where the operator happened to be standing.
+fn git_hooks_dir() -> Result<PathBuf> {
+    let sh = xshell::Shell::new()?;
+    Ok(PathBuf::from(crate::grade::find_workspace_root(&sh)?).join(".git/hooks"))
+}
+
 /// Install git hooks
 fn install_git_hooks() -> Result<()> {
     println!("{}", "→ Installing git hooks...".bright_blue());
 
-    let hooks_dir = Path::new(".git/hooks");
+    let hooks_dir = git_hooks_dir()?;
 
     if !hooks_dir.exists() {
-        anyhow::bail!("Not in a git repository. Run this command from the repository root.");
+        anyhow::bail!(
+            "No {} — not a git repository (or a worktree, whose .git is a file).",
+            hooks_dir.display()
+        );
     }
 
     // Install pre-commit hook
@@ -353,10 +377,10 @@ fn verify_tools() -> Result<()> {
 pub fn uninstall() -> Result<()> {
     println!("{}", "→ Removing git hooks...".bright_blue());
 
-    let hooks_dir = Path::new(".git/hooks");
+    let hooks_dir = git_hooks_dir()?;
 
     if !hooks_dir.exists() {
-        println!("  No hooks directory found.");
+        println!("  No hooks directory found at {}.", hooks_dir.display());
         return Ok(());
     }
 

@@ -8,7 +8,7 @@ use chrono::Utc;
 use owo_colors::OwoColorize;
 use std::fs;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use xshell::Shell;
 
 /// Record A-grade completion for a crate
@@ -22,6 +22,18 @@ pub fn run(crate_name: &str, force: bool) -> Result<()> {
 
     // Use the shared cargo-metadata path lookup (ss5.2)
     let crate_path = grade::find_crate_path(&sh, crate_name)?;
+
+    // ★ Both records this command writes are addressed from here, NOT from the
+    // process's working directory. `fs::write` resolves a relative path against
+    // the process, and nothing in this command moves that — so run from a
+    // subdirectory, `update_completion_log` found no log where it looked, took
+    // its "create new" branch, and wrote a fresh one-line log into a stray
+    // `<subdir>/docs/archive/` while printing `✓ Created …`. The real log kept
+    // every earlier crate and gained nothing; the completion was lost, and the
+    // output said it succeeded. Same defect family as the grader's criteria
+    // 2–5, and the only one of them that DESTROYS a record rather than
+    // mis-reading one.
+    let workspace_root = PathBuf::from(grade::find_workspace_root(&sh)?);
 
     // Run the rebuilt grade tool internally (ss5.1)
     println!("{}", "Step 1: Verifying automated criteria...".cyan());
@@ -109,8 +121,14 @@ pub fn run(crate_name: &str, force: bool) -> Result<()> {
             "{}",
             "    Criterion 7 will be recorded as 'automated (forced)'.".yellow()
         );
-        write_completion(&crate_path, crate_name, "automated (forced)", &report)?;
-        update_completion_log(crate_name, "automated (forced)")?;
+        write_completion(
+            &workspace_root,
+            &crate_path,
+            crate_name,
+            "automated (forced)",
+            &report,
+        )?;
+        update_completion_log(&workspace_root, crate_name, "automated (forced)")?;
     } else {
         // Interactive review flow (ss5.5)
         println!();
@@ -158,8 +176,8 @@ pub fn run(crate_name: &str, force: bool) -> Result<()> {
 
         println!("  {} API Design reviewed by: {}", "✓".green(), reviewer);
 
-        write_completion(&crate_path, crate_name, reviewer, &report)?;
-        update_completion_log(crate_name, reviewer)?;
+        write_completion(&workspace_root, &crate_path, crate_name, reviewer, &report)?;
+        update_completion_log(&workspace_root, crate_name, reviewer)?;
     }
 
     println!();
@@ -176,6 +194,7 @@ pub fn run(crate_name: &str, force: bool) -> Result<()> {
 
 /// Write COMPLETION.md with actual measured values from GradeReport (ss5.3).
 fn write_completion(
+    workspace_root: &Path,
     crate_path: &str,
     crate_name: &str,
     reviewer: &str,
@@ -231,24 +250,24 @@ cargo xtask grade {crate_name}
 "#
     );
 
-    let completion_path = format!("{}/COMPLETION.md", crate_path);
+    let completion_path = workspace_root.join(crate_path).join("COMPLETION.md");
     fs::write(&completion_path, content).context_msg("Failed to write COMPLETION.md")?;
 
-    println!("  {} Created {}", "✓".green(), completion_path);
+    println!("  {} Created {}", "✓".green(), completion_path.display());
 
     Ok(())
 }
 
-fn update_completion_log(crate_name: &str, reviewer: &str) -> Result<()> {
-    let log_path = "docs/archive/COMPLETION_LOG.md";
+fn update_completion_log(workspace_root: &Path, crate_name: &str, reviewer: &str) -> Result<()> {
+    let log_path = workspace_root.join("docs/archive/COMPLETION_LOG.md");
     let now = Utc::now();
     let date = now.format("%Y-%m-%d").to_string();
 
     let entry = format!("| {} | {} | {} |\n", date, crate_name, reviewer);
 
-    if Path::new(log_path).exists() {
+    if log_path.exists() {
         // Append to existing log
-        let content = fs::read_to_string(log_path)?;
+        let content = fs::read_to_string(&log_path)?;
         if content.contains(&format!("| {} |", crate_name)) {
             println!(
                 "  {} {} already in completion log (updating)",
@@ -256,9 +275,9 @@ fn update_completion_log(crate_name: &str, reviewer: &str) -> Result<()> {
                 crate_name
             );
         } else {
-            let mut file = fs::OpenOptions::new().append(true).open(log_path)?;
+            let mut file = fs::OpenOptions::new().append(true).open(&log_path)?;
             file.write_all(entry.as_bytes())?;
-            println!("  {} Updated {}", "✓".green(), log_path);
+            println!("  {} Updated {}", "✓".green(), log_path.display());
         }
     } else {
         // Create new log
@@ -278,11 +297,11 @@ See [CONTRIBUTING.md](../../CONTRIBUTING.md) for the workflow.
             entry
         );
 
-        if let Some(parent) = Path::new(log_path).parent() {
+        if let Some(parent) = log_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(log_path, content)?;
-        println!("  {} Created {}", "✓".green(), log_path);
+        fs::write(&log_path, content)?;
+        println!("  {} Created {}", "✓".green(), log_path.display());
     }
 
     Ok(())
@@ -296,5 +315,52 @@ trait ContextMsg<T> {
 impl<T> ContextMsg<T> for std::result::Result<T, std::io::Error> {
     fn context_msg(self, msg: &str) -> Result<T> {
         self.map_err(|e| anyhow::anyhow!("{}: {}", msg, e))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ★★ The data-loss path: `update_completion_log` addressed the log
+    /// RELATIVELY, so running `cargo xtask complete` from a subdirectory found
+    /// no log where it looked, took its "create new" branch, and wrote a fresh
+    /// one-entry log into a stray `<subdir>/docs/archive/` — while printing
+    /// `✓ Created …`. Every previously completed crate's record was left
+    /// behind in the real log, which never got the new entry either.
+    ///
+    /// Worse than the grader's cwd bugs it shares a cause with: those
+    /// mis-*read* a tree, this one silently *writes the wrong file* and
+    /// reports success.
+    ///
+    /// Pins the property that fixes it — the log is addressed from the
+    /// workspace root, so an existing log is APPENDED to rather than replaced.
+    #[test]
+    fn the_completion_log_is_appended_at_the_workspace_root_not_recreated() {
+        let root = std::env::temp_dir().join(format!(
+            "cf-complete-log-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let archive = root.join("docs/archive");
+        fs::create_dir_all(&archive).expect("mkdir archive");
+        let log = archive.join("COMPLETION_LOG.md");
+        fs::write(&log, "| Date | Crate | Reviewer |\n|---|---|---|\n| 2026-01-01 | earlier-crate | someone |\n")
+            .expect("seed log");
+
+        update_completion_log(&root, "new-crate", "me").expect("append");
+
+        let after = fs::read_to_string(&log).expect("read back");
+        assert!(
+            after.contains("earlier-crate"),
+            "the existing record was destroyed:\n{after}"
+        );
+        assert!(
+            after.contains("new-crate"),
+            "the new entry is missing:\n{after}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 }
