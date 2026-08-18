@@ -1322,7 +1322,8 @@ impl<Msh: Mesh, E: Element<N, G> + Default, const N: usize, const G: usize>
     /// Nothing in this arc checked the deformed configuration before rung 4.
     ///
     /// ⚠⚠ **It reads the FOUR GAUSS POINTS ONLY, so `> 0` does not mean "no element folded" —
-    /// and this doc used to say that it did.** The rest-state work in this crate is the direct
+    /// and this doc used to say that it did.** (What now guarantees "no element folded" is
+    /// the solver, not this: see the ✅ note below.) The rest-state work in this crate is the direct
     /// counterexample: 18 conformed-disc elements were folded at a reference corner with every
     /// Stroud point healthy, and the three gates `cad72838` reddened all had `det F` negative
     /// at reference corner 2 while every Gauss point *and* the affine corner block read
@@ -1331,12 +1332,18 @@ impl<Msh: Mesh, E: Element<N, G> + Default, const N: usize, const G: usize>
     /// `w_ref · |detJ|` at those same four points, so it contributes with positive weight and
     /// never trips the `try_inverse` path.
     ///
-    /// ▶ **Deliberately unchanged, and tracked** — the sibling deferral is on
-    /// `Tet10Mesh::with_sdf_projected_boundary`. Extending this to the reference corners is a
-    /// *deformed-configuration* change: it needs its own before/after on the ramp and envelope
-    /// gates that assert on it (`coupled.rs`'s ramp assert and `tests/coupled_tet10_ramp.rs`),
-    /// because those would be the first to red and their anchors are published as measured
-    /// fact. Fixing the rest mesh, as this rung does, buys nothing for this metric.
+    /// ✅ **The deferral this doc used to carry is resolved, and not by changing this
+    /// method.** It said extending the check to the reference corners was a
+    /// deformed-configuration change needing its own before/after on the gates that assert
+    /// on it. What happened instead is that the *claim* moved: `sim-soft`'s step-boundary
+    /// validity gate now **certifies** `det F > 0` over each element's whole volume, so a
+    /// pose that reaches you through [`Self::set_flexion`] has already been proven fold-free
+    /// — by a bound over the element, not by four samples. Widening this readout would
+    /// duplicate that proof less well, and would move published anchors to do it.
+    ///
+    /// ⇒ This stays a **number**, by design rather than by deferral: how squashed the disc
+    /// is at the points quadrature uses. It is not, and no longer needs to be, the thing that
+    /// decides whether an element folded.
     #[must_use]
     pub fn min_jacobian_ratio(&self) -> f64 {
         self.sandwich.min_gauss_det_ratio()
@@ -4202,7 +4209,29 @@ mod tests {
                 tet10_nodes(curved, tid).map(|nodes| {
                     let x_ref = SMatrix::<f64, 10, 3>::from_fn(|a, k| pos[nodes[a] as usize][k]);
                     let coeffs = sim_soft::element::rest_det_j_coefficients(&x_ref);
-                    coeffs.iter().copied().fold(f64::INFINITY, f64::min) / affine_det(&x_ref)
+                    // ⚠⚠ `f64::min` implements IEEE `minNum`, which DISCARDS a NaN
+                    // operand instead of propagating it. Folding the coefficients with
+                    // it alone let a non-finite node coordinate produce a finite — and
+                    // therefore healthy-looking — minimum. `certify_rest` tracks
+                    // finiteness separately for exactly this reason, and this census
+                    // reintroduced the idiom the same day that was fixed there, because
+                    // the fold is the default way to write it.
+                    //
+                    // NEG_INFINITY rather than NaN for the non-finite case, and the
+                    // direction is decided by one consumer in particular: the
+                    // `shipped_below == 0` assertion at the end of
+                    // `what_the_midside_floor_binds_on_fom` counts `v < BADLY_CONDITIONED`.
+                    // Every comparison against NaN is false, so a NaN element would not
+                    // be counted there and that gate would
+                    // PASS on a mesh it should red — fail-open, in the one place here
+                    // that fails rather than prints. NEG_INFINITY is counted by it, by
+                    // the at-floor count, and by the open-ended lowest histogram band
+                    // (`band(NEG_INFINITY, ..)`, whose `v >= lo` admits it).
+                    if coeffs.iter().all(|c| c.is_finite()) {
+                        coeffs.iter().copied().fold(f64::INFINITY, f64::min) / affine_det(&x_ref)
+                    } else {
+                        f64::NEG_INFINITY
+                    }
                 })
             })
             .collect()
@@ -4818,13 +4847,18 @@ mod tests {
 
     /// ▶ **Does a PASSING fine-mesh disc solve hide folded elements?**
     ///
-    /// The solver's `check_validity_at_step_start` samples five values — `det F` at the four
-    /// Gauss points plus the corner-block affine `det F`. Measured against a proof on random
-    /// deformed configurations, that check misses **100 % of folds at their onset**
-    /// (`sim-soft`'s `deformed_validity_pilot`), because the Stroud points are strictly
-    /// interior and the corner block ignores midsides entirely. A real cantilever bending solve
-    /// never entered that blind spot — zero folds out to 136 % tip deflection — so the open
-    /// question is whether a harsher, finer, real scene does.
+    /// ✅ **Answered by conversion, not by this scene — read this as the census that
+    /// motivated it.** The solver's `check_validity_at_step_start` USED to sample five
+    /// values: `det F` at the four Gauss points plus the corner-block affine `det F`.
+    /// Measured against a proof on random deformed configurations, that check missed
+    /// **100 % of folds at their onset** (`sim-soft`'s `tests/deformed_validity.rs`),
+    /// because the Stroud points are strictly interior and the corner block ignores
+    /// midsides entirely. A real cantilever bending solve never entered that blind spot —
+    /// zero folds out to 136 % tip deflection — leaving open whether a harsher, finer,
+    /// real scene would. The gate now **certifies** `det F > 0` over each element's whole
+    /// volume, so a passing solve can no longer hide a folded element and this arm's
+    /// original question is closed by construction. What it still measures is whether a
+    /// fine real scene stays SOLVABLE under the stricter gate.
     ///
     /// This is that scene: the **discriminator's** configuration, `cell = 0.002`, Tet10 alone.
     ///

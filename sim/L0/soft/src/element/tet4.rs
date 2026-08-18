@@ -14,7 +14,7 @@
 
 use nalgebra::{SMatrix, SVector};
 
-use super::Element;
+use super::{Element, RestValidity};
 use crate::Vec3;
 
 /// Linear tetrahedron element. Constant strain, 12 DOFs total.
@@ -40,5 +40,169 @@ impl Element<4, 1> for Tet4 {
     fn gauss_points(&self) -> [(Vec3, f64); 1] {
         // Centroid, weight = 1/6 = volume of the reference tet.
         [(Vec3::new(0.25, 0.25, 0.25), 1.0 / 6.0)]
+    }
+
+    /// Exact with no machinery. Tet4's map is affine, so `det J` is the same
+    /// constant at every point of the element and the single centroid
+    /// evaluation already answers for the whole of it — there is no gap between
+    /// sampling and certifying here, which is the property `Tet10` lacks.
+    ///
+    /// The margin is `1.0` because every Bernstein coefficient of a constant
+    /// equals that constant, so the smallest is the largest: this is the widest
+    /// margin the type can express, and it is the honest one.
+    ///
+    /// This impl exists so the solver's validity gate can be written once for
+    /// both element types, not because Tet4 needed a certificate.
+    fn certify_orientation(&self, x: &SMatrix<f64, 4, 3>) -> RestValidity {
+        let value = self.rest_jacobian_dets(x)[0];
+        // ⚠ `is_finite` is LOAD-BEARING, not decoration, and an earlier revision of
+        // this comment said it was kept "for contract symmetry with Tet10". It is not:
+        // `NaN > 0.0` is false so a bare `> 0.0` does reject a NaN, but
+        // `f64::INFINITY > 0.0` is TRUE, so dropping the clause certifies an element
+        // whose determinant overflowed. A mutation sweep caught that the claim was
+        // wrong and that no test covered the infinite case.
+        if value.is_finite() && value > 0.0 {
+            RestValidity::Certified { margin: 1.0 }
+        } else {
+            RestValidity::Violated {
+                at: self.gauss_points()[0].0,
+                value,
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Same convention as `solver::backward_euler::tests`: a test's `panic!` in a
+    // match fallback IS the assertion, and `float_cmp` is deliberate here — an
+    // affine map's determinant is one exact constant, so `== 0.0` on a coplanar
+    // tet is a statement about the arithmetic, not a tolerance judgement.
+    #![allow(clippy::panic, clippy::float_cmp)]
+
+    use super::*;
+
+    /// A tet's node matrix, row per node.
+    fn nodes(v: [[f64; 3]; 4]) -> SMatrix<f64, 4, 3> {
+        SMatrix::<f64, 4, 3>::from_fn(|a, k| v[a][k])
+    }
+
+    /// The reference tet, right-handed: `det J = 1 > 0`.
+    const RIGHT_HANDED: [[f64; 3]; 4] = [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ];
+
+    /// ★ The four verdicts [`Tet4::certify_orientation`] can reach, asserted directly.
+    ///
+    /// The solver exercises this impl only through its validity gate, and only on
+    /// right-handed meshes — so until this existed, three of the four arms were
+    /// reached by no test at all. The left-handed case in particular is load-bearing
+    /// elsewhere: `tests/multi_material_validity.rs` states that a left-handed REST
+    /// tet is now rejected on its own account. `mesh`'s own docs record right-handed
+    /// orientation (`signed_volume > 0`) as an invariant each constructor enforces, so
+    /// that claim cannot be exercised through a mesh — this is where it is checked.
+    #[test]
+    fn certify_orientation_reaches_every_verdict_it_can() {
+        // Right-handed: certified, and with the widest margin the type expresses —
+        // every Bernstein coefficient of a constant equals that constant.
+        match Tet4.certify_orientation(&nodes(RIGHT_HANDED)) {
+            RestValidity::Certified { margin } => assert!(
+                (margin - 1.0).abs() < 1e-15,
+                "an affine map has one determinant everywhere, so the margin is 1.0; got {margin}"
+            ),
+            other => panic!("a right-handed tet must certify, got {other:?}"),
+        }
+
+        // Left-handed: two corners swapped flips the sign of `det J`.
+        let mut left = RIGHT_HANDED;
+        left.swap(1, 2);
+        match Tet4.certify_orientation(&nodes(left)) {
+            RestValidity::Violated { value, .. } => assert!(
+                value < 0.0,
+                "the witness must carry the negative determinant that refutes it; got {value}"
+            ),
+            other => panic!("a left-handed tet must be refuted, got {other:?}"),
+        }
+
+        // Degenerate: corner 3 laid onto the opposite face gives `det J == 0`, which
+        // `> 0.0` must reject. A `>= 0.0` predicate would certify a flat element.
+        let mut flat = RIGHT_HANDED;
+        flat[3] = [0.5, 0.5, 0.0];
+        match Tet4.certify_orientation(&nodes(flat)) {
+            RestValidity::Violated { value, .. } => assert!(
+                value == 0.0,
+                "a coplanar tet has det J exactly 0; got {value}"
+            ),
+            other => panic!("a degenerate tet must be refuted, got {other:?}"),
+        }
+
+        // Non-finite, BOTH kinds — and they arrive by different routes, which is why
+        // both are asserted. A `NaN` determinant is rejected by `> 0.0` alone (every
+        // comparison against NaN is false). An INFINITE one is not:
+        // `f64::INFINITY > 0.0` is true, so only the `is_finite` clause stops it. A
+        // mutation sweep that deleted that clause survived the entire suite until the
+        // infinite cases below existed.
+        for poison in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut poisoned = RIGHT_HANDED;
+            poisoned[1][0] = poison;
+            match Tet4.certify_orientation(&nodes(poisoned)) {
+                RestValidity::Violated { value, .. } => assert!(
+                    !value.is_finite(),
+                    "the witness must carry the non-finite determinant; got {value}"
+                ),
+                other => panic!("a {poison} coordinate must be refuted, got {other:?}"),
+            }
+        }
+
+        // ★ The case that makes `is_finite` load-bearing rather than decorative, and
+        // the one a mutation sweep needed: a non-finite COORDINATE collapses the
+        // determinant to `NaN`, which `> 0.0` already rejects. Overflow does not.
+        // Measured at 1e150 per axis, `det J` is exactly `+inf` — positively oriented
+        // and unusable — and `f64::INFINITY > 0.0` is TRUE, so without `is_finite`
+        // this certifies. Deleting the clause survived the whole suite until this
+        // existed.
+        let huge = 1.0e150_f64;
+        let overflowed = nodes([
+            [0.0, 0.0, 0.0],
+            [huge, 0.0, 0.0],
+            [0.0, huge, 0.0],
+            [0.0, 0.0, huge],
+        ]);
+        assert_eq!(
+            Tet4.rest_jacobian_dets(&overflowed)[0],
+            f64::INFINITY,
+            "the fixture must actually overflow to +inf, or it is not exercising the \
+             clause it names"
+        );
+        match Tet4.certify_orientation(&overflowed) {
+            RestValidity::Violated { value, .. } => assert!(
+                value.is_infinite() && value.is_sign_positive(),
+                "the witness must carry the +inf determinant; got {value}"
+            ),
+            other => panic!("an overflowed determinant must be refuted, got {other:?}"),
+        }
+    }
+
+    /// The certificate agrees with the sampled predicate it generalises.
+    ///
+    /// For `Tet4` the two are the same number by construction — `G == 1` and the map
+    /// is affine — and that identity is what lets the solver's gate be written once
+    /// for both element types. Pinned so a future edit to either cannot drift.
+    #[test]
+    fn the_certificate_and_the_single_gauss_determinant_are_the_same_number() {
+        for v in [
+            RIGHT_HANDED,
+            [[0.0; 3], [2.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 5.0]],
+        ] {
+            let x = nodes(v);
+            let det = Tet4.rest_jacobian_dets(&x)[0];
+            assert!(
+                det > 0.0 && Tet4.certify_orientation(&x).is_certified(),
+                "both must accept the same right-handed tet (det = {det})"
+            );
+        }
     }
 }

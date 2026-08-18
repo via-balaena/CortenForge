@@ -174,41 +174,42 @@ impl Tet10Mesh {
 
     /// Move the named midside nodes toward caller-supplied targets, backing each move off
     /// just far enough to keep every incident element's rest Jacobian above a fraction
-    /// `quality_floor` of its original value at **every Gauss point and every reference
-    /// corner** — so no element inverts or collapses to a sliver.
+    /// `quality_floor` of its original value **everywhere in that element** — so no element
+    /// inverts or collapses to a sliver.
     ///
     /// `moves` lists `(midside, target)` pairs. This is the quadratic companion to
     /// [`SdfMeshedTetMesh::with_projected_nodes`](crate::SdfMeshedTetMesh::with_projected_nodes)
     /// and the *intelligent-caller* companion to
-    /// [`Self::with_sdf_projected_boundary`], differing from the latter in the two ways a
+    /// [`Self::with_sdf_projected_boundary`], differing from the latter in the one way a
     /// bonded anatomical surface needs:
     ///
     /// - **the caller supplies explicit targets**, so the projection can honour a direction
     ///   or anatomy gate this layer knows nothing about (which of two candidate surfaces, an
     ///   alignment test, a subset of the boundary left deliberately straight) rather than
-    ///   projecting every boundary midside onto one [`Sdf`];
-    /// - **the validity bar is checked at eight sample points**, where the sibling now
-    ///   *certifies* it over the whole element ([`certify_rest`]). Both hold the same
-    ///   quality floor `detJ ≥ quality_floor · detJ_rest`, and both hold a floor rather than
-    ///   a bare `detJ > 0` for the same reason — a bare `detJ > 0` bisects each backed-off
-    ///   node onto the `detJ → 0⁺` degeneracy boundary, manufacturing slivers exactly where
-    ///   the move was largest. ⚠ This difference is a **deficit here, not a feature**; see the
-    ///   note below.
+    ///   projecting every boundary midside onto one [`Sdf`].
+    ///
+    /// ⚠ That is now the ONLY difference. An earlier revision of this list gave a second —
+    /// that this method "is checked at eight sample points" while the sibling certifies,
+    /// calling it "a deficit here, not a feature". It was, and it was fixed: both now hold
+    /// the same bar by proof over the whole element ([`certify_rest`]), and both take a
+    /// caller-supplied `quality_floor` and hold a *relative* floor rather than a bare
+    /// `detJ > 0` — a bare `detJ > 0` bisects each backed-off node onto the `detJ → 0⁺`
+    /// degeneracy boundary, manufacturing slivers exactly where the move was largest.
     ///
     /// For each move the full target is tried first; if it would drop an incident element
-    /// below the floor at any sample point, the node is bisected back along the segment
+    /// below the floor **anywhere in that element**, the node is bisected back along the segment
     /// `straight → target` to the furthest point that keeps every incident element above the
     /// floor. The original position (`t = 0`) is feasible for `quality_floor < 1` whenever the
-    /// input element's own sample determinants are positive, so in the worst case a node simply
-    /// stays put. Nodes are swept in ascending `VertexId` order, so the result is deterministic.
+    /// input element is itself certified, so in the worst case a node simply stays put.
+    /// Nodes are swept in ascending `VertexId` order, so the result is deterministic.
     /// The reference `detJ_rest` per element is captured once, from `self`, before any node
     /// moves — so curving several midsides of the same element still measures each against that
     /// element's original, healthy geometry.
     ///
     /// ⚠ That positivity proviso is exact rather than pedantic: `d ≥ floor·o` at `t = 0`
     /// reduces to `o·(1 − floor) ≥ 0`, i.e. to `o ≥ 0`. It holds unconditionally on the
-    /// intended input — a [`Self::from_tet4`] mesh is straight, so all eight determinants equal
-    /// the affine `6·V` of a positive-volume tet.
+    /// intended input — a [`Self::from_tet4`] mesh is straight, so its map is affine and
+    /// all twenty Bernstein coefficients equal the same `6·V` of a positive-volume tet.
     ///
     /// ⚠⚠ **An element that arrives already inverted (`o ≤ 0`) is IMMOVABLE**, and the guard
     /// that makes it so is explicit rather than emergent. A relative floor is only a quality
@@ -218,9 +219,10 @@ impl Tet10Mesh {
     /// path** — which tries the full target first — would accept any placement merely
     /// less-inverted than `floor·o`. Measured before the guard existed: a full target accepted
     /// on a pre-folded element, leaving it inverted, and a separate search found an accepted
-    /// move that degraded a sample point which had arrived *healthy* by 94.5 %. The `o > 0`
-    /// conjunct in `incident_ok` makes the documented behaviour actual; it is inert on every
-    /// in-tree path, since each enriches a positive-volume Tet4 mesh. Pinned by
+    /// move that degraded a sample point which had arrived *healthy* by 94.5 %. That guard
+    /// now lives inside [`certify_rest`], which refuses an invalid reference outright rather
+    /// than leaving each caller to remember the conjunct; it is inert on every in-tree path,
+    /// since each enriches a positive-volume Tet4 mesh. Pinned by
     /// `an_already_inverted_element_is_not_moved_at_all`.
     ///
     /// ⚠⚠ **A non-finite target is rejected without corrupting the node it rejects.** Every
@@ -1084,9 +1086,15 @@ mod tests {
 
     // --- with_projected_midsides: the caller-targeted, quality-floored rung ---
 
-    /// Rest-Jacobian determinants of every element at all **eight** sample points the
-    /// projector holds above the floor: the four Gauss points (`0..4`), then the four
-    /// reference corners (`4..8`).
+    /// Rest-Jacobian determinants of every element at eight points: the four Gauss points
+    /// (`0..4`), then the four reference corners (`4..8`).
+    ///
+    /// ★ An **independent** readout, deliberately not the certifier. The projector holds
+    /// its floor by proof over each element's whole volume ([`certify_rest`]), and these
+    /// eight points are a strict subset of what that proof covers — so this can cross-check
+    /// the proof without sharing its implementation, and can only ever agree with it. A
+    /// disagreement would mean one of the two is wrong, which is the point of keeping a
+    /// second route to the number.
     fn all_dets(mesh: &Tet10Mesh) -> Vec<[f64; 8]> {
         let element = Tet10;
         let corner_grads: [SMatrix<f64, 10, 3>; 4] =
@@ -1141,9 +1149,11 @@ mod tests {
             })
     }
 
-    /// The worst `detJ / detJ_rest` over every element and **all eight** sample points —
-    /// exactly the quantity [`Tet10Mesh::with_projected_midsides`] promises to hold above
-    /// its floor.
+    /// The worst `detJ / detJ_rest` over every element and all eight sample points.
+    ///
+    /// ⚠ **Not** the quantity [`Tet10Mesh::with_projected_midsides`] promises — that is a
+    /// bound over each element's whole volume. This is eight samples of it, so the promise
+    /// implies this and not the reverse.
     fn worst_det_ratio(curved: &Tet10Mesh, straight: &Tet10Mesh) -> f64 {
         worst_det_ratio_over(curved, straight, 0..8)
     }
@@ -1194,8 +1204,10 @@ mod tests {
     /// The back-off engages on a grossly-inverting target and holds the quality floor at
     /// EVERY sample point — and the floor is what stops it, not slack: the worst
     /// determinant ratio lands just above `quality_floor`, where a bare `detJ > 0`
-    /// predicate (the `with_sdf_projected_boundary` rule) would have bisected onto the
-    /// `detJ → 0⁺` degeneracy boundary instead.
+    /// predicate would have bisected onto the `detJ → 0⁺` degeneracy boundary instead.
+    /// (⚠ An earlier revision called that "the `with_sdf_projected_boundary` rule". It is
+    /// not: that method takes a `quality_floor` too, and holds a relative bar for the same
+    /// reason this one does.)
     ///
     /// ★ **Which constraint binds is itself the measurement, and it moved.** While the
     /// acceptance test was Gauss-only, this fixture's worst Gauss ratio landed within a

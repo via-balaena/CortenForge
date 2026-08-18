@@ -30,13 +30,15 @@
 )]
 
 use faer::sparse::Triplet;
+use nalgebra::SMatrix;
 
 use sim_ml_chassis::Tensor;
 
+use super::helpers::{deformation_gradient, element_node_ids};
 use crate::Vec3;
 use crate::contact::NullContact;
 use crate::element::Element;
-use crate::material::MaterialField;
+use crate::material::{MaterialField, NeoHookean};
 use crate::mesh::{HandBuiltTetMesh, Mesh, SingleTetMesh, Tet10Mesh, TetId, VertexId};
 use crate::readout::{BoundaryConditions, LoadAxis};
 use crate::solver::SolverFailure;
@@ -1151,8 +1153,12 @@ fn single_tet10_all_corners_pinned() -> (CpuTet10NHSolver<Tet10Mesh>, Vec<f64>) 
 /// is about +170, i.e. the Gauss points are nowhere near the boundary — the corner
 /// block alone is inverted.
 ///
-/// The gate now checks both, so this fails closed. Reverting either half revives a
-/// silent `Ok`.
+/// ⚠ The gate no longer has a "corner-block half" to revert: it certifies `det J_def`
+/// over the whole element, and the four reference corners are among the certificate's
+/// coefficients **exactly**, so this class is subsumed rather than separately handled.
+/// What this fixture still proves is that the class stays closed — a certificate is a
+/// stronger claim than the two-stage check only if it actually rejects what that check
+/// rejected.
 #[test]
 fn corner_inverted_tet10_is_rejected_even_when_every_gauss_point_is_positive() {
     let (solver, _rest) = single_tet10_all_corners_pinned();
@@ -1170,20 +1176,24 @@ fn corner_inverted_tet10_is_rejected_even_when_every_gauss_point_is_positive() {
     assert!(
         ratio > 0.0,
         "fixture no longer exercises the corner-only class: min Gauss det ratio is \
-         {ratio}, so a Gauss point is inverted and the sweep would catch it"
+         {ratio}, so a Gauss point is inverted and the old five-point rule would have \
+         rejected this state too"
     );
 
     let (tet_id, message) = validity_message(&solver, &x);
     assert_eq!(tet_id, 0);
     assert!(
-        message.contains("corner block"),
-        "expected the corner-block stage to reject this — the Gauss points are all \
-         positive, so naming a Gauss point would mean the fixture stopped covering \
-         its class. Got: {message}"
-    );
-    assert!(
         message.contains("inversion = det F ="),
         "expected the inversion slot, got: {message}"
+    );
+    // The certificate names the parametric point it EVALUATED non-positive. A gate
+    // that had fallen back to sampling would have nothing to name here, because the
+    // premise above says every sampled point is positive.
+    assert!(
+        message.contains("at xi = ("),
+        "expected a certified refutation carrying its witness point — a sampled verdict \
+         cannot produce one on this fixture, since every Gauss point accepts it. \
+         Got: {message}"
     );
 }
 
@@ -1232,15 +1242,19 @@ fn the_sweep_covers_every_element_not_just_the_first() {
     );
 }
 
-/// The sweep reports the FIRST non-positive Gauss point, as its `# Errors` says.
+/// A wholesale inversion must be **refuted**, not merely left uncertifiable.
 ///
-/// ⚠ Every other fixture inverts exactly one Gauss point, so first and last
-/// coincide and a mutant that scans all `G` and reports the LAST violator passes
-/// them all. Mirroring the whole element through `z = 0` makes `F = diag(1,1,-1)`
-/// at every point, so all four are inverted and the reported index is the only
-/// thing that distinguishes first-wins from last-wins.
+/// ⚠ This replaces a first-violator-wins check on the Gauss index, which the
+/// certificate has no analogue for — there is one verdict per element, not `G` of
+/// them. The property worth keeping from that fixture is the fixture itself:
+/// mirroring the whole element through `z = 0` makes `det J_def` negative at every
+/// point, which is the case a bound-only certifier would answer
+/// [`RestValidity::Undetermined`] on if its refutation path were broken (the bracket
+/// alone proves nothing; only the evaluated corner values refute). Reading
+/// `Undetermined` here would still fail the solve — it is fail-closed — so a plain
+/// "the gate rejects it" assertion cannot see the difference. This names the verdict.
 #[test]
-fn the_sweep_reports_the_first_inverted_gauss_point() {
+fn a_uniformly_inverted_element_is_refuted_not_merely_uncertifiable() {
     let (solver, rest) = single_tet10_all_corners_pinned();
     // Negate every z: a uniform reflection, det F = -1 at all four Gauss points.
     let x: Vec<f64> = rest
@@ -1251,10 +1265,16 @@ fn the_sweep_reports_the_first_inverted_gauss_point() {
 
     let (_tet_id, message) = validity_message(&solver, &x);
     assert!(
-        message.contains("at Gauss point 0 (0-based) of 4"),
-        "a uniformly reflected element inverts every Gauss point, so the FIRST one \
-         must be named — reporting a later index means the sweep is not \
-         first-violator-wins. Got: {message}"
+        message.contains("at xi = ("),
+        "a uniform reflection must be REFUTED with an evaluated witness, not reported \
+         as uncertifiable — the refutation path is what distinguishes a proof from a \
+         bound that happened to fail. Got: {message}"
+    );
+    // `F = diag(1, 1, -1)` everywhere, so the reported `det F` must be -1 to rounding.
+    assert!(
+        message.contains("det F = -1.000"),
+        "a pure reflection has det F = -1 at every point of the element, so any other \
+         value means the reported quantity is not det F. Got: {message}"
     );
 }
 
@@ -1330,7 +1350,7 @@ fn the_gate_runs_on_a_curved_tet10() {
     );
 }
 
-/// A corner-block inversion the Gauss sweep accepts.
+/// A corner-block inversion that every Gauss point accepts.
 ///
 /// Isolates the corner-block stage: corners mirrored through `z = 0` so the
 /// affine corner block reads -1.000, with midsides placed so every Gauss point
@@ -1338,13 +1358,12 @@ fn the_gate_runs_on_a_curved_tet10() {
 /// `main` gated all along, and which sweeping the Gauss points INSTEAD of the
 /// corner block would have silently dropped.
 ///
-/// ⚠ Currently REDUNDANT with `corner_inverted_tet10_...`, which also isolates
-/// this stage now that the two-stage gate is what ships. It is kept because
-/// that redundancy is conditional: the reference-corner stage (preserved on
-/// `wip/tet10-reference-corner-stage`) also rejects the flagship fixture, so
-/// the moment that stage re-lands the flagship stops discriminating and this
-/// becomes the only fixture that does. Its margins are also far tighter —
-/// Gauss +3.0 rather than +170.
+/// ⚠ Overlaps `corner_inverted_tet10_...` in class, and is kept for its MARGINS:
+/// the Gauss points here read +3.0 rather than +170, so a certificate that had
+/// quietly widened its margin — certifying anything not strongly negative —
+/// fails this fixture while passing the flagship. That is a different mutant
+/// from the one the flagship catches, and it is the reason the redundancy is
+/// worth its cost.
 #[test]
 fn a_corner_block_inversion_is_caught_when_the_gauss_sweep_accepts() {
     let (solver, _rest) = single_tet10_all_corners_pinned();
@@ -1354,7 +1373,7 @@ fn a_corner_block_inversion_is_caught_when_the_gauss_sweep_accepts() {
         0.121_098, 0.058_131, 0.084_446, -0.081_337, -0.070_843, 0.031_283, -0.080_082, 0.134_754,
     ];
 
-    // Premise: the Gauss sweep must abstain, or this duplicates the sweep tests.
+    // Premise: the Gauss points must abstain, or this duplicates the fixtures above.
     let ratio = solver.min_gauss_det_ratio(&x);
     assert!(
         ratio > 0.0,
@@ -1365,11 +1384,514 @@ fn a_corner_block_inversion_is_caught_when_the_gauss_sweep_accepts() {
     let (tet_id, message) = validity_message(&solver, &x);
     assert_eq!(tet_id, 0);
     assert!(
-        message.contains("on the corner block"),
-        "expected the CORNER-BLOCK stage to reject this — every Gauss point accepts \
-         it, so any other slot naming it means the fixture stopped isolating that \
-         stage. Got: {message}"
+        message.contains("inversion = det F =") && message.contains("at xi = ("),
+        "expected a certified refutation on the inversion slot — every Gauss point \
+         accepts this fixture, so a sampled verdict could not reject it at all. \
+         Got: {message}"
     );
+}
+
+/// ★ The REST half of the gate's pair, and the negative control that makes it
+/// load-bearing: a solver built on a mesh that is folded **in its own rest
+/// configuration** must fail, at rest.
+///
+/// ⚠ This class was unreachable before, and not because it does not occur — because
+/// nothing could see it. `det F = det J_def / det J_rest`, and at rest `x_def == x_rest`
+/// so `det F ≡ 1` at every point of every element, however folded the rest mesh is.
+/// Every slot of the old gate read `det F`; so does `min_gauss_det_ratio`. The assertion
+/// below that the ratio reads exactly `1.0` is not colour — it is the proof that no
+/// deformed-configuration check, however exact, could have caught this. That is why the
+/// rest certificate is taken separately in `new()` rather than inferred from the
+/// deformed one.
+///
+/// The fold is the same move the deformed fixtures use — a midside reflected through
+/// its edge's endpoint corner — applied to the mesh instead of to the state.
+#[test]
+fn a_rest_folded_mesh_is_rejected_even_though_det_f_is_one_everywhere() {
+    let tet4 = SingleTetMesh::new(&MaterialField::uniform(1.0e5, 4.0e5));
+    // Edge (0, 1) runs (0,0,0) -> (0.1,0,0), so its midside sits at (0.05, 0, 0);
+    // reflecting through corner 0 puts it a full edge length the wrong side.
+    let straight_midside = Vec3::new(0.05, 0.0, 0.0);
+    let tet10 = Tet10Mesh::from_tet4(&tet4).with_curved_midsides(|p| {
+        if (p - straight_midside).norm() < 1e-12 {
+            -p
+        } else {
+            p
+        }
+    });
+    let solver: CpuTet10NHSolver<Tet10Mesh> = CpuNewtonSolver::new(
+        Tet10,
+        tet10,
+        NullContact,
+        SolverConfig::skeleton(),
+        BoundaryConditions {
+            pinned_vertices: vec![0, 1, 2, 3],
+            roller_vertices: Vec::new(),
+            loaded_vertices: Vec::new(),
+        },
+    );
+
+    // The state under test is the REST state itself — no deformation at all.
+    let rest = tet10_rest_dofs(&solver);
+    let ratio = solver.min_gauss_det_ratio(&rest);
+    assert!(
+        (ratio - 1.0).abs() < 1e-12,
+        "the deformed readout must be exactly 1.0 here, or this fixture is not \
+         demonstrating the blind spot it claims: got {ratio}"
+    );
+
+    let (tet_id, message) = validity_message(&solver, &rest);
+    assert_eq!(tet_id, 0, "the single element is the violator");
+    assert!(
+        message.contains("REST element is not orientation-valid"),
+        "expected the rest-configuration verdict, not a deformed one — det F is 1 \
+         everywhere here, so a deformed check has nothing to report. Got: {message}"
+    );
+}
+
+/// ★★ The fixture that makes the rest certificate NECESSARY rather than merely
+/// tidy: a rest mesh folded **between its own sample points**, evaluated at a
+/// deformed state that is itself provably healthy.
+///
+/// ⚠ Read `a_rest_folded_mesh_is_rejected_even_though_det_f_is_one_everywhere`
+/// first — it shows the rest fold is invisible at rest, but at rest the deformed
+/// certificate refutes too, so it does not isolate which half fired. This one does.
+/// The state handed to the gate is the STRAIGHT configuration, whose `det J_def` is
+/// an affine constant and certifies outright, so the deformed half must pass. The
+/// element is nonetheless materially inverted (`det F = det J_def / det J_rest < 0`
+/// wherever the rest determinant is), and only the rest half can say so.
+///
+/// ⚠⚠ The old five-point check passes this state, and both of its halves are pinned
+/// rather than argued. Its four Gauss values are `min_gauss_det_ratio`, asserted
+/// positive in the search below — the fold sits between them. Its fifth, the affine
+/// corner block, is the identity here because only a MIDSIDE moves: the corners of
+/// the deformed state are bit-identical to the rest corners, asserted below, so
+/// `F_corner = I` and `det = 1`. Deleting the rest certificate does not merely lose
+/// an attribution, it returns the gate to `Ok` on a mesh carrying an inverted
+/// element.
+///
+/// The amplitude is SEARCHED rather than hardcoded because the window is narrow —
+/// too little and nothing is folded, too much and a Gauss point sees it and the
+/// fixture stops isolating. A hardcoded value would silently leave the window under
+/// any change to the element or its quadrature.
+#[test]
+fn a_rest_fold_between_the_sample_points_is_caught_at_a_healthy_deformed_state() {
+    let field = MaterialField::uniform(1.0e5, 4.0e5);
+    let tet4 = SingleTetMesh::new(&field);
+    let straight = Tet10Mesh::from_tet4(&tet4);
+    let straight_dofs = {
+        let positions = straight.positions();
+        let mut x = vec![0.0_f64; 3 * positions.len()];
+        for (v, pos) in positions.iter().enumerate() {
+            x[3 * v] = pos.x;
+            x[3 * v + 1] = pos.y;
+            x[3 * v + 2] = pos.z;
+        }
+        x
+    };
+    // Edge (0, 1) runs (0,0,0) -> (0.1,0,0); its midside sits at (0.05, 0, 0). Pulling
+    // it back along -x curves the map until `det J` dips negative near corner 0, while
+    // the Stroud points — all strictly interior — stay positive for a while yet.
+    let straight_midside = Vec3::new(0.05, 0.0, 0.0);
+    let solver_with_pull = |pull: f64| -> CpuTet10NHSolver<Tet10Mesh> {
+        let mesh = Tet10Mesh::from_tet4(&tet4).with_curved_midsides(|p| {
+            if (p - straight_midside).norm() < 1e-12 {
+                p - Vec3::new(pull, 0.0, 0.0)
+            } else {
+                p
+            }
+        });
+        CpuNewtonSolver::new(
+            Tet10,
+            mesh,
+            NullContact,
+            SolverConfig::skeleton(),
+            BoundaryConditions {
+                pinned_vertices: vec![0, 1, 2, 3],
+                roller_vertices: Vec::new(),
+                loaded_vertices: Vec::new(),
+            },
+        )
+    };
+
+    let found = (1..=400u32).find_map(|step| {
+        let pull = f64::from(step) * 0.000_25;
+        let solver = solver_with_pull(pull);
+        // The old check's own reading, at the state under test. `> 0` means every
+        // sampled `det F` is positive — the five-point verdict is "healthy".
+        let ratio = solver.min_gauss_det_ratio(&straight_dofs);
+        if ratio <= 0.0 {
+            return None;
+        }
+        validity_result(&solver, &straight_dofs)
+            .err()
+            .map(|failure| (pull, ratio, solver, failure))
+    });
+
+    let (pull, ratio, solver, failure) = found.expect(
+        "no midside pull in the scanned window folds the REST element while leaving \
+         every Gauss point positive — the window moved, and this fixture no longer \
+         isolates the rest certificate from the deformed one",
+    );
+
+    // The fifth of the old check's five values. Only a midside was pulled, so the
+    // deformed corners equal the rest corners and the affine corner block is the
+    // identity — `det F = 1`, comfortably positive. Asserting the premise rather
+    // than the determinant keeps the guard on the thing a future edit would break.
+    let rest_positions = solver.mesh.positions();
+    for v in 0..4usize {
+        for k in 0..3usize {
+            assert_eq!(
+                straight_dofs[3 * v + k],
+                rest_positions[v][k],
+                "only a midside may move in this fixture: corner {v} differs from rest, \
+                 so the affine corner block is no longer the identity and the old \
+                 five-point check might have caught this after all"
+            );
+        }
+    }
+
+    // The deformed state is not merely unsampled-healthy, it is PROVABLY healthy:
+    // the straight configuration's map is affine, so its `det J` is one positive
+    // constant. Nothing the deformed certificate could say rejects this state.
+    let nodes = element_node_ids::<NeoHookean, Tet10Mesh, 10>(&solver.mesh, 0);
+    let x_def = SMatrix::<f64, 10, 3>::from_fn(|a, k| straight_dofs[3 * nodes[a] as usize + k]);
+    assert!(
+        Tet10.certify_orientation(&x_def).is_certified(),
+        "the deformed state must certify, or the rest half is not what rejected this"
+    );
+
+    let SolverFailure::ValidityViolation { tet_id, message } = failure else {
+        panic!("expected a validity violation, got: {failure:?}");
+    };
+    assert_eq!(tet_id, 0, "the single element is the violator");
+    assert!(
+        message.contains("REST element is not orientation-valid"),
+        "at pull {pull} the five-point readout is {ratio} (healthy) and the deformed \
+         state certifies, so ONLY the rest certificate can reject this. Got: {message}"
+    );
+}
+
+/// ★ EVERY rest defect is recorded, not only the lowest-numbered one.
+///
+/// ⚠ White-box, and deliberately so. With [`InversionHandling`] carrying a single
+/// variant the gate visits every element in ascending order and stops at the first
+/// violator, so no *observable* behaviour distinguishes "keep the first defect" from
+/// "keep them all" — which is exactly the reasoning an earlier revision of this
+/// solver used to keep only the first.
+///
+/// It becomes observable the moment a material opts out of the orientation check: a
+/// lower-numbered element the gate SKIPS would consume the only slot and hide a
+/// higher-numbered one the gate does reach, and that element — invalid in its rest
+/// configuration — would pass. `det F ≡ 1` at rest, so nothing else would catch it.
+/// The invariant is pinned here because the behaviour cannot pin it yet.
+#[test]
+fn every_rest_defect_is_recorded_not_only_the_first() {
+    let field = MaterialField::uniform(1.0e5, 4.0e5);
+    let tet4 = HandBuiltTetMesh::two_tet_shared_face(&field);
+    let n_tets = tet4.n_tets();
+    assert!(n_tets >= 2, "the fixture needs at least two elements");
+
+    // Push every midside away from the origin until BOTH elements are folded in
+    // their rest configuration. Scanned rather than hardcoded: the window between
+    // "nothing folds" and "the curved Jacobian is singular and `new()` panics" is
+    // not wide, and a constant would silently leave it under any fixture change.
+    let solver_at = |scale: f64| -> CpuTet10NHSolver<Tet10Mesh> {
+        let mesh = Tet10Mesh::from_tet4(&tet4).with_curved_midsides(|p| p * scale);
+        CpuNewtonSolver::new(
+            Tet10,
+            mesh,
+            NullContact,
+            SolverConfig::skeleton(),
+            BoundaryConditions {
+                pinned_vertices: (0..tet4.n_vertices() as VertexId).collect(),
+                roller_vertices: Vec::new(),
+                loaded_vertices: Vec::new(),
+            },
+        )
+    };
+
+    let found = (1..=60u32).find_map(|step| {
+        let solver = solver_at(1.0 + f64::from(step) * 0.05);
+        (solver.rest_orientation_defects.len() >= 2).then_some(solver)
+    });
+    let solver = found.expect(
+        "no midside scale in the scanned window folds two elements at once — the \
+         fixture no longer distinguishes keeping every defect from keeping the first",
+    );
+
+    let ids: Vec<usize> = solver
+        .rest_orientation_defects
+        .iter()
+        .map(|(t, _)| *t)
+        .collect();
+    assert!(
+        ids.len() >= 2,
+        "expected every folded element to be recorded, got {ids:?}"
+    );
+    // Ascending is not cosmetic: the gate binary-searches this list.
+    assert!(
+        ids.windows(2).all(|w| w[0] < w[1]),
+        "the defect list must be strictly ascending by tet id for the gate's binary \
+         search to find anything: {ids:?}"
+    );
+    assert!(
+        ids.contains(&1),
+        "a defect on an element OTHER than the first must survive — keeping only the \
+         lowest-numbered one is the regression this pins. Got {ids:?}"
+    );
+}
+
+/// ★★★ The identity the certified gate RESTS on, pinned against the function the
+/// assembly actually uses.
+///
+/// `check_orientation` certifies `det J_def > 0` and concludes `det F > 0`. The whole
+/// step between those is
+///
+/// ```text
+///     det F = det J_def / det J_rest
+/// ```
+///
+/// and until this existed nothing tested it. Every other fixture in this file is
+/// sign-consistent under either reading — they feed states where both quantities go
+/// negative together — so a `grad_x_n` built from the wrong configuration, or paired
+/// with the wrong Gauss point, would leave all of them green while the gate certified
+/// a quantity that is not `det F`. Both mutants were run: pairing `d_def[q]` with
+/// `d_rest[0]` fails this test at Gauss point 1.
+///
+/// ⚠ It does NOT catch a transposed `grad_x_n`, and no determinant-based check can:
+/// `det(Aᵀ) = det(A)`. That is a blind spot of the method and not of this fixture, and
+/// it is harmless HERE for the same reason — the gate consumes nothing but
+/// determinants, so a transpose cannot change its verdict either. A convention error
+/// that would matter has to change a determinant, and those are what this catches.
+///
+/// This compares `deformation_gradient(x_def, grad_x_n).determinant()` — the tensor
+/// `first_piola` is actually handed — against `Element::rest_jacobian_dets` evaluated
+/// at the same Gauss point, on curved elements under asymmetric deformation. Symmetric
+/// fixtures would not catch a transpose, so none are used.
+#[test]
+fn det_f_is_the_ratio_of_the_two_jacobian_determinants() {
+    // Deliberately asymmetric in all three axes: a transposed `grad_x_n` gives the
+    // same determinant on a symmetric element, so symmetry here would hide the defect
+    // this test exists for.
+    let base: [[f64; 3]; 4] = [
+        [0.0, 0.0, 0.0],
+        [1.3, 0.0, 0.0],
+        [0.4, 0.9, 0.0],
+        [0.2, 0.3, 1.7],
+    ];
+    // Midside offsets off the straight midpoints — a genuinely CURVED element, where
+    // `det J` varies per Gauss point and the identity has something to say.
+    let curve: [[f64; 3]; 6] = [
+        [0.05, -0.03, 0.02],
+        [-0.02, 0.06, 0.01],
+        [0.03, 0.04, -0.05],
+        [-0.04, 0.02, 0.03],
+        [0.01, -0.05, 0.04],
+        [0.02, 0.03, 0.06],
+    ];
+
+    let mut rest = [[0.0f64; 3]; 10];
+    rest[..4].copy_from_slice(&base);
+    for (i, &(a, b)) in TET10_EDGE_NODES.iter().enumerate() {
+        for k in 0..3 {
+            rest[4 + i][k] = 0.5f64.mul_add(base[a][k] + base[b][k], curve[i][k]);
+        }
+    }
+    let x_rest = SMatrix::<f64, 10, 3>::from_fn(|a, k| rest[a][k]);
+    assert!(
+        Tet10.certify_orientation(&x_rest).is_certified(),
+        "the fixture's rest element must be valid, or the ratio's denominator is not \
+         the certified-positive quantity the gate relies on"
+    );
+
+    // ⚠ Non-vacuity, tracked and asserted below: a curved element (so `det J` varies
+    // per Gauss point and the identity has something to say) and a population that
+    // reaches BOTH signs of `det F` (so the sign-equivalence is exercised where it
+    // matters, not only where everything is comfortably positive).
+    let mut saw_negative = false;
+    let mut saw_positive = false;
+
+    // Several asymmetric deformations. ⚠ The last MIRRORS through `z = 0`, which is
+    // what actually reaches a negative `det F` — an earlier revision instead scaled a
+    // shear up and called the largest case "folding", and the `saw_negative` assertion
+    // below caught that it never folded at all. Growing a smooth deformation does not
+    // reliably invert an element; reflecting it does, by construction.
+    for (label, scale, twist, mirror_z) in [
+        ("mild", 0.05_f64, 0.02_f64, 1.0_f64),
+        ("large", 0.30, 0.15, 1.0),
+        ("mirrored through z = 0", 0.10, 0.05, -1.0),
+    ] {
+        let x_def = SMatrix::<f64, 10, 3>::from_fn(|a, k| {
+            // Node index (0..10) and axis index (0..3) — both exact in f64; the lint
+            // is about `usize` values that could exceed the mantissa, which these
+            // cannot.
+            #[allow(clippy::cast_precision_loss)]
+            let (a_f, k_f) = (a as f64, k as f64);
+            let shear = twist * a_f * (k_f + 1.0) * 0.031;
+            let v = rest[a][k] + scale * (0.7 * rest[a][(k + 1) % 3] - 0.3 * rest[a][k]) + shear;
+            if k == 2 { v * mirror_z } else { v }
+        });
+
+        let d_def = Tet10.rest_jacobian_dets(&x_def);
+        let d_rest = Tet10.rest_jacobian_dets(&x_rest);
+        assert!(
+            d_rest.iter().any(|d| (d - d_rest[0]).abs() > 1e-9),
+            "the rest element must be genuinely CURVED — a straight one has the same \
+             det J at every Gauss point, and the identity is trivial there"
+        );
+        for (q, (xi, _w)) in Tet10.gauss_points().into_iter().enumerate() {
+            let grad_xi = Tet10.shape_gradients(xi);
+            // `J_rest(xi) = x_restT * grad_xi`, and `grad_x_n = grad_xi * J_rest^-1` —
+            // the same composition `construct::curved_gauss_geometry` caches.
+            let j_rest = x_rest.transpose() * grad_xi;
+            let grad_x_n = grad_xi
+                * j_rest
+                    .try_inverse()
+                    .expect("the certified rest element has a non-singular Jacobian");
+            let det_f = deformation_gradient(&x_def, &grad_x_n).determinant();
+            let ratio = d_def[q] / d_rest[q];
+            assert!(
+                (det_f - ratio).abs() <= 1e-9 * ratio.abs().max(1.0),
+                "{label}, Gauss point {q}: det F = {det_f} but det J_def / det J_rest = \
+                 {ratio}. The gate certifies the RATIO's numerator and concludes about \
+                 det F; if these differ, it is certifying the wrong quantity"
+            );
+            // And the conclusion the gate actually draws, stated as a sign equivalence.
+            assert_eq!(
+                det_f > 0.0,
+                d_def[q] > 0.0,
+                "{label}, Gauss point {q}: with det J_rest = {} > 0 certified, the sign \
+                 of det F must BE the sign of det J_def — that equivalence is what lets \
+                 the gate bound one and conclude about the other",
+                d_rest[q]
+            );
+            saw_negative |= det_f < 0.0;
+            saw_positive |= det_f > 0.0;
+        }
+    }
+    assert!(
+        saw_negative && saw_positive,
+        "the fixture must reach both signs of det F, or the sign equivalence is only \
+         checked where it is easy: saw_negative = {saw_negative}, \
+         saw_positive = {saw_positive}"
+    );
+}
+
+/// A `Tet10` whose certificate can be switched to [`RestValidity::Undetermined`] after
+/// the solver holding it has been constructed.
+///
+/// ⚠ A stub, and the only way to reach that arm of the gate. `Undetermined` means an
+/// element grazes `det J = 0` too closely for the bracket to separate within the
+/// subdivision budget, and it does not occur in geometry a solve produces: a search
+/// over **200 000 random curved elements at curvatures from 0.20 to 0.60 returned
+/// zero**. So the arm cannot be reached by any fixture — only injected.
+///
+/// The flag is shared rather than owned so the test can arm it *after* `new()` has
+/// taken its rest certificate. Disarmed it delegates to `Tet10` exactly, which is what
+/// lets construction succeed normally and isolates the deformed arm from the rest one.
+#[derive(Clone)]
+struct Tet10UndeterminedWhenArmed(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Element<10, 4> for Tet10UndeterminedWhenArmed {
+    fn shape_functions(&self, xi: Vec3) -> nalgebra::SVector<f64, 10> {
+        Tet10.shape_functions(xi)
+    }
+    fn shape_gradients(&self, xi: Vec3) -> SMatrix<f64, 10, 3> {
+        Tet10.shape_gradients(xi)
+    }
+    fn gauss_points(&self) -> [(Vec3, f64); 4] {
+        Tet10.gauss_points()
+    }
+    fn certify_orientation(&self, x: &SMatrix<f64, 10, 3>) -> crate::element::RestValidity {
+        if self.0.load(std::sync::atomic::Ordering::Relaxed) {
+            crate::element::RestValidity::Undetermined
+        } else {
+            Tet10.certify_orientation(x)
+        }
+    }
+}
+
+/// ★ `Undetermined` is read as a VIOLATION — absence of a proof is not a proof.
+///
+/// ⚠ The one arm of the gate no fixture can reach (see
+/// [`Tet10UndeterminedWhenArmed`]), and therefore the one a mutation sweep found
+/// unguarded: flipping it to `Ok(())` passed the entire suite. That is the fail-OPEN
+/// direction on a state the gate's own docs call "not one to integrate over", so it is
+/// pinned by injection rather than left to the argument that it cannot happen.
+#[test]
+fn an_uncertifiable_element_is_read_as_a_violation() {
+    let armed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let tet4 = SingleTetMesh::new(&MaterialField::uniform(1.0e5, 4.0e5));
+    let solver: CpuNewtonSolver<
+        Tet10UndeterminedWhenArmed,
+        Tet10Mesh,
+        NullContact,
+        NeoHookean,
+        10,
+        4,
+    > = CpuNewtonSolver::new(
+        Tet10UndeterminedWhenArmed(std::sync::Arc::clone(&armed)),
+        Tet10Mesh::from_tet4(&tet4),
+        NullContact,
+        SolverConfig::skeleton(),
+        BoundaryConditions {
+            pinned_vertices: vec![0, 1, 2, 3],
+            roller_vertices: Vec::new(),
+            loaded_vertices: Vec::new(),
+        },
+    );
+
+    // Disarmed through construction, so the REST certificate succeeded and the rest
+    // arm of the gate is silent — whatever fires below is the deformed arm.
+    let rest = {
+        let positions = solver.mesh.positions();
+        let mut x = vec![0.0_f64; 3 * positions.len()];
+        for (v, pos) in positions.iter().enumerate() {
+            x[3 * v] = pos.x;
+            x[3 * v + 1] = pos.y;
+            x[3 * v + 2] = pos.z;
+        }
+        x
+    };
+    assert!(
+        solver.check_validity_at_step_start(&rest).is_ok(),
+        "disarmed, the rest state must pass — otherwise this test is measuring the rest \
+         arm and not the one it names"
+    );
+
+    armed.store(true, std::sync::atomic::Ordering::Relaxed);
+    let Err(SolverFailure::ValidityViolation { tet_id, message }) =
+        solver.check_validity_at_step_start(&rest)
+    else {
+        panic!("an uncertifiable element must fail the gate, not pass it");
+    };
+    assert_eq!(tet_id, 0, "the single element is the violator");
+    assert!(
+        message.contains("could not be certified either way"),
+        "expected the uncertifiable verdict on the inversion slot, got: {message}"
+    );
+}
+
+/// The four reference corners in parametric coordinates, in this crate's corner
+/// convention (local node 0 is the `1 - xi - eta - zeta` complement). Mirrors
+/// `element::validity`'s private `REFERENCE_SIMPLEX`; kept local rather than made
+/// public, because a test asserting on a witness point should state the convention
+/// it expects rather than import agreement with the thing under test.
+const REFERENCE_SIMPLEX_VERTICES: [Vec3; 4] = [
+    Vec3::new(0.0, 0.0, 0.0),
+    Vec3::new(1.0, 0.0, 0.0),
+    Vec3::new(0.0, 1.0, 0.0),
+    Vec3::new(0.0, 0.0, 1.0),
+];
+
+/// The step-start gate's verdict on `x`, asked directly.
+///
+/// [`validity_message`] drives a whole `try_replay_step`, which is right for fixtures
+/// asserting the failure reaches a caller. This one asks the gate, so a fixture that
+/// scans many candidate meshes does not pay a Newton loop per candidate.
+fn validity_result(solver: &CpuTet10NHSolver<Tet10Mesh>, x: &[f64]) -> Result<(), SolverFailure> {
+    solver.check_validity_at_step_start(x)
 }
 
 /// Run the step-start gate on `x` and return the `ValidityViolation` message, or panic
@@ -1403,11 +1925,17 @@ fn validity_message(solver: &CpuTet10NHSolver<Tet10Mesh>, x: &[f64]) -> (usize, 
 /// from both corner-block slots' thresholds — while the quadratic map folds through
 /// itself at an interior Gauss point.
 ///
-/// **Every Gauss index is covered, and that is the point.** Reflecting the midside of an
-/// edge through one of its endpoints inverts the Stroud point nearest that corner, so the
-/// table walks `q = 0, 1, 2, 3` and asserts the reported index each time. Without this, a
-/// gate that inspected only `gauss[0]` — the exact degeneration the sweep exists to
-/// prevent — would still pass.
+/// **Every corner is covered, and that is the point.** Reflecting the midside of an edge
+/// through one of its endpoints folds the element at that corner, so the table walks all
+/// four and asserts the WITNESS POINT reported each time. A certifier that named a fixed
+/// point, or the wrong corner, passes any single row and fails the table.
+///
+/// ⚠ This used to walk the four Stroud points and assert the reported Gauss INDEX, against
+/// a mutant that inspected only `gauss[0]`. The gate no longer has indices to report — it
+/// returns one verdict per element — so the mutant is gone and the property that replaced
+/// it is a stronger one: the witness is a point the determinant was *evaluated*
+/// non-positive at, and the four reference corners are coefficients of the certificate
+/// exactly, so each row's fold has a predictable, distinct witness.
 ///
 /// `min_gauss_det_ratio` pins the premise. It is a genuinely different code path (it
 /// evaluates `Element::rest_jacobian_dets` on raw node coordinates and never reads
@@ -1425,9 +1953,9 @@ fn validity_message(solver: &CpuTet10NHSolver<Tet10Mesh>, x: &[f64]) -> (usize, 
 /// because folding an all-NaN diagonal with `f64::max` yields `0`. Both blame the linear
 /// algebra for an inverted element.
 #[test]
-fn tet10_midside_inversion_is_gated_at_every_gauss_point() {
-    // (edge index, endpoint corner to reflect that edge's midside through). The Stroud
-    // point nearest `corner` is the one that inverts, so this covers q = 0..4.
+fn tet10_midside_inversion_is_gated_at_every_corner() {
+    // (edge index, endpoint corner to reflect that edge's midside through). Reflecting
+    // through `corner` folds the element at that corner, so this covers all four.
     for (edge, corner) in [(0_usize, 0_usize), (1, 1), (5, 2), (3, 3)] {
         let (solver, rest) = single_tet10_all_corners_pinned();
         let mut x = rest.clone();
@@ -1465,12 +1993,18 @@ fn tet10_midside_inversion_is_gated_at_every_gauss_point() {
             message.contains("inversion = det F"),
             "must fail on the inversion slot, got: {message}"
         );
-        // The mutant-killer: pins WHICH point reported, so a sweep truncated to
-        // `gauss[0]` (or reversed, or mis-labelled) cannot pass the whole table.
-        let expected = format!("at Gauss point {corner} (0-based) of 4");
+        // The mutant-killer: pins WHICH point reported. The four reference corners are
+        // coefficients of the certificate exactly, so reflecting a midside through
+        // `corner` must be refuted AT that corner's parametric vertex — a certifier
+        // that reported a fixed point, or the wrong corner, cannot pass the whole table.
+        let vertex = REFERENCE_SIMPLEX_VERTICES[corner];
+        let expected = format!(
+            "at xi = ({:.4}, {:.4}, {:.4})",
+            vertex.x, vertex.y, vertex.z
+        );
         assert!(
             message.contains(&expected),
-            "expected the violation to name the Gauss point nearest corner {corner} \
+            "expected the violation to name corner {corner}'s parametric vertex \
              (\"{expected}\"), got: {message}"
         );
     }
@@ -1580,7 +2114,8 @@ fn fully_pinned_inverted_element_no_longer_converges() {
 
     let rest = tet10_rest_dofs(&solver);
     let mut x = rest;
-    // Same reflection the sweep test uses: midside 4 through corner 0, inverting the
+    // Same reflection `tet10_midside_inversion_is_gated_at_every_corner` uses: midside 4
+    // through corner 0, inverting the
     // Gauss point nearest it.
     x[12] = -0.05;
     assert!(
@@ -1596,21 +2131,26 @@ fn fully_pinned_inverted_element_no_longer_converges() {
     );
 }
 
-/// The Gauss sweep must leave **Tet4** verdicts exactly where they were.
+/// The gate must leave **Tet4** verdicts exactly where they were.
 ///
-/// This is the back-compat half of the change, and until now nothing exercised it: every
-/// other validity test in the crate trips `max_stretch_deviation`, so no test fired the
-/// inversion branch on a linear element at all. For `N == 4` the swept `F` is bit-identical
-/// to the corner block (`Tet4::shape_gradients` discards its `xi`, `G == 1`, and both
-/// gradients are post-multiplied by the same `j_0_inv`), so these two states must be
-/// rejected exactly as they were before the sweep.
+/// This is the back-compat half, and until it was written nothing exercised it: every other
+/// validity test in the crate trips `max_stretch_deviation`, so no test fired the inversion
+/// branch on a linear element at all.
+///
+/// ⚠ The reason it holds has been REPLACED, not merely reworded. It used to be that the
+/// swept `F` was bit-identical to the corner block (`Tet4::shape_gradients` discards its
+/// `xi`, `G == 1`, both gradients post-multiplied by the same `j_0_inv`). The gate no
+/// longer builds `F` from a cached gradient at all. It now holds because
+/// `det F = det J_def / det J_rest`, both are single constants for an affine map, and the
+/// rest determinant is certified strictly positive — so the sign of the certified quantity
+/// is the sign of `det F`, exactly as before.
 ///
 /// Both signs of the boundary are covered deliberately. Corner 3 pushed *through* the
 /// opposite face gives `det F < 0`; corner 3 laid *onto* that face gives `det F == 0`,
 /// which pins the `<=` in the predicate — under a `< 0.0` mutant the degenerate state
 /// would instead reach `invert_transpose` and panic as a singular `F`.
 #[test]
-fn tet4_inversion_verdict_survives_the_gauss_sweep() {
+fn tet4_rejects_negative_and_zero_det_f_on_the_inversion_slot() {
     for (label, z3, expect_sign) in [
         ("mirrored through the opposite face", -0.1_f64, "negative"),
         ("collapsed onto the opposite face", 0.0_f64, "zero"),

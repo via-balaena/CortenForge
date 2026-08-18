@@ -1,19 +1,38 @@
-//! PILOT — does the solver's deformed-configuration validity check miss folds?
+//! Does the solver's deformed-configuration validity check miss folds? — the
+//! pilot that decided it, kept as the evidence the gate now rests on.
 //!
 //! `CpuNewtonSolver::check_orientation` is the gate that stops a folded element
-//! reaching `first_piola`. It runs on **every Newton iteration of every
-//! simulation**, and it samples:
+//! reaching `first_piola`. It **used to sample five values**:
 //!
 //! - `det F` at the four Gauss points, where the constitutive model is
 //!   evaluated, and
 //! - the **corner-block affine** `det F`, from the four corners only.
 //!
-//! Five values. The rest-configuration meshers used four, then eight, and both
-//! were measured to miss real folds — 18 on the conformed disc, then 5 more on
-//! the lofted one, the worst inverted past its own straight volume. This asks
-//! whether the same gap exists in the deformed configuration, where the
-//! consequence is worse: the solver integrates over the folded element and
-//! takes `|det|`, silently, inside the Newton loop.
+//! The rest-configuration meshers used four, then eight, and both were measured to
+//! miss real folds — 18 on the conformed disc, then 5 more on the lofted one, the
+//! worst inverted past its own straight volume. This asked whether the same gap
+//! existed in the deformed configuration, where the consequence is worse: the
+//! solver integrates over the folded element and takes `|det|`, silently.
+//!
+//! ✅ **It does, and the gate was converted.** `check_orientation` now certifies
+//! `det J_def > 0` over the whole element and pairs it with a rest certificate taken
+//! once at construction. `five_point_says_healthy` below is therefore the rule the
+//! gate *used* to apply, kept as the comparator these measurements are stated
+//! against — not a description of what ships.
+//!
+//! ⚠ An earlier revision of this header said the gate "runs on every Newton
+//! iteration of every simulation". It does not: it runs at **two step boundaries**
+//! per step (`newton.rs` — the incoming state and the converged one), while assembly
+//! and factorization run per iteration. That mistake is what made the cost look
+//! prohibitive. Measured on whole steps
+//! (`what_one_step_costs_at_two_resolutions`), certifying it costs **~1 % of a
+//! step** — 3 interleaved before/after pairs at each of two resolutions, the
+//! certified side dearer in all 6.
+//!
+//! ⚠ Interleave the pairs. Run three of one condition and then three of the other
+//! and machine drift is fully confounded with the change: done that way, the same
+//! measurement read +4.3 % on the small mesh and **−2.0 % on the large one**, which
+//! is not a cost profile, it is a clock.
 //!
 //! # Why the existing primitive applies unchanged
 //!
@@ -56,8 +75,11 @@
 //! and produce a reassuring zero that means nothing.
 //!
 //! ⇒ Read the conclusion as **"no contact-free solve enters the blind spot"**.
-//! Whether a contact solve does is open, and is the measurement that would
-//! reopen the case for certifying the deformed check.
+//! Whether a contact solve does remains open — but it is no longer load-bearing:
+//! the deferral it was blocking rested on a cost that turned out to be ~1 % of a
+//! step, so the gate was certified without waiting for it. The contact census is
+//! still worth running, as a measurement of how often the old rule was wrong in the
+//! regime most likely to fold, rather than as the thing that decides the design.
 
 #![allow(
     // Element/vertex counts index the `Mesh` trait's `u32` id space.
@@ -117,12 +139,19 @@ fn corner_block_det(x: &SMatrix<f64, 10, 3>) -> f64 {
     SMatrix::<f64, 3, 3>::from_fn(|r, c| x[(c + 1, r)] - x[(0, r)]).determinant()
 }
 
-/// **The solver's check, replicated exactly**: the sign verdict at the four
-/// Gauss points plus the corner block.
+/// **The solver's former check**: the sign verdict at the four Gauss points plus the
+/// corner block.
 ///
-/// `det F = det J_def / det J_rest` and `det J_rest > 0` is certified, so the
-/// sign of `det F` is the sign of `det J_def` — which is what this reads. The
-/// corner block is compared in the same way.
+/// ⚠ Replicated up to a positive factor, not literally. The old gate divided by
+/// `det J_rest` at each Gauss point; this reads `det J_def` there and divides only on
+/// the corner block. The verdicts agree because `det F = det J_def / det J_rest` and
+/// the denominator is strictly positive — **which every caller must ensure**, and
+/// each does: the random population below skips any element whose rest is not
+/// certified, the sphere is conformed against a quality floor, and the cantilever is
+/// straight-edged (affine, so one positive constant).
+///
+/// An earlier revision called this "replicated exactly", which it is not, and the
+/// asymmetry between its two halves is the tell.
 fn five_point_says_healthy(deformed: &SMatrix<f64, 10, 3>, rest: &SMatrix<f64, 10, 3>) -> bool {
     let gauss_ok = Tet10
         .rest_jacobian_dets(deformed)
@@ -181,9 +210,11 @@ fn how_much_does_the_five_point_deformed_check_miss() {
 
         for _ in 0..3000 {
             let (rest, def) = rest_and_deformed(&mut rng, deform);
-            // Only elements whose REST state is sound are meaningful here — the
-            // solver never starts from an invalid rest mesh (that is what the
-            // mesher work certified).
+            // Only elements whose REST state is sound are meaningful here, and this
+            // is also what makes `five_point_says_healthy`'s denominator positive.
+            // The solver no longer merely assumes this of its input: it certifies
+            // every element's rest configuration at construction and fails the first
+            // step boundary otherwise.
             if !certify_rest(&rest, ValidityBar::Positive).is_certified() {
                 continue;
             }
@@ -389,8 +420,19 @@ const STATIC_DT: f64 = 1.0;
 /// scene `tet10_bending_locking` drives, which is the canonical Tet10 bending
 /// fixture in this crate.
 fn cantilever_scene() -> (Tet10Mesh, Vec<VertexId>, Vec<VertexId>) {
+    cantilever_scene_at(8, 2, 2)
+}
+
+/// [`cantilever_scene`] at an arbitrary cell resolution, so the cost arm can ask
+/// how the gate's share moves with element count.
+fn cantilever_scene_at(
+    nx: usize,
+    ny: usize,
+    nz: usize,
+) -> (Tet10Mesh, Vec<VertexId>, Vec<VertexId>) {
     let field = MaterialField::uniform(MU_BEAM, 2.0 * MU_BEAM * NU_BEAM / (1.0 - 2.0 * NU_BEAM));
-    let tet4 = HandBuiltTetMesh::cantilever_bilayer_beam(8, 2, 2, LENGTH, BREADTH, HEIGHT, &field);
+    let tet4 =
+        HandBuiltTetMesh::cantilever_bilayer_beam(nx, ny, nz, LENGTH, BREADTH, HEIGHT, &field);
     let tet10 = Tet10Mesh::from_tet4(&tet4);
     let pinned: Vec<VertexId> = pick_vertices_by_predicate(&tet10, |p| p.x.abs() < 1e-9);
     let loaded: Vec<VertexId> = pick_vertices_by_predicate(&tet10, |p| (p.x - LENGTH).abs() < 1e-9);
@@ -401,9 +443,23 @@ fn cantilever_scene() -> (Tet10Mesh, Vec<VertexId>, Vec<VertexId>) {
     (tet10, pinned, loaded)
 }
 
-/// ★★ The measurement that decides whether the blind spot matters: a real
-/// quasi-static **bending** solve, censused at the states the solver's own gate
-/// examines.
+/// ★★ The measurement that decided whether the blind spot matters — and, now that
+/// it has been acted on, the regression net that says certification did not cost a
+/// real solve: a quasi-static **bending** solve, censused at the states the
+/// solver's own gate examines.
+///
+/// ⚠⚠ **`total_folded == 0` can no longer fail for the reason it was written.**
+/// The gate now certifies these same states, so a folded step boundary makes
+/// `try_replay_step` return `Err` and the loop breaks before the census sees it.
+/// That assert is kept as a cross-check that the census and the gate agree about
+/// what the certificate says, not as a discovery — and it is not what makes this
+/// test worth running.
+///
+/// ★ **`max_tip` is the live assertion.** Certification is strictly stricter than
+/// the five-point rule, so the failure mode this test now guards is the opposite
+/// one: a gate so strict that real bending stops converging. The beam reaches
+/// 136 % of its own length in tip deflection; if certification ever refused a step
+/// before that, the ramp would break early and `max_tip` would fall short.
 ///
 /// `check_validity_at_step_start` runs on the incoming state at each step
 /// boundary, so censusing every step boundary examines exactly the states the
@@ -517,22 +573,147 @@ fn a_real_bending_solve_censused_at_every_step_boundary() {
     );
     println!("  totals: {total_folded} folded, {total_missed} of them invisible to the gate");
 
-    // ★ THE FINDING, as a detector rather than a print. The blind spot is real —
-    // the random population above proves it. The claim THIS test carries is that
-    // real bending never enters it. If that reverses, the case for certifying
-    // the hot path is back, and this is how it announces itself.
+    // Cross-check, not a discovery: the gate certifies these very states, so it
+    // would have refused the step before the census could see a fold. This asserts
+    // the census and the gate read the same certificate — a disagreement would mean
+    // one of them is not calling `certify_orientation` on the state it claims to.
     assert_eq!(
         total_folded, 0,
-        "a real bending solve produced {total_folded} folded elements at step boundaries, \
-         {total_missed} of them invisible to the solver's five-point gate — the deformed \
-         check now has a real scene that defeats it, which is the evidence needed to certify \
-         the hot path"
+        "the census found {total_folded} folded elements at states the solver's own gate \
+         certified ({total_missed} of them invisible to the five-point rule). The gate and \
+         this census disagree, which means one of them is not reading the state it claims to"
     );
-    // ⚠ Non-vacuity: without this, the assert above passes for a beam that never
-    // bent — a load ramp failing on step 1 would read as a clean result.
+    // ★ THE LIVE ASSERTION. Certification is strictly stricter than what it
+    // replaced, so the risk it introduces is refusing steps a real solve needs. If
+    // the ramp above ever breaks early, this is what says so.
     assert!(
         max_tip > 0.5 * LENGTH,
-        "the beam must actually bend for that zero to mean anything; max tip deflection was \
-         {max_tip:.4} m on a {LENGTH} m beam"
+        "the beam must reach a real deflection under the certified gate; max tip deflection \
+         was {max_tip:.4} m on a {LENGTH} m beam. A short ramp here means certification is \
+         refusing steps that the five-point rule allowed"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// WHAT THE CONVERSION WOULD COST A CALLER
+// ---------------------------------------------------------------------------
+
+/// Untimed load levels walked before timing starts, then the level each timed
+/// step advances to. A caller ramps; it does not jump to full load from rest.
+const WARM_RAMP: [f64; 4] = [8.0, 32.0, 72.0, 128.0];
+const TIMED_LOAD: f64 = 162.0;
+
+/// Timed steps per round, and timed rounds after one untimed warm-up.
+const TIMED_STEPS: usize = 3;
+
+/// ★ The measurement that decides the conversion — whole steps, not the predicate.
+///
+/// [`deformed_certification_cost_against_the_five_point_check`] says the certificate
+/// costs ~2.2x the five-point check **per element**. That ratio is not what a caller
+/// pays, and reading it as though it were is how this deferral was originally argued
+/// ("2.31x on the hot path"). The gate is not the step: `check_validity_at_step_start`
+/// runs at **two step boundaries** — once on the incoming state, once on the converged
+/// one (`newton.rs`) — while assembly, factorization and every Armijo backtrack run
+/// per Newton iteration. So this arm times `try_replay_step` itself. Run it before and
+/// after a change to the gate and the difference is what a caller actually pays, with
+/// no arithmetic in between and no assumption about how often the gate is called.
+///
+/// ⚠ The small beam is kept deliberately. The gate is **linear** in element count while
+/// the factorization is superlinear, so the gate's share is largest on the *smallest*
+/// mesh — refining makes a gate change look cheaper, not dearer. Reporting only the
+/// refined row would flatter the conversion.
+///
+/// ⚠ Every timed step is an INCREMENT from a pre-solved neighbour, which is what a
+/// simulation does. An earlier draft timed a jump from rest to full load instead: that
+/// is hundreds of Newton iterations of a kind no caller runs, it charged the step
+/// **2180 ms** against this form's 42 ms — a 51x self-inflicted inflation that made the
+/// fixture unrunnable rather than conservative.
+///
+/// `#[ignore]`: a deliberately-run measurement, not a gate. Wall-clock thresholds in CI
+/// are noise detectors, and this arm's whole purpose is to be read by a human deciding
+/// whether a gate change is affordable. Run it with `--ignored --nocapture`, in
+/// **release** — the debug numbers measure the debug build, not the engine.
+#[test]
+#[ignore = "deliberately-run cost measurement (~40 s, release); not a CI gate"]
+fn what_one_step_costs_at_two_resolutions() {
+    println!("\n=== STEP COST (release) — the denominator a gate change is a share of ===");
+    println!(
+        "{:>10} {:>10} {:>12} {:>16}",
+        "elements", "DOFs", "ms / step", "us / element"
+    );
+    for (nx, ny, nz) in [(8usize, 2usize, 2usize), (12, 3, 4)] {
+        let (tet10, pinned, loaded) = cantilever_scene_at(nx, ny, nz);
+        let n_tets = tet10.n_tets();
+
+        let positions = tet10.positions();
+        let n_dof = 3 * positions.len();
+        let mut x_flat = vec![0.0; n_dof];
+        for (v, p) in positions.iter().enumerate() {
+            x_flat[3 * v] = p.x;
+            x_flat[3 * v + 1] = p.y;
+            x_flat[3 * v + 2] = p.z;
+        }
+
+        let n_loaded = loaded.len() as f64;
+        let bc = BoundaryConditions {
+            pinned_vertices: pinned,
+            roller_vertices: Vec::new(),
+            loaded_vertices: loaded.iter().map(|&v| (v, LoadAxis::AxisZ)).collect(),
+        };
+        let mut cfg = SolverConfig::skeleton();
+        cfg.dt = STATIC_DT;
+        cfg.max_newton_iter = 500;
+        cfg.tol = 1e-8;
+        let solver: CpuTet10NHSolver<Tet10Mesh> =
+            CpuNewtonSolver::new(Tet10, tet10.clone(), NullContact, cfg, bc);
+
+        // Walk to a working deflection, untimed — the timed step then advances
+        // from a converged neighbour, so it costs what a simulation's steps cost.
+        let v_prev = Tensor::zeros(&[n_dof]);
+        let mut x_prev = Tensor::from_slice(&x_flat, &[n_dof]);
+        for load in WARM_RAMP {
+            let theta = Tensor::from_slice(&[load / n_loaded], &[1]);
+            let step = solver
+                .try_replay_step(&x_prev, &v_prev, &theta, cfg.dt)
+                .expect("the warm ramp must converge for the timings below to mean anything");
+            x_prev = Tensor::from_slice(&step.x_final, &[n_dof]);
+        }
+
+        let theta = Tensor::from_slice(&[TIMED_LOAD / n_loaded], &[1]);
+        let warm = solver
+            .try_replay_step(&x_prev, &v_prev, &theta, cfg.dt)
+            .expect("the timed increment must converge");
+        let mut tip = 0.0f64;
+        for (v, p) in positions.iter().enumerate() {
+            tip = tip.max((warm.x_final[3 * v + 2] - p.z).abs());
+        }
+
+        let mut best = f64::INFINITY;
+        for _ in 0..ROUNDS {
+            let t = Instant::now();
+            for _ in 0..TIMED_STEPS {
+                let step = solver
+                    .try_replay_step(&x_prev, &v_prev, &theta, cfg.dt)
+                    .expect("the timed increment converged during warm-up");
+                std::hint::black_box(step.x_final[0]);
+            }
+            best = best.min(t.elapsed().as_secs_f64() / TIMED_STEPS as f64);
+        }
+        println!(
+            "{n_tets:>10} {n_dof:>10} {:>12.3} {:>16.2}",
+            best * 1e3,
+            best * 1e6 / n_tets as f64
+        );
+        // ⚠ Non-vacuity: a step that barely moves the beam is not the step whose
+        // cost is being reported. The ramp arm above reaches 0.6 m on this beam.
+        assert!(
+            tip > 0.3 * LENGTH,
+            "the timed step must land on a genuinely deflected state; tip was {tip:.4} m"
+        );
+    }
+    println!(
+        "  Read `deformed_certification_cost_against_the_five_point_check`'s per-element\n  \
+         figures against THIS column, not against each other. The gate runs twice per\n  \
+         step, so its share is 2 x (per-element ns) x elements / (ms per step)."
     );
 }

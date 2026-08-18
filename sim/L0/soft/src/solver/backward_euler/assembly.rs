@@ -417,7 +417,19 @@ where
     ///
     /// `1.0` means the configuration is as well-shaped as the rest mesh; a value in
     /// `(0, 1)` means some element has been squashed by that factor at some quadrature
-    /// point; `≤ 0` means an element has folded through itself (inverted) there.
+    /// point; `≤ 0` means an element has folded through itself (inverted) **at one of
+    /// those points**.
+    ///
+    /// ⚠⚠ **Four points, so `> 0` does NOT mean "no element folded."** `det F` is a ratio
+    /// of cubics for a curved Tet10 and is free to dip negative between quadrature points;
+    /// measured, a five-point read misses up to 100 % of folds at onset. The solver's own
+    /// gate no longer works this way — its `inversion` slot *certifies*
+    /// `det F > 0` over the whole element — so a configuration the solver refuses can carry
+    /// a comfortably positive value here. This is a **readout that reports a number**, and
+    /// deliberately still the weaker of the two: it is called once per captured frame rather
+    /// than at a step boundary, and its published values are anchors that a change of
+    /// meaning would move. Read it as "how squashed, at the quadrature points", never as a
+    /// validity verdict.
     ///
     /// ⚠ **This is not [`Mesh::quality`], and the difference matters for higher-order
     /// elements.** `QualityMetrics` is a four-*corner* statistic cached at mesh

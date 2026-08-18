@@ -1212,9 +1212,17 @@ mod tests {
              configuration is vacuous"
         );
         for f in &traj.frames {
+            // ⚠ Cross-check, not a discovery: `sim-soft`'s step-boundary gate now
+            // CERTIFIES `det F > 0` over each element's whole volume, so a frame that
+            // exists at all was already proven fold-free — a folded pose would have
+            // failed `capture_ramp` above rather than arriving here with a negative
+            // ratio. This asserts the four-point readout agrees with that proof;
+            // disagreement would mean the readout is not reading the solved pose.
             assert!(
                 f.min_jacobian_ratio > 0.0,
-                "an element folded at {:.3}° — worst deformed detJ/detJ_rest = {:.4}",
+                "the readout says an element folded at {:.3}° (worst deformed \
+                 detJ/detJ_rest = {:.4}) at a pose the solver's certified gate passed — \
+                 the two disagree, so one of them is not reading the solved state",
                 f.theta.to_degrees(),
                 f.min_jacobian_ratio
             );

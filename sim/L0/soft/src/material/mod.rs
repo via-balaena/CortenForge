@@ -156,14 +156,20 @@ pub enum InversionHandling {
     /// `NaN` silently. Enforcement lives at the solve boundaries, where the
     /// state is a candidate equilibrium rather than a line-search trial:
     /// `CpuNewtonSolver::check_validity_at_step_start` (via
-    /// `check_orientation`) sweeps `det F > 0` at the corner block and at
-    /// the Gauss points and fails closed with
+    /// `check_orientation`) **certifies** `det F > 0` over each element's whole
+    /// volume — it used to sweep the corner block and the Gauss points, which for a
+    /// curved Tet10 is a sample, not a proof — and fails closed with
     /// [`SolverFailure::ValidityViolation`](crate::solver::SolverFailure).
     ///
-    /// ⚠ Adding a variant that does NOT route through that sweep also arms a
-    /// latent hole in the sibling `max_stretch_deviation` slot, whose `f64::max` /
-    /// `f64::min` reductions silently swallow a non-finite `σ`. See the stretch
-    /// check's comment in `check_validity_at_step_start`.
+    /// ⚠ Adding a variant that does NOT route through that check arms two latent
+    /// holes, unreachable today only because this enum has one variant:
+    ///
+    /// 1. the sibling `max_stretch_deviation` slot, whose `f64::max` / `f64::min`
+    ///    reductions silently swallow a non-finite `σ` — see the stretch check's
+    ///    comment in `check_validity_at_step_start`;
+    /// 2. the REST half of the orientation check, reported through this same gate.
+    ///    An element skipped here is one whose invalid rest configuration is never
+    ///    surfaced, and `det F ≡ 1` at rest means nothing else can surface it.
     ///
     /// A `Material` impl declaring this variant is stating the domain its
     /// closed form is valid on; it is the solver's job to keep the state
