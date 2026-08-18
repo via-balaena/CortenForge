@@ -55,10 +55,12 @@ impl Element<4, 1> for Tet4 {
     /// both element types, not because Tet4 needed a certificate.
     fn certify_orientation(&self, x: &SMatrix<f64, 4, 3>) -> RestValidity {
         let value = self.rest_jacobian_dets(x)[0];
-        // `is_finite` as well as `> 0.0`: every comparison against NaN is
-        // false, so a bare `> 0.0` would fall through to `Violated` correctly
-        // here — but stating finiteness keeps this impl's contract identical to
-        // Tet10's, where the fold over coefficients cannot infer it.
+        // ⚠ `is_finite` is LOAD-BEARING, not decoration, and an earlier revision of
+        // this comment said it was kept "for contract symmetry with Tet10". It is not:
+        // `NaN > 0.0` is false so a bare `> 0.0` does reject a NaN, but
+        // `f64::INFINITY > 0.0` is TRUE, so dropping the clause certifies an element
+        // whose determinant overflowed. A mutation sweep caught that the claim was
+        // wrong and that no test covered the infinite case.
         if value.is_finite() && value > 0.0 {
             RestValidity::Certified { margin: 1.0 }
         } else {
@@ -137,20 +139,50 @@ mod tests {
             other => panic!("a degenerate tet must be refuted, got {other:?}"),
         }
 
-        // Non-finite: every comparison against NaN is false, so a bare `> 0.0` falls
-        // through to the refutation arm — which is the right answer, and is asserted
-        // rather than assumed because the sibling `Tet10` impl needs an explicit
-        // finiteness track to get here (`f64::min` discards NaN).
-        let mut poisoned = RIGHT_HANDED;
-        poisoned[1][0] = f64::NAN;
-        match Tet4.certify_orientation(&nodes(poisoned)) {
-            RestValidity::Violated { value, .. } => {
-                assert!(
-                    value.is_nan(),
-                    "the witness must carry the NaN; got {value}"
-                );
+        // Non-finite, BOTH kinds — and they arrive by different routes, which is why
+        // both are asserted. A `NaN` determinant is rejected by `> 0.0` alone (every
+        // comparison against NaN is false). An INFINITE one is not:
+        // `f64::INFINITY > 0.0` is true, so only the `is_finite` clause stops it. A
+        // mutation sweep that deleted that clause survived the entire suite until the
+        // infinite cases below existed.
+        for poison in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut poisoned = RIGHT_HANDED;
+            poisoned[1][0] = poison;
+            match Tet4.certify_orientation(&nodes(poisoned)) {
+                RestValidity::Violated { value, .. } => assert!(
+                    !value.is_finite(),
+                    "the witness must carry the non-finite determinant; got {value}"
+                ),
+                other => panic!("a {poison} coordinate must be refuted, got {other:?}"),
             }
-            other => panic!("a non-finite tet must be refuted, got {other:?}"),
+        }
+
+        // ★ The case that makes `is_finite` load-bearing rather than decorative, and
+        // the one a mutation sweep needed: a non-finite COORDINATE collapses the
+        // determinant to `NaN`, which `> 0.0` already rejects. Overflow does not.
+        // Measured at 1e150 per axis, `det J` is exactly `+inf` — positively oriented
+        // and unusable — and `f64::INFINITY > 0.0` is TRUE, so without `is_finite`
+        // this certifies. Deleting the clause survived the whole suite until this
+        // existed.
+        let huge = 1.0e150_f64;
+        let overflowed = nodes([
+            [0.0, 0.0, 0.0],
+            [huge, 0.0, 0.0],
+            [0.0, huge, 0.0],
+            [0.0, 0.0, huge],
+        ]);
+        assert_eq!(
+            Tet4.rest_jacobian_dets(&overflowed)[0],
+            f64::INFINITY,
+            "the fixture must actually overflow to +inf, or it is not exercising the \
+             clause it names"
+        );
+        match Tet4.certify_orientation(&overflowed) {
+            RestValidity::Violated { value, .. } => assert!(
+                value.is_infinite() && value.is_sign_positive(),
+                "the witness must carry the +inf determinant; got {value}"
+            ),
+            other => panic!("an overflowed determinant must be refuted, got {other:?}"),
         }
     }
 

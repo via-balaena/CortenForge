@@ -1778,6 +1778,101 @@ fn det_f_is_the_ratio_of_the_two_jacobian_determinants() {
     );
 }
 
+/// A `Tet10` whose certificate can be switched to [`RestValidity::Undetermined`] after
+/// the solver holding it has been constructed.
+///
+/// ⚠ A stub, and the only way to reach that arm of the gate. `Undetermined` means an
+/// element grazes `det J = 0` too closely for the bracket to separate within the
+/// subdivision budget, and it does not occur in geometry a solve produces: a search
+/// over **200 000 random curved elements at curvatures from 0.20 to 0.60 returned
+/// zero**. So the arm cannot be reached by any fixture — only injected.
+///
+/// The flag is shared rather than owned so the test can arm it *after* `new()` has
+/// taken its rest certificate. Disarmed it delegates to `Tet10` exactly, which is what
+/// lets construction succeed normally and isolates the deformed arm from the rest one.
+#[derive(Clone)]
+struct Tet10UndeterminedWhenArmed(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Element<10, 4> for Tet10UndeterminedWhenArmed {
+    fn shape_functions(&self, xi: Vec3) -> nalgebra::SVector<f64, 10> {
+        Tet10.shape_functions(xi)
+    }
+    fn shape_gradients(&self, xi: Vec3) -> SMatrix<f64, 10, 3> {
+        Tet10.shape_gradients(xi)
+    }
+    fn gauss_points(&self) -> [(Vec3, f64); 4] {
+        Tet10.gauss_points()
+    }
+    fn certify_orientation(&self, x: &SMatrix<f64, 10, 3>) -> crate::element::RestValidity {
+        if self.0.load(std::sync::atomic::Ordering::Relaxed) {
+            crate::element::RestValidity::Undetermined
+        } else {
+            Tet10.certify_orientation(x)
+        }
+    }
+}
+
+/// ★ `Undetermined` is read as a VIOLATION — absence of a proof is not a proof.
+///
+/// ⚠ The one arm of the gate no fixture can reach (see
+/// [`Tet10UndeterminedWhenArmed`]), and therefore the one a mutation sweep found
+/// unguarded: flipping it to `Ok(())` passed the entire suite. That is the fail-OPEN
+/// direction on a state the gate's own docs call "not one to integrate over", so it is
+/// pinned by injection rather than left to the argument that it cannot happen.
+#[test]
+fn an_uncertifiable_element_is_read_as_a_violation() {
+    let armed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let tet4 = SingleTetMesh::new(&MaterialField::uniform(1.0e5, 4.0e5));
+    let solver: CpuNewtonSolver<
+        Tet10UndeterminedWhenArmed,
+        Tet10Mesh,
+        NullContact,
+        NeoHookean,
+        10,
+        4,
+    > = CpuNewtonSolver::new(
+        Tet10UndeterminedWhenArmed(std::sync::Arc::clone(&armed)),
+        Tet10Mesh::from_tet4(&tet4),
+        NullContact,
+        SolverConfig::skeleton(),
+        BoundaryConditions {
+            pinned_vertices: vec![0, 1, 2, 3],
+            roller_vertices: Vec::new(),
+            loaded_vertices: Vec::new(),
+        },
+    );
+
+    // Disarmed through construction, so the REST certificate succeeded and the rest
+    // arm of the gate is silent — whatever fires below is the deformed arm.
+    let rest = {
+        let positions = solver.mesh.positions();
+        let mut x = vec![0.0_f64; 3 * positions.len()];
+        for (v, pos) in positions.iter().enumerate() {
+            x[3 * v] = pos.x;
+            x[3 * v + 1] = pos.y;
+            x[3 * v + 2] = pos.z;
+        }
+        x
+    };
+    assert!(
+        solver.check_validity_at_step_start(&rest).is_ok(),
+        "disarmed, the rest state must pass — otherwise this test is measuring the rest \
+         arm and not the one it names"
+    );
+
+    armed.store(true, std::sync::atomic::Ordering::Relaxed);
+    let Err(SolverFailure::ValidityViolation { tet_id, message }) =
+        solver.check_validity_at_step_start(&rest)
+    else {
+        panic!("an uncertifiable element must fail the gate, not pass it");
+    };
+    assert_eq!(tet_id, 0, "the single element is the violator");
+    assert!(
+        message.contains("could not be certified either way"),
+        "expected the uncertifiable verdict on the inversion slot, got: {message}"
+    );
+}
+
 /// The four reference corners in parametric coordinates, in this crate's corner
 /// convention (local node 0 is the `1 - xi - eta - zeta` complement). Mirrors
 /// `element::validity`'s private `REFERENCE_SIMPLEX`; kept local rather than made
