@@ -2,6 +2,7 @@
 #
 # Runs periodic checks that are too expensive for every PR:
 # - Fresh security advisory scan
+# - Per-crate coverage, via the grader itself (the ONLY CI path that measures it)
 # - Mutation testing (test quality verification)
 # - Dependency update check
 # - Benchmark regression monitoring
@@ -41,45 +42,135 @@ jobs:
         run: cargo audit --deny yanked
 
   # ============================================================================
-  # COVERAGE - Moved from quality-gate (too expensive for every PR)
+  # COVERAGE — the only CI path that measures the per-crate Coverage criterion
   # ============================================================================
+  # `quality-gate.yml` passes `--skip-coverage` on BOTH of its scoping branches,
+  # so before this job existed nothing in CI measured coverage at all. The
+  # per-crate criterion in `docs/STANDARDS.md` existed only as a local
+  # `cargo xtask grade <crate>` command, under a workflow header reading
+  # "A-grade or it doesn't ship".
+  #
+  # ★ It replaces a `cargo tarpaulin --workspace --fail-under 75` job that was
+  # wrong in two independent ways:
+  #
+  #   1. WRONG INSTRUMENT. A workspace AGGREGATE, where one crate at 40 % hides
+  #      inside a total that clears 75 %. `xtask grade` thresholds each crate
+  #      separately, so the two could disagree — two coverage mechanisms with
+  #      different semantics is drift waiting to happen.
+  #   2. IT NEVER PRODUCED A NUMBER. It failed at COMPILE time under
+  #      tarpaulin's instrumentation (`pulp-0.22.2` trips a const assertion),
+  #      red on every scheduled run back to at least 2026-06-28 — and the
+  #      `Weekly Summary` job reported that as a row in a table, which is why
+  #      eight weeks of it went unnoticed.
+  #
+  # Running the grader itself means ONE instrument, shared with the local gate:
+  # a number here is reproducible by `cargo xtask grade <crate>` on a laptop.
+  #
+  # ⚠ EXPECTED TO BE RED WHEN IT LANDS, and that is the point — it is a
+  # measurement, not a merge gate. ★ THIS JOB'S FIRST RUN IS THE AUTHORITATIVE
+  # LIST; what follows is the expectation going in, not a count to quote. From
+  # the 2026-08-16 census, less the four crates #776 took over the bar:
+  # cf-viewer (33.8 %), sim-bevy (35.0 %), sim-core (63.8 %), sim-mjcf (66.4 %)
+  # and cf-device-geometry (69.8 %, re-measured 2026-08-17). All pre-existing.
+  #
+  # They are deliberately NOT waived onto `COVERAGE_REPORT_ONLY`: that list's
+  # invariant is "never add a crate that was ALREADY measured and failing",
+  # because doing so switches off a gate that fires today rather than deferring
+  # one that just appeared. Emptying the list is the work; hiding it is not.
+  #
+  # ★ It needs no `--exclude`, unlike the tarpaulin job it replaces. Coverage's
+  # pass 2 (`cargo test --release -p <crate>`) is what could have made this job
+  # enormous, but `coverage_skip_reason` returns BEFORE pass 2 for
+  # `grading_profile = "integration-only"` — and both candidates declare it:
+  # `sim-conformance-tests` (the old job's named timeout source, 60k lines and
+  # 500k+ sim steps) and `sim-soft`, whose release-only
+  # `bonded_layer_indentation` is the single most expensive test in the
+  # workspace at 24.2 min. Neither runs here, which is why neither shows up in
+  # the 70.4 min sizing run, and why this job does NOT duplicate the
+  # `soft-contact-heavy` job below. Verified 2026-08-17 — do not "fix" it by
+  # adding excludes.
+  #
+  # Weekly rather than per-PR: a coverage run is minutes to tens of minutes PER
+  # CRATE (measured: sim-thermostat ~16 min), which is why the PR shards skip
+  # it. Sharded 3 ways to match `quality-gate.yml`'s grade job. The timeout is
+  # deliberately far above the ~25-30 min/shard the local sizing run implies,
+  # because nothing waits on this job and a slow runner must not turn a real
+  # measurement into a timeout — the failure mode that reads as "broken CI"
+  # rather than "coverage is short".
   coverage:
-    name: Coverage
+    name: Coverage (grade shard ${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 180
+    # Scoped to THIS job rather than the workflow, so the other ten jobs keep
+    # their current behaviour. It is the longest job in the repo and the
+    # workflow accepts `workflow_dispatch`, so without a group an impatient
+    # re-trigger runs a second three-hour sweep alongside the first — hours of
+    # runners spent twice, on a pool `quality-gate.yml` already guards for the
+    # same reason ("stacked runs starve the runner pool", there).
+    # `cancel-in-progress: false` because a sweep 150 minutes in is nearly
+    # done: queue behind it rather than throwing that away.
+    concurrency:
+      group: weekly-coverage-shard-${{ matrix.shard }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v6
 
+      # ⚠ Step-level timeout, because the JOB-level one is 180 minutes and this
+      # step normally takes ~40 s. Observed 2026-08-18 on this PR's own CI:
+      # `apt-get update` printed five lines, stalled fetching
+      # `archive.ubuntu.com/ubuntu noble-security InRelease`, and emitted
+      # nothing for the next 44 min until the 45 min job timeout killed it —
+      # `grade-all` never started. Under a 180 min budget that same stall costs
+      # three hours PER SHARD and still measures nothing. A setup step must not
+      # be able to spend a sweep's entire budget without producing a sweep.
+      #
+      # 10 min is ~15x the normal duration: generous enough that a merely slow
+      # mirror still succeeds, tight enough that a hung one fails while the
+      # runner is still cheap.
       - name: Install system dependencies
+        timeout-minutes: 10
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
 
+      # llvm-tools-preview is what makes this job different from the PR grade
+      # shards, and it is load-bearing: without it `grade_coverage` returns
+      # `Grade::Manual`, which `overall_automated` SKIPS, so every crate would
+      # grade A having measured nothing. `grade-all` now fails closed on that
+      # (see `SweepTally::coverage_unavailable`) — this line is what keeps it
+      # from having to.
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Install tarpaulin
-        run: cargo install cargo-tarpaulin
+        with:
+          components: clippy, llvm-tools-preview
+          targets: wasm32-unknown-unknown
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Generate coverage and check threshold
+      # No `--skip-coverage`: this job exists precisely to run the criterion
+      # every other CI path skips. Full workspace, never `--only` — a weekly
+      # sweep scoped to a diff would measure whatever last week happened to
+      # touch.
+      #
+      # ★ And no `--quiet`, unlike the PR grade shards it otherwise mirrors.
+      # That flag suppresses the one-line-per-crate progress, which costs
+      # nothing on a ~13 min job and a great deal on one that can run over an
+      # hour: a silent job cannot be distinguished from a hung one, and if it
+      # does hit the timeout the log would end without ever naming the crate it
+      # died on — for a coverage sweep, the single most useful fact in it.
+      # `run_all` forces `--quiet` per crate regardless, so this buys the
+      # progress lines WITHOUT the per-criterion chatter of 60-odd crates.
+      - name: cargo xtask grade-all --shard ${{ matrix.shard }}/3
+        env:
+          XTASK_GRADE_DEBUG: "1"
         run: |
-          # Run tarpaulin with 75% threshold - fails if coverage below threshold
-          # TODO: Increase to 90% as test coverage improves
-          #
-          # --timeout 300: per-test timeout (5 min) prevents hangs from heavy
-          #   simulation loops (e.g. 50k-step stability tests)
-          # --release: sim step loops are 3-10× faster in release mode
-          # --exclude: sim-conformance-tests has 60k+ lines of integration tests
-          #   with 500k+ simulation steps — not useful for line-coverage measurement
-          #   and the primary source of tarpaulin timeouts
-          cargo tarpaulin --all-features --workspace \
-            --timeout 300 \
-            --release \
-            --exclude sim-conformance-tests \
-            --fail-under 75
+          cargo run -p xtask --release -- grade-all \
+            --shard ${{ matrix.shard }}/3
 
   # ============================================================================
   # DEPENDENCY FRESHNESS

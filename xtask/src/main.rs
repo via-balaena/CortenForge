@@ -104,8 +104,12 @@ enum Commands {
         #[arg(long, conflicts_with = "quiet")]
         verbose: bool,
 
-        /// Skip the Coverage criterion across every crate. Required
-        /// for CI use — instrumented runs are too slow at workspace scale.
+        /// Skip the Coverage criterion across every crate. Used by the
+        /// per-PR grade shards, where an instrumented run per crate is too
+        /// slow at workspace scale. The weekly `scheduled.yml` coverage job
+        /// deliberately omits it — that job is the only CI path that measures
+        /// the criterion at all, so passing this flag there would silently
+        /// restore the hole it was added to close.
         #[arg(long)]
         skip_coverage: bool,
 

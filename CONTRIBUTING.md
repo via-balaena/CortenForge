@@ -76,10 +76,11 @@ cargo xtask grade <crate>          # criterion 1 reports the number
 ```
 
 ⚠ **PR CI does not measure coverage, so nothing but this command catches a
-regression.** `quality-gate.yml` passes `--skip-coverage` on every shard; the
-only CI-side coverage is a weekly `scheduled.yml` job, which uses a different
-instrument at workspace granularity and has failed every run since 2026-06-28.
-Run `xtask grade` on any crate you touch, before you push.
+regression before it merges.** `quality-gate.yml` passes `--skip-coverage` on
+every shard. The weekly `Coverage` job in `scheduled.yml` runs the same grader
+without that flag, so a regression *is* caught eventually — but a week after it
+lands, on someone else's clock. Run `xtask grade` on any crate you touch,
+before you push.
 
 Do not reach for `cargo tarpaulin` to predict your grade — different
 instrument, different scope, and it will not agree with the number that
@@ -162,7 +163,7 @@ grade — nothing puts it on the list automatically. Full rationale in
 
 | Criterion | A Standard | Automated? |
 |-----------|------------|------------|
-| **Test Coverage** | ≥75% **production** line coverage (target: 90%) — `#[cfg(test)]` code is excluded from the ratio; see STANDARDS.md | Yes, but **local only** — PR CI skips it |
+| **Test Coverage** | ≥75% **production** line coverage (target: 90%) — `#[cfg(test)]` code is excluded from the ratio; see STANDARDS.md | Yes, but **not before merge** — PR CI skips it; measured weekly |
 | **Documentation** | Zero doc warnings, all public items documented | Yes |
 | **Clippy** | Zero warnings | Yes |
 | **Safety** | Zero `unwrap()`/`expect()` in library code | Yes |
@@ -237,8 +238,10 @@ Integrity and WASM — CI does not invoke `cargo clippy -D warnings` or
 are therefore easy to mispredict from the command line alone, so check the
 grader's own output with `cargo xtask grade <crate>`.
 
-⚠ **Not run in CI, despite what you might expect:**
-- **Coverage** (criterion 1) — `--skip-coverage` on every shard. Local only.
+⚠ **Not run in PR CI, despite what you might expect:**
+- **Coverage** (criterion 1) — `--skip-coverage` on every shard, so it cannot
+  block your merge. Measured weekly by `scheduled.yml`'s `Coverage` job (the
+  same grader, no flag), which reports it after the fact.
 - **`--all-features` test sweep** — deliberately excluded; Layer Integrity in
   the grader covers all-features cleanliness without re-paying the compile.
 - **`no bevy in Layer 0`** as a standalone check — it is criterion 6 (Layer

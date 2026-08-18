@@ -44,7 +44,7 @@ Humans review; machines enforce.
 | Formatting | rustfmt | CI blocks on diff |
 | Linting | clippy pedantic+nursery | CI blocks on warning |
 | Testing | cargo test | CI blocks on failure |
-| Coverage | `cargo xtask grade` (llvm-cov) | ⚠ **Local only — CI does NOT block.** `grade-all` runs `--skip-coverage` on every PR shard. The weekly tarpaulin job is a different instrument at workspace scope and has failed every run since 2026-06-28. Verified 2026-08-16. |
+| Coverage | `cargo xtask grade` (llvm-cov) | ⚠ **Measured weekly, not per-PR.** `grade-all` still runs `--skip-coverage` on every PR shard, so coverage does not block a merge. `scheduled.yml`'s `coverage` job runs the same grader WITHOUT that flag, sharded 3 ways — one instrument, per-crate thresholds, reproducible locally by `cargo xtask grade <crate>`. It replaced a `cargo tarpaulin --workspace --fail-under 75` job that was a workspace *aggregate* and had never produced a number (compile failure, red every run since 2026-06-28). Honest tradeoff: a coverage regression is caught within a week of landing, not before. |
 | Documentation | rustdoc | CI blocks on warning |
 | Safety | clippy unwrap_used/expect_used | CI blocks on lib code violation |
 | Dependencies | cargo-deny | CI blocks on advisory/license |
@@ -414,7 +414,8 @@ if a && b {  // Need tests where:
 │   ├── format (rustfmt)                   │
 │   ├── lint (clippy)                      │
 │   ├── test (3 platforms)                 │
-│   ├── (NO coverage — --skip-coverage)    │
+│   ├── (NO coverage — --skip-coverage;    │
+│   │    measured weekly, see below)       │
 │   ├── docs (rustdoc)                     │
 │   ├── safety (clippy unwrap_used deny)   │
 │   ├── security (cargo-audit)             │
@@ -444,6 +445,9 @@ if a && b {  // Need tests where:
 ├─────────────────────────────────────────┤
 │ Weekly                                   │
 │   ├── cargo-audit (fresh advisories)     │
+│   ├── xtask grade-all (per-crate         │
+│   │    COVERAGE — 3 shards, no           │
+│   │    --skip-coverage)                  │
 │   ├── cargo-mutants (mutation testing)   │
 │   └── dependency-review (updates)        │
 │                                          │
@@ -460,7 +464,7 @@ Track these metrics for health visibility:
 
 | Metric | Target | Current | Trend |
 |--------|--------|---------|-------|
-| Test Coverage | ≥75% (target: 90%) | ~77% | → |
+| Test Coverage | ≥75% **per crate** | see weekly `Coverage` job | → |
 | Clippy Warnings | 0 | 0 | → |
 | Doc Warnings | 0 | 0 | → |
 | Security Advisories | 0 | ? | - |

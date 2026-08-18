@@ -195,15 +195,20 @@ pub fn run() -> Result<()> {
     println!();
     // ⚠ This block used to recommend `cargo tarpaulin` "to match CI threshold"
     // and told Mac/Windows users to rely on CI for coverage. Both were false:
-    // no PR job measures coverage (`grade-all` runs `--skip-coverage` on every
-    // shard), tarpaulin is a different instrument at workspace scope, and
-    // `xtask grade` is cross-platform. Onboarding is the worst place to be
-    // wrong about which command checks what — it is the first thing a new
-    // contributor runs, and it was pointing them at a tool whose own weekly
-    // job has failed every run since 2026-06-28.
+    // tarpaulin was a different instrument at workspace scope, and `xtask
+    // grade` is cross-platform. Onboarding is the worst place to be wrong
+    // about which command checks what — it is the first thing a new
+    // contributor runs.
+    //
+    // ⚠ Kept honest a second time when `scheduled.yml` started measuring
+    // coverage: this used to read "nothing else does", which stopped being
+    // true the moment a weekly job ran the same grader. The distinction that
+    // matters to a contributor is not local-vs-CI but BEFORE-vs-AFTER their
+    // merge — no PR shard measures coverage, so the weekly run cannot stop
+    // them shipping a regression, only tell them about it afterwards.
     println!(
         "{}",
-        "Coverage — check it locally, nothing else does:".bright_blue()
+        "Coverage — check it locally; CI will not catch it before you merge:".bright_blue()
     );
     // ⚠ No `rustup component add` line here. The tool check above already
     // reports llvm-tools CONDITIONALLY — a ✓ when present, the install command
@@ -214,6 +219,9 @@ pub fn run() -> Result<()> {
     println!("  • PR CI does NOT measure coverage — `grade-all` runs");
     println!("    --skip-coverage on every shard, so run this on any crate");
     println!("    you touch, before you push");
+    println!("  • The weekly `Coverage` job in scheduled.yml runs the same");
+    println!("    grader without that flag — it reports a regression the");
+    println!("    week AFTER it lands, which is not a substitute for the above");
     println!();
 
     Ok(())

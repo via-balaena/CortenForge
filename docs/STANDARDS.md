@@ -140,18 +140,19 @@ run is never waivable. So green here means "measured, enforcement deferred" —
 never "not measured", which is the distinction the fail-closed guarantee under
 **The Grade Command** exists to protect.
 
-⚠ The deferral does **not** protect today's CI, which cannot go red from this
-at all: **Enforcement → "What CI does NOT run"** below is the source of truth
-for why, and the weekly job it describes has failed every run since
-2026-06-28. The list is forward-looking, for whoever replaces that job with
-`grade-all` sans `--skip-coverage`. Until then it shapes local `xtask grade` output, which is
-where the backlog wants to be visible anyway.
+✅ The deferral is now load-bearing in CI. It was written forward-looking, for
+whoever replaced the broken weekly tarpaulin job with `grade-all` sans
+`--skip-coverage` — that replacement has happened, so this list is what keeps
+the weekly `Coverage` job's red confined to debt that was already known and
+owned. It still shapes local `xtask grade` output too, which is where the
+backlog wants to be visible anyway. ⚠ It remains powerless over a PR: no
+merge-blocking shard measures coverage, per **Enforcement → "What CI does NOT
+run"** below.
 
-⚠ And it will **not** make that job green. `cf-viewer` is measured, fails at
+⚠ And it does **not** make that job green. `cf-viewer` is measured, fails at
 33.8 %, and is deliberately not deferred; the other crates already known to sit
 under the bar — sim-core, sim-mjcf, sim-bevy, cf-device-geometry — are not
-deferred either. A full coverage run goes red on its first execution, and
-should. What the list changes is *which* red: the failures are crates whose
+deferred either. The weekly job goes red on its first execution, and should. What the list changes is *which* red: the failures are crates whose
 debt was already known and owned, not fourteen that a grader change lit up
 overnight. That is the line it draws — **newly revealed** versus **already
 tracked**. It is not a claim that such a job comes up green; `cf-viewer` alone
@@ -906,7 +907,7 @@ Every push to `main`/`develop` and every PR triggers parallel CI jobs (`.github/
 **What CI does NOT run** (intentional, per plan §6):
 - `--all-features` test sweep — Layer Integrity in the grader enforces all-features cleanliness; re-running tests under all-features would just re-pay the bevy_ecs / image / zip / criterion compile cost on every consumer's test build for no additional signal.
 - Standalone WASM job — the WASM Compatibility criterion (#7) is the single source of truth.
-- Coverage gate — still minutes per crate for crates whose own code is the hot path (`mesh-repair`, ~6 min), so running it across the workspace exceeds the wall-time budget even after instrumentation was scoped to the measured crate. ⚠ Sized 2026-08-16: a full sweep measures **61** crates — 47 before `has_lib_target` brought 14 `tools/` and `examples/` libraries into scope — and 47 of them took **70.4 min** serially against a 20–25 min budget, so the conclusion holds by a wide margin. Coverage is enforced locally via `cargo xtask grade <crate>`. ⚠ The nightly `coverage` job in `scheduled.yml` does **not** enforce this criterion: it runs `cargo tarpaulin --workspace --all-features --fail-under 75`, which counts test code and pools the whole workspace into one ratio. That job never got the migration this section describes, so no CI job measures the number defined here. Resolving the split is its own change.
+- Coverage gate **as a per-PR blocking check** (it does run weekly — see below) — still minutes per crate for crates whose own code is the hot path (`mesh-repair`, ~6 min), so running it across the workspace exceeds the wall-time budget even after instrumentation was scoped to the measured crate. ⚠ Sized 2026-08-16: a full sweep measures **61** crates — 47 before `has_lib_target` brought 14 `tools/` and `examples/` libraries into scope — and 47 of them took **70.4 min** serially against a 20–25 min budget, so the conclusion holds by a wide margin. Coverage is enforced locally via `cargo xtask grade <crate>`, and measured weekly in CI. ✅ **The split is resolved**: `scheduled.yml`'s `coverage` job now runs `grade-all` WITHOUT `--skip-coverage`, sharded 3 ways, so the number defined here is the number CI reports — same grader, same per-crate threshold, reproducible on a laptop. It replaced the `cargo tarpaulin --workspace --all-features --fail-under 75` job, which pooled the workspace into one ratio *and* had never compiled. ⚠ Weekly, not per-PR: a coverage regression is therefore caught within a week of landing rather than before it lands — the deliberate tradeoff that keeps the 70.4 min off the merge path.
 
 ### CI Wall-Time Budget
 
