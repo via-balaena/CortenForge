@@ -139,12 +139,19 @@ fn corner_block_det(x: &SMatrix<f64, 10, 3>) -> f64 {
     SMatrix::<f64, 3, 3>::from_fn(|r, c| x[(c + 1, r)] - x[(0, r)]).determinant()
 }
 
-/// **The solver's check, replicated exactly**: the sign verdict at the four
-/// Gauss points plus the corner block.
+/// **The solver's former check**: the sign verdict at the four Gauss points plus the
+/// corner block.
 ///
-/// `det F = det J_def / det J_rest` and `det J_rest > 0` is certified, so the
-/// sign of `det F` is the sign of `det J_def` — which is what this reads. The
-/// corner block is compared in the same way.
+/// ⚠ Replicated up to a positive factor, not literally. The old gate divided by
+/// `det J_rest` at each Gauss point; this reads `det J_def` there and divides only on
+/// the corner block. The verdicts agree because `det F = det J_def / det J_rest` and
+/// the denominator is strictly positive — **which every caller must ensure**, and
+/// each does: the random population below skips any element whose rest is not
+/// certified, the sphere is conformed against a quality floor, and the cantilever is
+/// straight-edged (affine, so one positive constant).
+///
+/// An earlier revision called this "replicated exactly", which it is not, and the
+/// asymmetry between its two halves is the tell.
 fn five_point_says_healthy(deformed: &SMatrix<f64, 10, 3>, rest: &SMatrix<f64, 10, 3>) -> bool {
     let gauss_ok = Tet10
         .rest_jacobian_dets(deformed)
@@ -203,9 +210,11 @@ fn how_much_does_the_five_point_deformed_check_miss() {
 
         for _ in 0..3000 {
             let (rest, def) = rest_and_deformed(&mut rng, deform);
-            // Only elements whose REST state is sound are meaningful here — the
-            // solver never starts from an invalid rest mesh (that is what the
-            // mesher work certified).
+            // Only elements whose REST state is sound are meaningful here, and this
+            // is also what makes `five_point_says_healthy`'s denominator positive.
+            // The solver no longer merely assumes this of its input: it certifies
+            // every element's rest configuration at construction and fails the first
+            // step boundary otherwise.
             if !certify_rest(&rest, ValidityBar::Positive).is_certified() {
                 continue;
             }

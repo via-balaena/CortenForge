@@ -99,8 +99,9 @@ mod tests {
     /// right-handed meshes — so until this existed, three of the four arms were
     /// reached by no test at all. The left-handed case in particular is load-bearing
     /// elsewhere: `tests/multi_material_validity.rs` states that a left-handed REST
-    /// tet is now rejected on its own account, and no mesh constructor in this crate
-    /// will build one, so this is where that claim can be checked.
+    /// tet is now rejected on its own account. `mesh`'s own docs record right-handed
+    /// orientation (`signed_volume > 0`) as an invariant each constructor enforces, so
+    /// that claim cannot be exercised through a mesh — this is where it is checked.
     #[test]
     fn certify_orientation_reaches_every_verdict_it_can() {
         // Right-handed: certified, and with the widest margin the type expresses —

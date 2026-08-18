@@ -34,7 +34,7 @@ use nalgebra::SMatrix;
 
 use sim_ml_chassis::Tensor;
 
-use super::helpers::element_node_ids;
+use super::helpers::{deformation_gradient, element_node_ids};
 use crate::Vec3;
 use crate::contact::NullContact;
 use crate::element::Element;
@@ -1639,6 +1639,142 @@ fn every_rest_defect_is_recorded_not_only_the_first() {
         ids.contains(&1),
         "a defect on an element OTHER than the first must survive — keeping only the \
          lowest-numbered one is the regression this pins. Got {ids:?}"
+    );
+}
+
+/// ★★★ The identity the certified gate RESTS on, pinned against the function the
+/// assembly actually uses.
+///
+/// `check_orientation` certifies `det J_def > 0` and concludes `det F > 0`. The whole
+/// step between those is
+///
+/// ```text
+///     det F = det J_def / det J_rest
+/// ```
+///
+/// and until this existed nothing tested it. Every other fixture in this file is
+/// sign-consistent under either reading — they feed states where both quantities go
+/// negative together — so a `grad_x_n` built from the wrong configuration, or paired
+/// with the wrong Gauss point, would leave all of them green while the gate certified
+/// a quantity that is not `det F`. Both mutants were run: pairing `d_def[q]` with
+/// `d_rest[0]` fails this test at Gauss point 1.
+///
+/// ⚠ It does NOT catch a transposed `grad_x_n`, and no determinant-based check can:
+/// `det(Aᵀ) = det(A)`. That is a blind spot of the method and not of this fixture, and
+/// it is harmless HERE for the same reason — the gate consumes nothing but
+/// determinants, so a transpose cannot change its verdict either. A convention error
+/// that would matter has to change a determinant, and those are what this catches.
+///
+/// This compares `deformation_gradient(x_def, grad_x_n).determinant()` — the tensor
+/// `first_piola` is actually handed — against `Element::rest_jacobian_dets` evaluated
+/// at the same Gauss point, on curved elements under asymmetric deformation. Symmetric
+/// fixtures would not catch a transpose, so none are used.
+#[test]
+fn det_f_is_the_ratio_of_the_two_jacobian_determinants() {
+    // Deliberately asymmetric in all three axes: a transposed `grad_x_n` gives the
+    // same determinant on a symmetric element, so symmetry here would hide the defect
+    // this test exists for.
+    let base: [[f64; 3]; 4] = [
+        [0.0, 0.0, 0.0],
+        [1.3, 0.0, 0.0],
+        [0.4, 0.9, 0.0],
+        [0.2, 0.3, 1.7],
+    ];
+    // Midside offsets off the straight midpoints — a genuinely CURVED element, where
+    // `det J` varies per Gauss point and the identity has something to say.
+    let curve: [[f64; 3]; 6] = [
+        [0.05, -0.03, 0.02],
+        [-0.02, 0.06, 0.01],
+        [0.03, 0.04, -0.05],
+        [-0.04, 0.02, 0.03],
+        [0.01, -0.05, 0.04],
+        [0.02, 0.03, 0.06],
+    ];
+
+    let mut rest = [[0.0f64; 3]; 10];
+    rest[..4].copy_from_slice(&base);
+    for (i, &(a, b)) in TET10_EDGE_NODES.iter().enumerate() {
+        for k in 0..3 {
+            rest[4 + i][k] = 0.5f64.mul_add(base[a][k] + base[b][k], curve[i][k]);
+        }
+    }
+    let x_rest = SMatrix::<f64, 10, 3>::from_fn(|a, k| rest[a][k]);
+    assert!(
+        Tet10.certify_orientation(&x_rest).is_certified(),
+        "the fixture's rest element must be valid, or the ratio's denominator is not \
+         the certified-positive quantity the gate relies on"
+    );
+
+    // ⚠ Non-vacuity, tracked and asserted below: a curved element (so `det J` varies
+    // per Gauss point and the identity has something to say) and a population that
+    // reaches BOTH signs of `det F` (so the sign-equivalence is exercised where it
+    // matters, not only where everything is comfortably positive).
+    let mut saw_negative = false;
+    let mut saw_positive = false;
+
+    // Several asymmetric deformations. ⚠ The last MIRRORS through `z = 0`, which is
+    // what actually reaches a negative `det F` — an earlier revision instead scaled a
+    // shear up and called the largest case "folding", and the `saw_negative` assertion
+    // below caught that it never folded at all. Growing a smooth deformation does not
+    // reliably invert an element; reflecting it does, by construction.
+    for (label, scale, twist, mirror_z) in [
+        ("mild", 0.05_f64, 0.02_f64, 1.0_f64),
+        ("large", 0.30, 0.15, 1.0),
+        ("mirrored through z = 0", 0.10, 0.05, -1.0),
+    ] {
+        let x_def = SMatrix::<f64, 10, 3>::from_fn(|a, k| {
+            // Node index (0..10) and axis index (0..3) — both exact in f64; the lint
+            // is about `usize` values that could exceed the mantissa, which these
+            // cannot.
+            #[allow(clippy::cast_precision_loss)]
+            let (a_f, k_f) = (a as f64, k as f64);
+            let shear = twist * a_f * (k_f + 1.0) * 0.031;
+            let v = rest[a][k] + scale * (0.7 * rest[a][(k + 1) % 3] - 0.3 * rest[a][k]) + shear;
+            if k == 2 { v * mirror_z } else { v }
+        });
+
+        let d_def = Tet10.rest_jacobian_dets(&x_def);
+        let d_rest = Tet10.rest_jacobian_dets(&x_rest);
+        assert!(
+            d_rest.iter().any(|d| (d - d_rest[0]).abs() > 1e-9),
+            "the rest element must be genuinely CURVED — a straight one has the same \
+             det J at every Gauss point, and the identity is trivial there"
+        );
+        for (q, (xi, _w)) in Tet10.gauss_points().into_iter().enumerate() {
+            let grad_xi = Tet10.shape_gradients(xi);
+            // `J_rest(xi) = x_restT * grad_xi`, and `grad_x_n = grad_xi * J_rest^-1` —
+            // the same composition `construct::curved_gauss_geometry` caches.
+            let j_rest = x_rest.transpose() * grad_xi;
+            let grad_x_n = grad_xi
+                * j_rest
+                    .try_inverse()
+                    .expect("the certified rest element has a non-singular Jacobian");
+            let det_f = deformation_gradient(&x_def, &grad_x_n).determinant();
+            let ratio = d_def[q] / d_rest[q];
+            assert!(
+                (det_f - ratio).abs() <= 1e-9 * ratio.abs().max(1.0),
+                "{label}, Gauss point {q}: det F = {det_f} but det J_def / det J_rest = \
+                 {ratio}. The gate certifies the RATIO's numerator and concludes about \
+                 det F; if these differ, it is certifying the wrong quantity"
+            );
+            // And the conclusion the gate actually draws, stated as a sign equivalence.
+            assert_eq!(
+                det_f > 0.0,
+                d_def[q] > 0.0,
+                "{label}, Gauss point {q}: with det J_rest = {} > 0 certified, the sign \
+                 of det F must BE the sign of det J_def — that equivalence is what lets \
+                 the gate bound one and conclude about the other",
+                d_rest[q]
+            );
+            saw_negative |= det_f < 0.0;
+            saw_positive |= det_f > 0.0;
+        }
+    }
+    assert!(
+        saw_negative && saw_positive,
+        "the fixture must reach both signs of det F, or the sign equivalence is only \
+         checked where it is easy: saw_negative = {saw_negative}, \
+         saw_positive = {saw_positive}"
     );
 }
 
