@@ -12,4 +12,50 @@
 # never implicitly per toolchain release.
 [toolchain]
 channel = "1.96.0"
-components = ["clippy", "rustfmt"]
+# `llvm-tools` supplies llvm-profdata/llvm-cov, which criterion 1 (Coverage)
+# resolves out of THIS toolchain's sysroot via `rustc --print target-libdir`.
+#
+# ★ It belongs here rather than in a workflow's `components:` list, and that is
+# not a style preference — it is the bug this line fixes. `scheduled.yml`'s
+# coverage job asked `dtolnay/rust-toolchain@stable` for `llvm-tools-preview`,
+# which installed it into STABLE, while this file (as the comment above says)
+# points every `rustc` invocation at 1.96.0. The component landed in a
+# toolchain nothing runs. The weekly sweep's first execution, 2026-08-18,
+# reported `(llvm-tools n/a)` for all 22 coverage-graded crates in shard 1 and
+# measured no coverage at all.
+#
+# Declaring it here also means a fresh clone can run `cargo xtask grade` with
+# coverage immediately, instead of hitting the same silence until someone
+# tells them to `rustup component add llvm-tools-preview`.
+#
+# ⚠⚠ A TYPO IN `components` OR `targets` IS NOT AN ERROR. rustup prints
+# `warn: skipping unavailable component <name>` and exits 0 — verified
+# 2026-08-18 by putting a bogus entry in each. So a misspelling here silently
+# un-equips the toolchain, and nothing in the build complains: coverage goes
+# back to unmeasured, or criterion 7 back to skipped. Check a rename against
+# `rustup component list` / `rustup target list`, and do not rely on the build
+# to tell you. The only backstop is `grade-all` failing closed on an unmeasured
+# sweep (`SweepTally::coverage_unavailable`) — and no equivalent exists for
+# criterion 7 yet, which is why its `Manual`-is-skipped hole is still open.
+components = ["clippy", "rustfmt", "llvm-tools"]
+
+# Criterion 7 (WASM Compatibility) runs `cargo check --target
+# wasm32-unknown-unknown`, gated on `wasm_target_installed`, which shells out to
+# `rustup target list --installed` — resolved through THIS file, like every
+# other rustup call in the repo.
+#
+# ⚠ Declared here for the same reason as `llvm-tools` above, and it is the same
+# bug one line up: `quality-gate.yml` asks the toolchain action for
+# `targets: wasm32-unknown-unknown`, which installs the target into the
+# action's channel while every `rustc`/`rustup` invocation uses 1.96.0. On a
+# runner nothing else installs it into, `wasm_target_installed` answers false,
+# criterion 7 degrades to `Manual` — and `overall_automated` SKIPS `Manual`, so
+# the criterion is deleted from the grade rather than failing it. There is no
+# standalone WASM job (criterion 7 is the single source of truth per
+# STANDARDS.md), so nothing else would notice.
+#
+# ⚠ EVIDENCE: the mechanism is verified (rustup resolves through this file, and
+# the action installs into its own channel); the CI before-state is INFERRED,
+# not measured, because a skipped criterion prints nothing a sweep log would
+# show. Confirm against a run rather than trusting this note.
+targets = ["wasm32-unknown-unknown"]
