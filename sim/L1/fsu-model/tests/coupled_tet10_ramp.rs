@@ -107,6 +107,14 @@ fn assert_sound_ramp(traj: &CoupledTrajectory, label: &str) -> (f64, f64) {
     );
 
     // (3) Element validity at each frame's DEFORMED configuration.
+    //
+    // ⚠ Cross-check, not a discovery. `sim-soft`'s step-boundary gate CERTIFIES
+    // `det F > 0` over each element's whole volume, so a frame that exists was already
+    // proven fold-free and `capture_ramp` would have failed instead of returning a
+    // negative ratio here. What this pins is that the four-point readout agrees with
+    // that proof about the pose it read. The rest-configuration quality floors remain
+    // unable to see either: they bound the mesh the projector produces, not what
+    // driving it to ±ROM does.
     let worst = traj
         .frames
         .iter()
@@ -115,9 +123,9 @@ fn assert_sound_ramp(traj: &CoupledTrajectory, label: &str) -> (f64, f64) {
     for f in &traj.frames {
         assert!(
             f.min_jacobian_ratio > 0.0,
-            "{label}: an element folded at {:.3}° ({:+.2} N·m) — worst detJ/detJ_rest = {:.4}. \
-             The rest-configuration quality floors cannot see this: they bound the mesh the \
-             projector produces, not what driving it to ±ROM does.",
+            "{label}: the readout says an element folded at {:.3}° ({:+.2} N·m) — worst \
+             detJ/detJ_rest = {:.4} — at a pose the solver's certified gate passed. The two \
+             disagree, so one of them is not reading the solved state.",
             f.theta.to_degrees(),
             f.applied,
             f.min_jacobian_ratio
