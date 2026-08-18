@@ -82,7 +82,9 @@ jobs:
       # yeslogic-fontconfig-sys C build dep).
       - name: Install Linux build deps
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
+        uses: ./.github/actions/install-linux-deps
+        with:
+          packages: libfontconfig1-dev
 
       # Correctness is gated on main by quality-gate.yml (full debug +
       # release test suites, grade-all, cross-OS checks) — a tag is only ever

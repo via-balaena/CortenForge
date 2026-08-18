@@ -138,6 +138,33 @@ jobs:
   # affected subset can only narrow PR feedback, never what reaches main. If
   # this job itself errors, consumers fall back to FULL (see the grade job's
   # `needs.affected.result` guard), so a miss here is fail-safe, never a hole.
+
+  # ⚠ Cheap, and it guards something that has bitten twice. `install-linux-deps`
+  # bounds `apt-get` so a slow mirror cannot eat a job budget (#778/#779, #783); its
+  # `test.sh` drives it against a stubbed `apt-get` and asserts both exit status and
+  # which annotation is emitted. Verified sensitive by mutation: dropping either
+  # timeout, the empty-input guard, the retry, or the 124 detection all fail it.
+  ci-scripts:
+    name: CI script guards
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      # ⚠ Assert the tools EXIST rather than skipping when they do not. `test.sh`
+      # exits 0 when `timeout(1)` is unavailable so it stays runnable on a dev
+      # machine; in CI that skip would be a silent pass, so the absence is a failure
+      # here instead.
+      - name: Require shellcheck and timeout
+        run: |
+          command -v shellcheck
+          command -v timeout
+
+      - name: Shellcheck the CI shell scripts
+        run: shellcheck -s bash .github/actions/install-linux-deps/*.sh
+
+      - name: apt bound behaves
+        run: bash .github/actions/install-linux-deps/test.sh
   affected:
     name: Affected crates
     runs-on: ubuntu-latest
@@ -222,9 +249,9 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
+        uses: ./.github/actions/install-linux-deps
+        with:
+          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -381,9 +408,9 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
+        uses: ./.github/actions/install-linux-deps
+        with:
+          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -487,9 +514,9 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
+        uses: ./.github/actions/install-linux-deps
+        with:
+          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -735,9 +762,9 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
+        uses: ./.github/actions/install-linux-deps
+        with:
+          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -1022,9 +1049,9 @@ jobs:
 
       - name: Install system dependencies
         if: steps.scope.outputs.run == 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
+        uses: ./.github/actions/install-linux-deps
+        with:
+          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
 
       - name: Install Rust
         if: steps.scope.outputs.run == 'true'
@@ -1103,7 +1130,7 @@ jobs:
 
   quality-gate:
     name: Quality Gate
-    needs: [format, grade, tests-debug, tests-release, cross-os, feature-combos, dependencies, validate-examples, soft-contact-heavy, licensed-gates]
+    needs: [format, ci-scripts, grade, tests-debug, tests-release, cross-os, feature-combos, dependencies, validate-examples, soft-contact-heavy, licensed-gates]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
