@@ -468,9 +468,11 @@ where
         // the pair that closes it, and it is taken here because the rest mesh
         // cannot change afterwards.
         //
-        // Only the first failure is kept: the gate reports the lowest-numbered
-        // violator, so a later one could never be the message.
-        let mut first_rest_orientation_defect: Option<(usize, RestValidity)> = None;
+        // EVERY failure is kept, not just the first — a lower-numbered element whose
+        // material opts out of the orientation check would otherwise consume the slot
+        // and hide a higher-numbered one the gate does reach. Pushed in ascending
+        // `tet_id`, which is what lets the gate binary-search it.
+        let mut rest_orientation_defects: Vec<(usize, RestValidity)> = Vec::new();
         let gauss_points = element.gauss_points();
         // Single-point (corner) parametric shape gradient for (a). Tet4 reads
         // the element's own constant barycentric gradient (ξ ignored, byte-
@@ -507,6 +509,13 @@ where
                 .try_inverse()
                 .expect("singular reference Jacobian — malformed rest mesh");
             let det = j_0.determinant();
+            // `.abs()` is defensive, and (c) below now says how defensive: every
+            // constructor in `mesh` documents right-handed orientation
+            // (`signed_volume > 0`) as an invariant, and the rest certificate turns
+            // that from assumed into checked — so a mesh reaching a step boundary has
+            // `det > 0` proven, making this `.abs()` a no-op there. It is kept because
+            // it runs BEFORE the certificate does, and a negative volume flowing into
+            // the mass lump would fail somewhere less legible than the validity gate.
             let volume = det.abs() / 6.0;
 
             // (a) Single-point corner geometry — byte-identical to rung 3b.
@@ -550,18 +559,16 @@ where
                 };
             gauss_geometries.push(GaussGeometry { gauss });
 
-            // (c) Certify this element's rest configuration over the WHOLE
-            // element. One determinant for Tet4 (constant `det J`) and ~0.36 us for
-            // Tet10, once per element for the solver's lifetime. The `is_none`
-            // short-circuits the rest of the mesh once a defect is found, since
-            // only the first is reported.
-            if first_rest_orientation_defect.is_none() {
-                let nodes = element_node_ids::<M, Msh, N>(&mesh, tet_id);
-                let x_ref = SMatrix::<f64, N, 3>::from_fn(|a, k| x_rest[nodes[a] as usize][k]);
-                let verdict = element.certify_orientation(&x_ref);
-                if !verdict.is_certified() {
-                    first_rest_orientation_defect = Some((tet_id as usize, verdict));
-                }
+            // (c) Certify this element's rest configuration over the WHOLE element.
+            // One determinant for Tet4 (constant `det J`) and at most ~0.36 us for
+            // Tet10 — measured on CURVED elements; a straight one has twenty equal
+            // coefficients and certifies at depth 0 — once per element for the
+            // solver's lifetime.
+            let nodes = element_node_ids::<M, Msh, N>(&mesh, tet_id);
+            let x_ref = SMatrix::<f64, N, 3>::from_fn(|a, k| x_rest[nodes[a] as usize][k]);
+            let verdict = element.certify_orientation(&x_ref);
+            if !verdict.is_certified() {
+                rest_orientation_defects.push((tet_id as usize, verdict));
             }
         }
 
@@ -733,7 +740,7 @@ where
             boundary_conditions,
             element_geometries,
             gauss_geometries,
-            first_rest_orientation_defect,
+            rest_orientation_defects,
             mass_per_dof,
             free_dof_indices,
             full_to_free_idx,

@@ -1571,6 +1571,76 @@ fn a_rest_fold_between_the_sample_points_is_caught_at_a_healthy_deformed_state()
     );
 }
 
+/// ★ EVERY rest defect is recorded, not only the lowest-numbered one.
+///
+/// ⚠ White-box, and deliberately so. With [`InversionHandling`] carrying a single
+/// variant the gate visits every element in ascending order and stops at the first
+/// violator, so no *observable* behaviour distinguishes "keep the first defect" from
+/// "keep them all" — which is exactly the reasoning an earlier revision of this
+/// solver used to keep only the first.
+///
+/// It becomes observable the moment a material opts out of the orientation check: a
+/// lower-numbered element the gate SKIPS would consume the only slot and hide a
+/// higher-numbered one the gate does reach, and that element — invalid in its rest
+/// configuration — would pass. `det F ≡ 1` at rest, so nothing else would catch it.
+/// The invariant is pinned here because the behaviour cannot pin it yet.
+#[test]
+fn every_rest_defect_is_recorded_not_only_the_first() {
+    let field = MaterialField::uniform(1.0e5, 4.0e5);
+    let tet4 = HandBuiltTetMesh::two_tet_shared_face(&field);
+    let n_tets = tet4.n_tets();
+    assert!(n_tets >= 2, "the fixture needs at least two elements");
+
+    // Push every midside away from the origin until BOTH elements are folded in
+    // their rest configuration. Scanned rather than hardcoded: the window between
+    // "nothing folds" and "the curved Jacobian is singular and `new()` panics" is
+    // not wide, and a constant would silently leave it under any fixture change.
+    let solver_at = |scale: f64| -> CpuTet10NHSolver<Tet10Mesh> {
+        let mesh = Tet10Mesh::from_tet4(&tet4).with_curved_midsides(|p| p * scale);
+        CpuNewtonSolver::new(
+            Tet10,
+            mesh,
+            NullContact,
+            SolverConfig::skeleton(),
+            BoundaryConditions {
+                pinned_vertices: (0..tet4.n_vertices() as VertexId).collect(),
+                roller_vertices: Vec::new(),
+                loaded_vertices: Vec::new(),
+            },
+        )
+    };
+
+    let found = (1..=60u32).find_map(|step| {
+        let solver = solver_at(1.0 + f64::from(step) * 0.05);
+        (solver.rest_orientation_defects.len() >= 2).then_some(solver)
+    });
+    let solver = found.expect(
+        "no midside scale in the scanned window folds two elements at once — the \
+         fixture no longer distinguishes keeping every defect from keeping the first",
+    );
+
+    let ids: Vec<usize> = solver
+        .rest_orientation_defects
+        .iter()
+        .map(|(t, _)| *t)
+        .collect();
+    assert!(
+        ids.len() >= 2,
+        "expected every folded element to be recorded, got {ids:?}"
+    );
+    // Ascending is not cosmetic: the gate binary-searches this list.
+    assert!(
+        ids.windows(2).all(|w| w[0] < w[1]),
+        "the defect list must be strictly ascending by tet id for the gate's binary \
+         search to find anything: {ids:?}"
+    );
+    assert!(
+        ids.contains(&1),
+        "a defect on an element OTHER than the first must survive — keeping only the \
+         lowest-numbered one is the regression this pins. Got {ids:?}"
+    );
+}
+
 /// The four reference corners in parametric coordinates, in this crate's corner
 /// convention (local node 0 is the `1 - xi - eta - zeta` complement). Mirrors
 /// `element::validity`'s private `REFERENCE_SIMPLEX`; kept local rather than made

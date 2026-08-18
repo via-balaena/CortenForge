@@ -703,7 +703,8 @@ fn what_one_step_costs_at_two_resolutions() {
         );
     }
     println!(
-        "  Read the per-element predicate costs above against THIS column, not against\n  \
-         each other: the gate runs twice per step at ~0.17 us/element."
+        "  Read `deformed_certification_cost_against_the_five_point_check`'s per-element\n  \
+         figures against THIS column, not against each other. The gate runs twice per\n  \
+         step, so its share is 2 x (per-element ns) x elements / (ms per step)."
     );
 }

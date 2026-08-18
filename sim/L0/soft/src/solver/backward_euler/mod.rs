@@ -184,15 +184,20 @@ pub struct CpuNewtonSolver<
     /// integrate over (Tet10 ladder rung 4). For Tet4 `(G = 1)` its single pair
     /// matches `element_geometries` bit-for-bit.
     gauss_geometries: Vec<GaussGeometry<N, G>>,
-    /// The **lowest-numbered** element whose **rest** configuration
-    /// [`Element::certify_orientation`] did not certify, with its verdict —
-    /// normally `None`.
+    /// Every element whose **rest** configuration [`Element::certify_orientation`]
+    /// did not certify, paired with its verdict, ascending by tet id — normally
+    /// EMPTY, which is why it is a sparse list rather than one entry per tet.
     ///
-    /// Only the first is kept, and that loses nothing: the gate is
-    /// first-violator-wins in ascending tet order, so no later rest defect could
-    /// ever be the one reported. Holding the full list instead would make the
-    /// gate's per-element lookup a scan of it — `O(elements x defects)` on a badly
-    /// broken mesh — to produce the identical message.
+    /// ⚠ **Every one, not just the lowest-numbered.** An earlier revision kept only
+    /// the first, on the reasoning that the gate is first-violator-wins in ascending
+    /// order so no later defect could be the message. That holds only while EVERY
+    /// material declares [`InversionHandling::RequireOrientation`]: a lower-numbered
+    /// element whose material opts out is skipped by the gate, and the defect it
+    /// consumed would then hide a higher-numbered one the gate does reach — which
+    /// would pass on an element with an invalid rest. Today
+    /// `InversionHandling` has exactly one variant, so the hole is unreachable; that
+    /// enum's own docs anticipate more, and this is a third thing such a variant
+    /// would otherwise arm. Ascending order makes the lookup a binary search.
     ///
     /// ★ Why the gate needs this, and why it is computed once. `det F = det J_def
     /// / det J_rest`, so certifying `det J_def > 0` over an element proves
@@ -207,7 +212,7 @@ pub struct CpuNewtonSolver<
     /// [`SolverFailure::ValidityViolation`] channel — which `try_step` callers
     /// already handle by skipping the design — instead of adding a fourth panic
     /// to `new()`. It is still fail-closed: the first step boundary reports it.
-    first_rest_orientation_defect: Option<(usize, RestValidity)>,
+    rest_orientation_defects: Vec<(usize, RestValidity)>,
     /// Lumped per-DOF mass (`length n_dof`). For a linear (Tet4) element the
     /// entry for DOF `i` (vertex `v = i / 3`) is `Σ_e (ρ V_e / 4)` over every
     /// element `e` that contains `v` (Phase 2 reproduces the walking

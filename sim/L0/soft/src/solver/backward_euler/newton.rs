@@ -323,7 +323,7 @@ where
     /// `det F ≡ 1`, so a rest-folded element is invisible to every gate that reads
     /// `det F` — including the five-point check this replaced. It is decided once
     /// in `new()` and held in
-    /// `first_rest_orientation_defect`;
+    /// [`rest_orientation_defects`](Self::rest_orientation_defects);
     /// this method reports it before asking about the deformed state, so the
     /// failure lands on the same channel with the same per-element attribution.
     ///
@@ -399,14 +399,14 @@ where
     fn check_orientation(&self, x_curr: &[f64], tet_id: usize) -> Result<(), SolverFailure> {
         // (1) The REST half of the pair, decided once in `new()`. Reported from
         // here so it inherits this gate's `RequireOrientation` gating and its
-        // per-element attribution. `None` on a healthy mesh, which is every mesh
-        // the projectors produce, so this costs one discriminant test per element.
-        if let Some((_, verdict)) = self
-            .first_rest_orientation_defect
-            .filter(|(t, _)| *t == tet_id)
-            .as_ref()
+        // per-element attribution. The list is EMPTY on a healthy mesh — every mesh
+        // the projectors produce — so the search bottoms out immediately there.
+        if let Ok(i) = self
+            .rest_orientation_defects
+            .binary_search_by_key(&tet_id, |(t, _)| *t)
         {
-            let detail = match verdict {
+            let verdict = self.rest_orientation_defects[i].1;
+            let detail = match &verdict {
                 RestValidity::Violated { at, value } => format!(
                     "det J_rest = {value:.3e} at xi = ({:.4}, {:.4}, {:.4})",
                     at.x, at.y, at.z
