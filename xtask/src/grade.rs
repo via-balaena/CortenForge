@@ -4217,15 +4217,27 @@ pub fn status() -> Result<()> {
     // For now, just list directories
     let locations = ["design", "mesh", "geometry", "sim"];
 
+    // ⚠ Rooted, like every other filesystem read in this module. This function
+    // already resolved `workspace_root` and then addressed these directories
+    // RELATIVELY, which `std::fs` takes against the process — so run from a
+    // subdirectory it printed its header and an empty list, reporting no crates
+    // at all rather than saying it could not look.
+    //
+    // Newly load-bearing: `xtask complete` now writes COMPLETION.md at the
+    // workspace root. A relative read here would answer "○ pending" for crates
+    // that are recorded as complete — a disagreement between the command that
+    // writes the record and the one that reports it.
+    let root = Path::new(&workspace_root);
     for loc in &locations {
-        if Path::new(loc).exists() {
+        let loc_dir = root.join(loc);
+        if loc_dir.exists() {
             println!("{}/", loc.bold());
-            for entry in std::fs::read_dir(loc)? {
+            for entry in std::fs::read_dir(&loc_dir)? {
                 let entry = entry?;
                 if entry.path().is_dir() {
                     let name = entry.file_name().to_string_lossy().to_string();
-                    let completion_path = format!("{}/{}/COMPLETION.md", loc, name);
-                    let status = if Path::new(&completion_path).exists() {
+                    let completion_path = loc_dir.join(&name).join("COMPLETION.md");
+                    let status = if completion_path.exists() {
                         "✓ A-grade".green().to_string()
                     } else {
                         "○ pending".dimmed().to_string()
