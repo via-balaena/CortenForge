@@ -196,13 +196,23 @@ impl Solid {
     /// 0.004 on a cuboid-minus-cylinder at 0.2. Meshes under 50K faces are then
     /// QEM-simplified, and that step does enforce two bounds: `|field|` at each
     /// collapsed vertex and at twenty-five sampled points per face, and that no
-    /// face ends up wound into the solid.
+    /// collapse *turns* a face inward.
     ///
     /// ⚠ Not an envelope. This said "within `max_deviation` everywhere" until
     /// 2026-08-20, when sweeping the output faces showed the simplified surface
-    /// straying about 1.25× that between its sampled points — and, before the
-    /// simplifier was bounded by the surface at all, a 10 mm cube coming back
-    /// as two triangles of volume 0.0 with every vertex inside tolerance.
+    /// straying 1.0–1.2× that between its sampled points, shape depending — and,
+    /// before the simplifier was bounded by the surface at all, a 10 mm cube
+    /// coming back as two triangles of volume 0.0 with every vertex inside
+    /// tolerance.
+    ///
+    /// ⚠ Two further limits worth knowing before trusting the output. The
+    /// winding screen runs only on the simplified branch: above the 50 000-face
+    /// cutoff below, the raw mesher output ships unscreened, and it is not
+    /// always clean — the same block at `max_deviation` 0.17 crosses the cutoff
+    /// and carries 64 inward-wound faces where 0.18 carries none. And no part of
+    /// this checks for self-intersection between faces that are not neighbours;
+    /// simplification reduces it (37 crossing pairs to 8 across four shapes) but
+    /// promises nothing.
     /// The simplifier's own docs record what is and is not promised. For an
     /// unsimplified mesh whose vertices carry the bound alone, use
     /// [`Self::mesh_adaptive`].

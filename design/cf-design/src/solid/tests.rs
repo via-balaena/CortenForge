@@ -2126,7 +2126,10 @@ fn mesh_to_tolerance_keeps_its_faces_near_the_surface() {
     // cut straight through the solid between them, and one did: before the
     // simplifier was bounded by the surface, a 10 mm cube came back as two
     // triangles with every vertex inside tolerance. Sweep the faces.
-    const STEPS: [f64; 9] = [0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0];
+    // n=32, not the n=8 this shipped with: a review pointed out that measuring
+    // a sampling error with a coarse sample understates it, which is the same
+    // mistake in miniature. The barycentric sweep below converges by ~n=50.
+    const N: u8 = 32;
 
     let shape = Solid::cuboid(Vector3::new(2.0, 2.0, 2.0)).subtract(Solid::cylinder(0.8, 3.0));
     let max_dev = 0.3;
@@ -2135,12 +2138,11 @@ fn mesh_to_tolerance_keeps_its_faces_near_the_surface() {
     let mut worst = 0.0_f64;
     for face in &mesh.geometry.faces {
         let corners = face.map(|vi| mesh.geometry.vertices[vi as usize]);
-        for &u in &STEPS {
-            for &v in &STEPS {
+        for i in 0..=N {
+            for j in 0..=(N - i) {
+                let u = f64::from(i) / f64::from(N);
+                let v = f64::from(j) / f64::from(N);
                 let w = 1.0 - u - v;
-                if w < 0.0 {
-                    continue;
-                }
                 let point = Point3::from(
                     corners[0].coords * u + corners[1].coords * v + corners[2].coords * w,
                 );
@@ -2151,16 +2153,35 @@ fn mesh_to_tolerance_keeps_its_faces_near_the_surface() {
 
     // ⚠ The bound is 1.5× `max_dev`, not `max_dev`, and that is the honest
     // number: the guard samples twenty-five points per face, so the surface
-    // between them can still bow further. Measured 2026-08-20 on this shape:
-    // 0.2927, which happens to land inside `max_dev` — but that is where the
-    // samples fell, not a promise, so the gate does not assert it. It exists to
-    // catch a collapse back toward the old behaviour, which swept past 1.0.
+    // between them can still bow further. Measured 2026-08-20 on this shape at
+    // a converged n=64 sweep: 0.3602, or 1.20×. It exists to catch a collapse
+    // back toward the old behaviour, which swept past 1.0 — not to assert an
+    // envelope the simplifier never had.
     assert!(
         worst <= 1.5 * max_dev,
         "simplified surface strays {worst:.4} from the field on this shape, past \
          the {:.4} that twenty-five-point sampling has been measured to hold",
         1.5 * max_dev,
     );
+}
+
+/// Faces wound into the solid rather than out of it, ignoring slivers whose
+/// normal direction is numerical noise.
+fn faces_wound_inward(mesh: &AttributedMesh, shape: &Solid) -> usize {
+    mesh.geometry
+        .faces
+        .iter()
+        .filter(|face| {
+            let corners = face.map(|vi| mesh.geometry.vertices[vi as usize]);
+            let normal = (corners[1] - corners[0]).cross(&(corners[2] - corners[0]));
+            if normal.norm() * 0.5 < 1e-4 {
+                return false;
+            }
+            let centroid =
+                Point3::from((corners[0].coords + corners[1].coords + corners[2].coords) / 3.0);
+            normal.dot(&shape.gradient(&centroid)) <= 0.0
+        })
+        .count()
 }
 
 #[test]
@@ -2172,36 +2193,80 @@ fn mesh_to_tolerance_winds_every_face_outward() {
     // probes read field 0 on it, because every point of that face does.
     //
     // Measured 2026-08-20 with the deviation guard but before
-    // `collapse_inverts_a_face`: 5 faces of this shape, and 7 of 60 on a 10 mm
-    // block, wound backwards at `normal · ∇f` of exactly -1.0 — through a mesh
-    // that read closed, manifold, consistently wound, and correct to 1 % on
-    // volume. A multi-agent review of that state is what surfaced it.
-    let shape = Solid::cuboid(Vector3::new(2.0, 2.0, 2.0)).subtract(Solid::cylinder(0.8, 3.0));
-    let mesh = shape.mesh_to_tolerance(0.3);
+    // `collapse_inverts_a_face`: 7 of 60 faces on the 10 mm block and 5 on the
+    // small one wound backwards at `normal · ∇f` of exactly -1.0 — through
+    // meshes that read closed, manifold, consistently wound, and correct to 1 %
+    // on volume. A multi-agent review is what surfaced it.
+    //
+    // ⚠ Both shapes, not one. The first revision of this test used only the
+    // small shape, and a review showed that gated collapse-created inversions
+    // and nothing else — the 10 mm block is where they were actually measured.
+    let shapes = [
+        (
+            "10 mm block, ⌀4 bore",
+            Solid::cuboid(Vector3::new(5.0, 5.0, 5.0)).subtract(Solid::cylinder(2.0, 6.0)),
+            0.2,
+        ),
+        (
+            "4 mm block, ⌀1.6 bore",
+            Solid::cuboid(Vector3::new(2.0, 2.0, 2.0)).subtract(Solid::cylinder(0.8, 3.0)),
+            0.3,
+        ),
+    ];
 
-    let mut backwards = Vec::new();
-    for face in &mesh.geometry.faces {
-        let corners = face.map(|vi| mesh.geometry.vertices[vi as usize]);
-        let normal = (corners[1] - corners[0]).cross(&(corners[2] - corners[0]));
-        // Slivers are excluded: below this area the cross product is numerical
-        // noise and its direction means nothing. 1e-4 mm² is ~1e-6 of the
-        // smallest honest face here.
-        if normal.norm() * 0.5 < 1e-4 {
-            continue;
-        }
-        let centroid =
-            Point3::from((corners[0].coords + corners[1].coords + corners[2].coords) / 3.0);
-        if normal.dot(&shape.gradient(&centroid)) <= 0.0 {
-            backwards.push(*face);
-        }
+    for (label, shape, max_dev) in shapes {
+        // ⚠ Stronger than the guard promises, and deliberately so. The guard is
+        // differential — it refuses to *turn* a face inward — so a clean output
+        // is not something it guarantees; on these two shapes it is something
+        // that was measured. The 10 mm block in fact arrives from the mesher
+        // with 8 inverted faces and leaves with none, because the collapses that
+        // remove them are exactly the ones the guard has no reason to refuse.
+        // If this ever fails, check `simplification_never_adds_an_inverted_face`
+        // first: that one states the property the guard actually owns.
+        let mesh = shape.mesh_to_tolerance(max_dev);
+        assert_eq!(
+            faces_wound_inward(&mesh, &shape),
+            0,
+            "{label}: {} of {} faces wind into the solid rather than out of it",
+            faces_wound_inward(&mesh, &shape),
+            mesh.geometry.faces.len(),
+        );
     }
+}
 
-    assert!(
-        backwards.is_empty(),
-        "{} of {} faces wind into the solid rather than out of it: {backwards:?}",
-        backwards.len(),
-        mesh.geometry.faces.len(),
-    );
+#[test]
+fn simplification_never_adds_an_inverted_face() {
+    // ★★ The honest form of the claim. `collapse_inverts_a_face` refuses to
+    // *turn* a face inward; it cannot repair one that arrived that way, and
+    // meshes do arrive that way — `Solid::cone(3,6).mesh_adaptive(0.3)` carries
+    // 40 inverted faces and some of exactly zero area, which is a defect in the
+    // mesher and not in this step.
+    //
+    // ⚠ An absolute assertion here would be the wrong gate, and worse, it would
+    // *reward the wrong behaviour*: the previous absolute guard drove this cone
+    // from 22 faces to 150 while raising its inverted count from 0 to 8, because
+    // refusing every collapse that touched pre-existing damage froze the damaged
+    // neighbourhood in place. Simplification must not make it worse. That is the
+    // property, so that is the assertion.
+    let cases = [
+        // 40 inverted faces in, 2 out — a reduction, not a repair.
+        ("cone", Solid::cone(3.0, 6.0), 0.3),
+        // 8 in, 0 out.
+        (
+            "4 mm block, ⌀1.6 bore",
+            Solid::cuboid(Vector3::new(2.0, 2.0, 2.0)).subtract(Solid::cylinder(0.8, 3.0)),
+            0.3,
+        ),
+    ];
+
+    for (label, shape, max_dev) in cases {
+        let before = faces_wound_inward(&shape.mesh_adaptive(max_dev), &shape);
+        let after = faces_wound_inward(&shape.mesh_to_tolerance(max_dev), &shape);
+        assert!(
+            after <= before,
+            "{label}: simplification raised inverted faces from {before} to {after}"
+        );
+    }
 }
 
 #[test]
