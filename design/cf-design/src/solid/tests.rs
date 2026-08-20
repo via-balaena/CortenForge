@@ -2340,18 +2340,26 @@ fn every_bounded_primitive_simplifies_to_clean_geometry() {
     // the helix — 78 % of its 0.45 wall — the output degrades to 3 inverted and
     // 4 degenerate faces, which is the mesher being asked for a feature it
     // cannot resolve rather than a defect in the guards.
-    let cases: Vec<(&str, Solid, f64)> = vec![
-        ("sphere", Solid::sphere(5.0), 0.5),
-        ("cuboid", Solid::cuboid(Vector3::new(3.7, 3.7, 3.7)), 0.3),
-        ("cylinder", Solid::cylinder(2.3, 4.1), 0.4),
-        ("capsule", Solid::capsule(1.7, 3.1), 0.4),
+    // The fourth column is a ceiling on inverted faces: 0 everywhere the output
+    // is actually clean, with the one exception named and measured.
+    //
+    // ⚠ Tolerance is part of the fixture, not a free knob. Meshing the lofts at
+    // 0.15/0.3 rather than 0.1/0.15 runs faster and reports zero inverted faces
+    // WITH THE SIGN BUG STILL IN — the first draft of this gate did exactly that
+    // and was decorative. Coarsen these and you have deleted the test.
+    let cases: Vec<(&str, Solid, f64, usize)> = vec![
+        ("sphere", Solid::sphere(5.0), 0.5, 0),
+        ("cuboid", Solid::cuboid(Vector3::new(3.7, 3.7, 3.7)), 0.3, 0),
+        ("cylinder", Solid::cylinder(2.3, 4.1), 0.4, 0),
+        ("capsule", Solid::capsule(1.7, 3.1), 0.4, 0),
         (
             "ellipsoid",
             Solid::ellipsoid(Vector3::new(4.3, 2.7, 1.9)),
             0.4,
+            0,
         ),
-        ("torus", Solid::torus(4.1, 1.3), 0.45),
-        ("cone", Solid::cone(3.0, 6.0), 0.3),
+        ("torus", Solid::torus(4.1, 1.3), 0.45, 0),
+        ("cone", Solid::cone(3.0, 6.0), 0.3, 0),
         (
             "pipe",
             Solid::pipe(
@@ -2363,6 +2371,7 @@ fn every_bounded_primitive_simplifies_to_clean_geometry() {
                 0.9,
             ),
             0.3,
+            0,
         ),
         (
             "pipe_spline",
@@ -2376,37 +2385,48 @@ fn every_bounded_primitive_simplifies_to_clean_geometry() {
                 0.7,
             ),
             0.3,
+            0,
         ),
-        // ⚠ Two lofts, and neither is centred on the origin — that asymmetry is
-        // exactly what the cap-selection bug needed to show itself.
+        // ⚠ Two lofts, neither centred on the origin — that asymmetry is exactly
+        // what the cap-selection bug needed in order to show itself.
+        // ★ This row is the discriminator: 0 inverted with the fix, 1 without.
         (
             "loft",
             Solid::loft(&[(-1.0, 0.9), (0.0, 0.6), (1.0, 0.3)]),
-            0.15,
+            0.1,
+            0,
         ),
         (
             "loft off-centre",
             Solid::loft(&[(-3.0, 2.1), (0.0, 1.4), (2.5, 0.7)]),
-            0.3,
+            0.15,
+            // Measured 1 with the fix and 5 without. The survivor is inherited:
+            // this loft's mesher output carries 480 inverted faces.
+            2,
         ),
         (
             "superellipsoid",
             Solid::superellipsoid(Vector3::new(3.1, 2.3, 1.7), 0.7, 1.3),
             0.4,
+            0,
         ),
-        ("log_spiral", Solid::log_spiral(1.1, 0.18, 0.45, 1.7), 0.3),
-        ("helix", Solid::helix(2.3, 1.7, 0.45, 1.6), 0.2),
+        (
+            "log_spiral",
+            Solid::log_spiral(1.1, 0.18, 0.45, 1.7),
+            0.3,
+            0,
+        ),
+        ("helix", Solid::helix(2.3, 1.7, 0.45, 1.6), 0.2, 0),
     ];
 
-    for (label, shape, max_dev) in cases {
+    for (label, shape, max_dev, ceiling) in cases {
         let mesh = shape.mesh_to_tolerance(max_dev);
         assert!(!mesh.is_empty(), "{label}: meshed to nothing");
 
         let inverted = faces_wound_inward(&mesh, &shape);
-        assert_eq!(
-            inverted,
-            0,
-            "{label}: {inverted} of {} faces wind into the solid",
+        assert!(
+            inverted <= ceiling,
+            "{label}: {inverted} of {} faces wind into the solid (at most {ceiling} expected)",
             mesh.geometry.faces.len()
         );
 
