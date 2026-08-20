@@ -542,7 +542,7 @@ fn surface_probes(tri: &[Point3<f64>; 3]) -> [Point3<f64>; PROBE_WEIGHTS.len()] 
 /// `mesh_to_tolerance(0.2)` returned **2 faces and volume 0.0** from a 28812-face
 /// input, with every surviving vertex dutifully within tolerance.
 ///
-/// Four probes per face is a sample, not a proof — a triangle can still bow
+/// Twelve probes per face is a sample, not a proof — a triangle can still bow
 /// away from the field between them. It is a sample of the surface, which is
 /// the thing being bounded, rather than of corners already known to sit on it.
 fn collapse_stays_within_deviation(
