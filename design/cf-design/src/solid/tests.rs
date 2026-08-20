@@ -2248,23 +2248,53 @@ fn simplification_never_adds_an_inverted_face() {
     // refusing every collapse that touched pre-existing damage froze the damaged
     // neighbourhood in place. Simplification must not make it worse. That is the
     // property, so that is the assertion.
+    // The third column is a ceiling on what may survive. `after <= before` alone
+    // is too weak to be worth writing: the absolute guard this replaced left the
+    // cone at 8 inverted faces, which is still under its input's 40 and would
+    // sail through. Measured here: cone 40 -> 2, block 8 -> 0.
     let cases = [
-        // 40 inverted faces in, 2 out — a reduction, not a repair.
-        ("cone", Solid::cone(3.0, 6.0), 0.3),
-        // 8 in, 0 out.
+        ("cone", Solid::cone(3.0, 6.0), 0.3, 4),
         (
             "4 mm block, ⌀1.6 bore",
             Solid::cuboid(Vector3::new(2.0, 2.0, 2.0)).subtract(Solid::cylinder(0.8, 3.0)),
             0.3,
+            0,
         ),
     ];
 
-    for (label, shape, max_dev) in cases {
+    for (label, shape, max_dev, ceiling) in cases {
         let before = faces_wound_inward(&shape.mesh_adaptive(max_dev), &shape);
         let after = faces_wound_inward(&shape.mesh_to_tolerance(max_dev), &shape);
         assert!(
             after <= before,
             "{label}: simplification raised inverted faces from {before} to {after}"
+        );
+        assert!(
+            after <= ceiling,
+            "{label}: {after} inverted faces survive simplification (from {before}); \
+             at most {ceiling} is what freezing-free collapse was measured to leave"
+        );
+    }
+
+    // ── The dimensions nobody picks for a test ──────────────────────────
+    //
+    // ★★ Every fixture above and in the rest of this file uses a half-extent of
+    // 0.5, 1, 2, 3 or 5 — values for which the centroid expression
+    // `(h + h + h) / 3.0` is exactly `h`. A guard that read a degenerate
+    // gradient as "inverted" therefore never fired in the whole 795-test suite,
+    // while taking `cuboid(3.7,3.7,3.7)` from 14 faces to 7500 and a 5×5×0.4
+    // plate from 14 to 1988. Round numbers were the blind spot, so this is the
+    // test that refuses to use them.
+    for (label, shape) in [
+        ("3.7 mm cube", Solid::cuboid(Vector3::new(3.7, 3.7, 3.7))),
+        ("thin plate", Solid::cuboid(Vector3::new(5.0, 5.0, 0.4))),
+    ] {
+        let faces = shape.mesh_to_tolerance(0.3).face_count();
+        assert!(
+            faces <= 100,
+            "{label}: {faces} faces — a box should simplify to a handful \
+             (measured 12 and 16); this is the shape of a guard that has stopped \
+             accepting collapses at all"
         );
     }
 }
