@@ -1187,6 +1187,24 @@ mod tests {
         };
         check(&n2, Point3::new(1.0, 0.5, 1.5), 1e-4);
         check(&n2, Point3::new(0.5, 0.3, 4.5), 1e-4);
+
+        // ⚠ Cap-dominant interior, on BOTH sides of the midplane. Every point
+        // above is barrel-dominant, so none of them reaches the branch that
+        // chooses between the two caps — and that branch chose by "am I below
+        // the bottom plane", which is true only outside the solid, so the whole
+        // bottom half of every loft pointed the wrong way. A wide, short loft
+        // puts these points nearer a cap than the barrel.
+        //
+        // ★ Two points, not one, and that is the whole design of this check:
+        // below the midplane alone leaves `p.z < z_max` passing, above it alone
+        // leaves the original `p.z <= z_min` passing. Only the pair pins the
+        // midplane. (Measured: the mirror mutant reverses 43.7 % of this loft's
+        // interior and was green against every other test in the crate.)
+        let flat = FieldNode::Loft {
+            stations: vec![[0.0, 3.0], [1.0, 3.0]],
+        };
+        check(&flat, Point3::new(0.5, 0.3, 0.4), 1e-4);
+        check(&flat, Point3::new(0.5, 0.3, 0.6), 1e-4);
     }
 
     // ── Booleans ────────────────────────────────────────────────────

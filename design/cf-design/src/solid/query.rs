@@ -200,8 +200,8 @@ impl Solid {
     ///
     /// ⚠ Not an envelope. This said "within `max_deviation` everywhere" until
     /// 2026-08-20, when sweeping the output faces showed the simplified surface
-    /// straying past it between its sampled points: 1.0–1.45× across the shapes
-    /// this crate measures, the worst being a plain cube rather than any of the
+    /// straying past it between its sampled points — up to 1.41× on the shapes
+    /// this crate fixtures, the worst being a plain cube rather than any of the
     /// awkward ones. ⚠ That range is a sample, not a bound — nothing in the
     /// algorithm limits how far a face may bow between probes, and denser-featured
     /// parts have been measured worse — and,

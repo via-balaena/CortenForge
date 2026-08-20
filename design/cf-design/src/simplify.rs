@@ -729,13 +729,16 @@ pub fn simplify_mesh(mesh: &IndexedMesh, target_faces: usize) -> IndexedMesh {
 ///
 /// A collapse is accepted only when `|field| ≤ max_deviation` at the new vertex
 /// *and* at each of [`surface_probes`]'s twenty-five points on every face the
-/// leaves behind, and only when it does not *turn* such a face inward — see
+/// collapse leaves behind, and only when it does not *turn* such a face inward — see
 /// [`collapse_inverts_a_face`], which catches what a distance bound cannot.
 ///
 /// ⚠ That is a promise about what a collapse adds, not about the mesh it is
 /// handed. Faces already wound inward in the input survive simplification, and
 /// they exist: `Solid::cone(3,6).mesh_adaptive(0.3)` arrives with 40 of them.
-/// Simplifying that cone leaves 2, which is a reduction and not a repair.
+/// Simplifying that cone leaves none — but that is repair by luck, not by
+/// contract: the collapses that removed them were simply ones this guard had no
+/// reason to refuse. The off-centre loft in `every_bounded_primitive_simplifies_to_clean_geometry`
+/// is the honest example, arriving with 480 inverted faces and leaving with 1.
 ///
 /// ⚠ The vertex test alone is vacuous on flat geometry — see
 /// [`collapse_stays_within_deviation`] for the measurement that says so.
@@ -745,7 +748,7 @@ pub fn simplify_mesh(mesh: &IndexedMesh, target_faces: usize) -> IndexedMesh {
 /// converged, unlike the n=12 sweep an earlier revision quoted — a 10 mm block
 /// with a ⌀4 through-hole at `max_deviation = 0.2` strays 0.223, a 4 mm cube at
 /// 0.3 strays 0.296, a sphere 0.312, and a *plain* 10 mm cube at 0.2 strays
-/// 0.282 — the worst of them, at 1.41×.
+/// 0.281 — the worst of them, at 1.41×.
 ///
 /// ⚠⚠ Read that as a sample, not a bound. Nothing in this algorithm limits how
 /// far a face may bow between its probes; the figures above are what a set of

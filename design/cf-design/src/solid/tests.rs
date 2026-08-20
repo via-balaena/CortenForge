@@ -2119,7 +2119,7 @@ fn mesh_to_tolerance_subtract() {
 
     // ⚠ Volume alone cannot see a weakened deviation bound. Relaxing the guard
     // to 1.4× `max_deviation` was measured to pass every other assertion in this
-    // crate while the surface strayed 0.5565 — 2.78× what the caller asked for.
+    // crate while the surface strayed 0.4838 — 2.42× what the caller asked for.
     // This shape is the one that shows it, and the mesh is already built here, so
     // the check costs nothing. Measured: 0.2226 at n=32.
     let stray = worst_surface_stray(&mesh, &shape, 32);
@@ -2166,7 +2166,8 @@ fn mesh_to_tolerance_keeps_its_faces_near_the_surface() {
     // ⚠ The bound is 1.5× `max_dev`, not `max_dev`, and that is the honest
     // number: the guard samples twenty-five points per face, so the surface
     // between them can still bow further. Measured 2026-08-20 on this shape at
-    // a converged n=64 sweep: 0.3602, or 1.20×. It exists to catch a collapse
+    // a converged n=64 sweep: 0.2962, or 0.99× — inside tolerance, though that
+    // is where the samples fell and not a promise. It exists to catch a collapse
     // back toward the old behaviour, which swept past 1.0 — not to assert an
     // envelope the simplifier never had.
     assert!(
@@ -2289,7 +2290,7 @@ fn mesh_to_tolerance_winds_every_face_outward() {
         // differential — it refuses to *turn* a face inward — so a clean output
         // is not something it guarantees; on these two shapes it is something
         // that was measured. The 10 mm block in fact arrives from the mesher
-        // with 8 inverted faces and leaves with none, because the collapses that
+        // with 24 inverted faces and leaves with none, because the collapses that
         // remove them are exactly the ones the guard has no reason to refuse.
         // If this ever fails, check `simplification_never_adds_an_inverted_face`
         // first: that one states the property the guard actually owns.
@@ -2323,14 +2324,15 @@ fn every_bounded_primitive_simplifies_to_clean_geometry() {
     // `mesh_to_tolerance` test. Five rounds of review re-examined the same four
     // — sphere, cuboid, cylinder, cone — while a sign error in `grad_loft`
     // reversed the outward direction through the bottom half of every loft and
-    // shipped inverted faces on every one of them. Nothing was subtle about it;
-    // nothing looked.
+    // shipped inverted faces on both loft rows below, at the tolerances those
+    // rows use. Nothing was subtle about it; nothing looked.
     //
     // ⚠ ADDING A PRIMITIVE TO `Solid` MEANS ADDING A ROW HERE. A primitive with
     // no row is a primitive nobody has meshed.
     //
-    // ⚠ `gyroid` and `schwarz_p` are absent deliberately: they are unbounded
-    // periodic surfaces, `bounds()` returns `None` for them, and
+    // ⚠ `gyroid`, `schwarz_p` and `plane` are absent deliberately — that is
+    // thirteen shapes across fourteen rows plus three exclusions, which is all
+    // sixteen. They are unbounded, `bounds()` returns `None` for them, and
     // `mesh_to_tolerance` answers with an empty mesh. That is a real gap in this
     // crate — they cannot be meshed at all — but it is not this gate's business,
     // and a row asserting "no inverted faces" over zero faces would be worse
@@ -2457,7 +2459,7 @@ fn simplification_never_adds_an_inverted_face() {
     // The third column is a ceiling on what may survive. `after <= before` alone
     // is too weak to be worth writing: an absolute guard tried on this branch
     // left the cone at 8 inverted faces, still under its input's 40, and would
-    // have sailed through. Measured here: cone 40 -> 0, block 8 -> 0.
+    // have sailed through. Measured here: cone 40 -> 0, two spheres 66 -> 0.
     //
     // ⚠ The cone reaching 0 depends on the zero-area branch of
     // `collapse_inverts_a_face` being differential too. While it was absolute,
