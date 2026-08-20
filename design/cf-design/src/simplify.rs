@@ -534,16 +534,16 @@ const PROBE_WEIGHTS: [[f64; 3]; 25] = [
 /// barycentrically to find how far the surface really strays, with
 /// [`collapse_inverts_a_face`] in place:
 ///
-/// | probes per face | worst stray | volume error | faces | time |
-/// |-----------------|-------------|--------------|-------|------|
-/// | 3               | 2.052       | 26.6 %       | 60    | 3.37 s |
-/// | 7               | 0.481       | 2.71 %       | 54    | 3.43 s |
-/// | 12              | 0.363       | 1.49 %       | 62    | 3.16 s |
-/// | **25 (this)**   | **0.203**   | **0.08 %**   | 68    | **3.21 s** |
+/// | probes per face | worst stray | volume error | faces | inverted | time |
+/// |-----------------|-------------|--------------|-------|----------|------|
+/// | 3               | 2.052       | 17.2 %       | 66    | 0        | 2.98 s |
+/// | 7               | 0.481       | 2.71 %       | 50    | 0        | 2.98 s |
+/// | 12              | 0.363       | 1.55 %       | 68    | 1        | 3.11 s |
+/// | **25 (this)**   | **0.223**   | **0.12 %**   | 58    | **0**    | **3.24 s** |
 ///
-/// Twenty-five is chosen because it is the first density whose worst stray
-/// lands on the tolerance it was asked for — 0.203 against 0.2 — and it costs
-/// nothing to get there. The time column is flat because
+/// Twenty-five is chosen because it is the only density here that leaves no
+/// inverted geometry and lands its worst stray nearest the tolerance it was
+/// asked for — 0.223 against 0.2 — and it costs almost nothing to get there. The time column is flat because
 /// [`collapse_inverts_a_face`] runs first and rejects most candidates before
 /// any of these probes are evaluated; density is only paid on the survivors.
 ///
@@ -567,22 +567,23 @@ fn triangle_normal(tri: &[Point3<f64>; 3]) -> Vector3<f64> {
 /// Which way this triangle faces relative to the field, or `None` when the
 /// field cannot say.
 ///
-/// ⚠ `None` is not a formality. `grad_cuboid` returns a zero vector for a probe
-/// that sits outside the box by less than an *absolute* `1e-15`, and a face
-/// centroid `(h + h + h) / 3.0` lands exactly there for most half-extents `h`.
-/// Reading that zero as "inverted" stopped simplification dead: measured
-/// 2026-08-20, `cuboid(3.7,3.7,3.7)` at 0.3 went from 14 faces to **7500**, and
-/// a 5×5×0.4 plate from 14 to 1988. It survived a 794-test suite because every
-/// fixture in it uses a half-extent — 0.5, 1, 2, 3, 5 — for which that centroid
-/// expression is exact. ⇒ the zero band in `grad_cuboid` is scale-dependent and
-/// is a defect in its own right; this only declines to draw conclusions from it.
+/// ⚠ `None` is not a formality, and the reason is worth keeping. `grad_cuboid`
+/// used to return a zero vector for any probe outside the box by less than an
+/// *absolute* `1e-15`, and a face centroid `(h + h + h) / 3.0` sits a few ULP
+/// proud of the plane for most half-extents `h`. That band is now `== 0.0`
+/// (see `gradient.rs`), which is the real fix; this abstain is the second line
+/// of defence for field nodes that genuinely have no gradient somewhere.
 ///
-/// ⚠ Mutation says this `None` is currently unobservable: the differential
-/// comparison in [`collapse_inverts_a_face`] reads the same zero gradient
-/// before and after the collapse, so treating it as "inward" cancels out and no
-/// test can tell. It stays because concluding *anything* about winding from a
-/// gradient the field did not supply is wrong on its own terms, and because the
-/// two defects were independent — either one alone produced the blowup above.
+/// ⚠⚠ What the pair of defects did, measured 2026-08-20, because the shape of it
+/// is instructive: reading a zero gradient as "inverted" *and* judging winding
+/// absolutely rather than differentially took `cuboid(3.7,3.7,3.7)` at 0.3 from
+/// 14 faces to **7500**, and a 5×5×0.4 plate from 14 to **1988**. ⚠ It needed
+/// both — a 4-way run gives 12 and 16 faces for either defect alone, and 7500
+/// and 1988 only together. An earlier revision of this comment claimed either
+/// one sufficed; that was asserted, not measured, and it was wrong.
+///
+/// It survived a 795-test suite because every fixture in it used a half-extent —
+/// 0.5, 1, 2, 3, 5 — for which that centroid expression is exact.
 fn winds_inward(tri: &[Point3<f64>; 3], node: &FieldNode) -> Option<bool> {
     let normal = triangle_normal(tri);
     let centroid = Point3::from((tri[0].coords + tri[1].coords + tri[2].coords) / 3.0);
@@ -602,12 +603,15 @@ fn winds_inward(tri: &[Point3<f64>; 3], node: &FieldNode) -> Option<bool> {
 /// rejections, and drove a cuboid-minus-cylinder to 828 faces to buy what this
 /// buys at 60.
 ///
-/// ★★ Differential, not absolute: a face that was *already* wound inward before
-/// the collapse is not this collapse's doing, and rejecting on it freezes the
-/// damaged neighbourhood in place so nothing can ever coarsen it. Measured with
-/// the absolute form, `cone(3,6)` at 0.3 went from 22 faces with no inverted
-/// geometry to 150 faces with 8 — the guard making the very thing it exists to
-/// prevent strictly worse.
+/// ★★ Differential, not absolute — and that applies to the zero-area branch
+/// below as much as to the winding test. A face that was *already* wound inward,
+/// or already had no area, is not this collapse's doing, and rejecting on it
+/// freezes the damaged neighbourhood so nothing can ever coarsen it. Measured
+/// with the absolute form, `cone(3,6)` at 0.3 came back as 126 faces of which
+/// **52 had exactly zero area** — 41 % of the shipped mesh was degenerate
+/// triangles the simplifier had been forbidden to remove. Differential on both
+/// counts, the same cone is **24 faces, none degenerate, none inverted**, at the
+/// same volume.
 ///
 /// ⚠ A distance bound cannot see any of this. Every point of a box face has
 /// field exactly 0, so an inverted triangle lying *in* that face satisfies the
@@ -622,11 +626,16 @@ fn collapse_inverts_a_face(
     node: &FieldNode,
 ) -> bool {
     affected.into_iter().any(|(before, after)| {
-        // A collapse that flattens a face to nothing is refused outright: below
-        // this the normal's direction is rounding error, so nothing downstream
-        // can judge the face at all.
+        // A collapse that flattens a face to nothing is refused — but only if
+        // the face had area to begin with. This branch was absolute while the
+        // winding test beside it was made differential, which is the same defect
+        // one line apart: the mesher emits exactly-zero-area triangles (84 of
+        // them on `cone(3,6)` at 0.3), and refusing every collapse that touches
+        // one freezes that neighbourhood permanently. Measured, the cone shipped
+        // 126 faces of which 52 had exactly zero area — 41 % of the mesh was
+        // degenerate triangles the simplifier had been forbidden to remove.
         if triangle_normal(&after).norm() < f64::EPSILON {
-            return true;
+            return triangle_normal(&before).norm() >= f64::EPSILON;
         }
         winds_inward(&after, node) == Some(true) && winds_inward(&before, node) != Some(true)
     })
@@ -734,10 +743,12 @@ pub fn simplify_mesh(mesh: &IndexedMesh, target_faces: usize) -> IndexedMesh {
 /// ⚠⚠ This bounds the points it samples, not every point of every face, so it
 /// is a strong bound and not a guarantee. Sweeping the output faces at n=64 —
 /// converged, unlike the n=12 sweep an earlier revision quoted — a 10 mm block
-/// with a ⌀4 through-hole at `max_deviation = 0.2` strays 0.203, a 4 mm cube at
-/// 0.3 strays 0.296, a sphere 0.312, and the same cube with a ⌀1.6 bore 0.360.
-/// So: about 1.0× on some shapes and 1.2× on others, and which one a caller gets
-/// is not something this function knows. Callers who need a true envelope want a
+/// with a ⌀4 through-hole at `max_deviation = 0.2` strays 0.223, a 4 mm cube at
+/// 0.3 strays 0.296, a sphere 0.312, and a *plain* 10 mm cube at 0.2 strays
+/// 0.281, which is the worst of them at 1.41×. So: 1.0× to about 1.45×, and
+/// which one a caller gets is not something this function knows. ⚠ An earlier
+/// revision said "1.0–1.2×" because it had not measured the plain cube — the
+/// simplest shape in the set was the one missing from it. Callers who need a true envelope want a
 /// Lipschitz-bounded test (the field's `lipschitz_factor` and the triangle's
 /// size give one), which costs sample density proportional to face area and has
 /// not been built.

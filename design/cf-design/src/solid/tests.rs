@@ -2116,6 +2116,18 @@ fn mesh_to_tolerance_subtract() {
         error * 100.0,
         mesh.geometry.signed_volume(),
     );
+
+    // ⚠ Volume alone cannot see a weakened deviation bound. Relaxing the guard
+    // to 1.4× `max_deviation` was measured to pass every other assertion in this
+    // crate while the surface strayed 0.5565 — 2.78× what the caller asked for.
+    // This shape is the one that shows it, and the mesh is already built here, so
+    // the check costs nothing. Measured: 0.2226 at n=32.
+    let stray = worst_surface_stray(&mesh, &shape, 32);
+    assert!(
+        stray <= 1.5 * max_dev,
+        "surface strays {stray:.4} from the field, past the {:.4} measured to hold here",
+        1.5 * max_dev,
+    );
 }
 
 #[test]
@@ -2163,6 +2175,29 @@ fn mesh_to_tolerance_keeps_its_faces_near_the_surface() {
          the {:.4} that twenty-five-point sampling has been measured to hold",
         1.5 * max_dev,
     );
+}
+
+/// How far the mesh surface strays from the field, swept barycentrically over
+/// every face. `n` is the subdivision: the sweep converges by about 50, and a
+/// coarse one understates the answer — measuring a sampling error with a sparse
+/// sample is the same mistake twice.
+fn worst_surface_stray(mesh: &AttributedMesh, shape: &Solid, n: u8) -> f64 {
+    let mut worst = 0.0_f64;
+    for face in &mesh.geometry.faces {
+        let corners = face.map(|vi| mesh.geometry.vertices[vi as usize]);
+        for i in 0..=n {
+            for j in 0..=(n - i) {
+                let u = f64::from(i) / f64::from(n);
+                let v = f64::from(j) / f64::from(n);
+                let w = 1.0 - u - v;
+                let point = Point3::from(
+                    corners[0].coords * u + corners[1].coords * v + corners[2].coords * w,
+                );
+                worst = worst.max(shape.evaluate(&point).abs());
+            }
+        }
+    }
+    worst
 }
 
 /// Faces wound into the solid rather than out of it, ignoring slivers whose
@@ -2249,11 +2284,16 @@ fn simplification_never_adds_an_inverted_face() {
     // neighbourhood in place. Simplification must not make it worse. That is the
     // property, so that is the assertion.
     // The third column is a ceiling on what may survive. `after <= before` alone
-    // is too weak to be worth writing: the absolute guard this replaced left the
-    // cone at 8 inverted faces, which is still under its input's 40 and would
-    // sail through. Measured here: cone 40 -> 2, block 8 -> 0.
+    // is too weak to be worth writing: an absolute guard tried on this branch
+    // left the cone at 8 inverted faces, still under its input's 40, and would
+    // have sailed through. Measured here: cone 40 -> 0, block 8 -> 0.
+    //
+    // ⚠ The cone reaching 0 depends on the zero-area branch of
+    // `collapse_inverts_a_face` being differential too. While it was absolute,
+    // the cone's 84 zero-area input triangles froze their neighbourhoods and it
+    // shipped 126 faces, 52 of them degenerate.
     let cases = [
-        ("cone", Solid::cone(3.0, 6.0), 0.3, 4),
+        ("cone", Solid::cone(3.0, 6.0), 0.3, 0),
         (
             "4 mm block, ⌀1.6 bore",
             Solid::cuboid(Vector3::new(2.0, 2.0, 2.0)).subtract(Solid::cylinder(0.8, 3.0)),
@@ -2285,16 +2325,31 @@ fn simplification_never_adds_an_inverted_face() {
     // while taking `cuboid(3.7,3.7,3.7)` from 14 faces to 7500 and a 5×5×0.4
     // plate from 14 to 1988. Round numbers were the blind spot, so this is the
     // test that refuses to use them.
-    for (label, shape) in [
-        ("3.7 mm cube", Solid::cuboid(Vector3::new(3.7, 3.7, 3.7))),
-        ("thin plate", Solid::cuboid(Vector3::new(5.0, 5.0, 0.4))),
+    for (label, extents) in [
+        ("3.7 mm cube", Vector3::new(3.7, 3.7, 3.7)),
+        ("thin plate", Vector3::new(5.0, 5.0, 0.4)),
     ] {
-        let faces = shape.mesh_to_tolerance(0.3).face_count();
+        let shape = Solid::cuboid(extents);
+        let mesh = shape.mesh_to_tolerance(0.3);
+        let faces = mesh.face_count();
         assert!(
             faces <= 100,
             "{label}: {faces} faces — a box should simplify to a handful \
              (measured 12 and 16); this is the shape of a guard that has stopped \
              accepting collapses at all"
+        );
+
+        // ⚠ A ceiling on its own is one-sided, and the other side is where a
+        // weakened deviation bound goes: relaxing the guard to 1.4× took this
+        // plate to 4 faces and volume 9.661 — 88 % of the solid gone — while
+        // satisfying `faces <= 100` comfortably. The floor is what the tolerance
+        // actually permits: every face may sit 0.3 inside its true plane, so the
+        // smallest legal solid is what remains after shaving that off each side.
+        let floor = (extents.x * 2.0 - 0.6) * (extents.y * 2.0 - 0.6) * (extents.z * 2.0 - 0.6);
+        let volume = mesh.geometry.signed_volume();
+        assert!(
+            volume >= floor,
+            "{label}: volume {volume:.3} is below the {floor:.3} a 0.3 mm tolerance can account for"
         );
     }
 }

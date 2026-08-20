@@ -299,7 +299,17 @@ fn grad_cuboid(half: &Vector3<f64>, p: &Point3<f64>) -> Vector3<f64> {
         // Outside: gradient of |max(q, 0)|
         let w = Vector3::new(q.x.max(0.0), q.y.max(0.0), q.z.max(0.0));
         let w_norm = w.norm();
-        if w_norm < 1e-15 {
+        // ⚠ `== 0.0`, not a tolerance. An absolute `1e-15` band here is
+        // scale-dependent: a face centroid `(h + h + h) / 3.0` sits a few ULP
+        // proud of the box plane for most half-extents `h`, landed inside the
+        // band, and got back a zero vector where the true gradient is simply the
+        // face normal. Everything downstream that asks "which way is out" then
+        // gets no answer — measured 2026-08-20, that blinded the QEM
+        // simplifier's winding guard on exactly the flat geometry it exists for,
+        // and made its test oracle score a correct face as inverted.
+        // Normalising a tiny-but-nonzero `w` is safe: each component is at most
+        // `w_norm`, so the quotient is bounded by 1.
+        if w_norm == 0.0 {
             return Vector3::zeros();
         }
         Vector3::new(
