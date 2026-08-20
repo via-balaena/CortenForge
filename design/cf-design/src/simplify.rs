@@ -487,20 +487,49 @@ impl SimplMesh {
 
 // ── Collapse guards ───────────────────────────────────────────────────────
 
+/// Barycentric weights of the probe lattice — quarter steps with the three
+/// corners dropped, so twelve points spread over the face.
+const PROBE_WEIGHTS: [[f64; 3]; 12] = [
+    [0.75, 0.25, 0.0],
+    [0.75, 0.0, 0.25],
+    [0.5, 0.5, 0.0],
+    [0.5, 0.25, 0.25],
+    [0.5, 0.0, 0.5],
+    [0.25, 0.75, 0.0],
+    [0.25, 0.5, 0.25],
+    [0.25, 0.25, 0.5],
+    [0.25, 0.0, 0.75],
+    [0.0, 0.75, 0.25],
+    [0.0, 0.5, 0.5],
+    [0.0, 0.25, 0.75],
+];
+
 /// The points on a triangle that a deviation test has to look at.
 ///
-/// Not the corners. A collapse only ever moves one corner, and it moves it to
-/// a point the caller has already tested — so a corner test re-asks a question
+/// Not the corners. A collapse only ever moves one corner, and it moves it to a
+/// point the caller has already tested — so a corner test re-asks a question
 /// whose answer is known, and learns nothing about the surface spanning them.
-/// The centroid and the three edge midpoints are on that surface.
-fn surface_probes(tri: &[Point3<f64>; 3]) -> [Point3<f64>; 4] {
-    let mid = |a: Point3<f64>, b: Point3<f64>| Point3::from((a.coords + b.coords) * 0.5);
-    [
-        Point3::from((tri[0].coords + tri[1].coords + tri[2].coords) / 3.0),
-        mid(tri[0], tri[1]),
-        mid(tri[1], tri[2]),
-        mid(tri[2], tri[0]),
-    ]
+///
+/// ★ Density is a measured trade, not a taste. Meshing a 10 mm block with a
+/// ⌀4 through-hole at `max_deviation = 0.2`, then sweeping the *output* faces
+/// barycentrically to find how far the surface really strays:
+///
+/// | probes per face | worst stray | volume error | simplify time |
+/// |-----------------|-------------|--------------|---------------|
+/// | 1 (centroid)    | 1.796       | 2.0 %        | 3.5 s         |
+/// | 4               | 0.997       | 3.0 %        | 4.1 s         |
+/// | **12 (this)**   | **0.434**   | **1.04 %**   | **4.3 s**     |
+/// | 25              | 0.305       | 0.35 %       | 7.5 s         |
+///
+/// Twelve is the knee: it more than halves the stray for 5 % more time, where
+/// twenty-five buys a further 1.4× for 73 % more.
+///
+/// ⚠ Note what the first column does *not* reach: 0.2. A finite sample bounds
+/// the points it visits, and the surface between them can still bow further.
+/// See [`simplify_mesh_tolerance`] for what that means for the caller.
+fn surface_probes(tri: &[Point3<f64>; 3]) -> [Point3<f64>; PROBE_WEIGHTS.len()] {
+    PROBE_WEIGHTS
+        .map(|[u, v, w]| Point3::from(tri[0].coords * u + tri[1].coords * v + tri[2].coords * w))
 }
 
 /// Does the *surface* stay within `max_deviation` of the field?
@@ -590,13 +619,19 @@ pub fn simplify_mesh(mesh: &IndexedMesh, target_faces: usize) -> IndexedMesh {
 /// from the true implicit surface.
 ///
 /// A collapse is accepted only when `|field| ≤ max_deviation` at the new
-/// vertex *and* at the centroid and edge midpoints of every face the collapse
-/// leaves behind.
+/// vertex *and* at each of [`surface_probes`]'s twelve points on every face the
+/// collapse leaves behind.
 ///
 /// ⚠ The vertex test alone is vacuous on flat geometry — see
-/// [`collapse_stays_within_deviation`] for the measurement that says so. The
-/// surface probes bound the sampled points, not every point of every face, so
-/// this is a strong bound rather than a guarantee.
+/// [`collapse_stays_within_deviation`] for the measurement that says so.
+///
+/// ⚠⚠ This bounds the points it samples, not every point of every face, so it
+/// is a strong bound and not a guarantee. Sweeping the output faces of a 10 mm
+/// block with a ⌀4 through-hole at `max_deviation = 0.2` finds the surface
+/// straying up to 0.434 — about 2×. A 4 mm cube at 0.3 strays 0.408, a sphere
+/// 0.328. Callers who need a true envelope want a Lipschitz-bounded test (the
+/// field's `lipschitz_factor` and the triangle's size give one), which costs
+/// sample density proportional to face area and has not been built.
 ///
 /// # Panics
 ///

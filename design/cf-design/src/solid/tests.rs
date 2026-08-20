@@ -2113,6 +2113,50 @@ fn mesh_to_tolerance_subtract() {
 }
 
 #[test]
+fn mesh_to_tolerance_keeps_its_faces_near_the_surface() {
+    // ★ `mesh_to_tolerance_within_deviation` samples vertices — which is the
+    // predicate the simplifier itself enforces, so it cannot fail for the
+    // reason it claims. A mesh can hold every vertex on the surface and still
+    // cut straight through the solid between them, and one did: before the
+    // simplifier was bounded by the surface, a 10 mm cube came back as two
+    // triangles with every vertex inside tolerance. Sweep the faces.
+    const STEPS: [f64; 9] = [0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0];
+
+    let shape = Solid::cuboid(Vector3::new(2.0, 2.0, 2.0)).subtract(Solid::cylinder(0.8, 3.0));
+    let max_dev = 0.3;
+    let mesh = shape.mesh_to_tolerance(max_dev);
+
+    let mut worst = 0.0_f64;
+    for face in &mesh.geometry.faces {
+        let corners = face.map(|vi| mesh.geometry.vertices[vi as usize]);
+        for &u in &STEPS {
+            for &v in &STEPS {
+                let w = 1.0 - u - v;
+                if w < 0.0 {
+                    continue;
+                }
+                let point = Point3::from(
+                    corners[0].coords * u + corners[1].coords * v + corners[2].coords * w,
+                );
+                worst = worst.max(shape.evaluate(&point).abs());
+            }
+        }
+    }
+
+    // ⚠ The bound is 2× `max_dev`, not `max_dev`, and that is the honest number:
+    // the guard samples twelve points per face, so the surface between them can
+    // bow further. Measured 2026-08-20 on this shape: 0.3795, or 1.27×. The gate
+    // is here to catch a collapse back toward the old behaviour, where this
+    // swept far past 1.0 — not to assert an envelope the simplifier never had.
+    assert!(
+        worst <= 2.0 * max_dev,
+        "simplified surface strays {worst:.4} from the field, past the {:.4} \
+         that twelve-point sampling has been measured to hold",
+        2.0 * max_dev,
+    );
+}
+
+#[test]
 fn mesh_to_tolerance_is_reproducible() {
     // End-to-end companion to `tolerance_simplification_is_reproducible`: this
     // one also covers the mesher's vertex numbering, which is where the

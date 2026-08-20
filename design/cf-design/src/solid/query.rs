@@ -188,13 +188,21 @@ impl Solid {
         mesh
     }
 
-    /// Mesh the solid to a guaranteed maximum surface deviation.
+    /// Mesh the solid, holding the surface close to `max_deviation`.
     ///
-    /// The output mesh surface is within `max_deviation` of the true implicit
-    /// surface everywhere. Uses the parallel adaptive octree DC mesher with
-    /// cell size derived from the requested deviation. For meshes under 50K
-    /// faces, applies QEM simplification to reduce flat regions while staying
-    /// within tolerance.
+    /// The mesher places every vertex within `max_deviation` of the true
+    /// implicit surface, using cell size derived from the requested deviation.
+    /// Meshes under 50K faces are then QEM-simplified, which keeps the same
+    /// bound at each vertex and at twelve sampled points per face.
+    ///
+    /// ⚠ Not an envelope. This said "within `max_deviation` everywhere" until
+    /// 2026-08-20, when sweeping the output faces showed the simplified surface
+    /// straying about 2× that between its sampled points — and, before the
+    /// simplifier was bounded by the surface at all, a 10 mm cube coming back
+    /// as two triangles of volume 0.0 with every vertex inside tolerance.
+    /// The simplifier's own docs record what is and is not promised. For an
+    /// unsimplified mesh whose vertices carry the bound alone, use
+    /// [`Self::mesh_adaptive`].
     ///
     /// Returns an empty mesh for infinite geometry (bare `Plane`).
     ///
