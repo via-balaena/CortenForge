@@ -17,13 +17,13 @@
 //! jobs that install a software adapter, so their green means the pipelines
 //! really ran.
 
-use crate::context::GpuContext;
+use crate::context::{GpuContext, GpuError};
 
 /// Environment variable by which a run declares an adapter MUST be present.
 pub const REQUIRE_GPU: &str = "CF_REQUIRE_GPU";
 
 /// What to do when [`GpuContext::new`] finds no adapter.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoAdapter {
     /// Report the skip and return — a developer without a GPU.
     Skip,
@@ -51,25 +51,41 @@ pub fn no_adapter_action(require: Option<&str>) -> NoAdapter {
 ///
 /// `suite` names the caller in the skip line, so a partial skip is legible.
 ///
-/// # Panics
-///
-/// When no adapter is available and [`REQUIRE_GPU`] is set to anything other
-/// than empty or `0`.
-// Panicking IS the contract here: the variable's whole purpose is to convert a
-// silent skip into a failure, and a test harness reports a panic as the failure
-// it is. Returning an error instead would put the decision back on each of the
-// 51 call sites, which is the arrangement that produced the fail-open.
-#[allow(clippy::panic)]
+/// Refuses to continue, rather than returning `None`, when the run required an
+/// adapter — see [`report_missing_adapter`].
 pub fn gpu_context_or_skip(suite: &str) -> Option<GpuContext> {
-    let err = match GpuContext::new() {
-        Ok(ctx) => return Some(ctx),
-        Err(e) => e,
-    };
-    match no_adapter_action(std::env::var(REQUIRE_GPU).ok().as_deref()) {
-        NoAdapter::Skip => {
-            eprintln!("  Skipping {suite} (no GPU): {err}");
+    match GpuContext::new() {
+        Ok(ctx) => Some(ctx),
+        Err(e) => {
+            report_missing_adapter(suite, &e, required());
             None
         }
+    }
+}
+
+/// Whether this run has declared that it must have an adapter.
+pub fn required() -> NoAdapter {
+    no_adapter_action(std::env::var(REQUIRE_GPU).ok().as_deref())
+}
+
+/// Announce a missing adapter, or refuse to continue without one.
+///
+/// ★ Split from [`gpu_context_or_skip`] for one reason: the refusal is the whole
+/// point of this module and it cannot be reached on a machine that HAS an
+/// adapter, so leaving it inside the context call left it permanently untested.
+/// Taking the decision as an argument lets a test drive the branch directly.
+///
+/// # Panics
+///
+/// When `action` is [`NoAdapter::Fail`].
+// Panicking IS the contract: the variable exists to convert a silent skip into a
+// failure, and a test harness reports a panic as the failure it is. Returning an
+// error would put the decision back on each of the 51 call sites, which is the
+// arrangement that produced the fail-open.
+#[allow(clippy::panic)]
+pub fn report_missing_adapter(suite: &str, err: &GpuError, action: NoAdapter) {
+    match action {
+        NoAdapter::Skip => eprintln!("  Skipping {suite} (no GPU): {err}"),
         NoAdapter::Fail => panic!(
             "{REQUIRE_GPU} is set, so this run requires a GPU adapter, but none was \
              found: {err}. Install a software Vulkan driver (`mesa-vulkan-drivers` \
@@ -108,5 +124,41 @@ mod tests {
             "any value"
         );
         assert_eq!(no_adapter_action(Some(" 1 ")), NoAdapter::Fail, "padded");
+    }
+
+    /// ★★ The refusal is this module's entire reason to exist, and until the
+    /// branch was split out nothing exercised it — mutating the panic to a plain
+    /// `None` passed the whole suite. That is the same shape as the defect this
+    /// module was written to fix, one level up.
+    #[test]
+    #[should_panic(expected = "requires a GPU adapter")]
+    fn a_required_adapter_that_is_missing_refuses_to_continue() {
+        report_missing_adapter("probe", &GpuError::NoAdapter, NoAdapter::Fail);
+    }
+
+    /// ★ The negative control for the test above: the same call with the same
+    /// error must NOT panic when the run never demanded an adapter, or a
+    /// developer without a GPU could not run this suite at all.
+    #[test]
+    fn a_missing_adapter_that_was_not_required_only_reports() {
+        report_missing_adapter("probe", &GpuError::NoAdapter, NoAdapter::Skip);
+    }
+
+    /// ★★ Guards the hole the refusal cannot see. `report_missing_adapter` only
+    /// ever runs on the `Err` path, so a bug that DISCARDS a working adapter —
+    /// returning `None` with a perfectly good device present — skips every test
+    /// and never trips the refusal. Under `CF_REQUIRE_GPU` the run has asserted a
+    /// device exists, so `None` is then a contradiction and must fail.
+    ///
+    /// ⚠ Vacuous when the variable is unset, which is deliberate: off a CI runner
+    /// there may genuinely be no adapter. It bites exactly where it must.
+    #[test]
+    fn a_run_that_requires_an_adapter_actually_receives_one() {
+        if required() == NoAdapter::Fail {
+            assert!(
+                gpu_context_or_skip("required-adapter probe").is_some(),
+                "{REQUIRE_GPU} is set, so an adapter was promised, but none was handed back"
+            );
+        }
     }
 }
