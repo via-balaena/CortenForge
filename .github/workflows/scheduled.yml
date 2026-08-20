@@ -133,11 +133,20 @@ jobs:
       # TOTAL. `timeout-minutes:` is available here because this step only *calls* a
       # composite action — it is unavailable on steps *inside* one, which is why the
       # action cannot express this itself.
+      # ⚠ `mesa-vulkan-drivers` is NOT decoration, and this is the job that proves
+      # it. `sim-gpu`'s tests take a GPU adapter or return early, and a returning
+      # test reports `ok` — so the 2026-08-18 sweep scored the crate 1.2 % of its
+      # production lines while every one of its 51 tests "passed". The package
+      # provides lavapipe, a CPU Vulkan device wgpu accepts as an ordinary adapter;
+      # the suite then runs in ~19 s and covers 97.7 %. `CF_REQUIRE_GPU` on the
+      # grade step turns a missing adapter back into a failure, so this number
+      # cannot quietly revert to measuring nothing.
       - name: Install system dependencies
         timeout-minutes: 10
         uses: ./.github/actions/install-linux-deps
         with:
           packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
+            mesa-vulkan-drivers
 
       # ⚠ `components:` here installs into whatever channel this action
       # resolves — NOT into the toolchain that actually runs. `rust-toolchain.toml`
@@ -188,6 +197,7 @@ jobs:
       - name: cargo xtask grade-all --shard ${{ matrix.shard }}/3
         env:
           XTASK_GRADE_DEBUG: "1"
+          CF_REQUIRE_GPU: "1"
         run: |
           cargo run -p xtask --release -- grade-all \
             --shard ${{ matrix.shard }}/3
