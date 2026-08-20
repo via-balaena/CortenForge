@@ -2093,12 +2093,42 @@ fn mesh_to_tolerance_subtract() {
         !mesh.is_empty(),
         "cuboid-with-hole mesh should have geometry"
     );
-    // Verify the hole exists: volume should be less than full cuboid.
-    let full_cuboid_vol = 10.0 * 10.0 * 10.0; // 1000 mm³
+
+    // ⚠ `volume < full cuboid` was the whole geometric claim here, and a mesh
+    // that has collapsed to nothing satisfies it too. It did: before the
+    // simplifier bounded itself by the surface, this returned 16-20 faces with
+    // a volume anywhere in 2.5..191 — passing this test every time it landed
+    // positive, and failing `signed_volume > 0.0` when it landed negative.
+    // Name the volume the shape actually has.
+    let hole = std::f64::consts::PI * 2.0 * 2.0 * 10.0; // ⌀4 through a 10 mm block
+    let exact = 10.0 * 10.0 * 10.0 - hole;
+    let error = (mesh.geometry.signed_volume() - exact).abs() / exact;
     assert!(
-        mesh.geometry.volume() < full_cuboid_vol,
-        "mesh volume ({:.1}) should be less than full cuboid ({full_cuboid_vol})",
-        mesh.geometry.volume()
+        error < 0.10,
+        "volume error {:.1}% — cuboid-with-hole should hold its volume \
+         (exact {exact:.1}, got {:.1})",
+        error * 100.0,
+        mesh.geometry.signed_volume(),
+    );
+}
+
+#[test]
+fn mesh_to_tolerance_is_reproducible() {
+    // End-to-end companion to `tolerance_simplification_is_reproducible`: this
+    // one also covers the mesher's vertex numbering, which is where the
+    // instability actually originated.
+    let shape = Solid::cuboid(Vector3::new(2.0, 2.0, 2.0)).subtract(Solid::cylinder(0.8, 3.0));
+
+    let first = shape.mesh_to_tolerance(0.3);
+    let second = shape.mesh_to_tolerance(0.3);
+
+    assert_eq!(
+        first.geometry.vertices, second.geometry.vertices,
+        "the same solid meshed twice gave different vertices"
+    );
+    assert_eq!(
+        first.geometry.faces, second.geometry.faces,
+        "the same solid meshed twice gave different faces"
     );
 }
 

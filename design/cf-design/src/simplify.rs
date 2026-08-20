@@ -378,42 +378,37 @@ impl SimplMesh {
         }
     }
 
-    /// The faces this collapse would leave behind, each paired as
+    /// The faces this collapse would leave behind, each yielded as
     /// `(before, after)`: the triangle as it stands now, and the same triangle
     /// once both endpoints have moved to `target`.
     ///
     /// The two faces that touch *both* endpoints are absent — a collapse
-    /// degenerates them to a line and [`Self::collapse_edge`] drops them.
+    /// degenerates them to a line and [`Self::collapse_edge`] drops them. That
+    /// is also why chaining the two one-rings needs no dedup pass: a face
+    /// reachable from both endpoints is by definition a face containing both,
+    /// and every such face is the kind this filter drops.
     fn faces_after_collapse(
         &self,
         edge: Edge,
         target: Point3<f64>,
-    ) -> Vec<([Point3<f64>; 3], [Point3<f64>; 3])> {
-        let on_edge = |vertex: u32| vertex == edge.0 || vertex == edge.1;
-        let mut seen = HashSet::new();
-        let mut affected = Vec::new();
-        for &fi in self.vertex_faces[edge.0 as usize]
+    ) -> impl Iterator<Item = ([Point3<f64>; 3], [Point3<f64>; 3])> + '_ {
+        let on_edge = move |vertex: u32| vertex == edge.0 || vertex == edge.1;
+        self.vertex_faces[edge.0 as usize]
             .iter()
             .chain(self.vertex_faces[edge.1 as usize].iter())
-        {
-            if !seen.insert(fi) {
-                continue;
-            }
-            let face = self.faces[fi];
-            if face.iter().filter(|&&vertex| on_edge(vertex)).count() >= 2 {
-                continue;
-            }
-            let before = face.map(|vertex| self.positions[vertex as usize]);
-            let after = face.map(|vertex| {
-                if on_edge(vertex) {
-                    target
-                } else {
-                    self.positions[vertex as usize]
-                }
-            });
-            affected.push((before, after));
-        }
-        affected
+            .map(|&fi| self.faces[fi])
+            .filter(move |face| face.iter().filter(|&&v| on_edge(v)).count() < 2)
+            .map(move |face| {
+                let before = face.map(|vertex| self.positions[vertex as usize]);
+                let after = face.map(|vertex| {
+                    if on_edge(vertex) {
+                        target
+                    } else {
+                        self.positions[vertex as usize]
+                    }
+                });
+                (before, after)
+            })
     }
 
     /// Re-queue updated edges around a vertex after a collapse.
@@ -530,12 +525,12 @@ fn triangle_normal(tri: &[Point3<f64>; 3]) -> Vector3<f64> {
 /// away from the field between them. It is a sample of the surface, which is
 /// the thing being bounded, rather than of corners already known to sit on it.
 fn collapse_stays_within_deviation(
-    affected: &[([Point3<f64>; 3], [Point3<f64>; 3])],
+    affected: impl Iterator<Item = ([Point3<f64>; 3], [Point3<f64>; 3])>,
     node: &FieldNode,
     max_deviation: f64,
 ) -> bool {
-    affected.iter().all(|(_, after)| {
-        surface_probes(after)
+    affected.into_iter().all(|(_, after)| {
+        surface_probes(&after)
             .iter()
             .all(|probe| node.evaluate(probe).abs() <= max_deviation)
     })
@@ -548,10 +543,12 @@ fn collapse_stays_within_deviation(
 /// distance test and still fold the neighbourhood over itself. That fold is
 /// what turns a merely coarse mesh into a self-intersecting one whose signed
 /// volume is near zero, or negative.
-fn collapse_folds_a_face(affected: &[([Point3<f64>; 3], [Point3<f64>; 3])]) -> bool {
-    affected.iter().any(|(before, after)| {
-        let folded = triangle_normal(after);
-        folded.norm() < f64::EPSILON || triangle_normal(before).dot(&folded) <= 0.0
+fn collapse_folds_a_face(
+    affected: impl Iterator<Item = ([Point3<f64>; 3], [Point3<f64>; 3])>,
+) -> bool {
+    affected.into_iter().any(|(before, after)| {
+        let folded = triangle_normal(&after);
+        folded.norm() < f64::EPSILON || triangle_normal(&before).dot(&folded) <= 0.0
     })
 }
 
@@ -607,13 +604,15 @@ pub fn simplify_mesh(mesh: &IndexedMesh, target_faces: usize) -> IndexedMesh {
 
         let (_, target) = sm.collapse_info(edge);
 
-        // No field to measure against here, so the quadric error is the only
-        // fidelity signal — but it still cannot see a fold, so that guard
-        // applies to both entry points.
-        if collapse_folds_a_face(&sm.faces_after_collapse(edge, target)) {
-            continue;
-        }
-
+        // ⚠ Deliberately no fold guard here, though this path can fold a face
+        // too. This loop owes its caller a face count, so a rejected collapse
+        // does not end the work — it forces the quota to be met by the next
+        // candidate, which costs more by construction. Measured 2026-08-20:
+        // guarding here pushed `simplify_cuboid_preserves_sharp_corners` from
+        // passing to a corner 0.950 away from its true position, because the
+        // collapses it declined were the ones that had been protecting the
+        // corner. `simplify_mesh_tolerance` has no quota, so refusing there is
+        // free; refusing here trades one defect for another.
         sm.collapse_edge(edge, target);
         sm.requeue_around(edge.0, &mut heap);
     }
@@ -681,10 +680,18 @@ pub fn simplify_mesh_tolerance(
             continue;
         }
 
-        let affected = sm.faces_after_collapse(edge, target);
-        if !collapse_stays_within_deviation(&affected, node, max_deviation)
-            || collapse_folds_a_face(&affected)
-        {
+        // Fold first: it is the cheaper test (two cross products per face, no
+        // field evaluation) and on flat geometry it is the one that fires —
+        // measured on a 10 mm cube, 147476 fold rejections against 3577
+        // deviation rejections.
+        if collapse_folds_a_face(sm.faces_after_collapse(edge, target)) {
+            continue;
+        }
+        if !collapse_stays_within_deviation(
+            sm.faces_after_collapse(edge, target),
+            node,
+            max_deviation,
+        ) {
             continue;
         }
 
@@ -837,6 +844,73 @@ mod tests {
             simplified.face_count(),
             mesh.face_count()
         );
+    }
+
+    #[test]
+    fn a_flat_solid_keeps_its_volume_through_tolerance_simplification() {
+        // ★ The case a vertex-only deviation test cannot see. Every point of a
+        // box face has field exactly 0, so asking "is the new vertex within
+        // tolerance" is vacuous there and the collapse ran until the box was
+        // gone. Measured 2026-08-20 on a 10 mm cube before the surface probes
+        // existed: 28812 faces down to 2, volume 1000 down to 0.0, and every
+        // surviving vertex dutifully inside tolerance.
+        //
+        // A sphere cannot stand in for this. Curvature bounds how far a
+        // collapse can travel before some vertex leaves tolerance, so every
+        // sphere test in this module passed throughout.
+        let (half_extent, max_dev) = (2.0, 0.3);
+        let cube = Solid::cuboid(nalgebra::Vector3::new(
+            half_extent,
+            half_extent,
+            half_extent,
+        ));
+        let mesh = cube.mesh_adaptive(max_dev);
+        let simplified = simplify_mesh_tolerance(&mesh.geometry, &cube.node, max_dev);
+
+        // The band, not a round number. Each face may sit up to `max_dev`
+        // either side of its true plane and still be a correct answer, so the
+        // volume the simplifier is allowed to return runs from the fully
+        // shrunk box to the fully grown one. Outside that band it is not a
+        // coarser box, it is a broken one — and the old guard returned 0.0.
+        let shrunk = (2.0 * (half_extent - max_dev)).powi(3);
+        let grown = (2.0 * (half_extent + max_dev)).powi(3);
+        let volume = simplified.signed_volume();
+        assert!(
+            (shrunk..=grown).contains(&volume),
+            "volume {volume:.3} is outside the {shrunk:.3}..={grown:.3} a {max_dev} mm \
+             tolerance allows (exact {:.1}, from {} faces)",
+            (2.0 * half_extent).powi(3),
+            simplified.face_count(),
+        );
+
+        // The other half of the claim: a guard that rejects everything would
+        // also keep the volume. Simplification still has to happen.
+        assert!(
+            simplified.face_count() * 4 < mesh.face_count(),
+            "expected a large reduction, got {} faces from {}",
+            simplified.face_count(),
+            mesh.face_count(),
+        );
+    }
+
+    #[test]
+    fn tolerance_simplification_is_reproducible() {
+        // Equal-cost collapses — which on a flat region is nearly all of them —
+        // used to resolve in `HashSet` iteration order, and `RandomState`
+        // reseeds per process. Twenty runs at a byte-identical sha returned
+        // twenty different meshes; that is what made `mesh_to_tolerance_subtract`
+        // fail intermittently in CI on a tree nobody had touched.
+        let cube = Solid::cuboid(nalgebra::Vector3::new(2.0, 2.0, 2.0));
+        let mesh = cube.mesh_adaptive(0.3);
+
+        let first = simplify_mesh_tolerance(&mesh.geometry, &cube.node, 0.3);
+        let second = simplify_mesh_tolerance(&mesh.geometry, &cube.node, 0.3);
+
+        assert_eq!(
+            first.vertices, second.vertices,
+            "vertices differ between runs"
+        );
+        assert_eq!(first.faces, second.faces, "faces differ between runs");
     }
 
     #[test]

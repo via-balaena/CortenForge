@@ -92,7 +92,16 @@ pub fn mesh_field_adaptive(
     let mut corner_cache: HashMap<(usize, usize, usize), f64> = HashMap::new();
     let mut cell_vertices: HashMap<(usize, usize, usize), u32> = HashMap::new();
 
-    for &(cx, cy, cz) in &surface_cells {
+    // Sorted, not hash order. Vertex indices are handed out in the order this
+    // loop visits cells, so iterating the `HashSet` directly numbered the same
+    // geometry differently on every run — `RandomState` reseeds per process.
+    // The mesh was never wrong, but its labels were unstable, and anything
+    // downstream that breaks a tie on a vertex index (the QEM simplifier does)
+    // inherited that instability as a different result each run.
+    let mut ordered_cells: Vec<(usize, usize, usize)> = surface_cells.iter().copied().collect();
+    ordered_cells.sort_unstable();
+
+    for &(cx, cy, cz) in &ordered_cells {
         let cell_min = Point3::new(
             (cx as f64).mul_add(cell_size, origin.x),
             (cy as f64).mul_add(cell_size, origin.y),
@@ -555,7 +564,10 @@ pub fn mesh_field_adaptive_par(
     // ── Phase 1: Parallel cell processing ─────────────────────────────
     // Each cell independently evaluates its 8 corners + gradients.
     // No shared corner cache — accepts ~2x redundant evals for full parallelism.
-    let cell_list: Vec<(usize, usize, usize)> = surface_cells.into_iter().collect();
+    // Sorted for the same reason as the sequential path: `cell_list` order is
+    // vertex-index order, and a `HashSet` does not have a stable one.
+    let mut cell_list: Vec<(usize, usize, usize)> = surface_cells.into_iter().collect();
+    cell_list.sort_unstable();
 
     // Process cells in parallel, collecting (cell_coord, vertex, corner_values)
     let cell_results: Vec<_> = cell_list
@@ -659,7 +671,12 @@ pub fn mesh_field_adaptive_par(
     // (dense). For each corner, check its 3 forward edges (+x, +y, +z).
     // This is O(surface_corners) instead of O(grid_volume) — critical for
     // fine resolutions where grid_volume >> surface_corners.
-    for (&(gx, gy, gz), &v0) in &corner_cache {
+    // Sorted for the same reason again — this loop is face-emission order.
+    let mut ordered_corners: Vec<((usize, usize, usize), f64)> =
+        corner_cache.iter().map(|(&key, &val)| (key, val)).collect();
+    ordered_corners.sort_unstable_by_key(|&(key, _)| key);
+
+    for &((gx, gy, gz), v0) in &ordered_corners {
         // X-edge: (gx,gy,gz) → (gx+1,gy,gz)
         if gy >= 1 && gz >= 1 {
             if let Some(&v1) = corner_cache.get(&(gx + 1, gy, gz)) {
@@ -873,6 +890,31 @@ mod tests {
     use super::*;
     use crate::field_node::Val;
     use std::f64::consts::PI;
+
+    #[test]
+    fn the_mesher_numbers_its_vertices_the_same_way_every_run() {
+        // Vertex indices are handed out in cell-visit order, and that order came
+        // from iterating a `HashSet`. The geometry was identical every run — the
+        // labels were not. Nothing here notices on its own, but the QEM
+        // simplifier breaks equal-cost ties on vertex index, so it inherited the
+        // instability and returned a different mesh on every run.
+        let node = FieldNode::Cuboid {
+            half_extents: Vector3::new(2.0, 2.0, 2.0),
+        };
+        let bounds = Aabb::new(Point3::new(-2.3, -2.3, -2.3), Point3::new(2.3, 2.3, 2.3));
+
+        let (first, _) = mesh_field_adaptive(&node, &bounds, 0.3);
+        let (second, _) = mesh_field_adaptive(&node, &bounds, 0.3);
+
+        assert_eq!(
+            first.geometry.vertices, second.geometry.vertices,
+            "vertex order differs between runs"
+        );
+        assert_eq!(
+            first.geometry.faces, second.geometry.faces,
+            "face order differs between runs"
+        );
+    }
 
     fn check_topology(mesh: &AttributedMesh) -> (bool, bool) {
         let mut directed: HashMap<(u32, u32), usize> = HashMap::new();
