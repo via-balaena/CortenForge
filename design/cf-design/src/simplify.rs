@@ -7,7 +7,8 @@
 //!   surface.
 //!
 //! Both are deterministic: equal-cost collapses tie-break on edge identity, so
-//! the output is a function of the input mesh alone. That is deliberate — see
+//! the output is a function of the arguments alone and not of how the working
+//! set happened to be enumerated. That is deliberate — see
 //! [`CollapseCandidate`]'s ordering for what happened when it was not.
 
 use std::collections::{BinaryHeap, HashMap, HashSet};
@@ -615,8 +616,8 @@ pub fn simplify_mesh(mesh: &IndexedMesh, target_faces: usize) -> IndexedMesh {
     sm.to_indexed_mesh()
 }
 
-/// Simplify a mesh until the next edge collapse would exceed `max_deviation`
-/// from the true implicit surface.
+/// Simplify a mesh until the next edge collapse would carry the surface past
+/// `max_deviation` from the true implicit surface at a sampled point.
 ///
 /// A collapse is accepted only when `|field| ≤ max_deviation` at the new
 /// vertex *and* at each of [`surface_probes`]'s twelve points on every face the
@@ -885,6 +886,25 @@ mod tests {
             simplified.face_count(),
             mesh.face_count(),
         );
+    }
+
+    #[test]
+    fn target_simplification_is_reproducible() {
+        // The module header claims *both* entry points are deterministic. They
+        // share `CollapseCandidate`'s ordering, so they stand or fall together —
+        // but a claim with no gate is how the last one got away.
+        let sphere = Solid::sphere(5.0);
+        let mesh = sphere.mesh_adaptive(0.5);
+        let target = mesh.face_count() / 2;
+
+        let first = simplify_mesh(&mesh.geometry, target);
+        let second = simplify_mesh(&mesh.geometry, target);
+
+        assert_eq!(
+            first.vertices, second.vertices,
+            "vertices differ between runs"
+        );
+        assert_eq!(first.faces, second.faces, "faces differ between runs");
     }
 
     #[test]
