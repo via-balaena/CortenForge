@@ -2329,6 +2329,19 @@ fn simplification_never_adds_an_inverted_face() {
     // shipped 126 faces, 52 of them degenerate.
     let cases = [
         ("cone", Solid::cone(3.0, 6.0), 0.3, 0),
+        // ⚠ The shape that shows the differential comparison is load-bearing.
+        // Its mesher output carries 66 inverted faces; judging winding
+        // absolutely — refusing any collapse whose result is inward, even if it
+        // was already inward — ships 112 faces with 2 still inverted, where
+        // refusing only the ones the collapse *creates* clears all 66 in 102
+        // faces. The cone alone cannot show this: it comes out clean either way
+        // once the zero-area branch is differential too.
+        (
+            "two spheres",
+            Solid::sphere(3.0).union(Solid::sphere(2.0).translate(Vector3::new(3.0, 0.0, 0.0))),
+            0.2,
+            0,
+        ),
         (
             "4 mm block, ⌀1.6 bore",
             Solid::cuboid(Vector3::new(2.0, 2.0, 2.0)).subtract(Solid::cylinder(0.8, 3.0)),
