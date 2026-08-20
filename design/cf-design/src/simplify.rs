@@ -3,12 +3,17 @@
 //! Two entry points:
 //! - [`simplify_mesh`] — reduce face count to a target.
 //! - [`simplify_mesh_tolerance`] — collapse edges until the next collapse would
-//!   exceed `max_deviation` from the true implicit surface.
+//!   move the surface further than `max_deviation` from the true implicit
+//!   surface, or fold it over.
+//!
+//! Both are deterministic: equal-cost collapses tie-break on edge identity, so
+//! the output is a function of the input mesh alone. That is deliberate — see
+//! [`CollapseCandidate`]'s ordering for what happened when it was not.
 
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use cf_geometry::IndexedMesh;
-use nalgebra::{Matrix4, Point3, Vector4};
+use nalgebra::{Matrix4, Point3, Vector3, Vector4};
 
 use crate::field_node::FieldNode;
 
@@ -72,7 +77,7 @@ impl Quadric {
 // ── Edge key ──────────────────────────────────────────────────────────────
 
 /// Canonical edge key with `lo < hi`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct Edge(u32, u32);
 
 impl Edge {
@@ -93,7 +98,7 @@ struct CollapseCandidate {
 
 impl PartialEq for CollapseCandidate {
     fn eq(&self, other: &Self) -> bool {
-        self.cost == other.cost
+        self.cmp(other) == std::cmp::Ordering::Equal
     }
 }
 impl Eq for CollapseCandidate {}
@@ -105,11 +110,24 @@ impl PartialOrd for CollapseCandidate {
 }
 impl Ord for CollapseCandidate {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // Reverse: min-heap by cost
+        // Reverse: min-heap by cost.
+        //
+        // ★ The tie-break is not cosmetic — it is what makes the output
+        // reproducible. A planar quadric has zero error at every point of its
+        // plane, so across a flat region *every* candidate costs exactly 0 and
+        // ties. Ordering by cost alone leaves those ties to heap insertion
+        // order, which came from iterating a `HashSet<Edge>` — and `RandomState`
+        // reseeds per process. Measured 2026-08-20: twenty runs of
+        // `mesh_to_tolerance` on one cuboid-minus-cylinder at a byte-identical
+        // sha returned twenty different meshes. Comparing the edge and its
+        // generation as well makes the pop sequence a function of the heap's
+        // contents rather than of how they arrived.
         other
             .cost
             .partial_cmp(&self.cost)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| other.edge.cmp(&self.edge))
+            .then_with(|| other.generation.cmp(&self.generation))
     }
 }
 
@@ -360,6 +378,44 @@ impl SimplMesh {
         }
     }
 
+    /// The faces this collapse would leave behind, each paired as
+    /// `(before, after)`: the triangle as it stands now, and the same triangle
+    /// once both endpoints have moved to `target`.
+    ///
+    /// The two faces that touch *both* endpoints are absent — a collapse
+    /// degenerates them to a line and [`Self::collapse_edge`] drops them.
+    fn faces_after_collapse(
+        &self,
+        edge: Edge,
+        target: Point3<f64>,
+    ) -> Vec<([Point3<f64>; 3], [Point3<f64>; 3])> {
+        let on_edge = |vertex: u32| vertex == edge.0 || vertex == edge.1;
+        let mut seen = HashSet::new();
+        let mut affected = Vec::new();
+        for &fi in self.vertex_faces[edge.0 as usize]
+            .iter()
+            .chain(self.vertex_faces[edge.1 as usize].iter())
+        {
+            if !seen.insert(fi) {
+                continue;
+            }
+            let face = self.faces[fi];
+            if face.iter().filter(|&&vertex| on_edge(vertex)).count() >= 2 {
+                continue;
+            }
+            let before = face.map(|vertex| self.positions[vertex as usize]);
+            let after = face.map(|vertex| {
+                if on_edge(vertex) {
+                    target
+                } else {
+                    self.positions[vertex as usize]
+                }
+            });
+            affected.push((before, after));
+        }
+        affected
+    }
+
     /// Re-queue updated edges around a vertex after a collapse.
     fn requeue_around(&self, vertex: u32, heap: &mut BinaryHeap<CollapseCandidate>) {
         let face_indices: Vec<usize> = self.vertex_faces[vertex as usize].iter().copied().collect();
@@ -437,6 +493,68 @@ impl SimplMesh {
     }
 }
 
+// ── Collapse guards ───────────────────────────────────────────────────────
+
+/// The points on a triangle that a deviation test has to look at.
+///
+/// Not the corners. A collapse only ever moves one corner, and it moves it to
+/// a point the caller has already tested — so a corner test re-asks a question
+/// whose answer is known, and learns nothing about the surface spanning them.
+/// The centroid and the three edge midpoints are on that surface.
+fn surface_probes(tri: &[Point3<f64>; 3]) -> [Point3<f64>; 4] {
+    let mid = |a: Point3<f64>, b: Point3<f64>| Point3::from((a.coords + b.coords) * 0.5);
+    [
+        Point3::from((tri[0].coords + tri[1].coords + tri[2].coords) / 3.0),
+        mid(tri[0], tri[1]),
+        mid(tri[1], tri[2]),
+        mid(tri[2], tri[0]),
+    ]
+}
+
+/// Unnormalized face normal — length is twice the area, direction is the winding.
+fn triangle_normal(tri: &[Point3<f64>; 3]) -> Vector3<f64> {
+    (tri[1] - tri[0]).cross(&(tri[2] - tri[0]))
+}
+
+/// Does the *surface* stay within `max_deviation` of the field?
+///
+/// ⚠ This is a different question from "is the new vertex within
+/// `max_deviation`", and the gap between them is not academic. Every point of
+/// a box face has field exactly 0, so a vertex-only test never objects to
+/// anything on a planar region and the collapse runs until the region is gone.
+/// Measured on a 10 mm cube 2026-08-20, before this guard existed:
+/// `mesh_to_tolerance(0.2)` returned **2 faces and volume 0.0** from a 28812-face
+/// input, with every surviving vertex dutifully within tolerance.
+///
+/// Four probes per face is a sample, not a proof — a triangle can still bow
+/// away from the field between them. It is a sample of the surface, which is
+/// the thing being bounded, rather than of corners already known to sit on it.
+fn collapse_stays_within_deviation(
+    affected: &[([Point3<f64>; 3], [Point3<f64>; 3])],
+    node: &FieldNode,
+    max_deviation: f64,
+) -> bool {
+    affected.iter().all(|(_, after)| {
+        surface_probes(after)
+            .iter()
+            .all(|probe| node.evaluate(probe).abs() <= max_deviation)
+    })
+}
+
+/// Would this collapse turn a face inside out, or flatten it to nothing?
+///
+/// The standard QEM companion to an error bound: an error metric scores where
+/// the surface lands, not which way it faces, so a collapse can satisfy every
+/// distance test and still fold the neighbourhood over itself. That fold is
+/// what turns a merely coarse mesh into a self-intersecting one whose signed
+/// volume is near zero, or negative.
+fn collapse_folds_a_face(affected: &[([Point3<f64>; 3], [Point3<f64>; 3])]) -> bool {
+    affected.iter().any(|(before, after)| {
+        let folded = triangle_normal(after);
+        folded.norm() < f64::EPSILON || triangle_normal(before).dot(&folded) <= 0.0
+    })
+}
+
 // ── Public API ────────────────────────────────────────────────────────────
 
 /// Simplify a mesh to the target face count using QEM edge collapse.
@@ -488,6 +606,14 @@ pub fn simplify_mesh(mesh: &IndexedMesh, target_faces: usize) -> IndexedMesh {
         }
 
         let (_, target) = sm.collapse_info(edge);
+
+        // No field to measure against here, so the quadric error is the only
+        // fidelity signal — but it still cannot see a fold, so that guard
+        // applies to both entry points.
+        if collapse_folds_a_face(&sm.faces_after_collapse(edge, target)) {
+            continue;
+        }
+
         sm.collapse_edge(edge, target);
         sm.requeue_around(edge.0, &mut heap);
     }
@@ -498,8 +624,14 @@ pub fn simplify_mesh(mesh: &IndexedMesh, target_faces: usize) -> IndexedMesh {
 /// Simplify a mesh until the next edge collapse would exceed `max_deviation`
 /// from the true implicit surface.
 ///
-/// Uses the field node to verify that each collapsed vertex stays within
-/// the tolerance: `|field(v)| ≤ max_deviation`.
+/// A collapse is accepted only when `|field| ≤ max_deviation` at the new
+/// vertex *and* at the centroid and edge midpoints of every face the collapse
+/// leaves behind, and only when it folds none of those faces over.
+///
+/// ⚠ The vertex test alone is vacuous on flat geometry — see
+/// [`collapse_stays_within_deviation`] for the measurement that says so. The
+/// surface probes bound the sampled points, not every point of every face, so
+/// this is a strong bound rather than a guarantee.
 ///
 /// # Panics
 ///
@@ -545,8 +677,14 @@ pub fn simplify_mesh_tolerance(
 
         let (_, target) = sm.collapse_info(edge);
 
-        let field_val = node.evaluate(&target).abs();
-        if field_val > max_deviation {
+        if node.evaluate(&target).abs() > max_deviation {
+            continue;
+        }
+
+        let affected = sm.faces_after_collapse(edge, target);
+        if !collapse_stays_within_deviation(&affected, node, max_deviation)
+            || collapse_folds_a_face(&affected)
+        {
             continue;
         }
 
