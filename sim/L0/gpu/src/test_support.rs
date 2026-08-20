@@ -57,14 +57,18 @@ pub fn gpu_context_or_skip(suite: &str) -> Option<GpuContext> {
     match GpuContext::new() {
         Ok(ctx) => Some(ctx),
         Err(e) => {
-            report_missing_adapter(suite, &e, required());
+            report_missing_adapter(suite, &e, action_from_env());
             None
         }
     }
 }
 
-/// Whether this run has declared that it must have an adapter.
-pub fn required() -> NoAdapter {
+/// The action this run has configured, read from the environment.
+///
+/// Named for what it returns rather than for the question it answers. A name
+/// like `required` yielding a [`NoAdapter`] reads at the call site as "required
+/// equals fail", which is the opposite of clarifying.
+pub fn action_from_env() -> NoAdapter {
     no_adapter_action(std::env::var(REQUIRE_GPU).ok().as_deref())
 }
 
@@ -154,7 +158,7 @@ mod tests {
     /// there may genuinely be no adapter. It bites exactly where it must.
     #[test]
     fn a_run_that_requires_an_adapter_actually_receives_one() {
-        if required() == NoAdapter::Fail {
+        if action_from_env() == NoAdapter::Fail {
             assert!(
                 gpu_context_or_skip("required-adapter probe").is_some(),
                 "{REQUIRE_GPU} is set, so an adapter was promised, but none was handed back"
