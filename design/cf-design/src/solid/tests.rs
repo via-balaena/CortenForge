@@ -2103,8 +2103,14 @@ fn mesh_to_tolerance_subtract() {
     let hole = std::f64::consts::PI * 2.0 * 2.0 * 10.0; // ⌀4 through a 10 mm block
     let exact = 10.0 * 10.0 * 10.0 - hole;
     let error = (mesh.geometry.signed_volume() - exact).abs() / exact;
+    // ⚠ 2 %, not the 10 % this shipped with for a day. At 10 % the gate could
+    // not tell the shipped probe lattice from a much worse one — measured, 25
+    // probes give 0.86 % here and 7 probes give 2.43 %, both under 10 %. 2 %
+    // separates them with 2.3× margin on an integrated quantity. It has not yet
+    // run on x86; if a Linux collapse sequence lands differently the number is
+    // the thing to revisit, with the measurement recorded.
     assert!(
-        error < 0.10,
+        error < 0.02,
         "volume error {:.1}% — cuboid-with-hole should hold its volume \
          (exact {exact:.1}, got {:.1})",
         error * 100.0,
@@ -2143,16 +2149,58 @@ fn mesh_to_tolerance_keeps_its_faces_near_the_surface() {
         }
     }
 
-    // ⚠ The bound is 2× `max_dev`, not `max_dev`, and that is the honest number:
-    // the guard samples twelve points per face, so the surface between them can
-    // bow further. Measured 2026-08-20 on this shape: 0.3795, or 1.27×. The gate
-    // is here to catch a collapse back toward the old behaviour, where this
-    // swept far past 1.0 — not to assert an envelope the simplifier never had.
+    // ⚠ The bound is 1.5× `max_dev`, not `max_dev`, and that is the honest
+    // number: the guard samples twenty-five points per face, so the surface
+    // between them can still bow further. Measured 2026-08-20 on this shape:
+    // 0.2927, which happens to land inside `max_dev` — but that is where the
+    // samples fell, not a promise, so the gate does not assert it. It exists to
+    // catch a collapse back toward the old behaviour, which swept past 1.0.
     assert!(
-        worst <= 2.0 * max_dev,
-        "simplified surface strays {worst:.4} from the field, past the {:.4} \
-         that twelve-point sampling has been measured to hold",
-        2.0 * max_dev,
+        worst <= 1.5 * max_dev,
+        "simplified surface strays {worst:.4} from the field on this shape, past \
+         the {:.4} that twenty-five-point sampling has been measured to hold",
+        1.5 * max_dev,
+    );
+}
+
+#[test]
+fn mesh_to_tolerance_winds_every_face_outward() {
+    // ★ Nothing else in this file can see an inverted face. The topology census
+    // counts directed edges, and an inverted triangle lying *in* a box face
+    // still leaves every edge traversed once each way; `signed_volume` nets a
+    // coplanar fold against its neighbours; and the simplifier's own deviation
+    // probes read field 0 on it, because every point of that face does.
+    //
+    // Measured 2026-08-20 with the deviation guard but before
+    // `collapse_inverts_a_face`: 5 faces of this shape, and 7 of 60 on a 10 mm
+    // block, wound backwards at `normal · ∇f` of exactly -1.0 — through a mesh
+    // that read closed, manifold, consistently wound, and correct to 1 % on
+    // volume. A multi-agent review of that state is what surfaced it.
+    let shape = Solid::cuboid(Vector3::new(2.0, 2.0, 2.0)).subtract(Solid::cylinder(0.8, 3.0));
+    let mesh = shape.mesh_to_tolerance(0.3);
+
+    let mut backwards = Vec::new();
+    for face in &mesh.geometry.faces {
+        let corners = face.map(|vi| mesh.geometry.vertices[vi as usize]);
+        let normal = (corners[1] - corners[0]).cross(&(corners[2] - corners[0]));
+        // Slivers are excluded: below this area the cross product is numerical
+        // noise and its direction means nothing. 1e-4 mm² is ~1e-6 of the
+        // smallest honest face here.
+        if normal.norm() * 0.5 < 1e-4 {
+            continue;
+        }
+        let centroid =
+            Point3::from((corners[0].coords + corners[1].coords + corners[2].coords) / 3.0);
+        if normal.dot(&shape.gradient(&centroid)) <= 0.0 {
+            backwards.push(*face);
+        }
+    }
+
+    assert!(
+        backwards.is_empty(),
+        "{} of {} faces wind into the solid rather than out of it: {backwards:?}",
+        backwards.len(),
+        mesh.geometry.faces.len(),
     );
 }
 

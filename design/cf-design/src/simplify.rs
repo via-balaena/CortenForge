@@ -14,7 +14,7 @@
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use cf_geometry::IndexedMesh;
-use nalgebra::{Matrix4, Point3, Vector4};
+use nalgebra::{Matrix4, Point3, Vector3, Vector4};
 
 use crate::field_node::FieldNode;
 
@@ -488,21 +488,34 @@ impl SimplMesh {
 
 // ── Collapse guards ───────────────────────────────────────────────────────
 
-/// Barycentric weights of the probe lattice — quarter steps with the three
-/// corners dropped, so twelve points spread over the face.
-const PROBE_WEIGHTS: [[f64; 3]; 12] = [
-    [0.75, 0.25, 0.0],
-    [0.75, 0.0, 0.25],
-    [0.5, 0.5, 0.0],
-    [0.5, 0.25, 0.25],
-    [0.5, 0.0, 0.5],
-    [0.25, 0.75, 0.0],
-    [0.25, 0.5, 0.25],
-    [0.25, 0.25, 0.5],
-    [0.25, 0.0, 0.75],
-    [0.0, 0.75, 0.25],
-    [0.0, 0.5, 0.5],
-    [0.0, 0.25, 0.75],
+/// Barycentric weights of the probe lattice — sixth steps with the three
+/// corners dropped, so twenty-five points spread over the face.
+const PROBE_WEIGHTS: [[f64; 3]; 25] = [
+    [0.0, 1.0 / 6.0, 5.0 / 6.0],
+    [0.0, 2.0 / 6.0, 4.0 / 6.0],
+    [0.0, 3.0 / 6.0, 3.0 / 6.0],
+    [0.0, 4.0 / 6.0, 2.0 / 6.0],
+    [0.0, 5.0 / 6.0, 1.0 / 6.0],
+    [1.0 / 6.0, 0.0, 5.0 / 6.0],
+    [1.0 / 6.0, 1.0 / 6.0, 4.0 / 6.0],
+    [1.0 / 6.0, 2.0 / 6.0, 3.0 / 6.0],
+    [1.0 / 6.0, 3.0 / 6.0, 2.0 / 6.0],
+    [1.0 / 6.0, 4.0 / 6.0, 1.0 / 6.0],
+    [1.0 / 6.0, 5.0 / 6.0, 0.0],
+    [2.0 / 6.0, 0.0, 4.0 / 6.0],
+    [2.0 / 6.0, 1.0 / 6.0, 3.0 / 6.0],
+    [2.0 / 6.0, 2.0 / 6.0, 2.0 / 6.0],
+    [2.0 / 6.0, 3.0 / 6.0, 1.0 / 6.0],
+    [2.0 / 6.0, 4.0 / 6.0, 0.0],
+    [3.0 / 6.0, 0.0, 3.0 / 6.0],
+    [3.0 / 6.0, 1.0 / 6.0, 2.0 / 6.0],
+    [3.0 / 6.0, 2.0 / 6.0, 1.0 / 6.0],
+    [3.0 / 6.0, 3.0 / 6.0, 0.0],
+    [4.0 / 6.0, 0.0, 2.0 / 6.0],
+    [4.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0],
+    [4.0 / 6.0, 2.0 / 6.0, 0.0],
+    [5.0 / 6.0, 0.0, 1.0 / 6.0],
+    [5.0 / 6.0, 1.0 / 6.0, 0.0],
 ];
 
 /// The points on a triangle that a deviation test has to look at.
@@ -513,24 +526,63 @@ const PROBE_WEIGHTS: [[f64; 3]; 12] = [
 ///
 /// ★ Density is a measured trade, not a taste. Meshing a 10 mm block with a
 /// ⌀4 through-hole at `max_deviation = 0.2`, then sweeping the *output* faces
-/// barycentrically to find how far the surface really strays:
+/// barycentrically to find how far the surface really strays, with
+/// [`collapse_inverts_a_face`] in place:
 ///
-/// | probes per face | worst stray | volume error | simplify time |
-/// |-----------------|-------------|--------------|---------------|
-/// | 1 (centroid)    | 1.796       | 2.0 %        | 3.5 s         |
-/// | 4               | 0.997       | 3.0 %        | 4.1 s         |
-/// | **12 (this)**   | **0.434**   | **1.04 %**   | **4.3 s**     |
-/// | 25              | 0.305       | 0.35 %       | 7.5 s         |
+/// | probes per face | worst stray | volume error | inverted faces | time |
+/// |-----------------|-------------|--------------|----------------|------|
+/// | 3               | 1.832       | 20.0 %       | 2              | 3.4 s |
+/// | 7               | 0.459       | 2.43 %       | 1              | 3.7 s |
+/// | 12              | 0.333       | 1.58 %       | 1              | 4.5 s |
+/// | **25 (this)**   | **0.250**   | **0.86 %**   | **0**          | **6.8 s** |
 ///
-/// Twelve is the knee: it more than halves the stray for 5 % more time, where
-/// twenty-five buys a further 1.4× for 73 % more.
+/// Twenty-five is not a knee, it is the first density that stops producing
+/// inverted geometry at all, and it also wins on every other column *including
+/// face count* (56 against 76) — a better-placed vertex earns more collapses
+/// later. It costs 51 % more time than twelve, which is the whole of its price.
 ///
-/// ⚠ Note what the first column does *not* reach: 0.2. A finite sample bounds
+/// ⚠ Note what the stray column does *not* reach: 0.2. A finite sample bounds
 /// the points it visits, and the surface between them can still bow further.
 /// See [`simplify_mesh_tolerance`] for what that means for the caller.
 fn surface_probes(tri: &[Point3<f64>; 3]) -> [Point3<f64>; PROBE_WEIGHTS.len()] {
     PROBE_WEIGHTS
         .map(|[u, v, w]| Point3::from(tri[0].coords * u + tri[1].coords * v + tri[2].coords * w))
+}
+
+/// Unnormalized face normal — length is twice the area, direction is the winding.
+fn triangle_normal(tri: &[Point3<f64>; 3]) -> Vector3<f64> {
+    (tri[1] - tri[0]).cross(&(tri[2] - tri[0]))
+}
+
+/// Would this collapse leave a face pointing into the solid instead of out of it?
+///
+/// ★ Judged against the **field gradient**, which is the outward direction, not
+/// against the face's own previous normal. The distinction is the whole point.
+/// A before/after normal test asks "did this face rotate more than 90°", which
+/// ordinary coarsening does all the time — measured, it rejected 147476
+/// collapses on one cube against 3577 deviation rejections, and drove the
+/// cuboid-minus-cylinder output to 828 faces to buy what this buys at 76.
+///
+/// ⚠ A distance bound cannot see this on its own. Every point of a box face has
+/// field exactly 0, so an inverted triangle lying *in* that face satisfies the
+/// deviation probes exactly, and the topology census cannot see it either: an
+/// in-plane fold still gives every edge one traversal each way, and its signed
+/// volume contribution cancels. Measured on `cuboid(5,5,5).subtract(cylinder(2,6))`
+/// at 0.2 without this guard: 7 of 60 faces wound backwards, `normal · ∇f` of
+/// exactly −1.0, the largest 7.05 mm² — through a mesh that read closed,
+/// manifold, consistently wound, and correct to 1 % on volume.
+fn collapse_inverts_a_face(
+    affected: impl Iterator<Item = [Point3<f64>; 3]>,
+    node: &FieldNode,
+) -> bool {
+    affected.into_iter().any(|face| {
+        let normal = triangle_normal(&face);
+        if normal.norm() < f64::EPSILON {
+            return true;
+        }
+        let centroid = Point3::from((face[0].coords + face[1].coords + face[2].coords) / 3.0);
+        normal.dot(&node.gradient(&centroid)) <= 0.0
+    })
 }
 
 /// Does the *surface* stay within `max_deviation` of the field?
@@ -619,9 +671,10 @@ pub fn simplify_mesh(mesh: &IndexedMesh, target_faces: usize) -> IndexedMesh {
 /// Simplify a mesh until the next edge collapse would carry the surface past
 /// `max_deviation` from the true implicit surface at a sampled point.
 ///
-/// A collapse is accepted only when `|field| ≤ max_deviation` at the new
-/// vertex *and* at each of [`surface_probes`]'s twelve points on every face the
-/// collapse leaves behind.
+/// A collapse is accepted only when `|field| ≤ max_deviation` at the new vertex
+/// *and* at each of [`surface_probes`]'s twelve points on every face the collapse
+/// leaves behind, and only when no such face ends up pointing into the solid —
+/// see [`collapse_inverts_a_face`], which catches what a distance bound cannot.
 ///
 /// ⚠ The vertex test alone is vacuous on flat geometry — see
 /// [`collapse_stays_within_deviation`] for the measurement that says so.
@@ -629,10 +682,12 @@ pub fn simplify_mesh(mesh: &IndexedMesh, target_faces: usize) -> IndexedMesh {
 /// ⚠⚠ This bounds the points it samples, not every point of every face, so it
 /// is a strong bound and not a guarantee. Sweeping the output faces of a 10 mm
 /// block with a ⌀4 through-hole at `max_deviation = 0.2` finds the surface
-/// straying up to 0.434 — about 2×. A 4 mm cube at 0.3 strays 0.408, a sphere
-/// 0.328. Callers who need a true envelope want a Lipschitz-bounded test (the
-/// field's `lipschitz_factor` and the triangle's size give one), which costs
-/// sample density proportional to face area and has not been built.
+/// straying up to 0.250 — about 1.25×. A 4 mm cube at 0.3 strays 0.292 and a
+/// sphere 0.311, both inside tolerance, but that is where the samples happened
+/// to land and not a promise. Callers who need a true envelope want a
+/// Lipschitz-bounded test (the field's `lipschitz_factor` and the triangle's
+/// size give one), which costs sample density proportional to face area and has
+/// not been built.
 ///
 /// # Panics
 ///
@@ -687,6 +742,10 @@ pub fn simplify_mesh_tolerance(
             node,
             max_deviation,
         ) {
+            continue;
+        }
+
+        if collapse_inverts_a_face(sm.faces_after_collapse(edge, target), node) {
             continue;
         }
 

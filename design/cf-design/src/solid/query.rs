@@ -194,12 +194,13 @@ impl Solid {
     /// Lipschitz factor, which holds vertices close to the true implicit
     /// surface — measured worst case 0.049 at `max_deviation` 0.3 on a sphere,
     /// 0.004 on a cuboid-minus-cylinder at 0.2. Meshes under 50K faces are then
-    /// QEM-simplified, and that step does enforce a bound: `|field|` at each
-    /// collapsed vertex and at twelve sampled points per face.
+    /// QEM-simplified, and that step does enforce two bounds: `|field|` at each
+    /// collapsed vertex and at twenty-five sampled points per face, and that no
+    /// face ends up wound into the solid.
     ///
     /// ⚠ Not an envelope. This said "within `max_deviation` everywhere" until
     /// 2026-08-20, when sweeping the output faces showed the simplified surface
-    /// straying about 2× that between its sampled points — and, before the
+    /// straying about 1.25× that between its sampled points — and, before the
     /// simplifier was bounded by the surface at all, a 10 mm cube coming back
     /// as two triangles of volume 0.0 with every vertex inside tolerance.
     /// The simplifier's own docs record what is and is not promised. For an
