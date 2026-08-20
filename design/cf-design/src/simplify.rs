@@ -577,6 +577,18 @@ fn collapse_inverts_a_face(
 ) -> bool {
     affected.into_iter().any(|face| {
         let normal = triangle_normal(&face);
+        // Reject rather than judge: below this the normal's *direction* is
+        // numerical noise, so the dot product underneath it would be deciding
+        // winding by rounding error. Not redundant with that test — a normal in
+        // (0, EPSILON) dots to a tiny positive number and would be accepted.
+        //
+        // ⚠ No test distinguishes this branch, and that is recorded rather than
+        // papered over: deleting it perturbs one collapse on
+        // `cuboid(5,5,5).subtract(cylinder(2,6))` and the sequence reshuffles
+        // downstream (volume 869.60 against 866.84, smallest face 0.103 mm²
+        // against 0.446 mm²) — a wash in quality, not a cliff, so there is no
+        // honest threshold to assert. It is here for the numerics of the test
+        // below, not for a measured improvement.
         if normal.norm() < f64::EPSILON {
             return true;
         }
