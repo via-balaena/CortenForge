@@ -945,6 +945,9 @@ pub fn run_all(
     // for why this cannot be folded into either bucket above: these crates
     // graded fine, and that is exactly the problem.
     let mut coverage_unavailable: Vec<String> = Vec::new();
+    // Same bucket shape for criterion 7, and open for the same reason: a skipped
+    // WASM check leaves every letter in this sweep untouched.
+    let mut wasm_unavailable: Vec<String> = Vec::new();
 
     for (idx, crate_name) in crate_names.iter().enumerate() {
         // Force --quiet per-crate regardless of outer verbosity — grade-all
@@ -980,9 +983,13 @@ pub fn run_all(
         // Checked for every crate, whichever bucket it lands in: a `Manual`
         // Coverage criterion leaves the crate's letter untouched, so the sweep
         // has no other place to notice that it never measured anything.
-        if !verbosity.skip_coverage && coverage_was_unavailable(&report) {
-            coverage_unavailable.push(crate_name.clone());
-        }
+        record_sweep_buckets(
+            crate_name,
+            &report,
+            verbosity.skip_coverage,
+            &mut coverage_unavailable,
+            &mut wasm_unavailable,
+        );
 
         let passed = matches!(report.automated_grade, Grade::A | Grade::APlus);
         if passed {
@@ -1014,6 +1021,7 @@ pub fn run_all(
         failures: failures.len(),
         errors: errors.len(),
         coverage_unavailable: coverage_unavailable.len(),
+        wasm_unavailable: wasm_unavailable.len(),
     };
 
     println!();
@@ -1088,6 +1096,24 @@ pub fn run_all(
         println!("      fix: rustup component add llvm-tools-preview");
     }
 
+    // Same treatment, same reason: without it a green-looking sweep would be
+    // one where criterion 7 simply never ran.
+    if !wasm_unavailable.is_empty() {
+        println!();
+        println!(
+            "{}",
+            "  WASM compatibility was never checked — the wasm32 target could not be confirmed."
+                .red()
+                .bold()
+        );
+        println!(
+            "      {} crate(s) skipped criterion 7: {}",
+            wasm_unavailable.len(),
+            wasm_unavailable.join(", ")
+        );
+        println!("      fix: rustup target add wasm32-unknown-unknown");
+    }
+
     if tally.is_green() {
         Ok(())
     } else {
@@ -1140,6 +1166,93 @@ fn coverage_was_unavailable(report: &GradeReport) -> bool {
         .any(|c| c.name.starts_with("1.") && c.grade == Grade::Manual)
 }
 
+/// The criterion result a target state implies, or `None` when the check can
+/// actually run.
+///
+/// ★ Split from the rustup call so the arm selection is testable without one.
+/// The case that matters — rustup unrunnable — cannot be produced on a machine
+/// where rustup works, which is every machine this grader is developed on.
+///
+/// Both non-`Installed` arms are [`Grade::Manual`], because an absent capability
+/// is not a code defect. They stay distinct because they name different things
+/// to go and fix, and because treating `Undetermined` as absence would be a
+/// claim nothing measured. ⚠ Treating it as PRESENCE would be worse still: the
+/// `cargo check` would fail for want of a target and the crate would take an F
+/// it did not earn.
+fn wasm_skip_result(target: &WasmTarget) -> Option<CriterionResult> {
+    match target {
+        WasmTarget::Installed => None,
+        WasmTarget::NotInstalled => Some(CriterionResult {
+            name: "7. WASM Compat",
+            result: "(target n/a)".to_string(),
+            grade: Grade::Manual,
+            threshold: "L0 wasm32",
+            measured_detail: "wasm32-unknown-unknown target not installed; \
+                              run `rustup target add wasm32-unknown-unknown` \
+                              and re-grade for an automated check"
+                .to_string(),
+        }),
+        WasmTarget::Undetermined(e) => Some(CriterionResult {
+            name: "7. WASM Compat",
+            result: "(rustup n/a)".to_string(),
+            grade: Grade::Manual,
+            threshold: "L0 wasm32",
+            measured_detail: format!(
+                "could not ask rustup which targets are installed, so whether this \
+                 crate builds for wasm32 is unknown — not evidence that the target \
+                 is absent: {e}"
+            ),
+        }),
+    }
+}
+
+/// Record `report` in whichever sweep-level buckets it belongs to.
+///
+/// ★ Pulled out of the sweep loop so the WIRING is testable, not just the
+/// predicates. With the two `if`s written inline, deleting the criterion-7 push
+/// left all 326 unit tests green — the detector, the tally and the headline were
+/// each correct and none of them was reachable. A gate nothing calls is a gate
+/// that does not exist.
+///
+/// ⚠ Coverage is conditional and WASM is not, and that asymmetry is real:
+/// `--skip-coverage` makes an unmeasured criterion 1 the instruction rather than
+/// a defect, while no flag asks for a sweep without criterion 7.
+fn record_sweep_buckets(
+    crate_name: &str,
+    report: &GradeReport,
+    skip_coverage: bool,
+    coverage_unavailable: &mut Vec<String>,
+    wasm_unavailable: &mut Vec<String>,
+) {
+    if !skip_coverage && coverage_was_unavailable(report) {
+        coverage_unavailable.push(crate_name.to_string());
+    }
+    if wasm_was_unavailable(report) {
+        wasm_unavailable.push(crate_name.to_string());
+    }
+}
+
+/// Whether criterion 7 was skipped rather than run.
+///
+/// The mirror of [`coverage_was_unavailable`], and open for the same reason: a
+/// `Manual` WASM criterion leaves the crate's letter untouched, so without this
+/// the sweep has no place to notice the criterion never ran. A rustup blip, or
+/// a target that was never installed, would silently DELETE criterion 7 from
+/// every grade in the sweep — [`GradeReport::overall_automated`] skips `Manual`.
+///
+/// ⚠ `Manual` only. [`Grade::NotApplicable`] is what a non-L0 crate gets, and
+/// that is a recorded decision (the WASM check is L0-only per STANDARDS.md),
+/// not a machine that failed to answer.
+///
+/// Matched on the `"7."` name prefix like [`coverage_was_unavailable`], so a
+/// renamed criterion cannot silently detach the guard from what it guards.
+fn wasm_was_unavailable(report: &GradeReport) -> bool {
+    report
+        .criteria
+        .iter()
+        .any(|c| c.name.starts_with("7.") && c.grade == Grade::Manual)
+}
+
 /// What a `grade-all` sweep ended with.
 ///
 /// `errors` is its own bucket rather than being folded into `failures`: a
@@ -1167,6 +1280,10 @@ struct SweepTally {
     /// absent. Always 0 under `--skip-coverage`, where not measuring is the
     /// instruction rather than a defect.
     coverage_unavailable: usize,
+    /// Crates whose WASM criterion was skipped because the target could not be
+    /// confirmed. Has no `--skip` flag to be suppressed by: there is no way to
+    /// ask for this sweep without asking for criterion 7.
+    wasm_unavailable: usize,
 }
 
 impl SweepTally {
@@ -1185,7 +1302,10 @@ impl SweepTally {
     /// ran. The third clause is what stops "nothing came back" reading as
     /// "nothing was wrong".
     fn is_green(&self) -> bool {
-        self.failures == 0 && self.errors == 0 && self.coverage_unavailable == 0
+        self.failures == 0
+            && self.errors == 0
+            && self.coverage_unavailable == 0
+            && self.wasm_unavailable == 0
     }
 
     /// One line naming every non-empty bucket, so no count the verdict depends
@@ -1196,26 +1316,46 @@ impl SweepTally {
     /// anyhow's own `Error:` prefix is the failure marker. Baking a `✗` in
     /// would print "Error: ✗ …" — two markers for one failure.
     fn headline(&self) -> String {
-        // ⚠ COMPOSED, never early-returned. An earlier draft returned the
-        // coverage sentence on its own, which silently dropped the failure and
-        // error counts — the precise defect
-        // `the_headline_names_both_buckets_when_both_are_non_empty` was
-        // written to prevent, walking back in through a new bucket. It matters
-        // more here than anywhere: this string is the `bail!` text, so it is
-        // the last line of a CI log, and "coverage tooling unavailable" as the
-        // whole verdict would bury a crate that really is failing.
-        if self.coverage_unavailable == 0 {
+        // ⚠ COMPOSED, never early-returned per bucket. An earlier draft returned
+        // the coverage sentence on its own, which silently dropped the failure
+        // and error counts — the precise defect
+        // `the_headline_names_both_buckets_when_both_are_non_empty` was written
+        // to prevent, and one that walks straight back in the moment a second
+        // bucket is added beside it. It matters more here than anywhere: this
+        // string is the `bail!` text, so it is the last line of a CI log, and
+        // "coverage tooling unavailable" as the whole verdict would bury a crate
+        // that really is failing.
+        //
+        // ★ Hence a LIST rather than a chain of conditionals. A third bucket
+        // appends one arm and inherits the composition; it cannot introduce a
+        // return path that drops the sentences either side of it.
+        let mut sweep_findings: Vec<String> = Vec::new();
+
+        // These lead, because each is a claim about the SWEEP rather than about
+        // any crate in it: every letter this run printed was computed with the
+        // named criterion skipped.
+        if self.coverage_unavailable > 0 {
+            sweep_findings.push(format!(
+                "coverage tooling unavailable — {} of {} crates were not measured, so no \
+                 grade in this sweep accounts for coverage \
+                 (`rustup component add llvm-tools-preview`).",
+                self.coverage_unavailable, self.total
+            ));
+        }
+        if self.wasm_unavailable > 0 {
+            sweep_findings.push(format!(
+                "WASM target unavailable — criterion 7 was skipped for {} of {} crates, so \
+                 those grades do not account for it \
+                 (`rustup target add wasm32-unknown-unknown`).",
+                self.wasm_unavailable, self.total
+            ));
+        }
+
+        if sweep_findings.is_empty() {
             return format!("grade-all: {}", self.count_clause());
         }
-        // Coverage leads, because it is a claim about the SWEEP rather than
-        // about any crate in it: every letter this run printed was computed
-        // with the Coverage criterion skipped.
-        let mut headline = format!(
-            "grade-all: coverage tooling unavailable — {} of {} crates were not measured, \
-             so no grade in this sweep accounts for coverage \
-             (`rustup component add llvm-tools-preview`).",
-            self.coverage_unavailable, self.total
-        );
+
+        let mut headline = format!("grade-all: {}", sweep_findings.join(" "));
         if self.failures > 0 || self.errors > 0 {
             // "Separately" because these crates failed on criteria that DID
             // run — their verdict stands on its own and is not softened by the
@@ -4240,18 +4380,45 @@ fn grade_layer_integrity(
     })
 }
 
-/// True if `wasm32-unknown-unknown` is installed via rustup. Returns
-/// `false` if rustup is missing or the target isn't listed; the caller
-/// degrades to `Grade::Manual` rather than running an unwinnable check.
-fn wasm_target_installed(sh: &Shell) -> bool {
-    let installed = cmd!(sh, "rustup target list --installed")
+/// Whether criterion 7 can run, and if not, which of two different reasons.
+///
+/// ★ The distinction is the point. An earlier version answered `bool` via
+/// `unwrap_or_default()`, which turned "rustup could not be consulted" into
+/// "the target is not installed" — a measurement failure wearing the costume of
+/// an environment fact. Both still degrade to [`Grade::Manual`], because an
+/// absent capability is not a code defect, but they are no longer the same
+/// sentence in the report, and [`SweepTally`] now refuses to call a sweep green
+/// while either is outstanding.
+#[derive(Debug, PartialEq, Eq)]
+enum WasmTarget {
+    Installed,
+    NotInstalled,
+    /// rustup could not be run at all, so nothing is known either way.
+    Undetermined(String),
+}
+
+/// Ask rustup whether `wasm32-unknown-unknown` is installed.
+fn wasm_target(sh: &Shell) -> WasmTarget {
+    match cmd!(sh, "rustup target list --installed")
         .ignore_status()
         .ignore_stderr()
         .read()
-        .unwrap_or_default();
-    installed
+    {
+        Ok(installed) => classify_target_list(&installed),
+        Err(e) => WasmTarget::Undetermined(e.to_string()),
+    }
+}
+
+/// The parsing half of [`wasm_target`], split so it is testable without rustup.
+fn classify_target_list(installed: &str) -> WasmTarget {
+    if installed
         .lines()
         .any(|l| l.trim() == "wasm32-unknown-unknown")
+    {
+        WasmTarget::Installed
+    } else {
+        WasmTarget::NotInstalled
+    }
 }
 
 /// Reduce a (possibly multi-page) `cargo check` stderr to a one-line
@@ -4349,17 +4516,8 @@ fn grade_wasm_compat(
         });
     }
 
-    if !wasm_target_installed(sh) {
-        return Ok(CriterionResult {
-            name: "7. WASM Compat",
-            result: "(target n/a)".to_string(),
-            grade: Grade::Manual,
-            threshold: "L0 wasm32",
-            measured_detail: "wasm32-unknown-unknown target not installed; \
-                              run `rustup target add wasm32-unknown-unknown` \
-                              and re-grade for an automated check"
-                .to_string(),
-        });
+    if let Some(skipped) = wasm_skip_result(&wasm_target(sh)) {
+        return Ok(skipped);
     }
 
     let output = cmd!(
@@ -6571,6 +6729,7 @@ tier_up_features = { sneaky = "App" }
             failures: 0,
             errors: 1,
             coverage_unavailable: 0,
+            wasm_unavailable: 0,
         };
         assert!(!tally.is_green(), "{tally:?}");
         assert!(
@@ -6587,6 +6746,7 @@ tier_up_features = { sneaky = "App" }
             failures: 0,
             errors: 0,
             coverage_unavailable: 0,
+            wasm_unavailable: 0,
         };
         assert!(green.is_green());
         assert_eq!(green.passes(), 10);
@@ -6597,6 +6757,7 @@ tier_up_features = { sneaky = "App" }
             failures: 1,
             errors: 0,
             coverage_unavailable: 0,
+            wasm_unavailable: 0,
         }
         .is_green());
     }
@@ -6611,6 +6772,7 @@ tier_up_features = { sneaky = "App" }
             failures: 2,
             errors: 3,
             coverage_unavailable: 0,
+            wasm_unavailable: 0,
         };
         let headline = tally.headline();
         assert!(headline.contains('2'), "{headline}");
@@ -6630,24 +6792,28 @@ tier_up_features = { sneaky = "App" }
                 failures: 0,
                 errors: 0,
                 coverage_unavailable: 0,
+                wasm_unavailable: 0,
             },
             SweepTally {
                 total: 3,
                 failures: 1,
                 errors: 0,
                 coverage_unavailable: 0,
+                wasm_unavailable: 0,
             },
             SweepTally {
                 total: 3,
                 failures: 0,
                 errors: 1,
                 coverage_unavailable: 0,
+                wasm_unavailable: 0,
             },
             SweepTally {
                 total: 3,
                 failures: 1,
                 errors: 1,
                 coverage_unavailable: 0,
+                wasm_unavailable: 0,
             },
             // The third bucket, alone and combined — it takes a different
             // branch through `headline`, so the invariant has to be checked
@@ -6657,12 +6823,14 @@ tier_up_features = { sneaky = "App" }
                 failures: 0,
                 errors: 0,
                 coverage_unavailable: 3,
+                wasm_unavailable: 0,
             },
             SweepTally {
                 total: 3,
                 failures: 1,
                 errors: 1,
                 coverage_unavailable: 3,
+                wasm_unavailable: 0,
             },
         ] {
             let headline = tally.headline();
@@ -7070,6 +7238,7 @@ test result: FAILED. 786 passed; 1 failed; 2 ignored; 0 measured; 0 filtered out
             failures: 0,
             errors: 0,
             coverage_unavailable: 61,
+            wasm_unavailable: 0,
         };
         assert!(!tally.is_green(), "{tally:?}");
         let headline = tally.headline();
@@ -7091,6 +7260,7 @@ test result: FAILED. 786 passed; 1 failed; 2 ignored; 0 measured; 0 filtered out
             failures: 2,
             errors: 0,
             coverage_unavailable: 8,
+            wasm_unavailable: 0,
         };
         assert_eq!(tally.passes(), 8);
         assert!(!tally.is_green());
@@ -7123,6 +7293,7 @@ test result: FAILED. 786 passed; 1 failed; 2 ignored; 0 measured; 0 filtered out
             failures: 0,
             errors: 0,
             coverage_unavailable: 0,
+            wasm_unavailable: 0,
         };
         assert!(green.is_green());
         assert!(green.headline().contains("10/10"), "{}", green.headline());
@@ -7167,6 +7338,249 @@ test result: FAILED. 786 passed; 1 failed; 2 ignored; 0 measured; 0 filtered out
         }));
     }
 
+    /// Build a report carrying one WASM criterion at `grade`.
+    ///
+    /// Mirrors [`report_with_coverage`], placeholder cell included and for the
+    /// same reason: the guard matches on the GRADE, and a fixture carrying a
+    /// matching string would pass equally if the guard were rewritten to sniff
+    /// text — the implementation this rules out.
+    fn report_with_wasm(grade: Grade) -> GradeReport {
+        GradeReport {
+            criteria: vec![CriterionResult {
+                name: "7. WASM Compat",
+                result: "<fixture>".to_string(),
+                grade,
+                threshold: "L0 wasm32",
+                measured_detail: String::new(),
+            }],
+            ..empty_report()
+        }
+    }
+
+    /// ★★ `Manual` is the one grade that must be caught, because it is the one
+    /// `overall_automated` SKIPS — the criterion leaves the letter untouched, so
+    /// nothing else in the sweep can notice it never ran.
+    ///
+    /// ★ `NotApplicable` is the negative control that matters most: every non-L0
+    /// crate gets it, so a guard that caught it too would fire on most of the
+    /// workspace and be turned off again within a day.
+    #[test]
+    fn only_a_manual_wasm_criterion_counts_as_unavailable() {
+        assert!(wasm_was_unavailable(&report_with_wasm(Grade::Manual)));
+
+        for grade in [
+            Grade::APlus,
+            Grade::A,
+            Grade::B,
+            Grade::C,
+            Grade::F,
+            Grade::NotApplicable,
+        ] {
+            assert!(
+                !wasm_was_unavailable(&report_with_wasm(grade)),
+                "{grade:?} is a criterion that ran, or a recorded decision"
+            );
+        }
+        assert!(!wasm_was_unavailable(&empty_report()));
+    }
+
+    /// ★ The guard keys on the `"7."` prefix, so a `Manual` on some OTHER
+    /// criterion must not be mistaken for this one. Criterion 8 is `Manual` for
+    /// every crate in the workspace by design, which would otherwise make the
+    /// whole sweep permanently red.
+    #[test]
+    fn a_manual_on_another_criterion_is_not_a_skipped_wasm_check() {
+        let api_design = GradeReport {
+            criteria: vec![CriterionResult {
+                name: "8. API Design",
+                result: "(manual review)".to_string(),
+                grade: Grade::Manual,
+                threshold: "checklist",
+                measured_detail: String::new(),
+            }],
+            ..empty_report()
+        };
+        assert!(!wasm_was_unavailable(&api_design));
+    }
+
+    /// ★★ The whole point: a sweep where criterion 7 never ran is NOT green,
+    /// even though every crate in it passed everything that did run.
+    #[test]
+    fn a_sweep_that_skipped_the_wasm_check_is_not_green() {
+        let all_passed_but_unchecked = SweepTally {
+            total: 61,
+            failures: 0,
+            errors: 0,
+            coverage_unavailable: 0,
+            wasm_unavailable: 4,
+        };
+        assert!(!all_passed_but_unchecked.is_green());
+        assert!(
+            all_passed_but_unchecked
+                .headline()
+                .to_lowercase()
+                .contains("criterion 7"),
+            "{}",
+            all_passed_but_unchecked.headline()
+        );
+
+        // Negative control: the same tally with nothing skipped IS green, so the
+        // assertion above tracks the bucket rather than being pinned false.
+        let checked = SweepTally {
+            wasm_unavailable: 0,
+            ..all_passed_but_unchecked
+        };
+        assert!(checked.is_green());
+    }
+
+    /// ★★ Both sweep-level buckets must survive into one headline.
+    ///
+    /// This started as a second early return beside the coverage one, which was
+    /// correct for all four combinations and still wrong: [`SweepTally::headline`]
+    /// states the invariant "COMPOSED, never early-returned per bucket", and a
+    /// per-bucket return is how that invariant gets walked back in. The findings
+    /// are a list now, so a third bucket appends an arm and inherits the
+    /// composition rather than adding a third way to drop a sentence.
+    #[test]
+    fn the_headline_names_coverage_and_wasm_when_both_are_outstanding() {
+        let both = SweepTally {
+            total: 61,
+            failures: 2,
+            errors: 1,
+            coverage_unavailable: 3,
+            wasm_unavailable: 4,
+        };
+        // Lower-cased because the WASM clause capitalises when it opens its own
+        // sentence and does not when it trails the coverage one; the assertion
+        // is about the clause being PRESENT, not about where it landed.
+        let headline = both.headline();
+        let lowered = headline.to_lowercase();
+        assert!(
+            lowered.contains("coverage tooling unavailable"),
+            "{headline}"
+        );
+        assert!(lowered.contains("criterion 7"), "{headline}");
+        assert!(lowered.contains("separately"), "{headline}");
+    }
+
+    /// ★★ The wiring, not just the predicate. Deleting the criterion-7 push
+    /// from the sweep loop left all 326 other tests green: every part of the
+    /// backstop was individually correct and none of it was reachable.
+    ///
+    /// ★ Coverage is asserted alongside it as the negative control — it proves
+    /// this fixture reaches the recording at all, so a failure here means the
+    /// WASM arm specifically, not the whole call.
+    #[test]
+    fn a_skipped_criterion_is_recorded_in_its_bucket() {
+        let both_skipped = GradeReport {
+            criteria: vec![
+                CriterionResult {
+                    name: "1. Coverage",
+                    result: "<fixture>".to_string(),
+                    grade: Grade::Manual,
+                    threshold: "≥75%/≥90% A+",
+                    measured_detail: String::new(),
+                },
+                CriterionResult {
+                    name: "7. WASM Compat",
+                    result: "<fixture>".to_string(),
+                    grade: Grade::Manual,
+                    threshold: "L0 wasm32",
+                    measured_detail: String::new(),
+                },
+            ],
+            ..empty_report()
+        };
+
+        let (mut cov, mut wasm) = (Vec::new(), Vec::new());
+        record_sweep_buckets("demo", &both_skipped, false, &mut cov, &mut wasm);
+        assert_eq!(cov, vec!["demo".to_string()], "coverage bucket");
+        assert_eq!(wasm, vec!["demo".to_string()], "wasm bucket");
+
+        // ★ `--skip-coverage` silences criterion 1 and MUST NOT silence 7:
+        // there is no flag that asks for a sweep without the WASM check.
+        let (mut cov, mut wasm) = (Vec::new(), Vec::new());
+        record_sweep_buckets("demo", &both_skipped, true, &mut cov, &mut wasm);
+        assert!(
+            cov.is_empty(),
+            "skip-coverage makes an unmeasured 1 the instruction"
+        );
+        assert_eq!(wasm, vec!["demo".to_string()], "but 7 is still a defect");
+
+        // ★ Negative control: a report where both criteria RAN records nothing,
+        // so the assertions above track the grades rather than being pinned.
+        let (mut cov, mut wasm) = (Vec::new(), Vec::new());
+        record_sweep_buckets(
+            "demo",
+            &report_with_wasm(Grade::A),
+            false,
+            &mut cov,
+            &mut wasm,
+        );
+        assert!(cov.is_empty() && wasm.is_empty(), "nothing was skipped");
+    }
+
+    /// ★★ An unrunnable rustup is not evidence of anything, and must not be
+    /// filed as either answer.
+    ///
+    /// Reading it as ABSENCE states a fact nothing measured. Reading it as
+    /// PRESENCE is worse: the `cargo check` would then fail for want of a
+    /// target, and the crate would take an F it did not earn — a grader
+    /// inventing a defect in code it never compiled.
+    ///
+    /// ★ All three arms are asserted, so the mapping cannot collapse to a
+    /// constant in either direction.
+    #[test]
+    fn an_unrunnable_rustup_is_filed_as_neither_present_nor_absent() {
+        let undetermined = wasm_skip_result(&WasmTarget::Undetermined("no such file".to_string()))
+            .expect("the check cannot run when rustup could not be asked");
+        assert_eq!(undetermined.grade, Grade::Manual);
+        assert_eq!(undetermined.result, "(rustup n/a)");
+        assert!(
+            undetermined.measured_detail.contains("not evidence"),
+            "{}",
+            undetermined.measured_detail
+        );
+
+        let absent = wasm_skip_result(&WasmTarget::NotInstalled)
+            .expect("the check cannot run without the target");
+        assert_eq!(absent.grade, Grade::Manual);
+        assert_eq!(
+            absent.result, "(target n/a)",
+            "a different cell, because it is a different thing to go and fix"
+        );
+
+        assert!(
+            wasm_skip_result(&WasmTarget::Installed).is_none(),
+            "with the target present the criterion runs for real"
+        );
+    }
+
+    /// ★ The parsing half, split from the rustup call so it runs anywhere.
+    #[test]
+    fn the_target_list_is_read_exactly() {
+        assert_eq!(
+            classify_target_list("aarch64-apple-darwin\nwasm32-unknown-unknown\n"),
+            WasmTarget::Installed
+        );
+        assert_eq!(
+            classify_target_list("  wasm32-unknown-unknown  \n"),
+            WasmTarget::Installed,
+            "rustup pads its list"
+        );
+        assert_eq!(
+            classify_target_list("aarch64-apple-darwin\n"),
+            WasmTarget::NotInstalled
+        );
+        assert_eq!(classify_target_list(""), WasmTarget::NotInstalled);
+        // ★ A near-miss must not read as a hit: `wasm32-wasip1` is a different
+        // target, and a `contains` implementation would accept it.
+        assert_eq!(
+            classify_target_list("wasm32-wasip1\nwasm32-unknown-unknown-foo\n"),
+            WasmTarget::NotInstalled
+        );
+    }
+
     #[test]
     fn passes_is_derived_so_it_cannot_drift_from_the_buckets() {
         // `saturating_sub` guards a nonsensical construction rather than
@@ -7177,6 +7591,7 @@ test result: FAILED. 786 passed; 1 failed; 2 ignored; 0 measured; 0 filtered out
             failures: 5,
             errors: 5,
             coverage_unavailable: 0,
+            wasm_unavailable: 0,
         };
         assert_eq!(nonsense.passes(), 0);
         assert!(!nonsense.is_green());
