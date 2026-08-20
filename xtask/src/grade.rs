@@ -1316,46 +1316,46 @@ impl SweepTally {
     /// anyhow's own `Error:` prefix is the failure marker. Baking a `✗` in
     /// would print "Error: ✗ …" — two markers for one failure.
     fn headline(&self) -> String {
-        // ⚠ COMPOSED, never early-returned. An earlier draft returned the
-        // coverage sentence on its own, which silently dropped the failure and
-        // error counts — the precise defect
-        // `the_headline_names_both_buckets_when_both_are_non_empty` was
-        // written to prevent, walking back in through a new bucket. It matters
-        // more here than anywhere: this string is the `bail!` text, so it is
-        // the last line of a CI log, and "coverage tooling unavailable" as the
-        // whole verdict would bury a crate that really is failing.
-        if self.coverage_unavailable == 0 && self.wasm_unavailable == 0 {
-            return format!("grade-all: {}", self.count_clause());
-        }
-        if self.coverage_unavailable == 0 {
-            // Same shape as the coverage sentence below, and composed for the
-            // same reason: it is a claim about the SWEEP, not about a crate.
-            let mut headline = format!(
-                "grade-all: WASM target unavailable — criterion 7 was skipped for {} of {} \
-                 crates, so those grades do not account for it \
-                 (`rustup target add wasm32-unknown-unknown`).",
-                self.wasm_unavailable, self.total
-            );
-            if self.failures > 0 || self.errors > 0 {
-                headline.push_str(&format!(" Separately, {}", self.count_clause()));
-            }
-            return headline;
-        }
-        // Coverage leads, because it is a claim about the SWEEP rather than
-        // about any crate in it: every letter this run printed was computed
-        // with the Coverage criterion skipped.
-        let mut headline = format!(
-            "grade-all: coverage tooling unavailable — {} of {} crates were not measured, \
-             so no grade in this sweep accounts for coverage \
-             (`rustup component add llvm-tools-preview`).",
-            self.coverage_unavailable, self.total
-        );
-        if self.wasm_unavailable > 0 {
-            headline.push_str(&format!(
-                " Criterion 7 was also skipped for {} crate(s).",
-                self.wasm_unavailable
+        // ⚠ COMPOSED, never early-returned per bucket. An earlier draft returned
+        // the coverage sentence on its own, which silently dropped the failure
+        // and error counts — the precise defect
+        // `the_headline_names_both_buckets_when_both_are_non_empty` was written
+        // to prevent, and one that walks straight back in the moment a second
+        // bucket is added beside it. It matters more here than anywhere: this
+        // string is the `bail!` text, so it is the last line of a CI log, and
+        // "coverage tooling unavailable" as the whole verdict would bury a crate
+        // that really is failing.
+        //
+        // ★ Hence a LIST rather than a chain of conditionals. A third bucket
+        // appends one arm and inherits the composition; it cannot introduce a
+        // return path that drops the sentences either side of it.
+        let mut sweep_findings: Vec<String> = Vec::new();
+
+        // These lead, because each is a claim about the SWEEP rather than about
+        // any crate in it: every letter this run printed was computed with the
+        // named criterion skipped.
+        if self.coverage_unavailable > 0 {
+            sweep_findings.push(format!(
+                "coverage tooling unavailable — {} of {} crates were not measured, so no \
+                 grade in this sweep accounts for coverage \
+                 (`rustup component add llvm-tools-preview`).",
+                self.coverage_unavailable, self.total
             ));
         }
+        if self.wasm_unavailable > 0 {
+            sweep_findings.push(format!(
+                "WASM target unavailable — criterion 7 was skipped for {} of {} crates, so \
+                 those grades do not account for it \
+                 (`rustup target add wasm32-unknown-unknown`).",
+                self.wasm_unavailable, self.total
+            ));
+        }
+
+        if sweep_findings.is_empty() {
+            return format!("grade-all: {}", self.count_clause());
+        }
+
+        let mut headline = format!("grade-all: {}", sweep_findings.join(" "));
         if self.failures > 0 || self.errors > 0 {
             // "Separately" because these crates failed on criteria that DID
             // run — their verdict stands on its own and is not softened by the
@@ -7433,11 +7433,14 @@ test result: FAILED. 786 passed; 1 failed; 2 ignored; 0 measured; 0 filtered out
         assert!(checked.is_green());
     }
 
-    /// ★ Both sweep-level buckets must survive into one headline. The coverage
-    /// arm early-returned before this bucket existed; a second early return
-    /// would drop whichever sentence lost the race — the defect
-    /// `the_headline_names_both_buckets_when_both_are_non_empty` already guards
-    /// for failures and errors, extended here to the pair that outranks them.
+    /// ★★ Both sweep-level buckets must survive into one headline.
+    ///
+    /// This started as a second early return beside the coverage one, which was
+    /// correct for all four combinations and still wrong: [`SweepTally::headline`]
+    /// states the invariant "COMPOSED, never early-returned per bucket", and a
+    /// per-bucket return is how that invariant gets walked back in. The findings
+    /// are a list now, so a third bucket appends an arm and inherits the
+    /// composition rather than adding a third way to drop a sentence.
     #[test]
     fn the_headline_names_coverage_and_wasm_when_both_are_outstanding() {
         let both = SweepTally {
