@@ -539,57 +539,118 @@ fn declared_modules(src: &str) -> Option<(Vec<String>, Vec<String>)> {
     Some((test, plain))
 }
 
+/// The crate's directory on disk, recovered from one of the export's absolute
+/// filenames.
+///
+/// llvm-cov reports absolute paths that contain `crate_path` as a fragment;
+/// cutting one at the end of that fragment leaves the crate root, which is where
+/// [`test_only_files`] starts its walk.
+///
+/// ★ Anchored at the LAST occurrence, matching [`relative_to_crate`]. A checkout
+/// under a directory that repeats the crate's own path fragment would otherwise
+/// resolve to an ANCESTOR of the crate, whose `src/lib.rs` is some other crate's
+/// or nothing at all. Either way this crate's module tree goes unwalked and the
+/// seeding falls back to the export's file list — the very gap it exists to
+/// close. Seeding a foreign tree cannot mismark anything, since the result is
+/// only ever consulted for files already established as this crate's own.
+fn crate_root_of(name: &str, crate_path: &str) -> Option<PathBuf> {
+    name.rfind(crate_path)
+        .map(|at| PathBuf::from(&name[..at + crate_path.len()]))
+}
+
 /// Every source file that exists only for tests because some ancestor declared
 /// it with `#[cfg(test)] mod name;`.
 ///
 /// Nothing *inside* such a file is attributed to `cfg(test)` — the gate is on
 /// the declaration, in a different file — so the span walk alone would score
-/// the whole file as production code. This workspace has 15 such declarations.
+/// the whole file as production code.
 ///
-/// ⚠ **This guard is defensive, not load-bearing today**, and the reason is a
-/// disjointness argument rather than a before/after run. In `sim-mjcf` — the
-/// one measured crate that uses the pattern — the single declaration resolves
-/// to `src/parser/tests.rs` (2370 lines), and llvm-cov omits that file from
-/// the export's `files[]` array while still attributing 93 executed functions
-/// and 1951 regions to it. The set this guard excludes is therefore disjoint
-/// from the set [`production_coverage`] measures, so it cannot move the
-/// number, whatever that number is.
+/// ★ **The search starts from the crate's module tree, not from the export's
+/// file list, and that distinction is the whole guard.** A declaration-only
+/// `mod.rs` — nothing but `pub mod` and `pub use` — compiles to no regions, so
+/// llvm-cov omits it from `files[]`. Seeding only from listed files therefore
+/// never opens it, never sees the `#[cfg(test)] mod name;` it holds, and scores
+/// every line of the test file that declaration gates as production code.
+/// Following ordinary `mod name;` declarations down from the crate root is what
+/// reaches such a file.
 ///
-/// The guard stays because the omission is undocumented behaviour rather than
-/// a promise, and the classifier's answer ("that file is test code") is true
-/// either way: if a future llvm-cov lists those files, the alternative is 2370
-/// test lines silently entering the metric as production.
-fn test_only_files(roots: &[String]) -> HashSet<PathBuf> {
+/// ⚠ **The omitted-declaration case is real and it is not small.** `sim-gpu`
+/// declares all three of its test modules in `src/pipeline/mod.rs`: 53 lines of
+/// module doc, `pub mod`, `pub use` and the three declarations themselves, with
+/// no executable code — so it carries no regions, and llvm-cov did not list it
+/// among the 18 files it reported for the crate. The 2026-08-18 weekly
+/// sweep (run 32106341473) scored the crate 344/5647 lines with "10 test lines
+/// excluded", and ranked `src/pipeline/tests.rs` (1511 uncovered),
+/// `conformance_tests.rs` (491) and `contact_conformance_tests.rs` (406) as its
+/// three largest production gaps. All three are test files.
+///
+/// ⛔ An earlier version of this doc argued the guard could not move the number,
+/// because llvm-cov omits `#[cfg(test)] mod` files from `files[]` — observed in
+/// `sim-mjcf`, whose `src/parser/tests.rs` is absent from the export while still
+/// attributing 93 executed functions to it. That run falsifies the argument: the
+/// omission is per-file and undocumented, and for `sim-gpu` all three files were
+/// listed. The guard is load-bearing.
+fn test_only_files(crate_root: Option<&Path>, listed: &[String]) -> HashSet<PathBuf> {
     let mut found = HashSet::new();
-    let mut queue: Vec<PathBuf> = Vec::new();
+    let mut test_queue: Vec<PathBuf> = Vec::new();
 
-    for root in roots {
-        let owner = Path::new(root);
-        let Some(src) = std::fs::read_to_string(owner).ok() else {
+    // Production side of the walk. `lib.rs`/`main.rs` are the roots Cargo
+    // compiles from; the listed files are added because a binary-only crate has
+    // no `src/lib.rs` to descend from, and its root carries `fn main` and so is
+    // always in the export. A root that could not be recovered contributes
+    // nothing rather than a cwd-relative guess.
+    //
+    // ⚠ `walked` and the `is_file()` guard below are both correctness-neutral
+    // here — `found` is written only by the test walk, and `read_to_string`
+    // rejects a non-file anyway. They bound the work instead: `walked` keeps a
+    // deep tree from being re-parsed once per path that reaches it. The test
+    // walk's `is_file()` is NOT equivalent, because it gates `found.insert`.
+    let mut prod_queue: Vec<PathBuf> = crate_root
+        .into_iter()
+        .flat_map(|root| [root.join("src/lib.rs"), root.join("src/main.rs")])
+        .collect();
+    prod_queue.extend(listed.iter().map(PathBuf::from));
+    let mut walked = HashSet::new();
+
+    while let Some(path) = prod_queue.pop() {
+        if !path.is_file() || !walked.insert(path.clone()) {
+            continue;
+        }
+        let Ok(src) = std::fs::read_to_string(&path) else {
             continue;
         };
-        let Some((test_mods, _)) = declared_modules(&src) else {
+        let Some((test_mods, plain_mods)) = declared_modules(&src) else {
             continue;
         };
-        for name in test_mods {
-            queue.extend(child_module_candidates(owner, &name));
+        for name in &test_mods {
+            test_queue.extend(child_module_candidates(&path, name));
+        }
+        // Descending through production modules is what finds a declaration
+        // the export never mentioned.
+        //
+        // ⚠ [`child_module_candidates`] resolves `mod name;` by convention and
+        // does not read `#[path = "…"]`. A relocated production module would
+        // stop the descent for its whole subtree — costing detections, never
+        // causing false ones. The workspace contains no `#[path]` today.
+        for name in &plain_mods {
+            prod_queue.extend(child_module_candidates(&path, name));
         }
     }
 
     // Once a file is test-only, everything it declares is too — `#[cfg(test)]`
     // is not repeated on the children.
-    while let Some(path) = queue.pop() {
+    while let Some(path) = test_queue.pop() {
         if !path.is_file() || !found.insert(path.clone()) {
             continue;
         }
-        let Some(src) = std::fs::read_to_string(&path).ok() else {
+        let Ok(src) = std::fs::read_to_string(&path) else {
             continue;
         };
         let Some((test_mods, plain_mods)) = declared_modules(&src) else {
             continue;
         };
         for name in test_mods.iter().chain(plain_mods.iter()) {
-            queue.extend(child_module_candidates(&path, name));
+            test_queue.extend(child_module_candidates(&path, name));
         }
     }
     found
@@ -725,7 +786,13 @@ pub(crate) fn production_coverage(
         .filter(|name| is_own_production_file(name, crate_path))
         .map(str::to_string)
         .collect();
-    let test_files = test_only_files(&own);
+    // With no own files there is no root — and nothing to measure either, so
+    // the empty result is never consulted. Which own file is used does not
+    // matter: every one of them contains `crate_path`, so each cuts back to the
+    // same root, unless a path repeats the fragment inside the crate — a shape
+    // no crate here has, and one [`crate_root_of`] degrades safely on anyway.
+    let crate_root = own.first().and_then(|name| crate_root_of(name, crate_path));
+    let test_files = test_only_files(crate_root.as_deref(), &own);
 
     for file in files {
         let name = file["filename"].as_str().unwrap_or("");
@@ -1356,6 +1423,203 @@ mod tests {
             "an all-#[cfg(test)] file is not a place to write production tests"
         );
         assert_eq!(cov.excluded, 5, "its 5 lines are reported as excluded");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ★★ A declaration-only `mod.rs` compiles to no regions, so llvm-cov omits
+    /// it from `files[]` — and the `#[cfg(test)] mod tests;` it holds goes with
+    /// it. A walk seeded only from listed files therefore never learns that
+    /// `src/pipeline/tests.rs` is test code, and ranks it as the crate's single
+    /// largest production gap.
+    ///
+    /// That is not a hypothetical: it is how the 2026-08-18 weekly sweep scored
+    /// `sim-gpu` at 344/5647 lines with "10 test lines excluded", listing three
+    /// test files as its three biggest gaps. All three are declared in
+    /// `src/pipeline/mod.rs`, which holds no executable code and so was not
+    /// among the 18 files llvm-cov reported for the crate.
+    ///
+    /// ★ The fixture withholds `src/pipeline/mod.rs` from the export on
+    /// purpose. Listing it would let the export-seeded walk find the
+    /// declaration too, and the test would pass without exercising the descent
+    /// from `lib.rs` that it exists to hold.
+    ///
+    /// ★ `real.rs` is the negative control: with no companion production file,
+    /// an empty row list would equally mean no files were found at all.
+    #[test]
+    fn a_test_module_declared_in_an_unlisted_mod_file_is_still_test_code() {
+        let root = crate_dir(
+            "unlisted-mod-decl",
+            &[
+                ("lib.rs", "pub mod pipeline;\n"),
+                (
+                    "pipeline/mod.rs",
+                    "pub mod real;\n#[cfg(test)]\nmod tests;\n",
+                ),
+                ("pipeline/real.rs", "pub fn f() -> i32 {\n    1\n}\n"),
+                (
+                    "pipeline/tests.rs",
+                    "#[test]\nfn a() {\n    assert_eq!(super::real::f(), 1);\n}\n",
+                ),
+            ],
+        );
+        let crate_path = root.to_str().expect("utf-8 temp path").to_string();
+        let segments =
+            serde_json::json!([[1, 1, 0, true, true, false], [4, 1, 0, false, false, false]]);
+        let json = serde_json::json!({
+            "data": [{"files": [
+                // `src/pipeline/mod.rs` is absent exactly as llvm-cov leaves it.
+                {"filename": format!("{crate_path}/src/pipeline/real.rs"), "segments": segments},
+                {"filename": format!("{crate_path}/src/pipeline/tests.rs"), "segments": segments},
+            ]}]
+        });
+
+        let cov = production_coverage(&json, &crate_path);
+        let order: Vec<&str> = cov.files.iter().map(|f| f.file.as_str()).collect();
+        assert_eq!(
+            order,
+            vec!["src/pipeline/real.rs"],
+            "a test module reached only through an unlisted `mod.rs` is not production code"
+        );
+        assert_eq!(cov.excluded, 4, "its 4 lines are reported as excluded");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ★ `rfind`, not `find`. A checkout under a directory repeating the crate's
+    /// own path fragment must resolve to the innermost match — the anchoring
+    /// [`relative_to_crate`] already uses. Taking the first occurrence yields a
+    /// root outside the crate, whose `src/lib.rs` does not exist, silently
+    /// costing the walk its disk seeding and reverting it to export-only.
+    #[test]
+    fn the_crate_root_is_recovered_from_the_last_occurrence() {
+        assert_eq!(
+            crate_root_of("/w/sim/L0/gpu/src/pipeline/mod.rs", "sim/L0/gpu"),
+            Some(PathBuf::from("/w/sim/L0/gpu"))
+        );
+        assert_eq!(
+            crate_root_of("/build/demo/checkout/demo/src/lib.rs", "demo"),
+            Some(PathBuf::from("/build/demo/checkout/demo")),
+            "the inner `demo` is the crate; the outer one is a build directory"
+        );
+        assert_eq!(crate_root_of("/elsewhere/other/src/lib.rs", "demo"), None);
+    }
+
+    /// ★ The export's file list is still a seed, and this is the case that needs
+    /// it. A binary-only crate has no `src/lib.rs` to descend from, so the only
+    /// route to `src/bin/cli.rs` is that llvm-cov listed it — which it does,
+    /// because a binary root holds `fn main` and therefore carries regions.
+    ///
+    /// ★ Without the companion production file the empty row list would equally
+    /// mean nothing was found at all.
+    #[test]
+    fn a_test_module_declared_in_a_binary_root_is_still_test_code() {
+        let root = crate_dir(
+            "bin-root-decl",
+            &[
+                ("bin/cli.rs", "#[cfg(test)]\nmod cli_tests;\nfn main() {}\n"),
+                ("bin/cli/cli_tests.rs", "#[test]\nfn a() {}\n"),
+                ("real.rs", "pub fn f() -> i32 {\n    1\n}\n"),
+            ],
+        );
+        let crate_path = root.to_str().expect("utf-8 temp path").to_string();
+        let segments =
+            serde_json::json!([[1, 1, 0, true, true, false], [4, 1, 0, false, false, false]]);
+        let json = serde_json::json!({
+            "data": [{"files": [
+                {"filename": format!("{crate_path}/src/bin/cli.rs"), "segments": segments},
+                {"filename": format!("{crate_path}/src/bin/cli/cli_tests.rs"), "segments": segments},
+                {"filename": format!("{crate_path}/src/real.rs"), "segments": segments},
+            ]}]
+        });
+
+        let cov = production_coverage(&json, &crate_path);
+        let rows: Vec<&str> = cov.files.iter().map(|f| f.file.as_str()).collect();
+        assert!(
+            !rows.contains(&"src/bin/cli/cli_tests.rs"),
+            "a test module declared in a binary root is not production code; rows were {rows:?}"
+        );
+        assert!(rows.contains(&"src/real.rs"), "rows were {rows:?}");
+        // 6, not 4: `src/bin/cli.rs` IS in the export, so the two lines of its
+        // own `#[cfg(test)] mod cli_tests;` declaration are excluded by the span
+        // walk alongside the four lines of the file that declaration gates. The
+        // sibling fixtures withhold their declaring file, so only this one shows
+        // both routes to `excluded` at once.
+        assert_eq!(cov.excluded, 6, "4 gated lines plus 2 declaration lines");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ★ `src/main.rs` is seeded from disk, not from the export. The fixture
+    /// withholds it from `files[]` — a binary whose object never reached the
+    /// merge leaves nothing to list — so only the disk seed can open it and find
+    /// the declaration it holds.
+    #[test]
+    fn a_test_module_declared_in_an_unlisted_main_is_still_test_code() {
+        let root = crate_dir(
+            "unlisted-main-decl",
+            &[
+                (
+                    "main.rs",
+                    "#[cfg(test)]\nmod tests;\nmod real;\nfn main() {}\n",
+                ),
+                ("real.rs", "pub fn f() -> i32 {\n    1\n}\n"),
+                ("tests.rs", "#[test]\nfn a() {}\n"),
+            ],
+        );
+        let crate_path = root.to_str().expect("utf-8 temp path").to_string();
+        let segments =
+            serde_json::json!([[1, 1, 0, true, true, false], [4, 1, 0, false, false, false]]);
+        let json = serde_json::json!({
+            "data": [{"files": [
+                // `src/main.rs` is deliberately absent from the export.
+                {"filename": format!("{crate_path}/src/real.rs"), "segments": segments},
+                {"filename": format!("{crate_path}/src/tests.rs"), "segments": segments},
+            ]}]
+        });
+
+        let cov = production_coverage(&json, &crate_path);
+        let rows: Vec<&str> = cov.files.iter().map(|f| f.file.as_str()).collect();
+        assert_eq!(
+            rows,
+            vec!["src/real.rs"],
+            "a declaration in an unlisted `main.rs` still marks its file test code"
+        );
+        assert_eq!(cov.excluded, 4, "its 4 lines are reported as excluded");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ★ Once a file is test-only its children are too, and they do not repeat
+    /// `#[cfg(test)]` — a helper a test file pulls in with a plain `mod helpers;`
+    /// carries nothing at all to identify itself. Only chaining the plain modules
+    /// through the test walk marks it, and dropping that chain silently promotes
+    /// every such helper to production code.
+    #[test]
+    fn a_helper_module_below_a_test_module_is_test_code_too() {
+        let root = crate_dir(
+            "test-helper-chain",
+            &[
+                ("lib.rs", "#[cfg(test)]\nmod tests;\npub mod real;\n"),
+                ("tests.rs", "mod helpers;\n#[test]\nfn a() {}\n"),
+                ("tests/helpers.rs", "pub fn fixture() -> i32 {\n    1\n}\n"),
+                ("real.rs", "pub fn f() -> i32 {\n    1\n}\n"),
+            ],
+        );
+        let crate_path = root.to_str().expect("utf-8 temp path").to_string();
+        let segments =
+            serde_json::json!([[1, 1, 0, true, true, false], [4, 1, 0, false, false, false]]);
+        let json = serde_json::json!({
+            "data": [{"files": [
+                {"filename": format!("{crate_path}/src/real.rs"), "segments": segments},
+                {"filename": format!("{crate_path}/src/tests/helpers.rs"), "segments": segments},
+            ]}]
+        });
+
+        let cov = production_coverage(&json, &crate_path);
+        let rows: Vec<&str> = cov.files.iter().map(|f| f.file.as_str()).collect();
+        assert_eq!(
+            rows,
+            vec!["src/real.rs"],
+            "a helper below a `#[cfg(test)]` module is test code, not a place to write tests"
+        );
+        assert_eq!(cov.excluded, 4, "its 4 lines are reported as excluded");
         let _ = std::fs::remove_dir_all(&root);
     }
 
