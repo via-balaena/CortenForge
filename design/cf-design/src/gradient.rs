@@ -783,8 +783,17 @@ fn grad_loft(stations: &[[f64; 2]], p: &Point3<f64>) -> Vector3<f64> {
         // Barrel dominant
         Vector3::new(rx, ry, -dr_dz)
     } else {
-        // Cap dominant
-        if p.z <= z_min {
+        // Cap dominant — pick the *nearer* cap, by the midplane.
+        //
+        // ⚠ This asked `p.z <= z_min` until 2026-08-20, i.e. "am I below the
+        // bottom plane", which is only ever true outside the solid. Every
+        // interior point therefore got the top cap's normal, so the outward
+        // direction was reversed through the whole bottom half: measured, 9664
+        // of 38712 interior probes on a three-station loft read `cos = -1.0`
+        // against a central-difference oracle, a wrong-sign slab 0.66 mm deep on
+        // a 2 mm part. `grad_cylinder` does this correctly with `p.z.signum()`;
+        // a loft is not centred on the origin, so it needs the midplane instead.
+        if p.z < 0.5 * (z_min + z_max) {
             Vector3::new(0.0, 0.0, -1.0)
         } else {
             Vector3::new(0.0, 0.0, 1.0)

@@ -2304,6 +2304,122 @@ fn mesh_to_tolerance_winds_every_face_outward() {
     }
 }
 
+/// Faces of exactly zero area — degenerate triangles that no consumer can use.
+fn zero_area_faces(mesh: &AttributedMesh) -> usize {
+    mesh.geometry
+        .faces
+        .iter()
+        .filter(|face| {
+            let c = face.map(|vi| mesh.geometry.vertices[vi as usize]);
+            (c[1] - c[0]).cross(&(c[2] - c[0])).norm() == 0.0
+        })
+        .count()
+}
+
+#[test]
+fn every_bounded_primitive_simplifies_to_clean_geometry() {
+    // ★★★ The coverage gate, and the reason it exists is worth stating plainly.
+    // Twelve of this crate's sixteen primitives had no fixture in any
+    // `mesh_to_tolerance` test. Five rounds of review re-examined the same four
+    // — sphere, cuboid, cylinder, cone — while a sign error in `grad_loft`
+    // reversed the outward direction through the bottom half of every loft and
+    // shipped inverted faces on every one of them. Nothing was subtle about it;
+    // nothing looked.
+    //
+    // ⚠ ADDING A PRIMITIVE TO `Solid` MEANS ADDING A ROW HERE. A primitive with
+    // no row is a primitive nobody has meshed.
+    //
+    // ⚠ `gyroid` and `schwarz_p` are absent deliberately: they are unbounded
+    // periodic surfaces, `bounds()` returns `None` for them, and
+    // `mesh_to_tolerance` answers with an empty mesh. That is a real gap in this
+    // crate — they cannot be meshed at all — but it is not this gate's business,
+    // and a row asserting "no inverted faces" over zero faces would be worse
+    // than no row.
+    //
+    // Tolerances are chosen finer than each shape's thinnest feature. At 0.35 on
+    // the helix — 78 % of its 0.45 wall — the output degrades to 3 inverted and
+    // 4 degenerate faces, which is the mesher being asked for a feature it
+    // cannot resolve rather than a defect in the guards.
+    let cases: Vec<(&str, Solid, f64)> = vec![
+        ("sphere", Solid::sphere(5.0), 0.5),
+        ("cuboid", Solid::cuboid(Vector3::new(3.7, 3.7, 3.7)), 0.3),
+        ("cylinder", Solid::cylinder(2.3, 4.1), 0.4),
+        ("capsule", Solid::capsule(1.7, 3.1), 0.4),
+        (
+            "ellipsoid",
+            Solid::ellipsoid(Vector3::new(4.3, 2.7, 1.9)),
+            0.4,
+        ),
+        ("torus", Solid::torus(4.1, 1.3), 0.45),
+        ("cone", Solid::cone(3.0, 6.0), 0.3),
+        (
+            "pipe",
+            Solid::pipe(
+                vec![
+                    Point3::new(-3.0, 0.0, 0.0),
+                    Point3::new(1.0, 2.0, 0.5),
+                    Point3::new(4.0, -1.0, 1.0),
+                ],
+                0.9,
+            ),
+            0.3,
+        ),
+        (
+            "pipe_spline",
+            Solid::pipe_spline(
+                vec![
+                    Point3::new(-3.0, 0.0, 0.0),
+                    Point3::new(0.0, 3.0, 1.0),
+                    Point3::new(3.0, 0.0, 0.0),
+                    Point3::new(0.0, -2.0, -1.0),
+                ],
+                0.7,
+            ),
+            0.3,
+        ),
+        // ⚠ Two lofts, and neither is centred on the origin — that asymmetry is
+        // exactly what the cap-selection bug needed to show itself.
+        (
+            "loft",
+            Solid::loft(&[(-1.0, 0.9), (0.0, 0.6), (1.0, 0.3)]),
+            0.15,
+        ),
+        (
+            "loft off-centre",
+            Solid::loft(&[(-3.0, 2.1), (0.0, 1.4), (2.5, 0.7)]),
+            0.3,
+        ),
+        (
+            "superellipsoid",
+            Solid::superellipsoid(Vector3::new(3.1, 2.3, 1.7), 0.7, 1.3),
+            0.4,
+        ),
+        ("log_spiral", Solid::log_spiral(1.1, 0.18, 0.45, 1.7), 0.3),
+        ("helix", Solid::helix(2.3, 1.7, 0.45, 1.6), 0.2),
+    ];
+
+    for (label, shape, max_dev) in cases {
+        let mesh = shape.mesh_to_tolerance(max_dev);
+        assert!(!mesh.is_empty(), "{label}: meshed to nothing");
+
+        let inverted = faces_wound_inward(&mesh, &shape);
+        assert_eq!(
+            inverted,
+            0,
+            "{label}: {inverted} of {} faces wind into the solid",
+            mesh.geometry.faces.len()
+        );
+
+        let degenerate = zero_area_faces(&mesh);
+        assert_eq!(
+            degenerate,
+            0,
+            "{label}: {degenerate} of {} faces have exactly zero area",
+            mesh.geometry.faces.len()
+        );
+    }
+}
+
 #[test]
 fn simplification_never_adds_an_inverted_face() {
     // ★★ The honest form of the claim. `collapse_inverts_a_face` refuses to
