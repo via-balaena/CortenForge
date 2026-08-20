@@ -407,10 +407,18 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # ⚠ `mesa-vulkan-drivers` is NOT decoration. `sim-gpu`'s tests take a GPU
+      # adapter or return early, and a returning test reports `ok` — so without a
+      # driver this job measured 1.2 % of that crate's production lines while
+      # concluding SUCCESS. It provides lavapipe, a CPU Vulkan device wgpu accepts
+      # as an ordinary adapter; the suite then runs in ~19 s and covers 97.7 %.
+      # `CF_REQUIRE_GPU` below turns a missing adapter back into a failure, so this
+      # cannot quietly revert to measuring nothing.
       - name: Install system dependencies
         uses: ./.github/actions/install-linux-deps
         with:
           packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
+            mesa-vulkan-drivers
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -422,6 +430,7 @@ jobs:
 
       - name: Run tests
         env:
+          CF_REQUIRE_GPU: 1
           AFFECTED_RESULT: ${{ needs.affected.result }}
           AFFECTED_FULL: ${{ needs.affected.outputs.needs_full }}
           AFFECTED_CRATES: ${{ needs.affected.outputs.crates }}

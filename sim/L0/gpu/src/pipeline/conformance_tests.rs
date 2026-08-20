@@ -63,15 +63,19 @@ use super::state_buffers::GpuStateBuffers;
 use super::velocity_fk::GpuVelocityFkPipeline;
 use crate::context::GpuContext;
 
+/// Name used in this file's skip line.
+const SUITE: &str = "conformance suite";
+
 /// Try to create a GPU context; skip the test (return) if none is available.
+///
+/// ⚠ The skip is conditional — see [`crate::test_support`]. Under
+/// `CF_REQUIRE_GPU` a missing adapter fails instead of returning, so a run that
+/// declared it has a GPU cannot report `ok` for tests that never executed.
 macro_rules! gpu_or_skip {
     () => {
-        match GpuContext::new() {
-            Ok(ctx) => ctx,
-            Err(e) => {
-                eprintln!("  Skipping conformance suite (no GPU): {e}");
-                return;
-            }
+        match crate::test_support::gpu_context_or_skip(SUITE) {
+            Some(ctx) => ctx,
+            None => return,
         }
     };
 }

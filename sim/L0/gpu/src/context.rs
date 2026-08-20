@@ -100,16 +100,10 @@ impl std::error::Error for GpuError {}
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn gpu_context_creates_on_metal() {
-        let ctx = match GpuContext::new() {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("  Skipping (no GPU): {e}");
-                return;
-            }
+        let Some(ctx) = crate::test_support::gpu_context_or_skip("adapter probe") else {
+            return;
         };
         eprintln!("  GPU adapter: {}", ctx.adapter_info.name);
         eprintln!("  Backend: {:?}", ctx.adapter_info.backend);
