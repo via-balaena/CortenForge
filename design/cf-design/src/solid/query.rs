@@ -190,10 +190,12 @@ impl Solid {
 
     /// Mesh the solid, holding the surface close to `max_deviation`.
     ///
-    /// The mesher places every vertex within `max_deviation` of the true
-    /// implicit surface, using cell size derived from the requested deviation.
-    /// Meshes under 50K faces are then QEM-simplified, which keeps the same
-    /// bound at each vertex and at twelve sampled points per face.
+    /// The mesher sizes its cells from `max_deviation` divided by the field's
+    /// Lipschitz factor, which holds vertices close to the true implicit
+    /// surface — measured worst case 0.049 at `max_deviation` 0.3 on a sphere,
+    /// 0.004 on a cuboid-minus-cylinder at 0.2. Meshes under 50K faces are then
+    /// QEM-simplified, and that step does enforce a bound: `|field|` at each
+    /// collapsed vertex and at twelve sampled points per face.
     ///
     /// ⚠ Not an envelope. This said "within `max_deviation` everywhere" until
     /// 2026-08-20, when sweeping the output faces showed the simplified surface

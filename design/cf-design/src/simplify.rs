@@ -893,8 +893,14 @@ mod tests {
         // The module header claims *both* entry points are deterministic. They
         // share `CollapseCandidate`'s ordering, so they stand or fall together —
         // but a claim with no gate is how the last one got away.
-        let sphere = Solid::sphere(5.0);
-        let mesh = sphere.mesh_adaptive(0.5);
+        //
+        // ⚠ A cuboid, not a sphere. Written against a sphere first, this passed
+        // with the tie-break deleted: curvature gives every candidate a distinct
+        // quadric error, so there are no ties to resolve and nothing to get
+        // wrong. Flat faces are where every candidate costs exactly 0, which is
+        // the whole reason the ordering had to become total.
+        let cube = Solid::cuboid(nalgebra::Vector3::new(2.0, 2.0, 2.0));
+        let mesh = cube.mesh_adaptive(0.3);
         let target = mesh.face_count() / 2;
 
         let first = simplify_mesh(&mesh.geometry, target);
