@@ -2200,6 +2200,28 @@ fn worst_surface_stray(mesh: &AttributedMesh, shape: &Solid, n: u8) -> f64 {
     worst
 }
 
+/// Outward direction at `point`, by central differences on the field.
+///
+/// ★★ Deliberately NOT `Solid::gradient`. The guard under test uses `gradient`,
+/// so an oracle built on it goes blind in exactly the places the guard does —
+/// and it did: `grad_cuboid` used to return a zero vector inside an absolute
+/// `1e-15` band, which made this census score an abstention as "inverted" while
+/// the guard it was checking silently accepted the same collapse. Both halves
+/// of that pair looked fine to each other. An oracle has to be able to disagree
+/// with the thing it is judging.
+fn outward_at(shape: &Solid, point: &Point3<f64>) -> Vector3<f64> {
+    let h = 1e-6;
+    let mut grad = Vector3::zeros();
+    for axis in 0..3 {
+        let mut ahead = *point;
+        let mut behind = *point;
+        ahead[axis] += h;
+        behind[axis] -= h;
+        grad[axis] = (shape.evaluate(&ahead) - shape.evaluate(&behind)) / (2.0 * h);
+    }
+    grad
+}
+
 /// Faces wound into the solid rather than out of it, ignoring slivers whose
 /// normal direction is numerical noise.
 fn faces_wound_inward(mesh: &AttributedMesh, shape: &Solid) -> usize {
@@ -2214,7 +2236,9 @@ fn faces_wound_inward(mesh: &AttributedMesh, shape: &Solid) -> usize {
             }
             let centroid =
                 Point3::from((corners[0].coords + corners[1].coords + corners[2].coords) / 3.0);
-            normal.dot(&shape.gradient(&centroid)) <= 0.0
+            let outward = outward_at(shape, &centroid);
+            // An unusable outward direction is an abstention, not a verdict.
+            outward.norm() > 1e-9 && normal.dot(&outward) <= 0.0
         })
         .count()
 }
@@ -2240,6 +2264,17 @@ fn mesh_to_tolerance_winds_every_face_outward() {
         (
             "10 mm block, ⌀4 bore",
             Solid::cuboid(Vector3::new(5.0, 5.0, 5.0)).subtract(Solid::cylinder(2.0, 6.0)),
+            0.2,
+        ),
+        // ⚠ Non-round extents, and the shape that caught the last defect. With
+        // `grad_cuboid`'s zero band left absolute this ships one backwards face
+        // of 1.41 mm² at `normal · ∇f` = -1.0; none of the round-numbered
+        // fixtures show it, because their face centroids land exactly on the
+        // plane instead of a few ULP proud of it.
+        (
+            "7.4 mm block, square bore",
+            Solid::cuboid(Vector3::new(3.7, 3.7, 3.7))
+                .subtract(Solid::cuboid(Vector3::new(1.37, 1.37, 9.0))),
             0.2,
         ),
         (
