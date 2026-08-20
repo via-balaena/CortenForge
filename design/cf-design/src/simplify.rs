@@ -576,6 +576,13 @@ fn triangle_normal(tri: &[Point3<f64>; 3]) -> Vector3<f64> {
 /// fixture in it uses a half-extent — 0.5, 1, 2, 3, 5 — for which that centroid
 /// expression is exact. ⇒ the zero band in `grad_cuboid` is scale-dependent and
 /// is a defect in its own right; this only declines to draw conclusions from it.
+///
+/// ⚠ Mutation says this `None` is currently unobservable: the differential
+/// comparison in [`collapse_inverts_a_face`] reads the same zero gradient
+/// before and after the collapse, so treating it as "inward" cancels out and no
+/// test can tell. It stays because concluding *anything* about winding from a
+/// gradient the field did not supply is wrong on its own terms, and because the
+/// two defects were independent — either one alone produced the blowup above.
 fn winds_inward(tri: &[Point3<f64>; 3], node: &FieldNode) -> Option<bool> {
     let normal = triangle_normal(tri);
     let centroid = Point3::from((tri[0].coords + tri[1].coords + tri[2].coords) / 3.0);
