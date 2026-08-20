@@ -916,6 +916,31 @@ mod tests {
         );
     }
 
+    #[test]
+    #[cfg(feature = "parallel-meshing")]
+    fn the_parallel_mesher_is_stable_too() {
+        // Same defect, one function over: the parallel path numbered vertices in
+        // `HashSet` order and emitted faces in `HashMap` order. Sorting one and
+        // not the other would have left the public `mesh_adaptive_par` returning
+        // a differently-labelled mesh on every call.
+        let node = FieldNode::Cuboid {
+            half_extents: Vector3::new(2.0, 2.0, 2.0),
+        };
+        let bounds = Aabb::new(Point3::new(-2.3, -2.3, -2.3), Point3::new(2.3, 2.3, 2.3));
+
+        let (first, _) = mesh_field_adaptive_par(&node, &bounds, 0.3);
+        let (second, _) = mesh_field_adaptive_par(&node, &bounds, 0.3);
+
+        assert_eq!(
+            first.geometry.vertices, second.geometry.vertices,
+            "vertex order differs between runs"
+        );
+        assert_eq!(
+            first.geometry.faces, second.geometry.faces,
+            "face order differs between runs"
+        );
+    }
+
     fn check_topology(mesh: &AttributedMesh) -> (bool, bool) {
         let mut directed: HashMap<(u32, u32), usize> = HashMap::new();
         for face in &mesh.geometry.faces {
