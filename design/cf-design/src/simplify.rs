@@ -745,10 +745,15 @@ pub fn simplify_mesh(mesh: &IndexedMesh, target_faces: usize) -> IndexedMesh {
 /// converged, unlike the n=12 sweep an earlier revision quoted — a 10 mm block
 /// with a ⌀4 through-hole at `max_deviation = 0.2` strays 0.223, a 4 mm cube at
 /// 0.3 strays 0.296, a sphere 0.312, and a *plain* 10 mm cube at 0.2 strays
-/// 0.281, which is the worst of them at 1.41×. So: 1.0× to about 1.45×, and
-/// which one a caller gets is not something this function knows. ⚠ An earlier
-/// revision said "1.0–1.2×" because it had not measured the plain cube — the
-/// simplest shape in the set was the one missing from it. Callers who need a true envelope want a
+/// 0.282 — the worst of them, at 1.41×.
+///
+/// ⚠⚠ Read that as a sample, not a bound. Nothing in this algorithm limits how
+/// far a face may bow between its probes; the figures above are what a set of
+/// shapes happened to produce, and denser-featured parts have been measured
+/// worse. Two earlier revisions of this comment each quoted a range as though it
+/// were a ceiling — "1.0–1.2×" before the plain cube was measured, then
+/// "1.0–1.45×" before multi-feature parts were — which is the same mistake
+/// twice, and the reason this paragraph now says what kind of claim it is. Callers who need a true envelope want a
 /// Lipschitz-bounded test (the field's `lipschitz_factor` and the triangle's
 /// size give one), which costs sample density proportional to face area and has
 /// not been built.

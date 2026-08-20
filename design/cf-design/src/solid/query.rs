@@ -200,8 +200,11 @@ impl Solid {
     ///
     /// ⚠ Not an envelope. This said "within `max_deviation` everywhere" until
     /// 2026-08-20, when sweeping the output faces showed the simplified surface
-    /// straying 1.0–1.45× that between its sampled points, shape depending — the
-    /// worst being a plain cube, not any of the awkward shapes — and,
+    /// straying past it between its sampled points: 1.0–1.45× across the shapes
+    /// this crate measures, the worst being a plain cube rather than any of the
+    /// awkward ones. ⚠ That range is a sample, not a bound — nothing in the
+    /// algorithm limits how far a face may bow between probes, and denser-featured
+    /// parts have been measured worse — and,
     /// before the simplifier was bounded by the surface at all, a 10 mm cube
     /// coming back as two triangles of volume 0.0 with every vertex inside
     /// tolerance.
@@ -210,7 +213,7 @@ impl Solid {
     /// winding screen runs only on the simplified branch: above the 50 000-face
     /// cutoff below, the raw mesher output ships unscreened, and it is not
     /// always clean — the same block at `max_deviation` 0.17 crosses the cutoff
-    /// and carries 48 inward-wound faces where 0.18, simplified, carries none. And no part of
+    /// and carries 64 inward-wound faces where 0.18, simplified, carries none. And no part of
     /// this checks for self-intersection between faces that are not neighbours;
     /// simplification reduces it (37 crossing pairs to 8 across four shapes) but
     /// promises nothing.
