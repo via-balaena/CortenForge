@@ -4,7 +4,7 @@
 //! - [`simplify_mesh`] — reduce face count to a target.
 //! - [`simplify_mesh_tolerance`] — collapse edges until the next collapse would
 //!   move the surface further than `max_deviation` from the true implicit
-//!   surface, or fold it over.
+//!   surface.
 //!
 //! Both are deterministic: equal-cost collapses tie-break on edge identity, so
 //! the output is a function of the input mesh alone. That is deliberate — see
@@ -13,7 +13,7 @@
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use cf_geometry::IndexedMesh;
-use nalgebra::{Matrix4, Point3, Vector3, Vector4};
+use nalgebra::{Matrix4, Point3, Vector4};
 
 use crate::field_node::FieldNode;
 
@@ -378,9 +378,8 @@ impl SimplMesh {
         }
     }
 
-    /// The faces this collapse would leave behind, each yielded as
-    /// `(before, after)`: the triangle as it stands now, and the same triangle
-    /// once both endpoints have moved to `target`.
+    /// The faces this collapse would leave behind, as they would stand once
+    /// both endpoints have moved to `target`.
     ///
     /// The two faces that touch *both* endpoints are absent — a collapse
     /// degenerates them to a line and [`Self::collapse_edge`] drops them. That
@@ -391,7 +390,7 @@ impl SimplMesh {
         &self,
         edge: Edge,
         target: Point3<f64>,
-    ) -> impl Iterator<Item = ([Point3<f64>; 3], [Point3<f64>; 3])> + '_ {
+    ) -> impl Iterator<Item = [Point3<f64>; 3]> + '_ {
         let on_edge = move |vertex: u32| vertex == edge.0 || vertex == edge.1;
         self.vertex_faces[edge.0 as usize]
             .iter()
@@ -399,15 +398,13 @@ impl SimplMesh {
             .map(|&fi| self.faces[fi])
             .filter(move |face| face.iter().filter(|&&v| on_edge(v)).count() < 2)
             .map(move |face| {
-                let before = face.map(|vertex| self.positions[vertex as usize]);
-                let after = face.map(|vertex| {
+                face.map(|vertex| {
                     if on_edge(vertex) {
                         target
                     } else {
                         self.positions[vertex as usize]
                     }
-                });
-                (before, after)
+                })
             })
     }
 
@@ -506,11 +503,6 @@ fn surface_probes(tri: &[Point3<f64>; 3]) -> [Point3<f64>; 4] {
     ]
 }
 
-/// Unnormalized face normal — length is twice the area, direction is the winding.
-fn triangle_normal(tri: &[Point3<f64>; 3]) -> Vector3<f64> {
-    (tri[1] - tri[0]).cross(&(tri[2] - tri[0]))
-}
-
 /// Does the *surface* stay within `max_deviation` of the field?
 ///
 /// ⚠ This is a different question from "is the new vertex within
@@ -525,30 +517,14 @@ fn triangle_normal(tri: &[Point3<f64>; 3]) -> Vector3<f64> {
 /// away from the field between them. It is a sample of the surface, which is
 /// the thing being bounded, rather than of corners already known to sit on it.
 fn collapse_stays_within_deviation(
-    affected: impl Iterator<Item = ([Point3<f64>; 3], [Point3<f64>; 3])>,
+    affected: impl Iterator<Item = [Point3<f64>; 3]>,
     node: &FieldNode,
     max_deviation: f64,
 ) -> bool {
-    affected.into_iter().all(|(_, after)| {
-        surface_probes(&after)
+    affected.into_iter().all(|face| {
+        surface_probes(&face)
             .iter()
             .all(|probe| node.evaluate(probe).abs() <= max_deviation)
-    })
-}
-
-/// Would this collapse turn a face inside out, or flatten it to nothing?
-///
-/// The standard QEM companion to an error bound: an error metric scores where
-/// the surface lands, not which way it faces, so a collapse can satisfy every
-/// distance test and still fold the neighbourhood over itself. That fold is
-/// what turns a merely coarse mesh into a self-intersecting one whose signed
-/// volume is near zero, or negative.
-fn collapse_folds_a_face(
-    affected: impl Iterator<Item = ([Point3<f64>; 3], [Point3<f64>; 3])>,
-) -> bool {
-    affected.into_iter().any(|(before, after)| {
-        let folded = triangle_normal(&after);
-        folded.norm() < f64::EPSILON || triangle_normal(&before).dot(&folded) <= 0.0
     })
 }
 
@@ -603,16 +579,6 @@ pub fn simplify_mesh(mesh: &IndexedMesh, target_faces: usize) -> IndexedMesh {
         }
 
         let (_, target) = sm.collapse_info(edge);
-
-        // ⚠ Deliberately no fold guard here, though this path can fold a face
-        // too. This loop owes its caller a face count, so a rejected collapse
-        // does not end the work — it forces the quota to be met by the next
-        // candidate, which costs more by construction. Measured 2026-08-20:
-        // guarding here pushed `simplify_cuboid_preserves_sharp_corners` from
-        // passing to a corner 0.950 away from its true position, because the
-        // collapses it declined were the ones that had been protecting the
-        // corner. `simplify_mesh_tolerance` has no quota, so refusing there is
-        // free; refusing here trades one defect for another.
         sm.collapse_edge(edge, target);
         sm.requeue_around(edge.0, &mut heap);
     }
@@ -625,7 +591,7 @@ pub fn simplify_mesh(mesh: &IndexedMesh, target_faces: usize) -> IndexedMesh {
 ///
 /// A collapse is accepted only when `|field| ≤ max_deviation` at the new
 /// vertex *and* at the centroid and edge midpoints of every face the collapse
-/// leaves behind, and only when it folds none of those faces over.
+/// leaves behind.
 ///
 /// ⚠ The vertex test alone is vacuous on flat geometry — see
 /// [`collapse_stays_within_deviation`] for the measurement that says so. The
@@ -680,13 +646,6 @@ pub fn simplify_mesh_tolerance(
             continue;
         }
 
-        // Fold first: it is the cheaper test (two cross products per face, no
-        // field evaluation) and on flat geometry it is the one that fires —
-        // measured on a 10 mm cube, 147476 fold rejections against 3577
-        // deviation rejections.
-        if collapse_folds_a_face(sm.faces_after_collapse(edge, target)) {
-            continue;
-        }
         if !collapse_stays_within_deviation(
             sm.faces_after_collapse(edge, target),
             node,
