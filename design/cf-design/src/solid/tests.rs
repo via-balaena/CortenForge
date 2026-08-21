@@ -2230,11 +2230,13 @@ fn faces_wound_inward(mesh: &AttributedMesh, shape: &Solid) -> usize {
 
 #[test]
 fn mesh_to_tolerance_winds_every_face_outward() {
-    // ★ Nothing else in this file can see an inverted face. The topology census
-    // counts directed edges, and an inverted triangle lying *in* a box face
-    // still leaves every edge traversed once each way; `signed_volume` nets a
-    // coplanar fold against its neighbours; and the simplifier's own deviation
-    // probes read field 0 on it, because every point of that face does.
+    // ★ No topology or volume check can see an inverted face — only a test that
+    // asks the field which way is out, which is why this one and its two
+    // siblings below exist. The topology census counts directed edges, and an
+    // inverted triangle lying *in* a box face still leaves every edge traversed
+    // once each way; `signed_volume` nets a coplanar fold against its
+    // neighbours; and the simplifier's own deviation probes read field 0 on it,
+    // because every point of that face does.
     //
     // Measured 2026-08-20 with the deviation guard but before
     // `collapse_inverts_a_face`: 7 of 60 faces on the 10 mm block and 5 on the
@@ -2242,9 +2244,10 @@ fn mesh_to_tolerance_winds_every_face_outward() {
     // meshes that read closed, manifold, consistently wound, and correct to 1 %
     // on volume. A multi-agent review is what surfaced it.
     //
-    // ⚠ Both shapes, not one. The first revision of this test used only the
-    // small shape, and a review showed that gated collapse-created inversions
-    // and nothing else — the 10 mm block is where they were actually measured.
+    // ⚠ More than one shape, deliberately. The first revision used only the
+    // 4 mm block, and a review showed that gated collapse-created inversions and
+    // nothing else — the 10 mm block is where they were actually measured, and
+    // the 7.4 mm block is the one whose extents are not round numbers.
     let shapes = [
         (
             "10 mm block, ⌀4 bore",
@@ -2489,13 +2492,13 @@ fn simplification_never_adds_an_inverted_face() {
 
 #[test]
 fn a_box_whose_dimensions_are_not_round_numbers_still_simplifies() {
-    // ★★ Every other fixture in this file uses a half-extent of 0.5, 1, 2, 3 or
-    // 5 — values for which the centroid expression `(h + h + h) / 3.0` is
-    // exactly `h`. A guard that read a degenerate gradient as "inverted"
-    // therefore never fired anywhere in the suite, while taking
-    // `cuboid(3.7,3.7,3.7)` from 14 faces to 7500 and a 5×5×0.4 plate from 14 to
-    // 1988. Round numbers were the blind spot, so this is the test that refuses
-    // to use them.
+    // ★★ When this defect was found, every fixture in this file used a
+    // half-extent of 0.5, 1, 2, 3 or 5 — values for which the centroid
+    // expression `(h + h + h) / 3.0` is exactly `h`. A guard that read a
+    // degenerate gradient as "inverted" therefore never fired anywhere in the
+    // suite, while taking `cuboid(3.7,3.7,3.7)` from 14 faces to 7500 and a
+    // 5×5×0.4 plate from 14 to 1988. Round numbers were the blind spot; this
+    // test and the primitive sweep both refuse to use them now.
     for (label, extents) in [
         ("3.7 mm cube", Vector3::new(3.7, 3.7, 3.7)),
         ("thin plate", Vector3::new(5.0, 5.0, 0.4)),

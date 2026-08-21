@@ -583,8 +583,9 @@ fn triangle_normal(tri: &[Point3<f64>; 3]) -> Vector3<f64> {
 /// and 1988 only together. An earlier revision of this comment claimed either
 /// one sufficed; that was asserted, not measured, and it was wrong.
 ///
-/// It survived a 795-test suite because every fixture in it used a half-extent —
-/// 0.5, 1, 2, 3, 5 — for which that centroid expression is exact.
+/// It survived the entire suite because every fixture in it, at the time, used
+/// a half-extent — 0.5, 1, 2, 3, 5 — for which that centroid expression is
+/// exact.
 fn winds_inward(tri: &[Point3<f64>; 3], node: &FieldNode) -> Option<bool> {
     let normal = triangle_normal(tri);
     let centroid = Point3::from((tri[0].coords + tri[1].coords + tri[2].coords) / 3.0);
