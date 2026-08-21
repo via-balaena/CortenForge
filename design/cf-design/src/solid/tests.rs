@@ -2140,28 +2140,12 @@ fn mesh_to_tolerance_keeps_its_faces_near_the_surface() {
     // triangles with every vertex inside tolerance. Sweep the faces.
     // n=32, not the n=8 this shipped with: a review pointed out that measuring
     // a sampling error with a coarse sample understates it, which is the same
-    // mistake in miniature. The barycentric sweep below converges by ~n=50.
-    const N: u8 = 32;
-
+    // mistake in miniature. The sweep converges by about n=50.
     let shape = Solid::cuboid(Vector3::new(2.0, 2.0, 2.0)).subtract(Solid::cylinder(0.8, 3.0));
     let max_dev = 0.3;
     let mesh = shape.mesh_to_tolerance(max_dev);
 
-    let mut worst = 0.0_f64;
-    for face in &mesh.geometry.faces {
-        let corners = face.map(|vi| mesh.geometry.vertices[vi as usize]);
-        for i in 0..=N {
-            for j in 0..=(N - i) {
-                let u = f64::from(i) / f64::from(N);
-                let v = f64::from(j) / f64::from(N);
-                let w = 1.0 - u - v;
-                let point = Point3::from(
-                    corners[0].coords * u + corners[1].coords * v + corners[2].coords * w,
-                );
-                worst = worst.max(shape.evaluate(&point).abs());
-            }
-        }
-    }
+    let worst = worst_surface_stray(&mesh, &shape, 32);
 
     // ⚠ The bound is 1.5× `max_dev`, not `max_dev`, and that is the honest
     // number: the guard samples twenty-five points per face, so the surface
