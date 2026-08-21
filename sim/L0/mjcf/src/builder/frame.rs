@@ -38,15 +38,15 @@ pub fn validate_childclass_references(
     body: &MjcfBody,
     resolver: &DefaultResolver,
 ) -> std::result::Result<(), ModelConversionError> {
-    if let Some(ref cc) = body.childclass {
-        if resolver.get_defaults(Some(cc.as_str())).is_none() {
-            return Err(ModelConversionError {
-                message: format!(
-                    "childclass '{}' on body '{}' references undefined default class",
-                    cc, body.name
-                ),
-            });
-        }
+    if let Some(ref cc) = body.childclass
+        && resolver.get_defaults(Some(cc.as_str())).is_none()
+    {
+        return Err(ModelConversionError {
+            message: format!(
+                "childclass '{}' on body '{}' references undefined default class",
+                cc, body.name
+            ),
+        });
     }
     for frame in &body.frames {
         validate_frame_childclass_refs(frame, resolver)?;
@@ -62,16 +62,16 @@ fn validate_frame_childclass_refs(
     frame: &MjcfFrame,
     resolver: &DefaultResolver,
 ) -> std::result::Result<(), ModelConversionError> {
-    if let Some(ref cc) = frame.childclass {
-        if resolver.get_defaults(Some(cc.as_str())).is_none() {
-            return Err(ModelConversionError {
-                message: format!(
-                    "childclass '{}' on frame '{}' references undefined default class",
-                    cc,
-                    frame.name.as_deref().unwrap_or("<unnamed>")
-                ),
-            });
-        }
+    if let Some(ref cc) = frame.childclass
+        && resolver.get_defaults(Some(cc.as_str())).is_none()
+    {
+        return Err(ModelConversionError {
+            message: format!(
+                "childclass '{}' on frame '{}' references undefined default class",
+                cc,
+                frame.name.as_deref().unwrap_or("<unnamed>")
+            ),
+        });
     }
     for nested in &frame.frames {
         validate_frame_childclass_refs(nested, resolver)?;

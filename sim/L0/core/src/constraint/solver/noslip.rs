@@ -240,100 +240,97 @@ pub fn noslip_postprocess(model: &Model, data: &mut Data) {
                     group_len,
                     contact_efc_start,
                 } = noslip_kinds[fi]
+                    && fi == group_start
                 {
-                    if fi == group_start {
-                        let normal_force = data.efc_force[contact_efc_start];
-                        let mu = data.efc_mu[contact_efc_start];
-                        let fn_abs = normal_force.abs();
+                    let normal_force = data.efc_force[contact_efc_start];
+                    let mu = data.efc_mu[contact_efc_start];
+                    let fn_abs = normal_force.abs();
 
-                        // Save old friction forces
-                        let old_forces: Vec<f64> =
-                            (0..group_len).map(|j| f[group_start + j]).collect();
+                    // Save old friction forces
+                    let old_forces: Vec<f64> = (0..group_len).map(|j| f[group_start + j]).collect();
 
-                        // Compute residuals for all friction rows
-                        let mut residuals: Vec<f64> = Vec::with_capacity(group_len);
+                    // Compute residuals for all friction rows
+                    let mut residuals: Vec<f64> = Vec::with_capacity(group_len);
+                    for local_j in 0..group_len {
+                        let idx = group_start + local_j;
+                        let mut res = b_eff[idx];
+                        for k in 0..n {
+                            res += a_sub[(idx, k)] * f[k];
+                        }
+                        residuals.push(res);
+                    }
+
+                    if fn_abs < MJ_MINVAL {
+                        // Zero normal force: zero all friction
                         for local_j in 0..group_len {
-                            let idx = group_start + local_j;
-                            let mut res = b_eff[idx];
-                            for k in 0..n {
-                                res += a_sub[(idx, k)] * f[k];
+                            f[group_start + local_j] = 0.0;
+                        }
+                    } else {
+                        // Build friction-friction subblock Ac and bias bc
+                        let mut ac_flat = vec![0.0_f64; group_len * group_len];
+                        let mut bc = vec![0.0_f64; group_len];
+                        for j in 0..group_len {
+                            for k in 0..group_len {
+                                ac_flat[j * group_len + k] =
+                                    a_sub[(group_start + j, group_start + k)];
                             }
-                            residuals.push(res);
+                            // bc[j] = res[j] - Σ Ac[j,k] * old[k]
+                            bc[j] = residuals[j];
+                            for k in 0..group_len {
+                                bc[j] -= ac_flat[j * group_len + k] * old_forces[k];
+                            }
                         }
 
-                        if fn_abs < MJ_MINVAL {
-                            // Zero normal force: zero all friction
-                            for local_j in 0..group_len {
-                                f[group_start + local_j] = 0.0;
+                        // QCQP dispatch
+                        let (fric_result, active) = if group_len == 2 {
+                            let ac2 = [[ac_flat[0], ac_flat[1]], [ac_flat[2], ac_flat[3]]];
+                            let (r, a) = qcqp::qcqp2(ac2, [bc[0], bc[1]], [mu[0], mu[1]], fn_abs);
+                            (r.to_vec(), a)
+                        } else if group_len == 3 {
+                            let ac3 = [
+                                [ac_flat[0], ac_flat[1], ac_flat[2]],
+                                [ac_flat[3], ac_flat[4], ac_flat[5]],
+                                [ac_flat[6], ac_flat[7], ac_flat[8]],
+                            ];
+                            let (r, a) = qcqp::qcqp3(
+                                ac3,
+                                [bc[0], bc[1], bc[2]],
+                                [mu[0], mu[1], mu[2]],
+                                fn_abs,
+                            );
+                            (r.to_vec(), a)
+                        } else {
+                            qcqp::qcqp_nd(&ac_flat, &bc, &mu[..group_len], fn_abs, group_len)
+                        };
+
+                        // Ellipsoidal rescale if constraint active
+                        if active {
+                            let mut ssq = 0.0_f64;
+                            for j in 0..group_len {
+                                if mu[j] > MJ_MINVAL {
+                                    ssq += (fric_result[j] / mu[j]).powi(2);
+                                }
+                            }
+                            let s = (fn_abs * fn_abs / ssq.max(MJ_MINVAL)).sqrt();
+                            for j in 0..group_len {
+                                f[group_start + j] = fric_result[j] * s;
                             }
                         } else {
-                            // Build friction-friction subblock Ac and bias bc
-                            let mut ac_flat = vec![0.0_f64; group_len * group_len];
-                            let mut bc = vec![0.0_f64; group_len];
-                            for j in 0..group_len {
-                                for k in 0..group_len {
-                                    ac_flat[j * group_len + k] =
-                                        a_sub[(group_start + j, group_start + k)];
-                                }
-                                // bc[j] = res[j] - Σ Ac[j,k] * old[k]
-                                bc[j] = residuals[j];
-                                for k in 0..group_len {
-                                    bc[j] -= ac_flat[j * group_len + k] * old_forces[k];
-                                }
-                            }
-
-                            // QCQP dispatch
-                            let (fric_result, active) = if group_len == 2 {
-                                let ac2 = [[ac_flat[0], ac_flat[1]], [ac_flat[2], ac_flat[3]]];
-                                let (r, a) =
-                                    qcqp::qcqp2(ac2, [bc[0], bc[1]], [mu[0], mu[1]], fn_abs);
-                                (r.to_vec(), a)
-                            } else if group_len == 3 {
-                                let ac3 = [
-                                    [ac_flat[0], ac_flat[1], ac_flat[2]],
-                                    [ac_flat[3], ac_flat[4], ac_flat[5]],
-                                    [ac_flat[6], ac_flat[7], ac_flat[8]],
-                                ];
-                                let (r, a) = qcqp::qcqp3(
-                                    ac3,
-                                    [bc[0], bc[1], bc[2]],
-                                    [mu[0], mu[1], mu[2]],
-                                    fn_abs,
-                                );
-                                (r.to_vec(), a)
-                            } else {
-                                qcqp::qcqp_nd(&ac_flat, &bc, &mu[..group_len], fn_abs, group_len)
-                            };
-
-                            // Ellipsoidal rescale if constraint active
-                            if active {
-                                let mut ssq = 0.0_f64;
-                                for j in 0..group_len {
-                                    if mu[j] > MJ_MINVAL {
-                                        ssq += (fric_result[j] / mu[j]).powi(2);
-                                    }
-                                }
-                                let s = (fn_abs * fn_abs / ssq.max(MJ_MINVAL)).sqrt();
-                                for j in 0..group_len {
-                                    f[group_start + j] = fric_result[j] * s;
-                                }
-                            } else {
-                                f[group_start..group_start + group_len]
-                                    .copy_from_slice(&fric_result[..group_len]);
-                            }
+                            f[group_start..group_start + group_len]
+                                .copy_from_slice(&fric_result[..group_len]);
                         }
-
-                        // Accumulate cost improvement for the whole group
-                        for local_j in 0..group_len {
-                            let idx = group_start + local_j;
-                            let delta = f[idx] - old_forces[local_j];
-                            improvement -= 0.5 * delta * delta * a_sub[(idx, idx)]
-                                + delta * residuals[local_j];
-                        }
-
-                        fi += group_len;
-                        continue;
                     }
+
+                    // Accumulate cost improvement for the whole group
+                    for local_j in 0..group_len {
+                        let idx = group_start + local_j;
+                        let delta = f[idx] - old_forces[local_j];
+                        improvement -=
+                            0.5 * delta * delta * a_sub[(idx, idx)] + delta * residuals[local_j];
+                    }
+
+                    fi += group_len;
+                    continue;
                 }
                 fi += 1;
             }
@@ -347,80 +344,79 @@ pub fn noslip_postprocess(model: &Model, data: &mut Data) {
                     group_start,
                     group_len,
                 } = noslip_kinds[fi]
+                    && fi == group_start
                 {
-                    if fi == group_start {
-                        // Process pairs: (0,1), (2,3), ..., (group_len-2, group_len-1)
-                        let mut k = 0;
-                        while k < group_len {
-                            if k + 1 >= group_len {
-                                break;
-                            }
-                            let j0 = group_start + k;
-                            let j1 = group_start + k + 1;
+                    // Process pairs: (0,1), (2,3), ..., (group_len-2, group_len-1)
+                    let mut k = 0;
+                    while k < group_len {
+                        if k + 1 >= group_len {
+                            break;
+                        }
+                        let j0 = group_start + k;
+                        let j1 = group_start + k + 1;
 
-                            let old = [f[j0], f[j1]];
-                            let mid = 0.5 * (old[0] + old[1]);
+                        let old = [f[j0], f[j1]];
+                        let mid = 0.5 * (old[0] + old[1]);
 
-                            // 2x2 block of unregularized A
-                            let a00 = a_sub[(j0, j0)];
-                            let a11 = a_sub[(j1, j1)];
-                            let a01 = a_sub[(j0, j1)];
+                        // 2x2 block of unregularized A
+                        let a00 = a_sub[(j0, j0)];
+                        let a11 = a_sub[(j1, j1)];
+                        let a01 = a_sub[(j0, j1)];
 
-                            // Unregularized residual for both rows
-                            let mut res0 = b_eff[j0];
-                            let mut res1 = b_eff[j1];
-                            for c in 0..n {
-                                res0 += a_sub[(j0, c)] * f[c];
-                                res1 += a_sub[(j1, c)] * f[c];
-                            }
-
-                            // Constant part: bc = res - A * old
-                            let bc0 = res0 - a00 * old[0] - a01 * old[1];
-                            let bc1 = res1 - a01 * old[0] - a11 * old[1];
-
-                            // 1D optimization over y (change of variables: f0=mid+y, f1=mid-y)
-                            let k1 = a00 + a11 - 2.0 * a01; // curvature
-                            let k0 = mid * (a00 - a11) + bc0 - bc1; // gradient at y=0
-
-                            if k1 < MJ_MINVAL {
-                                // Degenerate curvature: split evenly
-                                f[j0] = mid;
-                                f[j1] = mid;
-                            } else {
-                                let y = -k0 / k1;
-                                // Clamp: f0 >= 0 and f1 >= 0 ⟹ |y| <= mid
-                                if y < -mid {
-                                    f[j0] = 0.0;
-                                    f[j1] = 2.0 * mid;
-                                } else if y > mid {
-                                    f[j0] = 2.0 * mid;
-                                    f[j1] = 0.0;
-                                } else {
-                                    f[j0] = mid + y;
-                                    f[j1] = mid - y;
-                                }
-                            }
-
-                            // Cost rollback: revert if cost increased
-                            let d0 = f[j0] - old[0];
-                            let d1 = f[j1] - old[1];
-                            let cost = 0.5 * (d0 * d0 * a00 + d1 * d1 * a11 + 2.0 * d0 * d1 * a01)
-                                + d0 * res0
-                                + d1 * res1;
-                            if cost > 1e-10 {
-                                f[j0] = old[0];
-                                f[j1] = old[1];
-                            } else {
-                                // Accumulate cost improvement (cost is negative = improvement)
-                                improvement -= cost;
-                            }
-
-                            k += 2;
+                        // Unregularized residual for both rows
+                        let mut res0 = b_eff[j0];
+                        let mut res1 = b_eff[j1];
+                        for c in 0..n {
+                            res0 += a_sub[(j0, c)] * f[c];
+                            res1 += a_sub[(j1, c)] * f[c];
                         }
 
-                        fi += group_len;
-                        continue;
+                        // Constant part: bc = res - A * old
+                        let bc0 = res0 - a00 * old[0] - a01 * old[1];
+                        let bc1 = res1 - a01 * old[0] - a11 * old[1];
+
+                        // 1D optimization over y (change of variables: f0=mid+y, f1=mid-y)
+                        let k1 = a00 + a11 - 2.0 * a01; // curvature
+                        let k0 = mid * (a00 - a11) + bc0 - bc1; // gradient at y=0
+
+                        if k1 < MJ_MINVAL {
+                            // Degenerate curvature: split evenly
+                            f[j0] = mid;
+                            f[j1] = mid;
+                        } else {
+                            let y = -k0 / k1;
+                            // Clamp: f0 >= 0 and f1 >= 0 ⟹ |y| <= mid
+                            if y < -mid {
+                                f[j0] = 0.0;
+                                f[j1] = 2.0 * mid;
+                            } else if y > mid {
+                                f[j0] = 2.0 * mid;
+                                f[j1] = 0.0;
+                            } else {
+                                f[j0] = mid + y;
+                                f[j1] = mid - y;
+                            }
+                        }
+
+                        // Cost rollback: revert if cost increased
+                        let d0 = f[j0] - old[0];
+                        let d1 = f[j1] - old[1];
+                        let cost = 0.5 * (d0 * d0 * a00 + d1 * d1 * a11 + 2.0 * d0 * d1 * a01)
+                            + d0 * res0
+                            + d1 * res1;
+                        if cost > 1e-10 {
+                            f[j0] = old[0];
+                            f[j1] = old[1];
+                        } else {
+                            // Accumulate cost improvement (cost is negative = improvement)
+                            improvement -= cost;
+                        }
+
+                        k += 2;
                     }
+
+                    fi += group_len;
+                    continue;
                 }
                 fi += 1;
             }

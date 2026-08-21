@@ -550,11 +550,11 @@ impl Bvh {
                 } => {
                     for i in *first_primitive..(*first_primitive + *primitive_count) {
                         let prim_idx = self.primitives[i].index;
-                        if let Some(hit_t) = test_primitive(prim_idx) {
-                            if hit_t < cutoff {
-                                cutoff = hit_t;
-                                closest = Some((prim_idx, hit_t));
-                            }
+                        if let Some(hit_t) = test_primitive(prim_idx)
+                            && hit_t < cutoff
+                        {
+                            cutoff = hit_t;
+                            closest = Some((prim_idx, hit_t));
                         }
                     }
                 }

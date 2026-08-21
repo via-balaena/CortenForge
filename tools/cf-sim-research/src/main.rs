@@ -1806,15 +1806,15 @@ fn run_render_app(
     // back to defaults + log, don't crash the GUI.
     let mut cavity = CavityState::default_for_scan();
     let mut layers = LayersState::default_for_scan();
-    if let Some(d) = &loaded_design {
-        if let Err(e) = design_toml::apply_design_toml(d, &mut cavity, &mut layers) {
-            eprintln!(
-                "warning: apply_design_toml failed on a validated load ({e:#}); \
+    if let Some(d) = &loaded_design
+        && let Err(e) = design_toml::apply_design_toml(d, &mut cavity, &mut layers)
+    {
+        eprintln!(
+            "warning: apply_design_toml failed on a validated load ({e:#}); \
                  starting with defaults"
-            );
-            cavity = CavityState::default_for_scan();
-            layers = LayersState::default_for_scan();
-        }
+        );
+        cavity = CavityState::default_for_scan();
+        layers = LayersState::default_for_scan();
     }
 
     App::new()

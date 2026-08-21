@@ -134,14 +134,14 @@ pub fn draw_muscles(
         }
 
         // Draw force vector if available
-        if let Some(force) = muscle.force {
-            if force.abs() > 0.01 {
-                // Draw force along muscle line direction
-                let dir = (muscle.insertion - muscle.origin).normalize();
-                let center = vec3_from_point(&nalgebra::center(&muscle.origin, &muscle.insertion));
-                let force_vec = vec3_from_vector(&(dir * force * 0.01)); // Scale for visibility
-                gizmos.arrow(center, center + force_vec, config.colors.force_vector);
-            }
+        if let Some(force) = muscle.force
+            && force.abs() > 0.01
+        {
+            // Draw force along muscle line direction
+            let dir = (muscle.insertion - muscle.origin).normalize();
+            let center = vec3_from_point(&nalgebra::center(&muscle.origin, &muscle.insertion));
+            let force_vec = vec3_from_vector(&(dir * force * 0.01)); // Scale for visibility
+            gizmos.arrow(center, center + force_vec, config.colors.force_vector);
         }
     }
 }

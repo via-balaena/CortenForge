@@ -366,12 +366,12 @@ impl PolicyArtifact {
                     field: "provenance.final_reward".into(),
                 });
             }
-            if let Some(br) = prov.best_reward {
-                if !br.is_finite() {
-                    return Err(ArtifactError::NonFiniteValue {
-                        field: "provenance.best_reward".into(),
-                    });
-                }
+            if let Some(br) = prov.best_reward
+                && !br.is_finite()
+            {
+                return Err(ArtifactError::NonFiniteValue {
+                    field: "provenance.best_reward".into(),
+                });
             }
             for (i, m) in prov.metrics.iter().enumerate() {
                 if !m.mean_reward.is_finite() {

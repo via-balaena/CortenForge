@@ -171,10 +171,10 @@ pub fn step_scenes_lockstep(mut scenes: ResMut<PhysicsScenes>, time: Res<Time>) 
             scene.accumulator -= dt;
             steps += 1;
         }
-        if steps > 0 {
-            if let Err(e) = scene.data.forward(&scene.model) {
-                eprintln!("Multi-scene forward failed ({}): {e}", scene.label);
-            }
+        if steps > 0
+            && let Err(e) = scene.data.forward(&scene.model)
+        {
+            eprintln!("Multi-scene forward failed ({}): {e}", scene.label);
         }
     }
 }

@@ -287,26 +287,26 @@ where
             break;
         }
 
-        if let Some(value) = grid.get(coord) {
-            if is_solid(value) {
-                let point = ray.point_at(t);
+        if let Some(value) = grid.get(coord)
+            && is_solid(value)
+        {
+            let point = ray.point_at(t);
 
-                // Compute the normal from the face we entered
-                let normal = prev_coord.map_or_else(
-                    || -ray.direction,
-                    |prev| {
-                        let diff = coord - prev;
-                        Vector3::new(-f64::from(diff.x), -f64::from(diff.y), -f64::from(diff.z))
-                    },
-                );
+            // Compute the normal from the face we entered
+            let normal = prev_coord.map_or_else(
+                || -ray.direction,
+                |prev| {
+                    let diff = coord - prev;
+                    Vector3::new(-f64::from(diff.x), -f64::from(diff.y), -f64::from(diff.z))
+                },
+            );
 
-                return Some(RaycastHit {
-                    coord,
-                    t,
-                    point,
-                    normal,
-                });
-            }
+            return Some(RaycastHit {
+                coord,
+                t,
+                point,
+                normal,
+            });
         }
 
         prev_coord = Some(coord);
@@ -347,27 +347,27 @@ where
             break;
         }
 
-        if let Some(value) = grid.get(coord) {
-            if is_solid(value) {
-                let point = ray.point_at(t);
-                let normal = prev_coord.map_or_else(
-                    || -ray.direction,
-                    |prev| {
-                        let diff = coord - prev;
-                        Vector3::new(-f64::from(diff.x), -f64::from(diff.y), -f64::from(diff.z))
-                    },
-                );
+        if let Some(value) = grid.get(coord)
+            && is_solid(value)
+        {
+            let point = ray.point_at(t);
+            let normal = prev_coord.map_or_else(
+                || -ray.direction,
+                |prev| {
+                    let diff = coord - prev;
+                    Vector3::new(-f64::from(diff.x), -f64::from(diff.y), -f64::from(diff.z))
+                },
+            );
 
-                hits.push(RaycastHit {
-                    coord,
-                    t,
-                    point,
-                    normal,
-                });
+            hits.push(RaycastHit {
+                coord,
+                t,
+                point,
+                normal,
+            });
 
-                if stop_at_first {
-                    break;
-                }
+            if stop_at_first {
+                break;
             }
         }
 

@@ -242,28 +242,27 @@ pub fn collide_geoms(
             &pose2,
             model.ccd_iterations,
             model.ccd_tolerance,
-        ) {
-            if dist_result.distance < margin {
-                // Margin-zone contact: depth is negative (separated)
-                let depth = -dist_result.distance;
-                let diff = dist_result.witness_b - dist_result.witness_a;
-                let diff_norm = diff.norm();
-                let normal = if diff_norm > GEOM_EPSILON {
-                    diff / diff_norm
-                } else {
-                    Vector3::z()
-                };
-                let midpoint = nalgebra::center(&dist_result.witness_a, &dist_result.witness_b);
-                return vec![make_contact_from_geoms(
-                    model,
-                    midpoint.coords,
-                    normal,
-                    depth,
-                    geom1,
-                    geom2,
-                    margin,
-                )];
-            }
+        ) && dist_result.distance < margin
+        {
+            // Margin-zone contact: depth is negative (separated)
+            let depth = -dist_result.distance;
+            let diff = dist_result.witness_b - dist_result.witness_a;
+            let diff_norm = diff.norm();
+            let normal = if diff_norm > GEOM_EPSILON {
+                diff / diff_norm
+            } else {
+                Vector3::z()
+            };
+            let midpoint = nalgebra::center(&dist_result.witness_a, &dist_result.witness_b);
+            return vec![make_contact_from_geoms(
+                model,
+                midpoint.coords,
+                normal,
+                depth,
+                geom1,
+                geom2,
+                margin,
+            )];
         }
     }
 

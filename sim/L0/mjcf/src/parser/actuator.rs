@@ -149,15 +149,15 @@ pub(super) fn parse_actuator_attrs(
     // Muscle-specific attributes
     // ========================================================================
     // For muscle, timeconst is a pair [activation, deactivation]
-    if actuator_type == MjcfActuatorType::Muscle {
-        if let Some(tc) = get_attribute_opt(e, "timeconst") {
-            let parts = parse_float_array(&tc)?;
-            if parts.len() >= 2 {
-                actuator.muscle_timeconst = (parts[0], parts[1]);
-            } else if parts.len() == 1 {
-                // Single value means both are the same
-                actuator.muscle_timeconst = (parts[0], parts[0]);
-            }
+    if actuator_type == MjcfActuatorType::Muscle
+        && let Some(tc) = get_attribute_opt(e, "timeconst")
+    {
+        let parts = parse_float_array(&tc)?;
+        if parts.len() >= 2 {
+            actuator.muscle_timeconst = (parts[0], parts[1]);
+        } else if parts.len() == 1 {
+            // Single value means both are the same
+            actuator.muscle_timeconst = (parts[0], parts[0]);
         }
     }
     if let Some(range) = get_attribute_opt(e, "range") {
@@ -213,10 +213,10 @@ pub(super) fn parse_actuator_attrs(
             actuator.lengthrange = Some((parts[0], parts[1]));
         }
     }
-    if let Some(user) = get_attribute_opt(e, "user") {
-        if let Ok(parts) = parse_float_array(&user) {
-            actuator.user = parts;
-        }
+    if let Some(user) = get_attribute_opt(e, "user")
+        && let Ok(parts) = parse_float_array(&user)
+    {
+        actuator.user = parts;
     }
 
     Ok(actuator)

@@ -146,12 +146,11 @@ pub(super) fn parse_joint_defaults(e: &BytesStart) -> Result<MjcfJointDefaults> 
     defaults.solimpfriction = attr_fixed::<5>(e, "solimpfriction")?;
     defaults.actuatorgravcomp = attr_bool(e, "actuatorgravcomp");
     defaults.margin = parse_float_attr(e, "margin");
-    if let Some(user) = get_attribute_opt(e, "user") {
-        if let Ok(parts) = parse_float_array(&user) {
-            if !parts.is_empty() {
-                defaults.user = Some(parts);
-            }
-        }
+    if let Some(user) = get_attribute_opt(e, "user")
+        && let Ok(parts) = parse_float_array(&user)
+        && !parts.is_empty()
+    {
+        defaults.user = Some(parts);
     }
 
     Ok(defaults)
@@ -209,12 +208,11 @@ pub(super) fn parse_geom_defaults(e: &BytesStart) -> Result<MjcfGeomDefaults> {
         }
         defaults.fluidcoef = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
     }
-    if let Some(user) = get_attribute_opt(e, "user") {
-        if let Ok(parts) = parse_float_array(&user) {
-            if !parts.is_empty() {
-                defaults.user = Some(parts);
-            }
-        }
+    if let Some(user) = get_attribute_opt(e, "user")
+        && let Ok(parts) = parse_float_array(&user)
+        && !parts.is_empty()
+    {
+        defaults.user = Some(parts);
     }
     defaults.shellinertia = attr_bool(e, "shellinertia");
 
@@ -317,12 +315,11 @@ pub(super) fn parse_actuator_defaults(e: &BytesStart) -> Result<MjcfActuatorDefa
 
     // Adhesion-specific attributes
     defaults.gain = parse_float_attr(e, "gain");
-    if let Some(user) = get_attribute_opt(e, "user") {
-        if let Ok(parts) = parse_float_array(&user) {
-            if !parts.is_empty() {
-                defaults.user = Some(parts);
-            }
-        }
+    if let Some(user) = get_attribute_opt(e, "user")
+        && let Ok(parts) = parse_float_array(&user)
+        && !parts.is_empty()
+    {
+        defaults.user = Some(parts);
     }
 
     Ok(defaults)
@@ -395,12 +392,11 @@ pub(super) fn parse_tendon_defaults(e: &BytesStart) -> Result<MjcfTendonDefaults
 
     // Rendering
     defaults.material = get_attribute_opt(e, "material");
-    if let Some(user) = get_attribute_opt(e, "user") {
-        if let Ok(parts) = parse_float_array(&user) {
-            if !parts.is_empty() {
-                defaults.user = Some(parts);
-            }
-        }
+    if let Some(user) = get_attribute_opt(e, "user")
+        && let Ok(parts) = parse_float_array(&user)
+        && !parts.is_empty()
+    {
+        defaults.user = Some(parts);
     }
 
     Ok(defaults)
@@ -466,12 +462,11 @@ pub(super) fn parse_site_defaults(e: &BytesStart) -> Result<MjcfSiteDefaults> {
 
     // Rendering
     defaults.material = get_attribute_opt(e, "material");
-    if let Some(user) = get_attribute_opt(e, "user") {
-        if let Ok(parts) = parse_float_array(&user) {
-            if !parts.is_empty() {
-                defaults.user = Some(parts);
-            }
-        }
+    if let Some(user) = get_attribute_opt(e, "user")
+        && let Ok(parts) = parse_float_array(&user)
+        && !parts.is_empty()
+    {
+        defaults.user = Some(parts);
     }
 
     Ok(defaults)

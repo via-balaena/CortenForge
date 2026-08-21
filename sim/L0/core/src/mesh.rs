@@ -787,16 +787,15 @@ pub fn mesh_sphere_contact(
 
         if let Some((local_point, local_normal, penetration)) =
             triangle_sphere_contact(v0, v1, v2, local_center, sphere_radius)
+            && penetration > max_penetration
         {
-            if penetration > max_penetration {
-                max_penetration = penetration;
-                best_contact = Some(MeshContact {
-                    point: mesh_pose.transform_point(&local_point),
-                    normal: mesh_pose.rotation * local_normal,
-                    penetration,
-                    triangle_index: tri_idx,
-                });
-            }
+            max_penetration = penetration;
+            best_contact = Some(MeshContact {
+                point: mesh_pose.transform_point(&local_point),
+                normal: mesh_pose.rotation * local_normal,
+                penetration,
+                triangle_index: tri_idx,
+            });
         }
     }
 
@@ -850,16 +849,15 @@ pub fn mesh_capsule_contact(
 
         if let Some((local_point, local_normal, penetration)) =
             triangle_capsule_contact(v0, v1, v2, local_start, local_end, capsule_radius)
+            && penetration > max_penetration
         {
-            if penetration > max_penetration {
-                max_penetration = penetration;
-                best_contact = Some(MeshContact {
-                    point: mesh_pose.transform_point(&local_point),
-                    normal: mesh_pose.rotation * local_normal,
-                    penetration,
-                    triangle_index: tri_idx,
-                });
-            }
+            max_penetration = penetration;
+            best_contact = Some(MeshContact {
+                point: mesh_pose.transform_point(&local_point),
+                normal: mesh_pose.rotation * local_normal,
+                penetration,
+                triangle_index: tri_idx,
+            });
         }
     }
 

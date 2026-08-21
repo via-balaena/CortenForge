@@ -1256,17 +1256,17 @@ impl CastSpec {
         }
 
         // Shared accessories (the fast tail).
-        if selection.includes(PartId::Platform) {
-            if let Some(p) = mesh_and_gate_v2_platform(self, ribbon, out_dir)? {
-                save(&p.mesh, &p.path)?;
-                written.push(p.path);
-            }
+        if selection.includes(PartId::Platform)
+            && let Some(p) = mesh_and_gate_v2_platform(self, ribbon, out_dir)?
+        {
+            save(&p.mesh, &p.path)?;
+            written.push(p.path);
         }
-        if selection.includes(PartId::Funnel) {
-            if let Some(f) = mesh_and_gate_v2_funnel(self, ribbon, out_dir)? {
-                save(&f.mesh, &f.path)?;
-                written.push(f.path);
-            }
+        if selection.includes(PartId::Funnel)
+            && let Some(f) = mesh_and_gate_v2_funnel(self, ribbon, out_dir)?
+        {
+            save(&f.mesh, &f.path)?;
+            written.push(f.path);
         }
         if selection.includes(PartId::Dowel) {
             // Rod count = the per-layer dowels the solver placed (same source

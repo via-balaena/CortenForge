@@ -64,12 +64,11 @@ pub fn mj_sensor_vel(model: &Model, data: &mut Data) {
         }
 
         // §16.5d: Skip sensors on sleeping bodies
-        if sleep_enabled {
-            if let Some(body_id) = sensor_body_id(model, sensor_id) {
-                if data.body_sleep_state[body_id] == SleepState::Asleep {
-                    continue;
-                }
-            }
+        if sleep_enabled
+            && let Some(body_id) = sensor_body_id(model, sensor_id)
+            && data.body_sleep_state[body_id] == SleepState::Asleep
+        {
+            continue;
         }
 
         let adr = model.sensor_adr[sensor_id];

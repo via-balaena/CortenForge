@@ -265,14 +265,14 @@ fn check_wall_thickness(parts: &[Part], profile: &PrintProfile, warnings: &mut V
         }
 
         let resolution = profile.min_wall / 2.0;
-        if let Some(feature_size) = smallest_feature {
-            if feature_size < resolution {
-                warnings.push(DesignWarning::FeatureBelowResolution {
-                    part: part.name().to_owned(),
-                    feature_size,
-                    resolution,
-                });
-            }
+        if let Some(feature_size) = smallest_feature
+            && feature_size < resolution
+        {
+            warnings.push(DesignWarning::FeatureBelowResolution {
+                part: part.name().to_owned(),
+                feature_size,
+                resolution,
+            });
         }
     }
 }

@@ -84,10 +84,9 @@ fn copy_into(src: &Path, dest_dir: &Path) -> Result<()> {
     let dest = dest_dir.join(name);
     if let (Ok(src_canon), Ok(dest_canon)) =
         (std::fs::canonicalize(src), std::fs::canonicalize(&dest))
+        && src_canon == dest_canon
     {
-        if src_canon == dest_canon {
-            return Ok(()); // already in place — copying onto itself would zero it
-        }
+        return Ok(()); // already in place — copying onto itself would zero it
     }
     std::fs::copy(src, &dest).map_err(|e| {
         EngineError::ExportPrint(format!("copy {} → {}: {e}", src.display(), dest.display()))

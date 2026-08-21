@@ -54,13 +54,12 @@ pub fn clear_selection(
     if body.painted.is_empty() {
         return;
     }
-    if let Some(mesh) = meshes.get_mut(&body.mesh) {
-        if let Some(VertexAttributeValues::Float32x4(face_colors)) =
+    if let Some(mesh) = meshes.get_mut(&body.mesh)
+        && let Some(VertexAttributeValues::Float32x4(face_colors)) =
             mesh.attribute_mut(Mesh::ATTRIBUTE_COLOR)
-        {
-            for &f in &body.painted {
-                recolor(face_colors, f, colors.base);
-            }
+    {
+        for &f in &body.painted {
+            recolor(face_colors, f, colors.base);
         }
     }
     body.painted.clear();

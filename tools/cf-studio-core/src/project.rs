@@ -579,13 +579,13 @@ impl Project {
     ///
     /// Then stamp the current schema version.
     fn migrate(&mut self) {
-        if self.plug.is_none() {
-            if let Some(design) = &self.design {
-                self.plug = Some(PlugDraft {
-                    cavity_inset_m: design.cavity_inset_m,
-                    ridges: RidgeOptions::default(),
-                });
-            }
+        if self.plug.is_none()
+            && let Some(design) = &self.design
+        {
+            self.plug = Some(PlugDraft {
+                cavity_inset_m: design.cavity_inset_m,
+                ridges: RidgeOptions::default(),
+            });
         }
         // The furthest legal `current_step` is the first incomplete step (every
         // step before it is complete — the contiguous-prefix invariant). Only

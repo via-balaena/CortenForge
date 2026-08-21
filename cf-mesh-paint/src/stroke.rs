@@ -56,10 +56,10 @@ pub fn finalize_stroke(
     if crate::input::painting(&keys) && mouse.pressed(MouseButton::Left) {
         return; // still drawing
     }
-    if let Some(done) = stroke.0.take() {
-        if !done.faces.is_empty() {
-            history.0.push(done);
-        }
+    if let Some(done) = stroke.0.take()
+        && !done.faces.is_empty()
+    {
+        history.0.push(done);
     }
 }
 

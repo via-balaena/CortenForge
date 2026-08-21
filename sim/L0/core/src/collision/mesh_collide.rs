@@ -87,27 +87,26 @@ fn gjk_epa_shape_pair(
             pose2,
             model.ccd_iterations,
             model.ccd_tolerance,
-        ) {
-            if dist.distance < margin {
-                let depth = -dist.distance;
-                let diff = dist.witness_b - dist.witness_a;
-                let diff_norm = diff.norm();
-                let normal = if diff_norm > GEOM_EPSILON {
-                    diff / diff_norm
-                } else {
-                    Vector3::z()
-                };
-                let midpoint = nalgebra::center(&dist.witness_a, &dist.witness_b);
-                return vec![make_contact_from_geoms(
-                    model,
-                    midpoint.coords,
-                    normal,
-                    depth,
-                    geom1,
-                    geom2,
-                    margin,
-                )];
-            }
+        ) && dist.distance < margin
+        {
+            let depth = -dist.distance;
+            let diff = dist.witness_b - dist.witness_a;
+            let diff_norm = diff.norm();
+            let normal = if diff_norm > GEOM_EPSILON {
+                diff / diff_norm
+            } else {
+                Vector3::z()
+            };
+            let midpoint = nalgebra::center(&dist.witness_a, &dist.witness_b);
+            return vec![make_contact_from_geoms(
+                model,
+                midpoint.coords,
+                normal,
+                depth,
+                geom1,
+                geom2,
+                margin,
+            )];
         }
     }
 

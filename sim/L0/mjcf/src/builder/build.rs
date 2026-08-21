@@ -779,12 +779,12 @@ fn compute_tendon_tree_mapping(model: &mut Model) {
                 }
                 WrapType::Pulley => None,
             };
-            if let Some(bid) = bid {
-                if bid > 0 {
-                    let tree = model.body_treeid[bid];
-                    if tree < model.ntree {
-                        tree_set.insert(tree);
-                    }
+            if let Some(bid) = bid
+                && bid > 0
+            {
+                let tree = model.body_treeid[bid];
+                if tree < model.ntree {
+                    tree_set.insert(tree);
                 }
             }
         }
@@ -853,12 +853,12 @@ fn resolve_sleep_policies(model: &mut Model, body_sleep_policy: &[Option<SleepPo
                             }
                             WrapType::Pulley => None,
                         };
-                        if let Some(bid) = bid {
-                            if bid > 0 {
-                                let tree = model.body_treeid[bid];
-                                if tree < model.ntree {
-                                    model.tree_sleep_policy[tree] = SleepPolicy::AutoNever;
-                                }
+                        if let Some(bid) = bid
+                            && bid > 0
+                        {
+                            let tree = model.body_treeid[bid];
+                            if tree < model.ntree {
+                                model.tree_sleep_policy[tree] = SleepPolicy::AutoNever;
                             }
                         }
                     }
@@ -898,12 +898,12 @@ fn resolve_sleep_policies(model: &mut Model, body_sleep_policy: &[Option<SleepPo
                 None
             }
         };
-        if let Some(bid) = body_id {
-            if bid > 0 {
-                let tree = model.body_treeid[bid];
-                if tree < model.ntree {
-                    model.tree_sleep_policy[tree] = SleepPolicy::AutoNever;
-                }
+        if let Some(bid) = body_id
+            && bid > 0
+        {
+            let tree = model.body_treeid[bid];
+            if tree < model.ntree {
+                model.tree_sleep_policy[tree] = SleepPolicy::AutoNever;
             }
         }
     }

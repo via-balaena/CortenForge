@@ -419,10 +419,10 @@ impl FieldNode {
     pub(crate) fn find_param(&self, name: &str) -> Option<(usize, Arc<ParamStoreData>)> {
         // Check local vals
         for val in self.local_vals() {
-            if let Val::Param { id, store } = val {
-                if store.find_name(name) == Some(*id) {
-                    return Some((*id, Arc::clone(store)));
-                }
+            if let Val::Param { id, store } = val
+                && store.find_name(name) == Some(*id)
+            {
+                return Some((*id, Arc::clone(store)));
             }
         }
         // Recurse into children

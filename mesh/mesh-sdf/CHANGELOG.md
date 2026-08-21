@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Minimum supported Rust version is now 1.92** (was 1.87). The crate inherits
+  the workspace-wide declaration, and that floor is set by the locked dependency
+  graph as a whole — `wgpu 28.0.0` requires 1.92 — not by anything this crate
+  uses, so cargo refuses older toolchains even where this crate alone would have
+  built. The 1.87 it replaces was never verified: since 2026-02-17 the weekly
+  MSRV job had been trying to install a Rust version that does not exist, so it
+  never compiled anything.
+
 ### v0.9 candidates
 
 These backlog candidates are gated on a real consumer driving them per

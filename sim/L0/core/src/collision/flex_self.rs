@@ -113,33 +113,33 @@ fn collide_triangles(
     let gap = model.flex_gap[flex_id1] + model.flex_gap[flex_id2];
     let includemargin = margin - gap;
 
-    if let Some(contact_result) = triangle_triangle_intersection(&tri_a, &tri_b) {
-        if contact_result.depth > -includemargin {
-            let nearest1 = nearest_vertex(contact_result.point.coords, verts1, data);
-            let nearest2 = nearest_vertex(contact_result.point.coords, verts2, data);
+    if let Some(contact_result) = triangle_triangle_intersection(&tri_a, &tri_b)
+        && contact_result.depth > -includemargin
+    {
+        let nearest1 = nearest_vertex(contact_result.point.coords, verts1, data);
+        let nearest2 = nearest_vertex(contact_result.point.coords, verts2, data);
 
-            let contact = if flex_id1 == flex_id2 {
-                make_contact_flex_self(
-                    model,
-                    nearest1,
-                    nearest2,
-                    contact_result.point.coords,
-                    contact_result.normal,
-                    contact_result.depth,
-                )
-            } else {
-                make_contact_flex_flex(
-                    model,
-                    nearest1,
-                    nearest2,
-                    contact_result.point.coords,
-                    contact_result.normal,
-                    contact_result.depth,
-                )
-            };
-            data.contacts.push(contact);
-            data.ncon += 1;
-        }
+        let contact = if flex_id1 == flex_id2 {
+            make_contact_flex_self(
+                model,
+                nearest1,
+                nearest2,
+                contact_result.point.coords,
+                contact_result.normal,
+                contact_result.depth,
+            )
+        } else {
+            make_contact_flex_flex(
+                model,
+                nearest1,
+                nearest2,
+                contact_result.point.coords,
+                contact_result.normal,
+                contact_result.depth,
+            )
+        };
+        data.contacts.push(contact);
+        data.ncon += 1;
     }
 }
 

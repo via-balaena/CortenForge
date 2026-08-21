@@ -659,10 +659,10 @@ pub(super) fn parse_skin_attrs(e: &BytesStart) -> MjcfSkin {
     skin.mesh = get_attribute_opt(e, "mesh");
     skin.material = get_attribute_opt(e, "material");
 
-    if let Some(rgba) = get_attribute_opt(e, "rgba") {
-        if let Ok(v) = parse_vector4(&rgba) {
-            skin.rgba = v;
-        }
+    if let Some(rgba) = get_attribute_opt(e, "rgba")
+        && let Ok(v) = parse_vector4(&rgba)
+    {
+        skin.rgba = v;
     }
 
     if let Some(inflate) = parse_float_attr(e, "inflate") {
@@ -670,17 +670,17 @@ pub(super) fn parse_skin_attrs(e: &BytesStart) -> MjcfSkin {
     }
 
     // Parse embedded vertex positions if present
-    if let Some(vertex) = get_attribute_opt(e, "vertex") {
-        if let Ok(verts) = parse_float_array(&vertex) {
-            skin.vertex_positions = Some(verts);
-        }
+    if let Some(vertex) = get_attribute_opt(e, "vertex")
+        && let Ok(verts) = parse_float_array(&vertex)
+    {
+        skin.vertex_positions = Some(verts);
     }
 
     // Parse embedded face data if present
-    if let Some(face) = get_attribute_opt(e, "face") {
-        if let Ok(faces) = parse_int_array(&face) {
-            skin.faces = Some(faces);
-        }
+    if let Some(face) = get_attribute_opt(e, "face")
+        && let Ok(faces) = parse_int_array(&face)
+    {
+        skin.faces = Some(faces);
     }
 
     skin

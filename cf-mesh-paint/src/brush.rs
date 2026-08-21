@@ -116,12 +116,11 @@ pub fn hover_ray(
     if let Some((entity, hit)) = ray_cast
         .cast_ray(ray, &MeshRayCastSettings::default())
         .first()
+        && *entity == active
     {
-        if *entity == active {
-            hover.point = Some(hit.point);
-            hover.normal = hit.normal;
-            hover.face = hit.triangle_index;
-        }
+        hover.point = Some(hit.point);
+        hover.normal = hit.normal;
+        hover.face = hit.triangle_index;
     }
 }
 

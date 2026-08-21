@@ -202,13 +202,13 @@ pub(crate) fn preview_panel(
             ui.separator();
             ui.monospace(format!("{:<14}S  ({CAPTURE_HINT})", "simulate"));
             ui.monospace(format!("{:<14}{}", "repaint", "Esc / D"));
-            if let Some(build) = held.0.as_ref() {
-                if !build.warnings.is_empty() {
-                    ui.separator();
-                    ui.label("co-registration warnings:");
-                    for w in &build.warnings {
-                        ui.colored_label(egui::Color32::from_rgb(230, 200, 90), format!("• {w}"));
-                    }
+            if let Some(build) = held.0.as_ref()
+                && !build.warnings.is_empty()
+            {
+                ui.separator();
+                ui.label("co-registration warnings:");
+                for w in &build.warnings {
+                    ui.colored_label(egui::Color32::from_rgb(230, 200, 90), format!("• {w}"));
                 }
             }
         });

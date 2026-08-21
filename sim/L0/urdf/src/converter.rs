@@ -348,18 +348,18 @@ impl<'a> Converter<'a> {
         }
 
         // Add limits for revolute/prismatic
-        if let Some(limit) = &joint.limit {
-            if matches!(
+        if let Some(limit) = &joint.limit
+            && matches!(
                 joint.joint_type,
                 UrdfJointType::Revolute | UrdfJointType::Prismatic
-            ) {
-                write!(
-                    attrs,
-                    r#" limited="true" range="{} {}""#,
-                    limit.lower, limit.upper
-                )
-                .ok();
-            }
+            )
+        {
+            write!(
+                attrs,
+                r#" limited="true" range="{} {}""#,
+                limit.lower, limit.upper
+            )
+            .ok();
         }
 
         // Add dynamics (damping and friction)

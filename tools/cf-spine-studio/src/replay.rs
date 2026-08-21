@@ -206,10 +206,10 @@ pub(crate) fn flexion_update(
         .map_or(0, |lo| flexion.traj.frames[lo].facet_points.len());
 
     // Rewrite the disc surface (Z-up→Y-up swap + smooth-normal recompute).
-    if let Ok(handle) = q_disc.single() {
-        if let Some(mesh) = meshes.get_mut(&handle.0) {
-            apply_soft_positions(mesh, &flat, UpAxis::PlusZ);
-        }
+    if let Ok(handle) = q_disc.single()
+        && let Some(mesh) = meshes.get_mut(&handle.0)
+    {
+        apply_soft_positions(mesh, &flat, UpAxis::PlusZ);
     }
 
     // Rotate L4 by the true angle about the pivot. The Y/Z swap is a reflection, so

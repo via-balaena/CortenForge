@@ -97,7 +97,10 @@ const TINY_CELL_SIZE: f64 = 4.0;
 /// AABB inset in mm: `cell_size × 0.5 + shell_thickness = 10 × 0.5 +
 /// 1.2 = 6.2`. The lattice iteration bbox starts at this distance
 /// from each face of the input AABB.
-const INSET: f64 = CELL_SIZE_OVERRIDE.mul_add(0.5, 1.2);
+// `mul_add` is not const-stable on the workspace MSRV, and const-eval folds
+// this at compile time either way, so the FMA buys nothing here. Expanded
+// explicitly, as the `const fn` sites elsewhere in the workspace do.
+const INSET: f64 = CELL_SIZE_OVERRIDE * 0.5 + 1.2;
 
 /// Top-wide region z-threshold in mm: `SIDE − INSET − CELL_SIZE_OVERRIDE
 /// = 33.8`. Pre-fix, the lattice extended to the top of the AABB-

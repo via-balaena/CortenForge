@@ -107,10 +107,10 @@ impl FaceField {
             if (c - centre).norm_squared() > r2 {
                 continue;
             }
-            if let Some(cos_min) = cos_min {
-                if n.dot(&reference) < cos_min {
-                    continue; // normal too different from the seed face
-                }
+            if let Some(cos_min) = cos_min
+                && n.dot(&reference) < cos_min
+            {
+                continue; // normal too different from the seed face
             }
             hits.push(f);
         }

@@ -334,10 +334,9 @@ pub fn place_fasteners(
                     if !anchor_arcs.iter().any(|&a| {
                         let g = (a - b).rem_euclid(solver.perim);
                         g.min(solver.perim - g) <= dedup_tol
-                    }) {
-                        if let Some(r) = solver.resolve(b) {
-                            out.push(r.placement(PlacementOrigin::Boundary));
-                        }
+                    }) && let Some(r) = solver.resolve(b)
+                    {
+                        out.push(r.placement(PlacementOrigin::Boundary));
                     }
                 }
                 for w in 0..offs.len().saturating_sub(1) {
@@ -590,15 +589,15 @@ impl Solver<'_> {
         let max_k = (reach / step).floor() as usize;
         for k in 1..=max_k {
             let off = k as f64 * step;
-            if s + off < hi {
-                if let Some(r) = self.resolve(s + off) {
-                    return Some(r);
-                }
+            if s + off < hi
+                && let Some(r) = self.resolve(s + off)
+            {
+                return Some(r);
             }
-            if s - off > lo {
-                if let Some(r) = self.resolve(s - off) {
-                    return Some(r);
-                }
+            if s - off > lo
+                && let Some(r) = self.resolve(s - off)
+            {
+                return Some(r);
             }
         }
         None

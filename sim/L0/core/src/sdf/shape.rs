@@ -139,24 +139,25 @@ pub fn compute_shape_contact(
     // Tier 1: Both sphere-like → analytical single contact.
     // Non-spherical convex shapes (cuboids, cylinders) need multi-contact
     // for face-face stability, so they skip to Tier 2/3.
-    if a.prefers_single_contact() && b.prefers_single_contact() {
-        if let (Some(r_a), Some(r_b)) = (
+    if a.prefers_single_contact()
+        && b.prefers_single_contact()
+        && let (Some(r_a), Some(r_b)) = (
             a.effective_radius(&local_dir_a),
             b.effective_radius(&local_dir_b),
-        ) {
-            let center_dist = (pose_b.position - pose_a.position).norm();
-            let depth = (r_a + r_b - center_dist).max(0.0);
-            if depth > 0.0 || center_dist < r_a + r_b + margin {
-                let contact_point = pose_a.position + dir * (r_a - depth * 0.5);
-                let stable_normal = stabilize_direction(dir);
-                return vec![SdfContact {
-                    point: contact_point,
-                    normal: stable_normal,
-                    penetration: depth,
-                }];
-            }
-            return vec![];
+        )
+    {
+        let center_dist = (pose_b.position - pose_a.position).norm();
+        let depth = (r_a + r_b - center_dist).max(0.0);
+        if depth > 0.0 || center_dist < r_a + r_b + margin {
+            let contact_point = pose_a.position + dir * (r_a - depth * 0.5);
+            let stable_normal = stabilize_direction(dir);
+            return vec![SdfContact {
+                point: contact_point,
+                normal: stable_normal,
+                penetration: depth,
+            }];
         }
+        return vec![];
     }
 
     // Tier 2: Both support interval evaluation → octree detection
@@ -210,20 +211,20 @@ pub fn compute_shape_plane_contact(
     // path. Non-spherical convex shapes (cuboids, cylinders) need distributed
     // multi-contact against planes for rotational stability — they fall
     // through to Tier 2 (octree) or Tier 3 (grid).
-    if shape.prefers_single_contact() {
-        if let Some(radius) = shape.effective_radius(&local_dir) {
-            let dist_to_plane = (shape_pose.position.coords - plane_pos).dot(plane_normal);
-            let depth = radius - dist_to_plane;
-            if depth > -margin {
-                let contact_point = shape_pose.position - plane_normal * (radius - depth * 0.5);
-                return vec![SdfContact {
-                    point: contact_point,
-                    normal: *plane_normal,
-                    penetration: depth.max(0.0),
-                }];
-            }
-            return vec![];
+    if shape.prefers_single_contact()
+        && let Some(radius) = shape.effective_radius(&local_dir)
+    {
+        let dist_to_plane = (shape_pose.position.coords - plane_pos).dot(plane_normal);
+        let depth = radius - dist_to_plane;
+        if depth > -margin {
+            let contact_point = shape_pose.position - plane_normal * (radius - depth * 0.5);
+            return vec![SdfContact {
+                point: contact_point,
+                normal: *plane_normal,
+                penetration: depth.max(0.0),
+            }];
         }
+        return vec![];
     }
 
     // Tier 2: Shape supports interval evaluation → octree plane detection

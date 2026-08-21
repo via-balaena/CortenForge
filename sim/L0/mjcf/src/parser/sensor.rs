@@ -117,10 +117,10 @@ pub(super) fn parse_sensor_attrs(e: &BytesStart, sensor_type: MjcfSensorType) ->
         sensor.cutoff = cutoff;
     }
 
-    if let Some(user) = get_attribute_opt(e, "user") {
-        if let Ok(parts) = parse_float_array(&user) {
-            sensor.user = parts;
-        }
+    if let Some(user) = get_attribute_opt(e, "user")
+        && let Ok(parts) = parse_float_array(&user)
+    {
+        sensor.user = parts;
     }
 
     sensor.nsample = parse_int_attr(e, "nsample");

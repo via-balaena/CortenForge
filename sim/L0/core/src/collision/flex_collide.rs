@@ -115,17 +115,16 @@ pub(super) fn test_vertex_against_element_faces(
                 data.flexvert_xpos[elem_verts[2]],
             ];
             if let Some((depth, normal, contact_pos)) = sphere_triangle_contact(vpos, radius, &tri)
+                && depth > -includemargin
             {
-                if depth > -includemargin {
-                    let nearest = nearest_vertex(vpos, elem_verts, data);
-                    let contact = if flex_id_vertex == flex_id_elem {
-                        make_contact_flex_self(model, vertex, nearest, contact_pos, normal, depth)
-                    } else {
-                        make_contact_flex_flex(model, vertex, nearest, contact_pos, normal, depth)
-                    };
-                    data.contacts.push(contact);
-                    data.ncon += 1;
-                }
+                let nearest = nearest_vertex(vpos, elem_verts, data);
+                let contact = if flex_id_vertex == flex_id_elem {
+                    make_contact_flex_self(model, vertex, nearest, contact_pos, normal, depth)
+                } else {
+                    make_contact_flex_flex(model, vertex, nearest, contact_pos, normal, depth)
+                };
+                data.contacts.push(contact);
+                data.ncon += 1;
             }
         }
         3 => {
@@ -147,31 +146,16 @@ pub(super) fn test_vertex_against_element_faces(
                 ];
                 if let Some((depth, normal, contact_pos)) =
                     sphere_triangle_contact(vpos, radius, &tri)
+                    && depth > -includemargin
                 {
-                    if depth > -includemargin {
-                        let nearest = nearest_vertex(vpos, face, data);
-                        let contact = if flex_id_vertex == flex_id_elem {
-                            make_contact_flex_self(
-                                model,
-                                vertex,
-                                nearest,
-                                contact_pos,
-                                normal,
-                                depth,
-                            )
-                        } else {
-                            make_contact_flex_flex(
-                                model,
-                                vertex,
-                                nearest,
-                                contact_pos,
-                                normal,
-                                depth,
-                            )
-                        };
-                        data.contacts.push(contact);
-                        data.ncon += 1;
-                    }
+                    let nearest = nearest_vertex(vpos, face, data);
+                    let contact = if flex_id_vertex == flex_id_elem {
+                        make_contact_flex_self(model, vertex, nearest, contact_pos, normal, depth)
+                    } else {
+                        make_contact_flex_flex(model, vertex, nearest, contact_pos, normal, depth)
+                    };
+                    data.contacts.push(contact);
+                    data.ncon += 1;
                 }
             }
         }

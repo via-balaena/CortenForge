@@ -457,12 +457,12 @@ fn ray_indexed_mesh(
     let result = bvh.query_ray_closest(&ray.origin, &ray_dir_inv, max_dist, |tri_idx| {
         let (v0, v1, v2) = tri_verts(tri_idx)?;
 
-        if let Some(hit) = ray_triangle_impl(ray.origin, ray.direction, v0, v1, v2, cutoff) {
-            if hit.distance < cutoff {
-                cutoff = hit.distance;
-                closest_hit = Some(hit);
-                return Some(hit.distance);
-            }
+        if let Some(hit) = ray_triangle_impl(ray.origin, ray.direction, v0, v1, v2, cutoff)
+            && hit.distance < cutoff
+        {
+            cutoff = hit.distance;
+            closest_hit = Some(hit);
+            return Some(hit.distance);
         }
         None
     });
@@ -498,35 +498,36 @@ fn ray_heightfield(ray: &Ray, data: &crate::HeightFieldData, max_dist: f64) -> O
         if let Some(ground_height) = data.sample(pt.x, pt.y) {
             let height_diff = pt.z - ground_height;
 
-            if let Some(prev_diff) = prev_height_diff {
-                if prev_diff > 0.0 && height_diff <= 0.0 {
-                    // Surface crossing — refine with binary search
-                    let mut t_lo = t - step_size;
-                    let mut t_hi = t;
+            if let Some(prev_diff) = prev_height_diff
+                && prev_diff > 0.0
+                && height_diff <= 0.0
+            {
+                // Surface crossing — refine with binary search
+                let mut t_lo = t - step_size;
+                let mut t_hi = t;
 
-                    for _ in 0..8 {
-                        let t_mid = (t_lo + t_hi) * 0.5;
-                        let mid_pt = ray.point_at(t_mid);
-                        if let Some(mid_height) = data.sample(mid_pt.x, mid_pt.y) {
-                            if mid_pt.z - mid_height > 0.0 {
-                                t_lo = t_mid;
-                            } else {
-                                t_hi = t_mid;
-                            }
+                for _ in 0..8 {
+                    let t_mid = (t_lo + t_hi) * 0.5;
+                    let mid_pt = ray.point_at(t_mid);
+                    if let Some(mid_height) = data.sample(mid_pt.x, mid_pt.y) {
+                        if mid_pt.z - mid_height > 0.0 {
+                            t_lo = t_mid;
                         } else {
-                            break;
+                            t_hi = t_mid;
                         }
+                    } else {
+                        break;
                     }
-
-                    let final_t = (t_lo + t_hi) * 0.5;
-                    let final_pt = ray.point_at(final_t);
-
-                    let normal = data
-                        .normal(final_pt.x, final_pt.y)
-                        .unwrap_or_else(Vector3::z);
-
-                    return Some(RayHit::new(final_t, final_pt, normal));
                 }
+
+                let final_t = (t_lo + t_hi) * 0.5;
+                let final_pt = ray.point_at(final_t);
+
+                let normal = data
+                    .normal(final_pt.x, final_pt.y)
+                    .unwrap_or_else(Vector3::z);
+
+                return Some(RayHit::new(final_t, final_pt, normal));
             }
 
             prev_height_diff = Some(height_diff);

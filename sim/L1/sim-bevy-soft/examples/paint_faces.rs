@@ -391,25 +391,25 @@ fn update_display(
                 Visibility::Hidden
             };
         }
-        if let Ok(mat) = q_mat.get(e) {
-            if let Some(material) = materials.get_mut(&mat.0) {
-                if show.0 {
-                    material.base_color = Color::srgba(0.87, 0.84, 0.78, 0.30);
-                    material.alpha_mode = AlphaMode::Blend;
-                } else {
-                    material.base_color = Color::WHITE;
-                    material.alpha_mode = AlphaMode::Opaque;
-                }
+        if let Ok(mat) = q_mat.get(e)
+            && let Some(material) = materials.get_mut(&mat.0)
+        {
+            if show.0 {
+                material.base_color = Color::srgba(0.87, 0.84, 0.78, 0.30);
+                material.alpha_mode = AlphaMode::Blend;
+            } else {
+                material.base_color = Color::WHITE;
+                material.alpha_mode = AlphaMode::Opaque;
             }
         }
     }
-    if let Some(disc) = disc_entity.0 {
-        if let Ok(mut visibility) = q_vis.get_mut(disc) {
-            *visibility = if show.0 {
-                Visibility::Visible
-            } else {
-                Visibility::Hidden
-            };
-        }
+    if let Some(disc) = disc_entity.0
+        && let Ok(mut visibility) = q_vis.get_mut(disc)
+    {
+        *visibility = if show.0 {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
     }
 }

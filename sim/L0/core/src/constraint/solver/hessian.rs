@@ -290,10 +290,10 @@ impl SparseHessian {
             // Joint diagonal K/D
             for i in 0..nv {
                 let kd = h * model.implicit_damping[i] + h2 * model.implicit_stiffness[i];
-                if kd > 0.0 {
-                    if let Some(idx) = self.find_entry(i, i) {
-                        self.vals[idx] += kd;
-                    }
+                if kd > 0.0
+                    && let Some(idx) = self.find_entry(i, i)
+                {
+                    self.vals[idx] += kd;
                 }
             }
 
