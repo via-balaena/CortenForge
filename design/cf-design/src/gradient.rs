@@ -299,7 +299,17 @@ fn grad_cuboid(half: &Vector3<f64>, p: &Point3<f64>) -> Vector3<f64> {
         // Outside: gradient of |max(q, 0)|
         let w = Vector3::new(q.x.max(0.0), q.y.max(0.0), q.z.max(0.0));
         let w_norm = w.norm();
-        if w_norm < 1e-15 {
+        // ⚠ `== 0.0`, not a tolerance. An absolute `1e-15` band here is
+        // scale-dependent: a face centroid `(h + h + h) / 3.0` sits a few ULP
+        // proud of the box plane for most half-extents `h`, landed inside the
+        // band, and got back a zero vector where the true gradient is simply the
+        // face normal. Everything downstream that asks "which way is out" then
+        // gets no answer — measured 2026-08-20, that blinded the QEM
+        // simplifier's winding guard on exactly the flat geometry it exists for,
+        // and made its test oracle score a correct face as inverted.
+        // Normalising a tiny-but-nonzero `w` is safe: each component is at most
+        // `w_norm`, so the quotient is bounded by 1.
+        if w_norm == 0.0 {
             return Vector3::zeros();
         }
         Vector3::new(
@@ -773,8 +783,17 @@ fn grad_loft(stations: &[[f64; 2]], p: &Point3<f64>) -> Vector3<f64> {
         // Barrel dominant
         Vector3::new(rx, ry, -dr_dz)
     } else {
-        // Cap dominant
-        if p.z <= z_min {
+        // Cap dominant — pick the *nearer* cap, by the midplane.
+        //
+        // ⚠ This asked `p.z <= z_min` until 2026-08-20, i.e. "am I below the
+        // bottom plane", which is only ever true outside the solid. Every
+        // interior point therefore got the top cap's normal, so the outward
+        // direction was reversed through the whole bottom half: measured, 9664
+        // of 38712 interior probes on a three-station loft read `cos = -1.0`
+        // against a central-difference oracle, a wrong-sign slab 0.66 mm deep on
+        // a 2 mm part. `grad_cylinder` does this correctly with `p.z.signum()`;
+        // a loft is not centred on the origin, so it needs the midplane instead.
+        if p.z < 0.5 * (z_min + z_max) {
             Vector3::new(0.0, 0.0, -1.0)
         } else {
             Vector3::new(0.0, 0.0, 1.0)
@@ -1168,6 +1187,24 @@ mod tests {
         };
         check(&n2, Point3::new(1.0, 0.5, 1.5), 1e-4);
         check(&n2, Point3::new(0.5, 0.3, 4.5), 1e-4);
+
+        // ⚠ Cap-dominant interior, on BOTH sides of the midplane. Every point
+        // above is barrel-dominant, so none of them reaches the branch that
+        // chooses between the two caps — and that branch chose by "am I below
+        // the bottom plane", which is true only outside the solid, so the whole
+        // bottom half of every loft pointed the wrong way. A wide, short loft
+        // puts these points nearer a cap than the barrel.
+        //
+        // ★ Two points, not one, and that is the whole design of this check:
+        // below the midplane alone leaves `p.z < z_max` passing, above it alone
+        // leaves the original `p.z <= z_min` passing. Only the pair pins the
+        // midplane. (Measured: the mirror mutant reverses 43.7 % of this loft's
+        // interior and was green against every other test in the crate.)
+        let flat = FieldNode::Loft {
+            stations: vec![[0.0, 3.0], [1.0, 3.0]],
+        };
+        check(&flat, Point3::new(0.5, 0.3, 0.4), 1e-4);
+        check(&flat, Point3::new(0.5, 0.3, 0.6), 1e-4);
     }
 
     // ── Booleans ────────────────────────────────────────────────────

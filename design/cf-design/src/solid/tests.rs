@@ -2093,12 +2093,458 @@ fn mesh_to_tolerance_subtract() {
         !mesh.is_empty(),
         "cuboid-with-hole mesh should have geometry"
     );
-    // Verify the hole exists: volume should be less than full cuboid.
-    let full_cuboid_vol = 10.0 * 10.0 * 10.0; // 1000 mm³
+
+    // ⚠ `volume < full cuboid` was the whole geometric claim here, and a mesh
+    // that has collapsed to nothing satisfies it too. It did: before the
+    // simplifier bounded itself by the surface, this returned 16-20 faces with
+    // a volume anywhere in 2.5..191 — passing this test every time it landed
+    // positive, and failing `signed_volume > 0.0` when it landed negative.
+    // Name the volume the shape actually has.
+    let hole = std::f64::consts::PI * 2.0 * 2.0 * 10.0; // ⌀4 through a 10 mm block
+    let exact = 10.0 * 10.0 * 10.0 - hole;
+    let error = (mesh.geometry.signed_volume() - exact).abs() / exact;
+    // ⚠ 2 %, not the 10 % this shipped with for a day. At 10 % the gate could
+    // not tell the shipped probe lattice from a much worse one — measured, 25
+    // probes give 0.86 % here and 7 probes give 2.43 %, both under 10 %. 2 %
+    // separates them with 2.3× margin on an integrated quantity. It has not yet
+    // run on x86; if a Linux collapse sequence lands differently the number is
+    // the thing to revisit, with the measurement recorded.
     assert!(
-        mesh.geometry.volume() < full_cuboid_vol,
-        "mesh volume ({:.1}) should be less than full cuboid ({full_cuboid_vol})",
-        mesh.geometry.volume()
+        error < 0.02,
+        "volume error {:.1}% — cuboid-with-hole should hold its volume \
+         (exact {exact:.1}, got {:.1})",
+        error * 100.0,
+        mesh.geometry.signed_volume(),
+    );
+
+    // ⚠ Volume alone cannot see a weakened deviation bound. Relaxing the guard
+    // to 1.4× `max_deviation` was measured to pass every other assertion in this
+    // crate while the surface strayed 0.4838 — 2.42× what the caller asked for.
+    // This shape is the one that shows it, and the mesh is already built here, so
+    // the check costs nothing. Measured: 0.2226 at n=32.
+    let stray = worst_surface_stray(&mesh, &shape, 32);
+    assert!(
+        stray <= 1.5 * max_dev,
+        "surface strays {stray:.4} from the field, past the {:.4} measured to hold here",
+        1.5 * max_dev,
+    );
+}
+
+#[test]
+fn mesh_to_tolerance_keeps_its_faces_near_the_surface() {
+    // ★ `mesh_to_tolerance_within_deviation` samples vertices — which is the
+    // predicate the simplifier itself enforces, so it cannot fail for the
+    // reason it claims. A mesh can hold every vertex on the surface and still
+    // cut straight through the solid between them, and one did: before the
+    // simplifier was bounded by the surface, a 10 mm cube came back as two
+    // triangles with every vertex inside tolerance. Sweep the faces.
+    // n=32, not the n=8 this shipped with: a review pointed out that measuring
+    // a sampling error with a coarse sample understates it, which is the same
+    // mistake in miniature. The sweep converges by about n=50.
+    let shape = Solid::cuboid(Vector3::new(2.0, 2.0, 2.0)).subtract(Solid::cylinder(0.8, 3.0));
+    let max_dev = 0.3;
+    let mesh = shape.mesh_to_tolerance(max_dev);
+
+    let worst = worst_surface_stray(&mesh, &shape, 32);
+
+    // ⚠ The bound is 1.5× `max_dev`, not `max_dev`, and that is the honest
+    // number: the guard samples twenty-five points per face, so the surface
+    // between them can still bow further. Measured 2026-08-20 on this shape at
+    // a converged n=64 sweep: 0.2962, or 0.99× — inside tolerance, though that
+    // is where the samples fell and not a promise. It exists to catch a collapse
+    // back toward the old behaviour, which swept past 1.0 — not to assert an
+    // envelope the simplifier never had.
+    assert!(
+        worst <= 1.5 * max_dev,
+        "simplified surface strays {worst:.4} from the field on this shape, past \
+         the {:.4} that twenty-five-point sampling has been measured to hold",
+        1.5 * max_dev,
+    );
+}
+
+/// How far the mesh surface strays from the field, swept barycentrically over
+/// every face. `n` is the subdivision: the sweep converges by about 50, and a
+/// coarse one understates the answer — measuring a sampling error with a sparse
+/// sample is the same mistake twice.
+fn worst_surface_stray(mesh: &AttributedMesh, shape: &Solid, n: u8) -> f64 {
+    let mut worst = 0.0_f64;
+    for face in &mesh.geometry.faces {
+        let corners = face.map(|vi| mesh.geometry.vertices[vi as usize]);
+        for i in 0..=n {
+            for j in 0..=(n - i) {
+                let u = f64::from(i) / f64::from(n);
+                let v = f64::from(j) / f64::from(n);
+                let w = 1.0 - u - v;
+                let point = Point3::from(
+                    corners[0].coords * u + corners[1].coords * v + corners[2].coords * w,
+                );
+                worst = worst.max(shape.evaluate(&point).abs());
+            }
+        }
+    }
+    worst
+}
+
+/// Outward direction at `point`, by central differences on the field.
+///
+/// ★★ Deliberately NOT `Solid::gradient`. The guard under test uses `gradient`,
+/// so an oracle built on it goes blind in exactly the places the guard does —
+/// and it did: `grad_cuboid` used to return a zero vector inside an absolute
+/// `1e-15` band, which made this census score an abstention as "inverted" while
+/// the guard it was checking silently accepted the same collapse. Both halves
+/// of that pair looked fine to each other. An oracle has to be able to disagree
+/// with the thing it is judging.
+fn outward_at(shape: &Solid, point: &Point3<f64>) -> Vector3<f64> {
+    let h = 1e-6;
+    let mut grad = Vector3::zeros();
+    for axis in 0..3 {
+        let mut ahead = *point;
+        let mut behind = *point;
+        ahead[axis] += h;
+        behind[axis] -= h;
+        grad[axis] = (shape.evaluate(&ahead) - shape.evaluate(&behind)) / (2.0 * h);
+    }
+    grad
+}
+
+/// Faces wound into the solid rather than out of it, ignoring slivers whose
+/// normal direction is numerical noise.
+fn faces_wound_inward(mesh: &AttributedMesh, shape: &Solid) -> usize {
+    mesh.geometry
+        .faces
+        .iter()
+        .filter(|face| {
+            let corners = face.map(|vi| mesh.geometry.vertices[vi as usize]);
+            let normal = (corners[1] - corners[0]).cross(&(corners[2] - corners[0]));
+            if normal.norm() * 0.5 < 1e-4 {
+                return false;
+            }
+            let centroid =
+                Point3::from((corners[0].coords + corners[1].coords + corners[2].coords) / 3.0);
+            let outward = outward_at(shape, &centroid);
+            // An unusable outward direction is an abstention, not a verdict.
+            outward.norm() > 1e-9 && normal.dot(&outward) <= 0.0
+        })
+        .count()
+}
+
+#[test]
+fn mesh_to_tolerance_winds_every_face_outward() {
+    // ★ No topology or volume check can see an inverted face — only a test that
+    // asks the field which way is out, which is why this one and its two
+    // siblings below exist. The topology census counts directed edges, and an
+    // inverted triangle lying *in* a box face still leaves every edge traversed
+    // once each way; `signed_volume` nets a coplanar fold against its
+    // neighbours; and the simplifier's own deviation probes read field 0 on it,
+    // because every point of that face does.
+    //
+    // Measured 2026-08-20 with the deviation guard but before
+    // `collapse_inverts_a_face`: 7 of 60 faces on the 10 mm block and 5 on the
+    // small one wound backwards at `normal · ∇f` of exactly -1.0 — through
+    // meshes that read closed, manifold, consistently wound, and correct to 1 %
+    // on volume. A multi-agent review is what surfaced it.
+    //
+    // ⚠ More than one shape, deliberately. The first revision used only the
+    // 4 mm block, and a review showed that gated collapse-created inversions and
+    // nothing else — the 10 mm block is where they were actually measured, and
+    // the 7.4 mm block is the one whose extents are not round numbers.
+    let shapes = [
+        (
+            "10 mm block, ⌀4 bore",
+            Solid::cuboid(Vector3::new(5.0, 5.0, 5.0)).subtract(Solid::cylinder(2.0, 6.0)),
+            0.2,
+        ),
+        // ⚠ Non-round extents, and the shape that caught the last defect. With
+        // `grad_cuboid`'s zero band left absolute this ships one backwards face
+        // of 1.41 mm² at `normal · ∇f` = -1.0; none of the round-numbered
+        // fixtures show it, because their face centroids land exactly on the
+        // plane instead of a few ULP proud of it.
+        (
+            "7.4 mm block, square bore",
+            Solid::cuboid(Vector3::new(3.7, 3.7, 3.7))
+                .subtract(Solid::cuboid(Vector3::new(1.37, 1.37, 9.0))),
+            0.2,
+        ),
+        (
+            "4 mm block, ⌀1.6 bore",
+            Solid::cuboid(Vector3::new(2.0, 2.0, 2.0)).subtract(Solid::cylinder(0.8, 3.0)),
+            0.3,
+        ),
+    ];
+
+    for (label, shape, max_dev) in shapes {
+        // ⚠ Stronger than the guard promises, and deliberately so. The guard is
+        // differential — it refuses to *turn* a face inward — so a clean output
+        // is not something it guarantees; on these two shapes it is something
+        // that was measured. The 10 mm block in fact arrives from the mesher
+        // with 24 inverted faces and leaves with none, because the collapses that
+        // remove them are exactly the ones the guard has no reason to refuse.
+        // If this ever fails, check `simplification_never_adds_an_inverted_face`
+        // first: that one states the property the guard actually owns.
+        let mesh = shape.mesh_to_tolerance(max_dev);
+        let inverted = faces_wound_inward(&mesh, &shape);
+        assert_eq!(
+            inverted,
+            0,
+            "{label}: {inverted} of {} faces wind into the solid rather than out of it",
+            mesh.geometry.faces.len(),
+        );
+    }
+}
+
+/// Faces of exactly zero area — degenerate triangles that no consumer can use.
+fn zero_area_faces(mesh: &AttributedMesh) -> usize {
+    mesh.geometry
+        .faces
+        .iter()
+        .filter(|face| {
+            let c = face.map(|vi| mesh.geometry.vertices[vi as usize]);
+            (c[1] - c[0]).cross(&(c[2] - c[0])).norm() == 0.0
+        })
+        .count()
+}
+
+#[test]
+fn every_bounded_primitive_simplifies_to_clean_geometry() {
+    // ★★★ The coverage gate, and the reason it exists is worth stating plainly.
+    // Twelve of this crate's sixteen primitives had no fixture in any
+    // `mesh_to_tolerance` test. Five rounds of review re-examined the same four
+    // — sphere, cuboid, cylinder, cone — while a sign error in `grad_loft`
+    // reversed the outward direction through the bottom half of every loft and
+    // shipped inverted faces on both loft rows below, at the tolerances those
+    // rows use. Nothing was subtle about it; nothing looked.
+    //
+    // ⚠ ADDING A PRIMITIVE TO `Solid` MEANS ADDING A ROW HERE. A primitive with
+    // no row is a primitive nobody has meshed.
+    //
+    // ⚠ `gyroid`, `schwarz_p` and `plane` are absent deliberately — that is
+    // thirteen shapes across fourteen rows plus three exclusions, which is all
+    // sixteen. They are unbounded, `bounds()` returns `None` for them, and
+    // `mesh_to_tolerance` answers with an empty mesh. That is a real gap in this
+    // crate — they cannot be meshed at all — but it is not this gate's business,
+    // and a row asserting "no inverted faces" over zero faces would be worse
+    // than no row.
+    //
+    // Tolerances are chosen finer than each shape's thinnest feature. At 0.35 on
+    // the helix — 78 % of its 0.45 wall — the output degrades to 3 inverted and
+    // 4 degenerate faces, which is the mesher being asked for a feature it
+    // cannot resolve rather than a defect in the guards.
+    // The fourth column is a ceiling on inverted faces: 0 everywhere the output
+    // is actually clean, with the one exception named and measured.
+    //
+    // ⚠ Tolerance is part of the fixture, not a free knob. Meshing the lofts at
+    // 0.15/0.3 rather than 0.1/0.15 runs faster and reports zero inverted faces
+    // WITH THE SIGN BUG STILL IN — the first draft of this gate did exactly that
+    // and was decorative. Coarsen these and you have deleted the test.
+    let cases: Vec<(&str, Solid, f64, usize)> = vec![
+        ("sphere", Solid::sphere(5.0), 0.5, 0),
+        ("cuboid", Solid::cuboid(Vector3::new(3.7, 3.7, 3.7)), 0.3, 0),
+        ("cylinder", Solid::cylinder(2.3, 4.1), 0.4, 0),
+        ("capsule", Solid::capsule(1.7, 3.1), 0.4, 0),
+        (
+            "ellipsoid",
+            Solid::ellipsoid(Vector3::new(4.3, 2.7, 1.9)),
+            0.4,
+            0,
+        ),
+        ("torus", Solid::torus(4.1, 1.3), 0.45, 0),
+        ("cone", Solid::cone(3.0, 6.0), 0.3, 0),
+        (
+            "pipe",
+            Solid::pipe(
+                vec![
+                    Point3::new(-3.0, 0.0, 0.0),
+                    Point3::new(1.0, 2.0, 0.5),
+                    Point3::new(4.0, -1.0, 1.0),
+                ],
+                0.9,
+            ),
+            0.3,
+            0,
+        ),
+        (
+            "pipe_spline",
+            Solid::pipe_spline(
+                vec![
+                    Point3::new(-3.0, 0.0, 0.0),
+                    Point3::new(0.0, 3.0, 1.0),
+                    Point3::new(3.0, 0.0, 0.0),
+                    Point3::new(0.0, -2.0, -1.0),
+                ],
+                0.7,
+            ),
+            0.3,
+            0,
+        ),
+        // ⚠ Two lofts, neither centred on the origin — that asymmetry is exactly
+        // what the cap-selection bug needed in order to show itself.
+        // ★ This row is the discriminator: 0 inverted with the fix, 1 without.
+        (
+            "loft",
+            Solid::loft(&[(-1.0, 0.9), (0.0, 0.6), (1.0, 0.3)]),
+            0.1,
+            0,
+        ),
+        (
+            "loft off-centre",
+            Solid::loft(&[(-3.0, 2.1), (0.0, 1.4), (2.5, 0.7)]),
+            0.15,
+            // Measured 1 with the fix and 5 without. The survivor is inherited:
+            // this loft's mesher output carries 480 inverted faces.
+            2,
+        ),
+        (
+            "superellipsoid",
+            Solid::superellipsoid(Vector3::new(3.1, 2.3, 1.7), 0.7, 1.3),
+            0.4,
+            0,
+        ),
+        (
+            "log_spiral",
+            Solid::log_spiral(1.1, 0.18, 0.45, 1.7),
+            0.3,
+            0,
+        ),
+        ("helix", Solid::helix(2.3, 1.7, 0.45, 1.6), 0.2, 0),
+    ];
+
+    for (label, shape, max_dev, ceiling) in cases {
+        let mesh = shape.mesh_to_tolerance(max_dev);
+        assert!(!mesh.is_empty(), "{label}: meshed to nothing");
+
+        let inverted = faces_wound_inward(&mesh, &shape);
+        assert!(
+            inverted <= ceiling,
+            "{label}: {inverted} of {} faces wind into the solid (at most {ceiling} expected)",
+            mesh.geometry.faces.len()
+        );
+
+        let degenerate = zero_area_faces(&mesh);
+        assert_eq!(
+            degenerate,
+            0,
+            "{label}: {degenerate} of {} faces have exactly zero area",
+            mesh.geometry.faces.len()
+        );
+    }
+}
+
+#[test]
+fn simplification_never_adds_an_inverted_face() {
+    // ★★ The honest form of the claim. `collapse_inverts_a_face` refuses to
+    // *turn* a face inward; it cannot repair one that arrived that way, and
+    // meshes do arrive that way — `Solid::cone(3,6).mesh_adaptive(0.3)` carries
+    // 40 inverted faces and some of exactly zero area, which is a defect in the
+    // mesher and not in this step.
+    //
+    // ⚠ An absolute assertion here would be the wrong gate, and worse, it would
+    // *reward the wrong behaviour*: the previous absolute guard drove this cone
+    // from 22 faces to 150 while raising its inverted count from 0 to 8, because
+    // refusing every collapse that touched pre-existing damage froze the damaged
+    // neighbourhood in place. Simplification must not make it worse. That is the
+    // property, so that is the assertion.
+    // The third column is a ceiling on what may survive. `after <= before` alone
+    // is too weak to be worth writing: an absolute guard tried on this branch
+    // left the cone at 8 inverted faces, still under its input's 40, and would
+    // have sailed through. Measured here: cone 40 -> 0, two spheres 66 -> 0.
+    //
+    // ⚠ The cone reaching 0 depends on the zero-area branch of
+    // `collapse_inverts_a_face` being differential too. While it was absolute,
+    // the cone's 84 zero-area input triangles froze their neighbourhoods and it
+    // shipped 126 faces, 52 of them degenerate.
+    let cases = [
+        ("cone", Solid::cone(3.0, 6.0), 0.3, 0),
+        // ⚠ The shape that shows the differential comparison is load-bearing.
+        // Its mesher output carries 66 inverted faces; judging winding
+        // absolutely — refusing any collapse whose result is inward, even if it
+        // was already inward — ships 112 faces with 2 still inverted, where
+        // refusing only the ones the collapse *creates* clears all 66 in 102
+        // faces. The cone alone cannot show this: it comes out clean either way
+        // once the zero-area branch is differential too.
+        (
+            "two spheres",
+            Solid::sphere(3.0).union(Solid::sphere(2.0).translate(Vector3::new(3.0, 0.0, 0.0))),
+            0.2,
+            0,
+        ),
+        (
+            "4 mm block, ⌀1.6 bore",
+            Solid::cuboid(Vector3::new(2.0, 2.0, 2.0)).subtract(Solid::cylinder(0.8, 3.0)),
+            0.3,
+            0,
+        ),
+    ];
+
+    for (label, shape, max_dev, ceiling) in cases {
+        let before = faces_wound_inward(&shape.mesh_adaptive(max_dev), &shape);
+        let after = faces_wound_inward(&shape.mesh_to_tolerance(max_dev), &shape);
+        assert!(
+            after <= before,
+            "{label}: simplification raised inverted faces from {before} to {after}"
+        );
+        assert!(
+            after <= ceiling,
+            "{label}: {after} inverted faces survive simplification (from {before}); \
+             at most {ceiling} is what freezing-free collapse was measured to leave"
+        );
+    }
+}
+
+#[test]
+fn a_box_whose_dimensions_are_not_round_numbers_still_simplifies() {
+    // ★★ When this defect was found, every fixture in this file used a
+    // half-extent of 0.5, 1, 2, 3 or 5 — values for which the centroid
+    // expression `(h + h + h) / 3.0` is exactly `h`. A guard that read a
+    // degenerate gradient as "inverted" therefore never fired anywhere in the
+    // suite, while taking `cuboid(3.7,3.7,3.7)` from 14 faces to 7500 and a
+    // 5×5×0.4 plate from 14 to 1988. Round numbers were the blind spot; this
+    // test and the primitive sweep both refuse to use them now.
+    for (label, extents) in [
+        ("3.7 mm cube", Vector3::new(3.7, 3.7, 3.7)),
+        ("thin plate", Vector3::new(5.0, 5.0, 0.4)),
+    ] {
+        let shape = Solid::cuboid(extents);
+        let mesh = shape.mesh_to_tolerance(0.3);
+        let faces = mesh.face_count();
+        assert!(
+            faces <= 100,
+            "{label}: {faces} faces — a box should simplify to a handful \
+             (measured 12 and 16); this is the shape of a guard that has stopped \
+             accepting collapses at all"
+        );
+
+        // ⚠ A ceiling on its own is one-sided, and the other side is where a
+        // weakened deviation bound goes: relaxing the guard to 1.4× took this
+        // plate to 4 faces and volume 9.661 — 88 % of the solid gone — while
+        // satisfying `faces <= 100` comfortably. The floor is what the tolerance
+        // actually permits: every face may sit 0.3 inside its true plane, so the
+        // smallest legal solid is what remains after shaving that off each side.
+        let floor = (extents.x * 2.0 - 0.6) * (extents.y * 2.0 - 0.6) * (extents.z * 2.0 - 0.6);
+        let volume = mesh.geometry.signed_volume();
+        assert!(
+            volume >= floor,
+            "{label}: volume {volume:.3} is below the {floor:.3} a 0.3 mm tolerance can account for"
+        );
+    }
+}
+
+#[test]
+fn mesh_to_tolerance_is_reproducible() {
+    // End-to-end companion to `tolerance_simplification_is_reproducible`: this
+    // one also covers the mesher's vertex numbering, which is where the
+    // instability actually originated.
+    let shape = Solid::cuboid(Vector3::new(2.0, 2.0, 2.0)).subtract(Solid::cylinder(0.8, 3.0));
+
+    let first = shape.mesh_to_tolerance(0.3);
+    let second = shape.mesh_to_tolerance(0.3);
+
+    assert_eq!(
+        first.geometry.vertices, second.geometry.vertices,
+        "the same solid meshed twice gave different vertices"
+    );
+    assert_eq!(
+        first.geometry.faces, second.geometry.faces,
+        "the same solid meshed twice gave different faces"
     );
 }
 

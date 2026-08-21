@@ -188,13 +188,38 @@ impl Solid {
         mesh
     }
 
-    /// Mesh the solid to a guaranteed maximum surface deviation.
+    /// Mesh the solid, holding the surface close to `max_deviation`.
     ///
-    /// The output mesh surface is within `max_deviation` of the true implicit
-    /// surface everywhere. Uses the parallel adaptive octree DC mesher with
-    /// cell size derived from the requested deviation. For meshes under 50K
-    /// faces, applies QEM simplification to reduce flat regions while staying
-    /// within tolerance.
+    /// The mesher sizes its cells from `max_deviation` divided by the field's
+    /// Lipschitz factor, which holds vertices close to the true implicit
+    /// surface — measured worst case 0.049 at `max_deviation` 0.3 on a sphere,
+    /// 0.004 on a cuboid-minus-cylinder at 0.2. Meshes under 50K faces are then
+    /// QEM-simplified, and that step does enforce two bounds: `|field|` at each
+    /// collapsed vertex and at twenty-five sampled points per face, and that no
+    /// collapse *turns* a face inward.
+    ///
+    /// ⚠ Not an envelope. This said "within `max_deviation` everywhere" until
+    /// 2026-08-20, when sweeping the output faces showed the simplified surface
+    /// straying past it between its sampled points — up to 1.41× on the shapes
+    /// this crate fixtures, the worst being a plain cube rather than any of the
+    /// awkward ones. ⚠ That range is a sample, not a bound — nothing in the
+    /// algorithm limits how far a face may bow between probes, and denser-featured
+    /// parts have been measured worse — and,
+    /// before the simplifier was bounded by the surface at all, a 10 mm cube
+    /// coming back as two triangles of volume 0.0 with every vertex inside
+    /// tolerance.
+    ///
+    /// ⚠ Two further limits worth knowing before trusting the output. The
+    /// winding screen runs only on the simplified branch: above the 50 000-face
+    /// cutoff below, the raw mesher output ships unscreened, and it is not
+    /// always clean — the same block at `max_deviation` 0.17 crosses the cutoff
+    /// and carries 64 inward-wound faces where 0.18, simplified, carries none. And no part of
+    /// this checks for self-intersection between faces that are not neighbours;
+    /// simplification reduces it (37 crossing pairs to 8 across four shapes) but
+    /// promises nothing.
+    /// The simplifier's own docs record what is and is not promised. For an
+    /// unsimplified mesh whose vertices carry the bound alone, use
+    /// [`Self::mesh_adaptive`].
     ///
     /// Returns an empty mesh for infinite geometry (bare `Plane`).
     ///

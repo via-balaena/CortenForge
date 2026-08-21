@@ -3,12 +3,18 @@
 //! Two entry points:
 //! - [`simplify_mesh`] — reduce face count to a target.
 //! - [`simplify_mesh_tolerance`] — collapse edges until the next collapse would
-//!   exceed `max_deviation` from the true implicit surface.
+//!   move the surface further than `max_deviation` from the true implicit
+//!   surface.
+//!
+//! Both are deterministic: equal-cost collapses tie-break on edge identity, so
+//! the output is a function of the arguments alone and not of how the working
+//! set happened to be enumerated. That is deliberate — see
+//! [`CollapseCandidate`]'s ordering for what happened when it was not.
 
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use cf_geometry::IndexedMesh;
-use nalgebra::{Matrix4, Point3, Vector4};
+use nalgebra::{Matrix4, Point3, Vector3, Vector4};
 
 use crate::field_node::FieldNode;
 
@@ -72,7 +78,7 @@ impl Quadric {
 // ── Edge key ──────────────────────────────────────────────────────────────
 
 /// Canonical edge key with `lo < hi`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct Edge(u32, u32);
 
 impl Edge {
@@ -93,7 +99,7 @@ struct CollapseCandidate {
 
 impl PartialEq for CollapseCandidate {
     fn eq(&self, other: &Self) -> bool {
-        self.cost == other.cost
+        self.cmp(other) == std::cmp::Ordering::Equal
     }
 }
 impl Eq for CollapseCandidate {}
@@ -105,11 +111,24 @@ impl PartialOrd for CollapseCandidate {
 }
 impl Ord for CollapseCandidate {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // Reverse: min-heap by cost
+        // Reverse: min-heap by cost.
+        //
+        // ★ The tie-break is not cosmetic — it is what makes the output
+        // reproducible. A planar quadric has zero error at every point of its
+        // plane, so across a flat region *every* candidate costs exactly 0 and
+        // ties. Ordering by cost alone leaves those ties to heap insertion
+        // order, which came from iterating a `HashSet<Edge>` — and `RandomState`
+        // reseeds per process. Measured 2026-08-20: twenty runs of
+        // `mesh_to_tolerance` on one cuboid-minus-cylinder at a byte-identical
+        // sha returned twenty different meshes. Comparing the edge and its
+        // generation as well makes the pop sequence a function of the heap's
+        // contents rather than of how they arrived.
         other
             .cost
             .partial_cmp(&self.cost)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| other.edge.cmp(&self.edge))
+            .then_with(|| other.generation.cmp(&self.generation))
     }
 }
 
@@ -360,6 +379,41 @@ impl SimplMesh {
         }
     }
 
+    /// The faces this collapse would leave behind, each as `(before, after)`:
+    /// the triangle as it stands now, and as it would stand once both endpoints
+    /// have moved to `target`. Both halves are needed — a guard that looks only
+    /// at `after` cannot tell damage this collapse *caused* from damage it
+    /// merely *inherited*.
+    ///
+    /// The two faces that touch *both* endpoints are absent — a collapse
+    /// degenerates them to a line and [`Self::collapse_edge`] drops them. That
+    /// is also why chaining the two one-rings needs no dedup pass: a face
+    /// reachable from both endpoints is by definition a face containing both,
+    /// and every such face is the kind this filter drops.
+    fn faces_after_collapse(
+        &self,
+        edge: Edge,
+        target: Point3<f64>,
+    ) -> impl Iterator<Item = ([Point3<f64>; 3], [Point3<f64>; 3])> + '_ {
+        let on_edge = move |vertex: u32| vertex == edge.0 || vertex == edge.1;
+        self.vertex_faces[edge.0 as usize]
+            .iter()
+            .chain(self.vertex_faces[edge.1 as usize].iter())
+            .map(|&fi| self.faces[fi])
+            .filter(move |face| face.iter().filter(|&&v| on_edge(v)).count() < 2)
+            .map(move |face| {
+                let before = face.map(|vertex| self.positions[vertex as usize]);
+                let after = face.map(|vertex| {
+                    if on_edge(vertex) {
+                        target
+                    } else {
+                        self.positions[vertex as usize]
+                    }
+                });
+                (before, after)
+            })
+    }
+
     /// Re-queue updated edges around a vertex after a collapse.
     fn requeue_around(&self, vertex: u32, heap: &mut BinaryHeap<CollapseCandidate>) {
         let face_indices: Vec<usize> = self.vertex_faces[vertex as usize].iter().copied().collect();
@@ -437,6 +491,182 @@ impl SimplMesh {
     }
 }
 
+// ── Collapse guards ───────────────────────────────────────────────────────
+
+/// Barycentric weights of the probe lattice — sixth steps with the three
+/// corners dropped, so twenty-five points spread over the face.
+const PROBE_WEIGHTS: [[f64; 3]; 25] = [
+    [0.0, 1.0 / 6.0, 5.0 / 6.0],
+    [0.0, 2.0 / 6.0, 4.0 / 6.0],
+    [0.0, 3.0 / 6.0, 3.0 / 6.0],
+    [0.0, 4.0 / 6.0, 2.0 / 6.0],
+    [0.0, 5.0 / 6.0, 1.0 / 6.0],
+    [1.0 / 6.0, 0.0, 5.0 / 6.0],
+    [1.0 / 6.0, 1.0 / 6.0, 4.0 / 6.0],
+    [1.0 / 6.0, 2.0 / 6.0, 3.0 / 6.0],
+    [1.0 / 6.0, 3.0 / 6.0, 2.0 / 6.0],
+    [1.0 / 6.0, 4.0 / 6.0, 1.0 / 6.0],
+    [1.0 / 6.0, 5.0 / 6.0, 0.0],
+    [2.0 / 6.0, 0.0, 4.0 / 6.0],
+    [2.0 / 6.0, 1.0 / 6.0, 3.0 / 6.0],
+    [2.0 / 6.0, 2.0 / 6.0, 2.0 / 6.0],
+    [2.0 / 6.0, 3.0 / 6.0, 1.0 / 6.0],
+    [2.0 / 6.0, 4.0 / 6.0, 0.0],
+    [3.0 / 6.0, 0.0, 3.0 / 6.0],
+    [3.0 / 6.0, 1.0 / 6.0, 2.0 / 6.0],
+    [3.0 / 6.0, 2.0 / 6.0, 1.0 / 6.0],
+    [3.0 / 6.0, 3.0 / 6.0, 0.0],
+    [4.0 / 6.0, 0.0, 2.0 / 6.0],
+    [4.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0],
+    [4.0 / 6.0, 2.0 / 6.0, 0.0],
+    [5.0 / 6.0, 0.0, 1.0 / 6.0],
+    [5.0 / 6.0, 1.0 / 6.0, 0.0],
+];
+
+/// The points on a triangle that a deviation test has to look at.
+///
+/// Not the corners. A collapse only ever moves one corner, and it moves it to a
+/// point the caller has already tested — so a corner test re-asks a question
+/// whose answer is known, and learns nothing about the surface spanning them.
+///
+/// ★ Density is a measured trade, not a taste. Meshing a 10 mm block with a
+/// ⌀4 through-hole at `max_deviation = 0.2`, then sweeping the *output* faces
+/// barycentrically to find how far the surface really strays, with
+/// [`collapse_inverts_a_face`] in place:
+///
+/// | probes per face | worst stray | volume error | faces | inverted | time |
+/// |-----------------|-------------|--------------|-------|----------|------|
+/// | 3               | 2.052       | 17.2 %       | 66    | 0        | 2.98 s |
+/// | 7               | 0.481       | 2.71 %       | 50    | 0        | 2.98 s |
+/// | 12              | 0.363       | 1.55 %       | 68    | 1        | 3.11 s |
+/// | **25 (this)**   | **0.223**   | **0.12 %**   | 58    | **0**    | **3.24 s** |
+///
+/// Twenty-five is chosen because it is the only density here that leaves no
+/// inverted geometry and lands its worst stray nearest the tolerance it was
+/// asked for — 0.223 against 0.2 — and it costs almost nothing to get there.
+/// The time column is flat because [`collapse_inverts_a_face`] runs first and
+/// rejects most candidates before any of these probes are evaluated; density is
+/// only paid on the survivors.
+///
+/// ⚠ The stray column is a barycentric sweep at n=64, which is converged. An
+/// earlier revision of this table quoted an n=12 sweep and so understated every
+/// figure — sampling error in the measurement of a sampling error.
+///
+/// ⚠ Note what the stray column does *not* reach: 0.2. A finite sample bounds
+/// the points it visits, and the surface between them can still bow further.
+/// See [`simplify_mesh_tolerance`] for what that means for the caller.
+fn surface_probes(tri: &[Point3<f64>; 3]) -> [Point3<f64>; PROBE_WEIGHTS.len()] {
+    PROBE_WEIGHTS
+        .map(|[u, v, w]| Point3::from(tri[0].coords * u + tri[1].coords * v + tri[2].coords * w))
+}
+
+/// Unnormalized face normal — length is twice the area, direction is the winding.
+fn triangle_normal(tri: &[Point3<f64>; 3]) -> Vector3<f64> {
+    (tri[1] - tri[0]).cross(&(tri[2] - tri[0]))
+}
+
+/// Which way this triangle faces relative to the field, or `None` when the
+/// field cannot say.
+///
+/// ⚠ `None` is not a formality, and the reason is worth keeping. `grad_cuboid`
+/// used to return a zero vector for any probe outside the box by less than an
+/// *absolute* `1e-15`, and a face centroid `(h + h + h) / 3.0` sits a few ULP
+/// proud of the plane for most half-extents `h`. That band is now `== 0.0`
+/// (see `gradient.rs`), which is the real fix; this abstain is the second line
+/// of defence for field nodes that genuinely have no gradient somewhere.
+///
+/// ⚠⚠ What the pair of defects did, measured 2026-08-20, because the shape of it
+/// is instructive: reading a zero gradient as "inverted" *and* judging winding
+/// absolutely rather than differentially took `cuboid(3.7,3.7,3.7)` at 0.3 from
+/// 14 faces to **7500**, and a 5×5×0.4 plate from 14 to **1988**. ⚠ It needed
+/// both — a 4-way run gives 12 and 16 faces for either defect alone, and 7500
+/// and 1988 only together. An earlier revision of this comment claimed either
+/// one sufficed; that was asserted, not measured, and it was wrong.
+///
+/// It survived the entire suite because every fixture in it, at the time, used
+/// a half-extent — 0.5, 1, 2, 3, 5 — for which that centroid expression is
+/// exact.
+fn winds_inward(tri: &[Point3<f64>; 3], node: &FieldNode) -> Option<bool> {
+    let normal = triangle_normal(tri);
+    let centroid = Point3::from((tri[0].coords + tri[1].coords + tri[2].coords) / 3.0);
+    let gradient = node.gradient(&centroid);
+    if normal.norm() < f64::EPSILON || gradient.norm() < f64::EPSILON {
+        return None;
+    }
+    Some(normal.dot(&gradient) <= 0.0)
+}
+
+/// Would this collapse turn an outward face inward, or flatten one to nothing?
+///
+/// ★ Judged against the **field gradient**, which is the outward direction, not
+/// against the face's own previous normal. A before/after normal test asks "did
+/// this face rotate more than 90°", which ordinary coarsening does all the time
+/// — measured, it rejected 147476 collapses on one cube against 3577 deviation
+/// rejections, and drove a cuboid-minus-cylinder to 828 faces to buy what this
+/// buys at 60.
+///
+/// ★★ Differential, not absolute — and that applies to the zero-area branch
+/// below as much as to the winding test. A face that was *already* wound inward,
+/// or already had no area, is not this collapse's doing, and rejecting on it
+/// freezes the damaged neighbourhood so nothing can ever coarsen it. Measured
+/// with the absolute form, `cone(3,6)` at 0.3 came back as 126 faces of which
+/// **52 had exactly zero area** — 41 % of the shipped mesh was degenerate
+/// triangles the simplifier had been forbidden to remove. Differential on both
+/// counts, the same cone is **24 faces, none degenerate, none inverted**, at the
+/// same volume.
+///
+/// ⚠ A distance bound cannot see any of this. Every point of a box face has
+/// field exactly 0, so an inverted triangle lying *in* that face satisfies the
+/// deviation probes exactly, and the topology census cannot see it either: an
+/// in-plane fold still gives every edge one traversal each way, and its signed
+/// volume contribution cancels. Measured on `cuboid(5,5,5).subtract(cylinder(2,6))`
+/// at 0.2 without this guard: 7 of 60 faces wound backwards, `normal · ∇f` of
+/// exactly −1.0, the largest 7.05 mm² — through a mesh that read closed,
+/// manifold, consistently wound, and correct to 1 % on volume.
+fn collapse_inverts_a_face(
+    affected: impl Iterator<Item = ([Point3<f64>; 3], [Point3<f64>; 3])>,
+    node: &FieldNode,
+) -> bool {
+    affected.into_iter().any(|(before, after)| {
+        // A collapse that flattens a face to nothing is refused — but only if
+        // the face had area to begin with. This branch was absolute while the
+        // winding test beside it was made differential, which is the same defect
+        // one line apart: the mesher emits exactly-zero-area triangles (84 of
+        // them on `cone(3,6)` at 0.3), and refusing every collapse that touches
+        // one freezes that neighbourhood permanently — the cone measurement in
+        // this function's own docs is what that cost.
+        if triangle_normal(&after).norm() < f64::EPSILON {
+            return triangle_normal(&before).norm() >= f64::EPSILON;
+        }
+        winds_inward(&after, node) == Some(true) && winds_inward(&before, node) != Some(true)
+    })
+}
+
+/// Does the *surface* stay within `max_deviation` of the field?
+///
+/// ⚠ This is a different question from "is the new vertex within
+/// `max_deviation`", and the gap between them is not academic. Every point of
+/// a box face has field exactly 0, so a vertex-only test never objects to
+/// anything on a planar region and the collapse runs until the region is gone.
+/// Measured on a 10 mm cube 2026-08-20, before this guard existed:
+/// `mesh_to_tolerance(0.2)` returned **2 faces and volume 0.0** from a 28812-face
+/// input, with every surviving vertex dutifully within tolerance.
+///
+/// Twenty-five probes per face is a sample, not a proof — a triangle can still bow
+/// away from the field between them. It is a sample of the surface, which is
+/// the thing being bounded, rather than of corners already known to sit on it.
+fn collapse_stays_within_deviation(
+    affected: impl Iterator<Item = ([Point3<f64>; 3], [Point3<f64>; 3])>,
+    node: &FieldNode,
+    max_deviation: f64,
+) -> bool {
+    affected.into_iter().all(|(_, face)| {
+        surface_probes(&face)
+            .iter()
+            .all(|probe| node.evaluate(probe).abs() <= max_deviation)
+    })
+}
+
 // ── Public API ────────────────────────────────────────────────────────────
 
 /// Simplify a mesh to the target face count using QEM edge collapse.
@@ -495,11 +725,43 @@ pub fn simplify_mesh(mesh: &IndexedMesh, target_faces: usize) -> IndexedMesh {
     sm.to_indexed_mesh()
 }
 
-/// Simplify a mesh until the next edge collapse would exceed `max_deviation`
-/// from the true implicit surface.
+/// Simplify a mesh until the next edge collapse would carry the surface past
+/// `max_deviation` from the true implicit surface at a sampled point.
 ///
-/// Uses the field node to verify that each collapsed vertex stays within
-/// the tolerance: `|field(v)| ≤ max_deviation`.
+/// A collapse is accepted only when `|field| ≤ max_deviation` at the new vertex
+/// *and* at each of [`surface_probes`]'s twenty-five points on every face the
+/// collapse leaves behind, and only when it does not *turn* such a face inward — see
+/// [`collapse_inverts_a_face`], which catches what a distance bound cannot.
+///
+/// ⚠ That is a promise about what a collapse adds, not about the mesh it is
+/// handed. Faces already wound inward in the input survive simplification, and
+/// they exist: `Solid::cone(3,6).mesh_adaptive(0.3)` arrives with 40 of them.
+/// Simplifying that cone leaves none — but that is repair by luck, not by
+/// contract: the collapses that removed them were simply ones this guard had no
+/// reason to refuse. The off-centre loft in `every_bounded_primitive_simplifies_to_clean_geometry`
+/// is the honest example, arriving with 480 inverted faces and leaving with 1.
+///
+/// ⚠ The vertex test alone is vacuous on flat geometry — see
+/// [`collapse_stays_within_deviation`] for the measurement that says so.
+///
+/// ⚠⚠ This bounds the points it samples, not every point of every face, so it
+/// is a strong bound and not a guarantee. Sweeping the output faces at n=64 —
+/// converged, unlike the n=12 sweep an earlier revision quoted — a 10 mm block
+/// with a ⌀4 through-hole at `max_deviation = 0.2` strays 0.223, a 4 mm cube at
+/// 0.3 strays 0.296, a sphere 0.312, and a *plain* 10 mm cube at 0.2 strays
+/// 0.281 — the worst of them, at 1.41×.
+///
+/// ⚠⚠ Read that as a sample, not a bound. Nothing in this algorithm limits how
+/// far a face may bow between its probes; the figures above are what a set of
+/// shapes happened to produce, and denser-featured parts have been measured
+/// worse. Two earlier revisions of this comment each quoted a range as though it
+/// were a ceiling — "1.0–1.2×" before the plain cube was measured, then
+/// "1.0–1.45×" before multi-feature parts were — which is the same mistake
+/// twice, and the reason this paragraph now says what kind of claim it is.
+///
+/// Callers who need a true envelope want a Lipschitz-bounded test (the field's
+/// `lipschitz_factor` and the triangle's size give one), which costs sample
+/// density proportional to face area and has not been built.
 ///
 /// # Panics
 ///
@@ -545,8 +807,24 @@ pub fn simplify_mesh_tolerance(
 
         let (_, target) = sm.collapse_info(edge);
 
-        let field_val = node.evaluate(&target).abs();
-        if field_val > max_deviation {
+        if node.evaluate(&target).abs() > max_deviation {
+            continue;
+        }
+
+        // Inversion first: one gradient and one cross product per face against
+        // the deviation test's twenty-five field evaluations, and on flat
+        // geometry it is the one that fires. Both are pure predicates over the
+        // same faces, so the order cannot change a decision — only the work.
+        // Measured: 6.34 s to 2.97 s on the 10 mm block, byte-identical output.
+        if collapse_inverts_a_face(sm.faces_after_collapse(edge, target), node) {
+            continue;
+        }
+
+        if !collapse_stays_within_deviation(
+            sm.faces_after_collapse(edge, target),
+            node,
+            max_deviation,
+        ) {
             continue;
         }
 
@@ -699,6 +977,98 @@ mod tests {
             simplified.face_count(),
             mesh.face_count()
         );
+    }
+
+    #[test]
+    fn a_flat_solid_keeps_its_volume_through_tolerance_simplification() {
+        // ★ The case a vertex-only deviation test cannot see. Every point of a
+        // box face has field exactly 0, so asking "is the new vertex within
+        // tolerance" is vacuous there and the collapse ran until the box was
+        // gone. Measured 2026-08-20 on a 10 mm cube before the surface probes
+        // existed: 28812 faces down to 2, volume 1000 down to 0.0, and every
+        // surviving vertex dutifully inside tolerance.
+        //
+        // A sphere cannot stand in for this. Curvature bounds how far a
+        // collapse can travel before some vertex leaves tolerance, so every
+        // sphere test in this module passed throughout.
+        let (half_extent, max_dev) = (2.0, 0.3);
+        let cube = Solid::cuboid(nalgebra::Vector3::new(
+            half_extent,
+            half_extent,
+            half_extent,
+        ));
+        let mesh = cube.mesh_adaptive(max_dev);
+        let simplified = simplify_mesh_tolerance(&mesh.geometry, &cube.node, max_dev);
+
+        // The band, not a round number. Each face may sit up to `max_dev`
+        // either side of its true plane and still be a correct answer, so the
+        // volume the simplifier is allowed to return runs from the fully
+        // shrunk box to the fully grown one. Outside that band it is not a
+        // coarser box, it is a broken one — and the old guard returned 0.0.
+        let shrunk = (2.0 * (half_extent - max_dev)).powi(3);
+        let grown = (2.0 * (half_extent + max_dev)).powi(3);
+        let volume = simplified.signed_volume();
+        assert!(
+            (shrunk..=grown).contains(&volume),
+            "volume {volume:.3} is outside the {shrunk:.3}..={grown:.3} a {max_dev} mm \
+             tolerance allows (exact {:.1}, from {} faces)",
+            (2.0 * half_extent).powi(3),
+            simplified.face_count(),
+        );
+
+        // The other half of the claim: a guard that rejects everything would
+        // also keep the volume. Simplification still has to happen.
+        assert!(
+            simplified.face_count() * 4 < mesh.face_count(),
+            "expected a large reduction, got {} faces from {}",
+            simplified.face_count(),
+            mesh.face_count(),
+        );
+    }
+
+    #[test]
+    fn target_simplification_is_reproducible() {
+        // The module header claims *both* entry points are deterministic. They
+        // share `CollapseCandidate`'s ordering, so they stand or fall together —
+        // but a claim with no gate is how the last one got away.
+        //
+        // ⚠ A cuboid, not a sphere. Written against a sphere first, this passed
+        // with the tie-break deleted: curvature gives every candidate a distinct
+        // quadric error, so there are no ties to resolve and nothing to get
+        // wrong. Flat faces are where every candidate costs exactly 0, which is
+        // the whole reason the ordering had to become total.
+        let cube = Solid::cuboid(nalgebra::Vector3::new(2.0, 2.0, 2.0));
+        let mesh = cube.mesh_adaptive(0.3);
+        let target = mesh.face_count() / 2;
+
+        let first = simplify_mesh(&mesh.geometry, target);
+        let second = simplify_mesh(&mesh.geometry, target);
+
+        assert_eq!(
+            first.vertices, second.vertices,
+            "vertices differ between runs"
+        );
+        assert_eq!(first.faces, second.faces, "faces differ between runs");
+    }
+
+    #[test]
+    fn tolerance_simplification_is_reproducible() {
+        // Equal-cost collapses — which on a flat region is nearly all of them —
+        // used to resolve in `HashSet` iteration order, and `RandomState`
+        // reseeds per process. Twenty runs at a byte-identical sha returned
+        // twenty different meshes; that is what made `mesh_to_tolerance_subtract`
+        // fail intermittently in CI on a tree nobody had touched.
+        let cube = Solid::cuboid(nalgebra::Vector3::new(2.0, 2.0, 2.0));
+        let mesh = cube.mesh_adaptive(0.3);
+
+        let first = simplify_mesh_tolerance(&mesh.geometry, &cube.node, 0.3);
+        let second = simplify_mesh_tolerance(&mesh.geometry, &cube.node, 0.3);
+
+        assert_eq!(
+            first.vertices, second.vertices,
+            "vertices differ between runs"
+        );
+        assert_eq!(first.faces, second.faces, "faces differ between runs");
     }
 
     #[test]
