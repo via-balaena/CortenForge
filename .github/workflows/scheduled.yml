@@ -349,16 +349,17 @@ jobs:
   #
   # What belongs here is the command and its SCOPE, stated rather than implied:
   # default features, `--workspace`, lib and bin targets. The promise is about
-  # CONSUMING these crates, so dev-dependencies are out of scope. `--all-features`
-  # is deliberately NOT used, because that union does not currently build:
-  # `sim-bevy`'s `trace` feature enables `bevy/trace`, which turns on `profiling`'s
-  # tracing backend for the proc-macro while the `profiling` lib's `tracing`
-  # re-export stays gated off, and `rav1e` — reachable via `bevy_image` -> `image`
-  # -> `ravif` in the DEFAULT graph — then fails with 62 E0433s. Measured on macOS
-  # on 1.92 AND on the pinned 1.96, so it is not an MSRV question; `cargo tree -e
-  # features` reports the same union for the Linux target, though it has not been
-  # run to completion there. It needs its own fix, and folding it in here would
-  # only make this job un-passable for a reason it does not claim to check.
+  # CONSUMING these crates, so dev-dependencies are out of scope, and default
+  # features are what a consumer gets by naming the crate.
+  #
+  # `--all-features` is deliberately NOT used, and that is now a CHOICE rather than
+  # a blocker. It was a blocker when this job was written: the union did not build
+  # at all until `sim-bevy`'s unused `trace` feature was disabled — see that
+  # crate's manifest for the `profiling` lib/macro feature split it tripped. What
+  # remains is scope (an optional feature's MSRV is a promise nobody made) and cost
+  # (it drags every optional dependency in the graph into a job whose question is
+  # whether the DECLARED toolchain still builds what we ship). The union itself is
+  # checked weekly by the Clippy drift job below, which does pass `--all-features`.
   #
   # Deliberately uncached: the weekly cadence makes the rebuild cost irrelevant, and
   # a cache keyed on a different toolchain than the one under test is one more way

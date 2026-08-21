@@ -67,8 +67,38 @@ x11 = ["bevy/x11"]
 wayland = ["bevy/wayland"]
 # Ray-traced rendering (requires RTX GPU, Bevy 0.18+)
 # solari = ["bevy/bevy_solari"]
-# GPU profiling
-trace = ["bevy/trace"]
+# GPU profiling. DISABLED — it does not build, and it took the whole workspace's
+# `--all-features` down with it.
+#
+# `bevy/trace` turns on `profiling`'s tracing backend. `profiling-procmacros`
+# resolves to ONE unit for the whole graph, so it gets compiled with
+# `profile-with-tracing` for everybody — while `profiling` (the lib) resolves to
+# TWO units, and the one `rav1e` links has that feature OFF. Measured with
+# `cargo +nightly -Z unstable-options --unit-graph`:
+#
+#   profiling@1.0.17             [default, procmacros, profiling-procmacros]
+#   profiling@1.0.17             [default, procmacros, profile-with-tracing, tracing]
+#   profiling-procmacros@1.0.17  [profile-with-tracing]          <- single, shared
+#
+# `#[profiling::function]` inside rav1e then expands to `profiling::tracing::…`
+# against the instance lacking that re-export: 62 x E0433. rav1e is reachable via
+# `bevy_image -> image -> ravif` in the DEFAULT graph, so nothing here avoids it.
+#
+# Nothing in the workspace ever enabled this feature — but `--all-features` did,
+# which is how it broke `Clippy drift` and `Benchmark Baseline` every week, and the
+# pre-commit hook (which clippies changed crates in one `--all-features` call).
+#
+# ⚠ Re-enabling needs the lib/macro split resolved upstream — not just this line
+# uncommented, and NOT the workaround that suggests itself. Declaring
+# `profiling = { version = "1.0", features = ["profile-with-tracing"] }` as a direct
+# dependency here, to force the lib feature on target-side, was TRIED and MEASURED:
+# still 62 x E0433, identical rav1e failure. The forced feature unifies with bevy's
+# instance, not with the one rav1e links, so it changes nothing that matters.
+#
+# Dropping the feature also prunes `tracing-error` and `bevy_anti_alias` from the
+# lock, both reached only via `bevy_internal/trace`; nothing here uses anti-aliasing
+# (checked `Msaa`, `Fxaa`, `Smaa`, `TemporalAntiAlias` — no references).
+# trace = ["bevy/trace"]
 
 [lints.rust]
 unsafe_code = "forbid"
