@@ -283,6 +283,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # This job had no system-dependency step at all, so it never reached a
+      # benchmark: `yeslogic-fontconfig-sys` panicked in its build script and the
+      # build failed, measured on the 2026-08-18 run. Same package, same cause as
+      # the clippy-drift job below.
+      - name: Install system dependencies
+        uses: ./.github/actions/install-linux-deps
+        with:
+          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -332,17 +341,59 @@ jobs:
   # ============================================================================
   # MSRV CHECK
   # ============================================================================
+  # Checks that the workspace still builds on the toolchain `[workspace.package]
+  # rust-version` promises consumers. HOW that toolchain is resolved, and the three
+  # defects that stopped this job ever compiling a line, live in
+  # `.github/actions/msrv-toolchain/` — in a script, so they can be linted and
+  # tested rather than argued. No Rust version is named anywhere in this job.
+  #
+  # What belongs here is the command and its SCOPE, stated rather than implied:
+  # default features, `--workspace`, lib and bin targets. The promise is about
+  # CONSUMING these crates, so dev-dependencies are out of scope. `--all-features`
+  # is deliberately NOT used, because that union does not currently build:
+  # `sim-bevy`'s `trace` feature enables `bevy/trace`, which turns on `profiling`'s
+  # tracing backend for the proc-macro while the `profiling` lib's `tracing`
+  # re-export stays gated off, and `rav1e` — reachable via `bevy_image` -> `image`
+  # -> `ravif` in the DEFAULT graph — then fails with 62 E0433s. Measured on macOS
+  # on 1.92 AND on the pinned 1.96, so it is not an MSRV question; `cargo tree -e
+  # features` reports the same union for the Linux target, though it has not been
+  # run to completion there. It needs its own fix, and folding it in here would
+  # only make this job un-passable for a reason it does not claim to check.
+  #
+  # Deliberately uncached: the weekly cadence makes the rebuild cost irrelevant, and
+  # a cache keyed on a different toolchain than the one under test is one more way
+  # for a job to measure something other than what it says.
   msrv:
     name: MSRV Check
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install MSRV Rust
-        uses: dtolnay/rust-toolchain@1.100
+      - name: Install system dependencies
+        uses: ./.github/actions/install-linux-deps
+        with:
+          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
 
-      - name: Check builds with MSRV
-        run: cargo check --all-features
+      # No toolchain action here: rustup ships preinstalled on GitHub-hosted runners,
+      # and the MSRV is the only toolchain this job installs — so there is no second
+      # channel present for a bare `cargo` to fall back to unnoticed.
+      - name: Resolve and install the declared MSRV
+        id: msrv
+        uses: ./.github/actions/msrv-toolchain
+
+      # ⚠ Naming the toolchain on the command line is load-bearing, not decoration:
+      # installing it is not enough, because `rust-toolchain.toml` beats whatever
+      # channel is merely made default. The version reaches the shell as data rather
+      # than by `${{ }}` interpolation into script text, and printing it first means
+      # the log records which cargo actually ran the check.
+      - name: Check the workspace builds on the MSRV
+        env:
+          MSRV: ${{ steps.msrv.outputs.msrv }}
+        run: |
+          set -euo pipefail
+          cargo "+$MSRV" --version
+          cargo "+$MSRV" check --workspace --locked
 
   # ============================================================================
   # CLIPPY TOOLCHAIN-DRIFT EARLY WARNING
@@ -363,10 +414,14 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # `libfontconfig1-dev` is not decoration: without it `yeslogic-fontconfig-sys`
+      # (slint -> the studio crates) panics in its build script, and this job died
+      # there — before running a single lint — on every weekly run through
+      # 2026-08-18. Its red was read as toolchain drift; it was a missing package.
       - name: Install system dependencies
         uses: ./.github/actions/install-linux-deps
         with:
-          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
+          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
 
       - name: Install latest stable Rust
         uses: dtolnay/rust-toolchain@stable

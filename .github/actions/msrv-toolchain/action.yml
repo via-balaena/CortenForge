@@ -1,0 +1,25 @@
+name: Resolve and install the declared MSRV
+description: >
+  Reads `[workspace.package] rust-version` from the workspace manifest, installs
+  exactly that toolchain, and asserts the rustc it got back is the one it asked for.
+  Deliberately takes NO version input: naming a Rust version anywhere in CI is what
+  let an updater "upgrade" the old MSRV pin to a toolchain that does not exist, and
+  the job then failed in under a second every week for months. The reasoning and the
+  measurements live in `msrv.sh`, which is a file rather than an inline block so it
+  can be linted and tested — see `test.sh`.
+
+outputs:
+  msrv:
+    description: >
+      The MSRV read from the manifest, e.g. the workspace's declared version. Name it
+      on the command line (`cargo "+$MSRV"`) — installing a toolchain is NOT enough,
+      because `rust-toolchain.toml` beats whatever channel is merely made default.
+    value: ${{ steps.resolve.outputs.msrv }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve and install the declared MSRV
+      id: resolve
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/msrv.sh"
