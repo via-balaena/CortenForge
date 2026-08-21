@@ -160,11 +160,17 @@ jobs:
           command -v shellcheck
           command -v timeout
 
+      # Globbed across every action directory rather than naming one: a new action's
+      # script would otherwise be unlinted, which is the same shape of hole as CI
+      # shell that lives inline and is therefore neither linted nor tested.
       - name: Shellcheck the CI shell scripts
-        run: shellcheck -s bash .github/actions/install-linux-deps/*.sh
+        run: shellcheck -s bash .github/actions/*/*.sh
 
       - name: apt bound behaves
         run: bash .github/actions/install-linux-deps/test.sh
+
+      - name: MSRV resolution behaves
+        run: bash .github/actions/msrv-toolchain/test.sh
   affected:
     name: Affected crates
     runs-on: ubuntu-latest
