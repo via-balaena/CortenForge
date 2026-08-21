@@ -298,15 +298,65 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      # ⚠ `cargo bench --all-features -- --save-baseline weekly` could never have
+      # worked, and nobody had seen it try: this job died in `apt` for months, then in
+      # the `--all-features` union, and only reached its own command on 2026-08-21.
+      #
+      # Bare `cargo bench` benchmarks every target whose manifest leaves `bench = true`
+      # — every lib and every bin — and those run under the stock libtest harness,
+      # which rejects criterion's flag before any real benchmark starts:
+      #
+      #   Running unittests src/lib.rs (…/cf_anthro-…)
+      #   error: Unrecognized option: 'save-baseline'
+      #
+      # ⚠ `--benches` does NOT fix this, however much it reads like it should. Cargo
+      # defines it as "benchmark all targets that have `bench = true` set", i.e. the
+      # same set. Verified rather than assumed: the `-Z unstable-options --unit-graph`
+      # output is byte-identical with and without it, and the failure reproduces
+      # unchanged. Only `--bench <NAME>` selects an actual bench target.
+      #
+      # The names are derived from the manifests rather than listed here, for the same
+      # reason the MSRV job derives its toolchain: a hardcoded list goes stale in
+      # silence, and a newly added criterion bench would simply never be run while this
+      # job kept reporting success.
       - name: Run benchmarks
-        run: cargo bench --all-features -- --save-baseline weekly
+        run: |
+          set -euo pipefail
 
+          # ⚠ Captured in stages, NOT as `mapfile < <(cargo metadata | jq …)`. `set -e`
+          # does not fire for a pipeline inside a process substitution — verified — so
+          # a broken `cargo metadata` or missing `jq` would leave the list empty and be
+          # reported below as "no bench targets", blaming the manifests for a tooling
+          # failure. Written this way, each tool fails this step with its own error.
+          meta=$(cargo metadata --no-deps --format-version 1)
+          names_raw=$(jq -r '.packages[].targets[] | select(.kind[] == "bench") | .name' <<< "$meta" | sort -u)
+
+          # Fail closed. Zero targets would otherwise benchmark nothing and pass,
+          # which is the exact shape of failure this workflow keeps producing.
+          if [ -z "$names_raw" ]; then
+            echo "::error::no bench targets found in any manifest - this job would have benchmarked nothing and reported success"
+            exit 1
+          fi
+
+          mapfile -t names <<< "$names_raw"
+          args=()
+          for n in "${names[@]}"; do args+=(--bench "$n"); done
+          echo "benchmarking ${#names[@]} target(s): ${names[*]}"
+
+          cargo bench --workspace --all-features "${args[@]}" -- --save-baseline weekly
+
+      # ⚠ `if-no-files-found` defaults to `warn`, which would upload an empty artifact
+      # and let this job report success having saved no baseline — the same shape of
+      # quiet nothing it produced for months. `target/criterion` is criterion's default
+      # `CRITERION_HOME` relative to the workspace target dir; if that ever moves, this
+      # should fail rather than shrug.
       - name: Upload benchmark results
         uses: actions/upload-artifact@v6
         with:
           name: benchmark-baseline
           path: target/criterion
           retention-days: 90
+          if-no-files-found: error
 
   # ============================================================================
   # SUPPLY CHAIN VERIFICATION
