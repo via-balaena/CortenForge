@@ -543,9 +543,10 @@ const PROBE_WEIGHTS: [[f64; 3]; 25] = [
 ///
 /// Twenty-five is chosen because it is the only density here that leaves no
 /// inverted geometry and lands its worst stray nearest the tolerance it was
-/// asked for — 0.223 against 0.2 — and it costs almost nothing to get there. The time column is flat because
-/// [`collapse_inverts_a_face`] runs first and rejects most candidates before
-/// any of these probes are evaluated; density is only paid on the survivors.
+/// asked for — 0.223 against 0.2 — and it costs almost nothing to get there.
+/// The time column is flat because [`collapse_inverts_a_face`] runs first and
+/// rejects most candidates before any of these probes are evaluated; density is
+/// only paid on the survivors.
 ///
 /// ⚠ The stray column is a barycentric sweep at n=64, which is converged. An
 /// earlier revision of this table quoted an n=12 sweep and so understated every
@@ -631,9 +632,8 @@ fn collapse_inverts_a_face(
         // winding test beside it was made differential, which is the same defect
         // one line apart: the mesher emits exactly-zero-area triangles (84 of
         // them on `cone(3,6)` at 0.3), and refusing every collapse that touches
-        // one freezes that neighbourhood permanently. Measured, the cone shipped
-        // 126 faces of which 52 had exactly zero area — 41 % of the mesh was
-        // degenerate triangles the simplifier had been forbidden to remove.
+        // one freezes that neighbourhood permanently — the cone measurement in
+        // this function's own docs is what that cost.
         if triangle_normal(&after).norm() < f64::EPSILON {
             return triangle_normal(&before).norm() >= f64::EPSILON;
         }
@@ -756,10 +756,11 @@ pub fn simplify_mesh(mesh: &IndexedMesh, target_faces: usize) -> IndexedMesh {
 /// worse. Two earlier revisions of this comment each quoted a range as though it
 /// were a ceiling — "1.0–1.2×" before the plain cube was measured, then
 /// "1.0–1.45×" before multi-feature parts were — which is the same mistake
-/// twice, and the reason this paragraph now says what kind of claim it is. Callers who need a true envelope want a
-/// Lipschitz-bounded test (the field's `lipschitz_factor` and the triangle's
-/// size give one), which costs sample density proportional to face area and has
-/// not been built.
+/// twice, and the reason this paragraph now says what kind of claim it is.
+///
+/// Callers who need a true envelope want a Lipschitz-bounded test (the field's
+/// `lipschitz_factor` and the triangle's size give one), which costs sample
+/// density proportional to face area and has not been built.
 ///
 /// # Panics
 ///
