@@ -2279,11 +2279,11 @@ fn mesh_to_tolerance_winds_every_face_outward() {
         // If this ever fails, check `simplification_never_adds_an_inverted_face`
         // first: that one states the property the guard actually owns.
         let mesh = shape.mesh_to_tolerance(max_dev);
+        let inverted = faces_wound_inward(&mesh, &shape);
         assert_eq!(
-            faces_wound_inward(&mesh, &shape),
+            inverted,
             0,
-            "{label}: {} of {} faces wind into the solid rather than out of it",
-            faces_wound_inward(&mesh, &shape),
+            "{label}: {inverted} of {} faces wind into the solid rather than out of it",
             mesh.geometry.faces.len(),
         );
     }
@@ -2485,16 +2485,17 @@ fn simplification_never_adds_an_inverted_face() {
              at most {ceiling} is what freezing-free collapse was measured to leave"
         );
     }
+}
 
-    // ── The dimensions nobody picks for a test ──────────────────────────
-    //
-    // ★★ Every fixture above and in the rest of this file uses a half-extent of
-    // 0.5, 1, 2, 3 or 5 — values for which the centroid expression
-    // `(h + h + h) / 3.0` is exactly `h`. A guard that read a degenerate
-    // gradient as "inverted" therefore never fired in the whole 795-test suite,
-    // while taking `cuboid(3.7,3.7,3.7)` from 14 faces to 7500 and a 5×5×0.4
-    // plate from 14 to 1988. Round numbers were the blind spot, so this is the
-    // test that refuses to use them.
+#[test]
+fn a_box_whose_dimensions_are_not_round_numbers_still_simplifies() {
+    // ★★ Every other fixture in this file uses a half-extent of 0.5, 1, 2, 3 or
+    // 5 — values for which the centroid expression `(h + h + h) / 3.0` is
+    // exactly `h`. A guard that read a degenerate gradient as "inverted"
+    // therefore never fired anywhere in the suite, while taking
+    // `cuboid(3.7,3.7,3.7)` from 14 faces to 7500 and a 5×5×0.4 plate from 14 to
+    // 1988. Round numbers were the blind spot, so this is the test that refuses
+    // to use them.
     for (label, extents) in [
         ("3.7 mm cube", Vector3::new(3.7, 3.7, 3.7)),
         ("thin plate", Vector3::new(5.0, 5.0, 0.4)),
