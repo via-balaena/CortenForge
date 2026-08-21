@@ -516,10 +516,10 @@ where
             &mut lm_state,
             "factor_at_position (IFT adjoint at x_final)",
         );
-        if mu != 0.0 {
-            if let Some(xp) = x_prev {
-                factor.woodbury = self.assemble_friction_woodbury(x_curr, xp, dt, &factor);
-            }
+        if mu != 0.0
+            && let Some(xp) = x_prev
+        {
+            factor.woodbury = self.assemble_friction_woodbury(x_curr, xp, dt, &factor);
         }
         factor
     }
@@ -940,10 +940,10 @@ where
                 last_iter: 0,
                 context: info.context,
             })?;
-        if mu != 0.0 {
-            if let Some(xp) = x_prev {
-                factor.woodbury = self.assemble_friction_woodbury(x_curr, xp, dt, &factor);
-            }
+        if mu != 0.0
+            && let Some(xp) = x_prev
+        {
+            factor.woodbury = self.assemble_friction_woodbury(x_curr, xp, dt, &factor);
         }
         Ok(factor)
     }

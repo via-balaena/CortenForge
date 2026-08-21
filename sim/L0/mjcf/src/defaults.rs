@@ -171,10 +171,10 @@ impl DefaultResolver {
             if result.axis.is_none() {
                 result.axis = defaults.axis;
             }
-            if result.limited.is_none() {
-                if let Some(limited) = defaults.limited {
-                    result.limited = Some(limited);
-                }
+            if result.limited.is_none()
+                && let Some(limited) = defaults.limited
+            {
+                result.limited = Some(limited);
             }
             if result.ref_pos.is_none() {
                 result.ref_pos = defaults.ref_pos;
@@ -218,10 +218,10 @@ impl DefaultResolver {
             if result.margin.is_none() {
                 result.margin = defaults.margin;
             }
-            if result.user.is_empty() {
-                if let Some(ref user) = defaults.user {
-                    result.user.clone_from(user);
-                }
+            if result.user.is_empty()
+                && let Some(ref user) = defaults.user
+            {
+                result.user.clone_from(user);
             }
         }
 
@@ -323,10 +323,10 @@ impl DefaultResolver {
             if result.fluidcoef.is_none() {
                 result.fluidcoef = defaults.fluidcoef;
             }
-            if result.user.is_empty() {
-                if let Some(ref user) = defaults.user {
-                    result.user.clone_from(user);
-                }
+            if result.user.is_empty()
+                && let Some(ref user) = defaults.user
+            {
+                result.user.clone_from(user);
             }
             if result.shellinertia.is_none() {
                 result.shellinertia = defaults.shellinertia;
@@ -354,10 +354,9 @@ impl DefaultResolver {
                 .iter()
                 .zip(default_gear.iter())
                 .all(|(a, b)| (a - b).abs() < 1e-10)
+                && let Some(gear) = defaults.gear
             {
-                if let Some(gear) = defaults.gear {
-                    result.gear = gear;
-                }
+                result.gear = gear;
             }
 
             // Control range: apply default if None
@@ -371,38 +370,38 @@ impl DefaultResolver {
             }
 
             // Control limited: apply default only if not explicitly set on element
-            if result.ctrllimited.is_none() {
-                if let Some(ctrllimited) = defaults.ctrllimited {
-                    result.ctrllimited = Some(ctrllimited);
-                }
+            if result.ctrllimited.is_none()
+                && let Some(ctrllimited) = defaults.ctrllimited
+            {
+                result.ctrllimited = Some(ctrllimited);
             }
 
             // Force limited: apply default only if not explicitly set on element
-            if result.forcelimited.is_none() {
-                if let Some(forcelimited) = defaults.forcelimited {
-                    result.forcelimited = Some(forcelimited);
-                }
+            if result.forcelimited.is_none()
+                && let Some(forcelimited) = defaults.forcelimited
+            {
+                result.forcelimited = Some(forcelimited);
             }
 
             // kp: apply default if at default (1.0)
-            if (result.kp - 1.0).abs() < 1e-10 {
-                if let Some(kp) = defaults.kp {
-                    result.kp = kp;
-                }
+            if (result.kp - 1.0).abs() < 1e-10
+                && let Some(kp) = defaults.kp
+            {
+                result.kp = kp;
             }
 
             // kv: apply default if not explicitly set
-            if result.kv.is_none() {
-                if let Some(kv) = defaults.kv {
-                    result.kv = Some(kv);
-                }
+            if result.kv.is_none()
+                && let Some(kv) = defaults.kv
+            {
+                result.kv = Some(kv);
             }
 
             // dampratio: apply default if not explicitly set
-            if result.dampratio.is_none() {
-                if let Some(dr) = defaults.dampratio {
-                    result.dampratio = Some(dr);
-                }
+            if result.dampratio.is_none()
+                && let Some(dr) = defaults.dampratio
+            {
+                result.dampratio = Some(dr);
             }
 
             // Apply <general>-specific defaults.
@@ -454,10 +453,10 @@ impl DefaultResolver {
             }
 
             // Cylinder-specific: sentinel-value detection
-            if (result.area - 1.0).abs() < 1e-10 {
-                if let Some(area) = defaults.area {
-                    result.area = area;
-                }
+            if (result.area - 1.0).abs() < 1e-10
+                && let Some(area) = defaults.area
+            {
+                result.area = area;
             }
             if result.diameter.is_none() {
                 result.diameter = defaults.diameter;
@@ -465,71 +464,71 @@ impl DefaultResolver {
             if result.timeconst.is_none() {
                 result.timeconst = defaults.timeconst;
             }
-            if result.bias == [0.0, 0.0, 0.0] {
-                if let Some(bias) = defaults.bias {
-                    result.bias = bias;
-                }
+            if result.bias == [0.0, 0.0, 0.0]
+                && let Some(bias) = defaults.bias
+            {
+                result.bias = bias;
             }
 
             // Muscle-specific: sentinel-value detection
             if (result.muscle_timeconst.0 - 0.01).abs() < 1e-10
                 && (result.muscle_timeconst.1 - 0.04).abs() < 1e-10
+                && let Some(tc) = defaults.muscle_timeconst
             {
-                if let Some(tc) = defaults.muscle_timeconst {
-                    result.muscle_timeconst = tc;
-                }
+                result.muscle_timeconst = tc;
             }
-            if (result.range.0 - 0.75).abs() < 1e-10 && (result.range.1 - 1.05).abs() < 1e-10 {
-                if let Some(r) = defaults.range {
-                    result.range = r;
-                }
+            if (result.range.0 - 0.75).abs() < 1e-10
+                && (result.range.1 - 1.05).abs() < 1e-10
+                && let Some(r) = defaults.range
+            {
+                result.range = r;
             }
-            if (result.force - (-1.0)).abs() < 1e-10 {
-                if let Some(f) = defaults.force {
-                    result.force = f;
-                }
+            if (result.force - (-1.0)).abs() < 1e-10
+                && let Some(f) = defaults.force
+            {
+                result.force = f;
             }
-            if (result.scale - 200.0).abs() < 1e-10 {
-                if let Some(s) = defaults.scale {
-                    result.scale = s;
-                }
+            if (result.scale - 200.0).abs() < 1e-10
+                && let Some(s) = defaults.scale
+            {
+                result.scale = s;
             }
-            if (result.lmin - 0.5).abs() < 1e-10 {
-                if let Some(v) = defaults.lmin {
-                    result.lmin = v;
-                }
+            if (result.lmin - 0.5).abs() < 1e-10
+                && let Some(v) = defaults.lmin
+            {
+                result.lmin = v;
             }
-            if (result.lmax - 1.6).abs() < 1e-10 {
-                if let Some(v) = defaults.lmax {
-                    result.lmax = v;
-                }
+            if (result.lmax - 1.6).abs() < 1e-10
+                && let Some(v) = defaults.lmax
+            {
+                result.lmax = v;
             }
-            if (result.vmax - 1.5).abs() < 1e-10 {
-                if let Some(v) = defaults.vmax {
-                    result.vmax = v;
-                }
+            if (result.vmax - 1.5).abs() < 1e-10
+                && let Some(v) = defaults.vmax
+            {
+                result.vmax = v;
             }
-            if (result.fpmax - 1.3).abs() < 1e-10 {
-                if let Some(v) = defaults.fpmax {
-                    result.fpmax = v;
-                }
+            if (result.fpmax - 1.3).abs() < 1e-10
+                && let Some(v) = defaults.fpmax
+            {
+                result.fpmax = v;
             }
-            if (result.fvmax - 1.2).abs() < 1e-10 {
-                if let Some(v) = defaults.fvmax {
-                    result.fvmax = v;
-                }
+            if (result.fvmax - 1.2).abs() < 1e-10
+                && let Some(v) = defaults.fvmax
+            {
+                result.fvmax = v;
             }
 
             // Adhesion-specific: sentinel-value detection
-            if (result.gain - 1.0).abs() < 1e-10 {
-                if let Some(g) = defaults.gain {
-                    result.gain = g;
-                }
+            if (result.gain - 1.0).abs() < 1e-10
+                && let Some(g) = defaults.gain
+            {
+                result.gain = g;
             }
-            if result.user.is_empty() {
-                if let Some(ref user) = defaults.user {
-                    result.user.clone_from(user);
-                }
+            if result.user.is_empty()
+                && let Some(ref user) = defaults.user
+            {
+                result.user.clone_from(user);
             }
         }
 
@@ -578,10 +577,10 @@ impl DefaultResolver {
             if result.material.is_none() {
                 result.material.clone_from(&defaults.material);
             }
-            if result.user.is_empty() {
-                if let Some(ref user) = defaults.user {
-                    result.user.clone_from(user);
-                }
+            if result.user.is_empty()
+                && let Some(ref user) = defaults.user
+            {
+                result.user.clone_from(user);
             }
         }
 
@@ -602,10 +601,10 @@ impl DefaultResolver {
             }
 
             // Limited: apply default only if not explicitly set on element
-            if result.limited.is_none() {
-                if let Some(limited) = defaults.limited {
-                    result.limited = Some(limited);
-                }
+            if result.limited.is_none()
+                && let Some(limited) = defaults.limited
+            {
+                result.limited = Some(limited);
             }
 
             // All Option<T> fields: element value wins if set, otherwise inherit default.
@@ -652,10 +651,10 @@ impl DefaultResolver {
             if result.material.is_none() {
                 result.material.clone_from(&defaults.material);
             }
-            if result.user.is_empty() {
-                if let Some(ref user) = defaults.user {
-                    result.user.clone_from(user);
-                }
+            if result.user.is_empty()
+                && let Some(ref user) = defaults.user
+            {
+                result.user.clone_from(user);
             }
         }
 
@@ -671,24 +670,24 @@ impl DefaultResolver {
 
         if let Some(defaults) = self.sensor_defaults(sensor.class.as_deref()) {
             // Noise: apply default if zero
-            if result.noise == 0.0 {
-                if let Some(noise) = defaults.noise {
-                    result.noise = noise;
-                }
+            if result.noise == 0.0
+                && let Some(noise) = defaults.noise
+            {
+                result.noise = noise;
             }
 
             // Cutoff: apply default if zero
-            if result.cutoff == 0.0 {
-                if let Some(cutoff) = defaults.cutoff {
-                    result.cutoff = cutoff;
-                }
+            if result.cutoff == 0.0
+                && let Some(cutoff) = defaults.cutoff
+            {
+                result.cutoff = cutoff;
             }
 
             // User: apply default if empty
-            if result.user.is_empty() {
-                if let Some(ref user) = defaults.user {
-                    result.user.clone_from(user);
-                }
+            if result.user.is_empty()
+                && let Some(ref user) = defaults.user
+            {
+                result.user.clone_from(user);
             }
         }
 

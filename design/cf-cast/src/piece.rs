@@ -352,10 +352,10 @@ pub fn compose_piece_solid(
                 .flatten()
                 .map(|(profile, _excl)| {
                     let mut fasteners: Vec<(Point2, f64)> = Vec::new();
-                    if let (Some(plan), Some(boss_r)) = (dowels.as_ref(), dowel_boss_r) {
-                        if let Some(centers) = plan.first() {
-                            fasteners.extend(centers.iter().map(|&c| (c, boss_r)));
-                        }
+                    if let (Some(plan), Some(boss_r)) = (dowels.as_ref(), dowel_boss_r)
+                        && let Some(centers) = plan.first()
+                    {
+                        fasteners.extend(centers.iter().map(|&c| (c, boss_r)));
                     }
                     if let Some(centers) = bolts.as_ref().and_then(|p| p.first()) {
                         fasteners.extend(centers.iter().map(|&c| (c, bolt_boss_r)));
@@ -665,21 +665,20 @@ pub fn compose_piece_with_shared(
         funnel_cone: Some(cone),
         ..
     }) = &channel
+        && let Some(cb) = cone.bounds()
     {
-        if let Some(cb) = cone.bounds() {
-            mc_bounds = Aabb::new(
-                Point3::new(
-                    mc_bounds.min.x.min(cb.min.x),
-                    mc_bounds.min.y.min(cb.min.y),
-                    mc_bounds.min.z.min(cb.min.z),
-                ),
-                Point3::new(
-                    mc_bounds.max.x.max(cb.max.x),
-                    mc_bounds.max.y.max(cb.max.y),
-                    mc_bounds.max.z.max(cb.max.z),
-                ),
-            );
-        }
+        mc_bounds = Aabb::new(
+            Point3::new(
+                mc_bounds.min.x.min(cb.min.x),
+                mc_bounds.min.y.min(cb.min.y),
+                mc_bounds.min.z.min(cb.min.z),
+            ),
+            Point3::new(
+                mc_bounds.max.x.max(cb.max.x),
+                mc_bounds.max.y.max(cb.max.y),
+                mc_bounds.max.z.max(cb.max.z),
+            ),
+        );
     }
 
     // Pre-S4 / recon-4 (P) SDF seam: side-specific half-space

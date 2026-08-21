@@ -212,10 +212,10 @@ fn animate(
     }
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let idx = ((time.elapsed_secs_f64() / FRAME_DT) as usize) % n;
-    if let Ok(m) = block.single() {
-        if let Some(mesh) = meshes.get_mut(&m.0) {
-            apply_soft_positions(mesh, &scene.block_frames[idx], UpAxis::PlusZ);
-        }
+    if let Ok(m) = block.single()
+        && let Some(mesh) = meshes.get_mut(&m.0)
+    {
+        apply_soft_positions(mesh, &scene.block_frames[idx], UpAxis::PlusZ);
     }
 }
 
@@ -233,10 +233,10 @@ fn adjust_transparency(
     } else {
         return;
     };
-    if let Ok(m) = surface.single() {
-        if let Some(mat) = materials.get_mut(&m.0) {
-            let alpha = (mat.base_color.alpha() + delta).clamp(0.05, 1.0);
-            mat.base_color.set_alpha(alpha);
-        }
+    if let Ok(m) = surface.single()
+        && let Some(mat) = materials.get_mut(&m.0)
+    {
+        let alpha = (mat.base_color.alpha() + delta).clamp(0.05, 1.0);
+        mat.base_color.set_alpha(alpha);
     }
 }

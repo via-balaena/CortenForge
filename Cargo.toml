@@ -513,7 +513,12 @@ edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/via-balaena/CortenForge"
 authors = ["Via Balaena"]
-rust-version = "1.87"
+# Minimum supported Rust version. The weekly `MSRV Check` job builds the
+# workspace on exactly this toolchain, so bumping this line retargets that
+# job — it reads the version from here rather than repeating it.
+# 2026-08-20: the floor comes from the locked dependency graph, not our own
+# code — `wgpu 28.0.0` requires 1.92, and cargo refuses to build below it.
+rust-version = "1.92"
 
 [workspace.lints.rust]
 unsafe_code = "warn"

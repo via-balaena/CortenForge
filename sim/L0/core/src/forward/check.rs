@@ -95,13 +95,13 @@ pub fn mj_check_acc(model: &Model, data: &mut Data) {
             data.warnings[Warning::BadQacc as usize].last_info = i as i32;
             // Unlike check_pos/check_vel, re-run forward after reset to
             // recompute derived quantities from the reset state.
-            if !disabled(model, DISABLE_AUTORESET) {
-                if let Err(e) = data.forward(model) {
-                    log::error!(
-                        "mj_forward() failed after auto-reset (model's \
+            if !disabled(model, DISABLE_AUTORESET)
+                && let Err(e) = data.forward(model)
+            {
+                log::error!(
+                    "mj_forward() failed after auto-reset (model's \
                          qpos0 produces non-recoverable error): {e:?}"
-                    );
-                }
+                );
             }
             return;
         }

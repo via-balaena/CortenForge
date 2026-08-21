@@ -276,14 +276,14 @@ fn write_mass_budget_summary(md: &mut String, spec: &CastSpec, pour_volumes: &[P
 /// layer. Materials without a Smooth-On anchor (or with an unknown
 /// key) collapse all three cells to [`TDS_LOOKUP_PLACEHOLDER`].
 fn cure_protocol_cells(anchor_key: Option<&'static str>) -> (String, String, String) {
-    if let Some(key) = anchor_key {
-        if let Some(protocol) = lookup_cure(key) {
-            return (
-                protocol.mix_ratio_a_to_b.to_string(),
-                format!("{} min", protocol.pot_life_minutes),
-                format!("{} hr", protocol.cure_time_hours),
-            );
-        }
+    if let Some(key) = anchor_key
+        && let Some(protocol) = lookup_cure(key)
+    {
+        return (
+            protocol.mix_ratio_a_to_b.to_string(),
+            format!("{} min", protocol.pot_life_minutes),
+            format!("{} hr", protocol.cure_time_hours),
+        );
     }
     (
         TDS_LOOKUP_PLACEHOLDER.to_string(),

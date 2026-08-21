@@ -173,10 +173,10 @@ impl VecEnv {
                 if let Some(e) = err {
                     step_errors[i] = Some(e);
                 }
-                if let Some(data) = self.batch.env(i) {
-                    if data.divergence_detected() {
-                        diverged[i] = true;
-                    }
+                if let Some(data) = self.batch.env(i)
+                    && data.divergence_detected()
+                {
+                    diverged[i] = true;
                 }
             }
         }
@@ -215,28 +215,28 @@ impl VecEnv {
 
             if needs_reset {
                 // Extract terminal observation (if state is valid)
-                if !diverged[i] {
-                    if let Some(data) = self.batch.env(i) {
-                        terminal_observations[i] = Some(self.obs_space.extract(data));
-                    }
+                if !diverged[i]
+                    && let Some(data) = self.batch.env(i)
+                {
+                    terminal_observations[i] = Some(self.obs_space.extract(data));
                 }
 
                 // Auto-reset
                 self.batch.reset(i);
 
                 // on_reset hook
-                if let Some(ref mut hook) = self.on_reset_fn {
-                    if let Some(data) = self.batch.env_mut(i) {
-                        hook(&model, data, i);
-                    }
+                if let Some(ref mut hook) = self.on_reset_fn
+                    && let Some(data) = self.batch.env_mut(i)
+                {
+                    hook(&model, data, i);
                 }
 
                 // forward() to recompute derived quantities
-                if let Some(data) = self.batch.env_mut(i) {
-                    if let Err(e) = data.forward(&model) {
-                        // Log the forward error — env stays in clean reset state
-                        step_errors[i] = Some(e);
-                    }
+                if let Some(data) = self.batch.env_mut(i)
+                    && let Err(e) = data.forward(&model)
+                {
+                    // Log the forward error — env stays in clean reset state
+                    step_errors[i] = Some(e);
                 }
             }
 
@@ -274,10 +274,10 @@ impl VecEnv {
         self.batch.reset_all();
 
         for i in 0..self.batch.len() {
-            if let Some(ref mut hook) = self.on_reset_fn {
-                if let Some(data) = self.batch.env_mut(i) {
-                    hook(&model, data, i);
-                }
+            if let Some(ref mut hook) = self.on_reset_fn
+                && let Some(data) = self.batch.env_mut(i)
+            {
+                hook(&model, data, i);
             }
             if let Some(data) = self.batch.env_mut(i) {
                 data.forward(&model)?;

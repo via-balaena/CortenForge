@@ -310,33 +310,33 @@ pub fn validate(model: &MjcfModel) -> Result<ValidationResult> {
         }
 
         // Check that joint reference is valid
-        if let Some(ref joint_name) = actuator.joint {
-            if !joint_names.contains(joint_name) {
-                return Err(MjcfError::undefined_joint(
-                    joint_name,
-                    format!("actuator '{}'", actuator.name),
-                ));
-            }
+        if let Some(ref joint_name) = actuator.joint
+            && !joint_names.contains(joint_name)
+        {
+            return Err(MjcfError::undefined_joint(
+                joint_name,
+                format!("actuator '{}'", actuator.name),
+            ));
         }
 
         // Check that site reference is valid
-        if let Some(ref site_name) = actuator.site {
-            if !site_names_set.contains(site_name.as_str()) {
-                return Err(MjcfError::undefined_site(
-                    site_name,
-                    format!("actuator '{}'", actuator.name),
-                ));
-            }
+        if let Some(ref site_name) = actuator.site
+            && !site_names_set.contains(site_name.as_str())
+        {
+            return Err(MjcfError::undefined_site(
+                site_name,
+                format!("actuator '{}'", actuator.name),
+            ));
         }
 
         // Check that refsite reference is valid
-        if let Some(ref refsite_name) = actuator.refsite {
-            if !site_names_set.contains(refsite_name.as_str()) {
-                return Err(MjcfError::undefined_site(
-                    refsite_name,
-                    format!("actuator '{}' refsite", actuator.name),
-                ));
-            }
+        if let Some(ref refsite_name) = actuator.refsite
+            && !site_names_set.contains(refsite_name.as_str())
+        {
+            return Err(MjcfError::undefined_site(
+                refsite_name,
+                format!("actuator '{}' refsite", actuator.name),
+            ));
         }
 
         // Check mutual exclusivity of transmission targets
@@ -389,13 +389,13 @@ fn check_geom_finite(geom: &MjcfGeom, body_name: &str) -> Result<()> {
             format!("size values must be finite (body '{body_name}')"),
         ));
     }
-    if let Some(fromto) = geom.fromto {
-        if !fromto.iter().all(|v| v.is_finite()) {
-            return Err(MjcfError::invalid_geom_size(
-                geom_type_label,
-                format!("fromto values must be finite (body '{body_name}')"),
-            ));
-        }
+    if let Some(fromto) = geom.fromto
+        && !fromto.iter().all(|v| v.is_finite())
+    {
+        return Err(MjcfError::invalid_geom_size(
+            geom_type_label,
+            format!("fromto values must be finite (body '{body_name}')"),
+        ));
     }
     Ok(())
 }
@@ -506,27 +506,27 @@ fn validate_spatial_tendon(
     }
 
     // Rule 1: path must start and end with a Site
-    if let Some(first) = tendon.path_elements.first() {
-        if !matches!(first, SpatialPathElement::Site { .. }) {
-            return Err(MjcfError::invalid_option(
-                "tendon",
-                format!(
-                    "Spatial tendon '{}' path must start with a Site element",
-                    tendon.name
-                ),
-            ));
-        }
+    if let Some(first) = tendon.path_elements.first()
+        && !matches!(first, SpatialPathElement::Site { .. })
+    {
+        return Err(MjcfError::invalid_option(
+            "tendon",
+            format!(
+                "Spatial tendon '{}' path must start with a Site element",
+                tendon.name
+            ),
+        ));
     }
-    if let Some(last) = tendon.path_elements.last() {
-        if !matches!(last, SpatialPathElement::Site { .. }) {
-            return Err(MjcfError::invalid_option(
-                "tendon",
-                format!(
-                    "Spatial tendon '{}' path must end with a Site element",
-                    tendon.name
-                ),
-            ));
-        }
+    if let Some(last) = tendon.path_elements.last()
+        && !matches!(last, SpatialPathElement::Site { .. })
+    {
+        return Err(MjcfError::invalid_option(
+            "tendon",
+            format!(
+                "Spatial tendon '{}' path must end with a Site element",
+                tendon.name
+            ),
+        ));
     }
 
     // Rules 2, 6: validate element adjacency
@@ -639,16 +639,16 @@ fn validate_spatial_tendon(
                         ),
                     ));
                 }
-                if let Some(ss) = sidesite {
-                    if !site_names.contains(ss.as_str()) {
-                        return Err(MjcfError::invalid_option(
-                            "tendon",
-                            format!(
-                                "Tendon '{}' references unknown sidesite '{}'",
-                                tendon.name, ss
-                            ),
-                        ));
-                    }
+                if let Some(ss) = sidesite
+                    && !site_names.contains(ss.as_str())
+                {
+                    return Err(MjcfError::invalid_option(
+                        "tendon",
+                        format!(
+                            "Tendon '{}' references unknown sidesite '{}'",
+                            tendon.name, ss
+                        ),
+                    ));
                 }
             }
             SpatialPathElement::Pulley { .. } => {}

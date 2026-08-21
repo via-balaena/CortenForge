@@ -236,10 +236,10 @@ pub(super) fn parse_body_attrs(e: &BytesStart) -> Result<MjcfBody> {
             )
         })?);
     }
-    if let Some(user) = get_attribute_opt(e, "user") {
-        if let Ok(parts) = parse_float_array(&user) {
-            body.user = parts;
-        }
+    if let Some(user) = get_attribute_opt(e, "user")
+        && let Ok(parts) = parse_float_array(&user)
+    {
+        body.user = parts;
     }
 
     Ok(body)
@@ -313,10 +313,10 @@ pub(super) fn parse_joint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
     joint.actuatorgravcomp = attr_bool(e, "actuatorgravcomp");
 
     joint.margin = parse_float_attr(e, "margin");
-    if let Some(user) = get_attribute_opt(e, "user") {
-        if let Ok(parts) = parse_float_array(&user) {
-            joint.user = parts;
-        }
+    if let Some(user) = get_attribute_opt(e, "user")
+        && let Ok(parts) = parse_float_array(&user)
+    {
+        joint.user = parts;
     }
 
     Ok(joint)
@@ -418,10 +418,10 @@ pub(super) fn parse_geom_attrs(e: &BytesStart) -> Result<MjcfGeom> {
         }
         geom.fluidcoef = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
     }
-    if let Some(user) = get_attribute_opt(e, "user") {
-        if let Ok(parts) = parse_float_array(&user) {
-            geom.user = parts;
-        }
+    if let Some(user) = get_attribute_opt(e, "user")
+        && let Ok(parts) = parse_float_array(&user)
+    {
+        geom.user = parts;
     }
 
     // Parse shellinertia (boolean attribute)
@@ -517,10 +517,10 @@ pub(super) fn parse_site_attrs(e: &BytesStart) -> Result<MjcfSite> {
     site.rgba = attr_vec4(e, "rgba")?;
     site.group = parse_int_attr(e, "group");
     site.material = get_attribute_opt(e, "material");
-    if let Some(user) = get_attribute_opt(e, "user") {
-        if let Ok(parts) = parse_float_array(&user) {
-            site.user = parts;
-        }
+    if let Some(user) = get_attribute_opt(e, "user")
+        && let Ok(parts) = parse_float_array(&user)
+    {
+        site.user = parts;
     }
 
     Ok(site)

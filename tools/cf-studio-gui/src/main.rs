@@ -420,13 +420,13 @@ impl Scene {
             pass.draw_indexed(0..self.index_count, 0, 0..1);
 
             // Centerline overlay (on top, via the line pipeline's depth=Always).
-            if let Some(line_vbuf) = &self.line_vbuf {
-                if self.line_count >= 2 {
-                    pass.set_pipeline(&self.line_pipeline);
-                    pass.set_bind_group(0, &self.bind_group, &[]);
-                    pass.set_vertex_buffer(0, line_vbuf.slice(..));
-                    pass.draw(0..self.line_count, 0..1);
-                }
+            if let Some(line_vbuf) = &self.line_vbuf
+                && self.line_count >= 2
+            {
+                pass.set_pipeline(&self.line_pipeline);
+                pass.set_bind_group(0, &self.bind_group, &[]);
+                pass.set_vertex_buffer(0, line_vbuf.slice(..));
+                pass.draw(0..self.line_count, 0..1);
             }
         }
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -620,20 +620,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 // 2. A run is in flight — show elapsed time (whole seconds, so
                 // the property only changes ~1×/s even though we poll faster).
-                if let Some(t0) = start.get() {
-                    if let Some(ui) = weak.upgrade() {
-                        let secs = t0.elapsed().as_secs();
-                        ui.set_step_message(
-                            format!(
-                                "Making molds… {}:{:02} elapsed  \
+                if let Some(t0) = start.get()
+                    && let Some(ui) = weak.upgrade()
+                {
+                    let secs = t0.elapsed().as_secs();
+                    ui.set_step_message(
+                        format!(
+                            "Making molds… {}:{:02} elapsed  \
                                  (this can take a while — the window stays responsive)",
-                                secs / 60,
-                                secs % 60,
-                            )
-                            .into(),
-                        );
-                        ui.set_step_message_is_error(false);
-                    }
+                            secs / 60,
+                            secs % 60,
+                        )
+                        .into(),
+                    );
+                    ui.set_step_message_is_error(false);
                 }
             },
         );

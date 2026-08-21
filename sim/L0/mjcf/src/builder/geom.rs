@@ -83,10 +83,10 @@ impl ModelBuilder {
                 .push(geom.conaffinity.unwrap_or(1) as u32);
         }
         self.geom_name.push(geom.name.clone());
-        if let Some(ref name) = geom.name {
-            if !name.is_empty() {
-                self.geom_name_to_id.insert(name.clone(), geom_id);
-            }
+        if let Some(ref name) = geom.name
+            && !name.is_empty()
+        {
+            self.geom_name_to_id.insert(name.clone(), geom_id);
         }
         self.geom_mesh.push(geom_mesh_ref);
         self.geom_hfield.push(geom_hfield_ref);
@@ -318,11 +318,11 @@ fn validate_condim(condim: Option<i32>, geom_name: Option<&String>) -> i32 {
 pub fn geom_effective_com(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> Vector3<f64> {
     let pos = geom.pos.unwrap_or_else(Vector3::zeros);
     let q = geom.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0));
-    if let Some(&(_, mesh_com, _)) = mesh_props {
-        if mesh_com.norm() > 1e-14 {
-            let r = UnitQuaternion::from_quaternion(Quaternion::new(q[0], q[1], q[2], q[3]));
-            return pos + r.transform_vector(&mesh_com);
-        }
+    if let Some(&(_, mesh_com, _)) = mesh_props
+        && mesh_com.norm() > 1e-14
+    {
+        let r = UnitQuaternion::from_quaternion(Quaternion::new(q[0], q[1], q[2], q[3]));
+        return pos + r.transform_vector(&mesh_com);
     }
     pos
 }

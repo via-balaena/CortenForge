@@ -662,10 +662,11 @@ pub fn conform_disc_to_endplates(
     });
     let mut out = disc.clone();
     for (i, &v) in disc.vertices.iter().enumerate() {
-        if let Some((low_cut, high_cut)) = band {
-            if v.z > low_cut && v.z < high_cut {
-                continue; // interior (not in the endplate band) — bond use skips it
-            }
+        if let Some((low_cut, high_cut)) = band
+            && v.z > low_cut
+            && v.z < high_cut
+        {
+            continue; // interior (not in the endplate band) — bond use skips it
         }
         if let Some(p) = project_to_nearest_endplate(v, si, o4, o5) {
             out.vertices[i] = p;

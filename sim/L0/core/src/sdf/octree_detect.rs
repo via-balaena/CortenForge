@@ -235,20 +235,22 @@ fn extract_leaf_contacts(
 
     // Contact from A's surface penetrating B:
     // A's surface is near the cell center AND the cell center is inside/near B
-    if d_a.abs() < half_size * 2.0 && d_b < margin {
-        if let Some(c) = newton_contact(&p_a, a, pose_a, b, pose_b, margin, max_displacement) {
-            contacts.push(c);
-        }
+    if d_a.abs() < half_size * 2.0
+        && d_b < margin
+        && let Some(c) = newton_contact(&p_a, a, pose_a, b, pose_b, margin, max_displacement)
+    {
+        contacts.push(c);
     }
 
     // Contact from B's surface penetrating A:
     // B's surface is near the cell center AND the cell center is inside/near A
-    if d_b.abs() < half_size * 2.0 && d_a < margin {
-        if let Some(mut c) = newton_contact(&p_b, b, pose_b, a, pose_a, margin, max_displacement) {
-            // Negate normal: B's outward normal points B→A, convention is A→B
-            c.normal = -c.normal;
-            contacts.push(c);
-        }
+    if d_b.abs() < half_size * 2.0
+        && d_a < margin
+        && let Some(mut c) = newton_contact(&p_b, b, pose_b, a, pose_a, margin, max_displacement)
+    {
+        // Negate normal: B's outward normal points B→A, convention is A→B
+        c.normal = -c.normal;
+        contacts.push(c);
     }
 }
 

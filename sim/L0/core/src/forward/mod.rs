@@ -422,10 +422,11 @@ impl Data {
         // §53: cb_control fires between velocity and acceleration stages.
         // Only on full forward (not RK4 intermediate stages).
         // Gated on !DISABLE_ACTUATION — MuJoCo skips mjcb_control when actuation is disabled.
-        if compute_sensors && !disabled(model, DISABLE_ACTUATION) {
-            if let Some(ref cb) = model.cb_control {
-                (cb.0)(model, self);
-            }
+        if compute_sensors
+            && !disabled(model, DISABLE_ACTUATION)
+            && let Some(ref cb) = model.cb_control
+        {
+            (cb.0)(model, self);
         }
 
         self.forward_acc(model, compute_sensors)

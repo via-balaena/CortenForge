@@ -394,12 +394,11 @@ pub fn trim_mesh_along_centerline(
     // Tip-end trim: plane at arc-distance `trim_tip_mm` forward
     // from the tip; plane normal = local tangent (points toward
     // floor). Kept side = the "floor" side.
-    if trim_tip_mm > 0.0 {
-        if let Some((plane_point, tangent)) =
+    if trim_tip_mm > 0.0
+        && let Some((plane_point, tangent)) =
             point_along_polyline_at_arc_distance(centerline, trim_tip_mm * 0.001)
-        {
-            out = clip_mesh_against_plane(&out, plane_point, tangent);
-        }
+    {
+        out = clip_mesh_against_plane(&out, plane_point, tangent);
     }
 
     // Floor-end trim: plane at arc-distance
@@ -409,12 +408,11 @@ pub fn trim_mesh_along_centerline(
     if trim_floor_mm > 0.0 {
         let total_length_m = polyline_arc_length_m(centerline);
         let target_m = total_length_m - trim_floor_mm * 0.001;
-        if target_m > 0.0 {
-            if let Some((plane_point, tangent)) =
+        if target_m > 0.0
+            && let Some((plane_point, tangent)) =
                 point_along_polyline_at_arc_distance(centerline, target_m)
-            {
-                out = clip_mesh_against_plane(&out, plane_point, -tangent);
-            }
+        {
+            out = clip_mesh_against_plane(&out, plane_point, -tangent);
         }
     }
 

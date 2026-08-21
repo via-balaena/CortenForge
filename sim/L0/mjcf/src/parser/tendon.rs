@@ -142,12 +142,11 @@ pub(super) fn parse_tendon_attrs(
     tendon.name = get_attribute_opt(e, "name").unwrap_or_default();
     tendon.class = get_attribute_opt(e, "class");
 
-    if let Some(range) = get_attribute_opt(e, "range") {
-        if let Ok(parts) = parse_float_array(&range) {
-            if parts.len() >= 2 {
-                tendon.range = Some((parts[0], parts[1]));
-            }
-        }
+    if let Some(range) = get_attribute_opt(e, "range")
+        && let Ok(parts) = parse_float_array(&range)
+        && parts.len() >= 2
+    {
+        tendon.range = Some((parts[0], parts[1]));
     }
 
     tendon.limited = attr_bool(e, "limited");
@@ -157,58 +156,57 @@ pub(super) fn parse_tendon_attrs(
     tendon.frictionloss = parse_float_attr(e, "frictionloss");
 
     // B2: Parse springlength (1 or 2 values)
-    if let Some(sl_str) = get_attribute_opt(e, "springlength") {
-        if let Ok(parts) = parse_float_array(&sl_str) {
-            match parts.len() {
-                1 => {
-                    if parts[0] < 0.0 || !parts[0].is_finite() {
-                        return Err(MjcfError::invalid_attribute(
-                            "springlength",
-                            tendon.name,
-                            format!("value ({}) must be finite and >= 0", parts[0]),
-                        ));
-                    }
-                    tendon.springlength = Some((parts[0], parts[0])); // S2
+    if let Some(sl_str) = get_attribute_opt(e, "springlength")
+        && let Ok(parts) = parse_float_array(&sl_str)
+    {
+        match parts.len() {
+            1 => {
+                if parts[0] < 0.0 || !parts[0].is_finite() {
+                    return Err(MjcfError::invalid_attribute(
+                        "springlength",
+                        tendon.name,
+                        format!("value ({}) must be finite and >= 0", parts[0]),
+                    ));
                 }
-                n if n >= 2 => {
-                    if parts[0] < 0.0
-                        || parts[1] < 0.0
-                        || !parts[0].is_finite()
-                        || !parts[1].is_finite()
-                    {
-                        return Err(MjcfError::invalid_attribute(
-                            "springlength",
-                            tendon.name,
-                            format!(
-                                "values ({}, {}) must be finite and >= 0",
-                                parts[0], parts[1]
-                            ),
-                        ));
-                    }
-                    if parts[0] > parts[1] {
-                        // S4
-                        return Err(MjcfError::invalid_attribute(
-                            "springlength",
-                            tendon.name,
-                            format!("low ({}) must be <= high ({})", parts[0], parts[1]),
-                        ));
-                    }
-                    tendon.springlength = Some((parts[0], parts[1]));
-                }
-                _ => {} // empty string, ignore
+                tendon.springlength = Some((parts[0], parts[0])); // S2
             }
+            n if n >= 2 => {
+                if parts[0] < 0.0
+                    || parts[1] < 0.0
+                    || !parts[0].is_finite()
+                    || !parts[1].is_finite()
+                {
+                    return Err(MjcfError::invalid_attribute(
+                        "springlength",
+                        tendon.name,
+                        format!(
+                            "values ({}, {}) must be finite and >= 0",
+                            parts[0], parts[1]
+                        ),
+                    ));
+                }
+                if parts[0] > parts[1] {
+                    // S4
+                    return Err(MjcfError::invalid_attribute(
+                        "springlength",
+                        tendon.name,
+                        format!("low ({}) must be <= high ({})", parts[0], parts[1]),
+                    ));
+                }
+                tendon.springlength = Some((parts[0], parts[1]));
+            }
+            _ => {} // empty string, ignore
         }
     }
 
     tendon.width = parse_float_attr(e, "width");
     tendon.group = parse_int_attr(e, "group");
 
-    if let Some(rgba) = get_attribute_opt(e, "rgba") {
-        if let Ok(parts) = parse_float_array(&rgba) {
-            if parts.len() >= 4 {
-                tendon.rgba = Some(Vector4::new(parts[0], parts[1], parts[2], parts[3]));
-            }
-        }
+    if let Some(rgba) = get_attribute_opt(e, "rgba")
+        && let Ok(parts) = parse_float_array(&rgba)
+        && parts.len() >= 4
+    {
+        tendon.rgba = Some(Vector4::new(parts[0], parts[1], parts[2], parts[3]));
     }
 
     // Solver parameters
@@ -222,10 +220,10 @@ pub(super) fn parse_tendon_attrs(
 
     // Rendering
     tendon.material = get_attribute_opt(e, "material");
-    if let Some(user) = get_attribute_opt(e, "user") {
-        if let Ok(parts) = parse_float_array(&user) {
-            tendon.user = parts;
-        }
+    if let Some(user) = get_attribute_opt(e, "user")
+        && let Ok(parts) = parse_float_array(&user)
+    {
+        tendon.user = parts;
     }
 
     Ok(tendon)

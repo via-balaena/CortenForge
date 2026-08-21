@@ -594,10 +594,10 @@ fn expand_hull(
         };
 
         // 2. Check vertex limit (maxhullvert)
-        if let Some(max) = max_vertices {
-            if hull_vertices.len() >= max {
-                break;
-            }
+        if let Some(max) = max_vertices
+            && hull_vertices.len() >= max
+        {
+            break;
         }
 
         let eye_index = faces[face_idx].farthest_idx;

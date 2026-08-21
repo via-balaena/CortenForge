@@ -2320,23 +2320,21 @@ fn draw_trim_plane_overlays(
     // Initial CSP.4b version diverged from the actual centerline
     // path for curved scans (sock fixture's PCA-induced curvature
     // surfaced this in eyes-on-pixels feedback).
-    if trim.trim_tip_mm > 0.0 {
-        if let Some((plane_center_phys, tangent_phys)) =
+    if trim.trim_tip_mm > 0.0
+        && let Some((plane_center_phys, tangent_phys)) =
             point_along_polyline_at_arc_distance(cl, trim.trim_tip_mm * 0.001)
-        {
-            draw_at(plane_center_phys, tangent_phys);
-        }
+    {
+        draw_at(plane_center_phys, tangent_phys);
     }
 
     if trim.trim_floor_mm > 0.0 {
         let total_length_m = polyline_arc_length_m(cl);
         let target_m = total_length_m - trim.trim_floor_mm * 0.001;
-        if target_m > 0.0 {
-            if let Some((plane_center_phys, tangent_phys)) =
+        if target_m > 0.0
+            && let Some((plane_center_phys, tangent_phys)) =
                 point_along_polyline_at_arc_distance(cl, target_m)
-            {
-                draw_at(plane_center_phys, tangent_phys);
-            }
+        {
+            draw_at(plane_center_phys, tangent_phys);
         }
     }
 }
@@ -2747,13 +2745,13 @@ fn render_reorient_section(ui: &mut egui::Ui, state: &mut ReorientState, mesh: &
             // SCAN_PREP_DESIGN.md deferred item §5. The resulting
             // Euler angles drop straight into the slider source-of-
             // truth so the user can still nudge afterwards.
-            if ui.button("Auto-orient (PCA)").clicked() {
-                if let Some(q) = compute_pca_orientation(&mesh.vertices) {
-                    let (roll, pitch, yaw) = q.euler_angles();
-                    state.roll_deg = roll.to_degrees();
-                    state.pitch_deg = pitch.to_degrees();
-                    state.yaw_deg = yaw.to_degrees();
-                }
+            if ui.button("Auto-orient (PCA)").clicked()
+                && let Some(q) = compute_pca_orientation(&mesh.vertices)
+            {
+                let (roll, pitch, yaw) = q.euler_angles();
+                state.roll_deg = roll.to_degrees();
+                state.pitch_deg = pitch.to_degrees();
+                state.yaw_deg = yaw.to_degrees();
             }
 
             ui.add_space(4.0);

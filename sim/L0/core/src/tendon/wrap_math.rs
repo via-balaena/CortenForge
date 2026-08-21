@@ -302,24 +302,24 @@ pub fn sphere_wrap(
 
     // 2. Check for sidesite inside sphere (inverse wrap).
     //    Uses 3D norm matching MuJoCo's mju_norm3(s) < radius.
-    if let Some(ss) = sidesite {
-        if ss.norm() < radius {
-            let (axis0, axis1) = sphere_wrapping_plane(p1, p2);
-            let end0 = Vector2::new(p1.dot(&axis0), p1.dot(&axis1));
-            let end1 = Vector2::new(p2.dot(&axis0), p2.dot(&axis1));
+    if let Some(ss) = sidesite
+        && ss.norm() < radius
+    {
+        let (axis0, axis1) = sphere_wrapping_plane(p1, p2);
+        let end0 = Vector2::new(p1.dot(&axis0), p1.dot(&axis1));
+        let end1 = Vector2::new(p2.dot(&axis0), p2.dot(&axis1));
 
-            return match wrap_inside_2d(end0, end1, radius) {
-                None => WrapResult::NoWrap,
-                Some(t2d) => {
-                    let t3d = axis0 * t2d.x + axis1 * t2d.y;
-                    WrapResult::Wrapped {
-                        tangent_point_1: t3d,
-                        tangent_point_2: t3d, // identical — single tangent point
-                        arc_length: 0.0,
-                    }
+        return match wrap_inside_2d(end0, end1, radius) {
+            None => WrapResult::NoWrap,
+            Some(t2d) => {
+                let t3d = axis0 * t2d.x + axis1 * t2d.y;
+                WrapResult::Wrapped {
+                    tangent_point_1: t3d,
+                    tangent_point_2: t3d, // identical — single tangent point
+                    arc_length: 0.0,
                 }
-            };
-        }
+            }
+        };
     }
 
     // 3. Check if the straight-line path misses the sphere.
@@ -450,29 +450,29 @@ pub fn cylinder_wrap(
     //     This differs from the previous panic check which used 2D XY norm —
     //     a sidesite inside the cross-section but far along Z (norm3 > radius)
     //     now correctly uses normal wrap instead of inside wrap.
-    if let Some(ss) = sidesite {
-        if ss.norm() < radius {
-            return match wrap_inside_2d(p1_xy, p2_xy, radius) {
-                None => WrapResult::NoWrap,
-                Some(t2d) => {
-                    // Z interpolation with arc_length = 0.
-                    let l0 = (p1_xy - t2d).norm();
-                    let l1 = (p2_xy - t2d).norm();
-                    let total = l0 + l1;
-                    let tz = if total > 1e-10 {
-                        p1.z + (p2.z - p1.z) * l0 / total
-                    } else {
-                        0.5 * (p1.z + p2.z)
-                    };
-                    let t3d = Vector3::new(t2d.x, t2d.y, tz);
-                    WrapResult::Wrapped {
-                        tangent_point_1: t3d,
-                        tangent_point_2: t3d, // identical — single tangent point
-                        arc_length: 0.0,      // no helical component
-                    }
+    if let Some(ss) = sidesite
+        && ss.norm() < radius
+    {
+        return match wrap_inside_2d(p1_xy, p2_xy, radius) {
+            None => WrapResult::NoWrap,
+            Some(t2d) => {
+                // Z interpolation with arc_length = 0.
+                let l0 = (p1_xy - t2d).norm();
+                let l1 = (p2_xy - t2d).norm();
+                let total = l0 + l1;
+                let tz = if total > 1e-10 {
+                    p1.z + (p2.z - p1.z) * l0 / total
+                } else {
+                    0.5 * (p1.z + p2.z)
+                };
+                let t3d = Vector3::new(t2d.x, t2d.y, tz);
+                WrapResult::Wrapped {
+                    tangent_point_1: t3d,
+                    tangent_point_2: t3d, // identical — single tangent point
+                    arc_length: 0.0,      // no helical component
                 }
-            };
-        }
+            }
+        };
     }
 
     // 3. Compute sidesite XY projection once (used in both early-exit and

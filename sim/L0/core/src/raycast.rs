@@ -132,12 +132,12 @@ pub fn raycast_triangle_mesh_data(
         let result = bvh.query_ray_closest(&local_origin, &ray_dir_inv, max_distance, |tri_idx| {
             let (v0, v1, v2) = data.triangle_vertices(tri_idx)?;
 
-            if let Some(hit) = ray_triangle(&local_ray, v0, v1, v2, cutoff) {
-                if hit.distance < cutoff {
-                    cutoff = hit.distance;
-                    closest_hit = Some((hit.distance, hit.point, hit.normal));
-                    return Some(hit.distance);
-                }
+            if let Some(hit) = ray_triangle(&local_ray, v0, v1, v2, cutoff)
+                && hit.distance < cutoff
+            {
+                cutoff = hit.distance;
+                closest_hit = Some((hit.distance, hit.point, hit.normal));
+                return Some(hit.distance);
             }
             None
         });
@@ -167,12 +167,11 @@ pub fn raycast_triangle_mesh_data(
             let _ = face_idx; // Index available if needed
             let cutoff = closest_hit.as_ref().map_or(max_distance, |h| h.0);
 
-            if let Some(hit) = ray_triangle(&local_ray, v0, v1, v2, cutoff) {
-                if closest_hit.is_none()
-                    || hit.distance < closest_hit.as_ref().map_or(f64::MAX, |h| h.0)
-                {
-                    closest_hit = Some((hit.distance, hit.point, hit.normal));
-                }
+            if let Some(hit) = ray_triangle(&local_ray, v0, v1, v2, cutoff)
+                && (closest_hit.is_none()
+                    || hit.distance < closest_hit.as_ref().map_or(f64::MAX, |h| h.0))
+            {
+                closest_hit = Some((hit.distance, hit.point, hit.normal));
             }
         }
 
@@ -246,19 +245,19 @@ pub fn raycast_scene(
 
     for geom_id in 0..model.ngeom {
         // Body exclusion filter
-        if let Some(body_id) = bodyexclude {
-            if model.geom_body[geom_id] == body_id {
-                continue;
-            }
+        if let Some(body_id) = bodyexclude
+            && model.geom_body[geom_id] == body_id
+        {
+            continue;
         }
 
         // Geom group filter
-        if let Some(groups) = geomgroup {
-            if let Some(&g) = model.geom_group.get(geom_id) {
-                let g = usize::try_from(g).unwrap_or(0);
-                if g < 6 && !groups[g] {
-                    continue;
-                }
+        if let Some(groups) = geomgroup
+            && let Some(&g) = model.geom_group.get(geom_id)
+        {
+            let g = usize::try_from(g).unwrap_or(0);
+            if g < 6 && !groups[g] {
+                continue;
             }
         }
 
@@ -266,10 +265,10 @@ pub fn raycast_scene(
         let geom_type = model.geom_type[geom_id];
 
         // Primitive shapes via geom_to_shape (Sphere, Box, Capsule, Cylinder, Ellipsoid)
-        if let Some(shape) = geom_to_shape(geom_type, model.geom_size[geom_id]) {
-            if let Some(hit) = raycast_shape(&shape, &pose, ray_origin, ray_direction, cutoff) {
-                track_closest(hit, geom_id, &mut cutoff, &mut closest);
-            }
+        if let Some(shape) = geom_to_shape(geom_type, model.geom_size[geom_id])
+            && let Some(hit) = raycast_shape(&shape, &pose, ray_origin, ray_direction, cutoff)
+        {
+            track_closest(hit, geom_id, &mut cutoff, &mut closest);
         }
 
         // Handle types not covered by geom_to_shape
@@ -282,16 +281,16 @@ pub fn raycast_scene(
                 }
             }
             GeomType::Mesh => {
-                if let Some(mesh_id) = model.geom_mesh[geom_id] {
-                    if let Some(hit) = raycast_triangle_mesh_data(
+                if let Some(mesh_id) = model.geom_mesh[geom_id]
+                    && let Some(hit) = raycast_triangle_mesh_data(
                         &pose,
                         model.mesh_data[mesh_id].as_ref(),
                         ray_origin,
                         ray_direction,
                         cutoff,
-                    ) {
-                        track_closest(hit, geom_id, &mut cutoff, &mut closest);
-                    }
+                    )
+                {
+                    track_closest(hit, geom_id, &mut cutoff, &mut closest);
                 }
             }
             GeomType::Hfield => {

@@ -678,51 +678,51 @@ pub fn mesh_field_adaptive_par(
 
     for &((gx, gy, gz), v0) in &ordered_corners {
         // X-edge: (gx,gy,gz) → (gx+1,gy,gz)
-        if gy >= 1 && gz >= 1 {
-            if let Some(&v1) = corner_cache.get(&(gx + 1, gy, gz)) {
-                if (v0 < 0.0) != (v1 < 0.0) {
-                    let lo_inside = v0 < 0.0;
-                    let cells = [
-                        (gx, gy, gz),
-                        (gx, gy - 1, gz),
-                        (gx, gy - 1, gz - 1),
-                        (gx, gy, gz - 1),
-                    ];
-                    emit_quad(&cell_vertices, &mut mesh, &cells, lo_inside);
-                }
-            }
+        if gy >= 1
+            && gz >= 1
+            && let Some(&v1) = corner_cache.get(&(gx + 1, gy, gz))
+            && (v0 < 0.0) != (v1 < 0.0)
+        {
+            let lo_inside = v0 < 0.0;
+            let cells = [
+                (gx, gy, gz),
+                (gx, gy - 1, gz),
+                (gx, gy - 1, gz - 1),
+                (gx, gy, gz - 1),
+            ];
+            emit_quad(&cell_vertices, &mut mesh, &cells, lo_inside);
         }
 
         // Y-edge: (gx,gy,gz) → (gx,gy+1,gz)
-        if gx >= 1 && gz >= 1 {
-            if let Some(&v1) = corner_cache.get(&(gx, gy + 1, gz)) {
-                if (v0 < 0.0) != (v1 < 0.0) {
-                    let lo_inside = v0 < 0.0;
-                    let cells = [
-                        (gx, gy, gz - 1),
-                        (gx - 1, gy, gz - 1),
-                        (gx - 1, gy, gz),
-                        (gx, gy, gz),
-                    ];
-                    emit_quad(&cell_vertices, &mut mesh, &cells, lo_inside);
-                }
-            }
+        if gx >= 1
+            && gz >= 1
+            && let Some(&v1) = corner_cache.get(&(gx, gy + 1, gz))
+            && (v0 < 0.0) != (v1 < 0.0)
+        {
+            let lo_inside = v0 < 0.0;
+            let cells = [
+                (gx, gy, gz - 1),
+                (gx - 1, gy, gz - 1),
+                (gx - 1, gy, gz),
+                (gx, gy, gz),
+            ];
+            emit_quad(&cell_vertices, &mut mesh, &cells, lo_inside);
         }
 
         // Z-edge: (gx,gy,gz) → (gx,gy,gz+1)
-        if gx >= 1 && gy >= 1 {
-            if let Some(&v1) = corner_cache.get(&(gx, gy, gz + 1)) {
-                if (v0 < 0.0) != (v1 < 0.0) {
-                    let lo_inside = v0 < 0.0;
-                    let cells = [
-                        (gx, gy, gz),
-                        (gx - 1, gy, gz),
-                        (gx - 1, gy - 1, gz),
-                        (gx, gy - 1, gz),
-                    ];
-                    emit_quad(&cell_vertices, &mut mesh, &cells, lo_inside);
-                }
-            }
+        if gx >= 1
+            && gy >= 1
+            && let Some(&v1) = corner_cache.get(&(gx, gy, gz + 1))
+            && (v0 < 0.0) != (v1 < 0.0)
+        {
+            let lo_inside = v0 < 0.0;
+            let cells = [
+                (gx, gy, gz),
+                (gx - 1, gy, gz),
+                (gx - 1, gy - 1, gz),
+                (gx, gy - 1, gz),
+            ];
+            emit_quad(&cell_vertices, &mut mesh, &cells, lo_inside);
         }
     }
 

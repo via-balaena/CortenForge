@@ -735,19 +735,17 @@ fn append_contact_primitives(
                 .push([face[0] + base_v, face[1] + base_v, face[2] + base_v]);
         }
 
-        if extend_normals {
-            if let Some(normals) = attr.normals.as_mut() {
-                normals.reserve(surface.vertices.len());
-                for v in &surface.vertices {
-                    let g = contact_sdf.grad(NaPoint3::new(v.x, v.y, v.z));
-                    let n_sq = g.z.mul_add(g.z, g.x.mul_add(g.x, g.y * g.y));
-                    let n = if n_sq > 1e-30 {
-                        g / n_sq.sqrt()
-                    } else {
-                        Vec3::z()
-                    };
-                    normals.push(n);
-                }
+        if extend_normals && let Some(normals) = attr.normals.as_mut() {
+            normals.reserve(surface.vertices.len());
+            for v in &surface.vertices {
+                let g = contact_sdf.grad(NaPoint3::new(v.x, v.y, v.z));
+                let n_sq = g.z.mul_add(g.z, g.x.mul_add(g.x, g.y * g.y));
+                let n = if n_sq > 1e-30 {
+                    g / n_sq.sqrt()
+                } else {
+                    Vec3::z()
+                };
+                normals.push(n);
             }
         }
     }

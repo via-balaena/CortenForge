@@ -76,17 +76,17 @@ pub(super) fn parse_option_attrs(e: &BytesStart) -> Result<MjcfOption> {
     if let Some(ts) = parse_float_attr(e, "timestep") {
         option.timestep = ts;
     }
-    if let Some(integrator) = get_attribute_opt(e, "integrator") {
-        if let Some(int) = MjcfIntegrator::from_str(&integrator) {
-            option.integrator = int;
-        }
+    if let Some(integrator) = get_attribute_opt(e, "integrator")
+        && let Some(int) = MjcfIntegrator::from_str(&integrator)
+    {
+        option.integrator = int;
     }
 
     // Solver configuration
-    if let Some(solver) = get_attribute_opt(e, "solver") {
-        if let Some(s) = MjcfSolverType::from_str(&solver) {
-            option.solver = s;
-        }
+    if let Some(solver) = get_attribute_opt(e, "solver")
+        && let Some(s) = MjcfSolverType::from_str(&solver)
+    {
+        option.solver = s;
     }
     if let Some(iter) = parse_int_attr(e, "iterations") {
         option.iterations = iter.max(0) as usize;
@@ -120,15 +120,15 @@ pub(super) fn parse_option_attrs(e: &BytesStart) -> Result<MjcfOption> {
     }
 
     // Contact configuration
-    if let Some(cone) = get_attribute_opt(e, "cone") {
-        if let Some(c) = MjcfConeType::from_str(&cone) {
-            option.cone = c;
-        }
+    if let Some(cone) = get_attribute_opt(e, "cone")
+        && let Some(c) = MjcfConeType::from_str(&cone)
+    {
+        option.cone = c;
     }
-    if let Some(jacobian) = get_attribute_opt(e, "jacobian") {
-        if let Some(j) = MjcfJacobianType::from_str(&jacobian) {
-            option.jacobian = j;
-        }
+    if let Some(jacobian) = get_attribute_opt(e, "jacobian")
+        && let Some(j) = MjcfJacobianType::from_str(&jacobian)
+    {
+        option.jacobian = j;
     }
     if let Some(impratio) = parse_float_attr(e, "impratio") {
         option.impratio = impratio;
@@ -181,13 +181,13 @@ pub(super) fn parse_option_attrs(e: &BytesStart) -> Result<MjcfOption> {
     // Per-group actuator disabling
     if let Some(groups_str) = get_attribute_opt(e, "actuatorgroupdisable") {
         for token in groups_str.split_whitespace() {
-            if let Ok(group) = token.parse::<i32>() {
-                if (0..=30).contains(&group) {
-                    // `group` is bound to 0..=30 by the contains check above.
-                    #[allow(clippy::cast_sign_loss)]
-                    {
-                        option.actuatorgroupdisable |= 1u32 << (group as u32);
-                    }
+            if let Ok(group) = token.parse::<i32>()
+                && (0..=30).contains(&group)
+            {
+                // `group` is bound to 0..=30 by the contains check above.
+                #[allow(clippy::cast_sign_loss)]
+                {
+                    option.actuatorgroupdisable |= 1u32 << (group as u32);
                 }
             }
         }
