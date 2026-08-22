@@ -178,3 +178,11 @@ __pycache__/
 # OpenSim writes this log next to whatever cwd the reference generators run in
 opensim.log
 **/opensim.log
+
+# cargo-mutants scratch output. Written into the workspace root by
+# `cargo mutants`, which the weekly `mutation-testing` job runs and which
+# anyone reproducing it locally will regenerate. 164 of these files were
+# committed to `main` by accident in #799 — a `git add -A` swept up the
+# untracked output of a local measurement run. Ignored so that cannot recur.
+mutants.out/
+mutants.out.old/
