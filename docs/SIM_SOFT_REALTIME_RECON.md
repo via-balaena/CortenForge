@@ -187,7 +187,28 @@ document; the contact arm was not re-run after R0. Read them as upper bounds.
 
 A "high-quality environment" in this codebase's own terms is the 20 k–70 k free-DOF
 range (`Cargo.toml` cites 70 k free DOF; the conformed-disc and FSU meshes sit in
-that band). **The gap is 25–90× in DOF, which at n^1.28 is 70–350× in time.**
+that band). **The gap is 13–47× in DOF.**
+
+⚠ **CORRECTED 2026-08-22, and in time this document now quotes MEASURED points rather
+than a derived exponent.** The sentence here read *"25–90× in DOF, which at `n^1.28` is
+70–350× in time"*, and both halves were defective. **25–90×** is the pre-R0 pair
+(20 k–70 k over the old 800-DOF reachable figure; v1.3 replaced 800 with 1 500 and
+missed this line). **`n^1.28` appears nowhere else in this document and has no
+producer** — the two exponents actually measured here are `n^1.51` (low-end) and
+`n^1.43` (per-iteration), so the "70–350×" rested on a number with no source.
+
+The table above already brackets the target band with direct measurements, and the
+spread between them is the finding rather than noise:
+
+| directly measured, in or near the 20 k–70 k band | Newton iters/step | × 16.7 ms |
+|---|---:|---:|
+| block n=28, 70 644 free DOF | 0.5–0.6 | **34.6×** |
+| IPC indentation, 18 750 free DOF | 6.5 | **46.2×** |
+| cantilever 80×8, 19 440 free DOF | 37.0 | **267×** |
+
+⇒ **35–267× in time at comparable DOF**, set by how nonlinear the trajectory is far
+more than by mesh size — which is §3b.4's point, and precisely why one exponent was the
+wrong instrument. Quote a row, per this section's own rule two paragraphs up.
 
 **Substepping does not rescue it, and is measurably worse.** `cantilever 40×4` costs
 470.7 ms as one `dt = 1/60` step (24.2 Newton iterations). The same frame as 16.7
@@ -424,7 +445,7 @@ exist.
 
 ### 3a. The goal is not refuted
 
-Nothing measured says real time is unreachable. The gap is large (25–90× in DOF) but
+Nothing measured says real time is unreachable. The gap is large (13–47× in DOF) but
 it is the *size* of gap that reduced-order modelling is built for: ECSW/cubature
 literature routinely reports 2–3 orders of magnitude on exactly this shape of problem
 (hyperelastic FEM, fixed mesh, repeated solves). The brief's central architectural
@@ -974,6 +995,12 @@ small, separate PR and is not proposed here.
   (800 free DOF / `n^1.38` / 540 DOF at 1.37× / 3 000 DOF at 28×), so the doc asserted
   both that the 540-DOF anchor missed the 60 Hz budget by 1.37× and that it fitted at
   0.47×. §5 was additionally misquoting §2a by name.
+  **A third round found the same drift inside §2a itself** — the section the other two
+  fixes were checked against. Its DOF-gap sentence still read 25–90× (the pre-R0 pair),
+  as did §3a, and it derived a "70–350× in time" figure from **`n^1.28`, an exponent
+  with no producer anywhere in this document**. Both corrected to 13–47×, and the time
+  claim replaced with the three directly measured rows that bracket the target band
+  (34.6× / 46.2× / 267×) — a spread governed by trajectory nonlinearity, not DOF.
 - **v1.9 (2026-08-12)** — R1.3 landed; §6's goal-oriented-basis lead upgraded from a
   hypothesis to a measurement (enriched `r = 40` beats plain `r = 104`, 2.7x faster,
   conditional on the objective family being low-dimensional) and the "just raise `r`"
