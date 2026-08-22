@@ -114,7 +114,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -149,7 +149,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # ⚠ Assert the tools EXIST rather than skipping when they do not. `test.sh`
       # exits 0 when `timeout(1)` is unavailable so it stays runnable on a dev
@@ -181,7 +181,7 @@ jobs:
     steps:
       # fetch-depth: 0 — the diff is `origin/<base>...HEAD`, which needs the
       # merge-base, i.e. enough history of both sides.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -252,7 +252,7 @@ jobs:
       matrix:
         shard: [1, 2, 3]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         uses: ./.github/actions/install-linux-deps
@@ -411,7 +411,7 @@ jobs:
               sim-therm-env cf-design cf-design-tests cf-fsu-geometry cf-routing cf-routing-tests cf-cast-cli sim
               pbit-analyze pbit-fw-core
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # ⚠ `mesa-vulkan-drivers` is NOT decoration. `sim-gpu`'s tests take a GPU
       # adapter or return early, and a returning test reports `ok` — so without a
@@ -526,7 +526,7 @@ jobs:
           - id: 3
             crates: sim-ml-chassis sim-rl cf-codesign
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         uses: ./.github/actions/install-linux-deps
@@ -714,7 +714,7 @@ jobs:
       matrix:
         os: [macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -774,7 +774,7 @@ jobs:
     needs: [affected]
     if: ${{ !cancelled() }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         uses: ./.github/actions/install-linux-deps
@@ -828,7 +828,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Check licenses and sources
         uses: EmbarkStudios/cargo-deny-action@v2
@@ -845,7 +845,7 @@ jobs:
     # Only run on PRs (compare against base branch)
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -867,7 +867,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -882,7 +882,7 @@ jobs:
           find . -name "*.cdx.json" -not -path "./target/*" | head -1 | xargs -I{} cp {} sbom.json
 
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: sbom
           path: sbom.json
@@ -943,7 +943,7 @@ jobs:
       matrix:
         shard: [1, 2, 3]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -1035,7 +1035,7 @@ jobs:
     steps:
       # fetch-depth: 0 — the path decision diffs against the PR base, which
       # needs the merge-base, i.e. enough history of both sides.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -1119,7 +1119,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
