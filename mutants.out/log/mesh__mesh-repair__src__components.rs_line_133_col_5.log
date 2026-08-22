@@ -1,0 +1,238 @@
+
+*** mesh/mesh-repair/src/components.rs:133:5: replace find_connected_components -> ComponentAnalysis with Default::default()
+
+*** mutation diff:
+--- mesh/mesh-repair/src/components.rs
++++ replace find_connected_components -> ComponentAnalysis with Default::default()
+@@ -125,99 +125,17 @@
+ /// mesh.faces.push([0, 1, 2]);
+ /// mesh.faces.push([3, 4, 5]);
+ ///
+ /// let analysis = find_connected_components(&mesh);
+ /// assert_eq!(analysis.component_count, 2);
+ /// ```
+ #[must_use]
+ pub fn find_connected_components(mesh: &IndexedMesh) -> ComponentAnalysis {
+-    if mesh.faces.is_empty() {
+-        return ComponentAnalysis {
+-            component_count: 0,
+-            components: Vec::new(),
+-            largest_component_size: 0,
+-            smallest_component_size: 0,
+-        };
+-    }
+-
+-    let adjacency = MeshAdjacency::build(&mesh.faces);
+-    let face_count = mesh.faces.len();
+-
+-    // Build face-to-face adjacency via shared edges
+-    let mut face_neighbors: Vec<Vec<u32>> = vec![Vec::new(); face_count];
+-    for (face_idx, face) in mesh.faces.iter().enumerate() {
+-        // Check all three edges of this face
+-        for edge_idx in 0..3 {
+-            let v0 = face[edge_idx];
+-            let v1 = face[(edge_idx + 1) % 3];
+-
+-            if let Some(neighbors) = adjacency.faces_for_edge(v0, v1) {
+-                for &neighbor in neighbors {
+-                    if neighbor != face_idx {
+-                        face_neighbors[face_idx].push(neighbor as u32);
+-                    }
+-                }
+-            }
+-        }
+-    }
+-
+-    // Flood-fill to find connected components
+-    let mut visited = vec![false; face_count];
+-    let mut components: Vec<Vec<u32>> = Vec::new();
+-
+-    for start_face in 0..face_count {
+-        if visited[start_face] {
+-            continue;
+-        }
+-
+-        // BFS flood fill from this face
+-        let mut component = Vec::new();
+-        let mut queue = vec![start_face as u32];
+-        visited[start_face] = true;
+-
+-        while let Some(face_idx) = queue.pop() {
+-            component.push(face_idx);
+-
+-            for &neighbor in &face_neighbors[face_idx as usize] {
+-                if !visited[neighbor as usize] {
+-                    visited[neighbor as usize] = true;
+-                    queue.push(neighbor);
+-                }
+-            }
+-        }
+-
+-        components.push(component);
+-    }
+-
+-    // Sort components by size (largest first)
+-    components.sort_by_key(|c| Reverse(c.len()));
+-
+-    let component_count = components.len();
+-    let largest_component_size = components.first().map_or(0, Vec::len);
+-    let smallest_component_size = components.last().map_or(0, Vec::len);
+-
+-    info!(
+-        "Found {} connected component(s) in mesh with {} faces",
+-        component_count, face_count
+-    );
+-
+-    if component_count > 1 {
+-        debug!(
+-            "Component sizes: {:?}",
+-            components.iter().map(Vec::len).collect::<Vec<_>>()
+-        );
+-    }
+-
+-    ComponentAnalysis {
+-        component_count,
+-        components,
+-        largest_component_size,
+-        smallest_component_size,
+-    }
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Split a mesh into separate meshes, one per connected component.
+ ///
+ /// Each resulting mesh is independent and has its own vertex and face arrays.
+ ///
+ /// # Arguments
+ ///
+
+
+*** /Users/jonhillesheim/.rustup/toolchains/1.96.0-aarch64-apple-darwin/bin/cargo test --no-run --verbose --package=mesh-repair@2.0.0
+       Fresh autocfg v1.5.0
+       Fresh unicode-ident v1.0.24
+       Fresh cfg-if v1.0.4
+       Fresh bytemuck v1.25.0
+       Fresh rawpointer v0.2.1
+       Fresh safe_arch v0.7.4
+       Fresh bitflags v2.11.0
+       Fresh once_cell v1.21.4
+       Fresh libm v0.2.16
+       Fresh proc-macro2 v1.0.106
+       Fresh libc v0.2.183
+       Fresh wide v0.7.33
+       Fresh paste v1.0.15
+       Fresh matrixmultiply v0.3.10
+       Fresh typenum v1.20.1
+       Fresh crossbeam-utils v0.8.21
+       Fresh byteorder v1.5.0
+       Fresh num-traits v0.2.19
+       Fresh quote v1.0.45
+       Fresh getrandom v0.3.4
+       Fresh hash32 v0.3.1
+       Fresh errno v0.3.14
+       Fresh crossbeam-epoch v0.9.20
+       Fresh foldhash v0.2.0
+       Fresh smallvec v1.15.1
+       Fresh syn v2.0.117
+       Fresh approx v0.5.1
+       Fresh num-complex v0.4.6
+       Fresh num-integer v0.1.46
+       Fresh rand_core v0.9.5
+       Fresh equivalent v1.0.2
+       Fresh stable_deref_trait v1.2.1
+       Fresh allocator-api2 v0.2.21
+       Fresh crossbeam-deque v0.8.6
+       Fresh getrandom v0.4.2
+       Fresh rustix v1.1.4
+       Fresh num-rational v0.4.2
+       Fresh simba v0.9.1
+       Fresh nalgebra-macros v0.3.0
+       Fresh thiserror-impl v1.0.69
+       Fresh hashbrown v0.16.1
+       Fresh heapless v0.8.0
+       Fresh zerocopy v0.8.47
+       Fresh robust v1.2.0
+       Fresh fastrand v2.3.0
+       Fresh either v1.15.0
+       Fresh nalgebra v0.34.2
+       Fresh log v0.4.32
+       Fresh nalgebra v0.33.3
+       Fresh tempfile v3.27.0
+       Fresh rstar v0.12.2
+       Fresh thiserror v1.0.69
+       Fresh rayon-core v1.13.0
+       Fresh spade v2.15.1
+       Fresh ppv-lite86 v0.2.21
+       Fresh num-derive v0.4.2
+       Fresh tracing-attributes v0.1.31
+       Fresh thiserror-impl v2.0.18
+       Fresh cf-geometry v1.0.0 (/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/design/cf-geometry)
+       Fresh ena v0.14.4
+       Fresh ordered-float v4.6.0
+       Fresh wait-timeout v0.2.1
+       Fresh tracing-core v0.1.36
+       Fresh rustc-hash v2.1.1
+       Fresh fnv v1.0.7
+       Fresh arrayvec v0.7.6
+       Fresh quick-error v1.2.3
+       Fresh slab v0.4.12
+       Fresh downcast-rs v1.2.1
+       Fresh pin-project-lite v0.2.17
+       Fresh bit-vec v0.8.0
+       Fresh tracing v0.1.44
+       Fresh parry3d-f64 v0.17.6
+       Fresh mesh-types v1.0.0 (/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/mesh/mesh-types)
+       Fresh rusty-fork v0.3.1
+       Fresh bit-set v0.8.0
+       Fresh rand_chacha v0.9.0
+       Fresh rayon v1.12.0
+       Fresh thiserror v2.0.18
+       Fresh rand v0.9.2
+       Fresh rand_xorshift v0.4.0
+       Fresh unarray v0.1.4
+       Fresh regex-syntax v0.8.10
+       Fresh proptest v1.11.0
+       Dirty mesh-repair v2.0.0 (/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/mesh/mesh-repair): the file `mesh/mesh-repair/src/components.rs` has changed (1787397010.721578774s, 4s after last build at 1787397006.205177767s)
+   Compiling mesh-repair v2.0.0 (/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/mesh/mesh-repair)
+     Running `/Users/jonhillesheim/.rustup/toolchains/1.96.0-aarch64-apple-darwin/bin/rustc --crate-name mesh_repair --edition=2024 mesh/mesh-repair/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C split-debuginfo=unpacked '--warn=clippy::pedantic' '--warn=clippy::nursery' '--warn=clippy::all' '--warn=clippy::unwrap_used' --warn=unsafe_code '--deny=clippy::unimplemented' '--deny=clippy::todo' '--allow=clippy::suboptimal_flops' '--warn=clippy::panic' --warn=missing_docs '--deny=clippy::let_underscore_must_use' '--warn=clippy::expect_used' -C debug-assertions=on --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=f732cce5678e1299 -C extra-filename=-ab8ce07e98e614b6 --out-dir /private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps -C incremental=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/incremental -L dependency=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps --extern approx=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libapprox-21f4e731216a202d.rlib --extern cf_geometry=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libcf_geometry-2d727014e88ca3ac.rlib --extern hashbrown=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libhashbrown-1c5585b6045e19ac.rlib --extern mesh_types=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libmesh_types-bb100a088d3e9b11.rlib --extern nalgebra=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libnalgebra-2cbe3d9228d6c7b9.rlib --extern parry3d_f64=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libparry3d_f64-fefc5d4db899a6dc.rlib --extern proptest=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libproptest-677997f9db0adb94.rlib --extern rayon=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/librayon-02f13d7b576039e0.rlib --extern thiserror=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libthiserror-ac0ed17fd3751148.rlib --extern tracing=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libtracing-874c132bc63c536d.rlib`
+     Running `/Users/jonhillesheim/.rustup/toolchains/1.96.0-aarch64-apple-darwin/bin/rustc --crate-name mesh_repair --edition=2024 mesh/mesh-repair/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C split-debuginfo=unpacked '--warn=clippy::pedantic' '--warn=clippy::nursery' '--warn=clippy::all' '--warn=clippy::unwrap_used' --warn=unsafe_code '--deny=clippy::unimplemented' '--deny=clippy::todo' '--allow=clippy::suboptimal_flops' '--warn=clippy::panic' --warn=missing_docs '--deny=clippy::let_underscore_must_use' '--warn=clippy::expect_used' -C debug-assertions=on --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=824542de100eef2d -C extra-filename=-bbaf037179e386e6 --out-dir /private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps -C incremental=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/incremental -L dependency=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps --extern cf_geometry=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libcf_geometry-2d727014e88ca3ac.rmeta --extern hashbrown=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libhashbrown-1c5585b6045e19ac.rmeta --extern mesh_types=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libmesh_types-bb100a088d3e9b11.rmeta --extern nalgebra=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libnalgebra-2cbe3d9228d6c7b9.rmeta --extern parry3d_f64=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libparry3d_f64-fefc5d4db899a6dc.rmeta --extern rayon=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/librayon-02f13d7b576039e0.rmeta --extern thiserror=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libthiserror-ac0ed17fd3751148.rmeta --extern tracing=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libtracing-874c132bc63c536d.rmeta`
+warning: unused import: `std::cmp::Reverse`
+  --> mesh/mesh-repair/src/components.rs:37:5
+   |
+37 | use std::cmp::Reverse;
+   |     ^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `crate::adjacency::MeshAdjacency`
+  --> mesh/mesh-repair/src/components.rs:43:5
+   |
+43 | use crate::adjacency::MeshAdjacency;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0277]: the trait bound `ComponentAnalysis: Default` is not satisfied
+   --> mesh/mesh-repair/src/components.rs:133:5
+    |
+133 |     Default::default() /* ~ changed by cargo-mutants ~ */
+    |     ^^^^^^^^^^^^^^^^^^ the trait `Default` is not implemented for `ComponentAnalysis`
+    |
+help: consider annotating `ComponentAnalysis` with `#[derive(Default)]`
+    |
+ 47 + #[derive(Default)]
+ 48 | pub struct ComponentAnalysis {
+    |
+
+For more information about this error, try `rustc --explain E0277`.
+warning: `mesh-repair` (lib) generated 2 warnings
+error: could not compile `mesh-repair` (lib) due to 1 previous error; 2 warnings emitted
+
+Caused by:
+  process didn't exit successfully: `/Users/jonhillesheim/.rustup/toolchains/1.96.0-aarch64-apple-darwin/bin/rustc --crate-name mesh_repair --edition=2024 mesh/mesh-repair/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C split-debuginfo=unpacked '--warn=clippy::pedantic' '--warn=clippy::nursery' '--warn=clippy::all' '--warn=clippy::unwrap_used' --warn=unsafe_code '--deny=clippy::unimplemented' '--deny=clippy::todo' '--allow=clippy::suboptimal_flops' '--warn=clippy::panic' --warn=missing_docs '--deny=clippy::let_underscore_must_use' '--warn=clippy::expect_used' -C debug-assertions=on --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=824542de100eef2d -C extra-filename=-bbaf037179e386e6 --out-dir /private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps -C incremental=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/incremental -L dependency=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps --extern cf_geometry=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libcf_geometry-2d727014e88ca3ac.rmeta --extern hashbrown=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libhashbrown-1c5585b6045e19ac.rmeta --extern mesh_types=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libmesh_types-bb100a088d3e9b11.rmeta --extern nalgebra=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libnalgebra-2cbe3d9228d6c7b9.rmeta --extern parry3d_f64=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libparry3d_f64-fefc5d4db899a6dc.rmeta --extern rayon=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/librayon-02f13d7b576039e0.rmeta --extern thiserror=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libthiserror-ac0ed17fd3751148.rmeta --extern tracing=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libtracing-874c132bc63c536d.rmeta` (exit status: 1)
+warning: build failed, waiting for other jobs to finish...
+warning: `mesh-repair` (lib test) generated 2 warnings (2 duplicates)
+error: could not compile `mesh-repair` (lib test) due to 1 previous error; 2 warnings emitted
+
+Caused by:
+  process didn't exit successfully: `/Users/jonhillesheim/.rustup/toolchains/1.96.0-aarch64-apple-darwin/bin/rustc --crate-name mesh_repair --edition=2024 mesh/mesh-repair/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C split-debuginfo=unpacked '--warn=clippy::pedantic' '--warn=clippy::nursery' '--warn=clippy::all' '--warn=clippy::unwrap_used' --warn=unsafe_code '--deny=clippy::unimplemented' '--deny=clippy::todo' '--allow=clippy::suboptimal_flops' '--warn=clippy::panic' --warn=missing_docs '--deny=clippy::let_underscore_must_use' '--warn=clippy::expect_used' -C debug-assertions=on --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=f732cce5678e1299 -C extra-filename=-ab8ce07e98e614b6 --out-dir /private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps -C incremental=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/incremental -L dependency=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps --extern approx=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libapprox-21f4e731216a202d.rlib --extern cf_geometry=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libcf_geometry-2d727014e88ca3ac.rlib --extern hashbrown=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libhashbrown-1c5585b6045e19ac.rlib --extern mesh_types=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libmesh_types-bb100a088d3e9b11.rlib --extern nalgebra=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libnalgebra-2cbe3d9228d6c7b9.rlib --extern parry3d_f64=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libparry3d_f64-fefc5d4db899a6dc.rlib --extern proptest=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libproptest-677997f9db0adb94.rlib --extern rayon=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/librayon-02f13d7b576039e0.rlib --extern thiserror=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libthiserror-ac0ed17fd3751148.rlib --extern tracing=/private/var/folders/bm/hqbs88cx0fvff3jg_7xwjp0c0000gn/T/cargo-mutants-cortenforge-9vBoBk.tmp/target/debug/deps/libtracing-874c132bc63c536d.rlib` (exit status: 1)
+
+*** result: Failure(101)

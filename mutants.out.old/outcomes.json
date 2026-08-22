@@ -1,0 +1,363 @@
+{
+  "outcomes": [
+    {
+      "scenario": "Baseline",
+      "summary": "Success",
+      "log_path": "log/baseline.log",
+      "diff_path": null,
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 18.800020542,
+          "process_status": "Success",
+          "argv": [
+            "/Users/jonhillesheim/.rustup/toolchains/1.96.0-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=mesh-repair@2.0.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 21.936144083,
+          "process_status": "Success",
+          "argv": [
+            "/Users/jonhillesheim/.rustup/toolchains/1.96.0-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=mesh-repair@2.0.0",
+            "--release"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "mesh/mesh-repair/src/adjacency.rs:41:9: replace MeshAdjacency::build -> Self with Default::default()",
+          "package": "mesh-repair",
+          "file": "mesh/mesh-repair/src/adjacency.rs",
+          "function": {
+            "function_name": "MeshAdjacency::build",
+            "return_type": "-> Self",
+            "span": {
+              "start": {
+                "line": 23,
+                "column": 5
+              },
+              "end": {
+                "line": 66,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 41,
+              "column": 9
+            },
+            "end": {
+              "line": 65,
+              "column": 10
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/mesh__mesh-repair__src__adjacency.rs_line_41_col_9.log",
+      "diff_path": "diff/mesh__mesh-repair__src__adjacency.rs_line_41_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.140529375,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/jonhillesheim/.rustup/toolchains/1.96.0-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=mesh-repair@2.0.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "mesh/mesh-repair/src/adjacency.rs:73:9: replace MeshAdjacency::faces_for_edge -> Option<&[usize]> with None",
+          "package": "mesh-repair",
+          "file": "mesh/mesh-repair/src/adjacency.rs",
+          "function": {
+            "function_name": "MeshAdjacency::faces_for_edge",
+            "return_type": "-> Option<&[usize]>",
+            "span": {
+              "start": {
+                "line": 68,
+                "column": 5
+              },
+              "end": {
+                "line": 75,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 73,
+              "column": 9
+            },
+            "end": {
+              "line": 74,
+              "column": 57
+            }
+          },
+          "replacement": "None",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/mesh__mesh-repair__src__adjacency.rs_line_73_col_9.log",
+      "diff_path": "diff/mesh__mesh-repair__src__adjacency.rs_line_73_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.5097901660000002,
+          "process_status": "Success",
+          "argv": [
+            "/Users/jonhillesheim/.rustup/toolchains/1.96.0-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=mesh-repair@2.0.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 5.669821583,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/jonhillesheim/.rustup/toolchains/1.96.0-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=mesh-repair@2.0.0",
+            "--release"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "mesh/mesh-repair/src/adjacency.rs:73:9: replace MeshAdjacency::faces_for_edge -> Option<&[usize]> with Some(Vec::leak(Vec::new()))",
+          "package": "mesh-repair",
+          "file": "mesh/mesh-repair/src/adjacency.rs",
+          "function": {
+            "function_name": "MeshAdjacency::faces_for_edge",
+            "return_type": "-> Option<&[usize]>",
+            "span": {
+              "start": {
+                "line": 68,
+                "column": 5
+              },
+              "end": {
+                "line": 75,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 73,
+              "column": 9
+            },
+            "end": {
+              "line": 74,
+              "column": 57
+            }
+          },
+          "replacement": "Some(Vec::leak(Vec::new()))",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/mesh__mesh-repair__src__adjacency.rs_line_73_col_9_001.log",
+      "diff_path": "diff/mesh__mesh-repair__src__adjacency.rs_line_73_col_9_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.518216708,
+          "process_status": "Success",
+          "argv": [
+            "/Users/jonhillesheim/.rustup/toolchains/1.96.0-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=mesh-repair@2.0.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.960945125,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/jonhillesheim/.rustup/toolchains/1.96.0-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=mesh-repair@2.0.0",
+            "--release"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "mesh/mesh-repair/src/adjacency.rs:73:9: replace MeshAdjacency::faces_for_edge -> Option<&[usize]> with Some(Vec::leak(vec![0]))",
+          "package": "mesh-repair",
+          "file": "mesh/mesh-repair/src/adjacency.rs",
+          "function": {
+            "function_name": "MeshAdjacency::faces_for_edge",
+            "return_type": "-> Option<&[usize]>",
+            "span": {
+              "start": {
+                "line": 68,
+                "column": 5
+              },
+              "end": {
+                "line": 75,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 73,
+              "column": 9
+            },
+            "end": {
+              "line": 74,
+              "column": 57
+            }
+          },
+          "replacement": "Some(Vec::leak(vec![0]))",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/mesh__mesh-repair__src__adjacency.rs_line_73_col_9_002.log",
+      "diff_path": "diff/mesh__mesh-repair__src__adjacency.rs_line_73_col_9_002.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.517718208,
+          "process_status": "Success",
+          "argv": [
+            "/Users/jonhillesheim/.rustup/toolchains/1.96.0-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=mesh-repair@2.0.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 5.10330475,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/jonhillesheim/.rustup/toolchains/1.96.0-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=mesh-repair@2.0.0",
+            "--release"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "mesh/mesh-repair/src/adjacency.rs:73:9: replace MeshAdjacency::faces_for_edge -> Option<&[usize]> with Some(Vec::leak(vec![1]))",
+          "package": "mesh-repair",
+          "file": "mesh/mesh-repair/src/adjacency.rs",
+          "function": {
+            "function_name": "MeshAdjacency::faces_for_edge",
+            "return_type": "-> Option<&[usize]>",
+            "span": {
+              "start": {
+                "line": 68,
+                "column": 5
+              },
+              "end": {
+                "line": 75,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 73,
+              "column": 9
+            },
+            "end": {
+              "line": 74,
+              "column": 57
+            }
+          },
+          "replacement": "Some(Vec::leak(vec![1]))",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/mesh__mesh-repair__src__adjacency.rs_line_73_col_9_003.log",
+      "diff_path": "diff/mesh__mesh-repair__src__adjacency.rs_line_73_col_9_003.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.567531792,
+          "process_status": "Success",
+          "argv": [
+            "/Users/jonhillesheim/.rustup/toolchains/1.96.0-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=mesh-repair@2.0.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 5.082716375,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/jonhillesheim/.rustup/toolchains/1.96.0-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=mesh-repair@2.0.0",
+            "--release"
+          ]
+        }
+      ]
+    }
+  ],
+  "total_mutants": 5,
+  "missed": 0,
+  "caught": 4,
+  "timeout": 0,
+  "unviable": 1,
+  "success": 0,
+  "start_time": "2026-08-22T11:03:26.309155Z",
+  "end_time": null,
+  "cargo_mutants_version": "27.1.0"
+}

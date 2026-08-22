@@ -1,0 +1,21 @@
+--- mesh/mesh-repair/src/adjacency.rs
++++ replace MeshAdjacency::vertex_count -> usize with 1
+@@ -134,17 +134,17 @@
+     #[must_use]
+     pub fn edge_count(&self) -> usize {
+         self.edge_to_faces.len()
+     }
+ 
+     /// Get the number of unique vertices.
+     #[must_use]
+     pub fn vertex_count(&self) -> usize {
+-        self.vertex_to_faces.len()
++        1 /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// Normalize edge direction so v0 < v1.
+ #[inline]
+ const fn normalize_edge(v0: u32, v1: u32) -> (u32, u32) {
+     if v0 < v1 { (v0, v1) } else { (v1, v0) }
+ }

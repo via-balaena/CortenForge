@@ -1,0 +1,24 @@
+--- mesh/mesh-repair/src/adjacency.rs
++++ replace MeshAdjacency::non_manifold_edge_count -> usize with 0
+@@ -107,20 +107,17 @@
+             .iter()
+             .filter(|(_, faces)| faces.len() > 2)
+             .map(|(&edge, _)| edge)
+     }
+ 
+     /// Count the number of non-manifold edges.
+     #[must_use]
+     pub fn non_manifold_edge_count(&self) -> usize {
+-        self.edge_to_faces
+-            .values()
+-            .filter(|faces| faces.len() > 2)
+-            .count()
++        0 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Check if the mesh is manifold (all edges have at most 2 adjacent faces).
+     #[must_use]
+     pub fn is_manifold(&self) -> bool {
+         self.edge_to_faces.values().all(|faces| faces.len() <= 2)
+     }
+ 

@@ -1,0 +1,103 @@
+--- mesh/mesh-repair/src/components.rs
++++ replace find_connected_components -> ComponentAnalysis with Default::default()
+@@ -125,99 +125,17 @@
+ /// mesh.faces.push([0, 1, 2]);
+ /// mesh.faces.push([3, 4, 5]);
+ ///
+ /// let analysis = find_connected_components(&mesh);
+ /// assert_eq!(analysis.component_count, 2);
+ /// ```
+ #[must_use]
+ pub fn find_connected_components(mesh: &IndexedMesh) -> ComponentAnalysis {
+-    if mesh.faces.is_empty() {
+-        return ComponentAnalysis {
+-            component_count: 0,
+-            components: Vec::new(),
+-            largest_component_size: 0,
+-            smallest_component_size: 0,
+-        };
+-    }
+-
+-    let adjacency = MeshAdjacency::build(&mesh.faces);
+-    let face_count = mesh.faces.len();
+-
+-    // Build face-to-face adjacency via shared edges
+-    let mut face_neighbors: Vec<Vec<u32>> = vec![Vec::new(); face_count];
+-    for (face_idx, face) in mesh.faces.iter().enumerate() {
+-        // Check all three edges of this face
+-        for edge_idx in 0..3 {
+-            let v0 = face[edge_idx];
+-            let v1 = face[(edge_idx + 1) % 3];
+-
+-            if let Some(neighbors) = adjacency.faces_for_edge(v0, v1) {
+-                for &neighbor in neighbors {
+-                    if neighbor != face_idx {
+-                        face_neighbors[face_idx].push(neighbor as u32);
+-                    }
+-                }
+-            }
+-        }
+-    }
+-
+-    // Flood-fill to find connected components
+-    let mut visited = vec![false; face_count];
+-    let mut components: Vec<Vec<u32>> = Vec::new();
+-
+-    for start_face in 0..face_count {
+-        if visited[start_face] {
+-            continue;
+-        }
+-
+-        // BFS flood fill from this face
+-        let mut component = Vec::new();
+-        let mut queue = vec![start_face as u32];
+-        visited[start_face] = true;
+-
+-        while let Some(face_idx) = queue.pop() {
+-            component.push(face_idx);
+-
+-            for &neighbor in &face_neighbors[face_idx as usize] {
+-                if !visited[neighbor as usize] {
+-                    visited[neighbor as usize] = true;
+-                    queue.push(neighbor);
+-                }
+-            }
+-        }
+-
+-        components.push(component);
+-    }
+-
+-    // Sort components by size (largest first)
+-    components.sort_by_key(|c| Reverse(c.len()));
+-
+-    let component_count = components.len();
+-    let largest_component_size = components.first().map_or(0, Vec::len);
+-    let smallest_component_size = components.last().map_or(0, Vec::len);
+-
+-    info!(
+-        "Found {} connected component(s) in mesh with {} faces",
+-        component_count, face_count
+-    );
+-
+-    if component_count > 1 {
+-        debug!(
+-            "Component sizes: {:?}",
+-            components.iter().map(Vec::len).collect::<Vec<_>>()
+-        );
+-    }
+-
+-    ComponentAnalysis {
+-        component_count,
+-        components,
+-        largest_component_size,
+-        smallest_component_size,
+-    }
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Split a mesh into separate meshes, one per connected component.
+ ///
+ /// Each resulting mesh is independent and has its own vertex and face arrays.
+ ///
+ /// # Arguments
+ ///

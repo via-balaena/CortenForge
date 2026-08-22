@@ -1,0 +1,21 @@
+--- mesh/mesh-repair/src/components.rs
++++ replace > with >= in <impl std::fmt::Display for ComponentAnalysis>::fmt
+@@ -79,17 +79,17 @@
+                 "  Largest component: {} faces",
+                 self.largest_component_size
+             )?;
+             writeln!(
+                 f,
+                 "  Smallest component: {} faces",
+                 self.smallest_component_size
+             )?;
+-            if self.component_count > 1 {
++            if self.component_count >= /* ~ changed by cargo-mutants ~ */ 1 {
+                 writeln!(f, "  Component sizes:")?;
+                 for (i, comp) in self.components.iter().enumerate() {
+                     writeln!(f, "    Component {}: {} faces", i + 1, comp.len())?;
+                 }
+             }
+         }
+         Ok(())
+     }
