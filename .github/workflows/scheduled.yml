@@ -289,6 +289,20 @@ jobs:
   benchmark-baseline:
     name: Benchmark Baseline
     runs-on: ubuntu-latest
+    # Bounded against a MEASURED run, not a guess: run 32477481085 (2026-08-21)
+    # took 46m37s wall. That is the ONLY success this job has ever had — 34
+    # weekly attempts failed ahead of it, back to 2026-01-25 — so n=1, and the
+    # figure is a cold-cache one: `Swatinem/rust-cache` defaults to
+    # `cache-on-failure: false` and keys on the job id, and this job overrides
+    # neither, so none of those failures left anything to restore. It is
+    # therefore near the worst case for the compile half. Unbounded, the job
+    # inherits GitHub's 360-minute default and a hung bench burns six hours of
+    # runner time unnoticed.
+    #
+    # ⚠ At ~1.9x this is the tightest headroom in the file; the other bounded
+    # jobs run 2.9x-12x. If added benches push a legitimate run past it,
+    # re-measure and raise it — a timeout kill here is not a bench regression.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
 
