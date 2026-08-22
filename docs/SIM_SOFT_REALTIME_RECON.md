@@ -630,9 +630,13 @@ basis in the bulk):
 - **The mechanism is sound and the measurements support it.** The contact region is
   small: the IPC indentation engaged, at most, the vertices under a sphere of contact
   radius `a = 2.24 mm` on an 18 750-DOF mesh. A full-DOF patch of a few hundred DOF
-  coupled to a reduced bulk of `r ≈ 30–100` gives a system of ~500–800 DOF — which
-  §2a's "≈ 800 free DOF fits a 60 Hz converged frame" says is *exactly* the reachable
-  size. The arithmetic closes, which is a genuine (if provisional) encouragement.
+  coupled to a reduced bulk of `r ≈ 30–100` gives a system of ~500–800 DOF — comfortably
+  inside the **≈ 1 500 free DOF** §2a measures as reachable at 60 Hz, with roughly 2×
+  headroom. The arithmetic closes, which is a genuine (if provisional) encouragement.
+  ⚠ Until 2026-08-22 this sentence quoted §2a *by name* as saying "≈ 800 free DOF … is
+  *exactly* the reachable size" — a pre-R0 figure §2a itself stopped carrying at v1.3.
+  The correction turns "exactly at the limit" into "inside it with margin"; it does not
+  rescue anything, because the hard part is the coupling condition below, not the count.
 - **The coupling is where it is hard, and it is open research.** The interface between
   a full-DOF patch and a reduced bulk needs a compatibility condition. Options span
   static condensation of the bulk onto the interface (clean, but the condensed
@@ -906,11 +910,16 @@ small, separate PR and is not proposed here.
    upper bounds. The *shapes* (scaling exponents, phase shares, crossover point) are
    robust across repeats; the absolutes are not benchmark-grade. Re-take §2a on an idle
    machine before quoting any figure externally.
-2. **The `≈ 800 free DOF at 60 Hz` headline is an interpolation**, not a measured
-   point — it is derived from the 540 → 3 000 DOF pair at the measured `n^1.38` low-end
+2. **The `≈ 1 500 free DOF at 60 Hz` headline is an interpolation**, not a measured
+   point — it is derived from the 540 → 3 000 DOF pair at the measured `n^1.51` low-end
    exponent, using the IPC fixture's 6-iteration count. The bracketing measurements
-   (540 DOF at 1.37× budget; 3 000 DOF at 28×) *are* direct. Treat 800 as an order-of-
-   magnitude statement.
+   (540 DOF at **0.47×** budget — it *fits*, with 2× headroom; 3 000 DOF at 12.1×) *are*
+   direct. Treat 1 500 as an order-of-magnitude statement.
+   ⚠ **This risk carried the pre-R0 figures — 800 / `n^1.38` / 1.37× / 28× — from v1.3
+   to 2026-08-22.** v1.3 re-measured them and updated §2a, the verdict and the header
+   caveat, but missed §10 and §5. The doc therefore stated, in two places at once, that
+   the 540-DOF anchor **missed** the budget by 1.37× and that it **fitted** at 0.47× —
+   and this is the paragraph telling readers which figure is safe to quote.
 3. ~~**The `cantilever` at 36 300 free DOF does not converge.**~~ **RESOLVED
    2026-08-11 — this risk was mine, not the solver's.** The failing harness capped
    Newton at 60 iterations; the case needs 65. Every size converges with a generous
@@ -924,7 +933,7 @@ small, separate PR and is not proposed here.
    that this recon did not measure.** R3's gate exists precisely to hold it to account,
    and R3's kill condition (< ~10× over R0) is the response if it does not hold.
 6. **§5's hybrid-DD arithmetic closes on paper** (a few hundred patch DOF + `r ≈
-   30–100` lands inside the reachable ~800 DOF). That is encouraging and it is not
+   30–100` lands inside the reachable ≈ 1 500 DOF). That is encouraging and it is not
    evidence. Nothing about the coupling condition or the moving patch has been
    measured or designed.
 7. **The `BTreeMap` finding (§2d.2) is a profile attribution, not a proven fix.** R0's
@@ -960,6 +969,11 @@ small, separate PR and is not proposed here.
   ceiling is nearly 2× better than recorded *and* R1 as built already lifts it 10.4×
   without hyper-reduction. §8b's reading (b) re-pointed at the corrected figure. Header
   version stamp also corrected — it read v1.7 while this section already recorded v1.9.
+  **Separately, three sites that v1.3 missed were brought up to date**: §10 risk 2, §10
+  risk 6 and §5's hybrid-DD paragraph still carried the pre-R0 frame-budget figures
+  (800 free DOF / `n^1.38` / 540 DOF at 1.37× / 3 000 DOF at 28×), so the doc asserted
+  both that the 540-DOF anchor missed the 60 Hz budget by 1.37× and that it fitted at
+  0.47×. §5 was additionally misquoting §2a by name.
 - **v1.9 (2026-08-12)** — R1.3 landed; §6's goal-oriented-basis lead upgraded from a
   hypothesis to a measurement (enriched `r = 40` beats plain `r = 104`, 2.7x faster,
   conditional on the objective family being low-dimensional) and the "just raise `r`"
