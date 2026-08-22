@@ -1,0 +1,21 @@
+--- mesh/mesh-repair/src/components.rs
++++ replace != with == in find_connected_components
+@@ -147,17 +147,17 @@
+     for (face_idx, face) in mesh.faces.iter().enumerate() {
+         // Check all three edges of this face
+         for edge_idx in 0..3 {
+             let v0 = face[edge_idx];
+             let v1 = face[(edge_idx + 1) % 3];
+ 
+             if let Some(neighbors) = adjacency.faces_for_edge(v0, v1) {
+                 for &neighbor in neighbors {
+-                    if neighbor != face_idx {
++                    if neighbor == /* ~ changed by cargo-mutants ~ */ face_idx {
+                         face_neighbors[face_idx].push(neighbor as u32);
+                     }
+                 }
+             }
+         }
+     }
+ 
+     // Flood-fill to find connected components

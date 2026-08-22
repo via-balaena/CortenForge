@@ -1,0 +1,1 @@
+mesh/mesh-repair/src/adjacency.rs:41:9: replace MeshAdjacency::build -> Self with Default::default()

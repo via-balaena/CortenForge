@@ -1,0 +1,24 @@
+--- mesh/mesh-repair/src/adjacency.rs
++++ replace MeshAdjacency::non_manifold_edges -> impl Iterator<Item =(u32, u32)>+'_ with ::std::iter::once((0, 0))
+@@ -98,20 +98,17 @@
+         self.edge_to_faces
+             .values()
+             .filter(|faces| faces.len() == 1)
+             .count()
+     }
+ 
+     /// Iterate over all non-manifold edges (edges with more than two adjacent faces).
+     pub fn non_manifold_edges(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
+-        self.edge_to_faces
+-            .iter()
+-            .filter(|(_, faces)| faces.len() > 2)
+-            .map(|(&edge, _)| edge)
++        ::std::iter::once((0, 0)) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Count the number of non-manifold edges.
+     #[must_use]
+     pub fn non_manifold_edge_count(&self) -> usize {
+         self.edge_to_faces
+             .values()
+             .filter(|faces| faces.len() > 2)

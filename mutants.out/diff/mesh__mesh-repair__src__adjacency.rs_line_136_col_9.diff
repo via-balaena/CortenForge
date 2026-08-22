@@ -1,0 +1,21 @@
+--- mesh/mesh-repair/src/adjacency.rs
++++ replace MeshAdjacency::edge_count -> usize with 0
+@@ -128,17 +128,17 @@
+     #[must_use]
+     pub fn is_watertight(&self) -> bool {
+         self.edge_to_faces.values().all(|faces| faces.len() >= 2)
+     }
+ 
+     /// Get the total number of edges.
+     #[must_use]
+     pub fn edge_count(&self) -> usize {
+-        self.edge_to_faces.len()
++        0 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Get the number of unique vertices.
+     #[must_use]
+     pub fn vertex_count(&self) -> usize {
+         self.vertex_to_faces.len()
+     }
+ }

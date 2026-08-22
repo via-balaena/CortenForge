@@ -1,0 +1,4 @@
+mesh/mesh-repair/src/adjacency.rs:73:9: replace MeshAdjacency::faces_for_edge -> Option<&[usize]> with None
+mesh/mesh-repair/src/adjacency.rs:73:9: replace MeshAdjacency::faces_for_edge -> Option<&[usize]> with Some(Vec::leak(Vec::new()))
+mesh/mesh-repair/src/adjacency.rs:73:9: replace MeshAdjacency::faces_for_edge -> Option<&[usize]> with Some(Vec::leak(vec![0]))
+mesh/mesh-repair/src/adjacency.rs:73:9: replace MeshAdjacency::faces_for_edge -> Option<&[usize]> with Some(Vec::leak(vec![1]))

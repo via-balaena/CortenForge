@@ -4,7 +4,6 @@
 # - Fresh security advisory scan
 # - Per-crate coverage, via the grader itself (the ONLY CI path that measures it)
 # - Mutation testing (test quality verification)
-# - Dependency update check
 # - Benchmark regression monitoring
 #
 # See docs/INFRASTRUCTURE.md for the full constraint specification.
@@ -212,29 +211,35 @@ jobs:
             --shard ${{ matrix.shard }}/3
 
   # ============================================================================
-  # DEPENDENCY FRESHNESS
+  # DEPENDENCY FRESHNESS — REMOVED, do not re-add
   # ============================================================================
-  dependencies:
-    name: Dependency Check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install cargo-outdated
-        run: cargo install cargo-outdated
-
-      - name: Check outdated dependencies
-        run: |
-          echo "## Outdated Dependencies" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "The following dependencies have newer versions available:" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          cargo outdated --workspace >> $GITHUB_STEP_SUMMARY 2>&1 || true
-          echo '```' >> $GITHUB_STEP_SUMMARY
+  # There was a `dependencies` / "Dependency Check" job here running
+  # `cargo outdated --workspace`. Two reasons it is gone, in order:
+  #
+  # 1. It never completed. `cargo-outdated --workspace` copies EVERY workspace
+  #    member into a temp dir and re-resolves it against the registry — 301 of
+  #    them — and peaks at 12.9 GB RSS about 24 s in (measured 2026-08-22 on
+  #    macOS/arm64; a PROXY for the runner, so trust the ratio, not the digits).
+  #    Against that, GitHub DOCUMENTS 16 GB for the standard `ubuntu-24.04`
+  #    runner on a public repo (this one is public — checked, not assumed) and
+  #    7 GB on a private one, so going private would make this worse. Those two
+  #    figures are read off GitHub's docs, not measured here, and GitHub has
+  #    changed them before. The OOM killer took the runner agent: `exit 143`
+  #    plus "The runner has received a shutdown signal", with no step output,
+  #    on all four weekly runs checked (2026-08-02, -09, -16, -21). The red was
+  #    read as a dependency problem for months; it was the job dying.
+  # 2. Even working, it was redundant. `.github/dependabot.yml` already watches
+  #    the `cargo` ecosystem weekly and opens PRs — strictly more actionable
+  #    than a step-summary table, and the actual channel this repo triages
+  #    through (#727, #795, #723).
+  #
+  # It also gated nothing: its one real command ended in `|| true` and the rest
+  # were `echo`s, so no outcome of the check could ever fail the job. A
+  # permanently-red job that gates nothing is worse than no job: it teaches
+  # that red is normal — which is how the `--all-features` union stayed broken
+  # for months (#792).
+  #
+  # If a freshness report is ever wanted again: do NOT pass `--workspace`.
 
   # ============================================================================
   # MUTATION TESTING (Test Quality)
@@ -552,7 +557,7 @@ jobs:
   # ============================================================================
   summary:
     name: Weekly Summary
-    needs: [security-audit, coverage, dependencies, mutation-testing, benchmark-baseline, supply-chain, msrv, clippy-stable-drift, soft-contact-heavy]
+    needs: [security-audit, coverage, mutation-testing, benchmark-baseline, supply-chain, msrv, clippy-stable-drift, soft-contact-heavy]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -564,7 +569,6 @@ jobs:
           echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| Security Audit | ${{ needs.security-audit.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Coverage | ${{ needs.coverage.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Dependencies | ${{ needs.dependencies.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Mutation Testing | ${{ needs.mutation-testing.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Benchmarks | ${{ needs.benchmark-baseline.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Supply Chain | ${{ needs.supply-chain.result }} |" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,45 @@
+mesh/mesh-repair/src/adjacency.rs:73:9: replace MeshAdjacency::faces_for_edge -> Option<&[usize]> with None
+mesh/mesh-repair/src/adjacency.rs:73:9: replace MeshAdjacency::faces_for_edge -> Option<&[usize]> with Some(Vec::leak(Vec::new()))
+mesh/mesh-repair/src/adjacency.rs:73:9: replace MeshAdjacency::faces_for_edge -> Option<&[usize]> with Some(Vec::leak(vec![0]))
+mesh/mesh-repair/src/adjacency.rs:73:9: replace MeshAdjacency::faces_for_edge -> Option<&[usize]> with Some(Vec::leak(vec![1]))
+mesh/mesh-repair/src/adjacency.rs:82:9: replace MeshAdjacency::faces_for_vertex -> &[usize] with Vec::leak(Vec::new())
+mesh/mesh-repair/src/adjacency.rs:82:9: replace MeshAdjacency::faces_for_vertex -> &[usize] with Vec::leak(vec![0])
+mesh/mesh-repair/src/adjacency.rs:82:9: replace MeshAdjacency::faces_for_vertex -> &[usize] with Vec::leak(vec![1])
+mesh/mesh-repair/src/adjacency.rs:89:9: replace MeshAdjacency::boundary_edges -> impl Iterator<Item =(u32, u32)>+'_ with ::std::iter::empty()
+mesh/mesh-repair/src/adjacency.rs:89:9: replace MeshAdjacency::boundary_edges -> impl Iterator<Item =(u32, u32)>+'_ with ::std::iter::once((0, 0))
+mesh/mesh-repair/src/adjacency.rs:89:9: replace MeshAdjacency::boundary_edges -> impl Iterator<Item =(u32, u32)>+'_ with ::std::iter::once((0, 1))
+mesh/mesh-repair/src/adjacency.rs:89:9: replace MeshAdjacency::boundary_edges -> impl Iterator<Item =(u32, u32)>+'_ with ::std::iter::once((1, 0))
+mesh/mesh-repair/src/adjacency.rs:89:9: replace MeshAdjacency::boundary_edges -> impl Iterator<Item =(u32, u32)>+'_ with ::std::iter::once((1, 1))
+mesh/mesh-repair/src/adjacency.rs:91:46: replace == with != in MeshAdjacency::boundary_edges
+mesh/mesh-repair/src/adjacency.rs:98:9: replace MeshAdjacency::boundary_edge_count -> usize with 0
+mesh/mesh-repair/src/adjacency.rs:98:9: replace MeshAdjacency::boundary_edge_count -> usize with 1
+mesh/mesh-repair/src/adjacency.rs:100:41: replace == with != in MeshAdjacency::boundary_edge_count
+mesh/mesh-repair/src/adjacency.rs:115:9: replace MeshAdjacency::non_manifold_edge_count -> usize with 0
+mesh/mesh-repair/src/adjacency.rs:115:9: replace MeshAdjacency::non_manifold_edge_count -> usize with 1
+mesh/mesh-repair/src/adjacency.rs:117:41: replace > with == in MeshAdjacency::non_manifold_edge_count
+mesh/mesh-repair/src/adjacency.rs:117:41: replace > with < in MeshAdjacency::non_manifold_edge_count
+mesh/mesh-repair/src/adjacency.rs:117:41: replace > with >= in MeshAdjacency::non_manifold_edge_count
+mesh/mesh-repair/src/adjacency.rs:124:9: replace MeshAdjacency::is_manifold -> bool with true
+mesh/mesh-repair/src/adjacency.rs:124:9: replace MeshAdjacency::is_manifold -> bool with false
+mesh/mesh-repair/src/adjacency.rs:124:61: replace <= with > in MeshAdjacency::is_manifold
+mesh/mesh-repair/src/adjacency.rs:130:9: replace MeshAdjacency::is_watertight -> bool with true
+mesh/mesh-repair/src/adjacency.rs:130:9: replace MeshAdjacency::is_watertight -> bool with false
+mesh/mesh-repair/src/adjacency.rs:130:61: replace >= with < in MeshAdjacency::is_watertight
+mesh/mesh-repair/src/adjacency.rs:136:9: replace MeshAdjacency::edge_count -> usize with 0
+mesh/mesh-repair/src/adjacency.rs:136:9: replace MeshAdjacency::edge_count -> usize with 1
+mesh/mesh-repair/src/adjacency.rs:142:9: replace MeshAdjacency::vertex_count -> usize with 0
+mesh/mesh-repair/src/adjacency.rs:142:9: replace MeshAdjacency::vertex_count -> usize with 1
+mesh/mesh-repair/src/adjacency.rs:149:5: replace normalize_edge -> (u32, u32) with (0, 0)
+mesh/mesh-repair/src/adjacency.rs:149:5: replace normalize_edge -> (u32, u32) with (0, 1)
+mesh/mesh-repair/src/adjacency.rs:149:5: replace normalize_edge -> (u32, u32) with (1, 0)
+mesh/mesh-repair/src/adjacency.rs:149:5: replace normalize_edge -> (u32, u32) with (1, 1)
+mesh/mesh-repair/src/adjacency.rs:149:11: replace < with == in normalize_edge
+mesh/mesh-repair/src/components.rs:62:9: replace ComponentAnalysis::is_connected -> bool with true
+mesh/mesh-repair/src/components.rs:62:9: replace ComponentAnalysis::is_connected -> bool with false
+mesh/mesh-repair/src/components.rs:62:30: replace == with != in ComponentAnalysis::is_connected
+mesh/mesh-repair/src/components.rs:74:9: replace <impl std::fmt::Display for ComponentAnalysis>::fmt -> std::fmt::Result with Ok(Default::default())
+mesh/mesh-repair/src/components.rs:76:33: replace > with == in <impl std::fmt::Display for ComponentAnalysis>::fmt
+mesh/mesh-repair/src/components.rs:76:33: replace > with < in <impl std::fmt::Display for ComponentAnalysis>::fmt
+mesh/mesh-repair/src/components.rs:151:42: replace % with + in find_connected_components
+mesh/mesh-repair/src/components.rs:151:37: replace + with * in find_connected_components
+mesh/mesh-repair/src/components.rs:155:33: replace != with == in find_connected_components

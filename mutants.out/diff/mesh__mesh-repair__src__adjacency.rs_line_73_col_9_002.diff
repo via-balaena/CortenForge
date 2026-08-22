@@ -1,0 +1,22 @@
+--- mesh/mesh-repair/src/adjacency.rs
++++ replace MeshAdjacency::faces_for_edge -> Option<&[usize]> with Some(Vec::leak(vec![0]))
+@@ -65,18 +65,17 @@
+         }
+     }
+ 
+     /// Get faces adjacent to an edge.
+     ///
+     /// Returns `None` if the edge doesn't exist in the mesh.
+     #[must_use]
+     pub fn faces_for_edge(&self, v0: u32, v1: u32) -> Option<&[usize]> {
+-        let edge = normalize_edge(v0, v1);
+-        self.edge_to_faces.get(&edge).map(Vec::as_slice)
++        Some(Vec::leak(vec![0])) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Get faces adjacent to a vertex.
+     ///
+     /// Returns an empty slice if the vertex has no adjacent faces.
+     #[must_use]
+     pub fn faces_for_vertex(&self, v: u32) -> &[usize] {
+         self.vertex_to_faces.get(&v).map_or(&[], Vec::as_slice)

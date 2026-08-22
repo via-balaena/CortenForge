@@ -1,0 +1,21 @@
+--- mesh/mesh-repair/src/adjacency.rs
++++ replace == with != in MeshAdjacency::boundary_edges
+@@ -83,17 +83,17 @@
+     }
+ 
+     /// Iterate over all boundary edges (edges with exactly one adjacent face).
+     ///
+     /// Boundary edges indicate holes in the mesh surface.
+     pub fn boundary_edges(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
+         self.edge_to_faces
+             .iter()
+-            .filter(|(_, faces)| faces.len() == 1)
++            .filter(|(_, faces)| faces.len() != /* ~ changed by cargo-mutants ~ */ 1)
+             .map(|(&edge, _)| edge)
+     }
+ 
+     /// Count the number of boundary edges.
+     #[must_use]
+     pub fn boundary_edge_count(&self) -> usize {
+         self.edge_to_faces
+             .values()

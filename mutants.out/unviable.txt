@@ -1,0 +1,2 @@
+mesh/mesh-repair/src/adjacency.rs:41:9: replace MeshAdjacency::build -> Self with Default::default()
+mesh/mesh-repair/src/components.rs:133:5: replace find_connected_components -> ComponentAnalysis with Default::default()

@@ -1,0 +1,24 @@
+--- mesh/mesh-repair/src/adjacency.rs
++++ replace MeshAdjacency::boundary_edge_count -> usize with 1
+@@ -90,20 +90,17 @@
+             .iter()
+             .filter(|(_, faces)| faces.len() == 1)
+             .map(|(&edge, _)| edge)
+     }
+ 
+     /// Count the number of boundary edges.
+     #[must_use]
+     pub fn boundary_edge_count(&self) -> usize {
+-        self.edge_to_faces
+-            .values()
+-            .filter(|faces| faces.len() == 1)
+-            .count()
++        1 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Iterate over all non-manifold edges (edges with more than two adjacent faces).
+     pub fn non_manifold_edges(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
+         self.edge_to_faces
+             .iter()
+             .filter(|(_, faces)| faces.len() > 2)
+             .map(|(&edge, _)| edge)

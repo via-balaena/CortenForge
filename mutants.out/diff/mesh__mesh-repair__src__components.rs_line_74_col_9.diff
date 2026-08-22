@@ -1,0 +1,41 @@
+--- mesh/mesh-repair/src/components.rs
++++ replace <impl std::fmt::Display for ComponentAnalysis>::fmt -> std::fmt::Result with Ok(Default::default())
+@@ -66,37 +66,17 @@
+     #[must_use]
+     pub fn largest_component(&self) -> &[u32] {
+         self.components.first().map_or(&[], Vec::as_slice)
+     }
+ }
+ 
+ impl std::fmt::Display for ComponentAnalysis {
+     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+-        writeln!(f, "Component Analysis:")?;
+-        writeln!(f, "  Connected components: {}", self.component_count)?;
+-        if self.component_count > 0 {
+-            writeln!(
+-                f,
+-                "  Largest component: {} faces",
+-                self.largest_component_size
+-            )?;
+-            writeln!(
+-                f,
+-                "  Smallest component: {} faces",
+-                self.smallest_component_size
+-            )?;
+-            if self.component_count > 1 {
+-                writeln!(f, "  Component sizes:")?;
+-                for (i, comp) in self.components.iter().enumerate() {
+-                    writeln!(f, "    Component {}: {} faces", i + 1, comp.len())?;
+-                }
+-            }
+-        }
+-        Ok(())
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// Find all connected components in a mesh.
+ ///
+ /// Uses a flood-fill algorithm starting from each unvisited face.
+ /// Two faces are connected if they share an edge.
+ ///

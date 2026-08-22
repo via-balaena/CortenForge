@@ -1,0 +1,21 @@
+--- mesh/mesh-repair/src/adjacency.rs
++++ replace <= with > in MeshAdjacency::is_manifold
+@@ -116,17 +116,17 @@
+             .values()
+             .filter(|faces| faces.len() > 2)
+             .count()
+     }
+ 
+     /// Check if the mesh is manifold (all edges have at most 2 adjacent faces).
+     #[must_use]
+     pub fn is_manifold(&self) -> bool {
+-        self.edge_to_faces.values().all(|faces| faces.len() <= 2)
++        self.edge_to_faces.values().all(|faces| faces.len() > /* ~ changed by cargo-mutants ~ */ 2)
+     }
+ 
+     /// Check if the mesh is watertight (no boundary edges).
+     #[must_use]
+     pub fn is_watertight(&self) -> bool {
+         self.edge_to_faces.values().all(|faces| faces.len() >= 2)
+     }
+ 
