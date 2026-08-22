@@ -11,8 +11,11 @@ was touched and how to reproduce.
 **MISSION.md**: AMENDED 2026-08-10 with the "On speed as a ceiling" clause — see §8b.
 The ladder is authorised in principle; R3's three conditions are now mission-level.
 ⚠ That clause cites **this document** as the measured basis for its "throughput is a
-ceiling" premise, so §2b is load-bearing outside this recon — re-take it on an idle
-box (risk 1) before anyone leans on it further.
+ceiling" premise, so §2b is load-bearing outside this recon. **Its concurrency reading
+was CORRECTED on 2026-08-22 — the ceiling is 38 concurrent full-order envs, not the
+"~20" earlier revisions carried, and the reduced path raises it to ~395. Quote §2b, not
+any figure taken from a revision before v2.0.** The timing figures still want an idle
+box (risk 1).
 
 **One-line verdict**: the goal is **not refuted**, but the measurements move where the
 work is. The frame-budget gap is ~**13–47× in DOF** (≈ 1 500 free DOF fits a 60 Hz
