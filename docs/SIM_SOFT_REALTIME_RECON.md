@@ -1,6 +1,6 @@
 # sim-soft Real-Time Path — Phase-1 Measurement + Recon (Phase E predecessor)
 
-**Status**: RECON 2026-08-10 (rev 2026-08-11), v1.7. Phase 1 (measure) COMPLETE — all four requested
+**Status**: RECON 2026-08-10 (rev 2026-08-22), v2.0. Phase 1 (measure) COMPLETE — all four requested
 measurements taken; §2 reports them. Phase 2 (this recon) proposes the MOR +
 hyper-reduction path with a staged ladder whose first rung is a kill-or-confirm.
 **No production code was written and no dependency was added.** The measurement
@@ -206,12 +206,64 @@ Two numbers, both in the §2a table. The Cholesky factor size is **exact**
 
 - **Fill per row grows as ≈ n^0.35** — consistent with the nested-dissection figures
   already recorded in `ordering.rs` (334 → 458 → 648).
-- At the top of the range the factor alone is **480 MiB** and a single session is
-  **~0.9 GiB** resident. On a 24 GB box that caps concurrent full-order sessions at
-  roughly 20 — which is the number that matters for RL-style batching, and it is a
-  hard wall, not a tuning problem.
-- The whole-session RSS is ~1.9× the factor. The factor is the dominant term; nothing
-  else in the solver is close.
+- At the top of the range the factor alone is **480 MiB** and a single session **peaks**
+  at **~0.9 GiB**.
+- **⚠⚠ CORRECTED 2026-08-22 — an earlier revision read "roughly 20 concurrent full-order
+  sessions on a 24 GB box" off this row. That reading was wrong, and the error was in the
+  model, not the measurement.** `process max RSS` is a **peak**, and at 70 644 free DOF
+  **84 % of it is transient**: `OrderedLlt`'s value buffer is allocated inside
+  `factor_free_tangent` and dropped when the step returns — `CpuNewtonSolver` retains no
+  numeric factor, as its field list shows. Dividing 24 GB by a peak charges every session
+  for memory that is released between steps.
+
+  Re-measured on this table's own fixture and sizes (`uniform_block`, bottom face pinned),
+  with an **exact** `getrusage` high-water mark rather than a sampled one:
+
+  | | 70 644 free DOF |
+  |---|---:|
+  | held (survives the step) | **146 MiB** |
+  | transient (factor + assembly) | **779 MiB** |
+  | peak — reproduces this table's 919.1 | **926 MiB** (0.8 % apart) |
+
+  The quantity that actually caps batching is the **marginal** cost of one more
+  *concurrently stepping* env — the slope of exact peak against env count `K`:
+
+  | free DOF | full-order | reduced (`r = 40`) |
+  |---:|---:|---:|
+  | 13 872 | 86 MiB/env → 283 envs | 17 MiB/env → 1 445 envs |
+  | 26 460 | 175 MiB/env → 140 envs | 35 MiB/env → 698 envs |
+  | **70 644** | **638 MiB/env → 38 envs** | **61 MiB/env → 395 envs** |
+
+  So the full-order ceiling is **38, not ~20**, and the reduced path lifts it **10.4×** —
+  a win available from **R1 as built, with no hyper-reduction**. It is not free: the
+  reduced solve still assembles full-order triplets and forms `AΦ` every Newton iteration,
+  which is what the 61 MiB is.
+
+  ⚠ **Carry these with the numbers.** (i) **Forward-only** — `replay_step` is `&self`, so
+  both arms share one solver and the comparison is purely the transient; the tape-based
+  differentiable `step` is `&mut self` and was **not** measured, so this says nothing about
+  a co-design batch. (ii) `NullContact`. (iii) The reduced arm's *fixed* cost is **higher**
+  (440 vs 264 MiB) because the basis is fitted in-process; production would load `Φ`.
+  (iv) Repeat spread at `K = 8` is ±339 MiB (thread scheduling), putting the reduced slope
+  in a 33–63 MiB/env bracket — the 10× holds at the pessimistic end. (v) The basis was a
+  smooth analytic full-rank stand-in — a **memory-shape probe**, not a validated POD basis;
+  no accuracy claim follows from it.
+
+  ★ **Two ways this nearly read wrong, both caught by controls rather than by review.**
+  A 25 ms RSS sampler agreed with `getrusage` to 0.0 % on three pilot cells and **missed
+  36.7 %** on the fourth, because the reduced path's largest transient is short-lived. And
+  at `K ≤ 4` the reduced arm reads *flat* (506 → 504 MiB) — an artifact of the 506 MiB
+  **construction** high-water mark masking a smaller stepping transient, `ru_maxrss` being
+  monotone. Only pushing to `K = 16` resolved the true slope. Reporting either unchecked
+  would have overstated the result.
+
+  **Producer**: a ~200-line standalone binary outside the tree, public API only
+  (`uniform_block` → §2b's exact free-DOF counts, `CpuTet4NHSolver`, `PodBasis::fit`,
+  `ReducedNewtonSolver`, `libc::getrusage`), envs stepped in `std::thread::scope`.
+  **No repo change is needed to rebuild it** — unlike §9's timing work, nothing was patched
+  into `sim-soft` and nothing had to be reverted.
+- The whole-session **peak** is ~1.9× the factor, and the factor dominates that peak. But
+  of what a session *holds*, the factor is none of it.
 
 ### 2c. Q3 — the f32 question. **This is the finding that changes the plan.**
 
@@ -747,8 +799,9 @@ consequence: this recon is premature, R0 is still worth doing (it is a pure qual
 win), and R1+ waits behind the keystone and system-ID. Nothing is lost but time.
 
 **(b) Real time is a ceiling property, not a velocity property.** The argument: the
-capstone is an **RL-controlled** exoskeleton. RL needs sample throughput; §2b's
-"~20 concurrent full-order sessions on a 24 GB box" is a hard ceiling on that, and
+capstone is an **RL-controlled** exoskeleton. RL needs sample throughput; §2b's measured
+ceiling — **38 concurrent full-order envs on a 24 GB box at 70 644 free DOF** (corrected
+2026-08-22 from "~20"; the reduced path raises it to ~395) — is a hard ceiling on that, and
 `PERF_BASELINE.md` already shows the GPU path only pays at batch ≥ 1024. On this
 reading, an interactive/batchable soft path is *ceiling-determining* for step 5 of the
 mission's own thesis, and belongs in the sequence on the mission's own terms — not as a
@@ -896,6 +949,14 @@ small, separate PR and is not proposed here.
 
 ## 12. Version history
 
+- **v2.0 (2026-08-22)** — **§2b's concurrency reading corrected, and it was a modelling
+  error rather than a bad measurement.** `process max RSS` is a peak; 84 % of the 919 MiB
+  at 70 644 free DOF is a transient numeric factor that `CpuNewtonSolver` does not retain,
+  so dividing 24 GB by it undercounted. Re-measured marginal cost per concurrently
+  stepping env: **638 MiB (full) vs 61 MiB (reduced)** ⇒ **38 vs ~395 envs**, i.e. the
+  ceiling is nearly 2× better than recorded *and* R1 as built already lifts it 10.4×
+  without hyper-reduction. §8b's reading (b) re-pointed at the corrected figure. Header
+  version stamp also corrected — it read v1.7 while this section already recorded v1.9.
 - **v1.9 (2026-08-12)** — R1.3 landed; §6's goal-oriented-basis lead upgraded from a
   hypothesis to a measurement (enriched `r = 40` beats plain `r = 104`, 2.7x faster,
   conditional on the objective family being low-dimensional) and the "just raise `r`"
