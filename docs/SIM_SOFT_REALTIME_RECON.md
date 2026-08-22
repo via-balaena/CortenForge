@@ -206,9 +206,11 @@ spread between them is the finding rather than noise:
 | IPC indentation, 18 750 free DOF | 6.5 | **46.2×** |
 | cantilever 80×8, 19 440 free DOF | 37.0 | **267×** |
 
-⇒ **35–267× in time at comparable DOF**, set by how nonlinear the trajectory is far
-more than by mesh size — which is §3b.4's point, and precisely why one exponent was the
-wrong instrument. Quote a row, per this section's own rule two paragraphs up.
+⇒ **35–267× in time across the target band** — and the ordering **inverts**: the
+19 440-DOF cantilever costs **7.7× more** than the 70 644-DOF block (4 452 vs 578 ms),
+because it takes 37 Newton iterations against 0.5. Trajectory nonlinearity dominates
+mesh size outright here, which is §3b.4's point and precisely why a single DOF exponent
+was the wrong instrument. Quote a row, per this section's own rule two paragraphs up.
 
 **Substepping does not rescue it, and is measurably worse.** `cantilever 40×4` costs
 470.7 ms as one `dt = 1/60` step (24.2 Newton iterations). The same frame as 16.7
@@ -445,10 +447,11 @@ exist.
 
 ### 3a. The goal is not refuted
 
-Nothing measured says real time is unreachable. The gap is large (13–47× in DOF) but
-it is the *size* of gap that reduced-order modelling is built for: ECSW/cubature
-literature routinely reports 2–3 orders of magnitude on exactly this shape of problem
-(hyperelastic FEM, fixed mesh, repeated solves). The brief's central architectural
+Nothing measured says real time is unreachable. The gap is large — **13–47× in DOF,
+and 35–267× in measured frame time** (§2a; state it in time, because that is the unit
+the comparison below is in) — but it is the *size* of gap that reduced-order modelling
+is built for: ECSW/cubature literature routinely reports 2–3 orders of magnitude on
+exactly this shape of problem (hyperelastic FEM, fixed mesh, repeated solves). The brief's central architectural
 claim — that a reduced system is small and dense, so **converged Newton with an exact
 direct solve is preserved** and the error moves into the quadrature approximation
 where it can be measured against the full-order path — survives contact with the
