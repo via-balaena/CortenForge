@@ -37,7 +37,7 @@ jobs:
       checks: write
       issues: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -126,7 +126,7 @@ jobs:
       matrix:
         shard: [1, 2, 3]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # ⚠ The bound matters MOST here, and that is why this note stays. This job's
       # budget is 180 minutes, so the stall that cost one 45-minute shard elsewhere
@@ -218,7 +218,7 @@ jobs:
     name: Dependency Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -250,7 +250,7 @@ jobs:
           - mesh-types
           - mesh-repair
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -304,7 +304,7 @@ jobs:
     # re-measure and raise it — a timeout kill here is not a bench regression.
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # This job had no system-dependency step at all, so it never reached a
       # benchmark: `yeslogic-fontconfig-sys` panicked in its build script and the
@@ -374,7 +374,7 @@ jobs:
       # `CRITERION_HOME` relative to the workspace target dir; if that ever moves, this
       # should fail rather than shrug.
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: benchmark-baseline
           path: target/criterion
@@ -388,7 +388,7 @@ jobs:
     name: Supply Chain Verification
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -442,7 +442,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         uses: ./.github/actions/install-linux-deps
@@ -486,7 +486,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # `libfontconfig1-dev` is not decoration: without it `yeslogic-fontconfig-sys`
       # (slint -> the studio crates) panics in its build script, and this job died
@@ -567,7 +567,7 @@ jobs:
     # runner cannot turn a passing gate into a timeout failure.
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         uses: ./.github/actions/install-linux-deps
