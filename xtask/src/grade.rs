@@ -2290,20 +2290,31 @@ fn count_clippy_diagnostics(output: &str, crate_path: &str) -> Result<usize> {
     }
 }
 
-/// Returns true if any span in the diagnostic refers to a file whose path
-/// contains `crate_path` — i.e., the warning originates in the target crate
-/// and not a transitive workspace-member dependency.
+/// Returns true if any span in the diagnostic refers to a file INSIDE the
+/// directory `crate_path` — i.e., the warning originates in the target crate
+/// and not a transitive workspace-member dependency, nor a SIBLING whose
+/// directory name merely extends this one's.
 ///
-/// `.contains()` substring matching mirrors the convention in `grade_coverage`
-/// (line ~721); handles workspace-relative and absolute paths uniformly
-/// without normalization. Disjunctive semantics: ambiguous diagnostics (e.g.
-/// macro-generated with one span inside + one outside) are included, matching
-/// coverage's summing-loop behavior.
+/// Matching is BOUNDARY-AWARE via [`crate::coverage::path_is_under`], which
+/// carries the reasoning. It used to be a bare `name.contains(crate_path)`,
+/// and that silently blamed a crate for its siblings: with `crate_path =
+/// "mesh/mesh"`, one unused variable injected into `mesh-io` produced three
+/// diagnostics and this function accepted all three, so the `mesh` umbrella
+/// graded F on code it does not own. 38 workspace pairs collide that way.
+///
+/// ⚠ The tests below deliberately include a COLLIDING pair. The original
+/// three used `sim/L0/ml-chassis` against `sim/L0/types` — paths that are not
+/// prefixes of one another — so they passed under the broken predicate and
+/// could never have caught this. A fixture that cannot fail is not coverage.
+///
+/// Handles workspace-relative and absolute paths alike. Disjunctive semantics:
+/// ambiguous diagnostics (e.g. macro-generated with one span inside + one
+/// outside) are included, matching coverage's summing-loop behavior.
 fn any_span_in_crate(spans: &[serde_json::Value], crate_path: &str) -> bool {
     spans.iter().any(|span| {
         span["file_name"]
             .as_str()
-            .is_some_and(|name| name.contains(crate_path))
+            .is_some_and(|name| crate::coverage::path_is_under(name, crate_path))
     })
 }
 
@@ -5084,6 +5095,58 @@ mod tests {
             serde_json::json!({ "file_name": "sim/L0/types/src/lib.rs" }),
         ];
         assert!(any_span_in_crate(&spans, "sim/L0/ml-chassis"));
+    }
+
+    // --- the regression the three above could not see: a SIBLING crate whose
+    // path EXTENDS the graded crate's. Measured on 74882bf6, `mesh/mesh`
+    // swallowed 16 such crates and a bare `contains` blamed `mesh` for them.
+
+    #[test]
+    fn any_span_in_crate_rejects_sibling_with_extending_path() {
+        let spans = vec![serde_json::json!({ "file_name": "mesh/mesh-io/src/stl.rs" })];
+        assert!(
+            !any_span_in_crate(&spans, "mesh/mesh"),
+            "`mesh/mesh-io` is a sibling of `mesh/mesh`, not part of it"
+        );
+    }
+
+    #[test]
+    fn any_span_in_crate_rejects_sibling_suffixed_with_hyphen() {
+        // `sim/L0/rl` vs `sim/L0/rl-baselines`, and `sim/L0/core` vs
+        // `sim/L0/core-benches` — the same shape, on the physics side.
+        for (dir, sibling) in [
+            ("sim/L0/rl", "sim/L0/rl-baselines/src/lib.rs"),
+            ("sim/L0/core", "sim/L0/core-benches/benches/b.rs"),
+            ("design/cf-design", "design/cf-design-tests/tests/t.rs"),
+        ] {
+            let spans = vec![serde_json::json!({ "file_name": sibling })];
+            assert!(
+                !any_span_in_crate(&spans, dir),
+                "{sibling} is not under {dir}"
+            );
+        }
+    }
+
+    #[test]
+    fn any_span_in_crate_accepts_own_file_when_a_sibling_shares_the_prefix() {
+        // The other half: fixing the false ACCEPT must not introduce a false
+        // REJECT for the crate's own sources.
+        let spans = vec![serde_json::json!({ "file_name": "mesh/mesh/src/lib.rs" })];
+        assert!(any_span_in_crate(&spans, "mesh/mesh"));
+    }
+
+    #[test]
+    fn any_span_in_crate_accepts_absolute_paths() {
+        // `find_crate_path` normally yields a relative path, but falls back to
+        // an absolute one; span filenames can be absolute either way.
+        let spans = vec![serde_json::json!({
+            "file_name": "/Users/x/cortenforge/mesh/mesh/src/lib.rs"
+        })];
+        assert!(any_span_in_crate(&spans, "mesh/mesh"));
+        let sibling = vec![serde_json::json!({
+            "file_name": "/Users/x/cortenforge/mesh/mesh-io/src/stl.rs"
+        })];
+        assert!(!any_span_in_crate(&sibling, "mesh/mesh"));
     }
 
     // === F.3 IntegrationOnly profile + metadata opt-in ===

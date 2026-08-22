@@ -190,7 +190,59 @@ fn relative_to_crate(name: &str, crate_path: &str) -> String {
 /// Lives here rather than beside the instrumentation because "what counts as
 /// production" is this module's question; `coverage_run` only needs the answer.
 pub(crate) fn is_own_production_file(name: &str, crate_path: &str) -> bool {
-    name.contains(crate_path) && !name.contains(&format!("{crate_path}/tests/"))
+    // ⚠ Trim BEFORE composing the `tests/` path, not after. `path_is_under`
+    // trims only the END of what it is handed, so a `crate_path` arriving with
+    // a trailing slash would compose to `mesh/mesh//tests` — an interior `//`
+    // that matches nothing, silently switching the exclusion off and counting
+    // the crate's OWN integration tests as production. That is the same
+    // fail-open this function exists to prevent, reintroduced one level up.
+    // `find_crate_path` does not currently produce a trailing slash, so this
+    // is a guard rather than a live fix — but `path_is_under` accepts one by
+    // design, which makes it a caller's reasonable assumption.
+    let crate_path = crate_path.trim_end_matches('/');
+    path_is_under(name, crate_path) && !path_is_under(name, &format!("{crate_path}/tests"))
+}
+
+/// Whether `name` names a file inside the directory `dir`.
+///
+/// ★ **Boundary-aware on purpose — do NOT "simplify" this back to
+/// `name.contains(dir)`.** That is what it used to be, and a bare `contains`
+/// cannot tell a crate from a sibling whose path merely extends it: with
+/// `dir = "mesh/mesh"` it matches `mesh/mesh-io/src/stl.rs`. That is not a
+/// corner case here — 38 pairs of workspace members collide this way, and
+/// `mesh/mesh` alone swallows 16 of them, every `mesh-*` crate included.
+///
+/// Two ways it went wrong, both measured on 74882bf6:
+///
+/// - COVERAGE, and this is the fail-OPEN one: a sibling's files landed in the
+///   umbrella crate's ratio. Worse, a sibling's `tests/` came in as PRODUCTION,
+///   because the exclusion above strips only `<crate_path>/tests/` and
+///   `mesh/mesh-io/tests/x.rs` does not contain `mesh/mesh/tests/`. Near-100 %
+///   covered test bodies then padded the numerator of a crate that never ran
+///   them.
+/// - CLIPPY (`grade::any_span_in_crate`): one unused variable injected into
+///   `mesh-io` produced three diagnostics, and all three were attributed to
+///   `mesh`, whose own source was clean and untouched.
+///
+/// Matches a relative path by prefix and an absolute one by embedded segment,
+/// so callers may pass either — [`crate::grade::find_crate_path`] normally
+/// returns workspace-relative but falls back to absolute.
+pub(crate) fn path_is_under(name: &str, dir: &str) -> bool {
+    let name = name.replace('\\', "/");
+    let dir = dir.replace('\\', "/");
+    let dir = dir.trim_end_matches('/');
+    if dir.is_empty() {
+        // `""` or `"/"` — the filesystem root, which every path is under. This
+        // is a true answer rather than a swallowed edge case, and it preserves
+        // what the old `name.contains("")` did. ⚠ It is also match-everything,
+        // so it is worth knowing it is unreachable from grading: the only
+        // producer is `find_crate_path`, which strips `workspace_root` off a
+        // member's manifest dir, and the root manifest here is VIRTUAL — no
+        // member sits at the root, so no member strips to the empty string.
+        return true;
+    }
+    let seg = format!("{dir}/");
+    name.starts_with(&seg) || name.contains(&format!("/{seg}"))
 }
 
 /// Whether a crate-relative path is the root of a BINARY target, by Cargo's
@@ -803,7 +855,7 @@ pub(crate) fn production_coverage(
             // and the same reason: a metric that omits what it left out reads
             // as "everything was measured". Foreign files (a dependency's
             // macro source) are not this crate's at all and stay unmentioned.
-            if name.contains(crate_path) {
+            if path_is_under(name, crate_path) {
                 if let Some(segments) = file["segments"].as_array() {
                     acc.excluded += mapped_lines(segments).len() as u64;
                 }
@@ -1065,6 +1117,82 @@ mod tests {
             !is_own_production_file("/w/cortenforge/mesh/mesh-repair/src/lib.rs", cp),
             "another crate's source is not this crate's"
         );
+    }
+
+    /// ★★ The sibling-prefix regression, and the FAIL-OPEN half of it.
+    ///
+    /// The check above uses `design/cf-geometry` against `mesh/mesh-repair` —
+    /// paths that are not prefixes of one another, so it passed even when the
+    /// predicate was a bare `contains`. This one uses a colliding pair, which
+    /// is the only kind that could ever have caught the bug.
+    ///
+    /// The second assertion is the dangerous one: a SIBLING's `tests/` was
+    /// counted as this crate's PRODUCTION code, because the exclusion strips
+    /// only `<crate_path>/tests/` and `mesh/mesh-io/tests/…` does not contain
+    /// `mesh/mesh/tests/`. ~100 %-covered test bodies padded the numerator of
+    /// a crate that never ran them — coverage reading HIGHER than the truth.
+    #[test]
+    fn sibling_crate_sharing_a_path_prefix_is_not_own_production() {
+        let cp = "mesh/mesh";
+        assert!(
+            is_own_production_file("mesh/mesh/src/lib.rs", cp),
+            "the crate's own source must still count"
+        );
+        assert!(
+            !is_own_production_file("mesh/mesh-io/src/stl.rs", cp),
+            "`mesh/mesh-io` is a sibling of `mesh/mesh`, not part of it"
+        );
+        assert!(
+            !is_own_production_file("mesh/mesh-io/tests/roundtrip.rs", cp),
+            "a SIBLING's integration tests are not this crate's production code"
+        );
+        assert!(
+            !is_own_production_file("mesh/mesh/tests/it.rs", cp),
+            "the crate's own integration tests are still excluded"
+        );
+    }
+
+    /// A `crate_path` with a trailing slash must behave identically.
+    ///
+    /// Caught reviewing the fix above, not the original bug. `path_is_under`
+    /// trims only what it is handed, so composing the exclusion as
+    /// `format!("{crate_path}/tests")` on `"mesh/mesh/"` yielded
+    /// `"mesh/mesh//tests"` — an interior `//` matching nothing, which turned
+    /// the tests exclusion OFF and counted the crate's own integration tests
+    /// as production. Fail-open, in the fix for a fail-open.
+    #[test]
+    fn trailing_slash_on_crate_path_does_not_disable_the_tests_exclusion() {
+        for cp in ["mesh/mesh", "mesh/mesh/"] {
+            assert!(
+                is_own_production_file("mesh/mesh/src/lib.rs", cp),
+                "own source must count for crate_path {cp:?}"
+            );
+            assert!(
+                !is_own_production_file("mesh/mesh/tests/it.rs", cp),
+                "own integration tests must be excluded for crate_path {cp:?}"
+            );
+            assert!(
+                !is_own_production_file("mesh/mesh-io/src/stl.rs", cp),
+                "a sibling must be excluded for crate_path {cp:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn path_is_under_handles_relative_absolute_and_boundaries() {
+        assert!(path_is_under("mesh/mesh/src/lib.rs", "mesh/mesh"));
+        assert!(path_is_under(
+            "/w/cortenforge/mesh/mesh/src/lib.rs",
+            "mesh/mesh"
+        ));
+        assert!(path_is_under("mesh/mesh/src/lib.rs", "mesh/mesh/"));
+        assert!(!path_is_under("mesh/mesh-io/src/lib.rs", "mesh/mesh"));
+        assert!(!path_is_under(
+            "/w/cortenforge/mesh/mesh-io/src/lib.rs",
+            "mesh/mesh"
+        ));
+        // Not a prefix at a segment boundary: `xmesh/mesh` must not match.
+        assert!(!path_is_under("xmesh/mesh/src/lib.rs", "mesh/mesh"));
     }
 
     #[test]
