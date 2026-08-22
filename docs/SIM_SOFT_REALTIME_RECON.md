@@ -1,6 +1,6 @@
 # sim-soft Real-Time Path — Phase-1 Measurement + Recon (Phase E predecessor)
 
-**Status**: RECON 2026-08-10 (rev 2026-08-11), v1.7. Phase 1 (measure) COMPLETE — all four requested
+**Status**: RECON 2026-08-10 (rev 2026-08-22), v2.0. Phase 1 (measure) COMPLETE — all four requested
 measurements taken; §2 reports them. Phase 2 (this recon) proposes the MOR +
 hyper-reduction path with a staged ladder whose first rung is a kill-or-confirm.
 **No production code was written and no dependency was added.** The measurement
@@ -11,8 +11,11 @@ was touched and how to reproduce.
 **MISSION.md**: AMENDED 2026-08-10 with the "On speed as a ceiling" clause — see §8b.
 The ladder is authorised in principle; R3's three conditions are now mission-level.
 ⚠ That clause cites **this document** as the measured basis for its "throughput is a
-ceiling" premise, so §2b is load-bearing outside this recon — re-take it on an idle
-box (risk 1) before anyone leans on it further.
+ceiling" premise, so §2b is load-bearing outside this recon. **Its concurrency reading
+was CORRECTED on 2026-08-22 — the ceiling is 38 concurrent full-order envs, not the
+"~20" earlier revisions carried, and the reduced path raises it to ~395. Quote §2b, not
+any figure taken from a revision before v2.0.** The timing figures still want an idle
+box (risk 1).
 
 **One-line verdict**: the goal is **not refuted**, but the measurements move where the
 work is. The frame-budget gap is ~**13–47× in DOF** (≈ 1 500 free DOF fits a 60 Hz
@@ -184,7 +187,32 @@ document; the contact arm was not re-run after R0. Read them as upper bounds.
 
 A "high-quality environment" in this codebase's own terms is the 20 k–70 k free-DOF
 range (`Cargo.toml` cites 70 k free DOF; the conformed-disc and FSU meshes sit in
-that band). **The gap is 25–90× in DOF, which at n^1.28 is 70–350× in time.**
+that band). **The gap is 13–47× in DOF.**
+
+⚠ **CORRECTED 2026-08-22, and in time this document now quotes MEASURED points rather
+than a derived exponent.** The sentence here read *"25–90× in DOF, which at `n^1.28` is
+70–350× in time"*, and both halves were defective. **25–90×** is the pre-R0 pair
+(20 k–70 k over the old 800-DOF reachable figure; v1.3 replaced 800 with 1 500 and
+missed this line). **`n^1.28` appears nowhere else in this document and has no
+producer** — the two exponents actually measured here are `n^1.51` (low-end) and
+`n^1.43` (per-iteration), so the "70–350×" rested on a number with no source.
+
+The table above already brackets the target band with direct measurements, and the
+spread between them is the finding rather than noise:
+
+| directly measured, in or near the 20 k–70 k band | Newton iters/step | × 16.7 ms |
+|---|---:|---:|
+| block n=28, 70 644 free DOF | 0.5–0.6 | **34.6×** |
+| IPC indentation, 18 750 free DOF | 6.5 | **46.2×** |
+| cantilever 80×8, 19 440 free DOF | 37.0 | **267×** |
+
+⇒ **35–267× in time across the target band** — and the ordering **inverts**: the
+19 440-DOF cantilever costs **7.7× more** than the 70 644-DOF block (4 452 vs 578 ms),
+because it takes 37 Newton iterations against 0.5–0.6. Trajectory nonlinearity dominates
+mesh size outright here — **§3b.3** states the same thing about iteration counts *at
+comparable DOF*; across the band it is strong enough to reverse the ordering — and that
+is precisely why a single DOF exponent was the wrong instrument. **Quote a row**, per
+the measured-anchor rule in the header caveat.
 
 **Substepping does not rescue it, and is measurably worse.** `cantilever 40×4` costs
 470.7 ms as one `dt = 1/60` step (24.2 Newton iterations). The same frame as 16.7
@@ -206,12 +234,64 @@ Two numbers, both in the §2a table. The Cholesky factor size is **exact**
 
 - **Fill per row grows as ≈ n^0.35** — consistent with the nested-dissection figures
   already recorded in `ordering.rs` (334 → 458 → 648).
-- At the top of the range the factor alone is **480 MiB** and a single session is
-  **~0.9 GiB** resident. On a 24 GB box that caps concurrent full-order sessions at
-  roughly 20 — which is the number that matters for RL-style batching, and it is a
-  hard wall, not a tuning problem.
-- The whole-session RSS is ~1.9× the factor. The factor is the dominant term; nothing
-  else in the solver is close.
+- At the top of the range the factor alone is **480 MiB** and a single session **peaks**
+  at **~0.9 GiB**.
+- **⚠⚠ CORRECTED 2026-08-22 — an earlier revision read "roughly 20 concurrent full-order
+  sessions on a 24 GB box" off this row. That reading was wrong, and the error was in the
+  model, not the measurement.** `process max RSS` is a **peak**, and at 70 644 free DOF
+  **84 % of it is transient**: `OrderedLlt`'s value buffer is allocated inside
+  `factor_free_tangent` and dropped when the step returns — `CpuNewtonSolver` retains no
+  numeric factor, as its field list shows. Dividing 24 GB by a peak charges every session
+  for memory that is released between steps.
+
+  Re-measured on this table's own fixture and sizes (`uniform_block`, bottom face pinned),
+  with an **exact** `getrusage` high-water mark rather than a sampled one:
+
+  | | 70 644 free DOF |
+  |---|---:|
+  | held (survives the step) | **146 MiB** |
+  | transient (factor + assembly) | **779 MiB** |
+  | peak — reproduces this table's 919.1 | **926 MiB** (0.8 % apart) |
+
+  The quantity that actually caps batching is the **marginal** cost of one more
+  *concurrently stepping* env — the slope of exact peak against env count `K`:
+
+  | free DOF | full-order | reduced (`r = 40`) |
+  |---:|---:|---:|
+  | 13 872 | 86 MiB/env → 283 envs | 17 MiB/env → 1 445 envs |
+  | 26 460 | 175 MiB/env → 140 envs | 35 MiB/env → 698 envs |
+  | **70 644** | **638 MiB/env → 38 envs** | **61 MiB/env → 395 envs** |
+
+  So the full-order ceiling is **38, not ~20**, and the reduced path lifts it **10.4×** —
+  a win available from **R1 as built, with no hyper-reduction**. It is not free: the
+  reduced solve still assembles full-order triplets and forms `AΦ` every Newton iteration,
+  which is what the 61 MiB is.
+
+  ⚠ **Carry these with the numbers.** (i) **Forward-only** — `replay_step` is `&self`, so
+  both arms share one solver and the comparison is purely the transient; the tape-based
+  differentiable `step` is `&mut self` and was **not** measured, so this says nothing about
+  a co-design batch. (ii) `NullContact`. (iii) The reduced arm's *fixed* cost is **higher**
+  (440 vs 264 MiB) because the basis is fitted in-process; production would load `Φ`.
+  (iv) Repeat spread at `K = 8` is ±339 MiB (thread scheduling), putting the reduced slope
+  in a 33–63 MiB/env bracket — the 10× holds at the pessimistic end. (v) The basis was a
+  smooth analytic full-rank stand-in — a **memory-shape probe**, not a validated POD basis;
+  no accuracy claim follows from it.
+
+  ★ **Two ways this nearly read wrong, both caught by controls rather than by review.**
+  A 25 ms RSS sampler agreed with `getrusage` to 0.0 % on three pilot cells and **missed
+  36.7 %** on the fourth, because the reduced path's largest transient is short-lived. And
+  at `K ≤ 4` the reduced arm reads *flat* (506 → 504 MiB) — an artifact of the 506 MiB
+  **construction** high-water mark masking a smaller stepping transient, `ru_maxrss` being
+  monotone. Only pushing to `K = 16` resolved the true slope. Reporting either unchecked
+  would have overstated the result.
+
+  **Producer**: a ~200-line standalone binary outside the tree, public API only
+  (`uniform_block` → §2b's exact free-DOF counts, `CpuTet4NHSolver`, `PodBasis::fit`,
+  `ReducedNewtonSolver`, `libc::getrusage`), envs stepped in `std::thread::scope`.
+  **No repo change is needed to rebuild it** — unlike §9's timing work, nothing was patched
+  into `sim-soft` and nothing had to be reverted.
+- The whole-session **peak** is ~1.9× the factor, and the factor dominates that peak. But
+  of what a session *holds*, the factor is none of it.
 
 ### 2c. Q3 — the f32 question. **This is the finding that changes the plan.**
 
@@ -369,10 +449,11 @@ exist.
 
 ### 3a. The goal is not refuted
 
-Nothing measured says real time is unreachable. The gap is large (25–90× in DOF) but
-it is the *size* of gap that reduced-order modelling is built for: ECSW/cubature
-literature routinely reports 2–3 orders of magnitude on exactly this shape of problem
-(hyperelastic FEM, fixed mesh, repeated solves). The brief's central architectural
+Nothing measured says real time is unreachable. The gap is large — **13–47× in DOF,
+and 35–267× in measured frame time** (§2a; stated in time because that is the unit the
+literature figure that follows is in) — but it is the *size* of gap that reduced-order modelling
+is built for: ECSW/cubature literature routinely reports 2–3 orders of magnitude on
+exactly this shape of problem (hyperelastic FEM, fixed mesh, repeated solves). The brief's central architectural
 claim — that a reduced system is small and dense, so **converged Newton with an exact
 direct solve is preserved** and the error moves into the quadrature approximation
 where it can be measured against the full-order path — survives contact with the
@@ -575,9 +656,13 @@ basis in the bulk):
 - **The mechanism is sound and the measurements support it.** The contact region is
   small: the IPC indentation engaged, at most, the vertices under a sphere of contact
   radius `a = 2.24 mm` on an 18 750-DOF mesh. A full-DOF patch of a few hundred DOF
-  coupled to a reduced bulk of `r ≈ 30–100` gives a system of ~500–800 DOF — which
-  §2a's "≈ 800 free DOF fits a 60 Hz converged frame" says is *exactly* the reachable
-  size. The arithmetic closes, which is a genuine (if provisional) encouragement.
+  coupled to a reduced bulk of `r ≈ 30–100` gives a system of ~500–800 DOF — comfortably
+  inside the **≈ 1 500 free DOF** §2a measures as reachable at 60 Hz, with roughly 2×
+  headroom. The arithmetic closes, which is a genuine (if provisional) encouragement.
+  ⚠ Until 2026-08-22 this sentence quoted §2a *by name* as saying "≈ 800 free DOF … is
+  *exactly* the reachable size" — a pre-R0 figure §2a itself stopped carrying at v1.3.
+  The correction turns "exactly at the limit" into "inside it with margin"; it does not
+  rescue anything, because the hard part is the coupling condition below, not the count.
 - **The coupling is where it is hard, and it is open research.** The interface between
   a full-DOF patch and a reduced bulk needs a compatibility condition. Options span
   static condensation of the bulk onto the interface (clean, but the condensed
@@ -747,8 +832,9 @@ consequence: this recon is premature, R0 is still worth doing (it is a pure qual
 win), and R1+ waits behind the keystone and system-ID. Nothing is lost but time.
 
 **(b) Real time is a ceiling property, not a velocity property.** The argument: the
-capstone is an **RL-controlled** exoskeleton. RL needs sample throughput; §2b's
-"~20 concurrent full-order sessions on a 24 GB box" is a hard ceiling on that, and
+capstone is an **RL-controlled** exoskeleton. RL needs sample throughput; §2b's measured
+ceiling — **38 concurrent full-order envs on a 24 GB box at 70 644 free DOF** (corrected
+2026-08-22 from "~20"; the reduced path raises it to ~395) — is a hard ceiling on that, and
 `PERF_BASELINE.md` already shows the GPU path only pays at batch ≥ 1024. On this
 reading, an interactive/batchable soft path is *ceiling-determining* for step 5 of the
 mission's own thesis, and belongs in the sequence on the mission's own terms — not as a
@@ -850,11 +936,16 @@ small, separate PR and is not proposed here.
    upper bounds. The *shapes* (scaling exponents, phase shares, crossover point) are
    robust across repeats; the absolutes are not benchmark-grade. Re-take §2a on an idle
    machine before quoting any figure externally.
-2. **The `≈ 800 free DOF at 60 Hz` headline is an interpolation**, not a measured
-   point — it is derived from the 540 → 3 000 DOF pair at the measured `n^1.38` low-end
+2. **The `≈ 1 500 free DOF at 60 Hz` headline is an interpolation**, not a measured
+   point — it is derived from the 540 → 3 000 DOF pair at the measured `n^1.51` low-end
    exponent, using the IPC fixture's 6-iteration count. The bracketing measurements
-   (540 DOF at 1.37× budget; 3 000 DOF at 28×) *are* direct. Treat 800 as an order-of-
-   magnitude statement.
+   (540 DOF at **0.47×** budget — it *fits*, with 2× headroom; 3 000 DOF at 12.1×) *are*
+   direct. Treat 1 500 as an order-of-magnitude statement.
+   ⚠ **This risk carried the pre-R0 figures — 800 / `n^1.38` / 1.37× / 28× — from v1.3
+   to 2026-08-22.** v1.3 re-measured them and updated §2a, the verdict and the header
+   caveat, but missed §10 and §5. The doc therefore stated, in two places at once, that
+   the 540-DOF anchor **missed** the budget by 1.37× and that it **fitted** at 0.47× —
+   and this is the paragraph telling readers which figure is safe to quote.
 3. ~~**The `cantilever` at 36 300 free DOF does not converge.**~~ **RESOLVED
    2026-08-11 — this risk was mine, not the solver's.** The failing harness capped
    Newton at 60 iterations; the case needs 65. Every size converges with a generous
@@ -868,7 +959,7 @@ small, separate PR and is not proposed here.
    that this recon did not measure.** R3's gate exists precisely to hold it to account,
    and R3's kill condition (< ~10× over R0) is the response if it does not hold.
 6. **§5's hybrid-DD arithmetic closes on paper** (a few hundred patch DOF + `r ≈
-   30–100` lands inside the reachable ~800 DOF). That is encouraging and it is not
+   30–100` lands inside the reachable ≈ 1 500 DOF). That is encouraging and it is not
    evidence. Nothing about the coupling condition or the moving patch has been
    measured or designed.
 7. **The `BTreeMap` finding (§2d.2) is a profile attribution, not a proven fix.** R0's
@@ -896,6 +987,25 @@ small, separate PR and is not proposed here.
 
 ## 12. Version history
 
+- **v2.0 (2026-08-22)** — **§2b's concurrency reading corrected, and it was a modelling
+  error rather than a bad measurement.** `process max RSS` is a peak; 84 % of the 919 MiB
+  at 70 644 free DOF is a transient numeric factor that `CpuNewtonSolver` does not retain,
+  so dividing 24 GB by it undercounted. Re-measured marginal cost per concurrently
+  stepping env: **638 MiB (full) vs 61 MiB (reduced)** ⇒ **38 vs ~395 envs**, i.e. the
+  ceiling is nearly 2× better than recorded *and* R1 as built already lifts it 10.4×
+  without hyper-reduction. §8b's reading (b) re-pointed at the corrected figure. Header
+  version stamp also corrected — it read v1.7 while this section already recorded v1.9.
+  **Separately, three sites that v1.3 missed were brought up to date**: §10 risk 2, §10
+  risk 6 and §5's hybrid-DD paragraph still carried the pre-R0 frame-budget figures
+  (800 free DOF / `n^1.38` / 540 DOF at 1.37× / 3 000 DOF at 28×), so the doc asserted
+  both that the 540-DOF anchor missed the 60 Hz budget by 1.37× and that it fitted at
+  0.47×. §5 was additionally misquoting §2a by name.
+  **A third round found the same drift inside §2a itself** — the section the other two
+  fixes were checked against. Its DOF-gap sentence still read 25–90× (the pre-R0 pair),
+  as did §3a, and it derived a "70–350× in time" figure from **`n^1.28`, an exponent
+  with no producer anywhere in this document**. Both corrected to 13–47×, and the time
+  claim replaced with the three directly measured rows that bracket the target band
+  (34.6× / 46.2× / 267×) — a spread governed by trajectory nonlinearity, not DOF.
 - **v1.9 (2026-08-12)** — R1.3 landed; §6's goal-oriented-basis lead upgraded from a
   hypothesis to a measurement (enriched `r = 40` beats plain `r = 104`, 2.7x faster,
   conditional on the objective family being low-dimensional) and the "just raise `r`"
