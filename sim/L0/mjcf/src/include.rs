@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use quick_xml::Reader;
 use quick_xml::Writer;
+use quick_xml::XmlVersion;
 use quick_xml::events::{BytesStart, Event};
 
 use crate::error::{MjcfError, Result};
@@ -139,8 +140,14 @@ fn expand_includes_inner(
 fn extract_file_attr(e: &BytesStart) -> Result<String> {
     for attr in e.attributes().flatten() {
         if attr.key.as_ref() == b"file" {
+            // `normalized_value` performs XML attribute-value normalization
+            // (entity unescaping plus tab/newline -> space), the spec-correct
+            // reading of an attribute; `unescape_value` is deprecated as of
+            // quick-xml 0.41. The version argument only selects 1.1 line-ending
+            // handling: `Implicit1_0` and `Explicit1_0` normalize identically,
+            // and MJCF is XML 1.0, so this is the right reading either way.
             let val = attr
-                .unescape_value()
+                .normalized_value(XmlVersion::Implicit1_0)
                 .map_err(|e| MjcfError::XmlParse(format!("invalid include file attr: {e}")))?;
             let val = val.to_string();
             if val.is_empty() {

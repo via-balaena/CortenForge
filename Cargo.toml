@@ -650,13 +650,20 @@ zip = "8.6"
 # PLY format support
 ply-rs = "0.1"
 # 3MF format support (XML parsing)
-quick-xml = "0.39"
+quick-xml = "0.41"
 # STEP format support (CAD interchange) - truck ecosystem
 truck-stepio = "0.3"
 truck-modeling = "0.6"
 truck-topology = "0.6"
 truck-polymesh = "0.6"
-truck-meshalgo = "0.4"
+# `vtk` is on by default and pulls vtkio 0.6.3, which pins quick-xml 0.22 and
+# lz4_flex 0.7 (RUSTSEC-2026-0194/0195/0041). mesh-io only needs tessellation,
+# so the VTK reader is dead weight carrying live advisories.
+truck-meshalgo = { version = "0.4", default-features = false, features = [
+    "analyzers",
+    "filters",
+    "tessellation",
+] }
 
 # ---------------------------------------------------------------------------
 # GPU Compute

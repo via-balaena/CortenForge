@@ -27,6 +27,15 @@ jobs:
   security-audit:
     name: Security Audit
     runs-on: ubuntu-latest
+    # `rustsec/audit-check` branches on the trigger (see its main.ts): a
+    # `schedule` event files an ISSUE, anything else posts a CHECK run. This
+    # workflow has both triggers, so it needs both scopes — with neither, the
+    # audit succeeds and then dies reporting, and the findings are computed
+    # and discarded.
+    permissions:
+      contents: read
+      checks: write
+      issues: write
     steps:
       - uses: actions/checkout@v6
 
