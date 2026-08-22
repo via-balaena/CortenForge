@@ -432,7 +432,9 @@ jobs:
   # remains is scope (an optional feature's MSRV is a promise nobody made) and cost
   # (it drags every optional dependency in the graph into a job whose question is
   # whether the DECLARED toolchain still builds what we ship). The union itself is
-  # checked weekly by the Clippy drift job below, which does pass `--all-features`.
+  # checked on every PR by `feature-combos` in quality-gate.yml, so what goes
+  # unchecked here is specifically "the union under the MSRV toolchain", not the
+  # union.
   #
   # Deliberately uncached: the weekly cadence makes the rebuild cost irrelevant, and
   # a cache keyed on a different toolchain than the one under test is one more way
@@ -479,8 +481,32 @@ jobs:
   # masked a real failure once (the 1.95 -> 1.96 `suboptimal_flops` sweep). This
   # weekly job runs clippy on the *current* stable and prints its version, so new
   # lints surface as a standing signal pointing at the drift — before they block a
-  # PR merge. It mirrors the PR clippy gate exactly (`--all-targets --all-features
-  # -- -D warnings`).
+  # PR merge.
+  #
+  # ⚠⚠ AS WRITTEN, IT PROBABLY DOES NOT DO THAT. `rust-toolchain.toml` pins
+  # `channel = "1.96.0"`, and rustup honors a toolchain file over the channel a CI
+  # action installs — that file's own header says so, and `rustup show
+  # active-toolchain` in a checkout prints `1.96.0 … (overridden by
+  # …/rust-toolchain.toml)`. So `dtolnay/rust-toolchain@stable` installing 1.98.0
+  # (it did, run 32470647754, 2026-08-21) does not make the clippy below run on
+  # 1.98.0: every cargo invocation in the checkout resolves through the pin. This
+  # job would then be a slower copy of the PR gate, incapable of detecting the one
+  # thing it is named for.
+  #
+  # ⚠ EVIDENCE: the mechanism is verified, the behaviour ON A RUNNER is INFERRED —
+  # the `rustc --version` this job records goes only to `$GITHUB_STEP_SUMMARY`,
+  # which is not in the job log, so no run has ever been read back. The `Record`
+  # step below now echoes to stdout as well, so the next weekly run settles it.
+  #
+  # This matters more than it did, because the command is no longer unique to this
+  # job: `feature-combos` in quality-gate.yml now runs the same `--workspace
+  # --all-targets --all-features -- -D warnings` on every PR. If the pin does
+  # apply here, the overlap is total and this job's marginal value is zero.
+  #
+  # Not fixed in the same change on purpose: forcing the floating toolchain
+  # (`cargo +stable`, or `RUSTUP_TOOLCHAIN=stable`) is expected to light up
+  # unswept lints and turn this job red — 1.87 -> 1.92 lit 179 sites in #790.
+  # That is a sweep to be PRICED, not a line slipped into an unrelated PR.
   clippy-stable-drift:
     name: Clippy (latest stable drift check)
     runs-on: ubuntu-latest
@@ -509,10 +535,13 @@ jobs:
         run: |
           echo "## Clippy Drift Check" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Ran against the latest stable toolchain:" >> $GITHUB_STEP_SUMMARY
+          echo "Toolchain ACTUALLY used — rust-toolchain.toml may override the stable the action installed; see this job's header:" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          rustc --version >> $GITHUB_STEP_SUMMARY
-          cargo clippy --version >> $GITHUB_STEP_SUMMARY
+          # Echoed to BOTH the step summary and stdout. Summary-only was why the
+          # pin question could not be answered from any past run's log.
+          rustc --version | tee -a $GITHUB_STEP_SUMMARY
+          cargo clippy --version | tee -a $GITHUB_STEP_SUMMARY
+          rustup show active-toolchain | tee -a $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Run clippy on latest stable

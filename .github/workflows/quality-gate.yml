@@ -21,36 +21,59 @@
 #
 # Test execution structure (L0 plan §8 step 13 / §6):
 # - `tests-debug` (ubuntu, default features, debug profile): authoritative
-#   test gate for the 23 light-weight workspace lib/integration crates.
+#   test gate for the light-weight workspace lib/integration crates. NO COUNT
+#   HERE ON PURPOSE — the job's three shard lists are the source of truth; this
+#   line said 23 while they named 63 (fixed 2026-08-22, see the job's note).
 #   Sharded 3 ways (balanced by dependency tree) like `tests-release` and
 #   `grade`: on a foundational `sim-core` PR the affected set is nearly the full
 #   crate list, making this the COMPILE-bound long pole, so the heavy GUI dep
 #   trees (Bevy / Slint) are isolated one-per-shard to compile once each.
 # - `tests-release` (ubuntu, default features, --release): authoritative
-#   test gate for the 6 crates whose heavy stochastic-physics integration
+#   test gate for the crates whose heavy stochastic-physics integration
 #   tests (90M–600M-step Boltzmann/CEM/REINFORCE/SA validators) run 5–10×
 #   slower in debug. Per `feedback_release_mode_heavy_tests.md` and plan
-#   §6.5: sim-ml-chassis, sim-thermostat, sim-rl, sim-conformance-tests,
-#   sim-opt, sim-rl-baselines. Runs in parallel with tests-debug on a
-#   separate runner. (sim-rl-baselines holds the RL-baseline fixtures that
+#   §6.5. Sharded 3 ways, and again NO COUNT: the shard lists below are the
+#   source of truth. This line used to enumerate six crates while the lists
+#   named ten. Runs in parallel with tests-debug on a separate runner.
+#   (sim-rl-baselines holds the RL-baseline fixtures that
 #   used to live under sim-thermostat/sim-therm-env/sim-opt; nearly all its
 #   tests are `#[ignore]`d — only two fast compute-parity checks run — so in
 #   CI it is effectively a COMPILE gate. The isolation removes the backwards
 #   sim-rl dev-dep from those L0 physics crates.)
-# - `cross-os` (macos + windows, 3 platform-sensitive crates): cross-OS
-#   validation for FP determinism + file-path handling concerns. Per
-#   plan §6.3 (b): sim-core (FP/physics), sim-mjcf (XML/file paths),
-#   mesh-io (multi-format file paths). Other crates' cross-OS coverage
-#   was admission-of-status-quo; ubuntu coverage is sufficient.
-# - `feature-combos` (ubuntu): explicit non-default-feature paths.
-#   Currently sim-soft `gpu-probe` (the only feature that flips a
-#   tier per `tier_up_features`). Add new combos here as features
-#   land.
+# - `cross-os` (macos + windows): cross-OS validation for FP determinism +
+#   file-path handling concerns. Per plan §6.3 (b): sim-core (FP/physics),
+#   sim-mjcf (XML/file paths), mesh-io (multi-format file paths), and
+#   mesh-printability — this line said "3 crates" and omitted the fourth
+#   until 2026-08-22. It also builds `cf-studio-gui` `--locked` on each OS,
+#   which is the Windows release artifact and a lockfile-drift guard, not a
+#   test. Other crates' cross-OS coverage was admission-of-status-quo;
+#   ubuntu coverage is sufficient.
+# - `feature-combos` (ubuntu): explicit non-default-feature paths, plus
+#   the workspace-union `--all-features` gate. Currently sim-soft
+#   `gpu-probe` (the only feature that flips a tier per
+#   `tier_up_features`) and the `cortenforge` facade subsets. Add new
+#   combos here as features land.
+#
+# Relocated (NOT dropped):
+# - `--all-features` from the test matrix (plan §6.1). The union is a
+#   COMPILE property, so it is gated once in `feature-combos` as a
+#   check-only `cargo clippy --workspace --all-targets --all-features`,
+#   rather than re-paid as a full codegen build by every leg of the
+#   matrix.
+#
+#   ⚠ This bullet previously read "Layer Integrity now enforces
+#   all-features cleanliness in the grader". It does not, and never did:
+#   that criterion shells out to `cargo tree -e … --all-features`
+#   (xtask/src/grade.rs), which reads the dependency GRAPH and compiles
+#   nothing. Worse, the graph is the wrong instrument for this: for the
+#   crate that broke #792, `cargo tree -e features` reported IDENTICAL
+#   `profiling` feature edges per-crate and workspace-wide, while the two
+#   scopes differ by a whole compilation unit. The criterion that DOES compile
+#   under `--all-features` is Clippy, one crate at a time; the
+#   `feature-combos` job carries the measurement showing that per-crate
+#   compile is not the same check as the union either.
 #
 # Dropped vs prior config:
-# - `--all-features` from the test matrix (plan §6.1): Layer Integrity
-#   now enforces all-features cleanliness in the grader; the test
-#   matrix doesn't need to verify the same property by recompilation.
 # - `wasm` job (plan §6.4): the WASM Compatibility criterion in
 #   `cargo xtask grade-all` is the single source of truth. The job
 #   was warning-only anyway.
@@ -299,15 +322,22 @@ jobs:
   # Runs `cargo test` (default features, debug) on the workspace crates whose
   # tests finish quickly in debug mode — mostly libs, plus `tools/` bins whose
   # tests are pure-function. The three shard lists below are the SOURCE OF TRUTH
-  # for that set (a hardcoded count here rots; this comment previously said 23
-  # when the shards named 42). The grade job's `--skip-coverage` flag skips its
+  # for that set. A hardcoded count here rots: this comment once said 23 while
+  # the shards named 42, which is why it no longer states one. Copies of it
+  # elsewhere rotted the same way and were removed on 2026-08-22 — the header
+  # block above and docs/STANDARDS.md both still said 23 when the lists named
+  # 63. Read the count off the lists; do not restate it anywhere.
+  # The grade job's `--skip-coverage` flag skips its
   # Coverage criterion (which is what runs cargo test inside grade), so this job
   # + tests-release are the SOLE test-execution gate in CI.
   #
-  # `--all-features` is intentionally absent (plan §6.1): Layer Integrity in
-  # the grader enforces all-features cleanliness; running it again here would
-  # just re-pay the bevy_ecs / image / zip / criterion compile cost on every
-  # consumer's test build for no additional signal.
+  # `--all-features` is intentionally absent (plan §6.1), and the reason is
+  # cost, not redundancy: the union is gated once, as a check-only clippy in
+  # `feature-combos`. Turning it on here would re-pay the bevy_ecs / image /
+  # zip / criterion cost as a full CODEGEN build in each of the three shards,
+  # to assert a property no test in this job exercises. (The claim this
+  # comment used to make — that Layer Integrity in the grader already enforces
+  # all-features cleanliness — was false; see the header block.)
   # SHARDING (3 legs, mirrors `tests-release` + `grade`): on a foundational
   # `sim-core` PR the affected set is nearly the whole crate list, so this job is
   # COMPILE-bound (it rebuilds ~30 crates in debug) and was the single ~25-min
@@ -686,8 +716,8 @@ jobs:
   # Per plan §6.3 (b): cross-OS coverage limited to crates with legitimate
   # cross-OS concerns (FP determinism, mmap behavior, file-path handling).
   # ubuntu coverage is provided by the `tests-debug` + `tests-release` jobs;
-  # this matrix adds macOS + Windows for the three crates where it actually
-  # matters.
+  # this matrix adds macOS + Windows for the crates where it actually matters —
+  # the four enumerated below (this line said "three" while listing four).
   #
   # Selection rationale:
   # - sim-core: physics integration, FP determinism is load-bearing
@@ -760,17 +790,33 @@ jobs:
   # covers the feature paths that aren't the default. Add new combos here as
   # features land.
   #
-  # Currently:
+  # Currently, in step order:
   # - sim-soft `gpu-probe`: tier-up feature pulling wgpu/bytemuck/pollster.
   #   `tests/invariant_6_gpu_probe.rs` is `#![cfg(feature = "gpu-probe")]`-
   #   gated and gracefully skips when no wgpu adapter is available
   #   (headless CI), so this gate exercises the build graph + skip path.
+  # - the `cortenforge` facade's per-domain feature subsets.
+  # - the WORKSPACE UNION (`--all-features` over every member at once) — see
+  #   that step for why it is not covered by the grader, and why it runs last.
+  #
+  # ⚠ The two named combos are PR-scoped by `affected`; the union step is NOT,
+  # and must not be. Feature unification is a whole-graph property: a manifest
+  # edit in one crate can change what a shared dependency exposes to an
+  # unrelated crate the affected-set never names.
   feature-combos:
     name: Feature Combos
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    # PR-scoped: the only combo is sim-soft's `gpu-probe`, so this runs when
-    # sim-soft is affected (and always on non-PR / needs_full / fallback).
+    # Raised from 20 when the union step landed. Measured inputs: this job ran
+    # 6m38s / 9m11s / 7m26s on PRs #793 / #794 / #796, and the identical union
+    # command took 6m41s COLD on a Linux runner (the weekly Clippy drift job,
+    # run 32470647754 — 14s cache step, i.e. a genuine miss). Worst observed
+    # sum is ~16 min, so 20 left ~1.26x headroom; 35 is ~2.2x, in line with the
+    # rest of the file. ⚠ Provisional: no run has yet paid the union cost in
+    # THIS job's cache, so re-read it once a few PRs have and tighten if the
+    # steady state is far below.
+    timeout-minutes: 35
+    # `needs: [affected]` scopes the two named combos (see the per-step `if:`s),
+    # NOT the union step, which is unconditional. The job itself always runs.
     needs: [affected]
     if: ${{ !cancelled() }}
     steps:
@@ -817,6 +863,63 @@ jobs:
           cargo check -p cortenforge --no-default-features --features mesh
           cargo check -p cortenforge --no-default-features --features fabrication
           cargo check -p cortenforge --no-default-features --features sim
+
+      # ── The workspace union ───────────────────────────────────────────────
+      # UNCONDITIONAL and unsharded, by design: this is one cargo resolution
+      # over every member at once, which is a different graph from any
+      # per-crate build and cannot be decomposed into them.
+      #
+      # WHY THE GRADER DOES NOT ALREADY COVER THIS — measured, not argued.
+      #
+      # `cargo xtask grade`'s CLIPPY criterion does compile under
+      # `--all-features` (grade.rs runs `cargo clippy -p <crate> --all-targets
+      # --all-features --message-format=json`), so it is fair to ask what a
+      # second all-features compile buys. Answer, from a controlled rerun of
+      # the #792 defect on 4ed3766f with `sim-bevy`'s `trace` feature put back:
+      #
+      #   cargo clippy -p sim-bevy --all-targets --all-features   -> EXIT 0
+      #   cargo clippy --workspace --all-targets --all-features   -> EXIT 101,
+      #                                        62 x E0433 in `rav1e`
+      #
+      # Same tree, same flags but for the scope. The per-crate command — which
+      # is verbatim what the grader runs, on the very crate that owned the
+      # defect — is BLIND to it. `cargo +nightly build -Z unstable-options
+      # --unit-graph` says why, in both arms:
+      #
+      #   -p sim-bevy   ONE `profiling` unit  — WITH profile-with-tracing+tracing
+      #   --workspace   TWO `profiling` units — one WITH, one WITHOUT
+      #   both scopes   ONE `profiling-procmacros` unit, always WITH
+      #
+      # Per-crate, the single `profiling` is the one WITH the `tracing`
+      # re-export, so `rav1e` compiles. The union adds a second, tracing-less
+      # `profiling` while the proc-macro stays single and stays
+      # tracing-flavoured; `rav1e` links the tracing-less one, and
+      # `#[profiling::function]` expands to `profiling::tracing::…` against an
+      # instance that has no such path. Hence 62 x E0433.
+      #
+      # ⚠ None of that is visible to a graph query. `cargo tree … --all-features
+      # -e features` reports IDENTICAL `profiling` feature edges under both
+      # scopes — 1-vs-2 units collapses to one node. That is the concrete reason
+      # this must be a compile step, and the concrete reason Layer Integrity's
+      # `cargo tree` could never have caught it.
+      #
+      # Second, smaller reason: on a PR the grade job is `--only`-scoped to the
+      # affected set, so an untouched crate is not clippied at all. This step
+      # is unconditional.
+      #
+      # Ordered LAST deliberately. Steps stop at the first failure, so whichever
+      # runs first can mask the others. The union is the most expensive step and
+      # the only unconditional one, so putting it last means (a) a
+      # union break never hides a `gpu-probe` or facade break, and (b) an
+      # obviously-broken PR fails on a narrow, fast check without first paying
+      # ~7 min of union compile.
+      #
+      # Clippy rather than `cargo check` costs next to nothing extra (clippy IS
+      # a check build plus lint passes) and is strictly stronger. `-D warnings`
+      # is safe here because `rust-toolchain.toml` pins the compiler, so this
+      # cannot go red from a toolchain float — see that file.
+      - name: Clippy workspace union (--all-features)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   # ============================================================================
   # DEPENDENCIES - License / source audit via cargo-deny
