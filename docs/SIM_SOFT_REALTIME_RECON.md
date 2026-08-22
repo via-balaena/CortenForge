@@ -208,9 +208,11 @@ spread between them is the finding rather than noise:
 
 ⇒ **35–267× in time across the target band** — and the ordering **inverts**: the
 19 440-DOF cantilever costs **7.7× more** than the 70 644-DOF block (4 452 vs 578 ms),
-because it takes 37 Newton iterations against 0.5. Trajectory nonlinearity dominates
-mesh size outright here, which is §3b.4's point and precisely why a single DOF exponent
-was the wrong instrument. Quote a row, per this section's own rule two paragraphs up.
+because it takes 37 Newton iterations against 0.5–0.6. Trajectory nonlinearity dominates
+mesh size outright here — **§3b.3** states the same thing about iteration counts *at
+comparable DOF*; across the band it is strong enough to reverse the ordering — and that
+is precisely why a single DOF exponent was the wrong instrument. **Quote a row**, per
+the measured-anchor rule in the header caveat.
 
 **Substepping does not rescue it, and is measurably worse.** `cantilever 40×4` costs
 470.7 ms as one `dt = 1/60` step (24.2 Newton iterations). The same frame as 16.7
@@ -448,8 +450,8 @@ exist.
 ### 3a. The goal is not refuted
 
 Nothing measured says real time is unreachable. The gap is large — **13–47× in DOF,
-and 35–267× in measured frame time** (§2a; state it in time, because that is the unit
-the comparison below is in) — but it is the *size* of gap that reduced-order modelling
+and 35–267× in measured frame time** (§2a; stated in time because that is the unit the
+literature figure that follows is in) — but it is the *size* of gap that reduced-order modelling
 is built for: ECSW/cubature literature routinely reports 2–3 orders of magnitude on
 exactly this shape of problem (hyperelastic FEM, fixed mesh, repeated solves). The brief's central architectural
 claim — that a reduced system is small and dense, so **converged Newton with an exact
