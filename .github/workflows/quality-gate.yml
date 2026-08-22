@@ -340,15 +340,29 @@ jobs:
   # all-features cleanliness — was false; see the header block.)
   # SHARDING (3 legs, mirrors `tests-release` + `grade`): on a foundational
   # `sim-core` PR the affected set is nearly the whole crate list, so this job is
-  # COMPILE-bound (it rebuilds ~30 crates in debug) and was the single ~25-min
-  # long pole — within ~5 min of its own timeout. (Test *execution* is trivial:
-  # the slowest single suite measured ~39 s; the cost is compilation.)
+  # COMPILE-bound. (Test *execution* is trivial: the slowest single suite
+  # measured ~39 s; the cost is compilation.)
   #
   # The split is BY DEPENDENCY TREE, not round-robin: a first attempt that
   # round-robined crates by count left one shard compiling BOTH giant optional
   # trees (Bevy via sim-bevy-soft + Slint/wgpu via cf-studio-gui) and it stayed
   # at ~25 min. Each giant tree must compile *somewhere*, so the win comes from
   # co-locating each tree's consumers on ONE shard (it compiles once, not 2-3×):
+  #
+  # ⚠ THE RULE WAS RIGHT; THE LISTS HAD DRIFTED FROM IT. Measured 2026-08-22,
+  # shard 2 was carrying THREE trees, two of them duplicates of another shard:
+  # Slint via `cf-studio-gui` (legitimately its home, the only slint consumer in
+  # the workspace); BEVY via six `example-ml-*` crates, 345 `bevy` lines each in
+  # `cargo tree` — a second full bevy compile beside shard 1's; and SIM+MESH via
+  # `cortenforge` (the facade re-exports sim-core/sim-soft/sim-mjcf/cf-design and
+  # every mesh-*) plus `mesh` (the umbrella) — a second copy of shard 3's stack.
+  # Result: 30.2 / 23.5 / 7.6 min, shard 2 KILLED at its 30-minute cap on #799
+  # and clearing the re-run by 32 s, while shard 3 idled for 22 minutes.
+  #
+  # ⚠ A crate's shard is decided by WHICH TREE IT PULLS, not by its name or
+  # directory. Check `cargo tree -p <crate> --edges normal | grep -c bevy` (or
+  # `slint`) before adding one — the drift above happened because example-ml-*
+  # and cortenforge were filed by name.
   #   - shard 1 = the Bevy tree   (cf-bevy-common, sim-bevy-soft, cf-viewer, sim-ml-chassis-bevy,
   #                                cf-spine-studio, cf-sim-research, cf-scan-prep, cf-device-design,
   #                                cf-device-geometry)
@@ -412,7 +426,13 @@ jobs:
   tests-debug:
     name: Tests (debug — shard ${{ matrix.id }}/3)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Raised 30 -> 45 alongside the 2026-08-22 regrouping. 30 was not a
+    # considered bound, it was a cliff: shard 2 ran 28-29 min for weeks (94-97%
+    # of cap), was KILLED at 30:10 on #799, and cleared the re-run by 32 s. The
+    # regrouping should drop it well below that, but this lands BEFORE the new
+    # balance is measured, so the cap must not be the thing that proves it.
+    # Re-read all three shard times from a full run and tighten.
+    timeout-minutes: 45
     # PR-scoped to each shard's crate list (see the `affected` job); always runs
     # (`if: !cancelled()`) so it is never a skipped required check, and falls
     # back to the full shard list on any non-PR / needs_full / affected-failed
@@ -423,23 +443,50 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # shard 1 = the BEVY tree and nothing else. Every crate here pulls
+          # bevy (measured: 16-389 `bevy` lines in `cargo tree --edges normal`),
+          # including the six `example-ml-*` crates that used to sit on shard 2
+          # and dragged a SECOND full bevy compile there.
           - id: 1
             crates: cf-bevy-common sim-bevy-soft cf-viewer sim-ml-chassis-bevy cf-spine-studio
               sim-bevy cf-mesh-paint
               cf-sim-research cf-scan-prep cf-device-design cf-device-geometry
-              mesh-types mesh-io mesh-repair mesh-loft mesh-select mesh-sdf mesh-offset mesh-shell mesh-measure
-              cf-msk-lib cf-mjcf-emit cf-osim
-          - id: 2
-            crates: cf-studio-core cf-studio-engine cf-studio-gui cf-studio
-              cf-geometry cf-spatial cf-scan-prep-core mesh-printability mesh-lattice mesh
-              cortenforge cf-msk-fit cf-anthro cf-cap-planes cf-device-types xtask
               example-ml-6dof-cem-linear example-ml-vec-env-ppo example-ml-vec-env-auto-reset
               example-ml-vec-env-reinforce example-ml-vec-env-sac example-ml-vec-env-td3
+          # shard 2 = the SLINT tree. `cf-studio-gui` is the only slint consumer
+          # in the workspace and it IS this shard: 459 unique packages, against
+          # 223 for all eleven other crates unioned — of which only 16 fall
+          # outside gui's own tree. So the rest are ~3% of the build and ride
+          # along genuinely free.
+          #
+          # They pull NO giant optional tree, which is the property that decides
+          # placement. Several do pull a few mesh-/sim- crates (cf-msk-fit 11,
+          # cf-scan-prep-core 5, cf-anthro 5) — LEAVES of shard 3's stack, not
+          # the whole stack the way `cortenforge` pulled it (32 workspace crates,
+          # itself excluded) — which is why cortenforge moved and these did not.
+          # Moving them anyway would save 16 packages of 475; not worth the churn.
+          - id: 2
+            crates: cf-studio-core cf-studio-engine cf-studio-gui cf-studio
+              cf-geometry cf-spatial cf-scan-prep-core
+              cf-msk-fit cf-anthro cf-cap-planes cf-device-types xtask
+          # shard 3 = sim + mesh + design: one shared dependency stack, no giant
+          # optional tree. Largest by COUNT, and expected to stay cheap per
+          # crate — mesh-types/io/repair/sdf/offset/printability were ALREADY
+          # built here as dependencies of cf-fsu-geometry / cf-cast-cli / sim,
+          # so adding their test targets costs little. `cortenforge` (facade)
+          # and `mesh` (umbrella) belong here because they re-export this stack
+          # and nothing else; measured, cortenforge adds only 3 workspace crates
+          # this shard was not already building.
+          # ⚠ "expected", not measured — this shard was 7.6 min with 18 crates
+          # and is now 34. Its real time comes from this change's own CI run.
           - id: 3
             crates: sim-soft sim-core sim-mjcf sim-urdf sim-gpu sim-types
               sim-truss sim-gpu-benches
               sim-therm-env cf-design cf-design-tests cf-fsu-geometry cf-routing cf-routing-tests cf-cast-cli sim
               pbit-analyze pbit-fw-core
+              mesh-types mesh-io mesh-repair mesh-loft mesh-select mesh-sdf mesh-offset
+              mesh-shell mesh-measure mesh-printability mesh-lattice mesh
+              cortenforge cf-msk-lib cf-mjcf-emit cf-osim
     steps:
       - uses: actions/checkout@v7
 
