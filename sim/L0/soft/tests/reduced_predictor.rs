@@ -37,11 +37,13 @@
 //! killed it (step-0 failure on contact plus a body load) and the reduced loop
 //! refuses it outright.
 //!
-//! ⚠ **Precondition, checked before anything is concluded.** A gentle fixture
-//! that converges in 2 iterations per step cannot show an iteration-count gain
-//! whatever the predictor does. The report prints the oracle baseline's mean
-//! iterations per step first, and says so explicitly when that number is too
-//! low for the comparison to mean anything.
+//! ⚠ **Precondition, printed BEFORE the conclusion it qualifies.** A gentle
+//! fixture that converges in 2 iterations per step cannot show an
+//! iteration-count gain whatever the predictor does, so the report states the
+//! per-step baselines and the ±1-iteration resolution ahead of the ★ COMPOSITION
+//! line, and says explicitly when those numbers are too thin for it to mean
+//! anything. (It used to print them after, which hands a reader the conclusion
+//! before the caveat.)
 //!
 //! ## Running it
 //!
@@ -164,6 +166,15 @@ const MIN_INFORMATIVE_ITERS_PER_STEP: f64 = 3.0;
 /// cell into looking cheaper than it is — an earlier draft used 80 in three
 /// places and 200 in a fourth, for no stated reason.
 const NEWTON_CAP: usize = 200;
+/// R1.1's residual tolerance.
+const DEFAULT_TOL: f64 = 1.0e-6;
+/// R1.1's mesh: 16 × 16 lateral, 6 through thickness → 5 202 free DOF.
+const FULL_N_LAT: usize = 16;
+const FULL_NZ: usize = 6;
+/// A mesh small enough for the CI-covered tests to build, train and solve on in
+/// well under a second.
+const SMALL_N_LAT: usize = 4;
+const SMALL_NZ: usize = 2;
 
 struct Rig {
     solver: CpuTet4NHSolver<HandBuiltTetMesh>,
@@ -172,9 +183,14 @@ struct Rig {
     n_dof: usize,
 }
 
-fn rig(guess: InitialGuess) -> Rig {
+/// The one rig builder. Every fixture here is this beam at some resolution and
+/// some tolerance; parameterising both is what lets the callers stop building a
+/// solver only to throw it away and replace it — which also left `x_rest`
+/// sourced from one mesh construction and `solver` from another, identical only
+/// so long as nobody edited one of the two specs.
+fn rig_of(n_lat: usize, nz: usize, guess: InitialGuess, tol: f64) -> Rig {
     let field = MaterialField::uniform(MU, LAMBDA);
-    let mesh = HandBuiltTetMesh::cantilever_bilayer_beam(16, 16, 6, LX, LY, H, &field);
+    let mesh = HandBuiltTetMesh::cantilever_bilayer_beam(n_lat, n_lat, nz, LX, LY, H, &field);
     let n_dof = 3 * mesh.n_vertices();
     let mut x_rest = vec![0.0; n_dof];
     for (c, p) in x_rest.chunks_exact_mut(3).zip(mesh.positions()) {
@@ -194,7 +210,7 @@ fn rig(guess: InitialGuess) -> Rig {
     cfg.dt = DT;
     cfg.density = DENSITY;
     cfg.max_newton_iter = NEWTON_CAP;
-    cfg.tol = 1.0e-6;
+    cfg.tol = tol;
     cfg.initial_guess = guess;
     Rig {
         solver: CpuTet4NHSolver::new(Tet4, mesh, NullContact, cfg, bc),
@@ -202,6 +218,11 @@ fn rig(guess: InitialGuess) -> Rig {
         loaded,
         n_dof,
     }
+}
+
+/// R1.1's fixture at its own tolerance — the measurement rig.
+fn rig(guess: InitialGuess) -> Rig {
+    rig_of(FULL_N_LAT, FULL_NZ, guess, DEFAULT_TOL)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -503,6 +524,52 @@ fn measure(load_scale: f64, r_modes: usize) {
     let o_gain = ratio(o_base, o_pred);
     let r_gain = ratio(r_base, r_pred);
     println!("║");
+    // ⚠ How well is the composition ratio actually RESOLVED? These are integer
+    // counts, so the honest statement is not "above an arbitrary floor" but "a
+    // one-iteration change in any arm moves the answer by this much". The first
+    // version of this check compared `per_step < 3.0` against a baseline of
+    // exactly 3.00 and duly printed "readable" over the one cell its own comment
+    // called degenerate.
+    // ⚠ BOTH directions. The composition is nonlinear in the two DENOMINATOR arms,
+    // so −1 always moves it further than +1, and the gap widens as counts shrink —
+    // exactly the thin-fixture regime this report warns about. Probing only +1
+    // while labelling the result "±1" understated the true sensitivity.
+    let worst_wobble = [false, true]
+        .into_iter()
+        .flat_map(|up| {
+            let bump = move |n: usize| if up { n + 1 } else { n.saturating_sub(1) };
+            [
+                (bump(o_base), o_pred, r_base, r_pred),
+                (o_base, bump(o_pred), r_base, r_pred),
+                (o_base, o_pred, bump(r_base), r_pred),
+                (o_base, o_pred, r_base, bump(r_pred)),
+            ]
+        })
+        .map(|(ob, op, rb, rp)| ((ratio(rb, rp) / ratio(ob, op)) - r_gain / o_gain).abs())
+        .filter(|d| d.is_finite())
+        .fold(0.0_f64, f64::max);
+    println!("║   resolution: ±1 iteration in any arm moves the composition by {worst_wobble:.3}");
+    let r_per_step = r_base as f64 / steps_total;
+    if per_step <= MIN_INFORMATIVE_ITERS_PER_STEP || r_per_step <= MIN_INFORMATIVE_ITERS_PER_STEP {
+        println!("║ ⚠⚠ THIN — baselines run {per_step:.2} (oracle) / {r_per_step:.2} (reduced)");
+        println!(
+            "║    iterations/step, at or below the {MIN_INFORMATIVE_ITERS_PER_STEP:.1} floor, so \
+             the GAIN MAGNITUDES are weak."
+        );
+        println!(
+            "║    ★ The COMPOSITION ratio can still be read where the two arms' counts match \
+             EXACTLY —"
+        );
+        println!(
+            "║      that is a structural agreement, not a magnitude — but weigh it against the \
+             resolution above."
+        );
+    } else {
+        println!(
+            "║ baselines {per_step:.2} (oracle) / {r_per_step:.2} (reduced) iters/step — \
+             both above the {MIN_INFORMATIVE_ITERS_PER_STEP:.1} floor."
+        );
+    }
     println!(
         "║ ★ COMPOSITION: reduced gain / oracle gain = {:.3}  (1.0 = composes cleanly)",
         r_gain / o_gain
@@ -514,37 +581,6 @@ fn measure(load_scale: f64, r_modes: usize) {
         100.0 * mean_floor
     );
     println!("║");
-    // ⚠ How well is the composition ratio actually RESOLVED? These are integer
-    // counts, so the honest statement is not "above an arbitrary floor" but "a
-    // one-iteration change in any arm moves the answer by this much". The first
-    // version of this check compared `per_step < 3.0` against a baseline of
-    // exactly 3.00 and duly printed "readable" over the one cell its own comment
-    // called degenerate.
-    let worst_wobble = [
-        (o_base + 1, o_pred, r_base, r_pred),
-        (o_base, o_pred + 1, r_base, r_pred),
-        (o_base, o_pred, r_base + 1, r_pred),
-        (o_base, o_pred, r_base, r_pred + 1),
-    ]
-    .into_iter()
-    .map(|(ob, op, rb, rp)| ((ratio(rb, rp) / ratio(ob, op)) - r_gain / o_gain).abs())
-    .fold(0.0_f64, f64::max);
-    println!("║   resolution: ±1 iteration in any arm moves the composition by {worst_wobble:.3}");
-    let r_per_step = r_base as f64 / steps_total;
-    if per_step <= MIN_INFORMATIVE_ITERS_PER_STEP || r_per_step <= MIN_INFORMATIVE_ITERS_PER_STEP {
-        println!(
-            "║ ⚠⚠ THIN — baselines run {per_step:.2} (oracle) / {r_per_step:.2} (reduced) \n\
-             ║    iterations/step, at or below the {MIN_INFORMATIVE_ITERS_PER_STEP:.1} floor. The \n\
-             ║    GAIN MAGNITUDES are weak here. ★ The COMPOSITION ratio can still be read when\n\
-             ║    the two arms' counts match exactly — that is a structural agreement, not a\n\
-             ║    magnitude — but weigh it against the resolution line above."
-        );
-    } else {
-        println!(
-            "║ baselines {per_step:.2} (oracle) / {r_per_step:.2} (reduced) iters/step — \
-             both above the {MIN_INFORMATIVE_ITERS_PER_STEP:.1} floor."
-        );
-    }
     println!("╚═\n");
 }
 
@@ -579,38 +615,9 @@ fn reduced_refuses_inertial_with_load_at_construction() {
     drop(ReducedNewtonSolver::new(&r.solver, &basis, &r.x_rest));
 }
 
-/// A small, fast rig for the CI-covered tests: same physics, a mesh small enough
-/// to train and solve in well under a second.
+/// A small, fast rig plus a POD basis fitted on it — the CI-covered tests' scene.
 fn small_basis_rig(guess: InitialGuess) -> (Rig, PodBasis) {
-    let field = MaterialField::uniform(MU, LAMBDA);
-    let mesh = HandBuiltTetMesh::cantilever_bilayer_beam(4, 4, 2, LX, LY, H, &field);
-    let n_dof = 3 * mesh.n_vertices();
-    let mut x_rest = vec![0.0; n_dof];
-    for (c, p) in x_rest.chunks_exact_mut(3).zip(mesh.positions()) {
-        c[0] = p.x;
-        c[1] = p.y;
-        c[2] = p.z;
-    }
-    let pins = pick_vertices_by_predicate(&mesh, |p: &Vec3| p.z.abs() < 1e-12);
-    let loaded: Vec<VertexId> =
-        pick_vertices_by_predicate(&mesh, |p: &Vec3| (p.z - H).abs() < 1e-12);
-    let bc = BoundaryConditions {
-        pinned_vertices: pins,
-        roller_vertices: Vec::new(),
-        loaded_vertices: loaded.iter().map(|&v| (v, LoadAxis::FullVector)).collect(),
-    };
-    let mut cfg = SolverConfig::skeleton();
-    cfg.dt = DT;
-    cfg.density = DENSITY;
-    cfg.max_newton_iter = NEWTON_CAP;
-    cfg.tol = 1.0e-6;
-    cfg.initial_guess = guess;
-    let r = Rig {
-        solver: CpuTet4NHSolver::new(Tet4, mesh, NullContact, cfg, bc),
-        x_rest,
-        loaded,
-        n_dof,
-    };
+    let r = rig_of(SMALL_N_LAT, SMALL_NZ, guess, DEFAULT_TOL);
     let fd = r.solver.free_dof_indices().to_vec();
     let mass = r.solver.mass_per_free_dof();
     let mut train = SnapshotSet::new(fd.len());
@@ -642,7 +649,11 @@ fn reduced_inertial_reaches_the_same_root_as_previous_state() {
     const SAME_ROOT_REL_TOL: f64 = 1.0e-6;
 
     let (base, basis) = small_basis_rig(InitialGuess::PreviousState);
-    let (pred, _) = small_basis_rig(InitialGuess::Inertial);
+    // ⚠ `rig_of`, NOT a second `small_basis_rig`: that would run 30 more
+    // full-order solves and a POD fit only to discard the basis — and worse, a
+    // training failure there would abort THIS test with "small rig trains", a
+    // message about a basis it does not use, instead of its own assertion.
+    let pred = rig_of(SMALL_N_LAT, SMALL_NZ, InitialGuess::Inertial, DEFAULT_TOL);
     let red_base = ReducedNewtonSolver::new(&base.solver, &basis, &base.x_rest);
     let red_pred = ReducedNewtonSolver::new(&pred.solver, &basis, &pred.x_rest);
 
@@ -707,37 +718,12 @@ fn reduced_inertial_reaches_the_same_root_as_previous_state() {
 fn reduced_inertial_produces_the_documented_first_iterate() {
     const HUGE_TOL: f64 = 1.0e30;
 
-    let build = |guess: InitialGuess| {
-        let (mut r, basis) = small_basis_rig(guess);
-        // Rebuild the solver with the enormous tolerance; everything else is the
-        // small rig's configuration unchanged.
-        let field = MaterialField::uniform(MU, LAMBDA);
-        let mesh = HandBuiltTetMesh::cantilever_bilayer_beam(4, 4, 2, LX, LY, H, &field);
-        let pins = pick_vertices_by_predicate(&mesh, |p: &Vec3| p.z.abs() < 1e-12);
-        let loaded: Vec<VertexId> =
-            pick_vertices_by_predicate(&mesh, |p: &Vec3| (p.z - H).abs() < 1e-12);
-        let mut cfg = SolverConfig::skeleton();
-        cfg.dt = DT;
-        cfg.density = DENSITY;
-        cfg.max_newton_iter = NEWTON_CAP;
-        cfg.tol = HUGE_TOL;
-        cfg.initial_guess = guess;
-        r.solver = CpuTet4NHSolver::new(
-            Tet4,
-            mesh,
-            NullContact,
-            cfg,
-            BoundaryConditions {
-                pinned_vertices: pins,
-                roller_vertices: Vec::new(),
-                loaded_vertices: loaded.iter().map(|&v| (v, LoadAxis::FullVector)).collect(),
-            },
-        );
-        (r, basis)
-    };
+    // The basis is trained at the ordinary tolerance; the SOLVERS run at the huge
+    // one so Newton converges at iteration 0 and `q` is the initial iterate.
+    let (_, basis) = small_basis_rig(InitialGuess::PreviousState);
+    let base = rig_of(SMALL_N_LAT, SMALL_NZ, InitialGuess::PreviousState, HUGE_TOL);
+    let pred = rig_of(SMALL_N_LAT, SMALL_NZ, InitialGuess::Inertial, HUGE_TOL);
 
-    let (base, basis) = build(InitialGuess::PreviousState);
-    let (pred, _) = build(InitialGuess::Inertial);
     let n = basis.n_modes();
     assert!(n >= 2, "need a couple of modes for this to say anything");
 
@@ -866,34 +852,7 @@ fn why_does_reduction_cost_iterations_under_load() {
     /// subspace; a per-cell basis would confound the trend with its own quality.
     const TRAIN_TOL: f64 = 1.0e-8;
 
-    let rig_at = |guess: InitialGuess, tol: f64| {
-        let mut r = rig(guess);
-        let field = MaterialField::uniform(MU, LAMBDA);
-        let mesh = HandBuiltTetMesh::cantilever_bilayer_beam(16, 16, 6, LX, LY, H, &field);
-        let pins = pick_vertices_by_predicate(&mesh, |p: &Vec3| p.z.abs() < 1e-12);
-        let loaded: Vec<VertexId> =
-            pick_vertices_by_predicate(&mesh, |p: &Vec3| (p.z - H).abs() < 1e-12);
-        let mut cfg = SolverConfig::skeleton();
-        cfg.dt = DT;
-        cfg.density = DENSITY;
-        cfg.max_newton_iter = NEWTON_CAP;
-        cfg.tol = tol;
-        cfg.initial_guess = guess;
-        r.solver = CpuTet4NHSolver::new(
-            Tet4,
-            mesh,
-            NullContact,
-            cfg,
-            BoundaryConditions {
-                pinned_vertices: pins,
-                roller_vertices: Vec::new(),
-                loaded_vertices: loaded.iter().map(|&v| (v, LoadAxis::FullVector)).collect(),
-            },
-        );
-        r
-    };
-
-    let train_rig = rig_at(InitialGuess::PreviousState, TRAIN_TOL);
+    let train_rig = rig_of(FULL_N_LAT, FULL_NZ, InitialGuess::PreviousState, TRAIN_TOL);
     let fd = train_rig.solver.free_dof_indices().to_vec();
     let mass = train_rig.solver.mass_per_free_dof();
     let mut train = SnapshotSet::new(fd.len());
@@ -918,18 +877,28 @@ fn why_does_reduction_cost_iterations_under_load() {
         "║ {:>8} {:>8} {:>9} {:>9} {:>12} {:>12}",
         "tol", "oracle", "reduced", "red/orc", "‖Φᵀr‖ conv", "‖r‖ conv"
     );
-    let mut ratios = Vec::new();
+    let mut ratios: Vec<(f64, f64, f64)> = Vec::new();
     for tol in TOLS {
-        let base = rig_at(InitialGuess::PreviousState, tol);
+        let base = rig_of(FULL_N_LAT, FULL_NZ, InitialGuess::PreviousState, tol);
         let red = ReducedNewtonSolver::new(&base.solver, &basis, &base.x_rest);
         let (mut o, mut ri) = (0usize, 0usize);
         let (mut pj, mut fl) = (0.0_f64, 0.0_f64);
+        // ⚠ Break on the FIRST failing arm. `measure` was fixed for exactly this
+        // last round and this sibling reintroduced it: last-write-wins lets a
+        // later arm's message overwrite an earlier one, so a `ValidityViolation`
+        // on the REDUCED arm at trajectory 900 gets reported as the oracle's
+        // `NewtonIterCap` at 902 — a fixture limit attributed to the wrong arm,
+        // in the wrong category. It also kept paying for 5 202-DOF solves in a
+        // cell whose result was already discarded.
         let mut ok: Option<String> = None;
-        for &k in &EVAL_IDS {
+        'traj: for &k in &EVAL_IDS {
             let t = sample_scaled(k, LOAD);
             match run_oracle(&base, t).1 {
                 ArmOutcome::Converged(n) => o += n,
-                other => ok = Some(describe_outcome("oracle", &other)),
+                other => {
+                    ok = Some(describe_outcome("oracle", &other));
+                    break 'traj;
+                }
             }
             match run_reduced_diag(&base, &red, t, basis.n_modes()) {
                 Ok(d) => {
@@ -937,7 +906,10 @@ fn why_does_reduction_cost_iterations_under_load() {
                     pj += d.proj;
                     fl += d.full;
                 }
-                Err(outcome) => ok = Some(describe_outcome("reduced", &outcome)),
+                Err(outcome) => {
+                    ok = Some(describe_outcome("reduced", &outcome));
+                    break 'traj;
+                }
             }
         }
         if let Some(why) = ok {
@@ -945,8 +917,16 @@ fn why_does_reduction_cost_iterations_under_load() {
             continue;
         }
         let n = EVAL_IDS.len() as f64;
+        if o == 0 {
+            // Same hazard `measure`'s `ratio` closure guards: `iter_count` is
+            // 0-based, so an arm converging at iteration 0 on every step totals
+            // zero. An `inf` here would flow into the min/max fold and the
+            // monotonicity test and produce a confident verdict from garbage.
+            println!("║ {tol:>8.0e}   cell dropped — oracle took 0 iterations; ratio undefined");
+            continue;
+        }
         let ratio = ri as f64 / o as f64;
-        ratios.push((tol, ratio));
+        ratios.push((tol, ratio, pj / n));
         println!(
             "║ {tol:>8.0e} {o:>8} {ri:>9} {ratio:>8.3}× {:>12.2e} {:>12.2e}",
             pj / n,
@@ -969,8 +949,11 @@ fn why_does_reduction_cost_iterations_under_load() {
             TOLS.len(),
         );
     } else {
-        let lo = ratios.iter().map(|&(_, r)| r).fold(f64::INFINITY, f64::min);
-        let hi = ratios.iter().map(|&(_, r)| r).fold(0.0_f64, f64::max);
+        let lo = ratios
+            .iter()
+            .map(|&(_, r, _)| r)
+            .fold(f64::INFINITY, f64::min);
+        let hi = ratios.iter().map(|&(_, r, _)| r).fold(0.0_f64, f64::max);
         let spread = hi / lo;
         // A floor predicts the ratio rising MONOTONICALLY as tol tightens. Scatter
         // with an interior extremum is the signature of quantization noise, and it
@@ -995,10 +978,37 @@ fn why_does_reduction_cost_iterations_under_load() {
             println!(
                 "║ ⇒ RATE, not a floor: no monotone growth in tol, so the reduced solve pays a \
                  roughly\n║   CONSTANT factor per digit. The Galerkin direction is simply worse \
-                 under load;\n║   it is not stalling against something it cannot represent.\n\
-                 ║   ★ Corroborated by ‖Φᵀr‖ at convergence tracking tol all the way down — a \
-                 floor\n║     would have pinned it."
+                 under load;\n║   it is not stalling against something it cannot represent."
             );
+            // ⚠ MEASURED, not asserted. An earlier draft printed this
+            // corroboration unconditionally without ever reading `pj` — a claim
+            // that could not fail for the reason it stated, which is the whole
+            // failure mode this file keeps warning about. A floor would PIN the
+            // converged ‖Φᵀr‖ instead of letting it follow tol down.
+            let tracks = ratios.iter().all(|&(tol, _, proj)| proj <= tol);
+            let proj_span = ratios.iter().map(|&(_, _, p)| p).fold(0.0_f64, f64::max)
+                / ratios
+                    .iter()
+                    .map(|&(_, _, p)| p)
+                    .fold(f64::INFINITY, f64::min);
+            if tracks && proj_span > 1.0e3 {
+                println!(
+                    "║   ★ CORROBORATED: converged ‖Φᵀr‖ stays under every tol and spans \
+                     {proj_span:.1e}×\n║     across the sweep — it follows tol down instead of \
+                     pinning, which is what a floor\n║     would have done."
+                );
+            } else {
+                println!(
+                    "║   ⚠ NOT corroborated: converged ‖Φᵀr‖ {} tol and spans only \
+                     {proj_span:.1e}×.\n║     The spread says RATE but the residual says \
+                     otherwise — do not read either alone.",
+                    if tracks {
+                        "tracks"
+                    } else {
+                        "does NOT stay under"
+                    }
+                );
+            }
         }
     }
     println!("╚═\n");
