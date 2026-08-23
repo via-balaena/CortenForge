@@ -89,8 +89,8 @@ pub struct ReducedStep {
 /// independent reasons:
 ///
 /// - **It has no free analogue here.** The reduced load term is
-///   `(ΦᵀMΦ)⁻¹Φᵀf_ext`, which is `Φᵀf_ext` only under [`Inner::Mass`]; under
-///   [`Inner::Euclidean`] it needs an `r×r` solve.
+///   `(ΦᵀMΦ)⁻¹Φᵀf_ext`, which is `Φᵀf_ext` only under [`Inner::Mass`](super::pod::Inner)
+///   and needs an `r×r` solve under `Inner::Euclidean`.
 /// - **It was KILLED on the evidence** (recon §2f): it dies at step 0 on contact
 ///   plus a body load, in both load directions, so it is not shippable in the
 ///   full-order path either until a selector gates it. Porting a killed variant
@@ -124,9 +124,11 @@ fn assert_supported_initial_guess(guess: InitialGuess) {
 ///
 /// Borrows the full solver rather than owning one, so it shares that solver's
 /// [`SolverConfig`](crate::SolverConfig) — including
-/// [`InitialGuess`](crate::InitialGuess), which this loop does NOT implement and
-/// therefore refuses at construction: [`Self::new`] panics unless the wrapped
-/// solver is configured with `InitialGuess::PreviousState`.
+/// [`InitialGuess`], which this loop **implements** for
+/// `PreviousState` and `Inertial`. `Inertial` reproduces the oracle's `x̂`
+/// exactly in reduced coordinates and needs no mass matrix.
+/// [`Self::new`] panics on `InertialWithLoad`, the one variant with no free
+/// reduced form.
 pub struct ReducedNewtonSolver<'a, E, Msh, C, M, const N: usize, const G: usize>
 where
     E: Element<N, G>,
@@ -317,9 +319,15 @@ where
         //
         //     x⁰ = x_rest + Φ(q_prev + Δt·q̇_prev) = x_prev + Δt·v_prev = x̂
         //
-        // — bit-for-bit the same full-order point the oracle starts from, for
-        // EITHER `Inner` variant. (`v_prev_full` above is `Φq̇_prev` by
-        // construction, which is what makes the second equality hold.)
+        // — the same full-order point the oracle starts from, for EITHER `Inner`
+        // variant. (`v_prev_full` above is `Φq̇_prev` by construction, which is
+        // what makes the second equality hold.)
+        //
+        // ⚠ Equal in exact arithmetic, IDENTICAL TO ROUNDING in f64 — not
+        // bit-for-bit. This path computes `x_rest + Φ·fma(Δt, q̇, q)` while the
+        // full path computes `fma(Δt, Φq̇, x_rest + Φq)`: same value, different
+        // association. Do not write a byte-identity gate against it; this crate
+        // has real bit-equality gates elsewhere and one here would flake.
         //
         // ⚠ `InertialWithLoad` has NO such free analogue: it wants
         // `(ΦᵀMΦ)⁻¹Φᵀf_ext`, which collapses to `Φᵀf_ext` only under
