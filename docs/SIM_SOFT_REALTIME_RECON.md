@@ -1,12 +1,15 @@
 # sim-soft Real-Time Path — Phase-1 Measurement + Recon (Phase E predecessor)
 
-**Status**: RECON 2026-08-10 (rev 2026-08-22), v2.0. Phase 1 (measure) COMPLETE — all four requested
+**Status**: RECON 2026-08-10 (rev 2026-08-23), v2.1. Phase 1 (measure) COMPLETE — all four requested
 measurements taken; §2 reports them. Phase 2 (this recon) proposes the MOR +
 hyper-reduction path with a staged ladder whose first rung is a kill-or-confirm.
-**No production code was written and no dependency was added.** The measurement
-instrumentation was temporary (implement → measure → revert, per
-`feedback_implement_measure_revert_pattern`) and is reverted; §9 lists exactly what
-was touched and how to reproduce.
+**No dependency was added.** Phase 1's instrumentation was temporary (implement →
+measure → revert, per `feedback_implement_measure_revert_pattern`) and is reverted;
+§9 lists exactly what was touched and how to reproduce. ⚠ **§2f (v2.1) is the one
+exception and is deliberate**: its `SolverConfig::initial_guess` is production code
+that SHIPPED, because unlike a timing probe the thing being measured is the feature.
+Its harness is permanent too — `tests/predictor_spike.rs`, `#[ignore]`d — so that
+result is re-runnable without re-applying anything.
 
 **MISSION.md**: AMENDED 2026-08-10 with the "On speed as a ceiling" clause — see §8b.
 The ladder is authorised in principle; R3's three conditions are now mission-level.
@@ -24,7 +27,10 @@ converged-Newton frame; a high-quality environment wants 20k–70k), f32 is
 brief did not anticipate and which changes the wgpu plan — and **contact costs
 0.02 % of a contact-active frame**, so contact is a *structural* problem for MOR, not
 a compute one. Two cheap full-order levers surfaced that must be measured before any
-reduced-order code is written.
+reduced-order code is written. **A third, added 2026-08-23: a Newton PREDICTOR buys
+1.97× on the representative workload and 4.70× on the hard one by cutting ITERATION
+COUNT — the factor no rung of the ladder touches — which drops what R3 must deliver
+from 12–16× to 6.1–8.1×, below its own 10× kill floor. → §2f**
 
 > ### ⚠ Carry these three caveats with every number in this document
 >
@@ -48,6 +54,10 @@ reduced-order code is written.
 >    understates it. (An earlier draft recorded this as an unexplained *oracle
 >    convergence failure*; that was a too-low iteration cap in the measuring harness,
 >    diagnosed in §3d.) → §3b.4, §3d
+>    ⚠ **Every iteration count in §2 is a `PreviousState`-start figure.** §2f cuts them
+>    2.0–4.7× with a predictor, and shows §2a's `37.0 iters/step` to be a
+>    transient-window mean (the 60-step mean is 18.9; the *peak* reproduces). Quote §2f
+>    alongside any iteration count taken from §2.
 >
 > Two further limits that bite anyone reusing these numbers: the ECSW speedup in §4b
 > rests on a **literature claim this recon did not measure** (R3's kill condition
@@ -161,7 +171,10 @@ one step per frame):
 | `dynamic_indentation` (IPC) | 18 750 | 6.5 | — | 8 |
 | block_sag (all sizes) | 1 944 – 70 644 | 0.5 – 0.6 | 0 | 2 |
 
-**The frame budget, stated plainly.** Take the IPC indentation's 6 Newton iterations
+**The frame budget, stated plainly.** ⚠ The whole of this paragraph assumes Newton
+starts from `x_prev`; **§2f halves the representative iteration count (6 → 3) with a
+predictor**, which moves every DOF figure below in the favourable direction. Read the
+two together. Take the IPC indentation's 6 Newton iterations
 as the honest representative count (the cantilever's 12–37 is a beam collapsing under
 self-weight; 6 is a normal contact-active soft-tissue step). At 60 Hz that allows
 16.7 / 6 = **2.78 ms per Newton iteration**. Interpolating the measured `n^1.51` low-end scaling gives:
@@ -442,6 +455,148 @@ frame is (a) hold Newton at ~6 iterations where the unconstrained stiff block ne
 what the factorization then has to chew. That reframing matters for §5: a
 hyper-reduction scheme that "makes contact cheap" is solving a problem that does not
 exist.
+
+### 2f. The OTHER factor — Newton ITERATION COUNT is a large, cheap lever
+
+**Measured 2026-08-23, on `main` @ `368a73a0`.** §2a decomposes a frame as
+`iterations × per-iteration cost` and every rung of the §7 ladder moves only the
+second factor — R1.1 measured the reduced solve taking *identical* iteration
+counts to the oracle, and substepping measured 1.4× worse (§3c). The first
+factor had never been attacked. It turns out to be the cheaper of the two.
+
+**What changed in the code**: `SolverConfig::initial_guess`, a three-way choice of
+where Newton starts. Backward Euler's residual is
+`r(x) = (m/Δt²)·(x − x̂) + f_int(x) − f_ext` with `x̂ = x_prev + Δt·v_prev`, so the
+choice is *which term the first iterate already satisfies*:
+
+| variant | `x⁰` | zeroes |
+|---|---|---|
+| `PreviousState` (default) | `x_prev` | nothing — the pre-existing behaviour |
+| `Inertial` | `x̂` | the inertial term, bit-exactly |
+| `InertialWithLoad` | `x̂ + Δt²·f_ext/m` | everything but `f_int(x⁰)` |
+
+`InertialWithLoad` is the exact backward-Euler answer for a DOF with no internal
+force (BE composes to `x̂ + Δt²a` with **no** `½` — it is not the continuous
+constant-acceleration kinematic), i.e. the incremental-potential literature's
+predictive position. This is an *addition*, never a substitute: the default is a
+no-op match arm, the pre-predictor path is bit-equal, and the guess changes the
+path Newton walks, never the root — every arm below converges to the same
+trajectory to between `6e-14` and `8e-12` relative.
+
+**Method.** Three arms stepped in **lockstep** from a common initial state (arm 0
+step k, arm 1 step k, …), never as block-ordered runs, so machine drift lands on
+all three equally. Step-by-step interleaving *inside* a trajectory is impossible:
+the arms reach the same root each step but not the same bits, so after step 1 they
+are three genuinely different trajectories. `dt = 1/60`, `tol` unchanged at
+`1e-10` (a predictor must not be allowed to buy iterations by converging less),
+Newton cap 120. Harness: `sim-soft/tests/predictor_spike.rs`, `#[ignore]`d — it
+carries the matrix and the pre-registered decision rule in its module docs.
+⚠ Same contended box as the rest of this document; the RATIOS are the
+trustworthy part.
+
+| fixture | free DOF | arm | ΣIters | vs base | p50 | p95 | max | ms p50 | ms max |
+|---|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| `block_sag` | 1 944 | `PreviousState` | 11 | 1.00× | 0 | 1 | 2 | 2.2 | 17.5 |
+| | | `Inertial` | 38 | **3.46× worse** | 1 | 2 | 2 | 8.8 | 16.2 |
+| | | `InertialWithLoad` | 360 | **32.7× worse** | 6 | 6 | 6 | 43.4 | 44.5 |
+| IPC indentation | 5 202 | `PreviousState` | 433 | 1.00× | 6 | 7 | 7 | 156.8 | 184.9 |
+| | | `Inertial` | 205 | **0.473×** | 2 | 5 | 6 | 58.6 | 157.5 |
+| | | `InertialWithLoad` | 205 | **0.473×** | 2 | 5 | 6 | 57.8 | 156.1 |
+| IPC indentation | 18 750 | `PreviousState` | 461 | 1.00× | 6 | 7 | 8 | 849.3 | 1 112.1 |
+| | | `Inertial` | 236 | **0.512×** | 3 | 6 | 6 | 431.5 | 855.6 |
+| | | `InertialWithLoad` | 236 | **0.512×** | 3 | 6 | 6 | 432.0 | 849.1 |
+| `cantilever 40×4` | 3 000 | `PreviousState` | 746 | 1.00× | 10 | 33 | 38 | 75.8 | 296.9 |
+| | | `Inertial` | 238 | **0.319×** | 4 | 5 | 10 | 31.7 | 76.7 |
+| | | `InertialWithLoad` | 248 | **0.332×** | 4 | 5 | **5** | 31.9 | **39.5** |
+| `cantilever 80×8` | 19 440 | `PreviousState` | 1 134 | 1.00× | 13 | 44 | 57 | 1 461.5 | 6 494.1 |
+| | | `Inertial` | 241 | **0.213×** | 4 | 5 | 12 | 458.2 | 1 371.2 |
+| | | `InertialWithLoad` | 278 | **0.245×** | 5 | 5 | **5** | 565.8 | **590.3** |
+
+Zero convergence failures on any subject fixture — no Armijo stall, no iteration
+cap, no validity violation, no non-finite state.
+
+**On the IPC pair being identical.** `Inertial` and `InertialWithLoad` agree to the
+digit on both IPC rows. That was predicted before the run, not observed after it:
+the indentation fixture is displacement-controlled with `gravity_z = 0` and an
+empty θ, so `f_ext ≡ 0` and the two variants are the same point by construction.
+It is the harness's own self-check, and it passed.
+
+#### The gain, and what it does to the ladder
+
+On the **representative** workload (IPC 18 750, the fixture closest to VR "grab
+and deform"): **1.95× fewer iterations, 1.97× less wall-clock per step.** On the
+hard end (`cantilever 80×8`): **4.70×**.
+
+The consequence for R3 is the reason this was measured before it. §7 records that
+with R1 at ~2×, R3 must deliver **12–16×** to reach a 60 Hz frame, while R3's own
+kill floor is 10× — so R3 could pass its gate and leave the budget missed. At
+1.97× from the predictor that requirement falls to **6.1–8.1×**:
+
+> **R3's 10× kill floor now EXCEEDS what the frame budget needs.** The gate and
+> the goal have swapped places — passing R3 now implies making the budget, which
+> is what a kill gate is supposed to mean.
+
+⚠ **The factors multiply only if the predictor is ported to the reduced solver.**
+R1's ~2× is a *per-iteration* saving and the predictor's is an *iteration-count*
+saving, so they compose — but `reduced::newton` starts from `q_prev` and has no
+predictor, so today a reduced solve would keep the full iteration count. That port
+is small and is the top follow-up. Until it is measured, the composed figure is a
+projection, not a result.
+
+#### ★ The variance finding — `InertialWithLoad` makes frame cost nearly CONSTANT
+
+§3c records that reduction preserves iteration counts exactly and therefore does
+nothing for the *spike*, while VR is a p99 problem: a scene averaging 8 ms that
+spikes to 40 is unusable. The predictor is the first thing measured here that
+attacks the spike directly. Ratio of `ms max` to `ms p50` on `cantilever 80×8`:
+
+| arm | ms p50 | ms max | max / p50 |
+|---|---:|---:|---:|
+| `PreviousState` | 1 461.5 | 6 494.1 | **4.44×** |
+| `Inertial` | 458.2 | 1 371.2 | 2.99× |
+| `InertialWithLoad` | 565.8 | 590.3 | **1.04×** |
+
+`InertialWithLoad` gives up 15 % on the median and buys an **11.0× cut in the
+tail**, turning a workload that spikes 4.4× above its median into one that is flat
+to within 4 %. On total iterations the two variants are near-tied (241 vs 278) and
+`Inertial` looks marginally better; on the quantity VR actually pays for they are
+not close. **This is a case where mean and tail rank the options oppositely** —
+cf. `feedback_metric_choice_can_invert_findings`.
+
+#### ⚠ `block_sag` got 32.7× WORSE, and that is the boundary of the technique
+
+The negative control was pre-registered as "must not move — if it moves, the
+harness is wrong". It moved, hard. The harness is not wrong; **the rule was
+mis-specified.** `block_sag` was chosen because it has no *upside* (it converges at
+iterate 0 already), and that was silently written down as though it also had no
+*downside*. Its downside is wide open.
+
+The result is real, not an artifact: all three arms converge to the same trajectory
+(`6e-9` relative), the damage is monotone in how far the guess is thrown, and the
+arithmetic is elementary — `Δt²g` at 60 Hz is **2.7 mm** of free fall per frame,
+while a stiff pinned 5 cm block actually sags micrometres. The predictor is a bet
+that a DOF's motion over one frame is **inertia-dominated**. It pays where the body
+genuinely moves ballistically between frames and loses badly where stiffness pins
+it, and the loss is largest for exactly the variant that is best elsewhere.
+
+⇒ **`InertialWithLoad` cannot be an unconditional default.** The obvious selector is
+also cheap: evaluate `‖r‖` at both candidate guesses and start from the smaller.
+One extra internal-force assembly is `asmF` = **0.92 ms at 19 440 free DOF against
+114 ms per Newton iteration — 0.8 %** (§2a), so the choice can be made per-step and
+per-scene rather than baked into a config. Unmeasured; the natural next spike.
+
+#### Two smaller things worth recording
+
+- **This document's `37.0 iters/step` for `cantilever 80×8` is a transient-window
+  figure.** The baseline arm above reproduces the *peak* almost exactly (57 here vs
+  56 in §2a/§3b.4) but its mean over 60 steps is **18.9**, because iteration count
+  decays sharply once the beam stops falling from rest. §2a's iteration table does
+  not state its step count and the two are consistent if it covered ~10 steps. Any
+  argument resting on "37" is resting on the first fraction of a second.
+- **The predictor helps the median far more than the tail on IPC** (p50 6→3, max
+  8→6), and the opposite on the cantilever. Contact appears to set an iteration
+  floor the predictor cannot get under — consistent with §2e's finding that contact
+  is a *structural* cost that holds Newton at ~6 iterations.
 
 ---
 
@@ -897,9 +1052,10 @@ R3's gate must fire online rather than in a docstring.
 
 ## 9. Reproduction, and what was reverted
 
-**No production code was written. No dependency was added.** Four temporary
-instrumentation edits and three temporary test files existed during the session and
-are reverted. Verified after the revert: `git status` shows only this doc as
+**No production code was written for Phase 1. No dependency was added.** Four
+temporary instrumentation edits and three temporary test files existed during the
+session and are reverted. (⚠ §2f, added in v2.1, is a later measurement that did NOT
+follow this pattern — see the header. Nothing in *this* section changed.) Verified after the revert: `git status` shows only this doc as
 untracked, and `cargo xtask grade sim-soft` returns **A on all seven automated
 criteria** (Documentation, Clippy, Safety, Dependencies, Layer Integrity, WASM Compat;
 Coverage is `—` under the crate's recorded `integration-only` profile, and API Design
@@ -987,6 +1143,20 @@ small, separate PR and is not proposed here.
 
 ## 12. Version history
 
+- **v2.1 (2026-08-23)** — **§2f added: the iteration-count factor is a lever, and a
+  large one.** `SolverConfig::initial_guess` (a Newton predictor; default bit-equal)
+  measured across five fixture/size pairs, three arms stepped in lockstep. 1.95× fewer
+  iterations on the representative IPC workload, 4.70× on `cantilever 80×8`, zero
+  convergence failures, trajectories identical to 6e-14…8e-12. **R3's required gain
+  falls from 12–16× to 6.1–8.1×, i.e. below its own 10× kill floor** — the gate now
+  implies the goal instead of undershooting it. `InertialWithLoad` additionally
+  collapses the frame-time tail (`ms max / ms p50` 4.44× → **1.04×**), the first thing
+  measured here that attacks VARIANCE rather than the mean. ⚠ Two limits recorded with
+  it: the factors compose only once the predictor is ported to `reduced::newton`
+  (unmeasured), and the `block_sag` control got **32.7× worse**, which bounds the
+  technique — the predictor is a bet that motion over a frame is inertia-dominated,
+  and a stiff pinned block is where that bet is wrong by ~1000×. The header verdict,
+  caveat 3 and §2a's frame-budget paragraph were re-pointed at §2f.
 - **v2.0 (2026-08-22)** — **§2b's concurrency reading corrected, and it was a modelling
   error rather than a bad measurement.** `process max RSS` is a peak; 84 % of the 919 MiB
   at 70 644 free DOF is a transient numeric factor that `CpuNewtonSolver` does not retain,
