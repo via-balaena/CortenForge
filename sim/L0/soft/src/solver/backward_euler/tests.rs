@@ -43,7 +43,7 @@ use crate::mesh::{HandBuiltTetMesh, Mesh, SingleTetMesh, Tet10Mesh, TetId, Verte
 use crate::readout::{BoundaryConditions, LoadAxis};
 use crate::solver::SolverFailure;
 use crate::solver::lm::LmState;
-use crate::solver::{CpuNewtonSolver, LmConfig, Solver, SolverConfig};
+use crate::solver::{CpuNewtonSolver, InitialGuess, LmConfig, Solver, SolverConfig};
 use crate::{
     CpuTet10NHSolver, SkeletonSolver,
     element::{TET10_EDGE_NODES, Tet4, Tet10},
@@ -849,6 +849,193 @@ fn gated_lm_enabled_happy_path_converges_same_as_pre_f3() {
         "outer lm_state.lambda must stay 0.0 throughout (no escalation fired \
          on happy-path), got {lm_lambda}"
     );
+}
+
+// --- Newton initial guess (`InitialGuess`) ---
+
+/// Rest coordinates of the 1-tet skeleton scene, in the solver's
+/// vertex-major xyz-inner DOF layout. Vertices 0–2 are pinned; vertex 3
+/// (DOFs 9, 10, 11) is the only free one.
+const SKELETON_REST: [f64; 12] = [
+    0.0, 0.0, 0.0, //
+    0.1, 0.0, 0.0, //
+    0.0, 0.1, 0.0, //
+    0.0, 0.0, 0.1,
+];
+
+/// Gravity for the `InitialGuess` scene. Nonzero on purpose — see
+/// [`initial_guess_variants_produce_the_documented_first_iterate`].
+const GUESS_GRAVITY: f64 = -9.81;
+
+/// The 1-tet scene the two `InitialGuess` tests share: vertices 0–2 pinned,
+/// vertex 3 loaded along `+ẑ` by a single θ scalar.
+fn initial_guess_solver(guess: InitialGuess, tol: f64) -> SkeletonSolver {
+    let mut cfg = SolverConfig::skeleton();
+    cfg.initial_guess = guess;
+    cfg.tol = tol;
+    // Nonzero so `f_ext` reaches the PINNED DOFs as well as the loaded one —
+    // without it, `InertialWithLoad` has nothing to move a constrained DOF
+    // with and the constrained-DOF assertion goes vacuous.
+    cfg.gravity_z = GUESS_GRAVITY;
+    CpuNewtonSolver::new(
+        Tet4,
+        SingleTetMesh::new(&MaterialField::uniform(1.0e5, 4.0e5)),
+        NullContact,
+        cfg,
+        BoundaryConditions {
+            pinned_vertices: vec![0, 1, 2],
+            roller_vertices: Vec::new(),
+            loaded_vertices: vec![(3, LoadAxis::AxisZ)],
+        },
+    )
+}
+
+/// Each [`InitialGuess`] variant produces EXACTLY the `x⁰` its docs promise,
+/// and none of them moves a constrained DOF.
+///
+/// The trick that makes this checkable: `tol` is set enormous, so Newton's
+/// convergence test fires at iteration 0 and `x_final` **is** the initial
+/// iterate. That turns an internal intermediate into an observable and lets
+/// the assertions pin the ALGEBRA itself rather than some downstream proxy
+/// for it — a wrong sign, a missing `dt²`, or a loop over all DOFs instead of
+/// the free ones each fail here, individually and by name.
+///
+/// ⚠ **Both adversarial inputs here are load-bearing, and the first draft had
+/// neither.** `v_prev` is nonzero on the PINNED DOFs and `gravity_z` is nonzero
+/// (so `f_ext` is nonzero on the pinned DOFs too). With pinned velocities left
+/// at zero — the obvious-looking choice — `x + dt·0 == x` and the
+/// "constrained DOFs are untouched" assertion cannot fail: a mutation looping
+/// over all `n_dof` instead of `free_dof_indices` passed the first version of
+/// this test. Feeding a velocity the solver is contractually obliged to IGNORE
+/// is what makes the assertion mean anything.
+///
+/// `f_ext` is known exactly on this scene: `assemble_external_force`'s stage-1
+/// broadcast puts θ on the loaded vertex's `+ẑ` DOF, and the gravity scatter
+/// then adds `m_v·g` to every vertex's `+ẑ` DOF — so `f_ext[11] = θ + m₁₁·g`
+/// and `f_ext[3v+2] = m·g` elsewhere.
+#[test]
+fn initial_guess_variants_produce_the_documented_first_iterate() {
+    /// Far above any residual this scene can produce, so iteration 0 converges.
+    const HUGE_TOL: f64 = 1.0e30;
+    const DT: f64 = 1.0e-2;
+    const THETA: f64 = 1.0;
+    /// Nonzero on EVERY DOF, pinned ones included — see the doc comment.
+    const V_ALL: [f64; 12] = [
+        0.011, -0.013, 0.017, //
+        -0.019, 0.023, -0.029, //
+        0.031, -0.037, 0.041, //
+        0.030, -0.050, 0.070,
+    ];
+
+    let x_prev = Tensor::from_slice(&SKELETON_REST, &[12]);
+    let v_prev = Tensor::from_slice(&V_ALL, &[12]);
+    let theta = Tensor::from_slice(&[THETA], &[1]);
+
+    // Mass is read off the solver so the expectation tracks the lumped-mass
+    // rule rather than restating it.
+    let probe = initial_guess_solver(InitialGuess::PreviousState, HUGE_TOL);
+    let mass_z = probe.mass_per_dof[11];
+    assert!(mass_z > 0.0, "free DOF 11 must carry positive lumped mass");
+    let f_ext_11 = mass_z.mul_add(GUESS_GRAVITY, THETA);
+
+    let mut expected = [
+        // PreviousState: x_prev, untouched.
+        SKELETON_REST,
+        // Inertial: x_prev + dt·v_prev on the free DOFs only.
+        SKELETON_REST,
+        // InertialWithLoad: additionally dt²·f_ext/m, which is nonzero on
+        // DOF 11 alone.
+        SKELETON_REST,
+    ];
+    for k in 9..12 {
+        expected[1][k] = DT.mul_add(V_ALL[k], SKELETON_REST[k]);
+        expected[2][k] = DT.mul_add(V_ALL[k], SKELETON_REST[k]);
+    }
+    let dt_sq = DT.powi(2);
+    expected[2][11] += dt_sq * (f_ext_11 / mass_z);
+
+    for (variant, want) in [
+        InitialGuess::PreviousState,
+        InitialGuess::Inertial,
+        InitialGuess::InertialWithLoad,
+    ]
+    .into_iter()
+    .zip(expected)
+    {
+        let solver = initial_guess_solver(variant, HUGE_TOL);
+        let (step, _) = solver
+            .try_solve_impl(&x_prev, &v_prev, &theta, DT)
+            .expect("a tol of 1e30 must converge at iteration 0");
+        assert_eq!(
+            step.iter_count, 0,
+            "{variant:?}: the huge-tol scene must converge at iteration 0 so \
+             x_final is the initial iterate; got iter_count {}",
+            step.iter_count,
+        );
+        assert_eq!(
+            step.x_final,
+            want.to_vec(),
+            "{variant:?}: initial iterate does not match the documented formula",
+        );
+        assert_eq!(
+            step.x_final[0..9],
+            SKELETON_REST[0..9],
+            "{variant:?}: a CONSTRAINED DOF moved — the extrapolation must be \
+             restricted to free_dof_indices, or a pinned DOF walks off its \
+             prescribed position permanently (Newton never updates it back)",
+        );
+    }
+}
+
+/// The guess changes the PATH Newton walks, never the root it walks to.
+///
+/// All three variants solve the same `r(x) = 0`, so at a real tolerance they
+/// must land on the same state. This is the property the whole knob rests on:
+/// if it failed, `InitialGuess` would be a physics knob rather than a cost
+/// knob, and no amount of iteration-count saving would be worth having.
+#[test]
+fn initial_guess_variants_converge_to_the_same_root() {
+    const DT: f64 = 1.0e-2;
+    const THETA: f64 = 1.0;
+    /// Five digits below the `1e-10` residual tolerance's reach on this scene —
+    /// loose enough not to pin bits, tight enough that a genuinely different
+    /// root could not slip through.
+    const SAME_ROOT_REL_TOL: f64 = 1.0e-8;
+
+    let v = [0.03_f64, -0.05, 0.07];
+    let mut v_all = [0.0_f64; 12];
+    v_all[9..12].copy_from_slice(&v);
+
+    let x_prev = Tensor::from_slice(&SKELETON_REST, &[12]);
+    let v_prev = Tensor::from_slice(&v_all, &[12]);
+    let theta = Tensor::from_slice(&[THETA], &[1]);
+
+    let solve = |guess: InitialGuess| {
+        let solver = initial_guess_solver(guess, SolverConfig::skeleton().tol);
+        solver
+            .try_solve_impl(&x_prev, &v_prev, &theta, DT)
+            .expect("every initial guess must converge on the skeleton scene")
+            .0
+            .x_final
+    };
+
+    let base = solve(InitialGuess::PreviousState);
+    let base_norm = base.iter().map(|b| b * b).sum::<f64>().sqrt();
+    for variant in [InitialGuess::Inertial, InitialGuess::InertialWithLoad] {
+        let got = solve(variant);
+        let diff = got
+            .iter()
+            .zip(base.iter())
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum::<f64>()
+            .sqrt();
+        assert!(
+            diff / base_norm < SAME_ROOT_REL_TOL,
+            "{variant:?} converged to a DIFFERENT root than PreviousState: \
+             relative separation {:.3e} exceeds {SAME_ROOT_REL_TOL:.0e}",
+            diff / base_norm,
+        );
+    }
 }
 
 // --- Rung 6: nodal reaction-force readout (`nodal_reaction_forces`) ---

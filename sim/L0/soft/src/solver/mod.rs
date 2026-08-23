@@ -21,7 +21,7 @@ pub mod lm;
 
 pub(crate) use backward_euler::FactoredFreeTangent;
 pub use backward_euler::{
-    CpuNewtonSolver, FrictionReactionGradients, FrictionVertexForce, SolverConfig,
+    CpuNewtonSolver, FrictionReactionGradients, FrictionVertexForce, InitialGuess, SolverConfig,
 };
 pub use lm::LmConfig;
 // `SolverFailure` is re-exported from this module's own definition

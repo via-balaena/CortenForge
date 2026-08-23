@@ -69,7 +69,7 @@ pub mod reduced;
 mod sensitivities;
 mod trait_impl;
 
-pub use config::{FrictionReactionGradients, FrictionVertexForce, SolverConfig};
+pub use config::{FrictionReactionGradients, FrictionVertexForce, InitialGuess, SolverConfig};
 pub(crate) use factor::FactoredFreeTangent;
 
 /// Per-element **single-point** reference geometry (Phase 2 commit 4a).

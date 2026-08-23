@@ -12,11 +12,11 @@ use crate::mesh::{Mesh, TetId};
 use crate::solver::lm::LmState;
 use crate::solver::{CpuTape, NewtonStep, SolverFailure};
 
-use super::CpuNewtonSolver;
 use super::helpers::{
     armijo_stall_panic_message, deformation_gradient, element_node_ids, extract_element_dof_values,
     residual_into,
 };
+use super::{CpuNewtonSolver, InitialGuess};
 
 /// Armijo sufficient-decrease constant (scope §5 R-1).
 const ARMIJO_C1: f64 = 1e-4;
@@ -657,6 +657,44 @@ where
         }
     }
 
+    /// Move the initial iterate off `x_prev` per
+    /// [`SolverConfig::initial_guess`](super::SolverConfig::initial_guess).
+    ///
+    /// `x_curr` enters as a copy of `x_prev` and leaves as Newton's `x⁰`.
+    /// Only FREE DOFs move. A constrained DOF carries its prescribed
+    /// position in `x_prev` and is never updated by the Newton solve, so
+    /// extrapolating one would walk it off its constraint permanently rather
+    /// than merely guess badly — and the free-DOF restriction is also what
+    /// makes [`InitialGuess::InertialWithLoad`]'s division by mass total (see
+    /// that variant's docs for the auto-pin invariant behind it).
+    ///
+    /// A no-op under the default [`InitialGuess::PreviousState`], which is
+    /// what keeps the pre-predictor path bit-equal.
+    fn apply_initial_guess(&self, x_curr: &mut [f64], v_prev: &[f64], f_ext: &[f64], dt: f64) {
+        match self.config.initial_guess {
+            InitialGuess::PreviousState => {}
+            InitialGuess::Inertial => {
+                for &i in &self.free_dof_indices {
+                    // Same fused op as `helpers::residual_into`'s `x_hat`, so
+                    // the inertial term cancels to exactly zero at `x⁰`.
+                    x_curr[i] = dt.mul_add(v_prev[i], x_curr[i]);
+                }
+            }
+            InitialGuess::InertialWithLoad => {
+                let dt2 = dt * dt;
+                for &i in &self.free_dof_indices {
+                    let m = self.mass_per_dof[i];
+                    debug_assert!(
+                        m > 0.0,
+                        "free DOF {i} has non-positive lumped mass {m} — an unreferenced \
+                         vertex should have been auto-pinned at construction",
+                    );
+                    x_curr[i] = dt.mul_add(v_prev[i], x_curr[i]) + dt2 * (f_ext[i] / m);
+                }
+            }
+        }
+    }
+
     /// Graceful-failure counterpart to [`Self::solve_impl`] (F3.3 per
     /// `docs/F3_LM_REGULARIZATION_SPEC.md` §2.5). Same Newton loop,
     /// but returns `Result<(NewtonStep, f64), SolverFailure>` instead
@@ -720,10 +758,14 @@ where
              Tet10 analog (see fbar.rs)."
         );
 
-        let mut x_curr: Vec<f64> = x_prev.as_slice().to_vec();
         let x_prev_vec: Vec<f64> = x_prev.as_slice().to_vec();
         let v_prev_vec: Vec<f64> = v_prev.as_slice().to_vec();
 
+        // Assembled BEFORE the initial iterate because
+        // `InitialGuess::InertialWithLoad` reads it. Safe to hoist: it reads
+        // `theta`, the boundary conditions, and the construction-time lumped
+        // mass — never `x` — so the buffer it produces is identical either
+        // side of the move.
         let mut f_ext = vec![0.0; self.n_dof];
         self.assemble_external_force(theta, &mut f_ext);
 
@@ -734,7 +776,19 @@ where
         // co-design caller skips the design); `solve_impl`/`step`
         // re-panic the verbatim Decision Q message (fail-closed
         // contract unchanged).
-        self.check_validity_at_step_start(&x_curr)?;
+        //
+        // Checked on `x_prev` — the STATE this step warm-starts from — and
+        // deliberately not on the initial iterate, which under a non-default
+        // [`InitialGuess`](super::InitialGuess) is a different point. An
+        // iterate is not a state: Newton's later iterates are not checked
+        // either, and gating one would fail-close a step whose converged
+        // answer is perfectly valid. Bit-equal under the default guess, where
+        // the two coincide. The reduced solver already reads it this way
+        // (`reduced::newton` checks `x_prev` against a `q_prev` iterate).
+        self.check_validity_at_step_start(&x_prev_vec)?;
+
+        let mut x_curr: Vec<f64> = x_prev_vec.clone();
+        self.apply_initial_guess(&mut x_curr, &v_prev_vec, &f_ext, dt);
 
         let mut f_int = vec![0.0; self.n_dof];
         let mut r_full = vec![0.0; self.n_dof];

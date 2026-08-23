@@ -5,6 +5,60 @@ use crate::Vec3;
 use crate::mesh::VertexId;
 use crate::solver::lm::LmConfig;
 
+/// Where Newton starts each step — the initial iterate `x⁰` handed to
+/// [`CpuNewtonSolver`](super::CpuNewtonSolver)'s outer loop.
+///
+/// Backward Euler's free-DOF residual is
+///
+/// ```text
+///     r(x) = (m/Δt²)·(x − x̂) + f_int(x) − f_ext,     x̂ = x_prev + Δt·v_prev
+/// ```
+///
+/// so the choice here is *which term the first iterate already satisfies*.
+/// It changes the PATH Newton walks, never the root it walks to: every
+/// variant converges to the same `‖r‖ < tol` state, so this is a cost knob,
+/// not a physics knob.
+///
+/// ⚠ **It is not free of risk.** A guess further from the root can land
+/// outside the convergence basin, cost *more* iterations, or — under an
+/// [`IpcRigidContact`](crate::IpcRigidContact) log barrier — overshoot into
+/// penetration, where the barrier energy is infinite. Newton's intermediate
+/// iterates are not validity-checked — only the step-start state and the
+/// converged state are (Phase 4 Decision Q's two boundaries) — so an inverted
+/// first iterate surfaces as a stall or a non-finite residual rather than a
+/// clean [`SolverFailure::ValidityViolation`](crate::SolverFailure).
+/// Measure per fixture before switching.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InitialGuess {
+    /// `x⁰ = x_prev` — the previous step's converged position. The default,
+    /// and the only variant that leaves the whole residual to Newton.
+    #[default]
+    PreviousState,
+    /// `x⁰ = x̂ = x_prev + Δt·v_prev` — constant-velocity extrapolation.
+    ///
+    /// Zeroes the inertial term `(m/Δt²)·(x − x̂)` exactly: the expression is
+    /// the same fused `dt.mul_add(v_prev[i], x_prev[i])` the residual itself
+    /// uses, so the cancellation is bit-exact rather than merely close.
+    /// Leaves `f_int(x⁰) − f_ext`.
+    Inertial,
+    /// `x⁰ = x̂ + Δt²·f_ext/m` — [`Self::Inertial`] plus the displacement the
+    /// external load alone would produce.
+    ///
+    /// This is the **exact backward-Euler answer for a DOF with no internal
+    /// force**, not the continuous constant-acceleration kinematic (which
+    /// would carry a `½`): BE's own `x = x_prev + Δt·v`, `v = v_prev + Δt·a`
+    /// composes to `x̂ + Δt²a` with no halving. It therefore zeroes every
+    /// residual term except `f_int(x⁰)`, and is the "predictive position" the
+    /// incremental-potential contact literature starts its solves from.
+    ///
+    /// The division by `m` is safe on every DOF this touches: only FREE DOFs
+    /// are moved, and an unreferenced vertex — the sole source of a zero
+    /// lumped mass — is auto-pinned at construction (see `construct`'s
+    /// `effective_pinned` walk, and the same invariant cited by
+    /// `assemble_external_force`'s gravity scatter).
+    InertialWithLoad,
+}
+
 /// Solver configuration — integration parameters the skeleton scene
 /// (spec §2) consumes. `skeleton()` returns the spec-§2 defaults.
 #[derive(Clone, Copy, Debug)]
@@ -83,6 +137,15 @@ pub struct SolverConfig {
     /// wires the coupling into the adjoint. (Mirrors the `friction_mu`
     /// forward-only-in-PR1 contract above.)
     pub fbar: bool,
+    /// Where Newton starts each step. Default [`InitialGuess::PreviousState`]
+    /// = start from `x_prev`, **bit-equal** to the pre-predictor path (the
+    /// `PreviousState` arm of `apply_initial_guess` is a no-op, the same
+    /// short-circuit shape as `gravity_z = 0.0` and `fbar = false`).
+    ///
+    /// The non-default variants trade a cheaper Newton path for a first
+    /// iterate that may sit outside the convergence basin — see
+    /// [`InitialGuess`] for the risk and for what each variant zeroes.
+    pub initial_guess: InitialGuess,
 }
 
 impl SolverConfig {
@@ -93,6 +156,8 @@ impl SolverConfig {
     /// drop-and-rest fixture opts in by mutating the field on a
     /// constructed config (mirrors the Hertzian and compressive-block
     /// fixtures' `STATIC_DT` bumping pattern).
+    /// `initial_guess = PreviousState` — Newton starts from `x_prev`, the
+    /// pre-predictor behavior; a caller opts into extrapolation the same way.
     #[must_use]
     pub const fn skeleton() -> Self {
         Self {
@@ -106,6 +171,7 @@ impl SolverConfig {
             friction_mu: 0.0,
             friction_eps_v: 0.0,
             fbar: false,
+            initial_guess: InitialGuess::PreviousState,
         }
     }
 }
