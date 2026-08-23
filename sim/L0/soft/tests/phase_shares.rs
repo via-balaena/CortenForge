@@ -76,6 +76,16 @@ struct Measured {
 }
 
 fn report(m: &Measured, published: Option<[f64; 5]>) {
+    // Without this, `snapshot()` would still hold the PREVIOUS fixture's counters
+    // (reset never fired) and every per-step figure would divide by zero — a
+    // plausible-looking table attributed to the wrong fixture.
+    assert!(
+        m.steps > 0,
+        "{}: zero measured steps — the fixture produced no more than WARMUP_STEPS \
+         ({WARMUP_STEPS}), so the timing slots were never reset and hold the \
+         previous fixture's data",
+        m.label,
+    );
     println!(
         "\n╔═ {} — {} free DOF, {} measured steps",
         m.label, m.free_dof, m.steps
@@ -90,25 +100,31 @@ fn report(m: &Measured, published: Option<[f64; 5]>) {
         "║ {:<16} {:>10} {:>9} {:>11} {:>9}",
         "phase", "ms total", "ms/step", "share", "calls"
     );
+    // ⚠ Shares of WALL step time, matching §2d's stated denominator ("phase
+    // shares of total step time"). `Phases::share` divides by instrumented work
+    // instead, which sums to 100 % BY CONSTRUCTION and is therefore a different
+    // quantity from the rows in that table — subtracting one from the other, as
+    // an R0-credit derivation does, silently compares two denominators.
     for p in Phase::ALL {
         println!(
             "║ {:<16} {:>10.2} {:>9.3} {:>10.1} % {:>9}",
             p.label(),
             m.phases.millis(p),
             m.phases.millis(p) / m.steps as f64,
-            100.0 * m.phases.share(p),
+            100.0 * m.phases.millis(p) / m.total_ms,
             m.phases.calls(p),
         );
     }
     println!(
-        "║ (contact is NESTED in asm force; the other four are disjoint and sum to \
-         {:.1} %)",
+        "║ instrumented / wall = {:.1} % — the remainder is residual evaluation, line \
+         search and allocation",
         100.0
             * Phase::ALL
                 .iter()
                 .filter(|p| !matches!(p, Phase::Contact))
-                .map(|p| m.phases.share(*p))
+                .map(|p| m.phases.millis(*p))
                 .sum::<f64>()
+            / m.total_ms
     );
     if let Some(pub_row) = published {
         println!("║");
@@ -132,6 +148,25 @@ fn report(m: &Measured, published: Option<[f64; 5]>) {
             "║ ⚠ If these disagree materially, the INSTRUMENT is suspect and nothing \
              below it can be read."
         );
+        // ★ ASSERTED, not merely printed. An earlier version only printed these
+        // ratios, so a run where the instrument was 3× wrong on the known-good
+        // row still exited 0 and the doc quoted the printout as validation — a
+        // control that cannot fail is not a control.
+        for (p, want) in Phase::ALL.iter().zip(pub_row) {
+            if want <= 0.0 {
+                continue;
+            }
+            let got = 100.0 * m.phases.millis(*p) / m.total_ms;
+            let ratio = got / want;
+            assert!(
+                (0.80..=1.25).contains(&ratio),
+                "POSITIVE CONTROL FAILED on {}: published {want:.1} %, measured \
+                 {got:.1} % ({ratio:.2}×). The instrument does not reproduce a row \
+                 that is already post-R0, so nothing it reports elsewhere can be \
+                 read.",
+                p.label(),
+            );
+        }
     }
     println!("╚═\n");
 }

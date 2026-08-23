@@ -585,6 +585,7 @@ where
         // f_int gradient scatter in `assemble_global_int_force`).
         // `NullContact` returns an empty contributions Vec → empty
         // for-loops → acc unchanged → bit-equal Hessian.
+        let _tc = crate::profile::Timer::start(crate::profile::Phase::Contact);
         let positions = slice_to_vec3s(x_curr);
         let pairs = self.contact.active_pairs(&self.mesh, &positions);
         for pair in &pairs {

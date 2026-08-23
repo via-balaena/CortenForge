@@ -9,11 +9,12 @@
 //! what R3's whole premise rests on. It was produced by temporary scratch edits
 //! that were then reverted (§9), which has cost twice:
 //!
-//! - **Its two IPC contact rows are still `pre-R0`** and have never been
-//!   re-measured, so R0's credit on the fixture that matters is INFERRED from an
-//!   Amdahl bound rather than measured — and that inference is the single input
-//!   deciding whether R3 must find 5.8–8.2× or 6.5–10.1×, i.e. whether it can
-//!   clear its own 10× kill floor.
+//! - **Its two IPC contact rows were still `pre-R0`** and had never been
+//!   re-measured. ⚠ These timers re-measure the SHARES, and that is all they do.
+//!   Do NOT difference shares across two sessions to recover a whole-step credit:
+//!   §2d finding 4 tried it and was wrong by 34 %, because the premise "the other
+//!   phases' absolute cost is unchanged" does not hold across two instruments.
+//!   A whole-step credit is a ratio of wall times — see `tests/r0_ab.rs`.
 //! - Re-deriving anything means re-applying patches from a prose description,
 //!   which is exactly how a measurement stops being reproducible.
 //!
@@ -37,6 +38,13 @@
 //! so a phase's wall time spans its parallel region rather than summing per-core
 //! work; the shares are therefore comparable to each other and to §2d, but they
 //! are not CPU-time.
+//!
+//! ⚠ **FULL-ORDER PATH ONLY.** These five slots cover
+//! `solver::backward_euler`'s hot path. The REDUCED solver
+//! (`backward_euler::reduced`) is uninstrumented — its `project_tangent` and its
+//! dense `r×r` factorization fall into no slot — so a reduced run's
+//! instrumented-vs-wall figure will be far below 100 % and its shares mean
+//! nothing. Instrumenting R1's path is a separate job and is not done here.
 //!
 //! ## Use
 //!
@@ -69,8 +77,15 @@ pub enum Phase {
     TriangularSolve,
     /// Contact: active-pair search plus gradient scatter.
     ///
-    /// ⚠ **NESTED inside [`Self::AssembleForce`]**, not disjoint from it — the
-    /// contact block lives in `assemble_global_int_force`. It is excluded from
+    /// ⚠ **NESTED inside BOTH [`Self::AssembleForce`] and
+    /// [`Self::AssembleTangent`]** — contact does gradient work in
+    /// `assemble_global_int_force` and Hessian work (with its own
+    /// `active_pairs` search) in `assemble_free_hessian_triplets`. Both are
+    /// booked here. ⚠ An earlier version timed only the force side, which
+    /// understated contact AND silently folded the contact Hessian into
+    /// `AssembleTangent` — enough to break a cross-session comparison of that
+    /// share on a contact fixture, while leaving contact-free fixtures correct.
+    /// It is excluded from
     /// [`Phases::total_nanos`] so the four disjoint slots still sum correctly,
     /// and [`Phases::share`] reports it as a fraction of that same total, i.e.
     /// "of which contact" rather than "plus contact". §2d's column reads the
