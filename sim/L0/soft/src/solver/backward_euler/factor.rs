@@ -181,6 +181,7 @@ impl FactoredFreeTangent {
     /// correction. The forward Newton step and Woodbury `Z = A_sym⁻¹ U` build both use
     /// this (the forward Hessian is the frozen-lag symmetric tangent).
     pub(crate) fn solve_base_in_place(&self, rhs: &mut [f64]) {
+        let _t = crate::profile::Timer::start(crate::profile::Phase::TriangularSolve);
         let n = rhs.len();
         let mat = MatMut::from_column_major_slice_mut(rhs, n, 1);
         self.inner.solve_in_place_with_conj(Conj::No, mat);
@@ -292,6 +293,7 @@ where
         lm_state: &mut LmState,
         context: &str,
     ) -> FactoredFreeTangent {
+        let _t = crate::profile::Timer::start(crate::profile::Phase::NumericFactor);
         // Snapshot max_diag ONCE per call (not per retry) per spec §2.1.
         // The mass-diagonal scatter inside `assemble_free_hessian_
         // triplets` (search for `Mass diagonal:`) guarantees a positive
@@ -778,6 +780,7 @@ where
         lm_state: &mut LmState,
         context: &str,
     ) -> Result<FactoredFreeTangent, DoublyFailedFactorInfo> {
+        let _t = crate::profile::Timer::start(crate::profile::Phase::NumericFactor);
         let max_diag = triplets_max_diag(triplets);
         debug_assert!(
             max_diag > 0.0,

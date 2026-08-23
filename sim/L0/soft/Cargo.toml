@@ -60,6 +60,13 @@ default = []
 # under a separate `gpu` feature. Locked to the round-trip test in
 # `tests/invariant_6_gpu_probe.rs`. See scope §1 I-6 clarification.
 gpu-probe = ["dep:wgpu", "dep:bytemuck", "dep:pollster"]
+# Per-phase wall-clock timers in the solver hot path (`src/profile.rs`), for
+# re-measuring recon §2d's phase-share table. OFF by default and zero-cost when
+# off: the no-op `Timer` has no `Drop` and an `#[inline(always)]` constructor, so
+# the default build carries no timing code — which matters because these sit
+# inside the Newton loop and a solver that is measurably different when
+# instrumented cannot measure itself.
+phase-timing = []
 
 [dependencies]
 # Chassis tape, VjpOp, Tensor<f64> — shipped in PR #213.
