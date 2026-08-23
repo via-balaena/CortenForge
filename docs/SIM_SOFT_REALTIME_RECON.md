@@ -1,6 +1,6 @@
 # sim-soft Real-Time Path — Phase-1 Measurement + Recon (Phase E predecessor)
 
-**Status**: RECON 2026-08-10 (rev 2026-08-23), v2.1. Phase 1 (measure) COMPLETE — all four requested
+**Status**: RECON 2026-08-10 (rev 2026-08-23), v2.2. Phase 1 (measure) COMPLETE — all four requested
 measurements taken; §2 reports them. Phase 2 (this recon) proposes the MOR +
 hyper-reduction path with a staged ladder whose first rung is a kill-or-confirm.
 **No dependency was added.** Phase 1's instrumentation was temporary (implement →
@@ -9,7 +9,9 @@ measure → revert, per `feedback_implement_measure_revert_pattern`) and is reve
 exception and is deliberate**: its `SolverConfig::initial_guess` is production code
 that SHIPPED, because unlike a timing probe the thing being measured is the feature.
 Its harness is permanent too — `tests/predictor_spike.rs`, `#[ignore]`d — so that
-result is re-runnable without re-applying anything.
+result is re-runnable without re-applying anything. §2g (v2.2) is NOT a second
+exception: it also wrote production code, measured it, and **reverted it**, which
+is the pattern rather than a departure from it.
 
 **MISSION.md**: AMENDED 2026-08-10 with the "On speed as a ceiling" clause — see §8b.
 The ladder is authorised in principle; R3's three conditions are now mission-level.
@@ -468,7 +470,8 @@ repo squash-merges, `368a73a0` will not survive onto `main` either. Re-run from 
 harness named below rather than from a SHA. §2a decomposes a frame as
 `iterations × per-iteration cost` and every rung of the §7 ladder moves only the
 second factor — R1.1 measured the reduced solve taking *identical* iteration
-counts to the oracle, and substepping measured 1.4× worse (§3c). The first
+counts to the oracle (⚠ inside its own load box only — #817 measured a ~17 %
+premium outside it), and substepping measured 1.4× worse (§3c). The first
 factor had never been attacked. It turns out to be the cheaper of the two.
 
 **What changed in the code**: `SolverConfig::initial_guess`, a three-way choice of
@@ -543,12 +546,14 @@ barrier operates on, and 43 % of the layer's 6.4 mm thickness in a single iterat
 predicted drop on a layer whose base is PINNED inverts elements near the bottom, so
 `det F ≤ 0`. The load term fails on the kinematic side as well as the contact side.
 
-⇒ **`Inertial` is the robust arm.** It wins or ties on every fixture measured and
-never once failed to converge. `InertialWithLoad` wins the tail on ONE non-contact
+⇒ **`Inertial` is the robust arm.** It never once failed to converge, on any
+fixture. ⚠ It does not win everywhere: on `block_sag` it is 3.5× worse than
+`PreviousState` (38 vs 11) — see §2g, which measures all four arms together. `InertialWithLoad` wins the tail on ONE non-contact
 fixture and is catastrophic on two of the four fixture classes (`block_sag` 32.7×
 worse; contact-plus-load fatal). **Nothing here supports shipping the load term as a
-default**, and the `‖r‖`-at-both-guesses selector below stops being an optimisation
-and becomes the precondition for using it at all.
+default**, and a selector stops being an optimisation and becomes the precondition
+for using it at all. ⛔ The `‖r‖` form of that selector was then built and killed
+(§2g); the load term remains unshippable and its tail win unclaimed.
 
 **On the IPC pair being identical — and what that hid.** `Inertial` and
 `InertialWithLoad` agree to the digit on both IPC rows. That was predicted before the
@@ -628,11 +633,31 @@ better than the input.
 > That is a large improvement in R3's odds and it is NOT the clean "the gate now
 > implies the goal" an earlier revision of this section claimed.
 
+⚠⚠ **This table assumes R1 = 2×, which #817 showed holds only inside R1.1's load
+box.** Outside it the reduced solve pays a ~17 % iteration premium, so R1's NET is
+2 / 1.17 = **1.71×**, and the decision-critical measured-R0 row at 18 750 becomes
+46.2 ÷ (R0 1.17×) ÷ (R1 net 1.71×) ÷ (predictor 1.97×) ≈ **11.7× — ABOVE the
+10× kill floor**, restoring exactly
+the "R3 passes its own gate and the budget is still missed" situation the verdict
+above says the predictor removed. **The bracketing reading holds inside R1.1's box
+and not outside it**, and which regime a real workload sits in is unmeasured.
+
 ⇒ **Re-measuring §2d's contact-arm shares post-R0 is now on R3's critical path**, not
 merely a housekeeping item: it is the single input that decides which row above is
 the real one.
 
 ⚠ **The factors multiply only if the predictor is ported to the reduced solver.**
+✅ **DONE — the port landed in #817 (`d23a29f1`) and the composition HOLDS**
+(1.000 at R1.1's operating point). ⚠ That PR also found the reduced solve paying an
+**iteration-count premium outside R1.1's load box** — ~17 % at ×2 load, not
+truncation and not a residual floor but a rate effect. ⚠ **That is a premium on the
+COUNT, not a change to R1's per-iteration `~2×`**; conflating the two is the
+mixed-aggregate error this document keeps making (see §2f's "quote these with
+both their metric and their aggregate attached"). What it does mean is that R1.1's
+iteration-count PARITY (reduced never exceeds oracle) is a property of its load box,
+and the ladder's composed figure inherits that. The paragraph below is the pre-port
+reasoning, kept for the record.
+
 R1's ~2× is a *per-iteration* saving and the predictor's is an *iteration-count*
 saving, so they compose — but `reduced::newton` starts from `q_prev` and has no
 predictor, so today a reduced solve would keep the full iteration count. That port
@@ -686,11 +711,15 @@ that a DOF's motion over one frame is **inertia-dominated**. It pays where the b
 genuinely moves ballistically between frames and loses badly where stiffness pins
 it, and the loss is largest for exactly the variant that is best elsewhere.
 
-⇒ **`InertialWithLoad` cannot be an unconditional default.** The obvious selector is
-also cheap: evaluate `‖r‖` at both candidate guesses and start from the smaller.
-One extra internal-force assembly is `asmF` = **0.92 ms at 19 440 free DOF against
-114 ms per Newton iteration — 0.8 %** (§2a), so the choice can be made per-step and
-per-scene rather than baked into a config. Unmeasured; the natural next spike.
+⇒ **`InertialWithLoad` cannot be an unconditional default.** The obvious selector
+looked cheap: evaluate `‖r‖` at the candidate guesses and start from the smallest,
+for a couple of extra internal-force assemblies per step.
+
+⛔ **BUILT AND KILLED — see §2g.** The cost behaved as predicted in SHAPE (measured −0.15 % to
++6.70 % of total wall-clock; three candidates, not two), and it does rescue every cell the load term dies on. But it
+selects the WORST arm on the cantilevers, because `‖r(x⁰)‖` is not a proxy for
+distance to the root. Read §2g before proposing a variant of this; the paragraph
+above is kept as the motivation it was, not as a live recommendation.
 
 #### Two smaller things worth recording
 
@@ -715,6 +744,89 @@ per-scene rather than baked into a config. Unmeasured; the natural next spike.
   is a *structural* cost that holds Newton at ~6 iterations.
 
 ---
+
+### 2g. The `‖r‖` selector — built, measured, KILLED
+
+§2f named a per-step selector as the precondition for using the load term:
+evaluate `‖r‖` at each candidate guess, start from the smallest. Built as
+`InitialGuess::Adaptive`, measured, **removed**. ⚠ The code was squashed away and
+exists in no branch — **§9b carries the re-apply recipe**, and these numbers
+cannot be re-derived without it.
+
+| fixture | `PreviousState` | `Inertial` | `InertialWithLoad` | **`Adaptive`** |
+|---|---:|---:|---:|---:|
+| `block_sag` 1 944 | **11** | 38 | 360 | **11** ✓ |
+| `cantilever 40×4` | 746 | **238** | 248 | **746** ✗ |
+| `cantilever 80×8` | 1 134 | **241** | 278 | **1 134** ✗ |
+| IPC 5 202 | 433 | **205** | 205 | 205 ✓ |
+| IPC 18 750 | 461 | **236** | 236 | 236 ✓ |
+| IPC + body load, −z / +z | 434 / 433 | **205 / 205** | **DIED / DIED at step 0** | 205 / 205 ✓ |
+
+**It does the safety job**: rescues the only cell the load term dies on, in both
+load directions, and on `block_sag` avoids both the 32.7× blowup and `Inertial`'s
+3.5× penalty. Overhead **−0.15 % to +6.70 %** of wall-clock, against the arm it
+selected (three extra assemblies per step; two is the floor, since Newton needs
+one of them anyway).
+
+⛔ **And on `cantilever 80×8` it selects the worst arm — 4.71× on iterations,
+4.60× on wall-clock** (40×4: 3.13× / 3.05×). It discards the predictor's largest
+win, on the fixture the arc was motivated by. **KILLED** on either metric.
+
+#### ★ Why — `‖r(x⁰)‖` is not a proxy for distance to the ROOT
+
+| fixture | ranking picks | correct? |
+|---|---|---|
+| IPC (± load) | `Inertial` | ✅ |
+| `block_sag` | `PreviousState` | ✅ (11 vs 38) |
+| **`cantilever` 40×4, 80×8** | `PreviousState` | ⛔ **wrong** |
+
+The split is **the cantilever against everything else**, not contact against
+gravity — `block_sag` is gravity-driven bending and the ranking is right there.
+The rule fails on the one large-deflection, high-iteration fixture, i.e. exactly
+where iteration count is worth optimising, and works wherever it matters least.
+
+On the cantilever, `x_prev` has the SMALLER residual — the inertial term `−M·v/Δt`
+is modest for a slowly-moving beam while moving to `x̂` changes `f_int` by more
+than it saves — yet `x̂` converges 3–5× faster because it is nearer the root.
+
+⚠ The failure is **silent**: every arm converges, nothing errors, only the
+iteration count shows it. A selector judged on "did it converge" would ship.
+
+★ **No evidence the per-step adaptivity was ever exercised.** `Adaptive`'s totals
+equal a fixed arm's exactly on every row. ⚠ On the three IPC rows without a body
+load that proves little — `f_ext ≡ 0` there makes `Inertial` and
+`InertialWithLoad` the same point, so equal totals cannot distinguish "never
+switched" from "switched between indistinguishable arms". On `block_sag` and the
+two cantilevers the arms are genuinely distinct and the totals still match
+exactly, which is where the claim actually rests.
+
+#### ⇒ Where this leaves the load term
+
+**Use `Inertial`.** Never failed on any fixture, best-or-tied on five of six, and
+zero extra assemblies. Its worst case is `block_sag`, 3.5× off optimal at 409 ms
+absolute.
+
+**A kinematic veto by ELEMENT SIZE is dead too — on arithmetic, without a run.**
+`Δt²g` = 2.725 mm is fixture-independent, so per element:
+
+| fixture | element | `Δt²g` / element | the veto must |
+|---|---:|---:|---|
+| `block_sag` 1 944 | 6.25 mm | **0.44** | VETO (360 iters, 32.7× worse) |
+| `cantilever 80×8` | 2.50 mm | **1.09** | ALLOW (best tail) |
+| IPC + body load | 1.06 mm | **2.56** | VETO (dies at step 0) |
+
+The required action is **VETO / ALLOW / VETO** as the ratio rises — non-monotonic,
+so **no single element-size threshold separates them.**
+
+⇒ What survives is narrower: a **contact-band** veto, where `Δt²g` is **109×**
+`d_hat` = 2.5e-5 m and the margin is not close. That handles the contact cell;
+`block_sag` needs a different mechanism entirely, and nothing here suggests one.
+Until then the load term is unshippable and its tail win — **2.99× against
+`Inertial`**, the arm it competes with, not the 4.44× against the baseline —
+unclaimed.
+
+---
+
 
 ## 3. What the measurements say about feasibility
 
@@ -1171,7 +1283,11 @@ R3's gate must fire online rather than in a docstring.
 **No production code was written for Phase 1. No dependency was added.** Four
 temporary instrumentation edits and three temporary test files existed during the
 session and are reverted. (⚠ §2f, added in v2.1, is a later measurement that did NOT
-follow this pattern — see the header. Nothing in *this* section changed.) Verified after the revert: `git status` shows only this doc as
+follow this pattern — see the header.)
+
+### 9a. Phase-1's own verification and reverted edits
+
+Verified after the revert: `git status` shows only this doc as
 untracked, and `cargo xtask grade sim-soft` returns **A on all seven automated
 criteria** (Documentation, Clippy, Safety, Dependencies, Layer Integrity, WASM Compat;
 Coverage is `—` under the crate's recorded `integration-only` profile, and API Design
@@ -1199,6 +1315,53 @@ table above — it is mechanical — and drive it with the per-case env vars. If
 measurement is to be repeated regularly, the right move is **not** to re-apply
 scratch patches but to land the timing slots properly behind a feature flag; that is a
 small, separate PR and is not proposed here.
+
+### 9b. Reproducing §2g's selector measurement (v2.2)
+
+§2g's code was written, measured and reverted, and the revert was squashed, so
+**nothing in git reproduces it**. To re-run, re-apply — it is mechanical:
+
+| where | edit |
+|---|---|
+| `config.rs` | add `Adaptive` to `InitialGuess`. ⚠ `#[non_exhaustive]` makes this additive DOWNSTREAM only — in-crate there are TWO exhaustive matches to extend, `newton.rs`'s placement and `reduced/newton.rs`'s `let mut q = match …`; the compiler finds both. ⚠ It does NOT find the four sites below |
+| `newton.rs` | split the existing per-variant placement into `place_guess(variant, …)`, and REWRITE `apply_initial_guess` (it already exists) as a dispatcher. Its signature must gain `x_prev`, which `assemble_global_int_force` needs. For `Adaptive`: per candidate **`x_curr.copy_from_slice(x_prev)` FIRST**, then `place_guess`, assemble `f_int`, `residual_into`, `free_residual_norm`; keep the smallest FINITE; then reset and re-place the winner. Hoist `f_int`/`r_full` above the call so candidates reuse them |
+| `newton.rs` | widen `free_residual_norm` to `pub(super)` if the unit tests are wanted |
+| `reduced/newton.rs` | add `Adaptive` to `assert_supported_initial_guess`'s refusal AND to the `let mut q = match …` arm (an `unreachable!` beside `InertialWithLoad`) — the reduced loop's own norm is the PROJECTED `‖Φᵀr‖`, a different quantity |
+| `tests/predictor_spike.rs` | extend `ARMS` to four and widen each `solvers` array literal |
+| `src/.../tests.rs` | ⚠ two 3-element array literals compile CLEANLY and silently skip a fourth variant — the candidate list in `initial_guess_variants_produce_the_documented_first_iterate` (zipped against a 3-element `expected`) and `guess_changes_path_not_root` |
+| `helpers.rs` | ⚠ `initial_guess_stall_hint`'s `matches!(…, PreviousState)` early-return also compiles clean, then emits "the first iterate is extrapolated off x_prev" on every stall — false whenever the selector chose `PreviousState` |
+| `tests/predictor_spike.rs` | ⚠ `run_arms` has two hardcoded `3`s (`vec![x0.to_vec(); 3]`, `vec![vec![0.0; n_dof]; 3]`) that the compiler does NOT catch: `out` is sized from `ARMS` while `x`/`v` stay at 3, so step 0 panics on `x[3]` |
+
+⚠⚠ **Keep the non-finite filter: the ordering does NOT make it optional.** An
+earlier reading held that `PreviousState` going first guarantees a finite running
+best, because its residual is finite whenever the step-start validity check
+passed. That is false under a moving contact barrier: the check tests element `F`
+(inversion, max stretch), not barrier distance, and `replace_contact` advances the
+collider between steps — so `x_prev`, converged against the OLD pose, can penetrate
+the NEW one and return `‖r‖ = NaN`. The running best is then NaN, every later
+`cand < best` is false, and the selector silently degenerates to always-
+`PreviousState`: the killed behaviour, with no error and no NaN in the output.
+
+⚠⚠ **The `copy_from_slice` reset is not optional and its absence is SILENT.**
+Placement is in-place and reads its own base (`x_curr[i] = dt.mul_add(v_prev[i],
+x_curr[i])`), so looping without resetting gives the third candidate
+`x_prev + 2Δt·v + Δt²f/m` instead of `x̂ + Δt²f/m` — no error, no panic, just a
+wrong guess and a wrong ranking.
+
+⚠ Evaluate `PreviousState` first regardless — it is the one point already validated
+this step, so a cheap tie should not move off it.
+
+⚠ A discriminating unit fixture needs the scene's candidate ordering to be
+non-default. On the 1-tet skeleton at θ = 1 the residuals are `PreviousState` 0.914
+< `Inertial` 6.44 < `InertialWithLoad` 20.0, so a selector hard-wired to
+`PreviousState` is indistinguishable from a working one; at θ = 1000 the order flips
+to `Inertial` 992.6 < `PreviousState` 999.9 and the choice becomes observable.
+
+⚠ **Precision on "no committed tree":** the implementation WAS committed, as
+`15c8f27a`, and then orphaned by the squash. It is on no branch, was never pushed,
+and will be garbage-collected — so it is recoverable on the machine that made it
+until then, and by nobody else ever. The recipe above is the durable record.
+
 
 ---
 
@@ -1259,6 +1422,17 @@ small, separate PR and is not proposed here.
 
 ## 12. Version history
 
+- **v2.2 (2026-08-23)** — **§2g: the `‖r‖` selector was built, measured on all six
+  cells, and KILLED.** It rescues the cell `InertialWithLoad` dies on and avoids
+  `block_sag`'s 32.7× blowup, at −0.15–6.70 % overhead, but selects the WORST arm
+  on the cantilevers (1 134 vs `Inertial`'s 241 at 19 440 DOF). Cause: `‖r(x⁰)‖`
+  is not a proxy for distance to the ROOT, and the split is the cantilever against
+  everything else — `block_sag` is gravity-driven bending and the ranking is right
+  there. `InitialGuess::Adaptive` was removed rather than shipped; §9b carries the
+  re-apply recipe, since the code was squashed away. **An element-size veto is
+  ruled out by the same section on arithmetic**; a contact-band veto is not.
+  ⚠ Also marks that §2f's R3 table assumes R1 = 2×, which #817 showed holds only
+  inside R1.1's load box.
 - **v2.1 (2026-08-23)** — **§2f added: the iteration-count factor is a lever, and a
   large one.** `SolverConfig::initial_guess` (a Newton predictor; default bit-equal)
   measured across six fixture/size/load cells, three arms stepped in lockstep. 1.95×

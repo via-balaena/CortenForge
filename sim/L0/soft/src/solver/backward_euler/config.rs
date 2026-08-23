@@ -29,13 +29,20 @@ use crate::solver::lm::LmConfig;
 /// clean [`SolverFailure::ValidityViolation`](crate::SolverFailure).
 /// Measure per fixture before switching.
 ///
-/// `#[non_exhaustive]`: this set is expected to grow. `InertialWithLoad`
+/// `#[non_exhaustive]` because this set may still grow. `InertialWithLoad`
 /// measured **32.7× worse** on a stiff fixture (recon §2f), so it cannot be an
-/// unconditional default, and the next variant is already scoped — a per-step
-/// selector that evaluates `‖r‖` at both candidate guesses and starts from the
-/// smaller. Closing the enum now costs nothing (it has never shipped) and
-/// keeps that addition from being a breaking change; the price is a `_` arm in
-/// any external `match`.
+/// unconditional default.
+///
+/// ⛔ **The obvious rescue has been tried and killed.** A per-step selector
+/// ranking the candidates by `‖r‖` was built, measured on all six cells, and
+/// removed: it picks the WORST arm on the large-deflection cantilever (4.7× on
+/// iterations), because `‖r(x⁰)‖` is not a proxy for distance to the root.
+/// **Read recon §2g before proposing any variant of that idea.**
+///
+/// ⇒ [`Self::Inertial`] is the best-measured choice on five of the six cells and
+/// never failed on any — **but it is NOT the default, and deliberately so**: on a
+/// stiff, quasi-static scene it is 3.5× WORSE than [`Self::PreviousState`]
+/// (`block_sag`, 38 iterations against 11). Opt in per scene; do not assume it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum InitialGuess {

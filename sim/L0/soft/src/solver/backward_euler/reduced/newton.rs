@@ -339,7 +339,8 @@ where
         // `Inner::Mass` and needs an r×r solve under `Inner::Euclidean`. It is
         // deliberately NOT ported — recon §2f's pre-registered rule KILLED that
         // variant (it dies at step 0 on contact plus a body load), so it is not
-        // shippable anywhere until the `‖r‖`-at-both-guesses selector gates it.
+        // shippable anywhere: the `‖r‖` selector that was supposed to gate it was
+        // built, measured and KILLED (recon §2g), so nothing gates it today.
         // `assert_supported_initial_guess` refuses it rather than half-supporting
         // it here.
         let mut q: Vec<f64> = match self.full.config.initial_guess {
