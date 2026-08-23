@@ -82,43 +82,15 @@ pub struct ReducedStep {
 /// full-order `x_prev` each step would silently re-project it, discarding the
 /// out-of-span part and hiding exactly the drift a reduced model has to be judged on.
 /// Reduced state in, reduced state out.
-/// Refuse a full solver carrying a predictor.
 ///
-/// The reduced loop starts from `q_prev` and has none. It reads the FULL
-/// solver's config through a BORROW (`full: &CpuNewtonSolver`), so it cannot be
-/// handed a different one — **the divergence is structural**, not a matter of
-/// accidentally sharing a config object. Refuse rather than ignore: the
-/// R-ladder's methodology is full-order oracle vs reduced fast path over the
-/// SAME full solver, so silently dropping the predictor on one side would
-/// benchmark a PREDICTED oracle against an UNPREDICTED reduced model and
-/// mis-measure the very ratio the ladder exists to establish. Loud refusal is
-/// this crate's convention for an unsupported combination (cf. `fbar` + Tet10,
-/// friction on the differentiable path).
+/// # Initial guess
 ///
-/// Called from `new` — the documented contract is that this is a construction
-/// error, and the expensive part (snapshots, the POD fit) is already paid by
-/// the time `step` runs — and again from `step` as belt-and-braces.
-///
-/// # Panics
-/// If `guess` is anything but [`InitialGuess::PreviousState`].
-fn assert_supported_initial_guess(guess: InitialGuess) {
-    assert!(
-        matches!(guess, InitialGuess::PreviousState),
-        "ReducedNewtonSolver does not implement SolverConfig::initial_guess \
-         ({guess:?}) — it always starts from q_prev. Build the full solver with \
-         InitialGuess::PreviousState for any reduced solve or full-vs-reduced \
-         comparison, until the predictor is ported into this loop.",
-    );
-}
-
-/// Galerkin Newton on a POD subspace — R1.1's reduced fast path, wrapping the
-/// full-order [`CpuNewtonSolver`] it is graded against and never replacing it.
-///
-/// Borrows the full solver rather than owning one, so it shares that solver's
-/// [`SolverConfig`](crate::SolverConfig) — including
-/// [`InitialGuess`](crate::InitialGuess), which this loop does NOT implement and
-/// therefore refuses at construction: [`Self::new`] panics unless the wrapped
-/// solver is configured with `InitialGuess::PreviousState`.
+/// The full solver is BORROWED, so this type shares its
+/// [`SolverConfig`](crate::SolverConfig) and cannot be configured apart from it —
+/// including [`InitialGuess`]. It **implements** `PreviousState` and `Inertial`;
+/// the latter reproduces the oracle's `x̂` exactly in reduced coordinates, with no
+/// mass matrix. [`Self::new`] panics on `InertialWithLoad`, the one variant with
+/// no free reduced form.
 pub struct ReducedNewtonSolver<'a, E, Msh, C, M, const N: usize, const G: usize>
 where
     E: Element<N, G>,
@@ -135,6 +107,43 @@ where
     x_rest: Vec<f64>,
 }
 
+/// Refuse the one [`InitialGuess`] this loop cannot honour.
+///
+/// `PreviousState` and `Inertial` are both implemented, and `Inertial` reproduces
+/// the oracle's `x̂` exactly (see `step`). `InertialWithLoad` is refused, for two
+/// independent reasons:
+///
+/// - **It has no free analogue here.** The reduced load term is
+///   `(ΦᵀMΦ)⁻¹Φᵀf_ext`, which is `Φᵀf_ext` only under [`Inner::Mass`](super::pod::Inner)
+///   and needs an `r×r` solve under `Inner::Euclidean`.
+/// - **It was KILLED on the evidence** (recon §2f): it dies at step 0 on contact
+///   plus a body load, in both load directions, so it is not shippable in the
+///   full-order path either until a selector gates it. Porting a killed variant
+///   into a second solver would be work with no consumer.
+///
+/// The refusal is loud because the failure it prevents is silent: the R-ladder's
+/// methodology is full-order oracle vs reduced fast path over the SAME borrowed
+/// solver (`full: &CpuNewtonSolver`), so quietly dropping a guess on one side
+/// would benchmark a predicted oracle against an unpredicted reduced model and
+/// mis-measure the very ratio the ladder exists to establish.
+///
+/// Called from `new` — the documented contract is that this is a construction
+/// error, and the expensive part (snapshots, the POD fit) is already paid by the
+/// time `step` runs — and again from `step` as belt-and-braces.
+///
+/// # Panics
+/// If `guess` is [`InitialGuess::InertialWithLoad`].
+fn assert_supported_initial_guess(guess: InitialGuess) {
+    assert!(
+        !matches!(guess, InitialGuess::InertialWithLoad),
+        "ReducedNewtonSolver does not implement \
+         SolverConfig::initial_guess = InertialWithLoad. Its reduced form needs \
+         (ΦᵀMΦ)⁻¹Φᵀf_ext, free only under Inner::Mass — and recon §2f's \
+         pre-registered rule KILLED the variant anyway (step-0 failure on contact \
+         plus a body load). Use PreviousState or Inertial.",
+    );
+}
+
 impl<'a, E, Msh, C, M, const N: usize, const G: usize> ReducedNewtonSolver<'a, E, Msh, C, M, N, G>
 where
     E: Element<N, G>,
@@ -149,6 +158,12 @@ where
     /// Panics if `x_rest` is not `n_dof` long, or if the basis does not span the
     /// solver's free DOFs — either is a scene-wiring bug that would otherwise surface
     /// as silently wrong physics.
+    ///
+    /// Also panics if the wrapped solver is configured with
+    /// [`InitialGuess::InertialWithLoad`], which this loop does not implement.
+    /// Caught HERE rather than at the first `step` so the failure lands before
+    /// any TRAJECTORY is run — not before the fit, which `basis` proves is
+    /// already paid by the time this is callable.
     #[must_use]
     pub fn new(
         full: &'a CpuNewtonSolver<E, Msh, C, M, N, G>,
@@ -258,11 +273,11 @@ where
     ///
     /// # Panics
     /// Panics if `q_prev` / `qdot_prev` are not `n_modes` long, if `dt` is not
-    /// positive, or if the wrapped full solver was configured with a
-    /// `SolverConfig::initial_guess` other than `PreviousState` — this loop has
-    /// no predictor and refuses rather than silently dropping one (see the
-    /// assert's own comment for why a silent drop would corrupt a
-    /// full-vs-reduced measurement).
+    /// positive, or if the wrapped full solver was configured with
+    /// `SolverConfig::initial_guess = InertialWithLoad`, which this loop does
+    /// not implement — its reduced form needs `(ΦᵀMΦ)⁻¹Φᵀf_ext`, free only under
+    /// `Inner::Mass`, and recon §2f's pre-registered rule killed the variant on
+    /// the evidence. `PreviousState` and `Inertial` are both honoured.
     // One linear Newton narrative: residual, projection, tangent, factor, line search.
     // Splitting it would separate the residual definition from the norm it descends.
     #[allow(clippy::too_many_lines)]
@@ -302,12 +317,47 @@ where
         let mut f_int = vec![0.0; n_dof];
         let mut r_full = vec![0.0; n_dof];
 
-        // Always starts from `q_prev` — no predictor. Guarded by the
-        // `initial_guess` assert at the top of this function rather than left
-        // silent; porting the predictor here is the outstanding follow-up
-        // (recon §2f: the full-order and reduced gains compose only once it
-        // lands, so the composed figure is a projection until then).
-        let mut q = q_prev.to_vec();
+        // Newton's starting point, per `SolverConfig::initial_guess`.
+        //
+        // ★ `Inertial` has an EXACT analogue in reduced coordinates, and it needs
+        // no mass matrix. The map is affine with a constant basis, so
+        //
+        //     x⁰ = x_rest + Φ(q_prev + Δt·q̇_prev) = x_prev + Δt·v_prev = x̂
+        //
+        // — the same full-order point the oracle starts from, for EITHER `Inner`
+        // variant. (`v_prev_full` above is `Φq̇_prev` by construction, which is
+        // what makes the second equality hold.)
+        //
+        // ⚠ Equal in exact arithmetic, IDENTICAL TO ROUNDING in f64 — not
+        // bit-for-bit. This path computes `x_rest + Φ·fma(Δt, q̇, q)` while the
+        // full path computes `fma(Δt, Φq̇, x_rest + Φq)`: same value, different
+        // association. Do not write a byte-identity gate against it; this crate
+        // has real bit-equality gates elsewhere and one here would flake.
+        //
+        // ⚠ `InertialWithLoad` has NO such free analogue: it wants
+        // `(ΦᵀMΦ)⁻¹Φᵀf_ext`, which collapses to `Φᵀf_ext` only under
+        // `Inner::Mass` and needs an r×r solve under `Inner::Euclidean`. It is
+        // deliberately NOT ported — recon §2f's pre-registered rule KILLED that
+        // variant (it dies at step 0 on contact plus a body load), so it is not
+        // shippable anywhere until the `‖r‖`-at-both-guesses selector gates it.
+        // `assert_supported_initial_guess` refuses it rather than half-supporting
+        // it here.
+        let mut q: Vec<f64> = match self.full.config.initial_guess {
+            InitialGuess::PreviousState => q_prev.to_vec(),
+            InitialGuess::Inertial => q_prev
+                .iter()
+                .zip(qdot_prev.iter())
+                .map(|(&qp, &qd)| dt.mul_add(qd, qp))
+                .collect(),
+            // Refused by `assert_supported_initial_guess`, which runs both at
+            // `new` and at the top of this function — so reaching here means
+            // that guard was removed or bypassed, not that a caller did
+            // anything wrong.
+            InitialGuess::InertialWithLoad => unreachable!(
+                "refused by assert_supported_initial_guess at construction and at \
+                 the top of this function"
+            ),
+        };
         self.full.check_validity_at_step_start(&x_prev)?;
 
         let residual_at = |q: &[f64], f_int: &mut Vec<f64>, r_full: &mut Vec<f64>| -> Vec<f64> {

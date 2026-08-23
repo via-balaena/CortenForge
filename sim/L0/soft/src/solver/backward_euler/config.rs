@@ -192,22 +192,20 @@ pub struct SolverConfig {
     /// iterate that may sit outside the convergence basin — see
     /// [`InitialGuess`] for the risk and for what each variant zeroes.
     ///
-    /// ⚠ **FULL-ORDER SOLVER ONLY, and `reduced` PANICS rather than ignoring
-    /// it.** `backward_euler::reduced`'s `ReducedNewtonSolver` borrows the full
-    /// solver (`&CpuNewtonSolver`) and reads this same config, so it cannot be
-    /// given a different one; it always starts from `q_prev`. Its `step`
-    /// therefore **asserts** this field is [`InitialGuess::PreviousState`]
-    /// rather than dropping the predictor quietly — a silent drop would make a
-    /// full-vs-reduced comparison benchmark a *predicted* oracle against an
-    /// *unpredicted* reduced model, which is exactly the ratio the R-ladder
-    /// exists to measure.
+    /// **Honoured by the reduced solver too, except for one variant.**
+    /// `backward_euler::reduced`'s `ReducedNewtonSolver` borrows the full solver
+    /// (`&CpuNewtonSolver`) and reads this same config, so the two cannot be
+    /// configured apart — which is why it implements the guess rather than
+    /// ignoring it. [`InitialGuess::Inertial`] reproduces the oracle's `x̂`
+    /// EXACTLY in reduced coordinates (`x_rest + Φ(q + Δt·q̇) = x_prev + Δt·v`),
+    /// for either `Inner`.
     ///
-    /// ⚠ That refusal is a **panic, not a [`SolverFailure`](crate::SolverFailure)**
-    /// — a `try_`-style caller cannot recover from it — so it is a
-    /// configuration error to be caught in construction, not a runtime
-    /// condition. Set [`InitialGuess::PreviousState`] on any solver a
-    /// `ReducedNewtonSolver` will wrap, until the predictor is ported into the
-    /// reduced loop.
+    /// ⚠ [`InitialGuess::InertialWithLoad`] is **refused with a panic** there:
+    /// its reduced form wants `(ΦᵀMΦ)⁻¹Φᵀf_ext`, free only under `Inner::Mass`,
+    /// and the variant is killed on the evidence anyway (recon §2f). The refusal
+    /// is a panic, not a [`SolverFailure`](crate::SolverFailure) — a `try_`-style
+    /// caller cannot recover — so it is a configuration error caught at
+    /// `ReducedNewtonSolver::new`, not a runtime condition.
     pub initial_guess: InitialGuess,
 }
 
