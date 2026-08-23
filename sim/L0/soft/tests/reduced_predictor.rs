@@ -480,7 +480,8 @@ fn measure(load_scale: f64, r_modes: usize) {
         "\n╔═ Does the predictor gain survive reduction?  (load ×{load_scale:.0}, r = {r_modes})"
     );
     println!(
-        "║ fixture: R1.1 bilayer beam, 5 202 free DOF, r = {} retained (requested {r_modes})",
+        "║ fixture: R1.1 bilayer beam, {} free DOF, r = {} retained (requested {r_modes})",
+        fd.len(),
         basis.n_modes()
     );
     assert!(
@@ -501,19 +502,11 @@ fn measure(load_scale: f64, r_modes: usize) {
         "║ {:<24} {:>12} {:>12} {:>10}",
         "", "PreviousState", "Inertial", "gain"
     );
-    for (label, b, p) in [
-        ("oracle (full order)", o_base, o_pred),
-        ("reduced (Galerkin)", r_base, r_pred),
-    ] {
-        let gain = if p == 0 {
-            f64::INFINITY
-        } else {
-            b as f64 / p as f64
-        };
-        println!("║ {label:<24} {b:>12} {p:>12} {gain:>9.3}×");
-    }
-    // Guarded like the table rows: `iter_count` is 0-based, so an arm that lands
-    // inside `tol` at iteration 0 on every step totals zero.
+    // ONE rule for a zero denominator, used by the table and the headline alike.
+    // They disagreed before — `INFINITY` in the table, `NaN` below — on a case
+    // that can really happen: `iter_count` is 0-based, so an arm converging at
+    // iteration 0 on every step totals zero. (The old comment here even claimed
+    // the two were "guarded like" each other.)
     let ratio = |b: usize, p: usize| {
         if p == 0 {
             f64::NAN
@@ -521,6 +514,12 @@ fn measure(load_scale: f64, r_modes: usize) {
             b as f64 / p as f64
         }
     };
+    for (label, b, p) in [
+        ("oracle (full order)", o_base, o_pred),
+        ("reduced (Galerkin)", r_base, r_pred),
+    ] {
+        println!("║ {label:<24} {b:>12} {p:>12} {:>9.3}×", ratio(b, p));
+    }
     let o_gain = ratio(o_base, o_pred);
     let r_gain = ratio(r_base, r_pred);
     println!("║");
@@ -600,7 +599,14 @@ fn measure(load_scale: f64, r_modes: usize) {
 #[test]
 #[should_panic(expected = "does not implement")]
 fn reduced_refuses_inertial_with_load_at_construction() {
-    let r = rig(InitialGuess::InertialWithLoad);
+    // The SMALL rig: the refusal reads a config field and cannot depend on mesh
+    // size, so there is no reason to make CI build a 5 202-DOF solver for it.
+    let r = rig_of(
+        SMALL_N_LAT,
+        SMALL_NZ,
+        InitialGuess::InertialWithLoad,
+        DEFAULT_TOL,
+    );
     let fd = r.solver.free_dof_indices().to_vec();
     let mass = r.solver.mass_per_free_dof();
     // A one-snapshot basis is enough: the refusal must fire on the CONFIG, long
@@ -677,7 +683,11 @@ fn reduced_inertial_reaches_the_same_root_as_previous_state() {
         // Negative control on the test itself: with a zero initial velocity the
         // two guesses coincide, so a run where `qdot` never leaves zero would
         // compare an arm against itself.
-        if qdb.iter().any(|v| v.abs() > 0.0) {
+        // The PREDICTED arm's qdot, and only on steps whose value a later step
+        // actually consumes. This guard exists to catch the two arms having been
+        // the same point throughout; reading the BASELINE's qdot was a proxy for
+        // the quantity that matters rather than the quantity itself.
+        if s < STEPS && qdp.iter().any(|v| v.abs() > 0.0) {
             moved = true;
         }
     }

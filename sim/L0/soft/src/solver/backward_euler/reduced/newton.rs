@@ -158,6 +158,7 @@ where
     /// Panics if `x_rest` is not `n_dof` long, or if the basis does not span the
     /// solver's free DOFs — either is a scene-wiring bug that would otherwise surface
     /// as silently wrong physics.
+    ///
     /// Also panics if the wrapped solver is configured with
     /// [`InitialGuess::InertialWithLoad`], which this loop does not implement —
     /// caught HERE rather than at the first `step` so the failure lands before
