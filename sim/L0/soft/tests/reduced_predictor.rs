@@ -503,10 +503,9 @@ fn measure(load_scale: f64, r_modes: usize) {
         "", "PreviousState", "Inertial", "gain"
     );
     // ONE rule for a zero denominator, used by the table and the headline alike.
-    // They disagreed before — `INFINITY` in the table, `NaN` below — on a case
-    // that can really happen: `iter_count` is 0-based, so an arm converging at
-    // iteration 0 on every step totals zero. (The old comment here even claimed
-    // the two were "guarded like" each other.)
+    // `iter_count` is 0-based, so an arm converging at iteration 0 on every step
+    // really does total zero — and the two sites used to disagree about it,
+    // `INFINITY` in the table against `NaN` here.
     let ratio = |b: usize, p: usize| {
         if p == 0 {
             f64::NAN

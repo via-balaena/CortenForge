@@ -160,9 +160,10 @@ where
     /// as silently wrong physics.
     ///
     /// Also panics if the wrapped solver is configured with
-    /// [`InitialGuess::InertialWithLoad`], which this loop does not implement —
-    /// caught HERE rather than at the first `step` so the failure lands before
-    /// the snapshots and the POD fit are paid for.
+    /// [`InitialGuess::InertialWithLoad`], which this loop does not implement.
+    /// Caught HERE rather than at the first `step` so the failure lands before
+    /// any TRAJECTORY is run — not before the fit, which `basis` proves is
+    /// already paid by the time this is callable.
     #[must_use]
     pub fn new(
         full: &'a CpuNewtonSolver<E, Msh, C, M, N, G>,
