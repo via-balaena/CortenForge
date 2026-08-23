@@ -27,10 +27,11 @@ converged-Newton frame; a high-quality environment wants 20k–70k), f32 is
 brief did not anticipate and which changes the wgpu plan — and **contact costs
 0.02 % of a contact-active frame**, so contact is a *structural* problem for MOR, not
 a compute one. Two cheap full-order levers surfaced that must be measured before any
-reduced-order code is written. **A third, added 2026-08-23: a Newton PREDICTOR buys
-1.97× on the representative workload and 4.70× on the hard one by cutting ITERATION
-COUNT — the factor no rung of the ladder touches — which drops what R3 must deliver
-from 12–16× to 6.1–8.1×, below its own 10× kill floor. → §2f**
+reduced-order code is written. **A third, added 2026-08-23: a Newton PREDICTOR cuts
+ITERATION COUNT — the factor no rung of the ladder touches — by 1.95× on the
+representative workload and 4.71× on the hard one (wall-clock over the same runs:
+1.90× and 4.63×), which drops what R3 must deliver from 12–16× to 6.1–8.1×, below
+its own 10× kill floor. → §2f**
 
 > ### ⚠ Carry these three caveats with every number in this document
 >
@@ -458,7 +459,10 @@ exist.
 
 ### 2f. The OTHER factor — Newton ITERATION COUNT is a large, cheap lever
 
-**Measured 2026-08-23, on `main` @ `368a73a0`.** §2a decomposes a frame as
+**Measured 2026-08-23** on `spike/newton-predictor` @ `368a73a0` — the commit that
+added the knob. ⚠ **Not a `main` SHA**: `main` was at `2dfe1335`, and because this
+repo squash-merges, `368a73a0` will not survive onto `main` either. Re-run from the
+harness named below rather than from a SHA. §2a decomposes a frame as
 `iterations × per-iteration cost` and every rung of the §7 ladder moves only the
 second factor — R1.1 measured the reduced solve taking *identical* iteration
 counts to the oracle, and substepping measured 1.4× worse (§3c). The first
@@ -525,14 +529,27 @@ It is the harness's own self-check, and it passed.
 
 #### The gain, and what it does to the ladder
 
-On the **representative** workload (IPC 18 750, the fixture closest to VR "grab
-and deform"): **1.95× fewer iterations, 1.97× less wall-clock per step.** On the
-hard end (`cantilever 80×8`): **4.70×**.
+⚠ **Quote these with both their metric and their aggregate attached** — an earlier
+revision of this paragraph paired a wall-clock ratio for one fixture with an
+iteration ratio for the other, which flatters the pair by ~47 %.
+
+| fixture | ΣIters | wall-clock, total | wall-clock, median frame |
+|---|---:|---:|---:|
+| IPC 18 750 (**representative**) | **1.95×** | 1.90× | 1.97× |
+| `cantilever 80×8` (hard end) | **4.71×** | 4.63× | 3.19× |
+
+Iterations and total wall-clock track each other closely, as they must. The
+cantilever's *median* is the outlier at 3.19× because the baseline's total is
+dominated by transient spikes the median never sees — which is the same fact §2f's
+variance section is about, seen from the other side.
 
 The consequence for R3 is the reason this was measured before it. §7 records that
 with R1 at ~2×, R3 must deliver **12–16×** to reach a 60 Hz frame, while R3's own
-kill floor is 10× — so R3 could pass its gate and leave the budget missed. At
-1.97× from the predictor that requirement falls to **6.1–8.1×**:
+kill floor is 10× — so R3 could pass its gate and leave the budget missed. A frame
+budget is a per-frame quantity, so the figure to divide by is the representative
+workload's **median frame time, 1.97×**; the requirement falls to **6.1–8.1×**
+(on total wall-clock, 1.90×, it is 6.3–8.4× — the conclusion does not turn on
+which aggregate is used):
 
 > **R3's 10× kill floor now EXCEEDS what the frame budget needs.** The gate and
 > the goal have swapped places — passing R3 now implies making the budget, which
@@ -563,7 +580,7 @@ Read against `Inertial` — the arm it is actually competing with —
 more median frame time** (565.8 vs 458.2 ms) and buys a **2.32× tail cut**
 (1 371.2 → 590.3 ms). Against the `PreviousState` baseline the tail cut is
 **11.0×** (6 494.1 → 590.3 ms). Either way it turns a workload spiking 4.4× above
-its own median into one flat to within 4 %.
+its own median into one flat to within 4.3 %.
 
 ⚠ Those are three different comparisons and it is easy to quote a ratio from one
 against a baseline from another; the `max / p50` column above is the one figure
@@ -595,6 +612,15 @@ per-scene rather than baked into a config. Unmeasured; the natural next spike.
 
 #### Two smaller things worth recording
 
+- **The `block_sag` control's premise came out 3× stronger than pre-registered, and
+  the same window effect explains it.** It was chosen against §2a's `0.5–0.6
+  iters/step`; the baseline arm measures **11 iterations over 60 steps = 0.18**, with
+  `p50 = 0` — most steps converge at iterate 0 without a single Newton iteration.
+  That does not weaken the control, it sharpens it: the fixture has even less to give
+  than the figure it was picked on, so its 32.7× degradation is measured against a
+  floor that is nearly zero. Same cause as the cantilever row below — §2a's iteration
+  table does not state its step count, and both mismatches resolve if it covered a
+  short, transient-weighted window.
 - **This document's `37.0 iters/step` for `cantilever 80×8` is a transient-window
   figure.** The baseline arm above reproduces the *peak* almost exactly (57 here vs
   56 in §2a/§3b.4) but its mean over 60 steps is **18.9**, because iteration count
@@ -1154,7 +1180,8 @@ small, separate PR and is not proposed here.
 - **v2.1 (2026-08-23)** — **§2f added: the iteration-count factor is a lever, and a
   large one.** `SolverConfig::initial_guess` (a Newton predictor; default bit-equal)
   measured across five fixture/size pairs, three arms stepped in lockstep. 1.95× fewer
-  iterations on the representative IPC workload, 4.70× on `cantilever 80×8`, zero
+  iterations on the representative IPC workload and 4.71× on `cantilever 80×8`
+  (wall-clock totals 1.90× / 4.63×), zero
   convergence failures, trajectories identical to 6e-14…8e-12 on the subjects. **R3's required gain
   falls from 12–16× to 6.1–8.1×, i.e. below its own 10× kill floor** — the gate now
   implies the goal instead of undershooting it. `InertialWithLoad` additionally

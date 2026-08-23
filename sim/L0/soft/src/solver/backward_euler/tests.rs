@@ -1092,11 +1092,17 @@ fn initial_guess_with_load_degrades_gracefully_on_a_massless_model() {
             solver.mass_per_dof[11], 0.0,
             "the premise of this test is a zero lumped mass at density = 0",
         );
-        solver
+        let (step, _) = solver
             .try_solve_impl(&x_prev, &v_prev, &theta, DT)
-            .expect("a massless static solve at tol 1e30 must converge at iteration 0")
-            .0
-            .x_final
+            .expect("a massless static solve at tol 1e30 must converge");
+        // Without this the comparison below could pass because both variants
+        // converged to the same ROOT after N iterations, rather than because they
+        // produced the same `x⁰` — which is the property actually under test.
+        assert_eq!(
+            step.iter_count, 0,
+            "the huge-tol scene must converge at iteration 0 so x_final is x⁰",
+        );
+        step.x_final
     };
 
     let with_load = massless(InitialGuess::InertialWithLoad);

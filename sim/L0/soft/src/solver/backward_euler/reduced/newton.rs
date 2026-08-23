@@ -236,6 +236,27 @@ where
             "q must have n_modes entries"
         );
         assert!(dt > 0.0, "dt must be positive, got {dt}");
+        // The reduced loop starts from `q_prev` and has no predictor. It reads the
+        // FULL solver's config through a BORROW (`full: &CpuNewtonSolver`), so it
+        // cannot be handed a different one — the divergence is structural, not a
+        // matter of sharing a config object by accident. Refuse rather than ignore:
+        // the R-ladder's own methodology is full-order oracle vs reduced fast path
+        // over the SAME full solver, so silently dropping the predictor on one side
+        // would benchmark a PREDICTED oracle against an UNPREDICTED reduced model
+        // and mis-measure the very ratio the ladder exists to establish. Loud
+        // refusal is this crate's convention for an unsupported combination
+        // (cf. `fbar` + Tet10, and friction on the differentiable path).
+        assert!(
+            matches!(
+                self.full.config.initial_guess,
+                crate::solver::InitialGuess::PreviousState
+            ),
+            "ReducedNewtonSolver does not implement SolverConfig::initial_guess \
+             ({:?}) — it always starts from q_prev. Build the full solver with \
+             InitialGuess::PreviousState for any reduced solve or full-vs-reduced \
+             comparison, until the predictor is ported into this loop.",
+            self.full.config.initial_guess,
+        );
 
         let n_dof = self.full.n_dof;
         // The previous full state, reconstructed from reduced coordinates. Constrained
@@ -256,11 +277,9 @@ where
         let mut f_int = vec![0.0; n_dof];
         let mut r_full = vec![0.0; n_dof];
 
-        // ⚠ Always starts from `q_prev`: `SolverConfig::initial_guess` is a
-        // FULL-ORDER knob and is silently ignored here. Driving a full and a
-        // reduced solve from one config therefore compares a predicted full
-        // solve against an unpredicted reduced one — see that field's docs.
-        // Porting the predictor into this loop is the outstanding follow-up
+        // Always starts from `q_prev` — no predictor. Guarded by the
+        // `initial_guess` assert at the top of this function rather than left
+        // silent; porting the predictor here is the outstanding follow-up
         // (recon §2f: the full-order and reduced gains compose only once it
         // lands, so the composed figure is a projection until then).
         let mut q = q_prev.to_vec();

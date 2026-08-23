@@ -695,10 +695,16 @@ where
                         // cannot reach here (auto-pinned at construction), but a
                         // massless MODEL can, and every DOF is zero at once.
                         //
-                        // Degrade to `Inertial` rather than divide. With no mass
-                        // there is no inertia to extrapolate against — the residual
-                        // does not reference `x̂` at all — so `Δt²·f_ext/m` has no
-                        // meaning to compute, and computing it anyway yields
+                        // Drop ONLY the load term: `x⁰` keeps `Δt·v_prev`, so this
+                        // variant degrades to exactly `Inertial` here. ⚠ Note the
+                        // narrower claim — with `m == 0` the residual is
+                        // `f_int(x) − f_ext` and does not reference `x̂`, so the
+                        // velocity term zeroes nothing either; it is kept because
+                        // the caller asked for an extrapolating variant and
+                        // honouring the defined half is more predictable than
+                        // silently reverting to `PreviousState`. (In a static rig
+                        // `v_prev` is zero and the two coincide anyway.) What
+                        // cannot be kept is `Δt²·f_ext/m`, which yields
                         // `0/0 = NaN` on unloaded DOFs and `±inf` on loaded ones.
                         // That poisons `x⁰`; `‖r‖` is then `NaN`, `NaN < tol` is
                         // false so Newton can never converge, and the `NaN` reaches

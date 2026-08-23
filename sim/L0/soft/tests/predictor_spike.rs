@@ -65,9 +65,13 @@
 //!   IPC, with **zero** failures (Armijo stall / iter cap / validity violation /
 //!   non-finite state) on either.
 //! - **KILL** — IPC loses convergence, or iteration count rises.
-//! - **`block_sag` MUST NOT MOVE.** It sits at 0.5–0.6 iterations against a
-//!   floor of ~1, so it has nothing to give. If it moves, the harness is wrong —
-//!   that is the whole job of a negative control.
+//! - **`block_sag` MUST NOT IMPROVE.** ⚠ Written as "must not MOVE" before the first
+//!   run, and that was wrong: the fixture was chosen for having no UPSIDE (it
+//!   converges at iterate 0 already — measured 0.18 iters/step, not the 0.5–0.6 it
+//!   was picked on), and that got silently recorded as having no DOWNSIDE. Its
+//!   downside is unbounded, and it duly degraded 32.7×. **An improvement here would
+//!   indict the harness; a degradation is a fact about the technique.** State a
+//!   control's licence in both directions, and name which direction is the alarm.
 //! - Also reported: `‖x_arm − x_base‖ / ‖x_base‖` at the final step. Two
 //!   trajectories each converged to `1e-10` still separate over 60 steps, so
 //!   this is REPORTED, not gated — but a large value means the predictor changed
@@ -585,7 +589,14 @@ fn run_indentation(a_over_cell: f64) -> (usize, usize, Vec<f64>, Vec<ArmResult>)
 // Ordered cheapest-first so a harness defect surfaces in seconds rather than
 // after the expensive case has run.
 
-/// **Negative control.** 1 944 free DOF, 0.5–0.6 iterations/step. Must not move.
+/// **Negative control.** 1 944 free DOF. Picked against recon §2a's `0.5–0.6
+/// iterations/step`; it actually measures **0.18** (11 iterations over 60 steps,
+/// `p50 = 0`), so its floor is even closer to zero than the premise assumed.
+///
+/// ⚠ The pre-registered rule in the module docs says "must not move", and that rule
+/// is MIS-SPECIFIED: this fixture was chosen for having no UPSIDE, which is not the
+/// same as having no downside. Its downside is wide open and it degrades hard. What
+/// would indict the harness is an IMPROVEMENT here, not a degradation.
 #[test]
 #[ignore = "predictor spike instrument — run explicitly, see module docs"]
 fn spike_block_sag_1944() {
