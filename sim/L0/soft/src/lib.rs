@@ -80,8 +80,8 @@ pub use sdf_bridge::{
     TranslatedSdf, project_point_onto_sdf,
 };
 pub use solver::{
-    CpuNewtonSolver, CpuTape, FrictionReactionGradients, FrictionVertexForce, LmConfig, NewtonStep,
-    Solver, SolverConfig, SolverFailure,
+    CpuNewtonSolver, CpuTape, FrictionReactionGradients, FrictionVertexForce, InitialGuess,
+    LmConfig, NewtonStep, Solver, SolverConfig, SolverFailure,
 };
 pub use viz::{
     Plane, VizError, boundary_surface, design_scene, design_scene_deformed, design_slab_cut,

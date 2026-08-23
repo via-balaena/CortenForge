@@ -9,8 +9,8 @@ use crate::material::Material;
 use crate::mesh::Mesh;
 use crate::solver::SolverFailure;
 
-use super::super::CpuNewtonSolver;
 use super::super::helpers::residual_into;
+use super::super::{CpuNewtonSolver, InitialGuess};
 use super::pod::PodBasis;
 
 /// Armijo sufficient-decrease constant — the full solver's value, so the two
@@ -82,6 +82,43 @@ pub struct ReducedStep {
 /// full-order `x_prev` each step would silently re-project it, discarding the
 /// out-of-span part and hiding exactly the drift a reduced model has to be judged on.
 /// Reduced state in, reduced state out.
+/// Refuse a full solver carrying a predictor.
+///
+/// The reduced loop starts from `q_prev` and has none. It reads the FULL
+/// solver's config through a BORROW (`full: &CpuNewtonSolver`), so it cannot be
+/// handed a different one — **the divergence is structural**, not a matter of
+/// accidentally sharing a config object. Refuse rather than ignore: the
+/// R-ladder's methodology is full-order oracle vs reduced fast path over the
+/// SAME full solver, so silently dropping the predictor on one side would
+/// benchmark a PREDICTED oracle against an UNPREDICTED reduced model and
+/// mis-measure the very ratio the ladder exists to establish. Loud refusal is
+/// this crate's convention for an unsupported combination (cf. `fbar` + Tet10,
+/// friction on the differentiable path).
+///
+/// Called from `new` — the documented contract is that this is a construction
+/// error, and the expensive part (snapshots, the POD fit) is already paid by
+/// the time `step` runs — and again from `step` as belt-and-braces.
+///
+/// # Panics
+/// If `guess` is anything but [`InitialGuess::PreviousState`].
+fn assert_supported_initial_guess(guess: InitialGuess) {
+    assert!(
+        matches!(guess, InitialGuess::PreviousState),
+        "ReducedNewtonSolver does not implement SolverConfig::initial_guess \
+         ({guess:?}) — it always starts from q_prev. Build the full solver with \
+         InitialGuess::PreviousState for any reduced solve or full-vs-reduced \
+         comparison, until the predictor is ported into this loop.",
+    );
+}
+
+/// Galerkin Newton on a POD subspace — R1.1's reduced fast path, wrapping the
+/// full-order [`CpuNewtonSolver`] it is graded against and never replacing it.
+///
+/// Borrows the full solver rather than owning one, so it shares that solver's
+/// [`SolverConfig`](crate::SolverConfig) — including
+/// [`InitialGuess`](crate::InitialGuess), which this loop does NOT implement and
+/// therefore refuses at construction: [`Self::new`] panics unless the wrapped
+/// solver is configured with `InitialGuess::PreviousState`.
 pub struct ReducedNewtonSolver<'a, E, Msh, C, M, const N: usize, const G: usize>
 where
     E: Element<N, G>,
@@ -130,6 +167,7 @@ where
             basis.n_free(),
             full.free_dof_indices().len(),
         );
+        assert_supported_initial_guess(full.config.initial_guess);
         Self {
             full,
             basis,
@@ -219,7 +257,12 @@ where
     /// can inspect it with the ordinary readouts.
     ///
     /// # Panics
-    /// Panics if `q_prev` / `qdot_prev` are not `n_modes` long.
+    /// Panics if `q_prev` / `qdot_prev` are not `n_modes` long, if `dt` is not
+    /// positive, or if the wrapped full solver was configured with a
+    /// `SolverConfig::initial_guess` other than `PreviousState` — this loop has
+    /// no predictor and refuses rather than silently dropping one (see the
+    /// assert's own comment for why a silent drop would corrupt a
+    /// full-vs-reduced measurement).
     // One linear Newton narrative: residual, projection, tangent, factor, line search.
     // Splitting it would separate the residual definition from the norm it descends.
     #[allow(clippy::too_many_lines)]
@@ -236,6 +279,9 @@ where
             "q must have n_modes entries"
         );
         assert!(dt > 0.0, "dt must be positive, got {dt}");
+        // Belt-and-braces: `new` already refused this, but a future constructor
+        // would bypass that and the divergence is silent by nature.
+        assert_supported_initial_guess(self.full.config.initial_guess);
 
         let n_dof = self.full.n_dof;
         // The previous full state, reconstructed from reduced coordinates. Constrained
@@ -256,6 +302,11 @@ where
         let mut f_int = vec![0.0; n_dof];
         let mut r_full = vec![0.0; n_dof];
 
+        // Always starts from `q_prev` — no predictor. Guarded by the
+        // `initial_guess` assert at the top of this function rather than left
+        // silent; porting the predictor here is the outstanding follow-up
+        // (recon §2f: the full-order and reduced gains compose only once it
+        // lands, so the composed figure is a projection until then).
         let mut q = q_prev.to_vec();
         self.full.check_validity_at_step_start(&x_prev)?;
 

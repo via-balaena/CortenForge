@@ -5,9 +5,109 @@ use crate::Vec3;
 use crate::mesh::VertexId;
 use crate::solver::lm::LmConfig;
 
+/// Where Newton starts each step — the initial iterate `x⁰` handed to
+/// [`CpuNewtonSolver`](super::CpuNewtonSolver)'s outer loop.
+///
+/// Backward Euler's free-DOF residual is
+///
+/// ```text
+///     r(x) = (m/Δt²)·(x − x̂) + f_int(x) − f_ext,     x̂ = x_prev + Δt·v_prev
+/// ```
+///
+/// so the choice here is *which term the first iterate already satisfies*.
+/// It changes the PATH Newton walks, never the root it walks to: every
+/// variant converges to the same `‖r‖ < tol` state, so this is a cost knob,
+/// not a physics knob.
+///
+/// ⚠ **It is not free of risk.** A guess further from the root can land
+/// outside the convergence basin, cost *more* iterations, or — under an
+/// [`IpcRigidContact`](crate::IpcRigidContact) log barrier — overshoot into
+/// penetration, where the barrier energy is infinite. Newton's intermediate
+/// iterates are not validity-checked — only the step-start state and the
+/// converged state are (Phase 4 Decision Q's two boundaries) — so an inverted
+/// first iterate surfaces as a stall or a non-finite residual rather than a
+/// clean [`SolverFailure::ValidityViolation`](crate::SolverFailure).
+/// Measure per fixture before switching.
+///
+/// `#[non_exhaustive]`: this set is expected to grow. `InertialWithLoad`
+/// measured **32.7× worse** on a stiff fixture (recon §2f), so it cannot be an
+/// unconditional default, and the next variant is already scoped — a per-step
+/// selector that evaluates `‖r‖` at both candidate guesses and starts from the
+/// smaller. Closing the enum now costs nothing (it has never shipped) and
+/// keeps that addition from being a breaking change; the price is a `_` arm in
+/// any external `match`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum InitialGuess {
+    /// `x⁰ = x_prev` — the previous step's converged position. The default,
+    /// and the only variant that leaves the whole residual to Newton.
+    #[default]
+    PreviousState,
+    /// `x⁰ = x̂ = x_prev + Δt·v_prev` — constant-velocity extrapolation.
+    ///
+    /// Zeroes the inertial term `(m/Δt²)·(x − x̂)` **on every free DOF**,
+    /// exactly: the expression is the same fused
+    /// `dt.mul_add(v_prev[i], x_prev[i])` the residual itself uses, so the
+    /// cancellation is bit-exact rather than merely close. Leaves
+    /// `f_int(x⁰) − f_ext`. (A CONSTRAINED DOF keeps `x_prev`, so its inertial
+    /// term is *not* zeroed when `v_prev` is nonzero there — harmless, since
+    /// constrained rows enter neither `free_residual_norm` nor the solve.)
+    Inertial,
+    /// `x⁰ = x̂ + Δt²·f_ext/m` — [`Self::Inertial`] plus the displacement the
+    /// external load alone would produce.
+    ///
+    /// This is the **exact backward-Euler answer for a DOF with no internal
+    /// force**, not the continuous constant-acceleration kinematic (which
+    /// would carry a `½`): BE's own `x = x_prev + Δt·v`, `v = v_prev + Δt·a`
+    /// composes to `x̂ + Δt²a` with no halving. It therefore zeroes every
+    /// residual term except `f_int(x⁰)`, and is the "predictive position" the
+    /// incremental-potential contact literature starts its solves from.
+    ///
+    /// **A zero lumped mass degrades this variant to [`Self::Inertial`] on that
+    /// DOF rather than dividing.** Two distinct sources, and only one is
+    /// impossible: an unreferenced vertex is auto-pinned at construction (see
+    /// `construct`'s `effective_pinned` walk) so it never reaches a free DOF —
+    /// but **`SolverConfig::density = 0.0` zeroes the mass of the whole model
+    /// at once**, and that is a supported static-solve configuration, not a
+    /// mistake (`slender_bending_matches_analytic`'s `STATIC_DENSITY`). With no
+    /// mass there is no inertial term in the residual at all, so there is
+    /// nothing for `Δt²·f_ext/m` to predict against.
+    InertialWithLoad,
+}
+
 /// Solver configuration — integration parameters the skeleton scene
 /// (spec §2) consumes. `skeleton()` returns the spec-§2 defaults.
+///
+/// # Construction
+///
+/// **Start from [`Self::skeleton`] and mutate the fields you need.** That is
+/// how every call site in this workspace already builds one, and with
+/// `#[non_exhaustive]` it is the only way an external crate can.
+///
+/// ```
+/// use sim_soft::SolverConfig;
+/// let mut cfg = SolverConfig::skeleton();
+/// cfg.dt = 1.0 / 60.0;
+/// cfg.gravity_z = -9.81;
+/// ```
+///
+/// That fence is a REAL doctest, deliberately. A doctest compiles as an
+/// external crate, which is exactly the vantage point `#[non_exhaustive]`
+/// changes — so it is a live check that the only construction route this type
+/// leaves outsiders still works. An `ignore` fence here would be unverified
+/// documentation of the very contract the attribute exists to enforce.
+///
+/// `#[non_exhaustive]` is deliberate and was added when `initial_guess`
+/// landed. This struct is a bag of independent integration knobs that grows
+/// as the solver does — `gravity_z`, `lm_regularization`, `friction_mu`,
+/// `fbar` and `initial_guess` were all added after v1.0.0 — and with public
+/// fields and no marker, **every one of those additions is a semver break for
+/// any external struct literal.** Closing it converts an open-ended series of
+/// breaks into exactly one, taken here, at the cost of a construction idiom
+/// the workspace had already adopted unanimously. Adding a field is now a
+/// minor-version change; only removing or retyping one is major.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct SolverConfig {
     /// Integration time-step (seconds).
     pub dt: f64,
@@ -83,6 +183,32 @@ pub struct SolverConfig {
     /// wires the coupling into the adjoint. (Mirrors the `friction_mu`
     /// forward-only-in-PR1 contract above.)
     pub fbar: bool,
+    /// Where Newton starts each step. Default [`InitialGuess::PreviousState`]
+    /// = start from `x_prev`, **bit-equal** to the pre-predictor path (the
+    /// `PreviousState` arm of `apply_initial_guess` is a no-op, the same
+    /// short-circuit shape as `gravity_z = 0.0` and `fbar = false`).
+    ///
+    /// The non-default variants trade a cheaper Newton path for a first
+    /// iterate that may sit outside the convergence basin — see
+    /// [`InitialGuess`] for the risk and for what each variant zeroes.
+    ///
+    /// ⚠ **FULL-ORDER SOLVER ONLY, and `reduced` PANICS rather than ignoring
+    /// it.** `backward_euler::reduced`'s `ReducedNewtonSolver` borrows the full
+    /// solver (`&CpuNewtonSolver`) and reads this same config, so it cannot be
+    /// given a different one; it always starts from `q_prev`. Its `step`
+    /// therefore **asserts** this field is [`InitialGuess::PreviousState`]
+    /// rather than dropping the predictor quietly — a silent drop would make a
+    /// full-vs-reduced comparison benchmark a *predicted* oracle against an
+    /// *unpredicted* reduced model, which is exactly the ratio the R-ladder
+    /// exists to measure.
+    ///
+    /// ⚠ That refusal is a **panic, not a [`SolverFailure`](crate::SolverFailure)**
+    /// — a `try_`-style caller cannot recover from it — so it is a
+    /// configuration error to be caught in construction, not a runtime
+    /// condition. Set [`InitialGuess::PreviousState`] on any solver a
+    /// `ReducedNewtonSolver` will wrap, until the predictor is ported into the
+    /// reduced loop.
+    pub initial_guess: InitialGuess,
 }
 
 impl SolverConfig {
@@ -93,6 +219,8 @@ impl SolverConfig {
     /// drop-and-rest fixture opts in by mutating the field on a
     /// constructed config (mirrors the Hertzian and compressive-block
     /// fixtures' `STATIC_DT` bumping pattern).
+    /// `initial_guess = PreviousState` — Newton starts from `x_prev`, the
+    /// pre-predictor behavior; a caller opts into extrapolation the same way.
     #[must_use]
     pub const fn skeleton() -> Self {
         Self {
@@ -106,6 +234,7 @@ impl SolverConfig {
             friction_mu: 0.0,
             friction_eps_v: 0.0,
             fbar: false,
+            initial_guess: InitialGuess::PreviousState,
         }
     }
 }

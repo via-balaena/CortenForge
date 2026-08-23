@@ -12,11 +12,11 @@ use crate::mesh::{Mesh, TetId};
 use crate::solver::lm::LmState;
 use crate::solver::{CpuTape, NewtonStep, SolverFailure};
 
-use super::CpuNewtonSolver;
 use super::helpers::{
     armijo_stall_panic_message, deformation_gradient, element_node_ids, extract_element_dof_values,
-    residual_into,
+    initial_guess_stall_hint, residual_into,
 };
+use super::{CpuNewtonSolver, InitialGuess};
 
 /// Armijo sufficient-decrease constant (scope §5 R-1).
 const ARMIJO_C1: f64 = 1e-4;
@@ -530,13 +530,22 @@ where
                     last_iter,
                     last_r_norm,
                     ..
-                } => panic!("{}", armijo_stall_panic_message(last_iter, last_r_norm)),
-                SolverFailure::NewtonIterCap { max_iter, .. } => panic!(
+                } => panic!(
+                    "{}",
+                    armijo_stall_panic_message(last_iter, last_r_norm, self.config.initial_guess,)
+                ),
+                SolverFailure::NewtonIterCap {
+                    max_iter,
+                    last_r_norm,
+                    ..
+                } => panic!(
                     "Newton failed to converge within {max_iter} iterations at \
                      tol {tol:e}. Likely causes: θ drives system out of R-2's \
                      SPD region, or spec §3 R-1's assumption of 3-5 iter \
-                     convergence from zero initial guess is wrong for this θ.",
+                     convergence from the previous state is wrong for this θ.{hint}",
                     tol = self.config.tol,
+                    hint =
+                        initial_guess_stall_hint(max_iter, last_r_norm, self.config.initial_guess,),
                 ),
                 SolverFailure::DoublyFailedFactor { context, .. } => panic!("{context}"),
                 // Decision Q fail-closed: `step`/`replay_step` re-panic with the verbatim
@@ -657,6 +666,69 @@ where
         }
     }
 
+    /// Move the initial iterate off `x_prev` per
+    /// [`SolverConfig::initial_guess`](super::SolverConfig::initial_guess).
+    ///
+    /// `x_curr` enters as a copy of `x_prev` and leaves as Newton's `x⁰`.
+    /// Only FREE DOFs move. A constrained DOF carries its prescribed
+    /// position in `x_prev` and is never updated by the Newton solve, so
+    /// extrapolating one would walk it off its constraint permanently rather
+    /// than merely guess badly — and the free-DOF restriction is also what
+    /// makes [`InitialGuess::InertialWithLoad`]'s division by mass total (see
+    /// that variant's docs for the auto-pin invariant behind it).
+    ///
+    /// A no-op under the default [`InitialGuess::PreviousState`], which is
+    /// what keeps the pre-predictor path bit-equal.
+    fn apply_initial_guess(&self, x_curr: &mut [f64], v_prev: &[f64], f_ext: &[f64], dt: f64) {
+        match self.config.initial_guess {
+            InitialGuess::PreviousState => {}
+            InitialGuess::Inertial => {
+                for &i in &self.free_dof_indices {
+                    // Same fused op as `helpers::residual_into`'s `x_hat`, so
+                    // the inertial term cancels to exactly zero at `x⁰`.
+                    x_curr[i] = dt.mul_add(v_prev[i], x_curr[i]);
+                }
+            }
+            InitialGuess::InertialWithLoad => {
+                let dt2 = dt * dt;
+                for &i in &self.free_dof_indices {
+                    let m = self.mass_per_dof[i];
+                    x_curr[i] = if m > 0.0 {
+                        dt.mul_add(v_prev[i], x_curr[i]) + dt2 * (f_ext[i] / m)
+                    } else {
+                        // ⚠ `m == 0` is a SUPPORTED configuration, not a defect:
+                        // `config.density = 0.0` collapses the whole `M/Δt²` term
+                        // and turns each step into a pure static root-find, which
+                        // is how `slender_bending_matches_analytic`'s
+                        // `STATIC_DENSITY` rig measures. An unreferenced vertex
+                        // cannot reach here (auto-pinned at construction), but a
+                        // massless MODEL can, and every DOF is zero at once.
+                        //
+                        // Drop ONLY the load term: `x⁰` keeps `Δt·v_prev`, so this
+                        // variant degrades to exactly `Inertial` here. ⚠ Note the
+                        // narrower claim — with `m == 0` the residual is
+                        // `f_int(x) − f_ext` and does not reference `x̂`, so the
+                        // velocity term zeroes nothing either; it is kept because
+                        // the caller asked for an extrapolating variant and
+                        // honouring the defined half is more predictable than
+                        // silently reverting to `PreviousState`. (In a static rig
+                        // `v_prev` is zero and the two coincide anyway.) What
+                        // cannot be kept is `Δt²·f_ext/m`, which yields
+                        // `0/0 = NaN` on unloaded DOFs and `±inf` on loaded ones.
+                        // That poisons `x⁰`; `‖r‖` is then `NaN`, `NaN < tol` is
+                        // false so Newton can never converge, and the `NaN` reaches
+                        // the tangent. MEASURED with the guard removed: in debug it
+                        // trips `try_factor_free_tangent`'s `max_diag > 0.0`
+                        // `debug_assert`; in `--release`, where this crate's FEM
+                        // gates run, that assert is compiled out too and the `NaN`
+                        // flows on into the factor and line search.
+                        dt.mul_add(v_prev[i], x_curr[i])
+                    };
+                }
+            }
+        }
+    }
+
     /// Graceful-failure counterpart to [`Self::solve_impl`] (F3.3 per
     /// `docs/F3_LM_REGULARIZATION_SPEC.md` §2.5). Same Newton loop,
     /// but returns `Result<(NewtonStep, f64), SolverFailure>` instead
@@ -720,10 +792,15 @@ where
              Tet10 analog (see fbar.rs)."
         );
 
-        let mut x_curr: Vec<f64> = x_prev.as_slice().to_vec();
         let x_prev_vec: Vec<f64> = x_prev.as_slice().to_vec();
         let v_prev_vec: Vec<f64> = v_prev.as_slice().to_vec();
 
+        // ⚠ This assembly did NOT move: it already sat here, ahead of the
+        // validity check. What moved is `x_curr`, whose construction is now
+        // BELOW both, so `InitialGuess::InertialWithLoad` can read `f_ext`.
+        // Nothing here is load-bearing ordering — `assemble_external_force`
+        // reads `theta`, the boundary conditions and the construction-time
+        // lumped mass, never `x`.
         let mut f_ext = vec![0.0; self.n_dof];
         self.assemble_external_force(theta, &mut f_ext);
 
@@ -734,7 +811,19 @@ where
         // co-design caller skips the design); `solve_impl`/`step`
         // re-panic the verbatim Decision Q message (fail-closed
         // contract unchanged).
-        self.check_validity_at_step_start(&x_curr)?;
+        //
+        // Checked on `x_prev` — the STATE this step warm-starts from — and
+        // deliberately not on the initial iterate, which under a non-default
+        // [`InitialGuess`](super::InitialGuess) is a different point. An
+        // iterate is not a state: Newton's later iterates are not checked
+        // either, and gating one would fail-close a step whose converged
+        // answer is perfectly valid. Bit-equal under the default guess, where
+        // the two coincide. The reduced solver already reads it this way
+        // (`reduced::newton` checks `x_prev` against a `q_prev` iterate).
+        self.check_validity_at_step_start(&x_prev_vec)?;
+
+        let mut x_curr: Vec<f64> = x_prev_vec.clone();
+        self.apply_initial_guess(&mut x_curr, &v_prev_vec, &f_ext, dt);
 
         let mut f_int = vec![0.0; self.n_dof];
         let mut r_full = vec![0.0; self.n_dof];
