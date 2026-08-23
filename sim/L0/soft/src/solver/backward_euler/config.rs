@@ -185,14 +185,22 @@ pub struct SolverConfig {
     /// iterate that may sit outside the convergence basin — see
     /// [`InitialGuess`] for the risk and for what each variant zeroes.
     ///
-    /// ⚠ **FULL-ORDER SOLVER ONLY.** `backward_euler::reduced`'s
-    /// `ReducedNewtonSolver` reads this same config but always starts from
-    /// `q_prev`, so it silently ignores this field. That matters most where it
-    /// is least visible: driving a full and a reduced solve from ONE config
-    /// object compares a predicted full solve against an unpredicted reduced
-    /// one. Porting the predictor into the reduced Newton loop is tracked work,
-    /// not a decision — until it lands, set this to
-    /// [`InitialGuess::PreviousState`] for any full-vs-reduced comparison.
+    /// ⚠ **FULL-ORDER SOLVER ONLY, and `reduced` PANICS rather than ignoring
+    /// it.** `backward_euler::reduced`'s `ReducedNewtonSolver` borrows the full
+    /// solver (`&CpuNewtonSolver`) and reads this same config, so it cannot be
+    /// given a different one; it always starts from `q_prev`. Its `step`
+    /// therefore **asserts** this field is [`InitialGuess::PreviousState`]
+    /// rather than dropping the predictor quietly — a silent drop would make a
+    /// full-vs-reduced comparison benchmark a *predicted* oracle against an
+    /// *unpredicted* reduced model, which is exactly the ratio the R-ladder
+    /// exists to measure.
+    ///
+    /// ⚠ That refusal is a **panic, not a [`SolverFailure`](crate::SolverFailure)**
+    /// — a `try_`-style caller cannot recover from it — so it is a
+    /// configuration error to be caught in construction, not a runtime
+    /// condition. Set [`InitialGuess::PreviousState`] on any solver a
+    /// `ReducedNewtonSolver` will wrap, until the predictor is ported into the
+    /// reduced loop.
     pub initial_guess: InitialGuess,
 }
 

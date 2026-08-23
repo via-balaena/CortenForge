@@ -28,10 +28,12 @@ brief did not anticipate and which changes the wgpu plan — and **contact costs
 0.02 % of a contact-active frame**, so contact is a *structural* problem for MOR, not
 a compute one. Two cheap full-order levers surfaced that must be measured before any
 reduced-order code is written. **A third, added 2026-08-23: a Newton PREDICTOR cuts
-ITERATION COUNT — the factor no rung of the ladder touches — by 1.95× on the
-representative workload and 4.71× on the hard one (wall-clock over the same runs:
-1.90× and 4.63×), which drops what R3 must deliver from 12–16× to 6.1–8.1×, below
-its own 10× kill floor. → §2f**
+ITERATION COUNT — the factor no rung of the ladder touches — by `1.95×` on the
+representative workload, roughly HALVING what R3 must deliver and bringing it from
+clearly above R3's `10×` kill floor to bracketing it. ⚠ The load-carrying variant is
+NOT shippable as a default: it is fatal on contact-plus-load. Every other ratio, and
+the R3 derivation, live in §2f and are deliberately not restated here — three review
+rounds each found a fresh metric-mixing error in this sentence. → §2f**
 
 > ### ⚠ Carry these three caveats with every number in this document
 >
@@ -521,11 +523,40 @@ trustworthy part.
 Zero convergence failures on any subject fixture — no Armijo stall, no iteration
 cap, no validity violation, no non-finite state.
 
-**On the IPC pair being identical.** `Inertial` and `InertialWithLoad` agree to the
-digit on both IPC rows. That was predicted before the run, not observed after it:
-the indentation fixture is displacement-controlled with `gravity_z = 0` and an
-empty θ, so `f_ext ≡ 0` and the two variants are the same point by construction.
-It is the harness's own self-check, and it passed.
+##### ⛔ Adding the missing cell: contact AND a body load kills `InertialWithLoad`
+
+IPC 5 202, `gravity_z = ±9.81`, both directions because only one is adversarial
+(`−z` loads the layer away from the indenter above it; `+z` drives it in):
+
+| body load | `PreviousState` | `Inertial` | `InertialWithLoad` |
+|---|---:|---:|---|
+| `−z` (away from collider) | 434 | 205 (0.472×) | **DIED, step 0** — `ArmijoStall @ iter 0, ‖r‖ = NaN` |
+| `+z` (into collider) | 433 | 205 (0.473×) | **DIED, step 0** — `ArmijoStall @ iter 0, ‖r‖ = 3.67e6` |
+
+**Both directions, on the first step.** The scale says why: `Δt²g` at 60 Hz is
+**2.7 mm**, against an IPC band `d_hat` of **2.5e-5 m** — `109×` the length scale the
+barrier operates on, and 43 % of the layer's 6.4 mm thickness in a single iterate.
+⚠ The `−z` failure is a `NaN`, and it is **not** the barrier: a uniform 2.7 mm
+predicted drop on a layer whose base is PINNED inverts elements near the bottom, so
+`det F ≤ 0`. The load term fails on the kinematic side as well as the contact side.
+
+⇒ **`Inertial` is the robust arm.** It wins or ties on every fixture measured and
+never once failed to converge. `InertialWithLoad` wins the tail on ONE non-contact
+fixture and is catastrophic on two of the four fixture classes (`block_sag` 32.7×
+worse; contact-plus-load fatal). **Nothing here supports shipping the load term as a
+default**, and the `‖r‖`-at-both-guesses selector below stops being an optimisation
+and becomes the precondition for using it at all.
+
+**On the IPC pair being identical — and what that hid.** `Inertial` and
+`InertialWithLoad` agree to the digit on both IPC rows. That was predicted before the
+run, not observed after it: the indentation fixture is displacement-controlled with
+`gravity_z = 0` and an empty θ, so `f_ext ≡ 0` and the two variants are the same
+point by construction. The harness's own self-check, and it passed.
+
+⚠ **It also meant `Δt²·f_ext/m` — the ONLY term distinguishing the two arms — was
+never exercised against a contact barrier.** The matrix crossed fixture × size ×
+guess but never *load × contact*, and that omission sat directly under the arm the
+variance result below recommends. Closed by measurement, not by caveat:
 
 #### The gain, and what it does to the ladder
 
@@ -543,17 +574,43 @@ cantilever's *median* is the outlier at 3.19× because the baseline's total is
 dominated by transient spikes the median never sees — which is the same fact §2f's
 variance section is about, seen from the other side.
 
-The consequence for R3 is the reason this was measured before it. §7 records that
-with R1 at ~2×, R3 must deliver **12–16×** to reach a 60 Hz frame, while R3's own
-kill floor is 10× — so R3 could pass its gate and leave the budget missed. A frame
-budget is a per-frame quantity, so the figure to divide by is the representative
-workload's **median frame time, 1.97×**; the requirement falls to **6.1–8.1×**
-(on total wall-clock, 1.90×, it is 6.3–8.4× — the conclusion does not turn on
-which aggregate is used):
+#### What it does to R3's requirement — derived here, from this document
 
-> **R3's 10× kill floor now EXCEEDS what the frame budget needs.** The gate and
-> the goal have swapped places — passing R3 now implies making the budget, which
-> is what a kill gate is supposed to mean.
+The consequence for R3 is the reason this was measured before it. ⚠ An earlier
+revision of this paragraph cited "§7 records 12–16×"; **§7 records no such figure**
+— the only ×-value in it is R3's `10×` kill floor. The requirement is derived, and
+the derivation belongs in the open where it can be audited, so here it is in full.
+
+Ingredients, all from this document: the pre-R0 gap to a 16.7 ms frame (§2a), the
+assembly share R0 was able to touch (§2d), R0's measured `1.51–1.89×` on that share
+(§2a), R1's `~2×` (R1.1), and the predictor's median-frame `1.97×` (above). A frame
+budget is a per-frame quantity, hence the median rather than a total.
+
+| IPC size | pre-R0 gap | asm share | R0 credited | R3 needs, no predictor | **with predictor** |
+|---|---:|---:|---:|---:|---:|
+| 5 202 | 28.0× | 17.7 % | best case 1.22× | 11.5× | **5.8×** |
+| 5 202 | 28.0× | 17.7 % | measured 1.09× | 12.8× | **6.5×** |
+| 18 750 | 46.2× | 30.1 % | best case 1.43× | 16.1× | **8.2×** |
+| 18 750 | 46.2× | 30.1 % | measured 1.17× | 19.8× | **10.1×** |
+
+⚠ **The answer depends on how much credit R0 gets, and the two rows straddle the
+kill floor.** "R0 best case" assumes R0 removed assembly cost *entirely* — an Amdahl
+upper bound on R0, and therefore a LOWER bound on what R3 must still find. "R0
+measured" applies R0's actual `1.89×` to the assembly share alone. §2d's contact-arm
+figures are flagged as the only ones never re-measured after R0, so neither row is
+better than the input.
+
+> **The predictor roughly HALVES R3's requirement — from 11.5–19.8× to 5.8–10.1×.**
+> Before it, the requirement was clearly ABOVE R3's `10×` kill floor on every
+> accounting, so R3 could pass its gate and leave the frame budget missed. After it,
+> the requirement brackets the floor: comfortably under on the optimistic accounting,
+> and **10.1× against a 10× floor at 18 750 on the measured one — a coin flip.**
+> That is a large improvement in R3's odds and it is NOT the clean "the gate now
+> implies the goal" an earlier revision of this section claimed.
+
+⇒ **Re-measuring §2d's contact-arm shares post-R0 is now on R3's critical path**, not
+merely a housekeeping item: it is the single input that decides which row above is
+the real one.
 
 ⚠ **The factors multiply only if the predictor is ported to the reduced solver.**
 R1's ~2× is a *per-iteration* saving and the predictor's is an *iteration-count*
@@ -587,6 +644,11 @@ against a baseline from another; the `max / p50` column above is the one figure
 that needs no baseline at all. **On totals `Inertial` wins and on the tail
 `InertialWithLoad` wins — mean and tail rank the two options oppositely**, cf.
 `feedback_metric_choice_can_invert_findings`.
+
+⛔ **This is a result about the TERM, not a recommendation for the ARM.** Measured on
+one non-contact fixture; the same term is fatal on contact-plus-load (above). What
+survives is: *a load-aware predictor can flatten the frame-time tail, and something
+must gate when it fires.*
 
 #### ⚠ `block_sag` got 32.7× WORSE, and that is the boundary of the technique
 
@@ -1179,12 +1241,20 @@ small, separate PR and is not proposed here.
 
 - **v2.1 (2026-08-23)** — **§2f added: the iteration-count factor is a lever, and a
   large one.** `SolverConfig::initial_guess` (a Newton predictor; default bit-equal)
-  measured across five fixture/size pairs, three arms stepped in lockstep. 1.95× fewer
-  iterations on the representative IPC workload and 4.71× on `cantilever 80×8`
-  (wall-clock totals 1.90× / 4.63×), zero
+  measured across six fixture/size/load cells, three arms stepped in lockstep. 1.95×
+  fewer iterations on the representative IPC workload and 4.71× on `cantilever 80×8`
+  (wall-clock totals 1.90× / 4.63×; see §2f for the median column and for why the
+  three aggregates must not be mixed), zero
   convergence failures, trajectories identical to 6e-14…8e-12 on the subjects. **R3's required gain
-  falls from 12–16× to 6.1–8.1×, i.e. below its own 10× kill floor** — the gate now
-  implies the goal instead of undershooting it. `InertialWithLoad` additionally
+  is roughly HALVED — from 11.5–19.8× to 5.8–10.1× depending on how much credit R0
+  gets, a derivation §2f now shows in full rather than citing.** Before the predictor
+  the requirement sat clearly above R3's `10×` kill floor on every accounting; it now
+  brackets it (comfortably under on the optimistic row, 10.1× vs 10× on the measured
+  one). ⚠ An earlier draft of this entry claimed the floor now cleanly exceeds the
+  need and cited a §7 figure that does not exist. ⛔ A sixth cell added after review —
+  contact PLUS a body load — **kills `InertialWithLoad` at step 0 in both load
+  directions**, so `Inertial` is the robust arm and the load term needs a gate before
+  it can be used at all. `InertialWithLoad` additionally
   collapses the frame-time tail (`ms max / ms p50` 4.44× → **1.04×**), the first thing
   measured here that attacks VARIANCE rather than the mean. ⚠ Two limits recorded with
   it: the factors compose only once the predictor is ported to `reduced::newton`

@@ -72,7 +72,10 @@
 //!   downside is unbounded, and it duly degraded 32.7×. **An improvement here would
 //!   indict the harness; a degradation is a fact about the technique.** State a
 //!   control's licence in both directions, and name which direction is the alarm.
-//! - Also reported: `‖x_arm − x_base‖ / ‖x_base‖` at the final step. Two
+//! - Also reported: `‖x_arm − x_base‖ / ‖u_base‖` at the final step, where the
+//!   denominator is the baseline's DISPLACEMENT from rest, not its absolute
+//!   position — dividing by `‖x_base‖` on a 20 cm beam whose tip moved 4 cm
+//!   reads reassuringly tiny whatever the arms did (see `rel_drift`). Two
 //!   trajectories each converged to `1e-10` still separate over 60 steps, so
 //!   this is REPORTED, not gated — but a large value means the predictor changed
 //!   the answer rather than the path, which would be a finding, not a win.
@@ -351,6 +354,15 @@ fn report(case: &str, n_free: usize, n_steps: usize, x_rest: &[f64], arms: &[Arm
         } else {
             format!("{:>7.3}×", arm.total_iters() as f64 / base_total as f64)
         };
+        if arm.iters.is_empty() {
+            // A dead arm has no samples; printing `NaN` quantiles next to a
+            // `0` total invites reading it as a spectacular result.
+            println!(
+                "║ {:<11} {:>7} {} {:>6} {:>6} {:>6} {:>10} {:>10} {:>10}",
+                arm.label, "—", ratio, "—", "—", "—", "—", "—", "—",
+            );
+            continue;
+        }
         println!(
             "║ {:<11} {:>7} {} {:>6} {:>6} {:>6} {:>10.2} {:>10.2} {:>10.1}",
             arm.label,
@@ -516,15 +528,32 @@ fn indenter(lx: f64, ly: f64, z_center: f64) -> TranslatedSdf<SphereSdf> {
     }
 }
 
-fn ipc_solver(
+/// The indentation scene's geometry, resolved once by [`dims_for`] and shared by
+/// all three arms. Grouped because the arms must differ in the guess and NOTHING
+/// else — passing six loose numbers three times invites one of them drifting.
+#[derive(Clone, Copy)]
+struct LayerScene {
     n_lat: usize,
     nz: usize,
     lateral: f64,
     h: f64,
     z_start: f64,
     d_hat: f64,
+}
+
+fn ipc_solver(
+    scene: LayerScene,
+    gravity: f64,
     guess: InitialGuess,
 ) -> IpcRigidContactSolver<HandBuiltTetMesh> {
+    let LayerScene {
+        n_lat,
+        nz,
+        lateral,
+        h,
+        z_start,
+        d_hat,
+    } = scene;
     let field = MaterialField::uniform(LAYER_MU, LAYER_LAMBDA);
     let mesh =
         HandBuiltTetMesh::cantilever_bilayer_beam(n_lat, n_lat, nz, lateral, lateral, h, &field);
@@ -536,6 +565,7 @@ fn ipc_solver(
     cfg.density = DENSITY;
     cfg.max_newton_iter = MAX_NEWTON_ITER;
     cfg.initial_guess = guess;
+    cfg.gravity_z = gravity;
 
     CpuNewtonSolver::new(
         Tet4,
@@ -547,7 +577,7 @@ fn ipc_solver(
 }
 
 /// Drive the indentation ramp across all three arms.
-fn run_indentation(a_over_cell: f64) -> (usize, usize, Vec<f64>, Vec<ArmResult>) {
+fn run_indentation(a_over_cell: f64, gravity: f64) -> (usize, usize, Vec<f64>, Vec<ArmResult>) {
     let (n_lat, nz, lateral, h) = dims_for(a_over_cell);
     let d_hat = BAND_FRAC * DELTA;
     // South pole starts a full `1.2·d̂` above the top face (barrier inactive)
@@ -565,10 +595,18 @@ fn run_indentation(a_over_cell: f64) -> (usize, usize, Vec<f64>, Vec<ArmResult>)
     let n_free =
         3 * probe.n_vertices() - 3 * pick_vertices_by_predicate(&probe, |p| p.z.abs() < 1e-9).len();
 
+    let scene = LayerScene {
+        n_lat,
+        nz,
+        lateral,
+        h,
+        z_start,
+        d_hat,
+    };
     let solvers = [
-        ipc_solver(n_lat, nz, lateral, h, z_start, d_hat, ARMS[0].1),
-        ipc_solver(n_lat, nz, lateral, h, z_start, d_hat, ARMS[1].1),
-        ipc_solver(n_lat, nz, lateral, h, z_start, d_hat, ARMS[2].1),
+        ipc_solver(scene, gravity, ARMS[0].1),
+        ipc_solver(scene, gravity, ARMS[1].1),
+        ipc_solver(scene, gravity, ARMS[2].1),
     ];
 
     // Every arm sees the identical sphere pose at step `k`; only the Newton
@@ -617,8 +655,43 @@ fn spike_block_sag_1944() {
 #[test]
 #[ignore = "predictor spike instrument — run explicitly, see module docs"]
 fn spike_ipc_5202() {
-    let (n_free, n_steps, x_rest, arms) = run_indentation(2.0);
+    let (n_free, n_steps, x_rest, arms) = run_indentation(2.0, 0.0);
     report("IPC dynamic_indentation", n_free, n_steps, &x_rest, &arms);
+}
+
+/// **The cell the original matrix missed: contact AND a body load.**
+///
+/// ⚠ Both IPC rows above run at `gravity_z = 0` with an empty θ, so `f_ext ≡ 0`
+/// and `Inertial` and `InertialWithLoad` are the *same point* by construction.
+/// That was designed in as a harness self-check — and it has a consequence the
+/// self-check hides: **`Δt²·f_ext/m`, the only term distinguishing the arm the
+/// tail result recommends, was never exercised against a contact barrier at
+/// all.** The scales say that is exactly where it should be tested: one frame
+/// of free fall is `Δt²g` = 2.7 mm against an IPC band `d_hat` = 2.5e-5 m —
+/// **109× the length scale the barrier operates on**, and 43 % of the layer
+/// thickness in a single iterate.
+///
+/// Run in BOTH directions, because only one of them is adversarial:
+/// `-z` loads the layer AWAY from the indenter sitting above it (benign), while
+/// `+z` drives it INTO the collider (the hazard). Testing only the benign
+/// direction would be the same vacuous-fixture mistake as zeroing the pinned
+/// velocities — see `feedback_negative_controls_need_two_sided_rules`.
+#[test]
+#[ignore = "predictor spike instrument — run explicitly, see module docs"]
+fn spike_ipc_gravity_5202() {
+    for (label, g) in [
+        ("−z, away from collider", -9.81),
+        ("+z, INTO collider", 9.81),
+    ] {
+        let (n_free, n_steps, x_rest, arms) = run_indentation(2.0, g);
+        report(
+            &format!("IPC + body load ({label})"),
+            n_free,
+            n_steps,
+            &x_rest,
+            &arms,
+        );
+    }
 }
 
 /// Cantilever at 3 000 free DOF — 24.2 iterations/step in the recon.
@@ -651,7 +724,7 @@ fn spike_cantilever_3000() {
 #[test]
 #[ignore = "predictor spike instrument — run explicitly, see module docs"]
 fn spike_ipc_18750() {
-    let (n_free, n_steps, x_rest, arms) = run_indentation(3.0);
+    let (n_free, n_steps, x_rest, arms) = run_indentation(3.0, 0.0);
     report("IPC dynamic_indentation", n_free, n_steps, &x_rest, &arms);
 }
 

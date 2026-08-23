@@ -219,7 +219,12 @@ where
     /// can inspect it with the ordinary readouts.
     ///
     /// # Panics
-    /// Panics if `q_prev` / `qdot_prev` are not `n_modes` long.
+    /// Panics if `q_prev` / `qdot_prev` are not `n_modes` long, if `dt` is not
+    /// positive, or if the wrapped full solver was configured with a
+    /// `SolverConfig::initial_guess` other than `PreviousState` — this loop has
+    /// no predictor and refuses rather than silently dropping one (see the
+    /// assert's own comment for why a silent drop would corrupt a
+    /// full-vs-reduced measurement).
     // One linear Newton narrative: residual, projection, tangent, factor, line search.
     // Splitting it would separate the residual definition from the norm it descends.
     #[allow(clippy::too_many_lines)]
