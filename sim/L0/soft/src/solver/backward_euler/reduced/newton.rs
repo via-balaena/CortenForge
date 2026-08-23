@@ -82,6 +82,31 @@ pub struct ReducedStep {
 /// full-order `x_prev` each step would silently re-project it, discarding the
 /// out-of-span part and hiding exactly the drift a reduced model has to be judged on.
 /// Reduced state in, reduced state out.
+///
+/// # Initial guess
+///
+/// The full solver is BORROWED, so this type shares its
+/// [`SolverConfig`](crate::SolverConfig) and cannot be configured apart from it —
+/// including [`InitialGuess`]. It **implements** `PreviousState` and `Inertial`;
+/// the latter reproduces the oracle's `x̂` exactly in reduced coordinates, with no
+/// mass matrix. [`Self::new`] panics on `InertialWithLoad`, the one variant with
+/// no free reduced form.
+pub struct ReducedNewtonSolver<'a, E, Msh, C, M, const N: usize, const G: usize>
+where
+    E: Element<N, G>,
+    Msh: Mesh<M>,
+    M: Material,
+    C: ContactModel + ActivePairsFor<M>,
+{
+    // `pub(super)` on exactly the two the sibling `sensitivity` module reads — the
+    // adjoint needs the assembly source and the basis, and accessors for them would be
+    // two methods that only re-state `struct` fields. `x_rest` stays private: the
+    // adjoint is taken at a caller-supplied configuration, never at rest.
+    pub(super) full: &'a CpuNewtonSolver<E, Msh, C, M, N, G>,
+    pub(super) basis: &'a PodBasis,
+    x_rest: Vec<f64>,
+}
+
 /// Refuse the one [`InitialGuess`] this loop cannot honour.
 ///
 /// `PreviousState` and `Inertial` are both implemented, and `Inertial` reproduces
@@ -119,32 +144,6 @@ fn assert_supported_initial_guess(guess: InitialGuess) {
     );
 }
 
-/// Galerkin Newton on a POD subspace — R1.1's reduced fast path, wrapping the
-/// full-order [`CpuNewtonSolver`] it is graded against and never replacing it.
-///
-/// Borrows the full solver rather than owning one, so it shares that solver's
-/// [`SolverConfig`](crate::SolverConfig) — including
-/// [`InitialGuess`], which this loop **implements** for
-/// `PreviousState` and `Inertial`. `Inertial` reproduces the oracle's `x̂`
-/// exactly in reduced coordinates and needs no mass matrix.
-/// [`Self::new`] panics on `InertialWithLoad`, the one variant with no free
-/// reduced form.
-pub struct ReducedNewtonSolver<'a, E, Msh, C, M, const N: usize, const G: usize>
-where
-    E: Element<N, G>,
-    Msh: Mesh<M>,
-    M: Material,
-    C: ContactModel + ActivePairsFor<M>,
-{
-    // `pub(super)` on exactly the two the sibling `sensitivity` module reads — the
-    // adjoint needs the assembly source and the basis, and accessors for them would be
-    // two methods that only re-state `struct` fields. `x_rest` stays private: the
-    // adjoint is taken at a caller-supplied configuration, never at rest.
-    pub(super) full: &'a CpuNewtonSolver<E, Msh, C, M, N, G>,
-    pub(super) basis: &'a PodBasis,
-    x_rest: Vec<f64>,
-}
-
 impl<'a, E, Msh, C, M, const N: usize, const G: usize> ReducedNewtonSolver<'a, E, Msh, C, M, N, G>
 where
     E: Element<N, G>,
@@ -159,6 +158,10 @@ where
     /// Panics if `x_rest` is not `n_dof` long, or if the basis does not span the
     /// solver's free DOFs — either is a scene-wiring bug that would otherwise surface
     /// as silently wrong physics.
+    /// Also panics if the wrapped solver is configured with
+    /// [`InitialGuess::InertialWithLoad`], which this loop does not implement —
+    /// caught HERE rather than at the first `step` so the failure lands before
+    /// the snapshots and the POD fit are paid for.
     #[must_use]
     pub fn new(
         full: &'a CpuNewtonSolver<E, Msh, C, M, N, G>,

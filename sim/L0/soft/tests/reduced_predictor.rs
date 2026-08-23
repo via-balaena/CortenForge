@@ -97,6 +97,20 @@ enum ArmOutcome {
     DidNotConverge(String),
 }
 
+/// One line naming WHICH arm stopped and WHY, keeping the physics-limit and
+/// failed-to-converge cases distinguishable wherever an outcome is reported.
+fn describe_outcome(arm: &str, outcome: &ArmOutcome) -> String {
+    match outcome {
+        ArmOutcome::Converged(_) => format!("{arm}: converged"),
+        ArmOutcome::LeftValidityDomain(why) => {
+            format!("{arm}: {why} (a FIXTURE physics limit, not a solver result)")
+        }
+        ArmOutcome::DidNotConverge(why) => {
+            format!("{arm}: {why} (a RESULT about this arm)")
+        }
+    }
+}
+
 fn classify(fail: &SolverFailure) -> ArmOutcome {
     match fail {
         SolverFailure::ValidityViolation { tet_id, .. } => {
@@ -145,6 +159,11 @@ const EVAL_IDS: [u64; 3] = [900, 901, 902];
 /// Below this mean, the fixture has no room to show a gain and the comparison
 /// is reported as inconclusive rather than as a result.
 const MIN_INFORMATIVE_ITERS_PER_STEP: f64 = 3.0;
+/// Newton cap, shared by EVERY rig here. Generous against the ~4 iterations/step
+/// these fixtures actually take, so it never binds and never silently truncates a
+/// cell into looking cheaper than it is — an earlier draft used 80 in three
+/// places and 200 in a fourth, for no stated reason.
+const NEWTON_CAP: usize = 200;
 
 struct Rig {
     solver: CpuTet4NHSolver<HandBuiltTetMesh>,
@@ -174,7 +193,7 @@ fn rig(guess: InitialGuess) -> Rig {
     let mut cfg = SolverConfig::skeleton();
     cfg.dt = DT;
     cfg.density = DENSITY;
-    cfg.max_newton_iter = 80;
+    cfg.max_newton_iter = NEWTON_CAP;
     cfg.tol = 1.0e-6;
     cfg.initial_guess = guess;
     Rig {
@@ -357,10 +376,12 @@ fn measure(load_scale: f64, r_modes: usize) {
     let red_pred = ReducedNewtonSolver::new(&pred.solver, &basis, &pred.x_rest);
 
     let (mut o_base, mut o_pred, mut r_base, mut r_pred) = (0usize, 0usize, 0usize, 0usize);
+    let mut eval_states: Vec<Vec<Vec<f64>>> = Vec::with_capacity(EVAL_IDS.len());
     for &k in &EVAL_IDS {
         let t = sample_scaled(k, load_scale);
+        let (base_states, base_outcome) = run_oracle(&base, t);
         let cells = [
-            ("oracle/PreviousState", run_oracle(&base, t).1),
+            ("oracle/PreviousState", base_outcome),
             ("oracle/Inertial", run_oracle(&pred, t).1),
             (
                 "reduced/PreviousState",
@@ -372,22 +393,22 @@ fn measure(load_scale: f64, r_modes: usize) {
             ),
         ];
         let mut counts = [0usize; 4];
+        // ⚠ Report the FIRST failing arm and stop. Last-write-wins would let a
+        // later arm's message overwrite an earlier one — so a `ValidityViolation`
+        // on the BASELINE (a fixture limit) could be reported as the predicted arm
+        // putting Newton somewhere it could not recover from, which is exactly the
+        // misattribution `ArmOutcome` exists to prevent. Arms are evaluated in a
+        // fixed order, so "first" is deterministic and the message names which.
         let mut bail: Option<String> = None;
         for (i, (name, outcome)) in cells.iter().enumerate() {
             match outcome {
                 ArmOutcome::Converged(n) => counts[i] = *n,
-                ArmOutcome::LeftValidityDomain(why) => {
+                other => {
                     bail = Some(format!(
-                        "SKIPPED — {name} on trajectory {k}: {why}. A physics limit on the \
-                         FIXTURE, not a result about the predictor."
+                        "trajectory {k} — {}",
+                        describe_outcome(name, other)
                     ));
-                }
-                ArmOutcome::DidNotConverge(why) => {
-                    bail = Some(format!(
-                        "⛔ {name} FAILED TO CONVERGE on trajectory {k}: {why}. This is a \
-                         RESULT about that arm, NOT a fixture problem — the predictor put \
-                         Newton somewhere it could not recover from."
-                    ));
+                    break;
                 }
             }
         }
@@ -402,6 +423,9 @@ fn measure(load_scale: f64, r_modes: usize) {
             r_base += c;
             r_pred += d;
         }
+        // Keep the baseline states the confound pass needs, instead of throwing
+        // them away and re-solving the identical trajectory a third time.
+        eval_states.push(base_states);
     }
 
     // ⚠ CONFOUND CHECK, before any composition number is read as a predictor
@@ -409,19 +433,14 @@ fn measure(load_scale: f64, r_modes: usize) {
     // it worse — and a reduced trajectory that drifts makes Newton work harder
     // for reasons that have nothing to do with the initial guess. Measure the
     // subspace's own ceiling at this scale so the two can be told apart.
+    // Reuses the baseline states the eval loop already computed. The previous
+    // version re-solved the whole held-out set here — a third full-order pass per
+    // cell — and then needed an "outcome changed between passes" assert that only
+    // existed because the states had been discarded.
     let mut floor_sum = 0.0_f64;
     let mut floor_n = 0usize;
-    for &k in &EVAL_IDS {
-        let t = sample_scaled(k, load_scale);
-        let (states, outcome) = run_oracle(&base, t);
-        // The eval loop above already returned on any non-convergence, so this
-        // cannot fire — assert rather than average over a truncated `states`,
-        // which would silently bias the very number the confound control reads.
-        assert!(
-            matches!(outcome, ArmOutcome::Converged(_)),
-            "baseline oracle changed outcome between the eval and confound passes",
-        );
-        for x in &states {
+    for states in &eval_states {
+        for x in states {
             let u = SnapshotSet::free_displacement(x, &base.x_rest, &fd);
             floor_sum += basis.projection_error(&u);
             floor_n += 1;
@@ -583,7 +602,7 @@ fn small_basis_rig(guess: InitialGuess) -> (Rig, PodBasis) {
     let mut cfg = SolverConfig::skeleton();
     cfg.dt = DT;
     cfg.density = DENSITY;
-    cfg.max_newton_iter = 80;
+    cfg.max_newton_iter = NEWTON_CAP;
     cfg.tol = 1.0e-6;
     cfg.initial_guess = guess;
     let r = Rig {
@@ -700,7 +719,7 @@ fn reduced_inertial_produces_the_documented_first_iterate() {
         let mut cfg = SolverConfig::skeleton();
         cfg.dt = DT;
         cfg.density = DENSITY;
-        cfg.max_newton_iter = 80;
+        cfg.max_newton_iter = NEWTON_CAP;
         cfg.tol = HUGE_TOL;
         cfg.initial_guess = guess;
         r.solver = CpuTet4NHSolver::new(
@@ -786,22 +805,28 @@ fn run_reduced_diag(
     >,
     t: Traj,
     n_modes: usize,
-) -> Option<RedDiag> {
+) -> Result<RedDiag, ArmOutcome> {
     let mut q = vec![0.0; n_modes];
     let mut qdot = vec![0.0; n_modes];
     let (mut iters, mut proj, mut full) = (0usize, 0.0_f64, 0.0_f64);
     for s in 1..=STEPS {
         let th = theta_at(r, t, s);
-        let step = reduced
-            .step(&q, &qdot, &Tensor::from_slice(&th, &[th.len()]), DT)
-            .ok()?;
+        // ⚠ Route through `classify`, NOT `.ok()?`. The previous commit added
+        // `ArmOutcome` precisely so a fixture physics limit could not be reported
+        // as an arm failing to converge — and this function, written one commit
+        // later, threw the variant away again. A `ValidityViolation` at a tighter
+        // `tol` would have been printed as the reduced arm failing.
+        let step = match reduced.step(&q, &qdot, &Tensor::from_slice(&th, &[th.len()]), DT) {
+            Ok(step) => step,
+            Err(fail) => return Err(classify(&fail)),
+        };
         iters += step.iter_count;
         proj += step.projected_residual_norm;
         full += step.full_residual_norm;
         q = step.q;
         qdot = step.qdot;
     }
-    Some(RedDiag {
+    Ok(RedDiag {
         iters,
         proj: proj / STEPS as f64,
         full: full / STEPS as f64,
@@ -851,7 +876,7 @@ fn why_does_reduction_cost_iterations_under_load() {
         let mut cfg = SolverConfig::skeleton();
         cfg.dt = DT;
         cfg.density = DENSITY;
-        cfg.max_newton_iter = 200;
+        cfg.max_newton_iter = NEWTON_CAP;
         cfg.tol = tol;
         cfg.initial_guess = guess;
         r.solver = CpuTet4NHSolver::new(
@@ -899,24 +924,24 @@ fn why_does_reduction_cost_iterations_under_load() {
         let red = ReducedNewtonSolver::new(&base.solver, &basis, &base.x_rest);
         let (mut o, mut ri) = (0usize, 0usize);
         let (mut pj, mut fl) = (0.0_f64, 0.0_f64);
-        let mut ok = true;
+        let mut ok: Option<String> = None;
         for &k in &EVAL_IDS {
             let t = sample_scaled(k, LOAD);
             match run_oracle(&base, t).1 {
                 ArmOutcome::Converged(n) => o += n,
-                _ => ok = false,
+                other => ok = Some(describe_outcome("oracle", &other)),
             }
             match run_reduced_diag(&base, &red, t, basis.n_modes()) {
-                Some(d) => {
+                Ok(d) => {
                     ri += d.iters;
                     pj += d.proj;
                     fl += d.full;
                 }
-                None => ok = false,
+                Err(outcome) => ok = Some(describe_outcome("reduced", &outcome)),
             }
         }
-        if !ok {
-            println!("║ {tol:>8.0e}   an arm failed to converge — cell dropped");
+        if let Some(why) = ok {
+            println!("║ {tol:>8.0e}   cell dropped — {why}");
             continue;
         }
         let n = EVAL_IDS.len() as f64;
@@ -929,23 +954,50 @@ fn why_does_reduction_cost_iterations_under_load() {
         );
     }
     println!("║");
-    if let (Some(&(lo_t, lo)), Some(&(hi_t, hi))) = (ratios.first(), ratios.last()) {
-        let growth = hi / lo;
+    // ⚠ SPREAD over every surviving cell, not first-to-last. The endpoint form
+    // cannot see an interior extremum — and this data HAS one: 1.070 / 1.170 /
+    // 1.111, so endpoints report 1.039× while the true spread is 1.093×. It also
+    // silently degrades when a cell is dropped: `first`/`last` need not be the tol
+    // extremes, and with one survivor it reports growth 1.0 and prints a verdict
+    // from a single point.
+    if ratios.len() < 3 {
         println!(
-            "║ reduced/oracle ratio {lo:.3}× at tol {lo_t:.0e} → {hi:.3}× at tol {hi_t:.0e} \
-             (growth {growth:.3}×)"
+            "║ ⚠⚠ NO VERDICT — only {} of {} cells survived. Distinguishing a floor from a \n\
+             ║    rate needs the trend across the whole tol range, and two points cannot \n\
+             ║    show non-monotonicity even when it is there.",
+            ratios.len(),
+            TOLS.len(),
         );
-        if growth > 1.15 {
+    } else {
+        let lo = ratios.iter().map(|&(_, r)| r).fold(f64::INFINITY, f64::min);
+        let hi = ratios.iter().map(|&(_, r)| r).fold(0.0_f64, f64::max);
+        let spread = hi / lo;
+        // A floor predicts the ratio rising MONOTONICALLY as tol tightens. Scatter
+        // with an interior extremum is the signature of quantization noise, and it
+        // is worth reporting separately from the spread's magnitude.
+        let monotone = ratios.windows(2).all(|w| w[1].1 >= w[0].1);
+        println!(
+            "║ reduced/oracle ratio spans {lo:.3}×–{hi:.3}× over the tol range \
+             (spread {spread:.3}×, {})",
+            if monotone {
+                "MONOTONE in tol"
+            } else {
+                "NON-monotonic — an interior extremum, i.e. scatter"
+            }
+        );
+        if spread > 1.15 && monotone {
             println!(
-                "║ ⇒ FLOOR: the ratio grows as tol tightens. The reduced solve is grinding \
-                 against a\n║   residual floor the subspace cannot get under — nonlinear \
-                 coupling of content\n║   Φ does not span back into Φᵀr."
+                "║ ⇒ FLOOR: the ratio grows MONOTONICALLY as tol tightens. The reduced solve \
+                 is grinding\n║   against a residual floor the subspace cannot get under — \
+                 nonlinear coupling of\n║   content Φ does not span, back into Φᵀr."
             );
         } else {
             println!(
-                "║ ⇒ RATE, not a floor: the ratio is ~flat in tol, so the reduced solve pays a \
+                "║ ⇒ RATE, not a floor: no monotone growth in tol, so the reduced solve pays a \
                  roughly\n║   CONSTANT factor per digit. The Galerkin direction is simply worse \
-                 under load;\n║   it is not stalling against something it cannot represent."
+                 under load;\n║   it is not stalling against something it cannot represent.\n\
+                 ║   ★ Corroborated by ‖Φᵀr‖ at convergence tracking tol all the way down — a \
+                 floor\n║     would have pinned it."
             );
         }
     }
