@@ -759,3 +759,195 @@ fn reduced_inertial_produces_the_documented_first_iterate() {
          would mean the arm is a silent no-op, which the same-root test cannot see",
     );
 }
+
+// ── WHY does reduction cost iterations under load? ────────────────────────
+
+/// A reduced step's converged diagnostics, which `ReducedStep` already exposes.
+struct RedDiag {
+    iters: usize,
+    /// `‖Φᵀr‖` at convergence — the quantity the reduced Newton descends.
+    proj: f64,
+    /// `‖r_free‖` at convergence — the full-order residual the subspace CANNOT
+    /// remove. A Galerkin solve makes the residual orthogonal to the basis, not
+    /// zero, so this is expected to be large; what matters is how it MOVES.
+    full: f64,
+}
+
+fn run_reduced_diag(
+    r: &Rig,
+    reduced: &ReducedNewtonSolver<
+        '_,
+        Tet4,
+        HandBuiltTetMesh,
+        NullContact,
+        sim_soft::NeoHookean,
+        4,
+        1,
+    >,
+    t: Traj,
+    n_modes: usize,
+) -> Option<RedDiag> {
+    let mut q = vec![0.0; n_modes];
+    let mut qdot = vec![0.0; n_modes];
+    let (mut iters, mut proj, mut full) = (0usize, 0.0_f64, 0.0_f64);
+    for s in 1..=STEPS {
+        let th = theta_at(r, t, s);
+        let step = reduced
+            .step(&q, &qdot, &Tensor::from_slice(&th, &[th.len()]), DT)
+            .ok()?;
+        iters += step.iter_count;
+        proj += step.projected_residual_norm;
+        full += step.full_residual_norm;
+        q = step.q;
+        qdot = step.qdot;
+    }
+    Some(RedDiag {
+        iters,
+        proj: proj / STEPS as f64,
+        full: full / STEPS as f64,
+    })
+}
+
+/// Why does the reduced solve need MORE Newton iterations than the oracle once
+/// the load rises — and why doesn't rank fix it?
+///
+/// The companion measurement found that at ×2 load the reduced solve takes ~17 %
+/// more iterations than the oracle with no predictor involved, and that DOUBLING
+/// the modes makes it slightly worse while making the subspace strictly better
+/// (projection floor 0.352 % against ×1's 0.455 %). So it is not truncation.
+///
+/// ## What this separates
+///
+/// The reduced loop converges on `‖Φᵀr‖ < tol` — an ABSOLUTE tolerance on a
+/// projected quantity, descended by its own Armijo. Two candidate mechanisms
+/// make opposite predictions under a `tol` sweep at fixed load:
+///
+/// - **A residual FLOOR.** Nonlinearity couples content the subspace cannot
+///   represent back into `Φᵀr`, so the last iterations grind against a floor.
+///   ⇒ tightening `tol` blows the reduced count up relative to the oracle's.
+/// - **A RATE problem.** The Galerkin direction is simply a worse descent
+///   direction under load, costing a roughly constant factor per digit.
+///   ⇒ the reduced/oracle ratio stays flat as `tol` tightens.
+///
+/// Load and `r` are held fixed; only `tol` moves. The basis is trained ONCE at
+/// the tightest tolerance and shared, so the subspace is identical across cells
+/// and cannot itself explain a trend.
+#[test]
+#[ignore = "reduced-predictor instrument — run explicitly, see module docs"]
+fn why_does_reduction_cost_iterations_under_load() {
+    const LOAD: f64 = 2.0;
+    const TOLS: [f64; 3] = [1.0e-4, 1.0e-6, 1.0e-8];
+    /// Basis training runs at the TIGHTEST tolerance so every cell shares one
+    /// subspace; a per-cell basis would confound the trend with its own quality.
+    const TRAIN_TOL: f64 = 1.0e-8;
+
+    let rig_at = |guess: InitialGuess, tol: f64| {
+        let mut r = rig(guess);
+        let field = MaterialField::uniform(MU, LAMBDA);
+        let mesh = HandBuiltTetMesh::cantilever_bilayer_beam(16, 16, 6, LX, LY, H, &field);
+        let pins = pick_vertices_by_predicate(&mesh, |p: &Vec3| p.z.abs() < 1e-12);
+        let loaded: Vec<VertexId> =
+            pick_vertices_by_predicate(&mesh, |p: &Vec3| (p.z - H).abs() < 1e-12);
+        let mut cfg = SolverConfig::skeleton();
+        cfg.dt = DT;
+        cfg.density = DENSITY;
+        cfg.max_newton_iter = 200;
+        cfg.tol = tol;
+        cfg.initial_guess = guess;
+        r.solver = CpuTet4NHSolver::new(
+            Tet4,
+            mesh,
+            NullContact,
+            cfg,
+            BoundaryConditions {
+                pinned_vertices: pins,
+                roller_vertices: Vec::new(),
+                loaded_vertices: loaded.iter().map(|&v| (v, LoadAxis::FullVector)).collect(),
+            },
+        );
+        r
+    };
+
+    let train_rig = rig_at(InitialGuess::PreviousState, TRAIN_TOL);
+    let fd = train_rig.solver.free_dof_indices().to_vec();
+    let mass = train_rig.solver.mass_per_free_dof();
+    let mut train = SnapshotSet::new(fd.len());
+    for k in 0..N_TRAIN as u64 {
+        let (states, outcome) = run_oracle(&train_rig, sample_scaled(k, LOAD));
+        assert!(
+            matches!(outcome, ArmOutcome::Converged(_)),
+            "training must converge at the tightest tolerance",
+        );
+        for x in &states {
+            train.push(&SnapshotSet::free_displacement(x, &train_rig.x_rest, &fd));
+        }
+    }
+    let basis = PodBasis::fit(&train, Inner::Mass, &mass, 1.0, R_MODES).expect("basis fits");
+
+    println!(
+        "\n╔═ Why does reduction cost iterations under load?  (load ×{LOAD:.0}, r = {})",
+        basis.n_modes()
+    );
+    println!("║ one shared basis, trained at tol {TRAIN_TOL:.0e}; only `tol` varies");
+    println!(
+        "║ {:>8} {:>8} {:>9} {:>9} {:>12} {:>12}",
+        "tol", "oracle", "reduced", "red/orc", "‖Φᵀr‖ conv", "‖r‖ conv"
+    );
+    let mut ratios = Vec::new();
+    for tol in TOLS {
+        let base = rig_at(InitialGuess::PreviousState, tol);
+        let red = ReducedNewtonSolver::new(&base.solver, &basis, &base.x_rest);
+        let (mut o, mut ri) = (0usize, 0usize);
+        let (mut pj, mut fl) = (0.0_f64, 0.0_f64);
+        let mut ok = true;
+        for &k in &EVAL_IDS {
+            let t = sample_scaled(k, LOAD);
+            match run_oracle(&base, t).1 {
+                ArmOutcome::Converged(n) => o += n,
+                _ => ok = false,
+            }
+            match run_reduced_diag(&base, &red, t, basis.n_modes()) {
+                Some(d) => {
+                    ri += d.iters;
+                    pj += d.proj;
+                    fl += d.full;
+                }
+                None => ok = false,
+            }
+        }
+        if !ok {
+            println!("║ {tol:>8.0e}   an arm failed to converge — cell dropped");
+            continue;
+        }
+        let n = EVAL_IDS.len() as f64;
+        let ratio = ri as f64 / o as f64;
+        ratios.push((tol, ratio));
+        println!(
+            "║ {tol:>8.0e} {o:>8} {ri:>9} {ratio:>8.3}× {:>12.2e} {:>12.2e}",
+            pj / n,
+            fl / n
+        );
+    }
+    println!("║");
+    if let (Some(&(lo_t, lo)), Some(&(hi_t, hi))) = (ratios.first(), ratios.last()) {
+        let growth = hi / lo;
+        println!(
+            "║ reduced/oracle ratio {lo:.3}× at tol {lo_t:.0e} → {hi:.3}× at tol {hi_t:.0e} \
+             (growth {growth:.3}×)"
+        );
+        if growth > 1.15 {
+            println!(
+                "║ ⇒ FLOOR: the ratio grows as tol tightens. The reduced solve is grinding \
+                 against a\n║   residual floor the subspace cannot get under — nonlinear \
+                 coupling of content\n║   Φ does not span back into Φᵀr."
+            );
+        } else {
+            println!(
+                "║ ⇒ RATE, not a floor: the ratio is ~flat in tol, so the reduced solve pays a \
+                 roughly\n║   CONSTANT factor per digit. The Galerkin direction is simply worse \
+                 under load;\n║   it is not stalling against something it cannot represent."
+            );
+        }
+    }
+    println!("╚═\n");
+}
