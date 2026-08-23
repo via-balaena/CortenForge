@@ -14,7 +14,7 @@ use crate::solver::{CpuTape, NewtonStep, SolverFailure};
 
 use super::helpers::{
     armijo_stall_panic_message, deformation_gradient, element_node_ids, extract_element_dof_values,
-    residual_into,
+    initial_guess_stall_hint, residual_into,
 };
 use super::{CpuNewtonSolver, InitialGuess};
 
@@ -530,13 +530,22 @@ where
                     last_iter,
                     last_r_norm,
                     ..
-                } => panic!("{}", armijo_stall_panic_message(last_iter, last_r_norm)),
-                SolverFailure::NewtonIterCap { max_iter, .. } => panic!(
+                } => panic!(
+                    "{}",
+                    armijo_stall_panic_message(last_iter, last_r_norm, self.config.initial_guess,)
+                ),
+                SolverFailure::NewtonIterCap {
+                    max_iter,
+                    last_r_norm,
+                    ..
+                } => panic!(
                     "Newton failed to converge within {max_iter} iterations at \
                      tol {tol:e}. Likely causes: θ drives system out of R-2's \
                      SPD region, or spec §3 R-1's assumption of 3-5 iter \
-                     convergence from zero initial guess is wrong for this θ.",
+                     convergence from the previous state is wrong for this θ.{hint}",
                     tol = self.config.tol,
+                    hint =
+                        initial_guess_stall_hint(max_iter, last_r_norm, self.config.initial_guess,),
                 ),
                 SolverFailure::DoublyFailedFactor { context, .. } => panic!("{context}"),
                 // Decision Q fail-closed: `step`/`replay_step` re-panic with the verbatim
@@ -786,11 +795,12 @@ where
         let x_prev_vec: Vec<f64> = x_prev.as_slice().to_vec();
         let v_prev_vec: Vec<f64> = v_prev.as_slice().to_vec();
 
-        // Assembled BEFORE the initial iterate because
-        // `InitialGuess::InertialWithLoad` reads it. Safe to hoist: it reads
-        // `theta`, the boundary conditions, and the construction-time lumped
-        // mass — never `x` — so the buffer it produces is identical either
-        // side of the move.
+        // ⚠ This assembly did NOT move: it already sat here, ahead of the
+        // validity check. What moved is `x_curr`, whose construction is now
+        // BELOW both, so `InitialGuess::InertialWithLoad` can read `f_ext`.
+        // Nothing here is load-bearing ordering — `assemble_external_force`
+        // reads `theta`, the boundary conditions and the construction-time
+        // lumped mass, never `x`.
         let mut f_ext = vec![0.0; self.n_dof];
         self.assemble_external_force(theta, &mut f_ext);
 

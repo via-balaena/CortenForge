@@ -84,11 +84,18 @@ pub enum InitialGuess {
 /// how every call site in this workspace already builds one, and with
 /// `#[non_exhaustive]` it is the only way an external crate can.
 ///
-/// ```ignore
+/// ```
+/// use sim_soft::SolverConfig;
 /// let mut cfg = SolverConfig::skeleton();
 /// cfg.dt = 1.0 / 60.0;
 /// cfg.gravity_z = -9.81;
 /// ```
+///
+/// That fence is a REAL doctest, deliberately. A doctest compiles as an
+/// external crate, which is exactly the vantage point `#[non_exhaustive]`
+/// changes — so it is a live check that the only construction route this type
+/// leaves outsiders still works. An `ignore` fence here would be unverified
+/// documentation of the very contract the attribute exists to enforce.
 ///
 /// `#[non_exhaustive]` is deliberate and was added when `initial_guess`
 /// landed. This struct is a bag of independent integration knobs that grows

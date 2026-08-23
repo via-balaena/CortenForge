@@ -461,8 +461,9 @@ exist.
 
 ### 2f. The OTHER factor — Newton ITERATION COUNT is a large, cheap lever
 
-**Measured 2026-08-23** on `spike/newton-predictor` @ `368a73a0` — the commit that
-added the knob. ⚠ **Not a `main` SHA**: `main` was at `2dfe1335`, and because this
+**Measured 2026-08-23** on `spike/newton-predictor`: the five original cells at
+`368a73a0` (the commit that added the knob), the sixth — contact plus a body load,
+added after review — at `98573f48`. ⚠ **Not a `main` SHA**: `main` was at `2dfe1335`, and because this
 repo squash-merges, `368a73a0` will not survive onto `main` either. Re-run from the
 harness named below rather than from a SHA. §2a decomposes a frame as
 `iterations × per-iteration cost` and every rung of the §7 ladder moves only the
@@ -486,10 +487,12 @@ force (BE composes to `x̂ + Δt²a` with **no** `½` — it is not the continuo
 constant-acceleration kinematic), i.e. the incremental-potential literature's
 predictive position. This is an *addition*, never a substitute: the default is a
 no-op match arm, the pre-predictor path is bit-equal, and the guess changes the
-path Newton walks, never the root — on the four SUBJECT fixtures every arm
-converges to the same trajectory to between `6e-14` and `8e-12` relative, and on
-the `block_sag` control to `6e-9` (still a same-root agreement; that fixture is
-simply where the arms take wildly different PATHS — see below).
+path Newton walks, never the root. ⚠ **"Never the root" is a claim about where
+Newton lands WHEN IT LANDS, not a promise that it always does** — the
+contact-plus-load cell below has an arm that never converges at all. Where every
+arm does converge, they agree: `6e-14`–`8e-12` relative on the four original
+subject fixtures, `6e-9` on the `block_sag` control (still same-root; that fixture
+is simply where the arms take wildly different PATHS).
 
 **Method.** Three arms stepped in **lockstep** from a common initial state (arm 0
 step k, arm 1 step k, …), never as block-ordered runs, so machine drift lands on
@@ -573,6 +576,23 @@ Iterations and total wall-clock track each other closely, as they must. The
 cantilever's *median* is the outlier at 3.19× because the baseline's total is
 dominated by transient spikes the median never sees — which is the same fact §2f's
 variance section is about, seen from the other side.
+
+#### ★ Verdict against the PRE-REGISTERED rule
+
+The harness's module docs fixed a decision rule before the first run: **WIN** =
+≥20 % fewer total iterations on the cantilever AND ≥10 % on IPC with zero failures;
+**KILL** = IPC loses convergence, or iteration count rises. Scored, rather than
+re-argued from the prose above:
+
+| arm | cantilever | IPC | failures | **verdict** |
+|---|---:|---:|---|---|
+| `Inertial` | −78.7 % | −48.8 % | none, any cell | **WIN** |
+| `InertialWithLoad` | −75.5 % | −48.8 % | **IPC + load: dies at step 0** | **KILLED** |
+
+The rule discriminates the two arms cleanly and it fired on its own terms — the
+KILL condition is *"IPC loses convergence"*, and that is precisely what the sixth
+cell produced. Recording it this way matters because the rule predates the data:
+the alternative is choosing an arm from a prose argument written afterwards.
 
 #### What it does to R3's requirement — derived here, from this document
 

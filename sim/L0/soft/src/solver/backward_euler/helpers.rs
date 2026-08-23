@@ -130,12 +130,57 @@ pub(super) fn residual_into(
 /// lines silently embed leading whitespace into the message text —
 /// drifted across the three call sites pre-polish (21-space vs
 /// 17-space continuation), making the panic UX site-dependent.
-pub(super) fn armijo_stall_panic_message(last_iter: usize, last_r_norm: f64) -> String {
+pub(super) fn armijo_stall_panic_message(
+    last_iter: usize,
+    last_r_norm: f64,
+    initial_guess: super::InitialGuess,
+) -> String {
     format!(
         "Armijo line-search stalled at Newton iter {last_iter} \
          (r_norm {last_r_norm:e}). Likely causes: non-SPD tangent \
          near solution (spec §3 R-2 violation), or near-singular \
-         condensed system."
+         condensed system.{}",
+        initial_guess_stall_hint(last_iter, last_r_norm, initial_guess),
+    )
+}
+
+/// Extra cause named when a stall happens under a NON-DEFAULT
+/// [`InitialGuess`](super::InitialGuess).
+///
+/// ⚠ Without this the message above sends a reader after a tangent or
+/// conditioning bug that may not exist. A predictor can put `x⁰` outside the
+/// convergence basin — or, with a body load, far enough off `x_prev` to invert
+/// elements — and the resulting stall looks identical to a genuine non-SPD
+/// tangent from the outside. MEASURED: `InertialWithLoad` on a gravity-loaded
+/// IPC scene stalls at iteration 0 with `r_norm = NaN`, whose real cause is a
+/// 2.7 mm uniform predicted drop inverting elements above a pinned base — not
+/// the conditioning of anything (recon §2f).
+///
+/// A stall at **iteration 0** is the strong tell: Newton has taken no step, so
+/// the only thing that can be wrong is where it was told to start.
+pub(super) fn initial_guess_stall_hint(
+    last_iter: usize,
+    last_r_norm: f64,
+    initial_guess: super::InitialGuess,
+) -> String {
+    if matches!(initial_guess, super::InitialGuess::PreviousState) {
+        return String::new();
+    }
+    let at_start = if last_iter == 0 || !last_r_norm.is_finite() {
+        " Both are STRONGLY indicated here: the stall is at iteration 0 \
+         and/or the residual is non-finite, meaning Newton never took a \
+         step and the starting point itself is the suspect."
+    } else {
+        ""
+    };
+    format!(
+        " ⚠ ALSO: this solver runs SolverConfig::initial_guess = \
+         {initial_guess:?}, not the default PreviousState, so the first \
+         iterate is extrapolated off x_prev rather than equal to it. A \
+         predictor can land outside the convergence basin, or (with a body \
+         load) far enough off x_prev to invert elements.{at_start} Re-run with \
+         InitialGuess::PreviousState to tell a predictor problem apart from a \
+         tangent problem."
     )
 }
 

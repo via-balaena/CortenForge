@@ -18,7 +18,7 @@
 //! its result **rescopes R3**: whatever iteration-count gain lands here comes
 //! straight off the 12–16× per-iteration gain R3 would otherwise have to find.
 //!
-//! ## The matrix, fixed before the first run
+//! ## The matrix (five cells fixed before the first run; a sixth added after review)
 //!
 //! | knob | value | why |
 //! |---|---|---|
@@ -30,6 +30,17 @@
 //! | [`SolverConfig::max_newton_iter`] | 120 | recon's 60-cap aborted a case needing 65 (§3d); ~2× the observed max of 56, so a predictor blowup is VISIBLE rather than truncated |
 //! | [`SolverConfig::tol`] | `1e-10`, unchanged | a predictor must not be allowed to buy iterations by converging less |
 //! | repeats | none | see "on repeats" below |
+//! | **body load** | **`0` · `±9.81` on IPC** | ⚠ **ADDED AFTER THE FIRST RUN, and the omission was the matrix's worst defect** — see below |
+//!
+//! ⚠ **The `load × contact` cell was missing, and the harness's own self-check
+//! hid it.** With `gravity_z = 0` and an empty θ the IPC fixture has `f_ext ≡ 0`,
+//! so `Inertial` and `InertialWithLoad` are the same point there — designed in as
+//! a self-check, and duly passed. What that identity *also* means is that the only
+//! contact fixture in the matrix **could not test the term separating the two
+//! arms**. Every "these must agree exactly" self-check is simultaneously a
+//! coverage-hole report; this one went unread until review. Measuring the missing
+//! cell killed `InertialWithLoad` outright (step-0 failure in both load
+//! directions), so the omission was not cosmetic — it sat under the recommendation.
 //!
 //! **On the third arm.** The memo scoped this spike as `x + Δt·v`
 //! ([`InitialGuess::Inertial`]). That variant does nothing at all on the first
@@ -79,6 +90,13 @@
 //!   trajectories each converged to `1e-10` still separate over 60 steps, so
 //!   this is REPORTED, not gated — but a large value means the predictor changed
 //!   the answer rather than the path, which would be a finding, not a win.
+//!
+//! **VERDICT, scored against the above:** `Inertial` **WINS** (cantilever −78.7 %,
+//! IPC −48.8 %, zero failures anywhere). `InertialWithLoad` is **KILLED** by the
+//! KILL clause verbatim — *"IPC loses convergence"* — on the contact-plus-load
+//! cell, where it dies at step 0 in both load directions. The rule predates the
+//! data and discriminates the arms on its own terms, which is the point of writing
+//! one down first.
 //!
 //! ## Running it
 //!
