@@ -1,6 +1,6 @@
 # sim-soft Real-Time Path — Phase-1 Measurement + Recon (Phase E predecessor)
 
-**Status**: RECON 2026-08-10 (rev 2026-08-23), v2.2. Phase 1 (measure) COMPLETE — all four requested
+**Status**: RECON 2026-08-10 (rev 2026-08-23), v2.3. Phase 1 (measure) COMPLETE — all four requested
 measurements taken; §2 reports them. Phase 2 (this recon) proposes the MOR +
 hyper-reduction path with a staged ladder whose first rung is a kill-or-confirm.
 **No dependency was added.** Phase 1's instrumentation was temporary (implement →
@@ -200,8 +200,9 @@ Directly measured points either side of the budget, at `dt = 1/60`, one step/fra
 | IPC indentation a/cell 1.5 | 5 202 | 486.9 | 29.2× | 14.8× |
 | IPC indentation a/cell 2 | 18 750 | 771.0 | 46.2× | 23.4× |
 
-⚠ The two IPC rows are the only pre-R0 timings still quoted anywhere in this
-document; the contact arm was not re-run after R0. Read them as upper bounds.
+⚠ The two IPC rows are pre-R0 TIMINGS and stay quoted here because the 46.2× gap
+is derived from them. Their SHARES were re-measured post-R0 in v2.3 (§2d findings
+4–5); the absolute ms were not, and are not comparable across sessions.
 
 A "high-quality environment" in this codebase's own terms is the 20 k–70 k free-DOF
 range (`Cargo.toml` cites 70 k free DOF; the conformed-disc and FSU meshes sit in
@@ -403,15 +404,17 @@ Same deterministic sweep, phase shares of total step time:
 | 19 440 | 4.7 % | 18.6 % | **72.3 %** | 3.7 % | — |
 | 26 460 (block) | 1.8 % | 10.6 % | **62.1 %** | 3.1 % | — |
 | 70 644 (block) | 1.3 % | 8.1 % | **70.8 %** | 2.8 % | — |
-| 5 202 (IPC contact, pre-R0) | 0.5 % | 17.7 % | **80.6 %** | 0.3 % | **0.02 %** |
-| 18 750 (IPC contact, pre-R0) | 0.7 % | 30.1 % | **65.6 %** | 2.3 % | **0.02 %** |
+| 5 202 (IPC contact, ~~pre-R0~~) | 0.5 % | 17.7 % | **80.6 %** | 0.3 % | **0.02 %** |
+| 5 202 (IPC contact, **post-R0**) | 2.4 % | 24.5 % | **70.5 %** | 2.5 % | **0.1 %** |
+| 18 750 (IPC contact, ~~pre-R0~~) | 0.7 % | 30.1 % | **65.6 %** | 2.3 % | **0.02 %** |
+| 18 750 (IPC contact, **post-R0**) | 1.7 % | **17.1 %** | **77.2 %** | 4.0 % | **0.0 %** |
 
 Symbolic factorization is one-shot per solver construction (1.0 ms at 540 DOF →
 1 029 ms at 70 644 DOF) and is **not** on the frame budget — it is amortised over
 every step of a session. That is already the shipped design (`construct.rs` builds it
 once; `replace_contact` deliberately reuses it).
 
-Three findings:
+Six findings:
 
 1. **The numeric factorization dominates from ~1–2 k free DOF upward.** Assembly leads
    only at the very bottom of the range (50.9 % against 31.6 % at 540 free DOF); by
@@ -433,7 +436,34 @@ Three findings:
    that pattern: **1.51–1.89× on the whole step, byte-identical output**
    (`e77023c7`, `43b198a2`). The numbers above are post-R0.
 
-3. **Triangular solves are never the bottleneck** (0.3–2.9 % everywhere). Worth
+4. **★ The contact rows were re-measured post-R0 (v2.3), and they decide R3.**
+   `cargo test --release -p sim-soft --features phase-timing --test phase_shares --
+   --ignored --nocapture` — the timers are a permanent feature now
+   (`src/profile.rs`), not a scratch patch, so this is re-runnable.
+
+   ⚠ **Absolute ms/step is NOT comparable across the two sessions** (917.6 post-R0
+   at 18 750 against §2a's pre-R0 771.0 — a box difference, not a regression).
+   SHARES are, being internally normalised, and R0 touched only tangent assembly,
+   so the other phases' absolute cost is unchanged and the share shift gives R0's
+   whole-step credit directly:
+
+   > `asmK` 30.1 % → 17.1 % at 18 750 ⇒ **R0 credit = (1 − 0.171)/(1 − 0.301) =
+   > 1.186×**, measured rather than inferred from an Amdahl bound.
+
+   ★ The instrument was validated before the numbers were read: on
+   `cantilever 80×8`, whose row above is ALREADY post-R0, it reproduces the
+   published shares at **1.02× / 1.04× / 1.00× / 0.96×**. A phase-share instrument
+   that cannot reproduce a known-good row cannot be trusted on an unknown one.
+
+5. **⚠ The pre-R0 5 202 row is UNSOUND, not merely stale.** Its shares imply
+   `asmK` share ROSE across R0 (17.7 % → 24.5 %), i.e. R0 credit
+   `(1 − 0.245)/(1 − 0.177) = 0.917×` — R0 made the fixture SLOWER. That is
+   impossible: R0 was a strictly cheaper data structure with byte-identical output
+   (finding 2). The 18 750 row moves the physically correct way, which is why the
+   credit above rests on it alone. Whatever is wrong with the 5 202 pre-R0 row,
+   it is wrong independently of anything measured in v2.3.
+
+6. **Triangular solves are never the bottleneck** (0.3–2.9 % everywhere). Worth
    stating because it is the phase a naive "put the solve on the GPU" plan targets
    first, and it would buy essentially nothing.
 
@@ -611,27 +641,28 @@ assembly share R0 was able to touch (§2d), R0's measured `1.51–1.89×` on tha
 (§2a), R1's `~2×` (R1.1), and the predictor's median-frame `1.97×` (above). A frame
 budget is a per-frame quantity, hence the median rather than a total.
 
-| IPC size | pre-R0 gap | asm share | R0 credited | R3 needs, no predictor | **with predictor** |
-|---|---:|---:|---:|---:|---:|
-| 5 202 | 28.0× | 17.7 % | best case 1.22× | 11.5× | **5.8×** |
-| 5 202 | 28.0× | 17.7 % | measured 1.09× | 12.8× | **6.5×** |
-| 18 750 | 46.2× | 30.1 % | best case 1.43× | 16.1× | **8.2×** |
-| 18 750 | 46.2× | 30.1 % | measured 1.17× | 19.8× | **10.1×** |
+| IPC 18 750 | R0 credit | R3 needs, no predictor | **with predictor** |
+|---|---:|---:|---:|
+| Amdahl best case (assembly free) | 1.43× | 16.1× | 8.2× |
+| Amdahl, R0's 1.89× on the share | 1.17× | 19.8× | 10.1× |
+| **★ MEASURED (v2.3, §2d finding 4)** | **1.186×** | **19.5×** | **9.89×** |
 
-⚠ **The answer depends on how much credit R0 gets, and the two rows straddle the
-kill floor.** "R0 best case" assumes R0 removed assembly cost *entirely* — an Amdahl
-upper bound on R0, and therefore a LOWER bound on what R3 must still find. "R0
-measured" applies R0's actual `1.89×` to the assembly share alone. §2d's contact-arm
-figures are flagged as the only ones never re-measured after R0, so neither row is
-better than the input.
+★ **The fork is closed.** The two Amdahl rows straddled the kill floor and the
+answer turned on which was real; §2d finding 4 measured R0's credit directly from
+the post-R0 share shift, and it lands at **1.186×**, near the pessimistic bound.
 
-> **The predictor roughly HALVES R3's requirement — from 11.5–19.8× to 5.8–10.1×.**
-> Before it, the requirement was clearly ABOVE R3's `10×` kill floor on every
-> accounting, so R3 could pass its gate and leave the frame budget missed. After it,
-> the requirement brackets the floor: comfortably under on the optimistic accounting,
-> and **10.1× against a 10× floor at 18 750 on the measured one — a coin flip.**
-> That is a large improvement in R3's odds and it is NOT the clean "the gate now
-> implies the goal" an earlier revision of this section claimed.
+> ### R3 needs 9.89× against a 10× kill floor.
+>
+> **Viable, and not comfortable** — one percent of margin, on a fixture whose
+> pre-R0 gap (46.2×) is itself a contended-box figure. R3 is worth starting; it is
+> not worth assuming.
+
+> **The predictor roughly HALVES R3's requirement — 19.5× to 9.89× on the measured
+> credit.** Before it, the requirement was clearly ABOVE R3's `10×` kill floor on
+> every accounting, so R3 could pass its gate and leave the frame budget missed.
+> After it, **9.89× against a 10× floor** — inside the gate by one percent. A large
+> improvement in R3's odds, and not the clean "the gate now implies the goal" an
+> earlier revision of this section claimed.
 
 ⚠⚠ **This table assumes R1 = 2×, which #817 showed holds only inside R1.1's load
 box.** Outside it the reduced solve pays a ~17 % iteration premium, so R1's NET is
@@ -642,9 +673,8 @@ the "R3 passes its own gate and the budget is still missed" situation the verdic
 above says the predictor removed. **The bracketing reading holds inside R1.1's box
 and not outside it**, and which regime a real workload sits in is unmeasured.
 
-⇒ **Re-measuring §2d's contact-arm shares post-R0 is now on R3's critical path**, not
-merely a housekeeping item: it is the single input that decides which row above is
-the real one.
+✅ **Done in v2.3** — this was on R3's critical path as the single input deciding
+which row was real, and §2d findings 4–5 measured it.
 
 ⚠ **The factors multiply only if the predictor is ported to the reduced solver.**
 ✅ **DONE — the port landed in #817 (`d23a29f1`) and the composition HOLDS**
@@ -1422,6 +1452,20 @@ until then, and by nobody else ever. The recipe above is the durable record.
 
 ## 12. Version history
 
+- **v2.3 (2026-08-23)** — **§2d's two `pre-R0` contact rows re-measured, closing the
+  fork that decided R3.** Timers are now a permanent feature (`src/profile.rs`,
+  `phase-timing`, zero-cost when off) rather than a scratch patch, and
+  `tests/phase_shares.rs` re-runs the table. R0 touched only tangent assembly, so
+  the share shift gives its credit directly: `asmK` 30.1 % → 17.1 % at 18 750 ⇒
+  **R0 = 1.186×**, and **R3 needs 9.89× against its 10× kill floor** — viable by one
+  percent, where the two Amdahl bounds had straddled it (8.2× / 10.1×).
+  ★ Validated before reading: the instrument reproduces the already-post-R0
+  `cantilever 80×8` row at 1.02 / 1.04 / 1.00 / 0.96×.
+  ⚠ **The pre-R0 5 202 row is UNSOUND**, not merely stale — its shares imply R0 made
+  that fixture 0.917× SLOWER, which a strictly cheaper byte-identical data structure
+  cannot do. ⚠ Absolute ms/step is not comparable across sessions (917.6 vs 771.0 at
+  18 750 is box difference); only shares are.
+
 - **v2.2 (2026-08-23)** — **§2g: the `‖r‖` selector was built, measured on all six
   cells, and KILLED.** It rescues the cell `InertialWithLoad` dies on and avoids
   `block_sag`'s 32.7× blowup, at −0.15–6.70 % overhead, but selects the WORST arm
@@ -1441,7 +1485,8 @@ until then, and by nobody else ever. The recipe above is the durable record.
   three aggregates must not be mixed), zero
   convergence failures, trajectories identical to 6e-14…8e-12 on the subjects. **R3's required gain
   is roughly HALVED — from 11.5–19.8× to 5.8–10.1× depending on how much credit R0
-  gets, a derivation §2f now shows in full rather than citing.** Before the predictor
+  gets, a derivation §2f now shows in full rather than citing.** (⚠ v2.3 closed that
+  fork by MEASURING R0's credit at 1.186×: the answer is 9.89×.) Before the predictor
   the requirement sat clearly above R3's `10×` kill floor on every accounting; it now
   brackets it (comfortably under on the optimistic row, 10.1× vs 10× on the measured
   one). ⚠ An earlier draft of this entry claimed the floor now cleanly exceeds the

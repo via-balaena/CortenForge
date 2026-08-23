@@ -40,12 +40,18 @@
 //!
 //! ## Use
 //!
-//! ```ignore
+//! ```
+//! use sim_soft::profile::{self, Phase};
 //! profile::reset();
 //! // ... run the steps to be measured ...
 //! let p = profile::snapshot();
-//! println!("{:.1} % numeric factor", 100.0 * p.share(Phase::NumericFactor));
+//! let numf = 100.0 * p.share(Phase::NumericFactor);
+//! # assert!(numf >= 0.0);
 //! ```
+//!
+//! A real doctest, not an `ignore` fence: it compiles as an EXTERNAL crate, so it
+//! checks the surface a consumer actually sees. It passes in both feature states —
+//! with the feature off every slot reads zero, which is the documented behaviour.
 
 /// The phases §2d reports, one slot each.
 ///
