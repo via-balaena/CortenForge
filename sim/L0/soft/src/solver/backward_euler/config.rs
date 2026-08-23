@@ -28,7 +28,16 @@ use crate::solver::lm::LmConfig;
 /// first iterate surfaces as a stall or a non-finite residual rather than a
 /// clean [`SolverFailure::ValidityViolation`](crate::SolverFailure).
 /// Measure per fixture before switching.
+///
+/// `#[non_exhaustive]`: this set is expected to grow. `InertialWithLoad`
+/// measured **32.7× worse** on a stiff fixture (recon §2f), so it cannot be an
+/// unconditional default, and the next variant is already scoped — a per-step
+/// selector that evaluates `‖r‖` at both candidate guesses and starts from the
+/// smaller. Closing the enum now costs nothing (it has never shipped) and
+/// keeps that addition from being a breaking change; the price is a `_` arm in
+/// any external `match`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum InitialGuess {
     /// `x⁰ = x_prev` — the previous step's converged position. The default,
     /// and the only variant that leaves the whole residual to Newton.
@@ -68,7 +77,30 @@ pub enum InitialGuess {
 
 /// Solver configuration — integration parameters the skeleton scene
 /// (spec §2) consumes. `skeleton()` returns the spec-§2 defaults.
+///
+/// # Construction
+///
+/// **Start from [`Self::skeleton`] and mutate the fields you need.** That is
+/// how every call site in this workspace already builds one, and with
+/// `#[non_exhaustive]` it is the only way an external crate can.
+///
+/// ```ignore
+/// let mut cfg = SolverConfig::skeleton();
+/// cfg.dt = 1.0 / 60.0;
+/// cfg.gravity_z = -9.81;
+/// ```
+///
+/// `#[non_exhaustive]` is deliberate and was added when `initial_guess`
+/// landed. This struct is a bag of independent integration knobs that grows
+/// as the solver does — `gravity_z`, `lm_regularization`, `friction_mu`,
+/// `fbar` and `initial_guess` were all added after v1.0.0 — and with public
+/// fields and no marker, **every one of those additions is a semver break for
+/// any external struct literal.** Closing it converts an open-ended series of
+/// breaks into exactly one, taken here, at the cost of a construction idiom
+/// the workspace had already adopted unanimously. Adding a field is now a
+/// minor-version change; only removing or retyping one is major.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct SolverConfig {
     /// Integration time-step (seconds).
     pub dt: f64,
