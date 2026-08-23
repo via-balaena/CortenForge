@@ -480,8 +480,10 @@ force (BE composes to `x̂ + Δt²a` with **no** `½` — it is not the continuo
 constant-acceleration kinematic), i.e. the incremental-potential literature's
 predictive position. This is an *addition*, never a substitute: the default is a
 no-op match arm, the pre-predictor path is bit-equal, and the guess changes the
-path Newton walks, never the root — every arm below converges to the same
-trajectory to between `6e-14` and `8e-12` relative.
+path Newton walks, never the root — on the four SUBJECT fixtures every arm
+converges to the same trajectory to between `6e-14` and `8e-12` relative, and on
+the `block_sag` control to `6e-9` (still a same-root agreement; that fixture is
+simply where the arms take wildly different PATHS — see below).
 
 **Method.** Three arms stepped in **lockstep** from a common initial state (arm 0
 step k, arm 1 step k, …), never as block-ordered runs, so machine drift lands on
@@ -556,12 +558,18 @@ attacks the spike directly. Ratio of `ms max` to `ms p50` on `cantilever 80×8`:
 | `Inertial` | 458.2 | 1 371.2 | 2.99× |
 | `InertialWithLoad` | 565.8 | 590.3 | **1.04×** |
 
-`InertialWithLoad` gives up 15 % on the median and buys an **11.0× cut in the
-tail**, turning a workload that spikes 4.4× above its median into one that is flat
-to within 4 %. On total iterations the two variants are near-tied (241 vs 278) and
-`Inertial` looks marginally better; on the quantity VR actually pays for they are
-not close. **This is a case where mean and tail rank the options oppositely** —
-cf. `feedback_metric_choice_can_invert_findings`.
+Read against `Inertial` — the arm it is actually competing with —
+`InertialWithLoad` costs **15 % more total iterations** (278 vs 241) and **23 %
+more median frame time** (565.8 vs 458.2 ms) and buys a **2.32× tail cut**
+(1 371.2 → 590.3 ms). Against the `PreviousState` baseline the tail cut is
+**11.0×** (6 494.1 → 590.3 ms). Either way it turns a workload spiking 4.4× above
+its own median into one flat to within 4 %.
+
+⚠ Those are three different comparisons and it is easy to quote a ratio from one
+against a baseline from another; the `max / p50` column above is the one figure
+that needs no baseline at all. **On totals `Inertial` wins and on the tail
+`InertialWithLoad` wins — mean and tail rank the two options oppositely**, cf.
+`feedback_metric_choice_can_invert_findings`.
 
 #### ⚠ `block_sag` got 32.7× WORSE, and that is the boundary of the technique
 
@@ -1147,7 +1155,7 @@ small, separate PR and is not proposed here.
   large one.** `SolverConfig::initial_guess` (a Newton predictor; default bit-equal)
   measured across five fixture/size pairs, three arms stepped in lockstep. 1.95× fewer
   iterations on the representative IPC workload, 4.70× on `cantilever 80×8`, zero
-  convergence failures, trajectories identical to 6e-14…8e-12. **R3's required gain
+  convergence failures, trajectories identical to 6e-14…8e-12 on the subjects. **R3's required gain
   falls from 12–16× to 6.1–8.1×, i.e. below its own 10× kill floor** — the gate now
   implies the goal instead of undershooting it. `InertialWithLoad` additionally
   collapses the frame-time tail (`ms max / ms p50` 4.44× → **1.04×**), the first thing

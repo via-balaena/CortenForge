@@ -36,10 +36,13 @@ pub enum InitialGuess {
     PreviousState,
     /// `x⁰ = x̂ = x_prev + Δt·v_prev` — constant-velocity extrapolation.
     ///
-    /// Zeroes the inertial term `(m/Δt²)·(x − x̂)` exactly: the expression is
-    /// the same fused `dt.mul_add(v_prev[i], x_prev[i])` the residual itself
-    /// uses, so the cancellation is bit-exact rather than merely close.
-    /// Leaves `f_int(x⁰) − f_ext`.
+    /// Zeroes the inertial term `(m/Δt²)·(x − x̂)` **on every free DOF**,
+    /// exactly: the expression is the same fused
+    /// `dt.mul_add(v_prev[i], x_prev[i])` the residual itself uses, so the
+    /// cancellation is bit-exact rather than merely close. Leaves
+    /// `f_int(x⁰) − f_ext`. (A CONSTRAINED DOF keeps `x_prev`, so its inertial
+    /// term is *not* zeroed when `v_prev` is nonzero there — harmless, since
+    /// constrained rows enter neither `free_residual_norm` nor the solve.)
     Inertial,
     /// `x⁰ = x̂ + Δt²·f_ext/m` — [`Self::Inertial`] plus the displacement the
     /// external load alone would produce.
@@ -51,11 +54,15 @@ pub enum InitialGuess {
     /// residual term except `f_int(x⁰)`, and is the "predictive position" the
     /// incremental-potential contact literature starts its solves from.
     ///
-    /// The division by `m` is safe on every DOF this touches: only FREE DOFs
-    /// are moved, and an unreferenced vertex — the sole source of a zero
-    /// lumped mass — is auto-pinned at construction (see `construct`'s
-    /// `effective_pinned` walk, and the same invariant cited by
-    /// `assemble_external_force`'s gravity scatter).
+    /// **A zero lumped mass degrades this variant to [`Self::Inertial`] on that
+    /// DOF rather than dividing.** Two distinct sources, and only one is
+    /// impossible: an unreferenced vertex is auto-pinned at construction (see
+    /// `construct`'s `effective_pinned` walk) so it never reaches a free DOF —
+    /// but **`SolverConfig::density = 0.0` zeroes the mass of the whole model
+    /// at once**, and that is a supported static-solve configuration, not a
+    /// mistake (`slender_bending_matches_analytic`'s `STATIC_DENSITY`). With no
+    /// mass there is no inertial term in the residual at all, so there is
+    /// nothing for `Δt²·f_ext/m` to predict against.
     InertialWithLoad,
 }
 
@@ -145,6 +152,15 @@ pub struct SolverConfig {
     /// The non-default variants trade a cheaper Newton path for a first
     /// iterate that may sit outside the convergence basin — see
     /// [`InitialGuess`] for the risk and for what each variant zeroes.
+    ///
+    /// ⚠ **FULL-ORDER SOLVER ONLY.** `backward_euler::reduced`'s
+    /// `ReducedNewtonSolver` reads this same config but always starts from
+    /// `q_prev`, so it silently ignores this field. That matters most where it
+    /// is least visible: driving a full and a reduced solve from ONE config
+    /// object compares a predicted full solve against an unpredicted reduced
+    /// one. Porting the predictor into the reduced Newton loop is tracked work,
+    /// not a decision — until it lands, set this to
+    /// [`InitialGuess::PreviousState`] for any full-vs-reduced comparison.
     pub initial_guess: InitialGuess,
 }
 

@@ -936,7 +936,13 @@ fn initial_guess_variants_produce_the_documented_first_iterate() {
     let probe = initial_guess_solver(InitialGuess::PreviousState, HUGE_TOL);
     let mass_z = probe.mass_per_dof[11];
     assert!(mass_z > 0.0, "free DOF 11 must carry positive lumped mass");
-    let f_ext_11 = mass_z.mul_add(GUESS_GRAVITY, THETA);
+    // ⚠ Written as mul-then-add, NOT `mul_add`, to mirror
+    // `assemble_external_force` exactly (`f_ext[..] = mag;` then
+    // `f_ext[..] += mass * gravity_z;` — two roundings, not one fused). The
+    // assertion below demands BIT equality, so an expectation with a different
+    // rounding structure would agree only by luck and could fail by 1 ULP on
+    // any change to the constants, for a reason unrelated to the code.
+    let f_ext_11 = THETA + mass_z * GUESS_GRAVITY;
 
     let mut expected = [
         // PreviousState: x_prev, untouched.
@@ -1002,9 +1008,8 @@ fn initial_guess_variants_converge_to_the_same_root() {
     /// root could not slip through.
     const SAME_ROOT_REL_TOL: f64 = 1.0e-8;
 
-    let v = [0.03_f64, -0.05, 0.07];
     let mut v_all = [0.0_f64; 12];
-    v_all[9..12].copy_from_slice(&v);
+    v_all[9..12].copy_from_slice(&[0.03, -0.05, 0.07]);
 
     let x_prev = Tensor::from_slice(&SKELETON_REST, &[12]);
     let v_prev = Tensor::from_slice(&v_all, &[12]);
@@ -1036,6 +1041,78 @@ fn initial_guess_variants_converge_to_the_same_root() {
             diff / base_norm,
         );
     }
+}
+
+/// A MASSLESS model must not produce a non-finite first iterate.
+///
+/// `config.density = 0.0` zeroes every entry of `mass_per_dof` and collapses the
+/// whole `M/Δt²` term, turning each step into a pure static root-find. It is a
+/// supported configuration, not a mistake — `slender_bending_matches_analytic`
+/// runs its measurements that way (`STATIC_DENSITY`).
+///
+/// ⚠ This is the case the FIRST version of `InertialWithLoad` got wrong. Its
+/// safety argument covered only unreferenced vertices (auto-pinned, so they
+/// never reach a free DOF) and missed that `density = 0` zeroes the mass of the
+/// whole model at once. `Δt²·f_ext/m` was then `0/0 = NaN` on unloaded DOFs and
+/// `±inf` on loaded ones. `‖r‖` is then `NaN`, `NaN < tol` is false so Newton
+/// never converges, and the `NaN` reaches the tangent — verified by removing the
+/// guard, which panics here in debug (`try_factor_free_tangent`'s
+/// `max_diag > 0.0`) and in release loses that assert too. The original guard
+/// was itself a `debug_assert!`, so **the fixture most likely to hit this was
+/// also the one least able to report it.**
+#[test]
+fn initial_guess_with_load_degrades_gracefully_on_a_massless_model() {
+    const HUGE_TOL: f64 = 1.0e30;
+    const DT: f64 = 1.0e-2;
+    const THETA: f64 = 1.0;
+
+    let mut v_all = [0.0_f64; 12];
+    v_all[9..12].copy_from_slice(&[0.03, -0.05, 0.07]);
+    let x_prev = Tensor::from_slice(&SKELETON_REST, &[12]);
+    let v_prev = Tensor::from_slice(&v_all, &[12]);
+    let theta = Tensor::from_slice(&[THETA], &[1]);
+
+    let massless = |guess: InitialGuess| {
+        let mut cfg = SolverConfig::skeleton();
+        cfg.initial_guess = guess;
+        cfg.tol = HUGE_TOL;
+        cfg.density = 0.0;
+        let solver: SkeletonSolver = CpuNewtonSolver::new(
+            Tet4,
+            SingleTetMesh::new(&MaterialField::uniform(1.0e5, 4.0e5)),
+            NullContact,
+            cfg,
+            BoundaryConditions {
+                pinned_vertices: vec![0, 1, 2],
+                roller_vertices: Vec::new(),
+                loaded_vertices: vec![(3, LoadAxis::AxisZ)],
+            },
+        );
+        assert_eq!(
+            solver.mass_per_dof[11], 0.0,
+            "the premise of this test is a zero lumped mass at density = 0",
+        );
+        solver
+            .try_solve_impl(&x_prev, &v_prev, &theta, DT)
+            .expect("a massless static solve at tol 1e30 must converge at iteration 0")
+            .0
+            .x_final
+    };
+
+    let with_load = massless(InitialGuess::InertialWithLoad);
+    for (i, &x) in with_load.iter().enumerate() {
+        assert!(
+            x.is_finite(),
+            "InertialWithLoad produced a non-finite x⁰[{i}] = {x} on a massless \
+             model — the mass guard divided by zero",
+        );
+    }
+    assert_eq!(
+        with_load,
+        massless(InitialGuess::Inertial),
+        "with no mass there is no inertial term to predict against, so \
+         InertialWithLoad must degrade to exactly Inertial rather than divide",
+    );
 }
 
 // --- Rung 6: nodal reaction-force readout (`nodal_reaction_forces`) ---

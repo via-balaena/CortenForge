@@ -256,6 +256,13 @@ where
         let mut f_int = vec![0.0; n_dof];
         let mut r_full = vec![0.0; n_dof];
 
+        // ⚠ Always starts from `q_prev`: `SolverConfig::initial_guess` is a
+        // FULL-ORDER knob and is silently ignored here. Driving a full and a
+        // reduced solve from one config therefore compares a predicted full
+        // solve against an unpredicted reduced one — see that field's docs.
+        // Porting the predictor into this loop is the outstanding follow-up
+        // (recon §2f: the full-order and reduced gains compose only once it
+        // lands, so the composed figure is a projection until then).
         let mut q = q_prev.to_vec();
         self.full.check_validity_at_step_start(&x_prev)?;
 

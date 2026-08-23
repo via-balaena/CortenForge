@@ -684,12 +684,31 @@ where
                 let dt2 = dt * dt;
                 for &i in &self.free_dof_indices {
                     let m = self.mass_per_dof[i];
-                    debug_assert!(
-                        m > 0.0,
-                        "free DOF {i} has non-positive lumped mass {m} — an unreferenced \
-                         vertex should have been auto-pinned at construction",
-                    );
-                    x_curr[i] = dt.mul_add(v_prev[i], x_curr[i]) + dt2 * (f_ext[i] / m);
+                    x_curr[i] = if m > 0.0 {
+                        dt.mul_add(v_prev[i], x_curr[i]) + dt2 * (f_ext[i] / m)
+                    } else {
+                        // ⚠ `m == 0` is a SUPPORTED configuration, not a defect:
+                        // `config.density = 0.0` collapses the whole `M/Δt²` term
+                        // and turns each step into a pure static root-find, which
+                        // is how `slender_bending_matches_analytic`'s
+                        // `STATIC_DENSITY` rig measures. An unreferenced vertex
+                        // cannot reach here (auto-pinned at construction), but a
+                        // massless MODEL can, and every DOF is zero at once.
+                        //
+                        // Degrade to `Inertial` rather than divide. With no mass
+                        // there is no inertia to extrapolate against — the residual
+                        // does not reference `x̂` at all — so `Δt²·f_ext/m` has no
+                        // meaning to compute, and computing it anyway yields
+                        // `0/0 = NaN` on unloaded DOFs and `±inf` on loaded ones.
+                        // That poisons `x⁰`; `‖r‖` is then `NaN`, `NaN < tol` is
+                        // false so Newton can never converge, and the `NaN` reaches
+                        // the tangent. MEASURED with the guard removed: in debug it
+                        // trips `try_factor_free_tangent`'s `max_diag > 0.0`
+                        // `debug_assert`; in `--release`, where this crate's FEM
+                        // gates run, that assert is compiled out too and the `NaN`
+                        // flows on into the factor and line search.
+                        dt.mul_add(v_prev[i], x_curr[i])
+                    };
                 }
             }
         }

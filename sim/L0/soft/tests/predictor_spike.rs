@@ -300,7 +300,16 @@ fn run_arms<S: Solver>(
 /// separation divided by it reads as reassuringly tiny whatever the arms
 /// actually did. Displacement is the quantity that is zero when nothing moved,
 /// and therefore the only one whose ratio means anything.
-fn rel_drift(arm: &ArmResult, base: &ArmResult, x_rest: &[f64]) -> f64 {
+/// ⚠ Returns `None` when the number would be unreadable rather than a number
+/// nobody can interpret: either arm having died means the two `x_final`s are
+/// from DIFFERENT steps (an arm that stopped at step 20 against a base that ran
+/// to 71), and a base that died at step 0 leaves the denominator exactly zero.
+/// The drift line is the "did the predictor change the ANSWER rather than the
+/// path" readout, so it must go quiet exactly where it would otherwise mislead.
+fn rel_drift(arm: &ArmResult, base: &ArmResult, x_rest: &[f64]) -> Option<f64> {
+    if arm.failure.is_some() || base.failure.is_some() {
+        return None;
+    }
     let num: f64 = arm
         .x_final
         .iter()
@@ -315,7 +324,7 @@ fn rel_drift(arm: &ArmResult, base: &ArmResult, x_rest: &[f64]) -> f64 {
         .map(|(b, r)| (b - r) * (b - r))
         .sum::<f64>()
         .sqrt();
-    num / den
+    (den > 0.0).then(|| num / den)
 }
 
 /// Print one case's comparison table. Everything the decision rule reads is
@@ -352,11 +361,13 @@ fn report(case: &str, n_free: usize, n_steps: usize, x_rest: &[f64], arms: &[Arm
         );
     }
     for arm in &arms[1..] {
-        println!(
-            "║ drift {:<9} ‖x − x_base‖/‖x_base‖ = {:.3e}",
-            arm.label,
-            rel_drift(arm, &arms[0], x_rest)
-        );
+        match rel_drift(arm, &arms[0], x_rest) {
+            Some(d) => println!("║ drift {:<9} ‖Δu‖/‖u_base‖ = {d:.3e}", arm.label),
+            None => println!(
+                "║ drift {:<9} — not comparable (an arm died, or the base never moved)",
+                arm.label
+            ),
+        }
     }
     for arm in arms {
         if let Some(reason) = &arm.failure {
