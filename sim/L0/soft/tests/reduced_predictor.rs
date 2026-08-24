@@ -51,8 +51,14 @@
 //! being compiled.
 //!
 //! ```text
-//! cargo test --release -p sim-soft --test reduced_predictor -- --ignored --nocapture
+//! cargo test --release -p sim-soft --test reduced_predictor -- --ignored --nocapture \
+//!   --test-threads=1
 //! ```
+//!
+//! ⚠ `--test-threads=1` is required: the two measurements otherwise compete for
+//! cores while each is being timed, and their tables interleave. ⚠ Do NOT expect
+//! the quiet-box gate to catch that for you — running both concurrently was tried
+//! and both gates PASSED. The flag is the guarantee; the gate is not.
 
 #![allow(
     // A failed oracle or reduced step is a broken instrument, not a runtime
@@ -69,6 +75,8 @@
     // Each body is one linear narrative: build, train, run the arms, compare.
     clippy::too_many_lines
 )]
+
+mod refbox;
 
 use sim_ml_chassis::Tensor;
 use sim_soft::solver::backward_euler::reduced::{
@@ -326,6 +334,7 @@ fn run_reduced(
 #[test]
 #[ignore = "reduced-predictor instrument — run explicitly, see module docs"]
 fn does_the_predictor_gain_survive_reduction() {
+    refbox::require_quiet_box();
     // THREE cells. At ×1 (R1.1's own box) the oracle baseline is exactly 3.00
     // iterations/step, which is thin — the gain magnitudes there are weak even
     // though the composition ratio is exact. ×2 makes Newton work harder on the
@@ -860,6 +869,8 @@ fn why_does_reduction_cost_iterations_under_load() {
     /// Basis training runs at the TIGHTEST tolerance so every cell shares one
     /// subspace; a per-cell basis would confound the trend with its own quality.
     const TRAIN_TOL: f64 = 1.0e-8;
+
+    refbox::require_quiet_box();
 
     let train_rig = rig_of(FULL_N_LAT, FULL_NZ, InitialGuess::PreviousState, TRAIN_TOL);
     let fd = train_rig.solver.free_dof_indices().to_vec();

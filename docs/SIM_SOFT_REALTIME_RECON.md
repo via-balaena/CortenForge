@@ -726,9 +726,9 @@ enters the arithmetic at all:
 ⚠ **This is a per-box statement and it is not portable.** A frame budget is
 absolute, so the gap belongs to the machine it was measured on; only the ratios
 (R0, R1, the predictor) transfer. §2d finding 4 is the evidence that they are the
-only things that do. **R3's gate should therefore be restated against a named
-reference box before it is spent against** — that is now a prerequisite for
-starting R3, not a footnote to it.
+only things that do. ✅ **The reference box is now FIXED and enforced in code —
+§2h.** `Mac16,8` (M4 Pro, 8P+4E), with a piloted contention gate that refuses a
+gate-bearing run on a loaded box. Every `×` above is a quantity on that machine.
 
 ⚠ **What is NOT claimed.** That `53.2×` is the gap on the deployment target: no
 such target is fixed anywhere in this document, and this box is one sample. What
@@ -919,6 +919,133 @@ unclaimed.
 
 ---
 
+
+### 2h. The REFERENCE BOX — what a `×` in this document is measured against
+
+A frame budget is ABSOLUTE, so a gap to it belongs to the machine that produced
+it. This document went four revisions without honouring that and withdrew its
+headline twice as a result. The reference box is now fixed, and enforced in code
+rather than in prose (`sim/L0/soft/tests/refbox/mod.rs`).
+
+| | |
+|---|---|
+| **Model** | `Mac16,8` — Apple M4 Pro |
+| **Cores** | 8 performance + 4 efficiency (12 logical) |
+| **RAM** | 24 GiB |
+| **OS / toolchain** | macOS 26.6.2 · rustc 1.96.0 (pinned by `rust-toolchain.toml`) |
+
+**Hard-failed:** model and the P/E core split — the hardware the cost scales
+with. **Stamped only:** RAM, OS, rustc; they drift for reasons unrelated to
+speed, and the toolchain is pinned elsewhere. Every measurement prints the block,
+so a figure cannot travel without its box again.
+
+**All four inputs to R3's requirement are gated**, not just the two that
+prompted this. R3 needs `gap ÷ R1 ÷ predictor`, and those terms come from four
+harnesses — `phase_shares.rs` and `r0_ab.rs` (the gap), `reduced_predictor.rs`
+(R1's `1.71×` net), `predictor_spike.rs` (the predictor's `1.97×`). ⚠ The last
+two were missed on the first pass, and the predictor's `1.97×` is a **wall-clock
+median-frame ratio** (§2f's third column), not an iteration count — so it is
+box-sensitive exactly like the gap. Gating half the inputs and calling the box
+fixed would have been an overclaim. Eleven call sites; the CI-run tests in those
+files are deliberately left ungated.
+
+#### The contention gate, and why the obvious statistic was the wrong one
+
+Background load is the bigger threat, not different hardware. §2's own header
+records the same 3 000-DOF fixture at **4.9 ms and 28.0 ms** in two runs — `5.7×`
+from load alone, against the `~1.6×` seen across boxes.
+
+The measurement fixtures cannot police themselves: the IPC ramp deepens its
+indenter every step, so `max/p50` is `1.31` from physics, and the
+`cantilever 80×8` transient runs 8× min-to-max. So a **separate probe** runs
+first (~0.6 s): `cantilever 40×4`, 3 000 free DOF, `dt = 1e-3`, which holds the
+Newton count constant at 3 — identical work every step, so any spread has one
+source. Measured at **~61 % `numeric factor`** (61.1 / 60.8 % on two runs), so it loads the phase the real
+measurements are bottlenecked on. The probe **checks its constant-work premise
+and refuses to report if the count varies**; it caught a `[2, 3, 3, …]` first
+step on its first run and declared itself invalid until warm-up was raised.
+
+Thresholds were **piloted, not chosen** — 10 runs idle, then under deliberate
+load:
+
+| load | `burst` (max/p50) | probe median |
+|---|---|---:|
+| idle (10 runs) | 1.008 – **1.060** | 23.80 – **24.70** ms |
+| 2 cores busy | 1.015 – 1.223 | **25.83** – 26.18 ms |
+| 4 cores busy | 1.022 – **1.063** | 26.15 – 26.61 ms |
+| 12 cores busy | 2.374 – 5.873 | 82.0 – 143.9 ms |
+
+⚠ **The finding: `burst` does NOT detect sustained partial load.** At 4 busy
+cores it reads `1.063×` against an idle maximum of `1.060×` — no separation —
+because steady load slows *every* step and therefore lands in the median. An
+earlier draft of the probe documented `burst` as "the contention statistic" and
+claimed a median would hide what it catches; that was backwards, and the pilot
+is what said so. Both checks ship, for different failure modes:
+
+- **`probe median ≤ 25.5 ms`** — the sensitive check. Sits in the measured gap
+  between idle max `24.70` and the lightest contaminated case `25.83`. Only
+  `3.3 %` headroom, deliberately; a genuine baseline shift must be re-piloted,
+  not accommodated by widening this.
+- **`burst ≤ 1.30×`** — the gross-stall backstop, for a few long preemptions on
+  a box whose median looks fine.
+- **`probe median ≥ 21.0 ms`** — not a contention check. Catches the probe
+  getting *cheaper*, which means the workload or solver moved and every constant
+  here is stale.
+
+Negative-controlled end to end: with 3 cores busy the gate refuses a
+gate-bearing run in **0.69 s**, naming the cause — and `burst` read `1.02×` in
+that same run, which is precisely why it is not the gate on its own.
+
+⚠ **The pilot's 10 runs undersample the tail, and the first real gated run said
+so**: it passed at probe median `24.59 ms` (3.7 % under the ceiling) with burst
+`1.07×` — already above the pilot's idle maximum of `1.060×`. `burst`'s `1.30×`
+absorbs that; the median's `3.3 %` has less room. Expect this gate to fail
+occasionally on a busy day. That is the intended bias — it fails CLOSED, and a
+refused measurement costs a re-run while a contended one costs a retracted
+finding.
+
+#### ⚠ The gate is WEAKER for cross-tree A/B, and that is measured
+
+`tests/r0_ab.rs` runs the same fixture on two trees, and the probe is
+`cantilever 40×4` — a fixture **R0 itself speeds up**. On the pre-R0 tree the
+probe reads **57.39 ms** against post-R0's **24.47 ms** (`2.35×`), so applying the
+absolute median ceiling would reject the pre-R0 arm on every run and the A/B
+could never execute. This was caught by review before it shipped, not by the
+gate.
+
+`burst` IS scale-free and does transfer — idle pre-R0 reads `1.013–1.063×`
+against post-R0's `1.008–1.060×` — so the cross-tree gate checks identity and
+burst, and skips the median. **The cost: that arm has weaker contention
+protection**, since burst misses sustained partial load. What covers it is
+INTERLEAVING, measured rather than assumed:
+
+| under a 3-core load | absolute times | **R0 credit** |
+|---|---:|---:|
+| IPC 18 750 | +3.4 % | **+0.4 %** |
+| IPC 5 202 | +4.0 % | **+1.4 %** |
+
+The load lands on both arms and leaves the ratio, which is why interleaving is
+mandatory in `r0_ab.rs` rather than advisory.
+
+#### R3's two numbers, both on this box
+
+The document has been conflating these. They are different quantities:
+
+| | value | what it decides |
+|---|---:|---|
+| R3's own **kill floor** | **≥ 10×** | whether the rung ships at all |
+| **Frame-budget requirement** | **13.5 – 15.8×** | whether 60 Hz is actually reached |
+
+Both are quantities **on the reference box** and neither is portable. R3 passing
+its floor and missing the budget is not a contradiction — it is the situation
+§2f now predicts.
+
+⚠ **Transfer to another box is UNVALIDATED, and deliberately not offered.**
+Validating a transfer rule needs at least two boxes; one is available. The only
+cross-box evidence here has it failing in opposite directions across fixture
+families (`1.60× / 1.56× / 1.08×` … and `0.51×`), so a plausible-looking scaling
+factor would be worse than none. Anything measured elsewhere is a different
+number wearing the same name.
 
 ## 3. What the measurements say about feasibility
 
@@ -1271,7 +1398,7 @@ same door, under its own feature, and must not enter the default build.
 | **R0** ✅ **DONE** (`e77023c7`, `43b198a2`) | **Full-order assembly lever.** Replace the per-iteration `BTreeMap` rebuild in `assemble_free_hessian_triplets` with a pattern-indexed value buffer built once at construction. No algorithm change. | Byte-identity of the assembled triplets against the current path (the `feedback_float_refactor_byte_identity` recipe), plus a measured ms/iteration delta on the §2a fixtures. | §2d.2. Establishes the **honest baseline** the reduction is measured against. Cheap, self-contained, and a win regardless of whether anything downstream ships. |
 | **R1** ✅ **DONE** (`#744`, `#745`, R1.2) | **Linear subspace, no contact, no coupling.** POD basis from full-order snapshots on the `cantilever` fixture at 3 000 free DOF; reduced Newton with a dense `r × r` direct solve; `Φ` and quadrature both handled naively (full element sweep — **no hyper-reduction yet**). Differentiable path wired at the same time (§6, `Φ` constant). | Projection error vs the oracle < 1 % in tip displacement over the training trajectory; reduced gradient matches the oracle's to the crate's existing gradcheck tolerance. ⚠ **That second clause was wrong and was amended before R1.2 was built** — it asks two different functions to agree to 5 digits when their states already differ in the third. Split into a gradcheck-tolerance kill gate on the reduced model's *own* derivative and a measured comparison against the oracle; see the plan's §5/§7 and §13. **Wall time is explicitly NOT gated at R1** — without hyper-reduction it will not be faster, and pretending otherwise would corrupt the signal. | **The cheap kill-or-confirm.** It answers the one question that decides everything downstream: *does a low-dimensional subspace represent this material's deformation at all?* Fixture already exists; no new physics. |
 | **R2** | **Precision decision.** Measure a full-f32 forward path on the reduced system (`r × r` is small enough to port by hand without touching the 1 396-`f64` production surface), and decide residual-in-f64-on-CPU vs compensated-summation-in-f32. | Reduced-model f32 forward drift and gradient drift vs the f64 reduced model, on R1's fixture; explicit go/no-go on whether the residual can live in f32. | §2c. Must precede any GPU work; deciding it after a shader exists means writing the shader twice. |
-| **R3** | **Hyper-reduction (ECSW) + the validity domain.** NNLS training over R1's snapshots; `ReducedValidityDomain` with the online `‖q‖` + residual-proxy gate; the three error measures of §4c. | Measured speedup vs §2a's baseline (post-R0), with the three §4c errors reported alongside. Domain gate demonstrated to fire on an out-of-domain trajectory. | This is where the frame-budget win actually arrives. Also where the "smooth and wrong" failure mode is defended against. |
+| **R3** (⚠ gate is `≥10×` **on §2h's reference box**; the frame budget separately needs `13.5–15.8×`) | **Hyper-reduction (ECSW) + the validity domain.** NNLS training over R1's snapshots; `ReducedValidityDomain` with the online `‖q‖` + residual-proxy gate; the three error measures of §4c. | Measured speedup vs §2a's baseline (post-R0), with the three §4c errors reported alongside. Domain gate demonstrated to fire on an out-of-domain trajectory. | This is where the frame-budget win actually arrives. Also where the "smooth and wrong" failure mode is defended against. |
 | **R4** | **Hybrid domain decomposition, FIXED contact patch.** Full DOF under a stationary indenter, reduced bulk, on the `dynamic_indentation` geometry. | End-to-end reaction force vs the oracle, in the same band `bonded_layer_indentation` already asserts. | §5. Fixed patch first, because it isolates the coupling condition from the re-partitioning problem. |
 | **R5** | **Moving patch.** Re-partitioning under a once-built symbolic factorization, or a conservative union pattern. | Sliding-contact trajectory vs the oracle. | §5's open-research item. **Explicitly gated on R4 succeeding**; if R4 fails, this is not attempted. |
 | **R6** | **Rigid↔soft coupling.** | — | **Last, deliberately.** Per the brief, and it is the right call: the keystone coupling is itself the platform's hardest open problem (`MISSION.md` §2), and stacking it on an unsolved real-time reduced path would make any failure uninterpretable. |
@@ -1513,6 +1640,30 @@ until then, and by nobody else ever. The recipe above is the durable record.
 - `sim/L0/soft/src/material/` — the `ValidityDomain` §4c mirrors.
 
 ## 12. Version history
+
+- **v2.5 (2026-08-23)** — **§2h: the reference box is FIXED, and enforced in code.**
+  `Mac16,8` (Apple M4 Pro, 8P+4E) — hard-failed on model and core split, stamped on
+  RAM/OS/rustc, via `tests/refbox/mod.rs`, which both gate-bearing harnesses now call.
+  A ~0.6 s probe (`cantilever 40×4`, `dt = 1e-3`, Newton count pinned at 3) runs first
+  and refuses the measurement on a loaded box. ★ **Thresholds piloted, not chosen**:
+  10 idle runs then deliberate load. ⚠ **The pilot overturned the design** — `burst`
+  (max/p50), which the probe originally documented as "the contention statistic",
+  does NOT separate sustained partial load (`1.063×` at 4 busy cores against a
+  `1.060×` idle max), because steady load lands in the median. The absolute median is
+  the sensitive check; `burst` is kept as the gross-stall backstop. Negative-controlled:
+  3 busy cores are refused in 0.69 s. ⚠ The probe also **caught its own premise
+  failing** on its first run (`[2, 3, 3, …]` iterations) and declared itself invalid.
+  ⚠ **Transfer between boxes remains UNVALIDATED and is not offered** — it needs two
+  boxes, and the one cross-box dataset shows it failing in opposite directions.
+  R3's two numbers are now stated separately: kill floor `≥10×`, frame budget
+  `13.5–15.8×`, both on this box. ⚠ Review caught that the gate would have BROKEN
+  the cross-tree A/B — the probe fixture is one R0 speeds up (57.39 ms pre-R0 vs
+  24.47 post), so the median ceiling would reject the pre-R0 arm every run; that
+  path now checks identity and the scale-free `burst` only, and leans on
+  interleaving for the rest. ⚠ Review also caught that only 2 of the 4 harnesses
+  feeding R3's arithmetic had been gated — `predictor_spike.rs` and
+  `reduced_predictor.rs` were missed, and the predictor's `1.97×` is wall-clock,
+  not an iteration count. All four are gated now.
 
 - **v2.4 (2026-08-23)** — **⛔ v2.3's `9.89×` is WITHDRAWN, and the method that
   produced it is retired.** Two independent defects, both found by review rather

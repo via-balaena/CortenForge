@@ -47,6 +47,8 @@
     clippy::too_many_lines
 )]
 
+mod refbox;
+
 use std::time::Instant;
 
 use sim_ml_chassis::Tensor;
@@ -342,6 +344,7 @@ fn require_timing_enabled() {
 #[test]
 #[ignore = "phase-share instrument — run explicitly with --features phase-timing"]
 fn remeasure_2d_phase_shares() {
+    refbox::require_quiet_box();
     require_timing_enabled();
 
     // ── positive control: §2d's cantilever row is ALREADY post-R0 ──
