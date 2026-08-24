@@ -24,9 +24,13 @@
 //! ECSW replaces assembly-and-projection over every element with a weighted sum
 //! over a sampled subset, so [`Phase::ecsw_reducible`] splits the slots. With
 //! `f` the reducible share, **R3's whole-step ceiling is `1/(1 − f)`** — the
-//! limit as the sampled subset goes to zero cost. If that is below `13.5×`, R3
-//! cannot reach the frame budget however good the cubature is, and the ladder
-//! needs R4 rather than more R3.
+//! limit as the sampled subset goes to zero cost.
+//!
+//! `f` is reported as a BRACKET, because some of the frame is removable only if
+//! R3's own `ReducedValidityDomain` works ([`Reducible::PlannedByR3`]); folding
+//! that in would assume the success of the thing being sized. Measured, the
+//! bracket is `8.3×–37.1×` against a `13.5–15.8×` requirement and a `10×` floor —
+//! it straddles both, and the validity sweep alone decides it.
 //!
 //! ## Controls
 //!
@@ -57,7 +61,7 @@ mod refbox;
 use std::time::Instant;
 
 use sim_ml_chassis::Tensor;
-use sim_soft::profile::{self, Phase};
+use sim_soft::profile::{self, Phase, Reducible};
 use sim_soft::solver::backward_euler::reduced::{
     Inner, PodBasis, ReducedNewtonSolver, SnapshotSet,
 };
@@ -181,30 +185,36 @@ fn main_report(label: &str, wall_ms: f64, steps: usize, iters: usize) {
     println!("║ {:.2} ms/step wall", wall_ms / steps as f64);
     println!("║");
     println!("║ {:<22} {:>10} {:>9}  ECSW?", "phase", "ms/step", "share");
-    let mut reducible = 0.0;
+    let (mut sure, mut planned) = (0.0, 0.0);
     for ph in Phase::ALL {
         let ms = p.millis(ph);
         if ms <= 0.0 {
             continue;
         }
         let share = 100.0 * ms / wall_ms;
-        if ph.ecsw_reducible() {
-            reducible += share;
+        match ph.ecsw_reducible() {
+            Reducible::Yes => sure += share,
+            Reducible::PlannedByR3 => planned += share,
+            Reducible::No => {}
         }
         // ⚠ `Contact` is NESTED inside `AssembleForce` and `AssembleTangent`,
         // both of which are reducible, so its time has already been added via its
         // parents. ECSW cannot remove a broad-phase pair search — it replaces
         // element quadrature — so take it back out. Missing this overstates the
-        // ceiling: 90.0 % reads as 10.0x where the honest figure is 87.4 % / 7.9x.
+        // ceiling: 90.0 % read as 10.0x where the honest lower bound is 88.0 % / 8.3x.
         if matches!(ph, Phase::Contact) {
-            reducible -= share;
+            sure -= share;
         }
         println!(
             "║ {:<22} {:10.3} {:8.1} %  {}",
             ph.label(),
             ms / steps as f64,
             share,
-            if ph.ecsw_reducible() { "yes" } else { "NO" }
+            match ph.ecsw_reducible() {
+                Reducible::Yes => "yes",
+                Reducible::No => "NO",
+                Reducible::PlannedByR3 => "if R3's own design works",
+            }
         );
     }
     println!("║");
@@ -212,17 +222,31 @@ fn main_report(label: &str, wall_ms: f64, steps: usize, iters: usize) {
         "║ instrumented / wall = {:.1} %",
         100.0 * total_instr / wall_ms
     );
-    println!("║ ECSW-reducible      = {reducible:.1} % of wall  (contact nesting removed)");
-    let ceiling = 100.0 / (100.0 - reducible);
-    println!("║ ⇒ R3 Amdahl CEILING = {ceiling:.1}×   (R3 needs 13.5–15.8×)");
+    let unaccounted = 100.0 - 100.0 * total_instr / wall_ms;
+    println!("║ reducible: {sure:.1} % certain + {planned:.1} % if R3's own design works");
+    println!("║ unaccounted: {unaccounted:.1} % — counted as NOT reducible in BOTH bounds");
+    let lo = 100.0 / (100.0 - sure);
+    let hi = 100.0 / (100.0 - sure - planned);
+    println!("║");
+    // ⚠ The upper bound is ILL-CONDITIONED: at f ≈ 0.97 a 0.1 pp shift in the
+    // reducible share moves it by ~2×, and two identical runs gave 37.1 and 38.9.
+    // Print it as an approximate lower limit so it is not read to three digits.
+    let hi_txt = if sure + planned > 95.0 {
+        format!("≳{hi:.0}×  ⚠ ill-conditioned, do not quote precisely")
+    } else {
+        format!("{hi:.1}×")
+    };
+    println!("║ ⇒ R3 Amdahl CEILING = {lo:.1}× … {hi_txt}   (needs 13.5–15.8×, floor 10×)");
     println!(
         "║ ⇒ {}",
-        if ceiling >= 15.8 {
-            "clears the requirement even at its high end"
-        } else if ceiling >= 13.5 {
-            "clears the LOW end only — the high end is unreachable"
+        if lo >= 15.8 {
+            "clears the requirement on either bound"
+        } else if hi < 10.0 {
+            "⛔ cannot clear R3's own 10× floor on EITHER bound"
+        } else if hi < 13.5 {
+            "⚠ can clear the 10× floor but NOT the frame budget"
         } else {
-            "⛔ BELOW the requirement: R3 cannot reach the frame budget"
+            "⚠ BRACKET STRADDLES the requirement — the bound decides, so close it"
         }
     );
     println!("╚═");

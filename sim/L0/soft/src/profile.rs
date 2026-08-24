@@ -111,15 +111,35 @@ pub enum Phase {
     ReducedProjectTangent,
     /// Reduced path: the dense `r × r` Cholesky/LU and its solve (`O(r³)`).
     ///
-    /// ⚠ The one cost centre here that hyper-reduction (R3) CANNOT touch — ECSW
-    /// replaces assembly and projection with a weighted sum over a sampled
-    /// element subset, and leaves this untouched. Its share is therefore R3's
-    /// Amdahl ceiling.
+    /// Hyper-reduction cannot touch it — ECSW replaces assembly and projection
+    /// with a weighted sum over sampled elements and leaves the `r × r` solve
+    /// alone. It measures **0.0 %** of a reduced frame at `r = 40`, so it is not
+    /// what bounds R3; see [`Reducible`] and §2i for what does.
     ReducedDenseSolve,
+
+    /// The `O(n)` residual vector arithmetic — `(m/Δt²)(x − x̂) + f_int − f_ext`
+    /// and the free-DOF gather. Shared by both paths.
+    ResidualForm,
+    /// The deformed-validity element sweep at step start and on convergence.
+    ValidityCheck,
+}
+
+/// Whether hyper-reduction can remove a phase.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reducible {
+    /// ECSW replaces this with a weighted sum over sampled elements.
+    Yes,
+    /// Untouched by hyper-reduction — the `r × r` solve, the contact broad phase.
+    No,
+    /// Removed only if R3's OWN design works: the analytic `ΦᵀMΦ = I` inertia
+    /// term and the `ReducedValidityDomain` gate that replaces the element sweep
+    /// (§4c). Counting these as removed assumes the thing being sized succeeds,
+    /// so they are reported as a separate bracket rather than folded in.
+    PlannedByR3,
 }
 
 /// Number of timing slots.
-const N_SLOTS: usize = 9;
+const N_SLOTS: usize = 11;
 
 impl Phase {
     /// Every slot, in §2d's column order.
@@ -133,6 +153,8 @@ impl Phase {
         Self::ReducedProjectCovector,
         Self::ReducedProjectTangent,
         Self::ReducedDenseSolve,
+        Self::ResidualForm,
+        Self::ValidityCheck,
     ];
 
     /// §2d's column heading for this phase.
@@ -148,6 +170,8 @@ impl Phase {
             Self::ReducedProjectCovector => "red proj r",
             Self::ReducedProjectTangent => "red proj K",
             Self::ReducedDenseSolve => "red dense solve",
+            Self::ResidualForm => "residual form",
+            Self::ValidityCheck => "validity check",
         }
     }
 
@@ -159,17 +183,18 @@ impl Phase {
     /// [`Self::Contact`], whose pair search is not an element-quadrature cost.
     /// `1 / (1 − reducible share)` is R3's Amdahl ceiling.
     #[must_use]
-    pub const fn ecsw_reducible(self) -> bool {
+    pub const fn ecsw_reducible(self) -> Reducible {
         match self {
             Self::AssembleForce
             | Self::AssembleTangent
             | Self::ReducedExpand
             | Self::ReducedProjectCovector
-            | Self::ReducedProjectTangent => true,
+            | Self::ReducedProjectTangent => Reducible::Yes,
             Self::NumericFactor
             | Self::TriangularSolve
             | Self::Contact
-            | Self::ReducedDenseSolve => false,
+            | Self::ReducedDenseSolve => Reducible::No,
+            Self::ResidualForm | Self::ValidityCheck => Reducible::PlannedByR3,
         }
     }
 
@@ -184,6 +209,8 @@ impl Phase {
             Self::ReducedProjectCovector => 6,
             Self::ReducedProjectTangent => 7,
             Self::ReducedDenseSolve => 8,
+            Self::ResidualForm => 9,
+            Self::ValidityCheck => 10,
         }
     }
 }

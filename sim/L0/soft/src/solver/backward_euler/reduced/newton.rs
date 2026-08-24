@@ -209,6 +209,7 @@ where
 
     /// Gather the free-DOF entries of a full-DOF vector.
     pub(super) fn gather_free(&self, full: &[f64]) -> Vec<f64> {
+        let _t = crate::profile::Timer::start(crate::profile::Phase::ResidualForm);
         self.full
             .free_dof_indices()
             .iter()
