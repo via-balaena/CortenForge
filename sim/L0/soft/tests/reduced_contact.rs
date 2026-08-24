@@ -573,6 +573,73 @@ fn the_window_depth_guard_discriminates_early_from_deep() {
     );
 }
 
+/// ★ Negative controls for [`in_sample_advantage`]'s three guards. Each is a
+/// state no passing run of the instrument can reach, which is exactly why they
+/// need exercising here instead.
+#[cfg(test)]
+fn rows_for(pairs: &[(&'static str, usize, f64)]) -> Vec<(&'static str, usize, Arm)> {
+    pairs
+        .iter()
+        .map(|&(l, r, err)| {
+            let mut a = healthy_arm(l);
+            a.max_rel_err = err;
+            (l, r, a)
+        })
+        .collect()
+}
+
+/// The remaining `top_row` guard. Cheap, and it closes the sweep: every
+/// assertion in the generalisation path is now either exercised by a test or
+/// DECLARED structural below.
+#[test]
+#[should_panic(expected = "no rows recorded for `absent`")]
+fn top_row_refuses_a_label_with_no_rows() {
+    let rows = rows_for(&[("in", 40, 1.0e-6)]);
+    let _ = top_row(&rows, "absent");
+}
+
+/// ⚠ **Declared UNCONTROLLED, deliberately.** Three guards in this file fire
+/// only when a full-order oracle fails its own ramp — the training trajectories,
+/// the scoring oracles, and the in-sample control's survival check. Reaching any
+/// of them means the FIXTURE is broken, not the reduced path, and demonstrating
+/// them would mean injecting a fault into a multi-minute instrument for no
+/// diagnostic gain. The `≥10×` floor is likewise not separately controlled: the
+/// number it compares is pinned by
+/// [`advantage_is_the_ratio_of_the_two_top_rows`] and the comparison itself is a
+/// `>=`. Everything else has a negative control.
+#[test]
+#[should_panic(expected = "passes having measured NOTHING")]
+fn advantage_refuses_a_zero_denominator() {
+    // `max_rel_err` initialises to 0.0 and is only updated for finite samples,
+    // so "recorded nothing" and "was perfect" are the same value.
+    let rows = rows_for(&[("in", 40, 0.0), ("ip", 40, 1.0e-3)]);
+    let _ = in_sample_advantage(&rows, "in", "ip");
+}
+
+#[test]
+#[should_panic(expected = "scored at different ranks")]
+fn advantage_refuses_a_rank_mismatch() {
+    let rows = rows_for(&[("in", 80, 1.0e-6), ("ip", 40, 1.0e-3)]);
+    let _ = in_sample_advantage(&rows, "in", "ip");
+}
+
+#[test]
+#[should_panic(expected = "TRUNCATED trajectory")]
+fn advantage_refuses_a_truncated_interpolation_arm() {
+    let mut rows = rows_for(&[("in", 40, 1.0e-6), ("ip", 40, 1.0e-9)]);
+    rows[1].2.failure = Some("ArmijoStall at iter 3".to_owned());
+    let _ = in_sample_advantage(&rows, "in", "ip");
+}
+
+/// The two-sided half: clean inputs give the ratio, so the three panics above
+/// are their stated causes and not the machinery.
+#[test]
+fn advantage_is_the_ratio_of_the_two_top_rows() {
+    let rows = rows_for(&[("in", 40, 2.0e-6), ("ip", 40, 1.4e-3), ("in", 20, 9.9)]);
+    let got = in_sample_advantage(&rows, "in", "ip");
+    assert!((got - 700.0).abs() < 1e-9, "expected 700x, got {got}");
+}
+
 fn rest_positions(mesh: &HandBuiltTetMesh) -> Vec<f64> {
     let mut x = vec![0.0_f64; 3 * mesh.n_vertices()];
     for (c, p) in x.chunks_exact_mut(3).zip(mesh.positions().iter()) {
@@ -1707,23 +1774,13 @@ fn reduced_basis_generalises() {
     // The held-out rows are the MEASUREMENT; a bad number there is the finding,
     // not a test failure. What must hold is that the rig can score a basis it
     // did fit — otherwise every row is measuring the harness.
-    let at_top = |label: &str| {
-        rows.iter()
-            .filter(|(l, ..)| *l == label)
-            .max_by_key(|(_, got, _)| *got)
-            .unwrap_or_else(|| panic!("no rows recorded for `{label}`"))
-    };
-    let control = at_top(TEST_OFFSETS[0].0);
+    let control = top_row(&rows, TEST_OFFSETS[0].0);
     assert!(
         control.2.failure.is_none() && control.2.min_sd > 0.0,
         "the IN-SAMPLE control did not survive its own trajectory — nothing above \
          is interpretable",
     );
-    // ★ The quantitative half. Structural survival is not enough: if in-sample
-    // accuracy regressed, every row would still print and the comparison the
-    // whole test exists to make would be meaningless while passing.
-    let interp = at_top(TEST_OFFSETS[1].0);
-    let advantage = interp.2.max_rel_err / control.2.max_rel_err;
+    let advantage = in_sample_advantage(&rows, TEST_OFFSETS[0].0, TEST_OFFSETS[1].0);
     println!(
         "RC\t★ control: in-sample is {advantage:.0}× better than interpolation at \
          r={} (floor {MIN_IN_SAMPLE_ADVANTAGE:.0}×)",
@@ -1731,10 +1788,57 @@ fn reduced_basis_generalises() {
     );
     assert!(
         advantage >= MIN_IN_SAMPLE_ADVANTAGE,
-        "in-sample ({:.2e}) is only {advantage:.1}× better than interpolation \
-         ({:.2e}) — the rig cannot tell a basis it FIT from one it did not, so \
-         the generalisation reading above is not supported",
-        control.2.max_rel_err,
-        interp.2.max_rel_err,
+        "in-sample is only {advantage:.1}× better than interpolation — the rig \
+         cannot tell a basis it FIT from one it did not, so the generalisation \
+         reading above is not supported",
     );
+}
+
+/// The highest-rank row recorded for `label`.
+fn top_row<'a>(
+    rows: &'a [(&'static str, usize, Arm)],
+    label: &str,
+) -> &'a (&'static str, usize, Arm) {
+    rows.iter()
+        .filter(|(l, ..)| *l == label)
+        .max_by_key(|(_, got, _)| *got)
+        .unwrap_or_else(|| panic!("no rows recorded for `{label}`"))
+}
+
+/// How many times better the in-sample row is than the interpolated one, with
+/// the three guards that make the number mean something.
+///
+/// ★ Extracted from the test body ONLY so those guards can be exercised. A
+/// control that has run exclusively on good data is not a control — and the
+/// first of these is the exact shape this file keeps producing: the ratio's
+/// denominator is `max_rel_err`, which INITIALISES TO ZERO and is only updated
+/// for finite samples, so a run that recorded no usable error at all would
+/// divide by zero, report `inf×`, and sail past the floor having measured
+/// nothing.
+fn in_sample_advantage(
+    rows: &[(&'static str, usize, Arm)],
+    in_label: &str,
+    interp_label: &str,
+) -> f64 {
+    let (_, fitted_rank, fitted) = top_row(rows, in_label);
+    let (_, held_rank, held) = top_row(rows, interp_label);
+    assert_eq!(
+        fitted_rank, held_rank,
+        "the two rows were scored at different ranks, so their ratio is not a \
+         generalisation measurement",
+    );
+    assert!(
+        held.failure.is_none(),
+        "the interpolation arm did not complete ({}), so its error is over a \
+         TRUNCATED trajectory — a small ratio would then indict the basis when \
+         the arm simply stopped early",
+        held.failure.as_deref().unwrap_or(""),
+    );
+    assert!(
+        fitted.max_rel_err.is_finite() && fitted.max_rel_err > 0.0,
+        "in-sample error is {:.3e}; a zero or non-finite denominator makes the \
+         ratio `inf` and the control passes having measured NOTHING",
+        fitted.max_rel_err,
+    );
+    held.max_rel_err / fitted.max_rel_err
 }
