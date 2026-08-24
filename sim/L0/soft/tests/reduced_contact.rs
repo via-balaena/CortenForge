@@ -993,8 +993,14 @@ fn reduced_contact_does_not_tunnel_through_the_barrier() {
 ///   `active_pairs`. On a linear mesh `active_pairs` resolves to
 ///   `active_vertex_pairs`, which evaluates every primitive at every vertex
 ///   with no broad phase. Neither term has anything to do with how many pairs
-///   are actually active — which is what §2i meant when it called the
-///   `NullContact` cost "pure marshalling + broad-phase", now measured at scale.
+///   are actually active.
+///
+///   ★★ **Recon §2d finding 4 already described both passes** — "marshal every
+///   vertex into a fresh `Vec<Vec3>` and run the broad-phase scan before any
+///   pair exists", twice per Newton iteration — and then set them aside:
+///   *"Neither is on R3's path."* Under `C/R = B/I` that is overturned. The
+///   cost is `1–2 %` of a whole frame, which is why it looked ignorable, and
+///   `69 %` of `I`, which is the only quantity that decides the rung.
 ///
 ///   ⚠ **Two scoping corrections to the paragraph above, both from round 3.**
 ///   (a) The `O(n_vertices)` walk is the LINEAR-mesh path; a Tet10 mesh

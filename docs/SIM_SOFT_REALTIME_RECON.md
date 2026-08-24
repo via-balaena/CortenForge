@@ -517,6 +517,13 @@ Five findings:
    `slice_to_vec3s` + `active_pairs` run TWICE per Newton iteration (force and
    tangent). Neither is on R3's path, and neither is costed here beyond this note.
 
+   ⛔ **That last sentence is OVERTURNED by §2k (v2.13).** It was written when a
+   rung's verdict was thought to turn on a whole-frame speedup, where this cost
+   is `1–2 %`. Under `C/R = B/I` only the IRREDUCIBLE time decides, and on the
+   reduced path at 18 750 this cost is **`69 %` of it** — the largest single term
+   in the quantity that says whether R3 clears. It is not just on R3's path; at
+   that size it very nearly is R3's path.
+
 5. **Triangular solves are never the bottleneck** (0.3–2.9 % everywhere). Worth
    stating because it is the phase a naive "put the solve on the GPU" plan targets
    first, and it would buy essentially nothing.
@@ -1938,16 +1945,35 @@ Five things it changes:
    requirement's own fixture. Two points per term; a marker for where to measure
    next, not a number. It does mean the `1.4×` above must not be read as "R3
    clears for soft bodies": it clears **at this size**.
-4. ★★★ **Which identifies the one optimisation that can move R3's margin.**
-   `IpcRigidContact::active_vertex_pairs` evaluates every primitive at **every
-   vertex in the mesh** — there is no broad phase — so contact's per-call cost is
-   linear in vertex count, which is the `n^1.13` above. Contact is `69 %` of `I`,
-   and by `C/R = B/I` only `I` can move a rung's verdict. **A contact broad phase
-   is therefore the available lever, and `asm tangent` is not** — at `68.7 %` of
-   the reduced FRAME it moves the margin by exactly zero, the same trap §2j's
-   corollary caught for `red proj K`. ⚠ No size of win is claimed here; what is
-   established is that the cost is `O(n_vertices)` by construction, and that it
-   is the only term of size in the deciding quantity.
+4. ★★★ **Which overturns §2d's dismissal of the contact PATH, and locates the
+   only available lever on R3's margin.**
+
+   §2d finding 4 already described the mechanism: both timed blocks "marshal
+   every vertex into a fresh `Vec<Vec3>` and run the broad-phase scan before any
+   pair exists", twice per Newton iteration. It then set it aside —
+   *"Neither is on R3's path, and neither is costed here beyond this note."*
+
+   **That dismissal is now wrong, and `C/R = B/I` is why.** Contact is `69 %` of
+   `I` at 18 750, `I` is the only quantity that moves a rung's verdict, and the
+   two `O(n)` passes are the bulk of contact. So the contact PATH is not merely
+   on R3's path — at this size it very nearly IS R3's path. The corollary runs
+   the other way for the big lines: `asm tangent`, at `68.7 %` of the reduced
+   FRAME, moves the margin by exactly zero — the same trap §2j's corollary caught
+   for `red proj K`.
+
+   Neither pass scales with how many pairs are ACTIVE: `slice_to_vec3s`
+   allocates and copies every position per call, and `active_pairs` on a linear
+   mesh resolves to `active_vertex_pairs`, which evaluates every primitive at
+   every vertex with no broad phase.
+
+   ⚠ **Two scopings, both from a third review round.** (a) The per-vertex walk is
+   the LINEAR-mesh path; a Tet10 mesh dispatches to `active_face_pairs`, which
+   iterates boundary faces. (b) The `n^1.13` is **not** a per-call scaling —
+   contact's `4.24×` growth factors as `1.37×` more calls (Newton `4.12 → 5.25`
+   iterations) × `3.08×` more work per call, and per call against `3.97×` more
+   vertices that is `n_vert^0.88`, sublinear. The `O(n)` structure is real and in
+   the source; the exponent was over-attributed to it. ⚠ No size of win is
+   claimed for removing either pass.
 5. **`I` is `69 %` contact and `29 %` the validity sweep at 18 750** (`53 %` /
    `45 %` at 5 202 — see finding 3). The sweep is
    `Reducible::PlannedByR3`, so §4c's `ReducedValidityDomain` is worth about
@@ -2617,11 +2643,17 @@ until then, and by nobody else ever. The recipe above is the durable record.
   at 5 202, `1.36–1.47×` at 18 750). ★★★ A SECOND round then found that fitting one
   exponent to `I` hid two terms moving in opposite directions — `contact` at
   `n^1.13` and the validity sweep at `n^0.58` — which corrects the headroom
-  marker to `~26 k` free DOF and, more usefully, **names the only optimisation
-  that can move R3's margin at all**: `active_vertex_pairs` has no broad phase
-  and is `O(n_vertices)` per call, and contact is `69 %` of `I`. Round 1 also
+  marker to `~26 k` free DOF and, more usefully, **located the only
+  available lever on R3's margin**: contact is `69 %` of `I`, and its slot is two
+  `O(n)` passes. ★★ A THIRD round found that §2d had already described those
+  passes and dismissed them — *"Neither is on R3's path"* — a sentence
+  `C/R = B/I` now OVERTURNS; §2d carries the retraction. That round also narrowed
+  the mechanism twice (the per-vertex walk is the linear-mesh path; the `n^1.13`
+  is `1.37×` more calls × `n_vert^0.88` per call, not a linear per-call cost) and
+  closed a hole in the non-penetration gate itself, which reduced with `f64::min`
+  and so SWALLOWED `NaN` — a diverged configuration would have passed. Round 1
   caught a `#[test]` attribute swallowed into a doc comment, which had silently
-  removed the timing instrument from the suite, and round 2 a published control
+  removed the timing instrument from the suite; round 2, a published control
   range that did not match its own pilot data.
 - **v2.12 (2026-08-24)** — **§2j: v2.11's account of the `profile.rs` survivors was
   wrong, and re-running it is how that was found.** It said they were equivalent
