@@ -1012,10 +1012,12 @@ run in `0.69 s` under the first, 4 cores busy in **`0.62 s`** under the second
 
 ⚠⚠ **The probe measures the SUT, so this recurs.** It is a **full-order** solve, so
 every optimisation on the full-order path invalidates all four constants. ⚠ Note what
-that does NOT include: `project_tangent` and the contact-fixture work — §2i's next two
-items — are both on the REDUCED path, which the probe never touches, so these constants
-should hold across them. What moves them next is the first change to full-order
-assembly, ordering, factorization or the contact path. The design that would not need
+that does NOT include `project_tangent`, §2i's next item: it is purely reduced-path and
+the probe never runs the reduced path, so these constants should hold across it. ⚠ It
+DOES include one change §2i openly invites — the probe is built with `NullContact`, so it
+pays the same broad-phase and marshalling §2i measures at `2.9 %` and calls "free to
+remove". Removing it would move the probe. So would any change to full-order assembly,
+ordering or factorization. The design that would not need
 re-baselining
 is a probe independent of the code under test — a fixed synthetic workload
 measuring the box alone. Deliberately not taken: the present probe is *measured*
@@ -1146,7 +1148,7 @@ gate-bearing. The gate-bearing figures are the profile shares below.
 (2 per step), the profile gives `6.684/2 = 3.342 ms` sequential and `1.229/2 = 0.615 ms`
 parallel — both about `1.6×` ABOVE the microbench (`1.63×` and `1.61×`), because a solve
 visits states more deformed than a `γ = 0.15` shear. The absolutes do not transfer; the
-**ratio does**, `5.44×` in-solve against `5.37×` on the bench. An offset that is equal on
+**ratio does**, `5.43×` in-solve against `5.37×` on the bench. An offset that is equal on
 both arms is what a state-dependence looks like — a discrepancy on only one arm would
 mean the timers.
 
@@ -1262,8 +1264,10 @@ operating point, R3's ceiling brackets `20.5×` to `≳34×`.*
 This change took its quiet median `24.47 → 22.75 ms` and left legitimate readings
 `3.8 %` from the `21.0 ms` floor — which is precisely what that floor is for. All four
 constants were re-piloted (§2h), and every future full-order optimisation will force
-the same. ⚠ **Neither of the two next items below is one** — `project_tangent` and the
-contact fixture are reduced-path, and the probe does not run the reduced path at all.
+the same. ⚠ **`project_tangent`, the next item below, is NOT one** — it is reduced-path
+and the probe never runs the reduced path. ⚠ But the probe is built with `NullContact`,
+so the `2.9 %` marshalling cost noted above is *in* it: acting on "free to remove" would
+force a re-pilot.
 
 #### What this does to the ladder
 
@@ -1902,9 +1906,10 @@ until then, and by nobody else ever. The recipe above is the durable record.
   `22.60–23.36`, 4 busy cores `24.17–24.93`), ceiling `25.5 → 23.7`, floor
   `21.0 → 19.5`, burst unchanged; the finding that **burst cannot detect sustained
   partial load replicated on a different tree**. Named as a standing cost of a probe
-  that measures the SUT — though ⚠ NOT by the next two items, which are reduced-path
-  and the probe is full-order. ▶ Next, in order: (1) `project_tangent`, (2) the reduced
-  path WITH contact.
+  that measures the SUT — though ⚠ NOT by `project_tangent`, which is reduced-path while
+  the probe is full-order. It WOULD be moved by removing the `NullContact` marshalling,
+  since the probe is built with `NullContact`. ▶ Next, in order: (1) `project_tangent`,
+  (2) the reduced path WITH contact.
 
 - **v2.6 (2026-08-23)** — **§2i: R3's Amdahl ceiling MEASURED, and it brackets
   `8.3×` … `≳37×`** (the upper bound is ill-conditioned near `f → 1` — two identical

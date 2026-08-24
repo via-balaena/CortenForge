@@ -3987,7 +3987,7 @@ fn validity_sweep_parallel_agrees_with_sequential() {
 /// ⚠ Neither state reproduces a solve's ABSOLUTE cost: a `γ = 0.15` shear is
 /// milder than the states a solve visits, and both arms read about `1.6×` cheaper
 /// here than the profile's per-sweep figures (`3.342` / `0.615 ms`). What transfers
-/// is the RATIO — `5.37×` here against `5.44×` in-solve. Equal offsets on both arms
+/// is the RATIO — `5.37×` here against `5.43×` in-solve. Equal offsets on both arms
 /// are a state-dependence; an offset on one arm would mean the timers.
 ///
 /// ```text
