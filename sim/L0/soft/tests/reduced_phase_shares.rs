@@ -307,7 +307,7 @@ fn main_report(label: &str, wall_ms: f64, steps: usize, iters: usize) {
     let irreducible = per_step * (100.0 - sure) / 100.0;
     let margin = FRAME_BUDGET_MS / irreducible;
     println!(
-        "║ ⇒ GATE (§2j): irreducible {irreducible:.3} ms/step vs a {FRAME_BUDGET_MS} ms frame          ⇒ margin {margin:.2}×"
+        "║ ⇒ GATE (§2j): irreducible {irreducible:.3} ms/step vs {FRAME_BUDGET_MS} ms ⇒ margin {margin:.2}×"
     );
     println!(
         "║ ⇒ {}",

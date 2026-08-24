@@ -300,7 +300,10 @@ Two results, and the second is the one that matters.
 > `0.0407 → 0.0025` per mode² (**16×**) and the `O(r)` coefficient `1.87 → 0.69`
 > (**2.7×**), while the r-independent constant held at `117 → 112 ms`. ★ That constant
 > is the control — it is `asm tangent` and friends, which the change cannot touch, and
-> it did not move. **Break-even against the oracle: `r ≈ 61` → `r ≈ 219`.**
+> it held to `4 %` while the `r²` term fell `16×`. **Break-even against the oracle:
+> `r ≈ 61` → `r ≈ 219`** — ⚠ the second figure EXTRAPOLATES to twice the swept range
+> and is not a measurement; what is measured is that every rank in the sweep now beats
+> the oracle, where two of five did not.
 >
 > ⚠⚠ **Finding 2's CONCLUSION survives, on finding 1's evidence alone.** The accuracy
 > columns in the table above are bit-identical across the change — `Σx*` gradient error

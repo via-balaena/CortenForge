@@ -165,6 +165,29 @@ pub enum Reducible {
 /// Number of timing slots.
 const N_SLOTS: usize = 13;
 
+/// Every [`Phase`] must own a DISTINCT slot below [`N_SLOTS`].
+///
+/// [`Phase::index`] is a hand-written `match`, so adding a variant or renumbering
+/// (both happened when the two `ReducedProjectTangent*` children landed) can
+/// silently give two phases the same slot — and the failure mode is not a crash
+/// but two costs summed into one row, in a module whose entire purpose is
+/// attributing cost to rows. `Phase::ALL` is length-checked against `N_SLOTS` by
+/// its own type; this checks the mapping. It fails the BUILD, not a test.
+const _: () = {
+    let mut seen = [false; N_SLOTS];
+    let mut i = 0;
+    while i < N_SLOTS {
+        let idx = Phase::ALL[i].index();
+        assert!(idx < N_SLOTS, "Phase::index() returned a slot >= N_SLOTS");
+        assert!(
+            !seen[idx],
+            "two Phase variants share a slot index — their times would silently merge"
+        );
+        seen[idx] = true;
+        i += 1;
+    }
+};
+
 impl Phase {
     /// Every slot, in §2d's column order.
     pub const ALL: [Self; N_SLOTS] = [

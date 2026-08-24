@@ -30,11 +30,12 @@ pub struct PodBasis {
     /// `[p·r + k] == modes[k][p]`.
     ///
     /// ⚠ **A second copy of `Φ`, and it doubles the basis's memory** —
-    /// `n · r · 8 B`, `1.66 MiB` at R1.1's `5 202 × 40`, against recon §2b's
-    /// `61 MiB` per reduced env. It is cached rather than built per call
-    /// because `project_tangent` runs once per Newton iteration and an
-    /// `O(n·r)` transpose there would eat a large part of what the layout
-    /// buys.
+    /// `n · r · 8 B`, `1.59 MiB` at R1.1's `5 202 × 40`. ★ That is **per basis,
+    /// not per environment**: [`super::ReducedNewtonSolver`] borrows the basis,
+    /// so concurrent envs share one copy and recon §2b's `61 MiB`-per-env figure
+    /// is unaffected. It is cached rather than rebuilt per call because
+    /// `project_tangent` runs once per Newton iteration and an `O(n·r)`
+    /// transpose there would eat a large part of what the layout buys.
     ///
     /// Both layouts are kept because the accessors want opposite ones:
     /// [`Self::project_covector`] walks a whole mode (`k` outer, `p` inner) and

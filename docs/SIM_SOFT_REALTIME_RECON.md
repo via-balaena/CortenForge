@@ -1643,7 +1643,7 @@ scope creep. The gather's share is measured; only its efficiency is unquantified
 The change is the one knob 0 named: `Φᵀ` cached as a flat `n × r` row-major buffer
 alongside the existing column-major copy, `Y` flat `n × r` to match, the gather's
 inner loop two contiguous AXPYs, and the contract `n` rank-1 updates into an
-L1-resident `r × r` accumulator. No parallelism, no new dependency.
+L1-resident `r × r` accumulator. No parallelism, no new dependency. Costs `1.59 MiB` for the second copy of `Φ` — **per basis, not per env**, since the solver borrows it, so §2b's memory ceiling is untouched.
 
 | | before | after | factor |
 |---|---:|---:|---:|
@@ -1669,18 +1669,29 @@ negative controls, both fire: reversing the contract's accumulation order change
 the 13th digit and is caught (**a tolerance test would have passed it**), and
 dropping mode 0 from the flat transpose alone is caught.
 
+⚠ That gate runs at `r = 5`, `n = 150`. The production-scale evidence is separate
+and was free: the `r = 10 … 104` sweep at `n = 5 202` prints displacement
+projection and four gradient-error columns, and **every one is identical across
+the change to all printed digits** (`4` significant figures). That is consistent
+with byte-identity at production scale rather than proof of it — the `to_bits()`
+gate is what proves it, and it proves it small.
+
 #### ★★ The invariant held, and the instrument printed the misreading anyway
 
 §2j predicted that this could not move R3's margin. Measured:
 
-| | before | after |
+| (three runs each side) | before | after |
 |---|---:|---:|
-| R3's ceiling | 19.97× | **11.32×** |
-| this fixture's requirement `T/B` | 3.95× | **2.14×** |
-| **margin `B/I`** | **5.06×** | **5.29×** |
+| R3's ceiling | 19.4–19.9× | **11.2–12.2×** |
+| this fixture's requirement `T/B` | 3.92–3.97× | **2.12–2.15×** |
+| **margin `B/I`** | **4.91–5.02×** | **5.28–5.66×** |
 
-The ceiling fell `1.76×`, the requirement fell `1.85×`, and the margin did not
-move. ⚠ **And `tests/reduced_phase_shares.rs` printed `"⚠ BRACKET STRADDLES the
+The ceiling fell `~1.7×`, the requirement fell `~1.85×`, and **the margin did not
+fall.** ⚠ It read slightly HIGHER afterwards, and that is not a benefit of the
+change: `I` is mostly `contact` plus the validity sweep, and the sweep read
+`1.33–1.43 ms` in the before runs against `1.11 ms` after — inside the `±10 %`
+session spread §2i records for that row. Read the two bands as "unmoved", not as
+`+8 %`. ⚠ **And `tests/reduced_phase_shares.rs` printed `"⚠ BRACKET STRADDLES the
 requirement — the bound decides, so close it"`** — because it compared the new
 `11.2×` against a hardcoded `needs 13.5–15.8×` that is both stale and a different
 fixture. Exactly the defect §2j's corollary names. **The harness has been fixed**
@@ -1703,7 +1714,12 @@ argument needs re-measuring"*. It had. Least squares over the sweep:
 
 ⇒ **the break-even against the oracle moves `r ≈ 61` → `r ≈ 219`**, and at the R1
 plan's rank ceiling of 104 the reduced path goes from `0.51×` the oracle to
-`1.83×`. Plan §14 finding 2's cost premise is overturned; **its conclusion
+`1.83×`. ⚠⚠ **`r ≈ 219` is an EXTRAPOLATION to twice the swept range and must not
+be quoted as a measurement** — the fit is good over `10 … 104` (max residual
+`1.2 ms`) but nothing constrains it past that, and an `O(r³)` term the sweep
+cannot see would pull it in hard. What is MEASURED is the narrow claim: **every
+rank in the swept range is now faster than the oracle**, where two of five were
+slower before. `r ≈ 61` is by contrast an interpolation, and safe. Plan §14 finding 2's cost premise is overturned; **its conclusion
 survives on finding 1 alone** — the accuracy columns are bit-identical and `Σx*`
 gradient error is still `0.704` at `r = 104`, so rank still does not fix the
 adjoint. The guard's bound was **re-measured, not widened**: it now asserts
@@ -2327,7 +2343,7 @@ until then, and by nobody else ever. The recipe above is the durable record.
 ## 12. Version history
 
 - **v2.10 (2026-08-24)** — **§2j BUILT: `project_tangent` is `1.84×` of a reduced
-  frame, byte-identically — and the margin did not move, exactly as pre-registered.**
+  frame, byte-identically — and the margin did not fall, exactly as pre-registered.**
   A flat `n × r` `Y` with a cached transposed `Φ` turns the gather into contiguous
   AXPYs and the contract into `n` rank-1 updates against an L1-resident `r × r`
   accumulator. Frame `65.89 → 35.72 ms`; `red proj K` `5.61×` (`Y=AΦ` `6.09×`,
@@ -2338,9 +2354,11 @@ until then, and by nobody else ever. The recipe above is the durable record.
   pre-change form written from the column-major `modes()` so a wrong transpose
   cannot satisfy both, and negative-controlled twice (reversing the contract's
   accumulation order changes the 13th digit and is caught — **a tolerance test
-  would have passed it**). ★★ **The invariant was confirmed by experiment**: the
-  ceiling fell `19.97 → 11.32×` and this fixture's requirement `3.95 → 2.14×`, so
-  the margin `B/I` went `5.06 → 5.29×`. ⚠ `tests/reduced_phase_shares.rs` printed
+  would have passed it**). ★★ **The invariant was confirmed by experiment**: over
+  three runs a side the ceiling fell `19.4–19.9× → 11.2–12.2×` and this fixture's
+  requirement `3.92–3.97× → 2.12–2.15×`, while the margin `B/I` did NOT fall
+  (`4.91–5.02× → 5.28–5.66×`; the small rise is the validity sweep's own `±10 %`,
+  not a benefit of the change). ⚠ `tests/reduced_phase_shares.rs` printed
   *"BRACKET STRADDLES the requirement"* anyway, comparing the new ceiling against a
   hardcoded stale `13.5–15.8×` from a different fixture — the exact defect §2j's
   corollary names, now fixed: the harness reports irreducible ms/step against the
@@ -2349,12 +2367,18 @@ until then, and by nobody else ever. The recipe above is the durable record.
   it to. Re-measured, the `O(r²)` coefficient fell **16×** and `O(r)` **2.7×** with
   the r-independent constant unmoved (`117 → 112 ms`, the control), so **R1's
   break-even against the oracle moves `r ≈ 61` → `r ≈ 219`** and at rank 104 the
-  reduced path goes `0.51× → 1.83×` the oracle. Plan §14 finding 2's cost premise is
+  reduced path goes `0.51× → 1.83×` the oracle. ⚠⚠ `r ≈ 219` is an EXTRAPOLATION
+  to twice the swept range, not a measurement; the measured claim is that **every
+  rank in the sweep is now faster than the oracle**, where two of five were slower. Plan §14 finding 2's cost premise is
   overturned and **its conclusion survives on finding 1 alone** — accuracy is
   bit-identical, `Σx*` error is still `0.704` at `r = 104`. The guard was
   re-measured, not widened (`1.25–2.0` two-sided, piloted `1.47/1.49/1.49`).
   ⇒ **`asm tangent` is now `66.9 %` of a reduced frame**, the next item, as the
-  prize table said it would be. ⚠ Knobs 2 / 3 / 4 remain unswept.
+  prize table said it would be. ⚠ Knobs 2 / 3 / 4 remain unswept. ★ Review pass
+  added a **build-failing guard that every `Phase` owns a distinct slot** — this
+  revision renumbered five variants and added two, and `Phase::index` is a
+  hand-written `match` whose failure mode is two costs silently summed into one
+  row. Negative-controlled: a duplicated slot fails the build.
 
 - **v2.9 (2026-08-24)** — **§2j knob 0 MEASURED: `ΦᵀKΦ` splits `1.85 : 1`, both
   halves are large, and the contract is LATENCY-bound — so one layout change fixes
