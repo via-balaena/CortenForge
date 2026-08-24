@@ -3974,9 +3974,16 @@ fn validity_sweep_parallel_agrees_with_sequential() {
 ///
 /// Measurement, not a gate — no threshold is asserted here, because the number
 /// that matters is what it does to §2i's `9.3 %` share, and that is read off
-/// `tests/reduced_phase_shares.rs`, not off this ratio. The one assertion is a
-/// control: both arms must return `Ok`, or one of them is being timed on an
-/// early exit.
+/// `tests/reduced_phase_shares.rs`, not off this ratio. It also does NOT run
+/// behind `tests/refbox`'s contention gate (that module is an integration-test
+/// fixture and this is a unit test), so its absolute times are corroborating,
+/// not gate-bearing. The one assertion is a control: both arms must return
+/// `Ok`, or one of them is being timed on an early exit.
+///
+/// ⚠ **Two states, because the rest state is not representative.** At rest
+/// `F = I` exactly and the Jacobi SVD converges in fewer sweeps than on a
+/// deformed `F`, so a rest-only measurement understates the sweep. The sheared
+/// state is the one to reconcile against a share measured in a running solve.
 ///
 /// ```text
 /// cargo test --release -p sim-soft --lib -- --ignored --nocapture \
@@ -3991,6 +3998,14 @@ fn validity_sweep_parallel_speedup() {
     let (solver, x_rest) = validity_sweep_rig(16, 6);
     let materials = solver.mesh.materials();
 
+    // A smooth shear, `u_x = 0.15 · z`: every element sees `F ≠ I` while the
+    // principal stretches stay far inside NeoHookean's `max_stretch_deviation`
+    // of 1.0, so the sweep does its full work and still returns `Ok`.
+    let mut x_shear = x_rest.clone();
+    for c in x_shear.chunks_exact_mut(3) {
+        c[0] += 0.15 * c[2];
+    }
+
     let time_it = |f: &dyn Fn() -> Result<(), SolverFailure>| -> f64 {
         let t0 = std::time::Instant::now();
         let out = f();
@@ -4001,33 +4016,33 @@ fn validity_sweep_parallel_speedup() {
         );
         ms
     };
-
-    for _ in 0..WARMUP {
-        time_it(&|| solver.sweep_validity_sequential(&x_rest, materials));
-        time_it(&|| solver.sweep_validity_parallel(&x_rest, materials));
-    }
-
-    let mut seq = Vec::with_capacity(ROUNDS);
-    let mut par = Vec::with_capacity(ROUNDS);
-    for _ in 0..ROUNDS {
-        seq.push(time_it(&|| {
-            solver.sweep_validity_sequential(&x_rest, materials)
-        }));
-        par.push(time_it(&|| {
-            solver.sweep_validity_parallel(&x_rest, materials)
-        }));
-    }
-
     let p50 = |v: &mut Vec<f64>| {
         v.sort_by(f64::total_cmp);
         v[v.len() / 2]
     };
-    let (s, p) = (p50(&mut seq), p50(&mut par));
 
     println!(
-        "\nVALSWEEP\ttets={}\tthreads={}\tseq_p50_ms={s:.3}\tpar_p50_ms={p:.3}\tspeedup={:.2}x",
+        "\nVALSWEEP\ttets={}\tthreads={}",
         solver.mesh.n_tets(),
-        rayon::current_num_threads(),
-        s / p,
+        rayon::current_num_threads()
     );
+    for (label, x) in [("rest", &x_rest), ("sheared", &x_shear)] {
+        for _ in 0..WARMUP {
+            time_it(&|| solver.sweep_validity_sequential(x, materials));
+            time_it(&|| solver.sweep_validity_parallel(x, materials));
+        }
+
+        let mut seq = Vec::with_capacity(ROUNDS);
+        let mut par = Vec::with_capacity(ROUNDS);
+        for _ in 0..ROUNDS {
+            seq.push(time_it(&|| solver.sweep_validity_sequential(x, materials)));
+            par.push(time_it(&|| solver.sweep_validity_parallel(x, materials)));
+        }
+
+        let (sq, pl) = (p50(&mut seq), p50(&mut par));
+        println!(
+            "VALSWEEP\t{label:<8}\tseq_p50_ms={sq:.3}\tpar_p50_ms={pl:.3}\tspeedup={:.2}x",
+            sq / pl
+        );
+    }
 }
