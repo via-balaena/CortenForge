@@ -1157,33 +1157,70 @@ traversal: violators are collected with their ids and reduced by `min_by_key`, s
 first-violator-wins survives an unspecified visit order. The cost is paid only on
 the failing path — no early exit, one `format!` per violator.
 
-#### As measured now — `65.97 ms/step`, and the bracket clears
+#### ⛔ …but below ~500 tets it is a REGRESSION, and that needed a threshold
 
-| phase | ms/step | share | ECSW removes it? |
-|---|---:|---:|---|
-| **`red proj K`** (`ΦᵀKΦ`) | **37.482** | **56.8 %** | yes |
-| `asm tangent` | 23.377 | 35.4 % | yes |
-| `asm force` | 2.365 | 3.6 % | yes |
-| `contact` (nested) | 1.888 | 2.9 % | no |
-| **`validity check`** | **1.229** | **1.9 %** | only if R3's own design works |
-| `red proj r` (`Φᵀr`) | 0.961 | 1.5 % | yes |
-| `red expand` | 0.456 | 0.7 % | yes |
-| `residual form` | 0.038 | 0.1 % | only if R3's own design works |
-| `red dense solve` (`r × r`) | 0.019 | 0.0 % | no |
+The `5.37×` above is one mesh size. Swept, entering rayon costs a fixed ~`60 µs`
+whatever the work, so on a small mesh the parallel sweep is **slower than the serial
+one it replaced**:
+
+| tets | seq | par | speedup |
+|---:|---:|---:|---:|
+| 12 | 0.0068 ms | 0.0578 ms | **0.12×** |
+| 192 | 0.0909 | 0.1666 | **0.55×** |
+| 432 | 0.1630 | 0.1599 | 1.02× |
+| 1 200 | 0.2806 | 0.1608 | 1.75× |
+| 9 216 | 2.0239 | 0.3696 | 5.48× |
+
+Break-even is ~`430` tets deformed, ~`680` at rest (cheaper per element, so it needs
+more of them to cover the same overhead). The skeleton solver is **one** tet, and the
+unit fixtures are in the hundreds — so as first written this change made the gate up to
+`8×` slower on exactly the meshes most of the suite uses.
+
+`sweep_validity` now dispatches on `PARALLEL_SWEEP_MIN_TETS = 1024`, set above both
+break-evens so the parallel path is taken only where it clearly pays rather than at the
+crossover. Guarded by a `const` assertion beside it — a BUILD failure, not a test, so a
+filtered run cannot skip it — if the constant is lowered back into the measured
+regression band.
+
+⚠ **Neither published figure moves**: §2i's fixture is 9 216 tets and §2h's probe is
+3 840, both far above the threshold — confirmed by re-running both after the fix.
+
+★ This was caught by sweeping a knob the first measurement held fixed. The speedup was
+real and reproducible at the size it was measured at; what was wrong was the unstated
+generalisation to all sizes.
+
+#### As measured now — `65.97` / `66.04 ms/step`, and the bracket clears
+
+**Two runs**, because the first draft of this section quoted one — for a quantity this
+same section warns is run-to-run variable. Both are gate-passing runs on the reference
+box, taken either side of the size-threshold fix below.
+
+| phase | run 1 | run 2 | share | ECSW removes it? |
+|---|---:|---:|---:|---|
+| **`red proj K`** (`ΦᵀKΦ`) | **37.482** | **37.422** | **56.7–56.8 %** | yes |
+| `asm tangent` | 23.377 | 23.530 | 35.4–35.6 % | yes |
+| `asm force` | 2.365 | 2.364 | 3.6 % | yes |
+| `contact` (nested) | 1.888 | 1.967 | 2.9–3.0 % | no |
+| **`validity check`** | **1.229** | **1.197** | **1.8–1.9 %** | only if R3's own design works |
+| `red proj r` (`Φᵀr`) | 0.961 | 0.962 | 1.5 % | yes |
+| `red expand` | 0.456 | 0.462 | 0.7 % | yes |
+| `residual form` | 0.038 | 0.037 | 0.1 % | only if R3's own design works |
+| `red dense solve` (`r × r`) | 0.019 | 0.022 | 0.0 % | no |
 
 | bound | reducible | **ceiling `1/(1 − f)`** |
 |---|---:|---:|
-| certain only | 95.1 % | **20.5×** |
-| plus what R3's own design removes | 97.0 % | **≳34×** ⚠ |
+| certain only | 95.0–95.1 % | **20.2–20.5×** |
+| plus what R3's own design removes | 96.9–97.0 % | **≳32×** ⚠ |
 
-> ### The bracket is 20.5× … ≳34×. R3 needs 13.5–15.8×, with a 10× floor.
+> ### The bracket is 20.2–20.5× … ≳32×. R3 needs 13.5–15.8×, with a 10× floor.
 >
 > **It clears on either bound.** The straddle is gone.
 >
-> ⚠ The upper bound is still **ill-conditioned** and must not be quoted
-> precisely: at `f ≈ 0.97` a `0.1 pp` shift moves it by ~2×, and two identical
-> runs of the earlier configuration gave `37.1×` and `38.9×`. What is solid is
-> that it is far above `15.8×`, not its value.
+> ⚠ The upper bound is still **ill-conditioned** and must not be quoted precisely: at
+> `f ≈ 0.97` a `0.1 pp` shift moves it by ~2×. The two runs above differ by `0.1 pp`
+> and their upper bounds read `34×` and `32×` — the lower is quoted. Two identical runs
+> of the earlier configuration likewise gave `37.1×` and `38.9×`. What is solid is that
+> it is far above `15.8×`, not its value.
 
 **Coherence check.** ⚠ This is a CROSS-SESSION comparison of absolute times, which §2d
 finding 3 says not to trust — licensed here only by its own result: the untouched rows
@@ -1256,7 +1293,7 @@ path is the one that has never been run with contact.
 for**, and its phase mix there is unknown — contact would add irreducible cost and
 push the ceiling DOWN. Comparing the two directly is the error of §2d finding 4
 wearing different clothes. The solid claim is the narrow one: *at R1.1's own
-operating point, R3's ceiling brackets `20.5×` to `≳34×`.*
+operating point, R3's ceiling brackets `20.2–20.5×` to `≳32×`.*
 
 #### ⚠ The reference box had to be re-baselined, and this will recur
 
@@ -1637,7 +1674,7 @@ same door, under its own feature, and must not enter the default build.
 | **R0** ✅ **DONE** (`e77023c7`, `43b198a2`) | **Full-order assembly lever.** Replace the per-iteration `BTreeMap` rebuild in `assemble_free_hessian_triplets` with a pattern-indexed value buffer built once at construction. No algorithm change. | Byte-identity of the assembled triplets against the current path (the `feedback_float_refactor_byte_identity` recipe), plus a measured ms/iteration delta on the §2a fixtures. | §2d.2. Establishes the **honest baseline** the reduction is measured against. Cheap, self-contained, and a win regardless of whether anything downstream ships. |
 | **R1** ✅ **DONE** (`#744`, `#745`, R1.2) | **Linear subspace, no contact, no coupling.** POD basis from full-order snapshots on the `cantilever` fixture at 3 000 free DOF; reduced Newton with a dense `r × r` direct solve; `Φ` and quadrature both handled naively (full element sweep — **no hyper-reduction yet**). Differentiable path wired at the same time (§6, `Φ` constant). | Projection error vs the oracle < 1 % in tip displacement over the training trajectory; reduced gradient matches the oracle's to the crate's existing gradcheck tolerance. ⚠ **That second clause was wrong and was amended before R1.2 was built** — it asks two different functions to agree to 5 digits when their states already differ in the third. Split into a gradcheck-tolerance kill gate on the reduced model's *own* derivative and a measured comparison against the oracle; see the plan's §5/§7 and §13. **Wall time is explicitly NOT gated at R1** — without hyper-reduction it will not be faster, and pretending otherwise would corrupt the signal. | **The cheap kill-or-confirm.** It answers the one question that decides everything downstream: *does a low-dimensional subspace represent this material's deformation at all?* Fixture already exists; no new physics. |
 | **R2** | **Precision decision.** Measure a full-f32 forward path on the reduced system (`r × r` is small enough to port by hand without touching the 1 396-`f64` production surface), and decide residual-in-f64-on-CPU vs compensated-summation-in-f32. | Reduced-model f32 forward drift and gradient drift vs the f64 reduced model, on R1's fixture; explicit go/no-go on whether the residual can live in f32. | §2c. Must precede any GPU work; deciding it after a shader exists means writing the shader twice. |
-| **R3** **§2i brackets its Amdahl ceiling at `20.5×`–`≳34×`** — clear of both its own `10×` floor and the budget's `13.5–15.8×` on either bound. ⚠ Contact-free fixture; contact would push it DOWN, and the reduced path has never run with contact. Gate is `≥10×` on §2h's reference box. | **Hyper-reduction (ECSW) + the validity domain.** NNLS training over R1's snapshots; `ReducedValidityDomain` with the online `‖q‖` + residual-proxy gate; the three error measures of §4c. | Measured speedup vs §2a's baseline (post-R0), with the three §4c errors reported alongside. Domain gate demonstrated to fire on an out-of-domain trajectory. | This is where the frame-budget win actually arrives. Also where the "smooth and wrong" failure mode is defended against. |
+| **R3** **§2i brackets its Amdahl ceiling at `20.2–20.5×`–`≳32×`** (two runs) — clear of both its own `10×` floor and the budget's `13.5–15.8×` on either bound. ⚠ Contact-free fixture; contact would push it DOWN, and the reduced path has never run with contact. Gate is `≥10×` on §2h's reference box. | **Hyper-reduction (ECSW) + the validity domain.** NNLS training over R1's snapshots; `ReducedValidityDomain` with the online `‖q‖` + residual-proxy gate; the three error measures of §4c. | Measured speedup vs §2a's baseline (post-R0), with the three §4c errors reported alongside. Domain gate demonstrated to fire on an out-of-domain trajectory. | This is where the frame-budget win actually arrives. Also where the "smooth and wrong" failure mode is defended against. |
 | **R4** | **Hybrid domain decomposition, FIXED contact patch.** Full DOF under a stationary indenter, reduced bulk, on the `dynamic_indentation` geometry. | End-to-end reaction force vs the oracle, in the same band `bonded_layer_indentation` already asserts. | §5. Fixed patch first, because it isolates the coupling condition from the re-partitioning problem. |
 | **R5** | **Moving patch.** Re-partitioning under a once-built symbolic factorization, or a conservative union pattern. | Sliding-contact trajectory vs the oracle. | §5's open-research item. **Explicitly gated on R4 succeeding**; if R4 fails, this is not attempted. |
 | **R6** | **Rigid↔soft coupling.** | — | **Last, deliberately.** Per the brief, and it is the right call: the keystone coupling is itself the platform's hardest open problem (`MISSION.md` §2), and stacking it on an unsolved real-time reduced path would make any failure uninterpretable. |
@@ -1881,7 +1918,8 @@ until then, and by nobody else ever. The recipe above is the durable record.
 ## 12. Version history
 
 - **v2.7 (2026-08-23)** — **§2i: the bracket UNSTRADDLED — R3's ceiling is now
-  `20.5×` … `≳34×`, clear of both its `10×` floor and the budget's `13.5–15.8×`.**
+  `20.2–20.5×` … `≳32×` over two runs, clear of both its `10×` floor and the
+  budget's `13.5–15.8×`.**
   v2.6 said the whole bracket turned on one line, the validity element sweep at
   `9.3 %`, and concluded the `ReducedValidityDomain` was a PERFORMANCE prerequisite
   without which R3 could not clear its own gate. ⛔ **That conclusion is RETRACTED.**
@@ -1890,7 +1928,13 @@ until then, and by nobody else ever. The recipe above is the durable record.
   `Element` / `ContactModel` were already `Send + Sync` supertraits, so it
   parallelises with no new bound and no signature change. Measured `5.37×` on the
   sweep (9 216 tets, sheared state, 12 threads), taking it from `9.3 %` to `1.9 %`
-  of a reduced frame and the frame from `72.07` to `65.97 ms/step`. Verdict-identical
+  of a reduced frame and the frame from `72.07` to `~66 ms/step`. ⛔ ⚠ First version was
+  a REGRESSION below ~500 tets — entering rayon costs a fixed ~`60 µs`, so at 12 tets it
+  read `0.12×` and at 192 tets `0.55×`, and the skeleton solver is one tet. Fixed with a
+  piloted `PARALLEL_SWEEP_MIN_TETS = 1024` (break-even ~430 deformed / ~680 at rest),
+  guarded by a `const` assertion; neither published figure moves, both fixtures being
+  far above it.
+  Verdict-identical
   — violators reduce by `min_by_key` on `tet_id`, so first-violator-wins survives an
   unspecified visit order; negative-controlled by swapping in `max_by_key`.
   `ReducedValidityDomain` reverts to §4c's correctness feature and R3's two halves

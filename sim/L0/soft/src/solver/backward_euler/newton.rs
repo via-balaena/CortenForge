@@ -21,6 +21,52 @@ use super::{CpuNewtonSolver, ElementGeometry, InitialGuess};
 /// Armijo sufficient-decrease constant (scope §5 R-1).
 const ARMIJO_C1: f64 = 1e-4;
 
+/// Mesh size at or above which the step-boundary validity sweep runs under rayon.
+///
+/// ★ **PILOTED, not chosen** — and the pilot found a REGRESSION, which is why this
+/// constant exists at all. Entering rayon costs ~`60 µs` whatever the work, so on a
+/// small mesh the parallel sweep is slower than the serial one it replaced.
+/// Measured (`validity_sweep_parallel_speedup`, 12 threads, sheared state):
+///
+/// | tets | speedup |
+/// |---:|---:|
+/// | 12 | **0.12×** |
+/// | 192 | **0.55×** |
+/// | 432 | 1.02× |
+/// | 1 200 | 1.75× |
+/// | 9 216 | 5.48× |
+///
+/// Break-even is ~`430` tets on a deformed state and ~`680` on the rest state (which
+/// costs less per element, so it needs more of them to cover the same overhead). This
+/// sits ABOVE both: the parallel path is taken only where it clearly pays, not at the
+/// crossover, because avoiding a regression on the small meshes the skeleton solver and
+/// the unit fixtures use is worth more than a marginal `1.3×` on a mid-sized one.
+///
+/// ⚠ Not a tuning knob and deliberately not configurable — it is a property of this
+/// box's rayon dispatch cost, and it should be re-piloted, not adjusted, if that
+/// changes. The published `§2i` figures are unaffected: that fixture is 9 216 tets and
+/// `§2h`'s reference probe is 3 840, both far above.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) const PARALLEL_SWEEP_MIN_TETS: usize = 1024;
+
+/// The threshold must stay above where the parallel sweep starts paying.
+///
+/// [`PARALLEL_SWEEP_MIN_TETS`] is a piloted number whose pilot lives in an `#[ignore]`d
+/// measurement, so nothing else would stop a later edit from lowering it back into the
+/// regression band. A `const` assertion rather than a test: it fails the BUILD, and a
+/// filtered test run cannot skip it.
+///
+/// ⚠ A static bound, not a measurement — it cannot notice that the break-even itself has
+/// moved (a different box, a cheaper per-element check, a different rayon). Re-run
+/// `validity_sweep_parallel_speedup` when any of those change.
+#[cfg(not(target_arch = "wasm32"))]
+const _: () = assert!(
+    PARALLEL_SWEEP_MIN_TETS > 680,
+    "PARALLEL_SWEEP_MIN_TETS is at or below the measured break-even (~680 tets on the \
+     rest state), so the parallel validity sweep would be taken where it is SLOWER than \
+     the serial one. Re-pilot with `validity_sweep_parallel_speedup` before changing it."
+);
+
 /// Local stall-info carrier returned by [`CpuNewtonSolver::armijo_backtrack`]
 /// when the line search exhausts its backtrack budget (F3.3 per
 /// `docs/F3_LM_REGULARIZATION_SPEC.md` §2.5).
@@ -173,19 +219,27 @@ where
         self.sweep_validity(x_curr, materials)
     }
 
-    /// The sweep itself, dispatched by target: rayon on native, sequential on
-    /// wasm32.
+    /// The sweep itself, dispatched by target and by mesh size: rayon on native
+    /// from [`PARALLEL_SWEEP_MIN_TETS`] tets up, sequential below it and on wasm32.
     ///
     /// Split out of [`Self::check_validity_at_step_start`] so the gate's
     /// preconditions (the extent assertion, the timer) are stated once and both
-    /// targets inherit them.
+    /// arms inherit them.
+    ///
+    /// ⚠ The size test is not an optimisation, it is a REGRESSION FIX: below the
+    /// threshold the parallel sweep is measurably slower than the serial one it
+    /// replaced — `0.12×` at 12 tets. See [`PARALLEL_SWEEP_MIN_TETS`].
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn sweep_validity(
         &self,
         x_curr: &[f64],
         materials: &[M],
     ) -> Result<(), SolverFailure> {
-        self.sweep_validity_parallel(x_curr, materials)
+        if self.element_geometries.len() >= PARALLEL_SWEEP_MIN_TETS {
+            self.sweep_validity_parallel(x_curr, materials)
+        } else {
+            self.sweep_validity_sequential(x_curr, materials)
+        }
     }
 
     /// wasm32 has no threads to give — same verdict, one core. See the
@@ -249,13 +303,12 @@ where
     /// The sweep on one core, ascending by `tet_id`, returning at the first
     /// violator.
     ///
-    /// Two callers, and the second is why this is not `#[cfg(target_arch =
-    /// "wasm32")]` alone: it is wasm32's sweep, and on native it is the A/B
-    /// baseline that `validity_sweep_parallel_speedup` interleaves against
-    /// `sweep_validity_parallel` in one binary (no intra-doc link: that one is
-    /// absent on wasm32). Measuring a rewrite against a copy of the old code in a
-    /// test would measure the copy.
-    #[cfg(any(target_arch = "wasm32", test))]
+    /// Three callers, which is why it is unconditional: it is wasm32's sweep, it is
+    /// the native sweep BELOW [`PARALLEL_SWEEP_MIN_TETS`], and it is the A/B baseline
+    /// that `validity_sweep_parallel_speedup` interleaves against
+    /// `sweep_validity_parallel` in one binary (no intra-doc link: that one is absent
+    /// on wasm32). Measuring a rewrite against a copy of the old code in a test would
+    /// measure the copy.
     pub(super) fn sweep_validity_sequential(
         &self,
         x_curr: &[f64],

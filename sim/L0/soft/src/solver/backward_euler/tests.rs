@@ -3885,21 +3885,45 @@ fn validity_sweep_rig(
 /// run to run; one agreeing sample would not be evidence.
 #[test]
 fn validity_sweep_parallel_agrees_with_sequential() {
+    // 432 tets and 1200 tets: below and above `PARALLEL_SWEEP_MIN_TETS`, so
+    // `sweep_validity` resolves each way and BOTH resolutions are checked to give
+    // the gate's verdict.
+    //
+    // ⚠ What this does NOT check is that the dispatch points the right way. It
+    // cannot: the two arms are verdict-identical by design, so an inverted size
+    // test is invisible to every correctness test and shows up only as lost speed.
+    // `validity_sweep_parallel_speedup` is the instrument for that, and a `const`
+    // assertion beside `PARALLEL_SWEEP_MIN_TETS` guards the constant itself.
+    assert_sweeps_agree(6, 2);
+    assert_sweeps_agree(10, 2);
+}
+
+/// One mesh size's worth of [`validity_sweep_parallel_agrees_with_sequential`].
+fn assert_sweeps_agree(n_lat: usize, nz: usize) {
     const REPEATS: usize = 32;
 
-    let (solver, x_rest) = validity_sweep_rig(6, 2);
+    let (solver, x_rest) = validity_sweep_rig(n_lat, nz);
     let materials = solver.mesh.materials();
+    let n_tets = solver.mesh.n_tets();
 
-    // The passing path: a valid state must be `Ok` on both arms, or the test
+    // The passing path: a valid state must be `Ok` on every arm, or the checks
     // below would be comparing two different kinds of failure.
-    assert!(
-        solver.sweep_validity_sequential(&x_rest, materials).is_ok(),
-        "rest state must be inside the validity domain"
-    );
-    assert!(
-        solver.sweep_validity_parallel(&x_rest, materials).is_ok(),
-        "rest state must be inside the validity domain"
-    );
+    for (arm, got) in [
+        (
+            "sequential",
+            solver.sweep_validity_sequential(&x_rest, materials),
+        ),
+        (
+            "parallel",
+            solver.sweep_validity_parallel(&x_rest, materials),
+        ),
+        ("dispatch", solver.sweep_validity(&x_rest, materials)),
+    ] {
+        assert!(
+            got.is_ok(),
+            "{n_tets} tets: rest state must be inside the validity domain ({arm} arm)"
+        );
+    }
 
     // One interior vertex dragged far out of the mesh: the tets incident to it
     // are wrecked, every other tet is untouched. That gives a violator SET with
@@ -3908,7 +3932,7 @@ fn validity_sweep_parallel_agrees_with_sequential() {
     let v = solver.mesh.n_vertices() / 2;
     x_bad[3 * v] += 10.0 * SWEEP_LX;
 
-    let violators: Vec<usize> = (0..solver.mesh.n_tets())
+    let violators: Vec<usize> = (0..n_tets)
         .filter(|&t| {
             solver
                 .check_element_validity(&x_bad, t, &solver.element_geometries[t], materials)
@@ -3918,13 +3942,13 @@ fn validity_sweep_parallel_agrees_with_sequential() {
 
     assert!(
         violators.len() >= 2,
-        "control failed — the fixture must produce more than one violator for the \
-         reduction to be exercised at all, got {violators:?}"
+        "{n_tets} tets: control failed — the fixture must produce more than one \
+         violator for the reduction to be exercised at all, got {violators:?}"
     );
     assert!(
         violators[0] > 0,
-        "control failed — the lowest violator is tet 0, so `min` is indistinguishable \
-         from `max` or from an arbitrary pick"
+        "{n_tets} tets: control failed — the lowest violator is tet 0, so `min` is \
+         indistinguishable from `max` or from an arbitrary pick"
     );
 
     let expected = violators[0];
@@ -3936,34 +3960,44 @@ fn validity_sweep_parallel_agrees_with_sequential() {
         message: seq_msg,
     } = &seq
     else {
-        panic!("sequential sweep reported {seq:?}, not a validity violation");
+        panic!("{n_tets} tets: sequential sweep reported {seq:?}, not a validity violation");
     };
     assert_eq!(
         *seq_tet, expected,
-        "sequential sweep is first-violator-wins by construction"
+        "{n_tets} tets: sequential sweep is first-violator-wins by construction"
     );
 
+    // The parallel arm repeatedly, because a work-stealing schedule varies run to
+    // run and one agreeing sample would not be evidence. The dispatcher is checked
+    // alongside it: at this size it must resolve to one of the two, and either way
+    // the verdict is the same one.
     for rep in 0..REPEATS {
-        let par = solver
-            .sweep_validity_parallel(&x_bad, materials)
-            .expect_err("the wrecked state must violate");
-        let SolverFailure::ValidityViolation {
-            tet_id: par_tet,
-            message: par_msg,
-        } = &par
-        else {
-            panic!("parallel sweep reported {par:?}, not a validity violation");
-        };
-        assert_eq!(
-            *par_tet, expected,
-            "run {rep}: parallel sweep must report the LOWEST violating tet \
-             (violators: {violators:?})"
-        );
-        assert_eq!(
-            par_msg, seq_msg,
-            "run {rep}: the two sweeps must produce the identical message, not just \
-             the same tet id"
-        );
+        for (arm, got) in [
+            (
+                "parallel",
+                solver.sweep_validity_parallel(&x_bad, materials),
+            ),
+            ("dispatch", solver.sweep_validity(&x_bad, materials)),
+        ] {
+            let err = got.expect_err("the wrecked state must violate");
+            let SolverFailure::ValidityViolation {
+                tet_id: par_tet,
+                message: par_msg,
+            } = &err
+            else {
+                panic!("{n_tets} tets: {arm} sweep reported {err:?}, not a validity violation");
+            };
+            assert_eq!(
+                *par_tet, expected,
+                "{n_tets} tets, run {rep}, {arm} arm: must report the LOWEST violating \
+                 tet (violators: {violators:?})"
+            );
+            assert_eq!(
+                par_msg, seq_msg,
+                "{n_tets} tets, run {rep}, {arm} arm: must produce the identical \
+                 message, not just the same tet id"
+            );
+        }
     }
 }
 
@@ -3999,55 +4033,61 @@ fn validity_sweep_parallel_agrees_with_sequential() {
 fn validity_sweep_parallel_speedup() {
     const WARMUP: usize = 3;
     const ROUNDS: usize = 15;
+    /// `(n_lat, nz)` — `nz` must be even. Smallest is 12 tets, which is the
+    /// regime where rayon's per-call overhead could exceed the work.
+    /// `(n_lat, nz)` — `nz` must be even. Spans the regime where rayon's per-call
+    /// overhead exceeds the work (12 tets) through the published fixture (9 216),
+    /// so the break-even that sets `PARALLEL_SWEEP_MIN_TETS` is visible in one run.
+    const SIZES: [(usize, usize); 7] = [(1, 2), (4, 2), (6, 2), (8, 2), (10, 2), (8, 4), (16, 6)];
 
-    let (solver, x_rest) = validity_sweep_rig(16, 6);
-    let materials = solver.mesh.materials();
-
-    // A smooth shear, `u_x = 0.15 · z`: every element sees `F ≠ I` while the
-    // principal stretches stay far inside NeoHookean's `max_stretch_deviation`
-    // of 1.0, so the sweep does its full work and still returns `Ok`.
-    let mut x_shear = x_rest.clone();
-    for c in x_shear.chunks_exact_mut(3) {
-        c[0] += 0.15 * c[2];
-    }
-
-    let time_it = |f: &dyn Fn() -> Result<(), SolverFailure>| -> f64 {
-        let t0 = std::time::Instant::now();
-        let out = f();
-        let ms = t0.elapsed().as_secs_f64() * 1e3;
-        assert!(
-            out.is_ok(),
-            "control failed — an arm exited early on a violation"
-        );
-        ms
-    };
     let p50 = |v: &mut Vec<f64>| {
         v.sort_by(f64::total_cmp);
         v[v.len() / 2]
     };
 
-    println!(
-        "\nVALSWEEP\ttets={}\tthreads={}",
-        solver.mesh.n_tets(),
-        rayon::current_num_threads()
-    );
-    for (label, x) in [("rest", &x_rest), ("sheared", &x_shear)] {
-        for _ in 0..WARMUP {
-            time_it(&|| solver.sweep_validity_sequential(x, materials));
-            time_it(&|| solver.sweep_validity_parallel(x, materials));
+    println!("\nVALSWEEP\tthreads={}", rayon::current_num_threads());
+    for (n_lat, nz) in SIZES {
+        let (solver, x_rest) = validity_sweep_rig(n_lat, nz);
+        let materials = solver.mesh.materials();
+
+        // A smooth shear, `u_x = 0.15 · z`: every element sees `F ≠ I` while the
+        // principal stretches stay far inside NeoHookean's `max_stretch_deviation`
+        // of 1.0, so the sweep does its full work and still returns `Ok`.
+        let mut x_shear = x_rest.clone();
+        for c in x_shear.chunks_exact_mut(3) {
+            c[0] += 0.15 * c[2];
         }
 
-        let mut seq = Vec::with_capacity(ROUNDS);
-        let mut par = Vec::with_capacity(ROUNDS);
-        for _ in 0..ROUNDS {
-            seq.push(time_it(&|| solver.sweep_validity_sequential(x, materials)));
-            par.push(time_it(&|| solver.sweep_validity_parallel(x, materials)));
-        }
+        let time_it = |f: &dyn Fn() -> Result<(), SolverFailure>| -> f64 {
+            let t0 = std::time::Instant::now();
+            let out = f();
+            let ms = t0.elapsed().as_secs_f64() * 1e3;
+            assert!(
+                out.is_ok(),
+                "control failed — an arm exited early on a violation"
+            );
+            ms
+        };
 
-        let (sq, pl) = (p50(&mut seq), p50(&mut par));
-        println!(
-            "VALSWEEP\t{label:<8}\tseq_p50_ms={sq:.3}\tpar_p50_ms={pl:.3}\tspeedup={:.2}x",
-            sq / pl
-        );
+        for (label, x) in [("rest", &x_rest), ("sheared", &x_shear)] {
+            for _ in 0..WARMUP {
+                time_it(&|| solver.sweep_validity_sequential(x, materials));
+                time_it(&|| solver.sweep_validity_parallel(x, materials));
+            }
+
+            let mut seq = Vec::with_capacity(ROUNDS);
+            let mut par = Vec::with_capacity(ROUNDS);
+            for _ in 0..ROUNDS {
+                seq.push(time_it(&|| solver.sweep_validity_sequential(x, materials)));
+                par.push(time_it(&|| solver.sweep_validity_parallel(x, materials)));
+            }
+
+            let (sq, pl) = (p50(&mut seq), p50(&mut par));
+            println!(
+                "VALSWEEP\ttets={:<6}\t{label:<8}\tseq_p50_ms={sq:>8.4}\tpar_p50_ms={pl:>8.4}\tspeedup={:.2}x",
+                solver.mesh.n_tets(),
+                sq / pl
+            );
+        }
     }
 }

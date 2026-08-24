@@ -31,7 +31,8 @@
 //! that in would assume the success of the thing being sized. Measured, the
 //! bracket first read `8.3×–37.1×` against a `13.5–15.8×` requirement and a `10×`
 //! floor — straddling both, with the validity element sweep alone deciding it.
-//! Parallelising that sweep took it to `20.5×–≳34×`, which clears on either bound
+//! Parallelising that sweep took it to `20.2–20.5×–≳32×` over two runs, clearing on
+//! either bound
 //! (recon §2i, v2.7). The straddle is why this harness exists; keep it, because
 //! `project_tangent` and R3 itself will both move the mix again.
 //!
