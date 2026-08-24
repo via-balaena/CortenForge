@@ -598,15 +598,25 @@ fn top_row_refuses_a_label_with_no_rows() {
     let _ = top_row(&rows, "absent");
 }
 
-/// ⚠ **Declared UNCONTROLLED, deliberately.** Three guards in this file fire
-/// only when a full-order oracle fails its own ramp — the training trajectories,
-/// the scoring oracles, and the in-sample control's survival check. Reaching any
-/// of them means the FIXTURE is broken, not the reduced path, and demonstrating
-/// them would mean injecting a fault into a multi-minute instrument for no
-/// diagnostic gain. The `≥10×` floor is likewise not separately controlled: the
-/// number it compares is pinned by
-/// [`advantage_is_the_ratio_of_the_two_top_rows`] and the comparison itself is a
-/// `>=`. Everything else has a negative control.
+/// ⚠ **Declared UNCONTROLLED, deliberately — and the rule, not a list.** This
+/// file carries **22 guards outside test bodies**; six have `#[should_panic]`
+/// controls and two more (`MIN_WINDOW_DEPTH_BANDS`, `MAX_GAP_DEV_BANDS`) are
+/// exercised two-sidedly by ordinary tests. The remaining fourteen all share one
+/// property: **they fire only if the FIXTURE or the INSTRUMENT is broken** — a
+/// mesh with no pinned face, a full-order oracle failing its own ramp, a
+/// profiler slot recording no calls, a timed window with no contact in it.
+/// Demonstrating those means injecting a fault into a multi-minute instrument
+/// for no diagnostic gain, so they stay uncontrolled and this comment is the
+/// record of that choice.
+///
+/// The `≥10×` floor is separately not controlled and does not need to be: the
+/// number it compares is pinned by [`advantage_is_the_ratio_of_the_two_top_rows`]
+/// and the comparison is a `>=`.
+///
+/// ⚠ An earlier version of this note said "three guards", which read as though
+/// the other nineteen were controlled. The count above came from walking the
+/// file and separating guards from assertions *inside* test bodies — two
+/// earlier scripted audits got that wrong in opposite directions.
 #[test]
 #[should_panic(expected = "passes having measured NOTHING")]
 fn advantage_refuses_a_zero_denominator() {
@@ -1638,11 +1648,16 @@ const MIN_IN_SAMPLE_ADVANTAGE: f64 = 10.0;
 ///   complete all 71 steps, and do not penetrate — `min_sd` stays positive and
 ///   inside the band — while being `28 %` and `109 %` wrong. Convergence plus
 ///   non-penetration is NOT a validity check.
-/// - ★★ **`gap_dev` is**, and that was not what it was built for. It reads
-///   `0.33–0.58 d̂` on the failing arms against `3e-11` in-sample — five orders
-///   over its regression threshold. It was added to catch a hyper-reduced
-///   assembly shifting the equilibrium; it turns out to be the cheap
-///   out-of-domain indicator too.
+/// - ★★ **`gap_dev` is**, and that was not what it was built for. Across all
+///   eight failing arms it reads `0.161–0.583 d̂` against `3.1e-11` in-sample at
+///   the same rank. ⚠ **But it is an ERROR indicator, not an in-domain one**: at
+///   `r = 20` the IN-SAMPLE arm reads `1.6e-4`, over the threshold, because the
+///   answer is genuinely poor there (`relL2 = 2.4e-2`). It conflates "outside
+///   the hull" with "basis too small" — arguably the right quantity for a §4c
+///   gate, since both are reasons to refuse an answer, but the gate needs its
+///   own threshold study and not the `2e-6` regression figure. Nor is it
+///   monotone in `relL2` within a regime, so it separates regimes by orders of
+///   magnitude and ranks nothing finer.
 /// - ⇒ **This REVIVES `ReducedValidityDomain` (§4c) as a CORRECTNESS
 ///   prerequisite.** v2.7 retracted it as a performance prerequisite and that
 ///   retraction stands. But a reduced solver that returns a converged,

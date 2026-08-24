@@ -2070,12 +2070,24 @@ position's own full-order oracle**. Rel-L2 free-DOF displacement:
    band — while being `28 %` and `109 %` wrong. **Convergence plus
    non-penetration is not a validity check**, and it is exactly the "smooth and
    wrong" mode §4b warns about, now observed rather than anticipated.
-4. ★★ **`gap_dev` detects it, which is not what it was built for.** The converged
-   contact gap moves `0.33–0.58 d̂` on the failing arms against `3e-11` in-sample
-   — five orders over the regression threshold it was piloted at. Added to catch
-   a hyper-reduced assembly shifting the equilibrium; it is also the cheapest
-   out-of-domain indicator measured so far, and a candidate online signal for
-   §4c's gate.
+4. ★★ **`gap_dev` detects it, which is not what it was built for** — with a
+   caveat that a later audit added and that anyone building §4c's gate on it
+   needs. Across all eight failing arms the converged contact gap moves
+   **`0.161–0.583 d̂`** against `3.1e-11` in-sample at the same rank: four to five
+   orders over the regression threshold it was piloted at, and nine orders over
+   the in-sample value.
+
+   ⚠ **But it is an ERROR indicator, not an in-domain indicator.** At `r = 20` the
+   IN-SAMPLE arm itself reads `1.6e-4`, well over that threshold — because the
+   answer is genuinely poor there (`relL2 = 2.4e-2`). `gap_dev` tracks *"is this
+   configuration being solved well"*, which conflates "outside the training hull"
+   with "basis too small". For a validity GATE that is arguably the better
+   quantity — both are reasons to refuse an answer — but the claim must be stated
+   that way, and the gate needs its own threshold study rather than inheriting
+   the `2e-6` regression figure. ⚠ It is also not monotone in `relL2` within a
+   regime (interpolation gets *worse* in `gap_dev` from `r=40` to `r=80` while
+   `relL2` improves), so it separates regimes by orders of magnitude and ranks
+   nothing finer.
 
 **What this does to the plan.** §4c already names "contact configuration class"
 as part of the `ReducedValidityDomain` parameter box, so this VALIDATES that
@@ -2271,8 +2283,12 @@ accuracy superiority — that is not claimed and would need measuring.
 > without the gate is now measured rather than argued. ⚠ v2.7's retraction of
 > this section as a PERFORMANCE prerequisite is a separate claim and stands.
 > ★ `gap_dev` (the converged contact gap's drift, §2l finding 4) is a measured
-> candidate for the online signal: `0.33–0.58 d̂` out-of-domain against `3e-11`
-> in-sample.
+> candidate for the online signal: `0.161–0.583 d̂` out-of-domain against
+> `3.1e-11` in-sample at the same rank. ⚠ **It is an ERROR indicator, not an
+> in-domain one** — at `r = 20` the in-sample arm itself reads `1.6e-4` because
+> the answer is genuinely poor there. For a gate that is arguably the right
+> quantity, since both are reasons to refuse an answer, but **it needs its own
+> threshold study** and must not inherit the `2e-6` regression figure.
 
 
 This mirrors `sim-soft`'s existing `ValidityDomain` on `Material` (which already gates
@@ -2735,8 +2751,10 @@ until then, and by nobody else ever. The recipe above is the durable record.
   in rank**, the classic advection-like POD failure, and NOT the free edge (the
   nearer extrapolation keeps `1.5a` of clearance and fails alike). ★★★ Failure is
   **SILENT**: the bad arms converge, complete, and do not penetrate. ★★ `gap_dev`
-  detects it anyway (`0.33–0.58 d̂` vs `3e-11`), which is not what it was built
-  for, and is a candidate online signal for §4c. ⇒ **`ReducedValidityDomain`
+  detects it anyway (`0.161–0.583 d̂` vs `3.1e-11`), which is not what it was
+  built for, and is a candidate online signal for §4c — ⚠ as an ERROR indicator
+  rather than an in-domain one, needing its own threshold, since at `r = 20` the
+  in-sample arm also clears the regression figure. ⇒ **`ReducedValidityDomain`
   revived as a CORRECTNESS prerequisite** (v2.7's retraction of it as a
   PERFORMANCE prerequisite stands); §7's R1 row qualified to "DONE AS SCOPED",
   since every R1 gate was posed on a fixed contact configuration; §10 carries it
