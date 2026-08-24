@@ -1883,8 +1883,8 @@ down. Four runs, §2h's reference box:
 | reduced, `PreviousState` | 304–315 | 9.00 | 17.1–18.2 | **`0.92–0.98×`** ⛔ |
 | reduced, `Inertial` | 182–185 | 5.25 | 11.3–12.3 | **`1.36–1.47×`** ✓ |
 
-Six runs. The same window at 5 202 reads `3.24–3.39×` and `4.40–4.45×` — see
-finding 3 below, the margin is size-dependent.
+Six runs at 18 750. The same window at 5 202 (three runs) reads `3.24–3.39×`
+and `4.40–4.61×` — see finding 3, the margin is size-dependent.
 
 **R3 clears — on `1.4×`, where the contact-free fixture reports `5.60×`.** That
 figure was not wrong; it was measured somewhere the requirement does not live,
@@ -1919,8 +1919,8 @@ Five things it changes:
    looked (`1.15 → 1.50`, not `1.06 → 1.50`). The counts are exact integers per
    step, so the ratios reproduce; only the margins need repeats.
 3. ★★ **The margin is not a constant of the ladder — it falls with size.** `I`
-   is `3.75–3.80 ms` at 5 202 and `11.3–12.3 ms` at 18 750 against a fixed
-   `16.7 ms` budget, so `B/I` goes `4.4× → 1.4×`.
+   is `3.62–3.80 ms` at 5 202 and `11.3–12.3 ms` at 18 750 against a fixed
+   `16.7 ms` budget, so `B/I` goes `4.4–4.6× → 1.36–1.47×`.
 
    ⚠ **Do not fit one exponent to that**, which a first pass did. `I`'s two real
    terms move in opposite directions and the blend is an artefact of where their
@@ -1928,6 +1928,7 @@ Five things it changes:
 
    | term | 5 202 | 18 750 | scaling | share of `I` |
    |---|---:|---:|---|---|
+   *(one run at each size; the ranges above are over three and six)*
    | `contact` | 1.998 | 8.468 | **`n^1.13`** | 53 % → **69 %** |
    | `validity check` | 1.687 | 3.561 | `n^0.58` | 45 % → 29 % |
 
@@ -2336,7 +2337,7 @@ same door, under its own feature, and must not enter the default build.
 | **R0** ✅ **DONE** (`e77023c7`, `43b198a2`) | **Full-order assembly lever.** Replace the per-iteration `BTreeMap` rebuild in `assemble_free_hessian_triplets` with a pattern-indexed value buffer built once at construction. No algorithm change. | Byte-identity of the assembled triplets against the current path (the `feedback_float_refactor_byte_identity` recipe), plus a measured ms/iteration delta on the §2a fixtures. | §2d.2. Establishes the **honest baseline** the reduction is measured against. Cheap, self-contained, and a win regardless of whether anything downstream ships. |
 | **R1** ✅ **DONE** (`#744`, `#745`, R1.2) | **Linear subspace, no contact, no coupling.** POD basis from full-order snapshots on the `cantilever` fixture at 3 000 free DOF; reduced Newton with a dense `r × r` direct solve; `Φ` and quadrature both handled naively (full element sweep — **no hyper-reduction yet**). Differentiable path wired at the same time (§6, `Φ` constant). | Projection error vs the oracle < 1 % in tip displacement over the training trajectory; reduced gradient matches the oracle's to the crate's existing gradcheck tolerance. ⚠ **That second clause was wrong and was amended before R1.2 was built** — it asks two different functions to agree to 5 digits when their states already differ in the third. Split into a gradcheck-tolerance kill gate on the reduced model's *own* derivative and a measured comparison against the oracle; see the plan's §5/§7 and §13. **Wall time is explicitly NOT gated at R1** — without hyper-reduction it will not be faster, and pretending otherwise would corrupt the signal. | **The cheap kill-or-confirm.** It answers the one question that decides everything downstream: *does a low-dimensional subspace represent this material's deformation at all?* Fixture already exists; no new physics. |
 | **R2** | **Precision decision.** Measure a full-f32 forward path on the reduced system (`r × r` is small enough to port by hand without touching the 1 396-`f64` production surface), and decide residual-in-f64-on-CPU vs compensated-summation-in-f32. | Reduced-model f32 forward drift and gradient drift vs the f64 reduced model, on R1's fixture; explicit go/no-go on whether the residual can live in f32. | §2c. Must precede any GPU work; deciding it after a shader exists means writing the shader twice. |
-| **R3** **§2i brackets its Amdahl ceiling at `20.2–20.5×`–`≳32×`** (two runs) — clear of both its own `10×` floor and the budget's `13.5–15.8×` on either bound. ✅ v2.13: the reduced path HAS now run with contact — §2k measures `I = 11.3–12.3 ms` on IPC 18 750, margin `1.36–1.47×` under `Inertial` and a FAIL of `0.92–0.98×` under `PreviousState`. ⚠ Size-dependent — `4.4×` at 5 202, and extrapolating, gone by ~`28 k` free DOF. Gate is **`I ≤ 16.7 ms`** on §2h's reference box (§2j — restated in v2.8 from `≥10×`, which was a ratio over a moving baseline). | **Hyper-reduction (ECSW) + the validity domain.** NNLS training over R1's snapshots; `ReducedValidityDomain` with the online `‖q‖` + residual-proxy gate; the three error measures of §4c. | Measured speedup vs §2a's baseline (post-R0), with the three §4c errors reported alongside. Domain gate demonstrated to fire on an out-of-domain trajectory. | This is where the frame-budget win actually arrives. Also where the "smooth and wrong" failure mode is defended against. |
+| **R3** **§2i brackets its Amdahl ceiling at `20.2–20.5×`–`≳32×`** (two runs) — clear of both its own `10×` floor and the budget's `13.5–15.8×` on either bound. ✅ v2.13: the reduced path HAS now run with contact — §2k measures `I = 11.3–12.3 ms` on IPC 18 750, margin `1.36–1.47×` under `Inertial` and a FAIL of `0.92–0.98×` under `PreviousState`. ⚠ Size-dependent — `4.4–4.6×` at 5 202, and extrapolating the two terms of `I` separately, gone by ~`26 k` free DOF. Gate is **`I ≤ 16.7 ms`** on §2h's reference box (§2j — restated in v2.8 from `≥10×`, which was a ratio over a moving baseline). | **Hyper-reduction (ECSW) + the validity domain.** NNLS training over R1's snapshots; `ReducedValidityDomain` with the online `‖q‖` + residual-proxy gate; the three error measures of §4c. | Measured speedup vs §2a's baseline (post-R0), with the three §4c errors reported alongside. Domain gate demonstrated to fire on an out-of-domain trajectory. | This is where the frame-budget win actually arrives. Also where the "smooth and wrong" failure mode is defended against. |
 | **R4** | **Hybrid domain decomposition, FIXED contact patch.** Full DOF under a stationary indenter, reduced bulk, on the `dynamic_indentation` geometry. | End-to-end reaction force vs the oracle, in the same band `bonded_layer_indentation` already asserts. | §5. Fixed patch first, because it isolates the coupling condition from the re-partitioning problem. |
 | **R5** | **Moving patch.** Re-partitioning under a once-built symbolic factorization, or a conservative union pattern. | Sliding-contact trajectory vs the oracle. | §5's open-research item. **Explicitly gated on R4 succeeding**; if R4 fails, this is not attempted. |
 | **R6** | **Rigid↔soft coupling.** | — | **Last, deliberately.** Per the brief, and it is the right call: the keystone coupling is itself the platform's hardest open problem (`MISSION.md` §2), and stacking it on an unsolved real-time reduced path would make any failure uninterpretable. |
@@ -2612,8 +2613,8 @@ until then, and by nobody else ever. The recipe above is the durable record.
   MISMATCHED comparison** — 5 202's whole-ramp average against 18 750's
   last-8-steps average — and the harness now sweeps both sizes in one window. The
   effect survived and grew (`1.15 → 1.50`, not `1.06 → 1.50`). That re-measurement
-  also produced §2k's third finding: **the margin falls with size** (`4.4×` at
-  5 202, `1.4×` at 18 750). ★★★ A SECOND round then found that fitting one
+  also produced §2k's third finding: **the margin falls with size** (`4.4–4.6×`
+  at 5 202, `1.36–1.47×` at 18 750). ★★★ A SECOND round then found that fitting one
   exponent to `I` hid two terms moving in opposite directions — `contact` at
   `n^1.13` and the validity sweep at `n^0.58` — which corrects the headroom
   marker to `~26 k` free DOF and, more usefully, **names the only optimisation
