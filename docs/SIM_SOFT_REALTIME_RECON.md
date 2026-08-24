@@ -1,6 +1,6 @@
 # sim-soft Real-Time Path — Phase-1 Measurement + Recon (Phase E predecessor)
 
-**Status**: RECON 2026-08-10 (rev 2026-08-24), v2.8. Phase 1 (measure) COMPLETE — all four requested
+**Status**: RECON 2026-08-10 (rev 2026-08-24), v2.9. Phase 1 (measure) COMPLETE — all four requested
 measurements taken; §2 reports them. Phase 2 (this recon) proposes the MOR +
 hyper-reduction path with a staged ladder whose first rung is a kill-or-confirm.
 **No dependency was added.** Phase 1's instrumentation was temporary (implement →
@@ -1276,6 +1276,25 @@ box, taken either side of the size-threshold fix below.
 > of the earlier configuration likewise gave `37.1×` and `38.9×`. What is solid is that
 > it is far above `15.8×`, not its value.
 
+⚠⚠ **`20.2–20.5×` IS TOO TIGHT — four further runs (v2.9) widen the lower bound to
+`19.0–20.8×`.** Two runs were enough to stop quoting one, and not enough to bound
+the spread. The cause is visible and is the one §2j predicted: the lower bound is
+`T / I`, and `I` is only `~3.2 ms` of a `~66 ms` frame, so it is set by the
+smallest rows in the table. `validity check` alone ranges `1.197–1.459 ms` across
+the six runs (`±10 %`) — the parallel sweep's own scheduling variance — and drags
+the ceiling with it.
+
+| runs | `validity check` | ceiling `1/(1−f)` |
+|---|---|---|
+| the two above (v2.7) | `1.197`, `1.229` | `20.5×`, `20.8×` |
+| four more (v2.9) | `1.333`–`1.459` | `19.0×`, `19.4×`, `19.5×`, `19.9×` |
+
+★ The large rows do NOT show this: `red proj K` spans `36.80–37.48` and
+`asm tangent` `23.23–23.53` across all six, both inside `1.9 %`. So this is not
+session drift in the harness — it is a small, noisy quantity being the
+denominator. **No conclusion moves**: `19.0×` still clears `13.5–15.8×`, and under
+§2j's restated gate `I ≤ 16.7 ms` the margin is `4.9–5.3×`. Quote **`≥19×`**.
+
 **Coherence check.** ⚠ This is a CROSS-SESSION comparison of absolute times, which §2d
 finding 3 says not to trust — licensed here only by its own result: the untouched rows
 agree to `0.3–2.1 %`, which is what says the two runs are comparable. The frame fell
@@ -1538,9 +1557,15 @@ the difference is a POD basis:
 | 4 (Tet10) | new mesh *and* new snapshot set | as knob 2, and it is the one marked "recorded, not gated" |
 
 ⇒ **Run knob 0 first on the existing fixture.** It is one run, it costs nothing
-extra, and it decides which fix is even a candidate — so the expensive `n` sweep
-is not paid twice. ⚠ The harness's own wall cost has not been measured; smoke one
-run and record it here before committing to the rest of the matrix.
+extra, and it decides which fix is even a candidate — so the `n` sweep is not paid
+twice.
+
+✅ **Smoked: `9.2 s` wall for the whole harness**, snapshot generation and SVD
+included (`5.7 s` of it inside the test). ⚠ **The paragraph above overstated the
+cost and is corrected here rather than quietly**: the ordering of the knobs by
+price is right, but in absolute terms *every* cell of this matrix is seconds, so
+"the dominant cost of the matrix" means seconds rather than minutes and nothing in
+it needs rationing. Run the whole thing.
 
 **Pre-registered rules, in force for every run below:**
 
@@ -1555,6 +1580,63 @@ run and record it here before committing to the rest of the matrix.
 6. **State which half the fix addresses, and measure the other.** A layout change
    that helps one loop and pessimises the other is a wash that reads as a win if
    only the frame total is watched.
+
+#### ✅ Knob 0, MEASURED — the split is `1.85 : 1` and BOTH halves are large
+
+Three runs on the reference box, `r = 40`, `n = 5 202`, `4.00` Newton iterations
+per step. The positive control — the two children bracket every statement of the
+parent bar `basis.modes()`, so they must nearly exhaust it — read **`99.5 %` on
+all three**, so the timers are where their names say and the ratio below means
+something.
+
+| | run a | run b | run c | share of frame |
+|---|---:|---:|---:|---:|
+| `Y = AΦ` — gather, `O(nnz·r)` | 24.191 | 24.157 | 23.865 | **36.4–36.7 %** |
+| `Φᵀ Y` — contract, `O(n·r²)` | 13.010 | 13.162 | 12.882 | **19.7–19.9 %** |
+| **A : B** | 1.86 | 1.84 | 1.85 | — |
+
+**Neither half can be ignored, and that was the point of the knob.** Taking one to
+zero cost and leaving the other alone caps the whole-frame win hard:
+
+| | frame | whole-frame |
+|---|---:|---:|
+| gather → 0, contract untouched | 41.82 ms | **1.58×** |
+| contract → 0, gather untouched | 52.87 ms | **1.25×** |
+| both → 0 | 28.80 ms | 2.29× |
+| both at a realistic `8×` | 33.44 ms | 1.97× |
+
+⇒ **Pre-registered rule 6 binds here**: a fix that addresses one loop must report
+what it did to the other, because "`ΦᵀKΦ` got faster" can mean `1.25×` or `2.29×`
+of a frame.
+
+#### ★ The contract is LATENCY-bound, which names the fix
+
+The contract's flop count needs no new accessor: `calls · r(r+1)/2 · n · 2` =
+**`34.13` Mflop/step**, and at `13.02 ms` that is **`2.62` GFLOP/s** — *one FMA
+per `3.36` cycles* at `4.4 GHz`.
+
+That is not a bandwidth wall and it is nowhere near a throughput wall. It is the
+**serial dependency chain**: `(0..n).map(|p| modes[i][p] * y[p][j]).sum()` is one
+accumulator threaded through `n` FMAs of ~4-cycle latency, so the machine is
+idling ~3 cycles in 4 no matter how much SIMD or how many cores it has. §2j's
+knob-0 rule said *"near scalar peak ⇒ threads + SIMD; far below ⇒ layout"* — the
+answer is the second, and more specifically **restructuring before parallelism**.
+
+⇒ **One change addresses both halves**, which is the outcome rule 6 was written to
+check for:
+
+- store the basis **transposed** (`Φᵀ` as a flat `n × r`) and `Y` as a flat
+  `n × r` instead of `Vec<Vec<f64>>`;
+- the **gather**'s inner `k` loop then walks `y[row·r ..]` and `phi_t[col·r ..]`
+  contiguously — two AXPYs instead of `r` pointer-chases per triplet;
+- the **contract** becomes `n` rank-1 updates into an `r × r` accumulator (`40 ×
+  40 × 8 B = 12.8 KiB`, L1-resident) — a `syrk`. Each of the `n` steps writes
+  `r(r+1)/2` *independent* accumulators, so the dependency chain that costs `3.36`
+  cycles/FMA today is gone by construction.
+
+⚠ The gather's own flop rate is NOT computed here: it needs the pattern `nnz` and
+there is no public accessor for it. Adding one purely for a diagnostic was judged
+scope creep. The gather's share is measured; only its efficiency is unquantified.
 
 ## 3. What the measurements say about feasibility
 
@@ -2159,6 +2241,29 @@ until then, and by nobody else ever. The recipe above is the durable record.
 - `sim/L0/soft/src/material/` — the `ValidityDomain` §4c mirrors.
 
 ## 12. Version history
+
+- **v2.9 (2026-08-24)** — **§2j knob 0 MEASURED: `ΦᵀKΦ` splits `1.85 : 1`, both
+  halves are large, and the contract is LATENCY-bound — so one layout change fixes
+  both.** `Y = AΦ` is `36.4–36.7 %` of a reduced frame and `Φᵀ Y` is `19.7–19.9 %`,
+  stable over three runs, with the split's positive control at `99.5 %` every time.
+  ⇒ fixing only the gather caps the whole-frame win at `1.58×` and only the
+  contract at `1.25×`, against `2.29×` for both — which is exactly what
+  pre-registered rule 6 exists to make visible. ★ The contract's flop rate is
+  computable from public quantities alone: `34.13` Mflop/step at `13.02 ms` is
+  `2.62` GFLOP/s, **one FMA per `3.36` cycles**, i.e. the serial dependency chain
+  of a `sum()` over `n` — not bandwidth, not throughput. Knob 0's pre-registered
+  reading ("near scalar peak ⇒ threads + SIMD; far below ⇒ layout") therefore
+  says restructure first: a flat `n × r` `Y` and a transposed `Φ` turn the gather's
+  inner loop into two contiguous AXPYs and the contract into `n` rank-1 updates
+  against a `12.8 KiB` L1-resident `r × r` accumulator, which removes the
+  dependency chain by construction. ⚠⚠ **Also widens §2i's published ceiling:
+  `20.2–20.5×` was two runs and is TOO TIGHT — four more give `19.0–20.8×`.** The
+  cause is §2j's own prediction: the bound is `T/I` and `I` is `~3.2 ms`, so the
+  `±10 %` scheduling variance of the `1.2–1.5 ms` validity sweep sets it, while the
+  large rows hold inside `1.9 %`. No conclusion moves; quote `≥19×`. ⚠ §2j's
+  costing is corrected too — the harness was smoked at **`9.2 s` wall**, so the
+  knob ordering by price stands but "the dominant cost of the matrix" means
+  seconds, and nothing in it needs rationing.
 
 - **v2.8 (2026-08-24)** — **§2j: R3's kill floor RESTATED, before the measurement
   that would have moved it — and `project_tangent` reclassified as a wall-clock item,
