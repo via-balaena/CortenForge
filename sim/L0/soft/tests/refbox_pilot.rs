@@ -50,3 +50,36 @@ fn pilot_probe_spread() {
         bursts[9], p50s[5]
     );
 }
+
+/// What phase does the probe actually stress?
+///
+/// The probe's design rationale is that it loads the same phase the real
+/// measurements are bottlenecked on. §2d's `57.5 % numeric factor` at 3 000 DOF
+/// is NOT evidence for that — that row is `dt = 1/60` with many Newton
+/// iterations, and the probe runs `dt = 1e-3` with three. Different regime, so
+/// it needs measuring rather than citing.
+///
+/// ```text
+/// cargo test --release -p sim-soft --features phase-timing \
+///   --test refbox_pilot -- --ignored --nocapture probe_phase_character
+/// ```
+#[test]
+#[ignore = "pilot, ~1 s — characterises the probe's phase mix"]
+#[cfg(feature = "phase-timing")]
+fn probe_phase_character() {
+    use sim_soft::profile::{self, Phase};
+    profile::reset();
+    let p = refbox::probe();
+    // `probe` resets on the way out, so re-run one under a fresh window. The
+    // returned stats are irrelevant here — only the counters it left behind are.
+    profile::reset();
+    let _unused = refbox::probe_inner_for_profiling();
+    let ph = profile::snapshot();
+    println!(
+        "\nprobe phase mix (p50 {:.2} ms, {} iters/step):",
+        p.p50_ms, p.iters
+    );
+    for phase in Phase::ALL {
+        println!("  {:<16} {:6.1} %", phase.label(), 100.0 * ph.share(phase));
+    }
+}

@@ -58,8 +58,7 @@
 //! ⚠ `--test-threads=1` is required: the two measurements otherwise compete for
 //! cores while each is being timed, and their tables interleave. ⚠ Do NOT expect
 //! the quiet-box gate to catch that for you — running both concurrently was tried
-//! and both gates PASSED (the probe is small enough to coexist, and the two 0.6 s
-//! probes need not overlap). The flag is the guarantee; the gate is not.
+//! and both gates PASSED. The flag is the guarantee; the gate is not.
 
 #![allow(
     // A failed oracle or reduced step is a broken instrument, not a runtime

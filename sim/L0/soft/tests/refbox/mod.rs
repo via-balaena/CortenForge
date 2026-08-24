@@ -1,41 +1,24 @@
 //! Measurement preconditions: **which box**, and **is it idle**.
 //!
-//! ## Why this exists
+//! A frame budget is ABSOLUTE, so a gap to it belongs to one machine. The
+//! evidence, the pilot data and the thresholds' derivation live in
+//! `docs/SIM_SOFT_REALTIME_RECON.md` §2h; this module is the enforcement.
 //!
-//! A frame budget is an ABSOLUTE quantity, so the gap to it belongs to the
-//! machine it was measured on. `docs/SIM_SOFT_REALTIME_RECON.md` spent four
-//! revisions not honouring that:
+//! **Hard-failed** — `hw.model` and the P/E core split, the hardware the cost
+//! scales with. **Stamped only** — RAM, OS, `rustc`: they drift for reasons
+//! unrelated to speed, and the toolchain is pinned by `rust-toolchain.toml`.
 //!
-//! - §2d finding 4 measures three fixtures on two boxes and gets transfer
-//!   ratios of `1.60×`, `1.56×`, `1.08×` … and `0.51×`. No single box factor
-//!   does that, so a `ms/step` quoted without its box means nothing.
-//! - §2's own header records the SAME 3 000-DOF fixture measuring **4.9 ms and
-//!   28.0 ms** in two runs under background load — a `5.7×` spread, which dwarfs
-//!   any cross-box difference measured since.
+//! Two invariants a future edit must not break:
 //!
-//! The second is the bigger threat and the easier one to forget: the box is
-//! right there, it looks idle, and the number is wrong anyway.
+//! 1. ⚠⚠ **This file is copied onto the PRE-R0 tree** by `tests/r0_ab.rs`'s A/B
+//!    recipe, so it must compile against `ecf4cfef^`. Anything newer than that
+//!    commit must be `cfg`-gated — `sim_soft::profile` already broke that arm
+//!    once.
+//! 2. ⚠ Deliberately NOT `tests/common/mod.rs`, which eight physics tests share
+//!    and which has no business depending on `sysctl`.
 //!
-//! ## What is enforced, and what is only recorded
-//!
-//! **Hard-failed** — the hardware the cost scales with: `hw.model` and the P/E
-//! core split. A different machine is not this machine, and a gate spent
-//! against it is meaningless.
-//!
-//! **Stamped only** — RAM, OS version, `rustc` version. These drift for reasons
-//! unrelated to speed, and the toolchain is already pinned by
-//! `rust-toolchain.toml`, so failing on them would be friction without
-//! protection. They print with every measurement so a number cannot travel
-//! without its context.
-//!
-//! ⚠ **Transfer to another box is UNVALIDATED and this module does not offer
-//! it.** Validating a transfer rule needs at least two boxes; one is available.
-//! The only cross-box evidence in the recon shows transfer failing in OPPOSITE
-//! directions across fixture families, so a plausible-looking scaling factor
-//! would be worse than none.
-//!
-//! ⚠ This is deliberately NOT `tests/common/mod.rs`: that module is shared by
-//! eight physics tests and has no business gaining a dependency on `sysctl`.
+//! ⚠ **Transfer between boxes is UNVALIDATED and not offered here** — it needs
+//! two boxes, and §2d finding 4 has it failing in opposite directions.
 
 // Each integration test binary compiles this whole module but uses only part of
 // it, so per-binary dead-code warnings are expected and not informative.
@@ -142,11 +125,9 @@ impl BoxIdentity {
 
 /// Stamp the box, and **fail** unless it is the reference box.
 ///
-/// Call this from any measurement whose number is spent against a gate. The
-/// recon's `10×` kill floor and its `13.5–15.8×` frame-budget requirement are
-/// both quantities on THIS machine; produced anywhere else they are a different
-/// number wearing the same name, which is the failure that cost four document
-/// revisions.
+/// Call this from any measurement whose number is spent against a gate: the
+/// recon's `10×` kill floor and `13.5–15.8×` frame-budget requirement are both
+/// quantities on THIS machine.
 pub fn require_reference_box() -> BoxIdentity {
     let id = BoxIdentity::detect();
     id.stamp();
@@ -190,21 +171,13 @@ pub struct Probe {
 }
 
 impl Probe {
-    /// Slowest step over the median — the **gross-stall** statistic.
+    /// Slowest step over the median — the **gross-stall** statistic, and the
+    /// WEAKER of the two checks.
     ///
-    /// ⚠ **This is the WEAKER of the two checks, and an earlier revision of this
-    /// comment had it backwards.** It was written asserting that burst is "the
-    /// contention statistic" and that a median would hide what it catches. The
-    /// pilot falsified that: under a 4-core background load burst reads
-    /// `1.063×` against an idle maximum of `1.060×` — no separation at all —
-    /// while the absolute median moves cleanly out of band. Sustained partial
-    /// load slows EVERY step, so it lands in the median and leaves this ratio
-    /// alone.
-    ///
-    /// It is kept because it catches the opposite failure: a few long stalls on
-    /// an otherwise quiet box (12-core load reads `2.37–5.87×`), which is
-    /// preemption the median genuinely would hide. Two checks, two failure
-    /// modes; see [`require_quiet_box`].
+    /// ⚠ It does NOT detect sustained partial load: at 4 busy cores it reads
+    /// `1.063×` against a `1.060×` idle maximum, because steady load slows every
+    /// step and lands in the median instead. It catches the opposite failure —
+    /// a few long stalls (12 busy cores: `2.37–5.87×`). §2h has the pilot data.
     #[must_use]
     pub fn burst(&self) -> f64 {
         self.max_ms / self.p50_ms
@@ -223,18 +196,40 @@ impl Probe {
     }
 }
 
-/// Run the contention probe: `cantilever 40×4` (3 000 free DOF) at [`PROBE_DT`],
-/// which §2d puts at 57.5 % `numeric factor` — the same phase the real
-/// measurements are bottlenecked on.
+/// Run the contention probe: `cantilever 40×4` (3 000 free DOF) at [`PROBE_DT`].
 ///
-/// ⚠ **The measurement fixtures cannot police themselves**, which is why this
-/// exists separately. The IPC ramp deepens its indenter every step, so its
-/// `max/p50` is `1.31` from physics alone; the `cantilever 80×8` transient runs
-/// 8× min-to-max. A threshold loose enough for those would never catch
-/// contention. This probe does the SAME work every step, so its spread has only
-/// one source.
+/// **Measured ~61 % `numeric factor`** (`refbox_pilot::probe_phase_character`;
+/// 61.1 / 60.8 % on two runs),
+/// so it loads the phase the real measurements are bottlenecked on. §2d's
+/// `57.5 %` for this DOF count is NOT the evidence — that row is `dt = 1/60`
+/// with many Newton iterations, a different regime.
+///
+/// A separate probe exists because the measurement fixtures cannot police
+/// themselves — the IPC ramp's `max/p50` is `1.31` from physics alone. This does
+/// the SAME work every step, so its spread has one source.
 #[must_use]
 pub fn probe() -> Probe {
+    let p = probe_inner_for_profiling();
+    // The probe runs real solves, so with `phase-timing` on it has been
+    // accumulating into the GLOBAL phase counters. Leave them as we found them:
+    // no current caller is harmed (each resets before reading), but a future
+    // measurement that snapshots without resetting would report the probe's work
+    // as its own.
+    //
+    // ⚠ `cfg`, not an unconditional call, and that is REQUIRED — see the
+    // cross-tree note in the module docs. `sim_soft::profile` landed with the
+    // phase-timing feature and does not exist on the pre-R0 tree this file is
+    // copied into; naming it unconditionally fails that arm to compile, which is
+    // exactly what the first version of this hygiene fix did.
+    #[cfg(feature = "phase-timing")]
+    sim_soft::profile::reset();
+    p
+}
+
+/// [`probe`] without the counter reset, so `refbox_pilot`'s phase-mix pilot can
+/// read what the probe actually stressed. Not for measurement use.
+#[must_use]
+pub fn probe_inner_for_profiling() -> Probe {
     const MU: f64 = 3.5e5;
     const LAMBDA: f64 = 1.4e6;
     let field = MaterialField::uniform(MU, LAMBDA);
@@ -295,14 +290,6 @@ pub fn probe() -> Probe {
          until the count is constant before trusting any run."
     );
 
-    // The probe runs real solves, so with `phase-timing` on it has been
-    // accumulating into the GLOBAL phase counters this whole time. Leave them
-    // as we found them: no current caller is harmed (both reset before reading),
-    // but a future measurement that snapshots without resetting would silently
-    // report the probe's work as part of its own. `reset` is a no-op without the
-    // feature, so this costs nothing.
-    sim_soft::profile::reset();
-
     let mut sorted = per_step.clone();
     sorted.sort_by(|a, b| a.partial_cmp(b).expect("no NaN timings"));
     Probe {
@@ -321,17 +308,12 @@ pub const REF_PROBE_P50_MS: f64 = 24.47;
 
 /// Upper bound on the probe median before a run is refused.
 ///
-/// **Piloted, not chosen.** Measured idle maximum is `24.70 ms`; the lightest
-/// contaminated case in the pilot (a 2-core background load) has minimum
-/// `25.83 ms`. This sits in that gap, near the maximum-margin separator, so it
-/// admits every idle run observed and rejects every contaminated one — a 2-core
-/// load already inflates the median `6.4 %`.
+/// **Piloted, not chosen** — it sits in the measured gap between the idle
+/// maximum `24.70 ms` and the lightest contaminated case `25.83 ms` (§2h).
 ///
-/// ⚠ Headroom above the observed idle maximum is only `3.3 %`. That is
-/// deliberate — this is the sensitive check — but it means a genuine baseline
-/// shift (a warmer box, a newer OS, a faster solver) will read as contention.
-/// The remedy is to re-run `tests/refbox_pilot.rs` and re-baseline both
-/// constants together, NOT to widen this one.
+/// ⚠ Only `3.3 %` headroom, deliberately. A genuine baseline shift will read as
+/// contention; the remedy is to re-run `tests/refbox_pilot.rs` and re-baseline
+/// both constants, NOT to widen this one.
 pub const PROBE_P50_CEILING_MS: f64 = 25.5;
 
 /// Lower bound on the probe median.
@@ -347,35 +329,30 @@ pub const PROBE_P50_FLOOR_MS: f64 = 21.0;
 /// firing on the ordinary jitter of a quiet box.
 pub const PROBE_BURST_MAX: f64 = 1.30;
 
-// ⚠ MEASURED SENSITIVITY LIMIT. The gate catches sustained EXTERNAL load well (2
-// busy cores already trip it). It did NOT catch two of this crate's own measurement
-// tests run concurrently: `cargo test --test reduced_predictor -- --ignored` without
-// `--test-threads=1` passed both gates. The probe is only 3 000 DOF, where the
-// factorization has little parallelism to lose, and the two 0.6 s probes need not
-// overlap at all inside a 77 s run. So `--test-threads=1` remains a REQUIREMENT of
-// the harnesses and this gate is not a substitute for it. Recorded because the
-// opposite was written here first, as a prediction, and the run disagreed.
+// ⚠ MEASURED SENSITIVITY LIMIT. The gate catches sustained EXTERNAL load (2 busy
+// cores trip it) but did NOT catch two of this crate's own measurements run
+// concurrently — `--test reduced_predictor -- --ignored` without
+// `--test-threads=1` passed both gates. Why is not established. So
+// `--test-threads=1` stays a REQUIREMENT of the harnesses and this gate is not a
+// substitute for it.
 
 /// Identity plus the **scale-free** contention check only, for measurements
 /// that run the SAME fixture on more than one tree.
 ///
-/// ⚠ **[`require_quiet_box`] cannot be used across trees, and this is measured,
-/// not assumed.** The probe is `cantilever 40×4` — a fixture R0 itself speeds
-/// up. On the pre-R0 tree (`ecf4cfef^`) it reads **57.39 ms** against post-R0's
-/// **24.47 ms**, a `2.35×` difference, so the absolute median ceiling would
-/// reject the pre-R0 arm of `tests/r0_ab.rs` on every run and the A/B could
-/// never execute. A baseline calibrated on one tree is not a property of the
-/// box.
-///
-/// [`Probe::burst`] IS scale-free and transfers: idle pre-R0 reads
-/// `1.013–1.063×` against post-R0's `1.008–1.060×`. So it is checked here.
+/// ⚠ **[`require_quiet_box`] cannot be used across trees.** The probe is a
+/// fixture R0 speeds up: pre-R0 it reads **57.39 ms** against post-R0's
+/// **24.47 ms**, so the median ceiling would reject the pre-R0 arm every run. A
+/// baseline calibrated on one tree is not a property of the box.
+/// [`Probe::burst`] IS scale-free (pre-R0 `1.013–1.063×` vs `1.008–1.060×`), so
+/// it is checked here.
 ///
 /// ⚠ **The cost is real: this arm has weaker contention protection**, because
 /// burst does not detect sustained partial load (see [`Probe::burst`]). What
-/// covers it instead is the A/B protocol itself — arms are INTERLEAVED, so a
-/// persistent load lands on both and largely cancels from the ratio. That is a
-/// weaker guarantee than the single-tree gate, and it is the reason interleaving
-/// is mandatory rather than advisory in `tests/r0_ab.rs`.
+/// covers it is INTERLEAVING, and that was measured rather than assumed: under a
+/// 3-core load the absolute times move `+3.4 %` while the R0 credit shifts
+/// `+0.4 %` at 18 750 (`+4.0 %` / `+1.4 %` at 5 202). The load lands on both arms
+/// and leaves the ratio. That is why interleaving is mandatory in
+/// `tests/r0_ab.rs` rather than advisory.
 pub fn require_quiet_box_cross_tree() -> (BoxIdentity, Probe) {
     let id = require_reference_box();
     let p = probe();

@@ -960,9 +960,10 @@ indenter every step, so `max/p50` is `1.31` from physics, and the
 `cantilever 80×8` transient runs 8× min-to-max. So a **separate probe** runs
 first (~0.6 s): `cantilever 40×4`, 3 000 free DOF, `dt = 1e-3`, which holds the
 Newton count constant at 3 — identical work every step, so any spread has one
-source. The probe **checks that premise and refuses to report if the count
-varies**; it caught a `[2, 3, 3, …]` first step on its first run and declared
-itself invalid until the warm-up was raised.
+source. Measured at **~61 % `numeric factor`** (61.1 / 60.8 % on two runs), so it loads the phase the real
+measurements are bottlenecked on. The probe **checks its constant-work premise
+and refuses to report if the count varies**; it caught a `[2, 3, 3, …]` first
+step on its first run and declared itself invalid until warm-up was raised.
 
 Thresholds were **piloted, not chosen** — 10 runs idle, then under deliberate
 load:
@@ -1014,11 +1015,17 @@ gate.
 
 `burst` IS scale-free and does transfer — idle pre-R0 reads `1.013–1.063×`
 against post-R0's `1.008–1.060×` — so the cross-tree gate checks identity and
-burst, and skips the median. **The honest cost: that arm has weaker contention
-protection**, since burst misses sustained partial load. What covers it is the
-protocol — arms are INTERLEAVED, so a persistent load lands on both and largely
-cancels from the ratio. That is why interleaving is mandatory in `r0_ab.rs`
-rather than advisory.
+burst, and skips the median. **The cost: that arm has weaker contention
+protection**, since burst misses sustained partial load. What covers it is
+INTERLEAVING, measured rather than assumed:
+
+| under a 3-core load | absolute times | **R0 credit** |
+|---|---:|---:|
+| IPC 18 750 | +3.4 % | **+0.4 %** |
+| IPC 5 202 | +4.0 % | **+1.4 %** |
+
+The load lands on both arms and leaves the ratio, which is why interleaving is
+mandatory in `r0_ab.rs` rather than advisory.
 
 #### R3's two numbers, both on this box
 
