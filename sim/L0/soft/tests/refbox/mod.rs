@@ -317,7 +317,7 @@ pub const REF_PROBE_P50_MS: f64 = 24.47;
 /// contaminated case in the pilot (a 2-core background load) has minimum
 /// `25.83 ms`. This sits in that gap, near the maximum-margin separator, so it
 /// admits every idle run observed and rejects every contaminated one — a 2-core
-/// load already inflates the median `6.5 %`.
+/// load already inflates the median `6.4 %`.
 ///
 /// ⚠ Headroom above the observed idle maximum is only `3.3 %`. That is
 /// deliberate — this is the sensitive check — but it means a genuine baseline
@@ -345,7 +345,7 @@ pub const PROBE_BURST_MAX: f64 = 1.30;
 /// ⚠ **[`require_quiet_box`] cannot be used across trees, and this is measured,
 /// not assumed.** The probe is `cantilever 40×4` — a fixture R0 itself speeds
 /// up. On the pre-R0 tree (`ecf4cfef^`) it reads **57.39 ms** against post-R0's
-/// **24.47 ms**, a `2.34×` difference, so the absolute median ceiling would
+/// **24.47 ms**, a `2.35×` difference, so the absolute median ceiling would
 /// reject the pre-R0 arm of `tests/r0_ab.rs` on every run and the A/B could
 /// never execute. A baseline calibrated on one tree is not a property of the
 /// box.

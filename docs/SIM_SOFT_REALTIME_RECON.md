@@ -1007,7 +1007,7 @@ finding.
 
 `tests/r0_ab.rs` runs the same fixture on two trees, and the probe is
 `cantilever 40×4` — a fixture **R0 itself speeds up**. On the pre-R0 tree the
-probe reads **57.4 ms** against post-R0's **24.5 ms** (`2.34×`), so applying the
+probe reads **57.39 ms** against post-R0's **24.47 ms** (`2.35×`), so applying the
 absolute median ceiling would reject the pre-R0 arm on every run and the A/B
 could never execute. This was caught by review before it shipped, not by the
 gate.
@@ -1650,8 +1650,8 @@ until then, and by nobody else ever. The recipe above is the durable record.
   boxes, and the one cross-box dataset shows it failing in opposite directions.
   R3's two numbers are now stated separately: kill floor `≥10×`, frame budget
   `13.5–15.8×`, both on this box. ⚠ Review caught that the gate would have BROKEN
-  the cross-tree A/B — the probe fixture is one R0 speeds up (57.4 ms pre-R0 vs
-  24.5 post), so the median ceiling would reject the pre-R0 arm every run; that
+  the cross-tree A/B — the probe fixture is one R0 speeds up (57.39 ms pre-R0 vs
+  24.47 post), so the median ceiling would reject the pre-R0 arm every run; that
   path now checks identity and the scale-free `burst` only, and leans on
   interleaving for the rest. ⚠ Review also caught that only 2 of the 4 harnesses
   feeding R3's arithmetic had been gated — `predictor_spike.rs` and
