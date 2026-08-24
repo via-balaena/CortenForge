@@ -1152,6 +1152,20 @@ Under rayon on the reference box (12 threads, 9 216 tets):
 | rest | 1.506 ms | 0.311 ms | 4.83× |
 | sheared `u_x = 0.15 z` | 2.050 ms | 0.382 ms | **5.37×** |
 
+✅ **RE-MEASURED on the current tree (v2.15 audit), and it reproduces almost
+exactly**: `seq 2.0515 ms`, `par 0.3790 ms`, **`5.41×`** — `0.07 %`, `0.8 %` and
+`0.7 %` off the three figures above, across sessions and across every change
+since. ★ **Why this row is durable when §2j/§2k's drifted:** it comes from an
+in-binary seq-vs-par A/B taking a `p50` over repeats inside one process, so the
+two arms share the machine state and the ratio cancels almost everything. The
+figures that moved were single-run PHASE SHARES, where each number is one
+sample of an absolute time. ⇒ **When a claim has to survive, build it as a
+same-process A/B over repeats, not as a share.**
+
+⚠ The `9.3 % → 1.9 %` frame shares in this section are PRE-`project_tangent` and
+cannot be re-checked on the current tree at all: the denominator changed when
+§2j nearly halved the frame.
+
 ⚠ The two states differ because at rest `F = I` exactly and the Jacobi SVD converges
 in fewer sweeps, so a rest-only measurement understates the sweep. ⚠ These are lib unit
 tests and therefore **not behind §2h's contention gate** — corroborating, not
@@ -1671,6 +1685,12 @@ L1-resident `r × r` accumulator. No parallelism, no new dependency. Costs `1.59
 | | before | after | factor |
 |---|---:|---:|---:|
 | **reduced frame** | 65.89 ms | **35.72 ms** | **1.84×** |
+
+⚠ Those are POINT values, and this harness's own spread is `~2.1 %` (noted below
+against the control). A later run of the same post-change configuration read
+`34.86 ms`, which would put the ratio at `1.89×`. **Read the effect as `1.84×`
+with a couple of percent either way**, not to three digits — it is far larger
+than the spread, which is why the conclusion is safe and the digits are not.
 | `red proj K` | 37.09 | 6.62 | 5.61× |
 | ↳ `Y = AΦ` | 24.07 | 3.95 | 6.09× |
 | ↳ `Φᵀ Y` | 13.02 | 2.67 | 4.88× |
@@ -1711,8 +1731,16 @@ count did.
 | (three runs each side) | before | after |
 |---|---:|---:|
 | R3's ceiling | 19.4–19.9× | **11.2–12.2×** |
-| this fixture's requirement `T/B` | 3.92–3.97× | **2.12–2.15×** |
+| this fixture's requirement `T/B` | 3.92–3.97× | **2.09–2.15×** |
 | **margin `B/I`** | **4.91–5.02×** | **5.28–5.66×** |
+
+⚠ **A fourth run of the post-change arm, taken in a later session on the same
+tree, read `2.09×` — outside the three-run `2.12–2.15×` this table first
+carried** (ceiling `11.7×` and margin `5.60×` both landed inside). The
+requirement row is widened to `2.09–2.15×`; the conclusion is untouched, since
+what §2j claims is that the MARGIN did not move and it did not. ⇒ Same lesson
+§2k's audit reached independently: **three runs give a range that a fourth run
+escapes.** Read every range in §2i–§2l as min–max observed, not as a bound.
 
 The ceiling fell `~1.7×`, the requirement fell `~1.85×`, and **the margin did not
 fall.** ⚠ It read slightly HIGHER afterwards, and that is not a benefit of the
