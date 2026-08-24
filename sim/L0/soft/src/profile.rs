@@ -290,10 +290,19 @@ impl Phase {
     /// and the symptom is two costs summed into one row rather than a crash —
     /// in the module whose whole job is attributing cost to rows. As
     /// discriminants, duplicates are a COMPILE ERROR, so that failure is
-    /// unrepresentable. A variant with a discriminant past [`N_SLOTS`] is still
-    /// possible; the `const` block below rules it out for everything in
-    /// [`Self::ALL`], and anything outside `ALL` would panic loudly on first use
-    /// rather than silently merging.
+    /// unrepresentable.
+    ///
+    /// ★ Three checks compose, and between them the only reachable mistake is a
+    /// loud one. Adding a variant means (1) picking a discriminant, and a
+    /// colliding one is `E0081` at compile time; (2) if it is `>= N_SLOTS`, the
+    /// `const` block below rejects it — for `ALL`'s members; and (3) raising
+    /// `N_SLOTS` to make room retypes `ALL` to `[Self; N_SLOTS]`, so the new
+    /// variant must be listed there or the array length is wrong. The one gap
+    /// left is a variant numbered `>= N_SLOTS` that is *also* kept out of `ALL`:
+    /// it compiles, and then panics on out-of-bounds the first time it is timed —
+    /// under `phase-timing` only, and never quietly. **No path leads to two
+    /// phases sharing a slot**, which is the failure worth engineering against,
+    /// because its symptom is a plausible-looking number rather than a crash.
     const fn index(self) -> usize {
         self as usize
     }

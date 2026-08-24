@@ -1523,8 +1523,9 @@ harness counts the *unaccounted* remainder — instrumented time short of wall,
 `~0.1 %` — as irreducible in both bounds, deliberately, so a missing cost centre
 pushes the ceiling DOWN rather than up. `I` is therefore `T · (1 − f)` and runs a
 few hundredths of a millisecond above the visible rows. Recomputing `I` by adding
-these up understates it by `~1 %` and overstates the ceiling by the same;
-quote the harness's own figure.
+these up understates it by `1–2 %` (measured `1.1 / 1.2 / 2.1 %` over the three
+post-fix runs) and overstates the ceiling by the same; quote the harness's own
+figure.
 
 Removing the `NullContact` marshalling would take the margin `5.2× → 13.3×`, a
 `2.57×` improvement, and it is the only line in the table that moves the verdict
@@ -1680,12 +1681,14 @@ dropping mode 0 from the flat transpose alone is caught.
 ⚠ That gate runs at `r = 5`, `n = 150`. The production-scale evidence is separate
 and was free: the `r = 10 … 104` sweep at `n = 5 202` prints, per rank, a
 displacement projection and retained energy plus four columns for each of three
-objectives — **75 numeric fields, every one identical across the change** to all
-printed digits. That is consistent with byte-identity at production scale rather
+objectives — **70 numeric fields over 20 lines, every one identical across the
+change** to all printed digits. That is consistent with byte-identity at production scale rather
 than proof of it; the `to_bits()` gate is what proves it, and it proves it small.
-⚠ The first version of this claim was checked by a diff that stripped everything
-after `trajectory` and so compared **2 of the 75** — the conclusion held, the
-evidence did not exist until it was rerun over all of them.
+⚠ It took two review rounds to make this sentence true. The first version was
+checked by a diff that stripped everything after `trajectory`, comparing **2 of
+the 70**; the second reported **75**, having counted the `1.3` in each `R1.3`
+header five times. The conclusion held throughout. Neither the coverage nor the
+count did.
 
 #### ★★ The invariant held, and the instrument printed the misreading anyway
 
