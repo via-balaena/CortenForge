@@ -40,6 +40,7 @@ pub mod field;
 pub mod material;
 pub mod mesh;
 pub mod observable;
+pub mod profile;
 pub mod readout;
 pub mod sdf_bridge;
 pub mod solver;

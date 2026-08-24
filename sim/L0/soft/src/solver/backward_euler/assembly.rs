@@ -251,6 +251,7 @@ where
         dt: f64,
         f_int: &mut [f64],
     ) {
+        let _t = crate::profile::Timer::start(crate::profile::Phase::AssembleForce);
         debug_assert!(x_curr.len() == self.n_dof);
         debug_assert!(f_int.len() == self.n_dof);
         f_int.fill(0.0);
@@ -299,15 +300,21 @@ where
         // `∂Ψ_elastic/∂x` is the +`f_int` contribution above.
         // `NullContact` returns an empty contributions Vec → empty
         // for-loops → bit-equal to the pre-Phase-5 elastic-only path.
-        let positions = slice_to_vec3s(x_curr);
-        let pairs = self.contact.active_pairs(&self.mesh, &positions);
-        for pair in &pairs {
-            let g = self.contact.gradient(pair, &positions);
-            for &(vid, force) in &g.contributions {
-                let v = vid as usize;
-                f_int[3 * v] += force.x;
-                f_int[3 * v + 1] += force.y;
-                f_int[3 * v + 2] += force.z;
+        {
+            // NESTED inside this function's own `AssembleForce` timer — see
+            // `Phase::Contact`, which documents the exclusion that keeps
+            // `total_nanos` from double-counting it.
+            let _tc = crate::profile::Timer::start(crate::profile::Phase::Contact);
+            let positions = slice_to_vec3s(x_curr);
+            let pairs = self.contact.active_pairs(&self.mesh, &positions);
+            for pair in &pairs {
+                let g = self.contact.gradient(pair, &positions);
+                for &(vid, force) in &g.contributions {
+                    let v = vid as usize;
+                    f_int[3 * v] += force.x;
+                    f_int[3 * v + 1] += force.y;
+                    f_int[3 * v + 2] += force.z;
+                }
             }
         }
 
@@ -504,6 +511,7 @@ where
         x_prev: Option<&[f64]>,
         dt: f64,
     ) -> Vec<Triplet<usize, usize, f64>> {
+        let _t = crate::profile::Timer::start(crate::profile::Phase::AssembleTangent);
         debug_assert!(x_curr.len() == self.n_dof);
         // `dt * dt` then `mass / dt2` matches the pre-commit-4 code's
         // mass-diagonal expression order (`mass_per_dof / (dt * dt)`).
@@ -577,6 +585,7 @@ where
         // f_int gradient scatter in `assemble_global_int_force`).
         // `NullContact` returns an empty contributions Vec → empty
         // for-loops → acc unchanged → bit-equal Hessian.
+        let _tc = crate::profile::Timer::start(crate::profile::Phase::Contact);
         let positions = slice_to_vec3s(x_curr);
         let pairs = self.contact.active_pairs(&self.mesh, &positions);
         for pair in &pairs {
