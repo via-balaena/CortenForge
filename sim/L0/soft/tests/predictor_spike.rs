@@ -129,6 +129,8 @@
     clippy::too_many_lines
 )]
 
+mod refbox;
+
 use std::time::Instant;
 
 use sim_ml_chassis::Tensor;
@@ -656,6 +658,7 @@ fn run_indentation(a_over_cell: f64, gravity: f64) -> (usize, usize, Vec<f64>, V
 #[test]
 #[ignore = "predictor spike instrument — run explicitly, see module docs"]
 fn spike_block_sag_1944() {
+    refbox::require_quiet_box();
     let solvers = [
         block_sag(8, ARMS[0].1),
         block_sag(8, ARMS[1].1),
@@ -673,6 +676,7 @@ fn spike_block_sag_1944() {
 #[test]
 #[ignore = "predictor spike instrument — run explicitly, see module docs"]
 fn spike_ipc_5202() {
+    refbox::require_quiet_box();
     let (n_free, n_steps, x_rest, arms) = run_indentation(2.0, 0.0);
     report("IPC dynamic_indentation", n_free, n_steps, &x_rest, &arms);
 }
@@ -697,6 +701,7 @@ fn spike_ipc_5202() {
 #[test]
 #[ignore = "predictor spike instrument — run explicitly, see module docs"]
 fn spike_ipc_gravity_5202() {
+    refbox::require_quiet_box();
     for (label, g) in [
         ("−z, away from collider", -9.81),
         ("+z, INTO collider", 9.81),
@@ -716,6 +721,7 @@ fn spike_ipc_gravity_5202() {
 #[test]
 #[ignore = "predictor spike instrument — run explicitly, see module docs"]
 fn spike_cantilever_3000() {
+    refbox::require_quiet_box();
     let solvers = [
         cantilever(40, 4, ARMS[0].1),
         cantilever(40, 4, ARMS[1].1),
@@ -742,6 +748,7 @@ fn spike_cantilever_3000() {
 #[test]
 #[ignore = "predictor spike instrument — run explicitly, see module docs"]
 fn spike_ipc_18750() {
+    refbox::require_quiet_box();
     let (n_free, n_steps, x_rest, arms) = run_indentation(3.0, 0.0);
     report("IPC dynamic_indentation", n_free, n_steps, &x_rest, &arms);
 }
@@ -751,6 +758,7 @@ fn spike_ipc_18750() {
 #[test]
 #[ignore = "predictor spike instrument — run explicitly, see module docs"]
 fn spike_cantilever_19440() {
+    refbox::require_quiet_box();
     let solvers = [
         cantilever(80, 8, ARMS[0].1),
         cantilever(80, 8, ARMS[1].1),

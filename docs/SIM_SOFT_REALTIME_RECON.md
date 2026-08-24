@@ -939,6 +939,16 @@ with. **Stamped only:** RAM, OS, rustc; they drift for reasons unrelated to
 speed, and the toolchain is pinned elsewhere. Every measurement prints the block,
 so a figure cannot travel without its box again.
 
+**All four inputs to R3's requirement are gated**, not just the two that
+prompted this. R3 needs `gap ÷ R1 ÷ predictor`, and those terms come from four
+harnesses — `phase_shares.rs` and `r0_ab.rs` (the gap), `reduced_predictor.rs`
+(R1's `1.71×` net), `predictor_spike.rs` (the predictor's `1.97×`). ⚠ The last
+two were missed on the first pass, and the predictor's `1.97×` is a **wall-clock
+median-frame ratio** (§2f's third column), not an iteration count — so it is
+box-sensitive exactly like the gap. Gating half the inputs and calling the box
+fixed would have been an overclaim. Eleven call sites; the CI-run tests in those
+files are deliberately left ungated.
+
 #### The contention gate, and why the obvious statistic was the wrong one
 
 Background load is the bigger threat, not different hardware. §2's own header
@@ -1643,7 +1653,10 @@ until then, and by nobody else ever. The recipe above is the durable record.
   the cross-tree A/B — the probe fixture is one R0 speeds up (57.4 ms pre-R0 vs
   24.5 post), so the median ceiling would reject the pre-R0 arm every run; that
   path now checks identity and the scale-free `burst` only, and leans on
-  interleaving for the rest.
+  interleaving for the rest. ⚠ Review also caught that only 2 of the 4 harnesses
+  feeding R3's arithmetic had been gated — `predictor_spike.rs` and
+  `reduced_predictor.rs` were missed, and the predictor's `1.97×` is wall-clock,
+  not an iteration count. All four are gated now.
 
 - **v2.4 (2026-08-23)** — **⛔ v2.3's `9.89×` is WITHDRAWN, and the method that
   produced it is retired.** Two independent defects, both found by review rather
