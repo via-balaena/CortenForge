@@ -1,6 +1,6 @@
 # sim-soft Real-Time Path — Phase-1 Measurement + Recon (Phase E predecessor)
 
-**Status**: RECON 2026-08-10 (rev 2026-08-24), v2.11. Phase 1 (measure) COMPLETE — all four requested
+**Status**: RECON 2026-08-10 (rev 2026-08-24), v2.12. Phase 1 (measure) COMPLETE — all four requested
 measurements taken; §2 reports them. Phase 2 (this recon) proposes the MOR +
 hyper-reduction path with a staged ladder whose first rung is a kill-or-confirm.
 **No dependency was added.** Phase 1's instrumentation was temporary (implement →
@@ -1759,11 +1759,12 @@ It is a **better** fix at 80, because the term it removes is the one that grows.
 instrument published without being run"* to *"a tally said 75 where the data said
 70"*, which is the point at which re-reading mostly generates new text to re-read.
 
-| file | mutants | caught | survived | unviable |
+| run | mutants | caught | survived | unviable |
 |---|---:|---:|---:|---:|
 | `project_tangent` | 71 | **61** | **0** | 10 |
 | `profile.rs`, before | 36 | 0 | 29 | 7 |
-| `profile.rs`, after | 36 | **22** | **7** | 7 |
+| `profile.rs`, after, feature OFF | 36 | 22 | 7 | 7 |
+| `profile.rs`, after, feature ON | 36 | **26** | **3** | 7 |
 
 **`project_tangent` scores 100 % of what is killable.** The 10 unviable are all
 whole-function return swaps (`DMatrix::new()`, `from_iter([0.0])`) that do not
@@ -1795,27 +1796,51 @@ detectable), disjoint shares summing to `1.0`, the zero-total guard, per-slot
 read-back, `is_nested` being exactly the three children, and the ECSW class the
 harness's nesting correction keys on. **0 → 22 of 29.**
 
-#### The 7 that remain, and why chasing them would be theatre
+#### ★★ A cfg-gated module needs ONE RUN PER CONFIGURATION
 
-- **2 mutate the `const` guard's own loop bound** (`while i < N_SLOTS`), making it
-  vacuous. A compile-time guard is not a test and no test can kill them. Accepted:
-  the primary protection is `E0081`, a language rule that cannot be mutated away.
-- **5 are in the feature-gated `imp` module.** Under `--lib` without
-  `phase-timing` the active arm is the no-op one, so several are *equivalent*
-  mutants by construction. The enabled arm is covered — `phase_shares.rs` asserts
-  every slot is non-zero after a real solve, §2j's split control asserts the two
-  children exhaust their parent, and both harnesses report `instrumented / wall`
-  — but all of it lives in `#[ignore]`d tests.
+The `profile.rs` survivors were first written up as *"equivalent mutants, and the
+enabled arm can only be reached through box-gated harnesses, so `-j 1` with the
+feature on"*. **That was wrong on both halves, and re-running it is how it was
+found.** `-j 1` was never the issue, and the enabled arm did not need a harness.
 
-⚠⚠ **And that coverage cannot be measured by mutation on this box, for a reason
-worth recording.** The harnesses are reference-box gated; mutation runs them
-4-way parallel; the contention gate would refuse, the test would fail, and the
-mutant would be scored **caught for a reason unrelated to the mutation**. A
-green mutation score obtained that way would be
-[`feedback_a_gate_that_cannot_fail_for_the_reason_it_claims`] inverted — a gate
-that cannot *pass* for the reason it claims. Any future attempt must run
-`-j 1` with `--features phase-timing`, and should expect the wall-clock cost of a
-box-gated harness per mutant.
+`imp` exists twice, once per `#[cfg(feature = "phase-timing")]` arm. A mutation of
+the arm that a given build does **not** compile changes nothing, cannot fail any
+test, and is scored **MISSED** — indistinguishable in the report from a real
+coverage hole. So the two runs see opposite halves:
+
+| survivor | feature OFF | feature ON |
+|---|---|---|
+| `Timer::start`, `Drop`, `reset`, `snapshot` (timed arm) | 4 inert — not compiled | **caught** (`start` becomes *unviable*: the timed `Timer` has no `Default`) |
+| `Timer::start`, `snapshot` (no-op arm) | 1 equivalent — the body *is* `default()` | 1 inert — not compiled |
+| the `const` guard's `while i < N_SLOTS` | 2 | 2 |
+
+⇒ **every live mutant is caught in the configuration where it is live**, and what
+is left is the two that mutate the guard's own loop bound into vacuity. A
+compile-time guard is not a test and no test can kill those; accepted, because the
+protection that matters is `E0081`, a language rule that cannot be mutated away.
+
+⚠ **A single mutation run over cfg-gated code silently overstates the gap.** Of
+the original `0 of 29`, five were never live in the build being measured. Report
+which configuration a mutation score belongs to, or it is not a score.
+
+#### What closed the timed arm — and why a unit test could not
+
+`Timer` records on drop into process-global `AtomicU64` statics, not
+thread-locals, which is why every harness reading them needs `--test-threads=1`.
+A `#[cfg(test)] mod` would have shared those counters with 337 lib tests, several
+of which build `Timer`s once the feature is on, so any exact-count assertion would
+race. **`tests/profile_contract.rs` is a separate integration binary**: its own
+process, its own statics, one test function. It asserts the recording contract
+with the feature on (drop books exactly one entry, into its own slot, non-zero;
+`reset` clears every slot) and the **zero-cost contract with it off** — that the
+no-op arm records nothing, which `profile`'s module header claims and nothing
+asserted. Negative-controlled by hand against all three: gutting `Drop`, `reset`
+or `snapshot` each fails it.
+
+★ The `#[ignore]`d harnesses do check related properties — `phase_shares.rs`
+asserts no slot reads zero after a real solve, §2j's split control asserts the two
+children exhaust their parent — but they are box-gated and CI never runs them.
+This one runs by default, in whichever configuration is being built.
 
 ## 3. What the measurements say about feasibility
 
@@ -2420,6 +2445,26 @@ until then, and by nobody else ever. The recipe above is the durable record.
 - `sim/L0/soft/src/material/` — the `ValidityDomain` §4c mirrors.
 
 ## 12. Version history
+
+- **v2.12 (2026-08-24)** — **§2j: v2.11's account of the `profile.rs` survivors was
+  wrong, and re-running it is how that was found.** It said they were equivalent
+  mutants reachable only through box-gated harnesses, needing `-j 1 --features
+  phase-timing`. `-j 1` was never the issue and no harness was needed. ★★ The real
+  finding is general: **`imp` exists twice, once per `cfg` arm, and a mutation of the
+  arm a build does not compile is scored MISSED — indistinguishable from a real
+  coverage hole.** The two runs see opposite halves; five of the original `0 of 29`
+  were never live in the build being measured. ⇒ **a mutation score over cfg-gated
+  code must name its configuration, or it is not a score.** With the feature on:
+  **26 caught, 3 survived** — two of which mutate the `const` guard's own loop bound
+  into vacuity, unkillable because a compile-time guard is not a test (`E0081` is the
+  protection that matters and cannot be mutated away), and one inert. Every live
+  mutant is now caught in the configuration where it is live. What closed the timed
+  arm is `tests/profile_contract.rs`, a **separate integration binary** — its own
+  process, therefore its own statics, which is what a `#[cfg(test)] mod` could not
+  have: the counters are process-global and 337 lib tests would race them. It asserts
+  the recording contract with the feature on and the **zero-cost contract with it
+  off**, the latter being a module-header claim that nothing had ever checked.
+  Negative-controlled against gutted `Drop`, `reset` and `snapshot`.
 
 - **v2.11 (2026-08-24)** — **§2j: mutation testing, after three read-rounds stopped
   converging.** `project_tangent` scores **61 of 61 killable mutants** (10 unviable
