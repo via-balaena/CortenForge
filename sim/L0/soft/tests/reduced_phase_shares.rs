@@ -36,6 +36,25 @@
 //! (recon §2i, v2.7). The straddle is why this harness exists; keep it, because
 //! `project_tangent` and R3 itself will both move the mix again.
 //!
+//! ## ★★ What the ceiling ALONE cannot tell you (recon §2j, v2.8)
+//!
+//! `C = T/I` and the requirement `R = T/B` share a numerator, so `C/R = B/I` and
+//! **R3 clears iff `I ≤ B`** — the frame's IRREDUCIBLE time against the budget.
+//! Two consequences for how this harness's output gets read:
+//!
+//! 1. **Speeding up any [`Reducible::Yes`] phase leaves R3's margin exactly
+//!    unchanged**, because it lowers `C` and `R` by the same factor. The
+//!    `red proj K` row is `56.8 %` of the frame and moves R3's verdict by zero.
+//!    A ceiling re-quoted after such a change MUST carry its own re-measured
+//!    requirement, or it reads as a regression that did not happen.
+//! 2. **The rows that decide R3 are the irreducible ones**, and they are small:
+//!    `I = 3.223 ms`, `61 %` of it `contact` marshalling on a `NullContact`
+//!    scene. ⚠ Which is also the limit of this fixture — `I` has never been
+//!    measured on a contact fixture, where the requirement actually lives.
+//!
+//! ⚠ The `10×` floor named above was restated in v2.8 and is now a complexity
+//! heuristic, not a gate.
+//!
 //! ## Controls
 //!
 //! ⚠ There is **no published reduced-path row to reproduce**, so the positive
@@ -91,6 +110,10 @@ const R_MODES: usize = 40;
 const N_TRAIN: usize = 12;
 /// Steps per trajectory — R1.1's value, and what `frac` below normalises against.
 const TRAJ_STEPS: usize = 5;
+/// A 60 Hz frame. What [`Reducible`] mass has to fit inside for R3 to clear —
+/// recon §2j's restated gate, which replaced a `≥10×` ratio over a baseline the
+/// rest of the ladder keeps moving.
+const FRAME_BUDGET_MS: f64 = 16.7;
 const WARMUP: usize = 1;
 const STEPS: usize = 4;
 
@@ -179,7 +202,7 @@ fn main_report(label: &str, wall_ms: f64, steps: usize, iters: usize) {
     let p = profile::snapshot();
     let total_instr: f64 = Phase::ALL
         .iter()
-        .filter(|ph| !matches!(ph, Phase::Contact))
+        .filter(|ph| !ph.is_nested())
         .map(|ph| p.millis(*ph))
         .sum();
     println!(
@@ -196,23 +219,28 @@ fn main_report(label: &str, wall_ms: f64, steps: usize, iters: usize) {
             continue;
         }
         let share = 100.0 * ms / wall_ms;
-        match ph.ecsw_reducible() {
-            Reducible::Yes => sure += share,
-            Reducible::PlannedByR3 => planned += share,
-            // `Reducible::No` and anything added later: counted as NOT reducible,
-            // which lowers the ceiling. `Phase` is `#[non_exhaustive]`, so a new
-            // variant reaches here silently — failing toward the pessimistic bound
-            // is the safe direction, and the label below makes it visible.
-            _ => {}
-        }
-        // ⚠ `Contact` is NESTED inside `AssembleForce` and `AssembleTangent`,
-        // both of which are reducible, so its time has already been added via its
-        // parents. ECSW cannot remove a broad-phase pair search — it replaces
-        // element quadrature — so take it back out. Missing this overstates the
-        // ceiling: when #822 first ran, 90.0 % read as 10.0x where the honest lower
-        // bound was 88.0 % / 8.3x.
-        if matches!(ph, Phase::Contact) {
-            sure -= share;
+        // ⚠ A NESTED slot's time is already in the totals via its parent, so it
+        // must not be added again — but it must be SUBTRACTED when its own ECSW
+        // class differs from the parent that carried it. `Contact` is the case
+        // that bites: irreducible, inside two reducible parents. Missing it
+        // overstates the ceiling — when #822 first ran, 90.0 % read as 10.0x
+        // where the honest lower bound was 88.0 % / 8.3x. The two
+        // `ReducedProjectTangent*` children are reducible inside a reducible
+        // parent and correctly need no adjustment.
+        if ph.is_nested() {
+            if ph.ecsw_reducible() != Reducible::Yes {
+                sure -= share;
+            }
+        } else {
+            match ph.ecsw_reducible() {
+                Reducible::Yes => sure += share,
+                Reducible::PlannedByR3 => planned += share,
+                // `Reducible::No` and anything added later: counted as NOT reducible,
+                // which lowers the ceiling. `Phase` is `#[non_exhaustive]`, so a new
+                // variant reaches here silently — failing toward the pessimistic bound
+                // is the safe direction, and the label below makes it visible.
+                _ => {}
+            }
         }
         println!(
             "║ {:<22} {:10.3} {:8.1} %  {}",
@@ -228,6 +256,22 @@ fn main_report(label: &str, wall_ms: f64, steps: usize, iters: usize) {
         );
     }
     println!("║");
+    // ★ POSITIVE CONTROL for the knob-0 split. The two children bracket every
+    // statement of the parent except `basis.modes()`, so they must very nearly
+    // exhaust it. A low figure means one of the two timers is not where its
+    // name says, and the A:B ratio below it is then meaningless.
+    let parent = p.millis(Phase::ReducedProjectTangent);
+    if parent > 0.0 {
+        let (g, c) = (
+            p.millis(Phase::ReducedProjectTangentGather),
+            p.millis(Phase::ReducedProjectTangentContract),
+        );
+        println!(
+            "║ ★ split control: Y=AΦ + ΦᵀY = {:.1} % of red proj K   (A:B = {:.2}:1)",
+            100.0 * (g + c) / parent,
+            if c > 0.0 { g / c } else { f64::NAN }
+        );
+    }
     println!(
         "║ instrumented / wall = {:.1} %",
         100.0 * total_instr / wall_ms
@@ -246,19 +290,38 @@ fn main_report(label: &str, wall_ms: f64, steps: usize, iters: usize) {
     } else {
         format!("{hi:.1}×")
     };
-    println!("║ ⇒ R3 Amdahl CEILING = {lo:.1}× … {hi_txt}   (needs 13.5–15.8×, floor 10×)");
+    println!("║ ⇒ R3 Amdahl ceiling = {lo:.1}× … {hi_txt}");
+
+    // ★★ recon §2j. The ceiling ALONE decides nothing, and this harness used to
+    // print it against a hardcoded `needs 13.5–15.8×, floor 10×`. Both halves of
+    // that were wrong to print here: the requirement is `T/B` and falls whenever
+    // the frame does, so a run that speeds up a REDUCIBLE phase lowers the
+    // ceiling and the requirement by the same factor — `C/R = B/I` — and the
+    // comparison reads as a regression that did not happen. Measured: the
+    // `project_tangent` layout change took the ceiling `20.0× → 11.3×` and this
+    // line printed "BRACKET STRADDLES the requirement" for a change that left
+    // the margin at `5.1× → 5.3×`.
+    //
+    // What decides is whether the IRREDUCIBLE time fits the frame budget.
+    let per_step = wall_ms / steps as f64;
+    let irreducible = per_step * (100.0 - sure) / 100.0;
+    let margin = FRAME_BUDGET_MS / irreducible;
+    println!(
+        "║ ⇒ GATE (§2j): irreducible {irreducible:.3} ms/step vs {FRAME_BUDGET_MS} ms ⇒ margin {margin:.2}×"
+    );
     println!(
         "║ ⇒ {}",
-        if lo >= 15.8 {
-            "clears the requirement on either bound"
-        } else if hi < 10.0 {
-            "⛔ cannot clear R3's own 10× floor on EITHER bound"
-        } else if hi < 13.5 {
-            "⚠ can clear the 10× floor but NOT the frame budget"
+        if margin >= 1.0 {
+            "CLEARS — R3 can reach the budget on this fixture, with that much room"
         } else {
-            "⚠ BRACKET STRADDLES the requirement — the bound decides, so close it"
+            "⛔ CANNOT clear: the irreducible work alone overruns the frame budget"
         }
     );
+    println!(
+        "║ ⚠ this fixture's OWN requirement is {:.2}× (T/B). §2f's 13.5–15.8× is IPC 18 750",
+        per_step / FRAME_BUDGET_MS
+    );
+    println!("║   WITH contact — a different fixture. Do not read the ceiling against it.");
     println!("╚═");
 }
 

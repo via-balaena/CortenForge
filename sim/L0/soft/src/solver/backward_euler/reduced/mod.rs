@@ -40,3 +40,6 @@ pub use newton::{ReducedNewtonSolver, ReducedStep};
 pub use pod::{Inner, PodBasis, PodError};
 pub use sensitivity::ReducedAdjoint;
 pub use snapshot::SnapshotSet;
+
+#[cfg(test)]
+mod tests;

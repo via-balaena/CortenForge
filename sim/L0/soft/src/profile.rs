@@ -39,12 +39,17 @@
 //! work; the shares are therefore comparable to each other and to §2d, but they
 //! are not CPU-time.
 //!
-//! ⚠ **FULL-ORDER PATH ONLY.** These five slots cover
-//! `solver::backward_euler`'s hot path. The REDUCED solver
-//! (`backward_euler::reduced`) is uninstrumented — its `project_tangent` and its
-//! dense `r×r` factorization fall into no slot — so a reduced run's
-//! instrumented-vs-wall figure will be far below 100 % and its shares mean
-//! nothing. Instrumenting R1's path is a separate job and is not done here.
+//! **BOTH PATHS.** Six slots cover `solver::backward_euler`'s full-order hot
+//! path; four more (`Reduced*`) cover `backward_euler::reduced`, added by #822
+//! so R3's Amdahl ceiling could be measured before R3 was built. ⚠ This
+//! paragraph read *"FULL-ORDER PATH ONLY … the reduced solver is
+//! uninstrumented"* through #822 and #823 and was simply stale; the reduced
+//! slots it says do not exist are [`Phase::ReducedProjectTangent`] and its
+//! three siblings.
+//!
+//! ⚠ **The two paths are still not one measurement.** A reduced run leaves the
+//! full-order-only slots at zero and vice versa, so read the shares against the
+//! path that produced them — recon §2d for full-order, §2i for reduced.
 //!
 //! ## Use
 //!
@@ -70,15 +75,21 @@
 // stay exhaustive regardless, so nothing here loses its compiler check.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+// The discriminant IS the timing slot, and it is written out rather than left
+// implicit so that the mapping is one thing instead of two. Rust rejects
+// duplicate discriminants at compile time, which makes "two phases share a slot"
+// — the failure that shows up as two costs summed into one row, not as a crash —
+// unrepresentable rather than merely asserted. See `Self::index`.
+#[repr(usize)]
 pub enum Phase {
     /// Internal-force assembly (`asm force`) — including Armijo's re-evaluations.
-    AssembleForce,
+    AssembleForce = 0,
     /// Free-DOF tangent assembly (`asm tangent`).
-    AssembleTangent,
+    AssembleTangent = 1,
     /// Numeric Cholesky/LU of the free tangent (`numeric factor`).
-    NumericFactor,
+    NumericFactor = 2,
     /// Triangular solves against that factor (`tri solve`).
-    TriangularSolve,
+    TriangularSolve = 3,
     /// The contact PATH: position marshalling, the active-pair search, and the
     /// gradient/Hessian scatter.
     ///
@@ -97,35 +108,49 @@ pub enum Phase {
     /// understated contact AND silently folded the contact Hessian into
     /// `AssembleTangent` — enough to break a cross-session comparison of that
     /// share on a contact fixture, while leaving contact-free fixtures correct.
-    /// It is excluded from
-    /// [`Phases::total_nanos`] so the four disjoint slots still sum correctly,
-    /// and [`Phases::share`] reports it as a fraction of that same total, i.e.
+    /// It is [`Phase::is_nested`], so it is excluded from
+    /// [`Phases::total_nanos`] and the disjoint slots still sum correctly, and
+    /// [`Phases::share`] reports it as a fraction of that same total, i.e.
     /// "of which contact" rather than "plus contact". §2d's column reads the
     /// same way, which is why its rows come to ~99 % rather than over 100 %.
-    Contact,
+    Contact = 4,
 
     /// Reduced path: `x = x_rest + Φq` reconstruction (`O(n·r)`).
-    ReducedExpand,
+    ReducedExpand = 5,
     /// Reduced path: `Φᵀr`, the residual projection (`O(n·r)`).
-    ReducedProjectCovector,
+    ReducedProjectCovector = 6,
     /// Reduced path: `ΦᵀAΦ`, EXCLUDING the tangent assembly it calls (`O(n·r²)`).
     ///
     /// The assembly is already booked to [`Self::AssembleTangent`], so this slot
     /// starts after the triplets exist and the two stay disjoint.
-    ReducedProjectTangent,
+    ReducedProjectTangent = 7,
+    /// Of which: `Y = AΦ`, the sparse-times-dense gather (`O(nnz·r)`).
+    ///
+    /// **NESTED inside [`Self::ReducedProjectTangent`]** — see [`Self::is_nested`].
+    /// Added to answer recon §2j's knob 0: `ΦᵀAΦ` is two loops with different
+    /// asymptotics and different fixes, and the parent slot cannot say which one
+    /// is slow.
+    ReducedProjectTangentGather = 8,
+    /// Of which: `Φᵀ Y`, the dense contraction into `r × r` (`O(n·r²)`).
+    ///
+    /// **NESTED inside [`Self::ReducedProjectTangent`]** — see [`Self::is_nested`].
+    /// Its flop count is exactly `calls · r(r+1)/2 · n · 2` and every factor is
+    /// public, so this slot's achieved flop rate is computable without any new
+    /// accessor. The sibling gather's is not — it needs the pattern `nnz`.
+    ReducedProjectTangentContract = 9,
     /// Reduced path: the dense `r × r` Cholesky/LU and its solve (`O(r³)`).
     ///
     /// Hyper-reduction cannot touch it — ECSW replaces assembly and projection
     /// with a weighted sum over sampled elements and leaves the `r × r` solve
     /// alone. It measures **0.0 %** of a reduced frame at `r = 40`, so it is not
     /// what bounds R3; see [`Reducible`] and §2i for what does.
-    ReducedDenseSolve,
+    ReducedDenseSolve = 10,
 
     /// The `O(n)` residual vector arithmetic — `(m/Δt²)(x − x̂) + f_int − f_ext`
     /// and the free-DOF gather. Shared by both paths.
-    ResidualForm,
+    ResidualForm = 11,
     /// The deformed-validity element sweep at step start and on convergence.
-    ValidityCheck,
+    ValidityCheck = 12,
 }
 
 /// Whether hyper-reduction can remove a phase.
@@ -144,7 +169,35 @@ pub enum Reducible {
 }
 
 /// Number of timing slots.
-const N_SLOTS: usize = 11;
+const N_SLOTS: usize = 13;
+
+/// Every [`Self::ALL`] entry owns a distinct slot below [`N_SLOTS`].
+///
+/// ⚠ **This checks `ALL`, not the enum.** The round-1 version of this comment
+/// claimed "every `Phase`", which it never verified — the loop cannot see a
+/// variant that was added to the enum and forgotten here. That gap is now closed
+/// upstream instead: [`Phase`] carries explicit discriminants, so duplicates are
+/// a compile error and no two variants can share a slot whether or not they
+/// appear in `ALL`. What remains for this block is the RANGE — a variant
+/// numbered past `N_SLOTS` would index the static arrays out of bounds — plus
+/// the pigeonhole that makes `ALL` complete: `N_SLOTS` distinct slots, all below
+/// `N_SLOTS`, is every slot exactly once.
+///
+/// It fails the BUILD, not a test.
+const _: () = {
+    let mut seen = [false; N_SLOTS];
+    let mut i = 0;
+    while i < N_SLOTS {
+        let idx = Phase::ALL[i].index();
+        assert!(idx < N_SLOTS, "a Phase discriminant is >= N_SLOTS");
+        assert!(
+            !seen[idx],
+            "two Phase::ALL entries share a slot — their times would silently merge"
+        );
+        seen[idx] = true;
+        i += 1;
+    }
+};
 
 impl Phase {
     /// Every slot, in §2d's column order.
@@ -157,6 +210,8 @@ impl Phase {
         Self::ReducedExpand,
         Self::ReducedProjectCovector,
         Self::ReducedProjectTangent,
+        Self::ReducedProjectTangentGather,
+        Self::ReducedProjectTangentContract,
         Self::ReducedDenseSolve,
         Self::ResidualForm,
         Self::ValidityCheck,
@@ -174,6 +229,8 @@ impl Phase {
             Self::ReducedExpand => "red expand",
             Self::ReducedProjectCovector => "red proj r",
             Self::ReducedProjectTangent => "red proj K",
+            Self::ReducedProjectTangentGather => "  ↳ of which Y=AΦ",
+            Self::ReducedProjectTangentContract => "  ↳ of which ΦᵀY",
             Self::ReducedDenseSolve => "red dense solve",
             Self::ResidualForm => "residual form",
             Self::ValidityCheck => "validity check",
@@ -194,7 +251,9 @@ impl Phase {
             | Self::AssembleTangent
             | Self::ReducedExpand
             | Self::ReducedProjectCovector
-            | Self::ReducedProjectTangent => Reducible::Yes,
+            | Self::ReducedProjectTangent
+            | Self::ReducedProjectTangentGather
+            | Self::ReducedProjectTangentContract => Reducible::Yes,
             Self::NumericFactor
             | Self::TriangularSolve
             | Self::Contact
@@ -203,27 +262,56 @@ impl Phase {
         }
     }
 
+    /// Whether this slot's time is ALSO counted inside another slot.
+    ///
+    /// Nested slots are excluded from [`Phases::total_nanos`], which is what
+    /// keeps the disjoint slots summing correctly, and [`Phases::share`]
+    /// therefore reports them as *"of which"* rather than *"plus"*.
+    ///
+    /// ⚠ **A nested slot's ECSW class is not automatically its parent's.**
+    /// [`Self::Contact`] is irreducible inside two reducible parents, so a
+    /// consumer summing reducible shares must take it back out — missing that
+    /// read `90.0 %` where the honest bound was `88.0 %` when #822 first ran.
+    /// The two `ReducedProjectTangent*` children ARE reducible, like their
+    /// parent, so they need no such correction; the rule to apply is *"adjust
+    /// when the child's class differs from the parent's"*, not *"adjust
+    /// `Contact`"*.
+    #[must_use]
+    pub const fn is_nested(self) -> bool {
+        matches!(
+            self,
+            Self::Contact | Self::ReducedProjectTangentGather | Self::ReducedProjectTangentContract
+        )
+    }
+
+    /// This phase's slot, which IS its discriminant.
+    ///
+    /// Not a `match`. A hand-written mapping can give two variants the same slot
+    /// and the symptom is two costs summed into one row rather than a crash —
+    /// in the module whose whole job is attributing cost to rows. As
+    /// discriminants, duplicates are a COMPILE ERROR, so that failure is
+    /// unrepresentable.
+    ///
+    /// ★ Three checks compose, and between them the only reachable mistake is a
+    /// loud one. Adding a variant means (1) picking a discriminant, and a
+    /// colliding one is `E0081` at compile time; (2) if it is `>= N_SLOTS`, the
+    /// `const` block below rejects it — for `ALL`'s members; and (3) raising
+    /// `N_SLOTS` to make room retypes `ALL` to `[Self; N_SLOTS]`, so the new
+    /// variant must be listed there or the array length is wrong. The one gap
+    /// left is a variant numbered `>= N_SLOTS` that is *also* kept out of `ALL`:
+    /// it compiles, and then panics on out-of-bounds the first time it is timed —
+    /// under `phase-timing` only, and never quietly. **No path leads to two
+    /// phases sharing a slot**, which is the failure worth engineering against,
+    /// because its symptom is a plausible-looking number rather than a crash.
     const fn index(self) -> usize {
-        match self {
-            Self::AssembleForce => 0,
-            Self::AssembleTangent => 1,
-            Self::NumericFactor => 2,
-            Self::TriangularSolve => 3,
-            Self::Contact => 4,
-            Self::ReducedExpand => 5,
-            Self::ReducedProjectCovector => 6,
-            Self::ReducedProjectTangent => 7,
-            Self::ReducedDenseSolve => 8,
-            Self::ResidualForm => 9,
-            Self::ValidityCheck => 10,
-        }
+        self as usize
     }
 }
 
 /// Accumulated nanoseconds and call counts per phase.
 ///
-/// ⚠ Two things this is not. [`Self::total_nanos`] sums the four DISJOINT slots
-/// — [`Phase::Contact`] is nested inside [`Phase::AssembleForce`] and would
+/// ⚠ Two things this is not. [`Self::total_nanos`] sums only the DISJOINT slots
+/// — the [`Phase::is_nested`] ones are counted through their parents and would
 /// double-count — and it is **not** elapsed step time either, since it omits
 /// everything outside an instrumented phase (residual evaluation, the line
 /// search's arithmetic, allocation). Shares are of *instrumented* work. §2d's
@@ -258,13 +346,14 @@ impl Phases {
         self.nanos(phase) as f64 / 1.0e6
     }
 
-    /// Summed nanoseconds across the four DISJOINT slots. Excludes
-    /// [`Phase::Contact`], which is nested inside [`Phase::AssembleForce`].
+    /// Summed nanoseconds across the DISJOINT slots — every slot for which
+    /// [`Phase::is_nested`] is false. The nested ones are already counted
+    /// through their parents.
     #[must_use]
     pub fn total_nanos(&self) -> u64 {
         Phase::ALL
             .iter()
-            .filter(|p| !matches!(p, Phase::Contact))
+            .filter(|p| !p.is_nested())
             .map(|p| self.nanos(*p))
             .sum()
     }
@@ -383,3 +472,158 @@ mod imp {
 }
 
 pub use imp::{Timer, reset, snapshot};
+
+#[cfg(test)]
+mod tests {
+    //! Unit cover for the slot arithmetic every published share rests on.
+    //!
+    //! ⚠ **Added because mutation testing measured this file at 0 of 29.** Its
+    //! only consumers are `#[ignore]`d, reference-box-gated harnesses, so nothing
+    //! that runs by default exercised it — and among the survivors were
+    //! `delete ! in total_nanos` (which inverts the disjoint/nested filter and
+    //! silently rewrites every share in recon §2d / §2i / §2j), both constant
+    //! replacements of [`Phase::is_nested`], and `/` → `*` in [`Phases::share`].
+    //! A number-producing module with no unit tests is the "no producer, no
+    //! measurement" failure with the producer present and unchecked.
+
+    #![allow(
+        clippy::float_cmp,
+        clippy::panic,
+        // Same bound the production `millis`/`share` record: nanoseconds pass
+        // f64's exact-integer range only past ~52 days in one slot, and this
+        // fixture's largest value is 13 ms.
+        clippy::cast_precision_loss
+    )]
+
+    use super::{N_SLOTS, Phase, Phases, Reducible};
+
+    /// Distinct, non-round values so a slot mix-up cannot coincide.
+    fn seeded() -> Phases {
+        let mut p = Phases::default();
+        let mut i = 0;
+        while i < N_SLOTS {
+            p.nanos[i] = (i as u64 + 1) * 1_000_003;
+            p.calls[i] = (i as u64 + 1) * 7;
+            i += 1;
+        }
+        p
+    }
+
+    #[test]
+    fn nanos_and_calls_read_their_own_slot() {
+        let p = seeded();
+        for (i, ph) in Phase::ALL.iter().enumerate() {
+            assert_eq!(p.nanos(*ph), (i as u64 + 1) * 1_000_003, "{}", ph.label());
+            assert_eq!(p.calls(*ph), (i as u64 + 1) * 7, "{}", ph.label());
+        }
+    }
+
+    #[test]
+    fn total_nanos_sums_the_disjoint_slots_and_omits_the_nested_ones() {
+        let p = seeded();
+        let want: u64 = Phase::ALL
+            .iter()
+            .filter(|ph| !ph.is_nested())
+            .map(|ph| p.nanos(*ph))
+            .sum();
+        assert_eq!(p.total_nanos(), want);
+
+        // Two-sided: the nested slots must be genuinely EXCLUDED, not merely
+        // "some subset summed". Their time is non-zero here, so a filter that
+        // dropped or inverted the negation lands somewhere else.
+        let nested: u64 = Phase::ALL
+            .iter()
+            .filter(|ph| ph.is_nested())
+            .map(|ph| p.nanos(*ph))
+            .sum();
+        assert!(nested > 0, "fixture must exercise the nested slots");
+        assert_eq!(p.total_nanos() + nested, p.nanos.iter().sum::<u64>());
+        assert_ne!(p.total_nanos(), nested, "the filter is inverted");
+    }
+
+    #[test]
+    fn share_is_the_slot_over_the_disjoint_total() {
+        let p = seeded();
+        let ph = Phase::AssembleTangent;
+        assert_eq!(p.share(ph), p.nanos(ph) as f64 / p.total_nanos() as f64);
+
+        // A NESTED slot reports "of which": its share is against the same total,
+        // so the disjoint slots sum to 1.0 and the nested ones push past it.
+        let disjoint: f64 = Phase::ALL
+            .iter()
+            .filter(|q| !q.is_nested())
+            .map(|q| p.share(*q))
+            .sum();
+        assert!(
+            (disjoint - 1.0).abs() < 1e-12,
+            "disjoint shares = {disjoint}"
+        );
+        assert!(p.share(Phase::Contact) > 0.0);
+    }
+
+    #[test]
+    fn share_is_zero_rather_than_nan_when_nothing_ran() {
+        let p = Phases::default();
+        assert_eq!(p.total_nanos(), 0);
+        let s = p.share(Phase::NumericFactor);
+        assert!(s.is_finite() && s == 0.0, "got {s}");
+    }
+
+    #[test]
+    fn millis_is_nanos_scaled_by_a_million() {
+        let mut p = Phases::default();
+        p.nanos[Phase::NumericFactor.index()] = 2_500_000;
+        assert_eq!(p.millis(Phase::NumericFactor), 2.5);
+        assert_eq!(p.millis(Phase::AssembleForce), 0.0);
+    }
+
+    #[test]
+    fn is_nested_is_exactly_the_three_children() {
+        let nested: Vec<&str> = Phase::ALL
+            .iter()
+            .filter(|ph| ph.is_nested())
+            .map(|ph| ph.label())
+            .collect();
+        assert_eq!(nested.len(), 3, "found {nested:?}");
+        for ph in [
+            Phase::Contact,
+            Phase::ReducedProjectTangentGather,
+            Phase::ReducedProjectTangentContract,
+        ] {
+            assert!(ph.is_nested(), "{} should be nested", ph.label());
+        }
+        for ph in [Phase::AssembleTangent, Phase::ReducedProjectTangent] {
+            assert!(!ph.is_nested(), "{} should be disjoint", ph.label());
+        }
+    }
+
+    #[test]
+    fn nested_children_carry_their_parents_ecsw_class_except_contact() {
+        // The harness subtracts a nested slot from the reducible sum exactly when
+        // its class differs from the parent that already counted it. These three
+        // are what that rule keys on.
+        assert_eq!(Phase::Contact.ecsw_reducible(), Reducible::No);
+        assert_eq!(Phase::AssembleForce.ecsw_reducible(), Reducible::Yes);
+        for ph in [
+            Phase::ReducedProjectTangent,
+            Phase::ReducedProjectTangentGather,
+            Phase::ReducedProjectTangentContract,
+        ] {
+            assert_eq!(ph.ecsw_reducible(), Reducible::Yes, "{}", ph.label());
+        }
+        assert_eq!(
+            Phase::ValidityCheck.ecsw_reducible(),
+            Reducible::PlannedByR3
+        );
+    }
+
+    #[test]
+    fn labels_are_non_empty_and_distinct() {
+        let mut seen: Vec<&str> = Phase::ALL.iter().map(|ph| ph.label()).collect();
+        assert!(seen.iter().all(|l| !l.trim().is_empty()));
+        seen.sort_unstable();
+        let n = seen.len();
+        seen.dedup();
+        assert_eq!(seen.len(), n, "two phases share a label");
+    }
+}

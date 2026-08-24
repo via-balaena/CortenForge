@@ -1,6 +1,9 @@
 # R1 — Linear Reduced Basis: scope and plan
 
-**Status**: 2026-08-12, v5. **R1.0–R1.3 COMPLETE. R1 is done.** §14 records R1.3: the
+**Status**: 2026-08-24, v6. **R1.0–R1.3 COMPLETE. R1 is done.** ⛔ §14 finding 2's
+COST premise was overturned 2026-08-24 by recon §2j — the break-even moved `r ≈ 61 →
+r ≈ 219` and R1 is now faster than the oracle at every rank in the sweep. **R1.3's
+conclusion is unchanged**; see the amendment in §14. §14 records R1.3: the
 adjoint gap does not close by raising `r` at any rank worth running, but **does** close
 under goal-oriented enrichment — conditional on the declared objective family being
 low-dimensional. R1.0/R1.1
@@ -270,11 +273,51 @@ Two results, and the second is the one that matters.
    signature of the adjoint's missing content sitting in **near-null directions rather
    than in the spectrum's tail**. Modes ordered by displacement energy cannot recover a
    direction the snapshots never excited.
-2. **The ranks that fix the gradient are past the break-even.** Break-even is between
-   r=40 and r=80; at the plan's §2 ceiling of 104 the reduced model runs at **half the
-   oracle's speed**. So "raise `r`" buys gradient accuracy only by giving up the entire
-   reason for reducing. ⚠ Scoped to **R1**: hyper-reduction (R3) attacks the element
-   sweep and would move this break-even, so this is not a general statement about MOR.
+2. ⛔ **The ranks that fix the gradient are past the break-even.** ⇒ **The COST half of
+   this finding is OVERTURNED — see the amendment below.** As measured in v5: break-even
+   between r=40 and r=80; at the plan's §2 ceiling of 104 the reduced model ran at
+   **half the oracle's speed**, so "raise `r`" bought gradient accuracy only by giving up
+   the entire reason for reducing. ⚠ Scoped to **R1**: hyper-reduction (R3) attacks the
+   element sweep and would move this break-even, so this was never a general statement
+   about MOR.
+
+> ### ⛔ AMENDED 2026-08-24 (v6) — the break-even moved from `r ≈ 61` to `r ≈ 219`
+>
+> Finding 2's *cost* premise died to an implementation change, not to new physics.
+> `project_tangent` built `Y = AΦ` as a `Vec<Vec<f64>>` and contracted it with
+> `r(r+1)/2` dot products down its short axis; recon §2j replaced both with a flat
+> `n × r` buffer and `n` rank-1 updates, **byte-identically**. Re-measured on the same
+> sweep:
+>
+> | `r` | v5 trajectory | v6 | vs oracle: v5 → v6 |
+> |---:|---:|---:|---|
+> | 10 | 135 ms | 120 ms | 2.86× → 3.21× |
+> | 40 | 263 ms | 143 ms | 1.47× → **2.69×** |
+> | 80 | 519 ms | 185 ms | 0.75× → **2.08×** |
+> | 104 | 756 ms | 211 ms | **0.51× → 1.83×** |
+>
+> Least squares over the sweep separates the terms: the `O(r²)` coefficient fell
+> `0.0407 → 0.0025` per mode² (**16×**) and the `O(r)` coefficient `1.87 → 0.69`
+> (**2.7×**), while the r-independent constant held at `117 → 112 ms`. ★ That constant
+> is the control — it is `asm tangent` and friends, which the change cannot touch, and
+> it held to `4 %` while the `r²` term fell `16×`. **Break-even against the oracle:
+> `r ≈ 61` → `r ≈ 219`** — ⚠ the second figure EXTRAPOLATES to twice the swept range
+> and is not a measurement; what is measured is that every rank in the sweep now beats
+> the oracle, where two of five did not.
+>
+> ⚠⚠ **Finding 2's CONCLUSION survives, on finding 1's evidence alone.** The accuracy
+> columns in the table above are bit-identical across the change — `Σx*` gradient error
+> is still `0.704` at `r = 104`. Raising `r` still does not fix the adjoint; it simply no
+> longer costs the speed as well. The load-bearing R1.3 result — **goal-oriented
+> enrichment, not rank** — is unchanged, and now rests on accuracy rather than on
+> accuracy plus a cost wall. ⚠ What DOES change is that the plan's §2 rank ceiling of
+> 104 was partly cost-motivated and no longer needs to be.
+>
+> ★ This amendment exists because `adjoint_gap_across_basis_sizes` asserted
+> `growth > 1.5` with the message *"if `ΦᵀAΦ` stopped dominating, §14's break-even
+> argument needs re-measuring"*. It fired on the first run after the change. The bound
+> was **not** widened; the test now asserts the new shape two-sided (`1.25–2.0`, piloted
+> at `1.47/1.49/1.49`), so a regression of the layout trips it from the other side.
 
 ⚠ A timing confound was found and removed mid-measurement. The rig's `tol` is tightened
 to 1e-10 for R1.2's finite differences, and R1.1 measured `‖Φᵀr‖/‖r‖` between 1e-7 and
@@ -602,6 +645,16 @@ the first run.
 
 ## 10. Version history
 
+- **v6 (2026-08-24)** — **§14 finding 2 AMENDED: the break-even moved `r ≈ 61` →
+  `r ≈ 219`.** Recon §2j rewrote `project_tangent` from a `Vec<Vec<f64>>` `Y` and
+  column dot products to a flat `n × r` buffer and `n` rank-1 updates, byte-identically.
+  The rank sweep's `O(r²)` coefficient fell 16× and its `O(r)` coefficient 2.7×, with the
+  r-independent constant unmoved (`117 → 112 ms`) as the control. At the §2 rank ceiling
+  of 104 the reduced path went from `0.51×` the oracle to `1.83×`, so "the knob's useful
+  range is empty at R1" no longer holds on cost grounds. ⚠ **R1.3's conclusion stands** —
+  the accuracy columns are bit-identical, `Σx*` error is still `0.704` at `r = 104`, and
+  goal-oriented enrichment remains the answer; it now rests on finding 1 alone. Caught by
+  `adjoint_gap_across_basis_sizes`, whose bound was re-measured rather than widened.
 - **v5 (2026-08-12)** — R1.3 built, piloted and gated; §14 records the rank sweep (the
   knob's useful range is empty at R1, and the adjoint/displacement disparity widens 26.7x
   with rank) and the enrichment result (r=40 enriched beats plain r=104, 2.7x faster),
