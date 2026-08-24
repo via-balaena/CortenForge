@@ -515,6 +515,17 @@ fn the_candidate_grid_sizes_are_reported_before_any_solve() {
         "the sizing table printed {seen} of {} designed grids — rows are being skipped",
         PREVIEW_GRIDS.len()
     );
+    // ★ The superset relation is DOCUMENTED on `PREVIEW_GRIDS`, so enforce it:
+    // a grid added to `GRIDS` and forgotten here would leave the sweep running
+    // cells whose size was never reported, which is the one thing this preview
+    // exists to prevent.
+    for g in GRIDS {
+        assert!(
+            PREVIEW_GRIDS.contains(&g),
+            "{g:?} is swept by GRIDS but not sized by PREVIEW_GRIDS, so the sweep runs a cell \
+             whose DOF count is never reported"
+        );
+    }
 }
 
 /// Grids the sizing preview reports, a superset of [`GRIDS`] — it also sizes
@@ -801,68 +812,121 @@ fn the_discretisation_verdict_does_not_depend_on_stiffness() {
     );
 }
 
-/// ★★ **The verdict does not depend on the relaxed tolerance.**
+/// ★★ **The verdict does not depend on the relaxed tolerance** — swept, and
+/// with a positive control that proves the tolerance is connected at all.
 ///
 /// [`TOL_REL`] was moved from `1e-6` to `1e-4` because the tighter value sat
 /// below the f64 assembly floor for an `8 GPa` beam and stalled 17 of 30 cells
 /// *at the right answer* ([`rig`] carries the evidence). A relaxation taken to
 /// make a red gate green is worthless unless the answer is shown to be the same
-/// answer — so this tightens by `10×` and requires the ratio not to move.
+/// answer.
 ///
-/// ⚠ Two-sided by construction: it fails if the ratio drifts, **and** it fails
-/// if the tighter arm cannot converge, which is the failure mode that would mean
-/// `1e-4` is merely hiding a stall rather than clearing one.
+/// # ⚠⚠ The first version of this control was a TAUTOLOGY
+///
+/// It compared `1e-4` against `1e-5` and asserted the ratios agreed. They agreed
+/// at `0.00e0` — **because those two tolerances select the identical Newton
+/// iterate**. Measured in review: iteration counts are `4 → 4`, `5 → 5`,
+/// `163 → 163`. The control was comparing a computation against *itself*, so its
+/// green was arithmetic identity rather than evidence. Worse, mutating the loose
+/// arm by `1000×` (to `1e-1`) still did not move it — a control that survives
+/// mutation of the very quantity it claims to test.
+///
+/// # What the sweep shows instead, which is stronger
+///
+/// Newton's residual falls in discrete jumps, so any tolerance inside one jump
+/// selects the same iterate. Across `1e-1 … 1e-5` — **four orders** — every arm
+/// returns a bit-identical ratio and iteration count. That is much better
+/// evidence than the original single-decade comparison could give.
+///
+/// # ★ The positive control, without which "insensitive" is unfalsifiable
+///
+/// An inert knob and a **disconnected** knob look identical from inside a
+/// negative control. So this also asserts the tolerance *can* change the answer:
+/// at `tol_rel = 1e0` it collapses — Tet4 to `0.0275` in one iteration, and
+/// **Tet10 to `0.0` in ZERO iterations**, the solver reporting success having
+/// accepted the rest state. ⚠ Worth carrying beyond this test: `converged` from
+/// this solver does not imply it did any work.
 #[test]
 #[cfg_attr(debug_assertions, ignore = "release-only measurement")]
 fn the_verdict_does_not_depend_on_the_tolerance() {
-    const TIGHTER: f64 = TOL_REL / 10.0;
-    println!("\n=== tolerance-independence control: {TOL_REL:e} vs {TIGHTER:e} (relative) ===");
+    /// The working range, swept. Bounded below by the arithmetic floor (`1e-6`
+    /// stalls) and above by [`TOL_DISCONNECT_PROBE`].
+    const TOL_SPAN: [f64; 5] = [1.0e-1, 1.0e-2, 1.0e-3, 1.0e-4, 1.0e-5];
+    /// A tolerance so slack the answer MUST move. Piloted: the smallest decade
+    /// that changes any arm — everything from `1e-1` down is inert.
+    const TOL_DISCONNECT_PROBE: f64 = 1.0e0;
+
     println!(
-        "{:>12} {:>14} {:>14} {:>12}",
-        "element", "ratio @1e-4", "ratio @1e-5", "rel. drift"
+        "\n=== tolerance-independence: swept {:e}..{:e}, plus a disconnect probe ===",
+        TOL_SPAN[0],
+        TOL_SPAN[TOL_SPAN.len() - 1]
+    );
+    println!(
+        "{:>12} {:>10} {:>16} {:>8} {:>12}",
+        "element", "tol_rel", "ratio", "iters", "vs TOL_REL"
     );
 
-    let mut worst = 0.0f64;
     let mut compared = 0usize;
+    let mut worst = 0.0f64;
     for arm in ARMS {
-        let loose = solve_at_tol(arm, 16, 1, 2, EI_TARGET, TOL_REL);
-        let tight = solve_at_tol(arm, 16, 1, 2, EI_TARGET, TIGHTER);
+        let reference = solve_at_tol(arm, 16, 1, 2, EI_TARGET, TOL_REL);
         assert!(
-            loose.converged,
-            "{}: the chosen tolerance must itself converge; got {:?}",
+            reference.converged && reference.ratio.is_finite() && reference.ratio > 0.0,
+            "{}: the chosen tolerance must itself converge to a usable ratio; got {:?}",
             arm.label(),
-            loose.failure
+            reference.failure
         );
-        assert!(
-            tight.converged,
-            "{}: a 10x TIGHTER tolerance must still converge, or {TOL_REL:e} is hiding a stall \
-             rather than clearing an unreachable target; got {:?}",
-            arm.label(),
-            tight.failure
-        );
-        assert!(
-            loose.ratio.is_finite() && loose.ratio > 0.0,
-            "{}: ratio {} is not a usable denominator",
-            arm.label(),
-            loose.ratio
-        );
-        let drift = (tight.ratio - loose.ratio).abs() / loose.ratio;
+
+        for tol in TOL_SPAN {
+            let row = solve_at_tol(arm, 16, 1, 2, EI_TARGET, tol);
+            assert!(
+                row.converged,
+                "{} at tol_rel={tol:e} must converge, or the swept range is wrong; got {:?}",
+                arm.label(),
+                row.failure
+            );
+            let drift = (row.ratio - reference.ratio).abs() / reference.ratio;
+            println!(
+                "{:>12} {tol:>10.0e} {:>16.8} {:>8} {:>12.2e}",
+                arm.label(),
+                row.ratio,
+                row.iters,
+                drift
+            );
+            worst = worst.max(drift);
+            compared += 1;
+        }
+
+        // ★ POSITIVE control. Without it, "the ratio never moves" is equally
+        // consistent with `tol_rel` never reaching the solver at all.
+        let probe = solve_at_tol(arm, 16, 1, 2, EI_TARGET, TOL_DISCONNECT_PROBE);
+        let moved = (probe.ratio - reference.ratio).abs() / reference.ratio;
         println!(
-            "{:>12} {:>14.6} {:>14.6} {:>12.2e}",
+            "{:>12} {TOL_DISCONNECT_PROBE:>10.0e} {:>16.8} {:>8} {:>12.2e}  <- disconnect probe",
             arm.label(),
-            loose.ratio,
-            tight.ratio,
-            drift
+            probe.ratio,
+            probe.iters,
+            moved
         );
-        worst = worst.max(drift);
-        compared += 1;
+        assert!(
+            moved > 0.5,
+            "{}: at tol_rel={TOL_DISCONNECT_PROBE:e} the ratio moved only {moved:.3e}. A \
+             tolerance that cannot change the answer even when made absurd is NOT WIRED to \
+             the solver, and every 'insensitive' reading above is then meaningless",
+            arm.label()
+        );
     }
 
-    assert_eq!(compared, ARMS.len(), "every arm must be compared");
+    assert_eq!(
+        compared,
+        ARMS.len() * TOL_SPAN.len(),
+        "every arm must be swept across the whole span"
+    );
     assert!(
         worst < 1.0e-4,
-        "the reported ratios moved with the tolerance (worst relative drift {worst:.3e}), \
-         so {TOL_REL:e} is not converged and this file's numbers are tolerance artefacts"
+        "the reported ratios moved with the tolerance across the working range (worst \
+         relative drift {worst:.3e}), so {TOL_REL:e} is not converged and this file's numbers \
+         are tolerance artefacts"
     );
 }
 
@@ -1727,6 +1791,7 @@ fn the_cost_figures_are_not_a_loose_tolerance_artefact() {
 
     let mut compared = 0usize;
     let mut worst_tip_drift = 0.0f64;
+    let mut iters_rose = false;
     for (arm, nx) in [(Arm::Tet10, 8usize), (Arm::Tet4, 40usize)] {
         let loose = cost_of_at_tol(arm, nx, 1, 2, TOL_REL);
         let tight = cost_of_at_tol(arm, nx, 1, 2, TIGHTER);
@@ -1758,10 +1823,23 @@ fn the_cost_figures_are_not_a_loose_tolerance_artefact() {
             drift,
         );
         worst_tip_drift = worst_tip_drift.max(drift);
+        iters_rose |= tight.iters_p50() > loose.iters_p50();
         compared += 1;
     }
 
     assert_eq!(compared, 2, "both elements must be compared");
+    // ★ The wiring check, and the reason this control is not the tautology its
+    // static sibling was: at least one arm must actually SPEND more iterations
+    // under the tighter tolerance. Measured Tet10 `1 -> 2` and Tet4 `1 -> 1`, so
+    // it is asserted over the pair rather than per-arm. Without this, "the
+    // trajectory did not move" is equally consistent with the tolerance never
+    // reaching the solver.
+    assert!(
+        iters_rose,
+        "no arm spent more Newton iterations under a 10x tighter tolerance, so this control \
+         cannot distinguish a converged trajectory from a tolerance that is not wired to the \
+         solver at all"
+    );
     assert!(
         worst_tip_drift < 1.0e-3,
         "the trajectory moved with the tolerance (worst relative tip drift \
