@@ -57,7 +57,8 @@
 //! ```
 //!
 //! ★ `E_eff = 8.0 GPa` implies a real tube modulus of
-//! `E_eff · I_solid / I_hollow ≈ 25 GPa` — low for unidirectional carbon
+//! `E_eff · I_solid / I_hollow ≈ 25 GPa` — taking a `1.2 mm` wall, i.e.
+//! `I_hollow = 1.26e-8 m⁴` — low for unidirectional carbon
 //! (`130+ GPa`), right for a real layup
 //! carrying a lot of off-axis ply. The fixture lands where a stick actually is.
 //!
@@ -90,7 +91,9 @@
 //!   *volumetric* locking (`ν → 0.5`); this is a composite at `ν = 0.3` and the
 //!   failure here is bending under-resolution, which F-bar does not touch.
 //! - **Tet10** — quadratic, does not lock (`slender_bending_matches_analytic`
-//!   recovers `0.97–0.995` at 20:1), but carries `~8×` the nodes per cell.
+//!   recovers `0.97–0.995` at 20:1), but carries more nodes per cell —
+//!   **`5.0–6.0×`, measured** by the sizing preview below on these grids, not
+//!   the `~8×` a structured-grid estimate suggests.
 
 // Loaded-vertex counts and grid indices cast to `f64` for the per-vertex load
 // split and the analytic comparison — the FEM idiom shared with
@@ -246,15 +249,17 @@ struct Row {
 /// ~`10²  N` while `1e-6·load/√n` asks for a residual of `1.7e-7 N` — a relative
 /// precision of `~1e-9` on a summed quantity, which is the f64 floor, not a
 /// convergence criterion. `1e-4` puts the demand at `~1e-7` relative, reachable
-/// with four orders of margin over the `1e-4`-relative accuracy this file
+/// with three orders of margin over the `1e-4`-relative accuracy this file
 /// reports. ★ The relaxation is **not** taken on trust — see
 /// [`the_verdict_does_not_depend_on_the_tolerance`].
 ///
 /// Provenance: this rig is the one in
 /// `slender_bending_matches_analytic.rs`, re-derived for this section and load.
-/// Deliberately duplicated rather than shared for now — the stick rig will
-/// change shape when the cost instrument lands, and extracting a common module
-/// before the second consumer's shape is known would be premature.
+/// Deliberately duplicated rather than shared. ▶ The cost instrument has since
+/// landed in this same file and reuses this rig unchanged, so the "wait for the
+/// second consumer" reason has expired: extracting a shared beam rig is now a
+/// real follow-up, and touching `slender_bending_matches_analytic.rs` to do it
+/// needs its own change so that rig's numbers can be shown not to move.
 fn rig<M: Mesh>(
     mesh: &M,
     load: f64,
@@ -515,7 +520,13 @@ fn the_candidate_grid_sizes_are_reported_before_any_solve() {
         );
         seen += 1;
     }
-    assert!(seen > 0, "no grid was sized, so the table above is vacuous");
+    // Counted against the literal it iterates, not against zero: a `continue`
+    // or an early `break` added later would drop rows from the table silently,
+    // and `seen > 0` could not notice.
+    assert_eq!(
+        seen, 13,
+        "the sizing table printed {seen} of 13 designed grids — rows are being skipped"
+    );
 }
 
 /// The grids swept, coarsest first. `nz` is the **flex-direction** resolution
@@ -587,7 +598,10 @@ fn stick_flex_accuracy_against_resolution() {
 
     let mut cells = 0usize;
     let mut nonconverged: Vec<String> = Vec::new();
-    let mut best_tet4 = 0.0f64;
+    let mut best_linear = 0.0f64;
+    // ★ Captured so the gates below assert on the numbers actually PRINTED,
+    // rather than on three fresh solves of the same cells.
+    let mut tet10_ratios: Vec<(usize, f64)> = Vec::new();
 
     for (nx, ny, nz) in GRIDS {
         for arm in ARMS {
@@ -602,8 +616,17 @@ fn stick_flex_accuracy_against_resolution() {
                     implied_f1_error_pct(row.ratio),
                     row.iters,
                 );
-                if arm == Arm::Tet4 {
-                    best_tet4 = best_tet4.max(row.ratio);
+                // ★★ BOTH linear arms, **F-bar included**. F-bar IS the "cure"
+                // the gate below names, and it reads HIGHER than plain Tet4 at
+                // every grid (0.5178 vs 0.4001) — so excluding it would hide the
+                // arm CLOSEST to the bar from the gate built to catch exactly
+                // that. Reviewed in 2026-08-24's pass; the first version
+                // accumulated `Arm::Tet4` only.
+                if arm != Arm::Tet10 {
+                    best_linear = best_linear.max(row.ratio);
+                }
+                if arm == Arm::Tet10 && ny == 1 && nz == 2 {
+                    tet10_ratios.push((nx, row.ratio));
                 }
             } else {
                 let (kind, r_norm, tol, n) = row.failure.expect("a non-converged row must say why");
@@ -638,13 +661,30 @@ fn stick_flex_accuracy_against_resolution() {
         "a non-converged cell is not evidence; these did not converge: {nonconverged:?}"
     );
     assert!(
-        best_tet4 > 0.0,
-        "no Tet4 row was measured, so there is nothing to compare the quadratic element against"
+        best_linear > 0.0,
+        "no linear-element row was measured, so there is nothing to compare the quadratic \
+         element against"
     );
 
-    // ---- The two claims this file makes, gated. ----
+    gate_the_two_claims(&tet10_ratios, best_linear);
+}
 
-    let tet10_at = |nx: usize| solve(Arm::Tet10, nx, 1, 2, EI_TARGET).ratio;
+/// The claims [`stick_flex_accuracy_against_resolution`] makes, asserted against
+/// the rows it actually printed.
+fn gate_the_two_claims(tet10_ratios: &[(usize, f64)], best_linear: f64) {
+    // Reads the sweep's own rows. ⚠ Panics rather than re-solving if a grid is
+    // removed from `GRIDS`: a gate that quietly re-computes what it is meant to
+    // check is no longer checking the reported measurement.
+    let tet10_at = |nx: usize| {
+        tet10_ratios
+            .iter()
+            .find(|(n, _)| *n == nx)
+            .map(|&(_, r)| r)
+            .expect(
+                "this nx at ny=1,nz=2 is not in GRIDS, so the gate cannot read the table it \
+                 claims to gate",
+            )
+    };
     let coarse = tet10_at(8);
     assert!(
         coarse >= FLEX_BAR,
@@ -665,16 +705,19 @@ fn stick_flex_accuracy_against_resolution() {
          {coarse:.4} -> {fine:.4} -> {finer:.4}"
     );
 
-    // ★★ Two-sided, and it fires on an IMPROVEMENT. `best_tet4` is the best
-    // Tet4 reading anywhere in the swept range (0.4001 at 864 free DOF on
-    // 2026-08-24). If a future element or cure lifts Tet4 over the bar, this
-    // file's central comparison — "the quadratic element is not optional here" —
-    // has changed and must be re-read, not silently kept.
+    // ★★ Two-sided, and it fires on an IMPROVEMENT. `best_linear` is the best
+    // reading from EITHER linear arm anywhere in the swept range — plain Tet4
+    // (0.4001 at 864 free DOF) or Tet4+F-bar (0.5178, the higher of the two, and
+    // therefore the one that would trip this first). If a future element or cure
+    // lifts a linear arm over the bar, this file's central comparison — "the
+    // quadratic element is not optional here" — has changed and must be
+    // re-read, not silently kept.
     assert!(
-        best_tet4 < FLEX_BAR,
-        "Tet4 now reaches {best_tet4:.4} of analytic, at or above the {FLEX_BAR} bar. That is \
-         GOOD NEWS and it invalidates this file's conclusion: re-read the element comparison \
-         and the cost table, which assumes Tet4 cannot reach the accuracy bar at any swept size"
+        best_linear < FLEX_BAR,
+        "a LINEAR arm (Tet4 or Tet4+F-bar) now reaches {best_linear:.4} of analytic, at or \
+         above the {FLEX_BAR} bar. That is GOOD NEWS and it invalidates this file's conclusion: \
+         re-read the element comparison and the cost table, which assume no linear arm reaches \
+         the accuracy bar at any swept size"
     );
 }
 
@@ -928,8 +971,12 @@ struct Cost {
 }
 
 impl Cost {
-    /// `p50` of a sample. ⚠ Panics on an empty sample rather than returning a
-    /// zero that would read as "instant".
+    /// Median of a sample — the **upper** median for an even count, since
+    /// `MEASURED_FRAMES` is 20 and this takes `v[n/2]` rather than averaging the
+    /// two middle samples. That biases the reported cost *up* by at most one
+    /// sample's worth, which is the conservative direction for a claim that
+    /// something FITS a budget. ⚠ Panics on an empty sample rather than
+    /// returning a zero that would read as "instant".
     fn p50(values: &[f64]) -> f64 {
         assert!(
             !values.is_empty(),
@@ -954,6 +1001,13 @@ impl Cost {
     /// in a more nearly linear regime and needs fewer iterations. That is a real
     /// difference and it is reported separately; it must not be allowed to
     /// masquerade as a per-iteration cost difference.
+    ///
+    /// ⚠ **Inert on the data as measured**, and the A/B is honest only because
+    /// of that: every measured frame in the smooth ramp regime runs at exactly
+    /// **one** Newton iteration, so this reduces to `ms_p50` and the ratio the
+    /// A/B reports is a raw wall-time ratio at matched DOF. Were iteration
+    /// counts ever to vary, note this is `median(ms) / median(iters)`, which is
+    /// NOT `median(ms/iters)` — the two diverge once the counts spread.
     fn ms_per_iter(&self) -> f64 {
         self.ms_p50() / self.iters_p50()
     }
@@ -1418,31 +1472,38 @@ fn whether_the_iteration_grind_is_nonlinearity_or_the_tangent() {
         "  As delta/L -> 0 the problem becomes LINEAR. An exact tangent solves a linear\n           problem in ONE Newton step, so iterations must collapse. If they do not, the\n           tangent is not the derivative of the residual.\n"
     );
     println!(
-        "{:>12} {:>12} {:>10} {:>8}",
-        "delta/L", "element", "fem/exact", "iters"
+        "{:>12} {:>12} {:>10} {:>8} {:>14}",
+        "delta/L", "element", "fem/exact", "iters", "outcome"
     );
 
-    let mut tet10: Vec<(f64, usize)> = Vec::new();
-    let mut tet4: Vec<(f64, usize)> = Vec::new();
+    // `(amplitude, iterations, ratio)` — the ratio is what tells a fast stall
+    // apart from a fast stall AT THE WRONG ANSWER.
+    let mut tet10: Vec<(f64, usize, f64)> = Vec::new();
+    let mut tet4: Vec<(f64, usize, f64)> = Vec::new();
     for ratio in [1.0e-8, 1.0e-6, 1.0e-4, 1.0e-3, 1.0e-2] {
         for (arm, nx) in [(Arm::Tet10, 8usize), (Arm::Tet4, 40usize)] {
             let row = solve_full(arm, nx, 1, 2, EI_TARGET, TOL_REL, ratio);
+            // ⚠ A row that did NOT converge must not print like one that did.
+            // The `δ/L = 1e-2` Tet10 cell hits the iteration cap and reports
+            // `0.2285` — a partial iterate, NOT a converged wrong answer, and
+            // the distinction is this whole file's founding lesson.
             println!(
-                "{ratio:>12.0e} {:>12} {:>10.4} {:>8}",
+                "{ratio:>12.0e} {:>12} {:>10.4} {:>8} {:>14}",
                 arm.label(),
                 row.ratio,
                 row.iters,
+                row.failure.map_or("converged", |(kind, ..)| kind),
             );
             if arm == Arm::Tet10 {
-                tet10.push((ratio, row.iters));
+                tet10.push((ratio, row.iters, row.ratio));
             } else {
-                tet4.push((ratio, row.iters));
+                tet4.push((ratio, row.iters, row.ratio));
             }
         }
     }
 
-    let smallest = |v: &[(f64, usize)]| v.first().map_or(usize::MAX, |&(_, i)| i);
-    let largest = |v: &[(f64, usize)]| v.last().map_or(0, |&(_, i)| i);
+    let smallest = |v: &[(f64, usize, f64)]| v.first().map_or(usize::MAX, |&(_, i, _)| i);
+    let largest = |v: &[(f64, usize, f64)]| v.last().map_or(0, |&(_, i, _)| i);
     assert!(
         tet10.len() == 5 && tet4.len() == 5,
         "every amplitude must be measured for both elements"
@@ -1457,6 +1518,29 @@ fn whether_the_iteration_grind_is_nonlinearity_or_the_tangent() {
         smallest(&tet4),
         largest(&tet4)
     );
+    // ⚠⚠ **The smallest-amplitude rows ARMIJO-STALL, they do not converge**, and
+    // that was invisible until the `outcome` column was added in review. `tol` is
+    // `1e-4·load/√n` and the load shrinks with the amplitude, so at `δ/L = 1e-8`
+    // the target is back under the arithmetic floor — the same trap the static
+    // sweep hit, arriving from the other direction.
+    //
+    // ★ It does not overturn the reading, but it changes what the reading IS. A
+    // low iteration count at a stall means "reached the floor fast", which is
+    // only evidence of a good tangent if the answer it reached is the RIGHT one.
+    // So the verdict requires BOTH: few iterations, AND the same ratio the
+    // converged rows report. A bad tangent grinding slowly would still be far
+    // from the answer at iteration 9.
+    let converged_ratio = tet10
+        .iter()
+        .find(|(r, _, _)| (*r - 1.0e-3).abs() < 1e-12)
+        .map(|&(_, _, ratio)| ratio)
+        .expect("the delta/L = 1e-3 row is the converged reference and must be present");
+    let linear_ratio = tet10.first().map(|&(_, _, r)| r).expect("non-empty");
+    let ratio_agrees = (linear_ratio - converged_ratio).abs() / converged_ratio < 1.0e-3;
+    println!(
+        "  linear-limit ratio {linear_ratio:.4} vs converged {converged_ratio:.4} — {}",
+        if ratio_agrees { "AGREE" } else { "DISAGREE" }
+    );
     println!(
         "  => {}",
         // Piloted: the linear-limit readings are Tet10 7-9 and Tet4 5-10, against
@@ -1464,11 +1548,21 @@ fn whether_the_iteration_grind_is_nonlinearity_or_the_tangent() {
         // would hold its iteration count as the problem linearised; both
         // elements drop by 1-2 orders instead. `15` sits above the measured
         // linear-limit noise and far below any non-collapse.
-        if smallest(&tet10) <= 15 {
-            "collapses toward linear: the tangent is FINE, the grind is real NONLINEARITY"
-        } else {
+        if smallest(&tet10) <= 15 && ratio_agrees {
+            "collapses toward linear AT THE RIGHT ANSWER: the tangent is FINE, the grind is \
+             real NONLINEARITY"
+        } else if ratio_agrees {
             "does NOT collapse on a linear problem: the TANGENT is the suspect"
+        } else {
+            "the linear-limit rows do not agree with the converged ratio — this probe is \
+             measuring something other than the tangent and cannot be read"
         }
+    );
+    assert!(
+        ratio_agrees,
+        "the linear-limit row reports {linear_ratio:.4} against the converged {converged_ratio:.4}. \
+         Those rows ARMIJO-STALL, and a stall at the WRONG answer makes the iteration count \
+         above meaningless as evidence about the tangent"
     );
 }
 
@@ -1515,7 +1609,11 @@ fn whether_load_continuation_clears_the_wall() {
             probed += 1;
         }
     }
-    assert!(probed > 0, "nothing was probed");
+    assert_eq!(
+        probed,
+        2 * 4,
+        "the ramp table printed {probed} of 8 designed cells — rows are being skipped"
+    );
     println!(
         "\n  => {}",
         if any_ok {
