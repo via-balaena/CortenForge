@@ -75,15 +75,21 @@
 // stay exhaustive regardless, so nothing here loses its compiler check.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+// The discriminant IS the timing slot, and it is written out rather than left
+// implicit so that the mapping is one thing instead of two. Rust rejects
+// duplicate discriminants at compile time, which makes "two phases share a slot"
+// — the failure that shows up as two costs summed into one row, not as a crash —
+// unrepresentable rather than merely asserted. See `Self::index`.
+#[repr(usize)]
 pub enum Phase {
     /// Internal-force assembly (`asm force`) — including Armijo's re-evaluations.
-    AssembleForce,
+    AssembleForce = 0,
     /// Free-DOF tangent assembly (`asm tangent`).
-    AssembleTangent,
+    AssembleTangent = 1,
     /// Numeric Cholesky/LU of the free tangent (`numeric factor`).
-    NumericFactor,
+    NumericFactor = 2,
     /// Triangular solves against that factor (`tri solve`).
-    TriangularSolve,
+    TriangularSolve = 3,
     /// The contact PATH: position marshalling, the active-pair search, and the
     /// gradient/Hessian scatter.
     ///
@@ -107,44 +113,44 @@ pub enum Phase {
     /// [`Phases::share`] reports it as a fraction of that same total, i.e.
     /// "of which contact" rather than "plus contact". §2d's column reads the
     /// same way, which is why its rows come to ~99 % rather than over 100 %.
-    Contact,
+    Contact = 4,
 
     /// Reduced path: `x = x_rest + Φq` reconstruction (`O(n·r)`).
-    ReducedExpand,
+    ReducedExpand = 5,
     /// Reduced path: `Φᵀr`, the residual projection (`O(n·r)`).
-    ReducedProjectCovector,
+    ReducedProjectCovector = 6,
     /// Reduced path: `ΦᵀAΦ`, EXCLUDING the tangent assembly it calls (`O(n·r²)`).
     ///
     /// The assembly is already booked to [`Self::AssembleTangent`], so this slot
     /// starts after the triplets exist and the two stay disjoint.
-    ReducedProjectTangent,
+    ReducedProjectTangent = 7,
     /// Of which: `Y = AΦ`, the sparse-times-dense gather (`O(nnz·r)`).
     ///
     /// **NESTED inside [`Self::ReducedProjectTangent`]** — see [`Self::is_nested`].
     /// Added to answer recon §2j's knob 0: `ΦᵀAΦ` is two loops with different
     /// asymptotics and different fixes, and the parent slot cannot say which one
     /// is slow.
-    ReducedProjectTangentGather,
+    ReducedProjectTangentGather = 8,
     /// Of which: `Φᵀ Y`, the dense contraction into `r × r` (`O(n·r²)`).
     ///
     /// **NESTED inside [`Self::ReducedProjectTangent`]** — see [`Self::is_nested`].
     /// Its flop count is exactly `calls · r(r+1)/2 · n · 2` and every factor is
     /// public, so this slot's achieved flop rate is computable without any new
     /// accessor. The sibling gather's is not — it needs the pattern `nnz`.
-    ReducedProjectTangentContract,
+    ReducedProjectTangentContract = 9,
     /// Reduced path: the dense `r × r` Cholesky/LU and its solve (`O(r³)`).
     ///
     /// Hyper-reduction cannot touch it — ECSW replaces assembly and projection
     /// with a weighted sum over sampled elements and leaves the `r × r` solve
     /// alone. It measures **0.0 %** of a reduced frame at `r = 40`, so it is not
     /// what bounds R3; see [`Reducible`] and §2i for what does.
-    ReducedDenseSolve,
+    ReducedDenseSolve = 10,
 
     /// The `O(n)` residual vector arithmetic — `(m/Δt²)(x − x̂) + f_int − f_ext`
     /// and the free-DOF gather. Shared by both paths.
-    ResidualForm,
+    ResidualForm = 11,
     /// The deformed-validity element sweep at step start and on convergence.
-    ValidityCheck,
+    ValidityCheck = 12,
 }
 
 /// Whether hyper-reduction can remove a phase.
@@ -165,23 +171,28 @@ pub enum Reducible {
 /// Number of timing slots.
 const N_SLOTS: usize = 13;
 
-/// Every [`Phase`] must own a DISTINCT slot below [`N_SLOTS`].
+/// Every [`Self::ALL`] entry owns a distinct slot below [`N_SLOTS`].
 ///
-/// [`Phase::index`] is a hand-written `match`, so adding a variant or renumbering
-/// (both happened when the two `ReducedProjectTangent*` children landed) can
-/// silently give two phases the same slot — and the failure mode is not a crash
-/// but two costs summed into one row, in a module whose entire purpose is
-/// attributing cost to rows. `Phase::ALL` is length-checked against `N_SLOTS` by
-/// its own type; this checks the mapping. It fails the BUILD, not a test.
+/// ⚠ **This checks `ALL`, not the enum.** The round-1 version of this comment
+/// claimed "every `Phase`", which it never verified — the loop cannot see a
+/// variant that was added to the enum and forgotten here. That gap is now closed
+/// upstream instead: [`Phase`] carries explicit discriminants, so duplicates are
+/// a compile error and no two variants can share a slot whether or not they
+/// appear in `ALL`. What remains for this block is the RANGE — a variant
+/// numbered past `N_SLOTS` would index the static arrays out of bounds — plus
+/// the pigeonhole that makes `ALL` complete: `N_SLOTS` distinct slots, all below
+/// `N_SLOTS`, is every slot exactly once.
+///
+/// It fails the BUILD, not a test.
 const _: () = {
     let mut seen = [false; N_SLOTS];
     let mut i = 0;
     while i < N_SLOTS {
         let idx = Phase::ALL[i].index();
-        assert!(idx < N_SLOTS, "Phase::index() returned a slot >= N_SLOTS");
+        assert!(idx < N_SLOTS, "a Phase discriminant is >= N_SLOTS");
         assert!(
             !seen[idx],
-            "two Phase variants share a slot index — their times would silently merge"
+            "two Phase::ALL entries share a slot — their times would silently merge"
         );
         seen[idx] = true;
         i += 1;
@@ -273,22 +284,18 @@ impl Phase {
         )
     }
 
+    /// This phase's slot, which IS its discriminant.
+    ///
+    /// Not a `match`. A hand-written mapping can give two variants the same slot
+    /// and the symptom is two costs summed into one row rather than a crash —
+    /// in the module whose whole job is attributing cost to rows. As
+    /// discriminants, duplicates are a COMPILE ERROR, so that failure is
+    /// unrepresentable. A variant with a discriminant past [`N_SLOTS`] is still
+    /// possible; the `const` block below rules it out for everything in
+    /// [`Self::ALL`], and anything outside `ALL` would panic loudly on first use
+    /// rather than silently merging.
     const fn index(self) -> usize {
-        match self {
-            Self::AssembleForce => 0,
-            Self::AssembleTangent => 1,
-            Self::NumericFactor => 2,
-            Self::TriangularSolve => 3,
-            Self::Contact => 4,
-            Self::ReducedExpand => 5,
-            Self::ReducedProjectCovector => 6,
-            Self::ReducedProjectTangent => 7,
-            Self::ReducedProjectTangentGather => 8,
-            Self::ReducedProjectTangentContract => 9,
-            Self::ReducedDenseSolve => 10,
-            Self::ResidualForm => 11,
-            Self::ValidityCheck => 12,
-        }
+        self as usize
     }
 }
 

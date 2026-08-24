@@ -1518,6 +1518,14 @@ Since the margin is `B / I`, only the irreducible mass can move R3's verdict —
 | `validity check` | 1.197 | 37.1 % |
 | `residual form` + `red dense solve` | 0.059 | 1.8 % |
 
+⚠ **These rows do not sum to `I`, and that is not an error in the table.** The
+harness counts the *unaccounted* remainder — instrumented time short of wall,
+`~0.1 %` — as irreducible in both bounds, deliberately, so a missing cost centre
+pushes the ceiling DOWN rather than up. `I` is therefore `T · (1 − f)` and runs a
+few hundredths of a millisecond above the visible rows. Recomputing `I` by adding
+these up understates it by `~1 %` and overstates the ceiling by the same;
+quote the harness's own figure.
+
 Removing the `NullContact` marshalling would take the margin `5.2× → 13.3×`, a
 `2.57×` improvement, and it is the only line in the table that moves the verdict
 at all. `red proj K`, at `56.8 %` of the frame, moves it by zero.
@@ -1670,11 +1678,14 @@ the 13th digit and is caught (**a tolerance test would have passed it**), and
 dropping mode 0 from the flat transpose alone is caught.
 
 ⚠ That gate runs at `r = 5`, `n = 150`. The production-scale evidence is separate
-and was free: the `r = 10 … 104` sweep at `n = 5 202` prints displacement
-projection and four gradient-error columns, and **every one is identical across
-the change to all printed digits** (`4` significant figures). That is consistent
-with byte-identity at production scale rather than proof of it — the `to_bits()`
-gate is what proves it, and it proves it small.
+and was free: the `r = 10 … 104` sweep at `n = 5 202` prints, per rank, a
+displacement projection and retained energy plus four columns for each of three
+objectives — **75 numeric fields, every one identical across the change** to all
+printed digits. That is consistent with byte-identity at production scale rather
+than proof of it; the `to_bits()` gate is what proves it, and it proves it small.
+⚠ The first version of this claim was checked by a diff that stripped everything
+after `trajectory` and so compared **2 of the 75** — the conclusion held, the
+evidence did not exist until it was rerun over all of them.
 
 #### ★★ The invariant held, and the instrument printed the misreading anyway
 
@@ -2374,11 +2385,16 @@ until then, and by nobody else ever. The recipe above is the durable record.
   bit-identical, `Σx*` error is still `0.704` at `r = 104`. The guard was
   re-measured, not widened (`1.25–2.0` two-sided, piloted `1.47/1.49/1.49`).
   ⇒ **`asm tangent` is now `66.9 %` of a reduced frame**, the next item, as the
-  prize table said it would be. ⚠ Knobs 2 / 3 / 4 remain unswept. ★ Review pass
-  added a **build-failing guard that every `Phase` owns a distinct slot** — this
-  revision renumbered five variants and added two, and `Phase::index` is a
-  hand-written `match` whose failure mode is two costs silently summed into one
-  row. Negative-controlled: a duplicated slot fails the build.
+  prize table said it would be. ⚠ Knobs 2 / 3 / 4 remain unswept. ★ Two review
+  rounds. Round 1 found seven defects (an instrument change published without ever
+  being run; point values for run-variable quantities in the section forbidding
+  them; `r ≈ 219` quoted as measurement rather than extrapolation). Round 2 found
+  three more, all inside round 1's own fixes — including that its new slot-uniqueness
+  guard **claimed to check every `Phase` but only iterated `Phase::ALL`**, blind to
+  exactly the "someone adds a variant" case it was written for. Closed properly:
+  `Phase` now carries explicit discriminants and `index()` is `self as usize`, so a
+  duplicate slot is a COMPILE ERROR (`E0081`) for every variant, in or out of `ALL`.
+  The `const` block keeps the range check. Both negative-controlled.
 
 - **v2.9 (2026-08-24)** — **§2j knob 0 MEASURED: `ΦᵀKΦ` splits `1.85 : 1`, both
   halves are large, and the contract is LATENCY-bound — so one layout change fixes
