@@ -1541,7 +1541,8 @@ until then, and by nobody else ever. The recipe above is the durable record.
   does mean the A/B's *external* validation rests on the `1.51–1.89×` range alone.
 
 - **v2.3 (2026-08-23)** — ⛔ **SUPERSEDED BY v2.4 — the headline result below is
-  withdrawn; kept for the record.** §2d's two `pre-R0` contact rows re-measured. Timers are now a permanent feature (`src/profile.rs`,
+  withdrawn; kept for the record.** §2d's two `pre-R0` contact rows re-measured.
+  Timers are now a permanent feature (`src/profile.rs`,
   `phase-timing`, zero-cost when off) rather than a scratch patch, and
   `tests/phase_shares.rs` re-runs the table. R0 touched only tangent assembly, so
   the share shift gives its credit directly: `asmK` 30.1 % → 17.1 % at 18 750 ⇒
