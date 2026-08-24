@@ -166,6 +166,23 @@ feral-metis = "0.2.1"
 # which is the right trade for a target that has no threads to give.
 faer = { version = "0.24", default-features = false, features = ["std", "sparse-linalg", "rayon"] }
 
+# The step-boundary validity sweep (`check_validity_at_step_start`) is a per-tet
+# loop over the whole mesh, run twice per step, with no cross-element coupling.
+# Measured at 9.3 % of a REDUCED frame it is what caps R3's Amdahl ceiling
+# (recon 2i), and under hyper-reduction it is the only remaining O(n_tets) term
+# while everything else drops to O(sampled) -- so it is the line that decides
+# whether R3 clears its own gate.
+#
+# No new bound was needed: `Mesh`, `Material`, `Element` and `ContactModel` are
+# already `Send + Sync` supertraits.
+#
+# Native-only for the same reason faer's `rayon` feature is: wasm32 has no
+# threads, and `xtask grade`'s WASM Compat criterion holds every L0 crate to
+# that target. wasm runs `sweep_validity_sequential` -- same verdict, one core.
+# Already in the native graph via faer's `rayon` feature, so the direct
+# declaration costs the tier's 100/100 dependency budget nothing.
+rayon = { workspace = true }
+
 [dev-dependencies]
 # 5-digit gradcheck tolerance assertions (Phase-B tests).
 approx = { workspace = true }
