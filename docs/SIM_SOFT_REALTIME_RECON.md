@@ -1,6 +1,6 @@
 # sim-soft Real-Time Path — Phase-1 Measurement + Recon (Phase E predecessor)
 
-**Status**: RECON 2026-08-10 (rev 2026-08-24), v2.12. Phase 1 (measure) COMPLETE — all four requested
+**Status**: RECON 2026-08-10 (rev 2026-08-24), v2.13. Phase 1 (measure) COMPLETE — all four requested
 measurements taken; §2 reports them. Phase 2 (this recon) proposes the MOR +
 hyper-reduction path with a staged ladder whose first rung is a kill-or-confirm.
 **No dependency was added.** Phase 1's instrumentation was temporary (implement →
@@ -1294,6 +1294,8 @@ the ceiling with it.
 session drift in the harness — it is a small, noisy quantity being the
 denominator. **No conclusion moves**: `19.0×` still clears `13.5–15.8×`, and under
 §2j's restated gate `I ≤ 16.7 ms` the margin is `4.9–5.3×`. Quote **`≥19×`**.
+⚠ **That margin is this CONTACT-FREE fixture's.** On IPC 18 750 with contact it
+is `1.36–1.47×` (§2k) — same gate, same box, `~4×` less room.
 
 **Coherence check.** ⚠ This is a CROSS-SESSION comparison of absolute times, which §2d
 finding 3 says not to trust — licensed here only by its own result: the untouched rows
@@ -1540,6 +1542,11 @@ the only place `I` is unknown.
 ⚠ And the `1.967 ms` above is marshalling on a scene with **no contact**. On a
 real contact fixture `I` is larger and genuinely irreducible. Which is the point:
 `I` has never been measured where the requirement lives.
+
+✅ **Measured in v2.13 — see §2k.** `I` is `11.3–12.3 ms` on IPC 18 750 under the
+settled predictor, a margin of `1.36–1.47×` against this fixture's `5.60×`. The
+prediction that contact would dominate `I` held (`69 %` of it); the prediction
+that the iteration count would carry over did not.
 
 #### The knob matrix, and what each knob is for
 
@@ -1841,6 +1848,94 @@ or `snapshot` each fails it.
 asserts no slot reads zero after a real solve, §2j's split control asserts the two
 children exhaust their parent — but they are box-gated and CI never runs them.
 This one runs by default, in whichever configuration is being built.
+
+### 2k. The contact fixture — `I` measured where the requirement lives (v2.13)
+
+§2j closed by naming the one measurement R3 was actually waiting on: the margin
+is `B / I`, and `I` had only ever been measured on a contact-free cantilever
+where **61 % of it was `contact` marshalling on a `NullContact` scene**. The
+largest term in the deciding quantity was a placeholder for the thing that was
+absent. Measured now, on IPC 18 750 — the fixture §2f states the requirement for.
+
+**The producer first.** The reduced path had never been run with contact at all,
+and timing a solver that produces the wrong answer is not a measurement. The
+question was not idle: `IpcRigidContact` clamps its barrier
+(`sd.max(d̂ · 1e-6)`), so penetration is finite-energy rather than infinite, and
+the reduced line search backtracks on `‖Φᵀr‖`, which cannot see a barrier spike
+orthogonal to the subspace. **That mechanism is real and has no consequence
+here.** At `r = 10` the solve converges on `‖Φᵀr‖ < 1e-10` while `‖r_free‖` is
+`1.49e-4` — six orders hidden by the projection — and nothing penetrates, at any
+rank down to `r = 2`, where the displacement field is `48 %` wrong.
+
+★ The equilibrium gap converges in `r` far faster than the field around it: the
+two are within `1.7×` at `r = 2`, but the gap is `~2 700×` better determined at
+`r = 10` and `~54 000×` at `r = 20`. The barrier pins the contact state much
+harder than the subspace can disturb it.
+
+**Then the timing.** Three arms over one 71-step ramp, timing the last 8 steps —
+the deepest, where the patch is largest. An early-ramp window would report `I`
+for a frame with no active pairs, which is this section's own defect one level
+down. Four runs, §2h's reference box:
+
+| arm | ms/step | iters/step | `I` ms | `B/I` |
+|---|---:|---:|---:|---:|
+| full-order | 814–825 | 6.00 | 668–678 | `0.02×` |
+| reduced, `PreviousState` | 304–315 | 9.00 | 17.2–18.2 | **`0.92–0.97×`** ⛔ |
+| reduced, `Inertial` | 182–185 | 5.25 | 11.3–12.3 | **`1.36–1.47×`** ✓ |
+
+**R3 clears — on `1.4×`, where the contact-free fixture reports `5.60×`.** That
+figure was not wrong; it was measured somewhere the requirement does not live,
+and it overstated the margin by about `4×`.
+
+Three things it changes:
+
+1. ★★ **The predictor is LOAD-BEARING for R3, not an optimisation.** The same
+   rung passes under `Inertial` and fails under `PreviousState`, in all four
+   runs, by `3–8 %`. `I` is dominated by per-iteration cost and the two counts
+   are `5.25` against `9.00`. §2f recommended `Inertial` on iteration count
+   alone; R3's viability now rests on that recommendation.
+2. ★★ **The reduced path's iteration PENALTY grows with size, and the full-order
+   path's does not.** Full-order takes `6.10` iterations at 5 202 and `6.00`
+   here; the reduced arm takes `6.44` and then `9.00`, so reduced/full goes
+   `1.06× → 1.50×`. This is the extrapolation the producer run flagged and could
+   not close, and it is what moved the answer — **not** the contact cost, which
+   came in as projected.
+3. **`I` is `69 %` contact and `29 %` the validity sweep.** The sweep is
+   `Reducible::PlannedByR3`, so §4c's `ReducedValidityDomain` is worth about
+   `+0.5×` of margin here (`I` would fall to `~8.7 ms`). That does NOT reverse
+   v2.7's retraction — the rung clears either way — but at `1.4×` it is no longer
+   irrelevant, which it was at `5.6×`.
+
+**The projection this arc was carrying was sound.** It had been estimating
+`1.43 ms` of contact per Newton iteration by dividing §2d's `1.0 %` share by
+§2a's `927.7 ms`. Measured directly, on this box, in the same run as the thing it
+is compared against: `1.42–1.75 ms`. The wide spread is expected — `contact` is
+`~1 %` of a full-order frame, so its per-iteration figure is a small difference
+of large numbers.
+
+**Controls.** Coverage reads `100.0 %` on every arm. A cross-path control asserts
+`contact` costs the same per CALL whichever way the solve is driven, since it is
+the same code on the same mesh — piloted `0.80–1.06×` over four runs, banded
+`0.6–1.7×`. A window check asserts the barrier is active during the timed steps.
+The producer check carries a negative control (the undeformed mesh at the final
+pose reads `min_sd = −δ`, so a positive gap is the solve's doing) and a piloted
+`gap_dev` limit shown failing at `r = 2` and `r = 4` rather than left green for a
+reason it never demonstrates.
+
+⚠ **What this does not establish.** The basis is IN-SAMPLE — trained on the
+trajectory it is scored against — which isolates "does the algebra work against a
+barrier" from "does POD generalise across contact configurations". The second
+question, a laterally *moving* contact patch, is the classic advection-like POD
+failure, is an R1 question, and remains open. Nothing here runs with friction or
+a body load (§2f killed `InertialWithLoad` on contact-plus-load; all of this runs
+`gravity_z = 0`). And the full-order `53.2×` gap is untouched.
+
+Harness: `tests/reduced_contact.rs` — an always-on non-penetration gate (2.3 s,
+runs in `tests-debug`), an `#[ignore]`d producer ladder over `r ∈ {2,4,10,20,40}`
+× both predictors, and this `#[ignore]`d timing instrument (needs
+`--features phase-timing` and `--test-threads=1`). The share table and the
+`I ≤ B` verdict are shared with §2j's harness through `tests/reduced_report/`, so
+the two fixtures cannot drift apart on the arithmetic that decides the rung.
 
 ## 3. What the measurements say about feasibility
 
@@ -2193,7 +2288,7 @@ same door, under its own feature, and must not enter the default build.
 | **R0** ✅ **DONE** (`e77023c7`, `43b198a2`) | **Full-order assembly lever.** Replace the per-iteration `BTreeMap` rebuild in `assemble_free_hessian_triplets` with a pattern-indexed value buffer built once at construction. No algorithm change. | Byte-identity of the assembled triplets against the current path (the `feedback_float_refactor_byte_identity` recipe), plus a measured ms/iteration delta on the §2a fixtures. | §2d.2. Establishes the **honest baseline** the reduction is measured against. Cheap, self-contained, and a win regardless of whether anything downstream ships. |
 | **R1** ✅ **DONE** (`#744`, `#745`, R1.2) | **Linear subspace, no contact, no coupling.** POD basis from full-order snapshots on the `cantilever` fixture at 3 000 free DOF; reduced Newton with a dense `r × r` direct solve; `Φ` and quadrature both handled naively (full element sweep — **no hyper-reduction yet**). Differentiable path wired at the same time (§6, `Φ` constant). | Projection error vs the oracle < 1 % in tip displacement over the training trajectory; reduced gradient matches the oracle's to the crate's existing gradcheck tolerance. ⚠ **That second clause was wrong and was amended before R1.2 was built** — it asks two different functions to agree to 5 digits when their states already differ in the third. Split into a gradcheck-tolerance kill gate on the reduced model's *own* derivative and a measured comparison against the oracle; see the plan's §5/§7 and §13. **Wall time is explicitly NOT gated at R1** — without hyper-reduction it will not be faster, and pretending otherwise would corrupt the signal. | **The cheap kill-or-confirm.** It answers the one question that decides everything downstream: *does a low-dimensional subspace represent this material's deformation at all?* Fixture already exists; no new physics. |
 | **R2** | **Precision decision.** Measure a full-f32 forward path on the reduced system (`r × r` is small enough to port by hand without touching the 1 396-`f64` production surface), and decide residual-in-f64-on-CPU vs compensated-summation-in-f32. | Reduced-model f32 forward drift and gradient drift vs the f64 reduced model, on R1's fixture; explicit go/no-go on whether the residual can live in f32. | §2c. Must precede any GPU work; deciding it after a shader exists means writing the shader twice. |
-| **R3** **§2i brackets its Amdahl ceiling at `20.2–20.5×`–`≳32×`** (two runs) — clear of both its own `10×` floor and the budget's `13.5–15.8×` on either bound. ⚠ Contact-free fixture; contact would push it DOWN, and the reduced path has never run with contact. Gate is **`I ≤ 16.7 ms`** on §2h's reference box (§2j — restated in v2.8 from `≥10×`, which was a ratio over a moving baseline). | **Hyper-reduction (ECSW) + the validity domain.** NNLS training over R1's snapshots; `ReducedValidityDomain` with the online `‖q‖` + residual-proxy gate; the three error measures of §4c. | Measured speedup vs §2a's baseline (post-R0), with the three §4c errors reported alongside. Domain gate demonstrated to fire on an out-of-domain trajectory. | This is where the frame-budget win actually arrives. Also where the "smooth and wrong" failure mode is defended against. |
+| **R3** **§2i brackets its Amdahl ceiling at `20.2–20.5×`–`≳32×`** (two runs) — clear of both its own `10×` floor and the budget's `13.5–15.8×` on either bound. ✅ v2.13: the reduced path HAS now run with contact — §2k measures `I = 11.3–12.3 ms` on IPC 18 750, margin `1.36–1.47×` under `Inertial` and a FAIL of `0.92–0.97×` under `PreviousState`. Gate is **`I ≤ 16.7 ms`** on §2h's reference box (§2j — restated in v2.8 from `≥10×`, which was a ratio over a moving baseline). | **Hyper-reduction (ECSW) + the validity domain.** NNLS training over R1's snapshots; `ReducedValidityDomain` with the online `‖q‖` + residual-proxy gate; the three error measures of §4c. | Measured speedup vs §2a's baseline (post-R0), with the three §4c errors reported alongside. Domain gate demonstrated to fire on an out-of-domain trajectory. | This is where the frame-budget win actually arrives. Also where the "smooth and wrong" failure mode is defended against. |
 | **R4** | **Hybrid domain decomposition, FIXED contact patch.** Full DOF under a stationary indenter, reduced bulk, on the `dynamic_indentation` geometry. | End-to-end reaction force vs the oracle, in the same band `bonded_layer_indentation` already asserts. | §5. Fixed patch first, because it isolates the coupling condition from the re-partitioning problem. |
 | **R5** | **Moving patch.** Re-partitioning under a once-built symbolic factorization, or a conservative union pattern. | Sliding-contact trajectory vs the oracle. | §5's open-research item. **Explicitly gated on R4 succeeding**; if R4 fails, this is not attempted. |
 | **R6** | **Rigid↔soft coupling.** | — | **Last, deliberately.** Per the brief, and it is the right call: the keystone coupling is itself the platform's hardest open problem (`MISSION.md` §2), and stacking it on an unsolved real-time reduced path would make any failure uninterpretable. |
@@ -2417,6 +2512,9 @@ until then, and by nobody else ever. The recipe above is the durable record.
    the frame's irreducible time failing to fit the budget (§2j). ★ §2i's measured
    ceiling of `20.2–20.5×` is already the strongest evidence either way, and it is
    an *upper bound on ECSW's reach here*, not a confirmation of the literature claim.
+   ✅ **v2.13**: §2k answers the gate on the right fixture — `I = 11.3–12.3 ms`,
+   margin `1.36–1.47×`. It CLEARS, with `~4×` less room than the contact-free
+   fixture implied, and only under the `Inertial` predictor.
 6. **§5's hybrid-DD arithmetic closes on paper** (a few hundred patch DOF + `r ≈
    30–100` lands inside the reachable ≈ 1 500 DOF). That is encouraging and it is not
    evidence. Nothing about the coupling condition or the moving patch has been
@@ -2446,6 +2544,22 @@ until then, and by nobody else ever. The recipe above is the durable record.
 
 ## 12. Version history
 
+- **v2.13 (2026-08-24)** — **§2k, new: `I` measured on IPC 18 750, the fixture the
+  requirement is stated for.** §2j had named this as the one measurement R3 was
+  waiting on, because `I` had only ever been read on a contact-free cantilever
+  where `61 %` of it was `contact` marshalling on a `NullContact` scene. **R3
+  CLEARS at `1.36–1.47×`, against the `5.60×` that fixture reports** — the old
+  number was measured somewhere the requirement does not live and overstated the
+  margin `~4×`. ★★ Two things it changed that were not on the list: the PREDICTOR
+  is now load-bearing (`PreviousState` FAILS at `0.92–0.97×` in all four runs,
+  `Inertial` passes), and the reduced path's iteration penalty GROWS with size
+  while the full-order path's does not (reduced/full `1.06× → 1.50×`) — which is
+  what moved the answer, not the contact cost, which came in as projected
+  (`1.42–1.75 ms/iteration` against `1.43` extrapolated). The pre-registered
+  failure mode — a projected Armijo tunnelling through a finite-energy barrier —
+  is real as a mechanism (`‖r_free‖ = 1.49e-4` behind `‖Φᵀr‖ < 1e-10` at `r = 10`)
+  and produced no penetration at any rank down to `r = 2`. §2i, §2j, §7 and §10
+  updated where they said the reduced path had never run with contact.
 - **v2.12 (2026-08-24)** — **§2j: v2.11's account of the `profile.rs` survivors was
   wrong, and re-running it is how that was found.** It said they were equivalent
   mutants reachable only through box-gated harnesses, needing `-j 1 --features
