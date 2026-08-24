@@ -1075,7 +1075,7 @@ Instrumented/wall **99.9 %**, so the denominator is essentially complete.
 | bound | reducible | **ceiling `1/(1 − f)`** |
 |---|---:|---:|
 | certain only | 88.0 % | **8.3×** |
-| plus what R3's own design removes | ~97.3 % | **≳37×** ⚠ |
+| plus what R3's own design removes | 97.4 % | **≳37×** ⚠ |
 
 > ### The bracket is 8.3× … ≳37×. R3 needs 13.5–15.8×, with a 10× floor.
 >
@@ -1128,7 +1128,7 @@ marshalling and broad-phase on a scene with no contact.
 for**, and its phase mix there is unknown — contact would add irreducible cost and
 push the ceiling DOWN. Comparing the two directly is the error of §2d finding 4
 wearing different clothes. The solid claim is the narrow one: *at R1.1's own
-operating point, R3's ceiling brackets `8.3×–37.1×`.*
+operating point, R3's ceiling brackets `8.3×` to `≳37×`.*
 
 #### What this does to the ladder
 
