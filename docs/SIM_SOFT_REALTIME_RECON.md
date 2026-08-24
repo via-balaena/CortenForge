@@ -993,6 +993,23 @@ occasionally on a busy day. That is the intended bias — it fails CLOSED, and a
 refused measurement costs a re-run while a contended one costs a retracted
 finding.
 
+#### ⚠ The gate is WEAKER for cross-tree A/B, and that is measured
+
+`tests/r0_ab.rs` runs the same fixture on two trees, and the probe is
+`cantilever 40×4` — a fixture **R0 itself speeds up**. On the pre-R0 tree the
+probe reads **57.4 ms** against post-R0's **24.5 ms** (`2.34×`), so applying the
+absolute median ceiling would reject the pre-R0 arm on every run and the A/B
+could never execute. This was caught by review before it shipped, not by the
+gate.
+
+`burst` IS scale-free and does transfer — idle pre-R0 reads `1.013–1.063×`
+against post-R0's `1.008–1.060×` — so the cross-tree gate checks identity and
+burst, and skips the median. **The honest cost: that arm has weaker contention
+protection**, since burst misses sustained partial load. What covers it is the
+protocol — arms are INTERLEAVED, so a persistent load lands on both and largely
+cancels from the ratio. That is why interleaving is mandatory in `r0_ab.rs`
+rather than advisory.
+
 #### R3's two numbers, both on this box
 
 The document has been conflating these. They are different quantities:
@@ -1622,7 +1639,11 @@ until then, and by nobody else ever. The recipe above is the durable record.
   ⚠ **Transfer between boxes remains UNVALIDATED and is not offered** — it needs two
   boxes, and the one cross-box dataset shows it failing in opposite directions.
   R3's two numbers are now stated separately: kill floor `≥10×`, frame budget
-  `13.5–15.8×`, both on this box.
+  `13.5–15.8×`, both on this box. ⚠ Review caught that the gate would have BROKEN
+  the cross-tree A/B — the probe fixture is one R0 speeds up (57.4 ms pre-R0 vs
+  24.5 post), so the median ceiling would reject the pre-R0 arm every run; that
+  path now checks identity and the scale-free `burst` only, and leans on
+  interleaving for the rest.
 
 - **v2.4 (2026-08-23)** — **⛔ v2.3's `9.89×` is WITHDRAWN, and the method that
   produced it is retired.** Two independent defects, both found by review rather

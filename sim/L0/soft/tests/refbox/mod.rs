@@ -339,12 +339,47 @@ pub const PROBE_P50_FLOOR_MS: f64 = 21.0;
 /// firing on the ordinary jitter of a quiet box.
 pub const PROBE_BURST_MAX: f64 = 1.30;
 
-/// The full precondition for a gate-bearing measurement: **the reference box,
-/// and quiet.**
+/// Identity plus the **scale-free** contention check only, for measurements
+/// that run the SAME fixture on more than one tree.
+///
+/// ⚠ **[`require_quiet_box`] cannot be used across trees, and this is measured,
+/// not assumed.** The probe is `cantilever 40×4` — a fixture R0 itself speeds
+/// up. On the pre-R0 tree (`ecf4cfef^`) it reads **57.39 ms** against post-R0's
+/// **24.47 ms**, a `2.34×` difference, so the absolute median ceiling would
+/// reject the pre-R0 arm of `tests/r0_ab.rs` on every run and the A/B could
+/// never execute. A baseline calibrated on one tree is not a property of the
+/// box.
+///
+/// [`Probe::burst`] IS scale-free and transfers: idle pre-R0 reads
+/// `1.013–1.063×` against post-R0's `1.008–1.060×`. So it is checked here.
+///
+/// ⚠ **The cost is real: this arm has weaker contention protection**, because
+/// burst does not detect sustained partial load (see [`Probe::burst`]). What
+/// covers it instead is the A/B protocol itself — arms are INTERLEAVED, so a
+/// persistent load lands on both and largely cancels from the ratio. That is a
+/// weaker guarantee than the single-tree gate, and it is the reason interleaving
+/// is mandatory rather than advisory in `tests/r0_ab.rs`.
+pub fn require_quiet_box_cross_tree() -> (BoxIdentity, Probe) {
+    let id = require_reference_box();
+    let p = probe();
+    p.report();
+    println!("│ (cross-tree: median ceiling NOT applied — the probe is itself subject to R0)");
+    assert!(
+        p.burst() <= PROBE_BURST_MAX,
+        "BOX IS STALLING: probe burst {:.3}x exceeds {PROBE_BURST_MAX:.2}x. Burst is          the only contention check available across trees, so a run that trips it          cannot be rescued by interleaving.",
+        p.burst()
+    );
+    (id, p)
+}
+
+/// The full precondition for a gate-bearing measurement on the CURRENT tree:
+/// **the reference box, and quiet.**
 ///
 /// Runs the probe (~0.6 s) and refuses the measurement if the box is loaded.
 /// Both checks are needed and they catch different things — see
 /// [`Probe::burst`] for why the obvious single statistic is the wrong one.
+///
+/// ⚠ Not for cross-tree measurement — use [`require_quiet_box_cross_tree`].
 pub fn require_quiet_box() -> (BoxIdentity, Probe) {
     let id = require_reference_box();
     let p = probe();

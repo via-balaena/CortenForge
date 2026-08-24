@@ -225,7 +225,7 @@ fn measure(a_over_cell: f64, label: &str, expect_iters: usize) {
 #[test]
 #[ignore = "measurement, minutes long — run explicitly"]
 fn r0_ab_wall_time() {
-    refbox::require_quiet_box();
+    refbox::require_quiet_box_cross_tree();
     for (a_over_cell, label, expect_iters) in [(2.0, "IPC_5202", 422), (3.0, "IPC_18750", 449)] {
         measure(a_over_cell, label, expect_iters);
     }
@@ -278,7 +278,7 @@ fn cantilever(nx: usize, n_cross: usize) -> (CpuTet4NHSolver<HandBuiltTetMesh>, 
 #[test]
 #[ignore = "measurement, minutes long — run explicitly"]
 fn r0_ab_cantilever_control() {
-    refbox::require_quiet_box();
+    refbox::require_quiet_box_cross_tree();
     let (solver, x0, free) = cantilever(80, 8);
     let n = x0.len();
     let theta = Tensor::from_slice(&[], &[0]);
