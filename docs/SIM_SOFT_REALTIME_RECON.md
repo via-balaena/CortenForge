@@ -1,6 +1,6 @@
 # sim-soft Real-Time Path — Phase-1 Measurement + Recon (Phase E predecessor)
 
-**Status**: RECON 2026-08-10 (rev 2026-08-24), v2.10. Phase 1 (measure) COMPLETE — all four requested
+**Status**: RECON 2026-08-10 (rev 2026-08-24), v2.11. Phase 1 (measure) COMPLETE — all four requested
 measurements taken; §2 reports them. Phase 2 (this recon) proposes the MOR +
 hyper-reduction path with a staged ladder whose first rung is a kill-or-confirm.
 **No dependency was added.** Phase 1's instrumentation was temporary (implement →
@@ -1752,6 +1752,71 @@ It is a **better** fix at 80, because the term it removes is the one that grows.
   uses none — this `1.84×` is single-threaded, so the thread knob is unspent
   headroom rather than a risk) and Tet10. Recorded as open, not as done.
 
+#### ✅ MUTATION TESTING — three read-rounds stopped converging, so the instrument changed
+
+`cargo mutants`, scoped to the two files this work touched, tests run with
+`--lib`. Read rounds 1–3 found 7 / 3 / 3 defects with severity falling from *"an
+instrument published without being run"* to *"a tally said 75 where the data said
+70"*, which is the point at which re-reading mostly generates new text to re-read.
+
+| file | mutants | caught | survived | unviable |
+|---|---:|---:|---:|---:|
+| `project_tangent` | 71 | **61** | **0** | 10 |
+| `profile.rs`, before | 36 | 0 | 29 | 7 |
+| `profile.rs`, after | 36 | **22** | **7** | 7 |
+
+**`project_tangent` scores 100 % of what is killable.** The 10 unviable are all
+whole-function return swaps (`DMatrix::new()`, `from_iter([0.0])`) that do not
+typecheck.
+
+★ **A perfect score is when to ask what did the killing.** `reduced/tests.rs` is
+the only lib test that reaches `project_tangent`, so the result was attributed
+rather than assumed: apply `row != col → row == col` and the suite fails; mark the
+byte-identity test `#[ignore]` and **the same mutant passes 328 green tests**. One
+test is doing all of it. That is the answer the pre-registration wanted — the gate
+is load-bearing, not decorative — and also a warning, because `#[ignore]`ing it
+returns `project_tangent` to zero lib-level coverage without turning anything red.
+
+#### ⚠ `profile.rs` measured 0 of 29 — the instrument had no unit tests at all
+
+Every number in §2d, §2i and §2j comes out of this module, and nothing that runs
+by default exercised it. Among the survivors:
+
+- **`delete ! in total_nanos`** — turns `filter(|p| !p.is_nested())` into its
+  inverse, so the denominator becomes the nested slots alone and **every share in
+  this document silently changes**;
+- both constant replacements of **`Phase::is_nested`**, the predicate §2j made
+  load-bearing;
+- **`/` → `*` in `Phases::share`**, and `==` → `!=` on its divide-by-zero guard.
+
+Eight unit tests now cover the slot arithmetic: nested slots excluded from
+`total_nanos` (asserted two-sided, so an inverted filter lands somewhere
+detectable), disjoint shares summing to `1.0`, the zero-total guard, per-slot
+read-back, `is_nested` being exactly the three children, and the ECSW class the
+harness's nesting correction keys on. **0 → 22 of 29.**
+
+#### The 7 that remain, and why chasing them would be theatre
+
+- **2 mutate the `const` guard's own loop bound** (`while i < N_SLOTS`), making it
+  vacuous. A compile-time guard is not a test and no test can kill them. Accepted:
+  the primary protection is `E0081`, a language rule that cannot be mutated away.
+- **5 are in the feature-gated `imp` module.** Under `--lib` without
+  `phase-timing` the active arm is the no-op one, so several are *equivalent*
+  mutants by construction. The enabled arm is covered — `phase_shares.rs` asserts
+  every slot is non-zero after a real solve, §2j's split control asserts the two
+  children exhaust their parent, and both harnesses report `instrumented / wall`
+  — but all of it lives in `#[ignore]`d tests.
+
+⚠⚠ **And that coverage cannot be measured by mutation on this box, for a reason
+worth recording.** The harnesses are reference-box gated; mutation runs them
+4-way parallel; the contention gate would refuse, the test would fail, and the
+mutant would be scored **caught for a reason unrelated to the mutation**. A
+green mutation score obtained that way would be
+[`feedback_a_gate_that_cannot_fail_for_the_reason_it_claims`] inverted — a gate
+that cannot *pass* for the reason it claims. Any future attempt must run
+`-j 1` with `--features phase-timing`, and should expect the wall-clock cost of a
+box-gated harness per mutant.
+
 ## 3. What the measurements say about feasibility
 
 ### 3a. The goal is not refuted
@@ -2355,6 +2420,26 @@ until then, and by nobody else ever. The recipe above is the durable record.
 - `sim/L0/soft/src/material/` — the `ValidityDomain` §4c mirrors.
 
 ## 12. Version history
+
+- **v2.11 (2026-08-24)** — **§2j: mutation testing, after three read-rounds stopped
+  converging.** `project_tangent` scores **61 of 61 killable mutants** (10 unviable
+  return swaps). ★ A perfect score is when to ask what did the killing, so it was
+  attributed rather than assumed: `row != col → row == col` fails the suite, and with
+  the byte-identity test `#[ignore]`d **the same mutant passes 328 green tests**. One
+  test does all of it — load-bearing, and a warning that ignoring it silently returns
+  the function to zero coverage. ⚠ **`profile.rs` measured 0 of 29**: the module that
+  produces every figure in §2d / §2i / §2j had no unit tests, and its survivors included
+  `delete ! in total_nanos` — which inverts the disjoint/nested filter and rewrites every
+  share in this document — plus both constant replacements of `Phase::is_nested` and
+  `/` → `*` in `Phases::share`. Eight unit tests take it to **22 of 29**. The remaining
+  seven are not worth chasing and the reason is recorded: two mutate the `const` guard's
+  own loop bound (a compile-time guard is not a test; `E0081` is the real protection and
+  cannot be mutated away), and five are in the feature-gated `imp` module whose disabled
+  arm makes them equivalent mutants. ⚠⚠ **The enabled arm's coverage cannot be measured
+  by mutation on this box**: it lives in `#[ignore]`d, reference-box-gated harnesses, and
+  running those 4-way parallel would trip the contention gate, fail the test, and score
+  the mutant **caught for a reason unrelated to the mutation** — a gate that cannot
+  *pass* for the reason it claims. Needs `-j 1` with `--features phase-timing`.
 
 - **v2.10 (2026-08-24)** — **§2j BUILT: `project_tangent` is `1.84×` of a reduced
   frame, byte-identically — and the margin did not fall, exactly as pre-registered.**

@@ -472,3 +472,158 @@ mod imp {
 }
 
 pub use imp::{Timer, reset, snapshot};
+
+#[cfg(test)]
+mod tests {
+    //! Unit cover for the slot arithmetic every published share rests on.
+    //!
+    //! ⚠ **Added because mutation testing measured this file at 0 of 29.** Its
+    //! only consumers are `#[ignore]`d, reference-box-gated harnesses, so nothing
+    //! that runs by default exercised it — and among the survivors were
+    //! `delete ! in total_nanos` (which inverts the disjoint/nested filter and
+    //! silently rewrites every share in recon §2d / §2i / §2j), both constant
+    //! replacements of [`Phase::is_nested`], and `/` → `*` in [`Phases::share`].
+    //! A number-producing module with no unit tests is the "no producer, no
+    //! measurement" failure with the producer present and unchecked.
+
+    #![allow(
+        clippy::float_cmp,
+        clippy::panic,
+        // Same bound the production `millis`/`share` record: nanoseconds pass
+        // f64's exact-integer range only past ~52 days in one slot, and this
+        // fixture's largest value is 13 ms.
+        clippy::cast_precision_loss
+    )]
+
+    use super::{N_SLOTS, Phase, Phases, Reducible};
+
+    /// Distinct, non-round values so a slot mix-up cannot coincide.
+    fn seeded() -> Phases {
+        let mut p = Phases::default();
+        let mut i = 0;
+        while i < N_SLOTS {
+            p.nanos[i] = (i as u64 + 1) * 1_000_003;
+            p.calls[i] = (i as u64 + 1) * 7;
+            i += 1;
+        }
+        p
+    }
+
+    #[test]
+    fn nanos_and_calls_read_their_own_slot() {
+        let p = seeded();
+        for (i, ph) in Phase::ALL.iter().enumerate() {
+            assert_eq!(p.nanos(*ph), (i as u64 + 1) * 1_000_003, "{}", ph.label());
+            assert_eq!(p.calls(*ph), (i as u64 + 1) * 7, "{}", ph.label());
+        }
+    }
+
+    #[test]
+    fn total_nanos_sums_the_disjoint_slots_and_omits_the_nested_ones() {
+        let p = seeded();
+        let want: u64 = Phase::ALL
+            .iter()
+            .filter(|ph| !ph.is_nested())
+            .map(|ph| p.nanos(*ph))
+            .sum();
+        assert_eq!(p.total_nanos(), want);
+
+        // Two-sided: the nested slots must be genuinely EXCLUDED, not merely
+        // "some subset summed". Their time is non-zero here, so a filter that
+        // dropped or inverted the negation lands somewhere else.
+        let nested: u64 = Phase::ALL
+            .iter()
+            .filter(|ph| ph.is_nested())
+            .map(|ph| p.nanos(*ph))
+            .sum();
+        assert!(nested > 0, "fixture must exercise the nested slots");
+        assert_eq!(p.total_nanos() + nested, p.nanos.iter().sum::<u64>());
+        assert_ne!(p.total_nanos(), nested, "the filter is inverted");
+    }
+
+    #[test]
+    fn share_is_the_slot_over_the_disjoint_total() {
+        let p = seeded();
+        let ph = Phase::AssembleTangent;
+        assert_eq!(p.share(ph), p.nanos(ph) as f64 / p.total_nanos() as f64);
+
+        // A NESTED slot reports "of which": its share is against the same total,
+        // so the disjoint slots sum to 1.0 and the nested ones push past it.
+        let disjoint: f64 = Phase::ALL
+            .iter()
+            .filter(|q| !q.is_nested())
+            .map(|q| p.share(*q))
+            .sum();
+        assert!(
+            (disjoint - 1.0).abs() < 1e-12,
+            "disjoint shares = {disjoint}"
+        );
+        assert!(p.share(Phase::Contact) > 0.0);
+    }
+
+    #[test]
+    fn share_is_zero_rather_than_nan_when_nothing_ran() {
+        let p = Phases::default();
+        assert_eq!(p.total_nanos(), 0);
+        let s = p.share(Phase::NumericFactor);
+        assert!(s.is_finite() && s == 0.0, "got {s}");
+    }
+
+    #[test]
+    fn millis_is_nanos_scaled_by_a_million() {
+        let mut p = Phases::default();
+        p.nanos[Phase::NumericFactor.index()] = 2_500_000;
+        assert_eq!(p.millis(Phase::NumericFactor), 2.5);
+        assert_eq!(p.millis(Phase::AssembleForce), 0.0);
+    }
+
+    #[test]
+    fn is_nested_is_exactly_the_three_children() {
+        let nested: Vec<&str> = Phase::ALL
+            .iter()
+            .filter(|ph| ph.is_nested())
+            .map(|ph| ph.label())
+            .collect();
+        assert_eq!(nested.len(), 3, "found {nested:?}");
+        for ph in [
+            Phase::Contact,
+            Phase::ReducedProjectTangentGather,
+            Phase::ReducedProjectTangentContract,
+        ] {
+            assert!(ph.is_nested(), "{} should be nested", ph.label());
+        }
+        for ph in [Phase::AssembleTangent, Phase::ReducedProjectTangent] {
+            assert!(!ph.is_nested(), "{} should be disjoint", ph.label());
+        }
+    }
+
+    #[test]
+    fn nested_children_carry_their_parents_ecsw_class_except_contact() {
+        // The harness subtracts a nested slot from the reducible sum exactly when
+        // its class differs from the parent that already counted it. These three
+        // are what that rule keys on.
+        assert_eq!(Phase::Contact.ecsw_reducible(), Reducible::No);
+        assert_eq!(Phase::AssembleForce.ecsw_reducible(), Reducible::Yes);
+        for ph in [
+            Phase::ReducedProjectTangent,
+            Phase::ReducedProjectTangentGather,
+            Phase::ReducedProjectTangentContract,
+        ] {
+            assert_eq!(ph.ecsw_reducible(), Reducible::Yes, "{}", ph.label());
+        }
+        assert_eq!(
+            Phase::ValidityCheck.ecsw_reducible(),
+            Reducible::PlannedByR3
+        );
+    }
+
+    #[test]
+    fn labels_are_non_empty_and_distinct() {
+        let mut seen: Vec<&str> = Phase::ALL.iter().map(|ph| ph.label()).collect();
+        assert!(seen.iter().all(|l| !l.trim().is_empty()));
+        seen.sort_unstable();
+        let n = seen.len();
+        seen.dedup();
+        assert_eq!(seen.len(), n, "two phases share a label");
+    }
+}
