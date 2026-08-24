@@ -302,31 +302,61 @@ pub fn probe_inner_for_profiling() -> Probe {
 
 // ── the contention gate ─────────────────────────────────────────────────────
 
-/// Probe median on a quiet reference box, from the pilot (10 runs: 23.80–24.70,
-/// median 24.47).
-pub const REF_PROBE_P50_MS: f64 = 24.47;
+/// Probe median on a quiet reference box, from the pilot (10 runs: 22.60–23.36,
+/// median 22.75).
+///
+/// ★★ **RE-BASELINED — the probe measures the SUT, so a solver change moves it.**
+/// The first baseline was `24.47 ms` (10 runs, 23.80–24.70). Parallelising the
+/// step-boundary validity sweep took it to `22.75`, a `7.0 %` shift, and the
+/// original floor of `21.0` was then only `3.8 %` away from a legitimate reading.
+/// That is exactly what [`PROBE_P50_FLOOR_MS`] is for, and the response it
+/// prescribes — re-pilot, do not widen — is what produced these numbers.
+///
+/// ⚠ **This will recur.** The probe is a full solve of `cantilever 40×4`, so every
+/// optimisation on the full-order path invalidates all four constants below. The
+/// design that would not need re-baselining is a probe independent of the code
+/// under test (a fixed synthetic workload measuring the BOX alone) — deliberately
+/// not taken here, because the present probe is known to load the same phase the
+/// gate-bearing measurements are bottlenecked on and a synthetic one would have to
+/// re-earn that. Named so the next person re-piloting can weigh the swap instead
+/// of rediscovering the cost.
+pub const REF_PROBE_P50_MS: f64 = 22.75;
 
 /// Upper bound on the probe median before a run is refused.
 ///
-/// **Piloted, not chosen** — it sits in the measured gap between the idle
-/// maximum `24.70 ms` and the lightest contaminated case `25.83 ms` (§2h).
+/// **Piloted, not chosen** — it sits in the measured gap between the idle maximum
+/// `23.36 ms` and the lightest 4-busy-core case `24.17 ms`.
 ///
-/// ⚠ Only `3.3 %` headroom, deliberately. A genuine baseline shift will read as
-/// contention; the remedy is to re-run `tests/refbox_pilot.rs` and re-baseline
-/// both constants, NOT to widen this one.
-pub const PROBE_P50_CEILING_MS: f64 = 25.5;
+/// ⚠ Only `1.5 %` headroom above idle, deliberately. A genuine baseline shift will
+/// read as contention; the remedy is to re-run `tests/refbox_pilot.rs` and
+/// re-baseline every constant here, NOT to widen this one.
+pub const PROBE_P50_CEILING_MS: f64 = 23.7;
 
 /// Lower bound on the probe median.
 ///
 /// Not a contention check — a floor catches the probe getting CHEAPER, which
 /// means the workload or the solver changed underneath the baseline and every
 /// constant here is stale. Failing closed forces a re-pilot instead of silently
-/// comparing against a number that no longer describes the same work.
-pub const PROBE_P50_FLOOR_MS: f64 = 21.0;
+/// comparing against a number that no longer describes the same work. It did its
+/// job: see [`REF_PROBE_P50_MS`].
+///
+/// ⚠ Set from the LOWEST reading observed anywhere on this tree, `21.79 ms`, not
+/// from the pilot's own minimum of `22.60`. Those `21.79` / `21.94` readings came
+/// from `--features phase-timing` binaries while `refbox_pilot` and `r0_ab` both
+/// sat at `22.6–23.4`: the same probe on the same tree spreads `~7 %` across test
+/// BINARIES, which is a floor under how tight any of these constants can be. Not
+/// explained — four observations is not a finding — but accommodated.
+pub const PROBE_P50_FLOOR_MS: f64 = 19.5;
 
-/// Upper bound on [`Probe::burst`]. Idle maximum is `1.060×` and a 12-core load
-/// reads `2.37×` and up; this sits between, catching gross stalls without
-/// firing on the ordinary jitter of a quiet box.
+/// Upper bound on [`Probe::burst`]. Idle maximum is `1.054×` and a 12-core load
+/// reads `2.37×` and up; this sits between, catching gross stalls without firing
+/// on the ordinary jitter of a quiet box.
+///
+/// ★ The re-pilot independently replicated the finding that made burst the WEAK
+/// check: 4 busy cores read `1.030–1.078×` against an idle `1.008–1.054×`, so the
+/// two ranges are `2.3 %` apart and burst cannot discriminate. The median can —
+/// `23.36` idle vs `24.17` loaded. Unchanged from the first pilot, on a different
+/// tree.
 pub const PROBE_BURST_MAX: f64 = 1.30;
 
 // ⚠ MEASURED SENSITIVITY LIMIT. The gate catches sustained EXTERNAL load (2 busy
@@ -340,9 +370,11 @@ pub const PROBE_BURST_MAX: f64 = 1.30;
 /// that run the SAME fixture on more than one tree.
 ///
 /// ⚠ **[`require_quiet_box`] cannot be used across trees.** The probe is a
-/// fixture R0 speeds up: pre-R0 it reads **57.39 ms** against post-R0's
-/// **24.47 ms**, so the median ceiling would reject the pre-R0 arm every run. A
-/// baseline calibrated on one tree is not a property of the box.
+/// fixture the optimisations themselves speed up: pre-R0 it reads **57.39 ms**
+/// against **24.47 ms** at R0 and **22.75 ms** once the validity sweep went
+/// parallel, so the median ceiling would reject the pre-R0 arm every run. A
+/// baseline calibrated on one tree is not a property of the box — and the drift
+/// across three trees is why [`REF_PROBE_P50_MS`] carries a standing warning.
 /// [`Probe::burst`] IS scale-free (pre-R0 `1.013–1.063×` vs `1.008–1.060×`), so
 /// it is checked here.
 ///
