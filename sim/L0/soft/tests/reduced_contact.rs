@@ -131,7 +131,13 @@
     clippy::many_single_char_names
 )]
 
+mod reduced_report;
+mod refbox;
+
+use std::time::Instant;
+
 use sim_ml_chassis::Tensor;
+use sim_soft::profile::{self, Phase};
 use sim_soft::solver::backward_euler::reduced::{
     Inner, PodBasis, ReducedNewtonSolver, SnapshotSet,
 };
@@ -209,6 +215,24 @@ const GATE_RANK: usize = 40;
 /// changes the forces the barrier is balanced against, and the failure mode
 /// there is a shifted equilibrium, not a tunnelled one.
 const MAX_GAP_DEV_BANDS: f64 = 2.0e-6;
+
+/// `a/cell = 3` — 18 750 free DOF, the row §2f's requirement is stated on and
+/// the source of the `53.2×` full-order gap.
+const TIMING_A_OVER_CELL: f64 = 3.0;
+/// Requested rank for the timing fixture; the ramp's own numerical rank caps it.
+const TIMING_RANK: usize = 40;
+/// How many of the ramp's trailing steps carry the timing measurement.
+///
+/// ⚠ THE LAST ones, and that choice is load-bearing. The indenter starts above
+/// the barrier band and descends, so a frame early in the ramp has no active
+/// pairs at all — timing those would report `I` for a scene with no contact in
+/// it, which is precisely the thing this fixture exists to stop doing. The
+/// deepest steps carry the largest contact patch, and that is the workload the
+/// frame budget is claimed against.
+const TIMING_STEPS: usize = 8;
+/// Never measured — they run to build state and warm the caches. Everything
+/// before [`TIMING_STEPS`] is warmup by construction, which is 63 of 71 steps.
+const _: () = assert!(TIMING_STEPS < 71);
 
 const GUESSES: [(&str, InitialGuess); 2] = [
     ("prev", InitialGuess::PreviousState),
@@ -388,6 +412,24 @@ fn describe(e: &SolverFailure, scene: Scene, k: usize) -> String {
     }
 }
 
+/// The timed sub-window of a trajectory. Kept apart from the trajectory-level
+/// tallies because the correctness rows want every step and the timing rows want
+/// only the deepest ones, where the contact patch is largest.
+#[derive(Clone, Copy, Default)]
+struct Measured {
+    steps: usize,
+    iters: usize,
+    wall_ms: f64,
+}
+
+impl Measured {
+    fn record(&mut self, ms: f64, iters: usize) {
+        self.steps += 1;
+        self.iters += iters;
+        self.wall_ms += ms;
+    }
+}
+
 /// One arm's trajectory-level summary. `min_sd` is the worst over all steps —
 /// the closest any vertex came to the collider, negative meaning it went through.
 struct Arm {
@@ -406,6 +448,8 @@ struct Arm {
     /// reaches the SAME equilibrium gap. A hyper-reduced assembly that got the
     /// internal forces slightly wrong would shift this while staying positive.
     gap_dev: f64,
+    /// The timed window, empty unless the arm was run with a `measure_from`.
+    measured: Measured,
     failure: Option<String>,
 }
 
@@ -454,7 +498,14 @@ struct Oracle {
     arm: Arm,
 }
 
-fn run_oracle(scene: Scene, x_rest: &[f64]) -> Oracle {
+/// Step index at which to `profile::reset()` and start accumulating wall time.
+/// [`NO_TIMING`] runs the trajectory without touching the profiler at all, which
+/// is what the correctness tests want — they must not disturb a measurement, and
+/// they must not pay for one.
+type MeasureFrom = usize;
+const NO_TIMING: MeasureFrom = usize::MAX;
+
+fn run_oracle(scene: Scene, x_rest: &[f64], measure_from: MeasureFrom) -> Oracle {
     let mut solver = scene.solver(InitialGuess::PreviousState);
     let n_dof = x_rest.len();
     let theta = Tensor::from_slice(&[], &[0]);
@@ -463,10 +514,15 @@ fn run_oracle(scene: Scene, x_rest: &[f64]) -> Oracle {
     let mut v = vec![0.0; n_dof];
     let mut out = Vec::with_capacity(scene.n_steps());
     let (mut iters, mut min_sd, mut last_full_r) = (0usize, f64::INFINITY, f64::NAN);
+    let mut m = Measured::default();
     let mut failure = None;
 
     for k in 0..scene.n_steps() {
         solver.replace_contact(scene.contact_at(k));
+        if k == measure_from {
+            profile::reset();
+        }
+        let t0 = Instant::now();
         let step = solver.try_replay_step(
             &Tensor::from_slice(&x, &[n_dof]),
             &Tensor::from_slice(&v, &[n_dof]),
@@ -475,6 +531,10 @@ fn run_oracle(scene: Scene, x_rest: &[f64]) -> Oracle {
         );
         match step {
             Ok(s) => {
+                let ms = t0.elapsed().as_secs_f64() * 1e3;
+                if k >= measure_from {
+                    m.record(ms, s.iter_count);
+                }
                 for i in 0..n_dof {
                     v[i] = (s.x_final[i] - x[i]) / DT;
                 }
@@ -502,9 +562,20 @@ fn run_oracle(scene: Scene, x_rest: &[f64]) -> Oracle {
             max_rel_err: 0.0,
             last_full_r,
             gap_dev: 0.0,
+            measured: m,
             failure,
         },
     }
+}
+
+/// What every reduced arm on one fixture shares: the rest configuration, the
+/// free-DOF map, and the trajectory it is scored against. Grouped because they
+/// are three views of ONE full-order run and passing them separately invites an
+/// arm being scored against a different oracle than it was fitted to.
+struct Ctx<'a> {
+    x_rest: &'a [f64],
+    fd: &'a [usize],
+    oracle: &'a Oracle,
 }
 
 fn run_reduced(
@@ -512,23 +583,32 @@ fn run_reduced(
     basis: &PodBasis,
     guess: InitialGuess,
     label: String,
-    x_rest: &[f64],
-    fd: &[usize],
-    oracle: &Oracle,
+    ctx: &Ctx<'_>,
+    measure_from: MeasureFrom,
 ) -> Arm {
+    let Ctx { x_rest, fd, oracle } = *ctx;
     let mut solver = scene.solver(guess);
     let theta = Tensor::from_slice(&[], &[0]);
     let mut q = vec![0.0; basis.n_modes()];
     let mut qdot = vec![0.0; basis.n_modes()];
     let (mut iters, mut min_sd, mut max_rel_err, mut last_full_r) =
         (0usize, f64::INFINITY, 0.0_f64, f64::NAN);
+    let mut m = Measured::default();
     let (mut completed, mut failure) = (0usize, None);
 
     for k in 0..scene.n_steps() {
         solver.replace_contact(scene.contact_at(k));
         let reduced = ReducedNewtonSolver::new(&solver, basis, x_rest);
+        if k == measure_from {
+            profile::reset();
+        }
+        let t0 = Instant::now();
         match reduced.step(&q, &qdot, &theta, DT) {
             Ok(s) => {
+                let ms = t0.elapsed().as_secs_f64() * 1e3;
+                if k >= measure_from {
+                    m.record(ms, s.iter_count);
+                }
                 let x = reduced.expand_to_full(&s.q);
                 min_sd = min_sd.min(min_signed_distance(&x, scene.centre_at(k)));
                 if let Some(ox) = oracle.x.get(k) {
@@ -558,6 +638,7 @@ fn run_reduced(
         max_rel_err,
         last_full_r,
         gap_dev: (min_sd - oracle.arm.min_sd).abs() / scene.d_hat,
+        measured: m,
         failure,
     }
 }
@@ -621,7 +702,7 @@ fn ladder(scene: Scene, ranks: &[usize]) -> Ladder {
     );
 
     // ── the oracle, and the snapshots every basis below is fitted to ──
-    let oracle = run_oracle(scene, &x_rest);
+    let oracle = run_oracle(scene, &x_rest, NO_TIMING);
     oracle.arm.print(n_steps, scene.d_hat);
     assert!(
         oracle.arm.failure.is_none(),
@@ -695,9 +776,12 @@ fn ladder(scene: Scene, ranks: &[usize]) -> Ladder {
                 &basis,
                 guess,
                 format!("r={r}→{got} {name}"),
-                &x_rest,
-                &fd,
-                &oracle,
+                &Ctx {
+                    x_rest: &x_rest,
+                    fd: &fd,
+                    oracle: &oracle,
+                },
+                NO_TIMING,
             );
             arm.print(n_steps, scene.d_hat);
             arms.push((r, name, arm));
@@ -740,4 +824,240 @@ fn reduced_contact_does_not_tunnel_through_the_barrier() {
     let l = ladder(Scene::new(GATE_A_OVER_CELL), &[GATE_RANK]);
     let faults = l.faults(GATE_RANK, l.oracle.arm.min_sd);
     assert!(faults.is_empty(), "{}", faults.join("\n"));
+}
+
+/// Step 2 of the contact arc: **`I` on the fixture the requirement is stated
+/// for.**
+///
+/// ```text
+/// cargo test --release -p sim-soft --features phase-timing \
+///   --test reduced_contact -- --ignored --nocapture --test-threads=1
+/// ```
+///
+/// Margin is `B / I`, so only the irreducible part of a frame decides R3 — and
+/// until this ran, `I` had only ever been measured on a contact-free cantilever
+/// where `61 %` of it was `contact` marshalling on a `NullContact` scene. The
+/// largest term in the deciding quantity was a placeholder for the thing that
+/// was absent.
+///
+/// Three arms over one ramp: the full-order solve (which is also the snapshot
+/// source and the oracle), then the reduced solve under each predictor. The
+/// full-order arm is not decoration — every projection made so far divided a
+/// published `1.0 %` share by a published `927.7 ms` to get `1.43 ms` of contact
+/// per Newton iteration, and this measures that directly, on this box, in the
+/// same run as the thing it is compared against.
+///
+/// ⚠ `--test-threads=1` is not optional: the profiler's slots are process-global
+/// statics, and a second test running concurrently would have its time land in
+/// this one's snapshot.
+///
+/// ## Measured — four runs, 2026-08-24, reference box
+///
+/// | arm | ms/step | iters/step | `I` ms | `B/I` |
+/// |---|---:|---:|---:|---:|
+/// | full-order | 814.3–825.0 | 6.00 | 668.2–677.9 | 0.02× |
+/// | reduced, `PreviousState` | 303.8–314.5 | 9.00 | 17.2–18.2 | **0.92–0.97×** ⛔ |
+/// | reduced, `Inertial` | 181.9–184.9 | 5.25 | 11.3–12.3 | **1.36–1.47×** ✓ |
+///
+/// - ★★ **R3 clears here, but on `1.4×`, not the `5.6×` the contact-free fixture
+///   reports.** The old number was not wrong, it was measured somewhere the
+///   requirement does not live; it overstated the margin by about `4×`.
+/// - ★★ **The predictor is now load-bearing for R3, not merely an optimisation.**
+///   `PreviousState` needs `9.00` iterations against `Inertial`'s `5.25`, and `I`
+///   is dominated by per-iteration cost, so the same rung passes under one
+///   predictor and fails under the other. It fails by only `3–8 %`, which is
+///   close — but it fails in all four runs.
+/// - ★ **The reduced path's iteration PENALTY grows with size, and the
+///   full-order path's does not.** Full-order takes `6.10` iterations at 5 202
+///   and `6.00` here; the reduced arm takes `6.44` and then `9.00`, so
+///   reduced/full goes `1.06× → 1.50×`. This is the extrapolation the correctness
+///   run flagged and could not close, and it is what moved the answer.
+/// - `I` is `69 %` contact and `29 %` the validity sweep, the rest negligible.
+///   The sweep is [`Reducible::PlannedByR3`], so R3's own `ReducedValidityDomain`
+///   is worth about `+0.5×` of margin here (`I` would fall to `~8.7 ms`). That
+///   does NOT revive it as a prerequisite — the rung clears either way — but on a
+///   `1.4×` margin it is no longer irrelevant, which it was at `5.6×`.
+/// - The `1.43 ms` of contact per Newton iteration this arc had been projecting
+///   from two published tables measures **`1.42–1.75`** here (a wide spread:
+///   `contact` is ~1 % of a full-order frame, so its per-iteration figure is a
+///   small difference of large numbers). The projection was
+///   sound; the iteration count it was multiplied by was not.
+#[test]
+#[ignore = "reduced-path contact TIMING — needs --features phase-timing, ~2 min"]
+fn reduced_contact_phase_shares() {
+    refbox::require_quiet_box();
+
+    let scene = Scene::new(TIMING_A_OVER_CELL);
+    let probe = scene.mesh();
+    let x_rest = rest_positions(&probe);
+    let solver = scene.solver(InitialGuess::PreviousState);
+    let fd = solver.free_dof_indices().to_vec();
+    let mass = solver.mass_per_free_dof();
+    let n_steps = scene.n_steps();
+    let measure_from = n_steps - TIMING_STEPS;
+
+    println!(
+        "\nRC\tTIMING fixture: IPC indentation a/cell={TIMING_A_OVER_CELL:.1}, {} free DOF, \
+         {} tets, {n_steps} ramp steps, timing the last {TIMING_STEPS}",
+        fd.len(),
+        probe.n_tets(),
+    );
+
+    // ── arm 0: full-order. Oracle, snapshot source, and the measured contact
+    // cost that replaces the extrapolation. ──
+    let oracle = run_oracle(scene, &x_rest, measure_from);
+    assert!(
+        oracle.arm.failure.is_none(),
+        "the full-order arm did not survive its ramp: {}",
+        oracle.arm.failure.as_deref().unwrap_or(""),
+    );
+    let full_snap = profile::snapshot();
+    let full = reduced_report::main_report(
+        "FULL-ORDER, IPC 18 750",
+        oracle.arm.measured.wall_ms,
+        oracle.arm.measured.steps,
+        oracle.arm.measured.iters,
+    );
+
+    // ⚠ VACUITY GUARD ON THE WINDOW, not on the ramp. The correctness tests
+    // already check that contact engages SOMEWHERE; what matters here is that it
+    // is engaged in the steps that were TIMED. An early-ramp window would report
+    // `I` for a scene with no active pairs — which is the exact defect this
+    // fixture exists to retire, reintroduced one level down.
+    let deepest = min_signed_distance(
+        oracle.x.last().expect("the ramp produced steps"),
+        scene.centre_at(n_steps - 1),
+    );
+    println!(
+        "RC\tWINDOW CHECK — gap at the last timed step {deepest:.3e} vs band {:.2e}: \
+         contact is {} during the measurement",
+        scene.d_hat,
+        if deepest < scene.d_hat {
+            "ACTIVE"
+        } else {
+            "INACTIVE — the timing is of a contact-free frame"
+        },
+    );
+    assert!(
+        deepest < scene.d_hat,
+        "the timed window has no active contact ({deepest:.3e} ≥ {:.2e})",
+        scene.d_hat,
+    );
+    assert!(
+        full_snap.calls(Phase::Contact) > 0,
+        "the contact slot recorded no calls in the timed window",
+    );
+
+    // ── the basis, from the same trajectory (in-sample; see the module docs) ──
+    let mut train = SnapshotSet::new(fd.len());
+    for x in &oracle.x {
+        train.push(&SnapshotSet::free_displacement(x, &x_rest, &fd));
+    }
+    let basis = PodBasis::fit(&train, Inner::Mass, &mass, 1.0, TIMING_RANK).expect("basis fits");
+    let r = basis.n_modes();
+    println!(
+        "RC\tbasis: r={r} kept of {TIMING_RANK} requested, {} snapshots",
+        train.len()
+    );
+
+    // ── arms 1 and 2: the reduced solve under each predictor ──
+    let mut rows = vec![("FULL-ORDER", full, oracle.arm.measured, full_snap)];
+    for (name, guess) in GUESSES {
+        let arm = run_reduced(
+            scene,
+            &basis,
+            guess,
+            format!("r={r} {name}"),
+            &Ctx {
+                x_rest: &x_rest,
+                fd: &fd,
+                oracle: &oracle,
+            },
+            measure_from,
+        );
+        assert!(
+            arm.failure.is_none(),
+            "reduced {name} did not survive its ramp: {}",
+            arm.failure.as_deref().unwrap_or(""),
+        );
+        assert!(
+            arm.min_sd > 0.0,
+            "reduced {name} PENETRATED at 18 750 (min_sd {:.3e}) — the timing would \
+             be of a configuration inside the collider",
+            arm.min_sd,
+        );
+        let snap = profile::snapshot();
+        let v = reduced_report::main_report(
+            &format!("REDUCED r={r}, {name} predictor"),
+            arm.measured.wall_ms,
+            arm.measured.steps,
+            arm.measured.iters,
+        );
+        rows.push((name, v, arm.measured, snap));
+    }
+
+    // ── the comparison, and the control ──
+    println!("\nRC\t╔═ IPC 18 750 — what decides R3");
+    println!(
+        "RC\t║ {:<14} {:>10} {:>10} {:>10} {:>9} {:>12}",
+        "arm", "ms/step", "iters/st", "I ms", "B/I", "contact/iter"
+    );
+    for (label, v, m, snap) in &rows {
+        let per_iter = if snap.calls(Phase::Contact) > 0 {
+            snap.millis(Phase::Contact) / m.iters as f64
+        } else {
+            f64::NAN
+        };
+        println!(
+            "RC\t║ {label:<14} {:>10.2} {:>10.2} {:>10.3} {:>8.2}× {:>12.3}",
+            v.per_step_ms,
+            m.iters as f64 / m.steps as f64,
+            v.irreducible_ms,
+            v.margin,
+            per_iter,
+        );
+    }
+    println!(
+        "RC\t║ the projection this replaces: 1.43 ms of contact per Newton iteration,\n\
+         RC\t║ from 927.7 ms × 1.0 % ÷ 6.51 across two published tables."
+    );
+    println!("RC\t╚═");
+
+    // ★ CROSS-PATH CONTROL. `contact` is the same code on the same mesh at
+    // nearly the same configuration whichever way the solve is driven, so the
+    // per-CALL cost must agree. If it does not, the slot is not measuring what
+    // its name claims and every `I` above is built on it.
+    let per_call = |snap: &profile::Phases| -> f64 {
+        let c = snap.calls(Phase::Contact);
+        assert!(c > 0, "no contact calls recorded — cannot form the control");
+        snap.millis(Phase::Contact) / c as f64
+    };
+    let base = per_call(&rows[0].3);
+    let mut off = Vec::new();
+    for (label, _, _, snap) in rows.iter().skip(1) {
+        let ratio = per_call(snap) / base;
+        println!(
+            "RC\t★ control: contact per call, {label} / full-order = {ratio:.3}× \
+             ({:.4} vs {base:.4} ms)",
+            per_call(snap),
+        );
+        // PILOTED over three runs at 0.801–1.057×. The spread is wide for a
+        // control because `contact` is ~1 % of a full-order frame, so the
+        // DENOMINATOR is a small difference of large numbers; the band is set
+        // for that, not for the agreement the two paths actually show. What it
+        // still catches is the failure it is for — a slot that double-counts,
+        // misses the broad phase, or books a different set of calls on one of
+        // the two paths, all of which land ≥2× out.
+        if !(0.6..1.7).contains(&ratio) {
+            off.push(format!(
+                "{label}: contact per call is {ratio:.3}× full-order"
+            ));
+        }
+    }
+    assert!(
+        off.is_empty(),
+        "the contact slot does not measure the same work on both paths, so every \
+         `I` above is built on it:\n{}",
+        off.join("\n"),
+    );
 }

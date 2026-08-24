@@ -11,6 +11,15 @@
 //! Consumers: `reduced_phase_shares.rs` (contact-free, R1.1's operating point)
 //! and `reduced_contact.rs` (IPC indentation, where R3's requirement lives).
 
+// Each declaring binary compiles this module in full but consumes only what it
+// needs — `reduced_phase_shares` reads none of [`Verdict`]'s fields because it
+// reports one arm and the verdict block already printed them, while
+// `reduced_contact` tabulates three arms and reads them all. The same
+// `tests/common` friction `common/mod.rs` and `refbox/mod.rs` carry, for the
+// same reason. Scoped to this shared module; production `src/` has no such
+// blanket.
+#![allow(dead_code)]
+
 use sim_soft::profile::{self, Phase, Reducible};
 
 /// A 60 Hz frame. What the IRREDUCIBLE mass has to fit inside for R3 to clear —
@@ -25,7 +34,26 @@ pub const FRAME_BUDGET_MS: f64 = 16.7;
 /// and the harness reports a confident, wrong "cannot clear".
 const MIN_COVERAGE_PCT: f64 = 20.0;
 
-pub fn main_report(label: &str, wall_ms: f64, steps: usize, iters: usize) {
+/// What the verdict block printed, so a caller comparing several arms can
+/// tabulate them without a second copy of the arithmetic — the failure this
+/// module exists to prevent.
+#[derive(Clone, Copy, Debug)]
+pub struct Verdict {
+    /// Wall ms per step over the measured window.
+    pub per_step_ms: f64,
+    /// `I` — the part of a frame ECSW cannot remove, in ms/step. The only
+    /// quantity that decides a rung, since `C/R = B/I`.
+    pub irreducible_ms: f64,
+    /// `B / I`. `≥ 1` is a pass.
+    pub margin: f64,
+    /// `T / B` — what this fixture would need overall, for context only.
+    pub requirement: f64,
+    /// `1/(1 − f)` at the certain and the R3-contingent reducible shares.
+    pub ceiling_lo: f64,
+    pub ceiling_hi: f64,
+}
+
+pub fn main_report(label: &str, wall_ms: f64, steps: usize, iters: usize) -> Verdict {
     let p = profile::snapshot();
     let total_instr: f64 = Phase::ALL
         .iter()
@@ -158,4 +186,12 @@ pub fn main_report(label: &str, wall_ms: f64, steps: usize, iters: usize) {
     );
     println!("║   WITH contact — a different fixture. Do not read the ceiling against it.");
     println!("╚═");
+    Verdict {
+        per_step_ms: per_step,
+        irreducible_ms: irreducible,
+        margin,
+        requirement: per_step / FRAME_BUDGET_MS,
+        ceiling_lo: lo,
+        ceiling_hi: hi,
+    }
 }
