@@ -1,6 +1,6 @@
 # sim-soft Real-Time Path — Phase-1 Measurement + Recon (Phase E predecessor)
 
-**Status**: RECON 2026-08-10 (rev 2026-08-24), v2.13. Phase 1 (measure) COMPLETE — all four requested
+**Status**: RECON 2026-08-10 (rev 2026-08-24), v2.14. Phase 1 (measure) COMPLETE — all four requested
 measurements taken; §2 reports them. Phase 2 (this recon) proposes the MOR +
 hyper-reduction path with a staged ladder whose first rung is a kill-or-confirm.
 **No dependency was added.** Phase 1's instrumentation was temporary (implement →
@@ -2025,6 +2025,73 @@ runs in `tests-debug`), an `#[ignore]`d producer ladder over `r ∈ {2,4,10,20,4
 `I ≤ B` verdict are shared with §2j's harness through `tests/reduced_report/`, so
 the two fixtures cannot drift apart on the arithmetic that decides the rung.
 
+### 2l. The basis does NOT generalise across contact positions (v2.14)
+
+§2k timed the reduced path with contact. It could not say whether the path is
+*right* off its training data, because every reduced measurement in this document
+— §2i, §2j, §2k — uses an **in-sample basis**, fitted to the trajectory it is then
+scored against. That isolated "does the algebra survive a barrier" from "does the
+basis generalise", and it left the property R3 depends on untested.
+
+Measured: one basis trained on five lateral indenter offsets spanning `±1a`
+(355 snapshots, 5 202 free DOF), scored at four positions against **each
+position's own full-order oracle**. Rel-L2 free-DOF displacement:
+
+| position | `r=20` | `r=40` | `r=80` | `r=142` |
+|---|---:|---:|---:|---:|
+| IN-SAMPLE `+0.00a` | 2.4e-2 | 4.7e-3 | 1.1e-4 | **2.6e-6** |
+| INTERP `+0.25a` | 3.2e-2 | 1.8e-2 | 9.5e-3 | **1.9e-3** |
+| EXTRAP `+1.50a` | 3.2e-1 | 1.5e-1 | 3.2e-1 | **2.8e-1** |
+| EXTRAP `+2.00a` | DIVERGED | 7.6e-1 | 1.0e0 | **1.1e0** |
+
+1. ★★★ **The subspace is wrong for a translated patch, and RANK DOES NOT FIX IT.**
+   In-sample buys four orders across the ladder. Both extrapolations are **flat**
+   in rank and the far one gets worse. This is the classic advection-like POD
+   failure: a localised feature that translates is nearly orthogonal to itself one
+   patch-width away, so representing the family costs one mode per position rather
+   than a few modes overall.
+   ⇒ **It is not the free edge.** `+1.50a` keeps `1.5a` of clearance and fails
+   alike; `+2.00a` keeps `1a`. The pair is why both are scored (§2d's rule: test
+   the difference before naming a cause).
+2. ★★ **Even INTERPOLATION costs three orders.** Between training points `0.5a`
+   apart, `+0.25a` plateaus at `1.9e-3` where in-sample reaches `2.6e-6`, and it
+   improves only ~1.2 orders over a 7× rank increase against in-sample's four.
+   **The reduction advantage dies long before the accuracy does** — buying
+   generalisation with rank means giving back the thing R1 exists for.
+3. ★★★ **Out-of-domain failure is SILENT.** The failing arms converge, complete
+   all 71 steps, and do not penetrate — `min_sd` stays positive and inside the
+   band — while being `28 %` and `109 %` wrong. **Convergence plus
+   non-penetration is not a validity check**, and it is exactly the "smooth and
+   wrong" mode §4b warns about, now observed rather than anticipated.
+4. ★★ **`gap_dev` detects it, which is not what it was built for.** The converged
+   contact gap moves `0.33–0.58 d̂` on the failing arms against `3e-11` in-sample
+   — five orders over the regression threshold it was piloted at. Added to catch
+   a hyper-reduced assembly shifting the equilibrium; it is also the cheapest
+   out-of-domain indicator measured so far, and a candidate online signal for
+   §4c's gate.
+
+**What this does to the plan.** §4c already names "contact configuration class"
+as part of the `ReducedValidityDomain` parameter box, so this VALIDATES that
+design rather than contradicting it — but it moves the gate from prudent to
+mandatory and puts a number on the cost of not having one. ⛔ **`ReducedValidityDomain`
+is revived as a CORRECTNESS prerequisite.** v2.7's retraction of it as a
+PERFORMANCE prerequisite stands untouched and is a separate claim.
+
+⚠ **And it qualifies "R1 COMPLETE".** R1's gates (§11, R1.0–R1.3) were all posed
+and passed on a fixed contact configuration; none of them asked this. R1 is
+complete *as scoped*, and the scope excluded the question that decides whether
+R3 is worth building. §7's R1 row carries the qualification.
+
+**Where the structural answer probably lives:** §5's hybrid domain decomposition —
+a full-order patch around the contact with a reduced far field — is the standard
+response to a moving localised feature, and it is sketched there and unmeasured.
+Goal-oriented enrichment (plan §14) addresses a different axis (objective family)
+and does not obviously help here.
+
+Harness: `tests/reduced_contact.rs::reduced_basis_generalises`, `#[ignore]`d,
+~5 min. Re-run it against any future basis scheme; the in-sample row is its
+two-sided control and the rank trend is the discriminator.
+
 ## 3. What the measurements say about feasibility
 
 ### 3a. The goal is not refuted
@@ -2188,6 +2255,18 @@ than elements and its training is greedier. ECSW is chosen for (1) and (3), not 
 accuracy superiority — that is not claimed and would need measuring.
 
 ### 4c. The validity domain: stated, measured, gated
+
+> ⛔ **v2.14 — this is now a CORRECTNESS PREREQUISITE, not a prudent addition.**
+> §2l measures the reduced solver returning a **converged, non-penetrating,
+> `28–109 %`-wrong** answer once the contact patch moves outside the training
+> hull. The parameter box below already names "contact configuration class",
+> so the design anticipated it — what changed is that the cost of shipping
+> without the gate is now measured rather than argued. ⚠ v2.7's retraction of
+> this section as a PERFORMANCE prerequisite is a separate claim and stands.
+> ★ `gap_dev` (the converged contact gap's drift, §2l finding 4) is a measured
+> candidate for the online signal: `0.33–0.58 d̂` out-of-domain against `3e-11`
+> in-sample.
+
 
 This mirrors `sim-soft`'s existing `ValidityDomain` on `Material` (which already gates
 `inversion` and `max_stretch_deviation`, and which `check_validity_at_step_start`
@@ -2374,7 +2453,7 @@ same door, under its own feature, and must not enter the default build.
 | rung | scope | gate | why here |
 |---|---|---|---|
 | **R0** ✅ **DONE** (`e77023c7`, `43b198a2`) | **Full-order assembly lever.** Replace the per-iteration `BTreeMap` rebuild in `assemble_free_hessian_triplets` with a pattern-indexed value buffer built once at construction. No algorithm change. | Byte-identity of the assembled triplets against the current path (the `feedback_float_refactor_byte_identity` recipe), plus a measured ms/iteration delta on the §2a fixtures. | §2d.2. Establishes the **honest baseline** the reduction is measured against. Cheap, self-contained, and a win regardless of whether anything downstream ships. |
-| **R1** ✅ **DONE** (`#744`, `#745`, R1.2) | **Linear subspace, no contact, no coupling.** POD basis from full-order snapshots on the `cantilever` fixture at 3 000 free DOF; reduced Newton with a dense `r × r` direct solve; `Φ` and quadrature both handled naively (full element sweep — **no hyper-reduction yet**). Differentiable path wired at the same time (§6, `Φ` constant). | Projection error vs the oracle < 1 % in tip displacement over the training trajectory; reduced gradient matches the oracle's to the crate's existing gradcheck tolerance. ⚠ **That second clause was wrong and was amended before R1.2 was built** — it asks two different functions to agree to 5 digits when their states already differ in the third. Split into a gradcheck-tolerance kill gate on the reduced model's *own* derivative and a measured comparison against the oracle; see the plan's §5/§7 and §13. **Wall time is explicitly NOT gated at R1** — without hyper-reduction it will not be faster, and pretending otherwise would corrupt the signal. | **The cheap kill-or-confirm.** It answers the one question that decides everything downstream: *does a low-dimensional subspace represent this material's deformation at all?* Fixture already exists; no new physics. |
+| **R1** ✅ **DONE AS SCOPED** (`#744`, `#745`, R1.2) — ⚠ **v2.14: every R1 gate was posed on a FIXED contact configuration.** §2l measures the basis failing to generalise across contact POSITIONS (`28–109 %`, flat in rank), which none of R1.0–R1.3 asked. Complete, with the scope that excluded the question deciding R3. | **Linear subspace, no contact, no coupling.** POD basis from full-order snapshots on the `cantilever` fixture at 3 000 free DOF; reduced Newton with a dense `r × r` direct solve; `Φ` and quadrature both handled naively (full element sweep — **no hyper-reduction yet**). Differentiable path wired at the same time (§6, `Φ` constant). | Projection error vs the oracle < 1 % in tip displacement over the training trajectory; reduced gradient matches the oracle's to the crate's existing gradcheck tolerance. ⚠ **That second clause was wrong and was amended before R1.2 was built** — it asks two different functions to agree to 5 digits when their states already differ in the third. Split into a gradcheck-tolerance kill gate on the reduced model's *own* derivative and a measured comparison against the oracle; see the plan's §5/§7 and §13. **Wall time is explicitly NOT gated at R1** — without hyper-reduction it will not be faster, and pretending otherwise would corrupt the signal. | **The cheap kill-or-confirm.** It answers the one question that decides everything downstream: *does a low-dimensional subspace represent this material's deformation at all?* Fixture already exists; no new physics. |
 | **R2** | **Precision decision.** Measure a full-f32 forward path on the reduced system (`r × r` is small enough to port by hand without touching the 1 396-`f64` production surface), and decide residual-in-f64-on-CPU vs compensated-summation-in-f32. | Reduced-model f32 forward drift and gradient drift vs the f64 reduced model, on R1's fixture; explicit go/no-go on whether the residual can live in f32. | §2c. Must precede any GPU work; deciding it after a shader exists means writing the shader twice. |
 | **R3** **§2i brackets its Amdahl ceiling at `20.2–20.5×`–`≳32×`** (two runs) — clear of both its own `10×` floor and the budget's `13.5–15.8×` on either bound. ✅ v2.13: the reduced path HAS now run with contact — §2k measures `I = 11.3–12.3 ms` on IPC 18 750, margin `1.36–1.47×` under `Inertial` and a FAIL of `0.92–0.98×` under `PreviousState`. ⚠ Size-dependent — `~4.5×` at 5 202, and extrapolating the two terms of `I` separately, gone by ~`26 k` free DOF. Gate is **`I ≤ 16.7 ms`** on §2h's reference box (§2j — restated in v2.8 from `≥10×`, which was a ratio over a moving baseline). | **Hyper-reduction (ECSW) + the validity domain.** NNLS training over R1's snapshots; `ReducedValidityDomain` with the online `‖q‖` + residual-proxy gate; the three error measures of §4c. | Measured speedup vs §2a's baseline (post-R0), with the three §4c errors reported alongside. Domain gate demonstrated to fire on an out-of-domain trajectory. | This is where the frame-budget win actually arrives. Also where the "smooth and wrong" failure mode is defended against. |
 | **R4** | **Hybrid domain decomposition, FIXED contact patch.** Full DOF under a stationary indenter, reduced bulk, on the `dynamic_indentation` geometry. | End-to-end reaction force vs the oracle, in the same band `bonded_layer_indentation` already asserts. | §5. Fixed patch first, because it isolates the coupling condition from the re-partitioning problem. |
@@ -2570,6 +2649,16 @@ until then, and by nobody else ever. The recipe above is the durable record.
 
 ## 10. Open risks
 
+0. ⛔ **THE BASIS DOES NOT GENERALISE ACROSS CONTACT POSITIONS, and rank does not
+   fix it (§2l, v2.14).** `28–109 %` error one to two patch-radii outside the
+   training hull, flat in rank, and **silent** — it converges and does not
+   penetrate. Listed first because it is the only measured result that can
+   invalidate R3 rather than resize it: hyper-reducing a basis that is wrong off
+   its training data makes a wrong answer cheaper. The response is §4c's gate
+   (now mandatory) plus, structurally, §5's hybrid domain decomposition — which
+   is sketched and unmeasured. ⚠ Interpolation *inside* the hull is usable
+   (`1.9e-3` on a `0.5a` grid), so the risk is a domain-coverage and gating
+   problem, not a dead end.
 1. **Every timing number was taken on a contended box (§1a).** Absolute times are
    upper bounds. The *shapes* (scaling exponents, phase shares, crossover point) are
    robust across repeats; the absolutes are not benchmark-grade. Re-take §2a on an idle
@@ -2632,6 +2721,20 @@ until then, and by nobody else ever. The recipe above is the durable record.
 
 ## 12. Version history
 
+- **v2.14 (2026-08-24)** — **§2l, new: the basis does NOT generalise across
+  contact POSITIONS.** One basis trained on five lateral indenter offsets
+  (`±1a`), scored at four positions against each one's own oracle: in-sample
+  `2.6e-6`, interpolation `1.9e-3`, extrapolation `0.28` and `1.09` — ★★★ **flat
+  in rank**, the classic advection-like POD failure, and NOT the free edge (the
+  nearer extrapolation keeps `1.5a` of clearance and fails alike). ★★★ Failure is
+  **SILENT**: the bad arms converge, complete, and do not penetrate. ★★ `gap_dev`
+  detects it anyway (`0.33–0.58 d̂` vs `3e-11`), which is not what it was built
+  for, and is a candidate online signal for §4c. ⇒ **`ReducedValidityDomain`
+  revived as a CORRECTNESS prerequisite** (v2.7's retraction of it as a
+  PERFORMANCE prerequisite stands); §7's R1 row qualified to "DONE AS SCOPED",
+  since every R1 gate was posed on a fixed contact configuration; §10 carries it
+  as risk 0, the only measured result that can invalidate R3 rather than resize
+  it.
 - **v2.13 (2026-08-24)** — **§2k, new: `I` measured on IPC 18 750, the fixture the
   requirement is stated for.** §2j had named this as the one measurement R3 was
   waiting on, because `I` had only ever been read on a contact-free cantilever
