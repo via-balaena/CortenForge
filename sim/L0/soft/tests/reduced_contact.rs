@@ -906,8 +906,8 @@ fn reduced_contact_does_not_tunnel_through_the_barrier() {
 ///   window the effect survives and is larger than it looked on the reduced
 ///   side (`1.15 → 1.50`, not `1.06 → 1.50`).
 /// - ★★ **The margin is not a constant of the ladder — it falls with size.**
-///   `I` is `3.75–3.80 ms` at 5 202 and `11.3–12.3` at 18 750 against a fixed
-///   `16.7 ms` budget, so `B/I` goes `4.4× → 1.4×`.
+///   `I` is `3.62–3.80 ms` at 5 202 and `11.3–12.3` at 18 750 against a fixed
+///   `16.7 ms` budget, so `B/I` goes `4.4–4.6× → 1.36–1.47×`.
 ///
 ///   ⚠ **Do not fit one exponent to that.** `I`'s two real terms move in
 ///   opposite directions, and the blend (`n^0.89`) is an artefact of where the
@@ -915,6 +915,7 @@ fn reduced_contact_does_not_tunnel_through_the_barrier() {
 ///
 ///   | term | 5 202 | 18 750 | scaling | share of `I` |
 ///   |---|---:|---:|---|---|
+///   *(one run at each size — the ranges above are over three and six)*
 ///   | `contact` | 1.998 | 8.468 | **`n^1.13`** | 53 % → **69 %** |
 ///   | `validity check` | 1.687 | 3.561 | `n^0.58` | 45 % → 29 % |
 ///
