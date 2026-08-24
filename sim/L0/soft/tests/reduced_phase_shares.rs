@@ -198,7 +198,7 @@ fn main_report(label: &str, wall_ms: f64, steps: usize, iters: usize) {
     let p = profile::snapshot();
     let total_instr: f64 = Phase::ALL
         .iter()
-        .filter(|ph| !matches!(ph, Phase::Contact))
+        .filter(|ph| !ph.is_nested())
         .map(|ph| p.millis(*ph))
         .sum();
     println!(
@@ -215,23 +215,28 @@ fn main_report(label: &str, wall_ms: f64, steps: usize, iters: usize) {
             continue;
         }
         let share = 100.0 * ms / wall_ms;
-        match ph.ecsw_reducible() {
-            Reducible::Yes => sure += share,
-            Reducible::PlannedByR3 => planned += share,
-            // `Reducible::No` and anything added later: counted as NOT reducible,
-            // which lowers the ceiling. `Phase` is `#[non_exhaustive]`, so a new
-            // variant reaches here silently — failing toward the pessimistic bound
-            // is the safe direction, and the label below makes it visible.
-            _ => {}
-        }
-        // ⚠ `Contact` is NESTED inside `AssembleForce` and `AssembleTangent`,
-        // both of which are reducible, so its time has already been added via its
-        // parents. ECSW cannot remove a broad-phase pair search — it replaces
-        // element quadrature — so take it back out. Missing this overstates the
-        // ceiling: when #822 first ran, 90.0 % read as 10.0x where the honest lower
-        // bound was 88.0 % / 8.3x.
-        if matches!(ph, Phase::Contact) {
-            sure -= share;
+        // ⚠ A NESTED slot's time is already in the totals via its parent, so it
+        // must not be added again — but it must be SUBTRACTED when its own ECSW
+        // class differs from the parent that carried it. `Contact` is the case
+        // that bites: irreducible, inside two reducible parents. Missing it
+        // overstates the ceiling — when #822 first ran, 90.0 % read as 10.0x
+        // where the honest lower bound was 88.0 % / 8.3x. The two
+        // `ReducedProjectTangent*` children are reducible inside a reducible
+        // parent and correctly need no adjustment.
+        if ph.is_nested() {
+            if ph.ecsw_reducible() != Reducible::Yes {
+                sure -= share;
+            }
+        } else {
+            match ph.ecsw_reducible() {
+                Reducible::Yes => sure += share,
+                Reducible::PlannedByR3 => planned += share,
+                // `Reducible::No` and anything added later: counted as NOT reducible,
+                // which lowers the ceiling. `Phase` is `#[non_exhaustive]`, so a new
+                // variant reaches here silently — failing toward the pessimistic bound
+                // is the safe direction, and the label below makes it visible.
+                _ => {}
+            }
         }
         println!(
             "║ {:<22} {:10.3} {:8.1} %  {}",
@@ -247,6 +252,22 @@ fn main_report(label: &str, wall_ms: f64, steps: usize, iters: usize) {
         );
     }
     println!("║");
+    // ★ POSITIVE CONTROL for the knob-0 split. The two children bracket every
+    // statement of the parent except `basis.modes()`, so they must very nearly
+    // exhaust it. A low figure means one of the two timers is not where its
+    // name says, and the A:B ratio below it is then meaningless.
+    let parent = p.millis(Phase::ReducedProjectTangent);
+    if parent > 0.0 {
+        let (g, c) = (
+            p.millis(Phase::ReducedProjectTangentGather),
+            p.millis(Phase::ReducedProjectTangentContract),
+        );
+        println!(
+            "║ ★ split control: Y=AΦ + ΦᵀY = {:.1} % of red proj K   (A:B = {:.2}:1)",
+            100.0 * (g + c) / parent,
+            if c > 0.0 { g / c } else { f64::NAN }
+        );
+    }
     println!(
         "║ instrumented / wall = {:.1} %",
         100.0 * total_instr / wall_ms

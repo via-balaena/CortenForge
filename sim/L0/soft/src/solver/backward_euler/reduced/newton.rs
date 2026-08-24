@@ -244,18 +244,30 @@ where
         // Y = A Φ, dense n × r, column-major by mode. `Φ` is borrowed, not rebuilt:
         // reconstructing it from unit vectors costs `O(n·r²)` per call and this runs
         // once per Newton iteration.
-        let mut y = vec![vec![0.0_f64; r]; n];
         let modes = self.basis.modes();
-        for t in &triplets {
-            let (row, col, v) = (t.row, t.col, t.val);
-            for k in 0..r {
-                y[row][k] += v * modes[k][col];
-                if row != col {
-                    y[col][k] += v * modes[k][row];
+
+        // The two loops are timed separately — they have different asymptotics
+        // (`O(nnz·r)` vs `O(n·r²)`) and want different fixes, and the parent
+        // slot cannot say which one is slow. Both slots are NESTED inside
+        // `ReducedProjectTangent`; recon §2j, knob 0.
+        let y = {
+            let _t =
+                crate::profile::Timer::start(crate::profile::Phase::ReducedProjectTangentGather);
+            let mut y = vec![vec![0.0_f64; r]; n];
+            for t in &triplets {
+                let (row, col, v) = (t.row, t.col, t.val);
+                for k in 0..r {
+                    y[row][k] += v * modes[k][col];
+                    if row != col {
+                        y[col][k] += v * modes[k][row];
+                    }
                 }
             }
-        }
+            y
+        };
 
+        let _tc =
+            crate::profile::Timer::start(crate::profile::Phase::ReducedProjectTangentContract);
         let mut a_r = DMatrix::<f64>::zeros(r, r);
         for i in 0..r {
             for j in i..r {

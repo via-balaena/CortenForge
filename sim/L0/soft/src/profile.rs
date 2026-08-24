@@ -102,9 +102,9 @@ pub enum Phase {
     /// understated contact AND silently folded the contact Hessian into
     /// `AssembleTangent` — enough to break a cross-session comparison of that
     /// share on a contact fixture, while leaving contact-free fixtures correct.
-    /// It is excluded from
-    /// [`Phases::total_nanos`] so the four disjoint slots still sum correctly,
-    /// and [`Phases::share`] reports it as a fraction of that same total, i.e.
+    /// It is [`Phase::is_nested`], so it is excluded from
+    /// [`Phases::total_nanos`] and the disjoint slots still sum correctly, and
+    /// [`Phases::share`] reports it as a fraction of that same total, i.e.
     /// "of which contact" rather than "plus contact". §2d's column reads the
     /// same way, which is why its rows come to ~99 % rather than over 100 %.
     Contact,
@@ -118,6 +118,20 @@ pub enum Phase {
     /// The assembly is already booked to [`Self::AssembleTangent`], so this slot
     /// starts after the triplets exist and the two stay disjoint.
     ReducedProjectTangent,
+    /// Of which: `Y = AΦ`, the sparse-times-dense gather (`O(nnz·r)`).
+    ///
+    /// **NESTED inside [`Self::ReducedProjectTangent`]** — see [`Self::is_nested`].
+    /// Added to answer recon §2j's knob 0: `ΦᵀAΦ` is two loops with different
+    /// asymptotics and different fixes, and the parent slot cannot say which one
+    /// is slow.
+    ReducedProjectTangentGather,
+    /// Of which: `Φᵀ Y`, the dense contraction into `r × r` (`O(n·r²)`).
+    ///
+    /// **NESTED inside [`Self::ReducedProjectTangent`]** — see [`Self::is_nested`].
+    /// Its flop count is exactly `calls · r(r+1)/2 · n · 2` and every factor is
+    /// public, so this slot's achieved flop rate is computable without any new
+    /// accessor. The sibling gather's is not — it needs the pattern `nnz`.
+    ReducedProjectTangentContract,
     /// Reduced path: the dense `r × r` Cholesky/LU and its solve (`O(r³)`).
     ///
     /// Hyper-reduction cannot touch it — ECSW replaces assembly and projection
@@ -149,7 +163,7 @@ pub enum Reducible {
 }
 
 /// Number of timing slots.
-const N_SLOTS: usize = 11;
+const N_SLOTS: usize = 13;
 
 impl Phase {
     /// Every slot, in §2d's column order.
@@ -162,6 +176,8 @@ impl Phase {
         Self::ReducedExpand,
         Self::ReducedProjectCovector,
         Self::ReducedProjectTangent,
+        Self::ReducedProjectTangentGather,
+        Self::ReducedProjectTangentContract,
         Self::ReducedDenseSolve,
         Self::ResidualForm,
         Self::ValidityCheck,
@@ -179,6 +195,8 @@ impl Phase {
             Self::ReducedExpand => "red expand",
             Self::ReducedProjectCovector => "red proj r",
             Self::ReducedProjectTangent => "red proj K",
+            Self::ReducedProjectTangentGather => "  ↳ of which Y=AΦ",
+            Self::ReducedProjectTangentContract => "  ↳ of which ΦᵀY",
             Self::ReducedDenseSolve => "red dense solve",
             Self::ResidualForm => "residual form",
             Self::ValidityCheck => "validity check",
@@ -199,13 +217,37 @@ impl Phase {
             | Self::AssembleTangent
             | Self::ReducedExpand
             | Self::ReducedProjectCovector
-            | Self::ReducedProjectTangent => Reducible::Yes,
+            | Self::ReducedProjectTangent
+            | Self::ReducedProjectTangentGather
+            | Self::ReducedProjectTangentContract => Reducible::Yes,
             Self::NumericFactor
             | Self::TriangularSolve
             | Self::Contact
             | Self::ReducedDenseSolve => Reducible::No,
             Self::ResidualForm | Self::ValidityCheck => Reducible::PlannedByR3,
         }
+    }
+
+    /// Whether this slot's time is ALSO counted inside another slot.
+    ///
+    /// Nested slots are excluded from [`Phases::total_nanos`], which is what
+    /// keeps the disjoint slots summing correctly, and [`Phases::share`]
+    /// therefore reports them as *"of which"* rather than *"plus"*.
+    ///
+    /// ⚠ **A nested slot's ECSW class is not automatically its parent's.**
+    /// [`Self::Contact`] is irreducible inside two reducible parents, so a
+    /// consumer summing reducible shares must take it back out — missing that
+    /// read `90.0 %` where the honest bound was `88.0 %` when #822 first ran.
+    /// The two `ReducedProjectTangent*` children ARE reducible, like their
+    /// parent, so they need no such correction; the rule to apply is *"adjust
+    /// when the child's class differs from the parent's"*, not *"adjust
+    /// `Contact`"*.
+    #[must_use]
+    pub const fn is_nested(self) -> bool {
+        matches!(
+            self,
+            Self::Contact | Self::ReducedProjectTangentGather | Self::ReducedProjectTangentContract
+        )
     }
 
     const fn index(self) -> usize {
@@ -218,17 +260,19 @@ impl Phase {
             Self::ReducedExpand => 5,
             Self::ReducedProjectCovector => 6,
             Self::ReducedProjectTangent => 7,
-            Self::ReducedDenseSolve => 8,
-            Self::ResidualForm => 9,
-            Self::ValidityCheck => 10,
+            Self::ReducedProjectTangentGather => 8,
+            Self::ReducedProjectTangentContract => 9,
+            Self::ReducedDenseSolve => 10,
+            Self::ResidualForm => 11,
+            Self::ValidityCheck => 12,
         }
     }
 }
 
 /// Accumulated nanoseconds and call counts per phase.
 ///
-/// ⚠ Two things this is not. [`Self::total_nanos`] sums the four DISJOINT slots
-/// — [`Phase::Contact`] is nested inside [`Phase::AssembleForce`] and would
+/// ⚠ Two things this is not. [`Self::total_nanos`] sums only the DISJOINT slots
+/// — the [`Phase::is_nested`] ones are counted through their parents and would
 /// double-count — and it is **not** elapsed step time either, since it omits
 /// everything outside an instrumented phase (residual evaluation, the line
 /// search's arithmetic, allocation). Shares are of *instrumented* work. §2d's
@@ -263,13 +307,14 @@ impl Phases {
         self.nanos(phase) as f64 / 1.0e6
     }
 
-    /// Summed nanoseconds across the four DISJOINT slots. Excludes
-    /// [`Phase::Contact`], which is nested inside [`Phase::AssembleForce`].
+    /// Summed nanoseconds across the DISJOINT slots — every slot for which
+    /// [`Phase::is_nested`] is false. The nested ones are already counted
+    /// through their parents.
     #[must_use]
     pub fn total_nanos(&self) -> u64 {
         Phase::ALL
             .iter()
-            .filter(|p| !matches!(p, Phase::Contact))
+            .filter(|p| !p.is_nested())
             .map(|p| self.nanos(*p))
             .sum()
     }
