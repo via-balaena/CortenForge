@@ -106,8 +106,29 @@ fn indenter(lx: f64, ly: f64, z: f64) -> TranslatedSdf<SphereSdf> {
     }
 }
 
+/// Fail if this arm's trajectory is not the one the other arm ran.
+///
+/// ⚠ **This is the harness's load-bearing precondition, and it used to be prose.**
+/// R0 was byte-identical, so both arms take the SAME Newton iterations on every
+/// fixture — 422 / 449 / 358 in the recorded runs. A ratio of wall times only
+/// means anything if the two arms did the same work, and a tree that perturbs the
+/// trajectory (a changed default, a different predictor, a materially different
+/// fixture) breaks that silently: the timings still print, still look plausible,
+/// and no longer measure R0. Comparing the arms cannot be done inside one process
+/// — they are separate trees — so each arm checks itself against the count both
+/// arms produced, which is the strongest check a single invocation can make.
+fn assert_same_trajectory(label: &str, iters: usize, expect: usize) {
+    assert_eq!(
+        iters, expect,
+        "{label}: {iters} Newton iterations, expected {expect}. This arm is NOT on \
+         the trajectory the other arm ran, so any wall-time ratio against it is \
+         meaningless — fix the divergence before reading a single timing. If the \
+         change is deliberate, re-record BOTH arms and update this expectation."
+    );
+}
+
 /// One fixture: the IPC indentation ramp, timed with `Instant` only.
-fn measure(a_over_cell: f64, label: &str) {
+fn measure(a_over_cell: f64, label: &str, expect_iters: usize) {
     let (n_lat, nz, lateral, h) = dims_for(a_over_cell);
     let d_hat = BAND_FRAC * DELTA;
     let z_start = h + RADIUS + 1.2 * d_hat;
@@ -176,6 +197,7 @@ fn measure(a_over_cell: f64, label: &str) {
         !per_step.is_empty(),
         "{label}: no measured steps — the ramp produced no more than WARMUP_STEPS"
     );
+    assert_same_trajectory(label, iters, expect_iters);
     let n = per_step.len();
     let mean = per_step.iter().sum::<f64>() / n as f64;
     let mut sorted = per_step.clone();
@@ -198,8 +220,8 @@ fn measure(a_over_cell: f64, label: &str) {
 #[test]
 #[ignore = "measurement, minutes long — run explicitly"]
 fn r0_ab_wall_time() {
-    for (a_over_cell, label) in [(2.0, "IPC_5202"), (3.0, "IPC_18750")] {
-        measure(a_over_cell, label);
+    for (a_over_cell, label, expect_iters) in [(2.0, "IPC_5202", 422), (3.0, "IPC_18750", 449)] {
+        measure(a_over_cell, label, expect_iters);
     }
 }
 
@@ -276,6 +298,7 @@ fn r0_ab_cantilever_control() {
     }
     let cnt = per_step.len();
     assert!(cnt > 0, "cantilever control: no measured steps");
+    assert_same_trajectory("CANTILEVER_80x8", iters, 358);
     let mean = per_step.iter().sum::<f64>() / cnt as f64;
     let mut sorted = per_step.clone();
     sorted.sort_by(|a, b| a.partial_cmp(b).expect("no NaN timings"));
