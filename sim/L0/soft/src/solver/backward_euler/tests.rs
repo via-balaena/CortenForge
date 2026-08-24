@@ -40,7 +40,7 @@ use crate::contact::NullContact;
 use crate::element::Element;
 use crate::material::{MaterialField, NeoHookean};
 use crate::mesh::{HandBuiltTetMesh, Mesh, SingleTetMesh, Tet10Mesh, TetId, VertexId};
-use crate::readout::{BoundaryConditions, LoadAxis};
+use crate::readout::{BoundaryConditions, LoadAxis, pick_vertices_by_predicate};
 use crate::solver::SolverFailure;
 use crate::solver::lm::LmState;
 use crate::solver::{CpuNewtonSolver, InitialGuess, LmConfig, Solver, SolverConfig};
@@ -3810,5 +3810,375 @@ fn factorization_fill_growth() {
             nd.factor_seconds * 1e3,
             amd.factor_seconds / nd.factor_seconds,
         );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// The step-boundary validity sweep, parallelised — recon §2i follow-up
+//
+// §2i measured the sweep at 9.3 % of a REDUCED frame, which is what puts R3's
+// Amdahl ceiling at `8.3×` against a `13.5–15.8×` requirement. The sweep is a
+// per-tet loop with no cross-element coupling, so the constant-factor answer
+// (run it on every core) is available without any of the soundness argument a
+// `ReducedValidityDomain` would need. These two tests are the pair that answer
+// "is it still the same gate?" and "was it worth it?".
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Beam dimensions for the sweep fixtures — the `reduced_phase_shares.rs`
+/// geometry, so the timing test below measures the same elements §2i's share
+/// was measured on.
+const SWEEP_LX: f64 = 0.020;
+const SWEEP_LY: f64 = 0.020;
+const SWEEP_H: f64 = 0.006;
+
+/// A cantilever whose REST state is inside every element's validity domain,
+/// returned with that rest state.
+fn validity_sweep_rig(
+    n_lat: usize,
+    nz: usize,
+) -> (crate::CpuTet4NHSolver<HandBuiltTetMesh>, Vec<f64>) {
+    let field = MaterialField::uniform(1.0e5, 4.0e5);
+    let mesh = HandBuiltTetMesh::cantilever_bilayer_beam(
+        n_lat, n_lat, nz, SWEEP_LX, SWEEP_LY, SWEEP_H, &field,
+    );
+    let mut x_rest = vec![0.0; 3 * mesh.n_vertices()];
+    for (c, p) in x_rest.chunks_exact_mut(3).zip(mesh.positions()) {
+        c[0] = p.x;
+        c[1] = p.y;
+        c[2] = p.z;
+    }
+    let pinned_vertices = pick_vertices_by_predicate(&mesh, |p: &Vec3| p.z.abs() < 1e-12);
+    let bc = BoundaryConditions {
+        pinned_vertices,
+        roller_vertices: Vec::new(),
+        loaded_vertices: Vec::new(),
+    };
+    let mut cfg = SolverConfig::skeleton();
+    cfg.dt = 1.0 / 60.0;
+    cfg.density = 1030.0;
+    (
+        CpuNewtonSolver::new(Tet4, mesh, NullContact, cfg, bc),
+        x_rest,
+    )
+}
+
+/// **The per-element predicate did not change; the REDUCTION did.** This test
+/// points at the reduction.
+///
+/// `sweep_validity_parallel` cannot return "the first violator reached", because
+/// under work-stealing that is not a defined element. It collects every violator
+/// with its id and takes the minimum. The failure mode being guarded is a
+/// reduction that returns an arbitrary violator (or the largest), which would
+/// make `SolverFailure::ValidityViolation::tet_id` — pinned by that variant's
+/// docs and by IV-7's `#[should_panic]` slot-substring contracts —
+/// nondeterministic across runs.
+///
+/// ★ Two controls, because a fixture where every element violates would pass
+/// this test under an arbitrary-violator reduction one time in `n_tets`:
+///
+/// 1. **`>= 2` violators**, so there is something for the reduction to choose
+///    between at all.
+/// 2. **the minimum violator id is not `0`**, so `min` is distinguishable from
+///    `max` and from "whatever the iterator yielded first".
+///
+/// The parallel arm is run repeatedly because a work-stealing schedule varies
+/// run to run; one agreeing sample would not be evidence.
+#[test]
+fn validity_sweep_parallel_agrees_with_sequential() {
+    // 432 tets and 1200 tets: below and above `PARALLEL_SWEEP_MIN_TETS`, so
+    // `sweep_validity` resolves each way and BOTH resolutions are checked to give
+    // the gate's verdict.
+    //
+    // ⚠ What this does NOT check is that the dispatch points the right way. It
+    // cannot: the two arms are verdict-identical by design, so an inverted size
+    // test is invisible to every correctness test and shows up only as lost speed.
+    // `validity_sweep_parallel_speedup` is the instrument for that, and a `const`
+    // assertion beside `PARALLEL_SWEEP_MIN_TETS` guards the constant itself.
+    assert_sweeps_agree(6, 2);
+    assert_sweeps_agree(10, 2);
+}
+
+/// The same ladder on **Tet10**, whose per-element certificate is far more expensive
+/// than Tet4's — so break-even should move DOWN, leaving the Tet4-derived threshold
+/// conservative rather than wrong.
+///
+/// Stated as the expectation and then measured, because "a more expensive element can
+/// only help" is exactly the kind of inference that put a regression in this file in
+/// the first place.
+///
+/// ```text
+/// cargo test --release -p sim-soft --lib -- --ignored --nocapture \
+///   validity_sweep_parallel_speedup_tet10
+/// ```
+#[test]
+#[ignore = "measurement, not a gate — see the doc comment for the command"]
+fn validity_sweep_parallel_speedup_tet10() {
+    const WARMUP: usize = 3;
+    const ROUNDS: usize = 15;
+    const SIZES: [(usize, usize); 5] = [(1, 2), (4, 2), (6, 2), (8, 2), (10, 2)];
+
+    let p50 = |v: &mut Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        v[v.len() / 2]
+    };
+
+    println!("\nVALSWEEP10\tthreads={}", rayon::current_num_threads());
+    for (n_lat, nz) in SIZES {
+        let field = MaterialField::uniform(1.0e5, 4.0e5);
+        let tet4 = HandBuiltTetMesh::cantilever_bilayer_beam(
+            n_lat, n_lat, nz, SWEEP_LX, SWEEP_LY, SWEEP_H, &field,
+        );
+        let mesh = Tet10Mesh::from_tet4(&tet4);
+        let mut x_rest = vec![0.0; 3 * mesh.n_vertices()];
+        for (c, p) in x_rest.chunks_exact_mut(3).zip(mesh.positions()) {
+            c[0] = p.x;
+            c[1] = p.y;
+            c[2] = p.z;
+        }
+        let pinned_vertices = pick_vertices_by_predicate(&mesh, |p: &Vec3| p.z.abs() < 1e-12);
+        let mut cfg = SolverConfig::skeleton();
+        cfg.dt = 1.0 / 60.0;
+        cfg.density = 1030.0;
+        let solver: CpuTet10NHSolver<Tet10Mesh> = CpuNewtonSolver::new(
+            Tet10,
+            mesh,
+            NullContact,
+            cfg,
+            BoundaryConditions {
+                pinned_vertices,
+                roller_vertices: Vec::new(),
+                loaded_vertices: Vec::new(),
+            },
+        );
+        let materials = solver.mesh.materials();
+
+        let mut x_shear = x_rest.clone();
+        for c in x_shear.chunks_exact_mut(3) {
+            c[0] += 0.15 * c[2];
+        }
+
+        let time_it = |f: &dyn Fn() -> Result<(), SolverFailure>| -> f64 {
+            let t0 = std::time::Instant::now();
+            let out = f();
+            let ms = t0.elapsed().as_secs_f64() * 1e3;
+            assert!(
+                out.is_ok(),
+                "control failed — an arm exited early on a violation"
+            );
+            ms
+        };
+
+        for (label, x) in [("rest", &x_rest), ("sheared", &x_shear)] {
+            for _ in 0..WARMUP {
+                time_it(&|| solver.sweep_validity_sequential(x, materials));
+                time_it(&|| solver.sweep_validity_parallel(x, materials));
+            }
+            let mut seq = Vec::with_capacity(ROUNDS);
+            let mut par = Vec::with_capacity(ROUNDS);
+            for _ in 0..ROUNDS {
+                seq.push(time_it(&|| solver.sweep_validity_sequential(x, materials)));
+                par.push(time_it(&|| solver.sweep_validity_parallel(x, materials)));
+            }
+            let (sq, pl) = (p50(&mut seq), p50(&mut par));
+            println!(
+                "VALSWEEP10\ttets={:<6}\t{label:<8}\tseq_p50_ms={sq:>8.4}\tpar_p50_ms={pl:>8.4}\tspeedup={:.2}x",
+                solver.mesh.n_tets(),
+                sq / pl
+            );
+        }
+    }
+}
+
+/// One mesh size's worth of [`validity_sweep_parallel_agrees_with_sequential`].
+fn assert_sweeps_agree(n_lat: usize, nz: usize) {
+    const REPEATS: usize = 32;
+
+    let (solver, x_rest) = validity_sweep_rig(n_lat, nz);
+    let materials = solver.mesh.materials();
+    let n_tets = solver.mesh.n_tets();
+
+    // The passing path: a valid state must be `Ok` on every arm, or the checks
+    // below would be comparing two different kinds of failure.
+    for (arm, got) in [
+        (
+            "sequential",
+            solver.sweep_validity_sequential(&x_rest, materials),
+        ),
+        (
+            "parallel",
+            solver.sweep_validity_parallel(&x_rest, materials),
+        ),
+        ("dispatch", solver.sweep_validity(&x_rest, materials)),
+    ] {
+        assert!(
+            got.is_ok(),
+            "{n_tets} tets: rest state must be inside the validity domain ({arm} arm)"
+        );
+    }
+
+    // One interior vertex dragged far out of the mesh: the tets incident to it
+    // are wrecked, every other tet is untouched. That gives a violator SET with
+    // a nonzero minimum, which is what makes the reduction observable.
+    let mut x_bad = x_rest;
+    let v = solver.mesh.n_vertices() / 2;
+    x_bad[3 * v] += 10.0 * SWEEP_LX;
+
+    let violators: Vec<usize> = (0..n_tets)
+        .filter(|&t| {
+            solver
+                .check_element_validity(&x_bad, t, &solver.element_geometries[t], materials)
+                .is_err()
+        })
+        .collect();
+
+    assert!(
+        violators.len() >= 2,
+        "{n_tets} tets: control failed — the fixture must produce more than one \
+         violator for the reduction to be exercised at all, got {violators:?}"
+    );
+    assert!(
+        violators[0] > 0,
+        "{n_tets} tets: control failed — the lowest violator is tet 0, so `min` is \
+         indistinguishable from `max` or from an arbitrary pick"
+    );
+
+    let expected = violators[0];
+    let seq = solver
+        .sweep_validity_sequential(&x_bad, materials)
+        .expect_err("the wrecked state must violate");
+    let SolverFailure::ValidityViolation {
+        tet_id: seq_tet,
+        message: seq_msg,
+    } = &seq
+    else {
+        panic!("{n_tets} tets: sequential sweep reported {seq:?}, not a validity violation");
+    };
+    assert_eq!(
+        *seq_tet, expected,
+        "{n_tets} tets: sequential sweep is first-violator-wins by construction"
+    );
+
+    // The parallel arm repeatedly, because a work-stealing schedule varies run to
+    // run and one agreeing sample would not be evidence. The dispatcher is checked
+    // alongside it: at this size it must resolve to one of the two, and either way
+    // the verdict is the same one.
+    for rep in 0..REPEATS {
+        for (arm, got) in [
+            (
+                "parallel",
+                solver.sweep_validity_parallel(&x_bad, materials),
+            ),
+            ("dispatch", solver.sweep_validity(&x_bad, materials)),
+        ] {
+            let err = got.expect_err("the wrecked state must violate");
+            let SolverFailure::ValidityViolation {
+                tet_id: par_tet,
+                message: par_msg,
+            } = &err
+            else {
+                panic!("{n_tets} tets: {arm} sweep reported {err:?}, not a validity violation");
+            };
+            assert_eq!(
+                *par_tet, expected,
+                "{n_tets} tets, run {rep}, {arm} arm: must report the LOWEST violating \
+                 tet (violators: {violators:?})"
+            );
+            assert_eq!(
+                par_msg, seq_msg,
+                "{n_tets} tets, run {rep}, {arm} arm: must produce the identical \
+                 message, not just the same tet id"
+            );
+        }
+    }
+}
+
+/// Was it worth it? Interleaved `seq, par, seq, par, …` on §2i's own mesh.
+///
+/// ⚠ Interleaved, not block-ordered: a `AAA…BBB` layout confounds the change
+/// with thermal drift and with whatever else the box picked up mid-run.
+///
+/// Measurement, not a gate — no threshold is asserted here, because the number
+/// that matters is what it does to §2i's `9.3 %` share, and that is read off
+/// `tests/reduced_phase_shares.rs`, not off this ratio. It also does NOT run
+/// behind `tests/refbox`'s contention gate (that module is an integration-test
+/// fixture and this is a unit test), so its absolute times are corroborating,
+/// not gate-bearing. The one assertion is a control: both arms must return
+/// `Ok`, or one of them is being timed on an early exit.
+///
+/// ⚠ **Two states, because the rest state is not representative.** At rest
+/// `F = I` exactly and the Jacobi SVD converges in fewer sweeps than on a
+/// deformed `F`, so a rest-only measurement understates the sweep.
+///
+/// ⚠ Neither state reproduces a solve's ABSOLUTE cost: a `γ = 0.15` shear is
+/// milder than the states a solve visits, and both arms read about `1.6×` cheaper
+/// here than the profile's per-sweep figures (`3.342` / `0.615 ms`). What transfers
+/// is the RATIO — `5.37×` here against `5.43×` in-solve. Equal offsets on both arms
+/// are a state-dependence; an offset on one arm would mean the timers.
+///
+/// ```text
+/// cargo test --release -p sim-soft --lib -- --ignored --nocapture \
+///   validity_sweep_parallel_speedup
+/// ```
+#[test]
+#[ignore = "measurement, not a gate — see the doc comment for the command"]
+fn validity_sweep_parallel_speedup() {
+    const WARMUP: usize = 3;
+    const ROUNDS: usize = 15;
+    /// `(n_lat, nz)` — `nz` must be even. Smallest is 12 tets, which is the
+    /// regime where rayon's per-call overhead could exceed the work.
+    /// `(n_lat, nz)` — `nz` must be even. Spans the regime where rayon's per-call
+    /// overhead exceeds the work (12 tets) through the published fixture (9 216),
+    /// so the break-even that sets `PARALLEL_SWEEP_MIN_TETS` is visible in one run.
+    const SIZES: [(usize, usize); 7] = [(1, 2), (4, 2), (6, 2), (8, 2), (10, 2), (8, 4), (16, 6)];
+
+    let p50 = |v: &mut Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        v[v.len() / 2]
+    };
+
+    println!("\nVALSWEEP\tthreads={}", rayon::current_num_threads());
+    for (n_lat, nz) in SIZES {
+        let (solver, x_rest) = validity_sweep_rig(n_lat, nz);
+        let materials = solver.mesh.materials();
+
+        // A smooth shear, `u_x = 0.15 · z`: every element sees `F ≠ I` while the
+        // principal stretches stay far inside NeoHookean's `max_stretch_deviation`
+        // of 1.0, so the sweep does its full work and still returns `Ok`.
+        let mut x_shear = x_rest.clone();
+        for c in x_shear.chunks_exact_mut(3) {
+            c[0] += 0.15 * c[2];
+        }
+
+        let time_it = |f: &dyn Fn() -> Result<(), SolverFailure>| -> f64 {
+            let t0 = std::time::Instant::now();
+            let out = f();
+            let ms = t0.elapsed().as_secs_f64() * 1e3;
+            assert!(
+                out.is_ok(),
+                "control failed — an arm exited early on a violation"
+            );
+            ms
+        };
+
+        for (label, x) in [("rest", &x_rest), ("sheared", &x_shear)] {
+            for _ in 0..WARMUP {
+                time_it(&|| solver.sweep_validity_sequential(x, materials));
+                time_it(&|| solver.sweep_validity_parallel(x, materials));
+            }
+
+            let mut seq = Vec::with_capacity(ROUNDS);
+            let mut par = Vec::with_capacity(ROUNDS);
+            for _ in 0..ROUNDS {
+                seq.push(time_it(&|| solver.sweep_validity_sequential(x, materials)));
+                par.push(time_it(&|| solver.sweep_validity_parallel(x, materials)));
+            }
+
+            let (sq, pl) = (p50(&mut seq), p50(&mut par));
+            println!(
+                "VALSWEEP\ttets={:<6}\t{label:<8}\tseq_p50_ms={sq:>8.4}\tpar_p50_ms={pl:>8.4}\tspeedup={:.2}x",
+                solver.mesh.n_tets(),
+                sq / pl
+            );
+        }
     }
 }

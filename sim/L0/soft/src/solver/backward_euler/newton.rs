@@ -16,10 +16,56 @@ use super::helpers::{
     armijo_stall_panic_message, deformation_gradient, element_node_ids, extract_element_dof_values,
     initial_guess_stall_hint, residual_into,
 };
-use super::{CpuNewtonSolver, InitialGuess};
+use super::{CpuNewtonSolver, ElementGeometry, InitialGuess};
 
 /// Armijo sufficient-decrease constant (scope §5 R-1).
 const ARMIJO_C1: f64 = 1e-4;
+
+/// Mesh size at or above which the step-boundary validity sweep runs under rayon.
+///
+/// ★ **PILOTED, not chosen** — and the pilot found a REGRESSION, which is why this
+/// constant exists at all. Entering rayon costs ~`60 µs` whatever the work, so on a
+/// small mesh the parallel sweep is slower than the serial one it replaced.
+/// Measured (`validity_sweep_parallel_speedup`, 12 threads, sheared state):
+///
+/// | tets | speedup |
+/// |---:|---:|
+/// | 12 | **0.12×** |
+/// | 192 | **0.55×** |
+/// | 432 | 1.02× |
+/// | 1 200 | 1.75× |
+/// | 9 216 | 5.48× |
+///
+/// Break-even is ~`430` tets on a deformed state and ~`680` on the rest state (which
+/// costs less per element, so it needs more of them to cover the same overhead). This
+/// sits ABOVE both: the parallel path is taken only where it clearly pays, not at the
+/// crossover, because avoiding a regression on the small meshes the skeleton solver and
+/// the unit fixtures use is worth more than a marginal `1.3×` on a mid-sized one.
+///
+/// ⚠ Not a tuning knob and deliberately not configurable — it is a property of this
+/// box's rayon dispatch cost, and it should be re-piloted, not adjusted, if that
+/// changes. The published `§2i` figures are unaffected: that fixture is 9 216 tets and
+/// `§2h`'s reference probe is 3 840, both far above.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) const PARALLEL_SWEEP_MIN_TETS: usize = 1024;
+
+/// The threshold must stay above where the parallel sweep starts paying.
+///
+/// [`PARALLEL_SWEEP_MIN_TETS`] is a piloted number whose pilot lives in an `#[ignore]`d
+/// measurement, so nothing else would stop a later edit from lowering it back into the
+/// regression band. A `const` assertion rather than a test: it fails the BUILD, and a
+/// filtered test run cannot skip it.
+///
+/// ⚠ A static bound, not a measurement — it cannot notice that the break-even itself has
+/// moved (a different box, a cheaper per-element check, a different rayon). Re-run
+/// `validity_sweep_parallel_speedup` when any of those change.
+#[cfg(not(target_arch = "wasm32"))]
+const _: () = assert!(
+    PARALLEL_SWEEP_MIN_TETS > 680,
+    "PARALLEL_SWEEP_MIN_TETS is at or below the measured break-even (~680 tets on the \
+     rest state), so the parallel validity sweep would be taken where it is SLOWER than \
+     the serial one. Re-pilot with `validity_sweep_parallel_speedup` before changing it."
+);
 
 /// Local stall-info carrier returned by [`CpuNewtonSolver::armijo_backtrack`]
 /// when the line search exhausts its backtrack budget (F3.3 per
@@ -51,12 +97,20 @@ where
     /// deformation gradient `F` evaluated at `x_curr` (Phase 4 commit
     /// 12, IV-7 per scope memo Decision Q).
     ///
-    /// First-violator-wins: walks tets in ascending `tet_id` order, evaluates
-    /// `F = Σ_a x_{a,i} · ∂N_a/∂X_j`, and returns
-    /// [`SolverFailure::ValidityViolation`] for the first tet whose `F` falls
-    /// outside the declared [`crate::ValidityDomain`] (the `step` /
+    /// First-violator-wins: evaluates `F = Σ_a x_{a,i} · ∂N_a/∂X_j` on every tet
+    /// and returns [`SolverFailure::ValidityViolation`] for the LOWEST-id tet
+    /// whose `F` falls outside the declared [`crate::ValidityDomain`] (the `step` /
     /// `replay_step` wrappers turn that `Err` into the panic; this method
-    /// itself does not panic on a violation). The two slots checkable from `F`
+    /// itself does not panic on a violation).
+    ///
+    /// ⚠ *Lowest id*, not *first reached*: on native the sweep runs under rayon
+    /// and reduces by `min_by_key`, so traversal order is unspecified while the
+    /// verdict — and the `tet_id` in the message — is not. See
+    /// `sweep_validity_parallel` (no intra-doc link: it does not exist on wasm32),
+    /// and `validity_sweep_parallel_agrees_with_sequential` for the equivalence
+    /// test.
+    ///
+    /// The two slots checkable from `F`
     /// for every base [`Material`] impl Phase 4 ships are
     /// `inversion` (`det F ≤ 0`, or non-finite, under
     /// [`InversionHandling::RequireOrientation`]) and
@@ -162,95 +216,249 @@ where
             self.element_geometries.len(),
             self.mesh.n_tets(),
         );
+        self.sweep_validity(x_curr, materials)
+    }
+
+    /// The sweep itself, dispatched by target and by mesh size: rayon on native
+    /// from [`PARALLEL_SWEEP_MIN_TETS`] tets up, sequential below it and on wasm32.
+    ///
+    /// Split out of [`Self::check_validity_at_step_start`] so the gate's
+    /// preconditions (the extent assertion, the timer) are stated once and both
+    /// arms inherit them.
+    ///
+    /// ⚠ Neither test is an optimisation; both are REGRESSION FIXES, because below
+    /// the threshold the parallel sweep is measurably slower than the serial one it
+    /// replaced — `0.10×` at 12 tets on the default 12-thread pool. See
+    /// [`PARALLEL_SWEEP_MIN_TETS`].
+    ///
+    /// ★ The thread test is separate because the two regressions have different
+    /// shapes. The size one is a WAKEUP cost and scales with the pool: it is worst at
+    /// 12 threads and nearly absent at 1. The thread one is the opposite — in a
+    /// single-thread pool the parallel path cannot win at any size and measures
+    /// `0.94–0.99×` across the whole ladder, a small standing loss that no size
+    /// threshold removes. One `usize` compare and one relaxed load to remove both.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn sweep_validity(
+        &self,
+        x_curr: &[f64],
+        materials: &[M],
+    ) -> Result<(), SolverFailure> {
+        if self.element_geometries.len() >= PARALLEL_SWEEP_MIN_TETS
+            && rayon::current_num_threads() > 1
+        {
+            self.sweep_validity_parallel(x_curr, materials)
+        } else {
+            self.sweep_validity_sequential(x_curr, materials)
+        }
+    }
+
+    /// wasm32 has no threads to give — same verdict, one core. See the
+    /// `[target.'cfg(not(target_arch = \"wasm32\"))']` block in `Cargo.toml` for
+    /// why the dependency itself is native-only.
+    #[cfg(target_arch = "wasm32")]
+    pub(super) fn sweep_validity(
+        &self,
+        x_curr: &[f64],
+        materials: &[M],
+    ) -> Result<(), SolverFailure> {
+        self.sweep_validity_sequential(x_curr, materials)
+    }
+
+    /// The sweep under rayon, **verdict-identical to
+    /// `sweep_validity_sequential`** (no intra-doc link: that one is
+    /// `cfg(any(wasm32, test))`, so it is absent from a native doc build).
+    ///
+    /// ★ First-violator-wins is preserved by the `min_by_key`, not by traversal
+    /// order: every element is checked, the violators are collected with their
+    /// ids, and the lowest id wins. Reducing by "whichever worker finished first"
+    /// would make the reported `tet_id` — which IV-7's `#[should_panic]` contracts
+    /// and the `SolverFailure::ValidityViolation` docs both pin — nondeterministic.
+    ///
+    /// ⚠ Two costs this pays that the sequential path does not, both on the
+    /// FAILING path only:
+    ///
+    /// 1. **No early exit.** The sequential sweep returns at the first violator;
+    ///    this one evaluates all `n_tets` before reducing. A step that fails
+    ///    validity therefore pays a full sweep. That is the same work a PASSING
+    ///    step pays, which is the case the frame budget is written against, and a
+    ///    failed step is discarded by the caller anyway.
+    /// 2. **One `format!` per violator**, not one per step: a mesh that is
+    ///    wholesale inverted allocates a message it will not print. Bounded by
+    ///    `n_tets` and confined to the failure path.
+    ///
+    /// Both are deliberate. The alternative — a cheap boolean pre-pass to find the
+    /// minimum violating id, then re-running the full check on it — would put the
+    /// predicate in two places, and two copies of a validity predicate is exactly
+    /// the drift this gate cannot afford.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn sweep_validity_parallel(
+        &self,
+        x_curr: &[f64],
+        materials: &[M],
+    ) -> Result<(), SolverFailure> {
+        use rayon::prelude::*;
+
+        self.element_geometries
+            .par_iter()
+            .enumerate()
+            .filter_map(|(tet_id, geom)| {
+                self.check_element_validity(x_curr, tet_id, geom, materials)
+                    .err()
+                    .map(|failure| (tet_id, failure))
+            })
+            .min_by_key(|&(tet_id, _)| tet_id)
+            .map_or(Ok(()), |(_, failure)| Err(failure))
+    }
+
+    /// The sweep on one core, ascending by `tet_id`, returning at the first
+    /// violator.
+    ///
+    /// Three callers, which is why it is unconditional: it is wasm32's sweep, it is
+    /// the native sweep BELOW [`PARALLEL_SWEEP_MIN_TETS`], and it is the A/B baseline
+    /// that `validity_sweep_parallel_speedup` interleaves against
+    /// `sweep_validity_parallel` in one binary (no intra-doc link: that one is absent
+    /// on wasm32). Measuring a rewrite against a copy of the old code in a test would
+    /// measure the copy.
+    pub(super) fn sweep_validity_sequential(
+        &self,
+        x_curr: &[f64],
+        materials: &[M],
+    ) -> Result<(), SolverFailure> {
         for (tet_id, geom) in self.element_geometries.iter().enumerate() {
-            let validity = materials[tet_id].validity();
+            self.check_element_validity(x_curr, tet_id, geom, materials)?;
+        }
+        Ok(())
+    }
 
-            // Inversion check first, for two reasons — neither of which is that
-            // the stretch verdict would be wrong otherwise. `|σ − 1|` is a
-            // genuine bound whatever the orientation, since singular values are
-            // orientation-blind (`σ(F) = σ(RF)` for a reflection `R`).
-            //   1. Attribution: first-violator-wins, so an inverted element
-            //      should be reported on the slot that names the actual defect
-            //      rather than on whatever stretch bound it also happens to trip.
-            //   2. The stretch reductions below SWALLOW non-finite values (see
-            //      their comment), so SOME slot must reject a non-finite `det F`.
-            //      ⚠ Order is not what secures that: both slots run in the same
-            //      loop iteration, so a `NaN` is caught either way and only the
-            //      ATTRIBUTION depends on which runs first. Reason (1) is the
-            //      whole reason for the ordering; this is a reason the sweep must
-            //      EXIST, which is a different claim.
-            // Programs that allow `det F <= 0` declare a non-`RequireOrientation`
-            // inversion handler, and Phase 4 has none — Phase H may add
-            // `Barrier` / `OptIn` variants when an impl needs them. ⚠ A variant
-            // that skips this sweep arms the NaN hole named in (2).
-            if matches!(validity.inversion, InversionHandling::RequireOrientation) {
-                self.check_orientation(x_curr, tet_id)?;
+    /// One element's verdict — the whole per-tet body of the gate, and the only
+    /// copy of it.
+    ///
+    /// Pure in `(x_curr, tet_id, geom, materials)` and reads nothing mutable off
+    /// `self`, which is what lets the sweep above run it on every core: `Mesh`,
+    /// `Material`, `Element` and `ContactModel` are all already `Send + Sync`
+    /// supertraits, so parallelising cost no new bound and changed no signature.
+    ///
+    /// `materials` is passed in rather than re-read per element — `Mesh::materials`
+    /// is a trait call the sweep would otherwise make `n_tets` times.
+    //
+    // similar_names: `tet_id`/`tet` mirrors the assembly methods.
+    // cast_possible_truncation: same Mesh-trait API tax as the
+    // assembly methods.
+    #[allow(clippy::similar_names, clippy::cast_possible_truncation)]
+    pub(super) fn check_element_validity(
+        &self,
+        x_curr: &[f64],
+        tet_id: usize,
+        geom: &ElementGeometry,
+        materials: &[M],
+    ) -> Result<(), SolverFailure> {
+        let validity = materials[tet_id].validity();
+
+        // Inversion check first, for two reasons — neither of which is that
+        // the stretch verdict would be wrong otherwise. `|σ − 1|` is a
+        // genuine bound whatever the orientation, since singular values are
+        // orientation-blind (`σ(F) = σ(RF)` for a reflection `R`).
+        //   1. Attribution: first-violator-wins, so an inverted element
+        //      should be reported on the slot that names the actual defect
+        //      rather than on whatever stretch bound it also happens to trip.
+        //   2. The stretch reductions below SWALLOW non-finite values (see
+        //      their comment), so SOME slot must reject a non-finite `det F`.
+        //      ⚠ Order is not what secures that: both slots run in the same
+        //      element check, so a `NaN` is caught either way and only the
+        //      ATTRIBUTION depends on which runs first. Reason (1) is the
+        //      whole reason for the ordering; this is a reason the sweep must
+        //      EXIST, which is a different claim.
+        // Programs that allow `det F <= 0` declare a non-`RequireOrientation`
+        // inversion handler, and Phase 4 has none — Phase H may add
+        // `Barrier` / `OptIn` variants when an impl needs them. ⚠ A variant
+        // that skips this certificate arms the NaN hole named in (2).
+        if matches!(validity.inversion, InversionHandling::RequireOrientation) {
+            self.check_orientation(x_curr, tet_id)?;
+        }
+
+        // Principal-stretch bounds: SVD `F = U Σ V^T` gives
+        // singular values `σ_i` which are the principal stretches.
+        // `f.svd_unordered(false, false)` skips U/V (we only need
+        // σ); cheap O(27) FLOPs per tet.
+        //
+        // ⚠ These reductions SWALLOW non-finite values: Rust's `f64::max` /
+        // `f64::min` return the non-NaN operand, so a `NaN` σ would report
+        // `max_dev = 0.0` / `min_sigma = INFINITY` and PASS. Safe only
+        // because the inversion certificate above rejects a non-finite `det F`
+        // first, for every material that declares `RequireOrientation` —
+        // which today is all of them. Adding a variant that skips the sweep
+        // means adding an `is_finite` guard here.
+        //
+        // Nothing orientation-negative reaches here, for either element
+        // type: the certificate above checks the Gauss points AND the corner
+        // block, so both `F`s this slot could read are already known
+        // positive-oriented.
+        //
+        // ⚠ An earlier revision of this comment said the opposite — that a
+        // corner-negative Tet10 was "no longer gated at all", and called
+        // that deliberate on the grounds that no constitutive law is
+        // evaluated at the corner `F`. That was the rationalization for a
+        // real hole: such an element passed the whole gate (this slot
+        // abstains too, since σ are orientation-blind, so `diag(1,1,-1)`
+        // reports `max_dev = 0`) and the solve returned `Ok` with a folded
+        // element in it. The corner block is gated again. Do not restore
+        // the argument.
+        //
+        // Two gate flavors (Yeoh arc memo D8): if either of the new
+        // asymmetric bounds is `Some`, gate per-bound; else fall
+        // back to the legacy NH symmetric `max_i |σ_i - 1|` bound.
+        //
+        // Edge case: `(Some, None)` or `(None, Some)` checks only
+        // the populated bound — the other direction is unchecked.
+        // No production constructor reaches that state today (every
+        // `SiliconeMaterial::to_yeoh` sets both via
+        // `with_principal_stretch_bounds`); future asymmetric-only
+        // callers opt into the unchecked direction by construction.
+        //
+        // Still read from the single-point corner geometry (for Tet4 the
+        // constant strain; for Tet10 the affine corner block) — the
+        // inversion certificate above deliberately does not share this `F`. See
+        // `check_validity_at_step_start`'s doc for why only one of the two slots
+        // moved.
+        let verts = self.mesh.tet_vertices(tet_id as TetId);
+        let x_elem = extract_element_dof_values(x_curr, &verts);
+        let f = deformation_gradient(&x_elem, &geom.grad_x_n);
+        let svd = f.svd_unordered(false, false);
+        let sigma = svd.singular_values;
+        match (
+            validity.max_principal_stretch,
+            validity.min_principal_stretch,
+        ) {
+            (None, None) => {
+                let max_dev = sigma
+                    .iter()
+                    .map(|s| (s - 1.0).abs())
+                    .fold(0.0_f64, f64::max);
+                let bound = validity.max_stretch_deviation;
+                if max_dev > bound {
+                    return Err(SolverFailure::ValidityViolation {
+                        tet_id,
+                        message: format!(
+                            "validity violation at tet {tet_id}: max_stretch_deviation \
+                             = {max_dev:.3} exceeds bound {bound:.3} (singular values \
+                             of F = [{s0:.3}, {s1:.3}, {s2:.3}]). Phase 4 scope memo \
+                             Decision Q fail-closed semantics.",
+                            s0 = sigma[0],
+                            s1 = sigma[1],
+                            s2 = sigma[2],
+                        ),
+                    });
+                }
             }
-
-            // Principal-stretch bounds: SVD `F = U Σ V^T` gives
-            // singular values `σ_i` which are the principal stretches.
-            // `f.svd_unordered(false, false)` skips U/V (we only need
-            // σ); cheap O(27) FLOPs per tet.
-            //
-            // ⚠ These reductions SWALLOW non-finite values: Rust's `f64::max` /
-            // `f64::min` return the non-NaN operand, so a `NaN` σ would report
-            // `max_dev = 0.0` / `min_sigma = INFINITY` and PASS. Safe only
-            // because the inversion sweep above rejects a non-finite `det F`
-            // first, for every material that declares `RequireOrientation` —
-            // which today is all of them. Adding a variant that skips the sweep
-            // means adding an `is_finite` guard here.
-            //
-            // Nothing orientation-negative reaches here, for either element
-            // type: the sweep above checks the Gauss points AND the corner
-            // block, so both `F`s this slot could read are already known
-            // positive-oriented.
-            //
-            // ⚠ An earlier revision of this comment said the opposite — that a
-            // corner-negative Tet10 was "no longer gated at all", and called
-            // that deliberate on the grounds that no constitutive law is
-            // evaluated at the corner `F`. That was the rationalization for a
-            // real hole: such an element passed the whole gate (this slot
-            // abstains too, since σ are orientation-blind, so `diag(1,1,-1)`
-            // reports `max_dev = 0`) and the solve returned `Ok` with a folded
-            // element in it. The corner block is gated again. Do not restore
-            // the argument.
-            //
-            // Two gate flavors (Yeoh arc memo D8): if either of the new
-            // asymmetric bounds is `Some`, gate per-bound; else fall
-            // back to the legacy NH symmetric `max_i |σ_i - 1|` bound.
-            //
-            // Edge case: `(Some, None)` or `(None, Some)` checks only
-            // the populated bound — the other direction is unchecked.
-            // No production constructor reaches that state today (every
-            // `SiliconeMaterial::to_yeoh` sets both via
-            // `with_principal_stretch_bounds`); future asymmetric-only
-            // callers opt into the unchecked direction by construction.
-            //
-            // Still read from the single-point corner geometry (for Tet4 the
-            // constant strain; for Tet10 the affine corner block) — the
-            // inversion sweep above deliberately does not share this `F`. See
-            // this method's doc for why only one of the two slots moved.
-            let verts = self.mesh.tet_vertices(tet_id as TetId);
-            let x_elem = extract_element_dof_values(x_curr, &verts);
-            let f = deformation_gradient(&x_elem, &geom.grad_x_n);
-            let svd = f.svd_unordered(false, false);
-            let sigma = svd.singular_values;
-            match (
-                validity.max_principal_stretch,
-                validity.min_principal_stretch,
-            ) {
-                (None, None) => {
-                    let max_dev = sigma
-                        .iter()
-                        .map(|s| (s - 1.0).abs())
-                        .fold(0.0_f64, f64::max);
-                    let bound = validity.max_stretch_deviation;
-                    if max_dev > bound {
+            (max_p, min_p) => {
+                if let Some(max) = max_p {
+                    let max_sigma = sigma.iter().fold(0.0_f64, |a, &b| a.max(b));
+                    if max_sigma > max {
                         return Err(SolverFailure::ValidityViolation {
                             tet_id,
                             message: format!(
-                                "validity violation at tet {tet_id}: max_stretch_deviation \
-                                 = {max_dev:.3} exceeds bound {bound:.3} (singular values \
+                                "validity violation at tet {tet_id}: max_principal_stretch \
+                                 = {max_sigma:.3} exceeds bound {max:.3} (singular values \
                                  of F = [{s0:.3}, {s1:.3}, {s2:.3}]). Phase 4 scope memo \
                                  Decision Q fail-closed semantics.",
                                 s0 = sigma[0],
@@ -260,40 +468,21 @@ where
                         });
                     }
                 }
-                (max_p, min_p) => {
-                    if let Some(max) = max_p {
-                        let max_sigma = sigma.iter().fold(0.0_f64, |a, &b| a.max(b));
-                        if max_sigma > max {
-                            return Err(SolverFailure::ValidityViolation {
-                                tet_id,
-                                message: format!(
-                                    "validity violation at tet {tet_id}: max_principal_stretch \
-                                     = {max_sigma:.3} exceeds bound {max:.3} (singular values \
-                                     of F = [{s0:.3}, {s1:.3}, {s2:.3}]). Phase 4 scope memo \
-                                     Decision Q fail-closed semantics.",
-                                    s0 = sigma[0],
-                                    s1 = sigma[1],
-                                    s2 = sigma[2],
-                                ),
-                            });
-                        }
-                    }
-                    if let Some(min) = min_p {
-                        let min_sigma = sigma.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-                        if min_sigma < min {
-                            return Err(SolverFailure::ValidityViolation {
-                                tet_id,
-                                message: format!(
-                                    "validity violation at tet {tet_id}: min_principal_stretch \
-                                     = {min_sigma:.3} below bound {min:.3} (singular values \
-                                     of F = [{s0:.3}, {s1:.3}, {s2:.3}]). Phase 4 scope memo \
-                                     Decision Q fail-closed semantics.",
-                                    s0 = sigma[0],
-                                    s1 = sigma[1],
-                                    s2 = sigma[2],
-                                ),
-                            });
-                        }
+                if let Some(min) = min_p {
+                    let min_sigma = sigma.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+                    if min_sigma < min {
+                        return Err(SolverFailure::ValidityViolation {
+                            tet_id,
+                            message: format!(
+                                "validity violation at tet {tet_id}: min_principal_stretch \
+                                 = {min_sigma:.3} below bound {min:.3} (singular values \
+                                 of F = [{s0:.3}, {s1:.3}, {s2:.3}]). Phase 4 scope memo \
+                                 Decision Q fail-closed semantics.",
+                                s0 = sigma[0],
+                                s1 = sigma[1],
+                                s2 = sigma[2],
+                            ),
+                        });
                     }
                 }
             }

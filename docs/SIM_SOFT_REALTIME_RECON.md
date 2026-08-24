@@ -966,7 +966,17 @@ and refuses to report if the count varies**; it caught a `[2, 3, 3, …]` first
 step on its first run and declared itself invalid until warm-up was raised.
 
 Thresholds were **piloted, not chosen** — 10 runs idle, then under deliberate
-load:
+load. ⚠ The table below is the **second** pilot: §2i's parallel validity sweep
+moved the probe's quiet median `24.47 → 22.75 ms`, the floor caught it, and every
+constant was re-derived. The first pilot's numbers are kept underneath because
+the two agree on the finding.
+
+| load | `burst` (max/p50) | probe median |
+|---|---|---:|
+| idle (10 runs) | 1.008 – **1.054** | 22.60 – **23.36** ms |
+| 4 cores busy (10 runs) | 1.030 – **1.078** | **24.17** – 24.93 ms |
+
+First pilot, before the sweep went parallel:
 
 | load | `burst` (max/p50) | probe median |
 |---|---|---:|
@@ -976,25 +986,51 @@ load:
 | 12 cores busy | 2.374 – 5.873 | 82.0 – 143.9 ms |
 
 ⚠ **The finding: `burst` does NOT detect sustained partial load.** At 4 busy
-cores it reads `1.063×` against an idle maximum of `1.060×` — no separation —
-because steady load slows *every* step and therefore lands in the median. An
-earlier draft of the probe documented `burst` as "the contention statistic" and
-claimed a median would hide what it catches; that was backwards, and the pilot
-is what said so. Both checks ship, for different failure modes:
+cores the second pilot reads `1.030–1.078×` against an idle `1.008–1.054×` — the
+two ranges are `2.3 %` apart, no separation — because steady load slows *every*
+step and therefore lands in the median. An earlier draft of the probe documented
+`burst` as "the contention statistic" and claimed a median would hide what it
+catches; that was backwards, and the pilot is what said so. **Replicated on a
+different tree**, which is more than the original finding had. Both checks ship,
+for different failure modes:
 
-- **`probe median ≤ 25.5 ms`** — the sensitive check. Sits in the measured gap
-  between idle max `24.70` and the lightest contaminated case `25.83`. Only
-  `3.3 %` headroom, deliberately; a genuine baseline shift must be re-piloted,
+- **`probe median ≤ 23.7 ms`** — the sensitive check. Sits in the measured gap
+  between idle max `23.36` and the lightest contaminated case `24.17`. Only
+  `1.5 %` headroom, deliberately; a genuine baseline shift must be re-piloted,
   not accommodated by widening this.
 - **`burst ≤ 1.30×`** — the gross-stall backstop, for a few long preemptions on
-  a box whose median looks fine.
-- **`probe median ≥ 21.0 ms`** — not a contention check. Catches the probe
+  a box whose median looks fine. Unchanged.
+- **`probe median ≥ 19.5 ms`** — not a contention check. Catches the probe
   getting *cheaper*, which means the workload or solver moved and every constant
-  here is stale.
+  here is stale. **It has now done exactly that once**, which is what produced
+  this second pilot.
 
-Negative-controlled end to end: with 3 cores busy the gate refuses a
-gate-bearing run in **0.69 s**, naming the cause — and `burst` read `1.02×` in
-that same run, which is precisely why it is not the gate on its own.
+Negative-controlled end to end, both pilots: 3 cores busy refused a gate-bearing
+run in `0.69 s` under the first, 4 cores busy in **`0.62 s`** under the second
+(probe median `23.92 ms`), each naming the cause. Under the first, `burst` read
+`1.02×` in the refusing run — precisely why it is not the gate on its own.
+
+⚠⚠ **The probe measures the SUT, so this recurs.** It is a **full-order** solve, so
+every optimisation on the full-order path invalidates all four constants. ⚠ Note what
+that does NOT include `project_tangent`, §2i's next item: it is purely reduced-path and
+the probe never runs the reduced path, so these constants should hold across it. ⚠ It
+DOES include one change §2i openly invites — the probe is built with `NullContact`, so it
+pays the same broad-phase and marshalling §2i measures at `2.9 %` and calls "free to
+remove". Removing it would move the probe. So would any change to full-order assembly,
+ordering or factorization. The design that would not need
+re-baselining
+is a probe independent of the code under test — a fixed synthetic workload
+measuring the box alone. Deliberately not taken: the present probe is *measured*
+to load the phase the gate-bearing runs are bottlenecked on, and a synthetic one
+would have to re-earn that. Named so the next re-pilot can weigh the swap rather
+than rediscover the cost.
+
+⚠ **The same probe spreads `~7 %` across test BINARIES of one tree.** Readings of
+`21.79` / `21.94 ms` came from `--features phase-timing` builds while
+`refbox_pilot` and `r0_ab` sat at `22.6–23.4 ms`. Four observations is not an
+explanation, but it is a floor under how tight any of these constants can ever be,
+and `PROBE_P50_FLOOR_MS` is set from the lowest of them rather than from the
+pilot's own minimum.
 
 ⚠ **The pilot's 10 runs undersample the tail, and the first real gated run said
 so**: it passed at probe median `24.59 ms` (3.7 % under the ceiling) with burst
@@ -1007,10 +1043,11 @@ finding.
 #### ⚠ The gate is WEAKER for cross-tree A/B, and that is measured
 
 `tests/r0_ab.rs` runs the same fixture on two trees, and the probe is
-`cantilever 40×4` — a fixture **R0 itself speeds up**. On the pre-R0 tree the
-probe reads **57.39 ms** against post-R0's **24.47 ms** (`2.35×`), so applying the
-absolute median ceiling would reject the pre-R0 arm on every run and the A/B
-could never execute. This was caught by review before it shipped, not by the
+`cantilever 40×4` — a fixture **the optimisations themselves speed up**. On the
+pre-R0 tree the probe reads **57.39 ms** against **24.47 ms** at R0 and
+**22.75 ms** once the validity sweep went parallel, so applying the absolute
+median ceiling would reject the pre-R0 arm on every run and the A/B could never
+execute. This was caught by review before it shipped, not by the
 gate.
 
 `burst` IS scale-free and does transfer — idle pre-R0 reads `1.013–1.063×`
@@ -1047,7 +1084,7 @@ families (`1.60× / 1.56× / 1.08×` … and `0.51×`), so a plausible-looking s
 factor would be worse than none. Anything measured elsewhere is a different
 number wearing the same name.
 
-### 2i. R3's Amdahl ceiling — measured, and it straddles the requirement
+### 2i. R3's Amdahl ceiling — measured, and then unstraddled
 
 §4b picks ECSW on a literature claim of **2–3 orders of magnitude**. That is a
 speedup on *element integration*; R3's whole-step gain is capped by whatever
@@ -1056,7 +1093,13 @@ full-order path and the reduced solver carried no timers — so R3 was about to 
 built without knowing its own ceiling (`tests/reduced_phase_shares.rs`).
 
 **R1.1's operating point**: `16×16×6` cantilever bilayer, 5 202 free DOF, `r = 40`,
-`NullContact`, `72.07 ms/step`, 4.00 Newton iterations/step.
+`NullContact`, 4.00 Newton iterations/step.
+
+Measured, the bracket **straddled** the requirement — and one line of the table
+decided it. That line has since been fixed. Both measurements are kept, because
+the route from the first to the second is the reusable part.
+
+#### As first measured (#822) — `72.07 ms/step`, the sweep serial
 
 | phase | ms/step | share | ECSW removes it? |
 |---|---:|---:|---|
@@ -1077,39 +1120,190 @@ Instrumented/wall **99.9 %**, so the denominator is essentially complete.
 | certain only | 88.0 % | **8.3×** |
 | plus what R3's own design removes | 97.4 % | **≳37×** ⚠ |
 
-> ### The bracket is 8.3× … ≳37×. R3 needs 13.5–15.8×, with a 10× floor.
+`8.3× … ≳37×` against a `13.5–15.8×` requirement and a `10×` floor: it straddled
+both, so **the bound decided everything**, and what moved the bound was almost
+entirely the `validity check` row.
+
+#### What that row actually was: a serial `for` loop
+
+`check_validity_at_step_start` walks every tet — a `det F` certificate plus a 3×3
+SVD — and runs twice per step, at step start and again on convergence. No
+cross-element coupling. `Mesh`, `Material`, `Element` and `ContactModel` were
+already `Send + Sync` supertraits, so it parallelises with **no new trait bound
+and no signature change**.
+
+Under rayon on the reference box (12 threads, 9 216 tets):
+
+| state | sequential | parallel | speedup |
+|---|---:|---:|---:|
+| rest | 1.506 ms | 0.311 ms | 4.83× |
+| sheared `u_x = 0.15 z` | 2.050 ms | 0.382 ms | **5.37×** |
+
+⚠ The two states differ because at rest `F = I` exactly and the Jacobi SVD converges
+in fewer sweeps, so a rest-only measurement understates the sweep. ⚠ These are lib unit
+tests and therefore **not behind §2h's contention gate** — corroborating, not
+gate-bearing. The gate-bearing figures are the profile shares below.
+
+★ **The two instruments cross-check, and the way they disagree is the check.** Per sweep
+(2 per step), the profile gives `6.684/2 = 3.342 ms` sequential and `1.229/2 = 0.615 ms`
+parallel — both about `1.6×` ABOVE the microbench (`1.63×` and `1.61×`), because a solve
+visits states more deformed than a `γ = 0.15` shear. The absolutes do not transfer; the
+**ratio does**, `5.43×` in-solve against `5.37×` on the bench. An offset that is equal on
+both arms is what a state-dependence looks like — a discrepancy on only one arm would
+mean the timers.
+
+Verdict-identical, and that is a property of the reduction rather than of the
+traversal: violators are collected with their ids and reduced by `min_by_key`, so
+first-violator-wins survives an unspecified visit order. The cost is paid only on
+the failing path — no early exit, one `format!` per violator.
+
+#### ⛔ …but below ~500 tets it is a REGRESSION, and that needed a threshold
+
+The `5.37×` above is one mesh size. Swept, entering rayon costs a fixed ~`60 µs`
+whatever the work, so on a small mesh the parallel sweep is **slower than the serial
+one it replaced**:
+
+| tets | seq | par | speedup |
+|---:|---:|---:|---:|
+| 12 | 0.0068 ms | 0.0578 ms | **0.12×** |
+| 192 | 0.0909 | 0.1666 | **0.55×** |
+| 432 | 0.1630 | 0.1599 | 1.02× |
+| 1 200 | 0.2806 | 0.1608 | 1.75× |
+| 9 216 | 2.0239 | 0.3696 | 5.48× |
+
+Break-even is ~`430` tets deformed, ~`680` at rest (cheaper per element, so it needs
+more of them to cover the same overhead). The skeleton solver is **one** tet, and the
+unit fixtures are in the hundreds — so as first written this change made the gate up to
+`8×` slower on exactly the meshes most of the suite uses.
+
+`sweep_validity` now dispatches on `PARALLEL_SWEEP_MIN_TETS = 1024`, set above both
+break-evens so the parallel path is taken only where it clearly pays rather than at the
+crossover. Guarded by a `const` assertion beside it — a BUILD failure, not a test, so a
+filtered run cannot skip it — if the constant is lowered back into the measured
+regression band.
+
+⚠ **Neither published figure moves**: §2i's fixture is 9 216 tets and §2h's probe is
+3 840, both far above the threshold — confirmed by re-running both after the fix.
+
+★ This was caught by sweeping a knob the first measurement held fixed. The speedup was
+real and reproducible at the size it was measured at; what was wrong was the unstated
+generalisation to all sizes.
+
+#### The other two knobs, swept for the same reason
+
+**Threads.** The mechanism above is not a fixed rayon-entry cost — it is a *wakeup*
+cost, and it scales with the pool. Speedup on the sheared state:
+
+| tets | 1 thr | 2 thr | 4 thr | 8 thr | 12 thr |
+|---:|---:|---:|---:|---:|---:|
+| 12 | 0.56× | 0.61× | 0.24× | 0.16× | **0.10×** |
+| 192 | 0.99× | 1.66× | 1.06× | 1.12× | **0.39×** |
+| 432 | 0.95× | 1.79× | 1.73× | 1.68× | **0.81×** |
+| 768 | 0.95× | 1.80× | 2.14× | 2.43× | 1.41× |
+| 1 536 | 0.96× | 1.84× | 2.60× | **3.27×** | 2.31× |
+| 9 216 | 0.98× | 1.89× | 3.31× | **5.18×** | 5.11× |
+
+Two things fall out, and only the first was anticipated:
+
+1. **The size threshold's worst case is the DEFAULT pool.** At 12 threads break-even is
+   between 432 and 768; at 2–8 threads it is at or below 192. `1024` clears the worst
+   column, so it is safe for every pool measured.
+2. ⚠ **In a single-thread pool the parallel path cannot win at any size** — `0.94–0.99×`
+   the whole ladder, a small standing loss no size threshold removes. The dispatch now
+   also requires `rayon::current_num_threads() > 1`.
+
+⚠⚠ **A lead, not acted on: 12 threads is worse than 8 at every size measured.** The box
+is 8 P + 4 E, and waking the four E-cores costs more than they return — `1.41×` against
+`2.43×` at 768 tets, `2.31×` against `3.27×` at 1 536. At the two published fixtures the
+gap is small (`5.11×` vs `5.18×` at 9 216), so nothing here is affected, but a P-core-only
+pool looks worth `40–70 %` on mid-sized meshes. Not taken: the global pool is shared with
+faer's factorization, so it is a change to the whole solver's threading, not to this
+sweep, and it wants its own measurement.
+
+**Element type.** Tet10's per-element certificate brackets a cubic over the whole
+element and is far more expensive than Tet4's, so break-even should move DOWN. Stated as
+an expectation and then measured, because "a more expensive element can only help" is
+the same kind of inference that put the regression here to begin with:
+
+| tets | Tet4 | Tet10 |
+|---:|---:|---:|
+| 192 | 0.55× | 1.12× |
+| 432 | 1.02× | 1.79× |
+| 768 | 1.31× | 2.38× |
+| 1 200 | 1.75× | 3.08× |
+
+Break-even ~200 tets, as predicted. The Tet4-derived threshold is therefore
+**conservative** on Tet10 rather than wrong — it leaves some speedup unclaimed between
+200 and 1 024 tets, which is the right direction for a constant piloted on one element
+type.
+
+#### As measured now — `65.97` / `66.04 ms/step`, and the bracket clears
+
+**Two runs**, because the first draft of this section quoted one — for a quantity this
+same section warns is run-to-run variable. Both are gate-passing runs on the reference
+box, taken either side of the size-threshold fix below.
+
+| phase | run 1 | run 2 | share | ECSW removes it? |
+|---|---:|---:|---:|---|
+| **`red proj K`** (`ΦᵀKΦ`) | **37.482** | **37.422** | **56.7–56.8 %** | yes |
+| `asm tangent` | 23.377 | 23.530 | 35.4–35.6 % | yes |
+| `asm force` | 2.365 | 2.364 | 3.6 % | yes |
+| `contact` (nested) | 1.888 | 1.967 | 2.9–3.0 % | no |
+| **`validity check`** | **1.229** | **1.197** | **1.8–1.9 %** | only if R3's own design works |
+| `red proj r` (`Φᵀr`) | 0.961 | 0.962 | 1.5 % | yes |
+| `red expand` | 0.456 | 0.462 | 0.7 % | yes |
+| `residual form` | 0.038 | 0.037 | 0.1 % | only if R3's own design works |
+| `red dense solve` (`r × r`) | 0.019 | 0.022 | 0.0 % | no |
+
+| bound | reducible | **ceiling `1/(1 − f)`** |
+|---|---:|---:|
+| certain only | 95.0–95.1 % | **20.2–20.5×** |
+| plus what R3's own design removes | 96.9–97.0 % | **≳32×** ⚠ |
+
+> ### The bracket is 20.2–20.5× … ≳32×. R3 needs 13.5–15.8×, with a 10× floor.
 >
-> It straddles both, so **the bound decides everything** — and what moves it is
-> almost entirely one line of the table.
+> **It clears on either bound.** The straddle is gone.
 >
-> ⚠ The upper bound is **ill-conditioned** and must not be quoted precisely: at
-> `f ≈ 0.97` a `0.1 pp` shift moves it by ~2×, and two identical runs gave `37.1×`
-> and `38.9×`. What is solid is that it is far above `15.8×`, not its value.
+> ⚠ The upper bound is still **ill-conditioned** and must not be quoted precisely: at
+> `f ≈ 0.97` a `0.1 pp` shift moves it by ~2×. The two runs above differ by `0.1 pp`
+> and their upper bounds read `34×` and `32×` — the lower is quoted. Two identical runs
+> of the earlier configuration likewise gave `37.1×` and `38.9×`. What is solid is that
+> it is far above `15.8×`, not its value.
 
-#### The `ReducedValidityDomain` is a PERFORMANCE prerequisite, not a safety extra
+**Coherence check.** ⚠ This is a CROSS-SESSION comparison of absolute times, which §2d
+finding 3 says not to trust — licensed here only by its own result: the untouched rows
+agree to `0.3–2.1 %`, which is what says the two runs are comparable. The frame fell
+`72.07 → 65.97 ms`, a `6.10 ms` saving; the
+sweep row fell `6.684 → 1.229 ms`, `5.46 ms` of it. **89 % of the whole-frame
+improvement is the line that was changed**, and the two large untouched rows barely
+moved: `red proj K` `37.591 → 37.482` (`−0.3 %`) and `asm tangent`
+`23.880 → 23.377` (`−2.1 %`), both inside this harness's run-to-run spread. Had
+they moved materially, the reading would be about the timers, not the change.
 
-The whole bracket is the **validity check at 9.3 %**: a full element sweep, run at
-step start and again on convergence. R3's scope already includes replacing it
-with *"`ReducedValidityDomain` with the online `‖q‖` + residual-proxy gate"* — but
-that reads as the defence against §4c's "smooth and wrong" failure mode, i.e. a
-correctness feature. It is not: **without it R3's ceiling is `8.3×` and R3 cannot
-clear its own `10×` gate.** The two halves of R3 are not separable, and the
-validity half is the one that decides whether the hyper-reduction half is worth
-building.
+#### ⛔ RETRACTED — the `ReducedValidityDomain` is not a performance prerequisite
 
-⚠ Do NOT read this as "reduction inflates the sweep". Against `cantilever 80×8`
-the same sweep is `0.5 %` of a full frame, which invites a 20× inflation story —
-but that is an artifact of a 19 440-DOF mesh whose factorization is 72 % and
-squeezes everything else. Measured on ONE fixture, both paths: **`7.6 %` full →
-`9.6 %` reduced**, a modest `~1.3×`. The sweep is simply a large cost at this size
-either way; what makes it decisive is that `1/(1 − f)` is unforgiving near the top.
+The previous revision of this section argued that because the sweep at `9.3 %`
+decided the bracket, R3's two halves were inseparable and the validity half had to
+go first: *"without it R3's ceiling is `8.3×` and R3 cannot clear its own `10×`
+gate."* **Withdrawn.** The sweep's share was a property of running it on one core,
+not of the sweep. `ReducedValidityDomain` reverts to what §4c always said it was —
+the defence against "smooth and wrong", a correctness feature, sequenced on its own
+merits.
 
-#### `ΦᵀKΦ` is 52 % of the frame — hypothesis, not result
+⚠ What survives the retraction is the *asymptotic* form of the argument, and it is
+weaker than it looks. Under ECSW the reduced work drops to `O(n_selected)` while
+the sweep stays `O(n_tets)/P`, so the sweep's share must grow with mesh refinement
+and a constant factor only buys headroom. It is not currently possible to say how
+much: this bracket is one mesh, and the measurement that would settle it is the
+same contact-fixture measurement item 3 below already calls for.
 
-`red proj K` costs more than the assembly it projects. `project_tangent` builds an
-`n × r` dense `Y` as a **`Vec<Vec<f64>>`** and contracts it in a naive `O(n·r²)`
-triple loop, single-threaded — structurally what R0's per-iteration `BTreeMap`
-was, and R0 came to `1.62×` on the whole step.
+#### `ΦᵀKΦ` is 57 % of the frame — hypothesis, not result
+
+`red proj K` costs more than the assembly it projects, and removing the sweep
+raised its share from `52.2 %` to `56.8 %`. `project_tangent` builds an `n × r`
+dense `Y` as a **`Vec<Vec<f64>>`** and contracts it in a naive `O(n·r²)` triple
+loop, single-threaded — structurally what R0's per-iteration `BTreeMap` was, and
+what the validity sweep just turned out to be.
 
 ⚠ **Stated as the next measurement, not a finding** — this document's attributions
 are wrong about a third of the time (§2d finding 3). It is worth testing first
@@ -1117,10 +1311,29 @@ because it pays twice: it improves R1's `~2×` directly, and it moves R3's ceili
 and R3's requirement in the same direction, so the net sign is not obvious from
 the armchair.
 
-Also visible: **`contact` costs 2.6 % of a frame with `NullContact`** — pure
+Also visible: **`contact` costs 2.9 % of a frame with `NullContact`** — pure
 marshalling and broad-phase on a scene with no contact.
 
-#### ⚠⚠ Ceiling and requirement are on DIFFERENT FIXTURES
+#### The full-order path got almost nothing, and that is the point
+
+The same change is worth `0.4–0.6 %` of a full-order frame — `1.008 ms` of
+`155.60` at IPC 5 202, `3.134 ms` of `890.22` at IPC 18 750 — because there the
+sparse factorization is `70–77 %` and squeezes everything else. So:
+
+- **§2a's gap is unchanged.** A `0.4 %` line cannot move a `53.2×` gap, and it
+  should not be restated from a single run: `r0_ab`'s `IPC_18750` p50 has read
+  `824`, `843` and `888 ms` on this tree across runs, a `±4 %` spread that swamps
+  the effect.
+- **§2d needs no revision.** Re-measured on this tree its post-R0 rows land within
+  `1–3 pp` of what it publishes, which is its own run-to-run spread.
+- The `7.6 % → 9.6 %` full-vs-reduced comparison recorded at #822 is now
+  `1.3 % → 1.9 %` on the same fixture — the same `~1.3×` inflation, `5.5×` cheaper
+  on both sides.
+
+⚠ The corollary is that **this was a reduced-path optimisation**, and the reduced
+path is the one that has never been run with contact.
+
+#### ⚠⚠ Ceiling and requirement are still on DIFFERENT FIXTURES
 
 `13.5–15.8×` is IPC 18 750 **with contact**; this is R1.1's **contact-free**
 5 202-DOF cantilever. The ladder defines R1 as *"linear subspace, no contact"*, so
@@ -1128,17 +1341,35 @@ marshalling and broad-phase on a scene with no contact.
 for**, and its phase mix there is unknown — contact would add irreducible cost and
 push the ceiling DOWN. Comparing the two directly is the error of §2d finding 4
 wearing different clothes. The solid claim is the narrow one: *at R1.1's own
-operating point, R3's ceiling brackets `8.3×` to `≳37×`.*
+operating point, R3's ceiling brackets `20.2–20.5×` to `≳32×`.*
+
+#### ⚠ The reference box had to be re-baselined, and this will recur
+
+§2h's probe is a **full-order** solve of `cantilever 40×4`, so it measures the SUT.
+This change took its quiet median `24.47 → 22.75 ms` and left legitimate readings
+`3.8 %` from the `21.0 ms` floor — which is precisely what that floor is for. All four
+constants were re-piloted (§2h), and every future full-order optimisation will force
+the same. ⚠ **`project_tangent`, the next item below, is NOT one** — it is reduced-path
+and the probe never runs the reduced path. ⚠ But the probe is built with `NullContact`,
+so the `2.9 %` marshalling cost noted above is *in* it: acting on "free to remove" would
+force a re-pilot.
 
 #### What this does to the ladder
 
-Three things to measure before more ECSW work, in order:
+The blocking item is discharged. **R3's viability no longer depends on the
+validity-domain gate**, so the two halves of R3 are separable again and the
+hyper-reduction half can be sized on its own.
 
-1. **Can the `ReducedValidityDomain` gate actually replace the element sweep?**
-   It decides the bracket, and therefore whether R3 is viable at all.
-2. **`project_tangent` as an implementation question** — the R0-shaped target.
-3. **The reduced path on a CONTACT fixture** — the requirement lives there and R1
-   has never been validated there.
+Two of the three measurements still stand, in order:
+
+1. **`project_tangent` as an implementation question** — `56.8 %` of a reduced
+   frame, the R0-shaped target, and now the largest single line by a wide margin.
+2. **The reduced path on a CONTACT fixture** — the requirement lives there, R1 has
+   never been validated there, and it is also what would settle how far the
+   asymptotic form of the retracted argument reaches.
+
+`ReducedValidityDomain` stays in R3's scope as §4c's correctness feature, no
+longer as a gate on whether R3 is worth building.
 
 ## 3. What the measurements say about feasibility
 
@@ -1491,7 +1722,7 @@ same door, under its own feature, and must not enter the default build.
 | **R0** ✅ **DONE** (`e77023c7`, `43b198a2`) | **Full-order assembly lever.** Replace the per-iteration `BTreeMap` rebuild in `assemble_free_hessian_triplets` with a pattern-indexed value buffer built once at construction. No algorithm change. | Byte-identity of the assembled triplets against the current path (the `feedback_float_refactor_byte_identity` recipe), plus a measured ms/iteration delta on the §2a fixtures. | §2d.2. Establishes the **honest baseline** the reduction is measured against. Cheap, self-contained, and a win regardless of whether anything downstream ships. |
 | **R1** ✅ **DONE** (`#744`, `#745`, R1.2) | **Linear subspace, no contact, no coupling.** POD basis from full-order snapshots on the `cantilever` fixture at 3 000 free DOF; reduced Newton with a dense `r × r` direct solve; `Φ` and quadrature both handled naively (full element sweep — **no hyper-reduction yet**). Differentiable path wired at the same time (§6, `Φ` constant). | Projection error vs the oracle < 1 % in tip displacement over the training trajectory; reduced gradient matches the oracle's to the crate's existing gradcheck tolerance. ⚠ **That second clause was wrong and was amended before R1.2 was built** — it asks two different functions to agree to 5 digits when their states already differ in the third. Split into a gradcheck-tolerance kill gate on the reduced model's *own* derivative and a measured comparison against the oracle; see the plan's §5/§7 and §13. **Wall time is explicitly NOT gated at R1** — without hyper-reduction it will not be faster, and pretending otherwise would corrupt the signal. | **The cheap kill-or-confirm.** It answers the one question that decides everything downstream: *does a low-dimensional subspace represent this material's deformation at all?* Fixture already exists; no new physics. |
 | **R2** | **Precision decision.** Measure a full-f32 forward path on the reduced system (`r × r` is small enough to port by hand without touching the 1 396-`f64` production surface), and decide residual-in-f64-on-CPU vs compensated-summation-in-f32. | Reduced-model f32 forward drift and gradient drift vs the f64 reduced model, on R1's fixture; explicit go/no-go on whether the residual can live in f32. | §2c. Must precede any GPU work; deciding it after a shader exists means writing the shader twice. |
-| **R3** ⚠ **§2i brackets its Amdahl ceiling at `8.3×`–`≳37×`** — straddling both its own `10×` floor and the budget's `13.5–15.8×`. The bracket is decided by ONE line: the validity-domain gate, which is inside R3's own scope, so the two halves are not separable. Gate is `≥10×` on §2h's reference box. | **Hyper-reduction (ECSW) + the validity domain.** NNLS training over R1's snapshots; `ReducedValidityDomain` with the online `‖q‖` + residual-proxy gate; the three error measures of §4c. | Measured speedup vs §2a's baseline (post-R0), with the three §4c errors reported alongside. Domain gate demonstrated to fire on an out-of-domain trajectory. | This is where the frame-budget win actually arrives. Also where the "smooth and wrong" failure mode is defended against. |
+| **R3** **§2i brackets its Amdahl ceiling at `20.2–20.5×`–`≳32×`** (two runs) — clear of both its own `10×` floor and the budget's `13.5–15.8×` on either bound. ⚠ Contact-free fixture; contact would push it DOWN, and the reduced path has never run with contact. Gate is `≥10×` on §2h's reference box. | **Hyper-reduction (ECSW) + the validity domain.** NNLS training over R1's snapshots; `ReducedValidityDomain` with the online `‖q‖` + residual-proxy gate; the three error measures of §4c. | Measured speedup vs §2a's baseline (post-R0), with the three §4c errors reported alongside. Domain gate demonstrated to fire on an out-of-domain trajectory. | This is where the frame-budget win actually arrives. Also where the "smooth and wrong" failure mode is defended against. |
 | **R4** | **Hybrid domain decomposition, FIXED contact patch.** Full DOF under a stationary indenter, reduced bulk, on the `dynamic_indentation` geometry. | End-to-end reaction force vs the oracle, in the same band `bonded_layer_indentation` already asserts. | §5. Fixed patch first, because it isolates the coupling condition from the re-partitioning problem. |
 | **R5** | **Moving patch.** Re-partitioning under a once-built symbolic factorization, or a conservative union pattern. | Sliding-contact trajectory vs the oracle. | §5's open-research item. **Explicitly gated on R4 succeeding**; if R4 fails, this is not attempted. |
 | **R6** | **Rigid↔soft coupling.** | — | **Last, deliberately.** Per the brief, and it is the right call: the keystone coupling is itself the platform's hardest open problem (`MISSION.md` §2), and stacking it on an unsolved real-time reduced path would make any failure uninterpretable. |
@@ -1733,6 +1964,50 @@ until then, and by nobody else ever. The recipe above is the durable record.
 - `sim/L0/soft/src/material/` — the `ValidityDomain` §4c mirrors.
 
 ## 12. Version history
+
+- **v2.7 (2026-08-23)** — **§2i: the bracket UNSTRADDLED — R3's ceiling is now
+  `20.2–20.5×` … `≳32×` over two runs, clear of both its `10×` floor and the
+  budget's `13.5–15.8×`.**
+  v2.6 said the whole bracket turned on one line, the validity element sweep at
+  `9.3 %`, and concluded the `ReducedValidityDomain` was a PERFORMANCE prerequisite
+  without which R3 could not clear its own gate. ⛔ **That conclusion is RETRACTED.**
+  The sweep's share was a property of running it on one core: it is a per-tet loop
+  with no cross-element coupling, run twice per step, and `Mesh` / `Material` /
+  `Element` / `ContactModel` were already `Send + Sync` supertraits, so it
+  parallelises with no new bound and no signature change. Measured `5.37×` on the
+  sweep (9 216 tets, sheared state, 12 threads), taking it from `9.3 %` to `1.9 %`
+  of a reduced frame and the frame from `72.07` to `~66 ms/step`. ⛔ ⚠ First version was
+  a REGRESSION below ~500 tets — entering rayon costs a fixed ~`60 µs`, so at 12 tets it
+  read `0.12×` and at 192 tets `0.55×`, and the skeleton solver is one tet. Fixed with a
+  piloted `PARALLEL_SWEEP_MIN_TETS = 1024` (break-even ~430 deformed / ~680 at rest),
+  guarded by a `const` assertion; neither published figure moves, both fixtures being
+  far above it. The other two held-fixed knobs were then swept too: **threads** (the
+  cost is a WAKEUP cost, worst on the default 12-thread pool, and in a 1-thread pool the
+  parallel path never wins at any size — dispatch now also requires
+  `current_num_threads() > 1`) and **element type** (Tet10 break-even ~200 tets, so the
+  Tet4-derived threshold is conservative there, as predicted). ⚠⚠ Lead recorded, not
+  acted on: **12 threads is worse than 8 at every size** — the 4 E-cores cost more than
+  they return, worth `40–70 %` on mid-sized meshes, but the pool is shared with faer.
+  Verdict-identical
+  — violators reduce by `min_by_key` on `tet_id`, so first-violator-wins survives an
+  unspecified visit order; negative-controlled by swapping in `max_by_key`.
+  `ReducedValidityDomain` reverts to §4c's correctness feature and R3's two halves
+  are separable again. ★ Coherence check: `89 %` of the whole-frame improvement is
+  the row that changed, and the two large untouched rows moved `< 1.5 %`. ⚠ The
+  full-order path gains almost nothing (`0.4–0.6 %` of a frame, where factorization
+  is `70–77 %`), so **§2a's gap and §2d's table are unchanged** — this was a
+  reduced-path optimisation, and the reduced path is the one that has never run with
+  contact. ⚠ `ΦᵀKΦ` rises to `56.8 %` of a reduced frame, now the largest line by a
+  wide margin. ⚠ **§2h had to be re-baselined**: the probe is a full solve, so this
+  change moved its quiet median `24.47 → 22.75 ms` and left legitimate readings
+  `3.8 %` from the `21.0` floor — which is what that floor is for. Re-piloted (idle
+  `22.60–23.36`, 4 busy cores `24.17–24.93`), ceiling `25.5 → 23.7`, floor
+  `21.0 → 19.5`, burst unchanged; the finding that **burst cannot detect sustained
+  partial load replicated on a different tree**. Named as a standing cost of a probe
+  that measures the SUT — though ⚠ NOT by `project_tangent`, which is reduced-path while
+  the probe is full-order. It WOULD be moved by removing the `NullContact` marshalling,
+  since the probe is built with `NullContact`. ▶ Next, in order: (1) `project_tangent`,
+  (2) the reduced path WITH contact.
 
 - **v2.6 (2026-08-23)** — **§2i: R3's Amdahl ceiling MEASURED, and it brackets
   `8.3×` … `≳37×`** (the upper bound is ill-conditioned near `f → 1` — two identical
