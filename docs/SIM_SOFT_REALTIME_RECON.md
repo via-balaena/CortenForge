@@ -1896,9 +1896,16 @@ reference box:
 
 | arm | ms/step | iters/step | `I` ms | `B/I` |
 |---|---:|---:|---:|---:|
-| full-order (`PreviousState`) | 812–825 | 6.00 | 667–678 | `0.02–0.03×` |
+| full-order (`PreviousState`) | 812–844 | 6.00 | 667–695 | `0.02–0.03×` |
 | reduced, `PreviousState` | 304–315 | 9.00 | 17.1–18.2 | **`0.92–0.98×`** ⛔ |
-| reduced, `Inertial` | 182–185 | 5.25 | 11.3–12.3 | **`1.36–1.47×`** ✓ |
+| reduced, `Inertial` | 181–185 | 5.25 | 11.3–12.3 | **`1.36–1.47×`** ✓ |
+
+⚠ **These are min–max OBSERVED over nine runs, not bounds.** A ninth run put
+full-order `ms/step` at `844` and reduced-`Inertial` at `181` — both outside the
+eight-run range this table first carried. What did NOT move across any of the
+nine is what the rung turns on: `I`, `B/I`, and the iteration counts, which are
+exact integers per step. Read the wall-clock column as context and the last two
+as the result.
 
 Eight runs at 18 750, four at 5 202. The same window at 5 202 reads `~3.3×` and
 `~4.5×` — see finding 3, the margin is size-dependent. ⚠ The 18 750 ranges are

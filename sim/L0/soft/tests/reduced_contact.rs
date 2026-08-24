@@ -1094,20 +1094,22 @@ fn reduced_contact_does_not_tunnel_through_the_barrier() {
 /// statics, and a second test running concurrently would have its time land in
 /// this one's snapshot.
 ///
-/// ## Measured — eight runs at 18 750, four at 5 202, 2026-08-24, reference box
+/// ## Measured — nine runs at 18 750, five at 5 202, 2026-08-24, reference box
 ///
 /// (Four of the 18 750 runs predate the refactor into a two-size sweep and
 /// measure the same window the same way; all eight sit inside the ranges below.
-/// ⚠ The 18 750 ranges are quoted tight because they decide the rung; the 5 202
-/// ones are rounded to one decimal ON PURPOSE — they are context, and quoting
-/// them tight put the documents on a treadmill where every verification run
-/// invalidated a figure.)
+/// ⚠⚠ Every range here is min–max OBSERVED, not a bound — a ninth run landed
+/// outside two of the wall-clock ones. What has NOT moved across any run is
+/// `I`, `B/I`, and the iteration counts, which are exact integers per step, and
+/// those are what the rung turns on. The 5 202 figures are rounded to one
+/// decimal on purpose: they are context, and quoting context tight put these
+/// documents on a treadmill where every verification run invalidated a figure.)
 ///
 /// | arm | ms/step | iters/step | `I` ms | `B/I` |
 /// |---|---:|---:|---:|---:|
-/// | full-order (`PreviousState`) | 812.4–825.0 | 6.00 | 666.6–677.9 | 0.02–0.03× |
+/// | full-order (`PreviousState`) | 812.4–844.2 | 6.00 | 666.6–694.8 | 0.02–0.03× |
 /// | reduced, `PreviousState` | 303.8–314.5 | 9.00 | 17.1–18.2 | **0.92–0.98×** ⛔ |
-/// | reduced, `Inertial` | 181.9–184.9 | 5.25 | 11.3–12.3 | **1.36–1.47×** ✓ |
+/// | reduced, `Inertial` | 180.7–184.9 | 5.25 | 11.3–12.3 | **1.36–1.47×** ✓ |
 ///
 /// - ★★ **R3 clears here, but on `1.4×`, not the `5.6×` the contact-free fixture
 ///   reports.** The old number was not wrong, it was measured somewhere the
@@ -1116,7 +1118,7 @@ fn reduced_contact_does_not_tunnel_through_the_barrier() {
 ///   `PreviousState` needs `9.00` iterations against `Inertial`'s `5.25`, and `I`
 ///   is dominated by per-iteration cost, so the same rung passes under one
 ///   predictor and fails under the other. It fails by only `2–8 %`, which is
-///   close — but it fails in all eight runs.
+///   close — but it fails in all nine runs.
 /// - ★ **The reduced path's iteration PENALTY grows with size, and the
 ///   full-order path's does not.** Same trailing window at both sizes:
 ///
@@ -1463,10 +1465,12 @@ fn timing_fixture(a_over_cell: f64) -> SizeRow {
 /// Lateral indenter offsets the basis is TRAINED on, in patch radii.
 const TRAIN_OFFSETS: [f64; 5] = [-1.0, -0.5, 0.0, 0.5, 1.0];
 
-/// Offsets it is SCORED at. The first is inside the training set and is the
-/// two-sided control — if it is not excellent, the rig is broken and the other
-/// two rows say nothing. The second interpolates between training points, the
-/// third extrapolates `2×` past the training edge.
+/// Offsets it is SCORED at: one inside the training set, one interpolating
+/// between training points, and two extrapolating past the training edge.
+///
+/// The IN-SAMPLE row is the two-sided control — if it is not far better than the
+/// rest, the rig is broken and no other row says anything.
+///
 /// ⚠ TWO extrapolation points, and the pair is the de-confound. `+2.00a` leaves
 /// only `1a` of clearance to the plate's free edge, so a failure there mixes
 /// "outside the training span" with "a different boundary regime". `+1.50a` is
@@ -1484,8 +1488,9 @@ const TEST_OFFSETS: [(&str, f64); 4] = [
 /// subspace is wrong, which no rank fixes).
 const BASIS_RANKS: [usize; 4] = [20, 40, 80, 160];
 
-/// 5 202 free DOF — R1.1's operating point, and cheap enough for a 7-trajectory
-/// training set.
+/// 5 202 free DOF — R1.1's operating point, and cheap enough for the eight
+/// full-order trajectories this needs (five training, three more to score
+/// against).
 const GEN_A_OVER_CELL: f64 = 2.0;
 
 /// **R1's open question, and R3 is blocked on it.**
@@ -1523,6 +1528,18 @@ const GEN_A_OVER_CELL: f64 = 2.0;
 ///    §14) fixes it. Flat in rank ⇒ the subspace is wrong for translated
 ///    contact, and R1 needs a different basis, not a bigger one.
 ///
+/// How much better the IN-SAMPLE row must be than the INTERPOLATED one, at the
+/// highest achieved rank, for the table to mean anything.
+///
+/// ★ A RATIO, not a floor. An absolute bound would have to sit near `1e-4`, and
+/// in-sample reads `1.1e-4` at `r=80` — so a run whose top rank came out lower
+/// would trip it spuriously. The ratio is scale-free and encodes the property
+/// that actually matters: the rig can score a basis it DID fit far better than
+/// one it did not. PILOTED at `730×` (`2.6e-6` vs `1.9e-3`) at `r=142` and `86×`
+/// at `r=80`, so `10×` keeps one to two orders of headroom and still fails long
+/// before the two rows become indistinguishable.
+const MIN_IN_SAMPLE_ADVANTAGE: f64 = 10.0;
+
 /// ⚠ `+2.00a` leaves only `1a` of clearance to the plate's free edge, so its
 /// deformation field differs in character as well as in position. A failure
 /// there is not purely an extrapolation result — which is why `+1.50a` is also
@@ -1602,6 +1619,27 @@ fn reduced_basis_generalises() {
     println!("RC\ttraining set: {} snapshots", train.len());
 
     // ── score at each test offset ──
+    // ★ Fitted ONCE per rank, outside the scoring loop. The basis is a function
+    // of the training set and the rank only — refitting it per test offset costs
+    // 16 eigendecompositions where 4 do, and reads as though the subspace
+    // depended on the point being scored, which is the opposite of the claim.
+    let mut bases = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for r in BASIS_RANKS {
+        let fitted = PodBasis::fit(&train, Inner::Mass, &mass, 1.0, r).expect("basis fits");
+        if seen.insert(fitted.n_modes()) {
+            bases.push((r, fitted));
+        }
+    }
+    println!(
+        "RC\tbases: {}",
+        bases
+            .iter()
+            .map(|(r, b)| format!("r={r}→{}", b.n_modes()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
     let mut rows: Vec<(&str, usize, Arm)> = Vec::new();
     for (label, dx) in TEST_OFFSETS {
         let sc = Scene::at_offset(GEN_A_OVER_CELL, dx);
@@ -1622,16 +1660,11 @@ fn reduced_basis_generalises() {
                 &owned
             };
 
-        let mut seen = std::collections::BTreeSet::new();
-        for r in BASIS_RANKS {
-            let basis = PodBasis::fit(&train, Inner::Mass, &mass, 1.0, r).expect("basis fits");
+        for (r, basis) in &bases {
             let got = basis.n_modes();
-            if !seen.insert(got) {
-                continue;
-            }
             let arm = run_reduced(
                 sc,
-                &basis,
+                basis,
                 InitialGuess::Inertial,
                 format!("{label}  r={r}→{got}"),
                 &Ctx {
@@ -1674,14 +1707,34 @@ fn reduced_basis_generalises() {
     // The held-out rows are the MEASUREMENT; a bad number there is the finding,
     // not a test failure. What must hold is that the rig can score a basis it
     // did fit — otherwise every row is measuring the harness.
-    let control = rows
-        .iter()
-        .filter(|(l, ..)| *l == TEST_OFFSETS[0].0)
-        .max_by_key(|(_, got, _)| *got)
-        .expect("the in-sample control ran");
+    let at_top = |label: &str| {
+        rows.iter()
+            .filter(|(l, ..)| *l == label)
+            .max_by_key(|(_, got, _)| *got)
+            .unwrap_or_else(|| panic!("no rows recorded for `{label}`"))
+    };
+    let control = at_top(TEST_OFFSETS[0].0);
     assert!(
         control.2.failure.is_none() && control.2.min_sd > 0.0,
         "the IN-SAMPLE control did not survive its own trajectory — nothing above \
          is interpretable",
+    );
+    // ★ The quantitative half. Structural survival is not enough: if in-sample
+    // accuracy regressed, every row would still print and the comparison the
+    // whole test exists to make would be meaningless while passing.
+    let interp = at_top(TEST_OFFSETS[1].0);
+    let advantage = interp.2.max_rel_err / control.2.max_rel_err;
+    println!(
+        "RC\t★ control: in-sample is {advantage:.0}× better than interpolation at \
+         r={} (floor {MIN_IN_SAMPLE_ADVANTAGE:.0}×)",
+        control.1,
+    );
+    assert!(
+        advantage >= MIN_IN_SAMPLE_ADVANTAGE,
+        "in-sample ({:.2e}) is only {advantage:.1}× better than interpolation \
+         ({:.2e}) — the rig cannot tell a basis it FIT from one it did not, so \
+         the generalisation reading above is not supported",
+        control.2.max_rel_err,
+        interp.2.max_rel_err,
     );
 }
