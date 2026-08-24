@@ -437,6 +437,72 @@ fn rel_l2_is_nan_against_a_zero_reference() {
     assert!(e.is_finite() && (e - 1.0).abs() < 1e-15, "got {e}");
 }
 
+/// A clean arm, for exercising the verdict logic without running a solve.
+#[cfg(test)]
+fn healthy_arm(label: &str) -> Arm {
+    Arm {
+        label: label.to_owned(),
+        completed: 71,
+        iters: 426,
+        min_sd: 1.0e-5,
+        max_rel_err: 1.0e-7,
+        last_full_r: 1.0e-11,
+        gap_dev: 0.0,
+        measured: Measured::default(),
+        failure: None,
+    }
+}
+
+/// ★ Negative control for [`faults_at`]'s vacuity guard. Asserting on a rank
+/// that recorded no arm would return an empty verdict and pass — the failure the
+/// guard exists for, and one no passing run can demonstrate.
+#[test]
+#[should_panic(expected = "no arm was recorded at r=40")]
+fn faults_at_refuses_a_rank_with_no_arm() {
+    let arms = vec![(20, "prev", healthy_arm("r=20 prev"))];
+    let _ = faults_at(&arms, 40, 1.0e-5);
+}
+
+/// The two-sided half: a rank that IS present, and clean, reports nothing — so
+/// the panic above is the missing rank and not the machinery.
+#[test]
+fn faults_at_passes_a_clean_arm() {
+    let arms = vec![(40, "inertial", healthy_arm("r=40 inertial"))];
+    assert!(faults_at(&arms, 40, 1.0e-5).is_empty());
+}
+
+/// ★ And that the checks themselves fire, so "clean arm reports nothing" is not
+/// "nothing is ever reported".
+#[test]
+fn faults_at_catches_penetration_and_a_moved_equilibrium() {
+    let mut sunk = healthy_arm("r=40 prev");
+    sunk.min_sd = -1.0e-9;
+    let mut drifted = healthy_arm("r=40 inertial");
+    drifted.gap_dev = 10.0 * MAX_GAP_DEV_BANDS;
+    let arms = vec![(40, "prev", sunk), (40, "inertial", drifted)];
+    let out = faults_at(&arms, 40, 1.0e-5);
+    assert_eq!(out.len(), 2, "{out:#?}");
+    assert!(out[0].contains("PENETRATED"), "{}", out[0]);
+    assert!(out[1].contains("contact equilibrium moved"), "{}", out[1]);
+}
+
+/// ★ Negative control for the OTHER half of the finiteness split: the gate
+/// refuses a non-finite configuration, but the failure formatter must survive
+/// one — a diverged `x_partial` is exactly where a `NaN` lives, and a panic there
+/// would replace "which arm died, and where" with nothing.
+#[test]
+fn describe_survives_a_diverged_partial() {
+    let scene = Scene::new(GATE_A_OVER_CELL);
+    let e = SolverFailure::ArmijoStall {
+        x_partial: vec![f64::NAN; 9],
+        last_iter: 7,
+        last_r_norm: 1.0e-3,
+    };
+    let msg = describe(&e, scene, 0);
+    assert!(msg.contains("ArmijoStall at iter 7"), "{msg}");
+    assert!(msg.contains("non-finite (diverged)"), "{msg}");
+}
+
 fn rest_positions(mesh: &HandBuiltTetMesh) -> Vec<f64> {
     let mut x = vec![0.0_f64; 3 * mesh.n_vertices()];
     for (c, p) in x.chunks_exact_mut(3).zip(mesh.positions().iter()) {
@@ -452,14 +518,26 @@ fn rest_positions(mesh: &HandBuiltTetMesh) -> Vec<f64> {
 /// derives only `Debug`, and its variants carry `x_partial`, so `{e:?}` would
 /// print the entire configuration.
 fn describe(e: &SolverFailure, scene: Scene, k: usize) -> String {
-    let at = |x: &[f64]| min_signed_distance(x, scene.centre_at(k));
+    // ⚠ NON-ASSERTING, deliberately. `min_signed_distance` refuses a non-finite
+    // configuration because it feeds the non-penetration gate — but a diverged
+    // solve's `x_partial` is EXACTLY where a non-finite position lives, so
+    // calling it here would replace "which arm died, and where" with a panic
+    // from inside the diagnostic. The guard is right for the gate and wrong for
+    // the report; this reports the condition instead of asserting on it.
+    let at = |x: &[f64]| -> String {
+        if x.iter().all(|v| v.is_finite()) {
+            format!("{:.3e}", min_signed_distance(x, scene.centre_at(k)))
+        } else {
+            "non-finite (diverged)".to_owned()
+        }
+    };
     match e {
         SolverFailure::ArmijoStall {
             x_partial,
             last_iter,
             last_r_norm,
         } => format!(
-            "ArmijoStall at iter {last_iter}, ‖r‖ = {last_r_norm:.3e}, min_sd = {:.3e}",
+            "ArmijoStall at iter {last_iter}, ‖r‖ = {last_r_norm:.3e}, min_sd = {}",
             at(x_partial)
         ),
         SolverFailure::NewtonIterCap {
@@ -467,15 +545,12 @@ fn describe(e: &SolverFailure, scene: Scene, k: usize) -> String {
             max_iter,
             last_r_norm,
         } => format!(
-            "NewtonIterCap at {max_iter}, ‖r‖ = {last_r_norm:.3e}, min_sd = {:.3e}",
+            "NewtonIterCap at {max_iter}, ‖r‖ = {last_r_norm:.3e}, min_sd = {}",
             at(x_partial)
         ),
         SolverFailure::DoublyFailedFactor {
             x_partial, context, ..
-        } => format!(
-            "DoublyFailedFactor ({context}), min_sd = {:.3e}",
-            at(x_partial)
-        ),
+        } => format!("DoublyFailedFactor ({context}), min_sd = {}", at(x_partial)),
         SolverFailure::ValidityViolation { tet_id, message } => {
             format!("ValidityViolation at tet {tet_id}: {message}")
         }
@@ -733,8 +808,30 @@ impl Ladder {
     /// rather than asserted in place: the shape across `r` is the finding, and
     /// asserting inside the loop would discard every row past the first failure.
     fn faults(&self, at_rank: usize, oracle_min_sd: f64) -> Vec<String> {
+        faults_at(&self.arms, at_rank, oracle_min_sd)
+    }
+}
+
+/// ⚠⚠ **The empty result is the dangerous one.** Callers do
+/// `assert!(faults.is_empty())`, so a rank with NO recorded arm passes every
+/// check silently. That is reachable: [`ladder`] SKIPS a requested rank whose
+/// basis duplicates a lower rung's, so asking for `40` on a mesh whose ramp caps
+/// at `20` records nothing at `40` and the gate goes green having tested
+/// nothing. Refuse it rather than return an empty verdict.
+fn faults_at(
+    arms: &[(usize, &'static str, Arm)],
+    at_rank: usize,
+    oracle_min_sd: f64,
+) -> Vec<String> {
+    assert!(
+        arms.iter().any(|(r, ..)| *r == at_rank),
+        "no arm was recorded at r={at_rank}, so asserting on it would pass \
+         having checked nothing — the rank was skipped as a duplicate basis, or \
+         it is not in the ladder",
+    );
+    {
         let mut out = Vec::new();
-        for (r, name, arm) in &self.arms {
+        for (r, name, arm) in arms {
             if *r != at_rank {
                 continue;
             }
@@ -927,7 +1024,10 @@ fn reduced_contact_does_not_tunnel_through_the_barrier() {
 /// statics, and a second test running concurrently would have its time land in
 /// this one's snapshot.
 ///
-/// ## Measured — six runs at 18 750, two at 5 202, 2026-08-24, reference box
+/// ## Measured — seven runs at 18 750, three at 5 202, 2026-08-24, reference box
+///
+/// (Four of the 18 750 runs predate the refactor into a two-size sweep and
+/// measure the same window the same way; all seven sit inside the ranges below.)
 ///
 /// | arm | ms/step | iters/step | `I` ms | `B/I` |
 /// |---|---:|---:|---:|---:|
@@ -941,8 +1041,8 @@ fn reduced_contact_does_not_tunnel_through_the_barrier() {
 /// - ★★ **The predictor is now load-bearing for R3, not merely an optimisation.**
 ///   `PreviousState` needs `9.00` iterations against `Inertial`'s `5.25`, and `I`
 ///   is dominated by per-iteration cost, so the same rung passes under one
-///   predictor and fails under the other. It fails by only `3–8 %`, which is
-///   close — but it fails in all six runs.
+///   predictor and fails under the other. It fails by only `2–8 %`, which is
+///   close — but it fails in all seven runs.
 /// - ★ **The reduced path's iteration PENALTY grows with size, and the
 ///   full-order path's does not.** Same trailing window at both sizes:
 ///

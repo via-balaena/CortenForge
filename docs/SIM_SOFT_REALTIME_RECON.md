@@ -1890,8 +1890,8 @@ down. Four runs, §2h's reference box:
 | reduced, `PreviousState` | 304–315 | 9.00 | 17.1–18.2 | **`0.92–0.98×`** ⛔ |
 | reduced, `Inertial` | 182–185 | 5.25 | 11.3–12.3 | **`1.36–1.47×`** ✓ |
 
-Six runs at 18 750. The same window at 5 202 (three runs) reads `3.24–3.39×`
-and `4.40–4.61×` — see finding 3, the margin is size-dependent.
+Seven runs at 18 750, three at 5 202. The same window at 5 202 reads
+`3.24–3.39×` and `4.40–4.61×` — see finding 3, the margin is size-dependent.
 
 **R3 clears — on `1.4×`, where the contact-free fixture reports `5.60×`.** That
 figure was not wrong; it was measured somewhere the requirement does not live,
@@ -1900,8 +1900,8 @@ and it overstated the margin by about `4×`.
 Five things it changes:
 
 1. ★★ **The predictor is LOAD-BEARING for R3, not an optimisation.** The same
-   rung passes under `Inertial` and fails under `PreviousState`, in all four
-   runs, by `3–8 %`. `I` is dominated by per-iteration cost and the two counts
+   rung passes under `Inertial` and fails under `PreviousState`, in all seven
+   runs, by `2–8 %`. `I` is dominated by per-iteration cost and the two counts
    are `5.25` against `9.00`. §2f recommended `Inertial` on iteration count
    alone; R3's viability now rests on that recommendation.
 2. ★★ **The reduced path's iteration PENALTY grows with size, and the full-order
@@ -2626,7 +2626,7 @@ until then, and by nobody else ever. The recipe above is the durable record.
   CLEARS at `1.36–1.47×`, against the `5.60×` that fixture reports** — the old
   number was measured somewhere the requirement does not live and overstated the
   margin `~4×`. ★★ Two things it changed that were not on the list: the PREDICTOR
-  is now load-bearing (`PreviousState` FAILS at `0.92–0.98×` in all six runs,
+  is now load-bearing (`PreviousState` FAILS at `0.92–0.98×` in all seven runs,
   `Inertial` passes), and the reduced path's iteration penalty GROWS with size
   while the full-order path's does not (reduced/full `1.15× → 1.50×`) — which is
   what moved the answer, not the contact cost, which came in as projected
