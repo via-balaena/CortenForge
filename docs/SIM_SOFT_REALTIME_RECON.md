@@ -1047,6 +1047,77 @@ families (`1.60× / 1.56× / 1.08×` … and `0.51×`), so a plausible-looking s
 factor would be worse than none. Anything measured elsewhere is a different
 number wearing the same name.
 
+### 2i. R3's Amdahl ceiling — measured, and it is BELOW R3's own kill floor
+
+§4b picks ECSW on a literature claim of **2–3 orders of magnitude**. That is a
+speedup on *element integration*; R3's whole-step gain is capped by whatever
+fraction of a REDUCED frame that is. Nobody had measured it — §2d is the
+full-order path, and the reduced solver carried no timers at all — so R3 was
+about to be built without knowing its own ceiling. This is that measurement
+(`tests/reduced_phase_shares.rs`).
+
+**R1.1's operating point**: `16×16×6` cantilever bilayer, 5 202 free DOF, `r = 40`,
+`NullContact`, `69.25 ms/step`, 4.00 Newton iterations/step.
+
+| phase | ms/step | share | ECSW can remove? |
+|---|---:|---:|---|
+| `asm tangent` | 22.859 | 33.0 % | yes |
+| **`red proj K`** (`ΦᵀKΦ`) | **36.029** | **52.0 %** | yes |
+| `asm force` | 2.272 | 3.3 % | yes |
+| `red proj r` (`Φᵀr`) | 0.928 | 1.3 % | yes |
+| `red expand` (`x_rest + Φq`) | 0.434 | 0.6 % | yes |
+| `contact` (nested) | 1.865 | 2.7 % | **no** |
+| `red dense solve` (`r × r`) | 0.019 | 0.0 % | **no** |
+
+Instrumented/wall `90.3 %`. **ECSW-reducible `87.6 %` ⇒ R3's ceiling is `1/(1 − f)`
+= `8.1×`.**
+
+> ### R3 cannot clear its own 10× kill floor, let alone the 13.5–15.8× the budget needs.
+>
+> Not "probably won't" — `8.1×` is the limit as the sampled element subset goes to
+> ZERO cost. No cubature is better than that.
+
+⚠⚠ **The ceiling and the requirement are on DIFFERENT FIXTURES, and that is not a
+detail.** `13.5–15.8×` is IPC 18 750 with contact; this is R1.1's contact-free
+5 202-DOF cantilever. The ladder puts R1 at *"linear subspace, no contact"*, so
+**the reduced path has never been run on the fixture the requirement is stated
+for** — and its phase mix there is unknown. Comparing the two directly is the
+same error as comparing across boxes (§2d finding 4). What is solid is the
+narrower claim: *at R1.1's own operating point, R3's ceiling is `8.1×` and its
+floor is `10×`.*
+
+#### The dominant cost is a data structure, not physics — hypothesis, not result
+
+`red proj K` is 52 % of the frame, more than the assembly it projects.
+`project_tangent` builds an `n × r` dense `Y` as a **`Vec<Vec<f64>>`** and contracts
+it in a naive `O(n·r²)` triple loop, single-threaded. That is structurally the
+same species as R0's per-iteration `BTreeMap` — and R0 turned out to be `1.62×`
+on the whole step.
+
+⚠ **Stated as the next measurement, not as a finding.** The recon's own history
+is that attributions like this are wrong about a third of the time (§2d finding
+3). What makes it worth testing first is that it pays twice: it improves R1's
+`~2×` directly, and it changes R3's arithmetic — a cheaper projection shrinks the
+frame R3 must attack *and* lowers the reducible share it can attack, so the
+ceiling and the requirement move together and the sign of the net is not
+obvious from the armchair.
+
+Also visible: **`contact` costs 2.7 % of a frame with `NullContact`** — pure
+marshalling and broad-phase overhead on a scene that has no contact (§2d finding
+5's note). Removing it raises the ceiling to ~`8.4×`, which does not rescue R3 but
+is free.
+
+#### What this does to the ladder
+
+R3 was *"where the frame-budget win actually arrives"*. On this evidence it is
+not, by itself. Before more ECSW work, two things are worth measuring, in order:
+
+1. **`project_tangent`'s cost as an implementation question** — the R0-shaped
+   target above.
+2. **The reduced path on a CONTACT fixture** — because the requirement lives
+   there and R1 has never been validated there. Until that exists, R3's gate and
+   R3's ceiling are quantities on different problems.
+
 ## 3. What the measurements say about feasibility
 
 ### 3a. The goal is not refuted
@@ -1398,7 +1469,7 @@ same door, under its own feature, and must not enter the default build.
 | **R0** ✅ **DONE** (`e77023c7`, `43b198a2`) | **Full-order assembly lever.** Replace the per-iteration `BTreeMap` rebuild in `assemble_free_hessian_triplets` with a pattern-indexed value buffer built once at construction. No algorithm change. | Byte-identity of the assembled triplets against the current path (the `feedback_float_refactor_byte_identity` recipe), plus a measured ms/iteration delta on the §2a fixtures. | §2d.2. Establishes the **honest baseline** the reduction is measured against. Cheap, self-contained, and a win regardless of whether anything downstream ships. |
 | **R1** ✅ **DONE** (`#744`, `#745`, R1.2) | **Linear subspace, no contact, no coupling.** POD basis from full-order snapshots on the `cantilever` fixture at 3 000 free DOF; reduced Newton with a dense `r × r` direct solve; `Φ` and quadrature both handled naively (full element sweep — **no hyper-reduction yet**). Differentiable path wired at the same time (§6, `Φ` constant). | Projection error vs the oracle < 1 % in tip displacement over the training trajectory; reduced gradient matches the oracle's to the crate's existing gradcheck tolerance. ⚠ **That second clause was wrong and was amended before R1.2 was built** — it asks two different functions to agree to 5 digits when their states already differ in the third. Split into a gradcheck-tolerance kill gate on the reduced model's *own* derivative and a measured comparison against the oracle; see the plan's §5/§7 and §13. **Wall time is explicitly NOT gated at R1** — without hyper-reduction it will not be faster, and pretending otherwise would corrupt the signal. | **The cheap kill-or-confirm.** It answers the one question that decides everything downstream: *does a low-dimensional subspace represent this material's deformation at all?* Fixture already exists; no new physics. |
 | **R2** | **Precision decision.** Measure a full-f32 forward path on the reduced system (`r × r` is small enough to port by hand without touching the 1 396-`f64` production surface), and decide residual-in-f64-on-CPU vs compensated-summation-in-f32. | Reduced-model f32 forward drift and gradient drift vs the f64 reduced model, on R1's fixture; explicit go/no-go on whether the residual can live in f32. | §2c. Must precede any GPU work; deciding it after a shader exists means writing the shader twice. |
-| **R3** (⚠ gate is `≥10×` **on §2h's reference box**; the frame budget separately needs `13.5–15.8×`) | **Hyper-reduction (ECSW) + the validity domain.** NNLS training over R1's snapshots; `ReducedValidityDomain` with the online `‖q‖` + residual-proxy gate; the three error measures of §4c. | Measured speedup vs §2a's baseline (post-R0), with the three §4c errors reported alongside. Domain gate demonstrated to fire on an out-of-domain trajectory. | This is where the frame-budget win actually arrives. Also where the "smooth and wrong" failure mode is defended against. |
+| **R3** ⛔ **BLOCKED — §2i measures its Amdahl ceiling at `8.1×`, below its own `10×` floor.** Gate is `≥10×` on §2h's reference box; the budget separately needs `13.5–15.8×`. Fix `project_tangent` first (52 % of a reduced frame). | **Hyper-reduction (ECSW) + the validity domain.** NNLS training over R1's snapshots; `ReducedValidityDomain` with the online `‖q‖` + residual-proxy gate; the three error measures of §4c. | Measured speedup vs §2a's baseline (post-R0), with the three §4c errors reported alongside. Domain gate demonstrated to fire on an out-of-domain trajectory. | This is where the frame-budget win actually arrives. Also where the "smooth and wrong" failure mode is defended against. |
 | **R4** | **Hybrid domain decomposition, FIXED contact patch.** Full DOF under a stationary indenter, reduced bulk, on the `dynamic_indentation` geometry. | End-to-end reaction force vs the oracle, in the same band `bonded_layer_indentation` already asserts. | §5. Fixed patch first, because it isolates the coupling condition from the re-partitioning problem. |
 | **R5** | **Moving patch.** Re-partitioning under a once-built symbolic factorization, or a conservative union pattern. | Sliding-contact trajectory vs the oracle. | §5's open-research item. **Explicitly gated on R4 succeeding**; if R4 fails, this is not attempted. |
 | **R6** | **Rigid↔soft coupling.** | — | **Last, deliberately.** Per the brief, and it is the right call: the keystone coupling is itself the platform's hardest open problem (`MISSION.md` §2), and stacking it on an unsolved real-time reduced path would make any failure uninterpretable. |
@@ -1640,6 +1711,23 @@ until then, and by nobody else ever. The recipe above is the durable record.
 - `sim/L0/soft/src/material/` — the `ValidityDomain` §4c mirrors.
 
 ## 12. Version history
+
+- **v2.6 (2026-08-23)** — **§2i: R3's Amdahl ceiling MEASURED at `8.1×`, below its
+  own `10×` kill floor.** §4b picked ECSW on a literature claim of 2–3 orders of
+  magnitude, but that is a speedup on element integration and R3's whole-step gain
+  is capped by what fraction of a REDUCED frame that is — never measured, because
+  the reduced solver carried no timers. Four slots added plus
+  `Phase::ecsw_reducible`. At R1.1's operating point (5 202 free DOF, `r = 40`):
+  **`ΦᵀKΦ` is 52 % of the frame**, more than the assembly it projects; reducible
+  share `87.6 %` ⇒ ceiling `8.1×`. ⇒ **R3 as specified does not reach the frame
+  budget and does not clear its own gate.** ⚠⚠ Ceiling and requirement are on
+  DIFFERENT FIXTURES — `13.5–15.8×` is IPC 18 750 with contact, this is R1.1's
+  contact-free cantilever, and the reduced path has never been run with contact at
+  all. ⚠ Accounting bug caught pre-publication: `Contact` nests inside two
+  reducible parents, so the broad-phase was counted as ECSW-removable — `90.0 %` /
+  `10.0×` corrected to `87.6 %` / `8.1×`. ▶ Next: `project_tangent` is a naive
+  `O(n·r²)` contraction over `Vec<Vec<f64>>` — an R0-shaped target, stated as a
+  hypothesis. Also: `contact` costs 2.7 % of a frame that has no contact.
 
 - **v2.5 (2026-08-23)** — **§2h: the reference box is FIXED, and enforced in code.**
   `Mac16,8` (Apple M4 Pro, 8P+4E) — hard-failed on model and core split, stamped on
