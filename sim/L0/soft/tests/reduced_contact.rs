@@ -381,9 +381,60 @@ impl Scene {
 /// failure mode with the thing it is checking — the same reason the oracle in
 /// `reduced/tests.rs` is written from the other matrix layout.
 fn min_signed_distance(x: &[f64], centre: Vec3) -> f64 {
+    // ⚠⚠ FINITENESS FIRST, and it is not defensive padding. `f64::min(x, NaN)`
+    // returns `x`, so a diverged configuration full of NaN would reduce to a
+    // perfectly healthy-looking positive gap and sail through the
+    // non-penetration assertion this function exists to feed. `contact/ipc.rs`
+    // carries a comment warning about exactly this reduction, and
+    // `predictor_spike.rs` filters non-finite `x_final` for the same reason.
+    assert!(
+        x.iter().all(|v| v.is_finite()),
+        "non-finite position in the configuration being measured — the solve \
+         diverged, and `f64::min` would have hidden it",
+    );
     x.chunks_exact(3)
         .map(|c| (Vec3::new(c[0], c[1], c[2]) - centre).norm() - RADIUS)
         .fold(f64::INFINITY, f64::min)
+}
+
+/// The two reductions this file's verdicts rest on, checked directly.
+///
+/// ★ Both are `f64::min`/`f64::max` folds, which SWALLOW `NaN` — the failure the
+/// guard in [`min_signed_distance`] exists for. A guard that has never been
+/// shown to fire is not a guard, so it is negative-controlled here rather than
+/// left to a diverged solve that may never happen.
+#[test]
+#[should_panic(expected = "non-finite position")]
+fn min_signed_distance_refuses_a_diverged_configuration() {
+    let mut x = vec![0.0; 9];
+    x[4] = f64::NAN;
+    let _ = min_signed_distance(&x, Vec3::zeros());
+}
+
+/// The two-sided half: the same shape of input, finite, reduces to the NEAREST
+/// vertex's gap — so the test above is failing on the `NaN` and not on the fold.
+#[test]
+fn min_signed_distance_takes_the_nearest_vertex() {
+    // Two vertices on the x axis at 3·RADIUS and 2·RADIUS from a sphere at the
+    // origin, so the gaps are 2·RADIUS and RADIUS and the second one wins.
+    let x = vec![3.0 * RADIUS, 0.0, 0.0, 2.0 * RADIUS, 0.0, 0.0];
+    let got = min_signed_distance(&x, Vec3::zeros());
+    assert!(
+        (got - RADIUS).abs() < 1e-15 * RADIUS,
+        "expected the nearer vertex's gap {RADIUS:e}, got {got:e}",
+    );
+}
+
+/// `rel_l2` returns `NaN` on a zero-displacement reference, which the ramp's first
+/// steps produce before the indenter reaches the band. The caller SKIPS those
+/// rather than folding them into a `f64::max` that would drop them silently —
+/// this pins the value the skip is keyed on.
+#[test]
+fn rel_l2_is_nan_against_a_zero_reference() {
+    assert!(rel_l2(&[1.0, 0.0], &[0.0, 0.0]).is_nan());
+    assert!(rel_l2(&[3.0, 4.0], &[0.0, 0.0]).is_nan());
+    let e = rel_l2(&[1.0, 1.0], &[1.0, 0.0]);
+    assert!(e.is_finite() && (e - 1.0).abs() < 1e-15, "got {e}");
 }
 
 fn rest_positions(mesh: &HandBuiltTetMesh) -> Vec<f64> {
@@ -631,10 +682,16 @@ fn run_reduced(
                 let x = reduced.expand_to_full(&s.q);
                 min_sd = min_sd.min(min_signed_distance(&x, scene.centre_at(k)));
                 if let Some(ox) = oracle.x.get(k) {
-                    max_rel_err = max_rel_err.max(rel_l2(
-                        &free_disp(&x, x_rest, fd),
-                        &free_disp(ox, x_rest, fd),
-                    ));
+                    let e = rel_l2(&free_disp(&x, x_rest, fd), &free_disp(ox, x_rest, fd));
+                    // Same trap as `min_signed_distance`: `f64::max(x, NaN)` is
+                    // `x`, so a NaN here would drop out of the running maximum
+                    // instead of surfacing. `rel_l2` returns NaN when the oracle
+                    // displacement is exactly zero, which the ramp's first steps
+                    // can produce before the indenter reaches the band — so skip
+                    // those deliberately rather than folding them in blind.
+                    if e.is_finite() {
+                        max_rel_err = max_rel_err.max(e);
+                    }
                 }
                 iters += s.iter_count;
                 last_full_r = s.full_residual_norm;
@@ -925,15 +982,30 @@ fn reduced_contact_does_not_tunnel_through_the_barrier() {
 ///   the requirement's own fixture. Two points per term, so it is a marker for
 ///   where to measure next, not a number. It does mean `1.4×` must not be read
 ///   as "R3 clears for soft bodies"; it clears **at this size**.
-/// - ★★★ **And that identifies the ONE optimisation that can move R3's margin.**
-///   `IpcRigidContact::active_vertex_pairs` (`contact/ipc.rs`) evaluates every
-///   primitive at **every vertex in the mesh** — there is no broad phase — so
-///   contact's per-call cost is linear in vertex count, which is the `n^1.13`
-///   above. Contact is `69 %` of `I`, and by `C/R = B/I` only `I` moves a
-///   rung's verdict. So a contact broad phase is the available lever, and
-///   `asm tangent` — `68.7 %` of the reduced FRAME — is not: it moves the
-///   margin by exactly zero. ⚠ No number is claimed for the win here; what is
-///   measured is that the cost is `O(n_vertices)` by construction.
+/// - ★★★ **And that identifies where the one available lever on R3's margin
+///   is.** Contact is `69 %` of `I`, and by `C/R = B/I` only `I` moves a rung's
+///   verdict — so `asm tangent`, at `68.7 %` of the reduced FRAME, moves it by
+///   exactly zero, the same trap §2j's corollary caught for `red proj K`.
+///
+///   What the `Phase::Contact` slot actually wraps (`assembly.rs`) is **two**
+///   `O(n)` passes plus the per-pair work: `slice_to_vec3s`, which allocates
+///   and copies EVERY position into a fresh `Vec<Vec3>` on every call, and then
+///   `active_pairs`. On a linear mesh `active_pairs` resolves to
+///   `active_vertex_pairs`, which evaluates every primitive at every vertex
+///   with no broad phase. Neither term has anything to do with how many pairs
+///   are actually active — which is what §2i meant when it called the
+///   `NullContact` cost "pure marshalling + broad-phase", now measured at scale.
+///
+///   ⚠ **Two scoping corrections to the paragraph above, both from round 3.**
+///   (a) The `O(n_vertices)` walk is the LINEAR-mesh path; a Tet10 mesh
+///   dispatches to `active_face_pairs`, which iterates boundary faces.
+///   (b) The `n^1.13` is NOT a per-call scaling. Contact's `4.24×` growth
+///   factors as `1.37×` more calls (Newton iterations went `4.12 → 5.25`) ×
+///   `3.08×` more work per call — and per call against `3.97×` more vertices
+///   that is `n_vert^0.88`, sublinear, not linear. The `O(n)` structure is
+///   real and verified in the source; the exponent was over-attributed to it.
+///
+///   ⚠ No size of win is claimed for removing either term.
 /// - `I` is `69 %` contact and `29 %` the validity sweep, the rest negligible.
 ///   The sweep is [`Reducible::PlannedByR3`], so R3's own `ReducedValidityDomain`
 ///   is worth about `+0.5×` of margin here (`I` would fall to `~8.7 ms`). That
