@@ -286,15 +286,26 @@ fn dims_for(a_over_cell: f64) -> (usize, usize, f64, f64) {
     (n_lat, nz, lateral, h)
 }
 
-fn indenter(lx: f64, ly: f64, z_center: f64) -> TranslatedSdf<SphereSdf> {
+/// The Hertzian contact patch radius `a = √(Rδ)`. The natural length for a
+/// LATERAL offset, because it is the width of the thing being translated.
+fn patch_radius() -> f64 {
+    (RADIUS * DELTA).sqrt()
+}
+
+fn indenter(lx: f64, ly: f64, dx: f64, z_center: f64) -> TranslatedSdf<SphereSdf> {
     TranslatedSdf {
         inner: SphereSdf { radius: RADIUS },
-        offset: Vec3::new(lx / 2.0, ly / 2.0, z_center),
+        offset: Vec3::new(dx.mul_add(patch_radius(), lx / 2.0), ly / 2.0, z_center),
     }
 }
 
 #[derive(Clone, Copy)]
 struct Scene {
+    /// Lateral offset of the indenter from the plate's centre, in units of the
+    /// contact patch radius `a`. Zero for every fixture except the basis
+    /// generalisation sweep, which translates the patch to ask whether a global
+    /// POD basis can follow it.
+    dx: f64,
     a_over_cell: f64,
     n_lat: usize,
     nz: usize,
@@ -305,8 +316,14 @@ struct Scene {
 
 impl Scene {
     fn new(a_over_cell: f64) -> Self {
+        Self::at_offset(a_over_cell, 0.0)
+    }
+
+    /// The same scene with the indenter moved sideways by `dx` patch radii.
+    fn at_offset(a_over_cell: f64, dx: f64) -> Self {
         let (n_lat, nz, lateral, h) = dims_for(a_over_cell);
         Self {
+            dx,
             a_over_cell,
             n_lat,
             nz,
@@ -343,7 +360,12 @@ impl Scene {
             Tet4,
             mesh,
             IpcRigidContact::with_params(
-                vec![indenter(self.lateral, self.lateral, self.z_start())],
+                vec![indenter(
+                    self.lateral,
+                    self.lateral,
+                    self.dx,
+                    self.z_start(),
+                )],
                 KAPPA,
                 self.d_hat,
             ),
@@ -376,12 +398,16 @@ impl Scene {
     }
 
     fn centre_at(self, k: usize) -> Vec3 {
-        Vec3::new(self.lateral / 2.0, self.lateral / 2.0, self.z_at(k))
+        Vec3::new(
+            self.dx.mul_add(patch_radius(), self.lateral / 2.0),
+            self.lateral / 2.0,
+            self.z_at(k),
+        )
     }
 
     fn contact_at(self, k: usize) -> IpcRigidContact {
         IpcRigidContact::with_params(
-            vec![indenter(self.lateral, self.lateral, self.z_at(k))],
+            vec![indenter(self.lateral, self.lateral, self.dx, self.z_at(k))],
             KAPPA,
             self.d_hat,
         )
@@ -545,6 +571,83 @@ fn the_window_depth_guard_discriminates_early_from_deep() {
         deep <= MIN_WINDOW_DEPTH_BANDS,
         "the depth floor must ACCEPT the window actually used, but {deep} d̂ fails it",
     );
+}
+
+/// ★ Negative controls for [`in_sample_advantage`]'s three guards. Each is a
+/// state no passing run of the instrument can reach, which is exactly why they
+/// need exercising here instead.
+#[cfg(test)]
+fn rows_for(pairs: &[(&'static str, usize, f64)]) -> Vec<(&'static str, usize, Arm)> {
+    pairs
+        .iter()
+        .map(|&(l, r, err)| {
+            let mut a = healthy_arm(l);
+            a.max_rel_err = err;
+            (l, r, a)
+        })
+        .collect()
+}
+
+/// The remaining `top_row` guard. Cheap, and it closes the sweep: every
+/// assertion in the generalisation path is now either exercised by a test or
+/// DECLARED structural below.
+#[test]
+#[should_panic(expected = "no rows recorded for `absent`")]
+fn top_row_refuses_a_label_with_no_rows() {
+    let rows = rows_for(&[("in", 40, 1.0e-6)]);
+    let _ = top_row(&rows, "absent");
+}
+
+/// ⚠ **Declared UNCONTROLLED, deliberately — and the rule, not a list.** This
+/// file carries **22 guards outside test bodies**; six have `#[should_panic]`
+/// controls and two more (`MIN_WINDOW_DEPTH_BANDS`, `MAX_GAP_DEV_BANDS`) are
+/// exercised two-sidedly by ordinary tests. The remaining fourteen all share one
+/// property: **they fire only if the FIXTURE or the INSTRUMENT is broken** — a
+/// mesh with no pinned face, a full-order oracle failing its own ramp, a
+/// profiler slot recording no calls, a timed window with no contact in it.
+/// Demonstrating those means injecting a fault into a multi-minute instrument
+/// for no diagnostic gain, so they stay uncontrolled and this comment is the
+/// record of that choice.
+///
+/// The `≥10×` floor is separately not controlled and does not need to be: the
+/// number it compares is pinned by [`advantage_is_the_ratio_of_the_two_top_rows`]
+/// and the comparison is a `>=`.
+///
+/// ⚠ An earlier version of this note said "three guards", which read as though
+/// the other nineteen were controlled. The count above came from walking the
+/// file and separating guards from assertions *inside* test bodies — two
+/// earlier scripted audits got that wrong in opposite directions.
+#[test]
+#[should_panic(expected = "passes having measured NOTHING")]
+fn advantage_refuses_a_zero_denominator() {
+    // `max_rel_err` initialises to 0.0 and is only updated for finite samples,
+    // so "recorded nothing" and "was perfect" are the same value.
+    let rows = rows_for(&[("in", 40, 0.0), ("ip", 40, 1.0e-3)]);
+    let _ = in_sample_advantage(&rows, "in", "ip");
+}
+
+#[test]
+#[should_panic(expected = "scored at different ranks")]
+fn advantage_refuses_a_rank_mismatch() {
+    let rows = rows_for(&[("in", 80, 1.0e-6), ("ip", 40, 1.0e-3)]);
+    let _ = in_sample_advantage(&rows, "in", "ip");
+}
+
+#[test]
+#[should_panic(expected = "TRUNCATED trajectory")]
+fn advantage_refuses_a_truncated_interpolation_arm() {
+    let mut rows = rows_for(&[("in", 40, 1.0e-6), ("ip", 40, 1.0e-9)]);
+    rows[1].2.failure = Some("ArmijoStall at iter 3".to_owned());
+    let _ = in_sample_advantage(&rows, "in", "ip");
+}
+
+/// The two-sided half: clean inputs give the ratio, so the three panics above
+/// are their stated causes and not the machinery.
+#[test]
+fn advantage_is_the_ratio_of_the_two_top_rows() {
+    let rows = rows_for(&[("in", 40, 2.0e-6), ("ip", 40, 1.4e-3), ("in", 20, 9.9)]);
+    let got = in_sample_advantage(&rows, "in", "ip");
+    assert!((got - 700.0).abs() < 1e-9, "expected 700x, got {got}");
 }
 
 fn rest_positions(mesh: &HandBuiltTetMesh) -> Vec<f64> {
@@ -1068,20 +1171,22 @@ fn reduced_contact_does_not_tunnel_through_the_barrier() {
 /// statics, and a second test running concurrently would have its time land in
 /// this one's snapshot.
 ///
-/// ## Measured — eight runs at 18 750, four at 5 202, 2026-08-24, reference box
+/// ## Measured — nine runs at 18 750, five at 5 202, 2026-08-24, reference box
 ///
 /// (Four of the 18 750 runs predate the refactor into a two-size sweep and
 /// measure the same window the same way; all eight sit inside the ranges below.
-/// ⚠ The 18 750 ranges are quoted tight because they decide the rung; the 5 202
-/// ones are rounded to one decimal ON PURPOSE — they are context, and quoting
-/// them tight put the documents on a treadmill where every verification run
-/// invalidated a figure.)
+/// ⚠⚠ Every range here is min–max OBSERVED, not a bound — a ninth run landed
+/// outside two of the wall-clock ones. What has NOT moved across any run is
+/// `I`, `B/I`, and the iteration counts, which are exact integers per step, and
+/// those are what the rung turns on. The 5 202 figures are rounded to one
+/// decimal on purpose: they are context, and quoting context tight put these
+/// documents on a treadmill where every verification run invalidated a figure.)
 ///
 /// | arm | ms/step | iters/step | `I` ms | `B/I` |
 /// |---|---:|---:|---:|---:|
-/// | full-order (`PreviousState`) | 812.4–825.0 | 6.00 | 666.6–677.9 | 0.02–0.03× |
+/// | full-order (`PreviousState`) | 812.4–844.2 | 6.00 | 666.6–694.8 | 0.02–0.03× |
 /// | reduced, `PreviousState` | 303.8–314.5 | 9.00 | 17.1–18.2 | **0.92–0.98×** ⛔ |
-/// | reduced, `Inertial` | 181.9–184.9 | 5.25 | 11.3–12.3 | **1.36–1.47×** ✓ |
+/// | reduced, `Inertial` | 180.7–184.9 | 5.25 | 11.3–12.3 | **1.36–1.47×** ✓ |
 ///
 /// - ★★ **R3 clears here, but on `1.4×`, not the `5.6×` the contact-free fixture
 ///   reports.** The old number was not wrong, it was measured somewhere the
@@ -1090,7 +1195,7 @@ fn reduced_contact_does_not_tunnel_through_the_barrier() {
 ///   `PreviousState` needs `9.00` iterations against `Inertial`'s `5.25`, and `I`
 ///   is dominated by per-iteration cost, so the same rung passes under one
 ///   predictor and fails under the other. It fails by only `2–8 %`, which is
-///   close — but it fails in all eight runs.
+///   close — but it fails in all nine runs.
 /// - ★ **The reduced path's iteration PENALTY grows with size, and the
 ///   full-order path's does not.** Same trailing window at both sizes:
 ///
@@ -1131,8 +1236,8 @@ fn reduced_contact_does_not_tunnel_through_the_barrier() {
 ///   where to measure next, not a number. It does mean `1.4×` must not be read
 ///   as "R3 clears for soft bodies"; it clears **at this size**.
 /// - ★★★ **And that identifies where the one available lever on R3's margin
-///   is.** Contact is `69 %` of `I`, and by `C/R = B/I` only `I` moves a rung's
-///   verdict — so `asm tangent`, at `68.7 %` of the reduced FRAME, moves it by
+///   is.** Contact is `65–69 %` of `I`, and by `C/R = B/I` only `I` moves a rung's
+///   verdict — so `asm tangent`, at `66.7–68.7 %` of the reduced FRAME, moves it by
 ///   exactly zero, the same trap §2j's corollary caught for `red proj K`.
 ///
 ///   What the `Phase::Contact` slot actually wraps (`assembly.rs`) is **two**
@@ -1148,7 +1253,7 @@ fn reduced_contact_does_not_tunnel_through_the_barrier() {
 ///   pair exists", twice per Newton iteration — and then set them aside:
 ///   *"Neither is on R3's path."* Under `C/R = B/I` that is overturned. The
 ///   cost is `1–2 %` of a whole frame, which is why it looked ignorable, and
-///   `69 %` of `I`, which is the only quantity that decides the rung.
+///   `65–69 %` of `I`, which is the only quantity that decides the rung.
 ///
 ///   ⚠ **Two scoping corrections to the paragraph above, both from round 3.**
 ///   (a) The `O(n_vertices)` walk is the LINEAR-mesh path; a Tet10 mesh
@@ -1160,9 +1265,9 @@ fn reduced_contact_does_not_tunnel_through_the_barrier() {
 ///   real and verified in the source; the exponent was over-attributed to it.
 ///
 ///   ⚠ No size of win is claimed for removing either term.
-/// - `I` is `69 %` contact and `29 %` the validity sweep, the rest negligible.
+/// - `I` is `65–69 %` contact and `29–33 %` the validity sweep, the rest negligible.
 ///   The sweep is [`Reducible::PlannedByR3`], so R3's own `ReducedValidityDomain`
-///   is worth about `+0.5×` of margin here (`I` would fall to `~8.7 ms`). That
+///   is worth about `+0.5–0.8×` of margin here (`I` would fall to `7.7–8.7 ms`). That
 ///   does NOT revive it as a prerequisite — the rung clears either way — but on a
 ///   `1.4×` margin it is no longer irrelevant, which it was at `5.6×`.
 /// - The `1.43 ms` of contact per Newton iteration this arc had been projecting
@@ -1393,7 +1498,7 @@ fn timing_fixture(a_over_cell: f64) -> SizeRow {
              ({:.4} vs {base:.4} ms)",
             per_call(snap),
         );
-        // PILOTED at 0.764–1.173× over sixteen arm-comparisons across both
+        // PILOTED at 0.764–1.173× over 28 arm-comparisons across both
         // sizes. ⚠ An earlier comment said `0.80–1.17` — the low end was read
         // off a subset. The spread is wide for a control because `contact` is ~1 % of a full-order frame, so the
         // DENOMINATOR is a small difference of large numbers; the band is set
@@ -1430,4 +1535,325 @@ fn timing_fixture(a_over_cell: f64) -> SizeRow {
         prev_iters: iters_of("prev"),
         inertial_iters: iters_of("inertial"),
     }
+}
+
+// ── R1's open question: does the basis GENERALISE across contact positions? ──
+
+/// Lateral indenter offsets the basis is TRAINED on, in patch radii.
+const TRAIN_OFFSETS: [f64; 5] = [-1.0, -0.5, 0.0, 0.5, 1.0];
+
+/// Offsets it is SCORED at: one inside the training set, one interpolating
+/// between training points, and two extrapolating past the training edge.
+///
+/// The IN-SAMPLE row is the two-sided control — if it is not far better than the
+/// rest, the rig is broken and no other row says anything.
+///
+/// ⚠ TWO extrapolation points, and the pair is the de-confound. `+2.00a` leaves
+/// only `1a` of clearance to the plate's free edge, so a failure there mixes
+/// "outside the training span" with "a different boundary regime". `+1.50a` is
+/// half the extrapolation distance with `1.5a` of clearance; if both fail alike,
+/// the free edge is not the cause.
+const TEST_OFFSETS: [(&str, f64); 4] = [
+    ("IN-SAMPLE  +0.00a", 0.0),
+    ("INTERP     +0.25a", 0.25),
+    ("EXTRAP     +1.50a", 1.5),
+    ("EXTRAP     +2.00a", 2.0),
+];
+
+/// Requested ranks. Wide on purpose: the whole discriminator is whether error
+/// FALLS with rank (a capacity problem, which rank fixes) or is FLAT in it (the
+/// subspace is wrong, which no rank fixes).
+const BASIS_RANKS: [usize; 4] = [20, 40, 80, 160];
+
+/// 5 202 free DOF — R1.1's operating point, and cheap enough for the eight
+/// full-order trajectories this needs (five training, three more to score
+/// against).
+const GEN_A_OVER_CELL: f64 = 2.0;
+
+/// **R1's open question, and R3 is blocked on it.**
+///
+/// ```text
+/// cargo test --release -p sim-soft --test reduced_contact \
+///   reduced_basis_generalises -- --ignored --nocapture
+/// ```
+///
+/// Every reduced measurement in this crate uses an IN-SAMPLE basis — fitted to
+/// the trajectory it is then scored against. That was the right isolation for
+/// "does the algebra survive a barrier", and it leaves the property R3 actually
+/// depends on untested: that the basis represents scenes it was NOT trained on.
+///
+/// A ceiling raiser inherits its floor's soundness. If a global POD basis cannot
+/// follow a contact patch as it MOVES, then hyper-reducing that basis is a faster
+/// wrong answer, and the `1.4×` margin §2k measured is a number about the wrong
+/// thing. This is the classic advection-like POD failure: a localised feature
+/// that translates needs a rank explosion to represent, because each position
+/// is nearly orthogonal to the last.
+///
+/// The indenter is swept LATERALLY, which on this fixture is the cleanest
+/// available form of that question — and it is the same question a puck sliding
+/// along a stick blade asks.
+///
+/// ## Pre-registration (before the first run)
+///
+/// 1. **In-sample reproduces** the earlier result — `~1e-7` rel-L2 at high rank.
+///    If not, stop: the training set or the scoring is wired wrong.
+/// 2. **Interpolation is usable** — somewhere in `1e-4 … 1e-2`. Five positions
+///    over `±1a` is a fine grid relative to the patch width.
+/// 3. **Extrapolation is where it breaks.** No number predicted.
+/// 4. ★ **The discriminator is the RANK TREND, not any single error.** Falling
+///    with rank ⇒ capacity, and more modes (or goal-oriented enrichment, plan
+///    §14) fixes it. Flat in rank ⇒ the subspace is wrong for translated
+///    contact, and R1 needs a different basis, not a bigger one.
+///
+/// How much better the IN-SAMPLE row must be than the INTERPOLATED one, at the
+/// highest achieved rank, for the table to mean anything.
+///
+/// ★ A RATIO, not a floor. An absolute bound would have to sit near `1e-4`, and
+/// in-sample reads `1.1e-4` at `r=80` — so a run whose top rank came out lower
+/// would trip it spuriously. The ratio is scale-free and encodes the property
+/// that actually matters: the rig can score a basis it DID fit far better than
+/// one it did not. PILOTED at `730×` (`2.6e-6` vs `1.9e-3`) at `r=142` and `86×`
+/// at `r=80`, so `10×` keeps one to two orders of headroom and still fails long
+/// before the two rows become indistinguishable.
+const MIN_IN_SAMPLE_ADVANTAGE: f64 = 10.0;
+
+/// ⚠ `+2.00a` leaves only `1a` of clearance to the plate's free edge, so its
+/// deformation field differs in character as well as in position. A failure
+/// there is not purely an extrapolation result — which is why `+1.50a` is also
+/// scored, at half the distance with `1.5a` of clearance.
+///
+/// ## Measured — 2026-08-24, 5 202 free DOF, 355 training snapshots
+///
+/// rel-L2 against each position's OWN full-order oracle:
+///
+/// | position | r=20 | r=40 | r=80 | r=142 |
+/// |---|---:|---:|---:|---:|
+/// | IN-SAMPLE `+0.00a` | 2.4e-2 | 4.7e-3 | 1.1e-4 | **2.6e-6** |
+/// | INTERP `+0.25a` | 3.2e-2 | 1.8e-2 | 9.5e-3 | **1.9e-3** |
+/// | EXTRAP `+1.50a` | 3.2e-1 | 1.5e-1 | 3.2e-1 | **2.8e-1** |
+/// | EXTRAP `+2.00a` | DIVERGED | 7.6e-1 | 1.0e0 | **1.1e0** |
+///
+/// - ★★★ **The subspace is wrong for a translated patch, and RANK DOES NOT FIX
+///   IT.** In-sample buys four orders across the ladder. Both extrapolations are
+///   FLAT in rank — `+1.50a` wanders `0.15–0.32` with no trend, `+2.00a` gets
+///   WORSE. The predicted advection-like failure, confirmed on the clean point:
+///   `+1.50a` has `1.5a` of edge clearance, so the free edge is exonerated and
+///   extrapolation itself is the cause.
+/// - ★★ **Even INTERPOLATION costs three orders.** Between training points
+///   `0.5a` apart, `+0.25a` reaches `1.9e-3` where in-sample reaches `2.6e-6` at
+///   the same rank, and it improves only ~1.2 orders across a 7× rank increase
+///   against in-sample's four. The reduction advantage dies long before the
+///   accuracy does.
+/// - ★★★ **Out-of-domain is SILENT.** The `+1.50a` and `+2.00a` arms converge,
+///   complete all 71 steps, and do not penetrate — `min_sd` stays positive and
+///   inside the band — while being `28 %` and `109 %` wrong. Convergence plus
+///   non-penetration is NOT a validity check.
+/// - ★★ **`gap_dev` is**, and that was not what it was built for. Across all
+///   eight failing arms it reads `0.161–0.583 d̂` against `3.1e-11` in-sample at
+///   the same rank. ⚠ **But it is an ERROR indicator, not an in-domain one**: at
+///   `r = 20` the IN-SAMPLE arm reads `1.6e-4`, over the threshold, because the
+///   answer is genuinely poor there (`relL2 = 2.4e-2`). It conflates "outside
+///   the hull" with "basis too small" — arguably the right quantity for a §4c
+///   gate, since both are reasons to refuse an answer, but the gate needs its
+///   own threshold study and not the `2e-6` regression figure. Nor is it
+///   monotone in `relL2` within a regime, so it separates regimes by orders of
+///   magnitude and ranks nothing finer.
+/// - ⇒ **This REVIVES `ReducedValidityDomain` (§4c) as a CORRECTNESS
+///   prerequisite.** v2.7 retracted it as a performance prerequisite and that
+///   retraction stands. But a reduced solver that returns a converged,
+///   non-penetrating, 100 %-wrong answer outside its training hull cannot ship
+///   without a domain gate.
+#[test]
+#[ignore = "R1 basis generalisation — ~5 min, run explicitly (see the fn docs)"]
+fn reduced_basis_generalises() {
+    let base = Scene::new(GEN_A_OVER_CELL);
+    let probe = base.mesh();
+    let x_rest = rest_positions(&probe);
+    let solver = base.solver(InitialGuess::PreviousState);
+    let fd = solver.free_dof_indices().to_vec();
+    let mass = solver.mass_per_free_dof();
+    let n_steps = base.n_steps();
+
+    println!(
+        "\nRC\tGENERALISATION: IPC indentation a/cell={GEN_A_OVER_CELL:.1}, {} free DOF, \
+         {n_steps} steps/trajectory\nRC\ttrain offsets {TRAIN_OFFSETS:?} a  |  patch radius \
+         a = {:.3e} m, plate = 8a",
+        fd.len(),
+        patch_radius(),
+    );
+
+    // ── one full-order trajectory per TRAINING offset; snapshots pooled ──
+    let mut train = SnapshotSet::new(fd.len());
+    let mut train_oracles = Vec::new();
+    for dx in TRAIN_OFFSETS {
+        let sc = Scene::at_offset(GEN_A_OVER_CELL, dx);
+        let o = run_oracle(sc, &x_rest, NO_TIMING);
+        assert!(
+            o.arm.failure.is_none(),
+            "training trajectory at {dx:+.2}a failed: {}",
+            o.arm.failure.as_deref().unwrap_or(""),
+        );
+        for x in &o.x {
+            train.push(&SnapshotSet::free_displacement(x, &x_rest, &fd));
+        }
+        train_oracles.push((dx, o));
+    }
+    println!("RC\ttraining set: {} snapshots", train.len());
+
+    // ── score at each test offset ──
+    // ★ Fitted ONCE per rank, outside the scoring loop. The basis is a function
+    // of the training set and the rank only — refitting it per test offset costs
+    // 16 eigendecompositions where 4 do, and reads as though the subspace
+    // depended on the point being scored, which is the opposite of the claim.
+    let mut bases = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for r in BASIS_RANKS {
+        let fitted = PodBasis::fit(&train, Inner::Mass, &mass, 1.0, r).expect("basis fits");
+        if seen.insert(fitted.n_modes()) {
+            bases.push((r, fitted));
+        }
+    }
+    println!(
+        "RC\tbases: {}",
+        bases
+            .iter()
+            .map(|(r, b)| format!("r={r}→{}", b.n_modes()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    let mut rows: Vec<(&str, usize, Arm)> = Vec::new();
+    for (label, dx) in TEST_OFFSETS {
+        let sc = Scene::at_offset(GEN_A_OVER_CELL, dx);
+        // Reuse the training oracle when the test point IS a training point —
+        // that guarantees the in-sample control is scored against exactly the
+        // trajectory its snapshots came from, rather than a lookalike re-run.
+        let owned;
+        let oracle =
+            if let Some((_, o)) = train_oracles.iter().find(|(t, _)| (t - dx).abs() < 1e-12) {
+                o
+            } else {
+                owned = run_oracle(sc, &x_rest, NO_TIMING);
+                assert!(
+                    owned.arm.failure.is_none(),
+                    "scoring oracle at {dx:+.2}a failed: {}",
+                    owned.arm.failure.as_deref().unwrap_or(""),
+                );
+                &owned
+            };
+
+        for (r, basis) in &bases {
+            let got = basis.n_modes();
+            let arm = run_reduced(
+                sc,
+                basis,
+                InitialGuess::Inertial,
+                format!("{label}  r={r}→{got}"),
+                &Ctx {
+                    x_rest: &x_rest,
+                    fd: &fd,
+                    oracle,
+                },
+                NO_TIMING,
+            );
+            arm.print(n_steps, sc.d_hat);
+            rows.push((label, got, arm));
+        }
+    }
+
+    // ── the discriminator ──
+    println!("\nRC\t╔═ does rank fix it? (rel-L2 vs each position's OWN full-order oracle)");
+    for (label, _) in TEST_OFFSETS {
+        let mut line = format!("RC\t║ {label:<18}");
+        for (l, got, arm) in &rows {
+            if *l == label {
+                let e = if arm.failure.is_some() {
+                    "   DIVERGED".to_owned()
+                } else {
+                    format!(" r{got:<3}{:>9.2e}", arm.max_rel_err)
+                };
+                line.push_str(&e);
+            }
+        }
+        println!("{line}");
+    }
+    println!(
+        "RC\t║ FALLING with rank ⇒ capacity, and more modes fix it.\n\
+         RC\t║ FLAT in rank ⇒ the subspace is wrong for a translated patch, and\n\
+         RC\t║ no rank fixes it — R1 would need a different basis, not a bigger one."
+    );
+    println!("RC\t╚═");
+
+    // ── the only assertion: the two-sided control ──
+    //
+    // The held-out rows are the MEASUREMENT; a bad number there is the finding,
+    // not a test failure. What must hold is that the rig can score a basis it
+    // did fit — otherwise every row is measuring the harness.
+    let control = top_row(&rows, TEST_OFFSETS[0].0);
+    assert!(
+        control.2.failure.is_none() && control.2.min_sd > 0.0,
+        "the IN-SAMPLE control did not survive its own trajectory — nothing above \
+         is interpretable",
+    );
+    let advantage = in_sample_advantage(&rows, TEST_OFFSETS[0].0, TEST_OFFSETS[1].0);
+    println!(
+        "RC\t★ control: in-sample is {advantage:.0}× better than interpolation at \
+         r={} (floor {MIN_IN_SAMPLE_ADVANTAGE:.0}×)",
+        control.1,
+    );
+    assert!(
+        advantage >= MIN_IN_SAMPLE_ADVANTAGE,
+        "in-sample is only {advantage:.1}× better than interpolation — the rig \
+         cannot tell a basis it FIT from one it did not, so the generalisation \
+         reading above is not supported",
+    );
+}
+
+/// The highest-rank row recorded for `label`.
+fn top_row<'a>(
+    rows: &'a [(&'static str, usize, Arm)],
+    label: &str,
+) -> &'a (&'static str, usize, Arm) {
+    rows.iter()
+        .filter(|(l, ..)| *l == label)
+        .max_by_key(|(_, got, _)| *got)
+        .unwrap_or_else(|| panic!("no rows recorded for `{label}`"))
+}
+
+/// How many times better the in-sample row is than the interpolated one, with
+/// the three guards that make the number mean something.
+///
+/// ★ Extracted from the test body ONLY so those guards can be exercised. A
+/// control that has run exclusively on good data is not a control — and the
+/// first of these is the exact shape this file keeps producing: the ratio's
+/// denominator is `max_rel_err`, which INITIALISES TO ZERO and is only updated
+/// for finite samples, so a run that recorded no usable error at all would
+/// divide by zero, report `inf×`, and sail past the floor having measured
+/// nothing.
+fn in_sample_advantage(
+    rows: &[(&'static str, usize, Arm)],
+    in_label: &str,
+    interp_label: &str,
+) -> f64 {
+    let (_, fitted_rank, fitted) = top_row(rows, in_label);
+    let (_, held_rank, held) = top_row(rows, interp_label);
+    assert_eq!(
+        fitted_rank, held_rank,
+        "the two rows were scored at different ranks, so their ratio is not a \
+         generalisation measurement",
+    );
+    assert!(
+        held.failure.is_none(),
+        "the interpolation arm did not complete ({}), so its error is over a \
+         TRUNCATED trajectory — a small ratio would then indict the basis when \
+         the arm simply stopped early",
+        held.failure.as_deref().unwrap_or(""),
+    );
+    assert!(
+        fitted.max_rel_err.is_finite() && fitted.max_rel_err > 0.0,
+        "in-sample error is {:.3e}; a zero or non-finite denominator makes the \
+         ratio `inf` and the control passes having measured NOTHING",
+        fitted.max_rel_err,
+    );
+    held.max_rel_err / fitted.max_rel_err
 }
