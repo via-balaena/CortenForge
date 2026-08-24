@@ -1440,9 +1440,13 @@ fn where_the_dynamic_rig_loses_convergence() {
             }
         }
     }
-    assert!(
-        probed > 0,
-        "nothing was probed, so the table above is vacuous"
+    // ⚠ Round two's commit claimed BOTH `assert!(probed > 0)` counters were
+    // replaced. Only one was — this is the other, found by inventorying all 41
+    // assertions rather than by re-reading the diff.
+    assert_eq!(
+        probed,
+        2 * 2 * 3 * 2,
+        "the discriminator printed {probed} of 24 designed cells — rows are being skipped"
     );
     assert!(
         converged_any,
@@ -1704,6 +1708,20 @@ fn whether_load_continuation_clears_the_wall() {
             "CONTINUATION DOES NOT CLEAR IT: the wall is the solver at stick amplitudes, \
              and reduction cannot move it"
         }
+    );
+    // ★★ ASSERTED, not just printed. Found by mutation: collapsing every ramp to
+    // a single frame — i.e. back to the step load that started this whole
+    // investigation — left this test PASSING, because its conclusion lived only
+    // in a `println!`. A verdict nobody gates is a verdict nobody is watching.
+    //
+    // ⚠ Deliberately one-sided in the direction that matters: `RAMP_FRAMES = 60`
+    // is piloted off this table, so if continuation ever stops clearing the wall
+    // the cost instrument's whole regime is invalid and must be re-piloted.
+    assert!(
+        any_ok,
+        "NO ramp length cleared the load, so continuation no longer rescues the step-load \
+         wall — `RAMP_FRAMES` is piloted off this table and the cost instrument's regime \
+         must be re-derived before any timing figure is quoted"
     );
 }
 
