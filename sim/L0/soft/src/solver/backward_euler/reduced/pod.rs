@@ -26,6 +26,21 @@ pub struct PodBasis {
     n_free: usize,
     /// Column-major modes, `r` columns of length `n_free`.
     modes: Vec<Vec<f64>>,
+    /// The same modes, transposed and FLAT: `n_free × r` row-major, entry
+    /// `[p·r + k] == modes[k][p]`.
+    ///
+    /// ⚠ **A second copy of `Φ`, and it doubles the basis's memory** —
+    /// `n · r · 8 B`, `1.66 MiB` at R1.1's `5 202 × 40`, against recon §2b's
+    /// `61 MiB` per reduced env. It is cached rather than built per call
+    /// because `project_tangent` runs once per Newton iteration and an
+    /// `O(n·r)` transpose there would eat a large part of what the layout
+    /// buys.
+    ///
+    /// Both layouts are kept because the accessors want opposite ones:
+    /// [`Self::project_covector`] walks a whole mode (`k` outer, `p` inner) and
+    /// is contiguous in the column-major copy, while `ΦᵀAΦ` walks all modes at
+    /// one DOF (`p` outer, `k` inner) and is contiguous in this one.
+    modes_row_major: Vec<f64>,
     /// Singular values of the (weighted) snapshot matrix, descending — **all** of them,
     /// not just the retained `r`, so the truncation can be re-judged without refitting.
     singular_values: Vec<f64>,
@@ -248,9 +263,20 @@ impl PodBasis {
             modes.push(phi);
         }
 
+        // `n × r` row-major transpose of `modes`, built once. See the field's
+        // documentation for why both layouts are kept.
+        let mut modes_row_major = vec![0.0_f64; n * modes.len()];
+        let r = modes.len();
+        for (k, phi) in modes.iter().enumerate() {
+            for (p, &v) in phi.iter().enumerate() {
+                modes_row_major[p * r + k] = v;
+            }
+        }
+
         Ok(Self {
             n_free: n,
             modes,
+            modes_row_major,
             singular_values,
             inner,
             sqrt_mass,
@@ -332,6 +358,20 @@ impl PodBasis {
     #[must_use]
     pub fn modes(&self) -> &[Vec<f64>] {
         &self.modes
+    }
+
+    /// `Φᵀ` as a FLAT `n_free × r` row-major buffer: `[p·r + k] == modes()[k][p]`.
+    ///
+    /// The layout `ΦᵀAΦ` wants. Both of that product's loops walk *all modes at
+    /// one DOF*, which is a stride of `n_free` in [`Self::modes`] and `r`
+    /// separate allocations to chase; here it is `r` contiguous `f64`.
+    ///
+    /// Recon §2j measured the difference this addresses: the contraction ran at
+    /// `2.62` GFLOP/s, one FMA per `3.36` cycles, latency-bound on a `sum()`
+    /// threaded down the short axis of a `Vec<Vec<f64>>`.
+    #[must_use]
+    pub fn modes_row_major(&self) -> &[f64] {
+        &self.modes_row_major
     }
 
     /// `Φᵀ f` — the **Galerkin projection of a force / residual**, with NO mass weight.

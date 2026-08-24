@@ -110,6 +110,10 @@ const R_MODES: usize = 40;
 const N_TRAIN: usize = 12;
 /// Steps per trajectory — R1.1's value, and what `frac` below normalises against.
 const TRAJ_STEPS: usize = 5;
+/// A 60 Hz frame. What [`Reducible`] mass has to fit inside for R3 to clear —
+/// recon §2j's restated gate, which replaced a `≥10×` ratio over a baseline the
+/// rest of the ladder keeps moving.
+const FRAME_BUDGET_MS: f64 = 16.7;
 const WARMUP: usize = 1;
 const STEPS: usize = 4;
 
@@ -286,19 +290,38 @@ fn main_report(label: &str, wall_ms: f64, steps: usize, iters: usize) {
     } else {
         format!("{hi:.1}×")
     };
-    println!("║ ⇒ R3 Amdahl CEILING = {lo:.1}× … {hi_txt}   (needs 13.5–15.8×, floor 10×)");
+    println!("║ ⇒ R3 Amdahl ceiling = {lo:.1}× … {hi_txt}");
+
+    // ★★ recon §2j. The ceiling ALONE decides nothing, and this harness used to
+    // print it against a hardcoded `needs 13.5–15.8×, floor 10×`. Both halves of
+    // that were wrong to print here: the requirement is `T/B` and falls whenever
+    // the frame does, so a run that speeds up a REDUCIBLE phase lowers the
+    // ceiling and the requirement by the same factor — `C/R = B/I` — and the
+    // comparison reads as a regression that did not happen. Measured: the
+    // `project_tangent` layout change took the ceiling `20.0× → 11.3×` and this
+    // line printed "BRACKET STRADDLES the requirement" for a change that left
+    // the margin at `5.1× → 5.3×`.
+    //
+    // What decides is whether the IRREDUCIBLE time fits the frame budget.
+    let per_step = wall_ms / steps as f64;
+    let irreducible = per_step * (100.0 - sure) / 100.0;
+    let margin = FRAME_BUDGET_MS / irreducible;
+    println!(
+        "║ ⇒ GATE (§2j): irreducible {irreducible:.3} ms/step vs a {FRAME_BUDGET_MS} ms frame          ⇒ margin {margin:.2}×"
+    );
     println!(
         "║ ⇒ {}",
-        if lo >= 15.8 {
-            "clears the requirement on either bound"
-        } else if hi < 10.0 {
-            "⛔ cannot clear R3's own 10× floor on EITHER bound"
-        } else if hi < 13.5 {
-            "⚠ can clear the 10× floor but NOT the frame budget"
+        if margin >= 1.0 {
+            "CLEARS — R3 can reach the budget on this fixture, with that much room"
         } else {
-            "⚠ BRACKET STRADDLES the requirement — the bound decides, so close it"
+            "⛔ CANNOT clear: the irreducible work alone overruns the frame budget"
         }
     );
+    println!(
+        "║ ⚠ this fixture's OWN requirement is {:.2}× (T/B). §2f's 13.5–15.8× is IPC 18 750",
+        per_step / FRAME_BUDGET_MS
+    );
+    println!("║   WITH contact — a different fixture. Do not read the ceiling against it.");
     println!("╚═");
 }
 

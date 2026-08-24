@@ -1,6 +1,6 @@
 # sim-soft Real-Time Path — Phase-1 Measurement + Recon (Phase E predecessor)
 
-**Status**: RECON 2026-08-10 (rev 2026-08-24), v2.9. Phase 1 (measure) COMPLETE — all four requested
+**Status**: RECON 2026-08-10 (rev 2026-08-24), v2.10. Phase 1 (measure) COMPLETE — all four requested
 measurements taken; §2 reports them. Phase 2 (this recon) proposes the MOR +
 hyper-reduction path with a staged ladder whose first rung is a kill-or-confirm.
 **No dependency was added.** Phase 1's instrumentation was temporary (implement →
@@ -1638,6 +1638,90 @@ check for:
 there is no public accessor for it. Adding one purely for a diagnostic was judged
 scope creep. The gather's share is measured; only its efficiency is unquantified.
 
+#### ✅ BUILT and MEASURED — `1.84×` of a reduced frame, byte-identically
+
+The change is the one knob 0 named: `Φᵀ` cached as a flat `n × r` row-major buffer
+alongside the existing column-major copy, `Y` flat `n × r` to match, the gather's
+inner loop two contiguous AXPYs, and the contract `n` rank-1 updates into an
+L1-resident `r × r` accumulator. No parallelism, no new dependency.
+
+| | before | after | factor |
+|---|---:|---:|---:|
+| **reduced frame** | 65.89 ms | **35.72 ms** | **1.84×** |
+| `red proj K` | 37.09 | 6.62 | 5.61× |
+| ↳ `Y = AΦ` | 24.07 | 3.95 | 6.09× |
+| ↳ `Φᵀ Y` | 13.02 | 2.67 | 4.88× |
+| `asm tangent` (untouched — the control) | 23.24 | 23.73 | 0.98× |
+
+Three runs each side, split control `100.0 %` on all three after. ⚠ The two arms
+are block-ordered, not interleaved, which §2d finding 3 warns about — licensed
+here by the control row: `asm tangent` is untouched by the change and moved
+`2.1 %`, inside this harness's own spread, against a `1.84×` effect.
+
+**Against the cap §2j fixed in advance: `1.84×` of an available `2.31×`.** Rule 3
+satisfied — quoted whole-frame, not as the `5.61×` on the phase.
+
+**Correctness is byte-identity, not a tolerance.** Both loops still sum their `p`
+terms low-to-high, so the result is exact to the bit; the gate compares every
+upper-triangle entry with `to_bits()` against the pre-change form, written from
+the *column-major* `modes()` so a wrong transpose cannot satisfy both. Two
+negative controls, both fire: reversing the contract's accumulation order changes
+the 13th digit and is caught (**a tolerance test would have passed it**), and
+dropping mode 0 from the flat transpose alone is caught.
+
+#### ★★ The invariant held, and the instrument printed the misreading anyway
+
+§2j predicted that this could not move R3's margin. Measured:
+
+| | before | after |
+|---|---:|---:|
+| R3's ceiling | 19.97× | **11.32×** |
+| this fixture's requirement `T/B` | 3.95× | **2.14×** |
+| **margin `B/I`** | **5.06×** | **5.29×** |
+
+The ceiling fell `1.76×`, the requirement fell `1.85×`, and the margin did not
+move. ⚠ **And `tests/reduced_phase_shares.rs` printed `"⚠ BRACKET STRADDLES the
+requirement — the bound decides, so close it"`** — because it compared the new
+`11.2×` against a hardcoded `needs 13.5–15.8×` that is both stale and a different
+fixture. Exactly the defect §2j's corollary names. **The harness has been fixed**
+to report the gate that decides — irreducible ms/step against the 16.7 ms budget,
+and the margin — and to print this fixture's own `T/B` beside a warning not to
+read the ceiling against §2f's number.
+
+#### ✅ Knob 1 came free, and it is where the result is largest
+
+`tests/reduced_gradient.rs::adjoint_gap_across_basis_sizes` already sweeps
+`r = 10 … 104`. It **failed on the first run after the change**, asserting
+`growth > 1.5` with the message *"if `ΦᵀAΦ` stopped dominating, §14's break-even
+argument needs re-measuring"*. It had. Least squares over the sweep:
+
+| | `O(r²)` /mode² | `O(r)` /mode | constant |
+|---|---:|---:|---:|
+| before | 0.0407 | 1.87 | 117.4 ms |
+| after | **0.0025** | **0.69** | **112.3 ms** |
+| | **16× down** | **2.7× down** | **unmoved — the control** |
+
+⇒ **the break-even against the oracle moves `r ≈ 61` → `r ≈ 219`**, and at the R1
+plan's rank ceiling of 104 the reduced path goes from `0.51×` the oracle to
+`1.83×`. Plan §14 finding 2's cost premise is overturned; **its conclusion
+survives on finding 1 alone** — the accuracy columns are bit-identical and `Σx*`
+gradient error is still `0.704` at `r = 104`, so rank still does not fix the
+adjoint. The guard's bound was **re-measured, not widened**: it now asserts
+`1.25–2.0` two-sided, piloted at `1.47/1.49/1.49`, so a regression of the layout
+trips it from the other side.
+
+★ This is the knob-1 prediction paying off in the direction the pre-registration
+did not guess: it warned *"a fix tuned at `r = 40` can be the wrong fix at 80"*.
+It is a **better** fix at 80, because the term it removes is the one that grows.
+
+#### What is left
+
+- **`asm tangent` is now `66.9 %` of a reduced frame** — the next item, exactly as
+  the prize table predicted it would be.
+- ⚠ **Knobs 2, 3 and 4 are NOT swept.** `n` (one fixture only), threads (the fix
+  uses none — this `1.84×` is single-threaded, so the thread knob is unspent
+  headroom rather than a risk) and Tet10. Recorded as open, not as done.
+
 ## 3. What the measurements say about feasibility
 
 ### 3a. The goal is not refuted
@@ -2241,6 +2325,36 @@ until then, and by nobody else ever. The recipe above is the durable record.
 - `sim/L0/soft/src/material/` — the `ValidityDomain` §4c mirrors.
 
 ## 12. Version history
+
+- **v2.10 (2026-08-24)** — **§2j BUILT: `project_tangent` is `1.84×` of a reduced
+  frame, byte-identically — and the margin did not move, exactly as pre-registered.**
+  A flat `n × r` `Y` with a cached transposed `Φ` turns the gather into contiguous
+  AXPYs and the contract into `n` rank-1 updates against an L1-resident `r × r`
+  accumulator. Frame `65.89 → 35.72 ms`; `red proj K` `5.61×` (`Y=AΦ` `6.09×`,
+  `ΦᵀY` `4.88×`); `asm tangent`, untouched, moved `2.1 %` and is the control that
+  licenses the block-ordered comparison. Against §2j's pre-fixed cap: `1.84×` of an
+  available `2.31×`. **No parallelism** — the thread knob is unspent. ★ Correctness
+  is BYTE-IDENTITY: same terms, same order, gated with `to_bits()` against the
+  pre-change form written from the column-major `modes()` so a wrong transpose
+  cannot satisfy both, and negative-controlled twice (reversing the contract's
+  accumulation order changes the 13th digit and is caught — **a tolerance test
+  would have passed it**). ★★ **The invariant was confirmed by experiment**: the
+  ceiling fell `19.97 → 11.32×` and this fixture's requirement `3.95 → 2.14×`, so
+  the margin `B/I` went `5.06 → 5.29×`. ⚠ `tests/reduced_phase_shares.rs` printed
+  *"BRACKET STRADDLES the requirement"* anyway, comparing the new ceiling against a
+  hardcoded stale `13.5–15.8×` from a different fixture — the exact defect §2j's
+  corollary names, now fixed: the harness reports irreducible ms/step against the
+  budget and the margin. ✅ **Knob 1 came free and is where the result is largest**:
+  `adjoint_gap_across_basis_sizes` failed on the first run, as its own message asked
+  it to. Re-measured, the `O(r²)` coefficient fell **16×** and `O(r)` **2.7×** with
+  the r-independent constant unmoved (`117 → 112 ms`, the control), so **R1's
+  break-even against the oracle moves `r ≈ 61` → `r ≈ 219`** and at rank 104 the
+  reduced path goes `0.51× → 1.83×` the oracle. Plan §14 finding 2's cost premise is
+  overturned and **its conclusion survives on finding 1 alone** — accuracy is
+  bit-identical, `Σx*` error is still `0.704` at `r = 104`. The guard was
+  re-measured, not widened (`1.25–2.0` two-sided, piloted `1.47/1.49/1.49`).
+  ⇒ **`asm tangent` is now `66.9 %` of a reduced frame**, the next item, as the
+  prize table said it would be. ⚠ Knobs 2 / 3 / 4 remain unswept.
 
 - **v2.9 (2026-08-24)** — **§2j knob 0 MEASURED: `ΦᵀKΦ` splits `1.85 : 1`, both
   halves are large, and the contract is LATENCY-bound — so one layout change fixes

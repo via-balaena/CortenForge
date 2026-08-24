@@ -1012,15 +1012,37 @@ fn adjoint_gap_across_basis_sizes() {
         face_z_grad[R_SWEEP.len() - 1]
     );
 
-    // ★ The cost the rank knob carries. Same run, same machine, so this ratio survives a
-    // noisy box far better than an absolute time would; measured 2.7x, bounded at 1.5x.
-    // Asserted as a SHAPE rather than as a speedup-vs-oracle threshold, because the
-    // latter would flake on a contended CI runner — the oracle comparison is reported.
+    // ★★ The cost the rank knob carries — **INVERTED 2026-08-24, and the old
+    // assertion is what caught it.** This read `growth > 1.5` ("measured 2.7x")
+    // on the premise that `ΦᵀAΦ` dominates and rank is therefore expensive. Recon
+    // §2j's layout change (flat `n × r` `Y`, transposed `Φ`) made that premise
+    // false: the `O(r²)` coefficient fell 16x and the `O(r)` coefficient 2.7x, so
+    // growth dropped to 1.47–1.49x over three runs and the old bound fired
+    // exactly as its message asked it to.
+    //
+    // Re-measured rather than re-baselined, per that message. §14's break-even
+    // vs the oracle moved from **r ≈ 61 to r ≈ 219**, and at the plan's r=104
+    // ceiling the reduced path went from **0.51x the oracle to 1.83x**. ⚠ §14's
+    // finding 1 is untouched — the accuracy columns above are bit-identical
+    // across the change, so rank still does not fix the adjoint; it is only the
+    // COST half of finding 2 that died.
+    //
+    // Bounded two-sided, piloted at 1.47/1.49/1.49:
+    //   * above 2.0 ⇒ `ΦᵀAΦ` is dominating again, i.e. the layout regressed
+    //     (the pre-change reading was 2.87x);
+    //   * below 1.25 ⇒ rank has stopped costing anything at all, which on an
+    //     `O(n·r²)` contraction means the measurement broke, not the code.
+    // Still asserted as a SHAPE, not as a speedup-vs-oracle threshold, because
+    // the latter would flake on a contended runner — and a regression of the
+    // layout trips the upper bound anyway, so the overturn is guarded without one.
     let growth = ms[R_SWEEP.len() - 1] / ms[2];
     assert!(
-        growth > 1.5,
-        "the reduced trajectory grew only {growth:.2}x from r=40 to the rank ceiling — \
-         if `ΦᵀAΦ` stopped dominating, §14's break-even argument needs re-measuring"
+        (1.25..2.0).contains(&growth),
+        "the reduced trajectory grew {growth:.2}x from r=40 to the rank ceiling, outside \
+         the piloted 1.25–2.0 band (measured 1.47–1.49x after recon §2j's layout change, \
+         2.87x before it). Above the band, `ΦᵀAΦ` dominates again and the layout has \
+         regressed; below it, rank costs nothing and the measurement is suspect. Either \
+         way §14's break-even needs re-measuring, not the bound widening."
     );
 }
 

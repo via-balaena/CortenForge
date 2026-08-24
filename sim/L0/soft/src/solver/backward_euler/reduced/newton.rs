@@ -241,25 +241,35 @@ where
         let r = self.basis.n_modes();
         let n = self.basis.n_free();
 
-        // Y = A Φ, dense n × r, column-major by mode. `Φ` is borrowed, not rebuilt:
-        // reconstructing it from unit vectors costs `O(n·r²)` per call and this runs
-        // once per Newton iteration.
-        let modes = self.basis.modes();
+        // `Φᵀ` FLAT, `n × r` row-major. Both loops below walk all modes at one
+        // DOF, which is this layout's contiguous direction; `basis.modes()` is
+        // the transpose of it and costs `r` pointer-chases per access.
+        let phi_t = self.basis.modes_row_major();
 
         // The two loops are timed separately — they have different asymptotics
-        // (`O(nnz·r)` vs `O(n·r²)`) and want different fixes, and the parent
-        // slot cannot say which one is slow. Both slots are NESTED inside
-        // `ReducedProjectTangent`; recon §2j, knob 0.
+        // (`O(nnz·r)` vs `O(n·r²)`), and the parent slot cannot say which is
+        // slow. Both slots are NESTED inside `ReducedProjectTangent`; recon §2j,
+        // knob 0, which measured them at `1.85 : 1`.
         let y = {
             let _t =
                 crate::profile::Timer::start(crate::profile::Phase::ReducedProjectTangentGather);
-            let mut y = vec![vec![0.0_f64; r]; n];
+            // `Y = AΦ`, dense `n × r` row-major — matching `phi_t`, so each
+            // triplet contributes one contiguous AXPY per endpoint.
+            let mut y = vec![0.0_f64; n * r];
             for t in &triplets {
                 let (row, col, v) = (t.row, t.col, t.val);
-                for k in 0..r {
-                    y[row][k] += v * modes[k][col];
-                    if row != col {
-                        y[col][k] += v * modes[k][row];
+                for (yk, &pk) in y[row * r..(row + 1) * r]
+                    .iter_mut()
+                    .zip(&phi_t[col * r..(col + 1) * r])
+                {
+                    *yk += v * pk;
+                }
+                if row != col {
+                    for (yk, &pk) in y[col * r..(col + 1) * r]
+                        .iter_mut()
+                        .zip(&phi_t[row * r..(row + 1) * r])
+                    {
+                        *yk += v * pk;
                     }
                 }
             }
@@ -268,12 +278,32 @@ where
 
         let _tc =
             crate::profile::Timer::start(crate::profile::Phase::ReducedProjectTangentContract);
+        // `A_r = Φᵀ Y` as `n` rank-1 updates of an `r × r` accumulator rather
+        // than `r(r+1)/2` independent dot products down the columns of `Y`.
+        //
+        // Same arithmetic in the same order — for each `(i, j)` the `p` terms
+        // are still added low-to-high — so this is BYTE-IDENTICAL to the dot
+        // products it replaces. What changes is that the `r(r+1)/2`
+        // accumulators are now live at once, all of them in `r · r · 8 B` of
+        // L1, so consecutive FMAs are independent and the ~4-cycle latency
+        // chain that bounded the old loop at `2.62` GFLOP/s is gone. Upper
+        // triangle only, mirrored at the end.
+        let mut acc = vec![0.0_f64; r * r];
+        for p in 0..n {
+            let (phi_p, y_p) = (&phi_t[p * r..(p + 1) * r], &y[p * r..(p + 1) * r]);
+            for (i, &phi_pi) in phi_p.iter().enumerate() {
+                for (a, &yj) in acc[i * r + i..(i + 1) * r].iter_mut().zip(&y_p[i..]) {
+                    *a += phi_pi * yj;
+                }
+            }
+        }
+
         let mut a_r = DMatrix::<f64>::zeros(r, r);
         for i in 0..r {
             for j in i..r {
-                let acc: f64 = (0..n).map(|p| modes[i][p] * y[p][j]).sum();
-                a_r[(i, j)] = acc;
-                a_r[(j, i)] = acc;
+                let v = acc[i * r + j];
+                a_r[(i, j)] = v;
+                a_r[(j, i)] = v;
             }
         }
         a_r
