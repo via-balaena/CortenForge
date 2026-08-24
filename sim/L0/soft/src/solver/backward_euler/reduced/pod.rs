@@ -352,6 +352,7 @@ impl PodBasis {
     /// Panics if `f.len() != n_free`.
     #[must_use]
     pub fn project_covector(&self, f: &[f64]) -> Vec<f64> {
+        let _t = crate::profile::Timer::start(crate::profile::Phase::ReducedProjectCovector);
         assert!(f.len() == self.n_free, "f must have n_free entries");
         self.modes
             .iter()

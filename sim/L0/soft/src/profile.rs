@@ -65,6 +65,10 @@
 ///
 /// Deliberately the same five the recon's table uses, in its column order, so a
 /// re-measurement drops straight into that table rather than needing a mapping.
+// Variants get added as cost centres are discovered — this file went 5 → 11 in
+// one session. Downstream matches must not break each time, and in-crate matches
+// stay exhaustive regardless, so nothing here loses its compiler check.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Phase {
     /// Internal-force assembly (`asm force`) — including Armijo's re-evaluations.
@@ -99,16 +103,63 @@ pub enum Phase {
     /// "of which contact" rather than "plus contact". §2d's column reads the
     /// same way, which is why its rows come to ~99 % rather than over 100 %.
     Contact,
+
+    /// Reduced path: `x = x_rest + Φq` reconstruction (`O(n·r)`).
+    ReducedExpand,
+    /// Reduced path: `Φᵀr`, the residual projection (`O(n·r)`).
+    ReducedProjectCovector,
+    /// Reduced path: `ΦᵀAΦ`, EXCLUDING the tangent assembly it calls (`O(n·r²)`).
+    ///
+    /// The assembly is already booked to [`Self::AssembleTangent`], so this slot
+    /// starts after the triplets exist and the two stay disjoint.
+    ReducedProjectTangent,
+    /// Reduced path: the dense `r × r` Cholesky/LU and its solve (`O(r³)`).
+    ///
+    /// Hyper-reduction cannot touch it — ECSW replaces assembly and projection
+    /// with a weighted sum over sampled elements and leaves the `r × r` solve
+    /// alone. It measures **0.0 %** of a reduced frame at `r = 40`, so it is not
+    /// what bounds R3; see [`Reducible`] and §2i for what does.
+    ReducedDenseSolve,
+
+    /// The `O(n)` residual vector arithmetic — `(m/Δt²)(x − x̂) + f_int − f_ext`
+    /// and the free-DOF gather. Shared by both paths.
+    ResidualForm,
+    /// The deformed-validity element sweep at step start and on convergence.
+    ValidityCheck,
 }
+
+/// Whether hyper-reduction can remove a phase.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reducible {
+    /// ECSW replaces this with a weighted sum over sampled elements.
+    Yes,
+    /// Untouched by hyper-reduction — the `r × r` solve, the contact broad phase.
+    No,
+    /// Removed only if R3's OWN design works: the analytic `ΦᵀMΦ = I` inertia
+    /// term and the `ReducedValidityDomain` gate that replaces the element sweep
+    /// (§4c). Counting these as removed assumes the thing being sized succeeds,
+    /// so they are reported as a separate bracket rather than folded in.
+    PlannedByR3,
+}
+
+/// Number of timing slots.
+const N_SLOTS: usize = 11;
 
 impl Phase {
     /// Every slot, in §2d's column order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; N_SLOTS] = [
         Self::AssembleForce,
         Self::AssembleTangent,
         Self::NumericFactor,
         Self::TriangularSolve,
         Self::Contact,
+        Self::ReducedExpand,
+        Self::ReducedProjectCovector,
+        Self::ReducedProjectTangent,
+        Self::ReducedDenseSolve,
+        Self::ResidualForm,
+        Self::ValidityCheck,
     ];
 
     /// §2d's column heading for this phase.
@@ -120,6 +171,35 @@ impl Phase {
             Self::NumericFactor => "numeric factor",
             Self::TriangularSolve => "tri solve",
             Self::Contact => "contact",
+            Self::ReducedExpand => "red expand",
+            Self::ReducedProjectCovector => "red proj r",
+            Self::ReducedProjectTangent => "red proj K",
+            Self::ReducedDenseSolve => "red dense solve",
+            Self::ResidualForm => "residual form",
+            Self::ValidityCheck => "validity check",
+        }
+    }
+
+    /// Whether hyper-reduction (R3/ECSW) can attack this phase.
+    ///
+    /// ECSW replaces assembly-and-projection over ALL elements with a weighted
+    /// sum over a sampled subset, so everything that scales with the element
+    /// count or `n` is reducible. The dense `r × r` solve is not, and neither is
+    /// [`Self::Contact`], whose pair search is not an element-quadrature cost.
+    /// `1 / (1 − reducible share)` is R3's Amdahl ceiling.
+    #[must_use]
+    pub const fn ecsw_reducible(self) -> Reducible {
+        match self {
+            Self::AssembleForce
+            | Self::AssembleTangent
+            | Self::ReducedExpand
+            | Self::ReducedProjectCovector
+            | Self::ReducedProjectTangent => Reducible::Yes,
+            Self::NumericFactor
+            | Self::TriangularSolve
+            | Self::Contact
+            | Self::ReducedDenseSolve => Reducible::No,
+            Self::ResidualForm | Self::ValidityCheck => Reducible::PlannedByR3,
         }
     }
 
@@ -130,6 +210,12 @@ impl Phase {
             Self::NumericFactor => 2,
             Self::TriangularSolve => 3,
             Self::Contact => 4,
+            Self::ReducedExpand => 5,
+            Self::ReducedProjectCovector => 6,
+            Self::ReducedProjectTangent => 7,
+            Self::ReducedDenseSolve => 8,
+            Self::ResidualForm => 9,
+            Self::ValidityCheck => 10,
         }
     }
 }
@@ -144,8 +230,8 @@ impl Phase {
 /// rows do not sum to 100 % for the same two reasons.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Phases {
-    nanos: [u64; 5],
-    calls: [u64; 5],
+    nanos: [u64; N_SLOTS],
+    calls: [u64; N_SLOTS],
 }
 
 impl Phases {
@@ -207,20 +293,8 @@ mod imp {
 
     // `Relaxed` throughout: these are diagnostic tallies, and nothing orders
     // against them. Same reasoning as `CpuNewtonSolver::factorizations`.
-    static NANOS: [AtomicU64; 5] = [
-        AtomicU64::new(0),
-        AtomicU64::new(0),
-        AtomicU64::new(0),
-        AtomicU64::new(0),
-        AtomicU64::new(0),
-    ];
-    static CALLS: [AtomicU64; 5] = [
-        AtomicU64::new(0),
-        AtomicU64::new(0),
-        AtomicU64::new(0),
-        AtomicU64::new(0),
-        AtomicU64::new(0),
-    ];
+    static NANOS: [AtomicU64; super::N_SLOTS] = [const { AtomicU64::new(0) }; super::N_SLOTS];
+    static CALLS: [AtomicU64; super::N_SLOTS] = [const { AtomicU64::new(0) }; super::N_SLOTS];
 
     /// Scope guard: times from construction to drop.
     pub struct Timer {
@@ -255,7 +329,7 @@ mod imp {
 
     /// Zero every slot. Call before the window to be measured.
     pub fn reset() {
-        for i in 0..5 {
+        for i in 0..super::N_SLOTS {
             NANOS[i].store(0, Ordering::Relaxed);
             CALLS[i].store(0, Ordering::Relaxed);
         }
@@ -265,7 +339,7 @@ mod imp {
     #[must_use]
     pub fn snapshot() -> Phases {
         let mut out = Phases::default();
-        for i in 0..5 {
+        for i in 0..super::N_SLOTS {
             out.nanos[i] = NANOS[i].load(Ordering::Relaxed);
             out.calls[i] = CALLS[i].load(Ordering::Relaxed);
         }

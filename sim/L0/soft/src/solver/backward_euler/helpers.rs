@@ -108,6 +108,7 @@ pub(super) fn residual_into(
     dt: f64,
     r: &mut [f64],
 ) {
+    let _t = crate::profile::Timer::start(crate::profile::Phase::ResidualForm);
     debug_assert!(x_curr.len() == r.len());
     debug_assert!(x_prev.len() == r.len());
     debug_assert!(v_prev.len() == r.len());

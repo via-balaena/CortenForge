@@ -144,6 +144,7 @@ where
     // path the only one allowed to be physically invalid.
     #[allow(clippy::similar_names, clippy::cast_possible_truncation)]
     pub(super) fn check_validity_at_step_start(&self, x_curr: &[f64]) -> Result<(), SolverFailure> {
+        let _t = crate::profile::Timer::start(crate::profile::Phase::ValidityCheck);
         debug_assert!(x_curr.len() == self.n_dof);
         let materials = self.mesh.materials();
         // A gate that silently skips tets fails open, so the loop's extent is
