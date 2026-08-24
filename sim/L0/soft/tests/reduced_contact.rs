@@ -1236,8 +1236,8 @@ fn reduced_contact_does_not_tunnel_through_the_barrier() {
 ///   where to measure next, not a number. It does mean `1.4×` must not be read
 ///   as "R3 clears for soft bodies"; it clears **at this size**.
 /// - ★★★ **And that identifies where the one available lever on R3's margin
-///   is.** Contact is `69 %` of `I`, and by `C/R = B/I` only `I` moves a rung's
-///   verdict — so `asm tangent`, at `68.7 %` of the reduced FRAME, moves it by
+///   is.** Contact is `65–69 %` of `I`, and by `C/R = B/I` only `I` moves a rung's
+///   verdict — so `asm tangent`, at `66.7–68.7 %` of the reduced FRAME, moves it by
 ///   exactly zero, the same trap §2j's corollary caught for `red proj K`.
 ///
 ///   What the `Phase::Contact` slot actually wraps (`assembly.rs`) is **two**
@@ -1253,7 +1253,7 @@ fn reduced_contact_does_not_tunnel_through_the_barrier() {
 ///   pair exists", twice per Newton iteration — and then set them aside:
 ///   *"Neither is on R3's path."* Under `C/R = B/I` that is overturned. The
 ///   cost is `1–2 %` of a whole frame, which is why it looked ignorable, and
-///   `69 %` of `I`, which is the only quantity that decides the rung.
+///   `65–69 %` of `I`, which is the only quantity that decides the rung.
 ///
 ///   ⚠ **Two scoping corrections to the paragraph above, both from round 3.**
 ///   (a) The `O(n_vertices)` walk is the LINEAR-mesh path; a Tet10 mesh
@@ -1265,9 +1265,9 @@ fn reduced_contact_does_not_tunnel_through_the_barrier() {
 ///   real and verified in the source; the exponent was over-attributed to it.
 ///
 ///   ⚠ No size of win is claimed for removing either term.
-/// - `I` is `69 %` contact and `29 %` the validity sweep, the rest negligible.
+/// - `I` is `65–69 %` contact and `29–33 %` the validity sweep, the rest negligible.
 ///   The sweep is [`Reducible::PlannedByR3`], so R3's own `ReducedValidityDomain`
-///   is worth about `+0.5×` of margin here (`I` would fall to `~8.7 ms`). That
+///   is worth about `+0.5–0.8×` of margin here (`I` would fall to `7.7–8.7 ms`). That
 ///   does NOT revive it as a prerequisite — the rung clears either way — but on a
 ///   `1.4×` margin it is no longer irrelevant, which it was at `5.6×`.
 /// - The `1.43 ms` of contact per Newton iteration this arc had been projecting
@@ -1498,7 +1498,7 @@ fn timing_fixture(a_over_cell: f64) -> SizeRow {
              ({:.4} vs {base:.4} ms)",
             per_call(snap),
         );
-        // PILOTED at 0.764–1.173× over sixteen arm-comparisons across both
+        // PILOTED at 0.764–1.173× over 28 arm-comparisons across both
         // sizes. ⚠ An earlier comment said `0.80–1.17` — the low end was read
         // off a subset. The spread is wide for a control because `contact` is ~1 % of a full-order frame, so the
         // DENOMINATOR is a small difference of large numbers; the band is set

@@ -1900,6 +1900,16 @@ reference box:
 | reduced, `PreviousState` | 304–315 | 9.00 | 17.1–18.2 | **`0.92–0.98×`** ⛔ |
 | reduced, `Inertial` | 181–185 | 5.25 | 11.3–12.3 | **`1.36–1.47×`** ✓ |
 
+⚠⚠ **Every DERIVED figure in this section was recomputed over all nine runs by
+a later audit, and several had been quoted from run 1 alone** — where, being
+first, they sat at extremes of the eventual range. `asm tangent` read `68.7 %`
+against a measured `66.7–68.7 %`; contact's share of `I` read `69 %` against
+`65–69 %`; the validity sweep `29 %` against `29–33 %`; `I` without the sweep
+`~8.7 ms` against `7.7–8.7`. None of them changed a conclusion, and all four
+were the extreme rather than the middle. ⇒ **A derived figure computed once from
+the first run and never re-derived as the sample grows is a stale figure that
+still looks measured.**
+
 ⚠ **These are min–max OBSERVED over nine runs, not bounds.** A ninth run put
 full-order `ms/step` at `844` and reduced-`Inertial` at `181` — both outside the
 eight-run range this table first carried. What did NOT move across any of the
@@ -1907,7 +1917,7 @@ nine is what the rung turns on: `I`, `B/I`, and the iteration counts, which are
 exact integers per step. Read the wall-clock column as context and the last two
 as the result.
 
-Eight runs at 18 750, four at 5 202. The same window at 5 202 reads `~3.3×` and
+Nine runs at 18 750, five at 5 202. The same window at 5 202 reads `~3.3×` and
 `~4.5×` — see finding 3, the margin is size-dependent. ⚠ The 18 750 ranges are
 quoted tight because they decide the rung; the 5 202 ones are rounded because
 they are context, and quoting context tight put this document on a treadmill
@@ -1977,8 +1987,8 @@ Five things it changes:
    `I` at 18 750, `I` is the only quantity that moves a rung's verdict, and the
    two `O(n)` passes are the bulk of contact. So the contact PATH is not merely
    on R3's path — at this size it very nearly IS R3's path. The corollary runs
-   the other way for the big lines: `asm tangent`, at `68.7 %` of the reduced
-   FRAME, moves the margin by exactly zero — the same trap §2j's corollary caught
+   the other way for the big lines: `asm tangent`, at `66.7–68.7 %` of the
+   reduced FRAME, moves the margin by exactly zero — the same trap §2j's corollary caught
    for `red proj K`.
 
    Neither pass scales with how many pairs are ACTIVE: `slice_to_vec3s`
@@ -1994,10 +2004,10 @@ Five things it changes:
    vertices that is `n_vert^0.88`, sublinear. The `O(n)` structure is real and in
    the source; the exponent was over-attributed to it. ⚠ No size of win is
    claimed for removing either pass.
-5. **`I` is `69 %` contact and `29 %` the validity sweep at 18 750** (`53 %` /
+5. **`I` is `65–69 %` contact and `29–33 %` the validity sweep at 18 750** (`53 %` /
    `45 %` at 5 202 — see finding 3). The sweep is
    `Reducible::PlannedByR3`, so §4c's `ReducedValidityDomain` is worth about
-   `+0.5×` of margin here (`I` would fall to `~8.7 ms`). That does NOT reverse
+   `+0.5–0.8×` of margin here (`I` would fall to `7.7–8.7 ms`). That does NOT reverse
    v2.7's retraction — the rung clears either way — but at `1.4×` it is no longer
    irrelevant, which it was at `5.6×`.
 
@@ -2785,7 +2795,7 @@ until then, and by nobody else ever. The recipe above is the durable record.
   exponent to `I` hid two terms moving in opposite directions — `contact` at
   `n^1.13` and the validity sweep at `n^0.58` — which corrects the headroom
   marker to `~26 k` free DOF and, more usefully, **located the only
-  available lever on R3's margin**: contact is `69 %` of `I`, and its slot is two
+  available lever on R3's margin**: contact is `65–69 %` of `I`, and its slot is two
   `O(n)` passes. ★★ A THIRD round found that §2d had already described those
   passes and dismissed them — *"Neither is on R3's path"* — a sentence
   `C/R = B/I` now OVERTURNS; §2d carries the retraction. That round also narrowed
