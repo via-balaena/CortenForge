@@ -198,6 +198,7 @@ where
 
     /// Scatter `x = x_rest + Φq` onto full DOFs, taking constrained DOFs from `x_prev`.
     fn expand(&self, q: &[f64], x_prev: &[f64]) -> Vec<f64> {
+        let _t = crate::profile::Timer::start(crate::profile::Phase::ReducedExpand);
         let mut x = x_prev.to_vec();
         let u = self.basis.reconstruct(q);
         for (k, &full_idx) in self.full.free_dof_indices().iter().enumerate() {
@@ -232,6 +233,10 @@ where
         dt: f64,
     ) -> DMatrix<f64> {
         let triplets = self.full.assemble_free_hessian_triplets(x, x_prev, dt);
+        // Starts HERE, not at the top of the function: the assembly above is
+        // already booked to `Phase::AssembleTangent`, and wrapping the whole
+        // function would double-count it.
+        let _t = crate::profile::Timer::start(crate::profile::Phase::ReducedProjectTangent);
         let r = self.basis.n_modes();
         let n = self.basis.n_free();
 
@@ -403,10 +408,12 @@ where
             // Dense `r × r`: Cholesky when SPD, LU otherwise. The full tangent is SPD in
             // the regimes R1.1 targets and `ΦᵀAΦ` inherits that for a full-rank `Φ`, so
             // the LU arm is the same cold fallback `factor_free_tangent` keeps.
-            let delta = a_r
-                .clone()
-                .cholesky()
-                .map_or_else(|| a_r.clone().lu().solve(&rhs), |ch| Some(ch.solve(&rhs)));
+            let delta = {
+                let _t = crate::profile::Timer::start(crate::profile::Phase::ReducedDenseSolve);
+                a_r.clone()
+                    .cholesky()
+                    .map_or_else(|| a_r.clone().lu().solve(&rhs), |ch| Some(ch.solve(&rhs)))
+            };
             let Some(delta) = delta else {
                 return Err(SolverFailure::DoublyFailedFactor {
                     x_partial: self.expand(&q, &x_prev),
