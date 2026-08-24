@@ -195,7 +195,11 @@ fn main_report(label: &str, wall_ms: f64, steps: usize, iters: usize) {
         match ph.ecsw_reducible() {
             Reducible::Yes => sure += share,
             Reducible::PlannedByR3 => planned += share,
-            Reducible::No => {}
+            // `Reducible::No` and anything added later: counted as NOT reducible,
+            // which lowers the ceiling. `Phase` is `#[non_exhaustive]`, so a new
+            // variant reaches here silently — failing toward the pessimistic bound
+            // is the safe direction, and the label below makes it visible.
+            _ => {}
         }
         // ⚠ `Contact` is NESTED inside `AssembleForce` and `AssembleTangent`,
         // both of which are reducible, so its time has already been added via its
@@ -214,6 +218,7 @@ fn main_report(label: &str, wall_ms: f64, steps: usize, iters: usize) {
                 Reducible::Yes => "yes",
                 Reducible::No => "NO",
                 Reducible::PlannedByR3 => "if R3's own design works",
+                _ => "?? UNCLASSIFIED — counted as NOT reducible",
             }
         );
     }
@@ -364,6 +369,39 @@ fn reduced_phase_shares() {
         "assembly cost disagrees by {worst:.2}× between the reduced and full paths on \
          the SAME mesh. They call the same function, so the timers are not measuring \
          what their names say and the reducible share above cannot be read."
+    );
+
+    // ★ How much reduction raises the share of what it does not touch. Same
+    // fixture, same mesh, both paths, so this is measured rather than inferred —
+    // and it came out SMALLER than the cross-fixture figures suggest. Against
+    // `cantilever 80x8` (19 440 DOF) the validity sweep is 0.5 % of a full frame,
+    // which invites the story "reduction inflates it 20x". On one fixture it goes
+    // 7.6 % -> 9.6 %. The 0.5 % is an artifact of a much larger mesh where the
+    // sparse factorization is 72 % and squeezes everything else.
+    println!("\n★ FIXED COSTS — the same work as a share of each path's frame:");
+    let red_total: f64 = Phase::ALL
+        .iter()
+        .filter(|ph| !matches!(ph, Phase::Contact))
+        .map(|ph| red.millis(*ph))
+        .sum();
+    let full_total: f64 = Phase::ALL
+        .iter()
+        .filter(|ph| !matches!(ph, Phase::Contact))
+        .map(|ph| full.millis(*ph))
+        .sum();
+    for ph in [Phase::ValidityCheck, Phase::AssembleTangent] {
+        println!(
+            "  {:<16} full {:5.1} %   reduced {:5.1} %",
+            ph.label(),
+            100.0 * full.millis(ph) / full_total,
+            100.0 * red.millis(ph) / red_total
+        );
+    }
+    println!(
+        "  ⇒ modest inflation (~1.3x on share). The sweep is a large cost on this\n\
+         \x20   fixture in BOTH paths — it is not reduction that makes it matter,\n\
+         \x20   it is that R3's ceiling is 1/(1-f) and this is irreducible without\n\
+         \x20   the ReducedValidityDomain."
     );
 
     let instr: f64 = Phase::ALL

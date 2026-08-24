@@ -118,8 +118,8 @@ fn report(m: &Measured, published: Option<[f64; 5]>) {
         );
     }
     println!(
-        "║ instrumented / wall = {:.1} % — the remainder is residual evaluation, line \
-         search and allocation",
+        "║ instrumented / wall = {:.1} % — the remainder is line search bookkeeping \
+         and allocation",
         100.0
             * Phase::ALL
                 .iter()

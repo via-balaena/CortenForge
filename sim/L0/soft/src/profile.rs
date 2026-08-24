@@ -65,6 +65,10 @@
 ///
 /// Deliberately the same five the recon's table uses, in its column order, so a
 /// re-measurement drops straight into that table rather than needing a mapping.
+// Variants get added as cost centres are discovered — this file went 5 → 11 in
+// one session. Downstream matches must not break each time, and in-crate matches
+// stay exhaustive regardless, so nothing here loses its compiler check.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Phase {
     /// Internal-force assembly (`asm force`) — including Armijo's re-evaluations.
@@ -125,6 +129,7 @@ pub enum Phase {
 }
 
 /// Whether hyper-reduction can remove a phase.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reducible {
     /// ECSW replaces this with a weighted sum over sampled elements.

@@ -1097,6 +1097,13 @@ clear its own `10×` gate.** The two halves of R3 are not separable, and the
 validity half is the one that decides whether the hyper-reduction half is worth
 building.
 
+⚠ Do NOT read this as "reduction inflates the sweep". Against `cantilever 80×8`
+the same sweep is `0.5 %` of a full frame, which invites a 20× inflation story —
+but that is an artifact of a 19 440-DOF mesh whose factorization is 72 % and
+squeezes everything else. Measured on ONE fixture, both paths: **`7.6 %` full →
+`9.6 %` reduced**, a modest `~1.3×`. The sweep is simply a large cost at this size
+either way; what makes it decisive is that `1/(1 − f)` is unforgiving near the top.
+
 #### `ΦᵀKΦ` is 52 % of the frame — hypothesis, not result
 
 `red proj K` costs more than the assembly it projects. `project_tangent` builds an
