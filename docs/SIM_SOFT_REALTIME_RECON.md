@@ -201,7 +201,7 @@ Directly measured points either side of the budget, at `dt = 1/60`, one step/fra
 | IPC indentation a/cell 2 | 18 750 | 771.0 | 46.2× | 23.4× |
 
 ⚠⚠ **The two IPC rows are pre-R0 TIMINGS and the `46.2×` derived from them is NO
-LONGER USED (v2.4).** §2d finding 5 measures both fixtures on a second box and
+LONGER USED (v2.4).** §2d finding 4 measures both fixtures on a second box and
 finds `771.0 ms` irreconcilable: two of three fixtures put that box ~1.6× SLOWER
 than this one, and IPC 18 750 alone puts it 2× faster. The `a/cell` labels here
 also do not reproduce these DOF counts under the current `dims_for`, so the
@@ -225,11 +225,11 @@ spread between them is the finding rather than noise:
 | directly measured, in or near the 20 k–70 k band | Newton iters/step | × 16.7 ms |
 |---|---:|---:|
 | block n=28, 70 644 free DOF | 0.5–0.6 | **34.6×** |
-| IPC indentation, 18 750 free DOF | 6.5 | ~~46.2×~~ → **53.8×** |
+| IPC indentation, 18 750 free DOF | 6.5 | ~~46.2×~~ → **53.2×** |
 | cantilever 80×8, 19 440 free DOF | 37.0 | **267×** |
 
-⚠ The IPC row is the one figure §2d finding 5 could not reconcile across boxes;
-`53.8×` is its **measured post-R0** replacement (§2f), which is the number R3 is
+⚠ The IPC row is the one figure §2d finding 4 could not reconcile across boxes;
+`53.2×` is its **measured post-R0** replacement (§2f), which is the number R3 is
 now sized against. The other two rows are untouched and remain pre-R0/post-R0 as
 originally noted.
 
@@ -422,7 +422,7 @@ Symbolic factorization is one-shot per solver construction (1.0 ms at 540 DOF �
 every step of a session. That is already the shipped design (`construct.rs` builds it
 once; `replace_contact` deliberately reuses it).
 
-Six findings:
+Five findings:
 
 1. **The numeric factorization dominates from ~1–2 k free DOF upward.** Assembly leads
    only at the very bottom of the range (50.9 % against 31.6 % at 540 free DOF); by
@@ -444,14 +444,16 @@ Six findings:
    that pattern: **1.51–1.89× on the whole step, byte-identical output**
    (`e77023c7`, `43b198a2`). The numbers above are post-R0.
 
-4. **★ The contact rows were re-measured post-R0, and R0's credit is now measured
+3. **★ The contact rows were re-measured post-R0, and R0's credit is now measured
    DIRECTLY (v2.4).** `cargo test --release -p sim-soft --features phase-timing
    --test phase_shares -- --ignored --nocapture` for the shares;
    `tests/r0_ab.rs` for the credit. Both are permanent (`src/profile.rs`), not
    scratch patches.
 
    ⚠⚠ **v2.3 derived R0's credit by differencing phase SHARES across two
-   sessions and got `1.186×`. That was wrong by 34 %.** The premise was "R0
+   sessions and got `1.186×`. That was wrong by 37 %.** Mean-of-rounds credit is
+   `1.620×`; on the median frame it is `1.584×`, i.e. 34 % — quote the aggregate
+   with the number, per §2f. The premise was "R0
    touched only tangent assembly, so every other phase's absolute cost is
    unchanged" — and this document's own data falsify it: across the two sessions
    `asm force` moves `2.4×` and `tri solve` `1.7×`, where the premise predicts
@@ -466,10 +468,11 @@ Six findings:
    | fixture | pre-R0 (`ecf4cfef^`) | post-R0 | **R0 credit** | Newton iters/step |
    |---|---:|---:|---:|---:|
    | IPC 5 202 | 304.0 ms | 165.4 ms | **1.84×** | 6.12 → 6.12 |
-   | IPC 18 750 | 1 509.6 ms | 933.3 ms | **1.62×** | 6.51 → 6.51 |
+   | IPC 18 750 | 1 502.8 ms | 927.7 ms | **1.62×** | 6.51 → 6.51 |
    | cantilever 80×8 | 7 239.2 ms | 4 133.2 ms | **1.75×** | 35.80 → 35.80 |
 
-   Mean ms/step, 3 interleaved rounds per arm (2 for the cantilever), one box,
+   Mean ms/step, 6 interleaved rounds per arm at 18 750, 3 at 5 202, 2 for the
+   cantilever; one box,
    same toolchain (1.96.0), harness byte-identical on both trees. **Newton
    iteration counts are identical to the last digit on every fixture** — R0
    changed cost, not numerics, which is the byte-identity claim of finding 2
@@ -482,7 +485,7 @@ Six findings:
    second time, down to `1.17×`. The share-differencing then appeared to confirm
    the discounted number. Two independent mistakes agreeing is why it survived.
 
-5. **⚠⚠ Cross-session ABSOLUTE timings in this document are not reliable, and the
+4. **⚠⚠ Cross-session ABSOLUTE timings in this document are not reliable, and the
    `46.2×` gap is one of them.** v2.3 excused a mismatch as "a box difference, not
    a regression". It is not: a box difference is a single factor, and three
    fixtures measured on both boxes do not admit one.
@@ -492,7 +495,7 @@ Six findings:
    | IPC 5 202, pre-R0 | 486.9 ms | 304.0 ms | 1.60× |
    | cantilever 80×8, pre-R0 (`b0f4aa21`) | 11 272 ms | 7 239.2 ms | 1.56× |
    | cantilever 80×8, post-R0 | 4 452 ms | 4 133.2 ms | 1.08× |
-   | **IPC 18 750, pre-R0** | **771.0 ms** | **1 509.6 ms** | **0.51×** |
+   | **IPC 18 750, pre-R0** | **771.0 ms** | **1 502.8 ms** | **0.51×** |
 
    Two fixtures put the recon's box ~1.6× slower; **IPC 18 750 alone puts it 2×
    faster.** No box factor does that. §2a's `771.0 ms` is the outlier, and it is
@@ -507,7 +510,14 @@ Six findings:
    disease, not a defect peculiar to one row — which is how v2.3 read it, and why
    it discarded that row and kept the conclusion instead of the reverse.
 
-6. **Triangular solves are never the bottleneck** (0.3–2.9 % everywhere). Worth
+   ⚠ **The `contact` column is the contact PATH, not contact itself.** Both timed
+   blocks marshal every vertex into a fresh `Vec<Vec3>` and run the broad-phase
+   scan before any pair exists, so the column never reads zero: `cantilever 80×8`
+   measures **1.6 %** of its frame there under `NullContact`. It also means
+   `slice_to_vec3s` + `active_pairs` run TWICE per Newton iteration (force and
+   tangent). Neither is on R3's path, and neither is costed here beyond this note.
+
+5. **Triangular solves are never the bottleneck** (0.3–2.9 % everywhere). Worth
    stating because it is the phase a naive "put the solve on the GPU" plan targets
    first, and it would buy essentially nothing.
 
@@ -682,9 +692,9 @@ the derivation belongs in the open where it can be audited, so here it is in ful
 
 ⚠⚠ **REPLACED in v2.4. The `9.89×` this section reported is WITHDRAWN.** It was
 `pre-R0 gap ÷ R0 credit ÷ R1 ÷ predictor`, and two of those four factors were
-unsound: the gap came from §2a's `771.0 ms`, which §2d finding 5 shows is the one
+unsound: the gap came from §2a's `771.0 ms`, which §2d finding 4 shows is the one
 figure of three that no box factor reconciles, and the credit came from
-cross-session share differencing, which §2d finding 4 shows was wrong by 34 %.
+cross-session share differencing, which §2d finding 3 shows was wrong by 37 %.
 The old derivation is in git (`4545a2f6`); reproducing it here would only give a
 wrong number a second airing.
 
@@ -694,33 +704,33 @@ enters the arithmetic at all:
 
 | IPC 18 750, measured post-R0 on this box | value |
 |---|---:|
-| median frame (`tests/r0_ab.rs`, 3 interleaved rounds) | **898.4 ms** |
-| gap to a 16.7 ms frame | **53.8×** |
-| ÷ R1 `2×` (inside R1.1's load box) ÷ predictor `1.97×` | **R3 needs 13.7×** |
-| ÷ R1 net `1.71×` (outside it, #817) ÷ predictor `1.97×` | **R3 needs 16.0×** |
+| median frame (`tests/r0_ab.rs`, 6 interleaved rounds) | **887.9 ms** |
+| gap to a 16.7 ms frame | **53.2×** |
+| ÷ R1 `2×` (inside R1.1's load box) ÷ predictor `1.97×` | **R3 needs 13.5×** |
+| ÷ R1 net `1.71×` (outside it, #817) ÷ predictor `1.97×` | **R3 needs 15.8×** |
 
-> ### R3 needs 13.7–16.0× against a 10× kill floor — ABOVE it on every accounting.
+> ### R3 needs 13.5–15.8× against a 10× kill floor — ABOVE it on every accounting.
 >
 > **R0's credit does not appear in this arithmetic at all, and that is the point.**
-> `898.4 ms` is measured on the shipped code, so R0's benefit is already inside it;
+> `887.9 ms` is measured on the shipped code, so R0's benefit is already inside it;
 > dividing by a credit again would double-count it. R0 is bigger than v2.3 thought
 > (`1.62×`, not `1.186×`) — the requirement still rises, because the two errors
 > pushed opposite ways and the gap error was the larger.
 >
 > ⚠ Compare like with like: v2.3's `46.2×` was a PRE-R0 gap, so its implied post-R0
-> gap was `46.2 ÷ 1.186 =` **`39.0×`**. The measured post-R0 gap is **`53.8×`** —
-> **1.38× worse than assumed**, and that factor is what moves R3 from `9.89×` to
-> `13.7×`. **R3 can pass its own `10×` gate and still leave the frame budget
+> gap was `46.2 ÷ 1.186 =` **`39.0×`**. The measured post-R0 gap is **`53.2×`** —
+> **1.37× worse than assumed**, and that factor is what moves R3 from `9.89×` to
+> `13.5×`. **R3 can pass its own `10×` gate and still leave the frame budget
 > missed** — the exact situation v2.3 claimed the predictor had removed.
 
 ⚠ **This is a per-box statement and it is not portable.** A frame budget is
 absolute, so the gap belongs to the machine it was measured on; only the ratios
-(R0, R1, the predictor) transfer. §2d finding 5 is the evidence that they are the
+(R0, R1, the predictor) transfer. §2d finding 4 is the evidence that they are the
 only things that do. **R3's gate should therefore be restated against a named
 reference box before it is spent against** — that is now a prerequisite for
 starting R3, not a footnote to it.
 
-⚠ **What is NOT claimed.** That `53.8×` is the gap on the deployment target: no
+⚠ **What is NOT claimed.** That `53.2×` is the gap on the deployment target: no
 such target is fixed anywhere in this document, and this box is one sample. What
 IS claimed is that the previous `46.2×` was not one either, and had a measurement
 behind it that three fixtures contradict.
@@ -922,7 +932,7 @@ exactly this shape of problem (hyperelastic FEM, fixed mesh, repeated solves). T
 claim — that a reduced system is small and dense, so **converged Newton with an exact
 direct solve is preserved** and the error moves into the quadrature approximation
 where it can be measured against the full-order path — survives contact with the
-numbers, and §2d.3 strengthens it: since triangular solves are already negligible,
+numbers, and §2d.5 strengthens it: since triangular solves are already negligible,
 shrinking the system to a dense `r × r` solve costs nothing that was load-bearing.
 
 ### 3b. Where the measurements bite the plan
@@ -1510,7 +1520,7 @@ until then, and by nobody else ever. The recipe above is the durable record.
   `1.186×`** — measured by a direct wall-time A/B across `ecf4cfef^`→post-R0 on one
   box, interleaved, with Newton iteration counts identical to the last digit on all
   three fixtures (`tests/r0_ab.rs`). Cross-session share differencing was wrong by
-  34 %; its premise "R0 touched only tangent assembly" is falsified by this
+  37 %; its premise "R0 touched only tangent assembly" is falsified by this
   document's own rows (`asm force` moves 2.4×, `tri solve` 1.7×). All three
   measured credits (1.62× / 1.75× / 1.84×) land inside the `1.51–1.89×` whole-step
   range R0's own PR reported; `1.186×` does not — §2f had Amdahl-discounted a figure
@@ -1518,8 +1528,8 @@ until then, and by nobody else ever. The recipe above is the durable record.
   (2) **The `46.2×` gap is unsound.** §2a's `771.0 ms` is the one figure of three
   that no box factor reconciles (two fixtures put the recon's box 1.6× SLOWER, that
   one puts it 2× faster), so "box difference, not a regression" was an excuse, not
-  an explanation. ⇒ **The gap is now MEASURED post-R0 on a named box: 898.4 ms,
-  `53.8×`, and R3 needs `13.7–16.0×` against a `10×` floor — ABOVE it.**
+  an explanation. ⇒ **The gap is now MEASURED post-R0 on a named box: 887.9 ms,
+  `53.2×`, and R3 needs `13.5–15.8×` against a `10×` floor — ABOVE it.**
   ⚠ Also corrected: the phase-timing instrument booked contact-Hessian work to
   `AssembleTangent`, which the contact-free positive control could not catch; the
   post-R0 contact rows above are the re-measured ones.
@@ -1527,7 +1537,7 @@ until then, and by nobody else ever. The recipe above is the durable record.
   the recon's published `2.53×` and measured `1.75×`. Recorded rather than
   discarded: the target is itself a cross-session ratio over an unknown window on a
   strongly transient trajectory (1.4 s to 11.4 s within one 12-step run), i.e. an
-  instance of exactly what finding 5 documents. It does not rescue `1.186×`, and it
+  instance of exactly what finding 4 documents. It does not rescue `1.186×`, and it
   does mean the A/B's *external* validation rests on the `1.51–1.89×` range alone.
 
 - **v2.3 (2026-08-23)** — ⛔ **SUPERSEDED BY v2.4 — the headline result below is
@@ -1564,7 +1574,7 @@ until then, and by nobody else ever. The recipe above is the durable record.
   convergence failures, trajectories identical to 6e-14…8e-12 on the subjects. **R3's required gain
   is roughly HALVED — from 11.5–19.8× to 5.8–10.1× depending on how much credit R0
   gets, a derivation §2f now shows in full rather than citing.** (⚠ v2.3 claimed to close that fork at
-  `1.186×`/`9.89×`; ⛔ v2.4 WITHDREW both — R0 is `1.62×` and R3 needs `13.7–16.0×`.) Before the predictor
+  `1.186×`/`9.89×`; ⛔ v2.4 WITHDREW both — R0 is `1.62×` and R3 needs `13.5–15.8×`.) Before the predictor
   the requirement sat clearly above R3's `10×` kill floor on every accounting; it now
   brackets it (comfortably under on the optimistic row, 10.1× vs 10× on the measured
   one). ⚠ An earlier draft of this entry claimed the floor now cleanly exceeds the

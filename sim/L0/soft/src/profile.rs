@@ -12,7 +12,7 @@
 //! - **Its two IPC contact rows were still `pre-R0`** and had never been
 //!   re-measured. ⚠ These timers re-measure the SHARES, and that is all they do.
 //!   Do NOT difference shares across two sessions to recover a whole-step credit:
-//!   §2d finding 4 tried it and was wrong by 34 %, because the premise "the other
+//!   §2d finding 3 tried it and was wrong by 37 %, because the premise "the other
 //!   phases' absolute cost is unchanged" does not hold across two instruments.
 //!   A whole-step credit is a ratio of wall times — see `tests/r0_ab.rs`.
 //! - Re-deriving anything means re-applying patches from a prose description,
@@ -75,7 +75,15 @@ pub enum Phase {
     NumericFactor,
     /// Triangular solves against that factor (`tri solve`).
     TriangularSolve,
-    /// Contact: active-pair search plus gradient scatter.
+    /// The contact PATH: position marshalling, the active-pair search, and the
+    /// gradient/Hessian scatter.
+    ///
+    /// ⚠ **Not "the cost of contact".** Both timed blocks call
+    /// `slice_to_vec3s(x_curr)` — a full `Vec<Vec3>` copy of every vertex —
+    /// and then `active_pairs`, before any pair exists. Those run under
+    /// `NullContact` too, so a contact-free fixture reports the FLOOR cost of
+    /// having the contact path compiled in rather than zero: `cantilever 80×8`
+    /// measures **1.6 %** of its frame here with no contact whatsoever.
     ///
     /// ⚠ **NESTED inside BOTH [`Self::AssembleForce`] and
     /// [`Self::AssembleTangent`]** — contact does gradient work in

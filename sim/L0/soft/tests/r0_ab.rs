@@ -25,12 +25,27 @@
 //!
 //! ## Running it
 //!
-//! Once per arm, INTERLEAVED (A B A B A B, never AAA BBB) so thermal drift and
-//! background load land on both arms instead of being confounded with R0:
+//! Build the pre-R0 arm as a detached worktree, so it keeps its own `target/` and
+//! neither arm rebuilds when you alternate:
+//!
+//! ```text
+//! git worktree add --detach /tmp/pre-r0 ecf4cfef^   # R0 landed as ecf4cfef (#742)
+//! cp sim/L0/soft/tests/r0_ab.rs /tmp/pre-r0/sim/L0/soft/tests/
+//! ```
+//!
+//! Then run once per arm, INTERLEAVED (A B A B A B, never AAA BBB) so thermal
+//! drift and background load land on both arms instead of being confounded with
+//! R0:
 //!
 //! ```text
 //! cargo test --release -p sim-soft --test r0_ab -- --ignored --nocapture --test-threads=1
 //! ```
+//!
+//! ⚠ Both trees pin the same toolchain (1.96.0) via `rust-toolchain.toml`; if that
+//! ever stops being true the arms are measuring the compiler, not R0. And check
+//! `iters_per_step` MATCHES across arms before reading any timing — R0 was
+//! byte-identical, so a difference there means the two arms are not on the same
+//! trajectory and the ratio is meaningless.
 
 #![allow(
     clippy::panic,
@@ -260,6 +275,7 @@ fn r0_ab_cantilever_control() {
         x = step.x_final;
     }
     let cnt = per_step.len();
+    assert!(cnt > 0, "cantilever control: no measured steps");
     let mean = per_step.iter().sum::<f64>() / cnt as f64;
     let mut sorted = per_step.clone();
     sorted.sort_by(|a, b| a.partial_cmp(b).expect("no NaN timings"));
