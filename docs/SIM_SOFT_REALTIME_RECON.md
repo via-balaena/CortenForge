@@ -1879,15 +1879,18 @@ down. Four runs, §2h's reference box:
 
 | arm | ms/step | iters/step | `I` ms | `B/I` |
 |---|---:|---:|---:|---:|
-| full-order | 814–825 | 6.00 | 668–678 | `0.02×` |
-| reduced, `PreviousState` | 304–315 | 9.00 | 17.2–18.2 | **`0.92–0.97×`** ⛔ |
+| full-order (`PreviousState`) | 812–825 | 6.00 | 667–678 | `0.02–0.03×` |
+| reduced, `PreviousState` | 304–315 | 9.00 | 17.1–18.2 | **`0.92–0.98×`** ⛔ |
 | reduced, `Inertial` | 182–185 | 5.25 | 11.3–12.3 | **`1.36–1.47×`** ✓ |
+
+Six runs. The same window at 5 202 reads `3.24–3.39×` and `4.40–4.45×` — see
+finding 3 below, the margin is size-dependent.
 
 **R3 clears — on `1.4×`, where the contact-free fixture reports `5.60×`.** That
 figure was not wrong; it was measured somewhere the requirement does not live,
 and it overstated the margin by about `4×`.
 
-Three things it changes:
+Four things it changes:
 
 1. ★★ **The predictor is LOAD-BEARING for R3, not an optimisation.** The same
    rung passes under `Inertial` and fails under `PreviousState`, in all four
@@ -1895,12 +1898,34 @@ Three things it changes:
    are `5.25` against `9.00`. §2f recommended `Inertial` on iteration count
    alone; R3's viability now rests on that recommendation.
 2. ★★ **The reduced path's iteration PENALTY grows with size, and the full-order
-   path's does not.** Full-order takes `6.10` iterations at 5 202 and `6.00`
-   here; the reduced arm takes `6.44` and then `9.00`, so reduced/full goes
-   `1.06× → 1.50×`. This is the extrapolation the producer run flagged and could
+   path's does not.** Same trailing window at both sizes:
+
+   | free DOF | full | prev | inertial | prev/full | inert/full |
+   |---:|---:|---:|---:|---:|---:|
+   | 5 202 | 6.00 | 6.88 | 4.12 | `1.15×` | `0.69×` |
+   | 18 750 | 6.00 | 9.00 | 5.25 | **`1.50×`** | **`0.88×`** |
+
+   Full-order is flat; reduction costs progressively more iterations as the
+   problem grows. This is the extrapolation the producer run flagged and could
    not close, and it is what moved the answer — **not** the contact cost, which
    came in as projected.
-3. **`I` is `69 %` contact and `29 %` the validity sweep.** The sweep is
+
+   ⚠ **The first evidence for this was a mismatched comparison, and a review
+   pass caught it before the branch shipped.** It read 5 202's WHOLE-RAMP average
+   (`6.44`) against 18 750's LAST-8-STEPS average (`9.00`) and attributed the
+   difference to size — but the last steps are the deepest indentation, where the
+   count is highest regardless. Two variables had moved at once. Re-measured in
+   one window, the effect survives and is LARGER on the reduced side than it
+   looked (`1.15 → 1.50`, not `1.06 → 1.50`). The counts are exact integers per
+   step, so the ratios reproduce; only the margins need repeats.
+3. ★★ **The margin is not a constant of the ladder — it falls with size.** `I` is
+   `3.75–3.80 ms` at 5 202 and `11.3–12.3 ms` at 18 750, i.e. `∝ n^0.88` against
+   a fixed `16.7 ms` budget, so `B/I` goes `4.4× → 1.4×`. Extrapolated, **R3's
+   headroom runs out near `28 k` free DOF**, about `1.5×` the requirement's own
+   fixture. ⚠ Two points and a power law — a marker for where to measure next,
+   not a number. It does mean the `1.4×` above should not be read as "R3 clears
+   for soft bodies"; it clears **at this size**.
+4. **`I` is `69 %` contact and `29 %` the validity sweep.** The sweep is
    `Reducible::PlannedByR3`, so §4c's `ReducedValidityDomain` is worth about
    `+0.5×` of margin here (`I` would fall to `~8.7 ms`). That does NOT reverse
    v2.7's retraction — the rung clears either way — but at `1.4×` it is no longer
@@ -1909,14 +1934,14 @@ Three things it changes:
 **The projection this arc was carrying was sound.** It had been estimating
 `1.43 ms` of contact per Newton iteration by dividing §2d's `1.0 %` share by
 §2a's `927.7 ms`. Measured directly, on this box, in the same run as the thing it
-is compared against: `1.42–1.75 ms`. The wide spread is expected — `contact` is
+is compared against: `1.26–1.75 ms`. The wide spread is expected — `contact` is
 `~1 %` of a full-order frame, so its per-iteration figure is a small difference
 of large numbers.
 
 **Controls.** Coverage reads `100.0 %` on every arm. A cross-path control asserts
 `contact` costs the same per CALL whichever way the solve is driven, since it is
-the same code on the same mesh — piloted `0.80–1.06×` over four runs, banded
-`0.6–1.7×`. A window check asserts the barrier is active during the timed steps.
+the same code on the same mesh — piloted `0.80–1.17×` over sixteen
+arm-comparisons across both sizes, banded `0.6–1.7×`. A window check asserts the barrier is active during the timed steps.
 The producer check carries a negative control (the undeformed mesh at the final
 pose reads `min_sd = −δ`, so a positive gap is the solve's doing) and a piloted
 `gap_dev` limit shown failing at `r = 2` and `r = 4` rather than left green for a
@@ -2288,7 +2313,7 @@ same door, under its own feature, and must not enter the default build.
 | **R0** ✅ **DONE** (`e77023c7`, `43b198a2`) | **Full-order assembly lever.** Replace the per-iteration `BTreeMap` rebuild in `assemble_free_hessian_triplets` with a pattern-indexed value buffer built once at construction. No algorithm change. | Byte-identity of the assembled triplets against the current path (the `feedback_float_refactor_byte_identity` recipe), plus a measured ms/iteration delta on the §2a fixtures. | §2d.2. Establishes the **honest baseline** the reduction is measured against. Cheap, self-contained, and a win regardless of whether anything downstream ships. |
 | **R1** ✅ **DONE** (`#744`, `#745`, R1.2) | **Linear subspace, no contact, no coupling.** POD basis from full-order snapshots on the `cantilever` fixture at 3 000 free DOF; reduced Newton with a dense `r × r` direct solve; `Φ` and quadrature both handled naively (full element sweep — **no hyper-reduction yet**). Differentiable path wired at the same time (§6, `Φ` constant). | Projection error vs the oracle < 1 % in tip displacement over the training trajectory; reduced gradient matches the oracle's to the crate's existing gradcheck tolerance. ⚠ **That second clause was wrong and was amended before R1.2 was built** — it asks two different functions to agree to 5 digits when their states already differ in the third. Split into a gradcheck-tolerance kill gate on the reduced model's *own* derivative and a measured comparison against the oracle; see the plan's §5/§7 and §13. **Wall time is explicitly NOT gated at R1** — without hyper-reduction it will not be faster, and pretending otherwise would corrupt the signal. | **The cheap kill-or-confirm.** It answers the one question that decides everything downstream: *does a low-dimensional subspace represent this material's deformation at all?* Fixture already exists; no new physics. |
 | **R2** | **Precision decision.** Measure a full-f32 forward path on the reduced system (`r × r` is small enough to port by hand without touching the 1 396-`f64` production surface), and decide residual-in-f64-on-CPU vs compensated-summation-in-f32. | Reduced-model f32 forward drift and gradient drift vs the f64 reduced model, on R1's fixture; explicit go/no-go on whether the residual can live in f32. | §2c. Must precede any GPU work; deciding it after a shader exists means writing the shader twice. |
-| **R3** **§2i brackets its Amdahl ceiling at `20.2–20.5×`–`≳32×`** (two runs) — clear of both its own `10×` floor and the budget's `13.5–15.8×` on either bound. ✅ v2.13: the reduced path HAS now run with contact — §2k measures `I = 11.3–12.3 ms` on IPC 18 750, margin `1.36–1.47×` under `Inertial` and a FAIL of `0.92–0.97×` under `PreviousState`. Gate is **`I ≤ 16.7 ms`** on §2h's reference box (§2j — restated in v2.8 from `≥10×`, which was a ratio over a moving baseline). | **Hyper-reduction (ECSW) + the validity domain.** NNLS training over R1's snapshots; `ReducedValidityDomain` with the online `‖q‖` + residual-proxy gate; the three error measures of §4c. | Measured speedup vs §2a's baseline (post-R0), with the three §4c errors reported alongside. Domain gate demonstrated to fire on an out-of-domain trajectory. | This is where the frame-budget win actually arrives. Also where the "smooth and wrong" failure mode is defended against. |
+| **R3** **§2i brackets its Amdahl ceiling at `20.2–20.5×`–`≳32×`** (two runs) — clear of both its own `10×` floor and the budget's `13.5–15.8×` on either bound. ✅ v2.13: the reduced path HAS now run with contact — §2k measures `I = 11.3–12.3 ms` on IPC 18 750, margin `1.36–1.47×` under `Inertial` and a FAIL of `0.92–0.98×` under `PreviousState`. ⚠ Size-dependent — `4.4×` at 5 202, and extrapolating, gone by ~`28 k` free DOF. Gate is **`I ≤ 16.7 ms`** on §2h's reference box (§2j — restated in v2.8 from `≥10×`, which was a ratio over a moving baseline). | **Hyper-reduction (ECSW) + the validity domain.** NNLS training over R1's snapshots; `ReducedValidityDomain` with the online `‖q‖` + residual-proxy gate; the three error measures of §4c. | Measured speedup vs §2a's baseline (post-R0), with the three §4c errors reported alongside. Domain gate demonstrated to fire on an out-of-domain trajectory. | This is where the frame-budget win actually arrives. Also where the "smooth and wrong" failure mode is defended against. |
 | **R4** | **Hybrid domain decomposition, FIXED contact patch.** Full DOF under a stationary indenter, reduced bulk, on the `dynamic_indentation` geometry. | End-to-end reaction force vs the oracle, in the same band `bonded_layer_indentation` already asserts. | §5. Fixed patch first, because it isolates the coupling condition from the re-partitioning problem. |
 | **R5** | **Moving patch.** Re-partitioning under a once-built symbolic factorization, or a conservative union pattern. | Sliding-contact trajectory vs the oracle. | §5's open-research item. **Explicitly gated on R4 succeeding**; if R4 fails, this is not attempted. |
 | **R6** | **Rigid↔soft coupling.** | — | **Last, deliberately.** Per the brief, and it is the right call: the keystone coupling is itself the platform's hardest open problem (`MISSION.md` §2), and stacking it on an unsolved real-time reduced path would make any failure uninterpretable. |
@@ -2551,15 +2576,23 @@ until then, and by nobody else ever. The recipe above is the durable record.
   CLEARS at `1.36–1.47×`, against the `5.60×` that fixture reports** — the old
   number was measured somewhere the requirement does not live and overstated the
   margin `~4×`. ★★ Two things it changed that were not on the list: the PREDICTOR
-  is now load-bearing (`PreviousState` FAILS at `0.92–0.97×` in all four runs,
+  is now load-bearing (`PreviousState` FAILS at `0.92–0.98×` in all six runs,
   `Inertial` passes), and the reduced path's iteration penalty GROWS with size
-  while the full-order path's does not (reduced/full `1.06× → 1.50×`) — which is
+  while the full-order path's does not (reduced/full `1.15× → 1.50×`) — which is
   what moved the answer, not the contact cost, which came in as projected
-  (`1.42–1.75 ms/iteration` against `1.43` extrapolated). The pre-registered
+  (`1.26–1.75 ms/iteration` against `1.43` extrapolated). The pre-registered
   failure mode — a projected Armijo tunnelling through a finite-energy barrier —
   is real as a mechanism (`‖r_free‖ = 1.49e-4` behind `‖Φᵀr‖ < 1e-10` at `r = 10`)
   and produced no penetration at any rank down to `r = 2`. §2i, §2j, §7 and §10
   updated where they said the reduced path had never run with contact.
+  ⚠ **A review pass before this branch shipped found the size claim resting on a
+  MISMATCHED comparison** — 5 202's whole-ramp average against 18 750's
+  last-8-steps average — and the harness now sweeps both sizes in one window. The
+  effect survived and grew (`1.15 → 1.50`, not `1.06 → 1.50`). That re-measurement
+  also produced §2k's third finding: **the margin falls with size** (`4.4×` at
+  5 202, `1.4×` at 18 750, `I ∝ n^0.88`), so R3's headroom runs out near `28 k`
+  free DOF. The same pass caught a `#[test]` attribute swallowed into a doc
+  comment, which had silently removed the timing instrument from the suite.
 - **v2.12 (2026-08-24)** — **§2j: v2.11's account of the `profile.rs` survivors was
   wrong, and re-running it is how that was found.** It said they were equivalent
   mutants reachable only through box-gated harnesses, needing `-j 1 --features

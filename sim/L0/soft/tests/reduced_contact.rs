@@ -206,9 +206,16 @@ const GATE_RANK: usize = 40;
 /// `6.9e-14` at the trajectory's full rank, and `2.8e-13` on the gate's coarse
 /// mesh. The threshold is the CRUDEST rung's value rounded up — "a reduction may
 /// not disturb the contact equilibrium more than a 10-mode basis does" — which
-/// anchors it to something measured instead of to a round number, keeps ~7
-/// orders of headroom over floating-point drift at the ranks that matter, and
-/// still trips on a sub-percent error in the internal forces.
+/// anchors it to something measured rather than to a round number, and keeps ~7
+/// orders of headroom over floating-point drift at the ranks that matter.
+///
+/// ⚠ **Its sensitivity to a given force error is NOT characterised, and an
+/// earlier version of this comment claimed it was.** `gap_dev` falls
+/// superlinearly in basis quality — `gap_dev / relL2` is `0.39` at `r = 4`,
+/// `2.6e-4` at `r = 10`, `1.3e-5` at `r = 20` — so extrapolating a
+/// "trips at ~1 % force error" figure from the one rung nearest the threshold
+/// crosses four orders of curvature. What the ladder DEMONSTRATES it catches is
+/// the `r ≤ 4` class, four to five orders over the limit.
 ///
 /// ⚠ This is the assertion `min_sd > 0` cannot make. That one only asks which
 /// SIDE of the collider the material ended up on; R3's hyper-reduced assembly
@@ -216,9 +223,18 @@ const GATE_RANK: usize = 40;
 /// there is a shifted equilibrium, not a tunnelled one.
 const MAX_GAP_DEV_BANDS: f64 = 2.0e-6;
 
-/// `a/cell = 3` — 18 750 free DOF, the row §2f's requirement is stated on and
-/// the source of the `53.2×` full-order gap.
-const TIMING_A_OVER_CELL: f64 = 3.0;
+/// The timing sweep. `a/cell = 3` is 18 750 free DOF — the row §2f's requirement
+/// is stated on, and the source of the `53.2×` full-order gap. `a/cell = 2` is
+/// 5 202, and it is here for ONE reason: the reduced path's iteration count has
+/// to be compared across sizes IN THE SAME WINDOW.
+///
+/// ⚠ The first version of this harness did not do that, and the review pass
+/// caught it. It compared 5 202's whole-ramp average (`6.44`) against 18 750's
+/// last-8-steps average (`9.00`) and read the difference as a size effect —
+/// but the last steps are the DEEPEST indentation, where the count would be
+/// highest anyway. Two variables moved at once. Both rows here now use the same
+/// trailing window, so the difference is size.
+const TIMING_A_OVER_CELL: [f64; 2] = [2.0, 3.0];
 /// Requested rank for the timing fixture; the ramp's own numerical rank caps it.
 const TIMING_RANK: usize = 40;
 /// How many of the ramp's trailing steps carry the timing measurement.
@@ -229,10 +245,13 @@ const TIMING_RANK: usize = 40;
 /// it, which is precisely the thing this fixture exists to stop doing. The
 /// deepest steps carry the largest contact patch, and that is the workload the
 /// frame budget is claimed against.
+///
+/// ⚠ Whether this leaves any warmup is checked at RUNTIME, against the ramp's
+/// actual length. A `const` assertion here could only compare it to a hardcoded
+/// step count, and the ramp's length is derived from `d̂` and `δ` — so the
+/// constant would go stale in silence the moment either moved, which is the
+/// shape of a guard that cannot fail for the reason it claims.
 const TIMING_STEPS: usize = 8;
-/// Never measured — they run to build state and warm the caches. Everything
-/// before [`TIMING_STEPS`] is warmup by construction, which is 63 of 71 steps.
-const _: () = assert!(TIMING_STEPS < 71);
 
 const GUESSES: [(&str, InitialGuess); 2] = [
     ("prev", InitialGuess::PreviousState),
@@ -851,12 +870,12 @@ fn reduced_contact_does_not_tunnel_through_the_barrier() {
 /// statics, and a second test running concurrently would have its time land in
 /// this one's snapshot.
 ///
-/// ## Measured — four runs, 2026-08-24, reference box
+/// ## Measured — six runs at 18 750, two at 5 202, 2026-08-24, reference box
 ///
 /// | arm | ms/step | iters/step | `I` ms | `B/I` |
 /// |---|---:|---:|---:|---:|
-/// | full-order | 814.3–825.0 | 6.00 | 668.2–677.9 | 0.02× |
-/// | reduced, `PreviousState` | 303.8–314.5 | 9.00 | 17.2–18.2 | **0.92–0.97×** ⛔ |
+/// | full-order (`PreviousState`) | 812.4–825.0 | 6.00 | 666.6–677.9 | 0.02–0.03× |
+/// | reduced, `PreviousState` | 303.8–314.5 | 9.00 | 17.1–18.2 | **0.92–0.98×** ⛔ |
 /// | reduced, `Inertial` | 181.9–184.9 | 5.25 | 11.3–12.3 | **1.36–1.47×** ✓ |
 ///
 /// - ★★ **R3 clears here, but on `1.4×`, not the `5.6×` the contact-free fixture
@@ -866,19 +885,39 @@ fn reduced_contact_does_not_tunnel_through_the_barrier() {
 ///   `PreviousState` needs `9.00` iterations against `Inertial`'s `5.25`, and `I`
 ///   is dominated by per-iteration cost, so the same rung passes under one
 ///   predictor and fails under the other. It fails by only `3–8 %`, which is
-///   close — but it fails in all four runs.
+///   close — but it fails in all six runs.
 /// - ★ **The reduced path's iteration PENALTY grows with size, and the
-///   full-order path's does not.** Full-order takes `6.10` iterations at 5 202
-///   and `6.00` here; the reduced arm takes `6.44` and then `9.00`, so
-///   reduced/full goes `1.06× → 1.50×`. This is the extrapolation the correctness
-///   run flagged and could not close, and it is what moved the answer.
+///   full-order path's does not.** Same trailing window at both sizes:
+///
+///   | free DOF | full | prev | inertial | prev/full | inert/full |
+///   |---:|---:|---:|---:|---:|---:|
+///   | 5 202 | 6.00 | 6.88 | 4.12 | 1.15× | 0.69× |
+///   | 18 750 | 6.00 | 9.00 | 5.25 | **1.50×** | **0.88×** |
+///
+///   Full-order is flat; reduction costs progressively more iterations as the
+///   problem grows. The counts are exact integers per step, so the ratios
+///   reproduce run to run — it is the margins below them that need repeats.
+///
+///   ⚠ **The first version of this harness got the right answer from the wrong
+///   comparison, and the review pass caught it.** It read 5 202's WHOLE-RAMP
+///   average (`6.44`) against 18 750's LAST-8-STEPS average (`9.00`) and called
+///   the difference size — but the last steps are the deepest indentation, where
+///   the count is highest anyway. Two variables had moved. Re-measured in one
+///   window the effect survives and is larger than it looked on the reduced
+///   side (`1.15 → 1.50`, not `1.06 → 1.50`).
+/// - ★★ **The margin is not a constant of the ladder — it falls with size.**
+///   `I` is `3.75–3.80 ms` at 5 202 and `11.3–12.3` at 18 750, i.e. `∝ n^0.88`
+///   against a fixed `16.7 ms` budget, so `B/I` goes `4.4× → 1.4×`.
+///   Extrapolated, **R3's headroom runs out near `28 k` free DOF** — about
+///   `1.5×` the requirement's own fixture. ⚠ Two points and a power law; treat
+///   it as a marker for where to measure next, not as a number.
 /// - `I` is `69 %` contact and `29 %` the validity sweep, the rest negligible.
 ///   The sweep is [`Reducible::PlannedByR3`], so R3's own `ReducedValidityDomain`
 ///   is worth about `+0.5×` of margin here (`I` would fall to `~8.7 ms`). That
 ///   does NOT revive it as a prerequisite — the rung clears either way — but on a
 ///   `1.4×` margin it is no longer irrelevant, which it was at `5.6×`.
 /// - The `1.43 ms` of contact per Newton iteration this arc had been projecting
-///   from two published tables measures **`1.42–1.75`** here (a wide spread:
+///   from two published tables measures **`1.26–1.75`** here (a wide spread:
 ///   `contact` is ~1 % of a full-order frame, so its per-iteration figure is a
 ///   small difference of large numbers). The projection was
 ///   sound; the iteration count it was multiplied by was not.
@@ -887,24 +926,72 @@ fn reduced_contact_does_not_tunnel_through_the_barrier() {
 fn reduced_contact_phase_shares() {
     refbox::require_quiet_box();
 
-    let scene = Scene::new(TIMING_A_OVER_CELL);
+    let sizes: Vec<SizeRow> = TIMING_A_OVER_CELL.into_iter().map(timing_fixture).collect();
+
+    // ── the cross-size comparison, which is the whole reason 5 202 is here ──
+    //
+    // Both rows are the SAME trailing window on the SAME ramp, so the only thing
+    // that differs is the mesh. Compare `reduced / full-order` rather than the
+    // reduced count alone: the full-order arm absorbs whatever the window's
+    // depth does to Newton, and what is being asked is whether REDUCTION costs
+    // more iterations as the problem grows.
+    println!("\nRC\t╔═ does the reduced path's iteration PENALTY grow with size?");
+    println!(
+        "RC\t║ {:<10} {:>8} {:>8} {:>10} {:>12} {:>12}",
+        "free DOF", "full", "prev", "inertial", "prev/full", "inert/full"
+    );
+    for s in &sizes {
+        println!(
+            "RC\t║ {:<10} {:>8.2} {:>8.2} {:>10.2} {:>11.2}× {:>11.2}×",
+            s.free_dof,
+            s.full_iters,
+            s.prev_iters,
+            s.inertial_iters,
+            s.prev_iters / s.full_iters,
+            s.inertial_iters / s.full_iters,
+        );
+    }
+    println!("RC\t╚═");
+}
+
+/// One size's three arms, reduced to the iteration counts the size comparison
+/// needs. The per-size verdicts are printed by [`timing_fixture`] as they run.
+struct SizeRow {
+    free_dof: usize,
+    full_iters: f64,
+    prev_iters: f64,
+    inertial_iters: f64,
+}
+
+fn timing_fixture(a_over_cell: f64) -> SizeRow {
+    let scene = Scene::new(a_over_cell);
     let probe = scene.mesh();
     let x_rest = rest_positions(&probe);
     let solver = scene.solver(InitialGuess::PreviousState);
     let fd = solver.free_dof_indices().to_vec();
     let mass = solver.mass_per_free_dof();
     let n_steps = scene.n_steps();
+    // Checked here, against the ramp's real length, for the reason
+    // `TIMING_STEPS` gives: a `const` form could only compare against a
+    // hardcoded count and would go stale in silence.
+    assert!(
+        TIMING_STEPS < n_steps,
+        "the timed window is {TIMING_STEPS} of {n_steps} steps — it would leave \
+         no warmup, and `n_steps - TIMING_STEPS` would underflow",
+    );
     let measure_from = n_steps - TIMING_STEPS;
 
     println!(
-        "\nRC\tTIMING fixture: IPC indentation a/cell={TIMING_A_OVER_CELL:.1}, {} free DOF, \
+        "\nRC\tTIMING fixture: IPC indentation a/cell={a_over_cell:.1}, {} free DOF, \
          {} tets, {n_steps} ramp steps, timing the last {TIMING_STEPS}",
         fd.len(),
         probe.n_tets(),
     );
 
     // ── arm 0: full-order. Oracle, snapshot source, and the measured contact
-    // cost that replaces the extrapolation. ──
+    // cost that replaces the extrapolation. ⚠ It runs `PreviousState`, so the
+    // "full-order" row is that predictor's; the reduced rows are labelled with
+    // theirs, and only the reduced rows carry a verdict. ──
     let oracle = run_oracle(scene, &x_rest, measure_from);
     assert!(
         oracle.arm.failure.is_none(),
@@ -913,7 +1000,7 @@ fn reduced_contact_phase_shares() {
     );
     let full_snap = profile::snapshot();
     let full = reduced_report::main_report(
-        "FULL-ORDER, IPC 18 750",
+        &format!("FULL-ORDER ({} free DOF), PreviousState", fd.len()),
         oracle.arm.measured.wall_ms,
         oracle.arm.measured.steps,
         oracle.arm.measured.iters,
@@ -922,8 +1009,8 @@ fn reduced_contact_phase_shares() {
     // ⚠ VACUITY GUARD ON THE WINDOW, not on the ramp. The correctness tests
     // already check that contact engages SOMEWHERE; what matters here is that it
     // is engaged in the steps that were TIMED. An early-ramp window would report
-    // `I` for a scene with no active pairs — which is the exact defect this
-    // fixture exists to retire, reintroduced one level down.
+    // `I` for a scene with no active pairs — the exact defect this fixture
+    // exists to retire, reintroduced one level down.
     let deepest = min_signed_distance(
         oracle.x.last().expect("the ramp produced steps"),
         scene.centre_at(n_steps - 1),
@@ -982,8 +1069,9 @@ fn reduced_contact_phase_shares() {
         );
         assert!(
             arm.min_sd > 0.0,
-            "reduced {name} PENETRATED at 18 750 (min_sd {:.3e}) — the timing would \
-             be of a configuration inside the collider",
+            "reduced {name} PENETRATED at {} free DOF (min_sd {:.3e}) — the timing \
+             would be of a configuration inside the collider",
+            fd.len(),
             arm.min_sd,
         );
         let snap = profile::snapshot();
@@ -996,8 +1084,8 @@ fn reduced_contact_phase_shares() {
         rows.push((name, v, arm.measured, snap));
     }
 
-    // ── the comparison, and the control ──
-    println!("\nRC\t╔═ IPC 18 750 — what decides R3");
+    // ── the per-size comparison, and the control ──
+    println!("\nRC\t╔═ {} free DOF — what decides R3", fd.len());
     println!(
         "RC\t║ {:<14} {:>10} {:>10} {:>10} {:>9} {:>12}",
         "arm", "ms/step", "iters/st", "I ms", "B/I", "contact/iter"
@@ -1017,10 +1105,6 @@ fn reduced_contact_phase_shares() {
             per_iter,
         );
     }
-    println!(
-        "RC\t║ the projection this replaces: 1.43 ms of contact per Newton iteration,\n\
-         RC\t║ from 927.7 ms × 1.0 % ÷ 6.51 across two published tables."
-    );
     println!("RC\t╚═");
 
     // ★ CROSS-PATH CONTROL. `contact` is the same code on the same mesh at
@@ -1041,8 +1125,8 @@ fn reduced_contact_phase_shares() {
              ({:.4} vs {base:.4} ms)",
             per_call(snap),
         );
-        // PILOTED over three runs at 0.801–1.057×. The spread is wide for a
-        // control because `contact` is ~1 % of a full-order frame, so the
+        // PILOTED at 0.80–1.17× over sixteen arm-comparisons across both
+        // sizes. The spread is wide for a control because `contact` is ~1 % of a full-order frame, so the
         // DENOMINATOR is a small difference of large numbers; the band is set
         // for that, not for the agreement the two paths actually show. What it
         // still catches is the failure it is for — a slot that double-counts,
@@ -1060,4 +1144,12 @@ fn reduced_contact_phase_shares() {
          `I` above is built on it:\n{}",
         off.join("\n"),
     );
+
+    let iters_of = |i: usize| rows[i].2.iters as f64 / rows[i].2.steps as f64;
+    SizeRow {
+        free_dof: fd.len(),
+        full_iters: iters_of(0),
+        prev_iters: iters_of(1),
+        inertial_iters: iters_of(2),
+    }
 }
