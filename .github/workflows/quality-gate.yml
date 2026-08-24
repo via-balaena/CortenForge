@@ -721,6 +721,14 @@ jobs:
       # carries an UNCONDITIONAL `#[ignore]`, so selecting the binary runs its two
       # cheap arms and leaves that one out — verified, not assumed.
       #
+      # `stick_flex` (37.9 s measured, not estimated) carries three release-only
+      # gates — the resolution sweep and its stiffness- and tolerance-independence
+      # controls. Its six timing and diagnostic instruments hold UNCONDITIONAL
+      # `#[ignore]`s (they gate on the reference box), so naming the binary runs
+      # the four that should run and leaves those out — verified in the run, not
+      # assumed. ★ It was caught by `cargo xtask release-gates` on its own first
+      # PR, which is that guard working exactly as #747 intended.
+      #
       # ⚠ `tet10_lame_decision` is deliberately NOT here: its `#[ignore]` is
       # unconditional and reasoned (7.16 GB peak RSS, above a runner's memory).
       # Absent from CI by design, not by oversight.
@@ -736,7 +744,8 @@ jobs:
             --test reduced_gradient \
             --test fbar_locking \
             --test tet10_indentation_demand1 \
-            --test slender_bending_matches_analytic
+            --test slender_bending_matches_analytic \
+            --test stick_flex
         shell: bash
 
       # cf-cast's mold/cast kernel runs in release (its Monte-Carlo probes are
