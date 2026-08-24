@@ -1,6 +1,6 @@
 # sim-soft Real-Time Path — Phase-1 Measurement + Recon (Phase E predecessor)
 
-**Status**: RECON 2026-08-10 (rev 2026-08-23), v2.3. Phase 1 (measure) COMPLETE — all four requested
+**Status**: RECON 2026-08-10 (rev 2026-08-24), v2.8. Phase 1 (measure) COMPLETE — all four requested
 measurements taken; §2 reports them. Phase 2 (this recon) proposes the MOR +
 hyper-reduction path with a staged ladder whose first rung is a kill-or-confirm.
 **No dependency was added.** Phase 1's instrumentation was temporary (implement →
@@ -1070,8 +1070,14 @@ The document has been conflating these. They are different quantities:
 
 | | value | what it decides |
 |---|---:|---|
-| R3's own **kill floor** | **≥ 10×** | whether the rung ships at all |
-| **Frame-budget requirement** | **13.5 – 15.8×** | whether 60 Hz is actually reached |
+| **Feasibility gate** | **`I ≤ 16.7 ms`** | whether 60 Hz is reachable at all |
+| **Frame-budget requirement** | **13.5 – 15.8×** | what R3 must actually deliver |
+| ~~R3's own kill floor~~ | ~~`≥ 10×`~~ | ⇒ **§2j** — restated; now a complexity heuristic, not a gate |
+
+⚠ **The kill floor was RESTATED in v2.8, before the measurement that would have
+moved it** — it was a ratio over a baseline every rung on this ladder is chartered
+to improve, so it got harder each time an earlier rung succeeded. §2j derives the
+replacement: R3 clears iff its *irreducible* time fits the frame budget.
 
 Both are quantities **on the reference box** and neither is portable. R3 passing
 its floor and missing the budget is not a contradiction — it is the situation
@@ -1364,12 +1370,191 @@ Two of the three measurements still stand, in order:
 
 1. **`project_tangent` as an implementation question** — `56.8 %` of a reduced
    frame, the R0-shaped target, and now the largest single line by a wide margin.
+   ⚠ **It is a WALL-CLOCK item, not an R3 item** — §2j shows that speeding up any
+   `Reducible::Yes` phase moves R3's ceiling and requirement by the same factor and
+   leaves its margin exactly unchanged. Worth doing first anyway; just not because
+   R3 is waiting on it.
 2. **The reduced path on a CONTACT fixture** — the requirement lives there, R1 has
    never been validated there, and it is also what would settle how far the
-   asymptotic form of the retracted argument reaches.
+   asymptotic form of the retracted argument reaches. ★ **This is the one R3 is
+   actually waiting on**: the margin is `B / I`, and `I` has never been measured
+   where the requirement lives (§2j).
 
 `ReducedValidityDomain` stays in R3's scope as §4c's correctness feature, no
 longer as a gate on whether R3 is worth building.
+
+### 2j. `project_tangent` — PRE-REGISTRATION, written before the measurement
+
+§2i names `ΦᵀKΦ` the next item and flags that *"it moves R3's ceiling and R3's
+requirement in the same direction, so the net sign is not obvious from the
+armchair."* It is obvious from the algebra, and the algebra needed writing down
+before the run rather than after.
+
+#### The net sign is not ambiguous — it is exactly zero
+
+Write a reduced frame as `T = I + Red`, irreducible plus reducible, against a
+frame budget `B`. ECSW's ceiling is the limit as the sampled subset goes to zero
+cost, and the requirement is the gap to budget:
+
+```text
+C = T / I          R = T / B          C / R = B / I
+```
+
+**R3 clears iff `C ≥ R`, i.e. iff `I ≤ B`.** The margin depends on the budget and
+the *irreducible* time and on nothing else. Speeding up any `Reducible::Yes` phase
+shrinks `T`, which lowers `C` and `R` by the same factor and leaves `C / R` fixed.
+Against §2i's **run 2** (run 1 gives `5.26×`, equally flat — the invariance is
+algebraic, so the spread between runs is in `I`, not in the property):
+
+| speedup `S` on `red proj K` | frame | ceiling `C` | requirement `R` | margin `C/R` |
+|---:|---:|---:|---:|---:|
+| 1× | 66.00 ms | 20.48× | 3.95× | **5.18×** |
+| 4× | 37.93 ms | 11.77× | 2.27× | **5.18×** |
+| 10.2× | 32.23 ms | 10.00× | 1.93× | **5.18×** |
+| ∞ | 28.57 ms | 8.87× | 1.71× | **5.18×** |
+
+⚠⚠ **`R = 3.95×` is this fixture's own requirement and is NOT §2f's
+`13.5–15.8×`.** That one is IPC 18 750 **with contact and with the predictor
+applied**; this is R1.1's contact-free 5 202-DOF cantilever run under
+`InitialGuess::PreviousState`, i.e. no predictor. Same definition — the factor R3
+must supply from the reduced baseline to reach a 16.7 ms frame — on a different
+fixture. Reading one against the other is §2d finding 4 again; the invariance
+itself is what transfers, the numbers are not.
+
+> ### Pre-registered rule 1 — no run on `project_tangent` may conclude anything about whether R3 clears.
+>
+> It cannot. The quantity that decides that is `I`, and `project_tangent` is not
+> in it.
+
+★ The invariance is exact in ECSW's ideal limit. Real ECSW leaves `ε · Red`
+behind, so feasibility is `I + ε · Red ≤ B` and shrinking `Red` makes R3 *easier*.
+The invariance is therefore the conservative reading, not an optimistic one.
+
+#### ⚠ What is NOT invariant — a gate written as a ratio
+
+`C` itself falls, and §7's kill floor is stated as a ratio: *"R3's measured
+speedup over §2a's (post-R0) baseline is under ~10×"*. That baseline is one every
+rung on this ladder is chartered to improve.
+
+| speedup on `ΦᵀKΦ` | frame (run 2) | ceiling, run 1 → run 2 | against a fixed `10×` |
+|---:|---:|---:|---|
+| 1× | 66.00 ms | 20.77× → 20.48× | clears |
+| 4× | 37.93 ms | 11.91× → 11.77× | clears |
+| 8× | 33.25 ms | 10.44× → 10.32× | **all but touching it** |
+| **10.2–11.4×** | ~32 ms | **10.00×** | **exactly at it** |
+| ∞ | 28.57 ms | 8.87× → 8.87× | fails |
+
+⚠ **The crossover is quoted as a RANGE because it moves between runs** —
+`11.38×` on run 1, `10.24×` on run 2. It is set by `I`, the smallest and
+therefore noisiest column in §2i's table (`3.174` vs `3.223 ms`), so a single
+figure here would be the same defect §2i's own headline was corrected for.
+
+That range is well inside reach. It does not need the current loop to be
+pathological: **8 cores and 2-wide `f64` SIMD are ~16× of headroom over a
+single-threaded scalar triple loop**, before any layout change. **A gate that
+gets harder every time an earlier rung succeeds is measuring the wrong thing.**
+
+> ### ⇒ RESTATED — and restated BEFORE the measurement, which is the last moment it is legitimate
+>
+> §7 states its kill conditions *"so they cannot be renegotiated after the fact"*.
+> Changing one after this measurement would be exactly that. Changing it now, with
+> the reason on the record and the outcome still unknown, is not.
+>
+> | | was | is |
+> |---|---|---|
+> | R3's feasibility gate | speedup `≥ 10×` over the post-R0 baseline | **`I ≤ 16.7 ms`**, measured on the fixture the REQUIREMENT is stated for |
+> | the `10×` | a kill floor | a **complexity heuristic** — re-derived against the baseline of the day, never carried |
+>
+> The two agree today (`I = 3.17–3.22 ms` over the two runs, and `20.5–20.8× ≥ 10×`).
+> They diverge the moment any reducible phase is optimised, which is precisely what
+> the next item is.
+
+⚠ **Corollary for how results get quoted.** A re-quoted ceiling must be reported
+beside its own re-measured requirement. Reading a post-fix `11.8×` against the
+standing `13.5–15.8×` would say "R3 is now blocked" about a change that did not
+move R3 at all — the requirement fell with it. Any ceiling quoted alone after this
+point is a defect.
+
+#### The prize, bounded before it is measured
+
+| | frame | vs the 16.7 ms budget |
+|---|---:|---:|
+| today | 66.0 ms | 3.95× over |
+| `ΦᵀKΦ` at `8×` | 33.1–33.3 ms | 1.98–1.99× over |
+| `ΦᵀKΦ` at `∞` | 28.5–28.6 ms | **1.71× over** |
+
+**`project_tangent` alone cannot reach 60 Hz on its own fixture**, and its
+whole-frame ceiling is `2.31×` — a `10×` on a `56.8 %` line is `1.99×` of a
+frame. At the floor, `asm tangent` is `82 %` of what is left and becomes the next
+item by construction. Stated here so a good result cannot be oversold later.
+
+#### ★ The corollary reorders §2i's list
+
+Since the margin is `B / I`, only the irreducible mass can move R3's verdict — and
+`I` is `3.17–3.22 ms` of a `66 ms` frame (rows are run 2):
+
+| irreducible line | ms | share of `I` |
+|---|---:|---:|
+| `contact` marshalling — **on `NullContact`** | 1.967 | **61.0 %** |
+| `validity check` | 1.197 | 37.1 % |
+| `residual form` + `red dense solve` | 0.059 | 1.8 % |
+
+Removing the `NullContact` marshalling would take the margin `5.2× → 13.3×`, a
+`2.57×` improvement, and it is the only line in the table that moves the verdict
+at all. `red proj K`, at `56.8 %` of the frame, moves it by zero.
+
+⇒ **`project_tangent` is a WALL-CLOCK item, not an R3 item.** It is still the
+right thing to do first — largest line by a wide margin, R0-shaped, and a real
+credit to R1 today — but §2i's ordering implies R3 is waiting on it and R3 is not.
+**The measurement R3 waits on is item 2, the contact fixture**, because that is
+the only place `I` is unknown.
+
+⚠ And the `1.967 ms` above is marshalling on a scene with **no contact**. On a
+real contact fixture `I` is larger and genuinely irreducible. Which is the point:
+`I` has never been measured where the requirement lives.
+
+#### The knob matrix, and what each knob is for
+
+⚠ **Knob 0 gates the rest — no fix is chosen until it reads.** §2d finding 3 puts
+this document's attributions wrong about a third of the time, and `project_tangent`
+is two loops with different asymptotics and different fixes.
+
+| # | knob | values | why it is in the matrix |
+|---|---|---|---|
+| **0** | **which half** | `Y = AΦ` (`O(nnz·r)`) vs `ΦᵀY` (`O(n·r²)`), split by a temporary sub-timer — **and the achieved flop rate of each** | they need different fixes; "`ΦᵀKΦ` is slow" does not say which. ★ The flop rate separates the two candidate diagnoses: near scalar peak ⇒ this is honest serial arithmetic and the fix is threads + SIMD; far below ⇒ it is the `Vec<Vec<f64>>` layout, and the fix is a flat buffer first |
+| 1 | `r` | 20 / **40** / 80 | phase A is `O(r)`, phase B is `O(r²)`, so the A:B ratio *moves with `r`* — a fix tuned at R1.1's `r = 40` can be the wrong fix at 80 |
+| 2 | `n` — **free DOF, not tets** | R1.1's `5 202`, plus one smaller and one larger beam | #823's lesson verbatim: a rayon path measured at one size read `0.12×` at another. ⚠ **This is the expensive knob** — see the costing below |
+| 3 | threads | 1 / 4 / 8 / 12 | §2i found 12 worse than 8 at every size on this 8P+4E box; the cost is a wakeup cost |
+| 4 | element type | Tet4 / Tet10 | a denser pattern shifts `nnz` and therefore the A:B ratio. **Recorded, not gated** |
+
+**⚠ Cost, stated before the matrix is run.** The knobs are not equally priced, and
+the difference is a POD basis:
+
+| knob | what it forces | cost |
+|---|---|---|
+| 0, 3 | nothing — same fixture, same basis | one harness run each |
+| 1 (`r`) | re-truncate the basis; snapshots are reusable | cheap; `r` is a truncation of an existing SVD |
+| **2 (`n`)** | **a whole new snapshot set** — 12 trajectories × 5 full-order steps, then an SVD, per size | **the dominant cost of the matrix** |
+| 4 (Tet10) | new mesh *and* new snapshot set | as knob 2, and it is the one marked "recorded, not gated" |
+
+⇒ **Run knob 0 first on the existing fixture.** It is one run, it costs nothing
+extra, and it decides which fix is even a candidate — so the expensive `n` sweep
+is not paid twice. ⚠ The harness's own wall cost has not been measured; smoke one
+run and record it here before committing to the rest of the matrix.
+
+**Pre-registered rules, in force for every run below:**
+
+1. **No conclusion about R3's clearance** (rule 1 above).
+2. **The credit is an interleaved wall-time A/B**, box-gated per §2h. Never share
+   differencing — §2d finding 3, wrong by `37 %`.
+3. **The headline is the whole-frame factor**, quoted against its `2.31×` cap, not
+   the phase-local speedup. A `10×` on a `56.8 %` line is `1.99×` of a frame.
+4. **A rayon path ships only with a piloted size threshold and a `const`
+   assertion**, per #823's regression.
+5. **Any re-quoted ceiling carries its own re-measured requirement.**
+6. **State which half the fix addresses, and measure the other.** A layout change
+   that helps one loop and pessimises the other is a wash that reads as a win if
+   only the frame total is watched.
 
 ## 3. What the measurements say about feasibility
 
@@ -1722,7 +1907,7 @@ same door, under its own feature, and must not enter the default build.
 | **R0** ✅ **DONE** (`e77023c7`, `43b198a2`) | **Full-order assembly lever.** Replace the per-iteration `BTreeMap` rebuild in `assemble_free_hessian_triplets` with a pattern-indexed value buffer built once at construction. No algorithm change. | Byte-identity of the assembled triplets against the current path (the `feedback_float_refactor_byte_identity` recipe), plus a measured ms/iteration delta on the §2a fixtures. | §2d.2. Establishes the **honest baseline** the reduction is measured against. Cheap, self-contained, and a win regardless of whether anything downstream ships. |
 | **R1** ✅ **DONE** (`#744`, `#745`, R1.2) | **Linear subspace, no contact, no coupling.** POD basis from full-order snapshots on the `cantilever` fixture at 3 000 free DOF; reduced Newton with a dense `r × r` direct solve; `Φ` and quadrature both handled naively (full element sweep — **no hyper-reduction yet**). Differentiable path wired at the same time (§6, `Φ` constant). | Projection error vs the oracle < 1 % in tip displacement over the training trajectory; reduced gradient matches the oracle's to the crate's existing gradcheck tolerance. ⚠ **That second clause was wrong and was amended before R1.2 was built** — it asks two different functions to agree to 5 digits when their states already differ in the third. Split into a gradcheck-tolerance kill gate on the reduced model's *own* derivative and a measured comparison against the oracle; see the plan's §5/§7 and §13. **Wall time is explicitly NOT gated at R1** — without hyper-reduction it will not be faster, and pretending otherwise would corrupt the signal. | **The cheap kill-or-confirm.** It answers the one question that decides everything downstream: *does a low-dimensional subspace represent this material's deformation at all?* Fixture already exists; no new physics. |
 | **R2** | **Precision decision.** Measure a full-f32 forward path on the reduced system (`r × r` is small enough to port by hand without touching the 1 396-`f64` production surface), and decide residual-in-f64-on-CPU vs compensated-summation-in-f32. | Reduced-model f32 forward drift and gradient drift vs the f64 reduced model, on R1's fixture; explicit go/no-go on whether the residual can live in f32. | §2c. Must precede any GPU work; deciding it after a shader exists means writing the shader twice. |
-| **R3** **§2i brackets its Amdahl ceiling at `20.2–20.5×`–`≳32×`** (two runs) — clear of both its own `10×` floor and the budget's `13.5–15.8×` on either bound. ⚠ Contact-free fixture; contact would push it DOWN, and the reduced path has never run with contact. Gate is `≥10×` on §2h's reference box. | **Hyper-reduction (ECSW) + the validity domain.** NNLS training over R1's snapshots; `ReducedValidityDomain` with the online `‖q‖` + residual-proxy gate; the three error measures of §4c. | Measured speedup vs §2a's baseline (post-R0), with the three §4c errors reported alongside. Domain gate demonstrated to fire on an out-of-domain trajectory. | This is where the frame-budget win actually arrives. Also where the "smooth and wrong" failure mode is defended against. |
+| **R3** **§2i brackets its Amdahl ceiling at `20.2–20.5×`–`≳32×`** (two runs) — clear of both its own `10×` floor and the budget's `13.5–15.8×` on either bound. ⚠ Contact-free fixture; contact would push it DOWN, and the reduced path has never run with contact. Gate is **`I ≤ 16.7 ms`** on §2h's reference box (§2j — restated in v2.8 from `≥10×`, which was a ratio over a moving baseline). | **Hyper-reduction (ECSW) + the validity domain.** NNLS training over R1's snapshots; `ReducedValidityDomain` with the online `‖q‖` + residual-proxy gate; the three error measures of §4c. | Measured speedup vs §2a's baseline (post-R0), with the three §4c errors reported alongside. Domain gate demonstrated to fire on an out-of-domain trajectory. | This is where the frame-budget win actually arrives. Also where the "smooth and wrong" failure mode is defended against. |
 | **R4** | **Hybrid domain decomposition, FIXED contact patch.** Full DOF under a stationary indenter, reduced bulk, on the `dynamic_indentation` geometry. | End-to-end reaction force vs the oracle, in the same band `bonded_layer_indentation` already asserts. | §5. Fixed patch first, because it isolates the coupling condition from the re-partitioning problem. |
 | **R5** | **Moving patch.** Re-partitioning under a once-built symbolic factorization, or a conservative union pattern. | Sliding-contact trajectory vs the oracle. | §5's open-research item. **Explicitly gated on R4 succeeding**; if R4 fails, this is not attempted. |
 | **R6** | **Rigid↔soft coupling.** | — | **Last, deliberately.** Per the brief, and it is the right call: the keystone coupling is itself the platform's hardest open problem (`MISSION.md` §2), and stacking it on an unsolved real-time reduced path would make any failure uninterpretable. |
@@ -1731,8 +1916,14 @@ same door, under its own feature, and must not enter the default build.
 fact): if R1 shows the projection error is not small at any `r` worth having, the MOR
 path is wrong for this material class and the recon is falsified — the correct
 response is to revert to R0's win and re-recon, not to widen the basis until the
-number looks acceptable. If R3's measured speedup over §2a's (post-R0) baseline is under ~10×,
-reduction is not paying for its complexity and the honest move is to bank it.
+number looks acceptable. **R3's own gate was RESTATED in v2.8 — see §2j.** It read
+*"if R3's measured speedup over §2a's (post-R0) baseline is under ~10×, reduction is
+not paying for its complexity"*, which is a ratio against a baseline every rung here
+is chartered to improve: succeeding at R1's own line items made R3 fail a gate it
+otherwise passed, while simultaneously making R3 less necessary. It now reads: **R3
+clears iff the frame's IRREDUCIBLE time fits the budget, `I ≤ 16.7 ms`, on the
+fixture in question** — which is what `C ≥ R` reduces to. The `~10×` survives as a
+complexity heuristic, re-derived against the baseline of the day and never carried.
 
 ---
 
@@ -1934,8 +2125,12 @@ until then, and by nobody else ever. The recipe above is the durable record.
    Any f32 path needs its own tolerance policy, decided deliberately rather than by
    loosening an existing assertion.
 5. **§4b's ECSW recommendation rests on a literature claim about achievable speedup
-   that this recon did not measure.** R3's gate exists precisely to hold it to account,
-   and R3's kill condition (< ~10× over R0) is the response if it does not hold.
+   that this recon did not measure.** R3's gate exists precisely to hold it to account.
+   ⚠ Its form CHANGED in v2.8: the response is no longer "< ~10× over R0" — that was a
+   ratio over a baseline the rest of the ladder keeps moving — but **`I > 16.7 ms`**,
+   the frame's irreducible time failing to fit the budget (§2j). ★ §2i's measured
+   ceiling of `20.2–20.5×` is already the strongest evidence either way, and it is
+   an *upper bound on ECSW's reach here*, not a confirmation of the literature claim.
 6. **§5's hybrid-DD arithmetic closes on paper** (a few hundred patch DOF + `r ≈
    30–100` lands inside the reachable ≈ 1 500 DOF). That is encouraging and it is not
    evidence. Nothing about the coupling condition or the moving patch has been
@@ -1964,6 +2159,34 @@ until then, and by nobody else ever. The recipe above is the durable record.
 - `sim/L0/soft/src/material/` — the `ValidityDomain` §4c mirrors.
 
 ## 12. Version history
+
+- **v2.8 (2026-08-24)** — **§2j: R3's kill floor RESTATED, before the measurement
+  that would have moved it — and `project_tangent` reclassified as a wall-clock item,
+  not an R3 item.** Written as a pre-registration for §2i's next item, and the
+  algebra settled the question §2i had left open. Write a reduced frame `T = I + Red`
+  against budget `B`: the ceiling is `C = T/I`, the requirement `R = T/B`, so
+  **`C/R = B/I`** and R3 clears iff **`I ≤ B`**. ⇒ speeding up any `Reducible::Yes`
+  phase lowers `C` and `R` by the same factor and **leaves R3's margin exactly
+  unchanged** (`5.18×` at every `S`, verified against v2.7's run 2). §2i had called
+  the net sign "not obvious from the armchair"; it is zero. ⚠ What is NOT invariant
+  is a gate written as a RATIO: `≥10×` over §2a's post-R0 baseline gets harder every
+  time an earlier rung succeeds, and a `10.24×` win on `ΦᵀKΦ` — well inside reach for
+  a scalar `Vec<Vec<f64>>` triple loop — would have driven the ceiling to exactly
+  `10.00×` and failed it. **Restated as `I ≤ 16.7 ms`**; the `~10×` survives as a
+  complexity heuristic, re-derived per measurement rather than carried. Restated
+  BEFORE the run, which §7's own "cannot be renegotiated after the fact" makes the
+  last legitimate moment. ★ The margin being `B/I` also reorders §2i's list: `I` is
+  `3.223 ms`, of which **`61 %` is `contact` marshalling on a `NullContact` scene**
+  and `37 %` the validity sweep, so those are the only lines that can move R3's
+  verdict while `red proj K` at `56.8 %` of the frame moves it by zero. **The
+  measurement R3 waits on is the CONTACT fixture**, the one place `I` is unknown.
+  ⚠ The prize is bounded in advance: `project_tangent` at `S = ∞` leaves a `28.57 ms`
+  frame, still `1.71×` over budget, with `asm tangent` then `82 %` of it — so it
+  **cannot reach 60 Hz on its own fixture**, whole-frame cap `2.31×`. Six
+  pre-registered rules and a five-knob matrix (knob 0, which of the two loops is
+  slow, gates the rest) are recorded in §2j. ⚠ No code changed and no measurement was
+  taken. ★ Also fixes this document's **status line, which had read `v2.3` since
+  v2.4** while the history below ran to v2.7.
 
 - **v2.7 (2026-08-23)** — **§2i: the bracket UNSTRADDLED — R3's ceiling is now
   `20.2–20.5×` … `≳32×` over two runs, clear of both its `10×` floor and the

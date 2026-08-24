@@ -39,12 +39,17 @@
 //! work; the shares are therefore comparable to each other and to §2d, but they
 //! are not CPU-time.
 //!
-//! ⚠ **FULL-ORDER PATH ONLY.** These five slots cover
-//! `solver::backward_euler`'s hot path. The REDUCED solver
-//! (`backward_euler::reduced`) is uninstrumented — its `project_tangent` and its
-//! dense `r×r` factorization fall into no slot — so a reduced run's
-//! instrumented-vs-wall figure will be far below 100 % and its shares mean
-//! nothing. Instrumenting R1's path is a separate job and is not done here.
+//! **BOTH PATHS.** Six slots cover `solver::backward_euler`'s full-order hot
+//! path; four more (`Reduced*`) cover `backward_euler::reduced`, added by #822
+//! so R3's Amdahl ceiling could be measured before R3 was built. ⚠ This
+//! paragraph read *"FULL-ORDER PATH ONLY … the reduced solver is
+//! uninstrumented"* through #822 and #823 and was simply stale; the reduced
+//! slots it says do not exist are [`Phase::ReducedProjectTangent`] and its
+//! three siblings.
+//!
+//! ⚠ **The two paths are still not one measurement.** A reduced run leaves the
+//! full-order-only slots at zero and vice versa, so read the shares against the
+//! path that produced them — recon §2d for full-order, §2i for reduced.
 //!
 //! ## Use
 //!

@@ -13,6 +13,13 @@
 //! kill floor — so it decides whether R3 can clear its own gate. This replaces
 //! the inference with a measurement.
 //!
+//! ⚠ **The `10×` kill floor named above was RESTATED in recon v2.8 (§2j)** and no
+//! longer gates R3: it was a ratio over a baseline every rung on the ladder is
+//! chartered to improve, so it got harder each time an earlier rung succeeded.
+//! R3's gate is now `I ≤ 16.7 ms` — the frame's IRREDUCIBLE time against the
+//! budget. The paragraph above is left as written because it records why this
+//! harness was built, which the restatement does not change.
+//!
 //! ## Why single-arm
 //!
 //! `tests/predictor_spike.rs` runs four solvers in lockstep and measured IPC

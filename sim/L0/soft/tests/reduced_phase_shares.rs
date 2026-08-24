@@ -36,6 +36,25 @@
 //! (recon §2i, v2.7). The straddle is why this harness exists; keep it, because
 //! `project_tangent` and R3 itself will both move the mix again.
 //!
+//! ## ★★ What the ceiling ALONE cannot tell you (recon §2j, v2.8)
+//!
+//! `C = T/I` and the requirement `R = T/B` share a numerator, so `C/R = B/I` and
+//! **R3 clears iff `I ≤ B`** — the frame's IRREDUCIBLE time against the budget.
+//! Two consequences for how this harness's output gets read:
+//!
+//! 1. **Speeding up any [`Reducible::Yes`] phase leaves R3's margin exactly
+//!    unchanged**, because it lowers `C` and `R` by the same factor. The
+//!    `red proj K` row is `56.8 %` of the frame and moves R3's verdict by zero.
+//!    A ceiling re-quoted after such a change MUST carry its own re-measured
+//!    requirement, or it reads as a regression that did not happen.
+//! 2. **The rows that decide R3 are the irreducible ones**, and they are small:
+//!    `I = 3.223 ms`, `61 %` of it `contact` marshalling on a `NullContact`
+//!    scene. ⚠ Which is also the limit of this fixture — `I` has never been
+//!    measured on a contact fixture, where the requirement actually lives.
+//!
+//! ⚠ The `10×` floor named above was restated in v2.8 and is now a complexity
+//! heuristic, not a gate.
+//!
 //! ## Controls
 //!
 //! ⚠ There is **no published reduced-path row to reproduce**, so the positive
