@@ -1010,9 +1010,13 @@ run in `0.69 s` under the first, 4 cores busy in **`0.62 s`** under the second
 (probe median `23.92 ms`), each naming the cause. Under the first, `burst` read
 `1.02×` in the refusing run — precisely why it is not the gate on its own.
 
-⚠⚠ **The probe measures the SUT, so this recurs.** It is a full solve, so every
-optimisation on the full-order path invalidates all four constants;
-`project_tangent` will do it again. The design that would not need re-baselining
+⚠⚠ **The probe measures the SUT, so this recurs.** It is a **full-order** solve, so
+every optimisation on the full-order path invalidates all four constants. ⚠ Note what
+that does NOT include: `project_tangent` and the contact-fixture work — §2i's next two
+items — are both on the REDUCED path, which the probe never touches, so these constants
+should hold across them. What moves them next is the first change to full-order
+assembly, ordering, factorization or the contact path. The design that would not need
+re-baselining
 is a probe independent of the code under test — a fixed synthetic workload
 measuring the box alone. Deliberately not taken: the present probe is *measured*
 to load the phase the gate-bearing runs are bottlenecked on, and a synthetic one
@@ -1133,9 +1137,18 @@ Under rayon on the reference box (12 threads, 9 216 tets):
 | rest | 1.506 ms | 0.311 ms | 4.83× |
 | sheared `u_x = 0.15 z` | 2.050 ms | 0.382 ms | **5.37×** |
 
-⚠ The two states differ because at rest `F = I` exactly and the Jacobi SVD
-converges in fewer sweeps. A rest-only measurement understates the sweep; the
-sheared row is the one that reconciles with a share measured inside a solve.
+⚠ The two states differ because at rest `F = I` exactly and the Jacobi SVD converges
+in fewer sweeps, so a rest-only measurement understates the sweep. ⚠ These are lib unit
+tests and therefore **not behind §2h's contention gate** — corroborating, not
+gate-bearing. The gate-bearing figures are the profile shares below.
+
+★ **The two instruments cross-check, and the way they disagree is the check.** Per sweep
+(2 per step), the profile gives `6.684/2 = 3.342 ms` sequential and `1.229/2 = 0.615 ms`
+parallel — both about `1.6×` ABOVE the microbench (`1.63×` and `1.61×`), because a solve
+visits states more deformed than a `γ = 0.15` shear. The absolutes do not transfer; the
+**ratio does**, `5.44×` in-solve against `5.37×` on the bench. An offset that is equal on
+both arms is what a state-dependence looks like — a discrepancy on only one arm would
+mean the timers.
 
 Verdict-identical, and that is a property of the reduction rather than of the
 traversal: violators are collected with their ids and reduced by `min_by_key`, so
@@ -1170,7 +1183,10 @@ the failing path — no early exit, one `format!` per violator.
 > runs of the earlier configuration gave `37.1×` and `38.9×`. What is solid is
 > that it is far above `15.8×`, not its value.
 
-**Coherence check.** The frame fell `72.07 → 65.97 ms`, a `6.10 ms` saving; the
+**Coherence check.** ⚠ This is a CROSS-SESSION comparison of absolute times, which §2d
+finding 3 says not to trust — licensed here only by its own result: the untouched rows
+agree to `0.3–2.1 %`, which is what says the two runs are comparable. The frame fell
+`72.07 → 65.97 ms`, a `6.10 ms` saving; the
 sweep row fell `6.684 → 1.229 ms`, `5.46 ms` of it. **89 % of the whole-frame
 improvement is the line that was changed**, and the two large untouched rows barely
 moved: `red proj K` `37.591 → 37.482` (`−0.3 %`) and `asm tangent`
@@ -1242,11 +1258,12 @@ operating point, R3's ceiling brackets `20.5×` to `≳34×`.*
 
 #### ⚠ The reference box had to be re-baselined, and this will recur
 
-§2h's probe is a full solve of `cantilever 40×4`, so it measures the SUT. This
-change took its quiet median `24.47 → 22.75 ms` and left legitimate readings
-`3.8 %` from the `21.0 ms` floor — which is precisely what that floor is for. All
-four constants were re-piloted (§2h). **Every future full-order optimisation will
-do the same**, `project_tangent` included.
+§2h's probe is a **full-order** solve of `cantilever 40×4`, so it measures the SUT.
+This change took its quiet median `24.47 → 22.75 ms` and left legitimate readings
+`3.8 %` from the `21.0 ms` floor — which is precisely what that floor is for. All four
+constants were re-piloted (§2h), and every future full-order optimisation will force
+the same. ⚠ **Neither of the two next items below is one** — `project_tangent` and the
+contact fixture are reduced-path, and the probe does not run the reduced path at all.
 
 #### What this does to the ladder
 
@@ -1885,8 +1902,9 @@ until then, and by nobody else ever. The recipe above is the durable record.
   `22.60–23.36`, 4 busy cores `24.17–24.93`), ceiling `25.5 → 23.7`, floor
   `21.0 → 19.5`, burst unchanged; the finding that **burst cannot detect sustained
   partial load replicated on a different tree**. Named as a standing cost of a probe
-  that measures the SUT — `project_tangent` will do it again. ▶ Next, in order:
-  (1) `project_tangent`, (2) the reduced path WITH contact.
+  that measures the SUT — though ⚠ NOT by the next two items, which are reduced-path
+  and the probe is full-order. ▶ Next, in order: (1) `project_tangent`, (2) the reduced
+  path WITH contact.
 
 - **v2.6 (2026-08-23)** — **§2i: R3's Amdahl ceiling MEASURED, and it brackets
   `8.3×` … `≳37×`** (the upper bound is ill-conditioned near `f → 1` — two identical

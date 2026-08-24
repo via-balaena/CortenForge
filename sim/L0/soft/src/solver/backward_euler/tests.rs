@@ -3982,8 +3982,13 @@ fn validity_sweep_parallel_agrees_with_sequential() {
 ///
 /// ⚠ **Two states, because the rest state is not representative.** At rest
 /// `F = I` exactly and the Jacobi SVD converges in fewer sweeps than on a
-/// deformed `F`, so a rest-only measurement understates the sweep. The sheared
-/// state is the one to reconcile against a share measured in a running solve.
+/// deformed `F`, so a rest-only measurement understates the sweep.
+///
+/// ⚠ Neither state reproduces a solve's ABSOLUTE cost: a `γ = 0.15` shear is
+/// milder than the states a solve visits, and both arms read about `1.6×` cheaper
+/// here than the profile's per-sweep figures (`3.342` / `0.615 ms`). What transfers
+/// is the RATIO — `5.37×` here against `5.44×` in-solve. Equal offsets on both arms
+/// are a state-dependence; an offset on one arm would mean the timers.
 ///
 /// ```text
 /// cargo test --release -p sim-soft --lib -- --ignored --nocapture \

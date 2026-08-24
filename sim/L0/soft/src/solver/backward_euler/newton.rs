@@ -60,8 +60,9 @@ where
     /// ⚠ *Lowest id*, not *first reached*: on native the sweep runs under rayon
     /// and reduces by `min_by_key`, so traversal order is unspecified while the
     /// verdict — and the `tet_id` in the message — is not. See
-    /// [`Self::sweep_validity_parallel`], and `validity_sweep_parallel_agrees`
-    /// for the equivalence test.
+    /// `sweep_validity_parallel` (no intra-doc link: it does not exist on wasm32),
+    /// and `validity_sweep_parallel_agrees_with_sequential` for the equivalence
+    /// test.
     ///
     /// The two slots checkable from `F`
     /// for every base [`Material`] impl Phase 4 ships are
@@ -200,7 +201,8 @@ where
     }
 
     /// The sweep under rayon, **verdict-identical to
-    /// [`Self::sweep_validity_sequential`]**.
+    /// `sweep_validity_sequential`** (no intra-doc link: that one is
+    /// `cfg(any(wasm32, test))`, so it is absent from a native doc build).
     ///
     /// ★ First-violator-wins is preserved by the `min_by_key`, not by traversal
     /// order: every element is checked, the violators are collected with their
@@ -250,8 +252,9 @@ where
     /// Two callers, and the second is why this is not `#[cfg(target_arch =
     /// "wasm32")]` alone: it is wasm32's sweep, and on native it is the A/B
     /// baseline that `validity_sweep_parallel_speedup` interleaves against
-    /// [`Self::sweep_validity_parallel`] in one binary. Measuring a rewrite
-    /// against a copy of the old code in a test would measure the copy.
+    /// `sweep_validity_parallel` in one binary (no intra-doc link: that one is
+    /// absent on wasm32). Measuring a rewrite against a copy of the old code in a
+    /// test would measure the copy.
     #[cfg(any(target_arch = "wasm32", test))]
     pub(super) fn sweep_validity_sequential(
         &self,
