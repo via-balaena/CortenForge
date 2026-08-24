@@ -295,6 +295,14 @@ pub fn probe() -> Probe {
          until the count is constant before trusting any run."
     );
 
+    // The probe runs real solves, so with `phase-timing` on it has been
+    // accumulating into the GLOBAL phase counters this whole time. Leave them
+    // as we found them: no current caller is harmed (both reset before reading),
+    // but a future measurement that snapshots without resetting would silently
+    // report the probe's work as part of its own. `reset` is a no-op without the
+    // feature, so this costs nothing.
+    sim_soft::profile::reset();
+
     let mut sorted = per_step.clone();
     sorted.sort_by(|a, b| a.partial_cmp(b).expect("no NaN timings"));
     Probe {
@@ -338,6 +346,15 @@ pub const PROBE_P50_FLOOR_MS: f64 = 21.0;
 /// reads `2.37×` and up; this sits between, catching gross stalls without
 /// firing on the ordinary jitter of a quiet box.
 pub const PROBE_BURST_MAX: f64 = 1.30;
+
+// ⚠ MEASURED SENSITIVITY LIMIT. The gate catches sustained EXTERNAL load well (2
+// busy cores already trip it). It did NOT catch two of this crate's own measurement
+// tests run concurrently: `cargo test --test reduced_predictor -- --ignored` without
+// `--test-threads=1` passed both gates. The probe is only 3 000 DOF, where the
+// factorization has little parallelism to lose, and the two 0.6 s probes need not
+// overlap at all inside a 77 s run. So `--test-threads=1` remains a REQUIREMENT of
+// the harnesses and this gate is not a substitute for it. Recorded because the
+// opposite was written here first, as a prediction, and the run disagreed.
 
 /// Identity plus the **scale-free** contention check only, for measurements
 /// that run the SAME fixture on more than one tree.
@@ -389,9 +406,10 @@ pub fn require_quiet_box() -> (BoxIdentity, Probe) {
         "BOX IS CONTENDED: probe median {:.2} ms exceeds {PROBE_P50_CEILING_MS:.2} ms \
          (quiet reference is {REF_PROBE_P50_MS:.2} ms). Every step is slow, which is \
          sustained background load, not jitter — the recon has a 5.7x spread on one \
-         fixture from exactly this. Close what is running and re-measure. If the box \
-         is genuinely idle, its baseline has moved: re-run tests/refbox_pilot.rs and \
-         re-baseline, do not widen the threshold.",
+         fixture from exactly this. Close what is running (and check you passed \
+         --test-threads=1) and re-measure. If the box is genuinely idle, its baseline \
+         has moved: re-run tests/refbox_pilot.rs and re-baseline, do not widen the \
+         threshold.",
         p.p50_ms
     );
     assert!(

@@ -110,7 +110,8 @@
 //!
 //! `--test-threads=1` is load-bearing twice over: it keeps the printed tables
 //! from interleaving, and it keeps two cases from competing for cores while one
-//! of them is being timed.
+//! of them is being timed. ⚠ The quiet-box gate each case now runs does NOT
+//! replace it — concurrent measurements were tried and their gates passed.
 
 #![allow(
     // A broken fixture or a solver failure is a broken instrument, not a runtime
