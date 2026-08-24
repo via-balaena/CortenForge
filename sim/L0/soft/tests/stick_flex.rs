@@ -493,21 +493,7 @@ fn the_candidate_grid_sizes_are_reported_before_any_solve() {
     );
 
     let mut seen = 0usize;
-    for (nx, ny, nz) in [
-        (2, 1, 2),
-        (4, 1, 2),
-        (8, 1, 2),
-        (16, 1, 2),
-        (24, 1, 2),
-        (32, 1, 2),
-        (48, 1, 2),
-        (8, 1, 4),
-        (16, 1, 4),
-        (24, 1, 4),
-        (32, 1, 4),
-        (16, 2, 4),
-        (32, 2, 4),
-    ] {
+    for (nx, ny, nz) in PREVIEW_GRIDS {
         let d4 = free_dof_of(Arm::Tet4, nx, ny, nz);
         let d10 = free_dof_of(Arm::Tet10, nx, ny, nz);
         assert!(
@@ -520,14 +506,34 @@ fn the_candidate_grid_sizes_are_reported_before_any_solve() {
         );
         seen += 1;
     }
-    // Counted against the literal it iterates, not against zero: a `continue`
-    // or an early `break` added later would drop rows from the table silently,
-    // and `seen > 0` could not notice.
+    // Counted against the array's OWN length, not against zero and not against a
+    // hard-coded 13: `seen > 0` could not notice a `continue` added later, and a
+    // literal count would fail spuriously the moment a grid is added.
     assert_eq!(
-        seen, 13,
-        "the sizing table printed {seen} of 13 designed grids — rows are being skipped"
+        seen,
+        PREVIEW_GRIDS.len(),
+        "the sizing table printed {seen} of {} designed grids — rows are being skipped",
+        PREVIEW_GRIDS.len()
     );
 }
+
+/// Grids the sizing preview reports, a superset of [`GRIDS`] — it also sizes
+/// the `ny = 2` cells the sweep uses only as a control.
+const PREVIEW_GRIDS: [(usize, usize, usize); 13] = [
+    (2, 1, 2),
+    (4, 1, 2),
+    (8, 1, 2),
+    (16, 1, 2),
+    (24, 1, 2),
+    (32, 1, 2),
+    (48, 1, 2),
+    (8, 1, 4),
+    (16, 1, 4),
+    (24, 1, 4),
+    (32, 1, 4),
+    (16, 2, 4),
+    (32, 2, 4),
+];
 
 /// The grids swept, coarsest first. `nz` is the **flex-direction** resolution
 /// and the one bending accuracy should be most sensitive to.
@@ -676,14 +682,20 @@ fn gate_the_two_claims(tet10_ratios: &[(usize, f64)], best_linear: f64) {
     // removed from `GRIDS`: a gate that quietly re-computes what it is meant to
     // check is no longer checking the reported measurement.
     let tet10_at = |nx: usize| {
-        tet10_ratios
-            .iter()
-            .find(|(n, _)| *n == nx)
-            .map(|&(_, r)| r)
-            .expect(
-                "this nx at ny=1,nz=2 is not in GRIDS, so the gate cannot read the table it \
-                 claims to gate",
-            )
+        // ⚠ `assert!` then `expect`, rather than `expect` alone, ONLY so the
+        // message can name `nx`. The first lint-clean rewrite of this used a
+        // bare `.expect("this nx …")` and silently dropped which grid was
+        // missing — losing information from a failure path to satisfy a lint is
+        // the exact mistake this file was built around.
+        let hit = tet10_ratios.iter().find(|(n, _)| *n == nx);
+        assert!(
+            hit.is_some(),
+            "nx={nx} at ny=1,nz=2 is not among the sweep's captured rows, so this gate cannot \
+             read the table it claims to gate. If the row exists but did not converge, the \
+             non-convergence assert above should have fired first — check that it still runs \
+             BEFORE this one"
+        );
+        hit.expect("asserted non-None on the line above").1
     };
     let coarse = tet10_at(8);
     assert!(
@@ -1535,7 +1547,13 @@ fn whether_the_iteration_grind_is_nonlinearity_or_the_tangent() {
         .find(|(r, _, _)| (*r - 1.0e-3).abs() < 1e-12)
         .map(|&(_, _, ratio)| ratio)
         .expect("the delta/L = 1e-3 row is the converged reference and must be present");
-    let linear_ratio = tet10.first().map(|&(_, _, r)| r).expect("non-empty");
+    // ⚠ Found BY MINIMUM AMPLITUDE, not by position. `smallest`/`largest` below
+    // still read `.first()`/`.last()`, which silently mislabels if the amplitude
+    // array is ever reordered; this check must not inherit that.
+    let &(_, _, linear_ratio) = tet10
+        .iter()
+        .min_by(|a, b| a.0.partial_cmp(&b.0).expect("amplitudes are never NaN"))
+        .expect("the amplitude sweep is non-empty");
     let ratio_agrees = (linear_ratio - converged_ratio).abs() / converged_ratio < 1.0e-3;
     println!(
         "  linear-limit ratio {linear_ratio:.4} vs converged {converged_ratio:.4} — {}",
