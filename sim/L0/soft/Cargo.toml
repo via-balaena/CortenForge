@@ -179,8 +179,9 @@ faer = { version = "0.24", default-features = false, features = ["std", "sparse-
 # Native-only for the same reason faer's `rayon` feature is: wasm32 has no
 # threads, and `xtask grade`'s WASM Compat criterion holds every L0 crate to
 # that target. wasm runs `sweep_validity_sequential` -- same verdict, one core.
-# Already in the native graph via faer's `rayon` feature, so the direct
-# declaration costs the tier's 100/100 dependency budget nothing.
+# Already in the native graph via faer's `rayon` feature, so declaring it
+# directly adds no crate to the graph and costs the dependency budget nothing
+# (`dependency_budget = 200`, raised from the L0 default of 100).
 rayon = { workspace = true }
 
 [dev-dependencies]

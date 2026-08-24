@@ -29,8 +29,11 @@
 //! `f` is reported as a BRACKET, because some of the frame is removable only if
 //! R3's own `ReducedValidityDomain` works ([`Reducible::PlannedByR3`]); folding
 //! that in would assume the success of the thing being sized. Measured, the
-//! bracket is `8.3×–37.1×` against a `13.5–15.8×` requirement and a `10×` floor —
-//! it straddles both, and the validity sweep alone decides it.
+//! bracket first read `8.3×–37.1×` against a `13.5–15.8×` requirement and a `10×`
+//! floor — straddling both, with the validity element sweep alone deciding it.
+//! Parallelising that sweep took it to `20.5×–≳34×`, which clears on either bound
+//! (recon §2i, v2.7). The straddle is why this harness exists; keep it, because
+//! `project_tangent` and R3 itself will both move the mix again.
 //!
 //! ## Controls
 //!
@@ -205,7 +208,8 @@ fn main_report(label: &str, wall_ms: f64, steps: usize, iters: usize) {
         // both of which are reducible, so its time has already been added via its
         // parents. ECSW cannot remove a broad-phase pair search — it replaces
         // element quadrature — so take it back out. Missing this overstates the
-        // ceiling: 90.0 % read as 10.0x where the honest lower bound is 88.0 % / 8.3x.
+        // ceiling: when #822 first ran, 90.0 % read as 10.0x where the honest lower
+        // bound was 88.0 % / 8.3x.
         if matches!(ph, Phase::Contact) {
             sure -= share;
         }
@@ -398,10 +402,9 @@ fn reduced_phase_shares() {
         );
     }
     println!(
-        "  ⇒ modest inflation (~1.3x on share). The sweep is a large cost on this\n\
-         \x20   fixture in BOTH paths — it is not reduction that makes it matter,\n\
-         \x20   it is that R3's ceiling is 1/(1-f) and this is irreducible without\n\
-         \x20   the ReducedValidityDomain."
+        "  ⇒ modest inflation (~1.3x on share). Both figures are POST the parallel\n\
+         \x20   sweep (recon §2i v2.7); before it they read 7.6 % / 9.6 %, and that\n\
+         \x20   9.3 % of a reduced frame was what made R3's ceiling straddle."
     );
 
     let instr: f64 = Phase::ALL
