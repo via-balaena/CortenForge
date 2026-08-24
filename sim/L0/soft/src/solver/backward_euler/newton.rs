@@ -226,16 +226,26 @@ where
     /// preconditions (the extent assertion, the timer) are stated once and both
     /// arms inherit them.
     ///
-    /// ⚠ The size test is not an optimisation, it is a REGRESSION FIX: below the
-    /// threshold the parallel sweep is measurably slower than the serial one it
-    /// replaced — `0.12×` at 12 tets. See [`PARALLEL_SWEEP_MIN_TETS`].
+    /// ⚠ Neither test is an optimisation; both are REGRESSION FIXES, because below
+    /// the threshold the parallel sweep is measurably slower than the serial one it
+    /// replaced — `0.10×` at 12 tets on the default 12-thread pool. See
+    /// [`PARALLEL_SWEEP_MIN_TETS`].
+    ///
+    /// ★ The thread test is separate because the two regressions have different
+    /// shapes. The size one is a WAKEUP cost and scales with the pool: it is worst at
+    /// 12 threads and nearly absent at 1. The thread one is the opposite — in a
+    /// single-thread pool the parallel path cannot win at any size and measures
+    /// `0.94–0.99×` across the whole ladder, a small standing loss that no size
+    /// threshold removes. One `usize` compare and one relaxed load to remove both.
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn sweep_validity(
         &self,
         x_curr: &[f64],
         materials: &[M],
     ) -> Result<(), SolverFailure> {
-        if self.element_geometries.len() >= PARALLEL_SWEEP_MIN_TETS {
+        if self.element_geometries.len() >= PARALLEL_SWEEP_MIN_TETS
+            && rayon::current_num_threads() > 1
+        {
             self.sweep_validity_parallel(x_curr, materials)
         } else {
             self.sweep_validity_sequential(x_curr, materials)

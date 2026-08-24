@@ -3898,6 +3898,97 @@ fn validity_sweep_parallel_agrees_with_sequential() {
     assert_sweeps_agree(10, 2);
 }
 
+/// The same ladder on **Tet10**, whose per-element certificate is far more expensive
+/// than Tet4's — so break-even should move DOWN, leaving the Tet4-derived threshold
+/// conservative rather than wrong.
+///
+/// Stated as the expectation and then measured, because "a more expensive element can
+/// only help" is exactly the kind of inference that put a regression in this file in
+/// the first place.
+///
+/// ```text
+/// cargo test --release -p sim-soft --lib -- --ignored --nocapture \
+///   validity_sweep_parallel_speedup_tet10
+/// ```
+#[test]
+#[ignore = "measurement, not a gate — see the doc comment for the command"]
+fn validity_sweep_parallel_speedup_tet10() {
+    const WARMUP: usize = 3;
+    const ROUNDS: usize = 15;
+    const SIZES: [(usize, usize); 5] = [(1, 2), (4, 2), (6, 2), (8, 2), (10, 2)];
+
+    let p50 = |v: &mut Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        v[v.len() / 2]
+    };
+
+    println!("\nVALSWEEP10\tthreads={}", rayon::current_num_threads());
+    for (n_lat, nz) in SIZES {
+        let field = MaterialField::uniform(1.0e5, 4.0e5);
+        let tet4 = HandBuiltTetMesh::cantilever_bilayer_beam(
+            n_lat, n_lat, nz, SWEEP_LX, SWEEP_LY, SWEEP_H, &field,
+        );
+        let mesh = Tet10Mesh::from_tet4(&tet4);
+        let mut x_rest = vec![0.0; 3 * mesh.n_vertices()];
+        for (c, p) in x_rest.chunks_exact_mut(3).zip(mesh.positions()) {
+            c[0] = p.x;
+            c[1] = p.y;
+            c[2] = p.z;
+        }
+        let pinned_vertices = pick_vertices_by_predicate(&mesh, |p: &Vec3| p.z.abs() < 1e-12);
+        let mut cfg = SolverConfig::skeleton();
+        cfg.dt = 1.0 / 60.0;
+        cfg.density = 1030.0;
+        let solver: CpuTet10NHSolver<Tet10Mesh> = CpuNewtonSolver::new(
+            Tet10,
+            mesh,
+            NullContact,
+            cfg,
+            BoundaryConditions {
+                pinned_vertices,
+                roller_vertices: Vec::new(),
+                loaded_vertices: Vec::new(),
+            },
+        );
+        let materials = solver.mesh.materials();
+
+        let mut x_shear = x_rest.clone();
+        for c in x_shear.chunks_exact_mut(3) {
+            c[0] += 0.15 * c[2];
+        }
+
+        let time_it = |f: &dyn Fn() -> Result<(), SolverFailure>| -> f64 {
+            let t0 = std::time::Instant::now();
+            let out = f();
+            let ms = t0.elapsed().as_secs_f64() * 1e3;
+            assert!(
+                out.is_ok(),
+                "control failed — an arm exited early on a violation"
+            );
+            ms
+        };
+
+        for (label, x) in [("rest", &x_rest), ("sheared", &x_shear)] {
+            for _ in 0..WARMUP {
+                time_it(&|| solver.sweep_validity_sequential(x, materials));
+                time_it(&|| solver.sweep_validity_parallel(x, materials));
+            }
+            let mut seq = Vec::with_capacity(ROUNDS);
+            let mut par = Vec::with_capacity(ROUNDS);
+            for _ in 0..ROUNDS {
+                seq.push(time_it(&|| solver.sweep_validity_sequential(x, materials)));
+                par.push(time_it(&|| solver.sweep_validity_parallel(x, materials)));
+            }
+            let (sq, pl) = (p50(&mut seq), p50(&mut par));
+            println!(
+                "VALSWEEP10\ttets={:<6}\t{label:<8}\tseq_p50_ms={sq:>8.4}\tpar_p50_ms={pl:>8.4}\tspeedup={:.2}x",
+                solver.mesh.n_tets(),
+                sq / pl
+            );
+        }
+    }
+}
+
 /// One mesh size's worth of [`validity_sweep_parallel_agrees_with_sequential`].
 fn assert_sweeps_agree(n_lat: usize, nz: usize) {
     const REPEATS: usize = 32;

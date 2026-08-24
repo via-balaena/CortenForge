@@ -1189,6 +1189,54 @@ regression band.
 real and reproducible at the size it was measured at; what was wrong was the unstated
 generalisation to all sizes.
 
+#### The other two knobs, swept for the same reason
+
+**Threads.** The mechanism above is not a fixed rayon-entry cost — it is a *wakeup*
+cost, and it scales with the pool. Speedup on the sheared state:
+
+| tets | 1 thr | 2 thr | 4 thr | 8 thr | 12 thr |
+|---:|---:|---:|---:|---:|---:|
+| 12 | 0.56× | 0.61× | 0.24× | 0.16× | **0.10×** |
+| 192 | 0.99× | 1.66× | 1.06× | 1.12× | **0.39×** |
+| 432 | 0.95× | 1.79× | 1.73× | 1.68× | **0.81×** |
+| 768 | 0.95× | 1.80× | 2.14× | 2.43× | 1.41× |
+| 1 536 | 0.96× | 1.84× | 2.60× | **3.27×** | 2.31× |
+| 9 216 | 0.98× | 1.89× | 3.31× | **5.18×** | 5.11× |
+
+Two things fall out, and only the first was anticipated:
+
+1. **The size threshold's worst case is the DEFAULT pool.** At 12 threads break-even is
+   between 432 and 768; at 2–8 threads it is at or below 192. `1024` clears the worst
+   column, so it is safe for every pool measured.
+2. ⚠ **In a single-thread pool the parallel path cannot win at any size** — `0.94–0.99×`
+   the whole ladder, a small standing loss no size threshold removes. The dispatch now
+   also requires `rayon::current_num_threads() > 1`.
+
+⚠⚠ **A lead, not acted on: 12 threads is worse than 8 at every size measured.** The box
+is 8 P + 4 E, and waking the four E-cores costs more than they return — `1.41×` against
+`2.43×` at 768 tets, `2.31×` against `3.27×` at 1 536. At the two published fixtures the
+gap is small (`5.11×` vs `5.18×` at 9 216), so nothing here is affected, but a P-core-only
+pool looks worth `40–70 %` on mid-sized meshes. Not taken: the global pool is shared with
+faer's factorization, so it is a change to the whole solver's threading, not to this
+sweep, and it wants its own measurement.
+
+**Element type.** Tet10's per-element certificate brackets a cubic over the whole
+element and is far more expensive than Tet4's, so break-even should move DOWN. Stated as
+an expectation and then measured, because "a more expensive element can only help" is
+the same kind of inference that put the regression here to begin with:
+
+| tets | Tet4 | Tet10 |
+|---:|---:|---:|
+| 192 | 0.55× | 1.12× |
+| 432 | 1.02× | 1.79× |
+| 768 | 1.31× | 2.38× |
+| 1 200 | 1.75× | 3.08× |
+
+Break-even ~200 tets, as predicted. The Tet4-derived threshold is therefore
+**conservative** on Tet10 rather than wrong — it leaves some speedup unclaimed between
+200 and 1 024 tets, which is the right direction for a constant piloted on one element
+type.
+
 #### As measured now — `65.97` / `66.04 ms/step`, and the bracket clears
 
 **Two runs**, because the first draft of this section quoted one — for a quantity this
@@ -1933,7 +1981,13 @@ until then, and by nobody else ever. The recipe above is the durable record.
   read `0.12×` and at 192 tets `0.55×`, and the skeleton solver is one tet. Fixed with a
   piloted `PARALLEL_SWEEP_MIN_TETS = 1024` (break-even ~430 deformed / ~680 at rest),
   guarded by a `const` assertion; neither published figure moves, both fixtures being
-  far above it.
+  far above it. The other two held-fixed knobs were then swept too: **threads** (the
+  cost is a WAKEUP cost, worst on the default 12-thread pool, and in a 1-thread pool the
+  parallel path never wins at any size — dispatch now also requires
+  `current_num_threads() > 1`) and **element type** (Tet10 break-even ~200 tets, so the
+  Tet4-derived threshold is conservative there, as predicted). ⚠⚠ Lead recorded, not
+  acted on: **12 threads is worse than 8 at every size** — the 4 E-cores cost more than
+  they return, worth `40–70 %` on mid-sized meshes, but the pool is shared with faer.
   Verdict-identical
   — violators reduce by `min_by_key` on `tet_id`, so first-violator-wins survives an
   unspecified visit order; negative-controlled by swapping in `max_by_key`.
