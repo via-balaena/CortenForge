@@ -30,8 +30,11 @@
 //!
 //! ```text
 //! git worktree add --detach /tmp/pre-r0 ecf4cfef^   # R0 landed as ecf4cfef (#742)
-//! cp sim/L0/soft/tests/r0_ab.rs /tmp/pre-r0/sim/L0/soft/tests/
+//! cp -R sim/L0/soft/tests/r0_ab.rs sim/L0/soft/tests/refbox /tmp/pre-r0/sim/L0/soft/tests/
 //! ```
+//!
+//! ⚠ `refbox/` goes too — both arms must enforce the same box and quiet-state
+//! preconditions, or the ratio is between one clean run and one contended one.
 //!
 //! Then run once per arm, INTERLEAVED (A B A B A B, never AAA BBB) so thermal
 //! drift and background load land on both arms instead of being confounded with
@@ -54,6 +57,8 @@
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss
 )]
+
+mod refbox;
 
 use std::time::Instant;
 
@@ -220,6 +225,7 @@ fn measure(a_over_cell: f64, label: &str, expect_iters: usize) {
 #[test]
 #[ignore = "measurement, minutes long — run explicitly"]
 fn r0_ab_wall_time() {
+    refbox::require_quiet_box();
     for (a_over_cell, label, expect_iters) in [(2.0, "IPC_5202", 422), (3.0, "IPC_18750", 449)] {
         measure(a_over_cell, label, expect_iters);
     }
@@ -272,6 +278,7 @@ fn cantilever(nx: usize, n_cross: usize) -> (CpuTet4NHSolver<HandBuiltTetMesh>, 
 #[test]
 #[ignore = "measurement, minutes long — run explicitly"]
 fn r0_ab_cantilever_control() {
+    refbox::require_quiet_box();
     let (solver, x0, free) = cantilever(80, 8);
     let n = x0.len();
     let theta = Tensor::from_slice(&[], &[0]);
