@@ -1890,7 +1890,7 @@ finding 3 below, the margin is size-dependent.
 figure was not wrong; it was measured somewhere the requirement does not live,
 and it overstated the margin by about `4×`.
 
-Four things it changes:
+Five things it changes:
 
 1. ★★ **The predictor is LOAD-BEARING for R3, not an optimisation.** The same
    rung passes under `Inertial` and fails under `PreviousState`, in all four
@@ -1918,14 +1918,37 @@ Four things it changes:
    one window, the effect survives and is LARGER on the reduced side than it
    looked (`1.15 → 1.50`, not `1.06 → 1.50`). The counts are exact integers per
    step, so the ratios reproduce; only the margins need repeats.
-3. ★★ **The margin is not a constant of the ladder — it falls with size.** `I` is
-   `3.75–3.80 ms` at 5 202 and `11.3–12.3 ms` at 18 750, i.e. `∝ n^0.88` against
-   a fixed `16.7 ms` budget, so `B/I` goes `4.4× → 1.4×`. Extrapolated, **R3's
-   headroom runs out near `28 k` free DOF**, about `1.5×` the requirement's own
-   fixture. ⚠ Two points and a power law — a marker for where to measure next,
-   not a number. It does mean the `1.4×` above should not be read as "R3 clears
-   for soft bodies"; it clears **at this size**.
-4. **`I` is `69 %` contact and `29 %` the validity sweep.** The sweep is
+3. ★★ **The margin is not a constant of the ladder — it falls with size.** `I`
+   is `3.75–3.80 ms` at 5 202 and `11.3–12.3 ms` at 18 750 against a fixed
+   `16.7 ms` budget, so `B/I` goes `4.4× → 1.4×`.
+
+   ⚠ **Do not fit one exponent to that**, which a first pass did. `I`'s two real
+   terms move in opposite directions and the blend is an artefact of where their
+   crossover currently sits:
+
+   | term | 5 202 | 18 750 | scaling | share of `I` |
+   |---|---:|---:|---|---|
+   | `contact` | 1.998 | 8.468 | **`n^1.13`** | 53 % → **69 %** |
+   | `validity check` | 1.687 | 3.561 | `n^0.58` | 45 % → 29 % |
+
+   Contact is taking over, so the blended `n^0.89` will keep rising toward
+   contact's exponent. Summing the terms separately puts `I = 16.7 ms` at
+   **`~26 k` free DOF** (the blended fit says `~28 k`) — about `1.4×` the
+   requirement's own fixture. Two points per term; a marker for where to measure
+   next, not a number. It does mean the `1.4×` above must not be read as "R3
+   clears for soft bodies": it clears **at this size**.
+4. ★★★ **Which identifies the one optimisation that can move R3's margin.**
+   `IpcRigidContact::active_vertex_pairs` evaluates every primitive at **every
+   vertex in the mesh** — there is no broad phase — so contact's per-call cost is
+   linear in vertex count, which is the `n^1.13` above. Contact is `69 %` of `I`,
+   and by `C/R = B/I` only `I` can move a rung's verdict. **A contact broad phase
+   is therefore the available lever, and `asm tangent` is not** — at `68.7 %` of
+   the reduced FRAME it moves the margin by exactly zero, the same trap §2j's
+   corollary caught for `red proj K`. ⚠ No size of win is claimed here; what is
+   established is that the cost is `O(n_vertices)` by construction, and that it
+   is the only term of size in the deciding quantity.
+5. **`I` is `69 %` contact and `29 %` the validity sweep at 18 750** (`53 %` /
+   `45 %` at 5 202 — see finding 3). The sweep is
    `Reducible::PlannedByR3`, so §4c's `ReducedValidityDomain` is worth about
    `+0.5×` of margin here (`I` would fall to `~8.7 ms`). That does NOT reverse
    v2.7's retraction — the rung clears either way — but at `1.4×` it is no longer
@@ -1940,7 +1963,7 @@ of large numbers.
 
 **Controls.** Coverage reads `100.0 %` on every arm. A cross-path control asserts
 `contact` costs the same per CALL whichever way the solve is driven, since it is
-the same code on the same mesh — piloted `0.80–1.17×` over sixteen
+the same code on the same mesh — piloted `0.764–1.173×` over sixteen
 arm-comparisons across both sizes, banded `0.6–1.7×`. A window check asserts the barrier is active during the timed steps.
 The producer check carries a negative control (the undeformed mesh at the final
 pose reads `min_sd = −δ`, so a positive gap is the solve's doing) and a piloted
@@ -2590,9 +2613,15 @@ until then, and by nobody else ever. The recipe above is the durable record.
   last-8-steps average — and the harness now sweeps both sizes in one window. The
   effect survived and grew (`1.15 → 1.50`, not `1.06 → 1.50`). That re-measurement
   also produced §2k's third finding: **the margin falls with size** (`4.4×` at
-  5 202, `1.4×` at 18 750, `I ∝ n^0.88`), so R3's headroom runs out near `28 k`
-  free DOF. The same pass caught a `#[test]` attribute swallowed into a doc
-  comment, which had silently removed the timing instrument from the suite.
+  5 202, `1.4×` at 18 750). ★★★ A SECOND round then found that fitting one
+  exponent to `I` hid two terms moving in opposite directions — `contact` at
+  `n^1.13` and the validity sweep at `n^0.58` — which corrects the headroom
+  marker to `~26 k` free DOF and, more usefully, **names the only optimisation
+  that can move R3's margin at all**: `active_vertex_pairs` has no broad phase
+  and is `O(n_vertices)` per call, and contact is `69 %` of `I`. Round 1 also
+  caught a `#[test]` attribute swallowed into a doc comment, which had silently
+  removed the timing instrument from the suite, and round 2 a published control
+  range that did not match its own pilot data.
 - **v2.12 (2026-08-24)** — **§2j: v2.11's account of the `profile.rs` survivors was
   wrong, and re-running it is how that was found.** It said they were equivalent
   mutants reachable only through box-gated harnesses, needing `-j 1 --features

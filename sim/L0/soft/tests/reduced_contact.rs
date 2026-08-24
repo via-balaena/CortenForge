@@ -906,11 +906,33 @@ fn reduced_contact_does_not_tunnel_through_the_barrier() {
 ///   window the effect survives and is larger than it looked on the reduced
 ///   side (`1.15 → 1.50`, not `1.06 → 1.50`).
 /// - ★★ **The margin is not a constant of the ladder — it falls with size.**
-///   `I` is `3.75–3.80 ms` at 5 202 and `11.3–12.3` at 18 750, i.e. `∝ n^0.88`
-///   against a fixed `16.7 ms` budget, so `B/I` goes `4.4× → 1.4×`.
-///   Extrapolated, **R3's headroom runs out near `28 k` free DOF** — about
-///   `1.5×` the requirement's own fixture. ⚠ Two points and a power law; treat
-///   it as a marker for where to measure next, not as a number.
+///   `I` is `3.75–3.80 ms` at 5 202 and `11.3–12.3` at 18 750 against a fixed
+///   `16.7 ms` budget, so `B/I` goes `4.4× → 1.4×`.
+///
+///   ⚠ **Do not fit one exponent to that.** `I`'s two real terms move in
+///   opposite directions, and the blend (`n^0.89`) is an artefact of where the
+///   crossover currently sits:
+///
+///   | term | 5 202 | 18 750 | scaling | share of `I` |
+///   |---|---:|---:|---|---|
+///   | `contact` | 1.998 | 8.468 | **`n^1.13`** | 53 % → **69 %** |
+///   | `validity check` | 1.687 | 3.561 | `n^0.58` | 45 % → 29 % |
+///
+///   Contact is taking over, so the blended exponent will keep rising toward
+///   contact's. Summing the two terms separately puts `I = 16.7 ms` at
+///   **`~26 k` free DOF** (the single blended fit says `~28 k`) — about `1.4×`
+///   the requirement's own fixture. Two points per term, so it is a marker for
+///   where to measure next, not a number. It does mean `1.4×` must not be read
+///   as "R3 clears for soft bodies"; it clears **at this size**.
+/// - ★★★ **And that identifies the ONE optimisation that can move R3's margin.**
+///   `IpcRigidContact::active_vertex_pairs` (`contact/ipc.rs`) evaluates every
+///   primitive at **every vertex in the mesh** — there is no broad phase — so
+///   contact's per-call cost is linear in vertex count, which is the `n^1.13`
+///   above. Contact is `69 %` of `I`, and by `C/R = B/I` only `I` moves a
+///   rung's verdict. So a contact broad phase is the available lever, and
+///   `asm tangent` — `68.7 %` of the reduced FRAME — is not: it moves the
+///   margin by exactly zero. ⚠ No number is claimed for the win here; what is
+///   measured is that the cost is `O(n_vertices)` by construction.
 /// - `I` is `69 %` contact and `29 %` the validity sweep, the rest negligible.
 ///   The sweep is [`Reducible::PlannedByR3`], so R3's own `ReducedValidityDomain`
 ///   is worth about `+0.5×` of margin here (`I` would fall to `~8.7 ms`). That
@@ -1125,8 +1147,9 @@ fn timing_fixture(a_over_cell: f64) -> SizeRow {
              ({:.4} vs {base:.4} ms)",
             per_call(snap),
         );
-        // PILOTED at 0.80–1.17× over sixteen arm-comparisons across both
-        // sizes. The spread is wide for a control because `contact` is ~1 % of a full-order frame, so the
+        // PILOTED at 0.764–1.173× over sixteen arm-comparisons across both
+        // sizes. ⚠ An earlier comment said `0.80–1.17` — the low end was read
+        // off a subset. The spread is wide for a control because `contact` is ~1 % of a full-order frame, so the
         // DENOMINATOR is a small difference of large numbers; the band is set
         // for that, not for the agreement the two paths actually show. What it
         // still catches is the failure it is for — a slot that double-counts,
@@ -1145,11 +1168,20 @@ fn timing_fixture(a_over_cell: f64) -> SizeRow {
         off.join("\n"),
     );
 
-    let iters_of = |i: usize| rows[i].2.iters as f64 / rows[i].2.steps as f64;
+    // ⚠ BY NAME, not by position. `rows[1]` / `rows[2]` would silently swap the
+    // two predictors' columns the day `GUESSES` is reordered, and the size table
+    // would still look entirely reasonable.
+    let iters_of = |want: &str| -> f64 {
+        let (_, _, m, _) = rows
+            .iter()
+            .find(|(label, ..)| *label == want)
+            .unwrap_or_else(|| panic!("no `{want}` arm in this fixture's rows"));
+        m.iters as f64 / m.steps as f64
+    };
     SizeRow {
         free_dof: fd.len(),
-        full_iters: iters_of(0),
-        prev_iters: iters_of(1),
-        inertial_iters: iters_of(2),
+        full_iters: iters_of("FULL-ORDER"),
+        prev_iters: iters_of("prev"),
+        inertial_iters: iters_of("inertial"),
     }
 }
