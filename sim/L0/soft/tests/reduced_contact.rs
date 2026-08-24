@@ -239,12 +239,18 @@ const TIMING_A_OVER_CELL: [f64; 2] = [2.0, 3.0];
 const TIMING_RANK: usize = 40;
 /// How many of the ramp's trailing steps carry the timing measurement.
 ///
-/// ⚠ THE LAST ones, and that choice is load-bearing. The indenter starts above
-/// the barrier band and descends, so a frame early in the ramp has no active
-/// pairs at all — timing those would report `I` for a scene with no contact in
-/// it, which is precisely the thing this fixture exists to stop doing. The
-/// deepest steps carry the largest contact patch, and that is the workload the
-/// frame budget is claimed against.
+/// ⚠ THE LAST ones, and that choice is load-bearing — though **not for the
+/// reason an earlier version of this comment gave.** It claimed early frames
+/// have "no active pairs at all". They do: `z_start` is `1.2·d̂` above the
+/// surface and the first increment is `0.3·d̂`, so step 0 already sits at
+/// `0.90·d̂` and the barrier is live for the entire ramp.
+///
+/// The real reason is the PATCH, not the presence of contact. It grows as the
+/// indenter descends — step 0 is `+0.90 d̂` of clearance against `-18 d̂` of
+/// interference at the first timed step — so contact cost rises monotonically
+/// and the trailing window is the conservative choice for `I`. Timing an early
+/// window would understate the deciding quantity, which is the same error as
+/// timing a contact-free fixture, just smaller.
 ///
 /// ⚠ Whether this leaves any warmup is checked at RUNTIME, against the ramp's
 /// actual length. A `const` assertion here could only compare it to a hardcoded
@@ -252,6 +258,15 @@ const TIMING_RANK: usize = 40;
 /// constant would go stale in silence the moment either moved, which is the
 /// shape of a guard that cannot fail for the reason it claims.
 const TIMING_STEPS: usize = 8;
+
+/// How deep the ramp must already be at the first timed step, in units of `d̂`,
+/// as pose interference against the undeformed surface.
+///
+/// ★ PILOTED and DISCRIMINATING, which the "contact is active" check beside it
+/// is not: the ramp reads `+0.90 d̂` at step 0 and `-18.0 d̂` at the first timed
+/// step, so a floor of `-10 d̂` sits between them and moving the window forward
+/// trips it. Both `a/cell` rows use the same ramp, so one constant covers both.
+const MIN_WINDOW_DEPTH_BANDS: f64 = -10.0;
 
 const GUESSES: [(&str, InitialGuess); 2] = [
     ("prev", InitialGuess::PreviousState),
@@ -501,6 +516,35 @@ fn describe_survives_a_diverged_partial() {
     let msg = describe(&e, scene, 0);
     assert!(msg.contains("ArmijoStall at iter 7"), "{msg}");
     assert!(msg.contains("non-finite (diverged)"), "{msg}");
+}
+
+/// ★ Negative control for [`MIN_WINDOW_DEPTH_BANDS`], and the check that the
+/// "contact is active in the timed window" assertion beside it CANNOT make.
+///
+/// The barrier is live for this ramp's whole length — step 0 already sits at
+/// `0.90 d̂` — so an active-contact test passes at every step and discriminates
+/// nothing. The depth floor does: it rejects step 0 and accepts the real window.
+/// This also pins the "step 0 is already inside the band" fact that the window
+/// comment now rests on, after an earlier version claimed the opposite.
+#[test]
+fn the_window_depth_guard_discriminates_early_from_deep() {
+    let scene = Scene::new(GATE_A_OVER_CELL);
+    let x_rest = rest_positions(&scene.mesh());
+    let bands = |k: usize| min_signed_distance(&x_rest, scene.centre_at(k)) / scene.d_hat;
+    let early = bands(0);
+    let deep = bands(scene.n_steps() - TIMING_STEPS);
+    assert!(
+        (0.0..1.0).contains(&early),
+        "step 0 should be inside the band ({early} d̂) but clear of the surface",
+    );
+    assert!(
+        early > MIN_WINDOW_DEPTH_BANDS,
+        "the depth floor must REJECT an early window, but {early} d̂ passes it",
+    );
+    assert!(
+        deep <= MIN_WINDOW_DEPTH_BANDS,
+        "the depth floor must ACCEPT the window actually used, but {deep} d̂ fails it",
+    );
 }
 
 fn rest_positions(mesh: &HandBuiltTetMesh) -> Vec<f64> {
@@ -1024,10 +1068,14 @@ fn reduced_contact_does_not_tunnel_through_the_barrier() {
 /// statics, and a second test running concurrently would have its time land in
 /// this one's snapshot.
 ///
-/// ## Measured — seven runs at 18 750, three at 5 202, 2026-08-24, reference box
+/// ## Measured — eight runs at 18 750, four at 5 202, 2026-08-24, reference box
 ///
 /// (Four of the 18 750 runs predate the refactor into a two-size sweep and
-/// measure the same window the same way; all seven sit inside the ranges below.)
+/// measure the same window the same way; all eight sit inside the ranges below.
+/// ⚠ The 18 750 ranges are quoted tight because they decide the rung; the 5 202
+/// ones are rounded to one decimal ON PURPOSE — they are context, and quoting
+/// them tight put the documents on a treadmill where every verification run
+/// invalidated a figure.)
 ///
 /// | arm | ms/step | iters/step | `I` ms | `B/I` |
 /// |---|---:|---:|---:|---:|
@@ -1042,7 +1090,7 @@ fn reduced_contact_does_not_tunnel_through_the_barrier() {
 ///   `PreviousState` needs `9.00` iterations against `Inertial`'s `5.25`, and `I`
 ///   is dominated by per-iteration cost, so the same rung passes under one
 ///   predictor and fails under the other. It fails by only `2–8 %`, which is
-///   close — but it fails in all seven runs.
+///   close — but it fails in all eight runs.
 /// - ★ **The reduced path's iteration PENALTY grows with size, and the
 ///   full-order path's does not.** Same trailing window at both sizes:
 ///
@@ -1063,8 +1111,8 @@ fn reduced_contact_does_not_tunnel_through_the_barrier() {
 ///   window the effect survives and is larger than it looked on the reduced
 ///   side (`1.15 → 1.50`, not `1.06 → 1.50`).
 /// - ★★ **The margin is not a constant of the ladder — it falls with size.**
-///   `I` is `3.62–3.80 ms` at 5 202 and `11.3–12.3` at 18 750 against a fixed
-///   `16.7 ms` budget, so `B/I` goes `4.4–4.6× → 1.36–1.47×`.
+///   `I` is `3.6–3.8 ms` at 5 202 and `11.3–12.3` at 18 750 against a fixed
+///   `16.7 ms` budget, so `B/I` goes `~4.5× → 1.36–1.47×`.
 ///
 ///   ⚠ **Do not fit one exponent to that.** `I`'s two real terms move in
 ///   opposite directions, and the blend (`n^0.89`) is an artefact of where the
@@ -1207,11 +1255,14 @@ fn timing_fixture(a_over_cell: f64) -> SizeRow {
         oracle.arm.measured.iters,
     );
 
-    // ⚠ VACUITY GUARD ON THE WINDOW, not on the ramp. The correctness tests
-    // already check that contact engages SOMEWHERE; what matters here is that it
-    // is engaged in the steps that were TIMED. An early-ramp window would report
-    // `I` for a scene with no active pairs — the exact defect this fixture
-    // exists to retire, reintroduced one level down.
+    // ⚠ WINDOW GUARD — two claims, because the obvious one is nearly vacuous
+    // here. The barrier is live for this ramp's whole length (step 0 is already
+    // at `0.90 d̂`), so "contact is active in the timed steps" can only fail if
+    // the geometry changes radically. What actually has to hold is that the
+    // window sits in the DEEP part, where the patch and therefore the cost are
+    // largest — an early window would understate `I`, which is the same error as
+    // timing a contact-free fixture, just smaller. Both are checked; the depth
+    // one is the one with teeth.
     let deepest = min_signed_distance(
         oracle.x.last().expect("the ramp produced steps"),
         scene.centre_at(n_steps - 1),
@@ -1230,6 +1281,22 @@ fn timing_fixture(a_over_cell: f64) -> SizeRow {
         deepest < scene.d_hat,
         "the timed window has no active contact ({deepest:.3e} ≥ {:.2e})",
         scene.d_hat,
+    );
+    // ★ The guard with teeth: pose depth at the FIRST timed step, measured on
+    // the undeformed mesh so it is a property of the window's placement and not
+    // of the solve. Step 0 reads `+0.90 d̂`; the first timed step reads `-18 d̂`.
+    // `MIN_WINDOW_DEPTH_BANDS` sits between them, so moving the window forward
+    // trips this — which is what makes it a check rather than a restatement.
+    let window_depth = min_signed_distance(&x_rest, scene.centre_at(measure_from)) / scene.d_hat;
+    println!(
+        "RC\tWINDOW DEPTH — pose interference at the first timed step is \
+         {window_depth:.1} d̂ (step 0 is +0.90 d̂); floor {MIN_WINDOW_DEPTH_BANDS:.1} d̂"
+    );
+    assert!(
+        window_depth <= MIN_WINDOW_DEPTH_BANDS,
+        "the timed window is not in the ramp's deep part ({window_depth:.1} d̂ > \
+         {MIN_WINDOW_DEPTH_BANDS:.1} d̂) — contact cost rises with the patch, so \
+         an early window UNDERSTATES `I`, the quantity the verdict turns on",
     );
     assert!(
         full_snap.calls(Phase::Contact) > 0,
