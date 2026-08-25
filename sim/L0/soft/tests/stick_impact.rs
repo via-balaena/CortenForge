@@ -1320,3 +1320,282 @@ fn whether_the_starting_point_or_the_momentum_does_the_work() {
         );
     }
 }
+
+/// The axial profile a guess-error is given, as a function of rest `x/L`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Shape {
+    /// Non-zero on the blade band only — the field a velocity seed imposes, and
+    /// a discontinuous one.
+    Band,
+    /// Linear in `x`: a rigid rotation about the clamp. Smooth, and wrong in
+    /// curvature everywhere.
+    Rotation,
+    /// `3(x/L)² − (x/L)³`, the static deflection curve of a tip-loaded
+    /// cantilever — **the shape the answer itself has**.
+    TipLoadCurve,
+    /// The first free-vibration mode of a clamped-free beam. Smooth, and the
+    /// shape a struck stick actually rings in.
+    FirstMode,
+}
+
+impl Shape {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Band => "band",
+            Self::Rotation => "rotation",
+            Self::TipLoadCurve => "tip-load",
+            Self::FirstMode => "mode-1",
+        }
+    }
+
+    /// Profile value at rest coordinate `s = x/L`, unnormalised.
+    fn at(self, s: f64) -> f64 {
+        match self {
+            Self::Band => f64::from(s > 1.0 - 1e-9),
+            Self::Rotation => s,
+            Self::TipLoadCurve => 3.0 * s * s - s * s * s,
+            Self::FirstMode => {
+                // Clamped-free mode 1: cosh−cos − σ(sinh−sin), βL = 1.8751,
+                // σ = 0.734_096. Standard Euler–Bernoulli eigenfunction.
+                let b = 1.875_104_068_711_961 * s;
+                (b.cosh() - b.cos()) - 0.734_096 * (b.sinh() - b.sin())
+            }
+        }
+    }
+}
+
+/// The fixed-equation rig the shape probe runs on: one `p`, one answer, and a
+/// solver that starts Newton wherever it is handed.
+struct ShapeRig {
+    n_dof: usize,
+    /// Rest `x/L` per vertex, for evaluating a [`Shape`] profile.
+    axial: Vec<f64>,
+    x_rest: Vec<f64>,
+    /// The answer this equation has, found by starting at `p`.
+    x_star: Vec<f64>,
+    /// `p = x₀ + dt·v₀`. The equation depends on **only** this.
+    p: Vec<f64>,
+    theta_value: f64,
+    tol: f64,
+    solver: CpuTet10NHSolver<Tet10Mesh>,
+    star_iters: usize,
+    /// `‖x* − x_rest‖`, the yardstick every error is scaled against.
+    travel: f64,
+}
+
+/// Euclidean distance between two DOF vectors.
+fn dof_distance(a: &[f64], b: &[f64]) -> f64 {
+    a.iter()
+        .zip(b)
+        .map(|(u, w)| (u - w) * (u - w))
+        .sum::<f64>()
+        .sqrt()
+}
+
+impl ShapeRig {
+    fn build() -> Self {
+        let (mu, lambda) = lame_for(e_eff_for(EI_TARGET));
+        let field = MaterialField::uniform(mu, lambda);
+        let (nx, ny, nz) = GRID;
+        let tet4 =
+            HandBuiltTetMesh::cantilever_bilayer_beam(nx, ny, nz, SPAN, WIDTH, DEPTH, &field);
+        let mesh = Tet10Mesh::from_tet4(&tet4);
+        let n_dof = 3 * mesh.n_vertices();
+        let axial: Vec<f64> = mesh.positions().iter().map(|q| q.x / SPAN).collect();
+
+        let load = slapshot_load(EI_TARGET);
+        let (x_rest, _rest_z, bc, mut cfg) = rig(&mesh, load, rho_eff(), false, TOL_REL);
+        cfg.dt = VR_DT;
+        let loaded = bc.loaded_vertices.clone();
+        let theta_value = load / loaded.len() as f64;
+
+        // `p` for a strike known to converge, so there is an answer to aim at.
+        let seed_tip = 0.2 * one_frame_response(load);
+        let mut p = x_rest.clone();
+        for &(vertex, _) in &loaded {
+            p[3 * vertex as usize + 2] += seed_tip;
+        }
+
+        let mut cfg_a = cfg;
+        cfg_a.initial_guess = InitialGuess::Inertial;
+        let solver_a: CpuTet10NHSolver<Tet10Mesh> = CpuNewtonSolver::new(
+            Tet10,
+            Tet10Mesh::from_tet4(&tet4),
+            NullContact,
+            cfg_a,
+            bc.clone(),
+        );
+        let v_star: Vec<f64> = p
+            .iter()
+            .zip(&x_rest)
+            .map(|(pi, xi)| (pi - xi) / VR_DT)
+            .collect();
+        let star = solver_a
+            .try_replay_step(
+                &Tensor::from_slice(&x_rest, &[n_dof]),
+                &Tensor::from_slice(&v_star, &[n_dof]),
+                &Tensor::from_slice(&[theta_value], &[1]),
+                VR_DT,
+            )
+            .expect("the reference solve must converge or there is no answer to aim at");
+
+        let mut cfg_b = cfg;
+        cfg_b.initial_guess = InitialGuess::PreviousState;
+        let solver: CpuTet10NHSolver<Tet10Mesh> =
+            CpuNewtonSolver::new(Tet10, Tet10Mesh::from_tet4(&tet4), NullContact, cfg_b, bc);
+
+        let travel = dof_distance(&star.x_final, &x_rest);
+        Self {
+            n_dof,
+            axial,
+            x_rest,
+            x_star: star.x_final,
+            p,
+            theta_value,
+            tol: cfg_b.tol,
+            solver,
+            star_iters: star.iter_count,
+            travel,
+        }
+    }
+
+    /// Solve the fixed equation starting from `start`.
+    ///
+    /// ★ `v_prev` is chosen as `(p − start)/dt` so that `x_prev + dt·v_prev = p`
+    /// no matter where `start` is — the equation is untouched, only Newton's
+    /// starting point moves.
+    fn run_from(&self, start: &[f64]) -> (bool, usize, Vec<f64>) {
+        let v: Vec<f64> = self
+            .p
+            .iter()
+            .zip(start)
+            .map(|(pi, si)| (pi - si) / VR_DT)
+            .collect();
+        let step = self.solver.try_replay_step(
+            &Tensor::from_slice(start, &[self.n_dof]),
+            &Tensor::from_slice(&v, &[self.n_dof]),
+            &Tensor::from_slice(&[self.theta_value], &[1]),
+            VR_DT,
+        );
+        let (x_final, iters, failure) = outcome_of(step, self.tol, &self.x_rest);
+        (failure.is_none(), iters, x_final)
+    }
+
+    /// A start displaced from `x*` by `err_frac · travel`, along `shape`.
+    ///
+    /// Returns the start and the cosine between the error and the answer's own
+    /// displacement from rest — "how much does this error look like the thing
+    /// Newton is trying to find", with magnitude divided out.
+    fn start_along(&self, shape: Shape, err_frac: f64) -> (Vec<f64>, f64) {
+        let mut dir = vec![0.0; self.n_dof];
+        for (v, &s) in self.axial.iter().enumerate() {
+            dir[3 * v + 2] = shape.at(s);
+        }
+        let mag = dir.iter().map(|d| d * d).sum::<f64>().sqrt();
+        let scale = err_frac * self.travel / mag;
+        let start: Vec<f64> = self
+            .x_star
+            .iter()
+            .zip(&dir)
+            .map(|(xs, d)| d.mul_add(scale, *xs))
+            .collect();
+        let (mut dot, mut na, mut nb) = (0.0, 0.0, 0.0);
+        for ((si, xs), xr) in start.iter().zip(&self.x_star).zip(&self.x_rest) {
+            let (a, b) = (si - xs, xs - xr);
+            dot += a * b;
+            na += a * a;
+            nb += b * b;
+        }
+        (start, dot / (na.sqrt() * nb.sqrt()))
+    }
+}
+
+/// ★★★ **Same distance from the answer, different DIRECTION. Does the shape of
+/// the error set the iteration count?**
+///
+/// The previous diagnostic left a sharp anomaly: a guess sitting at `19 %` of the
+/// answer converged in `6` iterations while one at `88 %` took `51`, and the
+/// full-vector distance agreed the second was *closer*. So distance is not what
+/// Newton is paying for. The hypothesis is **shape** — a velocity seed puts its
+/// error on the blade band alone, a discontinuous field, so a larger seed buys a
+/// righter tip on a more wrongly-shaped guess.
+///
+/// ★★ **The design this rests on.** A backward-Euler step solves
+/// `M(x − p)/dt² + f_int(x) = F` with `p = x₀ + dt·v₀`, so the equation — and
+/// therefore the answer — **depends only on `p`**. Fixing `p` and choosing `x₀'`
+/// freely with `v₀' = (p − x₀')/dt` puts Newton's starting point anywhere while
+/// leaving the problem untouched. `InitialGuess::Inertial` cannot do this: it
+/// always starts *at* `p`, the very point that defines the equation, so under
+/// `Inertial` the guess and the problem are one knob. That is why the earlier
+/// seed sweep could not separate them.
+///
+/// Two controls make the reading safe:
+///
+/// - **`err = 0` must converge immediately.** Needing real iterations from `x*`
+///   would mean `x*` is not the answer and every distance is measured from the
+///   wrong point.
+/// - **every start must land on the same `x*`.** They share one equation; a
+///   disagreement means `x_prev` does more than feed the inertia term and the
+///   whole construction is invalid.
+#[test]
+#[ignore = "diagnostic — run explicitly"]
+fn whether_the_shape_of_the_guess_error_sets_the_iteration_count() {
+    let r = ShapeRig::build();
+    println!(
+        "\n=== SAME equation (p fixed), SAME |error|, different error SHAPE ===\n  \
+         load {:.1} N, answer reached from p in {} iters, |x* − x_rest| = {:.3} mm",
+        slapshot_load(EI_TARGET),
+        r.star_iters,
+        1e3 * r.travel
+    );
+
+    let (ok0, iters0, _) = r.run_from(&r.x_star);
+    println!(
+        "  control: starting AT x* -> {iters0} iters, {}",
+        if ok0 { "ok" } else { "FAILED" }
+    );
+    assert!(
+        ok0 && iters0 <= 1,
+        "starting at x* took {iters0} iterations, so x* is not the answer and every \
+         distance below is measured from the wrong point"
+    );
+
+    println!(
+        "{:>10} {:>8} {:>9} {:>8} {:>10} {:>9}",
+        "shape", "|err|", "cos", "iters", "answer err", "outcome"
+    );
+    let mut converged = 0usize;
+    for err_frac in [0.25, 0.50, 1.00, 2.00] {
+        for shape in [
+            Shape::Band,
+            Shape::Rotation,
+            Shape::TipLoadCurve,
+            Shape::FirstMode,
+        ] {
+            let (start, cos) = r.start_along(shape, err_frac);
+            let (ok, iters, x_final) = r.run_from(&start);
+            let answer_err = dof_distance(&x_final, &r.x_star) / r.travel;
+            println!(
+                "{:>10} {err_frac:>8.2} {cos:>9.3} {iters:>8} {answer_err:>10.2e} {:>9}",
+                shape.label(),
+                if ok { "ok" } else { "FAILED" }
+            );
+            if ok {
+                converged += 1;
+                assert!(
+                    answer_err < 1e-3,
+                    "{} at |err| {err_frac} converged to a DIFFERENT answer \
+                     ({answer_err:.2e} away). `x_prev` does more than feed the inertia \
+                     term, so holding `p` fixed does not hold the equation fixed and \
+                     this construction is invalid",
+                    shape.label()
+                );
+            }
+        }
+    }
+    assert!(
+        converged >= 4,
+        "only {converged} of 16 starts converged — too few to compare shapes against \
+         each other"
+    );
+}
