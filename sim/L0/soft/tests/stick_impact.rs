@@ -75,18 +75,32 @@
 //! # Why the strike REPEATS, and why that is a `p99` requirement
 //!
 //! VR punishes a dropped frame with nausea, so the requirement is `p99`, not
-//! `p50`. A `p99` can only see the impact frames if impacts are at least `1 %`
-//! of the sample — and backward Euler at `dt = 1/90` is strongly dissipative on
-//! a `13.7 Hz` first mode (`~6.6 steps per period`), so a single strike at frame
-//! 0 rings down and leaves ~290 easy frames. Its `p99` would land on an easy
-//! frame **by construction** and report a number that means nothing.
+//! `p50`. A `p99` reads the impact regime only if impacts are a large enough
+//! share of the sample — so the stick is struck every [`STRIKE_PERIOD`] frames
+//! across [`RUN_FRAMES`]: `10` strikes, `3` per second of sim time. That is at
+//! the aggressive end of a real possession (a game's stick-puck contacts run
+//! nearer `1–2 Hz`), which is the conservative direction for a claim that
+//! something **fits** a budget.
 //!
-//! So the stick is struck every [`STRIKE_PERIOD`] frames across
-//! [`RUN_FRAMES`] — `10` strikes, `3` per second of sim time. That is at the
-//! aggressive end of a real possession (a game's stick-puck contacts run nearer
-//! `1–2 Hz`), which is the conservative direction for a claim that something
-//! **fits** a budget. `max` is reported beside `p99`, because for VR one dropped
-//! frame is the failure.
+//! ⚠ **What that buys is measured, not argued** —
+//! [`striking_once_leaves_the_p99_blind_to_the_impact`]. An earlier draft of
+//! these docs claimed a single strike would make the `p99` "meaningless"; it does
+//! not. Backward Euler at `dt = 1/90` is strongly dissipative on a `13.7 Hz`
+//! first mode (`~6.6 steps per period`), but the ring-down still leaves several
+//! elevated frames, so a one-strike `p99` lands **on the ring-down**, at `43 %`
+//! of the impact's iteration count. It understates by `2.4×` rather than
+//! reporting nothing. Ten strikes put the `p99` exactly on the worst frame
+//! (`37` of `37` iterations).
+//!
+//! ⚠⚠ **And `max` is not usable as a statistic here.** A `max` over 300 frames is
+//! a single sample, and on this box the worst frame read `39.92 ms` on one run
+//! and `58.29 ms` on the next — a `1.46×` swing from one OS hiccup. Newton
+//! iteration counts are deterministic for a given trajectory and do not move at
+//! all, so every claim in this file is asserted on **iterations**, with wall
+//! times printed beside them and gated only where the threshold is an order of
+//! magnitude clear. ★ That is a finding in its own right: **VR cares about the
+//! worst frame, and the worst frame is the quantity this box measures least
+//! reliably.**
 //!
 //! # The budget this is scored against
 //!
@@ -238,6 +252,32 @@ impl Run {
     const fn completed(&self) -> bool {
         self.ended_early.is_none()
     }
+
+    /// Frames whose Newton iteration count lies in `band`, as
+    /// `(iterations, ms per iteration)` pairs.
+    ///
+    /// ⚠⚠ The ratio is `ms/iters` **per frame**, not `median(ms)/median(iters)`.
+    /// The two diverge as soon as iteration counts spread — which is exactly the
+    /// regime this file measures, `1` iteration in the quiet frames against `37`
+    /// in the impact frames — and the second form silently divides two order
+    /// statistics that need not come from the same frame at all.
+    /// `stick_flex.rs`'s `Cost::ms_per_iter` carries the same warning; here it
+    /// would be live.
+    ///
+    /// ★★ **The iteration count is returned alongside the cost, from this one
+    /// filter, deliberately.** A caller that wants to check its two bands really
+    /// are far apart must read that from the *same* rows it took the costs from.
+    /// Computing it from a second, parallel filter is how a guard ends up unable
+    /// to see the band it is guarding — which is what mutation testing found
+    /// here, in the version that did exactly that.
+    fn frames_in(&self, band: std::ops::RangeInclusive<usize>) -> Vec<(usize, f64)> {
+        self.iters
+            .iter()
+            .zip(&self.ms)
+            .filter(|&(&it, _)| band.contains(&it) && it > 0)
+            .map(|(&it, &ms)| (it, ms / it as f64))
+            .collect()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +300,20 @@ impl Run {
 /// is built to avoid. → `stickrig::rig`, which derives `tol` from the load it is
 /// handed.
 fn run_cell(strike: Strike, magnitude: f64, grid: (usize, usize, usize)) -> Run {
+    run_cell_every(strike, magnitude, grid, STRIKE_PERIOD)
+}
+
+/// [`run_cell`], with the strike interval exposed.
+///
+/// ★ Exposed because [`STRIKE_PERIOD`] is a load-bearing design choice and this
+/// file asserts what it buys rather than arguing for it in prose —
+/// see [`striking_once_understates_the_p99`].
+fn run_cell_every(
+    strike: Strike,
+    magnitude: f64,
+    grid: (usize, usize, usize),
+    strike_period: usize,
+) -> Run {
     let (nx, ny, nz) = grid;
     let (mu, lambda) = lame_for(e_eff_for(EI_TARGET));
     let field = MaterialField::uniform(mu, lambda);
@@ -293,7 +347,7 @@ fn run_cell(strike: Strike, magnitude: f64, grid: (usize, usize, usize)) -> Run 
     let mut standing_force = 0.0f64;
 
     for k in 0..RUN_FRAMES {
-        let striking = k % STRIKE_PERIOD == 0;
+        let striking = k % strike_period == 0;
         let theta_value = match strike {
             Strike::ForceHeld => {
                 if striking {
@@ -346,10 +400,15 @@ fn report_row(strike: Strike, magnitude: f64, run: &Run) {
         // there is no per-iteration cost to report. Printing the `inf` that
         // division gives reads as a defect; `n/a` reads as what it is.
         let it99 = percentile(&it_f, 0.99);
-        let per_iter = if it99 > 0.0 {
-            format!("{:.3}", percentile(&ms_f, 0.99) / it99)
-        } else {
+        let per_frame: Vec<f64> = run
+            .frames_in(1..=usize::MAX)
+            .into_iter()
+            .map(|(_, r)| r)
+            .collect();
+        let per_iter = if per_frame.is_empty() {
             "n/a".to_owned()
+        } else {
+            format!("{:.3}", percentile(&per_frame, 0.5))
         };
         println!(
             "{:>13} {magnitude:>7.3} {:>7} {:>10.2e} {:>8.2} {:>8.2} {:>8.2} {:>7.1} {:>7.1} \
@@ -403,7 +462,7 @@ fn report_header() {
         "p50 it",
         "p99 it",
         "max it",
-        "ms/it99",
+        "ms/it",
         "outcome"
     );
 }
@@ -614,17 +673,28 @@ fn a_momentum_strike_converges_deeper_than_any_force_strike_that_converged() {
 /// cells (or there is no spike to attribute), while the cost *per Newton
 /// iteration* must stay flat (or the attribution is wrong).
 ///
+/// ★★ **The flatness is tested between two POPULATIONS of frames, not between
+/// two order statistics.** Every run here contains cheap frames (one Newton
+/// iteration, the stick coasting) and expensive ones (tens of iterations, the
+/// stick being struck). If cost were linear in iterations, those two populations
+/// have the *same* `ms` per iteration; if some fixed per-frame overhead or some
+/// super-linear term were driving the spike instead, they do not. Dividing a
+/// `p99` of `ms` by a `p99` of `iters` — the first form this gate was written in
+/// — cannot see that, because the two order statistics need not come from the
+/// same frame.
+///
 /// ★ It doubles as the control on this file's own instrument. The solver prints
 /// a line to stdout whenever the `faer` LU fallback fires, and that printing
-/// happens **inside** the region `one_frame` times. If it were inflating the
-/// impact frames, `ms` per iteration would be higher on the expensive cells than
-/// on the cheap ones. It is not.
+/// happens **inside** the region `one_frame` times — on the impact frames only.
+/// If it were inflating them, the high-iteration population would show a higher
+/// cost per iteration than the low-iteration one. It does not.
 #[test]
 #[cfg_attr(debug_assertions, ignore = "release-only measurement")]
 fn the_frame_cost_spike_is_iteration_count_not_cost_per_iteration() {
     report_header();
     let mut ms99 = Vec::new();
-    let mut per_iter = Vec::new();
+    let mut cheap: Vec<(usize, f64)> = Vec::new();
+    let mut costly: Vec<(usize, f64)> = Vec::new();
     for magnitude in [0.05, 0.50, 2.00] {
         let run = run_cell(Strike::VelocityImpulse, magnitude, GRID);
         report_row(Strike::VelocityImpulse, magnitude, &run);
@@ -634,25 +704,50 @@ fn the_frame_cost_spike_is_iteration_count_not_cost_per_iteration() {
              sample to attribute",
             run.ended_early
         );
-        let it_f: Vec<f64> = run.iters.iter().map(|&i| i as f64).collect();
-        let m = percentile(&run.ms, 0.99);
-        ms99.push(m);
-        per_iter.push(m / percentile(&it_f, 0.99));
+        ms99.push(percentile(&run.ms, 0.99));
+        cheap.extend(run.frames_in(1..=2));
+        costly.extend(run.frames_in(10..=usize::MAX));
     }
 
     let (ms_lo, ms_hi) = (
         ms99.iter().copied().fold(f64::MAX, f64::min),
         ms99.iter().copied().fold(0.0f64, f64::max),
     );
-    let (pi_lo, pi_hi) = (
-        per_iter.iter().copied().fold(f64::MAX, f64::min),
-        per_iter.iter().copied().fold(0.0f64, f64::max),
+    // ⚠ Without both populations the comparison is vacuous, and a run that
+    // happened to contain only cheap frames would pass it silently.
+    assert!(
+        !cheap.is_empty() && !costly.is_empty(),
+        "the sample holds {} frames at 1-2 Newton iterations and {} at 10+. Both \
+         populations are needed or there is nothing to compare",
+        cheap.len(),
+        costly.len()
     );
+    // ⚠⚠ And without THIS the gate passes vacuously if the two bands ever
+    // collapse onto the same frames: identical populations are trivially `1.00x`
+    // apart. The separation is read off the very rows the costs came from — an
+    // earlier version computed it from a parallel filter and could not see a
+    // mutated band at all.
+    let mean = |rows: &[(usize, f64)]| {
+        rows.iter().map(|&(it, _)| it).sum::<usize>() as f64 / rows.len() as f64
+    };
+    let (cheap_mean, costly_mean) = (mean(&cheap), mean(&costly));
+    assert!(
+        costly_mean > 5.0 * cheap_mean,
+        "the two populations average {costly_mean:.1} and {cheap_mean:.1} Newton \
+         iterations. They are not far enough apart for their agreement to mean \
+         anything about how cost scales with iteration count"
+    );
+    let cheap_rate = percentile(&cheap.iter().map(|&(_, r)| r).collect::<Vec<_>>(), 0.5);
+    let costly_rate = percentile(&costly.iter().map(|&(_, r)| r).collect::<Vec<_>>(), 0.5);
+    let drift = (costly_rate / cheap_rate).max(cheap_rate / costly_rate);
     println!(
-        "  p99 frame cost spans {:.1}x ({ms_lo:.2}-{ms_hi:.2} ms); cost per iteration \
-         spans {:.2}x ({pi_lo:.3}-{pi_hi:.3} ms)",
+        "  p99 frame cost spans {:.1}x ({ms_lo:.2}-{ms_hi:.2} ms). Cost per Newton \
+         iteration: {cheap_rate:.3} ms on {} frames averaging {cheap_mean:.1} \
+         iterations, {costly_rate:.3} ms on {} averaging {costly_mean:.1} — \
+         {drift:.2}x apart",
         ms_hi / ms_lo,
-        pi_hi / pi_lo
+        cheap.len(),
+        costly.len(),
     );
     assert!(
         ms_hi / ms_lo > 4.0,
@@ -661,11 +756,11 @@ fn the_frame_cost_spike_is_iteration_count_not_cost_per_iteration() {
         ms_hi / ms_lo
     );
     assert!(
-        pi_hi / pi_lo < 1.5,
-        "cost per Newton iteration spanned {:.2}x ({pi_lo:.3}-{pi_hi:.3} ms). The \
-         spike is then NOT purely iteration count, and the claim that reduction \
-         cannot touch it does not follow",
-        pi_hi / pi_lo
+        drift < 1.5,
+        "cost per Newton iteration differs {drift:.2}x between frames taking 1-2 \
+         iterations ({cheap_rate:.3} ms) and frames taking 10+ ({costly_rate:.3} \
+         ms). The spike is then NOT purely iteration count, and the claim that \
+         reduction cannot touch it does not follow"
     );
 }
 
@@ -767,5 +862,99 @@ fn an_unstruck_run_is_flat_and_a_struck_one_is_not() {
         "a struck run's p99 ({struck99:.2} ms) is not 5x an unstruck one's \
          ({quiet99:.2} ms). The p99 this file reports is then background variance, \
          not the impact"
+    );
+}
+
+/// **What repeated striking actually buys — measured, because the first version
+/// of this file only asserted it.**
+///
+/// Mutation testing set [`STRIKE_PERIOD`] past [`RUN_FRAMES`] — one strike per
+/// run instead of ten — and every other gate in this file kept passing. So the
+/// design choice was undefended, and the prose defending it was untested.
+///
+/// What the interval changes is **which frame the `p99` lands on**:
+///
+/// ```text
+///   10 strikes   p99 = 37 iters, worst = 37 iters   ratio 1.00  <- p99 IS an impact frame
+///    1 strike    p99 = 16 iters, worst = 37 iters   ratio 0.43  <- p99 is a RING-DOWN frame
+/// ```
+///
+/// ★★ **The worst frame is the same in both runs, which is the control that
+/// makes the rest readable** — the strike is identical and only the sampling of
+/// it differs. Without it, a higher `p99` under repeated striking could equally
+/// mean the stick was being driven harder.
+///
+/// ⚠⚠ **Everything here is asserted on Newton ITERATIONS, not milliseconds, and
+/// that is not a stylistic choice.** The first version of this gate controlled
+/// on `max` wall time and failed on its own control: the worst frame read
+/// `39.92 ms` on one run and `58.29 ms` on the next — a `1.46x` swing, because a
+/// `max` over 300 frames is a **single sample** and one OS hiccup owns it.
+/// Iteration counts are deterministic for a given trajectory, so they carry the
+/// claim; the wall times are printed beside them as the human-facing number and
+/// asserted on nowhere.
+///
+/// ★ That is worth carrying out of this file: **VR cares about the worst frame,
+/// and the worst frame is the statistic this box measures least reliably.** A
+/// `p99` over a sample designed to contain impacts is the strongest honest
+/// upper statistic available here.
+///
+/// ⚠ The `p50` also roughly doubles (`1.07 -> 2.16 ms`), a real and separate
+/// effect: struck three times a second the stick is never fully quiet, so the
+/// median frame is doing work too. That is duty cycle, not tail sampling, and it
+/// is reported rather than folded into the claim.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "release-only measurement")]
+fn striking_once_leaves_the_p99_blind_to_the_impact() {
+    let many = run_cell_every(Strike::VelocityImpulse, 1.0, GRID, STRIKE_PERIOD);
+    let once = run_cell_every(Strike::VelocityImpulse, 1.0, GRID, RUN_FRAMES * 2);
+    report_header();
+    report_row(Strike::VelocityImpulse, 1.0, &many);
+    report_row(Strike::VelocityImpulse, 1.0, &once);
+    assert!(
+        many.completed() && once.completed(),
+        "both runs must complete: {:?} / {:?}",
+        many.ended_early,
+        once.ended_early
+    );
+
+    let it99 = |r: &Run| percentile(&r.iters.iter().map(|&i| i as f64).collect::<Vec<_>>(), 0.99);
+    let worst = |r: &Run| r.iters.iter().copied().max().unwrap_or(0) as f64;
+    let (many99, once99) = (it99(&many), it99(&once));
+    let (many_worst, once_worst) = (worst(&many), worst(&once));
+    println!(
+        "  {} strikes: p99 {many99:.0} of {many_worst:.0} iters = {:.2} | 1 strike: \
+         p99 {once99:.0} of {once_worst:.0} = {:.2}. Wall time p50 {:.2} -> {:.2} ms \
+         (duty cycle), p99 {:.2} -> {:.2} ms",
+        RUN_FRAMES / STRIKE_PERIOD,
+        many99 / many_worst,
+        once99 / once_worst,
+        percentile(&once.ms, 0.5),
+        percentile(&many.ms, 0.5),
+        percentile(&once.ms, 0.99),
+        percentile(&many.ms, 0.99),
+    );
+
+    // ★ The control first: same strike, so the worst frame must take the same
+    // number of iterations. If it does not, the two runs are different
+    // experiments and nothing below compares.
+    assert!(
+        (many_worst - once_worst).abs() < 1.0,
+        "the worst frame took {many_worst:.0} Newton iterations under repeated \
+         striking and {once_worst:.0} under one. The two runs are not delivering \
+         the same strike, so the p99 comparison below is confounded"
+    );
+    assert!(
+        many99 > 0.9 * many_worst,
+        "with {} strikes the p99 ({many99:.0} iterations) is not within 10 % of the \
+         worst frame ({many_worst:.0}), so it is not reading the impact regime and \
+         STRIKE_PERIOD is not doing the job this file claims for it",
+        RUN_FRAMES / STRIKE_PERIOD
+    );
+    assert!(
+        once99 < 0.6 * once_worst,
+        "with ONE strike the p99 ({once99:.0} iterations) already reaches {:.0} % of \
+         the worst frame ({once_worst:.0}). Repeated striking then buys nothing, and \
+         the module docs — and STRIKE_PERIOD itself — should say so",
+        100.0 * once99 / once_worst
     );
 }
