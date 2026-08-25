@@ -40,40 +40,44 @@ use crate::solver::lm::LmConfig;
 /// **Read recon §2g before proposing any variant of that idea.**
 ///
 /// ⛔ **A second rescue has been built, measured and killed: mesh smoothing of
-/// the predicted displacement.** `tests/stick_impact.rs` established that on an
+/// the predicted displacement.** `tests/stick_impact.rs` establishes that on an
 /// impact frame the *shape* of the guess error, not its distance from the root,
-/// sets the iteration count — a band-localised error costs **47×** a smooth one
-/// at matched distance — and that replacing `Δt·v_prev` with a smooth
-/// tip-matched profile cuts `p99` frame cost **6.6×** (`38.5 → 5.8 ms`) with the
-/// trajectory unchanged to `1.8e-9`. That result is real, and it is **beam
-/// specific**: the profile that delivers it is a linear axial ramp, which knows
-/// the fixture is a cantilever.
+/// sets the iteration count — a band-localised error costs **`46.8×`** a smooth
+/// one at matched distance (`whether_the_shape_of_the_guess_error_sets_the_
+/// iteration_count`, which computes and gates that ratio) — and that replacing
+/// `Δt·v_prev` with a smooth tip-matched profile cuts `p99` frame cost by
+/// **`~6×`** (`whether_a_smoothed_start_moves_the_p99_end_to_end`). That result
+/// is real, and it is **beam specific**: the profile delivering it is a linear
+/// axial ramp, which knows the fixture is a cantilever.
 ///
 /// Two mesh-general forms were implemented as a `SmoothedInertial` variant and
-/// both lost to plain [`Self::Inertial`] on the same fixture:
+/// both lost to plain [`Self::Inertial`] on the same fixture: **graph-Laplacian
+/// diffusion with a peak rescale**, which decays the field *away* from the
+/// impulse instead of ramping *toward* it and inverted elements at iteration 0;
+/// and **harmonic extension from the driven nodes**, which was valid and
+/// trajectory-exact and still slower than doing nothing.
 ///
-/// - **Graph-Laplacian diffusion + peak rescale** — diffusion decays the field
-///   *away* from the impulse instead of ramping *toward* it, and restoring the
-///   peak then amplifies the very gradient the smoothing was for. It inverted
-///   elements at iteration 0 at every setting.
-/// - **Harmonic extension from the driven nodes** (hold the impulse's support,
-///   relax the rest) — valid, trajectory-exact, and still `0.87×` at best, i.e.
-///   slower than doing nothing. Its `p99` iteration count ran `51-123` against
-///   `Inertial`'s `37`.
+/// ⚠⚠ **Those two arms are NOT in the tree and were never committed**, so the
+/// figures they produced are unrecoverable and are deliberately not quoted here.
+/// What is quoted above is what `tests/stick_impact.rs` can still reproduce on
+/// demand. Treat the two failures as directional evidence, not as measurements
+/// you can check — and if you want numbers, re-run the experiment rather than
+/// trusting a doc comment about code nobody can read.
 ///
-/// ★ Two things were learned and are worth more than the variant would have
-/// been. **A midside node is not an ordinary graph vertex**: neighbour-averaging
-/// one walks it off the edge it bisects and folds the element, which is why the
-/// first form inverted on Tet10 and never on Tet4. And **"smooth" is not the
-/// property that matters** — a harmonic extension of the predicted field is
-/// smooth and still loses, so the win came from imposing a specific *low-strain
-/// global shape*, which graph smoothing does not produce.
+/// ★ Two findings from that attempt DO survive, because they were established by
+/// difference rather than by the numbers:
 ///
-/// ⇒ The live candidate is therefore **modal projection** — project `Δt·v_prev`
-/// onto the first few elastic modes, the general form of "a low-strain global
-/// shape" — and this crate already has the basis machinery for it (`reduced`).
-/// **Do not re-attempt a local/graph smoother without a reason those two
-/// measurements do not already cover.**
+/// - **A midside node is not an ordinary graph vertex.** Neighbour-averaging one
+///   walks it off the edge it bisects and folds the quadratic element. The same
+///   code never failed on Tet4, which has no midsides.
+/// - **"Smooth" is not the property that matters.** A harmonic extension of the
+///   predicted field is smooth and still lost to the ramp on the same equation,
+///   so the win comes from imposing a specific *low-strain global shape*, which
+///   graph smoothing does not produce.
+///
+/// ⇒ The live candidate is **modal projection** — project `Δt·v_prev` onto the
+/// first few elastic modes, the general form of "a low-strain global shape" —
+/// and this crate already has the basis machinery for it (`reduced`).
 ///
 /// ⇒ [`Self::Inertial`] is the best-measured choice on five of the six cells and
 /// never failed on any — **but it is NOT the default, and deliberately so**: on a

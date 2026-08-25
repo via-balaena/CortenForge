@@ -5,9 +5,17 @@
 //! convincing stick at `1.14 ms/frame`, no reduction needed — and then turned up
 //! something sharper on the way past:
 //!
-//! > A **step load does not converge at any magnitude above ~2 % of a
-//! > slapshot**, for either element, at any `dt`, under either predictor.
-//! > `r_norm` pins at a fixed ~25 % of the load and the solve caps out.
+//! > A step load's residual pins at a fixed ~25 % of the load and the solve
+//! > caps out — for either element, at any `dt`, under either predictor — and
+//! > **even 2 % of a slapshot needs 279 iterations**.
+//!
+//! ⚠ Quoted carefully, because an earlier version of this file did not. It read
+//! that as "a step load does not converge above ~2 % of a slapshot", which is a
+//! different and stronger claim: at 2 % it *does* converge, expensively. On this
+//! rig the held-force wall sits between **5 % and 10 %** of the slapshot load —
+//! `a_held_force_strike_fails_above_the_wall_and_completes_below_it` hard-codes
+//! `0.05` as its must-complete arm, so the gate and the misquote contradicted
+//! each other.
 //!
 //! A puck strike *is* an abrupt load, so on its face that reads as "VR hockey is
 //! not reachable", and it reads that way on the side of the budget no rung of
@@ -45,6 +53,8 @@
 //! | arm | what it does | why it is here |
 //! |---|---|---|
 //! | `ForceHeld` | tip force applied at the strike frame and **held** | the discriminator's posing — the **positive control** that this rig can still see the known wall |
+//! | `ForcePulse` | the same force, for **one frame**, then released | separates "abrupt" from "sustained": it is a momentum transfer, but delivered as a force |
+//! | `VelocityImpulse` | **no external force at all**; a velocity jump on the blade band | what a puck actually does |
 //!
 //! ⚠⚠ **`ForceHeld`'s `p99` is not comparable to the other two arms', by
 //! construction.** Because the force is already standing when the second strike
@@ -54,8 +64,6 @@
 //! producer reads `p99 = 21.9 ms` against `max = 366 ms` on the same row. Only
 //! `ForceHeld`'s **convergence verdict** and its **`max`** are quotable; nothing
 //! in this file asserts on its `p99`.
-//! | `ForcePulse` | the same force, for **one frame**, then released | separates "abrupt" from "sustained": it is a momentum transfer, but delivered as a force |
-//! | `VelocityImpulse` | **no external force at all**; a velocity jump on the blade band | what a puck actually does |
 //!
 //! ⚠⚠ **The arms are not momentum-matched analytically, and that is deliberate.**
 //! Matching `F·dt` against `m·Δv` needs the lumped mass of the loaded band,
@@ -88,8 +96,10 @@
 //! not. Backward Euler at `dt = 1/90` is strongly dissipative on a `13.7 Hz`
 //! first mode (`~6.6 steps per period`), but the ring-down still leaves several
 //! elevated frames, so a one-strike `p99` lands **on the ring-down**, at `43 %`
-//! of the impact's iteration count. It understates by `2.4×` rather than
-//! reporting nothing. Ten strikes put the `p99` exactly on the worst frame
+//! of the impact's iteration count — it understates by `2.3×` rather than
+//! reporting nothing. (An earlier draft said `2.4×`, which is the *wall-time*
+//! dilution; sitting beside the `43 %` iteration ratio it read as that ratio's
+//! reciprocal, which is `2.3`.) Ten strikes put the `p99` exactly on the worst frame
 //! (`37` of `37` iterations).
 //!
 //! ⚠⚠ **And `max` is not usable as a statistic here.** A `max` over 300 frames is
@@ -106,8 +116,14 @@
 //!
 //! The target is **PCVR** (stated 2026-08-25), i.e. `90 Hz = 11.1 ms` per frame
 //! with render, AI, audio and gameplay taking their share. Physics gets
-//! `~2 ms`. The 360-DOF stick sits at `0.57×` of that on a `p50` — the whole
-//! point of this file is that `p50` was never the binding number.
+//! `~2 ms`.
+//!
+//! ⚠ **The struck stick busts that on BOTH statistics** — `p50 ~1.1×`,
+//! `p99 ~20×`. An earlier draft said the stick "sits at `0.57×` on a `p50`",
+//! which is `stick_flex.rs`'s **60 Hz smooth-ramp** figure (`1.14 ms` against
+//! `2 ms`): a different regime, at a different `dt`, from a different fixture.
+//! Struck at 90 Hz this file measures `~2.2 ms`. The finding is that `p50` was
+//! never the *binding* number, not that it fits.
 //!
 //! # ⛔ Deliberately not measured here
 //!
@@ -327,7 +343,7 @@ fn run_cell(strike: Strike, magnitude: f64, grid: (usize, usize, usize)) -> Run 
 ///
 /// ★ Exposed because [`STRIKE_PERIOD`] is a load-bearing design choice and this
 /// file asserts what it buys rather than arguing for it in prose —
-/// see [`striking_once_understates_the_p99`].
+/// see [`striking_once_leaves_the_p99_blind_to_the_impact`].
 fn run_cell_every(
     strike: Strike,
     magnitude: f64,
@@ -524,9 +540,10 @@ fn report_header() {
 
 /// Magnitudes swept, as a fraction of each arm's reference drive.
 ///
-/// Spans four decades of energy either side of the `~2 %` where the held-force
-/// wall was found, and **reaches `2.0×`** because the impulse arm's reference
-/// velocity corresponds to only a firm pass, not a slapshot — see
+/// Brackets the held-force wall — measured on this rig between `5 %` and `10 %`
+/// of the slapshot load — by an order of magnitude below and nearly two above,
+/// and **reaches `8.0×`** because the impulse arm's reference velocity
+/// corresponds to only a firm pass, not a slapshot — see
 /// [`slapshot_equivalent_tip_velocity`].
 const MAGNITUDES: [f64; 10] = [0.01, 0.02, 0.05, 0.10, 0.25, 0.50, 1.00, 2.00, 4.00, 8.00];
 
@@ -1249,8 +1266,10 @@ fn probe_step(load: f64, seed_tip_m: f64, guess_mode: InitialGuess) -> StepProbe
 /// momentum to the *problem*, not just to the starting point, and
 /// `whether_the_force_wall_is_the_load_path_or_the_initial_guess` was wrong to
 /// describe it as holding the load fixed. The answer moves with the seed, which
-/// this ladder shows directly: at `5.4 N` the converged tip runs `4.84 → 6.07 mm`
-/// **monotonically** across `seed 0.1 → 2.0`.
+/// this ladder shows directly: at `5.4 N` the converged tip runs `4.90 → 6.07 mm`
+/// **monotonically** across the swept seeds, `0.2 → 2.0`. (An earlier draft said
+/// `4.84` at `seed 0.1` — a value from a finer grid this loop no longer walks;
+/// it was also inconsistent with the `+23.8 %` the same code prints.)
 ///
 /// ⇒ What that experiment really established is narrower and still useful: **a
 /// BE step from REST under a suddenly applied load is the hard case, and any
@@ -1592,6 +1611,13 @@ impl ShapeRig {
     }
 }
 
+/// Guess-error magnitudes swept, as a fraction of `‖x* − x_rest‖`.
+const ERR_FRACTIONS: [f64; 4] = [0.25, 0.50, 1.00, 2.00];
+
+/// The rung the published shape ratio is quoted at — the smallest, where the
+/// band/smooth gap is widest and least confounded by the error's own amplitude.
+const RATIO_ERR_FRAC: f64 = ERR_FRACTIONS[0];
+
 /// ★★★ **Same distance from the answer, different DIRECTION. Does the shape of
 /// the error set the iteration count?**
 ///
@@ -1648,7 +1674,8 @@ fn whether_the_shape_of_the_guess_error_sets_the_iteration_count() {
     );
     let mut converged_shapes: std::collections::BTreeSet<&'static str> =
         std::collections::BTreeSet::new();
-    for err_frac in [0.25, 0.50, 1.00, 2.00] {
+    let (mut band_iters, mut smooth_iters): (Option<usize>, Option<usize>) = (None, None);
+    for err_frac in ERR_FRACTIONS {
         for shape in [
             Shape::Band,
             Shape::Rotation,
@@ -1665,6 +1692,13 @@ fn whether_the_shape_of_the_guess_error_sets_the_iteration_count() {
             );
             if ok {
                 converged_shapes.insert(shape.label());
+                if (err_frac - RATIO_ERR_FRAC).abs() < 1e-12 {
+                    if shape == Shape::Band {
+                        band_iters = Some(iters);
+                    } else {
+                        smooth_iters = Some(smooth_iters.map_or(iters, |b: usize| b.min(iters)));
+                    }
+                }
                 assert!(
                     answer_err < 1e-3,
                     "{} at |err| {err_frac} converged to a DIFFERENT answer \
@@ -1687,6 +1721,32 @@ fn whether_the_shape_of_the_guess_error_sets_the_iteration_count() {
          BETWEEN shapes needs at least two, and this table is the sole backing for \
          the 47x figure quoted elsewhere",
         converged_shapes.len()
+    );
+
+    // ★★★ **The `47x` this file's headline rests on, COMPUTED and gated.**
+    //
+    // It used to be read off the printed table by eye, with nothing asserting it
+    // — and the iterations column cannot be read safely by eye either, because a
+    // row that hits `max_newton_iter` reports the CAP as its iteration count and
+    // prints indistinguishably from a converged one. `run_from` returns whether
+    // the row converged, and both rows feeding the ratio are required to have.
+    let (band, smooth) = (
+        band_iters.expect("the Band row at the ratio's err_frac must converge"),
+        smooth_iters.expect("at least one smooth row at the ratio's err_frac must converge"),
+    );
+    let ratio = band as f64 / smooth as f64;
+    println!(
+        "  at |err| {RATIO_ERR_FRAC}: band {band} iterations against {smooth} for the \
+         best smooth shape — {ratio:.1}x"
+    );
+    // Piloted at 234/5 = 46.8x. `10x` keeps a wide margin while refusing to let
+    // the headline survive a collapse of the effect it names.
+    assert!(
+        ratio > 10.0,
+        "a band-localised guess error cost {ratio:.1}x a smooth one at matched \
+         distance ({band} against {smooth} iterations), not the order of magnitude \
+         this file and `InitialGuess`'s docs claim. The shape finding does not hold \
+         as measured"
     );
 }
 
