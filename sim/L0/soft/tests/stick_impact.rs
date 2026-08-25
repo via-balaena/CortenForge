@@ -142,7 +142,8 @@ use sim_soft::element::Tet10;
 use sim_soft::mesh::HandBuiltTetMesh;
 use sim_soft::solver::CpuNewtonSolver;
 use sim_soft::{
-    CpuTet10NHSolver, InitialGuess, MaterialField, Mesh, NullContact, Solver, Tet10Mesh,
+    CpuTet10NHSolver, InitialGuess, LoadAxis, MaterialField, Mesh, NullContact, Solver, Tet10Mesh,
+    VertexId,
 };
 
 mod stickrig;
@@ -1598,4 +1599,494 @@ fn whether_the_shape_of_the_guess_error_sets_the_iteration_count() {
         "only {converged} of 16 starts converged — too few to compare shapes against \
          each other"
     );
+}
+
+/// Where Newton is started on a real impact frame.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Start {
+    /// `x₀ + dt·v₀` — exactly what `InitialGuess::Inertial` does today, and
+    /// band-shaped whenever the strike is.
+    AtP,
+    /// `x₀` — what `InitialGuess::PreviousState` does. The control.
+    AtPrevious,
+    /// The predicted tip displacement, redistributed along the beam on a smooth
+    /// profile instead of dumped on the blade band.
+    Smoothed(Shape),
+}
+
+impl Start {
+    fn label(self) -> String {
+        match self {
+            Self::AtP => "p (Inertial)".to_owned(),
+            Self::AtPrevious => "x0 (Previous)".to_owned(),
+            Self::Smoothed(s) => format!("smooth:{}", s.label()),
+        }
+    }
+}
+
+/// ★★★ **On a REAL impact frame, does a smoothed start cut the iteration count?**
+///
+/// [`whether_the_shape_of_the_guess_error_sets_the_iteration_count`] showed a
+/// band-localised error costs `47×` a smooth one at matched distance, on a
+/// *synthetic* error. This is the claim that matters: the same intervention on an
+/// impact frame the game would actually produce.
+///
+/// The stick is advanced through a full strike and its ring-down under the normal
+/// `Inertial` path, and then — at the next strike — `p = x₀ + dt·v₀` is held
+/// **exactly** and only Newton's starting point is varied. The physics is
+/// untouched: same load, same momentum, same answer. Only the guess moves.
+///
+/// ★★ The control is that every start reaches the **same** `x_final`. They share
+/// one equation. A disagreement means this is changing the simulation rather
+/// than the way it is solved, and any speedup would be worthless.
+#[test]
+#[ignore = "diagnostic — run explicitly"]
+fn whether_a_smoothed_start_cuts_iterations_on_a_real_impact_frame() {
+    for magnitude in [0.25, 1.00, 2.00, 8.00] {
+        let probe = ImpactFrame::at_strike(magnitude, STRIKE_PERIOD);
+        println!(
+            "\n=== REAL impact frame: impulse {magnitude:.2}x, struck at frame {}, \
+             after one prior strike ===\n  p is {:.1} mm from x0 at the tip; the \
+             answer is {:.1} mm from x0. **Inertial baseline: {} iters**",
+            STRIKE_PERIOD,
+            1e3 * probe.p_tip,
+            1e3 * probe.answer_tip,
+            probe.star_iters,
+        );
+        println!(
+            "{:>15} {:>8} {:>11} {:>10} {:>9}",
+            "start", "iters", "start->x*", "answer err", "outcome"
+        );
+        // ★ The baseline is the REAL `Inertial` path, not the `AtP` row. `AtP`
+        // reproduces it exactly whenever `p` is a valid configuration — and when
+        // it is not, `AtP` dies on a validity check that `Inertial` never
+        // performs, because `Inertial` keeps `x_prev = x0`.
+        let baseline = probe.star_iters;
+        let mut at_p: Option<usize> = None;
+        let mut best = usize::MAX;
+        for start in [
+            Start::AtP,
+            Start::AtPrevious,
+            Start::Smoothed(Shape::TipLoadCurve),
+            Start::Smoothed(Shape::FirstMode),
+            Start::Smoothed(Shape::Rotation),
+        ] {
+            let (ok, iters, dist, answer_err) = probe.run(start);
+            println!(
+                "{:>15} {iters:>8} {dist:>11.3} {answer_err:>10.2e} {:>9}",
+                start.label(),
+                if ok { "ok" } else { "FAILED" }
+            );
+            if ok {
+                assert!(
+                    answer_err < 1e-3,
+                    "{} reached a DIFFERENT answer ({answer_err:.2e} away) on the same \
+                     equation — this is changing the simulation, not the way it is \
+                     solved",
+                    start.label()
+                );
+                if start == Start::AtP {
+                    at_p = Some(iters);
+                } else if !matches!(start, Start::AtPrevious) {
+                    best = best.min(iters);
+                }
+            }
+        }
+        // Cross-check: where `p` is valid, the fixed-`p` construction must
+        // reproduce the real path exactly. If it ever disagrees while both
+        // converge, the construction is not neutral and every row is suspect.
+        match at_p {
+            Some(i) => assert!(
+                i == baseline,
+                "the fixed-p construction took {i} iterations from `p` where the real \
+                 Inertial path took {baseline}. Holding `p` fixed is then NOT \
+                 equivalent to what the solver does, and this whole table is invalid"
+            ),
+            None => println!(
+                "  note: starting AT p failed a validity check — `p` is an inverted \
+                 configuration here, which the real Inertial path never has to hold as \
+                 `x_prev`. Baseline stays the real path's {baseline} iters."
+            ),
+        }
+        if best == usize::MAX {
+            println!("  no smoothed start converged — smoothing does NOT transfer here");
+        } else {
+            println!(
+                "  best smoothed start: {best} iters against {baseline} for Inertial \
+                 — {:.2}x",
+                baseline as f64 / best as f64
+            );
+        }
+    }
+}
+
+/// A real impact frame, captured mid-trajectory: the state just after the strike
+/// velocity lands, with `p` pinned so only the starting point can vary.
+struct ImpactFrame {
+    n_dof: usize,
+    axial: Vec<f64>,
+    x0: Vec<f64>,
+    /// `x₀ + dt·v₀`. Fixed — it defines the equation.
+    p: Vec<f64>,
+    /// Tip displacement of `p` relative to `x₀`.
+    p_tip: f64,
+    /// Tip displacement of the answer relative to `x₀`.
+    answer_tip: f64,
+    x_star: Vec<f64>,
+    /// Iterations the REAL `Inertial` path took on this frame — `x_prev = x₀`,
+    /// `v_prev = v₀`, guess at `p`. ★ This is the baseline, not the `AtP` row:
+    /// `AtP` hands the solver `x_prev = p`, and when `p` is an inverted
+    /// configuration that trips a validity check the real path never sees.
+    star_iters: usize,
+    /// `‖x* − x₀‖`, the yardstick distances are reported against.
+    travel: f64,
+    theta_value: f64,
+    tol: f64,
+    solver: CpuTet10NHSolver<Tet10Mesh>,
+    loaded: Vec<(VertexId, LoadAxis)>,
+}
+
+impl ImpactFrame {
+    /// Advance the impulse arm through `warmup` frames under the normal
+    /// `Inertial` path, then land the next strike and freeze the frame.
+    fn at_strike(magnitude: f64, warmup: usize) -> Self {
+        let (mu, lambda) = lame_for(e_eff_for(EI_TARGET));
+        let field = MaterialField::uniform(mu, lambda);
+        let (nx, ny, nz) = GRID;
+        let tet4 =
+            HandBuiltTetMesh::cantilever_bilayer_beam(nx, ny, nz, SPAN, WIDTH, DEPTH, &field);
+        let mesh = Tet10Mesh::from_tet4(&tet4);
+        let n_dof = 3 * mesh.n_vertices();
+        let axial: Vec<f64> = mesh.positions().iter().map(|q| q.x / SPAN).collect();
+
+        let (x_rest, rest_z, bc, mut cfg) =
+            rig(&mesh, slapshot_load(EI_TARGET), rho_eff(), false, TOL_REL);
+        cfg.dt = VR_DT;
+        let loaded = bc.loaded_vertices.clone();
+
+        let mut cfg_a = cfg;
+        cfg_a.initial_guess = InitialGuess::Inertial;
+        let advancer: CpuTet10NHSolver<Tet10Mesh> = CpuNewtonSolver::new(
+            Tet10,
+            Tet10Mesh::from_tet4(&tet4),
+            NullContact,
+            cfg_a,
+            bc.clone(),
+        );
+        let mut cfg_b = cfg;
+        cfg_b.initial_guess = InitialGuess::PreviousState;
+        let solver: CpuTet10NHSolver<Tet10Mesh> =
+            CpuNewtonSolver::new(Tet10, Tet10Mesh::from_tet4(&tet4), NullContact, cfg_b, bc);
+
+        // The impulse arm carries no external load at all.
+        let theta = Tensor::from_slice(&[0.0], &[1]);
+        let strike_velocity = slapshot_equivalent_tip_velocity() * magnitude;
+        let (mut x, mut v) = (x_rest, vec![0.0; n_dof]);
+        for k in 0..warmup {
+            if k % STRIKE_PERIOD == 0 {
+                for &(vertex, _) in &loaded {
+                    v[3 * vertex as usize + 2] += strike_velocity;
+                }
+            }
+            one_frame(&advancer, &mut x, &mut v, &theta, VR_DT)
+                .expect("the warm-up trajectory must complete or there is no impact frame");
+        }
+        // The strike under test.
+        for &(vertex, _) in &loaded {
+            v[3 * vertex as usize + 2] += strike_velocity;
+        }
+        let x0 = x.clone();
+        let p: Vec<f64> = x0
+            .iter()
+            .zip(&v)
+            .map(|(xi, vi)| vi.mul_add(VR_DT, *xi))
+            .collect();
+
+        let star = advancer
+            .try_replay_step(
+                &Tensor::from_slice(&x0, &[n_dof]),
+                &Tensor::from_slice(&v, &[n_dof]),
+                &theta,
+                VR_DT,
+            )
+            .expect("the Inertial baseline must converge or there is nothing to improve");
+        let x_star = star.x_final;
+        let tip_of_rel = |a: &[f64]| tip_of(a, &loaded, &rest_z) - tip_of(&x0, &loaded, &rest_z);
+        Self {
+            n_dof,
+            axial,
+            p_tip: tip_of_rel(&p),
+            answer_tip: tip_of_rel(&x_star),
+            star_iters: star.iter_count,
+            travel: dof_distance(&x_star, &x0),
+            x0,
+            p,
+            x_star,
+            theta_value: 0.0,
+            tol: cfg_b.tol,
+            solver,
+            loaded,
+        }
+    }
+
+    /// The starting point a [`Start`] selects, at this frame.
+    fn start_point(&self, start: Start) -> Vec<f64> {
+        match start {
+            Start::AtP => self.p.clone(),
+            Start::AtPrevious => self.x0.clone(),
+            Start::Smoothed(shape) => {
+                // Keep the tip where the impulse puts it; spread the rest of the
+                // displacement along a smooth profile instead of the blade band.
+                let tip = self
+                    .loaded
+                    .iter()
+                    .map(|&(vtx, _)| self.p[3 * vtx as usize + 2] - self.x0[3 * vtx as usize + 2])
+                    .fold(0.0f64, |a, b| if b.abs() > a.abs() { b } else { a });
+                let unit = shape.at(1.0);
+                let mut out = self.x0.clone();
+                for (v, &s) in self.axial.iter().enumerate() {
+                    out[3 * v + 2] += tip * shape.at(s) / unit;
+                }
+                out
+            }
+        }
+    }
+
+    /// Solve the frozen frame from `start`. Returns
+    /// `(converged, iterations, ‖start − x*‖/travel, ‖x_final − x*‖/travel)`.
+    fn run(&self, start: Start) -> (bool, usize, f64, f64) {
+        let s = self.start_point(start);
+        // ★ `v_prev` is chosen so `x_prev + dt·v_prev = p` regardless of `start`,
+        // which is what keeps the equation — and the answer — fixed.
+        let v: Vec<f64> = self
+            .p
+            .iter()
+            .zip(&s)
+            .map(|(pi, si)| (pi - si) / VR_DT)
+            .collect();
+        let step = self.solver.try_replay_step(
+            &Tensor::from_slice(&s, &[self.n_dof]),
+            &Tensor::from_slice(&v, &[self.n_dof]),
+            &Tensor::from_slice(&[self.theta_value], &[1]),
+            VR_DT,
+        );
+        let (x_final, iters, failure) = outcome_of(step, self.tol, &self.x0);
+        (
+            failure.is_none(),
+            iters,
+            dof_distance(&s, &self.x_star) / self.travel,
+            dof_distance(&x_final, &self.x_star) / self.travel,
+        )
+    }
+}
+
+/// One frame stepped from an arbitrary starting point, holding the physics fixed.
+///
+/// ⚠⚠ **The velocity update uses the TRUE previous position, not the start.**
+/// `x_prev` is being used here as a lever on where Newton begins, not as a claim
+/// about where the stick was; updating `v` from it would make the trajectory
+/// diverge from the one this is supposed to reproduce exactly.
+fn one_frame_from<S: Solver>(
+    solver: &S,
+    x: &mut Vec<f64>,
+    v: &mut [f64],
+    theta: &Tensor<f64>,
+    start: &[f64],
+) -> Result<(usize, f64), String> {
+    let n_dof = x.len();
+    // `p` is what the physics depends on, and it is computed from the true state.
+    let p: Vec<f64> = x
+        .iter()
+        .zip(&*v)
+        .map(|(xi, vi)| vi.mul_add(VR_DT, *xi))
+        .collect();
+    let v_eff: Vec<f64> = p
+        .iter()
+        .zip(start)
+        .map(|(pi, si)| (pi - si) / VR_DT)
+        .collect();
+    let t0 = std::time::Instant::now();
+    let step = solver
+        .try_replay_step(
+            &Tensor::from_slice(start, &[n_dof]),
+            &Tensor::from_slice(&v_eff, &[n_dof]),
+            theta,
+            VR_DT,
+        )
+        .map_err(|e| format!("{e:?}"))?;
+    let ms = t0.elapsed().as_secs_f64() * 1e3;
+    if !step.x_final.iter().all(|f| f.is_finite()) {
+        return Err("non-finite x_final".to_owned());
+    }
+    for (vi, (xf, xp)) in v.iter_mut().zip(step.x_final.iter().zip(x.iter())) {
+        *vi = (xf - xp) / VR_DT;
+    }
+    x.clone_from(&step.x_final);
+    Ok((step.iter_count, ms))
+}
+
+/// ★★★ **End to end: does a smoothed start move the `p99` the whole arc is
+/// about — without moving the simulation?**
+///
+/// Per-frame the intervention is worth `1.4–6.3×`
+/// ([`whether_a_smoothed_start_cuts_iterations_on_a_real_impact_frame`]). This
+/// runs the full `300`-frame trajectory under each strategy and reads the
+/// distribution, which is the quantity a VR budget is actually judged on.
+///
+/// ★★ **The control is that the trajectory does not move.** Every strategy steps
+/// the same `p` each frame and therefore solves the same equation, so the stick
+/// must follow the *same path* — only the iteration counts may differ. A
+/// strategy that is faster because it went somewhere else is worthless, and that
+/// is the failure this gate exists to catch.
+#[test]
+#[ignore = "producer — reference box only, run explicitly"]
+fn whether_a_smoothed_start_moves_the_p99_end_to_end() {
+    let magnitude = 1.0;
+    println!(
+        "\n=== 300 frames, impulse {magnitude:.2}x, struck every {STRIKE_PERIOD} — \
+         SAME physics, different Newton start ==="
+    );
+    println!(
+        "{:>15} {:>8} {:>8} {:>8} {:>7} {:>7} {:>11} {:>9}",
+        "start", "p50 ms", "p99 ms", "max ms", "p50 it", "p99 it", "peak d/L", "outcome"
+    );
+    let mut reference_peak: Option<f64> = None;
+    let mut baseline99 = 0.0f64;
+    for start in [
+        Start::AtP,
+        Start::Smoothed(Shape::TipLoadCurve),
+        Start::Smoothed(Shape::FirstMode),
+        Start::Smoothed(Shape::Rotation),
+    ] {
+        let run = trajectory_with(start, magnitude);
+        let it: Vec<f64> = run.iters.iter().map(|&i| i as f64).collect();
+        let ok = run.completed();
+        println!(
+            "{:>15} {:>8.2} {:>8.2} {:>8.2} {:>7.1} {:>7.1} {:>11.4e} {:>9}",
+            start.label(),
+            if ok {
+                percentile(&run.ms, 0.5)
+            } else {
+                f64::NAN
+            },
+            if ok {
+                percentile(&run.ms, 0.99)
+            } else {
+                f64::NAN
+            },
+            run.ms.iter().copied().fold(0.0f64, f64::max),
+            if ok { percentile(&it, 0.5) } else { f64::NAN },
+            if ok { percentile(&it, 0.99) } else { f64::NAN },
+            run.peak_ratio,
+            if ok { "ok" } else { "FAILED" },
+        );
+        if !ok {
+            println!("      ended early: {:?}", run.ended_early);
+            continue;
+        }
+        // ★ Same equation every frame ⇒ same path. Anything else means the
+        // speedup was bought by simulating something different.
+        match reference_peak {
+            None => {
+                reference_peak = Some(run.peak_ratio);
+                baseline99 = percentile(&run.ms, 0.99);
+            }
+            Some(reference) => {
+                let drift = (run.peak_ratio - reference).abs() / reference;
+                assert!(
+                    drift < 1e-6,
+                    "{} reached peak d/L {:.6e} against the baseline's {reference:.6e} \
+                     ({drift:.2e} apart). The start changed the TRAJECTORY, so any \
+                     speedup it shows is a different simulation, not a faster one",
+                    start.label(),
+                    run.peak_ratio
+                );
+                println!(
+                    "      trajectory matches baseline to {drift:.1e}; p99 {:.2} -> \
+                     {:.2} ms = {:.2}x",
+                    baseline99,
+                    percentile(&run.ms, 0.99),
+                    baseline99 / percentile(&run.ms, 0.99),
+                );
+            }
+        }
+    }
+    assert!(
+        reference_peak.is_some(),
+        "the baseline trajectory did not complete, so there is nothing to compare"
+    );
+}
+
+/// Run the full trajectory with Newton started per `start` each frame.
+fn trajectory_with(start: Start, magnitude: f64) -> Run {
+    let (mu, lambda) = lame_for(e_eff_for(EI_TARGET));
+    let field = MaterialField::uniform(mu, lambda);
+    let (nx, ny, nz) = GRID;
+    let tet4 = HandBuiltTetMesh::cantilever_bilayer_beam(nx, ny, nz, SPAN, WIDTH, DEPTH, &field);
+    let mesh = Tet10Mesh::from_tet4(&tet4);
+    let n_dof = 3 * mesh.n_vertices();
+    let axial: Vec<f64> = mesh.positions().iter().map(|q| q.x / SPAN).collect();
+
+    let (x_rest, rest_z, bc, mut cfg) =
+        rig(&mesh, slapshot_load(EI_TARGET), rho_eff(), false, TOL_REL);
+    cfg.dt = VR_DT;
+    cfg.initial_guess = InitialGuess::PreviousState;
+    let free_dof = n_dof - 3 * bc.pinned_vertices.len();
+    let loaded = bc.loaded_vertices.clone();
+    let solver: CpuTet10NHSolver<Tet10Mesh> =
+        CpuNewtonSolver::new(Tet10, mesh, NullContact, cfg, bc);
+
+    let theta = Tensor::from_slice(&[0.0], &[1]);
+    let strike_velocity = slapshot_equivalent_tip_velocity() * magnitude;
+    let (mut pos, mut vel) = (x_rest, vec![0.0; n_dof]);
+    let (mut iters, mut ms) = (Vec::new(), Vec::new());
+    let mut peak_ratio = 0.0f64;
+    let mut ended_early = None;
+
+    for k in 0..RUN_FRAMES {
+        if k % STRIKE_PERIOD == 0 {
+            for &(vertex, _) in &loaded {
+                vel[3 * vertex as usize + 2] += strike_velocity;
+            }
+        }
+        let p: Vec<f64> = pos
+            .iter()
+            .zip(&vel)
+            .map(|(xi, vi)| vi.mul_add(VR_DT, *xi))
+            .collect();
+        let s = match start {
+            Start::AtP => p,
+            Start::AtPrevious => pos.clone(),
+            Start::Smoothed(shape) => {
+                let tip = loaded
+                    .iter()
+                    .map(|&(vtx, _)| p[3 * vtx as usize + 2] - pos[3 * vtx as usize + 2])
+                    .fold(0.0f64, |a, b| if b.abs() > a.abs() { b } else { a });
+                let unit = shape.at(1.0);
+                let mut out = pos.clone();
+                for (vtx, &sx) in axial.iter().enumerate() {
+                    out[3 * vtx + 2] += tip * shape.at(sx) / unit;
+                }
+                out
+            }
+        };
+        match one_frame_from(&solver, &mut pos, &mut vel, &theta, &s) {
+            Ok((it, t)) => {
+                iters.push(it);
+                ms.push(t);
+                peak_ratio = peak_ratio.max(tip_of(&pos, &loaded, &rest_z) / SPAN);
+            }
+            Err(why) => {
+                ended_early = Some(format!("frame {k}: {why}"));
+                break;
+            }
+        }
+    }
+    Run {
+        free_dof,
+        iters,
+        ms,
+        peak_ratio,
+        ended_early,
+    }
 }
