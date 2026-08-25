@@ -3301,9 +3301,31 @@ until then, and by nobody else ever. The recipe above is the durable record.
   it a direction everywhere else; "two impossibility results" overstated — only
   the domain-signal one is a proof, the ECSW one is affordability; and "§2o leans
   on no cross-ensemble number" was false — §2o carries one and LABELS it, which is
-  the form §2n should have used. ⇒ **the fix is the least-reviewed text** — the
-  THIRD time on this branch a round has found its defects in the previous round's
-  fixes (`9728a9a9`, `e3a55587`, and here).
+  the form §2n should have used.
+
+  ★★ **ROUND 3 found 4 more, in round 2's fixes** — and one had the CERTAINTY
+  backwards: "only the domain-signal result is a proof" is inverted. The ECSW
+  constraint is definitional (`‖r_free‖` needs the sweep ECSW removes; no
+  measurement can overturn it); the rank-independence result is a definitional
+  ARGUMENT on a MEASURED premise (`1.005×`, one statistic, one held-out position).
+  Also: "C's training never sweeps the scored patch" overstated the coverage
+  control — C's novelty maxes at `0.250`, so it still recognises `75 %` of the
+  scored active set; it leaves a HOLE, which is what §2o said.
+
+  ★★ **ROUND 4 found 3, and the worst PREDATES this branch.** The producer
+  check's module doc listed `r ∈ {10, 20, 40, 60}` while `R_LADDER` sweeps
+  `{2, 4, 10, 20, 40, 60}` — dropping the two rungs its own const doc calls the
+  two-sided half. ⛔ And three ratios in its "Measured" prose (`1.7×`, `~2 700×`,
+  `~54 000×`) do NOT reproduce from the table three lines above them, which gives
+  `2.37×`, `3.79e3×`, `7.62e4×`; every published figure is `0.71×` of the table's.
+  Withdrawn pending the 2026-08-24 log rather than overwritten, since a
+  correction computed from a 3-s.f. table is the failure this document keeps
+  naming. The finding's DIRECTION is unaffected.
+
+  ⇒ **the fix is the least-reviewed text** — four rounds on this branch have now
+  each found defects in the previous round's fixes (`9728a9a9`, `e3a55587`,
+  `1222a698`, `12a13d36`). ⚠ Round 4 also shows the corollary: once the new text
+  converges, the rounds start finding OLD text instead.
 
 - **v2.18 (2026-08-25)** — **§2o, new: "density" is TWO factors and the online
   signals measure the WEAKER one.** A 2-factor design at a fixed held-out point,

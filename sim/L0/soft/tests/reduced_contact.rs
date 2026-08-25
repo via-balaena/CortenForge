@@ -64,10 +64,19 @@
 //!
 //! ## Knobs
 //!
-//! Swept: `r ∈ {10, 20, 40, 60}` × `InitialGuess ∈ {PreviousState, Inertial}`.
-//! Both are cheap because the single full-order oracle trajectory dominates the
-//! run. `Inertial` is in because it is the settled predictor AND because it
-//! changes iteration count, which is the deciding quantity above.
+//! Swept: [`R_LADDER`] = `r ∈ {2, 4, 10, 20, 40, 60}` × `InitialGuess ∈
+//! {PreviousState, Inertial}`. Both are cheap because the single full-order
+//! oracle trajectory dominates the run. `Inertial` is in because it is the
+//! settled predictor AND because it changes iteration count, which is the
+//! deciding quantity above.
+//!
+//! ⚠ **`2` and `4` are not padding** — see [`R_LADDER`]'s own docs: they are the
+//! two-sided half, there so the table SHOWS what a subspace that cannot hold the
+//! trajectory does to the contact equilibrium. An earlier version of this line
+//! listed only `{10, 20, 40, 60}` and dropped exactly the load-bearing two.
+//! ⚠ And `40` and `60` both truncate to the trajectory's full rank of `36`, so
+//! the ladder yields FIVE distinct bases, not six — which is why the table below
+//! has a `36 (full rank)` row and no `40` or `60` row.
 //!
 //! Held: Tet4, `a/cell = 2` (5 202 free DOF), frictionless, `gravity_z = 0`,
 //! `dt = 1/60`, in-sample basis (trained on the trajectory it is tested on).
@@ -94,10 +103,20 @@
 //! | 36 (full rank) | 6.44 / 3.55 | 2.77e-7 | 6.94e-14 d̂ |
 //!
 //! - ★ **The equilibrium gap converges in `r` far faster than the displacement
-//!   field does**, and increasingly so: the two are within `1.7×` of each other
-//!   at `r = 2`, but the gap is `~2 700×` better determined at `r = 10` and
-//!   `~54 000×` at `r = 20`. Once the subspace is adequate at all, the barrier
-//!   pins the contact state much harder than the field around it.
+//!   field does**, and increasingly so. Once the subspace is adequate at all, the
+//!   barrier pins the contact state much harder than the field around it.
+//!
+//!   ⛔ **The three ratios this bullet used to quote do NOT reproduce from the
+//!   table above it, and are withdrawn pending the run log.** It said `1.7×` at
+//!   `r = 2`, `~2 700×` at `r = 10` and `~54 000×` at `r = 20`; the published
+//!   cells give `2.37×`, `3.79e3×` and `7.62e4×`. Every published figure is
+//!   `0.71×` of the table's — systematic, so a transcription slip rather than
+//!   arithmetic, and most likely prose carried over from an earlier pilot when
+//!   the table was re-measured. ⚠ The 2026-08-24 log is not in reach, so the
+//!   derived values are stated as DERIVED FROM THE 3-s.f. TABLE and not as a
+//!   correction computed from it — re-run the producer check to settle them.
+//!   **The direction of the finding is unaffected**: the gap is better determined
+//!   than the field at every rank, and increasingly so with rank.
 //! - ★ **The mechanism prediction 3 named is real and measured — it just has no
 //!   consequence here.** At `r = 10` the reduced solve converges on
 //!   `‖Φᵀr‖ < 1e-10` while `‖r_free‖` is `1.49e-4`: the projection hides six
