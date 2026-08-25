@@ -141,13 +141,15 @@ use sim_ml_chassis::Tensor;
 use sim_soft::element::Tet10;
 use sim_soft::mesh::HandBuiltTetMesh;
 use sim_soft::solver::CpuNewtonSolver;
-use sim_soft::{CpuTet10NHSolver, InitialGuess, MaterialField, Mesh, NullContact, Tet10Mesh};
+use sim_soft::{
+    CpuTet10NHSolver, InitialGuess, MaterialField, Mesh, NullContact, Solver, Tet10Mesh,
+};
 
 mod stickrig;
 
 use stickrig::{
     DEPTH, EI_TARGET, MASS_PER_LENGTH, SLAPSHOT_DEFLECTION, SPAN, TOL_REL, WIDTH, e_eff_for,
-    lame_for, one_frame, percentile, rho_eff, rig, slapshot_load, tip_of,
+    lame_for, one_frame, outcome_of, percentile, rho_eff, rig, slapshot_load, tip_of,
 };
 
 // ---------------------------------------------------------------------------
@@ -1058,4 +1060,263 @@ fn whether_the_force_wall_is_the_load_path_or_the_initial_guess() {
          wall left to diagnose and this diagnostic is answering a dead question",
         baseline.peak_ratio
     );
+}
+
+/// One backward-Euler step from rest, with the blade band's velocity seeded.
+struct StepProbe {
+    /// Where `x + dt·v` puts the tip, in metres.
+    guess_tip: f64,
+    converged: bool,
+    iters: usize,
+    r_norm: f64,
+    /// Tip displacement of the state the solve actually reached.
+    final_tip: f64,
+    /// `‖x_guess − x_final‖ / ‖x_final − x₀‖` — how far the initial guess sits
+    /// from the answer, as a fraction of how far the answer sits from rest.
+    /// `0` is a perfect guess, `1` is starting at rest.
+    guess_err: f64,
+}
+
+/// Take exactly one BE step from rest under `load`, starting from `x + dt·v`
+/// with `v` seeded on the blade band.
+///
+/// ⚠ Deliberately a **single step**, not a 300-frame run. The question here is
+/// about one solve's basin, and a multi-frame run re-seeds at every strike and
+/// carries state between them, so its "peak deflection" is a trajectory
+/// property rather than this equation's answer.
+fn probe_step(load: f64, seed_tip_m: f64, guess_mode: InitialGuess) -> StepProbe {
+    let (mu, lambda) = lame_for(e_eff_for(EI_TARGET));
+    let field = MaterialField::uniform(mu, lambda);
+    let (nx, ny, nz) = GRID;
+    let tet4 = HandBuiltTetMesh::cantilever_bilayer_beam(nx, ny, nz, SPAN, WIDTH, DEPTH, &field);
+    let mesh = Tet10Mesh::from_tet4(&tet4);
+    let n_dof = 3 * mesh.n_vertices();
+
+    let (x0, rest_z, bc, mut cfg) = rig(&mesh, slapshot_load(EI_TARGET), rho_eff(), false, TOL_REL);
+    cfg.dt = VR_DT;
+    cfg.initial_guess = guess_mode;
+    let tol = cfg.tol;
+    let loaded = bc.loaded_vertices.clone();
+    let n_loaded = loaded.len();
+    let solver: CpuTet10NHSolver<Tet10Mesh> =
+        CpuNewtonSolver::new(Tet10, mesh, NullContact, cfg, bc);
+
+    let mut v = vec![0.0; n_dof];
+    for &(vertex, _) in &loaded {
+        v[3 * vertex as usize + 2] += seed_tip_m / VR_DT;
+    }
+    let theta = Tensor::from_slice(&[load / n_loaded as f64], &[1]);
+    let step = solver.try_replay_step(
+        &Tensor::from_slice(&x0, &[n_dof]),
+        &Tensor::from_slice(&v, &[n_dof]),
+        &theta,
+        VR_DT,
+    );
+    let r_norm = step.as_ref().map_or(f64::NAN, |s| s.final_residual_norm);
+    let (x_final, iters, failure) = outcome_of(step, tol, &x0);
+
+    // The guess Newton actually starts from, which is what `guess_mode` selects.
+    let guess: Vec<f64> = match guess_mode {
+        InitialGuess::Inertial => x0
+            .iter()
+            .zip(&v)
+            .map(|(&xi, &vi)| vi.mul_add(VR_DT, xi))
+            .collect(),
+        // `InitialGuess` is `#[non_exhaustive]`; anything added later starts
+        // somewhere this probe does not model, so it must not be reported as if
+        // it did.
+        InitialGuess::PreviousState => x0.clone(),
+        // Same convention as this file's `expect_used` allowance: in a test, a
+        // case the probe cannot model must abort loudly rather than be reported
+        // as if it had been handled.
+        #[allow(clippy::panic)]
+        _ => panic!("probe_step models PreviousState and Inertial only, got {guess_mode:?}"),
+    };
+    let norm = |a: &[f64], b: &[f64]| {
+        a.iter()
+            .zip(b)
+            .map(|(p, q)| (p - q) * (p - q))
+            .sum::<f64>()
+            .sqrt()
+    };
+    let travel = norm(&x_final, &x0);
+    StepProbe {
+        guess_tip: seed_tip_m,
+        converged: failure.is_none(),
+        iters,
+        r_norm: failure.map_or(r_norm, |(_, r, _, _)| r),
+        final_tip: tip_of(&x_final, &loaded, &rest_z),
+        guess_err: if travel > 0.0 {
+            norm(&guess, &x_final) / travel
+        } else {
+            f64::NAN
+        },
+    }
+}
+
+/// ★★★ **Seeding velocity does NOT hold the problem fixed — it changes the
+/// equation. So the previous diagnostic could not have shown what it claimed.**
+///
+/// A backward-Euler step solves
+///
+/// ```text
+///   M (x − x₀ − dt·v₀) / dt²  +  f_int(x)  =  F
+/// ```
+///
+/// and **`v₀` is in it**. Seeding the blade band's velocity therefore adds
+/// momentum to the *problem*, not just to the starting point, and
+/// `whether_the_force_wall_is_the_load_path_or_the_initial_guess` was wrong to
+/// describe it as holding the load fixed. The answer moves with the seed, which
+/// this ladder shows directly: at `5.4 N` the converged tip runs `4.84 → 6.07 mm`
+/// **monotonically** across `seed 0.1 → 2.0`.
+///
+/// ⇒ What that experiment really established is narrower and still useful: **a
+/// BE step from REST under a suddenly applied load is the hard case, and any
+/// initial momentum makes it tractable.** Whether the help comes from the easier
+/// equation or from the better starting point, it could not separate — because
+/// `InitialGuess::Inertial` ties them together.
+///
+/// [`whether_the_starting_point_or_the_momentum_does_the_work`] separates them.
+#[test]
+#[ignore = "diagnostic — run explicitly"]
+fn seeding_velocity_moves_the_answer_not_just_the_guess() {
+    for magnitude in [0.10, 1.00] {
+        let load = slapshot_load(EI_TARGET) * magnitude;
+        let unit = one_frame_response(load);
+        println!("\n=== ONE BE step from rest, load {load:.1} N. Does the ANSWER move? ===");
+        println!(
+            "{:>6} {:>11} {:>11} {:>10} {:>7} {:>11} {:>9}",
+            "seed", "guess (mm)", "answer (mm)", "guess err", "iters", "r_norm", "outcome"
+        );
+        let mut answers: Vec<f64> = Vec::new();
+        for i in 0..=10 {
+            let seed = f64::from(i) * 0.2;
+            let p = probe_step(load, seed * unit, InitialGuess::Inertial);
+            println!(
+                "{seed:>6.2} {:>11.2} {:>11.2} {:>10.3} {:>7} {:>11.3e} {:>9}",
+                1e3 * p.guess_tip,
+                1e3 * p.final_tip,
+                p.guess_err,
+                p.iters,
+                p.r_norm,
+                if p.converged { "ok" } else { "FAILED" },
+            );
+            if p.converged {
+                answers.push(p.final_tip);
+            }
+        }
+        assert!(
+            answers.len() >= 3,
+            "only {} seeds converged at {load:.1} N — too few to say the answer moves",
+            answers.len()
+        );
+        // ★ The claim is that the answer moves WITH the seed, monotonically. A
+        // rise that is not monotone would mean something other than the added
+        // momentum is driving it.
+        let rises = answers.windows(2).filter(|w| w[1] > w[0]).count();
+        let spread = (answers[answers.len() - 1] - answers[0]) / answers[0];
+        println!(
+            "  answer rose on {rises} of {} steps, total {:.1} % — the seed is in the \
+             EQUATION, not only in the guess",
+            answers.len() - 1,
+            100.0 * spread
+        );
+        assert!(
+            rises == answers.len() - 1 && spread > 0.05,
+            "the converged answer did not rise monotonically with the seed ({rises} of \
+             {} steps, {:.1} % total). Seeding would then NOT be changing the \
+             equation, and the previous diagnostic's framing would have been right \
+             after all",
+            answers.len() - 1,
+            100.0 * spread
+        );
+    }
+}
+
+/// ★★★ **The separator: same equation, two starting points.**
+///
+/// `InitialGuess::PreviousState` starts Newton at `x₀`; `Inertial` starts it at
+/// `x₀ + dt·v₀`. Run both at the **same `v₀`** and the equation is identical —
+/// only the starting point differs. That is the comparison
+/// [`seeding_velocity_moves_the_answer_not_just_the_guess`] shows the seed sweep
+/// could not make.
+///
+/// - If both converge to the same answer and `Inertial` merely takes fewer
+///   iterations, the starting point is a **speed** lever, and what rescues the
+///   force wall is the added momentum.
+/// - If `Inertial` converges where `PreviousState` does not, the starting point
+///   is a **correctness** lever and the original framing was right.
+///
+/// ★★ The control is that both reach the **same answer** — they are solving one
+/// equation, so a disagreement means Newton's landing spot depends on where it
+/// set off, and no deflection in this file would mean anything.
+///
+/// ⚠ At `seed = 0` the two modes give *identical* guesses (`x₀ + dt·0 = x₀`), so
+/// that row is a built-in sanity check: it must read the same on both sides.
+#[test]
+#[ignore = "diagnostic — run explicitly"]
+fn whether_the_starting_point_or_the_momentum_does_the_work() {
+    for magnitude in [0.10, 1.00] {
+        let load = slapshot_load(EI_TARGET) * magnitude;
+        let unit = one_frame_response(load);
+        println!(
+            "\n=== ONE BE step, load {load:.1} N, SAME v0 both sides — only the \
+             starting point differs ==="
+        );
+        println!(
+            "{:>6} {:>26} {:>26} {:>12}",
+            "seed", "PreviousState (x0)", "Inertial (x0 + dt*v0)", "answers"
+        );
+        println!(
+            "{:>6} {:>9} {:>7} {:>9} {:>9} {:>7} {:>9} {:>12}",
+            "", "answer", "iters", "outcome", "answer", "iters", "outcome", "agree?"
+        );
+        let mut both = 0usize;
+        for i in 0..=10 {
+            let seed = f64::from(i) * 0.2;
+            let prev = probe_step(load, seed * unit, InitialGuess::PreviousState);
+            let iner = probe_step(load, seed * unit, InitialGuess::Inertial);
+            let agree = if prev.converged && iner.converged {
+                format!(
+                    "{:.2e}",
+                    (prev.final_tip - iner.final_tip).abs() / iner.final_tip
+                )
+            } else {
+                "-".to_owned()
+            };
+            println!(
+                "{seed:>6.2} {:>9.2} {:>7} {:>9} {:>9.2} {:>7} {:>9} {agree:>12}",
+                1e3 * prev.final_tip,
+                prev.iters,
+                if prev.converged { "ok" } else { "FAILED" },
+                1e3 * iner.final_tip,
+                iner.iters,
+                if iner.converged { "ok" } else { "FAILED" },
+            );
+            if prev.converged && iner.converged {
+                both += 1;
+                let rel = (prev.final_tip - iner.final_tip).abs() / iner.final_tip;
+                assert!(
+                    rel < 1e-3,
+                    "at seed {seed:.2} the two starting points converged to DIFFERENT \
+                     answers ({:.4} vs {:.4} mm, {rel:.2e} apart) while solving the \
+                     same equation. Newton's landing spot then depends on where it \
+                     set off, and no deflection in this file means anything",
+                    1e3 * prev.final_tip,
+                    1e3 * iner.final_tip
+                );
+            }
+        }
+        // ⚠ Say so when the agreement control never ran. It is conditional on
+        // both sides converging, and if `PreviousState` fails everywhere the
+        // control is vacuous — which is a result, not a pass.
+        println!(
+            "  both sides converged on {both} of 11 rows{}",
+            if both == 0 {
+                " — the same-answer control did NOT run"
+            } else {
+                ""
+            }
+        );
+    }
 }
