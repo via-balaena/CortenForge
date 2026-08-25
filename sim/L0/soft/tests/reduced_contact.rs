@@ -3685,3 +3685,184 @@ fn the_signal_margin_on_a_held_out_position() {
          RC\t   large? That is a fail-open, in one cell."
     );
 }
+
+// ── §4c rung 1c: how DENSE must the ensemble be, and does density mean SPACING ──
+// ── or COUNT?                                                                  ──
+
+/// The three training sets, all scored at the same held-out point. Chosen as a
+/// **2-factor design over the offsets that already have oracles**, so this costs
+/// no full-order trajectory the arc has not already paid for:
+///
+/// | | offsets | trajectories | gap to `+0.00a` |
+/// |---|---|---|---|
+/// | **A** | `[-1, -0.5, +0.5, +1]` | 4 | `0.5a` |
+/// | **B** | `[-0.5, +0.5]` | 2 | `0.5a` |
+/// | **C** | `[-1, +1]` | 2 | `1.0a` |
+///
+/// **A vs B isolates ENSEMBLE SIZE at fixed gap. B vs C isolates GAP at fixed
+/// size.** Without both comparisons "denser is better" cannot be resolved into a
+/// statement a `ReducedValidityDomain` could carry, because spacing and count move
+/// together in every ensemble anyone builds by refining a grid.
+const DENSITY_SETS: [(&str, &[f64]); 3] = [
+    ("A  4 traj, gap 0.50a", &[-1.0, -0.5, 0.5, 1.0]),
+    ("B  2 traj, gap 0.50a", &[-0.5, 0.5]),
+    ("C  2 traj, gap 1.00a", &[-1.0, 1.0]),
+];
+
+/// **How dense must the training ensemble be — and is "density" SPACING or COUNT?**
+///
+/// ```text
+/// cargo test --release -p sim-soft --test reduced_contact \
+///   how_dense_the_training_ensemble_must_be -- --ignored --nocapture
+/// ```
+///
+/// §10 risk 0 carries the domain-coverage half of §4c as untouched, and §5's open
+/// item 3 was re-scoped to exactly this question. It is the one a validity domain
+/// has to answer in its **Stated** clause: a parameter box is only meaningful if
+/// you can say how finely the box was sampled and what that buys.
+///
+/// Every reduced result in this arc conflates two things, because refining a
+/// training grid changes both at once: the SPACING between neighbouring
+/// trajectories, and the NUMBER of them. §2n measured one ensemble at one spacing.
+/// This separates the two factors on the offsets whose oracles already exist.
+///
+/// ## Pre-registration (before the first run)
+///
+/// 1. **If only GAP matters, A ≈ B and C is worse.** Then a validity domain need
+///    only state its sampling PITCH, which is a cheap thing to state and to check
+///    online — the nearest-snapshot distance already measures it.
+/// 2. **If SIZE matters, A beats B at the same gap.** Then the domain must state
+///    the ensemble's cardinality too, and `snapshot_distance` — which sees only the
+///    nearest neighbour — is blind to the thing that matters, which would be a
+///    second strike against the candidate §2n already disqualified as an accuracy
+///    signal.
+/// 3. ★ **No prediction on which.** The POD basis grows richer with more
+///    trajectories even at fixed spacing, so both mechanisms are real; which
+///    dominates at this gap is the measurement.
+/// 4. **`snapshot_distance` should read the SAME for A and B and larger for C**,
+///    since it is close to linear in gap (§2n measured `0.506` at `0.25a` and
+///    `0.970` at `0.50a`). ⚠ Across ensembles its normaliser changes, so this is
+///    the weakest of the four and is read as a direction, not a number.
+#[test]
+#[ignore = "§4c ensemble-density sweep — 5 full-order trajectories, ~2 min (see the fn docs)"]
+fn how_dense_the_training_ensemble_must_be() {
+    let base = Scene::new(GEN_A_OVER_CELL);
+    let x_rest = rest_positions(&base.mesh());
+    let solver = base.solver(InitialGuess::PreviousState);
+    let fd = solver.free_dof_indices().to_vec();
+    let mass = solver.mass_per_free_dof();
+    let tol = SolverConfig::skeleton().tol;
+    let n_steps = base.n_steps();
+    let scored_at = LOO_HELD_OUT;
+
+    println!(
+        "\nRC\t§4c DENSITY SWEEP: {} free DOF, all arms scored at {scored_at:+.2}a\n\
+         RC\tA vs B isolates ENSEMBLE SIZE at fixed gap; B vs C isolates GAP at fixed size.",
+        fd.len(),
+    );
+
+    let mut oracles: Vec<(f64, Oracle)> = Vec::new();
+    for dx in TRAIN_OFFSETS {
+        let o = run_oracle(Scene::at_offset(GEN_A_OVER_CELL, dx), &x_rest, NO_TIMING);
+        assert!(
+            o.arm.failure.is_none(),
+            "oracle at {dx:+.2}a failed: {}",
+            o.arm.failure.as_deref().unwrap_or(""),
+        );
+        oracles.push((dx, o));
+    }
+    let at = |dx: f64| -> &Oracle {
+        &oracles
+            .iter()
+            .find(|(t, _)| (t - dx).abs() < 1e-12)
+            .unwrap_or_else(|| panic!("no oracle at {dx:+.2}a"))
+            .1
+    };
+
+    let mut rows: Vec<(&'static str, usize, Arm)> = Vec::new();
+    for (tag, offsets) in DENSITY_SETS {
+        assert!(
+            offsets.iter().all(|d| (d - scored_at).abs() > 1e-12),
+            "{tag} contains the scored offset, so it is not held out at all",
+        );
+        let mut snaps = SnapshotSet::new(fd.len());
+        let mut active = std::collections::BTreeSet::new();
+        for &dx in offsets {
+            let sc = Scene::at_offset(GEN_A_OVER_CELL, dx);
+            for (k, x) in at(dx).x.iter().enumerate() {
+                snaps.push(&SnapshotSet::free_displacement(x, &x_rest, &fd));
+                active.extend(active_vertices(x, sc.centre_at(k), sc.d_hat));
+            }
+        }
+        let gap = offsets
+            .iter()
+            .map(|d| (d - scored_at).abs())
+            .fold(f64::INFINITY, f64::min);
+        println!(
+            "\nRC\t── {tag}: {} snapshots, {} vertices ever active, true gap {gap:.2}a ──",
+            snaps.len(),
+            active.len(),
+        );
+        let mut seen = std::collections::BTreeSet::new();
+        for r in BASIS_RANKS {
+            let basis = PodBasis::fit(&snaps, Inner::Mass, &mass, 1.0, r).expect("basis fits");
+            if !seen.insert(basis.n_modes()) {
+                continue;
+            }
+            let train_q: Vec<Vec<f64>> = snaps.columns().iter().map(|u| basis.project(u)).collect();
+            let radius = cloud_radius(&train_q);
+            assert!(radius > 0.0, "zero cloud radius at r={}", basis.n_modes());
+            let probe = Probe {
+                envelope: training_envelope(&train_q),
+                train_q,
+                cloud_radius: radius,
+                train_active: &active,
+                tol,
+                d_hat: base.d_hat,
+            };
+            let sc = Scene::at_offset(GEN_A_OVER_CELL, scored_at);
+            let arm = run_reduced(
+                sc,
+                &basis,
+                InitialGuess::Inertial,
+                format!("{tag} r={r}→{}", basis.n_modes()),
+                &Ctx {
+                    x_rest: &x_rest,
+                    fd: &fd,
+                    oracle: at(scored_at),
+                    probe: Some(&probe),
+                },
+                NO_TIMING,
+            );
+            arm.print(n_steps, sc.d_hat);
+            rows.push((tag, basis.n_modes(), arm));
+        }
+    }
+    assert_every_arm_produced(&rows, rows.len());
+
+    println!(
+        "\nRC\t╔═ held-out error at {scored_at:+.2}a, and what the domain signal reads\n\
+         RC\t║ {:<26}{:>12}{:>22}{:>16}",
+        "ensemble", "relL2", "snapshot-dist max/med", "novelty max"
+    );
+    for (tag, got, arm) in &rows {
+        let s3 = signal(arm, |s| s.snapshot_distance, Quantile::Max);
+        let s3m = signal(arm, |s| s.snapshot_distance, Quantile::Median);
+        let s4 = signal(arm, |s| s.active_novelty, Quantile::Max);
+        println!(
+            "RC\t║ {:<26}{:>12.3e}{:>22}{:>16}",
+            format!("{tag} r={got}"),
+            arm.max_rel_err,
+            match (s3, s3m) {
+                (Some(a), Some(b)) => format!("{a:.3e}/{b:.3e}"),
+                _ => "—".to_owned(),
+            },
+            s4.map_or_else(|| "—".to_owned(), |v| format!("{v:.3e}")),
+        );
+    }
+    println!(
+        "RC\t║ A vs B at the SAME gap ⇒ what ENSEMBLE SIZE alone buys.\n\
+         RC\t║ B vs C at the SAME size ⇒ what GAP alone costs.\n\
+         RC\t╚═"
+    );
+}
