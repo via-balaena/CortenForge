@@ -2149,6 +2149,113 @@ Harness: `tests/reduced_contact.rs::reduced_basis_generalises`, `#[ignore]`d,
 ~5 min. Re-run it against any future basis scheme; the in-sample row is its
 two-sided control and the rank trend is the discriminator.
 
+### 2m. §4c rung 1 — an ONLINE validity signal exists, and it is rank-independent (v2.15)
+
+§2l revived `ReducedValidityDomain` as a CORRECTNESS prerequisite, and named
+`gap_dev` as the one quantity measured to catch a silent out-of-domain answer.
+**`gap_dev` cannot be the gate.** It is `|min_sd − ORACLE min_sd|`, so it is a
+diagnostic: a runtime check that needs the full-order answer has nothing left to
+protect. And §4c's *stated* online signal — a bound on `‖q‖` against the training
+envelope — sits in §5 under honestly-open research as not detecting a moved
+contact patch: argued, never measured.
+
+Four oracle-free candidates, scored on §2l's own matrix (same offsets, ranks,
+mesh and ramp; ground truth reproduces §2l cell for cell), of two deliberate
+kinds — an **ERROR** signal rises when the answer is poor from any cause, a
+**DOMAIN** signal rises when the scene is outside what the ensemble saw:
+
+| | signal | kind |
+|---|---|---|
+| S1 | `‖r_free‖ / tol`, the residual the Galerkin condition is blind to | ERROR |
+| S2 | excursion outside the per-mode training box, in half-widths | DOMAIN |
+| S3 | distance to the nearest training snapshot, in cloud radii | DOMAIN |
+| S4 | fraction of contact-active vertices never active in training | DOMAIN |
+
+S1 is free: `r_free` is already assembled at the convergence check and
+`ReducedStep::full_residual_norm` already returns its norm, with this study's
+question stated in its own docs ("no useful bound on it is known yet").
+
+**★★★ S3 is rank-independent.** In cloud radii:
+
+| position | `r=20` | `r=40` | `r=80` | `r=142` |
+|---|---:|---:|---:|---:|
+| IN-SAMPLE `+0.00a` | 3.59e-3 | 9.06e-4 | 6.00e-6 | **6.94e-7** |
+| INTERP `+0.25a` | **5.062e-1** | **5.063e-1** | **5.063e-1** | **5.069e-1** |
+| EXTRAP `+1.50a` | 1.31 | 1.17 | 1.38 | **1.92** |
+| EXTRAP `+2.00a` | 2.74 | 2.96 | 3.56 | **5.98** |
+
+Interpolation reads the same value to **four significant figures** across a 7×
+rank change — the signature a domain signal must have and an error signal cannot.
+
+**★★★ The mechanism, and it is the transferable part.** S3 is rank-independent
+*because POD is energy-ordered*: the leading modes dominate both the distance and
+the cloud radius, so appending tail modes changes neither. S2 takes a **max over
+per-mode normalised deviations**, so it is dominated by the THINNEST axis —
+always the newest tail mode — and its IN-SAMPLE row climbs `104×` with rank
+(`7.85e-2 → 8.17e0`) on the one row that is in-domain by definition. ⇒ **For a
+rank-independent domain signal, take a NORM over modes, never a MAX.**
+
+**⛔ §5's open item 3 is measured, and the argument in it is wrong.** S2 separates
+strongly at every fixed rank (`7.85e-2 / 0.98 / 23.5 / 54.6` at `r=20`), so
+`q`-space *does* carry where the indenter went. What fails is the STATISTIC, not
+the coordinates: in-sample at `r=142` reads `8.17` against interpolation at
+`r=20`'s `0.98`, so no rank-independent threshold exists for a per-mode box.
+
+**S1 separates by regime and conflates within it**, as pre-registered: it falls
+`5.8` orders with rank in-sample (`1.53e8 → 2.47e2`) and only `0.77` / `0.58`
+orders at `+1.50a` / `+2.00a`.
+
+**S4 is the cleanest cut and the coarsest instrument.** Exactly `0.000` at both
+in-hull positions across all four ranks and `≥ 0.111` at both out-of-hull
+positions across all four — no overlap, nothing to tune, the test is "is it
+zero". ⚠ But its magnitude moves `2.6×`/`2.7×` with rank on the extrapolation
+rows, because the active set is computed from `x_rest + Φq` and that field is
+`28 %`–`109 %` wrong out of domain. The pre-registration said rank-dependence
+falsifies basis-independence; it does.
+
+#### ⚠ The margin that would have been overstated
+
+S3's in-sample-versus-everything margin is `141×`. **That is not the gate's
+margin.** A gate must ACCEPT interpolation at `1.9e-3`, and interpolation to the
+nearer extrapolation is `5.069e-1 → 1.165` = **`2.30×`**. S4's window on that
+same cut is exact (`0` vs `≥0.111`); S1's is `3.62e8 → 2.46e9` = `6.80×`.
+
+#### What this settles for §4c
+
+⇒ **The gate is a DOMAIN signal (S4, or S3 for a graded reading) PLUS S1 as the
+error backstop.** Interpolation lands IN DOMAIN on both geometric signals while
+being three orders worse than in-sample, so those three orders are a
+sampling-density-and-rank problem and catching them is S1's job. The two have
+opposite remedies — more training versus more rank — which is precisely what a
+single conflating signal can never report, and why `gap_dev` would have been the
+wrong quantity even if it had been computable online.
+
+★ At the converged rank the pair is a calibration curve, monotone `4/4`:
+`6.9e-7 → 2.6e-6`, `0.507 → 1.9e-3`, `1.92 → 0.282`, `5.98 → 1.09`.
+
+#### ⚠ What this does NOT establish
+
+- **S4's exact zero is a property of THIS ensemble.** Training offsets are `0.5a`
+  apart against a patch of radius `a`, so the union is a contiguous band and
+  interpolation cannot fall in a hole. A sparser ensemble is untested.
+- **S4 rests on 1–3 vertices** (`1/8`, `2/7`, `3/16`, `1/9` at `+1.50a`; the
+  union is `41` of `2 023`), and the harness does not print the denominator.
+  Fix before any threshold is set on it.
+- **S1 is not normalised by the load**, so `6.80×` is a figure about this ramp.
+- **S2's rank explosion is INFERRED not to be the degenerate-mode floor binding**
+  — a bound mode would read `~1e12` and the largest cell is `4.9e7` — but which
+  mode drives the max is not instrumented.
+- **No threshold is set here.** One fixture, one mesh, one material, one ramp;
+  thresholds are learned and this is the pilot they get learned from.
+
+Harness: `tests/reduced_contact.rs::an_online_signal_separates_out_of_domain`,
+`#[ignore]`d, `142 s`. Recording is opt-in through `Ctx::probe`, so the timing
+and phase-share arms pay nothing for it. Two-sided controls throughout, because
+every domain signal's HEALTHY reading is zero: the accumulator starts at `NaN`
+rather than `0` so an arm that recorded nothing cannot read as in-domain, and an
+in-run wiring control requires the `+0.00a` trajectory to read `0` novel against
+the union it belongs to AND non-zero (`0.476`) against the `-1.00a` union alone.
+
 ## 3. What the measurements say about feasibility
 
 ### 3a. The goal is not refuted
@@ -2320,13 +2427,17 @@ accuracy superiority — that is not claimed and would need measuring.
 > so the design anticipated it — what changed is that the cost of shipping
 > without the gate is now measured rather than argued. ⚠ v2.7's retraction of
 > this section as a PERFORMANCE prerequisite is a separate claim and stands.
-> ★ `gap_dev` (the converged contact gap's drift, §2l finding 4) is a measured
-> candidate for the online signal: `0.161–0.583 d̂` out-of-domain against
-> `3.1e-11` in-sample at the same rank. ⚠ **It is an ERROR indicator, not an
-> in-domain one** — at `r = 20` the in-sample arm itself reads `1.6e-4` because
-> the answer is genuinely poor there. For a gate that is arguably the right
-> quantity, since both are reasons to refuse an answer, but **it needs its own
-> threshold study** and must not inherit the `2e-6` regression figure.
+> ⛔ **`gap_dev` IS NOT A CANDIDATE FOR THE ONLINE SIGNAL, and an earlier version
+> of this paragraph said it was.** It detects the failure well
+> (`0.161–0.583 d̂` out-of-domain against `3.1e-11` in-sample at the same rank),
+> but it is `|min_sd − ORACLE min_sd|` — it differences against the full-order
+> answer, so it is a DIAGNOSTIC and can never gate anything. §2m (v2.15)
+> measured four candidates that are genuinely oracle-free and found one that is
+> flat in rank. ⚠ The separate caveat below stands and generalises: `gap_dev` is
+> an ERROR indicator, not an in-domain one — at `r = 20` the in-sample arm reads
+> `1.6e-4` because the answer is genuinely poor there — and §2m confirms the
+> same conflation in the oracle-free error signal, which is exactly why the gate
+> needs a DOMAIN signal beside it.
 
 
 This mirrors `sim-soft`'s existing `ValidityDomain` on `Material` (which already gates
@@ -2357,6 +2468,35 @@ the direct path. ⚠ The one genuinely new thing: a reduced model can leave its 
 therefore has to be **online**, on `‖q‖` and on a cheap residual proxy, not merely a
 statement in a docstring. That is a design requirement, and it is the single most
 important thing to get right in R3.
+
+#### ✅ Rung 1 done — the online signal is MEASURED (§2m, v2.15)
+
+Four oracle-free candidates were scored on §2l's matrix. What the design above got
+right, wrong, and left unsaid:
+
+- ✅ **"the gate has to be ONLINE" was the load-bearing call.** `gap_dev`, the one
+  detector §2l measured, differences against the ORACLE's `min_sd` and is therefore a
+  diagnostic that could never have shipped as a gate.
+- ⚠ **"on `‖q‖`" was right about the coordinates and wrong about the statistic.** A
+  per-mode envelope box is a max over normalised deviations, dominated by the thinnest
+  tail axis, and has NO rank-independent threshold — its in-sample row climbs `104×`
+  with rank. The distance to the nearest training snapshot in cloud radii is flat in
+  rank to four significant figures. ⇒ **a NORM over modes, never a MAX.**
+- ✅ **"and on a cheap residual proxy" was right, and it is free**: `‖r_free‖ / tol`,
+  already assembled at the convergence check.
+- ⛔ **What the design did not say: it takes TWO signals, not one bound.** A DOMAIN
+  signal and an ERROR signal answer different questions with opposite remedies (more
+  training vs. more rank). Interpolation reads IN DOMAIN on both geometric candidates
+  while being three orders worse than in-sample — correctly, since that gap is a
+  sampling-density problem. A single conflating quantity cannot report which it caught.
+- ★ The **"contact configuration class"** named in **Stated** now has a concrete
+  realisation: the fraction of contact-active vertices never active in training reads
+  exactly `0` in domain at every rank and `≥ 0.111` out of it. ⚠ On this ensemble; it
+  rests on 1–3 vertices, and the sampling-density question is open.
+
+⇒ Rung 2 is the gate itself: fail-closed on a domain signal plus the residual proxy,
+with thresholds piloted rather than assumed. See §2m for the margins, which are `2.30×`
+for a graded distance and exact for the hull-membership test.
 
 ---
 
@@ -2407,8 +2547,18 @@ basis in the bulk):
    search) are stated over full nodal positions. Whether they survive projection onto a
    subspace — and what "feasible" means for `q` — is not settled in the literature we
    can rely on.
-3. Validity-domain statement for contact. §4c's `‖q‖` gate does not detect "the
-   indenter moved somewhere the ensemble never saw."
+3. ⛔ **CLOSED by §2m (v2.15), and the claim below was wrong.** It read: "§4c's
+   `‖q‖` gate does not detect *the indenter moved somewhere the ensemble never
+   saw*." That was argued, never measured. Measured, `q`-space carries the
+   position information plainly — what failed was the STATISTIC. A per-mode box
+   is a max over normalised deviations and is dominated by the thinnest tail
+   axis, so it has no rank-independent threshold; the distance to the nearest
+   training snapshot, normalised by the training cloud's radius, is flat in rank
+   to four significant figures and separates every position. ⇒ take a NORM over
+   modes, never a MAX. What remains open is the sampling question the finding
+   exposes: how DENSE the ensemble must be, since the geometric hull test reads
+   exactly zero for interpolation only because the training offsets are `0.5a`
+   apart against a patch of radius `a`.
 
 **Consequence for sequencing**: R1 is deliberately **no contact** (§7). The cheap
 kill-or-confirm must not be entangled with the part that is open research, or a
@@ -2516,7 +2666,7 @@ same door, under its own feature, and must not enter the default build.
 | **R0** ✅ **DONE** (`e77023c7`, `43b198a2`) | **Full-order assembly lever.** Replace the per-iteration `BTreeMap` rebuild in `assemble_free_hessian_triplets` with a pattern-indexed value buffer built once at construction. No algorithm change. | Byte-identity of the assembled triplets against the current path (the `feedback_float_refactor_byte_identity` recipe), plus a measured ms/iteration delta on the §2a fixtures. | §2d.2. Establishes the **honest baseline** the reduction is measured against. Cheap, self-contained, and a win regardless of whether anything downstream ships. |
 | **R1** ✅ **DONE AS SCOPED** (`#744`, `#745`, R1.2) — ⚠ **v2.14: every R1 gate was posed on a FIXED contact configuration.** §2l measures the basis failing to generalise across contact POSITIONS (`28–109 %`, flat in rank), which none of R1.0–R1.3 asked. Complete, with the scope that excluded the question deciding R3. | **Linear subspace, no contact, no coupling.** POD basis from full-order snapshots on the `cantilever` fixture at 3 000 free DOF; reduced Newton with a dense `r × r` direct solve; `Φ` and quadrature both handled naively (full element sweep — **no hyper-reduction yet**). Differentiable path wired at the same time (§6, `Φ` constant). | Projection error vs the oracle < 1 % in tip displacement over the training trajectory; reduced gradient matches the oracle's to the crate's existing gradcheck tolerance. ⚠ **That second clause was wrong and was amended before R1.2 was built** — it asks two different functions to agree to 5 digits when their states already differ in the third. Split into a gradcheck-tolerance kill gate on the reduced model's *own* derivative and a measured comparison against the oracle; see the plan's §5/§7 and §13. **Wall time is explicitly NOT gated at R1** — without hyper-reduction it will not be faster, and pretending otherwise would corrupt the signal. | **The cheap kill-or-confirm.** It answers the one question that decides everything downstream: *does a low-dimensional subspace represent this material's deformation at all?* Fixture already exists; no new physics. |
 | **R2** | **Precision decision.** Measure a full-f32 forward path on the reduced system (`r × r` is small enough to port by hand without touching the 1 396-`f64` production surface), and decide residual-in-f64-on-CPU vs compensated-summation-in-f32. | Reduced-model f32 forward drift and gradient drift vs the f64 reduced model, on R1's fixture; explicit go/no-go on whether the residual can live in f32. | §2c. Must precede any GPU work; deciding it after a shader exists means writing the shader twice. |
-| **R3** **§2i brackets its Amdahl ceiling at `20.2–20.5×`–`≳32×`** (two runs) — clear of both its own `10×` floor and the budget's `13.5–15.8×` on either bound. ✅ v2.13: the reduced path HAS now run with contact — §2k measures `I = 11.3–12.3 ms` on IPC 18 750, margin `1.36–1.47×` under `Inertial` and a FAIL of `0.92–0.98×` under `PreviousState`. ⚠ Size-dependent — `~4.5×` at 5 202, and extrapolating the two terms of `I` separately, gone by ~`26 k` free DOF. Gate is **`I ≤ 16.7 ms`** on §2h's reference box (§2j — restated in v2.8 from `≥10×`, which was a ratio over a moving baseline). | **Hyper-reduction (ECSW) + the validity domain.** NNLS training over R1's snapshots; `ReducedValidityDomain` with the online `‖q‖` + residual-proxy gate; the three error measures of §4c. | Measured speedup vs §2a's baseline (post-R0), with the three §4c errors reported alongside. Domain gate demonstrated to fire on an out-of-domain trajectory. | This is where the frame-budget win actually arrives. Also where the "smooth and wrong" failure mode is defended against. |
+| **R3** **§2i brackets its Amdahl ceiling at `20.2–20.5×`–`≳32×`** (two runs) — clear of both its own `10×` floor and the budget's `13.5–15.8×` on either bound. ✅ v2.13: the reduced path HAS now run with contact — §2k measures `I = 11.3–12.3 ms` on IPC 18 750, margin `1.36–1.47×` under `Inertial` and a FAIL of `0.92–0.98×` under `PreviousState`. ⚠ Size-dependent — `~4.5×` at 5 202, and extrapolating the two terms of `I` separately, gone by ~`26 k` free DOF. Gate is **`I ≤ 16.7 ms`** on §2h's reference box (§2j — restated in v2.8 from `≥10×`, which was a ratio over a moving baseline). | **Hyper-reduction (ECSW) + the validity domain.** NNLS training over R1's snapshots; `ReducedValidityDomain` — ✅ v2.15: §2m measured its online signal, so this half is implementation, not research. The gate is a DOMAIN signal (nearest-training-snapshot distance in cloud radii, flat in rank; or the exact hull-membership variant) PLUS `‖r_free‖ / tol` as the error backstop — a NORM over modes, never the per-mode max the design had stated. Plus the three error measures of §4c. | Measured speedup vs §2a's baseline (post-R0), with the three §4c errors reported alongside. Domain gate demonstrated to fire on an out-of-domain trajectory. | This is where the frame-budget win actually arrives. Also where the "smooth and wrong" failure mode is defended against. |
 | **R4** | **Hybrid domain decomposition, FIXED contact patch.** Full DOF under a stationary indenter, reduced bulk, on the `dynamic_indentation` geometry. | End-to-end reaction force vs the oracle, in the same band `bonded_layer_indentation` already asserts. | §5. Fixed patch first, because it isolates the coupling condition from the re-partitioning problem. |
 | **R5** | **Moving patch.** Re-partitioning under a once-built symbolic factorization, or a conservative union pattern. | Sliding-contact trajectory vs the oracle. | §5's open-research item. **Explicitly gated on R4 succeeding**; if R4 fails, this is not attempted. |
 | **R6** | **Rigid↔soft coupling.** | — | **Last, deliberately.** Per the brief, and it is the right call: the keystone coupling is itself the platform's hardest open problem (`MISSION.md` §2), and stacking it on an unsolved real-time reduced path would make any failure uninterpretable. |
@@ -2720,6 +2870,17 @@ until then, and by nobody else ever. The recipe above is the durable record.
    is sketched and unmeasured. ⚠ Interpolation *inside* the hull is usable
    (`1.9e-3` on a `0.5a` grid), so the risk is a domain-coverage and gating
    problem, not a dead end.
+
+   ✅ **The GATING half is now discharged to a measurement (§2m, v2.15):** an
+   ONLINE, oracle-free signal exists and is rank-independent — distance to the
+   nearest training snapshot in cloud radii reads `5.06e-1` at interpolation to
+   four significant figures across a 7× rank change, against `≤ 3.6e-3`
+   in-sample and `≥ 1.17` extrapolating. Paired with `‖r_free‖ / tol` as the
+   error backstop, §4c's gate has a candidate design and rung 2 is
+   implementation, not research. ⚠ The DOMAIN-COVERAGE half is untouched, and
+   §2m sharpens it: how dense must the ensemble be? The geometric hull test reads
+   exactly zero for interpolation only because the training offsets are `0.5a`
+   apart against a patch of radius `a`.
 1. **Every timing number was taken on a contended box (§1a).** Absolute times are
    upper bounds. The *shapes* (scaling exponents, phase shares, crossover point) are
    robust across repeats; the absolutes are not benchmark-grade. Re-take §2a on an idle
@@ -2782,6 +2943,28 @@ until then, and by nobody else ever. The recipe above is the durable record.
 
 ## 12. Version history
 
+- **v2.15 (2026-08-25)** — **§2m, new: §4c rung 1 — an ONLINE validity signal
+  exists and is RANK-INDEPENDENT.** §2l's detector `gap_dev` differences against
+  the ORACLE and could never have been a gate. Four oracle-free candidates scored
+  on §2l's own matrix: ★★★ distance to the nearest training snapshot in cloud
+  radii reads `5.062e-1 / 5.063e-1 / 5.063e-1 / 5.069e-1` at interpolation across
+  `r = 20 … 142` — four significant figures over a 7× rank change — against
+  `≤ 3.6e-3` in-sample and `1.17 … 5.98` extrapolating. ★★★ **Mechanism, and it
+  is the transferable part:** POD is energy-ordered, so a NORM over modes is set
+  by the head and is rank-independent, while a MAX over per-mode normalised
+  deviations is set by the thinnest tail axis and climbs `104×` with rank on the
+  IN-SAMPLE row. ⇒ take a norm, never a max. ⛔ **§5's open item 3 is closed and
+  its claim was wrong** — `q`-space does carry where the indenter went; the
+  stated per-mode BOX was the defect, not the coordinates. ★★ **The gate needs
+  TWO signals:** interpolation reads IN DOMAIN on both geometric candidates while
+  being three orders worse than in-sample, correctly — that gap is
+  sampling density, whose remedy (more training) is the opposite of the
+  low-rank remedy (more modes), and one conflating quantity cannot report which
+  it caught. ⚠ The advertised margin is `2.30×` (interpolation to the nearer
+  extrapolation), NOT the `141×` of in-sample-versus-everything; the
+  hull-membership variant is exact (`0` vs `≥ 0.111`) but rests on 1–3 vertices
+  of a `41`-vertex union and is untested on a sparser ensemble. NO THRESHOLD SET.
+  §4c, §5, §7 and §10 risk 0 updated.
 - **v2.14 (2026-08-24)** — **§2l, new: the basis does NOT generalise across
   contact POSITIONS.** One basis trained on five lateral indenter offsets
   (`±1a`), scored at four positions against each one's own oracle: in-sample
@@ -2790,7 +2973,8 @@ until then, and by nobody else ever. The recipe above is the durable record.
   nearer extrapolation keeps `1.5a` of clearance and fails alike). ★★★ Failure is
   **SILENT**: the bad arms converge, complete, and do not penetrate. ★★ `gap_dev`
   detects it anyway (`0.161–0.583 d̂` vs `3.1e-11`), which is not what it was
-  built for, and is a candidate online signal for §4c — ⚠ as an ERROR indicator
+  built for, and (⛔ WRONG, corrected in v2.15: `gap_dev` differences against the
+  ORACLE, so it can never gate) was called a candidate online signal for §4c — ⚠ as an ERROR indicator
   rather than an in-domain one, needing its own threshold, since at `r = 20` the
   in-sample arm also clears the regression figure. ⇒ **`ReducedValidityDomain`
   revived as a CORRECTNESS prerequisite** (v2.7's retraction of it as a

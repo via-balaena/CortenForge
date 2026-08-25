@@ -115,6 +115,21 @@
 //! with friction, or with a body load (recon §2f killed `InertialWithLoad` on
 //! contact-plus-load, and everything here runs `gravity_z = 0`). And it is not a
 //! timing run — `I` still has to be measured.
+//!
+//! ## The other two studies in this file
+//!
+//! The producer check above is the FIRST of three, and the later two answer what
+//! its own caveat leaves open. They share this fixture deliberately.
+//!
+//! - [`reduced_basis_generalises`] (recon §2l) — does the basis hold up when the
+//!   contact patch MOVES? **No**, and rank does not fix it. Failure is SILENT:
+//!   the bad arms converge, complete, and do not penetrate while `28 %`–`109 %`
+//!   wrong. That is what makes §4c's validity gate a CORRECTNESS prerequisite.
+//! - [`an_online_signal_separates_out_of_domain`] (recon §2m) — given that, what
+//!   can a gate actually WATCH at runtime? Four oracle-free candidates scored on
+//!   the same matrix. `gap_dev`, the detector §2l found, needs the oracle and is
+//!   disqualified; the distance to the nearest training snapshot is flat in rank
+//!   and is not.
 
 #![allow(
     clippy::panic,
@@ -1678,11 +1693,19 @@ const MIN_IN_SAMPLE_ADVANTAGE: f64 = 10.0;
 ///   the same rank. ⚠ **But it is an ERROR indicator, not an in-domain one**: at
 ///   `r = 20` the IN-SAMPLE arm reads `1.6e-4`, over the threshold, because the
 ///   answer is genuinely poor there (`relL2 = 2.4e-2`). It conflates "outside
-///   the hull" with "basis too small" — arguably the right quantity for a §4c
-///   gate, since both are reasons to refuse an answer, but the gate needs its
-///   own threshold study and not the `2e-6` regression figure. Nor is it
-///   monotone in `relL2` within a regime, so it separates regimes by orders of
-///   magnitude and ranks nothing finer.
+///   the hull" with "basis too small". Nor is it monotone in `relL2` within a
+///   regime, so it separates regimes by orders of magnitude and ranks nothing
+///   finer.
+///
+///   ⛔ **AND IT CANNOT BE THE §4c GATE — an earlier version of this list said
+///   it arguably was.** `gap_dev` is `|min_sd − ORACLE min_sd|`
+///   (see its field on [`Arm`]), so it differences against the full-order
+///   answer: a runtime check that needs the solve it exists to avoid protects
+///   nothing. It stays here as a diagnostic and as the reference column the
+///   oracle-free candidates are measured against. The signals that CAN gate are
+///   in [`an_online_signal_separates_out_of_domain`], which also confirms the
+///   ERROR/in-domain conflation above in an oracle-free signal — which is why
+///   the gate needs a DOMAIN signal beside it, not a better error one.
 /// - ⇒ **This REVIVES `ReducedValidityDomain` (§4c) as a CORRECTNESS
 ///   prerequisite.** v2.7 retracted it as a performance prerequisite and that
 ///   retraction stands. But a reduced solver that returns a converged,
@@ -2474,6 +2497,103 @@ fn signal(arm: &Arm, pick: fn(&Signals) -> f64) -> Option<f64> {
 ///    `+0.25a` lands on. It is `1.9e-3` — three orders worse than in-sample and
 ///    arguably still usable. A gate that refuses interpolation is useless; one
 ///    that accepts it owes an account of the three orders. No prediction.
+///
+/// ## Measured — first run, 2026-08-25, `a/cell = 2` (5 202 free DOF, 2 023 vertices)
+///
+/// Ground truth reproduces §2l cell for cell (`2.42e-2 / 4.73e-3 / 1.12e-4 /
+/// 2.57e-6` in-sample, `1.89e-3` interpolating, `0.282` and `1.09`
+/// extrapolating), so this is that fixture and not a lookalike. Training set:
+/// `355` snapshots, `41` of `2 023` vertices ever contact-active. Wiring
+/// control: `0.000` novel against its own union, `0.476` against the `-1.00a`
+/// union alone.
+///
+/// **★★★ AN ORACLE-FREE SIGNAL EXISTS, AND IT IS RANK-INDEPENDENT.**
+/// `hull_distance` (S3), in cloud radii:
+///
+/// | position | r=20 | r=40 | r=80 | r=142 |
+/// |---|---:|---:|---:|---:|
+/// | IN-SAMPLE `+0.00a` | 3.59e-3 | 9.06e-4 | 6.00e-6 | 6.94e-7 |
+/// | INTERP `+0.25a` | **5.062e-1** | **5.063e-1** | **5.063e-1** | **5.069e-1** |
+/// | EXTRAP `+1.50a` | 1.31 | 1.17 | 1.38 | 1.92 |
+/// | EXTRAP `+2.00a` | 2.74 | 2.96 | 3.56 | 5.98 |
+///
+/// Interpolation reads the same value to FOUR significant figures across a 7×
+/// rank change. That is the signature a domain signal must have and an error
+/// signal cannot: a statement about where the scene sits, not about how well it
+/// is resolved.
+///
+/// **★★★ The mechanism, and it is the transferable part.** S3 is
+/// rank-independent *because POD is energy-ordered*: the leading modes dominate
+/// both the distance and the cloud radius, so appending tail modes changes
+/// neither. S2 takes a **max over per-mode normalised deviations**, so it is
+/// dominated by the THINNEST axis — always the newest tail mode — and its
+/// IN-SAMPLE row climbs `104×` with rank (`7.85e-2 → 8.17e0`) on the one row
+/// that is in-domain by definition. ⇒ **For a rank-independent domain signal,
+/// take a NORM over modes, never a MAX.**
+///
+/// ### Against the pre-registration
+///
+/// 1. **HELD.** S1 falls `5.8` orders with rank in-sample (`1.53e8 → 2.47e2`)
+///    and only `0.77` / `0.58` orders at `+1.50a` / `+2.00a` — separates by
+///    regime, flat within the bad ones, exactly the conflating shape.
+/// 2. ⛔ **FALSIFIED, and it is the useful one.** S2 separates strongly at every
+///    fixed rank. Recon §5's "the `‖q‖` gate does not detect that the indenter
+///    moved somewhere the ensemble never saw" was ARGUED, and it is **wrong** —
+///    `q`-space carries the position information. What fails is the STATISTIC:
+///    in-sample at `r=142` reads `8.17` against interpolation at `r=20`'s
+///    `0.98`, so no rank-independent threshold exists for a per-mode box.
+/// 3. **HELD**, and S3 is the best of the four.
+/// 4. ⚠ **PARTIALLY FALSIFIED.** S4 is stepped in position and reads EXACTLY
+///    zero in domain at every rank, but its magnitude moves `2.6×`/`2.7×` with
+///    rank on the two extrapolation rows — the active set is computed from
+///    `x_rest + Φq`, and out of domain that field is `28 %`–`109 %` wrong, so
+///    which vertices fall inside `d̂` is contaminated exactly where it matters.
+///    The pre-registered structural claim said rank-dependence falsifies
+///    basis-independence. It does.
+/// 5. **HELD** — see the gate below.
+/// 6. **Interpolation is IN DOMAIN** on both geometric signals (S4 exactly `0`,
+///    S3 a distinct but small `0.506`). ⇒ its three orders are a
+///    sampling-density-and-rank problem, not a domain problem, and catching
+///    them is S1's job. That is the product answer.
+///
+/// ### ⚠ The margin I would have overstated
+///
+/// S3's in-sample-versus-everything-else margin is `141×`
+/// (`3.59e-3 → 5.062e-1`). **That is not the gate's margin.** A gate that
+/// ACCEPTS interpolation — and it must, at `1.9e-3` — has only
+/// `5.069e-1 → 1.165` = **`2.30×`** between interpolation and the nearer
+/// extrapolation.
+///
+/// ★ **S4 wins that exact cut outright**: `0.000` at both in-hull positions
+/// across all four ranks, `≥ 0.111` at both out-of-hull positions across all
+/// four, no overlap and nothing to tune — the test is "is it zero". S1's
+/// equivalent window is `3.62e8 → 2.46e9`, or `6.80×`.
+///
+/// ⇒ **§4c's gate is a DOMAIN signal (S4, or S3 for a graded reading) plus S1
+/// as the error backstop.** They have opposite remedies — more training versus
+/// more rank — which is what a single conflating signal can never report.
+///
+/// ★ At the converged rank the two are a calibration curve, monotone `4/4`:
+/// `6.9e-7 → 2.6e-6`, `0.507 → 1.9e-3`, `1.92 → 0.282`, `5.98 → 1.09`.
+///
+/// ### ⚠ What this does NOT establish
+///
+/// - **S4's exact zero is a property of THIS ensemble.** Training offsets are
+///   `0.5a` apart against a patch of radius `a`, so the training union is a
+///   contiguous band and interpolation cannot fall in a hole. A sparser ensemble
+///   is untested and could read non-zero in domain.
+/// - **S4 rests on 1–3 vertices.** The readings are `1/8`, `2/7`, `3/16`, `1/9`
+///   at `+1.50a`; the union is `41` of `2 023` vertices. ⚠ And the DENOMINATOR
+///   IS NOT PRINTED — a fraction without its count. Fix before any threshold.
+/// - **S1 is not normalised by the load** (see [`Signals::residual_excess`]), so
+///   its `6.80×` window is a figure about this ramp.
+/// - **S2's rank explosion is INFERRED not to be [`DEGENERATE_MODE_FLOOR`]
+///   binding** — a bound mode would read `~1e12` and the largest cell is
+///   `4.9e7` — but which mode drives the max is not instrumented.
+/// - **No threshold is set, and none should be read off these cells.** One
+///   fixture, one mesh, one material, one ramp.
+/// - The `+2.00a r=20` "divergence" is an `ArmijoStall` at `‖r‖ = 1.037e-10`
+///   against a `1e-10` tol — it stalled AT the answer, not away from it.
 #[test]
 #[ignore = "§4c online-signal pilot — 8 full-order trajectories, ~5 min (see the fn docs)"]
 fn an_online_signal_separates_out_of_domain() {
