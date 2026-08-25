@@ -2707,6 +2707,21 @@ enum Band {
     /// reads like `smooth:mode-1`, the in-plane components carry the whole cost
     /// and a mesh-general predictor can be built from transverse fields.
     TipMatchedZOnly,
+    /// [`Self::TipMatched`] with the transverse part scaled by `β` and the
+    /// in-plane part by `β²`.
+    ///
+    /// ★★★ The falsifiable prediction of the axial-strain mechanism. A mode's
+    /// in-plane field cancels `½(∂w/∂x)²` at the amplitude it was fitted at;
+    /// rescale `w` by `β` and that term grows as `β²` while a linearly scaled
+    /// `∂u/∂x` grows as `β`. Scaling the in-plane part by `β²` instead should
+    /// cancel the mismatch — and `β²` is arithmetic on a number the arm already
+    /// has, not knowledge about beams, so a win here is still mesh-general.
+    ///
+    /// ⚠ It is a prediction about the LEADING term only. The cancellation is
+    /// exact for a kinematic that is quadratic in the rotation and nothing
+    /// more; a Neo-Hookean Tet10 at `0.6 rad` is not that, so a partial
+    /// recovery would still support the mechanism.
+    QuadraticInPlane,
     /// The analytic first-mode `z` profile plus [`Self::TipMatched`]'s `x`/`y`.
     ///
     /// ★★★ Cell (analytic-z, POD in-plane). The other half of the crossover,
@@ -2734,6 +2749,7 @@ impl Band {
             Self::Random => "rand",
             Self::TipMatched => "tipmatch",
             Self::TipMatchedZOnly => "tip-z",
+            Self::QuadraticInPlane => "tip-b2",
             Self::RampPlusModalXy => "ramp+xy",
             Self::ScaledLikeLow => "scaled",
         }
@@ -2779,9 +2795,11 @@ fn modal_start(
             };
             (u.iter().map(|ui| alpha * ui).collect(), low)
         }
-        Band::Low | Band::TipMatched | Band::TipMatchedZOnly | Band::RampPlusModalXy => {
-            (project_onto(&rig.basis.modes()[..low], &rig.mass, &u), low)
-        }
+        Band::Low
+        | Band::TipMatched
+        | Band::TipMatchedZOnly
+        | Band::QuadraticInPlane
+        | Band::RampPlusModalXy => (project_onto(&rig.basis.modes()[..low], &rig.mass, &u), low),
     };
     // ⚠ Only the FREE DOFs enter the field. A constrained DOF keeps `x₀`,
     // matching what `Start::AtPrevious` and every `Start::Smoothed` profile
@@ -2794,30 +2812,42 @@ fn modal_start(
     }
     let predicted: Vec<f64> = p.iter().zip(x0).map(|(a, b)| a - b).collect();
     let want = tip_displacement(&predicted, loaded);
-    if matches!(
-        arm.band,
-        Band::TipMatched | Band::TipMatchedZOnly | Band::RampPlusModalXy
-    ) {
-        // A projection with no amplitude at the driven band cannot be rescaled
-        // to have some; leaving it unscaled makes that visible as a `Low`-sized
-        // row rather than hiding it behind a division.
-        let have = tip_displacement(&field, loaded);
-        if have != 0.0 {
-            let beta = want / have;
+    // `β` rescales a projection so the driven band lands where `p` puts it. It
+    // is read off the UNSCALED field, and it is the SAME number for every
+    // tip-matched arm below — zeroing, replacing or separately scaling the
+    // in-plane components cannot move a fold that reads only `z`. That is what
+    // makes the 2×2 a decomposition rather than four unrelated rows.
+    //
+    // A projection with no amplitude at the driven band cannot be rescaled to
+    // have some; `β = 1` leaves it as the plain projection, which shows up as a
+    // `Low`-sized row rather than hiding behind a division.
+    let have = tip_displacement(&field, loaded);
+    let beta = if have == 0.0 { 1.0 } else { want / have };
+    match arm.band {
+        // A projection, used as one. At `β = 1` there is no amplitude mismatch
+        // to create — which is why these are the arms that do well.
+        Band::Low | Band::Random | Band::ScaledLikeLow => {}
+        Band::TipMatched => {
             for f in &mut field {
                 *f *= beta;
             }
         }
-    }
-    match arm.band {
         Band::TipMatchedZOnly => {
             for (i, f) in field.iter_mut().enumerate() {
-                if i % 3 != 2 {
-                    *f = 0.0;
-                }
+                *f = if i % 3 == 2 { *f * beta } else { 0.0 };
+            }
+        }
+        Band::QuadraticInPlane => {
+            for (i, f) in field.iter_mut().enumerate() {
+                *f *= if i % 3 == 2 { beta } else { beta * beta };
             }
         }
         Band::RampPlusModalXy => {
+            for (i, f) in field.iter_mut().enumerate() {
+                if i % 3 != 2 {
+                    *f *= beta;
+                }
+            }
             // Overwrite `z` with the analytic profile, keeping the projection's
             // in-plane field. Written at EVERY vertex, exactly as
             // `smoothed_start` writes it, and it vanishes at the clamp because
@@ -2827,7 +2857,6 @@ fn modal_start(
                 field[3 * v + 2] = want * Shape::FirstMode.at(s) / unit;
             }
         }
-        Band::Low | Band::TipMatched | Band::Random | Band::ScaledLikeLow => {}
     }
     let out: Vec<f64> = x0.iter().zip(&field).map(|(a, b)| a + b).collect();
     (out, width)
@@ -3210,6 +3239,7 @@ fn modal_sweep_at(rig: &ModalRig, magnitude: f64) {
             Band::Low,
             Band::TipMatched,
             Band::TipMatchedZOnly,
+            Band::QuadraticInPlane,
             Band::RampPlusModalXy,
             Band::Random,
             Band::ScaledLikeLow,
@@ -3269,5 +3299,14 @@ fn modal_verdict(
         cell(find(Band::RampPlusModalXy)),
         cell(find(Band::TipMatched)),
     );
-    vec![headline, split]
+    // ★ The prediction the axial-strain mechanism makes, read against the two
+    // rescales that bracket it and against the profile that still wins.
+    let quad = format!(
+        "      b2  r={rank}  xy:beta {}   xy:beta^2 {}   xy:none {}   analytic-z {}",
+        cell(find(Band::TipMatched)),
+        cell(find(Band::QuadraticInPlane)),
+        cell(find(Band::TipMatchedZOnly)),
+        cell(ramp),
+    );
+    vec![headline, split, quad]
 }
