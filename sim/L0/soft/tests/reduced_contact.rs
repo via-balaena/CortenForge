@@ -119,10 +119,15 @@
 //! ## The other studies in this file
 //!
 //! The producer check above is the first of SIX `#[ignore]`d studies, and each
-//! later one answers what its predecessor's caveat leaves open. They share this
-//! fixture deliberately — the same [`GEN_A_OVER_CELL`], [`TRAIN_OFFSETS`] and
-//! [`BASIS_RANKS`], so a finding is scored against the matrix the previous rung
-//! published rather than a lookalike re-run.
+//! later one answers what its predecessor's caveat leaves open.
+//!
+//! ⚠ They do NOT all share one fixture. The first two carry their own ladders —
+//! [`R_LADDER`] for the producer check, [`TIMING_A_OVER_CELL`] (which reaches
+//! `a/cell = 3`) for the timing run. **The last FOUR share
+//! [`GEN_A_OVER_CELL`] and [`BASIS_RANKS`] deliberately**, so each is scored
+//! against the matrix the previous rung published rather than a lookalike re-run;
+//! §2n and §2o then vary the training ENSEMBLE on that matrix — and §2n adds one
+//! off-lattice TEST position — which is exactly what each is built to change.
 //!
 //! - [`reduced_contact_phase_shares`] (recon §2k) — step 2 of the contact arc:
 //!   `I` measured on the fixture R3's requirement is stated for.
@@ -131,8 +136,8 @@
 //!   **7 of the 8** extrapolation arms: they converge, complete all 71 steps, and
 //!   do not penetrate while `14.8 %`–`109 %` wrong. (The eighth, `+2.00a` at
 //!   `r=20`, stalls at step 65 — the only one the solver itself flags, and the
-//!   only one reading above `109 %`.) That is what makes §4c's validity gate a
-//!   CORRECTNESS prerequisite.
+//!   highest cell in the matrix at `119.6 %`.) That is what makes §4c's validity
+//!   gate a CORRECTNESS prerequisite.
 //! - [`an_online_signal_separates_out_of_domain`] (recon §2m) — given that, what
 //!   can a gate actually WATCH at runtime? Four oracle-free candidates scored on
 //!   the same matrix. `gap_dev`, the detector §2l found, needs the oracle and is
@@ -3577,8 +3582,8 @@ const OFF_LATTICE_EXTRAP: f64 = 1.75;
 ///   `0.970` at `0.50a`) is a DIRECTION. ⚠ The ratio between the two normalisers
 ///   is not measured; measuring it would take one re-run printing
 ///   `cloud_radius` per arm, and none of this section's conclusions wait on it.
-///   ✅ §2o states the same caveat correctly and does not lean on a cross-ensemble
-///   number anywhere.
+///   ✅ §2o carries one cross-ensemble reading (`~1.1×`) and labels it a direction
+///   rather than a number, which is the form this section should have used.
 /// - **The lattice control tests the EXTRAPOLATION end only.**
 /// - No timing, no threshold, one fixture, one basis construction.
 #[test]
