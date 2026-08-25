@@ -1,6 +1,6 @@
 # sim-soft Real-Time Path — Phase-1 Measurement + Recon (Phase E predecessor)
 
-**Status**: RECON 2026-08-10 (rev 2026-08-25), v2.17. Phase 1 (measure) COMPLETE — all four requested
+**Status**: RECON 2026-08-10 (rev 2026-08-25), v2.18. Phase 1 (measure) COMPLETE — all four requested
 measurements taken; §2 reports them. Phase 2 (this recon) proposes the MOR +
 hyper-reduction path with a staged ladder whose first rung is a kill-or-confirm.
 **No dependency was added.** Phase 1's instrumentation was temporary (implement →
@@ -2399,6 +2399,74 @@ leaving two of its own pre-registered items unanswerable from its output — a
 prediction whose data is not emitted is not a prediction, and the harness now
 emits it.
 
+### 2o. §4c rung 1c — "density" is TWO factors, and the weaker one is what the signals measure (v2.18)
+
+§10 risk 0 carried §4c's domain-coverage half as untouched and §5's open item 3 was
+re-scoped to it: **how dense must the training ensemble be?** A parameter box in the
+**Stated** clause is meaningless without it.
+
+Every reduced result in this arc conflates two factors, because refining a training
+grid moves both at once: the SPACING between neighbouring trajectories, and the
+NUMBER of them. A 2-factor design over offsets whose oracles already exist, all
+scored at the same held-out `+0.00a`, costing no new trajectory:
+
+| ensemble | `r=20` | `r=40` | at its own ceiling |
+|---|---:|---:|---:|
+| **A** 4 traj, gap `0.50a` | 3.733e-1 | 1.406e-1 | 1.172e-2 (`r=116`) |
+| **B** 2 traj, gap `0.50a` | 7.949e-1 | 3.790e-1 | 1.394e-1 (`r=64`) |
+| **C** 2 traj, gap `1.00a` | 8.632e-1 | 4.448e-1 | 3.058e-1 (`r=65`) |
+
+#### ★★★ At matched rank, SIZE dominates GAP
+
+- **A vs B** — doubling the ENSEMBLE at fixed gap buys **`2.13×` / `2.70×`**.
+- **B vs C** — doubling the GAP at fixed size costs **`1.09×` / `1.17×`**.
+
+"Denser is better" resolves into two effects of unequal weight, and **the one every
+online candidate in §2m measures — the gap — is the weaker.**
+
+★★ **Size compounds, because it sets the rank CEILING.** 284 snapshots retain 116
+modes; 142 retain 64. B cannot pass `r=64` however much rank is asked for, so at
+their respective ceilings A beats B by **`11.9×`** against the `2.1–2.7×` basis
+quality alone accounts for. A small ensemble is penalised twice — a worse basis at
+every rank, and a lower rank to stop at.
+
+#### ⇒ Second strike against §2m's surviving candidate
+
+A and B are at **the same gap** and differ `2.13–2.70×` in error. The domain
+signals read:
+
+- `active_novelty`: **`0.000` for both at every rank.** Identical.
+- `snapshot_distance` median: A `0.411–0.420`, B `0.447–0.500` — ~`1.1×`, ⚠ and the
+  normaliser changes across ensembles, so even that is a direction not a number.
+
+**Neither can express ensemble size.** §2n showed `snapshot_distance` is blind to
+RESOLUTION (rank-independent by construction); this shows it is blind to ENSEMBLE
+SIZE too. It reads the sampling PITCH — measured here as the smaller of the two
+things that set the error.
+
+⇒ **A `ReducedValidityDomain` must state CARDINALITY and not only pitch, and the
+online candidate cannot check the clause that matters more.**
+
+#### ✅ And C is the positive control for `active_novelty`
+
+C fires — `0.250 / 0.182 / 0.167` — where A and B read exactly zero, because
+`[-1, +1]` leaves a hole at the centre that `±0.5a` sweeps through. So that signal
+does measure something real, **COVERAGE**, and fires exactly when coverage fails.
+This sweep measures coverage to be the factor that is NOT dominating.
+
+#### ⚠ What this does NOT establish
+
+- One held-out point, one gap pair, one size pair — `2.13–2.70×` and `1.09–1.17×`
+  are two points each, not a scaling law.
+- **Trajectory count and SNAPSHOT count are confounded**: B and C hold 142 snapshots
+  because they hold 2 ramps of 71 steps. A longer ramp at fewer offsets would
+  separate them; nothing here does.
+- Only the matched-rank rows isolate a factor. The own-ceiling column mixes basis
+  quality with the ceiling and is reported separately for that reason.
+
+Harness: `tests/reduced_contact.rs::how_dense_the_training_ensemble_must_be`,
+`#[ignore]`d, `82.7 s`, zero new full-order trajectories.
+
 ## 3. What the measurements say about feasibility
 
 ### 3a. The goal is not refuted
@@ -3034,8 +3102,11 @@ until then, and by nobody else ever. The recipe above is the durable record.
    rank-independence, which §2m named as its signature, is exactly what makes it
    blind to resolution. ⇒ a DOMAIN signal and an ERROR signal are provably
    different quantities and §4c needs both; neither alone gates. ⚠ The
-   DOMAIN-COVERAGE half remains untouched, and one held-out point is still one
-   point.
+   DOMAIN-COVERAGE half is answered in part by §2n/§2o (v2.18): "density" is TWO
+   factors, ENSEMBLE SIZE dominates GAP `2.1–2.7×` against `1.1×` at matched rank
+   and compounds through the rank ceiling to `11.9×`, and **both online candidates
+   are blind to size** — so the domain must state CARDINALITY and neither candidate
+   can check it. ⚠ One held-out point is still one point.
 1. **Every timing number was taken on a contended box (§1a).** Absolute times are
    upper bounds. The *shapes* (scaling exponents, phase shares, crossover point) are
    robust across repeats; the absolutes are not benchmark-grade. Re-take §2a on an idle
@@ -3098,6 +3169,19 @@ until then, and by nobody else ever. The recipe above is the durable record.
 
 ## 12. Version history
 
+- **v2.18 (2026-08-25)** — **§2o, new: "density" is TWO factors and the online
+  signals measure the WEAKER one.** A 2-factor design at a fixed held-out point,
+  zero new trajectories: at matched rank, doubling the ENSEMBLE at fixed gap buys
+  `2.13–2.70×` while doubling the GAP at fixed size costs only `1.09–1.17×`. ★★
+  Size COMPOUNDS by setting the rank ceiling (284 snapshots → 116 modes, 142 → 64),
+  so at their own ceilings the larger ensemble wins `11.9×`. ⇒ **second strike on
+  §2m's survivor:** two ensembles at the SAME gap differ `2.1–2.7×` in error while
+  `active_novelty` reads `0.000` for both and `snapshot_distance` reads ~`1.1×`
+  apart — **neither can express ensemble size**, so a validity domain must state
+  CARDINALITY and the online candidate cannot check it. ✅ Positive control:
+  `active_novelty` DOES fire (`0.167–0.250`) on the ensemble that leaves a genuine
+  hole, so it measures COVERAGE correctly — coverage is just not what dominates.
+  §5 item 3 and §10 risk 0's domain-coverage half answered in part.
 - **v2.17 (2026-08-25)** — **§2n, new: the first HELD-OUT position, and it
   disqualifies §2m's survivor.** Leave-one-out (refit on `[-1,-0.5,+0.5,+1]a`,
   score at `+0.00a`) plus an off-lattice extrapolation control. ★★★ **Within one

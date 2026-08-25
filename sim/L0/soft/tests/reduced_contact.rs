@@ -3743,6 +3743,76 @@ const DENSITY_SETS: [(&str, &[f64]); 3] = [
 ///    since it is close to linear in gap (§2n measured `0.506` at `0.25a` and
 ///    `0.970` at `0.50a`). ⚠ Across ensembles its normaliser changes, so this is
 ///    the weakest of the four and is read as a direction, not a number.
+///
+/// ## Measured — 2026-08-25, 5 oracles, `82.7 s`
+///
+/// | ensemble | `r=20` | `r=40` | at its own ceiling |
+/// |---|---:|---:|---:|
+/// | **A** 4 traj, gap `0.50a` | 3.733e-1 | 1.406e-1 | 1.172e-2 (`r=116`) |
+/// | **B** 2 traj, gap `0.50a` | 7.949e-1 | 3.790e-1 | 1.394e-1 (`r=64`) |
+/// | **C** 2 traj, gap `1.00a` | 8.632e-1 | 4.448e-1 | 3.058e-1 (`r=65`) |
+///
+/// ### ★★★ SIZE dominates GAP, and pre-registration item 2 is the branch taken
+///
+/// At matched rank:
+///
+/// - **A vs B — doubling the ENSEMBLE at fixed gap buys `2.13×` / `2.70×`.**
+/// - **B vs C — doubling the GAP at fixed size costs `1.09×` / `1.17×`.**
+///
+/// So "denser is better" resolves into two effects of unequal weight, and the one
+/// every online signal here measures — the gap — is the WEAKER of the two.
+///
+/// ★★ **And size compounds, because it sets the rank CEILING.** 284 snapshots
+/// retain 116 modes; 142 retain 64. B cannot go past `r=64` no matter what is
+/// asked of it, so at their respective ceilings A beats B by **`11.9×`** — far
+/// more than the `2.1–2.7×` the basis quality alone accounts for. A small ensemble
+/// is penalised twice: a worse basis at every rank, and a lower rank to stop at.
+///
+/// ### ⇒ Second strike against the surviving candidate
+///
+/// A and B are **the same gap** and differ `2.13–2.70×` in error. What the domain
+/// signals read:
+///
+/// - `active_novelty`: **`0.000` for both, at every rank.** Identical.
+/// - `snapshot_distance` median: A `0.411–0.420`, B `0.447–0.500` — about `1.1×`,
+///   ⚠ and across ensembles its normaliser changes, so even that is weak evidence
+///   rather than a measurement.
+///
+/// **Neither can express ensemble size.** §2n showed `snapshot_distance` is blind
+/// to RESOLUTION (rank-independent by construction); this shows it is blind to
+/// ENSEMBLE SIZE as well. It reads the sampling PITCH, which is measured here to be
+/// the smaller of the two things that determine the error.
+///
+/// ⇒ **A `ReducedValidityDomain` must state CARDINALITY, not only pitch** — and
+/// the online candidate cannot check the clause that matters more.
+///
+/// ### ✅ C is the positive control, and it tells `active_novelty` apart from noise
+///
+/// C fires: `0.250 / 0.182 / 0.167`, where A and B read exactly zero. `[-1, +1]`
+/// leaves a genuine hole at the centre that `±0.5a` sweeps through. So
+/// `active_novelty` does measure something real — **COVERAGE** — and it fires
+/// exactly when coverage fails. That is the correct semantics for it, and this
+/// sweep measures coverage to be the thing that is NOT dominating.
+///
+/// ### Pre-registration
+///
+/// 1. ⛔ Not the branch taken — gap is not the only factor.
+/// 2. ✅ **SIZE matters, and dominates.** With the consequence stated there: the
+///    domain must carry cardinality, and a nearest-neighbour signal cannot.
+/// 3. Both mechanisms are real; SIZE won at this gap by `~2×`.
+/// 4. ⚠ Read as a direction only, as flagged: B and C read higher than A, but the
+///    cross-ensemble normaliser makes the numbers non-comparable.
+///
+/// ### ⚠ What this does NOT establish
+///
+/// - **One held-out point, one gap pair, one size pair.** The `2.13–2.70×` and
+///   `1.09–1.17×` are two points each, not a scaling law.
+/// - **Size and snapshot COUNT are confounded here** — B and C have 142 snapshots
+///   because they have 2 trajectories of 71 steps. Nothing separates "more
+///   trajectories" from "more snapshots"; a longer ramp at fewer offsets would.
+/// - **The rank ceilings differ**, so only the matched-rank rows isolate a factor.
+///   The own-ceiling column mixes basis quality with the ceiling itself, which is
+///   why it is reported separately and named as compounding.
 #[test]
 #[ignore = "§4c ensemble-density sweep — 5 full-order trajectories, ~2 min (see the fn docs)"]
 fn how_dense_the_training_ensemble_must_be() {
