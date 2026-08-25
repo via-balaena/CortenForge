@@ -2521,13 +2521,11 @@ fn signal(arm: &Arm, pick: fn(&Signals) -> f64) -> Option<f64> {
 /// lookalike. ⚠ The exception is a double-rounding in the PUBLISHED table, not a
 /// difference in the run — see [`reduced_basis_generalises`].
 ///
-/// ⚠ **On what the agreement does and does not prove.** Re-running
-/// [`reduced_basis_generalises`] after this file's changes reproduces THIS
-/// test's ground-truth column digit for digit — but both runs are the CHANGED
-/// code, so that is two harnesses agreeing, not a before/after check. The
-/// before/after evidence is the comparison against §2l's PUBLISHED table
-/// (16 of 16 at the two significant figures it carries, once its own
-/// double-rounding is corrected). Training set:
+/// ★ **Non-regression on the shared `run_reduced` is MEASURED, not argued.**
+/// [`reduced_basis_generalises`] was run at `0d9496b2` (this branch's parent,
+/// before any of these edits) and again here: **byte-identical output**. Two
+/// harnesses agreeing on the changed code would not have shown that — both
+/// would move together — which is why the pre-change arm was run. Training set:
 /// `355` snapshots, `41` of `2 023` vertices ever contact-active. Wiring
 /// control: `0.000` novel against its own union, `0.476` against the `-1.00a`
 /// union alone.
@@ -2640,6 +2638,17 @@ fn signal(arm: &Arm, pick: fn(&Signals) -> f64) -> Option<f64> {
 /// - **S2's rank explosion is INFERRED not to be [`DEGENERATE_MODE_FLOOR`]
 ///   binding** — a bound mode would read `~1e12` and the largest cell is
 ///   `4.9e7` — but which mode drives the max is not instrumented.
+/// - ★ **SEPARATION is the fixture-specific half; RANK-INDEPENDENCE is the
+///   general one.** That a norm over energy-ordered coordinates does not move
+///   with rank follows from POD itself. That the norm *separates in-domain from
+///   out-of-domain* was measured on one lateral sweep of one indenter, and
+///   nothing here says it holds for a different kind of parameter change.
+/// - **`hull_distance` assumes the basis was fitted under [`Inner::Mass`]**, so
+///   that `ΦᵀMΦ = I` and a Euclidean distance between coordinate vectors IS the
+///   mass-norm distance between the fields. ⚠ Nothing CHECKS it: `PodBasis`
+///   exposes no `inner()`, and a Euclidean-fitted basis would silently make this
+///   column mean something else. Rung 2 should either expose it or verify the
+///   Gram directly, which `stick_impact.rs` already has machinery for.
 /// - **No threshold is set, and none should be read off these cells.** One
 ///   fixture, one mesh, one material, one ramp.
 /// - The `+2.00a r=20` "divergence" is an `ArmijoStall` at `‖r‖ = 1.037e-10`
@@ -2679,10 +2688,20 @@ fn an_online_signal_separates_out_of_domain() {
     // ── training: the ensemble, and everything it SAW ──
     let mut train = SnapshotSet::new(fd.len());
     let mut train_active = std::collections::BTreeSet::new();
-    let mut per_offset_active = Vec::new();
+    // The single training offset FARTHEST from the in-sample point, kept for the
+    // wiring control below. Chosen by `|dx|` rather than by position in
+    // `TRAIN_OFFSETS`, so reordering that constant cannot quietly hand the
+    // control the in-sample set itself.
+    let mut far: Option<(f64, std::collections::BTreeSet<usize>)> = None;
     let mut in_sample_oracle = None;
     for dx in TRAIN_OFFSETS {
         let sc = Scene::at_offset(GEN_A_OVER_CELL, dx);
+        assert!(
+            (sc.d_hat - base.d_hat).abs() < f64::EPSILON,
+            "the barrier band changed with the offset, so the training union is \
+             built with a different definition of contact-active than the probes \
+             score against",
+        );
         let o = run_oracle(sc, &x_rest, NO_TIMING);
         assert!(
             o.arm.failure.is_none(),
@@ -2702,7 +2721,9 @@ fn an_online_signal_separates_out_of_domain() {
             mine.extend(active_vertices(x, sc.centre_at(k), sc.d_hat));
         }
         train_active.extend(mine.iter().copied());
-        per_offset_active.push((dx, mine));
+        if far.as_ref().is_none_or(|(d, _)| dx.abs() > d.abs()) {
+            far = Some((dx, mine));
+        }
         if dx == 0.0 {
             in_sample_oracle = Some(o);
         }
@@ -2730,14 +2751,12 @@ fn an_online_signal_separates_out_of_domain() {
          in domain, and neither is a measurement",
         train_active.len(),
     );
-    let (far_dx, far_only) = per_offset_active
-        .first()
-        .expect("TRAIN_OFFSETS is not empty");
+    let (far_dx, far_only) = far.expect("TRAIN_OFFSETS is not empty");
     let (mut self_novelty, mut far_novelty) = (0.0_f64, 0.0_f64);
     for (k, x) in in_sample_oracle.x.iter().enumerate() {
         let a = active_vertices(x, base.centre_at(k), base.d_hat);
         self_novelty = self_novelty.max(active_novelty(&a, &train_active));
-        far_novelty = far_novelty.max(active_novelty(&a, far_only));
+        far_novelty = far_novelty.max(active_novelty(&a, &far_only));
     }
     assert!(
         self_novelty.abs() < f64::EPSILON,

@@ -2247,6 +2247,14 @@ exact (`0` vs `≥0.111`); S1's is `3.62e8 → 2.46e9` = `6.80×`.
 
 #### What this settles for §4c
 
+★★ **Two cells prove neither signal alone suffices**, and they are the sharpest
+form of the argument: **in-sample at `r=20` reads `141×` MORE in-domain than
+interpolation at `r=142` (`3.59e-3` vs `5.069e-1`) while being `13×` MORE WRONG
+(`2.42e-2` vs `1.89e-3`).** A domain-only gate would pass the `2.4 %` answer and,
+at any threshold below `0.507`, refuse the `0.19 %` one. An error-only gate gets
+the ordering right and cannot say that the first needs modes and the second needs
+training.
+
 ⇒ **The gate is a DOMAIN signal (S4, or S3 for a graded reading) PLUS S1 as the
 error backstop.** Interpolation lands IN DOMAIN on both geometric signals while
 being three orders worse than in-sample, so those three orders are a
@@ -2278,11 +2286,25 @@ wrong quantity even if it had been computable online.
 - **S2's rank explosion is INFERRED not to be the degenerate-mode floor binding**
   — a bound mode would read `~1e12` and the largest cell is `4.9e7` — but which
   mode drives the max is not instrumented.
+- ★ **SEPARATION is the fixture-specific half; RANK-INDEPENDENCE is the general
+  one.** That a norm over energy-ordered coordinates does not move with rank
+  follows from POD itself. That it SEPARATES was measured on one lateral sweep of
+  one indenter, and nothing here says it holds for another kind of parameter.
+- **`hull_distance` assumes the basis was fitted under `Inner::Mass`** (so
+  `ΦᵀMΦ = I`, and Euclidean distance in `q` IS mass-norm distance in `u`). ⚠
+  Nothing checks it — `PodBasis` exposes no `inner()`, and a Euclidean-fitted
+  basis would silently change what the column means. Rung 2 should expose it or
+  verify the Gram.
 - **No threshold is set here.** One fixture, one mesh, one material, one ramp;
   thresholds are learned and this is the pilot they get learned from.
+- ★ **Non-regression on the shared `run_reduced` is MEASURED:**
+  `reduced_basis_generalises` was run at `0d9496b2` (pre-change) and after, with
+  **byte-identical output**.
 
 Harness: `tests/reduced_contact.rs::an_online_signal_separates_out_of_domain`,
-`#[ignore]`d, `142 s`. Recording is opt-in through `Ctx::probe`, so the timing
+`#[ignore]`d, `142–146 s` over **two runs whose signal tables are byte-identical**
+— worth stating, because every cell below is a single number and this is the only
+evidence that it is a determined one. Recording is opt-in through `Ctx::probe`, so the timing
 and phase-share arms pay nothing for it. Two-sided controls throughout, because
 every domain signal's HEALTHY reading is zero: the accumulator starts at `NaN`
 rather than `0` so an arm that recorded nothing cannot read as in-domain, and an
