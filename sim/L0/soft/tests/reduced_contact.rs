@@ -1670,8 +1670,13 @@ const MIN_IN_SAMPLE_ADVANTAGE: f64 = 10.0;
 /// |---|---:|---:|---:|---:|
 /// | IN-SAMPLE `+0.00a` | 2.4e-2 | 4.7e-3 | 1.1e-4 | **2.6e-6** |
 /// | INTERP `+0.25a` | 3.2e-2 | 1.8e-2 | 9.5e-3 | **1.9e-3** |
-/// | EXTRAP `+1.50a` | 3.2e-1 | 1.5e-1 | 3.2e-1 | **2.8e-1** |
+/// | EXTRAP `+1.50a` | 3.1e-1 | 1.5e-1 | 3.2e-1 | **2.8e-1** |
 /// | EXTRAP `+2.00a` | DIVERGED | 7.6e-1 | 1.0e0 | **1.1e0** |
+///
+/// ⚠ **`+1.50a` at `r=20` was published as `3.2e-1` and is `3.1e-1`**, corrected
+/// 2026-08-25. The true value is `3.149e-1`; the discriminator below prints
+/// `{:.2e}` = `3.15e-1`, and the table was rounded a SECOND time from that. A
+/// figure derived from an already-rounded figure. The other 15 reproduce exactly.
 ///
 /// - ★★★ **The subspace is wrong for a translated patch, and RANK DOES NOT FIX
 ///   IT.** In-sample buys four orders across the ladder. Both extrapolations are
@@ -2097,6 +2102,16 @@ fn training_envelope(train_q: &[Vec<f64>]) -> Vec<(f64, f64)> {
                 .iter()
                 .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), t| {
                     assert_eq!(t.len(), r, "training snapshots have inconsistent rank");
+                    // ⚠ `f64::min`/`max` SWALLOW NaN — the trap `min_signed_distance`
+                    // carries its own guard for. A non-finite training coordinate
+                    // would drop silently out of the envelope, NARROWING it, and
+                    // every excursion measured against it would then read high.
+                    assert!(
+                        t[i].is_finite(),
+                        "training coordinate {i} is {}, which the min/max fold \
+                         would have swallowed",
+                        t[i],
+                    );
                     (lo.min(t[i]), hi.max(t[i]))
                 })
         })
@@ -2500,9 +2515,19 @@ fn signal(arm: &Arm, pick: fn(&Signals) -> f64) -> Option<f64> {
 ///
 /// ## Measured — first run, 2026-08-25, `a/cell = 2` (5 202 free DOF, 2 023 vertices)
 ///
-/// Ground truth reproduces §2l cell for cell (`2.42e-2 / 4.73e-3 / 1.12e-4 /
-/// 2.57e-6` in-sample, `1.89e-3` interpolating, `0.282` and `1.09`
-/// extrapolating), so this is that fixture and not a lookalike. Training set:
+/// Ground truth reproduces §2l at **15 of 16 cells** and corrects the sixteenth
+/// (`2.42e-2 / 4.73e-3 / 1.12e-4 / 2.57e-6` in-sample, `1.89e-3` interpolating,
+/// `0.282` and `1.09` extrapolating), so this is that fixture and not a
+/// lookalike. ⚠ The exception is a double-rounding in the PUBLISHED table, not a
+/// difference in the run — see [`reduced_basis_generalises`].
+///
+/// ⚠ **On what the agreement does and does not prove.** Re-running
+/// [`reduced_basis_generalises`] after this file's changes reproduces THIS
+/// test's ground-truth column digit for digit — but both runs are the CHANGED
+/// code, so that is two harnesses agreeing, not a before/after check. The
+/// before/after evidence is the comparison against §2l's PUBLISHED table
+/// (16 of 16 at the two significant figures it carries, once its own
+/// double-rounding is corrected). Training set:
 /// `355` snapshots, `41` of `2 023` vertices ever contact-active. Wiring
 /// control: `0.000` novel against its own union, `0.476` against the `-1.00a`
 /// union alone.
@@ -2522,6 +2547,14 @@ fn signal(arm: &Arm, pick: fn(&Signals) -> f64) -> Option<f64> {
 /// signal cannot: a statement about where the scene sits, not about how well it
 /// is resolved.
 ///
+/// ★★ **And the same column carries its own two-sided control.** Flatness would
+/// be worthless if this statistic were trivially rank-invariant — numerator and
+/// denominator scaling together by construction. It is not: the IN-SAMPLE row of
+/// the very same quantity falls **`5 170×`** (`3.59e-3 → 6.94e-7`) over the same
+/// rank range, which is what it must do, since in-sample the reduced solution
+/// converges onto trajectories that ARE training points. Flat on one row and
+/// falling five orders on another is a property of the scenes, not of the ratio.
+///
 /// **★★★ The mechanism, and it is the transferable part.** S3 is
 /// rank-independent *because POD is energy-ordered*: the leading modes dominate
 /// both the distance and the cloud radius, so appending tail modes changes
@@ -2530,6 +2563,13 @@ fn signal(arm: &Arm, pick: fn(&Signals) -> f64) -> Option<f64> {
 /// IN-SAMPLE row climbs `104×` with rank (`7.85e-2 → 8.17e0`) on the one row
 /// that is in-domain by definition. ⇒ **For a rank-independent domain signal,
 /// take a NORM over modes, never a MAX.**
+///
+/// ⚠ **Inferred from the SHAPES, not from a per-mode decomposition — which is
+/// not instrumented.** The support is sharper than "it grows": S2's in-sample
+/// row moves within `1.6×` for three rungs (`7.85e-2 / 1.27e-1 / 1.21e-1`) and
+/// then jumps `68×` on the last — which is exactly where the requested `160`
+/// truncated to `142`, the numerical-rank edge where retained modes are
+/// thinnest.
 ///
 /// ### Against the pre-registration
 ///
@@ -2558,11 +2598,12 @@ fn signal(arm: &Arm, pick: fn(&Signals) -> f64) -> Option<f64> {
 ///
 /// ### ⚠ The margin I would have overstated
 ///
-/// S3's in-sample-versus-everything-else margin is `141×`
-/// (`3.59e-3 → 5.062e-1`). **That is not the gate's margin.** A gate that
-/// ACCEPTS interpolation — and it must, at `1.9e-3` — has only
-/// `5.069e-1 → 1.165` = **`2.30×`** between interpolation and the nearer
-/// extrapolation.
+/// S3's in-sample-versus-everything-else separation is `141×`
+/// (`3.59e-3 → 5.062e-1`). **That is not what a gate gets.** A gate must ACCEPT
+/// interpolation — it is `1.9e-3` — so a threshold has to sit between
+/// interpolation's `5.069e-1` and the nearer extrapolation's `1.165`: a
+/// separating **WINDOW of `2.30×`**, about `1.5×` either side of a centred
+/// threshold, not `2.30×` of headroom.
 ///
 /// ★ **S4 wins that exact cut outright**: `0.000` at both in-hull positions
 /// across all four ranks, `≥ 0.111` at both out-of-hull positions across all
@@ -2582,11 +2623,20 @@ fn signal(arm: &Arm, pick: fn(&Signals) -> f64) -> Option<f64> {
 ///   `0.5a` apart against a patch of radius `a`, so the training union is a
 ///   contiguous band and interpolation cannot fall in a hole. A sparser ensemble
 ///   is untested and could read non-zero in domain.
-/// - **S4 rests on 1–3 vertices.** The readings are `1/8`, `2/7`, `3/16`, `1/9`
-///   at `+1.50a`; the union is `41` of `2 023` vertices. ⚠ And the DENOMINATOR
-///   IS NOT PRINTED — a fraction without its count. Fix before any threshold.
+/// - **S4 is quantised by a tiny active set.** `+1.50a` reads exactly `0.1250`,
+///   `0.2857`, `0.1875`, `0.1111`, and the training union is `41` of `2 023`
+///   vertices. ⚠ **The denominator is NOT printed**, so reading those as `1/8`,
+///   `2/7`, `3/16`, `1/9` — 1–3 novel vertices of 7–16 — is an INFERENCE from
+///   the simplest consistent fraction, not a measurement. Print the count before
+///   any threshold is set on this signal.
 /// - **S1 is not normalised by the load** (see [`Signals::residual_excess`]), so
 ///   its `6.80×` window is a figure about this ramp.
+/// - **Every arm ran `InitialGuess::Inertial`.** At convergence `‖r_free‖` is a
+///   property of the converged state, so S1 should be predictor-independent — but
+///   OUT of domain the projected line search can land differently (§2c's
+///   tunnelling mechanism is real there), and §2k already found the predictor
+///   load-bearing on this fixture. Untested, and it is S1's exposure, not the
+///   geometric signals'.
 /// - **S2's rank explosion is INFERRED not to be [`DEGENERATE_MODE_FLOOR`]
 ///   binding** — a bound mode would read `~1e12` and the largest cell is
 ///   `4.9e7` — but which mode drives the max is not instrumented.
@@ -2611,6 +2661,11 @@ fn an_online_signal_separates_out_of_domain() {
     // converged at — but the coupling is by inspection, not by the compiler,
     // which is why the figure is printed rather than left implicit.
     let tol = SolverConfig::skeleton().tol;
+    assert!(
+        tol > 0.0,
+        "tol is {tol}, so `residual_excess` would be `inf` or negative — a unit \
+         of zero is not a unit",
+    );
 
     println!(
         "\nRC\t§4c SIGNAL PILOT: IPC indentation a/cell={GEN_A_OVER_CELL:.1}, {} free DOF, \
@@ -2792,6 +2847,7 @@ fn an_online_signal_separates_out_of_domain() {
     }
 
     // ── control: no PRODUCER, no measurement ──
+    let mut checked = 0usize;
     for (label, got, arm) in &rows {
         if arm.completed == 0 {
             continue;
@@ -2807,7 +2863,29 @@ fn an_online_signal_separates_out_of_domain() {
              read as perfectly in domain",
             arm.completed,
         );
+        // ⚠ The same zero-reads-as-perfect hole the ground-truth table filters,
+        // asserted rather than merely hidden: `max_rel_err` initialises to ZERO
+        // and only updates for finite samples, so an arm that recorded no usable
+        // error would read as an EXACT answer. A completed arm cannot be
+        // bit-identical to its oracle — full rank is `2.57e-6`, not `0`.
+        assert!(
+            arm.max_rel_err > 0.0,
+            "{label} r={got} completed {} steps with max_rel_err exactly 0.0 — \
+             that is 'no usable sample', not a perfect answer",
+            arm.completed,
+        );
+        checked += 1;
     }
+    // ⚠⚠ The `continue` above makes this loop VACUOUS if nothing completed, and a
+    // vacuous pass on a signal whose healthy reading is zero is the worst shape
+    // this file has — the same refusal `faults_at` makes for the same reason.
+    assert_eq!(
+        checked,
+        TEST_OFFSETS.len() * bases.len(),
+        "only {checked} of {} arms were signal-checked; the rest completed no \
+         steps, so the tables below are not a full matrix",
+        TEST_OFFSETS.len() * bases.len(),
+    );
 
     // ── control: the rig can still score a basis it DID fit ──
     //

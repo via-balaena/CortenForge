@@ -2086,8 +2086,15 @@ position's own full-order oracle**. Rel-L2 free-DOF displacement:
 |---|---:|---:|---:|---:|
 | IN-SAMPLE `+0.00a` | 2.4e-2 | 4.7e-3 | 1.1e-4 | **2.6e-6** |
 | INTERP `+0.25a` | 3.2e-2 | 1.8e-2 | 9.5e-3 | **1.9e-3** |
-| EXTRAP `+1.50a` | 3.2e-1 | 1.5e-1 | 3.2e-1 | **2.8e-1** |
+| EXTRAP `+1.50a` | 3.1e-1 | 1.5e-1 | 3.2e-1 | **2.8e-1** |
 | EXTRAP `+2.00a` | DIVERGED | 7.6e-1 | 1.0e0 | **1.1e0** |
+
+⚠ **`+1.50a` at `r=20` was published as `3.2e-1` and is `3.1e-1`.** Corrected
+2026-08-25 when §2m re-ran the matrix at three significant figures: the true
+value is `3.149e-1`, the harness's own discriminator prints `{:.2e}` = `3.15e-1`,
+and the table was then rounded a SECOND time from that to `3.2e-1`. A figure
+derived from an already-rounded figure — the failure this document keeps naming.
+The other 15 cells reproduce exactly.
 
 1. ★★★ **The subspace is wrong for a translated patch, and RANK DOES NOT FIX IT.**
    In-sample buys four orders across the ladder. Both extrapolations are **flat**
@@ -2160,7 +2167,8 @@ envelope — sits in §5 under honestly-open research as not detecting a moved
 contact patch: argued, never measured.
 
 Four oracle-free candidates, scored on §2l's own matrix (same offsets, ranks,
-mesh and ramp; ground truth reproduces §2l cell for cell), of two deliberate
+mesh and ramp; ground truth reproduces §2l at 15 of 16 cells and CORRECTS the
+sixteenth — see §2l's note), of two deliberate
 kinds — an **ERROR** signal rises when the answer is poor from any cause, a
 **DOMAIN** signal rises when the scene is outside what the ensemble saw:
 
@@ -2187,6 +2195,13 @@ question stated in its own docs ("no useful bound on it is known yet").
 Interpolation reads the same value to **four significant figures** across a 7×
 rank change — the signature a domain signal must have and an error signal cannot.
 
+★★ **The same column carries its own two-sided control.** Flatness would prove
+nothing if the statistic were trivially rank-invariant. It is not: the IN-SAMPLE
+row of the same quantity falls `5 170×` (`3.59e-3 → 6.94e-7`) over the same rank
+range — as it must, since in-sample the reduced solution converges onto
+trajectories that ARE training points. Flat on one row and falling five orders on
+another is a property of the scenes, not of the ratio.
+
 **★★★ The mechanism, and it is the transferable part.** S3 is rank-independent
 *because POD is energy-ordered*: the leading modes dominate both the distance and
 the cloud radius, so appending tail modes changes neither. S2 takes a **max over
@@ -2194,6 +2209,14 @@ per-mode normalised deviations**, so it is dominated by the THINNEST axis —
 always the newest tail mode — and its IN-SAMPLE row climbs `104×` with rank
 (`7.85e-2 → 8.17e0`) on the one row that is in-domain by definition. ⇒ **For a
 rank-independent domain signal, take a NORM over modes, never a MAX.**
+
+⚠ **Inferred from the SHAPES, not from a per-mode decomposition — which is not
+instrumented.** The supporting detail is sharper than "it grows": S2's in-sample
+row moves within `1.6×` for three rungs (`7.85e-2 / 1.27e-1 / 1.21e-1`) and then
+jumps `68×` to `8.17` on the last one — and the last rung is exactly where the
+requested `160` truncated to `142`, i.e. the numerical-rank edge where the
+retained modes are thinnest. Which mode drives the max is the direct check, and
+it is rung 2's to make.
 
 **⛔ §5's open item 3 is measured, and the argument in it is wrong.** S2 separates
 strongly at every fixed rank (`7.85e-2 / 0.98 / 23.5 / 54.6` at `r=20`), so
@@ -2215,10 +2238,12 @@ falsifies basis-independence; it does.
 
 #### ⚠ The margin that would have been overstated
 
-S3's in-sample-versus-everything margin is `141×`. **That is not the gate's
-margin.** A gate must ACCEPT interpolation at `1.9e-3`, and interpolation to the
-nearer extrapolation is `5.069e-1 → 1.165` = **`2.30×`**. S4's window on that
-same cut is exact (`0` vs `≥0.111`); S1's is `3.62e8 → 2.46e9` = `6.80×`.
+S3's in-sample-versus-everything separation is `141×`. **That is not what a gate
+gets.** A gate must ACCEPT interpolation at `1.9e-3`, so the interval a threshold
+has to sit in runs from interpolation's `5.069e-1` to the nearer extrapolation's
+`1.165` — a separating **WINDOW of `2.30×`**, i.e. roughly `1.5×` either side of
+a centred threshold, not `2.30×` of headroom. S4's window on that same cut is
+exact (`0` vs `≥0.111`); S1's is `3.62e8 → 2.46e9` = `6.80×`.
 
 #### What this settles for §4c
 
@@ -2238,10 +2263,18 @@ wrong quantity even if it had been computable online.
 - **S4's exact zero is a property of THIS ensemble.** Training offsets are `0.5a`
   apart against a patch of radius `a`, so the union is a contiguous band and
   interpolation cannot fall in a hole. A sparser ensemble is untested.
-- **S4 rests on 1–3 vertices** (`1/8`, `2/7`, `3/16`, `1/9` at `+1.50a`; the
-  union is `41` of `2 023`), and the harness does not print the denominator.
-  Fix before any threshold is set on it.
+- **S4 is quantised by a tiny active set.** `+1.50a` reads exactly `0.1250`,
+  `0.2857`, `0.1875`, `0.1111` — small-integer ratios, and the training union is
+  `41` of `2 023` vertices. ⚠ **The denominator is NOT printed**, so reading
+  those as `1/8`, `2/7`, `3/16`, `1/9` (1–3 novel vertices of 7–16) is an
+  INFERENCE from the simplest consistent fraction, not a measurement. Print the
+  count before any threshold is set on this signal.
 - **S1 is not normalised by the load**, so `6.80×` is a figure about this ramp.
+- **Every arm ran `Inertial`.** `‖r_free‖` at convergence is a property of the
+  converged state, so S1 should be predictor-independent — but out of domain the
+  projected line search can land differently, and §2k found the predictor
+  load-bearing on this fixture. Untested; it is S1's exposure, not the geometric
+  signals'.
 - **S2's rank explosion is INFERRED not to be the degenerate-mode floor binding**
   — a bound mode would read `~1e12` and the largest cell is `4.9e7` — but which
   mode drives the max is not instrumented.
