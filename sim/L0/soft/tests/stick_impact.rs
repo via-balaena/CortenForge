@@ -2979,6 +2979,53 @@ fn whether_the_band_projector_is_a_projector() {
 /// they bisect and folds the quadratic element — the same failure mode
 /// `SmoothedInertial`'s graph-Laplacian arm died of, and the reason
 /// `InitialGuess`'s docs say a midside node is not an ordinary graph vertex.
+///
+/// # ★★★ The amplitude hypothesis was wrong, and the way it failed is the
+/// sharpest thing in this file
+///
+/// [`Band::TipMatched`] was added to test the one difference between `Low` and
+/// the ramp: the ramp keeps the full predicted tip displacement, `Low` keeps
+/// only the `~40 %` that projects onto mode 1. Rescale the mode to the same
+/// tip and the two should meet.
+///
+/// They do meet — in position. At `1.00x`:
+///
+/// ```text
+///   start                    iters   x0->start   start->x*
+///   smooth:mode-1                4       7.713       6.715
+///   modal:tipmatch r=1         146       7.643       6.644
+///   modal:low r=1                6       1.942       0.944
+/// ```
+///
+/// **`1 %` apart in both distances, `36×` apart in cost.** Rescaling made the
+/// modal arm `24×` WORSE than not rescaling it, and left it `36×` behind an
+/// analytic profile sitting essentially on top of it.
+///
+/// ⇒ So the winning property is **narrower than "a low-strain global shape"**,
+/// and narrower than "the right shape at the right amplitude". Two fields with
+/// the same driven-node displacement and the same first-mode z-profile are not
+/// interchangeable. What separates them is what `Shape` does NOT have:
+/// `smooth:mode-1` is a pure transverse `z` field, while a POD mode is a full
+/// 3-D finite-element deformation carrying the axial and Poisson components
+/// that belong to the amplitude it was FITTED at. Scaling those linearly is
+/// exactly what large-deflection beam kinematics says you may not do — axial
+/// shortening goes as the square of the rotation, not the first power.
+///
+/// ⚠ That reading is a hypothesis, not a measurement. What is measured is the
+/// `36×`. Two observations constrain it, and neither is explained:
+///
+/// - **More modes rescue the rescale**: `tipmatch` reads `146 → 41 → 39` over
+///   ranks 1–3 at `1.00x`, so whatever rank 1 gets wrong, ranks 2 and 3 partly
+///   correct.
+/// - **It is amplitude-dependent, not `β`-dependent.** `β ≈ 3.9` at every
+///   magnitude, because `want` and `have` both scale with the strike — yet
+///   `tipmatch r=1` costs only `1.6×` `Low` at `0.25x` and `24×` at `1.00x`.
+///
+/// ⇒ **The next probe is a component split**, and it is cheap: take POD mode 1
+/// and zero everything but `z`, and separately take `smooth:mode-1` and add the
+/// POD mode's `x`/`y` components. One of those two moves the `36×`, and which
+/// one it is says whether a mesh-general predictor has to be built out of
+/// transverse fields or can use full deformation modes.
 #[test]
 #[ignore = "diagnostic — run explicitly"]
 fn whether_a_modal_start_cuts_iterations_on_a_real_impact_frame() {
