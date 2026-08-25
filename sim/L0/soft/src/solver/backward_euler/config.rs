@@ -15,9 +15,16 @@ use crate::solver::lm::LmConfig;
 /// ```
 ///
 /// so the choice here is *which term the first iterate already satisfies*.
-/// It changes the PATH Newton walks, never the root it walks to: every
-/// variant converges to the same `‖r‖ < tol` state, so this is a cost knob,
-/// not a physics knob.
+/// It changes the PATH Newton walks, never the ROOT it walks to — the residual
+/// depends on the guess through nothing but `x̂`.
+///
+/// ⚠ **That is not the same as "a cost knob, not a physics knob", which this
+/// doc used to say here.** A variant that reaches the root reaches the same one;
+/// a variant can also fail to reach it at all. `NewtonIterCap` and
+/// `ArmijoStall` are returned as errors rather than as larger iteration counts,
+/// the converged state is validity-checked on the way out, and the measured
+/// example is two paragraphs down. In a frame budget a failed solve is worse
+/// than a slow one.
 ///
 /// ⚠ **It is not free of risk.** A guess further from the root can land
 /// outside the convergence basin, cost *more* iterations, or — under an
@@ -46,16 +53,25 @@ use crate::solver::lm::LmConfig;
 /// one at matched distance (`whether_the_shape_of_the_guess_error_sets_the_
 /// iteration_count`, which computes and gates that ratio) — and that replacing
 /// `Δt·v_prev` with a smooth tip-matched profile cuts `p99` frame cost by
-/// **`~6×`** (`whether_a_smoothed_start_moves_the_p99_end_to_end`). That result
-/// is real, and it is **beam specific**: the profile delivering it is a linear
-/// axial ramp, which knows the fixture is a cantilever.
+/// **`~6×`** (`whether_a_smoothed_start_moves_the_p99_end_to_end` — ⚠ a producer
+/// that file itself demotes to corroboration, since its two runs are not the
+/// same trajectory by frame 300; the accumulation-free evidence is the per-frame
+/// probe, which reads `25 → 4`). That result is real, and it is **beam
+/// specific**: the profiles delivering it are `Shape::TipLoadCurve` (`3s² − s³`,
+/// the static tip-loaded deflection) and `Shape::FirstMode` (the clamped-free
+/// eigenfunction), both written down in closed form because the fixture is a
+/// cantilever. ⚠ Not "a linear axial ramp", which this doc used to say — the
+/// linear profile is `Shape::Rotation`, and it is the one that never wins.
 ///
 /// Two mesh-general forms were implemented as a `SmoothedInertial` variant and
 /// both lost to plain [`Self::Inertial`] on the same fixture: **graph-Laplacian
 /// diffusion with a peak rescale**, which decays the field *away* from the
 /// impulse instead of ramping *toward* it and inverted elements at iteration 0;
 /// and **harmonic extension from the driven nodes**, which was valid and
-/// trajectory-exact and still slower than doing nothing.
+/// still slower than doing nothing. ⚠ It was recorded as "trajectory-exact";
+/// that rested on comparing `peak_ratio`, which `tests/stick_impact.rs` has
+/// since shown certifies nothing — two runs it called identical end `5.6e-1`
+/// apart.
 ///
 /// ⚠⚠ **Those two arms are NOT in the tree and were never committed**, so the
 /// figures they produced are unrecoverable and are deliberately not quoted here.
@@ -118,10 +134,13 @@ use crate::solver::lm::LmConfig;
 ///   `24×` over not rescaling it, and no scalar correction tried recovers it.
 /// - **The in-plane components are what hurt, and POD is the wrong ordering.**
 ///   Adding a POD mode's `x`/`y` field to an equivalent transverse profile
-///   costs `20×`, and a mode carrying only `1.7 %` in-plane costs `14.6×` once
-///   it is rescaled. The source is the basis itself: on this ring-down the
-///   modes at ranks 1–2 are AXIAL, `22×` and `18×` more in-plane than
-///   transverse, sitting above a bending mode at rank 3. POD ranks by energy in
+///   costs `20×`, and a mode putting only `2.0 %` of its mass-norm in-plane
+///   costs `14.6×` once it is rescaled. The source is the basis itself: on this
+///   ring-down the modes at ranks 1–2 are AXIAL — `0.999` of each one's own
+///   mass-norm is in-plane — sitting above a bending mode at rank 3. ⚠ Earlier
+///   figures here (`1.7 %`, `22×` and `18×`) were read off an RMS-over-peak
+///   column whose complement is not a share; `tests/stick_impact.rs` records why
+///   that column cannot carry this claim. POD ranks by energy in
 ///   the snapshots, and a modest stretching oscillation outranks a stiffer
 ///   bending mode on that measure. If a predictor wants the softest modes rather
 ///   than the most energetic ones, those are different orderings — a hypothesis,
