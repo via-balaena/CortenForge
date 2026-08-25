@@ -3070,11 +3070,53 @@ fn whether_the_band_projector_is_a_projector() {
 ///   magnitude, because `want` and `have` both scale with the strike — yet
 ///   `tipmatch r=1` costs only `1.6×` `Low` at `0.25x` and `24×` at `1.00x`.
 ///
-/// ⇒ **The next probe is a component split**, and it is cheap: take POD mode 1
-/// and zero everything but `z`, and separately take `smooth:mode-1` and add the
-/// POD mode's `x`/`y` components. One of those two moves the `36×`, and which
-/// one it is says whether a mesh-general predictor has to be built out of
-/// transverse fields or can use full deformation modes.
+/// # ★★★ The component split: the in-plane field carries it
+///
+/// The 2×2, iterations at `1.00x`, rank 1:
+///
+/// ```text
+///                     xy: none      xy: POD
+///    z: analytic             4           82
+///    z: POD                 10          146
+/// ```
+///
+/// **Adding the POD mode's in-plane field to the analytic profile costs `20×`
+/// (`4 → 82`). Swapping the analytic `z` profile for the POD one costs `2.5×`
+/// (`4 → 10`).** The in-plane components carry the gap, and it holds across the
+/// sweep: at `8.00x` rank 3 the POD `z` profile alone reads `29` against the
+/// hand-written Euler–Bernoulli mode's `25`, within `1.16×`, while the in-plane
+/// field takes the same start to `156`.
+///
+/// ⇒ **POD finds the right shape. The damage is entirely in what rides along
+/// with it.** Zeroing `x`/`y` turns `tipmatch`'s `146` into `10`, and unlike
+/// every other modal arm that one is stable in rank (`10, 11, 12, 13` over
+/// ranks 1–4, against `tipmatch`'s `146, 41, 39, 36`).
+///
+/// ## Why, and the two things it retro-explains
+///
+/// A slender beam's axial strain is `ε = ∂u/∂x + ½(∂w/∂x)²`. A POD mode's
+/// in-plane field `u` is whatever cancels that quadratic term **at the
+/// amplitude the mode was fitted at**. Rescaling the mode by `β` grows `∂u/∂x`
+/// linearly and `½(∂w/∂x)²` quadratically, leaving `(β² − β)·½(∂w/∂x)²` of
+/// spurious AXIAL strain — and this section's axial stiffness is about
+/// `(L/r)² ≈ 2·10⁴` times its bending stiffness, so a strain error far too
+/// small to see in the position columns is an enormous force error.
+///
+/// That is a hypothesis, but it is the one the numbers already committed to
+/// were waiting for, and it closes two of the three open items above:
+///
+/// - **Why the damage is amplitude-dependent rather than `β`-dependent.** The
+///   spurious term scales with `(∂w/∂x)²`, not with `β` alone. `β ≈ 3.9` at
+///   every magnitude, and `tipmatch` costs `1.6×` `Low` at `0.25x` and `24×` at
+///   `1.00x` — because the rotation, not the ratio, is what grew.
+/// - **Why plain `Low` is the best modal arm despite throwing amplitude away.**
+///   It never rescales. At `β = 1` there is no mismatch to create.
+///
+/// ⇒ **A modal predictor must be used as a PROJECTION, never as a rescaled
+/// shape** — and the mechanism makes a falsifiable prediction worth one run:
+/// scale the transverse part by `β` and the in-plane part by `β²`, and the
+/// mismatch should cancel. `β²` needs no beam knowledge, so an arm that wins
+/// there is still mesh-general.
 #[test]
 #[ignore = "diagnostic — run explicitly"]
 fn whether_a_modal_start_cuts_iterations_on_a_real_impact_frame() {
