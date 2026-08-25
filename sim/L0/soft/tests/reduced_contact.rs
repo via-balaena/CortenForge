@@ -124,7 +124,9 @@
 //! - [`reduced_basis_generalises`] (recon §2l) — does the basis hold up when the
 //!   contact patch MOVES? **No**, and rank does not fix it. Failure is SILENT:
 //!   the bad arms converge, complete, and do not penetrate while `28 %`–`109 %`
-//!   wrong. That is what makes §4c's validity gate a CORRECTNESS prerequisite.
+//!   wrong AT `r=142` (`14.8 %`–`119.6 %` across all eight extrapolation cells —
+//!   the bracket is a column, not a range). That is what makes §4c's validity
+//!   gate a CORRECTNESS prerequisite.
 //! - [`an_online_signal_separates_out_of_domain`] (recon §2m) — given that, what
 //!   can a gate actually WATCH at runtime? Four oracle-free candidates scored on
 //!   the same matrix. `gap_dev`, the detector §2l found, needs the oracle and is
@@ -613,8 +615,9 @@ fn rows_for(pairs: &[(&'static str, usize, f64)]) -> Vec<(&'static str, usize, A
 /// ZERO**, where "never measured" and "perfect" are the same number.
 ///
 /// - an arm run without a [`Probe`] has no signal at all;
-/// - an arm that recorded nothing keeps [`Signals::UNRECORDED`], which reads as
-///   in-domain on every domain column unless refused here;
+/// - an arm that recorded nothing keeps an EMPTY [`SignalTrace`], which would
+///   summarise to nothing at all — and every domain signal's healthy reading is
+///   zero, so it must be refused rather than folded;
 /// - `max_rel_err` initialises to `0.0` and only updates for FINITE samples, so
 ///   an arm with no usable error sample reads as an EXACT answer. A completed
 ///   arm cannot be bit-identical to its oracle — full rank is `2.57e-6`.
@@ -661,12 +664,17 @@ fn probed_rows(errs: &[f64]) -> Vec<(&'static str, usize, Arm)> {
         .map(|(i, &err)| {
             let mut a = healthy_arm("probed");
             a.max_rel_err = err;
-            a.signals = Some(Signals {
-                residual_excess: 1.0e6 + i as f64,
-                envelope_excursion: 0.0,
-                hull_distance: 0.25,
-                active_novelty: 0.0,
-            });
+            let mut t = SignalTrace::new();
+            t.record(
+                Signals {
+                    residual_excess: 1.0e6 + i as f64,
+                    envelope_excursion: 0.0,
+                    snapshot_distance: 0.25,
+                    active_novelty: 0.0,
+                },
+                7,
+            );
+            a.signals = Some(t);
             ("probed", 40, a)
         })
         .collect()
@@ -689,7 +697,7 @@ fn assert_every_arm_produced_refuses_an_unprobed_arm() {
 #[should_panic(expected = "recorded NO signal")]
 fn assert_every_arm_produced_refuses_an_arm_that_recorded_nothing() {
     let mut rows = probed_rows(&[1.0e-3]);
-    rows[0].2.signals = Some(Signals::UNRECORDED);
+    rows[0].2.signals = Some(SignalTrace::new());
     assert_every_arm_produced(&rows, 1);
 }
 
@@ -874,11 +882,11 @@ struct Arm {
     /// reaches the SAME equilibrium gap. A hyper-reduced assembly that got the
     /// internal forces slightly wrong would shift this while staying positive.
     gap_dev: f64,
-    /// The candidate ONLINE validity signals, `None` unless the arm was run
-    /// with a [`Probe`]. Absent by default because recording them costs a
-    /// `O(n_vertices)` band scan plus a `O(n_train · r)` hull search per step,
-    /// and neither may land in the timing arms.
-    signals: Option<Signals>,
+    /// Every step's ONLINE validity readings, `None` unless the arm was run with
+    /// a [`Probe`]. Absent by default because recording them costs a
+    /// `O(n_vertices)` band scan plus a `O(n_train · r)` nearest-snapshot search
+    /// per step, and neither may land in the timing arms.
+    signals: Option<SignalTrace>,
     /// The timed window, empty unless the arm was run with a `measure_from`.
     measured: Measured,
     failure: Option<String>,
@@ -893,7 +901,7 @@ impl Arm {
         };
         println!(
             "RC\t{:<18}\tsteps={:>3}/{n_steps}\titers/step={iters_per:>5.2}\t\
-             min_sd={:>16.9e}\t(band d̂={d_hat:.2e})\tmax_relL2={:>9.3e}\t‖r‖full={:>9.3e}\tgap_dev={:>9.3e} d̂\t{}",
+             min_sd={:>16.9e}\t(band d̂={d_hat:.2e})\tmax_relL2={:>9.3e}\t‖r‖full(LAST step)={:>9.3e}\tgap_dev={:>9.3e} d̂\t{}",
             self.label,
             self.completed,
             self.min_sd,
@@ -1029,7 +1037,7 @@ fn run_reduced(
         oracle,
         probe,
     } = *ctx;
-    let mut signals = probe.map(|_| Signals::UNRECORDED);
+    let mut signals = probe.map(|_| SignalTrace::new());
     let mut solver = scene.solver(guess);
     let theta = Tensor::from_slice(&[], &[0]);
     let mut q = vec![0.0; basis.n_modes()];
@@ -1056,7 +1064,8 @@ fn run_reduced(
                 let centre = scene.centre_at(k);
                 min_sd = min_sd.min(min_signed_distance(&x, centre));
                 if let (Some(p), Some(acc)) = (probe, signals.as_mut()) {
-                    acc.record(p.read(&s, &x, centre));
+                    let (reading, active) = p.read(&s, &x, centre);
+                    acc.record(reading, active);
                 }
                 if let Some(ox) = oracle.x.get(k) {
                     let e = rel_l2(&free_disp(&x, x_rest, fd), &free_disp(ox, x_rest, fd));
@@ -1770,9 +1779,15 @@ const GEN_A_OVER_CELL: f64 = 2.0;
 /// in-sample reads `1.1e-4` at `r=80` — so a run whose top rank came out lower
 /// would trip it spuriously. The ratio is scale-free and encodes the property
 /// that actually matters: the rig can score a basis it DID fit far better than
-/// one it did not. PILOTED at `730×` (`2.6e-6` vs `1.9e-3`) at `r=142` and `86×`
-/// at `r=80`, so `10×` keeps one to two orders of headroom and still fails long
-/// before the two rows become indistinguishable.
+/// one it did not. PILOTED at `734×` (`1.885e-3 / 2.569e-6`) at `r=142` and
+/// `84.5×` (`9.484e-3 / 1.122e-4`) at `r=80`, so `10×` keeps one to two orders of
+/// headroom and still fails long before the two rows become indistinguishable.
+///
+/// ⛔ **`86×` was published here and is `84.5×`** — corrected 2026-08-25. It was
+/// computed from §2l's already-ROUNDED table (`9.5e-3 / 1.1e-4` = `86.4`) rather
+/// than from the run. A second instance of the same defect §2l's own note
+/// records, in the docstring that note points at. ⇒ **take a figure from the
+/// highest-precision output the run produced, never from a printed table.**
 const MIN_IN_SAMPLE_ADVANTAGE: f64 = 10.0;
 
 /// ⚠ `+2.00a` leaves only `1a` of clearance to the plate's free edge, so its
@@ -2086,7 +2101,7 @@ struct Signals {
     /// ⚠ A per-mode box is the LOOSE hull — the bounding box of the training
     /// coordinates, not their convex hull — so a translated patch can sit inside
     /// it while being far from every training point. That looseness is not an
-    /// oversight; it is the predicted failure mode, and [`Signals::hull_distance`]
+    /// oversight; it is the predicted failure mode, and [`Signals::snapshot_distance`]
     /// is the tight companion that says whether looseness is the cause.
     envelope_excursion: f64,
     /// Distance from `q` to the NEAREST training snapshot, in units of the
@@ -2101,7 +2116,7 @@ struct Signals {
     /// nearest-neighbour pitch. On a ramp the nearest neighbour of any snapshot
     /// is its own predecessor one time step earlier, so a pitch normaliser would
     /// measure `dt` and not the offset spacing the ensemble was built on.
-    hull_distance: f64,
+    snapshot_distance: f64,
     /// Fraction of contact-active vertices that were active in NO training
     /// trajectory. **DOMAIN.**
     ///
@@ -2115,51 +2130,91 @@ struct Signals {
 }
 
 impl Signals {
-    /// ⚠⚠ **Accumulating from `NaN` is deliberate, and it is a guard.**
-    /// `f64::max(NaN, v)` returns `v`, so the first recorded step replaces this
-    /// and an arm that recorded NOTHING stays `NaN`. Starting from `0.0` would
-    /// leave that arm reading *perfectly in domain, zero residual* — the
-    /// dangerous empty result [`faults_at`] refuses for exactly this reason, and
-    /// worse here, because every domain signal's healthy value IS zero.
-    /// [`Signals::is_recorded`] is what converts it to a refusal.
-    const UNRECORDED: Self = Self {
-        residual_excess: f64::NAN,
-        envelope_excursion: f64::NAN,
-        hull_distance: f64::NAN,
-        active_novelty: f64::NAN,
-    };
-
-    /// Fold one step's reading into the running worst case.
-    ///
-    /// ★ The inputs are checked finite FIRST. The `NaN`-swallowing max above is
-    /// safe only because nothing non-finite is ever offered to it — a `NaN`
-    /// residual from a sick step would otherwise vanish into the fold and the
-    /// arm would report the worst of the *healthy* steps as its worst case.
-    fn record(&mut self, step: Self) {
-        for (name, v) in [
-            ("residual_excess", step.residual_excess),
-            ("envelope_excursion", step.envelope_excursion),
-            ("hull_distance", step.hull_distance),
-            ("active_novelty", step.active_novelty),
-        ] {
-            assert!(
-                v.is_finite(),
-                "{name} read {v} on a converged step — a non-finite sample would \
-                 be SWALLOWED by the max-fold and the arm would report the worst \
-                 of its healthy steps as its worst case",
-            );
-        }
-        self.residual_excess = self.residual_excess.max(step.residual_excess);
-        self.envelope_excursion = self.envelope_excursion.max(step.envelope_excursion);
-        self.hull_distance = self.hull_distance.max(step.hull_distance);
-        self.active_novelty = self.active_novelty.max(step.active_novelty);
+    /// The four values, in table order, paired with their names for reporting.
+    const fn named(&self) -> [(&'static str, f64); 4] {
+        [
+            ("residual_excess", self.residual_excess),
+            ("envelope_excursion", self.envelope_excursion),
+            ("snapshot_distance", self.snapshot_distance),
+            ("active_novelty", self.active_novelty),
+        ]
     }
 
+    /// ★ Checked on the way IN, not on the way out. Every summary below is a
+    /// fold, and a non-finite sample would either be swallowed by `min`/`max` or
+    /// poison a percentile — either way the arm would report the wrong step as
+    /// its worst case.
+    fn assert_finite(&self) {
+        for (name, v) in self.named() {
+            assert!(
+                v.is_finite(),
+                "{name} read {v} on a converged step — a non-finite sample cannot \
+                 be summarised, and a fold would hide it rather than surface it",
+            );
+        }
+    }
+}
+
+/// Every step's reading for one arm, kept WHOLE.
+///
+/// ⚠⚠ **This replaces a worst-over-steps accumulator, and the reason is the
+/// central limitation of the first pilot.** A max over the trajectory is an
+/// extreme-value statistic; a runtime gate reads ONE step. If a signal's max is
+/// a spike at the deepest pose, a per-step gate fires late or not at all; if it
+/// is a plateau, the trajectory statistic transfers. Nothing in a max-only table
+/// can tell those apart, so the summary is no longer the measurement — the
+/// distribution is, and the max is one quantile of it.
+struct SignalTrace {
+    steps: Vec<Signals>,
+    /// How many vertices were contact-active at each step — `active_novelty`'s
+    /// DENOMINATOR, without which the fraction cannot be read at all.
+    active_count: Vec<usize>,
+}
+
+impl SignalTrace {
+    const fn new() -> Self {
+        Self {
+            steps: Vec::new(),
+            active_count: Vec::new(),
+        }
+    }
+
+    fn record(&mut self, step: Signals, active: usize) {
+        step.assert_finite();
+        self.steps.push(step);
+        self.active_count.push(active);
+    }
+
+    /// An arm that recorded NOTHING has an EMPTY trace, which no summary can be
+    /// taken of. That is deliberate: every domain signal's healthy reading is
+    /// zero, so "never measured" must not be representable as a number.
     const fn is_recorded(&self) -> bool {
-        self.residual_excess.is_finite()
-            && self.envelope_excursion.is_finite()
-            && self.hull_distance.is_finite()
-            && self.active_novelty.is_finite()
+        !self.steps.is_empty()
+    }
+
+    /// `(min, median, max)` of one component over the steps recorded.
+    ///
+    /// ★ The median is the point of this whole structure. Reported beside the
+    /// max so a spike and a plateau are distinguishable, which is the difference
+    /// between a trajectory statistic and something a runtime gate could use.
+    fn spread(&self, pick: fn(&Signals) -> f64) -> (f64, f64, f64) {
+        assert!(
+            self.is_recorded(),
+            "spread over an EMPTY trace — there is no worst step, and returning \
+             zero would read as a perfectly in-domain arm",
+        );
+        let mut v: Vec<f64> = self.steps.iter().map(pick).collect();
+        v.sort_by(f64::total_cmp);
+        (v[0], v[v.len() / 2], v[v.len() - 1])
+    }
+
+    /// The active-set size range — `active_novelty`'s denominator.
+    fn active_range(&self) -> (usize, usize) {
+        assert!(self.is_recorded(), "active range over an EMPTY trace");
+        (
+            self.active_count.iter().copied().min().unwrap_or(0),
+            self.active_count.iter().copied().max().unwrap_or(0),
+        )
     }
 }
 
@@ -2174,7 +2229,7 @@ struct Probe<'a> {
     envelope: Vec<(f64, f64)>,
     /// Every training snapshot's reduced coordinates — the tight hull.
     train_q: Vec<Vec<f64>>,
-    /// RMS spread of `train_q` about its mean; `hull_distance`'s unit.
+    /// RMS spread of `train_q` about its mean; `snapshot_distance`'s unit.
     cloud_radius: f64,
     /// Every vertex contact-active at any step of any training trajectory.
     train_active: &'a std::collections::BTreeSet<usize>,
@@ -2186,16 +2241,15 @@ struct Probe<'a> {
 
 impl Probe<'_> {
     /// One step's four readings.
-    fn read(&self, s: &ReducedStep, x: &[f64], centre: Vec3) -> Signals {
-        Signals {
+    fn read(&self, s: &ReducedStep, x: &[f64], centre: Vec3) -> (Signals, usize) {
+        let active = active_vertices(x, centre, self.d_hat);
+        let reading = Signals {
             residual_excess: s.full_residual_norm / self.tol,
             envelope_excursion: envelope_excursion(&s.q, &self.envelope),
-            hull_distance: nearest_training_distance(&s.q, &self.train_q) / self.cloud_radius,
-            active_novelty: active_novelty(
-                &active_vertices(x, centre, self.d_hat),
-                self.train_active,
-            ),
-        }
+            snapshot_distance: nearest_training_distance(&s.q, &self.train_q) / self.cloud_radius,
+            active_novelty: active_novelty(&active, self.train_active),
+        };
+        (reading, active.len())
     }
 }
 
@@ -2495,45 +2549,164 @@ fn active_novelty_is_two_sided() {
     assert!(active_novelty(&std::collections::BTreeSet::new(), &seen).abs() < f64::EPSILON);
 }
 
-#[test]
-fn an_unrecorded_arm_does_not_read_as_in_domain() {
-    // ★★ THE control for this whole instrument. Every domain signal's healthy
-    // value is `0.0`, so an accumulator initialised to zero and never fed would
-    // report a perfectly in-domain arm. `UNRECORDED` must be distinguishable.
-    let empty = Signals::UNRECORDED;
-    assert!(!empty.is_recorded());
-    let mut acc = Signals::UNRECORDED;
-    acc.record(Signals {
-        residual_excess: 1.0e6,
-        envelope_excursion: 0.0,
-        hull_distance: 0.25,
-        active_novelty: 0.0,
-    });
-    assert!(acc.is_recorded());
-    // And the fold is a MAX, taken from the NaN start on the first sample.
-    assert!((acc.residual_excess - 1.0e6).abs() < 1e-9);
-    acc.record(Signals {
-        residual_excess: 1.0,
-        envelope_excursion: 3.0,
-        hull_distance: 0.1,
-        active_novelty: 0.5,
-    });
-    assert!((acc.residual_excess - 1.0e6).abs() < 1e-9);
-    assert!((acc.envelope_excursion - 3.0).abs() < 1e-12);
-    assert!((acc.hull_distance - 0.25).abs() < 1e-12);
-    assert!((acc.active_novelty - 0.5).abs() < 1e-12);
+#[cfg(test)]
+const fn step(
+    residual_excess: f64,
+    envelope_excursion: f64,
+    snapshot_distance: f64,
+    active_novelty: f64,
+) -> Signals {
+    Signals {
+        residual_excess,
+        envelope_excursion,
+        snapshot_distance,
+        active_novelty,
+    }
 }
 
 #[test]
-#[should_panic(expected = "SWALLOWED by the max-fold")]
-fn signals_refuse_a_non_finite_sample() {
-    let mut acc = Signals::UNRECORDED;
-    acc.record(Signals {
-        residual_excess: f64::NAN,
-        envelope_excursion: 0.0,
-        hull_distance: 0.0,
-        active_novelty: 0.0,
-    });
+fn an_unrecorded_arm_does_not_read_as_in_domain() {
+    // ★★ THE control for this whole instrument. Every domain signal's healthy
+    // reading is `0.0`, so an accumulator initialised to zero and never fed
+    // would report a perfectly in-domain arm. An empty trace must be
+    // distinguishable from a clean one, and must not be summarisable at all.
+    let empty = SignalTrace::new();
+    assert!(!empty.is_recorded());
+    let mut t = SignalTrace::new();
+    t.record(step(1.0e6, 0.0, 0.25, 0.0), 7);
+    assert!(t.is_recorded());
+}
+
+#[test]
+#[should_panic(expected = "EMPTY trace")]
+fn an_empty_trace_refuses_to_be_summarised() {
+    // ⚠ The dangerous alternative is a summary that returns `0.0` — which on a
+    // domain signal reads as PERFECTLY IN DOMAIN.
+    let _ = SignalTrace::new().spread(|s| s.snapshot_distance);
+}
+
+#[test]
+fn the_trace_reports_a_spread_and_not_just_its_worst_step() {
+    // ★ The whole reason the trace replaced a max-only accumulator: a SPIKE and
+    // a PLATEAU have the same max and completely different meanings for a check
+    // that reads one step.
+    let mut spike = SignalTrace::new();
+    let mut plateau = SignalTrace::new();
+    for i in 0..5 {
+        spike.record(step(1.0, 0.0, if i == 4 { 10.0 } else { 0.1 }, 0.0), 7);
+        plateau.record(step(1.0, 0.0, f64::from(i).mul_add(-0.01, 10.0), 0.0), 7);
+    }
+    let (s_min, s_med, s_max) = spike.spread(|s| s.snapshot_distance);
+    let (p_min, p_med, p_max) = plateau.spread(|s| s.snapshot_distance);
+    assert!(
+        (s_max - 10.0).abs() < 1e-12 && (p_max - 10.0).abs() < 1e-12,
+        "same max"
+    );
+    assert!(
+        (s_med - 0.1).abs() < 1e-12,
+        "spike median is the floor, got {s_med}"
+    );
+    assert!(p_med > 9.9, "plateau median is near the max, got {p_med}");
+    assert!((s_min - 0.1).abs() < 1e-12 && p_min > 9.9);
+}
+
+#[test]
+fn the_trace_reports_the_active_set_size() {
+    // `active_novelty` is a FRACTION; without its denominator a reading of
+    // `1.000` cannot be told from `1/1`.
+    let mut t = SignalTrace::new();
+    t.record(step(1.0, 0.0, 0.0, 0.0), 4);
+    t.record(step(1.0, 0.0, 0.0, 1.0), 19);
+    assert_eq!(t.active_range(), (4, 19));
+}
+
+#[test]
+#[should_panic(expected = "cannot be summarised")]
+fn a_trace_refuses_a_non_finite_sample() {
+    SignalTrace::new().record(step(f64::NAN, 0.0, 0.0, 0.0), 7);
+}
+
+/// **Can ONE threshold on this signal implement `accept ⟺ max_rel_err ≤ τ`?**
+///
+/// ★★★ **The question a gate is actually asked — and the first version of this
+/// pilot did not ask it.** It asked whether a signal separates the TRAINING SPAN
+/// from outside it. That is a different partition, and it flatters any signal
+/// that merely tracks the indenter's position, because on this fixture position
+/// and error happen to be monotone together. A gate does not refuse an answer for
+/// being far from home; it refuses one for being too WRONG.
+///
+/// So: sweep τ, and for each signal ask whether the accept side's worst reading
+/// is below the refuse side's best. A `FAIL` means no single threshold exists at
+/// that τ — the classes overlap or invert.
+///
+/// ⚠ Every margin printed here is FITTED, not validated: the threshold interval
+/// is derived from the same 16 cells it is scored on, and there is no held-out
+/// position anywhere in this matrix.
+fn print_gate_table(rows: &[(&'static str, usize, Arm)], taus: &[f64], q: Quantile) {
+    let cells: Vec<(f64, &Arm)> = rows
+        .iter()
+        .filter(|(_, _, a)| a.max_rel_err > 0.0)
+        .map(|(_, _, a)| (a.max_rel_err, a))
+        .collect();
+    assert!(
+        cells.len() == rows.len(),
+        "{} of {} arms have no usable error and cannot be placed on either side \
+         of an accuracy threshold",
+        rows.len() - cells.len(),
+        rows.len(),
+    );
+    let picks: [(&str, fn(&Signals) -> f64); 4] = [
+        ("S1", |s| s.residual_excess),
+        ("S2", |s| s.envelope_excursion),
+        ("S3", |s| s.snapshot_distance),
+        ("S4", |s| s.active_novelty),
+    ];
+    println!(
+        "\nRC\t╔═ GATE TEST ({}) — does ONE threshold give `accept ⟺ max_rel_err ≤ τ` ?",
+        match q {
+            Quantile::Max => "worst step — the decision a fire-if-ever gate reaches",
+            Quantile::Median => "median step — how much of the trajectory SUPPORTS that decision",
+        }
+    );
+    let mut head = format!("RC\t║ {:>9}", "τ");
+    for (n, _) in &picks {
+        let padded = format!("{n:>20}");
+        head.push_str(&padded);
+    }
+    println!("{head}");
+    for &tau in taus {
+        let mut line = format!("RC\t║ {tau:>9.0e}");
+        for (_, pick) in picks {
+            let side = |keep: bool| -> Vec<f64> {
+                cells
+                    .iter()
+                    .filter(|(e, _)| (*e <= tau) == keep)
+                    .filter_map(|(_, a)| signal(a, pick, q))
+                    .collect()
+            };
+            let (acc, refu) = (side(true), side(false));
+            let cell = if acc.is_empty() || refu.is_empty() {
+                "(one side empty)".to_owned()
+            } else {
+                let hi = acc.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                let lo = refu.iter().copied().fold(f64::INFINITY, f64::min);
+                if hi >= lo {
+                    "FAIL".to_owned()
+                } else if hi > 0.0 {
+                    format!("OK {:.2}x", lo / hi)
+                } else {
+                    "OK inf".to_owned()
+                }
+            };
+            let padded = format!("{cell:>20}");
+            line.push_str(&padded);
+        }
+        println!("{line}");
+    }
+    println!(
+        "RC\t║ A signal that FAILs at some τ cannot gate on accuracy there, however \
+         well\nRC\t║ it separates positions. ⚠ FITTED margins — no held-out position exists.\nRC\t╚═"
+    );
 }
 
 /// One quantity's matrix: positions down, rank across. The LAYOUT is the
@@ -2548,7 +2721,7 @@ fn print_matrix(
     title: &str,
     note: &str,
     rows: &[(&'static str, usize, Arm)],
-    pick: fn(&Arm) -> Option<f64>,
+    pick: impl Fn(&Arm) -> Option<f64>,
 ) {
     println!("\nRC\t╔═ {title}");
     for (label, _) in TEST_OFFSETS {
@@ -2571,9 +2744,26 @@ fn print_matrix(
     println!("RC\t║ {note}\nRC\t╚═");
 }
 
-/// One signal off an arm, or `None` if the arm recorded nothing.
-fn signal(arm: &Arm, pick: fn(&Signals) -> f64) -> Option<f64> {
-    arm.signals.as_ref().filter(|s| s.is_recorded()).map(pick)
+/// Which quantile of a signal's per-step distribution a table is reporting.
+///
+/// ★ The pilot's first version reported only [`Quantile::Max`], and that is an
+/// extreme-value statistic where the conclusion is about a check that reads ONE
+/// step. Reporting the median beside it is what makes a spike distinguishable
+/// from a plateau.
+#[derive(Clone, Copy)]
+enum Quantile {
+    Median,
+    Max,
+}
+
+/// One signal off an arm at one quantile, or `None` if the arm recorded nothing.
+fn signal(arm: &Arm, pick: fn(&Signals) -> f64, q: Quantile) -> Option<f64> {
+    let t = arm.signals.as_ref().filter(|s| s.is_recorded())?;
+    let (_, med, max) = t.spread(pick);
+    Some(match q {
+        Quantile::Median => med,
+        Quantile::Max => max,
+    })
 }
 
 /// **§4c rung 1 — is there an ONLINE signal, and does it separate the two ways
@@ -2625,7 +2815,7 @@ fn signal(arm: &Arm, pick: fn(&Signals) -> f64) -> Option<f64> {
 ///    the box contains it while the answer is `109 %` wrong. Predicted `0.0` or
 ///    near it at `+1.50a` and `+2.00a`. ★ If it DOES separate, recon §5's open
 ///    item 3 is answered in the cheap direction and rung 2 is nearly free.
-/// 3. **`hull_distance` separates where the box does not** — same coordinates,
+/// 3. **`snapshot_distance` separates where the box does not** — same coordinates,
 ///    tight hull instead of loose. It is here so that a flat `envelope_excursion`
 ///    can be attributed to the *statistic* rather than to `q`-space itself; if
 ///    both are flat, `q` genuinely carries no domain information and only the
@@ -2646,146 +2836,164 @@ fn signal(arm: &Arm, pick: fn(&Signals) -> f64) -> Option<f64> {
 ///    arguably still usable. A gate that refuses interpolation is useless; one
 ///    that accepts it owes an account of the three orders. No prediction.
 ///
-/// ## Measured — first run, 2026-08-25, `a/cell = 2` (5 202 free DOF, 2 023 vertices)
+/// ## Measured — 2026-08-25, `a/cell = 2` (5 202 free DOF, 2 023 vertices)
 ///
-/// Ground truth reproduces §2l at **15 of 16 cells** and corrects the sixteenth
-/// (`2.42e-2 / 4.73e-3 / 1.12e-4 / 2.57e-6` in-sample, `1.89e-3` interpolating,
-/// `0.282` and `1.09` extrapolating), so this is that fixture and not a
-/// lookalike. ⚠ The exception is a double-rounding in the PUBLISHED table, not a
-/// difference in the run — see [`reduced_basis_generalises`].
+/// ⚠⚠ **This section was rewritten after a cold re-derivation. The first version
+/// reported a trajectory MAXIMUM for a question about a per-step check, and that
+/// single choice inverted three of its four verdicts.** What follows is measured
+/// on an instrument that keeps every step. The superseded claims are named at the
+/// bottom, because a reader who saw them needs to know which ones moved.
 ///
-/// ★ **Non-regression on the shared `run_reduced` is MEASURED, not argued.**
-/// [`reduced_basis_generalises`] was run at `0d9496b2` (this branch's parent,
-/// before any of these edits) and again here: **byte-identical output**. Two
-/// harnesses agreeing on the changed code would not have shown that — both
-/// would move together — which is why the pre-change arm was run. Training set:
-/// `355` snapshots, `41` of `2 023` vertices ever contact-active. Wiring
-/// control: `0.000` novel against its own union, `0.476` against the `-1.00a`
-/// union alone.
+/// Ground truth reproduces §2l at 15 of 16 cells and corrects the sixteenth (see
+/// [`reduced_basis_generalises`]). Training set `355` snapshots, `41` of `2 023`
+/// vertices ever contact-active. Wiring control: `0.000` novel against its own
+/// union, `0.476` against the `-1.00a` union alone.
 ///
-/// **★★★ AN ORACLE-FREE SIGNAL EXISTS, AND IT IS RANK-INDEPENDENT.**
-/// `hull_distance` (S3), in cloud radii:
+/// ### The question a gate is actually asked
 ///
-/// | position | r=20 | r=40 | r=80 | r=142 |
-/// |---|---:|---:|---:|---:|
-/// | IN-SAMPLE `+0.00a` | 3.59e-3 | 9.06e-4 | 6.00e-6 | 6.94e-7 |
-/// | INTERP `+0.25a` | **5.062e-1** | **5.063e-1** | **5.063e-1** | **5.069e-1** |
-/// | EXTRAP `+1.50a` | 1.31 | 1.17 | 1.38 | 1.92 |
-/// | EXTRAP `+2.00a` | 2.74 | 2.96 | 3.56 | 5.98 |
+/// **Not** "does this signal separate the training span from outside it" — that
+/// is a partition over POSITION, and on this fixture position and error are
+/// monotone together, so it flatters anything tracking the indenter. A gate
+/// refuses an answer for being too WRONG. So: is there ONE threshold `θ` with
+/// `accept ⟺ max_rel_err ≤ τ`? Swept over `τ`, printed by the harness:
 ///
-/// Interpolation reads the same value to FOUR significant figures across a 7×
-/// rank change. That is the signature a domain signal must have and an error
-/// signal cannot: a statement about where the scene sits, not about how well it
-/// is resolved.
+/// | | `τ=1e-1` | `5e-2` | `3e-2` | `2e-2` | `1e-2` | `5e-3` | `3e-3` | `2e-3` | `1e-3` |
+/// |---|---|---|---|---|---|---|---|---|---|
+/// | **S1** worst step | 6.80× | 6.80× | 2.37× | 1.37× | 2.71× | 2.69× | FAIL | FAIL | 98.8× |
+/// | **S1** median step | FAIL | FAIL | 1.35× | FAIL | 1.13× | 5.04× | FAIL | FAIL | 85.2× |
+/// | **S2** either | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL |
+/// | **S3** worst step | 2.30× | 2.30× | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL | 151× |
+/// | **S3** median step | 1.94× | 1.94× | 1.00× | FAIL | FAIL | FAIL | FAIL | FAIL | 56.4× |
+/// | **S4** worst step | **∞** | **∞** | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL |
+/// | **S4** median step | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL |
 ///
-/// ★★ **And the same column carries its own two-sided control.** Flatness would
-/// be worthless if this statistic were trivially rank-invariant — numerator and
-/// denominator scaling together by construction. It is not: the IN-SAMPLE row of
-/// the very same quantity falls **`5 170×`** (`3.59e-3 → 6.94e-7`) over the same
-/// rank range, which is what it must do, since in-sample the reduced solution
-/// converges onto trajectories that ARE training points. Flat on one row and
-/// falling five orders on another is a property of the scenes, not of the ratio.
+/// ★ **Read the two rows per signal as a pair.** A gate that fires when ANY step
+/// crosses `θ` reaches its verdict on the **worst step**, so that row is the
+/// accept/refuse decision. The **median** row says how much of the trajectory is
+/// behind it: separation on both is a plateau; separation only at the max rests
+/// on a minority of steps and is one quiet step from silence.
 ///
-/// **★★★ The mechanism, and it is the transferable part.** S3 is
-/// rank-independent *because POD is energy-ordered*: the leading modes dominate
-/// both the distance and the cloud radius, so appending tail modes changes
-/// neither. S2 takes a **max over per-mode normalised deviations**, so it is
-/// dominated by the THINNEST axis — always the newest tail mode — and its
-/// IN-SAMPLE row climbs `104×` with rank (`7.85e-2 → 8.17e0`) on the one row
-/// that is in-domain by definition. ⇒ **For a rank-independent domain signal,
-/// take a NORM over modes, never a MAX.**
+/// ### The four verdicts
 ///
-/// ⚠ **Inferred from the SHAPES, not from a per-mode decomposition — which is
-/// not instrumented.** The support is sharper than "it grows": S2's in-sample
-/// row moves within `1.6×` for three rungs (`7.85e-2 / 1.27e-1 / 1.21e-1`) and
-/// then jumps `68×` on the last — which is exactly where the requested `160`
-/// truncated to `142`, the numerical-rank edge where retained modes are
-/// thinnest.
+/// - ⛔ **S2 is dead.** It fails at every `τ` on both rows. §5's open item 3 was
+///   still wrong to say `q`-space carries no position information — S2 separates
+///   POSITIONS strongly at every fixed rank — but the per-mode box cannot convert
+///   that into an accuracy rule at any tolerance.
+/// - ⛔ **S4's `∞` margin is an ARTIFACT of the maximum.** At `+1.50a` its median
+///   is **exactly `0.000` at all four ranks** while the answer is `14.8 %–31.8 %`
+///   wrong; the max of `0.111–0.286` comes from a minority of steps. And the
+///   denominator, now printed rather than inferred, is **10–18 active vertices at
+///   `+1.50a` and 4–12 at `+2.00a`** against 21 in-sample. ⇒ the whole signal is
+///   one or two vertices on a few steps. ★ Worse, it is confounded: the active
+///   set SHRINKS out of domain (`21 → 4`), so the fraction rises partly because
+///   the contact patch is disappearing, not only because it is novel.
+/// - ⚠ **S1 gates on accuracy at 7 of 9 tolerances on the worst step — and its
+///   separation does not survive per-step.** At the median, `+0.25a` at `r=20`
+///   reads `7.923e7` against `+1.50a` at `r=142`'s `5.838e7`: **inverted, 0.737×**.
+///   It is also **not free at R3**: `‖r_free‖` exists here only because R1.1
+///   sweeps every element, which is exactly what ECSW removes.
+/// - ✅ **S3 is the only candidate that survives both rows.** `2.30×` on the worst
+///   step, `1.94×` on the median — a plateau. Its interpolation row reads
+///   `5.062e-1 / 5.063e-1 / 5.063e-1 / 5.069e-1`, a spread of **`0.138 %`**
+///   across a `7.1×` rank change.
 ///
-/// ### Against the pre-registration
+/// ★★ **The flatness has its own two-sided control, in the same column.** It
+/// would prove nothing if the statistic were trivially rank-invariant. It is not:
+/// the IN-SAMPLE row of the same quantity falls **`5 168×`** (`3.59e-3 → 6.94e-7`)
+/// over the same range — as it must, since in-sample the reduced solution
+/// converges onto trajectories that ARE training points.
 ///
-/// 1. **HELD.** S1 falls `5.8` orders with rank in-sample (`1.53e8 → 2.47e2`)
-///    and only `0.77` / `0.58` orders at `+1.50a` / `+2.00a` — separates by
-///    regime, flat within the bad ones, exactly the conflating shape.
-/// 2. ⛔ **FALSIFIED, and it is the useful one.** S2 separates strongly at every
-///    fixed rank. Recon §5's "the `‖q‖` gate does not detect that the indenter
-///    moved somewhere the ensemble never saw" was ARGUED, and it is **wrong** —
-///    `q`-space carries the position information. What fails is the STATISTIC:
-///    in-sample at `r=142` reads `8.17` against interpolation at `r=20`'s
-///    `0.98`, so no rank-independent threshold exists for a per-mode box.
-/// 3. **HELD**, and S3 is the best of the four.
-/// 4. ⚠ **PARTIALLY FALSIFIED.** S4 is stepped in position and reads EXACTLY
-///    zero in domain at every rank, but its magnitude moves `2.6×`/`2.7×` with
-///    rank on the two extrapolation rows — the active set is computed from
-///    `x_rest + Φq`, and out of domain that field is `28 %`–`109 %` wrong, so
-///    which vertices fall inside `d̂` is contaminated exactly where it matters.
-///    The pre-registered structural claim said rank-dependence falsifies
-///    basis-independence. It does.
-/// 5. **HELD** — see the gate below.
-/// 6. **Interpolation is IN DOMAIN** on both geometric signals (S4 exactly `0`,
-///    S3 a distinct but small `0.506`). ⇒ its three orders are a
-///    sampling-density-and-rank problem, not a domain problem, and catching
-///    them is S1's job. That is the product answer.
+/// ### Why S3 and not S2 — and it is NOT max-versus-norm
 ///
-/// ### ⚠ The margin I would have overstated
+/// Both read the same coordinates. S2 normalises **per mode** and S3 by **one
+/// global scale** (the training cloud's radius). A per-mode divisor is set by the
+/// thinnest retained axis, which is always the newest tail mode, so S2's
+/// IN-SAMPLE row climbs `104×` with rank on the one row that is in-domain by
+/// definition. ⇒ **use ONE GLOBAL normaliser, not a per-mode one.**
 ///
-/// S3's in-sample-versus-everything-else separation is `141×`
-/// (`3.59e-3 → 5.062e-1`). **That is not what a gate gets.** A gate must ACCEPT
-/// interpolation — it is `1.9e-3` — so a threshold has to sit between
-/// interpolation's `5.069e-1` and the nearer extrapolation's `1.165`: a
-/// separating **WINDOW of `2.30×`**, about `1.5×` either side of a centred
-/// threshold, not `2.30×` of headroom.
+/// ⛔ An earlier version of this section drew the rule as "take a NORM over modes,
+/// never a MAX", and that is **provably wrong**: `‖d‖₂ ≥ ‖d‖∞` pointwise, so a
+/// norm over the SAME per-mode-normalised deviations is at least as rank-sensitive
+/// as the max — measured at `2.06× → 3.48×` over `r = 20 → 142` on random
+/// deviations. The operation was never the problem; the normaliser was. §7 had
+/// already recorded the wrong rule as rung 2's design.
 ///
-/// ★ **S4 wins that exact cut outright**: `0.000` at both in-hull positions
-/// across all four ranks, `≥ 0.111` at both out-of-hull positions across all
-/// four, no overlap and nothing to tune — the test is "is it zero". S1's
-/// equivalent window is `3.62e8 → 2.46e9`, or `6.80×`.
+/// ### The spectrum, which settles what `r=160 → 142` means
 ///
-/// ⇒ **§4c's gate is a DOMAIN signal (S4, or S3 for a graded reading) plus S1
-/// as the error backstop.** They have opposite remedies — more training versus
-/// more rank — which is what a single conflating signal can never report.
+/// `142` modes of `355` snapshots, `σ_last/σ_0 = 1.012e-8` — so the truncation is
+/// `SIGMA_FLOOR_REL`, not anything structural. But **retained energy is
+/// `1.000000000`**: the top rung already extracts everything this ensemble
+/// contains energetically while spanning 142 of 355 directions. ⇒ "flat in rank
+/// out of domain" is not a truncation statement. Asking for more modes cannot
+/// help, because there is no more energy to get — only different snapshots can.
 ///
-/// ★ At the converged rank the two are a calibration curve, monotone `4/4`:
-/// `6.9e-7 → 2.6e-6`, `0.507 → 1.9e-3`, `1.92 → 0.282`, `5.98 → 1.09`.
+/// ### Pre-registration, scored honestly
+///
+/// 1. **HELD** on the worst step (S1 falls `5.8` orders in-sample, `0.77`/`0.58`
+///    out of domain) — and its per-step separation inverts, which was not asked.
+/// 2. ⛔ **FALSIFIED.** S2 separates positions strongly at fixed rank.
+/// 3. **HELD**, and S3 is the only survivor — but at `~2×`, not the `141×` the
+///    first version advertised (see the superseded list).
+/// 4. ⛔ **FALSIFIED, and more completely than first recorded.** S4 is not merely
+///    rank-dependent; its separation is a per-trajectory spike over a handful of
+///    vertices.
+/// 5. ⚠ **VOID, not HELD.** Item 5 was written as a conditional on items 1 and 4
+///    both holding. Item 4 did not hold. The first version marked it HELD anyway —
+///    the one place the pre-registration was designed to bind, and it did not.
+/// 6. **Answered, with a caveat that undercuts it:** interpolation reads in-domain
+///    on both geometric signals. ⚠ But `+0.25a` is `0.5` cells off-lattice
+///    (`a/cell = 2`, so training sits at `0, ±1, ±2` cells and the extrapolations
+///    at `3` and `4`) — **the only offset in the experiment not on a lattice
+///    site**, and the one the whole question rests on.
+///
+/// ### ⇒ What this rung actually delivered
+///
+/// **Not a gate, and not a gate design.** A narrowed candidate set and a measured
+/// reason each of the others fails: S2 cannot convert position information into an
+/// accuracy rule; S4's margin is a maximum over a few vertices on a few steps;
+/// S1's is real per-trajectory but absent per-step and unavailable under ECSW. S3
+/// is left standing at `~2×`, on a fitted threshold, on one fixture.
 ///
 /// ### ⚠ What this does NOT establish
 ///
-/// - **S4's exact zero is a property of THIS ensemble.** Training offsets are
-///   `0.5a` apart against a patch of radius `a`, so the training union is a
-///   contiguous band and interpolation cannot fall in a hole. A sparser ensemble
-///   is untested and could read non-zero in domain.
-/// - **S4 is quantised by a tiny active set.** `+1.50a` reads exactly `0.1250`,
-///   `0.2857`, `0.1875`, `0.1111`, and the training union is `41` of `2 023`
-///   vertices. ⚠ **The denominator is NOT printed**, so reading those as `1/8`,
-///   `2/7`, `3/16`, `1/9` — 1–3 novel vertices of 7–16 — is an INFERENCE from
-///   the simplest consistent fraction, not a measurement. Print the count before
-///   any threshold is set on this signal.
-/// - **S1 is not normalised by the load** (see [`Signals::residual_excess`]), so
-///   its `6.80×` window is a figure about this ramp.
-/// - **Every arm ran `InitialGuess::Inertial`.** At convergence `‖r_free‖` is a
-///   property of the converged state, so S1 should be predictor-independent — but
-///   OUT of domain the projected line search can land differently (§2c's
-///   tunnelling mechanism is real there), and §2k already found the predictor
-///   load-bearing on this fixture. Untested, and it is S1's exposure, not the
-///   geometric signals'.
-/// - **S2's rank explosion is INFERRED not to be [`DEGENERATE_MODE_FLOOR`]
-///   binding** — a bound mode would read `~1e12` and the largest cell is
-///   `4.9e7` — but which mode drives the max is not instrumented.
-/// - ★ **SEPARATION is the fixture-specific half; RANK-INDEPENDENCE is the
-///   general one.** That a norm over energy-ordered coordinates does not move
-///   with rank follows from POD itself. That the norm *separates in-domain from
-///   out-of-domain* was measured on one lateral sweep of one indenter, and
-///   nothing here says it holds for a different kind of parameter change.
-/// - **`hull_distance` assumes the basis was fitted under [`Inner::Mass`]**, so
-///   that `ΦᵀMΦ = I` and a Euclidean distance between coordinate vectors IS the
-///   mass-norm distance between the fields. ⚠ Nothing CHECKS it: `PodBasis`
-///   exposes no `inner()`, and a Euclidean-fitted basis would silently make this
-///   column mean something else. Rung 2 should either expose it or verify the
-///   Gram directly, which `stick_impact.rs` already has machinery for.
-/// - **No threshold is set, and none should be read off these cells.** One
-///   fixture, one mesh, one material, one ramp.
-/// - The `+2.00a r=20` "divergence" is an `ArmijoStall` at `‖r‖ = 1.037e-10`
-///   against a `1e-10` tol — it stalled AT the answer, not away from it.
+/// - **No held-out position exists.** Every margin is computed on the same 16
+///   cells that chose the threshold. The hull edge is `1.0a` and the nearest
+///   scored out-of-domain point is `1.5a`, with **nothing sampled between** — so
+///   every window here is an upper bound on an unmeasured quantity.
+/// - **The DOMAIN/ERROR taxonomy is not falsifiable on this fixture.**
+///   Distance-from-training and error are monotone together across all four
+///   positions, so no cell could have distinguished the two kinds. The labels are
+///   definitions.
+/// - **Extrapolation is confounded with the free edge.** The plate is `8a`; the
+///   scored extrapolations keep `1.5a` and `1a` of clearance.
+/// - **The in-sample column measures RECONSTRUCTION, not prediction** — its 71
+///   steps are all training snapshots — and it is the anchor every ratio is taken
+///   against.
+/// - **One basis construction.** A single pooled POD under a mass inner product.
+///   Nothing here speaks to per-offset, parametric, or contact-local bases.
+/// - **`snapshot_distance` assumes [`Inner::Mass`]** so that Euclidean distance in
+///   `q` is mass-norm distance in `u`. Nothing checks it; `PodBasis` exposes no
+///   `inner()`.
+/// - **Every arm ran `Inertial`,** and the predictor exposure is NOT S1's alone —
+///   `snapshot_distance` reads `s.q` and `active_novelty` reads `x_rest + Φq`,
+///   both of which are the solved state.
+/// - **No timing.** Whether any of this is affordable is unmeasured.
+/// - **No threshold is set.** One fixture, one mesh, one material, one ramp.
+///
+/// ### ⛔ Superseded by this rewrite — named so the earlier text is traceable
+///
+/// | first published | corrected |
+/// |---|---|
+/// | "the same value to FOUR significant figures" | distinct at 4 and 3 s.f.; a `0.138 %` spread, same at TWO |
+/// | "take a NORM over modes, never a MAX" | the per-mode NORMALISER was the fault; a norm is at least as rank-sensitive |
+/// | "S4 wins that cut outright, `0` vs `≥0.111`" | a maximum-only artifact; median `0.000` at `+1.50a` |
+/// | "S3's margin is `141×`" | `2.30×` worst step, `1.94×` median; `141×` was in-sample-vs-everything |
+/// | "the gate needs TWO signals" | not shown for GATING; that argument is about DIAGNOSIS |
+/// | "`‖r_free‖`… and it is free" | free at R1.1, NOT under ECSW at R3 |
+/// | "out of domain that field is `28 %`–`109 %` wrong" | that is the `r=142` column; the range is `14.8 %`–`119.6 %` |
+/// | "`≥ 1.17` extrapolating" | the minimum is `1.165` |
+/// | "byte-identical output" (non-regression) | the 37 measurement ROWS are identical; the files differ |
+/// | pre-registration item 5 "HELD" | VOID — its antecedent was falsified |
 #[test]
 #[ignore = "§4c online-signal pilot — 8 full-order trajectories, ~5 min (see the fn docs)"]
 fn an_online_signal_separates_out_of_domain() {
@@ -2943,7 +3151,7 @@ fn an_online_signal_separates_out_of_domain() {
             let radius = cloud_radius(&train_q);
             assert!(
                 radius > 0.0,
-                "the training cloud at r={} has zero radius, so `hull_distance` \
+                "the training cloud at r={} has zero radius, so `snapshot_distance` \
                  would divide by zero",
                 basis.n_modes(),
             );
@@ -2966,6 +3174,28 @@ fn an_online_signal_separates_out_of_domain() {
             .map(|(r, b)| format!("r={r}→{}", b.n_modes()))
             .collect::<Vec<_>>()
             .join(", ")
+    );
+    // ⚠ The top rung asks for 160 and gets 142, and until this printed, nothing
+    // said WHY. It matters: if 142 is the training set's numerical rank, then the
+    // top rung already spans everything the ensemble contains, and "flat in rank"
+    // out of domain is not a truncation statement at all — no achievable rank
+    // could fix it, only different snapshots.
+    let top = &bases.last().expect("at least one basis").1;
+    let sv = top.singular_values();
+    println!(
+        "RC\tSPECTRUM: {} modes retained of {} snapshots; sigma_last/sigma_0 = {:.3e}; \
+         retained energy = {:.9}\nRC\t  => the top rung {} the training span ({} modes vs {} snapshots)",
+        top.n_modes(),
+        train.len(),
+        sv.get(top.n_modes() - 1).copied().unwrap_or(f64::NAN) / sv.first().copied().unwrap_or(1.0),
+        top.retained_energy_fraction(),
+        if top.n_modes() >= train.len() {
+            "SPANS"
+        } else {
+            "does NOT span"
+        },
+        top.n_modes(),
+        train.len(),
     );
 
     // ── score every position against every rank, with the probe attached ──
@@ -3042,40 +3272,92 @@ fn an_online_signal_separates_out_of_domain() {
         &rows,
         |a| a.failure.is_none().then_some(a.gap_dev),
     );
+    // ── worst-over-steps, the statistic the first pilot reported ──
+    for (name, note, pick) in SIGNAL_TABLES {
+        print_matrix(&format!("{name}   worst over steps"), note, &rows, |a| {
+            signal(a, pick, Quantile::Max)
+        });
+    }
+
+    // ── the MEDIAN step, which is what a per-step check would mostly see ──
+    //
+    // ★★ A max over 71 steps is an extreme-value statistic. A gate reads ONE
+    // step. Where the median tracks the max the trajectory figure transfers;
+    // where it collapses toward the in-domain value, the max is a spike and the
+    // separation above is not available to a runtime check at most steps.
+    for (name, _, pick) in SIGNAL_TABLES {
+        print_matrix(&format!("{name}   MEDIAN step"), MEDIAN_NOTE, &rows, |a| {
+            signal(a, pick, Quantile::Median)
+        });
+    }
+
+    // ── active_novelty's denominator, without which its fractions are unreadable ──
     print_matrix(
-        "S1  residual_excess = ‖r_free‖ / tol   [ERROR]",
-        "Predicted: falls with rank IN-SAMPLE, flat with rank OUT-of-domain, and \
-         large in BOTH — i.e. separates, and conflates.",
+        "active-set SIZE (max over steps) — S4's DENOMINATOR",
+        "A novelty of `1.000` over 4 active vertices and over 40 are different \
+         readings. The first pilot printed the fraction and not this.",
         &rows,
-        |a| signal(a, |s| s.residual_excess),
+        |a| {
+            a.signals
+                .as_ref()
+                .filter(|t| t.is_recorded())
+                .map(|t| t.active_range().1 as f64)
+        },
     );
-    print_matrix(
-        "S2  envelope_excursion (half-widths outside the per-mode box)   [DOMAIN]",
-        "§4c's STATED signal. Predicted ~0 everywhere ⇒ does NOT separate.",
-        &rows,
-        |a| signal(a, |s| s.envelope_excursion),
-    );
-    print_matrix(
-        "S3  hull_distance (cloud radii to the nearest training snapshot)   [DOMAIN]",
-        "The tight hull in the same coordinates: tells a bad STATISTIC apart from \
-         a q-space that carries no domain information at all.",
-        &rows,
-        |a| signal(a, |s| s.hull_distance),
-    );
-    print_matrix(
-        "S4  active_novelty (fraction of active vertices never active in training)   [DOMAIN]",
-        "Predicted FLAT IN RANK and STEPPED IN POSITION — 0 at +0.00a AND +0.25a, \
-         rising with extrapolation distance. Rank-dependence here falsifies it.",
-        &rows,
-        |a| signal(a, |s| s.active_novelty),
-    );
+
+    // ★★ BOTH quantiles, and the pair is the argument. A gate that fires when
+    // ANY step exceeds its threshold is decided by the MAX — so the max pass is
+    // the accept/refuse verdict. The MEDIAN pass says how much of the trajectory
+    // is behind that verdict: a signal that separates at both is a plateau, one
+    // that separates only at the max rests on a minority of steps and is one bad
+    // step away from silence.
+    print_gate_table(&rows, &GATE_TAUS, Quantile::Max);
+    print_gate_table(&rows, &GATE_TAUS, Quantile::Median);
     println!(
-        "\nRC\t★ READ THE SHAPES, NOT THE CELLS:\n\
-         RC\t   an ERROR signal falls with rank where the basis is adequate and is \
-         flat where it is not;\n\
-         RC\t   a DOMAIN signal is flat in rank and steps with POSITION.\n\
-         RC\t   If S1 conflates and a domain signal does not, §4c's gate needs BOTH \
-         — they have opposite remedies.\n\
-         RC\t   NO THRESHOLD IS SET HERE. This is the pilot they get learned from."
+        "\nRC\t★ HOW TO READ THIS:\n\
+         RC\t   The four matrices show SHAPE across rank and position.\n\
+         RC\t   The GATE TEST shows whether any of it converts into a rule.\n\
+         RC\t   ⚠ The [ERROR]/[DOMAIN] labels are DEFINITIONS, not findings — on \
+         this fixture\n\
+         RC\t   distance-from-training and error are monotone together, so no cell \
+         here could\n\
+         RC\t   have distinguished the two kinds. NO THRESHOLD IS SET."
     );
 }
+
+/// The four candidates, their table captions, and their accessors — one list so
+/// the worst-step and median passes cannot drift apart.
+const SIGNAL_TABLES: [(&str, &str, fn(&Signals) -> f64); 4] = [
+    (
+        "S1  residual_excess = ‖r_free‖ / tol   [ERROR by definition]",
+        "⚠ NOT normalised by load, and NOT free at R3: `r_free` exists here only \
+         because R1.1 sweeps every element, which is what ECSW removes.",
+        |s| s.residual_excess,
+    ),
+    (
+        "S2  envelope_excursion (half-widths outside the per-mode box)   [DOMAIN by definition]",
+        "§4c's STATED signal. Normalised PER MODE, so the thinnest retained axis \
+         sets it.",
+        |s| s.envelope_excursion,
+    ),
+    (
+        "S3  snapshot_distance (cloud radii to the NEAREST TRAINING SNAPSHOT)   [DOMAIN by definition]",
+        "⚠ NOT a hull distance: a point deep inside the convex hull but in a GAP \
+         between snapshots reads large. Normalised by ONE global scale.",
+        |s| s.snapshot_distance,
+    ),
+    (
+        "S4  active_novelty (fraction of active vertices never active in training)   [DOMAIN by definition]",
+        "⚠ Returns 0 for an EMPTY active set, so a solve that loses contact reads \
+         maximally in-domain — fail-open. Read with the denominator below.",
+        |s| s.active_novelty,
+    ),
+];
+
+const MEDIAN_NOTE: &str = "Compare with the worst-step matrix above: tracking ⇒ plateau (transfers to a \
+     per-step check); collapsing ⇒ spike (does not).";
+
+/// Accuracy thresholds the gate test sweeps. Spans four orders, and deliberately
+/// brackets `1e-2` — a 1 % field error is the loosest tolerance anyone would call
+/// acceptable, so a signal that cannot gate there cannot gate where it matters.
+const GATE_TAUS: [f64; 9] = [1e-1, 5e-2, 3e-2, 2e-2, 1e-2, 5e-3, 3e-3, 2e-3, 1e-3];
