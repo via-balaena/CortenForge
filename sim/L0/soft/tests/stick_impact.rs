@@ -61,9 +61,11 @@
 //! frame arrives, strikes 2–10 are no-ops: the run contains **one** impact event,
 //! not ten, so its impact frames are `0.3 %` of the sample and the `99th`
 //! percentile falls outside them. Its `max` shows what its `p99` hides: the
-//! producer reads `p99 = 8.4 ms` against `max = 362 ms` on the same row — a
-//! `43×` gap between two statistics of one sample, because only one frame of the
-//! three hundred is an impact. Only `ForceHeld`'s **convergence verdict** and its
+//! producer reads `p99 = 8.5-9.3 ms` against `max = 365-395 ms` on the same row
+//! — a `~43×` gap between two statistics of one sample, because only one frame
+//! of the three hundred is an impact. (Quoted as ranges over six quiet reps: the
+//! single-run values this replaced were below every subsequent sample, which is
+//! what a figure frozen at run 1 does.) Only `ForceHeld`'s **convergence verdict** and its
 //! **`max`** are quotable; nothing in this file asserts on its `p99`.
 //!
 //! ⚠⚠ **The arms are not momentum-matched analytically, and that is deliberate.**
@@ -714,8 +716,16 @@ fn a_momentum_strike_converges_deeper_than_any_force_strike_that_converged() {
     // change left only the shallowest cells converging, `deepest_force` would
     // collapse, `any_force_failed` would still hold, and the impulse arm would
     // clear a tiny bar — the gate passing LOUDER on weaker evidence. In the limit
-    // `> 0.0` accepts a bar of `1e-30`. Piloted at `4.96e-3`, so `1e-3` keeps
-    // ~5x margin while refusing a bar that represents no real deflection.
+    // `> 0.0` accepts a bar of `1e-30`.
+    //
+    // ⚠ `1e-3` sits BETWEEN two adjacent rungs of the sweep, not comfortably
+    // above one: `0.05` reaches `4.96e-3` and the next magnitude down (`0.01`)
+    // reaches `9.92e-4`, just under. That is the useful placement — it
+    // discriminates one rung from the next — but it is not the "~5x margin" an
+    // earlier comment claimed. ⚠⚠ And within the magnitudes this gate actually
+    // sweeps, the floor is equivalent to the `> 0.0` arm below: the reachable
+    // values are `{0, r(0.05), r(0.10), r(0.25)}`, so it only becomes
+    // independent if the deflection RESPONSE shrinks ~5x.
     // ⚠ Two different defects, so two different messages. The `> 0.0` form this
     // replaced said "the rig is broken, not the finding" — right for the
     // nothing-completed case and wrong for a merely shallow bar. Collapsing them
@@ -923,8 +933,16 @@ fn a_game_strike_busts_the_pcvr_budget_on_both_p50_and_p99() {
     // ★ Both arms now assert what the name says: over the budget, on both
     // statistics. Piloted at 2.20-2.35 ms and 38-43 ms across runs.
     //
-    // ⚠⚠ The `p50` arm is the THINNEST margin on this branch — 10-18 % over its
+    // ⚠⚠ The `p50` arm is the THINNEST margin on this branch — 13-14 % over its
     // threshold, on a quantity this file's own docs put at ~5 % run-to-run drift.
+    //
+    // ⚠⚠⚠ And `require_quiet_box()` above is NOT a guarantee that this reading is
+    // clean. Measured: a `stick_flex` timing instrument read `3.150 ms/frame`
+    // against a true `1.14` — 2.8x wrong — on a run where the quiet-box probe
+    // PASSED (`p50 22.76 ms, burst 1.02x`), because the contending work started
+    // after the probe sampled. An interleaved A/B then showed no regression at
+    // all. ⇒ The gate catches a box that is busy WHEN PROBED; it cannot catch one
+    // that gets busy afterwards. Never quote a single reading from behind it.
     // Every other threshold here has >=3x margin or sits on deterministic
     // iteration counts. It is tolerable only because this test is `#[ignore]`d
     // and quiet-box gated, so a flake costs a re-run rather than a red CI check.
@@ -956,8 +974,10 @@ fn a_game_strike_busts_the_pcvr_budget_on_both_p50_and_p99() {
 /// was a real solve measured against a no-op, cleared by ~600× by any frame
 /// taking a single iteration. Mutation confirmed it: scaling the strike to
 /// `0.1 %` (880× shallower, no impact regime, at most 2 iterations) left this
-/// gate green while every other gate in the file failed. On iterations the same
-/// mutation is caught, because 2 iterations is not 30.
+/// gate green while every other gate in the file failed. Both arms below now
+/// catch it — though the deflection arm fires FIRST, at `d/L = 1.23e-5`, so the
+/// iteration arm is never evaluated on that particular mutation. Each is
+/// independently reachable; neither is load-bearing alone.
 ///
 /// ★ It also takes wall time off CI's path. `quality-gate.yml` runs eleven
 /// binaries in one `cargo test --release` with no `--test-threads=1`, so these
@@ -1048,7 +1068,8 @@ fn an_unstruck_run_is_flat_and_a_struck_one_is_not() {
 /// `p99` over a sample designed to contain impacts is the strongest honest
 /// upper statistic available here.
 ///
-/// ⚠ The `p50` also roughly doubles (`1.07 -> 2.16 ms`), a real and separate
+/// ⚠ The `p50` also roughly doubles (`~1.15 -> ~2.27 ms` across quiet reps), a
+/// real and separate
 /// effect: struck three times a second the stick is never fully quiet, so the
 /// median frame is doing work too. That is duty cycle, not tail sampling, and it
 /// is reported rather than folded into the claim.
