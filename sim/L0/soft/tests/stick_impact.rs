@@ -2285,6 +2285,7 @@ fn smoothed_start(
                 arm,
                 x0,
                 p,
+                loaded,
             )
             .0
         }
@@ -2670,6 +2671,22 @@ enum Band {
     /// high-modes control it replaced — which could not be formed at every rank,
     /// because the ring-down supplies only a handful of sound modes.
     Random,
+    /// The leading `rank` modes, then RESCALED so the driven nodes land where
+    /// `p` puts them.
+    ///
+    /// ★★★ The one difference between `Low` and the ramp that wins Probe 3.
+    /// `Shape::TipLoadCurve` keeps the full predicted tip displacement and only
+    /// redistributes it — it starts `7.541` travel from `x₀`, further out than
+    /// `p` — whereas `Low` fixes the shape and throws the amplitude away with
+    /// it: mode 1 carries about `40 %` of the mass-weighted increment, so
+    /// `Low r=1` moves `1.942`. This arm separates the two: same low-strain
+    /// direction, full amplitude.
+    ///
+    /// ⚠ It needs the driven set, which is a real dependency and not a free
+    /// one — but it is the SAME information a contact solve already has, not
+    /// the analytic beam profile `Shape` needs, so an arm that wins here is
+    /// still mesh-general.
+    TipMatched,
     /// **Not a projection.** `x₀ + α(p − x₀)` with `α = ‖P_low u‖_M / ‖u‖_M`.
     ///
     /// ★★★ The load-bearing control. Projection can only SHRINK the increment
@@ -2688,6 +2705,7 @@ impl Band {
         match self {
             Self::Low => "low",
             Self::Random => "rand",
+            Self::TipMatched => "tipmatch",
             Self::ScaledLikeLow => "scaled",
         }
     }
@@ -2707,11 +2725,19 @@ struct ModalArm {
 /// 8 against a basis with 4 sound modes is projecting onto a narrower subspace
 /// than its label claims, and a caller that cannot tell reports a rank it never
 /// ran.
-fn modal_start(rig: &ModalRig, arm: ModalArm, x0: &[f64], p: &[f64]) -> (Vec<f64>, usize) {
+fn modal_start(
+    rig: &ModalRig,
+    arm: ModalArm,
+    x0: &[f64],
+    p: &[f64],
+    loaded: &[(VertexId, LoadAxis)],
+) -> (Vec<f64>, usize) {
     let u: Vec<f64> = rig.free.iter().map(|&i| p[i] - x0[i]).collect();
     let low = arm.rank.min(rig.sound_rank());
     let (d, width) = match arm.band {
-        Band::Low => (project_onto(&rig.basis.modes()[..low], &rig.mass, &u), low),
+        Band::Low | Band::TipMatched => {
+            (project_onto(&rig.basis.modes()[..low], &rig.mass, &u), low)
+        }
         Band::Random => {
             let k = arm.rank.min(rig.random.len());
             (project_onto(&rig.random[..k], &rig.mass, &u), k)
@@ -2734,6 +2760,27 @@ fn modal_start(rig: &ModalRig, arm: ModalArm, x0: &[f64], p: &[f64]) -> (Vec<f64
     let mut out = x0.to_vec();
     for (&i, di) in rig.free.iter().zip(&d) {
         out[i] += di;
+    }
+    if arm.band == Band::TipMatched {
+        // The same "largest signed z-displacement over the driven band" fold
+        // `smoothed_start` uses for the ramp, so the two arms are matched on
+        // what "the tip lands where `p` puts it" means.
+        let tip = |v: &[f64]| {
+            loaded
+                .iter()
+                .map(|&(vtx, _)| v[3 * vtx as usize + 2] - x0[3 * vtx as usize + 2])
+                .fold(0.0f64, |a, b| if b.abs() > a.abs() { b } else { a })
+        };
+        let (want, have) = (tip(p), tip(&out));
+        // A projection with no amplitude at the driven band cannot be rescaled
+        // to have some; leaving it unscaled makes that visible as a `Low` row
+        // rather than hiding it behind a division.
+        if have.abs() > 0.0 {
+            let beta = want / have;
+            for (o, &x) in out.iter_mut().zip(x0) {
+                *o = x + beta * (*o - x);
+            }
+        }
     }
     (out, width)
 }
@@ -2847,6 +2894,7 @@ fn whether_the_band_projector_is_a_projector() {
         },
         &x0,
         &p,
+        &[],
     );
     assert!(width == 0, "a rank-0 subspace cannot have width {width}");
     assert!(
@@ -3012,9 +3060,14 @@ fn whether_a_modal_start_cuts_iterations_on_a_real_impact_frame() {
         let mut verdict: Vec<String> = Vec::new();
         for rank in 1..=rig.sound_rank() {
             let mut got: Vec<(Band, Option<usize>)> = Vec::new();
-            for band in [Band::Low, Band::Random, Band::ScaledLikeLow] {
+            for band in [
+                Band::Low,
+                Band::TipMatched,
+                Band::Random,
+                Band::ScaledLikeLow,
+            ] {
                 let arm = ModalArm { rank, band };
-                let width = modal_start(&rig, arm, &probe.x0, &probe.p).1;
+                let width = modal_start(&rig, arm, &probe.x0, &probe.p, &probe.loaded).1;
                 got.push((band, row(Start::Modal(arm), width)));
             }
             let find = |b: Band| got.iter().find(|g| g.0 == b).and_then(|g| g.1);
@@ -3030,10 +3083,12 @@ fn whether_a_modal_start_cuts_iterations_on_a_real_impact_frame() {
             if let Some(low) = find(Band::Low) {
                 verdict.push(format!(
                     "r={rank}: low {low} vs Inertial {baseline} ({:.2}x); \
-                     vs scaled {} = SHAPE; vs rand {} = THESE modes",
+                     vs scaled {} = SHAPE; vs rand {} = THESE modes; \
+                     vs tipmatch {} = AMPLITUDE",
                     baseline as f64 / low as f64,
                     against(find(Band::ScaledLikeLow)),
                     against(find(Band::Random)),
+                    against(find(Band::TipMatched)),
                 ));
             } else {
                 verdict.push(format!("r={rank}: low FAILED to converge"));
