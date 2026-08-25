@@ -60,12 +60,11 @@
 //! construction.** Because the force is already standing when the second strike
 //! frame arrives, strikes 2–10 are no-ops: the run contains **one** impact event,
 //! not ten, so its impact frames are `0.3 %` of the sample and the `99th`
-//! percentile falls outside them. Its `max` shows what its `p99` hides — the
-//! producer reads `p99 = 21.9 ms` against `max = 366 ms` on the same row. Only
-//! `ForceHeld`'s **convergence verdict** and its **`max`** are quotable; nothing
-//! in this file asserts on its `p99`. The producer reads `p99 = 8.4 ms` against
-//! `max = 362 ms` on the same row — a `43×` gap between the two statistics, on
-//! one row, because only one frame of the three hundred is an impact.
+//! percentile falls outside them. Its `max` shows what its `p99` hides: the
+//! producer reads `p99 = 8.4 ms` against `max = 362 ms` on the same row — a
+//! `43×` gap between two statistics of one sample, because only one frame of the
+//! three hundred is an impact. Only `ForceHeld`'s **convergence verdict** and its
+//! **`max`** are quotable; nothing in this file asserts on its `p99`.
 //!
 //! ⚠⚠ **The arms are not momentum-matched analytically, and that is deliberate.**
 //! Matching `F·dt` against `m·Δv` needs the lumped mass of the loaded band,
@@ -99,7 +98,8 @@
 //! first mode (`~6.6 steps per period`), but the ring-down still leaves several
 //! elevated frames, so a one-strike `p99` lands **on the ring-down**, at `38 %`
 //! of the impact's iteration count — it understates by `2.6×` rather than
-//! reporting nothing. The wall-time dilution is `2.7×`.
+//! reporting nothing. The wall-time dilution is `2.7×`. Ten strikes put the
+//! `p99` exactly on the worst frame (`37` of `37` iterations).
 //!
 //! ⚠⚠ Those figures read `43 %` / `2.3×` until 2026-08-25, and the story of how
 //! is worth more than the numbers. They were measured when `stickrig::percentile`
@@ -109,8 +109,7 @@
 //! re-derived them. A later pass then "corrected" `2.4×` to `2.3×` by taking the
 //! reciprocal of the stale `43 %` — **a correction computed on top of an
 //! un-re-derived number.** ⇒ Changing a summary statistic's definition
-//! invalidates every figure ever measured with it, including the ones in prose. Ten strikes put the `p99` exactly on the worst frame
-//! (`37` of `37` iterations).
+//! invalidates every figure ever measured with it, including the ones in prose.
 //!
 //! ⚠⚠ **And `max` is not usable as a statistic here.** A `max` over 300 frames is
 //! a single sample, and on this box the worst frame read `39.92 ms` on one run
@@ -750,23 +749,26 @@ fn a_momentum_strike_converges_deeper_than_any_force_strike_that_converged() {
     );
 }
 
-/// ★★ **The frame-cost spike tracks iteration count — asserted on iterations, so
-/// it can run in CI.**
+/// **The `p99` Newton iteration count spans the magnitude sweep — the one half of
+/// the cost story that is deterministic enough for CI.**
 ///
-/// If frame cost were driven by something other than how many Newton iterations
-/// a frame takes, the iteration count would NOT span the range the frame cost
-/// does. This gate holds that half, which is deterministic.
+/// Asserts exactly one thing: `p99` iterations differ by more than `4×` between
+/// the shallowest and deepest strike. That is a *precondition* for attributing
+/// frame cost to iteration count — if iterations did not vary, there would be
+/// nothing to attribute to — and it is not the attribution.
 ///
-/// ⚠⚠ **It does NOT establish the attribution, and it used to be named as if it
-/// did.** This test reads only `run.iters`; it never touches `run.ms`. Splitting
-/// the wall-time half out into
-/// [`the_cost_per_iteration_is_flat_across_the_spike`] was necessary to keep a
-/// clock off CI's path, but it left the claim "*and not cost per iteration*"
-/// enforced nowhere in CI — a fixed per-frame overhead of `2 ms` inside the
-/// timed region drives cost per iteration `1.73×` apart and this gate still
-/// passes, printing a `ms/it` column it asserts nothing about. ⇒ **The
-/// attribution is a reference-box measurement, not a CI guarantee.** The name
-/// now says only what the asserts do.
+/// ⚠⚠ **This gate has been renamed TWICE for over-claiming, so read what it
+/// asserts, not what it is called.** It reads only `run.iters` and never touches
+/// `run.ms`. It was `..._is_iteration_count_not_cost_per_iteration` while
+/// enforcing nothing about cost per iteration, then
+/// `the_frame_cost_spike_tracks_iteration_count` while establishing no frame-cost
+/// spike at all — mutation proved that one by pinning every frame's cost to a
+/// constant `1.00 ms`, which leaves no spike anywhere and still passes.
+///
+/// ⇒ **The attribution lives in
+/// [`the_cost_per_iteration_is_flat_across_the_spike`], is reference-box gated,
+/// and is NOT a CI guarantee.** Keeping a clock off CI's path cost that, and the
+/// cost is real rather than a naming detail.
 ///
 /// ⚠ Splitting them is not cosmetic. `quality-gate.yml` runs eleven binaries in
 /// one `cargo test --release` with no `--test-threads=1`, so every release-only
@@ -776,7 +778,7 @@ fn a_momentum_strike_converges_deeper_than_any_force_strike_that_converged() {
 /// its timing instruments behind `refbox::require_quiet_box()` for exactly this.
 #[test]
 #[cfg_attr(debug_assertions, ignore = "release-only measurement")]
-fn the_frame_cost_spike_tracks_iteration_count() {
+fn the_p99_iteration_count_spans_the_magnitude_sweep() {
     report_header();
     let mut it99 = Vec::new();
     for magnitude in [0.05, 0.50, 2.00] {

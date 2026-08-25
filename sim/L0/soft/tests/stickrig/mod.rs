@@ -293,7 +293,7 @@ pub fn outcome_of<T>(
         }) => (
             x_partial,
             max_iter,
-            Some(("iter-cap", last_r_norm, tol, max_iter)),
+            Some((FAIL_ITER_CAP, last_r_norm, tol, max_iter)),
         ),
         Err(SolverFailure::ArmijoStall {
             x_partial,
@@ -302,7 +302,7 @@ pub fn outcome_of<T>(
         }) => (
             x_partial,
             last_iter,
-            Some(("armijo-stall", last_r_norm, tol, last_iter)),
+            Some((FAIL_ARMIJO, last_r_norm, tol, last_iter)),
         ),
         // No residual is meaningful once the factor has failed, and
         // `ValidityViolation` carries no position at all, so both report a
@@ -314,11 +314,13 @@ pub fn outcome_of<T>(
         }) => (
             x_partial,
             last_iter,
-            Some(("factor-failed", f64::NAN, tol, last_iter)),
+            Some((FAIL_FACTOR, f64::NAN, tol, last_iter)),
         ),
-        Err(SolverFailure::ValidityViolation { tet_id, .. }) => {
-            (rest.to_vec(), 0, Some(("validity", f64::NAN, tol, tet_id)))
-        }
+        Err(SolverFailure::ValidityViolation { tet_id, .. }) => (
+            rest.to_vec(),
+            0,
+            Some((FAIL_VALIDITY, f64::NAN, tol, tet_id)),
+        ),
     }
 }
 

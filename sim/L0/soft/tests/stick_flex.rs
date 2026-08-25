@@ -742,8 +742,15 @@ struct Cost {
 
 impl Cost {
     /// Median of this run's sample. ★ Delegates to `stickrig::percentile` so
-    /// this fixture, `stick_impact.rs` and `predictor_spike.rs` cannot drift on
-    /// what a percentile means.
+    /// this fixture and `stick_impact.rs` cannot drift on what a percentile
+    /// means.
+    ///
+    /// ⚠ That does NOT extend to `predictor_spike.rs`, which keeps its own
+    /// private `rank_index`/`percentile` and never calls this one. The *rule* is
+    /// byte-identical by hand, deliberately (see `stickrig::percentile`), but
+    /// nothing structural enforces it — and the copies already differ at the
+    /// edges: that one returns `0` on an empty sample where this one panics, and
+    /// it does not reject `q` outside `[0, 1]`.
     ///
     /// ⚠ That function used to take the UPPER median and argue it was the
     /// conservative choice for a fits-the-budget claim. Both halves are gone: it
