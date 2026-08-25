@@ -95,9 +95,17 @@ use crate::solver::lm::LmConfig;
 /// - **A modal predictor must be used as a PROJECTION, never as a rescaled
 ///   shape.** Rescaling a mode to match the driven-node displacement costs
 ///   `24×` over not rescaling it, and no scalar correction tried recovers it.
-/// - **The in-plane components are what hurt.** Adding a POD mode's `x`/`y`
-///   field to an equivalent transverse profile costs `20×`; the `z` profile
-///   itself is worth only `2.5×`. Why is not understood.
+/// - **The in-plane components are what hurt, and POD is the wrong ordering.**
+///   Adding a POD mode's `x`/`y` field to an equivalent transverse profile
+///   costs `20×`, and a mode carrying only `1.7 %` in-plane costs `14.6×` once
+///   it is rescaled. The source is the basis itself: on this ring-down the
+///   modes at ranks 1–2 are AXIAL, `22×` and `18×` more in-plane than
+///   transverse, sitting above a bending mode at rank 3. POD ranks by energy in
+///   the snapshots, and a modest stretching oscillation outranks a stiffer
+///   bending mode on that measure. **A predictor wants the softest modes, not
+///   the most energetic ones.** Ordering a basis by frequency rather than by
+///   singular value is the untried lever, and it needs neither a stiffness
+///   matrix nor any knowledge of the geometry.
 ///
 /// ⚠ `SIGMA_FLOOR_REL` in `reduced::pod` is not a floor for this use. It marks
 /// where a mode is distinguishable from round-off, not where it is accurate,

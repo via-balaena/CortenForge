@@ -3194,12 +3194,11 @@ fn whether_the_band_projector_is_a_projector() {
 /// so that the next attempt starts from measurements it can re-run, which is
 /// exactly what `SmoothedInertial` could not offer.
 ///
-/// ▶ The one factor this did NOT separate: even with the in-plane field gone,
-/// the POD `z` profile is `2.5×` off the analytic one at `1.00x` (`10` vs `4`)
-/// while being within `1.16×` at `8.00x`. Both analytic profiles — the static
-/// tip-load curve and the vibration mode — read `4`, so it is not which curve.
-/// A POD mode's `z` varies ACROSS the section, where a `Shape` profile is a
-/// function of `x/L` alone. That is the next thing to test if anyone returns.
+/// ▶ The last factor — whether a POD mode's `z` varies across the section — was
+/// then measured directly and is NOT the answer:
+/// [`whether_a_pod_mode_is_a_function_of_the_axial_coordinate`] reads a
+/// cross-sectional spread of `0.001` on mode 0. What it found instead is where
+/// to look next, and it is not about `z` at all.
 #[test]
 #[ignore = "diagnostic — run explicitly"]
 fn whether_a_modal_start_cuts_iterations_on_a_real_impact_frame() {
@@ -3389,6 +3388,65 @@ fn modal_verdict(
 /// - `in-plane` — RMS `√(x²+y²)`, the field the 2×2 showed carries `20×`.
 /// - `dev(mode-1)` / `dev(tip-load)` — how far the station-mean profile is from
 ///   each analytic curve, both normalised at the driven end.
+///
+/// # What it read — the question was wrong, and the answer is better
+///
+/// ```text
+///   mode   spread   in-plane   dev(mode-1)   dev(tip-load)   sigma/sigma_0
+///      0    0.001      0.017         0.012           0.018          1.00e0
+///      1    0.933     22.338         1.491           1.462          1.49e-2
+///      2    0.005     18.343         1.015           0.986          5.21e-3
+///      3    0.003      0.088         1.074           1.044          7.50e-4
+/// ```
+///
+/// ⛔ **Cross-sectional variation is not the answer.** Mode 0's spread is
+/// `0.001` — it already IS a function of `x/L`, to a tenth of a percent. Had
+/// the averaging arm been built first, it would have averaged a field that was
+/// already flat.
+///
+/// ★★★ **What the table shows instead: modes 1 and 2 are AXIAL modes.** Their
+/// in-plane RMS is `22×` and `18×` their own transverse peak — they are
+/// stretching motions with a little bending along for the ride, not bending
+/// modes. Mode 3 is a second bending mode (`8.8 %` in-plane). Mode 0 is the
+/// analytic first bending mode to `1.2 %`, and `98.3 %` transverse.
+///
+/// ⇒ **This is the source of the in-plane finding, and of the rank
+/// non-monotonicity the sweep recorded as unexplained.** Raising the rank past
+/// 1 does not add finer bending detail; it adds STRETCHING. `low r=1` is the
+/// best modal arm at the game strike because it is the only arm made of nothing
+/// but the bending mode.
+///
+/// ★★ **And it says why POD is the wrong ordering for a predictor.** POD ranks
+/// by energy IN THE SNAPSHOTS. A modest axial oscillation can outrank a second
+/// bending mode on that measure while being orders stiffer, which is exactly
+/// what `σ/σ₀` shows here: the two axial modes sit at ranks 1–2, above the
+/// bending mode at rank 3. **A predictor wants the SOFTEST modes, not the most
+/// energetic ones** — those are different orderings, and nothing in the fit
+/// knows the difference.
+///
+/// ★ It also sharpens how violent the in-plane sensitivity is. Mode 0 carries
+/// only `1.7 %` in-plane, and scaling THAT by `β ≈ 3.9` is the whole difference
+/// between `tipmatch r=1`'s `146` iterations and `tip-z r=1`'s `10` — `14.6×`
+/// from a `1.7 %` component. The STIFFNESS half of the struck mechanism (a
+/// slender section's axial stiffness is `~(L/r)² ≈ 2·10⁴` times its bending
+/// stiffness, so a small axial error is a huge force error) is independently
+/// evidenced by that. The KINEMATIC half — the `β²` cancellation — stays dead;
+/// it was refuted on its own prediction.
+///
+/// ⚠ **The residual `2.5×` is still not explained, only bounded.** `tip-z r=1`
+/// IS mode 0 with the in-plane zeroed, and its profile agrees with the analytic
+/// curve to `1.2 %` — yet the two cost `10` and `4`. Two curves agreeing to one
+/// percent are worth `2.5×`, which is the same order of sensitivity this whole
+/// file keeps running into (`46.8×` on shape at matched distance, `36×` at `1 %`
+/// apart in position). **The start's shape matters far below the level any
+/// position metric here can resolve**, and that is the finding to carry, not the
+/// individual ratios.
+///
+/// ▶ The lever this points at: order the basis by **frequency**, not by
+/// singular value. Each POD mode has a time coefficient over the ring-down, so
+/// its dominant frequency is measurable from the fit that already ran — no
+/// stiffness matrix, no beam knowledge. Sorting by it would put the bending
+/// modes first and the stretching modes last, mesh-generally.
 #[test]
 #[ignore = "diagnostic — run explicitly"]
 fn whether_a_pod_mode_is_a_function_of_the_axial_coordinate() {
