@@ -203,6 +203,18 @@ fn slapshot_equivalent_tip_velocity() -> f64 {
     SLAPSHOT_DEFLECTION * (tip_stiffness(EI_TARGET) / effective_tip_mass()).sqrt()
 }
 
+/// Tip displacement (m) a suddenly-applied tip load `f` produces in ONE backward
+/// -Euler frame from rest.
+///
+/// From `M(x − x₀)/dt² + K x = f` with `v₀ = 0`, lumping the beam onto its first
+/// mode: `x = f / (m_eff/dt² + k)`. At `dt = 1/90` the two terms are comparable
+/// (`590` against `538 N/m`), so inertia carries about half the load — which is
+/// why the answer for a force step is *small*, and why failing to find it is
+/// surprising.
+fn one_frame_response(f: f64) -> f64 {
+    f / (effective_tip_mass() / (VR_DT * VR_DT) + tip_stiffness(EI_TARGET))
+}
+
 // ---------------------------------------------------------------------------
 // The arms.
 // ---------------------------------------------------------------------------
@@ -314,6 +326,27 @@ fn run_cell_every(
     grid: (usize, usize, usize),
     strike_period: usize,
 ) -> Run {
+    run_cell_seeded(strike, magnitude, grid, strike_period, 0.0)
+}
+
+/// [`run_cell_every`], with a **velocity seed** on the blade band at each strike
+/// frame, as a fraction of the displacement the load itself would produce in one
+/// frame ([`one_frame_response`]).
+///
+/// ★★ This is the one-knob probe that separates *the load path* from *the
+/// initial guess*. `InitialGuess::Inertial` starts Newton at `x + dt·v`, so a
+/// seed of `1.0` hands the force-posed solve the same head start the
+/// momentum-posed one gets for free — **without changing the load by a single
+/// newton**. If a seed rescues a solve that fails at `seed = 0`, the wall is the
+/// starting point. If no seed rescues it, the wall is in how the load is
+/// applied, and this file's headline is measuring a rig defect.
+fn run_cell_seeded(
+    strike: Strike,
+    magnitude: f64,
+    grid: (usize, usize, usize),
+    strike_period: usize,
+    seed_frac: f64,
+) -> Run {
     let (nx, ny, nz) = grid;
     let (mu, lambda) = lame_for(e_eff_for(EI_TARGET));
     let field = MaterialField::uniform(mu, lambda);
@@ -336,6 +369,11 @@ fn run_cell_every(
 
     let force_per_vertex = slapshot_load(EI_TARGET) * magnitude / n_loaded as f64;
     let strike_velocity = slapshot_equivalent_tip_velocity() * magnitude;
+    // The seed is expressed as the velocity that would carry the tip to where
+    // this load lands it in one frame, so `seed_frac = 1.0` puts `x + dt·v`
+    // on the answer rather than at the start.
+    let seed_velocity =
+        seed_frac * one_frame_response(slapshot_load(EI_TARGET) * magnitude) / VR_DT;
 
     let (mut x, mut v) = (x_flat, vec![0.0; n_dof]);
     let mut iters = Vec::with_capacity(RUN_FRAMES);
@@ -358,6 +396,11 @@ fn run_cell_every(
             Strike::ForcePulse if striking => force_per_vertex,
             Strike::ForcePulse | Strike::VelocityImpulse => 0.0,
         };
+        if striking && seed_velocity != 0.0 {
+            for &(vertex, _) in &loaded {
+                v[3 * vertex as usize + 2] += seed_velocity;
+            }
+        }
         if strike == Strike::VelocityImpulse && striking {
             // A momentum transfer, not a force: the blade band gains velocity
             // along the flex axis and nothing else changes. `Inertial` reads
@@ -956,5 +999,63 @@ fn striking_once_leaves_the_p99_blind_to_the_impact() {
          the worst frame ({once_worst:.0}). Repeated striking then buys nothing, and \
          the module docs — and STRIKE_PERIOD itself — should say so",
         100.0 * once99 / once_worst
+    );
+}
+
+/// ★★★ **Is the force wall the LOAD PATH or the INITIAL GUESS?**
+///
+/// The force-posed arm stalls with a residual pinned at a nearly scale-invariant
+/// `20–26 %` of the applied load across an `80×` magnitude range, and it does so
+/// with a **positive-definite tangent throughout** — no `Llt` pivot ever falls
+/// back at any magnitude, while the momentum arm falls back on every strike and
+/// converges anyway. Neither of those is a nonlinearity signature. And the answer
+/// it cannot find is *small*: at `1×` a suddenly-applied slapshot load moves the
+/// tip about `48 mm` in one frame, where the momentum arm resolves `103 mm`.
+///
+/// So the diagnosis is undecided between two very different stories, and they
+/// demand opposite responses:
+///
+/// - **initial guess** — Newton simply starts too far away, and the momentum
+///   result is really a statement about `InitialGuess::Inertial`. The headline
+///   survives, restated.
+/// - **load path** — some fixed share of an applied load cannot be equilibrated,
+///   in which case the wall is a rig or solver defect, this file's headline is
+///   measuring a bug, and `stick_flex.rs`'s "real nonlinearity biting early"
+///   needs retracting.
+///
+/// One knob separates them: seed the blade band's velocity so `x + dt·v` starts
+/// **on** the answer instead of at rest, **without changing the load by a single
+/// newton**. If a seed rescues it, it is the guess. If no seed does, it is the
+/// load.
+#[test]
+#[ignore = "diagnostic — run explicitly"]
+fn whether_the_force_wall_is_the_load_path_or_the_initial_guess() {
+    println!(
+        "\n=== force-posed strike, load FIXED, initial guess swept — Tet10 {GRID:?}, \
+         dt = 1/90 ==="
+    );
+    for magnitude in [0.10, 1.00] {
+        let load = slapshot_load(EI_TARGET) * magnitude;
+        println!(
+            "\n  load {load:.1} N held from frame 0; one-frame answer is {:.1} mm \
+             (d/L = {:.2e})",
+            1e3 * one_frame_response(load),
+            one_frame_response(load) / SPAN,
+        );
+        report_header();
+        for seed in [0.0, 0.25, 0.50, 0.75, 1.00, 1.50, 2.00] {
+            let run = run_cell_seeded(Strike::ForceHeld, magnitude, GRID, STRIKE_PERIOD, seed);
+            print!("  seed {seed:>4.2}  ");
+            report_row(Strike::ForceHeld, magnitude, &run);
+        }
+    }
+    // The unseeded cell is the one whose failure this diagnostic exists to
+    // explain; if it stopped failing, the question has changed underneath.
+    let baseline = run_cell_seeded(Strike::ForceHeld, 1.0, GRID, STRIKE_PERIOD, 0.0);
+    assert!(
+        !baseline.completed(),
+        "the unseeded force arm at 1x COMPLETED, reaching d/L = {:.3e}. There is no \
+         wall left to diagnose and this diagnostic is answering a dead question",
+        baseline.peak_ratio
     );
 }
