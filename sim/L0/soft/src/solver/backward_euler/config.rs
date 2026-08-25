@@ -75,9 +75,34 @@ use crate::solver::lm::LmConfig;
 ///   so the win comes from imposing a specific *low-strain global shape*, which
 ///   graph smoothing does not produce.
 ///
-/// ⇒ The live candidate is **modal projection** — project `Δt·v_prev` onto the
-/// first few elastic modes, the general form of "a low-strain global shape" —
-/// and this crate already has the basis machinery for it (`reduced`).
+/// ⛔ **Modal projection was that candidate, and it has now been built,
+/// measured and set down too** — `tests/stick_impact.rs` Probe 4, which unlike
+/// the two arms above is IN THE TREE and re-runnable. Projecting `Δt·v_prev`
+/// onto the leading modes of a ring-down POD basis is worth `25 → 6` iterations
+/// at the game strike, beats a norm-matched scalar shrink by `6.8×` and a
+/// rank-matched random subspace by `7.5×`, and beats random at every magnitude
+/// and every rank. The mechanism is real and it is the modes.
+///
+/// It still loses to the beam-specific ramp at every magnitude (`6` against
+/// `4` at the game strike, `29` against `25` at `8×`), so it does not clear the
+/// bar and is not offered as a variant here. Three findings from it are worth
+/// carrying:
+///
+/// - **A predictor cannot be wrong, only expensive.** The full-order residual
+///   governs the answer, so R1's failure to generalise across contact positions
+///   disqualifies the reduced *solve* and not a reduced *predictor*. That
+///   asymmetry is why this candidate was worth the run.
+/// - **A modal predictor must be used as a PROJECTION, never as a rescaled
+///   shape.** Rescaling a mode to match the driven-node displacement costs
+///   `24×` over not rescaling it, and no scalar correction tried recovers it.
+/// - **The in-plane components are what hurt.** Adding a POD mode's `x`/`y`
+///   field to an equivalent transverse profile costs `20×`; the `z` profile
+///   itself is worth only `2.5×`. Why is not understood.
+///
+/// ⚠ `SIGMA_FLOOR_REL` in `reduced::pod` is not a floor for this use. It marks
+/// where a mode is distinguishable from round-off, not where it is accurate,
+/// and the gap is a square root — a basis fitted for a predictor should be
+/// truncated at `√(ε/target)` on the relative spectrum instead.
 ///
 /// ⇒ [`Self::Inertial`] is the best-measured choice on five of the six cells and
 /// never failed on any — **but it is NOT the default, and deliberately so**: on a

@@ -3141,11 +3141,60 @@ fn whether_the_band_projector_is_a_projector() {
 /// - **Why plain `Low` is the best modal arm despite throwing amplitude away.**
 ///   It never rescales. At `β = 1` there is no mismatch to create.
 ///
-/// ⇒ **A modal predictor must be used as a PROJECTION, never as a rescaled
-/// shape** — and the mechanism makes a falsifiable prediction worth one run:
-/// scale the transverse part by `β` and the in-plane part by `β²`, and the
-/// mismatch should cancel. `β²` needs no beam knowledge, so an arm that wins
-/// there is still mesh-general.
+/// ## ⛔ The mechanism made a prediction, and the prediction is dead
+///
+/// If the in-plane damage were an axial-strain mismatch, scaling the in-plane
+/// part by `β²` instead of `β` should cancel it. It does not. Iterations by
+/// in-plane treatment, ranks 1–4:
+///
+/// ```text
+///   impulse   xy: β                xy: β²                xy: none        analytic z
+///    0.25x    13, 10,  9,  10      12,  13,  16,  17     11, 46, 28, 16           5
+///    1.00x   146, 41, 39,  36     194, 174, 174, 299     10, 11, 12, 13           4
+///    2.00x    66, 71, 95, 329      38,  39,  39,  57     45, 16, 19, 39           5
+///    8.00x   153, 45, 65, FAIL    FAIL at every rank     50, 37, 29, FAIL        25
+/// ```
+///
+/// `β²` helps at `2.00x`, hurts at `0.25x` and `1.00x` — where it is `4×` worse
+/// than `β` at rank 1 and `8×` worse at rank 4 — and fails outright at every
+/// rank at `8.00x`. **The quadratic correction is not a correction.**
+///
+/// ⇒ So the axial-strain story is wrong, or at least the leading-order
+/// cancellation is not what governs, and it is struck rather than kept beside
+/// its own refutation. What survives it is stronger and simpler: **the in-plane
+/// field is harmful at every scaling tried, and REMOVING it is what works.**
+/// `xy: none` is the only in-plane treatment that is stable in rank and it is
+/// `14×` better than either rescaling at `1.00x`.
+///
+/// ⚠ Two of the three items the earlier section closed have to be re-opened
+/// with it: the amplitude dependence and `Low`'s advantage no longer have an
+/// explanation, only a description.
+///
+/// # ⛔ Verdict on the candidate
+///
+/// Best mesh-general modal arm against the two references, iterations:
+///
+/// ```text
+///   impulse   Inertial   best modal arm        analytic ramp
+///    0.25x           7   6   (low r=2)                     5
+///    1.00x          25   6   (low r=1)                     4
+///    2.00x          12   9   (low r=2)                     5
+///    8.00x          32   29  (tip-z r=3)                  25
+/// ```
+///
+/// **The ramp beats the best modal arm at every magnitude**, and the modal
+/// arm's margin over `Inertial` is large only at `1.00x`. Modal projection is
+/// real, mesh-general, and reproducible — and it does not clear the bar the
+/// beam-specific profile already set. It is recorded here rather than deleted
+/// so that the next attempt starts from measurements it can re-run, which is
+/// exactly what `SmoothedInertial` could not offer.
+///
+/// ▶ The one factor this did NOT separate: even with the in-plane field gone,
+/// the POD `z` profile is `2.5×` off the analytic one at `1.00x` (`10` vs `4`)
+/// while being within `1.16×` at `8.00x`. Both analytic profiles — the static
+/// tip-load curve and the vibration mode — read `4`, so it is not which curve.
+/// A POD mode's `z` varies ACROSS the section, where a `Shape` profile is a
+/// function of `x/L` alone. That is the next thing to test if anyone returns.
 #[test]
 #[ignore = "diagnostic — run explicitly"]
 fn whether_a_modal_start_cuts_iterations_on_a_real_impact_frame() {
