@@ -2874,6 +2874,63 @@ fn whether_the_band_projector_is_a_projector() {
 /// `p (Inertial)`. Projection shrinks the increment, so a `low` arm that beats
 /// `Inertial` may only be discovering that `x₀` is a better start than `p` —
 /// see [`Band::ScaledLikeLow`].
+///
+/// # What it read
+///
+/// Newton iterations, `4` sound modes, one frozen impact frame per column:
+///
+/// ```text
+///   impulse  Inertial     x₀   ramp tip/mode1   low r=1  r=2  r=3  r=4   scaled  rand
+///    0.25x          7    449            5 / 5         8    6    6    8        5    41
+///    1.00x         25   FAIL            4 / 4         6    8    8   14       41    45
+///    2.00x         12   FAIL            6 / 5        18    9    9   26      107    70
+///    8.00x     32 [*]   FAIL          37 / 25        37   48   54  219       14  FAIL
+/// ```
+///
+/// `[*]` at `8.00x` the `AtP` row itself fails a validity check — `p` is an
+/// inverted configuration there, which the real `Inertial` path never has to
+/// hold as `x_prev`. `32` is the real path's count. `scaled`/`rand` columns are
+/// rank 1.
+///
+/// ★★★ **The mechanism is real, and it is the modes.** At the game strike a
+/// SINGLE mode takes `25 → 6` iterations, `4.17×`, and it beats both controls:
+/// `6.83×` over the norm-matched scalar shrink and `7.50×` over a rank-matched
+/// random subspace. The two distance columns are what make that a statement
+/// about shape — `low r=1` and `scaled r=1` start `1.942` and `2.445` travel
+/// from `x₀`, and `0.944` and `1.939` from `x*`, so they are comparable in
+/// distance and `6.8×` apart in cost. The modes beat the random subspace at
+/// **every** magnitude and **every** rank (`1.07×` to `15.83×`), and at
+/// `8.00x` every random arm fails outright while every modal arm converges.
+///
+/// ⚠ **Distance is not the variable at all, and the ramp rows prove it.**
+/// `smooth:tip-load` starts `7.541` travel from `x₀` and `6.542` from `x*` —
+/// FURTHER from the answer than `p` is — and converges in `4` iterations, while
+/// `x₀`, which sits at `1.000`, hits the `500` cap and fails.
+///
+/// ⛔ **But modal projection does NOT beat the beam-specific ramp it was meant
+/// to generalise**, and that is the finding that decides the candidate. The
+/// analytic profiles take `4` at `1.00x` against the best modal arm's `6`, and
+/// `25` at `8.00x` against `37`. A mesh-general basis reproduced most of the
+/// win and none of the margin.
+///
+/// ⚠ Three more things this read that are not yet understood:
+///
+/// - **Rank is not monotone, and rank 4 is the worst arm at three of four
+///   magnitudes** (`14`, `26`, `219`). The 4th mode is where `x0->start` jumps
+///   from `1.947` to `2.998`: it adds a large component that overshoots.
+/// - **Both ends of the sweep invert.** At `0.25x` `Inertial` is already cheap
+///   and the scalar shrink wins; at `8.00x` `scaled r=1` takes `14` against
+///   `low r=1`'s `37` and `mode-1`'s `25`.
+/// - **A `0.040`-travel random nudge off `x₀` turns a `500`-iteration failure
+///   into `45` iterations** at `1.00x`. Whatever traps Newton exactly at `x₀`
+///   is not distance and not shape.
+///
+/// ★ One thing the random control DOES explain, consistently with the previous
+/// attempt: at `8.00x` it fails at iteration 0 on a validity check while moving
+/// only `0.04` travel. A random field displaces midside nodes off the edges
+/// they bisect and folds the quadratic element — the same failure mode
+/// `SmoothedInertial`'s graph-Laplacian arm died of, and the reason
+/// `InitialGuess`'s docs say a midside node is not an ordinary graph vertex.
 #[test]
 #[ignore = "diagnostic — run explicitly"]
 fn whether_a_modal_start_cuts_iterations_on_a_real_impact_frame() {
@@ -2906,15 +2963,21 @@ fn whether_a_modal_start_cuts_iterations_on_a_real_impact_frame() {
             probe.star_iters,
         );
         println!(
-            "{:>16} {:>8} {:>6} {:>11} {:>10} {:>9}",
-            "start", "iters", "width", "start->x*", "answer err", "outcome"
+            "{:>16} {:>8} {:>6} {:>10} {:>11} {:>10} {:>9}",
+            "start", "iters", "width", "x0->start", "start->x*", "answer err", "outcome"
         );
         let baseline = probe.star_iters;
 
         let row = |start: Start, width: usize| -> Option<usize> {
             let (ok, iters, dist, answer_err) = probe.run(start, Some(&rig));
+            // ★ Both distances, in units of `travel = ‖x* − x₀‖`. Without the
+            // first column the table cannot support its own headline: "the same
+            // distance from the answer, a different cost" is a claim ABOUT
+            // distance, and one distance is not enough to make it.
+            let moved =
+                dof_distance(&probe.start_point(start, Some(&rig)), &probe.x0) / probe.travel;
             println!(
-                "{:>16} {iters:>8} {width:>6} {dist:>11.3} {answer_err:>10.2e} {:>9}",
+                "{:>16} {iters:>8} {width:>6} {moved:>10.3} {dist:>11.3} {answer_err:>10.2e} {:>9}",
                 start.label(),
                 if ok { "ok" } else { "FAILED" }
             );
@@ -2931,7 +2994,17 @@ fn whether_a_modal_start_cuts_iterations_on_a_real_impact_frame() {
             }
         };
 
-        row(Start::AtP, 0);
+        if row(Start::AtP, 0).is_none() {
+            // The same asymmetry Probe 3 documents: `AtP` hands the solver
+            // `x_prev = p`, and an inverted `p` trips a validity check the real
+            // `Inertial` path never performs, because it keeps `x_prev = x₀`.
+            // The baseline stays the real path's count.
+            println!(
+                "  note: starting AT p failed a validity check — `p` is inverted here, \
+                 which the real Inertial path never has to hold as `x_prev`. Baseline \
+                 stays the real path's {baseline} iters."
+            );
+        }
         row(Start::AtPrevious, 0);
         row(Start::Smoothed(Shape::TipLoadCurve), 0);
         row(Start::Smoothed(Shape::FirstMode), 0);
