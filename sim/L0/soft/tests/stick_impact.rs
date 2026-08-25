@@ -1174,9 +1174,10 @@ fn probe_step(load: f64, seed_tip_m: f64, guess_mode: InitialGuess) -> StepProbe
 /// ```
 ///
 /// and **`v₀` is in it**. Seeding the blade band's velocity therefore adds
-/// momentum to the *problem*, not just to the starting point, and
-/// `whether_the_force_wall_is_the_load_path_or_the_initial_guess` was wrong to
-/// describe it as holding the load fixed. The answer moves with the seed, which
+/// momentum to the *problem*, not just to the starting point — so a seed sweep
+/// cannot be described as "the load held fixed, only the guess moved". An
+/// earlier producer in this file did exactly that and has been deleted; this
+/// ladder is what falsified it. The answer moves with the seed, which
 /// this ladder shows directly: at `5.4 N` the converged tip runs `4.90 → 6.07 mm`
 /// **monotonically** across the swept seeds, `0.2 → 2.0`. (An earlier draft said
 /// `4.84` at `seed 0.1` — a value from a finer grid this loop no longer walks;
