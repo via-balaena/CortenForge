@@ -1,6 +1,6 @@
 # sim-soft Real-Time Path — Phase-1 Measurement + Recon (Phase E predecessor)
 
-**Status**: RECON 2026-08-10 (rev 2026-08-24), v2.14. Phase 1 (measure) COMPLETE — all four requested
+**Status**: RECON 2026-08-10 (rev 2026-08-25), v2.19. Phase 1 (measure) COMPLETE — all four requested
 measurements taken; §2 reports them. Phase 2 (this recon) proposes the MOR +
 hyper-reduction path with a staged ladder whose first rung is a kill-or-confirm.
 **No dependency was added.** Phase 1's instrumentation was temporary (implement →
@@ -2086,8 +2086,15 @@ position's own full-order oracle**. Rel-L2 free-DOF displacement:
 |---|---:|---:|---:|---:|
 | IN-SAMPLE `+0.00a` | 2.4e-2 | 4.7e-3 | 1.1e-4 | **2.6e-6** |
 | INTERP `+0.25a` | 3.2e-2 | 1.8e-2 | 9.5e-3 | **1.9e-3** |
-| EXTRAP `+1.50a` | 3.2e-1 | 1.5e-1 | 3.2e-1 | **2.8e-1** |
+| EXTRAP `+1.50a` | 3.1e-1 | 1.5e-1 | 3.2e-1 | **2.8e-1** |
 | EXTRAP `+2.00a` | DIVERGED | 7.6e-1 | 1.0e0 | **1.1e0** |
+
+⚠ **`+1.50a` at `r=20` was published as `3.2e-1` and is `3.1e-1`.** Corrected
+2026-08-25 when §2m re-ran the matrix at three significant figures: the true
+value is `3.149e-1`, the harness's own discriminator prints `{:.2e}` = `3.15e-1`,
+and the table was then rounded a SECOND time from that to `3.2e-1`. A figure
+derived from an already-rounded figure — the failure this document keeps naming.
+The other 15 cells reproduce exactly.
 
 1. ★★★ **The subspace is wrong for a translated patch, and RANK DOES NOT FIX IT.**
    In-sample buys four orders across the ladder. Both extrapolations are **flat**
@@ -2103,11 +2110,16 @@ position's own full-order oracle**. Rel-L2 free-DOF displacement:
    improves only ~1.2 orders over a 7× rank increase against in-sample's four.
    **The reduction advantage dies long before the accuracy does** — buying
    generalisation with rank means giving back the thing R1 exists for.
-3. ★★★ **Out-of-domain failure is SILENT.** The failing arms converge, complete
-   all 71 steps, and do not penetrate — `min_sd` stays positive and inside the
-   band — while being `28 %` and `109 %` wrong. **Convergence plus
+3. ★★★ **Out-of-domain failure is SILENT in 7 of the 8 arms.** Seven converge,
+   complete all 71 steps, and do not penetrate — `min_sd` stays positive and
+   inside the band — while being `14.8 %`–`109 %` wrong. **Convergence plus
    non-penetration is not a validity check**, and it is exactly the "smooth and
    wrong" mode §4b warns about, now observed rather than anticipated.
+   ⚠ **The eighth is the honest bound**: `+2.00a` at `r=20` stalls at step 65 and
+   IS announced, so the mode is silent, not universally silent — and it is the
+   highest cell in the matrix (`119.6 %`, over the steps it completed).
+   ⚠ `28 %` and `109 %` are the **`r=142` column**, not the range; corrected in
+   v2.16 and again here where the column had been read as a bracket.
 4. ★★ **`gap_dev` detects it, which is not what it was built for** — with a
    caveat that a later audit added and that anyone building §4c's gate on it
    needs. Across all eight failing arms the converged contact gap moves
@@ -2148,6 +2160,337 @@ and does not obviously help here.
 Harness: `tests/reduced_contact.rs::reduced_basis_generalises`, `#[ignore]`d,
 ~5 min. Re-run it against any future basis scheme; the in-sample row is its
 two-sided control and the rank trend is the discriminator.
+
+### 2m. §4c rung 1 — the online-signal candidates, and what survives a per-step test (v2.15, rewritten v2.16)
+
+⚠⚠ **This section was rewritten on 2026-08-25 after a cold re-derivation.** The
+first version reported a trajectory MAXIMUM for a question about a per-step check.
+That one choice inverted three of its four verdicts. The superseded claims are
+tabulated at the end; the harness now prints both quantiles so the mistake is not
+re-makeable.
+
+§2l revived `ReducedValidityDomain` as a CORRECTNESS prerequisite and named
+`gap_dev` as the detector. **`gap_dev` cannot gate** — it is
+`|min_sd − ORACLE min_sd|`, so a runtime check would need the full-order answer it
+exists to avoid. Four oracle-free candidates were scored on §2l's own matrix
+(ground truth reproduces it at 15 of 16 cells and corrects the sixteenth):
+
+| | signal | normalised by |
+|---|---|---|
+| S1 | `‖r_free‖ / tol` | a solver tolerance (i.e. not by load) |
+| S2 | excursion outside the per-mode training box | each mode's OWN half-width |
+| S3 | distance to the NEAREST TRAINING SNAPSHOT | one global scale (cloud radius) |
+| S4 | fraction of contact-active vertices never active in training | the arm's own active set |
+
+#### The question a gate is actually asked
+
+**Not** "does this separate the training span from outside it." That is a
+partition over POSITION, and on this fixture position and error are monotone
+together, so it flatters anything that tracks the indenter. A gate refuses an
+answer for being too WRONG. Is there ONE threshold with `accept ⟺ relL2 ≤ τ`?
+
+| | `1e-1` | `5e-2` | `3e-2` | `2e-2` | `1e-2` | `5e-3` | `3e-3` | `2e-3` | `1e-3` |
+|---|---|---|---|---|---|---|---|---|---|
+| **S1** worst step | 6.80× | 6.80× | 2.37× | 1.37× | 2.71× | 2.69× | FAIL | FAIL | 98.8× |
+| **S1** median step | FAIL | FAIL | 1.35× | FAIL | 1.13× | 5.04× | FAIL | FAIL | 85.2× |
+| **S2** either | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL |
+| **S3** worst step | 2.30× | 2.30× | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL | 151× |
+| **S3** median step | **1.94×** | **1.94×** | 1.00× | FAIL | FAIL | FAIL | FAIL | FAIL | 56.4× |
+| **S4** worst step | ∞ | ∞ | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL |
+| **S4** median step | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL |
+
+★ **The two rows per signal are a pair.** A gate firing when ANY step crosses `θ`
+reaches its verdict on the **worst step** — that row is the decision. The
+**median** row says how much of the trajectory stands behind it: separation on
+both is a plateau; separation only at the max rests on a minority of steps.
+
+#### The four verdicts
+
+- ⛔ **S2 is dead** — FAIL at every `τ` on both rows. §5's open item 3 was still
+  wrong that `q`-space carries no position information (S2 separates positions
+  strongly at fixed rank), but the per-mode box converts none of it into a rule.
+- ⛔ **S4's `∞` margin is an ARTIFACT of the maximum.** At `+1.50a` its median is
+  **exactly `0.000` at all four ranks** while the answer is `14.8–31.8 %` wrong.
+  The denominator, now printed rather than inferred, is **10–18 active vertices at
+  `+1.50a`, 4–12 at `+2.00a`**, against 21 in-sample ⇒ the signal is one or two
+  vertices on a few steps. ★ And it is confounded: the active set SHRINKS out of
+  domain (`21 → 4`), so the fraction rises partly because the contact patch is
+  disappearing, not only because it is novel.
+- ⚠ **S1 decides correctly at 7 of 9 tolerances on the worst step, and its
+  separation does not survive per-step**: at the median, `+0.25a r=20` reads
+  `7.923e7` against `+1.50a r=142`'s `5.838e7` — **inverted, 0.737×**. It is also
+  **not free at R3**: `‖r_free‖` exists only because R1.1 sweeps every element,
+  which is what §4b's ECSW removes.
+- ✅ **S3 is the only candidate surviving both rows** — `2.30×` worst step,
+  `1.94×` median. Interpolation reads `5.062e-1 / 5.063e-1 / 5.063e-1 / 5.069e-1`,
+  a spread of **`0.138 %`** over a `7.1×` rank change.
+
+★★ **Two-sided control, in the same column:** flatness would prove nothing if the
+statistic were trivially rank-invariant. The IN-SAMPLE row of the same quantity
+falls **`5 168×`** (`3.59e-3 → 6.94e-7`) over the same range — as it must, since
+in-sample the reduced solution converges onto trajectories that ARE training
+points.
+
+#### Why S3 and not S2 — and it is NOT max-versus-norm
+
+Both read the same coordinates. S2 normalises **per mode**; S3 by **one global
+scale**. A per-mode divisor is set by the thinnest retained axis — always the
+newest tail mode — so S2's IN-SAMPLE row climbs `104×` with rank on the one row
+in-domain by definition. ⇒ **use ONE GLOBAL normaliser, not a per-mode one.**
+
+⛔ v2.15 drew this as *"take a NORM over modes, never a MAX"*, and that is
+**provably wrong**: `‖d‖₂ ≥ ‖d‖∞` pointwise, so a norm over the SAME
+per-mode-normalised deviations is at least as rank-sensitive as the max (measured
+at `2.06× → 3.48×` over `r = 20 → 142`). The operation was never the fault. §7 had
+already recorded the wrong rule as rung 2's design.
+
+#### The spectrum, which settles `r=160 → 142`
+
+`142` modes of `355` snapshots at `σ_last/σ_0 = 1.012e-8` — the truncation is
+`SIGMA_FLOOR_REL`, nothing structural. But **retained energy is `1.000000000`**:
+the top rung already extracts everything this ensemble holds energetically while
+spanning 142 of 355 directions. ⇒ "flat in rank out of domain" is not a truncation
+statement — more modes cannot help, only different snapshots.
+
+#### ⇒ What rung 1 delivered
+
+**Not a gate, and not a gate design.** A narrowed candidate set, and a measured
+reason each of the others fails. S3 is left standing at `~2×`, on a fitted
+threshold, on one fixture. §4c's gate is **not ready to build**, and v2.15's
+"rung 2 is implementation, not research" is withdrawn.
+
+⇒ ⛔ **AND S3 DID NOT SURVIVE THE NEXT TWO RUNGS — read them before building on
+anything above.** §2n (v2.17) supplies the held-out position this section says it
+lacks: the `~2×` does NOT survive it, and S3's rank-independence — named above as
+its signature — is precisely what disqualifies it as an accuracy gate. §2o (v2.18)
+then shows it is blind to ENSEMBLE SIZE as well. The two-signal conclusion
+withdrawn here returns in §2n on that evidence.
+
+#### ⚠ What this does NOT establish
+
+- **No held-out position exists.** Every margin is computed on the same 16 cells
+  that chose the threshold. The hull edge is `1.0a`, the nearest scored
+  out-of-domain point `1.5a`, and **nothing is sampled between** — so every window
+  is an upper bound on an unmeasured quantity.
+- **The DOMAIN/ERROR taxonomy is not falsifiable here.** Distance-from-training
+  and error are monotone together across all four positions; no cell could have
+  told the two kinds apart. The labels are definitions.
+- **Extrapolation is confounded with the free edge** (`1.5a` and `1a` clearance on
+  an `8a` plate), and `+0.25a` is **the only offset not on a lattice site**
+  (`0.5` cells, against training at `0, ±1, ±2` and extrapolation at `3, 4`) — the
+  one arm the product question rests on.
+- **The in-sample column measures RECONSTRUCTION, not prediction**, and is the
+  anchor every ratio is taken against.
+- **One basis construction**; `snapshot_distance` assumes `Inner::Mass` and
+  nothing checks it; **every arm ran `Inertial`** and the exposure is not S1's
+  alone (S3 reads `q`, S4 reads `x_rest + Φq` — both the solved state); **no
+  timing**; **no threshold set**.
+
+#### ⛔ Superseded by this rewrite
+
+| v2.15 published | v2.16 |
+|---|---|
+| "the same value to FOUR significant figures" | distinct at 4 and 3 s.f.; `0.138 %` spread, same at TWO |
+| "take a NORM over modes, never a MAX" | the per-mode NORMALISER was the fault |
+| "S4 wins that cut outright" | a maximum-only artifact; median `0.000` at `+1.50a` |
+| "S3's margin is `141×`" | `2.30×` worst step, `1.94×` median |
+| "the gate needs TWO signals" | not shown for GATING — that argument is about DIAGNOSIS. ⚠ The CONCLUSION returns in §2n on held-out evidence; only the v2.15 argument for it stays withdrawn |
+| "`‖r_free‖` … and it is free" | free at R1.1, NOT under ECSW at R3 |
+| "`28 %`–`109 %` wrong" | that is the `r=142` column; the range is `14.8 %`–`119.6 %` across all eight cells, `14.8 %`–`109 %` across the seven that complete |
+| "`≥ 1.17` extrapolating" | the minimum is `1.165` |
+| "byte-identical output" | the 37 measurement ROWS are identical; the files differ |
+| pre-registration item 5 "HELD" | VOID — its antecedent (item 4) was falsified |
+
+Harness: `tests/reduced_contact.rs::an_online_signal_separates_out_of_domain`,
+`#[ignore]`d, `140.4–146.1 s` across six runs. ⚠ The six are NOT byte-identical as
+files — the instrument gained tables and one column was relabelled — but every arm
+line and every shared table cell agrees exactly across all six, which is the only
+evidence any single number here is a determined one.
+It now keeps every step rather than a running maximum, prints both quantiles,
+`active_novelty`'s denominator, the singular-value spectrum, and computes the gate
+table itself — so the analysis that overturned v2.15 cannot drift from the data
+again.
+
+### 2n. §4c rung 1b — the held-out position, and why rank-independence disqualifies the survivor (v2.17)
+
+§2m ended with one candidate standing (`snapshot_distance`) and named its
+**rank-independence** as the signature that made it a domain signal. It also
+recorded that every margin it quoted was FITTED — derived from the same 16 cells
+it was scored on, with no held-out position anywhere. This rung supplies one, and
+the two facts collide.
+
+**Arm A — leave-one-out.** Refit on `[-1, -0.5, +0.5, +1]a`, score at `+0.00a`.
+**Arm B — lattice control.** `+1.75a` (off-lattice, `3.5` cells) against the
+`+1.50a` / `+2.00a` bracket, both on it. 8 oracles, `140.8 s`. ⚠ Two runs exist;
+the first (`139.7 s`) recorded the signals and printed none of them, so every
+signal figure below is the second's. The 16 arm rows are identical across both.
+
+#### ★★★ Rank-independence is why it cannot gate
+
+Four ranks, ONE basis family, ONE hull — what a deployed gate actually sees, since
+a gate ships with a single ensemble and a single threshold:
+
+| | span across the four ranks |
+|---|---|
+| `max_rel_err` | **31.9×** (`3.733e-1 → 1.172e-2`) |
+| `snapshot_distance` worst step | **1.005×** |
+| `snapshot_distance` median step | 1.023× |
+| `residual_excess` worst step | 6.409× |
+| `active_novelty` | `0.000` at every rank |
+
+A signal that does not move with rank **cannot report how well the basis resolved
+the answer**, because resolution is the thing rank changes. Within-ensemble
+threshold margins for `snapshot_distance` are `1.002 / 1.002 / 1.002 / 1.000` over
+`τ = 1e-1 … 2e-2` — noise. `residual_excess` gets `2.883×` on the same cells,
+because it is an error signal and tracks rank by construction.
+
+⇒ **Rank-independence and accuracy-sensitivity are mutually exclusive**, and that
+is a consequence of what each quantity measures rather than a design choice.
+
+#### ⇒ The two-signal conclusion returns, on opposite evidence
+
+§2m WITHDREW "the gate needs TWO signals" because the argument offered for it was
+about DIAGNOSIS and had been sold as gating. It returns here on a **held-out**
+position rather than a confounded position partition: `snapshot_distance` reads
+position and is blind to resolution; `residual_excess` reads resolution, is
+per-step blind to position (§2m), and is unavailable under ECSW. **Neither alone
+gates**, and that is now measured rather than argued.
+
+#### ⛔ §2m's fitted margin does not survive
+
+The load-bearing form is WITHIN arm A, so no normaliser question touches it: four
+readings spanning `0.9704–0.9756` carry errors of `1.2 %` to `37 %`. **No threshold
+separates them** — below `0.9704` refuses all four, above `0.9756` accepts all four,
+and there is nothing in between to place one at.
+
+⚠ §2m's interval was `[0.5069, 1.165)` and arm A lands inside it, in the band
+nothing was ever sampled in — but that is a **DIRECTION, not a number**: §2m's
+interval is in the 355-snapshot ensemble's units, arm A's readings in the
+284-snapshot ensemble's, and `snapshot_distance` divides by each ensemble's own
+cloud radius. See the caveats.
+
+#### The matched-gap pair
+
+Held-out `+0.00a` and `+1.50a` both sit `0.5a` from their nearest training
+snapshot and both ON the lattice — one interpolating, one extrapolating:
+
+| rank | HELD-OUT `+0.00a` | `+1.50a` | ratio |
+|---|---:|---:|---:|
+| 20 | 3.733e-1 | 3.149e-1 | **0.84×** |
+| 40 | 1.406e-1 | 1.478e-1 | **1.05×** |
+| 80 | 2.902e-2 | 3.177e-1 | 10.95× |
+| 116 / 142 | 1.172e-2 | 2.822e-1 | 24.08× |
+
+★★★ At `r=20` **extrapolation is the better of the two**, and at `r=40` they are
+indistinguishable. Being inside the hull does not make the answer better at a given
+rank — it makes the answer **improvable by rank**: interpolation falls `31.9×`
+across the sweep, extrapolation `1.12×`. ⇒ This sharpens §2l's "rank does not fix
+it" to: **rank does not fix it OUTSIDE the hull, and does fix it inside, at a rate
+the gap degrades.** ⚠ And at that matched gap `snapshot_distance`'s median reads
+`4.117e-1` against `4.271e-1` — `1.04×` for a `24×` error difference. ⚠⚠ Those two
+medians come from different ensembles and so from different normalisers: read
+`1.04×` as a direction. The within-arm form needs no cross-arm comparison and says
+the same — inside arm A the median moves `1.023×` across a `31.9×` error range.
+
+#### The lattice control
+
+`+1.75a` falls **INSIDE** the `+1.50a`/`+2.00a` bracket at all four ranks, and
+error tracks gap smoothly across `0.5a → 0.75a → 1.0a` with no lattice jump. The
+mesh confound raised against `+0.25a` is largely defused. ⚠ Evidence, not proof,
+for the interpolation end: with `cell = 0.5a` every on-lattice point inside the
+training span IS a training point, so no on-lattice interpolation control can
+exist on this mesh.
+
+#### ⚠ What this does NOT establish
+
+- **One held-out position** — better than none, still a single point.
+- ⚠⚠ **The two arms use different ensembles** (284 snapshots truncating at `r=116`
+  vs 355 at `r=142`), and `snapshot_distance` divides by its own ensemble's cloud
+  radius — so **every cross-arm number in this section is a DIRECTION, the median
+  comparison included.** (v2.17 said the median comparison was sound. It is the
+  same comparison.) The sound readings are the WITHIN-arm spans: `1.005×` worst
+  step and `1.023×` median against `31.9×` in error. The normaliser ratio is
+  unmeasured — one re-run printing `cloud_radius` per arm would settle it, and
+  nothing above waits on it. ✅ §2o carries one cross-ensemble reading (`~1.1×`)
+  and labels it a direction rather than a number — the form this section should
+  have used.
+- The lattice control tests the **extrapolation end only**.
+- No timing, no threshold, one fixture, one basis construction.
+
+Harness: `tests/reduced_contact.rs::the_signal_margin_on_a_held_out_position`,
+`#[ignore]`d. ⚠ Its first version recorded the signals and PRINTED NONE of them,
+leaving two of its own pre-registered items unanswerable from its output — a
+prediction whose data is not emitted is not a prediction, and the harness now
+emits it.
+
+### 2o. §4c rung 1c — "density" is TWO factors, and the weaker one is what the signals measure (v2.18)
+
+§10 risk 0 carried §4c's domain-coverage half as untouched and §5's open item 3 was
+re-scoped to it: **how dense must the training ensemble be?** A parameter box in the
+**Stated** clause is meaningless without it.
+
+Every reduced result in this arc conflates two factors, because refining a training
+grid moves both at once: the SPACING between neighbouring trajectories, and the
+NUMBER of them. A 2-factor design over offsets whose oracles already exist, all
+scored at the same held-out `+0.00a`, costing no new trajectory:
+
+| ensemble | `r=20` | `r=40` | at its own ceiling |
+|---|---:|---:|---:|
+| **A** 4 traj, gap `0.50a` | 3.733e-1 | 1.406e-1 | 1.172e-2 (`r=116`) |
+| **B** 2 traj, gap `0.50a` | 7.949e-1 | 3.790e-1 | 1.394e-1 (`r=64`) |
+| **C** 2 traj, gap `1.00a` | 8.632e-1 | 4.448e-1 | 3.058e-1 (`r=65`) |
+
+#### ★★★ At matched rank, SIZE dominates GAP
+
+- **A vs B** — doubling the ENSEMBLE at fixed gap buys **`2.13×` / `2.70×`**.
+- **B vs C** — doubling the GAP at fixed size costs **`1.09×` / `1.17×`**.
+
+"Denser is better" resolves into two effects of unequal weight, and **the one every
+online candidate in §2m measures — the gap — is the weaker.**
+
+★★ **Size compounds, because it sets the rank CEILING.** A's 284 snapshots retain
+116 modes; B's 142 retain 64 (C's 142 retain 65 — the ceiling comes from the
+spectrum, not the count alone). B cannot pass `r=64` however much rank is asked for, so at
+their respective ceilings A beats B by **`11.9×`** against the `2.1–2.7×` basis
+quality alone accounts for. A small ensemble is penalised twice — a worse basis at
+every rank, and a lower rank to stop at.
+
+#### ⇒ Second strike against §2m's surviving candidate
+
+A and B are at **the same gap** and differ `2.13–2.70×` in error. The domain
+signals read:
+
+- `active_novelty`: **`0.000` for both at every rank.** Identical.
+- `snapshot_distance` median: A `0.411–0.420`, B `0.447–0.500` — ~`1.1×`, ⚠ and the
+  normaliser changes across ensembles, so even that is a direction not a number.
+
+**Neither can express ensemble size.** §2n showed `snapshot_distance` is blind to
+RESOLUTION (rank-independent by construction); this shows it is blind to ENSEMBLE
+SIZE too. It reads the sampling PITCH — measured here as the smaller of the two
+things that set the error.
+
+⇒ **A `ReducedValidityDomain` must state CARDINALITY and not only pitch, and the
+online candidate cannot check the clause that matters more.**
+
+#### ✅ And C is the positive control for `active_novelty`
+
+C fires — `0.250 / 0.182 / 0.167` — where A and B read exactly zero, because
+`[-1, +1]` leaves a hole at the centre that `±0.5a` sweeps through. So that signal
+does measure something real, **COVERAGE**, and fires exactly when coverage fails.
+This sweep measures coverage to be the factor that is NOT dominating.
+
+#### ⚠ What this does NOT establish
+
+- One held-out point, one gap pair, one size pair — `2.13–2.70×` and `1.09–1.17×`
+  are two points each, not a scaling law.
+- **Trajectory count and SNAPSHOT count are confounded**: B and C hold 142 snapshots
+  because they hold 2 ramps of 71 steps. A longer ramp at fewer offsets would
+  separate them; nothing here does.
+- Only the matched-rank rows isolate a factor. The own-ceiling column mixes basis
+  quality with the ceiling and is reported separately for that reason.
+
+Harness: `tests/reduced_contact.rs::how_dense_the_training_ensemble_must_be`,
+`#[ignore]`d, `82.7 s`, zero new full-order trajectories.
 
 ## 3. What the measurements say about feasibility
 
@@ -2315,18 +2658,22 @@ accuracy superiority — that is not claimed and would need measuring.
 
 > ⛔ **v2.14 — this is now a CORRECTNESS PREREQUISITE, not a prudent addition.**
 > §2l measures the reduced solver returning a **converged, non-penetrating,
-> `28–109 %`-wrong** answer once the contact patch moves outside the training
-> hull. The parameter box below already names "contact configuration class",
+> `14.8–109 %`-wrong** answer once the contact patch moves outside the training
+> hull, in 7 of its 8 extrapolation arms (the eighth stalls and is announced). The parameter box below already names "contact configuration class",
 > so the design anticipated it — what changed is that the cost of shipping
 > without the gate is now measured rather than argued. ⚠ v2.7's retraction of
 > this section as a PERFORMANCE prerequisite is a separate claim and stands.
-> ★ `gap_dev` (the converged contact gap's drift, §2l finding 4) is a measured
-> candidate for the online signal: `0.161–0.583 d̂` out-of-domain against
-> `3.1e-11` in-sample at the same rank. ⚠ **It is an ERROR indicator, not an
-> in-domain one** — at `r = 20` the in-sample arm itself reads `1.6e-4` because
-> the answer is genuinely poor there. For a gate that is arguably the right
-> quantity, since both are reasons to refuse an answer, but **it needs its own
-> threshold study** and must not inherit the `2e-6` regression figure.
+> ⛔ **`gap_dev` IS NOT A CANDIDATE FOR THE ONLINE SIGNAL, and an earlier version
+> of this paragraph said it was.** It detects the failure well
+> (`0.161–0.583 d̂` out-of-domain against `3.1e-11` in-sample at the same rank),
+> but it is `|min_sd − ORACLE min_sd|` — it differences against the full-order
+> answer, so it is a DIAGNOSTIC and can never gate anything. §2m (v2.15)
+> measured four candidates that are genuinely oracle-free and found one that is
+> flat in rank. ⚠ The separate caveat below stands and generalises: `gap_dev` is
+> an ERROR indicator, not an in-domain one — at `r = 20` the in-sample arm reads
+> `1.6e-4` because the answer is genuinely poor there — and §2m confirms the
+> same conflation in the oracle-free error signal, which is exactly why the gate
+> needs a DOMAIN signal beside it.
 
 
 This mirrors `sim-soft`'s existing `ValidityDomain` on `Material` (which already gates
@@ -2356,7 +2703,97 @@ the direct path. ⚠ The one genuinely new thing: a reduced model can leave its 
 *silently and plausibly* — it will happily produce a smooth, wrong answer. The gate
 therefore has to be **online**, on `‖q‖` and on a cheap residual proxy, not merely a
 statement in a docstring. That is a design requirement, and it is the single most
-important thing to get right in R3.
+important thing to get right in R3. ⚠ **"online" survived rung 1; the two specific
+statistics named in this sentence did not** — see the block immediately below, which
+is the scorecard on this paragraph and not a restatement of it.
+
+#### ⚠ Rung 1 done — the online signal is MEASURED, and NO CANDIDATE SURVIVED IT (§2m v2.16, §2n v2.17, §2o v2.18)
+
+⚠⚠ **This block was written against §2m alone and is read with §2n and §2o or not
+at all.** §2m left one candidate standing; §2n and §2o each disqualified it, for
+reasons that are properties of the quantity rather than of the fixture.
+
+Four oracle-free candidates were scored on §2l's matrix. What the design above got
+right, wrong, and left unsaid:
+
+- ✅ **"the gate has to be ONLINE" was the load-bearing call.** `gap_dev`, the one
+  detector §2l measured, differences against the ORACLE's `min_sd` and is therefore a
+  diagnostic that could never have shipped as a gate.
+- ⚠ **"on `‖q‖`" was right about the coordinates and wrong about the statistic.** A
+  per-mode envelope box is dominated by the thinnest retained axis and has NO
+  rank-independent threshold — its in-sample row climbs `104×` with rank. The distance
+  to the nearest training snapshot, normalised by ONE GLOBAL scale, holds to `0.138 %`
+  across a `7.1×` rank change. ⇒ **use one global normaliser, not a per-mode one.**
+  ⛔ v2.15 drew this as "a NORM over modes, never a MAX" and that was provably wrong:
+  `‖d‖₂ ≥ ‖d‖∞`, so a norm over the same per-mode-normalised deviations is at least as
+  rank-sensitive as the max. The operation was never the fault.
+  ⛔⛔ **And that `0.138 %` flatness is the DISQUALIFIER, not the recommendation
+  (§2n).** On a held-out position the same statistic spans `1.005×` across four
+  ranks while the error spans `31.9×`. **Rank-independence and accuracy-sensitivity
+  are mutually exclusive** — a signal that does not move with rank cannot report
+  how well the basis resolved the answer, because resolution is what rank changes.
+  ⇒ `‖q‖`-space gives a DOMAIN reading and can never give an ACCURACY one. That is
+  a constraint on the design, not a defect in the statistic.
+- ⚠ **"and on a cheap residual proxy" was right, and it is free ONLY AT R1.1.**
+  `‖r_free‖` is available because R1.1 sweeps every element — which is precisely what
+  §4b's ECSW removes. At R3, the rung this gate ships on, the recommended backstop
+  costs the assembly the rung exists to eliminate. v2.15 said "free" without this.
+- ⛔ **v2.15 concluded the gate needs TWO signals; §2m WITHDREW it as a gating claim;
+  §2n REINSTATES it on evidence §2m did not have. The conclusion stands — the
+  argument for it does not.** §2m's gate table shows the error signal deciding
+  correctly at 7 of 9 tolerances on the worst step while both geometric candidates
+  fail at `1e-2`, which proves a DOMAIN-ONLY gate fails; v2.15's "opposite remedies"
+  argument was about DIAGNOSIS and was sold as gating. §2n then measures the other
+  half on a HELD-OUT position rather than a confounded position partition:
+  `snapshot_distance` reads position and is blind to resolution, `residual_excess`
+  reads resolution, is per-step blind to position, and is **unavailable under
+  ECSW**. ⇒ **Neither alone gates, and the one that reads accuracy is the one R3
+  cannot afford.** That is the sharp form of the problem rung 2 inherits.
+- ⚠ The **"contact configuration class"** named in **Stated** has a candidate
+  realisation in `active_novelty`, and §2m measured it to be **an artifact of a
+  trajectory maximum**: its median at `+1.50a` is exactly zero at every rank, over an
+  active set of 10–18 vertices. Not usable as stated. ✅ §2o rehabilitates it as a
+  COVERAGE signal — it fires (`0.167–0.250`) on the `±1.0a`-only ensemble, whose
+  training leaves a HOLE at the centre, and reads exactly `0.000` on the two whose
+  `±0.5a` trajectories sweep through it. ⚠ A hole, not an absence: at its worst
+  step C still recognises `75 %` of the scored active set. Coverage is measured
+  there to be the factor that does NOT dominate.
+- ⛔⛔ **The parameter box must state CARDINALITY, and no online candidate can
+  check it (§2o).** "Density" is two factors. At matched rank, doubling the
+  ENSEMBLE at fixed gap buys `2.13–2.70×`; doubling the GAP at fixed size costs
+  `1.09–1.17×`. Size compounds through the rank ceiling to `11.9×`. **Every online
+  candidate here reads the gap** — the weaker factor — and two ensembles at the
+  SAME gap differing `2.1–2.7×` in error read identically on `active_novelty` and
+  ~`1.1×` apart on `snapshot_distance` (⚠ a DIRECTION — the two ensembles
+  normalise by their own cloud radii). A **Stated** clause that names a parameter
+  box without a snapshot count is therefore under-specified, and the **Gated**
+  clause cannot enforce the part that matters most.
+
+⇒ **Rung 2 is NOT ready, and rung 1's survivor did not survive.** §2m left one
+candidate standing (`snapshot_distance`, `~2×` on a fitted threshold on one
+fixture); §2n disqualified it on resolution and §2o on cardinality. What rung 1
+actually delivered is a narrowed candidate set, a measured reason each fails, and
+**two hard constraints a gate design has to route around.** ⚠ They do not have
+the same standing, and the more certain one is not the more interesting one:
+
+1. **AFFORDABILITY, and it is definitional.** `‖r_free‖` requires the full element
+   sweep; ECSW exists to remove exactly that sweep. No measurement is needed and
+   none can overturn it. The error signal that reads accuracy is the one R3
+   cannot have.
+2. **A near-impossibility, and it is the load-bearing one.** A domain signal
+   cannot read accuracy: accuracy at fixed ensemble is a function of rank, so a
+   signal constant in rank cannot track it. The ARGUMENT is definitional; the
+   PREMISE — that `snapshot_distance` is constant in rank — is measured at
+   `1.005×`, on one statistic at one held-out position. Treat it as very strong
+   evidence, not as a theorem.
+
+v2.15's "rung 2 is implementation, not research" is withdrawn.
+
+⚠ **The prerequisite for rung 2 is an API change, not a measurement.**
+`ReducedStep` exposes only `projected_residual_norm` / `full_residual_norm` — a
+scalar. Anything that reads the residual VECTOR (a per-mode or per-region error
+indicator, which is the obvious next candidate class) cannot be built against the
+current surface.
 
 ---
 
@@ -2407,8 +2844,28 @@ basis in the bulk):
    search) are stated over full nodal positions. Whether they survive projection onto a
    subspace — and what "feasible" means for `q` — is not settled in the literature we
    can rely on.
-3. Validity-domain statement for contact. §4c's `‖q‖` gate does not detect "the
-   indenter moved somewhere the ensemble never saw."
+3. ⛔ **CLOSED by §2m (v2.16) as originally posed, and REPLACED by a harder
+   question (§2n v2.17, §2o v2.18).** It read: "§4c's `‖q‖` gate does not detect
+   *the indenter moved somewhere the ensemble never saw*." That was argued, never
+   measured. Measured, `q`-space carries the position information plainly — what
+   failed was the STATISTIC. A per-mode box is dominated by the thinnest retained
+   axis, so it has no rank-independent threshold; the distance to the nearest
+   training snapshot, normalised by ONE GLOBAL scale (the training cloud's
+   radius), holds to `0.138 %` across a `7.1×` rank change and separates every
+   position. ⇒ **use one global normaliser, not a per-mode one** (⛔ v2.15 wrote
+   "a NORM over modes, never a MAX", which is provably wrong — `‖d‖₂ ≥ ‖d‖∞`).
+
+   ⛔⛔ **The two follow-ups v2.16 named are now measured, and they reopen the item
+   on a different axis.** (a) The HELD-OUT position exists (§2n): the same
+   statistic spans `1.005×` across four ranks while the error spans `31.9×`, so
+   its rank-independence — the property that made it a domain signal — is exactly
+   what makes it blind to resolution. **Rank-independence and accuracy-sensitivity
+   are mutually exclusive.** (b) DENSITY is TWO factors (§2o): ENSEMBLE SIZE beats
+   GAP `2.13–2.70×` against `1.09–1.17×` at matched rank and compounds to `11.9×`
+   through the rank ceiling, and every online candidate reads the GAP — the weaker
+   one. ⇒ **What is open is no longer "does `q`-space carry position information"
+   (it does) but "what reads ACCURACY at runtime without the element sweep ECSW
+   removes".** One held-out point and one 2-factor cell are still one of each.
 
 **Consequence for sequencing**: R1 is deliberately **no contact** (§7). The cheap
 kill-or-confirm must not be entangled with the part that is open research, or a
@@ -2514,9 +2971,9 @@ same door, under its own feature, and must not enter the default build.
 | rung | scope | gate | why here |
 |---|---|---|---|
 | **R0** ✅ **DONE** (`e77023c7`, `43b198a2`) | **Full-order assembly lever.** Replace the per-iteration `BTreeMap` rebuild in `assemble_free_hessian_triplets` with a pattern-indexed value buffer built once at construction. No algorithm change. | Byte-identity of the assembled triplets against the current path (the `feedback_float_refactor_byte_identity` recipe), plus a measured ms/iteration delta on the §2a fixtures. | §2d.2. Establishes the **honest baseline** the reduction is measured against. Cheap, self-contained, and a win regardless of whether anything downstream ships. |
-| **R1** ✅ **DONE AS SCOPED** (`#744`, `#745`, R1.2) — ⚠ **v2.14: every R1 gate was posed on a FIXED contact configuration.** §2l measures the basis failing to generalise across contact POSITIONS (`28–109 %`, flat in rank), which none of R1.0–R1.3 asked. Complete, with the scope that excluded the question deciding R3. | **Linear subspace, no contact, no coupling.** POD basis from full-order snapshots on the `cantilever` fixture at 3 000 free DOF; reduced Newton with a dense `r × r` direct solve; `Φ` and quadrature both handled naively (full element sweep — **no hyper-reduction yet**). Differentiable path wired at the same time (§6, `Φ` constant). | Projection error vs the oracle < 1 % in tip displacement over the training trajectory; reduced gradient matches the oracle's to the crate's existing gradcheck tolerance. ⚠ **That second clause was wrong and was amended before R1.2 was built** — it asks two different functions to agree to 5 digits when their states already differ in the third. Split into a gradcheck-tolerance kill gate on the reduced model's *own* derivative and a measured comparison against the oracle; see the plan's §5/§7 and §13. **Wall time is explicitly NOT gated at R1** — without hyper-reduction it will not be faster, and pretending otherwise would corrupt the signal. | **The cheap kill-or-confirm.** It answers the one question that decides everything downstream: *does a low-dimensional subspace represent this material's deformation at all?* Fixture already exists; no new physics. |
+| **R1** ✅ **DONE AS SCOPED** (`#744`, `#745`, R1.2) — ⚠ **v2.14: every R1 gate was posed on a FIXED contact configuration.** §2l measures the basis failing to generalise across contact POSITIONS (`14.8–109 %` over the seven extrapolation arms that complete, flat in rank), which none of R1.0–R1.3 asked. Complete, with the scope that excluded the question deciding R3. | **Linear subspace, no contact, no coupling.** POD basis from full-order snapshots on the `cantilever` fixture at 3 000 free DOF; reduced Newton with a dense `r × r` direct solve; `Φ` and quadrature both handled naively (full element sweep — **no hyper-reduction yet**). Differentiable path wired at the same time (§6, `Φ` constant). | Projection error vs the oracle < 1 % in tip displacement over the training trajectory; reduced gradient matches the oracle's to the crate's existing gradcheck tolerance. ⚠ **That second clause was wrong and was amended before R1.2 was built** — it asks two different functions to agree to 5 digits when their states already differ in the third. Split into a gradcheck-tolerance kill gate on the reduced model's *own* derivative and a measured comparison against the oracle; see the plan's §5/§7 and §13. **Wall time is explicitly NOT gated at R1** — without hyper-reduction it will not be faster, and pretending otherwise would corrupt the signal. | **The cheap kill-or-confirm.** It answers the one question that decides everything downstream: *does a low-dimensional subspace represent this material's deformation at all?* Fixture already exists; no new physics. |
 | **R2** | **Precision decision.** Measure a full-f32 forward path on the reduced system (`r × r` is small enough to port by hand without touching the 1 396-`f64` production surface), and decide residual-in-f64-on-CPU vs compensated-summation-in-f32. | Reduced-model f32 forward drift and gradient drift vs the f64 reduced model, on R1's fixture; explicit go/no-go on whether the residual can live in f32. | §2c. Must precede any GPU work; deciding it after a shader exists means writing the shader twice. |
-| **R3** **§2i brackets its Amdahl ceiling at `20.2–20.5×`–`≳32×`** (two runs) — clear of both its own `10×` floor and the budget's `13.5–15.8×` on either bound. ✅ v2.13: the reduced path HAS now run with contact — §2k measures `I = 11.3–12.3 ms` on IPC 18 750, margin `1.36–1.47×` under `Inertial` and a FAIL of `0.92–0.98×` under `PreviousState`. ⚠ Size-dependent — `~4.5×` at 5 202, and extrapolating the two terms of `I` separately, gone by ~`26 k` free DOF. Gate is **`I ≤ 16.7 ms`** on §2h's reference box (§2j — restated in v2.8 from `≥10×`, which was a ratio over a moving baseline). | **Hyper-reduction (ECSW) + the validity domain.** NNLS training over R1's snapshots; `ReducedValidityDomain` with the online `‖q‖` + residual-proxy gate; the three error measures of §4c. | Measured speedup vs §2a's baseline (post-R0), with the three §4c errors reported alongside. Domain gate demonstrated to fire on an out-of-domain trajectory. | This is where the frame-budget win actually arrives. Also where the "smooth and wrong" failure mode is defended against. |
+| **R3** **§2i brackets its Amdahl ceiling at `20.2–20.5×`–`≳32×`** (two runs) — clear of both its own `10×` floor and the budget's `13.5–15.8×` on either bound. ✅ v2.13: the reduced path HAS now run with contact — §2k measures `I = 11.3–12.3 ms` on IPC 18 750, margin `1.36–1.47×` under `Inertial` and a FAIL of `0.92–0.98×` under `PreviousState`. ⚠ Size-dependent — `~4.5×` at 5 202, and extrapolating the two terms of `I` separately, gone by ~`26 k` free DOF. Gate is **`I ≤ 16.7 ms`** on §2h's reference box (§2j — restated in v2.8 from `≥10×`, which was a ratio over a moving baseline). | **Hyper-reduction (ECSW) + the validity domain.** NNLS training over R1's snapshots; `ReducedValidityDomain` — ⛔ v2.18: rung 1 NARROWED the candidates to one and then **disqualified that one twice**; there is no gate design. §2m: `snapshot_distance` (nearest training snapshot, ONE GLOBAL normaliser, NOT per mode) is the only candidate surviving a per-step test, at `~2×` on a FITTED threshold. §2n supplies the held-out position §2m lacked and it fails there — `1.005×` of signal across `31.9×` of error, because **rank-independence and accuracy-sensitivity are mutually exclusive**. §2o: it is blind to ENSEMBLE SIZE too, and size is the dominant factor — doubling it at fixed gap buys `2.13–2.70×` where doubling the gap at fixed size costs `1.09–1.17×` ⇒ the domain must state CARDINALITY and no candidate can check it. `‖r_free‖ / tol` reads accuracy but is NOT available here: it is the full element sweep ECSW removes. ⚠ Rung 2's prerequisite is an API change — `ReducedStep` exposes only residual NORMS, so no per-mode or per-region error indicator can be built against it. Plus the three error measures of §4c. | Measured speedup vs §2a's baseline (post-R0), with the three §4c errors reported alongside. Domain gate demonstrated to fire on an out-of-domain trajectory. | This is where the frame-budget win actually arrives. Also where the "smooth and wrong" failure mode is defended against. |
 | **R4** | **Hybrid domain decomposition, FIXED contact patch.** Full DOF under a stationary indenter, reduced bulk, on the `dynamic_indentation` geometry. | End-to-end reaction force vs the oracle, in the same band `bonded_layer_indentation` already asserts. | §5. Fixed patch first, because it isolates the coupling condition from the re-partitioning problem. |
 | **R5** | **Moving patch.** Re-partitioning under a once-built symbolic factorization, or a conservative union pattern. | Sliding-contact trajectory vs the oracle. | §5's open-research item. **Explicitly gated on R4 succeeding**; if R4 fails, this is not attempted. |
 | **R6** | **Rigid↔soft coupling.** | — | **Last, deliberately.** Per the brief, and it is the right call: the keystone coupling is itself the platform's hardest open problem (`MISSION.md` §2), and stacking it on an unsolved real-time reduced path would make any failure uninterpretable. |
@@ -2711,15 +3168,36 @@ until then, and by nobody else ever. The recipe above is the durable record.
 ## 10. Open risks
 
 0. ⛔ **THE BASIS DOES NOT GENERALISE ACROSS CONTACT POSITIONS, and rank does not
-   fix it (§2l, v2.14).** `28–109 %` error one to two patch-radii outside the
-   training hull, flat in rank, and **silent** — it converges and does not
-   penetrate. Listed first because it is the only measured result that can
+   fix it (§2l, v2.14).** `14.8–109 %` error one to two patch-radii outside the
+   training hull, flat in rank, and **silent in 7 of 8 arms** — they converge and
+   do not penetrate; the eighth stalls and is announced. Listed first because it is the only measured result that can
    invalidate R3 rather than resize it: hyper-reducing a basis that is wrong off
    its training data makes a wrong answer cheaper. The response is §4c's gate
    (now mandatory) plus, structurally, §5's hybrid domain decomposition — which
    is sketched and unmeasured. ⚠ Interpolation *inside* the hull is usable
    (`1.9e-3` on a `0.5a` grid), so the risk is a domain-coverage and gating
    problem, not a dead end.
+
+   ⚠ **The GATING half is NARROWED, not discharged (§2m, v2.16 — v2.15 claimed
+   discharged and was wrong).** Of four oracle-free candidates, one survives a
+   per-step test: distance to the nearest training snapshot reads `5.062e-1 …
+   5.069e-1` at interpolation (`0.138 %` spread over a `7.1×` rank change),
+   against `≤ 3.6e-3` in-sample and `≥ 1.165` extrapolating — a `2.30×` worst-step
+   and `1.94×` median-step window. The other three fail measurably: the per-mode
+   box at every tolerance, the vertex-novelty signal as a trajectory-maximum
+   artifact (median exactly zero at `+1.50a`), and the residual proxy per-step
+   (inverted, `0.737×`) and under ECSW (`r_free` is what hyper-reduction removes).
+   ⇒ §4c's gate is NOT ready to build. ⛔ **And §2n (v2.17) supplied the held-out
+   position: the surviving candidate's `~2×` does NOT survive it.** Within one
+   ensemble the error spans `31.9×` while that signal spans `1.005×` — its
+   rank-independence, which §2m named as its signature, is exactly what makes it
+   blind to resolution. ⇒ a DOMAIN signal and an ERROR signal are provably
+   different quantities and §4c needs both; neither alone gates. ⚠ The
+   DOMAIN-COVERAGE half is answered in part by §2n/§2o (v2.18): "density" is TWO
+   factors, ENSEMBLE SIZE dominates GAP `2.1–2.7×` against `1.1×` at matched rank
+   and compounds through the rank ceiling to `11.9×`, and **both online candidates
+   are blind to size** — so the domain must state CARDINALITY and neither candidate
+   can check it. ⚠ One held-out point is still one point.
 1. **Every timing number was taken on a contended box (§1a).** Absolute times are
    upper bounds. The *shapes* (scaling exponents, phase shares, crossover point) are
    robust across repeats; the absolutes are not benchmark-grade. Re-take §2a on an idle
@@ -2782,6 +3260,138 @@ until then, and by nobody else ever. The recipe above is the durable record.
 
 ## 12. Version history
 
+- **v2.19 (2026-08-25)** — **CONSISTENCY PASS over §2l–§2o and everything
+  downstream of them. No new measurement; every figure re-derived from the run
+  logs.** ⛔ **§4c's "rung 1 done" block had never been updated for §2n or §2o** —
+  it still recommended `snapshot_distance` on the strength of the `0.138 %`
+  rank-flatness that §2n showed to be the DISQUALIFIER, still carried the
+  two-signal conclusion as withdrawn when §2n reinstates it, and still ended "one
+  candidate standing". That is the block rung 2 would have been built from.
+  Rewritten, with the impossibility and the affordability limit separated and the
+  `ReducedStep`-exposes-only-a-NORM prerequisite named. ⛔ **§5 open item 3 was
+  claimed answered by v2.18's own changelog and was never edited** — it still
+  listed the held-out position and the density question as open. Rewritten.
+  ⛔ **§7's R3 row** still read "rung 2 must first get a HELD-OUT position; there
+  is none". ⛔ **`28–109 %` survived as a live range in §4c, §7's R1 row and §10
+  risk 0**, which §2m's own superseded table names as a column misread as a
+  bracket; the range over the eight extrapolation cells is `14.8–119.6 %`.
+  ⛔ **"the failing arms converge and complete all 71 steps" is true of SEVEN of
+  the eight** — `+2.00a` at `r=20` stalls at step 65, which §2l's own table marks
+  DIVERGED two paragraphs above the sentence. Silent, not universally silent, and
+  the honest bound is stronger for saying so. ⛔ **§2n asserted that its median
+  comparison was sound in the same bullet that ruled cross-arm comparison
+  unsound** — `4.117e-1` vs `4.271e-1` is a cross-arm comparison, as are the
+  `[0.5069, 1.165)` containment and pre-registration item 3's linearity reading.
+  All three relabelled as DIRECTIONS; the section's load-bearing claims are
+  within-arm and untouched (`1.005×` / `1.023×` of signal against `31.9×` of
+  error). ⚠ §2n's wall time quoted run 1 (`139.7 s`) while every signal figure
+  came from run 2 (`140.8 s`, 16 arm rows identical). ⚠ "142 snapshots retain 64
+  modes" is B's ceiling; C's 142 retain 65. ⚠ The test file's module doc still
+  announced "the other TWO studies" and "the FIRST of three"; there are six.
+
+  ★★ **A SECOND round found 8 defects in this pass's own fixes**, which is the
+  expected place for them. The load-bearing ones: the new module doc claimed all
+  six studies share one fixture (only the last FOUR share `GEN_A_OVER_CELL` and
+  `BASIS_RANKS`; the producer check runs the same mesh over its own rank ladder,
+  and the timing run has no rank ladder at all — a fixed `r=40` over two mesh
+  sizes, one of which is `a/cell = 3`); "the only cell above `109 %`"
+  was wrong at the rounding boundary — `+2.00a` at `r=142` reads `109.3 %`, so the
+  diverged arm is the HIGHEST cell (`119.6 %`), not the only one; the §4c rewrite
+  quoted the cross-ensemble `~1.1×` as a NUMBER in the same pass that relabelled
+  it a direction everywhere else; "two impossibility results" overstated — only
+  the domain-signal one is a proof, the ECSW one is affordability; and "§2o leans
+  on no cross-ensemble number" was false — §2o carries one and LABELS it, which is
+  the form §2n should have used.
+
+  ★★ **ROUND 3 found 4 more, in round 2's fixes** — and one had the CERTAINTY
+  backwards: "only the domain-signal result is a proof" is inverted. The ECSW
+  constraint is definitional (`‖r_free‖` needs the sweep ECSW removes; no
+  measurement can overturn it); the rank-independence result is a definitional
+  ARGUMENT on a MEASURED premise (`1.005×`, one statistic, one held-out position).
+  Also: "C's training never sweeps the scored patch" overstated the coverage
+  control — C's novelty maxes at `0.250`, so it still recognises `75 %` of the
+  scored active set; it leaves a HOLE, which is what §2o said.
+
+  ★★ **ROUND 4 found 3, and the worst PREDATES this branch.** The producer
+  check's module doc listed `r ∈ {10, 20, 40, 60}` while `R_LADDER` sweeps
+  `{2, 4, 10, 20, 40, 60}` — dropping the two rungs its own const doc calls the
+  two-sided half. ⛔ And three ratios in its "Measured" prose (`1.7×`, `~2 700×`,
+  `~54 000×`) do NOT reproduce from the table three lines above them, which gives
+  `2.37×`, `3.79e3×`, `7.62e4×`; every published figure is `0.71×` of the table's.
+  Withdrawn pending the 2026-08-24 log rather than overwritten, since a
+  correction computed from a 3-s.f. table is the failure this document keeps
+  naming. The finding's DIRECTION is unaffected.
+
+  ⇒ **the fix is the least-reviewed text** — four rounds on this branch have now
+  each found defects in the previous round's fixes (`9728a9a9`, `e3a55587`,
+  `1222a698`, `12a13d36`). ⚠ Round 4 also shows the corollary: once the new text
+  converges, the rounds start finding OLD text instead.
+
+- **v2.18 (2026-08-25)** — **§2o, new: "density" is TWO factors and the online
+  signals measure the WEAKER one.** A 2-factor design at a fixed held-out point,
+  zero new trajectories: at matched rank, doubling the ENSEMBLE at fixed gap buys
+  `2.13–2.70×` while doubling the GAP at fixed size costs only `1.09–1.17×`. ★★
+  Size COMPOUNDS by setting the rank ceiling (284 snapshots → 116 modes, 142 → 64),
+  so at their own ceilings the larger ensemble wins `11.9×`. ⇒ **second strike on
+  §2m's survivor:** two ensembles at the SAME gap differ `2.1–2.7×` in error while
+  `active_novelty` reads `0.000` for both and `snapshot_distance` reads ~`1.1×`
+  apart — **neither can express ensemble size**, so a validity domain must state
+  CARDINALITY and the online candidate cannot check it. ✅ Positive control:
+  `active_novelty` DOES fire (`0.167–0.250`) on the ensemble that leaves a genuine
+  hole, so it measures COVERAGE correctly — coverage is just not what dominates.
+  §5 item 3 and §10 risk 0's domain-coverage half answered in part.
+- **v2.17 (2026-08-25)** — **§2n, new: the first HELD-OUT position, and it
+  disqualifies §2m's survivor.** Leave-one-out (refit on `[-1,-0.5,+0.5,+1]a`,
+  score at `+0.00a`) plus an off-lattice extrapolation control. ★★★ **Within one
+  ensemble across four ranks the error spans `31.9×` while `snapshot_distance`
+  spans `1.005×`** — its single-ensemble threshold margins are `1.000–1.002×`,
+  noise, against `2.883×` for the residual proxy. ⇒ **rank-independence and
+  accuracy-sensitivity are mutually exclusive**, so the property §2m celebrated is
+  the one that disqualifies it. ⇒ **The two-signal conclusion v2.16 withdrew
+  RETURNS**, now on a held-out position rather than a confounded position
+  partition. ⛔ §2m's `[0.5069, 1.165)` interval does not survive: the held-out
+  arms read `0.9704–0.9756`, INSIDE it, carrying a `32×` error spread at one
+  value. ★★★ **Matched gap and matched lattice status, interpolating vs
+  extrapolating: at `r=20` extrapolation is BETTER (`0.84×`) and at `r=40` they are
+  indistinguishable (`1.05×`), diverging to `24×` only at top rank** — being inside
+  the hull does not make an answer better at a given rank, it makes it IMPROVABLE
+  by rank (interp falls `31.9×`, extrap `1.12×`), which sharpens §2l. ✅ Lattice
+  control: `+1.75a` falls inside the `+1.50a`/`+2.00a` bracket at all four ranks,
+  so the mesh confound against `+0.25a` is largely defused. ✅ `active_novelty`
+  reads `0.000` at the held-out point at every rank while the error runs
+  `1.2–37 %` — the pre-registered fail-open, confirmed.
+- **v2.16 (2026-08-25)** — **§2m REWRITTEN after a cold re-derivation; v2.15's
+  headline was an artifact.** v2.15 reported a trajectory MAXIMUM for a question
+  about a per-step check, and that single choice inverted three of its four
+  verdicts. Rebuilt the harness to keep every step, print both quantiles,
+  `active_novelty`'s denominator, the singular-value spectrum, and compute the
+  gate table itself. ⛔ **The gate table is the correction:** asking "is there ONE
+  threshold with `accept ⟺ relL2 ≤ τ`" — the question a gate is actually asked,
+  which v2.15 never asked — the error proxy decides at 7 of 9 tolerances on the
+  worst step while BOTH geometric candidates FAIL at `1e-2`. ⇒ **"the gate needs
+  TWO signals" is WITHDRAWN as a gating claim**; it is an argument about
+  DIAGNOSIS. ⛔ **`active_novelty`'s `∞` margin was a maximum-only artifact** —
+  median exactly `0.000` at `+1.50a` at all four ranks, over an active set of
+  10–18 vertices that SHRINKS out of domain (`21 → 4`), so the fraction rises
+  partly because contact is disappearing. ⛔ **`‖r_free‖/tol` is not free at R3**
+  (it is the element sweep ECSW removes) and its separation INVERTS per-step
+  (`0.737×`). ✅ **One candidate survives both passes:** `snapshot_distance`,
+  `2.30×` worst step and `1.94×` median. ⛔ **"a NORM over modes, never a MAX" was
+  provably wrong** (`‖d‖₂ ≥ ‖d‖∞`); the per-mode NORMALISER was the fault, and §7
+  had already recorded the wrong rule as rung 2's design. ⛔ Further corrections:
+  "four significant figures" is TWO (`0.138 %` spread); `28–109 %` is the `r=142`
+  column and the range is `14.8–119.6 %`; `≥1.17` is `1.165`; "byte-identical
+  output" holds for the measurement ROWS, not the files; pre-registration item 5
+  was marked HELD although its antecedent was falsified. ★ New caveats: **no
+  held-out position exists** so every margin is fitted; `+0.25a` is the ONLY
+  offset off the mesh lattice; the DOMAIN/ERROR taxonomy is not falsifiable on
+  this fixture. ⇒ §4c's gate is NOT ready to build; §10 risk 0 and §7's R3 row
+  restated from "discharged" to "narrowed".
+- **v2.15 (2026-08-25)** — §2m added: four oracle-free candidates scored on §2l's
+  matrix, `gap_dev` disqualified as oracle-dependent, §5's open item 3 refuted
+  (`q`-space does carry position information). ⚠ **Its headline findings and its
+  conclusion are superseded by v2.16** — see the table at the end of §2m. What
+  survives: the candidate set, the `gap_dev` retraction, and the §5 refutation.
 - **v2.14 (2026-08-24)** — **§2l, new: the basis does NOT generalise across
   contact POSITIONS.** One basis trained on five lateral indenter offsets
   (`±1a`), scored at four positions against each one's own oracle: in-sample
@@ -2790,7 +3400,8 @@ until then, and by nobody else ever. The recipe above is the durable record.
   nearer extrapolation keeps `1.5a` of clearance and fails alike). ★★★ Failure is
   **SILENT**: the bad arms converge, complete, and do not penetrate. ★★ `gap_dev`
   detects it anyway (`0.161–0.583 d̂` vs `3.1e-11`), which is not what it was
-  built for, and is a candidate online signal for §4c — ⚠ as an ERROR indicator
+  built for, and (⛔ WRONG, corrected in v2.15: `gap_dev` differences against the
+  ORACLE, so it can never gate) was called a candidate online signal for §4c — ⚠ as an ERROR indicator
   rather than an in-domain one, needing its own threshold, since at `r = 20` the
   in-sample arm also clears the regression figure. ⇒ **`ReducedValidityDomain`
   revived as a CORRECTNESS prerequisite** (v2.7's retraction of it as a

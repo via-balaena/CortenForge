@@ -64,10 +64,19 @@
 //!
 //! ## Knobs
 //!
-//! Swept: `r ∈ {10, 20, 40, 60}` × `InitialGuess ∈ {PreviousState, Inertial}`.
-//! Both are cheap because the single full-order oracle trajectory dominates the
-//! run. `Inertial` is in because it is the settled predictor AND because it
-//! changes iteration count, which is the deciding quantity above.
+//! Swept: [`R_LADDER`] = `r ∈ {2, 4, 10, 20, 40, 60}` × `InitialGuess ∈
+//! {PreviousState, Inertial}`. Both are cheap because the single full-order
+//! oracle trajectory dominates the run. `Inertial` is in because it is the
+//! settled predictor AND because it changes iteration count, which is the
+//! deciding quantity above.
+//!
+//! ⚠ **`2` and `4` are not padding** — see [`R_LADDER`]'s own docs: they are the
+//! two-sided half, there so the table SHOWS what a subspace that cannot hold the
+//! trajectory does to the contact equilibrium. An earlier version of this line
+//! listed only `{10, 20, 40, 60}` and dropped exactly the load-bearing two.
+//! ⚠ And `40` and `60` both truncate to the trajectory's full rank of `36`, so
+//! the ladder yields FIVE distinct bases, not six — which is why the table below
+//! has a `36 (full rank)` row and no `40` or `60` row.
 //!
 //! Held: Tet4, `a/cell = 2` (5 202 free DOF), frictionless, `gravity_z = 0`,
 //! `dt = 1/60`, in-sample basis (trained on the trajectory it is tested on).
@@ -94,10 +103,20 @@
 //! | 36 (full rank) | 6.44 / 3.55 | 2.77e-7 | 6.94e-14 d̂ |
 //!
 //! - ★ **The equilibrium gap converges in `r` far faster than the displacement
-//!   field does**, and increasingly so: the two are within `1.7×` of each other
-//!   at `r = 2`, but the gap is `~2 700×` better determined at `r = 10` and
-//!   `~54 000×` at `r = 20`. Once the subspace is adequate at all, the barrier
-//!   pins the contact state much harder than the field around it.
+//!   field does**, and increasingly so. Once the subspace is adequate at all, the
+//!   barrier pins the contact state much harder than the field around it.
+//!
+//!   ⛔ **The three ratios this bullet used to quote do NOT reproduce from the
+//!   table above it, and are withdrawn pending the run log.** It said `1.7×` at
+//!   `r = 2`, `~2 700×` at `r = 10` and `~54 000×` at `r = 20`; the published
+//!   cells give `2.37×`, `3.79e3×` and `7.62e4×`. Every published figure is
+//!   `0.71×` of the table's — systematic, so a transcription slip rather than
+//!   arithmetic, and most likely prose carried over from an earlier pilot when
+//!   the table was re-measured. ⚠ The 2026-08-24 log is not in reach, so the
+//!   derived values are stated as DERIVED FROM THE 3-s.f. TABLE and not as a
+//!   correction computed from it — re-run the producer check to settle them.
+//!   **The direction of the finding is unaffected**: the gap is better determined
+//!   than the field at every rank, and increasingly so with rank.
 //! - ★ **The mechanism prediction 3 named is real and measured — it just has no
 //!   consequence here.** At `r = 10` the reduced solve converges on
 //!   `‖Φᵀr‖ < 1e-10` while `‖r_free‖` is `1.49e-4`: the projection hides six
@@ -115,6 +134,48 @@
 //! with friction, or with a body load (recon §2f killed `InertialWithLoad` on
 //! contact-plus-load, and everything here runs `gravity_z = 0`). And it is not a
 //! timing run — `I` still has to be measured.
+//!
+//! ## The other studies in this file
+//!
+//! The producer check above is the first of SIX `#[ignore]`d studies, and each
+//! later one answers what its predecessor's caveat leaves open.
+//!
+//! ⚠ They do NOT all share one matrix. The producer check runs the same mesh
+//! (`A_OVER_CELL` is also `2.0`) over its own rank ladder [`R_LADDER`], in-sample
+//! only. The timing run has no rank ladder at all — a fixed [`TIMING_RANK`] over
+//! two mesh sizes ([`TIMING_A_OVER_CELL`] reaches `a/cell = 3`) and
+//! [`TIMING_STEPS`] steps.
+//!
+//! **The last FOUR share [`GEN_A_OVER_CELL`] and [`BASIS_RANKS`]
+//! deliberately**, so each is scored
+//! against the matrix the previous rung published rather than a lookalike re-run;
+//! §2n and §2o then vary the training ENSEMBLE on that matrix — and §2n adds one
+//! off-lattice TEST position — which is exactly what each is built to change.
+//!
+//! - [`reduced_contact_phase_shares`] (recon §2k) — step 2 of the contact arc:
+//!   `I` measured on the fixture R3's requirement is stated for.
+//! - [`reduced_basis_generalises`] (recon §2l) — does the basis hold up when the
+//!   contact patch MOVES? **No**, and rank does not fix it. Failure is SILENT in
+//!   **7 of the 8** extrapolation arms: they converge, complete all 71 steps, and
+//!   do not penetrate while `14.8 %`–`109 %` wrong. (The eighth, `+2.00a` at
+//!   `r=20`, stalls at step 65 — the only one the solver itself flags, and the
+//!   highest cell in the matrix at `119.6 %`.) That is what makes §4c's validity
+//!   gate a CORRECTNESS prerequisite.
+//! - [`an_online_signal_separates_out_of_domain`] (recon §2m) — given that, what
+//!   can a gate actually WATCH at runtime? Four oracle-free candidates scored on
+//!   the same matrix. `gap_dev`, the detector §2l found, needs the oracle and is
+//!   disqualified; one candidate survives a per-step test at `~2×`, on a FITTED
+//!   threshold — there is no held-out position in that matrix.
+//! - [`the_signal_margin_on_a_held_out_position`] (recon §2n) — supplies one, and
+//!   it disqualifies the survivor: across four ranks the error spans `31.9×`
+//!   while the signal spans `1.005×`. **Rank-independence and
+//!   accuracy-sensitivity are mutually exclusive.**
+//! - [`how_dense_the_training_ensemble_must_be`] (recon §2o) — "density" is TWO
+//!   factors, and the signals read the weaker one: ENSEMBLE SIZE beats GAP
+//!   `2.1–2.7×` at matched rank, and no online candidate can express size.
+//!
+//! ⚠ The always-on [`reduced_contact_does_not_tunnel_through_the_barrier`] is
+//! not one of the six — it is the CI half of the producer check, not a study.
 
 #![allow(
     clippy::panic,
@@ -139,7 +200,7 @@ use std::time::Instant;
 use sim_ml_chassis::Tensor;
 use sim_soft::profile::{self, Phase};
 use sim_soft::solver::backward_euler::reduced::{
-    Inner, PodBasis, ReducedNewtonSolver, SnapshotSet,
+    Inner, PodBasis, ReducedNewtonSolver, ReducedStep, SnapshotSet,
 };
 use sim_soft::{
     BoundaryConditions, HandBuiltTetMesh, InitialGuess, IpcRigidContact, IpcRigidContactSolver,
@@ -489,6 +550,7 @@ fn healthy_arm(label: &str) -> Arm {
         max_rel_err: 1.0e-7,
         last_full_r: 1.0e-11,
         gap_dev: 0.0,
+        signals: None,
         measured: Measured::default(),
         failure: None,
     }
@@ -586,6 +648,130 @@ fn rows_for(pairs: &[(&'static str, usize, f64)]) -> Vec<(&'static str, usize, A
             (l, r, a)
         })
         .collect()
+}
+
+/// Every arm that took a step must have PRODUCED both a signal and a usable
+/// error — and the full matrix must be present.
+///
+/// ★ Extracted from [`an_online_signal_separates_out_of_domain`] ONLY so these
+/// three guards can be exercised, exactly as [`faults_at`] is. All three are the
+/// shape this file keeps producing: **a quantity whose healthy reading is
+/// ZERO**, where "never measured" and "perfect" are the same number.
+///
+/// - an arm run without a [`Probe`] has no signal at all;
+/// - an arm that recorded nothing keeps an EMPTY [`SignalTrace`], which would
+///   summarise to nothing at all — and every domain signal's healthy reading is
+///   zero, so it must be refused rather than folded;
+/// - `max_rel_err` initialises to `0.0` and only updates for FINITE samples, so
+///   an arm with no usable error sample reads as an EXACT answer. A completed
+///   arm cannot be bit-identical to its oracle — full rank is `2.57e-6`.
+/// - and the whole loop skips arms that completed no steps, so without the count
+///   it goes VACUOUS when nothing completed.
+fn assert_every_arm_produced(rows: &[(&'static str, usize, Arm)], expected: usize) {
+    let mut checked = 0usize;
+    for (label, got, arm) in rows {
+        if arm.completed == 0 {
+            continue;
+        }
+        let s = arm
+            .signals
+            .as_ref()
+            .unwrap_or_else(|| panic!("{label} r={got} was run with NO probe attached"));
+        assert!(
+            s.is_recorded(),
+            "{label} r={got} completed {} steps and recorded NO signal — every \
+             domain signal's healthy value is zero, so an unrecorded arm would \
+             read as perfectly in domain",
+            arm.completed,
+        );
+        assert!(
+            arm.max_rel_err > 0.0,
+            "{label} r={got} completed {} steps with max_rel_err exactly 0.0 — \
+             that is 'no usable sample', not a perfect answer",
+            arm.completed,
+        );
+        checked += 1;
+    }
+    assert_eq!(
+        checked, expected,
+        "only {checked} of {expected} arms were signal-checked; the rest \
+         completed no steps, so the tables are not a full matrix",
+    );
+}
+
+/// ★ The three negative controls for it. Every one is a state no passing run of
+/// the instrument can reach — which is the whole reason they live here.
+#[cfg(test)]
+fn probed_rows(errs: &[f64]) -> Vec<(&'static str, usize, Arm)> {
+    errs.iter()
+        .enumerate()
+        .map(|(i, &err)| {
+            let mut a = healthy_arm("probed");
+            a.max_rel_err = err;
+            let mut t = SignalTrace::new();
+            t.record(
+                Signals {
+                    residual_excess: 1.0e6 + i as f64,
+                    envelope_excursion: 0.0,
+                    snapshot_distance: 0.25,
+                    active_novelty: 0.0,
+                },
+                7,
+            );
+            a.signals = Some(t);
+            ("probed", 40, a)
+        })
+        .collect()
+}
+
+#[test]
+fn assert_every_arm_produced_passes_a_full_matrix() {
+    assert_every_arm_produced(&probed_rows(&[1.0e-3, 2.0e-3]), 2);
+}
+
+#[test]
+#[should_panic(expected = "NO probe attached")]
+fn assert_every_arm_produced_refuses_an_unprobed_arm() {
+    let mut rows = probed_rows(&[1.0e-3]);
+    rows[0].2.signals = None;
+    assert_every_arm_produced(&rows, 1);
+}
+
+#[test]
+#[should_panic(expected = "recorded NO signal")]
+fn assert_every_arm_produced_refuses_an_arm_that_recorded_nothing() {
+    let mut rows = probed_rows(&[1.0e-3]);
+    rows[0].2.signals = Some(SignalTrace::new());
+    assert_every_arm_produced(&rows, 1);
+}
+
+#[test]
+#[should_panic(expected = "not a perfect answer")]
+fn assert_every_arm_produced_refuses_a_zero_error_arm() {
+    assert_every_arm_produced(&probed_rows(&[0.0]), 1);
+}
+
+/// ★ The OTHER side of the count, which a mutation round found unexercised:
+/// `checked > expected` is unreachable today (`checked` counts a subset of
+/// `rows`), so relaxing the equality to `<=` survived the whole suite. It stops
+/// being unreachable the moment someone pushes a row the expectation does not
+/// know about — which is precisely what the count exists to catch.
+#[test]
+#[should_panic(expected = "not a full matrix")]
+fn assert_every_arm_produced_refuses_more_arms_than_expected() {
+    assert_every_arm_produced(&probed_rows(&[1.0e-3, 2.0e-3]), 1);
+}
+
+#[test]
+#[should_panic(expected = "not a full matrix")]
+fn assert_every_arm_produced_refuses_a_vacuous_matrix() {
+    // ⚠⚠ THE dangerous one: every arm completed nothing, so the loop body never
+    // runs and every guard above passes having checked NOTHING.
+    let mut rows = probed_rows(&[1.0e-3, 2.0e-3]);
+    for r in &mut rows {
+        r.2.completed = 0;
+    }
+    assert_every_arm_produced(&rows, 2);
 }
 
 /// The remaining `top_row` guard. Cheap, and it closes the sweep: every
@@ -740,6 +926,11 @@ struct Arm {
     /// reaches the SAME equilibrium gap. A hyper-reduced assembly that got the
     /// internal forces slightly wrong would shift this while staying positive.
     gap_dev: f64,
+    /// Every step's ONLINE validity readings, `None` unless the arm was run with
+    /// a [`Probe`]. Absent by default because recording them costs a
+    /// `O(n_vertices)` band scan plus a `O(n_train · r)` nearest-snapshot search
+    /// per step, and neither may land in the timing arms.
+    signals: Option<SignalTrace>,
     /// The timed window, empty unless the arm was run with a `measure_from`.
     measured: Measured,
     failure: Option<String>,
@@ -754,7 +945,7 @@ impl Arm {
         };
         println!(
             "RC\t{:<18}\tsteps={:>3}/{n_steps}\titers/step={iters_per:>5.2}\t\
-             min_sd={:>16.9e}\t(band d̂={d_hat:.2e})\tmax_relL2={:>9.3e}\t‖r‖full={:>9.3e}\tgap_dev={:>9.3e} d̂\t{}",
+             min_sd={:>16.9e}\t(band d̂={d_hat:.2e})\tmax_relL2={:>9.3e}\t‖r‖full(LAST step)={:>9.3e}\tgap_dev={:>9.3e} d̂\t{}",
             self.label,
             self.completed,
             self.min_sd,
@@ -854,6 +1045,7 @@ fn run_oracle(scene: Scene, x_rest: &[f64], measure_from: MeasureFrom) -> Oracle
             max_rel_err: 0.0,
             last_full_r,
             gap_dev: 0.0,
+            signals: None,
             measured: m,
             failure,
         },
@@ -868,6 +1060,11 @@ struct Ctx<'a> {
     x_rest: &'a [f64],
     fd: &'a [usize],
     oracle: &'a Oracle,
+    /// What the training ensemble SAW, for the §4c signal study. `None` for
+    /// every arm that is not part of it — the recording is opt-in precisely so
+    /// the timing and phase-share arms pay nothing for it, the same shape as
+    /// [`NO_TIMING`].
+    probe: Option<&'a Probe<'a>>,
 }
 
 fn run_reduced(
@@ -878,7 +1075,13 @@ fn run_reduced(
     ctx: &Ctx<'_>,
     measure_from: MeasureFrom,
 ) -> Arm {
-    let Ctx { x_rest, fd, oracle } = *ctx;
+    let Ctx {
+        x_rest,
+        fd,
+        oracle,
+        probe,
+    } = *ctx;
+    let mut signals = probe.map(|_| SignalTrace::new());
     let mut solver = scene.solver(guess);
     let theta = Tensor::from_slice(&[], &[0]);
     let mut q = vec![0.0; basis.n_modes()];
@@ -902,7 +1105,12 @@ fn run_reduced(
                     m.record(ms, s.iter_count);
                 }
                 let x = reduced.expand_to_full(&s.q);
-                min_sd = min_sd.min(min_signed_distance(&x, scene.centre_at(k)));
+                let centre = scene.centre_at(k);
+                min_sd = min_sd.min(min_signed_distance(&x, centre));
+                if let (Some(p), Some(acc)) = (probe, signals.as_mut()) {
+                    let (reading, active) = p.read(&s, &x, centre);
+                    acc.record(reading, active);
+                }
                 if let Some(ox) = oracle.x.get(k) {
                     let e = rel_l2(&free_disp(&x, x_rest, fd), &free_disp(ox, x_rest, fd));
                     // Same trap as `min_signed_distance`: `f64::max(x, NaN)` is
@@ -936,6 +1144,7 @@ fn run_reduced(
         max_rel_err,
         last_full_r,
         gap_dev: (min_sd - oracle.arm.min_sd).abs() / scene.d_hat,
+        signals,
         measured: m,
         failure,
     }
@@ -1100,6 +1309,7 @@ fn ladder(scene: Scene, ranks: &[usize]) -> Ladder {
                     x_rest: &x_rest,
                     fd: &fd,
                     oracle: &oracle,
+                    probe: None,
                 },
                 NO_TIMING,
             );
@@ -1432,6 +1642,7 @@ fn timing_fixture(a_over_cell: f64) -> SizeRow {
                 x_rest: &x_rest,
                 fd: &fd,
                 oracle: &oracle,
+                probe: None,
             },
             measure_from,
         );
@@ -1612,9 +1823,15 @@ const GEN_A_OVER_CELL: f64 = 2.0;
 /// in-sample reads `1.1e-4` at `r=80` — so a run whose top rank came out lower
 /// would trip it spuriously. The ratio is scale-free and encodes the property
 /// that actually matters: the rig can score a basis it DID fit far better than
-/// one it did not. PILOTED at `730×` (`2.6e-6` vs `1.9e-3`) at `r=142` and `86×`
-/// at `r=80`, so `10×` keeps one to two orders of headroom and still fails long
-/// before the two rows become indistinguishable.
+/// one it did not. PILOTED at `734×` (`1.885e-3 / 2.569e-6`) at `r=142` and
+/// `84.5×` (`9.484e-3 / 1.122e-4`) at `r=80`, so `10×` keeps one to two orders of
+/// headroom and still fails long before the two rows become indistinguishable.
+///
+/// ⛔ **`86×` was published here and is `84.5×`** — corrected 2026-08-25. It was
+/// computed from §2l's already-ROUNDED table (`9.5e-3 / 1.1e-4` = `86.4`) rather
+/// than from the run. A second instance of the same defect §2l's own note
+/// records, in the docstring that note points at. ⇒ **take a figure from the
+/// highest-precision output the run produced, never from a printed table.**
 const MIN_IN_SAMPLE_ADVANTAGE: f64 = 10.0;
 
 /// ⚠ `+2.00a` leaves only `1a` of clearance to the plate's free edge, so its
@@ -1630,8 +1847,13 @@ const MIN_IN_SAMPLE_ADVANTAGE: f64 = 10.0;
 /// |---|---:|---:|---:|---:|
 /// | IN-SAMPLE `+0.00a` | 2.4e-2 | 4.7e-3 | 1.1e-4 | **2.6e-6** |
 /// | INTERP `+0.25a` | 3.2e-2 | 1.8e-2 | 9.5e-3 | **1.9e-3** |
-/// | EXTRAP `+1.50a` | 3.2e-1 | 1.5e-1 | 3.2e-1 | **2.8e-1** |
+/// | EXTRAP `+1.50a` | 3.1e-1 | 1.5e-1 | 3.2e-1 | **2.8e-1** |
 /// | EXTRAP `+2.00a` | DIVERGED | 7.6e-1 | 1.0e0 | **1.1e0** |
+///
+/// ⚠ **`+1.50a` at `r=20` was published as `3.2e-1` and is `3.1e-1`**, corrected
+/// 2026-08-25. The true value is `3.149e-1`; the discriminator below prints
+/// `{:.2e}` = `3.15e-1`, and the table was rounded a SECOND time from that. A
+/// figure derived from an already-rounded figure. The other 15 reproduce exactly.
 ///
 /// - ★★★ **The subspace is wrong for a translated patch, and RANK DOES NOT FIX
 ///   IT.** In-sample buys four orders across the ladder. Both extrapolations are
@@ -1644,20 +1866,31 @@ const MIN_IN_SAMPLE_ADVANTAGE: f64 = 10.0;
 ///   the same rank, and it improves only ~1.2 orders across a 7× rank increase
 ///   against in-sample's four. The reduction advantage dies long before the
 ///   accuracy does.
-/// - ★★★ **Out-of-domain is SILENT.** The `+1.50a` and `+2.00a` arms converge,
+/// - ★★★ **Out-of-domain is SILENT in 7 of the 8 arms.** Seven converge,
 ///   complete all 71 steps, and do not penetrate — `min_sd` stays positive and
-///   inside the band — while being `28 %` and `109 %` wrong. Convergence plus
-///   non-penetration is NOT a validity check.
+///   inside the band — while being `14.8 %`–`109 %` wrong. Convergence plus
+///   non-penetration is NOT a validity check. ⚠ The eighth (`+2.00a` at `r=20`)
+///   stalls at step 65 and IS announced, which is the honest bound on the
+///   finding: the failure mode is silent, not universally silent. `28 %` and
+///   `109 %` are the `r=142` column, not the range.
 /// - ★★ **`gap_dev` is**, and that was not what it was built for. Across all
 ///   eight failing arms it reads `0.161–0.583 d̂` against `3.1e-11` in-sample at
 ///   the same rank. ⚠ **But it is an ERROR indicator, not an in-domain one**: at
 ///   `r = 20` the IN-SAMPLE arm reads `1.6e-4`, over the threshold, because the
 ///   answer is genuinely poor there (`relL2 = 2.4e-2`). It conflates "outside
-///   the hull" with "basis too small" — arguably the right quantity for a §4c
-///   gate, since both are reasons to refuse an answer, but the gate needs its
-///   own threshold study and not the `2e-6` regression figure. Nor is it
-///   monotone in `relL2` within a regime, so it separates regimes by orders of
-///   magnitude and ranks nothing finer.
+///   the hull" with "basis too small". Nor is it monotone in `relL2` within a
+///   regime, so it separates regimes by orders of magnitude and ranks nothing
+///   finer.
+///
+///   ⛔ **AND IT CANNOT BE THE §4c GATE — an earlier version of this list said
+///   it arguably was.** `gap_dev` is `|min_sd − ORACLE min_sd|`
+///   (see its field on [`Arm`]), so it differences against the full-order
+///   answer: a runtime check that needs the solve it exists to avoid protects
+///   nothing. It stays here as a diagnostic and as the reference column the
+///   oracle-free candidates are measured against. The signals that CAN gate are
+///   in [`an_online_signal_separates_out_of_domain`], which also confirms the
+///   ERROR/in-domain conflation above in an oracle-free signal — which is why
+///   the gate needs a DOMAIN signal beside it, not a better error one.
 /// - ⇒ **This REVIVES `ReducedValidityDomain` (§4c) as a CORRECTNESS
 ///   prerequisite.** v2.7 retracted it as a performance prerequisite and that
 ///   retraction stands. But a reduced solver that returns a converged,
@@ -1753,6 +1986,7 @@ fn reduced_basis_generalises() {
                     x_rest: &x_rest,
                     fd: &fd,
                     oracle,
+                    probe: None,
                 },
                 NO_TIMING,
             );
@@ -1856,4 +2090,1934 @@ fn in_sample_advantage(
         fitted.max_rel_err,
     );
     held.max_rel_err / fitted.max_rel_err
+}
+
+// ── §4c rung 1: is there an ONLINE signal, and does it separate the two ways ──
+// ── a reduced answer can be wrong?                                           ──
+
+/// The candidate online validity signals, worst-over-steps, on one reduced arm.
+///
+/// ★★ **Every one is computable ONLINE.** No full-order oracle appears in any of
+/// them, and that is the whole point — it is exactly what `gap_dev` is not.
+/// [`Arm::gap_dev`] differences `min_sd` against the ORACLE's `min_sd`
+/// (`run_reduced`), so however well it detects the failure, it is a *diagnostic*
+/// and can never be a *gate*: a runtime check cannot run the full-order solve it
+/// exists to avoid.
+///
+/// ★ They are deliberately of two KINDS, because the thing §4c has to
+/// disentangle is that a reduced answer can be wrong for two unrelated reasons:
+///
+/// - an **ERROR** signal rises when the answer is poor, from any cause;
+/// - a **DOMAIN** signal rises when the scene is outside what the ensemble saw,
+///   whether or not the answer is poor.
+///
+/// `gap_dev` is an error signal, which is why §2l found it reading `1.6e-4` on
+/// the IN-SAMPLE arm at `r = 20` — in domain, and simply solved badly. A gate
+/// built on an error signal alone cannot say which of the two it caught, and
+/// the two have opposite remedies (more rank vs. more training).
+#[derive(Clone, Copy)]
+struct Signals {
+    /// `‖r_free‖ / tol` — the residual the Galerkin condition cannot see, in
+    /// units of the tolerance the solve declares itself converged at. **ERROR.**
+    ///
+    /// Free: `r_free` is already assembled at the convergence check and
+    /// [`ReducedStep::full_residual_norm`] already returns its norm. That
+    /// field's own docs state this study's question — "no useful bound on it is
+    /// known yet" — and `tol` is the natural unit, since `‖Φᵀr‖ < tol` is what
+    /// the solve stopped on, so the ratio reads as *how many tolerances of
+    /// residual the basis is blind to*. §2c measured `1.49e-4` against a `1e-10`
+    /// tol in-sample at `r = 10`, i.e. `1.5e6`, so the scale is large and the
+    /// column is read in orders of magnitude.
+    ///
+    /// ⚠ **It is NOT normalised by the load.** `‖r_free‖` is a force norm, so
+    /// the worst-over-steps reading is taken at the deepest pose, where the
+    /// barrier force is largest. That makes the column comparable ACROSS arms —
+    /// every one runs the same `z` ramp over the same `71` poses — and it does
+    /// NOT make a single cell comparable to anything outside this fixture. A
+    /// shippable threshold would have to divide by something; this pilot's job
+    /// is to say whether the quantity separates at all.
+    residual_excess: f64,
+    /// How far `q` lies outside the training envelope, in half-widths of that
+    /// envelope, worst over modes. Zero inside the box. **DOMAIN.**
+    ///
+    /// §4c's STATED signal — "a bound on reduced-coordinate magnitude `‖q‖`
+    /// relative to the training envelope". Recon §5 lists "the `‖q‖` gate does
+    /// not detect that the indenter moved somewhere the ensemble never saw"
+    /// under *honestly open research*: ARGUED, never measured. This measures it.
+    ///
+    /// ⚠ A per-mode box is the LOOSE hull — the bounding box of the training
+    /// coordinates, not their convex hull — so a translated patch can sit inside
+    /// it while being far from every training point. That looseness is not an
+    /// oversight; it is the predicted failure mode, and [`Signals::snapshot_distance`]
+    /// is the tight companion that says whether looseness is the cause.
+    envelope_excursion: f64,
+    /// Distance from `q` to the NEAREST training snapshot, in units of the
+    /// training cloud's own radius. **DOMAIN.**
+    ///
+    /// The tight hull, paired with `envelope_excursion` so that a box that fails
+    /// to separate can be told apart from a `q`-space that fails to separate. If
+    /// the box is flat across positions and this is not, the signal is real and
+    /// the box was merely the wrong statistic.
+    ///
+    /// ★ Normalised by the cloud RADIUS (RMS spread about the mean), not by the
+    /// nearest-neighbour pitch. On a ramp the nearest neighbour of any snapshot
+    /// is its own predecessor one time step earlier, so a pitch normaliser would
+    /// measure `dt` and not the offset spacing the ensemble was built on.
+    snapshot_distance: f64,
+    /// Fraction of contact-active vertices that were active in NO training
+    /// trajectory. **DOMAIN.**
+    ///
+    /// ★ The one candidate that barely involves the basis: it is a statement
+    /// about where the collider is, not about how well the subspace resolves it.
+    /// That gives it a falsifiable signature the others do not have — it should
+    /// be **FLAT IN RANK** and **STEPPED IN POSITION**. If it moves strongly
+    /// with rank it is contaminated by the solution and is not the
+    /// basis-independent domain check it claims to be.
+    active_novelty: f64,
+}
+
+impl Signals {
+    /// The four values, in table order, paired with their names for reporting.
+    const fn named(&self) -> [(&'static str, f64); 4] {
+        [
+            ("residual_excess", self.residual_excess),
+            ("envelope_excursion", self.envelope_excursion),
+            ("snapshot_distance", self.snapshot_distance),
+            ("active_novelty", self.active_novelty),
+        ]
+    }
+
+    /// ★ Checked on the way IN, not on the way out. Every summary below is a
+    /// fold, and a non-finite sample would either be swallowed by `min`/`max` or
+    /// poison a percentile — either way the arm would report the wrong step as
+    /// its worst case.
+    fn assert_finite(&self) {
+        for (name, v) in self.named() {
+            assert!(
+                v.is_finite(),
+                "{name} read {v} on a converged step — a non-finite sample cannot \
+                 be summarised, and a fold would hide it rather than surface it",
+            );
+        }
+    }
+}
+
+/// Every step's reading for one arm, kept WHOLE.
+///
+/// ⚠⚠ **This replaces a worst-over-steps accumulator, and the reason is the
+/// central limitation of the first pilot.** A max over the trajectory is an
+/// extreme-value statistic; a runtime gate reads ONE step. If a signal's max is
+/// a spike at the deepest pose, a per-step gate fires late or not at all; if it
+/// is a plateau, the trajectory statistic transfers. Nothing in a max-only table
+/// can tell those apart, so the summary is no longer the measurement — the
+/// distribution is, and the max is one quantile of it.
+struct SignalTrace {
+    steps: Vec<Signals>,
+    /// How many vertices were contact-active at each step — `active_novelty`'s
+    /// DENOMINATOR, without which the fraction cannot be read at all.
+    active_count: Vec<usize>,
+}
+
+impl SignalTrace {
+    const fn new() -> Self {
+        Self {
+            steps: Vec::new(),
+            active_count: Vec::new(),
+        }
+    }
+
+    fn record(&mut self, step: Signals, active: usize) {
+        step.assert_finite();
+        self.steps.push(step);
+        self.active_count.push(active);
+    }
+
+    /// An arm that recorded NOTHING has an EMPTY trace, which no summary can be
+    /// taken of. That is deliberate: every domain signal's healthy reading is
+    /// zero, so "never measured" must not be representable as a number.
+    const fn is_recorded(&self) -> bool {
+        !self.steps.is_empty()
+    }
+
+    /// `(min, median, max)` of one component over the steps recorded.
+    ///
+    /// ★ The median is the point of this whole structure. Reported beside the
+    /// max so a spike and a plateau are distinguishable, which is the difference
+    /// between a trajectory statistic and something a runtime gate could use.
+    fn spread(&self, pick: fn(&Signals) -> f64) -> (f64, f64, f64) {
+        assert!(
+            self.is_recorded(),
+            "spread over an EMPTY trace — there is no worst step, and returning \
+             zero would read as a perfectly in-domain arm",
+        );
+        let mut v: Vec<f64> = self.steps.iter().map(pick).collect();
+        v.sort_by(f64::total_cmp);
+        (v[0], v[v.len() / 2], v[v.len() - 1])
+    }
+
+    /// The active-set size range — `active_novelty`'s denominator.
+    fn active_range(&self) -> (usize, usize) {
+        assert!(self.is_recorded(), "active range over an EMPTY trace");
+        (
+            self.active_count.iter().copied().min().unwrap_or(0),
+            self.active_count.iter().copied().max().unwrap_or(0),
+        )
+    }
+}
+
+/// What the training ensemble SAW — the reference every online signal is scored
+/// against.
+///
+/// Built once per basis and shared by every arm at that rank, so two arms cannot
+/// be scored against different hulls, which is the same reason [`Ctx`] groups
+/// the oracle with the rest configuration.
+struct Probe<'a> {
+    /// Per-mode `[lo, hi]` of `q = ΦᵀMu` over every training snapshot.
+    envelope: Vec<(f64, f64)>,
+    /// Every training snapshot's reduced coordinates — the tight hull.
+    train_q: Vec<Vec<f64>>,
+    /// RMS spread of `train_q` about its mean; `snapshot_distance`'s unit.
+    cloud_radius: f64,
+    /// Every vertex contact-active at any step of any training trajectory.
+    train_active: &'a std::collections::BTreeSet<usize>,
+    /// The solve's convergence tolerance — `residual_excess`'s unit.
+    tol: f64,
+    /// The barrier band, which is what "contact-active" means.
+    d_hat: f64,
+}
+
+impl Probe<'_> {
+    /// One step's four readings.
+    fn read(&self, s: &ReducedStep, x: &[f64], centre: Vec3) -> (Signals, usize) {
+        let active = active_vertices(x, centre, self.d_hat);
+        let reading = Signals {
+            residual_excess: s.full_residual_norm / self.tol,
+            envelope_excursion: envelope_excursion(&s.q, &self.envelope),
+            snapshot_distance: nearest_training_distance(&s.q, &self.train_q) / self.cloud_radius,
+            active_novelty: active_novelty(&active, self.train_active),
+        };
+        (reading, active.len())
+    }
+}
+
+/// A mode with no variation across training supplies no scale of its own. Floor
+/// its half-width at this fraction of the WIDEST mode's, so an excursion there
+/// reads as enormous rather than as `inf` — which [`Signals::record`] would
+/// refuse, killing the whole run over one dead mode at the tail of the spectrum.
+const DEGENERATE_MODE_FLOOR: f64 = 1.0e-12;
+
+/// Per-mode `[min, max]` of the training snapshots' reduced coordinates.
+fn training_envelope(train_q: &[Vec<f64>]) -> Vec<(f64, f64)> {
+    assert!(
+        !train_q.is_empty(),
+        "an envelope over ZERO training snapshots would be empty, and \
+         `envelope_excursion` would then fold over nothing and return 0 — every \
+         arm perfectly in domain, having measured nothing",
+    );
+    let r = train_q[0].len();
+    (0..r)
+        .map(|i| {
+            train_q
+                .iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), t| {
+                    assert_eq!(t.len(), r, "training snapshots have inconsistent rank");
+                    // ⚠ `f64::min`/`max` SWALLOW NaN — the trap `min_signed_distance`
+                    // carries its own guard for. A non-finite training coordinate
+                    // would drop silently out of the envelope, NARROWING it, and
+                    // every excursion measured against it would then read high.
+                    assert!(
+                        t[i].is_finite(),
+                        "training coordinate {i} is {}, which the min/max fold \
+                         would have swallowed",
+                        t[i],
+                    );
+                    (lo.min(t[i]), hi.max(t[i]))
+                })
+        })
+        .collect()
+}
+
+/// How far `q` lies outside `envelope`, in half-widths, worst over modes.
+///
+/// Zero inside the box — which is the healthy reading, and the reason
+/// [`Signals::UNRECORDED`] starts at `NaN` rather than at zero.
+fn envelope_excursion(q: &[f64], envelope: &[(f64, f64)]) -> f64 {
+    assert_eq!(
+        q.len(),
+        envelope.len(),
+        "q has {} entries against an envelope of {} modes — the two were built \
+         from different bases and the comparison is meaningless",
+        q.len(),
+        envelope.len(),
+    );
+    let widest = envelope
+        .iter()
+        .map(|&(lo, hi)| (hi - lo) / 2.0)
+        .fold(0.0_f64, f64::max);
+    assert!(
+        widest > 0.0,
+        "every mode has a zero-width training envelope — the training set is a \
+         single point, or was projected onto the wrong basis",
+    );
+    let floor = DEGENERATE_MODE_FLOOR * widest;
+    // ⚠ The per-element `.max(0.0)` and the fold's `0.0` seed are MUTUALLY
+    // REDUNDANT, and that is measured, not assumed: deleting either one alone
+    // survives the whole suite, deleting BOTH is killed by
+    // `envelope_excursion_is_zero_inside_the_box`. Kept as a pair on purpose —
+    // the clamp says "inside the box contributes nothing" and the seed says "no
+    // modes, no excursion" — but a future edit must not read either as free.
+    q.iter()
+        .zip(envelope)
+        .map(|(&v, &(lo, hi))| (lo - v).max(v - hi).max(0.0) / ((hi - lo) / 2.0).max(floor))
+        .fold(0.0_f64, f64::max)
+}
+
+/// Distance from `q` to the nearest training snapshot, in `q`-space.
+///
+/// ★ Plain Euclidean, and that is not an approximation: the basis is fitted
+/// under [`Inner::Mass`], so `ΦᵀMΦ = I` and the Euclidean distance between two
+/// coordinate vectors IS the mass-norm distance between the displacements they
+/// reconstruct. Any other metric here would be measuring something the solve
+/// does not use.
+fn nearest_training_distance(q: &[f64], train_q: &[Vec<f64>]) -> f64 {
+    assert!(
+        !train_q.is_empty(),
+        "no training snapshots, so the nearest one is `inf` and the arm reads \
+         maximally out of domain for a reason that is about the rig",
+    );
+    train_q
+        .iter()
+        .map(|t| {
+            assert_eq!(
+                t.len(),
+                q.len(),
+                "training snapshot has a different rank than q"
+            );
+            q.iter()
+                .zip(t)
+                .map(|(a, b)| (a - b) * (a - b))
+                .sum::<f64>()
+                .sqrt()
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// RMS spread of the training coordinates about their mean — the cloud's radius.
+fn cloud_radius(train_q: &[Vec<f64>]) -> f64 {
+    assert!(
+        !train_q.is_empty(),
+        "no training snapshots to take a radius of"
+    );
+    let r = train_q[0].len();
+    let n = train_q.len() as f64;
+    let mut mean = vec![0.0; r];
+    for t in train_q {
+        assert_eq!(t.len(), r, "training snapshots have inconsistent rank");
+        for (m, v) in mean.iter_mut().zip(t) {
+            *m += v / n;
+        }
+    }
+    let sq: f64 = train_q
+        .iter()
+        .map(|t| {
+            t.iter()
+                .zip(&mean)
+                .map(|(a, m)| (a - m) * (a - m))
+                .sum::<f64>()
+        })
+        .sum();
+    (sq / n).sqrt()
+}
+
+/// Vertices within the barrier band `d̂` of the collider — what "contact-active"
+/// means to IPC, and computed from the sphere's geometry HERE for the same
+/// reason [`min_signed_distance`] is: a set read out of the contact model would
+/// share a failure mode with the thing being checked.
+fn active_vertices(x: &[f64], centre: Vec3, d_hat: f64) -> std::collections::BTreeSet<usize> {
+    x.chunks_exact(3)
+        .enumerate()
+        .filter(|(_, c)| (Vec3::new(c[0], c[1], c[2]) - centre).norm() - RADIUS < d_hat)
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Fraction of `active` that appears in no training trajectory.
+///
+/// ⚠ An EMPTY active set reads `0.0` — nothing is touching, so nothing is novel.
+/// That is right for a max-fold over a ramp whose first steps have the sphere a
+/// full `1.2 d̂` clear of the surface, and it means the column is driven by the
+/// deep steps, which is where the question lives.
+fn active_novelty(
+    active: &std::collections::BTreeSet<usize>,
+    seen: &std::collections::BTreeSet<usize>,
+) -> f64 {
+    if active.is_empty() {
+        return 0.0;
+    }
+    active.iter().filter(|v| !seen.contains(v)).count() as f64 / active.len() as f64
+}
+
+// ── the signal helpers' two-sided controls ────────────────────────────────
+//
+// ★ Every one of these is a fold or a set operation whose HEALTHY reading is
+// `0.0`, on a study whose whole question is whether a non-zero reading means
+// anything. A helper that silently returns zero is therefore indistinguishable
+// from a helper that works, on every arm that passes — so the "it can read
+// non-zero" half is exercised here rather than left to a measurement run that
+// may never produce one.
+
+#[test]
+fn envelope_excursion_is_zero_inside_the_box() {
+    let env = [(-1.0, 1.0), (0.0, 4.0)];
+    assert!(envelope_excursion(&[0.0, 2.0], &env).abs() < f64::EPSILON);
+    // The boundary belongs to the box.
+    assert!(envelope_excursion(&[1.0, 0.0], &env).abs() < f64::EPSILON);
+}
+
+#[test]
+fn envelope_excursion_counts_half_widths_and_is_two_sided() {
+    // Half-width 1 on mode 0: two half-widths past either end reads 2.
+    let env = [(-1.0, 1.0), (0.0, 4.0)];
+    assert!((envelope_excursion(&[3.0, 2.0], &env) - 2.0).abs() < 1e-12);
+    assert!((envelope_excursion(&[-3.0, 2.0], &env) - 2.0).abs() < 1e-12);
+    // Worst over modes, not the first: mode 1's half-width is 2, so `10.0` is
+    // three half-widths out and must beat mode 0's zero.
+    assert!((envelope_excursion(&[0.0, 10.0], &env) - 3.0).abs() < 1e-12);
+}
+
+#[test]
+fn envelope_excursion_floors_a_dead_mode_instead_of_returning_inf() {
+    // A mode that never moved in training has no scale of its own. Dividing by
+    // its true zero width gives `inf`, which `Signals::record` refuses — one
+    // dead mode at the tail of the spectrum would then kill the whole run.
+    let got = envelope_excursion(&[1.0e-6, 0.0], &[(0.0, 0.0), (-1.0, 1.0)]);
+    assert!(
+        got.is_finite(),
+        "a dead mode produced {got}, not a finite reading"
+    );
+    assert!(
+        got > 1.0e5,
+        "the dead mode must still read as a large excursion, got {got}"
+    );
+}
+
+#[test]
+#[should_panic(expected = "different bases")]
+fn envelope_excursion_refuses_a_rank_mismatch() {
+    let _ = envelope_excursion(&[0.0, 0.0, 0.0], &[(-1.0, 1.0)]);
+}
+
+#[test]
+#[should_panic(expected = "single point")]
+fn envelope_excursion_refuses_an_all_zero_width_envelope() {
+    let _ = envelope_excursion(&[1.0], &[(0.0, 0.0)]);
+}
+
+#[test]
+#[should_panic(expected = "ZERO training snapshots")]
+fn training_envelope_refuses_an_empty_training_set() {
+    let _ = training_envelope(&[]);
+}
+
+/// ★ Added because a MUTATION round killed nothing when this guard was deleted.
+/// It was written in review round 1, shipped, and then survived its own mutant —
+/// a guard with no negative control is not a guard, however right it looks.
+#[test]
+#[should_panic(expected = "min/max fold")]
+fn training_envelope_refuses_a_non_finite_coordinate() {
+    let _ = training_envelope(&[vec![1.0, f64::NAN], vec![2.0, 3.0]]);
+}
+
+#[test]
+fn training_envelope_brackets_every_snapshot() {
+    let train = vec![vec![1.0, -3.0], vec![-2.0, 0.0], vec![0.5, 5.0]];
+    let env = training_envelope(&train);
+    assert_eq!(env, vec![(-2.0, 1.0), (-3.0, 5.0)]);
+    // The defining property, checked through the consumer: a training point is
+    // in its own envelope by construction, and if it is not the two disagree.
+    for t in &train {
+        assert!(envelope_excursion(t, &env).abs() < f64::EPSILON);
+    }
+}
+
+#[test]
+fn nearest_training_distance_takes_the_nearest_not_the_first() {
+    let train = vec![vec![10.0, 0.0], vec![0.0, 1.0], vec![-10.0, 0.0]];
+    assert!((nearest_training_distance(&[0.0, 0.0], &train) - 1.0).abs() < 1e-12);
+    assert!(nearest_training_distance(&train[0], &train).abs() < f64::EPSILON);
+}
+
+#[test]
+#[should_panic(expected = "no training snapshots")]
+fn nearest_training_distance_refuses_an_empty_training_set() {
+    let _ = nearest_training_distance(&[0.0], &[]);
+}
+
+#[test]
+fn cloud_radius_is_the_rms_spread_about_the_mean() {
+    // Mean `(1, 0)`, each point one unit away ⇒ radius exactly 1.
+    assert!((cloud_radius(&[vec![0.0, 0.0], vec![2.0, 0.0]]) - 1.0).abs() < 1e-12);
+    // A single point has no spread — which is a real reading, not an error, and
+    // the caller is what must refuse to divide by it.
+    assert!(cloud_radius(&[vec![3.0, 4.0]]).abs() < f64::EPSILON);
+}
+
+#[test]
+fn active_vertices_takes_the_barrier_band_and_not_the_surface() {
+    let d_hat = 1.0e-5;
+    let centre = Vec3::new(0.0, 0.0, 0.0);
+    // Three vertices along +x: inside the sphere, inside the band, outside it.
+    let x = vec![
+        RADIUS * 0.5,
+        0.0,
+        0.0,
+        RADIUS + 0.5 * d_hat,
+        0.0,
+        0.0,
+        RADIUS + 1.5 * d_hat,
+        0.0,
+        0.0,
+    ];
+    let got = active_vertices(&x, centre, d_hat);
+    assert_eq!(got, [0usize, 1].into_iter().collect(), "got {got:?}");
+}
+
+#[test]
+fn active_novelty_is_two_sided() {
+    let seen: std::collections::BTreeSet<usize> = [1usize, 2, 3].into_iter().collect();
+    let subset: std::collections::BTreeSet<usize> = [2usize, 3].into_iter().collect();
+    let disjoint: std::collections::BTreeSet<usize> = [7usize, 8].into_iter().collect();
+    let half: std::collections::BTreeSet<usize> = [3usize, 9].into_iter().collect();
+    assert!(active_novelty(&subset, &seen).abs() < f64::EPSILON);
+    assert!((active_novelty(&disjoint, &seen) - 1.0).abs() < f64::EPSILON);
+    assert!((active_novelty(&half, &seen) - 0.5).abs() < f64::EPSILON);
+    // Nothing touching ⇒ nothing novel, and it must not be `NaN` — a `0/0` here
+    // would be swallowed by the max-fold in `Signals::record`.
+    assert!(active_novelty(&std::collections::BTreeSet::new(), &seen).abs() < f64::EPSILON);
+}
+
+#[cfg(test)]
+const fn step(
+    residual_excess: f64,
+    envelope_excursion: f64,
+    snapshot_distance: f64,
+    active_novelty: f64,
+) -> Signals {
+    Signals {
+        residual_excess,
+        envelope_excursion,
+        snapshot_distance,
+        active_novelty,
+    }
+}
+
+#[test]
+fn an_unrecorded_arm_does_not_read_as_in_domain() {
+    // ★★ THE control for this whole instrument. Every domain signal's healthy
+    // reading is `0.0`, so an accumulator initialised to zero and never fed
+    // would report a perfectly in-domain arm. An empty trace must be
+    // distinguishable from a clean one, and must not be summarisable at all.
+    let empty = SignalTrace::new();
+    assert!(!empty.is_recorded());
+    let mut t = SignalTrace::new();
+    t.record(step(1.0e6, 0.0, 0.25, 0.0), 7);
+    assert!(t.is_recorded());
+}
+
+#[test]
+#[should_panic(expected = "EMPTY trace")]
+fn an_empty_trace_refuses_to_be_summarised() {
+    // ⚠ The dangerous alternative is a summary that returns `0.0` — which on a
+    // domain signal reads as PERFECTLY IN DOMAIN.
+    let _ = SignalTrace::new().spread(|s| s.snapshot_distance);
+}
+
+#[test]
+fn the_trace_reports_a_spread_and_not_just_its_worst_step() {
+    // ★ The whole reason the trace replaced a max-only accumulator: a SPIKE and
+    // a PLATEAU have the same max and completely different meanings for a check
+    // that reads one step.
+    let mut spike = SignalTrace::new();
+    let mut plateau = SignalTrace::new();
+    for i in 0..5 {
+        spike.record(step(1.0, 0.0, if i == 4 { 10.0 } else { 0.1 }, 0.0), 7);
+        plateau.record(step(1.0, 0.0, f64::from(i).mul_add(-0.01, 10.0), 0.0), 7);
+    }
+    let (s_min, s_med, s_max) = spike.spread(|s| s.snapshot_distance);
+    let (p_min, p_med, p_max) = plateau.spread(|s| s.snapshot_distance);
+    assert!(
+        (s_max - 10.0).abs() < 1e-12 && (p_max - 10.0).abs() < 1e-12,
+        "same max"
+    );
+    assert!(
+        (s_med - 0.1).abs() < 1e-12,
+        "spike median is the floor, got {s_med}"
+    );
+    assert!(p_med > 9.9, "plateau median is near the max, got {p_med}");
+    assert!((s_min - 0.1).abs() < 1e-12 && p_min > 9.9);
+}
+
+#[test]
+fn the_trace_reports_the_active_set_size() {
+    // `active_novelty` is a FRACTION; without its denominator a reading of
+    // `1.000` cannot be told from `1/1`.
+    let mut t = SignalTrace::new();
+    t.record(step(1.0, 0.0, 0.0, 0.0), 4);
+    t.record(step(1.0, 0.0, 0.0, 1.0), 19);
+    assert_eq!(t.active_range(), (4, 19));
+}
+
+#[test]
+#[should_panic(expected = "cannot be summarised")]
+fn a_trace_refuses_a_non_finite_sample() {
+    SignalTrace::new().record(step(f64::NAN, 0.0, 0.0, 0.0), 7);
+}
+
+/// **Can ONE threshold on this signal implement `accept ⟺ max_rel_err ≤ τ`?**
+///
+/// ★★★ **The question a gate is actually asked — and the first version of this
+/// pilot did not ask it.** It asked whether a signal separates the TRAINING SPAN
+/// from outside it. That is a different partition, and it flatters any signal
+/// that merely tracks the indenter's position, because on this fixture position
+/// and error happen to be monotone together. A gate does not refuse an answer for
+/// being far from home; it refuses one for being too WRONG.
+///
+/// So: sweep τ, and for each signal ask whether the accept side's worst reading
+/// is below the refuse side's best. A `FAIL` means no single threshold exists at
+/// that τ — the classes overlap or invert.
+///
+/// ⚠ Every margin printed here is FITTED, not validated: the threshold interval
+/// is derived from the same 16 cells it is scored on, and there is no held-out
+/// position anywhere in this matrix.
+fn print_gate_table(rows: &[(&'static str, usize, Arm)], taus: &[f64], q: Quantile) {
+    let cells: Vec<(f64, &Arm)> = rows
+        .iter()
+        .filter(|(_, _, a)| a.max_rel_err > 0.0)
+        .map(|(_, _, a)| (a.max_rel_err, a))
+        .collect();
+    assert!(
+        cells.len() == rows.len(),
+        "{} of {} arms have no usable error and cannot be placed on either side \
+         of an accuracy threshold",
+        rows.len() - cells.len(),
+        rows.len(),
+    );
+    let picks: [(&str, fn(&Signals) -> f64); 4] = [
+        ("S1", |s| s.residual_excess),
+        ("S2", |s| s.envelope_excursion),
+        ("S3", |s| s.snapshot_distance),
+        ("S4", |s| s.active_novelty),
+    ];
+    println!(
+        "\nRC\t╔═ GATE TEST ({}) — does ONE threshold give `accept ⟺ max_rel_err ≤ τ` ?",
+        match q {
+            Quantile::Max => "worst step — the decision a fire-if-ever gate reaches",
+            Quantile::Median => "median step — how much of the trajectory SUPPORTS that decision",
+        }
+    );
+    let mut head = format!("RC\t║ {:>9}", "τ");
+    for (n, _) in &picks {
+        let padded = format!("{n:>20}");
+        head.push_str(&padded);
+    }
+    println!("{head}");
+    for &tau in taus {
+        let mut line = format!("RC\t║ {tau:>9.0e}");
+        for (_, pick) in picks {
+            let side = |keep: bool| -> Vec<f64> {
+                cells
+                    .iter()
+                    .filter(|(e, _)| (*e <= tau) == keep)
+                    .filter_map(|(_, a)| signal(a, pick, q))
+                    .collect()
+            };
+            let (acc, refu) = (side(true), side(false));
+            let cell = if acc.is_empty() || refu.is_empty() {
+                "(one side empty)".to_owned()
+            } else {
+                let hi = acc.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                let lo = refu.iter().copied().fold(f64::INFINITY, f64::min);
+                if hi >= lo {
+                    "FAIL".to_owned()
+                } else if hi > 0.0 {
+                    format!("OK {:.2}x", lo / hi)
+                } else {
+                    "OK inf".to_owned()
+                }
+            };
+            let padded = format!("{cell:>20}");
+            line.push_str(&padded);
+        }
+        println!("{line}");
+    }
+    println!(
+        "RC\t║ A signal that FAILs at some τ cannot gate on accuracy there, however \
+         well\nRC\t║ it separates positions. ⚠ FITTED margins — no held-out position exists.\nRC\t╚═"
+    );
+}
+
+/// One quantity's matrix: positions down, rank across. The LAYOUT is the
+/// argument — an error signal and a domain signal are told apart by their SHAPE,
+/// not by any single cell, and only a table shows shape.
+///
+/// `pick` returns `None` for a cell that was never measured. That is NOT
+/// printed as a zero: every domain signal's healthy reading IS zero, so a blank
+/// rendered as `0.0` would be a missing measurement disguised as a clean bill of
+/// health — the same trap [`Signals::UNRECORDED`] exists for.
+fn print_matrix(
+    title: &str,
+    note: &str,
+    rows: &[(&'static str, usize, Arm)],
+    pick: impl Fn(&Arm) -> Option<f64>,
+) {
+    println!("\nRC\t╔═ {title}");
+    for (label, _) in TEST_OFFSETS {
+        let mut line = format!("RC\t║ {label:<18}");
+        for (l, got, arm) in rows {
+            if *l != label {
+                continue;
+            }
+            // Bound rather than pushed inline: `push_str(&format!(..))` is a
+            // clippy `format_push_string`, and this file's other table builder
+            // binds for the same reason.
+            let cell = pick(arm).map_or_else(
+                || format!(" r{got:<4}{:>10}", "—"),
+                |v| format!(" r{got:<4}{v:>10.3e}"),
+            );
+            line.push_str(&cell);
+        }
+        println!("{line}");
+    }
+    println!("RC\t║ {note}\nRC\t╚═");
+}
+
+/// Which quantile of a signal's per-step distribution a table is reporting.
+///
+/// ★ The pilot's first version reported only [`Quantile::Max`], and that is an
+/// extreme-value statistic where the conclusion is about a check that reads ONE
+/// step. Reporting the median beside it is what makes a spike distinguishable
+/// from a plateau.
+#[derive(Clone, Copy)]
+enum Quantile {
+    Median,
+    Max,
+}
+
+/// One signal off an arm at one quantile, or `None` if the arm recorded nothing.
+fn signal(arm: &Arm, pick: fn(&Signals) -> f64, q: Quantile) -> Option<f64> {
+    let t = arm.signals.as_ref().filter(|s| s.is_recorded())?;
+    let (_, med, max) = t.spread(pick);
+    Some(match q {
+        Quantile::Median => med,
+        Quantile::Max => max,
+    })
+}
+
+/// **§4c rung 1 — is there an ONLINE signal, and does it separate the two ways
+/// a reduced answer can be wrong?**
+///
+/// ```text
+/// cargo test --release -p sim-soft --test reduced_contact \
+///   an_online_signal_separates_out_of_domain -- --ignored --nocapture
+/// ```
+///
+/// ## Why this is the next thing after [`reduced_basis_generalises`]
+///
+/// §2l established that a reduced solve outside its training hull **fails
+/// silently**: 7 of its 8 extrapolation arms converge, complete all `71` steps,
+/// and do not penetrate, while being `14.8 %`–`109 %` wrong. Convergence plus
+/// non-penetration is not a validity check, so `ReducedValidityDomain` (§4c) is
+/// a CORRECTNESS prerequisite and not a nicety.
+///
+/// The one quantity measured to catch it was `gap_dev` — and `gap_dev` is
+/// `|min_sd − ORACLE min_sd|`. **It cannot be a gate.** A runtime check that
+/// needs the full-order answer has nothing left to protect. So the detector we
+/// have does not exist online, and §4c's *stated* online signal (`‖q‖` against
+/// the training envelope) is listed in recon §5 under honestly-open research as
+/// not detecting a moved contact patch — argued, never measured.
+///
+/// This measures four candidates on the matrix where the ground truth is already
+/// known, and none of them may look at an oracle. It sets no thresholds: those
+/// are learned, and this is the pilot they get learned from.
+///
+/// ## The matrix — shared with [`reduced_basis_generalises`], deliberately
+///
+/// The same [`TRAIN_OFFSETS`], [`TEST_OFFSETS`], [`BASIS_RANKS`] and
+/// [`GEN_A_OVER_CELL`], so the ground truth this is scored against is the one
+/// §2l published rather than a lookalike re-run. The trajectories are re-run
+/// (both tests are `#[ignore]`, so nothing pays for it twice in CI) but the
+/// constants are shared, which is where a drift would actually invalidate the
+/// comparison.
+///
+/// ## Pre-registration (before the first run)
+///
+/// 1. **`residual_excess` separates BUT CONFLATES.** It should rise
+///    out-of-domain and it should *also* be large on the IN-SAMPLE arm at
+///    `r = 20`, which is in domain and merely solved badly (`relL2 = 2.4e-2`) —
+///    the same defect §2l found in `gap_dev`, for the same reason. Signature:
+///    **falls with rank in-sample, flat with rank out-of-domain.** If so it
+///    cannot be the gate alone.
+/// 2. **`envelope_excursion` does NOT separate** — the recon's argument is that
+///    a translated patch excites mode amplitudes the ensemble already covers, so
+///    the box contains it while the answer is `109 %` wrong. Predicted `0.0` or
+///    near it at `+1.50a` and `+2.00a`. ★ If it DOES separate, recon §5's open
+///    item 3 is answered in the cheap direction and rung 2 is nearly free.
+/// 3. **`snapshot_distance` separates where the box does not** — same coordinates,
+///    tight hull instead of loose. It is here so that a flat `envelope_excursion`
+///    can be attributed to the *statistic* rather than to `q`-space itself; if
+///    both are flat, `q` genuinely carries no domain information and only the
+///    geometric signal is left.
+/// 4. **`active_novelty` separates and does NOT conflate.** ★ Its falsifiable
+///    signature is structural: **FLAT IN RANK, STEPPED IN POSITION**, because it
+///    is a statement about where the collider is and barely involves the basis.
+///    If it moves strongly with rank, it is contaminated by the solution and is
+///    not the basis-independent check it claims to be. Predicted `0.0` at
+///    `+0.00a` AND at `+0.25a`, rising at `+1.50a`, higher at `+2.00a`.
+/// 5. ★★ **The consequence, if 1 and 4 both hold: the gate needs TWO signals.**
+///    A domain signal says whether the scene is in the hull; an error signal says
+///    whether it is being solved well. `gap_dev` conflates them because it is
+///    sensitive to both. They have opposite remedies — more training vs. more
+///    rank — so a gate that cannot say which it caught cannot say what to do.
+/// 6. **Genuinely uncertain, and it is the product question:** which side
+///    `+0.25a` lands on. It is `1.9e-3` — three orders worse than in-sample and
+///    arguably still usable. A gate that refuses interpolation is useless; one
+///    that accepts it owes an account of the three orders. No prediction.
+///
+/// ## Measured — 2026-08-25, `a/cell = 2` (5 202 free DOF, 2 023 vertices)
+///
+/// ⚠⚠ **This section was rewritten after a cold re-derivation. The first version
+/// reported a trajectory MAXIMUM for a question about a per-step check, and that
+/// single choice inverted three of its four verdicts.** What follows is measured
+/// on an instrument that keeps every step. The superseded claims are named at the
+/// bottom, because a reader who saw them needs to know which ones moved.
+///
+/// Ground truth reproduces §2l at 15 of 16 cells and corrects the sixteenth (see
+/// [`reduced_basis_generalises`]). Training set `355` snapshots, `41` of `2 023`
+/// vertices ever contact-active. Wiring control: `0.000` novel against its own
+/// union, `0.476` against the `-1.00a` union alone.
+///
+/// ### The question a gate is actually asked
+///
+/// **Not** "does this signal separate the training span from outside it" — that
+/// is a partition over POSITION, and on this fixture position and error are
+/// monotone together, so it flatters anything tracking the indenter. A gate
+/// refuses an answer for being too WRONG. So: is there ONE threshold `θ` with
+/// `accept ⟺ max_rel_err ≤ τ`? Swept over `τ`, printed by the harness:
+///
+/// | | `τ=1e-1` | `5e-2` | `3e-2` | `2e-2` | `1e-2` | `5e-3` | `3e-3` | `2e-3` | `1e-3` |
+/// |---|---|---|---|---|---|---|---|---|---|
+/// | **S1** worst step | 6.80× | 6.80× | 2.37× | 1.37× | 2.71× | 2.69× | FAIL | FAIL | 98.8× |
+/// | **S1** median step | FAIL | FAIL | 1.35× | FAIL | 1.13× | 5.04× | FAIL | FAIL | 85.2× |
+/// | **S2** either | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL |
+/// | **S3** worst step | 2.30× | 2.30× | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL | 151× |
+/// | **S3** median step | 1.94× | 1.94× | 1.00× | FAIL | FAIL | FAIL | FAIL | FAIL | 56.4× |
+/// | **S4** worst step | **∞** | **∞** | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL |
+/// | **S4** median step | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL |
+///
+/// ★ **Read the two rows per signal as a pair.** A gate that fires when ANY step
+/// crosses `θ` reaches its verdict on the **worst step**, so that row is the
+/// accept/refuse decision. The **median** row says how much of the trajectory is
+/// behind it: separation on both is a plateau; separation only at the max rests
+/// on a minority of steps and is one quiet step from silence.
+///
+/// ### The four verdicts
+///
+/// - ⛔ **S2 is dead.** It fails at every `τ` on both rows. §5's open item 3 was
+///   still wrong to say `q`-space carries no position information — S2 separates
+///   POSITIONS strongly at every fixed rank — but the per-mode box cannot convert
+///   that into an accuracy rule at any tolerance.
+/// - ⛔ **S4's `∞` margin is an ARTIFACT of the maximum.** At `+1.50a` its median
+///   is **exactly `0.000` at all four ranks** while the answer is `14.8 %–31.8 %`
+///   wrong; the max of `0.111–0.286` comes from a minority of steps. And the
+///   denominator, now printed rather than inferred, is **10–18 active vertices at
+///   `+1.50a` and 4–12 at `+2.00a`** against 21 in-sample. ⇒ the whole signal is
+///   one or two vertices on a few steps. ★ Worse, it is confounded: the active
+///   set SHRINKS out of domain (`21 → 4`), so the fraction rises partly because
+///   the contact patch is disappearing, not only because it is novel.
+/// - ⚠ **S1 gates on accuracy at 7 of 9 tolerances on the worst step — and its
+///   separation does not survive per-step.** At the median, `+0.25a` at `r=20`
+///   reads `7.923e7` against `+1.50a` at `r=142`'s `5.838e7`: **inverted, 0.737×**.
+///   It is also **not free at R3**: `‖r_free‖` exists here only because R1.1
+///   sweeps every element, which is exactly what ECSW removes.
+/// - ✅ **S3 is the only candidate that survives both rows.** `2.30×` on the worst
+///   step, `1.94×` on the median — a plateau. Its interpolation row reads
+///   `5.062e-1 / 5.063e-1 / 5.063e-1 / 5.069e-1`, a spread of **`0.138 %`**
+///   across a `7.1×` rank change.
+///
+/// ★★ **The flatness has its own two-sided control, in the same column.** It
+/// would prove nothing if the statistic were trivially rank-invariant. It is not:
+/// the IN-SAMPLE row of the same quantity falls **`5 168×`** (`3.59e-3 → 6.94e-7`)
+/// over the same range — as it must, since in-sample the reduced solution
+/// converges onto trajectories that ARE training points.
+///
+/// ### Why S3 and not S2 — and it is NOT max-versus-norm
+///
+/// Both read the same coordinates. S2 normalises **per mode** and S3 by **one
+/// global scale** (the training cloud's radius). A per-mode divisor is set by the
+/// thinnest retained axis, which is always the newest tail mode, so S2's
+/// IN-SAMPLE row climbs `104×` with rank on the one row that is in-domain by
+/// definition. ⇒ **use ONE GLOBAL normaliser, not a per-mode one.**
+///
+/// ⛔ An earlier version of this section drew the rule as "take a NORM over modes,
+/// never a MAX", and that is **provably wrong**: `‖d‖₂ ≥ ‖d‖∞` pointwise, so a
+/// norm over the SAME per-mode-normalised deviations is at least as rank-sensitive
+/// as the max — measured at `2.06× → 3.48×` over `r = 20 → 142` on random
+/// deviations. The operation was never the problem; the normaliser was. §7 had
+/// already recorded the wrong rule as rung 2's design.
+///
+/// ### The spectrum, which settles what `r=160 → 142` means
+///
+/// `142` modes of `355` snapshots, `σ_last/σ_0 = 1.012e-8` — so the truncation is
+/// `SIGMA_FLOOR_REL`, not anything structural. But **retained energy is
+/// `1.000000000`**: the top rung already extracts everything this ensemble
+/// contains energetically while spanning 142 of 355 directions. ⇒ "flat in rank
+/// out of domain" is not a truncation statement. Asking for more modes cannot
+/// help, because there is no more energy to get — only different snapshots can.
+///
+/// ### Pre-registration, scored honestly
+///
+/// 1. **HELD** on the worst step (S1 falls `5.8` orders in-sample, `0.77`/`0.58`
+///    out of domain) — and its per-step separation inverts, which was not asked.
+/// 2. ⛔ **FALSIFIED.** S2 separates positions strongly at fixed rank.
+/// 3. **HELD**, and S3 is the only survivor — but at `~2×`, not the `141×` the
+///    first version advertised (see the superseded list).
+/// 4. ⛔ **FALSIFIED, and more completely than first recorded.** S4 is not merely
+///    rank-dependent; its separation is a per-trajectory spike over a handful of
+///    vertices.
+/// 5. ⚠ **VOID, not HELD.** Item 5 was written as a conditional on items 1 and 4
+///    both holding. Item 4 did not hold. The first version marked it HELD anyway —
+///    the one place the pre-registration was designed to bind, and it did not.
+/// 6. **Answered, with a caveat that undercuts it:** interpolation reads in-domain
+///    on both geometric signals. ⚠ But `+0.25a` is `0.5` cells off-lattice
+///    (`a/cell = 2`, so training sits at `0, ±1, ±2` cells and the extrapolations
+///    at `3` and `4`) — **the only offset in the experiment not on a lattice
+///    site**, and the one the whole question rests on.
+///
+/// ### ⇒ What this rung actually delivered
+///
+/// **Not a gate, and not a gate design.** A narrowed candidate set and a measured
+/// reason each of the others fails: S2 cannot convert position information into an
+/// accuracy rule; S4's margin is a maximum over a few vertices on a few steps;
+/// S1's is real per-trajectory but absent per-step and unavailable under ECSW. S3
+/// is left standing at `~2×`, on a fitted threshold, on one fixture.
+///
+/// ⇒ ⛔ **AND S3 DID NOT SURVIVE THE NEXT TWO RUNGS. Read them before building on
+/// anything above.** [`the_signal_margin_on_a_held_out_position`] (§2n) supplies
+/// the held-out position this section says it lacks, and S3's rank-independence —
+/// named above as the signature that made it a domain signal — is exactly what
+/// makes it blind to resolution. [`how_dense_the_training_ensemble_must_be`]
+/// (§2o) then shows it is blind to ENSEMBLE SIZE as well. The two-signal
+/// conclusion this section withdraws returns in §2n on held-out evidence rather
+/// than the confounded position partition that was withdrawn.
+///
+/// ### ⚠ What this does NOT establish
+///
+/// - **No held-out position exists.** Every margin is computed on the same 16
+///   cells that chose the threshold. The hull edge is `1.0a` and the nearest
+///   scored out-of-domain point is `1.5a`, with **nothing sampled between** — so
+///   every window here is an upper bound on an unmeasured quantity.
+/// - **The DOMAIN/ERROR taxonomy is not falsifiable on this fixture.**
+///   Distance-from-training and error are monotone together across all four
+///   positions, so no cell could have distinguished the two kinds. The labels are
+///   definitions.
+/// - **Extrapolation is confounded with the free edge.** The plate is `8a`; the
+///   scored extrapolations keep `1.5a` and `1a` of clearance.
+/// - **The in-sample column measures RECONSTRUCTION, not prediction** — its 71
+///   steps are all training snapshots — and it is the anchor every ratio is taken
+///   against.
+/// - **One basis construction.** A single pooled POD under a mass inner product.
+///   Nothing here speaks to per-offset, parametric, or contact-local bases.
+/// - **`snapshot_distance` assumes [`Inner::Mass`]** so that Euclidean distance in
+///   `q` is mass-norm distance in `u`. Nothing checks it; `PodBasis` exposes no
+///   `inner()`.
+/// - **Every arm ran `Inertial`,** and the predictor exposure is NOT S1's alone —
+///   `snapshot_distance` reads `s.q` and `active_novelty` reads `x_rest + Φq`,
+///   both of which are the solved state.
+/// - **No timing.** Whether any of this is affordable is unmeasured.
+/// - **No threshold is set.** One fixture, one mesh, one material, one ramp.
+///
+/// ### ⛔ Superseded by this rewrite — named so the earlier text is traceable
+///
+/// | first published | corrected |
+/// |---|---|
+/// | "the same value to FOUR significant figures" | distinct at 4 and 3 s.f.; a `0.138 %` spread, same at TWO |
+/// | "take a NORM over modes, never a MAX" | the per-mode NORMALISER was the fault; a norm is at least as rank-sensitive |
+/// | "S4 wins that cut outright, `0` vs `≥0.111`" | a maximum-only artifact; median `0.000` at `+1.50a` |
+/// | "S3's margin is `141×`" | `2.30×` worst step, `1.94×` median; `141×` was in-sample-vs-everything |
+/// | "the gate needs TWO signals" | not shown for GATING; that argument is about DIAGNOSIS. ⚠ The CONCLUSION returns in §2n on held-out evidence — only the argument stays withdrawn |
+/// | "`‖r_free‖`… and it is free" | free at R1.1, NOT under ECSW at R3 |
+/// | "out of domain that field is `28 %`–`109 %` wrong" | that is the `r=142` column; the range is `14.8 %`–`119.6 %` across all eight cells, `14.8 %`–`109 %` across the seven that complete |
+/// | "`≥ 1.17` extrapolating" | the minimum is `1.165` |
+/// | "byte-identical output" (non-regression) | the 37 measurement ROWS are identical; the files differ |
+/// | pre-registration item 5 "HELD" | VOID — its antecedent was falsified |
+#[test]
+#[ignore = "§4c online-signal pilot — 8 full-order trajectories, ~5 min (see the fn docs)"]
+fn an_online_signal_separates_out_of_domain() {
+    let base = Scene::new(GEN_A_OVER_CELL);
+    let probe_mesh = base.mesh();
+    let x_rest = rest_positions(&probe_mesh);
+    let n_vertices = x_rest.len() / 3;
+    let solver = base.solver(InitialGuess::PreviousState);
+    let fd = solver.free_dof_indices().to_vec();
+    let mass = solver.mass_per_free_dof();
+    let n_steps = base.n_steps();
+    // ⚠ Read from the same constructor `Scene::solver` builds on. That fn
+    // overrides `dt`, `density`, `max_newton_iter`, `initial_guess` and
+    // `gravity_z` and NOT `tol`, so this is the tolerance the arms actually
+    // converged at — but the coupling is by inspection, not by the compiler,
+    // which is why the figure is printed rather than left implicit.
+    let tol = SolverConfig::skeleton().tol;
+    // ⚠ THREE things below hard-wire `0.0` as "the in-sample point": the oracle
+    // reused for `TEST_OFFSETS[0]`, the wiring control's `|dx|` choice of the
+    // FAR offset, and `top_row(rows, TEST_OFFSETS[0].0)` as the two-sided
+    // control. Change `TEST_OFFSETS[0]` to a held-out offset and all three go on
+    // reading as though it were in-sample — silently, since a held-out arm still
+    // completes. Nothing else pins them together, so this does.
+    assert!(
+        TRAIN_OFFSETS.contains(&TEST_OFFSETS[0].1),
+        "TEST_OFFSETS[0] is {:+.2}a, which is NOT a training offset — the row \
+         this test calls its IN-SAMPLE control would be held out",
+        TEST_OFFSETS[0].1,
+    );
+    assert!(
+        tol > 0.0,
+        "tol is {tol}, so `residual_excess` would be `inf` or negative — a unit \
+         of zero is not a unit",
+    );
+
+    println!(
+        "\nRC\t§4c SIGNAL PILOT: IPC indentation a/cell={GEN_A_OVER_CELL:.1}, {} free DOF, \
+         {n_vertices} vertices, {n_steps} steps/trajectory\nRC\ttrain offsets {TRAIN_OFFSETS:?} a \
+         |  patch radius a = {:.3e} m  |  tol = {tol:.1e}  |  band d̂ = {:.3e} m",
+        fd.len(),
+        patch_radius(),
+        base.d_hat,
+    );
+
+    // ── training: the ensemble, and everything it SAW ──
+    let mut train = SnapshotSet::new(fd.len());
+    let mut train_active = std::collections::BTreeSet::new();
+    // The single training offset FARTHEST from the in-sample point, kept for the
+    // wiring control below. Chosen by `|dx|` rather than by position in
+    // `TRAIN_OFFSETS`, so reordering that constant cannot quietly hand the
+    // control the in-sample set itself.
+    let mut far: Option<(f64, std::collections::BTreeSet<usize>)> = None;
+    let mut in_sample_oracle = None;
+    for dx in TRAIN_OFFSETS {
+        let sc = Scene::at_offset(GEN_A_OVER_CELL, dx);
+        assert!(
+            (sc.d_hat - base.d_hat).abs() < f64::EPSILON,
+            "the barrier band changed with the offset, so the training union is \
+             built with a different definition of contact-active than the probes \
+             score against",
+        );
+        let o = run_oracle(sc, &x_rest, NO_TIMING);
+        assert!(
+            o.arm.failure.is_none(),
+            "training trajectory at {dx:+.2}a failed: {}",
+            o.arm.failure.as_deref().unwrap_or(""),
+        );
+        let mut mine = std::collections::BTreeSet::new();
+        for (k, x) in o.x.iter().enumerate() {
+            assert_eq!(
+                x.len() / 3,
+                n_vertices,
+                "the mesh changed with the indenter offset, so vertex indices are \
+                 not comparable across trajectories and every novelty reading below \
+                 compares different bodies",
+            );
+            train.push(&SnapshotSet::free_displacement(x, &x_rest, &fd));
+            mine.extend(active_vertices(x, sc.centre_at(k), sc.d_hat));
+        }
+        train_active.extend(mine.iter().copied());
+        if far.as_ref().is_none_or(|(d, _)| dx.abs() > d.abs()) {
+            far = Some((dx, mine));
+        }
+        if dx == 0.0 {
+            in_sample_oracle = Some(o);
+        }
+    }
+    let in_sample_oracle = in_sample_oracle.expect("+0.00a is one of the training offsets");
+    println!(
+        "RC\ttraining set: {} snapshots, {} of {n_vertices} vertices ever contact-active",
+        train.len(),
+        train_active.len(),
+    );
+
+    // ── control: is the novelty signal WIRED TO THE SCENE? ──
+    //
+    // ★★ The unit tests prove `active_novelty` computes a fraction. They cannot
+    // prove this probe is reading THIS fixture. So: the in-sample trajectory
+    // must read `0` against the union it is part of (by construction), and it
+    // must read NON-ZERO against a union built from the far training offset
+    // alone. Without the second half, a probe wired to a set that happens to
+    // contain every vertex would pass the first half and every arm below would
+    // read "in domain" for a reason about the rig.
+    assert!(
+        !train_active.is_empty() && train_active.len() < n_vertices,
+        "{} of {n_vertices} vertices are in the training active set — an empty set \
+         makes every arm maximally novel and a FULL one makes every arm perfectly \
+         in domain, and neither is a measurement",
+        train_active.len(),
+    );
+    let (far_dx, far_only) = far.expect("TRAIN_OFFSETS is not empty");
+    let (mut self_novelty, mut far_novelty) = (0.0_f64, 0.0_f64);
+    for (k, x) in in_sample_oracle.x.iter().enumerate() {
+        let a = active_vertices(x, base.centre_at(k), base.d_hat);
+        self_novelty = self_novelty.max(active_novelty(&a, &train_active));
+        far_novelty = far_novelty.max(active_novelty(&a, &far_only));
+    }
+    assert!(
+        self_novelty.abs() < f64::EPSILON,
+        "the +0.00a trajectory reads {self_novelty:.3e} novel against a union it is \
+         PART OF — the probe is not reading the scene it thinks it is",
+    );
+    assert!(
+        far_novelty > 0.0,
+        "the +0.00a trajectory reads ZERO novel against the {far_dx:+.2}a active set \
+         alone — the signal cannot distinguish two patch positions a full {:.1}a \
+         apart, so a zero anywhere below means nothing",
+        far_dx.abs(),
+    );
+    println!(
+        "RC\t★ wiring control: +0.00a novelty = {self_novelty:.3e} vs its own union, \
+         {far_novelty:.3} vs the {far_dx:+.2}a union alone"
+    );
+
+    // ── the bases, and one probe per basis, both built ONCE ──
+    //
+    // ★ Outside the position loop, for the reason `reduced_basis_generalises`
+    // fits its bases outside it: the hull is a function of the TRAINING set and
+    // the rank alone. Building it per scored position would cost four times the
+    // projections and — worse — would read as though what counts as "in domain"
+    // depended on the point being asked about, which is the opposite of what a
+    // validity domain claims to be.
+    let mut bases = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for r in BASIS_RANKS {
+        let fitted = PodBasis::fit(&train, Inner::Mass, &mass, 1.0, r).expect("basis fits");
+        if seen.insert(fitted.n_modes()) {
+            bases.push((r, fitted));
+        }
+    }
+    let probes: Vec<Probe<'_>> = bases
+        .iter()
+        .map(|(_, basis)| {
+            let train_q: Vec<Vec<f64>> = train.columns().iter().map(|u| basis.project(u)).collect();
+            let radius = cloud_radius(&train_q);
+            assert!(
+                radius > 0.0,
+                "the training cloud at r={} has zero radius, so `snapshot_distance` \
+                 would divide by zero",
+                basis.n_modes(),
+            );
+            Probe {
+                envelope: training_envelope(&train_q),
+                train_q,
+                cloud_radius: radius,
+                train_active: &train_active,
+                tol,
+                // Constant across scenes: `Scene::at_offset` moves the indenter
+                // and changes nothing else, which the loop below re-checks.
+                d_hat: base.d_hat,
+            }
+        })
+        .collect();
+    println!(
+        "RC\tbases: {}",
+        bases
+            .iter()
+            .map(|(r, b)| format!("r={r}→{}", b.n_modes()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    // ⚠ The top rung asks for 160 and gets 142, and until this printed, nothing
+    // said WHY. It matters: if 142 is the training set's numerical rank, then the
+    // top rung already spans everything the ensemble contains, and "flat in rank"
+    // out of domain is not a truncation statement at all — no achievable rank
+    // could fix it, only different snapshots.
+    let top = &bases.last().expect("at least one basis").1;
+    let sv = top.singular_values();
+    println!(
+        "RC\tSPECTRUM: {} modes retained of {} snapshots; sigma_last/sigma_0 = {:.3e}; \
+         retained energy = {:.9}\nRC\t  => the top rung {} the training span ({} modes vs {} snapshots)",
+        top.n_modes(),
+        train.len(),
+        sv.get(top.n_modes() - 1).copied().unwrap_or(f64::NAN) / sv.first().copied().unwrap_or(1.0),
+        top.retained_energy_fraction(),
+        if top.n_modes() >= train.len() {
+            "SPANS"
+        } else {
+            "does NOT span"
+        },
+        top.n_modes(),
+        train.len(),
+    );
+
+    // ── score every position against every rank, with the probe attached ──
+    let mut rows: Vec<(&'static str, usize, Arm)> = Vec::new();
+    for (label, dx) in TEST_OFFSETS {
+        let sc = Scene::at_offset(GEN_A_OVER_CELL, dx);
+        assert!(
+            (sc.d_hat - base.d_hat).abs() < f64::EPSILON,
+            "the barrier band changed with the offset, so the probes were built \
+             against a different definition of contact-active than the arms use",
+        );
+        let owned;
+        let oracle = if dx == 0.0 {
+            &in_sample_oracle
+        } else {
+            owned = run_oracle(sc, &x_rest, NO_TIMING);
+            assert!(
+                owned.arm.failure.is_none(),
+                "scoring oracle at {dx:+.2}a failed: {}",
+                owned.arm.failure.as_deref().unwrap_or(""),
+            );
+            &owned
+        };
+
+        for ((r, basis), probe) in bases.iter().zip(&probes) {
+            let got = basis.n_modes();
+            let arm = run_reduced(
+                sc,
+                basis,
+                InitialGuess::Inertial,
+                format!("{label}  r={r}→{got}"),
+                &Ctx {
+                    x_rest: &x_rest,
+                    fd: &fd,
+                    oracle,
+                    probe: Some(probe),
+                },
+                NO_TIMING,
+            );
+            arm.print(n_steps, sc.d_hat);
+            rows.push((label, got, arm));
+        }
+    }
+
+    // ── control: no PRODUCER, no measurement ──
+    assert_every_arm_produced(&rows, TEST_OFFSETS.len() * bases.len());
+
+    // ── control: the rig can still score a basis it DID fit ──
+    //
+    // Carried over from `reduced_basis_generalises` unchanged. The held-out rows
+    // are the MEASUREMENT and a bad number there is the finding; what must hold
+    // is that the in-sample arm survives its own trajectory, or nothing above is
+    // interpretable.
+    let control = top_row(&rows, TEST_OFFSETS[0].0);
+    assert!(
+        control.2.failure.is_none() && control.2.min_sd > 0.0,
+        "the IN-SAMPLE control did not survive its own trajectory — nothing above \
+         is interpretable",
+    );
+
+    // ── the tables ──
+    print_matrix(
+        "GROUND TRUTH — rel-L2 vs each position's OWN full-order oracle",
+        "This is the column every signal below tries to predict with NO oracle. \
+         A `—` here is an arm that DIVERGED; its signal cells below are the \
+         reading over the steps it did complete, which is what a gate would have \
+         had to catch.",
+        &rows,
+        |a| a.failure.is_none().then_some(a.max_rel_err),
+    );
+    print_matrix(
+        "REFERENCE — gap_dev (d̂), §2l's detector. ⚠ NEEDS THE ORACLE, cannot gate",
+        "Shown to be beaten, not to be used: it differences against `oracle.min_sd`.",
+        &rows,
+        |a| a.failure.is_none().then_some(a.gap_dev),
+    );
+    // ── worst-over-steps, the statistic the first pilot reported ──
+    for (name, note, pick) in SIGNAL_TABLES {
+        print_matrix(&format!("{name}   worst over steps"), note, &rows, |a| {
+            signal(a, pick, Quantile::Max)
+        });
+    }
+
+    // ── the MEDIAN step, which is what a per-step check would mostly see ──
+    //
+    // ★★ A max over 71 steps is an extreme-value statistic. A gate reads ONE
+    // step. Where the median tracks the max the trajectory figure transfers;
+    // where it collapses toward the in-domain value, the max is a spike and the
+    // separation above is not available to a runtime check at most steps.
+    for (name, _, pick) in SIGNAL_TABLES {
+        print_matrix(&format!("{name}   MEDIAN step"), MEDIAN_NOTE, &rows, |a| {
+            signal(a, pick, Quantile::Median)
+        });
+    }
+
+    // ── active_novelty's denominator, without which its fractions are unreadable ──
+    print_matrix(
+        "active-set SIZE (max over steps) — S4's DENOMINATOR",
+        "A novelty of `1.000` over 4 active vertices and over 40 are different \
+         readings. The first pilot printed the fraction and not this.",
+        &rows,
+        |a| {
+            a.signals
+                .as_ref()
+                .filter(|t| t.is_recorded())
+                .map(|t| t.active_range().1 as f64)
+        },
+    );
+
+    // ★★ BOTH quantiles, and the pair is the argument. A gate that fires when
+    // ANY step exceeds its threshold is decided by the MAX — so the max pass is
+    // the accept/refuse verdict. The MEDIAN pass says how much of the trajectory
+    // is behind that verdict: a signal that separates at both is a plateau, one
+    // that separates only at the max rests on a minority of steps and is one bad
+    // step away from silence.
+    print_gate_table(&rows, &GATE_TAUS, Quantile::Max);
+    print_gate_table(&rows, &GATE_TAUS, Quantile::Median);
+    println!(
+        "\nRC\t★ HOW TO READ THIS:\n\
+         RC\t   The four matrices show SHAPE across rank and position.\n\
+         RC\t   The GATE TEST shows whether any of it converts into a rule.\n\
+         RC\t   ⚠ The [ERROR]/[DOMAIN] labels are DEFINITIONS, not findings — on \
+         this fixture\n\
+         RC\t   distance-from-training and error are monotone together, so no cell \
+         here could\n\
+         RC\t   have distinguished the two kinds. NO THRESHOLD IS SET."
+    );
+}
+
+/// The four candidates, their table captions, and their accessors — one list so
+/// the worst-step and median passes cannot drift apart.
+const SIGNAL_TABLES: [(&str, &str, fn(&Signals) -> f64); 4] = [
+    (
+        "S1  residual_excess = ‖r_free‖ / tol   [ERROR by definition]",
+        "⚠ NOT normalised by load, and NOT free at R3: `r_free` exists here only \
+         because R1.1 sweeps every element, which is what ECSW removes.",
+        |s| s.residual_excess,
+    ),
+    (
+        "S2  envelope_excursion (half-widths outside the per-mode box)   [DOMAIN by definition]",
+        "§4c's STATED signal. Normalised PER MODE, so the thinnest retained axis \
+         sets it.",
+        |s| s.envelope_excursion,
+    ),
+    (
+        "S3  snapshot_distance (cloud radii to the NEAREST TRAINING SNAPSHOT)   [DOMAIN by definition]",
+        "⚠ NOT a hull distance: a point deep inside the convex hull but in a GAP \
+         between snapshots reads large. Normalised by ONE global scale.",
+        |s| s.snapshot_distance,
+    ),
+    (
+        "S4  active_novelty (fraction of active vertices never active in training)   [DOMAIN by definition]",
+        "⚠ Returns 0 for an EMPTY active set, so a solve that loses contact reads \
+         maximally in-domain — fail-open. Read with the denominator below.",
+        |s| s.active_novelty,
+    ),
+];
+
+const MEDIAN_NOTE: &str = "Compare with the worst-step matrix above: tracking ⇒ plateau (transfers to a \
+     per-step check); collapsing ⇒ spike (does not).";
+
+/// Accuracy thresholds the gate test sweeps. Spans four orders, and deliberately
+/// brackets `1e-2` — a 1 % field error is the loosest tolerance anyone would call
+/// acceptable, so a signal that cannot gate there cannot gate where it matters.
+const GATE_TAUS: [f64; 9] = [1e-1, 5e-2, 3e-2, 2e-2, 1e-2, 5e-3, 3e-3, 2e-3, 1e-3];
+
+// ── §4c rung 1b: is the margin FITTED or VALIDATED, and is `+0.25a` confounded? ──
+
+/// The offset dropped from training and then scored — the held-out position the
+/// first pilot did not have.
+const LOO_HELD_OUT: f64 = 0.0;
+
+/// An OFF-lattice extrapolation point, at `3.5` cells. `+1.50a` and `+2.00a` are
+/// at `3` and `4` cells and bracket it in extrapolation distance, so if mesh
+/// alignment were a large effect this would fall OUTSIDE their bracket.
+const OFF_LATTICE_EXTRAP: f64 = 1.75;
+
+/// **Every margin in [`an_online_signal_separates_out_of_domain`] is FITTED.**
+///
+/// ```text
+/// cargo test --release -p sim-soft --test reduced_contact \
+///   the_signal_margin_on_a_held_out_position -- --ignored --nocapture
+/// ```
+///
+/// The threshold interval there is derived from the same 16 cells it is scored
+/// on, and there is no held-out position anywhere in that matrix. A margin
+/// measured on the points that chose it is an upper bound on an unmeasured
+/// quantity, not a measurement — which is the largest single hole a cold
+/// re-derivation found in §2m.
+///
+/// Two arms, and the pair costs one extra oracle over the main pilot:
+///
+/// **A — LEAVE-ONE-OUT.** Refit on `[-1, -0.5, +0.5, +1]a` and score at
+/// `+0.00a`, whose oracle already exists. This is the first genuinely held-out
+/// position in the arc.
+///
+/// ★★★ **And it lands on a coincidence worth more than the validation.**
+/// Held-out `+0.00a` sits `0.5a` from its nearest training snapshot and is ON the
+/// mesh lattice. So does `+1.50a`. **Matched gap, matched lattice status, one
+/// INTERPOLATING and one EXTRAPOLATING** — a direct test of whether "inside the
+/// convex hull" carries any information beyond "close to a training snapshot". If
+/// the two arms land together, then the in-hull/out-of-hull framing this whole
+/// rung is built on is really a distance framing wearing a topological name.
+///
+/// **B — THE LATTICE CONTROL.** `a/cell = 2`, so the training offsets sit at
+/// `0, ±1, ±2` cells and `+0.25a` sits at `0.5` — the ONLY scored offset off the
+/// lattice, and the arm the product question rests on. That confound cannot be
+/// broken by moving an interpolation point, because with `cell = 0.5a` every
+/// on-lattice point inside the training span IS a training point. So it is tested
+/// at the extrapolation end instead: `+1.75a` is off-lattice at `3.5` cells and
+/// its extrapolation distance is bracketed by `+1.50a` and `+2.00a`, both on it.
+///
+/// ## Pre-registration (before the first run)
+///
+/// 1. **No prediction on arm A's error**, and it is the interesting one. Gap
+///    `0.5a` is twice `+0.25a`'s.
+/// 2. ★ **If held-out `+0.00a` and `+1.50a` land within ~an order of each other,
+///    the hull framing is refuted** and `snapshot_distance` is measuring the only
+///    thing that ever mattered.
+/// 3. **`snapshot_distance` at held-out `+0.00a` reads `~1.0`** if it tracks gap
+///    linearly — `+0.25a` reads `0.506` at half the gap.
+/// 4. ★ **`active_novelty` at held-out `+0.00a` reads `0.000`**: the contact patch
+///    is inside the union of the four remaining trajectories. **If its error is
+///    also large, S4 is falsified as a gate in a single cell** — a fail-open
+///    exactly where a gate must not have one.
+/// 5. **`+1.75a` lands INSIDE the `+1.50a`/`+2.00a` bracket** if alignment is not
+///    a large effect. Outside it, `+0.25a`'s three orders are partly a mesh
+///    artifact and §2l's interpolation finding needs re-scoping.
+///
+/// ## Measured — 2026-08-25, 8 oracles, `140.8 s`
+///
+/// ⚠ Two runs exist. The first (`139.7 s`) recorded the signals and printed none
+/// of them; every signal figure below is from the second, which is why its wall
+/// time is the one quoted. The arm rows are identical across both.
+///
+/// ### ★★★ The headline: RANK-INDEPENDENCE IS WHY IT CANNOT GATE
+///
+/// §2m left one candidate standing and called its rank-independence the signature
+/// that made it a domain signal. **On a held-out ensemble that property is exactly
+/// what disqualifies it.** Four ranks, one basis family, one hull — what a
+/// deployed gate actually sees:
+///
+/// | | across the four ranks |
+/// |---|---|
+/// | `max_rel_err` | **31.9×** (`3.733e-1 → 1.172e-2`) |
+/// | `snapshot_distance` worst step | **1.005×** (`0.9756 → 0.9704`) |
+/// | `snapshot_distance` median step | 1.023× |
+/// | `residual_excess` worst step | 6.409× |
+/// | `active_novelty` | `0.000` at every rank |
+///
+/// A signal that does not move with rank **cannot report how well the basis
+/// resolved the answer**, because that is the thing rank changes. Its
+/// single-ensemble threshold margins are `1.002×`, `1.002×`, `1.002×`, `1.000×`
+/// across `τ = 1e-1 … 2e-2` — noise. `residual_excess` gets `2.883×` on the same
+/// cells because it is an error signal and tracks rank by construction.
+///
+/// ⇒ **Rank-independence and accuracy-sensitivity are mutually exclusive.** That
+/// is not a design preference; it follows from what each quantity measures.
+///
+/// ### ⇒ Which RESURRECTS the two-signal conclusion — for the opposite reason
+///
+/// §2m withdrew "the gate needs TWO signals" because the argument given for it was
+/// about DIAGNOSIS and was sold as gating. The conclusion returns here on
+/// different evidence: a **held-out** position, not a confounded position
+/// partition. `snapshot_distance` reads position and is blind to resolution;
+/// `residual_excess` reads resolution and is per-step-blind to position (§2m) and
+/// unavailable under ECSW. **Neither alone gates**, and now that is measured.
+///
+/// ### ⛔ §2m's margin was FITTED, and it does not survive
+///
+/// The load-bearing statement is WITHIN arm A, so no normaliser question touches
+/// it: its four readings are `0.9704–0.9756` while its errors run `1.2 %` to
+/// `37 %`. **No threshold separates them** — one below `0.9704` refuses all four,
+/// one above `0.9756` accepts all four, and there is nothing in between to place
+/// one at. A `32×` error spread sits at one signal value.
+///
+/// ⚠ §2m's interval was `[0.5069, 1.165)` and arm A's readings land inside it, in
+/// the band nothing was ever sampled in — but that comparison is **DIRECTIONAL,
+/// not numeric**: §2m's interval is in the 355-snapshot ensemble's units and arm
+/// A's readings in the 284-snapshot ensemble's, and `snapshot_distance` divides by
+/// each ensemble's OWN cloud radius. See the caveats.
+///
+/// ### The matched-gap pair — the comparison this test was built for
+///
+/// Held-out `+0.00a` and `+1.50a` sit `0.5a` from their nearest training snapshot,
+/// both ON the lattice, one interpolating and one extrapolating:
+///
+/// | rank | HELD-OUT `+0.00a` | `+1.50a` | ratio |
+/// |---|---:|---:|---:|
+/// | 20 | 3.733e-1 | 3.149e-1 | **0.84×** |
+/// | 40 | 1.406e-1 | 1.478e-1 | **1.05×** |
+/// | 80 | 2.902e-2 | 3.177e-1 | 10.95× |
+/// | 116 / 142 | 1.172e-2 | 2.822e-1 | 24.08× |
+///
+/// ★★★ **At `r=20` extrapolation is the BETTER of the two, and at `r=40` they are
+/// indistinguishable.** Being inside the hull does not make the answer better at a
+/// given rank — it makes the answer **improvable by rank**. Interpolation falls
+/// `31.9×` across the sweep; extrapolation falls `1.12×`. ⇒ This sharpens §2l's
+/// "rank does not fix it": rank does not fix it OUTSIDE the hull, and does fix it
+/// inside, at a rate the gap degrades.
+///
+/// ⚠ And at that matched gap, `snapshot_distance`'s **median reads `4.117e-1` vs
+/// `4.271e-1` — `1.04×` apart for a `24×` error difference.** ⚠⚠ Those two
+/// medians come from DIFFERENT ensembles and therefore different normalisers, so
+/// `1.04×` is a DIRECTION and not a number; the ratio between the normalisers is
+/// unmeasured. The within-arm version needs no such comparison and says the same
+/// thing: inside arm A alone the median moves `1.023×` across a `31.9×` error
+/// range.
+///
+/// ### The lattice control — the mesh confound is largely defused
+///
+/// `+1.75a` (off-lattice, `3.5` cells) falls **INSIDE** the `+1.50a`/`+2.00a`
+/// bracket at all four ranks (`0.720` in `[0.315, 1.196]`; `0.442` in
+/// `[0.148, 0.764]`; `0.674` in `[0.318, 1.037]`; `0.626` in `[0.282, 1.093]`).
+/// Alignment is not a large effect at the extrapolation end, and error tracks gap
+/// smoothly across `0.5a → 0.75a → 1.0a` with no lattice jump. ⚠ Evidence, not
+/// proof, for the interpolation end — `+0.25a` remains the only off-lattice
+/// interpolation point, and with `cell = 0.5a` no on-lattice one can exist inside
+/// the training span.
+///
+/// ### Pre-registration
+///
+/// 1. No prediction was made. Held-out `+0.00a`: `3.733e-1 → 1.172e-2`.
+/// 2. ⚠ **Half-refuted, and the half that fails is the interesting one.** The two
+///    arms land within `1.05×` at `r=40` and INVERT at `r=20`, so at low rank the
+///    hull framing carries nothing. It is upheld only at high rank, and its
+///    content is the TREND rather than the level.
+/// 3. ✅ **`~1.0` predicted, `0.970` measured.** ⚠ But score it weakly: the
+///    prediction was extrapolated from `0.506` at `0.25a`, which is §2m's
+///    FULL-ensemble reading, and `0.970` is arm A's LOO-ensemble reading. The
+///    two divide by different cloud radii, so "close to linear in gap" is a
+///    plausible reading of two points in two unit systems and not a measured
+///    slope. Nothing downstream rests on it.
+/// 4. ✅ **`active_novelty` reads `0.000` at the held-out point at every rank and
+///    both quantiles**, while the error runs `1.2 %`–`37 %`. FAIL at every `τ`.
+///    Fail-open at a held-out in-hull position, exactly as pre-registered.
+/// 5. ✅ Confirmed at all four ranks.
+///
+/// ### ⚠ What this does NOT establish
+///
+/// - **One held-out position.** Better than none, which is what §2m had, and still
+///   a single point.
+/// - ⚠⚠ **The two ensembles have different normalisers, and that disqualifies
+///   EVERY cross-arm number here — the median comparison included.** The LOO
+///   basis is fitted on 284 snapshots and truncates at `r=116`; the full one on
+///   355 at `r=142`, and `snapshot_distance` divides by its own ensemble's cloud
+///   radius (`cloud_radius(&train_q)`, computed per arm). So the sound readings
+///   are the WITHIN-arm spans — `1.005×` worst step, `1.023×` median, against
+///   `31.9×` in error — and every cross-arm figure above (`0.9704` against §2m's
+///   `[0.5069, 1.165)`; `4.117e-1` against `4.271e-1`; `0.506` at `0.25a` against
+///   `0.970` at `0.50a`) is a DIRECTION. ⚠ The ratio between the two normalisers
+///   is not measured; measuring it would take one re-run printing
+///   `cloud_radius` per arm, and none of this section's conclusions wait on it.
+///   ✅ §2o carries one cross-ensemble reading (`~1.1×`) and labels it a direction
+///   rather than a number, which is the form this section should have used.
+/// - **The lattice control tests the EXTRAPOLATION end only.**
+/// - No timing, no threshold, one fixture, one basis construction.
+#[test]
+#[ignore = "§4c margin validation — 8 full-order trajectories, ~3 min (see the fn docs)"]
+fn the_signal_margin_on_a_held_out_position() {
+    let base = Scene::new(GEN_A_OVER_CELL);
+    let x_rest = rest_positions(&base.mesh());
+    let solver = base.solver(InitialGuess::PreviousState);
+    let fd = solver.free_dof_indices().to_vec();
+    let mass = solver.mass_per_free_dof();
+    let tol = SolverConfig::skeleton().tol;
+    let n_steps = base.n_steps();
+    println!(
+        "\nRC\t§4c MARGIN VALIDATION: {} free DOF, {n_steps} steps\nRC\tarm A: train {:?} \\ {{{LOO_HELD_OUT:+.2}}}, score at {LOO_HELD_OUT:+.2}a  (gap 0.50a, ON lattice)\
+         \nRC\tarm B: full train, score at {OFF_LATTICE_EXTRAP:+.2}a (3.5 cells, OFF lattice) vs {:+.2}a / {:+.2}a (ON)",
+        fd.len(),
+        TRAIN_OFFSETS,
+        TEST_OFFSETS[2].1,
+        TEST_OFFSETS[3].1,
+    );
+
+    // ── every full-order trajectory this needs, run once ──
+    let mut oracles: Vec<(f64, Oracle)> = Vec::new();
+    let mut wanted: Vec<f64> = TRAIN_OFFSETS.to_vec();
+    for dx in [OFF_LATTICE_EXTRAP, TEST_OFFSETS[2].1, TEST_OFFSETS[3].1] {
+        wanted.push(dx);
+    }
+    for dx in wanted {
+        let sc = Scene::at_offset(GEN_A_OVER_CELL, dx);
+        let o = run_oracle(sc, &x_rest, NO_TIMING);
+        assert!(
+            o.arm.failure.is_none(),
+            "oracle at {dx:+.2}a failed: {}",
+            o.arm.failure.as_deref().unwrap_or(""),
+        );
+        oracles.push((dx, o));
+    }
+    let at = |dx: f64| -> &Oracle {
+        &oracles
+            .iter()
+            .find(|(t, _)| (t - dx).abs() < 1e-12)
+            .unwrap_or_else(|| panic!("no oracle at {dx:+.2}a"))
+            .1
+    };
+
+    // ── build one (snapshots, active-union) pair from a chosen set of offsets ──
+    let ensemble = |offsets: &[f64]| -> (SnapshotSet, std::collections::BTreeSet<usize>) {
+        let mut snaps = SnapshotSet::new(fd.len());
+        let mut active = std::collections::BTreeSet::new();
+        for &dx in offsets {
+            let sc = Scene::at_offset(GEN_A_OVER_CELL, dx);
+            for (k, x) in at(dx).x.iter().enumerate() {
+                snaps.push(&SnapshotSet::free_displacement(x, &x_rest, &fd));
+                active.extend(active_vertices(x, sc.centre_at(k), sc.d_hat));
+            }
+        }
+        (snaps, active)
+    };
+
+    let loo_offsets: Vec<f64> = TRAIN_OFFSETS
+        .into_iter()
+        .filter(|d| (d - LOO_HELD_OUT).abs() > 1e-12)
+        .collect();
+    assert_eq!(
+        loo_offsets.len(),
+        TRAIN_OFFSETS.len() - 1,
+        "the held-out offset is not in TRAIN_OFFSETS, so nothing was held out",
+    );
+
+    let mut rows: Vec<(&'static str, usize, Arm)> = Vec::new();
+    for (tag, train_offsets, scored) in [
+        ("A LOO-HELD-OUT", loo_offsets, vec![LOO_HELD_OUT]),
+        (
+            "B FULL-TRAIN",
+            TRAIN_OFFSETS.to_vec(),
+            vec![OFF_LATTICE_EXTRAP, TEST_OFFSETS[2].1, TEST_OFFSETS[3].1],
+        ),
+    ] {
+        let (snaps, active) = ensemble(&train_offsets);
+        println!(
+            "\nRC\t── {tag}: {} offsets, {} snapshots, {} vertices ever active ──",
+            train_offsets.len(),
+            snaps.len(),
+            active.len(),
+        );
+        let mut seen = std::collections::BTreeSet::new();
+        for r in BASIS_RANKS {
+            let basis = PodBasis::fit(&snaps, Inner::Mass, &mass, 1.0, r).expect("basis fits");
+            if !seen.insert(basis.n_modes()) {
+                continue;
+            }
+            let train_q: Vec<Vec<f64>> = snaps.columns().iter().map(|u| basis.project(u)).collect();
+            let radius = cloud_radius(&train_q);
+            assert!(radius > 0.0, "zero cloud radius at r={}", basis.n_modes());
+            let probe = Probe {
+                envelope: training_envelope(&train_q),
+                train_q,
+                cloud_radius: radius,
+                train_active: &active,
+                tol,
+                d_hat: base.d_hat,
+            };
+            for &dx in &scored {
+                let sc = Scene::at_offset(GEN_A_OVER_CELL, dx);
+                let arm = run_reduced(
+                    sc,
+                    &basis,
+                    InitialGuess::Inertial,
+                    format!("{tag} {dx:+.2}a r={r}→{}", basis.n_modes()),
+                    &Ctx {
+                        x_rest: &x_rest,
+                        fd: &fd,
+                        oracle: at(dx),
+                        probe: Some(&probe),
+                    },
+                    NO_TIMING,
+                );
+                arm.print(n_steps, sc.d_hat);
+                rows.push((tag, basis.n_modes(), arm));
+            }
+        }
+    }
+    assert_every_arm_produced(&rows, rows.len());
+
+    // ⚠ The first version of this test recorded the signals and PRINTED NONE of
+    // them, so pre-registration items 3 and 4 — both about what a signal reads at
+    // the held-out point — were unanswerable from its own output. A prediction
+    // whose data is not emitted is not a prediction.
+    println!(
+        "\nRC\t╔═ SIGNALS at each scored arm (worst step / median step)\nRC\t║ {:<30}{:>12}{:>22}{:>22}{:>18}",
+        "arm", "relL2", "S1 resid", "S3 snapshot-dist", "S4 novelty"
+    );
+    for (tag, got, arm) in &rows {
+        let cell = |pick: fn(&Signals) -> f64, w: usize| -> String {
+            let m = signal(arm, pick, Quantile::Max);
+            let d = signal(arm, pick, Quantile::Median);
+            match (m, d) {
+                (Some(m), Some(d)) => format!("{:>w$}", format!("{m:.3e}/{d:.3e}"), w = w),
+                _ => format!("{:>w$}", "—", w = w),
+            }
+        };
+        println!(
+            "RC\t║ {:<30}{:>12.3e}{}{}{}",
+            format!("{tag} r={got}"),
+            arm.max_rel_err,
+            cell(|s| s.residual_excess, 22),
+            cell(|s| s.snapshot_distance, 22),
+            cell(|s| s.active_novelty, 18),
+        );
+    }
+    println!("RC\t╚═");
+    println!(
+        "\nRC\t★ READ IT AS: (a) does HELD-OUT +0.00a land with +1.50a — same gap, same\n\
+         RC\t   lattice status, one interpolating and one extrapolating? If so the\n\
+         RC\t   hull framing is a DISTANCE framing wearing a topological name.\n\
+         RC\t   (b) does +1.75a fall inside the +1.50a/+2.00a bracket? If not, +0.25a's\n\
+         RC\t   three orders are partly a MESH artifact.\n\
+         RC\t   (c) does active_novelty read 0 at HELD-OUT +0.00a while the error is\n\
+         RC\t   large? That is a fail-open, in one cell."
+    );
+}
+
+// ── §4c rung 1c: how DENSE must the ensemble be, and does density mean SPACING ──
+// ── or COUNT?                                                                  ──
+
+/// The three training sets, all scored at the same held-out point. Chosen as a
+/// **2-factor design over the offsets that already have oracles**, so this costs
+/// no full-order trajectory the arc has not already paid for:
+///
+/// | | offsets | trajectories | gap to `+0.00a` |
+/// |---|---|---|---|
+/// | **A** | `[-1, -0.5, +0.5, +1]` | 4 | `0.5a` |
+/// | **B** | `[-0.5, +0.5]` | 2 | `0.5a` |
+/// | **C** | `[-1, +1]` | 2 | `1.0a` |
+///
+/// **A vs B isolates ENSEMBLE SIZE at fixed gap. B vs C isolates GAP at fixed
+/// size.** Without both comparisons "denser is better" cannot be resolved into a
+/// statement a `ReducedValidityDomain` could carry, because spacing and count move
+/// together in every ensemble anyone builds by refining a grid.
+const DENSITY_SETS: [(&str, &[f64]); 3] = [
+    ("A  4 traj, gap 0.50a", &[-1.0, -0.5, 0.5, 1.0]),
+    ("B  2 traj, gap 0.50a", &[-0.5, 0.5]),
+    ("C  2 traj, gap 1.00a", &[-1.0, 1.0]),
+];
+
+/// **How dense must the training ensemble be — and is "density" SPACING or COUNT?**
+///
+/// ```text
+/// cargo test --release -p sim-soft --test reduced_contact \
+///   how_dense_the_training_ensemble_must_be -- --ignored --nocapture
+/// ```
+///
+/// §10 risk 0 carries the domain-coverage half of §4c as untouched, and §5's open
+/// item 3 was re-scoped to exactly this question. It is the one a validity domain
+/// has to answer in its **Stated** clause: a parameter box is only meaningful if
+/// you can say how finely the box was sampled and what that buys.
+///
+/// Every reduced result in this arc conflates two things, because refining a
+/// training grid changes both at once: the SPACING between neighbouring
+/// trajectories, and the NUMBER of them. §2n measured one ensemble at one spacing.
+/// This separates the two factors on the offsets whose oracles already exist.
+///
+/// ## Pre-registration (before the first run)
+///
+/// 1. **If only GAP matters, A ≈ B and C is worse.** Then a validity domain need
+///    only state its sampling PITCH, which is a cheap thing to state and to check
+///    online — the nearest-snapshot distance already measures it.
+/// 2. **If SIZE matters, A beats B at the same gap.** Then the domain must state
+///    the ensemble's cardinality too, and `snapshot_distance` — which sees only the
+///    nearest neighbour — is blind to the thing that matters, which would be a
+///    second strike against the candidate §2n already disqualified as an accuracy
+///    signal.
+/// 3. ★ **No prediction on which.** The POD basis grows richer with more
+///    trajectories even at fixed spacing, so both mechanisms are real; which
+///    dominates at this gap is the measurement.
+/// 4. **`snapshot_distance` should read the SAME for A and B and larger for C**,
+///    since it is close to linear in gap (§2n measured `0.506` at `0.25a` and
+///    `0.970` at `0.50a`). ⚠ Across ensembles its normaliser changes, so this is
+///    the weakest of the four and is read as a direction, not a number.
+///
+/// ## Measured — 2026-08-25, 5 oracles, `82.7 s`
+///
+/// | ensemble | `r=20` | `r=40` | at its own ceiling |
+/// |---|---:|---:|---:|
+/// | **A** 4 traj, gap `0.50a` | 3.733e-1 | 1.406e-1 | 1.172e-2 (`r=116`) |
+/// | **B** 2 traj, gap `0.50a` | 7.949e-1 | 3.790e-1 | 1.394e-1 (`r=64`) |
+/// | **C** 2 traj, gap `1.00a` | 8.632e-1 | 4.448e-1 | 3.058e-1 (`r=65`) |
+///
+/// ### ★★★ SIZE dominates GAP, and pre-registration item 2 is the branch taken
+///
+/// At matched rank:
+///
+/// - **A vs B — doubling the ENSEMBLE at fixed gap buys `2.13×` / `2.70×`.**
+/// - **B vs C — doubling the GAP at fixed size costs `1.09×` / `1.17×`.**
+///
+/// So "denser is better" resolves into two effects of unequal weight, and the one
+/// every online signal here measures — the gap — is the WEAKER of the two.
+///
+/// ★★ **And size compounds, because it sets the rank CEILING.** A's 284 snapshots
+/// retain 116 modes; B's 142 retain 64. (C's 142 retain 65 — the ceiling is set by
+/// the spectrum, not by the snapshot count alone, which is why the two 142-snapshot
+/// ensembles do not land on the same one.) B cannot go past `r=64` no matter what is
+/// asked of it, so at their respective ceilings A beats B by **`11.9×`** — far
+/// more than the `2.1–2.7×` the basis quality alone accounts for. A small ensemble
+/// is penalised twice: a worse basis at every rank, and a lower rank to stop at.
+///
+/// ### ⇒ Second strike against the surviving candidate
+///
+/// A and B are **the same gap** and differ `2.13–2.70×` in error. What the domain
+/// signals read:
+///
+/// - `active_novelty`: **`0.000` for both, at every rank.** Identical.
+/// - `snapshot_distance` median: A `0.411–0.420`, B `0.447–0.500` — about `1.1×`,
+///   ⚠ and across ensembles its normaliser changes, so even that is weak evidence
+///   rather than a measurement.
+///
+/// **Neither can express ensemble size.** §2n showed `snapshot_distance` is blind
+/// to RESOLUTION (rank-independent by construction); this shows it is blind to
+/// ENSEMBLE SIZE as well. It reads the sampling PITCH, which is measured here to be
+/// the smaller of the two things that determine the error.
+///
+/// ⇒ **A `ReducedValidityDomain` must state CARDINALITY, not only pitch** — and
+/// the online candidate cannot check the clause that matters more.
+///
+/// ### ✅ C is the positive control, and it tells `active_novelty` apart from noise
+///
+/// C fires: `0.250 / 0.182 / 0.167`, where A and B read exactly zero. `[-1, +1]`
+/// leaves a genuine hole at the centre that `±0.5a` sweeps through. So
+/// `active_novelty` does measure something real — **COVERAGE** — and it fires
+/// exactly when coverage fails. That is the correct semantics for it, and this
+/// sweep measures coverage to be the thing that is NOT dominating.
+///
+/// ### Pre-registration
+///
+/// 1. ⛔ Not the branch taken — gap is not the only factor.
+/// 2. ✅ **SIZE matters, and dominates.** With the consequence stated there: the
+///    domain must carry cardinality, and a nearest-neighbour signal cannot.
+/// 3. Both mechanisms are real; SIZE won at this gap by `~2×`.
+/// 4. ⚠ Read as a direction only, as flagged: B and C read higher than A, but the
+///    cross-ensemble normaliser makes the numbers non-comparable.
+///
+/// ### ⚠ What this does NOT establish
+///
+/// - **One held-out point, one gap pair, one size pair.** The `2.13–2.70×` and
+///   `1.09–1.17×` are two points each, not a scaling law.
+/// - **Size and snapshot COUNT are confounded here** — B and C have 142 snapshots
+///   because they have 2 trajectories of 71 steps. Nothing separates "more
+///   trajectories" from "more snapshots"; a longer ramp at fewer offsets would.
+/// - **The rank ceilings differ**, so only the matched-rank rows isolate a factor.
+///   The own-ceiling column mixes basis quality with the ceiling itself, which is
+///   why it is reported separately and named as compounding.
+#[test]
+#[ignore = "§4c ensemble-density sweep — 5 full-order trajectories, ~2 min (see the fn docs)"]
+fn how_dense_the_training_ensemble_must_be() {
+    let base = Scene::new(GEN_A_OVER_CELL);
+    let x_rest = rest_positions(&base.mesh());
+    let solver = base.solver(InitialGuess::PreviousState);
+    let fd = solver.free_dof_indices().to_vec();
+    let mass = solver.mass_per_free_dof();
+    let tol = SolverConfig::skeleton().tol;
+    let n_steps = base.n_steps();
+    let scored_at = LOO_HELD_OUT;
+
+    println!(
+        "\nRC\t§4c DENSITY SWEEP: {} free DOF, all arms scored at {scored_at:+.2}a\n\
+         RC\tA vs B isolates ENSEMBLE SIZE at fixed gap; B vs C isolates GAP at fixed size.",
+        fd.len(),
+    );
+
+    let mut oracles: Vec<(f64, Oracle)> = Vec::new();
+    for dx in TRAIN_OFFSETS {
+        let o = run_oracle(Scene::at_offset(GEN_A_OVER_CELL, dx), &x_rest, NO_TIMING);
+        assert!(
+            o.arm.failure.is_none(),
+            "oracle at {dx:+.2}a failed: {}",
+            o.arm.failure.as_deref().unwrap_or(""),
+        );
+        oracles.push((dx, o));
+    }
+    let at = |dx: f64| -> &Oracle {
+        &oracles
+            .iter()
+            .find(|(t, _)| (t - dx).abs() < 1e-12)
+            .unwrap_or_else(|| panic!("no oracle at {dx:+.2}a"))
+            .1
+    };
+
+    let mut rows: Vec<(&'static str, usize, Arm)> = Vec::new();
+    for (tag, offsets) in DENSITY_SETS {
+        assert!(
+            offsets.iter().all(|d| (d - scored_at).abs() > 1e-12),
+            "{tag} contains the scored offset, so it is not held out at all",
+        );
+        let mut snaps = SnapshotSet::new(fd.len());
+        let mut active = std::collections::BTreeSet::new();
+        for &dx in offsets {
+            let sc = Scene::at_offset(GEN_A_OVER_CELL, dx);
+            for (k, x) in at(dx).x.iter().enumerate() {
+                snaps.push(&SnapshotSet::free_displacement(x, &x_rest, &fd));
+                active.extend(active_vertices(x, sc.centre_at(k), sc.d_hat));
+            }
+        }
+        let gap = offsets
+            .iter()
+            .map(|d| (d - scored_at).abs())
+            .fold(f64::INFINITY, f64::min);
+        println!(
+            "\nRC\t── {tag}: {} snapshots, {} vertices ever active, true gap {gap:.2}a ──",
+            snaps.len(),
+            active.len(),
+        );
+        let mut seen = std::collections::BTreeSet::new();
+        for r in BASIS_RANKS {
+            let basis = PodBasis::fit(&snaps, Inner::Mass, &mass, 1.0, r).expect("basis fits");
+            if !seen.insert(basis.n_modes()) {
+                continue;
+            }
+            let train_q: Vec<Vec<f64>> = snaps.columns().iter().map(|u| basis.project(u)).collect();
+            let radius = cloud_radius(&train_q);
+            assert!(radius > 0.0, "zero cloud radius at r={}", basis.n_modes());
+            let probe = Probe {
+                envelope: training_envelope(&train_q),
+                train_q,
+                cloud_radius: radius,
+                train_active: &active,
+                tol,
+                d_hat: base.d_hat,
+            };
+            let sc = Scene::at_offset(GEN_A_OVER_CELL, scored_at);
+            let arm = run_reduced(
+                sc,
+                &basis,
+                InitialGuess::Inertial,
+                format!("{tag} r={r}→{}", basis.n_modes()),
+                &Ctx {
+                    x_rest: &x_rest,
+                    fd: &fd,
+                    oracle: at(scored_at),
+                    probe: Some(&probe),
+                },
+                NO_TIMING,
+            );
+            arm.print(n_steps, sc.d_hat);
+            rows.push((tag, basis.n_modes(), arm));
+        }
+    }
+    assert_every_arm_produced(&rows, rows.len());
+
+    println!(
+        "\nRC\t╔═ held-out error at {scored_at:+.2}a, and what the domain signal reads\n\
+         RC\t║ {:<26}{:>12}{:>22}{:>16}",
+        "ensemble", "relL2", "snapshot-dist max/med", "novelty max"
+    );
+    for (tag, got, arm) in &rows {
+        let s3 = signal(arm, |s| s.snapshot_distance, Quantile::Max);
+        let s3m = signal(arm, |s| s.snapshot_distance, Quantile::Median);
+        let s4 = signal(arm, |s| s.active_novelty, Quantile::Max);
+        println!(
+            "RC\t║ {:<26}{:>12.3e}{:>22}{:>16}",
+            format!("{tag} r={got}"),
+            arm.max_rel_err,
+            match (s3, s3m) {
+                (Some(a), Some(b)) => format!("{a:.3e}/{b:.3e}"),
+                _ => "—".to_owned(),
+            },
+            s4.map_or_else(|| "—".to_owned(), |v| format!("{v:.3e}")),
+        );
+    }
+    println!(
+        "RC\t║ A vs B at the SAME gap ⇒ what ENSEMBLE SIZE alone buys.\n\
+         RC\t║ B vs C at the SAME size ⇒ what GAP alone costs.\n\
+         RC\t╚═"
+    );
 }
