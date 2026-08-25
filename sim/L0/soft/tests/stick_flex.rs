@@ -742,9 +742,16 @@ struct Cost {
 
 impl Cost {
     /// Median of this run's sample. ★ Delegates to `stickrig::percentile` so
-    /// this fixture and `stick_impact.rs` cannot drift on what a percentile
-    /// means; that function documents the upper-median convention and why it is
-    /// the conservative one for a fits-the-budget claim.
+    /// this fixture, `stick_impact.rs` and `predictor_spike.rs` cannot drift on
+    /// what a percentile means.
+    ///
+    /// ⚠ That function used to take the UPPER median and argue it was the
+    /// conservative choice for a fits-the-budget claim. Both halves are gone: it
+    /// now uses the standard nearest-rank `⌈q·n⌉ − 1`, and it retracts the
+    /// conservatism argument by name (the bias flips sign depending on whether
+    /// you are claiming a figure fits a budget or busts one). Every consumer of
+    /// `Cost` here is an `#[ignore]`d timing instrument, so no accuracy figure
+    /// this file publishes moved.
     fn p50(values: &[f64]) -> f64 {
         percentile(values, 0.5)
     }

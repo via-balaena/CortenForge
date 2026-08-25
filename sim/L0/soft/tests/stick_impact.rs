@@ -63,7 +63,9 @@
 //! percentile falls outside them. Its `max` shows what its `p99` hides — the
 //! producer reads `p99 = 21.9 ms` against `max = 366 ms` on the same row. Only
 //! `ForceHeld`'s **convergence verdict** and its **`max`** are quotable; nothing
-//! in this file asserts on its `p99`.
+//! in this file asserts on its `p99`. The producer reads `p99 = 8.4 ms` against
+//! `max = 362 ms` on the same row — a `43×` gap between the two statistics, on
+//! one row, because only one frame of the three hundred is an impact.
 //!
 //! ⚠⚠ **The arms are not momentum-matched analytically, and that is deliberate.**
 //! Matching `F·dt` against `m·Δv` needs the lumped mass of the loaded band,
@@ -95,11 +97,19 @@
 //! these docs claimed a single strike would make the `p99` "meaningless"; it does
 //! not. Backward Euler at `dt = 1/90` is strongly dissipative on a `13.7 Hz`
 //! first mode (`~6.6 steps per period`), but the ring-down still leaves several
-//! elevated frames, so a one-strike `p99` lands **on the ring-down**, at `43 %`
-//! of the impact's iteration count — it understates by `2.3×` rather than
-//! reporting nothing. (An earlier draft said `2.4×`, which is the *wall-time*
-//! dilution; sitting beside the `43 %` iteration ratio it read as that ratio's
-//! reciprocal, which is `2.3`.) Ten strikes put the `p99` exactly on the worst frame
+//! elevated frames, so a one-strike `p99` lands **on the ring-down**, at `38 %`
+//! of the impact's iteration count — it understates by `2.6×` rather than
+//! reporting nothing. The wall-time dilution is `2.7×`.
+//!
+//! ⚠⚠ Those figures read `43 %` / `2.3×` until 2026-08-25, and the story of how
+//! is worth more than the numbers. They were measured when `stickrig::percentile`
+//! used `⌊q·n⌋`; changing it to the standard `⌈q·n⌉` moved the `n = 300,
+//! q = 0.99` order statistic by exactly ONE rank, which on a run with a single
+//! elevated event is the difference between `16` iterations and `14`. Nothing
+//! re-derived them. A later pass then "corrected" `2.4×` to `2.3×` by taking the
+//! reciprocal of the stale `43 %` — **a correction computed on top of an
+//! un-re-derived number.** ⇒ Changing a summary statistic's definition
+//! invalidates every figure ever measured with it, including the ones in prose. Ten strikes put the `p99` exactly on the worst frame
 //! (`37` of `37` iterations).
 //!
 //! ⚠⚠ **And `max` is not usable as a statistic here.** A `max` over 300 frames is
@@ -184,8 +194,8 @@ const VR_DT: f64 = 1.0 / 90.0;
 /// ★ Set by the `p99` it has to support, not by taste: a `p99` over
 /// `stick_flex.rs`'s 20 samples is the 20th-of-20 order statistic, i.e. the
 /// maximum wearing a percentile's name. `300` puts the `99th` percentile at
-/// index `297`, three samples deep, and spans `3.33 s` of sim time — about
-/// `46` periods of the `13.7 Hz` first mode.
+/// index `296` under [`percentile`]'s `⌈q·n⌉ − 1` rule, three samples deep, and
+/// spans `3.33 s` of sim time — about `46` periods of the `13.7 Hz` first mode.
 const RUN_FRAMES: usize = 300;
 
 /// Frames between strikes. See the module docs: this is a `p99` **requirement**,
@@ -707,6 +717,16 @@ fn a_momentum_strike_converges_deeper_than_any_force_strike_that_converged() {
     // clear a tiny bar — the gate passing LOUDER on weaker evidence. In the limit
     // `> 0.0` accepts a bar of `1e-30`. Piloted at `4.96e-3`, so `1e-3` keeps
     // ~5x margin while refusing a bar that represents no real deflection.
+    // ⚠ Two different defects, so two different messages. The `> 0.0` form this
+    // replaced said "the rig is broken, not the finding" — right for the
+    // nothing-completed case and wrong for a merely shallow bar. Collapsing them
+    // into one threshold lost that, and a diagnosis is most of what an assert is
+    // worth when it fires.
+    assert!(
+        deepest_force > 0.0,
+        "NO force-posed cell completed, so there is nothing to compare the impulse \
+         arm against. The rig is broken, not the finding"
+    );
     assert!(
         deepest_force > 1e-3,
         "the deepest CONVERGING force cell reached only d/L = {deepest_force:.3e}. \
@@ -730,15 +750,23 @@ fn a_momentum_strike_converges_deeper_than_any_force_strike_that_converged() {
     );
 }
 
-/// ★★ **The spike is iteration count — asserted on iterations, so it can run in
-/// CI.**
+/// ★★ **The frame-cost spike tracks iteration count — asserted on iterations, so
+/// it can run in CI.**
 ///
 /// If frame cost were driven by something other than how many Newton iterations
 /// a frame takes, the iteration count would NOT span the range the frame cost
-/// does. This gate holds the iteration half, which is deterministic; the
-/// wall-time half — that cost per iteration stays flat — needs a clock and lives
-/// in [`the_cost_per_iteration_is_flat_across_the_spike`] behind a quiet-box
-/// gate.
+/// does. This gate holds that half, which is deterministic.
+///
+/// ⚠⚠ **It does NOT establish the attribution, and it used to be named as if it
+/// did.** This test reads only `run.iters`; it never touches `run.ms`. Splitting
+/// the wall-time half out into
+/// [`the_cost_per_iteration_is_flat_across_the_spike`] was necessary to keep a
+/// clock off CI's path, but it left the claim "*and not cost per iteration*"
+/// enforced nowhere in CI — a fixed per-frame overhead of `2 ms` inside the
+/// timed region drives cost per iteration `1.73×` apart and this gate still
+/// passes, printing a `ms/it` column it asserts nothing about. ⇒ **The
+/// attribution is a reference-box measurement, not a CI guarantee.** The name
+/// now says only what the asserts do.
 ///
 /// ⚠ Splitting them is not cosmetic. `quality-gate.yml` runs eleven binaries in
 /// one `cargo test --release` with no `--test-threads=1`, so every release-only
@@ -748,7 +776,7 @@ fn a_momentum_strike_converges_deeper_than_any_force_strike_that_converged() {
 /// its timing instruments behind `refbox::require_quiet_box()` for exactly this.
 #[test]
 #[cfg_attr(debug_assertions, ignore = "release-only measurement")]
-fn the_frame_cost_spike_is_iteration_count_not_cost_per_iteration() {
+fn the_frame_cost_spike_tracks_iteration_count() {
     report_header();
     let mut it99 = Vec::new();
     for magnitude in [0.05, 0.50, 2.00] {
@@ -891,7 +919,14 @@ fn a_game_strike_busts_the_pcvr_budget_on_both_p50_and_p99() {
         p99 / p50,
     );
     // ★ Both arms now assert what the name says: over the budget, on both
-    // statistics. Piloted at 2.1-2.4 ms and 38-43 ms across runs.
+    // statistics. Piloted at 2.20-2.35 ms and 38-43 ms across runs.
+    //
+    // ⚠⚠ The `p50` arm is the THINNEST margin on this branch — 10-18 % over its
+    // threshold, on a quantity this file's own docs put at ~5 % run-to-run drift.
+    // Every other threshold here has >=3x margin or sits on deterministic
+    // iteration counts. It is tolerable only because this test is `#[ignore]`d
+    // and quiet-box gated, so a flake costs a re-run rather than a red CI check.
+    // If it ever fires, re-measure before believing it.
     assert!(
         p50 > PCVR_PHYSICS_BUDGET_MS,
         "p50 was {p50:.2} ms, INSIDE the {PCVR_PHYSICS_BUDGET_MS} ms budget. The \
@@ -989,7 +1024,7 @@ fn an_unstruck_run_is_flat_and_a_struck_one_is_not() {
 ///
 /// ```text
 ///   10 strikes   p99 = 37 iters, worst = 37 iters   ratio 1.00  <- p99 IS an impact frame
-///    1 strike    p99 = 16 iters, worst = 37 iters   ratio 0.43  <- p99 is a RING-DOWN frame
+///    1 strike    p99 = 14 iters, worst = 37 iters   ratio 0.38  <- p99 is a RING-DOWN frame
 /// ```
 ///
 /// ★★ **The worst frame is the same in both runs, which is the control that
@@ -1071,6 +1106,11 @@ fn striking_once_leaves_the_p99_blind_to_the_impact() {
         100.0 * once99 / once_worst
     );
 }
+
+// ---------------------------------------------------------------------------
+// Probe 1 — the load path, or the starting point?
+// One BE step at a time, so nothing accumulates across frames.
+// ---------------------------------------------------------------------------
 
 /// One backward-Euler step from rest, with the blade band's velocity seeded.
 struct StepProbe {
@@ -1333,6 +1373,11 @@ fn whether_the_starting_point_or_the_momentum_does_the_work() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Probe 2 — same distance from the answer, different direction.
+// Holds `p` fixed so the equation cannot move while the start does.
+// ---------------------------------------------------------------------------
 
 /// The axial profile a guess-error is given, as a function of rest `x/L`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1665,6 +1710,11 @@ fn whether_the_shape_of_the_guess_error_sets_the_iteration_count() {
          as measured"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Probe 3 — a real impact frame, and the same intervention end to end.
+// Mid-trajectory rather than from rest; this is the claim that ships.
+// ---------------------------------------------------------------------------
 
 /// Where Newton is started on a real impact frame.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -2001,7 +2051,9 @@ fn one_frame_from<S: Solver>(
 /// 300 frames, about `6 %` growth per frame, which is ordinary for a nonlinear
 /// oscillator struck ten times. The claim "the trajectory is unchanged to
 /// `1.8e-9`" came from comparing `peak_ratio`, a scalar extremum reached right
-/// after the FIRST strike, before divergence sets in. It certified nothing.
+/// after the FIRST strike, before divergence sets in. It certified nothing — the
+/// trace above is what the code actually produces, and `5.6e-1` is the figure to
+/// quote.
 ///
 /// ⇒ **The accumulation-free evidence is
 /// [`whether_a_smoothed_start_cuts_iterations_on_a_real_impact_frame`]**, which
@@ -2086,7 +2138,7 @@ fn whether_a_smoothed_start_moves_the_p99_end_to_end() {
         //
         // ⚠⚠ The end-state comparison this replaced could not tell those apart,
         // and neither could the `peak_ratio` scalar before it — which reported
-        // `1.8e-9` agreement on runs whose full states end `6.5e-4` apart.
+        // near-perfect agreement on runs this trace ends `5.6e-1` apart.
         let trace = divergence_trace(Start::AtP, start, magnitude);
         assert!(
             trace.len() == RUN_FRAMES,
@@ -2227,8 +2279,8 @@ fn smoothed_start(
 /// different simulation.
 ///
 /// Comparing only the final states cannot tell those apart, which is how the
-/// `peak_ratio` control this replaced reported `1.8e-9` on runs whose full
-/// states were `6.5e-4` apart.
+/// `peak_ratio` control this replaced reported near-perfect agreement on runs
+/// this trace ends `5.6e-1` apart.
 fn divergence_trace(a: Start, b: Start, magnitude: f64) -> Vec<f64> {
     let (mu, lambda) = lame_for(e_eff_for(EI_TARGET));
     let field = MaterialField::uniform(mu, lambda);
@@ -2273,7 +2325,6 @@ fn divergence_trace(a: Start, b: Start, magnitude: f64) -> Vec<f64> {
         }
         let scale = dof_distance(&state[0].0, &x_rest).max(f64::MIN_POSITIVE);
         trace.push(dof_distance(&state[0].0, &state[1].0) / scale);
-        let _ = k;
     }
     trace
 }
