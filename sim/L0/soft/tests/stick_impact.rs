@@ -2384,9 +2384,9 @@ fn divergence_trace(a: Start, b: Start, magnitude: f64) -> Vec<f64> {
 // ⚠ **Rank 0 IS `InitialGuess::PreviousState`, exactly** — the projector is the
 // zero map, so the sweep starts at a variant that already ships. The other
 // endpoint is NOT reachable here and this file does not claim it: `ΦΦᵀM = I`
-// needs `r = n_free = 360`, and a ring-down of ~50 frames can supply at most
-// ~50 modes. `AtP` therefore stays a separate row rather than the top of the
-// sweep.
+// needs `r = n_free = 360`, and this ring-down supplies a single-digit number
+// of sound modes. `AtP` therefore stays a separate row rather than the top of
+// the sweep.
 //
 // ★★ Why this is worth measuring even though R1 does not generalise across
 // contact positions: **a predictor cannot be wrong, only expensive.** The
@@ -2395,10 +2395,11 @@ fn divergence_trace(a: Start, b: Start, magnitude: f64) -> Vec<f64> {
 // failure that disqualifies the reduced *solve* is not disqualifying here, and
 // that asymmetry is the whole reason this candidate outlived `SmoothedInertial`.
 
-/// Modes the ring-down fit retains at most.
+/// Modes the first, diagnostic fit is allowed to return.
 ///
-/// The sweep never asks for a rank above half of this, because the `High`
-/// control needs `rank..2·rank` to exist without being clipped.
+/// A cap on what gets *looked at*, not on what gets used: the arms run against
+/// the leading [`ModalRig::sound_rank`] modes, which is a much smaller number
+/// and is derived from the spectrum rather than chosen.
 const MODAL_MAX_MODES: usize = 32;
 
 /// Periods of the first bending mode the ring-down is sampled over.
@@ -2409,6 +2410,37 @@ const MODAL_MAX_MODES: usize = 32;
 /// many times over and short enough that the samples are not all noise.
 const RINGDOWN_PERIODS: f64 = 8.0;
 
+/// How far from `ΦᵀMΦ = I` the retained modes are allowed to sit.
+///
+/// ★★★ **This number chooses the rank — the rank does not choose it.** A POD
+/// fitted through the Gram matrix `G = UᵀU` squares the spectrum, so mode `k`
+/// carries a relative eigenvalue `(σ_k/σ_max)²` and an f64 eigensolve resolves
+/// it to about
+///
+/// ```text
+///     mode error  ≈  ε · (σ_max/σ_k)²
+/// ```
+///
+/// which inverts to a floor on the spectrum: a mode is worth keeping only while
+/// `σ_k/σ_max ≥ √(ε/target)`. At `1e-8` that is `σ_k/σ_max ≥ 1.5e-4`.
+///
+/// ⚠ **The crate's own `SIGMA_FLOOR_REL = 1e-8` is a different threshold and
+/// does not serve this purpose.** It marks where a mode becomes
+/// *distinguishable from* round-off, not where it becomes *accurate*, and the
+/// gap between the two is a square root. Fitted with `max_modes = 32` this
+/// ring-down clears that floor with 9 modes, of which the last few are noise:
+/// the pilot read `ΦᵀMΦ − I` at `1.8e-3` on the diagonal and `6.3e-4` off it,
+/// four orders worse than an orthogonal projector, which is what
+/// [`whether_the_band_projector_is_a_projector`] failed on before this constant
+/// existed. That is not a defect in `PodBasis` — it is `SIGMA_FLOOR_REL` being
+/// asked a question it does not answer.
+const MODAL_ORTHONORMALITY_TARGET: f64 = 1.0e-8;
+
+/// Relative singular-value floor implied by [`MODAL_ORTHONORMALITY_TARGET`].
+fn modal_sigma_floor() -> f64 {
+    (f64::EPSILON / MODAL_ORTHONORMALITY_TARGET).sqrt()
+}
+
 /// Frames of free vibration to snapshot, DERIVED from the stick's own `f₁`
 /// rather than hard-coded, so it cannot rot if the section or `EI` moves.
 fn ringdown_frames() -> usize {
@@ -2417,8 +2449,105 @@ fn ringdown_frames() -> usize {
     n
 }
 
+/// `Φ_S Φ_Sᵀ M u` for an M-orthonormal column set `modes`.
+///
+/// Free rather than a method because the two subspaces under test come from
+/// different places — the POD fit and a deterministic random draw — and
+/// projecting them with the same code is what makes the control comparable.
+fn project_onto(modes: &[Vec<f64>], mass: &[f64], u: &[f64]) -> Vec<f64> {
+    let mut out = vec![0.0; u.len()];
+    for phi in modes {
+        let q: f64 = phi
+            .iter()
+            .zip(u)
+            .zip(mass)
+            .map(|((a, b), m)| a * b * m)
+            .sum();
+        for (o, p) in out.iter_mut().zip(phi) {
+            *o += q * p;
+        }
+    }
+    out
+}
+
+/// Worst `|ΦᵀMΦ − I|` over a column set, as `(diagonal, off-diagonal)`.
+///
+/// The instrument [`MODAL_ORTHONORMALITY_TARGET`] is read against, and the one
+/// the random control is held to as well — a control compared against an
+/// orthogonal projector has to be one.
+fn gram_error(modes: &[Vec<f64>], mass: &[f64]) -> (f64, f64) {
+    let (mut diag, mut off) = (0.0f64, 0.0f64);
+    for (j, a) in modes.iter().enumerate() {
+        for (k, b) in modes.iter().enumerate() {
+            let g: f64 = a.iter().zip(b).zip(mass).map(|((x, y), m)| x * y * m).sum();
+            if j == k {
+                diag = diag.max((g - 1.0).abs());
+            } else {
+                off = off.max(g.abs());
+            }
+        }
+    }
+    (diag, off)
+}
+
+/// `‖u‖_M = √(uᵀMu)` — the norm the basis is orthonormal in, and the one
+/// [`Band::ScaledLikeLow`] matches against.
+fn m_norm(mass: &[f64], u: &[f64]) -> f64 {
+    u.iter()
+        .zip(mass)
+        .map(|(a, m)| a * a * m)
+        .sum::<f64>()
+        .sqrt()
+}
+
+/// `count` M-orthonormal directions drawn from a fixed seed.
+///
+/// ★ Deterministic on purpose. A control that redraws every run cannot be
+/// re-read, and a row that moves between runs is indistinguishable from a row
+/// that responds to the change under test.
+fn random_orthonormal(n: usize, count: usize, mass: &[f64]) -> Vec<Vec<f64>> {
+    let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+    let mut next = || {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        ((seed >> 11) as f64 / (1u64 << 53) as f64).mul_add(2.0, -1.0)
+    };
+    let mut out: Vec<Vec<f64>> = Vec::with_capacity(count);
+    for _ in 0..count {
+        let mut v: Vec<f64> = (0..n).map(|_| next()).collect();
+        // Modified Gram–Schmidt in the mass product, twice: one pass loses
+        // orthogonality to the earlier columns at the level of the condition
+        // number, and this control is compared against a basis held to 1e-8.
+        for _ in 0..2 {
+            for q in &out {
+                let d: f64 = q
+                    .iter()
+                    .zip(&v)
+                    .zip(mass)
+                    .map(|((a, b), m)| a * b * m)
+                    .sum();
+                for (vi, qi) in v.iter_mut().zip(q) {
+                    *vi -= d * qi;
+                }
+            }
+        }
+        let nrm = m_norm(mass, &v);
+        assert!(
+            nrm > 0.0,
+            "a random draw collapsed onto the span of the earlier controls"
+        );
+        for vi in &mut v {
+            *vi /= nrm;
+        }
+        out.push(v);
+    }
+    out
+}
+
 /// A basis of the stick's own low-strain shapes, plus the metric it is
-/// orthonormal in and the DOF map it is written in.
+/// orthonormal in, the DOF map it is written in, and the rank-matched random
+/// subspace it is judged against.
 ///
 /// ⚠⚠ **Fitted on a ring-down, never on a strike.** The stick is bent by the
 /// static tip load, the load is released, and the free vibration is
@@ -2438,6 +2567,11 @@ struct ModalRig {
     /// Lumped mass per free DOF, in `free` order — the metric `Inner::Mass`
     /// makes the basis orthonormal in.
     mass: Vec<f64>,
+    /// Leading modes that clear [`modal_sigma_floor`]. The arms use these; the
+    /// rest are kept only so the spectrum can be printed.
+    sound: usize,
+    /// `sound` M-orthonormal random directions — the rank-matched control.
+    random: Vec<Vec<f64>>,
 }
 
 impl ModalRig {
@@ -2485,64 +2619,57 @@ impl ModalRig {
         // mislead about held-out error.
         let basis = PodBasis::fit(&snaps, Inner::Mass, &mass, 1.0, MODAL_MAX_MODES)
             .expect("the ring-down must carry resolvable content");
-        Self { basis, free, mass }
+
+        let sv = basis.singular_values();
+        let floor = modal_sigma_floor() * sv.first().copied().unwrap_or(0.0);
+        let sound = sv
+            .iter()
+            .take(basis.modes().len())
+            .take_while(|s| **s >= floor)
+            .count();
+        assert!(
+            sound > 0,
+            "no mode cleared the {:.1e} relative spectrum floor, so there is no \
+             sound subspace to project onto",
+            modal_sigma_floor()
+        );
+        let random = random_orthonormal(free.len(), sound, &mass);
+        Self {
+            basis,
+            free,
+            mass,
+            sound,
+            random,
+        }
     }
 
-    /// Modes actually retained by the fit — `MODAL_MAX_MODES` is a cap, not a
-    /// promise, and a ring-down of a beam has far fewer resolvable directions
-    /// than that.
-    fn rank(&self) -> usize {
+    /// Modes the fit returned, sound or not.
+    fn retained(&self) -> usize {
         self.basis.modes().len()
     }
 
-    /// `Φ_S Φ_Sᵀ M u` over the mode band `lo..hi`, together with the width the
-    /// band ACTUALLY had.
-    ///
-    /// ★ The width is returned rather than clipped silently: a `High` control
-    /// asking for `16..32` against a basis that retained 9 modes is projecting
-    /// onto a 0-wide band, which is `AtPrevious` wearing a different label. A
-    /// caller that cannot tell those apart reports a control as passing when it
-    /// never ran.
-    fn project_band(&self, lo: usize, hi: usize, u: &[f64]) -> (Vec<f64>, usize) {
-        let modes = self.basis.modes();
-        let lo = lo.min(modes.len());
-        let hi = hi.clamp(lo, modes.len());
-        let mut out = vec![0.0; u.len()];
-        for phi in &modes[lo..hi] {
-            let q: f64 = phi
-                .iter()
-                .zip(u)
-                .zip(&self.mass)
-                .map(|((a, b), m)| a * b * m)
-                .sum();
-            for (o, p) in out.iter_mut().zip(phi) {
-                *o += q * p;
-            }
-        }
-        (out, hi - lo)
-    }
-
-    /// `‖u‖_M = √(uᵀMu)` — the norm the basis is orthonormal in, and the one
-    /// `Band::ScaledLikeLow` matches against.
-    fn m_norm(&self, u: &[f64]) -> f64 {
-        u.iter()
-            .zip(&self.mass)
-            .map(|(a, m)| a * a * m)
-            .sum::<f64>()
-            .sqrt()
+    /// Modes the arms are allowed to use — see [`MODAL_ORTHONORMALITY_TARGET`].
+    const fn sound_rank(&self) -> usize {
+        self.sound
     }
 }
 
-/// Which modes a [`Start::Modal`] arm keeps — and the two controls that decide
-/// whether keeping the LOW ones is what does the work.
+/// Which subspace a [`Start::Modal`] arm keeps — and the two controls that
+/// decide whether keeping the stick's own LOW modes is what does the work.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Band {
-    /// Modes `0..rank`. The low-strain subspace under test.
+    /// The leading `rank` POD modes of the ring-down. The low-strain subspace
+    /// under test.
     Low,
-    /// Modes `rank..2·rank`. Rank-matched and spectrum-shifted: same number of
-    /// directions, higher-strain ones. Separates "the LOW modes" from "any
-    /// `rank`-dimensional subspace".
-    High,
+    /// `rank` deterministic M-orthonormal RANDOM directions.
+    ///
+    /// ★★ Rank-matched and structure-blind: the same number of directions, drawn
+    /// with no knowledge of the stick. Separates "the structure's own low modes"
+    /// from "any `rank`-dimensional subspace". In 360 dimensions a random
+    /// direction is essentially all high-strain, so this also subsumes the
+    /// high-modes control it replaced — which could not be formed at every rank,
+    /// because the ring-down supplies only a handful of sound modes.
+    Random,
     /// **Not a projection.** `x₀ + α(p − x₀)` with `α = ‖P_low u‖_M / ‖u‖_M`.
     ///
     /// ★★★ The load-bearing control. Projection can only SHRINK the increment
@@ -2560,34 +2687,44 @@ impl Band {
     const fn label(self) -> &'static str {
         match self {
             Self::Low => "low",
-            Self::High => "high",
+            Self::Random => "rand",
             Self::ScaledLikeLow => "scaled",
         }
     }
 }
 
-/// One modal arm: how many modes, and which ones.
+/// One modal arm: how many directions, and which ones.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct ModalArm {
     rank: usize,
     band: Band,
 }
 
-/// The starting point a modal arm selects, and the band width it really used.
+/// The starting point a modal arm selects, and the number of directions it
+/// really used.
+///
+/// ★ The width is returned rather than clipped silently: an arm asking for rank
+/// 8 against a basis with 4 sound modes is projecting onto a narrower subspace
+/// than its label claims, and a caller that cannot tell reports a rank it never
+/// ran.
 fn modal_start(rig: &ModalRig, arm: ModalArm, x0: &[f64], p: &[f64]) -> (Vec<f64>, usize) {
     let u: Vec<f64> = rig.free.iter().map(|&i| p[i] - x0[i]).collect();
+    let low = arm.rank.min(rig.sound_rank());
     let (d, width) = match arm.band {
-        Band::Low => rig.project_band(0, arm.rank, &u),
-        Band::High => rig.project_band(arm.rank, 2 * arm.rank, &u),
+        Band::Low => (project_onto(&rig.basis.modes()[..low], &rig.mass, &u), low),
+        Band::Random => {
+            let k = arm.rank.min(rig.random.len());
+            (project_onto(&rig.random[..k], &rig.mass, &u), k)
+        }
         Band::ScaledLikeLow => {
-            let (low, width) = rig.project_band(0, arm.rank, &u);
-            let den = rig.m_norm(&u);
+            let proj = project_onto(&rig.basis.modes()[..low], &rig.mass, &u);
+            let den = m_norm(&rig.mass, &u);
             let alpha = if den > 0.0 {
-                rig.m_norm(&low) / den
+                m_norm(&rig.mass, &proj) / den
             } else {
                 0.0
             };
-            (u.iter().map(|ui| alpha * ui).collect(), width)
+            (u.iter().map(|ui| alpha * ui).collect(), low)
         }
     };
     // ⚠ Only the FREE DOFs move. A constrained DOF keeps `x₀`, matching what
@@ -2601,76 +2738,88 @@ fn modal_start(rig: &ModalRig, arm: ModalArm, x0: &[f64], p: &[f64]) -> (Vec<f64
     (out, width)
 }
 
-/// ★★ **Is the band projector actually a projector?**
+/// ★★ **Is the projector actually a projector, and how many modes is that true
+/// of?**
 ///
-/// Three properties, and every modal row is meaningless without them:
+/// Four properties, and every modal row is meaningless without them:
 ///
-/// 1. `ΦᵀMΦ = I` on the retained modes. Without it `Φ_SΦ_SᵀM` is not an
-///    orthogonal projection, `‖P u‖_M ≤ ‖u‖_M` need not hold, and
-///    [`Band::ScaledLikeLow`]'s `α` is matching against nothing.
-/// 2. The full band agrees with the crate's own `reconstruct(project(u))`.
-///    ★ The oracle DISAGREES with the subject: `project_band` is hand-rolled
-///    here over a mode subset, `PodBasis::project` is the shipped path, and
-///    they were written by different code. Agreement is evidence; a
-///    re-implementation checked against itself would be none.
-/// 3. Rank 0 reproduces `Start::AtPrevious` **exactly**, bit for bit — the
+/// 1. `ΦᵀMΦ = I` on the SOUND modes, to [`MODAL_ORTHONORMALITY_TARGET`].
+///    Without it `Φ_SΦ_SᵀM` is not an orthogonal projection, `‖Pu‖_M ≤ ‖u‖_M`
+///    need not hold, and [`Band::ScaledLikeLow`]'s `α` matches against nothing.
+/// 2. The same, for the random control — which is compared against the basis
+///    and so has to be held to the same standard.
+/// 3. The full retained band agrees with the crate's own
+///    `reconstruct(project(u))`. ★ The oracle DISAGREES with the subject:
+///    `project_onto` is hand-rolled here over a subspace, `PodBasis::project`
+///    is the shipped path, and they were written by different code. Agreement
+///    is evidence; a re-implementation checked against itself would be none.
+/// 4. Rank 0 reproduces `Start::AtPrevious` **exactly**, bit for bit — the
 ///    endpoint claim the section header makes.
+///
+/// ⚠ It also PRINTS the orthonormality error against retained rank, because
+/// that curve is where [`MODAL_ORTHONORMALITY_TARGET`] gets its floor. Read it
+/// before changing the constant.
 #[test]
 #[ignore = "diagnostic — run explicitly"]
 fn whether_the_band_projector_is_a_projector() {
     let rig = ModalRig::from_ringdown();
-    let modes = rig.basis.modes();
     println!(
-        "\n=== ring-down basis: {} snapshots over {} periods of f1={:.2} Hz, \
-         {} modes retained (cap {MODAL_MAX_MODES}) ===",
+        "\n=== ring-down basis: {} snapshots over {} periods of f1={:.2} Hz ===\n  \
+         {} modes cleared PodBasis's own SIGMA_FLOOR_REL (cap {MODAL_MAX_MODES}); \
+         {} clear this file's {:.1e} spectrum floor and are used",
         ringdown_frames(),
         RINGDOWN_PERIODS,
         f1_analytic(EI_TARGET),
-        rig.rank(),
+        rig.retained(),
+        rig.sound_rank(),
+        modal_sigma_floor(),
     );
     let sv = rig.basis.singular_values();
-    print!("  singular values:");
+    let s0 = sv[0];
+    print!("  sigma/sigma_0:");
     for s in sv.iter().take(12) {
-        print!(" {s:.2e}");
+        print!(" {:.2e}", s / s0);
     }
+    println!("{}", if sv.len() > 12 { " ..." } else { "" });
+
+    // The curve the floor is read off.
     println!(
-        "{}\n  retained energy fraction {:.6}",
-        if sv.len() > 12 { " ..." } else { "" },
-        rig.basis.retained_energy_fraction()
+        "  {:>5} {:>11} {:>11} {:>7}",
+        "rank", "|diag−1|", "|off|", "sound"
     );
-
-    // 1 — mass-orthonormality.
-    let mut worst_off = 0.0f64;
-    let mut worst_diag = 0.0f64;
-    for (j, a) in modes.iter().enumerate() {
-        for (k, b) in modes.iter().enumerate() {
-            let g: f64 = a
-                .iter()
-                .zip(b)
-                .zip(&rig.mass)
-                .map(|((x, y), m)| x * y * m)
-                .sum();
-            if j == k {
-                worst_diag = worst_diag.max((g - 1.0).abs());
-            } else {
-                worst_off = worst_off.max(g.abs());
-            }
-        }
+    for r in 1..=rig.retained() {
+        let (diag, off) = gram_error(&rig.basis.modes()[..r], &rig.mass);
+        println!(
+            "  {r:>5} {diag:>11.2e} {off:>11.2e} {:>7}",
+            if r <= rig.sound_rank() { "yes" } else { "no" }
+        );
     }
-    println!("  ΦᵀMΦ − I: worst diagonal {worst_diag:.2e}, worst off-diagonal {worst_off:.2e}");
+
+    // 1 — mass-orthonormality of the sound modes.
+    let (diag, off) = gram_error(&rig.basis.modes()[..rig.sound_rank()], &rig.mass);
     assert!(
-        worst_diag < 1e-10 && worst_off < 1e-10,
-        "the retained modes are not M-orthonormal (diag {worst_diag:.2e}, off {worst_off:.2e}), \
-         so Φ_SΦ_SᵀM is not an orthogonal projection and the ScaledLikeLow control is \
-         matching against a norm that does not mean what it says"
+        diag < MODAL_ORTHONORMALITY_TARGET && off < MODAL_ORTHONORMALITY_TARGET,
+        "the {} sound modes are not M-orthonormal (diag {diag:.2e}, off {off:.2e}) \
+         against a target of {MODAL_ORTHONORMALITY_TARGET:.1e}, so Φ_SΦ_SᵀM is not an \
+         orthogonal projection and the ScaledLikeLow control is matching against a \
+         norm that does not mean what it says",
+        rig.sound_rank(),
     );
 
-    // 2 — the full band must agree with the shipped projection path.
+    // 2 — and of the random control it is judged against.
+    let (rdiag, roff) = gram_error(&rig.random, &rig.mass);
+    println!("  random control: |diag−1| {rdiag:.2e}, |off| {roff:.2e}");
+    assert!(
+        rdiag < MODAL_ORTHONORMALITY_TARGET && roff < MODAL_ORTHONORMALITY_TARGET,
+        "the random control is not M-orthonormal (diag {rdiag:.2e}, off {roff:.2e}), so \
+         it is not a rank-matched projection and cannot be compared to one"
+    );
+
+    // 3 — the full band must agree with the shipped projection path.
     let u: Vec<f64> = (0..rig.free.len())
         .map(|i| ((i % 17) as f64 - 8.0) * 1e-3)
         .collect();
-    let (mine, width) = rig.project_band(0, rig.rank(), &u);
-    assert!(width == rig.rank(), "the full band was clipped to {width}");
+    let mine = project_onto(rig.basis.modes(), &rig.mass, &u);
     let theirs = rig.basis.reconstruct(&rig.basis.project(&u));
     let gap = mine
         .iter()
@@ -2681,12 +2830,12 @@ fn whether_the_band_projector_is_a_projector() {
     println!("  full band vs PodBasis::reconstruct(project(u)): {gap:.2e} on a {scale:.2e} field");
     assert!(
         gap <= 1e-12 * scale.max(1e-12),
-        "the hand-rolled band projector disagrees with the crate's own projection by \
-         {gap:.2e} on a {scale:.2e} field — every modal row below is computed by code \
-         that does not do what PodBasis does"
+        "the hand-rolled projector disagrees with the crate's own projection by \
+         {gap:.2e} on a {scale:.2e} field — every modal row is computed by code that \
+         does not do what PodBasis does"
     );
 
-    // 3 — rank 0 is `AtPrevious`, exactly.
+    // 4 — rank 0 is `AtPrevious`, exactly.
     let n = 3 * (rig.free.iter().copied().max().unwrap_or(0) / 3 + 1);
     let x0: Vec<f64> = (0..n).map(|i| (i as f64) * 1e-4).collect();
     let p: Vec<f64> = x0.iter().map(|a| a + 1e-3).collect();
@@ -2699,17 +2848,13 @@ fn whether_the_band_projector_is_a_projector() {
         &x0,
         &p,
     );
-    assert!(width == 0, "a rank-0 band cannot have width {width}");
+    assert!(width == 0, "a rank-0 subspace cannot have width {width}");
     assert!(
         zero == x0,
         "rank 0 must reproduce Start::AtPrevious bit for bit; it did not"
     );
     println!("  rank 0 == AtPrevious: exact");
 }
-
-/// Ranks the sweep runs. Bounded by `MODAL_MAX_MODES / 2` so [`Band::High`]'s
-/// `rank..2·rank` can be formed at full width whenever the fit retained the cap.
-const MODAL_RANKS: [usize; 5] = [1, 2, 4, 8, 16];
 
 /// ★★★ **Does starting Newton in the span of the stick's own low modes cut the
 /// iteration count on a real impact frame?**
@@ -2734,9 +2879,9 @@ const MODAL_RANKS: [usize; 5] = [1, 2, 4, 8, 16];
 fn whether_a_modal_start_cuts_iterations_on_a_real_impact_frame() {
     let rig = ModalRig::from_ringdown();
     println!(
-        "\n=== ring-down basis: {} modes retained from {} snapshots ===",
-        rig.rank(),
-        ringdown_frames()
+        "\n=== ring-down basis: {} of {} retained modes are sound and usable ===",
+        rig.sound_rank(),
+        rig.retained()
     );
     for magnitude in [0.25, 1.00, 2.00, 8.00] {
         let probe = ImpactFrame::at_strike(magnitude, STRIKE_PERIOD);
@@ -2792,21 +2937,33 @@ fn whether_a_modal_start_cuts_iterations_on_a_real_impact_frame() {
         row(Start::Smoothed(Shape::FirstMode), 0);
 
         let mut verdict: Vec<String> = Vec::new();
-        for rank in MODAL_RANKS {
-            let mut got: Vec<(Band, Option<usize>, usize)> = Vec::new();
-            for band in [Band::Low, Band::High, Band::ScaledLikeLow] {
+        for rank in 1..=rig.sound_rank() {
+            let mut got: Vec<(Band, Option<usize>)> = Vec::new();
+            for band in [Band::Low, Band::Random, Band::ScaledLikeLow] {
                 let arm = ModalArm { rank, band };
                 let width = modal_start(&rig, arm, &probe.x0, &probe.p).1;
-                got.push((band, row(Start::Modal(arm), width), width));
+                got.push((band, row(Start::Modal(arm), width)));
             }
             let find = |b: Band| got.iter().find(|g| g.0 == b).and_then(|g| g.1);
-            if let (Some(low), Some(scaled)) = (find(Band::Low), find(Band::ScaledLikeLow)) {
+            // `low` is the subject; each control is reported as its own count and
+            // the factor it costs OVER `low`, so `>1.00x` always means the modes won.
+            let against = |other: Option<usize>| -> String {
+                match (other, find(Band::Low)) {
+                    (Some(o), Some(low)) => format!("{o} ({:.2}x)", o as f64 / low as f64),
+                    (Some(o), None) => format!("{o} (--)"),
+                    (None, _) => "FAILED".to_owned(),
+                }
+            };
+            if let Some(low) = find(Band::Low) {
                 verdict.push(format!(
-                    "r={rank}: low {low} vs scaled {scaled} ({:.2}x on SHAPE), \
-                     vs Inertial {baseline} ({:.2}x overall)",
-                    scaled as f64 / low as f64,
+                    "r={rank}: low {low} vs Inertial {baseline} ({:.2}x); \
+                     vs scaled {} = SHAPE; vs rand {} = THESE modes",
                     baseline as f64 / low as f64,
+                    against(find(Band::ScaledLikeLow)),
+                    against(find(Band::Random)),
                 ));
+            } else {
+                verdict.push(format!("r={rank}: low FAILED to converge"));
             }
         }
         for v in &verdict {
