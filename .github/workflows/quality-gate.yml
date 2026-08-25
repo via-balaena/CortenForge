@@ -729,7 +729,7 @@ jobs:
       # assumed. ★ It was caught by `cargo xtask release-gates` on its own first
       # PR, which is that guard working exactly as #747 intended.
       #
-      # `stick_impact` carries FIVE release-only gates and NINE unconditional
+      # `stick_impact` carries FIVE release-only gates and TWELVE unconditional
       # `#[ignore]`s; the selection runs in 11.5 s measured, not estimated.
       #
       # ⚠ These counts go stale the moment a test is added or deleted, and this
@@ -752,7 +752,7 @@ jobs:
       # across_the_spike` — carry UNCONDITIONAL `#[ignore]`s plus
       # `refbox::require_quiet_box()`, the same treatment `stick_flex.rs` gives
       # all three of its timing instruments. Naming the binary runs the five that
-      # should run and leaves all nine out — verified in the run, not assumed.
+      # should run and leaves all twelve out — verified in the run, not assumed.
       #
       # ★ `cargo xtask release-gates` rejected this binary before it was listed —
       # the guard catching #747 a third time, after `stick_flex` (#827) and the

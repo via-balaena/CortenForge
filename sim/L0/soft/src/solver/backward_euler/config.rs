@@ -15,9 +15,16 @@ use crate::solver::lm::LmConfig;
 /// ```
 ///
 /// so the choice here is *which term the first iterate already satisfies*.
-/// It changes the PATH Newton walks, never the root it walks to: every
-/// variant converges to the same `‖r‖ < tol` state, so this is a cost knob,
-/// not a physics knob.
+/// It changes the PATH Newton walks, never the ROOT it walks to — the residual
+/// depends on the guess through nothing but `x̂`.
+///
+/// ⚠ **That is not the same as "a cost knob, not a physics knob", which this
+/// doc used to say here.** A variant that reaches the root reaches the same one;
+/// a variant can also fail to reach it at all. `NewtonIterCap` and
+/// `ArmijoStall` are returned as errors rather than as larger iteration counts,
+/// the converged state is validity-checked on the way out, and the measured
+/// example is two paragraphs down. In a frame budget a failed solve is worse
+/// than a slow one.
 ///
 /// ⚠ **It is not free of risk.** A guess further from the root can land
 /// outside the convergence basin, cost *more* iterations, or — under an
@@ -46,16 +53,36 @@ use crate::solver::lm::LmConfig;
 /// one at matched distance (`whether_the_shape_of_the_guess_error_sets_the_
 /// iteration_count`, which computes and gates that ratio) — and that replacing
 /// `Δt·v_prev` with a smooth tip-matched profile cuts `p99` frame cost by
-/// **`~6×`** (`whether_a_smoothed_start_moves_the_p99_end_to_end`). That result
-/// is real, and it is **beam specific**: the profile delivering it is a linear
-/// axial ramp, which knows the fixture is a cantilever.
+/// **`~6×`** (`whether_a_smoothed_start_moves_the_p99_end_to_end` — ⚠ a producer
+/// that file itself demotes to corroboration, since its two runs are not the
+/// same trajectory by frame 300; the accumulation-free evidence is the per-frame
+/// probe, which reads `25 → 4`). That result is real, and it is **beam
+/// specific**: all three profiles tried are written down in closed form because
+/// the fixture is a cantilever — `Shape::TipLoadCurve` (`3s² − s³`, the static
+/// tip-loaded deflection), `Shape::FirstMode` (the clamped-free eigenfunction),
+/// and `Shape::Rotation` (a linear ramp, i.e. a rigid rotation about the clamp).
+///
+/// ★ Which one wins depends on the strike. They tie at the game strike (`4`
+/// iterations each) and `Rotation` wins outright at `8×` — `13` against
+/// `FirstMode`'s `25` and `TipLoadCurve`'s `37` — which is awkward for the
+/// "beam specific" reading, because a rigid rotation is the least
+/// beam-shaped of the three.
+///
+/// ⚠⚠ A review round asserted that `Rotation` "never wins" and this doc was
+/// edited to match, turning a true sentence ("a linear axial ramp") into a false
+/// one. The claim was not checked against the producer before it was applied.
+/// Numbers above are from `whether_a_smoothed_start_cuts_iterations_on_a_real_
+/// impact_frame`, which prints all three arms at all four magnitudes.
 ///
 /// Two mesh-general forms were implemented as a `SmoothedInertial` variant and
 /// both lost to plain [`Self::Inertial`] on the same fixture: **graph-Laplacian
 /// diffusion with a peak rescale**, which decays the field *away* from the
 /// impulse instead of ramping *toward* it and inverted elements at iteration 0;
 /// and **harmonic extension from the driven nodes**, which was valid and
-/// trajectory-exact and still slower than doing nothing.
+/// still slower than doing nothing. ⚠ It was recorded as "trajectory-exact";
+/// that rested on comparing `peak_ratio`, which `tests/stick_impact.rs` has
+/// since shown certifies nothing — two runs it called identical end `5.6e-1`
+/// apart.
 ///
 /// ⚠⚠ **Those two arms are NOT in the tree and were never committed**, so the
 /// figures they produced are unrecoverable and are deliberately not quoted here.
@@ -75,9 +102,72 @@ use crate::solver::lm::LmConfig;
 ///   so the win comes from imposing a specific *low-strain global shape*, which
 ///   graph smoothing does not produce.
 ///
-/// ⇒ The live candidate is **modal projection** — project `Δt·v_prev` onto the
-/// first few elastic modes, the general form of "a low-strain global shape" —
-/// and this crate already has the basis machinery for it (`reduced`).
+/// ⛔ **Modal projection was that candidate, and it has now been built,
+/// measured and set down too** — `tests/stick_impact.rs` Probe 4, which unlike
+/// the two arms above is IN THE TREE and re-runnable. Projecting `Δt·v_prev`
+/// onto the leading modes of a ring-down POD basis is worth `25 → 6` iterations
+/// at the game strike.
+///
+/// ⚠ **The controls do not show that the modes are what did it, and an earlier
+/// version of this doc said they did.** The two controls — a rank-matched random
+/// subspace and a norm-matched scalar shrink — are both ROUGH fields, so beating
+/// them re-measures the smooth-vs-rough factor the same fixture already put at
+/// `46.8×`. The smooth non-modal comparison is the analytic profile, and that
+/// beats modal projection at every magnitude. ⚠ The scalar shrink also WINS at
+/// both ends of the sweep (`5` against `6` at `0.25×`, `14` against `37` at
+/// `8×`); quoting only its `6.8×` loss at the game strike was one-sided.
+///
+/// It still loses to the beam-specific ramp at every magnitude (`6` against `4`
+/// at the game strike, `29` against `25` at `8×`), so it does not clear the bar
+/// and is not offered as a variant here.
+///
+/// ⚠ And the basis is not the structure-blind object the phrase "fitted on a
+/// ring-down" suggests: the ring-down is excited by ramping a tip-band load and
+/// releasing it in one frame, which is both band-localised and a step, and the
+/// bend it produces IS the analytic tip-load profile. The fitted leading mode
+/// lands `0.018` from that curve. Read the result as "POD rediscovered the ramp,
+/// slightly worse, on a fixture loaded the way the ramp describes".
+///
+/// Three findings from it are worth carrying:
+///
+/// - **A predictor cannot change the ROOT — but it can stop the solve reaching
+///   it.** The residual depends on the guess through nothing but `x̂`, so R1's
+///   failure to generalise across contact positions disqualifies the reduced
+///   *solve* and not a reduced *predictor*. That asymmetry is why this candidate
+///   was worth the run. ⚠ It does NOT extend to "a predictor cannot be wrong,
+///   only expensive", which an earlier version of this doc claimed: an iteration
+///   cap and an Armijo stall are returned as errors, and `helpers`' own
+///   `initial_guess` notes record `InertialWithLoad` stalling at iteration 0
+///   with `r_norm = NaN` on a gravity-loaded IPC scene. In a frame budget a
+///   failed solve is worse than a slow one.
+/// - **A modal predictor must be used as a PROJECTION, never as a rescaled
+///   shape.** Rescaling a mode to match the driven-node displacement costs
+///   `24×` over not rescaling it, and no scalar correction tried recovers it.
+/// - **The in-plane components are what hurt, and POD is the wrong ordering.**
+///   Adding a POD mode's `x`/`y` field to an equivalent transverse profile
+///   costs `20×`, and a mode putting only `2.0 %` of its mass-norm in-plane
+///   costs `14.6×` once it is rescaled. The source is the basis itself: on this
+///   ring-down the modes at ranks 1–2 are AXIAL — `0.999` of each one's own
+///   mass-norm is in-plane — sitting above a bending mode at rank 3. ⚠ Earlier
+///   figures here (`1.7 %`, `22×` and `18×`) were read off an RMS-over-peak
+///   column whose complement is not a share; `tests/stick_impact.rs` records why
+///   that column cannot carry this claim. POD ranks by energy in
+///   the snapshots, and a modest stretching oscillation outranks a stiffer
+///   bending mode on that measure. If a predictor wants the softest modes rather
+///   than the most energetic ones, those are different orderings — a hypothesis,
+///   not a finding, and the untried lever it points at is ordering a basis by
+///   frequency rather than by singular value, which needs neither a stiffness
+///   matrix nor any knowledge of the geometry.
+///
+/// ⚠ `SIGMA_FLOOR_REL` in `reduced::pod` is not a floor for this use. It marks
+/// where a mode is distinguishable from round-off, not where it is accurate, and
+/// the gap is a square root: on the ring-down above it admits 9 modes of which 5
+/// are noise, the worst reading `ΦᵀMΦ − I` at `1.8e-3`. A basis fitted for a
+/// predictor wants truncation at `√(ε/target)` on the relative spectrum, where
+/// `target` is the orthonormality the projector has to have — `1e-8` there,
+/// which keeps 4. ⚠ That rule of thumb ignores the eigenvalue gap and is
+/// optimistic for nearly-degenerate modes; the fixture measures the curve rather
+/// than trusting it.
 ///
 /// ⇒ [`Self::Inertial`] is the best-measured choice on five of the six cells and
 /// never failed on any — **but it is NOT the default, and deliberately so**: on a
