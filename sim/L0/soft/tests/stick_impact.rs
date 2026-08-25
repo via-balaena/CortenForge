@@ -1,0 +1,771 @@
+//! **A puck strike is a step load, and a step load is the one thing this stick
+//! does not survive. Is that the physics, or the way the load was posed?**
+//!
+//! `stick_flex.rs` answered the sizing question — 360 free DOF of Tet10 is a
+//! convincing stick at `1.14 ms/frame`, no reduction needed — and then turned up
+//! something sharper on the way past:
+//!
+//! > A **step load does not converge at any magnitude above ~2 % of a
+//! > slapshot**, for either element, at any `dt`, under either predictor.
+//! > `r_norm` pins at a fixed ~25 % of the load and the solve caps out.
+//!
+//! A puck strike *is* an abrupt load, so on its face that reads as "VR hockey is
+//! not reachable", and it reads that way on the side of the budget no rung of
+//! the reduced-order ladder can move: **reduction cuts `ms/iteration`, never
+//! iteration count.**
+//!
+//! # ★ The knob the discriminator held fixed
+//!
+//! `stick_flex.rs::where_the_dynamic_rig_loses_convergence` swept 24 cells over
+//! **density × timestep × predictor × element**. All 24 pose the load the same
+//! way: a **tip force**, applied instantaneously and held. That is one posing of
+//! a strike, and it is not the posing a game uses.
+//!
+//! A puck does not apply a held force to a blade. It transfers **momentum** over
+//! a contact of `~1 ms` and leaves. The distinction is not cosmetic here,
+//! because of what the predictor does with it:
+//!
+//! ```text
+//!   force step      θ jumps;  v is unchanged  ->  x + dt·v is the OLD state,
+//!                                                 so Newton starts a full
+//!                                                 impact away from the answer
+//!   momentum impulse   θ = 0;  v jumps        ->  x + dt·v already carries the
+//!                                                 strike, so Newton starts
+//!                                                 NEXT TO the answer
+//! ```
+//!
+//! `InitialGuess::Inertial` is exactly `x + dt·v`. So the same physical strike,
+//! posed the way a game poses it, hands Newton a *qualitatively different*
+//! starting point. Whether that is enough to clear the wall is the question this
+//! file exists to answer, and it is not answerable from the 24 cells already
+//! run. → `stick_flex.rs`, and the ladder's memory of it.
+//!
+//! # The three arms, and why the comparison is made at MEASURED deflection
+//!
+//! | arm | what it does | why it is here |
+//! |---|---|---|
+//! | `ForceHeld` | tip force applied at the strike frame and **held** | the discriminator's posing — the **positive control** that this rig can still see the known wall |
+//!
+//! ⚠⚠ **`ForceHeld`'s `p99` is not comparable to the other two arms', by
+//! construction.** Because the force is already standing when the second strike
+//! frame arrives, strikes 2–10 are no-ops: the run contains **one** impact event,
+//! not ten, so its impact frames are `0.3 %` of the sample and the `99th`
+//! percentile falls outside them. Its `max` shows what its `p99` hides — the
+//! producer reads `p99 = 21.9 ms` against `max = 366 ms` on the same row. Only
+//! `ForceHeld`'s **convergence verdict** and its **`max`** are quotable; nothing
+//! in this file asserts on its `p99`.
+//! | `ForcePulse` | the same force, for **one frame**, then released | separates "abrupt" from "sustained": it is a momentum transfer, but delivered as a force |
+//! | `VelocityImpulse` | **no external force at all**; a velocity jump on the blade band | what a puck actually does |
+//!
+//! ⚠⚠ **The arms are not momentum-matched analytically, and that is deliberate.**
+//! Matching `F·dt` against `m·Δv` needs the lumped mass of the loaded band,
+//! which is a property of the mass matrix, not of the fixture. Asserting a match
+//! that the rig cannot verify is how a comparison becomes unfalsifiable. So each
+//! arm sweeps its own magnitude, and every cell **reports the peak tip
+//! deflection it actually reached**. The comparison is then made at matched
+//! *achieved* `δ/L` — a measured quantity — not at matched drive.
+//!
+//! ★ **This is also the trap the sweep has to avoid.** If the impulse arm only
+//! ever reaches `δ/L = 1e-4`, then "the impulse arm converges" is a tautology:
+//! it converges because it barely moved the stick, not because the posing
+//! helped. A claim from this file counts **only** at an achieved deflection that
+//! reaches the regime where `ForceHeld` fails. That is why the magnitude grid is
+//! piloted rather than guessed.
+//!
+//! # Why the strike REPEATS, and why that is a `p99` requirement
+//!
+//! VR punishes a dropped frame with nausea, so the requirement is `p99`, not
+//! `p50`. A `p99` can only see the impact frames if impacts are at least `1 %`
+//! of the sample — and backward Euler at `dt = 1/90` is strongly dissipative on
+//! a `13.7 Hz` first mode (`~6.6 steps per period`), so a single strike at frame
+//! 0 rings down and leaves ~290 easy frames. Its `p99` would land on an easy
+//! frame **by construction** and report a number that means nothing.
+//!
+//! So the stick is struck every [`STRIKE_PERIOD`] frames across
+//! [`RUN_FRAMES`] — `10` strikes, `3` per second of sim time. That is at the
+//! aggressive end of a real possession (a game's stick-puck contacts run nearer
+//! `1–2 Hz`), which is the conservative direction for a claim that something
+//! **fits** a budget. `max` is reported beside `p99`, because for VR one dropped
+//! frame is the failure.
+//!
+//! # The budget this is scored against
+//!
+//! The target is **PCVR** (stated 2026-08-25), i.e. `90 Hz = 11.1 ms` per frame
+//! with render, AI, audio and gameplay taking their share. Physics gets
+//! `~2 ms`. The 360-DOF stick sits at `0.57×` of that on a `p50` — the whole
+//! point of this file is that `p50` was never the binding number.
+//!
+//! # ⛔ Deliberately not measured here
+//!
+//! - **Hand-tracking jitter on the clamped band** — the other half of the VR
+//!   robustness question, and a separate rung.
+//! - **Sub-frame substepping through the contact** — a fourth posing, worth
+//!   measuring only if these three leave a gap.
+//! - **Tet4.** `stick_flex.rs` established that the held-force wall holds for
+//!   *both* elements, and this file does not re-check it. The scope cut is
+//!   principled rather than defensive: Tet4 **locks at this stick's `41:1`
+//!   slenderness** and cannot reach the accuracy bar at any swept size, so a Tet4
+//!   convergence result — whichever way it came out — cannot change what ships.
+//!   ⚠ It would still be *informative*: "posing matters" is claimed here on one
+//!   element only, and that is a narrower claim than the wall it is attacking.
+//! - **Whether the impulse arm's cost is monotone in drive.** It is not, and
+//!   [`whether_the_impulse_arm_costs_more_as_the_strike_grows`] prints the shape
+//!   without explaining it. An unexplained non-monotonicity is reported as open,
+//!   not smoothed over — the `8×` row is quotable as a measurement and not yet as
+//!   an understanding.
+
+// Loaded-vertex counts and frame indices cast to `f64` for load splits and
+// percentile arithmetic — the idiom shared with `stick_flex.rs`, not a
+// precision-sensitive path.
+#![allow(clippy::cast_precision_loss)]
+// `expect` on a value this file has just established to be present. In a test, a
+// violated invariant should abort loudly rather than be threaded through a
+// `Result` no caller can act on — the convention across this crate's tests.
+#![allow(clippy::expect_used)]
+
+use sim_ml_chassis::Tensor;
+use sim_soft::element::Tet10;
+use sim_soft::mesh::HandBuiltTetMesh;
+use sim_soft::solver::CpuNewtonSolver;
+use sim_soft::{CpuTet10NHSolver, InitialGuess, MaterialField, Mesh, NullContact, Tet10Mesh};
+
+mod stickrig;
+
+use stickrig::{
+    DEPTH, EI_TARGET, MASS_PER_LENGTH, SLAPSHOT_DEFLECTION, SPAN, TOL_REL, WIDTH, e_eff_for,
+    lame_for, one_frame, percentile, rho_eff, rig, slapshot_load, tip_of,
+};
+
+// ---------------------------------------------------------------------------
+// The regime.
+// ---------------------------------------------------------------------------
+
+/// VR frame period (s). `90 Hz`, not the `60 Hz` every cost figure in
+/// `stick_flex.rs` is measured at.
+const VR_DT: f64 = 1.0 / 90.0;
+
+/// Frames per run.
+///
+/// ★ Set by the `p99` it has to support, not by taste: a `p99` over
+/// `stick_flex.rs`'s 20 samples is the 20th-of-20 order statistic, i.e. the
+/// maximum wearing a percentile's name. `300` puts the `99th` percentile at
+/// index `297`, three samples deep, and spans `3.33 s` of sim time — about
+/// `46` periods of the `13.7 Hz` first mode.
+const RUN_FRAMES: usize = 300;
+
+/// Frames between strikes. See the module docs: this is a `p99` **requirement**,
+/// not a scenario preference. At `30` the stick is struck `10` times per run and
+/// impact frames are ~`3 %` of the sample, so the `99th` percentile lands inside
+/// the impacts rather than in the quiet ring-down between them.
+const STRIKE_PERIOD: usize = 30;
+
+/// The grid that carries `360` free Tet10 DOF — the stick `stick_flex.rs` says
+/// is a `5 %`-flex-error stick, and the one a PCVR budget affords.
+const GRID: (usize, usize, usize) = (4, 1, 2);
+
+/// Tip stiffness (N/m) of the fixture, `k = 3EI/L³`.
+fn tip_stiffness(ei: f64) -> f64 {
+    3.0 * ei / (SPAN * SPAN * SPAN)
+}
+
+/// Effective tip mass (kg) of the cantilever's first bending mode,
+/// `0.2427·m′·L` — the standard Rayleigh lumping for a clamped-free beam.
+///
+/// Used only to set the *scale* of the velocity sweep. It is not used to match
+/// the arms against each other; see the module docs for why that matching is
+/// refused.
+fn effective_tip_mass() -> f64 {
+    0.242_7 * MASS_PER_LENGTH * SPAN
+}
+
+/// Tip velocity (m/s) whose kinetic energy equals the strain energy of a
+/// slapshot-scale deflection: `½m_eff·v² = ½k·δ²`, so `v = δ·√(k/m_eff)`.
+///
+/// Lands at `~8.6 m/s`. ★ Worth reading against a real puck: the momentum that
+/// carries is `m_eff·v ≈ 0.63 N·s`, which a `170 g` puck delivers by losing
+/// `~3.7 m/s`. That is a firm pass, not a slapshot — so the sweep must reach
+/// **above** `1.0×` before it can claim to have covered game loads.
+fn slapshot_equivalent_tip_velocity() -> f64 {
+    SLAPSHOT_DEFLECTION * (tip_stiffness(EI_TARGET) / effective_tip_mass()).sqrt()
+}
+
+// ---------------------------------------------------------------------------
+// The arms.
+// ---------------------------------------------------------------------------
+
+/// How a strike is delivered to the blade band.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Strike {
+    /// Tip force applied at the strike frame and held for the rest of the run.
+    /// The 24-cell discriminator's posing, and this file's positive control.
+    ForceHeld,
+    /// The same tip force, applied for exactly one frame and then released.
+    ForcePulse,
+    /// No external force at all: a velocity jump on the blade band, which is
+    /// what a momentum transfer is.
+    VelocityImpulse,
+}
+
+impl Strike {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::ForceHeld => "force-held",
+            Self::ForcePulse => "force-pulse",
+            Self::VelocityImpulse => "impulse",
+        }
+    }
+}
+
+/// What one `(strike, magnitude)` cell produced.
+struct Run {
+    free_dof: usize,
+    /// Per-frame Newton iteration counts, in frame order.
+    iters: Vec<usize>,
+    /// Per-frame wall time (ms), in frame order.
+    ms: Vec<f64>,
+    /// ★ Peak tip deflection reached over the run, as a fraction of span. **The
+    /// axis the arms are compared on**, because it is measured rather than
+    /// assumed — see the module docs.
+    peak_ratio: f64,
+    /// `Some(reason)` if the run ended before [`RUN_FRAMES`].
+    ended_early: Option<String>,
+}
+
+impl Run {
+    /// Whether the run completed. ⚠ Every summary below is meaningless on a
+    /// truncated sample, so callers gate on this rather than reading a `p99`
+    /// over however many frames happened before the solver gave up.
+    const fn completed(&self) -> bool {
+        self.ended_early.is_none()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The runner.
+// ---------------------------------------------------------------------------
+
+/// Run one `(strike, magnitude)` cell: [`RUN_FRAMES`] frames at [`VR_DT`], struck
+/// every [`STRIKE_PERIOD`] frames.
+///
+/// `magnitude` is a fraction of the arm's own reference drive — of
+/// [`slapshot_load`] for the two force arms, of
+/// [`slapshot_equivalent_tip_velocity`] for the impulse arm. The arms are
+/// **not** comparable at equal `magnitude`; they are compared at equal
+/// [`Run::peak_ratio`], which this returns.
+///
+/// ★★ **Every arm is held to the same absolute Newton tolerance**, taken from
+/// the slapshot load regardless of which arm is running. Letting each arm scale
+/// its own tolerance by its own drive would mean the impulse arm could "clear
+/// the wall" by being asked for less, which is the failure mode this whole file
+/// is built to avoid. → `stickrig::rig`, which derives `tol` from the load it is
+/// handed.
+fn run_cell(strike: Strike, magnitude: f64, grid: (usize, usize, usize)) -> Run {
+    let (nx, ny, nz) = grid;
+    let (mu, lambda) = lame_for(e_eff_for(EI_TARGET));
+    let field = MaterialField::uniform(mu, lambda);
+    let tet4 = HandBuiltTetMesh::cantilever_bilayer_beam(nx, ny, nz, SPAN, WIDTH, DEPTH, &field);
+    let mesh = Tet10Mesh::from_tet4(&tet4);
+    let n_dof = 3 * mesh.n_vertices();
+
+    // ★ The tolerance reference is the slapshot load for EVERY arm — see the
+    // doc comment. `rig`'s other uses of `load` are confined to that.
+    let tol_reference = slapshot_load(EI_TARGET);
+    let (x_flat, rest_z, bc, mut cfg) = rig(&mesh, tol_reference, rho_eff(), false, TOL_REL);
+    cfg.dt = VR_DT;
+    cfg.initial_guess = InitialGuess::Inertial;
+
+    let free_dof = n_dof - 3 * bc.pinned_vertices.len();
+    let loaded = bc.loaded_vertices.clone();
+    let n_loaded = loaded.len();
+    let solver: CpuTet10NHSolver<Tet10Mesh> =
+        CpuNewtonSolver::new(Tet10, mesh, NullContact, cfg, bc);
+
+    let force_per_vertex = slapshot_load(EI_TARGET) * magnitude / n_loaded as f64;
+    let strike_velocity = slapshot_equivalent_tip_velocity() * magnitude;
+
+    let (mut x, mut v) = (x_flat, vec![0.0; n_dof]);
+    let mut iters = Vec::with_capacity(RUN_FRAMES);
+    let mut ms = Vec::with_capacity(RUN_FRAMES);
+    let mut peak_ratio = 0.0f64;
+    let mut ended_early = None;
+    // Held only by `ForceHeld`; the other two arms drive through `v` or through
+    // a single frame's `theta` and leave this at zero.
+    let mut standing_force = 0.0f64;
+
+    for k in 0..RUN_FRAMES {
+        let striking = k % STRIKE_PERIOD == 0;
+        let theta_value = match strike {
+            Strike::ForceHeld => {
+                if striking {
+                    standing_force = force_per_vertex;
+                }
+                standing_force
+            }
+            Strike::ForcePulse if striking => force_per_vertex,
+            Strike::ForcePulse | Strike::VelocityImpulse => 0.0,
+        };
+        if strike == Strike::VelocityImpulse && striking {
+            // A momentum transfer, not a force: the blade band gains velocity
+            // along the flex axis and nothing else changes. `Inertial` reads
+            // this straight into `x + dt·v`, which is the whole hypothesis.
+            for &(vertex, _) in &loaded {
+                v[3 * vertex as usize + 2] += strike_velocity;
+            }
+        }
+
+        let theta = Tensor::from_slice(&[theta_value], &[1]);
+        match one_frame(&solver, &mut x, &mut v, &theta, VR_DT) {
+            Ok((it, t)) => {
+                iters.push(it);
+                ms.push(t);
+                peak_ratio = peak_ratio.max(tip_of(&x, &loaded, &rest_z) / SPAN);
+            }
+            Err(why) => {
+                ended_early = Some(format!("frame {k}: {why}"));
+                break;
+            }
+        }
+    }
+
+    Run {
+        free_dof,
+        iters,
+        ms,
+        peak_ratio,
+        ended_early,
+    }
+}
+
+/// One row of the report, or the reason there is no row.
+fn report_row(strike: Strike, magnitude: f64, run: &Run) {
+    let verdict = run.ended_early.as_deref().unwrap_or("ok");
+    if run.completed() {
+        let ms_f: Vec<f64> = run.ms.clone();
+        let it_f: Vec<f64> = run.iters.iter().map(|&i| i as f64).collect();
+        // A run whose predictor already meets tol takes ZERO iterations, so
+        // there is no per-iteration cost to report. Printing the `inf` that
+        // division gives reads as a defect; `n/a` reads as what it is.
+        let it99 = percentile(&it_f, 0.99);
+        let per_iter = if it99 > 0.0 {
+            format!("{:.3}", percentile(&ms_f, 0.99) / it99)
+        } else {
+            "n/a".to_owned()
+        };
+        println!(
+            "{:>13} {magnitude:>7.3} {:>7} {:>10.2e} {:>8.2} {:>8.2} {:>8.2} {:>7.1} {:>7.1} \
+             {:>7} {:>8} {:>9}",
+            strike.label(),
+            run.free_dof,
+            run.peak_ratio,
+            percentile(&ms_f, 0.5),
+            percentile(&ms_f, 0.99),
+            ms_f.iter().copied().fold(0.0f64, f64::max),
+            percentile(&it_f, 0.5),
+            it99,
+            run.iters.iter().copied().max().unwrap_or(0),
+            per_iter,
+            verdict,
+        );
+    } else {
+        // ⚠ No summary at all on a truncated run. A `p99` over the handful of
+        // frames that happened before the solver gave up is not a `p99` of
+        // anything, and printing one beside the completed rows invites it to be
+        // read as if it were.
+        println!(
+            "{:>13} {magnitude:>7.3} {:>7} {:>10.2e} {:>8} {:>8} {:>8} {:>7} {:>7} {:>7} \
+             {:>8} {:>9}",
+            strike.label(),
+            run.free_dof,
+            run.peak_ratio,
+            "-",
+            "-",
+            "-",
+            "-",
+            "-",
+            "-",
+            "-",
+            verdict,
+        );
+    }
+}
+
+/// Column header for [`report_row`].
+fn report_header() {
+    println!(
+        "{:>13} {:>7} {:>7} {:>10} {:>8} {:>8} {:>8} {:>7} {:>7} {:>7} {:>8} {:>9}",
+        "arm",
+        "mag",
+        "DOF",
+        "peak d/L",
+        "p50 ms",
+        "p99 ms",
+        "max ms",
+        "p50 it",
+        "p99 it",
+        "max it",
+        "ms/it99",
+        "outcome"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Producer. Run this before touching a gate number — the grid below is piloted.
+// ---------------------------------------------------------------------------
+
+/// Magnitudes swept, as a fraction of each arm's reference drive.
+///
+/// Spans four decades of energy either side of the `~2 %` where the held-force
+/// wall was found, and **reaches `2.0×`** because the impulse arm's reference
+/// velocity corresponds to only a firm pass, not a slapshot — see
+/// [`slapshot_equivalent_tip_velocity`].
+const MAGNITUDES: [f64; 10] = [0.01, 0.02, 0.05, 0.10, 0.25, 0.50, 1.00, 2.00, 4.00, 8.00];
+
+/// **The producer: three postings of the same strike, swept.**
+///
+/// Read `peak d/L` first and the outcome second. A row that converged at a
+/// deflection three decades below the row it is being compared with has not
+/// cleared any wall; it has avoided one.
+#[test]
+#[ignore = "producer — reference box only, run explicitly"]
+fn how_a_strike_is_posed_against_whether_it_converges() {
+    println!(
+        "\n=== strike posing ladder — Tet10 {GRID:?}, dt = 1/90, {RUN_FRAMES} frames, \
+         struck every {STRIKE_PERIOD} ==="
+    );
+    println!(
+        "  reference force {:.1} N (slapshot), reference tip velocity {:.2} m/s",
+        slapshot_load(EI_TARGET),
+        slapshot_equivalent_tip_velocity()
+    );
+    report_header();
+
+    for strike in [
+        Strike::ForceHeld,
+        Strike::ForcePulse,
+        Strike::VelocityImpulse,
+    ] {
+        for magnitude in MAGNITUDES {
+            let run = run_cell(strike, magnitude, GRID);
+            report_row(strike, magnitude, &run);
+        }
+    }
+}
+
+/// Magnitudes for the impulse arm's own ladder, refining the range where the
+/// producer's iteration count stops being monotone.
+const IMPULSE_FINE: [f64; 7] = [2.00, 3.00, 4.00, 5.00, 6.00, 7.00, 8.00];
+
+/// **Diagnostic: the impulse arm's cost is NOT monotone in strike magnitude.**
+///
+/// The producer reads `136 → 190 → 75` iterations at `2× → 4× → 8×`. A cost that
+/// falls as the drive rises is either real Newton-basin geometry or a rig
+/// artefact, and quoting the `8×` figure without saying which would be quoting a
+/// number nobody has looked at. This prints the shape at `1×` steps so the
+/// non-monotonicity can be seen rather than inferred from three points.
+///
+/// ⚠ It resolves nothing on its own; it is the instrument that says what to
+/// attack next. Peak deflection is printed beside cost because if `δ/L` is
+/// **linear** in magnitude across the whole range — as the producer's
+/// `1.08e-2 / 2.16e-2 / 4.31e-2 / 8.57e-2` suggests — then the response is
+/// essentially linear there and a *non-monotone iteration count over a linear
+/// response* is the part that wants explaining.
+#[test]
+#[ignore = "diagnostic — run explicitly"]
+fn whether_the_impulse_arm_costs_more_as_the_strike_grows() {
+    println!("\n=== impulse arm, fine ladder — is cost monotone in drive? ===");
+    report_header();
+    let mut prev: Option<(f64, f64)> = None;
+    let mut inversions = 0usize;
+    for magnitude in IMPULSE_FINE {
+        let run = run_cell(Strike::VelocityImpulse, magnitude, GRID);
+        report_row(Strike::VelocityImpulse, magnitude, &run);
+        if run.completed() {
+            let it99 = percentile(
+                &run.iters.iter().map(|&i| i as f64).collect::<Vec<_>>(),
+                0.99,
+            );
+            if let Some((_, prev_it)) = prev
+                && it99 < prev_it
+            {
+                inversions += 1;
+            }
+            prev = Some((run.peak_ratio, it99));
+        }
+    }
+    println!(
+        "  {inversions} magnitude step(s) COST LESS than the step below them, over \
+         {} rungs",
+        IMPULSE_FINE.len()
+    );
+    // ⚠ Deliberately not a pass/fail threshold. This is a producer whose job is
+    // to make the shape visible; asserting a monotonicity nobody has explained
+    // would turn an open question into a gate that fails for a reason its
+    // message cannot name.
+    assert!(
+        prev.is_some(),
+        "no rung of the fine ladder completed, so it shows nothing — the rig is \
+         wrong, not the ladder"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Gates.
+// ---------------------------------------------------------------------------
+
+/// PCVR physics budget (ms) inside a `90 Hz / 11.1 ms` frame.
+///
+/// ⚠ **An estimate, not a figure the user stated.** Render (stereo), AI, audio,
+/// broadphase and gameplay take the rest. It is quoted here so the verdict below
+/// is legible, and the verdict does not turn on it: the measured `p99` is more
+/// than an order of magnitude over this, so it also busts `4 ms`, `6 ms`, and
+/// the entire `11.1 ms` frame.
+const PCVR_PHYSICS_BUDGET_MS: f64 = 2.0;
+
+/// **Positive control: this rig still sees the wall `stick_flex.rs` found.**
+///
+/// Two-sided, and it has to be. A rig where everything converges would report
+/// "momentum posing clears the wall" without there being a wall, and a rig where
+/// nothing converges would report it just as loudly. So both arms of the
+/// discriminator are asserted: below the wall the held force completes, above it
+/// the solve caps out.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "release-only measurement")]
+fn a_held_force_strike_fails_above_the_wall_and_completes_below_it() {
+    let below = run_cell(Strike::ForceHeld, 0.05, GRID);
+    let above = run_cell(Strike::ForceHeld, 0.25, GRID);
+    report_header();
+    report_row(Strike::ForceHeld, 0.05, &below);
+    report_row(Strike::ForceHeld, 0.25, &above);
+
+    assert!(
+        below.completed(),
+        "a held force at 5 % of a slapshot did NOT complete ({:?}) — the wall has \
+         moved DOWN, and every comparison in this file is scored against where it is",
+        below.ended_early
+    );
+    assert!(
+        !above.completed(),
+        "a held force at 25 % of a slapshot COMPLETED, reaching d/L = {:.3e}. The \
+         wall this file exists to attack is gone, so the momentum comparison below \
+         no longer demonstrates anything and its verdict must be re-derived",
+        above.peak_ratio
+    );
+}
+
+/// ★★★ **The headline: posing a strike as momentum clears the wall that posing
+/// it as force hits — and it clears it at a DEEPER deflection, not a shallower
+/// one.**
+///
+/// The guard is the whole gate. "The impulse arm converged" is worth nothing on
+/// its own, because an arm that barely moves the stick converges trivially. So
+/// the deepest deflection *any* force arm reached while completing is measured
+/// here rather than hard-coded, and the impulse arm has to beat it.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "release-only measurement")]
+fn a_momentum_strike_converges_deeper_than_any_force_strike_that_converged() {
+    report_header();
+    let mut deepest_force = 0.0f64;
+    let mut any_force_failed = false;
+    for strike in [Strike::ForceHeld, Strike::ForcePulse] {
+        for magnitude in [0.05, 0.10, 0.25] {
+            let run = run_cell(strike, magnitude, GRID);
+            report_row(strike, magnitude, &run);
+            if run.completed() {
+                deepest_force = deepest_force.max(run.peak_ratio);
+            } else {
+                any_force_failed = true;
+            }
+        }
+    }
+    let impulse = run_cell(Strike::VelocityImpulse, 8.0, GRID);
+    report_row(Strike::VelocityImpulse, 8.0, &impulse);
+
+    assert!(
+        any_force_failed,
+        "no force-posed cell failed, so there is no wall here to clear and this \
+         gate is vacuous"
+    );
+    assert!(
+        deepest_force > 0.0,
+        "no force-posed cell completed either, so there is nothing to compare the \
+         impulse arm against — the rig is broken, not the finding"
+    );
+    assert!(
+        impulse.completed(),
+        "the momentum-posed strike did NOT complete ({:?}) — the file's central \
+         claim is false as measured",
+        impulse.ended_early
+    );
+    assert!(
+        impulse.peak_ratio > deepest_force,
+        "the impulse arm converged at d/L = {:.3e}, which is NOT deeper than the \
+         {:.3e} the force arms reached while converging. It therefore converged by \
+         moving the stick LESS, and this gate must not be read as evidence that \
+         posing matters",
+        impulse.peak_ratio,
+        deepest_force
+    );
+}
+
+/// ★★ **The spike is iteration count, and nothing else — which is exactly why no
+/// rung of the reduced-order ladder can move it.**
+///
+/// Two-sided by construction: the frame cost must span a wide range across these
+/// cells (or there is no spike to attribute), while the cost *per Newton
+/// iteration* must stay flat (or the attribution is wrong).
+///
+/// ★ It doubles as the control on this file's own instrument. The solver prints
+/// a line to stdout whenever the `faer` LU fallback fires, and that printing
+/// happens **inside** the region `one_frame` times. If it were inflating the
+/// impact frames, `ms` per iteration would be higher on the expensive cells than
+/// on the cheap ones. It is not.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "release-only measurement")]
+fn the_frame_cost_spike_is_iteration_count_not_cost_per_iteration() {
+    report_header();
+    let mut ms99 = Vec::new();
+    let mut per_iter = Vec::new();
+    for magnitude in [0.05, 0.50, 2.00] {
+        let run = run_cell(Strike::VelocityImpulse, magnitude, GRID);
+        report_row(Strike::VelocityImpulse, magnitude, &run);
+        assert!(
+            run.completed(),
+            "impulse at {magnitude}x did not complete ({:?}), so this gate has no \
+             sample to attribute",
+            run.ended_early
+        );
+        let it_f: Vec<f64> = run.iters.iter().map(|&i| i as f64).collect();
+        let m = percentile(&run.ms, 0.99);
+        ms99.push(m);
+        per_iter.push(m / percentile(&it_f, 0.99));
+    }
+
+    let (ms_lo, ms_hi) = (
+        ms99.iter().copied().fold(f64::MAX, f64::min),
+        ms99.iter().copied().fold(0.0f64, f64::max),
+    );
+    let (pi_lo, pi_hi) = (
+        per_iter.iter().copied().fold(f64::MAX, f64::min),
+        per_iter.iter().copied().fold(0.0f64, f64::max),
+    );
+    println!(
+        "  p99 frame cost spans {:.1}x ({ms_lo:.2}-{ms_hi:.2} ms); cost per iteration \
+         spans {:.2}x ({pi_lo:.3}-{pi_hi:.3} ms)",
+        ms_hi / ms_lo,
+        pi_hi / pi_lo
+    );
+    assert!(
+        ms_hi / ms_lo > 4.0,
+        "p99 frame cost only spanned {:.1}x across these magnitudes, so there is no \
+         spike here to attribute to anything",
+        ms_hi / ms_lo
+    );
+    assert!(
+        pi_hi / pi_lo < 1.5,
+        "cost per Newton iteration spanned {:.2}x ({pi_lo:.3}-{pi_hi:.3} ms). The \
+         spike is then NOT purely iteration count, and the claim that reduction \
+         cannot touch it does not follow",
+        pi_hi / pi_lo
+    );
+}
+
+/// ★★★ **The verdict: `p50` fits the PCVR physics budget, `p99` does not.**
+///
+/// This is the whole reason the file exists. Every cost figure the stick has
+/// been scored on until now is a `p50` in the smooth-ramp regime, and on that
+/// number the 360-DOF stick fits at `0.57x`. Struck, the same stick at the same
+/// DOF on the same box misses by more than an order of magnitude — and it misses
+/// on latency, having been rescued from missing on correctness.
+///
+/// The magnitude is `1.0x`, which the module docs place at a **firm pass**, not
+/// a slapshot. The two assertions are on opposite sides of the budget, so
+/// neither can pass by the threshold being loose.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "release-only measurement")]
+fn a_game_strike_fits_the_pcvr_budget_on_p50_and_busts_it_on_p99() {
+    let run = run_cell(Strike::VelocityImpulse, 1.0, GRID);
+    report_header();
+    report_row(Strike::VelocityImpulse, 1.0, &run);
+    assert!(
+        run.completed(),
+        "the strike did not complete ({:?}), so there is no cost distribution to \
+         judge",
+        run.ended_early
+    );
+
+    let p50 = percentile(&run.ms, 0.5);
+    let p99 = percentile(&run.ms, 0.99);
+    println!(
+        "  p50 {p50:.2} ms = {:.2}x budget; p99 {p99:.2} ms = {:.1}x budget; \
+         p99/p50 = {:.1}x",
+        p50 / PCVR_PHYSICS_BUDGET_MS,
+        p99 / PCVR_PHYSICS_BUDGET_MS,
+        p99 / p50,
+    );
+    // Piloted at 2.23 ms; 4.0 leaves room for box drift without letting a
+    // regression of the smooth regime through unnoticed.
+    assert!(
+        p50 < 2.0 * PCVR_PHYSICS_BUDGET_MS,
+        "p50 was {p50:.2} ms. The smooth-regime cost has regressed, and the \
+         p50-fits/p99-busts contrast this gate reports is no longer the finding"
+    );
+    // Piloted at 41.7 ms. `> 15` is a factor of 2.8 below the measurement, so a
+    // large improvement is needed before this stops firing — which is the point:
+    // it should stop firing when someone fixes the spike.
+    assert!(
+        p99 > 7.5 * PCVR_PHYSICS_BUDGET_MS,
+        "p99 was {p99:.2} ms, inside 7.5x the physics budget. The impact spike has \
+         been fixed or the strike is no longer reaching the stick; either way this \
+         file's verdict needs re-deriving rather than silently passing"
+    );
+}
+
+/// **Negative control, with the companion positive arm that makes it mean
+/// something.**
+///
+/// An unstruck run must be flat — at most one Newton iteration a frame, no
+/// tail. That alone is worth little: a flat `p99` proves nothing unless the same
+/// instrument is shown to *move* when a strike is present. So both are asserted
+/// together, and the gap between them is what says the `p99` this file reports
+/// is reading the impact rather than background variance on the box.
+///
+/// ⚠ **The quiet arm's frame time is not a frame time.** With nothing driving
+/// it the `Inertial` guess already meets tol and the solver returns
+/// `iter_count = 0`, so its `~0.1 ms` measures the *predictor*, not a solve —
+/// the same degeneracy `stickrig::RAMP_FRAMES` documents. It is a valid floor
+/// for "the instrument reads flat", and it is not a cost anyone should quote.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "release-only measurement")]
+fn an_unstruck_run_is_flat_and_a_struck_one_is_not() {
+    let quiet = run_cell(Strike::VelocityImpulse, 0.0, GRID);
+    let struck = run_cell(Strike::VelocityImpulse, 1.0, GRID);
+    report_header();
+    report_row(Strike::VelocityImpulse, 0.0, &quiet);
+    report_row(Strike::VelocityImpulse, 1.0, &struck);
+
+    assert!(
+        quiet.completed() && struck.completed(),
+        "both runs must complete"
+    );
+    assert!(
+        quiet.peak_ratio < 1e-12,
+        "the unstruck run deflected to d/L = {:.3e} — it is being driven by \
+         something this file does not model, so it is not a control",
+        quiet.peak_ratio
+    );
+    let quiet99 = percentile(&quiet.ms, 0.99);
+    let struck99 = percentile(&struck.ms, 0.99);
+    assert!(
+        quiet.iters.iter().all(|&i| i <= 1),
+        "the unstruck run took up to {} Newton iterations in a frame, so \"flat\" \
+         is not what this control is measuring",
+        quiet.iters.iter().copied().max().unwrap_or(0)
+    );
+    println!("  quiet p99 {quiet99:.2} ms vs struck p99 {struck99:.2} ms");
+    assert!(
+        struck99 > 5.0 * quiet99,
+        "a struck run's p99 ({struck99:.2} ms) is not 5x an unstruck one's \
+         ({quiet99:.2} ms). The p99 this file reports is then background variance, \
+         not the impact"
+    );
+}

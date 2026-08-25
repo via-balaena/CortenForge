@@ -708,7 +708,7 @@ mod stickrig;
 use stickrig::{
     Arm, DEPTH, EI_TARGET, NU, RAMP_FRAMES, SLAPSHOT_DEFLECTION, SPAN, STATIC_DENSITY,
     TARGET_RATIO, TOL_REL, WIDTH, describe_failure, e_eff_for, f1_analytic, free_dof_of, lame_for,
-    load_for, one_frame, outcome_of, rho_eff, rig, slapshot_load, tip_of,
+    load_for, one_frame, outcome_of, percentile, rho_eff, rig, slapshot_load, tip_of,
 };
 
 /// Game timestep.
@@ -741,20 +741,12 @@ struct Cost {
 }
 
 impl Cost {
-    /// Median of a sample — the **upper** median for an even count, since
-    /// `MEASURED_FRAMES` is 20 and this takes `v[n/2]` rather than averaging the
-    /// two middle samples. That biases the reported cost *up* by at most one
-    /// sample's worth, which is the conservative direction for a claim that
-    /// something FITS a budget. ⚠ Panics on an empty sample rather than
-    /// returning a zero that would read as "instant".
+    /// Median of this run's sample. ★ Delegates to `stickrig::percentile` so
+    /// this fixture and `stick_impact.rs` cannot drift on what a percentile
+    /// means; that function documents the upper-median convention and why it is
+    /// the conservative one for a fits-the-budget claim.
     fn p50(values: &[f64]) -> f64 {
-        assert!(
-            !values.is_empty(),
-            "no samples: there is nothing to summarise"
-        );
-        let mut v = values.to_vec();
-        v.sort_by(|a, b| a.partial_cmp(b).expect("timings are never NaN"));
-        v[v.len() / 2]
+        percentile(values, 0.5)
     }
 
     fn ms_p50(&self) -> f64 {

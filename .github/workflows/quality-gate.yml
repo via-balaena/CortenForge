@@ -729,6 +729,15 @@ jobs:
       # assumed. ★ It was caught by `cargo xtask release-gates` on its own first
       # PR, which is that guard working exactly as #747 intended.
       #
+      # `stick_impact` carries five release-only gates — the held-force positive
+      # control, the momentum-vs-force headline, the iteration-count attribution,
+      # the p99-against-PCVR-budget verdict, and the unstruck/struck control. Its
+      # two producers (the posing ladder and the monotonicity diagnostic) hold
+      # UNCONDITIONAL `#[ignore]`s, so naming the binary runs the five that should
+      # run and leaves those out. ★ `cargo xtask release-gates` rejected this
+      # binary before the line below existed — the guard catching #747 a third
+      # time, after `stick_flex` (#827) and the R1 gates that named it first.
+      #
       # ⚠ `tet10_lame_decision` is deliberately NOT here: its `#[ignore]` is
       # unconditional and reasoned (7.16 GB peak RSS, above a runner's memory).
       # Absent from CI by design, not by oversight.
@@ -745,7 +754,8 @@ jobs:
             --test fbar_locking \
             --test tet10_indentation_demand1 \
             --test slender_bending_matches_analytic \
-            --test stick_flex
+            --test stick_flex \
+            --test stick_impact
         shell: bash
 
       # cf-cast's mold/cast kernel runs in release (its Monte-Carlo probes are

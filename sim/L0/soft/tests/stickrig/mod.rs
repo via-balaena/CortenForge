@@ -42,6 +42,46 @@ use sim_soft::{
     SolverFailure, Tet10Mesh, VertexId, pick_vertices_by_predicate,
 };
 
+/// Nearest-rank order statistic: the `q`-quantile of `values`, taken as
+/// `values_sorted[⌊q·n⌋]` clamped to the last index.
+///
+/// ★ **Shared so two fixtures cannot drift on the arithmetic that decides a
+/// rung** — the reason `tests/reduced_report/` exists, applied to summary
+/// statistics. `stick_flex.rs` reads a `p50` off a 20-frame cost sample and
+/// `stick_impact.rs` reads a `p99` off a 300-frame one; if those two disagreed
+/// about what a percentile *is*, neither number could be quoted beside the
+/// other.
+///
+/// ⚠ For an even count this takes the **upper** of the two middle samples
+/// (`⌊0.5·20⌋ = 10`, not the mean of indices 9 and 10). That biases a reported
+/// cost *up* by at most one sample, which is the conservative direction for a
+/// claim that something FITS a budget. It is also exactly what `stick_flex.rs`
+/// did before this was extracted, so its published figures are unchanged.
+///
+/// ⚠ Panics on an empty sample rather than returning a zero that would read as
+/// "instant", and rejects a `q` outside `[0, 1]` rather than saturating — a
+/// quantile silently clamped to the maximum is how a `p99` stops being a `p99`.
+// `q` is asserted into `[0, 1]` and `v` into `len >= 1` immediately below, so
+// `⌊q·len⌋` is non-negative and at most `len` — inside `usize` and inside the
+// `f64` integer range for any sample a test can hold. The cast cannot truncate
+// or lose a sign here, and a blanket module-level allow would hide the ones
+// that could.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub fn percentile(values: &[f64], q: f64) -> f64 {
+    assert!(
+        !values.is_empty(),
+        "no samples: there is nothing to summarise"
+    );
+    assert!(
+        (0.0..=1.0).contains(&q),
+        "quantile {q} is outside [0, 1] — clamping it would silently report a different statistic"
+    );
+    let mut v = values.to_vec();
+    v.sort_by(|a, b| a.partial_cmp(b).expect("timings are never NaN"));
+    let rank = ((q * v.len() as f64).floor() as usize).min(v.len() - 1);
+    v[rank]
+}
+
 // ---------------------------------------------------------------------------
 // The fixture. Two free inputs (`EI_TARGET`, `MASS_PER_LENGTH`); the rest derives.
 // ---------------------------------------------------------------------------
