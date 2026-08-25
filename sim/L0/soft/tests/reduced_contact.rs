@@ -116,22 +116,38 @@
 //! contact-plus-load, and everything here runs `gravity_z = 0`). And it is not a
 //! timing run — `I` still has to be measured.
 //!
-//! ## The other two studies in this file
+//! ## The other studies in this file
 //!
-//! The producer check above is the FIRST of three, and the later two answer what
-//! its own caveat leaves open. They share this fixture deliberately.
+//! The producer check above is the first of SIX `#[ignore]`d studies, and each
+//! later one answers what its predecessor's caveat leaves open. They share this
+//! fixture deliberately — the same [`GEN_A_OVER_CELL`], [`TRAIN_OFFSETS`] and
+//! [`BASIS_RANKS`], so a finding is scored against the matrix the previous rung
+//! published rather than a lookalike re-run.
 //!
+//! - [`reduced_contact_phase_shares`] (recon §2k) — step 2 of the contact arc:
+//!   `I` measured on the fixture R3's requirement is stated for.
 //! - [`reduced_basis_generalises`] (recon §2l) — does the basis hold up when the
-//!   contact patch MOVES? **No**, and rank does not fix it. Failure is SILENT:
-//!   the bad arms converge, complete, and do not penetrate while `28 %`–`109 %`
-//!   wrong AT `r=142` (`14.8 %`–`119.6 %` across all eight extrapolation cells —
-//!   the bracket is a column, not a range). That is what makes §4c's validity
-//!   gate a CORRECTNESS prerequisite.
+//!   contact patch MOVES? **No**, and rank does not fix it. Failure is SILENT in
+//!   **7 of the 8** extrapolation arms: they converge, complete all 71 steps, and
+//!   do not penetrate while `14.8 %`–`109 %` wrong. (The eighth, `+2.00a` at
+//!   `r=20`, stalls at step 65 — the only one the solver itself flags, and the
+//!   only one reading above `109 %`.) That is what makes §4c's validity gate a
+//!   CORRECTNESS prerequisite.
 //! - [`an_online_signal_separates_out_of_domain`] (recon §2m) — given that, what
 //!   can a gate actually WATCH at runtime? Four oracle-free candidates scored on
 //!   the same matrix. `gap_dev`, the detector §2l found, needs the oracle and is
-//!   disqualified; the distance to the nearest training snapshot is flat in rank
-//!   and is not.
+//!   disqualified; one candidate survives a per-step test at `~2×`, on a FITTED
+//!   threshold — there is no held-out position in that matrix.
+//! - [`the_signal_margin_on_a_held_out_position`] (recon §2n) — supplies one, and
+//!   it disqualifies the survivor: across four ranks the error spans `31.9×`
+//!   while the signal spans `1.005×`. **Rank-independence and
+//!   accuracy-sensitivity are mutually exclusive.**
+//! - [`how_dense_the_training_ensemble_must_be`] (recon §2o) — "density" is TWO
+//!   factors, and the signals read the weaker one: ENSEMBLE SIZE beats GAP
+//!   `2.1–2.7×` at matched rank, and no online candidate can express size.
+//!
+//! ⚠ The always-on [`reduced_contact_does_not_tunnel_through_the_barrier`] is
+//! not one of the six — it is the CI half of the producer check, not a study.
 
 #![allow(
     clippy::panic,
@@ -1822,10 +1838,13 @@ const MIN_IN_SAMPLE_ADVANTAGE: f64 = 10.0;
 ///   the same rank, and it improves only ~1.2 orders across a 7× rank increase
 ///   against in-sample's four. The reduction advantage dies long before the
 ///   accuracy does.
-/// - ★★★ **Out-of-domain is SILENT.** The `+1.50a` and `+2.00a` arms converge,
+/// - ★★★ **Out-of-domain is SILENT in 7 of the 8 arms.** Seven converge,
 ///   complete all 71 steps, and do not penetrate — `min_sd` stays positive and
-///   inside the band — while being `28 %` and `109 %` wrong. Convergence plus
-///   non-penetration is NOT a validity check.
+///   inside the band — while being `14.8 %`–`109 %` wrong. Convergence plus
+///   non-penetration is NOT a validity check. ⚠ The eighth (`+2.00a` at `r=20`)
+///   stalls at step 65 and IS announced, which is the honest bound on the
+///   finding: the failure mode is silent, not universally silent. `28 %` and
+///   `109 %` are the `r=142` column, not the range.
 /// - ★★ **`gap_dev` is**, and that was not what it was built for. Across all
 ///   eight failing arms it reads `0.161–0.583 d̂` against `3.1e-11` in-sample at
 ///   the same rank. ⚠ **But it is an ERROR indicator, not an in-domain one**: at
@@ -2777,8 +2796,8 @@ fn signal(arm: &Arm, pick: fn(&Signals) -> f64, q: Quantile) -> Option<f64> {
 /// ## Why this is the next thing after [`reduced_basis_generalises`]
 ///
 /// §2l established that a reduced solve outside its training hull **fails
-/// silently**: the `+1.50a` and `+2.00a` arms converge, complete all `71` steps,
-/// and do not penetrate, while being `28 %` and `109 %` wrong. Convergence plus
+/// silently**: 7 of its 8 extrapolation arms converge, complete all `71` steps,
+/// and do not penetrate, while being `14.8 %`–`109 %` wrong. Convergence plus
 /// non-penetration is not a validity check, so `ReducedValidityDomain` (§4c) is
 /// a CORRECTNESS prerequisite and not a nicety.
 ///
@@ -2954,6 +2973,15 @@ fn signal(arm: &Arm, pick: fn(&Signals) -> f64, q: Quantile) -> Option<f64> {
 /// S1's is real per-trajectory but absent per-step and unavailable under ECSW. S3
 /// is left standing at `~2×`, on a fitted threshold, on one fixture.
 ///
+/// ⇒ ⛔ **AND S3 DID NOT SURVIVE THE NEXT TWO RUNGS. Read them before building on
+/// anything above.** [`the_signal_margin_on_a_held_out_position`] (§2n) supplies
+/// the held-out position this section says it lacks, and S3's rank-independence —
+/// named above as the signature that made it a domain signal — is exactly what
+/// makes it blind to resolution. [`how_dense_the_training_ensemble_must_be`]
+/// (§2o) then shows it is blind to ENSEMBLE SIZE as well. The two-signal
+/// conclusion this section withdraws returns in §2n on held-out evidence rather
+/// than the confounded position partition that was withdrawn.
+///
 /// ### ⚠ What this does NOT establish
 ///
 /// - **No held-out position exists.** Every margin is computed on the same 16
@@ -2988,9 +3016,9 @@ fn signal(arm: &Arm, pick: fn(&Signals) -> f64, q: Quantile) -> Option<f64> {
 /// | "take a NORM over modes, never a MAX" | the per-mode NORMALISER was the fault; a norm is at least as rank-sensitive |
 /// | "S4 wins that cut outright, `0` vs `≥0.111`" | a maximum-only artifact; median `0.000` at `+1.50a` |
 /// | "S3's margin is `141×`" | `2.30×` worst step, `1.94×` median; `141×` was in-sample-vs-everything |
-/// | "the gate needs TWO signals" | not shown for GATING; that argument is about DIAGNOSIS |
+/// | "the gate needs TWO signals" | not shown for GATING; that argument is about DIAGNOSIS. ⚠ The CONCLUSION returns in §2n on held-out evidence — only the argument stays withdrawn |
 /// | "`‖r_free‖`… and it is free" | free at R1.1, NOT under ECSW at R3 |
-/// | "out of domain that field is `28 %`–`109 %` wrong" | that is the `r=142` column; the range is `14.8 %`–`119.6 %` |
+/// | "out of domain that field is `28 %`–`109 %` wrong" | that is the `r=142` column; the range is `14.8 %`–`119.6 %` across all eight cells, `14.8 %`–`109 %` across the seven that complete |
 /// | "`≥ 1.17` extrapolating" | the minimum is `1.165` |
 /// | "byte-identical output" (non-regression) | the 37 measurement ROWS are identical; the files differ |
 /// | pre-registration item 5 "HELD" | VOID — its antecedent was falsified |
@@ -3425,7 +3453,11 @@ const OFF_LATTICE_EXTRAP: f64 = 1.75;
 ///    a large effect. Outside it, `+0.25a`'s three orders are partly a mesh
 ///    artifact and §2l's interpolation finding needs re-scoping.
 ///
-/// ## Measured — 2026-08-25, 8 oracles, `139.7 s`
+/// ## Measured — 2026-08-25, 8 oracles, `140.8 s`
+///
+/// ⚠ Two runs exist. The first (`139.7 s`) recorded the signals and printed none
+/// of them; every signal figure below is from the second, which is why its wall
+/// time is the one quoted. The arm rows are identical across both.
 ///
 /// ### ★★★ The headline: RANK-INDEPENDENCE IS WHY IT CANNOT GATE
 ///
@@ -3462,11 +3494,17 @@ const OFF_LATTICE_EXTRAP: f64 = 1.75;
 ///
 /// ### ⛔ §2m's margin was FITTED, and it does not survive
 ///
-/// §2m's interval for `snapshot_distance` was `[0.5069, 1.165)`. The held-out
-/// arms read **`0.9704–0.9756`** — **inside** it, in the band nothing was ever
-/// sampled in, carrying a `32×` error spread at one signal value. A threshold
-/// placed anywhere in §2m's interval reads the same for a `1.2 %`-wrong answer and
-/// a `37 %`-wrong one.
+/// The load-bearing statement is WITHIN arm A, so no normaliser question touches
+/// it: its four readings are `0.9704–0.9756` while its errors run `1.2 %` to
+/// `37 %`. **No threshold separates them** — one below `0.9704` refuses all four,
+/// one above `0.9756` accepts all four, and there is nothing in between to place
+/// one at. A `32×` error spread sits at one signal value.
+///
+/// ⚠ §2m's interval was `[0.5069, 1.165)` and arm A's readings land inside it, in
+/// the band nothing was ever sampled in — but that comparison is **DIRECTIONAL,
+/// not numeric**: §2m's interval is in the 355-snapshot ensemble's units and arm
+/// A's readings in the 284-snapshot ensemble's, and `snapshot_distance` divides by
+/// each ensemble's OWN cloud radius. See the caveats.
 ///
 /// ### The matched-gap pair — the comparison this test was built for
 ///
@@ -3488,7 +3526,12 @@ const OFF_LATTICE_EXTRAP: f64 = 1.75;
 /// inside, at a rate the gap degrades.
 ///
 /// ⚠ And at that matched gap, `snapshot_distance`'s **median reads `4.117e-1` vs
-/// `4.271e-1` — `1.04×` apart for a `24×` error difference.**
+/// `4.271e-1` — `1.04×` apart for a `24×` error difference.** ⚠⚠ Those two
+/// medians come from DIFFERENT ensembles and therefore different normalisers, so
+/// `1.04×` is a DIRECTION and not a number; the ratio between the normalisers is
+/// unmeasured. The within-arm version needs no such comparison and says the same
+/// thing: inside arm A alone the median moves `1.023×` across a `31.9×` error
+/// range.
 ///
 /// ### The lattice control — the mesh confound is largely defused
 ///
@@ -3508,8 +3551,12 @@ const OFF_LATTICE_EXTRAP: f64 = 1.75;
 ///    arms land within `1.05×` at `r=40` and INVERT at `r=20`, so at low rank the
 ///    hull framing carries nothing. It is upheld only at high rank, and its
 ///    content is the TREND rather than the level.
-/// 3. ✅ **`~1.0` predicted, `0.970` measured.** `snapshot_distance` is close to
-///    linear in gap: `0.506` at `0.25a`, `0.970` at `0.50a`.
+/// 3. ✅ **`~1.0` predicted, `0.970` measured.** ⚠ But score it weakly: the
+///    prediction was extrapolated from `0.506` at `0.25a`, which is §2m's
+///    FULL-ensemble reading, and `0.970` is arm A's LOO-ensemble reading. The
+///    two divide by different cloud radii, so "close to linear in gap" is a
+///    plausible reading of two points in two unit systems and not a measured
+///    slope. Nothing downstream rests on it.
 /// 4. ✅ **`active_novelty` reads `0.000` at the held-out point at every rank and
 ///    both quantiles**, while the error runs `1.2 %`–`37 %`. FAIL at every `τ`.
 ///    Fail-open at a held-out in-hull position, exactly as pre-registered.
@@ -3519,11 +3566,19 @@ const OFF_LATTICE_EXTRAP: f64 = 1.75;
 ///
 /// - **One held-out position.** Better than none, which is what §2m had, and still
 ///   a single point.
-/// - **The two ensembles have different normalisers.** The LOO basis is fitted on
-///   284 snapshots and truncates at `r=116`; the full one on 355 at `r=142`. So
-///   `snapshot_distance` values are NOT directly comparable ACROSS the two arms —
-///   the within-ensemble spans and the median comparison are the sound readings,
-///   and the `0.970` vs `1.920` max comparison is not.
+/// - ⚠⚠ **The two ensembles have different normalisers, and that disqualifies
+///   EVERY cross-arm number here — the median comparison included.** The LOO
+///   basis is fitted on 284 snapshots and truncates at `r=116`; the full one on
+///   355 at `r=142`, and `snapshot_distance` divides by its own ensemble's cloud
+///   radius (`cloud_radius(&train_q)`, computed per arm). So the sound readings
+///   are the WITHIN-arm spans — `1.005×` worst step, `1.023×` median, against
+///   `31.9×` in error — and every cross-arm figure above (`0.9704` against §2m's
+///   `[0.5069, 1.165)`; `4.117e-1` against `4.271e-1`; `0.506` at `0.25a` against
+///   `0.970` at `0.50a`) is a DIRECTION. ⚠ The ratio between the two normalisers
+///   is not measured; measuring it would take one re-run printing
+///   `cloud_radius` per arm, and none of this section's conclusions wait on it.
+///   ✅ §2o states the same caveat correctly and does not lean on a cross-ensemble
+///   number anywhere.
 /// - **The lattice control tests the EXTRAPOLATION end only.**
 /// - No timing, no threshold, one fixture, one basis construction.
 #[test]
@@ -3762,8 +3817,10 @@ const DENSITY_SETS: [(&str, &[f64]); 3] = [
 /// So "denser is better" resolves into two effects of unequal weight, and the one
 /// every online signal here measures — the gap — is the WEAKER of the two.
 ///
-/// ★★ **And size compounds, because it sets the rank CEILING.** 284 snapshots
-/// retain 116 modes; 142 retain 64. B cannot go past `r=64` no matter what is
+/// ★★ **And size compounds, because it sets the rank CEILING.** A's 284 snapshots
+/// retain 116 modes; B's 142 retain 64. (C's 142 retain 65 — the ceiling is set by
+/// the spectrum, not by the snapshot count alone, which is why the two 142-snapshot
+/// ensembles do not land on the same one.) B cannot go past `r=64` no matter what is
 /// asked of it, so at their respective ceilings A beats B by **`11.9×`** — far
 /// more than the `2.1–2.7×` the basis quality alone accounts for. A small ensemble
 /// is penalised twice: a worse basis at every rank, and a lower rank to stop at.
