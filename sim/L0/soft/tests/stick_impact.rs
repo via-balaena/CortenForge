@@ -1751,8 +1751,18 @@ enum Start {
     /// The predicted tip displacement, redistributed along the beam on a smooth
     /// profile instead of dumped on the blade band.
     Smoothed(Shape),
-    /// `x₀ + Φ_S Φ_Sᵀ M (p − x₀)` — the predicted increment with everything
-    /// outside a band of the stick's own modes removed. See Probe 4.
+    /// A modal arm. `x₀ + Φ_S Φ_Sᵀ M (p − x₀)` for [`Band::Low`] and
+    /// [`Band::Random`] — the predicted increment with everything outside a
+    /// subspace removed.
+    ///
+    /// ⚠ That formula is NOT what the other five bands compute: four rescale by
+    /// `β` and zero or replace components, and [`Band::ScaledLikeLow`] is not a
+    /// projection at all. See [`Band`] for what each one does.
+    ///
+    /// ⚠ Only [`ImpactFrame`] can step this. `trajectory_with` and
+    /// `divergence_trace` pass `None` for the basis, so a `Modal` arm reaching
+    /// either panics — the modal arms have no end-to-end or lockstep
+    /// counterpart, and the type does not say so.
     Modal(ModalArm),
 }
 
@@ -2389,8 +2399,14 @@ fn divergence_trace(a: Start, b: Start, magnitude: f64) -> Vec<f64> {
 }
 
 // ---------------------------------------------------------------------------
-// Probe 4 — the modal predictor: the mesh-general form of "a low-strain shape".
-// The basis is fitted on a ring-down, never on a strike.
+// Probe 4 — the modal predictor. Is a low-strain shape obtainable from the
+// structure itself rather than written down for a cantilever?
+//
+// ⚠ "Mesh-general" is an argument about what an arm CONSUMES, never a
+// measurement, and nothing here measures it: one mesh, one section, one clamp,
+// one load location, one material. Read every use of the word in this section
+// as "does not read an analytic beam profile" — and see `ModalRig`, which
+// records the three ways this basis reads the beam anyway.
 // ---------------------------------------------------------------------------
 
 // ★ `Shape::TipLoadCurve` and `Shape::FirstMode` win Probe 3 by imposing a
@@ -2402,19 +2418,33 @@ fn divergence_trace(a: Start, b: Start, magnitude: f64) -> Vec<f64> {
 //
 //     x⁰ = x₀ + Φ_S Φ_Sᵀ M (p − x₀)          on the free DOFs
 //
-// ⚠ **Rank 0 IS `InitialGuess::PreviousState`, exactly** — the projector is the
-// zero map, so the sweep starts at a variant that already ships. The other
-// endpoint is NOT reachable here and this file does not claim it: `ΦΦᵀM = I`
-// needs `r = n_free = 360`, and this ring-down supplies a single-digit number
-// of sound modes. `AtP` therefore stays a separate row rather than the top of
-// the sweep.
+// ⚠ **At rank 0 the projector is the zero map, so every arm built on one is
+// `InitialGuess::PreviousState` exactly** — asserted across all six projecting
+// bands by `assert_rank_zero_is_previous_state`. `Band::RampPlusModalXy` is the
+// exception, because it substitutes rather than projects; that is asserted too.
+//
+// ⚠ Rank 0 is a PROPERTY of the family, not the bottom of the sweep: the sweep
+// runs `1..=sound_rank()` and never evaluates it. And the other endpoint is not
+// reachable at all — `ΦΦᵀM = I` needs `r = n_free = 360`, while this ring-down
+// supplies a single-digit number of sound modes — so `AtP` stays a separate row
+// rather than the top.
 //
 // ★★ Why this is worth measuring even though R1 does not generalise across
-// contact positions: **a predictor cannot be wrong, only expensive.** The
-// full-order residual still governs the answer, so a basis that fails to span
-// the deformation costs iterations and nothing else. The generalisation
-// failure that disqualifies the reduced *solve* is not disqualifying here, and
-// that asymmetry is the whole reason this candidate outlived `SmoothedInertial`.
+// contact positions: **a predictor cannot change the ROOT — but it can stop the
+// solve reaching it.** The residual depends on the guess through nothing but
+// `x̂ = x_prev + Δt·v_prev`, so a basis that fails to span the deformation moves
+// no answer. The generalisation failure that disqualifies the reduced *solve*
+// is therefore not disqualifying for a reduced *predictor*, and that asymmetry
+// is the whole reason this candidate outlived `SmoothedInertial`.
+//
+// ⚠⚠ **An earlier version of this said "a predictor cannot be wrong, only
+// expensive", full stop, and that is false.** Newton returns `NewtonIterCap`
+// and `ArmijoStall` as ERRORS, not as larger iteration counts; a start outside
+// the basin can stall the line search; the converged state is validity-checked
+// again on the way out; and `helpers.rs` records, as measured, `InertialWithLoad`
+// on a gravity-loaded IPC scene stalling at iteration 0 with `r_norm = NaN`
+// because the predicted drop inverted elements. In a frame budget a failed solve
+// is worse than a slow one. The correct claim is the narrow one above.
 
 /// Modes the first, diagnostic fit is allowed to return.
 ///
@@ -2450,11 +2480,21 @@ const RINGDOWN_PERIODS: f64 = 8.0;
 /// *distinguishable from* round-off, not where it becomes *accurate*, and the
 /// gap between the two is a square root. Fitted with `max_modes = 32` this
 /// ring-down clears that floor with 9 modes, of which the last few are noise:
-/// the pilot read `ΦᵀMΦ − I` at `1.8e-3` on the diagonal and `6.3e-4` off it,
-/// four orders worse than an orthogonal projector, which is what
+/// the pilot read `ΦᵀMΦ − I` at `1.8e-3` on the diagonal and `6.3e-4` off it —
+/// `5.3` orders above the `1e-8` asked for here, and `7.4` orders above what the
+/// four sound modes deliver (`6.6e-11`). That is what
 /// [`whether_the_band_projector_is_a_projector`] failed on before this constant
-/// existed. That is not a defect in `PodBasis` — it is `SIGMA_FLOOR_REL` being
+/// existed, and it is not a defect in `PodBasis`: it is `SIGMA_FLOOR_REL` being
 /// asked a question it does not answer.
+///
+/// ⚠ **The model is a rule of thumb, not a theorem, and it is optimistic in one
+/// case.** Eigenvector accuracy from a symmetric eigensolve is governed by the
+/// eigenvalue GAP, not by `λ_k/λ_max` alone: two nearly-degenerate modes are
+/// each poorly resolved while both clear this floor comfortably. A ring-down of
+/// a beam with symmetric bending pairs is exactly where that could bite. What
+/// justifies the constant here is not the model but the measured curve
+/// [`whether_the_band_projector_is_a_projector`] prints — the model chose where
+/// to look, and the curve is what says `4`.
 const MODAL_ORTHONORMALITY_TARGET: f64 = 1.0e-8;
 
 /// Relative singular-value floor implied by [`MODAL_ORTHONORMALITY_TARGET`].
@@ -2592,17 +2632,39 @@ fn random_orthonormal(n: usize, count: usize, mass: &[f64]) -> Vec<Vec<f64>> {
 /// orthonormal in, the DOF map it is written in, and the rank-matched random
 /// subspace it is judged against.
 ///
-/// ⚠⚠ **Fitted on a ring-down, never on a strike.** The stick is bent by the
-/// static tip load, the load is released, and the free vibration is
-/// snapshotted. Nothing in the training data is impulsive or band-shaped, so
-/// the basis has not been shown the field it is being asked to repair.
+/// Fitted on a ring-down: the stick is bent by the static tip load, the load is
+/// released, and the free vibration is snapshotted.
 ///
-/// ⚠ It HAS been shown the tip band, because `stickrig::rig` loads the stick
-/// there and that is also where the puck lands — this fixture has no second
-/// place to push. So the basis is independent of the *time signature* of the
-/// strike but not of its *location*, and a claim that modal projection
-/// transfers across contact positions cannot be made from this rig. That is the
-/// same axis R1 failed on, and it is the first thing to attack if this wins.
+/// ⚠⚠ **An earlier version of this doc said "fitted on a ring-down, NEVER on a
+/// strike — nothing in the training data is impulsive or band-shaped", and that
+/// was false.** Review found three leaks, and they are load-bearing enough that
+/// the basis cannot be called structure-blind:
+///
+/// - **The release IS a band-localised step load.** `from_ringdown` ramps the
+///   full `slapshot_load` onto the tip band over `RAMP_FRAMES` and then sets
+///   `theta = 0.0` in a single frame. That is an instantaneous removal of the
+///   whole tip-band force — the exact posing this file's own module docs
+///   identify as the hard one — and the first snapshot is taken one frame after
+///   it.
+/// - **The bend IS the analytic tip-load profile.** The training excitation is
+///   `slapshot_load` at the tip band along `AxisZ`, which is the same
+///   generalised force `Shape::TipLoadCurve` encodes in closed form, on the same
+///   axis the strike uses.
+///   [`whether_a_pod_mode_is_a_function_of_the_axial_coordinate`] confirms the
+///   consequence: mode 0 sits `0.018` from `TipLoadCurve` and `0.012` from
+///   `FirstMode`. **`Low r=1` is not a structure-blind alternative to the
+///   analytic ramp — it is a numerically fitted copy of it, produced by loading
+///   the beam the way the ramp describes.**
+/// - **The fit window is sized by beam theory.** [`ringdown_frames`] divides by
+///   `f1_analytic`, the closed-form clamped-free frequency. A probe whose
+///   premise is "the same idea without the analytic beam" sizes its training set
+///   from the analytic beam.
+///
+/// ⚠ The location caveat stands on top of those: `stickrig::rig` loads the stick
+/// at the tip band and that is also where the puck lands, because this fixture
+/// has no second place to push. A claim that modal projection transfers across
+/// contact positions cannot be made from this rig at all — the same axis R1
+/// failed on.
 struct ModalRig {
     basis: PodBasis,
     /// The solver's free-DOF map. Full-DOF index per free unknown.
@@ -2754,17 +2816,17 @@ enum Band {
     /// [`Self::TipMatched`] with the transverse part scaled by `β` and the
     /// in-plane part by `β²`.
     ///
-    /// ★★★ The falsifiable prediction of the axial-strain mechanism. A mode's
-    /// in-plane field cancels `½(∂w/∂x)²` at the amplitude it was fitted at;
-    /// rescale `w` by `β` and that term grows as `β²` while a linearly scaled
-    /// `∂u/∂x` grows as `β`. Scaling the in-plane part by `β²` instead should
-    /// cancel the mismatch — and `β²` is arithmetic on a number the arm already
-    /// has, not knowledge about beams, so a win here is still mesh-general.
+    /// ⛔ **Built as the falsifiable prediction of an axial-strain mechanism,
+    /// and it falsified it.** The idea was that a mode's in-plane field cancels
+    /// `½(∂w/∂x)²` at its fitted amplitude, so rescaling `w` by `β` leaves a
+    /// mismatch that `β²` on the in-plane part would cancel. It does not: `β²`
+    /// costs `4.2×` `β` at ranks 2–3 of `1.00x`, `8.3×` at rank 4, and produces
+    /// an inverted start at every rank of `8.00x`. The mechanism is struck; see
+    /// [`whether_a_modal_start_cuts_iterations_on_a_real_impact_frame`].
     ///
-    /// ⚠ It is a prediction about the LEADING term only. The cancellation is
-    /// exact for a kinematic that is quadratic in the rotation and nothing
-    /// more; a Neo-Hookean Tet10 at `0.6 rad` is not that, so a partial
-    /// recovery would still support the mechanism.
+    /// ⚠ Kept as a measured arm, not as a hypothesis. It is the only evidence
+    /// in the tree that the in-plane damage is NOT a scalar mis-scaling — which
+    /// is the one thing the surviving description rests on.
     QuadraticInPlane,
     /// The analytic first-mode `z` profile plus [`Self::TipMatched`]'s `x`/`y`.
     ///
@@ -3161,85 +3223,121 @@ fn assert_rank_zero_is_previous_state(rig: &ModalRig) {
 /// The same frozen-frame rig Probe 3 uses: the stick is advanced through a
 /// strike and its ring-down, the next strike lands, and then `p = x₀ + dt·v₀`
 /// is held **exactly** while only the starting point varies. Same load, same
-/// momentum, same answer — only the guess moves.
+/// momentum, same answer — only the guess moves. `assert_rig_matches_frame`
+/// checks the maps agree, and the `AtP` row is a strict equality against the
+/// real `Inertial` path, which is the only evidence that holding `p` fixed is
+/// equation-preserving at all.
 ///
 /// ★ This run is a **ceiling test, and deliberately generous**: the basis is
-/// fitted on this very stick. If a fixture-trained basis cannot beat plain
-/// `Inertial` here, no cheaper or more general basis will, and the candidate
-/// dies for the price of one run. Only if it wins is it worth asking where the
-/// basis could honestly come from.
+/// fitted on this very stick, and — see [`ModalRig`] — on this very load. If
+/// that cannot beat plain `Inertial`, no cheaper or more general basis will.
 ///
-/// ★★ Read the `low` row against the `scaled` row of the SAME rank, not against
-/// `p (Inertial)`. Projection shrinks the increment, so a `low` arm that beats
-/// `Inertial` may only be discovering that `x₀` is a better start than `p` —
-/// see [`Band::ScaledLikeLow`].
+/// # Reading the FAIL cells
+///
+/// ⚠⚠ **Not one modal arm in this section ever failed to converge.** Every
+/// modal failure is `validity-violation`: the START POINT was an inverted
+/// configuration, rejected before Newton ran. That is a property of the rig —
+/// it hands the start in as `x_prev`, which the solver checks — and a real
+/// predictor's first iterate is never checked, so those arms would simply have
+/// iterated away from it. The only genuine convergence failure anywhere in the
+/// section is `x0 (Previous)` hitting the `500` iteration cap.
+///
+/// The distinction is why `ImpactFrame::run` returns the kind, and why the
+/// iteration and answer-error columns are blanked on a validity trip: on that
+/// path `stickrig::outcome_of` synthesises `0` and `x₀`, and an earlier version
+/// of this file read both as data.
 ///
 /// # What it read
 ///
-/// Newton iterations, `4` sound modes, one frozen impact frame per column:
+/// Newton iterations, `4` sound modes, one frozen impact frame per ROW:
 ///
 /// ```text
 ///   impulse  Inertial     x₀   ramp tip/mode1   low r=1  r=2  r=3  r=4   scaled  rand
 ///    0.25x          7    449            5 / 5         8    6    6    8        5    41
-///    1.00x         25   FAIL            4 / 4         6    8    8   14       41    45
-///    2.00x         12   FAIL            6 / 5        18    9    9   26      107    70
-///    8.00x     32 [*]   FAIL          37 / 25        37   48   54  219       14  FAIL
+///    1.00x         25   cap             4 / 4         6    8    8   14       41    45
+///    2.00x         12   cap             6 / 5        18    9    9   26      107    70
+///    8.00x     32 [*]   cap           37 / 25        37   48   54  219       14  inv.
 /// ```
 ///
-/// `[*]` at `8.00x` the `AtP` row itself fails a validity check — `p` is an
-/// inverted configuration there, which the real `Inertial` path never has to
-/// hold as `x_prev`. `32` is the real path's count. `scaled`/`rand` columns are
-/// rank 1.
+/// `cap` = iteration cap, a real convergence failure. `inv.` = inverted start,
+/// rejected before Newton. `[*]` at `8.00x` the `AtP` row is itself an inverted
+/// start, so the neutrality cross-check cannot run there and `32` is the real
+/// path's count. `scaled`/`rand` columns are rank 1.
 ///
-/// ★★★ **The mechanism is real, and it is the modes.** At the game strike a
-/// SINGLE mode takes `25 → 6` iterations, `4.17×`, and it beats both controls:
-/// `6.83×` over the norm-matched scalar shrink and `7.50×` over a rank-matched
-/// random subspace. The two distance columns are what make that a statement
-/// about shape — `low r=1` and `scaled r=1` start `1.942` and `2.445` travel
-/// from `x₀`, and `0.944` and `1.939` from `x*`, so they are comparable in
-/// distance and `6.8×` apart in cost. The modes beat the random subspace at
-/// **every** magnitude and **every** rank (`1.07×` to `15.83×`), and at
-/// `8.00x` every random arm fails outright while every modal arm converges.
+/// ## What the controls DO show, and what they do not
 ///
-/// ⚠ **Distance is not the variable at all, and the ramp rows prove it.**
+/// At the game strike a single mode takes `25 → 6` iterations, `4.17×`. It
+/// beats the norm-matched scalar shrink `6.83×` and the rank-matched random
+/// subspace `7.50×`, and it beats random at every one of the 16 rank×magnitude
+/// cells that produced two numbers, from `1.07×` to `15.83×`.
+///
+/// ⛔ **That is NOT evidence that the win comes from the modes, and an earlier
+/// version of this file said it was.** Both controls differ from `Low` on the
+/// same axis, and it is not modality:
+///
+/// - `Random` is a white-noise nodal field. Its badness is roughness.
+/// - `ScaledLikeLow` is `α·u`, and `u` is the band-localised velocity
+///   increment. Shrinking a band-shaped field leaves it band-shaped, so this
+///   control is rough too.
+///
+/// [`whether_the_shape_of_the_guess_error_sets_the_iteration_count`] already
+/// measured rough-against-smooth at `46.8×` on this fixture. So `Low` beating
+/// both controls re-measures Probe 2's factor. **The smooth non-modal
+/// comparison is already in the table — `smooth:tip-load` and `smooth:mode-1` —
+/// and they beat `Low` at every magnitude.**
+///
+/// ⇒ What is supported: **a smooth, low-strain start beats a rough one, and a
+/// POD basis fitted on this fixture supplies one.** What is not supported:
+/// that it is *the modes* rather than the smoothness. The missing control is a
+/// smooth, element-conforming, non-modal subspace run through the same
+/// `project_onto` path at matched amplitude — `Random` matches rank but sits at
+/// `0.040` travel against `Low`'s `1.942`, a 50× amplitude gap, and
+/// `ScaledLikeLow` matches amplitude but is not a projection.
+///
+/// ⚠ The "comparable in distance" argument for `Low` vs `scaled` is weaker than
+/// it reads: `1.942` against `2.445` is 26 % apart, in a file whose headline is
+/// `36×` of cost between fields `1 %` apart. Those two columns are also
+/// unweighted Euclidean, while `ScaledLikeLow` is matched in `‖·‖_M` — the
+/// matched quantity is not the reported one.
+///
+/// ⚠ **Distance is still not the variable, and the ramp rows show it.**
 /// `smooth:tip-load` starts `7.541` travel from `x₀` and `6.542` from `x*` —
-/// FURTHER from the answer than `p` is — and converges in `4` iterations, while
-/// `x₀`, which sits at `1.000`, hits the `500` cap and fails.
+/// further from the answer than `p` — and converges in `4` iterations, while
+/// `x₀` at `1.000` hits the cap.
 ///
-/// ⛔ **But modal projection does NOT beat the beam-specific ramp it was meant
-/// to generalise**, and that is the finding that decides the candidate. The
-/// analytic profiles take `4` at `1.00x` against the best modal arm's `6`, and
-/// `25` at `8.00x` against `37`. A mesh-general basis reproduced most of the
-/// win and none of the margin.
+/// ## Rank
 ///
-/// ⚠ Three more things this read that are not yet understood:
+/// Rank is not monotone and rank 4 is the worst arm at three of four magnitudes
+/// (`14`, `26`, `219`; tied worst at `0.25x`). `x0->start` jumps from `1.947` to
+/// `2.998` there.
+/// [`whether_a_pod_mode_is_a_function_of_the_axial_coordinate`] shows what
+/// ranks 2–3 add, and it is not finer bending.
 ///
-/// - **Rank is not monotone, and rank 4 is the worst arm at three of four
-///   magnitudes** (`14`, `26`, `219`). The 4th mode is where `x0->start` jumps
-///   from `1.947` to `2.998`: it adds a large component that overshoots.
+/// ## Open
+///
 /// - **Both ends of the sweep invert.** At `0.25x` `Inertial` is already cheap
 ///   and the scalar shrink wins; at `8.00x` `scaled r=1` takes `14` against
 ///   `low r=1`'s `37` and `mode-1`'s `25`.
-/// - **A `0.040`-travel random nudge off `x₀` turns a `500`-iteration failure
-///   into `45` iterations** at `1.00x`. Whatever traps Newton exactly at `x₀`
-///   is not distance and not shape.
+/// - **A `0.040`-travel random nudge off `x₀` turns a `500`-iteration cap into
+///   `45` iterations** at `1.00x`. Neither distance nor shape explains it.
 ///
-/// ★ One thing the random control DOES explain, consistently with the previous
-/// attempt: at `8.00x` it fails at iteration 0 on a validity check while moving
-/// only `0.04` travel. A random field displaces midside nodes off the edges
-/// they bisect and folds the quadratic element — the same failure mode
-/// `SmoothedInertial`'s graph-Laplacian arm died of, and the reason
-/// `InitialGuess`'s docs say a midside node is not an ordinary graph vertex.
+/// ★ One thing the random control does explain: at `8.00x` it is rejected as an
+/// inverted start at every rank while moving only `0.04` travel. A random field
+/// displaces midside nodes off the edges they bisect and folds the quadratic
+/// element — the failure mode `SmoothedInertial`'s graph-Laplacian arm died of,
+/// and the reason `InitialGuess`'s docs say a midside node is not an ordinary
+/// graph vertex. ⚠ This is now read off the failure KIND rather than off a
+/// synthesised `0`, which is how the earlier version reached the same sentence.
 ///
 /// # ★★★ The amplitude hypothesis was wrong, and the way it failed is the
 /// sharpest thing in this file
 ///
-/// [`Band::TipMatched`] was added to test the one difference between `Low` and
-/// the ramp: the ramp keeps the full predicted tip displacement, `Low` keeps
-/// only the `~40 %` that projects onto mode 1. Rescale the mode to the same
-/// tip and the two should meet.
+/// [`Band::TipMatched`] tested the one difference between `Low` and the ramp:
+/// the ramp keeps the full predicted tip displacement, `Low` keeps only the part
+/// that projects onto mode 1. Rescale the mode to the same tip and the two
+/// should meet.
 ///
-/// They do meet — in position. At `1.00x`:
+/// They meet in position and nowhere else. At `1.00x`:
 ///
 /// ```text
 ///   start                    iters   x0->start   start->x*
@@ -3249,30 +3347,9 @@ fn assert_rank_zero_is_previous_state(rig: &ModalRig) {
 /// ```
 ///
 /// **`1 %` apart in both distances, `36×` apart in cost.** Rescaling made the
-/// modal arm `24×` WORSE than not rescaling it, and left it `36×` behind an
-/// analytic profile sitting essentially on top of it.
+/// modal arm `24×` worse than not rescaling it.
 ///
-/// ⇒ So the winning property is **narrower than "a low-strain global shape"**,
-/// and narrower than "the right shape at the right amplitude". Two fields with
-/// the same driven-node displacement and the same first-mode z-profile are not
-/// interchangeable. What separates them is what `Shape` does NOT have:
-/// `smooth:mode-1` is a pure transverse `z` field, while a POD mode is a full
-/// 3-D finite-element deformation carrying the axial and Poisson components
-/// that belong to the amplitude it was FITTED at. Scaling those linearly is
-/// exactly what large-deflection beam kinematics says you may not do — axial
-/// shortening goes as the square of the rotation, not the first power.
-///
-/// ⚠ That reading is a hypothesis, not a measurement. What is measured is the
-/// `36×`. Two observations constrain it, and neither is explained:
-///
-/// - **More modes rescue the rescale**: `tipmatch` reads `146 → 41 → 39` over
-///   ranks 1–3 at `1.00x`, so whatever rank 1 gets wrong, ranks 2 and 3 partly
-///   correct.
-/// - **It is amplitude-dependent, not `β`-dependent.** `β ≈ 3.9` at every
-///   magnitude, because `want` and `have` both scale with the strike — yet
-///   `tipmatch r=1` costs only `1.6×` `Low` at `0.25x` and `24×` at `1.00x`.
-///
-/// # ★★★ The component split: the in-plane field carries it
+/// ## The component split: the in-plane field carries it
 ///
 /// The 2×2, iterations at `1.00x`, rank 1:
 ///
@@ -3282,70 +3359,60 @@ fn assert_rank_zero_is_previous_state(rig: &ModalRig) {
 ///    z: POD                 10          146
 /// ```
 ///
-/// **Adding the POD mode's in-plane field to the analytic profile costs `20×`
-/// (`4 → 82`). Swapping the analytic `z` profile for the POD one costs `2.5×`
-/// (`4 → 10`).** The in-plane components carry the gap, and it holds across the
-/// sweep: at `8.00x` rank 3 the POD `z` profile alone reads `29` against the
-/// hand-written Euler–Bernoulli mode's `25`, within `1.16×`, while the in-plane
-/// field takes the same start to `156`.
+/// **Adding the POD mode's in-plane field to the analytic profile costs `20×`.
+/// Swapping the analytic `z` profile for the POD one costs `2.5×`.**
 ///
-/// ⇒ **POD finds the right shape. The damage is entirely in what rides along
-/// with it.** Zeroing `x`/`y` turns `tipmatch`'s `146` into `10`, and unlike
-/// every other modal arm that one is stable in rank (`10, 11, 12, 13` over
-/// ranks 1–4, against `tipmatch`'s `146, 41, 39, 36`).
+/// ⚠ **At `1.00x` and `8.00x`, not across the sweep** — an earlier version
+/// claimed the latter. `xy: none` loses to `xy: POD` at all three ranks at
+/// `0.25x` and at rank 1 of `2.00x`. Adding in-plane to the SAME `z` does cost
+/// something at every cell (`1.6×` to `25×`), but the `z` profile can cost more:
+/// at `0.25x` rank 2 it is `9.2×`.
 ///
-/// ## Why, and the two things it retro-explains
+/// ⇒ POD finds a usable shape; what rides along with it is expensive. Zeroing
+/// `x`/`y` turns `tipmatch`'s `146` into `10`, and at `1.00x` that arm is stable
+/// in rank (`10, 11, 12, 13`) where `tipmatch` is not (`146, 41, 39, 36`).
+/// ⚠ That stability is a `1.00x` property: at `0.25x` `xy:none` swings `4.2×`
+/// over rank while `xy:β` swings `1.4×`.
 ///
-/// A slender beam's axial strain is `ε = ∂u/∂x + ½(∂w/∂x)²`. A POD mode's
-/// in-plane field `u` is whatever cancels that quadratic term **at the
-/// amplitude the mode was fitted at**. Rescaling the mode by `β` grows `∂u/∂x`
-/// linearly and `½(∂w/∂x)²` quadratically, leaving `(β² − β)·½(∂w/∂x)²` of
-/// spurious AXIAL strain — and this section's axial stiffness is about
-/// `(L/r)² ≈ 2·10⁴` times its bending stiffness, so a strain error far too
-/// small to see in the position columns is an enormous force error.
+/// # ⛔ The mechanism that explained this is dead
 ///
-/// That is a hypothesis, but it is the one the numbers already committed to
-/// were waiting for, and it closes two of the three open items above:
+/// The explanation offered here was an axial-strain mismatch: a mode's in-plane
+/// field cancels `½(∂w/∂x)²` at its fitted amplitude, so rescaling `w` by `β`
+/// should leave `(β² − β)·½(∂w/∂x)²` of spurious axial strain against an axial
+/// stiffness `~(L/r)² ≈ 2·10⁴` times the bending stiffness. It predicted that
+/// scaling the in-plane part by `β²` would cancel the mismatch.
 ///
-/// - **Why the damage is amplitude-dependent rather than `β`-dependent.** The
-///   spurious term scales with `(∂w/∂x)²`, not with `β` alone. `β ≈ 3.9` at
-///   every magnitude, and `tipmatch` costs `1.6×` `Low` at `0.25x` and `24×` at
-///   `1.00x` — because the rotation, not the ratio, is what grew.
-/// - **Why plain `Low` is the best modal arm despite throwing amplitude away.**
-///   It never rescales. At `β = 1` there is no mismatch to create.
-///
-/// ## ⛔ The mechanism made a prediction, and the prediction is dead
-///
-/// If the in-plane damage were an axial-strain mismatch, scaling the in-plane
-/// part by `β²` instead of `β` should cancel it. It does not. Iterations by
-/// in-plane treatment, ranks 1–4:
+/// It does not. Iterations by in-plane treatment, ranks 1–4:
 ///
 /// ```text
 ///   impulse   xy: β                xy: β²                xy: none        analytic z
 ///    0.25x    13, 10,  9,  10      12,  13,  16,  17     11, 46, 28, 16           5
 ///    1.00x   146, 41, 39,  36     194, 174, 174, 299     10, 11, 12, 13           4
 ///    2.00x    66, 71, 95, 329      38,  39,  39,  57     45, 16, 19, 39           5
-///    8.00x   153, 45, 65, FAIL    FAIL at every rank     50, 37, 29, FAIL        25
+///    8.00x   153, 45, 65, inv.    inverted at every rank 50, 37, 29, inv.        25
 /// ```
 ///
-/// `β²` helps at `2.00x`, hurts at `0.25x` and `1.00x` — where it is `4×` worse
-/// than `β` at rank 1 and `8×` worse at rank 4 — and fails outright at every
-/// rank at `8.00x`. **The quadratic correction is not a correction.**
+/// `β²` helps at `2.00x`, is a wash at `0.25x` rank 1 (`12` against `13`), and
+/// costs `4.2×` at ranks 2–3 and `8.3×` at rank 4 of `1.00x`. At `8.00x` it
+/// produces an inverted start at every rank — which is not a convergence result
+/// but does say the `β²` field is violently over-scaled.
 ///
-/// ⇒ So the axial-strain story is wrong, or at least the leading-order
-/// cancellation is not what governs, and it is struck rather than kept beside
-/// its own refutation. What survives it is stronger and simpler: **the in-plane
-/// field is harmful at every scaling tried, and REMOVING it is what works.**
-/// `xy: none` is the only in-plane treatment that is stable in rank and it is
-/// `14×` better than either rescaling at `1.00x`.
+/// ⇒ **The mechanism is struck.** Its derivation is not kept above this
+/// paragraph — an earlier commit claimed to have struck it and left the whole
+/// exposition standing twenty lines up, which is the append-instead-of-replace
+/// pattern this project has now shipped three times. What replaces it is
+/// weaker, and is a description rather than an explanation: **the in-plane field
+/// is expensive at every scaling tried, and removing it is what works.**
 ///
-/// ⚠ Two of the three items the earlier section closed have to be re-opened
-/// with it: the amplitude dependence and `Low`'s advantage no longer have an
-/// explanation, only a description.
+/// ⚠ The two things the mechanism claimed to retro-explain — the amplitude
+/// dependence, and why plain `Low` wins despite discarding amplitude — go back
+/// to being unexplained with it. And "the stiffness half survives
+/// independently" does not hold either: that argument rests on `146` vs `10`,
+/// the same two cells the mechanism was invented to explain.
 ///
 /// # ⛔ Verdict on the candidate
 ///
-/// Best mesh-general modal arm against the two references, iterations:
+/// Best modal arm against the two references, iterations:
 ///
 /// ```text
 ///   impulse   Inertial   best modal arm        analytic ramp
@@ -3355,18 +3422,16 @@ fn assert_rank_zero_is_previous_state(rig: &ModalRig) {
 ///    8.00x          32   29  (tip-z r=3)                  25
 /// ```
 ///
-/// **The ramp beats the best modal arm at every magnitude**, and the modal
-/// arm's margin over `Inertial` is large only at `1.00x`. Modal projection is
-/// real, mesh-general, and reproducible — and it does not clear the bar the
-/// beam-specific profile already set. It is recorded here rather than deleted
-/// so that the next attempt starts from measurements it can re-run, which is
-/// exactly what `SmoothedInertial` could not offer.
+/// **The ramp beats the best modal arm at every magnitude**, and the margin over
+/// `Inertial` is large only at `1.00x`. ⚠ `scaled` is excluded above as a
+/// control, and it is worth naming that at `8.00x` it takes `14` — beating both
+/// the best modal arm and the ramp. It reads the basis only for a scalar `α`.
 ///
-/// ▶ The last factor — whether a POD mode's `z` varies across the section — was
-/// then measured directly and is NOT the answer:
-/// [`whether_a_pod_mode_is_a_function_of_the_axial_coordinate`] reads a
-/// cross-sectional spread of `0.001` on mode 0. What it found instead is where
-/// to look next, and it is not about `z` at all.
+/// ⇒ Modal projection is reproducible and does not clear the bar the
+/// beam-specific profile already set — and per [`ModalRig`], the basis it uses
+/// was fitted by loading the beam the way that profile describes. It is recorded
+/// rather than deleted so the next attempt starts from measurements it can
+/// re-run, which is what `SmoothedInertial` could not offer.
 #[test]
 #[ignore = "diagnostic — run explicitly"]
 fn whether_a_modal_start_cuts_iterations_on_a_real_impact_frame() {
@@ -3648,46 +3713,69 @@ fn modal_verdict(
 /// # What it read — the question was wrong, and the answer is better
 ///
 /// ```text
-///   mode   spread   in-plane   dev(mode-1)   dev(tip-load)   sigma/sigma_0
-///      0    0.001      0.017         0.012           0.018          1.00e0
-///      1    0.933     22.338         1.491           1.462          1.49e-2
-///      2    0.005     18.343         1.015           0.986          5.21e-3
-///      3    0.003      0.088         1.074           1.044          7.50e-4
+///   mode   share   spread   in-plane/peak   dev(mode-1)   dev(tip-load)   sigma/sigma_0
+///      0   0.020    0.001           0.017         0.012           0.018          1.00e0
+///      1   0.999    0.933          22.338         1.491           1.462         1.49e-2
+///      2   0.999    0.005          18.343         1.015           0.986         5.21e-3
+///      3   0.078    0.003           0.088         1.074           1.044         7.50e-4
 /// ```
+///
+/// ⚠ `dev(...)` normalises each mode's station-mean profile by its own value at
+/// the driven end. For the two axial modes that value is a small fraction of an
+/// already-small transverse field, so their `dev` figures say "not a bending
+/// profile" and nothing quantitative. The `share` column is what the conclusion
+/// rests on.
 ///
 /// ⛔ **Cross-sectional variation is not the answer.** Mode 0's spread is
 /// `0.001` — it already IS a function of `x/L`, to a tenth of a percent. Had
 /// the averaging arm been built first, it would have averaged a field that was
 /// already flat.
 ///
-/// ★★★ **What the table shows instead: modes 1 and 2 are AXIAL modes.** Their
-/// in-plane RMS is `22×` and `18×` their own transverse peak — they are
-/// stretching motions with a little bending along for the ride, not bending
-/// modes. Mode 3 is a second bending mode (`8.8 %` in-plane). Mode 0 is the
-/// analytic first bending mode to `1.2 %`, and `98.3 %` transverse.
+/// ★★★ **What the table shows instead: modes 1 and 2 are AXIAL modes.** The
+/// `share` column is the fraction of each mode's own mass-norm lying in the
+/// in-plane DOFs — a real fraction, since `PodBasis` returns M-orthonormal
+/// modes so `‖φ‖_M = 1`. Modes 1 and 2 read `0.999`: they are stretching
+/// motions with a trace of bending, not bending modes. Modes 0 and 3 read
+/// `0.020` and `0.078`, so they are `99.9 %`+ transverse. Mode 0 is the analytic
+/// first bending mode to `1.2 %`.
 ///
-/// ⇒ **This is the source of the in-plane finding, and of the rank
-/// non-monotonicity the sweep recorded as unexplained.** Raising the rank past
-/// 1 does not add finer bending detail; it adds STRETCHING. `low r=1` is the
-/// best modal arm at the game strike because it is the only arm made of nothing
-/// but the bending mode.
+/// ⚠ The `in-plane/peak` column beside it is an RMS over a station divided by a
+/// GLOBAL transverse peak — two normalisations, so its complement is not a
+/// share. An earlier version of this file reported "`98.3 %` transverse" from
+/// `1 − 0.017` on that column. That number was fabricated; `share` is the
+/// measurement it needed.
 ///
-/// ★★ **And it says why POD is the wrong ordering for a predictor.** POD ranks
-/// by energy IN THE SNAPSHOTS. A modest axial oscillation can outrank a second
-/// bending mode on that measure while being orders stiffer, which is exactly
-/// what `σ/σ₀` shows here: the two axial modes sit at ranks 1–2, above the
-/// bending mode at rank 3. **A predictor wants the SOFTEST modes, not the most
-/// energetic ones** — those are different orderings, and nothing in the fit
-/// knows the difference.
+/// ⇒ **Consistent with the in-plane finding and with the rank
+/// non-monotonicity**: raising the rank past 1 does not add finer bending
+/// detail, it adds stretching. ⚠ Stated as consistency, not as cause — the
+/// direct test is an arm using modes 0 and 3 and skipping 1–2, it is one line of
+/// code, and it is not built. This file has had two mechanism hypotheses
+/// refuted after being stated more confidently than this.
 ///
-/// ★ It also sharpens how violent the in-plane sensitivity is. Mode 0 carries
-/// only `1.7 %` in-plane, and scaling THAT by `β ≈ 3.9` is the whole difference
-/// between `tipmatch r=1`'s `146` iterations and `tip-z r=1`'s `10` — `14.6×`
-/// from a `1.7 %` component. The STIFFNESS half of the struck mechanism (a
-/// slender section's axial stiffness is `~(L/r)² ≈ 2·10⁴` times its bending
-/// stiffness, so a small axial error is a huge force error) is independently
-/// evidenced by that. The KINEMATIC half — the `β²` cancellation — stays dead;
-/// it was refuted on its own prediction.
+/// ⚠ And the tidy version of it — "`low r=1` is best because it is the only
+/// pure-bending arm" — holds at `1.00x` only. At `0.25x` the best is `low r=2`,
+/// which includes an axial mode; at `8.00x` it is `tip-z r=3`, and `low r=1`
+/// (`37`) is worse there than plain `Inertial` (`32`).
+///
+/// ★★ **And it suggests POD is the wrong ordering for a predictor.** POD ranks
+/// by energy IN THE SNAPSHOTS, and on that measure a modest axial oscillation
+/// can outrank a stiffer bending mode — which is what `σ/σ₀` shows here, two
+/// axial modes at ranks 1–2 above a bending mode at rank 3. If a predictor wants
+/// the SOFTEST modes rather than the most energetic ones, those are different
+/// orderings and nothing in the fit knows the difference.
+///
+/// ⚠ A hypothesis about an untried lever, not a finding. Nothing here measures
+/// a frequency-ordered basis.
+///
+/// ★ It also sharpens how violent the in-plane sensitivity is. Mode 0 puts only
+/// `2.0 %` of its mass-norm in-plane, and scaling that by `β ≈ 3.9` is the whole
+/// difference between `tipmatch r=1`'s `146` iterations and `tip-z r=1`'s `10`.
+///
+/// ⚠ That is a restatement of two cells of the 2×2, not new evidence for the
+/// struck mechanism. An earlier version called it independent support for the
+/// mechanism's "stiffness half"; it is the same `146` and `10` the mechanism was
+/// invented to explain, and splitting a refuted mechanism in two and reviving
+/// the half that survives on its own motivating data is not a test.
 ///
 /// ⚠ **The residual `2.5×` is still not explained, only bounded.** `tip-z r=1`
 /// IS mode 0 with the in-plane zeroed, and its profile agrees with the analytic
@@ -3698,11 +3786,12 @@ fn modal_verdict(
 /// position metric here can resolve**, and that is the finding to carry, not the
 /// individual ratios.
 ///
-/// ▶ The lever this points at: order the basis by **frequency**, not by
-/// singular value. Each POD mode has a time coefficient over the ring-down, so
-/// its dominant frequency is measurable from the fit that already ran — no
-/// stiffness matrix, no beam knowledge. Sorting by it would put the bending
-/// modes first and the stretching modes last, mesh-generally.
+/// ▶ Two untried levers, in order of cost. **Skip the axial modes** — an arm on
+/// modes 0 and 3 — which is the direct test of everything above and is one line.
+/// Then **order the basis by frequency** rather than by singular value: each POD
+/// mode has a time coefficient over the ring-down, so its dominant frequency
+/// falls out of the fit that already ran, with no stiffness matrix. The second
+/// is only worth building if the first says the ordering is what matters.
 #[test]
 #[ignore = "diagnostic — run explicitly"]
 fn whether_a_pod_mode_is_a_function_of_the_axial_coordinate() {

@@ -79,19 +79,40 @@ use crate::solver::lm::LmConfig;
 /// measured and set down too** — `tests/stick_impact.rs` Probe 4, which unlike
 /// the two arms above is IN THE TREE and re-runnable. Projecting `Δt·v_prev`
 /// onto the leading modes of a ring-down POD basis is worth `25 → 6` iterations
-/// at the game strike, beats a norm-matched scalar shrink by `6.8×` and a
-/// rank-matched random subspace by `7.5×`, and beats random at every magnitude
-/// and every rank. The mechanism is real and it is the modes.
+/// at the game strike.
 ///
-/// It still loses to the beam-specific ramp at every magnitude (`6` against
-/// `4` at the game strike, `29` against `25` at `8×`), so it does not clear the
-/// bar and is not offered as a variant here. Three findings from it are worth
-/// carrying:
+/// ⚠ **The controls do not show that the modes are what did it, and an earlier
+/// version of this doc said they did.** The two controls — a rank-matched random
+/// subspace and a norm-matched scalar shrink — are both ROUGH fields, so beating
+/// them re-measures the smooth-vs-rough factor the same fixture already put at
+/// `46.8×`. The smooth non-modal comparison is the analytic profile, and that
+/// beats modal projection at every magnitude. ⚠ The scalar shrink also WINS at
+/// both ends of the sweep (`5` against `6` at `0.25×`, `14` against `37` at
+/// `8×`); quoting only its `6.8×` loss at the game strike was one-sided.
 ///
-/// - **A predictor cannot be wrong, only expensive.** The full-order residual
-///   governs the answer, so R1's failure to generalise across contact positions
-///   disqualifies the reduced *solve* and not a reduced *predictor*. That
-///   asymmetry is why this candidate was worth the run.
+/// It still loses to the beam-specific ramp at every magnitude (`6` against `4`
+/// at the game strike, `29` against `25` at `8×`), so it does not clear the bar
+/// and is not offered as a variant here.
+///
+/// ⚠ And the basis is not the structure-blind object the phrase "fitted on a
+/// ring-down" suggests: the ring-down is excited by ramping a tip-band load and
+/// releasing it in one frame, which is both band-localised and a step, and the
+/// bend it produces IS the analytic tip-load profile. The fitted leading mode
+/// lands `0.018` from that curve. Read the result as "POD rediscovered the ramp,
+/// slightly worse, on a fixture loaded the way the ramp describes".
+///
+/// Three findings from it are worth carrying:
+///
+/// - **A predictor cannot change the ROOT — but it can stop the solve reaching
+///   it.** The residual depends on the guess through nothing but `x̂`, so R1's
+///   failure to generalise across contact positions disqualifies the reduced
+///   *solve* and not a reduced *predictor*. That asymmetry is why this candidate
+///   was worth the run. ⚠ It does NOT extend to "a predictor cannot be wrong,
+///   only expensive", which an earlier version of this doc claimed: an iteration
+///   cap and an Armijo stall are returned as errors, and `helpers`' own
+///   `initial_guess` notes record `InertialWithLoad` stalling at iteration 0
+///   with `r_norm = NaN` on a gravity-loaded IPC scene. In a frame budget a
+///   failed solve is worse than a slow one.
 /// - **A modal predictor must be used as a PROJECTION, never as a rescaled
 ///   shape.** Rescaling a mode to match the driven-node displacement costs
 ///   `24×` over not rescaling it, and no scalar correction tried recovers it.
@@ -102,15 +123,21 @@ use crate::solver::lm::LmConfig;
 ///   modes at ranks 1–2 are AXIAL, `22×` and `18×` more in-plane than
 ///   transverse, sitting above a bending mode at rank 3. POD ranks by energy in
 ///   the snapshots, and a modest stretching oscillation outranks a stiffer
-///   bending mode on that measure. **A predictor wants the softest modes, not
-///   the most energetic ones.** Ordering a basis by frequency rather than by
-///   singular value is the untried lever, and it needs neither a stiffness
+///   bending mode on that measure. If a predictor wants the softest modes rather
+///   than the most energetic ones, those are different orderings — a hypothesis,
+///   not a finding, and the untried lever it points at is ordering a basis by
+///   frequency rather than by singular value, which needs neither a stiffness
 ///   matrix nor any knowledge of the geometry.
 ///
 /// ⚠ `SIGMA_FLOOR_REL` in `reduced::pod` is not a floor for this use. It marks
-/// where a mode is distinguishable from round-off, not where it is accurate,
-/// and the gap is a square root — a basis fitted for a predictor should be
-/// truncated at `√(ε/target)` on the relative spectrum instead.
+/// where a mode is distinguishable from round-off, not where it is accurate, and
+/// the gap is a square root: on the ring-down above it admits 9 modes of which 5
+/// are noise, the worst reading `ΦᵀMΦ − I` at `1.8e-3`. A basis fitted for a
+/// predictor wants truncation at `√(ε/target)` on the relative spectrum, where
+/// `target` is the orthonormality the projector has to have — `1e-8` there,
+/// which keeps 4. ⚠ That rule of thumb ignores the eigenvalue gap and is
+/// optimistic for nearly-degenerate modes; the fixture measures the curve rather
+/// than trusting it.
 ///
 /// ⇒ [`Self::Inertial`] is the best-measured choice on five of the six cells and
 /// never failed on any — **but it is NOT the default, and deliberately so**: on a
