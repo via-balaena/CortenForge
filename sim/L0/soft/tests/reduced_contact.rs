@@ -3424,6 +3424,108 @@ const OFF_LATTICE_EXTRAP: f64 = 1.75;
 /// 5. **`+1.75a` lands INSIDE the `+1.50a`/`+2.00a` bracket** if alignment is not
 ///    a large effect. Outside it, `+0.25a`'s three orders are partly a mesh
 ///    artifact and §2l's interpolation finding needs re-scoping.
+///
+/// ## Measured — 2026-08-25, 8 oracles, `139.7 s`
+///
+/// ### ★★★ The headline: RANK-INDEPENDENCE IS WHY IT CANNOT GATE
+///
+/// §2m left one candidate standing and called its rank-independence the signature
+/// that made it a domain signal. **On a held-out ensemble that property is exactly
+/// what disqualifies it.** Four ranks, one basis family, one hull — what a
+/// deployed gate actually sees:
+///
+/// | | across the four ranks |
+/// |---|---|
+/// | `max_rel_err` | **31.9×** (`3.733e-1 → 1.172e-2`) |
+/// | `snapshot_distance` worst step | **1.005×** (`0.9756 → 0.9704`) |
+/// | `snapshot_distance` median step | 1.023× |
+/// | `residual_excess` worst step | 6.409× |
+/// | `active_novelty` | `0.000` at every rank |
+///
+/// A signal that does not move with rank **cannot report how well the basis
+/// resolved the answer**, because that is the thing rank changes. Its
+/// single-ensemble threshold margins are `1.002×`, `1.002×`, `1.002×`, `1.000×`
+/// across `τ = 1e-1 … 2e-2` — noise. `residual_excess` gets `2.883×` on the same
+/// cells because it is an error signal and tracks rank by construction.
+///
+/// ⇒ **Rank-independence and accuracy-sensitivity are mutually exclusive.** That
+/// is not a design preference; it follows from what each quantity measures.
+///
+/// ### ⇒ Which RESURRECTS the two-signal conclusion — for the opposite reason
+///
+/// §2m withdrew "the gate needs TWO signals" because the argument given for it was
+/// about DIAGNOSIS and was sold as gating. The conclusion returns here on
+/// different evidence: a **held-out** position, not a confounded position
+/// partition. `snapshot_distance` reads position and is blind to resolution;
+/// `residual_excess` reads resolution and is per-step-blind to position (§2m) and
+/// unavailable under ECSW. **Neither alone gates**, and now that is measured.
+///
+/// ### ⛔ §2m's margin was FITTED, and it does not survive
+///
+/// §2m's interval for `snapshot_distance` was `[0.5069, 1.165)`. The held-out
+/// arms read **`0.9704–0.9756`** — **inside** it, in the band nothing was ever
+/// sampled in, carrying a `32×` error spread at one signal value. A threshold
+/// placed anywhere in §2m's interval reads the same for a `1.2 %`-wrong answer and
+/// a `37 %`-wrong one.
+///
+/// ### The matched-gap pair — the comparison this test was built for
+///
+/// Held-out `+0.00a` and `+1.50a` sit `0.5a` from their nearest training snapshot,
+/// both ON the lattice, one interpolating and one extrapolating:
+///
+/// | rank | HELD-OUT `+0.00a` | `+1.50a` | ratio |
+/// |---|---:|---:|---:|
+/// | 20 | 3.733e-1 | 3.149e-1 | **0.84×** |
+/// | 40 | 1.406e-1 | 1.478e-1 | **1.05×** |
+/// | 80 | 2.902e-2 | 3.177e-1 | 10.95× |
+/// | 116 / 142 | 1.172e-2 | 2.822e-1 | 24.08× |
+///
+/// ★★★ **At `r=20` extrapolation is the BETTER of the two, and at `r=40` they are
+/// indistinguishable.** Being inside the hull does not make the answer better at a
+/// given rank — it makes the answer **improvable by rank**. Interpolation falls
+/// `31.9×` across the sweep; extrapolation falls `1.12×`. ⇒ This sharpens §2l's
+/// "rank does not fix it": rank does not fix it OUTSIDE the hull, and does fix it
+/// inside, at a rate the gap degrades.
+///
+/// ⚠ And at that matched gap, `snapshot_distance`'s **median reads `4.117e-1` vs
+/// `4.271e-1` — `1.04×` apart for a `24×` error difference.**
+///
+/// ### The lattice control — the mesh confound is largely defused
+///
+/// `+1.75a` (off-lattice, `3.5` cells) falls **INSIDE** the `+1.50a`/`+2.00a`
+/// bracket at all four ranks (`0.720` in `[0.315, 1.196]`; `0.442` in
+/// `[0.148, 0.764]`; `0.674` in `[0.318, 1.037]`; `0.626` in `[0.282, 1.093]`).
+/// Alignment is not a large effect at the extrapolation end, and error tracks gap
+/// smoothly across `0.5a → 0.75a → 1.0a` with no lattice jump. ⚠ Evidence, not
+/// proof, for the interpolation end — `+0.25a` remains the only off-lattice
+/// interpolation point, and with `cell = 0.5a` no on-lattice one can exist inside
+/// the training span.
+///
+/// ### Pre-registration
+///
+/// 1. No prediction was made. Held-out `+0.00a`: `3.733e-1 → 1.172e-2`.
+/// 2. ⚠ **Half-refuted, and the half that fails is the interesting one.** The two
+///    arms land within `1.05×` at `r=40` and INVERT at `r=20`, so at low rank the
+///    hull framing carries nothing. It is upheld only at high rank, and its
+///    content is the TREND rather than the level.
+/// 3. ✅ **`~1.0` predicted, `0.970` measured.** `snapshot_distance` is close to
+///    linear in gap: `0.506` at `0.25a`, `0.970` at `0.50a`.
+/// 4. ✅ **`active_novelty` reads `0.000` at the held-out point at every rank and
+///    both quantiles**, while the error runs `1.2 %`–`37 %`. FAIL at every `τ`.
+///    Fail-open at a held-out in-hull position, exactly as pre-registered.
+/// 5. ✅ Confirmed at all four ranks.
+///
+/// ### ⚠ What this does NOT establish
+///
+/// - **One held-out position.** Better than none, which is what §2m had, and still
+///   a single point.
+/// - **The two ensembles have different normalisers.** The LOO basis is fitted on
+///   284 snapshots and truncates at `r=116`; the full one on 355 at `r=142`. So
+///   `snapshot_distance` values are NOT directly comparable ACROSS the two arms —
+///   the within-ensemble spans and the median comparison are the sound readings,
+///   and the `0.970` vs `1.920` max comparison is not.
+/// - **The lattice control tests the EXTRAPOLATION end only.**
+/// - No timing, no threshold, one fixture, one basis construction.
 #[test]
 #[ignore = "§4c margin validation — 8 full-order trajectories, ~3 min (see the fn docs)"]
 fn the_signal_margin_on_a_held_out_position() {
@@ -3545,6 +3647,34 @@ fn the_signal_margin_on_a_held_out_position() {
         }
     }
     assert_every_arm_produced(&rows, rows.len());
+
+    // ⚠ The first version of this test recorded the signals and PRINTED NONE of
+    // them, so pre-registration items 3 and 4 — both about what a signal reads at
+    // the held-out point — were unanswerable from its own output. A prediction
+    // whose data is not emitted is not a prediction.
+    println!(
+        "\nRC\t╔═ SIGNALS at each scored arm (worst step / median step)\nRC\t║ {:<30}{:>12}{:>22}{:>22}{:>18}",
+        "arm", "relL2", "S1 resid", "S3 snapshot-dist", "S4 novelty"
+    );
+    for (tag, got, arm) in &rows {
+        let cell = |pick: fn(&Signals) -> f64, w: usize| -> String {
+            let m = signal(arm, pick, Quantile::Max);
+            let d = signal(arm, pick, Quantile::Median);
+            match (m, d) {
+                (Some(m), Some(d)) => format!("{:>w$}", format!("{m:.3e}/{d:.3e}"), w = w),
+                _ => format!("{:>w$}", "—", w = w),
+            }
+        };
+        println!(
+            "RC\t║ {:<30}{:>12.3e}{}{}{}",
+            format!("{tag} r={got}"),
+            arm.max_rel_err,
+            cell(|s| s.residual_excess, 22),
+            cell(|s| s.snapshot_distance, 22),
+            cell(|s| s.active_novelty, 18),
+        );
+    }
+    println!("RC\t╚═");
     println!(
         "\nRC\t★ READ IT AS: (a) does HELD-OUT +0.00a land with +1.50a — same gap, same\n\
          RC\t   lattice status, one interpolating and one extrapolating? If so the\n\

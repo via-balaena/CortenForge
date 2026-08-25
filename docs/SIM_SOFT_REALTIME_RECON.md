@@ -1,6 +1,6 @@
 # sim-soft Real-Time Path — Phase-1 Measurement + Recon (Phase E predecessor)
 
-**Status**: RECON 2026-08-10 (rev 2026-08-25), v2.16. Phase 1 (measure) COMPLETE — all four requested
+**Status**: RECON 2026-08-10 (rev 2026-08-25), v2.17. Phase 1 (measure) COMPLETE — all four requested
 measurements taken; §2 reports them. Phase 2 (this recon) proposes the MOR +
 hyper-reduction path with a staged ladder whose first rung is a kill-or-confirm.
 **No dependency was added.** Phase 1's instrumentation was temporary (implement →
@@ -2254,6 +2254,11 @@ reason each of the others fails. S3 is left standing at `~2×`, on a fitted
 threshold, on one fixture. §4c's gate is **not ready to build**, and v2.15's
 "rung 2 is implementation, not research" is withdrawn.
 
+⇒ ⚠ **And §2n (v2.17) then supplies the held-out position this section says it
+lacks: the `~2×` does NOT survive it, and S3's rank-independence — named above as
+its signature — is precisely what disqualifies it as an accuracy gate.** The
+two-signal conclusion withdrawn here returns there on that evidence.
+
 #### ⚠ What this does NOT establish
 
 - **No held-out position exists.** Every margin is computed on the same 16 cells
@@ -2298,6 +2303,101 @@ It now keeps every step rather than a running maximum, prints both quantiles,
 `active_novelty`'s denominator, the singular-value spectrum, and computes the gate
 table itself — so the analysis that overturned v2.15 cannot drift from the data
 again.
+
+### 2n. §4c rung 1b — the held-out position, and why rank-independence disqualifies the survivor (v2.17)
+
+§2m ended with one candidate standing (`snapshot_distance`) and named its
+**rank-independence** as the signature that made it a domain signal. It also
+recorded that every margin it quoted was FITTED — derived from the same 16 cells
+it was scored on, with no held-out position anywhere. This rung supplies one, and
+the two facts collide.
+
+**Arm A — leave-one-out.** Refit on `[-1, -0.5, +0.5, +1]a`, score at `+0.00a`.
+**Arm B — lattice control.** `+1.75a` (off-lattice, `3.5` cells) against the
+`+1.50a` / `+2.00a` bracket, both on it. 8 oracles, `139.7 s`.
+
+#### ★★★ Rank-independence is why it cannot gate
+
+Four ranks, ONE basis family, ONE hull — what a deployed gate actually sees, since
+a gate ships with a single ensemble and a single threshold:
+
+| | span across the four ranks |
+|---|---|
+| `max_rel_err` | **31.9×** (`3.733e-1 → 1.172e-2`) |
+| `snapshot_distance` worst step | **1.005×** |
+| `snapshot_distance` median step | 1.023× |
+| `residual_excess` worst step | 6.409× |
+| `active_novelty` | `0.000` at every rank |
+
+A signal that does not move with rank **cannot report how well the basis resolved
+the answer**, because resolution is the thing rank changes. Within-ensemble
+threshold margins for `snapshot_distance` are `1.002 / 1.002 / 1.002 / 1.000` over
+`τ = 1e-1 … 2e-2` — noise. `residual_excess` gets `2.883×` on the same cells,
+because it is an error signal and tracks rank by construction.
+
+⇒ **Rank-independence and accuracy-sensitivity are mutually exclusive**, and that
+is a consequence of what each quantity measures rather than a design choice.
+
+#### ⇒ The two-signal conclusion returns, on opposite evidence
+
+§2m WITHDREW "the gate needs TWO signals" because the argument offered for it was
+about DIAGNOSIS and had been sold as gating. It returns here on a **held-out**
+position rather than a confounded position partition: `snapshot_distance` reads
+position and is blind to resolution; `residual_excess` reads resolution, is
+per-step blind to position (§2m), and is unavailable under ECSW. **Neither alone
+gates**, and that is now measured rather than argued.
+
+#### ⛔ §2m's fitted margin does not survive
+
+Its `snapshot_distance` interval was `[0.5069, 1.165)`. The held-out arms read
+**`0.9704–0.9756` — INSIDE it**, in the band nothing was ever sampled in, carrying
+a `32×` error spread at one signal value. A threshold anywhere in that interval
+reads identically for a `1.2 %`-wrong answer and a `37 %`-wrong one.
+
+#### The matched-gap pair
+
+Held-out `+0.00a` and `+1.50a` both sit `0.5a` from their nearest training
+snapshot and both ON the lattice — one interpolating, one extrapolating:
+
+| rank | HELD-OUT `+0.00a` | `+1.50a` | ratio |
+|---|---:|---:|---:|
+| 20 | 3.733e-1 | 3.149e-1 | **0.84×** |
+| 40 | 1.406e-1 | 1.478e-1 | **1.05×** |
+| 80 | 2.902e-2 | 3.177e-1 | 10.95× |
+| 116 / 142 | 1.172e-2 | 2.822e-1 | 24.08× |
+
+★★★ At `r=20` **extrapolation is the better of the two**, and at `r=40` they are
+indistinguishable. Being inside the hull does not make the answer better at a given
+rank — it makes the answer **improvable by rank**: interpolation falls `31.9×`
+across the sweep, extrapolation `1.12×`. ⇒ This sharpens §2l's "rank does not fix
+it" to: **rank does not fix it OUTSIDE the hull, and does fix it inside, at a rate
+the gap degrades.** ⚠ And at that matched gap `snapshot_distance`'s median reads
+`4.117e-1` against `4.271e-1` — `1.04×` for a `24×` error difference.
+
+#### The lattice control
+
+`+1.75a` falls **INSIDE** the `+1.50a`/`+2.00a` bracket at all four ranks, and
+error tracks gap smoothly across `0.5a → 0.75a → 1.0a` with no lattice jump. The
+mesh confound raised against `+0.25a` is largely defused. ⚠ Evidence, not proof,
+for the interpolation end: with `cell = 0.5a` every on-lattice point inside the
+training span IS a training point, so no on-lattice interpolation control can
+exist on this mesh.
+
+#### ⚠ What this does NOT establish
+
+- **One held-out position** — better than none, still a single point.
+- ⚠ **The two arms use different ensembles** (284 snapshots truncating at `r=116`
+  vs 355 at `r=142`), so their `snapshot_distance` NORMALISERS differ. The
+  within-ensemble spans and the median comparison are sound; the `0.970` vs
+  `1.920` worst-step comparison across arms is NOT, and is not used above.
+- The lattice control tests the **extrapolation end only**.
+- No timing, no threshold, one fixture, one basis construction.
+
+Harness: `tests/reduced_contact.rs::the_signal_margin_on_a_held_out_position`,
+`#[ignore]`d. ⚠ Its first version recorded the signals and PRINTED NONE of them,
+leaving two of its own pre-registered items unanswerable from its output — a
+prediction whose data is not emitted is not a prediction, and the harness now
+emits it.
 
 ## 3. What the measurements say about feasibility
 
@@ -2928,10 +3028,14 @@ until then, and by nobody else ever. The recipe above is the durable record.
    box at every tolerance, the vertex-novelty signal as a trajectory-maximum
    artifact (median exactly zero at `+1.50a`), and the residual proxy per-step
    (inverted, `0.737×`) and under ECSW (`r_free` is what hyper-reduction removes).
-   ⇒ §4c's gate is NOT ready to build. ⚠ And the DOMAIN-COVERAGE half is untouched
-   and now sharper: **no held-out position exists anywhere in that matrix**, so
-   every margin is fitted, and nothing is sampled between the hull edge at `1.0a`
-   and the nearest scored point at `1.5a`.
+   ⇒ §4c's gate is NOT ready to build. ⛔ **And §2n (v2.17) supplied the held-out
+   position: the surviving candidate's `~2×` does NOT survive it.** Within one
+   ensemble the error spans `31.9×` while that signal spans `1.005×` — its
+   rank-independence, which §2m named as its signature, is exactly what makes it
+   blind to resolution. ⇒ a DOMAIN signal and an ERROR signal are provably
+   different quantities and §4c needs both; neither alone gates. ⚠ The
+   DOMAIN-COVERAGE half remains untouched, and one held-out point is still one
+   point.
 1. **Every timing number was taken on a contended box (§1a).** Absolute times are
    upper bounds. The *shapes* (scaling exponents, phase shares, crossover point) are
    robust across repeats; the absolutes are not benchmark-grade. Re-take §2a on an idle
@@ -2994,6 +3098,26 @@ until then, and by nobody else ever. The recipe above is the durable record.
 
 ## 12. Version history
 
+- **v2.17 (2026-08-25)** — **§2n, new: the first HELD-OUT position, and it
+  disqualifies §2m's survivor.** Leave-one-out (refit on `[-1,-0.5,+0.5,+1]a`,
+  score at `+0.00a`) plus an off-lattice extrapolation control. ★★★ **Within one
+  ensemble across four ranks the error spans `31.9×` while `snapshot_distance`
+  spans `1.005×`** — its single-ensemble threshold margins are `1.000–1.002×`,
+  noise, against `2.883×` for the residual proxy. ⇒ **rank-independence and
+  accuracy-sensitivity are mutually exclusive**, so the property §2m celebrated is
+  the one that disqualifies it. ⇒ **The two-signal conclusion v2.16 withdrew
+  RETURNS**, now on a held-out position rather than a confounded position
+  partition. ⛔ §2m's `[0.5069, 1.165)` interval does not survive: the held-out
+  arms read `0.9704–0.9756`, INSIDE it, carrying a `32×` error spread at one
+  value. ★★★ **Matched gap and matched lattice status, interpolating vs
+  extrapolating: at `r=20` extrapolation is BETTER (`0.84×`) and at `r=40` they are
+  indistinguishable (`1.05×`), diverging to `24×` only at top rank** — being inside
+  the hull does not make an answer better at a given rank, it makes it IMPROVABLE
+  by rank (interp falls `31.9×`, extrap `1.12×`), which sharpens §2l. ✅ Lattice
+  control: `+1.75a` falls inside the `+1.50a`/`+2.00a` bracket at all four ranks,
+  so the mesh confound against `+0.25a` is largely defused. ✅ `active_novelty`
+  reads `0.000` at the held-out point at every rank while the error runs
+  `1.2–37 %` — the pre-registered fail-open, confirmed.
 - **v2.16 (2026-08-25)** — **§2m REWRITTEN after a cold re-derivation; v2.15's
   headline was an artifact.** v2.15 reported a trajectory MAXIMUM for a question
   about a per-step check, and that single choice inverted three of its four
