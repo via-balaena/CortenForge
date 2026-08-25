@@ -126,18 +126,18 @@ pub const TARGET_RATIO: f64 = 1.0e-3;
 /// [`STATIC_DENSITY`] being zero, which removes `M(x − x₀)/dt²` outright. A `dt`
 /// alone does not make a step static — that mistake cost
 /// `slender_bending_matches_analytic.rs` a whole false ceiling.
-pub const STATIC_DT: f64 = 1.0;
+const STATIC_DT: f64 = 1.0;
 
 /// ★ Zero, because this is a static benchmark against a static closed form.
 pub const STATIC_DENSITY: f64 = 0.0;
 
 /// Second moment of area of the **solid** twin (m⁴), about the bending axis.
-pub fn i_solid() -> f64 {
+fn i_solid() -> f64 {
     WIDTH * DEPTH * DEPTH * DEPTH / 12.0
 }
 
 /// Cross-sectional area of the solid twin (m²).
-pub fn area() -> f64 {
+fn area() -> f64 {
     WIDTH * DEPTH
 }
 
@@ -236,6 +236,15 @@ pub fn rig<M: Mesh>(
     }
     let rest_z: Vec<f64> = loaded.iter().map(|&v| positions[v as usize].z).collect();
 
+    // ⚠⚠ `gravity_z` is left at `skeleton()`'s `0.0`, so this "physical
+    // identity" rig carries NO self-weight — the stick is weightless and only
+    // moves when something drives it. Deliberate, and load-bearing twice over:
+    // every deflection reported against the analytic cantilever is a response to
+    // the applied load alone, and `stick_impact.rs`'s unstruck control asserts
+    // the quiet run deflects less than `1e-12`, which self-weight would break
+    // outright (a horizontal 1.2 m shaft sags to `d/L ~ 1.7e-3` under its own
+    // mass). Enabling gravity here is not a knob — it changes what both fixtures
+    // measure.
     let mut cfg = SolverConfig::skeleton();
     cfg.dt = STATIC_DT;
     cfg.density = density;
