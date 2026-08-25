@@ -391,6 +391,33 @@ pub fn one_frame<S: Solver>(
     Ok((step.iter_count, ms))
 }
 
+/// Stable leading tokens of [`describe_failure`]'s output, one per
+/// [`SolverFailure`] variant.
+///
+/// ★ Shared with the classifier below rather than written twice: a gate that
+/// wants "did this fail for the reason I claim?" must not re-spell the prefix
+/// its producer emits, or the two drift and the classifier silently answers
+/// `false` forever.
+pub const FAIL_ITER_CAP: &str = "iter-cap";
+pub const FAIL_ARMIJO: &str = "armijo-stall";
+pub const FAIL_FACTOR: &str = "factor-failed";
+pub const FAIL_VALIDITY: &str = "validity-violation";
+
+/// Whether a failure reason from [`describe_failure`] is Newton failing to
+/// CONVERGE, as opposed to the step dying some other way.
+///
+/// ⚠⚠ **The distinction is the whole point of several gates.** `Run::completed()`
+/// is `false` for an iteration cap, an Armijo stall, a failed factorisation, an
+/// inverted element and a non-finite state alike. A gate asserting only
+/// `!completed()` to prove "the convergence wall is intact" therefore reports
+/// success when an element inverts instead — a different defect entirely,
+/// demanding the opposite fix.
+pub fn is_convergence_failure(reason: &str) -> bool {
+    // `describe_failure` prefixes the token; the frame loops prepend "frame N: ".
+    let body = reason.split_once(": ").map_or(reason, |(_, rest)| rest);
+    body.starts_with(FAIL_ITER_CAP) || body.starts_with(FAIL_ARMIJO)
+}
+
 /// A one-line reason a step failed, for the run-ended-early report.
 pub fn describe_failure(e: &SolverFailure) -> String {
     match e {
@@ -398,17 +425,17 @@ pub fn describe_failure(e: &SolverFailure) -> String {
             max_iter,
             last_r_norm,
             ..
-        } => format!("iter-cap at {max_iter}, r_norm {last_r_norm:.3e}"),
+        } => format!("{FAIL_ITER_CAP} at {max_iter}, r_norm {last_r_norm:.3e}"),
         SolverFailure::ArmijoStall {
             last_iter,
             last_r_norm,
             ..
-        } => format!("armijo-stall at iter {last_iter}, r_norm {last_r_norm:.3e}"),
+        } => format!("{FAIL_ARMIJO} at iter {last_iter}, r_norm {last_r_norm:.3e}"),
         SolverFailure::DoublyFailedFactor {
             last_iter, context, ..
-        } => format!("factor failed at iter {last_iter}: {context}"),
+        } => format!("{FAIL_FACTOR} at iter {last_iter}: {context}"),
         SolverFailure::ValidityViolation { tet_id, message } => {
-            format!("validity violation, tet {tet_id}: {message}")
+            format!("{FAIL_VALIDITY}, tet {tet_id}: {message}")
         }
     }
 }

@@ -151,7 +151,8 @@ mod stickrig;
 
 use stickrig::{
     DEPTH, EI_TARGET, MASS_PER_LENGTH, SLAPSHOT_DEFLECTION, SPAN, TOL_REL, WIDTH, describe_failure,
-    e_eff_for, lame_for, one_frame, outcome_of, percentile, rho_eff, rig, slapshot_load, tip_of,
+    e_eff_for, is_convergence_failure, lame_for, one_frame, outcome_of, percentile, rho_eff, rig,
+    slapshot_load, tip_of,
 };
 
 // ---------------------------------------------------------------------------
@@ -290,7 +291,10 @@ impl Run {
         self.iters
             .iter()
             .zip(&self.ms)
-            .filter(|&(&it, _)| band.contains(&it) && it > 0)
+            // ⚠ No `&& it > 0` here. It was redundant against every caller's
+            // band, and it silently REPAIRED a mutated lower bound of `0` — so
+            // the one mutation able to catch a bad band was swallowed.
+            .filter(|&(&it, _)| band.contains(&it))
             .map(|(&it, &ms)| (it, ms / it as f64))
             .collect()
     }
@@ -656,6 +660,17 @@ fn a_held_force_strike_fails_above_the_wall_and_completes_below_it() {
          no longer demonstrates anything and its verdict must be re-derived",
         above.peak_ratio
     );
+    // ★★ ...and it must fail for the reason this gate NAMES. `completed()` is
+    // false for an inverted element or a failed factorisation too, so without
+    // this the gate reports "the convergence wall is intact" when the cell died
+    // of something else entirely — a different defect demanding the opposite fix.
+    let why = above.ended_early.as_deref().unwrap_or_default();
+    assert!(
+        is_convergence_failure(why),
+        "the above-wall cell did fail, but NOT by failing to converge: {why:?}. \
+         This gate certifies a Newton convergence wall; anything else here is a \
+         separate defect wearing its clothes"
+    );
 }
 
 /// ★★★ **The headline: posing a strike as momentum clears the wall that posing
@@ -679,6 +694,14 @@ fn a_momentum_strike_converges_deeper_than_any_force_strike_that_converged() {
             if run.completed() {
                 deepest_force = deepest_force.max(run.peak_ratio);
             } else {
+                let why = run.ended_early.as_deref().unwrap_or_default();
+                assert!(
+                    is_convergence_failure(why),
+                    "{} at {magnitude}x failed, but not by failing to converge: \
+                     {why:?}. This file's central claim rests on the force posing \
+                     hitting a CONVERGENCE wall, not on it dying some other way",
+                    strike.label()
+                );
                 any_force_failed = true;
             }
         }
@@ -691,10 +714,18 @@ fn a_momentum_strike_converges_deeper_than_any_force_strike_that_converged() {
         "no force-posed cell failed, so there is no wall here to clear and this \
          gate is vacuous"
     );
+    // ⚠⚠ A floor, not `> 0.0`. The bar is the deepest deflection a force arm
+    // reached WHILE CONVERGING, so it moves DOWN as the wall gets stronger: if a
+    // change left only the shallowest cells converging, `deepest_force` would
+    // collapse, `any_force_failed` would still hold, and the impulse arm would
+    // clear a tiny bar — the gate passing LOUDER on weaker evidence. In the limit
+    // `> 0.0` accepts a bar of `1e-30`. Piloted at `4.96e-3`, so `1e-3` keeps
+    // ~5x margin while refusing a bar that represents no real deflection.
     assert!(
-        deepest_force > 0.0,
-        "no force-posed cell completed either, so there is nothing to compare the \
-         impulse arm against — the rig is broken, not the finding"
+        deepest_force > 1e-3,
+        "the deepest CONVERGING force cell reached only d/L = {deepest_force:.3e}. \
+         That is not a deflection worth beating, so the impulse arm clearing it \
+         demonstrates nothing about posing"
     );
     assert!(
         impulse.completed(),
@@ -793,9 +824,17 @@ fn the_cost_per_iteration_is_flat_across_the_spike() {
         cheap.extend(run.frames_in(1..=2));
         costly.extend(run.frames_in(10..=usize::MAX));
     }
+    // ⚠⚠ A population FLOOR, not `!is_empty()`. The two bands are disjoint
+    // literals (`1..=2` against `10..`), so any assertion that they are far apart
+    // in iteration count is a tautology — it holds for every possible sample. What
+    // genuinely needs asserting is that each population is big enough for a median
+    // to be a rate rather than noise: `!is_empty()` accepted `n = 1`, letting a
+    // `1.00x` agreement be read off one frame against 290. Piloted at 440 and 80.
     assert!(
-        !cheap.is_empty() && !costly.is_empty(),
-        "the sample holds {} cheap frames and {} costly ones; both are needed",
+        cheap.len() >= 100 && costly.len() >= 20,
+        "the sample holds {} frames at 1-2 Newton iterations and {} at 10+. A median \
+         over a handful of frames is not a rate, so the flatness below would be read \
+         off noise",
         cheap.len(),
         costly.len()
     );
@@ -1607,7 +1646,8 @@ fn whether_the_shape_of_the_guess_error_sets_the_iteration_count() {
         "{:>10} {:>8} {:>9} {:>8} {:>10} {:>9}",
         "shape", "|err|", "cos", "iters", "answer err", "outcome"
     );
-    let mut converged = 0usize;
+    let mut converged_shapes: std::collections::BTreeSet<&'static str> =
+        std::collections::BTreeSet::new();
     for err_frac in [0.25, 0.50, 1.00, 2.00] {
         for shape in [
             Shape::Band,
@@ -1624,7 +1664,7 @@ fn whether_the_shape_of_the_guess_error_sets_the_iteration_count() {
                 if ok { "ok" } else { "FAILED" }
             );
             if ok {
-                converged += 1;
+                converged_shapes.insert(shape.label());
                 assert!(
                     answer_err < 1e-3,
                     "{} at |err| {err_frac} converged to a DIFFERENT answer \
@@ -1636,10 +1676,17 @@ fn whether_the_shape_of_the_guess_error_sets_the_iteration_count() {
             }
         }
     }
+    // ⚠ Counts distinct SHAPES, not rows. `converged >= 4` counted rows, and 4 is
+    // exactly what ONE shape contributes when it converges at all four `err_frac`
+    // values and the other three fail everywhere — so the guard passed on a table
+    // with no cross-shape comparison left in it, which is the only thing this
+    // diagnostic exists to provide.
     assert!(
-        converged >= 4,
-        "only {converged} of 16 starts converged — too few to compare shapes against \
-         each other"
+        converged_shapes.len() >= 2,
+        "only {} distinct shape(s) converged ({converged_shapes:?}) — a comparison \
+         BETWEEN shapes needs at least two, and this table is the sole backing for \
+         the 47x figure quoted elsewhere",
+        converged_shapes.len()
     );
 }
 
