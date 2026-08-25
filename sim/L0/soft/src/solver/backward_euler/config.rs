@@ -57,11 +57,22 @@ use crate::solver::lm::LmConfig;
 /// that file itself demotes to corroboration, since its two runs are not the
 /// same trajectory by frame 300; the accumulation-free evidence is the per-frame
 /// probe, which reads `25 → 4`). That result is real, and it is **beam
-/// specific**: the profiles delivering it are `Shape::TipLoadCurve` (`3s² − s³`,
-/// the static tip-loaded deflection) and `Shape::FirstMode` (the clamped-free
-/// eigenfunction), both written down in closed form because the fixture is a
-/// cantilever. ⚠ Not "a linear axial ramp", which this doc used to say — the
-/// linear profile is `Shape::Rotation`, and it is the one that never wins.
+/// specific**: all three profiles tried are written down in closed form because
+/// the fixture is a cantilever — `Shape::TipLoadCurve` (`3s² − s³`, the static
+/// tip-loaded deflection), `Shape::FirstMode` (the clamped-free eigenfunction),
+/// and `Shape::Rotation` (a linear ramp, i.e. a rigid rotation about the clamp).
+///
+/// ★ Which one wins depends on the strike. They tie at the game strike (`4`
+/// iterations each) and `Rotation` wins outright at `8×` — `13` against
+/// `FirstMode`'s `25` and `TipLoadCurve`'s `37` — which is awkward for the
+/// "beam specific" reading, because a rigid rotation is the least
+/// beam-shaped of the three.
+///
+/// ⚠⚠ A review round asserted that `Rotation` "never wins" and this doc was
+/// edited to match, turning a true sentence ("a linear axial ramp") into a false
+/// one. The claim was not checked against the producer before it was applied.
+/// Numbers above are from `whether_a_smoothed_start_cuts_iterations_on_a_real_
+/// impact_frame`, which prints all three arms at all four magnitudes.
 ///
 /// Two mesh-general forms were implemented as a `SmoothedInertial` variant and
 /// both lost to plain [`Self::Inertial`] on the same fixture: **graph-Laplacian

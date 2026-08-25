@@ -126,8 +126,10 @@
 //! magnitude clear", which is not true of the `p50` arm of
 //! `a_game_strike_busts_the_pcvr_budget_on_both_p50_and_p99`: it sits `13–14 %`
 //! over its threshold, the thinnest margin on the file, and is flagged as such
-//! where it is asserted. Every OTHER threshold here has `>=3×` margin or sits on
-//! a deterministic iteration count.
+//! where it is asserted. ⚠ Nor is the `p99` arm of that same gate an order of
+//! magnitude clear: it is piloted at `38–43 ms` against a `15 ms` threshold, so
+//! `2.5–2.9×`. Every other threshold in the file sits on a deterministic
+//! iteration count, a convergence outcome, or a deflection.
 //!
 //! # The budget this is scored against
 //!
@@ -1556,7 +1558,13 @@ impl ShapeRig {
     /// ★ `v_prev` is chosen as `(p − start)/dt` so that `x_prev + dt·v_prev = p`
     /// no matter where `start` is — the equation is untouched, only Newton's
     /// starting point moves.
-    fn run_from(&self, start: &[f64]) -> (bool, usize, Vec<f64>) {
+    /// ⚠ Returns the failure KIND, not a bool, for the same reason
+    /// [`ImpactFrame::run`] does: on a validity violation `stickrig::outcome_of`
+    /// SYNTHESISES the iteration count (`0`) and the final position (`x_rest`),
+    /// so a caller must not print either as a measurement. Every row on this
+    /// fixture converges today, which is exactly the state Probe 3 was in at
+    /// three of its four magnitudes before the fourth one exposed it.
+    fn run_from(&self, start: &[f64]) -> (Option<&'static str>, usize, Vec<f64>) {
         let v: Vec<f64> = self
             .p
             .iter()
@@ -1570,7 +1578,7 @@ impl ShapeRig {
             VR_DT,
         );
         let (x_final, iters, failure) = outcome_of(step, self.tol, &self.x_rest);
-        (failure.is_none(), iters, x_final)
+        (failure.map(|f| f.0), iters, x_final)
     }
 
     /// A start displaced from `x*` by `err_frac · travel`, along `shape`.
@@ -1648,19 +1656,19 @@ fn whether_the_shape_of_the_guess_error_sets_the_iteration_count() {
         1e3 * r.travel
     );
 
-    let (ok0, iters0, _) = r.run_from(&r.x_star);
+    let (fail0, iters0, _) = r.run_from(&r.x_star);
     println!(
         "  control: starting AT x* -> {iters0} iters, {}",
-        if ok0 { "ok" } else { "FAILED" }
+        fail0.unwrap_or("ok")
     );
     assert!(
-        ok0 && iters0 <= 1,
+        fail0.is_none() && iters0 <= 1,
         "starting at x* took {iters0} iterations, so x* is not the answer and every \
          distance below is measured from the wrong point"
     );
 
     println!(
-        "{:>10} {:>8} {:>9} {:>8} {:>10} {:>9}",
+        "{:>10} {:>8} {:>9} {:>8} {:>10} {:>18}",
         "shape", "|err|", "cos", "iters", "answer err", "outcome"
     );
     let mut converged_shapes: std::collections::BTreeSet<&'static str> =
@@ -1674,12 +1682,24 @@ fn whether_the_shape_of_the_guess_error_sets_the_iteration_count() {
             Shape::FirstMode,
         ] {
             let (start, cos) = r.start_along(shape, err_frac);
-            let (ok, iters, x_final) = r.run_from(&start);
+            let (failure, iters, x_final) = r.run_from(&start);
+            let ok = failure.is_none();
             let answer_err = dof_distance(&x_final, &r.x_star) / r.travel;
+            let tripped = failure == Some(FAIL_VALIDITY);
+            let it_col = if tripped {
+                "--".to_owned()
+            } else {
+                iters.to_string()
+            };
+            let err_col = if tripped {
+                "--".to_owned()
+            } else {
+                format!("{answer_err:.2e}")
+            };
             println!(
-                "{:>10} {err_frac:>8.2} {cos:>9.3} {iters:>8} {answer_err:>10.2e} {:>9}",
+                "{:>10} {err_frac:>8.2} {cos:>9.3} {it_col:>8} {err_col:>10} {:>18}",
                 shape.label(),
-                if ok { "ok" } else { "FAILED" }
+                failure.unwrap_or("ok")
             );
             if ok {
                 converged_shapes.insert(shape.label());
@@ -1801,6 +1821,10 @@ impl Start {
 #[test]
 #[ignore = "diagnostic — run explicitly"]
 fn whether_a_smoothed_start_cuts_iterations_on_a_real_impact_frame() {
+    // ★ Same requirement Probe 4 carries: the neutrality cross-check is
+    // skippable at any magnitude where `p` is inverted, and a table whose
+    // construction was never shown to be equation-preserving is not evidence.
+    let mut cross_check_ran = false;
     for magnitude in [0.25, 1.00, 2.00, 8.00] {
         let probe = ImpactFrame::at_strike(magnitude, STRIKE_PERIOD);
         println!(
@@ -1822,6 +1846,7 @@ fn whether_a_smoothed_start_cuts_iterations_on_a_real_impact_frame() {
         // performs, because `Inertial` keeps `x_prev = x0`.
         let baseline = probe.star_iters;
         let mut at_p: Option<usize> = None;
+        let mut at_p_kind: Option<&'static str> = None;
         let mut best = usize::MAX;
         for start in [
             Start::AtP,
@@ -1855,7 +1880,12 @@ fn whether_a_smoothed_start_cuts_iterations_on_a_real_impact_frame() {
                 failure.unwrap_or("ok")
             );
             if ok {
-                // Piloted on this probe's own readings, whose worst is `2.6e-8`.
+                // Piloted on this probe's own readings: the largest answer error
+                // over all 20 cells it runs — 4 magnitudes × 5 starts, including
+                // `Shape::Rotation`, which only this probe carries — is `2.6e-8`,
+                // so `1e-5` clears it by `385×`. ⚠ Measured over every row, not
+                // read off the one cell a doc comment happens to quote; doing the
+                // latter is how Probe 4's pilot first cited its second-largest.
                 assert!(
                     answer_err < 1e-5,
                     "{} reached a DIFFERENT answer ({answer_err:.2e} away) on the same \
@@ -1868,22 +1898,33 @@ fn whether_a_smoothed_start_cuts_iterations_on_a_real_impact_frame() {
                 } else if !matches!(start, Start::AtPrevious) {
                     best = best.min(iters);
                 }
+            } else if start == Start::AtP {
+                at_p_kind = failure;
             }
         }
         // Cross-check: where `p` is valid, the fixed-`p` construction must
         // reproduce the real path exactly. If it ever disagrees while both
         // converge, the construction is not neutral and every row is suspect.
         match at_p {
-            Some(i) => assert!(
-                i == baseline,
-                "the fixed-p construction took {i} iterations from `p` where the real \
-                 Inertial path took {baseline}. Holding `p` fixed is then NOT \
-                 equivalent to what the solver does, and this whole table is invalid"
-            ),
+            Some(i) => {
+                cross_check_ran = true;
+                assert!(
+                    i == baseline,
+                    "the fixed-p construction took {i} iterations from `p` where the \
+                     real Inertial path took {baseline}. Holding `p` fixed is then NOT \
+                     equivalent to what the solver does, and this whole table is invalid"
+                );
+            }
+            // ⚠ The KIND, read rather than assumed. This branch used to say
+            // "failed a validity check — `p` is an inverted configuration" for
+            // ANY failure, including an iteration cap, which the table beside it
+            // would simultaneously print as `iter-cap` with a real count. The
+            // same fix landed in Probe 4 one commit earlier and not here.
             None => println!(
-                "  note: starting AT p failed a validity check — `p` is an inverted \
-                 configuration here, which the real Inertial path never has to hold as \
-                 `x_prev`. Baseline stays the real path's {baseline} iters."
+                "  note: starting AT p ended in `{}` — the real Inertial path never has \
+                 to hold `p` as `x_prev`, so the baseline stays its {baseline} iters \
+                 and the neutrality cross-check could not run at this magnitude.",
+                at_p_kind.unwrap_or("an unnamed failure")
             ),
         }
         if best == usize::MAX {
@@ -1896,6 +1937,11 @@ fn whether_a_smoothed_start_cuts_iterations_on_a_real_impact_frame() {
             );
         }
     }
+    assert!(
+        cross_check_ran,
+        "the neutrality cross-check did not run at ANY magnitude, so nothing in this \
+         probe is backed by evidence that the fixed-p construction is equation-preserving"
+    );
 }
 
 /// A real impact frame, captured mid-trajectory: the state just after the strike
@@ -2783,8 +2829,9 @@ impl ModalRig {
              rank was not chosen by the spectrum. {}",
             if basis.modes().len() < MODAL_MAX_MODES {
                 "PodBasis's own SIGMA_FLOOR_REL is what stopped the fit, so raising \
-                 MODAL_MAX_MODES will not help — lower this file's floor, or fit \
-                 more snapshots"
+                 MODAL_MAX_MODES will not help — RAISE this file's floor (that means \
+                 lowering MODAL_ORTHONORMALITY_TARGET, since floor = sqrt(eps/target)), \
+                 or fit more snapshots"
             } else {
                 "MODAL_MAX_MODES is what stopped the fit — raise it until a mode \
                  falls below the floor"
@@ -2848,8 +2895,8 @@ enum Band {
     /// projection is taken in, and `40 %` in the unweighted Euclidean norm the
     /// distance columns report — so `Low r=1` moves `1.942` where `p` moves
     /// `4.851`. ⚠ The two metrics are named because an earlier version of this
-    /// sentence quoted the Euclidean figure as the mass-weighted one. This arm separates the two: same low-strain
-    /// direction, full amplitude.
+    /// sentence quoted the Euclidean figure as the mass-weighted one. This arm
+    /// separates the two: same low-strain direction, full amplitude.
     ///
     /// ⚠ It needs the driven set, which is a real dependency and not a free
     /// one — but it is the SAME information a contact solve already has, not
@@ -3050,8 +3097,8 @@ fn modal_start(
 ///    runs: the two paths share the metric, the mode set and the formula, and
 ///    only the loop nesting differs, so a wrong `mass` passes both. It also
 ///    cannot exercise a SLICED band, which is what every arm uses.
-/// 4. The sliced projector is idempotent, and the arms stay inside the band they
-///    are labelled with — the two properties (3) cannot reach.
+/// 4. The arms stay inside the band they are labelled with, and the sliced
+///    projector is idempotent — the two properties (3) cannot reach.
 /// 5. Rank 0 reproduces `Start::AtPrevious` bit for bit across all six
 ///    PROJECTING bands. `Band::RampPlusModalXy` substitutes rather than
 ///    projects, so it does not, and that exception is asserted too.
@@ -3179,8 +3226,14 @@ fn whether_the_band_projector_is_a_projector() {
 /// oracle CANNOT make. That oracle only exercises the full retained band,
 /// because the crate has no sliced counterpart — while every arm slices. This
 /// one calls `modal_start` itself and asks whether the field it produced has any
-/// component on the modes the arm claims to have discarded, which is exactly
-/// what an off-by-one in `low` would show up as.
+/// component on the modes the arm claims to have discarded.
+///
+/// ⚠ **One-sided.** It catches modes wrongly INCLUDED — an over-slice — and not
+/// an arm projecting onto FEWER modes than its label, which leaves the field
+/// inside the claimed span and the leak at zero. Narrowing is covered only by
+/// `width == rank`, which is tautological here. ⚠ And the leak's magnitude floor
+/// is the orthonormality error, since `leak = Σ_{i<r} G_ji q_i`; its threshold
+/// is tied to `MODAL_ORTHONORMALITY_TARGET` for that reason.
 ///
 /// ⚠ **An earlier version of this helper checked `compose` — that projecting
 /// onto `0..s` and `s..r` separately sums to `0..r` — and claimed the same
@@ -3197,7 +3250,7 @@ fn assert_arms_stay_in_their_band(rig: &ModalRig) {
     let p: Vec<f64> = x0.iter().map(|a| a + 1e-3).collect();
     let loaded = driven_band(rig);
     let mut worst_leak = 0.0f64;
-    for rank in 1..rig.sound_rank() {
+    for rank in 1..=rig.sound_rank() {
         let arm = ModalArm {
             rank,
             band: Band::Low,
@@ -3205,12 +3258,30 @@ fn assert_arms_stay_in_their_band(rig: &ModalRig) {
         let (start, width) = modal_start(rig, arm, &x0, &p, &rig.axial, &loaded);
         assert!(width == rank, "rank {rank} arm reported width {width}");
         let d: Vec<f64> = rig.free.iter().map(|&i| start[i] - x0[i]).collect();
-        // The modes the arm claims to have thrown away.
-        let leak = project_onto(&rig.basis.modes()[rank..rig.sound_rank()], &rig.mass, &d);
+        // ★ The RESIDUAL after projecting `d` back onto the band it claims, not
+        // the leak onto a list of excluded modes. Same property — "`d` lies in
+        // `span(modes[..rank])`" — but its error floor is the SOUND modes'
+        // orthonormality alone, and it catches a component on ANY direction
+        // outside the band rather than only on modes that happen to be listed.
+        //
+        // ⚠ Projecting onto `modes[rank..retained]` was tried and is worse: the
+        // unsound modes are not M-orthonormal — that is what makes them unsound —
+        // so the measurement inherits THEIR error. It read `2.09e-7` against a
+        // `4e-7` bound, a `1.9×` margin on a quantity that has nothing to do
+        // with slicing.
+        let back = project_onto(&rig.basis.modes()[..rank], &rig.mass, &d);
+        let resid: Vec<f64> = d.iter().zip(&back).map(|(a, b)| a - b).collect();
         let d_n = m_norm(&rig.mass, &d).max(f64::MIN_POSITIVE);
-        worst_leak = worst_leak.max(m_norm(&rig.mass, &leak) / d_n);
+        worst_leak = worst_leak.max(m_norm(&rig.mass, &resid) / d_n);
     }
-    let whole = project_onto(&rig.basis.modes()[..rig.sound_rank()], &rig.mass, &p);
+    // ⚠ FREE-DOF, not the full-DOF `p`. `project_onto` zips mode against input
+    // and would have silently truncated, pairing `φ[k]` with the k-th FULL DOF —
+    // no wrong verdict, since idempotence holds for any input, but the printed
+    // scale would describe a vector that is neither `p` nor `p − x₀`, and it is
+    // the exact "lands on the wrong unknowns and every row still prints" hazard
+    // `assert_rig_matches_frame` exists for.
+    let u: Vec<f64> = rig.free.iter().map(|&i| p[i] - x0[i]).collect();
+    let whole = project_onto(&rig.basis.modes()[..rig.sound_rank()], &rig.mass, &u);
     let again = project_onto(&rig.basis.modes()[..rig.sound_rank()], &rig.mass, &whole);
     let scale = whole.iter().fold(0.0f64, |m, a| m.max(a.abs()));
     let idem = whole
@@ -3222,17 +3293,31 @@ fn assert_arms_stay_in_their_band(rig: &ModalRig) {
         "  band containment: worst leak {worst_leak:.2e} of ‖d‖_M; idempotence {idem:.2e} \
          on a {scale:.2e} field"
     );
+    // ⚠ Tied to the declared standard, like the idempotence bound below it —
+    // this assert was `1e-9`, which is 10× TIGHTER than the orthonormality the
+    // file calls acceptable. The leak is `Σ_{i<r} G_ji q_i`: off-diagonal Gram
+    // entries and nothing else, so its floor IS `‖G − I‖`. A basis that only
+    // just met `MODAL_ORTHONORMALITY_TARGET` would have fired this assert with a
+    // message naming a slicing bug that does not exist. Applying that principle
+    // to one of two asserts in the same function is the same partial-fix pattern
+    // this file keeps recording.
+    let leak_tol = 10.0 * rig.sound_rank() as f64 * MODAL_ORTHONORMALITY_TARGET;
     assert!(
-        worst_leak < 1e-9,
+        worst_leak < leak_tol,
         "a Low arm put {worst_leak:.2e} of its displacement on modes outside the band its \
-         label names, so the rank printed in the table is not the rank that ran"
+         label names (tolerance {leak_tol:.1e}), so the rank printed in the table is not \
+         the rank that ran"
     );
-    // ⚠ Tied to the file's declared orthonormality standard rather than picked.
+    // ⚠ Tied to the file's declared orthonormality standard, with one picked
+    // factor stated rather than buried.
     // `P(Pu) − Pu = Σ[(ΦᵀMΦ − I)q]φ`, so the relative idempotence error is about
     // `r·‖G − I‖`. A basis that only just meets `MODAL_ORTHONORMALITY_TARGET`
     // must still pass here, or this fires on a basis the file calls acceptable
     // and suppresses the more informative oracle below it. The previous `1e-10`
     // was 100× tighter than that standard, and passed with 1.86× margin.
+    // ⚠ The derivation gives `r·ε`; the extra decade is margin, and it also
+    // absorbs the max-abs-vs-M-norm conversion the derivation glosses. Both are
+    // choices, not consequences.
     let tol = 10.0 * rig.sound_rank() as f64 * MODAL_ORTHONORMALITY_TARGET;
     assert!(
         idem <= tol * scale.max(1e-12),
@@ -3472,11 +3557,14 @@ fn assert_rank_zero_is_previous_state(rig: &ModalRig) {
 /// a first correction miscounted it. On the same-`z` axis (`tip-z` against
 /// `tipmatch`, which is the in-plane comparison proper) **removing the in-plane
 /// field wins 12 of the 15 cells where both converge. All three losses are at
-/// `0.25x`, ranks 2–4** — the magnitude where `Inertial` is already cheap and
-/// every arm is within a few iterations of every other.
+/// `0.25x`, ranks 2–4** — the magnitude where `Inertial` is already cheap (`7`)
+/// and the smooth arms sit at `5`–`11`, so the losses are a few iterations
+/// against a low baseline. ⚠ Not "every arm is within a few iterations of every
+/// other", which this said: the rough arms reach `95` there.
 ///
-/// ⚠ Adding in-plane to the analytic `z` costs `1.6×` to `25×` at every cell of
-/// THAT row. It does not generalise to the POD-`z` row, where at `0.25x` ranks
+/// ⚠ Adding in-plane to the analytic `z` costs `1.6×` to `25×` at each of the
+/// 15 cells of THAT row that produce a ratio — the 16th, `8.00x` rank 4, is an
+/// inverted start. It does not generalise to the POD-`z` row, where at `0.25x` ranks
 /// 2–4 adding in-plane HELPS (as far as `0.22×`). And the `z` profile can cost
 /// more than the in-plane field does: at `0.25x` rank 2 it is `9.2×`.
 ///
@@ -3635,6 +3723,10 @@ fn assert_rig_matches_frame(rig: &ModalRig, probe: &ImpactFrame) {
 ///
 /// Split out of the test only because the per-magnitude body IS the
 /// instrument and the test around it is a loop over four magnitudes.
+///
+/// Returns whether the neutrality cross-check RAN at this magnitude — it cannot
+/// where `p` is itself an inverted configuration, and the caller requires it to
+/// have run somewhere.
 fn modal_sweep_at(rig: &ModalRig, magnitude: f64) -> bool {
     let probe = ImpactFrame::at_strike(magnitude, STRIKE_PERIOD);
     assert_rig_matches_frame(rig, &probe);
@@ -3880,9 +3972,10 @@ fn modal_verdict(
 /// the driven end. For the two axial modes that value is a large fraction of an
 /// already-tiny transverse field (`−0.533` and `−0.997` of each mode's own
 /// transverse peak), so the normalisation is stable but what it normalises is
-/// `0.1 %` of the mode. Their `dev` figures therefore say "not a bending
-/// profile" and nothing quantitative. The `share` column is what the conclusion
-/// rests on.
+/// `0.2 %` of the mode's energy — `√(1 − share²)` = `4.5 %` of its norm. ⚠ Not
+/// `1 − share`, which is the operation two paragraphs down calls fabricated.
+/// Their `dev` figures therefore say "not a bending profile" and nothing
+/// quantitative. The `share` column is what the conclusion rests on.
 ///
 /// ⛔ **Cross-sectional variation is not the answer.** Mode 0's spread is
 /// `0.001` — it already IS a function of `x/L`, to a tenth of a percent. Had
@@ -4007,10 +4100,17 @@ fn whether_a_pod_mode_is_a_function_of_the_axial_coordinate() {
         // `√(1 − share²)`. Both are reported so neither has to be inferred, and
         // the bound is asserted because complementing an unbounded quantity is
         // exactly how "98.3 % transverse" got into this file.
+        // ⚠ The bound that matters is on the WHOLE mode, not on the in-plane
+        // part. `inplane_m2` is a subset sum, so `‖φ‖_M = 0.5` halves every share
+        // and still passes a `share <= 1` test — the headline "0.999 of its
+        // mass-norm is in-plane" would then be wrong by 2× with the gate green.
+        // The `ΦᵀMΦ = I` check lives in a different test on a different rig
+        // instance, so it does not cover this one.
+        let mode_norm = m_norm(&rig.mass, &rig.basis.modes()[k]);
         assert!(
-            inplane_share <= 1.0 + 1e-6,
-            "mode {k}'s in-plane share is {inplane_share:.4}, so ‖φ‖_M is not 1 and \
-             this column is not a share of anything"
+            (mode_norm - 1.0).abs() < 1e-6,
+            "mode {k} has ‖φ‖_M = {mode_norm:.6}, not 1, so the in-plane figure is not \
+             a share of anything"
         );
 
         let mut rows: Vec<(f64, f64, f64, f64)> = Vec::new();
