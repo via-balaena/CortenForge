@@ -3361,3 +3361,197 @@ const MEDIAN_NOTE: &str = "Compare with the worst-step matrix above: tracking �
 /// brackets `1e-2` — a 1 % field error is the loosest tolerance anyone would call
 /// acceptable, so a signal that cannot gate there cannot gate where it matters.
 const GATE_TAUS: [f64; 9] = [1e-1, 5e-2, 3e-2, 2e-2, 1e-2, 5e-3, 3e-3, 2e-3, 1e-3];
+
+// ── §4c rung 1b: is the margin FITTED or VALIDATED, and is `+0.25a` confounded? ──
+
+/// The offset dropped from training and then scored — the held-out position the
+/// first pilot did not have.
+const LOO_HELD_OUT: f64 = 0.0;
+
+/// An OFF-lattice extrapolation point, at `3.5` cells. `+1.50a` and `+2.00a` are
+/// at `3` and `4` cells and bracket it in extrapolation distance, so if mesh
+/// alignment were a large effect this would fall OUTSIDE their bracket.
+const OFF_LATTICE_EXTRAP: f64 = 1.75;
+
+/// **Every margin in [`an_online_signal_separates_out_of_domain`] is FITTED.**
+///
+/// ```text
+/// cargo test --release -p sim-soft --test reduced_contact \
+///   the_signal_margin_on_a_held_out_position -- --ignored --nocapture
+/// ```
+///
+/// The threshold interval there is derived from the same 16 cells it is scored
+/// on, and there is no held-out position anywhere in that matrix. A margin
+/// measured on the points that chose it is an upper bound on an unmeasured
+/// quantity, not a measurement — which is the largest single hole a cold
+/// re-derivation found in §2m.
+///
+/// Two arms, and the pair costs one extra oracle over the main pilot:
+///
+/// **A — LEAVE-ONE-OUT.** Refit on `[-1, -0.5, +0.5, +1]a` and score at
+/// `+0.00a`, whose oracle already exists. This is the first genuinely held-out
+/// position in the arc.
+///
+/// ★★★ **And it lands on a coincidence worth more than the validation.**
+/// Held-out `+0.00a` sits `0.5a` from its nearest training snapshot and is ON the
+/// mesh lattice. So does `+1.50a`. **Matched gap, matched lattice status, one
+/// INTERPOLATING and one EXTRAPOLATING** — a direct test of whether "inside the
+/// convex hull" carries any information beyond "close to a training snapshot". If
+/// the two arms land together, then the in-hull/out-of-hull framing this whole
+/// rung is built on is really a distance framing wearing a topological name.
+///
+/// **B — THE LATTICE CONTROL.** `a/cell = 2`, so the training offsets sit at
+/// `0, ±1, ±2` cells and `+0.25a` sits at `0.5` — the ONLY scored offset off the
+/// lattice, and the arm the product question rests on. That confound cannot be
+/// broken by moving an interpolation point, because with `cell = 0.5a` every
+/// on-lattice point inside the training span IS a training point. So it is tested
+/// at the extrapolation end instead: `+1.75a` is off-lattice at `3.5` cells and
+/// its extrapolation distance is bracketed by `+1.50a` and `+2.00a`, both on it.
+///
+/// ## Pre-registration (before the first run)
+///
+/// 1. **No prediction on arm A's error**, and it is the interesting one. Gap
+///    `0.5a` is twice `+0.25a`'s.
+/// 2. ★ **If held-out `+0.00a` and `+1.50a` land within ~an order of each other,
+///    the hull framing is refuted** and `snapshot_distance` is measuring the only
+///    thing that ever mattered.
+/// 3. **`snapshot_distance` at held-out `+0.00a` reads `~1.0`** if it tracks gap
+///    linearly — `+0.25a` reads `0.506` at half the gap.
+/// 4. ★ **`active_novelty` at held-out `+0.00a` reads `0.000`**: the contact patch
+///    is inside the union of the four remaining trajectories. **If its error is
+///    also large, S4 is falsified as a gate in a single cell** — a fail-open
+///    exactly where a gate must not have one.
+/// 5. **`+1.75a` lands INSIDE the `+1.50a`/`+2.00a` bracket** if alignment is not
+///    a large effect. Outside it, `+0.25a`'s three orders are partly a mesh
+///    artifact and §2l's interpolation finding needs re-scoping.
+#[test]
+#[ignore = "§4c margin validation — 8 full-order trajectories, ~3 min (see the fn docs)"]
+fn the_signal_margin_on_a_held_out_position() {
+    let base = Scene::new(GEN_A_OVER_CELL);
+    let x_rest = rest_positions(&base.mesh());
+    let solver = base.solver(InitialGuess::PreviousState);
+    let fd = solver.free_dof_indices().to_vec();
+    let mass = solver.mass_per_free_dof();
+    let tol = SolverConfig::skeleton().tol;
+    let n_steps = base.n_steps();
+    println!(
+        "\nRC\t§4c MARGIN VALIDATION: {} free DOF, {n_steps} steps\nRC\tarm A: train {:?} \\ {{{LOO_HELD_OUT:+.2}}}, score at {LOO_HELD_OUT:+.2}a  (gap 0.50a, ON lattice)\
+         \nRC\tarm B: full train, score at {OFF_LATTICE_EXTRAP:+.2}a (3.5 cells, OFF lattice) vs {:+.2}a / {:+.2}a (ON)",
+        fd.len(),
+        TRAIN_OFFSETS,
+        TEST_OFFSETS[2].1,
+        TEST_OFFSETS[3].1,
+    );
+
+    // ── every full-order trajectory this needs, run once ──
+    let mut oracles: Vec<(f64, Oracle)> = Vec::new();
+    let mut wanted: Vec<f64> = TRAIN_OFFSETS.to_vec();
+    for dx in [OFF_LATTICE_EXTRAP, TEST_OFFSETS[2].1, TEST_OFFSETS[3].1] {
+        wanted.push(dx);
+    }
+    for dx in wanted {
+        let sc = Scene::at_offset(GEN_A_OVER_CELL, dx);
+        let o = run_oracle(sc, &x_rest, NO_TIMING);
+        assert!(
+            o.arm.failure.is_none(),
+            "oracle at {dx:+.2}a failed: {}",
+            o.arm.failure.as_deref().unwrap_or(""),
+        );
+        oracles.push((dx, o));
+    }
+    let at = |dx: f64| -> &Oracle {
+        &oracles
+            .iter()
+            .find(|(t, _)| (t - dx).abs() < 1e-12)
+            .unwrap_or_else(|| panic!("no oracle at {dx:+.2}a"))
+            .1
+    };
+
+    // ── build one (snapshots, active-union) pair from a chosen set of offsets ──
+    let ensemble = |offsets: &[f64]| -> (SnapshotSet, std::collections::BTreeSet<usize>) {
+        let mut snaps = SnapshotSet::new(fd.len());
+        let mut active = std::collections::BTreeSet::new();
+        for &dx in offsets {
+            let sc = Scene::at_offset(GEN_A_OVER_CELL, dx);
+            for (k, x) in at(dx).x.iter().enumerate() {
+                snaps.push(&SnapshotSet::free_displacement(x, &x_rest, &fd));
+                active.extend(active_vertices(x, sc.centre_at(k), sc.d_hat));
+            }
+        }
+        (snaps, active)
+    };
+
+    let loo_offsets: Vec<f64> = TRAIN_OFFSETS
+        .into_iter()
+        .filter(|d| (d - LOO_HELD_OUT).abs() > 1e-12)
+        .collect();
+    assert_eq!(
+        loo_offsets.len(),
+        TRAIN_OFFSETS.len() - 1,
+        "the held-out offset is not in TRAIN_OFFSETS, so nothing was held out",
+    );
+
+    let mut rows: Vec<(&'static str, usize, Arm)> = Vec::new();
+    for (tag, train_offsets, scored) in [
+        ("A LOO-HELD-OUT", loo_offsets, vec![LOO_HELD_OUT]),
+        (
+            "B FULL-TRAIN",
+            TRAIN_OFFSETS.to_vec(),
+            vec![OFF_LATTICE_EXTRAP, TEST_OFFSETS[2].1, TEST_OFFSETS[3].1],
+        ),
+    ] {
+        let (snaps, active) = ensemble(&train_offsets);
+        println!(
+            "\nRC\t── {tag}: {} offsets, {} snapshots, {} vertices ever active ──",
+            train_offsets.len(),
+            snaps.len(),
+            active.len(),
+        );
+        let mut seen = std::collections::BTreeSet::new();
+        for r in BASIS_RANKS {
+            let basis = PodBasis::fit(&snaps, Inner::Mass, &mass, 1.0, r).expect("basis fits");
+            if !seen.insert(basis.n_modes()) {
+                continue;
+            }
+            let train_q: Vec<Vec<f64>> = snaps.columns().iter().map(|u| basis.project(u)).collect();
+            let radius = cloud_radius(&train_q);
+            assert!(radius > 0.0, "zero cloud radius at r={}", basis.n_modes());
+            let probe = Probe {
+                envelope: training_envelope(&train_q),
+                train_q,
+                cloud_radius: radius,
+                train_active: &active,
+                tol,
+                d_hat: base.d_hat,
+            };
+            for &dx in &scored {
+                let sc = Scene::at_offset(GEN_A_OVER_CELL, dx);
+                let arm = run_reduced(
+                    sc,
+                    &basis,
+                    InitialGuess::Inertial,
+                    format!("{tag} {dx:+.2}a r={r}→{}", basis.n_modes()),
+                    &Ctx {
+                        x_rest: &x_rest,
+                        fd: &fd,
+                        oracle: at(dx),
+                        probe: Some(&probe),
+                    },
+                    NO_TIMING,
+                );
+                arm.print(n_steps, sc.d_hat);
+                rows.push((tag, basis.n_modes(), arm));
+            }
+        }
+    }
+    assert_every_arm_produced(&rows, rows.len());
+    println!(
+        "\nRC\t★ READ IT AS: (a) does HELD-OUT +0.00a land with +1.50a — same gap, same\n\
+         RC\t   lattice status, one interpolating and one extrapolating? If so the\n\
+         RC\t   hull framing is a DISTANCE framing wearing a topological name.\n\
+         RC\t   (b) does +1.75a fall inside the +1.50a/+2.00a bracket? If not, +0.25a's\n\
+         RC\t   three orders are partly a MESH artifact.\n\
+         RC\t   (c) does active_novelty read 0 at HELD-OUT +0.00a while the error is\n\
+         RC\t   large? That is a fail-open, in one cell."
+    );
+}
