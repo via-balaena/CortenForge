@@ -604,6 +604,124 @@ fn rows_for(pairs: &[(&'static str, usize, f64)]) -> Vec<(&'static str, usize, A
         .collect()
 }
 
+/// Every arm that took a step must have PRODUCED both a signal and a usable
+/// error — and the full matrix must be present.
+///
+/// ★ Extracted from [`an_online_signal_separates_out_of_domain`] ONLY so these
+/// three guards can be exercised, exactly as [`faults_at`] is. All three are the
+/// shape this file keeps producing: **a quantity whose healthy reading is
+/// ZERO**, where "never measured" and "perfect" are the same number.
+///
+/// - an arm run without a [`Probe`] has no signal at all;
+/// - an arm that recorded nothing keeps [`Signals::UNRECORDED`], which reads as
+///   in-domain on every domain column unless refused here;
+/// - `max_rel_err` initialises to `0.0` and only updates for FINITE samples, so
+///   an arm with no usable error sample reads as an EXACT answer. A completed
+///   arm cannot be bit-identical to its oracle — full rank is `2.57e-6`.
+/// - and the whole loop skips arms that completed no steps, so without the count
+///   it goes VACUOUS when nothing completed.
+fn assert_every_arm_produced(rows: &[(&'static str, usize, Arm)], expected: usize) {
+    let mut checked = 0usize;
+    for (label, got, arm) in rows {
+        if arm.completed == 0 {
+            continue;
+        }
+        let s = arm
+            .signals
+            .as_ref()
+            .unwrap_or_else(|| panic!("{label} r={got} was run with NO probe attached"));
+        assert!(
+            s.is_recorded(),
+            "{label} r={got} completed {} steps and recorded NO signal — every \
+             domain signal's healthy value is zero, so an unrecorded arm would \
+             read as perfectly in domain",
+            arm.completed,
+        );
+        assert!(
+            arm.max_rel_err > 0.0,
+            "{label} r={got} completed {} steps with max_rel_err exactly 0.0 — \
+             that is 'no usable sample', not a perfect answer",
+            arm.completed,
+        );
+        checked += 1;
+    }
+    assert_eq!(
+        checked, expected,
+        "only {checked} of {expected} arms were signal-checked; the rest \
+         completed no steps, so the tables are not a full matrix",
+    );
+}
+
+/// ★ The three negative controls for it. Every one is a state no passing run of
+/// the instrument can reach — which is the whole reason they live here.
+#[cfg(test)]
+fn probed_rows(errs: &[f64]) -> Vec<(&'static str, usize, Arm)> {
+    errs.iter()
+        .enumerate()
+        .map(|(i, &err)| {
+            let mut a = healthy_arm("probed");
+            a.max_rel_err = err;
+            a.signals = Some(Signals {
+                residual_excess: 1.0e6 + i as f64,
+                envelope_excursion: 0.0,
+                hull_distance: 0.25,
+                active_novelty: 0.0,
+            });
+            ("probed", 40, a)
+        })
+        .collect()
+}
+
+#[test]
+fn assert_every_arm_produced_passes_a_full_matrix() {
+    assert_every_arm_produced(&probed_rows(&[1.0e-3, 2.0e-3]), 2);
+}
+
+#[test]
+#[should_panic(expected = "NO probe attached")]
+fn assert_every_arm_produced_refuses_an_unprobed_arm() {
+    let mut rows = probed_rows(&[1.0e-3]);
+    rows[0].2.signals = None;
+    assert_every_arm_produced(&rows, 1);
+}
+
+#[test]
+#[should_panic(expected = "recorded NO signal")]
+fn assert_every_arm_produced_refuses_an_arm_that_recorded_nothing() {
+    let mut rows = probed_rows(&[1.0e-3]);
+    rows[0].2.signals = Some(Signals::UNRECORDED);
+    assert_every_arm_produced(&rows, 1);
+}
+
+#[test]
+#[should_panic(expected = "not a perfect answer")]
+fn assert_every_arm_produced_refuses_a_zero_error_arm() {
+    assert_every_arm_produced(&probed_rows(&[0.0]), 1);
+}
+
+/// ★ The OTHER side of the count, which a mutation round found unexercised:
+/// `checked > expected` is unreachable today (`checked` counts a subset of
+/// `rows`), so relaxing the equality to `<=` survived the whole suite. It stops
+/// being unreachable the moment someone pushes a row the expectation does not
+/// know about — which is precisely what the count exists to catch.
+#[test]
+#[should_panic(expected = "not a full matrix")]
+fn assert_every_arm_produced_refuses_more_arms_than_expected() {
+    assert_every_arm_produced(&probed_rows(&[1.0e-3, 2.0e-3]), 1);
+}
+
+#[test]
+#[should_panic(expected = "not a full matrix")]
+fn assert_every_arm_produced_refuses_a_vacuous_matrix() {
+    // ⚠⚠ THE dangerous one: every arm completed nothing, so the loop body never
+    // runs and every guard above passes having checked NOTHING.
+    let mut rows = probed_rows(&[1.0e-3, 2.0e-3]);
+    for r in &mut rows {
+        r.2.completed = 0;
+    }
+    assert_every_arm_produced(&rows, 2);
+}
+
 /// The remaining `top_row` guard. Cheap, and it closes the sweep: every
 /// assertion in the generalisation path is now either exercised by a test or
 /// DECLARED structural below.
@@ -2141,6 +2259,12 @@ fn envelope_excursion(q: &[f64], envelope: &[(f64, f64)]) -> f64 {
          single point, or was projected onto the wrong basis",
     );
     let floor = DEGENERATE_MODE_FLOOR * widest;
+    // ⚠ The per-element `.max(0.0)` and the fold's `0.0` seed are MUTUALLY
+    // REDUNDANT, and that is measured, not assumed: deleting either one alone
+    // survives the whole suite, deleting BOTH is killed by
+    // `envelope_excursion_is_zero_inside_the_box`. Kept as a pair on purpose —
+    // the clamp says "inside the box contributes nothing" and the seed says "no
+    // modes, no excursion" — but a future edit must not read either as free.
     q.iter()
         .zip(envelope)
         .map(|(&v, &(lo, hi))| (lo - v).max(v - hi).max(0.0) / ((hi - lo) / 2.0).max(floor))
@@ -2292,6 +2416,15 @@ fn envelope_excursion_refuses_an_all_zero_width_envelope() {
 #[should_panic(expected = "ZERO training snapshots")]
 fn training_envelope_refuses_an_empty_training_set() {
     let _ = training_envelope(&[]);
+}
+
+/// ★ Added because a MUTATION round killed nothing when this guard was deleted.
+/// It was written in review round 1, shipped, and then survived its own mutant —
+/// a guard with no negative control is not a guard, however right it looks.
+#[test]
+#[should_panic(expected = "min/max fold")]
+fn training_envelope_refuses_a_non_finite_coordinate() {
+    let _ = training_envelope(&[vec![1.0, f64::NAN], vec![2.0, 3.0]]);
 }
 
 #[test]
@@ -2670,6 +2803,18 @@ fn an_online_signal_separates_out_of_domain() {
     // converged at — but the coupling is by inspection, not by the compiler,
     // which is why the figure is printed rather than left implicit.
     let tol = SolverConfig::skeleton().tol;
+    // ⚠ THREE things below hard-wire `0.0` as "the in-sample point": the oracle
+    // reused for `TEST_OFFSETS[0]`, the wiring control's `|dx|` choice of the
+    // FAR offset, and `top_row(rows, TEST_OFFSETS[0].0)` as the two-sided
+    // control. Change `TEST_OFFSETS[0]` to a held-out offset and all three go on
+    // reading as though it were in-sample — silently, since a held-out arm still
+    // completes. Nothing else pins them together, so this does.
+    assert!(
+        TRAIN_OFFSETS.contains(&TEST_OFFSETS[0].1),
+        "TEST_OFFSETS[0] is {:+.2}a, which is NOT a training offset — the row \
+         this test calls its IN-SAMPLE control would be held out",
+        TEST_OFFSETS[0].1,
+    );
     assert!(
         tol > 0.0,
         "tol is {tol}, so `residual_excess` would be `inf` or negative — a unit \
@@ -2866,45 +3011,7 @@ fn an_online_signal_separates_out_of_domain() {
     }
 
     // ── control: no PRODUCER, no measurement ──
-    let mut checked = 0usize;
-    for (label, got, arm) in &rows {
-        if arm.completed == 0 {
-            continue;
-        }
-        let s = arm
-            .signals
-            .as_ref()
-            .expect("every arm in this test was run with a probe attached");
-        assert!(
-            s.is_recorded(),
-            "{label} r={got} completed {} steps and recorded NO signal — every \
-             domain signal's healthy value is zero, so an unrecorded arm would \
-             read as perfectly in domain",
-            arm.completed,
-        );
-        // ⚠ The same zero-reads-as-perfect hole the ground-truth table filters,
-        // asserted rather than merely hidden: `max_rel_err` initialises to ZERO
-        // and only updates for finite samples, so an arm that recorded no usable
-        // error would read as an EXACT answer. A completed arm cannot be
-        // bit-identical to its oracle — full rank is `2.57e-6`, not `0`.
-        assert!(
-            arm.max_rel_err > 0.0,
-            "{label} r={got} completed {} steps with max_rel_err exactly 0.0 — \
-             that is 'no usable sample', not a perfect answer",
-            arm.completed,
-        );
-        checked += 1;
-    }
-    // ⚠⚠ The `continue` above makes this loop VACUOUS if nothing completed, and a
-    // vacuous pass on a signal whose healthy reading is zero is the worst shape
-    // this file has — the same refusal `faults_at` makes for the same reason.
-    assert_eq!(
-        checked,
-        TEST_OFFSETS.len() * bases.len(),
-        "only {checked} of {} arms were signal-checked; the rest completed no \
-         steps, so the tables below are not a full matrix",
-        TEST_OFFSETS.len() * bases.len(),
-    );
+    assert_every_arm_produced(&rows, TEST_OFFSETS.len() * bases.len());
 
     // ── control: the rig can still score a basis it DID fit ──
     //

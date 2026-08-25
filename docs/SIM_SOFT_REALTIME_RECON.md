@@ -2301,6 +2301,36 @@ wrong quantity even if it had been computable online.
   `reduced_basis_generalises` was run at `0d9496b2` (pre-change) and after, with
   **byte-identical output**.
 
+#### What three review rounds and a mutation battery cost, and what each caught
+
+Recorded because the split is the reusable part, not the count.
+
+Rounds 1 and 2 each found defects in the PREVIOUS round's fixes and none in
+untouched code — the pattern this document already carries. Round 3, reading
+round 2's diff, found **one** latent coupling: three separate pieces of the study
+hard-wire `0.0` as "the in-sample point" (the reused oracle, the wiring control's
+choice of the FAR offset by `|dx|`, and `top_row(TEST_OFFSETS[0])` as the
+two-sided control) with nothing pinning `TEST_OFFSETS[0]` to a training offset.
+A held-out arm still completes, so the drift would have been silent.
+
+Then reading stopped paying and **mutation found what three read-rounds missed**:
+
+- ⛔ The `training_envelope` NaN guard — written in round 1 to close a
+  "min/max folds swallow NaN" hole, read three times, and it **survived its own
+  mutant**. Deleting it killed no test. A guard with no negative control is not a
+  guard, however right it looks. It has one now.
+- ⚠ The study's three producer guards were unexercisable inside the test body.
+  Extracted as `assert_every_arm_produced` with five negative controls — the same
+  move, for the same reason, that `faults_at` was extracted for.
+- ★ **Not a defect, and only mutation could have settled it:** `envelope_excursion`'s
+  per-element `.max(0.0)` and its fold's `0.0` seed are MUTUALLY REDUNDANT.
+  Deleting either alone survives the suite; deleting BOTH is killed. Kept as a
+  pair deliberately, now with the evidence attached so a future edit cannot read
+  either as free.
+
+**15 mutants, 15 killed**, after the two fixes above. ⇒ Reading had converged;
+mutation had not, because it does not measure the same thing.
+
 Harness: `tests/reduced_contact.rs::an_online_signal_separates_out_of_domain`,
 `#[ignore]`d, `142–146 s` over **two runs whose signal tables are byte-identical**
 — worth stating, because every cell below is a single number and this is the only
