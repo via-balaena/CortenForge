@@ -149,8 +149,8 @@ use sim_soft::{
 mod stickrig;
 
 use stickrig::{
-    DEPTH, EI_TARGET, MASS_PER_LENGTH, SLAPSHOT_DEFLECTION, SPAN, TOL_REL, WIDTH, e_eff_for,
-    lame_for, one_frame, outcome_of, percentile, rho_eff, rig, slapshot_load, tip_of,
+    DEPTH, EI_TARGET, MASS_PER_LENGTH, SLAPSHOT_DEFLECTION, SPAN, TOL_REL, WIDTH, describe_failure,
+    e_eff_for, lame_for, one_frame, outcome_of, percentile, rho_eff, rig, slapshot_load, tip_of,
 };
 
 // ---------------------------------------------------------------------------
@@ -1831,25 +1831,7 @@ impl ImpactFrame {
 
     /// The starting point a [`Start`] selects, at this frame.
     fn start_point(&self, start: Start) -> Vec<f64> {
-        match start {
-            Start::AtP => self.p.clone(),
-            Start::AtPrevious => self.x0.clone(),
-            Start::Smoothed(shape) => {
-                // Keep the tip where the impulse puts it; spread the rest of the
-                // displacement along a smooth profile instead of the blade band.
-                let tip = self
-                    .loaded
-                    .iter()
-                    .map(|&(vtx, _)| self.p[3 * vtx as usize + 2] - self.x0[3 * vtx as usize + 2])
-                    .fold(0.0f64, |a, b| if b.abs() > a.abs() { b } else { a });
-                let unit = shape.at(1.0);
-                let mut out = self.x0.clone();
-                for (v, &s) in self.axial.iter().enumerate() {
-                    out[3 * v + 2] += tip * shape.at(s) / unit;
-                }
-                out
-            }
-        }
+        smoothed_start(start, &self.x0, &self.p, &self.axial, &self.loaded)
     }
 
     /// Solve the frozen frame from `start`. Returns
@@ -1905,15 +1887,17 @@ fn one_frame_from<S: Solver>(
         .zip(start)
         .map(|(pi, si)| (pi - si) / VR_DT)
         .collect();
+    // ⚠⚠ Built BEFORE the clock starts, exactly as `stickrig::one_frame` does.
+    // `Tensor::from_slice` is two `to_vec`s, so leaving these inside the timed
+    // region charged this path ~4 allocations and ~6.5 KB of memcpy per frame
+    // that the shipped path is not charged — a systematic bias, and one pointing
+    // the WRONG way, since it inflated the arm being compared against.
+    let x_in = Tensor::from_slice(start, &[n_dof]);
+    let v_in = Tensor::from_slice(&v_eff, &[n_dof]);
     let t0 = std::time::Instant::now();
     let step = solver
-        .try_replay_step(
-            &Tensor::from_slice(start, &[n_dof]),
-            &Tensor::from_slice(&v_eff, &[n_dof]),
-            theta,
-            VR_DT,
-        )
-        .map_err(|e| format!("{e:?}"))?;
+        .try_replay_step(&x_in, &v_in, theta, VR_DT)
+        .map_err(|e| describe_failure(&e))?;
     let ms = t0.elapsed().as_secs_f64() * 1e3;
     if !step.x_final.iter().all(|f| f.is_finite()) {
         return Err("non-finite x_final".to_owned());
@@ -1933,11 +1917,29 @@ fn one_frame_from<S: Solver>(
 /// runs the full `300`-frame trajectory under each strategy and reads the
 /// distribution, which is the quantity a VR budget is actually judged on.
 ///
-/// ★★ **The control is that the trajectory does not move.** Every strategy steps
-/// the same `p` each frame and therefore solves the same equation, so the stick
-/// must follow the *same path* — only the iteration counts may differ. A
-/// strategy that is faster because it went somewhere else is worthless, and that
-/// is the failure this gate exists to catch.
+/// ⚠⚠ **The trajectories DO move, and an earlier version of this file was wrong
+/// to say otherwise.** Stepped in lockstep against the baseline, a smoothed run
+/// reads:
+///
+/// ```text
+///   frame   1     ~7e-9      solver tolerance — the same equation, the same answer
+///   frame  10     ~5e-8
+///   frame 300      5.6e-1    56 % apart
+/// ```
+///
+/// So the *equation* is identical — frame 1 is measured before anything can
+/// accumulate — but this fixture amplifies a `1e-8` difference to `O(1)` over
+/// 300 frames, about `6 %` growth per frame, which is ordinary for a nonlinear
+/// oscillator struck ten times. The claim "the trajectory is unchanged to
+/// `1.8e-9`" came from comparing `peak_ratio`, a scalar extremum reached right
+/// after the FIRST strike, before divergence sets in. It certified nothing.
+///
+/// ⇒ **The accumulation-free evidence is
+/// [`whether_a_smoothed_start_cuts_iterations_on_a_real_impact_frame`]**, which
+/// compares ONE frame with `p` pinned and reads `25 → 4` iterations with the
+/// answers `2.6e-8` apart. This producer corroborates over a trajectory; it is
+/// not the primary evidence, and its two runs are not the same trajectory by the
+/// end.
 #[test]
 #[ignore = "producer — reference box only, run explicitly"]
 fn whether_a_smoothed_start_moves_the_p99_end_to_end() {
@@ -1950,20 +1952,11 @@ fn whether_a_smoothed_start_moves_the_p99_end_to_end() {
         "{:>15} {:>8} {:>8} {:>8} {:>7} {:>7} {:>11} {:>9}",
         "start", "p50 ms", "p99 ms", "max ms", "p50 it", "p99 it", "peak d/L", "outcome"
     );
-    let mut reference_peak: Option<f64> = None;
-    let mut baseline99 = 0.0f64;
-    for start in [
-        Start::AtP,
-        Start::Smoothed(Shape::TipLoadCurve),
-        Start::Smoothed(Shape::FirstMode),
-        Start::Smoothed(Shape::Rotation),
-    ] {
-        let run = trajectory_with(start, magnitude);
+    let report = |label: &str, run: &Run| {
         let it: Vec<f64> = run.iters.iter().map(|&i| i as f64).collect();
         let ok = run.completed();
         println!(
-            "{:>15} {:>8.2} {:>8.2} {:>8.2} {:>7.1} {:>7.1} {:>11.4e} {:>9}",
-            start.label(),
+            "{label:>15} {:>8.2} {:>8.2} {:>8.2} {:>7.1} {:>7.1} {:>11.4e} {:>9}",
             if ok {
                 percentile(&run.ms, 0.5)
             } else {
@@ -1982,39 +1975,83 @@ fn whether_a_smoothed_start_moves_the_p99_end_to_end() {
         );
         if !ok {
             println!("      ended early: {:?}", run.ended_early);
-            continue;
         }
-        // ★ Same equation every frame ⇒ same path. Anything else means the
-        // speedup was bought by simulating something different.
-        match reference_peak {
-            None => {
-                reference_peak = Some(run.peak_ratio);
-                baseline99 = percentile(&run.ms, 0.99);
-            }
-            Some(reference) => {
-                let drift = (run.peak_ratio - reference).abs() / reference;
-                assert!(
-                    drift < 1e-6,
-                    "{} reached peak d/L {:.6e} against the baseline's {reference:.6e} \
-                     ({drift:.2e} apart). The start changed the TRAJECTORY, so any \
-                     speedup it shows is a different simulation, not a faster one",
-                    start.label(),
-                    run.peak_ratio
-                );
-                println!(
-                    "      trajectory matches baseline to {drift:.1e}; p99 {:.2} -> \
-                     {:.2} ms = {:.2}x",
-                    baseline99,
-                    percentile(&run.ms, 0.99),
-                    baseline99 / percentile(&run.ms, 0.99),
-                );
-            }
-        }
-    }
+    };
+
+    // ★ The baseline is `AtP` EXPLICITLY, run outside the loop and required to
+    // complete. Anchoring it to "the first strategy that completes" let a
+    // smoothed run silently become the baseline whenever `AtP` failed — and this
+    // file documents `AtP` failing as reachable (it hands the solver
+    // `x_prev = p`, which trips a validity check on an inverted `p` that the
+    // shipped `Inertial` path never performs). Every ratio below would then have
+    // been smoothed-against-smoothed, under a closing assert saying otherwise.
+    let base = trajectory_with(Start::AtP, magnitude);
+    report(&Start::AtP.label(), &base);
     assert!(
-        reference_peak.is_some(),
-        "the baseline trajectory did not complete, so there is nothing to compare"
+        base.completed(),
+        "the AtP baseline did not complete ({:?}). There is nothing to measure a \
+         speedup against, and no other strategy may silently become the reference",
+        base.ended_early
     );
+    let base99 = percentile(&base.ms, 0.99);
+
+    for start in [
+        Start::Smoothed(Shape::TipLoadCurve),
+        Start::Smoothed(Shape::FirstMode),
+        Start::Smoothed(Shape::Rotation),
+    ] {
+        let run = trajectory_with(start, magnitude);
+        report(&start.label(), &run);
+        assert!(
+            run.completed(),
+            "{} did not complete ({:?}) — it steps the same `p` every frame as the \
+             baseline, so a failure here is a defect in the start, not a result",
+            start.label(),
+            run.ended_early
+        );
+        // ★★★ The control, run in LOCKSTEP rather than on end states. Both
+        // strategies step the same `p` every frame, so at frame 1 — before
+        // anything can accumulate — they must agree to solver tolerance. Later
+        // frames are allowed to drift: this is a nonlinear oscillator struck ten
+        // times, and tolerance-level differences amplify in one.
+        //
+        // ⚠⚠ The end-state comparison this replaced could not tell those apart,
+        // and neither could the `peak_ratio` scalar before it — which reported
+        // `1.8e-9` agreement on runs whose full states end `6.5e-4` apart.
+        let trace = divergence_trace(Start::AtP, start, magnitude);
+        assert!(
+            trace.len() == RUN_FRAMES,
+            "{} diverged into a failed frame at {} of {RUN_FRAMES}",
+            start.label(),
+            trace.len()
+        );
+        let (first, last) = (trace[0], trace[trace.len() - 1]);
+        println!(
+            "      lockstep vs baseline: frame 1 {first:.2e}, frame 10 {:.2e}, \
+             frame {RUN_FRAMES} {last:.2e}",
+            trace[9],
+        );
+        assert!(
+            first < 1e-6,
+            "{} differs from the baseline by {first:.2e} at FRAME 1, before anything \
+             can accumulate. It is solving a different equation, so its speedup is \
+             bought on a different simulation",
+            start.label()
+        );
+        assert!(
+            last > first,
+            "{} shows divergence {last:.2e} at frame {RUN_FRAMES} against {first:.2e} \
+             at frame 1 — it did not grow. Then the frame-1 agreement is not \
+             evidence of anything, because this comparison is not sensitive enough \
+             to see a difference at all",
+            start.label()
+        );
+        let p99 = percentile(&run.ms, 0.99);
+        println!(
+            "      p99 {base99:.2} -> {p99:.2} ms = {:.2}x",
+            base99 / p99
+        );
+    }
 }
 
 /// Run the full trajectory with Newton started per `start` each frame.
@@ -2054,22 +2091,7 @@ fn trajectory_with(start: Start, magnitude: f64) -> Run {
             .zip(&vel)
             .map(|(xi, vi)| vi.mul_add(VR_DT, *xi))
             .collect();
-        let s = match start {
-            Start::AtP => p,
-            Start::AtPrevious => pos.clone(),
-            Start::Smoothed(shape) => {
-                let tip = loaded
-                    .iter()
-                    .map(|&(vtx, _)| p[3 * vtx as usize + 2] - pos[3 * vtx as usize + 2])
-                    .fold(0.0f64, |a, b| if b.abs() > a.abs() { b } else { a });
-                let unit = shape.at(1.0);
-                let mut out = pos.clone();
-                for (vtx, &sx) in axial.iter().enumerate() {
-                    out[3 * vtx + 2] += tip * shape.at(sx) / unit;
-                }
-                out
-            }
-        };
+        let s = smoothed_start(start, &pos, &p, &axial, &loaded);
         match one_frame_from(&solver, &mut pos, &mut vel, &theta, &s) {
             Ok((it, t)) => {
                 iters.push(it);
@@ -2089,4 +2111,100 @@ fn trajectory_with(start: Start, magnitude: f64) -> Run {
         peak_ratio,
         ended_early,
     }
+}
+
+/// The point Newton is started from, for a given [`Start`].
+///
+/// ★ One definition, used by the per-frame probe, the end-to-end producer and
+/// the lockstep trace. It was duplicated across two of them, which would have
+/// let the per-frame and end-to-end headlines silently measure *different*
+/// interventions while both kept passing.
+fn smoothed_start(
+    start: Start,
+    x0: &[f64],
+    p: &[f64],
+    axial: &[f64],
+    loaded: &[(VertexId, LoadAxis)],
+) -> Vec<f64> {
+    match start {
+        Start::AtP => p.to_vec(),
+        Start::AtPrevious => x0.to_vec(),
+        Start::Smoothed(shape) => {
+            // Keep the tip where the impulse puts it; spread the rest of the
+            // displacement along a smooth profile instead of the blade band.
+            let tip = loaded
+                .iter()
+                .map(|&(vtx, _)| p[3 * vtx as usize + 2] - x0[3 * vtx as usize + 2])
+                .fold(0.0f64, |a, b| if b.abs() > a.abs() { b } else { a });
+            let unit = shape.at(1.0);
+            let mut out = x0.to_vec();
+            for (v, &s) in axial.iter().enumerate() {
+                out[3 * v + 2] += tip * shape.at(s) / unit;
+            }
+            out
+        }
+    }
+}
+
+/// Step two starting strategies in **lockstep** from the same initial state,
+/// returning their per-frame relative state divergence.
+///
+/// ★★★ This is what separates the two readings of an end-to-end difference.
+/// Both strategies step the same `p` every frame, so if they are solving the
+/// same equation they must agree at frame 1 to solver tolerance, and any larger
+/// end-state gap is **accumulation** — tolerance-level differences amplified by
+/// a nonlinear oscillator over hundreds of frames. If instead they disagree at
+/// frame 1, the start is changing the problem and every speedup is bought on a
+/// different simulation.
+///
+/// Comparing only the final states cannot tell those apart, which is how the
+/// `peak_ratio` control this replaced reported `1.8e-9` on runs whose full
+/// states were `6.5e-4` apart.
+fn divergence_trace(a: Start, b: Start, magnitude: f64) -> Vec<f64> {
+    let (mu, lambda) = lame_for(e_eff_for(EI_TARGET));
+    let field = MaterialField::uniform(mu, lambda);
+    let (nx, ny, nz) = GRID;
+    let tet4 = HandBuiltTetMesh::cantilever_bilayer_beam(nx, ny, nz, SPAN, WIDTH, DEPTH, &field);
+    let mesh = Tet10Mesh::from_tet4(&tet4);
+    let n_dof = 3 * mesh.n_vertices();
+    let axial: Vec<f64> = mesh.positions().iter().map(|q| q.x / SPAN).collect();
+    let (x_rest, _rest_z, bc, mut cfg) =
+        rig(&mesh, slapshot_load(EI_TARGET), rho_eff(), false, TOL_REL);
+    cfg.dt = VR_DT;
+    cfg.initial_guess = InitialGuess::PreviousState;
+    let loaded = bc.loaded_vertices.clone();
+    let solver: CpuTet10NHSolver<Tet10Mesh> =
+        CpuNewtonSolver::new(Tet10, mesh, NullContact, cfg, bc);
+
+    let theta = Tensor::from_slice(&[0.0], &[1]);
+    let strike_velocity = slapshot_equivalent_tip_velocity() * magnitude;
+    let mut state = [
+        (x_rest.clone(), vec![0.0; n_dof]),
+        (x_rest.clone(), vec![0.0; n_dof]),
+    ];
+    let mut trace = Vec::with_capacity(RUN_FRAMES);
+
+    for k in 0..RUN_FRAMES {
+        for (which, start) in [a, b].into_iter().enumerate() {
+            let (pos, vel) = &mut state[which];
+            if k % STRIKE_PERIOD == 0 {
+                for &(vertex, _) in &loaded {
+                    vel[3 * vertex as usize + 2] += strike_velocity;
+                }
+            }
+            let p: Vec<f64> = pos
+                .iter()
+                .zip(&*vel)
+                .map(|(xi, vi)| vi.mul_add(VR_DT, *xi))
+                .collect();
+            let s = smoothed_start(start, pos, &p, &axial, &loaded);
+            if one_frame_from(&solver, pos, vel, &theta, &s).is_err() {
+                return trace;
+            }
+        }
+        let scale = dof_distance(&state[0].0, &x_rest).max(f64::MIN_POSITIVE);
+        trace.push(dof_distance(&state[0].0, &state[1].0) / scale);
+        let _ = k;
+    }
+    trace
 }

@@ -43,30 +43,34 @@ use sim_soft::{
 };
 
 /// Nearest-rank order statistic: the `q`-quantile of `values`, taken as
-/// `values_sorted[⌊q·n⌋]` clamped to the last index.
+/// `values_sorted[⌈q·n⌉ − 1]`, saturating so `q = 1.0` is the maximum.
 ///
-/// ★ **Shared so two fixtures cannot drift on the arithmetic that decides a
+/// ★★ **Shared so instruments cannot drift on the arithmetic that decides a
 /// rung** — the reason `tests/reduced_report/` exists, applied to summary
 /// statistics. `stick_flex.rs` reads a `p50` off a 20-frame cost sample and
-/// `stick_impact.rs` reads a `p99` off a 300-frame one; if those two disagreed
-/// about what a percentile *is*, neither number could be quoted beside the
-/// other.
+/// `stick_impact.rs` a `p99` off a 300-frame one, and `InitialGuess`'s docs
+/// quote both beside `predictor_spike.rs`. If those disagreed about what a
+/// percentile *is*, none of the three could be quoted next to the others.
 ///
-/// ⚠ For an even count this takes the **upper** of the two middle samples
-/// (`⌊0.5·20⌋ = 10`, not the mean of indices 9 and 10). That biases a reported
-/// cost *up* by at most one sample, which is the conservative direction for a
-/// claim that something FITS a budget. It is also exactly what `stick_flex.rs`
-/// did before this was extracted, so its published figures are unchanged.
+/// ⚠⚠ **This definition is not free-standing — it is `predictor_spike.rs`'s
+/// `rank_index`, deliberately.** That file is the sibling instrument on the same
+/// subject (the `InitialGuess` predictor, per-step iterations and `ms`), and it
+/// got here first. An earlier version of this function used `⌊q·n⌋`, which
+/// differs by exactly one order statistic at every intermediate quantile
+/// (`n = 20, q = 0.5` → index 10 against 9; `n = 300, q = 0.99` → 297 against
+/// 296) — so the extraction that was justified by "two fixtures cannot drift"
+/// shipped already drifting against the nearest fixture of all. If either
+/// definition changes, change both.
+///
+/// ⛔ The `⌊q·n⌋` form carried a rationale that it "biases the reported cost up,
+/// the conservative direction for a claim that something FITS a budget". That
+/// argument does not survive: this file's headline claim is that a `p99` BUSTS a
+/// budget, for which the same bias is anti-conservative. A percentile should be
+/// the standard one and the conservatism argued separately.
 ///
 /// ⚠ Panics on an empty sample rather than returning a zero that would read as
 /// "instant", and rejects a `q` outside `[0, 1]` rather than saturating — a
-/// quantile silently clamped to the maximum is how a `p99` stops being a `p99`.
-// `q` is asserted into `[0, 1]` and `v` into `len >= 1` immediately below, so
-// `⌊q·len⌋` is non-negative and at most `len` — inside `usize` and inside the
-// `f64` integer range for any sample a test can hold. The cast cannot truncate
-// or lose a sign here, and a blanket module-level allow would hide the ones
-// that could.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+/// quantile silently clamped is how a `p99` stops being a `p99`.
 pub fn percentile(values: &[f64], q: f64) -> f64 {
     assert!(
         !values.is_empty(),
@@ -78,8 +82,19 @@ pub fn percentile(values: &[f64], q: f64) -> f64 {
     );
     let mut v = values.to_vec();
     v.sort_by(|a, b| a.partial_cmp(b).expect("timings are never NaN"));
-    let rank = ((q * v.len() as f64).floor() as usize).min(v.len() - 1);
-    v[rank]
+    v[rank_index(v.len(), q)]
+}
+
+/// Nearest-rank index into a length-`n` sorted sample for quantile `q`.
+///
+/// Byte-for-byte the rule in `predictor_spike.rs::rank_index`; see
+/// [`percentile`] for why that matters.
+fn rank_index(n: usize, q: f64) -> usize {
+    // `q` is in `[0, 1]` and `n >= 1` (both asserted by the sole caller), so
+    // `⌈q·n⌉` is in `[0, n]` — inside `usize` and inside `f64`'s integer range.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let rank = (q * n as f64).ceil() as usize;
+    rank.max(1).min(n) - 1
 }
 
 // ---------------------------------------------------------------------------
