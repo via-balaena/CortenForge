@@ -2285,6 +2285,7 @@ fn smoothed_start(
                 arm,
                 x0,
                 p,
+                axial,
                 loaded,
             )
             .0
@@ -2292,10 +2293,8 @@ fn smoothed_start(
         Start::Smoothed(shape) => {
             // Keep the tip where the impulse puts it; spread the rest of the
             // displacement along a smooth profile instead of the blade band.
-            let tip = loaded
-                .iter()
-                .map(|&(vtx, _)| p[3 * vtx as usize + 2] - x0[3 * vtx as usize + 2])
-                .fold(0.0f64, |a, b| if b.abs() > a.abs() { b } else { a });
+            let predicted: Vec<f64> = p.iter().zip(x0).map(|(a, b)| a - b).collect();
+            let tip = tip_displacement(&predicted, loaded);
             let unit = shape.at(1.0);
             let mut out = x0.to_vec();
             for (v, &s) in axial.iter().enumerate() {
@@ -2489,6 +2488,20 @@ fn gram_error(modes: &[Vec<f64>], mass: &[f64]) -> (f64, f64) {
         }
     }
     (diag, off)
+}
+
+/// Largest signed `z` displacement over the driven band — what both the ramp
+/// and every tip-matched modal arm mean by "the tip".
+///
+/// ★ ONE definition, shared by [`smoothed_start`] and [`modal_start`]. The 2×2
+/// in this section compares their rows directly; if the two folded the band
+/// differently they would be reading different tips and every row would still
+/// print.
+fn tip_displacement(disp: &[f64], loaded: &[(VertexId, LoadAxis)]) -> f64 {
+    loaded
+        .iter()
+        .map(|&(vtx, _)| disp[3 * vtx as usize + 2])
+        .fold(0.0f64, |a, b| if b.abs() > a.abs() { b } else { a })
 }
 
 /// `‖u‖_M = √(uᵀMu)` — the norm the basis is orthonormal in, and the one
@@ -2687,6 +2700,20 @@ enum Band {
     /// the analytic beam profile `Shape` needs, so an arm that wins here is
     /// still mesh-general.
     TipMatched,
+    /// [`Self::TipMatched`] with its `x` and `y` components zeroed — the
+    /// tip-matched POD `z` profile alone.
+    ///
+    /// ★★★ Cell (POD-z, no in-plane) of the 2×2 that splits the `36×`. If this
+    /// reads like `smooth:mode-1`, the in-plane components carry the whole cost
+    /// and a mesh-general predictor can be built from transverse fields.
+    TipMatchedZOnly,
+    /// The analytic first-mode `z` profile plus [`Self::TipMatched`]'s `x`/`y`.
+    ///
+    /// ★★★ Cell (analytic-z, POD in-plane). The other half of the crossover,
+    /// and the two decompose exactly: `TipMatched` is this arm's in-plane field
+    /// plus `TipMatchedZOnly`'s `z` field, because zeroing `x`/`y` cannot change
+    /// a fold that reads only `z`, so both inherit the SAME `β`.
+    RampPlusModalXy,
     /// **Not a projection.** `x₀ + α(p − x₀)` with `α = ‖P_low u‖_M / ‖u‖_M`.
     ///
     /// ★★★ The load-bearing control. Projection can only SHRINK the increment
@@ -2706,6 +2733,8 @@ impl Band {
             Self::Low => "low",
             Self::Random => "rand",
             Self::TipMatched => "tipmatch",
+            Self::TipMatchedZOnly => "tip-z",
+            Self::RampPlusModalXy => "ramp+xy",
             Self::ScaledLikeLow => "scaled",
         }
     }
@@ -2730,14 +2759,12 @@ fn modal_start(
     arm: ModalArm,
     x0: &[f64],
     p: &[f64],
+    axial: &[f64],
     loaded: &[(VertexId, LoadAxis)],
 ) -> (Vec<f64>, usize) {
     let u: Vec<f64> = rig.free.iter().map(|&i| p[i] - x0[i]).collect();
     let low = arm.rank.min(rig.sound_rank());
     let (d, width) = match arm.band {
-        Band::Low | Band::TipMatched => {
-            (project_onto(&rig.basis.modes()[..low], &rig.mass, &u), low)
-        }
         Band::Random => {
             let k = arm.rank.min(rig.random.len());
             (project_onto(&rig.random[..k], &rig.mass, &u), k)
@@ -2752,36 +2779,57 @@ fn modal_start(
             };
             (u.iter().map(|ui| alpha * ui).collect(), low)
         }
+        Band::Low | Band::TipMatched | Band::TipMatchedZOnly | Band::RampPlusModalXy => {
+            (project_onto(&rig.basis.modes()[..low], &rig.mass, &u), low)
+        }
     };
-    // ⚠ Only the FREE DOFs move. A constrained DOF keeps `x₀`, matching what
-    // `Start::AtPrevious` and every `Start::Smoothed` profile already do (their
-    // profiles vanish at the clamp), and matching `InitialGuess`'s own note
-    // that a constrained row enters neither the residual norm nor the solve.
-    let mut out = x0.to_vec();
+    // ⚠ Only the FREE DOFs enter the field. A constrained DOF keeps `x₀`,
+    // matching what `Start::AtPrevious` and every `Start::Smoothed` profile
+    // already do (their profiles vanish at the clamp), and matching
+    // `InitialGuess`'s own note that a constrained row enters neither the
+    // residual norm nor the solve.
+    let mut field = vec![0.0; x0.len()];
     for (&i, di) in rig.free.iter().zip(&d) {
-        out[i] += di;
+        field[i] = *di;
     }
-    if arm.band == Band::TipMatched {
-        // The same "largest signed z-displacement over the driven band" fold
-        // `smoothed_start` uses for the ramp, so the two arms are matched on
-        // what "the tip lands where `p` puts it" means.
-        let tip = |v: &[f64]| {
-            loaded
-                .iter()
-                .map(|&(vtx, _)| v[3 * vtx as usize + 2] - x0[3 * vtx as usize + 2])
-                .fold(0.0f64, |a, b| if b.abs() > a.abs() { b } else { a })
-        };
-        let (want, have) = (tip(p), tip(&out));
+    let predicted: Vec<f64> = p.iter().zip(x0).map(|(a, b)| a - b).collect();
+    let want = tip_displacement(&predicted, loaded);
+    if matches!(
+        arm.band,
+        Band::TipMatched | Band::TipMatchedZOnly | Band::RampPlusModalXy
+    ) {
         // A projection with no amplitude at the driven band cannot be rescaled
-        // to have some; leaving it unscaled makes that visible as a `Low` row
-        // rather than hiding it behind a division.
-        if have.abs() > 0.0 {
+        // to have some; leaving it unscaled makes that visible as a `Low`-sized
+        // row rather than hiding it behind a division.
+        let have = tip_displacement(&field, loaded);
+        if have != 0.0 {
             let beta = want / have;
-            for (o, &x) in out.iter_mut().zip(x0) {
-                *o = x + beta * (*o - x);
+            for f in &mut field {
+                *f *= beta;
             }
         }
     }
+    match arm.band {
+        Band::TipMatchedZOnly => {
+            for (i, f) in field.iter_mut().enumerate() {
+                if i % 3 != 2 {
+                    *f = 0.0;
+                }
+            }
+        }
+        Band::RampPlusModalXy => {
+            // Overwrite `z` with the analytic profile, keeping the projection's
+            // in-plane field. Written at EVERY vertex, exactly as
+            // `smoothed_start` writes it, and it vanishes at the clamp because
+            // the profile does.
+            let unit = Shape::FirstMode.at(1.0);
+            for (v, &s) in axial.iter().enumerate() {
+                field[3 * v + 2] = want * Shape::FirstMode.at(s) / unit;
+            }
+        }
+        Band::Low | Band::TipMatched | Band::Random | Band::ScaledLikeLow => {}
+    }
+    let out: Vec<f64> = x0.iter().zip(&field).map(|(a, b)| a + b).collect();
     (out, width)
 }
 
@@ -2894,6 +2942,7 @@ fn whether_the_band_projector_is_a_projector() {
         },
         &x0,
         &p,
+        &[],
         &[],
     );
     assert!(width == 0, "a rank-0 subspace cannot have width {width}");
@@ -3036,113 +3085,147 @@ fn whether_a_modal_start_cuts_iterations_on_a_real_impact_frame() {
         rig.retained()
     );
     for magnitude in [0.25, 1.00, 2.00, 8.00] {
-        let probe = ImpactFrame::at_strike(magnitude, STRIKE_PERIOD);
-        // ⚠ The basis and the frame are built from separately enriched meshes.
-        // They agree only because both go through `rig()` on the same GRID; if
-        // the free-DOF map ever diverged, `modal_start` would scatter the
-        // projection onto the wrong DOFs and every row would still print.
-        assert!(
-            rig.free == probe.solver.free_dof_indices(),
-            "the basis and the impact frame disagree about which DOFs are free \
-             ({} vs {}), so the projection would land on the wrong unknowns",
-            rig.free.len(),
-            probe.solver.free_dof_indices().len()
-        );
-        println!(
-            "\n=== REAL impact frame: impulse {magnitude:.2}x, struck at frame {}, \
-             after one prior strike ===\n  p is {:.1} mm from x0 at the tip; the \
-             answer is {:.1} mm from x0. **Inertial baseline: {} iters**",
-            STRIKE_PERIOD,
-            1e3 * probe.p_tip,
-            1e3 * probe.answer_tip,
-            probe.star_iters,
-        );
-        println!(
-            "{:>16} {:>8} {:>6} {:>10} {:>11} {:>10} {:>9}",
-            "start", "iters", "width", "x0->start", "start->x*", "answer err", "outcome"
-        );
-        let baseline = probe.star_iters;
-
-        let row = |start: Start, width: usize| -> Option<usize> {
-            let (ok, iters, dist, answer_err) = probe.run(start, Some(&rig));
-            // ★ Both distances, in units of `travel = ‖x* − x₀‖`. Without the
-            // first column the table cannot support its own headline: "the same
-            // distance from the answer, a different cost" is a claim ABOUT
-            // distance, and one distance is not enough to make it.
-            let moved =
-                dof_distance(&probe.start_point(start, Some(&rig)), &probe.x0) / probe.travel;
-            println!(
-                "{:>16} {iters:>8} {width:>6} {moved:>10.3} {dist:>11.3} {answer_err:>10.2e} {:>9}",
-                start.label(),
-                if ok { "ok" } else { "FAILED" }
-            );
-            if ok {
-                assert!(
-                    answer_err < 1e-3,
-                    "{} reached a DIFFERENT answer ({answer_err:.2e} away) on the same \
-                     equation — this is changing the simulation, not the way it is solved",
-                    start.label()
-                );
-                Some(iters)
-            } else {
-                None
-            }
-        };
-
-        if row(Start::AtP, 0).is_none() {
-            // The same asymmetry Probe 3 documents: `AtP` hands the solver
-            // `x_prev = p`, and an inverted `p` trips a validity check the real
-            // `Inertial` path never performs, because it keeps `x_prev = x₀`.
-            // The baseline stays the real path's count.
-            println!(
-                "  note: starting AT p failed a validity check — `p` is inverted here, \
-                 which the real Inertial path never has to hold as `x_prev`. Baseline \
-                 stays the real path's {baseline} iters."
-            );
-        }
-        row(Start::AtPrevious, 0);
-        row(Start::Smoothed(Shape::TipLoadCurve), 0);
-        row(Start::Smoothed(Shape::FirstMode), 0);
-
-        let mut verdict: Vec<String> = Vec::new();
-        for rank in 1..=rig.sound_rank() {
-            let mut got: Vec<(Band, Option<usize>)> = Vec::new();
-            for band in [
-                Band::Low,
-                Band::TipMatched,
-                Band::Random,
-                Band::ScaledLikeLow,
-            ] {
-                let arm = ModalArm { rank, band };
-                let width = modal_start(&rig, arm, &probe.x0, &probe.p, &probe.loaded).1;
-                got.push((band, row(Start::Modal(arm), width)));
-            }
-            let find = |b: Band| got.iter().find(|g| g.0 == b).and_then(|g| g.1);
-            // `low` is the subject; each control is reported as its own count and
-            // the factor it costs OVER `low`, so `>1.00x` always means the modes won.
-            let against = |other: Option<usize>| -> String {
-                match (other, find(Band::Low)) {
-                    (Some(o), Some(low)) => format!("{o} ({:.2}x)", o as f64 / low as f64),
-                    (Some(o), None) => format!("{o} (--)"),
-                    (None, _) => "FAILED".to_owned(),
-                }
-            };
-            if let Some(low) = find(Band::Low) {
-                verdict.push(format!(
-                    "r={rank}: low {low} vs Inertial {baseline} ({:.2}x); \
-                     vs scaled {} = SHAPE; vs rand {} = THESE modes; \
-                     vs tipmatch {} = AMPLITUDE",
-                    baseline as f64 / low as f64,
-                    against(find(Band::ScaledLikeLow)),
-                    against(find(Band::Random)),
-                    against(find(Band::TipMatched)),
-                ));
-            } else {
-                verdict.push(format!("r={rank}: low FAILED to converge"));
-            }
-        }
-        for v in &verdict {
-            println!("  {v}");
-        }
+        modal_sweep_at(&rig, magnitude);
     }
+}
+
+/// One frozen impact frame, every arm.
+///
+/// Split out of the test only because the per-magnitude body IS the
+/// instrument and the test around it is a loop over four magnitudes.
+fn modal_sweep_at(rig: &ModalRig, magnitude: f64) {
+    let probe = ImpactFrame::at_strike(magnitude, STRIKE_PERIOD);
+    // ⚠ The basis and the frame are built from separately enriched meshes.
+    // They agree only because both go through `rig()` on the same GRID; if
+    // the free-DOF map ever diverged, `modal_start` would scatter the
+    // projection onto the wrong DOFs and every row would still print.
+    assert!(
+        rig.free == probe.solver.free_dof_indices(),
+        "the basis and the impact frame disagree about which DOFs are free \
+         ({} vs {}), so the projection would land on the wrong unknowns",
+        rig.free.len(),
+        probe.solver.free_dof_indices().len()
+    );
+    println!(
+        "\n=== REAL impact frame: impulse {magnitude:.2}x, struck at frame {}, \
+         after one prior strike ===\n  p is {:.1} mm from x0 at the tip; the \
+         answer is {:.1} mm from x0. **Inertial baseline: {} iters**",
+        STRIKE_PERIOD,
+        1e3 * probe.p_tip,
+        1e3 * probe.answer_tip,
+        probe.star_iters,
+    );
+    println!(
+        "{:>16} {:>8} {:>6} {:>10} {:>11} {:>10} {:>9}",
+        "start", "iters", "width", "x0->start", "start->x*", "answer err", "outcome"
+    );
+    let baseline = probe.star_iters;
+
+    let row = |start: Start, width: usize| -> Option<usize> {
+        let (ok, iters, dist, answer_err) = probe.run(start, Some(rig));
+        // ★ Both distances, in units of `travel = ‖x* − x₀‖`. Without the
+        // first column the table cannot support its own headline: "the same
+        // distance from the answer, a different cost" is a claim ABOUT
+        // distance, and one distance is not enough to make it.
+        let moved = dof_distance(&probe.start_point(start, Some(rig)), &probe.x0) / probe.travel;
+        println!(
+            "{:>16} {iters:>8} {width:>6} {moved:>10.3} {dist:>11.3} {answer_err:>10.2e} {:>9}",
+            start.label(),
+            if ok { "ok" } else { "FAILED" }
+        );
+        if ok {
+            assert!(
+                answer_err < 1e-3,
+                "{} reached a DIFFERENT answer ({answer_err:.2e} away) on the same \
+                 equation — this is changing the simulation, not the way it is solved",
+                start.label()
+            );
+            Some(iters)
+        } else {
+            None
+        }
+    };
+
+    if row(Start::AtP, 0).is_none() {
+        // The same asymmetry Probe 3 documents: `AtP` hands the solver
+        // `x_prev = p`, and an inverted `p` trips a validity check the real
+        // `Inertial` path never performs, because it keeps `x_prev = x₀`.
+        // The baseline stays the real path's count.
+        println!(
+            "  note: starting AT p failed a validity check — `p` is inverted here, \
+             which the real Inertial path never has to hold as `x_prev`. Baseline \
+             stays the real path's {baseline} iters."
+        );
+    }
+    row(Start::AtPrevious, 0);
+    row(Start::Smoothed(Shape::TipLoadCurve), 0);
+    let ramp = row(Start::Smoothed(Shape::FirstMode), 0);
+
+    let mut verdict: Vec<String> = Vec::new();
+    for rank in 1..=rig.sound_rank() {
+        let mut got: Vec<(Band, Option<usize>)> = Vec::new();
+        for band in [
+            Band::Low,
+            Band::TipMatched,
+            Band::TipMatchedZOnly,
+            Band::RampPlusModalXy,
+            Band::Random,
+            Band::ScaledLikeLow,
+        ] {
+            let arm = ModalArm { rank, band };
+            let width = modal_start(rig, arm, &probe.x0, &probe.p, &probe.axial, &probe.loaded).1;
+            got.push((band, row(Start::Modal(arm), width)));
+        }
+        verdict.extend(modal_verdict(rank, baseline, ramp, &got));
+    }
+    for v in &verdict {
+        println!("  {v}");
+    }
+}
+
+/// The two summary lines one rank produces: the control comparison, and the
+/// 2×2 that splits the tip-matched gap.
+///
+/// `low` is the subject; each control is reported as its own count and the
+/// factor it costs OVER `low`, so `>1.00x` always means the modes won.
+fn modal_verdict(
+    rank: usize,
+    baseline: usize,
+    ramp: Option<usize>,
+    got: &[(Band, Option<usize>)],
+) -> Vec<String> {
+    let find = |b: Band| got.iter().find(|g| g.0 == b).and_then(|g| g.1);
+    let against = |other: Option<usize>| -> String {
+        match (other, find(Band::Low)) {
+            (Some(o), Some(low)) => format!("{o} ({:.2}x)", o as f64 / low as f64),
+            (Some(o), None) => format!("{o} (--)"),
+            (None, _) => "FAILED".to_owned(),
+        }
+    };
+    let headline = find(Band::Low).map_or_else(
+        || format!("r={rank}: low FAILED to converge"),
+        |low| {
+            format!(
+                "r={rank}: low {low} vs Inertial {baseline} ({:.2}x); \
+                 vs scaled {} = SHAPE; vs rand {} = THESE modes; \
+                 vs tipmatch {} = AMPLITUDE",
+                baseline as f64 / low as f64,
+                against(find(Band::ScaledLikeLow)),
+                against(find(Band::Random)),
+                against(find(Band::TipMatched)),
+            )
+        },
+    );
+    // ★ The four cells share one `β` and decompose exactly: (POD-z, POD-xy) is
+    // (POD-z, none) plus the in-plane half of (analytic-z, POD-xy).
+    let cell = |v: Option<usize>| v.map_or_else(|| "FAIL".to_owned(), |i| i.to_string());
+    let split = format!(
+        "      2x2 r={rank}  z:analytic|xy:none {}   z:POD|xy:none {}   \
+         z:analytic|xy:POD {}   z:POD|xy:POD {}",
+        cell(ramp),
+        cell(find(Band::TipMatchedZOnly)),
+        cell(find(Band::RampPlusModalXy)),
+        cell(find(Band::TipMatched)),
+    );
+    vec![headline, split]
 }
