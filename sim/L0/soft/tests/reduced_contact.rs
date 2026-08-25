@@ -121,10 +121,14 @@
 //! The producer check above is the first of SIX `#[ignore]`d studies, and each
 //! later one answers what its predecessor's caveat leaves open.
 //!
-//! ⚠ They do NOT all share one fixture. The first two carry their own ladders —
-//! [`R_LADDER`] for the producer check, [`TIMING_A_OVER_CELL`] (which reaches
-//! `a/cell = 3`) for the timing run. **The last FOUR share
-//! [`GEN_A_OVER_CELL`] and [`BASIS_RANKS`] deliberately**, so each is scored
+//! ⚠ They do NOT all share one matrix. The producer check runs the same mesh
+//! (`A_OVER_CELL` is also `2.0`) over its own rank ladder [`R_LADDER`], in-sample
+//! only. The timing run has no rank ladder at all — a fixed [`TIMING_RANK`] over
+//! two mesh sizes ([`TIMING_A_OVER_CELL`] reaches `a/cell = 3`) and
+//! [`TIMING_STEPS`] steps.
+//!
+//! **The last FOUR share [`GEN_A_OVER_CELL`] and [`BASIS_RANKS`]
+//! deliberately**, so each is scored
 //! against the matrix the previous rung published rather than a lookalike re-run;
 //! §2n and §2o then vary the training ENSEMBLE on that matrix — and §2n adds one
 //! off-lattice TEST position — which is exactly what each is built to change.

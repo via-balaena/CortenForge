@@ -2754,9 +2754,10 @@ right, wrong, and left unsaid:
   trajectory maximum**: its median at `+1.50a` is exactly zero at every rank, over an
   active set of 10–18 vertices. Not usable as stated. ✅ §2o rehabilitates it as a
   COVERAGE signal — it fires (`0.167–0.250`) on the `±1.0a`-only ensemble, whose
-  training never sweeps the scored patch, and reads exactly `0.000` on the two
-  whose `±0.5a` trajectories do — but coverage is measured there to be the factor
-  that does NOT dominate.
+  training leaves a HOLE at the centre, and reads exactly `0.000` on the two whose
+  `±0.5a` trajectories sweep through it. ⚠ A hole, not an absence: at its worst
+  step C still recognises `75 %` of the scored active set. Coverage is measured
+  there to be the factor that does NOT dominate.
 - ⛔⛔ **The parameter box must state CARDINALITY, and no online candidate can
   check it (§2o).** "Density" is two factors. At matched rank, doubling the
   ENSEMBLE at fixed gap buys `2.13–2.70×`; doubling the GAP at fixed size costs
@@ -2772,11 +2773,21 @@ right, wrong, and left unsaid:
 candidate standing (`snapshot_distance`, `~2×` on a fitted threshold on one
 fixture); §2n disqualified it on resolution and §2o on cardinality. What rung 1
 actually delivered is a narrowed candidate set, a measured reason each fails, and
-**two hard constraints a gate design has to route around**: an IMPOSSIBILITY — a
-domain signal cannot read accuracy, which follows from what the quantities measure
-— and an AFFORDABILITY limit — the error signal that can read accuracy is the
-element sweep ECSW removes. Only the first is a proof. v2.15's "rung 2 is
-implementation, not research" is withdrawn.
+**two hard constraints a gate design has to route around.** ⚠ They do not have
+the same standing, and the more certain one is not the more interesting one:
+
+1. **AFFORDABILITY, and it is definitional.** `‖r_free‖` requires the full element
+   sweep; ECSW exists to remove exactly that sweep. No measurement is needed and
+   none can overturn it. The error signal that reads accuracy is the one R3
+   cannot have.
+2. **A near-impossibility, and it is the load-bearing one.** A domain signal
+   cannot read accuracy: accuracy at fixed ensemble is a function of rank, so a
+   signal constant in rank cannot track it. The ARGUMENT is definitional; the
+   PREMISE — that `snapshot_distance` is constant in rank — is measured at
+   `1.005×`, on one statistic at one held-out position. Treat it as very strong
+   evidence, not as a theorem.
+
+v2.15's "rung 2 is implementation, not research" is withdrawn.
 
 ⚠ **The prerequisite for rung 2 is an API change, not a measurement.**
 `ReducedStep` exposes only `projected_residual_norm` / `full_residual_norm` — a
@@ -3281,16 +3292,18 @@ until then, and by nobody else ever. The recipe above is the durable record.
   ★★ **A SECOND round found 8 defects in this pass's own fixes**, which is the
   expected place for them. The load-bearing ones: the new module doc claimed all
   six studies share one fixture (only the last FOUR share `GEN_A_OVER_CELL` and
-  `BASIS_RANKS`; the producer check and the timing run carry their own ladders,
-  and `TIMING_A_OVER_CELL` reaches `a/cell = 3`); "the only cell above `109 %`"
+  `BASIS_RANKS`; the producer check runs the same mesh over its own rank ladder,
+  and the timing run has no rank ladder at all — a fixed `r=40` over two mesh
+  sizes, one of which is `a/cell = 3`); "the only cell above `109 %`"
   was wrong at the rounding boundary — `+2.00a` at `r=142` reads `109.3 %`, so the
   diverged arm is the HIGHEST cell (`119.6 %`), not the only one; the §4c rewrite
   quoted the cross-ensemble `~1.1×` as a NUMBER in the same pass that relabelled
   it a direction everywhere else; "two impossibility results" overstated — only
   the domain-signal one is a proof, the ECSW one is affordability; and "§2o leans
   on no cross-ensemble number" was false — §2o carries one and LABELS it, which is
-  the form §2n should have used. ⇒ **the fix is the least-reviewed text**, fourth
-  consecutive occurrence in this arc.
+  the form §2n should have used. ⇒ **the fix is the least-reviewed text** — the
+  THIRD time on this branch a round has found its defects in the previous round's
+  fixes (`9728a9a9`, `e3a55587`, and here).
 
 - **v2.18 (2026-08-25)** — **§2o, new: "density" is TWO factors and the online
   signals measure the WEAKER one.** A 2-factor design at a fixed held-out point,
