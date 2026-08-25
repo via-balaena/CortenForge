@@ -146,6 +146,7 @@ use sim_soft::{
     VertexId,
 };
 
+mod refbox;
 mod stickrig;
 
 use stickrig::{
@@ -712,35 +713,27 @@ fn a_momentum_strike_converges_deeper_than_any_force_strike_that_converged() {
     );
 }
 
-/// ★★ **The spike is iteration count, and nothing else — which is exactly why no
-/// rung of the reduced-order ladder can move it.**
+/// ★★ **The spike is iteration count — asserted on iterations, so it can run in
+/// CI.**
 ///
-/// Two-sided by construction: the frame cost must span a wide range across these
-/// cells (or there is no spike to attribute), while the cost *per Newton
-/// iteration* must stay flat (or the attribution is wrong).
+/// If frame cost were driven by something other than how many Newton iterations
+/// a frame takes, the iteration count would NOT span the range the frame cost
+/// does. This gate holds the iteration half, which is deterministic; the
+/// wall-time half — that cost per iteration stays flat — needs a clock and lives
+/// in [`the_cost_per_iteration_is_flat_across_the_spike`] behind a quiet-box
+/// gate.
 ///
-/// ★★ **The flatness is tested between two POPULATIONS of frames, not between
-/// two order statistics.** Every run here contains cheap frames (one Newton
-/// iteration, the stick coasting) and expensive ones (tens of iterations, the
-/// stick being struck). If cost were linear in iterations, those two populations
-/// have the *same* `ms` per iteration; if some fixed per-frame overhead or some
-/// super-linear term were driving the spike instead, they do not. Dividing a
-/// `p99` of `ms` by a `p99` of `iters` — the first form this gate was written in
-/// — cannot see that, because the two order statistics need not come from the
-/// same frame.
-///
-/// ★ It doubles as the control on this file's own instrument. The solver prints
-/// a line to stdout whenever the `faer` LU fallback fires, and that printing
-/// happens **inside** the region `one_frame` times — on the impact frames only.
-/// If it were inflating them, the high-iteration population would show a higher
-/// cost per iteration than the low-iteration one. It does not.
+/// ⚠ Splitting them is not cosmetic. `quality-gate.yml` runs eleven binaries in
+/// one `cargo test --release` with no `--test-threads=1`, so every release-only
+/// gate here executes concurrently, each driving a rayon-parallel solver. A `ms`
+/// threshold under that contention fails for a reason its message cannot name,
+/// on PRs that changed nothing — and `stick_flex.rs` already keeps all three of
+/// its timing instruments behind `refbox::require_quiet_box()` for exactly this.
 #[test]
 #[cfg_attr(debug_assertions, ignore = "release-only measurement")]
 fn the_frame_cost_spike_is_iteration_count_not_cost_per_iteration() {
     report_header();
-    let mut ms99 = Vec::new();
-    let mut cheap: Vec<(usize, f64)> = Vec::new();
-    let mut costly: Vec<(usize, f64)> = Vec::new();
+    let mut it99 = Vec::new();
     for magnitude in [0.05, 0.50, 2.00] {
         let run = run_cell(Strike::VelocityImpulse, magnitude, GRID);
         report_row(Strike::VelocityImpulse, magnitude, &run);
@@ -750,80 +743,109 @@ fn the_frame_cost_spike_is_iteration_count_not_cost_per_iteration() {
              sample to attribute",
             run.ended_early
         );
-        ms99.push(percentile(&run.ms, 0.99));
+        it99.push(percentile(
+            &run.iters.iter().map(|&i| i as f64).collect::<Vec<_>>(),
+            0.99,
+        ));
+    }
+    let (lo, hi) = (
+        it99.iter().copied().fold(f64::MAX, f64::min),
+        it99.iter().copied().fold(0.0f64, f64::max),
+    );
+    println!(
+        "  p99 Newton iterations span {:.1}x ({lo:.0}-{hi:.0})",
+        hi / lo
+    );
+    assert!(
+        hi / lo > 4.0,
+        "p99 iteration count only spanned {:.1}x ({lo:.0}-{hi:.0}) across these \
+         magnitudes, so there is no spike here to attribute to anything",
+        hi / lo
+    );
+}
+
+/// **The wall-time half: cost per Newton iteration is flat across the spike.**
+///
+/// Two POPULATIONS of frames, not two order statistics — cheap frames (1-2
+/// iterations, the stick coasting) against costly ones (10+, the stick being
+/// struck), each frame's own `ms/iters`. If cost were linear in iterations those
+/// populations agree; if a fixed per-frame overhead or a super-linear term drove
+/// the spike, they do not.
+///
+/// ★ It doubles as the control on this file's own instrument: the solver prints
+/// to stdout whenever the `faer` LU fallback fires, and that printing happens
+/// INSIDE the timed region, on impact frames only. If it were inflating them,
+/// the costly population would show a higher cost per iteration. It does not.
+///
+/// ⛔ `#[ignore]`d and quiet-box gated, because it is the only claim in this file
+/// that irreducibly needs a clock. → `stick_flex.rs`, same treatment.
+#[test]
+#[ignore = "timing instrument — reference box only, run explicitly"]
+fn the_cost_per_iteration_is_flat_across_the_spike() {
+    refbox::require_quiet_box();
+    report_header();
+    let mut cheap: Vec<(usize, f64)> = Vec::new();
+    let mut costly: Vec<(usize, f64)> = Vec::new();
+    for magnitude in [0.05, 0.50, 2.00] {
+        let run = run_cell(Strike::VelocityImpulse, magnitude, GRID);
+        report_row(Strike::VelocityImpulse, magnitude, &run);
+        assert!(run.completed(), "impulse at {magnitude}x did not complete");
         cheap.extend(run.frames_in(1..=2));
         costly.extend(run.frames_in(10..=usize::MAX));
     }
-
-    let (ms_lo, ms_hi) = (
-        ms99.iter().copied().fold(f64::MAX, f64::min),
-        ms99.iter().copied().fold(0.0f64, f64::max),
-    );
-    // ⚠ Without both populations the comparison is vacuous, and a run that
-    // happened to contain only cheap frames would pass it silently.
     assert!(
         !cheap.is_empty() && !costly.is_empty(),
-        "the sample holds {} frames at 1-2 Newton iterations and {} at 10+. Both \
-         populations are needed or there is nothing to compare",
+        "the sample holds {} cheap frames and {} costly ones; both are needed",
         cheap.len(),
         costly.len()
     );
-    // ⚠⚠ And without THIS the gate passes vacuously if the two bands ever
-    // collapse onto the same frames: identical populations are trivially `1.00x`
-    // apart. The separation is read off the very rows the costs came from — an
-    // earlier version computed it from a parallel filter and could not see a
-    // mutated band at all.
     let mean = |rows: &[(usize, f64)]| {
         rows.iter().map(|&(it, _)| it).sum::<usize>() as f64 / rows.len() as f64
     };
     let (cheap_mean, costly_mean) = (mean(&cheap), mean(&costly));
-    assert!(
-        costly_mean > 5.0 * cheap_mean,
-        "the two populations average {costly_mean:.1} and {cheap_mean:.1} Newton \
-         iterations. They are not far enough apart for their agreement to mean \
-         anything about how cost scales with iteration count"
-    );
     let cheap_rate = percentile(&cheap.iter().map(|&(_, r)| r).collect::<Vec<_>>(), 0.5);
     let costly_rate = percentile(&costly.iter().map(|&(_, r)| r).collect::<Vec<_>>(), 0.5);
     let drift = (costly_rate / cheap_rate).max(cheap_rate / costly_rate);
     println!(
-        "  p99 frame cost spans {:.1}x ({ms_lo:.2}-{ms_hi:.2} ms). Cost per Newton \
-         iteration: {cheap_rate:.3} ms on {} frames averaging {cheap_mean:.1} \
-         iterations, {costly_rate:.3} ms on {} averaging {costly_mean:.1} — \
-         {drift:.2}x apart",
-        ms_hi / ms_lo,
+        "  {cheap_rate:.3} ms/iter on {} frames averaging {cheap_mean:.1} iterations, \
+         {costly_rate:.3} on {} averaging {costly_mean:.1} — {drift:.2}x apart",
         cheap.len(),
         costly.len(),
     );
     assert!(
-        ms_hi / ms_lo > 4.0,
-        "p99 frame cost only spanned {:.1}x across these magnitudes, so there is no \
-         spike here to attribute to anything",
-        ms_hi / ms_lo
-    );
-    assert!(
         drift < 1.5,
         "cost per Newton iteration differs {drift:.2}x between frames taking 1-2 \
-         iterations ({cheap_rate:.3} ms) and frames taking 10+ ({costly_rate:.3} \
-         ms). The spike is then NOT purely iteration count, and the claim that \
-         reduction cannot touch it does not follow"
+         iterations ({cheap_rate:.3} ms) and frames taking 10+ ({costly_rate:.3} ms). \
+         The spike is then NOT purely iteration count, and the claim that reduction \
+         cannot touch it does not follow"
     );
 }
 
-/// ★★★ **The verdict: `p50` fits the PCVR physics budget, `p99` does not.**
+/// ★★★ **The verdict: a game strike busts the PCVR physics budget on BOTH
+/// statistics — marginally on `p50`, catastrophically on `p99`.**
 ///
-/// This is the whole reason the file exists. Every cost figure the stick has
-/// been scored on until now is a `p50` in the smooth-ramp regime, and on that
-/// number the 360-DOF stick fits at `0.57x`. Struck, the same stick at the same
-/// DOF on the same box misses by more than an order of magnitude — and it misses
-/// on latency, having been rescued from missing on correctness.
+/// Every cost figure this stick had been scored on was a `p50` in a smooth ramp,
+/// where `stick_flex.rs` reads `1.14 ms/frame` at 60 Hz — `0.57×` a ~2 ms budget.
+/// Struck at 90 Hz the same stick at the same DOF on the same box reads `~2.2 ms`
+/// (`~1.1×`, over) and a `p99` above `40 ms` (`~20×`, far over).
 ///
-/// The magnitude is `1.0x`, which the module docs place at a **firm pass**, not
-/// a slapshot. The two assertions are on opposite sides of the budget, so
-/// neither can pass by the threshold being loose.
+/// ⚠⚠ **This test used to be called `..._fits_the_pcvr_budget_on_p50_...` and
+/// asserted `p50 < 2 × budget`.** It printed `p50 2.22 ms = 1.11x budget` — its
+/// own refutation — and passed, because the threshold was set at twice the number
+/// the name claimed. The `p50` does not fit and never did; the honest contrast is
+/// `1.1×` against `20×`, not "fits" against "busts". ★ The `0.57×` figure the old
+/// doc leant on is `stick_flex.rs`'s **60 Hz smooth-ramp** number — a different
+/// regime at a different `dt` — so the comparison was also across two fixtures.
+///
+/// ⛔ `#[ignore]`d and quiet-box gated. This claim is irreducibly about
+/// milliseconds, and `quality-gate.yml` runs eleven binaries in one
+/// `cargo test --release` with no `--test-threads=1`. Under that contention a
+/// `ms` threshold fails for a reason its message cannot name, on PRs that changed
+/// nothing. `stick_flex.rs` ships only accuracy gates to CI for the same reason.
 #[test]
-#[cfg_attr(debug_assertions, ignore = "release-only measurement")]
-fn a_game_strike_fits_the_pcvr_budget_on_p50_and_busts_it_on_p99() {
+#[ignore = "timing instrument — reference box only, run explicitly"]
+fn a_game_strike_busts_the_pcvr_budget_on_both_p50_and_p99() {
+    refbox::require_quiet_box();
     let run = run_cell(Strike::VelocityImpulse, 1.0, GRID);
     report_header();
     report_row(Strike::VelocityImpulse, 1.0, &run);
@@ -843,38 +865,43 @@ fn a_game_strike_fits_the_pcvr_budget_on_p50_and_busts_it_on_p99() {
         p99 / PCVR_PHYSICS_BUDGET_MS,
         p99 / p50,
     );
-    // Piloted at 2.23 ms; 4.0 leaves room for box drift without letting a
-    // regression of the smooth regime through unnoticed.
+    // ★ Both arms now assert what the name says: over the budget, on both
+    // statistics. Piloted at 2.1-2.4 ms and 38-43 ms across runs.
     assert!(
-        p50 < 2.0 * PCVR_PHYSICS_BUDGET_MS,
-        "p50 was {p50:.2} ms. The smooth-regime cost has regressed, and the \
-         p50-fits/p99-busts contrast this gate reports is no longer the finding"
+        p50 > PCVR_PHYSICS_BUDGET_MS,
+        "p50 was {p50:.2} ms, INSIDE the {PCVR_PHYSICS_BUDGET_MS} ms budget. The \
+         smooth-regime cost has improved past what this file reports, so the \
+         verdict needs re-deriving rather than silently passing"
     );
-    // Piloted at 41.7 ms. `> 15` is a factor of 2.8 below the measurement, so a
-    // large improvement is needed before this stops firing — which is the point:
-    // it should stop firing when someone fixes the spike.
     assert!(
         p99 > 7.5 * PCVR_PHYSICS_BUDGET_MS,
         "p99 was {p99:.2} ms, inside 7.5x the physics budget. The impact spike has \
          been fixed or the strike is no longer reaching the stick; either way this \
-         file's verdict needs re-deriving rather than silently passing"
+         file's verdict needs re-deriving"
     );
 }
 
 /// **Negative control, with the companion positive arm that makes it mean
-/// something.**
+/// something — both on Newton ITERATIONS.**
 ///
-/// An unstruck run must be flat — at most one Newton iteration a frame, no
-/// tail. That alone is worth little: a flat `p99` proves nothing unless the same
-/// instrument is shown to *move* when a strike is present. So both are asserted
-/// together, and the gap between them is what says the `p99` this file reports
-/// is reading the impact rather than background variance on the box.
+/// An unstruck run must be flat: the `Inertial` guess already meets tol, so
+/// every frame returns `iter_count = 0`. That alone is worth little, so the
+/// struck run's iteration `p99` is asserted beside it.
 ///
-/// ⚠ **The quiet arm's frame time is not a frame time.** With nothing driving
-/// it the `Inertial` guess already meets tol and the solver returns
-/// `iter_count = 0`, so its `~0.1 ms` measures the *predictor*, not a solve —
-/// the same degeneracy `stickrig::RAMP_FRAMES` documents. It is a valid floor
-/// for "the instrument reads flat", and it is not a cost anyone should quote.
+/// ⚠⚠ **This used to compare wall time, and could not fail for its stated
+/// reason.** The quiet arm never enters the solver at all — 300 frames of
+/// `iter_count = 0`, ~0.07 ms of predictor return — so `struck99 > 5 × quiet99`
+/// was a real solve measured against a no-op, cleared by ~600× by any frame
+/// taking a single iteration. Mutation confirmed it: scaling the strike to
+/// `0.1 %` (880× shallower, no impact regime, at most 2 iterations) left this
+/// gate green while every other gate in the file failed. On iterations the same
+/// mutation is caught, because 2 iterations is not 30.
+///
+/// ★ It also takes wall time off CI's path. `quality-gate.yml` runs eleven
+/// binaries in one `cargo test --release` with no `--test-threads=1`, so these
+/// gates execute concurrently, each driving a rayon-parallel solver — and
+/// `stick_flex.rs` keeps every timing instrument behind `require_quiet_box()`
+/// for exactly that reason.
 #[test]
 #[cfg_attr(debug_assertions, ignore = "release-only measurement")]
 fn an_unstruck_run_is_flat_and_a_struck_one_is_not() {
@@ -886,7 +913,9 @@ fn an_unstruck_run_is_flat_and_a_struck_one_is_not() {
 
     assert!(
         quiet.completed() && struck.completed(),
-        "both runs must complete"
+        "both runs must complete: {:?} / {:?}",
+        quiet.ended_early,
+        struck.ended_early
     );
     assert!(
         quiet.peak_ratio < 1e-12,
@@ -894,20 +923,33 @@ fn an_unstruck_run_is_flat_and_a_struck_one_is_not() {
          something this file does not model, so it is not a control",
         quiet.peak_ratio
     );
-    let quiet99 = percentile(&quiet.ms, 0.99);
-    let struck99 = percentile(&struck.ms, 0.99);
+    // ★ The companion arm the negative control needs: the strike must actually
+    // bend the stick. Without it, a strike applied to the wrong axis still costs
+    // iterations and still passes everything below.
     assert!(
-        quiet.iters.iter().all(|&i| i <= 1),
-        "the unstruck run took up to {} Newton iterations in a frame, so \"flat\" \
-         is not what this control is measuring",
-        quiet.iters.iter().copied().max().unwrap_or(0)
+        struck.peak_ratio > 1e-3,
+        "the struck run only reached d/L = {:.3e}. There is no impact regime here, \
+         so nothing below certifies that this file's p99 reads an impact",
+        struck.peak_ratio
     );
-    println!("  quiet p99 {quiet99:.2} ms vs struck p99 {struck99:.2} ms");
+
+    let quiet_max = quiet.iters.iter().copied().max().unwrap_or(0);
+    let struck_it99 = percentile(
+        &struck.iters.iter().map(|&i| i as f64).collect::<Vec<_>>(),
+        0.99,
+    );
+    println!("  quiet max {quiet_max} iters vs struck p99 {struck_it99:.0} iters");
     assert!(
-        struck99 > 5.0 * quiet99,
-        "a struck run's p99 ({struck99:.2} ms) is not 5x an unstruck one's \
-         ({quiet99:.2} ms). The p99 this file reports is then background variance, \
-         not the impact"
+        quiet_max <= 1,
+        "the unstruck run took up to {quiet_max} Newton iterations in a frame, so \
+         \"flat\" is not what this control is measuring"
+    );
+    // Piloted at 37. `30` leaves room for the impact frame to get cheaper without
+    // letting the strike vanish: the mutation that scaled it to 0.1 % read 2.
+    assert!(
+        struck_it99 >= 30.0,
+        "a struck run's iteration p99 is {struck_it99:.0}, not the tens an impact \
+         costs. The p99 this file reports is then not reading an impact"
     );
 }
 

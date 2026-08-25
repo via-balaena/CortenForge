@@ -729,14 +729,28 @@ jobs:
       # assumed. ★ It was caught by `cargo xtask release-gates` on its own first
       # PR, which is that guard working exactly as #747 intended.
       #
-      # `stick_impact` carries five release-only gates — the held-force positive
-      # control, the momentum-vs-force headline, the iteration-count attribution,
-      # the p99-against-PCVR-budget verdict, and the unstruck/struck control. Its
-      # two producers (the posing ladder and the monotonicity diagnostic) hold
-      # UNCONDITIONAL `#[ignore]`s, so naming the binary runs the five that should
-      # run and leaves those out. ★ `cargo xtask release-gates` rejected this
-      # binary before the line below existed — the guard catching #747 a third
-      # time, after `stick_flex` (#827) and the R1 gates that named it first.
+      # `stick_impact` carries FIVE release-only gates and TEN unconditional
+      # `#[ignore]`s; the selection runs in 11.9 s measured, not estimated.
+      #
+      # ⚠⚠ Every gate here asserts on Newton ITERATION COUNTS or on convergence,
+      # never on wall time, and that is a hard requirement rather than a style
+      # choice. This step names eleven binaries in one `cargo test --release`
+      # with no `--test-threads=1`, so libtest runs their release-only gates
+      # CONCURRENTLY, each driving a rayon-parallel solver. A `ms` threshold under
+      # that contention fails for a reason its message cannot name, on PRs that
+      # changed nothing — and a `max` over 300 frames was measured swinging 1.46x
+      # from a single OS hiccup even on an idle box. Iteration counts do not move.
+      #
+      # The two claims that irreducibly need a clock — `a_game_strike_busts_the_
+      # pcvr_budget_on_both_p50_and_p99` and `the_cost_per_iteration_is_flat_
+      # across_the_spike` — carry UNCONDITIONAL `#[ignore]`s plus
+      # `refbox::require_quiet_box()`, the same treatment `stick_flex.rs` gives
+      # all three of its timing instruments. Naming the binary runs the five that
+      # should run and leaves all ten out — verified in the run, not assumed.
+      #
+      # ★ `cargo xtask release-gates` rejected this binary before it was listed —
+      # the guard catching #747 a third time, after `stick_flex` (#827) and the
+      # R1 gates that named it first.
       #
       # ⚠ `tet10_lame_decision` is deliberately NOT here: its `#[ignore]` is
       # unconditional and reasoned (7.16 GB peak RSS, above a runner's memory).
