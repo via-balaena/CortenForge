@@ -2586,6 +2586,9 @@ struct ModalRig {
     sound: usize,
     /// `sound` M-orthonormal random directions — the rank-matched control.
     random: Vec<Vec<f64>>,
+    /// Rest `x/L` per VERTEX — the coordinate a [`Shape`] profile is a function
+    /// of, kept so a mode can be asked whether it is one too.
+    axial: Vec<f64>,
 }
 
 impl ModalRig {
@@ -2599,6 +2602,7 @@ impl ModalRig {
             HandBuiltTetMesh::cantilever_bilayer_beam(nx, ny, nz, SPAN, WIDTH, DEPTH, &field);
         let mesh = Tet10Mesh::from_tet4(&tet4);
         let n_dof = 3 * mesh.n_vertices();
+        let axial: Vec<f64> = mesh.positions().iter().map(|q| q.x / SPAN).collect();
         let (x_rest, _rest_z, bc, mut cfg) =
             rig(&mesh, slapshot_load(EI_TARGET), rho_eff(), false, TOL_REL);
         cfg.dt = VR_DT;
@@ -2654,6 +2658,7 @@ impl ModalRig {
             mass,
             sound,
             random,
+            axial,
         }
     }
 
@@ -3358,4 +3363,109 @@ fn modal_verdict(
         cell(ramp),
     );
     vec![headline, split, quad]
+}
+
+/// ★★ **Is a POD mode a function of `x/L`, the way a [`Shape`] profile is?**
+///
+/// The 2×2 left one factor unseparated. With the in-plane field gone, the POD
+/// `z` profile still costs `2.5×` the analytic one at `1.00x` (`10` vs `4`)
+/// while sitting within `1.16×` at `8.00x`. Both analytic curves — the static
+/// tip-load shape and the vibration mode — read `4`, so it is not WHICH curve.
+///
+/// Exactly two things can differ. A `Shape` profile is a function of the axial
+/// coordinate alone: every vertex at a given `x` gets the same `z`. A POD mode
+/// is a finite-element field with no such constraint, so it may carry
+/// **cross-sectional variation** — different `z` at the same `x`, depending on
+/// where in the section the vertex sits.
+///
+/// ⚠ **This measures the mode field. It runs no solve and proves nothing about
+/// iteration counts** — it decides whether an averaging arm would be fixing a
+/// real feature or a phantom, and the honest order is to look before building.
+///
+/// Reported per mode, all relative to the mode's peak `|z|`:
+///
+/// - `spread` — `(max z − min z)` within one axial station. This is the whole
+///   question: `0` means the mode already IS a function of `x/L`.
+/// - `in-plane` — RMS `√(x²+y²)`, the field the 2×2 showed carries `20×`.
+/// - `dev(mode-1)` / `dev(tip-load)` — how far the station-mean profile is from
+///   each analytic curve, both normalised at the driven end.
+#[test]
+#[ignore = "diagnostic — run explicitly"]
+fn whether_a_pod_mode_is_a_function_of_the_axial_coordinate() {
+    let rig = ModalRig::from_ringdown();
+    // Axial stations, in rest order. Tet10 midside nodes put vertices at every
+    // half-element, so this is 2·nx+1 stations for a (4,1,2) grid.
+    let mut stations: Vec<f64> = rig.axial.clone();
+    stations.sort_by(f64::total_cmp);
+    stations.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    println!(
+        "\n=== POD mode structure: {} vertices over {} axial stations, \
+         {} sound modes ===",
+        rig.axial.len(),
+        stations.len(),
+        rig.sound_rank()
+    );
+
+    for k in 0..rig.sound_rank() {
+        // Scatter the mode onto full DOFs. A constrained vertex has no free DOF
+        // and stays zero, which is what the clamp does anyway.
+        let mut full = vec![0.0; 3 * rig.axial.len()];
+        for (&i, &v) in rig.free.iter().zip(&rig.basis.modes()[k]) {
+            full[i] = v;
+        }
+        let peak = full
+            .iter()
+            .skip(2)
+            .step_by(3)
+            .fold(0.0f64, |m, a| m.max(a.abs()));
+        assert!(
+            peak > 0.0,
+            "mode {k} has no transverse content at all, so every ratio below \
+             would be a division by zero dressed as a measurement"
+        );
+
+        let mut rows: Vec<(f64, f64, f64, f64)> = Vec::new();
+        for &s in &stations {
+            let at: Vec<usize> = (0..rig.axial.len())
+                .filter(|&v| (rig.axial[v] - s).abs() < 1e-9)
+                .collect();
+            let zs: Vec<f64> = at.iter().map(|&v| full[3 * v + 2]).collect();
+            let mean = zs.iter().sum::<f64>() / zs.len() as f64;
+            let lo = zs.iter().fold(f64::INFINITY, |m, a| m.min(*a));
+            let hi = zs.iter().fold(f64::NEG_INFINITY, |m, a| m.max(*a));
+            let inplane = (at
+                .iter()
+                .map(|&v| full[3 * v].powi(2) + full[3 * v + 1].powi(2))
+                .sum::<f64>()
+                / at.len() as f64)
+                .sqrt();
+            rows.push((s, mean / peak, (hi - lo) / peak, inplane / peak));
+        }
+
+        // Normalise the station-mean profile at the driven end, exactly as
+        // `smoothed_start` normalises a `Shape` at `s = 1`, so the deviation is
+        // between two curves that agree there by construction.
+        let tip_mean = rows.last().expect("stations are non-empty").1;
+        let dev = |shape: Shape| -> f64 {
+            let unit = shape.at(1.0);
+            rows.iter()
+                .map(|&(s, mean, _, _)| (mean / tip_mean - shape.at(s) / unit).abs())
+                .fold(0.0f64, f64::max)
+        };
+        let worst_spread = rows.iter().fold(0.0f64, |m, r| m.max(r.2));
+        let worst_inplane = rows.iter().fold(0.0f64, |m, r| m.max(r.3));
+        println!(
+            "\n  mode {k}: worst spread {worst_spread:.3}, worst in-plane \
+             {worst_inplane:.3}, dev(mode-1) {:.3}, dev(tip-load) {:.3}",
+            dev(Shape::FirstMode),
+            dev(Shape::TipLoadCurve),
+        );
+        println!(
+            "  {:>7} {:>9} {:>9} {:>9}",
+            "s", "mean z", "spread", "in-plane"
+        );
+        for &(s, mean, spread, inplane) in &rows {
+            println!("  {s:>7.3} {mean:>9.3} {spread:>9.3} {inplane:>9.3}");
+        }
+    }
 }
