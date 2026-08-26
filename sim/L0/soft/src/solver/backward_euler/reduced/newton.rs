@@ -28,15 +28,66 @@ pub struct ReducedStep {
     pub iter_count: usize,
     /// `‖Φᵀr_free‖` at convergence — the quantity the reduced solve drives to zero.
     pub projected_residual_norm: f64,
-    /// `‖r_free‖` at convergence — the **full** residual of the reduced state.
+    /// `r_free` at convergence — the **full** residual of the reduced state, as a
+    /// VECTOR, not a norm.
     ///
     /// This does **not** go to zero, and that is not a defect. A Galerkin solve makes
     /// the residual *orthogonal to the basis*, not zero; whatever lives outside the
     /// span is invisible to it. The ratio
-    /// `projected_residual_norm / full_residual_norm` is therefore a direct measure of
+    /// `projected_residual_norm / full_residual_norm()` is therefore a direct measure of
     /// how much of the equations the basis can see, and it is reported rather than
     /// asserted because no useful bound on it is known yet.
-    pub full_residual_norm: f64,
+    ///
+    /// ## Why the VECTOR and not just its norm (recon §4c rung 2)
+    ///
+    /// §4c rung 1 ended on two impossibility results: a DOMAIN signal cannot read
+    /// accuracy (rank-independence and accuracy-sensitivity are mutually exclusive,
+    /// §2n), and the ERROR signal that can — `‖r_free‖` — is the full element sweep
+    /// ECSW exists to remove (§2m). What that leaves untried is a **spatially
+    /// resolved** error indicator, and it is not expressible against a scalar: it
+    /// wants `r_free` itself, grouped by region. Exposing the norm alone made that
+    /// class unbuildable, which is why rung 2's prerequisite was recorded as an API
+    /// change rather than a measurement.
+    ///
+    /// ⛔ **PER-MODE, via the retained basis, is dead on arrival — and this vector is
+    /// what shows it.** `Φᵀr_free`
+    /// ([`PodBasis::project_covector`](super::PodBasis::project_covector)) is the
+    /// obvious per-mode reading, but it is exactly what the Galerkin solve drove below
+    /// `tol`: on the gate's fixture its LARGEST component is `2.6e-13`, against a
+    /// per-DOF max of `1.8e-2` in `r_free` — 11 orders down, so every component is.
+    /// There is no per-mode signal there to read, by construction rather than by
+    /// bad luck. A per-mode indicator would have to test against directions the basis
+    /// does NOT retain, which needs more than `Φ`. The same fixture puts `90.5 %` of
+    /// `‖r_free‖₁` on its top decile of DOFs, which is the signal that IS there.
+    /// ⚠ One fixture, one step, `r = 8` — a direction, not a law; the gate prints both
+    /// numbers so a second fixture can check it.
+    ///
+    /// ⚠ This is NOT a claim that such an indicator is affordable at R3. `r_free`
+    /// costs the element sweep, exactly as §2m measured; what changes here is only
+    /// that the candidates can be **built and falsified**, on a research path where
+    /// the sweep is already being paid.
+    ///
+    /// ## Layout
+    ///
+    /// `n_free` entries, in
+    /// [`free_dof_indices()`](super::super::CpuNewtonSolver::free_dof_indices) order —
+    /// the same gather the solve gathers, so entry `k` is full-DOF
+    /// `free_dof_indices()[k]`. A per-region indicator has to map back through that
+    /// index to reach an element or a vertex; the vector carries no geometry of its own.
+    pub full_residual: Vec<f64>,
+}
+
+impl ReducedStep {
+    /// `‖r_free‖` at convergence.
+    ///
+    /// Derived from [`Self::full_residual`] rather than stored beside it, so the two
+    /// cannot disagree — which is why the solve no longer computes this inline. An
+    /// `O(n_free)` reduction, negligible against the element sweep that produced the
+    /// vector in the first place.
+    #[must_use]
+    pub fn full_residual_norm(&self) -> f64 {
+        self.full_residual.iter().map(|a| a * a).sum::<f64>().sqrt()
+    }
 }
 
 /// A reduced-order Newton solver: a **wrapper** on a full-order solver plus a basis.
@@ -435,14 +486,21 @@ where
             if proj_norm < self.full.config.tol {
                 let x = self.expand(&q, &x_prev);
                 self.full.check_validity_at_step_start(&x)?;
-                let full_norm = r_free.iter().map(|a| a * a).sum::<f64>().sqrt();
                 let qdot: Vec<f64> = q.iter().zip(q_prev).map(|(a, b)| (a - b) / dt).collect();
                 return Ok(ReducedStep {
                     q,
                     qdot,
                     iter_count: iter,
                     projected_residual_norm: proj_norm,
-                    full_residual_norm: full_norm,
+                    // MOVED, not copied — `r_free` is already assembled by the
+                    // convergence check above and was previously dropped after its norm
+                    // was taken. Handing it out costs no allocation, and it costs
+                    // NEGATIVE arithmetic: that `‖r_free‖` reduction is gone from the
+                    // step, paid now only by callers that ask for it.
+                    // ⚠ §2k's `I` figures did not move regardless — `reduced_contact`
+                    // reads `t0.elapsed()` as its first statement after `step` returns,
+                    // so the norm was never inside the timed window to begin with.
+                    full_residual: r_free,
                 });
             }
 
