@@ -27,7 +27,7 @@
 //! # Asset & licensing
 //!
 //! The reference mesh (`BodyParts3D` L4 = `FMA13075`) is CC BY-SA — copyleft —
-//! so it is **not** committed to this Apache-licensed tree. The test is marked
+//! so it is **not** committed to this permissively licensed tree. The test is marked
 //! `#[ignore]` and gated on `$CF_L4_STL` (mirrors the `CF_CAST_ITER1_DIR`
 //! precedent): it skips by default / in CI and runs against a locally-provided
 //! mesh. Run with:

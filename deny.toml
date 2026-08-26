@@ -24,7 +24,7 @@ all-features = true
 
 [licenses]
 version = 2
-# We're Apache-2.0, so we accept permissive licenses.
+# We're `MIT OR Apache-2.0`, so we accept permissive licenses.
 # In v2 format, all unlicensed and copyleft crates are denied by default.
 allow = [
     "MIT",
@@ -43,7 +43,7 @@ allow = [
     "bzip2-1.0.6",
     # Font licenses — cover font ASSETS only (not code). Pulled in via
     # `bevy_egui` → `egui` → `epaint` → `epaint_default_fonts`, which
-    # ships Hack + Ubuntu fonts. Compatible with Apache-2.0 workspace
+    # ships Hack + Ubuntu fonts. Compatible with the `MIT OR Apache-2.0` workspace
     # since font-asset licenses don't infect software using the font.
     "OFL-1.1",          # SIL Open Font License 1.1 (Google Fonts default)
     "Ubuntu-font-1.0",  # Ubuntu Font Licence v1.0

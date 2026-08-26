@@ -124,12 +124,12 @@ jobs:
           codesign --force --deep --sign - "$app" || true
           mkdir -p dist
           # Stage the app next to the license/disclaimer so the terms travel
-          # inside the archive (Apache-2.0 §4) — a redistributed copy carries
+          # inside the archive (both licenses require it) — a redistributed copy carries
           # them. ditto (no --keepParent) archives the staging dir's contents,
           # preserving the .app bundle layout + executable bit.
           stage="$(mktemp -d)"
           mv "$app" "$stage/"
-          cp LICENSE NOTICE DISCLAIMER.md "$stage/"
+          cp LICENSE-APACHE LICENSE-MIT NOTICE DISCLAIMER.md "$stage/"
           ditto -c -k "$stage" "dist/${{ matrix.asset }}"
 
       - name: Package Studio (Linux tar.gz)
@@ -137,11 +137,11 @@ jobs:
         run: |
           mkdir -p dist
           # Include the license/disclaimer at the archive root so the terms
-          # travel with a redistributed copy (Apache-2.0 §4). GNU tar applies
+          # travel with a redistributed copy (both licenses require it). GNU tar applies
           # each -C to the files that follow it.
           tar czf "dist/${{ matrix.asset }}" \
             -C "target/${{ matrix.target }}/release" cf-studio-gui \
-            -C "$GITHUB_WORKSPACE" LICENSE NOTICE DISCLAIMER.md
+            -C "$GITHUB_WORKSPACE" LICENSE-APACHE LICENSE-MIT NOTICE DISCLAIMER.md
 
       - name: Package Studio (Windows zip)
         if: runner.os == 'Windows'
@@ -149,9 +149,9 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           # Include the license/disclaimer at the archive root so the terms
-          # travel with a redistributed copy (Apache-2.0 §4).
+          # travel with a redistributed copy (both licenses require it).
           Compress-Archive -Force `
-            -Path "target/${{ matrix.target }}/release/cf-studio-gui.exe", "LICENSE", "NOTICE", "DISCLAIMER.md" `
+            -Path "target/${{ matrix.target }}/release/cf-studio-gui.exe", "LICENSE-APACHE", "LICENSE-MIT", "NOTICE", "DISCLAIMER.md" `
             -DestinationPath "dist/${{ matrix.asset }}"
 
       - name: Upload Studio artifact
@@ -332,7 +332,7 @@ jobs:
             ${{ needs.changelog.outputs.changelog }}
 
             ---
-            By downloading and using this software you accept the terms in the bundled `DISCLAIMER` — it is general-purpose research software, provided **as is**, **not a medical device**, used **entirely at your own risk**. Each archive includes `LICENSE`, `NOTICE`, and `DISCLAIMER`.
+            By downloading and using this software you accept the terms in the bundled `DISCLAIMER` — it is general-purpose research software, provided **as is**, **not a medical device**, used **entirely at your own risk**. Each archive includes `LICENSE-APACHE`, `LICENSE-MIT`, `NOTICE`, and `DISCLAIMER`.
 
             SBOM (CycloneDX) attached. All builds meet the A-grade quality standard ([STANDARDS.md](https://github.com/via-balaena/CortenForge/blob/main/docs/STANDARDS.md)).
           files: |
