@@ -167,10 +167,11 @@ examples/cast/*/out/*.stl
 # Third-party source pulled in locally — NEVER redistributed from here
 # =============================================================================
 # Python virtualenvs. A `.venv/` appears at the workspace root from local `uv`
-# runs (the MuJoCo conformance ground truth and the OpenSim asset generators are
-# both driven that way). Observed, not theorised: the one on this machine holds
-# `mujoco-3.4.0` including MuJoCo's own Apache-2.0 C headers, plus a few hundred
+# runs. What it contains is observed, not theorised: the one on this machine holds
+# `mujoco-3.4.0`, including MuJoCo's own Apache-2.0 C headers, plus a few hundred
 # MB of third-party wheels — none of it ours to redistribute.
+# (Not every Python tool here lands in this directory — the OpenSim generators are
+# documented against `/tmp/osim-venv`. The rule is about the path, not the tool.)
 #
 # Nothing has leaked: `git ls-files .venv` is empty today. This is preventive,
 # and the precedent is `mutants.out/` below — 164 files of untracked local

@@ -445,8 +445,11 @@ docs(mesh-types): add examples to all public functions
 Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
 dual licensed under `MIT OR Apache-2.0`, without any additional terms or
-conditions. (Same wording as the README's Contribution section — these two must
-not drift.)
+conditions.
+
+These are the same inbound TERMS as the README's Contribution section, which says
+"dual licensed as above" because it sits under the list of the two licenses. The
+wording differs only where it has to; the grant must not.
 
 ---
 
