@@ -31,6 +31,13 @@ mod complete;
 mod coverage;
 mod coverage_run;
 mod grade;
+// The binary never calls these — `xtask/build.rs` does, via `include!`. They live
+// under src/ purely so they are COMPILED INTO A CRATE WITH A TEST TARGET: a build
+// script has none, and while this logic lived only in build.rs a mutation survey
+// found that gutting the hook-ownership check passed the entire suite. The module is
+// carried here for its tests, so dead_code is expected rather than papered over.
+#[allow(dead_code)]
+mod hook_install;
 mod licensed_gates;
 mod pr_scope;
 mod release_gates;

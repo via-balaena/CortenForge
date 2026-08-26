@@ -394,6 +394,17 @@ mod hook_tests {
     /// walked straight through the guard. Measured before the `:(icase)` fix.
     #[test]
     fn an_uppercase_mesh_extension_blocks_too() {
+        // ALL FIVE uppercased. Testing only SCAN.STL left four `:(icase)` entries
+        // uncovered — dropping `:(icase)` from `*.mtl` alone was a mutant the suite
+        // survived, measured.
+        for name in ["SCAN.STL", "SCAN.OBJ", "SCAN.PLY", "SCAN.3MF", "SCAN.MTL"] {
+            let (ok, out) = run_hook(name, false);
+            assert!(!ok, "{name} did not block the commit; output:\n{out}");
+            assert!(
+                out.contains("Refusing to commit mesh/scan binaries"),
+                "{name} was NOT blocked — is :(icase) still on every entry?:\n{out}"
+            );
+        }
         let (ok, out) = run_hook("SCAN.STL", false);
         assert!(!ok, "SCAN.STL did not block the commit");
         assert!(
