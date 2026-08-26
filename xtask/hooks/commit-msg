@@ -1,0 +1,51 @@
+#!/bin/sh
+# CortenForge Commit Message Hook
+# Auto-installed by: xtask (build.rs on build, and `cargo xtask setup`)
+#
+# ⚠ SINGLE SOURCE OF TRUTH: xtask/hooks/ — edit THAT file, never a copy.
+#   This text used to be duplicated as a const in BOTH xtask/build.rs and
+#   xtask/src/setup.rs, kept in sync by a comment. It drifted: #709 added the
+#   scan/mesh guard to the build.rs copy only, so `cargo xtask setup` installed
+#   a hook without it — and build.rs then refused to overwrite that hook because
+#   it did not carry build.rs's own sentinel. Both installers now read this file.
+#
+# Enforces conventional commit format for automated changelog generation.
+# See docs/INFRASTRUCTURE.md for details.
+
+commit_msg=$(cat "$1")
+
+# Allow merge commits
+if echo "$commit_msg" | grep -qE "^Merge "; then
+    exit 0
+fi
+
+# Allow revert commits
+if echo "$commit_msg" | grep -qE "^Revert "; then
+    exit 0
+fi
+
+# Conventional commit pattern:
+# type(scope): description
+# type: description
+#
+# Types: feat, fix, refactor, test, docs, chore, perf, ci, build, style
+pattern="^(feat|fix|refactor|test|docs|chore|perf|ci|build|style)(\([a-z0-9-]+\))?: .+"
+
+if ! echo "$commit_msg" | head -1 | grep -qE "$pattern"; then
+    echo "✗ Commit message does not follow conventional commits format."
+    echo ""
+    echo "Expected format:"
+    echo "  <type>(<scope>): <description>"
+    echo ""
+    echo "Types: feat, fix, refactor, test, docs, chore, perf, ci, build, style"
+    echo ""
+    echo "Examples:"
+    echo "  feat(mesh-repair): add hole-filling edge case detection"
+    echo "  fix(mesh-io): handle malformed STL headers gracefully"
+    echo "  docs: update README with new examples"
+    echo "  refactor(mesh-repair): extract hole-filling into separate module"
+    echo ""
+    echo "Your message:"
+    echo "  $(head -1 "$1")"
+    exit 1
+fi

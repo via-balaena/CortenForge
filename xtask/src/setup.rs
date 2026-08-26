@@ -26,133 +26,13 @@ use std::path::{Path, PathBuf};
 /// This runs before every commit to catch issues early.
 /// Faster than CI, provides immediate feedback.
 /// Only lints crates with staged Rust changes (not the full workspace).
-const PRE_COMMIT_HOOK: &str = r#"#!/bin/sh
-# CortenForge Pre-Commit Hook
-# Installed by: cargo xtask setup
-#
-# This hook enforces quality standards before commits reach CI.
-# See docs/INFRASTRUCTURE.md for the full constraint specification.
-#
-# Performance: only lints crates with staged changes (not the full workspace).
-
-set -e
-
-echo "╔═══════════════════════════════════════════════════════════════╗"
-echo "║                  CortenForge Pre-Commit Check                  ║"
-echo "╚═══════════════════════════════════════════════════════════════╝"
-
-# Format check (fast — only checks already-formatted files, <1s)
-echo "→ Checking formatting..."
-if ! cargo fmt --all -- --check 2>/dev/null; then
-    echo "✗ Formatting check failed. Run: cargo fmt --all"
-    exit 1
-fi
-echo "✓ Formatting OK"
-
-# Determine which crates have staged Rust or Cargo.toml changes.
-# Pathspec `'*Cargo.toml'` matches nested manifests (sim/L0/**/Cargo.toml,
-# examples/**/Cargo.toml, etc.) as well as the workspace root. A plain
-# `'Cargo.toml'` pathspec would only match the workspace root.
-staged_rs_files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.rs' '*Cargo.toml')
-
-if [ -z "$staged_rs_files" ]; then
-    echo "→ No Rust/Cargo files staged — skipping clippy."
-else
-    # Extract crate names from staged file paths.
-    # Walk up from each file to find nearest Cargo.toml, read [package] name.
-    crates=""
-    for file in $staged_rs_files; do
-        dir=$(dirname "$file")
-        while [ "$dir" != "." ]; do
-            if [ -f "$dir/Cargo.toml" ] && grep -q '^\[package\]' "$dir/Cargo.toml"; then
-                name=$(sed -n '/^\[package\]/,/^\[/{s/^name *= *"\(.*\)"/\1/p;}' "$dir/Cargo.toml")
-                if [ -n "$name" ]; then
-                    crates="$crates $name"
-                fi
-                break
-            fi
-            dir=$(dirname "$dir")
-        done
-    done
-
-    # Deduplicate
-    crates=$(echo "$crates" | tr ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/ *$//')
-
-    if [ -z "$crates" ]; then
-        echo "→ Staged Rust files don't belong to a workspace crate — skipping clippy."
-    else
-        echo "→ Running clippy on changed crates: $crates"
-        clippy_args=""
-        for crate in $crates; do
-            clippy_args="$clippy_args -p $crate"
-        done
-        if ! cargo clippy $clippy_args --all-targets --all-features -- -D warnings 2>/dev/null; then
-            echo "✗ Clippy check failed. Fix errors before committing."
-            exit 1
-        fi
-        echo "✓ Clippy OK"
-    fi
-fi
-
-# Note: unwrap/expect enforcement is handled by clippy via workspace lints
-# (clippy::unwrap_used = "deny" in Cargo.toml)
-# The grep-based scan was removed as it caught doc examples falsely.
-
-echo ""
-echo "╔═══════════════════════════════════════════════════════════════╗"
-echo "║                    Pre-commit checks passed                    ║"
-echo "╚═══════════════════════════════════════════════════════════════╝"
-"#;
+const PRE_COMMIT_HOOK: &str = include_str!("../hooks/pre-commit");
 
 /// Commit message hook content
 ///
 /// Enforces conventional commit format:
 /// `<type>(<scope>): <description>`
-const COMMIT_MSG_HOOK: &str = r#"#!/bin/sh
-# CortenForge Commit Message Hook
-# Installed by: cargo xtask setup
-#
-# Enforces conventional commit format for automated changelog generation.
-# See docs/INFRASTRUCTURE.md for details.
-
-commit_msg=$(cat "$1")
-
-# Allow merge commits
-if echo "$commit_msg" | grep -qE "^Merge "; then
-    exit 0
-fi
-
-# Allow revert commits
-if echo "$commit_msg" | grep -qE "^Revert "; then
-    exit 0
-fi
-
-# Conventional commit pattern:
-# type(scope): description
-# type: description
-#
-# Types: feat, fix, refactor, test, docs, chore, perf, ci, build, style
-pattern="^(feat|fix|refactor|test|docs|chore|perf|ci|build|style)(\([a-z0-9-]+\))?: .+"
-
-if ! echo "$commit_msg" | head -1 | grep -qE "$pattern"; then
-    echo "✗ Commit message does not follow conventional commits format."
-    echo ""
-    echo "Expected format:"
-    echo "  <type>(<scope>): <description>"
-    echo ""
-    echo "Types: feat, fix, refactor, test, docs, chore, perf, ci, build, style"
-    echo ""
-    echo "Examples:"
-    echo "  feat(mesh-repair): add hole-filling edge case detection"
-    echo "  fix(mesh-io): handle malformed STL headers gracefully"
-    echo "  docs: update README with new examples"
-    echo "  refactor(mesh-repair): extract hole-filling into separate module"
-    echo ""
-    echo "Your message:"
-    echo "  $(head -1 "$1")"
-    exit 1
-fi
-"#;
+const COMMIT_MSG_HOOK: &str = include_str!("../hooks/commit-msg");
 
 /// Run the setup command
 pub fn run() -> Result<()> {
@@ -400,4 +280,58 @@ pub fn uninstall() -> Result<()> {
 
     println!("{}", "Hooks removed.".bright_green());
     Ok(())
+}
+
+#[cfg(test)]
+mod hook_tests {
+    use super::{COMMIT_MSG_HOOK, PRE_COMMIT_HOOK};
+
+    /// The scan/mesh guard must actually be in the hook that gets installed.
+    ///
+    /// This is the gate that #709 needed and did not have. That PR is titled
+    /// "make 'no scan or mesh binaries' a hard rule, **enforced twice**" and added
+    /// the guard to `xtask/build.rs`'s copy of the hook only — `setup.rs` held a
+    /// second, independent copy and never received it. So `cargo xtask setup`
+    /// installed a hook with no guard, and the rule was enforced ONCE on every
+    /// machine set up that way. Nothing failed, because nothing checked.
+    ///
+    /// Both consts now `include_str!` the same file, so this cannot drift again —
+    /// but the assertion stays, because "they read the same file" is a property of
+    /// today's code and this is a property of the SHIPPED ARTIFACT.
+    #[test]
+    fn the_installed_pre_commit_hook_carries_the_scan_mesh_guard() {
+        for needle in ["CF_ALLOW_MESH", "*.stl", "*.obj", "*.ply", "*.3mf", "*.mtl"] {
+            assert!(
+                PRE_COMMIT_HOOK.contains(needle),
+                "the pre-commit hook shipped to .git/hooks is missing {needle:?}. \
+                 The repository is PUBLIC and the casting pipeline's inputs are \
+                 anatomical scans of a real person; .gitignore cannot stop \
+                 `git add -f`, which is the hole this guard exists to close."
+            );
+        }
+    }
+
+    /// The updater in `build.rs` recognises a hook as ours by its TITLE line, so
+    /// that a hook written by either installer gets healed on the next build. If a
+    /// title changes without `build.rs`'s marker changing with it, every existing
+    /// checkout silently stops receiving hook updates — which is exactly the
+    /// failure this arc fixed, and it is invisible until something else breaks.
+    #[test]
+    fn hook_titles_match_the_markers_the_updater_looks_for() {
+        assert!(
+            PRE_COMMIT_HOOK.contains("CortenForge Pre-Commit Hook"),
+            "pre-commit title changed; update the marker in xtask/build.rs::main"
+        );
+        assert!(
+            COMMIT_MSG_HOOK.contains("CortenForge Commit Message Hook"),
+            "commit-msg title changed; update the marker in xtask/build.rs::main"
+        );
+    }
+
+    /// Both hooks must be runnable `sh`, since git executes them directly.
+    #[test]
+    fn hooks_start_with_a_posix_sh_shebang() {
+        assert!(PRE_COMMIT_HOOK.starts_with("#!/bin/sh\n"));
+        assert!(COMMIT_MSG_HOOK.starts_with("#!/bin/sh\n"));
+    }
 }

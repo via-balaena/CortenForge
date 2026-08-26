@@ -8,157 +8,10 @@ use std::fs;
 use std::path::Path;
 
 /// Pre-commit hook content (must match setup.rs)
-const PRE_COMMIT_HOOK: &str = r#"#!/bin/sh
-# CortenForge Pre-Commit Hook
-# Auto-installed by: xtask build.rs
-#
-# This hook enforces quality standards before commits reach CI.
-# See docs/INFRASTRUCTURE.md for the full constraint specification.
-#
-# Performance: only lints crates with staged changes (not the full workspace).
-
-set -e
-
-echo "╔═══════════════════════════════════════════════════════════════╗"
-echo "║                  CortenForge Pre-Commit Check                  ║"
-echo "╚═══════════════════════════════════════════════════════════════╝"
-
-# ── Scan/mesh guard — FIRST, because it is a safety rule, not a quality one ──
-# This repository is PUBLIC, and the casting pipeline's inputs are anatomical scans
-# of a real person. They live outside the repo by design: reached via
-# CF_CAST_ITER1_DIR (design/cf-cast/tests/iter1_gate.rs, #[ignore]d) or regenerated
-# by cf-cast. Zero meshes have ever been tracked here — but that was habit, not a
-# rule. Verified 2026-07-29: `git add` accepted a 29 MB anatomical scan without
-# complaint, and once such a blob is pushed it is in the public history permanently.
-#
-# .gitignore now blocks these extensions; this check catches `git add -f`, which
-# .gitignore cannot. Both layers, because the cost of one miss is unrecoverable.
-#
-# Escape hatch for a genuinely non-personal fixture mesh:
-#     CF_ALLOW_MESH=1 git commit ...
-echo "→ Checking for scan/mesh binaries..."
-staged_meshes=$(git diff --cached --name-only --diff-filter=ACMR \
-    -- '*.stl' '*.obj' '*.ply' '*.3mf' '*.mtl' || true)
-if [ -n "$staged_meshes" ] && [ "${CF_ALLOW_MESH:-0}" != "1" ]; then
-    echo "✗ Refusing to commit mesh/scan binaries to a PUBLIC repository:"
-    echo "$staged_meshes" | sed 's/^/      /'
-    echo ""
-    echo "  Scan inputs are anatomical and must stay outside this repo (~/scans)."
-    echo "  Generated meshes are reproducible and have no browse value."
-    echo "  If this really is a non-personal fixture:  CF_ALLOW_MESH=1 git commit ..."
-    exit 1
-fi
-echo "✓ No scan/mesh binaries staged"
-
-# Format check (fast — only checks already-formatted files, <1s)
-echo "→ Checking formatting..."
-if ! cargo fmt --all -- --check 2>/dev/null; then
-    echo "✗ Formatting check failed. Run: cargo fmt --all"
-    exit 1
-fi
-echo "✓ Formatting OK"
-
-# Determine which crates have staged Rust or Cargo.toml changes.
-# Pathspec `'*Cargo.toml'` matches nested manifests (sim/L0/**/Cargo.toml,
-# examples/**/Cargo.toml, etc.) as well as the workspace root. A plain
-# `'Cargo.toml'` pathspec would only match the workspace root.
-staged_rs_files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.rs' '*Cargo.toml')
-
-if [ -z "$staged_rs_files" ]; then
-    echo "→ No Rust/Cargo files staged — skipping clippy."
-else
-    # Extract crate names from staged file paths.
-    # Walk up from each file to find nearest Cargo.toml, read [package] name.
-    crates=""
-    for file in $staged_rs_files; do
-        dir=$(dirname "$file")
-        while [ "$dir" != "." ]; do
-            if [ -f "$dir/Cargo.toml" ] && grep -q '^\[package\]' "$dir/Cargo.toml"; then
-                name=$(sed -n '/^\[package\]/,/^\[/{s/^name *= *"\(.*\)"/\1/p;}' "$dir/Cargo.toml")
-                if [ -n "$name" ]; then
-                    crates="$crates $name"
-                fi
-                break
-            fi
-            dir=$(dirname "$dir")
-        done
-    done
-
-    # Deduplicate
-    crates=$(echo "$crates" | tr ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/ *$//')
-
-    if [ -z "$crates" ]; then
-        echo "→ Staged Rust files don't belong to a workspace crate — skipping clippy."
-    else
-        echo "→ Running clippy on changed crates: $crates"
-        clippy_args=""
-        for crate in $crates; do
-            clippy_args="$clippy_args -p $crate"
-        done
-        if ! cargo clippy $clippy_args --all-targets --all-features -- -D warnings 2>/dev/null; then
-            echo "✗ Clippy check failed. Fix errors before committing."
-            exit 1
-        fi
-        echo "✓ Clippy OK"
-    fi
-fi
-
-# Note: unwrap/expect enforcement is handled by clippy via workspace lints
-# (clippy::unwrap_used = "deny" in Cargo.toml)
-# The grep-based scan was removed as it caught doc examples falsely.
-
-echo ""
-echo "╔═══════════════════════════════════════════════════════════════╗"
-echo "║                    Pre-commit checks passed                    ║"
-echo "╚═══════════════════════════════════════════════════════════════╝"
-"#;
+const PRE_COMMIT_HOOK: &str = include_str!("hooks/pre-commit");
 
 /// Commit message hook content (must match setup.rs)
-const COMMIT_MSG_HOOK: &str = r#"#!/bin/sh
-# CortenForge Commit Message Hook
-# Auto-installed by: xtask build.rs
-#
-# Enforces conventional commit format for automated changelog generation.
-# See docs/INFRASTRUCTURE.md for details.
-
-commit_msg=$(cat "$1")
-
-# Allow merge commits
-if echo "$commit_msg" | grep -qE "^Merge "; then
-    exit 0
-fi
-
-# Allow revert commits
-if echo "$commit_msg" | grep -qE "^Revert "; then
-    exit 0
-fi
-
-# Conventional commit pattern:
-# type(scope): description
-# type: description
-#
-# Types: feat, fix, refactor, test, docs, chore, perf, ci, build, style
-pattern="^(feat|fix|refactor|test|docs|chore|perf|ci|build|style)(\([a-z0-9-]+\))?: .+"
-
-if ! echo "$commit_msg" | head -1 | grep -qE "$pattern"; then
-    echo "✗ Commit message does not follow conventional commits format."
-    echo ""
-    echo "Expected format:"
-    echo "  <type>(<scope>): <description>"
-    echo ""
-    echo "Types: feat, fix, refactor, test, docs, chore, perf, ci, build, style"
-    echo ""
-    echo "Examples:"
-    echo "  feat(mesh-repair): add hole-filling edge case detection"
-    echo "  fix(mesh-io): handle malformed STL headers gracefully"
-    echo "  docs: update README with new examples"
-    echo "  refactor(mesh-repair): extract hole-filling into separate module"
-    echo ""
-    echo "Your message:"
-    echo "  $(head -1 "$1")"
-    exit 1
-fi
-"#;
+const COMMIT_MSG_HOOK: &str = include_str!("hooks/commit-msg");
 
 fn main() {
     // Skip in CI environments
@@ -178,25 +31,45 @@ fn main() {
 
     // Install pre-commit hook if missing or outdated
     let pre_commit_path = hooks_dir.join("pre-commit");
-    install_hook_if_needed(&pre_commit_path, PRE_COMMIT_HOOK, "pre-commit");
+    install_hook_if_needed(
+        &pre_commit_path,
+        PRE_COMMIT_HOOK,
+        "pre-commit",
+        "CortenForge Pre-Commit Hook",
+    );
 
     // Install commit-msg hook if missing or outdated
     let commit_msg_path = hooks_dir.join("commit-msg");
-    install_hook_if_needed(&commit_msg_path, COMMIT_MSG_HOOK, "commit-msg");
+    install_hook_if_needed(
+        &commit_msg_path,
+        COMMIT_MSG_HOOK,
+        "commit-msg",
+        "CortenForge Commit Message Hook",
+    );
 
     // Tell cargo to rerun if hooks are deleted
     println!("cargo:rerun-if-changed=../.git/hooks/pre-commit");
+    // The hook text itself is now a tracked file, so edits to it must
+    // retrigger this build script or the change never reaches .git/hooks.
+    println!("cargo:rerun-if-changed=hooks/pre-commit");
+    println!("cargo:rerun-if-changed=hooks/commit-msg");
     println!("cargo:rerun-if-changed=../.git/hooks/commit-msg");
 }
 
-fn install_hook_if_needed(path: &Path, content: &str, name: &str) {
+fn install_hook_if_needed(path: &Path, content: &str, name: &str, marker: &str) {
     let needs_install = if path.exists() {
         match fs::read_to_string(path) {
-            // Only overwrite hooks we own (contain our sentinel).
-            // Replace if content differs (hook was updated in source).
-            Ok(existing) if existing.contains("Auto-installed by: xtask build.rs") => {
-                existing != content
-            }
+            // Overwrite any hook that is OURS, by either installer's stamp.
+            //
+            // ⚠ This used to match only "Auto-installed by: xtask build.rs", and that
+            // single line is why the scan/mesh guard never reached most checkouts.
+            // `cargo xtask setup` wrote a hook stamped "Installed by: cargo xtask
+            // setup"; this function then classified it as somebody else's file and
+            // refused to touch it, FOREVER. #709 added the mesh guard to the build.rs
+            // copy only, so every machine set up via `xtask setup` kept a hook with no
+            // guard and no way to ever get one. Matching the title line instead heals
+            // those checkouts on the next build, because both stamps carry it.
+            Ok(existing) if existing.contains(marker) => existing != content,
             // Hook exists but isn't ours — don't overwrite.
             Ok(_) => false,
             Err(_) => true,
