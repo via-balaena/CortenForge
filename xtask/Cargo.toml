@@ -3,7 +3,9 @@ name = "xtask"
 version = "0.1.0"
 edition = "2021"
 description = "Development automation and quality enforcement for CortenForge"
-license = "Apache-2.0"
+# Inherited so the license can never drift from the workspace. `version` and
+# `edition` above are deliberately NOT inherited; the license is not.
+license.workspace = true
 publish = false
 
 # This is a dev-only tool, not published to crates.io

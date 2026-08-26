@@ -24,7 +24,7 @@ all-features = true
 
 [licenses]
 version = 2
-# We're Apache-2.0, so we accept permissive licenses.
+# We're `MIT OR Apache-2.0`, so we accept permissive licenses.
 # In v2 format, all unlicensed and copyleft crates are denied by default.
 allow = [
     "MIT",

@@ -442,7 +442,8 @@ docs(mesh-types): add examples to all public functions
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under Apache-2.0.
+By contributing, you agree that your contributions will be dual licensed under
+`MIT OR Apache-2.0`, without any additional terms or conditions.
 
 ---
 

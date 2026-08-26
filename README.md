@@ -3,7 +3,7 @@
 > A software development kit for the mechatronics and simulation space — composable Rust components for the full path from a physical scan to a simulated, designed, optimized, and manufactured system, and back.
 
 [![Quality Gate](https://github.com/via-balaena/CortenForge/actions/workflows/quality-gate.yml/badge.svg)](https://github.com/via-balaena/CortenForge/actions/workflows/quality-gate.yml)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![Built with Rust](https://img.shields.io/badge/built%20with-Rust-dea584?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 
 ## What it is
@@ -14,7 +14,7 @@ The kit is the product. To prove the components compose end to end, our capstone
 
 ## ⚠️ Disclaimer
 
-CortenForge — including the **Cendrillon** application — is general-purpose research and engineering software, provided **AS IS** under the [Apache License 2.0](LICENSE), **without warranty of any kind**. **It is not a medical device** and makes no medical, therapeutic, or health claims. You use it — and make and use anything created with it — **entirely at your own risk**; you alone are responsible for choosing body-safe materials and for proper mixing, curing, and hygiene, and should always follow the manufacturer's safety data sheet (SDS). See **[DISCLAIMER.md](./DISCLAIMER.md)** for the full text.
+CortenForge — including the **Cendrillon** application — is general-purpose research and engineering software, provided **AS IS** under [MIT](./LICENSE-MIT) or [Apache-2.0](./LICENSE-APACHE) at your option, **without warranty of any kind**. **It is not a medical device** and makes no medical, therapeutic, or health claims. You use it — and make and use anything created with it — **entirely at your own risk**; you alone are responsible for choosing body-safe materials and for proper mixing, curing, and hygiene, and should always follow the manufacturer's safety data sheet (SDS). See **[DISCLAIMER.md](./DISCLAIMER.md)** for the full text.
 
 ## Stack
 
@@ -81,4 +81,17 @@ cargo xtask grade <crate-name>      # run the quality gate on a single crate
 
 ## License
 
-Apache-2.0
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](./LICENSE-APACHE) or
+  <http://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](./LICENSE-MIT) or
+  <http://opensource.org/licenses/MIT>)
+
+at your option.
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
+dual licensed as above, without any additional terms or conditions.
