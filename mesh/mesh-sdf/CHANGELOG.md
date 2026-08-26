@@ -9,10 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **License is now `MIT OR Apache-2.0`** (was `Apache-2.0`). The crate inherits
-  the workspace declaration (`license.workspace = true`); the dual offer adds the
-  MIT option alongside Apache-2.0, at the licensee's choice.
-
 - **Minimum supported Rust version is now 1.92** (was 1.87). The crate inherits
   the workspace-wide declaration, and that floor is set by the locked dependency
   graph as a whole — `wgpu 28.0.0` requires 1.92 — not by anything this crate
