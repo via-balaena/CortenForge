@@ -326,8 +326,15 @@ mod hook_tests {
         std::fs::write(&hook, PRE_COMMIT_HOOK).expect("hook");
         let mut cmd = Command::new("sh");
         cmd.arg(&hook).current_dir(&dir);
+        // env_remove is not optional. Without it the child INHERITS an ambient
+        // CF_ALLOW_MESH, and a developer who exports it — i.e. exactly the person
+        // who works with meshes — sees the two blocking tests fail on their machine
+        // and nobody else's. Measured: `CF_ALLOW_MESH=1 cargo test -p xtask` failed
+        // 2 of 5 before this line existed.
         if allow_mesh {
             cmd.env("CF_ALLOW_MESH", "1");
+        } else {
+            cmd.env_remove("CF_ALLOW_MESH");
         }
         let out = cmd.output().expect("run hook");
         let combined = format!(
@@ -346,13 +353,25 @@ mod hook_tests {
     /// the only thing that can, and #709 shipped it to one of the two installers
     /// with nothing checking that it worked.
     #[test]
-    fn a_staged_mesh_blocks_the_commit() {
-        let (ok, out) = run_hook("part.stl", false);
-        assert!(!ok, "hook exited 0 with a staged .stl; output:\n{out}");
-        assert!(
-            out.contains("Refusing to commit mesh/scan binaries"),
-            "hook failed, but not at the mesh guard; output:\n{out}"
-        );
+    fn every_guarded_extension_blocks_the_commit() {
+        // ALL FIVE. Testing only .stl left four of the guard's extensions with zero
+        // coverage, so dropping one from the pathspec was a change no test opposed.
+        for name in ["part.stl", "part.obj", "part.ply", "part.3mf", "part.mtl"] {
+            let (_, out) = run_hook(name, false);
+            assert!(
+                out.contains("Refusing to commit mesh/scan binaries"),
+                "{name} did not trip the mesh guard; output:\n{out}"
+            );
+            // ⚠ NOT `assert!(!ok)`. That is VACUOUS here: the throwaway repo has no
+            // Cargo.toml, so `cargo fmt --all --check` fails and the hook exits
+            // non-zero whatever the guard does. Assert instead that it exited AT the
+            // guard — the guard `exit 1`s immediately, so the formatting step must
+            // never be reached.
+            assert!(
+                !out.contains("Checking formatting"),
+                "{name} tripped the guard but did not exit there; output:\n{out}"
+            );
+        }
     }
 
     /// ...including UPPERCASE extensions. Git pathspecs are case-sensitive, so the
@@ -360,14 +379,14 @@ mod hook_tests {
     /// walked straight through the guard. Measured before the `:(icase)` fix.
     #[test]
     fn an_uppercase_mesh_extension_blocks_too() {
-        let (ok, out) = run_hook("SCAN.STL", false);
-        assert!(
-            !ok,
-            "SCAN.STL was NOT blocked — pathspec is case-sensitive again"
-        );
+        let (_, out) = run_hook("SCAN.STL", false);
         assert!(
             out.contains("Refusing to commit mesh/scan binaries"),
-            "{out}"
+            "SCAN.STL was NOT blocked — the pathspec is case-sensitive again:\n{out}"
+        );
+        assert!(
+            !out.contains("Checking formatting"),
+            "did not exit at the guard:\n{out}"
         );
     }
 
@@ -391,6 +410,30 @@ mod hook_tests {
         );
     }
 
+    /// `build.rs::title_of` takes the marker from line 2, so line 2 must actually
+    /// BE a title. It only requires that a second line exists — a hook whose line 2
+    /// were `set -e` would build fine and yield the marker "set -e", after which the
+    /// updater silently stops recognising its own hooks. That is this arc's original
+    /// bug, reintroduced one level up, and it would be invisible: no error, hooks
+    /// just quietly stop updating. Assert the shape the derivation depends on.
+    #[test]
+    fn line_two_of_each_hook_is_the_title_the_marker_is_derived_from() {
+        for (name, hook) in [
+            ("pre-commit", PRE_COMMIT_HOOK),
+            ("commit-msg", COMMIT_MSG_HOOK),
+        ] {
+            let line2 = hook.lines().nth(1).unwrap_or_else(|| {
+                panic!("{name} has no line 2; build.rs::title_of would panic the BUILD")
+            });
+            assert!(
+                line2.starts_with("# CortenForge"),
+                "{name} line 2 is {line2:?}, not a `# CortenForge ...` title. \
+                 build.rs::title_of would derive that as the ownership marker and \
+                 the updater would stop recognising its own hooks, silently."
+            );
+        }
+    }
+
     /// Both hooks must be runnable `sh`, since git executes them directly.
     #[test]
     fn hooks_start_with_a_posix_sh_shebang() {
@@ -400,8 +443,12 @@ mod hook_tests {
 
     /// No CR anywhere: `include_str!` embeds bytes verbatim (unlike a Rust string
     /// literal, which rustc normalises), so a CRLF checkout would ship `#!/bin/sh\r`
-    /// and every hook would fail to execute. `.gitattributes` pins these to LF;
-    /// this fails if that pin is ever removed.
+    /// and every hook would fail to execute. `.gitattributes` pins these to LF.
+    ///
+    /// ⚠ This does NOT prove the pin exists: it reads the bytes as checked out, so
+    /// on any LF checkout it passes whether or not `.gitattributes` is there. It
+    /// catches a CR committed into the file, and it fails on a CRLF checkout —
+    /// which is where it matters. The pin itself is guarded by review, not by this.
     #[test]
     fn hooks_contain_no_carriage_returns() {
         assert!(

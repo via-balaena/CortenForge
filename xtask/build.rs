@@ -64,10 +64,24 @@ fn main() {
 /// exists to fix, reintroduced one level up. Taking it from the text makes that
 /// impossible.
 fn title_of(hook: &str) -> &str {
-    hook.lines()
+    let title = hook
+        .lines()
         .nth(1)
-        .expect("hook must have a title line")
-        .trim_start_matches("# ")
+        .map(|l| l.trim_start_matches("# ").trim())
+        .unwrap_or_default();
+    // ⚠ VALIDATE, do not just extract. An empty marker is the dangerous case, and
+    // it is silent: `existing.contains("")` is UNCONDITIONALLY TRUE, so a hook whose
+    // line 2 was blank would make the installer treat EVERY hook as its own and
+    // clobber a developer's foreign hook — the exact inverse of what this check is
+    // for. Failing the build loudly is much better than that; a malformed hook file
+    // is a repository bug, not a user's problem.
+    assert!(
+        title.starts_with("CortenForge"),
+        "a hook in xtask/hooks/ has a malformed title line ({title:?}). Line 2 must \
+         read `# CortenForge ...` — the installer derives its ownership marker from \
+         it, and an empty marker matches every hook, including other people's."
+    );
+    title
 }
 
 fn install_hook_if_needed(path: &Path, content: &str, name: &str, marker: &str) {
