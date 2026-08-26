@@ -1124,7 +1124,7 @@ fn run_reduced(
                     }
                 }
                 iters += s.iter_count;
-                last_full_r = s.full_residual_norm;
+                last_full_r = s.full_residual_norm();
                 completed += 1;
                 q = s.q;
                 qdot = s.qdot;
@@ -2120,10 +2120,11 @@ struct Signals {
     /// `‖r_free‖ / tol` — the residual the Galerkin condition cannot see, in
     /// units of the tolerance the solve declares itself converged at. **ERROR.**
     ///
-    /// Free: `r_free` is already assembled at the convergence check and
-    /// [`ReducedStep::full_residual_norm`] already returns its norm. That
-    /// field's own docs state this study's question — "no useful bound on it is
-    /// known yet" — and `tol` is the natural unit, since `‖Φᵀr‖ < tol` is what
+    /// Free: `r_free` is already assembled at the convergence check and handed
+    /// straight out as [`ReducedStep::full_residual`], with
+    /// [`ReducedStep::full_residual_norm`] deriving its norm. That FIELD's own docs
+    /// state this study's question — "no useful bound on it is known yet" — and
+    /// `tol` is the natural unit, since `‖Φᵀr‖ < tol` is what
     /// the solve stopped on, so the ratio reads as *how many tolerances of
     /// residual the basis is blind to*. §2c measured `1.49e-4` against a `1e-10`
     /// tol in-sample at `r = 10`, i.e. `1.5e6`, so the scale is large and the
@@ -2291,7 +2292,7 @@ impl Probe<'_> {
     fn read(&self, s: &ReducedStep, x: &[f64], centre: Vec3) -> (Signals, usize) {
         let active = active_vertices(x, centre, self.d_hat);
         let reading = Signals {
-            residual_excess: s.full_residual_norm / self.tol,
+            residual_excess: s.full_residual_norm() / self.tol,
             envelope_excursion: envelope_excursion(&s.q, &self.envelope),
             snapshot_distance: nearest_training_distance(&s.q, &self.train_q) / self.cloud_radius,
             active_novelty: active_novelty(&active, self.train_active),

@@ -33,6 +33,15 @@
 //! residual orthogonal to the basis, **not** zero, so the reduced state leaves a large
 //! full-order residual while its displacement error stays under ~1 %. That is expected,
 //! and it is why displacement — not residual — is the accuracy metric here.
+//!
+//! ## The second gate: what a converged step HANDS BACK
+//!
+//! [`ReducedStep`](sim_soft::solver::backward_euler::reduced::ReducedStep) is R1.1's
+//! output type, so its contract is gated here too —
+//! `a_converged_step_hands_back_the_residual_it_converged_on`. That gate is about the
+//! API surface rather than about accuracy, so it does **not** need the 16x16x6 beam and
+//! is not release-only: it runs on `rig_at(4, 4, 2)` — 150 free DOF, `r = 8`, 0.04 s —
+//! in an ordinary debug `cargo test`.
 
 #![allow(
     clippy::expect_used,
@@ -79,6 +88,8 @@ const STEPS: usize = 5;
 /// Retained modes. Inside the plan's ceiling of `min(n_free / 50, 200)`, which is 104
 /// for this fixture's 5 202 free DOF; `r = 40` is a 130x reduction.
 const R_MODES: usize = 40;
+/// Newton convergence tolerance on `‖Φᵀr‖`.
+const TOL: f64 = 1.0e-6;
 struct Rig {
     solver: CpuTet4NHSolver<HandBuiltTetMesh>,
     x_rest: Vec<f64>,
@@ -97,8 +108,15 @@ struct Traj {
 }
 
 fn rig() -> Rig {
+    rig_at(16, 16, 6)
+}
+
+/// `rig` at an explicit mesh resolution, so the residual gate can take a coarse one.
+/// Everything except the element counts is shared, which is the point: the two fixtures
+/// must not drift into different physics.
+fn rig_at(nx: usize, ny: usize, nz: usize) -> Rig {
     let field = MaterialField::uniform(MU, LAMBDA);
-    let mesh = HandBuiltTetMesh::cantilever_bilayer_beam(16, 16, 6, LX, LY, H, &field);
+    let mesh = HandBuiltTetMesh::cantilever_bilayer_beam(nx, ny, nz, LX, LY, H, &field);
     let n_dof = 3 * mesh.n_vertices();
     let mut x_rest = vec![0.0; n_dof];
     for (c, p) in x_rest.chunks_exact_mut(3).zip(mesh.positions()) {
@@ -118,7 +136,7 @@ fn rig() -> Rig {
     cfg.dt = DT;
     cfg.density = DENSITY;
     cfg.max_newton_iter = 80;
-    cfg.tol = 1.0e-6;
+    cfg.tol = TOL;
     Rig {
         solver: CpuTet4NHSolver::new(Tet4, mesh, NullContact, cfg, bc),
         x_rest,
@@ -286,5 +304,136 @@ fn reduced_newton_tracks_the_basis_projection_floor() {
         "Galerkin overhead {worst_ratio:.2}x exceeds the {MAX_GALERKIN_OVERHEAD:.1}x gate. \
          The reduced SOLVE, not the basis, is the problem: absolute error was \
          {worst_total:.3e} against a basis floor it should be tracking."
+    );
+}
+
+// ── §4c rung 2's prerequisite: what a converged step HANDS BACK ───────────────
+
+/// Training trajectories for the residual gate. It asserts a property of the value
+/// `step` returns, not an accuracy figure, so the ensemble only has to be rich enough
+/// to fit a basis at all — `N_TRAIN`'s 48 would buy nothing here and cost seconds.
+const COARSE_TRAIN: usize = 8;
+/// Retained modes for the residual gate. Small on purpose: a *truncated* basis is what
+/// makes the full residual survive convergence, which is the regime the gate reads.
+const COARSE_MODES: usize = 8;
+
+/// A converged step hands back the residual it converged **on** — not a stale iterate.
+///
+/// ## Why this is gated at all
+///
+/// Recon §4c rung 1 closed on two impossibility results: a DOMAIN signal cannot read
+/// accuracy (rank-independence and accuracy-sensitivity are mutually exclusive, §2n),
+/// and the ERROR signal that can — `‖r_free‖` — is the full element sweep ECSW exists
+/// to remove (§2m). What that leaves untried is a **spatially resolved** indicator, and
+/// `ReducedStep` used to expose residual NORMS only, so it could not be built at all.
+/// `full_residual` is the vector it needs. This gate pins the three things a consumer
+/// of that vector has to be able to rely on, and prints the two numbers that say which
+/// rung-2 candidate class is worth building — see the trailing `println!`.
+///
+/// ## ★ The load-bearing assertion is the RE-PROJECTION
+///
+/// Length and non-vanishing would both still pass if the solve stored `r_free` from the
+/// **wrong Newton iterate** — every iterate has the same length, and `full_residual_norm`
+/// is derived from whatever was stored, so it cannot disagree with it. Re-projecting the
+/// vector that was actually handed out, and comparing against the separately-recorded
+/// `projected_residual_norm`, is what ties it to the iterate the solve stopped on. The
+/// oracle disagrees with the SUT precisely on the defect class that matters.
+#[test]
+fn a_converged_step_hands_back_the_residual_it_converged_on() {
+    let r = rig_at(4, 4, 2);
+    let fd = r.solver.free_dof_indices().to_vec();
+    let mass = r.solver.mass_per_free_dof();
+
+    let mut train = SnapshotSet::new(fd.len());
+    for k in 0..COARSE_TRAIN as u64 {
+        for x in &run_full(&r, sample(k), STEPS).0 {
+            train.push(&SnapshotSet::free_displacement(x, &r.x_rest, &fd));
+        }
+    }
+    let basis = PodBasis::fit(&train, Inner::Mass, &mass, 1.0, COARSE_MODES).expect("basis fits");
+    let reduced = ReducedNewtonSolver::new(&r.solver, &basis, &r.x_rest);
+
+    // One step from rest, on a held-out trajectory at full ramp.
+    let t = sample(900);
+    let mut th = vec![0.0; 3 * r.loaded.len()];
+    for (i, &vid) in r.loaded.iter().enumerate() {
+        let (px, py) = (r.x_rest[3 * vid as usize], r.x_rest[3 * vid as usize + 1]);
+        let d2 = (px - t.cx).powi(2) + (py - t.cy).powi(2);
+        th[3 * i + 2] = -t.p0 * (-d2 / (2.0 * t.w * t.w)).exp();
+    }
+    let q0 = vec![0.0; basis.n_modes()];
+    let step = reduced
+        .step(&q0, &q0, &Tensor::from_slice(&th, &[th.len()]), DT)
+        .expect("the coarse reduced step converges");
+
+    // (1) LAYOUT. A per-region indicator maps entries back through `free_dof_indices`,
+    // so a length that disagrees with the basis would mis-attribute every entry.
+    assert!(
+        step.full_residual.len() == basis.n_free(),
+        "full_residual has {} entries, expected n_free = {}",
+        step.full_residual.len(),
+        basis.n_free(),
+    );
+
+    // (2) IT DOES NOT VANISH. A Galerkin solve makes the residual orthogonal to the
+    // basis, not zero — that is the documented fact the whole §4c line rests on, and a
+    // vector of zeros here would mean the projected residual was handed out by mistake.
+    let full_norm = step.full_residual_norm();
+    assert!(
+        full_norm.is_finite() && full_norm > 0.0,
+        "full residual norm is {full_norm}; a converged Galerkin step leaves a real \
+         out-of-span residual, so zero or non-finite means the wrong vector was stored"
+    );
+
+    // (3) IT IS THE CONVERGED ITERATE. Re-projecting the vector that was handed out
+    // must reproduce the reported projected norm: same function, same input, same
+    // summation order as the solve's own convergence check, so this is bit-exact and
+    // takes no tolerance.
+    //
+    // ⚠ There is deliberately NO `projected_residual_norm < TOL` assertion beside it.
+    // The solve constructs a `ReducedStep` only from inside `if proj_norm < tol`, so
+    // that check cannot fail for the reason it would claim to — it is convergence
+    // restated, not tested.
+    let reprojected = basis.project_covector(&step.full_residual);
+    let reprojected_norm = reprojected.iter().map(|a| a * a).sum::<f64>().sqrt();
+    assert!(
+        reprojected_norm.to_bits() == step.projected_residual_norm.to_bits(),
+        "re-projecting the handed-out full_residual gives {reprojected_norm:e}, but the \
+         step reports projected_residual_norm = {:e}. They are computed by the same \
+         function from the same vector, so a difference means full_residual came from a \
+         DIFFERENT Newton iterate than the norm did.",
+        step.projected_residual_norm,
+    );
+    // The two numbers that decide which rung-2 candidate class is worth building.
+    //
+    // PER-MODE is dead on arrival and this is where that shows: `Φᵀr_free` is exactly
+    // what the solve drove below `tol`, so its components carry no signal about which
+    // mode is at fault — by construction, not by bad luck. PER-REGION is what survives:
+    // the out-of-span residual is strongly localized, so grouping `r_free` by region
+    // has something to read. Neither is asserted — one fixture at one step is a
+    // direction, not a law — but both are printed so a second fixture can check them.
+    let per_mode_max = basis
+        .project_covector(&step.full_residual)
+        .iter()
+        .fold(0.0_f64, |m, v| m.max(v.abs()));
+    let per_dof_max = step
+        .full_residual
+        .iter()
+        .fold(0.0_f64, |m, v| m.max(v.abs()));
+    let mut mag: Vec<f64> = step.full_residual.iter().map(|v| v.abs()).collect();
+    mag.sort_unstable_by(|a, b| b.total_cmp(a));
+    let decile = mag.iter().take(mag.len() / 10).sum::<f64>() / mag.iter().sum::<f64>();
+    println!(
+        "rung-2 prerequisite: n_free={} r={} iters={} ‖Φᵀr‖={:e} ‖r_free‖={:e} ratio={:e}\n  \
+         per-mode: max |(Φᵀr)_i| = {per_mode_max:e} vs per-DOF max |r_free| = \
+         {per_dof_max:e} — no signal\n  \
+         per-region: top decile of DOFs carries {:.1}% of ‖r_free‖₁ — signal",
+        basis.n_free(),
+        basis.n_modes(),
+        step.iter_count,
+        step.projected_residual_norm,
+        full_norm,
+        step.projected_residual_norm / full_norm,
+        100.0 * decile,
     );
 }

@@ -1,6 +1,6 @@
 # sim-soft Real-Time Path — Phase-1 Measurement + Recon (Phase E predecessor)
 
-**Status**: RECON 2026-08-10 (rev 2026-08-25), v2.19. Phase 1 (measure) COMPLETE — all four requested
+**Status**: RECON 2026-08-10 (rev 2026-08-26), v2.20. Phase 1 (measure) COMPLETE — all four requested
 measurements taken; §2 reports them. Phase 2 (this recon) proposes the MOR +
 hyper-reduction path with a staged ladder whose first rung is a kill-or-confirm.
 **No dependency was added.** Phase 1's instrumentation was temporary (implement →
@@ -2789,11 +2789,53 @@ the same standing, and the more certain one is not the more interesting one:
 
 v2.15's "rung 2 is implementation, not research" is withdrawn.
 
-⚠ **The prerequisite for rung 2 is an API change, not a measurement.**
-`ReducedStep` exposes only `projected_residual_norm` / `full_residual_norm` — a
-scalar. Anything that reads the residual VECTOR (a per-mode or per-region error
-indicator, which is the obvious next candidate class) cannot be built against the
-current surface.
+✅ **The prerequisite for rung 2 — an API change, not a measurement — is
+DISCHARGED (v2.20).** `ReducedStep` used to expose only
+`projected_residual_norm` / `full_residual_norm`, both scalars, so anything that
+reads the residual VECTOR (a per-mode or per-region error indicator, which is how
+v2.19 named the next candidate class — the sub-section below kills the per-mode
+half) could not be built against the surface at all.
+`ReducedStep::full_residual` now hands back the converged `r_free` itself —
+`n_free` entries in `free_dof_indices()` order — and `full_residual_norm()`
+becomes a method derived from it, so the norm and the vector cannot disagree.
+A spatially resolved indicator groups it through the free-DOF index. Gated by
+`reduced_newton_trajectory::a_converged_step_hands_back_the_residual_it_converged_on`,
+which re-projects the handed-out vector and requires a bit-exact match against the
+separately-recorded projected norm — the assertion that a stale Newton iterate
+cannot pass.
+
+⚠ **This unblocks BUILDING the candidate class; it does not make it affordable.**
+Constraint 1 above is untouched: `r_free` still costs the full element sweep ECSW
+exists to remove, so a spatially resolved indicator built on it is a RESEARCH
+instrument on a path that is already paying the sweep, not a shippable R3 gate.
+Constraint 2 is untouched too. **Rung 2 remains research, and it still has to
+route around both.**
+
+### ⛔ And the vector immediately KILLS half of what it unblocked: PER-MODE
+
+The candidate class was written up as "per-mode or per-region". The first is
+**dead on arrival, by construction**, and the vector is what shows it. The obvious
+per-mode reading is `Φᵀr_free` componentwise — but that is exactly the quantity
+the Galerkin solve drove below `tol`, so at convergence it holds no information
+about which mode is at fault. Measured on the gate's fixture (`n_free = 150`,
+`r = 8`, one step): the LARGEST of its 8 components is `2.6e-13`, against a
+per-DOF max of `1.8e-2` in `r_free` — **11 orders down**, so every component is.
+A per-mode indicator would have to test `r_free` against directions the basis does
+**not** retain, which needs more than `Φ` and is therefore a different piece of
+work than this API change.
+
+**What survives is spatial.** On the same step, the top decile of DOFs carries
+**`90.5 %`** of `‖r_free‖₁` — the out-of-span residual is strongly localized, so
+grouping by region has something to read. ⚠ One fixture, one step, one rank: a
+DIRECTION, not a law. Both numbers are printed by
+`a_converged_step_hands_back_the_residual_it_converged_on`, so a second fixture
+checks them without re-deriving anything. ⚠ That gate also prints a `ratio=`
+field, and it is **not** the per-mode figure: it is `‖Φᵀr‖ / ‖r_free‖`, a
+norm-over-norm that happens to land at a similar magnitude. The per-mode reading
+is the `max |(Φᵀr)_i|` field beside it.
+
+⇒ Rung 2's candidate space narrows again, before a single candidate is built:
+**spatially resolved, or nothing.**
 
 ---
 
@@ -2973,7 +3015,7 @@ same door, under its own feature, and must not enter the default build.
 | **R0** ✅ **DONE** (`e77023c7`, `43b198a2`) | **Full-order assembly lever.** Replace the per-iteration `BTreeMap` rebuild in `assemble_free_hessian_triplets` with a pattern-indexed value buffer built once at construction. No algorithm change. | Byte-identity of the assembled triplets against the current path (the `feedback_float_refactor_byte_identity` recipe), plus a measured ms/iteration delta on the §2a fixtures. | §2d.2. Establishes the **honest baseline** the reduction is measured against. Cheap, self-contained, and a win regardless of whether anything downstream ships. |
 | **R1** ✅ **DONE AS SCOPED** (`#744`, `#745`, R1.2) — ⚠ **v2.14: every R1 gate was posed on a FIXED contact configuration.** §2l measures the basis failing to generalise across contact POSITIONS (`14.8–109 %` over the seven extrapolation arms that complete, flat in rank), which none of R1.0–R1.3 asked. Complete, with the scope that excluded the question deciding R3. | **Linear subspace, no contact, no coupling.** POD basis from full-order snapshots on the `cantilever` fixture at 3 000 free DOF; reduced Newton with a dense `r × r` direct solve; `Φ` and quadrature both handled naively (full element sweep — **no hyper-reduction yet**). Differentiable path wired at the same time (§6, `Φ` constant). | Projection error vs the oracle < 1 % in tip displacement over the training trajectory; reduced gradient matches the oracle's to the crate's existing gradcheck tolerance. ⚠ **That second clause was wrong and was amended before R1.2 was built** — it asks two different functions to agree to 5 digits when their states already differ in the third. Split into a gradcheck-tolerance kill gate on the reduced model's *own* derivative and a measured comparison against the oracle; see the plan's §5/§7 and §13. **Wall time is explicitly NOT gated at R1** — without hyper-reduction it will not be faster, and pretending otherwise would corrupt the signal. | **The cheap kill-or-confirm.** It answers the one question that decides everything downstream: *does a low-dimensional subspace represent this material's deformation at all?* Fixture already exists; no new physics. |
 | **R2** | **Precision decision.** Measure a full-f32 forward path on the reduced system (`r × r` is small enough to port by hand without touching the 1 396-`f64` production surface), and decide residual-in-f64-on-CPU vs compensated-summation-in-f32. | Reduced-model f32 forward drift and gradient drift vs the f64 reduced model, on R1's fixture; explicit go/no-go on whether the residual can live in f32. | §2c. Must precede any GPU work; deciding it after a shader exists means writing the shader twice. |
-| **R3** **§2i brackets its Amdahl ceiling at `20.2–20.5×`–`≳32×`** (two runs) — clear of both its own `10×` floor and the budget's `13.5–15.8×` on either bound. ✅ v2.13: the reduced path HAS now run with contact — §2k measures `I = 11.3–12.3 ms` on IPC 18 750, margin `1.36–1.47×` under `Inertial` and a FAIL of `0.92–0.98×` under `PreviousState`. ⚠ Size-dependent — `~4.5×` at 5 202, and extrapolating the two terms of `I` separately, gone by ~`26 k` free DOF. Gate is **`I ≤ 16.7 ms`** on §2h's reference box (§2j — restated in v2.8 from `≥10×`, which was a ratio over a moving baseline). | **Hyper-reduction (ECSW) + the validity domain.** NNLS training over R1's snapshots; `ReducedValidityDomain` — ⛔ v2.18: rung 1 NARROWED the candidates to one and then **disqualified that one twice**; there is no gate design. §2m: `snapshot_distance` (nearest training snapshot, ONE GLOBAL normaliser, NOT per mode) is the only candidate surviving a per-step test, at `~2×` on a FITTED threshold. §2n supplies the held-out position §2m lacked and it fails there — `1.005×` of signal across `31.9×` of error, because **rank-independence and accuracy-sensitivity are mutually exclusive**. §2o: it is blind to ENSEMBLE SIZE too, and size is the dominant factor — doubling it at fixed gap buys `2.13–2.70×` where doubling the gap at fixed size costs `1.09–1.17×` ⇒ the domain must state CARDINALITY and no candidate can check it. `‖r_free‖ / tol` reads accuracy but is NOT available here: it is the full element sweep ECSW removes. ⚠ Rung 2's prerequisite is an API change — `ReducedStep` exposes only residual NORMS, so no per-mode or per-region error indicator can be built against it. Plus the three error measures of §4c. | Measured speedup vs §2a's baseline (post-R0), with the three §4c errors reported alongside. Domain gate demonstrated to fire on an out-of-domain trajectory. | This is where the frame-budget win actually arrives. Also where the "smooth and wrong" failure mode is defended against. |
+| **R3** **§2i brackets its Amdahl ceiling at `20.2–20.5×`–`≳32×`** (two runs) — clear of both its own `10×` floor and the budget's `13.5–15.8×` on either bound. ✅ v2.13: the reduced path HAS now run with contact — §2k measures `I = 11.3–12.3 ms` on IPC 18 750, margin `1.36–1.47×` under `Inertial` and a FAIL of `0.92–0.98×` under `PreviousState`. ⚠ Size-dependent — `~4.5×` at 5 202, and extrapolating the two terms of `I` separately, gone by ~`26 k` free DOF. Gate is **`I ≤ 16.7 ms`** on §2h's reference box (§2j — restated in v2.8 from `≥10×`, which was a ratio over a moving baseline). | **Hyper-reduction (ECSW) + the validity domain.** NNLS training over R1's snapshots; `ReducedValidityDomain` — ⛔ v2.18: rung 1 NARROWED the candidates to one and then **disqualified that one twice**; there is no gate design. §2m: `snapshot_distance` (nearest training snapshot, ONE GLOBAL normaliser, NOT per mode) is the only candidate surviving a per-step test, at `~2×` on a FITTED threshold. §2n supplies the held-out position §2m lacked and it fails there — `1.005×` of signal across `31.9×` of error, because **rank-independence and accuracy-sensitivity are mutually exclusive**. §2o: it is blind to ENSEMBLE SIZE too, and size is the dominant factor — doubling it at fixed gap buys `2.13–2.70×` where doubling the gap at fixed size costs `1.09–1.17×` ⇒ the domain must state CARDINALITY and no candidate can check it. `‖r_free‖ / tol` reads accuracy but is NOT available here: it is the full element sweep ECSW removes. ✅ v2.20: rung 2's prerequisite is DISCHARGED — `ReducedStep::full_residual` now exposes the converged `r_free` VECTOR (`full_residual_norm()` derives from it), so a spatially resolved indicator can be BUILT. ⛔ And the vector kills PER-MODE on arrival: `Φᵀr_free` is what the solve drove below `tol`, largest component measured at `2.6e-13` against a `1.8e-2` per-DOF max in `r_free`, `11` orders down — a per-mode indicator needs directions `Φ` does not retain. What survives is spatial: the top decile of DOFs carries `90.5 %` of `‖r_free‖₁`. ⚠ Buildable, not affordable: `r_free` is still the element sweep ECSW removes, so those candidates are research instruments, not R3 gates. Plus the three error measures of §4c. | Measured speedup vs §2a's baseline (post-R0), with the three §4c errors reported alongside. Domain gate demonstrated to fire on an out-of-domain trajectory. | This is where the frame-budget win actually arrives. Also where the "smooth and wrong" failure mode is defended against. |
 | **R4** | **Hybrid domain decomposition, FIXED contact patch.** Full DOF under a stationary indenter, reduced bulk, on the `dynamic_indentation` geometry. | End-to-end reaction force vs the oracle, in the same band `bonded_layer_indentation` already asserts. | §5. Fixed patch first, because it isolates the coupling condition from the re-partitioning problem. |
 | **R5** | **Moving patch.** Re-partitioning under a once-built symbolic factorization, or a conservative union pattern. | Sliding-contact trajectory vs the oracle. | §5's open-research item. **Explicitly gated on R4 succeeding**; if R4 fails, this is not attempted. |
 | **R6** | **Rigid↔soft coupling.** | — | **Last, deliberately.** Per the brief, and it is the right call: the keystone coupling is itself the platform's hardest open problem (`MISSION.md` §2), and stacking it on an unsolved real-time reduced path would make any failure uninterpretable. |
@@ -3259,6 +3301,35 @@ until then, and by nobody else ever. The recipe above is the durable record.
 - `sim/L0/soft/src/material/` — the `ValidityDomain` §4c mirrors.
 
 ## 12. Version history
+
+- **v2.20 (2026-08-26)** — **§4c WRAP-UP: rung 2's API prerequisite, shipped.**
+  Production code, deliberately — v2.19 closed rung 1 with zero production code
+  and recorded that rung 2 could not START because `ReducedStep` handed back
+  residual NORMS only. `ReducedStep::full_residual` now carries the converged
+  `r_free` vector (`n_free` entries, `free_dof_indices()` order) and
+  `full_residual_norm()` is a method derived from it rather than a field stored
+  beside it, so the two cannot disagree. The vector is MOVED out of the
+  convergence check that already assembled it: no extra allocation, no extra
+  arithmetic. New debug-runnable gate
+  `a_converged_step_hands_back_the_residual_it_converged_on` in
+  `reduced_newton_trajectory.rs`, on a coarse `4x4x2` rig (`n_free = 150`,
+  `r = 8`, 0.04 s); its three assertions were negative-controlled by three
+  mutants — a stale iterate perturbed by one part in `1e9`, a zeroed vector, and
+  a truncated one — each killed by a different assertion. ⛔ **A review pass then
+  found the vector KILLS half of what it unblocked, and that three passing mutants
+  had not noticed:** the write-up said the class was "per-mode or per-region", but
+  `Φᵀr_free` is precisely what the solve drives below `tol`, so per-mode carries no
+  signal at convergence — its largest component measured at `2.6e-13` against a
+  `1.8e-2` per-DOF max in `r_free`, `11` orders down. What survives is spatial: the
+  top decile of DOFs carries `90.5 %` of `‖r_free‖₁`. Both numbers are now printed
+  by the gate. The same pass deleted a fourth assertion, `projected_residual_norm <
+  TOL`, as VACUOUS — the solve constructs a step only from inside
+  `if proj_norm < tol`, so it restated convergence rather than testing it, and it
+  was the one assertion no mutant had killed. ⚠ **This changes what rung 2 CAN be
+  built from; it changes nothing about the two constraints.**
+  `r_free` still costs the element sweep, so the per-mode / per-region class is a
+  research instrument, not an R3 gate, and rung 2 stays research rather than
+  implementation.
 
 - **v2.19 (2026-08-25)** — **CONSISTENCY PASS over §2l–§2o and everything
   downstream of them. No new measurement; every figure re-derived from the run

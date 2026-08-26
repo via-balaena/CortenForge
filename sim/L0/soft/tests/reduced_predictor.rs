@@ -826,7 +826,7 @@ fn run_reduced_diag(
         };
         iters += step.iter_count;
         proj += step.projected_residual_norm;
-        full += step.full_residual_norm;
+        full += step.full_residual_norm();
         q = step.q;
         qdot = step.qdot;
     }
