@@ -319,6 +319,18 @@ mod hook_tests {
         git(&["init", "-q", "."]);
         git(&["config", "user.email", "t@t"]);
         git(&["config", "user.name", "t"]);
+        // A real, already-formatted cargo project. Without it `cargo fmt --all
+        // --check` fails on EVERY invocation, the hook exits non-zero whatever the
+        // guard does, and no assertion on the exit code can mean anything. This is
+        // what makes `a_clean_stage_passes` — and therefore the whole suite's
+        // pass/fail discrimination — possible.
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            b"[package]\nname = \"p\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+        )
+        .expect("Cargo.toml");
+        std::fs::create_dir_all(dir.join("src")).expect("src");
+        std::fs::write(dir.join("src/main.rs"), b"fn main() {}\n").expect("main.rs");
         std::fs::write(dir.join(staged), b"solid x\n").expect("fixture");
         git(&["add", "-f", staged]);
 
@@ -357,7 +369,10 @@ mod hook_tests {
         // ALL FIVE. Testing only .stl left four of the guard's extensions with zero
         // coverage, so dropping one from the pathspec was a change no test opposed.
         for name in ["part.stl", "part.obj", "part.ply", "part.3mf", "part.mtl"] {
-            let (_, out) = run_hook(name, false);
+            let (ok, out) = run_hook(name, false);
+            // `!ok` is load-bearing now that the scratch repo is a valid, formatted
+            // cargo project — `a_clean_stage_passes` proves the hook CAN exit 0.
+            assert!(!ok, "{name} did not block the commit; output:\n{out}");
             assert!(
                 out.contains("Refusing to commit mesh/scan binaries"),
                 "{name} did not trip the mesh guard; output:\n{out}"
@@ -379,7 +394,8 @@ mod hook_tests {
     /// walked straight through the guard. Measured before the `:(icase)` fix.
     #[test]
     fn an_uppercase_mesh_extension_blocks_too() {
-        let (_, out) = run_hook("SCAN.STL", false);
+        let (ok, out) = run_hook("SCAN.STL", false);
+        assert!(!ok, "SCAN.STL did not block the commit");
         assert!(
             out.contains("Refusing to commit mesh/scan binaries"),
             "SCAN.STL was NOT blocked — the pathspec is case-sensitive again:\n{out}"
@@ -407,6 +423,72 @@ mod hook_tests {
         assert!(
             !out.contains("No scan/mesh binaries staged"),
             "override claimed nothing was staged, which is false; output:\n{out}"
+        );
+    }
+
+    /// A mesh already in history, MODIFIED, must still be blocked.
+    ///
+    /// The guard's `--diff-filter=ACMR` covers additions, copies, modifications and
+    /// renames. Every other test here stages a brand-new file, i.e. only `A` — so
+    /// narrowing the filter to `A` alone was a mutation the whole suite survived.
+    /// Measured, then closed with this test.
+    #[test]
+    fn modifying_a_mesh_already_in_history_is_blocked_too() {
+        let dir = std::env::temp_dir().join(format!("cf-hook-mod-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .expect("git")
+        };
+        git(&["init", "-q", "."]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "t"]);
+        // Land it in history first — the guard is not what put it there.
+        std::fs::write(dir.join("old.stl"), b"solid v1\n").expect("v1");
+        git(&["add", "-f", "old.stl"]);
+        git(&["commit", "-q", "-m", "seed", "--no-verify"]);
+        // Now MODIFY it: diff-filter M, not A.
+        std::fs::write(dir.join("old.stl"), b"solid v2 much bigger\n").expect("v2");
+        git(&["add", "old.stl"]);
+
+        let hook = dir.join("hook.sh");
+        std::fs::write(&hook, PRE_COMMIT_HOOK).expect("hook");
+        let out = Command::new("sh")
+            .arg(&hook)
+            .current_dir(&dir)
+            .env_remove("CF_ALLOW_MESH")
+            .output()
+            .expect("run hook");
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            combined.contains("Refusing to commit mesh/scan binaries"),
+            "a MODIFIED mesh was not blocked — is --diff-filter still ACMR?; output:\n{combined}"
+        );
+    }
+
+    /// POSITIVE CONTROL: the hook must be able to SUCCEED.
+    ///
+    /// Without this the suite cannot tell "the guard blocked it" from "the hook
+    /// always fails", and it very nearly could not: the scratch repo had no
+    /// `Cargo.toml`, so `cargo fmt --all --check` failed on every run and the hook
+    /// exited non-zero unconditionally. Every `assert!(!ok)` was vacuous. A gate
+    /// that cannot pass proves as little as one that cannot fail.
+    #[test]
+    fn a_clean_stage_passes() {
+        let (ok, out) = run_hook("readme.txt", false);
+        assert!(ok, "hook rejected a clean stage; output:\n{out}");
+        assert!(
+            out.contains("No scan/mesh binaries staged"),
+            "clean stage did not reach the guard's happy path; output:\n{out}"
         );
     }
 
