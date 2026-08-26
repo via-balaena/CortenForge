@@ -164,6 +164,21 @@ MUJOCO_LOG.TXT
 examples/cast/*/out/*.stl
 
 # =============================================================================
+# Third-party source pulled in locally — NEVER redistributed from here
+# =============================================================================
+# Python virtualenvs. A `.venv/` appears at the workspace root from local `uv`
+# runs (the MuJoCo conformance ground truth and the OpenSim asset generators are
+# both driven that way). Observed, not theorised: the one on this machine holds
+# `mujoco-3.4.0` including MuJoCo's own Apache-2.0 C headers, plus a few hundred
+# MB of third-party wheels — none of it ours to redistribute.
+#
+# Nothing has leaked: `git ls-files .venv` is empty today. This is preventive,
+# and the precedent is `mutants.out/` below — 164 files of untracked local
+# measurement output went to `main` in #799 on a single `git add -A`. The same
+# gesture would vendor someone else's licensed source here.
+.venv/
+
+# =============================================================================
 # Old Repos (during migration)
 # =============================================================================
 # These are the original repos being migrated - keep for reference but don't track
@@ -174,17 +189,6 @@ examples/cast/*/out/*.stl
 # Python bytecode (from the OpenSim asset generators)
 __pycache__/
 *.pyc
-
-# Python virtualenvs. `uv run --with mujoco ...` materialises `.venv/` in the
-# workspace root — that is how the MuJoCo conformance ground truth is produced
-# locally. It carries MuJoCo's own Apache-2.0 C headers and ~hundreds of MB of
-# third-party wheels, none of which this repo should ever redistribute.
-#
-# Nothing has leaked: `git ls-files .venv` is empty today. This is preventive,
-# and the precedent is `mutants.out/` below — 164 files of untracked local
-# measurement output went to `main` in #799 on a single `git add -A`. The same
-# gesture would vendor someone else's licensed source here.
-.venv/
 
 # OpenSim writes this log next to whatever cwd the reference generators run in
 opensim.log
