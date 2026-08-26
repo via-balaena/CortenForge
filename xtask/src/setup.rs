@@ -141,6 +141,18 @@ fn install_git_hooks() -> Result<()> {
         );
     }
 
+    install_git_hooks_into(&hooks_dir)
+}
+
+/// Write both hooks into `hooks_dir`.
+///
+/// Split out from [`install_git_hooks`] so a test can reach it: the version that
+/// resolves the directory itself can only be exercised by changing the process's
+/// cwd, which is global and races other tests. A mutation survey found the pairing
+/// — which const goes to which filename — was covered by NOTHING, so swapping
+/// `PRE_COMMIT_HOOK` and `COMMIT_MSG_HOOK` here shipped green. That is the same
+/// class as this arc's original bug: installer wiring with no gate on it.
+fn install_git_hooks_into(hooks_dir: &Path) -> Result<()> {
     // Install pre-commit hook
     let pre_commit_path = hooks_dir.join("pre-commit");
     fs::write(&pre_commit_path, PRE_COMMIT_HOOK).context("Failed to write pre-commit hook")?;
@@ -483,6 +495,41 @@ mod hook_tests {
         assert!(
             combined.contains("Refusing to commit mesh/scan binaries"),
             "a MODIFIED mesh was not blocked — is --diff-filter still ACMR?; output:\n{combined}"
+        );
+    }
+
+    /// The right hook text must land at the right FILENAME.
+    ///
+    /// Nothing covered this. A mutation survey found that swapping the two consts
+    /// in `install_git_hooks_into` — writing the commit-msg script to `pre-commit`
+    /// and vice versa — passed the entire suite. The scan/mesh guard lives only in
+    /// the pre-commit text, so that swap silently disarms it while every other test
+    /// stays green, because they all exercise `PRE_COMMIT_HOOK` directly rather
+    /// than what the installer actually writes.
+    #[test]
+    fn the_installer_writes_each_hook_to_its_own_filename() {
+        let dir = std::env::temp_dir().join(format!("cf-install-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+
+        super::install_git_hooks_into(&dir).expect("install");
+
+        let pre = std::fs::read_to_string(dir.join("pre-commit")).expect("pre-commit written");
+        let msg = std::fs::read_to_string(dir.join("commit-msg")).expect("commit-msg written");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(
+            pre, PRE_COMMIT_HOOK,
+            "pre-commit did not receive PRE_COMMIT_HOOK"
+        );
+        assert_eq!(
+            msg, COMMIT_MSG_HOOK,
+            "commit-msg did not receive COMMIT_MSG_HOOK"
+        );
+        assert!(
+            pre.contains("CF_ALLOW_MESH"),
+            "the file installed as pre-commit has no scan/mesh guard — the consts are \
+             crossed, and every other test would still pass"
         );
     }
 
