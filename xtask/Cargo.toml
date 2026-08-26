@@ -3,8 +3,9 @@ name = "xtask"
 version = "0.1.0"
 edition = "2021"
 description = "Development automation and quality enforcement for CortenForge"
-# Inherited so the license can never drift from the workspace. `version` and
-# `edition` above are deliberately NOT inherited; the license is not.
+# Inherited, so the license can never drift from the workspace. The `version` and
+# `edition` above are deliberately NOT inherited — those divergences are intended.
+# The license was not: it was a hand-copied duplicate, and it went stale.
 license.workspace = true
 publish = false
 

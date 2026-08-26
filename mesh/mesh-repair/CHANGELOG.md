@@ -9,10 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **License is `MIT OR Apache-2.0` again.** The workspace was relicensed back to
-  the dual offer, and this crate inherits it (`license.workspace = true`). This
-  RESTORES the MIT option that 2.0.0 removed — see that entry below, which stays
-  as written because it is an accurate record of what 2.0.0 shipped.
+- **License is `MIT OR Apache-2.0` again.** The workspace was relicensed to the
+  dual offer and this crate inherits it (`license.workspace = true`), which
+  RESTORES the MIT option 2.0.0 removed. "Again" is about THIS CRATE, not the
+  workspace: the workspace itself has read `Apache-2.0` since its first commit and
+  was never dual before now. The 2.0.0 entry below stays as written — it is an
+  accurate record of what 2.0.0 shipped.
 
 - **Minimum supported Rust version is now 1.92** (was 1.87). The crate inherits
   the workspace-wide declaration, and that floor is set by the locked dependency

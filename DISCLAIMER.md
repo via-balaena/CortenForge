@@ -2,8 +2,9 @@
 
 CortenForge — including the **Cendrillon** application — is general-purpose
 research and engineering software, provided by Via Balaena **AS IS** under the
-[MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option, **without warranty of any kind**, including
-merchantability, fitness for a particular purpose, accuracy, or safety.
+[MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option, **without
+warranty of any kind**, including merchantability, fitness for a particular
+purpose, accuracy, or safety.
 
 **It is not a medical device** and makes no medical, therapeutic, or health
 claims. It is not cleared or approved by the FDA, CE, or any regulatory body.

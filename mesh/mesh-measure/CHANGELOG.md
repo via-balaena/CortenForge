@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **License is now `MIT OR Apache-2.0`** (was `Apache-2.0`). The crate inherits
+  the workspace declaration (`license.workspace = true`); the dual offer adds the
+  MIT option alongside Apache-2.0, at the licensee's choice.
+
 - **`CrossSection`/`Contour` centroid is now the true polygon centroid**
   (area-weighted shoelace moments in the plane frame), replacing the naive
   `sum(points) / points.len()` average that a chain-closure-duplicate vertex
