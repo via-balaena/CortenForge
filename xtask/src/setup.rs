@@ -21,7 +21,7 @@ use owo_colors::OwoColorize;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Pre-commit hook content (must match build.rs)
+/// Pre-commit hook content. Single source: `xtask/hooks/pre-commit`.
 ///
 /// This runs before every commit to catch issues early.
 /// Faster than CI, provides immediate feedback.
@@ -285,46 +285,109 @@ pub fn uninstall() -> Result<()> {
 #[cfg(test)]
 mod hook_tests {
     use super::{COMMIT_MSG_HOOK, PRE_COMMIT_HOOK};
+    use std::process::Command;
 
-    /// The scan/mesh guard must actually be in the hook that gets installed.
+    /// Run the pre-commit hook in a throwaway git repo with `staged` created and
+    /// `git add -f`'d. Returns (exited_zero, combined_output).
     ///
-    /// This is the gate that #709 needed and did not have. That PR is titled
-    /// "make 'no scan or mesh binaries' a hard rule, **enforced twice**" and added
-    /// the guard to `xtask/build.rs`'s copy of the hook only — `setup.rs` held a
-    /// second, independent copy and never received it. So `cargo xtask setup`
-    /// installed a hook with no guard, and the rule was enforced ONCE on every
-    /// machine set up that way. Nothing failed, because nothing checked.
-    ///
-    /// Both consts now `include_str!` the same file, so this cannot drift again —
-    /// but the assertion stays, because "they read the same file" is a property of
-    /// today's code and this is a property of the SHIPPED ARTIFACT.
-    #[test]
-    fn the_installed_pre_commit_hook_carries_the_scan_mesh_guard() {
-        for needle in ["CF_ALLOW_MESH", "*.stl", "*.obj", "*.ply", "*.3mf", "*.mtl"] {
-            assert!(
-                PRE_COMMIT_HOOK.contains(needle),
-                "the pre-commit hook shipped to .git/hooks is missing {needle:?}. \
-                 The repository is PUBLIC and the casting pipeline's inputs are \
-                 anatomical scans of a real person; .gitignore cannot stop \
-                 `git add -f`, which is the hole this guard exists to close."
-            );
+    /// The hook is executed for real. A `contains("CF_ALLOW_MESH")` assertion on the
+    /// hook TEXT proves nothing — the string also appears in the header comment and
+    /// in the help line, so the entire enforcing block can be deleted and a text
+    /// assertion still passes. That was measured, not imagined: it is exactly what
+    /// the first version of this test did.
+    fn run_hook(staged: &str, allow_mesh: bool) -> (bool, String) {
+        // ⚠ Per-INVOCATION, not per-filename. Two tests both stage "part.stl", so a
+        // name derived from the filename collided and they raced each other's
+        // temp dir — cargo runs tests in parallel. It passed when run alone and
+        // failed in the suite, which is the flake that reaches CI and not you.
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let uniq = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "cf-hook-{}-{uniq}-{}",
+            std::process::id(),
+            staged.replace(['/', '.'], "_")
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .expect("git")
+        };
+        git(&["init", "-q", "."]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(dir.join(staged), b"solid x\n").expect("fixture");
+        git(&["add", "-f", staged]);
+
+        let hook = dir.join("hook.sh");
+        std::fs::write(&hook, PRE_COMMIT_HOOK).expect("hook");
+        let mut cmd = Command::new("sh");
+        cmd.arg(&hook).current_dir(&dir);
+        if allow_mesh {
+            cmd.env("CF_ALLOW_MESH", "1");
         }
+        let out = cmd.output().expect("run hook");
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        (out.status.success(), combined)
     }
 
-    /// The updater in `build.rs` recognises a hook as ours by its TITLE line, so
-    /// that a hook written by either installer gets healed on the next build. If a
-    /// title changes without `build.rs`'s marker changing with it, every existing
-    /// checkout silently stops receiving hook updates — which is exactly the
-    /// failure this arc fixed, and it is invisible until something else breaks.
+    /// A staged mesh must actually BLOCK the commit — the behaviour, not the prose.
+    ///
+    /// This repository is PUBLIC and the casting pipeline's inputs are anatomical
+    /// scans of a real person. `.gitignore` cannot stop `git add -f`; this hook is
+    /// the only thing that can, and #709 shipped it to one of the two installers
+    /// with nothing checking that it worked.
     #[test]
-    fn hook_titles_match_the_markers_the_updater_looks_for() {
+    fn a_staged_mesh_blocks_the_commit() {
+        let (ok, out) = run_hook("part.stl", false);
+        assert!(!ok, "hook exited 0 with a staged .stl; output:\n{out}");
         assert!(
-            PRE_COMMIT_HOOK.contains("CortenForge Pre-Commit Hook"),
-            "pre-commit title changed; update the marker in xtask/build.rs::main"
+            out.contains("Refusing to commit mesh/scan binaries"),
+            "hook failed, but not at the mesh guard; output:\n{out}"
+        );
+    }
+
+    /// ...including UPPERCASE extensions. Git pathspecs are case-sensitive, so the
+    /// original `'*.stl'` did not match `PART.STL` and a scanner emitting uppercase
+    /// walked straight through the guard. Measured before the `:(icase)` fix.
+    #[test]
+    fn an_uppercase_mesh_extension_blocks_too() {
+        let (ok, out) = run_hook("SCAN.STL", false);
+        assert!(
+            !ok,
+            "SCAN.STL was NOT blocked — pathspec is case-sensitive again"
         );
         assert!(
-            COMMIT_MSG_HOOK.contains("CortenForge Commit Message Hook"),
-            "commit-msg title changed; update the marker in xtask/build.rs::main"
+            out.contains("Refusing to commit mesh/scan binaries"),
+            "{out}"
+        );
+    }
+
+    /// The documented override must work, and must ANNOUNCE itself. Printing
+    /// "no scan/mesh binaries staged" while letting meshes through — which the
+    /// hook used to do — hides the one commit anyone would want a record of.
+    #[test]
+    fn the_override_lets_it_through_and_says_so() {
+        let (_, out) = run_hook("part.stl", true);
+        assert!(
+            !out.contains("Refusing to commit mesh/scan binaries"),
+            "CF_ALLOW_MESH=1 did not suppress the refusal; output:\n{out}"
+        );
+        assert!(
+            out.contains("allowing mesh/scan binaries through"),
+            "override was silent — it must leave a record; output:\n{out}"
+        );
+        assert!(
+            !out.contains("No scan/mesh binaries staged"),
+            "override claimed nothing was staged, which is false; output:\n{out}"
         );
     }
 
@@ -333,5 +396,21 @@ mod hook_tests {
     fn hooks_start_with_a_posix_sh_shebang() {
         assert!(PRE_COMMIT_HOOK.starts_with("#!/bin/sh\n"));
         assert!(COMMIT_MSG_HOOK.starts_with("#!/bin/sh\n"));
+    }
+
+    /// No CR anywhere: `include_str!` embeds bytes verbatim (unlike a Rust string
+    /// literal, which rustc normalises), so a CRLF checkout would ship `#!/bin/sh\r`
+    /// and every hook would fail to execute. `.gitattributes` pins these to LF;
+    /// this fails if that pin is ever removed.
+    #[test]
+    fn hooks_contain_no_carriage_returns() {
+        assert!(
+            !PRE_COMMIT_HOOK.contains('\r'),
+            "pre-commit has CR — check .gitattributes"
+        );
+        assert!(
+            !COMMIT_MSG_HOOK.contains('\r'),
+            "commit-msg has CR — check .gitattributes"
+        );
     }
 }

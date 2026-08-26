@@ -7,10 +7,10 @@
 use std::fs;
 use std::path::Path;
 
-/// Pre-commit hook content (must match setup.rs)
+/// Pre-commit hook content. Single source: `xtask/hooks/pre-commit`.
 const PRE_COMMIT_HOOK: &str = include_str!("hooks/pre-commit");
 
-/// Commit message hook content (must match setup.rs)
+/// Commit message hook content. Single source: `xtask/hooks/commit-msg`.
 const COMMIT_MSG_HOOK: &str = include_str!("hooks/commit-msg");
 
 fn main() {
@@ -35,7 +35,7 @@ fn main() {
         &pre_commit_path,
         PRE_COMMIT_HOOK,
         "pre-commit",
-        "CortenForge Pre-Commit Hook",
+        title_of(PRE_COMMIT_HOOK),
     );
 
     // Install commit-msg hook if missing or outdated
@@ -44,7 +44,7 @@ fn main() {
         &commit_msg_path,
         COMMIT_MSG_HOOK,
         "commit-msg",
-        "CortenForge Commit Message Hook",
+        title_of(COMMIT_MSG_HOOK),
     );
 
     // Tell cargo to rerun if hooks are deleted
@@ -54,6 +54,20 @@ fn main() {
     println!("cargo:rerun-if-changed=hooks/pre-commit");
     println!("cargo:rerun-if-changed=hooks/commit-msg");
     println!("cargo:rerun-if-changed=../.git/hooks/commit-msg");
+}
+
+/// The hook's own title line, used to recognise a hook as ours.
+///
+/// DERIVED, never written down twice. A hardcoded marker is a second copy of a
+/// string that lives in the hook file, and the moment the two disagree the updater
+/// silently stops recognising its own hooks — which is precisely the bug this arc
+/// exists to fix, reintroduced one level up. Taking it from the text makes that
+/// impossible.
+fn title_of(hook: &str) -> &str {
+    hook.lines()
+        .nth(1)
+        .expect("hook must have a title line")
+        .trim_start_matches("# ")
 }
 
 fn install_hook_if_needed(path: &Path, content: &str, name: &str, marker: &str) {
@@ -72,7 +86,10 @@ fn install_hook_if_needed(path: &Path, content: &str, name: &str, marker: &str) 
             Ok(existing) if existing.contains(marker) => existing != content,
             // Hook exists but isn't ours — don't overwrite.
             Ok(_) => false,
-            Err(_) => true,
+            // A hook we cannot READ is not a hook we may overwrite. This used to
+            // return true, which would clobber a non-UTF-8 hook belonging to
+            // somebody else — the exact thing the ownership check exists to prevent.
+            Err(_) => false,
         }
     } else {
         true

@@ -34,18 +34,30 @@ echo "╚═══════════════════════�
 # Escape hatch for a genuinely non-personal fixture mesh:
 #     CF_ALLOW_MESH=1 git commit ...
 echo "→ Checking for scan/mesh binaries..."
+# ':(icase)' is load-bearing. Git pathspecs are CASE-SENSITIVE, so a bare '*.stl'
+# does NOT match PART.STL — and scanners happily emit uppercase extensions. Without
+# it the guard is bypassed by the filename alone, which is the hole it exists to close.
 staged_meshes=$(git diff --cached --name-only --diff-filter=ACMR \
-    -- '*.stl' '*.obj' '*.ply' '*.3mf' '*.mtl' || true)
-if [ -n "$staged_meshes" ] && [ "${CF_ALLOW_MESH:-0}" != "1" ]; then
-    echo "✗ Refusing to commit mesh/scan binaries to a PUBLIC repository:"
-    echo "$staged_meshes" | sed 's/^/      /'
-    echo ""
-    echo "  Scan inputs are anatomical and must stay outside this repo (~/scans)."
-    echo "  Generated meshes are reproducible and have no browse value."
-    echo "  If this really is a non-personal fixture:  CF_ALLOW_MESH=1 git commit ..."
-    exit 1
+    -- ':(icase)*.stl' ':(icase)*.obj' ':(icase)*.ply' \
+       ':(icase)*.3mf' ':(icase)*.mtl' || true)
+if [ -n "$staged_meshes" ]; then
+    if [ "${CF_ALLOW_MESH:-0}" = "1" ]; then
+        # Say so LOUDLY. Printing "no meshes staged" here — which is what this used
+        # to do — hides the one commit anyone would ever want a record of.
+        echo "⚠ CF_ALLOW_MESH=1 — allowing mesh/scan binaries through:"
+        echo "$staged_meshes" | sed 's/^/      /'
+    else
+        echo "✗ Refusing to commit mesh/scan binaries to a PUBLIC repository:"
+        echo "$staged_meshes" | sed 's/^/      /'
+        echo ""
+        echo "  Scan inputs are anatomical and must stay outside this repo (~/scans)."
+        echo "  Generated meshes are reproducible and have no browse value."
+        echo "  If this really is a non-personal fixture:  CF_ALLOW_MESH=1 git commit ..."
+        exit 1
+    fi
+else
+    echo "✓ No scan/mesh binaries staged"
 fi
-echo "✓ No scan/mesh binaries staged"
 
 # Format check (fast — only checks already-formatted files, <1s)
 echo "→ Checking formatting..."
