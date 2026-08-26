@@ -175,6 +175,17 @@ examples/cast/*/out/*.stl
 __pycache__/
 *.pyc
 
+# Python virtualenvs. `uv run --with mujoco ...` materialises `.venv/` in the
+# workspace root — that is how the MuJoCo conformance ground truth is produced
+# locally. It carries MuJoCo's own Apache-2.0 C headers and ~hundreds of MB of
+# third-party wheels, none of which this repo should ever redistribute.
+#
+# Nothing has leaked: `git ls-files .venv` is empty today. This is preventive,
+# and the precedent is `mutants.out/` below — 164 files of untracked local
+# measurement output went to `main` in #799 on a single `git add -A`. The same
+# gesture would vendor someone else's licensed source here.
+.venv/
+
 # OpenSim writes this log next to whatever cwd the reference generators run in
 opensim.log
 **/opensim.log
