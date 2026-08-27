@@ -130,32 +130,47 @@ pub fn parse_git_paths_rooted_at(stdout: &str, base: &std::path::Path) -> Option
 
 /// Join `answer` onto `base` and resolve it the way `--path-format=absolute` would.
 ///
-/// The hooks directory need not exist yet, so `canonicalize` can fail outright.
-/// Resolve the longest prefix that DOES exist and re-attach the rest: that is enough
-/// to defeat both escapes, because a `..` or a symlink can only take us somewhere
-/// that already exists.
+/// Walks the answer's components one at a time, resolving symlinks as it goes and
+/// applying `..` to what it has resolved so far. The hooks directory need not exist
+/// yet, so a component that is not on disk is simply carried lexically.
+///
+/// ⚠⚠ AN EARLIER VERSION WALKED UP FROM THE WHOLE JOINED PATH instead, canonicalising
+/// the longest existing PREFIX and re-attaching the rest. That looks equivalent and
+/// is not: `Path::file_name()` returns `None` for a `..` component, so the loop bailed
+/// out to the un-normalised join whenever the nearest existing ancestor lay above a
+/// `..`. Measured, `core.hooksPath = nope/../../shared-hooks`: git answers
+/// `/lab/shared-hooks` (outside → refused) while the bail-out returned
+/// `<repo>/nope/../../shared-hooks`, which `starts_with` accepts component-wise —
+/// containment defeated. The shipped test used `../shared-hooks`, which happened to
+/// work because `<repo>/..` exists: ONE component away from the failing class.
 fn absolutize(base: &std::path::Path, answer: &str) -> std::path::PathBuf {
-    let joined = base.join(answer);
-    let mut suffix: Vec<std::ffi::OsString> = Vec::new();
-    let mut probe = joined.clone();
-    loop {
-        if let Ok(real) = std::fs::canonicalize(&probe) {
-            let mut out = real;
-            for part in suffix.iter().rev() {
-                out.push(part);
+    use std::path::Component;
+
+    let mut out = base.to_path_buf();
+    for component in std::path::Path::new(answer).components() {
+        match component {
+            // An absolute answer replaces the base outright — `--show-toplevel` is
+            // absolute even on the old git this exists for.
+            Component::RootDir | Component::Prefix(_) => {
+                out = std::path::PathBuf::from(component.as_os_str());
             }
-            return out;
-        }
-        let Some(name) = probe.file_name().map(std::ffi::OsStr::to_os_string) else {
-            // Ran out of path without finding anything real. Nothing to resolve
-            // against, so hand back the lexical join and let containment judge it.
-            return joined;
-        };
-        suffix.push(name);
-        if !probe.pop() {
-            return joined;
+            Component::CurDir => {}
+            // Applied to what is resolved SO FAR, which is what makes a symlink
+            // followed by `..` land where the kernel would put it.
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::Normal(part) => {
+                out.push(part);
+                // Resolve as we go, so a symlinked component is followed before the
+                // next `..` is applied. A component not yet on disk stays lexical.
+                if let Ok(real) = std::fs::canonicalize(&out) {
+                    out = real;
+                }
+            }
         }
     }
+    out
 }
 
 /// Exactly three answer lines, or nothing.
@@ -231,9 +246,15 @@ pub fn classify_hooks_dir(paths: &GitPaths, repo_root: &std::path::Path) -> Hook
 
 /// Resolve the hooks directory for `repo_root`, or `None` if it cannot be known.
 ///
-/// ONE implementation and ONE git invocation, used by `build.rs` and by the xtask
-/// binary. Writing this out per-installer is what let the two drift, and asking git
-/// twice let the two answers come from different config snapshots.
+/// ONE implementation, used by `build.rs` and by the xtask binary — writing this out
+/// per-installer is what let the two drift.
+///
+/// ⚠ It makes TWO `rev-parse` calls, deliberately, and this doc used to claim one.
+/// Both run unconditionally so that the ORDER between their answers is decided in
+/// the pure [`resolve_from_answers`], where a test can reach it, instead of by
+/// control flow nothing could see. (An earlier note here warned that asking twice
+/// risks two different config snapshots: only ONE answer is ever consumed, so the
+/// unused one cannot contaminate anything.)
 ///
 /// ⚠ FALLBACK, and it is the LAST resort, not the second. When git cannot answer at
 /// all but `<root>/.git` is a real directory, fall back to `<root>/.git/hooks`.
@@ -409,6 +430,66 @@ pub fn write_hook_file(path: &std::path::Path, content: &str) -> std::io::Result
         let _ = std::fs::remove_file(&tmp);
     }
     result
+}
+
+/// What the caller was attempting, which is what makes the advice right or absurd.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Attempted {
+    /// Installing. `retry` is how THIS caller is re-run — "rebuild" for the build
+    /// script, "re-run" for `cargo xtask setup`.
+    Install { retry: &'static str },
+    /// Removing. There is nothing to merge and nothing to re-run.
+    Uninstall,
+}
+
+/// Say precisely why a hook was left alone, and what to do about it.
+///
+/// ⚠⚠ SHARED BY BOTH INSTALLERS, and that is the entire point. This started life in
+/// `setup.rs` alone, so `cargo build` and `cargo xtask setup` told DIFFERENT stories
+/// about the same file — in the very commit that moved `is_executable` here to stop
+/// exactly that, and that rewrote `build.rs`'s other message because "a fix that
+/// lands in one installer and not the other is the drift this arc exists to end".
+/// It landed in one installer and not the other.
+///
+/// Two cases were being told the wrong story:
+/// - An EMPTY hook classifies `Foreign` — correctly, it carries no marker — but
+///   "merge ours into yours" is nonsense for a zero-byte file, and before the
+///   ownership check `setup` used to be the way to repair one. Name it, and give the
+///   one action that works.
+/// - Anything merely UNREADABLE was reported as somebody else's hook: a chmod-000
+///   hook that IS ours, a directory, a dangling symlink.
+#[must_use]
+pub fn describe_untouchable(
+    state: HookState,
+    name: &str,
+    path: &std::path::Path,
+    attempted: Attempted,
+) -> String {
+    let empty = path.metadata().is_ok_and(|m| m.len() == 0);
+    match (state, attempted) {
+        // ⚠ Uninstalling says only what it DID. Advising a merge, or a re-run, in the
+        // middle of `uninstall` tells the developer to install the thing they asked
+        // to remove.
+        (_, Attempted::Uninstall) => {
+            format!("⚠ Left the {name} hook in place — it is not one we installed.")
+        }
+        (HookState::Foreign, Attempted::Install { retry }) if empty => format!(
+            "⚠ The existing {name} hook is EMPTY, so it carries no mark of ours and \
+             was left alone — CortenForge's {name} hook is NOT installed and its \
+             checks will not run. Delete {} and {retry}.",
+            path.display()
+        ),
+        (HookState::Foreign, Attempted::Install { retry }) => format!(
+            "⚠ Left your existing {name} hook in place — CortenForge's is NOT \
+             installed and its checks will not run. Merge xtask/hooks/{name} into \
+             yours, or move yours aside and {retry}."
+        ),
+        (_, Attempted::Install { .. }) => format!(
+            "⚠ Could not read the existing {name} hook, so it was left alone — it \
+             may be a directory, a broken symlink, or unreadable. CortenForge's \
+             {name} hook is NOT installed and its checks will not run."
+        ),
+    }
 }
 
 /// Will git actually RUN the hook at `path`?
@@ -888,6 +969,30 @@ mod tests {
         .expect("old git emits exactly this shape");
         let verdict = classify_hooks_dir(&escaped, &repo);
 
+        // ⚠⚠ THE SAME ESCAPE ONE COMPONENT DEEPER, which the `../shared-hooks` case
+        // above does NOT cover. An earlier `absolutize` walked up from the whole
+        // joined path, and `Path::file_name()` is `None` for `..`, so it bailed to
+        // the un-normalised join whenever the nearest EXISTING ancestor lay above a
+        // `..`. `../shared-hooks` passed only because `<repo>/..` exists. Here the
+        // first component does not exist, so the old implementation gave up and
+        // returned `<repo>/nope/../../shared-hooks` — accepted by a component-wise
+        // `starts_with` as inside the repo.
+        let deep = parse_git_paths_rooted_at(
+            &format!("{}\n.git\nnope/../../shared-hooks\n", repo.display()),
+            &repo,
+        )
+        .expect("old git emits exactly this shape");
+        let deep_verdict = classify_hooks_dir(&deep, &repo);
+
+        // ★ And through a SYMLINK that leaves the tree: `..` must apply to where the
+        // link LANDS, not to where it sits, which is why components are resolved one
+        // at a time rather than lexically.
+        std::os::unix::fs::symlink(lab.join("shared-hooks"), repo.join("lnk")).ok();
+        let via_link =
+            parse_git_paths_rooted_at(&format!("{}\n.git\nlnk\n", repo.display()), &repo)
+                .expect("old git emits exactly this shape");
+        let link_verdict = classify_hooks_dir(&via_link, &repo);
+
         // POSITIVE CONTROL: a relative answer that stays INSIDE must still be ours,
         // or "refuses everything" would pass the assertion above.
         let inside =
@@ -898,13 +1003,24 @@ mod tests {
 
         assert_eq!(
             verdict,
-            HooksDir::Shared(outside),
+            HooksDir::Shared(outside.clone()),
             "`..` in an old git's answer escaped the checkout and was accepted"
         );
         assert_eq!(
             inside_verdict,
             HooksDir::Repo(repo.join(".git").join("hooks")),
             "POSITIVE CONTROL: an old git's ordinary answer is still ours"
+        );
+        assert_eq!(
+            deep_verdict,
+            HooksDir::Shared(outside.clone()),
+            "a `..` whose parent does not exist escaped the checkout — the shipped \
+             test was one component away from seeing it"
+        );
+        assert_eq!(
+            link_verdict,
+            HooksDir::Shared(outside),
+            "an in-repo symlink pointing out of the tree escaped containment"
         );
     }
 
@@ -968,6 +1084,37 @@ mod tests {
             resolve_from_answers(None, None, root, false),
             None,
             "with no .git directory there is nothing to guess at"
+        );
+    }
+
+    /// A hooks directory whose name starts with `-` is an ANSWER, not an echoed flag.
+    ///
+    /// ⚠ This is the gate the commit that deleted the `-`-prefix filter did not
+    /// write, against its own stated standard. Re-adding the filter survived all 20
+    /// tests in this module; measured on the pure functions, the filter turns
+    /// `Repo(<repo>/-hooks)` into `Repo(<repo>/.git/hooks)` — a successful-looking
+    /// install into a directory git never reads.
+    #[test]
+    fn a_dash_prefixed_hooks_path_is_an_answer_not_an_echoed_option() {
+        use super::{parse_git_paths, resolve_from_answers, HooksDir};
+        use std::path::Path;
+
+        let root = Path::new("/nx-cf-dash-repo");
+        let legacy = "/nx-cf-dash-repo\n/nx-cf-dash-repo/.git\n-hooks\n";
+        assert_eq!(
+            resolve_from_answers(None, Some(legacy), root, true),
+            Some(HooksDir::Repo(root.join("-hooks"))),
+            "`core.hooksPath = -hooks` is legal; dropping its answer for the leading \
+             dash leaves two lines, no answer, and the `.git/hooks` guess reporting a \
+             successful install into a directory git never reads"
+        );
+
+        // NEGATIVE CONTROL: the shape that filter claimed to catch is refused by the
+        // absolute-path rule on its own — which is why removing it cost nothing.
+        assert_eq!(
+            parse_git_paths("--path-format=absolute\n/r\n.git\n.git/hooks\n"),
+            None,
+            "an echoed flag is still not an answer"
         );
     }
 

@@ -142,7 +142,9 @@ filename through the single `hook_install::HOOKS` table —
   `build.rs` in no way at all: an up-to-date hook has its executable bit repaired
   IN PLACE (`chmod`), never rewritten. ⚠ Rewriting looked equivalent and was not —
   the atomic write renames over the path, so it replaced a symlinked hook with a
-  regular file and flipped tracked `.githooks/*` from 644 to 755 on every run.
+  regular file, and rewrote the file (new inode) on every single run. ⚠ It does NOT
+  stop a tracked hook at 644 becoming 755 — that still happens, and must, because git
+  ignores a hook without the executable bit.
 
   ⚠ This used to be the opposite: `setup` wrote both hooks unconditionally and
   `uninstall` deleted by filename, so the two installers reached opposite verdicts on
@@ -180,6 +182,11 @@ through those variables (a bare repo plus `GIT_WORK_TREE`) can no longer be reso
 That trade is deliberate — with both set, git still answers the ownership question
 with our own directory while answering the rest for the other repository — and the
 build says so by name rather than falling silent.
+
+⚠ A `core.hooksPath` whose directory name begins with `-` now resolves correctly —
+but git itself cannot execute a hook out of it (`/bin/sh: -/: invalid option`). It
+fails CLOSED, refusing the commit, so nothing is lost silently; the setting is simply
+unusable, for reasons outside this code.
 
 Relative answers from an old git are NORMALISED, not merely joined: `..` and symlinks
 are resolved the way `--path-format=absolute` would. Without that, `core.hooksPath =

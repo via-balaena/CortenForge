@@ -162,33 +162,48 @@ else
     # cheerfully prints "don't belong to a workspace crate" and exits 0. Since `-`
     # sorts early, usually ALL crates are lost. Measured. That is the same false
     # clean bill of health the mesh guard's own comments refuse to print.
+    # ⚠ `./` PREFIX, and it is not cosmetic. `$dir` can begin with `-` (a crate in a
+    # `-dash/` directory), and then `grep`/`sed`/`test` parse the FILENAME as options:
+    # measured, `grep: invalid option -- g`, exit 2, so that crate is dropped. The
+    # obvious fix, `--`, is not portable: GNU sed accepts it, BSD sed treats it as a
+    # FILENAME and exits 1 — measured on macOS. Prefixing `./` gives an operand that
+    # can never start with a dash, on either. `$dir` is always repo-relative here.
     crates=$(printf '%s\n' "$staged_rs_files" | while IFS= read -r file; do
         [ -n "$file" ] || continue
         dir=$(dirname -- "$file")
         # `!= "/"` guards an absolute path, whose dirname never reaches "." — git
         # gives repo-relative paths, so this is insurance, not a live case.
         while [ "$dir" != "." ] && [ "$dir" != "/" ]; do
-            if [ -f "$dir/Cargo.toml" ] && grep -q '^\[package\]' "$dir/Cargo.toml"; then
+            manifest="./$dir/Cargo.toml"
+            if [ -f "$manifest" ] && grep -q '^\[package\]' "$manifest"; then
                 sed -n '/^\[package\]/,/^\[/{s/^name *= *"\(.*\)"/\1/p;}' \
-                    "$dir/Cargo.toml" | tr -d '\r'
+                    "$manifest" | tr -d '\r'
                 break
             fi
             dir=$(dirname -- "$dir")
         done
     done | sort -u | tr '\n' ' ' | sed 's/ *$//')
 
-    # ⚠ A path containing a NEWLINE cannot survive a line-based read, and git
-    # C-quotes control characters regardless of `core.quotePath` — so such a file is
-    # dropped from the lint set. That is tolerable; dropping it SILENTLY is not,
-    # because "no crates" and "we lost some crates" print the same reassuring line.
-    # Compare a NUL-delimited count against the line count and say so when they differ.
-    staged_rs_nul=$(git -c core.quotePath=false diff --cached --name-only -z \
-        --diff-filter=ACMR -- '*.rs' '*Cargo.toml' | tr -dc '\0' | wc -c | tr -d ' ')
-    staged_rs_lines=$(printf '%s\n' "$staged_rs_files" | wc -l | tr -d ' ')
-    if [ "$staged_rs_nul" != "$staged_rs_lines" ]; then
-        echo "⚠ A staged path contains a newline, so the crate list below may be"
-        echo "  incomplete and some staged code will NOT be linted."
-    fi
+    # ⚠⚠ A C-QUOTED PATH IS A DROPPED CRATE, AND IT MUST SAY SO.
+    # git quotes any path containing a control character — `"src/we\nird.rs"`, with a
+    # literal backslash-n inside real double quotes — and `core.quotePath=false` only
+    # affects bytes >= 0x80, not control characters. The quoted form names no file on
+    # disk, so the walk above finds no manifest and that crate silently leaves the
+    # lint set.
+    #
+    # ⚠ The previous attempt at this compared a NUL-delimited count against the line
+    # count. It could NEVER fire: git puts the quoted path on exactly ONE line, so one
+    # path is always one line and one NUL. Measured across newline, tab, CR,
+    # backslash, quote and non-ASCII names — equal every time. It was a gate that
+    # could not fail for the reason it claimed, and it cost a third `git diff` on
+    # every commit. Detect the quoting itself, which is the observable fact.
+    case "$staged_rs_files" in
+        '"'*|*"
+\""*)
+            echo "⚠ A staged path contains a control character, so git quoted it and"
+            echo "  its crate is NOT in the lint set below — that code will NOT be linted."
+            ;;
+    esac
 
     if [ -z "$crates" ]; then
         # True for a root-level staged file: the workspace manifest is virtual (no

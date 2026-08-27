@@ -134,19 +134,14 @@ fn install_hook_if_needed(path: &Path, content: &str, name: &str) {
         // already ours and current. Otherwise the developer's scan/mesh guard is not
         // armed and they have no way to know — that silence is how the original bug
         // survived on real machines for two releases.
-        match state {
-            HookState::Foreign => println!(
-                "cargo:warning=Left your existing {name} hook in place, so \
-                 CortenForge's is NOT installed and the scan/mesh guard is not armed. \
-                 Merge xtask/hooks/{name} into yours, or move yours aside and rebuild."
-            ),
-            HookState::Unreadable => println!(
-                "cargo:warning=Could not read the existing {name} hook, so it was left \
-                 alone. CortenForge's {name} hook is NOT installed and the scan/mesh \
-                 guard is not armed."
-            ),
-            _ => {}
-        }
+        // SHARED with `cargo xtask setup`. Spelling these out here is how the two
+        // installers came to tell different stories about the same file: the empty-
+        // hook wording was fixed in `setup.rs` only, so `cargo build` still told a
+        // zero-byte hook to "merge ours into yours".
+        println!(
+            "cargo:warning={}",
+            describe_untouchable(state, name, path, Attempted::Install { retry: "rebuild" })
+        );
         return;
     }
 
