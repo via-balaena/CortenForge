@@ -171,11 +171,20 @@ answering the others for a different repository.
 If git cannot be asked at all, resolution falls back to `<root>/.git/hooks` when that
 `.git` is a real directory — installing nothing would be a regression for a container
 with no `git` binary or a repo tripping `dubious ownership`. ⚠ The fallback is the
-LAST resort, not the second: a git too old for `--path-format` (Ubuntu 20.04 ships
-2.25) is asked again without it, so a `core.hooksPath` is still honoured there. The
-one case the fallback cannot see is a `core.hooksPath` on a machine where git cannot
-run at all — nothing can, and it is the only remaining way to be told "Installed"
-about a file git does not read.
+LAST resort, not the second: git's own answer always wins when there is one. The one
+case the fallback cannot see is a `core.hooksPath` on a machine where git cannot run
+at all — nothing can, and it is the only remaining way to be told "Installed" about a
+file git does not read.
+
+The ask deliberately passes NO `--path-format=absolute`. Asking for it made git's
+answer easier and the code harder: a git older than 2.31 (Ubuntu 20.04 ships 2.25)
+does not know the flag, echoes it, and exits 0 — which forced a second ask, a second
+parser, an absolute-path rule to tell the two apart, and a documented order between
+their answers. Every option now passed predates git 2.5. Measured across 35 repository
+shapes, nine of them built specifically to break the equivalence: one ask and two asks
+returned the identical verdict every time, and under a pre-2.5 shim the one-ask design
+is strictly better — three shapes that resolved to a SILENT refusal now resolve
+correctly or say why.
 
 ⚠ Because `GIT_DIR`/`GIT_WORK_TREE` are cleared, a working tree checked out purely
 through those variables (a bare repo plus `GIT_WORK_TREE`) can no longer be resolved.
@@ -189,7 +198,7 @@ fails CLOSED, refusing the commit, so nothing is lost silently; the setting is s
 unusable, for reasons outside this code.
 
 Relative answers from an old git are NORMALISED, not merely joined: `..` and symlinks
-are resolved the way `--path-format=absolute` would. Without that, `core.hooksPath =
+are resolved the way git resolves them. Without that, `core.hooksPath =
 ../shared-hooks` produced `<repo>/../shared-hooks`, which `starts_with` accepts
 component-wise — containment defeated, on exactly the git version the second ask
 serves.
