@@ -220,17 +220,25 @@ blocked** — demonstrated end to end. Both require a `core.hooksPath` git itsel
 use; detecting them would mean re-implementing the kernel's path traversal, which is
 the class of reimplementation this arc has already paid for twice.
 
-⚠ **git cannot execute hooks from a RELATIVE `core.hooksPath` of `.` or `./`** —
-measured on git 2.50: it drops the directory part and `execvp` searches `PATH`, so
-every commit dies with `error: cannot run pre-commit: No such file or directory`. The
-installers resolve and install exactly where git says, and report success, for hooks
-git will never run. It fails CLOSED (the commit is refused), and spelling the same
-directory as an ABSOLUTE path works end to end.
+⚠ **Two `core.hooksPath` spellings name a directory git cannot EXEC from, and both
+are REFUSED rather than installed into.** git execs `<hooksPath>/<name>` roughly as
+the shell would, so the answer is the front of a command line and not merely a
+location:
 
-⚠ A `core.hooksPath` whose directory name begins with `-` now resolves correctly —
-but git itself cannot execute a hook out of it (`/bin/sh: -/: invalid option`). It
-fails CLOSED, refusing the commit, so nothing is lost silently; the setting is simply
-unusable, for reasons outside this code.
+- **`.` or `./`** — git normalises the leading `./` away, leaving the bare word
+  `pre-commit`; `execvp` searches `PATH` and the commit dies with `error: cannot run
+  pre-commit: No such file or directory`.
+- **anything beginning with `-`** (`core.hooksPath = -hooks`) — the command starts
+  with a dash, so the shell reads it as OPTIONS and dumps its option list instead of
+  running anything.
+
+Measured on git 2.50.1, each shape three-sided: configured with NO hook file, commits
+succeed; with a hook installed, **every commit in the checkout is refused**; and the
+SAME directory named as an ABSOLUTE path runs the hook and commits fine. So installing
+here does not merely leave the guard unarmed — it breaks a working repository, with an
+error naming neither CortenForge nor `core.hooksPath`. Both installers therefore
+decline and say which setting to change. This is the one refusal that is not about
+ownership: the directory *is* ours to write.
 
 Relative answers — which is what git returns for the git dir and the hooks path, on
 every version — are NORMALISED, not merely joined: `..` and symlinks

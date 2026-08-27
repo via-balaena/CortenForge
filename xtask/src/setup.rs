@@ -156,6 +156,21 @@ fn hooks_dir_from(
              core.hooksPath somewhere inside this checkout.",
             dir.display()
         ),
+        // ⚠⚠ NOT A PERMISSION REFUSAL. This directory IS ours to write — and we
+        // decline anyway, because git cannot exec a hook from the form it is spelled
+        // in, so installing would make git refuse every commit in the checkout.
+        // Both installers must say so, or `cargo build` and `cargo xtask setup`
+        // disagree about a repository neither of them can help: the drift this whole
+        // arc exists to end.
+        Some(crate::hook_install::HooksDir::GitCannotRun(dir)) => anyhow::bail!(
+            "git resolves hooks to {}, but core.hooksPath is spelled in a form git \
+             cannot EXEC from — a bare `.` or `./`, which git normalises away to \
+             nothing, or a path starting with `-`, which the shell reads as options. \
+             Installing there would make git refuse EVERY commit in this checkout. \
+             Naming that same directory as an ABSOLUTE path works; so does a \
+             subdirectory such as .githooks. Then re-run.",
+            dir.display()
+        ),
         // ⚠ NAME THE CAUSE WHEN WE KNOW IT. `build.rs` explained this case and
         // `setup` did not — the explanation lived in `build_outcome`, which is
         // build-script-only, so the developer got "could not determine" from one
@@ -1435,6 +1450,23 @@ mod hook_tests {
         assert!(
             other.to_string().contains("/outer/.git/hooks"),
             "the refusal must name the directory: {other}"
+        );
+
+        // ★ OURS, AND STILL REFUSED. Every refusal above is "not our directory";
+        // this one is "our directory, which git cannot run hooks from" — installing
+        // would make git reject every commit in the checkout. Both installers must
+        // reach the same verdict, so `build_outcome` gates the same case.
+        let unrunnable = super::hooks_dir_from(
+            Some(HooksDir::GitCannotRun(PathBuf::from("/repo"))),
+            root,
+            false,
+        )
+        .expect_err("core.hooksPath=. must not be installed into");
+        assert!(
+            unrunnable.to_string().contains("core.hooksPath")
+                && unrunnable.to_string().contains("EVERY commit"),
+            "name the setting to change and what installing would have done: \
+             {unrunnable}"
         );
 
         let unknown = super::hooks_dir_from(None, root, false)

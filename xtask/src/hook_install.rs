@@ -54,6 +54,17 @@ pub enum HooksDir {
     /// A hooks directory outside this repository altogether: a global
     /// `core.hooksPath`, shared with every other repo on the machine.
     Shared(std::path::PathBuf),
+    /// Inside this checkout, but spelled so that GIT ITSELF cannot exec a hook from
+    /// it — `core.hooksPath = .` or `./`. Installing here is worse than installing
+    /// nowhere, so it is refused with the one sentence that explains it.
+    ///
+    /// ⚠⚠ THE ONLY VARIANT THAT IS ABOUT GIT'S LIMIT RATHER THAN OUR PERMISSION.
+    /// The other three answer "is this ours to write?"; this one answers "can the
+    /// answer be used at all?" — which is why it cannot be decided from the
+    /// absolute path in the payload. `.` and an absolute path to the same directory
+    /// resolve identically and git runs one and not the other, so the distinction
+    /// lives in [`GitPaths::hooks_runnable`], taken from the RAW answer.
+    GitCannotRun(std::path::PathBuf),
 }
 
 /// The three answers one `git rev-parse` call gives about a checkout.
@@ -65,6 +76,9 @@ struct GitPaths {
     pub common_dir: std::path::PathBuf,
     /// Where git will actually look for hooks.
     pub hooks: std::path::PathBuf,
+    /// Whether git can EXEC a hook from that answer, which is not the same question
+    /// as where the answer points. See [`hooks_answer_is_runnable`].
+    pub hooks_runnable: bool,
 }
 
 /// Parse `git rev-parse --show-toplevel --git-common-dir --git-path hooks`, or
@@ -135,8 +149,60 @@ fn parse_git_paths(stdout: &str, base: &std::path::Path) -> Option<GitPaths> {
     Some(GitPaths {
         toplevel: absolutize(base, toplevel),
         common_dir: absolutize(base, common_dir),
+        // ⚠ TAKEN FROM THE RAW ANSWER, and it has to be: `absolutize` is what
+        // destroys the distinction this asks about. See `hooks_answer_is_runnable`.
+        hooks_runnable: hooks_answer_is_runnable(hooks),
         hooks: absolutize(base, hooks),
     })
+}
+
+/// Can git EXEC a hook out of the directory it just named?
+///
+/// ⚠⚠ IT IS NOT ALWAYS YES, and where it is no, INSTALLING IS WORSE THAN DOING
+/// NOTHING. git execs `<hooksPath>/<name>` roughly as the shell would, so the answer
+/// is not merely a location — it is the front of a command line, and two spellings
+/// of a perfectly good directory are not commands. In both, a checkout that
+/// committed fine before we installed refuses EVERY commit afterwards, with an error
+/// that names neither CortenForge nor `core.hooksPath`.
+///
+/// Measured on git 2.50.1, each shape three-sided in one repository — configured but
+/// with no hook file, with an always-passing hook installed, and with the SAME
+/// directory named absolutely:
+///
+/// 1. **`core.hooksPath = .` (or `./`)** — git normalises the leading `./` away, so
+///    the command becomes the bare word `pre-commit`, `execvp` searches PATH, and
+///    the commit dies with `error: cannot run pre-commit: No such file or directory`.
+///    No hook file: commits succeed. Hook installed: REFUSED, hook never ran.
+///    Absolute: runs, commit succeeds.
+/// 2. **an answer beginning with `-`** (`core.hooksPath = -hooks`) — the command
+///    starts with a dash, so the shell reads it as OPTIONS and dumps its option list
+///    (`verbose off / vi off / xtrace off`) instead of running anything. No hook
+///    file: commits succeed. Hook installed: REFUSED. Absolute — the very same
+///    `-hooks` directory, named from `/` — RUNS, which is what proves the fault is
+///    the leading character of the command and not the directory.
+///
+/// ⚠ THE RULE IS EXACTLY AS WIDE AS THE MEASUREMENT, and no wider, because this arc
+/// has deleted four defensive rules added for shapes nobody could produce. A
+/// relative answer with any real component (`.githooks`, `./nested`) keeps its
+/// directory part and execs relative to the top level — measured to work, gated as a
+/// positive control. Every absolute answer works, including one whose last component
+/// starts with `-`. Only the two shapes above are refused.
+///
+/// ⚠⚠ THIS IS NOT THE DELETED `-` FILTER COMING BACK, and the difference is the
+/// whole point. That filter DROPPED the line, so the answer was lost, two lines were
+/// left, and the `.git/hooks` guess reported a successful install into a directory
+/// git does not read — a false success. This keeps the answer, names the directory
+/// git really chose, and refuses it out loud. Same input, opposite failure mode.
+#[must_use]
+fn hooks_answer_is_runnable(answer: &str) -> bool {
+    // The shell reads a leading `-` as options, whatever follows it.
+    if answer.starts_with('-') {
+        return false;
+    }
+    // `.`, `./`, `././` — everything normalises away and no directory part is left.
+    std::path::Path::new(answer)
+        .components()
+        .any(|c| !matches!(c, std::path::Component::CurDir))
 }
 
 /// Join `answer` onto `base` and resolve it the way git's own `--path-format=absolute`
@@ -322,16 +388,31 @@ fn classify_hooks_dir(paths: &GitPaths, repo_root: &std::path::Path) -> HooksDir
     if paths.toplevel != repo_root {
         return HooksDir::OtherRepo(paths.hooks.clone());
     }
+    // ⚠⚠ BEFORE ASKING WHETHER IT IS OURS, ASK WHETHER GIT CAN USE IT. These are
+    // different questions and the answer to the first used to stand in for both.
+    //
+    // The working-tree arm below accepts the repository ROOT (`core.hooksPath = .`,
+    // where git's hooks answer equals the toplevel), and that acceptance was pinned
+    // by a test whose comment called it a decision: "that is genuinely where git
+    // reads hooks under that setting … the visible cost is two untracked files in
+    // the repository root". Both halves were false. git cannot exec a hook from a
+    // relative `.` at all, so the guard was never armed — and the real cost was that
+    // installing there makes git refuse EVERY commit in the checkout. The fact that
+    // refutes it was measured on this very branch and written into
+    // docs/INFRASTRUCTURE.md while this comment went on asserting the opposite,
+    // eight lines from the code it describes.
+    if !paths.hooks_runnable {
+        return HooksDir::GitCannotRun(paths.hooks.clone());
+    }
     // `starts_with` is COMPONENT-wise, not textual, so a sibling whose name merely
     // begins with the same characters (`/x/.github` against `/x/.git`) is not
     // "inside" it. Both arms rely on that.
     //
-    // ★ The working-tree arm accepts the repository ROOT itself (`core.hooksPath=.`,
-    // where git's answer equals the toplevel). That is deliberate: it is where git
-    // genuinely reads hooks from under that setting, and refusing would leave the
-    // guard unarmed for someone who asked for it explicitly. It does mean the two
-    // hooks appear as untracked files in the root — pinned by test, so a future
-    // reader meets a decision rather than a surprise.
+    // ★ The working-tree arm still accepts the repository root when git spells it in
+    // a form git can exec from — an ABSOLUTE `core.hooksPath` naming the top level.
+    // That case works (measured), and it does mean the two hooks appear as untracked
+    // files in the root. Pinned by test, so a future reader meets a decision rather
+    // than a surprise.
     if paths.hooks.starts_with(&paths.common_dir) || paths.hooks.starts_with(&paths.toplevel) {
         HooksDir::Repo(paths.hooks.clone())
     } else {
@@ -572,6 +653,19 @@ pub fn build_outcome(
              CortenForge's hooks were NOT installed and the scan/mesh guard is not \
              armed. Merge xtask/hooks/* into it yourself, or point core.hooksPath \
              somewhere inside this checkout.",
+            dir.display()
+        )),
+        // ⚠⚠ THE ONE REFUSAL THAT IS NOT ABOUT OWNERSHIP. We are entitled to write
+        // here — it is our own checkout — and installing anyway would break the
+        // developer's repository rather than merely fail to protect it, so the
+        // message has to say that plainly or it reads as bureaucracy.
+        Some(HooksDir::GitCannotRun(dir)) => BuildOutcome::Warn(format!(
+            "git resolves hooks to {}, but core.hooksPath is spelled in a form git \
+             cannot EXEC from — a bare `.` or `./`, which git normalises away to \
+             nothing, or a path starting with `-`, which the shell reads as options. \
+             Installing there would make git refuse EVERY commit in this checkout, so \
+             CortenForge's hooks were NOT installed and the scan/mesh guard is not \
+             armed. Naming that same directory as an ABSOLUTE path works.",
             dir.display()
         )),
         // ⚠ `GIT_DIR`/`GIT_WORK_TREE` are cleared before asking git, because
@@ -1188,10 +1282,17 @@ mod tests {
         use super::{classify_hooks_dir, GitPaths, HooksDir};
         use std::path::{Path, PathBuf};
 
+        // `hooks_runnable: true` throughout: every case here spells the hooks path
+        // absolutely, which is the form git can exec from. The false case is not a
+        // property of these paths at all — it comes from the RAW answer — so it is
+        // gated where it is decided, in
+        // `a_hooks_path_git_cannot_exec_from_is_refused_rather_than_installed_into`,
+        // rather than smuggled in here as a magic path string.
         let at = |top: &str, common: &str, hooks: &str| GitPaths {
             toplevel: PathBuf::from(top),
             common_dir: PathBuf::from(common),
             hooks: PathBuf::from(hooks),
+            hooks_runnable: true,
         };
         let verdict = |p: &GitPaths, root: &str| classify_hooks_dir(p, Path::new(root));
 
@@ -1251,20 +1352,30 @@ mod tests {
             HooksDir::Shared(_)
         ));
 
-        // ★ THE DEGENERATE SHAPE: `core.hooksPath=.`, where git's hooks answer IS
-        // the working tree root. An earlier revision asserted this was refused; the
-        // revision that widened containment to the working tree deleted that
-        // assertion and replaced it with nothing, so the behaviour flipped with no
-        // test either way. It is now a DECISION, pinned: accepted, because that is
-        // genuinely where git reads hooks under that setting, and refusing leaves
-        // the guard unarmed for someone who configured it deliberately. The visible
-        // cost is two untracked files in the repository root.
+        // ★ THE DEGENERATE SHAPE: a hooks answer that IS the working tree root. An
+        // earlier revision asserted this was refused; the revision that widened
+        // containment to the working tree deleted that assertion and replaced it
+        // with nothing, so the behaviour flipped with no test either way.
+        //
+        // ⚠⚠ THE COMMENT THAT REPLACED IT WAS WORSE THAN NO COMMENT. It read
+        // "accepted, because that is genuinely where git reads hooks under that
+        // setting", pinning `core.hooksPath = .` as a considered decision — and it
+        // was measured false on this very branch: git cannot exec a hook from a
+        // relative `.`, so the guard was never armed, and installing there makes git
+        // refuse every commit. A confident justification is not evidence, and this
+        // one outlived its own refutation by four commits.
+        //
+        // What is true is narrower, so it is asserted narrowly: the root is
+        // acceptable when git names it in a form git can exec from — an ABSOLUTE
+        // core.hooksPath. The relative spelling is refused in
+        // `a_hooks_path_git_cannot_exec_from_is_refused_rather_than_installed_into`.
         assert!(
             matches!(
                 verdict(&at("/repo", "/repo/.git", "/repo"), "/repo"),
                 HooksDir::Repo(_)
             ),
-            "core.hooksPath=. puts hooks in the repo root, and git reads them there"
+            "an ABSOLUTE core.hooksPath naming the repo root is a directory git runs \
+             hooks from"
         );
 
         // ⚠ THE PAYLOAD, not just the variant. Every assertion above is
@@ -1290,6 +1401,188 @@ mod tests {
                 "/outer/vendor/cortenforge"
             ),
             HooksDir::OtherRepo(PathBuf::from("/outer/.git/hooks")),
+        );
+    }
+
+    /// Two `core.hooksPath` spellings name a directory git itself cannot exec from.
+    ///
+    /// ⚠⚠ THE PREMISE IS RUN, NOT ASSERTED. Two claims about git on this arc were
+    /// written confidently in a comment and later measured false, so each shape here
+    /// makes real git prove the harm before the decision that avoids it is gated. If
+    /// a future git starts executing these, the test fails on the PREMISE and tells
+    /// the reader the rule can be deleted — rather than passing forever on a stale
+    /// belief.
+    ///
+    /// ★ EVERY REFUSAL IS PAIRED WITH THE SAME DIRECTORY SPELLED ABSOLUTELY, which
+    /// git runs. Without that pairing, "git cannot exec from here" would be
+    /// satisfied by a broken fixture — a hook that never worked anywhere — and the
+    /// rule would look justified while condemning the directory rather than the
+    /// spelling.
+    #[test]
+    #[cfg(unix)]
+    fn a_hooks_path_git_cannot_exec_from_is_refused_rather_than_installed_into() {
+        use super::{resolve_hooks_dir, HooksDir};
+
+        let lab = std::env::temp_dir().join(format!("cf-dothooks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&lab);
+        std::fs::create_dir_all(&lab).expect("temp dir");
+        let repo = std::fs::canonicalize(&lab)
+            .expect("canonicalize")
+            .join("repo");
+        std::fs::create_dir_all(&repo).expect("temp dir");
+
+        // Every invocation goes through `git_command`, so the ambient GIT_* variables
+        // are cleared here exactly as they are in production.
+        let git = |args: &[&str]| {
+            super::git_command(&repo, args)
+                .output()
+                .expect("git must be installed to run this test")
+        };
+        assert!(git(&["init", "-q"]).status.success(), "git init");
+        git(&["config", "user.email", "t@example.invalid"]);
+        git(&["config", "user.name", "t"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(repo.join("a.txt"), "one\n").expect("seed");
+        git(&["add", "a.txt"]);
+        assert!(
+            git(&["commit", "-qm", "feat: one"]).status.success(),
+            "the baseline commit must succeed, or the fixture proves nothing"
+        );
+
+        // An ALWAYS-PASSING hook: any commit failure below is git failing to run it,
+        // never the hook rejecting the commit.
+        let hook = repo.join("pre-commit");
+        std::fs::write(&hook, "#!/bin/sh\necho HOOK-RAN\nexit 0\n").expect("seed hook");
+        super::make_executable(&hook).expect("chmod");
+
+        let commit = |file: &str, msg: &str| {
+            std::fs::write(repo.join(file), "x\n").expect("seed");
+            git(&["add", file]);
+            let out = git(&["commit", "-qm", msg]);
+            // ⚠ BOTH STREAMS. git connects a hook's stdout to its own STDERR, so
+            // reading stdout alone reported "the hook never ran" for a hook that ran
+            // perfectly — caught here only because the positive control asserts the
+            // hook DID run rather than just that the commit succeeded.
+            let ran = String::from_utf8_lossy(&out.stdout).contains("HOOK-RAN")
+                || String::from_utf8_lossy(&out.stderr).contains("HOOK-RAN");
+            (out.status.success(), ran)
+        };
+
+        // ⚠ WRITTEN INTO `.git/config` DIRECTLY, because `git config core.hooksPath
+        // -hooks` cannot express one of the shapes under test: git parses the value
+        // as an option. `git config core.hooksPath -- -hooks` does not help either —
+        // it stores the literal `--`, and the first version of this fixture did
+        // exactly that and "passed" while testing a setting nobody has. A later
+        // `[core]` section wins, so each call appends one, and the read-back below
+        // is what stops a silently ineffective fixture a second time.
+        let set_hooks_path = |value: &str| {
+            let cfg = repo.join(".git").join("config");
+            let mut text = std::fs::read_to_string(&cfg).expect("read .git/config");
+            text.push_str(&format!("\n[core]\n\thooksPath = {value}\n"));
+            std::fs::write(&cfg, text).expect("write .git/config");
+            let got = git(&["config", "--get", "core.hooksPath"]);
+            assert_eq!(
+                String::from_utf8_lossy(&got.stdout).trim(),
+                value,
+                "the fixture did not actually set core.hooksPath, so everything below \
+                 it would test the default"
+            );
+        };
+
+        set_hooks_path(".");
+        let under_dot = commit("b.txt", "feat: two");
+        let dot_verdict = resolve_hooks_dir(&repo);
+
+        // CONTROL: the identical file, the identical directory, spelled absolutely.
+        set_hooks_path(&repo.display().to_string());
+        let under_absolute = commit("c.txt", "feat: three");
+
+        // CONTROL: an ordinary in-repo relative path keeps its directory part, so git
+        // execs it — this is why the rule is narrowed to a path that normalises away
+        // to nothing rather than to "relative".
+        std::fs::create_dir_all(repo.join(".githooks")).expect("temp dir");
+        std::fs::rename(&hook, repo.join(".githooks/pre-commit")).expect("move hook");
+        set_hooks_path(".githooks");
+        let under_subdir = commit("d.txt", "feat: four");
+        let subdir_verdict = resolve_hooks_dir(&repo);
+
+        // ★ THE SECOND SHAPE: a leading `-`. The command git execs starts with a
+        // dash, so the shell reads it as OPTIONS and prints its option list instead
+        // of running the hook.
+        let dashed = repo.join("-hooks");
+        std::fs::create_dir_all(&dashed).expect("temp dir");
+        std::fs::rename(repo.join(".githooks/pre-commit"), dashed.join("pre-commit"))
+            .expect("move hook");
+        set_hooks_path("-hooks");
+        let under_dash = commit("e.txt", "feat: five");
+        let dash_verdict = resolve_hooks_dir(&repo);
+
+        // CONTROL, and the one that identifies the CAUSE: the very same `-hooks`
+        // directory, named from `/`, runs. So the fault is the leading character of
+        // the command, not the directory — which is why the rule reads the raw
+        // answer's first byte rather than the resolved path's last component.
+        set_hooks_path(&dashed.display().to_string());
+        let under_dash_absolute = commit("f.txt", "feat: six");
+        let dash_absolute_verdict = resolve_hooks_dir(&repo);
+        let _ = std::fs::remove_dir_all(&lab);
+
+        // THE PREMISE, from git itself.
+        assert_eq!(
+            under_dot,
+            (false, false),
+            "git is expected to REFUSE the commit and never run the hook under \
+             core.hooksPath=. — if this now succeeds, git gained the ability to exec \
+             from a relative `.` and the GitCannotRun rule can be deleted"
+        );
+        assert_eq!(
+            under_absolute,
+            (true, true),
+            "the same file in the same directory, named absolutely, must run — \
+             otherwise the assertion above is satisfied by a hook that never worked"
+        );
+        assert_eq!(
+            under_subdir,
+            (true, true),
+            "a relative path with a real component still execs; the rule must not \
+             widen to every relative answer"
+        );
+        assert_eq!(
+            under_dash,
+            (false, false),
+            "git is expected to REFUSE the commit under core.hooksPath=-hooks — the \
+             shell reads the command as options"
+        );
+        assert_eq!(
+            under_dash_absolute,
+            (true, true),
+            "the SAME -hooks directory named absolutely must run, or the refusal \
+             above is about the directory rather than the spelling"
+        );
+
+        // THE DECISION, which exists only because of the premise above.
+        assert_eq!(
+            dot_verdict,
+            Some(HooksDir::GitCannotRun(repo.clone())),
+            "core.hooksPath=. must be refused by name, not installed into"
+        );
+        assert_eq!(
+            subdir_verdict,
+            Some(HooksDir::Repo(repo.join(".githooks"))),
+            "the positive control: an in-repo relative hooks path is still ours"
+        );
+        // ⚠ THE PAYLOAD, not just the variant. The deleted `-`-prefix filter also
+        // declined to install into `-hooks` — by LOSING the answer and installing
+        // into `.git/hooks` while reporting success. Naming the directory git really
+        // chose is what separates this refusal from that bug.
+        assert_eq!(
+            dash_verdict,
+            Some(HooksDir::GitCannotRun(dashed.clone())),
+            "the refusal must carry the directory git chose, not fall back to a guess"
+        );
+        assert_eq!(
+            dash_absolute_verdict,
+            Some(HooksDir::Repo(dashed)),
+            "absolute is the spelling that works, and it must still be ours"
         );
     }
 
@@ -1499,6 +1792,24 @@ mod tests {
             true,
             false,
         );
+        // ★ AND THE FOURTH, which is not about ownership: the directory IS ours, and
+        // we decline anyway because installing would make git refuse every commit.
+        // Mutating this arm into an install is the shape that reintroduces the bug,
+        // and it is indistinguishable from `Repo` by payload alone.
+        let unrunnable = build_outcome(
+            Some(HooksDir::GitCannotRun(PathBuf::from("/repo"))),
+            true,
+            false,
+        );
+        let BuildOutcome::Warn(said) = unrunnable else {
+            panic!("core.hooksPath=. must warn, not install: {unrunnable:?}");
+        };
+        assert!(
+            said.contains("core.hooksPath") && said.contains("EVERY commit"),
+            "the developer has to be told which setting to change and what installing \
+             would have done to their checkout: {said}"
+        );
+
         let BuildOutcome::Warn(message) = shared else {
             panic!("a hooks dir outside the repo must warn, not install: {shared:?}");
         };
@@ -1705,9 +2016,19 @@ mod tests {
     /// A hooks directory whose name starts with `-` is an ANSWER, not an echoed flag.
     ///
     /// ⚠ This is the gate the commit that deleted the `-`-prefix filter did not
-    /// write, against its own stated standard. Re-adding the filter survived every test in this module; measured on the pure functions, the filter turns
-    /// `Repo(<repo>/-hooks)` into `Repo(<repo>/.git/hooks)` — a successful-looking
-    /// install into a directory git never reads.
+    /// write, against its own stated standard. Re-adding the filter survived every
+    /// test in this module; measured on the pure functions, the filter turns the
+    /// answer into `Repo(<repo>/.git/hooks)` — a successful-looking install into a
+    /// directory git never reads.
+    ///
+    /// ⚠⚠ THE VERDICT CHANGED AND THE CLAIM DID NOT. `-hooks` is now `GitCannotRun`
+    /// rather than `Repo`, because git measurably cannot exec from it — but that is
+    /// the OPPOSITE of what the deleted filter did, and this test exists to keep the
+    /// two apart. The filter LOST the answer and installed somewhere else while
+    /// reporting success; this names `<repo>/-hooks` — the directory git really
+    /// chose — and refuses it out loud. So the assertion is on the PAYLOAD as much as
+    /// the variant: if the guess ever reappears here, the filter is back under a new
+    /// name.
     #[test]
     fn a_dash_prefixed_hooks_path_is_an_answer_not_an_echoed_option() {
         use super::{resolve_from_answers, HooksDir};
@@ -1717,10 +2038,24 @@ mod tests {
         let legacy = "/nx-cf-dash-repo\n/nx-cf-dash-repo/.git\n-hooks\n";
         assert_eq!(
             resolve_from_answers(Some(legacy), root, true),
+            Some(HooksDir::GitCannotRun(root.join("-hooks"))),
+            "`core.hooksPath = -hooks` is legal and must be carried through to the \
+             directory git chose; dropping its answer for the leading dash leaves two \
+             lines, no answer, and the `.git/hooks` guess reporting a successful \
+             install into a directory git never reads"
+        );
+        // ★ AND THE SAME DIRECTORY, NAMED ABSOLUTELY, IS STILL OURS TO INSTALL INTO —
+        // measured: git runs the hook. Without this the refusal above would be
+        // satisfied by a rule that condemned the directory rather than the spelling.
+        assert_eq!(
+            resolve_from_answers(
+                Some("/nx-cf-dash-repo\n/nx-cf-dash-repo/.git\n/nx-cf-dash-repo/-hooks\n"),
+                root,
+                true
+            ),
             Some(HooksDir::Repo(root.join("-hooks"))),
-            "`core.hooksPath = -hooks` is legal; dropping its answer for the leading \
-             dash leaves two lines, no answer, and the `.git/hooks` guess reporting a \
-             successful install into a directory git never reads"
+            "the fault is the leading character of the command git execs, not the \
+             directory: absolute works"
         );
 
         // NEGATIVE CONTROL: an echoed option is still refused — on COUNT, the shape
