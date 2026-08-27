@@ -128,13 +128,22 @@ that left the scan/mesh guard uninstalled on most checkouts (#833).
 **Installers**: two, both reading the same source and pairing each text with its
 filename through the single `hook_install::HOOKS` table —
 - `xtask/build.rs` — automatic on first `cargo build` of any xtask command. Replaces
-  a hook that is ours and out of date, leaves a foreign hook alone and says so.
+  a hook that is ours and out of date, repairs a missing executable bit, and leaves a
+  foreign hook alone. Every outcome except "already ours and current" is announced
+  with a `cargo:warning`, because a guard that is not armed must never be silent.
 - `cargo xtask setup` — the one-command heal. ⚠ Writes both UNCONDITIONALLY: it
   does NOT make the ownership check `build.rs` makes, so it overwrites a hook you
   wrote yourself, with no backup. Move yours aside first. This is deliberate — it is
   what makes the heal work from any state — but it means the warning `build.rs`
   prints ("merge ours into yours") must be acted on BEFORE running the heal, not by
   running it.
+
+Both resolve the directory with `git rev-parse --git-path hooks` rather than joining
+`.git/hooks` onto the repo root — that join is silently wrong under `core.hooksPath`,
+in a linked worktree (whose `.git` is a *file*, so the path does not exist), and with
+`--separate-git-dir`. In each case the old code wrote a file git never reads, and
+reported success.
+
 **Checks**:
 - **Scan/mesh guard** — refuses staged `*.stl` / `*.obj` / `*.ply` / `*.3mf` / `*.mtl`
   (see 1.3.1 below). Runs first: it is a safety rule, not a quality one.

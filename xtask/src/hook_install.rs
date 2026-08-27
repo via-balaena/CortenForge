@@ -36,6 +36,31 @@ pub const HOOKS: [(&str, &str); 2] = [
     ("commit-msg", COMMIT_MSG_HOOK),
 ];
 
+/// Turn `git rev-parse --git-path hooks` output into the directory to install into.
+///
+/// ⚠ ASK GIT, never build the path yourself. `<root>/.git/hooks` is wrong in three
+/// real configurations, and wrong SILENTLY — the installer writes a file, reports
+/// success, and git reads somewhere else:
+/// - `core.hooksPath` (husky, lefthook, pre-commit.com, corporate global config)
+///   relocates hooks entirely. Measured: `--git-path hooks` returns the custom path.
+/// - a linked worktree has `.git` as a FILE, so `<root>/.git/hooks` does not exist;
+///   git runs hooks from the common dir, which `--git-path` resolves. Agents here run
+///   with `isolation: "worktree"`, so this is a routine environment, not an exotic one.
+/// - `--separate-git-dir` likewise.
+///
+/// ⚠ git answers RELATIVE to the repo root in the common case (`.git/hooks`) and
+/// ABSOLUTE for the other two — both measured. `Path::join` is correct for both,
+/// because an absolute right-hand side REPLACES the left rather than nesting under
+/// it. That behaviour is the whole reason this is a named, tested function instead
+/// of an inline join: getting it wrong puts the hooks somewhere plausible and quiet.
+#[must_use]
+pub fn hooks_dir_from_git(
+    git_path_output: &str,
+    repo_root: &std::path::Path,
+) -> std::path::PathBuf {
+    repo_root.join(git_path_output.trim())
+}
+
 /// The hook's own title line, used to recognise a hook as ours.
 ///
 /// DERIVED, never written down twice. A hardcoded marker is a second copy of a
@@ -276,6 +301,32 @@ mod tests {
                 "a hook we did not install reads as up to date — the warning is lost"
             );
         }
+    }
+
+    /// Both shapes git actually returns, pinned. The absolute case is a worktree or
+    /// a `core.hooksPath`; joining it must REPLACE the root, not nest under it.
+    #[test]
+    fn a_relative_git_path_joins_the_root_and_an_absolute_one_replaces_it() {
+        use super::hooks_dir_from_git;
+        use std::path::{Path, PathBuf};
+
+        let root = Path::new("/repo");
+        assert_eq!(
+            hooks_dir_from_git(".git/hooks\n", root),
+            PathBuf::from("/repo/.git/hooks"),
+            "a relative answer must be joined onto the repo root"
+        );
+        assert_eq!(
+            hooks_dir_from_git("/elsewhere/common/.git/hooks\n", root),
+            PathBuf::from("/elsewhere/common/.git/hooks"),
+            "an absolute answer must REPLACE the root — a worktree's hooks live in \
+             the common dir, and nesting it under the root points at nothing"
+        );
+        assert_eq!(
+            hooks_dir_from_git("  /custom/hooks  ", root),
+            PathBuf::from("/custom/hooks"),
+            "surrounding whitespace/newline must be trimmed"
+        );
     }
 
     /// Ours-and-current is NOT ours-to-rewrite, but it IS ours to repair. If these

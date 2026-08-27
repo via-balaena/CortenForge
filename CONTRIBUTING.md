@@ -36,11 +36,14 @@ cargo xtask ci
 > you build the project. The pre-commit hook includes a guard that refuses to commit
 > scan/mesh binaries to this public repository.
 >
-> ⚠ Two cases are **not** automatic. If you already have your own
+> They install into whatever directory git reports, so linked worktrees and
+> `core.hooksPath` are handled.
+>
+> ⚠ One case is **not** automatic: if you already have your own
 > `.git/hooks/pre-commit`, the build leaves it alone and prints a `cargo:warning`
-> saying the guard is not armed — merge `xtask/hooks/pre-commit` into yours. And if
-> `.git/hooks` does not exist, nothing is installed. `cargo xtask setup` installs
-> both, but it overwrites whatever is there, so move your own hook aside first.
+> saying the guard is not armed. Merge `xtask/hooks/pre-commit` into yours.
+> `cargo xtask setup` installs ours instead, but it overwrites whatever is there
+> with no backup — move your hook aside first if you want to keep it.
 
 ### Local CI/CD (Recommended)
 

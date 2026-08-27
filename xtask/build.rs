@@ -5,7 +5,7 @@
 //! has the pre-commit and commit-msg hooks installed.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // The installer's data and its pure decisions, shared VERBATIM with the xtask binary
 // so they are unit-tested. A build script has no test target; while they lived only
@@ -22,10 +22,38 @@ fn main() {
     // Find the workspace root (where .git is)
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let workspace_root = Path::new(&manifest_dir).parent().unwrap();
-    let hooks_dir = workspace_root.join(".git/hooks");
 
-    // Only proceed if we're in a git repo
+    // ASK GIT where its hooks live — see `hooks_dir_from_git`. Building the path as
+    // `<root>/.git/hooks` is silently wrong under `core.hooksPath`, in a linked
+    // worktree, and with `--separate-git-dir`.
+    let hooks_dir = match ask_git_for_hooks_dir(workspace_root) {
+        Some(dir) => dir,
+        None => {
+            // Only worth saying anything if this looks like a checkout at all. xtask
+            // can be built from a vendored copy with no git present, and warning
+            // there would be noise on every build.
+            if workspace_root.join(".git").exists() {
+                println!(
+                    "cargo:warning=Could not ask git where its hooks directory is, so \
+                     CortenForge's git hooks were NOT installed and the scan/mesh \
+                     guard is not armed."
+                );
+            }
+            return;
+        }
+    };
+
     if !hooks_dir.exists() {
+        // ⚠ NOT silent. This was the one decline path still quiet, and it covers the
+        // largest not-armed population. We deliberately do NOT create the directory:
+        // under `core.hooksPath` it can point anywhere on the filesystem, and making
+        // directories outside the repo is not a build script's business.
+        println!(
+            "cargo:warning=git's hooks directory ({}) does not exist, so CortenForge's \
+             hooks were NOT installed and the scan/mesh guard is not armed. Create it, \
+             or unset core.hooksPath, and rebuild.",
+            hooks_dir.display()
+        );
         return;
     }
 
@@ -37,11 +65,33 @@ fn main() {
     }
 
     for (name, _) in HOOKS {
-        // Re-run if the installed hook is deleted...
-        println!("cargo:rerun-if-changed=../.git/hooks/{name}");
-        // ...and if its tracked source changes, or the edit never reaches .git/hooks.
+        // Re-run if the installed hook is deleted — at the directory git ACTUALLY
+        // uses, not an assumed `../.git/hooks`.
+        println!("cargo:rerun-if-changed={}", hooks_dir.join(name).display());
+        // ...and if its tracked source changes, or the edit never reaches the hook.
         println!("cargo:rerun-if-changed=hooks/{name}");
     }
+}
+
+/// Ask git for its hooks directory. `None` when git cannot answer at all.
+///
+/// A build script must never fail the build over this, so every failure mode —
+/// git missing, not a repository, unreadable output — collapses to `None` and the
+/// caller decides whether it is worth a warning.
+fn ask_git_for_hooks_dir(workspace_root: &Path) -> Option<PathBuf> {
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", "--git-path", "hooks"])
+        .current_dir(workspace_root)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let answer = String::from_utf8(out.stdout).ok()?;
+    if answer.trim().is_empty() {
+        return None;
+    }
+    Some(hooks_dir_from_git(&answer, workspace_root))
 }
 
 /// Install `content` at `path` unless something we must not touch is already there.

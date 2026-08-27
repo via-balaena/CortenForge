@@ -116,9 +116,21 @@ pub fn run() -> Result<()> {
 ///
 /// Rooted, "no hooks directory" becomes a statement about the repository rather
 /// than about where the operator happened to be standing.
+/// Where git will actually look for hooks.
+///
+/// ASK GIT — see [`crate::hook_install::hooks_dir_from_git`]. Joining `.git/hooks`
+/// onto the workspace root is silently wrong under `core.hooksPath`, in a linked
+/// worktree (whose `.git` is a FILE, so that path does not exist at all), and with
+/// `--separate-git-dir`. In every one of those the old code either wrote a file git
+/// never reads, or refused to work in a checkout where hooks are perfectly runnable.
 fn git_hooks_dir() -> Result<PathBuf> {
     let sh = xshell::Shell::new()?;
-    Ok(PathBuf::from(crate::grade::find_workspace_root(&sh)?).join(".git/hooks"))
+    let root = PathBuf::from(crate::grade::find_workspace_root(&sh)?);
+    sh.change_dir(&root);
+    let answer = xshell::cmd!(sh, "git rev-parse --git-path hooks")
+        .read()
+        .context("could not ask git where its hooks directory is")?;
+    Ok(crate::hook_install::hooks_dir_from_git(&answer, &root))
 }
 
 /// Install git hooks
@@ -128,8 +140,11 @@ fn install_git_hooks() -> Result<()> {
     let hooks_dir = git_hooks_dir()?;
 
     if !hooks_dir.exists() {
+        // Worktrees and core.hooksPath now resolve correctly, so reaching here means
+        // the directory genuinely is not there — not that we guessed the path wrong.
         anyhow::bail!(
-            "No {} — not a git repository (or a worktree, whose .git is a file).",
+            "git reports its hooks directory as {}, but that directory does not \
+             exist. Create it (or unset core.hooksPath) and run setup again.",
             hooks_dir.display()
         );
     }
@@ -592,6 +607,157 @@ mod hook_tests {
         );
     }
 
+    /// Resolve the hooks dir the way the installers do, inside `repo`.
+    fn hooks_dir_of(repo: &std::path::Path) -> std::path::PathBuf {
+        let out = Command::new("git")
+            .args(["rev-parse", "--git-path", "hooks"])
+            .current_dir(repo)
+            .output()
+            .expect("git rev-parse");
+        assert!(out.status.success(), "git could not report its hooks dir");
+        crate::hook_install::hooks_dir_from_git(&String::from_utf8_lossy(&out.stdout), repo)
+    }
+
+    /// ★ END-TO-END: git ITSELF must run the guard on a real `git commit`.
+    ///
+    /// Every other test here runs `sh hook.sh` directly. That proves the hook SCRIPT
+    /// works and says nothing about whether it ever reaches git — which is #709's bug
+    /// exactly: a correct script that was never installed where git would run it.
+    /// This is the only test in the suite that would have caught the original.
+    ///
+    /// It covers the whole chain in one pass: the installer picks the directory git
+    /// actually uses, writes the right text under the right filename, makes it
+    /// executable, and git invokes it on commit. A regression in ANY link fails here.
+    #[test]
+    fn git_itself_runs_the_installed_guard_on_a_real_commit() {
+        let dir = std::env::temp_dir().join(format!("cf-e2e-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .env_remove("CF_ALLOW_MESH")
+                .output()
+                .expect("git");
+            let combined = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            (out.status.success(), combined)
+        };
+        let must = |args: &[&str]| {
+            let (ok, out) = git(args);
+            assert!(
+                ok,
+                "scratch-repo setup failed at `git {}`:\n{out}",
+                args.join(" ")
+            );
+        };
+        must(&["init", "-q", "."]);
+        must(&["config", "user.email", "t@t"]);
+        must(&["config", "user.name", "t"]);
+        // The developer's global signing config would otherwise fail every commit
+        // here on their machine and nobody else's.
+        must(&["config", "commit.gpgsign", "false"]);
+
+        // Install through the REAL installer, into the directory git reports.
+        super::install_git_hooks_into(&hooks_dir_of(&dir)).expect("install");
+
+        // A valid, formatted cargo project so fmt/clippy cannot confound the result.
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            b"[workspace]\n[package]\nname = \"p\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+        )
+        .expect("Cargo.toml");
+        std::fs::create_dir_all(dir.join("src")).expect("src");
+        std::fs::write(dir.join("src/main.rs"), b"fn main() {}\n").expect("main.rs");
+
+        // THE CLAIM: a staged mesh cannot be committed, via git, not via `sh`.
+        std::fs::write(dir.join("part.stl"), b"solid x\n").expect("fixture");
+        must(&["add", "-f", "part.stl"]);
+        let (ok, out) = git(&["commit", "-m", "feat(x): try to sneak a mesh in"]);
+        assert!(
+            !ok,
+            "git COMMITTED a staged mesh — the guard never ran:\n{out}"
+        );
+        assert!(
+            out.contains("Refusing to commit mesh/scan binaries"),
+            "the commit failed, but not at our guard — this test would pass on any \
+             broken hook, so the message is the assertion:\n{out}"
+        );
+
+        // POSITIVE CONTROL: the same installed hooks must let a clean commit through.
+        // Without it, "hook not installed at all" and "guard blocked it" are the same
+        // result, and the assertion above proves nothing.
+        must(&["rm", "-q", "--cached", "part.stl"]);
+        std::fs::remove_file(dir.join("part.stl")).expect("rm fixture");
+        must(&["add", "Cargo.toml", "src/main.rs"]);
+        let (ok, out) = git(&["commit", "-m", "feat(x): a clean commit"]);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(ok, "the installed hooks rejected a clean commit:\n{out}");
+    }
+
+    /// The worktree case, two-sided: the OLD assumption must be shown to fail, and
+    /// ours to work. `<root>/.git/hooks` does not exist in a linked worktree — `.git`
+    /// is a FILE — yet git runs hooks there from the common dir. Agents in this repo
+    /// run with `isolation: "worktree"`, so this is a routine environment.
+    #[test]
+    fn a_worktree_resolves_to_the_common_hooks_dir_where_naive_joining_fails() {
+        let base = std::env::temp_dir().join(format!("cf-wt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let repo = base.join("repo");
+        std::fs::create_dir_all(&repo).expect("temp dir");
+        let git_in = |cwd: &std::path::Path, args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .expect("git");
+            assert!(
+                out.status.success(),
+                "git {} failed:\n{}",
+                args.join(" "),
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git_in(&repo, &["init", "-q", "."]);
+        git_in(&repo, &["config", "user.email", "t@t"]);
+        git_in(&repo, &["config", "user.name", "t"]);
+        git_in(&repo, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(repo.join("a.txt"), b"x\n").expect("seed");
+        git_in(&repo, &["add", "a.txt"]);
+        git_in(&repo, &["commit", "-q", "-m", "chore: seed", "--no-verify"]);
+
+        let wt = base.join("wt");
+        git_in(
+            &repo,
+            &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "wtb"],
+        );
+
+        // ⚠ Sample every fact BEFORE cleanup. `.exists()` on a deleted tree is
+        // false for both the broken and the working path, which reads as a failure
+        // of the thing under test rather than of the test's own ordering.
+        let resolved = hooks_dir_of(&wt);
+        let naive_exists = wt.join(".git/hooks").exists();
+        let resolved_exists = resolved.exists();
+        let dot_git_is_file = wt.join(".git").is_file();
+        let _ = std::fs::remove_dir_all(&base);
+
+        assert!(dot_git_is_file, "a linked worktree's .git should be a FILE");
+        assert!(
+            !naive_exists,
+            "NEGATIVE CONTROL BROKEN: <worktree>/.git/hooks exists, so this test can \
+             no longer show that naive joining fails"
+        );
+        assert!(
+            resolved_exists,
+            "asking git did not yield a usable hooks dir in a worktree ({})",
+            resolved.display()
+        );
+    }
+
     /// Run the commit-msg hook against `message`. Returns (exited_zero, output).
     ///
     /// EXECUTED, not grepped. Asserting on `COMMIT_MSG_HOOK`'s text would prove
@@ -670,27 +836,58 @@ mod hook_tests {
     /// `|| true`, so `set -e` aborts there regardless and the hook exits non-zero
     /// either way. The discriminator is that the guard must never CLAIM a clean stage
     /// it was unable to verify.
-    #[test]
-    fn the_guard_refuses_when_it_cannot_read_the_index() {
-        let dir = std::env::temp_dir().join(format!("cf-nogit-{}", std::process::id()));
+    /// Run the pre-commit hook OUTSIDE a git repo, which is the cheapest way to make
+    /// `git diff --cached` fail for real rather than by injection.
+    fn run_hook_outside_a_repo(allow_mesh: bool) -> (bool, String) {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let uniq = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("cf-nogit-{}-{uniq}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("temp dir");
-        // Deliberately NOT a git repo, which is the cheapest way to make
-        // `git diff --cached` exit non-zero for real rather than by injection.
         let hook = dir.join("hook.sh");
         std::fs::write(&hook, PRE_COMMIT_HOOK).expect("hook");
-        let out = Command::new("sh")
-            .arg(&hook)
-            .current_dir(&dir)
-            .env_remove("CF_ALLOW_MESH")
-            .output()
-            .expect("run hook");
+        let mut cmd = Command::new("sh");
+        cmd.arg(&hook).current_dir(&dir);
+        if allow_mesh {
+            cmd.env("CF_ALLOW_MESH", "1");
+        } else {
+            cmd.env_remove("CF_ALLOW_MESH");
+        }
+        let out = cmd.output().expect("run hook");
         let combined = format!(
             "{}{}",
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
         let _ = std::fs::remove_dir_all(&dir);
+        (out.status.success(), combined)
+    }
+
+    /// The documented override must work on the unreadable-index path too — and must
+    /// STILL not claim a clean stage.
+    ///
+    /// Without it the only way past a malfunctioning guard is `git commit
+    /// --no-verify`, which also disables the commit-message hook: the mitigation for
+    /// one broken gate silently drops a second. ⚠ The second assertion is the
+    /// load-bearing one. Letting this path fall through to "✓ No scan/mesh binaries
+    /// staged" would print a clean bill of health for a check that never ran, which
+    /// is the precise false statement this guard's whole history is made of.
+    #[test]
+    fn the_override_skips_the_unreadable_index_loudly_without_claiming_a_clean_stage() {
+        let (_, out) = run_hook_outside_a_repo(true);
+        assert!(
+            out.contains("SKIPPED ENTIRELY"),
+            "the override did not leave a record that the guard never ran;\n{out}"
+        );
+        assert!(
+            !out.contains("No scan/mesh binaries staged"),
+            "the hook claimed a clean stage for a check that never ran;\n{out}"
+        );
+    }
+
+    #[test]
+    fn the_guard_refuses_when_it_cannot_read_the_index() {
+        let (ok, combined) = run_hook_outside_a_repo(false);
 
         assert!(
             !combined.contains("No scan/mesh binaries staged"),
@@ -700,7 +897,12 @@ mod hook_tests {
             combined.contains("scan/mesh guard cannot run"),
             "the guard did not refuse for the stated reason; output:\n{combined}"
         );
-        assert!(!out.status.success(), "hook passed; output:\n{combined}");
+        assert!(!ok, "hook passed; output:\n{combined}");
+        assert!(
+            combined.contains("CF_ALLOW_MESH=1 git commit"),
+            "the refusal did not name the override, so the only way out a developer \
+             can find is --no-verify, which drops the commit-message gate too;\n{combined}"
+        );
     }
 
     /// `hook_install::title_of` takes the marker from line 2, so line 2 must actually
