@@ -51,8 +51,12 @@ pub enum HooksDir {
     /// Git resolves this checkout to a DIFFERENT repository — we are a copy nested
     /// inside someone else's working tree, and git found theirs by walking up.
     OtherRepo(std::path::PathBuf),
-    /// A hooks directory outside this repository altogether: a global
-    /// `core.hooksPath`, shared with every other repo on the machine.
+    /// A hooks directory outside this repository altogether. Often a GLOBAL
+    /// `core.hooksPath`, which is shared with every other repo on the machine — but
+    /// ⚠ classification is by LOCATION, not ownership, so a repo-LOCAL
+    /// `core.hooksPath = ../hooks` lands here too. Say WHERE, never WHOSE: three
+    /// other sites had to correct exactly that wording, and a test asserts the
+    /// warning does not claim the directory is shared.
     Shared(std::path::PathBuf),
     /// Inside this checkout, but spelled so that GIT ITSELF cannot exec a hook from
     /// it — `core.hooksPath = .` or `./`. Installing here is worse than installing
@@ -84,9 +88,16 @@ struct GitPaths {
 /// Parse `git rev-parse --show-toplevel --git-common-dir --git-path hooks`, or
 /// `None` if git did not really answer.
 ///
-/// `--show-toplevel` is absolute on every git; the other two come back RELATIVE to
-/// the directory the command ran in, which is `base`. `absolutize` resolves them the
-/// way `--path-format=absolute` would.
+/// `--show-toplevel` is absolute on every git. The other two are USUALLY relative to
+/// the directory the command ran in, which is `base`, and `absolutize` resolves them
+/// the way `--path-format=absolute` would.
+///
+/// ⚠ "Usually" is not "always", and the exception is the case this change exists for:
+/// measured, a LINKED WORKTREE answers with an ABSOLUTE common dir and hooks path,
+/// and so does an absolute `core.hooksPath`. Nothing here may assume relative —
+/// `push_component` lets a `RootDir` replace what came before, which is what makes
+/// both shapes land correctly. An earlier version of this sentence, and one in
+/// docs/INFRASTRUCTURE.md, stated "relative … on every version" as a rule.
 ///
 /// ⚠ NO `--path-format=absolute`, and that is a deliberate simplification. Asking
 /// for it made git's ANSWER easier and the CODE harder: a git older than 2.31
@@ -126,10 +137,24 @@ struct GitPaths {
 /// ⚠⚠ THE ECHO HAZARD IS NOT GONE, it is just no longer reachable by a flag WE
 /// choose. `rev-parse` still echoes any option it does not understand and still
 /// exits 0. `--git-common-dir` and `--git-path` shipped IN git 2.5 (2015), so only
-/// something older echoes one — and measured, such a git also fails on the trailing
-/// `hooks` operand and exits 128, so `ask_git` discards the output before it is
-/// parsed at all. `core.hooksPath` did not exist before 2.9, so the `.git/hooks`
-/// guess such a git falls back to is the right answer for it anyway.
+/// something older echoes one — and measured against a faithful shim, such a git
+/// reads the trailing `hooks` as a REVISION. With no ref by that name it exits 128
+/// and `ask_git` discards the output before it is parsed at all.
+///
+/// ⚠ THAT 128 IS NOT THE GUARANTEE, and leaning on it would be a mistake: in a
+/// repository with a BRANCH named `hooks`, the same git exits 0 and emits four lines
+/// — two answers, the echoed option, and the branch's SHA. Nothing is discarded, and
+/// what refuses it is the COUNT rule in [`three_answers`]. A repo with a `hooks`
+/// branch is not exotic. Measured.
+///
+/// ⚠ KNOWN GAP, one release wide. `core.hooksPath` arrived in 2.9, so the
+/// `.git/hooks` guess is the right answer for anything older. But `rev-parse
+/// --git-path` did not HONOUR `core.hooksPath` until 2.10 (upstream `9445b492`,
+/// after v2.9.0 — its own message says `git_path()` was forgotten while
+/// `run-command.c` was special-cased). On 2.9.x we therefore install into
+/// `.git/hooks` and report success while git runs hooks from `core.hooksPath`.
+/// Documented rather than worked around: the window is one 2016 minor release, and
+/// closing it would mean a version check in a module that deliberately has none.
 ///
 /// ⚠ There used to be a rule dropping any line starting with `-`, described as belt
 /// and braces. It was not free: `core.hooksPath = -hooks` is a legal setting whose
@@ -352,8 +377,12 @@ fn resolve_into(out: &mut std::path::PathBuf, path: &std::path::Path, budget: &m
 /// filter would rescue (an echo PLUS three good answers) cannot occur. Measured with
 /// a faithful pre-2.5 shim: the trailing `hooks` becomes an unresolvable revision,
 /// git exits 128, and `ask_git` discards the output before this function runs.
-/// [`parse_git_paths`] rejects a shifted answer instead, on the one line that must be
-/// a path whatever git you are on.
+///
+/// ⚠ AND IF ONE EVER REACHED HERE, THE COUNT RULE BELOW IS WHAT REFUSES IT — nothing
+/// in this module inspects what a line LOOKS like any more. An earlier version of
+/// this sentence sent the reader to a `toplevel.is_absolute()` rule in
+/// [`parse_git_paths`]; that rule was deleted for catching nothing, and the sentence
+/// outlived it.
 fn three_answers(stdout: &str) -> Option<[&str; 3]> {
     let lines: Vec<&str> = stdout.lines().collect();
     let [toplevel, common_dir, hooks] = lines.as_slice() else {
@@ -494,10 +523,13 @@ fn resolve_from_answers(
 /// ⚠⚠ NO `--path-format=absolute`, and that is the decision this const exists to
 /// pin. Adding it looks free — on a modern git it changes nothing, which is exactly
 /// why a mutation survey found nothing objecting. On a git older than 2.31 (Ubuntu
-/// 20.04 ships 2.25) it is not free: that git does not know the flag, echoes it as
-/// the FIRST line since it is the first option we pass, every answer shifts, and
-/// `parse_git_paths` refuses on the toplevel rule. The result is safe but WRONG —
-/// resolution falls back to `.git/hooks` and a `core.hooksPath` is silently lost.
+/// 20.04 ships 2.25) it is not free: that git does not know the flag and echoes it
+/// as an EXTRA line in position, so the answer is four lines and the COUNT rule in
+/// [`three_answers`] refuses it. (It is not a SHIFT — an echo never replaces an
+/// answer. Saying "shift" here pointed at a `toplevel.is_absolute()` rule that no
+/// longer exists, and was wrong about the mechanism even while it existed.) The
+/// result is safe but WRONG — resolution falls back to `.git/hooks` and a
+/// `core.hooksPath` is silently lost.
 ///
 /// Every option here shipped in git 2.5 (2015) or earlier.
 const REV_PARSE_ASK: [&str; 5] = [
@@ -519,8 +551,23 @@ const REV_PARSE_ASK: [&str; 5] = [
 ///
 /// That shape is reachable: git exports an absolute `GIT_DIR` to every hook it runs
 /// in a linked worktree, and `git submodule foreach` exports one too — so a hook or
-/// a `foreach` that builds CortenForge elsewhere inherits it. Clearing these makes
-/// the answer depend only on the directory, which is the whole premise of asking.
+/// a `foreach` that builds CortenForge elsewhere inherits it.
+///
+/// ⚠⚠ CLEARING THESE DOES NOT MAKE THE ANSWER DEPEND ONLY ON THE DIRECTORY, and an
+/// earlier version of this sentence claimed it did. Measured, in one directory:
+/// `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0`, `GIT_CONFIG_PARAMETERS`,
+/// `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM` each move the verdict — one of them
+/// to an `Install` into a directory git does not read, and `GIT_CONFIG_GLOBAL=/dev/null`
+/// hides a real global `core.hooksPath`. `GIT_CONFIG_PARAMETERS` is exported by git to
+/// every hook whenever the outer command carried `-c`, so it is as reachable as
+/// `GIT_DIR` was.
+///
+/// ★ They are NOT cleared, deliberately. `GIT_DIR` redirects us into ANOTHER
+/// repository — a containment failure. These only change which config git reads for
+/// THIS one, which is a developer configuring their own tools; clearing them would
+/// mean overriding a setting someone deliberately passed. The narrower true claim is
+/// the one that matters: the REPOSITORY we answer for depends only on the
+/// directory.
 fn ask_git(repo_root: &std::path::Path, args: &[&str]) -> Option<String> {
     let out = git_command(repo_root, args)
         .output()
@@ -943,10 +990,16 @@ mod tests {
 
     /// ⚠ THE PAIRING. Crossing the two entries of `HOOKS` installs the commit-msg
     /// script as `pre-commit`, which disarms the scan/mesh guard for everyone whose
-    /// hooks come from `cargo build` — the majority path. Every other test in the
-    /// workspace exercises `PRE_COMMIT_HOOK` directly rather than what the installer
-    /// pairs it with, so this swap shipped green until this test existed. It was
-    /// measured, not imagined.
+    /// hooks come from `cargo build` — the majority path. It was measured, not
+    /// imagined: before the `HOOKS` table existed, `build.rs` wrote the pairing out
+    /// itself and crossing its two consts shipped green.
+    ///
+    /// ⚠ NOT THE ONLY GATE, and an earlier version of this comment claimed it was.
+    /// `the_installer_writes_each_hook_to_its_own_filename` in `setup.rs` drives the
+    /// installer and would fail on the same swap. Both comments said "every other
+    /// test exercises `PRE_COMMIT_HOOK` directly", so each implied it was load-bearing
+    /// alone — delete either on the strength of its neighbour's prose and you would be
+    /// wrong. This one is the cheaper, more direct assertion on the TABLE.
     #[test]
     fn each_hook_is_paired_with_the_filename_git_runs_it_under() {
         let text = |name: &str| {
@@ -976,8 +1029,6 @@ mod tests {
             "a hook was added or removed — give it a pairing assertion here too"
         );
     }
-
-    /// The consts must be the ones the table names, not two independent copies.
 
     #[test]
     fn title_is_taken_from_line_two_without_its_comment_marker() {
@@ -1067,11 +1118,12 @@ mod tests {
         }
     }
 
-    /// A SHIFTED answer is refused; a legitimate answer that looks like a flag is not.
+    /// An ECHOED option is refused; a legitimate answer that looks like a flag is not.
     ///
-    /// ⚠ `rev-parse` echoes any option it does not understand and still exits 0. If
-    /// that ever happens every answer shifts and `toplevel` stops being a path — so
-    /// the one line that must be absolute on every git is the line that is checked.
+    /// ⚠ `rev-parse` echoes any option it does not understand and still exits 0 —
+    /// as an EXTRA line IN POSITION, never in place of an answer, so what arrives is
+    /// FOUR lines and the count rule in `three_answers` refuses it. That is the whole
+    /// defence, and it is the only one: nothing inspects what a line looks like.
     /// Refusing sends the caller to the `.git/hooks` fallback (hooks installed,
     /// nothing hidden); letting a shift through yields `OtherRepo`, which `build.rs`
     /// handles by returning SILENTLY.
@@ -1082,7 +1134,7 @@ mod tests {
     /// settings. Both cases are asserted below, so a third attempt at filtering by
     /// what a line LOOKS like fails here.
     #[test]
-    fn a_shifted_answer_is_refused_and_a_flag_shaped_answer_is_not() {
+    fn an_echoed_option_is_refused_on_count_and_a_flag_shaped_answer_is_not() {
         use super::parse_git_paths;
         use std::path::{Path, PathBuf};
 
@@ -1144,7 +1196,7 @@ mod tests {
         assert!(
             !ask.iter().any(|a| a.starts_with("--path-format")),
             "`--path-format` arrived in git 2.31; Ubuntu 20.04 ships 2.25, which \
-             echoes it as the FIRST line, shifts every answer, and silently loses a \
+             echoes it as an extra line, making four, and silently loses a \
              core.hooksPath to the .git/hooks fallback: {ask:?}"
         );
         // POSITIVE CONTROL: it must still ask the three questions resolution needs,
@@ -1238,7 +1290,7 @@ mod tests {
     /// the rest is recorded in docs/INFRASTRUCTURE.md.
     #[test]
     #[cfg(unix)]
-    fn a_symlink_cycle_terminates_and_names_nothing_that_exists() {
+    fn a_symlink_cycle_terminates_and_stays_inside_the_checkout() {
         let lab = std::env::temp_dir().join(format!("cf-cycle-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&lab);
         let repo = lab.join("repo");
@@ -1610,6 +1662,22 @@ mod tests {
             PathBuf::from("/repo"),
             "join must leave an already-absolute answer alone"
         );
+
+        // ★ AND THE OPPOSITE SHAPE, which no test reached: git does NOT always answer
+        // relatively. Measured, a LINKED WORKTREE returns an ABSOLUTE common dir and
+        // hooks path — and that is the case this whole change exists for, so it must
+        // not depend on a "relative on every version" belief that the docs and this
+        // module both used to state as a rule. `push_component` handles it because a
+        // `RootDir` REPLACES what came before; a `join`-and-hope would too, but only
+        // by accident, and nothing was asserting either way.
+        let worktree = parse_git_paths("/wt\n/main/.git\n/main/.git/hooks\n", Path::new("/wt"))
+            .expect("a worktree's absolute answers are an answer");
+        assert_eq!(
+            worktree.common_dir,
+            PathBuf::from("/main/.git"),
+            "an absolute common dir must not be appended to the base"
+        );
+        assert_eq!(worktree.hooks, PathBuf::from("/main/.git/hooks"));
 
         assert!(
             parse_git_paths("/repo\n.git\n", base).is_none(),
@@ -2148,7 +2216,7 @@ mod tests {
     /// builds xtask, whose build script rewrites the hook the shell is still reading.
     /// The race itself is not reproducible in a unit test, so this pins the two
     /// observable consequences of doing it right: the content lands, and no
-    /// `.cf-install-tmp` sibling survives.
+    /// `pre-commit.cf-install-<pid>-<n>` sibling survives.
     #[test]
     fn writing_a_hook_replaces_it_and_leaves_no_temporary_behind() {
         use super::write_hook_file;

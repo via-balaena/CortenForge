@@ -138,9 +138,11 @@ filename through the single `hook_install::HOOKS` table —
   honour those variables, so it is the way out of that state.
 - `cargo xtask setup` — the one-command heal, and `cargo xtask uninstall` its
   inverse. Both make the SAME ownership check `build.rs` makes: a hook that is not
-  ours is neither overwritten nor deleted, and they say so. They differ from
-  `build.rs` in no way at all: an up-to-date hook has its executable bit repaired
-  IN PLACE (`chmod`), never rewritten. ⚠ Rewriting looked equivalent and was not —
+  ours is neither overwritten nor deleted, and they say so. They treat an up-to-date
+  hook exactly as `build.rs` does: its executable bit is repaired IN PLACE (`chmod`),
+  never rewritten. (⚠ Not "identical in every way" — they differ deliberately twice:
+  `setup` ignores `CI`/`GITHUB_ACTIONS`, as the bullet above says, and it BAILS where
+  `build.rs` warns and carries on.) ⚠ Rewriting looked equivalent and was not —
   the atomic write renames over the path, so it replaced a symlinked hook with a
   regular file, and rewrote the file (new inode) on every single run. ⚠ It does NOT
   stop a tracked hook at 644 becoming 755 — that still happens, and must, because git
@@ -240,8 +242,9 @@ error naming neither CortenForge nor `core.hooksPath`. Both installers therefore
 decline and say which setting to change. This is the one refusal that is not about
 ownership: the directory *is* ours to write.
 
-Relative answers — which is what git returns for the git dir and the hooks path, on
-every version — are NORMALISED, not merely joined: `..` and symlinks
+Relative answers — which is what git USUALLY returns for the git dir and the hooks
+path, though a linked worktree and an absolute `core.hooksPath` both answer
+absolutely — are NORMALISED, not merely joined: `..` and symlinks
 are resolved the way git resolves them. Without that, `core.hooksPath =
 ../shared-hooks` produced `<repo>/../shared-hooks`, which `starts_with` accepts
 component-wise — containment defeated.

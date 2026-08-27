@@ -109,8 +109,10 @@ pub fn run() -> Result<()> {
 /// "No hooks directory found" and return `Ok(())` — a no-op reported as success.
 ///
 /// Refuses a hooks directory outside this repository: a `core.hooksPath` pointing
-/// out there may be shared with every other repo on the machine, and installing or
-/// deleting there is not ours to do. See [`crate::hook_install::HooksDir`].
+/// out there MAY be shared with every other repo on the machine, and installing or
+/// deleting there is not ours to do either way. ⚠ "May" is load-bearing — a
+/// repo-local `core.hooksPath` out of the tree lands here too, so the refusal names
+/// the location, never the owner. See [`crate::hook_install::HooksDir`].
 ///
 /// # Errors
 /// If git's hooks directory cannot be determined, or is not inside this checkout.
@@ -1323,9 +1325,13 @@ mod hook_tests {
     /// Nothing covered this. A mutation survey found that swapping the two consts
     /// in `install_git_hooks_into` — writing the commit-msg script to `pre-commit`
     /// and vice versa — passed the entire suite. The scan/mesh guard lives only in
-    /// the pre-commit text, so that swap silently disarms it while every other test
-    /// stays green, because they all exercise `PRE_COMMIT_HOOK` directly rather
-    /// than what the installer actually writes.
+    /// the pre-commit text, so that swap silently disarms it.
+    ///
+    /// ⚠ ITS PAIR IS `each_hook_is_paired_with_the_filename_git_runs_it_under` in
+    /// `hook_install.rs`, which asserts the same property on the `HOOKS` table.
+    /// Neither is redundant: that one pins the DATA, this one drives the INSTALLER
+    /// and would still catch a mispairing introduced in the write loop. An earlier
+    /// version of both comments claimed to be the only gate.
     #[test]
     fn the_installer_writes_each_hook_to_its_own_filename() {
         let dir = std::env::temp_dir().join(format!("cf-install-{}", std::process::id()));

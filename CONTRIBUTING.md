@@ -50,7 +50,16 @@ cargo xtask ci
 > - git's hooks directory does not exist — create it, then `touch xtask/build.rs`,
 >   because creating a directory alone does not re-run the build script;
 > - `core.hooksPath` points **outside this repository** — a directory out there may
->   be shared with your other repos, so we will not write to it.
+>   be shared with your other repos, so we will not write to it;
+> - `core.hooksPath` is spelled in a form git cannot run hooks from (a bare `.`/`./`,
+>   or a path starting with `-`) — installing would make git refuse every commit;
+> - `GIT_DIR`/`GIT_WORK_TREE` are set, so the checkout could not be resolved;
+> - the hooks directory could not be determined at all;
+> - a hook is not executable and the bit could not be repaired (git ignores it
+>   silently).
+>
+> ⚠ Treat that list as the shape of these warnings, not as an exhaustive index —
+> anything saying the guard is **not armed** means exactly that.
 >
 > It stays **silent** in two cases, neither of which is about you: if this source
 > sits inside somebody else's checkout with no `.git` of its own (git resolves
