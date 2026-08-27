@@ -92,7 +92,7 @@ struct GitPaths {
 /// Parse `git rev-parse --show-toplevel --git-common-dir --git-path hooks --git-path
 /// hooks/pre-commit` — see [`REV_PARSE_ASK`] — or `None` if git did not really answer.
 ///
-/// `--show-toplevel` is absolute on every git. The other two are USUALLY relative to
+/// `--show-toplevel` is absolute on every git. The other three are USUALLY relative to
 /// the directory the command ran in, which is `base`, and `absolutize` resolves them
 /// the way `--path-format=absolute` would.
 ///
@@ -222,17 +222,18 @@ fn parse_git_paths(stdout: &str, base: &std::path::Path) -> Option<GitPaths> {
 /// ★ VALIDATED AS A PREDICATE, not as three hunches — but read this as MOTIVATION,
 /// not as evidence, on the same standard as the differential above: the sweep is not
 /// in the tree. What is EVIDENCE is the nine shapes the live gate re-measures against
-/// real git on every run. The sweep was 20 `core.hooksPath` spellings
-/// were run against real git — `.` `./` `./.` `././` `././.` `-hooks` `+hooks`
+/// real git on every run. The sweep ran 20 `core.hooksPath` spellings against real
+/// git — `.` `./` `./.` `././` `././.` `-hooks` `+hooks`
 /// `.githooks` `./nested` `sub/-hooks` `sub/+hooks` `""` `hooks` `..` `" githooks"`
 /// `"githooks "` `-` `+` `./-hooks` `./+hooks` — installing an always-passing hook
 /// where git said the directory was, then committing. This function agrees with git
 /// on all 20. The first design disagreed on SIX — it refused `./.`, `././` and
 /// `././.`, which git runs, and accepted `+hooks`, `+` and `./+hooks`, which git
-/// cannot exec. (An earlier count of "four" here was wrong, which is its own small
-/// argument for the rule below.)
+/// cannot exec. (An earlier version of this paragraph said "four", which is its own
+/// small argument for keeping the sweep OUT of the prose and IN the gate.)
 ///
-/// ⚠⚠ THIS IS NOT THE DELETED `-` FILTER COMING BACK. That filter DROPPED the line,
+/// ⚠⚠ THIS IS NOT THE DELETED `-` FILTER COMING BACK (catalogue: [`four_answers`]).
+/// That filter DROPPED the line,
 /// so the answer was lost, two lines were left, and the `.git/hooks` guess reported a
 /// successful install into a directory git does not read — a false success. This
 /// keeps the answer, names the directory git really chose, and refuses it out loud.
@@ -382,40 +383,49 @@ fn resolve_into(out: &mut std::path::PathBuf, path: &std::path::Path, budget: &m
 /// ⚠⚠ AND NO EMPTY-LINE FILTER, which was a LIVE BUG rather than dead weight.
 /// `core.hooksPath` may end in a newline — git 2.50 stores it and genuinely runs
 /// hooks out of the directory whose name ends in that newline, measured by putting
-/// an executable hook in both candidates and committing. git's answer is then FOUR
-/// lines with the last one empty, and dropping it left three, so the count check
-/// below never fired and we installed into the TRUNCATED `<repo>/hooks` while git
-/// read `<repo>/hooks\n`. Exactly what that check exists to prevent, reached by the
-/// same mechanism with the newline at the END rather than the middle.
+/// an executable hook in both candidates and committing. Re-measured under the
+/// four-question ask, `core.hooksPath = "hooks\n"` answers SIX lines: the empty one
+/// lands in position four, and the exec answer is itself split across lines five and
+/// six (`hooks` / `/pre-commit`). Dropping empties leaves five, which is still
+/// refused — but the historical bug was real: under the old three-question ask the
+/// same filter left a well-formed THREE and installed into the TRUNCATED
+/// `<repo>/hooks` while git read `<repo>/hooks\n`.
 ///
-/// ★★ THE CATALOGUE OF DELETED RULES LIVES HERE, so it is told once. FIVE defensive
-/// rules have been added and deleted on this arc: a `-` prefix filter (ate
-/// `core.hooksPath = -hooks`), an exact-match option filter (ate `--git-path`), an
-/// empty-line filter (defeated this very count rule), a `toplevel.is_absolute()` rule
-/// in [`parse_git_paths`], and a `file_name` check in [`git_will_exec_our_hook`].
+/// ⚠ The numbers in this paragraph moved when the fourth question was added, and an
+/// earlier version of it kept the old ones. Quote the RULE, not a count.
+///
+/// ★★ THE CATALOGUE OF DELETED RULES LIVES HERE, and only here. FIVE defensive rules
+/// have been added and deleted on this arc:
+///
+/// | rule | what it ate |
+/// |---|---|
+/// | `-` prefix filter | `core.hooksPath = -hooks` |
+/// | exact-match option filter | `core.hooksPath = --git-path` |
+/// | empty-line filter | defeated this very count rule |
+/// | `toplevel.is_absolute()` in [`parse_git_paths`] | nothing |
+/// | `file_name` check in [`git_will_exec_our_hook`] | nothing |
+///
 /// Every one was added to catch a shape someone REASONED about; every one was
-/// measured afterwards to catch nothing, and three of the five ate a legal answer.
-/// ⇒ A defensive rule that cannot be shown to catch something the primary rule misses
-/// is not free insurance; it is an untested code path with its own failure mode.
+/// measured afterwards to catch nothing, and three of the five ate a legal answer,
+/// each the same way: a real answer removed, a short count, no answer, and the
+/// `.git/hooks` guess reporting a successful install into a directory git never
+/// reads. ⇒ **A defensive rule that cannot be shown to catch something the primary
+/// rule misses is not free insurance; it is an untested code path with its own
+/// failure mode.**
 ///
-/// ⚠⚠ NOTHING IS DROPPED FOR LOOKING LIKE AN OPTION, and that has now been decided
-/// twice, in both directions. A `-`-prefix filter ate the answer for
-/// `core.hooksPath = -hooks`; an exact-match filter on the option names we pass ate
-/// `core.hooksPath = --git-path`. Both are legal settings, and both failures were the
-/// same one: a real answer removed, two lines left, no answer, and the `.git/hooks`
-/// guess reporting a successful install into a directory git never reads.
+/// ⚠ The BENEFIT the option-shaped filters promised was unreachable on every git that
+/// exists: a git that echoes one of our options is, by construction, a git that
+/// cannot answer it, so the shape they would rescue (an echo PLUS a full set of good
+/// answers) cannot occur. Measured with a faithful pre-2.5 shim.
 ///
-/// ⚠ The BENEFIT was unreachable on every git that exists. A git that echoes one of
-/// our options is, by construction, a git that cannot answer it — so the shape a
-/// filter would rescue (an echo PLUS three good answers) cannot occur. Measured with
-/// a faithful pre-2.5 shim: the trailing `hooks` becomes an unresolvable revision,
-/// git exits 128, and `ask_git` discards the output before this function runs.
+/// ⇒ NOTHING IS DROPPED FOR LOOKING LIKE AN OPTION. If an echo ever did reach here,
+/// THE COUNT RULE BELOW is what refuses it — nothing in this module inspects what a
+/// line LOOKS like any more.
 ///
-/// ⚠ AND IF ONE EVER REACHED HERE, THE COUNT RULE BELOW IS WHAT REFUSES IT — nothing
-/// in this module inspects what a line LOOKS like any more. An earlier version of
-/// this sentence sent the reader to a `toplevel.is_absolute()` rule in
-/// [`parse_git_paths`]; that rule was deleted for catching nothing, and the sentence
-/// outlived it.
+/// ⚠ The `trim_end_matches('\r')` above is deliberately NOT in that table, and the
+/// distinction is worth holding: it was a NORMALISER, deleted for being redundant
+/// with `str::lines`, not a rule added to refuse an answer. The five above all
+/// REFUSED something; that is the class with the failure mode.
 fn four_answers(stdout: &str) -> Option<[&str; 4]> {
     let lines: Vec<&str> = stdout.lines().collect();
     let [toplevel, common_dir, hooks, exec] = lines.as_slice() else {
@@ -581,8 +591,9 @@ const REV_PARSE_ASK: [&str; 7] = [
     //
     // ⚠ The hook NAME here is only a probe. Every name shares the `core.hooksPath`
     // prefix, and the properties `git_will_exec_our_hook` reads are functions of that
-    // prefix alone — measured across 40 spellings × three hook names, zero
-    // divergence. It must still name a hook we actually manage, which cannot be
+    // prefix alone, so any hook name gives the same verdict BY CONSTRUCTION. (A
+    // 40-spelling sweep across three names agreed, but it is not in the tree; the
+    // construction argument is the reason to believe it, not the sweep.) It must still name a hook we actually manage, which cannot be
     // expressed as a `const` (there is no const string concatenation) and is
     // therefore asserted against [`HOOKS`] in
     // `the_ask_carries_no_option_an_old_git_would_echo`.
@@ -1272,7 +1283,7 @@ mod tests {
                 base
             )
             .is_none(),
-            "an echoed option makes a fourth line; taking three of four silently \
+            "an echoed option makes a FIFTH line; taking four of five silently \
              shifts which answer is which"
         );
 
@@ -1315,10 +1326,10 @@ mod tests {
         assert!(
             !ask.iter().any(|a| a.starts_with("--path-format")),
             "`--path-format` arrived in git 2.31; Ubuntu 20.04 ships 2.25, which \
-             echoes it as an extra line, making four, and silently loses a \
+             echoes it as an extra line, making FIVE, and silently loses a \
              core.hooksPath to the .git/hooks fallback: {ask:?}"
         );
-        // POSITIVE CONTROL: it must still ask the three questions resolution needs,
+        // POSITIVE CONTROL: it must still ask the questions resolution needs,
         // or "carries no bad option" would be satisfied by asking nothing.
         for required in ["--show-toplevel", "--git-common-dir", "--git-path"] {
             assert!(
@@ -1359,12 +1370,18 @@ mod tests {
             "a fifth line means something answered that we did not ask, so the \
              four we read may not be the four we wanted"
         );
-        // ★★ AND AN EMPTY FOURTH LINE COUNTS. `core.hooksPath` may end in a newline;
-        // git 2.50 stores it and RUNS hooks from the directory whose name ends in
-        // that newline — measured by putting an executable hook in both candidates
-        // and committing. Its answer carries an extra EMPTY line. An `!l.is_empty()`
-        // filter dropped it, leaving a well-formed count, and installed into the
-        // TRUNCATED `<repo>/hooks` while git read `<repo>/hooks\n`.
+        // ★★ AND THE SHAPE A NEWLINE IN `core.hooksPath` REALLY MAKES. git 2.50
+        // stores `hooks\n` and RUNS hooks from the directory whose name ends in that
+        // newline — measured by putting an executable hook in both candidates and
+        // committing. The fixture below is that answer, re-measured under the
+        // four-question ask: SIX lines, the empty one in position FOUR, and the exec
+        // answer split across the last two. An `!l.is_empty()` filter dropped the
+        // empty, leaving a well-formed count, and installed into the TRUNCATED
+        // `<repo>/hooks` while git read `<repo>/hooks\n`.
+        //
+        // ⚠ The previous fixture here was `\"…hooks\\nhooks/pre-commit\\n\\n\"` — an
+        // empty line LAST, which no git emits under this ask. A fixture no producer
+        // can produce tests nothing, which this module says 100 lines above.
         //
         // ⚠ BE HONEST ABOUT WHAT THE COUNT RULE BUYS HERE. It prevents the TRUNCATED
         // install; it does not rescue the developer. Refusing sends resolution to the
@@ -1372,9 +1389,9 @@ mod tests {
         // "Installed" while git reads the newline-named one. The guard moves the
         // failure from silent-and-truncated to silent-and-elsewhere.
         assert!(
-            four_answers("/r\n.git\nhooks\nhooks/pre-commit\n\n").is_none(),
-            "an empty fifth line is still a fifth line; dropping it installs into \
-             a truncated directory that git does not read"
+            four_answers("/r\n.git\nhooks\n\nhooks\n/pre-commit\n").is_none(),
+            "the real six-line shape must be refused; dropping the empty line \
+             installs into a truncated directory that git does not read"
         );
         // ★ AND THE LOWER SIDE, which nothing reached: THREE lines. That is exactly
         // what the previous three-question ask produced, so it is the shape a git
@@ -1609,7 +1626,7 @@ mod tests {
         );
     }
 
-    /// Two `core.hooksPath` spellings name a directory git itself cannot exec from.
+    /// Four `core.hooksPath` spellings name a file git itself will not exec.
     ///
     /// ⚠⚠ THE PREMISE IS RUN, NOT ASSERTED. Two claims about git on this arc were
     /// written confidently in a comment and later measured false, so each shape here

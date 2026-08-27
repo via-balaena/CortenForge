@@ -77,10 +77,12 @@ cargo xtask ci
 > unarmed through every later `cargo build` — silently. `cargo xtask setup` always
 > runs, and repairs the bit for any ordinary hook file.
 >
-> ⚠ The one case it will not repair is a hook that is a **symlink**: `chmod` follows
-> the link, so repairing would change the permissions of the target — a file outside
-> the hooks directory, possibly outside the repository. It says which file to chmod
-> instead, and counts that as a failure, so `cargo xtask setup` exits non-zero.
+> ⚠ The one case it will not repair is a hook that is a **symlink** whose target is
+> not executable. `chmod` follows the link, so repairing would silently change the
+> permissions of a different file — and we do not check where it points, so the
+> refusal is unconditional. It names the resolved target for you to chmod, and counts
+> that as a failure, so `cargo xtask setup` exits non-zero. (A symlinked hook whose
+> target IS executable is fine: git runs it, so there is nothing to repair.)
 >
 > `cargo xtask setup` reaches the same verdicts, and it will not overwrite or delete
 > a hook that is not ours — `cargo xtask uninstall` removes only the hooks it

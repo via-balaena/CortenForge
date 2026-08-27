@@ -140,9 +140,13 @@ filename through the single `hook_install::HOOKS` table —
   inverse. Both make the SAME ownership check `build.rs` makes: a hook that is not
   ours is neither overwritten nor deleted, and they say so. They treat an up-to-date
   hook exactly as `build.rs` does: its executable bit is repaired IN PLACE (`chmod`),
-  never rewritten. (⚠ Not "identical in every way" — they differ deliberately twice:
-  `setup` ignores `CI`/`GITHUB_ACTIONS`, as the bullet above says, and it BAILS where
-  `build.rs` warns and carries on.) ⚠ Rewriting looked equivalent and was not —
+  never rewritten. (⚠ Not "identical in every way" — they differ deliberately three
+  times: `setup` ignores `CI`/`GITHUB_ACTIONS`, as the bullet above says; it BAILS
+  where `build.rs` warns and carries on; and **`uninstall` will clean a hooks
+  directory git cannot exec from, which both installers refuse to write to** — see
+  below. That last one is the way out for a checkout whose every commit is being
+  refused by a hook we installed, so it is worth knowing before you need it.)
+  ⚠ Rewriting looked equivalent and was not —
   the atomic write renames over the path, so it replaced a symlinked hook with a
   regular file, and rewrote the file (new inode) on every single run. ⚠ It does NOT
   stop a tracked hook at 644 becoming 755 — that still happens, and must, because git
@@ -156,9 +160,9 @@ filename through the single `hook_install::HOOKS` table —
   typed the command.
 
 Both resolve the directory by ASKING git (`rev-parse --show-toplevel
---git-common-dir --git-path hooks --git-path hooks/pre-commit` — the fourth question
-is explained under "spellings git will not run our hook from" below) rather than
-joining `.git/hooks` onto the repo
+--git-common-dir --git-path hooks --git-path hooks/pre-commit`; the fourth question is
+explained under "Some `core.hooksPath` spellings name a directory git will not run OUR
+file from" below) rather than joining `.git/hooks` onto the repo
 root — that join is silently wrong under `core.hooksPath`, in a linked worktree
 (whose `.git` is a *file*, so the path does not exist), and with
 `--separate-git-dir`. In each case the old code wrote a file git never reads, and
@@ -209,8 +213,9 @@ while nothing was repaired.
 
 Three things bound it, none of them ours: **`cargo xtask setup` always runs and
 repairs any ordinary hook file** — that is the remedy (⚠ except a hook that is a
-SYMLINK, where `chmod` would follow the link out of the hooks directory; it names the
-target for you to chmod and exits non-zero); DELETING a hook does re-trigger the build script; and
+SYMLINK with a non-executable target, where `chmod` would follow the link onto a
+different file; it names the resolved target for you to chmod and exits non-zero);
+DELETING a hook does re-trigger the build script; and
 git prints `hint: the '…/pre-commit' hook was ignored because it's not set as
 executable`, which can be switched off. ⇒ **If you ever chmod a hook, run
 `cargo xtask setup`.** Nothing else will notice.
@@ -255,6 +260,13 @@ either breaks a working repository — with an error naming neither CortenForge 
 `core.hooksPath` — or reports a guard that is not armed. Both installers decline and
 say which setting to change. This is the one refusal that is not about ownership: the
 directory *is* ours to write.
+
+⚠ **`cargo xtask uninstall` is the way out**, and it is the only command that will act
+on such a directory. A checkout stranded like this got that way by having our hooks
+installed there before the refusal existed — so every commit is being refused by a
+hook we put down, and telling that developer to fix their config and re-run the
+installer would be answering an uninstall with install advice. Both installers still
+refuse to WRITE; only removal is allowed, and only after containment has passed.
 
 ⚠ **The directory answer cannot decide this, so we ask git for the path it execs.**
 `core.hooksPath = .` and `= ./.` both make `rev-parse --git-path hooks` answer `.`,
