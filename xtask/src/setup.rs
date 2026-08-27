@@ -1422,7 +1422,7 @@ mod hook_tests {
         );
     }
 
-    /// The three refusals, which nothing reached before.
+    /// Every refusal, which nothing reached before.
     ///
     /// ⚠ These are the containment layer as the USER meets it. `classify_hooks_dir`
     /// was well covered, but its verdicts fed a `match` that no test called, so
@@ -1430,8 +1430,13 @@ mod hook_tests {
     /// `cargo xtask setup` wrote CortenForge's hooks into a developer's global hooks
     /// directory, or into an unrelated repository. A verdict nobody acts on is not a
     /// guard.
+    ///
+    /// ⚠ The name used to say "that is not ours", which stopped being true when
+    /// `GitCannotRun` arrived: that directory IS ours, and is refused anyway because
+    /// git would not run what we wrote there. A test name is read far more often
+    /// than its body.
     #[test]
-    fn setup_refuses_every_hooks_directory_that_is_not_ours() {
+    fn setup_refuses_every_hooks_directory_it_must_not_write() {
         use crate::hook_install::HooksDir;
         use std::path::{Path, PathBuf};
 
