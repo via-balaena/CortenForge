@@ -642,20 +642,25 @@ fn print_coverage_detail(report: &GradeReport) {
 /// command behind `(llvm-tools n/a)`, or the error and failing test names
 /// behind `(measurement failed)`.
 ///
-/// ★★ THE RULE IS ABOUT THE TEST RUN, NOT ABOUT COVERAGE. Criterion 1 returns
-/// early on four paths, and exactly one of them — [`NO_PRODUCTION_LINES_CELL`] —
-/// sits BELOW pass 2, so it is the only one whose crate had its tests run. Its
-/// detail genuinely restates its cell. The other three
-/// ([`COVERAGE_SKIPPED_CELL`], `(bin-only)`, `(integration-only)`) all return
-/// above pass 2, so each of their details carries a second fact the cell has no
-/// room for: **the crate's tests did not run**, and the letter beside it is not
-/// evidence the code works.
+/// ★★ THE RULE IS ABOUT THE TEST RUN, NOT ABOUT COVERAGE.
+/// [`NO_PRODUCTION_LINES_CELL`] is the sole silent cell, because it is the only
+/// one whose detail adds nothing: its crate's tests ran and passed on the way
+/// here, and "no production code to instrument" is the cell restated. Every
+/// other criterion-1 result carries something the cell cannot show:
 ///
-/// ⚠ Written as "silent iff the tests ran" rather than as a list of three
-/// cells, because a list is a thing to forget to extend. A fifth early return
-/// added above pass 2 inherits the speaking behaviour; only a return placed
-/// below it, where the suite has actually gated, goes quiet — which is the
-/// distinction that matters and the one a new cell name cannot get wrong.
+/// - [`COVERAGE_SKIPPED_CELL`] — the tests did NOT run, so the letter beside it
+///   is not evidence the code works.
+/// - `(bin-only)` / `(integration-only)` — coverage is N/A, but the suite's
+///   OUTCOME is not, and [`profile_skip_result`] puts it in the detail: ran and
+///   passed, no `#[test]` to run, or not run because `--skip-coverage`. Three
+///   states behind one `NotApplicable`, distinguishable only here.
+/// - a percentage, `(llvm-tools n/a)`, `(measurement failed)`, `(tests FAILED)`
+///   — each carries counts, a fix command, or the failing test names.
+///
+/// ⚠ Written as one exclusion rather than a list of the cells that DO speak,
+/// because a list is a thing to forget to extend: a new early return inherits
+/// the speaking behaviour instead of needing to be remembered. Silence has to
+/// be argued for, and today exactly one path can argue for it.
 fn coverage_detail_says_more_than_the_cell(c: &CriterionResult) -> bool {
     c.grade != Grade::NotApplicable || c.result != NO_PRODUCTION_LINES_CELL
 }
@@ -678,12 +683,17 @@ const COVERAGE_SKIPPED_CELL: &str = "(skipped — no tests run)";
 /// Criterion 1's `result` cell when the crate has no production lines to
 /// measure.
 ///
-/// ★ The ONLY early return in criterion 1 that sits BELOW pass 2, and therefore
-/// the only one whose crate had its tests run and gate. That position is
-/// deliberate and load-bearing — "no production code to measure" says nothing
-/// about whether the crate's `tests/` suite passes — and it is what
-/// [`coverage_detail_says_more_than_the_cell`] keys the silent set on. Moving
-/// this return above pass 2 would make the cell a lie in two ways at once.
+/// ★ The only early return in criterion 1 that sits BELOW pass 2, so by the
+/// time it is reached the crate's suite has already run AND passed — which is
+/// why it is the one cell whose detail adds nothing, and what
+/// [`coverage_detail_says_more_than_the_cell`] keys the silent set on.
+///
+/// That position is deliberate and load-bearing: "no production code to
+/// measure" says nothing about whether the crate's `tests/` suite passes.
+/// [`profile_skip_criterion`] now applies the same argument to the two profile
+/// skips, which reach their test run by a different route — so this constant is
+/// no longer the only path whose tests gate, only the only one that can say so
+/// without adding a word.
 const NO_PRODUCTION_LINES_CELL: &str = "(no production lines)";
 
 /// Criterion 1's result when `--skip-coverage` suppressed it.
@@ -951,6 +961,13 @@ pub fn run(crate_name: &str, verbosity: Verbosity) -> Result<()> {
 /// are the only enumeration in CI that can silently lose a crate;
 /// `cargo xtask test-reachability` guards them, but only necessarily — it
 /// checks a crate is NAMED by a job, not that the job runs its tests.
+///
+/// ⚠ The flag is what suppresses the run, NOT the crate's profile. A sweep
+/// WITHOUT it — the weekly `scheduled.yml` coverage job — runs every crate's
+/// tests, including the coverage-N/A ones that used to be exempt by profile
+/// (see [`profile_skip_criterion`]). Sized 2026-08-27: 240 of 301 crates take
+/// that path and 224 of them declare no `#[test]`, so the added cost falls on
+/// the 16 that do.
 pub fn run_all(
     verbosity: Verbosity,
     shard: Option<(usize, usize)>,
@@ -1291,6 +1308,204 @@ fn wasm_skip_result(target: &WasmTarget) -> Option<CriterionResult> {
     }
 }
 
+/// Criterion 1 for a crate whose COVERAGE is N/A by profile — which still runs
+/// its tests.
+///
+/// ★★ THE POINT: coverage being unmeasurable says NOTHING about whether the
+/// crate's tests pass, and criterion 1 gates both. This return used to sit
+/// above pass 2 and hand back `NotApplicable` immediately, so every
+/// `(bin-only)` and `(integration-only)` crate was graded without its suite
+/// ever running. Measured 2026-08-27: **240 of 301 workspace crates** take this
+/// path. Only **16** have tests — but those 16 hold **1607** of them,
+/// `sim-soft`'s 770 included, and `xtask`'s own 430. The quality tool graded
+/// itself A without running its own tests.
+///
+/// The neighbouring `declares_no_production_code` return was already placed
+/// BELOW pass 2 for exactly this reason, with the argument spelled out on it.
+/// This applies the same argument to the two profiles it did not cover.
+///
+/// Three outcomes, each said out loud rather than collapsed into "N/A":
+///
+/// - `--skip-coverage` — the operator asked for no coverage work; pass 2 is
+///   coverage work's other half, so it does not run and the detail says so.
+///   This is what keeps CI's per-PR cost unchanged.
+/// - no `#[test]` anywhere in the crate — nothing to run. 224 of the 240 are
+///   this case, 223 of them `examples/` crates carrying the Bevy tree, so
+///   running them regardless would buy release builds that cannot find
+///   anything. ⚠ "Nothing to run" is reported as itself, NOT as "tests passed".
+/// - a suite exists — it runs, and a failure is an `F` exactly as it is on the
+///   measured path.
+fn profile_skip_criterion(
+    sh: &Shell,
+    crate_name: &str,
+    crate_path: &str,
+    verbosity: Verbosity,
+    cell: &'static str,
+    coverage_reason: String,
+) -> CriterionResult {
+    profile_skip_criterion_with(
+        cell,
+        coverage_reason,
+        verbosity.skip_coverage,
+        || {
+            // Rooted on the shell's directory, which `evaluate` set to the
+            // workspace root — `crate_path` is relative to it, and `std::fs`
+            // reads the PROCESS's cwd, which `xshell` never touches.
+            let crate_dir = Path::new(&sh.current_dir()).join(crate_path);
+            crate::test_reachability::crate_has_tests(&crate_dir, crate_name)
+        },
+        || {
+            if !verbosity.quiet {
+                eprintln!(
+                    "    coverage N/A for this profile, but the crate has tests — \
+                     running cargo test --release"
+                );
+            }
+            run_crate_tests(sh, crate_name, verbosity)
+        },
+    )
+}
+
+/// [`profile_skip_criterion`] with the test run injected.
+///
+/// ★★ THE SEAM EXISTS SO THE DECISION IS GATEABLE. The caller above shells out
+/// to cargo, so no unit test can reach it — and "does this path actually RUN
+/// the tests" is the entire behaviour being added. With the call written
+/// inline, deleting it would leave every test in this crate green while
+/// reinstating the defect, which is the same shape that once let the
+/// criterion-7 sweep push be deleted under 326 passing tests.
+///
+/// Both callbacks are `FnOnce` and both are LAZY, which is load-bearing in
+/// different ways:
+///
+/// - `run_tests` must not fire on the two non-running arms, or a crate with no
+///   `#[test]` pays for a release build that can find nothing.
+/// - `has_tests` must not fire under `--skip-coverage`. It walks and
+///   `syn`-parses every source file in the crate, and 240 of 301 workspace
+///   crates reach here — so computing it eagerly would put a full parse of all
+///   of them onto every PR grade shard, to answer a question that arm discards.
+///
+/// `a_coverage_na_crate_with_tests_actually_runs_them` asserts both, in both
+/// directions.
+fn profile_skip_criterion_with(
+    cell: &'static str,
+    coverage_reason: String,
+    skip_coverage: bool,
+    has_tests: impl FnOnce() -> bool,
+    run_tests: impl FnOnce() -> HeavyRun,
+) -> CriterionResult {
+    if skip_coverage {
+        return profile_skip_result(cell, &coverage_reason, ProfileSkip::NoCoverageWorkAsked);
+    }
+    if !has_tests() {
+        return profile_skip_result(cell, &coverage_reason, ProfileSkip::NoTestsToRun);
+    }
+    profile_skip_result(cell, &coverage_reason, ProfileSkip::Ran(run_tests()))
+}
+
+/// What happened to a coverage-N/A crate's test suite.
+///
+/// ★ Named so the three cases cannot be collapsed. The one that matters is
+/// [`Self::NoTestsToRun`]: "there was nothing to run" and "the tests passed"
+/// produce the same letter and are not the same claim, and writing them as one
+/// arm is how a suite that does not exist starts reading as a suite that
+/// passed.
+enum ProfileSkip {
+    /// `--skip-coverage`: the operator asked for no coverage work, and pass 2
+    /// is coverage work's other half.
+    NoCoverageWorkAsked,
+    /// The crate declares no `#[test]`.
+    NoTestsToRun,
+    /// The suite ran. Carries the outcome, failing names included.
+    Ran(HeavyRun),
+}
+
+/// Criterion 1's result for a coverage-N/A crate, given what became of its
+/// tests.
+///
+/// ★ Pure, so all four wordings are unit-testable — [`profile_skip_criterion`]
+/// shells out to cargo and no test can reach it. The detail line is the only
+/// place a reader learns which of the three happened, and they grade the same
+/// (`NotApplicable`) in every case but a failure, so the TEXT is the whole
+/// signal.
+fn profile_skip_result(
+    cell: &'static str,
+    coverage_reason: &str,
+    outcome: ProfileSkip,
+) -> CriterionResult {
+    let not_applicable = |detail: String| CriterionResult {
+        name: "1. Coverage",
+        result: cell.to_string(),
+        grade: Grade::NotApplicable,
+        threshold: "≥75%/≥90% A+",
+        measured_detail: detail,
+    };
+    match outcome {
+        ProfileSkip::NoCoverageWorkAsked => not_applicable(format!(
+            "{coverage_reason} — and its TESTS WERE NOT RUN either: --skip-coverage \
+             turns off pass 2, the only place any criterion executes tests, so nothing \
+             in this grade reflects whether the suite passes."
+        )),
+        ProfileSkip::NoTestsToRun => not_applicable(format!(
+            "{coverage_reason} — and the crate declares no #[test], so there was no \
+             suite to run. ⚠ NOT the same claim as \"its tests passed\"."
+        )),
+        ProfileSkip::Ran(heavy) if heavy.passed => not_applicable(format!(
+            "{coverage_reason}. Its tests WERE run (cargo test --release) and passed."
+        )),
+        ProfileSkip::Ran(heavy) => CriterionResult {
+            name: "1. Coverage",
+            result: "(tests FAILED)".to_string(),
+            grade: Grade::F,
+            threshold: "≥75%/≥90% A+",
+            measured_detail: format!("{coverage_reason}{}", heavy.describe_failure()),
+        },
+    }
+}
+
+/// Run a crate's whole suite in release, uninstrumented — criterion 1's pass 2.
+///
+/// ★ Extracted so the two callers share it: the measured path, where it is
+/// pass 2 of 2, and [`profile_skip_criterion`], where coverage is N/A but the
+/// suite still has to gate. Before the extraction the run existed only inside
+/// the measured path, which is why every coverage-N/A crate was graded without
+/// its tests — `sim-soft`'s 770 among them.
+///
+/// ⚠ The captured branch keeps the FAILING TEST NAMES, not just the exit
+/// status. `run_all` forces `--quiet` per crate, so a sweep always takes this
+/// branch — and before this it discarded the output and reported a bare
+/// `(heavy tests FAILED)`. That is unactionable in exactly the context that
+/// produces it: the weekly sweep names a crate whose tests failed and cannot
+/// say which test, while the operator has no terminal output to look at either,
+/// because there wasn't one. Measured 2026-08-18: the first completed sweep
+/// reported `cf-design — F … 94.2% (heavy tests FAILED)` and nothing more.
+///
+/// The streaming branch leaves `failed` empty on purpose: libtest already
+/// printed every name to the terminal the operator is watching, so re-listing
+/// them in the detail line would duplicate what they can see.
+fn run_crate_tests(sh: &Shell, crate_name: &str, verbosity: Verbosity) -> HeavyRun {
+    if verbosity.json || verbosity.quiet {
+        match cmd!(sh, "cargo test --release -p {crate_name}")
+            .ignore_status()
+            .output()
+        {
+            Ok(o) => HeavyRun::from_captured(o.status.success(), &o.stdout, &o.stderr),
+            // Spawn failure is not a passing test run.
+            Err(_) => HeavyRun {
+                passed: false,
+                failed: Vec::new(),
+            },
+        }
+    } else {
+        HeavyRun {
+            passed: cmd!(sh, "cargo test --release -p {crate_name}")
+                .run()
+                .is_ok(),
+            failed: Vec::new(),
+        }
+    }
+}
+
 /// Record `report` in whichever sweep-level buckets it belongs to.
 ///
 /// ★ Pulled out of the sweep loop so the WIRING is testable, not just the
@@ -1574,6 +1789,12 @@ pub(crate) fn find_crate_path(sh: &Shell, crate_name: &str) -> Result<String> {
 /// Clippy and Safety relaxation; they never established the absence of a
 /// library, which is what the coverage skip was resting on. See
 /// [`has_lib_target`] for what that cost.
+///
+/// ⚠ **This answers a question about COVERAGE only.** Returning `Some` used to
+/// end the criterion outright, which quietly took the crate's TEST RUN with it;
+/// the caller now hands the answer to [`profile_skip_criterion`], which runs
+/// the suite anyway. Do not restore an early return here — "we cannot measure
+/// this crate's lines" is not a reason to stop asking whether it works.
 fn coverage_skip_reason(
     profile: CrateProfile,
     has_lib_target: bool,
@@ -1583,21 +1804,13 @@ fn coverage_skip_reason(
         CrateProfile::Example | CrateProfile::Xtask => Some((
             "(bin-only)",
             format!(
-                "coverage skipped: this {} crate has no lib target per STANDARDS.md §1 \
-                 — AND SO IS ITS TEST RUN, which this criterion also gates: the return \
-                 is above pass 2, the only place any criterion executes tests. `grade` \
-                 therefore reports a letter for this crate without running its suite. \
-                 Run `cargo test -p <crate>` yourself.",
+                "coverage skipped: this {} crate has no lib target per STANDARDS.md §1",
                 profile.label()
             ),
         )),
         CrateProfile::IntegrationOnly => Some((
             "(integration-only)",
-            "coverage skipped: integration-only crate per [package.metadata.cortenforge] \
-             — AND SO IS ITS TEST RUN, which this criterion also gates: the return is \
-             above pass 2, the only place any criterion executes tests. An \
-             integration-only crate keeps ALL its tests in tests/, so this is the whole \
-             suite. Run `cargo test -p <crate>` yourself."
+            "coverage skipped: integration-only crate per [package.metadata.cortenforge]"
                 .to_string(),
         )),
         CrateProfile::Layer0 | CrateProfile::BevyLayer1 => None,
@@ -1686,13 +1899,9 @@ fn grade_coverage(
     // `has_lib_target` rather than by the directory the crate sits in — see
     // that function for the 9718 lines the guess was hiding.
     if let Some((result, detail)) = coverage_skip_reason(profile, has_lib_target) {
-        return Ok(CriterionResult {
-            name: "1. Coverage",
-            result: result.to_string(),
-            grade: Grade::NotApplicable,
-            threshold: "≥75%/≥90% A+",
-            measured_detail: detail,
-        });
+        return Ok(profile_skip_criterion(
+            sh, crate_name, crate_path, verbosity, result, detail,
+        ));
     }
 
     // `--skip-coverage` opt-out: CI runs want the other criteria without
@@ -1765,39 +1974,7 @@ fn grade_coverage(
     } else {
         None
     };
-    // ⚠ The captured branch keeps the FAILING TEST NAMES, not just the exit
-    // status. `run_all` forces `--quiet` per crate, so a sweep always takes
-    // this branch — and before this it discarded the output and reported a bare
-    // `(heavy tests FAILED)`. That is unactionable in exactly the context that
-    // produces it: the weekly sweep names a crate whose tests failed and cannot
-    // say which test, while the operator has no terminal output to look at
-    // either, because there wasn't one. Measured 2026-08-18: the first
-    // completed sweep reported `cf-design — F … 94.2% (heavy tests FAILED)`
-    // and nothing more.
-    //
-    // The streaming branch leaves `failed` empty on purpose: libtest already
-    // printed every name to the terminal the operator is watching, so
-    // re-listing them in the detail line would duplicate what they can see.
-    let heavy = if verbosity.json || verbosity.quiet {
-        match cmd!(sh, "cargo test --release -p {crate_name}")
-            .ignore_status()
-            .output()
-        {
-            Ok(o) => HeavyRun::from_captured(o.status.success(), &o.stdout, &o.stderr),
-            // Spawn failure is not a passing test run.
-            Err(_) => HeavyRun {
-                passed: false,
-                failed: Vec::new(),
-            },
-        }
-    } else {
-        HeavyRun {
-            passed: cmd!(sh, "cargo test --release -p {crate_name}")
-                .run()
-                .is_ok(),
-            failed: Vec::new(),
-        }
-    };
+    let heavy = run_crate_tests(sh, crate_name, verbosity);
     let heavy_passed = heavy.passed;
     drop(heartbeat);
     if !verbosity.quiet {
@@ -5323,6 +5500,180 @@ serde = \"1\"
                 "the reason must still name the property that is now checked: {detail}"
             );
         }
+    }
+
+    /// The coverage-N/A path must actually CALL the test runner — and must not
+    /// call it when there is nothing to run.
+    ///
+    /// ★★ The wiring, not the wording. `profile_skip_result` can be perfectly
+    /// correct about all three outcomes while the caller never invokes the
+    /// runner at all; that combination is exactly the defect this change
+    /// closes, and it is invisible to every other test here.
+    ///
+    /// ⚠ BOTH DIRECTIONS. "It ran the tests" alone passes on a version that
+    /// always runs them — which would spend a release build on each of the 223
+    /// example crates that declare no `#[test]`.
+    #[test]
+    fn a_coverage_na_crate_with_tests_actually_runs_them() {
+        let reason = || "coverage skipped: integration-only crate".to_string();
+
+        let (mut probed, mut ran) = (false, false);
+        let r = profile_skip_criterion_with(
+            "(integration-only)",
+            reason(),
+            false,
+            || {
+                probed = true;
+                true
+            },
+            || {
+                ran = true;
+                HeavyRun::ok()
+            },
+        );
+        assert!(
+            probed && ran,
+            "a coverage-N/A crate WITH tests must have them run"
+        );
+        assert!(r.measured_detail.contains("and passed"), "{r:?}");
+
+        // No #[test] in the crate: probe yes, run no.
+        let (mut probed, mut ran) = (false, false);
+        let r = profile_skip_criterion_with(
+            "(bin-only)",
+            reason(),
+            false,
+            || {
+                probed = true;
+                false
+            },
+            || {
+                ran = true;
+                HeavyRun::ok()
+            },
+        );
+        assert!(probed, "the probe is how that is known");
+        assert!(
+            !ran,
+            "a crate with no #[test] must not pay for a release test build"
+        );
+        assert!(r.measured_detail.contains("no #[test]"), "{r:?}");
+
+        // --skip-coverage: NEITHER callback fires. The run is what keeps per-PR
+        // CI cost unchanged; the probe matters too, because it walks and
+        // syn-parses every file of all 240 crates that reach this path.
+        let (mut probed, mut ran) = (false, false);
+        let r = profile_skip_criterion_with(
+            "(bin-only)",
+            reason(),
+            true,
+            || {
+                probed = true;
+                true
+            },
+            || {
+                ran = true;
+                HeavyRun::ok()
+            },
+        );
+        assert!(
+            !ran,
+            "--skip-coverage must still suppress the run, or every PR CI shard \
+             newly pays a release test build per crate"
+        );
+        assert!(
+            !probed,
+            "--skip-coverage must not even ASK whether the crate has tests — that \
+             walk parses every source file of 240 crates per sweep"
+        );
+        assert!(r.measured_detail.contains("NOT RUN"), "{r:?}");
+    }
+
+    /// A coverage-N/A crate whose suite is RED must be an F, not an N/A.
+    ///
+    /// ★ The whole behavioural point of routing this path through the test
+    /// gate. Before it, `(bin-only)` and `(integration-only)` returned
+    /// `NotApplicable` without running anything, so a red suite in `sim-soft`
+    /// (770 tests) or `xtask` (430) left the crate's letter untouched.
+    #[test]
+    fn a_coverage_na_crate_with_a_red_suite_grades_f() {
+        let red = profile_skip_result(
+            "(integration-only)",
+            "coverage skipped: integration-only crate",
+            ProfileSkip::Ran(HeavyRun {
+                passed: false,
+                failed: vec!["solver::diverges".to_string()],
+            }),
+        );
+        assert_eq!(red.grade, Grade::F, "a red suite must override to F");
+        assert!(
+            red.measured_detail.contains("solver::diverges"),
+            "the failing test must be named: {}",
+            red.measured_detail
+        );
+
+        // Positive control: the same path with a GREEN suite must not be F,
+        // or the assertion above would pass on a function that returns F
+        // unconditionally.
+        let green = profile_skip_result(
+            "(integration-only)",
+            "coverage skipped: integration-only crate",
+            ProfileSkip::Ran(HeavyRun::ok()),
+        );
+        assert_eq!(green.grade, Grade::NotApplicable);
+    }
+
+    /// "Nothing to run" must never read as "the tests passed".
+    ///
+    /// ⚠⚠ These three outcomes carry the SAME grade (`NotApplicable`), so the
+    /// detail text is the entire difference between them. Collapsing the arms
+    /// — the obvious simplification, since two of them return the same letter
+    /// — is what turns a crate with no suite into a crate whose suite passed,
+    /// silently and for as long as nobody re-reads the function.
+    #[test]
+    fn nothing_to_run_is_not_reported_as_tests_passed() {
+        let reason = "coverage skipped: bin-only";
+        let none = profile_skip_result("(bin-only)", reason, ProfileSkip::NoTestsToRun);
+        let flag = profile_skip_result("(bin-only)", reason, ProfileSkip::NoCoverageWorkAsked);
+        let ran = profile_skip_result("(bin-only)", reason, ProfileSkip::Ran(HeavyRun::ok()));
+
+        // ⚠ Keyed on the AFFIRMATIVE claim, not on the word "passed". The
+        // no-tests arm deliberately quotes the phrase in order to deny it
+        // (`NOT the same claim as "its tests passed"`), and a bare
+        // `!contains("passed")` fails on that disclaimer — punishing the text
+        // for being explicit, which is the opposite of what is wanted here.
+        const CLAIMS_A_GREEN_RUN: &str = "WERE run (cargo test --release) and passed";
+        assert!(
+            !none.measured_detail.contains(CLAIMS_A_GREEN_RUN),
+            "a crate with no #[test] must not claim a passing suite: {}",
+            none.measured_detail
+        );
+        assert!(
+            !flag.measured_detail.contains(CLAIMS_A_GREEN_RUN),
+            "a crate whose tests were never run must not claim a passing suite: {}",
+            flag.measured_detail
+        );
+        // Positive control: the one case that MAY make that claim, does.
+        // Without it the two assertions above would pass on a builder that
+        // never mentions a test run at all.
+        assert!(
+            ran.measured_detail.contains(CLAIMS_A_GREEN_RUN),
+            "the ran-and-green case must say so: {}",
+            ran.measured_detail
+        );
+        // And the no-tests arm must SAY the distinction out loud, not merely
+        // omit the claim — omission is what a reader misreads.
+        assert!(
+            none.measured_detail.contains("no #[test]"),
+            "the no-suite case must name why there is no result: {}",
+            none.measured_detail
+        );
+
+        // And all three must be distinguishable from each other, since the
+        // grade cannot tell them apart.
+        assert_ne!(none.measured_detail, flag.measured_detail);
+        assert_ne!(none.measured_detail, ran.measured_detail);
+        assert_ne!(flag.measured_detail, ran.measured_detail);
     }
 
     /// A crate's own source tree for the [`has_lib_target`] cases below.

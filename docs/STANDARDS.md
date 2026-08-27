@@ -64,6 +64,17 @@ grades documentation, lints, safety, dependencies, layering, WASM and API, and
 asserts nothing about whether the code works. The grade report says so on that
 path, in criterion 1's detail line and in the sweep banner.
 
+**Coverage being N/A does not exempt a crate from the test run.** A `(bin-only)`
+crate (`Example`/`Xtask` profile with no lib target) or an `(integration-only)`
+one still has its suite run and still grades **F** on a failure; only the
+percentage is waived. Before 2026-08-27 those two profiles returned above pass
+2, so **240 of 301 workspace crates were graded without their tests ever
+running** — 224 of them declare no `#[test]` and lose nothing, but the other 16
+hold **1607 tests**, including `sim-soft`'s 770 and `xtask`'s own 430. The
+grader graded itself A without running its own suite. Crates with no `#[test]`
+are reported as *"no suite to run"*, which is deliberately not the same claim as
+*"its tests passed"*.
+
 What gates tests in CI is `tests-debug` + `tests-release`, whose hand-maintained
 crate lists are the only crate enumeration in the workflow — and so the only
 place a crate's tests can be silently lost. `cargo xtask test-reachability`

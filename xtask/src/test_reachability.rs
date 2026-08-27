@@ -106,6 +106,48 @@ fn survey(root: &Path) -> Survey {
     }
 }
 
+/// Whether `package`, rooted at `crate_dir`, holds at least one plain
+/// `#[test]`.
+///
+/// ★ Asked by [`crate::grade`] before it spends a pass-2 `cargo test --release`
+/// on a crate whose COVERAGE is N/A. Measured 2026-08-27: 240 of 301 workspace
+/// crates take that path and only **16** have any tests, so running the suite
+/// for all of them would buy 224 release builds that cannot find anything —
+/// 223 of them `examples/` crates carrying the Bevy tree.
+///
+/// ⚠ **FAILS OPEN, and deliberately the opposite way to [`survey`].** A file
+/// that cannot be read or parsed counts as tests-present, so the crate is
+/// tested rather than skipped. `survey` reports unreadable files instead,
+/// because its question is "did I look everywhere"; here the two errors are not
+/// symmetric — a needless test run costs minutes, a silently skipped one is the
+/// exact defect this call exists to close.
+///
+/// ⚠ Plain `#[test]` only, with the same blind spot the module doc records: a
+/// crate whose tests were all `#[tokio::test]` would read as having none and be
+/// skipped in silence. None exists in this workspace today (checked); widen
+/// [`count_tests`] before introducing one.
+pub(crate) fn crate_has_tests(crate_dir: &Path, package: &str) -> bool {
+    for path in source_files(crate_dir) {
+        // Scoped by OWNING PACKAGE, not by the walk: `source_files` recurses,
+        // and a crate directory that contains a nested crate would otherwise
+        // borrow its tests and claim a suite it does not have.
+        match owning_package(&path) {
+            Some((_, owner)) if owner == package => {}
+            _ => continue,
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return true;
+        };
+        let Ok(file) = syn::parse_file(&text) else {
+            return true;
+        };
+        if count_tests(&file.items) > 0 {
+            return true;
+        }
+    }
+    false
+}
+
 /// Count `#[test]` functions, descending into modules so a crate that hides its
 /// tests behind `mod tests` is not read as having none.
 fn count_tests(items: &[syn::Item]) -> usize {
@@ -387,5 +429,108 @@ mod tests {
     fn the_workspace_has_no_orphaned_test_crates() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         check_at(root).expect("every crate with tests should be named by a CI job");
+    }
+
+    /// A throwaway crate tree: `(relative path, contents)`, plus a manifest
+    /// naming the package.
+    fn crate_fixture(tag: &str, package: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "cf-has-tests-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir root");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            format!("[package]\nname = \"{package}\"\n"),
+        )
+        .expect("write manifest");
+        for (name, body) in files {
+            let path = root.join(name);
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+            std::fs::write(&path, body).expect("write");
+        }
+        root
+    }
+
+    /// The decision `grade` spends a release test run on.
+    ///
+    /// ★ BOTH FACES. A prober that always answers `true` costs 224 needless
+    /// release builds; one that always answers `false` silently reinstates the
+    /// defect this whole change closes. Neither assertion alone can tell the
+    /// difference.
+    #[test]
+    fn crate_has_tests_finds_a_nested_test_module_and_says_no_when_there_is_none() {
+        let with = crate_fixture(
+            "with",
+            "widget",
+            &[(
+                "src/lib.rs",
+                "pub fn f() {}\n#[cfg(test)]\nmod tests {\n  #[test]\n  fn t() {}\n}\n",
+            )],
+        );
+        assert!(
+            crate_has_tests(&with, "widget"),
+            "a #[test] inside `mod tests` is the normal shape and must be found"
+        );
+
+        let without = crate_fixture("without", "widget", &[("src/lib.rs", "pub fn f() {}\n")]);
+        assert!(
+            !crate_has_tests(&without, "widget"),
+            "a crate with no #[test] must answer false, or the prober is `true` \
+             and buys a release build for all 223 example crates"
+        );
+    }
+
+    /// Unparseable input must answer YES.
+    ///
+    /// ⚠ The opposite default to [`survey`], and deliberately so: there, an
+    /// unreadable file is REPORTED because the question is "did I look
+    /// everywhere". Here the errors are asymmetric — answering yes wastes a
+    /// test run, answering no skips a suite in silence, which is the defect.
+    #[test]
+    fn crate_has_tests_fails_open_on_a_file_it_cannot_parse() {
+        let broken = crate_fixture(
+            "broken",
+            "widget",
+            &[("src/lib.rs", "this is not rust {{{ \n")],
+        );
+        assert!(
+            crate_has_tests(&broken, "widget"),
+            "a file that will not parse must be treated as possibly holding tests"
+        );
+    }
+
+    /// A nested crate's tests belong to the nested crate.
+    ///
+    /// ⚠ `source_files` recurses, so without the owning-package filter a crate
+    /// directory containing another crate would borrow its tests and claim a
+    /// suite it does not have — then run `cargo test -p <outer>`, which would
+    /// not execute them.
+    #[test]
+    fn crate_has_tests_does_not_borrow_a_nested_packages_tests() {
+        let root = crate_fixture("nested", "outer", &[("src/lib.rs", "pub fn f() {}\n")]);
+        let inner = root.join("inner");
+        std::fs::create_dir_all(inner.join("src")).expect("mkdir inner");
+        std::fs::write(inner.join("Cargo.toml"), "[package]\nname = \"inner\"\n")
+            .expect("write inner manifest");
+        std::fs::write(
+            inner.join("src/lib.rs"),
+            "#[cfg(test)]\nmod tests {\n  #[test]\n  fn t() {}\n}\n",
+        )
+        .expect("write inner source");
+
+        assert!(
+            !crate_has_tests(&root, "outer"),
+            "outer has no tests of its own; inner's must not count for it"
+        );
+        // Positive control: the walk DOES reach the nested file, so the
+        // assertion above is about ownership and not about an empty walk.
+        assert!(
+            crate_has_tests(&root, "inner"),
+            "the nested file is reachable from the same walk — otherwise the \
+             assertion above would pass on a walk that found nothing"
+        );
     }
 }
