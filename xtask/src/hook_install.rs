@@ -151,67 +151,66 @@ fn parse_git_paths_rooted_at(stdout: &str, base: &std::path::Path) -> Option<Git
 /// containment defeated. The shipped test used `../shared-hooks`, which happened to
 /// work because `<repo>/..` exists: ONE component away from the failing class.
 fn absolutize(base: &std::path::Path, answer: &str) -> std::path::PathBuf {
-    use std::path::Component;
-
     let mut out = base.to_path_buf();
     for component in std::path::Path::new(answer).components() {
-        match component {
-            // An absolute answer replaces the base outright — `--show-toplevel` is
-            // absolute even on the old git this exists for.
-            //
-            // ⚠ `Prefix` ASSIGNS, `RootDir` PUSHES. `C:\repo` yields Prefix("C:")
-            // then RootDir, and assigning on both discarded the drive: the second
-            // arm overwrote `C:` with `MAIN_SEPARATOR_STR`, leaving a root-relative
-            // `\repo`. `PathBuf::push` of a root replaces everything EXCEPT the
-            // prefix, which is exactly the rule here.
-            Component::Prefix(_) => {
-                out = std::path::PathBuf::from(component.as_os_str());
-            }
-            Component::RootDir => {
-                out.push(component.as_os_str());
-            }
-            Component::CurDir => {}
-            // Applied to what is resolved SO FAR, which is what makes a symlink
-            // followed by `..` land where the kernel would put it.
-            Component::ParentDir => {
-                out.pop();
-            }
-            Component::Normal(part) => {
-                out.push(part);
-                // Resolve as we go, so a symlinked component is followed before the
-                // next `..` is applied. A component not yet on disk stays lexical.
-                if let Ok(real) = std::fs::canonicalize(&out) {
-                    out = real;
-                    continue;
-                }
-                // ⚠ A DANGLING symlink is still a symlink, and the kernel still
-                // follows it. `canonicalize` refuses one, so the component stayed
-                // lexical and a following `..` popped the LINK instead of the link's
-                // target. Measured against git: `core.hooksPath = dangle/../hooks`
-                // gave `<lab>/outside/hooks` from git and `<repo>/hooks` here — and
-                // `<repo>/hooks` can exist, so the `exists()` gate would not catch it
-                // and `setup` would install there and report success.
-                if let Ok(target) = std::fs::read_link(&out) {
-                    out.pop();
-                    // A relative link target hangs off the directory holding the link.
-                    for part in target.components() {
-                        match part {
-                            Component::Prefix(_) => {
-                                out = std::path::PathBuf::from(part.as_os_str());
-                            }
-                            Component::RootDir => out.push(part.as_os_str()),
-                            Component::CurDir => {}
-                            Component::ParentDir => {
-                                out.pop();
-                            }
-                            Component::Normal(p) => out.push(p),
-                        }
-                    }
-                }
-            }
+        push_component(&mut out, component);
+        // Resolve as we go, so a symlinked component is followed BEFORE the next
+        // `..` is applied — that is what makes `lnk/..` land where the kernel puts
+        // it rather than where the link sits.
+        if matches!(component, std::path::Component::Normal(_)) {
+            follow_links(&mut out);
         }
     }
     out
+}
+
+/// Apply one path component to `out`, with the platform's own rules.
+///
+/// ⚠ `Prefix` ASSIGNS, `RootDir` PUSHES. `C:\repo` yields `Prefix("C:")` then
+/// `RootDir`, and assigning on both discarded the drive: the second overwrote `C:`
+/// with `MAIN_SEPARATOR_STR`, leaving a root-relative `\repo`. `PathBuf::push` of a
+/// root replaces everything EXCEPT the prefix, which is exactly the rule wanted here.
+fn push_component(out: &mut std::path::PathBuf, component: std::path::Component<'_>) {
+    use std::path::Component;
+    match component {
+        Component::Prefix(_) => *out = std::path::PathBuf::from(component.as_os_str()),
+        Component::RootDir => out.push(component.as_os_str()),
+        Component::CurDir => {}
+        Component::ParentDir => {
+            out.pop();
+        }
+        Component::Normal(part) => out.push(part),
+    }
+}
+
+/// Follow `out` through symlinks until it names something real, or nothing new.
+///
+/// ⚠⚠ A CHAIN, NOT ONE HOP. `canonicalize` resolves a whole chain but REFUSES a
+/// dangling one, so the first version of this followed `read_link` exactly once and
+/// stopped. Measured against git 2.50 with `l1 -> l2 -> <lab>/outside/gone`: git
+/// answers `<lab>/outside/gone`, which is outside the checkout and refused, while
+/// one hop answered `<repo>/l2` — INSIDE, and accepted. A `core.hooksPath` behind two
+/// links escaped containment on exactly the old-git population this code serves.
+///
+/// The cap is what makes a symlink CYCLE terminate; the kernel bounds itself the same
+/// way (`SYMLOOP_MAX`), and git reports such a path as unresolvable, so any answer we
+/// give for a cycle is refused downstream by the directory simply not existing.
+fn follow_links(out: &mut std::path::PathBuf) {
+    const MAX_HOPS: usize = 40;
+    for _ in 0..MAX_HOPS {
+        if let Ok(real) = std::fs::canonicalize(&*out) {
+            *out = real;
+            return;
+        }
+        let Ok(target) = std::fs::read_link(&*out) else {
+            return; // Not a symlink, or unreadable: this is as resolved as it gets.
+        };
+        // A relative target hangs off the directory holding the link.
+        out.pop();
+        for part in target.components() {
+            push_component(out, part);
+        }
+    }
 }
 
 /// Exactly three answer lines, or nothing.
@@ -1391,6 +1390,15 @@ mod tests {
         };
         let through_link = verdict("dangle/../hooks");
         let onto_link = verdict("dangle");
+        // ★★ A CHAIN, not one hop. `l1 -> l2 -> <lab>/outside/gone`: `canonicalize`
+        // refuses the whole thing because the end dangles, and following `read_link`
+        // exactly ONCE stops at `<repo>/l2` — INSIDE the checkout, and accepted —
+        // while git resolves the chain to `<lab>/outside/gone` and refuses it.
+        // Measured against git 2.50; the one-hop version shipped in #835.
+        std::os::unix::fs::symlink("l2", repo.join("l1")).expect("symlink");
+        std::os::unix::fs::symlink(lab_real.join("outside/gone"), repo.join("l2"))
+            .expect("symlink");
+        let through_chain = verdict("l1");
         // POSITIVE CONTROL: an ordinary relative answer is still ours, so a rule that
         // simply refused everything would not pass this test.
         let ordinary = verdict(".git/hooks");
@@ -1411,6 +1419,12 @@ mod tests {
             ordinary,
             HooksDir::Repo(repo.join(".git").join("hooks")),
             "POSITIVE CONTROL: the ordinary answer is unaffected"
+        );
+        assert_eq!(
+            through_chain,
+            HooksDir::Shared(lab_real.join("outside").join("gone")),
+            "a symlink CHAIN was followed only one hop, so a hooks directory git \
+             resolves outside the checkout was accepted as ours"
         );
     }
 
