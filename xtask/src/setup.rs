@@ -597,20 +597,20 @@ mod hook_tests {
         run_hook_with_crate_full(dir_name, false, None, Some(extra_staged))
     }
 
-    /// As above, but `clippy_failure` makes the stub fail the clippy step with that
-    /// text on STDERR — which is where cargo puts every diagnostic it prints.
+    /// As above, but `cargo_failure` makes the stub fail one cargo SUBCOMMAND with
+    /// that text on STDERR — which is where cargo puts every diagnostic it prints.
     fn run_hook_with_crate_and_cargo(
         dir_name: &str,
         crlf_manifest: bool,
-        clippy_failure: Option<&str>,
+        cargo_failure: Option<(&str, &str)>,
     ) -> (bool, String, Vec<String>) {
-        run_hook_with_crate_full(dir_name, crlf_manifest, clippy_failure, None)
+        run_hook_with_crate_full(dir_name, crlf_manifest, cargo_failure, None)
     }
 
     fn run_hook_with_crate_full(
         dir_name: &str,
         crlf_manifest: bool,
-        clippy_failure: Option<&str>,
+        cargo_failure: Option<(&str, &str)>,
         extra_staged: Option<&str>,
     ) -> (bool, String, Vec<String>) {
         static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -656,9 +656,9 @@ mod hook_tests {
         let bin = dir.join("stubbin");
         std::fs::create_dir_all(&bin).expect("bin");
         let log = dir.join("cargo.log");
-        let fail_clause = match clippy_failure {
-            Some(msg) => {
-                format!("case \"$1\" in clippy) printf '%s\\n' '{msg}' >&2; exit 1;; esac\n")
+        let fail_clause = match cargo_failure {
+            Some((subcommand, msg)) => {
+                format!("case \"$1\" in {subcommand}) printf '%s\\n' '{msg}' >&2; exit 1;; esac\n")
             }
             None => String::new(),
         };
@@ -1062,7 +1062,8 @@ mod hook_tests {
     #[test]
     fn a_failing_lint_shows_cargos_own_diagnostic() {
         let diagnostic = "error: length comparison to zero at src/lib.rs:1:5";
-        let (ok, out, argv) = run_hook_with_crate_and_cargo("demo", false, Some(diagnostic));
+        let (ok, out, argv) =
+            run_hook_with_crate_and_cargo("demo", false, Some(("clippy", diagnostic)));
 
         assert!(
             argv.iter().any(|a| a.contains("clippy")),
@@ -1077,6 +1078,40 @@ mod hook_tests {
             out.contains(diagnostic),
             "cargo's own diagnostic was swallowed, leaving the developer a verdict \
              with no evidence;\n{out}"
+        );
+    }
+
+    /// The formatting step must show its cause on failure and stay QUIET on success.
+    ///
+    /// ⚠ TWO-SIDED, because both one-sided versions of this shipped. First the step
+    /// carried `2>/dev/null`, so a missing rustfmt component produced only "Run:
+    /// cargo fmt --all" — advice that fixes nothing. Removing the redirect put 3552
+    /// lines on EVERY commit: `rustfmt.toml` sets nightly-only options and cargo
+    /// warns about each, per file. A gate on either half alone would have accepted
+    /// the other failure.
+    #[test]
+    fn the_format_step_shows_its_cause_but_only_when_it_fails() {
+        // ⚠ No apostrophes: the stub embeds this in a single-quoted shell literal,
+        // and the first one ends the string. The mechanism was fine; the fixture was
+        // not, which the assertion caught by showing the mangled text back.
+        let cause = "error: rustfmt is not installed for the stable toolchain";
+        let (ok, out, _) = run_hook_with_crate_and_cargo("demo", false, Some(("fmt", cause)));
+        assert!(!ok, "a formatting failure must fail the commit;\n{out}");
+        assert!(
+            out.contains(cause),
+            "the developer was told to run `cargo fmt --all`, which would not have \
+             helped, and the actual cause was discarded;\n{out}"
+        );
+
+        // NEGATIVE CONTROL: on success the step must add no noise. The stub prints
+        // nothing, so anything here would have come from an unredirected cargo.
+        let (ok, quiet, _) = run_hook_with_crate("demo", false);
+        assert!(ok, "the ordinary case must pass;\n{quiet}");
+        assert!(
+            !quiet.contains(cause) && quiet.lines().count() < 20,
+            "the formatting step is noisy on the happy path ({} lines); captured \
+             output must only be printed when it means something;\n{quiet}",
+            quiet.lines().count()
         );
     }
 

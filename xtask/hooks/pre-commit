@@ -95,12 +95,15 @@ fi
 
 # Format check (fast — only checks already-formatted files, <1s)
 echo "→ Checking formatting..."
-# ⚠ NO `2>/dev/null`, for the reason the clippy step below spells out at length:
-# cargo writes diagnostics to stderr, and discarding them leaves a verdict with no
-# evidence. Measured — a missing rustfmt component reported only "✗ Formatting check
-# failed. Run: cargo fmt --all", advice that fixes nothing, while the actual cause
-# (`'rustfmt' is not installed for the toolchain`) went to /dev/null.
-if ! cargo fmt --all -- --check; then
+# ⚠ CAPTURED, then shown ONLY ON FAILURE. Two wrong answers were tried first.
+# `2>/dev/null` discarded cargo's diagnostics, so a missing rustfmt component
+# reported just "✗ Formatting check failed. Run: cargo fmt --all" — advice that fixes
+# nothing — while the real cause went to /dev/null. Removing the redirect instead put
+# 3552 lines on EVERY commit: rustfmt.toml sets nightly-only options and warns about
+# each, per file. Keeping the output and printing it only when it matters costs
+# nothing on the happy path and loses no evidence on the unhappy one.
+if ! fmt_output=$(cargo fmt --all -- --check 2>&1); then
+    echo "$fmt_output"
     echo "✗ Formatting check failed. Run: cargo fmt --all"
     exit 1
 fi
