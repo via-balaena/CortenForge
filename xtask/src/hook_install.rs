@@ -235,10 +235,30 @@ fn resolve_into(out: &mut std::path::PathBuf, path: &std::path::Path, budget: &m
 
 /// Exactly three answer lines, or nothing.
 ///
-/// ⚠ Only `\r` is stripped, NOT surrounding whitespace: a directory whose name ends
-/// in a space is legal on every filesystem we support, and trimming it made git's
-/// answer differ from the path we asked about, so a repository was classified as
-/// somebody ELSE's — the one build.rs arm that returns completely silently.
+/// ⚠ NOTHING IS TRIMMED. A directory whose name ends in a SPACE is legal on every
+/// filesystem we support, and trimming it made git's answer differ from the path we
+/// asked about, so a repository was classified as somebody ELSE's — the one build.rs
+/// arm that returns completely silently.
+///
+/// ⚠ There was a `trim_end_matches('\r')` here for CRLF output. `str::lines` already
+/// splits on `\r\n` and drops the `\r` — measured — so it fired only on a final line
+/// ending in a bare CR with no newline, which git does not emit. A mutation survey
+/// found deleting it changed nothing, which by this module's own standard makes it an
+/// untested path rather than insurance. Removed; the CRLF property is gated below and
+/// belongs to `lines`.
+///
+/// ⚠ KNOWN LIMIT, and unfixable line-by-line: a directory whose name ends in `\r`
+/// would have that byte eaten by `lines` itself. Reading `-z` output would be the
+/// only cure, and no supported git emits such a path here.
+///
+/// ⚠⚠ AND NO EMPTY-LINE FILTER, which was a LIVE BUG rather than dead weight.
+/// `core.hooksPath` may end in a newline — git 2.50 stores it and genuinely runs
+/// hooks out of the directory whose name ends in that newline, measured by putting
+/// an executable hook in both candidates and committing. git's answer is then FOUR
+/// lines with the last one empty, and dropping it left three, so the count check
+/// below never fired and we installed into the TRUNCATED `<repo>/hooks` while git
+/// read `<repo>/hooks\n`. Exactly what that check exists to prevent, reached by the
+/// same mechanism with the newline at the END rather than the middle.
 ///
 /// ⚠⚠ NOTHING IS DROPPED FOR LOOKING LIKE AN OPTION, and that has now been decided
 /// twice, in both directions. A `-`-prefix filter ate the answer for
@@ -255,11 +275,7 @@ fn resolve_into(out: &mut std::path::PathBuf, path: &std::path::Path, budget: &m
 /// [`parse_git_paths`] rejects a shifted answer instead, on the one line that must be
 /// a path whatever git you are on.
 fn three_answers(stdout: &str) -> Option<[&str; 3]> {
-    let lines: Vec<&str> = stdout
-        .lines()
-        .map(|l| l.trim_end_matches('\r'))
-        .filter(|l| !l.is_empty())
-        .collect();
+    let lines: Vec<&str> = stdout.lines().collect();
     let [toplevel, common_dir, hooks] = lines.as_slice() else {
         return None;
     };
@@ -1017,6 +1033,17 @@ mod tests {
             "a fourth line means something answered that we did not ask, so the \
              three we read may not be the three we wanted"
         );
+        // ★★ AND AN EMPTY FOURTH LINE COUNTS. `core.hooksPath` may end in a newline;
+        // git 2.50 stores it and RUNS hooks from the directory whose name ends in
+        // that newline — measured by putting an executable hook in both candidates
+        // and committing. Its answer is four lines, the last empty. An
+        // `!l.is_empty()` filter dropped it, left three, and installed into the
+        // TRUNCATED `<repo>/hooks` while git read `<repo>/hooks\n`.
+        assert!(
+            three_answers("/r\n.git\nhooks\n\n").is_none(),
+            "an empty fourth line is still a fourth line; dropping it installs into \
+             a truncated directory that git does not read"
+        );
         // POSITIVE CONTROL: exactly three is still an answer.
         assert!(three_answers("/r\n.git\n.git/hooks\n").is_some());
 
@@ -1029,7 +1056,35 @@ mod tests {
         );
     }
 
-    /// A symlink CYCLE must terminate, and must not be reported as ours to install.
+    /// The hop budget is bounded at BOTH ends, and only one end was pinned.
+    ///
+    /// ⚠ `resolve_into` recurses once per hop, so this const is a stack-depth
+    /// control as well as a loop bound. Measured on this platform: 10_000 terminates,
+    /// 100_000 aborts the process with `fatal runtime error: stack overflow`. A build
+    /// script runs this, so that abort is a failed build with no diagnostic at all —
+    /// and no behavioural test can see the difference, because every value in between
+    /// resolves the same paths. A mutation raising it to 1000 survived the suite.
+    #[test]
+    fn the_hop_budget_is_bounded_at_both_ends() {
+        let budget = super::MAX_LINK_HOPS;
+        // Lower: below the kernel's own limit we would truncate chains it WOULD
+        // resolve, and name an inside path for a directory that is outside.
+        assert!(
+            budget >= 32,
+            "this platform's kernel follows 32 nested links; a smaller budget \
+             truncates chains git resolves fine: {budget}"
+        );
+        // Upper: no real path needs more than twice that, and the recursion is why
+        // the ceiling matters.
+        assert!(
+            budget <= 64,
+            "resolve_into recurses once per hop, and a large budget turns a crafted \
+             symlink cycle into a stack overflow — which in a build script is a \
+             failed build with no message: {budget}"
+        );
+    }
+
+    /// A symlink CYCLE must terminate, and must not be reported as ours to install.    /// A symlink CYCLE must terminate, and must not be reported as ours to install.
     ///
     /// ⚠ The ask carries no `--path-format=absolute`, and WITHOUT it git resolves a
     /// cycle lexically and exits 0 — it does NOT report the path as unresolvable, as
@@ -1527,6 +1582,18 @@ mod tests {
         std::os::unix::fs::symlink(lab_real.join("real"), repo.join("symdir")).expect("symlink");
         std::os::unix::fs::symlink("symdir/gone", repo.join("dangle2")).expect("symlink");
         let popped_onto_link = verdict("dangle2/..");
+        // ★★ A LINK DEEPER IN THE ANSWER. Every symlink case above puts the link at
+        // component ONE, so resolving only the first component passed them all —
+        // measured, that mutant then installs into `<repo>/sub/x` (accepted as ours)
+        // while git runs the hook from `<lab>/x`. The sibling shape `sub/lnk` is
+        // worse: it names a directory that EXISTS outside the checkout, so the
+        // installers' `exists()` gate does not catch it either.
+        std::fs::create_dir_all(repo.join("sub")).expect("temp dir");
+        std::fs::create_dir_all(lab_real.join("x")).expect("temp dir");
+        std::os::unix::fs::symlink(lab_real.join("outside"), repo.join("sub/lnk"))
+            .expect("symlink");
+        let deep_link = verdict("sub/lnk");
+        let deep_then_up = verdict("sub/lnk/../x");
         // POSITIVE CONTROL: an ordinary relative answer is still ours, so a rule that
         // simply refused everything would not pass this test.
         let ordinary = verdict(".git/hooks");
@@ -1553,6 +1620,17 @@ mod tests {
             HooksDir::Shared(lab_real.join("outside").join("gone")),
             "a symlink CHAIN was followed only one hop, so a hooks directory git \
              resolves outside the checkout was accepted as ours"
+        );
+        assert_eq!(
+            deep_link,
+            HooksDir::Shared(lab_real.join("outside")),
+            "a symlink at a LATER component of the answer was left unresolved, so a \
+             directory outside the checkout was accepted as ours"
+        );
+        assert_eq!(
+            deep_then_up,
+            HooksDir::Shared(lab_real.join("x")),
+            "`..` after a later symlinked component popped the LINK, not its target"
         );
         assert_eq!(
             popped_onto_link,
@@ -1610,12 +1688,23 @@ mod tests {
              build.rs is the one that returns completely silently"
         );
 
+        // ⚠ THIS IS `str::lines`' JOB, NOT OURS. It splits on `\r\n` and drops the
+        // `\r`, so the `trim_end_matches('\r')` that used to sit here was dead for
+        // every shape git emits — a survey deleted it with the suite still green —
+        // and where it WAS live (a name ending in two CRs) it stripped more of a
+        // legal directory name than git does. Gone. The property still deserves
+        // pinning, because a Windows checkout really does produce this.
         let crlf = parse_git_paths(
             "/repo\r\n.git\r\n.git/hooks\r\n",
             std::path::Path::new("/repo"),
         )
-        .expect("a CR is line noise, not part of the path");
+        .expect("CRLF output must parse");
         assert_eq!(crlf.toplevel, PathBuf::from("/repo"));
+        assert_eq!(
+            crlf.hooks,
+            PathBuf::from("/repo/.git/hooks"),
+            "a CR survived into a resolved path, so every answer carries one"
+        );
     }
 
     /// The FALLBACK, both directions. When git cannot answer but `.git` is a real

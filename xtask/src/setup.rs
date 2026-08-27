@@ -117,7 +117,11 @@ pub fn run() -> Result<()> {
 fn git_hooks_dir() -> Result<PathBuf> {
     let sh = xshell::Shell::new()?;
     let root = PathBuf::from(crate::grade::find_workspace_root(&sh)?);
-    hooks_dir_from(crate::hook_install::resolve_hooks_dir(&root), &root)
+    hooks_dir_from(
+        crate::hook_install::resolve_hooks_dir(&root),
+        &root,
+        std::env::var_os("GIT_DIR").is_some() || std::env::var_os("GIT_WORK_TREE").is_some(),
+    )
 }
 
 /// Turn a resolution into a directory to write, or into the reason we will not.
@@ -127,7 +131,11 @@ fn git_hooks_dir() -> Result<PathBuf> {
 /// While the two were one function, mutating either refusal into `Ok(dir)` left the
 /// whole suite green while `cargo xtask setup` wrote CortenForge's hooks into a
 /// developer's global hooks directory, or into an unrelated repository.
-fn hooks_dir_from(resolved: Option<crate::hook_install::HooksDir>, root: &Path) -> Result<PathBuf> {
+fn hooks_dir_from(
+    resolved: Option<crate::hook_install::HooksDir>,
+    root: &Path,
+    git_env_set: bool,
+) -> Result<PathBuf> {
     match resolved {
         Some(crate::hook_install::HooksDir::Repo(dir)) => Ok(dir),
         Some(crate::hook_install::HooksDir::OtherRepo(dir)) => anyhow::bail!(
@@ -147,6 +155,17 @@ fn hooks_dir_from(resolved: Option<crate::hook_install::HooksDir>, root: &Path) 
              with your other repos. Merge xtask/hooks/* into it yourself, or point \
              core.hooksPath somewhere inside this checkout.",
             dir.display()
+        ),
+        // ⚠ NAME THE CAUSE WHEN WE KNOW IT. `build.rs` explained this case and
+        // `setup` did not — the explanation lived in `build_outcome`, which is
+        // build-script-only, so the developer got "could not determine" from one
+        // installer and a usable sentence from the other about the same checkout.
+        None if git_env_set => anyhow::bail!(
+            "GIT_DIR/GIT_WORK_TREE are set in this environment. They are ignored when \
+             locating hooks, because they let the environment install into a \
+             different repository — so {} could not be resolved. Run this from the \
+             working tree without them.",
+            root.display()
         ),
         None => anyhow::bail!(
             "Could not determine git's hooks directory for {}.",
@@ -1380,6 +1399,7 @@ mod hook_tests {
         let ours = super::hooks_dir_from(
             Some(HooksDir::Repo(PathBuf::from("/repo/.git/hooks"))),
             root,
+            false,
         );
         assert_eq!(
             ours.expect("our own hooks dir must be accepted"),
@@ -1392,6 +1412,7 @@ mod hook_tests {
         let shared = super::hooks_dir_from(
             Some(HooksDir::Shared(PathBuf::from("/home/dev/.githooks"))),
             root,
+            false,
         )
         .expect_err("a hooks dir outside the repo is never ours to write");
         assert!(
@@ -1408,6 +1429,7 @@ mod hook_tests {
         let other = super::hooks_dir_from(
             Some(HooksDir::OtherRepo(PathBuf::from("/outer/.git/hooks"))),
             root,
+            false,
         )
         .expect_err("an ancestor repository is never ours to write");
         assert!(
@@ -1415,8 +1437,16 @@ mod hook_tests {
             "the refusal must name the directory: {other}"
         );
 
-        let unknown =
-            super::hooks_dir_from(None, root).expect_err("an unknown hooks dir is not a licence");
+        let unknown = super::hooks_dir_from(None, root, false)
+            .expect_err("an unknown hooks dir is not a licence");
+        // The same checkout, with the environment that explains it — `build.rs` said
+        // this and `setup` did not.
+        let with_env = super::hooks_dir_from(None, root, true)
+            .expect_err("an unknown hooks dir is not a licence");
+        assert!(
+            with_env.to_string().contains("GIT_DIR"),
+            "name the variable the developer has to unset: {with_env}"
+        );
         assert!(
             unknown.to_string().contains("/repo"),
             "the refusal must name the checkout: {unknown}"

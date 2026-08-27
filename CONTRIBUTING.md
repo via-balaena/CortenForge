@@ -62,6 +62,11 @@ cargo xtask ci
 > git looks in the ordinary case. The one thing it cannot then see is a
 > `core.hooksPath`, so if you set one, keep `git` working.
 >
+> ⚠ **If you ever `chmod -x` a hook, run `cargo xtask setup`.** `chmod` does not change
+> a file's mtime, so cargo cannot tell the build script to re-run, and the hook stays
+> unarmed through every later `cargo build` — silently. `cargo xtask setup` always runs
+> and always repairs the bit.
+>
 > `cargo xtask setup` reaches the same verdicts, and it will not overwrite or delete
 > a hook that is not ours — `cargo xtask uninstall` removes only the hooks it
 > installed. An up-to-date hook is left alone apart from its executable bit, so a

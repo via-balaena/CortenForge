@@ -195,6 +195,27 @@ That trade is deliberate — with both set, git still answers the ownership ques
 with our own directory while answering the rest for the other repository — and the
 build says so by name rather than falling silent.
 
+⚠⚠ **ONE WAY TO DISARM THE GUARD SILENTLY, AND IT IS CARGO'S, NOT OURS.** Clearing a
+hook's executable bit (`chmod -x`) leaves its **mtime unchanged** — measured — and
+cargo's `rerun-if-changed` freshness check compares mtimes. So the build script does
+not re-run, the hook stays unarmed through any number of `cargo build`s, and a staged
+`.stl` commits successfully. Worse, cargo REPLAYS the previous run's `cargo:warning=`
+lines on a no-op build, so you may see "Repaired the pre-commit hook's executable bit"
+while nothing was repaired.
+
+Three things bound it, none of them ours: **`cargo xtask setup` always runs and always
+repairs** — that is the remedy; DELETING a hook does re-trigger the build script; and
+git prints `hint: the '…/pre-commit' hook was ignored because it's not set as
+executable`, which can be switched off. ⇒ **If you ever chmod a hook, run
+`cargo xtask setup`.** Nothing else will notice.
+
+⚠ **git cannot execute hooks from a RELATIVE `core.hooksPath` of `.` or `./`** —
+measured on git 2.50: it drops the directory part and `execvp` searches `PATH`, so
+every commit dies with `error: cannot run pre-commit: No such file or directory`. The
+installers resolve and install exactly where git says, and report success, for hooks
+git will never run. It fails CLOSED (the commit is refused), and spelling the same
+directory as an ABSOLUTE path works end to end.
+
 ⚠ A `core.hooksPath` whose directory name begins with `-` now resolves correctly —
 but git itself cannot execute a hook out of it (`/bin/sh: -/: invalid option`). It
 fails CLOSED, refusing the commit, so nothing is lost silently; the setting is simply
