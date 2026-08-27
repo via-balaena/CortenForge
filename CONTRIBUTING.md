@@ -301,6 +301,12 @@ grader's own output with `cargo xtask grade <crate>`.
 - **Coverage** (criterion 1) — `--skip-coverage` on every shard, so it cannot
   block your merge. Measured weekly by `scheduled.yml`'s `Coverage` job (the
   same grader, no flag), which reports it after the fact.
+  ⚠ **And with it, the grader's test run.** Criterion 1 is the only criterion
+  that executes tests, so a green `xtask Grade` shard says nothing about whether
+  your code works — `Tests (debug)` and `Tests (release, heavy)` are what gate
+  that. Running `cargo xtask grade <crate>` locally (no flag) does run them —
+  including for `(bin-only)` and `(integration-only)` crates, whose coverage is
+  N/A but whose suites still gate.
 - **`--all-features` test sweep** — deliberately excluded; Layer Integrity in
   the grader covers all-features cleanliness without re-paying the compile.
 - **`no bevy in Layer 0`** as a standalone check — it is criterion 6 (Layer

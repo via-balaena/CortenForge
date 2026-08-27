@@ -101,14 +101,51 @@ jobs:
   # Weekly rather than per-PR: a coverage run is minutes to tens of minutes PER
   # CRATE (measured: sim-thermostat ~16 min), which is why the PR shards skip
   # it. Sharded 3 ways to match `quality-gate.yml`'s grade job. The timeout is
-  # deliberately far above the ~25-30 min/shard the local sizing run implies,
-  # because nothing waits on this job and a slow runner must not turn a real
-  # measurement into a timeout — the failure mode that reads as "broken CI"
-  # rather than "coverage is short".
+  # deliberately far above what a shard needs, because nothing waits on this job
+  # and a slow runner must not turn a real measurement into a timeout — the
+  # failure mode that reads as "broken CI" rather than "coverage is short".
+  #
+  # ⚠ THE "~25-30 min/shard the local sizing run implies" THIS COMMENT USED TO
+  # CITE WAS NEVER WHAT RAN. Measured from the job records:
+  #
+  #     run          shard 1   shard 2   shard 3
+  #     2026-08-18      88 m      75 m     149 m
+  #     2026-08-23      91 m     104 m     113 m
+  #
+  # So 180 was ~1.2x the observed peak, not 6x the estimate. Read the durations
+  # off the job records before quoting a number here; do not restate the local
+  # sizing figure, which is what rotted.
+  #
+  # ★ Raised to 240 on 2026-08-27, deliberately and with the cost measured.
+  # Criterion 1 now runs the test suite of coverage-N/A crates too — the
+  # `(bin-only)` and `(integration-only)` profiles used to return above pass 2,
+  # so 240 of 301 workspace crates were graded without their tests running (see
+  # `profile_skip_criterion`). 224 of those declare no `#[test]` and cost
+  # nothing; the other 16 hold 1607 tests. They fall unevenly: shard 1 takes
+  # sim-soft (770) + xtask (430) + cf-scan-prep (115) but has run 88-91 m, the
+  # roomiest; shard 3 takes cf-sim-research + sim-rl-baselines + cf-device-design
+  # (187) and is the one that hit 149 m.
+  #
+  # `cargo test --release -p sim-soft`, the largest single addition, measured on
+  # an M4 laptop: 8m15s including the build, 7m16s warm, 1.69 GB peak RSS, 92
+  # binaries / 720 passed / 45 ignored / 0 failures. ⚠ Both timings were taken
+  # with other cargo work running, so treat them as upper bounds on THAT machine
+  # — and a hosted runner is slower regardless. One binary is 196 s of the 436,
+  # so this cost is concentrated, not spread: shaving that one test would take
+  # most of it back.
+  #
+  # ⇒ the worst plausible shard 3 is ~149 + 25 ≈ 175 m, inside 180 by a margin
+  # too thin to be a plan.
+  #
+  # ⇒ 240 buys back the headroom the addition spent. It is NOT permission for
+  # the sweep to grow into it: if a shard starts exceeding ~150 m, shard by
+  # WEIGHT (`select_shard_weighted`, already written) rather than raising this
+  # again — round-robin does not balance coverage cost, which is what put 149 m
+  # and 75 m in the same run.
   coverage:
     name: Coverage (grade shard ${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 240
     # Scoped to THIS job rather than the workflow, so the other ten jobs keep
     # their current behaviour. It is the longest job in the repo and the
     # workflow accepts `workflow_dispatch`, so without a group an impatient

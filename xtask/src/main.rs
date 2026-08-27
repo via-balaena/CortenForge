@@ -103,6 +103,12 @@ enum Commands {
         /// minutes-long for
         /// crates whose own code is the hot path — too slow for per-PR CI.
         /// Dedicated coverage jobs run without the flag.
+        ///
+        /// ⚠ This ALSO skips the crate's test run. Criterion 1 is the only
+        /// criterion that executes tests, and the flag returns before it does,
+        /// so a crate whose suite is RED still grades A here. Criteria 2-8 read
+        /// source, lints and manifests; none runs a test. Omit the flag (as
+        /// `xtask complete` does) to have the suite gate the letter.
         #[arg(long)]
         skip_coverage: bool,
     },
@@ -123,6 +129,13 @@ enum Commands {
         /// deliberately omits it — that job is the only CI path that measures
         /// the criterion at all, so passing this flag there would silently
         /// restore the hole it was added to close.
+        ///
+        /// ⚠ It also drops every crate's TEST RUN, because criterion 1 is
+        /// where the sweep executes tests. A sweep under this flag therefore
+        /// grades documentation, lints, safety, dependencies, layering, WASM
+        /// and API — and asserts nothing about whether the code works. CI's
+        /// `tests-debug` + `tests-release` jobs are what gate that, and their
+        /// hand-maintained crate lists are the only place it can be lost.
         #[arg(long)]
         skip_coverage: bool,
 
