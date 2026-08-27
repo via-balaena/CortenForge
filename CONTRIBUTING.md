@@ -39,26 +39,33 @@ cargo xtask ci
 > They install into whatever directory git reports, so a linked worktree and an
 > in-repo `core.hooksPath` (the `.githooks/` convention) both work.
 >
-> ⚠ The build **declines** in five cases, and prints a `cargo:warning` each time —
-> if you see one, the scan/mesh guard is not armed:
+> ⚠ The build prints a `cargo:warning` for anything worth knowing — **including a
+> successful install**, so READ the warning rather than counting them. Only these
+> say the scan/mesh guard is not armed:
 >
 > - you already have your own `pre-commit`/`commit-msg` — merge `xtask/hooks/*`
->   into yours;
+>   into yours (a hook symlinked to a volume that is not mounted counts as yours,
+>   and is left alone);
 > - the existing hook cannot be read;
 > - git's hooks directory does not exist — create it, then `touch xtask/build.rs`,
 >   because creating a directory alone does not re-run the build script;
-> - `core.hooksPath` points **outside this repository** — that directory is shared
->   with your other repos, so we will not write to it;
-> - git could not be asked at all (no `git` on `PATH`, or it reports `dubious
->   ownership`) — fix that and rebuild.
+> - `core.hooksPath` points **outside this repository** — a directory out there may
+>   be shared with your other repos, so we will not write to it.
 >
-> It also stays **silent** in one case: if this source sits inside somebody else's
-> checkout with no `.git` of its own, git resolves *their* repository, and we never
-> install into a repository that is not this one.
+> It stays **silent** in two cases, neither of which is about you: if this source
+> sits inside somebody else's checkout with no `.git` of its own (git resolves
+> *their* repository, and we never install into a repository that is not this one),
+> and if there is no `.git` at all — an extracted tarball has no hooks to install.
 >
-> `cargo xtask setup` installs both hooks, but it overwrites whatever is there with
-> no backup — move your own hook aside first if you want to keep it. It refuses the
-> shared-`core.hooksPath` case too.
+> If git cannot be asked (no `git` on `PATH`, or `dubious ownership`) but `.git` is
+> a real directory, the build **installs anyway**, into `.git/hooks` — that is where
+> git looks in the ordinary case. The one thing it cannot then see is a
+> `core.hooksPath`, so if you set one, keep `git` working.
+>
+> `cargo xtask setup` reaches the same verdicts, and it will not overwrite or delete
+> a hook that is not ours — `cargo xtask uninstall` removes only the hooks it
+> installed. Run from a linked worktree, both act on the **main checkout's** shared
+> hooks directory, which is where git reads them from.
 
 ### Local CI/CD (Recommended)
 

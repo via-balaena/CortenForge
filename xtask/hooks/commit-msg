@@ -29,6 +29,20 @@ if echo "$subject" | grep -qE "^Revert "; then
     exit 0
 fi
 
+# Allow autosquash markers: `git commit --fixup=<sha>` / `--squash=<sha>` /
+# `--fixup=amend:<sha>` generate `fixup! <subject>` and friends, which cannot match
+# the pattern below and are REWRITTEN OUT of history by `git rebase --autosquash`
+# before anything reaches CI.
+#
+# ⚠ This is a SAFETY fix, not a convenience one. Rejecting them left `--no-verify`
+# as the only way to record a fixup — and that also drops the pre-commit hook, so
+# enforcing commit style on a message that gets deleted minutes later was disarming
+# the scan/mesh guard, whose miss is permanent and public. Never make the cheap gate
+# push people onto the hammer that disables the expensive one.
+if echo "$subject" | grep -qE "^(fixup|squash|amend)! "; then
+    exit 0
+fi
+
 # Conventional commit pattern:
 # type(scope): description
 # type: description

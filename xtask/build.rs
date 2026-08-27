@@ -99,11 +99,7 @@ fn install_hook_if_needed(path: &Path, content: &str, name: &str) {
     // from the content leaves nothing to cross.
     let marker = title_of(content);
 
-    let existing = if path.exists() {
-        Some(fs::read_to_string(path).map_err(|_| ()))
-    } else {
-        None
-    };
+    let existing = read_existing_hook(path);
     let state = classify(
         existing.as_ref().map(|r| r.as_deref().map_err(|_| ())),
         content,

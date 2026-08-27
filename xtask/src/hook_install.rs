@@ -70,20 +70,19 @@ pub struct GitPaths {
 /// so a naive read yields a plausible-looking relative path that `std::fs` then
 /// resolves against the PROCESS working directory. Measured, both.
 ///
-/// Hence two rules, and both are load-bearing:
-/// - drop any line starting with `-` — that is an echoed option, not a path;
-/// - require every remaining path to be ABSOLUTE, which is exactly what
-///   `--path-format=absolute` guarantees and an old git silently does not.
+/// Hence two rules, of unequal weight — and saying so is the point, because the
+/// first reads like the important one and is not:
+/// - **The absolute rule carries this function.** Every echoed option and every
+///   old-git answer measured so far is caught by it alone.
+/// - **Dropping `-`-prefixed lines is belt and braces.** No measured `rev-parse`
+///   output needs it: an echoed flag is never an absolute path, so the absolute
+///   rule already refuses it. It keeps the LINE COUNT honest for
+///   [`parse_git_paths_rooted_at`], which has no absolute rule to fall back on.
+///   Do not let this comment claim more than that — an earlier version called both
+///   rules load-bearing, and a survey found deleting the filter changed nothing.
 #[must_use]
 pub fn parse_git_paths(stdout: &str) -> Option<GitPaths> {
-    let lines: Vec<&str> = stdout
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('-'))
-        .collect();
-    let [toplevel, common_dir, hooks] = lines.as_slice() else {
-        return None;
-    };
+    let [toplevel, common_dir, hooks] = three_answers(stdout)?;
     let paths = GitPaths {
         toplevel: std::path::PathBuf::from(toplevel),
         common_dir: std::path::PathBuf::from(common_dir),
@@ -96,6 +95,46 @@ pub fn parse_git_paths(stdout: &str) -> Option<GitPaths> {
         return None;
     }
     Some(paths)
+}
+
+/// The same three answers from a git too old to know `--path-format=absolute`.
+///
+/// Such a git returns the git dir and the hooks path RELATIVE to the directory it
+/// ran in, so `base` — that same directory — is what they hang off. `Path::join`
+/// returns an already-absolute argument unchanged, which is what `--show-toplevel`
+/// gives even on old git, so one rule covers the mixed shape git actually emits.
+///
+/// ⚠ This exists so a `Shared` hooks directory is still RECOGNISED on old git.
+/// Without it, resolution fell through to the `.git/hooks` guess, and a developer
+/// on git 2.25 with a global `core.hooksPath` was told "Installed" while git read
+/// its hooks somewhere else entirely — a false success, which is the failure mode
+/// this whole arc exists to remove.
+#[must_use]
+pub fn parse_git_paths_rooted_at(stdout: &str, base: &std::path::Path) -> Option<GitPaths> {
+    let [toplevel, common_dir, hooks] = three_answers(stdout)?;
+    Some(GitPaths {
+        toplevel: base.join(toplevel),
+        common_dir: base.join(common_dir),
+        hooks: base.join(hooks),
+    })
+}
+
+/// Exactly three answer lines, or nothing.
+///
+/// ⚠ Only `\r` is stripped, NOT surrounding whitespace: a directory whose name ends
+/// in a space is legal on every filesystem we support, and trimming it made git's
+/// answer differ from the path we asked about, so a repository was classified as
+/// somebody ELSE's — the one build.rs arm that returns completely silently.
+fn three_answers(stdout: &str) -> Option<[&str; 3]> {
+    let lines: Vec<&str> = stdout
+        .lines()
+        .map(|l| l.trim_end_matches('\r'))
+        .filter(|l| !l.is_empty() && !l.starts_with('-'))
+        .collect();
+    let [toplevel, common_dir, hooks] = lines.as_slice() else {
+        return None;
+    };
+    Some([toplevel, common_dir, hooks])
 }
 
 /// Decide whether the hooks directory git named is ours to write.
@@ -124,7 +163,16 @@ pub fn classify_hooks_dir(paths: &GitPaths, repo_root: &std::path::Path) -> Hook
     if paths.toplevel != repo_root {
         return HooksDir::OtherRepo(paths.hooks.clone());
     }
-    // Component-wise, so `/x/.github` never counts as inside `/x/.git`.
+    // `starts_with` is COMPONENT-wise, not textual, so a sibling whose name merely
+    // begins with the same characters (`/x/.github` against `/x/.git`) is not
+    // "inside" it. Both arms rely on that.
+    //
+    // ★ The working-tree arm accepts the repository ROOT itself (`core.hooksPath=.`,
+    // where git's answer equals the toplevel). That is deliberate: it is where git
+    // genuinely reads hooks from under that setting, and refusing would leave the
+    // guard unarmed for someone who asked for it explicitly. It does mean the two
+    // hooks appear as untracked files in the root — pinned by test, so a future
+    // reader meets a decision rather than a surprise.
     if paths.hooks.starts_with(&paths.common_dir) || paths.hooks.starts_with(&paths.toplevel) {
         HooksDir::Repo(paths.hooks.clone())
     } else {
@@ -138,12 +186,18 @@ pub fn classify_hooks_dir(paths: &GitPaths, repo_root: &std::path::Path) -> Hook
 /// binary. Writing this out per-installer is what let the two drift, and asking git
 /// twice let the two answers come from different config snapshots.
 ///
-/// ⚠ FALLBACK. When git cannot answer but `<root>/.git` is a real directory, fall
-/// back to `<root>/.git/hooks`. Installing nothing there is a regression: that path
-/// is where git looks in the ordinary case, and a container with no `git` binary, a
-/// repo tripping `dubious ownership`, or a git too old for `--path-format` is
-/// exactly where the old code worked. A worktree's `.git` is a FILE, so it correctly
-/// does not take this branch — there we genuinely do not know.
+/// ⚠ FALLBACK, and it is the LAST resort, not the second. When git cannot answer at
+/// all but `<root>/.git` is a real directory, fall back to `<root>/.git/hooks`.
+/// Installing nothing there is a regression: that path is where git looks in the
+/// ordinary case, and a container with no `git` binary or a repo tripping `dubious
+/// ownership` is exactly where the old code worked. A worktree's `.git` is a FILE,
+/// so it correctly does not take this branch — there we genuinely do not know.
+///
+/// ⚠⚠ The fallback must never override an answer git COULD have given. It used to:
+/// on a git too old for `--path-format` the first ask returns unusable output, and
+/// jumping straight to `.git/hooks` guessed WRONG for anyone with a `core.hooksPath`
+/// — reporting "Installed" for a file git does not read. Hence the second ask, which
+/// that git does understand. Only when both fail is the answer genuinely unknown.
 #[must_use]
 pub fn resolve_hooks_dir(repo_root: &std::path::Path) -> Option<HooksDir> {
     // Canonicalise before comparing with git's answer: git resolves symlinks (macOS
@@ -151,27 +205,40 @@ pub fn resolve_hooks_dir(repo_root: &std::path::Path) -> Option<HooksDir> {
     // different repository.
     let canonical = std::fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_path_buf());
 
-    if let Some(out) = std::process::Command::new("git")
-        .args([
+    // Modern git: every answer absolute, so a relative one is proof of a git that
+    // did not understand the question.
+    if let Some(paths) = ask_git(
+        repo_root,
+        &[
             "rev-parse",
             "--path-format=absolute",
             "--show-toplevel",
             "--git-common-dir",
             "--git-path",
             "hooks",
-        ])
-        .current_dir(repo_root)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
+        ],
+    )
+    .as_deref()
+    .and_then(parse_git_paths)
     {
-        if let Some(paths) = String::from_utf8(out.stdout)
-            .ok()
-            .as_deref()
-            .and_then(parse_git_paths)
-        {
-            return Some(classify_hooks_dir(&paths, &canonical));
-        }
+        return Some(classify_hooks_dir(&paths, &canonical));
+    }
+
+    // git < 2.31 (Ubuntu 20.04 ships 2.25): same question without the flag it lacks.
+    if let Some(paths) = ask_git(
+        repo_root,
+        &[
+            "rev-parse",
+            "--show-toplevel",
+            "--git-common-dir",
+            "--git-path",
+            "hooks",
+        ],
+    )
+    .as_deref()
+    .and_then(|out| parse_git_paths_rooted_at(out, &canonical))
+    {
+        return Some(classify_hooks_dir(&paths, &canonical));
     }
 
     let dot_git = repo_root.join(".git");
@@ -179,6 +246,51 @@ pub fn resolve_hooks_dir(repo_root: &std::path::Path) -> Option<HooksDir> {
         return Some(HooksDir::Repo(dot_git.join("hooks")));
     }
     None
+}
+
+/// Run `git` in `repo_root` and return its stdout, or `None` if it did not succeed.
+///
+/// ⚠⚠ THE ENVIRONMENT IS PART OF THE QUESTION. With `GIT_DIR` set and no
+/// `GIT_WORK_TREE`, git skips repository discovery entirely and calls the directory
+/// we hand it the top level — so `--show-toplevel` echoes our own path back and the
+/// "is this our checkout?" check in [`classify_hooks_dir`] passes BY CONSTRUCTION,
+/// while `--git-common-dir` and `--git-path` answer for the OTHER repository. The
+/// verdict is `Repo`, pointing at somebody else's hooks directory. Measured.
+///
+/// That shape is reachable: git exports an absolute `GIT_DIR` to every hook it runs
+/// in a linked worktree, and `git submodule foreach` exports one too — so a hook or
+/// a `foreach` that builds CortenForge elsewhere inherits it. Clearing these makes
+/// the answer depend only on the directory, which is the whole premise of asking.
+fn ask_git(repo_root: &std::path::Path, args: &[&str]) -> Option<String> {
+    let out = git_command(repo_root, args)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    String::from_utf8(out.stdout).ok()
+}
+
+/// Every git invocation this module makes, including the environment it clears.
+///
+/// Split out so a test can inspect it. The end-to-end version of that test —
+/// setting `GIT_DIR` and calling `resolve_hooks_dir` — cannot be written: the
+/// environment is per-PROCESS, libtest runs these in parallel, and it broke four
+/// unrelated git tests with `fatal: not in a git directory`. Asserting on the
+/// command we build tests the same claim without a global side effect.
+pub const GIT_VARS_CLEARED: [&str; 4] = [
+    "GIT_DIR",
+    "GIT_COMMON_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+];
+
+#[must_use]
+pub fn git_command(repo_root: &std::path::Path, args: &[&str]) -> std::process::Command {
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(args).current_dir(repo_root);
+    for var in GIT_VARS_CLEARED {
+        cmd.env_remove(var);
+    }
+    cmd
 }
 
 /// Write `content` to `path` and make it executable, ATOMICALLY.
@@ -293,6 +405,24 @@ impl HookState {
     pub fn is_ours_to_manage(self) -> bool {
         !matches!(self, HookState::Foreign | HookState::Unreadable)
     }
+}
+
+/// Read whatever is at `path`, in the shape [`classify`] wants.
+///
+/// `None` means nothing is there. `Some(Err(()))` means something IS there that we
+/// cannot read as text, which [`HookState::Unreadable`] refuses to touch.
+///
+/// ⚠ PRESENCE IS `symlink_metadata`, NOT `exists()`. `Path::exists` FOLLOWS the
+/// link, so a hook symlinked to a shared hooks repo on an unmounted volume — a
+/// dangling link — answers `false`, classifies as `Missing`, and gets replaced by a
+/// regular file. Measured: the developer's link is destroyed, silently, and the
+/// installer reports `Installed`. A live symlink was already safe (the read follows
+/// it and sees foreign text); only the dangling case bypassed the invariant that we
+/// never touch a hook that is not ours.
+#[must_use]
+pub fn read_existing_hook(path: &std::path::Path) -> Option<Result<String, ()>> {
+    path.symlink_metadata().ok()?;
+    Some(std::fs::read_to_string(path).map_err(|_| ()))
 }
 
 /// Classify whatever is sitting at the hook path.
@@ -441,26 +571,17 @@ mod tests {
         let theirs = "#!/bin/sh\n# husky\nnpm test\n";
         assert_eq!(classify(Some(Ok(theirs)), OURS, MARKER), HookState::Foreign);
         assert_eq!(classify(Some(Err(())), OURS, MARKER), HookState::Unreadable);
-        assert!(!classify(Some(Ok(theirs)), OURS, MARKER).should_replace());
-        assert!(!classify(Some(Err(())), OURS, MARKER).should_replace());
-    }
-
-    /// The two "we did not install" states must stay DISTINGUISHABLE from the
-    /// up-to-date one. They are all `should_replace() == false`, but only the first
-    /// two mean the guard is not armed, and the installer warns on exactly those.
-    /// Collapsing them back into a bool is what made the omission silent.
-    #[test]
-    fn not_installed_is_distinguishable_from_already_current() {
-        let theirs = "#!/bin/sh\n# husky\nnpm test\n";
         for state in [
             classify(Some(Ok(theirs)), OURS, MARKER),
             classify(Some(Err(())), OURS, MARKER),
         ] {
-            assert!(!state.should_replace());
-            assert_ne!(
-                state,
-                HookState::OursCurrent,
-                "a hook we did not install reads as up to date — the warning is lost"
+            assert!(!state.should_replace(), "its CONTENT is not ours to write");
+            // The wider predicate, and the one that actually gates the installers:
+            // `should_replace` alone would still let the chmod repair touch it.
+            assert!(
+                !state.is_ours_to_manage(),
+                "a hook that is not ours must not be repaired either — that is a \
+                 write to somebody else's file, just a smaller one"
             );
         }
     }
@@ -563,6 +684,114 @@ mod tests {
             verdict(&at("/repo", "/repo/.git", "/repo2/.git/hooks"), "/repo"),
             HooksDir::Shared(_)
         ));
+
+        // ★ THE DEGENERATE SHAPE: `core.hooksPath=.`, where git's hooks answer IS
+        // the working tree root. An earlier revision asserted this was refused; the
+        // revision that widened containment to the working tree deleted that
+        // assertion and replaced it with nothing, so the behaviour flipped with no
+        // test either way. It is now a DECISION, pinned: accepted, because that is
+        // genuinely where git reads hooks under that setting, and refusing leaves
+        // the guard unarmed for someone who configured it deliberately. The visible
+        // cost is two untracked files in the repository root.
+        assert!(
+            matches!(
+                verdict(&at("/repo", "/repo/.git", "/repo"), "/repo"),
+                HooksDir::Repo(_)
+            ),
+            "core.hooksPath=. puts hooks in the repo root, and git reads them there"
+        );
+
+        // ⚠ THE PAYLOAD, not just the variant. Every assertion above is
+        // `matches!(.., Repo(_))`, which cannot see WHICH directory came back —
+        // returning the toplevel, or the common dir, for every input survives all
+        // of them. The verdict and the path are two separate claims.
+        assert_eq!(
+            verdict(&at("/wt", "/main/.git", "/main/.git/hooks"), "/wt"),
+            HooksDir::Repo(PathBuf::from("/main/.git/hooks")),
+            "the hooks path git named must be the path handed back, unaltered"
+        );
+        assert_eq!(
+            verdict(&at("/repo", "/repo/.git", "/home/dev/.githooks"), "/repo"),
+            HooksDir::Shared(PathBuf::from("/home/dev/.githooks")),
+            "a refusal still has to name the directory it is refusing"
+        );
+        assert_eq!(
+            verdict(
+                &at("/outer", "/outer/.git", "/outer/.git/hooks"),
+                "/outer/vendor/cortenforge"
+            ),
+            HooksDir::OtherRepo(PathBuf::from("/outer/.git/hooks")),
+        );
+    }
+
+    /// A git too old for `--path-format` answers RELATIVELY, and the second ask
+    /// exists to use that answer rather than throw it away.
+    ///
+    /// ⚠ This is what stops the `.git/hooks` fallback from overriding a knowable
+    /// answer. Without it, a developer on git 2.25 with a `core.hooksPath` was told
+    /// "Installed" for a file git does not read — a false success, which is the
+    /// failure mode the whole arc exists to remove.
+    #[test]
+    fn an_old_gits_relative_answer_is_usable_rather_than_discarded() {
+        use super::{classify_hooks_dir, parse_git_paths_rooted_at, HooksDir};
+        use std::path::{Path, PathBuf};
+
+        let base = Path::new("/repo");
+
+        // The exact mixed shape measured from a git without `--path-format`:
+        // toplevel absolute, git dir and hooks relative to the directory it ran in.
+        let paths = parse_git_paths_rooted_at("/repo\n.git\n.git/hooks\n", base)
+            .expect("relative answers are usable once rooted");
+        assert_eq!(paths.common_dir, PathBuf::from("/repo/.git"));
+        assert_eq!(paths.hooks, PathBuf::from("/repo/.git/hooks"));
+        assert_eq!(
+            paths.toplevel,
+            PathBuf::from("/repo"),
+            "join must leave an already-absolute answer alone"
+        );
+
+        // ★ THE POINT. Same old git, but the user has a global core.hooksPath. The
+        // strict parser refuses this, and the fallback would have guessed
+        // `/repo/.git/hooks` and reported success; rooted, it is correctly refused.
+        let shared = parse_git_paths_rooted_at("/repo\n.git\n/home/dev/.githooks\n", base)
+            .expect("mixed absolute/relative is what old git actually emits");
+        assert_eq!(
+            classify_hooks_dir(&shared, base),
+            HooksDir::Shared(PathBuf::from("/home/dev/.githooks")),
+            "an old git must still be able to tell us the hooks are elsewhere"
+        );
+
+        // The echo rule still applies: a flag line is not a path, in either parser.
+        assert!(
+            parse_git_paths_rooted_at("--path-format=absolute\n/repo\n.git\n.git/hooks\n", base)
+                .is_some(),
+            "dropping the echoed flag leaves exactly three answers"
+        );
+        assert!(
+            parse_git_paths_rooted_at("/repo\n.git\n", base).is_none(),
+            "a short answer is not an answer here either"
+        );
+    }
+
+    /// A directory whose name ends in a space is legal, and trimming broke it.
+    #[test]
+    fn a_path_is_not_trimmed_but_a_carriage_return_is() {
+        use super::parse_git_paths;
+        use std::path::PathBuf;
+
+        let paths = parse_git_paths("/repo/trail \n/repo/trail /.git\n/repo/trail /.git/hooks\n")
+            .expect("trailing spaces are part of the path");
+        assert_eq!(
+            paths.toplevel,
+            PathBuf::from("/repo/trail "),
+            "trimming made git's answer differ from the directory we asked about, \
+             so the repository was classified as somebody else's — and that arm of \
+             build.rs is the one that returns completely silently"
+        );
+
+        let crlf = parse_git_paths("/repo\r\n/repo/.git\r\n/repo/.git/hooks\r\n")
+            .expect("a CR is line noise, not part of the path");
+        assert_eq!(crlf.toplevel, PathBuf::from("/repo"));
     }
 
     /// The FALLBACK, both directions. When git cannot answer but `.git` is a real
@@ -614,7 +843,23 @@ mod tests {
         let path = dir.join("pre-commit");
 
         std::fs::write(&path, "old\n").expect("seed");
+        // ⚠ THE INODE IS THE CLAIM. Content, mode and no-leftovers are all equally
+        // true of a plain `fs::write` in place — the very thing this function's doc
+        // spends nine lines forbidding, because git may be executing that file and
+        // `sh` resumes at a stale offset in new content. A rename gives the running
+        // shell its own inode; an in-place write does not. Without this the whole
+        // atomicity argument was untested prose.
+        #[cfg(unix)]
+        let ino_before = {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::metadata(&path).expect("meta").ino()
+        };
         write_hook_file(&path, OURS).expect("write");
+        #[cfg(unix)]
+        let ino_after = {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::metadata(&path).expect("meta").ino()
+        };
 
         let content = std::fs::read_to_string(&path).expect("read back");
         let leftovers: Vec<String> = std::fs::read_dir(&dir)
@@ -639,6 +884,93 @@ mod tests {
         assert!(
             mode & 0o111 != 0,
             "the installed hook is not executable ({mode:o}); git ignores it silently"
+        );
+        #[cfg(unix)]
+        assert_ne!(
+            ino_before, ino_after,
+            "the hook was written IN PLACE, not renamed over: a shell already \
+             executing it would resume at a stale offset in the new bytes"
+        );
+    }
+
+    /// Every failure past the temp write has to take the temp file with it.
+    ///
+    /// ⚠ An orphan here is invisible: `uninstall` iterates `HOOKS` by name and would
+    /// never see `pre-commit.cf-install-1234-0`, so it sits in git's hooks directory
+    /// forever. Nothing exercised this arm — `if false { .. }` around the cleanup
+    /// survived the whole suite.
+    #[test]
+    fn a_failed_install_leaves_no_orphan_behind() {
+        use super::write_hook_file;
+
+        let dir = std::env::temp_dir().join(format!("cf-orphan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("pre-commit");
+
+        // A non-empty DIRECTORY where the hook belongs: the temp write and the chmod
+        // both succeed, and `rename` then fails with ENOTEMPTY/EISDIR. Measured —
+        // this is the one shape that reaches the cleanup without stubbing anything.
+        std::fs::create_dir_all(path.join("occupied")).expect("blocker");
+
+        let result = write_hook_file(&path, OURS);
+
+        let leftovers: Vec<String> = std::fs::read_dir(&dir)
+            .expect("read dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n != "pre-commit")
+            .collect();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(
+            result.is_err(),
+            "renaming over a non-empty directory must fail, or this test proves nothing"
+        );
+        assert!(
+            leftovers.is_empty(),
+            "the temporary file outlived a failed install: {leftovers:?}"
+        );
+    }
+
+    /// A dangling symlink is a hook that is PRESENT and not ours.
+    #[test]
+    #[cfg(unix)]
+    fn a_dangling_symlink_is_never_mistaken_for_an_absent_hook() {
+        use super::{classify, read_existing_hook, HookState};
+
+        let dir = std::env::temp_dir().join(format!("cf-dangle-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("pre-commit");
+        std::os::unix::fs::symlink(dir.join("no-such-volume/pre-commit"), &path).expect("symlink");
+
+        let existing = read_existing_hook(&path);
+        let state = classify(
+            existing.as_ref().map(|r| r.as_deref().map_err(|_| ())),
+            OURS,
+            MARKER,
+        );
+        // POSITIVE CONTROL for the rig: the naive test really would have said absent.
+        let exists_says_absent = !path.exists();
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(
+            exists_says_absent,
+            "NEGATIVE CONTROL BROKEN: Path::exists no longer follows the link, so \
+             this test can no longer show why symlink_metadata is required"
+        );
+        assert_eq!(
+            state,
+            HookState::Unreadable,
+            "a developer's link to a shared hooks repo on an unmounted volume read \
+             as Missing and was replaced by a regular file — silently, reported as \
+             a successful install"
+        );
+        assert!(
+            !state.should_replace(),
+            "and so it must never be written over"
         );
     }
 

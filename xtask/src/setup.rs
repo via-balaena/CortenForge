@@ -108,16 +108,27 @@ pub fn run() -> Result<()> {
 /// PROCESS working directory, so running from a subdirectory made `uninstall` report
 /// "No hooks directory found" and return `Ok(())` — a no-op reported as success.
 ///
-/// Refuses a hooks directory OUTSIDE this repository's git dir: a global
-/// `core.hooksPath` is shared with every other repo on the machine, and installing
-/// or deleting there is not ours to do. See [`crate::hook_install::HooksDir`].
+/// Refuses a hooks directory outside this repository: a `core.hooksPath` pointing
+/// out there may be shared with every other repo on the machine, and installing or
+/// deleting there is not ours to do. See [`crate::hook_install::HooksDir`].
 ///
 /// # Errors
-/// If git's hooks directory cannot be determined, or is shared with other repos.
+/// If git's hooks directory cannot be determined, or is not inside this checkout.
 fn git_hooks_dir() -> Result<PathBuf> {
     let sh = xshell::Shell::new()?;
     let root = PathBuf::from(crate::grade::find_workspace_root(&sh)?);
-    match crate::hook_install::resolve_hooks_dir(&root) {
+    hooks_dir_from(crate::hook_install::resolve_hooks_dir(&root), &root)
+}
+
+/// Turn a resolution into a directory to write, or into the reason we will not.
+///
+/// Split from [`git_hooks_dir`] because THE REFUSALS ARE THE POINT and the version
+/// that resolves the directory itself cannot be tested — it reads the process's cwd.
+/// While the two were one function, mutating either refusal into `Ok(dir)` left the
+/// whole suite green while `cargo xtask setup` wrote CortenForge's hooks into a
+/// developer's global hooks directory, or into an unrelated repository.
+fn hooks_dir_from(resolved: Option<crate::hook_install::HooksDir>, root: &Path) -> Result<PathBuf> {
+    match resolved {
         Some(crate::hook_install::HooksDir::Repo(dir)) => Ok(dir),
         Some(crate::hook_install::HooksDir::OtherRepo(dir)) => anyhow::bail!(
             "git resolves this directory to a different repository — its hooks live \
@@ -126,10 +137,15 @@ fn git_hooks_dir() -> Result<PathBuf> {
              one.",
             dir.display()
         ),
+        // ⚠ Says WHERE, not WHOSE. This fires for any hooks directory outside the
+        // repository, which a repo-LOCAL `core.hooksPath` can also name — the old
+        // wording told such a developer their setting was "shared with your other
+        // repos", which was simply false. Classification is by location; so is this.
         Some(crate::hook_install::HooksDir::Shared(dir)) => anyhow::bail!(
             "git is configured to read hooks from {}, which is outside this \
-             repository and shared with your other repos. Refusing to touch it — \
-             merge xtask/hooks/* into it yourself, or unset core.hooksPath.",
+             repository. Refusing to touch it — a directory out there may be shared \
+             with your other repos. Merge xtask/hooks/* into it yourself, or point \
+             core.hooksPath somewhere inside this checkout.",
             dir.display()
         ),
         None => anyhow::bail!(
@@ -173,10 +189,54 @@ fn install_git_hooks_into(hooks_dir: &Path) -> Result<()> {
     println!("  hooks directory: {}", hooks_dir.display());
     for (name, content) in HOOKS {
         let path = hooks_dir.join(name);
-        // Atomic: git may be RUNNING this exact file. See `write_hook_file`.
-        crate::hook_install::write_hook_file(&path, content)
-            .with_context(|| format!("Failed to write {name} hook"))?;
-        println!("  ✓ Installed {name} hook");
+        let marker = crate::hook_install::title_of(content);
+        let existing = crate::hook_install::read_existing_hook(&path);
+        let state = crate::hook_install::classify(
+            existing.as_ref().map(|r| r.as_deref().map_err(|_| ())),
+            content,
+            marker,
+        );
+
+        // ⚠⚠ THE OWNERSHIP CHECK, which this command did not make. `build.rs` has
+        // always classified first and left a foreign hook alone with a warning;
+        // `setup` overwrote it and printed `✓ Installed`, indistinguishable from
+        // the ordinary case. Two installers, one repository, opposite verdicts on
+        // the same file — and the untested one was the one that destroyed data.
+        //
+        // Resolving the directory properly is what forced the issue: `setup` run
+        // inside a linked worktree now reaches the MAIN checkout's hooks, so the
+        // clobber stopped being local to the developer who typed the command.
+        // Measured: it replaced a foreign `pre-commit` in the main checkout and
+        // said nothing. An explicit command is not a licence to delete a file
+        // nobody mentioned.
+        if !state.is_ours_to_manage() {
+            match state {
+                crate::hook_install::HookState::Foreign => println!(
+                    "  ⚠ Left your existing {name} hook in place — CortenForge's is \
+                     NOT installed and its checks will not run. Merge \
+                     xtask/hooks/{name} into yours, or move yours aside and re-run."
+                ),
+                _ => println!(
+                    "  ⚠ Could not read the existing {name} hook, so it was left \
+                     alone. CortenForge's {name} hook is NOT installed."
+                ),
+            }
+            continue;
+        }
+
+        if state.should_replace() {
+            // Atomic: git may be RUNNING this exact file. See `write_hook_file`.
+            crate::hook_install::write_hook_file(&path, content)
+                .with_context(|| format!("Failed to write {name} hook"))?;
+            println!("  ✓ Installed {name} hook");
+        } else {
+            // Ours and current. Still re-write it: this is the one command a
+            // developer runs to REPAIR hooks, and the cheapest way to guarantee the
+            // executable bit git silently requires is to lay the file down again.
+            crate::hook_install::write_hook_file(&path, content)
+                .with_context(|| format!("Failed to refresh {name} hook"))?;
+            println!("  ✓ {name} hook already current (refreshed)");
+        }
     }
 
     Ok(())
@@ -279,19 +339,49 @@ pub fn uninstall() -> Result<()> {
     // the SHARED common directory, so removing hooks here disarms the guard for the
     // main checkout and every other worktree.
     println!("  hooks directory: {}", hooks_dir.display());
+    uninstall_hooks_from(&hooks_dir)?;
+
+    println!("{}", "Hooks removed.".bright_green());
+    Ok(())
+}
+
+/// Remove OUR hooks from `hooks_dir`, and only ours.
+///
+/// Split out for the same reason as [`install_git_hooks_into`]: while the removal
+/// lived inside the command that resolves its own directory, no test could reach it,
+/// and it deleted files by name with no ownership check at all.
+fn uninstall_hooks_from(hooks_dir: &Path) -> Result<()> {
     // The same single source both installers read. Hardcoding the names here is
     // how a third hook would get installed by both of them and left behind by this
     // one — a live hook with no source, which is the drift shape (#709) this branch
     // exists to repair.
-    for (name, _) in HOOKS {
+    for (name, content) in HOOKS {
         let path = hooks_dir.join(name);
-        if path.exists() {
-            fs::remove_file(&path)?;
-            println!("  ✓ Removed {name} hook");
+        let marker = crate::hook_install::title_of(content);
+        let existing = crate::hook_install::read_existing_hook(&path);
+        let Some(existing) = existing else {
+            continue;
+        };
+        let state = crate::hook_install::classify(
+            Some(existing.as_deref().map_err(|_| ())),
+            content,
+            marker,
+        );
+
+        // ⚠⚠ DELETE ONLY WHAT WE INSTALLED. This removed `<dir>/<name>` by NAME,
+        // so it destroyed a developer's own `pre-commit` — the file `build.rs`
+        // deliberately preserves — and, once `core.hooksPath` inside the working
+        // tree became a supported layout, it deleted TRACKED files out of the
+        // checkout. Uninstalling CortenForge's hooks is not a licence to remove
+        // anybody else's; the two halves of the installer now agree on ownership.
+        if !state.is_ours_to_manage() {
+            println!("  ⚠ Left the existing {name} hook alone — it is not ours.");
+            continue;
         }
+        fs::remove_file(&path)?;
+        println!("  ✓ Removed {name} hook");
     }
 
-    println!("{}", "Hooks removed.".bright_green());
     Ok(())
 }
 
@@ -393,9 +483,19 @@ mod hook_tests {
     /// with nothing checking that it worked.
     #[test]
     fn every_guarded_extension_blocks_the_commit() {
-        // ALL FIVE. Testing only .stl left four of the guard's extensions with zero
-        // coverage, so dropping one from the pathspec was a change no test opposed.
-        for name in ["part.stl", "part.obj", "part.ply", "part.3mf", "part.mtl"] {
+        // EVERY extension. Testing only .stl left the others with zero coverage, so
+        // dropping one from the pathspec was a change no test opposed.
+        // ★ `.step`/`.stp` were in neither the guard nor .gitignore, while mesh-io
+        // has read and written STEP as a first-class format all along.
+        for name in [
+            "part.stl",
+            "part.obj",
+            "part.ply",
+            "part.3mf",
+            "part.mtl",
+            "part.step",
+            "part.stp",
+        ] {
             let (ok, out) = run_hook(name, false);
             // `!ok` is load-bearing now that the scratch repo is a valid, formatted
             // cargo project — `a_clean_stage_passes` proves the hook CAN exit 0.
@@ -422,24 +522,29 @@ mod hook_tests {
         // ALL FIVE uppercased. Testing only SCAN.STL left four `:(icase)` entries
         // uncovered — dropping `:(icase)` from `*.mtl` alone was a mutant the suite
         // survived, measured.
-        for name in ["SCAN.STL", "SCAN.OBJ", "SCAN.PLY", "SCAN.3MF", "SCAN.MTL"] {
+        // ⚠ A second, identical `run_hook("SCAN.STL", ..)` used to sit below this
+        // loop re-asserting the loop's own two predicates on the loop's own first
+        // input. Only its third assertion was new, so it is folded in here.
+        for name in [
+            "SCAN.STL",
+            "SCAN.OBJ",
+            "SCAN.PLY",
+            "SCAN.3MF",
+            "SCAN.MTL",
+            "SCAN.STEP",
+            "SCAN.STP",
+        ] {
             let (ok, out) = run_hook(name, false);
             assert!(!ok, "{name} did not block the commit; output:\n{out}");
             assert!(
                 out.contains("Refusing to commit mesh/scan binaries"),
                 "{name} was NOT blocked — is :(icase) still on every entry?:\n{out}"
             );
+            assert!(
+                !out.contains("Checking formatting"),
+                "{name} tripped the guard but did not exit there:\n{out}"
+            );
         }
-        let (ok, out) = run_hook("SCAN.STL", false);
-        assert!(!ok, "SCAN.STL did not block the commit");
-        assert!(
-            out.contains("Refusing to commit mesh/scan binaries"),
-            "SCAN.STL was NOT blocked — the pathspec is case-sensitive again:\n{out}"
-        );
-        assert!(
-            !out.contains("Checking formatting"),
-            "did not exit at the guard:\n{out}"
-        );
     }
 
     /// The documented override must work, and must ANNOUNCE itself. Printing
@@ -447,7 +552,17 @@ mod hook_tests {
     /// hook used to do — hides the one commit anyone would want a record of.
     #[test]
     fn the_override_lets_it_through_and_says_so() {
-        let (_, out) = run_hook("part.stl", true);
+        let (ok, out) = run_hook("part.stl", true);
+        // ⚠ THE EXIT STATUS WAS DISCARDED. Every assertion here was on stdout, so
+        // the hook could print its notice and then die — which is exactly what the
+        // CF_ALLOW_MESH escape did on the unreadable-index path, under `set -e`,
+        // exit 129. The sibling test was upgraded to check this; this one was not,
+        // and an `exit 1` appended to the allow branch survived all three checks.
+        assert!(
+            ok,
+            "CF_ALLOW_MESH=1 printed its notice and then FAILED the commit anyway; \
+             output:\n{out}"
+        );
         assert!(
             !out.contains("Refusing to commit mesh/scan binaries"),
             "CF_ALLOW_MESH=1 did not suppress the refusal; output:\n{out}"
@@ -614,6 +729,66 @@ mod hook_tests {
     /// `git rev-parse` here, which left the function the binary actually calls with
     /// no test reaching it — reverting that one to `root.join(".git/hooks")` kept the
     /// whole suite green. That is #709's shape inside the fix for #709.
+    /// The three refusals, which nothing reached before.
+    ///
+    /// ⚠ These are the containment layer as the USER meets it. `classify_hooks_dir`
+    /// was well covered, but its verdicts fed a `match` that no test called, so
+    /// mutating either refusal arm to `Ok(dir)` left the whole suite green while
+    /// `cargo xtask setup` wrote CortenForge's hooks into a developer's global hooks
+    /// directory, or into an unrelated repository. A verdict nobody acts on is not a
+    /// guard.
+    #[test]
+    fn setup_refuses_every_hooks_directory_that_is_not_ours() {
+        use crate::hook_install::HooksDir;
+        use std::path::{Path, PathBuf};
+
+        let root = Path::new("/repo");
+        let ours = super::hooks_dir_from(
+            Some(HooksDir::Repo(PathBuf::from("/repo/.git/hooks"))),
+            root,
+        );
+        assert_eq!(
+            ours.expect("our own hooks dir must be accepted"),
+            PathBuf::from("/repo/.git/hooks"),
+            "POSITIVE CONTROL: a rule that refuses everything is not containment"
+        );
+
+        // Each refusal must NAME the directory — that string is the developer's only
+        // route to fixing it, and an error that says only "refused" is a dead end.
+        let shared = super::hooks_dir_from(
+            Some(HooksDir::Shared(PathBuf::from("/home/dev/.githooks"))),
+            root,
+        )
+        .expect_err("a hooks dir outside the repo is never ours to write");
+        assert!(
+            shared.to_string().contains("/home/dev/.githooks"),
+            "the refusal must name the directory: {shared}"
+        );
+        assert!(
+            !shared.to_string().contains("your other repos.")
+                || shared.to_string().contains("may be shared"),
+            "a repo-LOCAL core.hooksPath outside the tree lands here too, so this \
+             must not assert whose directory it is: {shared}"
+        );
+
+        let other = super::hooks_dir_from(
+            Some(HooksDir::OtherRepo(PathBuf::from("/outer/.git/hooks"))),
+            root,
+        )
+        .expect_err("an ancestor repository is never ours to write");
+        assert!(
+            other.to_string().contains("/outer/.git/hooks"),
+            "the refusal must name the directory: {other}"
+        );
+
+        let unknown =
+            super::hooks_dir_from(None, root).expect_err("an unknown hooks dir is not a licence");
+        assert!(
+            unknown.to_string().contains("/repo"),
+            "the refusal must name the checkout: {unknown}"
+        );
+    }
+
     fn hooks_dir_of(repo: &std::path::Path) -> std::path::PathBuf {
         match crate::hook_install::resolve_hooks_dir(repo) {
             Some(crate::hook_install::HooksDir::Repo(dir)) => dir,
@@ -790,9 +965,22 @@ mod hook_tests {
         let naive_exists = wt.join(".git/hooks").exists();
         let resolved_exists = resolved.exists();
         let dot_git_is_file = wt.join(".git").is_file();
+        // The one right answer, computed independently of the code under test.
+        let expected = std::fs::canonicalize(&repo)
+            .expect("canonicalize repo")
+            .join(".git")
+            .join("hooks");
         let _ = std::fs::remove_dir_all(&base);
 
         assert!(dot_git_is_file, "a linked worktree's .git should be a FILE");
+        // ⚠ WHICH directory, not merely "one that exists". `resolved.exists()` alone
+        // is satisfied by returning the worktree root, or the toplevel, for every
+        // input — the test named for common-dir resolution could not see the
+        // difference it is named after.
+        assert_eq!(
+            resolved, expected,
+            "a worktree's hooks must resolve to the MAIN checkout's common dir"
+        );
         assert!(
             !naive_exists,
             "NEGATIVE CONTROL BROKEN: <worktree>/.git/hooks exists, so this test can \
@@ -802,6 +990,181 @@ mod hook_tests {
             resolved_exists,
             "asking git did not yield a usable hooks dir in a worktree ({})",
             resolved.display()
+        );
+    }
+
+    /// Ask git, in a repository whose answer CANNOT be `.git/hooks`.
+    ///
+    /// ⚠⚠ THIS IS THE SUITE'S UNCONDITIONAL GUARD on the whole "ask git" path.
+    /// Deleting the `rev-parse` block from `resolve_hooks_dir` — reverting precisely
+    /// to the bug this arc exists to fix — was killed by exactly one test, the
+    /// worktree one, which RETURNS EARLY whenever the developer has a global
+    /// `core.hooksPath`. libtest captures `eprintln!` for a passing test and throws
+    /// it away, so that skip is invisible: the run says `ok` and the only guard on
+    /// the central claim silently did nothing.
+    ///
+    /// A repo-LOCAL `core.hooksPath` overrides any global one, so this cannot skip.
+    /// And it is not the tautology the worktree test's old config pin was: that pin
+    /// named `<dir>/.git/hooks`, which is exactly what the NAIVE join produces, so a
+    /// reverted implementation passed it. This names a directory the naive join can
+    /// never yield, which is what makes the assertion discriminating.
+    #[test]
+    fn a_repo_local_hooks_path_is_resolved_and_the_naive_join_cannot_reach_it() {
+        let base = std::env::temp_dir().join(format!("cf-localhp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let repo = base.join("repo");
+        std::fs::create_dir_all(&repo).expect("temp dir");
+        let git_in = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .expect("git");
+            assert!(
+                out.status.success(),
+                "git {} failed:\n{}",
+                args.join(" "),
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git_in(&["init", "-q", "."]);
+        // In-tree, versioned, and NOT `.git/hooks` — the widespread `.githooks`
+        // convention. Local config beats global, so no environment can skip this.
+        git_in(&["config", "core.hooksPath", ".githooks"]);
+        std::fs::create_dir_all(repo.join(".githooks")).expect("hooks dir");
+
+        let resolved = hooks_dir_of(&repo);
+        let canonical = std::fs::canonicalize(&repo).expect("canonicalize");
+        let naive = canonical.join(".git").join("hooks");
+        let naive_exists = naive.exists();
+        let _ = std::fs::remove_dir_all(&base);
+
+        assert!(
+            naive_exists,
+            "NEGATIVE CONTROL BROKEN: <repo>/.git/hooks does not exist, so this test \
+             can no longer show that the naive join returns a plausible WRONG answer \
+             rather than an obviously missing one"
+        );
+        assert_eq!(
+            resolved,
+            canonical.join(".githooks"),
+            "git reads hooks from .githooks here; anything else is a file git never \
+             runs, installed with a success message"
+        );
+        assert_ne!(
+            resolved, naive,
+            "the naive join must not be able to produce this answer, or the test \
+             cannot tell the two implementations apart"
+        );
+    }
+
+    /// `GIT_DIR` in the environment must not steer resolution into another repo.
+    ///
+    /// ⚠ The containment check asks whether git's `--show-toplevel` equals the
+    /// directory we asked about. With `GIT_DIR` set and no `GIT_WORK_TREE`, git
+    /// skips discovery and calls OUR directory the top level — so that check passes
+    /// BY CONSTRUCTION while the hooks path answers for the other repository. The
+    /// verdict is `Repo`, pointing somewhere else entirely.
+    ///
+    /// Reachable, not hypothetical: git exports an absolute `GIT_DIR` to every hook
+    /// it runs in a linked worktree, and to `git submodule foreach` — so a hook or a
+    /// `foreach` that builds CortenForge elsewhere inherits one.
+    ///
+    /// ⚠ Asserted on the COMMAND, not end to end. The end-to-end version needs
+    /// `set_var`, which is per-process; written that way it broke four unrelated git
+    /// tests running in parallel (`fatal: not in a git directory`). The two halves of
+    /// the claim are split accordingly: git's behaviour under `GIT_DIR` is measured
+    /// and recorded here, and what this test pins is that we clear the variables.
+    #[test]
+    fn every_git_question_clears_the_variables_that_would_answer_for_another_repo() {
+        use std::path::Path;
+
+        let cmd = crate::hook_install::git_command(Path::new("/repo"), &["rev-parse"]);
+        let cleared: Vec<&str> = cmd
+            .get_envs()
+            .filter(|(_, v)| v.is_none())
+            .filter_map(|(k, _)| k.to_str())
+            .collect();
+
+        // Measured, git 2.50.1: with GIT_DIR set to repo B's git dir and the command
+        // run in checkout A, `--show-toplevel` answers **A** — git skips discovery
+        // and calls the working directory the top level — while --git-common-dir and
+        // --git-path answer for **B**. So `toplevel == repo_root` holds by
+        // construction, containment passes, and the verdict is Repo(B/.git/hooks).
+        // The naive `.git/hooks` join this replaced could not be steered that way.
+        for var in crate::hook_install::GIT_VARS_CLEARED {
+            assert!(
+                cleared.contains(&var),
+                "{var} is inherited by our git call, so the environment can decide \
+                 which repository we install into: cleared = {cleared:?}"
+            );
+        }
+        assert!(
+            cleared.contains(&"GIT_DIR"),
+            "GIT_DIR above all: it is the one git exports into every worktree hook"
+        );
+    }
+
+    /// `setup` and `uninstall` must reach the same ownership verdict as `build.rs`.
+    ///
+    /// ⚠⚠ THE TWO INSTALLERS DISAGREED, and the untested one destroyed data.
+    /// `build.rs` classified first and left a foreign hook alone with a warning;
+    /// `setup` overwrote it and printed `✓ Installed`, indistinguishable from the
+    /// ordinary case, and `uninstall` deleted it by NAME. Measured before the fix: a
+    /// developer's `pre-commit` replaced, sha changed, no backup, three cheerful
+    /// lines of output.
+    ///
+    /// Resolving the hooks directory properly is what made this urgent rather than
+    /// merely wrong: `setup` run inside a linked worktree now reaches the MAIN
+    /// checkout's hooks, so the clobber stopped being confined to the developer who
+    /// typed the command — an agent working in a worktree could do it to them.
+    #[test]
+    fn neither_installing_nor_uninstalling_touches_a_hook_that_is_not_ours() {
+        let dir = std::env::temp_dir().join(format!("cf-own-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+
+        // Someone else's hook where OUR pre-commit would go; our own, stale, where
+        // commit-msg goes — so one run exercises both verdicts.
+        let theirs = "#!/bin/sh\n# husky\necho theirs\n";
+        std::fs::write(dir.join("pre-commit"), theirs).expect("seed foreign");
+        let stale = format!(
+            "#!/bin/sh\n{}\n# an older CortenForge hook\n",
+            COMMIT_MSG_HOOK.lines().nth(1).expect("title line")
+        );
+        std::fs::write(dir.join("commit-msg"), &stale).expect("seed stale");
+
+        super::install_git_hooks_into(&dir).expect("install");
+
+        let foreign_after_install =
+            std::fs::read_to_string(dir.join("pre-commit")).expect("read foreign");
+        let ours_after_install =
+            std::fs::read_to_string(dir.join("commit-msg")).expect("read ours");
+
+        super::uninstall_hooks_from(&dir).expect("uninstall");
+
+        let foreign_survives = dir.join("pre-commit").exists();
+        let foreign_final = std::fs::read_to_string(dir.join("pre-commit")).unwrap_or_default();
+        let ours_removed = !dir.join("commit-msg").exists();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(
+            foreign_after_install, theirs,
+            "install overwrote a hook that was not ours — the file is gone and the \
+             developer was told it was a successful install"
+        );
+        assert_eq!(
+            ours_after_install, COMMIT_MSG_HOOK,
+            "POSITIVE CONTROL: our own stale hook must still be healed, or this test \
+             would pass just as well against an installer that writes nothing"
+        );
+        assert!(
+            foreign_survives && foreign_final == theirs,
+            "uninstall deleted a hook it never installed"
+        );
+        assert!(
+            ours_removed,
+            "POSITIVE CONTROL: uninstall must still remove OUR hook"
         );
     }
 
@@ -872,6 +1235,57 @@ mod hook_tests {
         ] {
             let (ok, out) = run_commit_msg(msg);
             assert!(ok, "{label}: rejected a message that must pass;\n{out}");
+        }
+    }
+
+    /// Autosquash markers must pass, and the type list must be real.
+    ///
+    /// ⚠ SAFETY, not convenience. `git commit --fixup=<sha>` writes `fixup! <subject>`,
+    /// which cannot match the conventional-commit pattern — so recording a fixup
+    /// required `--no-verify`, and that ALSO disables the pre-commit hook. The cheap
+    /// gate was pushing people onto the hammer that disarms the scan/mesh guard,
+    /// whose miss is permanent and public. Those messages are rewritten out of
+    /// history by `git rebase --autosquash` before anything reaches CI.
+    ///
+    /// ⚠ The type alternation had no coverage at all: only "garbage subject" (which
+    /// fails everything) and one `feat(xtask):`. Deleting `perf` or `ci` from the
+    /// pattern was a mutant nothing opposed.
+    #[test]
+    fn autosquash_markers_pass_and_every_declared_type_is_accepted() {
+        for marker in [
+            "fixup! feat(x): y",
+            "squash! feat(x): y",
+            "amend! feat(x): y",
+        ] {
+            let (ok, out) = run_commit_msg(&format!("{marker}\n"));
+            assert!(
+                ok,
+                "{marker} was rejected, so recording a fixup needs --no-verify — \
+                 which drops the scan/mesh guard too;\n{out}"
+            );
+        }
+
+        // Every type the hook's own message promises. A type listed in the help text
+        // but missing from the pattern is a documented lie the suite cannot see.
+        for ty in [
+            "feat", "fix", "refactor", "test", "docs", "chore", "perf", "ci", "build", "style",
+        ] {
+            let (ok, out) = run_commit_msg(&format!("{ty}: a description\n"));
+            assert!(ok, "type `{ty}` is advertised but rejected;\n{out}");
+            let (scoped, out2) = run_commit_msg(&format!("{ty}(cf-cast): a description\n"));
+            assert!(scoped, "type `{ty}` with a scope was rejected;\n{out2}");
+        }
+
+        // NEGATIVE CONTROLS: a rule that accepts everything is not a rule.
+        for (label, msg) in [
+            ("unknown type", "feet: a description\n"),
+            ("no description", "feat:\n"),
+            ("no colon", "feat a description\n"),
+            ("uppercase scope", "feat(CfCast): a description\n"),
+            ("fixup without the bang", "fixup feat(x): y\n"),
+        ] {
+            let (ok, out) = run_commit_msg(msg);
+            assert!(!ok, "{label}: accepted a malformed subject;\n{out}");
         }
     }
 
@@ -987,17 +1401,45 @@ mod hook_tests {
     /// bug, reintroduced one level up, and it would be invisible: no error, hooks
     /// just quietly stop updating. Assert the shape the derivation depends on.
     #[test]
-    fn line_two_of_each_hook_is_the_title_the_marker_is_derived_from() {
+    fn each_hooks_marker_finds_its_own_hook_and_only_its_own() {
+        use crate::hook_install::title_of;
+
+        // ⚠ THE ORACLE USED TO BE THE SUT. This test re-implemented `title_of`'s
+        // own line-2 parse inline and asserted the result looked right — so it
+        // agreed with the code under test by construction, and duplicated an
+        // assertion `title_is_taken_from_line_two_without_its_comment_marker`
+        // already makes exactly. What follows is the claim nothing else covers.
+        let markers: Vec<(&str, &str)> = HOOKS
+            .iter()
+            .map(|(name, hook)| (*name, title_of(hook)))
+            .collect();
+
         for (name, hook) in HOOKS {
-            let line2 = hook.lines().nth(1).unwrap_or_else(|| {
-                panic!("{name} has no line 2; hook_install::title_of would panic the BUILD")
-            });
+            let marker = title_of(hook);
+            // `classify` recognises a hook by `current.contains(marker)`. A marker
+            // derived from a hook that is not FOUND in it means the installer stops
+            // recognising its own work and never heals a stale hook again.
             assert!(
-                line2.starts_with("# CortenForge"),
-                "{name} line 2 is {line2:?}, not a `# CortenForge ...` title. \
-                 hook_install::title_of would derive that as the ownership marker and \
-                 the updater would stop recognising its own hooks, silently."
+                hook.contains(marker),
+                "{name}'s own marker {marker:?} is not present in its text"
             );
+        }
+
+        // ★ AND THEY MUST DIFFER. Identical titles would make each hook match the
+        // other's marker, so `classify` would call a `commit-msg` sitting at the
+        // `pre-commit` path "ours, stale" and overwrite it — the cross-pairing
+        // failure this file's HOOKS table exists to prevent, arriving by a second
+        // route that the pairing test cannot see.
+        for (a_name, a) in &markers {
+            for (b_name, b) in &markers {
+                if a_name != b_name {
+                    assert_ne!(
+                        a, b,
+                        "{a_name} and {b_name} share the ownership marker {a:?}, so \
+                         each would recognise the other as its own"
+                    );
+                }
+            }
         }
     }
 

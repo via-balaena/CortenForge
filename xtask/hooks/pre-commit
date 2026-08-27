@@ -44,9 +44,13 @@ echo "→ Checking for scan/mesh binaries..."
 # `|| true` and so aborts under `set -e`: the QUALITY check was failing safe while
 # this one, whose miss is unrecoverable, was failing unsafe.
 guard_unreadable=0
-if ! staged_meshes=$(git diff --cached --name-only --diff-filter=ACMR \
+# ⚠ KEEP IN STEP WITH .gitignore — the two layers are only worth having if they
+# cover the same extensions. `.step`/`.stp` were in NEITHER, while mesh-io has read
+# and written them as a first-class format all along (MeshFormat::Step), so the one
+# geometry format a CAD tool exports by default was the one the guard could not see.
+if ! staged_meshes=$(git -c core.quotePath=false diff --cached --name-only --diff-filter=ACMR \
     -- ':(icase)*.stl' ':(icase)*.obj' ':(icase)*.ply' \
-       ':(icase)*.3mf' ':(icase)*.mtl'); then
+       ':(icase)*.3mf' ':(icase)*.mtl' ':(icase)*.step' ':(icase)*.stp'); then
     if [ "${CF_ALLOW_MESH:-0}" = "1" ]; then
         # The DOCUMENTED override has to work here too. Without it the only way past
         # a malfunctioning guard is `git commit --no-verify`, which ALSO disables the
@@ -106,40 +110,68 @@ echo "✓ Formatting OK"
 # CF_ALLOW_MESH escape granted above and sending the developer to `--no-verify`
 # (which disables the commit-message hook too). Measured: a failing command
 # substitution under `set -e` exits immediately. Skip lint rather than die silently.
+# ⚠ `core.quotePath=false` is load-bearing, not cosmetic: by default git C-QUOTES
+# any path with a non-ASCII byte, so `café/src/lib.rs` arrives as
+# `"caf\303\251/src/lib.rs"` — a name no file has, which walks up to no Cargo.toml
+# and silently drops that crate from the lint set.
 if [ "$guard_unreadable" = "1" ]; then
     echo "→ Skipping clippy: the staged file list could not be read."
     staged_rs_files=""
-elif ! staged_rs_files=$(git diff --cached --name-only --diff-filter=ACMR \
-    -- '*.rs' '*Cargo.toml'); then
-    echo "✗ Could not read the staged file list, so the crates to lint cannot be"
-    echo "  determined. Refusing the commit rather than skipping the checks silently."
-    exit 1
+elif ! staged_rs_files=$(git -c core.quotePath=false diff --cached --name-only \
+    --diff-filter=ACMR -- '*.rs' '*Cargo.toml'); then
+    # The CF_ALLOW_MESH escape has to survive HERE too. It is granted above for an
+    # unreadable index, and this call reads that same index — so without this the
+    # override let you past the guard and then died one block later, which is the
+    # bug it was written to fix, one block further down.
+    if [ "${CF_ALLOW_MESH:-0}" = "1" ]; then
+        echo "⚠ CF_ALLOW_MESH=1 — the staged file list could not be read, so clippy"
+        echo "  was SKIPPED for this commit."
+        staged_rs_files=""
+        guard_unreadable=1
+    else
+        echo "✗ Could not read the staged file list, so the crates to lint cannot be"
+        echo "  determined. Refusing the commit rather than skipping the checks silently."
+        exit 1
+    fi
 fi
 
-if [ -z "$staged_rs_files" ]; then
+# ⚠ The "nothing staged" message is reachable ONLY when the list was actually read.
+# It used to sit on an `if [ -z ]` that an unreadable index also satisfied, so the
+# hook announced a clean stage it had never looked at — one line after saying it
+# could not look. Same false clean bill of health the mesh guard refuses to print.
+if [ "$guard_unreadable" = "1" ]; then
+    :
+elif [ -z "$staged_rs_files" ]; then
     echo "→ No Rust/Cargo files staged — skipping clippy."
 else
     # Extract crate names from staged file paths.
     # Walk up from each file to find nearest Cargo.toml, read [package] name.
-    crates=""
-    for file in $staged_rs_files; do
+    #
+    # ⚠ `while IFS= read -r` per line, NOT `for file in $staged_rs_files`. The
+    # default IFS splits on SPACES, so a crate directory named `my crate` became two
+    # words, matched no Cargo.toml, and was dropped from the lint set without a word.
+    # ⚠ `tr -d '\r'`: on a Windows checkout (`core.autocrlf=true`) every Cargo.toml
+    # has CRLF endings — measured, 876 CRs in the workspace root manifest — and the
+    # captured name ends in a CR. `cargo -p 'mycrate<CR>'` then fails with `invalid
+    # character in package name`, so NO Rust commit could pass the hook.
+    crates=$(printf '%s\n' "$staged_rs_files" | while IFS= read -r file; do
+        [ -n "$file" ] || continue
         dir=$(dirname "$file")
-        while [ "$dir" != "." ]; do
+        # `!= "/"` guards an absolute path, whose dirname never reaches "." — git
+        # gives repo-relative paths, so this is insurance, not a live case.
+        while [ "$dir" != "." ] && [ "$dir" != "/" ]; do
             if [ -f "$dir/Cargo.toml" ] && grep -q '^\[package\]' "$dir/Cargo.toml"; then
-                name=$(sed -n '/^\[package\]/,/^\[/{s/^name *= *"\(.*\)"/\1/p;}' "$dir/Cargo.toml")
-                if [ -n "$name" ]; then
-                    crates="$crates $name"
-                fi
+                sed -n '/^\[package\]/,/^\[/{s/^name *= *"\(.*\)"/\1/p;}' \
+                    "$dir/Cargo.toml" | tr -d '\r'
                 break
             fi
             dir=$(dirname "$dir")
         done
-    done
-
-    # Deduplicate
-    crates=$(echo "$crates" | tr ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/ *$//')
+    done | sort -u | tr '\n' ' ' | sed 's/ *$//')
 
     if [ -z "$crates" ]; then
+        # True for a root-level staged file: the workspace manifest is virtual (no
+        # [package]), so there is no crate to lint. Named in INFRASTRUCTURE.md.
         echo "→ Staged Rust files don't belong to a workspace crate — skipping clippy."
     else
         echo "→ Running clippy on changed crates: $crates"
@@ -147,7 +179,12 @@ else
         for crate in $crates; do
             clippy_args="$clippy_args -p $crate"
         done
-        if ! cargo clippy $clippy_args --all-targets --all-features -- -D warnings 2>/dev/null; then
+        # ⚠ NO `2>/dev/null`. cargo writes every diagnostic to stderr, so discarding
+        # it left the developer with `✗ Clippy check failed` and NOTHING else — not
+        # the file, not the lint, not the line. It also hid the CRLF failure above
+        # for as long as that bug existed. Noise is a cheaper price than a verdict
+        # with no evidence.
+        if ! cargo clippy $clippy_args --all-targets --all-features -- -D warnings; then
             echo "✗ Clippy check failed. Fix errors before committing."
             exit 1
         fi
