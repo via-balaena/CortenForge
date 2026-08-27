@@ -213,10 +213,13 @@ cargo fmt --all -- --check || exit 1
 cargo clippy -p <changed> --all-targets --all-features -- -D warnings || exit 1
 ```
 
-⚠ A staged file that belongs to no crate lints nothing — the workspace root manifest
-is virtual, so a root-only `Cargo.toml` change (including `[workspace.lints]`) is
-reported as "don't belong to a workspace crate" and skipped. That is accurate, and it
-is a real gap: linting the whole workspace is what pre-commit speed rules out.
+⚠ A staged file that belongs to no crate lints nothing. The walk now examines every
+directory up to and INCLUDING the repository root, so a repo whose root is a crate has
+that crate linted — it used to stop one level short, and the message blamed a "virtual
+manifest", which was the wrong cause: a root manifest *with* a `[package]` behaved
+identically. For CortenForge the root manifest genuinely is a virtual workspace, so a
+root-only `Cargo.toml` change (including `[workspace.lints]`) still lints nothing.
+That is a real gap: linting the whole workspace is what pre-commit speed rules out.
 
 **Why**: Shift left. Catch issues before they hit CI.
 Saves developer time (fast local feedback) and CI resources.

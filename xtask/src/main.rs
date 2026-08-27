@@ -31,15 +31,18 @@ mod complete;
 mod coverage;
 mod coverage_run;
 mod grade;
-// Dual-purpose, and `xtask/build.rs` pulls the whole thing in via `include!`. The
-// binary uses the DATA — `HOOKS` and the hook texts, through `setup`. The DECISIONS
-// (`title_of`, `classify`, `HookState`) are called only from the build script, so
-// they are dead HERE while being load-bearing there. They live under src/ so they are
-// COMPILED INTO A CRATE WITH A TEST TARGET: a build script has none, and while this
-// logic lived only in build.rs a mutation survey found that gutting the hook-ownership
-// check — and crossing the two hooks' filenames — passed the entire suite. dead_code
-// is expected rather than papered over.
-#[allow(dead_code)]
+// Dual-purpose, and `xtask/build.rs` pulls the whole thing in via `include!`. It
+// lives under src/ so it is COMPILED INTO A CRATE WITH A TEST TARGET: a build script
+// has none, and while this logic lived only in build.rs a mutation survey found that
+// gutting the hook-ownership check — and crossing the two hooks' filenames — passed
+// the entire suite.
+//
+// ⚠ This used to carry `#[allow(dead_code)]`, explained by a paragraph saying the
+// DECISIONS were called only from the build script. That stopped being true when
+// `setup` began classifying before it writes: `title_of`, `classify` and `HookState`
+// all have callers here now. Verified with `--force-warn dead_code` — nothing in this
+// module is dead — so the attribute was suppressing nothing and the explanation had
+// outlived the code it described.
 mod hook_install;
 mod licensed_gates;
 mod pr_scope;

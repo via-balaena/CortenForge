@@ -17,6 +17,13 @@
 //
 // Keep everything here PURE. The filesystem work stays in the installers; everything
 // decidable from strings is decided here, where a test can reach it.
+//
+// ⚠ `pub` HERE IS NOT PUBLIC API. This file is `include!`d into a build script (whose
+// crate root it becomes) and `mod`'d privately into the xtask binary, so `pub` only
+// ever means "reachable from `setup.rs`". Anything used solely inside this module —
+// the parsers, `classify_hooks_dir`, `resolve_from_answers` — is private, and the
+// child `mod tests` reaches it through `super::`. Adding `pub` to something only the
+// tests use would be documenting a boundary that does not exist.
 
 /// Pre-commit hook text. Single source: `xtask/hooks/pre-commit`.
 pub const PRE_COMMIT_HOOK: &str = include_str!("../hooks/pre-commit");
@@ -51,7 +58,7 @@ pub enum HooksDir {
 
 /// The three answers one `git rev-parse` call gives about a checkout.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GitPaths {
+struct GitPaths {
     /// The working tree root git resolves for us.
     pub toplevel: std::path::PathBuf,
     /// The shared git dir — the MAIN repo's `.git` when we are in a worktree.
@@ -81,7 +88,7 @@ pub struct GitPaths {
 /// shown to catch anything the primary rule misses, it is not free insurance; it is
 /// an untested code path with its own failure mode.
 #[must_use]
-pub fn parse_git_paths(stdout: &str) -> Option<GitPaths> {
+fn parse_git_paths(stdout: &str) -> Option<GitPaths> {
     let [toplevel, common_dir, hooks] = three_answers(stdout)?;
     let paths = GitPaths {
         toplevel: std::path::PathBuf::from(toplevel),
@@ -119,7 +126,7 @@ pub fn parse_git_paths(stdout: &str) -> Option<GitPaths> {
 /// old-git population this function was added to serve. An in-repo symlink pointing
 /// out of the tree escaped the same way.
 #[must_use]
-pub fn parse_git_paths_rooted_at(stdout: &str, base: &std::path::Path) -> Option<GitPaths> {
+fn parse_git_paths_rooted_at(stdout: &str, base: &std::path::Path) -> Option<GitPaths> {
     let [toplevel, common_dir, hooks] = three_answers(stdout)?;
     Some(GitPaths {
         toplevel: absolutize(base, toplevel),
@@ -151,8 +158,17 @@ fn absolutize(base: &std::path::Path, answer: &str) -> std::path::PathBuf {
         match component {
             // An absolute answer replaces the base outright — `--show-toplevel` is
             // absolute even on the old git this exists for.
-            Component::RootDir | Component::Prefix(_) => {
+            //
+            // ⚠ `Prefix` ASSIGNS, `RootDir` PUSHES. `C:\repo` yields Prefix("C:")
+            // then RootDir, and assigning on both discarded the drive: the second
+            // arm overwrote `C:` with `MAIN_SEPARATOR_STR`, leaving a root-relative
+            // `\repo`. `PathBuf::push` of a root replaces everything EXCEPT the
+            // prefix, which is exactly the rule here.
+            Component::Prefix(_) => {
                 out = std::path::PathBuf::from(component.as_os_str());
+            }
+            Component::RootDir => {
+                out.push(component.as_os_str());
             }
             Component::CurDir => {}
             // Applied to what is resolved SO FAR, which is what makes a symlink
@@ -166,6 +182,31 @@ fn absolutize(base: &std::path::Path, answer: &str) -> std::path::PathBuf {
                 // next `..` is applied. A component not yet on disk stays lexical.
                 if let Ok(real) = std::fs::canonicalize(&out) {
                     out = real;
+                    continue;
+                }
+                // ⚠ A DANGLING symlink is still a symlink, and the kernel still
+                // follows it. `canonicalize` refuses one, so the component stayed
+                // lexical and a following `..` popped the LINK instead of the link's
+                // target. Measured against git: `core.hooksPath = dangle/../hooks`
+                // gave `<lab>/outside/hooks` from git and `<repo>/hooks` here — and
+                // `<repo>/hooks` can exist, so the `exists()` gate would not catch it
+                // and `setup` would install there and report success.
+                if let Ok(target) = std::fs::read_link(&out) {
+                    out.pop();
+                    // A relative link target hangs off the directory holding the link.
+                    for part in target.components() {
+                        match part {
+                            Component::Prefix(_) => {
+                                out = std::path::PathBuf::from(part.as_os_str());
+                            }
+                            Component::RootDir => out.push(part.as_os_str()),
+                            Component::CurDir => {}
+                            Component::ParentDir => {
+                                out.pop();
+                            }
+                            Component::Normal(p) => out.push(p),
+                        }
+                    }
                 }
             }
         }
@@ -223,7 +264,7 @@ fn three_answers(stdout: &str) -> Option<[&str; 3]> {
 ///
 /// `repo_root` must already be canonicalised — see [`resolve_hooks_dir`].
 #[must_use]
-pub fn classify_hooks_dir(paths: &GitPaths, repo_root: &std::path::Path) -> HooksDir {
+fn classify_hooks_dir(paths: &GitPaths, repo_root: &std::path::Path) -> HooksDir {
     if paths.toplevel != repo_root {
         return HooksDir::OtherRepo(paths.hooks.clone());
     }
@@ -327,7 +368,7 @@ pub fn resolve_hooks_dir(repo_root: &std::path::Path) -> Option<HooksDir> {
 /// 3. `<root>/.git/hooks`, and ONLY when git could not be asked at all — a guess
 ///    that overrides a knowable answer is how the false success got here.
 #[must_use]
-pub fn resolve_from_answers(
+fn resolve_from_answers(
     modern: Option<&str>,
     legacy: Option<&str>,
     repo_root: &std::path::Path,
@@ -432,6 +473,91 @@ pub fn write_hook_file(path: &std::path::Path, content: &str) -> std::io::Result
     result
 }
 
+/// What the build script should DO about a resolution, and what it should say.
+///
+/// ⚠⚠ EXTRACTED FOR THE SAME REASON `hooks_dir_from` was, and it was overdue. This
+/// branch's whole thesis is "a build script has no test target, so lift the decision
+/// somewhere a test can reach it" — and that was applied to `cargo xtask setup`,
+/// the installer a developer types, while `build.rs` (the one a FRESH CLONE runs)
+/// kept its three directory-level arms as untestable control flow. Mutating its
+/// `Shared` arm into an install shipped green. These are the guards that stop a
+/// vendored copy writing into somebody else's repository.
+///
+/// ⚠ `dead_code` is allowed on THIS ITEM ONLY, and that is the point. The whole
+/// module used to carry a blanket `#[allow(dead_code)]`, which outlived its reason:
+/// `setup` began calling `title_of`/`classify`/`HookState`, so the attribute was
+/// suppressing nothing while its explanation quietly went false. `build_outcome` and
+/// this enum genuinely are build-script-only — `build.rs` reaches them through
+/// `include!`, which the binary's dead-code pass cannot see — so the exemption is
+/// scoped to them and says so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum BuildOutcome {
+    /// Install into this directory.
+    Install(std::path::PathBuf),
+    /// Do nothing, and say nothing. Reserved for cases that are not about this
+    /// developer at all — a vendored copy, a tarball with no `.git`.
+    Silent,
+    /// Do nothing, and say exactly this.
+    Warn(String),
+}
+
+/// Decide what a build script does with a resolution. Pure, so it is tested.
+///
+/// `dot_git_exists` distinguishes a checkout from an extracted tarball; `git_env_set`
+/// is whether `GIT_DIR`/`GIT_WORK_TREE` are in the environment, which is the one
+/// layout resolution deliberately refuses to follow.
+#[must_use]
+#[allow(dead_code)] // build-script-only; see `BuildOutcome`.
+pub fn build_outcome(
+    resolved: Option<HooksDir>,
+    dot_git_exists: bool,
+    git_env_set: bool,
+) -> BuildOutcome {
+    match resolved {
+        Some(HooksDir::Repo(dir)) => BuildOutcome::Install(dir),
+        // A copy of this source nested inside SOMEBODY ELSE'S checkout: git resolved
+        // their repository by walking up. Automatic installation only ever targets
+        // our own checkout — writing our mesh guard and our `cargo fmt` into an
+        // unrelated project is the harm containment exists to prevent. Silent on
+        // purpose: a vendored copy has nothing to say.
+        Some(HooksDir::OtherRepo(_)) => BuildOutcome::Silent,
+        // ⚠ Says WHERE, not WHOSE — a repo-LOCAL `core.hooksPath` pointing out of the
+        // tree lands here too, and telling that developer the directory is "shared
+        // with every other repo on this machine" is simply false.
+        Some(HooksDir::Shared(dir)) => BuildOutcome::Warn(format!(
+            "git is configured to read hooks from {}, which is outside this \
+             repository — a directory out there may be shared with your other repos. \
+             CortenForge's hooks were NOT installed and the scan/mesh guard is not \
+             armed. Merge xtask/hooks/* into it yourself, or point core.hooksPath \
+             somewhere inside this checkout.",
+            dir.display()
+        )),
+        // ⚠ `GIT_DIR`/`GIT_WORK_TREE` are cleared before asking git, because
+        // otherwise the environment decides which repository we install into. The
+        // cost lands here: a bare repo checked out through those variables can no
+        // longer be resolved, and its working tree has no `.git` for the next check
+        // to find — so without this it is the one shape that gets no hooks AND no
+        // explanation.
+        None if git_env_set => BuildOutcome::Warn(
+            "GIT_DIR/GIT_WORK_TREE are set in this environment. They are ignored \
+             when locating hooks, because they let the environment install into a \
+             different repository — so this checkout could not be resolved and \
+             CortenForge's hooks were NOT installed. Build from the working tree \
+             without them."
+                .to_string(),
+        ),
+        // Only worth saying anything if this looks like a checkout. xtask can be
+        // built from a vendored copy with no git present, where silence is right.
+        None if dot_git_exists => BuildOutcome::Warn(
+            "Could not determine git's hooks directory, so CortenForge's hooks were \
+             NOT installed and the scan/mesh guard is not armed."
+                .to_string(),
+        ),
+        None => BuildOutcome::Silent,
+    }
+}
+
 /// What the caller was attempting, which is what makes the advice right or absurd.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Attempted {
@@ -470,6 +596,18 @@ pub fn describe_untouchable(
         // ⚠ Uninstalling says only what it DID. Advising a merge, or a re-run, in the
         // middle of `uninstall` tells the developer to install the thing they asked
         // to remove.
+        //
+        // ⚠⚠ But it still has to distinguish the two states. A `_` here threw the
+        // distinction away and told the owner of a chmod-000 hook that IS ours — or
+        // of a hook symlinked to `xtask/hooks/` whose relative target stopped
+        // resolving — that their own file belonged to somebody else. That is the
+        // exact bug the doc above says this function fixed, reintroduced on the
+        // uninstall path one round later.
+        (HookState::Unreadable, Attempted::Uninstall) => format!(
+            "⚠ Could not read the {name} hook, so it was left in place — it may be a \
+             directory, a broken symlink, or unreadable. If it is ours, remove it by \
+             hand."
+        ),
         (_, Attempted::Uninstall) => {
             format!("⚠ Left the {name} hook in place — it is not one we installed.")
         }
@@ -634,7 +772,7 @@ pub fn classify(existing: Option<Result<&str, ()>>, content: &str, marker: &str)
 
 #[cfg(test)]
 mod tests {
-    use super::{classify, title_of, HookState, COMMIT_MSG_HOOK, HOOKS, PRE_COMMIT_HOOK};
+    use super::{classify, title_of, HookState, HOOKS};
 
     const OURS: &str = "#!/bin/sh\n# CortenForge Pre-Commit Hook\necho hi\n";
     const MARKER: &str = "CortenForge Pre-Commit Hook";
@@ -676,11 +814,6 @@ mod tests {
     }
 
     /// The consts must be the ones the table names, not two independent copies.
-    #[test]
-    fn the_table_holds_the_hook_consts_themselves() {
-        assert_eq!(HOOKS[0], ("pre-commit", PRE_COMMIT_HOOK));
-        assert_eq!(HOOKS[1], ("commit-msg", COMMIT_MSG_HOOK));
-    }
 
     #[test]
     fn title_is_taken_from_line_two_without_its_comment_marker() {
@@ -1027,7 +1160,7 @@ mod tests {
     /// The three rungs, in order, from the shapes each git actually emits.
     ///
     /// ⚠⚠ THE ORDERING HAD NO GATE. A mutation survey deleted the entire old-git
-    /// rung and all 373 tests stayed green — on a modern git the first rung answers
+    /// rung left the whole suite green — on a modern git the first rung answers
     /// and the second never runs, so nothing could see it go. Under a git-2.25 shim
     /// the same mutant turned `Shared(~/.githooks)` into `Repo(.git/hooks)`: the
     /// false "Installed" for a file git never reads, which is this arc's whole
@@ -1087,11 +1220,204 @@ mod tests {
         );
     }
 
+    /// The build script's OWN three refusals, which nothing reached.
+    ///
+    /// ⚠⚠ `cargo xtask setup`'s refusals were extracted into `hooks_dir_from` and
+    /// tested precisely so a mutation could not gut them — while `build.rs`, the
+    /// installer a FRESH CLONE actually runs, kept the same three decisions as
+    /// untestable control flow. Turning its `Shared` arm into an install shipped
+    /// green. These arms are what stop a vendored copy writing our mesh guard and our
+    /// `cargo fmt` into an unrelated project.
+    #[test]
+    fn the_build_script_installs_only_into_our_own_checkout() {
+        use super::{build_outcome, BuildOutcome, HooksDir};
+        use std::path::PathBuf;
+
+        // POSITIVE CONTROL first: a rule that refuses everything is not containment.
+        assert_eq!(
+            build_outcome(
+                Some(HooksDir::Repo(PathBuf::from("/repo/.git/hooks"))),
+                true,
+                false
+            ),
+            BuildOutcome::Install(PathBuf::from("/repo/.git/hooks")),
+            "our own checkout must still be installed into"
+        );
+
+        // ★ SILENT, deliberately: a vendored copy has nothing to say to the host
+        // repository's developer, and must certainly not write to it.
+        assert_eq!(
+            build_outcome(
+                Some(HooksDir::OtherRepo(PathBuf::from("/outer/.git/hooks"))),
+                true,
+                false
+            ),
+            BuildOutcome::Silent,
+            "a copy nested in someone else's checkout must write nothing, quietly"
+        );
+
+        // Outside the repo: never written, always announced — a guard that is not
+        // armed must never be silent.
+        let shared = build_outcome(
+            Some(HooksDir::Shared(PathBuf::from("/home/dev/.githooks"))),
+            true,
+            false,
+        );
+        let BuildOutcome::Warn(message) = shared else {
+            panic!("a hooks dir outside the repo must warn, not install: {shared:?}");
+        };
+        assert!(
+            message.contains("/home/dev/.githooks"),
+            "the warning must name the directory, or it is a dead end: {message}"
+        );
+        assert!(
+            !message.contains("every other repo on this machine"),
+            "a repo-LOCAL core.hooksPath lands here too, so this must not assert \
+             whose directory it is: {message}"
+        );
+
+        // Unresolvable, with the environment that explains why.
+        let env = build_outcome(None, false, true);
+        let BuildOutcome::Warn(message) = env else {
+            panic!("GIT_DIR/GIT_WORK_TREE must be explained, not silently ignored: {env:?}");
+        };
+        assert!(
+            message.contains("GIT_DIR"),
+            "name the variable the developer has to unset: {message}"
+        );
+
+        // Unresolvable in something that looks like a checkout: say so.
+        assert!(
+            matches!(build_outcome(None, true, false), BuildOutcome::Warn(_)),
+            "a checkout we cannot resolve must not be left silently unguarded"
+        );
+        // ...but an extracted tarball has no hooks to install and nothing to say.
+        assert_eq!(
+            build_outcome(None, false, false),
+            BuildOutcome::Silent,
+            "no .git and no git env is not a checkout — silence is right"
+        );
+    }
+
+    /// `./` is resolved AWAY, as `--path-format=absolute` resolves it.
+    ///
+    /// ⚠ ASSERTED ON BYTES, not on `PathBuf`. `PathBuf: PartialEq` compares
+    /// `components()`, which normalises a non-leading `.` away — so
+    /// `assert_eq!(hooks, PathBuf::from("/repo/.git/hooks"))` is TRUE for
+    /// `/repo/./.git/hooks`, and every equality assertion in this module would have
+    /// accepted a `CurDir` arm that pushed `"."`. Measured: a mutation survey found
+    /// that arm changed no verdict anywhere, and replacing it with `panic!` left the
+    /// whole suite green — live code, reached by nothing.
+    ///
+    /// The arm IS live: real git 2.50 answers `.` for `core.hooksPath = .`, `./` for
+    /// `./`, and `./nested` for `././nested`.
+    #[test]
+    fn a_dot_component_is_resolved_away_rather_than_carried() {
+        use super::parse_git_paths_rooted_at;
+        use std::ffi::OsStr;
+        use std::path::Path;
+
+        let base = Path::new("/nx-cf-dot-repo");
+
+        let nested = parse_git_paths_rooted_at("/nx-cf-dot-repo\n./.git\n./nested\n", base)
+            .expect("three answers");
+        assert_eq!(
+            nested.hooks.as_os_str(),
+            OsStr::new("/nx-cf-dot-repo/nested"),
+            "a `./` survived into the resolved hooks path: {:?}",
+            nested.hooks
+        );
+        assert_eq!(
+            nested.common_dir.as_os_str(),
+            OsStr::new("/nx-cf-dot-repo/.git"),
+            "and into the git dir: {:?}",
+            nested.common_dir
+        );
+
+        // `core.hooksPath = .` — old git answers the bare `.`, meaning the repo root.
+        let root =
+            parse_git_paths_rooted_at("/nx-cf-dot-repo\n./.git\n.\n", base).expect("three answers");
+        assert_eq!(
+            root.hooks.as_os_str(),
+            OsStr::new("/nx-cf-dot-repo"),
+            "`core.hooksPath = .` must resolve to the root itself, not `<root>/.`: {:?}",
+            root.hooks
+        );
+
+        // POSITIVE CONTROL: an answer with no `.` is carried through untouched, so
+        // this is not satisfied by a function that mangles every path.
+        let plain = parse_git_paths_rooted_at("/nx-cf-dot-repo\n.git\n.git/hooks\n", base)
+            .expect("three answers");
+        assert_eq!(
+            plain.hooks.as_os_str(),
+            OsStr::new("/nx-cf-dot-repo/.git/hooks"),
+            "POSITIVE CONTROL: an ordinary answer must be unchanged"
+        );
+    }
+
+    /// A DANGLING symlink is still a symlink, and the kernel still follows it.
+    ///
+    /// ⚠ `canonicalize` refuses one, so the component stayed lexical and a following
+    /// `..` popped the LINK rather than the link's TARGET. Measured against real git
+    /// 2.50.1, `core.hooksPath = dangle/../hooks` where `dangle -> <lab>/outside/x`
+    /// (target absent): git answers `<lab>/outside/hooks`, which is outside the
+    /// checkout and refused, while resolution answered `<repo>/hooks` — and that path
+    /// can EXIST, so the `hooks_dir.exists()` gate does not catch it and `setup`
+    /// installs there and reports success.
+    ///
+    /// The oracle here is git's own answer, recorded from a real run, not a second
+    /// implementation of the same walk.
+    #[test]
+    #[cfg(unix)]
+    fn a_dangling_symlink_is_followed_the_way_git_follows_it() {
+        use super::{classify_hooks_dir, parse_git_paths_rooted_at, HooksDir};
+
+        let lab = std::env::temp_dir().join(format!("cf-dangle2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&lab);
+        let repo = lab.join("repo");
+        std::fs::create_dir_all(repo.join(".git")).expect("temp dir");
+        std::fs::create_dir_all(lab.join("outside")).expect("temp dir");
+        let repo = std::fs::canonicalize(&repo).expect("canonicalize");
+        let lab_real = std::fs::canonicalize(&lab).expect("canonicalize");
+        // The target does NOT exist. That is the whole point.
+        std::os::unix::fs::symlink(lab_real.join("outside/x"), repo.join("dangle"))
+            .expect("symlink");
+
+        let verdict = |hooks: &str| {
+            let paths =
+                parse_git_paths_rooted_at(&format!("{}\n.git\n{hooks}\n", repo.display()), &repo)
+                    .expect("old git emits exactly this shape");
+            classify_hooks_dir(&paths, &repo)
+        };
+        let through_link = verdict("dangle/../hooks");
+        let onto_link = verdict("dangle");
+        // POSITIVE CONTROL: an ordinary relative answer is still ours, so a rule that
+        // simply refused everything would not pass this test.
+        let ordinary = verdict(".git/hooks");
+        let _ = std::fs::remove_dir_all(&lab);
+
+        assert_eq!(
+            through_link,
+            HooksDir::Shared(lab_real.join("outside").join("hooks")),
+            "`..` popped the dangling LINK instead of its TARGET, so a hooks \
+             directory git resolves to `<lab>/outside/hooks` was accepted as ours"
+        );
+        assert_eq!(
+            onto_link,
+            HooksDir::Shared(lab_real.join("outside").join("x")),
+            "a dangling link pointing out of the tree must still be followed out"
+        );
+        assert_eq!(
+            ordinary,
+            HooksDir::Repo(repo.join(".git").join("hooks")),
+            "POSITIVE CONTROL: the ordinary answer is unaffected"
+        );
+    }
+
     /// A hooks directory whose name starts with `-` is an ANSWER, not an echoed flag.
     ///
     /// ⚠ This is the gate the commit that deleted the `-`-prefix filter did not
-    /// write, against its own stated standard. Re-adding the filter survived all 20
-    /// tests in this module; measured on the pure functions, the filter turns
+    /// write, against its own stated standard. Re-adding the filter survived every test in this module; measured on the pure functions, the filter turns
     /// `Repo(<repo>/-hooks)` into `Repo(<repo>/.git/hooks)` — a successful-looking
     /// install into a directory git never reads.
     #[test]

@@ -95,7 +95,12 @@ fi
 
 # Format check (fast — only checks already-formatted files, <1s)
 echo "→ Checking formatting..."
-if ! cargo fmt --all -- --check 2>/dev/null; then
+# ⚠ NO `2>/dev/null`, for the reason the clippy step below spells out at length:
+# cargo writes diagnostics to stderr, and discarding them leaves a verdict with no
+# evidence. Measured — a missing rustfmt component reported only "✗ Formatting check
+# failed. Run: cargo fmt --all", advice that fixes nothing, while the actual cause
+# (`'rustfmt' is not installed for the toolchain`) went to /dev/null.
+if ! cargo fmt --all -- --check; then
     echo "✗ Formatting check failed. Run: cargo fmt --all"
     exit 1
 fi
@@ -173,13 +178,22 @@ else
         dir=$(dirname -- "$file")
         # `!= "/"` guards an absolute path, whose dirname never reaches "." — git
         # gives repo-relative paths, so this is insurance, not a live case.
-        while [ "$dir" != "." ] && [ "$dir" != "/" ]; do
+        # ⚠ THE ROOT IS PART OF THE WALK. This loop used to stop at `.`, so a crate
+        # living at the repository root was never examined — and the message blamed a
+        # "virtual manifest", which was simply the wrong cause: measured, a root
+        # manifest WITH a `[package]` section behaved identically. Any repo whose root
+        # is a crate had that crate silently unlinted. CortenForge's own root is
+        # virtual, which is why this went unnoticed.
+        while :; do
             manifest="./$dir/Cargo.toml"
             if [ -f "$manifest" ] && grep -q '^\[package\]' "$manifest"; then
                 sed -n '/^\[package\]/,/^\[/{s/^name *= *"\(.*\)"/\1/p;}' \
                     "$manifest" | tr -d '\r'
                 break
             fi
+            # `.` is the last candidate, not a stopping point before it.
+            [ "$dir" = "." ] && break
+            [ "$dir" = "/" ] && break
             dir=$(dirname -- "$dir")
         done
     done | sort -u | tr '\n' ' ' | sed 's/ *$//')
@@ -200,14 +214,20 @@ else
     case "$staged_rs_files" in
         '"'*|*"
 \""*)
-            echo "⚠ A staged path contains a control character, so git quoted it and"
+            echo "⚠ A staged path contains a character git has to quote (a control"
+            echo "  character, a backslash, or a double quote), so it was quoted and"
             echo "  its crate is NOT in the lint set below — that code will NOT be linted."
+            # ⚠ Cause stated precisely: with `core.quotePath=false` a non-ASCII name
+            # is NOT quoted, while a backslash or a double quote still is — so
+            # "contains a control character" sent the owner of `src/a\b.rs` hunting
+            # for one that was not there.
             ;;
     esac
 
     if [ -z "$crates" ]; then
-        # True for a root-level staged file: the workspace manifest is virtual (no
-        # [package]), so there is no crate to lint. Named in INFRASTRUCTURE.md.
+        # Reached when no manifest on the walk — up to and including the repository
+        # root — declares a `[package]`. For CortenForge that means a root-level
+        # staged file, because its root manifest is a virtual workspace.
         echo "→ Staged Rust files don't belong to a workspace crate — skipping clippy."
     else
         echo "→ Running clippy on changed crates: $crates"

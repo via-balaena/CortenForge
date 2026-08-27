@@ -16,7 +16,7 @@
 //! 2. Verify cargo-audit, cargo-deny, and the llvm-tools coverage component
 //! 3. Set up any additional development tooling
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use owo_colors::OwoColorize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -183,6 +183,29 @@ fn install_git_hooks() -> Result<()> {
 /// shipped green. That is the same class as this arc's original bug: installer wiring
 /// with no gate on it. The pairing now lives once, in `hook_install::HOOKS`.
 fn install_git_hooks_into(hooks_dir: &Path) -> Result<()> {
+    install_git_hooks_into_with(hooks_dir, &crate::hook_install::make_executable)
+}
+
+/// As above, with the executable-bit repair injected so a test can make it FAIL.
+///
+/// ⚠⚠ THE FAILURE CONTRACT HAD NO GATE AT ALL. Every test called this through
+/// `.expect("install")`, so nothing ever asserted it returns `Err` — a mutation
+/// survey deleted the `failures += 1`, and then the whole `if failures > 0 { bail! }`,
+/// and both shipped green. The consequence is the exact false success this arc
+/// exists to remove: `cargo xtask setup` exits 0 reporting success while a hook sits
+/// at mode 0644, which git ignores WITHOUT A WORD. `uninstall_hooks_from` has the
+/// symmetric test; install did not.
+///
+/// ⚠ A seam rather than a real refusal, deliberately. Making `chmod` fail needs
+/// `chflags uchg` (macOS) or root (Linux), and `xtask`'s tests run only on
+/// `ubuntu-latest` — so a `#[cfg(target_os = "macos")]` test would execute in NO CI
+/// job and its green would mean SKIPPED. That trap has already recurred three times
+/// here (#747, #827, #828).
+fn install_git_hooks_into_with(
+    hooks_dir: &Path,
+    #[cfg(unix)] repair_bit: &dyn Fn(&Path) -> std::io::Result<()>,
+    #[cfg(not(unix))] _repair_bit: &dyn Fn(&Path) -> std::io::Result<()>,
+) -> Result<()> {
     let mut failures = 0usize;
     // NAME IT. From a linked worktree this is the SHARED common directory, so this
     // command rewrites the hooks the main checkout uses; that blast radius must be
@@ -224,10 +247,23 @@ fn install_git_hooks_into(hooks_dir: &Path) -> Result<()> {
         }
 
         if state.should_replace() {
+            // ⚠ NOT `?`, for the same reason the chmod branch below is not — and this
+            // one was left with `?` in the very commit that fixed that one, 26 lines
+            // apart in the same loop. Measured: with a stale-but-ours `pre-commit`
+            // made immutable, `setup` aborted before `commit-msg` was even
+            // classified — and before `verify_tools()` — while `build.rs`, facing the
+            // identical directory, warned and installed `commit-msg` anyway. Two
+            // installers, one directory, different filesystem outcomes: the drift
+            // this arc exists to end.
+            //
             // Atomic: git may be RUNNING this exact file. See `write_hook_file`.
-            crate::hook_install::write_hook_file(&path, content)
-                .with_context(|| format!("Failed to write {name} hook"))?;
-            println!("  ✓ Installed {name} hook");
+            match crate::hook_install::write_hook_file(&path, content) {
+                Ok(()) => println!("  ✓ Installed {name} hook"),
+                Err(e) => {
+                    println!("  ⚠ Failed to write the {name} hook: {e}");
+                    failures += 1;
+                }
+            }
             continue;
         }
 
@@ -253,7 +289,7 @@ fn install_git_hooks_into(hooks_dir: &Path) -> Result<()> {
         // `commit-msg` too. Try every hook, then report.
         #[cfg(unix)]
         if !crate::hook_install::is_executable(&path) {
-            match crate::hook_install::make_executable(&path) {
+            match repair_bit(&path) {
                 Ok(()) => println!(
                     "  ✓ Repaired the {name} hook's executable bit — git had been \
                      ignoring it, so its checks were not running."
@@ -691,6 +727,11 @@ mod hook_tests {
             // CRLF manifest: the captured name ended in a CR, and `cargo -p 'x<CR>'`
             // is rejected — so NO Rust commit passed the hook on a Windows checkout.
             ("a CRLF manifest", "demo", true),
+            // ★ A crate at the REPOSITORY ROOT. The walk used to stop before `.`,
+            // so any repo whose root is a crate had that crate silently unlinted —
+            // and the message blamed a "virtual manifest", which was the wrong
+            // cause: measured, a root manifest WITH a `[package]` behaved the same.
+            ("a crate at the repository root", ".", false),
             // ★ A crate DIRECTORY starting with `-`. `dirname --` was not enough:
             // the very next line hands `"$dir/Cargo.toml"` to `grep`, which parses
             // it as options (`invalid option -- g`, exit 2) and drops the crate.
@@ -912,7 +953,7 @@ mod hook_tests {
             "PREMISE: clippy was never reached, so this proves nothing;\n{out}"
         );
         assert!(
-            out.contains("git quoted it"),
+            out.contains("has to quote"),
             "a path git had to quote was dropped from the lint set in silence — the \
              same reassuring output as having nothing to lint;\n{out}"
         );
@@ -921,7 +962,7 @@ mod hook_tests {
         // noise on every commit and stops meaning anything.
         let (_, plain, _) = run_hook_with_crate("demo", false);
         assert!(
-            !plain.contains("git quoted it"),
+            !plain.contains("has to quote"),
             "the warning fires for ordinary paths, so it says nothing;\n{plain}"
         );
     }
@@ -945,6 +986,68 @@ mod hook_tests {
             clippy.contains("-p demo-crate"),
             "the staged crate was dropped from the lint set: {clippy:?}\n{out}"
         );
+    }
+
+    /// A hook left non-executable is a FAILURE, not a success.
+    ///
+    /// ⚠⚠ git ignores a non-executable hook without a word, so `setup` exiting 0
+    /// after failing to repair the bit is a guard reported as armed while it is not.
+    /// Nothing covered this: every test called `install_git_hooks_into` through
+    /// `.expect("install")`, so deleting the `failures += 1` — and then the entire
+    /// `if failures > 0 { bail! }` — both shipped green. `uninstall_hooks_from` had
+    /// the symmetric test all along, which is what makes this an asymmetry rather
+    /// than an oversight.
+    #[test]
+    #[cfg(unix)]
+    fn a_hook_whose_bit_cannot_be_repaired_is_a_failure_not_a_success() {
+        use std::cell::RefCell;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("cf-norepair-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        // Ours and CURRENT, so the only work left is the executable bit — which is
+        // exactly the path whose failure was uncounted.
+        for (name, content) in HOOKS {
+            let path = dir.join(name);
+            std::fs::write(&path, content).expect("seed");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+                .expect("chmod 644");
+        }
+
+        let refused = RefCell::new(Vec::new());
+        let result = super::install_git_hooks_into_with(&dir, &|p: &std::path::Path| {
+            refused.borrow_mut().push(p.to_path_buf());
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "refused by the test",
+            ))
+        });
+        let attempted = refused.borrow().len();
+
+        // POSITIVE CONTROL: the same fixture with a repair that WORKS must install
+        // cleanly, or the assertion above would hold for a function that always fails.
+        let ok_result = super::install_git_hooks_into_with(&dir, &|p: &std::path::Path| {
+            crate::hook_install::make_executable(p)
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(
+            attempted,
+            HOOKS.len(),
+            "a refusal on the first hook aborted the loop, so the rest were never \
+             even attempted — the half-done install this counter exists to prevent"
+        );
+        let err = result.expect_err(
+            "a hook left non-executable is one git IGNORES WITHOUT A WORD, so \
+             reporting success here tells the developer their guard is armed when it \
+             is not",
+        );
+        assert!(
+            err.to_string().contains("2 hook(s)"),
+            "every refusal must be counted, not just the last: {err}"
+        );
+        ok_result.expect("POSITIVE CONTROL: a repair that succeeds must install cleanly");
     }
 
     /// A failing lint must show the developer WHY, not just that.
@@ -1225,12 +1328,6 @@ mod hook_tests {
         );
     }
 
-    /// Resolve the hooks dir through the PRODUCTION path.
-    ///
-    /// ⚠ Deliberately not a local reimplementation. An earlier version spelled out
-    /// `git rev-parse` here, which left the function the binary actually calls with
-    /// no test reaching it — reverting that one to `root.join(".git/hooks")` kept the
-    /// whole suite green. That is #709's shape inside the fix for #709.
     /// The three refusals, which nothing reached before.
     ///
     /// ⚠ These are the containment layer as the USER meets it. `classify_hooks_dir`
@@ -1291,6 +1388,12 @@ mod hook_tests {
         );
     }
 
+    /// Resolve the hooks dir through the PRODUCTION path.
+    ///
+    /// ⚠ Deliberately not a local reimplementation. An earlier version spelled out
+    /// `git rev-parse` here, which left the function the binary actually calls with
+    /// no test reaching it — reverting that one to `root.join(".git/hooks")` kept the
+    /// whole suite green. That is #709's shape inside the fix for #709.
     fn hooks_dir_of(repo: &std::path::Path) -> std::path::PathBuf {
         match crate::hook_install::resolve_hooks_dir(repo) {
             Some(crate::hook_install::HooksDir::Repo(dir)) => dir,
@@ -1594,17 +1697,22 @@ mod hook_tests {
         // --git-path answer for **B**. So `toplevel == repo_root` holds by
         // construction, containment passes, and the verdict is Repo(B/.git/hooks).
         // The naive `.git/hooks` join this replaced could not be steered that way.
-        for var in crate::hook_install::GIT_VARS_CLEARED {
+        // ⚠ HARDCODED, NOT ITERATED FROM `GIT_VARS_CLEARED`. Looping over the same
+        // const the production code loops over made the oracle the SUT: emptying that
+        // const would have satisfied the assertion vacuously. These four names are
+        // written out here so the test can disagree with the code.
+        for var in [
+            "GIT_DIR",
+            "GIT_COMMON_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+        ] {
             assert!(
                 cleared.contains(&var),
                 "{var} is inherited by our git call, so the environment can decide \
                  which repository we install into: cleared = {cleared:?}"
             );
         }
-        assert!(
-            cleared.contains(&"GIT_DIR"),
-            "GIT_DIR above all: it is the one git exports into every worktree hook"
-        );
     }
 
     /// `setup` and `uninstall` must reach the same ownership verdict as `build.rs`.

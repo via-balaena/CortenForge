@@ -22,7 +22,8 @@ fn main() {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let workspace_root = Path::new(&manifest_dir).parent().unwrap();
 
-    // ⚠ EMITTED BEFORE ANY EARLY RETURN. A build script that returns without any
+    // ⚠ EMITTED BEFORE EVERY RETURN BELOW — the `CI` skip above is the one exception,
+    // and it is deliberate: CI does not commit. A build script that returns without any
     // `rerun-if-changed` falls back to cargo's package-mtime heuristic, so the
     // advice in the warnings below ("create it and rebuild") would not re-run this
     // script at all and the developer would conclude the fix did not work.
@@ -30,60 +31,18 @@ fn main() {
         println!("cargo:rerun-if-changed=hooks/{name}");
     }
 
-    let hooks_dir = match resolve_hooks_dir(workspace_root) {
-        Some(HooksDir::Repo(dir)) => dir,
-        Some(HooksDir::OtherRepo(_)) => {
-            // A copy of this source nested inside SOMEBODY ELSE'S checkout: git
-            // resolved their repository by walking up. Automatic installation only
-            // ever targets our own checkout — writing our mesh guard and our
-            // `cargo fmt` into an unrelated project is the harm containment exists
-            // to prevent. Silent on purpose: a vendored copy has nothing to say.
-            return;
-        }
-        Some(HooksDir::Shared(dir)) => {
-            // ⚠ Says WHERE, not WHOSE — a repo-LOCAL `core.hooksPath` pointing out
-            // of the tree lands here too, and telling that developer the directory
-            // is "shared with every other repo on this machine" is simply false.
-            // The identical correction was made in `setup.rs` one commit earlier and
-            // not here: a fix that lands in one installer and not the other is the
-            // exact drift this whole arc exists to end.
-            println!(
-                "cargo:warning=git is configured to read hooks from {}, which is \
-                 outside this repository — a directory out there may be shared with \
-                 your other repos. CortenForge's hooks were NOT installed and the \
-                 scan/mesh guard is not armed. Merge xtask/hooks/* into it yourself, \
-                 or point core.hooksPath somewhere inside this checkout.",
-                dir.display()
-            );
-            return;
-        }
-        None => {
-            // ⚠ `GIT_DIR`/`GIT_WORK_TREE` are cleared before asking git, because
-            // otherwise the environment decides which repository we install into.
-            // The cost lands here: a bare repo checked out via those variables can
-            // no longer be resolved, and its working tree has no `.git` for the
-            // check below to find — so without this it is the one shape that gets
-            // no hooks AND no explanation. Name the reason we cannot see it.
-            if std::env::var_os("GIT_DIR").is_some() || std::env::var_os("GIT_WORK_TREE").is_some()
-            {
-                println!(
-                    "cargo:warning=GIT_DIR/GIT_WORK_TREE are set in this environment. \
-                     They are ignored when locating hooks, because they let the \
-                     environment install into a different repository — so this \
-                     checkout could not be resolved and CortenForge's hooks were NOT \
-                     installed. Build from the working tree without them."
-                );
-                return;
-            }
-            // Only worth saying anything if this looks like a checkout. xtask can be
-            // built from a vendored copy with no git present, where silence is right.
-            if workspace_root.join(".git").exists() {
-                println!(
-                    "cargo:warning=Could not determine git's hooks directory, so \
-                     CortenForge's hooks were NOT installed and the scan/mesh guard \
-                     is not armed."
-                );
-            }
+    // The DECISION is `build_outcome` in src/hook_install.rs — pure, and unit-tested
+    // there. This renders it. Keeping the arms here is what left the guards a fresh
+    // clone depends on with no gate at all.
+    let hooks_dir = match build_outcome(
+        resolve_hooks_dir(workspace_root),
+        workspace_root.join(".git").exists(),
+        std::env::var_os("GIT_DIR").is_some() || std::env::var_os("GIT_WORK_TREE").is_some(),
+    ) {
+        BuildOutcome::Install(dir) => dir,
+        BuildOutcome::Silent => return,
+        BuildOutcome::Warn(message) => {
+            println!("cargo:warning={}", one_line(&message));
             return;
         }
     };
@@ -96,7 +55,7 @@ fn main() {
              hooks were NOT installed and the scan/mesh guard is not armed. Create it, \
              then `touch xtask/build.rs` or `cargo clean -p xtask` to retry — creating \
              a directory alone does not re-run this build script.",
-            hooks_dir.display()
+            one_line(&hooks_dir.display().to_string())
         );
         return;
     }
@@ -138,9 +97,18 @@ fn install_hook_if_needed(path: &Path, content: &str, name: &str) {
         // installers came to tell different stories about the same file: the empty-
         // hook wording was fixed in `setup.rs` only, so `cargo build` still told a
         // zero-byte hook to "merge ours into yours".
+        // ⚠ ONE LINE. Cargo cuts a `cargo:warning=` at the first newline and drops
+        // the remainder without even echoing it — measured. Only the empty-hook arm
+        // interpolates a path, and it does so mid-sentence, so a hooks directory with
+        // a newline in a component would lose the actionable half of the advice.
         println!(
             "cargo:warning={}",
-            describe_untouchable(state, name, path, Attempted::Install { retry: "rebuild" })
+            one_line(&describe_untouchable(
+                state,
+                name,
+                path,
+                Attempted::Install { retry: "rebuild" }
+            ))
         );
         return;
     }
@@ -164,9 +132,19 @@ fn install_hook_if_needed(path: &Path, content: &str, name: &str) {
         // build here rewrites the hooks the main checkout uses — that must be visible.
         println!(
             "cargo:warning=Installed {name} git hook at {}",
-            path.display()
+            one_line(&path.display().to_string())
         );
     }
+}
+
+/// Flatten a message so cargo cannot truncate it.
+///
+/// Every `cargo:warning=` here interpolates a path, and a path may legally contain a
+/// newline. Cargo is line-based and silently discards everything after the first one,
+/// so the half of the sentence that tells the developer what to DO is the half that
+/// disappears.
+fn one_line(message: &str) -> String {
+    message.replace(['\n', '\r'], " ")
 }
 
 /// Make sure git will actually RUN the hook at `path`.
