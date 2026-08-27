@@ -254,7 +254,9 @@ spelling a perfectly good directory stop that command from being our hook:
   produces — git answers `./` for the directory but execs `/pre-commit` at the
   FILESYSTEM root, so commits succeed and the hook is never read.
 
-Measured on git 2.50.1 across 20 spellings, each installed-and-committed: the first
+Measured on git 2.50.1 across 20 spellings, each installed-and-committed — ⚠ read
+that sweep as MOTIVATION, not evidence: it is not in the tree, and what runs on every
+build is the nine-shape live gate in `hook_install.rs`. The first
 two brick the checkout, the third is a silent false success. Installing therefore
 either breaks a working repository — with an error naming neither CortenForge nor
 `core.hooksPath` — or reports a guard that is not armed. Both installers decline and

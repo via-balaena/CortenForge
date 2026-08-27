@@ -204,15 +204,11 @@ fn hooks_dir_from(
             "git is configured to read hooks from {}, which is outside this \
              repository. Refusing to touch it — a directory out there may be shared \
              with your other repos. Merge xtask/hooks/* into it yourself, or point \
-             core.hooksPath somewhere inside this checkout.",
+             core.hooksPath somewhere inside this checkout. (⚠ If core.hooksPath \
+             starts with `-` or `+`, merging will not help either: git cannot exec a \
+             hook from it at all, whatever it contains.)",
             dir.display()
         ),
-        // ⚠⚠ NOT A PERMISSION REFUSAL. This directory IS ours to write — and we
-        // decline anyway, because git cannot exec a hook from the form it is spelled
-        // in, so installing would make git refuse every commit in the checkout.
-        // Both installers must say so, or `cargo build` and `cargo xtask setup`
-        // disagree about a repository neither of them can help: the drift this whole
-        // arc exists to end.
         // ⚠⚠ REMOVING FROM HERE IS EXACTLY WHAT THIS DEVELOPER NEEDS. Containment
         // has already passed, so the directory is inside this REPOSITORY (the common
         // dir or the working tree — in a worktree those differ); and the
@@ -227,6 +223,12 @@ fn hooks_dir_from(
         {
             Ok(dir)
         }
+        // ⚠⚠ NOT A PERMISSION REFUSAL. This directory IS ours to write — and we
+        // decline anyway, because git will not exec a hook from the form it is
+        // spelled in, so installing would make git refuse every commit in the
+        // checkout. Both installers must say so, or `cargo build` and `cargo xtask
+        // setup` disagree about a repository neither of them can help: the drift this
+        // whole arc exists to end.
         Some(crate::hook_install::HooksDir::GitCannotRun(dir)) => anyhow::bail!(
             "git resolves hooks to {}, but the path git would actually EXEC is not \
              the file we would write. core.hooksPath is a bare `.`/`./` (git \
