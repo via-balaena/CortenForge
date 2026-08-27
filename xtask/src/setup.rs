@@ -21,18 +21,11 @@ use owo_colors::OwoColorize;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Pre-commit hook content. Single source: `xtask/hooks/pre-commit`.
-///
-/// This runs before every commit to catch issues early.
-/// Faster than CI, provides immediate feedback.
-/// Only lints crates with staged Rust changes (not the full workspace).
-const PRE_COMMIT_HOOK: &str = include_str!("../hooks/pre-commit");
-
-/// Commit message hook content
-///
-/// Enforces conventional commit format:
-/// `<type>(<scope>): <description>`
-const COMMIT_MSG_HOOK: &str = include_str!("../hooks/commit-msg");
+// The hook texts and — critically — the filename each one is installed under come
+// from `hook_install`, which `build.rs` also uses. Declaring them again here is what
+// made the two installers separate code: `setup.rs` got a pairing test and `build.rs`
+// kept its own uncovered copy, where crossing the consts still shipped green.
+use crate::hook_install::HOOKS;
 
 /// Run the setup command
 pub fn run() -> Result<()> {
@@ -149,21 +142,16 @@ fn install_git_hooks() -> Result<()> {
 /// Split out from [`install_git_hooks`] so a test can reach it: the version that
 /// resolves the directory itself can only be exercised by changing the process's
 /// cwd, which is global and races other tests. A mutation survey found the pairing
-/// — which const goes to which filename — was covered by NOTHING, so swapping
-/// `PRE_COMMIT_HOOK` and `COMMIT_MSG_HOOK` here shipped green. That is the same
-/// class as this arc's original bug: installer wiring with no gate on it.
+/// — which text goes to which filename — was covered by NOTHING, so crossing the two
+/// shipped green. That is the same class as this arc's original bug: installer wiring
+/// with no gate on it. The pairing now lives once, in `hook_install::HOOKS`.
 fn install_git_hooks_into(hooks_dir: &Path) -> Result<()> {
-    // Install pre-commit hook
-    let pre_commit_path = hooks_dir.join("pre-commit");
-    fs::write(&pre_commit_path, PRE_COMMIT_HOOK).context("Failed to write pre-commit hook")?;
-    make_executable(&pre_commit_path)?;
-    println!("  ✓ Installed pre-commit hook");
-
-    // Install commit-msg hook
-    let commit_msg_path = hooks_dir.join("commit-msg");
-    fs::write(&commit_msg_path, COMMIT_MSG_HOOK).context("Failed to write commit-msg hook")?;
-    make_executable(&commit_msg_path)?;
-    println!("  ✓ Installed commit-msg hook");
+    for (name, content) in HOOKS {
+        let path = hooks_dir.join(name);
+        fs::write(&path, content).with_context(|| format!("Failed to write {name} hook"))?;
+        make_executable(&path)?;
+        println!("  ✓ Installed {name} hook");
+    }
 
     Ok(())
 }
@@ -296,7 +284,7 @@ pub fn uninstall() -> Result<()> {
 
 #[cfg(test)]
 mod hook_tests {
-    use super::{COMMIT_MSG_HOOK, PRE_COMMIT_HOOK};
+    use crate::hook_install::{COMMIT_MSG_HOOK, HOOKS, PRE_COMMIT_HOOK};
     use std::process::Command;
 
     /// Run the pre-commit hook in a throwaway git repo with `staged` created and
@@ -321,12 +309,26 @@ mod hook_tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("temp dir");
+        // ⚠ PREMISE CHECK. Every call below is setup this test's CONCLUSION rests
+        // on. A dropped exit status does not fail the test — it silently turns it
+        // into a different, still-green one. If `git add` fails, nothing is staged,
+        // the hook reports a clean stage and exits 0, and `a_clean_stage_passes` —
+        // the positive control the whole suite's discrimination rests on — passes
+        // having proved nothing about a stage.
         let git = |args: &[&str]| {
-            Command::new("git")
+            let out = Command::new("git")
                 .args(args)
                 .current_dir(&dir)
                 .output()
-                .expect("git")
+                .expect("git");
+            assert!(
+                out.status.success(),
+                "scratch-repo setup failed at `git {}`:\n{}{}",
+                args.join(" "),
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            out
         };
         git(&["init", "-q", "."]);
         git(&["config", "user.email", "t@t"]);
@@ -389,11 +391,9 @@ mod hook_tests {
                 out.contains("Refusing to commit mesh/scan binaries"),
                 "{name} did not trip the mesh guard; output:\n{out}"
             );
-            // ⚠ NOT `assert!(!ok)`. That is VACUOUS here: the throwaway repo has no
-            // Cargo.toml, so `cargo fmt --all --check` fails and the hook exits
-            // non-zero whatever the guard does. Assert instead that it exited AT the
-            // guard — the guard `exit 1`s immediately, so the formatting step must
-            // never be reached.
+            // AND that it exited AT the guard: the guard `exit 1`s immediately, so
+            // the formatting step must never be reached. This is a separate claim
+            // from `!ok` above — an exit code alone cannot say WHERE it exited.
             assert!(
                 !out.contains("Checking formatting"),
                 "{name} tripped the guard but did not exit there; output:\n{out}"
@@ -460,16 +460,34 @@ mod hook_tests {
         let dir = std::env::temp_dir().join(format!("cf-hook-mod-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("temp dir");
+        // ⚠ PREMISE CHECK, and it is the whole test. This case differs from the ADD
+        // case ONLY if the seed commit succeeds: if it fails, `old.stl` never reaches
+        // HEAD, the later `git add` stages it as A rather than M, and the assertion
+        // below passes while `--diff-filter=A` — the exact mutation this test exists
+        // to kill — survives. Measured: forcing the commit to fail leaves it green.
         let git = |args: &[&str]| {
-            Command::new("git")
+            let out = Command::new("git")
                 .args(args)
                 .current_dir(&dir)
                 .output()
-                .expect("git")
+                .expect("git");
+            assert!(
+                out.status.success(),
+                "scratch-repo setup failed at `git {}` — without a seed COMMIT this \
+                 test silently degrades to the ADD case:\n{}{}",
+                args.join(" "),
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            out
         };
         git(&["init", "-q", "."]);
         git(&["config", "user.email", "t@t"]);
         git(&["config", "user.name", "t"]);
+        // Same reason as `env_remove("CF_ALLOW_MESH")` in `run_hook`: the scratch
+        // repo inherits the developer's GLOBAL config, and a `commit.gpgsign=true`
+        // there fails the seed commit on their machine and nobody else's.
+        git(&["config", "commit.gpgsign", "false"]);
         // Land it in history first — the guard is not what put it there.
         std::fs::write(dir.join("old.stl"), b"solid v1\n").expect("v1");
         git(&["add", "-f", "old.stl"]);
@@ -516,7 +534,33 @@ mod hook_tests {
 
         let pre = std::fs::read_to_string(dir.join("pre-commit")).expect("pre-commit written");
         let msg = std::fs::read_to_string(dir.join("commit-msg")).expect("commit-msg written");
+        // git IGNORES a hook that is not executable, and says nothing when it does.
+        // `make_executable` is already a no-op on non-unix, so a regression there
+        // disarms both hooks with every content assertion still green.
+        #[cfg(unix)]
+        let modes: Vec<(&str, u32)> = {
+            use std::os::unix::fs::PermissionsExt;
+            HOOKS
+                .iter()
+                .map(|(name, _)| {
+                    let m = std::fs::metadata(dir.join(name))
+                        .expect("installed hook")
+                        .permissions()
+                        .mode();
+                    (*name, m)
+                })
+                .collect()
+        };
         let _ = std::fs::remove_dir_all(&dir);
+
+        #[cfg(unix)]
+        for (name, mode) in modes {
+            assert!(
+                mode & 0o111 != 0,
+                "{name} was installed non-executable ({mode:o}); git will silently \
+                 ignore it and the scan/mesh guard never runs"
+            );
+        }
 
         assert_eq!(
             pre, PRE_COMMIT_HOOK,
@@ -558,10 +602,7 @@ mod hook_tests {
     /// just quietly stop updating. Assert the shape the derivation depends on.
     #[test]
     fn line_two_of_each_hook_is_the_title_the_marker_is_derived_from() {
-        for (name, hook) in [
-            ("pre-commit", PRE_COMMIT_HOOK),
-            ("commit-msg", COMMIT_MSG_HOOK),
-        ] {
+        for (name, hook) in HOOKS {
             let line2 = hook.lines().nth(1).unwrap_or_else(|| {
                 panic!("{name} has no line 2; build.rs::title_of would panic the BUILD")
             });

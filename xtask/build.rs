@@ -7,16 +7,11 @@
 use std::fs;
 use std::path::Path;
 
-// The installer's two pure decisions, shared VERBATIM with the xtask binary so
-// they are unit-tested. A build script has no test target; while these lived only
-// here, gutting the ownership check passed the whole suite.
+// The installer's data and its pure decisions, shared VERBATIM with the xtask binary
+// so they are unit-tested. A build script has no test target; while they lived only
+// here, gutting the ownership check passed the whole suite, and so did crossing the
+// two hooks' filenames.
 include!("src/hook_install.rs");
-
-/// Pre-commit hook content. Single source: `xtask/hooks/pre-commit`.
-const PRE_COMMIT_HOOK: &str = include_str!("hooks/pre-commit");
-
-/// Commit message hook content. Single source: `xtask/hooks/commit-msg`.
-const COMMIT_MSG_HOOK: &str = include_str!("hooks/commit-msg");
 
 fn main() {
     // Skip in CI environments
@@ -34,47 +29,61 @@ fn main() {
         return;
     }
 
-    // Install pre-commit hook if missing or outdated
-    let pre_commit_path = hooks_dir.join("pre-commit");
-    install_hook_if_needed(
-        &pre_commit_path,
-        PRE_COMMIT_HOOK,
-        "pre-commit",
-        title_of(PRE_COMMIT_HOOK),
-    );
+    // ★ The filename comes from the same tuple as the text, so there is no pairing
+    // to get wrong here. Writing it out per-hook is what let `build.rs` cross the
+    // two consts while the `setup.rs` copy of the same list was under test.
+    for (name, content) in HOOKS {
+        install_hook_if_needed(&hooks_dir.join(name), content, name);
+    }
 
-    // Install commit-msg hook if missing or outdated
-    let commit_msg_path = hooks_dir.join("commit-msg");
-    install_hook_if_needed(
-        &commit_msg_path,
-        COMMIT_MSG_HOOK,
-        "commit-msg",
-        title_of(COMMIT_MSG_HOOK),
-    );
-
-    // Tell cargo to rerun if hooks are deleted
-    println!("cargo:rerun-if-changed=../.git/hooks/pre-commit");
-    // The hook text itself is now a tracked file, so edits to it must
-    // retrigger this build script or the change never reaches .git/hooks.
-    println!("cargo:rerun-if-changed=hooks/pre-commit");
-    println!("cargo:rerun-if-changed=hooks/commit-msg");
-    println!("cargo:rerun-if-changed=../.git/hooks/commit-msg");
+    for (name, _) in HOOKS {
+        // Re-run if the installed hook is deleted...
+        println!("cargo:rerun-if-changed=../.git/hooks/{name}");
+        // ...and if its tracked source changes, or the edit never reaches .git/hooks.
+        println!("cargo:rerun-if-changed=hooks/{name}");
+    }
 }
 
-fn install_hook_if_needed(path: &Path, content: &str, name: &str, marker: &str) {
-    // The DECISION is `should_replace` in src/hook_install.rs — pure, and unit-tested
-    // there. Only the filesystem work lives here, because a build script cannot be
-    // tested and this logic has already been wrong twice.
+/// Install `content` at `path` unless something we must not touch is already there.
+///
+/// The DECISION is `classify` in src/hook_install.rs — pure, and unit-tested there.
+/// Only the filesystem work lives here, because a build script cannot be tested and
+/// this logic has already been wrong twice.
+fn install_hook_if_needed(path: &Path, content: &str, name: &str) {
+    // DERIVED, not a parameter. A caller that can pass a marker can pass the OTHER
+    // hook's marker — the mis-pairing class this arc keeps rediscovering. Taking it
+    // from the content leaves nothing to cross.
+    let marker = title_of(content);
+
     let existing = if path.exists() {
         Some(fs::read_to_string(path).map_err(|_| ()))
     } else {
         None
     };
-    if !should_replace(
+    let state = classify(
         existing.as_ref().map(|r| r.as_deref().map_err(|_| ())),
         content,
         marker,
-    ) {
+    );
+
+    if !state.should_replace() {
+        // ⚠ Declining to install is only allowed to be SILENT when the hook is
+        // already ours and current. Otherwise the developer's scan/mesh guard is not
+        // armed and they have no way to know — that silence is how the original bug
+        // survived on real machines for two releases.
+        match state {
+            HookState::Foreign => println!(
+                "cargo:warning=Left your existing {name} hook in place, so \
+                 CortenForge's is NOT installed and the scan/mesh guard is not armed. \
+                 Merge xtask/hooks/{name} into yours, or move yours aside and rebuild."
+            ),
+            HookState::Unreadable => println!(
+                "cargo:warning=Could not read the existing {name} hook, so it was left \
+                 alone. CortenForge's {name} hook is NOT installed and the scan/mesh \
+                 guard is not armed."
+            ),
+            _ => {}
+        }
         return;
     }
 
@@ -87,7 +96,15 @@ fn install_hook_if_needed(path: &Path, content: &str, name: &str, marker: &str) 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o755));
+        if let Err(e) = fs::set_permissions(path, fs::Permissions::from_mode(0o755)) {
+            // git ignores a hook that is not executable, and says nothing. Discarding
+            // this error leaves a hook that looks installed and never runs.
+            println!(
+                "cargo:warning=Installed {name} hook but could not make it \
+                 executable, so git will ignore it: {e}"
+            );
+            return;
+        }
     }
 
     println!("cargo:warning=Installed {name} git hook");
