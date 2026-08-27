@@ -182,12 +182,20 @@ because the cost of a single miss is unrecoverable:
 | layer | catches | cannot catch |
 |---|---|---|
 | `.gitignore` blanket `*.stl` `*.obj` `*.ply` `*.3mf` `*.mtl` | `git add`, `git add .` | `git add -f`; and an UPPERCASE `PART.STL` wherever `core.ignorecase=false` (Linux, CI) — these patterns are case-sensitive, unlike layer 2's |
-| pre-commit guard (`xtask/hooks/pre-commit`) | `git add -f`, anything already staged, any case (`:(icase)`) | a commit made with `--no-verify` |
+| pre-commit guard (`xtask/hooks/pre-commit`) | `git add -f`, anything already staged, any case (`:(icase)`) | a commit made with `--no-verify`; and, with `CF_ALLOW_MESH=1` **already exported**, a commit made while git cannot read the index (see below) |
 
 Neither layer can untrack anything: zero meshes are tracked, and `.gitignore` never
 applies to files already in the index. The `sim/L0/tests/assets/mujoco_menagerie`
 assets are a **submodule** — its contents belong to its own repository and are
 unaffected.
+
+⚠ `CF_ALLOW_MESH=1` has a second effect, added deliberately and worth knowing. If
+git cannot read the staged file list at all, the guard cannot run; without the
+override the hook REFUSES the commit, and with it the guard is skipped entirely and
+says so. That is the lesser evil — the alternative is `git commit --no-verify`, which
+disables the commit-message hook as well — but it means someone who exports
+`CF_ALLOW_MESH=1` permanently has turned the guard into best-effort. Set it per
+command, not in your shell profile.
 
 Escape hatch, for a genuinely non-personal fixture mesh:
 

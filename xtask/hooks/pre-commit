@@ -101,7 +101,20 @@ echo "✓ Formatting OK"
 # Pathspec `'*Cargo.toml'` matches nested manifests (sim/L0/**/Cargo.toml,
 # examples/**/Cargo.toml, etc.) as well as the workspace root. A plain
 # `'Cargo.toml'` pathspec would only match the workspace root.
-staged_rs_files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.rs' '*Cargo.toml')
+# ⚠ If the mesh guard could not read the index, this call cannot either — and
+# under `set -e` its failure would kill the hook HERE, with no message, undoing the
+# CF_ALLOW_MESH escape granted above and sending the developer to `--no-verify`
+# (which disables the commit-message hook too). Measured: a failing command
+# substitution under `set -e` exits immediately. Skip lint rather than die silently.
+if [ "$guard_unreadable" = "1" ]; then
+    echo "→ Skipping clippy: the staged file list could not be read."
+    staged_rs_files=""
+elif ! staged_rs_files=$(git diff --cached --name-only --diff-filter=ACMR \
+    -- '*.rs' '*Cargo.toml'); then
+    echo "✗ Could not read the staged file list, so the crates to lint cannot be"
+    echo "  determined. Refusing the commit rather than skipping the checks silently."
+    exit 1
+fi
 
 if [ -z "$staged_rs_files" ]; then
     echo "→ No Rust/Cargo files staged — skipping clippy."

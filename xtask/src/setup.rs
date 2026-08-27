@@ -119,6 +119,13 @@ fn git_hooks_dir() -> Result<PathBuf> {
     let root = PathBuf::from(crate::grade::find_workspace_root(&sh)?);
     match crate::hook_install::resolve_hooks_dir(&root) {
         Some(crate::hook_install::HooksDir::Repo(dir)) => Ok(dir),
+        Some(crate::hook_install::HooksDir::OtherRepo(dir)) => anyhow::bail!(
+            "git resolves this directory to a different repository — its hooks live \
+             at {}. This looks like a copy of CortenForge nested inside another \
+             checkout; refusing to install hooks into a repository that is not this \
+             one.",
+            dir.display()
+        ),
         Some(crate::hook_install::HooksDir::Shared(dir)) => anyhow::bail!(
             "git is configured to read hooks from {}, which is outside this \
              repository and shared with your other repos. Refusing to touch it — \
@@ -160,6 +167,10 @@ fn install_git_hooks() -> Result<()> {
 /// shipped green. That is the same class as this arc's original bug: installer wiring
 /// with no gate on it. The pairing now lives once, in `hook_install::HOOKS`.
 fn install_git_hooks_into(hooks_dir: &Path) -> Result<()> {
+    // NAME IT. From a linked worktree this is the SHARED common directory, so this
+    // command rewrites the hooks the main checkout uses; that blast radius must be
+    // visible rather than inferred.
+    println!("  hooks directory: {}", hooks_dir.display());
     for (name, content) in HOOKS {
         let path = hooks_dir.join(name);
         // Atomic: git may be RUNNING this exact file. See `write_hook_file`.
@@ -264,6 +275,10 @@ pub fn uninstall() -> Result<()> {
         return Ok(());
     }
 
+    // NAME IT, for the same reason as install: run from a linked worktree this is
+    // the SHARED common directory, so removing hooks here disarms the guard for the
+    // main checkout and every other worktree.
+    println!("  hooks directory: {}", hooks_dir.display());
     // The same single source both installers read. Hardcoding the names here is
     // how a third hook would get installed by both of them and left behind by this
     // one — a live hook with no source, which is the drift shape (#709) this branch
@@ -533,8 +548,9 @@ mod hook_tests {
         let pre = std::fs::read_to_string(dir.join("pre-commit")).expect("pre-commit written");
         let msg = std::fs::read_to_string(dir.join("commit-msg")).expect("commit-msg written");
         // git IGNORES a hook that is not executable, and says nothing when it does.
-        // `make_executable` is already a no-op on non-unix, so a regression there
-        // disarms both hooks with every content assertion still green.
+        // The chmod lives in `hook_install::write_hook_file`, whose `#[cfg(unix)]`
+        // block is a no-op elsewhere, so a regression there disarms both hooks with
+        // every content assertion still green.
         #[cfg(unix)]
         let modes: Vec<(&str, u32)> = {
             use std::os::unix::fs::PermissionsExt;
@@ -714,6 +730,23 @@ mod hook_tests {
     /// run with `isolation: "worktree"`, so this is a routine environment.
     #[test]
     fn a_worktree_resolves_to_the_common_hooks_dir_where_naive_joining_fails() {
+        // `resolve_hooks_dir` spawns its own git, so an env var set on OUR Command
+        // cannot reach it, and a GLOBAL `core.hooksPath` would redirect the answer.
+        // Skipping loudly is the honest option here: the alternative — pinning the
+        // config — is exactly what made this assertion a tautology before.
+        let has_global_hookspath = Command::new("git")
+            .args(["config", "--global", "--get", "core.hooksPath"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if has_global_hookspath {
+            eprintln!(
+                "SKIPPED a_worktree_resolves_…: a global core.hooksPath is set, \
+                 which redirects git's answer and cannot be isolated from here"
+            );
+            return;
+        }
+
         let base = std::env::temp_dir().join(format!("cf-wt-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let repo = base.join("repo");
@@ -735,14 +768,11 @@ mod hook_tests {
         git_in(&repo, &["config", "user.email", "t@t"]);
         git_in(&repo, &["config", "user.name", "t"]);
         git_in(&repo, &["config", "commit.gpgsign", "false"]);
-        // Same reason as the e2e test: pin to this repo's own default so an inherited
-        // global `core.hooksPath` cannot redirect the answer. The worktree still
-        // resolves to the COMMON dir, which is what this test is about.
-        let common_hooks = repo.join(".git/hooks");
-        git_in(
-            &repo,
-            &["config", "core.hooksPath", &common_hooks.to_string_lossy()],
-        );
+        // ⚠ NO `core.hooksPath` pin here. An earlier version pinned it to the value
+        // this test then asserts git returns, which made the positive assertion a
+        // TAUTOLOGY — it would have held even if worktree resolution were reverted
+        // entirely. Measured: with hooksPath UNSET git already answers the common
+        // dir, so the pin bought nothing and cost the test its discrimination.
         std::fs::write(repo.join("a.txt"), b"x\n").expect("seed");
         git_in(&repo, &["add", "a.txt"]);
         git_in(&repo, &["commit", "-q", "-m", "chore: seed", "--no-verify"]);
@@ -845,14 +875,6 @@ mod hook_tests {
         }
     }
 
-    /// The scan/mesh guard must fail CLOSED when git cannot answer.
-    ///
-    /// It used to end in `|| true`, so any git failure produced an empty list and the
-    /// hook printed "No scan/mesh binaries staged" — false — and carried on. ⚠ The
-    /// exit code alone CANNOT catch this: the clippy step further down has no
-    /// `|| true`, so `set -e` aborts there regardless and the hook exits non-zero
-    /// either way. The discriminator is that the guard must never CLAIM a clean stage
-    /// it was unable to verify.
     /// Run the pre-commit hook OUTSIDE a git repo, which is the cheapest way to make
     /// `git diff --cached` fail for real rather than by injection.
     fn run_hook_outside_a_repo(allow_mesh: bool) -> (bool, String) {
@@ -861,6 +883,18 @@ mod hook_tests {
         let dir = std::env::temp_dir().join(format!("cf-nogit-{}-{uniq}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("temp dir");
+        // A valid, formatted cargo project, so the ONLY thing wrong here is that
+        // git cannot answer. Without it the hook dies at `cargo fmt` and the test
+        // cannot tell "the override let it through" from "it failed later anyway" —
+        // which is exactly how a broken override passed review once already.
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            b"[workspace]\n[package]\nname = \"p\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+        )
+        .expect("Cargo.toml");
+        std::fs::create_dir_all(dir.join("src")).expect("src");
+        std::fs::write(dir.join("src/main.rs"), b"fn main() {}\n").expect("main.rs");
+
         let hook = dir.join("hook.sh");
         std::fs::write(&hook, PRE_COMMIT_HOOK).expect("hook");
         let mut cmd = Command::new("sh");
@@ -891,14 +925,19 @@ mod hook_tests {
     /// is the precise false statement this guard's whole history is made of.
     #[test]
     fn the_override_skips_the_unreadable_index_loudly_without_claiming_a_clean_stage() {
-        let (_, out) = run_hook_outside_a_repo(true);
-        // ⚠ WHERE it exited, not merely what it printed. Adding an `exit 1` after the
-        // skip message would satisfy both assertions below while breaking the very
-        // thing this test is named for, so assert the hook reached the NEXT step.
+        let (ok, out) = run_hook_outside_a_repo(true);
+        // ⚠ THE EXIT CODE, not merely the message. The first version of this override
+        // printed its notice and then died anyway, because a LATER unguarded
+        // `git diff` failed under `set -e` — so the escape hatch did not escape, and
+        // a test that only grepped stdout could not see it. Assert it ran to the end.
+        assert!(
+            ok,
+            "the override printed its notice and then refused anyway — it did not \
+             let the commit proceed, which is the whole point of it;\n{out}"
+        );
         assert!(
             out.contains("Checking formatting"),
-            "the override printed its notice and then refused anyway — it did not let \
-             the commit proceed, which is the whole point of it;\n{out}"
+            "the hook never reached the steps after the guard;\n{out}"
         );
         assert!(
             out.contains("SKIPPED ENTIRELY"),
@@ -910,6 +949,17 @@ mod hook_tests {
         );
     }
 
+    /// The scan/mesh guard must fail CLOSED when git cannot answer.
+    ///
+    /// It used to end in `|| true`, so any git failure produced an empty list and the
+    /// hook printed "✓ No scan/mesh binaries staged" — false — and let the commit
+    /// through with the scan attached.
+    ///
+    /// ⚠ The MESSAGE is the assertion, not just the exit code. Both are checked here,
+    /// but the exit code alone would be weak: for most of this hook's history a
+    /// later unguarded `git diff` aborted it under `set -e` anyway, so a non-zero
+    /// exit proved nothing about the guard. What cannot be faked is that the hook
+    /// must never CLAIM a clean stage it was unable to verify.
     #[test]
     fn the_guard_refuses_when_it_cannot_read_the_index() {
         let (ok, combined) = run_hook_outside_a_repo(false);

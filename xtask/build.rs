@@ -33,6 +33,14 @@ fn main() {
 
     let hooks_dir = match resolve_hooks_dir(workspace_root) {
         Some(HooksDir::Repo(dir)) => dir,
+        Some(HooksDir::OtherRepo(_)) => {
+            // A copy of this source nested inside SOMEBODY ELSE'S checkout: git
+            // resolved their repository by walking up. Automatic installation only
+            // ever targets our own checkout — writing our mesh guard and our
+            // `cargo fmt` into an unrelated project is the harm containment exists
+            // to prevent. Silent on purpose: a vendored copy has nothing to say.
+            return;
+        }
         Some(HooksDir::Shared(dir)) => {
             println!(
                 "cargo:warning=git is configured to read hooks from {}, which is \

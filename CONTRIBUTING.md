@@ -36,10 +36,10 @@ cargo xtask ci
 > you build the project. The pre-commit hook includes a guard that refuses to commit
 > scan/mesh binaries to this public repository.
 >
-> They install into whatever directory git reports, so linked worktrees and
-> `core.hooksPath` are handled.
+> They install into whatever directory git reports, so a linked worktree and an
+> in-repo `core.hooksPath` (the `.githooks/` convention) both work.
 >
-> ⚠ The build **declines** in four cases, and prints a `cargo:warning` each time —
+> ⚠ The build **declines** in five cases, and prints a `cargo:warning` each time —
 > if you see one, the scan/mesh guard is not armed:
 >
 > - you already have your own `pre-commit`/`commit-msg` — merge `xtask/hooks/*`
@@ -47,8 +47,14 @@ cargo xtask ci
 > - the existing hook cannot be read;
 > - git's hooks directory does not exist — create it, then `touch xtask/build.rs`,
 >   because creating a directory alone does not re-run the build script;
-> - a **global** `core.hooksPath` points outside this repository — that directory is
->   shared with your other repos, so we will not write to it.
+> - `core.hooksPath` points **outside this repository** — that directory is shared
+>   with your other repos, so we will not write to it;
+> - git could not be asked at all (no `git` on `PATH`, or it reports `dubious
+>   ownership`) — fix that and rebuild.
+>
+> It also stays **silent** in one case: if this source sits inside somebody else's
+> checkout with no `.git` of its own, git resolves *their* repository, and we never
+> install into a repository that is not this one.
 >
 > `cargo xtask setup` installs both hooks, but it overwrites whatever is there with
 > no backup — move your own hook aside first if you want to keep it. It refuses the
