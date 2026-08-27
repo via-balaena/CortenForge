@@ -44,10 +44,27 @@ pub fn run() -> Result<()> {
     println!();
 
     // Step 1: Install git hooks
-    install_git_hooks()?;
+    //
+    // ⚠ NOT `?`, for the same reason the install loop accumulates rather than
+    // aborting. `?` here made ONE unrepairable hook cancel `verify_tools` and every
+    // line of onboarding below — and that became reachable the moment the executable
+    // bit stopped being repaired through a symlink, which turned a silent (wrong)
+    // success into a legitimate failure. Report both, then fail.
+    let hooks = install_git_hooks();
 
     // Step 2: Verify required tools
-    verify_tools()?;
+    let tools = verify_tools();
+
+    // ⚠ Fail AFTER both have run and printed. Their messages are the actionable part;
+    // the exit status only decides whether a script notices.
+    //
+    // ⚠ NOT GATED, and saying so is better than implying otherwise: `run()` does real
+    // filesystem and process work, so the ordering is only observable end to end.
+    // What IS gated is the contract underneath it — `install_git_hooks_into` returns
+    // an error rather than aborting mid-loop, in
+    // `a_hook_whose_bit_cannot_be_repaired_is_a_failure_not_a_success`.
+    hooks?;
+    tools?;
 
     // Step 3: Summary
     println!();

@@ -859,6 +859,18 @@ pub fn describe_untouchable(
 /// git ignores a non-executable hook without a word — no error, no warning, the
 /// guard simply never runs. Both installers must therefore repair the bit even when
 /// the TEXT is already current, and both must decide that the same way.
+///
+/// ⚠⚠ `metadata` FOLLOWS a symlink, and that is REQUIRED, not incidental. git execs
+/// through the link, so the mode that decides "will git run this?" is the TARGET's.
+/// Measured: a link at mode 0644 whose target is 0755 — the hook RUNS; a link at 0777
+/// whose target is 0644 — git skips it and the commit succeeds unguarded. Switching
+/// to `symlink_metadata` would read the LINK's own mode, which macOS reports as
+/// `120755`, so `& 0o111` is always true and every symlinked hook would be declared
+/// fine — silently, which is the exact failure this function exists to detect. That
+/// one-token change survived a whole mutation round; it is gated now.
+///
+/// ★ This is deliberately a different question from the one [`make_executable`] asks.
+/// "Will git run it" is about the target; "is it ours to chmod" is about the path.
 #[cfg(unix)]
 #[must_use]
 pub fn is_executable(path: &std::path::Path) -> bool {
@@ -878,34 +890,68 @@ pub fn is_executable(path: &std::path::Path) -> bool {
 /// the mode of whatever the link points AT: a file at an arbitrary path that
 /// containment never looked at, because containment is computed for the hooks
 /// DIRECTORY. Measured: with `.git/hooks/pre-commit` a link to a mode-0600 file
-/// outside the repository, a plain `cargo build` widened it to 0755. Every other
-/// write this module makes is bounded by the hooks directory; this one was not, and
-/// the doc above was busy congratulating it for preserving the link.
+/// outside the repository, a plain `cargo build` widened it to 0755.
+///
+/// ⚠ BE EXACT ABOUT THE POPULATION, because an earlier version of this paragraph was
+/// not. The chmod is only ever reached for [`HookState::OursCurrent`] — `Missing` and
+/// `OursStale` go down the write path, `Foreign` and `Unreadable` are left alone — so
+/// the target has to hold a byte-identical copy of our CURRENT hook text. "A
+/// mode-0600 file outside the repository" overstated it; a copy of our own hook,
+/// stored outside the repo and linked in, is the shape.
+///
+/// ⚠ AND ONE ESCAPE IS DELIBERATELY LEFT OPEN: a HARD link. `set_permissions` on it
+/// changes a file with another name elsewhere, and no test refuses it. That is not
+/// the same defect. Chmodding through a SYMLINK changes a file that is not the hook;
+/// chmodding a hard link changes the hook, which merely has a second name — the
+/// developer who made that link asked for exactly that. Refusing would punish an
+/// intentional setup to defend a claim about names rather than about files. So the
+/// honest scope of this guard is: no write here ever lands on a DIFFERENT file from
+/// the one at the hook path.
 ///
 /// ★ [`is_executable`] deliberately still FOLLOWS the link, and that is not an
 /// inconsistency: the question it asks is "will git run this?", and git execs through
 /// the link. The decision was always right — only the write was unbounded. So a
-/// non-executable link is still reported, it is just reported to the developer
-/// instead of being silently fixed on a file that is not ours.
+/// non-executable link is still reported rather than repaired; the old code did print
+/// a repair message, it just never said whose file's mode it had changed.
 ///
 /// # Errors
-/// If the path is a symlink, or if the mode cannot be changed.
+/// If the path cannot be stat-ed, if it is a symlink, or if the mode cannot be
+/// changed.
 #[cfg(unix)]
 pub fn make_executable(path: &std::path::Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     if path.symlink_metadata()?.file_type().is_symlink() {
-        let target = std::fs::read_link(path).map_or_else(
-            |_| "a target that could not be read".to_string(),
-            |t| t.display().to_string(),
-        );
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!(
-                "it is a symlink to {target}, and making it executable would change \
-                 THAT file's permissions, which is outside this repository and not \
-                 ours to do — chmod it yourself if you want git to run it"
+        // ⚠ RESOLVED AGAINST THE HOOK'S OWN DIRECTORY, because `read_link` returns
+        // the target exactly as written and these links are normally RELATIVE. The
+        // raw form (`../../xtask/hooks/pre-commit`) is relative to the hooks dir,
+        // while the developer reading this message is standing in the repo root,
+        // where it points two levels above the checkout — at nothing. An unusable
+        // path in a message whose only instruction is "chmod it yourself".
+        // `absolutize` is the module's own resolver, so the path printed here is
+        // normalised the same way every other path in this module is — no `..`
+        // left in a sentence whose whole purpose is to be pasted after `chmod +x`.
+        let target = std::fs::read_link(path).map(|t| {
+            let parent = path.parent().unwrap_or(std::path::Path::new("."));
+            t.to_str()
+                .map_or_else(|| parent.join(&t), |s| absolutize(parent, s))
+        });
+        let said = match target {
+            // ⚠ Says WHICH FILE, never WHOSE. An earlier version asserted the target
+            // was "outside this repository" unconditionally, having checked nothing —
+            // and the commonest link of all, to this repo's own tracked
+            // `xtask/hooks/pre-commit`, made that simply false.
+            Ok(t) => format!(
+                "it is a symlink, so making it executable would change the \
+                 permissions of {} instead — chmod that file yourself if you want \
+                 git to run this hook",
+                t.display()
             ),
-        ));
+            Err(e) => format!(
+                "it is a symlink whose target could not be read ({e}), so making it \
+                 executable would change the permissions of some other file"
+            ),
+        };
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, said));
     }
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
 }
@@ -2583,6 +2629,14 @@ mod tests {
 
         let refused = super::make_executable(&link)
             .expect_err("a symlink must not be chmodded — the mode lands on its target");
+        // The same escape written the ordinary way: a RELATIVE target.
+        let nested = base.join("hooks");
+        std::fs::create_dir_all(&nested).expect("temp dir");
+        let rel_link = nested.join("pre-commit");
+        std::os::unix::fs::symlink("../somebody-elses-file", &rel_link).expect("symlink");
+        let said_relative = super::make_executable(&rel_link)
+            .expect_err("a relative symlink is still a symlink")
+            .to_string();
         let after = std::fs::metadata(&outside)
             .expect("meta")
             .permissions()
@@ -2608,11 +2662,80 @@ mod tests {
             "the refusal is printed verbatim by both installers, so it has to name \
              the file the developer must chmod: {said}"
         );
+        // ⚠ AND A RELATIVE LINK, which is how these are normally written. `read_link`
+        // returns the target verbatim, so the message used to print a path relative
+        // to the HOOKS directory to a developer standing in the repo root, where it
+        // resolves to nothing. The instruction is "chmod that file yourself"; it has
+        // to name a file they can actually reach.
+        assert!(
+            said_relative.contains("somebody-elses-file") && !said_relative.contains("../"),
+            "the refusal must resolve a relative link target, not echo it: \
+             {said_relative}"
+        );
         repaired.expect("a regular hook file is still ours to repair");
         assert!(
             ours_mode & 0o111 != 0,
             "the positive control did not repair: a refusal that refuses everything \
              would satisfy the assertion above while git ignores every hook"
+        );
+    }
+
+    /// "Will git run this?" is a question about the TARGET, and must stay one.
+    ///
+    /// ⚠⚠ A ONE-TOKEN MUTANT SURVIVED A WHOLE ROUND HERE. `metadata` →
+    /// `symlink_metadata` reads the LINK's own mode, which macOS reports as `120755`,
+    /// so `& 0o111` is true for EVERY symlinked hook: `ensure_executable` returns
+    /// early, the refusal never prints, and git goes on silently ignoring a hook
+    /// whose target is not executable. Silent, which is the one outcome this module
+    /// treats as unacceptable — and the safety argument in `make_executable`'s doc
+    /// rests on this behaviour, which nothing was measuring.
+    #[test]
+    #[cfg(unix)]
+    fn whether_git_will_run_a_hook_is_read_through_the_symlink() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let base = std::env::temp_dir().join(format!("cf-execlink-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).expect("temp dir");
+
+        let dull = base.join("target-0644");
+        std::fs::write(&dull, "hook\n").expect("seed");
+        std::fs::set_permissions(&dull, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        let to_dull = base.join("pre-commit");
+        std::os::unix::fs::symlink(&dull, &to_dull).expect("symlink");
+
+        // POSITIVE CONTROL: the same link shape over an executable target.
+        let live = base.join("target-0755");
+        std::fs::write(&live, "hook\n").expect("seed");
+        std::fs::set_permissions(&live, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let to_live = base.join("commit-msg");
+        std::os::unix::fs::symlink(&live, &to_live).expect("symlink");
+
+        let over_dull = super::is_executable(&to_dull);
+        let over_live = super::is_executable(&to_live);
+        // The link's OWN mode, which is what the mutant would read.
+        let link_mode = to_dull
+            .symlink_metadata()
+            .expect("lstat")
+            .permissions()
+            .mode();
+        let _ = std::fs::remove_dir_all(&base);
+
+        assert!(
+            !over_dull,
+            "a link to a NON-executable target was called runnable — git execs \
+             through the link, so this hook will be silently ignored"
+        );
+        assert!(
+            over_live,
+            "POSITIVE CONTROL: a link to an executable target must be runnable, or \
+             the assertion above is satisfied by a function that always says no"
+        );
+        assert!(
+            link_mode & 0o111 != 0,
+            "this test is only meaningful while a symlink's own mode carries \
+             execute bits ({link_mode:o}); if that changes, the mutant it exists to \
+             kill can no longer hide"
         );
     }
 
