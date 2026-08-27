@@ -180,11 +180,14 @@ The ask deliberately passes NO `--path-format=absolute`. Asking for it made git'
 answer easier and the code harder: a git older than 2.31 (Ubuntu 20.04 ships 2.25)
 does not know the flag, echoes it, and exits 0 — which forced a second ask, a second
 parser, an absolute-path rule to tell the two apart, and a documented order between
-their answers. Every option now passed predates git 2.5. Measured across 35 repository
-shapes, nine of them built specifically to break the equivalence: one ask and two asks
-returned the identical verdict every time, and under a pre-2.5 shim the one-ask design
-is strictly better — three shapes that resolved to a SILENT refusal now resolve
-correctly or say why.
+their answers. Every option now passed shipped in git 2.5 (2015) or earlier.
+
+⚠ The price is that resolving `..` and symlinks is now OUR job on every machine,
+where git's own `--path-format=absolute` used to do it whenever it could. Review
+found two containment escapes in that walk which the two-ask design never reached,
+precisely because on a modern git it never ran. Both are fixed and gated, and the
+tests use git's own answer as the oracle — but the walk should be read as
+load-bearing for everyone, not as a legacy path.
 
 ⚠ Because `GIT_DIR`/`GIT_WORK_TREE` are cleared, a working tree checked out purely
 through those variables (a bare repo plus `GIT_WORK_TREE`) can no longer be resolved.
@@ -197,11 +200,11 @@ but git itself cannot execute a hook out of it (`/bin/sh: -/: invalid option`). 
 fails CLOSED, refusing the commit, so nothing is lost silently; the setting is simply
 unusable, for reasons outside this code.
 
-Relative answers from an old git are NORMALISED, not merely joined: `..` and symlinks
+Relative answers — which is what git returns for the git dir and the hooks path, on
+every version — are NORMALISED, not merely joined: `..` and symlinks
 are resolved the way git resolves them. Without that, `core.hooksPath =
 ../shared-hooks` produced `<repo>/../shared-hooks`, which `starts_with` accepts
-component-wise — containment defeated, on exactly the git version the second ask
-serves.
+component-wise — containment defeated.
 
 **Checks**:
 - **Scan/mesh guard** — refuses staged `*.stl` / `*.obj` / `*.ply` / `*.3mf` /
