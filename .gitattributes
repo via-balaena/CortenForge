@@ -1,4 +1,5 @@
-# The git hooks are shipped into .git/hooks byte-for-byte by xtask's build script,
+# The git hooks are shipped byte-for-byte into git's hooks directory by xtask's
+# build script (`git rev-parse --git-path hooks`, not an assumed `.git/hooks`),
 # which reads them with `include_str!`. Unlike a Rust string literal — which rustc
 # normalises — `include_str!` embeds the file's bytes VERBATIM. On a checkout with
 # core.autocrlf=true (the Git-for-Windows installer default) these files would

@@ -39,11 +39,20 @@ cargo xtask ci
 > They install into whatever directory git reports, so linked worktrees and
 > `core.hooksPath` are handled.
 >
-> ⚠ One case is **not** automatic: if you already have your own
-> `.git/hooks/pre-commit`, the build leaves it alone and prints a `cargo:warning`
-> saying the guard is not armed. Merge `xtask/hooks/pre-commit` into yours.
-> `cargo xtask setup` installs ours instead, but it overwrites whatever is there
-> with no backup — move your hook aside first if you want to keep it.
+> ⚠ The build **declines** in four cases, and prints a `cargo:warning` each time —
+> if you see one, the scan/mesh guard is not armed:
+>
+> - you already have your own `pre-commit`/`commit-msg` — merge `xtask/hooks/*`
+>   into yours;
+> - the existing hook cannot be read;
+> - git's hooks directory does not exist — create it, then `touch xtask/build.rs`,
+>   because creating a directory alone does not re-run the build script;
+> - a **global** `core.hooksPath` points outside this repository — that directory is
+>   shared with your other repos, so we will not write to it.
+>
+> `cargo xtask setup` installs both hooks, but it overwrites whatever is there with
+> no backup — move your own hook aside first if you want to keep it. It refuses the
+> shared-`core.hooksPath` case too.
 
 ### Local CI/CD (Recommended)
 

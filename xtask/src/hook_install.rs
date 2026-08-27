@@ -36,29 +36,129 @@ pub const HOOKS: [(&str, &str); 2] = [
     ("commit-msg", COMMIT_MSG_HOOK),
 ];
 
-/// Turn `git rev-parse --git-path hooks` output into the directory to install into.
+/// Where git will look for hooks, and whether that place is ours to write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HooksDir {
+    /// Inside THIS repository's git directory. Ours to manage.
+    Repo(std::path::PathBuf),
+    /// Git is configured to read hooks from somewhere outside this repository's git
+    /// dir — a global `core.hooksPath`, typically. Shared with every other repo on
+    /// the machine, and therefore never ours to write or delete.
+    Shared(std::path::PathBuf),
+}
+
+/// Is the directory git named inside this repository's git dir?
 ///
-/// ⚠ ASK GIT, never build the path yourself. `<root>/.git/hooks` is wrong in three
-/// real configurations, and wrong SILENTLY — the installer writes a file, reports
-/// success, and git reads somewhere else:
-/// - `core.hooksPath` (husky, lefthook, pre-commit.com, corporate global config)
-///   relocates hooks entirely. Measured: `--git-path hooks` returns the custom path.
-/// - a linked worktree has `.git` as a FILE, so `<root>/.git/hooks` does not exist;
-///   git runs hooks from the common dir, which `--git-path` resolves. Agents here run
-///   with `isolation: "worktree"`, so this is a routine environment, not an exotic one.
-/// - `--separate-git-dir` likewise.
+/// ⚠ CONTAINMENT. Asking git where hooks live fixes worktrees and `core.hooksPath`,
+/// but it also removes a property the old `<root>/.git/hooks` join had for free: the
+/// path could not leave the checkout. With a GLOBAL `core.hooksPath`, git answers
+/// `~/.githooks`, and writing there installs our hooks — and our mesh guard, and our
+/// `cargo fmt` — into EVERY repository on the machine, with `uninstall` deleting
+/// whatever was there. That is a worse failure than the one this replaced.
 ///
-/// ⚠ git answers RELATIVE to the repo root in the common case (`.git/hooks`) and
-/// ABSOLUTE for the other two — both measured. `Path::join` is correct for both,
-/// because an absolute right-hand side REPLACES the left rather than nesting under
-/// it. That behaviour is the whole reason this is a named, tested function instead
-/// of an inline join: getting it wrong puts the hooks somewhere plausible and quiet.
+/// A linked worktree's hooks resolve to the COMMON dir, which is inside the git dir,
+/// so the case this change exists for still passes. Measured both ways.
+///
+/// ★ This also disposes of git's degenerate answers for free: `core.hooksPath=""`
+/// makes git answer `./` and `core.hooksPath=.` makes it answer `.` — both resolve
+/// to the working tree, which is not inside the git dir, so both are refused rather
+/// than dropping `pre-commit` into the repository root.
 #[must_use]
-pub fn hooks_dir_from_git(
-    git_path_output: &str,
-    repo_root: &std::path::Path,
-) -> std::path::PathBuf {
-    repo_root.join(git_path_output.trim())
+pub fn classify_hooks_dir(hooks: &std::path::Path, git_common_dir: &std::path::Path) -> HooksDir {
+    // Component-wise, not string prefix: `/x/.github` must not count as inside
+    // `/x/.git`.
+    if hooks.starts_with(git_common_dir) {
+        HooksDir::Repo(hooks.to_path_buf())
+    } else {
+        HooksDir::Shared(hooks.to_path_buf())
+    }
+}
+
+/// Ask git where its hooks directory is, as an absolute path.
+///
+/// `None` when git cannot answer at all — no binary, not a repository, `dubious
+/// ownership`, or a git too old for `--path-format` (2.31). Callers must treat that
+/// as "unknown", never as "nowhere".
+#[must_use]
+pub fn ask_git(repo_root: &std::path::Path, what: &[&str]) -> Option<std::path::PathBuf> {
+    // ⚠ `what` is a SLICE because `--git-path` takes its argument separately.
+    // Passing "--git-path=hooks" as one token makes `rev-parse` treat it as a
+    // revision and ECHO IT BACK verbatim, exit 0 — which then classified as
+    // `Shared` and silently installed nothing anywhere. Caught by the e2e test.
+    let mut args = vec!["rev-parse", "--path-format=absolute"];
+    args.extend_from_slice(what);
+    let out = std::process::Command::new("git")
+        .args(&args)
+        .current_dir(repo_root)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let answer = String::from_utf8(out.stdout).ok()?;
+    let answer = answer.trim();
+    if answer.is_empty() {
+        return None;
+    }
+    Some(std::path::PathBuf::from(answer))
+}
+
+/// Resolve the hooks directory for `repo_root`, or `None` if it cannot be known.
+///
+/// ONE implementation, used by `build.rs` and by the xtask binary. Writing this out
+/// per-installer is what let the two drift in the first place, and the copy the
+/// binary used had no test reaching it.
+///
+/// ⚠ FALLBACK. When git cannot answer but `<root>/.git` is a real directory, fall
+/// back to `<root>/.git/hooks`. Installing nothing there would be a regression:
+/// that path is where git looks in the ordinary case, and a container without a
+/// `git` binary, or one tripping `dubious ownership`, is exactly where the old code
+/// worked and silence would leave the guard unarmed. A worktree's `.git` is a FILE,
+/// so it correctly does not take this branch — there we genuinely do not know.
+#[must_use]
+pub fn resolve_hooks_dir(repo_root: &std::path::Path) -> Option<HooksDir> {
+    if let (Some(hooks), Some(common)) = (
+        ask_git(repo_root, &["--git-path", "hooks"]),
+        ask_git(repo_root, &["--git-common-dir"]),
+    ) {
+        return Some(classify_hooks_dir(&hooks, &common));
+    }
+    let dot_git = repo_root.join(".git");
+    if dot_git.is_dir() {
+        return Some(HooksDir::Repo(dot_git.join("hooks")));
+    }
+    None
+}
+
+/// Write `content` to `path` and make it executable, ATOMICALLY.
+///
+/// ⚠ Never `fs::write` a hook in place. git may be RUNNING that exact file: editing
+/// `xtask/hooks/pre-commit` makes the pre-commit hook run clippy, which builds xtask,
+/// whose build script then rewrites the hook the shell is still reading. `sh` reads a
+/// script in blocks and seeks, so it resumes at a stale offset in new content — a
+/// syntax error or, worse, a silently skipped check, blamed on the hook rather than
+/// on the installer. Writing a sibling and renaming gives the running shell its own
+/// inode and swaps the name in one step.
+///
+/// # Errors
+/// If the temporary file cannot be written, made executable, or renamed into place.
+pub fn write_hook_file(path: &std::path::Path, content: &str) -> std::io::Result<()> {
+    let tmp = path.with_extension("cf-install-tmp");
+    std::fs::write(&tmp, content)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Set the mode on the TEMP file, so the hook is never visible under its real
+        // name in a non-executable state — git would silently ignore it in that gap.
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+    }
+    match std::fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
 }
 
 /// The hook's own title line, used to recognise a hook as ours.
@@ -303,29 +403,116 @@ mod tests {
         }
     }
 
-    /// Both shapes git actually returns, pinned. The absolute case is a worktree or
-    /// a `core.hooksPath`; joining it must REPLACE the root, not nest under it.
+    /// CONTAINMENT, both directions. A worktree's hooks live in the COMMON git dir
+    /// and must be accepted; a global `core.hooksPath` points outside it and must be
+    /// refused, or `cargo xtask setup` rewrites every repo on the machine.
+    ///
+    /// ★ The degenerate shapes are here because git really answers them:
+    /// `core.hooksPath=""` yields `./` and `core.hooksPath=.` yields `.` — measured.
+    /// Both land on the working tree, so containment refuses them and nothing drops
+    /// a `pre-commit` file into the repository root.
     #[test]
-    fn a_relative_git_path_joins_the_root_and_an_absolute_one_replaces_it() {
-        use super::hooks_dir_from_git;
-        use std::path::{Path, PathBuf};
+    fn only_a_hooks_dir_inside_this_repositorys_git_dir_is_ours() {
+        use super::{classify_hooks_dir, HooksDir};
+        use std::path::Path;
 
-        let root = Path::new("/repo");
-        assert_eq!(
-            hooks_dir_from_git(".git/hooks\n", root),
-            PathBuf::from("/repo/.git/hooks"),
-            "a relative answer must be joined onto the repo root"
+        let common = Path::new("/repo/.git");
+        let ours = |p: &str| matches!(classify_hooks_dir(Path::new(p), common), HooksDir::Repo(d) if d == *Path::new(p));
+
+        assert!(ours("/repo/.git/hooks"), "the ordinary checkout");
+        assert!(
+            ours("/repo/.git/hooks"),
+            "a linked worktree resolves to this same common dir — the case the \
+             whole change exists for"
         );
-        assert_eq!(
-            hooks_dir_from_git("/elsewhere/common/.git/hooks\n", root),
-            PathBuf::from("/elsewhere/common/.git/hooks"),
-            "an absolute answer must REPLACE the root — a worktree's hooks live in \
-             the common dir, and nesting it under the root points at nothing"
+        assert!(
+            !ours("/home/dev/.githooks"),
+            "a GLOBAL core.hooksPath is shared with every other repo on the machine"
         );
+        assert!(
+            !ours("/repo"),
+            "core.hooksPath=\".\" resolves to the working tree"
+        );
+        assert!(
+            !ours("/repo/.github/hooks"),
+            "must compare by PATH COMPONENT: /repo/.github is not inside /repo/.git"
+        );
+    }
+
+    /// The FALLBACK, both directions. When git cannot answer but `.git` is a real
+    /// directory, installing nothing would be a regression: that path is where git
+    /// looks in the ordinary case, and a container with no `git` binary or a repo
+    /// tripping `dubious ownership` is exactly where the previous code worked.
+    ///
+    /// ⚠ And it must NOT guess when there is no `.git` at all — a vendored copy or a
+    /// tarball has no hooks to install, and inventing a path would create junk.
+    /// Measured: `git rev-parse` exits 128 in both of these directories.
+    #[test]
+    fn git_being_unable_to_answer_falls_back_only_when_dot_git_is_a_real_directory() {
+        use super::{resolve_hooks_dir, HooksDir};
+
+        let base = std::env::temp_dir().join(format!("cf-fallback-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let with_git = base.join("with-git");
+        let without = base.join("without-git");
+        std::fs::create_dir_all(with_git.join(".git")).expect("temp dir");
+        std::fs::create_dir_all(&without).expect("temp dir");
+
+        let a = resolve_hooks_dir(&with_git);
+        let b = resolve_hooks_dir(&without);
+        let _ = std::fs::remove_dir_all(&base);
+
         assert_eq!(
-            hooks_dir_from_git("  /custom/hooks  ", root),
-            PathBuf::from("/custom/hooks"),
-            "surrounding whitespace/newline must be trimmed"
+            a,
+            Some(HooksDir::Repo(with_git.join(".git").join("hooks"))),
+            "a real .git directory git cannot speak for must still get hooks"
+        );
+        assert_eq!(b, None, "no .git at all must not be guessed at");
+    }
+
+    /// The write must be atomic and must leave nothing behind.
+    ///
+    /// ⚠ `fs::write` truncates in place, and git may be RUNNING that exact file:
+    /// editing `xtask/hooks/pre-commit` makes the pre-commit hook run clippy, which
+    /// builds xtask, whose build script rewrites the hook the shell is still reading.
+    /// The race itself is not reproducible in a unit test, so this pins the two
+    /// observable consequences of doing it right: the content lands, and no
+    /// `.cf-install-tmp` sibling survives.
+    #[test]
+    fn writing_a_hook_replaces_it_and_leaves_no_temporary_behind() {
+        use super::write_hook_file;
+
+        let dir = std::env::temp_dir().join(format!("cf-atomic-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("pre-commit");
+
+        std::fs::write(&path, "old\n").expect("seed");
+        write_hook_file(&path, OURS).expect("write");
+
+        let content = std::fs::read_to_string(&path).expect("read back");
+        let leftovers: Vec<String> = std::fs::read_dir(&dir)
+            .expect("read dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n != "pre-commit")
+            .collect();
+        #[cfg(unix)]
+        let mode = {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::metadata(&path).expect("meta").permissions().mode()
+        };
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(content, OURS, "the replacement content did not land");
+        assert!(
+            leftovers.is_empty(),
+            "a temporary file survived the install: {leftovers:?}"
+        );
+        #[cfg(unix)]
+        assert!(
+            mode & 0o111 != 0,
+            "the installed hook is not executable ({mode:o}); git ignores it silently"
         );
     }
 

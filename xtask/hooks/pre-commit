@@ -55,7 +55,6 @@ if ! staged_meshes=$(git diff --cached --name-only --diff-filter=ACMR \
         echo "⚠ CF_ALLOW_MESH=1 — the staged file list could not be read, so the"
         echo "  scan/mesh guard was SKIPPED ENTIRELY for this commit."
         guard_unreadable=1
-        staged_meshes=""
     else
         echo "✗ Could not read the staged file list, so the scan/mesh guard cannot run."
         echo "  Refusing the commit: an unreadable index is NOT evidence that nothing"
@@ -66,28 +65,28 @@ if ! staged_meshes=$(git diff --cached --name-only --diff-filter=ACMR \
         exit 1
     fi
 fi
-if [ "$guard_unreadable" = "1" ]; then
-    # ⚠ Deliberately says NOTHING more. Falling through to the "✓ No scan/mesh
-    # binaries staged" branch below would print a clean bill of health for a check
-    # that never ran — the exact false statement this guard's history is made of.
-    :
-elif [ -n "$staged_meshes" ]; then
-    if [ "${CF_ALLOW_MESH:-0}" = "1" ]; then
-        # Say so LOUDLY. Printing "no meshes staged" here — which is what this used
-        # to do — hides the one commit anyone would ever want a record of.
-        echo "⚠ CF_ALLOW_MESH=1 — allowing mesh/scan binaries through:"
-        echo "$staged_meshes" | sed 's/^/      /'
+# ⚠ Skipped entirely when the list could not be read. Falling through to the
+# "✓ No scan/mesh binaries staged" branch would print a clean bill of health for a
+# check that never ran — the exact false statement this guard's history is made of.
+if [ "$guard_unreadable" = "0" ]; then
+    if [ -n "$staged_meshes" ]; then
+        if [ "${CF_ALLOW_MESH:-0}" = "1" ]; then
+            # Say so LOUDLY. Printing "no meshes staged" here — which is what this
+            # used to do — hides the one commit anyone would want a record of.
+            echo "⚠ CF_ALLOW_MESH=1 — allowing mesh/scan binaries through:"
+            echo "$staged_meshes" | sed 's/^/      /'
+        else
+            echo "✗ Refusing to commit mesh/scan binaries to a PUBLIC repository:"
+            echo "$staged_meshes" | sed 's/^/      /'
+            echo ""
+            echo "  Scan inputs are anatomical and must stay outside this repo (~/scans)."
+            echo "  Generated meshes are reproducible and have no browse value."
+            echo "  If this really is a non-personal fixture:  CF_ALLOW_MESH=1 git commit ..."
+            exit 1
+        fi
     else
-        echo "✗ Refusing to commit mesh/scan binaries to a PUBLIC repository:"
-        echo "$staged_meshes" | sed 's/^/      /'
-        echo ""
-        echo "  Scan inputs are anatomical and must stay outside this repo (~/scans)."
-        echo "  Generated meshes are reproducible and have no browse value."
-        echo "  If this really is a non-personal fixture:  CF_ALLOW_MESH=1 git commit ..."
-        exit 1
+        echo "✓ No scan/mesh binaries staged"
     fi
-else
-    echo "✓ No scan/mesh binaries staged"
 fi
 
 # Format check (fast — only checks already-formatted files, <1s)

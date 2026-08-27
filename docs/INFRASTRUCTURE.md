@@ -131,6 +131,8 @@ filename through the single `hook_install::HOOKS` table —
   a hook that is ours and out of date, repairs a missing executable bit, and leaves a
   foreign hook alone. Every outcome except "already ours and current" is announced
   with a `cargo:warning`, because a guard that is not armed must never be silent.
+  Two silences are deliberate: it does nothing under `CI`/`GITHUB_ACTIONS`, and it
+  stays quiet when there is no `.git` at all (a vendored copy, a tarball).
 - `cargo xtask setup` — the one-command heal. ⚠ Writes both UNCONDITIONALLY: it
   does NOT make the ownership check `build.rs` makes, so it overwrites a hook you
   wrote yourself, with no backup. Move yours aside first. This is deliberate — it is
@@ -152,7 +154,7 @@ reported success.
 - Commit message validation (conventional commits)
 
 ```bash
-# Hooks are auto-installed to .git/hooks/ when building xtask.
+# Hooks are auto-installed when building xtask, into the directory git reports.
 # The hooks run:
 cargo fmt --all -- --check || exit 1
 cargo clippy --all-features -- -D warnings || exit 1
