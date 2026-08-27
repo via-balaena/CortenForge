@@ -80,14 +80,18 @@ cargo xtask ci
 > ⚠ The one case it will not repair is a hook that is a **symlink** whose target is
 > not executable. `chmod` follows the link, so repairing would silently change the
 > permissions of a different file — and we do not check where it points, so the
-> refusal is unconditional. It names the resolved target for you to chmod, and counts
-> that as a failure, so `cargo xtask setup` exits non-zero. (A symlinked hook whose
+> refusal is unconditional. It names the resolved target for you to chmod (or says
+> the target could not be read, when it could not), and counts that as a failure, so
+> `cargo xtask setup` exits non-zero. (A symlinked hook whose
 > target IS executable is fine: git runs it, so there is nothing to repair.)
 >
 > `cargo xtask setup` reaches the same verdicts, and it will not overwrite or delete
-> a hook that is not ours — `cargo xtask uninstall` removes only the hooks it
-> installed. An up-to-date hook is left alone apart from its executable bit, so a
-> `.git/hooks/pre-commit` you have symlinked to `xtask/hooks/pre-commit` survives. Run from a linked worktree, both act on the **main checkout's** shared
+> a hook that is not ours — `cargo xtask uninstall` removes only hooks carrying our
+> marker, whichever installer put them there (that is what lets it clean up after an
+> older version of the tool). An up-to-date hook is left alone apart from its
+> executable bit, so a `.git/hooks/pre-commit` you have symlinked to
+> `xtask/hooks/pre-commit` survives. Run from a linked worktree, both act on the
+> **main checkout's** shared
 > hooks directory, which is where git reads them from.
 
 ### Local CI/CD (Recommended)
