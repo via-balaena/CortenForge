@@ -135,40 +135,47 @@ pub fn run() -> Result<()> {
 /// If git's hooks directory cannot be determined, is not inside this repository, or
 /// — when installing — is one git cannot exec a hook from.
 /// Where `cargo xtask setup` may write. Refuses a `GitCannotRun` directory.
-fn hooks_dir_for_install() -> Result<PathBuf> {
-    git_hooks_dir(crate::hook_install::Attempted::Install { retry: "re-run" })
+fn hooks_dir_for_install(root: &Path) -> Result<PathBuf> {
+    git_hooks_dir(
+        root,
+        crate::hook_install::Attempted::Install { retry: "re-run" },
+    )
 }
 
 /// Where `cargo xtask uninstall` may DELETE. Accepts a `GitCannotRun` directory,
 /// because that is where a stranded developer's hooks actually are.
 ///
-/// ⚠⚠ THESE TWO WRAPPERS EXIST BECAUSE THE PAIRING CANNOT BE TESTED. `git_hooks_dir`
-/// resolves the workspace root from the PROCESS working directory, so no in-process
-/// test can drive `install_git_hooks()` or `uninstall()` and observe which
-/// `Attempted` they passed — and a mutation survey confirmed it: crossing the two
-/// call sites ships GREEN in both directions, and the install direction makes
-/// `cargo xtask setup` install into a directory git cannot exec from, the exact
-/// outcome `GitCannotRun` exists to prevent.
+/// ⚠⚠ THE PAIRING OF THESE TWO WITH THEIR CALLERS IS ITSELF A THING THAT MUST BE
+/// GATED, and for one commit it was not. `hooks_dir_from` is asserted for both
+/// `Attempted` values, but nothing tested the WIRING — and crossing the two call
+/// sites shipped GREEN in both directions, the install direction making `cargo xtask
+/// setup` install into a directory git cannot exec from, the exact outcome
+/// `GitCannotRun` exists to prevent. Same shape as the hook PAIRING that already cost
+/// this arc a commit (`8f843874`): two things that must correspond, nothing asserting
+/// they do.
 ///
-/// This is the same shape as the hook PAIRING that cost this arc a commit already
-/// (`8f843874`): two things that must correspond, with nothing asserting they do.
-/// There the fix was to make the pairing DATA. Here it cannot be — the caller IS the
-/// pairing — so the mitigation is naming: a crossing now reads
-/// `hooks_dir_for_removal()` inside `install_git_hooks`, which is absurd on sight,
-/// rather than an argument two tokens different from the right one.
-///
-/// ⚠ What IS gated is the decision these wrap: `hooks_dir_from` is asserted for both
-/// `Attempted` values, including that only `GitCannotRun` differs between them.
-fn hooks_dir_for_removal() -> Result<PathBuf> {
-    git_hooks_dir(crate::hook_install::Attempted::Uninstall)
+/// ★ I first wrote that it could not be gated, because `git_hooks_dir` resolved the
+/// workspace root from the PROCESS working directory. That was giving up too early —
+/// the root is a PARAMETER now, exactly as `repair_bit` and `hooks_dir_from` already
+/// were, so `install_git_hooks_in` and `uninstall_in` can be driven against a lab
+/// repository and the crossing dies. "Untestable" usually means "not yet injected".
+fn hooks_dir_for_removal(root: &Path) -> Result<PathBuf> {
+    git_hooks_dir(root, crate::hook_install::Attempted::Uninstall)
 }
 
-fn git_hooks_dir(attempted: crate::hook_install::Attempted) -> Result<PathBuf> {
+/// The workspace root, read from the process's working directory.
+///
+/// This is the ONE part of resolution that cannot be handed to a test, which is why
+/// it is now the only thing the public entry points do before delegating.
+fn workspace_root() -> Result<PathBuf> {
     let sh = xshell::Shell::new()?;
-    let root = PathBuf::from(crate::grade::find_workspace_root(&sh)?);
+    Ok(PathBuf::from(crate::grade::find_workspace_root(&sh)?))
+}
+
+fn git_hooks_dir(root: &Path, attempted: crate::hook_install::Attempted) -> Result<PathBuf> {
     hooks_dir_from(
-        crate::hook_install::resolve_hooks_dir(&root),
-        &root,
+        crate::hook_install::resolve_hooks_dir(root),
+        root,
         std::env::var_os("GIT_DIR").is_some() || std::env::var_os("GIT_WORK_TREE").is_some(),
         attempted,
     )
@@ -176,8 +183,12 @@ fn git_hooks_dir(attempted: crate::hook_install::Attempted) -> Result<PathBuf> {
 
 /// Turn a resolution into a directory to write, or into the reason we will not.
 ///
-/// Split from [`git_hooks_dir`] because THE REFUSALS ARE THE POINT and the version
-/// that resolves the directory itself cannot be tested — it reads the process's cwd.
+/// Split from [`git_hooks_dir`] because THE REFUSALS ARE THE POINT and, at the time,
+/// the version that resolved the directory could not be tested — it read the
+/// process's cwd. ⚠ That is no longer why: the root is a parameter now, and
+/// [`workspace_root`] is the only thing left that cannot be handed to a test. The
+/// split still earns its place, because these arms are pure and this is where a
+/// mutation survey can reach them one at a time.
 /// While the two were one function, mutating either refusal into `Ok(dir)` left the
 /// whole suite green while `cargo xtask setup` wrote CortenForge's hooks into a
 /// developer's global hooks directory, or into an unrelated repository.
@@ -260,9 +271,16 @@ fn hooks_dir_from(
 
 /// Install git hooks
 fn install_git_hooks() -> Result<()> {
+    install_git_hooks_in(&workspace_root()?)
+}
+
+/// The install path, with the one untestable step (finding the workspace root) lifted
+/// out — so a test can drive the real command against a lab repository and observe
+/// which `Attempted` it passes.
+fn install_git_hooks_in(root: &Path) -> Result<()> {
     println!("{}", "→ Installing git hooks...".bright_blue());
 
-    let hooks_dir = hooks_dir_for_install()?;
+    let hooks_dir = hooks_dir_for_install(root)?;
 
     if !hooks_dir.exists() {
         // Worktrees and core.hooksPath now resolve correctly, so reaching here means
@@ -505,9 +523,14 @@ fn verify_tools() -> Result<()> {
 
 /// Uninstall git hooks
 pub fn uninstall() -> Result<()> {
+    uninstall_in(&workspace_root()?)
+}
+
+/// The uninstall path, split for the same reason as [`install_git_hooks_in`].
+fn uninstall_in(root: &Path) -> Result<()> {
     println!("{}", "→ Removing git hooks...".bright_blue());
 
-    let hooks_dir = hooks_dir_for_removal()?;
+    let hooks_dir = hooks_dir_for_removal(root)?;
 
     if !hooks_dir.exists() {
         println!("  No hooks directory found at {}.", hooks_dir.display());
@@ -1472,6 +1495,86 @@ mod hook_tests {
         assert!(
             out.contains("No scan/mesh binaries staged"),
             "clean stage did not reach the guard's happy path; output:\n{out}"
+        );
+    }
+
+    /// The two commands must pass the `Attempted` that matches what they are doing.
+    ///
+    /// ⚠⚠ THE PAIRING, NOT THE DECISION. `hooks_dir_from` was already asserted for
+    /// both `Attempted` values; the WIRING was not, and crossing the two call sites
+    /// shipped GREEN in both directions. The install direction is the dangerous one:
+    /// `cargo xtask setup` would install into a directory git cannot exec from — the
+    /// exact outcome `GitCannotRun` exists to prevent — and every commit in that
+    /// checkout would then be refused by the hook we had just written.
+    ///
+    /// ★ This drives the REAL commands against a lab repository, which is the only
+    /// thing that can gate a call site: you have to execute it. It became possible
+    /// once the workspace root was a parameter rather than the process cwd.
+    #[test]
+    #[cfg(unix)]
+    fn setup_and_uninstall_each_pass_the_attempt_that_matches_them() {
+        let lab = std::env::temp_dir().join(format!("cf-wiring-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&lab);
+        std::fs::create_dir_all(&lab).expect("temp dir");
+        let repo = std::fs::canonicalize(&lab)
+            .expect("canonicalize")
+            .join("repo");
+        std::fs::create_dir_all(&repo).expect("temp dir");
+
+        let git = |args: &[&str]| {
+            crate::hook_install::git_command(&repo, args)
+                .output()
+                .expect("git must be installed to run this test")
+        };
+        assert!(git(&["init", "-q"]).status.success(), "git init");
+
+        // A hooks directory INSIDE the repo that git cannot exec from: `-hooks`
+        // starts with a dash, so the hook's interpreter reads it as options.
+        // Written into .git/config directly — `git config core.hooksPath -hooks`
+        // cannot express it, and `--` stores the literal `--`.
+        let hooks = repo.join("-hooks");
+        std::fs::create_dir_all(&hooks).expect("temp dir");
+        let cfg = repo.join(".git").join("config");
+        let mut text = std::fs::read_to_string(&cfg).expect("read config");
+        text.push_str("\n[core]\n\thooksPath = -hooks\n");
+        std::fs::write(&cfg, text).expect("write config");
+        assert_eq!(
+            String::from_utf8_lossy(&git(&["config", "--get", "core.hooksPath"]).stdout).trim(),
+            "-hooks",
+            "the fixture did not set core.hooksPath, so everything below tests nothing"
+        );
+
+        // Seed OUR hooks, as the previous code would have left them.
+        for (name, content) in HOOKS {
+            let path = hooks.join(name);
+            std::fs::write(&path, content).expect("seed");
+            crate::hook_install::make_executable(&path).expect("chmod");
+        }
+
+        let install = super::install_git_hooks_in(&repo);
+        let removal = super::uninstall_in(&repo);
+        let left_behind: Vec<_> = HOOKS
+            .iter()
+            .filter(|(name, _)| hooks.join(name).exists())
+            .map(|(name, _)| *name)
+            .collect();
+        let _ = std::fs::remove_dir_all(&lab);
+
+        let err = install.expect_err(
+            "setup must REFUSE a hooks directory git cannot exec from — passing \
+             Attempted::Uninstall here installs into it instead",
+        );
+        assert!(
+            err.to_string().contains("core.hooksPath"),
+            "the refusal must name the setting: {err}"
+        );
+        removal.expect(
+            "uninstall must be able to clean that same directory — passing \
+             Attempted::Install here bails and strands the developer",
+        );
+        assert!(
+            left_behind.is_empty(),
+            "uninstall resolved the directory but removed nothing: {left_behind:?}"
         );
     }
 
