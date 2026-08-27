@@ -43,36 +43,67 @@ echo "→ Checking for scan/mesh binaries..."
 # the commit through with the scan attached. Note the clippy step below has no
 # `|| true` and so aborts under `set -e`: the QUALITY check was failing safe while
 # this one, whose miss is unrecoverable, was failing unsafe.
-if ! staged_meshes=$(git diff --cached --name-only --diff-filter=ACMR \
+guard_unreadable=0
+# ⚠ KEEP IN STEP WITH .gitignore — the two layers are only worth having if they
+# cover the same extensions. `.step`/`.stp` were in NEITHER, while mesh-io has read
+# and written them as a first-class format all along (MeshFormat::Step), so the one
+# geometry format a CAD tool exports by default was the one the guard could not see.
+if ! staged_meshes=$(git -c core.quotePath=false diff --cached --name-only --diff-filter=ACMR \
     -- ':(icase)*.stl' ':(icase)*.obj' ':(icase)*.ply' \
-       ':(icase)*.3mf' ':(icase)*.mtl'); then
-    echo "✗ Could not read the staged file list, so the scan/mesh guard cannot run."
-    echo "  Refusing the commit: an unreadable index is NOT evidence that nothing"
-    echo "  is staged, and this guard protects a PUBLIC repo from anatomical data."
-    exit 1
-fi
-if [ -n "$staged_meshes" ]; then
+       ':(icase)*.3mf' ':(icase)*.mtl' ':(icase)*.step' ':(icase)*.stp'); then
     if [ "${CF_ALLOW_MESH:-0}" = "1" ]; then
-        # Say so LOUDLY. Printing "no meshes staged" here — which is what this used
-        # to do — hides the one commit anyone would ever want a record of.
-        echo "⚠ CF_ALLOW_MESH=1 — allowing mesh/scan binaries through:"
-        echo "$staged_meshes" | sed 's/^/      /'
+        # The DOCUMENTED override has to work here too. Without it the only way past
+        # a malfunctioning guard is `git commit --no-verify`, which ALSO disables the
+        # commit-message check — so the mitigation for one broken gate silently drops
+        # a second. Skipping loudly beats pushing people to the bigger hammer.
+        echo "⚠ CF_ALLOW_MESH=1 — the staged file list could not be read, so the"
+        echo "  scan/mesh guard was SKIPPED ENTIRELY for this commit."
+        guard_unreadable=1
     else
-        echo "✗ Refusing to commit mesh/scan binaries to a PUBLIC repository:"
-        echo "$staged_meshes" | sed 's/^/      /'
+        echo "✗ Could not read the staged file list, so the scan/mesh guard cannot run."
+        echo "  Refusing the commit: an unreadable index is NOT evidence that nothing"
+        echo "  is staged, and this guard protects a PUBLIC repo from anatomical data."
         echo ""
-        echo "  Scan inputs are anatomical and must stay outside this repo (~/scans)."
-        echo "  Generated meshes are reproducible and have no browse value."
-        echo "  If this really is a non-personal fixture:  CF_ALLOW_MESH=1 git commit ..."
+        echo "  If you must commit anyway:  CF_ALLOW_MESH=1 git commit ..."
+        echo "  Prefer that to --no-verify, which also drops the commit message check."
         exit 1
     fi
-else
-    echo "✓ No scan/mesh binaries staged"
+fi
+# ⚠ Skipped entirely when the list could not be read. Falling through to the
+# "✓ No scan/mesh binaries staged" branch would print a clean bill of health for a
+# check that never ran — the exact false statement this guard's history is made of.
+if [ "$guard_unreadable" = "0" ]; then
+    if [ -n "$staged_meshes" ]; then
+        if [ "${CF_ALLOW_MESH:-0}" = "1" ]; then
+            # Say so LOUDLY. Printing "no meshes staged" here — which is what this
+            # used to do — hides the one commit anyone would want a record of.
+            echo "⚠ CF_ALLOW_MESH=1 — allowing mesh/scan binaries through:"
+            echo "$staged_meshes" | sed 's/^/      /'
+        else
+            echo "✗ Refusing to commit mesh/scan binaries to a PUBLIC repository:"
+            echo "$staged_meshes" | sed 's/^/      /'
+            echo ""
+            echo "  Scan inputs are anatomical and must stay outside this repo (~/scans)."
+            echo "  Generated meshes are reproducible and have no browse value."
+            echo "  If this really is a non-personal fixture:  CF_ALLOW_MESH=1 git commit ..."
+            exit 1
+        fi
+    else
+        echo "✓ No scan/mesh binaries staged"
+    fi
 fi
 
 # Format check (fast — only checks already-formatted files, <1s)
 echo "→ Checking formatting..."
-if ! cargo fmt --all -- --check 2>/dev/null; then
+# ⚠ CAPTURED, then shown ONLY ON FAILURE. Two wrong answers were tried first.
+# `2>/dev/null` discarded cargo's diagnostics, so a missing rustfmt component
+# reported just "✗ Formatting check failed. Run: cargo fmt --all" — advice that fixes
+# nothing — while the real cause went to /dev/null. Removing the redirect instead put
+# 3552 lines on EVERY commit: rustfmt.toml sets nightly-only options and warns about
+# each, per file. Keeping the output and printing it only when it matters costs
+# nothing on the happy path and loses no evidence on the unhappy one.
+if ! fmt_output=$(cargo fmt --all -- --check 2>&1); then
+    echo "$fmt_output"
     echo "✗ Formatting check failed. Run: cargo fmt --all"
     exit 1
 fi
@@ -82,32 +113,124 @@ echo "✓ Formatting OK"
 # Pathspec `'*Cargo.toml'` matches nested manifests (sim/L0/**/Cargo.toml,
 # examples/**/Cargo.toml, etc.) as well as the workspace root. A plain
 # `'Cargo.toml'` pathspec would only match the workspace root.
-staged_rs_files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.rs' '*Cargo.toml')
+# ⚠ If the mesh guard could not read the index, this call cannot either — and
+# under `set -e` its failure would kill the hook HERE, with no message, undoing the
+# CF_ALLOW_MESH escape granted above and sending the developer to `--no-verify`
+# (which disables the commit-message hook too). Measured: a failing command
+# substitution under `set -e` exits immediately. Skip lint rather than die silently.
+# ⚠ `core.quotePath=false` is load-bearing, not cosmetic: by default git C-QUOTES
+# any path with a non-ASCII byte, so `café/src/lib.rs` arrives as
+# `"caf\303\251/src/lib.rs"` — a name no file has, which walks up to no Cargo.toml
+# and silently drops that crate from the lint set.
+if [ "$guard_unreadable" = "1" ]; then
+    echo "→ Skipping clippy: the staged file list could not be read."
+    staged_rs_files=""
+elif ! staged_rs_files=$(git -c core.quotePath=false diff --cached --name-only \
+    --diff-filter=ACMR -- '*.rs' '*Cargo.toml'); then
+    # The CF_ALLOW_MESH escape has to survive HERE too. It is granted above for an
+    # unreadable index, and this call reads that same index — so without this the
+    # override let you past the guard and then died one block later, which is the
+    # bug it was written to fix, one block further down.
+    if [ "${CF_ALLOW_MESH:-0}" = "1" ]; then
+        echo "⚠ CF_ALLOW_MESH=1 — the staged file list could not be read, so clippy"
+        echo "  was SKIPPED for this commit."
+        staged_rs_files=""
+        guard_unreadable=1
+    else
+        echo "✗ Could not read the staged file list, so the crates to lint cannot be"
+        echo "  determined. Refusing the commit rather than skipping the checks silently."
+        exit 1
+    fi
+fi
 
-if [ -z "$staged_rs_files" ]; then
+# ⚠ The "nothing staged" message is reachable ONLY when the list was actually read.
+# It used to sit on an `if [ -z ]` that an unreadable index also satisfied, so the
+# hook announced a clean stage it had never looked at — one line after saying it
+# could not look. Same false clean bill of health the mesh guard refuses to print.
+if [ "$guard_unreadable" = "1" ]; then
+    :
+elif [ -z "$staged_rs_files" ]; then
     echo "→ No Rust/Cargo files staged — skipping clippy."
 else
     # Extract crate names from staged file paths.
     # Walk up from each file to find nearest Cargo.toml, read [package] name.
-    crates=""
-    for file in $staged_rs_files; do
-        dir=$(dirname "$file")
-        while [ "$dir" != "." ]; do
-            if [ -f "$dir/Cargo.toml" ] && grep -q '^\[package\]' "$dir/Cargo.toml"; then
-                name=$(sed -n '/^\[package\]/,/^\[/{s/^name *= *"\(.*\)"/\1/p;}' "$dir/Cargo.toml")
-                if [ -n "$name" ]; then
-                    crates="$crates $name"
-                fi
+    #
+    # ⚠ `while IFS= read -r` per line, NOT `for file in $staged_rs_files`. The
+    # default IFS splits on SPACES, so a crate directory named `my crate` became two
+    # words, matched no Cargo.toml, and was dropped from the lint set without a word.
+    # ⚠ `tr -d '\r'`: on a Windows checkout (`core.autocrlf=true`) every Cargo.toml
+    # has CRLF endings — measured, 876 CRs in the workspace root manifest — and the
+    # captured name ends in a CR. `cargo -p 'mycrate<CR>'` then fails with `invalid
+    # character in package name`, so NO Rust commit could pass the hook.
+    # ⚠ `dirname --`. Without the `--`, a staged path beginning with `-` is parsed
+    # as OPTIONS: `dirname: illegal option -- d`, non-zero exit, and under `set -e`
+    # that kills this subshell MID-STREAM. The failure does not propagate — the
+    # assignment takes the status of the last command in the pipeline (`sed`, which
+    # succeeds) — so every crate after the offending path is lost and the hook
+    # cheerfully prints "don't belong to a workspace crate" and exits 0. Since `-`
+    # sorts early, usually ALL crates are lost. Measured. That is the same false
+    # clean bill of health the mesh guard's own comments refuse to print.
+    # ⚠ `./` PREFIX, and it is not cosmetic. `$dir` can begin with `-` (a crate in a
+    # `-dash/` directory), and then `grep`/`sed`/`test` parse the FILENAME as options:
+    # measured, `grep: invalid option -- g`, exit 2, so that crate is dropped. The
+    # obvious fix, `--`, is not portable: GNU sed accepts it, BSD sed treats it as a
+    # FILENAME and exits 1 — measured on macOS. Prefixing `./` gives an operand that
+    # can never start with a dash, on either. `$dir` is always repo-relative here.
+    crates=$(printf '%s\n' "$staged_rs_files" | while IFS= read -r file; do
+        [ -n "$file" ] || continue
+        dir=$(dirname -- "$file")
+        # `!= "/"` guards an absolute path, whose dirname never reaches "." — git
+        # gives repo-relative paths, so this is insurance, not a live case.
+        # ⚠ THE ROOT IS PART OF THE WALK. This loop used to stop at `.`, so a crate
+        # living at the repository root was never examined — and the message blamed a
+        # "virtual manifest", which was simply the wrong cause: measured, a root
+        # manifest WITH a `[package]` section behaved identically. Any repo whose root
+        # is a crate had that crate silently unlinted. CortenForge's own root is
+        # virtual, which is why this went unnoticed.
+        while :; do
+            manifest="./$dir/Cargo.toml"
+            if [ -f "$manifest" ] && grep -q '^\[package\]' "$manifest"; then
+                sed -n '/^\[package\]/,/^\[/{s/^name *= *"\(.*\)"/\1/p;}' \
+                    "$manifest" | tr -d '\r'
                 break
             fi
-            dir=$(dirname "$dir")
+            # `.` is the last candidate, not a stopping point before it.
+            [ "$dir" = "." ] && break
+            [ "$dir" = "/" ] && break
+            dir=$(dirname -- "$dir")
         done
-    done
+    done | sort -u | tr '\n' ' ' | sed 's/ *$//')
 
-    # Deduplicate
-    crates=$(echo "$crates" | tr ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/ *$//')
+    # ⚠⚠ A C-QUOTED PATH IS A DROPPED CRATE, AND IT MUST SAY SO.
+    # git quotes any path containing a control character — `"src/we\nird.rs"`, with a
+    # literal backslash-n inside real double quotes — and `core.quotePath=false` only
+    # affects bytes >= 0x80, not control characters. The quoted form names no file on
+    # disk, so the walk above finds no manifest and that crate silently leaves the
+    # lint set.
+    #
+    # ⚠ The previous attempt at this compared a NUL-delimited count against the line
+    # count. It could NEVER fire: git puts the quoted path on exactly ONE line, so one
+    # path is always one line and one NUL. Measured across newline, tab, CR,
+    # backslash, quote and non-ASCII names — equal every time. It was a gate that
+    # could not fail for the reason it claimed, and it cost a third `git diff` on
+    # every commit. Detect the quoting itself, which is the observable fact.
+    case "$staged_rs_files" in
+        '"'*|*"
+\""*)
+            echo "⚠ A staged path contains a character git has to quote (a control"
+            echo "  character, a backslash, or a double quote), so it was quoted and"
+            echo "  its crate is NOT in the lint set below — that code will NOT be linted."
+            # ⚠ Cause stated precisely: with `core.quotePath=false` a non-ASCII name
+            # is NOT quoted, while a backslash or a double quote still is — so
+            # "contains a control character" sent the owner of `src/a\b.rs` hunting
+            # for one that was not there.
+            ;;
+    esac
 
     if [ -z "$crates" ]; then
+        # Reached when no manifest on the walk — up to and including the repository
+        # root — declares a `[package]`. For CortenForge that means a root-level
+        # staged file, because its root manifest is a virtual workspace.
         echo "→ Staged Rust files don't belong to a workspace crate — skipping clippy."
     else
         echo "→ Running clippy on changed crates: $crates"
@@ -115,7 +238,12 @@ else
         for crate in $crates; do
             clippy_args="$clippy_args -p $crate"
         done
-        if ! cargo clippy $clippy_args --all-targets --all-features -- -D warnings 2>/dev/null; then
+        # ⚠ NO `2>/dev/null`. cargo writes every diagnostic to stderr, so discarding
+        # it left the developer with `✗ Clippy check failed` and NOTHING else — not
+        # the file, not the lint, not the line. It also hid the CRLF failure above
+        # for as long as that bug existed. Noise is a cheaper price than a verdict
+        # with no evidence.
+        if ! cargo clippy $clippy_args --all-targets --all-features -- -D warnings; then
             echo "✗ Clippy check failed. Fix errors before committing."
             exit 1
         fi

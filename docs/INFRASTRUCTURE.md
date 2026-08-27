@@ -128,26 +128,98 @@ that left the scan/mesh guard uninstalled on most checkouts (#833).
 **Installers**: two, both reading the same source and pairing each text with its
 filename through the single `hook_install::HOOKS` table —
 - `xtask/build.rs` — automatic on first `cargo build` of any xtask command. Replaces
-  a hook that is ours and out of date, leaves a foreign hook alone and says so.
-- `cargo xtask setup` — the one-command heal. ⚠ Writes both UNCONDITIONALLY: it
-  does NOT make the ownership check `build.rs` makes, so it overwrites a hook you
-  wrote yourself, with no backup. Move yours aside first. This is deliberate — it is
-  what makes the heal work from any state — but it means the warning `build.rs`
-  prints ("merge ours into yours") must be acted on BEFORE running the heal, not by
-  running it.
+  a hook that is ours and out of date, repairs a missing executable bit, and leaves a
+  foreign hook alone. Every outcome except "already ours and current" is announced
+  with a `cargo:warning`, because a guard that is not armed must never be silent.
+  Two silences are deliberate: it does nothing under `CI`/`GITHUB_ACTIONS`, and it
+  stays quiet when there is no `.git` at all (a vendored copy, a tarball). ⚠ The
+  first bites locally if you export `CI=1` in your own shell — the build then
+  installs nothing and says nothing. `cargo xtask setup` deliberately does NOT
+  honour those variables, so it is the way out of that state.
+- `cargo xtask setup` — the one-command heal, and `cargo xtask uninstall` its
+  inverse. Both make the SAME ownership check `build.rs` makes: a hook that is not
+  ours is neither overwritten nor deleted, and they say so. They differ from
+  `build.rs` in no way at all: an up-to-date hook has its executable bit repaired
+  IN PLACE (`chmod`), never rewritten. ⚠ Rewriting looked equivalent and was not —
+  the atomic write renames over the path, so it replaced a symlinked hook with a
+  regular file, and rewrote the file (new inode) on every single run. ⚠ It does NOT
+  stop a tracked hook at 644 becoming 755 — that still happens, and must, because git
+  ignores a hook without the executable bit.
+
+  ⚠ This used to be the opposite: `setup` wrote both hooks unconditionally and
+  `uninstall` deleted by filename, so the two installers reached opposite verdicts on
+  the same file and the untested one destroyed data. Resolving the hooks directory
+  properly is what forced the fix — run from a linked worktree, these commands reach
+  the MAIN checkout's shared hooks, so the clobber was no longer confined to whoever
+  typed the command.
+
+Both resolve the directory by ASKING git (`rev-parse --show-toplevel
+--git-common-dir --git-path hooks`) rather than joining `.git/hooks` onto the repo
+root — that join is silently wrong under `core.hooksPath`, in a linked worktree
+(whose `.git` is a *file*, so the path does not exist), and with
+`--separate-git-dir`. In each case the old code wrote a file git never reads, and
+reported success.
+
+Asking git costs a property the naive join had for free: the join could never leave
+the checkout. Three checks restore it — git's `--show-toplevel` must be the directory
+we asked about (git finds a repo by walking UP, so a vendored copy resolves to the
+ANCESTOR repo); the hooks directory must lie inside the common git dir or the working
+tree; and `GIT_DIR`/`GIT_WORK_TREE` are cleared before asking, because with `GIT_DIR`
+set git skips discovery and answers the toplevel question with our own path while
+answering the others for a different repository.
+
+If git cannot be asked at all, resolution falls back to `<root>/.git/hooks` when that
+`.git` is a real directory — installing nothing would be a regression for a container
+with no `git` binary or a repo tripping `dubious ownership`. ⚠ The fallback is the
+LAST resort, not the second: a git too old for `--path-format` (Ubuntu 20.04 ships
+2.25) is asked again without it, so a `core.hooksPath` is still honoured there. The
+one case the fallback cannot see is a `core.hooksPath` on a machine where git cannot
+run at all — nothing can, and it is the only remaining way to be told "Installed"
+about a file git does not read.
+
+⚠ Because `GIT_DIR`/`GIT_WORK_TREE` are cleared, a working tree checked out purely
+through those variables (a bare repo plus `GIT_WORK_TREE`) can no longer be resolved.
+That trade is deliberate — with both set, git still answers the ownership question
+with our own directory while answering the rest for the other repository — and the
+build says so by name rather than falling silent.
+
+⚠ A `core.hooksPath` whose directory name begins with `-` now resolves correctly —
+but git itself cannot execute a hook out of it (`/bin/sh: -/: invalid option`). It
+fails CLOSED, refusing the commit, so nothing is lost silently; the setting is simply
+unusable, for reasons outside this code.
+
+Relative answers from an old git are NORMALISED, not merely joined: `..` and symlinks
+are resolved the way `--path-format=absolute` would. Without that, `core.hooksPath =
+../shared-hooks` produced `<repo>/../shared-hooks`, which `starts_with` accepts
+component-wise — containment defeated, on exactly the git version the second ask
+serves.
+
 **Checks**:
-- **Scan/mesh guard** — refuses staged `*.stl` / `*.obj` / `*.ply` / `*.3mf` / `*.mtl`
-  (see 1.3.1 below). Runs first: it is a safety rule, not a quality one.
+- **Scan/mesh guard** — refuses staged `*.stl` / `*.obj` / `*.ply` / `*.3mf` /
+  `*.mtl` / `*.step` / `*.stp` (see 1.3.1 below). Runs first: it is a safety rule,
+  not a quality one.
 - Format check (`cargo fmt --check`)
-- Clippy check (library code only, `-D warnings`)
-- Commit message validation (conventional commits)
+- Clippy check — **`--all-targets`** (lib, bins, tests, benches, examples) on the
+  crates with staged changes, `-D warnings`
+- Commit message validation (conventional commits). `Merge`/`Revert` subjects and
+  the `fixup!`/`squash!`/`amend!` autosquash markers are allowed — rejecting those
+  forced `--no-verify`, which drops the scan/mesh guard too.
 
 ```bash
-# Hooks are auto-installed to .git/hooks/ when building xtask.
+# Hooks are auto-installed when building xtask, into the directory git reports.
 # The hooks run:
 cargo fmt --all -- --check || exit 1
-cargo clippy --all-features -- -D warnings || exit 1
+# ...then clippy, scoped to the crates owning the staged files (not the workspace):
+cargo clippy -p <changed> --all-targets --all-features -- -D warnings || exit 1
 ```
+
+⚠ A staged file that belongs to no crate lints nothing. The walk now examines every
+directory up to and INCLUDING the repository root, so a repo whose root is a crate has
+that crate linted — it used to stop one level short, and the message blamed a "virtual
+manifest", which was the wrong cause: a root manifest *with* a `[package]` behaved
+identically. For CortenForge the root manifest genuinely is a virtual workspace, so a
+root-only `Cargo.toml` change (including `[workspace.lints]`) still lints nothing.
+That is a real gap: linting the whole workspace is what pre-commit speed rules out.
 
 **Why**: Shift left. Catch issues before they hit CI.
 Saves developer time (fast local feedback) and CI resources.
@@ -160,8 +232,9 @@ anatomical scans of a real person.** They must never be committed here.
 Where the data lives instead: `~/scans/`, reached by `CF_CAST_ITER1_DIR` (see
 `design/cf-cast/tests/iter1_gate.rs`, which is `#[ignore]`d precisely so the standard
 suite needs no out-of-repo fixture) or regenerated by `cf-cast`. Nothing in this repo
-has ever tracked a mesh — `git ls-files '*.stl' '*.obj' '*.ply' '*.3mf'` returns zero,
-in the working tree and in all history.
+has ever tracked a mesh — `git ls-files ':(icase)*.stl' ':(icase)*.obj'
+':(icase)*.ply' ':(icase)*.3mf' ':(icase)*.mtl' ':(icase)*.step' ':(icase)*.stp'`
+returns zero, in the working tree and in all history (re-verified 2026-08-27).
 
 That was **habit, not a rule**, until 2026-07-29: `git add` was observed accepting a
 29 MB anatomical scan without complaint. A pushed blob is in the public history
@@ -170,13 +243,30 @@ because the cost of a single miss is unrecoverable:
 
 | layer | catches | cannot catch |
 |---|---|---|
-| `.gitignore` blanket `*.stl` `*.obj` `*.ply` `*.3mf` `*.mtl` | `git add`, `git add .` | `git add -f`; and an UPPERCASE `PART.STL` wherever `core.ignorecase=false` (Linux, CI) — these patterns are case-sensitive, unlike layer 2's |
-| pre-commit guard (`xtask/hooks/pre-commit`) | `git add -f`, anything already staged, any case (`:(icase)`) | a commit made with `--no-verify` |
+| `.gitignore` blanket `*.stl` `*.obj` `*.ply` `*.3mf` `*.mtl` `*.step` `*.stp` | `git add`, `git add .` | `git add -f`; and an UPPERCASE `PART.STL` wherever `core.ignorecase=false` (Linux, CI) — these patterns are case-sensitive, unlike layer 2's |
+| pre-commit guard (`xtask/hooks/pre-commit`) | `git add -f`, anything already staged, any case (`:(icase)`) | a commit made with `--no-verify`; with `CF_ALLOW_MESH=1` **already exported**, a commit made while git cannot read the index (see below); and **any extension not in the list** |
+
+⚠ **Both layers are ALLOWLISTS, and that is the largest hole.** They cover the seven
+extensions above because those are what `mesh-io` reads and writes. A scan exported
+as `.glb`, `.gltf`, `.off`, `.pcd`, `.xyz`, `.e57` or `.fbx` passes both layers
+untouched — verified by staging each. `.step`/`.stp` were in neither layer until
+2026-08-27 despite `MeshFormat::Step` existing all along, which is the shape of the
+mistake to expect again: **the guard tracks the formats we support, and it lags them.**
+When `mesh-io` learns a format, both layers and their test must learn it in the same
+commit.
 
 Neither layer can untrack anything: zero meshes are tracked, and `.gitignore` never
 applies to files already in the index. The `sim/L0/tests/assets/mujoco_menagerie`
 assets are a **submodule** — its contents belong to its own repository and are
 unaffected.
+
+⚠ `CF_ALLOW_MESH=1` has a second effect, added deliberately and worth knowing. If
+git cannot read the staged file list at all, the guard cannot run; without the
+override the hook REFUSES the commit, and with it the guard is skipped entirely and
+says so. That is the lesser evil — the alternative is `git commit --no-verify`, which
+disables the commit-message hook as well — but it means someone who exports
+`CF_ALLOW_MESH=1` permanently has turned the guard into best-effort. Set it per
+command, not in your shell profile.
 
 Escape hatch, for a genuinely non-personal fixture mesh:
 

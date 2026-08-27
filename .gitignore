@@ -155,6 +155,8 @@ MUJOCO_LOG.TXT
 *.ply
 *.3mf
 *.mtl
+*.step
+*.stp
 
 # Cast example STL artifacts (regenerate via
 # `cargo run -p example-cast-layered-silicone-device-v1`).
