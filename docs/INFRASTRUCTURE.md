@@ -138,9 +138,15 @@ filename through the single `hook_install::HOOKS` table —
   honour those variables, so it is the way out of that state.
 - `cargo xtask setup` — the one-command heal, and `cargo xtask uninstall` its
   inverse. Both make the SAME ownership check `build.rs` makes: a hook that is not
-  ours is neither overwritten nor deleted, and they say so. They differ from
-  `build.rs` in no way at all: an up-to-date hook has its executable bit repaired
-  IN PLACE (`chmod`), never rewritten. ⚠ Rewriting looked equivalent and was not —
+  ours is neither overwritten nor deleted, and they say so. They treat an up-to-date
+  hook exactly as `build.rs` does: its executable bit is repaired IN PLACE (`chmod`),
+  never rewritten. (⚠ Not "identical in every way" — they differ deliberately three
+  times: `setup` ignores `CI`/`GITHUB_ACTIONS`, as the bullet above says; it BAILS
+  where `build.rs` warns and carries on; and **`uninstall` will clean a hooks
+  directory git cannot exec from, which both installers refuse to write to** — see
+  below. That last one is the way out for a checkout whose every commit is being
+  refused by a hook we installed, so it is worth knowing before you need it.)
+  ⚠ Rewriting looked equivalent and was not —
   the atomic write renames over the path, so it replaced a symlinked hook with a
   regular file, and rewrote the file (new inode) on every single run. ⚠ It does NOT
   stop a tracked hook at 644 becoming 755 — that still happens, and must, because git
@@ -154,7 +160,9 @@ filename through the single `hook_install::HOOKS` table —
   typed the command.
 
 Both resolve the directory by ASKING git (`rev-parse --show-toplevel
---git-common-dir --git-path hooks`) rather than joining `.git/hooks` onto the repo
+--git-common-dir --git-path hooks --git-path hooks/pre-commit`; the fourth question is
+explained under "Some `core.hooksPath` spellings name a directory git will not run OUR
+file from" below) rather than joining `.git/hooks` onto the repo
 root — that join is silently wrong under `core.hooksPath`, in a linked worktree
 (whose `.git` is a *file*, so the path does not exist), and with
 `--separate-git-dir`. In each case the old code wrote a file git never reads, and
@@ -171,11 +179,23 @@ answering the others for a different repository.
 If git cannot be asked at all, resolution falls back to `<root>/.git/hooks` when that
 `.git` is a real directory — installing nothing would be a regression for a container
 with no `git` binary or a repo tripping `dubious ownership`. ⚠ The fallback is the
-LAST resort, not the second: a git too old for `--path-format` (Ubuntu 20.04 ships
-2.25) is asked again without it, so a `core.hooksPath` is still honoured there. The
-one case the fallback cannot see is a `core.hooksPath` on a machine where git cannot
-run at all — nothing can, and it is the only remaining way to be told "Installed"
-about a file git does not read.
+LAST resort, not the second: git's own answer always wins when there is one. The one
+case the fallback cannot see is a `core.hooksPath` on a machine where git cannot run
+at all — nothing can, and it is the only remaining way to be told "Installed" about a
+file git does not read.
+
+The ask deliberately passes NO `--path-format=absolute`. Asking for it made git's
+answer easier and the code harder: a git older than 2.31 (Ubuntu 20.04 ships 2.25)
+does not know the flag, echoes it, and exits 0 — which forced a second ask, a second
+parser, an absolute-path rule to tell the two apart, and a documented order between
+their answers. Every option now passed shipped in git 2.5 (2015) or earlier.
+
+⚠ The price is that resolving `..` and symlinks is now OUR job on every machine,
+where git's own `--path-format=absolute` used to do it whenever it could. Review
+found two containment escapes in that walk which the two-ask design never reached,
+precisely because on a modern git it never ran. Both are fixed and gated, and the
+tests use git's own answer as the oracle — but the walk should be read as
+load-bearing for everyone, not as a legacy path.
 
 ⚠ Because `GIT_DIR`/`GIT_WORK_TREE` are cleared, a working tree checked out purely
 through those variables (a bare repo plus `GIT_WORK_TREE`) can no longer be resolved.
@@ -183,16 +203,86 @@ That trade is deliberate — with both set, git still answers the ownership ques
 with our own directory while answering the rest for the other repository — and the
 build says so by name rather than falling silent.
 
-⚠ A `core.hooksPath` whose directory name begins with `-` now resolves correctly —
-but git itself cannot execute a hook out of it (`/bin/sh: -/: invalid option`). It
-fails CLOSED, refusing the commit, so nothing is lost silently; the setting is simply
-unusable, for reasons outside this code.
+⚠⚠ **ONE WAY TO DISARM THE GUARD SILENTLY, AND IT IS CARGO'S, NOT OURS.** Clearing a
+hook's executable bit (`chmod -x`) leaves its **mtime unchanged** — measured — and
+cargo's `rerun-if-changed` freshness check compares mtimes. So the build script does
+not re-run, the hook stays unarmed through any number of `cargo build`s, and a staged
+`.stl` commits successfully. Worse, cargo REPLAYS the previous run's `cargo:warning=`
+lines on a no-op build, so you may see "Repaired the pre-commit hook's executable bit"
+while nothing was repaired.
 
-Relative answers from an old git are NORMALISED, not merely joined: `..` and symlinks
-are resolved the way `--path-format=absolute` would. Without that, `core.hooksPath =
+Three things bound it, none of them ours: **`cargo xtask setup` always runs and
+repairs any ordinary hook file** — that is the remedy (⚠ except a hook that is a
+SYMLINK with a non-executable target, where `chmod` would follow the link onto a
+different file; it names the resolved target for you to chmod and exits non-zero);
+DELETING a hook does re-trigger the build script; and
+git prints `hint: the '…/pre-commit' hook was ignored because it's not set as
+executable`, which can be switched off. ⇒ **If you ever chmod a hook, run
+`cargo xtask setup`.** Nothing else will notice.
+
+⚠ **A `core.hooksPath` pointing through a BROKEN symlink installs where git cannot
+follow.** With a symlink cycle and `core.hooksPath = a/../hooks`, the `..` pops the
+unresolved link and resolution answers `<repo>/hooks` — which exists, so the hooks are
+written and reported installed — while git cannot traverse the cycle at all (`fatal:
+More than 32 nested symlinks`) and runs nothing. An EMPTY symlink target (macOS
+permits `ln -s ""`) is worse: git and the installer agree on the directory, but the
+kernel refuses to traverse `empty/`, so the hook does not run and **the commit is not
+blocked** — demonstrated end to end. Both require a `core.hooksPath` git itself cannot
+use; detecting them would mean re-implementing the kernel's path traversal, which is
+the class of reimplementation this arc has already paid for twice.
+
+⚠ **The same family, reached through a MISSING directory rather than a broken link:**
+`core.hooksPath = nope/../gh`, where `nope` does not exist. Resolution pops the `..`
+lexically and answers `<repo>/gh`; the kernel does not, so git can never open the
+path. We install into `<repo>/gh` and report success while the hook never runs.
+Accepted for the same reason as the others — the alternative is re-implementing
+traversal — and named here so it is met as a decision.
+
+⚠ **Some `core.hooksPath` spellings name a directory git will not run OUR file from,
+and those are REFUSED rather than installed into.** git execs `<hooksPath>/<name>`
+directly — no shell — so the answer is the front of a command line, and three ways of
+spelling a perfectly good directory stop that command from being our hook:
+
+- **`.` or `./`** — git's own path cleanup strips the leading `./`, leaving the bare
+  word `pre-commit`; `execvp` searches `PATH` and the commit dies with `error: cannot
+  run pre-commit: No such file or directory`.
+- **anything beginning with `-` or `+`** (`core.hooksPath = -hooks`) — `execve`
+  succeeds into the kernel's shebang handler, which hands the script path to the
+  interpreter as its first argument, and `/bin/sh` parses it as an OPTION STRING
+  (`/bin/sh: -/: invalid option`). POSIX shells take `+` the same way.
+- **an empty value**, which a script setting `core.hooksPath` from an unset variable
+  produces — git answers `./` for the directory but execs `/pre-commit` at the
+  FILESYSTEM root, so commits succeed and the hook is never read.
+
+Measured on git 2.50.1 across 20 spellings, each installed-and-committed — ⚠ read
+that sweep as MOTIVATION, not evidence: it is not in the tree, and what runs on every
+`cargo test` runs is the nine-shape live gate in `hook_install.rs`. The first
+two brick the checkout, the third is a silent false success. Installing therefore
+either breaks a working repository — with an error naming neither CortenForge nor
+`core.hooksPath` — or reports a guard that is not armed. Both installers decline and
+say which setting to change. This is the one refusal that is not about ownership: the
+directory *is* ours to write.
+
+⚠ **`cargo xtask uninstall` is the way out**, and it is the only command that will act
+on such a directory. A checkout stranded like this got that way by having our hooks
+installed there before the refusal existed — so every commit is being refused by a
+hook we put down, and telling that developer to fix their config and re-run the
+installer would be answering an uninstall with install advice. Both installers still
+refuse to WRITE; only removal is allowed, and only after containment has passed.
+
+⚠ **The directory answer cannot decide this, so we ask git for the path it execs.**
+`core.hooksPath = .` and `= ./.` both make `rev-parse --git-path hooks` answer `.`,
+and git refuses the commit under one and runs the hook under the other — git's cleanup
+strips one `./` from the directory answer and from the exec path independently, so the
+directory answer is a cleanup behind the string git runs. The ask therefore carries a
+fourth question, `--git-path hooks/pre-commit`, and the rule reads THAT.
+
+Relative answers — which is what git USUALLY returns for the git dir and the hooks
+path, though a linked worktree and an absolute `core.hooksPath` both answer
+absolutely — are NORMALISED, not merely joined: `..` and symlinks
+are resolved the way git resolves them. Without that, `core.hooksPath =
 ../shared-hooks` produced `<repo>/../shared-hooks`, which `starts_with` accepts
-component-wise — containment defeated, on exactly the git version the second ask
-serves.
+component-wise — containment defeated.
 
 **Checks**:
 - **Scan/mesh guard** — refuses staged `*.stl` / `*.obj` / `*.ply` / `*.3mf` /
