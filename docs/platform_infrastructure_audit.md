@@ -797,6 +797,10 @@ section-level comment.
   of truth (`xtask/build.rs` PRE_COMMIT_HOOK + `xtask/src/setup.rs`
   hook literal) by switching to `'*Cargo.toml'`. Rebuilding xtask
   auto-reinstalls the fixed hook via `build.rs::install_hook_if_needed`.
+  ⚠ SUPERSEDED by #833: there is no longer a second source of truth.
+  The hook text lives once, in `xtask/hooks/`, and having to fix it in
+  two places is precisely what let the scan/mesh guard go missing —
+  edit `xtask/hooks/pre-commit`, not a literal in either installer.
 
 ---
 

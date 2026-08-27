@@ -7,158 +7,11 @@
 use std::fs;
 use std::path::Path;
 
-/// Pre-commit hook content (must match setup.rs)
-const PRE_COMMIT_HOOK: &str = r#"#!/bin/sh
-# CortenForge Pre-Commit Hook
-# Auto-installed by: xtask build.rs
-#
-# This hook enforces quality standards before commits reach CI.
-# See docs/INFRASTRUCTURE.md for the full constraint specification.
-#
-# Performance: only lints crates with staged changes (not the full workspace).
-
-set -e
-
-echo "╔═══════════════════════════════════════════════════════════════╗"
-echo "║                  CortenForge Pre-Commit Check                  ║"
-echo "╚═══════════════════════════════════════════════════════════════╝"
-
-# ── Scan/mesh guard — FIRST, because it is a safety rule, not a quality one ──
-# This repository is PUBLIC, and the casting pipeline's inputs are anatomical scans
-# of a real person. They live outside the repo by design: reached via
-# CF_CAST_ITER1_DIR (design/cf-cast/tests/iter1_gate.rs, #[ignore]d) or regenerated
-# by cf-cast. Zero meshes have ever been tracked here — but that was habit, not a
-# rule. Verified 2026-07-29: `git add` accepted a 29 MB anatomical scan without
-# complaint, and once such a blob is pushed it is in the public history permanently.
-#
-# .gitignore now blocks these extensions; this check catches `git add -f`, which
-# .gitignore cannot. Both layers, because the cost of one miss is unrecoverable.
-#
-# Escape hatch for a genuinely non-personal fixture mesh:
-#     CF_ALLOW_MESH=1 git commit ...
-echo "→ Checking for scan/mesh binaries..."
-staged_meshes=$(git diff --cached --name-only --diff-filter=ACMR \
-    -- '*.stl' '*.obj' '*.ply' '*.3mf' '*.mtl' || true)
-if [ -n "$staged_meshes" ] && [ "${CF_ALLOW_MESH:-0}" != "1" ]; then
-    echo "✗ Refusing to commit mesh/scan binaries to a PUBLIC repository:"
-    echo "$staged_meshes" | sed 's/^/      /'
-    echo ""
-    echo "  Scan inputs are anatomical and must stay outside this repo (~/scans)."
-    echo "  Generated meshes are reproducible and have no browse value."
-    echo "  If this really is a non-personal fixture:  CF_ALLOW_MESH=1 git commit ..."
-    exit 1
-fi
-echo "✓ No scan/mesh binaries staged"
-
-# Format check (fast — only checks already-formatted files, <1s)
-echo "→ Checking formatting..."
-if ! cargo fmt --all -- --check 2>/dev/null; then
-    echo "✗ Formatting check failed. Run: cargo fmt --all"
-    exit 1
-fi
-echo "✓ Formatting OK"
-
-# Determine which crates have staged Rust or Cargo.toml changes.
-# Pathspec `'*Cargo.toml'` matches nested manifests (sim/L0/**/Cargo.toml,
-# examples/**/Cargo.toml, etc.) as well as the workspace root. A plain
-# `'Cargo.toml'` pathspec would only match the workspace root.
-staged_rs_files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.rs' '*Cargo.toml')
-
-if [ -z "$staged_rs_files" ]; then
-    echo "→ No Rust/Cargo files staged — skipping clippy."
-else
-    # Extract crate names from staged file paths.
-    # Walk up from each file to find nearest Cargo.toml, read [package] name.
-    crates=""
-    for file in $staged_rs_files; do
-        dir=$(dirname "$file")
-        while [ "$dir" != "." ]; do
-            if [ -f "$dir/Cargo.toml" ] && grep -q '^\[package\]' "$dir/Cargo.toml"; then
-                name=$(sed -n '/^\[package\]/,/^\[/{s/^name *= *"\(.*\)"/\1/p;}' "$dir/Cargo.toml")
-                if [ -n "$name" ]; then
-                    crates="$crates $name"
-                fi
-                break
-            fi
-            dir=$(dirname "$dir")
-        done
-    done
-
-    # Deduplicate
-    crates=$(echo "$crates" | tr ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/ *$//')
-
-    if [ -z "$crates" ]; then
-        echo "→ Staged Rust files don't belong to a workspace crate — skipping clippy."
-    else
-        echo "→ Running clippy on changed crates: $crates"
-        clippy_args=""
-        for crate in $crates; do
-            clippy_args="$clippy_args -p $crate"
-        done
-        if ! cargo clippy $clippy_args --all-targets --all-features -- -D warnings 2>/dev/null; then
-            echo "✗ Clippy check failed. Fix errors before committing."
-            exit 1
-        fi
-        echo "✓ Clippy OK"
-    fi
-fi
-
-# Note: unwrap/expect enforcement is handled by clippy via workspace lints
-# (clippy::unwrap_used = "deny" in Cargo.toml)
-# The grep-based scan was removed as it caught doc examples falsely.
-
-echo ""
-echo "╔═══════════════════════════════════════════════════════════════╗"
-echo "║                    Pre-commit checks passed                    ║"
-echo "╚═══════════════════════════════════════════════════════════════╝"
-"#;
-
-/// Commit message hook content (must match setup.rs)
-const COMMIT_MSG_HOOK: &str = r#"#!/bin/sh
-# CortenForge Commit Message Hook
-# Auto-installed by: xtask build.rs
-#
-# Enforces conventional commit format for automated changelog generation.
-# See docs/INFRASTRUCTURE.md for details.
-
-commit_msg=$(cat "$1")
-
-# Allow merge commits
-if echo "$commit_msg" | grep -qE "^Merge "; then
-    exit 0
-fi
-
-# Allow revert commits
-if echo "$commit_msg" | grep -qE "^Revert "; then
-    exit 0
-fi
-
-# Conventional commit pattern:
-# type(scope): description
-# type: description
-#
-# Types: feat, fix, refactor, test, docs, chore, perf, ci, build, style
-pattern="^(feat|fix|refactor|test|docs|chore|perf|ci|build|style)(\([a-z0-9-]+\))?: .+"
-
-if ! echo "$commit_msg" | head -1 | grep -qE "$pattern"; then
-    echo "✗ Commit message does not follow conventional commits format."
-    echo ""
-    echo "Expected format:"
-    echo "  <type>(<scope>): <description>"
-    echo ""
-    echo "Types: feat, fix, refactor, test, docs, chore, perf, ci, build, style"
-    echo ""
-    echo "Examples:"
-    echo "  feat(mesh-repair): add hole-filling edge case detection"
-    echo "  fix(mesh-io): handle malformed STL headers gracefully"
-    echo "  docs: update README with new examples"
-    echo "  refactor(mesh-repair): extract hole-filling into separate module"
-    echo ""
-    echo "Your message:"
-    echo "  $(head -1 "$1")"
-    exit 1
-fi
-"#;
+// The installer's data and its pure decisions, shared VERBATIM with the xtask binary
+// so they are unit-tested. A build script has no test target; while they lived only
+// here, gutting the ownership check passed the whole suite, and so did crossing the
+// two hooks' filenames.
+include!("src/hook_install.rs");
 
 fn main() {
     // Skip in CI environments
@@ -176,48 +29,112 @@ fn main() {
         return;
     }
 
-    // Install pre-commit hook if missing or outdated
-    let pre_commit_path = hooks_dir.join("pre-commit");
-    install_hook_if_needed(&pre_commit_path, PRE_COMMIT_HOOK, "pre-commit");
+    // ★ The filename comes from the same tuple as the text, so there is no pairing
+    // to get wrong here. Writing it out per-hook is what let `build.rs` cross the
+    // two consts while the `setup.rs` copy of the same list was under test.
+    for (name, content) in HOOKS {
+        install_hook_if_needed(&hooks_dir.join(name), content, name);
+    }
 
-    // Install commit-msg hook if missing or outdated
-    let commit_msg_path = hooks_dir.join("commit-msg");
-    install_hook_if_needed(&commit_msg_path, COMMIT_MSG_HOOK, "commit-msg");
-
-    // Tell cargo to rerun if hooks are deleted
-    println!("cargo:rerun-if-changed=../.git/hooks/pre-commit");
-    println!("cargo:rerun-if-changed=../.git/hooks/commit-msg");
+    for (name, _) in HOOKS {
+        // Re-run if the installed hook is deleted...
+        println!("cargo:rerun-if-changed=../.git/hooks/{name}");
+        // ...and if its tracked source changes, or the edit never reaches .git/hooks.
+        println!("cargo:rerun-if-changed=hooks/{name}");
+    }
 }
 
+/// Install `content` at `path` unless something we must not touch is already there.
+///
+/// The DECISION is `classify` in src/hook_install.rs — pure, and unit-tested there.
+/// Only the filesystem work lives here, because a build script cannot be tested and
+/// this logic has already been wrong twice.
 fn install_hook_if_needed(path: &Path, content: &str, name: &str) {
-    let needs_install = if path.exists() {
-        match fs::read_to_string(path) {
-            // Only overwrite hooks we own (contain our sentinel).
-            // Replace if content differs (hook was updated in source).
-            Ok(existing) if existing.contains("Auto-installed by: xtask build.rs") => {
-                existing != content
-            }
-            // Hook exists but isn't ours — don't overwrite.
-            Ok(_) => false,
-            Err(_) => true,
-        }
-    } else {
-        true
-    };
+    // DERIVED, not a parameter. A caller that can pass a marker can pass the OTHER
+    // hook's marker — the mis-pairing class this arc keeps rediscovering. Taking it
+    // from the content leaves nothing to cross.
+    let marker = title_of(content);
 
-    if needs_install {
+    let existing = if path.exists() {
+        Some(fs::read_to_string(path).map_err(|_| ()))
+    } else {
+        None
+    };
+    let state = classify(
+        existing.as_ref().map(|r| r.as_deref().map_err(|_| ())),
+        content,
+        marker,
+    );
+
+    if !state.is_ours_to_manage() {
+        // ⚠ Declining to install is only allowed to be SILENT when the hook is
+        // already ours and current. Otherwise the developer's scan/mesh guard is not
+        // armed and they have no way to know — that silence is how the original bug
+        // survived on real machines for two releases.
+        match state {
+            HookState::Foreign => println!(
+                "cargo:warning=Left your existing {name} hook in place, so \
+                 CortenForge's is NOT installed and the scan/mesh guard is not armed. \
+                 Merge xtask/hooks/{name} into yours, or move yours aside and rebuild."
+            ),
+            HookState::Unreadable => println!(
+                "cargo:warning=Could not read the existing {name} hook, so it was left \
+                 alone. CortenForge's {name} hook is NOT installed and the scan/mesh \
+                 guard is not armed."
+            ),
+            _ => {}
+        }
+        return;
+    }
+
+    let mut wrote = false;
+    if state.should_replace() {
         if let Err(e) = fs::write(path, content) {
-            // Don't fail the build, just warn
+            // Don't fail the build, just warn.
             println!("cargo:warning=Failed to install {name} hook: {e}");
             return;
         }
+        wrote = true;
+    }
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o755));
-        }
+    // ⚠ Runs even when the text was already current. See `ensure_executable`.
+    #[cfg(unix)]
+    ensure_executable(path, name, wrote);
 
+    if wrote {
         println!("cargo:warning=Installed {name} git hook");
+    }
+}
+
+/// Make sure git will actually RUN the hook at `path`.
+///
+/// git silently ignores a hook without an executable bit — no error, no warning, the
+/// guard simply never runs. The previous build script discarded this error entirely
+/// (`let _ = fs::set_permissions(..)`), so a hook with the right text and mode 0644
+/// is reachable on real machines, and checking only when we WRITE would never reach
+/// it: its text is current, so there is nothing to rewrite. Repair it regardless.
+#[cfg(unix)]
+fn ensure_executable(path: &Path, name: &str, freshly_written: bool) {
+    use std::os::unix::fs::PermissionsExt;
+    let already_executable = fs::metadata(path)
+        .map(|m| m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false);
+    if already_executable {
+        return;
+    }
+
+    if let Err(e) = fs::set_permissions(path, fs::Permissions::from_mode(0o755)) {
+        println!(
+            "cargo:warning=The {name} hook is not executable and could not be made \
+             one, so git will ignore it and its checks will not run: {e}"
+        );
+        return;
+    }
+
+    if !freshly_written {
+        println!(
+            "cargo:warning=Repaired the {name} hook's executable bit — git had been \
+             ignoring it, so its checks were not running."
+        );
     }
 }

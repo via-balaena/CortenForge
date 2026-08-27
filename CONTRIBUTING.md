@@ -32,8 +32,15 @@ cargo xtask grade <crate-name>
 cargo xtask ci
 ```
 
-> **Note:** Git hooks (pre-commit and commit-msg) are automatically installed
-> when you first build the project. No manual setup required.
+> **Note:** Git hooks (pre-commit and commit-msg) install themselves the first time
+> you build the project. The pre-commit hook includes a guard that refuses to commit
+> scan/mesh binaries to this public repository.
+>
+> ⚠ Two cases are **not** automatic. If you already have your own
+> `.git/hooks/pre-commit`, the build leaves it alone and prints a `cargo:warning`
+> saying the guard is not armed — merge `xtask/hooks/pre-commit` into yours. And if
+> `.git/hooks` does not exist, nothing is installed. `cargo xtask setup` installs
+> both, but it overwrites whatever is there, so move your own hook aside first.
 
 ### Local CI/CD (Recommended)
 

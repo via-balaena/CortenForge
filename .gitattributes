@@ -1,0 +1,7 @@
+# The git hooks are shipped into .git/hooks byte-for-byte by xtask's build script,
+# which reads them with `include_str!`. Unlike a Rust string literal — which rustc
+# normalises — `include_str!` embeds the file's bytes VERBATIM. On a checkout with
+# core.autocrlf=true (the Git-for-Windows installer default) these files would
+# arrive with CRLF, the shebang would become `#!/bin/sh\r`, and every hook would
+# fail to execute. Pin them to LF so the bytes are the same everywhere.
+xtask/hooks/*   text eol=lf

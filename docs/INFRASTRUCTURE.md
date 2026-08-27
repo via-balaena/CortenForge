@@ -56,7 +56,7 @@ Humans review; machines enforce.
 TIER 1: Non-Negotiable Foundation        [COMPLETE]
 ├── cargo-audit (CVE scanning)           [x] In quality-gate.yml
 ├── SBOM generation (CycloneDX)          [x] In quality-gate.yml
-├── Pre-commit hooks                     [x] Auto-installed via xtask/build.rs
+├── Pre-commit hooks                     [x] Source xtask/hooks/, auto-installed
 ├── Conventional commits                 [x] Enforced by commit-msg hook
 ├── Signed commits/releases              [ ] Branch protection (manual)
 └── cargo-semver-checks                  [x] In quality-gate.yml
@@ -119,8 +119,22 @@ cargo cyclonedx --format json --output-file sbom.json
 
 ### 1.3 Pre-Commit Hooks
 
-**Tool**: git hooks auto-installed via `xtask/build.rs`
-**Installation**: Automatic on first `cargo build` of any xtask command
+**Source of truth**: `xtask/hooks/pre-commit` and `xtask/hooks/commit-msg` — the
+hook scripts themselves, tracked and pinned to LF in `.gitattributes`. ⚠ To change
+what a hook DOES, edit those files. Do not add hook text to `xtask/build.rs`: it
+holds an `include_str!` of them, and a second copy of the text is exactly the drift
+that left the scan/mesh guard uninstalled on most checkouts (#833).
+
+**Installers**: two, both reading the same source and pairing each text with its
+filename through the single `hook_install::HOOKS` table —
+- `xtask/build.rs` — automatic on first `cargo build` of any xtask command. Replaces
+  a hook that is ours and out of date, leaves a foreign hook alone and says so.
+- `cargo xtask setup` — the one-command heal. ⚠ Writes both UNCONDITIONALLY: it
+  does NOT make the ownership check `build.rs` makes, so it overwrites a hook you
+  wrote yourself, with no backup. Move yours aside first. This is deliberate — it is
+  what makes the heal work from any state — but it means the warning `build.rs`
+  prints ("merge ours into yours") must be acted on BEFORE running the heal, not by
+  running it.
 **Checks**:
 - **Scan/mesh guard** — refuses staged `*.stl` / `*.obj` / `*.ply` / `*.3mf` / `*.mtl`
   (see 1.3.1 below). Runs first: it is a safety rule, not a quality one.
@@ -156,8 +170,8 @@ because the cost of a single miss is unrecoverable:
 
 | layer | catches | cannot catch |
 |---|---|---|
-| `.gitignore` blanket `*.stl` `*.obj` `*.ply` `*.3mf` `*.mtl` | `git add`, `git add .` | `git add -f` |
-| pre-commit guard (`xtask/build.rs`) | `git add -f`, anything already staged | a commit made with `--no-verify` |
+| `.gitignore` blanket `*.stl` `*.obj` `*.ply` `*.3mf` `*.mtl` | `git add`, `git add .` | `git add -f`; and an UPPERCASE `PART.STL` wherever `core.ignorecase=false` (Linux, CI) — these patterns are case-sensitive, unlike layer 2's |
+| pre-commit guard (`xtask/hooks/pre-commit`) | `git add -f`, anything already staged, any case (`:(icase)`) | a commit made with `--no-verify` |
 
 Neither layer can untrack anything: zero meshes are tracked, and `.gitignore` never
 applies to files already in the index. The `sim/L0/tests/assets/mujoco_menagerie`
@@ -485,7 +499,7 @@ Track these metrics for health visibility:
 - [x] WASM CI target (Layer 0 crates)
 - [x] Mutation testing (weekly scheduled)
 - [ ] Traceability infrastructure (requirements/ removed — rebuild when needed)
-- [x] Pre-commit hooks (auto-installed via xtask/build.rs)
+- [x] Pre-commit hooks (source xtask/hooks/, auto-installed)
 - [x] Conventional commit enforcement (commit-msg hook)
 
 ### Remaining (As Needed)
