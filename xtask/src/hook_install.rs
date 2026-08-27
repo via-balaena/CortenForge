@@ -690,11 +690,40 @@ pub fn is_executable(path: &std::path::Path) -> bool {
 /// file. A developer whose `.git/hooks/pre-commit` is a link to `xtask/hooks/`
 /// loses the link, silently, and the hook stops tracking its source. Measured.
 ///
+/// ⚠⚠ AND THAT IS EXACTLY WHY A LINK MUST NOT BE CHMODDED. `set_permissions` FOLLOWS
+/// the link — there is no portable `lchmod` — so "repair the hook's bit" would change
+/// the mode of whatever the link points AT: a file at an arbitrary path that
+/// containment never looked at, because containment is computed for the hooks
+/// DIRECTORY. Measured: with `.git/hooks/pre-commit` a link to a mode-0600 file
+/// outside the repository, a plain `cargo build` widened it to 0755. Every other
+/// write this module makes is bounded by the hooks directory; this one was not, and
+/// the doc above was busy congratulating it for preserving the link.
+///
+/// ★ [`is_executable`] deliberately still FOLLOWS the link, and that is not an
+/// inconsistency: the question it asks is "will git run this?", and git execs through
+/// the link. The decision was always right — only the write was unbounded. So a
+/// non-executable link is still reported, it is just reported to the developer
+/// instead of being silently fixed on a file that is not ours.
+///
 /// # Errors
-/// If the mode cannot be changed.
+/// If the path is a symlink, or if the mode cannot be changed.
 #[cfg(unix)]
 pub fn make_executable(path: &std::path::Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
+    if path.symlink_metadata()?.file_type().is_symlink() {
+        let target = std::fs::read_link(path).map_or_else(
+            |_| "a target that could not be read".to_string(),
+            |t| t.display().to_string(),
+        );
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "it is a symlink to {target}, and making it executable would change \
+                 THAT file's permissions, which is outside this repository and not \
+                 ours to do — chmod it yourself if you want git to run it"
+            ),
+        ));
+    }
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
 }
 
@@ -1942,6 +1971,69 @@ mod tests {
         assert!(!classify(Some(Ok(theirs)), OURS, MARKER).is_ours_to_manage());
         assert!(!classify(Some(Err(())), OURS, MARKER).is_ours_to_manage());
         assert!(classify(None, OURS, MARKER).is_ours_to_manage());
+    }
+
+    /// Repairing the bit must stay INSIDE the hooks directory.
+    ///
+    /// ⚠⚠ `set_permissions` follows a symlink, so this was the one write in the
+    /// module that containment could not bound: the hooks DIRECTORY was checked, and
+    /// then the chmod landed on wherever a link pointed. Measured before the fix, with
+    /// the real `build.rs`: a mode-0600 file outside the repository came out 0755
+    /// after a plain `cargo build`.
+    ///
+    /// ★ TWO-SIDED, because a refusal that refuses everything proves nothing. The
+    /// regular-file leg is the positive control: the same call, on the shape that IS
+    /// ours, must still repair the bit — otherwise git goes on silently ignoring a
+    /// correct hook, which is the failure this function exists to prevent.
+    #[test]
+    #[cfg(unix)]
+    fn repairing_the_bit_never_chmods_through_a_symlink() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let base = std::env::temp_dir().join(format!("cf-lchmod-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).expect("temp dir");
+
+        // The file a link points at: outside any hooks directory, owner-private.
+        let outside = base.join("somebody-elses-file");
+        std::fs::write(&outside, "not a hook\n").expect("seed");
+        std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+        let link = base.join("pre-commit");
+        std::os::unix::fs::symlink(&outside, &link).expect("symlink");
+
+        let refused = super::make_executable(&link)
+            .expect_err("a symlink must not be chmodded — the mode lands on its target");
+        let after = std::fs::metadata(&outside)
+            .expect("meta")
+            .permissions()
+            .mode();
+
+        // POSITIVE CONTROL: a regular file in the same directory still gets repaired.
+        let ours = base.join("commit-msg");
+        std::fs::write(&ours, "hook\n").expect("seed");
+        std::fs::set_permissions(&ours, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        let repaired = super::make_executable(&ours);
+        let ours_mode = std::fs::metadata(&ours).expect("meta").permissions().mode();
+        let _ = std::fs::remove_dir_all(&base);
+
+        assert_eq!(
+            after & 0o777,
+            0o600,
+            "the link's target was widened — this is the escape itself, not a proxy \
+             for it"
+        );
+        let said = refused.to_string();
+        assert!(
+            said.contains("symlink") && said.contains("somebody-elses-file"),
+            "the refusal is printed verbatim by both installers, so it has to name \
+             the file the developer must chmod: {said}"
+        );
+        repaired.expect("a regular hook file is still ours to repair");
+        assert!(
+            ours_mode & 0o111 != 0,
+            "the positive control did not repair: a refusal that refuses everything \
+             would satisfy the assertion above while git ignores every hook"
+        );
     }
 
     /// The failure mode an empty marker would cause, pinned directly: if a marker of
