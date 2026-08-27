@@ -165,12 +165,14 @@ fn hooks_dir_from(
         // disagree about a repository neither of them can help: the drift this whole
         // arc exists to end.
         Some(crate::hook_install::HooksDir::GitCannotRun(dir)) => anyhow::bail!(
-            "git resolves hooks to {}, but core.hooksPath is spelled in a form git \
-             cannot EXEC from — a bare `.` or `./`, which git normalises away to \
-             nothing, or a path starting with `-`, which the shell reads as options. \
-             Installing there would make git refuse EVERY commit in this checkout. \
-             Naming that same directory as an ABSOLUTE path works; so does a \
-             subdirectory such as .githooks. Then re-run.",
+            "git resolves hooks to {}, but the path git would actually EXEC is not \
+             the file we would write. core.hooksPath is a bare `.`/`./` (git \
+             normalises it away and searches PATH), starts with `-` or `+` (the \
+             hook's interpreter reads it as options), or is empty (git looks at the \
+             FILESYSTEM root). Installing would either make git refuse EVERY commit \
+             in this checkout or leave the hook silently unread. Naming that same \
+             directory as an ABSOLUTE path works; so does a subdirectory such as \
+             .githooks. Then re-run.",
             dir.display()
         ),
         // ⚠ NAME THE CAUSE WHEN WE KNOW IT. `build.rs` explained this case and

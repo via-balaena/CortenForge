@@ -222,25 +222,35 @@ blocked** — demonstrated end to end. Both require a `core.hooksPath` git itsel
 use; detecting them would mean re-implementing the kernel's path traversal, which is
 the class of reimplementation this arc has already paid for twice.
 
-⚠ **Two `core.hooksPath` spellings name a directory git cannot EXEC from, and both
-are REFUSED rather than installed into.** git execs `<hooksPath>/<name>` roughly as
-the shell would, so the answer is the front of a command line and not merely a
-location:
+⚠ **Some `core.hooksPath` spellings name a directory git will not run OUR file from,
+and those are REFUSED rather than installed into.** git execs `<hooksPath>/<name>`
+directly — no shell — so the answer is the front of a command line, and three ways of
+spelling a perfectly good directory stop that command from being our hook:
 
-- **`.` or `./`** — git normalises the leading `./` away, leaving the bare word
-  `pre-commit`; `execvp` searches `PATH` and the commit dies with `error: cannot run
-  pre-commit: No such file or directory`.
-- **anything beginning with `-`** (`core.hooksPath = -hooks`) — the command starts
-  with a dash, so the shell reads it as OPTIONS and dumps its option list instead of
-  running anything.
+- **`.` or `./`** — git's own path cleanup strips the leading `./`, leaving the bare
+  word `pre-commit`; `execvp` searches `PATH` and the commit dies with `error: cannot
+  run pre-commit: No such file or directory`.
+- **anything beginning with `-` or `+`** (`core.hooksPath = -hooks`) — `execve`
+  succeeds into the kernel's shebang handler, which hands the script path to the
+  interpreter as its first argument, and `/bin/sh` parses it as an OPTION STRING
+  (`/bin/sh: -/: invalid option`). POSIX shells take `+` the same way.
+- **an empty value**, which a script setting `core.hooksPath` from an unset variable
+  produces — git answers `./` for the directory but execs `/pre-commit` at the
+  FILESYSTEM root, so commits succeed and the hook is never read.
 
-Measured on git 2.50.1, each shape three-sided: configured with NO hook file, commits
-succeed; with a hook installed, **every commit in the checkout is refused**; and the
-SAME directory named as an ABSOLUTE path runs the hook and commits fine. So installing
-here does not merely leave the guard unarmed — it breaks a working repository, with an
-error naming neither CortenForge nor `core.hooksPath`. Both installers therefore
-decline and say which setting to change. This is the one refusal that is not about
-ownership: the directory *is* ours to write.
+Measured on git 2.50.1 across 20 spellings, each installed-and-committed: the first
+two brick the checkout, the third is a silent false success. Installing therefore
+either breaks a working repository — with an error naming neither CortenForge nor
+`core.hooksPath` — or reports a guard that is not armed. Both installers decline and
+say which setting to change. This is the one refusal that is not about ownership: the
+directory *is* ours to write.
+
+⚠ **The directory answer cannot decide this, so we ask git for the path it execs.**
+`core.hooksPath = .` and `= ./.` both make `rev-parse --git-path hooks` answer `.`,
+and git refuses the commit under one and runs the hook under the other — git's cleanup
+strips one `./` from the directory answer and from the exec path independently, so the
+directory answer is a cleanup behind the string git runs. The ask therefore carries a
+fourth question, `--git-path hooks/pre-commit`, and the rule reads THAT.
 
 Relative answers — which is what git USUALLY returns for the git dir and the hooks
 path, though a linked worktree and an absolute `core.hooksPath` both answer

@@ -51,8 +51,9 @@ cargo xtask ci
 >   because creating a directory alone does not re-run the build script;
 > - `core.hooksPath` points **outside this repository** — a directory out there may
 >   be shared with your other repos, so we will not write to it;
-> - `core.hooksPath` is spelled in a form git cannot run hooks from (a bare `.`/`./`,
->   or a path starting with `-`) — installing would make git refuse every commit;
+> - `core.hooksPath` is spelled in a form git will not run our hook from (a bare
+>   `.`/`./`, an empty value, or a path starting with `-` or `+`) — installing would
+>   either make git refuse every commit or leave the hook silently unread;
 > - `GIT_DIR`/`GIT_WORK_TREE` are set, so the checkout could not be resolved;
 > - the hooks directory could not be determined at all;
 > - a hook is not executable and the bit could not be repaired (git ignores it

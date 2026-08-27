@@ -58,16 +58,19 @@ pub enum HooksDir {
     /// other sites had to correct exactly that wording, and a test asserts the
     /// warning does not claim the directory is shared.
     Shared(std::path::PathBuf),
-    /// Inside this checkout, but spelled so that GIT ITSELF cannot exec a hook from
-    /// it — `core.hooksPath = .` or `./`. Installing here is worse than installing
-    /// nowhere, so it is refused with the one sentence that explains it.
+    /// Inside this checkout, but spelled so that GIT ITSELF will not exec the file
+    /// we would write there — `core.hooksPath` of `.`, `./`, `""`, or anything
+    /// starting with `-` or `+`. Installing is worse than installing nowhere: it
+    /// either makes git refuse every commit, or leaves the hook silently unread.
     ///
     /// ⚠⚠ THE ONLY VARIANT THAT IS ABOUT GIT'S LIMIT RATHER THAN OUR PERMISSION.
-    /// The other three answer "is this ours to write?"; this one answers "can the
-    /// answer be used at all?" — which is why it cannot be decided from the
-    /// absolute path in the payload. `.` and an absolute path to the same directory
-    /// resolve identically and git runs one and not the other, so the distinction
-    /// lives in [`GitPaths::hooks_runnable`], taken from the RAW answer.
+    /// The other three answer "is this ours to write?"; this one answers "will the
+    /// thing we write actually run?" — which is why it cannot be decided from the
+    /// path in the payload: `.` and an absolute path to the same directory resolve
+    /// identically and git runs one and not the other. Nor can it be decided from
+    /// the directory ANSWER — `.` and `./.` give the same answer and differ in
+    /// outcome. It is decided by asking git for the path it will exec; see
+    /// [`git_will_exec_our_hook`].
     GitCannotRun(std::path::PathBuf),
 }
 
@@ -81,7 +84,7 @@ struct GitPaths {
     /// Where git will actually look for hooks.
     pub hooks: std::path::PathBuf,
     /// Whether git can EXEC a hook from that answer, which is not the same question
-    /// as where the answer points. See [`hooks_answer_is_runnable`].
+    /// as where the answer points. See [`git_will_exec_our_hook`].
     pub hooks_runnable: bool,
 }
 
@@ -118,7 +121,7 @@ struct GitPaths {
 /// it as motivation, not as evidence. What is EVIDENCE is the tests below, whose
 /// oracle is git's own `--path-format=absolute` answer recorded from real runs.
 ///
-/// ⚠⚠ THE COUNT RULE IN [`three_answers`] IS THE WHOLE DEFENCE against a garbled
+/// ⚠⚠ THE COUNT RULE IN [`four_answers`] IS THE WHOLE DEFENCE against a garbled
 /// answer, and that is measured, not assumed. `rev-parse` echoes an option it does
 /// not understand as an EXTRA LINE IN POSITION — it never replaces an answer — so
 /// any echo makes four lines and is refused on count before anything inspects the
@@ -144,7 +147,7 @@ struct GitPaths {
 /// ⚠ THAT 128 IS NOT THE GUARANTEE, and leaning on it would be a mistake: in a
 /// repository with a BRANCH named `hooks`, the same git exits 0 and emits four lines
 /// — two answers, the echoed option, and the branch's SHA. Nothing is discarded, and
-/// what refuses it is the COUNT rule in [`three_answers`]. A repo with a `hooks`
+/// what refuses it is the COUNT rule in [`four_answers`]. A repo with a `hooks`
 /// branch is not exotic. Measured.
 ///
 /// ⚠ KNOWN GAP, one release wide. `core.hooksPath` arrived in 2.9, so the
@@ -170,65 +173,96 @@ struct GitPaths {
 /// way, as did a symlink CHAIN one hop further out.
 #[must_use]
 fn parse_git_paths(stdout: &str, base: &std::path::Path) -> Option<GitPaths> {
-    let [toplevel, common_dir, hooks] = three_answers(stdout)?;
+    let [toplevel, common_dir, hooks, exec] = four_answers(stdout)?;
+    let hooks = absolutize(base, hooks);
     Some(GitPaths {
         toplevel: absolutize(base, toplevel),
         common_dir: absolutize(base, common_dir),
-        // ⚠ TAKEN FROM THE RAW ANSWER, and it has to be: `absolutize` is what
-        // destroys the distinction this asks about. See `hooks_answer_is_runnable`.
-        hooks_runnable: hooks_answer_is_runnable(hooks),
-        hooks: absolutize(base, hooks),
+        // ⚠ FROM THE FOURTH ANSWER, not from `hooks`. The directory answer cannot
+        // decide this — see `git_will_exec_our_hook`.
+        hooks_runnable: git_will_exec_our_hook(exec, &hooks, base),
+        hooks,
     })
 }
 
-/// Can git EXEC a hook out of the directory it just named?
+/// Will git EXEC the very file we are about to write?
 ///
-/// ⚠⚠ IT IS NOT ALWAYS YES, and where it is no, INSTALLING IS WORSE THAN DOING
-/// NOTHING. git execs `<hooksPath>/<name>` roughly as the shell would, so the answer
-/// is not merely a location — it is the front of a command line, and two spellings
-/// of a perfectly good directory are not commands. In both, a checkout that
-/// committed fine before we installed refuses EVERY commit afterwards, with an error
-/// that names neither CortenForge nor `core.hooksPath`.
+/// ⚠⚠ NOT THE SAME QUESTION AS "where do hooks live?", and installing where the
+/// answer is no is worse than installing nowhere: a checkout that committed fine
+/// beforehand refuses EVERY commit afterwards, with an error naming neither
+/// CortenForge nor `core.hooksPath`.
 ///
-/// Measured on git 2.50.1, each shape three-sided in one repository — configured but
-/// with no hook file, with an always-passing hook installed, and with the SAME
-/// directory named absolutely:
+/// ⚠⚠ THIS IS THE SECOND DESIGN. The first computed the property from the hooks
+/// DIRECTORY answer, and that input cannot decide it — measured, `core.hooksPath`
+/// of `.` and of `./.` both make `--git-path hooks` answer `.`, and git refuses the
+/// commit under one and runs the hook under the other. git's own path cleanup strips
+/// exactly one leading `./`, and it strips it from the directory answer and from the
+/// exec path independently, so the directory answer is one cleanup behind the string
+/// git actually runs. No function of it can be right.
 ///
-/// 1. **`core.hooksPath = .` (or `./`)** — git normalises the leading `./` away, so
-///    the command becomes the bare word `pre-commit`, `execvp` searches PATH, and
-///    the commit dies with `error: cannot run pre-commit: No such file or directory`.
-///    No hook file: commits succeed. Hook installed: REFUSED, hook never ran.
-///    Absolute: runs, commit succeeds.
-/// 2. **an answer beginning with `-`** (`core.hooksPath = -hooks`) — the command
-///    starts with a dash, so the shell reads it as OPTIONS and dumps its option list
-///    (`verbose off / vi off / xtrace off`) instead of running anything. No hook
-///    file: commits succeed. Hook installed: REFUSED. Absolute — the very same
-///    `-hooks` directory, named from `/` — RUNS, which is what proves the fault is
-///    the leading character of the command and not the directory.
+/// ★ SO WE ASK GIT FOR THE STRING IT RUNS. `--git-path hooks/pre-commit` returns the
+/// exact path git will exec, cleanup already applied — the same move this whole arc
+/// is built on, one level down. Three properties of THAT answer decide it, and each
+/// was measured against real commits rather than reasoned about:
 ///
-/// ⚠ THE RULE IS EXACTLY AS WIDE AS THE MEASUREMENT, and no wider, because this arc
-/// has deleted four defensive rules added for shapes nobody could produce. A
-/// relative answer with any real component (`.githooks`, `./nested`) keeps its
-/// directory part and execs relative to the top level — measured to work, gated as a
-/// positive control. Every absolute answer works, including one whose last component
-/// starts with `-`. Only the two shapes above are refused.
+/// 1. **It must contain a `/`.** `core.hooksPath = .` yields the bare word
+///    `pre-commit`; `execvp` searches PATH and the commit dies with `error: cannot
+///    run pre-commit: No such file or directory`.
+/// 2. **It must not start with `-` or `+`.** `execve` succeeds into the KERNEL's
+///    shebang handler, which passes the script path to the interpreter as its first
+///    argument — so `/bin/sh` is handed `-hooks/pre-commit` and parses it as an
+///    OPTION STRING (`/bin/sh: -/: invalid option`). POSIX shells take `+` the same
+///    way (`set +x`), so `+hooks` fails identically. ⚠ It is the INTERPRETER that
+///    rejects it, not a shell parsing a command line: git execs directly, and a
+///    `core.hooksPath` containing `;`, spaces, `*`, `$` or a backtick all run fine.
+///    A `#!/usr/bin/env python3` hook fails differently again — python reads `-h`,
+///    prints usage, exits 0, and the guard is silently disarmed instead.
+/// 3. **It must be the file we are about to write.** `core.hooksPath = ""` — which a
+///    script setting it from an unset variable produces — makes git answer `./` for
+///    the directory and `/pre-commit` for the exec path. We would install at the repo
+///    root while git looks at the filesystem root: commits succeed, the hook never
+///    runs, and "Installed" is a lie. Comparing the two answers is what catches it.
 ///
-/// ⚠⚠ THIS IS NOT THE DELETED `-` FILTER COMING BACK, and the difference is the
-/// whole point. That filter DROPPED the line, so the answer was lost, two lines were
-/// left, and the `.git/hooks` guess reported a successful install into a directory
-/// git does not read — a false success. This keeps the answer, names the directory
-/// git really chose, and refuses it out loud. Same input, opposite failure mode.
+/// ⚠ THE COMPARISON IS ON THE PARENT, NOT THE WHOLE PATH, and that is deliberate:
+/// [`absolutize`] canonicalises each component, so resolving the file itself would
+/// follow a hook that is a SYMLINK to its target and report a mismatch for a setup
+/// that works perfectly.
+///
+/// ★ VALIDATED AS A PREDICATE, not as three hunches: 20 `core.hooksPath` spellings
+/// were run against real git — `.` `./` `./.` `././` `././.` `-hooks` `+hooks`
+/// `.githooks` `./nested` `sub/-hooks` `sub/+hooks` `""` `hooks` `..` `" githooks"`
+/// `"githooks "` `-` `+` `./-hooks` `./+hooks` — installing an always-passing hook
+/// where git said the directory was, then committing. This function agrees with git
+/// on all 20. The first design disagreed on four of them, in both directions.
+///
+/// ⚠⚠ THIS IS NOT THE DELETED `-` FILTER COMING BACK. That filter DROPPED the line,
+/// so the answer was lost, two lines were left, and the `.git/hooks` guess reported a
+/// successful install into a directory git does not read — a false success. This
+/// keeps the answer, names the directory git really chose, and refuses it out loud.
 #[must_use]
-fn hooks_answer_is_runnable(answer: &str) -> bool {
-    // The shell reads a leading `-` as options, whatever follows it.
-    if answer.starts_with('-') {
+fn git_will_exec_our_hook(exec: &str, hooks_dir: &std::path::Path, base: &std::path::Path) -> bool {
+    if !exec.contains('/') {
         return false;
     }
-    // `.`, `./`, `././` — everything normalises away and no directory part is left.
-    std::path::Path::new(answer)
-        .components()
-        .any(|c| !matches!(c, std::path::Component::CurDir))
+    if exec.starts_with('-') || exec.starts_with('+') {
+        return false;
+    }
+    let probe = std::path::Path::new(exec);
+    if probe.file_name() != Some(std::ffi::OsStr::new(HOOK_PROBE_NAME)) {
+        return false;
+    }
+    probe
+        .parent()
+        .and_then(|p| p.to_str())
+        .is_some_and(|parent| absolutize(base, parent) == hooks_dir)
 }
+
+/// The hook name we ask git to resolve, purely as a probe.
+///
+/// Any hook would do — every name shares the `core.hooksPath` prefix, so the three
+/// properties above are the same for all of them. It is taken from [`HOOKS`] so the
+/// probe cannot drift into naming a hook this installer does not manage.
+const HOOK_PROBE_NAME: &str = HOOKS[0].0;
 
 /// Join `answer` onto `base` and resolve it the way git's own `--path-format=absolute`
 /// would have — `..` applied to what is resolved so far, symlinks followed.
@@ -338,7 +372,7 @@ fn resolve_into(out: &mut std::path::PathBuf, path: &std::path::Path, budget: &m
     }
 }
 
-/// Exactly three answer lines, or nothing.
+/// Exactly four answer lines, or nothing.
 ///
 /// ⚠ NOTHING IS TRIMMED. A directory whose name ends in a SPACE is legal on every
 /// filesystem we support, and trimming it made git's answer differ from the path we
@@ -383,12 +417,12 @@ fn resolve_into(out: &mut std::path::PathBuf, path: &std::path::Path, budget: &m
 /// this sentence sent the reader to a `toplevel.is_absolute()` rule in
 /// [`parse_git_paths`]; that rule was deleted for catching nothing, and the sentence
 /// outlived it.
-fn three_answers(stdout: &str) -> Option<[&str; 3]> {
+fn four_answers(stdout: &str) -> Option<[&str; 4]> {
     let lines: Vec<&str> = stdout.lines().collect();
-    let [toplevel, common_dir, hooks] = lines.as_slice() else {
+    let [toplevel, common_dir, hooks, exec] = lines.as_slice() else {
         return None;
     };
-    Some([toplevel, common_dir, hooks])
+    Some([toplevel, common_dir, hooks, exec])
 }
 
 /// Decide whether the hooks directory git named is ours to write.
@@ -417,8 +451,9 @@ fn classify_hooks_dir(paths: &GitPaths, repo_root: &std::path::Path) -> HooksDir
     if paths.toplevel != repo_root {
         return HooksDir::OtherRepo(paths.hooks.clone());
     }
-    // ⚠⚠ BEFORE ASKING WHETHER IT IS OURS, ASK WHETHER GIT CAN USE IT. These are
-    // different questions and the answer to the first used to stand in for both.
+    // ⚠⚠ BEFORE ASKING WHETHER IT IS OURS, ASK WHETHER GIT WILL RUN WHAT WE WRITE.
+    // These are different questions and the answer to the first used to stand in for
+    // both.
     //
     // The working-tree arm below accepts the repository ROOT (`core.hooksPath = .`,
     // where git's hooks answer equals the toplevel), and that acceptance was pinned
@@ -525,19 +560,24 @@ fn resolve_from_answers(
 /// why a mutation survey found nothing objecting. On a git older than 2.31 (Ubuntu
 /// 20.04 ships 2.25) it is not free: that git does not know the flag and echoes it
 /// as an EXTRA line in position, so the answer is four lines and the COUNT rule in
-/// [`three_answers`] refuses it. (It is not a SHIFT — an echo never replaces an
+/// [`four_answers`] refuses it. (It is not a SHIFT — an echo never replaces an
 /// answer. Saying "shift" here pointed at a `toplevel.is_absolute()` rule that no
 /// longer exists, and was wrong about the mechanism even while it existed.) The
 /// result is safe but WRONG — resolution falls back to `.git/hooks` and a
 /// `core.hooksPath` is silently lost.
 ///
 /// Every option here shipped in git 2.5 (2015) or earlier.
-const REV_PARSE_ASK: [&str; 5] = [
+const REV_PARSE_ASK: [&str; 7] = [
     "rev-parse",
     "--show-toplevel",
     "--git-common-dir",
     "--git-path",
     "hooks",
+    // ⚠ THE FOURTH ANSWER IS NOT A LUXURY. It is the only thing that can tell
+    // `core.hooksPath = .` (git refuses every commit) from `./.` (git runs the hook)
+    // — they give the SAME directory answer. See `git_will_exec_our_hook`.
+    "--git-path",
+    "hooks/pre-commit",
 ];
 
 /// Run `git` in `repo_root` and return its stdout, or `None` if it did not succeed.
@@ -707,12 +747,14 @@ pub fn build_outcome(
         // developer's repository rather than merely fail to protect it, so the
         // message has to say that plainly or it reads as bureaucracy.
         Some(HooksDir::GitCannotRun(dir)) => BuildOutcome::Warn(format!(
-            "git resolves hooks to {}, but core.hooksPath is spelled in a form git \
-             cannot EXEC from — a bare `.` or `./`, which git normalises away to \
-             nothing, or a path starting with `-`, which the shell reads as options. \
-             Installing there would make git refuse EVERY commit in this checkout, so \
-             CortenForge's hooks were NOT installed and the scan/mesh guard is not \
-             armed. Naming that same directory as an ABSOLUTE path works.",
+            "git resolves hooks to {}, but the path git would actually EXEC is not \
+             the file we would write. core.hooksPath is a bare `.`/`./` (git \
+             normalises it away and searches PATH), starts with `-` or `+` (the \
+             hook's interpreter reads it as options), or is empty (git looks at the \
+             FILESYSTEM root). Installing would either make git refuse EVERY commit \
+             in this checkout or leave the hook silently unread, so CortenForge's \
+             hooks were NOT installed and the scan/mesh guard is not armed. Naming \
+             that same directory as an ABSOLUTE path works.",
             dir.display()
         )),
         // ⚠ `GIT_DIR`/`GIT_WORK_TREE` are cleared before asking git, because
@@ -985,6 +1027,20 @@ pub fn classify(existing: Option<Result<&str, ()>>, content: &str, marker: &str)
 mod tests {
     use super::{classify, title_of, HookState, HOOKS};
 
+    /// git's four answers for a checkout whose hooks directory answer is `hooks`.
+    ///
+    /// ⚠ The fourth is `--git-path hooks/pre-commit`, and for an ORDINARY answer it
+    /// really is the third with the hook name appended — measured across
+    /// `.githooks`, `./nested`, `hooks`, `..`, `sub/-hooks` and others. This helper
+    /// is only for those. The degenerate spellings, where git's cleanup makes the
+    /// two answers disagree (`.` answers `pre-commit`, `""` answers `/pre-commit`),
+    /// are written out literally at their own tests, because the disagreement IS the
+    /// thing under test and a helper that manufactured it would be marking its own
+    /// homework.
+    fn ask(top: &str, common: &str, hooks: &str) -> String {
+        format!("{top}\n{common}\n{hooks}\n{hooks}/pre-commit\n")
+    }
+
     const OURS: &str = "#!/bin/sh\n# CortenForge Pre-Commit Hook\necho hi\n";
     const MARKER: &str = "CortenForge Pre-Commit Hook";
 
@@ -1122,7 +1178,7 @@ mod tests {
     ///
     /// ⚠ `rev-parse` echoes any option it does not understand and still exits 0 —
     /// as an EXTRA line IN POSITION, never in place of an answer, so what arrives is
-    /// FOUR lines and the count rule in `three_answers` refuses it. That is the whole
+    /// FIVE lines and the count rule in `four_answers` refuses it. That is the whole
     /// defence, and it is the only one: nothing inspects what a line looks like.
     /// Refusing sends the caller to the `.git/hooks` fallback (hooks installed,
     /// nothing hidden); letting a shift through yields `OtherRepo`, which `build.rs`
@@ -1140,7 +1196,7 @@ mod tests {
 
         let base = Path::new("/repo");
 
-        let ordinary = parse_git_paths("/repo\n.git\n.git/hooks\n", base)
+        let ordinary = parse_git_paths(&ask("/repo", ".git", ".git/hooks"), base)
             .expect("toplevel absolute, the rest relative — what git actually emits");
         assert_eq!(ordinary.toplevel, PathBuf::from("/repo"));
         assert_eq!(ordinary.hooks, PathBuf::from("/repo/.git/hooks"));
@@ -1152,7 +1208,14 @@ mod tests {
         // emits, and used it to justify a `toplevel.is_absolute()` rule that
         // therefore never fired. A fixture no git can produce tests nothing.
         assert!(
-            parse_git_paths("/repo\n--some-option\n.git\n.git/hooks\n", base).is_none(),
+            parse_git_paths(
+                &format!(
+                    "/repo\n--some-option\n{}",
+                    ask("", ".git", ".git/hooks").trim_start_matches('\n')
+                ),
+                base
+            )
+            .is_none(),
             "an echoed option makes a fourth line; taking three of four silently \
              shifts which answer is which"
         );
@@ -1162,8 +1225,8 @@ mod tests {
         // `--git-path`, not an option we ask for, and "the options we ask for" is
         // ambiguous enough that a filter listing it would eat a legal answer.
         for hooks_answer in ["-hooks", "--git-path", "--show-toplevel", "hooks"] {
-            let paths = parse_git_paths(&format!("/repo\n.git\n{hooks_answer}\n"), base)
-                .unwrap_or_else(|| {
+            let paths =
+                parse_git_paths(&ask("/repo", ".git", hooks_answer), base).unwrap_or_else(|| {
                     panic!("`core.hooksPath = {hooks_answer}` is legal and its answer was eaten")
                 });
             assert_eq!(
@@ -1207,24 +1270,44 @@ mod tests {
                 "{required} is what containment is computed from: {ask:?}"
             );
         }
+        // ★ AND THE PROBE, which is the only thing that can tell `core.hooksPath = .`
+        // from `./.` — they give the same directory answer and git runs one of them.
+        // Dropping it does not break containment, so nothing else here would notice.
+        let probe = ask
+            .iter()
+            .find(|a| a.starts_with("hooks/"))
+            .unwrap_or_else(|| panic!("the exec-path probe is gone from the ask: {ask:?}"));
+        assert_eq!(
+            *probe,
+            format!("hooks/{}", super::HOOK_PROBE_NAME),
+            "the probe must name a hook this installer actually manages, or it \
+             measures the runnability of a file git will never be asked for"
+        );
+        assert!(
+            HOOKS
+                .iter()
+                .any(|(name, _)| *name == super::HOOK_PROBE_NAME),
+            "HOOK_PROBE_NAME drifted out of the HOOKS table: {:?}",
+            super::HOOK_PROBE_NAME
+        );
     }
 
-    /// A fourth line means the answers cannot be trusted to line up.
+    /// A fifth line means the answers cannot be trusted to line up.
     ///
     /// ⚠ Not hypothetical, and not only about echoed options: `core.hooksPath` may
     /// contain a NEWLINE — git 2.50 accepts it — and the answer then arrives split
-    /// across two lines. Taking the first three would install into a TRUNCATED
+    /// across two lines. Taking the first four would install into a TRUNCATED
     /// directory, which `setup` would happily create. The count check is what the
     /// module's own doc leans on, and nothing exercised it.
     #[test]
     fn more_answers_than_asked_for_is_not_an_answer() {
-        use super::{resolve_from_answers, three_answers, HooksDir};
+        use super::{four_answers, resolve_from_answers, HooksDir};
         use std::path::{Path, PathBuf};
 
         assert!(
-            three_answers("/r\n.git\n.git/hooks\n/extra\n").is_none(),
-            "a fourth line means something answered that we did not ask, so the \
-             three we read may not be the three we wanted"
+            four_answers("/r\n.git\n.git/hooks\n.git/hooks/pre-commit\n/extra\n").is_none(),
+            "a fifth line means something answered that we did not ask, so the \
+             four we read may not be the four we wanted"
         );
         // ★★ AND AN EMPTY FOURTH LINE COUNTS. `core.hooksPath` may end in a newline;
         // git 2.50 stores it and RUNS hooks from the directory whose name ends in
@@ -1233,19 +1316,23 @@ mod tests {
         // `!l.is_empty()` filter dropped it, left three, and installed into the
         // TRUNCATED `<repo>/hooks` while git read `<repo>/hooks\n`.
         assert!(
-            three_answers("/r\n.git\nhooks\n\n").is_none(),
-            "an empty fourth line is still a fourth line; dropping it installs into \
+            four_answers("/r\n.git\nhooks\nhooks/pre-commit\n\n").is_none(),
+            "an empty fifth line is still a fifth line; dropping it installs into \
              a truncated directory that git does not read"
         );
-        // POSITIVE CONTROL: exactly three is still an answer.
-        assert!(three_answers("/r\n.git\n.git/hooks\n").is_some());
+        // POSITIVE CONTROL: exactly four is still an answer.
+        assert!(four_answers("/r\n.git\n.git/hooks\n.git/hooks/pre-commit\n").is_some());
 
         // `core.hooksPath = "ho\noks"` — one setting, two lines.
         assert_eq!(
-            resolve_from_answers(Some("/r\n.git\n/r/ho\noks\n"), Path::new("/r"), true),
+            resolve_from_answers(
+                Some("/r\n.git\n/r/ho\noks\n/r/ho\noks/pre-commit\n"),
+                Path::new("/r"),
+                true
+            ),
             Some(HooksDir::Repo(PathBuf::from("/r/.git/hooks"))),
             "a hooks path containing a newline splits git's answer; reading the \
-             first three lines installs into a truncated directory"
+             first four lines installs into a truncated directory"
         );
     }
 
@@ -1300,7 +1387,7 @@ mod tests {
         std::os::unix::fs::symlink("a", repo.join("b")).expect("symlink");
 
         let verdict = |hooks: &str| {
-            super::parse_git_paths(&format!("{}\n.git\n{hooks}\n", repo.display()), &repo)
+            super::parse_git_paths(&ask(&repo.display().to_string(), ".git", hooks), &repo)
                 .expect("three answers")
                 .hooks
         };
@@ -1571,11 +1658,42 @@ mod tests {
 
         // CONTROL, and the one that identifies the CAUSE: the very same `-hooks`
         // directory, named from `/`, runs. So the fault is the leading character of
-        // the command, not the directory — which is why the rule reads the raw
-        // answer's first byte rather than the resolved path's last component.
+        // the command git execs, not the directory.
         set_hooks_path(&dashed.display().to_string());
         let under_dash_absolute = commit("f.txt", "feat: six");
         let dash_absolute_verdict = resolve_hooks_dir(&repo);
+
+        // ★ THE THIRD SHAPE: `+`. POSIX shells take `+opts` as well as `-opts`, so an
+        // interpreter handed `+hooks/pre-commit` rejects it exactly as it rejects the
+        // dash. The first version of this rule tested only `-` and installed happily
+        // into `+hooks`, which is the same brick one character to the right.
+        let plussed = repo.join("+hooks");
+        std::fs::create_dir_all(&plussed).expect("temp dir");
+        std::fs::rename(dashed.join("pre-commit"), plussed.join("pre-commit")).expect("move hook");
+        set_hooks_path("+hooks");
+        let under_plus = commit("g.txt", "feat: seven");
+        let plus_verdict = resolve_hooks_dir(&repo);
+
+        // ★★ AND THE TWO SHAPES THAT MUST BE ACCEPTED, which the first rule REFUSED.
+        // `./.` and `././` resolve to the same directory as `.` and give the SAME
+        // `--git-path hooks` answer — and git RUNS the hook under them. That is the
+        // measurement that killed reading the directory answer: no function of it can
+        // be right, because one answer maps to both outcomes.
+        std::fs::rename(plussed.join("pre-commit"), repo.join("pre-commit")).expect("move hook");
+        set_hooks_path("./.");
+        let under_dot_dot = commit("h.txt", "feat: eight");
+        let dot_dot_verdict = resolve_hooks_dir(&repo);
+        set_hooks_path("././");
+        let under_dot_slash = commit("i.txt", "feat: nine");
+
+        // ★ AND THE EMPTY VALUE, which a script setting core.hooksPath from an unset
+        // variable produces. git answers `./` for the directory but `/pre-commit` for
+        // the exec path: we would install at the repo root while git looks at the
+        // FILESYSTEM root. Commits succeed and the hook never runs — a false success,
+        // which is the failure mode this whole arc exists to remove.
+        set_hooks_path("");
+        let under_empty = commit("j.txt", "feat: ten");
+        let empty_verdict = resolve_hooks_dir(&repo);
         let _ = std::fs::remove_dir_all(&lab);
 
         // THE PREMISE, from git itself.
@@ -1610,6 +1728,30 @@ mod tests {
             "the SAME -hooks directory named absolutely must run, or the refusal \
              above is about the directory rather than the spelling"
         );
+        assert_eq!(
+            under_plus,
+            (false, false),
+            "git is expected to REFUSE the commit under core.hooksPath=+hooks — \
+             POSIX shells read `+` as an option introducer too"
+        );
+        assert_eq!(
+            under_dot_dot,
+            (true, true),
+            "git RUNS the hook under `./.`, which gives the same directory answer as \
+             `.` — refusing it is a regression, and this is the leg that proves the \
+             directory answer cannot decide runnability"
+        );
+        assert_eq!(
+            under_dot_slash,
+            (true, true),
+            "and under `././`, which gives the same directory answer as `./`"
+        );
+        assert_eq!(
+            under_empty,
+            (true, false),
+            "an empty core.hooksPath does not brick the checkout — it silently fails \
+             to run the hook, which is why it must be refused rather than installed"
+        );
 
         // THE DECISION, which exists only because of the premise above.
         assert_eq!(
@@ -1636,6 +1778,22 @@ mod tests {
             Some(HooksDir::Repo(dashed)),
             "absolute is the spelling that works, and it must still be ours"
         );
+        assert_eq!(
+            plus_verdict,
+            Some(HooksDir::GitCannotRun(plussed)),
+            "`+hooks` must be refused by name, not installed into"
+        );
+        assert_eq!(
+            dot_dot_verdict,
+            Some(HooksDir::Repo(repo.clone())),
+            "`./.` must be ACCEPTED — git runs hooks from it"
+        );
+        assert_eq!(
+            empty_verdict,
+            Some(HooksDir::GitCannotRun(repo)),
+            "an empty core.hooksPath must be refused: git execs /pre-commit while we \
+             would install at the repo root"
+        );
     }
 
     /// git answers RELATIVELY, and those answers must be used rather than discarded.
@@ -1653,7 +1811,7 @@ mod tests {
 
         // The exact mixed shape measured from a git without `--path-format`:
         // toplevel absolute, git dir and hooks relative to the directory it ran in.
-        let paths = parse_git_paths("/repo\n.git\n.git/hooks\n", base)
+        let paths = parse_git_paths(&ask("/repo", ".git", ".git/hooks"), base)
             .expect("relative answers are usable once rooted");
         assert_eq!(paths.common_dir, PathBuf::from("/repo/.git"));
         assert_eq!(paths.hooks, PathBuf::from("/repo/.git/hooks"));
@@ -1670,8 +1828,11 @@ mod tests {
         // module both used to state as a rule. `push_component` handles it because a
         // `RootDir` REPLACES what came before; a `join`-and-hope would too, but only
         // by accident, and nothing was asserting either way.
-        let worktree = parse_git_paths("/wt\n/main/.git\n/main/.git/hooks\n", Path::new("/wt"))
-            .expect("a worktree's absolute answers are an answer");
+        let worktree = parse_git_paths(
+            &ask("/wt", "/main/.git", "/main/.git/hooks"),
+            Path::new("/wt"),
+        )
+        .expect("a worktree's absolute answers are an answer");
         assert_eq!(
             worktree.common_dir,
             PathBuf::from("/main/.git"),
@@ -1702,7 +1863,7 @@ mod tests {
         let outside = std::fs::canonicalize(lab.join("shared-hooks")).expect("canonicalize");
 
         let escaped = parse_git_paths(
-            &format!("{}\n.git\n../shared-hooks\n", repo.display()),
+            &ask(&repo.display().to_string(), ".git", "../shared-hooks"),
             &repo,
         )
         .expect("old git emits exactly this shape");
@@ -1717,7 +1878,11 @@ mod tests {
         // returned `<repo>/nope/../../shared-hooks` — accepted by a component-wise
         // `starts_with` as inside the repo.
         let deep = parse_git_paths(
-            &format!("{}\n.git\nnope/../../shared-hooks\n", repo.display()),
+            &ask(
+                &repo.display().to_string(),
+                ".git",
+                "nope/../../shared-hooks",
+            ),
             &repo,
         )
         .expect("old git emits exactly this shape");
@@ -1727,14 +1892,17 @@ mod tests {
         // link LANDS, not to where it sits, which is why components are resolved one
         // at a time rather than lexically.
         std::os::unix::fs::symlink(lab.join("shared-hooks"), repo.join("lnk")).ok();
-        let via_link = parse_git_paths(&format!("{}\n.git\nlnk\n", repo.display()), &repo)
+        let via_link = parse_git_paths(&ask(&repo.display().to_string(), ".git", "lnk"), &repo)
             .expect("old git emits exactly this shape");
         let link_verdict = classify_hooks_dir(&via_link, &repo);
 
         // POSITIVE CONTROL: a relative answer that stays INSIDE must still be ours,
         // or "refuses everything" would pass the assertion above.
-        let inside = parse_git_paths(&format!("{}\n.git\n.git/hooks\n", repo.display()), &repo)
-            .expect("old git emits exactly this shape");
+        let inside = parse_git_paths(
+            &ask(&repo.display().to_string(), ".git", ".git/hooks"),
+            &repo,
+        )
+        .expect("old git emits exactly this shape");
         let inside_verdict = classify_hooks_dir(&inside, &repo);
         let _ = std::fs::remove_dir_all(&lab);
 
@@ -1778,11 +1946,11 @@ mod tests {
         use std::path::{Path, PathBuf};
 
         let root = Path::new("/nx-cf-rungs");
-        let ordinary = "/nx-cf-rungs\n.git\n.git/hooks\n";
-        let elsewhere = "/nx-cf-rungs\n.git\n/nx-cf-elsewhere/.githooks\n";
+        let ordinary = ask("/nx-cf-rungs", ".git", ".git/hooks");
+        let elsewhere = ask("/nx-cf-rungs", ".git", "/nx-cf-elsewhere/.githooks");
 
         assert_eq!(
-            resolve_from_answers(Some(ordinary), root, true),
+            resolve_from_answers(Some(&ordinary), root, true),
             Some(HooksDir::Repo(PathBuf::from("/nx-cf-rungs/.git/hooks"))),
             "git's own answer must be used"
         );
@@ -1792,7 +1960,7 @@ mod tests {
         // that has to win — otherwise the developer is told "Installed" about a file
         // git does not read.
         assert_eq!(
-            resolve_from_answers(Some(elsewhere), root, true),
+            resolve_from_answers(Some(&elsewhere), root, true),
             Some(HooksDir::Shared(PathBuf::from(
                 "/nx-cf-elsewhere/.githooks"
             ))),
@@ -1934,8 +2102,8 @@ mod tests {
 
         let base = Path::new("/nx-cf-dot-repo");
 
-        let nested =
-            parse_git_paths("/nx-cf-dot-repo\n./.git\n./nested\n", base).expect("three answers");
+        let nested = parse_git_paths(&ask("/nx-cf-dot-repo", "./.git", "./nested"), base)
+            .expect("four answers");
         assert_eq!(
             nested.hooks.as_os_str(),
             OsStr::new("/nx-cf-dot-repo/nested"),
@@ -1950,7 +2118,8 @@ mod tests {
         );
 
         // `core.hooksPath = .` — old git answers the bare `.`, meaning the repo root.
-        let root = parse_git_paths("/nx-cf-dot-repo\n./.git\n.\n", base).expect("three answers");
+        let root = parse_git_paths("/nx-cf-dot-repo\n./.git\n.\npre-commit\n", base)
+            .expect("four answers");
         assert_eq!(
             root.hooks.as_os_str(),
             OsStr::new("/nx-cf-dot-repo"),
@@ -1960,8 +2129,8 @@ mod tests {
 
         // POSITIVE CONTROL: an answer with no `.` is carried through untouched, so
         // this is not satisfied by a function that mangles every path.
-        let plain =
-            parse_git_paths("/nx-cf-dot-repo\n.git\n.git/hooks\n", base).expect("three answers");
+        let plain = parse_git_paths(&ask("/nx-cf-dot-repo", ".git", ".git/hooks"), base)
+            .expect("four answers");
         assert_eq!(
             plain.hooks.as_os_str(),
             OsStr::new("/nx-cf-dot-repo/.git/hooks"),
@@ -1998,7 +2167,7 @@ mod tests {
             .expect("symlink");
 
         let verdict = |hooks: &str| {
-            let paths = parse_git_paths(&format!("{}\n.git\n{hooks}\n", repo.display()), &repo)
+            let paths = parse_git_paths(&ask(&repo.display().to_string(), ".git", hooks), &repo)
                 .expect("old git emits exactly this shape");
             classify_hooks_dir(&paths, &repo)
         };
@@ -2103,9 +2272,9 @@ mod tests {
         use std::path::Path;
 
         let root = Path::new("/nx-cf-dash-repo");
-        let legacy = "/nx-cf-dash-repo\n/nx-cf-dash-repo/.git\n-hooks\n";
+        let legacy = ask("/nx-cf-dash-repo", "/nx-cf-dash-repo/.git", "-hooks");
         assert_eq!(
-            resolve_from_answers(Some(legacy), root, true),
+            resolve_from_answers(Some(&legacy), root, true),
             Some(HooksDir::GitCannotRun(root.join("-hooks"))),
             "`core.hooksPath = -hooks` is legal and must be carried through to the \
              directory git chose; dropping its answer for the leading dash leaves two \
@@ -2117,7 +2286,11 @@ mod tests {
         // satisfied by a rule that condemned the directory rather than the spelling.
         assert_eq!(
             resolve_from_answers(
-                Some("/nx-cf-dash-repo\n/nx-cf-dash-repo/.git\n/nx-cf-dash-repo/-hooks\n"),
+                Some(&ask(
+                    "/nx-cf-dash-repo",
+                    "/nx-cf-dash-repo/.git",
+                    "/nx-cf-dash-repo/-hooks",
+                )),
                 root,
                 true
             ),
@@ -2130,9 +2303,13 @@ mod tests {
         // git actually emits — without any rule inspecting what a line LOOKS like.
         // That is exactly what lets `-hooks` above survive.
         assert_eq!(
-            resolve_from_answers(Some("/r\n--git-common-dir\n.git\n-hooks\n"), root, true),
+            resolve_from_answers(
+                Some("/r\n--git-common-dir\n.git\n-hooks\n-hooks/pre-commit\n"),
+                root,
+                true
+            ),
             Some(HooksDir::Repo(root.join(".git").join("hooks"))),
-            "a four-line answer must fall back, not be read as three"
+            "a five-line answer must fall back, not be read as four"
         );
     }
 
@@ -2143,7 +2320,7 @@ mod tests {
         use std::path::PathBuf;
 
         let base = std::path::Path::new("/repo/trail ");
-        let paths = parse_git_paths("/repo/trail \n.git\n.git/hooks\n", base)
+        let paths = parse_git_paths(&ask("/repo/trail ", ".git", ".git/hooks"), base)
             .expect("trailing spaces are part of the path");
         assert_eq!(
             paths.toplevel,
@@ -2160,7 +2337,7 @@ mod tests {
         // legal directory name than git does. Gone. The property still deserves
         // pinning, because a Windows checkout really does produce this.
         let crlf = parse_git_paths(
-            "/repo\r\n.git\r\n.git/hooks\r\n",
+            "/repo\r\n.git\r\n.git/hooks\r\n.git/hooks/pre-commit\r\n",
             std::path::Path::new("/repo"),
         )
         .expect("CRLF output must parse");
